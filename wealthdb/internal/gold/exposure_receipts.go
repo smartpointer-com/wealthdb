@@ -42,6 +42,11 @@ import (
 //   - A name whose fitting hits are one issuer's (they share an ISIN or
 //     a name) in one country votes for it; any other name abstains. The
 //     votes must agree. Anything else stays unmatched.
+//
+// A line a fund's report states by name alone (no identifier) finds its
+// share by the same rules, among the shares of every country, both names
+// reduced alike (lineWords). It takes the share's sector and country as
+// a receipt does, and carries the same flag.
 
 // receiptSQL lists every security that lacks a sector or a risk country,
 // with each name a lookup, a broker or a fund line gives it and whether
@@ -66,10 +71,10 @@ SELECT s.security_key,
   FROM securities s JOIN names n ON n.k = s.security_key
  WHERE (s.sector IS NULL OR s.risk_country IS NULL) AND n.name IS NOT NULL AND trim(n.name) <> ''`
 
-// shareSQL lists the non-US equity shares a receipt may stand for:
-// each security a fund lists as an equity line under an ISIN from
-// outside the US, with a sector, its country of risk and domicile, and
-// every name the fund lines and the lookups give it.
+// shareSQL lists the equity shares a receipt or a named line may stand
+// for: each security a fund lists as an equity line under an ISIN, with
+// a sector, its country of risk and domicile, and every name the fund
+// lines and the lookups give it.
 const shareSQL = `
 WITH eq AS (
     SELECT DISTINCT COALESCE(sa.security_key, l.security_key) AS k
@@ -85,7 +90,29 @@ names AS (
     UNION SELECT security_key, name FROM securities WHERE name IS NOT NULL)
 SELECT DISTINCT s.security_key, COALESCE(s.risk_country, ''), COALESCE(s.domicile, ''), n.name
   FROM securities s JOIN eq ON eq.k = s.security_key JOIN names n ON n.k = s.security_key
- WHERE s.security_key LIKE 'isin:%' AND s.security_key NOT LIKE 'isin:US%' AND s.sector IS NOT NULL`
+ WHERE s.security_key LIKE 'isin:%' AND s.sector IS NOT NULL`
+
+// lineCompSQL lists the compositions each line named by name alone sits
+// in.
+const lineCompSQL = `
+SELECT DISTINCT COALESCE(sa.security_key, l.security_key), l.fund_ref || '@' || l.as_of || '@' || l.basis
+  FROM fund_lines l LEFT JOIN security_aliases sa ON sa.alias = l.security_key
+ WHERE l.security_key LIKE 'name:%'`
+
+// lineSQL lists the equity lines a fund names by name alone (a report's
+// inventory), as securities that lack a sector or a risk country, with
+// the country a source states for them.
+const lineSQL = `
+WITH eq AS (
+    SELECT DISTINCT COALESCE(sa.security_key, l.security_key) AS k, l.name
+      FROM fund_lines l
+      JOIN fund_compositions c USING (silver_source_id, fund_ref, as_of, basis)
+      JOIN fund_line_labels lab ON lab.provider = c.provider AND lab.field = 'asset_type' AND lab.raw = l.asset_type
+      LEFT JOIN security_aliases sa ON sa.alias = l.security_key
+     WHERE l.security_key LIKE 'name:%' AND lab.value = 'public_equity' AND trim(COALESCE(l.name, '')) <> '')
+SELECT eq.k, COALESCE(s.risk_country, ''), eq.name
+  FROM eq JOIN securities s ON s.security_key = eq.k
+ WHERE s.sector IS NULL OR s.risk_country IS NULL`
 
 // issuerSQL lists each receipt GLEIF ties to its issuer's other ISINs,
 // with those ISINs, where the receipt lacks a sector or a risk country.
@@ -98,10 +125,11 @@ WITH f AS (
 SELECT f.k, f.share FROM f JOIN securities s ON s.security_key = f.k
  WHERE s.sector IS NULL OR s.risk_country IS NULL`
 
-// receiptFillSQL completes each receipt from its share: a sector or a
-// risk country no source states, and a domicile only an ISIN's prefix
-// implies (a receipt's ISIN is the depositary's). The origin names the
-// share and how it was found: lei:… by GLEIF, underlying:… by name.
+// receiptFillSQL completes each receipt or named line from its share: a
+// sector or a risk country no source states, and a domicile only an
+// ISIN's prefix implies (a receipt's ISIN is the depositary's). The
+// origin names the share and how it was found: lei:… by GLEIF,
+// underlying:… by name.
 const receiptFillSQL = `
 UPDATE securities SET
     sector = COALESCE(securities.sector, u.sector),
@@ -119,7 +147,8 @@ UPDATE securities SET
  WHERE x.security_key = securities.security_key`
 
 // writeReceipts rewrites security_underlyings and completes each
-// receipt from the share it stands for.
+// receipt, and each line named by name alone, from the share it stands
+// for.
 func writeReceipts(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM security_underlyings`); err != nil {
 		return err
@@ -153,9 +182,13 @@ func writeReceipts(ctx context.Context, tx *sql.Tx) error {
 	}); err != nil {
 		return err
 	}
+	var abroad []shareName
 	isShare := map[string]bool{}
 	for _, sh := range shares {
-		isShare[sh.key] = true
+		if !strings.HasPrefix(sh.key, "isin:US") {
+			abroad = append(abroad, sh)
+			isShare[sh.key] = true
+		}
 	}
 	// By GLEIF first: the first equity share among the issuer's ISINs.
 	byLEI := map[string]string{}
@@ -174,7 +207,40 @@ func writeReceipts(ctx context.Context, tx *sql.Tx) error {
 	for k := range byLEI {
 		delete(receipts, k)
 	}
-	byName := linkReceipts(receipts, shares)
+	byName := linkReceipts(receipts, abroad)
+	lines := map[string]*receiptNames{}
+	if err := scanAll(ctx, tx, lineSQL, func(rows *sql.Rows) error {
+		var key, country, name string
+		if err := rows.Scan(&key, &country, &name); err != nil {
+			return err
+		}
+		if _, linked := byName[key]; linked {
+			return nil
+		}
+		r := lines[key]
+		if r == nil {
+			r = &receiptNames{country: country}
+			lines[key] = r
+		}
+		r.names = append(r.names, name)
+		return nil
+	}); err != nil {
+		return err
+	}
+	inComp := map[string][]string{}
+	if err := scanAll(ctx, tx, lineCompSQL, func(rows *sql.Rows) error {
+		var key, comp string
+		if err := rows.Scan(&key, &comp); err != nil {
+			return err
+		}
+		if lines[key] != nil {
+			inComp[key] = append(inComp[key], comp)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	maps.Copy(byName, linkLines(lines, shares, inComp))
 	type link struct{ key, share, origin string }
 	var links []link
 	for _, k := range slices.Sorted(maps.Keys(byLEI)) {
@@ -205,9 +271,9 @@ func scanAll(ctx context.Context, tx *sql.Tx, q string, scan func(*sql.Rows) err
 	return rows.Err()
 }
 
-// receiptNames is a security that may be a receipt: every name it goes
-// by, the country a source states for it, and whether anything calls it
-// a depositary receipt.
+// receiptNames is a security that may be a receipt, or a line named by
+// name alone: every name it goes by, the country a source states for it,
+// and whether anything calls it a depositary receipt.
 type receiptNames struct {
 	names   []string
 	country string
@@ -231,10 +297,10 @@ type shareIndex struct {
 	exact, byFirst map[string][]shareEntry
 }
 
-func newShareIndex(shares []shareName) shareIndex {
+func newShareIndex(shares []shareName, reduce func(string) []string) shareIndex {
 	idx := shareIndex{exact: map[string][]shareEntry{}, byFirst: map[string][]shareEntry{}}
 	for _, s := range shares {
-		w := issuerWords(s.name, false)
+		w := reduce(s.name)
 		if len(w) == 0 {
 			continue
 		}
@@ -247,32 +313,102 @@ func newShareIndex(shares []shareName) shareIndex {
 
 // linkReceipts maps each receipt's key to the share it stands for.
 func linkReceipts(receipts map[string]*receiptNames, shares []shareName) map[string]string {
-	idx := newShareIndex(shares)
+	idx := newShareIndex(shares, func(n string) []string { return issuerWords(n, false) })
 	out := map[string]string{}
 	for key, r := range receipts {
-		if !r.receipt {
+		if r.receipt {
+			if share, ok := idx.vote(r, func(n string) []string { return issuerWords(n, true) }); ok && share != key {
+				out[key] = share
+			}
+		}
+	}
+	return out
+}
+
+// linkLines maps each line a fund names by name alone to the share its
+// name names, by the receipts' rules, among the shares of every country.
+// Both sides are reduced alike (lineWords). A name that finds shares in
+// several countries (one company's in Australia and in Britain) takes
+// the market of the compositions it sits in as its country, where they
+// share one: a composition's market is the country of two in three of
+// its lines that found a share. inComp gives the compositions each line
+// sits in.
+func linkLines(lines map[string]*receiptNames, shares []shareName, inComp map[string][]string) map[string]string {
+	idx := newShareIndex(shares, lineWords)
+	country := map[string]string{}
+	for _, sh := range shares {
+		country[sh.key] = cmp.Or(country[sh.key], sh.country, sh.domicile)
+	}
+	out := map[string]string{}
+	for key, r := range lines {
+		if share, ok := idx.vote(r, lineWords); ok && share != key {
+			out[key] = share
+		}
+	}
+	tally := map[string]map[string]int{}
+	for key, share := range out {
+		for _, c := range inComp[key] {
+			if tally[c] == nil {
+				tally[c] = map[string]int{}
+			}
+			tally[c][country[share]]++
+		}
+	}
+	market := map[string]string{}
+	for c, n := range tally {
+		total := 0
+		for _, k := range n {
+			total += k
+		}
+		for ctry, k := range n {
+			if ctry != "" && 3*k >= 2*total {
+				market[c] = ctry
+			}
+		}
+	}
+	for key, r := range lines {
+		if _, done := out[key]; done || r.country != "" {
 			continue
 		}
-		hint := legalHint(r.names)
-		said := map[string]bool{}
-		for _, n := range r.names {
-			for _, w := range nameTokens(n) {
-				said[w] = true
+		hint := ""
+		for _, c := range inComp[key] {
+			if market[c] == "" || (hint != "" && market[c] != hint) {
+				hint = ""
+				break
 			}
+			hint = market[c]
 		}
-		var votes []shareEntry
-		for _, n := range r.names {
-			if hits := idx.match(issuerWords(n, true), r.country, hint, said); len(hits) > 0 {
-				if _, ok := oneShare(hits); ok {
-					votes = append(votes, hits...)
-				}
-			}
+		if hint == "" {
+			continue
 		}
-		if share, ok := oneShare(votes); ok && share != key {
+		local := *r
+		local.country = hint
+		if share, ok := idx.vote(&local, lineWords); ok && share != key {
 			out[key] = share
 		}
 	}
 	return out
+}
+
+// vote is the share a security's names agree on: each name that finds
+// one issuer's shares votes for them; any other abstains.
+func (idx shareIndex) vote(r *receiptNames, reduce func(string) []string) (string, bool) {
+	hint := legalHint(r.names)
+	said := map[string]bool{}
+	for _, n := range r.names {
+		for _, w := range nameTokens(n) {
+			said[w] = true
+		}
+	}
+	var votes []shareEntry
+	for _, n := range r.names {
+		if hits := idx.match(reduce(n), r.country, hint, said); len(hits) > 0 {
+			if _, ok := oneShare(hits); ok {
+				votes = append(votes, hits...)
+			}
+		}
+	}
+	return oneShare(votes)
 }
 
 // match is what one name of a receipt finds: the hits of the first tier
@@ -457,9 +593,9 @@ var legalCountries = func() map[string]map[string]bool {
 
 // abbreviations are the words a vendor's short name abbreviates other
 // than by cutting them short.
-var abbreviations = map[string]string{"INTL": "INTERNATIONAL", "HLDGS": "HOLDINGS", "HLDG": "HOLDING",
+var abbreviations = map[string]string{"INTL": "INTERNATIONAL", "HLDGS": "HOLDINGS", "HLDG": "HOLDING", "HLG": "HOLDING",
 	"INDS": "INDUSTRIES", "MFG": "MANUFACTURING", "GRP": "GROUP", "BK": "BANK", "SVCS": "SERVICES",
-	"FINL": "FINANCIAL", "NATL": "NATIONAL"}
+	"FINL": "FINANCIAL", "NATL": "NATIONAL", "COS": "COMPANIES", "PVT": "PRIVATE"}
 
 // countryWords name a country or a region in a company's name: a share
 // whose name adds one is a subsidiary there.
@@ -526,6 +662,37 @@ func issuerWords(name string, receipt bool) []string {
 		last = m[1]
 	}
 	add(name[last:], false)
+	return out
+}
+
+// classWords say which class of a share, or which form of it, a line
+// holds, not whose; parValue is a par value printed with its currency
+// (CHF0.10).
+var (
+	classWords = setOf("SHARE", "SHARES", "SHS", "SH", "ORD", "ORDS", "ORDINARY", "REG", "REGS", "REGD", "NPV",
+		"CLASS", "CL", "SER", "SERIES", "PAR", "PREF", "PFD", "PREFERENCE", "BEARER", "REGISTERED", "UNITARY", "PTG",
+		"CERT", "CHF", "EUR", "USD", "GBP")
+	parValue = regexp.MustCompile(`^(?:CHF|EUR|USD|GBP|SEK|NOK|DKK|JPY|CAD|AUD|HKD|SGD|NZD|ZAR|ILS|PLN|CZK|HUF)[0-9]+$`)
+)
+
+// lineWords reduces the name of a line a fund report states by name
+// alone, and the names of the shares it may be, to the issuer's words.
+// What parentheses say (REGD, US listed, voting rights), a share's class
+// and par value, legal forms, numbers and single letters drop. Unlike a
+// receipt's, the name keeps AMERICAN and GLOBAL: here they tell issuers
+// apart (AMERICAN NAME is not NAME).
+func lineWords(name string) []string {
+	var out []string
+	for _, w := range nameTokens(nameParens.ReplaceAllString(name, " ")) {
+		switch {
+		case w == "" || nameDigits.MatchString(w) || len(w) < 2, legalWords[w], classWords[w], parValue.MatchString(w):
+			continue
+		}
+		if full, ok := abbreviations[w]; ok {
+			w = full
+		}
+		out = append(out, w)
+	}
 	return out
 }
 

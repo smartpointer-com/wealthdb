@@ -73,24 +73,31 @@ var genericSectors = map[Sector][]string{
 }
 
 // The asset types an issuer file or a filing labels a line with, and the
-// asset class each counts in. N-PORT's assetCat codes are among them. A
-// derivative stays a leaf of its own kind: a currency forward counts in
-// foreign_exchange, any other derivative in other.
+// asset class each counts in. N-PORT's assetCat codes are among them, and
+// the sections a fund report lists its holdings under, in English and
+// German. A derivative stays a leaf of its own kind: a currency forward
+// counts in foreign_exchange, any other derivative in other.
 var genericAssetTypes = map[AssetClass][]string{
 	AssetClassPublicEquity: {"equity", "equities", "stock", "stocks", "common stock", "common", "preferred stock",
 		"preferred", "ordinary shares", "ec", "ep", "adr", "gdr", "american depository receipt",
-		"american depositary receipt", "global depositary receipt", "global depository receipt"},
+		"american depositary receipt", "global depositary receipt", "global depository receipt",
+		"common stocks", "preferred stocks", "bearer shares", "registered shares", "participation certificates",
+		"other shares", "stammaktien", "vorzugsaktien", "inhaberaktien", "namenaktien", "partizipationsscheine",
+		"aktien und sonstige beteiligungswertpapiere und -rechte"},
 	AssetClassFixedIncome: {"fixed income", "bond", "bonds", "debt", "dbt", "fixed-income", "government bond",
-		"corporate bond", "note", "notes", "abs-mbs", "abs-cbdo", "abs-o", "abs-app", "sn", "lon", "loan"},
+		"corporate bond", "note", "notes", "abs-mbs", "abs-cbdo", "abs-o", "abs-app", "sn", "lon", "loan",
+		"corporate bonds", "government bonds", "asset and mortgage backed"},
 	AssetClassCash: {"cash", "cash and/or derivatives", "money market", "cash collateral and margins",
 		"cash & equivalents", "cash equivalents", "stiv", "ra", "repo", "repurchase agreement", "deposit", "currency"},
 	AssetClassRealEstate:      {"real estate", "re", "reit", "real estate investment trust"},
 	AssetClassForeignExchange: {"fx", "forward", "forwards", "fx forward", "currency forward", "dfe", "foreign exchange"},
 	AssetClassOther: {"futures", "future", "swap", "swaps", "option", "options", "derivative", "derivatives",
-		"dco", "dcr", "de", "dir", "do", "comm", "commodity", "other"},
+		"dco", "dcr", "de", "dir", "do", "comm", "commodity", "other", "rights", "warrants", "bezugsrechte",
+		"optionsscheine"},
 	// A fund line looks through when a composition describes it; one that
 	// does not counts as multi asset.
-	AssetClassMultiAsset: {"fund", "funds", "etf", "etfs", "investment company", "mutual fund"},
+	AssetClassMultiAsset: {"fund", "funds", "etf", "etfs", "investment company", "mutual fund", "investment funds",
+		"investmentfonds"},
 }
 
 // Country spellings beside the canonical names and the codes themselves.

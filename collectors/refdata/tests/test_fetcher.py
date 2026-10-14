@@ -98,3 +98,40 @@ def test_http_error_becomes_a_fetch_error():
     c = fetcher.Client(opener=opener, sleep=lambda s: None)
     with pytest.raises(fetcher.FetchError, match="404"):
         c.get("https://example.org/missing")
+
+
+def test_a_disclaimer_is_posted_as_a_form():
+    c, _, seen = make_client()
+    c.post_form("https://example.org/entry", {"_action_set": "I agree"})
+    req = seen[-1]
+    assert (req.get_method(), req.data, req.get_header("Content-type")) == \
+        ("POST", b"_action_set=I+agree", "application/x-www-form-urlencoded")
+
+
+def test_cookies_are_kept_for_a_session_host_only():
+    import email.message
+    import urllib.request
+
+    class Resp:
+        def __init__(self, headers):
+            self._h = headers
+
+        def info(self):
+            return self._h
+
+    c = fetcher.Client(opener=lambda req, timeout: None)
+    # A host's own cookie and one set for its whole domain are kept; a
+    # cookie from any other host is not.
+    for host, cookie in (("www.swissfunddata.ch", "JSESSIONID=x1; Path=/"),
+                         ("www.swissfunddata.ch", "SCDID_S=x2; Path=/; Domain=.swissfunddata.ch"),
+                         ("www.example.org", "JSESSIONID=x3; Path=/")):
+        h = email.message.Message()
+        h["Set-Cookie"] = cookie
+        c.cookies.extract_cookies(Resp(h), urllib.request.Request(f"https://{host}/a"))
+    assert sorted(k.value for k in c.cookies) == ["x1", "x2"]
+    back = urllib.request.Request("https://www.swissfunddata.ch/b")
+    c.cookies.add_cookie_header(back)
+    assert "JSESSIONID=x1" in back.get_header("Cookie") and "SCDID_S=x2" in back.get_header("Cookie")
+    other = urllib.request.Request("https://www.example.org/b")
+    c.cookies.add_cookie_header(other)
+    assert not other.has_header("Cookie")

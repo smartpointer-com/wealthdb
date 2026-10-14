@@ -12,7 +12,9 @@ from .sec_edgar import SecEdgar
 from .sec_nport import SecNport
 from .spdr import Spdr
 from .sprott import Sprott
+from .swisscanto import Swisscanto
+from .swissfunddata import SwissFundData
 from .xtrackers import Xtrackers
 
-REGISTRY = {p.name: p for p in (Inbox(), IShares(), Xtrackers(), Invesco(), Spdr(), Sprott(), SecNport(),
-                                SecEdgar(), Gleif(), OpenFigi())}
+REGISTRY = {p.name: p for p in (Inbox(), IShares(), Xtrackers(), Invesco(), Spdr(), Sprott(), Swisscanto(),
+                                SwissFundData(), SecNport(), SecEdgar(), Gleif(), OpenFigi())}

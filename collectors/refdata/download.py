@@ -116,12 +116,13 @@ def security_order(securities, constituents: bool) -> list:
     return direct + sorted(through, key=lambda s: (-(s.share_pct or 0), s.key))
 
 
-def fetched_before(bronze_dir: Path | None) -> tuple[set, dict]:
+def fetched_before(bronze_dir: Path | None) -> tuple[dict, dict]:
     """What earlier complete runs fetched, which counts as had until gold
     holds it, so a second run before the next load asks for it no more:
-    (provider, fund ref, date) of every composition, and the day of each
-    provider's latest answer per security."""
-    funds, lookups = set(), {}
+    (provider, fund ref, date) of every composition with the day of the
+    latest run that fetched it, and the day of each provider's latest
+    answer per security."""
+    funds, lookups = {}, {}
     if bronze_dir is None or not bronze_dir.is_dir():
         return funds, lookups
     for run in bronze.iter_run_dirs(bronze_dir):
@@ -133,7 +134,8 @@ def fetched_before(bronze_dir: Path | None) -> tuple[set, dict]:
             if e.get("status") != "ok":
                 continue
             if e.get("kind") == "fund" and e.get("as_of"):
-                funds.add((e["provider"], e["ref"], date.fromisoformat(e["as_of"])))
+                k = (e["provider"], e["ref"], date.fromisoformat(e["as_of"]))
+                funds[k] = max(funds.get(k, day), day)
             elif e.get("kind") == "security":
                 k = (e["provider"], e["ref"])
                 lookups[k] = max(lookups.get(k, day), day)
@@ -163,18 +165,23 @@ def _dates(p, claim, fund, since, until, ctx):
 
 
 def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_age: int, backfill: bool,
-         refs=None, securities=True, constituents=False, fetched=frozenset(), looked_up=None):
+         refs=None, securities=True, constituents=False, fetched=None, looked_up=None):
     """The requests a run makes, and the funds no provider claims.
 
     The first provider that claims a fund serves it, and the next ones
     stand by for its current composition should it fail; an additive one
     (the inbox) serves it as well. A fund held today, a proxy or a reference
     fund wants its current composition once the newest one had is older
-    than max_age, unless the provider's newest is already had. A backfill
-    wants every date inside the days the fund was held, and the last one
-    before them within max_gap_days: the composition in force when the
-    holding began."""
+    than max_age, unless the provider's newest is already had or the
+    provider served one within max_age, as a report that states a day long
+    past. A backfill wants every date inside the days the fund was held,
+    and the last one before them within max_gap_days: the composition in
+    force when the holding began."""
     reqs, unclaimed = [], []
+    fetched = fetched or {}
+    served_days = {}
+    for (q, r, _), day in fetched.items():
+        served_days[(q, r)] = max(served_days.get((q, r), day), day)
     gap = timedelta(days=want.max_gap_days)
     for fund in want.funds:
         if refs and fund.ref not in refs:
@@ -204,7 +211,9 @@ def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_ag
                         have.add(d)
                 continue
             newest = max(have) if have else None
-            if current and (newest is None or (today - newest).days > max_age):
+            served_on = served_days.get((p.name, fund.ref))
+            if current and (newest is None or (today - newest).days > max_age) \
+                    and (served_on is None or (today - served_on).days > max_age):
                 try:
                     latest = p.latest(claim, ctx)
                 except LOOKUP_ERRORS as e:

@@ -84,9 +84,11 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
 With no file, the providers of public data run: `inbox`, `sec-nport`,
 `sec-edgar`, `gleif` and `openfigi`. The two SEC providers wait for a
 `contact`. An issuer's provider (`ishares`, `xtrackers`, `invesco`,
-`spdr`, `sprott`) runs only once `providers` names it: enabling it accepts the
-issuer's terms, quoted below. An issuer's daily file is fresher than a
-quarterly N-PORT filing, so list the issuers before `sec-nport`.
+`spdr`, `sprott`) and a report provider (`swisscanto`,
+`swissfunddata`) run only once `providers` names them: enabling one
+accepts its source's terms, quoted below. An issuer's daily file is
+fresher than a report or a quarterly N-PORT filing, so list the issuers
+first, then the report providers, then `sec-nport`.
 
 A setting or a provider name the collector does not know is an error,
 so a typo never passes for a switch that is off.
@@ -182,6 +184,36 @@ Sprott's US ETFs, from the holdings table each fund page embeds.
 **Terms.** The site links no terms of use (checked 2026-10-14); its
 privacy policy covers personal data only. Off until `providers` names
 it.
+
+### swisscanto and swissfunddata
+
+A fund no daily file describes, from its newest annual and semi-annual
+reports.
+
+- `swisscanto` finds a Swisscanto fund by its ISIN in Swisscanto's
+  product API, which links its umbrella's reports.
+- `swissfunddata` finds a fund distributed in Switzerland by its ISIN
+  in the document list of swissfunddata.ch.
+- Each report is a PDF with an inventory per sub-fund. The held fund's
+  is the one whose title its name names. Both reports are read, so a
+  fund has two compositions a year.
+- A report is months old the day it appears, so its composition reads
+  as aged. It is fetched again once max_age_days has passed since the
+  last fetch.
+- Swisscanto's inventory lists each position's ISIN. Other reports list
+  names only, under industry or country headings. Gold finds each
+  name's share among the shares the other funds' files list.
+- swissfunddata shows its document list only after a visitor states an
+  investor category and agrees to its disclaimer. The provider states
+  "private investor" and agrees, once a run. The site keeps that in a
+  session cookie. No account, no login.
+
+**Terms.** Swisscanto's legal notice prohibits accessing the site's
+contents systematically "to compile a collection, a database or a
+directory". swissfunddata's disclaimer bars professional market data
+distributors from using, systematically extracting, scraping or
+commercially exploiting its data, and requires consent for any public
+or commercial use. Off until `providers` names them.
 
 ### ishares
 
@@ -293,8 +325,9 @@ Every request goes through one small client:
   OpenFIGI (25), 50 a minute for GLEIF (60);
 - a User-Agent that names the tool, with the `contact` for the SEC's
   hosts only;
-- GET, and a read-only POST for OpenFIGI's mapping, which has no GET
-  form; no cookies;
+- GET, a read-only POST for OpenFIGI's mapping, which has no GET form,
+  and the POST that states swissfunddata's investor category;
+- no cookies, except swissfunddata's session;
 - a source that refuses a request for its rate is not asked again in
   the run.
 

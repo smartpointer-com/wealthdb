@@ -5,3 +5,6 @@ pytest>=8,<9
 # and load reads it back through compress.open_bytes. Self-contained
 # wheel (bundles libzstd), no system deps.
 zstandard>=0.22,<1
+# A fund report is a PDF: pypdfium2 (PDFium) reads its text, fast enough
+# for a report of a thousand pages.
+pypdfium2>=4.30,<6

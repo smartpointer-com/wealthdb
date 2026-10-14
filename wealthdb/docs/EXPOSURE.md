@@ -120,10 +120,18 @@ issuer's name, among the equity lines of the funds:
 - What the names find must be one issuer in one country. Anything else
   stays `unmatched`.
 
+A fund report may name a holding by its name alone. Such a line finds
+its share the same way, among the shares of every country. Both names
+lose what their parentheses say, a share's class and par value
+(`CHF0.10`), legal forms and numbers. A line's country, where its report
+states one, fits only a share of it. A name that finds shares in two
+countries takes its fund's market: the country of two in three of the
+fund's lines that found a share.
+
 `security_underlyings` keeps each link and how it was found (`lei` or
-`name`). The receipt's attributes name the share as their origin:
+`name`). The security's attributes name the share as their origin:
 `lei:isin:…` for GLEIF's link, `underlying:isin:…` for a match by name.
-The leaves of a receipt matched by name carry the flag `by_name`.
+The leaves of a security matched by name carry the flag `by_name`.
 
 `--country risk` (the default) places a security in its country of
 risk, else its domicile. `--country domicile` does the opposite.
@@ -291,7 +299,7 @@ row's gross value it covers: `proxy=12%`, `aged=<1%`.
 | `forward` | the composition is dated after the day |
 | `partial` | the weights leave more than 3% of the fund unexplained (the remainder), a forward states no legs, or a fund lies deeper than three levels |
 | `unmapped` | a provider's label has no place in the vocabulary |
-| `by_name` | a depositary receipt's sector or country comes from a share matched by name (§3) |
+| `by_name` | a depositary receipt's or a named line's sector or country comes from a share matched by name (§3) |
 | `opaque` | a private equity fund nothing looks through; it reads `diversified` |
 | `untagged` | a private holding (§5) has no tag. A tag that leaves a field blank is still a tag |
 | `unmatched` | a listed security or fund no source describes |

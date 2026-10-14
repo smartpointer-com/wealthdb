@@ -14,6 +14,9 @@ signs in anywhere.
 - GET requests to the pages and files each provider documents in
   [README.md](README.md). A provider may add a read-only POST only where
   the source's lookup has no GET form.
+- A provider may also accept a disclaimer a public site requires before
+  it serves its documents: an investor category, no account. The
+  session cookie the site sets lasts one run and is never stored.
 - No login, no account, no form that changes anything at the source.
 - Every request goes through `fetcher.Client`: one request a second per
   host, eight a second for the SEC (its limit is ten), and a User-Agent

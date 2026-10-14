@@ -96,3 +96,30 @@ def make_xlsx(rows) -> bytes:
                    '</Relationships>')
         z.writestr("xl/worksheets/sheet1.xml", f"<worksheet {ns}><sheetData>{body}</sheetData></worksheet>")
     return buf.getvalue()
+
+
+def pdf(pages) -> bytes:
+    """A PDF whose pages hold the given lines of text, in Helvetica: the
+    smallest file a text extractor reads as a report does."""
+    objs = {1: b"<< /Type /Catalog /Pages 2 0 R >>",
+            3: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"}
+    kids = []
+    for i, lines in enumerate(pages):
+        page, content = 4 + 2 * i, 5 + 2 * i
+        text = b"".join(b"(" + ln.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)").encode("cp1252")
+                        + b") Tj T* " for ln in lines)
+        stream = b"BT /F1 9 Tf 12 TL 36 800 Td " + text + b"ET"
+        objs[content] = b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream"
+        objs[page] = (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >>"
+                      b" /Contents %d 0 R >>" % content)
+        kids.append(b"%d 0 R" % page)
+    objs[2] = b"<< /Type /Pages /Kids [" + b" ".join(kids) + b"] /Count %d >>" % len(kids)
+    out, offsets = bytearray(b"%PDF-1.4\n"), {}
+    for n in sorted(objs):
+        offsets[n] = len(out)
+        out += b"%d 0 obj\n" % n + objs[n] + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+    out += b"".join(b"%010d 00000 n \n" % offsets[n] for n in sorted(objs))
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+    return bytes(out)

@@ -16,8 +16,9 @@ The collector's own settings: $XDG_CONFIG_HOME/refdata.cfg, by default
   claim, and for one held through funds when it can fill what that
   lacks. Without the
   setting, the local inbox and the providers of public data run
-  (DEFAULT_PROVIDERS); an issuer provider stays off until this list
-  names it, because enabling one accepts its terms (README.md).
+  (DEFAULT_PROVIDERS); an issuer or report provider stays off until
+  this list names it, because enabling one accepts its terms
+  (README.md).
 - `contact` is the address the SEC requires in the User-Agent; no other
   host receives it. The SEC providers do not run without it.
 - `max_age_days`: a fund whose newest composition is younger is not

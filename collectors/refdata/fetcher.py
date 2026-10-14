@@ -11,8 +11,10 @@ the client keeps under it:
 - GLEIF allows 60 a minute; the client sends 50.
 
 The client sends GET, and a POST only for a lookup whose API has no GET
-form (OpenFIGI's mapping), a read either way. It keeps no cookies and
-never signs in anywhere.
+form (OpenFIGI's mapping), a read either way, or for a disclaimer a
+source shows before its pages (swissfunddata's investor category). It
+keeps cookies only for a source that holds that statement in a session,
+and never signs in anywhere.
 
 A source that refuses a request for its rate (HTTP 429, or the SEC's
 403) is not asked again in the same run: every later request to it
@@ -25,6 +27,7 @@ status, timing and size, never a body.
 
 from __future__ import annotations
 
+import http.cookiejar
 import json
 import logging
 import time
@@ -49,6 +52,10 @@ INTERVALS = {"sec": 0.125, "api.openfigi.com": 60 / 24, "api.gleif.org": 1.2}
 
 # Sources whose 403 means "too fast or undeclared", not "no such page".
 REFUSES_WITH_403 = {"sec"}
+
+# Domains that keep a visitor's stated investor category in a session
+# cookie. No other host gets a cookie back.
+SESSION_DOMAINS = (".swissfunddata.ch",)
 
 # Sources that require a contact in the User-Agent. Every other host gets
 # the tool's name alone: the address goes nowhere it is not asked for.
@@ -85,7 +92,8 @@ class Client:
         self._sleep, self._clock = sleep, clock
         self._last: dict[str, float] = {}
         self.refused: dict[str, str] = {}
-        self._open = opener or urllib.request.urlopen
+        self.cookies = http.cookiejar.CookieJar(http.cookiejar.DefaultCookiePolicy(allowed_domains=SESSION_DOMAINS))
+        self._open = opener or urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookies)).open
         self.timeout = timeout
 
     def user_agent(self, source: str = "") -> str:
@@ -110,6 +118,12 @@ class Client:
         """A read-only POST: a lookup whose API has no GET form."""
         body = json.dumps(payload).encode("utf-8")
         return self._send("POST", url, body, {"Content-Type": "application/json", **(headers or {})})
+
+    def post_form(self, url: str, fields: dict, *, headers=None) -> Response:
+        """A form POST that reads nothing and changes nothing at the source:
+        the statement a disclaimer asks for before it shows its pages."""
+        body = urllib.parse.urlencode(fields).encode("utf-8")
+        return self._send("POST", url, body, {"Content-Type": "application/x-www-form-urlencoded", **(headers or {})})
 
     def _send(self, method, url, body, headers) -> Response:
         host = urllib.parse.urlsplit(url).hostname or ""

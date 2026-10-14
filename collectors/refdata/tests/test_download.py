@@ -31,6 +31,19 @@ def test_plan_fetches_a_stale_current_composition_and_skips_a_fresh_one(fake):
     assert unclaimed == ["symbol:NOPE"]
 
 
+def test_plan_does_not_fetch_again_what_a_provider_served_within_max_age(fake):
+    # A report states a day long past: the composition stays old however
+    # recently it was fetched.
+    want = wantedmod.parse(wanted_doc([fund("symbol:FUNDA", "FUNDA", compositions=["2026-01-31"])]))
+    served = {(fake.name, "symbol:FUNDA", date(2026, 1, 31)): date(2026, 7, 1)}
+    reqs, _ = download.plan(want, [fake], ctx(), today=date(2026, 7, 15), max_age=30, backfill=False,
+                            fetched=served)
+    assert reqs == []
+    reqs, _ = download.plan(want, [fake], ctx(), today=date(2026, 8, 15), max_age=30, backfill=False,
+                            fetched=served)
+    assert [(r.ref, r.as_of) for r in reqs] == [("symbol:FUNDA", None)]
+
+
 def test_plan_backfills_the_held_window_around_what_gold_has(fake):
     want = wantedmod.parse(wanted_doc([fund("symbol:FUNDA", "FUNDA", held_from="2026-02-01",
                                             held_to="2026-05-31", compositions=["2026-03-31"])]))
@@ -210,11 +223,13 @@ def test_plan_asks_constituents_only_when_allowed_and_what_a_provider_answers():
     assert keys(again) == ["isin:XX0000000091"]
 
 
-def test_earlier_runs_count_their_security_lookups(tmp_path):
+def test_earlier_runs_count_their_lookups_and_compositions(tmp_path):
     run = tmp_path / "20260714T120000Z"
     run.mkdir()
     (run / "run.json").write_text(json.dumps({"status": "complete", "requests": [
         {"kind": "security", "provider": "gleif", "ref": "isin:XX0000000095", "status": "ok"},
-        {"kind": "security", "provider": "gleif", "ref": "isin:XX0000000096", "status": "error"}]}))
+        {"kind": "security", "provider": "gleif", "ref": "isin:XX0000000096", "status": "error"},
+        {"kind": "fund", "provider": "fake", "ref": "symbol:FUNDA", "as_of": "2026-01-31", "status": "ok"}]}))
     funds, lookups = download.fetched_before(tmp_path)
-    assert funds == set() and lookups == {("gleif", "isin:XX0000000095"): date(2026, 7, 14)}
+    assert lookups == {("gleif", "isin:XX0000000095"): date(2026, 7, 14)}
+    assert funds == {("fake", "symbol:FUNDA", date(2026, 1, 31)): date(2026, 7, 14)}

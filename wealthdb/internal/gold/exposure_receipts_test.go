@@ -320,3 +320,69 @@ func TestExposureLinksAReceiptByItsIssuer(t *testing.T) {
 		t.Errorf("QDRZ flags = %q, want by_name", f)
 	}
 }
+
+// A line a fund's report names by name alone takes the share its name
+// names, among the shares of every country: reduced alike on both sides,
+// so a share's class, par value and parentheses drop and AMERICAN stays.
+// A line's country fits only a share of it. A name two countries' shares
+// carry takes its fund's market, where two in three of its other lines
+// found shares of one country; in a fund of no one market it stays
+// unmatched.
+func TestExposureLinksANamedLineToItsShare(t *testing.T) {
+	db, ctx := openExposureFixture(t)
+	for _, q := range []string{
+		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency)
+		 VALUES ('test-src', 'symbol:QSHR', ?, 'holdings', 'testprov', 8, 'USD'),
+		        ('test-src', 'symbol:QREP', ?, 'holdings', 'swissfunddata', 5, 'USD'),
+		        ('test-src', 'symbol:QMIX', ?, 'holdings', 'swissfunddata', 3, 'USD')`,
+		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
+		 weight, currency, country, sector) VALUES
+		 ('test-src', 'symbol:QSHR', ?, 'holdings', 1, 'isin:US0000000801', 'US0000000801', 'QORVANT MINING CORP', 'Equity', 20, 'USD', 'United States', 'Materials'),
+		 ('test-src', 'symbol:QSHR', ?, 'holdings', 2, 'isin:US0000000803', 'US0000000803', 'AMERICAN QEXPRESS CO', 'Equity', 20, 'USD', 'United States', 'Financials'),
+		 ('test-src', 'symbol:QSHR', ?, 'holdings', 3, 'isin:US0000000802', 'US0000000802', 'QEXPRESS INC', 'Equity', 20, 'USD', 'United States', 'Consumer Discretionary'),
+		 ('test-src', 'symbol:QSHR', ?, 'holdings', 4, 'isin:CH0000000804', 'CH0000000804', 'TALVERI BANK AG', 'Equity', 20, 'CHF', 'Switzerland', 'Financials'),
+		 ('test-src', 'symbol:QSHR', ?, 'holdings', 5, 'isin:US0000000805', 'US0000000805', 'DUONAME INC', 'Equity', 10, 'USD', 'United States', 'Industrials'),
+		 ('test-src', 'symbol:QSHR', ?, 'holdings', 6, 'isin:GB0000000806', 'GB0000000806', 'DUONAME PLC', 'Equity', 10, 'GBP', 'United Kingdom', 'Industrials'),
+		 ('test-src', 'symbol:QSHR', ?, 'holdings', 7, 'isin:US0000000808', 'US0000000808', 'TRINAME CORP', 'Equity', 0, 'USD', 'United States', 'Utilities'),
+		 ('test-src', 'symbol:QSHR', ?, 'holdings', 8, 'isin:JP0000000809', 'JP0000000809', 'TRINAME CORP', 'Equity', 0, 'JPY', 'Japan', 'Utilities'),
+		 ('test-src', 'symbol:QREP', ?, 'holdings', 1, 'name:q801', NULL, 'Qorvant Mining Corp.', 'Common Stocks', 25, 'USD', NULL, NULL),
+		 ('test-src', 'symbol:QREP', ?, 'holdings', 2, 'name:q802', NULL, 'American Qexpress Co.', 'Common Stocks', 25, 'USD', NULL, NULL),
+		 ('test-src', 'symbol:QREP', ?, 'holdings', 3, 'name:q804', NULL, 'TALVERI BANK AG CHF0.10 (REGD)', 'Registered shares', 25, 'CHF', 'Switzerland', NULL),
+		 ('test-src', 'symbol:QREP', ?, 'holdings', 4, 'name:q805', NULL, 'Duoname, Inc.', 'Common Stocks', 15, 'USD', NULL, NULL),
+		 ('test-src', 'symbol:QREP', ?, 'holdings', 5, 'name:q807', NULL, 'TALVERI BANK AG (BR)', 'Bearer shares', 10, 'CHF', 'Austria', NULL),
+		 ('test-src', 'symbol:QMIX', ?, 'holdings', 1, 'name:q801', NULL, 'Qorvant Mining Corp.', 'Common Stocks', 40, 'USD', NULL, NULL),
+		 ('test-src', 'symbol:QMIX', ?, 'holdings', 2, 'name:q804', NULL, 'TALVERI BANK AG CHF0.10 (REGD)', 'Registered shares', 40, 'CHF', 'Switzerland', NULL),
+		 ('test-src', 'symbol:QMIX', ?, 'holdings', 3, 'name:q908', NULL, 'Triname Corp.', 'Common Stocks', 20, 'USD', NULL, NULL)`,
+	} {
+		if _, err := db.ExecContext(ctx, q, slices.Repeat([]any{exSnap}, strings.Count(q, "?"))...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	rows, err := db.QueryContext(ctx, `SELECT x.security_key, x.underlying_key || '|' || s.sector || '|' || s.risk_country
+	    FROM security_underlyings x JOIN securities s USING (security_key) WHERE x.security_key LIKE 'name:q%'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			t.Fatal(err)
+		}
+		got[k] = v
+	}
+	want := map[string]string{
+		"name:q801": "isin:US0000000801|materials|US",
+		"name:q802": "isin:US0000000803|financials|US",
+		"name:q804": "isin:CH0000000804|financials|CH",
+		"name:q805": "isin:US0000000805|industrials|US",
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("links = %v, want %v (none for the bank in Austria, nor for a name of two countries in a fund of none)",
+			got, want)
+	}
+}
