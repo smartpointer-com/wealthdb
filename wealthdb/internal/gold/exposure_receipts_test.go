@@ -245,3 +245,12 @@ func TestMigration0129DDLIsRerunnable(t *testing.T) {
 		t.Errorf("after replay: PE1 flags = %q", f)
 	}
 }
+
+func TestMigration0130DDLIsRerunnable(t *testing.T) {
+	db, ctx := openExposureFixture(t)
+	rerunMigrationDDL(t, db, ctx, "0130_exposure_tags_ledger.sql")
+	rows, err := ExposureCoverage(ctx, db, exAsOf, "USD")
+	if err != nil || len(rows) == 0 {
+		t.Errorf("after replay: %d rows, %v", len(rows), err)
+	}
+}

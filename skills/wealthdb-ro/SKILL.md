@@ -234,7 +234,7 @@ Treat any other column as unredacted unless it actually prints `***`.
 | `exposure currencies` | `currency, kind, value, share_pct, direct_pct, via_funds_pct, quality` |
 | `exposure securities` | `security, name, asset_class, sector, country, currency, value, direct_value, via_funds_value, share_pct, quality` |
 | `exposure funds` | `fund, name, value, share_pct, via, proxy, provider, composition_date, gap_days, lines, weight_sum_pct, quality` |
-| `exposure coverage` | `section, reason, items, value, share_pct, detail` |
+| `exposure coverage` | `section, reason, items, value, share_pct, detail, silver_source_id, instrument` |
 | `holdings accounts` | `silver_source, snapshot_date, account, account_kind, tax_wrapper, management_style, base_currency, positions_value, cash_balance, total_value, total_value_outccy` |
 | `holdings sources` | as `accounts` without `account` and `account_kind`, one row per institution (base columns blank when the source mixes currencies or wrappers) |
 | `holdings portfolios` | as `accounts`, with `portfolio` in place of `account` and no `account_kind`, plus one sentinel row per source for accounts the bank did not group |

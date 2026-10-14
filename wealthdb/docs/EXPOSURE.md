@@ -9,7 +9,7 @@ the report shows and the rules behind them.
 Related design: DESIGN.md §4.17 (the `exposure` command), §7.6 (the
 reference tables), §10.14 (the macros);
 [adapters/refdata.md](adapters/refdata.md) (how reference data loads,
-and the wanted list); migrations 0125 to 0129.
+and the wanted list); migrations 0125 to 0130.
 
 Every figure is a share of a holding's market value, the value
 `holdings` reports. The look-through moves value between rows; it never
@@ -85,7 +85,8 @@ whose label a map knows, and keeps where it came from:
 | country of domicile | the legal country (GLEIF); the country of incorporation (EDGAR); the ISIN prefix |
 | market cap | a vendor; another provider's market cap |
 
-A tag in the config wins over every source for the holding it names.
+A row in the tags ledger (§9) wins over every source for the holding it
+names.
 The fund files are the security master: a stock held directly takes its
 sector and country from any fund line that names the same security.
 
@@ -198,6 +199,15 @@ mark describes the holding.
   country, currency and sector. A private equity fund nothing looks
   through reads the sector `diversified`, unless a tag says otherwise. It
   carries the `opaque` flag.
+- **Structured products.** No provider reads the basket of a
+  structured product (a certificate or a note). The basket comes
+  through the refdata
+  [inbox](../../collectors/refdata/README.md#inbox) instead, from the
+  issuer's factsheet or term sheet. Its composition wins over a tag.
+  Without one, the product is a private holding. A tag (§9) states its
+  country, currency and sector, and `exposure coverage` lists it under
+  `untagged` until one does. A product whose asset class is metal or
+  crypto counts by its class.
 
 ## 6. Currency
 
@@ -291,9 +301,7 @@ The `exposure` block of `wealthdb.cfg` holds what no source knows
     "symbol:LEV3":       { "fund": "symbol:IDX1", "leverage": 3 }
   },
   "reference_funds": ["symbol:IDX9"],
-  "tags": {
-    "manual": { "house-1": { "country": "CH", "currency": "CHF" } }
-  },
+  "tags": "~/ledgers/exposure-tags.csv",
   "custody": { "bank-1": { "custodian": "Example Bank AG", "country": "CH" } },
   "max_gap_days": 400
 }
@@ -302,16 +310,42 @@ The `exposure` block of `wealthdb.cfg` holds what no source knows
 - `proxies` maps a fund reference to its proxy (§5).
 - `reference_funds` are broad funds fetched for their lines alone. They
   widen the security master; they need not be held.
-- `tags` state the sector, country and currency of a holding no
-  composition describes, keyed by source and instrument like
-  `instrument_overrides`.
+- `tags` is the path to the tags ledger, below.
+
 - `custody` names who keeps each source's assets. A cash balance counts
   in its custodian's country.
 - `max_gap_days` bounds the temporal join (§4).
 
+The tags ledger is a CSV of what no public source can know: the
+country, currency and sector of a private holding (§5). It has one row
+per holding:
+
+```csv
+silver_source_id,instrument,country,currency,sector,note
+manual,house-1,CH,CHF,,the house
+manual,loan-1,CH,CHF,,its mortgage
+venture,fund-7,US,USD,technology,
+```
+
+- `silver_source_id` and `instrument` name the holding, as `exposure
+  coverage` prints them.
+- A row states at least one of `country` (ISO 3166), `currency`
+  (ISO 4217) and `sector` (§3). `note` is free text.
+- The columns may come in any order. An unknown column is refused, so
+  a misspelt header cannot drop a field.
+- A load reads the ledger before it opens gold, so a bad row stops it
+  early. The error names the line.
+- A missing file holds no tags.
+
+The ledger is filled in a loop. `wealthdb exposure coverage -f csv`
+lists each private holding without a row in the section `untagged`,
+with its `silver_source_id` and `instrument`. A row for it goes into the
+ledger, and the next load takes it. A holding its source names by no
+instrument has an empty `instrument` and cannot take a row.
+
 ## 10. Coverage
 
-`wealthdb exposure coverage` says what the figures rest on, in four
+`wealthdb exposure coverage` says what the figures rest on, in five
 sections:
 
 - `how` splits net worth by how each leaf is classified, and sums to
@@ -324,11 +358,16 @@ sections:
   `forward`.
 - `unmapped` lists each provider label no map knows, with the value it
   touches.
-- `unmatched` lists each holding no source describes and no tag covers.
+- `unmatched` lists each listed security held directly that no source
+  describes and no tag covers.
+- `untagged` lists each private holding the tags ledger has no row for.
 
-In the last two, the labels and holdings with no value share one line,
-`(no value)`, with their count. A label or holding whose leaves offset
-each other still has value and keeps its own line.
+The last two name each holding by `silver_source_id` and `instrument`,
+the two columns a ledger row starts with. A holding at two sources has
+a line for each. In the last three, the labels and holdings with no
+value share one line, `(no value)`, with their count. A label or
+holding whose leaves offset each other still has value and keeps its
+own line.
 
 ## 11. What exposure is not
 

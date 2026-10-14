@@ -1244,6 +1244,13 @@ func Load(path string) (*Config, error) {
 		}
 		c.EquityTransfers = expanded
 	}
+	if c.Exposure != nil && c.Exposure.Tags != "" {
+		expanded, err := expandPath(string(c.Exposure.Tags), configDir)
+		if err != nil {
+			return nil, fmt.Errorf("config: exposure.tags: %w", err)
+		}
+		c.Exposure.Tags = TagsPath(expanded)
+	}
 	if c.Spending != nil && c.Spending.Pins != "" {
 		expanded, err := expandPath(c.Spending.Pins, configDir)
 		if err != nil {

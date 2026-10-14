@@ -112,6 +112,7 @@ def _write_config(root, inputs, sim):
     (over / "spending_pins.csv").write_text(config.csv_text(config.PIN_COLUMNS, sim.notes.spending_pins))
     (over / "transfer_overrides.csv").write_text(
         config.csv_text(config.OVERRIDE_COLUMNS, sim.notes.transfer_overrides))
+    (over / "exposure_tags.csv").write_text(config.csv_text(config.TAG_COLUMNS, config.tag_rows(inputs.spec)))
 
 
 def main(argv=None):

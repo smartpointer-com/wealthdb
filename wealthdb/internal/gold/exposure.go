@@ -152,20 +152,24 @@ SELECT fund, name, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, via, proxy,
 }
 
 // ExposureCoverageRow is one line of the coverage view: a section (how,
-// age, unmapped, unmatched), a reason, and the value behind it.
+// age, unmapped, unmatched, untagged), a reason, and the value behind
+// it. A holding's line names its source and instrument, as a tags
+// ledger row does.
 type ExposureCoverageRow struct {
-	Section, Reason string
-	Items           int64
-	Value           *string
-	SharePct        *float64
-	Detail          *string
+	Section, Reason            string
+	Items                      int64
+	Value                      *string
+	SharePct                   *float64
+	Detail                     *string
+	SilverSourceID, Instrument *string
 }
 
 // ExposureCoverage runs report_exposure_coverage.
 func ExposureCoverage(ctx context.Context, db *sql.DB, asOf int64, ccy string) ([]ExposureCoverageRow, error) {
 	return scanRows(ctx, db, "ExposureCoverage", `
-SELECT section, reason, items, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, detail
+SELECT section, reason, items, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, detail, silver_source_id, instrument
   FROM report_exposure_coverage(?, ?)`, []any{asOf, ccy}, func(r *ExposureCoverageRow) []any {
-		return []any{&r.Section, &r.Reason, &r.Items, dec(&r.Value), flt(&r.SharePct), str(&r.Detail)}
+		return []any{&r.Section, &r.Reason, &r.Items, dec(&r.Value), flt(&r.SharePct), str(&r.Detail),
+			str(&r.SilverSourceID), str(&r.Instrument)}
 	})
 }

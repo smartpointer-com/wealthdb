@@ -23,11 +23,11 @@ type ExposureConfig struct {
 	// widen the security master a directly held stock finds its sector
 	// and country in. They need not be held.
 	ReferenceFunds []string `json:"reference_funds,omitempty"`
-	// Tags state what an opaque holding is (a property, a private
-	// fund): its sector, country and currency. Keyed by
-	// silver_source_id (outer) and instrument_external_id (inner), as
-	// instrument_overrides is.
-	Tags map[string]map[string]ExposureTag `json:"tags,omitempty"`
+	// Tags is the path to the tags ledger, a CSV of what no public
+	// source can know: a private holding's country, currency and sector
+	// (exposure_tags.go). Expanded like equity_transfers; a missing file
+	// holds no tags.
+	Tags TagsPath `json:"tags,omitempty"`
 	// Custody names who keeps each source's assets, keyed by
 	// silver_source_id.
 	Custody map[string]ExposureCustody `json:"custody,omitempty"`
@@ -48,13 +48,6 @@ type ExposureProxy struct {
 	Leverage *float64 `json:"leverage,omitempty"`
 }
 
-// ExposureTag is one `exposure.tags` entry.
-type ExposureTag struct {
-	Sector   string `json:"sector,omitempty"`
-	Country  string `json:"country,omitempty"`
-	Currency string `json:"currency,omitempty"`
-}
-
 // ExposureCustody is one `exposure.custody` entry.
 type ExposureCustody struct {
 	Custodian string `json:"custodian"`
@@ -66,9 +59,9 @@ type ExposureCustody struct {
 const maxLeverage = 10
 
 // validateExposure checks the exposure block: every fund reference
-// parses, no proxy chains or points at itself, every tag names a
-// configured source and a vocabulary value, every custody entry a
-// configured source.
+// parses, no proxy chains or points at itself, every custody entry names
+// a configured source. The tags ledger is checked where a load reads it
+// (ExposureRows).
 func (c *Config) validateExposure(seenIDs map[string]bool) error {
 	e := c.Exposure
 	if e == nil {
@@ -118,31 +111,6 @@ func (c *Config) validateExposure(seenIDs map[string]bool) error {
 		}
 		seenRef[ref] = true
 	}
-	for sourceID, perInstrument := range e.Tags {
-		if !seenIDs[sourceID] {
-			return fmt.Errorf("config: exposure.tags[%q]: no silver_sources[].id matches", sourceID)
-		}
-		for instrID, tag := range perInstrument {
-			where := fmt.Sprintf("config: exposure.tags[%q][%q]", sourceID, instrID)
-			if instrID == "" {
-				return fmt.Errorf("config: exposure.tags[%q]: empty instrument_external_id key", sourceID)
-			}
-			if tag.Sector == "" && tag.Country == "" && tag.Currency == "" {
-				return fmt.Errorf("%s: at least one of sector, country or currency must be set", where)
-			}
-			if tag.Sector != "" && !canonical.Sector(tag.Sector).Valid() {
-				return fmt.Errorf("%s: sector %q is not one of %s", where, tag.Sector, sectorNames())
-			}
-			if tag.Country != "" {
-				if _, ok := canonical.CountryByCode(tag.Country); !ok || tag.Country != strings.ToUpper(tag.Country) {
-					return fmt.Errorf("%s: country %q is not an ISO 3166 alpha-2 code", where, tag.Country)
-				}
-			}
-			if tag.Currency != "" && !IsLikelyISO4217(tag.Currency) {
-				return fmt.Errorf("%s: currency %q is not a 3-letter ISO 4217 code", where, tag.Currency)
-			}
-		}
-	}
 	for sourceID, cu := range e.Custody {
 		if !seenIDs[sourceID] {
 			return fmt.Errorf("config: exposure.custody[%q]: no silver_sources[].id matches", sourceID)
@@ -168,9 +136,10 @@ func sectorNames() string {
 }
 
 // ExposureRows is the exposure block as gold stores it, in a stable
-// order, with every fund reference in the form gold builds. Call after
-// Validate. An absent block yields the default settings alone.
-func (c *Config) ExposureRows() canonical.ExposureRows {
+// order, with every fund reference in the form gold builds, and the tags
+// ledger read and checked. Call after Validate. An absent block yields
+// the default settings alone.
+func (c *Config) ExposureRows() (canonical.ExposureRows, error) {
 	out := canonical.ExposureRows{Settings: canonical.ExposureSettings{
 		MaxGapDays: canonical.DefaultMaxGapDays,
 		AgedDays:   canonical.DefaultAgedDays,
@@ -178,7 +147,7 @@ func (c *Config) ExposureRows() canonical.ExposureRows {
 	}}
 	e := c.Exposure
 	if e == nil {
-		return out
+		return out, nil
 	}
 	if e.MaxGapDays > 0 {
 		out.Settings.MaxGapDays = e.MaxGapDays
@@ -198,17 +167,19 @@ func (c *Config) ExposureRows() canonical.ExposureRows {
 		out.ReferenceFunds = append(out.ReferenceFunds, ref)
 	}
 	slices.Sort(out.ReferenceFunds)
-	for _, src := range slices.Sorted(maps.Keys(e.Tags)) {
-		for _, instr := range slices.Sorted(maps.Keys(e.Tags[src])) {
-			t := e.Tags[src][instr]
-			out.Tags = append(out.Tags, canonical.ExposureTag{SilverSourceID: src, InstrumentExternalID: instr,
-				Sector: t.Sector, Country: t.Country, Currency: t.Currency})
-		}
+	sources := map[string]bool{}
+	for _, s := range c.SilverSources {
+		sources[s.ID] = true
 	}
+	tags, err := readTagLedgerFile(string(e.Tags), sources)
+	if err != nil {
+		return out, err
+	}
+	out.Tags = tags
 	for _, src := range slices.Sorted(maps.Keys(e.Custody)) {
 		cu := e.Custody[src]
 		out.Custody = append(out.Custody, canonical.ExposureCustody{SilverSourceID: src,
 			Custodian: strings.TrimSpace(cu.Custodian), Country: cu.Country})
 	}
-	return out
+	return out, nil
 }

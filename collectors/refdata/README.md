@@ -103,9 +103,10 @@ fund and the day it describes:
 <data-dir>/inbox/isin_XX0000000001/2026-06-30/holdings.csv
 ```
 
-The folder name is the fund reference as `wealthdb exposure funds`
-prints it, with `_` in place of `:`. A folder holds one composition
-file:
+The folder name is the fund's reference, with `_` in place of `:`.
+`wealthdb refdata-wanted` prints the reference of every fund the
+collector reads, a structured product among them. A folder holds one
+composition file:
 
 - a holdings table, CSV or XLSX: an issuer's own download, or a file
   made by hand. Its header row names at least a holding (`name`) and
@@ -117,6 +118,10 @@ file:
 
 A download copies each folder into bronze once, beside whatever
 provider serves the fund. The inbox itself is never changed.
+
+A structured product's basket comes only this way. No provider reads
+one. Exchange reference data lists no constituents, and issuers'
+product pages do not allow automated download.
 
 ### sec-nport
 

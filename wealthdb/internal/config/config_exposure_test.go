@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -27,15 +29,18 @@ func TestExposureRows(t *testing.T) {
             "isin:XX0000000003": {"fund": "isin:XX0000000004", "always": true}
         },
         "reference_funds": ["symbol:idx9", "isin:XX0000000005"],
-        "tags": {"manual": {"house-1": {"country": "CH", "currency": "CHF"},
-                            "pe-fund-1": {"country": "US", "currency": "USD", "sector": "technology"}}},
         "custody": {"bank": {"custodian": " Example Bank AG ", "country": "CH"}},
         "max_gap_days": 200
     }`)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	rows := c.ExposureRows()
+	c.Exposure.Tags = TagsPath(writeLedger(t, "silver_source_id,instrument,country,currency,sector,note\n"+
+		"manual,pe-fund-1,US,USD,technology,\nmanual,house-1,CH,CHF,,the house\n"))
+	rows, err := c.ExposureRows()
+	if err != nil {
+		t.Fatal(err)
+	}
 	wantProxies := []canonical.ExposureProxy{
 		{FundRef: "isin:XX0000000001", ProxyRef: "cusip:00000AA01", Leverage: 1},
 		{FundRef: "isin:XX0000000003", ProxyRef: "isin:XX0000000004", Always: true, Leverage: 1},
@@ -65,12 +70,82 @@ func TestExposureRows(t *testing.T) {
 	}
 }
 
-// Without the block, gold still gets the default settings.
+// Without the block, gold still gets the default settings; a ledger
+// path that names no file holds no tags.
 func TestExposureRowsDefaults(t *testing.T) {
-	c := &Config{}
-	rows := c.ExposureRows()
-	if rows.Settings.MaxGapDays != 400 || len(rows.Proxies)+len(rows.Tags)+len(rows.Custody)+len(rows.ReferenceFunds) != 0 {
-		t.Errorf("rows = %+v", rows)
+	for _, c := range []*Config{{}, {Exposure: &ExposureConfig{Tags: TagsPath(filepath.Join(t.TempDir(), "none.csv"))}}} {
+		rows, err := c.ExposureRows()
+		if err != nil || rows.Settings.MaxGapDays != 400 ||
+			len(rows.Proxies)+len(rows.Tags)+len(rows.Custody)+len(rows.ReferenceFunds) != 0 {
+			t.Errorf("rows = %+v, err %v", rows, err)
+		}
+	}
+}
+
+func writeLedger(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "exposure-tags.csv")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// The config's path reaches the ledger relative to the config, and a row
+// the ledger refuses names its line.
+func TestTagLedger(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "tags.csv"),
+		[]byte("instrument, silver_source_id ,country\nhouse-1,manual,CH\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "wealthdb.cfg")
+	if err := os.WriteFile(cfgPath, []byte(`{"gold_db": "/tmp/x", "default_currency": "USD",
+        "silver_sources": [{"id": "manual", "kind": "manual", "path": "/tmp/m.db"}],
+        "exposure": {"tags": "tags.csv"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := c.ExposureRows()
+	if err != nil || len(rows.Tags) != 1 || rows.Tags[0].InstrumentExternalID != "house-1" || rows.Tags[0].Country != "CH" {
+		t.Fatalf("tags = %+v, err %v", rows.Tags, err)
+	}
+	// A spreadsheet's byte-order mark and an empty trailing header cell
+	// are no columns.
+	c.Exposure.Tags = TagsPath(writeLedger(t, "\ufeffsilver_source_id,instrument,country,\nmanual,house-1,CH,\n"))
+	if rows, err := c.ExposureRows(); err != nil || len(rows.Tags) != 1 {
+		t.Errorf("BOM and trailing cell: %+v, %v", rows.Tags, err)
+	}
+	// The map form of tags is refused with what the field takes.
+	if err := os.WriteFile(cfgPath, []byte(`{"gold_db": "/tmp/x", "default_currency": "USD",
+        "silver_sources": [{"id": "manual", "kind": "manual", "path": "/tmp/m.db"}],
+        "exposure": {"tags": {"manual": {"house-1": {"country": "CH"}}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(cfgPath); err == nil || !strings.Contains(err.Error(), "path to the tags ledger") {
+		t.Errorf("map form: %v", err)
+	}
+	head := "silver_source_id,instrument,country,currency,sector\n"
+	for body, want := range map[string]string{
+		"silver_source_id,instrument,contry\n":          "unknown column \"contry\"",
+		"silver_source_id,instrument,country,country\n": "column \"country\" twice",
+		"silver_source_id,country\nmanual,CH\n":         "column \"instrument\" is required",
+		head + "nope,x,CH,,\n":                          "line 2: silver_source_id \"nope\"",
+		head + "manual,,CH,,\n":                         "line 2: silver_source_id and instrument are required",
+		head + "\nmanual,x,,,\n":                        "line 3: at least one of",
+		head + "manual,x,,,tech\n":                      "sector \"tech\" is not one of",
+		head + "manual,x,ch,,\n":                        "not an ISO 3166",
+		head + "manual,x,QQ,,\n":                        "not an ISO 3166",
+		head + "manual,x,,chf,\n":                       "ISO 4217",
+		head + "manual,x,CH,,\nmanual,x,,CHF,\n":        "line 3: manual x is tagged on line 2 already",
+	} {
+		c.Exposure.Tags = TagsPath(writeLedger(t, body))
+		if _, err := c.ExposureRows(); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: err %v, want %q", body, err, want)
+		}
 	}
 }
 
@@ -84,15 +159,9 @@ func TestExposureRejects(t *testing.T) {
 		`{"proxies": {"symbol:A": {"fund": "symbol:B", "leverage": 0}}}`:                     "non-zero factor",
 		`{"proxies": {"symbol:A": {"fund": "symbol:B", "leverage": 25}}}`:                    "non-zero factor",
 		`{"reference_funds": ["symbol:A", "symbol:a"]}`:                                      "listed twice",
-		`{"tags": {"nope": {"x": {"country": "CH"}}}}`:                                       "no silver_sources[].id matches",
-		`{"tags": {"manual": {"x": {}}}}`:                                                    "at least one of",
-		`{"tags": {"manual": {"x": {"sector": "tech"}}}}`:                                    "sector \"tech\" is not one of",
-		`{"tags": {"manual": {"x": {"country": "ch"}}}}`:                                     "not an ISO 3166",
-		`{"tags": {"manual": {"x": {"country": "QQ"}}}}`:                                     "not an ISO 3166",
-		`{"tags": {"manual": {"x": {"currency": "chf"}}}}`:                                   "ISO 4217",
 		`{"custody": {"bank": {"custodian": " "}}}`:                                          "custodian is required",
 		`{"custody": {"nope": {"custodian": "X"}}}`:                                          "no silver_sources[].id matches",
-		`{"max_gap_days": -1}`:                                                               "max_gap_days",
+		`{"max_gap_days": -1}`: "max_gap_days",
 	} {
 		if _, err := exposureConfig(t, block); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: err %v, want %q", block, err, want)

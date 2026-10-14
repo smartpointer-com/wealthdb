@@ -530,8 +530,56 @@ func TestExposureTagsAndZeroValueCoverage(t *testing.T) {
 		}
 	}
 	// The fixture's zero-weight future adds to the unmapped count.
-	if none["unmatched"] != 2 || none["unmapped"] < 1 {
-		t.Errorf("(no value) lines = %v, want 2 unmatched and the unmapped zero lines", none)
+	if none["untagged"] != 2 || none["unmapped"] < 1 {
+		t.Errorf("(no value) lines = %v, want 2 untagged and the unmapped zero lines", none)
+	}
+	// A private holding with no tag is listed by what a ledger row names;
+	// a listed one no source describes stays unmatched.
+	var pe1, unk *ExposureCoverageRow
+	for i, r := range rows {
+		switch r.Reason {
+		case "holding:test-src:PE1":
+			pe1 = &rows[i]
+		case "symbol:UNK":
+			unk = &rows[i]
+		}
+	}
+	if pe1 == nil || pe1.Section != "untagged" || pe1.SilverSourceID == nil || *pe1.SilverSourceID != "test-src" ||
+		pe1.Instrument == nil || *pe1.Instrument != "PE1" {
+		t.Errorf("PE1 coverage = %+v", pe1)
+	}
+	if unk == nil || unk.Section != "unmatched" {
+		t.Errorf("UNK coverage = %+v", unk)
+	}
+	// A holding at two sources has a line for each, as a ledger row each.
+	for _, q := range []string{
+		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
+		 first_seen_at, last_seen_at) VALUES ('test-src2', 'B1', 'brokerage', 'Other', 'USD', 0, 0)`,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, name, currency,
+		 first_seen_at, last_seen_at) VALUES ('test-src2', 'UNK', 'public_equity', 'stock', 'UNK', 'Unknown Corp', 'USD', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, quantity, market_value) VALUES ('test-src2', ?, 'B1', 'UNK', 'UNK',
+		 'public_equity', 'stock', 'USD', 1, 30)`,
+	} {
+		if _, err := db.ExecContext(ctx, q, slices.Repeat([]any{exSnap}, strings.Count(q, "?"))...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = ExposureCoverage(ctx, db, exAsOf, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var srcs []string
+	for _, r := range rows {
+		if r.Reason == "symbol:UNK" {
+			srcs = append(srcs, *r.SilverSourceID)
+		}
+	}
+	if !slices.Equal(srcs, []string{"test-src", "test-src2"}) {
+		t.Errorf("UNK lines by source = %v, want one each", srcs)
 	}
 }
 

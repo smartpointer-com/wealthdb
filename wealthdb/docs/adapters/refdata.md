@@ -207,15 +207,16 @@ run before the first load.
 
 ## 6. The exposure config tables
 
-The `exposure` block of `wealthdb.cfg` (DESIGN.md §5.1) is written into
-gold at every load, after the per-source loads, beside the holding
-aliases (`gold.SyncExposure`). Each table is replaced whole, so an entry
-taken out of the config leaves on the next load:
+The `exposure` block of `wealthdb.cfg` (DESIGN.md §5.1) and its tags
+ledger are written into gold at every load, after the per-source loads,
+beside the holding aliases (`gold.SyncExposure`). Each table is replaced
+whole, so an entry taken out of the config or the ledger leaves on the
+next load:
 
 - `exposure_proxies`: a fund whose composition stands in for another;
 - `exposure_reference_funds`: funds fetched for their lines alone;
-- `exposure_tags`: the sector, country and currency of a holding no
-  composition describes;
+- `exposure_tags`: the tags ledger's rows, the sector, country and
+  currency of a private holding (EXPOSURE.md §9);
 - `exposure_custody`: who keeps each source's assets;
 - `exposure_settings`: one row of settings.
 

@@ -74,9 +74,13 @@ or below the high watermark. Reload forces a full re-projection.`)
 	if err != nil {
 		return err
 	}
-	// Before gold is opened read-write (parseEnrichmentLedgers).
+	// Before gold is opened read-write (parseEnrichmentLedgers), the
+	// tags ledger with them.
 	enrichment, err := parseEnrichmentLedgers(cfg)
 	if err != nil {
+		return err
+	}
+	if enrichment.exposure, err = cfg.ExposureRows(); err != nil {
 		return err
 	}
 	targets, err := selectSources(cfg, id, "reload")
@@ -148,7 +152,7 @@ func reloadFreshAndSwap(
 			fmt.Fprintf(stdout, "reload: %s: %d snapshot row(s) + %d transaction(s)%s (watermark → %d)\n",
 				s.ID, res.SnapshotsLoaded, res.TransactionsLoaded, realizedLotsNote(res), res.ChangeNumberAfter)
 		}
-		firstErr = errors.Join(firstErr, stampConfig(ctx, db, cfg, "reload", stdout, stderr))
+		firstErr = errors.Join(firstErr, stampConfig(ctx, db, cfg, enrichment.exposure, "reload", stdout, stderr))
 		// Carry the paid-for stores over from the outgoing file. A hard
 		// error: those verdicts were bought from a model and have no
 		// config backup to re-stamp them from. Both spending families
@@ -546,6 +550,6 @@ func reloadInPlace(
 				s.ID, res.SnapshotsLoaded, res.TransactionsLoaded, realizedLotsNote(res), res.ChangeNumberAfter)
 		}
 	}
-	firstErr = errors.Join(firstErr, stampConfig(ctx, db, cfg, "reload", stdout, stderr))
+	firstErr = errors.Join(firstErr, stampConfig(ctx, db, cfg, enrichment.exposure, "reload", stdout, stderr))
 	return errors.Join(firstErr, runGoldPasses(ctx, db, cfg, enrichment, "reload", stdout, stderr))
 }

@@ -70,6 +70,43 @@ func TestStalePinFailsBeforeGoldIsOpened(t *testing.T) {
 	}
 }
 
+// A tags ledger row the build refuses stops load and reload before gold
+// is opened read-write, as a stale pin does, and names its line.
+func TestBadTagLedgerFailsBeforeGoldIsOpened(t *testing.T) {
+	t.Parallel()
+	for _, args := range [][]string{{"load", "schwab-test"}, {"reload", "schwab-test"}, {"reload", "-a"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			t.Parallel()
+			cfgPath := setupCLITest(t)
+			dir := filepath.Dir(cfgPath)
+			tags := filepath.Join(dir, "exposure_tags.csv")
+			if err := os.WriteFile(tags, []byte("silver_source_id,instrument,country\nschwab-test,QPRIV,ch\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD",
+                "silver_sources": [{"id":"schwab-test","kind":"schwab","path":%q}],
+                "exposure": {"tags": %q}}`, goldPathFromCfg(cfgPath), filepath.Join(dir, "schwab.db"), tags)
+			if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, se, code := run(t, "-c", cfgPath, "init"); code != 0 {
+				t.Fatalf("init failed: %s", se)
+			}
+			goldPath := goldPathFromCfg(cfgPath)
+			behind := putGoldOneMigrationBehind(t, goldPath)
+			so, se, code := run(t, append([]string{"-c", cfgPath}, args...)...)
+			if code == 0 || !strings.Contains(se, "exposure.tags") || !strings.Contains(se, "line 2") {
+				t.Fatalf("exit %d, stderr:\n%s", code, se)
+			}
+			version, loads, sources := goldState(t, goldPath)
+			if version != behind || loads != 0 || sources != 0 || strings.Contains(so, "snapshot row(s)") {
+				t.Errorf("gold at %d (want %d), %d loads, %d sources: opened before the ledger failed", version, behind,
+					loads, sources)
+			}
+		})
+	}
+}
+
 // writeStalePinConfig writes the CLI fixture with an income pins ledger
 // whose one pin names INCOME_WAGES, a value the taxonomy retired, and a
 // model block so that `categorize` gets as far as the ledgers. The

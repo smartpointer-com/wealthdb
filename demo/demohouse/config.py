@@ -21,6 +21,7 @@ EQUITY_TRANSFER_COLUMNS = ("silver_source_id", "account", "occurred_at", "direct
 PIN_COLUMNS = ("silver_source_id", "account", "occurred_at", "amount", "currency", "spend_detailed", "note")
 OVERRIDE_COLUMNS = ("verb", "silver_source_id", "account", "occurred_at", "amount", "currency",
                     "silver_source_id_b", "account_b", "occurred_at_b", "amount_b", "currency_b", "note")
+TAG_COLUMNS = ("silver_source_id", "instrument", "country", "currency", "sector", "note")
 
 
 def render(spec):
@@ -51,7 +52,7 @@ def render(spec):
             "transfer_overrides": "overrides/transfer_overrides.csv",
         },
         "income": {"rules": spec["config"]["income_rules"]},
-        "exposure": spec["config"]["exposure"],
+        "exposure": {**spec["config"]["exposure"], "tags": "overrides/exposure_tags.csv"},
         "web": {"enabled": True, "port": WEB_PORT},
         "mcp": {"enabled": True, "port": MCP_PORT},
     }
@@ -86,3 +87,11 @@ def csv_text(columns, rows):
     for r in rows:
         w.writerow({c: r.get(c, "") for c in columns})
     return out.getvalue()
+
+
+def tag_rows(spec):
+    """The household's exposure tags as rows of the tags ledger, sorted by
+    source and instrument."""
+    tags = spec["config"]["exposure"].get("tags", {})
+    return [{"silver_source_id": src, "instrument": instr, **tags[src][instr]}
+            for src in sorted(tags) for instr in sorted(tags[src])]

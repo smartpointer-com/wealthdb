@@ -49,9 +49,13 @@ load semantics.`)
 	if err != nil {
 		return err
 	}
-	// Before gold is opened read-write (parseEnrichmentLedgers).
+	// Before gold is opened read-write (parseEnrichmentLedgers), the
+	// tags ledger with them.
 	enrichment, err := parseEnrichmentLedgers(cfg)
 	if err != nil {
+		return err
+	}
+	if enrichment.exposure, err = cfg.ExposureRows(); err != nil {
 		return err
 	}
 	targets, err := selectSources(cfg, id, "load")
@@ -88,7 +92,7 @@ load semantics.`)
 		}
 		printLoadResult(stdout, res)
 	}
-	firstErr = errors.Join(firstErr, stampConfig(ctx, db, cfg, "load", stdout, stderr))
+	firstErr = errors.Join(firstErr, stampConfig(ctx, db, cfg, enrichment.exposure, "load", stdout, stderr))
 	return errors.Join(firstErr, runGoldPasses(ctx, db, cfg, enrichment, "load", stdout, stderr))
 }
 
@@ -127,15 +131,16 @@ func selectSources(cfg *config.Config, id, cmd string) ([]config.SilverSource, e
 // stampConfig writes what gold takes from the config once the sources
 // are in: the FX source precedence, which the SQL FX layer (fx_daily)
 // reads, the declared accounts, the holding aliases and the exposure
-// block. The precedence re-stamps every source, so a single-source load
+// rows, the tags ledger's read before gold opened. The precedence re-stamps every source, so a single-source load
 // keeps it globally correct; failing to stamp it degrades a conversion
 // and is a warning. A failure to sync the rows is an error
 // (syncConfigRows).
-func stampConfig(ctx context.Context, db *sql.DB, cfg *config.Config, verb string, stdout, stderr io.Writer) error {
+func stampConfig(ctx context.Context, db *sql.DB, cfg *config.Config, exposure canonical.ExposureRows, verb string,
+	stdout, stderr io.Writer) error {
 	if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
 		fmt.Fprintf(stderr, "%s: warning: could not stamp FX priorities: %s\n", verb, err.Error())
 	}
-	if err := syncConfigRows(ctx, db, cfg, verb, stdout); err != nil {
+	if err := syncConfigRows(ctx, db, cfg, exposure, verb, stdout); err != nil {
 		fmt.Fprintf(stderr, "%s: %s\n", verb, err.Error())
 		return err
 	}
@@ -149,7 +154,8 @@ func stampConfig(ctx context.Context, db *sql.DB, cfg *config.Config, verb strin
 // itself: a rule naming a declaration the dimension does not hold would
 // place its rows onto a far account the statement cannot resolve, which
 // is the hole the declarations exist to close.
-func syncConfigRows(ctx context.Context, db *sql.DB, cfg *config.Config, verb string, stdout io.Writer) error {
+func syncConfigRows(ctx context.Context, db *sql.DB, cfg *config.Config, exposure canonical.ExposureRows, verb string,
+	stdout io.Writer) error {
 	n, err := gold.SyncDeclaredAccounts(ctx, db, cfg.DeclaredAccountChanges(time.Now().Unix()))
 	if err != nil {
 		return fmt.Errorf("declared accounts: %w", err)
@@ -163,7 +169,7 @@ func syncConfigRows(ctx context.Context, db *sql.DB, cfg *config.Config, verb st
 	if n > 0 {
 		fmt.Fprintf(stdout, "%s: %d holding alias(es) stamped\n", verb, n)
 	}
-	if n, err = gold.SyncExposure(ctx, db, cfg.ExposureRows()); err != nil {
+	if n, err = gold.SyncExposure(ctx, db, exposure); err != nil {
 		return fmt.Errorf("exposure: %w", err)
 	}
 	if n > 0 {
@@ -173,11 +179,14 @@ func syncConfigRows(ctx context.Context, db *sql.DB, cfg *config.Config, verb st
 }
 
 // enrichmentLedgers are the files the enrichment pass applies beside
-// the config: both families' pins and the transfer-override ledger.
+// the config: both families' pins and the transfer-override ledger. A
+// load or reload also reads the exposure rows, the tags ledger's among
+// them, at the same time.
 type enrichmentLedgers struct {
 	spendPins  []spending.Pin
 	incomePins []spending.Pin
 	overrides  []gold.TransferOverrideRule
+	exposure   canonical.ExposureRows
 }
 
 // parseEnrichmentLedgers reads the ledgers the pass applies. Every

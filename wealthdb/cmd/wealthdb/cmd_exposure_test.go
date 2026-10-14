@@ -101,7 +101,7 @@ func TestExposurePrivacyHidesAmounts(t *testing.T) {
 		"currencies": {"USD", "fiat"},
 		"securities": {"symbol:AAAA", "Alpha Corp", "40.00", "technology"},
 		"funds":      {"symbol:IDXF", "57.14"},
-		"coverage":   {"looked_through", "unmatched"},
+		"coverage":   {"looked_through", "untagged", "brk"},
 	}
 	for _, v := range exposureViews {
 		out, errb, code := runExposure(t, cfg, v, "-d", "2026-06-30", "-p", "-f", "csv", "-C", "all")

@@ -490,10 +490,12 @@ class TestReference(Built):
         for key, p in exposure["proxies"].items():
             self.assertIn(key, refs)
             self.assertIn(p["fund"], refs)
-        for src, tags in exposure["tags"].items():
-            held = {r["instrument_id"] for r in self.rows[src]["positions"]}
-            for iid in tags:
-                self.assertIn(iid, held, f"{src}/{iid}")
+        self.assertEqual(exposure["tags"], "overrides/exposure_tags.csv")
+        tags = ledger(self.root, "exposure_tags.csv")
+        self.assertTrue(tags, "the tags ledger has rows")
+        for t in tags:
+            held = {r["instrument_id"] for r in self.rows[t["silver_source_id"]]["positions"]}
+            self.assertIn(t["instrument"], held, f"{t['silver_source_id']}/{t['instrument']}")
 
     def test_isins_have_the_demo_shape(self):
         for r in self.ref["lines"]:

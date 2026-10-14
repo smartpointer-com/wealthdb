@@ -420,10 +420,15 @@ func buildExposureCoverageColumns(ccy string) []columnSpec[gold.ExposureCoverage
 		outCcyCol("value", ccy, func(r row) *string { return r.Value }),
 		pctCol("share_pct", func(r row) *float64 { return r.SharePct }),
 		textCol("detail", func(r row) *string { return r.Detail }),
+		// What a tags ledger row names; -p hides the instrument id whole.
+		textCol("silver_source_id", func(r row) *string { return r.SilverSourceID }),
+		{Name: "instrument", Align: output.AlignLeft, Privacy: PrivacyFreeText,
+			Extract: func(r row) string { return strOrEmpty(r.Instrument) }},
 	}
 }
 
-var defaultExposureCoverageColumns = []string{"section", "reason", "items", "value", "share_pct", "detail"}
+var defaultExposureCoverageColumns = []string{"section", "reason", "items", "value", "share_pct", "detail",
+	"silver_source_id", "instrument"}
 
 func exposureUsage() string {
 	cols := map[string]string{
@@ -461,7 +466,8 @@ Views
                holdings
   coverage     what the figures rest on: how each part of net worth is
                classified, how old the compositions are, the labels no
-               map knows, the securities no source describes
+               map knows, the securities no source describes, and the
+               private holdings the tags ledger has no row for
 
 Flags
   -d, --as-of DATE   the day (default today UTC)
@@ -491,7 +497,7 @@ Notes
   has no place in the vocabulary), by_name (a receipt's sector or
   country comes from a share matched by name), opaque (a private equity
   fund nothing looks through; it reads diversified), untagged (a
-  private holding has no tag in exposure.tags), unmatched (a listed
+  private holding has no row in the tags ledger), unmatched (a listed
   security no source describes). In funds, no_composition marks a fund
   nothing describes on the day.
 
