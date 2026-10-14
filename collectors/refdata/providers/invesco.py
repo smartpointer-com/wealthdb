@@ -39,7 +39,7 @@ import fetcher
 from collectorkit import bronze
 
 from . import table
-from .base import Parsed, Provider, ProviderError, Unavailable, blank_to_none, dec, read_meta, write_meta
+from .base import Parsed, Provider, ProviderError, Unavailable, blank_to_none, dec, fund_isin, read_meta, write_meta
 
 API = "https://dng-api.invesco.com/cache/v1/accounts/{locale}/shareclasses/{id}/"
 ISSUER = re.compile(r"invesco|powershares", re.I)
@@ -54,7 +54,7 @@ class Invesco(Provider):
     def claim(self, fund, ctx):
         if not (ISSUER.search(fund.name or "") and ETF.search(fund.name or "")):
             return None
-        isin = (fund.isin or (fund.ref[5:] if fund.ref.startswith("isin:") else "") or "").upper()
+        isin = fund_isin(fund)
         cusip = (fund.cusip or (fund.ref[6:] if fund.ref.startswith("cusip:") else "") or "").upper()
         if not cusip and isin.startswith("US") and len(isin) == 12:
             cusip = isin[2:11]

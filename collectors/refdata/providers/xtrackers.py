@@ -32,7 +32,7 @@ from pathlib import Path
 from collectorkit import bronze
 
 from . import table, xlsx
-from .base import Parsed, Provider, ProviderError, Unavailable, read_meta, today_utc, write_meta
+from .base import Parsed, Provider, ProviderError, Unavailable, fund_isin, read_meta, today_utc, write_meta
 
 EXPORT = "https://etf.dws.com/etfdata/export/GBR/ENG/excel/product/constituent/{isin}/"
 DOC = "constituents.xlsx"
@@ -44,7 +44,7 @@ class Xtrackers(Provider):
     serves_funds = True
 
     def claim(self, fund, ctx):
-        isin = (fund.isin or (fund.ref[5:] if fund.ref.startswith("isin:") else "") or "").upper()
+        isin = fund_isin(fund)
         if not isin or isin.startswith("US") or not ISSUER.search(fund.name or ""):
             return None
         return {"ref": fund.ref, "isin": isin}

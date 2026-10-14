@@ -84,7 +84,7 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
 With no file, the providers of public data run: `inbox`, `sec-nport`,
 `sec-edgar`, `gleif` and `openfigi`. The two SEC providers wait for a
 `contact`. An issuer's provider (`ishares`, `xtrackers`, `invesco`,
-`spdr`, `sprott`) and a report provider (`swisscanto`,
+`amundi`, `spdr`, `sprott`) and a report provider (`swisscanto`,
 `swissfunddata`) run only once `providers` names them: enabling one
 accepts its source's terms, quoted below. An issuer's daily file is
 fresher than a report or a quarterly N-PORT filing, so list the issuers
@@ -273,6 +273,27 @@ forbid "devices (including software) that are designed to provide
 repeated automated access" and "any data mining, robots, or similar
 data gathering and extraction tools". Off until `providers` names it.
 
+### amundi
+
+Amundi's ETFs, from the product API behind the fund pages of Amundi's
+Swiss site.
+
+- A fund is claimed when its name names Amundi or Lyxor and an ETF, as
+  brokers write it.
+- The API answers a read-only POST, since it has no GET form, for
+  private investors in Switzerland. It serves the current holdings,
+  each with its ISIN, weight, sector and country of risk.
+- A fund that replicates its index through a swap holds a substitute
+  basket. Its holdings count as `collateral`. The API lists only an
+  index's top ten, so no index lines are read: name a proxy for such a
+  fund in `exposure.proxies`.
+
+**Terms.** Amundi's legal notice for its Swiss site lets a visitor
+download pages or parts of the site "ausschließlich für Ihren
+persönlichen Gebrauch" (for personal use only). It forbids reproducing
+the site or using it for public or commercial purposes without
+Amundi's written consent. Off until `providers` names it.
+
 ### sec-edgar
 
 What the SEC knows of a US-listed company, found by its ticker in the
@@ -325,8 +346,9 @@ Every request goes through one small client:
   OpenFIGI (25), 50 a minute for GLEIF (60);
 - a User-Agent that names the tool, with the `contact` for the SEC's
   hosts only;
-- GET, a read-only POST for OpenFIGI's mapping, which has no GET form,
-  and the POST that states swissfunddata's investor category;
+- GET; a read-only POST for OpenFIGI's mapping and Amundi's product
+  API, which have no GET form; and the POST that states swissfunddata's
+  investor category;
 - no cookies, except swissfunddata's session;
 - a source that refuses a request for its rate is not asked again in
   the run.

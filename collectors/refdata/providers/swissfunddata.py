@@ -27,8 +27,8 @@ import re
 
 import fetcher
 
-from .base import ProviderError
-from .reports import ReportProvider, fund_isin
+from .base import ProviderError, fund_isin
+from .reports import ReportProvider
 
 HOST = "https://www.swissfunddata.ch/sfdpub"
 ENTRY = f"{HOST}/sfd-entry/private?url=%2Fen%2F"

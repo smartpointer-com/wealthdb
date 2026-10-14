@@ -125,11 +125,6 @@ def _save_pdf(resp, path: Path) -> Path:
     return path
 
 
-def fund_isin(fund) -> str:
-    """A wanted fund's ISIN, from its ISIN or its reference."""
-    return (fund.isin or (fund.ref[5:] if fund.ref.startswith("isin:") else "") or "").strip().upper()
-
-
 def pdf_pages(path: Path, last: int | None = None) -> list:
     """Each page's text, in layout order; the first `last` pages only
     where given."""

@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import fetcher
 
-from .reports import ReportProvider, fund_isin
+from .base import fund_isin
+from .reports import ReportProvider
 
 API = "https://products.swisscanto.com/products/api"
 KINDS = {"funddetail.publication.FYRREP": "annual", "funddetail.publication.HYRREP": "semiannual"}

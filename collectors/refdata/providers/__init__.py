@@ -3,6 +3,7 @@ order a run asks them in is refdata.cfg's."""
 
 from __future__ import annotations
 
+from .amundi import Amundi
 from .gleif import Gleif
 from .inbox import Inbox
 from .invesco import Invesco
@@ -16,5 +17,5 @@ from .swisscanto import Swisscanto
 from .swissfunddata import SwissFundData
 from .xtrackers import Xtrackers
 
-REGISTRY = {p.name: p for p in (Inbox(), IShares(), Xtrackers(), Invesco(), Spdr(), Sprott(), Swisscanto(),
-                                SwissFundData(), SecNport(), SecEdgar(), Gleif(), OpenFigi())}
+REGISTRY = {p.name: p for p in (Inbox(), IShares(), Xtrackers(), Invesco(), Amundi(), Spdr(), Sprott(),
+                                Swisscanto(), SwissFundData(), SecNport(), SecEdgar(), Gleif(), OpenFigi())}

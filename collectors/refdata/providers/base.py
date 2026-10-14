@@ -153,6 +153,11 @@ def today_utc() -> date:
     return datetime.now(timezone.utc).date()
 
 
+def fund_isin(fund) -> str:
+    """A wanted fund's ISIN, from its ISIN or its reference."""
+    return (fund.isin or (fund.ref[5:] if fund.ref.startswith("isin:") else "") or "").strip().upper()
+
+
 def dec(value) -> str | None:
     """A number as silver's decimal string: None for blank or unparseable,
     no exponent, no trailing zeros."""

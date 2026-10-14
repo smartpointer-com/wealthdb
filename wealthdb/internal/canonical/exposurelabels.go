@@ -83,7 +83,7 @@ var genericAssetTypes = map[AssetClass][]string{
 		"american depositary receipt", "global depositary receipt", "global depository receipt",
 		"common stocks", "preferred stocks", "bearer shares", "registered shares", "participation certificates",
 		"other shares", "stammaktien", "vorzugsaktien", "inhaberaktien", "namenaktien", "partizipationsscheine",
-		"aktien und sonstige beteiligungswertpapiere und -rechte"},
+		"aktien und sonstige beteiligungswertpapiere und -rechte", "equity_ordinary", "equity_preferred"},
 	AssetClassFixedIncome: {"fixed income", "bond", "bonds", "debt", "dbt", "fixed-income", "government bond",
 		"corporate bond", "note", "notes", "abs-mbs", "abs-cbdo", "abs-o", "abs-app", "sn", "lon", "loan",
 		"corporate bonds", "government bonds", "asset and mortgage backed"},
