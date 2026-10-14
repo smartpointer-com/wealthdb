@@ -165,6 +165,63 @@ func TestRefdataWantedReadsKeysThroughAliases(t *testing.T) {
 	}
 }
 
+// A security held directly states a US symbol only: its own where the
+// holding is quoted in the US, else the one a lookup found (a share held
+// abroad that also trades in New York); a bank abroad's local ticker is
+// never one.
+func TestRefdataWantedStatesUSSymbols(t *testing.T) {
+	db, ctx := openMigrated(t)
+	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
+	for _, q := range []string{
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, symbol, currency,
+		 first_seen_at, last_seen_at) VALUES
+		 ('test-src', 'QUSA', 'public_equity', 'stock', NULL, 'QUSA', 'USD', 0, 0),
+		 ('test-src', 'QVIE', 'public_equity', 'stock', 'AT0000000031', 'QVIE', 'EUR', 0, 0),
+		 ('test-src', 'QDR', 'public_equity', 'stock', 'US0000000032', NULL, 'USD', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, market_value) VALUES
+		 ('test-src', ?, 'A', 'QUSA', 'QUSA', 'public_equity', 'stock', 'USD', 1),
+		 ('test-src', ?, 'A', 'QVIE', 'QVIE', 'public_equity', 'stock', 'EUR', 1),
+		 ('test-src', ?, 'A', 'QDR', 'QDR', 'public_equity', 'stock', 'USD', 1)`,
+		`INSERT INTO security_identities (silver_source_id, security_key, as_of, provider, isin, ticker, exchange)
+		 VALUES ('refdata', 'isin:US0000000032', ?, 'openfigi', 'US0000000032', 'QDRY', 'US'),
+		        ('refdata', 'isin:AT0000000035', ?, 'openfigi', 'AT0000000035', 'QVNSY', 'US')`,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, symbol, currency,
+		 first_seen_at, last_seen_at) VALUES ('test-src', 'QVNS', 'public_equity', 'stock', 'AT0000000035', 'QVNS', 'EUR', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, market_value) VALUES ('test-src', ?, 'A', 'QVNS', 'QVNS', 'public_equity', 'stock', 'EUR', 1)`,
+	} {
+		args := make([]any, strings.Count(q, "?"))
+		for i := range args {
+			args[i] = day
+		}
+		if _, err := db.ExecContext(ctx, q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	w, err := RefdataWanted(ctx, db, time.Unix(day+86400, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, s := range w.Securities {
+		got[s.Key] = "<nil>"
+		if s.Symbol != nil {
+			got[s.Key] = *s.Symbol
+		}
+	}
+	want := map[string]string{"symbol:QUSA": "QUSA", "isin:AT0000000031": "<nil>", "isin:US0000000032": "QDRY",
+		"isin:AT0000000035": "QVNSY"}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s symbol = %s, want %s", k, got[k], v)
+		}
+	}
+}
+
 // A held fund's lines that lack a sector or a country are wanted as
 // constituents, with their share and asset class and the US symbol a
 // fund line or a lookup gives them, never a broker's local ticker; a

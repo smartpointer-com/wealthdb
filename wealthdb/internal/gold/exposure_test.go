@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -368,9 +369,11 @@ func TestExposureLooksThroughEachKindOfFund(t *testing.T) {
 	close("QFXF's long EUR leg", leafValue(t, db, ctx, `top_key = 'symbol:QFXF' AND key = 'symbol:FWD' AND currency = 'EUR'`), 55)
 	close("QFXF's short USD leg", leafValue(t, db, ctx, `top_key = 'symbol:QFXF' AND key = 'symbol:FWD' AND currency = 'USD'`), -55)
 	// The house is tagged; the private fund and the unknown stock are not.
-	if f := leafFlags(t, db, ctx, `iid = 'PE1'`); f != "untagged" {
-		t.Errorf("PE1 flags = %q, want untagged", f)
+	// Nothing looks through the private fund: it reads diversified.
+	if f := leafFlags(t, db, ctx, `iid = 'PE1'`); f != "opaque,untagged" {
+		t.Errorf("PE1 flags = %q, want opaque,untagged", f)
 	}
+	close("PE1 diversified", leafValue(t, db, ctx, `iid = 'PE1' AND sector = 'diversified'`), 80)
 	if f := leafFlags(t, db, ctx, `iid = 'UNK'`); f != "unmatched" {
 		t.Errorf("UNK flags = %q, want unmatched", f)
 	}
@@ -466,6 +469,126 @@ func TestExposureCoverageNamesUnmappedLabels(t *testing.T) {
 	}
 }
 
+// A tag marks a private holding tagged even where it leaves a field
+// blank, and a private company's stock is private, not a listed security;
+// holdings and labels with no value share one coverage line each.
+func TestExposureTagsAndZeroValueCoverage(t *testing.T) {
+	db, ctx := openExposureFixture(t)
+	for _, i := range []struct {
+		id, class, vehicle string
+		mv                 int
+	}{{"PE2", "private_equity", "fund", 90}, {"PSTK", "private_equity", "stock", 20},
+		{"MEMO1", "other", "other", 0}, {"MEMO2", "other", "other", 0}} {
+		for _, q := range []string{
+			`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, name, currency,
+			 first_seen_at, last_seen_at) VALUES ('test-src', ?, ?, ?, ?, 'USD', 0, 0)`,
+			`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+			 asset_class, vehicle, currency, quantity, market_value) VALUES ('test-src', ?, 'A1', ?, ?, ?, ?, 'USD', 1, ?)`,
+		} {
+			args := []any{i.id, i.class, i.vehicle, i.id}
+			if strings.Contains(q, "positions") {
+				args = []any{exSnap, i.id, i.id, i.class, i.vehicle, i.mv}
+			}
+			if _, err := db.ExecContext(ctx, q, args...); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO exposure_tags (silver_source_id, instrument_external_id, country, currency)
+	    VALUES ('test-src', 'PE2', 'US', 'USD')`); err != nil {
+		t.Fatal(err)
+	}
+	if f := leafFlags(t, db, ctx, `iid = 'PE2'`); f != "opaque" {
+		t.Errorf("tagged PE2 flags = %q, want opaque", f)
+	}
+	if got := leafText(t, db, ctx, "how", `iid = 'PE2'`); got != "tagged" {
+		t.Errorf("tagged PE2 is %q", got)
+	}
+	if f := leafFlags(t, db, ctx, `iid = 'PSTK'`); f != "untagged" {
+		t.Errorf("a private company's stock flags %q, want untagged", f)
+	}
+	// A label no map knows, on a line of no weight.
+	if _, err := db.ExecContext(ctx, `INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no,
+	    security_key, name, asset_type, weight, currency, sector) VALUES ('test-src', 'symbol:FUNDX', ?, 'holdings', 99,
+	    'symbol:QZRO', 'Zero Line', 'Equity', 0, 'USD', 'Quasi Sector')`, exDay(5, 31)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := ExposureCoverage(ctx, db, exAsOf, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	none := map[string]int64{}
+	for _, r := range rows {
+		if strings.Contains(r.Reason, "MEMO") || strings.Contains(r.Reason, "Quasi") {
+			t.Errorf("an item with no value has a line of its own: %+v", r)
+		}
+		if r.Reason == "(no value)" {
+			none[r.Section] = r.Items
+		}
+	}
+	// The fixture's zero-weight future adds to the unmapped count.
+	if none["unmatched"] != 2 || none["unmapped"] < 1 {
+		t.Errorf("(no value) lines = %v, want 2 unmatched and the unmapped zero lines", none)
+	}
+}
+
+// A receipt's leaf that takes its share's sector by name says so.
+func TestExposureFlagsAReceiptMatchedByName(t *testing.T) {
+	db, ctx := openExposureFixture(t)
+	for _, q := range []string{
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, name, currency,
+		 first_seen_at, last_seen_at) VALUES ('test-src', 'QQRVY', 'public_equity', 'stock', 'QQRVY',
+		 'QORVANT AG SPON ADR EACH REP 0.5 ORD SHS', 'USD', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, quantity, market_value) VALUES ('test-src', ?, 'A1', 'QQRVY', 'QQRVY',
+		 'public_equity', 'stock', 'USD', 1, 40)`,
+		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency)
+		 VALUES ('test-src', 'symbol:QREF', ?, 'holdings', 'testprov', 1, 'USD')`,
+		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
+		 weight, currency, country, sector) VALUES ('test-src', 'symbol:QREF', ?, 'holdings', 1, 'isin:DE0000000701',
+		 'DE0000000701', 'QORVANT N AG', 'Equity', 100, 'EUR', 'Germany', 'Industrials')`,
+	} {
+		if _, err := db.ExecContext(ctx, q, slices.Repeat([]any{exSnap}, strings.Count(q, "?"))...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if f := leafFlags(t, db, ctx, `iid = 'QQRVY'`); f != "by_name" {
+		t.Errorf("QQRVY flags = %q, want by_name", f)
+	}
+	if got := leafText(t, db, ctx, "sector", `iid = 'QQRVY'`); got != "industrials" {
+		t.Errorf("QQRVY sector = %q", got)
+	}
+}
+
+// An SEC code that says nothing of the business (a depositary receipt's
+// registrant) gives no sector, though a broad range holds it.
+func TestExposureSICOfADepositaryGivesNoSector(t *testing.T) {
+	db, ctx := openMigrated(t)
+	if _, err := db.ExecContext(ctx, `INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider,
+	    value, scheme) VALUES ('refdata', 'symbol:QDEP', 'sic', 0, 'sec-edgar', '8880', 'sic'),
+	    ('refdata', 'symbol:QENG', 'sic', 0, 'sec-edgar', '8711', 'sic')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range map[string]string{"symbol:QDEP": "", "symbol:QENG": "industrials"} {
+		var got sql.NullString
+		if err := db.QueryRowContext(ctx, `SELECT sector FROM securities WHERE security_key = ?`, k).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got.String != want {
+			t.Errorf("%s sector = %q, want %q", k, got.String, want)
+		}
+	}
+}
+
 // A ticker a fund line states beside an ISIN reads as that ISIN, and a
 // CUSIP no source ties to an ISIN reads as the one the US rule gives.
 func TestExposureAliases(t *testing.T) {
@@ -515,12 +638,14 @@ func TestExposureAliases(t *testing.T) {
 }
 
 // Where sources tie one ticker to two ISINs, an account's own instrument
-// wins over lookups, however many state the other.
+// wins over lookups, however many state the other. A bank abroad's local
+// ticker ties nothing: in New York it is another company's.
 func TestExposureAliasPrecedence(t *testing.T) {
 	db, ctx := openExposureFixture(t)
 	for _, q := range []string{
-		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, isin, first_seen_at, last_seen_at)
-		 VALUES ('test-src', 'C2', 'public_equity', 'stock', 'QQZ', 'XX0000000021', 0, 0)`,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, isin, currency,
+		 first_seen_at, last_seen_at) VALUES ('test-src', 'C2', 'public_equity', 'stock', 'QQZ', 'XX0000000021', 'USD', 0, 0),
+		 ('test-src', 'C3', 'public_equity', 'stock', 'QVN', 'AT0000000023', 'EUR', 0, 0)`,
 		`INSERT INTO security_identities (silver_source_id, security_key, as_of, provider, isin, ticker)
 		 VALUES ('test-src', 'symbol:QQZ', 0, 'p1', 'XX0000000022', 'QQZ'), ('test-src', 'symbol:QQZ', 0, 'p2', 'XX0000000022', 'QQZ')`,
 	} {
@@ -537,6 +662,10 @@ func TestExposureAliasPrecedence(t *testing.T) {
 	}
 	if got != "isin:XX0000000021" {
 		t.Errorf("symbol:QQZ reads as %s, want the instrument's ISIN", got)
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM security_aliases WHERE alias = 'symbol:QVN'`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("a local ticker abroad ties %d aliases, %v", n, err)
 	}
 }
 

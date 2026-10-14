@@ -165,6 +165,9 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 				securities[ref] = s
 				stocks[ref] = h.vehicle == "stock"
 			}
+			if !usQuoted(h) {
+				h.symbol = sql.NullString{}
+			}
 			fillIDs(&s.ISIN, &s.CUSIP, &s.Symbol, &s.Name, &s.Currency, h)
 		}
 	}
@@ -184,6 +187,9 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		}
 		slices.Sort(open)
 		if err := addConstituents(ctx, db, securities, open, now); err != nil {
+			return nil, err
+		}
+		if err := addUSSymbols(ctx, db, securities); err != nil {
 			return nil, err
 		}
 		if stated, err = addSecurityState(ctx, db, securities, keys); err != nil {
@@ -295,6 +301,14 @@ SELECT h.src, h.iid, h.asset_class, COALESCE(h.vehicle, ''), i.isin, i.cusip, il
 		out = append(out, h)
 	}
 	return out, rows.Err()
+}
+
+// usQuoted reports whether a holding's symbol is a US one: the
+// instrument has a US ISIN or is priced in US dollars. A bank abroad
+// states the local ticker, which in New York may be another company's.
+func usQuoted(h heldInstrument) bool {
+	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(h.isin.String)), "US") ||
+		strings.EqualFold(strings.TrimSpace(h.ccy.String), "USD")
 }
 
 // stillHeldDays is how recently a source must have been observed for
@@ -531,6 +545,32 @@ SELECT c.key, 100 * c.v / NULLIF(t.total, 0), c.name, c.asset_class, s.currency,
 			s.Missing = append(s.Missing, "country")
 		}
 		securities[key] = s
+	}
+	return rows.Err()
+}
+
+// addUSSymbols gives a security held directly that has no US symbol of
+// its own the one a lookup or a fund line on a US listing states, so a
+// lookup by ticker finds the company.
+func addUSSymbols(ctx context.Context, db *sql.DB, securities map[string]*WantedSecurity) error {
+	ok, err := hasTable(ctx, db, "security_aliases")
+	if err != nil || !ok {
+		return err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT security_key, MIN(substr(alias, 8)) FROM security_aliases
+	 WHERE alias LIKE 'symbol:%' AND origin IN ('fund_line', 'lookup') GROUP BY 1`)
+	if err != nil {
+		return fmt.Errorf("wanted: US symbols: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, symbol string
+		if err := rows.Scan(&key, &symbol); err != nil {
+			return fmt.Errorf("wanted: US symbols scan: %w", err)
+		}
+		if s := securities[key]; s != nil && s.Scope == "direct" && s.Symbol == nil {
+			s.Symbol = &symbol
+		}
 	}
 	return rows.Err()
 }

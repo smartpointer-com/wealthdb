@@ -2,6 +2,10 @@
 sec-edgar: what the SEC knows of a US-listed company, from EDGAR.
 
 - Claim: a security whose ticker the SEC's company ticker file lists.
+  A security quoted abroad (an ISIN from outside the US, or no ISIN and
+  a price in another currency than US dollars) is claimed only where its
+  name and the SEC's agree: a ticker abroad may be another company's in
+  New York.
 - Fetch: the company's submissions file, and its latest reported common
   shares outstanding (the XBRL concept dei:EntityCommonStockSharesOutstanding).
   A company that reports no such concept is no error.
@@ -35,6 +39,41 @@ def compact(ticker: str) -> str:
     return re.sub(r"[./\s-]", "", str(ticker or "").upper())
 
 
+DEPOSITARY_SIC = "8880"
+DEPOSITARY_NAME = re.compile(r"/ADR/?\s*$", re.IGNORECASE)
+
+
+def depositary_registrant(sub: dict) -> bool:
+    """Whether a submissions file is a depositary receipt's registrant:
+    EDGAR files one under SIC 8880 or names it COMPANY/ADR."""
+    return str(sub.get("sic") or "") == DEPOSITARY_SIC or bool(DEPOSITARY_NAME.search(sub.get("name") or ""))
+
+
+FILLER = frozenset({"THE", "INC", "CORP", "CO", "LTD", "PLC", "SA", "AG", "NV", "SE", "AB", "ASA", "SPA", "LIMITED",
+                    "CORPORATION", "COMPANY", "GROUP", "HOLDINGS", "HOLDING", "CLASS", "CL", "COM", "ORD", "SHS"})
+
+
+def first_word(name) -> str:
+    """The first word of a name that tells the company: no legal form,
+    no filler, two letters at least."""
+    for w in re.split(r"[^A-Z0-9]+", str(name or "").upper().replace("'", "")):
+        if len(w) >= 2 and w not in FILLER:
+            return w
+    return ""
+
+
+def names_agree(a, b) -> bool:
+    """Whether two names are one company's: the first telling word of
+    each, the one the start of the other (QUELLMARK, QUELLMARK INC); a
+    word of two letters only where both are equal."""
+    x, y = first_word(a), first_word(b)
+    if not (x and y):
+        return False
+    if min(len(x), len(y)) < 3:
+        return x == y
+    return x.startswith(y) or y.startswith(x)
+
+
 SHARES = "https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/dei/EntityCommonStockSharesOutstanding.json"
 SUB_DOC = "submissions.json"
 SHARES_DOC = "shares.json"
@@ -47,29 +86,37 @@ class SecEdgar(Provider):
     answers = frozenset({"sector", "country"})
 
     def _tickers(self, ctx) -> tuple:
-        """ticker -> CIK as the SEC writes it, and share-class tickers
-        (XYZ-B) by their compact form (XYZB) besides."""
+        """ticker -> CIK as the SEC writes it, share-class tickers (XYZ-B)
+        by their compact form (XYZB) besides, and CIK -> company name."""
         def load():
             doc = ctx.client.get(COMPANY_TICKERS).json()
-            exact, classes = {}, {}
+            exact, classes, titles = {}, {}, {}
             for v in (doc.values() if isinstance(doc, dict) else doc):
                 t = str(v.get("ticker") or "").upper()
                 if not t:
                     continue
-                exact.setdefault(t, int(v["cik_str"]))
+                cik = int(v["cik_str"])
+                exact.setdefault(t, cik)
+                titles.setdefault(cik, v.get("title") or "")
                 if compact(t) != t:
-                    classes.setdefault(compact(t), int(v["cik_str"]))
-            return exact, classes
+                    classes.setdefault(compact(t), cik)
+            return exact, classes, titles
         return ctx.once("edgar_tickers", load)
 
     def claim_security(self, security, ctx):
         key = security.key
         symbol = (security.symbol or (key[7:] if key.startswith("symbol:") else "") or "").strip().upper()
-        exact, classes = self._tickers(ctx)
+        exact, classes, titles = self._tickers(ctx)
         # The ticker as written first; a share class's compact form only
         # matches a share-class ticker, never a plain one it collides with.
         cik = (exact.get(symbol) or classes.get(compact(symbol))) if symbol else None
-        return {"key": key, "symbol": symbol, "cik": cik} if cik else None
+        if not cik:
+            return None
+        isin = (security.isin or (key[5:] if key.startswith("isin:") else "")).upper()
+        abroad = not isin.startswith("US") if isin else (security.currency or "USD").upper() != "USD"
+        if abroad and security.name and not names_agree(security.name, titles.get(cik)):
+            return None
+        return {"key": key, "symbol": symbol, "cik": cik}
 
     def fetch_security(self, claim, outdir: Path, ctx):
         sub = ctx.client.get(SUBMISSIONS.format(cik=claim["cik"]))
@@ -136,8 +183,12 @@ def parse_company(sub: dict, shares: dict | None, key: str, as_of: date, *, prov
 
     fact("sic", sub.get("sic"), "sic", description=sub.get("sicDescription"))
     fact("incorporation", sub.get("stateOfIncorporation"), "edgar")
+    # A US address states its state; one abroad states its EDGAR country
+    # code apart. A depositary receipt's registrant files from its
+    # depositary's address, which says nothing of the company.
     business = (sub.get("addresses") or {}).get("business") or {}
-    fact("hq_country", business.get("stateOrCountry"), "edgar")
+    if not depositary_registrant(sub):
+        fact("hq_country", business.get("stateOrCountry") or business.get("countryCode"), "edgar")
     value, end = latest_shares(shares)
     fact("shares_outstanding", value, "count", end=end)
     return out

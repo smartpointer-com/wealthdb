@@ -10,10 +10,11 @@ import (
 )
 
 // RebuildExposure rewrites the exposure report's derived tables
-// (migration 0126) from what gold holds: the label maps and
+// (migrations 0126, 0129) from what gold holds: the label maps and
 // vocabularies, the labels the fund lines carry, each instrument's
 // security key, the aliases that tie two keys of one security together,
-// and the best-known attributes of every security. It runs after the
+// the best-known attributes of every security, and the share each
+// depositary receipt stands for. It runs after the
 // per-source loads, like the lot pass: an alias may tie a line one
 // source loaded to an instrument another one did. One transaction; the
 // tables are replaced whole.
@@ -33,6 +34,7 @@ func RebuildExposure(ctx context.Context, db *sql.DB) (ExposureCounts, error) {
 		{"instrument keys", func() error { return writeInstrumentKeys(ctx, tx) }},
 		{"aliases", func() error { return writeAliases(ctx, tx) }},
 		{"securities", func() error { return execAll(ctx, tx, securitiesSQL) }},
+		{"receipts", func() error { return writeReceipts(ctx, tx) }},
 	}
 	for _, s := range steps {
 		if err := s.run(); err != nil {
@@ -214,9 +216,11 @@ SELECT DISTINCT k FROM (
 // beside each other, the CUSIP rule last. A fund line's ticker names a
 // US symbol only where the line names a US listing: a US ISIN, a US
 // exchange, or, where the line states no exchange, a price in US
-// dollars. A local ticker elsewhere (ROP in Zurich) is a different US
-// symbol's (ROP in New York). The exchange patterns are the collector's
-// (collectors/refdata/providers/table.py); keep them equal.
+// dollars. A broker's symbol does so only where the instrument has a US
+// ISIN or is priced in US dollars. A local ticker elsewhere (ROP in
+// Zurich) is a different US symbol's (ROP in New York). The exchange
+// patterns are the collector's (collectors/refdata/providers/table.py);
+// keep them equal.
 const aliasesSQL = `
 INSERT INTO security_aliases
 WITH valid AS (
@@ -243,6 +247,7 @@ WITH valid AS (
           FROM security_identities WHERE cusip IS NOT NULL AND trim(cusip) <> ''
         UNION ALL SELECT 'symbol:' || upper(trim(symbol)), upper(trim(isin)), 'instrument', last_seen_at
           FROM instruments WHERE symbol IS NOT NULL AND trim(symbol) <> ''
+           AND (upper(trim(isin)) LIKE 'US%' OR upper(trim(COALESCE(currency, ''))) = 'USD')
         UNION ALL SELECT 'cusip:' || upper(trim(cusip)), upper(trim(isin)), 'instrument', last_seen_at
           FROM instruments WHERE cusip IS NOT NULL AND trim(cusip) <> '')
      WHERE isin IS NOT NULL AND regexp_full_match(isin, '[A-Z]{2}[A-Z0-9]{9}[0-9]')),
@@ -285,7 +290,7 @@ idn AS (
     SELECT COALESCE(sa.security_key, i.security_key) AS k, i.name, i.listing_currency, i.provider, i.as_of
       FROM security_identities i LEFT JOIN security_aliases sa ON sa.alias = i.security_key),
 sic AS (
-    SELECT fx.k, s.sector, fx.as_of
+    SELECT fx.k, NULLIF(s.sector, '') AS sector, fx.as_of
       FROM fx JOIN exposure_sic s ON TRY_CAST(fx.value AS INTEGER) BETWEEN s.lo AND s.hi
      WHERE fx.field = 'sic'
    QUALIFY ROW_NUMBER() OVER (PARTITION BY fx.k, fx.as_of, fx.provider ORDER BY s.rank) = 1),

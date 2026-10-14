@@ -23,7 +23,8 @@ investing grain, section, start year, as-of day and the reading of a
 missing cost basis. The account, category, income type, asset class and
 vehicle pickers stay at their defaults.
 
-A run fails when Metabase reports an error. A card that returns no rows
+A run fails when Metabase reports an error. A response cut off with no
+error and no result is asked once more first. A card that returns no rows
 at its dashboard's defaults fails too. Empty runs under any other picker
 value are listed, not failed: many card and source pairs are empty by
 nature (card balances for a source with no card). Exits 1 on any
@@ -121,9 +122,14 @@ def run_card(base, auth, dash, dc, ptypes, values):
     mapped = {m["parameter_id"]: m for m in dc.get("parameter_mappings", [])}
     body = {"parameters": [{"id": pid, "type": ptypes[pid], "value": v, "target": mapped[pid]["target"]}
                            for pid, v in values.items() if pid in mapped]}
-    st, res = call(base, f"/api/dashboard/{dash['id']}/dashcard/{dc['id']}/card/{dc['card_id']}/query",
-                   "POST", body, auth)
-    ok = st in (200, 202) and isinstance(res, dict) and res.get("status") == "completed" and "error" not in res
+    # A response Metabase cuts off carries no error and no result: the
+    # card is asked once more before it counts as failed.
+    for _attempt in range(2):
+        st, res = call(base, f"/api/dashboard/{dash['id']}/dashcard/{dc['id']}/card/{dc['card_id']}/query",
+                       "POST", body, auth)
+        ok = st in (200, 202) and isinstance(res, dict) and res.get("status") == "completed" and "error" not in res
+        if ok or (isinstance(res, dict) and res.get("error")):
+            break
     rows = (res.get("data") or {}).get("rows", []) if isinstance(res, dict) else []
     err = None if ok else (res.get("error") if isinstance(res, dict) else str(res))
     return ok, rows, err, body["parameters"]

@@ -200,3 +200,55 @@ def test_sec_edgar_matches_a_share_class_whatever_its_punctuation():
     # A plain ticker is itself; a share class never takes a plain ticker's place.
     assert e.claim_security(Security(key="symbol:QTA", symbol="QTA"), ctx)["cik"] == 10
     assert e.claim_security(Security(key="symbol:QT.A", symbol="QT.A"), ctx)["cik"] == 11
+
+
+def test_sec_edgar_claims_a_ticker_abroad_only_where_the_names_agree():
+    class Tickers:
+        def get(self, url, params=None):
+            doc = {"0": {"cik_str": 21, "ticker": "QEB", "title": "Quillmore Biologics Inc."},
+                   "1": {"cik_str": 22, "ticker": "QLB", "title": "QUELLBRIDGE LTD"}}
+            return fetcher.Response(url, 200, json.dumps(doc).encode(), "application/json")
+    ctx = Context(client=Tickers(), contact="ops@example.org")
+    e = SecEdgar()
+    # A bank abroad whose local ticker is a US biotech's: not claimed.
+    bank = Security(key="isin:XA0000000611", isin="XA0000000611", symbol="QEB", name="Quarzberg Bank AG")
+    assert e.claim_security(bank, ctx) is None
+    # A company abroad listed in New York under its own name: claimed.
+    listed = Security(key="isin:XB0000000612", isin="XB0000000612", symbol="QLB", name="Quellbridge Limited")
+    assert e.claim_security(listed, ctx)["cik"] == 22
+    # A US ISIN, or no name to compare, keeps the ticker's answer.
+    assert e.claim_security(Security(key="isin:US0000000613", symbol="QEB", name="Other"), ctx)["cik"] == 21
+    assert e.claim_security(Security(key="isin:XA0000000614", symbol="QEB"), ctx)["cik"] == 21
+    # A local ticker with no ISIN, priced abroad: the names must agree too.
+    local = Security(key="symbol:QEB", symbol="QEB", name="Quarzberg Bank AG", currency="EUR")
+    assert e.claim_security(local, ctx) is None
+    assert e.claim_security(Security(key="symbol:QEB", symbol="QEB", name="Other", currency="USD"), ctx)["cik"] == 21
+
+
+def test_names_agree_on_the_first_telling_word():
+    from providers.sec_edgar import names_agree
+    assert names_agree("Quellmark Inc", "QUELLMARK HOLDINGS LTD")
+    assert names_agree("QUELLMARK", "Quellmarkets Corp")
+    assert not names_agree("Quarzberg Bank AG", "Quillmore Biologics Inc.")
+    # A word of two letters agrees only with itself.
+    assert names_agree("QX Corp", "QX HOLDINGS") and not names_agree("QX Corp", "QXANTA Inc")
+
+
+def test_sec_edgar_reads_an_address_abroad_by_its_country_code():
+    sub = {**SUB, "stateOfIncorporation": "",
+           "addresses": {"business": {"city": "TORONTO", "stateOrCountry": None, "countryCode": "A6",
+                                      "isForeignLocation": 1}}}
+    p = parse_company(sub, None, "symbol:QEXI", DAY, provider="sec-edgar")
+    assert {f["field"]: f["value"] for f in p.security_facts}["hq_country"] == "A6"
+
+
+def test_sec_edgar_states_no_address_for_a_depositary_receipt():
+    office = {"business": {"city": "NEW YORK", "stateOrCountry": "NY"}}
+    sub = {**SUB, "sic": "8880", "stateOfIncorporation": "M0", "addresses": office}
+    p = parse_company(sub, None, "symbol:QEXIY", DAY, provider="sec-edgar")
+    assert {f["field"]: f["value"] for f in p.security_facts} == {"sic": "8880", "incorporation": "M0"}
+    # EDGAR names a registrant with no SIC code COMPANY/ADR.
+    sub = {**SUB, "name": "Example Industries Corporation/ADR", "sic": "", "stateOfIncorporation": "M0",
+           "addresses": office}
+    p = parse_company(sub, None, "symbol:QEXIY", DAY, provider="sec-edgar")
+    assert {f["field"]: f["value"] for f in p.security_facts} == {"incorporation": "M0"}

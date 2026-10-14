@@ -183,16 +183,21 @@ func ExposureLabels() []Label {
 }
 
 // SICRange maps a range of SEC SIC codes onto a sector. The ranges are
-// coarse on purpose: SIC is the fallback for a US filer no fund file and
-// no vendor describes.
+// coarse on purpose: SIC is the fallback for an SEC filer no fund file
+// and no vendor describes. A range with no sector holds codes that say
+// nothing of the business, such as the code EDGAR files a depositary
+// receipt's registrant under: a reader takes no sector from it.
 type SICRange struct {
 	Lo, Hi int
 	Sector Sector
 }
 
 // SICRanges is the SIC map, the narrower ranges first so a reader takes
-// the first range that holds a code.
+// the first range that holds a code. Every code a company files under
+// maps somewhere.
 var SICRanges = []SICRange{
+	{8880, 8888, ""},               // depositary receipts, foreign governments
+	{9995, 9995, SectorFinancials}, // non-operating shells and blank checks
 	{2830, 2836, SectorHealthCare}, // pharmaceuticals
 	{3570, 3579, SectorTechnology}, // computers
 	{3630, 3639, SectorConsumerCyclical},
@@ -230,6 +235,8 @@ var SICRanges = []SICRange{
 	{6700, 6799, SectorFinancials},
 	{7000, 7299, SectorConsumerCyclical},
 	{7300, 7399, SectorIndustrials},
+	{7500, 7599, SectorConsumerCyclical}, // automotive repair and rental
+	{7600, 7699, SectorIndustrials},      // miscellaneous repair
 	{7800, 7899, SectorCommunication},
 	{7900, 7999, SectorConsumerCyclical},
 	{8000, 8099, SectorHealthCare},

@@ -230,6 +230,13 @@ SEC's company ticker file:
   as EDGAR codes, which gold reads through EDGAR's own code list;
 - its latest reported shares outstanding.
 
+A ticker abroad may be another company's in New York. So a security
+quoted abroad is asked only where its name and the SEC's agree on the
+first word. Quoted abroad means an ISIN from outside the US, or no ISIN
+and a price in another currency than US dollars. A depositary receipt's registrant
+(SIC 8880, or a name ending in `/ADR`) files from its depositary's
+address, so its business address states nothing.
+
 **Terms.** As `sec-nport`.
 
 ### gleif

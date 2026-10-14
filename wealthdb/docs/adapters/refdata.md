@@ -182,6 +182,10 @@ stops at, are no constituents: no company lookup describes a fund. A
 constituent states the identifiers its key and its aliases give: a US
 symbol only from a fund line on a US listing or a lookup, never a
 broker's local ticker, so a lookup by ticker finds the right company.
+A security held directly states its own symbol only where the holding
+has a US ISIN or is priced in US dollars. Otherwise it states the US
+symbol a lookup found, if any. A bank abroad states the local ticker,
+which in New York may be another company's.
 
 A fund or security counts as still held while the latest snapshot of
 its source lists it and the source was observed within 90 days. A source

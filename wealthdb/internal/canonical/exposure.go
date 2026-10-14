@@ -38,11 +38,13 @@ const (
 )
 
 // A holding that is not a company's security takes its asset class as
-// its sector.
+// its sector. A private fund nothing looks through spans many companies
+// by design: it reads diversified.
 const (
-	SectorMetal  Sector = "metal"
-	SectorCrypto Sector = "crypto"
-	SectorCash   Sector = "cash"
+	SectorMetal       Sector = "metal"
+	SectorCrypto      Sector = "crypto"
+	SectorCash        Sector = "cash"
+	SectorDiversified Sector = "diversified"
 )
 
 var equitySectors = []Sector{
@@ -53,7 +55,7 @@ var equitySectors = []Sector{
 
 var bondSectors = []Sector{SectorGovernment, SectorMunicipal, SectorCorporate, SectorSecuritised}
 
-var assetSectors = []Sector{SectorMetal, SectorCrypto, SectorCash}
+var assetSectors = []Sector{SectorMetal, SectorCrypto, SectorCash, SectorDiversified}
 
 // Sectors is every sector, the eleven broad ones first, then the bond
 // sectors, then the sectors of holdings that are not securities.

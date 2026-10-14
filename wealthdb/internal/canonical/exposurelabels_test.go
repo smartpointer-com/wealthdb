@@ -56,14 +56,27 @@ func TestSICRanges(t *testing.T) {
 		return ""
 	}
 	for code, want := range map[int]Sector{2834: SectorHealthCare, 2800: SectorMaterials, 3571: SectorTechnology,
-		7372: SectorTechnology, 6798: SectorRealEstate, 6021: SectorFinancials, 4911: SectorUtilities, 1311: SectorEnergy} {
+		7372: SectorTechnology, 6798: SectorRealEstate, 6021: SectorFinancials, 4911: SectorUtilities, 1311: SectorEnergy,
+		7510: SectorConsumerCyclical, 9995: SectorFinancials, 8880: "", 8888: "", 8711: SectorIndustrials} {
 		if got := first(code); got != want {
 			t.Errorf("SIC %d = %q, want %q", code, got, want)
 		}
 	}
 	for _, r := range SICRanges {
-		if r.Lo > r.Hi || !r.Sector.Valid() {
+		if r.Lo > r.Hi || (r.Sector != "" && !r.Sector.Valid()) {
 			t.Errorf("bad range %+v", r)
+		}
+	}
+	// Every major group a company files under is covered: agriculture
+	// to services (01-89), and the shells of 99.
+	for _, code := range []int{100, 1000, 1311, 1531, 2011, 3999, 4011, 5012, 5311, 6021, 6798, 7011, 7372, 7510, 7622,
+		7812, 8011, 8742, 9995} {
+		hit := false
+		for _, r := range SICRanges {
+			hit = hit || (code >= r.Lo && code <= r.Hi)
+		}
+		if !hit {
+			t.Errorf("SIC %d maps nowhere", code)
 		}
 	}
 }

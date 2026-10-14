@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -271,6 +272,34 @@ func applyHeldKind(id string, held map[string]canonical.AccountKind, change *can
 	}
 }
 
+// pendingActivity names the row Fidelity lists money in flight under.
+const pendingActivity = "Pending activity"
+
+// addCurrentCash adds amt to the account's current cash in currency
+// at snap: one balance per account, currency and kind, the core
+// position's payload kept where there is one.
+func addCurrentCash(batch *canonical.SnapshotBatch, snap int64, acct, currency string, amt canonical.Decimal,
+	payload string, core bool) {
+	for i := range batch.CashBalances {
+		c := &batch.CashBalances[i]
+		if c.AccountExternalID == acct && c.Currency == currency && c.BalanceKind == canonical.BalanceKindCurrent {
+			c.Amount = c.Amount.Add(amt)
+			if core {
+				c.Payload = json.RawMessage(payload)
+			}
+			return
+		}
+	}
+	batch.CashBalances = append(batch.CashBalances, canonical.CashBalanceChange{
+		SnapshotAt:        snap,
+		AccountExternalID: acct,
+		Currency:          currency,
+		BalanceKind:       canonical.BalanceKindCurrent,
+		Amount:            amt,
+		Payload:           json.RawMessage(payload),
+	})
+}
+
 // appendPositionsAndCash walks `positions` once and splits each
 // row down one of two paths based on the silver-side
 // `is_core_position` flag:
@@ -287,10 +316,12 @@ func applyHeldKind(id string, held map[string]canonical.AccountKind, change *can
 //     whose book value is Fidelity's cost basis total, and its open
 //     lots where a fetch still describes it (lots.go).
 //
-// "Pending activity" rows (no instrument_key, description
-// "Pending activity") are skipped — Fidelity hasn't booked them
-// yet, so they have no resolvable instrument identity. They
-// reappear on the next dump as proper rows.
+// A "Pending activity" row (named so in instrument_key or in
+// description) is money in flight that Fidelity counts in the
+// account's value: it adds to the account's current cash, beside the
+// core position, so the account keeps its total and no position of
+// no identity appears. A row with no instrument_key and no such name
+// is skipped.
 //
 // `asset_class`, `currency`, and `is_core_position` are all
 // promoted columns on silver; the adapter relies on them directly
@@ -333,26 +364,17 @@ SELECT snapshot_at, account_external_id, instrument_key,
 		if !ok {
 			continue
 		}
-		if key == "" || desc == "Pending activity" {
-			// Pending-activity rows have no resolvable identity;
-			// emit nothing. The next dump should land them as
-			// real positions or transactions.
+		pending := strings.EqualFold(key, pendingActivity) || strings.EqualFold(desc, pendingActivity)
+		if key == "" && !pending {
 			continue
 		}
 
-		if isCore != 0 {
+		if isCore != 0 || pending {
 			amt, err := silver.DecimalOrZero(valueStr)
 			if err != nil {
-				return fmt.Errorf("money-market amount parse (acct=%s instr=%s): %w", acct, key, err)
+				return fmt.Errorf("cash amount parse (acct=%s instr=%s): %w", acct, key, err)
 			}
-			batch.CashBalances = append(batch.CashBalances, canonical.CashBalanceChange{
-				SnapshotAt:        snap,
-				AccountExternalID: acct,
-				Currency:          currency,
-				BalanceKind:       canonical.BalanceKindCurrent,
-				Amount:            amt,
-				Payload:           json.RawMessage(payload),
-			})
+			addCurrentCash(batch, snap, acct, currency, amt, payload, isCore != 0)
 			continue
 		}
 

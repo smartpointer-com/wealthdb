@@ -9,7 +9,7 @@ the report shows and the rules behind them.
 Related design: DESIGN.md §4.17 (the `exposure` command), §7.6 (the
 reference tables), §10.14 (the macros);
 [adapters/refdata.md](adapters/refdata.md) (how reference data loads,
-and the wanted list); migrations 0125 to 0128.
+and the wanted list); migrations 0125 to 0129.
 
 Every figure is a share of a holding's market value, the value
 `holdings` reports. The look-through moves value between rows; it never
@@ -89,6 +89,33 @@ A tag in the config wins over every source for the holding it names.
 The fund files are the security master: a stock held directly takes its
 sector and country from any fund line that names the same security.
 
+A depositary receipt (an ADR, a GDR) stands for a share listed abroad.
+Where no source states its sector or country, it takes the share's. No
+free source says which share an over-the-counter receipt stands for. So
+gold finds the share by the issuer's name, among the equity lines of the
+funds:
+
+- A name loses what it says of the receipt (ADR, sponsored, each
+  representing two shares). It also loses the legal form, single letters
+  and numbers. A share's name keeps what its parentheses say.
+- Equal names match first. Else the receipt's words may lead the
+  share's name, word by word, a word cut short allowed (ELECT for
+  ELECTRIC). A name of one word leads only a share with one telling
+  word (NAME BANK leads, NAME CHEMICAL does not).
+- A share whose name adds a country (NAME INDIA for NAME) is a
+  subsidiary there, not the issuer.
+- The first step that finds any share decides. Where its shares do not
+  fit, there is no match.
+- A legal form places the company: AG in Germany, Switzerland or
+  Austria, SPA in Italy. A share elsewhere does not fit. A receipt whose
+  country a source states fits only a share of that country.
+- What the names find must be one issuer in one country. Anything else
+  stays `unmatched`.
+
+`security_underlyings` keeps each link. The receipt's attributes name
+the share as their origin (`underlying:isin:…`), and its leaves carry
+the flag `by_name`.
+
 `--country risk` (the default) places a security in its country of
 risk, else its domicile. `--country domicile` does the opposite.
 
@@ -100,7 +127,8 @@ risk, else its domicile. `--country domicile` does the opposite.
   `technology`, `communication`, `utilities`, `real_estate`. A bond
   counts under who issued it: `government`, `municipal`, `corporate`,
   `securitised`. A holding that is not a company's security takes its
-  asset class: `cash`, `metal`, `crypto`, `real_estate`.
+  asset class: `cash`, `metal`, `crypto`, `real_estate`. A private equity
+  fund nothing looks through reads `diversified` (§5).
 - **Countries** are ISO 3166 alpha-2 codes, each in one of five
   regions: `north_america`, `latin_america`, `europe`,
   `middle_east_africa`, `asia_pacific`.
@@ -164,6 +192,12 @@ mark describes the holding.
   counts in its own currency and is flagged `partial`.
 - **Cash and derivatives inside a fund** stay leaves of their own asset
   type.
+- **Private holdings.** No public source describes a property, a loan,
+  a private fund, or a startup's shares and notes. The last are a stock
+  or a bond in a private asset class. A tag states such a holding's
+  country, currency and sector. A private equity fund nothing looks
+  through reads the sector `diversified`, unless a tag says otherwise. It
+  carries the `opaque` flag.
 
 ## 6. Currency
 
@@ -239,7 +273,9 @@ row's gross value it covers: `proxy=12%`, `aged=<1%`.
 | `forward` | the composition is dated after the day |
 | `partial` | the weights leave more than 3% of the fund unexplained (the remainder), a forward states no legs, or a fund lies deeper than three levels |
 | `unmapped` | a provider's label has no place in the vocabulary |
-| `untagged` | an opaque holding (a property, a private fund, a note) has no tag |
+| `by_name` | a depositary receipt's sector or country comes from a share matched by name (§3) |
+| `opaque` | a private equity fund nothing looks through; it reads `diversified` |
+| `untagged` | a private holding (§5) has no tag. A tag that leaves a field blank is still a tag |
 | `unmatched` | a listed security or fund no source describes |
 | `no_composition` | in `funds` only: no composition describes the fund on the day |
 
@@ -289,6 +325,10 @@ sections:
 - `unmapped` lists each provider label no map knows, with the value it
   touches.
 - `unmatched` lists each holding no source describes and no tag covers.
+
+In the last two, the labels and holdings with no value share one line,
+`(no value)`, with their count. A label or holding whose leaves offset
+each other still has value and keeps its own line.
 
 ## 11. What exposure is not
 

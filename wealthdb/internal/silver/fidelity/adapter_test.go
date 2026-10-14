@@ -61,7 +61,7 @@ func TestStatusEmpty(t *testing.T) {
 // TestSnapshotsCorePositionBecomesCash covers fidelity's
 // distinctive split: an is_core_position=1 money-market sweep row
 // projects to a CashBalanceChange, an ordinary row to a
-// PositionChange, and a "Pending activity" row is dropped. Also
+// PositionChange, and a "Pending activity" row adds to the cash. Also
 // checks the account_kind=brokerage / USD base / portfolio-kind
 // taxonomy projection.
 func TestSnapshotsCorePositionBecomesCash(t *testing.T) {
@@ -85,9 +85,9 @@ func TestSnapshotsCorePositionBecomesCash(t *testing.T) {
 	defer stream.Close()
 	batch, _, _ := stream.Next(context.Background())
 
-	// Only the ordinary position; core + pending excluded.
+	// Only the ordinary position; core + pending are cash.
 	if len(batch.Positions) != 1 {
-		t.Fatalf("positions = %d, want 1 (core + pending excluded)", len(batch.Positions))
+		t.Fatalf("positions = %d, want 1 (core + pending are cash)", len(batch.Positions))
 	}
 	p := batch.Positions[0]
 	if p.PositionKey != "VTI" {
@@ -893,5 +893,39 @@ func TestAWindUpInLegGetsItsCounterLeg(t *testing.T) {
 	}
 	if l.Description == nil || *l.Description != "TRANSFERRED TO VS 000000001 EXAMPLE CORP COM (XYZ) (Cash)" {
 		t.Errorf("counter-leg description = %v", l.Description)
+	}
+}
+
+// TestSnapshotsPendingActivityIsCash: money in flight, under either
+// spelling Fidelity uses, adds to the account's current cash, beside a
+// core position or alone, and never becomes a position.
+func TestSnapshotsPendingActivityIsCash(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 3, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, nickname, payload) VALUES
+            (1000, 'ACC1', 'One', '{}'), (1000, 'ACC2', 'Two', '{}');
+        INSERT INTO positions(snapshot_at, account_external_id, instrument_key, description, asset_class, currency, is_core_position, quantity, current_value, payload) VALUES
+            (1000, 'ACC1', 'FDRXX', 'Fidelity Cash', 'money_market', 'USD', 1, 0, 100.00, '{}'),
+            (1000, 'ACC1', 'Pending activity', '', 'equity', 'USD', 0, 0, 25.50, '{}'),
+            (1000, 'ACC2', '', 'Pending activity', '', 'USD', 0, 0, -7.25, '{}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Snapshots(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+	if len(batch.Positions) != 0 {
+		t.Errorf("positions = %+v, want none", batch.Positions)
+	}
+	got := map[string]string{}
+	for _, c := range batch.CashBalances {
+		got[c.AccountExternalID+"|"+c.Currency+"|"+string(c.BalanceKind)] = c.Amount.String()
+	}
+	want := map[string]string{"ACC1|USD|current": "125.5", "ACC2|USD|current": "-7.25"}
+	if len(got) != len(want) || got["ACC1|USD|current"] != want["ACC1|USD|current"] || got["ACC2|USD|current"] != want["ACC2|USD|current"] {
+		t.Errorf("cash = %v, want %v", got, want)
 	}
 }

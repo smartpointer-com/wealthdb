@@ -2951,7 +2951,10 @@ the end of every load and reload. It rewrites the derived tables:
 - `instrument_keys`, `security_aliases`: each instrument's security
   key, and the key each alias reads as;
 - `securities`: one row per security, its best-known attributes and
-  where each came from.
+  where each came from;
+- `security_underlyings`: the share each depositary receipt stands for,
+  found by the issuer's name (EXPOSURE.md §3). A receipt no source
+  describes takes that share's sector, country and domicile.
 
 The macros:
 

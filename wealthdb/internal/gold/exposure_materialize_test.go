@@ -142,3 +142,15 @@ func TestFirstHoldingsAtCountsCash(t *testing.T) {
 		t.Errorf("cash only: %d, ok %v, %v; want %d", at, ok, err, cashAt)
 	}
 }
+
+func TestMigration0128DDLIsRerunnable(t *testing.T) {
+	db, ctx := openExposureFixture(t)
+	if _, err := MaterializeExposure(ctx, db, exAsOf, 1); err != nil {
+		t.Fatal(err)
+	}
+	rerunMigrationDDL(t, db, ctx, "0128_exposure_dashboard.sql")
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_exposure`).Scan(&n); err != nil || n == 0 {
+		t.Errorf("after replay: %d rows, err %v", n, err)
+	}
+}

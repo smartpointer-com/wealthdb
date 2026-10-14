@@ -337,11 +337,16 @@ looks through every fund to the stocks, bonds and cash it holds, and adds
 that to what is held directly. Every view sums to net worth, so `share_pct`
 is a share of net worth and a loan is a negative row.
 
-- **Read `quality` before quoting a figure.** `proxy` means another fund's
-  composition stands in; `aged` and `forward` mean the composition is from
-  another day; `partial`, `unmapped`, `untagged` and `unmatched` mean part
-  of the value is not fully classified. An `unclassified` sector or country
-  is real money nothing describes, not zero exposure.
+- **Read `quality` before quoting a figure.**
+  - `proxy`: another fund's composition stands in.
+  - `aged`, `forward`: the composition is from another day.
+  - `partial`, `unmapped`, `untagged`, `unmatched`: part of the value is
+    not fully classified.
+  - `by_name`: a receipt's sector comes from a share matched by name.
+  - `opaque`: a private equity fund nothing looks through. It reads the
+    sector `diversified`.
+- An `unclassified` sector or country is real money nothing describes,
+  not zero exposure.
 - `--country risk|domicile` picks the country a security counts in, on
   `countries` and `securities`. Risk is the default.
 - `exposure coverage` is the honest summary: how each part of net worth is
