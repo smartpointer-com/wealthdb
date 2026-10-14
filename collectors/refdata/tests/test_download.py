@@ -190,6 +190,33 @@ def test_securities_held_directly_come_first_then_constituents_by_share():
         "isin:XX0000000072", "isin:XX0000000073", "isin:XX0000000071"]
     assert [s.key for s in download.security_order(want.securities, False)] == ["isin:XX0000000072"]
     assert want.securities[2].share_pct == 2.5
+    # Below the floor a constituent is not asked; one held directly is,
+    # and one at the floor is.
+    assert [s.key for s in download.security_order(want.securities, True, 1.0)] == [
+        "isin:XX0000000072", "isin:XX0000000073"]
+    assert [s.key for s in download.security_order(want.securities, True, 0.5)] == [
+        "isin:XX0000000072", "isin:XX0000000073", "isin:XX0000000071"]
+
+
+def test_the_floor_counts_a_share_by_its_size():
+    # Under a negative net worth every share is negative; an unknown one
+    # passes.
+    doc = wanted_doc(securities=[
+        {"key": "isin:XX0000000075", "scope": "constituent", "share_pct": -0.5, "missing": ["sector"], "lookups": {}},
+        {"key": "isin:XX0000000076", "scope": "constituent", "share_pct": None, "missing": ["sector"], "lookups": {}},
+        {"key": "isin:XX0000000077", "scope": "constituent", "share_pct": -0.01, "missing": ["sector"], "lookups": {}}])
+    want = wantedmod.parse(doc)
+    assert [s.key for s in download.security_order(want.securities, True, 0.1)] == [
+        "isin:XX0000000075", "isin:XX0000000076"]
+
+
+def test_plan_asks_no_constituent_below_the_floor():
+    doc = wanted_doc(securities=[
+        {"key": "isin:XX0000000078", "scope": "constituent", "share_pct": 0.05, "missing": ["country"], "lookups": {}},
+        {"key": "isin:XX0000000079", "scope": "constituent", "share_pct": 0.5, "missing": ["country"], "lookups": {}}])
+    reqs, _ = download.plan(wantedmod.parse(doc), [_FakeLookup()], ctx(), today=date(2026, 7, 15), max_age=30,
+                            backfill=False, constituents=True, floor_pct=0.1)
+    assert [r.ref for r in reqs] == ["isin:XX0000000079"]
 
 
 

@@ -61,6 +61,7 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
   "max_age_days": 30,
   "engine": "/path/to/wealthdb",
   "constituents": true,
+  "constituent_floor_pct": 0.0001,
   "fidelity_529_plans": {"XX": "https://www.example.com/xx-annual-report.pdf"}
 }
 ```
@@ -74,6 +75,9 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
   states no sector), the biggest share of net worth first. Off by
   default: a broad fund names thousands, and OpenFIGI takes 25 requests
   a minute. Securities held directly are always looked up.
+- `constituent_floor_pct` skips a security held through funds whose
+  share of net worth, in percent, is below it. The default, 0.0001, is
+  one millionth of net worth.
 - `contact` goes into the User-Agent of requests to the SEC, and to no
   other host. The SEC requires it; the SEC providers do not run without
   it. It is kept in this file only, never in bronze, silver or a log.

@@ -13,9 +13,9 @@ refdata downloader: the wanted list in, raw provider files out.
    them, that has no composition within half a month.
 3. For every wanted security held directly, ask every enabled security
    provider whose last answer is older than max_age_days; with
-   `constituents`, then ask for the securities held through funds, the
-   biggest first, each only of a provider that can fill a field it
-   lacks.
+   `constituents`, then ask for the securities held through funds whose
+   share of net worth reaches `constituent_floor_pct`, the biggest first,
+   each only of a provider that can fill a field it lacks.
 4. Write each answer's raw files into bronze, one folder per provider,
    fund and date:
 
@@ -111,15 +111,18 @@ def enabled_providers(cfg: config.Config, only):
     return out
 
 
-def security_order(securities, constituents: bool) -> list:
+def security_order(securities, constituents: bool, floor_pct: float = 0) -> list:
     """The securities a run asks for, in the order it asks: every one
     held directly, then, where refdata.cfg's `constituents` allows, the
-    securities held through funds, the biggest share of net worth first,
-    so a run cut short by --limit has asked for what weighs most. A scope
-    this collector does not know is skipped."""
+    securities held through funds whose share of net worth reaches
+    floor_pct, the biggest first, so a run cut short by --limit has asked
+    for what weighs most. A share counts by its size, so a negative net
+    worth drops none; an unknown one passes. A scope this collector does
+    not know is skipped."""
     direct = [s for s in securities if s.scope == "direct"]
-    through = [s for s in securities if s.scope == "constituent"] if constituents else []
-    return direct + sorted(through, key=lambda s: (-(s.share_pct or 0), s.key))
+    through = [s for s in securities if s.scope == "constituent"
+               and (s.share_pct is None or abs(s.share_pct) >= floor_pct)] if constituents else []
+    return direct + sorted(through, key=lambda s: (-abs(s.share_pct or 0), s.key))
 
 
 def fetched_before(bronze_dir: Path | None) -> tuple[dict, dict]:
@@ -171,7 +174,7 @@ def _dates(p, claim, fund, since, until, ctx):
 
 
 def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_age: int, backfill: bool,
-         refs=None, securities=True, constituents=False, fetched=None, looked_up=None):
+         refs=None, securities=True, constituents=False, floor_pct=0, fetched=None, looked_up=None):
     """The requests a run makes, and the funds no provider claims.
 
     The first provider that claims a fund serves it, and the next ones
@@ -238,7 +241,7 @@ def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_ag
                     reqs.append(Request("fund", p.name, fund.ref, d, claim))
                     have.add(d)
     if securities:
-        for sec in security_order(want.securities, constituents):
+        for sec in security_order(want.securities, constituents, floor_pct):
             if refs and sec.key not in refs:
                 continue
             for p in providers:
@@ -355,7 +358,8 @@ def main(argv=None) -> int:
     fetched_funds, looked_up = fetched_before(args.bronze_dir)
     reqs, unclaimed = plan(want, providers, ctx, today=today, max_age=cfg.max_age_days, backfill=args.backfill,
                            refs=set(args.ref or ()), securities=not args.no_securities,
-                           constituents=cfg.constituents, fetched=fetched_funds, looked_up=looked_up)
+                           constituents=cfg.constituents, floor_pct=cfg.constituent_floor_pct,
+                           fetched=fetched_funds, looked_up=looked_up)
     log.info("wanted: %d funds, %d securities; %d requests; %d funds no provider claims",
              len(want.funds), len(want.securities), len(reqs), len(unclaimed))
     for ref in unclaimed:

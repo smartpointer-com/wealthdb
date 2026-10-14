@@ -8,6 +8,7 @@ The collector's own settings: $XDG_CONFIG_HOME/refdata.cfg, by default
       "max_age_days": 30,
       "engine": "/path/to/wealthdb",
       "constituents": false,
+      "constituent_floor_pct": 0.0001,
       "fidelity_529_plans": {"XX": "https://www.example.com/xx-annual-report.pdf"}
     }
 
@@ -31,6 +32,9 @@ The collector's own settings: $XDG_CONFIG_HOME/refdata.cfg, by default
 - `constituents` lets the security providers look up the securities the
   lines of held funds name and no source describes, the biggest share of
   net worth first, as well as the securities held directly.
+- `constituent_floor_pct`: a security held through funds is looked up
+  only when its share of net worth, in percent, is at least this.
+  Below it, thousands of lookups would describe almost nothing.
 - `fidelity_529_plans` names the 529 plans `fidelity-529` reads: the
   prefix a broker writes before each of a plan's portfolios (one word,
   in any case), and the plan's annual report. Without it, the provider
@@ -51,7 +55,9 @@ from pathlib import Path
 FILE_NAME = "refdata.cfg"
 DEFAULT_PROVIDERS = ("inbox", "sec-nport", "sec-edgar", "gleif", "openfigi")
 DEFAULT_MAX_AGE_DAYS = 30
-SETTINGS = ("providers", "contact", "max_age_days", "engine", "constituents", "fidelity_529_plans")
+DEFAULT_CONSTITUENT_FLOOR_PCT = 0.0001
+SETTINGS = ("providers", "contact", "max_age_days", "engine", "constituents", "constituent_floor_pct",
+            "fidelity_529_plans")
 
 
 class ConfigError(Exception):
@@ -65,6 +71,7 @@ class Config:
     max_age_days: int = DEFAULT_MAX_AGE_DAYS
     engine: str = ""
     constituents: bool = False
+    constituent_floor_pct: float = DEFAULT_CONSTITUENT_FLOOR_PCT
     # Each 529 plan as (the broker's name prefix, the report's URL).
     fidelity_529_plans: tuple = ()
     path: Path | None = field(default=None, compare=False)
@@ -118,6 +125,9 @@ def load(known_providers, where: Path | None = None) -> Config:
     constituents = doc.get("constituents", False)
     if not isinstance(constituents, bool):
         raise ConfigError(f"{where}: constituents is true or false.")
+    floor = doc.get("constituent_floor_pct", DEFAULT_CONSTITUENT_FLOOR_PCT)
+    if not isinstance(floor, (int, float)) or isinstance(floor, bool) or not 0 <= floor <= 100:
+        raise ConfigError(f"{where}: constituent_floor_pct is a share of net worth in percent, 0 to 100.")
     plans = doc.get("fidelity_529_plans", {})
     if not isinstance(plans, dict) or not all(
             isinstance(k, str) and k.strip() and not any(c.isspace() for c in k.strip())
@@ -127,7 +137,7 @@ def load(known_providers, where: Path | None = None) -> Config:
     if len({k.strip().upper() for k in plans}) != len(plans):
         raise ConfigError(f"{where}: fidelity_529_plans names a prefix twice.")
     return Config(providers=tuple(providers), contact=contact.strip(), max_age_days=max_age,
-                  engine=engine.strip(), constituents=constituents,
+                  engine=engine.strip(), constituents=constituents, constituent_floor_pct=float(floor),
                   fidelity_529_plans=tuple((k.strip(), v) for k, v in sorted(plans.items())), path=where)
 
 

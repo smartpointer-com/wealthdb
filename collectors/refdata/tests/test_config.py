@@ -28,6 +28,8 @@ def test_settings_read(tmp_path):
     assert c.providers == ("ishares", "inbox") and c.contact == "a@example.org"
     assert c.max_age_days == 7 and c.constituents
     assert c.fidelity_529_plans == (("XX", "https://example.org/x.pdf"), ("YY", "https://example.org/y.pdf"))
+    assert c.constituent_floor_pct == config.DEFAULT_CONSTITUENT_FLOOR_PCT
+    assert config.load(KNOWN, write(tmp_path, {"constituent_floor_pct": 0})).constituent_floor_pct == 0
 
 
 @pytest.mark.parametrize("doc,msg", [
@@ -38,6 +40,10 @@ def test_settings_read(tmp_path):
     ({"providers": ["inbox", "inbox"]}, "twice"),
     ({"max_age_days": 0}, "max_age_days"),
     ({"constituents": "yes"}, "constituents"),
+    ({"constituent_floor_pct": "0.01"}, "constituent_floor_pct"),
+    ({"constituent_floor_pct": -1}, "constituent_floor_pct"),
+    ({"constituent_floor_pct": True}, "constituent_floor_pct"),
+    ({"constituent_floor_pct": 101}, "constituent_floor_pct"),
     ({"fidelity_529_plans": {" ": "https://example.org/x.pdf"}}, "fidelity_529_plans"),
     ({"fidelity_529_plans": {"xx": "https://example.org/x.pdf", "XX ": "https://example.org/y.pdf"}}, "twice"),
     ({"fidelity_529_plans": ["https://example.org/x.pdf"]}, "fidelity_529_plans"),
@@ -62,6 +68,13 @@ def test_engine_precedence(monkeypatch, tmp_path):
     assert config.engine_command(config.Config(engine="/x/wealthdb")) == "/x/wealthdb"
     monkeypatch.setenv("REFDATA_WEALTHDB", "/y/wealthdb")
     assert config.engine_command(config.Config(engine="/x/wealthdb")) == "/y/wealthdb"
+
+
+def test_a_nan_floor_is_refused(tmp_path):
+    p = tmp_path / "refdata.cfg"
+    p.write_text('{"constituent_floor_pct": NaN}')
+    with pytest.raises(config.ConfigError, match="constituent_floor_pct"):
+        config.load(KNOWN, p)
 
 
 def test_every_provider_setting_is_a_config_field():
