@@ -213,15 +213,24 @@ SELECT DISTINCT k FROM (
 	return execAll(ctx, tx, aliasesSQL)
 }
 
+// usLineSQL holds where a fund line names a US listing: a US ISIN, a US
+// exchange, or, where the line states no exchange, a price in US dollars.
+// It reads the line's isin, exchange and currency columns unqualified.
+// The exchange patterns are the collector's
+// (collectors/refdata/providers/table.py); keep them equal.
+const usLineSQL = `(upper(trim(isin)) LIKE 'US%'
+                OR (exchange IS NULL AND upper(trim(COALESCE(currency, ''))) = 'USD')
+                OR (regexp_matches(lower(COALESCE(exchange, '')),
+                                   'nyse|new york|nasdaq|cboe|bats|arca|american stock exchange|\biex\b|otc markets')
+                    AND NOT regexp_matches(lower(COALESCE(exchange, '')),
+                                           'euronext|omx|nordic|baltic|helsinki|stockholm|copenhagen|iceland|tallinn|riga|vilnius|armenia|dubai|canada|australia|europe|japan|\bneo\b')))`
+
 // aliasesSQL picks one ISIN per identifier from what the sources state
 // beside each other, the CUSIP rule last. A fund line's ticker names a
-// US symbol only where the line names a US listing: a US ISIN, a US
-// exchange, or, where the line states no exchange, a price in US
-// dollars. A broker's symbol does so only where the instrument has a US
-// ISIN or is priced in US dollars. A local ticker elsewhere (ROP in
-// Zurich) is a different US symbol's (ROP in New York). The exchange
-// patterns are the collector's (collectors/refdata/providers/table.py);
-// keep them equal.
+// US symbol only where the line names a US listing (usLineSQL). A
+// broker's symbol does so only where the instrument has a US ISIN or is
+// priced in US dollars. A local ticker elsewhere (ROP in Zurich) is a
+// different US symbol's (ROP in New York).
 //
 // A broker's symbol and CUSIP, stated together with no ISIN, fill each
 // other's gaps. The CUSIP reads as the ISIN a source states for it. Else,
@@ -240,12 +249,7 @@ WITH valid AS (
         SELECT 'symbol:' || upper(trim(ticker)) AS alias, upper(trim(isin)) AS isin, 'fund_line' AS origin, as_of
           FROM fund_lines
          WHERE ticker IS NOT NULL AND trim(ticker) <> ''
-           AND (upper(trim(isin)) LIKE 'US%'
-                OR (exchange IS NULL AND upper(trim(COALESCE(currency, ''))) = 'USD')
-                OR (regexp_matches(lower(COALESCE(exchange, '')),
-                                   'nyse|new york|nasdaq|cboe|bats|arca|american stock exchange|\biex\b|otc markets')
-                    AND NOT regexp_matches(lower(COALESCE(exchange, '')),
-                                           'euronext|omx|nordic|baltic|helsinki|stockholm|copenhagen|iceland|tallinn|riga|vilnius|armenia|dubai|canada|australia|europe|japan|\bneo\b')))
+           AND ` + usLineSQL + `
         UNION ALL SELECT 'cusip:' || upper(trim(cusip)), upper(trim(isin)), 'fund_line', as_of
           FROM fund_lines WHERE cusip IS NOT NULL AND trim(cusip) <> ''
         UNION ALL SELECT 'figi:' || upper(trim(figi)), upper(trim(isin)), 'fund_line', as_of

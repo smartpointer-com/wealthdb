@@ -10,8 +10,8 @@ security is. The engine's exposure report
 through every fund to the securities underneath.
 
 `refdata` reads only what gold asks for. The engine prints a **wanted
-list**: the funds held, their proxies and reference funds, and the
-securities held directly. `refdata` fetches what is missing or old, from
+list**: the funds held, their proxies and reference funds, the funds a
+held fund holds, and the securities held directly. `refdata` fetches what is missing or old, from
 public sources, and loads it into its silver. `wealthdb load refdata`
 brings it into gold.
 
@@ -60,7 +60,8 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
   "contact": "name@example.org",
   "max_age_days": 30,
   "engine": "/path/to/wealthdb",
-  "constituents": true
+  "constituents": true,
+  "fidelity_529_plans": {"XX": "https://www.example.com/xx-annual-report.pdf"}
 }
 ```
 
@@ -80,15 +81,18 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
   Without either, the collector asks the wrapper of its own checkout,
   which runs that checkout's engine image; outside a checkout,
   `wealthdb` on PATH.
+- `fidelity_529_plans` names the 529 plans `fidelity-529` reads. Each
+  entry maps the prefix a broker writes before a plan's portfolios to
+  the plan's annual report. Without it, that provider does not run.
 
 With no file, the providers of public data run: `inbox`, `sec-nport`,
 `sec-edgar`, `gleif` and `openfigi`. The two SEC providers wait for a
 `contact`. An issuer's provider (`ishares`, `xtrackers`, `invesco`,
 `amundi`, `spdr`, `sprott`) and a report provider (`swisscanto`,
-`swissfunddata`) run only once `providers` names them: enabling one
-accepts its source's terms, quoted below. An issuer's daily file is
-fresher than a report or a quarterly N-PORT filing, so list the issuers
-first, then the report providers, then `sec-nport`.
+`swissfunddata`, `fidelity-529`) run only once `providers` names them.
+Enabling one accepts its source's terms, quoted below. An issuer's
+daily file is fresher than a report or a quarterly N-PORT filing, so
+list the issuers first, then the report providers, then `sec-nport`.
 
 A setting or a provider name the collector does not know is an error,
 so a typo never passes for a switch that is off.
@@ -214,6 +218,30 @@ directory". swissfunddata's disclaimer bars professional market data
 distributors from using, systematically extracting, scraping or
 commercially exploiting its data, and requires consent for any public
 or commercial use. Off until `providers` names them.
+
+### fidelity-529
+
+The portfolios of a Fidelity-run state plan, from the plan's annual
+report. The report URL and the broker's name prefix are configured
+(`fidelity_529_plans`).
+
+- A portfolio is claimed by its name, as brokers write it: the prefix,
+  then "… PORT …". No request.
+- The report lists each portfolio's Fidelity funds with their shares and
+  value, as of the plan's year end. A fund's weight is its value's share
+  of the portfolio's net assets.
+- The SEC's list of fund series and classes names each fund's ticker.
+  The provider needs the SEC `contact` for it.
+- Once a portfolio's composition is in gold, the wanted list names its
+  funds too. The next download reads their filings with `sec-nport`.
+  The look-through then reaches the stocks and bonds they hold.
+
+**Terms.** The report states: "This report and the financial
+statements contained herein are submitted for the general information
+of the holders of units of the Portfolios." fidelity.com answers the
+tool's User-Agent with 403 for its other pages, its terms too. It
+serves the report. The SEC's content may be copied and redistributed.
+Off until `providers` names it.
 
 ### ishares
 

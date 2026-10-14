@@ -7,7 +7,8 @@ The collector's own settings: $XDG_CONFIG_HOME/refdata.cfg, by default
       "contact": "name@example.org",
       "max_age_days": 30,
       "engine": "/path/to/wealthdb",
-      "constituents": false
+      "constituents": false,
+      "fidelity_529_plans": {"XX": "https://www.example.com/xx-annual-report.pdf"}
     }
 
 - `providers` names the providers that run, in the order they are asked:
@@ -30,6 +31,10 @@ The collector's own settings: $XDG_CONFIG_HOME/refdata.cfg, by default
 - `constituents` lets the security providers look up the securities the
   lines of held funds name and no source describes, the biggest share of
   net worth first, as well as the securities held directly.
+- `fidelity_529_plans` names the 529 plans `fidelity-529` reads: the
+  prefix a broker writes before each of a plan's portfolios (one word,
+  in any case), and the plan's annual report. Without it, the provider
+  does not run.
 
 The file is JSON, read as data, so nothing in it runs. A file that does
 not parse, or names a setting or a provider this collector does not know,
@@ -46,7 +51,7 @@ from pathlib import Path
 FILE_NAME = "refdata.cfg"
 DEFAULT_PROVIDERS = ("inbox", "sec-nport", "sec-edgar", "gleif", "openfigi")
 DEFAULT_MAX_AGE_DAYS = 30
-SETTINGS = ("providers", "contact", "max_age_days", "engine", "constituents")
+SETTINGS = ("providers", "contact", "max_age_days", "engine", "constituents", "fidelity_529_plans")
 
 
 class ConfigError(Exception):
@@ -60,6 +65,8 @@ class Config:
     max_age_days: int = DEFAULT_MAX_AGE_DAYS
     engine: str = ""
     constituents: bool = False
+    # Each 529 plan as (the broker's name prefix, the report's URL).
+    fidelity_529_plans: tuple = ()
     path: Path | None = field(default=None, compare=False)
 
 
@@ -111,8 +118,17 @@ def load(known_providers, where: Path | None = None) -> Config:
     constituents = doc.get("constituents", False)
     if not isinstance(constituents, bool):
         raise ConfigError(f"{where}: constituents is true or false.")
+    plans = doc.get("fidelity_529_plans", {})
+    if not isinstance(plans, dict) or not all(
+            isinstance(k, str) and k.strip() and not any(c.isspace() for c in k.strip())
+            and isinstance(v, str) and v.startswith("https://") for k, v in plans.items()):
+        raise ConfigError(f"{where}: fidelity_529_plans maps a broker's name prefix, one word, to the "
+                          f"plan's annual report, an https:// URL.")
+    if len({k.strip().upper() for k in plans}) != len(plans):
+        raise ConfigError(f"{where}: fidelity_529_plans names a prefix twice.")
     return Config(providers=tuple(providers), contact=contact.strip(), max_age_days=max_age,
-                  engine=engine.strip(), constituents=constituents, path=where)
+                  engine=engine.strip(), constituents=constituents,
+                  fidelity_529_plans=tuple((k.strip(), v) for k, v in sorted(plans.items())), path=where)
 
 
 # The engine wrapper of the checkout this collector lives in: it runs

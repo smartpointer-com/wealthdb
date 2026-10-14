@@ -54,8 +54,9 @@ def test_plan_backfills_the_held_window_around_what_gold_has(fake):
     assert [r.as_of for r in reqs] == [date(2026, 1, 28), date(2026, 2, 28), date(2026, 4, 28), date(2026, 5, 28)]
 
 
-def test_plan_wants_the_current_composition_of_a_proxy_or_reference_fund(fake):
-    want = wantedmod.parse(wanted_doc([fund("symbol:FUNDA", "FUNDA", held_to="2026-01-31", roles=["proxy"])]))
+@pytest.mark.parametrize("role", ["proxy", "reference", "underlying"])
+def test_plan_wants_the_current_composition_of_a_fund_wanted_for_another_one(fake, role):
+    want = wantedmod.parse(wanted_doc([fund("symbol:FUNDA", "FUNDA", held_to="2026-01-31", roles=[role])]))
     reqs, _ = download.plan(want, [fake], ctx(), today=date(2026, 7, 15), max_age=30, backfill=False)
     assert [r.as_of for r in reqs] == [None]
 
@@ -84,6 +85,15 @@ def test_dry_run_writes_nothing(tmp_path, fake, monkeypatch, capsys):
     assert download.main(["--bronze-dir", str(tmp_path / "data"), "--wanted", str(w), "--dry-run"]) == 0
     assert not (tmp_path / "data").exists()
     assert "symbol:FUNDA\tcurrent" in capsys.readouterr().out
+
+
+def test_a_provider_that_reads_a_setting_waits_for_it(caplog):
+    cfg = download.config.Config(providers=("inbox", "fidelity-529"), contact="a@example.org")
+    assert [p.name for p in download.enabled_providers(cfg, None)] == ["inbox"]
+    assert "fidelity_529_plans" in caplog.text
+    cfg = download.config.Config(providers=("inbox", "fidelity-529"), contact="a@example.org",
+                                 fidelity_529_plans=(("XX", "https://example.org/x.pdf"),))
+    assert [p.name for p in download.enabled_providers(cfg, None)] == ["inbox", "fidelity-529"]
 
 
 def test_an_sec_provider_needs_a_contact(caplog):

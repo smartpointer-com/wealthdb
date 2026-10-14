@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"flag"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -360,4 +361,82 @@ func TestRefdataWantedKeepsAskingAboutANameMatch(t *testing.T) {
 		}
 	}
 	t.Error("the name-matched receipt is not wanted")
+}
+
+// A fund a held fund holds is wanted too, from today: each line of the
+// held fund's newest composition that is a fund and names it by an
+// identifier. A line named by name alone, an older composition's line
+// and a swap fund's basket are not.
+func TestRefdataWantedNamesTheFundsAHeldFundHolds(t *testing.T) {
+	db, ctx := openMigrated(t)
+	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
+	for _, q := range []string{
+		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
+		 first_seen_at, last_seen_at) VALUES ('test-src', 'A', 'brokerage', 'Brokerage', 'USD', 0, 0)`,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, currency,
+		 first_seen_at, last_seen_at) VALUES ('test-src', 'QFOF', 'multi_asset', 'fund', 'QFOF', 'USD', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, market_value) VALUES ('test-src', ?, 'A', 'QFOF', 'QFOF', 'multi_asset', 'fund', 'USD', 100)`,
+		// The newest holdings, an index list of the same day, an older
+		// list and a newer swap basket.
+		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count) VALUES
+		 ('test-src', 'symbol:QFOF', ?, 'holdings', 'testprov', 7),
+		 ('test-src', 'symbol:QFOF', ?, 'index', 'testprov', 1),
+		 ('test-src', 'symbol:QFOF', ? - 86400 * 200, 'holdings', 'testprov', 1),
+		 ('test-src', 'symbol:QFOF', ? + 86400, 'collateral', 'testprov', 1),
+		 ('test-src', 'symbol:QSUB', ? - 86400, 'holdings', 'testprov', 1)`,
+		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, ticker,
+		 exchange, currency, name, asset_type, weight) VALUES
+		 ('test-src', 'symbol:QFOF', ?, 'holdings', 1, 'symbol:QSUB', NULL, 'QSUB', NULL, 'USD', 'Qumbra Series Equity Fund', 'Fund', 50),
+		 ('test-src', 'symbol:QFOF', ?, 'holdings', 2, 'name:q1', NULL, NULL, NULL, 'USD', 'Qumbra Series Bond Fund', 'Fund', 20),
+		 ('test-src', 'symbol:QFOF', ?, 'holdings', 3, 'symbol:QSTK', NULL, 'QSTK', NULL, 'USD', 'Qorvant Corp', 'Equity', 10),
+		 ('test-src', 'symbol:QFOF', ?, 'holdings', 4, 'isin:XX0000000401', 'XX0000000401', 'QLOC', 'London Stock Exchange', 'GBP',
+		  'Qumbra Qland Fund', 'Fund', 15),
+		 ('test-src', 'symbol:QFOF', ?, 'holdings', 5, 'symbol:QMMF', NULL, 'QMMF', NULL, 'USD', 'Qumbra Money Market Fund',
+		  'Money Market Funds', 5),
+		 ('test-src', 'symbol:QFOF', ?, 'holdings', 6, 'symbol:QGBP', NULL, 'QGBP', NULL, 'GBP', 'Qumbra Sterling Fund', 'Fund', 0),
+		 ('test-src', 'symbol:QFOF', ?, 'holdings', 7, 'symbol:QLSE', NULL, 'QLSE', 'London Stock Exchange', 'USD',
+		  'Qumbra Dollar Fund', 'Fund', 0),
+		 ('test-src', 'symbol:QFOF', ?, 'index', 1, 'symbol:QIDX', NULL, 'QIDX', NULL, 'USD', 'Qumbra Index Fund', 'Fund', 100),
+		 ('test-src', 'symbol:QFOF', ? - 86400 * 200, 'holdings', 1, 'symbol:QOLD', NULL, 'QOLD', NULL, 'USD', 'Qumbra Old Fund', 'Fund', 100),
+		 ('test-src', 'symbol:QFOF', ? + 86400, 'collateral', 1, 'symbol:QCOL', NULL, 'QCOL', NULL, 'USD', 'Qumbra Basket Fund', 'Fund', 100),
+		 ('test-src', 'symbol:QSUB', ? - 86400, 'holdings', 1, 'symbol:QSTK', NULL, 'QSTK', NULL, 'USD', 'Qorvant Corp', 'Equity', 100)`,
+	} {
+		if _, err := db.ExecContext(ctx, q, slices.Repeat([]any{day}, strings.Count(q, "?"))...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	w, err := RefdataWanted(ctx, db, time.Unix(day+86400, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string][]string{}
+	for _, f := range w.Funds {
+		got[f.Ref] = f.Roles
+		switch f.Ref {
+		case "symbol:QSUB":
+			// Its own key names a US-dollar line: its symbol. Wanted from
+			// today, with the composition gold already has.
+			if f.Symbol == nil || *f.Symbol != "QSUB" || f.HeldTo != nil || f.HeldFrom == nil ||
+				!slices.Equal(f.Compositions, []string{"2026-06-29"}) {
+				t.Errorf("QSUB = %+v, want its symbol and composition, wanted from today", f)
+			}
+		case "isin:XX0000000401":
+			// A ticker on a London line is no US symbol.
+			if f.ISIN == nil || f.Symbol != nil {
+				t.Errorf("the London fund = %+v, want its ISIN and no symbol", f)
+			}
+		}
+	}
+	// A company, a money market fund (cash), a name-only line, a fund
+	// keyed by a ticker with no US listing, an index list, an older list
+	// and a swap basket stay out.
+	want := map[string][]string{"symbol:QFOF": {"held"}, "symbol:QSUB": {"underlying"},
+		"isin:XX0000000401": {"underlying"}}
+	if !maps.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("funds = %v, want %v", got, want)
+	}
 }

@@ -57,11 +57,13 @@ class Unavailable(ProviderError):
 @dataclass
 class Context:
     """What a provider gets from the run: the HTTP client, the contact for
-    the User-Agent, the data dir (the inbox lives there) and a cache dict
-    for lookups it repeats across funds (a ticker file)."""
+    the User-Agent, the data dir (the inbox lives there), the run's
+    refdata.cfg (config.Config) for a provider's own settings, and a cache
+    dict for lookups it repeats across funds (a ticker file)."""
     client: object
     contact: str = ""
     data_dir: Path | None = None
+    config: object = None
     cache: dict = field(default_factory=dict)
 
     def once(self, key, load):
@@ -101,6 +103,9 @@ class Provider:
     # The SEC asks every client to name a contact; such a provider does not
     # run without one.
     needs_contact = False
+    # The refdata.cfg setting a provider reads what to fetch from; it does
+    # not run while the setting is empty.
+    needs_setting = ""
     # An additive provider serves a fund beside the provider that claims
     # it, never instead of it: the inbox adds what was placed by hand.
     additive = False

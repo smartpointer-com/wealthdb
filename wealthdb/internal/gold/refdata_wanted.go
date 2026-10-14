@@ -50,7 +50,8 @@ type WantedFund struct {
 	// Currency is the currency the holding is priced in.
 	Currency *string `json:"currency"`
 	// Roles says why the fund is wanted: held, proxy (it stands in for a
-	// held fund) or reference (its lines widen the security master).
+	// held fund), reference (its lines widen the security master) or
+	// underlying (a held fund holds it).
 	Roles []string `json:"roles"`
 	// HeldFrom and HeldTo bound the days a composition is wanted for;
 	// HeldTo is null while the fund is still held.
@@ -176,9 +177,6 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		if err := addProxiesAndReferences(ctx, db, funds, spans, now, keys); err != nil {
 			return nil, err
 		}
-		if err := addCompositionDates(ctx, db, funds, keys); err != nil {
-			return nil, err
-		}
 		var open []string
 		for ref, f := range funds {
 			if spans[ref] != nil && spans[ref].open && slices.Contains(f.Roles, "held") {
@@ -186,6 +184,12 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 			}
 		}
 		slices.Sort(open)
+		if err := addUnderlying(ctx, db, funds, spans, open, now); err != nil {
+			return nil, err
+		}
+		if err := addCompositionDates(ctx, db, funds, keys); err != nil {
+			return nil, err
+		}
 		if err := addConstituents(ctx, db, securities, open, now); err != nil {
 			return nil, err
 		}
@@ -423,6 +427,77 @@ func addProxiesAndReferences(ctx context.Context, db *sql.DB, funds map[string]*
 		spans[ref].add(span{from: today, to: today, open: true, set: true})
 	}
 	return refs.Err()
+}
+
+// addUnderlying adds the funds a held fund holds, one level down: each
+// line of the composition the look-through reads on its newest day
+// (exposure_comps: holdings before index lines, never a swap fund's
+// basket) whose asset type is a fund and that names it by an identifier,
+// wanted from today in the role underlying, so the look-through can read
+// it too. Its symbol is a US one only, as a constituent's: one a source
+// ties to it, or its own key where its line names a US listing. A fund
+// keyed by a ticker with no US listing stays out, since a lookup by that
+// ticker finds another fund.
+func addUnderlying(ctx context.Context, db *sql.DB, funds map[string]*WantedFund, spans map[string]*span,
+	held []string, now time.Time) error {
+	ok, err := hasTable(ctx, db, "fund_line_labels")
+	if err != nil || !ok || len(held) == 0 {
+		return err
+	}
+	rows, err := db.QueryContext(ctx, `
+WITH newest AS (
+    SELECT silver_source_id, stored_ref, as_of, basis, provider
+      FROM exposure_comps()
+     WHERE fund_ref IN (SELECT unnest(CAST(? AS VARCHAR[])))
+   QUALIFY ROW_NUMBER() OVER (PARTITION BY fund_ref ORDER BY as_of DESC) = 1),
+u AS (
+    SELECT COALESCE(sa.security_key, l.security_key) AS k, MIN(l.isin) AS isin, MIN(l.cusip) AS cusip,
+           MIN(l.name) AS name, BOOL_OR(`+usLineSQL+`) AS us_line
+      FROM fund_lines l
+      JOIN newest n ON n.silver_source_id = l.silver_source_id AND n.stored_ref = l.fund_ref
+                   AND n.as_of = l.as_of AND n.basis = l.basis
+      JOIN fund_line_labels lab ON lab.provider = n.provider AND lab.field = 'asset_type' AND lab.raw = l.asset_type
+      LEFT JOIN security_aliases sa ON sa.alias = l.security_key
+     WHERE lab.value = 'multi_asset' AND l.security_key IS NOT NULL AND l.security_key NOT LIKE 'name:%'
+     GROUP BY 1)
+SELECT u.k, u.isin, u.cusip,
+       COALESCE((SELECT MIN(substr(alias, 8)) FROM security_aliases a WHERE a.security_key = u.k
+                  AND a.alias LIKE 'symbol:%' AND a.origin IN ('fund_line', 'lookup')),
+                CASE WHEN u.k LIKE 'symbol:%' THEN substr(u.k, 8) END),
+       u.name
+  FROM u
+ WHERE u.k NOT LIKE 'symbol:%' OR u.us_line
+ ORDER BY 1`, held)
+	if err != nil {
+		return fmt.Errorf("wanted: underlying funds: %w", err)
+	}
+	defer rows.Close()
+	today := now.UTC().Truncate(24 * time.Hour).Unix()
+	for rows.Next() {
+		var ref string
+		var isin, cusip, ticker, name sql.NullString
+		if err := rows.Scan(&ref, &isin, &cusip, &ticker, &name); err != nil {
+			return err
+		}
+		f := funds[ref]
+		if f == nil {
+			f = &WantedFund{Ref: ref}
+			funds[ref] = f
+			spans[ref] = &span{}
+		}
+		addRole(f, "underlying")
+		for _, v := range []struct {
+			dst **string
+			v   sql.NullString
+		}{{&f.ISIN, isin}, {&f.CUSIP, cusip}, {&f.Symbol, ticker}, {&f.Name, name}} {
+			if *v.dst == nil && v.v.Valid && v.v.String != "" {
+				s := v.v.String
+				*v.dst = &s
+			}
+		}
+		spans[ref].add(span{from: today, to: today, open: true, set: true})
+	}
+	return rows.Err()
 }
 
 func addRole(f *WantedFund, role string) {

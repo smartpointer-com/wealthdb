@@ -150,7 +150,7 @@ A fund:
 | `ref` | the fund reference (§3) |
 | `isin`, `cusip`, `symbol` | the identifiers known, each `null` where none is; the identifier the reference is made of is always filled |
 | `name`, `currency` | the holding's name and the currency it is priced in |
-| `roles` | `held`, `proxy` (it stands in for a held fund) or `reference` (its lines widen the security master) |
+| `roles` | `held`, `proxy` (it stands in for a held fund), `reference` (its lines widen the security master) or `underlying` (a held fund holds it) |
 | `held_from`, `held_to` | the days a composition is wanted for; `held_to` is `null` while the fund is still held |
 | `compositions` | the days gold already has a composition for, on any basis, ascending |
 
@@ -162,7 +162,15 @@ A private fund publishes no lines. A note's basket reaches gold only
 through the collector's inbox, since no public source serves one.
 The `exposure` config adds proxies and reference funds. A proxy is
 wanted over the days of the funds it stands in for; a reference fund
-from today.
+from today. A fund that a held fund holds is wanted from today too, one
+level down. It comes from a line of the held fund's newest composition:
+
+- the line's asset type is a fund, and an identifier names the fund;
+- a holdings list wins over an index list of the same day;
+- a swap fund's basket never counts.
+
+Such a fund states a US symbol only, as a security does below. A fund
+named by a ticker with no US listing stays out of the list.
 
 A security:
 

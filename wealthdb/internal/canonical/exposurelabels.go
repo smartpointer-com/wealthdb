@@ -88,7 +88,8 @@ var genericAssetTypes = map[AssetClass][]string{
 		"corporate bond", "note", "notes", "abs-mbs", "abs-cbdo", "abs-o", "abs-app", "sn", "lon", "loan",
 		"corporate bonds", "government bonds", "asset and mortgage backed"},
 	AssetClassCash: {"cash", "cash and/or derivatives", "money market", "cash collateral and margins",
-		"cash & equivalents", "cash equivalents", "stiv", "ra", "repo", "repurchase agreement", "deposit", "currency"},
+		"cash & equivalents", "cash equivalents", "stiv", "ra", "repo", "repurchase agreement", "deposit", "currency",
+		"money market funds"},
 	AssetClassRealEstate:      {"real estate", "re", "reit", "real estate investment trust"},
 	AssetClassForeignExchange: {"fx", "forward", "forwards", "fx forward", "currency forward", "dfe", "foreign exchange"},
 	AssetClassOther: {"futures", "future", "swap", "swaps", "option", "options", "derivative", "derivatives",
@@ -97,7 +98,7 @@ var genericAssetTypes = map[AssetClass][]string{
 	// A fund line looks through when a composition describes it; one that
 	// does not counts as multi asset.
 	AssetClassMultiAsset: {"fund", "funds", "etf", "etfs", "investment company", "mutual fund", "investment funds",
-		"investmentfonds"},
+		"investmentfonds", "domestic equity funds", "international equity funds", "bond funds", "short-term funds"},
 }
 
 // Country spellings beside the canonical names and the codes themselves.

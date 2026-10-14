@@ -54,6 +54,9 @@ log = logging.getLogger("refdata.download")
 # A past date counts as covered when gold holds a composition this close
 # to it: half the month-end cadence.
 NEAR_DAYS = 15
+# The roles that want a fund's current composition whether or not it is
+# held today: it stands in for, widens or lies under a held fund.
+CURRENT_ROLES = frozenset({"proxy", "reference", "underlying"})
 
 
 @dataclass
@@ -100,6 +103,9 @@ def enabled_providers(cfg: config.Config, only):
         if p.needs_contact and not cfg.contact:
             log.warning("%s: skipped — the SEC asks for a contact address; set `contact` in %s",
                         name, cfg.path)
+            continue
+        if p.needs_setting and not getattr(cfg, p.needs_setting):
+            log.warning("%s: skipped — set `%s` in %s", name, p.needs_setting, cfg.path)
             continue
         out.append(p)
     return out
@@ -170,11 +176,11 @@ def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_ag
 
     The first provider that claims a fund serves it, and the next ones
     stand by for its current composition should it fail; an additive one
-    (the inbox) serves it as well. A fund held today, a proxy or a reference
-    fund wants its current composition once the newest one had is older
-    than max_age, unless the provider's newest is already had or the
-    provider served one within max_age, as a report that states a day long
-    past. A backfill wants every date inside the days the fund was held,
+    (the inbox) serves it as well. A fund held today, or wanted in one of
+    CURRENT_ROLES, wants its current composition once the newest one had
+    is older than max_age, unless the provider's newest is already had or
+    the provider served one within max_age, as a report that states a day
+    long past. A backfill wants every date inside the days the fund was held,
     and the last one before them within max_gap_days: the composition in
     force when the holding began."""
     reqs, unclaimed = [], []
@@ -200,7 +206,7 @@ def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_ag
         if not served:
             unclaimed.append(fund.ref)
         have = set(fund.compositions) | {d for (_, r, d) in fetched if r == fund.ref}
-        current = fund.held_to is None or "reference" in fund.roles or "proxy" in fund.roles
+        current = fund.held_to is None or not CURRENT_ROLES.isdisjoint(fund.roles)
         until = fund.held_to or today
         since = (fund.held_from or today) - gap
         for p, claim in served:
@@ -335,7 +341,7 @@ def main(argv=None) -> int:
         return 2
     providers = enabled_providers(cfg, args.provider)
     data_dir = args.bronze_dir
-    ctx = Context(client=fetcher.Client(cfg.contact), contact=cfg.contact, data_dir=data_dir)
+    ctx = Context(client=fetcher.Client(cfg.contact), contact=cfg.contact, data_dir=data_dir, config=cfg)
     if args.check:
         return probe(providers, ctx)
     if args.bronze_dir is None:

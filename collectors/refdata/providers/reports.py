@@ -91,7 +91,7 @@ class ReportProvider(Provider):
             path = outdir / f"{kind}.pdf"
             # An umbrella's report serves each of its sub-funds a run holds:
             # fetched once, copied from the first fund's directory after.
-            first = ctx.once(("report", url), lambda url=url, path=path: _save_pdf(ctx.client.get(url), path))
+            first = ctx.once(("report", url), lambda url=url, path=path: save_pdf(ctx.client.get(url), path))
             if first != path:
                 bronze.atomic_write_bytes(path, first.read_bytes())
             files.append(path.name)
@@ -118,7 +118,7 @@ class ReportProvider(Provider):
         return out
 
 
-def _save_pdf(resp, path: Path) -> Path:
+def save_pdf(resp, path: Path) -> Path:
     if not resp.body.startswith(b"%PDF"):
         raise ProviderError(f"{resp.url} is not a PDF")
     bronze.atomic_write_bytes(path, resp.body)
@@ -159,9 +159,8 @@ def words(s: str) -> set:
 def own_title(titles, fund_name: str) -> str | None:
     """The sub-fund title a fund's name names: of the titles of three
     words or more whose every word the name holds, the one with the most
-    words. A source may order
-    a name's words otherwise (Index Fund Q - Equity Fund for Index
-    Equity Fund)."""
+    words. A source may order a name's words otherwise (Index Fund Q -
+    Equity Fund for Index Equity Fund)."""
     name = words(fund_name)
     fits = [t for t in set(titles) if len(words(t)) >= 3 and words(t) <= name]
     return max(fits, key=lambda t: (len(words(t)), t)) if fits else None

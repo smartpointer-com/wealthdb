@@ -40,12 +40,17 @@ func TestExposureLabelsAreConsistent(t *testing.T) {
 		{"asset_type", "stiv"}:               "cash",
 		{"asset_type", "dfe"}:                "foreign_exchange",
 		// A report's sections, and an issuer API's types.
-		{"asset_type", "stammaktien"}:       "public_equity",
-		{"asset_type", "registered shares"}: "public_equity",
-		{"asset_type", "bezugsrechte"}:      "other",
-		{"asset_type", "investmentfonds"}:   "multi_asset",
-		{"asset_type", "equity_ordinary"}:   "public_equity",
-		{"asset_type", "equity_preferred"}:  "public_equity",
+		{"asset_type", "stammaktien"}:                "public_equity",
+		{"asset_type", "registered shares"}:          "public_equity",
+		{"asset_type", "bezugsrechte"}:               "other",
+		{"asset_type", "investmentfonds"}:            "multi_asset",
+		{"asset_type", "equity_ordinary"}:            "public_equity",
+		{"asset_type", "equity_preferred"}:           "public_equity",
+		{"asset_type", "domestic equity funds"}:      "multi_asset",
+		{"asset_type", "international equity funds"}: "multi_asset",
+		{"asset_type", "bond funds"}:                 "multi_asset",
+		{"asset_type", "short-term funds"}:           "multi_asset",
+		{"asset_type", "money market funds"}:         "cash",
 	} {
 		if got := seen[[3]string{"", field[0], field[1]}]; got != want {
 			t.Errorf("%s %q maps to %q, want %q", field[0], field[1], got, want)
