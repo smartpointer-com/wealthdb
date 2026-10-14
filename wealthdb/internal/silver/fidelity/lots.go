@@ -120,6 +120,58 @@ SELECT snapshot_at, account_external_id, instrument_key, lot_index, cusip,
 	return carry, rows.Err()
 }
 
+// instrumentCUSIPs maps an instrument key to the CUSIP its lots state:
+// beside a stock's ticker, and as a bond's own key, in the open lots and
+// on the closed-positions page. Where they state two (a CUSIP changed),
+// the newest wins: an open lot over a closed one, then the latest fetch
+// or sale. Gold reads a CUSIP as the security's identity (its US ISIN by
+// rule, where no source states another).
+func (c *Connection) instrumentCUSIPs(ctx context.Context) (map[string]string, error) {
+	out := map[string]string{}
+	for _, t := range []struct{ table, column, query string }{
+		// Closed lots carry their document kind from migration 0012 on,
+		// the column RealizedLots checks for.
+		{"closed_lots", "security_name", `
+SELECT instrument_key, upper(trim(cusip)) FROM closed_lots
+ WHERE document_kind = 'closed_positions' AND instrument_key IS NOT NULL AND trim(COALESCE(cusip, '')) <> ''
+ ORDER BY disposed_date, upper(trim(cusip))`},
+		{"open_lots", "cusip", `
+SELECT instrument_key, upper(trim(cusip)) FROM open_lots
+ WHERE trim(COALESCE(cusip, '')) <> ''
+ ORDER BY snapshot_at, upper(trim(cusip))`},
+	} {
+		ok, err := silver.HasColumn(ctx, c.db, t.table, t.column)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		if err := c.scanCUSIPs(ctx, t.query, out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// scanCUSIPs reads (key, CUSIP) rows oldest first into out, so the
+// newest stays.
+func (c *Connection) scanCUSIPs(ctx context.Context, query string, out map[string]string) error {
+	rows, err := c.db.QueryContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("instrumentCUSIPs: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, cusip string
+		if err := rows.Scan(&key, &cusip); err != nil {
+			return err
+		}
+		out[key] = cusip
+	}
+	return rows.Err()
+}
+
 // latest returns the holding's latest fetch at or before t, or nil.
 func (lc *lotCarry) latest(h holding, t int64) *lotFetch {
 	fs := lc.fetches[h]

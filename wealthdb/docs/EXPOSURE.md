@@ -32,7 +32,10 @@ creates or loses any. Every view therefore sums to `holdings global`.
   stock held under its ticker and a line that names its ISIN are one
   security. The line must name a US listing (a US ISIN, a US exchange,
   or no exchange and a US-dollar price): a local ticker abroad is often
-  another company's US symbol.
+  another company's US symbol. A broker that states a holding's symbol
+  and CUSIP together lets each stand in for the other where sources
+  name only one. A US CUSIP takes its symbol's ISIN only where that
+  ISIN holds the CUSIP (a Canadian share): a ticker may be reused.
 - **A leaf** is what the look-through ends at: a holding no composition
   describes, a fund's line, a remainder, or the cash leg of a leveraged
   proxy.
@@ -91,10 +94,14 @@ The fund files are the security master: a stock held directly takes its
 sector and country from any fund line that names the same security.
 
 A depositary receipt (an ADR, a GDR) stands for a share listed abroad.
-Where no source states its sector or country, it takes the share's. No
-free source says which share an over-the-counter receipt stands for. So
-gold finds the share by the issuer's name, among the equity lines of the
-funds:
+Where no source states its sector or country, it takes the share's.
+GLEIF ties the receipt's ISIN to its issuer's LEI and lists the
+issuer's other ISINs (`issuer_isins`). Where one of them is an equity
+line of the funds with a sector, that line is the share; of several,
+the first by ISIN. GLEIF lists a share only
+where the numbering agency of its home market reports it, so many
+receipts stay without one. For those, gold finds the share by the
+issuer's name, among the equity lines of the funds:
 
 - A name loses what it says of the receipt (ADR, sponsored, each
   representing two shares). It also loses the legal form, single letters
@@ -113,9 +120,10 @@ funds:
 - What the names find must be one issuer in one country. Anything else
   stays `unmatched`.
 
-`security_underlyings` keeps each link. The receipt's attributes name
-the share as their origin (`underlying:isin:…`), and its leaves carry
-the flag `by_name`.
+`security_underlyings` keeps each link and how it was found (`lei` or
+`name`). The receipt's attributes name the share as their origin:
+`lei:isin:…` for GLEIF's link, `underlying:isin:…` for a match by name.
+The leaves of a receipt matched by name carry the flag `by_name`.
 
 `--country risk` (the default) places a security in its country of
 risk, else its domicile. `--country domicile` does the opposite.

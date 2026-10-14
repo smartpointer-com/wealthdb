@@ -8,8 +8,8 @@
 --   field blank is still a tag. A stock or a bond in a private asset
 --   class (a startup's shares, a private note) is private, not a listed
 --   security no source describes. A leaf whose sector, country or
---   domicile a depositary receipt took from its share carries the flag
---   `by_name`.
+--   domicile a depositary receipt took from a share matched by name
+--   carries the flag `by_name`.
 --   The macro is otherwise 0127's.
 -- * exposure_quality: the `by_name` and `opaque` flags, after
 --   `unmapped`.
@@ -25,7 +25,7 @@
 CREATE TABLE IF NOT EXISTS security_underlyings (
     security_key    TEXT NOT NULL,   -- the receipt
     underlying_key  TEXT NOT NULL,   -- the share it stands for
-    origin          TEXT NOT NULL    -- how the link was found: name
+    origin          TEXT NOT NULL    -- how the link was found: lei (GLEIF) or name
 );
 
 -- exposure_leaves: the look-through at an instant (docs/EXPOSURE.md §5),

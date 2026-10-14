@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"maps"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -252,5 +253,70 @@ func TestMigration0130DDLIsRerunnable(t *testing.T) {
 	rows, err := ExposureCoverage(ctx, db, exAsOf, "USD")
 	if err != nil || len(rows) == 0 {
 		t.Errorf("after replay: %d rows, %v", len(rows), err)
+	}
+}
+
+// GLEIF's link wins over a name: a receipt whose issuer's ISINs name an
+// equity share takes that share, and its leaf carries no by_name flag.
+func TestExposureLinksAReceiptByItsIssuer(t *testing.T) {
+	db, ctx := openExposureFixture(t)
+	for _, q := range []string{
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, name, currency,
+		 first_seen_at, last_seen_at) VALUES
+		 ('test-src', 'QDRL', 'public_equity', 'stock', 'US0000000751', 'QORVANT AG SPON ADR', 'USD', 0, 0),
+		 ('test-src', 'QDRZ', 'public_equity', 'stock', 'US0000000761', 'ZELMARO SPA UNSP ADR', 'USD', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, quantity, market_value) VALUES
+		 ('test-src', ?, 'A1', 'QDRL', 'QDRL', 'public_equity', 'stock', 'USD', 1, 40),
+		 ('test-src', ?, 'A1', 'QDRZ', 'QDRZ', 'public_equity', 'stock', 'USD', 1, 20)`,
+		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency)
+		 VALUES ('test-src', 'symbol:QREF', ?, 'holdings', 'testprov', 4, 'USD')`,
+		// the name points at one share, the issuer's ISINs at two others
+		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
+		 weight, currency, country, sector) VALUES
+		 ('test-src', 'symbol:QREF', ?, 'holdings', 1, 'isin:DE0000000752', 'DE0000000752', 'QORVANT N AG', 'Equity',
+		  25, 'EUR', 'Germany', 'Industrials'),
+		 ('test-src', 'symbol:QREF', ?, 'holdings', 2, 'isin:AT0000000755', 'AT0000000755', 'QORVANT HOLDING AG VZ', 'Equity',
+		  25, 'EUR', 'Austria', 'Energy'),
+		 ('test-src', 'symbol:QREF', ?, 'holdings', 3, 'isin:AT0000000753', 'AT0000000753', 'QORVANT HOLDING AG', 'Equity',
+		  25, 'EUR', 'Austria', 'Utilities'),
+		 ('test-src', 'symbol:QREF', ?, 'holdings', 4, 'isin:IT0000000762', 'IT0000000762', 'ZELMARO SPA', 'Equity',
+		  25, 'EUR', 'Italy', 'Financials')`,
+		`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value, scheme) VALUES
+		 ('refdata', 'isin:US0000000751', 'issuer_isins', ?, 'gleif', 'AT0000000755 AT0000000753 XS0000000754', 'isin'),
+		 ('refdata', 'isin:US0000000761', 'issuer_isins', ?, 'gleif', 'XS0000000763', 'isin')`,
+	} {
+		if _, err := db.ExecContext(ctx, q, slices.Repeat([]any{exSnap}, strings.Count(q, "?"))...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	var origin string
+	var sector, sectorOrigin sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT x.origin, s.sector, s.sector_origin FROM security_underlyings x
+	    JOIN securities s USING (security_key) WHERE x.security_key = 'isin:US0000000751'`).Scan(&origin, &sector,
+		&sectorOrigin); err != nil {
+		t.Fatal(err)
+	}
+	// Of the issuer's two shares, the first by ISIN.
+	if origin != "lei" || sector.String != "utilities" || sectorOrigin.String != "lei:isin:AT0000000753" {
+		t.Errorf("link %s, sector %q (%q)", origin, sector.String, sectorOrigin.String)
+	}
+	if f := leafFlags(t, db, ctx, `iid = 'QDRL'`); f != "" {
+		t.Errorf("QDRL flags = %q, want none", f)
+	}
+	// An issuer whose ISINs name no share leaves the receipt to its name.
+	if err := db.QueryRowContext(ctx, `SELECT x.origin, s.sector_origin FROM security_underlyings x
+	    JOIN securities s USING (security_key) WHERE x.security_key = 'isin:US0000000761'`).Scan(&origin,
+		&sectorOrigin); err != nil {
+		t.Fatal(err)
+	}
+	if origin != "name" || sectorOrigin.String != "underlying:isin:IT0000000762" {
+		t.Errorf("QDRZ link %s (%q), want the name's", origin, sectorOrigin.String)
+	}
+	if f := leafFlags(t, db, ctx, `iid = 'QDRZ'`); f != "by_name" {
+		t.Errorf("QDRZ flags = %q, want by_name", f)
 	}
 }

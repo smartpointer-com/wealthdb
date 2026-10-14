@@ -177,8 +177,12 @@ def test_a_constituent_is_asked_only_what_a_provider_answers():
     us_bond = c("isin:US0000000084", ("sector",), asset_class="fixed_income")
     cins = c("cusip:Q00000008", ("sector",))
     us_cusip = c("cusip:000000AH4", ("sector",))
+    no_sector_abroad = c("isin:XX0000000085", ("sector",))
     g, f, e = Gleif(), OpenFigi(), SecEdgar()
-    assert not g.wants_constituent(us_stock) and g.wants_constituent(no_country)
+    # GLEIF states a country, and leads a stock under a US ISIN (a
+    # receipt's) to its issuer's share; not a bond or a share abroad.
+    assert g.wants_constituent(no_country) and g.wants_constituent(us_stock)
+    assert not g.wants_constituent(us_bond) and not g.wants_constituent(no_sector_abroad)
     # OpenFIGI finds the US ticker of a US stock lacking a sector; not for a
     # bond, a known ticker, a country gap or a CINS code.
     assert f.wants_constituent(us_stock) and f.wants_constituent(us_cusip)
@@ -252,3 +256,68 @@ def test_sec_edgar_states_no_address_for_a_depositary_receipt():
            "addresses": office}
     p = parse_company(sub, None, "symbol:QEXIY", DAY, provider="sec-edgar")
     assert {f["field"]: f["value"] for f in p.security_facts} == {"incorporation": "M0"}
+
+
+def test_gleif_fetches_the_issuer_isins_of_a_receipt(tmp_path):
+    record = {"data": [{"id": "XXXXXXXXXXXXXXXXXX31", "attributes": {"lei": "XXXXXXXXXXXXXXXXXX31", "entity": {
+        "legalName": {"name": "Qorvant Holdings"}, "jurisdiction": "KR", "legalAddress": {"country": "KR"}}}}]}
+    isins = {"data": [{"attributes": {"isin": "US0000000641"}}, {"attributes": {"isin": "XK0000000642"}}]}
+
+    class Api:
+        def __init__(self):
+            self.urls = []
+
+        def get(self, url, params=None, headers=None):
+            self.urls.append(url)
+            body = isins if url.endswith("/isins") else record
+            return fetcher.Response(url, 200, json.dumps(body).encode(), "application/json")
+    g, api = Gleif(), Api()
+    ctx = Context(client=api)
+    receipt = Security(key="isin:US0000000641", isin="US0000000641", asset_class="public_equity")
+    g.fetch_security(g.claim_security(receipt, ctx), tmp_path / "r", ctx)
+    assert any(u.endswith("XXXXXXXXXXXXXXXXXX31/isins") for u in api.urls)
+    facts = [(f["field"], f["value"]) for f in g.parse(tmp_path / "r").security_facts]
+    assert ("issuer_isins", "XK0000000642") in facts
+    # A bond, or a share under an ISIN from abroad, asks for no ISIN list.
+    for sec in (Security(key="isin:US0000000643", isin="US0000000643", asset_class="fixed_income"),
+                Security(key="isin:XK0000000644", isin="XK0000000644", asset_class="public_equity")):
+        api.urls.clear()
+        g.fetch_security(g.claim_security(sec, ctx), tmp_path / sec.key[5:], ctx)
+        assert not any(u.endswith("/isins") for u in api.urls), sec.key
+
+
+def test_gleif_pages_the_issuer_isins_up_to_its_cap_and_keeps_the_issuer_without_them(tmp_path, monkeypatch):
+    import providers.gleif as gleif_mod
+    monkeypatch.setattr(gleif_mod, "ISIN_PAGE_SIZE", 2)
+    monkeypatch.setattr(gleif_mod, "ISIN_PAGES", 3)
+    record = {"data": [{"id": "XXXXXXXXXXXXXXXXXX32", "attributes": {"lei": "XXXXXXXXXXXXXXXXXX32", "entity": {
+        "legalName": {"name": "Qorvant Holdings"}, "jurisdiction": "KR", "legalAddress": {"country": "KR"}}}}]}
+
+    class Api:
+        def __init__(self, fail=False):
+            self.pages, self.fail = [], fail
+
+        def get(self, url, params=None, headers=None):
+            if not url.endswith("/isins"):
+                return fetcher.Response(url, 200, json.dumps(record).encode(), "application/json")
+            if self.fail:
+                raise fetcher.FetchError(url, 503)
+            page = int(params["page[number]"])
+            self.pages.append(page)
+            rows = [{"attributes": {"isin": f"XK00000006{page}{i}"}} for i in range(2)]
+            return fetcher.Response(url, 200, json.dumps({"data": rows}).encode(), "application/json")
+    g = Gleif()
+    receipt = Security(key="isin:US0000000651", isin="US0000000651", asset_class="public_equity")
+    api = Api()
+    ctx = Context(client=api)
+    g.fetch_security(g.claim_security(receipt, ctx), tmp_path / "full", ctx)
+    # Every page full: the cap stops it.
+    assert api.pages == [1, 2, 3]
+    (fact,) = [f for f in g.parse(tmp_path / "full").security_facts if f["field"] == "issuer_isins"]
+    assert len(fact["value"].split()) == 6
+    # The list failing leaves the issuer's own answer.
+    api = Api(fail=True)
+    ctx = Context(client=api)
+    g.fetch_security(g.claim_security(receipt, ctx), tmp_path / "failed", ctx)
+    fields = {f["field"] for f in g.parse(tmp_path / "failed").security_facts}
+    assert "legal_country" in fields and "issuer_isins" not in fields

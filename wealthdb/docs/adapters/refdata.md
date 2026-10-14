@@ -85,8 +85,10 @@ the reference, and the collector stores the composition under it. The
 join back is exact. Gold reads every key through its security aliases
 (EXPOSURE.md §1): a ticker or a CUSIP a source states beside an ISIN
 reads as that ISIN, and a CUSIP no source ties to an ISIN reads as the
-one the US rule gives. A fund held at two brokers under two keys that
-read as one ISIN is fetched once.
+one the US rule gives. A broker's symbol and CUSIP fill each other's
+gaps. A fund held at two brokers under two keys that read as one ISIN
+is fetched once. What a provider answered under one key counts for the
+key it reads as.
 
 ## 4. Status and change window
 
@@ -171,7 +173,7 @@ A security:
 | `scope` | `direct`: held directly, and always completed. `constituent`: named by a held fund's lines and lacking a sector or a country there; a collector looks these up only when its config allows. A collector skips a scope it does not know. |
 | `share_pct` | a constituent's share of net worth through funds, in percent, so a collector asks the biggest first; `null` for a security held directly |
 | `asset_class` | the security's asset class: the holding's, or the one its fund lines state, so a lookup that finds companies can skip a bond |
-| `missing` | the fields no source states yet: `sector`, `country` and, for a stock held directly, `market_cap` (the fact fields below). For a constituent, a country only an ISIN's prefix implies counts as missing. |
+| `missing` | the fields no source states yet: `sector`, `country` and, for a stock held directly, `market_cap` (the fact fields below). For a constituent, a country only an ISIN's prefix implies counts as missing, and so does a sector or a country a depositary receipt took from a share matched by name (EXPOSURE.md §3). |
 | `lookups` | the day each provider last answered for the security, so a collector refreshes what is older than its `max_age` |
 
 A security is wanted when a position holds it as a `stock` or a `bond`,
@@ -199,6 +201,7 @@ The fact fields a provider writes, and the wanted field each answers:
 | `sic` | `sector`, as an SEC SIC code |
 | `risk_country`, `hq_country`, `legal_country`, `incorporation` | `country` |
 | `market_cap`, `shares_outstanding`, `size` | `market_cap` |
+| `issuer_isins` | `sector` and `country` of a depositary receipt: the other ISINs of its issuer, space-separated, among which gold finds the share it stands for |
 
 A gold opened read-only before the exposure tables existed has no
 reference data and no exposure config yet. The list then names the

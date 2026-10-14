@@ -164,9 +164,10 @@ SELECT i.silver_source_id, i.instrument_external_id, COALESCE(i.isin, ''), COALE
 // beside an ISIN (a line's ticker, a lookup's FIGI, an instrument's
 // CUSIP) reads as that ISIN. Where two disagree, an account's own
 // instrument wins, then a lookup, then a fund line; within one kind, the
-// ISIN stated most often, then the newest. The US CUSIP rule ties a CUSIP to an
-// ISIN only where no source states one: a CUSIP that starts with a digit
-// may as well be Canadian.
+// ISIN stated most often, then the newest. The US CUSIP rule ties a CUSIP
+// to an ISIN only where no source states one: a CUSIP that starts with a
+// digit may as well be Canadian. A broker's symbol and CUSIP fill each
+// other's gaps (aliasesSQL).
 func writeAliases(ctx context.Context, tx *sql.Tx) error {
 	if err := execAll(ctx, tx,
 		`DELETE FROM security_aliases`,
@@ -221,6 +222,17 @@ SELECT DISTINCT k FROM (
 // Zurich) is a different US symbol's (ROP in New York). The exchange
 // patterns are the collector's (collectors/refdata/providers/table.py);
 // keep them equal.
+//
+// A broker's symbol and CUSIP, stated together with no ISIN, fill each
+// other's gaps. The CUSIP reads as the ISIN a source states for it. Else,
+// for a CINS code, which no rule ties to an ISIN, it reads as the ISIN a
+// source states for its symbol, never a US one (a CINS issuer sits
+// outside North America); for a US or Canadian CUSIP, as that ISIN only
+// where it holds the CUSIP (a Canadian one), else as the rule's. A reused
+// ticker so leaves the CUSIP alone. A symbol no source names
+// reads as its CUSIP does, or as the CUSIP itself, so a lookup's answer
+// under it stays with the holding. Only a symbol priced in US dollars
+// takes part, by the US-listing rule above.
 const aliasesSQL = `
 INSERT INTO security_aliases
 WITH valid AS (
@@ -257,13 +269,44 @@ stated AS (
       FROM valid WHERE alias NOT LIKE 'isin:%' GROUP BY alias, isin, origin),
 ruled AS (
     SELECT alias, security_key, 'cusip_rule' AS origin, 0 AS n, 0 AS latest, 2 AS rnk, 0 AS orank
-      FROM exposure_cusip_rule
+      FROM exposure_cusip_rule),
+picked AS (
+    SELECT * FROM (SELECT * FROM stated UNION ALL SELECT * FROM ruled)
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY alias ORDER BY rnk, orank, n DESC, latest DESC, security_key) = 1),
+pairs AS (
+    SELECT 'symbol:' || upper(trim(symbol)) AS sym, 'cusip:' || upper(trim(cusip)) AS cusip,
+           MAX(last_seen_at) AS latest, BOOL_OR(upper(trim(COALESCE(currency, ''))) = 'USD') AS usd
+      FROM instruments
+     WHERE symbol IS NOT NULL AND trim(symbol) <> '' AND regexp_full_match(upper(trim(cusip)), '[A-Z0-9]{9}')
+       AND (isin IS NULL OR trim(isin) = '')
+     GROUP BY 1, 2),
+stated_isin AS (
+    SELECT p.cusip, ps.security_key, p.latest
+      FROM pairs p JOIN picked ps ON ps.alias = p.sym
+     WHERE p.usd),
+held AS (
+    SELECT k.cusip,
+           CASE WHEN pc.rnk = 1 THEN pc.security_key
+                WHEN pc.security_key IS NULL THEN COALESCE(cins.security_key, k.cusip)
+                ELSE COALESCE(ca.security_key, pc.security_key) END AS security_key
+      FROM (SELECT DISTINCT cusip FROM pairs) k
+      LEFT JOIN picked pc ON pc.alias = k.cusip
+      LEFT JOIN (SELECT cusip, security_key FROM stated_isin WHERE security_key NOT LIKE 'isin:US%'
+                 QUALIFY ROW_NUMBER() OVER (PARTITION BY cusip ORDER BY latest DESC, security_key) = 1) cins
+             USING (cusip)
+      LEFT JOIN (SELECT cusip, security_key FROM stated_isin WHERE substr(security_key, 8, 9) = substr(cusip, 7)
+                 QUALIFY ROW_NUMBER() OVER (PARTITION BY cusip ORDER BY latest DESC, security_key) = 1) ca
+             USING (cusip)),
+tied AS (
+    SELECT cusip AS alias, security_key FROM held WHERE security_key <> cusip
     UNION ALL
-    SELECT 'symbol:' || upper(trim(i.symbol)), r.security_key, 'cusip_rule', 0, 0, 2, 0
-      FROM instruments i JOIN exposure_cusip_rule r ON r.alias = 'cusip:' || upper(trim(i.cusip))
-     WHERE i.symbol IS NOT NULL AND trim(i.symbol) <> '' AND (i.isin IS NULL OR trim(i.isin) = ''))
-SELECT alias, security_key, origin FROM (SELECT * FROM stated UNION ALL SELECT * FROM ruled)
-QUALIFY ROW_NUMBER() OVER (PARTITION BY alias ORDER BY rnk, orank, n DESC, latest DESC, security_key) = 1`
+    SELECT * FROM (
+        SELECT p.sym, h.security_key FROM pairs p JOIN held h USING (cusip)
+         WHERE p.usd AND p.sym NOT IN (SELECT alias FROM picked)
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY p.sym ORDER BY p.latest DESC, h.security_key) = 1))
+SELECT alias, security_key, 'instrument' FROM tied
+UNION ALL
+SELECT alias, security_key, origin FROM picked WHERE alias NOT IN (SELECT alias FROM tied)`
 
 // securitiesSQL rebuilds securities: per security, the best value of
 // each field, by the precedence of docs/EXPOSURE.md §3, and where it

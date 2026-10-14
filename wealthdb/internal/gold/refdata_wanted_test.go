@@ -2,9 +2,11 @@ package gold
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"flag"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -125,7 +127,8 @@ func TestRefdataWantedBeforeMigration(t *testing.T) {
 
 // Once a source ties a key to an ISIN, the wanted list names the ISIN: a
 // fund held under its ticker and a stock a fund line names beside its
-// ISIN are asked for once each, under the ISIN.
+// ISIN are asked for once each, under the ISIN. What a provider answered
+// under the ticker counts for the ISIN.
 func TestRefdataWantedReadsKeysThroughAliases(t *testing.T) {
 	db, ctx := openMigrated(t)
 	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
@@ -141,6 +144,8 @@ func TestRefdataWantedReadsKeysThroughAliases(t *testing.T) {
 		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, ticker, exchange, weight) VALUES
 		 ('test-src', 'symbol:OTHER', ?, 'holdings', 1, 'isin:XX0000000011', 'XX0000000011', 'FUNDT', 'NYSE Arca', 50),
 		 ('test-src', 'symbol:OTHER', ?, 'holdings', 2, 'isin:XX0000000012', 'XX0000000012', 'STKT', 'NASDAQ', 50)`,
+		`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
+		 VALUES ('refdata', 'symbol:STKT', 'sic', ?, 'sec-edgar', '7372')`,
 	} {
 		args := make([]any, strings.Count(q, "?"))
 		for i := range args {
@@ -161,7 +166,10 @@ func TestRefdataWantedReadsKeysThroughAliases(t *testing.T) {
 		t.Errorf("funds = %+v", w.Funds)
 	}
 	if len(w.Securities) != 1 || w.Securities[0].Key != "isin:XX0000000012" {
-		t.Errorf("securities = %+v", w.Securities)
+		t.Fatalf("securities = %+v", w.Securities)
+	}
+	if s := w.Securities[0]; s.Lookups["sec-edgar"] != "2026-06-30" || slices.Contains(s.Missing, "sector") {
+		t.Errorf("the ISIN's lookups = %v, missing = %v; want the answer under its ticker", s.Lookups, s.Missing)
 	}
 }
 
@@ -304,4 +312,52 @@ func TestRefdataWantedNamesConstituents(t *testing.T) {
 	if held := got["isin:XX0000000063"]; held.Scope != "direct" || held.SharePct != nil {
 		t.Errorf("the held stock = %+v", held)
 	}
+}
+
+// A receipt that took its sector and country from a share matched by name
+// is still wanted, so a lookup can tie it to its share.
+func TestRefdataWantedKeepsAskingAboutANameMatch(t *testing.T) {
+	db, ctx := openMigrated(t)
+	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
+	for _, q := range []string{
+		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
+		 first_seen_at, last_seen_at) VALUES ('test-src', 'A', 'brokerage', 'Brokerage', 'USD', 0, 0)`,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, currency,
+		 first_seen_at, last_seen_at) VALUES ('test-src', 'QFND', 'public_equity', 'etf', 'QFND', 'USD', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, market_value) VALUES ('test-src', ?, 'A', 'QFND', 'QFND', 'public_equity', 'etf', 'USD', 100)`,
+		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count)
+		 VALUES ('test-src', 'symbol:QFND', ?, 'holdings', 'ishares', 2)`,
+		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
+		 weight, currency, country, sector) VALUES
+		 ('test-src', 'symbol:QFND', ?, 'holdings', 1, 'isin:US0000000771', 'US0000000771', 'QORVANT AG SPON ADR',
+		  'Equity', 50, 'USD', NULL, NULL),
+		 ('test-src', 'symbol:QFND', ?, 'holdings', 2, 'isin:DE0000000772', 'DE0000000772', 'QORVANT N AG',
+		  'Equity', 50, 'EUR', 'Germany', 'Industrials')`,
+	} {
+		if _, err := db.ExecContext(ctx, q, slices.Repeat([]any{day}, strings.Count(q, "?"))...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	var origin sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT sector_origin FROM securities WHERE security_key = 'isin:US0000000771'`).
+		Scan(&origin); err != nil || origin.String != "underlying:isin:DE0000000772" {
+		t.Fatalf("the receipt is not linked by name: %q, %v", origin.String, err)
+	}
+	w, err := RefdataWanted(ctx, db, time.Unix(day+86400, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range w.Securities {
+		if s.Key == "isin:US0000000771" {
+			if !slices.Contains(s.Missing, "sector") || !slices.Contains(s.Missing, "country") {
+				t.Errorf("missing = %v, want sector and country", s.Missing)
+			}
+			return
+		}
+	}
+	t.Error("the name-matched receipt is not wanted")
 }

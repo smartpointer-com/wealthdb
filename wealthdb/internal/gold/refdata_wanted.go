@@ -434,7 +434,7 @@ func addRole(f *WantedFund, role string) {
 // addCompositionDates lists the days gold has a composition for, per
 // wanted fund.
 func addCompositionDates(ctx context.Context, db *sql.DB, funds map[string]*WantedFund, keys keyReader) error {
-	rows, err := db.QueryContext(ctx, `SELECT DISTINCT `+keys.sql("fund_ref")+`, as_of FROM fund_compositions ORDER BY 1, 2`)
+	rows, err := db.QueryContext(ctx, `SELECT DISTINCT `+keys.sql("c.fund_ref")+`, c.as_of FROM fund_compositions c ORDER BY 1, 2`)
 	if err != nil {
 		return fmt.Errorf("wanted: composition dates: %w", err)
 	}
@@ -470,8 +470,10 @@ var wantedFields = []struct {
 // a country there: equity and bond lines that name a company, each with
 // its share of net worth through funds. A line naming a fund, and a fund
 // the look-through stops at, stay out: no company lookup describes a
-// fund. A country only an ISIN's prefix implies counts as missing. A
-// security held directly stays direct. Its identifiers are those its key
+// fund. A country only an ISIN's prefix implies counts as missing, and so
+// does what a receipt took from a share matched by name, so a lookup may
+// still tie it to its share (exposure_receipts.go). A security held
+// directly stays direct. Its identifiers are those its key
 // and its aliases state: a US symbol only from a fund line on a US
 // listing or a lookup, never from a broker's local ticker. A gold
 // without the exposure macros has none.
@@ -490,8 +492,9 @@ funds AS (
       LEFT JOIN security_aliases sa ON sa.alias = a.fund_ref),
 c AS (
     SELECT l.key, SUM(abs(l.value)) AS v, MAX(l.name) AS name, arg_max(l.asset_class, abs(l.value)) AS asset_class,
-           BOOL_OR(l.sector IS NULL) AS no_sector,
+           BOOL_OR(l.sector IS NULL OR starts_with(COALESCE(s.sector_origin, ''), 'underlying:')) AS no_sector,
            BOOL_OR(l.country IS NULL
+                   OR starts_with(COALESCE(s.risk_country_origin, ''), 'underlying:')
                    OR (l.country_map IS NULL AND s.risk_country IS NULL
                        AND COALESCE(s.domicile_origin, 'isin_prefix') = 'isin_prefix')) AS no_country
       FROM l
@@ -579,9 +582,9 @@ func addUSSymbols(ctx context.Context, db *sql.DB, securities map[string]*Wanted
 // security, and returns which (key, field) pairs some source states.
 func addSecurityState(ctx context.Context, db *sql.DB, securities map[string]*WantedSecurity, keys keyReader) (map[[2]string]bool, error) {
 	rows, err := db.QueryContext(ctx, `
-SELECT `+keys.sql("security_key")+`, provider, MAX(as_of) FROM (
+SELECT `+keys.sql("x.security_key")+`, x.provider, MAX(x.as_of) FROM (
     SELECT security_key, provider, as_of FROM security_facts
-    UNION ALL SELECT security_key, provider, as_of FROM security_identities)
+    UNION ALL SELECT security_key, provider, as_of FROM security_identities) x
  GROUP BY 1, 2`)
 	if err != nil {
 		return nil, fmt.Errorf("wanted: lookups: %w", err)
@@ -606,14 +609,14 @@ SELECT `+keys.sql("security_key")+`, provider, MAX(as_of) FROM (
 
 	stated := map[[2]string]bool{}
 	for _, wf := range wantedFields {
-		q := `SELECT DISTINCT ` + keys.sql("security_key") + ` FROM security_facts WHERE field IN (` + placeholders(len(wf.facts)) + `)`
+		q := `SELECT DISTINCT ` + keys.sql("f.security_key") + ` FROM security_facts f WHERE f.field IN (` + placeholders(len(wf.facts)) + `)`
 		args := make([]any, len(wf.facts))
 		for i, f := range wf.facts {
 			args[i] = f
 		}
 		if wf.lineColumn != "" {
-			q += ` UNION SELECT DISTINCT ` + keys.sql("security_key") + ` FROM fund_lines WHERE ` + wf.lineColumn +
-				` IS NOT NULL AND security_key IS NOT NULL`
+			q += ` UNION SELECT DISTINCT ` + keys.sql("l.security_key") + ` FROM fund_lines l WHERE l.` + wf.lineColumn +
+				` IS NOT NULL AND l.security_key IS NOT NULL`
 		}
 		rows, err := db.QueryContext(ctx, q, args...)
 		if err != nil {
@@ -684,7 +687,9 @@ func (kr keyReader) key(k string) string {
 	return k
 }
 
-// sql is the same reading of a key column, in SQL.
+// sql is the same reading of a key column, in SQL. col is qualified by
+// its table: security_aliases has a security_key of its own, which a bare
+// security_key would name.
 func (kr keyReader) sql(col string) string {
 	if !kr.has {
 		return col

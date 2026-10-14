@@ -44,7 +44,11 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
-	if err := c.appendPositionsAndCash(ctx, w, byTime, lots); err != nil {
+	cusips, err := c.instrumentCUSIPs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.appendPositionsAndCash(ctx, w, byTime, lots, cusips); err != nil {
 		return nil, err
 	}
 	lots.logSkipped()
@@ -56,7 +60,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		if err := c.appendHistoricalAccounts(ctx, w, byTime, held); err != nil {
 			return nil, err
 		}
-		if err := c.appendHistoricalPositions(ctx, w, byTime); err != nil {
+		if err := c.appendHistoricalPositions(ctx, w, byTime, cusips); err != nil {
 			return nil, err
 		}
 	}
@@ -311,8 +315,9 @@ func addCurrentCash(batch *canonical.SnapshotBatch, snap int64, acct, currency s
 //     cash_balances so `wealthdb positions --with-cash` and the
 //     cash_balance aggregate column populate uniformly across
 //     sources.
-//   - everything else → InstrumentChange (registers identity +
-//     name + asset class) plus PositionChange (the holding line),
+//   - everything else → InstrumentChange (registers identity with
+//     the CUSIP of instrumentCUSIPs, name and asset class) plus
+//     PositionChange (the holding line),
 //     whose book value is Fidelity's cost basis total, and its open
 //     lots where a fetch still describes it (lots.go).
 //
@@ -326,7 +331,7 @@ func addCurrentCash(batch *canonical.SnapshotBatch, snap int64, acct, currency s
 // `asset_class`, `currency`, and `is_core_position` are all
 // promoted columns on silver; the adapter relies on them directly
 // rather than re-deriving from instrument_key + description.
-func (c *Connection) appendPositionsAndCash(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, lots *lotCarry) error {
+func (c *Connection) appendPositionsAndCash(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, lots *lotCarry, cusips map[string]string) error {
 	// CAST decimals to VARCHAR so SQLite's REAL → float64 round-
 	// trip doesn't bleed precision before we parse into the
 	// shopspring/decimal-backed canonical.Decimal.
@@ -387,6 +392,7 @@ SELECT snapshot_at, account_external_id, instrument_key,
 			InstrumentExternalID: key,
 			AssetClass:           assetClassNew,
 			Vehicle:              vehicle,
+			CUSIP:                silver.StrPtrIfNonEmpty(cusips[key]),
 			Symbol:               &symbol,
 			Name:                 silver.StrPtrIfNonEmpty(desc),
 			Currency:             &ccy,

@@ -11,7 +11,8 @@ from .openfigi import OpenFigi
 from .sec_edgar import SecEdgar
 from .sec_nport import SecNport
 from .spdr import Spdr
+from .sprott import Sprott
 from .xtrackers import Xtrackers
 
-REGISTRY = {p.name: p for p in (Inbox(), IShares(), Xtrackers(), Invesco(), Spdr(), SecNport(), SecEdgar(),
-                                Gleif(), OpenFigi())}
+REGISTRY = {p.name: p for p in (Inbox(), IShares(), Xtrackers(), Invesco(), Spdr(), Sprott(), SecNport(),
+                                SecEdgar(), Gleif(), OpenFigi())}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"encoding/json"
+	"maps"
 	"testing"
 	"time"
 
@@ -66,6 +67,7 @@ func allSnapshots(t *testing.T, conn silver.Connection) canonical.SnapshotBatch 
 				t.Errorf("lot %s/%s@%d has no position in its batch", l.PositionKey, l.LotKey, l.SnapshotAt)
 			}
 		}
+		all.Instruments = append(all.Instruments, b.Instruments...)
 		all.Positions = append(all.Positions, b.Positions...)
 		all.PositionLots = append(all.PositionLots, b.PositionLots...)
 		all.CashBalances = append(all.CashBalances, b.CashBalances...)
@@ -625,5 +627,47 @@ func TestASilverBeforeTheLotMigrationsStillLoads(t *testing.T) {
 	lots, err := conn.(silver.RealizedLotReader).RealizedLots(context.Background())
 	if err != nil || lots != nil {
 		t.Errorf("realized lots = %v (%v), want none", lots, err)
+	}
+}
+
+// An instrument takes the CUSIP its open or closed-position lots state:
+// beside a ticker, or as a bond's own key, on the live and the
+// statement paths alike. Of two, the newest wins: an open lot over a
+// closed one, then the latest fetch or sale. A ticker no such lot
+// names takes none.
+func TestInstrumentsTakeTheCUSIPTheirLotsState(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	addLotsSchema(t, db)
+	seedSQL(t, db, `
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (2000, 13, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, payload) VALUES (2000, 'ACC1', '{}');
+        INSERT INTO positions(snapshot_at, account_external_id, instrument_key, description, asset_class, quantity, current_value, cost_basis_total, payload) VALUES
+            (2000, 'ACC1', 'VTI', 'Total Market ETF', 'etf', 6, 1500, 600, '{}'),
+            (2000, 'ACC1', 'BND1', 'Treasury Note', 'bond', 5000, 4950, NULL, '{}'),
+            (2000, 'ACC1', 'QQQ', 'Nasdaq ETF', 'etf', 5, 2500, 2000, '{}'),
+            (2000, 'ACC1', 'QSML', 'Small Cap ETF', 'etf', 1, 200, NULL, '{}');
+        INSERT INTO open_lots(snapshot_at, account_external_id, instrument_key, lot_index, cusip, quantity, unit_cost, cost_basis, acquired_date, unrealized_gain_loss, current_value, term, source_sha256, payload) VALUES
+            (2000, 'ACC1', 'VTI', 0, ' syncusip1', 6, 100, 600, '2020-03-02', 900, 1500, 'LONG', 'sha-a', '{}'),
+            (1000, 'ACC1', 'VTI', 0, 'SYNCUSIP0', 6, 100, 600, '2020-03-02', 900, 1500, 'LONG', 'sha-0', '{}'),
+            (2000, 'ACC1', 'BND1', 0, 'BND1', 5000, 99, 4950, '2021-01-04', 0, 4950, NULL, 'sha-a', '{}'),
+            (2000, 'ACC1', 'QQQ', 0, 'SYNCUSIP2', 5, 400, 2000, '2023-01-10', 500, 2500, 'LONG', 'sha-a', '{}');
+        INSERT INTO closed_lots(lot_id, document_kind, account_external_id, security_name, instrument_key, cusip, quantity, disposed_date, proceeds) VALUES
+            ('c1', 'closed_positions', 'ACC1', 'NASDAQ ETF', 'QQQ', 'SYNCUSIP3', 1, '2024-06-03', 500),
+            ('c2', 'closed_positions', 'ACC1', 'OLD FUND', 'OLD1', 'SYNCUSIP4', 2, '2024-06-03', 100),
+            ('c4', 'closed_positions', 'ACC1', 'OLD FUND', 'OLD1', 'SYNCUSIP6', 1, '2023-01-02', 50),
+            ('c3', 'form_1099b', 'ACC1', 'SMALL CAP ETF', 'QSML', 'SYNCUSIP5', 1, '2024-06-03', 200);
+        INSERT INTO historical_position_snapshots(as_of_date, account_external_id, description, instrument_key, quantity, price, market_value, currency, payload) VALUES
+            (1000, 'ACC1', 'OLD FUND', 'OLD1', 2, 50.0, 100.00, 'USD', '{}');
+    `)
+	b := allSnapshots(t, openAdapter(t, path))
+	got := map[string]string{}
+	for _, in := range b.Instruments {
+		if in.CUSIP != nil {
+			got[in.InstrumentExternalID] = *in.CUSIP
+		}
+	}
+	want := map[string]string{"VTI": "SYNCUSIP1", "BND1": "BND1", "QQQ": "SYNCUSIP2", "OLD1": "SYNCUSIP4"}
+	if !maps.Equal(got, want) {
+		t.Errorf("instrument CUSIPs = %v, want %v (none from a 1099-B)", got, want)
 	}
 }

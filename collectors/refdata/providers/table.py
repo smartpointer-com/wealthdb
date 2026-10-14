@@ -74,11 +74,12 @@ def _norm(s) -> str:
     return " ".join(str(s or "").strip().lower().split())
 
 
-def header_index(rows) -> int | None:
+def header_index(rows, columns=None) -> int | None:
     """The index of the header row: the first row that names a holding and
-    its weight."""
-    names = set(COLUMNS["name"])
-    weights = set(COLUMNS["weight"])
+    its weight. `columns` adds a provider's own header words, as in
+    lines()."""
+    names = {*COLUMNS["name"], *(columns or {}).get("name", ())}
+    weights = {*COLUMNS["weight"], *(columns or {}).get("weight", ())}
     for i, row in enumerate(rows):
         cells = {_norm(c) for c in row}
         if cells & names and cells & weights:

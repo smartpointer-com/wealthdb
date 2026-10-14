@@ -229,10 +229,11 @@ SELECT DISTINCT a.account_external_id, a.portfolio_external_id,
 //
 // A row with no `instrument_key` is keyed by
 // syntheticHistoricalInstrumentKey. A row's key is also its symbol,
-// except a statement construct's (isStatementConstruct). The book value
+// except a statement construct's (isStatementConstruct); its CUSIP is
+// the one the lots state (instrumentCUSIPs). The book value
 // is the cost basis the statement prints for the holding; the 529 and
 // DAF layouts, the core account and the svb statements print none.
-func (c *Connection) appendHistoricalPositions(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (c *Connection) appendHistoricalPositions(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, cusips map[string]string) error {
 	dafAccounts, err := c.dafAccountIDs(ctx)
 	if err != nil {
 		return err
@@ -303,6 +304,7 @@ SELECT as_of_date, account_external_id,
 			InstrumentExternalID: instrKey,
 			AssetClass:           assetClassNew,
 			Vehicle:              vehicle,
+			CUSIP:                silver.StrPtrIfNonEmpty(cusips[instrKey]),
 			Symbol:               symbol,
 			Name:                 &name,
 			Currency:             &ccy,

@@ -84,7 +84,7 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
 With no file, the providers of public data run: `inbox`, `sec-nport`,
 `sec-edgar`, `gleif` and `openfigi`. The two SEC providers wait for a
 `contact`. An issuer's provider (`ishares`, `xtrackers`, `invesco`,
-`spdr`) runs only once `providers` names it: enabling it accepts the
+`spdr`, `sprott`) runs only once `providers` names it: enabling it accepts the
 issuer's terms, quoted below. An issuer's daily file is fresher than a
 quarterly N-PORT filing, so list the issuers before `sec-nport`.
 
@@ -167,6 +167,22 @@ reproduced, copied or transmitted or any of its contents disclosed to
 third parties without State Street Investment Management's express
 written consent." Off until `providers` names it.
 
+### sprott
+
+Sprott's US ETFs, from the holdings table each fund page embeds.
+
+- The fund is found by its ticker among the fund pages the site's home
+  page links.
+- The table lists every holding with its name, weight, shares and
+  market value, and its ticker. A ticker with an exchange code after it
+  names a listing abroad and is kept aside, not read as a US symbol. The
+  SEDOL column is not read.
+- The table is today's holdings; there is no history.
+
+**Terms.** The site links no terms of use (checked 2026-10-14); its
+privacy policy covers personal data only. Off until `providers` names
+it.
+
 ### ishares
 
 BlackRock's iShares funds, from the holdings each fund page serves.
@@ -248,7 +264,11 @@ address, so its business address states nothing.
 
 Who issued a security, from the Global LEI Foundation's API, by the
 security's ISIN: the issuer's LEI, legal name, legal country and
-headquarters country.
+headquarters country. A US share ISIN that GLEIF maps to a company
+abroad is a depositary receipt's. For it, the issuer's other ISINs come
+too, so gold can find the share the receipt stands for. A security held
+through funds is asked for when it lacks a country, or a sector under a
+US ISIN, which may be a receipt's.
 
 **Terms.** "The data available through the Access Service are provided
 under the CC0 licence" (GLEIF's terms of use for LEI data).

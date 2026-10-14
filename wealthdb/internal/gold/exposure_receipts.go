@@ -11,12 +11,14 @@ import (
 )
 
 // A depositary receipt (an ADR, a GDR) stands for shares of a company
-// listed elsewhere. No free source states which share an over-the-counter
-// receipt stands for: the depositaries' directories forbid automated
-// reading, and OpenFIGI states no ISIN. So the exposure pass finds the
-// share by the issuer's name among the non-US equity shares the fund
-// lines describe, and the receipt takes that share's sector, country and
-// domicile where no source states its own.
+// listed elsewhere, and takes that share's sector, country and domicile
+// where no source states its own. Where GLEIF maps the receipt's ISIN to
+// an issuer and lists that issuer's other ISINs, the share is the equity
+// line among them. Else, since no free source states which share an
+// over-the-counter receipt stands for (the depositaries' directories
+// forbid automated reading, and OpenFIGI states no ISIN), the exposure
+// pass finds the share by the issuer's name among the non-US equity
+// shares the fund lines describe.
 //
 // The match is strict, since a wrong one would pass unnoticed:
 //
@@ -42,8 +44,8 @@ import (
 //     votes must agree. Anything else stays unmatched.
 
 // receiptSQL lists every security that lacks a sector or a risk country,
-// with each name a lookup or a broker gives it and whether a lookup
-// calls it a depositary receipt.
+// with each name a lookup, a broker or a fund line gives it and whether
+// a lookup calls it a depositary receipt.
 const receiptSQL = `
 WITH names AS (
     SELECT COALESCE(sa.security_key, i.security_key) AS k, i.name,
@@ -53,7 +55,11 @@ WITH names AS (
     SELECT COALESCE(sa.security_key, ik.security_key), ins.name, FALSE
       FROM instrument_keys ik
       JOIN instruments ins USING (silver_source_id, instrument_external_id)
-      LEFT JOIN security_aliases sa ON sa.alias = ik.security_key)
+      LEFT JOIN security_aliases sa ON sa.alias = ik.security_key
+    UNION ALL
+    SELECT DISTINCT COALESCE(sa.security_key, l.security_key), l.name, FALSE
+      FROM fund_lines l LEFT JOIN security_aliases sa ON sa.alias = l.security_key
+     WHERE l.security_key IS NOT NULL)
 SELECT s.security_key,
        COALESCE(s.risk_country, CASE WHEN s.domicile_origin <> 'isin_prefix' THEN s.domicile END, ''),
        n.name, COALESCE(n.receipt, FALSE)
@@ -81,22 +87,35 @@ SELECT DISTINCT s.security_key, COALESCE(s.risk_country, ''), COALESCE(s.domicil
   FROM securities s JOIN eq ON eq.k = s.security_key JOIN names n ON n.k = s.security_key
  WHERE s.security_key LIKE 'isin:%' AND s.security_key NOT LIKE 'isin:US%' AND s.sector IS NOT NULL`
 
+// issuerSQL lists each receipt GLEIF ties to its issuer's other ISINs,
+// with those ISINs, where the receipt lacks a sector or a risk country.
+const issuerSQL = `
+WITH f AS (
+    SELECT DISTINCT COALESCE(sa.security_key, f.security_key) AS k, 'isin:' || upper(trim(i.isin)) AS share
+      FROM security_facts f LEFT JOIN security_aliases sa ON sa.alias = f.security_key,
+           unnest(string_split(f.value, ' ')) AS i(isin)
+     WHERE f.field = 'issuer_isins' AND trim(i.isin) <> '')
+SELECT f.k, f.share FROM f JOIN securities s ON s.security_key = f.k
+ WHERE s.sector IS NULL OR s.risk_country IS NULL`
+
 // receiptFillSQL completes each receipt from its share: a sector or a
 // risk country no source states, and a domicile only an ISIN's prefix
-// implies (a receipt's ISIN is the depositary's).
+// implies (a receipt's ISIN is the depositary's). The origin names the
+// share and how it was found: lei:… by GLEIF, underlying:… by name.
 const receiptFillSQL = `
 UPDATE securities SET
     sector = COALESCE(securities.sector, u.sector),
     sector_origin = CASE WHEN securities.sector IS NULL AND u.sector IS NOT NULL
-                         THEN 'underlying:' || u.security_key ELSE securities.sector_origin END,
+                         THEN x.how || u.security_key ELSE securities.sector_origin END,
     risk_country = COALESCE(securities.risk_country, u.risk_country),
     risk_country_origin = CASE WHEN securities.risk_country IS NULL AND u.risk_country IS NOT NULL
-                               THEN 'underlying:' || u.security_key ELSE securities.risk_country_origin END,
+                               THEN x.how || u.security_key ELSE securities.risk_country_origin END,
     domicile = CASE WHEN COALESCE(securities.domicile_origin, 'isin_prefix') = 'isin_prefix' AND u.domicile IS NOT NULL
                     THEN u.domicile ELSE securities.domicile END,
     domicile_origin = CASE WHEN COALESCE(securities.domicile_origin, 'isin_prefix') = 'isin_prefix' AND u.domicile IS NOT NULL
-                           THEN 'underlying:' || u.security_key ELSE securities.domicile_origin END
-  FROM security_underlyings x JOIN securities u ON u.security_key = x.underlying_key
+                           THEN x.how || u.security_key ELSE securities.domicile_origin END
+  FROM (SELECT *, CASE origin WHEN 'lei' THEN 'lei:' ELSE 'underlying:' END AS how FROM security_underlyings) x
+  JOIN securities u ON u.security_key = x.underlying_key
  WHERE x.security_key = securities.security_key`
 
 // writeReceipts rewrites security_underlyings and completes each
@@ -134,11 +153,39 @@ func writeReceipts(ctx context.Context, tx *sql.Tx) error {
 	}); err != nil {
 		return err
 	}
-	links := linkReceipts(receipts, shares)
-	keys := slices.Sorted(maps.Keys(links))
+	isShare := map[string]bool{}
+	for _, sh := range shares {
+		isShare[sh.key] = true
+	}
+	// By GLEIF first: the first equity share among the issuer's ISINs.
+	byLEI := map[string]string{}
+	if err := scanAll(ctx, tx, issuerSQL, func(rows *sql.Rows) error {
+		var k, share string
+		if err := rows.Scan(&k, &share); err != nil {
+			return err
+		}
+		if isShare[share] && (byLEI[k] == "" || share < byLEI[k]) {
+			byLEI[k] = share
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	for k := range byLEI {
+		delete(receipts, k)
+	}
+	byName := linkReceipts(receipts, shares)
+	type link struct{ key, share, origin string }
+	var links []link
+	for _, k := range slices.Sorted(maps.Keys(byLEI)) {
+		links = append(links, link{k, byLEI[k], "lei"})
+	}
+	for _, k := range slices.Sorted(maps.Keys(byName)) {
+		links = append(links, link{k, byName[k], "name"})
+	}
 	if err := InsertChunked(ctx, tx, "security_underlyings",
-		`INSERT INTO security_underlyings (security_key, underlying_key, origin) VALUES `, `(?, ?, 'name')`, len(keys),
-		func(i int, args []any) []any { return append(args, keys[i], links[keys[i]]) }); err != nil {
+		`INSERT INTO security_underlyings (security_key, underlying_key, origin) VALUES `, `(?, ?, ?)`, len(links),
+		func(i int, args []any) []any { return append(args, links[i].key, links[i].share, links[i].origin) }); err != nil {
 		return err
 	}
 	return execAll(ctx, tx, receiptFillSQL)

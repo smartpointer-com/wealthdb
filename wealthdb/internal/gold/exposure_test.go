@@ -717,6 +717,88 @@ func TestExposureAliasPrecedence(t *testing.T) {
 	}
 }
 
+// A broker's symbol and CUSIP fill each other's gaps. A CUSIP reads as
+// the ISIN a source states for it; a CINS code, else, as its symbol's,
+// never a US one, the lowest of two equally new; a US CUSIP as its
+// symbol's only where that ISIN holds the CUSIP (a Canadian one), else
+// as the rule's, so a reused ticker leaves it alone.
+// A symbol no source names reads as its CUSIP, keeping what a lookup
+// found under it; a symbol priced abroad takes no part. No alias reads
+// as another alias.
+func TestExposureABrokersSymbolAndCUSIPFillEachOther(t *testing.T) {
+	db, ctx := openExposureFixture(t)
+	isin := func(body string) string { return body + string(rune('0'+canonical.ISINCheckDigit(body))) }
+	ca := isin("CA00000AB07")
+	for _, q := range []string{
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, cusip, currency,
+		 first_seen_at, last_seen_at) VALUES ('test-src', 'QCS1', 'public_equity', 'stock', 'QCS1', '00000AB02', 'USD', 0, 0),
+		 ('test-src', 'QCS2', 'public_equity', 'stock', 'QCS2', '00000AB03', 'USD', 0, 0),
+		 ('test-src', 'QCS3', 'public_equity', 'stock', 'QCS3', 'Q0000AB04', 'USD', 0, 0),
+		 ('test-src', 'QCS4', 'public_equity', 'stock', 'QCS4', '00000AB05', 'USD', 0, 0),
+		 ('test-src', 'QCS5', 'public_equity', 'stock', 'QCS5', '00000AB06', 'USD', 0, 0),
+		 ('test-src', 'QCS6', 'public_equity', 'stock', 'QCS6', '00000AB07', 'USD', 0, 0),
+		 ('test-src', 'QCS8', 'public_equity', 'stock', 'QCS8', 'Q0000AB08', 'USD', 0, 1),
+		 ('test-src', 'QCS9', 'public_equity', 'stock', 'QCS9', 'Q0000AB08', 'USD', 0, 2),
+		 ('test-src', 'QLCL', 'public_equity', 'stock', 'QLCL', '00000AB10', 'CHF', 0, 0),
+		 ('test-src', 'QCSA', 'public_equity', 'stock', 'QCSA', 'Q0000AB11', 'USD', 0, 0),
+		 ('test-src', 'QCSB', 'public_equity', 'stock', 'QCSB', 'Q0000AB12', 'USD', 0, 5),
+		 ('test-src', 'QCSC', 'public_equity', 'stock', 'QCSC', 'Q0000AB12', 'USD', 0, 5)`,
+		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, cusip, ticker, exchange, currency, name, weight)
+		 VALUES ('test-src', 'symbol:FUNDX', 0, 'holdings', 80, 'isin:XX0000000051', 'XX0000000051', '00000AB03', NULL, NULL, 'USD', 'Cusip Co', 0),
+		        ('test-src', 'symbol:FUNDX', 0, 'holdings', 81, 'isin:XX0000000054', 'XX0000000054', NULL, 'QCS4', 'New York Stock Exchange', 'USD', 'New Co', 0),
+		        ('test-src', 'symbol:FUNDX', 0, 'holdings', 82, 'isin:XX0000000056', 'XX0000000056', '00000AB06', NULL, NULL, 'USD', 'Receipt Co', 0),
+		        ('test-src', 'symbol:FUNDX', 0, 'holdings', 83, 'isin:` + ca + `', '` + ca + `', NULL, 'QCS6', 'New York Stock Exchange', 'USD', 'Toronto Co', 0),
+		        ('test-src', 'symbol:FUNDX', 0, 'holdings', 84, 'isin:US0000000611', 'US0000000611', NULL, 'QCSA', 'NASDAQ', 'USD', 'Other Co', 0)`,
+		`INSERT INTO security_identities (silver_source_id, security_key, as_of, provider, isin, ticker)
+		 VALUES ('test-src', 'symbol:QCS2', 0, 'p1', 'XX0000000052', 'QCS2'),
+		        ('test-src', 'symbol:QCS9', 0, 'p1', 'XX0000000059', 'QCS9'),
+		        ('test-src', 'symbol:QCSB', 0, 'p1', 'XX0000000622', 'QCSB'),
+		        ('test-src', 'symbol:QCSC', 0, 'p1', 'XX0000000621', 'QCSC')`,
+		`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
+		 VALUES ('test-src', 'symbol:QCS3', 'legal_country', 0, 'gleif', 'DE')`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	for alias, want := range map[string]string{
+		"symbol:QCS1": "isin:" + isin("US00000AB02"), "cusip:00000AB02": "isin:" + isin("US00000AB02"),
+		"symbol:QCS2": "isin:XX0000000052", "cusip:00000AB03": "isin:XX0000000051",
+		"symbol:QCS3": "cusip:Q0000AB04",
+		"symbol:QCS4": "isin:XX0000000054", "cusip:00000AB05": "isin:" + isin("US00000AB05"),
+		"symbol:QCS5": "isin:XX0000000056", "cusip:00000AB06": "isin:XX0000000056",
+		"symbol:QCS6": "isin:" + ca, "cusip:00000AB07": "isin:" + ca,
+		"symbol:QCS8": "isin:XX0000000059", "cusip:Q0000AB08": "isin:XX0000000059",
+		"symbol:QLCL": "",
+		"symbol:QCSA": "isin:US0000000611", "cusip:Q0000AB11": "",
+		"cusip:Q0000AB12": "isin:XX0000000621",
+	} {
+		var got sql.NullString
+		err := db.QueryRowContext(ctx, `SELECT security_key FROM security_aliases WHERE alias = ?`, alias).Scan(&got)
+		if err != nil && err != sql.ErrNoRows {
+			t.Fatalf("%s: %v", alias, err)
+		}
+		if got.String != want {
+			t.Errorf("%s reads as %q, want %q", alias, got.String, want)
+		}
+	}
+	var chained int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM security_aliases a JOIN security_aliases b ON b.alias = a.security_key`).
+		Scan(&chained); err != nil || chained != 0 {
+		t.Errorf("%d aliases read as another alias, %v", chained, err)
+	}
+	var domicile sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT domicile FROM securities WHERE security_key = 'cusip:Q0000AB04'`).Scan(&domicile); err != nil {
+		t.Fatal(err)
+	}
+	if domicile.String != "DE" {
+		t.Errorf("the CUSIP's domicile = %q, want the lookup's under its symbol", domicile.String)
+	}
+}
+
 // A fund line that names no security is a row of its own in securities,
 // named by its fund and its name, never by the holding above it.
 func TestExposureSecuritiesNameKeylessLines(t *testing.T) {
