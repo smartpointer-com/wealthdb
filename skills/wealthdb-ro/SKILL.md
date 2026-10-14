@@ -74,7 +74,8 @@ year, `2026-03` a whole month, `2025-01-01 2025-06-30` a range.
   first, the rows of each quarter end; `--period monthly` or `annual` too)
 - **How far to trust the exposure figures** — `wealthdb exposure coverage`
   (what is classified how, how old the compositions are, what nothing
-  describes); `wealthdb exposure funds` shows each fund's composition date
+  describes, how far a fund read from a report lies from its proxy);
+  `wealthdb exposure funds` shows each fund's composition date
 - **Return of the whole portfolio / of each account over a window** —
   `wealthdb returns global 2025 --period total` / `wealthdb returns accounts 2025 --period total`
 - **Return of one account** —
@@ -342,7 +343,8 @@ is a share of net worth and a loan is a negative row.
   - `aged`, `forward`: the composition is from another day.
   - `partial`, `unmapped`, `untagged`, `unmatched`: part of the value is
     not fully classified.
-  - `by_name`: a receipt's sector comes from a share matched by name.
+  - `by_name`: a receipt's or a report line's sector comes from a share
+    matched by name among all shares, not in its fund's proxy.
   - `opaque`: a private equity fund nothing looks through. It reads the
     sector `diversified`.
 - An `unclassified` sector or country is real money nothing describes,

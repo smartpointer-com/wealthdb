@@ -2953,8 +2953,10 @@ the end of every load and reload. It rewrites the derived tables:
 - `securities`: one row per security, its best-known attributes and
   where each came from;
 - `security_underlyings`: the share each depositary receipt stands for,
-  found by the issuer's name (EXPOSURE.md §3). A receipt no source
-  describes takes that share's sector, country and domicile.
+  or a line a report names by name alone, and how it was found (by
+  GLEIF, in a proxy's lines, or by name among all shares; EXPOSURE.md
+  §3). A security no source describes takes that share's sector,
+  country and domicile.
 
 The macros:
 
@@ -2970,6 +2972,8 @@ The macros:
   expands only the funds a holding reaches within three levels;
 - `exposure_quality(flags, value)`: the aggregate behind every
   `quality` column;
+- `exposure_divergence(asof)`: how far each fund read from a report lies
+  from its proxy, by sector and by country;
 - `report_exposure_classes`, `_sectors`, `_countries`, `_currencies`,
   `_securities`, `_funds` and `_coverage`: the views.
 

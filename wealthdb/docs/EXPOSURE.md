@@ -140,17 +140,25 @@ issuer's name, among the equity lines of the funds:
   stays `unmatched`.
 
 A fund report may name a holding by its name alone. Such a line finds
-its share the same way, among the shares of every country. Both names
-lose what their parentheses say, a share's class and par value
-(`CHF0.10`), legal forms and numbers. A line's country, where its report
-states one, fits only a share of it. A name that finds shares in two
-countries takes its fund's market: the country of two in three of the
-fund's lines that found a share.
+its share the same way, in two steps:
 
-`security_underlyings` keeps each link and how it was found (`lei` or
-`name`). The security's attributes name the share as their origin:
-`lei:isin:…` for GLEIF's link, `underlying:isin:…` for a match by name.
-The leaves of a security matched by name carry the flag `by_name`.
+- First among the lines of the fund's proxy. The proxy is a fund of the
+  same index whose lines carry identifiers. Its composition nearest the
+  report's day serves. A share found there by a leading name yields to
+  another share the world names exactly.
+- Then, if the proxy has no match, among the shares of every country.
+
+Both names lose what their parentheses say, a share's class and par
+value (`CHF0.10`), legal forms and numbers. A line's country, where its
+report states one, fits only a share of it. A name that finds shares in
+two countries takes its fund's market: the country of two in three of
+the fund's lines that found a share.
+
+`security_underlyings` keeps each link and how it was found: `lei`,
+`roster` (in the proxy's lines) or `name` (among all shares). The
+security's attributes name the share as their origin: `lei:isin:…`,
+`roster:` and the share's key, or `underlying:isin:…`. The leaves of a security
+matched among all shares carry the flag `by_name`.
 
 `--country risk` (the default) places a security in its country of
 risk, else its domicile. `--country domicile` does the opposite.
@@ -322,7 +330,7 @@ row's gross value it covers: `proxy=12%`, `aged=<1%`.
 | `forward` | the composition is dated after the day |
 | `partial` | the weights leave more than 3% of the fund unexplained (the remainder), a forward states no legs, or a fund lies deeper than three levels |
 | `unmapped` | a provider's label has no place in the vocabulary |
-| `by_name` | a depositary receipt's or a named line's sector or country comes from a share matched by name (§3) |
+| `by_name` | a depositary receipt's or a named line's sector or country comes from a share matched by name among all shares, not in a proxy's lines (§3) |
 | `opaque` | a private equity fund nothing looks through; it reads `diversified` |
 | `untagged` | a private holding (§5) has no tag. A tag that leaves a field blank is still a tag |
 | `unmatched` | a listed security or fund no source describes |
@@ -384,7 +392,7 @@ instrument has an empty `instrument` and cannot take a row.
 
 ## 10. Coverage
 
-`wealthdb exposure coverage` says what the figures rest on, in five
+`wealthdb exposure coverage` says what the figures rest on, in six
 sections:
 
 - `how` splits net worth by how each leaf is classified, and sums to
@@ -400,13 +408,20 @@ sections:
 - `unmatched` lists each listed security held directly that no source
   describes and no tag covers.
 - `untagged` lists each private holding the tags ledger has no row for.
+- `divergence` lists each fund held and read from a report whose config
+  names a proxy with a composition of its own on the day. It gives the
+  value held through the fund. Its detail says how far the
+  report's equity lines lie from the proxy's, by sector and by country.
+  The measure is half the sum of the differences in each sector's or
+  country's share, in points. A line with no sector or no country counts
+  as a group of its own, so a line no share was found for shows here.
 
-The last two name each holding by `silver_source_id` and `instrument`,
-the two columns a ledger row starts with. A holding at two sources has
-a line for each. In the last three, the labels and holdings with no
-value share one line, `(no value)`, with their count. A label or
-holding whose leaves offset each other still has value and keeps its
-own line.
+`unmatched` and `untagged` name each holding by `silver_source_id` and
+`instrument`, the two columns a ledger row starts with. A holding at two
+sources has a line for each. In `unmapped`, `unmatched` and `untagged`,
+the labels and holdings with no value share one line, `(no value)`,
+with their count. A label or holding whose leaves offset each other
+still has value and keeps its own line.
 
 ## 11. What exposure is not
 

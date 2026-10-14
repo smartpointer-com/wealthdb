@@ -466,8 +466,9 @@ Views
                holdings
   coverage     what the figures rest on: how each part of net worth is
                classified, how old the compositions are, the labels no
-               map knows, the securities no source describes, and the
-               private holdings the tags ledger has no row for
+               map knows, the securities no source describes, the
+               private holdings the tags ledger has no row for, and how
+               far each fund read from a report lies from its proxy
 
 Flags
   -d, --as-of DATE   the day (default today UTC)
@@ -494,8 +495,9 @@ Notes
   forward (the composition is dated after the day), partial (the
   weights leave more than 3% unexplained, a forward states no legs, or
   a fund lies deeper than three levels), unmapped (a provider's label
-  has no place in the vocabulary), by_name (a receipt's sector or
-  country comes from a share matched by name), opaque (a private equity
+  has no place in the vocabulary), by_name (a receipt's or a report
+  line's sector or country comes from a share matched by name among all
+  shares), opaque (a private equity
   fund nothing looks through; it reads diversified), untagged (a
   private holding has no row in the tags ledger), unmatched (a listed
   security no source describes). In funds, no_composition marks a fund

@@ -44,9 +44,11 @@ import (
 //     votes must agree. Anything else stays unmatched.
 //
 // A line a fund's report states by name alone (no identifier) finds its
-// share by the same rules, among the shares of every country, both names
-// reduced alike (lineWords). It takes the share's sector and country as
-// a receipt does, and carries the same flag.
+// share by the same rules, both names reduced alike (lineWords). It looks
+// first among the lines of its fund's proxy, a fund of the same index
+// whose lines carry identifiers, and only then among the shares of every
+// country. It takes the share's sector and country as a receipt does; a
+// share found outside the proxy's roster carries the receipts' flag.
 
 // receiptSQL lists every security that lacks a sector or a risk country,
 // with each name a lookup, a broker or a fund line gives it and whether
@@ -114,6 +116,39 @@ SELECT eq.k, COALESCE(s.risk_country, ''), eq.name
   FROM eq JOIN securities s ON s.security_key = eq.k
  WHERE s.sector IS NULL OR s.risk_country IS NULL`
 
+// rosterSQL lists, for each composition that names a line by name alone,
+// the equity shares its fund's proxy lists: from the proxy's composition
+// nearest the report's day, each line an identifier names (an ISIN, a
+// CUSIP, a ticker) with a sector, by the name the proxy gives it. A line
+// without an asset type counts as equity, as in an equity fund's file.
+const rosterSQL = `
+WITH px AS (
+    SELECT COALESCE(a1.security_key, p.fund_ref) AS fund_ref, COALESCE(a2.security_key, p.proxy_ref) AS proxy_ref
+      FROM exposure_proxies p
+      LEFT JOIN security_aliases a1 ON a1.alias = p.fund_ref
+      LEFT JOIN security_aliases a2 ON a2.alias = p.proxy_ref
+    -- One proxy per fund, as exposure_funds_at picks it.
+   QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(a1.security_key, p.fund_ref)
+                              ORDER BY a1.security_key IS NOT NULL, p.fund_ref) = 1),
+comps AS (
+    SELECT DISTINCT l.fund_ref || '@' || l.as_of || '@' || l.basis AS comp,
+           COALESCE(sa.security_key, l.fund_ref) AS fund_ref, l.as_of
+      FROM fund_lines l LEFT JOIN security_aliases sa ON sa.alias = l.fund_ref
+     WHERE l.security_key LIKE 'name:%'),
+near AS (
+    SELECT c.comp, f.silver_source_id, f.stored_ref, f.as_of, f.basis, f.provider
+      FROM comps c JOIN px USING (fund_ref) JOIN exposure_comps() f ON f.fund_ref = px.proxy_ref
+   QUALIFY ROW_NUMBER() OVER (PARTITION BY c.comp ORDER BY abs(f.as_of - c.as_of), f.as_of DESC, f.silver_source_id) = 1)
+SELECT DISTINCT n.comp, s.security_key, COALESCE(s.risk_country, ''), COALESCE(s.domicile, ''), l.name
+  FROM near n
+  JOIN fund_lines l ON l.silver_source_id = n.silver_source_id AND l.fund_ref = n.stored_ref
+                   AND l.as_of = n.as_of AND l.basis = n.basis
+  LEFT JOIN fund_line_labels lab ON lab.provider = n.provider AND lab.field = 'asset_type' AND lab.raw = l.asset_type
+  LEFT JOIN security_aliases sa ON sa.alias = l.security_key
+  JOIN securities s ON s.security_key = COALESCE(sa.security_key, l.security_key)
+ WHERE COALESCE(lab.value, 'public_equity') = 'public_equity' AND s.security_key NOT LIKE 'name:%'
+   AND s.sector IS NOT NULL AND trim(COALESCE(l.name, '')) <> ''`
+
 // issuerSQL lists each receipt GLEIF ties to its issuer's other ISINs,
 // with those ISINs, where the receipt lacks a sector or a risk country.
 const issuerSQL = `
@@ -128,8 +163,8 @@ SELECT f.k, f.share FROM f JOIN securities s ON s.security_key = f.k
 // receiptFillSQL completes each receipt or named line from its share: a
 // sector or a risk country no source states, and a domicile only an
 // ISIN's prefix implies (a receipt's ISIN is the depositary's). The
-// origin names the share and how it was found: lei:… by GLEIF,
-// underlying:… by name.
+// origin names the share and how it was found: lei:… by GLEIF, roster:…
+// by name among a proxy's lines, underlying:… by name among all shares.
 const receiptFillSQL = `
 UPDATE securities SET
     sector = COALESCE(securities.sector, u.sector),
@@ -142,7 +177,8 @@ UPDATE securities SET
                     THEN u.domicile ELSE securities.domicile END,
     domicile_origin = CASE WHEN COALESCE(securities.domicile_origin, 'isin_prefix') = 'isin_prefix' AND u.domicile IS NOT NULL
                            THEN x.how || u.security_key ELSE securities.domicile_origin END
-  FROM (SELECT *, CASE origin WHEN 'lei' THEN 'lei:' ELSE 'underlying:' END AS how FROM security_underlyings) x
+  FROM (SELECT *, CASE origin WHEN 'lei' THEN 'lei:' WHEN 'roster' THEN 'roster:' ELSE 'underlying:' END AS how
+          FROM security_underlyings) x
   JOIN securities u ON u.security_key = x.underlying_key
  WHERE x.security_key = securities.security_key`
 
@@ -240,11 +276,41 @@ func writeReceipts(ctx context.Context, tx *sql.Tx) error {
 	}); err != nil {
 		return err
 	}
-	maps.Copy(byName, linkLines(lines, shares, inComp))
+	rosters := map[string][]shareName{}
+	if err := scanAll(ctx, tx, rosterSQL, func(rows *sql.Rows) error {
+		var comp string
+		var s shareName
+		if err := rows.Scan(&comp, &s.key, &s.country, &s.domicile, &s.name); err != nil {
+			return err
+		}
+		rosters[comp] = append(rosters[comp], s)
+		return nil
+	}); err != nil {
+		return err
+	}
+	world := newShareIndex(shares, lineWords)
+	country := map[string]string{}
+	note := func(sh shareName) { country[sh.key] = cmp.Or(country[sh.key], sh.country, sh.domicile) }
+	for _, sh := range shares {
+		note(sh)
+	}
+	for _, roster := range rosters {
+		for _, sh := range roster {
+			note(sh)
+		}
+	}
+	byRoster := linkRosters(lines, rosters, inComp, world)
+	for k := range byRoster {
+		delete(lines, k)
+	}
+	maps.Copy(byName, linkLines(lines, world, country, inComp, byRoster))
 	type link struct{ key, share, origin string }
 	var links []link
 	for _, k := range slices.Sorted(maps.Keys(byLEI)) {
 		links = append(links, link{k, byLEI[k], "lei"})
+	}
+	for _, k := range slices.Sorted(maps.Keys(byRoster)) {
+		links = append(links, link{k, byRoster[k], "roster"})
 	}
 	for _, k := range slices.Sorted(maps.Keys(byName)) {
 		links = append(links, link{k, byName[k], "name"})
@@ -325,20 +391,95 @@ func linkReceipts(receipts map[string]*receiptNames, shares []shareName) map[str
 	return out
 }
 
+// linkRosters maps each line a fund names by name alone to the share its
+// name names among its fund's proxy's lines, by the receipts' rules. A
+// line several compositions name searches their rosters together; a line
+// whose funds have no proxy is left to linkLines. A share the roster
+// finds only by a leading name (NAME for NAME HOLDINGS) yields where the
+// world holds another share of exactly that name: the line may be a
+// holding off the index. rosters gives each composition's roster, inComp
+// the compositions each line sits in.
+func linkRosters(lines map[string]*receiptNames, rosters map[string][]shareName,
+	inComp map[string][]string, world shareIndex) map[string]string {
+	indexes := map[string]shareIndex{}
+	out := map[string]string{}
+	for key, r := range lines {
+		var comps []string
+		for _, c := range inComp[key] {
+			if len(rosters[c]) > 0 && !slices.Contains(comps, c) {
+				comps = append(comps, c)
+			}
+		}
+		if len(comps) == 0 {
+			continue
+		}
+		slices.Sort(comps)
+		id := strings.Join(comps, "|")
+		idx, ok := indexes[id]
+		if !ok {
+			var shares []shareName
+			seen := map[shareName]bool{}
+			for _, c := range comps {
+				for _, sh := range rosters[c] {
+					if !seen[sh] {
+						seen[sh] = true
+						shares = append(shares, sh)
+					}
+				}
+			}
+			idx = newShareIndex(shares, lineWords)
+			indexes[id] = idx
+		}
+		share, ok := idx.vote(r, lineWords)
+		if !ok || share == key {
+			continue
+		}
+		if !idx.exactly(r.names)[share] && anyOther(world.exactly(r.names), share) {
+			continue
+		}
+		out[key] = share
+	}
+	return out
+}
+
+// anyOther reports whether keys holds a key other than k.
+func anyOther(keys map[string]bool, k string) bool {
+	for other := range keys {
+		if other != k {
+			return true
+		}
+	}
+	return false
+}
+
+// exactly is the shares whose name equals one of names, both reduced
+// alike (lineWords), with or without a last word cut short.
+func (idx shareIndex) exactly(names []string) map[string]bool {
+	out := map[string]bool{}
+	for _, n := range names {
+		w := lineWords(n)
+		if len(w) == 0 {
+			continue
+		}
+		for _, v := range receiptVariants(w) {
+			for _, e := range idx.exact[strings.Join(v, " ")] {
+				out[e.key] = true
+			}
+		}
+	}
+	return out
+}
+
 // linkLines maps each line a fund names by name alone to the share its
-// name names, by the receipts' rules, among the shares of every country.
-// Both sides are reduced alike (lineWords). A name that finds shares in
+// name names, by the receipts' rules, among the shares of every country
+// (idx, its names reduced by lineWords). A name that finds shares in
 // several countries (one company's in Australia and in Britain) takes
 // the market of the compositions it sits in as its country, where they
 // share one: a composition's market is the country of two in three of
-// its lines that found a share. inComp gives the compositions each line
-// sits in.
-func linkLines(lines map[string]*receiptNames, shares []shareName, inComp map[string][]string) map[string]string {
-	idx := newShareIndex(shares, lineWords)
-	country := map[string]string{}
-	for _, sh := range shares {
-		country[sh.key] = cmp.Or(country[sh.key], sh.country, sh.domicile)
-	}
+// its lines that found a share, here or in a roster (linked). country
+// gives each share's country, inComp the compositions each line sits in.
+func linkLines(lines map[string]*receiptNames, idx shareIndex, country map[string]string,
+	inComp map[string][]string, linked map[string]string) map[string]string {
 	out := map[string]string{}
 	for key, r := range lines {
 		if share, ok := idx.vote(r, lineWords); ok && share != key {
@@ -346,12 +487,14 @@ func linkLines(lines map[string]*receiptNames, shares []shareName, inComp map[st
 		}
 	}
 	tally := map[string]map[string]int{}
-	for key, share := range out {
-		for _, c := range inComp[key] {
-			if tally[c] == nil {
-				tally[c] = map[string]int{}
+	for _, links := range []map[string]string{out, linked} {
+		for key, share := range links {
+			for _, c := range inComp[key] {
+				if tally[c] == nil {
+					tally[c] = map[string]int{}
+				}
+				tally[c][country[share]]++
 			}
-			tally[c][country[share]]++
 		}
 	}
 	market := map[string]string{}
