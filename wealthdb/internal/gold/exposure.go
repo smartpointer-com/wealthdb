@@ -53,6 +53,27 @@ SELECT asset_class, sector, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, cl
 	})
 }
 
+// ExposureSizeRow is one size of one asset class. A size applies to
+// public equity alone; any other class has the size `(none)`.
+type ExposureSizeRow struct {
+	AssetClass, Size string
+	Value            *string
+	ExposureShares
+	ClassSharePct *float64
+	Quality       string
+}
+
+// ExposureSizes runs report_exposure_sizes.
+func ExposureSizes(ctx context.Context, db *sql.DB, asOf int64, ccy string) ([]ExposureSizeRow, error) {
+	return scanRows(ctx, db, "ExposureSizes", `
+SELECT asset_class, size, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, class_share_pct,
+       direct_pct, via_funds_pct, quality
+  FROM report_exposure_sizes(?, ?)`, []any{asOf, ccy}, func(r *ExposureSizeRow) []any {
+		return []any{&r.AssetClass, &r.Size, dec(&r.Value), flt(&r.SharePct), flt(&r.ClassSharePct),
+			flt(&r.DirectPct), flt(&r.ViaFundsPct), &r.Quality}
+	})
+}
+
 // ExposureCountryRow is one country, with its region.
 type ExposureCountryRow struct {
 	Country     string
@@ -98,7 +119,7 @@ SELECT currency, currency_kind, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct
 type ExposureSecurityRow struct {
 	Security                                       string
 	Name, Ticker, AssetClass, Sector, Country, Ccy *string
-	MarketCap                                      *string
+	MarketCap, Size                                *string
 	Value, DirectValue, ViaFundsValue              *string
 	Funds                                          int64
 	SharePct                                       *float64
@@ -109,12 +130,12 @@ type ExposureSecurityRow struct {
 func ExposureSecurities(ctx context.Context, db *sql.DB, asOf int64, ccy, country string) ([]ExposureSecurityRow, error) {
 	return scanRows(ctx, db, "ExposureSecurities", `
 SELECT security, name, ticker, asset_class, sector, country, currency,
-       CAST(market_cap::DECIMAL(28,0) AS VARCHAR), CAST(value::DECIMAL(28,4) AS VARCHAR),
+       CAST(market_cap::DECIMAL(28,0) AS VARCHAR), size, CAST(value::DECIMAL(28,4) AS VARCHAR),
        CAST(direct_value::DECIMAL(28,4) AS VARCHAR), CAST(via_funds_value::DECIMAL(28,4) AS VARCHAR),
        funds, share_pct, quality
   FROM report_exposure_securities(?, ?, p_country := ?)`, []any{asOf, ccy, country}, func(r *ExposureSecurityRow) []any {
 		return []any{&r.Security, str(&r.Name), str(&r.Ticker), str(&r.AssetClass), str(&r.Sector), str(&r.Country),
-			str(&r.Ccy), dec(&r.MarketCap), dec(&r.Value), dec(&r.DirectValue), dec(&r.ViaFundsValue),
+			str(&r.Ccy), dec(&r.MarketCap), str(&r.Size), dec(&r.Value), dec(&r.DirectValue), dec(&r.ViaFundsValue),
 			&r.Funds, flt(&r.SharePct), &r.Quality}
 	})
 }

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -29,6 +30,7 @@ func TestExposureRows(t *testing.T) {
             "isin:XX0000000003": {"fund": "isin:XX0000000004", "always": true}
         },
         "reference_funds": ["symbol:idx9", "isin:XX0000000005"],
+        "size_funds": {"symbol:all9": 100, "isin:XX0000000006": 85},
         "custody": {"bank": {"custodian": " Example Bank AG ", "country": "CH"}},
         "max_gap_days": 200
     }`)
@@ -56,6 +58,10 @@ func TestExposureRows(t *testing.T) {
 	}
 	if strings.Join(rows.ReferenceFunds, ",") != "isin:XX0000000005,symbol:IDX9" {
 		t.Errorf("reference funds = %v", rows.ReferenceFunds)
+	}
+	if want := []canonical.ExposureSizeFund{{FundRef: "isin:XX0000000006", CoveragePct: 85},
+		{FundRef: "symbol:ALL9", CoveragePct: 100}}; !slices.Equal(rows.SizeFunds, want) {
+		t.Errorf("size funds = %+v, want %+v", rows.SizeFunds, want)
 	}
 	if len(rows.Tags) != 2 || rows.Tags[0].InstrumentExternalID != "house-1" || rows.Tags[0].Country != "CH" ||
 		rows.Tags[1].Sector != "technology" {
@@ -159,9 +165,12 @@ func TestExposureRejects(t *testing.T) {
 		`{"proxies": {"symbol:A": {"fund": "symbol:B", "leverage": 0}}}`:                     "non-zero factor",
 		`{"proxies": {"symbol:A": {"fund": "symbol:B", "leverage": 25}}}`:                    "non-zero factor",
 		`{"reference_funds": ["symbol:A", "symbol:a"]}`:                                      "listed twice",
+		`{"size_funds": {"symbol:A": 100, "symbol:a": 85}}`:                                  "name the same fund",
+		`{"size_funds": {"symbol:A": 40}}`:                                                   "50 to 100",
+		`{"size_funds": {"A": 100}}`:                                                         "want isin:",
 		`{"custody": {"bank": {"custodian": " "}}}`:                                          "custodian is required",
 		`{"custody": {"nope": {"custodian": "X"}}}`:                                          "no silver_sources[].id matches",
-		`{"max_gap_days": -1}`: "max_gap_days",
+		`{"max_gap_days": -1}`:                                                               "max_gap_days",
 	} {
 		if _, err := exposureConfig(t, block); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: err %v, want %q", block, err, want)

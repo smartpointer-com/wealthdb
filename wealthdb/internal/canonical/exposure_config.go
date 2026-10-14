@@ -5,6 +5,7 @@ package canonical
 type ExposureRows struct {
 	Proxies        []ExposureProxy
 	ReferenceFunds []string
+	SizeFunds      []ExposureSizeFund
 	Tags           []ExposureTag
 	Custody        []ExposureCustody
 	Settings       ExposureSettings
@@ -18,6 +19,14 @@ type ExposureProxy struct {
 	ProxyRef string
 	Always   bool
 	Leverage float64
+}
+
+// ExposureSizeFund is a broad fund whose weights size the stocks no
+// market cap sizes, and the share of its markets' value it covers, in
+// percent.
+type ExposureSizeFund struct {
+	FundRef     string
+	CoveragePct float64
 }
 
 // ExposureTag states what one holding is, where no composition and no

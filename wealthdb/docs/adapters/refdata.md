@@ -160,10 +160,11 @@ equity, fixed income, multi asset, real estate, infrastructure, cash or
 other. A metal or crypto fund holds what its asset class already says.
 A private fund publishes no lines. A note's basket reaches gold only
 through the collector's inbox, since no public source serves one.
-The `exposure` config adds proxies and reference funds. A proxy is
-wanted over the days of the funds it stands in for; a reference fund
-from today. A fund that a held fund holds is wanted from today too, one
-level down. It comes from a line of the held fund's newest composition:
+The `exposure` config adds proxies, reference funds and size funds. A
+proxy is wanted over the days of the funds it stands in for; a
+reference or size fund from today, in the role `reference`. A fund that
+a held fund holds is wanted from today too, one level down. It comes
+from a line of the held fund's newest composition:
 
 - the line's asset type is a fund, and an identifier names the fund;
 - a holdings list wins over an index list of the same day;
@@ -226,6 +227,8 @@ next load:
 
 - `exposure_proxies`: a fund whose composition stands in for another;
 - `exposure_reference_funds`: funds fetched for their lines alone;
+- `exposure_size_funds`: broad funds whose weights size stocks, each
+  with the share of its markets it covers;
 - `exposure_tags`: the tags ledger's rows, the sector, country and
   currency of a private holding (EXPOSURE.md §9);
 - `exposure_custody`: who keeps each source's assets;

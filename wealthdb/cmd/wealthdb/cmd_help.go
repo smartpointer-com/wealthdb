@@ -74,7 +74,7 @@ var commandHelps = []commandHelp{
 	{name: "gains", args: "<view>", group: "report",
 		short: "what was gained or lost (P&L), realized and unrealized, over a window: summary, sources, portfolios, accounts, positions, realized, lots, coverage, check"},
 	{name: "exposure", args: "<view>", group: "report",
-		short: "what is really owned, every fund looked through, as of a date: classes, sectors, countries, currencies, securities, funds, coverage"},
+		short: "what is really owned, every fund looked through, as of a date: classes, sectors, sizes, countries, currencies, securities, funds, coverage"},
 	{name: "transactions", args: "[FROM [TO]]", group: "report",
 		short: "the individual booked lines over a window; totals by kind are the three reports below"},
 	{name: "spending", args: "<view>", group: "report",

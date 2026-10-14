@@ -51,8 +51,10 @@ import (
 // share found outside the proxy's roster carries the receipts' flag.
 
 // receiptSQL lists every security that lacks a sector or a risk country,
-// with each name a lookup, a broker or a fund line gives it and whether
-// a lookup calls it a depositary receipt.
+// and every one a lookup or a name calls a depositary receipt (the
+// parameter is receiptWording), with each name a lookup, a broker or a
+// fund line gives it and whether a lookup calls it a receipt. A receipt
+// a source describes still finds its share, for the share's size.
 const receiptSQL = `
 WITH names AS (
     SELECT COALESCE(sa.security_key, i.security_key) AS k, i.name,
@@ -71,7 +73,9 @@ SELECT s.security_key,
        COALESCE(s.risk_country, CASE WHEN s.domicile_origin <> 'isin_prefix' THEN s.domicile END, ''),
        n.name, COALESCE(n.receipt, FALSE)
   FROM securities s JOIN names n ON n.k = s.security_key
- WHERE (s.sector IS NULL OR s.risk_country IS NULL) AND n.name IS NOT NULL AND trim(n.name) <> ''`
+ WHERE n.name IS NOT NULL AND trim(n.name) <> ''
+   AND (s.sector IS NULL OR s.risk_country IS NULL
+        OR s.security_key IN (SELECT k FROM names WHERE receipt OR regexp_matches(upper(name), ?)))`
 
 // shareSQL lists the equity shares a receipt or a named line may stand
 // for: each security a fund lists as an equity line under an ISIN, with
@@ -150,21 +154,21 @@ SELECT DISTINCT n.comp, s.security_key, COALESCE(s.risk_country, ''), COALESCE(s
    AND s.sector IS NOT NULL AND trim(COALESCE(l.name, '')) <> ''`
 
 // issuerSQL lists each receipt GLEIF ties to its issuer's other ISINs,
-// with those ISINs, where the receipt lacks a sector or a risk country.
+// with those ISINs.
 const issuerSQL = `
 WITH f AS (
     SELECT DISTINCT COALESCE(sa.security_key, f.security_key) AS k, 'isin:' || upper(trim(i.isin)) AS share
       FROM security_facts f LEFT JOIN security_aliases sa ON sa.alias = f.security_key,
            unnest(string_split(f.value, ' ')) AS i(isin)
      WHERE f.field = 'issuer_isins' AND trim(i.isin) <> '')
-SELECT f.k, f.share FROM f JOIN securities s ON s.security_key = f.k
- WHERE s.sector IS NULL OR s.risk_country IS NULL`
+SELECT f.k, f.share FROM f JOIN securities s ON s.security_key = f.k`
 
-// receiptFillSQL completes each receipt or named line from its share: a
-// sector or a risk country no source states, and a domicile only an
-// ISIN's prefix implies (a receipt's ISIN is the depositary's). The
-// origin names the share and how it was found: lei:… by GLEIF, roster:…
-// by name among a proxy's lines, underlying:… by name among all shares.
+// receiptFillSQL completes each receipt or named line that lacks a sector
+// or a risk country from its share: a sector or a risk country no source
+// states, and a domicile only an ISIN's prefix implies (a receipt's ISIN
+// is the depositary's). The origin names the share and how it was found:
+// lei:… by GLEIF, roster:… by name among a proxy's lines, underlying:…
+// by name among all shares.
 const receiptFillSQL = `
 UPDATE securities SET
     sector = COALESCE(securities.sector, u.sector),
@@ -180,7 +184,7 @@ UPDATE securities SET
   FROM (SELECT *, CASE origin WHEN 'lei' THEN 'lei:' WHEN 'roster' THEN 'roster:' ELSE 'underlying:' END AS how
           FROM security_underlyings) x
   JOIN securities u ON u.security_key = x.underlying_key
- WHERE x.security_key = securities.security_key`
+ WHERE x.security_key = securities.security_key AND (securities.sector IS NULL OR securities.risk_country IS NULL)`
 
 // writeReceipts rewrites security_underlyings and completes each
 // receipt, and each line named by name alone, from the share it stands
@@ -204,7 +208,7 @@ func writeReceipts(ctx context.Context, tx *sql.Tx) error {
 		r.names = append(r.names, name)
 		r.receipt = r.receipt || receipt || receiptWording.MatchString(strings.ToUpper(name))
 		return nil
-	}); err != nil {
+	}, receiptWording.String()); err != nil {
 		return err
 	}
 	var shares []shareName
@@ -323,8 +327,8 @@ func writeReceipts(ctx context.Context, tx *sql.Tx) error {
 	return execAll(ctx, tx, receiptFillSQL)
 }
 
-func scanAll(ctx context.Context, tx *sql.Tx, q string, scan func(*sql.Rows) error) error {
-	rows, err := tx.QueryContext(ctx, q)
+func scanAll(ctx context.Context, tx *sql.Tx, q string, scan func(*sql.Rows) error, args ...any) error {
+	rows, err := tx.QueryContext(ctx, q, args...)
 	if err != nil {
 		return err
 	}

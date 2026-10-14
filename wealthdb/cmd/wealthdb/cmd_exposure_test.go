@@ -97,6 +97,7 @@ func TestExposurePrivacyHidesAmounts(t *testing.T) {
 	kept := map[string][]string{
 		"classes":    {"public_equity", "57.14"},
 		"sectors":    {"technology", "40.00"},
+		"sizes":      {"public_equity", "unclassified"},
 		"countries":  {"US", "40.00"},
 		"currencies": {"USD", "fiat"},
 		"securities": {"symbol:AAAA", "Alpha Corp", "40.00", "technology"},

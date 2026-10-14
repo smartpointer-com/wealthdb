@@ -28,7 +28,7 @@ func init() {
 }
 
 // exposureViews are the views, coarse to fine, then the diagnostics.
-var exposureViews = []string{"classes", "sectors", "countries", "currencies", "securities", "funds", "coverage"}
+var exposureViews = []string{"classes", "sectors", "sizes", "countries", "currencies", "securities", "funds", "coverage"}
 
 // exposureCountryViews are the views --country applies to.
 var exposureCountryViews = []string{"countries", "securities"}
@@ -110,6 +110,11 @@ func exposureReport(req request) *report {
 		return exposureView(req, buildExposureSectorColumns(ccy), defaultExposureSectorColumns,
 			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureSectorRow, error) {
 				return gold.ExposureSectors(ctx, db, at, ccy)
+			})
+	case "sizes":
+		return exposureView(req, buildExposureSizeColumns(ccy), defaultExposureSizeColumns,
+			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureSizeRow, error) {
+				return gold.ExposureSizes(ctx, db, at, ccy)
 			})
 	case "countries":
 		return exposureView(req, buildExposureCountryColumns(ccy), defaultExposureCountryColumns,
@@ -208,7 +213,7 @@ var exposurePeriods = []string{"monthly", "quarterly", "annual"}
 // exposureSeriesViews are the views a series takes: the aggregates and
 // coverage. A series of securities or funds would be thousands of rows a
 // period.
-var exposureSeriesViews = []string{"classes", "sectors", "countries", "currencies", "coverage"}
+var exposureSeriesViews = []string{"classes", "sectors", "sizes", "countries", "currencies", "coverage"}
 
 // seriesPoints are the ends of the periods of `period` that meet the
 // window [from, to]: each period's last second, the window's end for the
@@ -296,6 +301,21 @@ func buildExposureSectorColumns(ccy string) []columnSpec[gold.ExposureSectorRow]
 
 var defaultExposureSectorColumns = []string{"asset_class", "sector", "value", "share_pct", "class_share_pct", "quality"}
 
+func buildExposureSizeColumns(ccy string) []columnSpec[gold.ExposureSizeRow] {
+	type row = gold.ExposureSizeRow
+	cols := []columnSpec[row]{
+		{Name: "asset_class", Align: output.AlignLeft, Extract: func(r row) string { return r.AssetClass }},
+		{Name: "size", Align: output.AlignLeft, Extract: func(r row) string { return r.Size }},
+		outCcyCol("value", ccy, func(r row) *string { return r.Value }),
+	}
+	cols = append(cols, shareCols(func(r row) gold.ExposureShares { return r.ExposureShares })...)
+	return append(cols,
+		pctCol("class_share_pct", func(r row) *float64 { return r.ClassSharePct }),
+		qualityCol(func(r row) string { return r.Quality }))
+}
+
+var defaultExposureSizeColumns = []string{"asset_class", "size", "value", "share_pct", "class_share_pct", "quality"}
+
 func buildExposureCountryColumns(ccy string) []columnSpec[gold.ExposureCountryRow] {
 	type row = gold.ExposureCountryRow
 	cols := []columnSpec[row]{
@@ -344,8 +364,10 @@ func buildExposureSecurityColumns(ccy string) []columnSpec[gold.ExposureSecurity
 		textCol("sector", func(r row) *string { return r.Sector }),
 		textCol("country", func(r row) *string { return r.Country }),
 		textCol("currency", func(r row) *string { return r.Ccy }),
-		// A public figure, as its source states it: legible under -p.
+		// A public figure, as a source states it or EDGAR's shares and a
+		// price make it: legible under -p.
 		textCol("market_cap", func(r row) *string { return r.MarketCap }),
+		textCol("size", func(r row) *string { return r.Size }),
 		outCcyCol("value", ccy, func(r row) *string { return r.Value }),
 		outCcyCol("direct_value", ccy, func(r row) *string { return r.DirectValue }),
 		outCcyCol("via_funds_value", ccy, func(r row) *string { return r.ViaFundsValue }),
@@ -434,6 +456,7 @@ func exposureUsage() string {
 	cols := map[string]string{
 		"classes":    joinColumnNames(buildExposureClassColumns("CCY")),
 		"sectors":    joinColumnNames(buildExposureSectorColumns("CCY")),
+		"sizes":      joinColumnNames(buildExposureSizeColumns("CCY")),
 		"countries":  joinColumnNames(buildExposureCountryColumns("CCY")),
 		"currencies": joinColumnNames(buildExposureCurrencyColumns("CCY")),
 		"securities": joinColumnNames(buildExposureSecurityColumns("CCY")),
@@ -457,6 +480,8 @@ Views
   classes      one row per asset class
   sectors      one row per asset class and sector, with the share within
                the class
+  sizes        one row per asset class and size (large, mid, small; for
+               public equity alone), with the share within the class
   countries    one row per country, with its region
   currencies   one row per currency a value moves with: a fiat currency,
                a metal (XAU) or a coin (BTC)
@@ -475,8 +500,8 @@ Flags
   --period P         monthly | quarterly | annual: the view at the end of
                      every period of the window FROM..TO (default the
                      last twelve months; never past today), a period
-                     column first; on classes, sectors, countries,
-                     currencies and coverage
+                     column first; on classes, sectors, sizes,
+                     countries, currencies and coverage
   --country C        risk (default) | domicile: the country a security
                      counts in, on countries and securities
   -f FORMAT          table | csv | csv_plain | json
@@ -497,15 +522,19 @@ Notes
   a fund lies deeper than three levels), unmapped (a provider's label
   has no place in the vocabulary), by_name (a receipt's or a report
   line's sector or country comes from a share matched by name among all
-  shares), opaque (a private equity
-  fund nothing looks through; it reads diversified), untagged (a
-  private holding has no row in the tags ledger), unmatched (a listed
-  security no source describes). In funds, no_composition marks a fund
-  nothing describes on the day.
+  shares), opaque (a private equity fund nothing looks through; it reads
+  diversified), untagged (a private holding has no row in the tags
+  ledger), unmatched (a listed security no source describes). In funds,
+  no_composition marks a fund nothing describes on the day.
+
+  A stock's size comes from its market cap (large from 10bn US dollars,
+  mid from 2bn), else from its rank in a broad fund the config names
+  (exposure.size_funds).
 
 Available columns (per view):
   classes      ` + cols["classes"] + `
   sectors      ` + cols["sectors"] + `
+  sizes        ` + cols["sizes"] + `
   countries    ` + cols["countries"] + `
   currencies   ` + cols["currencies"] + `
   securities   ` + cols["securities"] + `
@@ -515,6 +544,7 @@ Available columns (per view):
 Default column sets:
   classes      ` + strings.Join(defaultExposureClassColumns, ", ") + `
   sectors      ` + strings.Join(defaultExposureSectorColumns, ", ") + `
+  sizes        ` + strings.Join(defaultExposureSizeColumns, ", ") + `
   countries    ` + strings.Join(defaultExposureCountryColumns, ", ") + `
   currencies   ` + strings.Join(defaultExposureCurrencyColumns, ", ") + `
   securities   ` + strings.Join(defaultExposureSecurityColumns, ", ") + `

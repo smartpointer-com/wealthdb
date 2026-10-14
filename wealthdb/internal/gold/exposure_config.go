@@ -11,14 +11,15 @@ import (
 // SyncExposure makes the exposure config tables hold exactly the
 // config's `exposure` block: each table is replaced whole, so an entry
 // taken out of the config leaves on the next load. Returns how many
-// proxies, reference funds, tags and custody entries it stamped.
+// proxies, reference and size funds, tags and custody entries it
+// stamped.
 func SyncExposure(ctx context.Context, db *sql.DB, rows canonical.ExposureRows) (int, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("SyncExposure: begin: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck — no-op after Commit
-	for _, t := range []string{"exposure_proxies", "exposure_reference_funds", "exposure_tags",
+	for _, t := range []string{"exposure_proxies", "exposure_reference_funds", "exposure_size_funds", "exposure_tags",
 		"exposure_custody", "exposure_settings"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t); err != nil {
 			return 0, fmt.Errorf("SyncExposure: clear %s: %w", t, err)
@@ -38,6 +39,12 @@ func SyncExposure(ctx context.Context, db *sql.DB, rows canonical.ExposureRows) 
 	}
 	for _, r := range rows.ReferenceFunds {
 		if err := insert(`INSERT INTO exposure_reference_funds (fund_ref) VALUES (?)`, r); err != nil {
+			return 0, err
+		}
+	}
+	for _, f := range rows.SizeFunds {
+		if err := insert(`INSERT INTO exposure_size_funds (fund_ref, coverage_pct) VALUES (?, ?)`,
+			f.FundRef, f.CoveragePct); err != nil {
 			return 0, err
 		}
 	}
@@ -62,5 +69,5 @@ VALUES (?, ?, ?, ?, ?)`, t.SilverSourceID, t.InstrumentExternalID,
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("SyncExposure: commit: %w", err)
 	}
-	return len(rows.Proxies) + len(rows.ReferenceFunds) + len(rows.Tags) + len(rows.Custody), nil
+	return len(rows.Proxies) + len(rows.ReferenceFunds) + len(rows.SizeFunds) + len(rows.Tags) + len(rows.Custody), nil
 }

@@ -12,8 +12,9 @@ import (
 
 // ExposureConfig is the `exposure` block of wealthdb.cfg: what the
 // exposure report needs that no source knows. Absent block ⇒ no proxies,
-// no reference funds, no tags, no custody, and the default settings. The
-// load writes it into gold's exposure tables (gold.SyncExposure).
+// no reference or size funds, no tags, no custody, and the default
+// settings. The load writes it into gold's exposure tables
+// (gold.SyncExposure).
 type ExposureConfig struct {
 	// Proxies maps a fund reference to the fund whose composition stands
 	// in for it. Keyed by isin:…, cusip:… or symbol:…, as `wealthdb
@@ -23,6 +24,11 @@ type ExposureConfig struct {
 	// widen the security master a directly held stock finds its sector
 	// and country in. They need not be held.
 	ReferenceFunds []string `json:"reference_funds,omitempty"`
+	// SizeFunds are broad funds whose weights size the stocks no market
+	// cap sizes, each with the share of its markets' value it covers in
+	// percent: 100 for an all-cap fund, 85 for a large and mid cap one.
+	// They are fetched like reference funds and need not be held.
+	SizeFunds map[string]float64 `json:"size_funds,omitempty"`
 	// Tags is the path to the tags ledger, a CSV of what no public
 	// source can know: a private holding's country, currency and sector
 	// (exposure_tags.go). Expanded like equity_transfers; a missing file
@@ -111,6 +117,20 @@ func (c *Config) validateExposure(seenIDs map[string]bool) error {
 		}
 		seenRef[ref] = true
 	}
+	sized := map[string]string{}
+	for key, cov := range e.SizeFunds {
+		ref, err := canonical.ParseFundRef(key)
+		if err != nil {
+			return fmt.Errorf("config: exposure.size_funds: %w", err)
+		}
+		if prev, dup := sized[ref]; dup {
+			return fmt.Errorf("config: exposure.size_funds: %q and %q name the same fund", prev, key)
+		}
+		sized[ref] = key
+		if math.IsNaN(cov) || cov < 50 || cov > 100 {
+			return fmt.Errorf("config: exposure.size_funds[%q] %v: want the share of its markets it covers, 50 to 100", key, cov)
+		}
+	}
 	for sourceID, cu := range e.Custody {
 		if !seenIDs[sourceID] {
 			return fmt.Errorf("config: exposure.custody[%q]: no silver_sources[].id matches", sourceID)
@@ -167,6 +187,11 @@ func (c *Config) ExposureRows() (canonical.ExposureRows, error) {
 		out.ReferenceFunds = append(out.ReferenceFunds, ref)
 	}
 	slices.Sort(out.ReferenceFunds)
+	for key, cov := range e.SizeFunds {
+		ref, _ := canonical.ParseFundRef(key)
+		out.SizeFunds = append(out.SizeFunds, canonical.ExposureSizeFund{FundRef: ref, CoveragePct: cov})
+	}
+	slices.SortFunc(out.SizeFunds, func(a, b canonical.ExposureSizeFund) int { return strings.Compare(a.FundRef, b.FundRef) })
 	sources := map[string]bool{}
 	for _, s := range c.SilverSources {
 		sources[s.ID] = true

@@ -365,7 +365,7 @@ func (s *span) dates() (from, to *string) {
 
 // addProxiesAndReferences adds the funds the exposure config names: a
 // proxy, wanted over the spans of the funds it stands in for, and a
-// reference fund, wanted from today.
+// reference or size fund, wanted from today in the role reference.
 func addProxiesAndReferences(ctx context.Context, db *sql.DB, funds map[string]*WantedFund,
 	spans map[string]*span, now time.Time, keys keyReader) error {
 	rows, err := db.QueryContext(ctx, `SELECT fund_ref, proxy_ref FROM exposure_proxies ORDER BY 1`)
@@ -412,7 +412,15 @@ func addProxiesAndReferences(ctx context.Context, db *sql.DB, funds map[string]*
 			spans[p.to].add(span{from: today, to: today, open: true, set: true})
 		}
 	}
-	refs, err := db.QueryContext(ctx, `SELECT fund_ref FROM exposure_reference_funds ORDER BY 1`)
+	q := `SELECT fund_ref FROM exposure_reference_funds`
+	sized, err := hasTable(ctx, db, "exposure_size_funds")
+	if err != nil {
+		return err
+	}
+	if sized {
+		q += ` UNION SELECT fund_ref FROM exposure_size_funds`
+	}
+	refs, err := db.QueryContext(ctx, q+` ORDER BY 1`)
 	if err != nil {
 		return fmt.Errorf("wanted: reference funds: %w", err)
 	}

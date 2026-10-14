@@ -86,7 +86,7 @@ whose label a map knows, and keeps where it came from:
 | sector | a vendor; the newest fund line; another provider's sector; the SEC SIC code; a bond's type at OpenFIGI; a bond's description |
 | country of risk | a vendor's risk country; the newest fund line's country; another provider's risk country; the headquarters country (GLEIF, EDGAR's business address); the country a bond's type or description implies |
 | country of domicile | the legal country (GLEIF); the country of incorporation (EDGAR); the ISIN prefix |
-| market cap | a vendor; another provider's market cap |
+| market cap | a vendor; another provider's market cap; for a US filer, EDGAR's shares outstanding times the US-dollar price a position held directly implies, else the newest fund line's |
 
 A row in the tags ledger (§9) wins over every source for the holding it
 names.
@@ -162,6 +162,29 @@ matched among all shares carry the flag `by_name`.
 
 `--country risk` (the default) places a security in its country of
 risk, else its domicile. `--country domicile` does the opposite.
+
+### Size
+
+A stock's size is `large`, `mid` or `small`:
+
+- From its market cap, where one is known: large from 10bn US dollars,
+  mid from 2bn, small below. A depositary receipt's own price and
+  EDGAR's share count make none: its price is the receipt's, its shares
+  the issuer's.
+- Else from its rank in a size fund, a broad fund the config names
+  (§9). Among the fund's stocks of its country, by falling weight, the
+  first that hold 70% of the market are large, those up to 85% mid, the
+  rest small. A fund that covers less than its whole market scales the
+  rank. A large and mid cap fund (85%) holds no small stock.
+- A stock in two size funds takes the one that covers more of its
+  market, then the one with more stocks of its country.
+- A depositary receipt, and a line a report names by name alone, takes
+  the size of the share it stands for (above).
+
+`securities.size_origin` says which: `market_cap`, `size_fund:` and the
+fund, or the share as `lei:`, `roster:` or `underlying:` with its key. A
+stock nothing sizes is `unclassified`, and so is a fund nothing looks
+through.
 
 ### Vocabularies
 
@@ -283,6 +306,7 @@ The `currencies` view marks each row's kind: `fiat`, `metal` or
 | --- | --- | --- |
 | `classes` | asset class | the allocation after look-through |
 | `sectors` | asset class and sector | the sector weights, and `class_share_pct` within the class |
+| `sizes` | asset class and size | large, mid and small caps (§3), and `class_share_pct` within the class |
 | `countries` | country | where the value is, with each country's region |
 | `currencies` | currency | what the value moves with |
 | `securities` | security | each security held directly and through every fund |
@@ -298,7 +322,8 @@ Columns every aggregate view shares:
 - `quality`: the flags of §8.
 
 A row with no value for its dimension reads `unclassified`. In
-`countries`, a metal or a coin reads `(none)`: it has no country.
+`countries`, a metal or a coin reads `(none)`: it has no country. In
+`sizes`, anything but public equity reads `(none)`.
 
 `securities` gives a leaf without a security a row of its own: cash per
 currency, any other fund line by its fund and name, a holding by its
@@ -314,9 +339,10 @@ the last second of every period in the window and puts a `period`
 column first. The last period ends at the window's end, so a window to
 today ends with today's figures. The window defaults to the last twelve
 months. It starts no earlier than the first holding and ends no later
-than today. It works on `classes`, `sectors`, `countries`, `currencies`
-and `coverage`. Each period is a separate look-through: its holdings
-and compositions are the ones of its own day (§4).
+than today. It works on `classes`, `sectors`, `sizes`, `countries`,
+`currencies` and `coverage`. Each period is a separate look-through: its
+holdings and compositions are the ones of its own day (§4). A security's
+attributes, its market cap and size among them, are today's.
 
 ## 8. Quality
 
@@ -348,6 +374,7 @@ The `exposure` block of `wealthdb.cfg` holds what no source knows
     "symbol:LEV3":       { "fund": "symbol:IDX1", "leverage": 3 }
   },
   "reference_funds": ["symbol:IDX9"],
+  "size_funds": { "symbol:ALL9": 100, "isin:XX0000000003": 85 },
   "tags": "~/ledgers/exposure-tags.csv",
   "custody": { "bank-1": { "custodian": "Example Bank AG", "country": "CH" } },
   "max_gap_days": 400
@@ -357,6 +384,11 @@ The `exposure` block of `wealthdb.cfg` holds what no source knows
 - `proxies` maps a fund reference to its proxy (§5).
 - `reference_funds` are broad funds fetched for their lines alone. They
   widen the security master; they need not be held.
+- `size_funds` are broad funds whose weights size the stocks no market
+  cap sizes (§3). Each states the share of its markets' value it
+  covers, in percent: 100 for an all-cap fund, 85 for a large and mid
+  cap one. A small-cap fund is no size fund. They are fetched like
+  reference funds.
 - `tags` is the path to the tags ledger, below.
 
 - `custody` names who keeps each source's assets. A cash balance counts

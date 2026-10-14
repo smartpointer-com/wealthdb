@@ -16,18 +16,24 @@ func TestSyncExposure(t *testing.T) {
 			{FundRef: "isin:XX0000000001", ProxyRef: "isin:XX0000000002", Always: true, Leverage: 1},
 		},
 		ReferenceFunds: []string{"symbol:IDX9"},
+		SizeFunds:      []canonical.ExposureSizeFund{{FundRef: "symbol:ALL9", CoveragePct: 100}},
 		Tags:           []canonical.ExposureTag{{SilverSourceID: "manual", InstrumentExternalID: "house-1", Country: "CH", Currency: "CHF"}},
 		Custody:        []canonical.ExposureCustody{{SilverSourceID: "bank", Custodian: "Example Bank AG"}},
 		Settings:       canonical.ExposureSettings{MaxGapDays: 400, AgedDays: 35, PartialPct: 3},
 	}
-	if n, err := SyncExposure(ctx, db, rows); err != nil || n != 5 {
+	if n, err := SyncExposure(ctx, db, rows); err != nil || n != 6 {
 		t.Fatalf("sync: %d %v", n, err)
 	}
 	rows.Proxies = rows.Proxies[:1]
 	rows.Tags, rows.Custody = nil, nil
 	rows.Settings.MaxGapDays = 200
-	if n, err := SyncExposure(ctx, db, rows); err != nil || n != 2 {
+	if n, err := SyncExposure(ctx, db, rows); err != nil || n != 3 {
 		t.Fatalf("resync: %d %v", n, err)
+	}
+	var sizeFunds string
+	if err := db.QueryRowContext(ctx, `SELECT string_agg(fund_ref || ':' || coverage_pct, ',') FROM exposure_size_funds`).
+		Scan(&sizeFunds); err != nil || sizeFunds != "symbol:ALL9:100.0" {
+		t.Errorf("size funds = %q (%v)", sizeFunds, err)
 	}
 	var proxies, tags, custody, settings string
 	if err := db.QueryRowContext(ctx, `SELECT

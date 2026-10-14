@@ -10,14 +10,15 @@ import (
 )
 
 // RebuildExposure rewrites the exposure report's derived tables
-// (migrations 0126, 0129) from what gold holds: the label maps and
+// (migrations 0126, 0129, 0132) from what gold holds: the label maps and
 // vocabularies, the labels the fund lines carry, each instrument's
 // security key, the aliases that tie two keys of one security together,
 // the best-known attributes of every security, the share each
-// depositary receipt stands for, and what a bond's description says
-// where nothing else does. It runs after the per-source loads, like the
-// lot pass: an alias may tie a line one source loaded to an instrument
-// another one did. One transaction; the tables are replaced whole.
+// depositary receipt stands for, what a bond's description says where
+// nothing else does, and each stock's market cap and size. It runs after
+// the per-source loads, like the lot pass: an alias may tie a line one
+// source loaded to an instrument another one did. One transaction; the
+// tables are replaced whole.
 func RebuildExposure(ctx context.Context, db *sql.DB) (ExposureCounts, error) {
 	var n ExposureCounts
 	tx, err := db.BeginTx(ctx, nil)
@@ -36,6 +37,7 @@ func RebuildExposure(ctx context.Context, db *sql.DB) (ExposureCounts, error) {
 		{"securities", func() error { return execAll(ctx, tx, securitiesSQL) }},
 		{"receipts", func() error { return writeReceipts(ctx, tx) }},
 		{"bonds", func() error { return writeBondReadings(ctx, tx) }},
+		{"sizes", func() error { return writeSizes(ctx, tx) }},
 	}
 	for _, s := range steps {
 		if err := s.run(); err != nil {
@@ -319,7 +321,8 @@ SELECT alias, security_key, origin FROM picked WHERE alias NOT IN (SELECT alias 
 // wins over one a map knows.
 const securitiesSQL = `
 DELETE FROM securities;
-INSERT INTO securities
+INSERT INTO securities (security_key, name, currency, sector, sector_origin, risk_country, risk_country_origin,
+                        domicile, domicile_origin, market_cap, market_cap_origin, shares_outstanding)
 WITH ln AS (
     SELECT COALESCE(sa.security_key, l.security_key) AS k, l.as_of, c.provider, l.name, l.currency,
            l.sector, COALESCE(l.risk_country, l.country) AS country

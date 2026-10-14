@@ -66,6 +66,9 @@ year, `2026-03` a whole month, `2025-01-01 2025-06-30` a range.
 - **Sector, country or currency exposure** — `wealthdb exposure sectors`,
   `wealthdb exposure countries`, `wealthdb exposure currencies`; add
   `-d 2025-12-31` for a past day
+- **Large, mid and small caps** — `wealthdb exposure sizes` (public
+  equity split by market cap; `unclassified` is what no market cap or
+  size fund sizes)
 - **How much of one company is owned, directly and through funds** —
   `wealthdb exposure securities | grep -i <company>` (read `direct_value`
   and `via_funds_value`)
@@ -143,7 +146,7 @@ year, `2026-03` a whole month, `2025-01-01 2025-06-30` a range.
 | Net worth per portfolio | `holdings portfolios` |
 | Balance per account | `holdings accounts` |
 | Every individual holding | `holdings positions` |
-| What is **really owned** once funds are looked through: classes, sectors, countries, currencies, single companies | `exposure <view>` |
+| What is **really owned** once funds are looked through: classes, sectors, sizes, countries, currencies, single companies | `exposure <view>` |
 | Trades, dividends, interest, fees, cash in and out over time | `transactions` |
 | How something **performed** over a period (return %) | `returns <view>` |
 | **What was gained or lost**, realized or unrealized; cost basis; tax lots | `gains <view>` |
@@ -155,7 +158,7 @@ year, `2026-03` a whole month, `2025-01-01 2025-06-30` a range.
 | Command | Views |
 |---|---|
 | `holdings` | `global`, `sources`, `portfolios`, `accounts`, `positions` |
-| `exposure` | `classes`, `sectors`, `countries`, `currencies`, `securities`, `funds`, `coverage` |
+| `exposure` | `classes`, `sectors`, `sizes`, `countries`, `currencies`, `securities`, `funds`, `coverage` |
 | `returns` | `global`, `sources`, `portfolios`, `accounts` |
 | `gains` | `summary`, `sources`, `portfolios`, `accounts`, `positions`, `realized`, `lots`, `coverage`, `check` |
 | `spending` | `summary`, `categories`, `transactions` |
@@ -231,6 +234,7 @@ Treat any other column as unredacted unless it actually prints `***`.
 | `holdings positions` | `silver_source, snapshot_date, account, symbol, position_key, asset_class, vehicle, currency, quantity, market_value, value` |
 | `exposure classes` | `asset_class, value, share_pct, direct_pct, via_funds_pct, quality` |
 | `exposure sectors` | `asset_class, sector, value, share_pct, class_share_pct, quality` |
+| `exposure sizes` | `asset_class, size, value, share_pct, class_share_pct, quality` |
 | `exposure countries` | `country, country_name, region, value, share_pct, direct_pct, via_funds_pct, quality` |
 | `exposure currencies` | `currency, kind, value, share_pct, direct_pct, via_funds_pct, quality` |
 | `exposure securities` | `security, name, asset_class, sector, country, currency, value, direct_value, via_funds_value, share_pct, quality` |
