@@ -83,15 +83,34 @@ whose label a map knows, and keeps where it came from:
 
 | Field | Order |
 | --- | --- |
-| sector | a vendor; the newest fund line; another provider's sector; the SEC SIC code |
-| country of risk | a vendor's risk country; the newest fund line's country; another provider's risk country; the headquarters country (GLEIF, EDGAR's business address) |
+| sector | a vendor; the newest fund line; another provider's sector; the SEC SIC code; a bond's type at OpenFIGI; a bond's description |
+| country of risk | a vendor's risk country; the newest fund line's country; another provider's risk country; the headquarters country (GLEIF, EDGAR's business address); the country a bond's type or description implies |
 | country of domicile | the legal country (GLEIF); the country of incorporation (EDGAR); the ISIN prefix |
 | market cap | a vendor; another provider's market cap |
 
 A row in the tags ledger (§9) wins over every source for the holding it
 names.
+
 The fund files are the security master: a stock held directly takes its
 sector and country from any fund line that names the same security.
+
+A bond held directly that no source gives a sector reads its broker's
+description, as the last source of its sector. The rules apply in this
+order:
+
+- A bond under a US ISIN reads municipal, US, US dollars where its
+  description holds a municipal word (GO, REV, AUTH, CNTY, SCH DIST and
+  the like). Two weaker words (WTR, PUB, HSG and the like) do too. A
+  legal form only a company has (INC, LLC, PLC) rules this out.
+- A bond under a US ISIN that names a US state or territory, with only
+  its form beside it, reads municipal too (STATE OF GEORGIA).
+- A description that names a country, with only the issuer's form and
+  the kind of paper beside it, reads government in that country
+  (FINLAND 3.33% 2041, REPUBLIC OF AUSTRIA 3.33% 2041).
+- A legal form (INC, CORP, LTD) reads corporate.
+
+Two brokers whose descriptions read otherwise leave the bond as it is.
+A country a source states stays. The origin is `description`.
 
 A depositary receipt (an ADR, a GDR) stands for a share listed abroad.
 Where no source states its sector or country, it takes the share's.
@@ -156,8 +175,12 @@ Each provider's labels map onto these in code
 (`internal/canonical/exposurelabels.go`), one to one. A provider whose
 words mean something else in the generic map has a map of its own: EDGAR
 writes `DE` for Delaware, so its state and country codes read through
-EDGAR's code list (`edgarcodes.go`), never the generic one. A label no map
-knows is **unmapped**: the leaf keeps no value for that field, the row
+EDGAR's code list (`edgarcodes.go`), never the generic one. OpenFIGI's
+type of a bond has a map too. `Govt`, `Muni` and `Corp` read as the
+bond sectors of those names, and `Mtge` and `Pool` as `securitised`.
+`Muni` also places a bond in the US, a territory's bond too. The map is
+coarse. `Corp` holds supranational and covered bonds as well. A label
+no map knows is **unmapped**: the leaf keeps no value for that field, the row
 says so, and `coverage` lists the label. No vendor's scheme ships; the
 maps name labels, never securities.
 

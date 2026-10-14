@@ -527,17 +527,21 @@ func addCompositionDates(ctx context.Context, db *sql.DB, funds map[string]*Want
 	return rows.Err()
 }
 
-// The fields a security wants, and the facts and fund-line columns that
-// state each. A bond wants no market cap.
+// The fields a security wants, and the facts, fund-line columns and
+// lookup type maps that state each. A bond's type states its sector, and
+// a municipal bond's type its country too (canonical/exposurelabels.go).
+// A bond wants no market cap.
 var wantedFields = []struct {
 	field      string
 	facts      []string
 	lineColumn string
+	typeLabels canonical.LabelField
 	stocksOnly bool
 }{
-	{"sector", []string{"sector", "sic"}, "sector", false},
-	{"country", []string{"risk_country", "hq_country", "legal_country", "incorporation"}, "country", false},
-	{"market_cap", []string{"market_cap", "shares_outstanding", "size"}, "", true},
+	{"sector", []string{"sector", "sic"}, "sector", canonical.LabelSecurityType, false},
+	{"country", []string{"risk_country", "hq_country", "legal_country", "incorporation"}, "country",
+		canonical.LabelSecurityTypeCountry, false},
+	{"market_cap", []string{"market_cap", "shares_outstanding", "size"}, "", "", true},
 }
 
 // addConstituents adds the securities the lines of the funds held today
@@ -654,12 +658,19 @@ func addUSSymbols(ctx context.Context, db *sql.DB, securities map[string]*Wanted
 }
 
 // addSecurityState fills the day each provider last answered for each
-// security, and returns which (key, field) pairs some source states.
+// security, and returns which (key, field) pairs some source states. A
+// lookup under another key that found nothing does not count: the
+// security's own identifier may find it (a broker's CUSIP asked as a
+// ticker finds no bond).
 func addSecurityState(ctx context.Context, db *sql.DB, securities map[string]*WantedSecurity, keys keyReader) (map[[2]string]bool, error) {
 	rows, err := db.QueryContext(ctx, `
-SELECT `+keys.sql("x.security_key")+`, x.provider, MAX(x.as_of) FROM (
-    SELECT security_key, provider, as_of FROM security_facts
-    UNION ALL SELECT security_key, provider, as_of FROM security_identities) x
+SELECT k, provider, MAX(as_of) FROM (
+    SELECT `+keys.sql("x.security_key")+` AS k, x.* FROM (
+        SELECT security_key, provider, as_of, TRUE AS found FROM security_facts
+        UNION ALL SELECT security_key, provider, as_of,
+                         COALESCE(TRY_CAST(json_extract_string(payload, '$.found') AS BOOLEAN), TRUE)
+          FROM security_identities) x)
+ WHERE found OR k = security_key
  GROUP BY 1, 2`)
 	if err != nil {
 		return nil, fmt.Errorf("wanted: lookups: %w", err)
@@ -682,6 +693,10 @@ SELECT `+keys.sql("x.security_key")+`, x.provider, MAX(x.as_of) FROM (
 		return nil, err
 	}
 
+	labels, err := hasTable(ctx, db, "exposure_labels")
+	if err != nil {
+		return nil, err
+	}
 	stated := map[[2]string]bool{}
 	for _, wf := range wantedFields {
 		q := `SELECT DISTINCT ` + keys.sql("f.security_key") + ` FROM security_facts f WHERE f.field IN (` + placeholders(len(wf.facts)) + `)`
@@ -692,6 +707,12 @@ SELECT `+keys.sql("x.security_key")+`, x.provider, MAX(x.as_of) FROM (
 		if wf.lineColumn != "" {
 			q += ` UNION SELECT DISTINCT ` + keys.sql("l.security_key") + ` FROM fund_lines l WHERE l.` + wf.lineColumn +
 				` IS NOT NULL AND l.security_key IS NOT NULL`
+		}
+		if wf.typeLabels != "" && labels {
+			q += ` UNION SELECT DISTINCT ` + keys.sql("i.security_key") + ` FROM security_identities i
+			  JOIN exposure_labels lt ON lt.provider = i.provider AND lt.field = ?
+			   AND lt.label = exposure_norm(i.security_type)`
+			args = append(args, string(wf.typeLabels))
 		}
 		rows, err := db.QueryContext(ctx, q, args...)
 		if err != nil {

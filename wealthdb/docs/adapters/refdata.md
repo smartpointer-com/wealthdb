@@ -181,8 +181,8 @@ A security:
 | `scope` | `direct`: held directly, and always completed. `constituent`: named by a held fund's lines and lacking a sector or a country there; a collector looks these up only when its config allows. A collector skips a scope it does not know. |
 | `share_pct` | a constituent's share of net worth through funds, in percent, so a collector asks the biggest first; `null` for a security held directly |
 | `asset_class` | the security's asset class: the holding's, or the one its fund lines state, so a lookup that finds companies can skip a bond |
-| `missing` | the fields no source states yet: `sector`, `country` and, for a stock held directly, `market_cap` (the fact fields below). For a constituent, a country only an ISIN's prefix implies counts as missing, and so does a sector or a country a depositary receipt took from a share matched by name (EXPOSURE.md §3). |
-| `lookups` | the day each provider last answered for the security, so a collector refreshes what is older than its `max_age` |
+| `missing` | the fields no source states yet: `sector`, `country` and, for a stock held directly, `market_cap` (the fact fields below). A bond's type from a lookup states its sector. A municipal bond's type states its country too. For a constituent, a country only an ISIN's prefix implies counts as missing, and so does a sector or a country a depositary receipt took from a share matched by name (EXPOSURE.md §3). |
+| `lookups` | the day each provider last answered for the security, so a collector refreshes what is older than its `max_age`. An answer under another key that found nothing does not count, so the security's own identifier is asked. |
 
 A security is wanted when a position holds it as a `stock` or a `bond`,
 or when the look-through of the day reaches it through a fund held today

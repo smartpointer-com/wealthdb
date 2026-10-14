@@ -440,3 +440,102 @@ func TestRefdataWantedNamesTheFundsAHeldFundHolds(t *testing.T) {
 		t.Errorf("funds = %v, want %v", got, want)
 	}
 }
+
+// A bond held directly reads its sector from a lookup's type of it, and
+// a municipal bond its country too, so neither field is missing and the
+// bond's leaf counts as a described security. A fund line's sector wins
+// over the type, and a stock's type states nothing. A lookup under
+// another key that found nothing does not count for the bond: its own
+// identifier may find it. One that found it does.
+func TestRefdataWantedReadsABondByItsType(t *testing.T) {
+	db, ctx := openMigrated(t)
+	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
+	for _, q := range []string{
+		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
+		 first_seen_at, last_seen_at) VALUES ('test-src', 'A', 'brokerage', 'Brokerage', 'USD', 0, 0)`,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, symbol, currency,
+		 first_seen_at, last_seen_at) VALUES
+		 ('test-src', 'QMUNI', 'fixed_income', 'bond', 'US00000000A1', '00000000A', 'USD', 0, 0),
+		 ('test-src', 'QGOVT', 'fixed_income', 'bond', 'XX0000000041', NULL, 'CHF', 0, 0),
+		 ('test-src', 'QNEW', 'fixed_income', 'bond', 'US00000000B9', '00000000B', 'USD', 0, 0),
+		 ('test-src', 'QLINE', 'fixed_income', 'bond', 'XX0000000042', NULL, 'EUR', 0, 0),
+		 ('test-src', 'QSTK', 'public_equity', 'stock', 'XX0000000043', NULL, 'EUR', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, market_value) VALUES
+		 ('test-src', ?, 'A', 'QMUNI', 'QMUNI', 'fixed_income', 'bond', 'USD', 1),
+		 ('test-src', ?, 'A', 'QGOVT', 'QGOVT', 'fixed_income', 'bond', 'CHF', 1),
+		 ('test-src', ?, 'A', 'QNEW', 'QNEW', 'fixed_income', 'bond', 'USD', 1),
+		 ('test-src', ?, 'A', 'QLINE', 'QLINE', 'fixed_income', 'bond', 'EUR', 1),
+		 ('test-src', ?, 'A', 'QSTK', 'QSTK', 'public_equity', 'stock', 'EUR', 1)`,
+		`INSERT INTO security_identities (silver_source_id, security_key, as_of, provider, security_type, payload) VALUES
+		 ('refdata', 'isin:US00000000A1', ?, 'openfigi', 'Muni', '{"found": true}'),
+		 ('refdata', 'symbol:00000000A', ?, 'gleif', NULL, '{"found": true}'),
+		 ('refdata', 'isin:XX0000000041', ?, 'openfigi', 'Govt', '{"found": true}'),
+		 ('refdata', 'symbol:00000000B', ?, 'openfigi', NULL, '{"found": false}'),
+		 ('refdata', 'isin:US00000000B9', ?, 'gleif', NULL, '{"found": false}'),
+		 ('refdata', 'isin:XX0000000042', ?, 'openfigi', 'Corp', '{"found": true}'),
+		 ('refdata', 'isin:XX0000000043', ?, 'openfigi', 'Common Stock', '{"found": true}')`,
+		`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value) VALUES
+		 ('refdata', 'isin:XX0000000041', 'legal_country', ?, 'gleif', 'DE'),
+		 ('refdata', 'isin:XX0000000042', 'legal_country', ?, 'gleif', 'DE'),
+		 ('refdata', 'isin:XX0000000043', 'legal_country', ?, 'gleif', 'DE')`,
+		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count)
+		 VALUES ('test-src', 'symbol:QREF', ?, 'holdings', 'testprov', 1)`,
+		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, sector, weight)
+		 VALUES ('test-src', 'symbol:QREF', ?, 'holdings', 1, 'isin:XX0000000042', 'XX0000000042', 'Government', 100)`,
+	} {
+		if _, err := db.ExecContext(ctx, q, slices.Repeat([]any{day}, strings.Count(q, "?"))...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"isin:US00000000A1": "municipal type:openfigi US type:openfigi",
+		"isin:XX0000000041": "government type:openfigi DE fact:gleif",
+		"isin:XX0000000042": "government fund_line:testprov DE fact:gleif",
+		"isin:XX0000000043": "- - DE fact:gleif",
+	} {
+		var got string
+		if err := db.QueryRowContext(ctx, `SELECT concat_ws(' ', COALESCE(sector, '-'), COALESCE(sector_origin, '-'),
+		  COALESCE(risk_country, domicile), COALESCE(risk_country_origin, domicile_origin))
+		  FROM securities WHERE security_key = ?`, key).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("%s = %s, want %s", key, got, want)
+		}
+	}
+	var how, flags string
+	if err := db.QueryRowContext(ctx, `SELECT how, array_to_string(flags, ',') FROM exposure_leaves(?, 'USD')
+	  WHERE top_key = 'isin:US00000000A1'`, day+86400).Scan(&how, &flags); err != nil {
+		t.Fatal(err)
+	}
+	if how != "security" || flags != "" {
+		t.Errorf("the municipal bond's leaf = %s %v, want a described security with no flag", how, flags)
+	}
+	w, err := RefdataWanted(ctx, db, time.Unix(day+86400, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]*WantedSecurity{}
+	for i := range w.Securities {
+		got[w.Securities[i].Key] = &w.Securities[i]
+	}
+	for key, missing := range map[string][]string{"isin:US00000000A1": {}, "isin:XX0000000041": {},
+		"isin:US00000000B9": {"sector", "country"}, "isin:XX0000000043": {"sector", "market_cap"}} {
+		if s := got[key]; s == nil || !slices.Equal(s.Missing, missing) {
+			t.Errorf("%s = %+v, want missing %v", key, s, missing)
+		}
+	}
+	// The ticker lookup found nothing under the CUSIP; GLEIF's answer
+	// under the bond's own key counts, and so does one that found the
+	// municipal bond under its CUSIP.
+	if s := got["isin:US00000000B9"]; s != nil && (s.Lookups["openfigi"] != "" || s.Lookups["gleif"] != "2026-06-30") {
+		t.Errorf("the new bond's lookups = %v, want gleif only", s.Lookups)
+	}
+	if s := got["isin:US00000000A1"]; s != nil && s.Lookups["gleif"] != "2026-06-30" {
+		t.Errorf("the municipal bond's lookups = %v, want gleif's answer under its CUSIP", s.Lookups)
+	}
+}

@@ -22,6 +22,10 @@ const (
 	LabelSector    LabelField = "sector"
 	LabelCountry   LabelField = "country"
 	LabelAssetType LabelField = "asset_type"
+	// LabelSecurityType maps a lookup's type of a security onto a sector,
+	// and LabelSecurityTypeCountry onto the country the type implies.
+	LabelSecurityType        LabelField = "security_type"
+	LabelSecurityTypeCountry LabelField = "security_type_country"
 )
 
 // Label is one map entry. Provider "" is the generic map.
@@ -101,6 +105,23 @@ var genericAssetTypes = map[AssetClass][]string{
 		"investmentfonds", "domestic equity funds", "international equity funds", "bond funds", "short-term funds"},
 }
 
+// OpenFigiProvider is the lookup whose security types name a bond's
+// market.
+const OpenFigiProvider = "openfigi"
+
+// The types OpenFIGI gives a bond, and the bond sector each reads as. A
+// bond's type is the last source of its sector, after every vendor, fund
+// line and filing. The map is coarse: corp holds supranational and
+// covered bonds too.
+var openFigiBondTypes = map[string]Sector{
+	"govt": SectorGovernment, "muni": SectorMunicipal, "corp": SectorCorporate,
+	"mtge": SectorSecuritised, "pool": SectorSecuritised,
+}
+
+// The types that place a bond in a country: a municipal bond is a US
+// state's, city's or territory's.
+var openFigiTypeCountries = map[string]string{"muni": "US"}
+
 // Country spellings beside the canonical names and the codes themselves.
 var countryAliases = map[string][]string{
 	"US": {"united states of america", "usa", "u.s.", "u.s.a.", "us"},
@@ -138,7 +159,7 @@ var countryAliases = map[string][]string{
 
 // ExposureLabels is every map entry, in a stable order: the generic
 // sectors, asset types and countries (each country's code, its name and
-// its other spellings).
+// its other spellings), EDGAR's country codes and OpenFIGI's bond types.
 func ExposureLabels() []Label {
 	var out []Label
 	sectors := map[string]bool{}
@@ -177,6 +198,12 @@ func ExposureLabels() []Label {
 		}
 	}
 	out = append(out, edgarLabels()...)
+	for t, sector := range openFigiBondTypes {
+		out = append(out, Label{Provider: OpenFigiProvider, Field: LabelSecurityType, Label: t, Value: string(sector)})
+	}
+	for t, code := range openFigiTypeCountries {
+		out = append(out, Label{Provider: OpenFigiProvider, Field: LabelSecurityTypeCountry, Label: t, Value: code})
+	}
 	sort.Slice(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if a.Provider != b.Provider {

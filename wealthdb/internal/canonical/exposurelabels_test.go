@@ -27,6 +27,14 @@ func TestExposureLabelsAreConsistent(t *testing.T) {
 			if !AssetClass(l.Value).Valid() {
 				t.Errorf("asset type %q maps to %q, not an asset class", l.Label, l.Value)
 			}
+		case LabelSecurityType:
+			if !Sector(l.Value).Valid() {
+				t.Errorf("security type %q maps to %q, not a sector", l.Label, l.Value)
+			}
+		case LabelSecurityTypeCountry:
+			if _, ok := CountryByCode(l.Value); !ok {
+				t.Errorf("security type %q maps to %q, not a country", l.Label, l.Value)
+			}
 		}
 	}
 	for field, want := range map[[2]string]string{
@@ -54,6 +62,20 @@ func TestExposureLabelsAreConsistent(t *testing.T) {
 	} {
 		if got := seen[[3]string{"", field[0], field[1]}]; got != want {
 			t.Errorf("%s %q maps to %q, want %q", field[0], field[1], got, want)
+		}
+	}
+	// OpenFIGI's bond types, in its own map only; a stock's type is none.
+	for k, want := range map[[2]string]string{
+		{"security_type", "muni"}: "municipal", {"security_type", "govt"}: "government",
+		{"security_type", "corp"}: "corporate", {"security_type", "mtge"}: "securitised",
+		{"security_type", "pool"}: "securitised", {"security_type", "common stock"}: "",
+		{"security_type_country", "muni"}: "US", {"security_type_country", "govt"}: "",
+	} {
+		if got := seen[[3]string{OpenFigiProvider, k[0], k[1]}]; got != want {
+			t.Errorf("OpenFIGI %s %q maps to %q, want %q", k[0], k[1], got, want)
+		}
+		if _, generic := seen[[3]string{"", k[0], k[1]}]; generic {
+			t.Errorf("OpenFIGI %s %q is in the generic map", k[0], k[1])
 		}
 	}
 }

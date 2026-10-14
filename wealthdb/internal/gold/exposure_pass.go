@@ -13,11 +13,11 @@ import (
 // (migrations 0126, 0129) from what gold holds: the label maps and
 // vocabularies, the labels the fund lines carry, each instrument's
 // security key, the aliases that tie two keys of one security together,
-// the best-known attributes of every security, and the share each
-// depositary receipt stands for. It runs after the
-// per-source loads, like the lot pass: an alias may tie a line one
-// source loaded to an instrument another one did. One transaction; the
-// tables are replaced whole.
+// the best-known attributes of every security, the share each
+// depositary receipt stands for, and what a bond's description says
+// where nothing else does. It runs after the per-source loads, like the
+// lot pass: an alias may tie a line one source loaded to an instrument
+// another one did. One transaction; the tables are replaced whole.
 func RebuildExposure(ctx context.Context, db *sql.DB) (ExposureCounts, error) {
 	var n ExposureCounts
 	tx, err := db.BeginTx(ctx, nil)
@@ -35,6 +35,7 @@ func RebuildExposure(ctx context.Context, db *sql.DB) (ExposureCounts, error) {
 		{"aliases", func() error { return writeAliases(ctx, tx) }},
 		{"securities", func() error { return execAll(ctx, tx, securitiesSQL) }},
 		{"receipts", func() error { return writeReceipts(ctx, tx) }},
+		{"bonds", func() error { return writeBondReadings(ctx, tx) }},
 	}
 	for _, s := range steps {
 		if err := s.run(); err != nil {
@@ -334,8 +335,13 @@ fx AS (
                 THEN f.provider ELSE '' END AS cmap
       FROM security_facts f LEFT JOIN security_aliases sa ON sa.alias = f.security_key),
 idn AS (
-    SELECT COALESCE(sa.security_key, i.security_key) AS k, i.name, i.listing_currency, i.provider, i.as_of
-      FROM security_identities i LEFT JOIN security_aliases sa ON sa.alias = i.security_key),
+    SELECT COALESCE(sa.security_key, i.security_key) AS k, i.name, i.listing_currency, i.provider, i.as_of,
+           lt.value AS type_sector, lc.value AS type_country
+      FROM security_identities i LEFT JOIN security_aliases sa ON sa.alias = i.security_key
+      LEFT JOIN exposure_labels lt ON lt.provider = i.provider AND lt.field = 'security_type'
+                                  AND lt.label = exposure_norm(i.security_type)
+      LEFT JOIN exposure_labels lc ON lc.provider = i.provider AND lc.field = 'security_type_country'
+                                  AND lc.label = exposure_norm(i.security_type)),
 sic AS (
     SELECT fx.k, NULLIF(s.sector, '') AS sector, fx.as_of
       FROM fx JOIN exposure_sic s ON TRY_CAST(fx.value AS INTEGER) BETWEEN s.lo AND s.hi
@@ -358,6 +364,8 @@ cand AS (
     UNION ALL
     SELECT k, 'sector', sector, 'sic', 4, as_of FROM sic
     UNION ALL
+    SELECT k, 'sector', type_sector, 'type:' || provider, 5, as_of FROM idn WHERE type_sector IS NOT NULL
+    UNION ALL
     SELECT fx.k, 'risk_country', cl.value, 'fact:' || fx.provider,
            CASE WHEN fx.field = 'hq_country' THEN 4 WHEN fx.provider = 'eodhd' THEN 1 ELSE 3 END, fx.as_of
       FROM fx JOIN exposure_labels cl ON cl.provider = fx.cmap AND cl.field = 'country' AND cl.label = exposure_norm(fx.value)
@@ -365,6 +373,8 @@ cand AS (
     UNION ALL
     SELECT ln.k, 'risk_country', lab.value, 'fund_line:' || ln.provider, 2, ln.as_of
       FROM ln JOIN fund_line_labels lab ON lab.provider = ln.provider AND lab.field = 'country' AND lab.raw = ln.country
+    UNION ALL
+    SELECT k, 'risk_country', type_country, 'type:' || provider, 5, as_of FROM idn WHERE type_country IS NOT NULL
     UNION ALL
     SELECT fx.k, 'domicile', cl.value, 'fact:' || fx.provider,
            CASE fx.field WHEN 'legal_country' THEN 1 ELSE 2 END, fx.as_of

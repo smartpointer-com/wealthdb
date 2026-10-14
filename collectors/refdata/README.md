@@ -357,9 +357,10 @@ under the CC0 licence" (GLEIF's terms of use for LEI data).
 ### openfigi
 
 A security's FIGI, name, ticker, exchange and type, from OpenFIGI's
-mapping API, by ISIN, else CUSIP, else US ticker. It states no sector
-and no country; it ties identifiers together. Five securities go into
-one request. A ticker is kept from a US listing only.
+mapping API, by ISIN, else CUSIP, else US ticker. It ties identifiers
+together. Five securities go into one request. A ticker is kept from a
+US listing only. A bond's type names its market, and gold reads the
+bond's sector from it.
 
 **Terms.** Bloomberg "hereby dedicates FIGI Identifiers to the public
 domain", redistribution included (OpenFIGI's terms of service). The API

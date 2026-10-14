@@ -11,8 +11,9 @@ OpenFIGI's mapping API.
 - Parse: the US listing where the API returns one, else the first, as an
   identity row with its composite FIGI where it names one. A ticker is
   kept from a US listing only: a local ticker elsewhere could read as a
-  different US symbol. OpenFIGI states no sector and no country. An
-  identifier it does not know is still a lookup.
+  different US symbol. OpenFIGI states no sector and no country. A
+  bond's type names its market, and gold reads the bond's sector from
+  it. An identifier it does not know is still a lookup.
 
 Terms: Bloomberg "hereby dedicates FIGI Identifiers to the public
 domain", including "redistribution of the FIGI Identifiers to your
@@ -59,9 +60,11 @@ class OpenFigi(Provider):
     def wants_constituent(self, security) -> bool:
         """A constituent is asked only for the US ticker of a stock that
         lacks a sector: the ticker lets the SEC's lookup find the company
-        and its industry code. OpenFIGI states no sector and no country, so
-        a bond, a security with a ticker, and one whose identifier is no
-        US one (a CINS code starts with a letter) are not asked."""
+        and its industry code. OpenFIGI states no company's sector and no
+        country, so a security with a ticker, and one whose identifier is
+        no US one (a CINS code starts with a letter), are not asked. A
+        bond is not asked either: a held fund's bonds run to thousands,
+        each a small share."""
         if security.symbol or "sector" not in security.missing or security.asset_class != "public_equity":
             return False
         key = security.key
