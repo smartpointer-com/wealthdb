@@ -2557,15 +2557,16 @@ def base_dashboards():
         "Exposure": (
             "What is really owned: every fund looked through to what it "
             "holds and added to what is held directly, by asset class, "
-            "sector, region, country and currency, at each month end and "
+            "sector, size, region, country and currency, at each month end and "
             f"today, in a chosen currency (default {DEFAULT_CURRENCY}). A "
             "breakdown reads the latest day in the window; a chart over "
             "time shows every month end. The last chart says how much of "
             "net worth the figures rest on. " + note,
             "range", [
             # The allocation first, then where it sits and what it moves
-            # with, each as of the window's end beside its history; last,
-            # how much the figures cover.
+            # with, each as of the window's end beside its history; then
+            # public equity by size beside what funds hold; last, how
+            # much the figures cover.
             ("Exposure by asset class", 0, 0, 8, 8, "as_of_day"),
             ("Asset classes over time", 0, 8, 16, 8, "as_of_day"),
             ("Exposure by sector", 8, 0, 12, 9, "as_of_day"),
@@ -2574,8 +2575,9 @@ def base_dashboards():
             ("Exposure by country", 17, 12, 12, 8, "as_of_day"),
             ("Exposure by currency", 25, 0, 12, 8, "as_of_day"),
             ("Currencies over time", 25, 12, 12, 8, "as_of_day"),
-            ("Held directly or through funds", 33, 0, 12, 7, "as_of_day"),
-            ("How the figures are classified", 33, 12, 12, 7, "as_of_day"),
+            ("Public equity by size", 33, 0, 12, 8, "as_of_day"),
+            ("Held directly or through funds", 33, 12, 12, 8, "as_of_day"),
+            ("How the figures are classified", 41, 0, 24, 7, "as_of_day"),
         ]),
         "Data Freshness": (
             "How long ago each source was last read — which feeds need a "
@@ -2591,13 +2593,14 @@ def base_dashboards():
 def exposure_cards(db_id):
     """The Exposure dashboard's cards and their privacy variants, one
     pair per tile: name -> ("question", display, description,
-    dataset_query, viz). Native SQL over web_exposure (gold migration
-    0128), the look-through at every month end and today, materialized
-    per reporting currency, so {{currency}} is a row filter as on Gains.
-    A breakdown reads the latest day in the window; a chart over time
-    shows each month end's shares. The base card shows the value and its
-    share of net worth; the privacy card the share alone, a share of net
-    worth being scale-free. docs/EXPOSURE.md defines every figure."""
+    dataset_query, viz). Native SQL over web_exposure (gold migrations
+    0128 and 0133), the look-through at every month end and today,
+    materialized per reporting currency, so {{currency}} is a row filter
+    as on Gains. A breakdown reads the latest day in the window; a chart
+    over time shows each month end's shares. The base card shows the
+    value and its share of net worth, or of public equity for sizes; the
+    privacy card the share alone, a share being scale-free.
+    docs/EXPOSURE.md defines every figure."""
     tags = spend_tags("web_exposure", EXPOSURE_FILTERS)
     note = (" Built for the Exposure dashboard; opened standalone it runs in "
             f"{DEFAULT_CURRENCY}, the currency variable's default, over every month end.")
@@ -2672,6 +2675,19 @@ def exposure_cards(db_id):
     over_time("Held directly or through funds",
               "Each month end's net worth split into what is held directly "
               "and what through funds.", "held", "held")
+    def by_size(privacy):
+        money = "" if privacy else ",\n       sum(value) AS value"
+        return (end + f"SELECT size{money},\n"
+                "       100 * sum(share_pct) / sum(sum(share_pct)) OVER () AS class_share_pct\n"
+                "  FROM e\n WHERE asset_class = 'public_equity'\n GROUP BY 1\n"
+                " ORDER BY CASE size WHEN 'large' THEN 1 WHEN 'mid' THEN 2 WHEN 'small' THEN 3 ELSE 4 END")
+    pair("Public equity by size", "bar",
+         "Public equity by the size of each company, at the latest day in "
+         "the window, as shares of public equity: large from 10bn US "
+         "dollars of market cap, mid from 2bn, small below, else by the "
+         "company's rank in a broad fund. Unclassified is what neither "
+         "sizes, and any fund nothing looks through.", by_size,
+         lambda privacy: {"graph.dimensions": ["size"], "graph.metrics": ["class_share_pct"]})
     over_time("How the figures are classified",
               "Each month end's net worth by how its figures are classified: "
               "looked through, proxied, a security a source describes, "
@@ -3950,9 +3966,9 @@ def dashboard_defs():
         "income, or of its biggest month; payer and account labels are "
         "redacted and absolute amounts never show. "),
         "Exposure": (
-        "Privacy view: every figure is a share (%) of net worth at its "
-        "month end, which needs no normalisation; the value columns are "
-        "dropped and absolute amounts never show. "),
+        "Privacy view: every figure is a share (%) of net worth, or of "
+        "public equity, at its month end, which needs no normalisation; the "
+        "value columns are dropped and absolute amounts never show. "),
         "Cash Flow": (
         "Privacy view: values are shares (%) of the window's own hub — "
         "the total the diagram flows through, which moves with the "

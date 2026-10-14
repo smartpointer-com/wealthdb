@@ -107,18 +107,26 @@ SELECT DISTINCT COALESCE(sa.security_key, l.security_key), l.fund_ref || '@' || 
 
 // lineSQL lists the equity lines a fund names by name alone (a report's
 // inventory), as securities that lack a sector or a risk country, with
-// the country a source states for them.
+// the country a source states for them. A size fund's line is listed
+// whatever it states: it finds its share for the share's size
+// (exposure_sizes.go), and one that lacks nothing is so marked.
 const lineSQL = `
-WITH eq AS (
-    SELECT DISTINCT COALESCE(sa.security_key, l.security_key) AS k, l.name
+WITH sized AS (
+    SELECT COALESCE(sa.security_key, s.fund_ref) AS fund_ref
+      FROM exposure_size_funds s LEFT JOIN security_aliases sa ON sa.alias = s.fund_ref),
+eq AS (
+    SELECT COALESCE(sa.security_key, l.security_key) AS k, l.name,
+           BOOL_OR(COALESCE(fa.security_key, l.fund_ref) IN (SELECT fund_ref FROM sized)) AS in_size_fund
       FROM fund_lines l
       JOIN fund_compositions c USING (silver_source_id, fund_ref, as_of, basis)
       JOIN fund_line_labels lab ON lab.provider = c.provider AND lab.field = 'asset_type' AND lab.raw = l.asset_type
       LEFT JOIN security_aliases sa ON sa.alias = l.security_key
-     WHERE l.security_key LIKE 'name:%' AND lab.value = 'public_equity' AND trim(COALESCE(l.name, '')) <> '')
-SELECT eq.k, COALESCE(s.risk_country, ''), eq.name
+      LEFT JOIN security_aliases fa ON fa.alias = l.fund_ref
+     WHERE l.security_key LIKE 'name:%' AND lab.value = 'public_equity' AND trim(COALESCE(l.name, '')) <> ''
+     GROUP BY 1, 2)
+SELECT eq.k, COALESCE(s.risk_country, ''), eq.name, s.sector IS NOT NULL AND s.risk_country IS NOT NULL
   FROM eq JOIN securities s ON s.security_key = eq.k
- WHERE s.sector IS NULL OR s.risk_country IS NULL`
+ WHERE s.sector IS NULL OR s.risk_country IS NULL OR eq.in_size_fund`
 
 // rosterSQL lists, for each composition that names a line by name alone,
 // the equity shares its fund's proxy lists: from the proxy's composition
@@ -251,7 +259,8 @@ func writeReceipts(ctx context.Context, tx *sql.Tx) error {
 	lines := map[string]*receiptNames{}
 	if err := scanAll(ctx, tx, lineSQL, func(rows *sql.Rows) error {
 		var key, country, name string
-		if err := rows.Scan(&key, &country, &name); err != nil {
+		var sizeOnly bool
+		if err := rows.Scan(&key, &country, &name, &sizeOnly); err != nil {
 			return err
 		}
 		if _, linked := byName[key]; linked {
@@ -259,7 +268,7 @@ func writeReceipts(ctx context.Context, tx *sql.Tx) error {
 		}
 		r := lines[key]
 		if r == nil {
-			r = &receiptNames{country: country}
+			r = &receiptNames{country: country, sizeOnly: sizeOnly}
 			lines[key] = r
 		}
 		r.names = append(r.names, name)
@@ -304,10 +313,14 @@ func writeReceipts(ctx context.Context, tx *sql.Tx) error {
 		}
 	}
 	byRoster := linkRosters(lines, rosters, inComp, world)
-	for k := range byRoster {
+	votes := map[string]string{}
+	for k, share := range byRoster {
+		if !lines[k].sizeOnly {
+			votes[k] = share
+		}
 		delete(lines, k)
 	}
-	maps.Copy(byName, linkLines(lines, world, country, inComp, byRoster))
+	maps.Copy(byName, linkLines(lines, world, country, inComp, votes))
 	type link struct{ key, share, origin string }
 	var links []link
 	for _, k := range slices.Sorted(maps.Keys(byLEI)) {
@@ -343,11 +356,16 @@ func scanAll(ctx context.Context, tx *sql.Tx, q string, scan func(*sql.Rows) err
 
 // receiptNames is a security that may be a receipt, or a line named by
 // name alone: every name it goes by, the country a source states for it,
-// and whether anything calls it a depositary receipt.
+// whether anything calls it a depositary receipt, and whether it is
+// listed for its share's size alone.
 type receiptNames struct {
 	names   []string
 	country string
 	receipt bool
+	// sizeOnly marks a size fund's line a source describes: it finds its
+	// share for the share's size alone, and casts no vote for its
+	// composition's market.
+	sizeOnly bool
 }
 
 // shareName is one name of a share a receipt may stand for.
@@ -480,8 +498,9 @@ func (idx shareIndex) exactly(names []string) map[string]bool {
 // several countries (one company's in Australia and in Britain) takes
 // the market of the compositions it sits in as its country, where they
 // share one: a composition's market is the country of two in three of
-// its lines that found a share, here or in a roster (linked). country
-// gives each share's country, inComp the compositions each line sits in.
+// its lines that found a share, here or in a roster (linked); a line
+// listed for its share's size alone has no vote. country gives each
+// share's country, inComp the compositions each line sits in.
 func linkLines(lines map[string]*receiptNames, idx shareIndex, country map[string]string,
 	inComp map[string][]string, linked map[string]string) map[string]string {
 	out := map[string]string{}
@@ -493,6 +512,9 @@ func linkLines(lines map[string]*receiptNames, idx shareIndex, country map[strin
 	tally := map[string]map[string]int{}
 	for _, links := range []map[string]string{out, linked} {
 		for key, share := range links {
+			if r := lines[key]; r != nil && r.sizeOnly {
+				continue
+			}
 			for _, c := range inComp[key] {
 				if tally[c] == nil {
 					tally[c] = map[string]int{}

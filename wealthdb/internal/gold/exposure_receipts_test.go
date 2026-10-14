@@ -259,6 +259,8 @@ func TestMigration0130DDLIsRerunnable(t *testing.T) {
 func TestMigration0131DDLIsRerunnable(t *testing.T) {
 	db, ctx := openExposureFixture(t)
 	rerunMigrationDDL(t, db, ctx, "0131_exposure_divergence.sql")
+	// 0133 redefines exposure_divergence; Migrate would replay it after.
+	rerunMigrationDDL(t, db, ctx, "0133_exposure_divergence_sizes.sql")
 	rows, err := ExposureCoverage(ctx, db, exAsOf, "USD")
 	if err != nil || len(rows) == 0 {
 		t.Errorf("after replay: %d rows, %v", len(rows), err)
@@ -433,13 +435,14 @@ func TestExposureLinksANamedLineInItsProxyFirst(t *testing.T) {
 		 ('test-src', 'symbol:QNOP', ?, 'holdings', 1, 'isin:GB0000000904', 'GB0000000904', 'Zentaro Systems PLC', 'Common Stocks', 100, 'GBP'),
 		 ('test-src', 'symbol:QRP2', ?, 'holdings', 1, 'isin:GB0000000904', 'GB0000000904', 'Zentaro Systems PLC', 'Common Stocks', 100, 'GBP')`,
 		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, source_kind, line_count, currency)
-		 VALUES ('test-src', 'symbol:QPRX', ?, 'holdings', 'testprov', 'issuer', 2, 'USD'),
+		 VALUES ('test-src', 'symbol:QPRX', ?, 'holdings', 'testprov', 'issuer', 3, 'USD'),
 		        ('test-src', 'symbol:QWLD', ?, 'holdings', 'testprov', 'issuer', 4, 'USD'),
 		        ('test-src', 'symbol:QRPT', ?, 'holdings', 'swissfunddata', 'report', 4, 'USD')`,
 		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
 		 weight, currency, country, sector) VALUES
 		 ('test-src', 'symbol:QPRX', ?, 'holdings', 1, 'isin:JP0000000901', 'JP0000000901', 'QORVANT MINING CORP', 'Equity', 60, 'JPY', 'Japan', 'Materials'),
 		 ('test-src', 'symbol:QPRX', ?, 'holdings', 2, 'symbol:QBLM', NULL, 'BELMIRA TRADING CORP', NULL, 40, 'JPY', 'Japan', 'Industrials'),
+		 ('test-src', 'symbol:QPRX', ?, 'holdings', 3, 'symbol:QNOS', NULL, 'QUIET HOLDINGS', NULL, 50, 'JPY', NULL, NULL),
 		 ('test-src', 'symbol:QWLD', ?, 'holdings', 1, 'isin:US0000000903', 'US0000000903', 'QORVANT MINING CORP', 'Equity', 50, 'USD', 'United States', 'Energy'),
 		 ('test-src', 'symbol:QWLD', ?, 'holdings', 2, 'isin:GB0000000904', 'GB0000000904', 'ZENTARO SYSTEMS PLC', 'Equity', 50, 'GBP', 'United Kingdom', 'Information Technology'),
 		 ('test-src', 'symbol:QWLD', ?, 'holdings', 3, 'isin:US0000000905', 'US0000000905', 'DUONAME CORP', 'Equity', 0, 'USD', 'United States', 'Energy'),
@@ -499,7 +502,8 @@ func TestExposureLinksANamedLineInItsProxyFirst(t *testing.T) {
 	}
 	// Sectors 40/20/30/10 (materials, industrials, technology,
 	// utilities) against 60/40/0/0: 40 points apart; countries 70/30
-	// (Japan, Britain) against 100/0: 30.
+	// (Japan, Britain) against 100/0: 30. The proxy's line that states
+	// neither is in neither mix.
 	if want := []string{"symbol:QRPT: sector 40.0, country 30.0 points from symbol:QPRX"}; !slices.Equal(div, want) {
 		t.Errorf("divergence = %v, want %v", div, want)
 	}
@@ -532,5 +536,80 @@ func TestLinkRostersKeepsToOneIssuer(t *testing.T) {
 	got := linkRosters(lines, rosters, inComp, world)
 	if want := map[string]string{"name:d": "isin:JP0000000917"}; !maps.Equal(got, want) {
 		t.Errorf("links = %v, want %v", got, want)
+	}
+}
+
+// A size fund's line a source describes finds its share, but casts no
+// vote for its composition's market: here the one line that votes finds
+// a British share, so a name two countries share reads British.
+func TestLinkLinesGivesASizeOnlyLineNoVote(t *testing.T) {
+	shares := []shareName{
+		{key: "isin:JP0000000E01", country: "JP", name: "QLAND ALPHA"},
+		{key: "isin:JP0000000E02", country: "JP", name: "QLAND BETA"},
+		{key: "isin:JP0000000E03", country: "JP", name: "DUOX"},
+		{key: "isin:GB0000000E04", country: "GB", name: "DUOX"},
+		{key: "isin:GB0000000E05", country: "GB", name: "QLAND GAMMA"},
+	}
+	country := map[string]string{}
+	for _, sh := range shares {
+		country[sh.key] = sh.country
+	}
+	lines := map[string]*receiptNames{
+		"name:a1": {names: []string{"Qland Alpha"}, country: "JP", sizeOnly: true},
+		"name:a2": {names: []string{"Qland Beta"}, country: "JP", sizeOnly: true},
+		"name:b":  {names: []string{"Qland Gamma"}},
+		"name:d":  {names: []string{"Duox"}},
+	}
+	inComp := map[string][]string{"name:a1": {"c"}, "name:a2": {"c"}, "name:b": {"c"}, "name:d": {"c"}}
+	got := linkLines(lines, newShareIndex(shares, lineWords), country, inComp, nil)
+	want := map[string]string{"name:a1": "isin:JP0000000E01", "name:a2": "isin:JP0000000E02",
+		"name:b": "isin:GB0000000E05", "name:d": "isin:GB0000000E04"}
+	if !maps.Equal(got, want) {
+		t.Errorf("links = %v, want %v", got, want)
+	}
+}
+
+// Each side's mix holds only the lines that state the dimension: a proxy
+// whose lines state no country, and that no source places, compares on
+// sectors alone.
+func TestExposureDivergenceComparesWhatEachSideStates(t *testing.T) {
+	db, ctx := openExposureFixture(t)
+	for _, q := range []string{
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, name, currency,
+		 first_seen_at, last_seen_at) VALUES ('test-src', 'QRP3', 'public_equity', 'fund', 'QRP3', 'Report Fund', 'USD', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, quantity, market_value)
+		 VALUES ('test-src', ?, 'A1', 'QRP3', 'QRP3', 'public_equity', 'fund', 'USD', 1, 100)`,
+		`INSERT INTO exposure_proxies (fund_ref, proxy_ref, always, leverage) VALUES ('symbol:QRP3', 'symbol:QPX3', FALSE, 1)`,
+		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, source_kind, line_count, currency)
+		 VALUES ('test-src', 'symbol:QRP3', ?, 'holdings', 'swissfunddata', 'report', 2, 'USD'),
+		        ('test-src', 'symbol:QPX3', ?, 'holdings', 'testprov', 'issuer', 2, 'USD')`,
+		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
+		 weight, currency, country, sector) VALUES
+		 ('test-src', 'symbol:QRP3', ?, 'holdings', 1, 'isin:JP0000000F01', 'JP0000000F01', 'QLAND ONE', 'Equity', 60, 'JPY', 'Japan', 'Materials'),
+		 ('test-src', 'symbol:QRP3', ?, 'holdings', 2, 'isin:JP0000000F02', 'JP0000000F02', 'QLAND TWO', 'Equity', 40, 'JPY', 'Japan', 'Industrials'),
+		 ('test-src', 'symbol:QPX3', ?, 'holdings', 1, 'symbol:QPF1', NULL, 'QLAND ONE', 'Equity', 50, 'JPY', NULL, 'Materials'),
+		 ('test-src', 'symbol:QPX3', ?, 'holdings', 2, 'symbol:QPF2', NULL, 'QLAND THREE', 'Equity', 50, 'JPY', NULL, 'Utilities')`,
+	} {
+		if _, err := db.ExecContext(ctx, q, slices.Repeat([]any{exSnap}, strings.Count(q, "?"))...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	cov, err := ExposureCoverage(ctx, db, exAsOf, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var div []string
+	for _, r := range cov {
+		if r.Section == "divergence" {
+			div = append(div, r.Reason+": "+*r.Detail)
+		}
+	}
+	// Materials 60/50, industrials 40/0, utilities 0/50: 50 points.
+	if want := []string{"symbol:QRP3: sector 50.0 points from symbol:QPX3"}; !slices.Equal(div, want) {
+		t.Errorf("divergence = %v, want %v", div, want)
 	}
 }

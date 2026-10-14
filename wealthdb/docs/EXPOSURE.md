@@ -178,11 +178,16 @@ A stock's size is `large`, `mid` or `small`:
   rank. A large and mid cap fund (85%) holds no small stock.
 - A stock in two size funds takes the one that covers more of its
   market, then the one with more stocks of its country.
+- A size fund whose file names its stocks by name alone (a US issuer's
+  file of foreign stocks) ranks them too. Each line finds the share it
+  names, as a report's line does, and the share takes the line's size.
+  That size rests on a name.
 - A depositary receipt, and a line a report names by name alone, takes
   the size of the share it stands for (above).
 
 `securities.size_origin` says which: `market_cap`, `size_fund:` and the
-fund, or the share as `lei:`, `roster:` or `underlying:` with its key. A
+fund, `size_fund_name:` and the fund for a size found by name, or the
+share as `lei:`, `roster:` or `underlying:` with its key. A
 stock nothing sizes is `unclassified`, and so is a fund nothing looks
 through.
 
@@ -442,11 +447,11 @@ sections:
 - `untagged` lists each private holding the tags ledger has no row for.
 - `divergence` lists each fund held and read from a report whose config
   names a proxy with a composition of its own on the day. It gives the
-  value held through the fund. Its detail says how far the
-  report's equity lines lie from the proxy's, by sector and by country.
-  The measure is half the sum of the differences in each sector's or
-  country's share, in points. A line with no sector or no country counts
-  as a group of its own, so a line no share was found for shows here.
+  value held through the fund. Its detail says how far the report's
+  equity lines lie from the proxy's, by sector and by country. The
+  measure is half the sum of the differences in each sector's or
+  country's share, in points. Each mix holds only the lines that state
+  that dimension. A dimension one side states for no line is left out.
 
 `unmatched` and `untagged` name each holding by `silver_source_id` and
 `instrument`, the two columns a ledger row starts with. A holding at two
@@ -470,7 +475,7 @@ The Metabase Exposure dashboard (`wealthdb web`) charts the same
 figures:
 
 - on the latest day in its time range, by asset class, sector, region,
-  country and currency;
+  country and currency, and public equity by size;
 - at every month end in the range, as shares of net worth over time;
 - split into what is held directly and what through funds, and by how
   each part is classified (§10).
@@ -480,6 +485,6 @@ and at today, in each reporting currency (web/DESIGN.md §8). A refresh
 recomputes the whole history, so a new composition or tag shows in
 past months too. The privacy twin shows the shares alone.
 
-The MCP server has an `exposure` tool with the same seven views, an
+The MCP server has an `exposure` tool with the same eight views, an
 `as_of` day and the `country` choice. Its rows equal the command's,
 cell for cell.

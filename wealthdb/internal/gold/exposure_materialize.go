@@ -14,8 +14,10 @@ import (
 // share of the holding it descends from, so its value in another
 // currency is its dollar value times the ratio of that holding's two
 // values. A holding no rate converts to US dollars is left out in every
-// currency. %s is the UNION of exposure_holdings per currency. The
-// instant is bound twice, once per currency, then after computed_at.
+// currency. A stock's size is today's at every instant: securities holds
+// one row per security. %s is the UNION of exposure_holdings per
+// currency. The instant is bound twice, once per currency, then after
+// computed_at.
 const exposureInsertSQL = `INSERT INTO report_exposure BY NAME
 WITH l AS (SELECT * FROM exposure_leaves(CAST(? AS BIGINT), 'USD')),
 usd AS (
@@ -24,11 +26,12 @@ usd AS (
 h AS (%s)
 SELECT CAST(? AS BIGINT) AS computed_at, h.out_ccy AS currency, CAST(? AS BIGINT) AS as_of,
        l.asset_class, l.sector, l.country, l.region, l.currency AS exposure_currency, l.currency_kind,
-       l.depth > 0 AS via_funds, l.how,
+       l.depth > 0 AS via_funds, l.how, s.size,
        SUM(l.value * h.value / usd.v) AS value
   FROM l
   JOIN usd ON usd.src = l.src AND usd.acct = l.acct AND usd.position_key = l.position_key
   JOIN h ON h.src = l.src AND h.acct = l.acct AND h.position_key = l.position_key
+  LEFT JOIN securities s ON s.security_key = l.key AND l.asset_class = 'public_equity' AND NOT l.fund_leaf
  GROUP BY ALL`
 
 // exposureHoldingsSQL is one currency's holdings for exposureInsertSQL.

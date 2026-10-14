@@ -57,52 +57,74 @@ UPDATE securities SET size = CASE WHEN market_cap >= $1 THEN $3 WHEN market_cap 
        size_origin = 'market_cap'
  WHERE market_cap > 0`
 
-// sizeByRankSQL sizes each stock no market cap sizes by its rank in a
-// size fund's newest composition: among the fund's stocks of the stock's
-// country (the fund's own label for it first), by falling weight, the
-// share of that country's weight the stocks before it hold, scaled by
-// the share of the market the fund covers. A stock on two lines of one
-// fund counts once, its weights summed. A stock in several size funds
-// takes the one that covers most of its market, then the one that lists
-// most stocks of its country.
+// sizeRanksSQL ranks every stock of every size fund's newest
+// composition: among the fund's stocks of the stock's country (the
+// fund's own label for it first), by falling weight, the share of that
+// country's weight the stocks before it hold, scaled by the share of the
+// market the fund covers, read as a size. A stock on two lines of one
+// fund counts once, its weights summed. peers is how many stocks of its
+// country the fund lists.
+const sizeRanksSQL = `
+CREATE OR REPLACE TEMP TABLE exposure_size_ranks AS
+WITH f AS (
+    SELECT c.*, sf.coverage_pct
+      FROM exposure_comps() c
+      JOIN (SELECT COALESCE(sa.security_key, s.fund_ref) AS fund_ref, MAX(s.coverage_pct) AS coverage_pct
+              FROM exposure_size_funds s LEFT JOIN security_aliases sa ON sa.alias = s.fund_ref
+             GROUP BY 1) sf USING (fund_ref)
+   QUALIFY ROW_NUMBER() OVER (PARTITION BY c.fund_ref ORDER BY c.as_of DESC) = 1),
+lines AS (
+    SELECT f.fund_ref, f.coverage_pct, COALESCE(sa.security_key, l.security_key) AS k, SUM(l.weight)::DOUBLE AS w,
+           MIN(COALESCE(lc.value, sec.risk_country, sec.domicile)) AS country
+      FROM f
+      JOIN fund_lines l ON l.silver_source_id = f.silver_source_id AND l.fund_ref = f.stored_ref
+                       AND l.as_of = f.as_of AND l.basis = f.basis
+      LEFT JOIN fund_line_labels la ON la.provider = f.provider AND la.field = 'asset_type' AND la.raw = l.asset_type
+      LEFT JOIN fund_line_labels lc ON lc.provider = f.provider AND lc.field = 'country'
+                                   AND lc.raw = COALESCE(l.risk_country, l.country)
+      LEFT JOIN security_aliases sa ON sa.alias = l.security_key
+      LEFT JOIN securities sec ON sec.security_key = COALESCE(sa.security_key, l.security_key)
+     WHERE COALESCE(la.value, 'public_equity') = 'public_equity' AND l.security_key IS NOT NULL
+     GROUP BY 1, 2, 3
+    HAVING SUM(l.weight) > 0),
+ranked AS (
+    SELECT *,
+           100 * COALESCE(SUM(w) OVER (PARTITION BY fund_ref, country ORDER BY w DESC, k
+                                       ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0)
+               / SUM(w) OVER (PARTITION BY fund_ref, country) AS before_pct,
+           COUNT(*) OVER (PARTITION BY fund_ref, country) AS peers
+      FROM lines WHERE country IS NOT NULL)
+SELECT k, fund_ref, coverage_pct, peers,
+       CASE WHEN before_pct * coverage_pct / 100 < $1 THEN $3
+            WHEN before_pct * coverage_pct / 100 < $2 THEN $4 ELSE $5 END AS size
+  FROM ranked`
+
+// sizeByRankSQL sizes each stock no market cap sizes and an identifier
+// names by its rank in a size fund. A stock in several takes the one
+// that covers most of its market, then the one that lists most stocks of
+// its country. A line named by name alone takes no rank of its own: its
+// share's size reaches it (sizeFillSQL).
 const sizeByRankSQL = `
 UPDATE securities SET size = r.size, size_origin = 'size_fund:' || r.fund_ref
-  FROM (
-    WITH f AS (
-        SELECT c.*, sf.coverage_pct
-          FROM exposure_comps() c
-          JOIN (SELECT COALESCE(sa.security_key, s.fund_ref) AS fund_ref, MAX(s.coverage_pct) AS coverage_pct
-                  FROM exposure_size_funds s LEFT JOIN security_aliases sa ON sa.alias = s.fund_ref
-                 GROUP BY 1) sf USING (fund_ref)
-       QUALIFY ROW_NUMBER() OVER (PARTITION BY c.fund_ref ORDER BY c.as_of DESC) = 1),
-    lines AS (
-        SELECT f.fund_ref, f.coverage_pct, COALESCE(sa.security_key, l.security_key) AS k, SUM(l.weight)::DOUBLE AS w,
-               MIN(COALESCE(lc.value, sec.risk_country, sec.domicile)) AS country
-          FROM f
-          JOIN fund_lines l ON l.silver_source_id = f.silver_source_id AND l.fund_ref = f.stored_ref
-                           AND l.as_of = f.as_of AND l.basis = f.basis
-          LEFT JOIN fund_line_labels la ON la.provider = f.provider AND la.field = 'asset_type' AND la.raw = l.asset_type
-          LEFT JOIN fund_line_labels lc ON lc.provider = f.provider AND lc.field = 'country'
-                                       AND lc.raw = COALESCE(l.risk_country, l.country)
-          LEFT JOIN security_aliases sa ON sa.alias = l.security_key
-          LEFT JOIN securities sec ON sec.security_key = COALESCE(sa.security_key, l.security_key)
-         WHERE COALESCE(la.value, 'public_equity') = 'public_equity'
-           AND l.security_key IS NOT NULL AND l.security_key NOT LIKE 'name:%'
-         GROUP BY 1, 2, 3
-        HAVING SUM(l.weight) > 0),
-    ranked AS (
-        SELECT *,
-               100 * COALESCE(SUM(w) OVER (PARTITION BY fund_ref, country ORDER BY w DESC, k
-                                           ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0)
-                   / SUM(w) OVER (PARTITION BY fund_ref, country) AS before_pct,
-               COUNT(*) OVER (PARTITION BY fund_ref, country) AS peers
-          FROM lines WHERE country IS NOT NULL)
-    SELECT k, fund_ref,
-           CASE WHEN before_pct * coverage_pct / 100 < $1 THEN $3
-                WHEN before_pct * coverage_pct / 100 < $2 THEN $4 ELSE $5 END AS size
-      FROM ranked
-   QUALIFY ROW_NUMBER() OVER (PARTITION BY k ORDER BY coverage_pct DESC, peers DESC, fund_ref) = 1) r
+  FROM (SELECT * FROM exposure_size_ranks WHERE k NOT LIKE 'name:%'
+       QUALIFY ROW_NUMBER() OVER (PARTITION BY k ORDER BY coverage_pct DESC, peers DESC, fund_ref) = 1) r
  WHERE r.k = securities.security_key AND securities.size IS NULL`
+
+// sizeByLineSQL sizes a share no market cap and no rank sizes by the rank
+// of a size fund's line that names it by name alone (security_underlyings,
+// a match by name): a fund file that states no identifier, such as a US
+// issuer's file of foreign stocks, still ranks its stocks. Of several
+// such lines, the one whose fund covers most of its market, then the
+// one that lists most stocks of its country. The origin says the size
+// rests on a name.
+const sizeByLineSQL = `
+UPDATE securities SET size = n.size, size_origin = 'size_fund_name:' || n.fund_ref
+  FROM (SELECT x.underlying_key AS k, r.size, r.fund_ref
+          FROM security_underlyings x JOIN exposure_size_ranks r ON r.k = x.security_key
+         WHERE x.security_key LIKE 'name:%'
+       QUALIFY ROW_NUMBER() OVER (PARTITION BY x.underlying_key
+                                  ORDER BY r.coverage_pct DESC, r.peers DESC, r.fund_ref) = 1) n
+ WHERE n.k = securities.security_key AND securities.size IS NULL`
 
 // sizeFillSQL sizes a depositary receipt, and a line a report names by
 // name alone, as the share it stands for (security_underlyings): the
@@ -116,8 +138,9 @@ UPDATE securities SET size = u.size, size_origin = x.how || u.security_key
 
 // writeSizes completes each security's market cap where EDGAR's shares
 // and a price give it, then sizes each stock: by its market cap where
-// known, else by its rank in a size fund (canonical/size.go); a receipt
-// or a line named by name alone as its share.
+// known, else by its rank in a size fund (canonical/size.go), else as a
+// size fund's line that names it; a receipt or a line named by name
+// alone as its share.
 func writeSizes(ctx context.Context, tx *sql.Tx) error {
 	buckets := []any{string(canonical.SizeLarge), string(canonical.SizeMid), string(canonical.SizeSmall)}
 	for _, s := range []struct {
@@ -126,8 +149,11 @@ func writeSizes(ctx context.Context, tx *sql.Tx) error {
 	}{
 		{marketCapSQL, []any{receiptWording.String(), minListedShares}},
 		{sizeByCapSQL, append([]any{canonical.LargeCapUSD, canonical.MidCapUSD}, buckets...)},
-		{sizeByRankSQL, append([]any{canonical.LargeCumPct, canonical.MidCumPct}, buckets...)},
+		{sizeRanksSQL, append([]any{canonical.LargeCumPct, canonical.MidCumPct}, buckets...)},
+		{sizeByRankSQL, nil},
+		{sizeByLineSQL, nil},
 		{sizeFillSQL, nil},
+		{`DROP TABLE exposure_size_ranks`, nil},
 	} {
 		if _, err := tx.ExecContext(ctx, s.q, s.args...); err != nil {
 			return err

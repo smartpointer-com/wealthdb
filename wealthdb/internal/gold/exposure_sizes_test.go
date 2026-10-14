@@ -12,7 +12,8 @@ import (
 // cap where known, else from its rank among its country's stocks in a
 // size fund: by falling weight, large until 70% of the market, mid until
 // 85%. A fund that covers 85% of its markets holds no small stock, and a
-// stock in two size funds takes the one that covers most. A receipt
+// stock in two size funds takes the one that covers most. A size fund
+// that names its stocks alone sizes the shares its lines name. A receipt
 // takes its share's size, found for that alone where a source describes
 // it. Size funds are wanted as reference funds; the
 // sizes view splits public equity.
@@ -30,7 +31,9 @@ func TestExposureSizesStocks(t *testing.T) {
 		 ('test-src', 'QRC2', 'public_equity', 'stock', 'US0000000A04', 'QRC2', 'USD', 0, 0),
 		 ('test-src', 'QALL', 'public_equity', 'etf', NULL, 'QALL', 'USD', 0, 0),
 		 ('test-src', 'QETF', 'public_equity', 'etf', NULL, 'QETF', 'USD', 0, 0),
-		 ('test-src', 'QBND', 'fixed_income', 'bond', 'XX0000000A05', NULL, 'USD', 0, 0)`,
+		 ('test-src', 'QBND', 'fixed_income', 'bond', 'XX0000000A05', NULL, 'USD', 0, 0),
+		 ('test-src', 'QPRC', 'public_equity', 'stock', 'CH0000000D01', NULL, 'CHF', 0, 0),
+		 ('test-src', 'QRPX', 'public_equity', 'fund', NULL, 'QRPX', 'USD', 0, 0)`,
 		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
 		 asset_class, vehicle, currency, quantity, market_value) VALUES
 		 ('test-src', ?, 'A', 'QBIG', 'QBIG', 'public_equity', 'stock', 'USD', 1, 100),
@@ -39,7 +42,9 @@ func TestExposureSizesStocks(t *testing.T) {
 		 ('test-src', ?, 'A', 'QRC2', 'QRC2', 'public_equity', 'stock', 'USD', 2, 100),
 		 ('test-src', ?, 'A', 'QALL', 'QALL', 'public_equity', 'etf', 'USD', 1, 100),
 		 ('test-src', ?, 'A', 'QETF', 'QETF', 'public_equity', 'etf', 'USD', 1, 100),
-		 ('test-src', ?, 'A', 'QBND', 'QBND', 'fixed_income', 'bond', 'USD', 1, 100)`,
+		 ('test-src', ?, 'A', 'QBND', 'QBND', 'fixed_income', 'bond', 'USD', 1, 100),
+		 ('test-src', ?, 'A', 'QPRC', 'QPRC', 'public_equity', 'stock', 'USD', 1, 100),
+		 ('test-src', ?, 'A', 'QRPX', 'QRPX', 'public_equity', 'fund', 'USD', 1, 100)`,
 		`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value) VALUES
 		 ('refdata', 'isin:US0000000A01', 'shares_outstanding', ?, 'sec-edgar', '200000000'),
 		 ('refdata', 'isin:US0000000A02', 'shares_outstanding', ?, 'sec-edgar', '50000000'),
@@ -49,16 +54,30 @@ func TestExposureSizesStocks(t *testing.T) {
 		 ('refdata', 'isin:US0000000A04', 'sector', ?, 'testfact', 'Materials'),
 		 ('refdata', 'isin:US0000000A04', 'risk_country', ?, 'testfact', 'JP'),
 		 ('refdata', 'symbol:QETF', 'market_cap', ?, 'testfact', '50000000000'),
-		 ('refdata', 'isin:US0000000B04', 'shares_outstanding', ?, 'sec-edgar', '1')`,
+		 ('refdata', 'isin:US0000000B04', 'shares_outstanding', ?, 'sec-edgar', '1'),
+		 ('refdata', 'isin:CH0000000D02', 'market_cap', ?, 'testfact', '1000000000')`,
 		`UPDATE instruments SET name = 'QLAND GAMMA SPONSORED ADR' WHERE instrument_external_id = 'QRC2'`,
 		`INSERT INTO security_identities (silver_source_id, security_key, as_of, provider, security_type)
 		 VALUES ('refdata', 'isin:US0000000A03', ?, 'openfigi', 'Depositary Receipt')`,
-		`INSERT INTO exposure_size_funds (fund_ref, coverage_pct) VALUES ('symbol:QALL', 100), ('symbol:QLM', 85)`,
+		`INSERT INTO exposure_size_funds (fund_ref, coverage_pct) VALUES ('symbol:QALL', 100), ('symbol:QLM', 85),
+		 ('symbol:QNAM', 100)`,
 		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency) VALUES
 		 ('test-src', 'symbol:QALL', ?, 'holdings', 'testprov', 6, 'USD'),
 		 ('test-src', 'symbol:QLM', ?, 'holdings', 'testprov', 4, 'USD'),
 		 ('test-src', 'symbol:QNEW', ? + 86400, 'holdings', 'testprov', 1, 'USD'),
-		 ('test-src', 'symbol:QEUR', ? + 2 * 86400, 'holdings', 'testprov', 1, 'EUR')`,
+		 ('test-src', 'symbol:QEUR', ? + 2 * 86400, 'holdings', 'testprov', 1, 'EUR'),
+		 ('test-src', 'symbol:QNAM', ?, 'holdings', 'testprov', 2, 'USD'),
+		 ('test-src', 'symbol:QWD2', ?, 'holdings', 'testprov', 2, 'USD'),
+		 ('test-src', 'symbol:QRPX', ?, 'holdings', 'swissfunddata', 1, 'USD')`,
+		// A size fund whose file names its stocks alone, with their
+		// sector and country; another fund names one under its ISIN.
+		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
+		 weight, currency, country, sector) VALUES
+		 ('test-src', 'symbol:QNAM', ?, 'holdings', 1, 'name:qorbit', NULL, 'QLAND ORBIT AG', 'Equity', 80, 'CHF', 'Switzerland', 'Industrials'),
+		 ('test-src', 'symbol:QNAM', ?, 'holdings', 2, 'name:qperch', NULL, 'QLAND PERCH AG', 'Equity', 20, 'CHF', 'Switzerland', 'Industrials'),
+		 ('test-src', 'symbol:QWD2', ?, 'holdings', 1, 'isin:CH0000000D01', 'CH0000000D01', 'QLAND PERCH AG', 'Equity', 50, 'CHF', 'Switzerland', 'Industrials'),
+		 ('test-src', 'symbol:QWD2', ?, 'holdings', 2, 'isin:CH0000000D02', 'CH0000000D02', 'QLAND ORBIT AG', 'Equity', 50, 'CHF', 'Switzerland', 'Industrials'),
+		 ('test-src', 'symbol:QRPX', ?, 'holdings', 1, 'name:qorbit', NULL, 'Qland Orbit AG', 'Common Stocks', 100, 'CHF', NULL, NULL)`,
 		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, asset_type,
 		 weight, quantity, market_value, currency, country) VALUES
 		 ('test-src', 'symbol:QALL', ?, 'holdings', 1, 'isin:US0000000B01', 'US0000000B01', 'Equity', 30, NULL, NULL, 'USD', 'United States'),
@@ -105,6 +124,12 @@ func TestExposureSizesStocks(t *testing.T) {
 		"isin:US0000000B04": "- small size_fund:symbol:QALL",
 		// 55% then 85% of a fund covering 85%: 47% and 72% of the market.
 		"isin:JP0000000C02": "- large size_fund:symbol:QLM",
+		// 80% of its country before it in a fund that names it alone.
+		"isin:CH0000000D01": "- mid size_fund_name:symbol:QNAM",
+		// A share with a market cap keeps it, whatever a size fund's line
+		// of its name ranks; a report's line of that name takes it.
+		"isin:CH0000000D02": "1000000000 small market_cap",
+		"name:qorbit":       "- small underlying:isin:CH0000000D02",
 		"isin:JP0000000C03": "- mid size_fund:symbol:QLM",
 	} {
 		var got string
@@ -124,11 +149,12 @@ func TestExposureSizesStocks(t *testing.T) {
 	for _, r := range rows {
 		got = append(got, r.AssetClass+" "+r.Size+" "+*r.Value)
 	}
-	// Held: QBIG, QMID and QRCP 100 each (large), QRC2 100 (mid), QALL
-	// 100 through its lines (55 large, 10 mid, 35 small), QETF 100 (a
+	// Held: QBIG, QMID and QRCP 100 each (large), QRC2 and QPRC 100
+	// each (mid), QALL 100 through its lines (55 large, 10 mid, 35
+	// small), QRPX 100 through its one named line (small), QETF 100 (a
 	// fund nothing looks through: no size, whatever its own cap) and a
 	// bond 100 (no size applies). The rows sum to what is held.
-	want := []string{"public_equity large 355", "public_equity mid 110", "public_equity small 35",
+	want := []string{"public_equity large 355", "public_equity mid 210", "public_equity small 135",
 		"public_equity unclassified 100", "fixed_income (none) 100"}
 	if !slices.Equal(got, want) {
 		t.Errorf("sizes = %v, want %v", got, want)

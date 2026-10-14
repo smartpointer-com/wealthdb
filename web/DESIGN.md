@@ -203,15 +203,18 @@ It reads in this order:
   latest day in the range;
 - the classes, regions and currencies over time, as shares that stack
   to 100;
+- public equity by size (large, mid, small) on the latest day, as shares
+  of public equity;
 - what is held directly against what is held through funds;
 - how the figures are classified, so a growing unclassified band shows
   where the other charts stop covering.
 
-Every figure is a share of net worth, which is scale-free. So the
-Exposure twin needs no normalisation: each card drops its money column
-and keeps the shares. Country, region and currency labels stay, since
-none names an account. Its tiles read `web_exposure` (migration 0128),
-a view over a materialized table (§8).
+Every figure is a share of net worth, or of public equity, which is
+scale-free. So the Exposure twin needs no normalisation: each card
+drops its money column and keeps the shares. Country, region and
+currency labels stay, since none names an account. Its tiles read
+`web_exposure` (migrations 0128 and 0133), a view over a materialized
+table (§8).
 
 **Data Freshness** counts a source's age from its last read, not from
 its latest snapshot: gold's `source_observed` (migration 0122) says
@@ -436,7 +439,9 @@ the holdings reach, and the dashboard charts every month end. So
 It does so in every reporting currency and stores the result grouped by
 the dimensions the dashboard charts. One instant's rows add up to
 `wealthdb exposure classes -d <day> -x CCY`, class by class, and to net
-worth. A Go test holds both. Countries are by country of risk.
+worth. A Go test holds both, and the sizes view's rows too. Countries
+are by country of risk. A stock's size is today's at every month end:
+gold keeps one size per security.
 
 The `web_exposure` view does three things:
 

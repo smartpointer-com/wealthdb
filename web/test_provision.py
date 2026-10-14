@@ -1405,6 +1405,14 @@ check("every Exposure tile is defined",
       bool(_ex_tiles) and all(n in CARDS for n in _ex_tiles),
       [n for n in _ex_tiles if n not in CARDS])
 check("...and is placed once", len(set(_ex_tiles)) == len(_ex_tiles))
+_ex_spec = p.base_dashboards()["Exposure"][2]
+check("...on the 24-column grid without overlaps",
+      all(c + w <= 24 for _, r, c, w, h, _t in _ex_spec) and not [
+          (a[0], b[0]) for i, a in enumerate(_ex_spec) for b in _ex_spec[i + 1:]
+          if a[2] < b[2] + b[3] and b[2] < a[2] + a[3] and a[1] < b[1] + b[4] and b[1] < a[1] + a[4]])
+# The description promises the coverage chart last.
+check("...the coverage chart last",
+      max(_ex_spec, key=lambda t: t[1])[0] == "How the figures are classified")
 _ex_sql = {n: (sql_of(CARDS[n][2]) or "") for n in _ex_tiles if n in CARDS}
 check("every Exposure tile is native over web_exposure",
       all("FROM web_exposure" in q for q in _ex_sql.values()),
