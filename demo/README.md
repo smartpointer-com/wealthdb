@@ -16,7 +16,7 @@ rather than a holding.
 ## Try it
 
 ```sh
-make demo                 # build silver and gold into ~/wealthdb-demo
+make demo                 # build silver and gold into the demo root
 make demo-web             # dashboards on http://127.0.0.1:3100/ (container wealthdb-metabase-demo)
 make demo-roll            # later: add the days since the last build, load only those
 make demo-web-stop        # stop the demo's dashboards
@@ -117,6 +117,8 @@ the look-through handles:
 - The real-estate fund's compositions start a year after it is first
   held.
 - One stock carries a sector label outside the vocabulary.
+- A structured note has neither a composition nor a tag, so `wealthdb
+  exposure coverage` lists it as `untagged`.
 
 The 529 portfolio has no composition of its own. The config names a
 target-date fund as its proxy, and tags the home, the loan and the
@@ -137,7 +139,7 @@ environment, no real config, no network. The code is in `demo/demohouse/`:
 | `market.py` | four price factors (stocks, bonds, gold, crypto), instrument prices, exchange rates |
 | `book.py` | the ledger: every balance is the running sum of its transactions, and every holding the sum of its lots |
 | `household.py` | the day-by-day simulation |
-| `reference.py` | the funds' month-end compositions and the securities' facts, from `catalogue/funds.json` |
+| `reference.py` | the funds' month-end compositions and the securities' facts, from `catalogue/funds.json` and the instruments |
 | `silver.py` | writes a full build, or appends the new days to an earlier one |
 | `config.py` | renders `wealthdb.cfg` and the ledger CSVs |
 | `dates.py`, `money.py` | the calendar and timestamps, and Decimal rounding and formats |
@@ -196,8 +198,8 @@ A findings build is a one-off picture: it cannot be appended to.
   each source, every currency the Currency picker offers, and the investing
   grain, section, start year and as-of pickers. It uses a temporary API
   key, so no filter values stay behind on the admin account. Its
-  defaults are the demo's port and `~/wealthdb-demo`. Another root
-  needs `--password-file`.
+  defaults are the demo's port and the demo root `make demo` uses.
+  Another root needs `--password-file`.
 - `demo/disjoint.py --demo <gold> --live <gold>` lists every
   identifying value a demo gold shares with another gold: ids, names,
   symbols, ISINs, counterparties, descriptions, signatures, and

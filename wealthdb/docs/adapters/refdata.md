@@ -38,7 +38,6 @@ Conventions:
 | Silver table | Gold table | One row per |
 | --- | --- | --- |
 | `dump_runs` | none | Drives `Status` and `ChangeWindow` (§4). |
-| `funds` | none | How the provider knows a fund. The collector's own bookkeeping. |
 | `compositions` | `fund_compositions` | fund, day and basis |
 | `lines` | `fund_lines` | composition line |
 | `attributes` | `fund_attributes` | fund and day |
@@ -82,12 +81,29 @@ Gold builds the fund reference of a holding from its instrument's ISIN,
 CUSIP and symbol, after it maps the holding's key through
 `holding_aliases` and `instrument_aliases()`. The wanted list carries
 the reference, and the collector stores the composition under it. The
-join back is exact. Gold reads every key through its security aliases
-(EXPOSURE.md §1): a ticker or a CUSIP a source states beside an ISIN
-reads as that ISIN, and a CUSIP no source ties to an ISIN reads as the
-one the US rule gives. A broker's symbol and CUSIP fill each other's
-gaps. A fund held at two brokers under two keys that read as one ISIN
-is fetched once. What a provider answered under one key counts for the
+join back is exact.
+
+Gold then reads every key through its security aliases
+(`security_aliases`, rebuilt at every load):
+
+- A ticker, CUSIP or FIGI that a fund line, a lookup or an instrument
+  states beside an ISIN reads as that ISIN.
+- Where sources disagree, an account's own instrument wins, then a
+  lookup, then a fund line. Within one kind, the ISIN stated most often
+  wins, then the newest.
+- A fund line's ticker counts only where the line names a US listing: a
+  US ISIN, a US exchange, or no exchange and a US-dollar price. A
+  broker's symbol counts only where the instrument has a US ISIN or is
+  priced in US dollars. A local ticker abroad is often another
+  company's US symbol.
+- A CUSIP no source ties to an ISIN reads as the one the US rule gives.
+- A broker that states a holding's symbol and CUSIP together, with no
+  ISIN, lets each stand in for the other. A US CUSIP takes its symbol's
+  ISIN only where that ISIN holds the CUSIP (a Canadian share), since
+  a ticker may be reused.
+
+A fund held at two brokers under two keys that read as one ISIN is
+fetched once. What a provider answered under one key counts for the
 key it reads as.
 
 ## 4. Status and change window
@@ -161,10 +177,11 @@ other. A metal or crypto fund holds what its asset class already says.
 A private fund publishes no lines. A note's basket reaches gold only
 through the collector's inbox, since no public source serves one.
 The `exposure` config adds proxies, reference funds and size funds. A
-proxy is wanted over the days of the funds it stands in for; a
-reference or size fund from today, in the role `reference`. A fund that
-a held fund holds is wanted from today too, one level down. It comes
-from a line of the held fund's newest composition:
+proxy is wanted over the days the funds it stands in for were held,
+else from today. A reference or size fund is wanted from today, in the
+role `reference`. A fund that a held fund holds is wanted from today
+too, one level down. It comes from a line of the held fund's newest
+composition:
 
 - the line's asset type is a fund, and an identifier names the fund;
 - a holdings list wins over an index list of the same day;
@@ -217,24 +234,7 @@ reference data and no exposure config yet. The list then names the
 held funds and securities with nothing known, so the first fetch can
 run before the first load.
 
-## 6. The exposure config tables
-
-The `exposure` block of `wealthdb.cfg` (DESIGN.md §5.1) and its tags
-ledger are written into gold at every load, after the per-source loads,
-beside the holding aliases (`gold.SyncExposure`). Each table is replaced
-whole, so an entry taken out of the config or the ledger leaves on the
-next load:
-
-- `exposure_proxies`: a fund whose composition stands in for another;
-- `exposure_reference_funds`: funds fetched for their lines alone;
-- `exposure_size_funds`: broad funds whose weights size stocks, each
-  with the share of its markets it covers;
-- `exposure_tags`: the tags ledger's rows, the sector, country and
-  currency of a private holding (EXPOSURE.md §9);
-- `exposure_custody`: who keeps each source's assets;
-- `exposure_settings`: one row of settings.
-
-## 7. The synthetic kind
+## 6. The synthetic kind
 
 The `synthetic` kind repeats the six reference tables column for column
 ([synthetic.md](synthetic.md) §12), and reads them through the same

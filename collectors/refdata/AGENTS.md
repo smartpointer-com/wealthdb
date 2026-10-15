@@ -18,10 +18,9 @@ signs in anywhere.
   it serves its documents: an investor category, no account. The
   session cookie the site sets lasts one run and is never stored.
 - No login, no account, no form that changes anything at the source.
-- Every request goes through `fetcher.Client`: one request a second per
-  host, eight a second for the SEC (its limit is ten), and a User-Agent
-  that names the tool. A source that refuses for its rate is not asked
-  again in the run.
+- Every request goes through `fetcher.Client` and keeps its rules
+  ([README.md, Pace](README.md#pace)). No provider opens a connection
+  of its own.
 - A run fetches only what the wanted list names. Never crawl a product
   range or a site.
 
@@ -29,14 +28,17 @@ signs in anywhere.
 
 A download needs no login and fires no challenge, so a live
 `download`, `download --dry-run` and `login --check` may run in
-development. Keep each run small (`--ref`, `--limit`).
+development. A dry run still makes the lookups that find each fund.
+Keep each run small (`--ref`, `--limit`).
 
 ## 3. Providers and their terms
 
-A new provider quotes its source's terms in the README. Public-data
-providers may be on by default. An issuer, report, archive or vendor
-provider stays off until `refdata.cfg` names it: enabling one accepts
-its terms, and that is the user's decision, not the code's.
+A new provider quotes its source's terms in the README, and only
+there. Its module points to that section (`Terms: README.md,
+<section>.`). Public-data providers may be on by default. An issuer,
+report, archive or vendor provider stays off until `refdata.cfg` names
+it: enabling one accepts its terms, and that is the user's decision,
+not the code's.
 
 ## 4. What stays out of the repo
 

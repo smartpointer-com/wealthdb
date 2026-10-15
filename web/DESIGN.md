@@ -4,12 +4,12 @@ The optional Metabase BI server. The decisions worth recording.
 
 ## 1. Host-side, not a Go subcommand
 
-The `wealthdb` wrapper forwards subcommands *into* the `wealthdb:latest`
-container, which has no Docker socket — so it can't manage a sibling
-Metabase container. `web` is therefore handled **host-side**: the
-wrapper special-cases the `web` verb (like `build`) and execs
-[`web/web`](web), which drives `docker` on the host. The Go engine
-stays pure (CLI/query only; no daemon).
+The `wealthdb` wrapper forwards subcommands *into* the engine container
+(`wealthdb:<tag>`, wealthdb/docs/DESIGN.md §12), which has no Docker
+socket — so it can't manage a sibling Metabase container. `web` is
+therefore handled **host-side**: the wrapper special-cases the `web`
+verb (like `build`) and execs [`web/web`](web), which drives `docker`
+on the host. The Go engine stays pure (CLI/query only; no daemon).
 
 The one thing the host script needs from the engine is config it can't
 easily parse itself (`wealthdb.cfg` is JSON, validated in Go): it calls
@@ -205,16 +205,18 @@ It reads in this order:
   to 100;
 - public equity by size (large, mid, small) on the latest day, as shares
   of public equity;
-- what is held directly against what is held through funds;
-- how the figures are classified, so a growing unclassified band shows
-  where the other charts stop covering.
+- what is held directly against what is held through funds, over
+  time;
+- how the figures are classified over time, so a growing unclassified
+  band shows where the other charts stop covering.
 
 Every figure is a share of net worth, or of public equity, which is
-scale-free. So the Exposure twin needs no normalisation: each card
-drops its money column and keeps the shares. Country, region and
-currency labels stay, since none names an account. Its tiles read
-`web_exposure` (migrations 0128 and 0133), a view over a materialized
-table (§8).
+scale-free. So the Exposure twin needs no normalisation. Each breakdown
+has a privacy card that drops the money column and keeps the shares.
+The charts over time show shares alone. They are privacy-exempt, so the
+twin shows the same cards. Country, region and currency labels stay,
+since none names an account. Its tiles read `web_exposure` (migration
+0127), a view over a materialized table (§8).
 
 **Data Freshness** counts a source's age from its last read, not from
 its latest snapshot: gold's `source_observed` (migration 0122) says
@@ -392,8 +394,8 @@ Modified-Dietz returns would be wrong here — a flow landing between two
 sparse snapshots poisons that bucket (a mid-month deposit with no fresh
 snapshot reads as a large loss, then a large gain next period), so a
 chained index can diverge from the true TWR by hundreds of points for
-sparse-snapshot sources — a real gainer chained down to a spurious
-near-total loss. The windowed TWRs use the
+sparse-snapshot sources: a source that gained can chain down to a
+spurious near-total loss. The windowed TWRs use the
 engine's snapshot-aligned chain, so the chart is correct and is
 built from the same figures the scalars and table show — at the cost
 of annual granularity (a finer curve would need per-month windows).
@@ -428,7 +430,7 @@ sold part counts a sale only from its month's start
 (wealthdb/docs/GAINS.md §2). The realized gain keeps its own tile: it
 is the figure a tax return reads.
 
-**Exposure** is materialized into `report_exposure` (migration 0128)
+**Exposure** is materialized into `report_exposure` (migration 0127)
 for the reason gains are. Each instant's look-through walks every fund
 the holdings reach, and the dashboard charts every month end. So
 `web-materialize` computes the look-through at these instants:
@@ -436,17 +438,18 @@ the holdings reach, and the dashboard charts every month end. So
 - the last second of every month from the first holding;
 - the end of today.
 
-It does so in every reporting currency and stores the result grouped by
-the dimensions the dashboard charts. One instant's rows add up to
-`wealthdb exposure classes -d <day> -x CCY`, class by class, and to net
-worth. A Go test holds both, and the sizes view's rows too. Countries
-are by country of risk. A stock's size is today's at every month end:
-gold keeps one size per security.
+wealthdb/docs/DESIGN.md §10.14 says how it stores them. One instant's
+rows add up to `wealthdb exposure classes -d <day> -x CCY`, class by
+class, and to net worth. A Go test compares each instant with
+`holdings global` and with every row of `wealthdb exposure sizes`,
+which splits each class. Countries are by country of risk. A stock's
+size is today's at every month end: gold keeps one size per security.
 
 The `web_exposure` view does three things:
 
-- it names a missing dimension `unclassified`, and a metal's or a
-  coin's country `(none)`;
+- it names a missing dimension `unclassified`, a metal's or a coin's
+  country `(none)`, and the size of anything but public equity
+  `(none)`;
 - it labels each row direct or via funds;
 - it adds each row's share of that instant's net worth.
 

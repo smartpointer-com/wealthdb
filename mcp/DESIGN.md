@@ -22,11 +22,11 @@ and for the two dumps, with and without privacy. `status` and
 `snapshots` are tables on the server and prose in the CLI, so they have
 no CLI twin to compare with.
 
-There is no second image. `wealthdb:latest` already holds DuckDB, the
-adapters and the binary; the MCP container is that image with a
-different command. The official Go SDK
-(`github.com/modelcontextprotocol/go-sdk`) supplies the protocol and
-both transports.
+There is no second image. The engine image (`wealthdb:<tag>`,
+wealthdb/docs/DESIGN.md §12) already holds DuckDB, the adapters and the
+binary; the MCP container is that image with a different command. The
+official Go SDK (`github.com/modelcontextprotocol/go-sdk`) supplies the
+protocol and both transports.
 
 ## 2. Live gold, not a snapshot
 
@@ -61,8 +61,8 @@ carries, every call answers "run `wealthdb mcp restart`":
 `gold.CheckSchemaKnown` compares gold's schema version with the
 binary's own, which needs no build stamp (the image binary carries
 none, so the stamp check in `gold.Open` cannot fire there). `wealthdb
-mcp status` compares the container's image with `wealthdb:latest`
-before any load.
+mcp status` compares the container's image with the current engine
+image before any load.
 
 ## 3. Transports and endpoints
 
@@ -100,7 +100,7 @@ docker run -d --name wealthdb-mcp --restart unless-stopped \
   --memory 3g \
   -v "$DATA_DIR/token:/run/wealthdb-mcp/token:ro" \
   -p 127.0.0.1:PORT:PORT -p "[::1]:PORT:PORT" \
-  wealthdb:latest -c "$CFG" mcp-serve --http :PORT --token-file /run/wealthdb-mcp/token
+  wealthdb:<tag> -c "$CFG" mcp-serve --http :PORT --token-file /run/wealthdb-mcp/token
 ```
 
 The mounts are the engine wrapper's, at the same paths, so the config's

@@ -7,9 +7,9 @@ currency and security, as of any day. This file defines every figure
 the report shows and the rules behind them.
 
 Related design: DESIGN.md §4.17 (the `exposure` command), §7.6 (the
-reference tables), §10.14 (the macros);
+reference and config tables), §10.14 (the derived tables and macros);
 [adapters/refdata.md](adapters/refdata.md) (how reference data loads,
-and the wanted list); migrations 0125 to 0130.
+the keys and aliases, and the wanted list); migrations 0125 to 0127.
 
 Every figure is a share of a holding's market value, the value
 `holdings` reports. The look-through moves value between rows; it never
@@ -27,15 +27,11 @@ creates or loses any. Every view therefore sums to `holdings global`.
   **A security key** names a security the same way, with `figi:…` and
   `name:…` as last resorts. One scheme serves both: a fund is a security
   that has a composition.
-- **An alias** reads one key as another. A fund line that states a
-  ticker beside an ISIN makes the ticker an alias of the ISIN, so a
-  stock held under its ticker and a line that names its ISIN are one
-  security. The line must name a US listing (a US ISIN, a US exchange,
-  or no exchange and a US-dollar price): a local ticker abroad is often
-  another company's US symbol. A broker that states a holding's symbol
-  and CUSIP together lets each stand in for the other where sources
-  name only one. A US CUSIP takes its symbol's ISIN only where that
-  ISIN holds the CUSIP (a Canadian share): a ticker may be reused.
+- **An alias** reads one key as another. A ticker a fund line states
+  beside an ISIN reads as that ISIN, so a stock held under its ticker
+  and a line that names its ISIN are one security.
+  [adapters/refdata.md §3](adapters/refdata.md#3-identity) gives the key
+  scheme and the alias rules.
 - **A leaf** is what the look-through ends at: a holding no composition
   describes, a fund's line, a remainder, or the cash leg of a leveraged
   proxy.
@@ -54,7 +50,7 @@ For a day:
    its cash, is left out here too.
 2. Read each holding's key through `holding_aliases` and
    `instrument_aliases()`, as the gains reports do, then through the
-   security aliases.
+   security aliases (§1).
 3. A holding whose key names a fund with a composition (§4) is replaced
    by its lines. Each line is worth the holding's value times its
    weight.
@@ -125,19 +121,23 @@ issuer's name, among the equity lines of the funds:
 - A name loses what it says of the receipt (ADR, sponsored, each
   representing two shares). It also loses the legal form, single letters
   and numbers. A share's name keeps what its parentheses say.
+- Each name the receipt goes by is matched on its own.
 - Equal names match first. Else the receipt's words may lead the
   share's name, word by word, a word cut short allowed (ELECT for
-  ELECTRIC). A name of one word leads only a share with one telling
-  word (NAME BANK leads, NAME CHEMICAL does not).
+  ELECTRIC). The first word must be equal, unless it has six letters or
+  more and starts the share's first word. A name of one word leads only
+  a share with one telling word (NAME BANK leads, NAME CHEMICAL does
+  not).
 - A share whose name adds a country (NAME INDIA for NAME) is a
   subsidiary there, not the issuer.
 - The first step that finds any share decides. Where its shares do not
   fit, there is no match.
-- A legal form places the company: AG in Germany, Switzerland or
-  Austria, SPA in Italy. A share elsewhere does not fit. A receipt whose
-  country a source states fits only a share of that country.
-- What the names find must be one issuer in one country. Anything else
-  stays `unmatched`.
+- A legal form places the company: SPA in Italy, OYJ in Finland. A
+  share elsewhere does not fit. A receipt whose country a source states
+  fits only a share of that country.
+- A name that finds one issuer in one country votes for it. Any other
+  name abstains. The votes must agree. Otherwise the receipt has no
+  share and keeps only what sources state of it.
 
 A fund report may name a holding by its name alone. Such a line finds
 its share the same way, in two steps:
@@ -310,21 +310,27 @@ The `currencies` view marks each row's kind: `fiat`, `metal` or
 | View | One row per | Answers |
 | --- | --- | --- |
 | `classes` | asset class | the allocation after look-through |
-| `sectors` | asset class and sector | the sector weights, and `class_share_pct` within the class |
-| `sizes` | asset class and size | large, mid and small caps (§3), and `class_share_pct` within the class |
+| `sectors` | asset class and sector | the sector weights, and each one's share within its class |
+| `sizes` | asset class and size | large, mid and small caps (§3), and each one's share within its class |
 | `countries` | country | where the value is, with each country's region |
 | `currencies` | currency | what the value moves with |
 | `securities` | security | each security held directly and through every fund |
 | `funds` | fund held directly | what describes it on the day, and how old that is |
 | `coverage` | reason | what the figures rest on (§10) |
 
-Columns every aggregate view shares:
+Columns every aggregate view shares, by the names `-C` takes:
 
-- `value_<CCY>`: the sum of the leaves, in the output currency.
-- `share_pct`: the share of net worth. A loan is a negative share.
-- `direct_pct` and `via_funds_pct`: the part held directly and the part
-  held through funds; they sum to `share_pct`.
+- `value`: the sum of the leaves, in the output currency.
+- `share`: the share of net worth. A loan is a negative share.
+- `direct` and `via_funds`: the part held directly and the part held
+  through funds. They sum to `share`.
 - `quality`: the flags of §8.
+
+`sectors` and `sizes` add `class_share`, the share within the asset
+class. A value prints as `value_<CCY>`. A share prints with a `_pct`
+suffix, in a table's header and as a JSON key: `share_pct`,
+`class_share_pct`, and `weight_sum_pct` in `funds`. `wealthdb help
+exposure` lists every view's columns.
 
 A row with no value for its dimension reads `unclassified`. In
 `countries`, a metal or a coin reads `(none)`: it has no country. In
@@ -352,7 +358,9 @@ attributes, its market cap and size among them, are today's.
 ## 8. Quality
 
 Each row says what its figure rests on. A flag carries the share of the
-row's gross value it covers: `proxy=12%`, `aged=<1%`.
+row's gross value it covers: `proxy=12%`, `aged=<1%`. `wealthdb help
+exposure` and the MCP server's `describe topic=quality` list the same
+flags.
 
 | Flag | Meaning |
 | --- | --- |
@@ -375,7 +383,7 @@ The `exposure` block of `wealthdb.cfg` holds what no source knows
 ```json
 "exposure": {
   "proxies": {
-    "isin:XX0000000001": { "fund": "isin:XX0000000002" },
+    "isin:XX0000000001": { "fund": "isin:XX0000000002", "always": true },
     "symbol:LEV3":       { "fund": "symbol:IDX1", "leverage": 3 }
   },
   "reference_funds": ["symbol:IDX9"],
@@ -386,19 +394,28 @@ The `exposure` block of `wealthdb.cfg` holds what no source knows
 }
 ```
 
-- `proxies` maps a fund reference to its proxy (§5).
+- `proxies` maps a fund reference to its proxy (§5): `fund`, `always`
+  (default false) and `leverage` (default 1; not zero, within ±10).
+  Two keys may not name one fund. A fund may not be its own proxy, and
+  a proxy may not have a proxy of its own.
 - `reference_funds` are broad funds fetched for their lines alone. They
   widen the security master; they need not be held.
 - `size_funds` are broad funds whose weights size the stocks no market
   cap sizes (§3). Each states the share of its markets' value it
-  covers, in percent: 100 for an all-cap fund, 85 for a large and mid
-  cap one. A small-cap fund is no size fund. They are fetched like
-  reference funds.
-- `tags` is the path to the tags ledger, below.
+  covers, in percent, from 50 to 100: 100 for an all-cap fund, 85 for a
+  large and mid cap one. A small-cap fund is no size fund. They are
+  fetched like reference funds.
+- `tags` is the path to the tags ledger, below. It expands like every
+  path in the config (DESIGN.md §5).
+- `custody` names who keeps each configured source's assets:
+  `custodian`, and optionally `country` (ISO 3166). A cash balance
+  counts in its custodian's country.
+- `max_gap_days` bounds the temporal join (§4): 1 to 3650 days,
+  default 400.
 
-- `custody` names who keeps each source's assets. A cash balance counts
-  in its custodian's country.
-- `max_gap_days` bounds the temporal join (§4).
+The block is checked when the config loads. A load writes it, with the
+tags ledger, into the `exposure_*` tables whole (DESIGN.md §7.6), so an
+entry taken out leaves on the next load.
 
 The tags ledger is a CSV of what no public source can know: the
 country, currency and sector of a private holding (§5). It has one row
@@ -472,19 +489,12 @@ still has value and keeps its own line.
 ## 12. The dashboard and MCP
 
 The Metabase Exposure dashboard (`wealthdb web`) charts the same
-figures:
-
-- on the latest day in its time range, by asset class, sector, region,
-  country and currency, and public equity by size;
-- at every month end in the range, as shares of net worth over time;
-- split into what is held directly and what through funds, and by how
-  each part is classified (§10).
-
-`wealthdb web-materialize` stores the look-through at every month end
-and at today, in each reporting currency (web/DESIGN.md §8). A refresh
+figures at every month end and today, by country of risk
+([web/DESIGN.md](../../web/DESIGN.md) §6 and §8). Every refresh
 recomputes the whole history, so a new composition or tag shows in
-past months too. The privacy twin shows the shares alone.
+past months too. A security's attributes, its size among them, are
+today's at every month end, as in a `--period` series (§7).
 
 The MCP server has an `exposure` tool with the same eight views, an
-`as_of` day and the `country` choice. Its rows equal the command's,
-cell for cell.
+`as_of` day and the `country` choice, but no `--period` series. Its
+rows equal the command's, cell for cell.

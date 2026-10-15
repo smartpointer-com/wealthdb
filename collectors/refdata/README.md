@@ -10,9 +10,10 @@ security is. The engine's exposure report
 through every fund to the securities underneath.
 
 `refdata` reads only what gold asks for. The engine prints a **wanted
-list**: the funds held, their proxies and reference funds, the funds a
-held fund holds, and the securities held directly. `refdata` fetches what is missing or old, from
-public sources, and loads it into its silver. `wealthdb load refdata`
+list**: the funds held, the funds the config names (proxies, reference
+and size funds), the funds a held fund holds, and the securities held
+directly or through funds. `refdata` fetches what is missing or old
+from public sources and loads it into its silver. `wealthdb load`
 brings it into gold.
 
 There is no login anywhere. Every provider reads public pages.
@@ -20,21 +21,25 @@ There is no login anywhere. Every provider reads public pages.
 ## Use
 
 ```sh
-./refdata download --dry-run       # print the requests a run would make
+./refdata download --dry-run       # plan a run and print what it would fetch
 ./refdata download                 # fetch what the wanted list lacks
 ./refdata download --backfill      # also fetch past dates while each fund was held
 ./refdata load                     # parse bronze into silver
-wealthdb load refdata              # bring it into gold
+wealthdb load refdata              # bring it into gold (the source's id in wealthdb.cfg)
 wealthdb exposure coverage         # see what is described, and what is not
 ```
 
 `download` asks the engine for the wanted list (`wealthdb -r
-refdata-wanted`). `--wanted FILE` reads a saved list instead. A run can
-be narrowed:
+refdata-wanted`). `--wanted FILE` reads a saved list instead. A dry run
+still makes the lookups that find each fund, such as a product list. A
+run can be narrowed:
 
-- `--provider NAME` asks only that provider (repeatable);
-- `--ref REF` fetches only that fund or security (repeatable);
-- `--limit N` fetches at most N files;
+- `--provider NAME` asks only that provider (repeatable). A name
+  `refdata.cfg` does not enable stops the run.
+- `--ref REF` fetches only that fund or security (repeatable).
+- `--limit N` makes at most N fetch attempts. The lookups that find a
+  fund are not counted. A request left without an attempt is recorded
+  as deferred.
 - `--no-securities` skips the security lookups.
 
 `login` is a no-op, since there is no session. `login --check` asks each
@@ -67,9 +72,13 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
 ```
 
 - `providers` are asked in this order. The first that claims a fund
-  serves it; the inbox serves beside it. Every security provider is
-  asked for every security held directly that it can claim; a security
-  held through funds only of a provider that can fill what it lacks.
+  serves it; the inbox serves beside it. A fund is offered only while it
+  wants a composition. The next provider claims it only when the fetch
+  of the one before fails. Every security provider is asked for every
+  security held directly that it can claim. A security held through
+  funds is asked only of a provider that can fill what it lacks.
+- `max_age_days` (1 to 3650, default 30) is how old a composition or a
+  lookup may be before it is fetched again.
 - `constituents` lets the security providers look up the securities a
   held fund's lines name that no source describes yet (an N-PORT filing
   states no sector), the biggest share of net worth first. Off by
@@ -79,15 +88,17 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
   share of net worth, in percent, is below it. The default, 0.0001, is
   one millionth of net worth.
 - `contact` goes into the User-Agent of requests to the SEC, and to no
-  other host. The SEC requires it; the SEC providers do not run without
-  it. It is kept in this file only, never in bronze, silver or a log.
+  other host. The SEC requires it. The providers that ask the SEC
+  (`sec-nport`, `sec-edgar` and `fidelity-529`) do not run without it.
+  It is kept in this file only, never in bronze, silver or a log.
 - `engine` is the wealthdb wrapper. `REFDATA_WEALTHDB` overrides it.
   Without either, the collector asks the wrapper of its own checkout,
   which runs that checkout's engine image; outside a checkout,
   `wealthdb` on PATH.
 - `fidelity_529_plans` names the 529 plans `fidelity-529` reads. Each
-  entry maps the prefix a broker writes before a plan's portfolios to
-  the plan's annual report. Without it, that provider does not run.
+  entry maps the prefix a broker writes before a plan's portfolios, one
+  word, to the https URL of the plan's annual report. Without it, that
+  provider does not run.
 
 With no file, the providers of public data run: `inbox`, `sec-nport`,
 `sec-edgar`, `gleif` and `openfigi`. The two SEC providers wait for a
@@ -114,7 +125,7 @@ fund and the day it describes:
 ```
 
 The folder name is the fund's reference, with `_` in place of `:`.
-`wealthdb refdata-wanted` prints the reference of every fund the
+`wealthdb -r refdata-wanted` prints the reference of every fund the
 collector reads, a structured product among them. A folder holds one
 composition file:
 
@@ -190,8 +201,8 @@ Sprott's US ETFs, from the holdings table each fund page embeds.
 - The table is today's holdings; there is no history.
 
 **Terms.** The site links no terms of use (checked 2026-10-14); its
-privacy policy covers personal data only. Off until `providers` names
-it.
+privacy policy covers personal data only. The holdings are the fund's
+own publication, read once a run. Off until `providers` names it.
 
 ### swisscanto and swissfunddata
 
@@ -221,7 +232,9 @@ contents systematically "to compile a collection, a database or a
 directory". swissfunddata's disclaimer bars professional market data
 distributors from using, systematically extracting, scraping or
 commercially exploiting its data, and requires consent for any public
-or commercial use. Off until `providers` names them.
+or commercial use. The reports are the funds' own publications, read for
+the funds held, at most once in max_age_days. Off until `providers`
+names them.
 
 ### fidelity-529
 
@@ -245,7 +258,8 @@ statements contained herein are submitted for the general information
 of the holders of units of the Portfolios." fidelity.com answers the
 tool's User-Agent with 403 for its other pages, its terms too. It
 serves the report. The SEC's content may be copied and redistributed.
-Off until `providers` names it.
+The report is read for the portfolios held, at most once in
+max_age_days. Off until `providers` names it.
 
 ### ishares
 
@@ -265,9 +279,9 @@ column: it would read as a different US symbol.
 
 **Terms.** BlackRock's terms forbid using "any robot, spider,
 intelligent agent, other automatic device, or manual process to search,
-monitor or copy this Website" without its permission, and allow
-downloading "material displayed on this Website for your personal use".
-Off until `providers` names it.
+monitor or copy this Website ... without BlackRock's permission", and
+allow downloading "material displayed on this Website for your personal
+use". Off until `providers` names it.
 
 ### xtrackers
 
@@ -284,7 +298,10 @@ DWS's Xtrackers ETFs, from the constituent export each fund page links.
 
 **Terms.** DWS's robots.txt disallows `/etfdata/*` and `/export/*`, the
 export's path. DWS's legal notice states no rule on automated access.
-Off until `providers` names it.
+The export's first row reads: "Although information in this document
+has been obtained from sources believed to be reliable, DWS does not
+guarantee its accuracy, completeness or fairness". Off until
+`providers` names it.
 
 ### invesco
 
@@ -302,8 +319,9 @@ Invesco's ETFs, from the data API its fund pages read.
 **Terms.** Invesco's terms grant "a limited, non-exclusive and
 revocable license to access and make personal use of the Website", and
 forbid "devices (including software) that are designed to provide
-repeated automated access" and "any data mining, robots, or similar
-data gathering and extraction tools". Off until `providers` names it.
+repeated automated access to the Website" and "any data mining, robots,
+or similar data gathering and extraction tools". Off until `providers`
+names it.
 
 ### amundi
 
@@ -356,7 +374,7 @@ through funds is asked for when it lacks a country, or a sector under a
 US ISIN, which may be a receipt's.
 
 **Terms.** "The data available through the Access Service are provided
-under the CC0 licence" (GLEIF's terms of use for LEI data).
+under the CC0 licence" (GLEIF's terms of use for LEI data, §II.3).
 
 ### openfigi
 
@@ -367,18 +385,22 @@ US listing only. A bond's type names its market, and gold reads the
 bond's sector from it.
 
 **Terms.** Bloomberg "hereby dedicates FIGI Identifiers to the public
-domain", redistribution included (OpenFIGI's terms of service). The API
+domain", including "redistribution of the FIGI Identifiers to your
+customers for their use" (OpenFIGI's terms of service, §1). The API
 takes 25 requests a minute without a key.
 
 ## Pace
 
 Every request goes through one small client:
 
+- https only;
 - one request a second per host; under a source's stated limit, with a
   margin: eight a second for the SEC (limit ten), 24 a minute for
   OpenFIGI (25), 50 a minute for GLEIF (60);
 - a User-Agent that names the tool, with the `contact` for the SEC's
   hosts only;
+- a redirect counts as a request to the host it leads to, with that
+  host's pace and User-Agent;
 - GET; a read-only POST for OpenFIGI's mapping and Amundi's product
   API, which have no GET form; and the POST that states swissfunddata's
   investor category;
@@ -387,8 +409,8 @@ Every request goes through one small client:
   the run.
 
 `download --debug` writes `screenshots/http-trace.jsonl` into the run
-dir: one line per request, with its URL, status, timing and size, and
-no body. `prune` reclaims it.
+dir: one line per request, the plan's lookups included, with its URL,
+status, timing and size, and no body. `prune` reclaims it.
 
 ## Where the data goes
 
@@ -401,27 +423,25 @@ Each `download` writes one UTC-timestamped run dir under
 <run>/securities/<provider>/<key>/
 ```
 
-One failed request does not fail the run. The manifest follows the
+A folder is named after the fund's reference or the security's key,
+`isin_XX…` as in the inbox. One failed request does not fail the run.
+The manifest follows the
 [shared status lifecycle](../README.md#debug-artefacts-run-status-and-pruning-bronze),
 so `load` never reads a crashed run. An N-PORT filing is stored
 zstd-compressed.
 
-The silver DB is `refdata.db`, beside the run dirs. It mirrors what the
-providers state:
+The silver DB is `refdata.db`, beside the run dirs. It keeps what the
+providers state, labels in their own words: each fund's compositions
+and their lines, its attributes and counterparties, and each security's
+identifiers and facts. A fund and day served again replaces what silver
+held for them. [adapters/refdata.md](../../wealthdb/docs/adapters/refdata.md)
+describes the tables and how gold reads them.
 
-| Table | One row per |
-| --- | --- |
-| `funds` | fund, as a provider names it |
-| `compositions` | fund, day and basis (`holdings`, `collateral`, `index`) |
-| `lines` | line of a composition, its labels as the provider wrote them |
-| `attributes` | fund and day: domicile, replication, hedged currency, lending |
-| `counterparties` | fund, day, role and name |
-| `securities` | security, day and provider: its identifiers |
-| `security_facts` | security, field, day and provider |
+Gold reads the silver as a source of kind `refdata` in `wealthdb.cfg`:
 
-A fund and day served again replaces what silver held for them. The
-gold adapter is described in
-[adapters/refdata.md](../../wealthdb/docs/adapters/refdata.md).
+```json
+{ "id": "refdata", "kind": "refdata", "path": "$XDG_DATA_HOME/wealthdb/refdata/refdata.db" }
+```
 
 ## Reclaiming disk
 

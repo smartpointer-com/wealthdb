@@ -295,9 +295,10 @@ asterisks are footnote markers, not part of the ticker). 529-plan
 positions use plan-internal codes (e.g. `XXX######` for state
 529-plan target-date sleeves).
 
-Gold's instrument also carries the CUSIP the lots state for its key
-(`open_lots`, closed positions): beside a ticker, or as a bond's own
-key. Where they state two, the newest wins.
+Gold's instrument also carries the CUSIP the lots state for its key,
+in `open_lots` and on the closed-positions page: beside a stock's
+ticker, or as a bond's own key. Where they state two, an open lot wins
+over a closed one, then the newest.
 
 Silver should discriminate via an `instrument_kind` column
 (`cusip` / `ticker` / `plan_code`) so gold can route plan-internal

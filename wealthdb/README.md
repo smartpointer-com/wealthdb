@@ -89,10 +89,11 @@ configured currency or another one, at historic FX rates, and a report
 can hide amounts for a screen others may see. `wealthdb help <command>`
 gives a command's views and flags.
 
-An adapter ships for every collected source — Swiss and US banks and
+An adapter ships for every collected source: Swiss and US banks and
 brokerages, pension providers, crypto, private markets, and reference
-FX. See [`../collectors/README.md`](../collectors/README.md) for the
-sources and [`internal/silver/`](internal/silver/) for their adapters.
+data (FX rates, what funds hold). See
+[`../collectors/README.md`](../collectors/README.md) for the sources and
+[`internal/silver/`](internal/silver/) for their adapters.
 
 Each account has a kind, a tax wrapper and a management style.
 Adapters fill what silver carries, and the config fills the rest
@@ -118,7 +119,6 @@ wealthdb gains summary 2025            # realized and unrealized gains in 2025, 
 wealthdb gains check 2025              # the rebuilt cost basis against what the statements say
 wealthdb exposure sectors              # sector weights, every fund looked through
 wealthdb exposure coverage             # what the exposure figures rest on
-wealthdb exposure countries --period quarterly 2025  # country weights at every quarter end
 wealthdb status -v                     # how current each source is
 ```
 

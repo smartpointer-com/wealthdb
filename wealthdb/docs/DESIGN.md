@@ -681,8 +681,8 @@ turns a view into a series over a window.
 | `<view>` | required | `classes` \| `sectors` \| `sizes` \| `countries` \| `currencies` \| `securities` \| `funds` \| `coverage`. |
 | `-d`, `--as-of` | today | The day. |
 | `--country` | `risk` | `risk` \| `domicile`: the country a security counts in, on `countries` and `securities`. Refused on the other views. |
-| `--period` | none | `monthly` \| `quarterly` \| `annual`: the view at the end of every period of the window `[FROM [TO]]` (default the last twelve months, never past today), a `period` column first. The last period ends at the window's end. On `classes`, `sectors`, `sizes`, `countries`, `currencies` and `coverage`; refused with `-d`. |
-| `-f`, `-C`, `-x`, `-p` | as §4.12 | `-p` hides every amount; shares, names, labels and public identifiers stay. |
+| `--period` | none | `monthly` \| `quarterly` \| `annual`: the view at the end of every period of the window `[FROM [TO]]`, a `period` column first (EXPOSURE.md §7). Refused on `securities` and `funds`, and with `-d`. |
+| `-f`, `-C`, `-x`, `-p` | as §4.12 | `-C` names a share column without its `_pct` suffix. `-p` hides every amount and every instrument id (EXPOSURE.md §7). |
 
 Every view sums to `holdings global`, and every row carries a
 `quality` column naming what its figure rests on.
@@ -801,7 +801,7 @@ Example config file:
 | `silver_sources[].relationships[].psn_start_override` | string | Optional `YYYY-MM-DD`. Overrides the auto-detected web↔PSN transaction-splice cutover for this relationship. Defaults to `MIN(snapshot_at)` in PSN's data for the paired `psn_id`. |
 | `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname`, `category`, `tax_wrapper`, and/or `management_style` strings, or `exclude: true` to drop the account and every fact keyed to it (a sweep over gold after the load's streams drain, §13.9). All inner fields are optional but at least one must be set per entry, and `exclude` may not be combined with a column override. `tax_wrapper` and `management_style` values are validated against the canonical enums (`internal/canonical/enums.go`) at config-load time. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
 | `declared_accounts` | object | Optional. Map keyed by an id the holder chooses (`[A-Za-z0-9_-]+`) of accounts the household OWNS at institutions the product does not collect: `account_kind` and `tax_wrapper` required and validated against the canonical enums, `nickname` and `currency` optional. The load writes each one as an account row under the reserved source `declared` (no `silver_sources[].id` may take that name), after the per-source loads and before the enrichment pass, and prints how many it stamped; a declaration removed from the config leaves on the next load. A declared account carries no balance and no facts: it exists so a rule's `far` can name it as the other side of an own-account move, which the cash flow statement then places by the declared wrapper exactly as it places a collected far account — a household wrapper makes the move pool-internal, a vehicle wrapper draws it as that vehicle's crossing (docs/CASHFLOW.md §4). Nothing the product measures can falsify a declaration, which is why the wrapper is required and the load prints how many declarations sit inside the pool. Deployment-specific: lives in the user's config. |
-| `exposure` | object | Optional. What the exposure report needs that no source knows. `proxies`: a map from a fund reference (`isin:…`, `cusip:…` or `symbol:…`) to `{ "fund", "always"?, "leverage"? }`, the fund whose composition stands in for it, by default only on the days the fund has none, with `always` on every day; `leverage` (default 1, non-zero, within ±10) scales the proxy's lines, the rest going to cash. A proxy may not have a proxy of its own. `reference_funds`: fund references fetched for their lines alone. `size_funds`: a map from a fund reference to the share of its markets' value it covers, in percent (50 to 100), a broad fund whose weights size the stocks no market cap sizes. `tags`: the path to the tags ledger, a CSV of `silver_source_id, instrument, country, currency, sector, note`, one row per private holding (docs/EXPOSURE.md §9); expanded like `equity_transfers`, read and checked by every load before gold opens, a missing file holding no tags. `custody`: keyed by `silver_source_id`, `{ "custodian", "country"? }`. `max_gap_days` (default 400): how far a composition may lie from a day and still describe it. The block is validated at config-load time and the tags ledger at every load; the load writes both into the `exposure_*` tables whole (docs/EXPOSURE.md §9). Deployment-specific: lives in the user's config. |
+| `exposure` | object | Optional. What the exposure report needs that no source knows: `proxies` (a fund whose composition stands in for another, with `always` and `leverage`), `reference_funds`, `size_funds`, `tags` (the path to the tags ledger, a CSV; expanded as above), `custody` and `max_gap_days` (default 400). docs/EXPOSURE.md §9 defines each key and its bounds. The block is validated at config-load time. Every load reads and checks the tags ledger before gold opens, then writes the block and the ledger into the `exposure_*` tables whole (§7.6). Deployment-specific: lives in the user's config. |
 | `holding_aliases` | array | Optional. Entries `{ "source", "account"?, "key", "as", "note"? }` naming a holding a source keys two ways, so the gains reports read both keys as one: a statement's overview line (`key`) until a daily feed lists the same holding by ISIN (`as`), say. `account` scopes the alias to one account; absent, it covers every account of the source. The load writes the block into gold's `holding_aliases` table whole, and `gains_windows` maps every position, lot and event key through it before a bucket's start meets its end (docs/GAINS.md §5). Validated for a configured source, two different keys, one alias per key, and no alias of an alias. Deployment-specific: lives in the user's config. |
 | `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole crypto portfolio inside an IRA / trust / Stiftung wrapper. Accepts `tax_wrapper` (unlike `account_overrides`, which also takes nickname / category / management_style) or `exclude: true`, which drops the portfolio and every account inside it with their facts; one of the two must be set and they may not be combined. A per-account `tax_wrapper` override still wins over a portfolio one. See §13.9. |
 | `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. See §13.9. |
@@ -1525,7 +1525,9 @@ is documented where it is used:
 - `binary_versions` (migration `0012`).
 - `report_returns` (migration `0026`) — §10.9.
 - `report_gains` (migration `0117`) — §10.13.
-- `report_exposure` (migration `0128`) — §10.14.
+- The exposure tables: the reference and config tables (migration
+  `0125`) — §7.6; the derived tables (migration `0126`) and
+  `report_exposure` (migration `0127`) — §10.14.
 - The spending overlay: `spend_categories` (migration `0040`;
   docs/SPENDING.md §2), and `spend_txn_enrichment`,
   `spend_merchant_categories` and `spend_account_scope` (migration
@@ -2042,8 +2044,26 @@ is keyed by `silver_source_id` and windowed by `as_of`, the day a row
 describes, as a snapshot table is windowed by `snapshot_at`. Every
 composition ever loaded is kept. The `refdata` kind writes them
 ([adapters/refdata.md](adapters/refdata.md)), and the `synthetic` kind
-can too. The `exposure` config block lands in the `exposure_*` tables at
-every load. The exposure report reads them ([EXPOSURE.md](EXPOSURE.md)).
+can too. Migration 0125 adds them. The refdata collector learns what to
+fetch from the hidden read-only subcommand `refdata-wanted`, whose JSON
+contract adapters/refdata.md §5 defines.
+
+The same migration adds the tables of the `exposure` config block
+(§5.1) and its tags ledger. Every load replaces them whole after the
+per-source loads, beside the holding aliases (`gold.SyncExposure`, §8.1),
+so an entry taken out of the config or the ledger leaves on the next
+load:
+
+- `exposure_proxies`: a fund whose composition stands in for another;
+- `exposure_reference_funds`: funds fetched for their lines alone;
+- `exposure_size_funds`: broad funds whose weights size stocks, each
+  with the share of its markets it covers;
+- `exposure_tags`: the tags ledger's rows;
+- `exposure_custody`: who keeps each source's assets;
+- `exposure_settings`: one row of settings.
+
+The exposure report reads both families ([EXPOSURE.md](EXPOSURE.md),
+§10.14).
 
 ## 8. Load semantics
 
@@ -2143,7 +2163,7 @@ its transactions, because none is a per-source fact:
 2. The config's declared accounts are stamped into `accounts`
    (`declared_accounts`, §5.1), its `holding_aliases` into the
    table of that name, and its `exposure` block into the `exposure_*`
-   tables.
+   tables (§7.6).
 3. The deterministic enrichment pass re-asserts every spend and income
    verdict in gold (§10.10, docs/SPENDING.md §3). An own-account move's
    two legs routinely arrive from two different sources, so neither is
@@ -2155,14 +2175,14 @@ its transactions, because none is a per-source fact:
    another one did.
 
 A failed FX stamp is a warning: it degrades a conversion. The other
-four fail as errors. A failed enrichment pass does not stop the lot
-pass; the load reports both. A failed declaration stamp or enrichment pass
+four fail as errors. A failed pass does not stop the next one; the
+load reports each. A failed declaration stamp or enrichment pass
 leaves own-account moves counted as spending, which is a wrong answer
 rather than a degraded one. A failed lot pass leaves the positions the
 load rewrote without a rebuilt basis, and nothing would say why. A
 failed exposure pass leaves the exposure report reading the derived
-tables of an earlier load. `reload` runs all five the same way, on both its in-place and
-fresh-file paths.
+tables of an earlier load. `reload` runs all five the same way, on
+both its in-place and fresh-file paths.
 
 ### 8.2 Why a windowed delete (not a full-replace)
 
@@ -2941,8 +2961,9 @@ exposes `missing_basis` for the dashboard's picker.
 The exposure macros look every holding through to what it holds.
 [EXPOSURE.md](EXPOSURE.md) defines every figure they return.
 
-The exposure pass (`gold.RebuildExposure`) runs after the lot pass at
-the end of every load and reload. It rewrites the derived tables:
+Migration 0126 adds the derived tables and the macros. The exposure
+pass (`gold.RebuildExposure`) runs after the lot pass at the end of
+every load and reload, and rewrites the derived tables:
 
 - `exposure_labels`, `exposure_countries`, `exposure_sic`: the label
   maps and vocabularies of `internal/canonical`;
@@ -2951,15 +2972,16 @@ the end of every load and reload. It rewrites the derived tables:
 - `instrument_keys`, `security_aliases`: each instrument's security
   key, and the key each alias reads as;
 - `securities`: one row per security, its best-known attributes and
-  where each came from, its market cap and its size among them;
-- `security_underlyings`: the share each depositary receipt stands for,
-  or a line a report names by name alone, and how it was found (by
-  GLEIF, in a proxy's lines, or by name among all shares; EXPOSURE.md
-  §3). A security no source describes takes that share's sector,
-  country and domicile.
+  where each came from, its market cap and its size among them
+  (EXPOSURE.md §3);
+- `security_underlyings`: the share each depositary receipt, or each
+  line a report names by name alone, stands for, and how it was found.
 
 The macros:
 
+- `exposure_key(key)`, `exposure_fund_keys()` and `exposure_proxy_refs()`:
+  a key read through the aliases, every key known as a fund, and the
+  config's proxies under their keys;
 - `exposure_holdings(asof, ccy)`: the positions and cash at an instant,
   each line valued as `report_accounts` values it, an account it leaves
   out of the total left out whole, with its key read through the
@@ -2968,8 +2990,9 @@ The macros:
   `exposure_funds_at(asof)`: the composition that describes each fund at
   the instant (the temporal join, proxies, leverage);
 - `exposure_leaves(asof, ccy, country)`: the look-through, one row per
-  leaf, with its class, sector, country, currency, flags and `how`. It
-  expands only the funds a holding reaches within three levels;
+  leaf, with its class, sector, country, currency, a stock's size, flags
+  and `how`. It expands only the funds a holding reaches within three
+  levels;
 - `exposure_quality(flags, value)`: the aggregate behind every
   `quality` column;
 - `exposure_divergence(asof)`: how far each fund read from a report lies
@@ -2981,27 +3004,26 @@ Values leave the leaves as DOUBLE: the look-through splits a line by
 weight. Each view's total equals `holdings global`; the printed rows,
 rounded to the cent, agree within a cent per row.
 
-`wealthdb exposure --period` runs a view once per period of the window.
-Each run is at the period's last second; the last one is at the
-window's end. The results stack under a `period` column. The window
-starts no earlier than the first holding and ends no later than
-today.
+`wealthdb exposure --period` runs a view once per period of the window
+(EXPOSURE.md §7). Its instants come from `gold.PeriodEnds`, as the
+dashboard's below do.
 
 The Metabase Exposure dashboard reads `report_exposure` (migration
-0128), a derived table like `report_gains`. `web-materialize`
+0127), a derived table like `report_gains`. `web-materialize`
 (`gold.MaterializeExposure`) rewrites it at every web refresh. It holds
-the leaves at the last second of every month from the first position,
+the leaves at the last second of every month from the first holding,
 and at the end of today:
 
 - grouped by the dimensions the dashboard charts: class, sector,
-  country, region, currency, held directly or through funds, and `how`;
+  country, region, currency, size, held directly or through funds, and
+  `how`;
 - in every reporting currency. The tree is walked once per instant, in
   US dollars. A leaf is a fixed share of the holding it descends from.
   So its value in another currency is its dollar value times the
   holding's value in that currency, over the holding's dollar value.
 
-`web_exposure` names a missing dimension the way the views do and adds
-each row's share of that instant's net worth.
+`web_exposure` is the dashboard's reading of it
+([web/DESIGN.md](../../web/DESIGN.md) §8).
 
 ## 11. Repository layout
 
@@ -3065,21 +3087,29 @@ wealthdb is an application, not a library.
 
 ## 12. Container / build / run
 
-Single-stage Dockerfile, single image tag (`wealthdb:latest`),
+Single-stage Dockerfile, one image (`wealthdb:latest` by default),
 used unchanged for development, testing, and production. See §12.4
 for why we don't separate stages.
 
-`WEALTHDB_IMAGE_TAG` replaces `latest` in every image name the tree
-builds, runs and removes: the engine, the collectors, their shared
-bases and Metabase. When the variable is unset, the first line of
-`.image-tag` at the repository root names the tag; the file is
-git-ignored, so each checkout keeps its own. Without either the tag is
-`latest`. A malformed `.image-tag` is an error, never a fall back to
-`latest`. One helper decides (`shared/wrappers/image-tag.sh`): the
-Makefile reads it and exports the result, every wrapper sources it, and
-each Dockerfile takes the tag as a build argument for its `FROM`. A
-second checkout that writes its tag into `.image-tag` then tests its
-own images from any shell, and leaves the ones a scheduled load runs
+The image tag replaces `latest` in every image name the tree builds,
+runs and removes: the engine, the collectors, their shared bases and
+Metabase. It resolves in this order:
+
+1. `WEALTHDB_IMAGE_TAG`, where it is set;
+2. the first line of `.image-tag` at the repository root, a git-ignored
+   file, so each checkout keeps its own;
+3. `latest`.
+
+A malformed `.image-tag` is an error, never a fall back to `latest`.
+One helper decides, `shared/wrappers/image-tag.sh`:
+
+- the Makefile reads it and exports the result;
+- every wrapper sources it;
+- each Dockerfile built on a shared base takes the tag as a build
+  argument for its `FROM`.
+
+A second checkout that writes its tag into `.image-tag` then tests its
+own images from any shell. It leaves every other checkout's images
 untouched.
 
 ### 12.1 Image

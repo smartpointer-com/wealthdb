@@ -7,7 +7,8 @@ model asks "what did we spend on groceries last year" and gets the same
 table `wealthdb spending` prints.
 
 The server is the engine itself (`wealthdb mcp-serve`), run in the
-`wealthdb:latest` image. It can only read:
+engine image (`wealthdb:latest`, or the checkout's tag). It can only
+read:
 
 - it has no tool that writes;
 - it opens the database read-only, for one call at a time;
