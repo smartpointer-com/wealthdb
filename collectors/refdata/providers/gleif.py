@@ -17,8 +17,7 @@ API.
 - Constituents: asked for a missing country, and for a missing sector
   of a stock under a US ISIN, which may be a receipt.
 
-Terms: "The data available through the Access Service are provided
-under the CC0 licence" (GLEIF's LEI data terms of use, §II.3).
+Terms: README.md, gleif.
 """
 
 from __future__ import annotations
@@ -31,23 +30,16 @@ from pathlib import Path
 import fetcher
 from collectorkit import bronze
 
-from .base import Parsed, Provider, ProviderError, read_meta, today_utc, write_meta
+from .base import Parsed, Provider, ident, read_meta, row, today_utc, write_meta
 
 API = "https://api.gleif.org/api/v1/lei-records"
 DOC = "lei-records.json"
 ISINS_DOC = "isins.json"
 ISIN_PAGE_SIZE = 200
 ISIN_PAGES = 5
+HEADERS = {"Accept": "application/vnd.api+json"}
 
 log = logging.getLogger("refdata.gleif")
-
-
-def _isin(security) -> str | None:
-    if security.isin:
-        return security.isin.strip().upper()
-    if security.key.startswith("isin:"):
-        return security.key[5:].upper()
-    return None
 
 
 class Gleif(Provider):
@@ -61,30 +53,25 @@ class Gleif(Provider):
         abroad, whose own share states one."""
         if super().wants_constituent(security):
             return True
-        isin = _isin(security) or ""
-        return "sector" in security.missing and security.asset_class == "public_equity" and isin.startswith("US")
+        return ("sector" in security.missing and security.asset_class == "public_equity"
+                and ident(security, "isin").startswith("US"))
 
     def claim_security(self, security, ctx):
-        isin = _isin(security)
+        isin = ident(security, "isin")
         if not isin:
             return None
         return {"key": security.key, "isin": isin,
                 "equity": (security.asset_class or "public_equity") == "public_equity"}
 
     def fetch_security(self, claim, outdir: Path, ctx):
-        resp = ctx.client.get(API, params={"filter[isin]": claim["isin"]},
-                              headers={"Accept": "application/vnd.api+json"})
-        try:
-            doc = resp.json()
-        except ValueError as e:
-            raise ProviderError(f"{resp.url} is not JSON: {e}") from e
-        outdir.mkdir(parents=True, exist_ok=True)
+        resp = ctx.client.get(API, params={"filter[isin]": claim["isin"]}, headers=HEADERS)
+        doc = resp.json()
         bronze.atomic_write_bytes(outdir / DOC, resp.body)
         lei, country = _issuer(doc)
         if claim.get("equity") and claim["isin"].startswith("US") and lei and country and country != "US":
             try:
                 isins = _lei_isins(lei, ctx)
-            except (fetcher.FetchError, ValueError) as e:
+            except fetcher.FetchError as e:
                 log.warning("%s: the ISINs of its issuer did not come: %s", claim["key"], e)
             else:
                 bronze.atomic_write_bytes(outdir / ISINS_DOC, json.dumps({"lei": lei, "isins": isins}).encode())
@@ -93,16 +80,16 @@ class Gleif(Provider):
 
     def parse(self, indir: Path) -> Parsed:
         meta = read_meta(indir)
-        doc = json.loads((indir / DOC).read_text(encoding="utf-8"))
-        out = parse_records(doc, meta["key"], meta["isin"], date.fromisoformat(meta["as_of"]), provider=self.name)
+        as_of = date.fromisoformat(meta["as_of"])
+        doc = json.loads((indir / DOC).read_text(encoding="utf-8-sig"))
+        out = parse_records(doc, meta["key"], meta["isin"], as_of, provider=self.name)
         if (indir / ISINS_DOC).is_file():
             isins = json.loads((indir / ISINS_DOC).read_text(encoding="utf-8"))
-            out.security_facts += issuer_isins(isins, meta["key"], meta["isin"], date.fromisoformat(meta["as_of"]),
-                                               provider=self.name)
+            out.security_facts += issuer_isins(isins, meta["key"], meta["isin"], as_of, provider=self.name)
         return out
 
     def probe(self, ctx) -> str:
-        resp = ctx.client.get(API, params={"page[size]": "1"}, headers={"Accept": "application/vnd.api+json"})
+        resp = ctx.client.get(API, params={"page[size]": "1"}, headers=HEADERS)
         return f"GLEIF API answered {resp.status}"
 
 
@@ -110,7 +97,7 @@ def _lei_isins(lei: str, ctx) -> list:
     """The ISINs GLEIF maps to an LEI, up to ISIN_PAGES pages."""
     isins = []
     for page in range(1, ISIN_PAGES + 1):
-        got = ctx.client.get(f"{API}/{lei}/isins", headers={"Accept": "application/vnd.api+json"},
+        got = ctx.client.get(f"{API}/{lei}/isins", headers=HEADERS,
                              params={"page[size]": str(ISIN_PAGE_SIZE), "page[number]": str(page)}).json()
         rows = got.get("data") or []
         isins += [(r.get("attributes") or {}).get("isin") for r in rows]
@@ -137,8 +124,8 @@ def issuer_isins(doc: dict, key: str, isin: str, as_of: date, *, provider: str) 
     others = sorted({str(o or "").strip().upper() for o in doc.get("isins") or []} - {isin, ""})
     if not others:
         return []
-    return [{"security_key": key, "field": "issuer_isins", "as_of": as_of, "provider": provider,
-             "value": " ".join(others), "scheme": "isin", "payload": {"lei": doc.get("lei")}}]
+    return [row("security_facts", security_key=key, field="issuer_isins", as_of=as_of, provider=provider,
+                value=" ".join(others), scheme="isin", payload={"lei": doc.get("lei")})]
 
 
 def _country(value) -> str | None:
@@ -155,24 +142,19 @@ def parse_records(doc: dict, key: str, isin: str, as_of: date, *, provider: str)
     records = doc.get("data") or []
     out = Parsed()
     if not records:
-        out.securities.append({"security_key": key, "as_of": as_of, "provider": provider, "isin": isin,
-                               "cusip": None, "figi": None, "lei": None, "ticker": None, "exchange": None,
-                               "name": None, "security_type": None, "listing_currency": None,
-                               "payload": {"found": False}})
+        out.securities.append(row("securities", security_key=key, as_of=as_of, provider=provider, isin=isin,
+                                  payload={"found": False}))
         return out
     lei, legal = _issuer(doc)
     entity = (records[0].get("attributes") or {}).get("entity") or {}
     hq = _country((entity.get("headquartersAddress") or {}).get("country"))
-    out.securities.append({
-        "security_key": key, "as_of": as_of, "provider": provider, "isin": isin, "cusip": None, "figi": None,
-        "lei": lei, "ticker": None, "exchange": None, "name": (entity.get("legalName") or {}).get("name"),
-        "security_type": None, "listing_currency": None,
-        "payload": {k: v for k, v in {"category": entity.get("category"),
-                                      "jurisdiction": entity.get("jurisdiction"),
-                                      "status": entity.get("status"), "records": len(records)}.items() if v},
-    })
+    out.securities.append(row(
+        "securities", security_key=key, as_of=as_of, provider=provider, isin=isin, lei=lei,
+        name=(entity.get("legalName") or {}).get("name"),
+        payload={k: v for k, v in {"category": entity.get("category"), "jurisdiction": entity.get("jurisdiction"),
+                                   "status": entity.get("status"), "records": len(records)}.items() if v}))
     for field, value in (("legal_country", legal), ("hq_country", hq)):
         if value:
-            out.security_facts.append({"security_key": key, "field": field, "as_of": as_of, "provider": provider,
-                                       "value": value, "scheme": "iso3166", "payload": {"lei": lei}})
+            out.security_facts.append(row("security_facts", security_key=key, field=field, as_of=as_of,
+                                          provider=provider, value=value, scheme="iso3166", payload={"lei": lei}))
     return out

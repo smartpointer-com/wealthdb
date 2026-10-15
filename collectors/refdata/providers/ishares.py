@@ -19,11 +19,7 @@ serves. Two sites:
   location and market currency. A local ticker of a non-US listing goes
   to the payload (table.py).
 
-Terms: BlackRock's terms forbid using "any robot, spider, intelligent
-agent, other automatic device, or manual process to search, monitor or
-copy this Website ... without BlackRock's permission", and allow
-downloading "material displayed on this Website for your personal use".
-Off until refdata.cfg names it.
+Terms: README.md, ishares.
 """
 
 from __future__ import annotations
@@ -37,7 +33,7 @@ from pathlib import Path
 from collectorkit import bronze
 
 from . import table
-from .base import Parsed, Provider, ProviderError, Unavailable, read_meta, write_meta
+from .base import Parsed, Provider, ProviderError, Unavailable, ident, read_meta, us_symbol, write_meta
 
 HOST = "https://www.ishares.com"
 SCREENERS = {
@@ -71,21 +67,17 @@ class IShares(Provider):
                     ids = [product.get("isin")]
                     if site == "us":
                         ids += [product.get("cusip"), product.get("localExchangeTicker")]
-                    for ident in (str(i).strip().upper() for i in ids if i):
-                        out.setdefault(ident, (site, product))
+                    for i in (str(i).strip().upper() for i in ids if i):
+                        out.setdefault(i, (site, product))
             return out
         return ctx.once("ishares_index", load)
 
     def claim(self, fund, ctx):
         index = self._index(ctx)
-        # A bare ticker names a US fund only, and only for a fund with no
-        # ISIN of another country: a UCITS fund's local ticker can be a
-        # US fund's.
-        isin = (fund.isin or "").strip().upper()
-        by_symbol = not isin or isin.startswith("US")
-        for ident in (fund.isin, fund.cusip, fund.symbol if by_symbol else None):
-            hit = index.get((ident or "").strip().upper()) if ident else None
-            if hit is None or (ident == fund.symbol and hit[0] != "us"):
+        # A ticker matches a US fund only (base.us_symbol).
+        for i, us_only in ((ident(fund, "isin"), False), (ident(fund, "cusip"), False), (us_symbol(fund), True)):
+            hit = index.get(i) if i else None
+            if hit is None or (us_only and hit[0] != "us"):
                 continue
             site, product = hit
             return {"ref": fund.ref, "site": site, "page": product["productPageUrl"],
@@ -111,14 +103,11 @@ class IShares(Provider):
 
     def fetch(self, claim, as_of, outdir: Path, ctx):
         if claim["site"] == "us":
-            if as_of is not None:
-                raise Unavailable("the US site serves the current holdings only")
             resp = ctx.client.get(HOST + claim["page"] + "/latest-holdings.csv")
-            text = resp.text("utf-8-sig")
-            day = _csv_day(text)
-            if day is None or table.header_index(table_rows(text)) is None:
+            rows = table.csv_rows(resp.text("utf-8-sig"))
+            day = _csv_day(rows)
+            if day is None or table.header_index(rows) is None:
                 raise ProviderError(f"{resp.url} is not a holdings file")
-            outdir.mkdir(parents=True, exist_ok=True)
             bronze.atomic_write_bytes(outdir / CSV_DOC, resp.body)
             write_meta(outdir, provider=self.name, ref=claim["ref"], site="us", as_of=day.isoformat())
             return day
@@ -132,11 +121,7 @@ class IShares(Provider):
         if as_of is not None:
             params["asOfDate"] = day.strftime("%Y%m%d")
         resp = ctx.client.get(f"{HOST}{claim['page']}/{CH_HOLDINGS}.ajax", params=params)
-        try:
-            json.loads(resp.text("utf-8-sig"))
-        except ValueError as e:
-            raise ProviderError(f"{resp.url} is not JSON: {e}") from e
-        outdir.mkdir(parents=True, exist_ok=True)
+        resp.json()  # an answer that is not JSON fails the fetch
         bronze.atomic_write_bytes(outdir / JSON_DOC, resp.body)
         write_meta(outdir, provider=self.name, ref=claim["ref"], site="ch", as_of=day.isoformat(),
                    columns=page["columns"], name=claim.get("name"))
@@ -155,23 +140,17 @@ class IShares(Provider):
         return f"iShares product lists: {len(self._index(ctx))} identifiers"
 
 
-def table_rows(text: str) -> list:
-    import csv
-    import io
-    return list(csv.reader(io.StringIO(text)))
-
-
-def _csv_day(text: str) -> date | None:
+def _csv_day(rows: list) -> date | None:
     """The day a US-site CSV's preamble states ("Fund Holdings as of")."""
-    for row in table_rows(text)[:10]:
-        if len(row) >= 2 and table._norm(row[0]) in ("fund holdings as of", "holdings as of"):
-            return table.parse_day(row[1])
+    for r in rows[:10]:
+        if len(r) >= 2 and table._norm(r[0]) in ("fund holdings as of", "holdings as of"):
+            return table.parse_day(r[1])
     return None
 
 
 def parse_csv(text: str, ref: str, as_of: date, *, provider: str) -> Parsed:
     """A US-site holdings CSV as silver rows for fund `ref`."""
-    rows = table_rows(text)
+    rows = table.csv_rows(text)
     start = table.header_index(rows)
     if start is None:
         raise ProviderError("the holdings file has no header row")

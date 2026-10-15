@@ -5,6 +5,7 @@ import json
 import pytest
 
 import config
+from providers import REGISTRY
 
 KNOWN = dict.fromkeys((*config.DEFAULT_PROVIDERS, "ishares"))
 
@@ -38,12 +39,20 @@ def test_settings_read(tmp_path):
     ({"provider": []}, "does not know: provider"),
     ({"providers": ["nope"]}, "names nope"),
     ({"providers": ["inbox", "inbox"]}, "twice"),
+    ({"providers": "inbox"}, "providers is a list"),
+    ({"providers": ["inbox", 1]}, "providers is a list"),
+    ({"contact": 7}, "contact is a string"),
+    ({"engine": ["/x/wealthdb"]}, "engine is a path"),
     ({"max_age_days": 0}, "max_age_days"),
+    ({"max_age_days": 3651}, "max_age_days"),
+    ({"max_age_days": True}, "max_age_days"),
+    ({"max_age_days": 1.5}, "max_age_days"),
     ({"constituents": "yes"}, "constituents"),
     ({"constituent_floor_pct": "0.01"}, "constituent_floor_pct"),
     ({"constituent_floor_pct": -1}, "constituent_floor_pct"),
     ({"constituent_floor_pct": True}, "constituent_floor_pct"),
     ({"constituent_floor_pct": 101}, "constituent_floor_pct"),
+    ('{"constituent_floor_pct": NaN}', "constituent_floor_pct"),
     ({"fidelity_529_plans": {" ": "https://example.org/x.pdf"}}, "fidelity_529_plans"),
     ({"fidelity_529_plans": {"xx": "https://example.org/x.pdf", "XX ": "https://example.org/y.pdf"}}, "twice"),
     ({"fidelity_529_plans": ["https://example.org/x.pdf"]}, "fidelity_529_plans"),
@@ -70,14 +79,20 @@ def test_engine_precedence(monkeypatch, tmp_path):
     assert config.engine_command(config.Config(engine="/x/wealthdb")) == "/y/wealthdb"
 
 
-def test_a_nan_floor_is_refused(tmp_path):
-    p = tmp_path / "refdata.cfg"
-    p.write_text('{"constituent_floor_pct": NaN}')
-    with pytest.raises(config.ConfigError, match="constituent_floor_pct"):
-        config.load(KNOWN, p)
+def test_a_file_that_cannot_be_read_is_refused(tmp_path):
+    (tmp_path / "refdata.cfg").mkdir()
+    with pytest.raises(config.ConfigError, match="cannot be read"):
+        config.load(KNOWN, tmp_path / "refdata.cfg")
+
+
+def test_the_file_lives_in_the_config_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert config.path() == tmp_path / "refdata.cfg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", " ")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    assert config.path() == tmp_path / "home" / ".config" / "refdata.cfg"
 
 
 def test_every_provider_setting_is_a_config_field():
-    from providers import REGISTRY
     fields = set(config.Config.__dataclass_fields__)
     assert {p.needs_setting for p in REGISTRY.values() if p.needs_setting} <= fields

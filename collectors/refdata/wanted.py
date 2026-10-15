@@ -31,7 +31,7 @@ class Fund:
     cusip: str | None = None
     symbol: str | None = None
     name: str | None = None
-    currency: str | None = None
+    currency: str | None = None          # in the contract (adapters/refdata.md §5); no provider reads it
     roles: tuple = ()
     held_from: date | None = None
     held_to: date | None = None          # None: still held

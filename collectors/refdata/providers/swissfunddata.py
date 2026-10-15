@@ -13,11 +13,7 @@ the annual and semi-annual reports swissfunddata.ch publishes.
 - Fetch and parse: providers/reports.py. A report names its positions,
   with no identifier: gold finds each one's security by its name.
 
-Terms: the disclaimer bars professional market data distributors from
-using, systematically extracting, scraping or commercially exploiting
-the site's data, and asks consent for any public or commercial use. The
-reports are the fund providers' publications, read for the funds held,
-at most once in max_age_days, for private use.
+Terms: README.md, swisscanto and swissfunddata.
 """
 
 from __future__ import annotations
@@ -27,7 +23,7 @@ import re
 
 import fetcher
 
-from .base import ProviderError, fund_isin
+from .base import ProviderError, ident
 from .reports import ReportProvider
 
 HOST = "https://www.swissfunddata.ch/sfdpub"
@@ -69,7 +65,7 @@ class SwissFundData(ReportProvider):
         return ctx.once("swissfunddata_entry", enter)
 
     def claim(self, fund, ctx):
-        isin = fund_isin(fund)
+        isin = ident(fund, "isin")
         if isin[:2] not in ("CH", "IE", "LU"):
             return None
         name, reports = documents(self._documents(isin, ctx))

@@ -16,8 +16,9 @@ A fund provider:
                                    serves, or None when only a fetch
                                    tells
     fetch(claim, as_of, outdir, ctx)
-                                -> writes the raw files into outdir;
-                                   as_of None is the current composition
+                                -> writes the raw files into outdir and
+                                   returns the day they describe; as_of
+                                   None is the current composition
     parse(indir)                -> Parsed rows; reads only what fetch wrote,
                                    so a parser fix re-runs on kept bronze
                                    with `load --force`
@@ -28,7 +29,7 @@ A security provider:
     fetch_security(claim, outdir, ctx)
     parse(indir)                -> Parsed rows (securities, facts)
 
-Both have probe(ctx), one cheap request that `login --check` makes.
+Both have probe(ctx), the cheapest answer `login --check` asks for.
 
 fetch writes a meta.json beside the raw files: what was asked, the claim
 and anything parse needs that the files do not hold. parse reads it back.
@@ -37,11 +38,34 @@ and anything parse needs that the files do not hold. parse reads it back.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from collectorkit import bronze
+
 META = "meta.json"
+
+# Every silver table's columns (migrations/0001_initial.sql), in order.
+COLUMNS = {
+    "compositions": ("fund_ref", "as_of", "basis", "provider", "source_kind", "fund_name", "currency",
+                     "net_assets", "line_count", "weight_sum", "units_outstanding", "run_at", "payload"),
+    "lines": ("fund_ref", "as_of", "basis", "line_no", "isin", "cusip", "figi", "ticker", "exchange", "name",
+              "asset_type", "weight", "quantity", "market_value", "currency", "country", "risk_country",
+              "sector", "industry", "maturity", "coupon", "long_currency", "long_amount", "short_currency",
+              "short_amount", "payload"),
+    "attributes": ("fund_ref", "as_of", "domicile", "legal_form", "ucits", "replication", "distribution",
+                   "ter", "hedged_currency", "lending", "index_name", "depositary", "run_at", "payload"),
+    "counterparties": ("fund_ref", "as_of", "role", "name", "lei", "share", "run_at", "payload"),
+    "securities": ("security_key", "as_of", "provider", "isin", "cusip", "figi", "lei", "ticker", "exchange",
+                   "name", "security_type", "listing_currency", "run_at", "payload"),
+    "security_facts": ("security_key", "field", "as_of", "provider", "value", "scheme", "run_at", "payload"),
+}
+
+# A number whose commas separate groups of three digits: 1,234.5.
+GROUPED = re.compile(r"^[-+]?\d{1,3}(?:,\d{3})+(?:\.\d*)?$")
 
 
 class ProviderError(Exception):
@@ -56,43 +80,55 @@ class Unavailable(ProviderError):
 
 @dataclass
 class Context:
-    """What a provider gets from the run: the HTTP client, the contact for
-    the User-Agent, the data dir (the inbox lives there), the run's
-    refdata.cfg (config.Config) for a provider's own settings, and a cache
-    dict for lookups it repeats across funds (a ticker file)."""
+    """What a provider gets from the run: the HTTP client, the data dir
+    (the inbox lives there), the run's refdata.cfg (config.Config) for a
+    provider's own settings, and a cache dict for lookups it repeats
+    across funds (a ticker file)."""
     client: object
-    contact: str = ""
     data_dir: Path | None = None
     config: object = None
     cache: dict = field(default_factory=dict)
 
     def once(self, key, load):
         """The result of `load()` for `key`, computed once per run. A load
-        that failed fails again without a second request: a file every
-        fund needs is asked for once, not once per fund."""
+        that failed fails again without a second request, with its first
+        traceback: a file every fund needs is asked for once, not once
+        per fund."""
         if key not in self.cache:
             try:
-                self.cache[key] = (load(), None)
+                self.cache[key] = (load(), None, None)
             except Exception as e:  # noqa: BLE001 - re-raised below, and on every later call
-                self.cache[key] = (None, e)
-        value, error = self.cache[key]
+                self.cache[key] = (None, e, e.__traceback__)
+        value, error, tb = self.cache[key]
         if error is not None:
-            raise error
+            raise error.with_traceback(tb)
         return value
 
 
 @dataclass
 class Parsed:
-    """Silver rows, keyed by the silver table's column names
-    (migrations/0001_initial.sql). Dates are datetime.date; load turns
-    them into the epoch seconds silver stores."""
-    funds: list = field(default_factory=list)
+    """Silver rows, keyed by the silver table's column names (COLUMNS).
+    Dates are datetime.date; load turns them into the epoch seconds
+    silver stores."""
     compositions: list = field(default_factory=list)
     lines: list = field(default_factory=list)
     attributes: list = field(default_factory=list)
     counterparties: list = field(default_factory=list)
     securities: list = field(default_factory=list)
     security_facts: list = field(default_factory=list)
+
+
+def row(table: str, **values) -> dict:
+    """A row of a silver table: every column None and the payload {},
+    then the values given. load stamps run_at. A name that is no column
+    of the table is an error."""
+    out = dict.fromkeys(c for c in COLUMNS[table] if c != "run_at")
+    out["payload"] = {}
+    stray = values.keys() - out.keys()
+    if stray:
+        raise KeyError(f"{table} has no column {', '.join(sorted(stray))}")
+    out.update(values)
+    return out
 
 
 class Provider:
@@ -109,6 +145,10 @@ class Provider:
     # An additive provider serves a fund beside the provider that claims
     # it, never instead of it: the inbox adds what was placed by hand.
     additive = False
+    # The wanted fields a security provider can state. A constituent (a
+    # security held through funds) is asked only of a provider that
+    # answers one of its missing fields: a broad fund names thousands.
+    answers = frozenset()
 
     def claim(self, fund, ctx):
         return None
@@ -125,11 +165,6 @@ class Provider:
     def claim_security(self, security, ctx):
         return None
 
-    # The wanted fields a security provider can state. A constituent (a
-    # security held through funds) is asked only of a provider that
-    # answers one of its missing fields: a broad fund names thousands.
-    answers = frozenset()
-
     def wants_constituent(self, security) -> bool:
         return bool(self.answers & set(security.missing))
 
@@ -140,13 +175,12 @@ class Provider:
         raise NotImplementedError
 
     def probe(self, ctx) -> str:
-        """One cheap request; returns a short description of what answered."""
+        """The cheapest answer the provider can ask for; returns a short
+        description of what answered."""
         return "nothing to probe"
 
 
 def write_meta(outdir: Path, **meta) -> None:
-    from collectorkit import bronze
-    outdir.mkdir(parents=True, exist_ok=True)
     bronze.atomic_write_json(outdir / META, meta)
 
 
@@ -158,22 +192,40 @@ def today_utc() -> date:
     return datetime.now(timezone.utc).date()
 
 
-def fund_isin(fund) -> str:
-    """A wanted fund's ISIN, from its ISIN or its reference."""
-    return (fund.isin or (fund.ref[5:] if fund.ref.startswith("isin:") else "") or "").strip().upper()
+def ident(item, scheme: str) -> str:
+    """A wanted fund's or security's identifier of one scheme (isin,
+    cusip or symbol): its own field, else the reference it is named by
+    where that is of the scheme. Upper case; "" where it has none."""
+    value = getattr(item, scheme, None)
+    if not value:
+        name = getattr(item, "ref", None) or getattr(item, "key", "")
+        value = name[len(scheme) + 1:] if name.startswith(scheme + ":") else ""
+    return value.strip().upper()
+
+
+def us_symbol(fund) -> str:
+    """A fund's ticker where it can name a US fund: a bare ticker names a
+    US listing, so a fund with an ISIN of another country has none here
+    (a UCITS fund's local ticker can be a US fund's)."""
+    isin = ident(fund, "isin")
+    return ident(fund, "symbol") if not isin or isin.startswith("US") else ""
 
 
 def dec(value) -> str | None:
-    """A number as silver's decimal string: None for blank or unparseable,
-    no exponent, no trailing zeros."""
-    from decimal import Decimal, InvalidOperation
+    """A number as silver's decimal string: no exponent, no trailing
+    zeros. None for a blank, an unparseable value, or a comma that is no
+    thousands mark (0,25 could be a quarter or 25)."""
     if value is None:
         return None
-    s = str(value).strip().replace(",", "").replace("’", "").replace("'", "")
+    s = str(value).strip().replace("’", "").replace("'", "")
     if s in ("", "-", "N/A", "n/a", "NA", "--"):
         return None
     if s.endswith("%"):
-        s = s[:-1]
+        s = s[:-1].strip()
+    if "," in s:
+        if not GROUPED.match(s):
+            return None
+        s = s.replace(",", "")
     try:
         d = Decimal(s)
     except InvalidOperation:

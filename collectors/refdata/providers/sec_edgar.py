@@ -14,10 +14,7 @@ sec-edgar: what the SEC knows of a US-listed company, from EDGAR.
   business address (EDGAR codes, which gold reads through EDGAR's own
   code map) and its shares outstanding as facts.
 
-Terms: as sec-nport. "Information presented on sec.gov is considered
-public information and may be copied or further distributed by users of
-the web site without the SEC's permission." The SEC requires a contact
-in the User-Agent and at most ten requests a second.
+Terms: README.md, sec-edgar.
 """
 
 from __future__ import annotations
@@ -30,8 +27,17 @@ from pathlib import Path
 import fetcher
 from collectorkit import bronze
 
-from .base import Parsed, Provider, ProviderError, read_meta, today_utc, write_meta
-from .sec_nport import COMPANY_TICKERS, SUBMISSIONS
+from .base import Parsed, Provider, ident, read_meta, row, today_utc, write_meta
+from .sec_nport import SUBMISSIONS, company_tickers
+
+SHARES = "https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/dei/EntityCommonStockSharesOutstanding.json"
+SUB_DOC = "submissions.json"
+SHARES_DOC = "shares.json"
+DEPOSITARY_SIC = "8880"
+DEPOSITARY_NAME = re.compile(r"/ADR/?\s*$", re.IGNORECASE)
+FILLER = frozenset({"THE", "INC", "CORP", "CO", "LTD", "PLC", "SA", "AG", "NV", "SE", "AB", "ASA", "SPA", "LIMITED",
+                    "CORPORATION", "COMPANY", "GROUP", "HOLDINGS", "HOLDING", "CLASS", "CL", "COM", "ORD", "SHS"})
+
 
 def compact(ticker: str) -> str:
     """A ticker without its share-class punctuation: brokers, the SEC
@@ -39,18 +45,10 @@ def compact(ticker: str) -> str:
     return re.sub(r"[./\s-]", "", str(ticker or "").upper())
 
 
-DEPOSITARY_SIC = "8880"
-DEPOSITARY_NAME = re.compile(r"/ADR/?\s*$", re.IGNORECASE)
-
-
 def depositary_registrant(sub: dict) -> bool:
     """Whether a submissions file is a depositary receipt's registrant:
     EDGAR files one under SIC 8880 or names it COMPANY/ADR."""
     return str(sub.get("sic") or "") == DEPOSITARY_SIC or bool(DEPOSITARY_NAME.search(sub.get("name") or ""))
-
-
-FILLER = frozenset({"THE", "INC", "CORP", "CO", "LTD", "PLC", "SA", "AG", "NV", "SE", "AB", "ASA", "SPA", "LIMITED",
-                    "CORPORATION", "COMPANY", "GROUP", "HOLDINGS", "HOLDING", "CLASS", "CL", "COM", "ORD", "SHS"})
 
 
 def first_word(name) -> str:
@@ -74,11 +72,6 @@ def names_agree(a, b) -> bool:
     return x.startswith(y) or y.startswith(x)
 
 
-SHARES = "https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/dei/EntityCommonStockSharesOutstanding.json"
-SUB_DOC = "submissions.json"
-SHARES_DOC = "shares.json"
-
-
 class SecEdgar(Provider):
     name = "sec-edgar"
     serves_securities = True
@@ -89,7 +82,7 @@ class SecEdgar(Provider):
         """ticker -> CIK as the SEC writes it, share-class tickers (XYZ-B)
         by their compact form (XYZB) besides, and CIK -> company name."""
         def load():
-            doc = ctx.client.get(COMPANY_TICKERS).json()
+            doc = company_tickers(ctx)
             exact, classes, titles = {}, {}, {}
             for v in (doc.values() if isinstance(doc, dict) else doc):
                 t = str(v.get("ticker") or "").upper()
@@ -104,27 +97,22 @@ class SecEdgar(Provider):
         return ctx.once("edgar_tickers", load)
 
     def claim_security(self, security, ctx):
-        key = security.key
-        symbol = (security.symbol or (key[7:] if key.startswith("symbol:") else "") or "").strip().upper()
+        symbol = ident(security, "symbol")
         exact, classes, titles = self._tickers(ctx)
         # The ticker as written first; a share class's compact form only
         # matches a share-class ticker, never a plain one it collides with.
         cik = (exact.get(symbol) or classes.get(compact(symbol))) if symbol else None
         if not cik:
             return None
-        isin = (security.isin or (key[5:] if key.startswith("isin:") else "")).upper()
+        isin = ident(security, "isin")
         abroad = not isin.startswith("US") if isin else (security.currency or "USD").upper() != "USD"
         if abroad and security.name and not names_agree(security.name, titles.get(cik)):
             return None
-        return {"key": key, "symbol": symbol, "cik": cik}
+        return {"key": security.key, "symbol": symbol, "cik": cik}
 
     def fetch_security(self, claim, outdir: Path, ctx):
         sub = ctx.client.get(SUBMISSIONS.format(cik=claim["cik"]))
-        try:
-            sub.json()
-        except ValueError as e:
-            raise ProviderError(f"{sub.url} is not JSON: {e}") from e
-        outdir.mkdir(parents=True, exist_ok=True)
+        sub.json()  # an answer that is not JSON fails the fetch
         bronze.atomic_write_bytes(outdir / SUB_DOC, sub.body)
         try:
             bronze.atomic_write_bytes(outdir / SHARES_DOC, ctx.client.get(SHARES.format(cik=claim["cik"])).body)
@@ -135,10 +123,10 @@ class SecEdgar(Provider):
 
     def parse(self, indir: Path) -> Parsed:
         meta = read_meta(indir)
-        sub = json.loads((indir / SUB_DOC).read_text(encoding="utf-8"))
+        sub = json.loads((indir / SUB_DOC).read_text(encoding="utf-8-sig"))
         shares = None
         if (indir / SHARES_DOC).is_file():
-            shares = json.loads((indir / SHARES_DOC).read_text(encoding="utf-8"))
+            shares = json.loads((indir / SHARES_DOC).read_text(encoding="utf-8-sig"))
         return parse_company(sub, shares, meta["key"], date.fromisoformat(meta["as_of"]), provider=self.name)
 
     def probe(self, ctx) -> str:
@@ -166,20 +154,17 @@ def parse_company(sub: dict, shares: dict | None, key: str, as_of: date, *, prov
     tickers = sub.get("tickers") or []
     exchanges = sub.get("exchanges") or []
     out = Parsed()
-    out.securities.append({
-        "security_key": key, "as_of": as_of, "provider": provider, "isin": None, "cusip": None, "figi": None,
-        "lei": sub.get("lei") or None, "ticker": tickers[0] if tickers else None,
-        "exchange": exchanges[0] if exchanges else None, "name": sub.get("name"), "security_type": sub.get("entityType"),
-        "listing_currency": None,
-        "payload": {k: v for k, v in {"cik": sub.get("cik"), "tickers": tickers or None,
-                                      "exchanges": exchanges or None,
-                                      "sic_description": sub.get("sicDescription")}.items() if v},
-    })
+    out.securities.append(row(
+        "securities", security_key=key, as_of=as_of, provider=provider, lei=sub.get("lei") or None,
+        ticker=tickers[0] if tickers else None, exchange=exchanges[0] if exchanges else None, name=sub.get("name"),
+        security_type=sub.get("entityType"),
+        payload={k: v for k, v in {"cik": sub.get("cik"), "tickers": tickers or None, "exchanges": exchanges or None,
+                                   "sic_description": sub.get("sicDescription")}.items() if v}))
 
     def fact(field, value, scheme, **payload):
         if value not in (None, ""):
-            out.security_facts.append({"security_key": key, "field": field, "as_of": as_of, "provider": provider,
-                                       "value": str(value), "scheme": scheme, "payload": payload})
+            out.security_facts.append(row("security_facts", security_key=key, field=field, as_of=as_of,
+                                          provider=provider, value=str(value), scheme=scheme, payload=payload))
 
     fact("sic", sub.get("sic"), "sic", description=sub.get("sicDescription"))
     fact("incorporation", sub.get("stateOfIncorporation"), "edgar")

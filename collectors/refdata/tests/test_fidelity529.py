@@ -9,9 +9,10 @@ import pytest
 
 import config
 import fetcher
-from providers.base import Context, ProviderError, Unavailable, today_utc
-from providers.fidelity529 import SERIES, Fidelity529, parse_schedule, schedule
-from tests.helpers import pdf
+from providers import reports
+from providers.base import Context, ProviderError, today_utc
+from providers.fidelity529 import SERIES, Fidelity529, _series, parse_schedule, schedule
+from tests.helpers import FakeClient, pdf
 from wanted import Fund
 
 # Two portfolios' schedules, each on its page, the title in the footer.
@@ -70,23 +71,19 @@ REPORT = "https://www.example.com/qq-annual-report.pdf"
 PLANS = config.Config(fidelity_529_plans=(("QQ", REPORT),))
 
 
-class Site:
-    def __init__(self, report, series=CSV):
-        self.report, self.series, self.asked = report, series, []
+REPORT_PDF = pdf([p.splitlines() for p in PAGES])
 
-    def get(self, url, params=None, headers=None):
-        self.asked.append(url)
-        if url == REPORT:
-            return fetcher.Response(url, 200, self.report, "application/pdf")
-        if url == SERIES.format(year=today_utc().year):
-            raise fetcher.FetchError(url, 404)  # this year's list is not out yet
-        return fetcher.Response(url, 200, self.series.encode(), "text/csv")
+
+def site(series=CSV, this_year=404):
+    # This year's list is not out yet: last year's stands.
+    return FakeClient({REPORT: REPORT_PDF, SERIES.format(year=today_utc().year): this_year,
+                       "investment-company-series-class": series})
 
 
 def test_the_plan_is_claimed_by_name_and_fetched_with_the_series_its_funds_belong_to(tmp_path):
     # The SEC spells one name otherwise: its words still find it.
-    site = Site(pdf([p.splitlines() for p in PAGES]), CSV.replace("Total Market", "Total-Market"))
-    ctx = Context(client=site, config=PLANS)
+    client = site(CSV.replace("Total Market", "Total-Market"))
+    ctx = Context(client=client, config=PLANS)
     f = Fidelity529()
     claim = f.claim(Fund(ref="symbol:QQQ000001", symbol="QQQ000001", name="QQ QLAND HORIZON PORT (QUMBRA INDX)"), ctx)
     assert claim == {"ref": "symbol:QQQ000001", "plan": "QQ", "report": REPORT,
@@ -95,16 +92,14 @@ def test_the_plan_is_claimed_by_name_and_fetched_with_the_series_its_funds_belon
     assert f.claim(Fund(ref="symbol:QX", symbol="QX", name="ZZ QLAND HORIZON PORT"), ctx) is None
     assert f.claim(Fund(ref="symbol:QY", symbol="QY", name="QQ QLAND BOND FUND"), ctx) is None
     # A prefix configured in another case claims alike.
-    lower = Context(client=site, config=config.Config(fidelity_529_plans=(("qq", REPORT),)))
+    lower = Context(client=client, config=config.Config(fidelity_529_plans=(("qq", REPORT),)))
     assert f.claim(Fund(ref="symbol:QQQ000001", name="QQ QLAND HORIZON PORT"), lower)["plan"] == "qq"
     # With no plan configured, nothing is claimed.
-    assert f.claim(Fund(ref="symbol:QQQ000001", name="QQ QLAND HORIZON PORT"), Context(client=site)) is None
-    assert site.asked == []
+    assert f.claim(Fund(ref="symbol:QQQ000001", name="QQ QLAND HORIZON PORT"), Context(client=client)) is None
+    assert client.asked == []
     assert f.fetch(claim, None, tmp_path / "f", ctx) == date(2025, 9, 30)
     p = f.parse(tmp_path / "f")
     assert [ln["ticker"] for ln in p.lines] == ["QTMXX", "QGXUS", None]
-    with pytest.raises(Unavailable):
-        f.fetch(claim, date(2025, 9, 30), tmp_path / "g", ctx)
 
 
 def test_two_schedules_on_a_page_and_one_over_two_pages_read_apart():
@@ -146,31 +141,32 @@ def test_the_total_may_end_its_own_line():
 
 
 def test_the_sec_list_falls_back_a_year_only_while_this_years_is_not_out(tmp_path):
-    from providers.fidelity529 import _series
-
-    class Sec:
-        def __init__(self, status):
-            self.status = status
-
-        def get(self, url, params=None, headers=None):
-            if url == SERIES.format(year=today_utc().year):
-                raise fetcher.FetchError(url, self.status)
-            return fetcher.Response(url, 200, CSV.encode(), "text/csv")
-    exact, _ = _series(Context(client=Sec(404)))
+    exact, _ = _series(Context(client=site()))
     assert exact["qumbra series total market index fund"] == [{"series": "S000000001", "tickers": ["QTMXX"]}]
     with pytest.raises(fetcher.FetchError):
-        _series(Context(client=Sec(503)))
-
-    class Empty:
-        def get(self, url, params=None, headers=None):
-            return fetcher.Response(url, 200, b"Series Name,Series ID\n", "text/csv")
+        _series(Context(client=site(this_year=503)))
     with pytest.raises(ProviderError, match="no fund series"):
-        _series(Context(client=Empty()))
+        _series(Context(client=site("Series Name,Series ID\n", this_year="Series Name,Series ID\n")))
 
 
 def test_the_probe_asks_for_a_configured_report():
-    site = Site(pdf([p.splitlines() for p in PAGES]))
-    assert Fidelity529().probe(Context(client=site, config=PLANS)) == "the QQ plan's report answered 200 with a PDF"
-    assert site.asked == [REPORT]
+    client = site()
+    assert Fidelity529().probe(Context(client=client, config=PLANS)) == "the QQ plan's report answered 200 with a PDF"
+    assert client.urls() == [REPORT]
     with pytest.raises(ProviderError, match="no plan"):
-        Fidelity529().probe(Context(client=site))
+        Fidelity529().probe(Context(client=client))
+
+
+def test_a_second_portfolio_reads_the_report_the_first_fetched(tmp_path, monkeypatch):
+    client = site()
+    ctx = Context(client=client, config=PLANS)
+    read = []
+    pages = reports.pdf_pages
+    monkeypatch.setattr("providers.fidelity529.pdf_pages", lambda path: read.append(path) or pages(path))
+    f = Fidelity529()
+    for ref, name in (("symbol:QQQ000001", "QQ QLAND HORIZON PORT (QUMBRA INDX)"),
+                      ("symbol:QQQ000002", "QQ QLAND HORIZON PORT (QUMBRA FUNDS)")):
+        f.fetch(f.claim(Fund(ref=ref, symbol=ref[7:], name=name), ctx), None, tmp_path / ref[7:], ctx)
+    # One report, one SEC list, and one read of the report's pages.
+    assert client.urls().count(REPORT) == 1 and len(read) == 1
+    assert len(f.parse(tmp_path / "QQQ000002").lines) == 3

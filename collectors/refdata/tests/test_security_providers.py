@@ -1,14 +1,17 @@
 """The security providers: gleif, openfigi and sec-edgar, on invented
 answers in each API's layout."""
 
-import json
 from datetime import date
 
+import pytest
+
 import fetcher
-from providers.base import Context
+import providers.gleif as gleif_mod
+from providers.base import Context, ProviderError
 from providers.gleif import Gleif, parse_records
-from providers.openfigi import OpenFigi, parse_mapping
-from providers.sec_edgar import SecEdgar, latest_shares, parse_company
+from providers.openfigi import API as FIGI, OpenFigi, parse_mapping
+from providers.sec_edgar import SecEdgar, latest_shares, names_agree, parse_company
+from tests.helpers import FakeClient
 from wanted import Security
 
 DAY = date(2026, 10, 13)
@@ -39,31 +42,26 @@ def test_gleif_claims_a_security_with_an_isin():
     assert g.claim_security(Security(key="symbol:QAAA"), Context(client=None)) is None
 
 
-class _FakeFigi:
-    def __init__(self):
-        self.posts = []
+def _mapping(url, jobs):
+    return [{"warning": "No identifier found."} if job["idValue"] == "QNONE" else
+            {"data": [{"figi": "BBG000000001", "compositeFIGI": "BBG000000002", "name": "EXAMPLE CO",
+                       "ticker": job["idValue"], "exchCode": "US", "securityType": "Common Stock",
+                       "marketSector": "Equity"}]}
+            for job in jobs]
 
-    def post_json(self, url, payload):
-        self.posts.append(payload)
-        out = []
-        for job in payload:
-            if job["idValue"] == "QNONE":
-                out.append({"warning": "No identifier found."})
-            else:
-                out.append({"data": [{"figi": "BBG000000001", "compositeFIGI": "BBG000000002", "name": "EXAMPLE CO",
-                                      "ticker": job["idValue"], "exchCode": "US", "securityType": "Common Stock",
-                                      "marketSector": "Equity"}]})
-        return fetcher.Response(url, 200, json.dumps(out).encode(), "application/json")
+
+def batches(client):
+    return [len(jobs) for _, _, jobs in client.asked]
 
 
 def test_openfigi_asks_five_securities_a_request(tmp_path):
-    client = _FakeFigi()
+    client = FakeClient({FIGI: _mapping})
     ctx = Context(client=client)
     p = OpenFigi()
     claims = [p.claim_security(Security(key=f"symbol:Q{i}"), ctx) for i in range(7)]
     for i, c in enumerate(claims):
         p.fetch_security(c, tmp_path / str(i), ctx)
-    assert [len(b) for b in client.posts] == [5, 2]
+    assert batches(client) == [5, 2]
     (s,) = p.parse(tmp_path / "6").securities
     assert (s["figi"], s["ticker"], s["exchange"], s["security_type"]) == ("BBG000000002", "Q6", "US", "Common Stock")
 
@@ -97,32 +95,19 @@ def test_sec_edgar_states_sic_incorporation_and_shares():
     assert latest_shares(None) == (None, None)
 
 
+def tickers(doc):
+    return FakeClient({"company_tickers.json": doc})
+
+
 def test_sec_edgar_claims_a_listed_ticker():
-    class Tickers:
-        def get(self, url, params=None):
-            body = json.dumps({"0": {"cik_str": 7, "ticker": "QEXI"}}).encode()
-            return fetcher.Response(url, 200, body, "application/json")
-    ctx = Context(client=Tickers(), contact="ops@example.org")
+    ctx = Context(client=tickers({"0": {"cik_str": 7, "ticker": "QEXI"}}))
     e = SecEdgar()
     assert e.claim_security(Security(key="symbol:QEXI"), ctx)["cik"] == 7
     assert e.claim_security(Security(key="symbol:QZZZ"), ctx) is None
 
 
-class _FailingFigi:
-    def __init__(self, body=None):
-        self.posts, self.body = [], body
-
-    def post_json(self, url, payload):
-        self.posts.append(payload)
-        if self.body is None:
-            raise fetcher.FetchError(url, 400, "Bad Request")
-        return fetcher.Response(url, 200, self.body, "application/json")
-
-
 def test_a_failed_openfigi_batch_fails_its_own_securities_only(tmp_path):
-    import pytest
-    from providers.base import ProviderError
-    client = _FailingFigi()
+    client = FakeClient({FIGI: 400})
     ctx = Context(client=client)
     p = OpenFigi()
     claims = [p.claim_security(Security(key=f"symbol:Q{i}"), ctx) for i in range(7)]
@@ -130,13 +115,23 @@ def test_a_failed_openfigi_batch_fails_its_own_securities_only(tmp_path):
         with pytest.raises((ProviderError, fetcher.FetchError)):
             p.fetch_security(c, tmp_path / str(i), ctx)
     # One request per batch: the failed five are not asked again.
-    assert [len(b) for b in client.posts] == [5, 2]
+    assert batches(client) == [5, 2]
+
+
+def test_openfigi_batches_the_jobs_still_waiting_whatever_the_order(tmp_path):
+    client = FakeClient({FIGI: _mapping})
+    ctx = Context(client=client)
+    p = OpenFigi()
+    claims = [p.claim_security(Security(key=f"symbol:Q{i}"), ctx) for i in range(8)]
+    # The last first: it takes the first four waiting along.
+    for i in (7, 0, 5, 6):
+        p.fetch_security(claims[i], tmp_path / str(i), ctx)
+    assert [[job["idValue"] for job in jobs] for _, _, jobs in client.asked] == [
+        ["Q7", "Q0", "Q1", "Q2", "Q3"], ["Q5", "Q4", "Q6"]]
 
 
 def test_an_openfigi_answer_of_the_wrong_length_is_an_error(tmp_path):
-    import pytest
-    from providers.base import ProviderError
-    ctx = Context(client=_FailingFigi(body=b"[]"))
+    ctx = Context(client=FakeClient({FIGI: []}))
     p = OpenFigi()
     c = p.claim_security(Security(key="symbol:QAAA"), ctx)
     with pytest.raises(ProviderError, match="something else"):
@@ -154,17 +149,24 @@ def test_openfigi_keeps_a_ticker_from_a_us_listing_only():
     assert (local["ticker"], local["payload"]["local_ticker"], local["cusip"]) == (None, "QLOC", "000000AC5")
 
 
+CLAIM = {"key": "symbol:QEXI", "symbol": "QEXI", "cik": 7}
+
+
 def test_sec_edgar_without_shares_is_no_error(tmp_path):
-    class Edgar:
-        def get(self, url, params=None):
-            if "companyconcept" in url:
-                raise fetcher.FetchError(url, 404, "Not Found")
-            return fetcher.Response(url, 200, json.dumps(SUB).encode(), "application/json")
-    ctx = Context(client=Edgar(), contact="ops@example.org")
+    ctx = Context(client=FakeClient({"companyconcept": 404, "submissions": SUB}))
     e = SecEdgar()
-    e.fetch_security({"key": "symbol:QEXI", "symbol": "QEXI", "cik": 7}, tmp_path, ctx)
+    e.fetch_security(CLAIM, tmp_path, ctx)
     got = e.parse(tmp_path)
     assert "shares_outstanding" not in {f["field"] for f in got.security_facts}
+
+
+def test_sec_edgar_fails_on_a_submissions_file_that_is_not_json_or_shares_that_fail(tmp_path):
+    with pytest.raises(fetcher.FetchError, match="not JSON"):
+        SecEdgar().fetch_security(CLAIM, tmp_path / "a", Context(client=FakeClient({"submissions": "<html/>"})))
+    with pytest.raises(fetcher.FetchError, match="503"):
+        SecEdgar().fetch_security(CLAIM, tmp_path / "b",
+                                  Context(client=FakeClient({"companyconcept": 503, "submissions": SUB})))
+    assert not (tmp_path / "b" / "meta.json").exists()
 
 
 def test_a_constituent_is_asked_only_what_a_provider_answers():
@@ -192,12 +194,8 @@ def test_a_constituent_is_asked_only_what_a_provider_answers():
 
 
 def test_sec_edgar_matches_a_share_class_whatever_its_punctuation():
-    class Tickers:
-        def get(self, url, params=None):
-            doc = {"0": {"cik_str": 9, "ticker": "QBR-B"}, "1": {"cik_str": 10, "ticker": "QTA"},
-                   "2": {"cik_str": 11, "ticker": "QT-A"}}
-            return fetcher.Response(url, 200, json.dumps(doc).encode(), "application/json")
-    ctx = Context(client=Tickers(), contact="ops@example.org")
+    ctx = Context(client=tickers({"0": {"cik_str": 9, "ticker": "QBR-B"}, "1": {"cik_str": 10, "ticker": "QTA"},
+                                  "2": {"cik_str": 11, "ticker": "QT-A"}}))
     e = SecEdgar()
     for written in ("QBRB", "QBR.B", "QBR/B"):
         assert e.claim_security(Security(key=f"symbol:{written}", symbol=written), ctx)["cik"] == 9
@@ -207,12 +205,8 @@ def test_sec_edgar_matches_a_share_class_whatever_its_punctuation():
 
 
 def test_sec_edgar_claims_a_ticker_abroad_only_where_the_names_agree():
-    class Tickers:
-        def get(self, url, params=None):
-            doc = {"0": {"cik_str": 21, "ticker": "QEB", "title": "Quillmore Biologics Inc."},
-                   "1": {"cik_str": 22, "ticker": "QLB", "title": "QUELLBRIDGE LTD"}}
-            return fetcher.Response(url, 200, json.dumps(doc).encode(), "application/json")
-    ctx = Context(client=Tickers(), contact="ops@example.org")
+    ctx = Context(client=tickers({"0": {"cik_str": 21, "ticker": "QEB", "title": "Quillmore Biologics Inc."},
+                                  "1": {"cik_str": 22, "ticker": "QLB", "title": "QUELLBRIDGE LTD"}}))
     e = SecEdgar()
     # A bank abroad whose local ticker is a US biotech's: not claimed.
     bank = Security(key="isin:XA0000000611", isin="XA0000000611", symbol="QEB", name="Quarzberg Bank AG")
@@ -230,7 +224,6 @@ def test_sec_edgar_claims_a_ticker_abroad_only_where_the_names_agree():
 
 
 def test_names_agree_on_the_first_telling_word():
-    from providers.sec_edgar import names_agree
     assert names_agree("Quellmark Inc", "QUELLMARK HOLDINGS LTD")
     assert names_agree("QUELLMARK", "Quellmarkets Corp")
     assert not names_agree("Quarzberg Bank AG", "Quillmore Biologics Inc.")
@@ -262,62 +255,57 @@ def test_gleif_fetches_the_issuer_isins_of_a_receipt(tmp_path):
     record = {"data": [{"id": "XXXXXXXXXXXXXXXXXX31", "attributes": {"lei": "XXXXXXXXXXXXXXXXXX31", "entity": {
         "legalName": {"name": "Qorvant Holdings"}, "jurisdiction": "KR", "legalAddress": {"country": "KR"}}}}]}
     isins = {"data": [{"attributes": {"isin": "US0000000641"}}, {"attributes": {"isin": "XK0000000642"}}]}
-
-    class Api:
-        def __init__(self):
-            self.urls = []
-
-        def get(self, url, params=None, headers=None):
-            self.urls.append(url)
-            body = isins if url.endswith("/isins") else record
-            return fetcher.Response(url, 200, json.dumps(body).encode(), "application/json")
-    g, api = Gleif(), Api()
+    g, api = Gleif(), FakeClient({"/isins": isins, "lei-records": record})
     ctx = Context(client=api)
     receipt = Security(key="isin:US0000000641", isin="US0000000641", asset_class="public_equity")
     g.fetch_security(g.claim_security(receipt, ctx), tmp_path / "r", ctx)
-    assert any(u.endswith("XXXXXXXXXXXXXXXXXX31/isins") for u in api.urls)
+    assert any(u.endswith("XXXXXXXXXXXXXXXXXX31/isins") for u in api.urls())
     facts = [(f["field"], f["value"]) for f in g.parse(tmp_path / "r").security_facts]
     assert ("issuer_isins", "XK0000000642") in facts
     # A bond, or a share under an ISIN from abroad, asks for no ISIN list.
     for sec in (Security(key="isin:US0000000643", isin="US0000000643", asset_class="fixed_income"),
                 Security(key="isin:XK0000000644", isin="XK0000000644", asset_class="public_equity")):
-        api.urls.clear()
+        api.asked.clear()
         g.fetch_security(g.claim_security(sec, ctx), tmp_path / sec.key[5:], ctx)
-        assert not any(u.endswith("/isins") for u in api.urls), sec.key
+        assert not any(u.endswith("/isins") for u in api.urls()), sec.key
 
 
 def test_gleif_pages_the_issuer_isins_up_to_its_cap_and_keeps_the_issuer_without_them(tmp_path, monkeypatch):
-    import providers.gleif as gleif_mod
     monkeypatch.setattr(gleif_mod, "ISIN_PAGE_SIZE", 2)
     monkeypatch.setattr(gleif_mod, "ISIN_PAGES", 3)
     record = {"data": [{"id": "XXXXXXXXXXXXXXXXXX32", "attributes": {"lei": "XXXXXXXXXXXXXXXXXX32", "entity": {
         "legalName": {"name": "Qorvant Holdings"}, "jurisdiction": "KR", "legalAddress": {"country": "KR"}}}}]}
 
-    class Api:
-        def __init__(self, fail=False):
-            self.pages, self.fail = [], fail
-
-        def get(self, url, params=None, headers=None):
-            if not url.endswith("/isins"):
-                return fetcher.Response(url, 200, json.dumps(record).encode(), "application/json")
-            if self.fail:
-                raise fetcher.FetchError(url, 503)
-            page = int(params["page[number]"])
-            self.pages.append(page)
-            rows = [{"attributes": {"isin": f"XK00000006{page}{i}"}} for i in range(2)]
-            return fetcher.Response(url, 200, json.dumps({"data": rows}).encode(), "application/json")
+    def page(url, params):
+        n = int(params["page[number]"])
+        return {"data": [{"attributes": {"isin": f"XK00000006{n}{i}"}} for i in range(2)]}
     g = Gleif()
     receipt = Security(key="isin:US0000000651", isin="US0000000651", asset_class="public_equity")
-    api = Api()
+    api = FakeClient({"/isins": page, "lei-records": record})
     ctx = Context(client=api)
     g.fetch_security(g.claim_security(receipt, ctx), tmp_path / "full", ctx)
     # Every page full: the cap stops it.
-    assert api.pages == [1, 2, 3]
+    assert [d["page[number]"] for _, u, d in api.asked if u.endswith("/isins")] == ["1", "2", "3"]
     (fact,) = [f for f in g.parse(tmp_path / "full").security_facts if f["field"] == "issuer_isins"]
     assert len(fact["value"].split()) == 6
     # The list failing leaves the issuer's own answer.
-    api = Api(fail=True)
-    ctx = Context(client=api)
+    ctx = Context(client=FakeClient({"/isins": 503, "lei-records": record}))
     g.fetch_security(g.claim_security(receipt, ctx), tmp_path / "failed", ctx)
     fields = {f["field"] for f in g.parse(tmp_path / "failed").security_facts}
     assert "legal_country" in fields and "issuer_isins" not in fields
+
+
+def test_gleif_fails_on_an_answer_that_is_not_json(tmp_path):
+    ctx = Context(client=FakeClient({"lei-records": "<html>busy</html>"}))
+    with pytest.raises(fetcher.FetchError, match="not JSON"):
+        Gleif().fetch_security({"key": "isin:XX0000000607", "isin": "XX0000000607", "equity": True}, tmp_path, ctx)
+
+
+def test_the_security_probes_ask_one_cheap_question_each():
+    client = FakeClient({FIGI: [{"data": []}], "lei-records": {"data": []},
+                         "company_tickers.json": {"0": {"cik_str": 7, "ticker": "QEXI"}}})
+    ctx = Context(client=client)
+    assert OpenFigi().probe(ctx) == "OpenFIGI mapping answered 200"
+    assert Gleif().probe(ctx) == "GLEIF API answered 200"
+    assert SecEdgar().probe(ctx) == "SEC company ticker file: 1 tickers"
+    assert len(client.asked) == 3

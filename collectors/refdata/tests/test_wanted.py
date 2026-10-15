@@ -53,3 +53,29 @@ def test_an_engine_older_than_the_contract_says_so(tmp_path):
 def test_a_missing_engine_says_how_to_name_one():
     with pytest.raises(wanted.WantedError, match="REFDATA_WEALTHDB"):
         wanted.from_engine("/nonexistent/wealthdb")
+
+
+def test_from_file_reads_a_saved_list_and_refuses_what_is_not_one(tmp_path):
+    saved = tmp_path / "wanted.json"
+    saved.write_text(json.dumps(wanted_doc([fund("symbol:FUNDA", "FUNDA")])))
+    assert wanted.from_file(saved).funds[0].ref == "symbol:FUNDA"
+    with pytest.raises(wanted.WantedError, match="none.json"):
+        wanted.from_file(tmp_path / "none.json")
+    saved.write_text("{")
+    with pytest.raises(wanted.WantedError, match="is not JSON"):
+        wanted.from_file(saved)
+    saved.write_text(json.dumps({"contract": "refdata-wanted", "version": 1}))
+    with pytest.raises(wanted.WantedError, match="malformed"):
+        wanted.from_file(saved)
+
+
+def test_an_engine_that_fails_says_how(tmp_path):
+    engine = _engine(tmp_path, 'echo "wealthdb: no config" >&2; exit 4\n')
+    with pytest.raises(wanted.WantedError, match=r"failed \(4\): wealthdb: no config"):
+        wanted.from_engine(engine)
+
+
+def test_an_engine_that_prints_no_json_says_so(tmp_path):
+    engine = _engine(tmp_path, 'echo "Usage: wealthdb"\n')
+    with pytest.raises(wanted.WantedError, match="printed no JSON"):
+        wanted.from_engine(engine)

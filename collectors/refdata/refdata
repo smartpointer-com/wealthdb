@@ -4,8 +4,8 @@
 # Host-venv collector (no Docker): reads public reference data, what each
 # fund holds and what each security is, for the funds and securities the
 # engine names in its wanted list. No login anywhere. Subcommands:
-#   login               No-op: there is no session. `login --check` probes
-#                       every enabled provider with one request.
+#   login               No-op: there is no session. `login --check` asks
+#                       every enabled provider for its cheapest answer.
 #   download [args...]  Ask the engine for the wanted list (or read
 #                       --wanted FILE) and fetch what is missing into bronze.
 #                       --backfill also fetches past dates; --dry-run plans
@@ -46,8 +46,8 @@ py="$(host_python)"
 
 case "$cmd" in
     login)
-        # No provider mints a session. `--check` makes one request per
-        # enabled provider instead.
+        # No provider mints a session. `--check` asks each enabled
+        # provider for its cheapest answer instead.
         case " ${FORWARD_ARGS[*]-} " in
             *" --check "*)
                 exec "$py" "$HERE/download.py" --bronze-dir "$DATA_DIR" \

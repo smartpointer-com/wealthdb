@@ -28,8 +28,10 @@ country its holdings take.
 
 from __future__ import annotations
 
+import os
 import re
 import unicodedata
+from collections import OrderedDict
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -37,7 +39,7 @@ from pathlib import Path
 from collectorkit import bronze
 
 from . import table
-from .base import Parsed, Provider, ProviderError, Unavailable, read_meta, write_meta
+from .base import Parsed, Provider, ProviderError, read_meta, row, write_meta
 
 MONTHS = {m: i + 1 for i, m in enumerate(
     ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
@@ -46,7 +48,7 @@ MONTHS = {m: i + 1 for i, m in enumerate(
      "dezember"))}
 DATE_WORDS = re.compile(r"(?:as (?:at|of)|ended|zum|per)\s+(\d{1,2})\.?\s+([A-Za-zä]+)\s+(\d{4})", re.I)
 DATE_DOTS = re.compile(r"(?:as (?:at|of)|ended|zum|per)\s+(\d{1,2})\.(\d{1,2})\.(\d{4})", re.I)
-ISIN = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}\d$")
+ISIN = table.ISIN_RE
 
 # A schedule page's heading states its day; a table of contents names the
 # schedules without one.
@@ -60,11 +62,13 @@ INVENTORY_END = re.compile(r"^(?:Total securities and similar instruments|Total 
                            r"Bank deposits|Bankguthaben|Derivative financial instruments|Derivative Finanzinstrumente)",
                            re.I)
 # The sections a holding sits in: its asset type, as the report writes it.
-SECTIONS = ("common stocks", "preferred stocks", "corporate bonds", "government bonds", "asset and mortgage backed",
-            "funds", "investment funds", "rights", "warrants", "stammaktien", "vorzugsaktien", "investmentfonds",
-            "bezugsrechte", "optionsscheine", "bearer shares", "registered shares", "participation certificates",
-            "other shares", "inhaberaktien", "namenaktien", "partizipationsscheine",
-            "aktien und sonstige beteiligungswertpapiere und -rechte")
+# Longest first, so a heading opens the longest section it starts with.
+SECTIONS = tuple(sorted((
+    "common stocks", "preferred stocks", "corporate bonds", "government bonds", "asset and mortgage backed",
+    "funds", "investment funds", "rights", "warrants", "stammaktien", "vorzugsaktien", "investmentfonds",
+    "bezugsrechte", "optionsscheine", "bearer shares", "registered shares", "participation certificates",
+    "other shares", "inhaberaktien", "namenaktien", "partizipationsscheine",
+    "aktien und sonstige beteiligungswertpapiere und -rechte"), key=len, reverse=True))
 INDUSTRY = re.compile(r"^(?P<h>[^\d(]+?) \(\(?-?[\d.,]+ ?%\)?\)")
 # The least percent of a fund the lines read must cover.
 MIN_PERCENT = 50
@@ -73,6 +77,22 @@ CLASS_WORDS = {"usd", "chf", "eur", "gbp", "jpy", "cad", "aud", "hkd", "sgd", "s
                "inc", "dist", "hedged", "class"}
 REPORT_WORDS = re.compile(r"\s*(?:Semi-Annual Report|Annual Report|Halbjahresbericht|Jahresbericht)\b.*$", re.I)
 FOOTER = re.compile(r"^(?P<t>Swisscanto .+?) \d+/\d+$")
+# A holding line in each layout: a schedule's name, quantity, value and
+# percent; an inventory's name, currency, quantities and percent; an
+# ISIN inventory's ISIN, name, quantities, currency, price, value and
+# percent.
+HOLDING = re.compile(r"^(?P<name>.+?) (?P<qty>\(?-?[\d.,]+\)?) (?P<val>\(?-?[\d.,]+\)?) (?P<pct>\(?-?\d+[.,]\d{2}\)?)$")
+INVENTORY_LINE = re.compile(r"^(?P<name>.+?)\*? (?P<ccy>[A-Z]{3}) (?P<nums>[\d ]+?) (?P<pct>\d+\.\d{2})(?: [\d ]+)?$")
+ISIN_LINE = re.compile(r"^(?P<isin>[A-Z]{2}[A-Z0-9]{9}\d) (?P<name>.+?) (?P<q0>-?[\d']+(?:\.\d+)?) "
+                       r"(?P<q1>[\d']+(?:\.\d+)?) (?P<q2>[\d']+(?:\.\d+)?) (?P<qty>-?[\d']+(?:\.\d+)?) "
+                       r"(?P<ccy>[A-Z]{3}) (?P<px>[\d']+(?:\.\d+)?) (?P<val>-?[\d']+(?:\.\d+)?) "
+                       r"(?P<pct>-?\d+\.\d{2})(?: \S{1,3}\))?$")
+# The line that ends an inventory's country block, and names the country.
+COUNTRY_TOTAL = re.compile(r"^TOTAL (?P<c>[^\d]+?) [\d ]*\d")
+# The reports whose pages parse keeps, by their files' hash: an
+# umbrella's report serves each of its sub-funds a run holds.
+PAGES_KEPT = 4
+_pages: OrderedDict = OrderedDict()
 
 
 class ReportProvider(Provider):
@@ -83,39 +103,36 @@ class ReportProvider(Provider):
     serves_funds = True
 
     def fetch(self, claim, as_of, outdir: Path, ctx):
-        if as_of is not None:
-            raise Unavailable(f"{self.name} serves the newest reports only")
-        outdir.mkdir(parents=True, exist_ok=True)
         files, days = [], []
         for kind, url in claim["reports"]:
             path = outdir / f"{kind}.pdf"
-            # An umbrella's report serves each of its sub-funds a run holds:
-            # fetched once, copied from the first fund's directory after.
-            first = ctx.once(("report", url), lambda url=url, path=path: save_pdf(ctx.client.get(url), path))
-            if first != path:
-                bronze.atomic_write_bytes(path, first.read_bytes())
+            fetch_pdf(ctx, url, path)
             files.append(path.name)
-            days.append(report_date(pdf_pages(path, last=5)))
+            days.append(ctx.once(("report_day", url), lambda path=path: report_date(pdf_pages(path, last=5))))
         day = max(filter(None, days), default=None)
+        if day is None:
+            raise ProviderError("no report states the day of its holdings")
         write_meta(outdir, provider=self.name, ref=claim["ref"], name=claim["name"], files=files,
-                   urls=[u for _, u in claim["reports"]], as_of=day.isoformat() if day else None)
+                   urls=[u for _, u in claim["reports"]], as_of=day.isoformat())
         return day
 
     def parse(self, indir: Path) -> Parsed:
+        """Each report's composition; of two that state the same day, the
+        later report's, so the day's lines are one report's."""
         meta = read_meta(indir)
-        out, errors = Parsed(), []
+        by_day, errors = {}, []
         for f in meta["files"]:
             try:
-                p = parse_report(pdf_pages(indir / f), meta["name"], meta["ref"], provider=self.name)
+                p = parse_report(report_pages(indir / f), meta["name"], meta["ref"], provider=self.name)
             except ProviderError as e:
                 errors.append(f"{f}: {e}")
                 continue
-            out.compositions += p.compositions
-            out.lines += p.lines
-            out.funds = out.funds or p.funds
-        if not out.compositions:
+            (c,) = p.compositions
+            by_day[(c["as_of"], c["basis"])] = p
+        if not by_day:
             raise ProviderError("; ".join(errors) or "no report")
-        return out
+        return Parsed(compositions=[c for p in by_day.values() for c in p.compositions],
+                      lines=[ln for p in by_day.values() for ln in p.lines])
 
 
 def save_pdf(resp, path: Path) -> Path:
@@ -123,6 +140,33 @@ def save_pdf(resp, path: Path) -> Path:
         raise ProviderError(f"{resp.url} is not a PDF")
     bronze.atomic_write_bytes(path, resp.body)
     return path
+
+
+def fetch_pdf(ctx, url: str, path: Path) -> None:
+    """Stores the PDF at `url` as `path`. A report several funds share is
+    asked for once a run, and linked from the first fund's folder into
+    the next one's."""
+    first = ctx.once(("report", url), lambda: save_pdf(ctx.client.get(url), path))
+    if first == path:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(first, path)
+    except OSError:
+        bronze.atomic_write_bytes(path, first.read_bytes())
+
+
+def report_pages(path: Path) -> tuple:
+    """pdf_pages(path), kept for the last PAGES_KEPT reports read by their
+    files' hash: the copies of one report read once."""
+    key = bronze.sha256_file(path)[0]
+    if key in _pages:
+        _pages.move_to_end(key)
+    else:
+        _pages[key] = tuple(pdf_pages(path))
+        if len(_pages) > PAGES_KEPT:
+            _pages.popitem(last=False)
+    return _pages[key]
 
 
 def pdf_pages(path: Path, last: int | None = None) -> list:
@@ -227,13 +271,8 @@ def parse_report(pages: list, fund_name: str, ref: str, *, provider: str) -> Par
         raise ProviderError(f"{fund_name!r} names {sorted(unexplained)}, which neither the sub-fund {title!r} "
                             "nor the report names")
     lns = _lines(rows, ref, as_of)
-    out = Parsed(lines=lns)
-    comp = table.composition(ref, as_of, lns, provider=provider, source_kind="report", fund_name=fund_name)
-    comp["payload"] = {"sub_fund": title}
-    out.compositions.append(comp)
-    out.funds.append({"fund_ref": ref, "isin": None, "cusip": None, "symbol": None, "name": fund_name,
-                      "provider": provider, "provider_id": None, "payload": {}})
-    return out
+    return Parsed(lines=lns, compositions=[table.composition(ref, as_of, lns, provider=provider, source_kind="report",
+                                                             fund_name=fund_name, payload={"sub_fund": title})])
 
 
 def _row_line(ln: str) -> bool:
@@ -250,16 +289,10 @@ def _lines(rows: list, ref: str, as_of: date) -> list:
     out = []
     for r in rows:
         weight = r["pct"] if not total else r["value"] * printed / total
-        out.append({
-            "fund_ref": ref, "as_of": as_of, "basis": "holdings", "line_no": len(out) + 1,
-            "isin": r.get("isin"), "cusip": None, "figi": None, "ticker": None, "exchange": None,
-            "name": r["name"], "asset_type": r.get("section"), "weight": table.dec(round(weight, 8)),
-            "quantity": table.dec(r.get("quantity")), "market_value": table.dec(r.get("value")),
-            "currency": r.get("currency"),
-            "country": r.get("country"), "risk_country": None, "sector": None, "industry": r.get("industry"),
-            "maturity": None, "coupon": None, "long_currency": None, "long_amount": None,
-            "short_currency": None, "short_amount": None, "payload": {},
-        })
+        out.append(row("lines", fund_ref=ref, as_of=as_of, basis="holdings", line_no=len(out) + 1, isin=r.get("isin"),
+                       name=r["name"], asset_type=r.get("section"), weight=table.dec(round(weight, 8)),
+                       quantity=table.dec(r.get("quantity")), market_value=table.dec(r.get("value")),
+                       currency=r.get("currency"), country=r.get("country"), industry=r.get("industry")))
     return out
 
 
@@ -267,7 +300,7 @@ def _section(line: str) -> str | None:
     """The asset-type section a heading line opens, as the report writes
     it. A heading may carry its own first letters again (a drop cap)."""
     low = " ".join(line.lower().split())
-    for s in sorted(SECTIONS, key=len, reverse=True):
+    for s in SECTIONS:
         if low == s or low.startswith(s + " "):
             return line.strip()[:len(s)]
     return None
@@ -291,7 +324,7 @@ def _own_pages(pages: list, fund_name: str, titles_of) -> tuple:
     return own, out
 
 
-def _schedule(pages: list, fund_name: str) -> list:
+def _schedule(pages: list, fund_name: str) -> tuple:
     """A schedule of investments: holding lines of name, quantity, market
     value and percent, from the held fund's pages up to its derivatives.
     A page names its sub-fund at its top, or beside the heading that
@@ -324,13 +357,10 @@ def _schedule(pages: list, fund_name: str) -> list:
             if m := INDUSTRY.match(ln):
                 industry = m.group("h").strip()
                 continue
-            row = _holding(ln) if section else None
-            if row:
-                rows.append({**row, "section": section, "industry": industry})
+            holding = _holding(ln) if section else None
+            if holding:
+                rows.append({**holding, "section": section, "industry": industry})
     return own, rows, mine
-
-
-HOLDING = re.compile(r"^(?P<name>.+?) (?P<qty>\(?-?[\d.,]+\)?) (?P<val>\(?-?[\d.,]+\)?) (?P<pct>\(?-?\d+[.,]\d{2}\)?)$")
 
 
 def _holding(ln: str) -> dict | None:
@@ -342,16 +372,12 @@ def _holding(ln: str) -> dict | None:
             "value": number(m.group("val"), decimal), "pct": number(m.group("pct"), decimal)}
 
 
-INVENTORY_LINE = re.compile(r"^(?P<name>.+?)\*? (?P<ccy>[A-Z]{3}) (?P<nums>[\d ]+?) (?P<pct>\d+\.\d{2})(?: [\d ]+)?$")
-COUNTRY_TOTAL = re.compile(r"^TOTAL (?P<c>[^\d]+?) [\d ]*\d")
-
-
-def _inventory(pages: list, fund_name: str) -> list:
+def _inventory(pages: list, fund_name: str) -> tuple:
     """An inventory of fund assets: each page names its sub-fund in its
     running header, its first line with letters. A country block ends in
-    a TOTAL line that names the
-    country, which its holdings take. Its numbers, grouped by spaces, do
-    not split into columns, so the printed percent stands."""
+    a TOTAL line that names the country, which its holdings take. Its
+    numbers, grouped by spaces, do not split into columns, so the
+    printed percent stands."""
     def titles_of(p):
         first = next((ln for ln in p.splitlines()[:3] if re.search(r"[A-Za-z]", ln)), "")
         title = re.sub(r"\s\d{1,3}\s", " ", REPORT_WORDS.sub("", first))
@@ -382,13 +408,7 @@ def _inventory(pages: list, fund_name: str) -> list:
     return own, rows + block, mine
 
 
-ISIN_LINE = re.compile(r"^(?P<isin>[A-Z]{2}[A-Z0-9]{9}\d) (?P<name>.+?) (?P<q0>-?[\d']+(?:\.\d+)?) "
-                       r"(?P<q1>[\d']+(?:\.\d+)?) (?P<q2>[\d']+(?:\.\d+)?) (?P<qty>-?[\d']+(?:\.\d+)?) "
-                       r"(?P<ccy>[A-Z]{3}) (?P<px>[\d']+(?:\.\d+)?) (?P<val>-?[\d']+(?:\.\d+)?) "
-                       r"(?P<pct>-?\d+\.\d{2})(?: \S{1,3}\))?$")
-
-
-def _isin_inventory(pages: list, fund_name: str) -> list:
+def _isin_inventory(pages: list, fund_name: str) -> tuple:
     """An inventory with an ISIN per line; each page names its sub-fund
     in its footer. A position sold out during the period is left out."""
     # Where a page's text comes out column by column (ISINs first, figures

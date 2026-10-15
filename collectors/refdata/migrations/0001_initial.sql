@@ -39,23 +39,9 @@ CREATE TABLE dump_runs (
     loaded_at             INTEGER NOT NULL                -- Unix s UTC
 );
 
--- One row per fund reference: how the provider knows the fund.
-CREATE TABLE funds (
-    fund_ref     TEXT    NOT NULL PRIMARY KEY,   -- isin:…, cusip:… or symbol:…, as gold named it
-    isin         TEXT,
-    cusip        TEXT,
-    symbol       TEXT,
-    name         TEXT,
-    provider     TEXT    NOT NULL,
-    provider_id  TEXT,                           -- the provider's own id (a product id, a series id)
-    run_at       INTEGER NOT NULL,
-    payload      TEXT    NOT NULL DEFAULT '{}'
-);
-
 -- One row per fund, day and basis. basis is holdings, collateral (a swap
 -- fund's substitute basket) or index (the index lines a provider lists
--- for a swap fund). source_kind is daily_file, filing, report, vendor or
--- inbox.
+-- for a swap fund). source_kind is daily_file, filing, report or inbox.
 CREATE TABLE compositions (
     fund_ref           TEXT    NOT NULL,
     as_of              INTEGER NOT NULL,
@@ -125,9 +111,9 @@ CREATE TABLE attributes (
     PRIMARY KEY (fund_ref, as_of)
 );
 
--- One row per fund, day, role and counterparty. role is swap, derivative
--- (any other derivative's counterparty), lending, custodian or
--- depositary; share is percent of net assets.
+-- One row per fund, day, role and counterparty. role is swap or
+-- derivative (any other derivative's counterparty); share is percent of
+-- net assets.
 CREATE TABLE counterparties (
     fund_ref  TEXT    NOT NULL,
     as_of     INTEGER NOT NULL,

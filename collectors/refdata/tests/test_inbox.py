@@ -1,12 +1,14 @@
 """The inbox: files placed by hand, claimed by their folder."""
 
 from datetime import date
+from pathlib import Path
 
 import pytest
 
 import wanted
-from providers.base import Context, ProviderError
+from providers.base import Context, ProviderError, Unavailable
 from providers.inbox import Inbox, parse_csv
+from tests.helpers import make_xlsx
 
 
 def test_claims_a_fund_by_its_folder_in_either_spelling(tmp_path):
@@ -54,7 +56,6 @@ def test_a_folder_holds_one_composition_file(tmp_path):
 
 
 def test_an_nport_document_in_the_inbox(tmp_path):
-    from pathlib import Path
     xml = (Path(__file__).parent / "fixtures" / "nport_primary_doc.xml").read_bytes()
     inbox, out = _placed(tmp_path, ("primary_doc.xml", xml), ("notes.txt", b"from the fund"))
     got = inbox.parse(out)
@@ -76,8 +77,21 @@ def test_an_issuer_download_with_preamble_and_notes(tmp_path):
 
 
 def test_an_xlsx_in_the_inbox(tmp_path):
-    from tests.helpers import make_xlsx
     book = make_xlsx([["Name", "ISIN", "Weight"], ["Alpha", "XX0000000701", "100"]])
     inbox, out = _placed(tmp_path, ("holdings.xlsx", book))
     (line,) = inbox.parse(out).lines
     assert (line["isin"], line["weight"]) == ("XX0000000701", "100")
+
+
+def test_a_day_with_no_folder_or_no_file_is_unavailable(tmp_path):
+    folder = tmp_path / "inbox" / "symbol_ABC"
+    (folder / "2026-03-31").mkdir(parents=True)
+    (folder / "2026-03-31" / ".DS_Store").write_bytes(b"")
+    ctx = Context(client=None, data_dir=tmp_path)
+    inbox = Inbox()
+    claim = inbox.claim(wanted.Fund(ref="symbol:ABC"), ctx)
+    with pytest.raises(Unavailable, match="does not exist"):
+        inbox.fetch(claim, date(2026, 4, 30), tmp_path / "a", ctx)
+    with pytest.raises(Unavailable, match="holds no file"):
+        inbox.fetch(claim, date(2026, 3, 31), tmp_path / "b", ctx)
+    assert inbox.probe(ctx) == "nothing to probe"

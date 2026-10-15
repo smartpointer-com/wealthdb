@@ -16,23 +16,19 @@ page links.
 A swap-replicated Xtrackers fund exports its substitute basket, not the
 index: name a proxy with `always` for such a fund.
 
-Terms: DWS's robots.txt disallows `/etfdata/*` and `/export/*`, the
-export's path. DWS's legal notice states no rule on automated access.
-The export's first row reads: "Although information in this document
-has been obtained from sources believed to be reliable, DWS does not
-guarantee its accuracy, completeness or fairness". Off until refdata.cfg
-names it.
+Terms: README.md, xtrackers.
 """
 
 from __future__ import annotations
 
 import re
+from datetime import date
 from pathlib import Path
 
 from collectorkit import bronze
 
 from . import table, xlsx
-from .base import Parsed, Provider, ProviderError, Unavailable, fund_isin, read_meta, today_utc, write_meta
+from .base import Parsed, Provider, ProviderError, ident, read_meta, today_utc, write_meta
 
 EXPORT = "https://etf.dws.com/etfdata/export/GBR/ENG/excel/product/constituent/{isin}/"
 DOC = "constituents.xlsx"
@@ -44,28 +40,24 @@ class Xtrackers(Provider):
     serves_funds = True
 
     def claim(self, fund, ctx):
-        isin = fund_isin(fund)
+        isin = ident(fund, "isin")
         if not isin or isin.startswith("US") or not ISSUER.search(fund.name or ""):
             return None
         return {"ref": fund.ref, "isin": isin}
 
     def fetch(self, claim, as_of, outdir: Path, ctx):
-        if as_of is not None:
-            raise Unavailable("xtrackers serves the current constituents only")
         resp = ctx.client.get(EXPORT.format(isin=claim["isin"]))
         if not resp.body.startswith(b"PK"):
             raise ProviderError(f"{resp.url} is not a workbook")
         rows = xlsx.rows(resp.body)
         if table.header_index(rows) is None:
             raise ProviderError(f"{resp.url} has no constituents header")
-        outdir.mkdir(parents=True, exist_ok=True)
         bronze.atomic_write_bytes(outdir / DOC, resp.body)
         day = today_utc()
         write_meta(outdir, provider=self.name, ref=claim["ref"], isin=claim["isin"], as_of=day.isoformat())
         return day
 
     def parse(self, indir: Path) -> Parsed:
-        from datetime import date
         meta = read_meta(indir)
         return parse_export((indir / DOC).read_bytes(), meta["ref"], date.fromisoformat(meta["as_of"]),
                             provider=self.name)

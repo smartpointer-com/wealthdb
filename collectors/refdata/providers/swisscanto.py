@@ -9,17 +9,14 @@ swisscanto: Swisscanto's funds, from their annual and semi-annual reports.
 - Fetch and parse: providers/reports.py. Each report lists every
   position with its ISIN.
 
-Terms: Swisscanto's legal notice prohibits accessing the site's
-contents systematically "to compile a collection, a database or a
-directory". The reports are the funds' own publications, read for the
-funds held, at most once in max_age_days.
+Terms: README.md, swisscanto and swissfunddata.
 """
 
 from __future__ import annotations
 
 import fetcher
 
-from .base import fund_isin
+from .base import ident
 from .reports import ReportProvider
 
 API = "https://products.swisscanto.com/products/api"
@@ -46,7 +43,7 @@ class Swisscanto(ReportProvider):
         return None
 
     def claim(self, fund, ctx):
-        isin = fund_isin(fund)
+        isin = ident(fund, "isin")
         if not isin.startswith("CH") or "swisscanto" not in (fund.name or "").lower():
             return None
         details = self._details(isin, ctx)

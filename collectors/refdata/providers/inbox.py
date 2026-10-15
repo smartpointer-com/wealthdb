@@ -23,8 +23,6 @@ for any issuer.
 
 from __future__ import annotations
 
-import csv
-import io
 import shutil
 from datetime import date
 from pathlib import Path
@@ -73,17 +71,10 @@ class Inbox(Provider):
     def dates(self, claim, since, until, ctx):
         return [d for d in _dates(Path(claim["folder"])) if since <= d <= until]
 
-    def latest(self, claim, ctx):
-        days = _dates(Path(claim["folder"]))
-        return days[-1] if days else None
-
     def fetch(self, claim, as_of, outdir: Path, ctx):
-        folder = Path(claim["folder"])
-        days = _dates(folder)
-        if not days:
-            raise Unavailable(f"{folder} holds no dated folder")
-        day = days[-1] if as_of is None else as_of
-        src = folder / day.isoformat()
+        """Copies the folder of the day asked for: the inbox serves the
+        days dates() lists, never a current composition."""
+        src = Path(claim["folder"]) / as_of.isoformat()
         if not src.is_dir():
             raise Unavailable(f"{src} does not exist")
         files = sorted(p for p in src.iterdir() if p.is_file() and not p.name.startswith("."))
@@ -92,9 +83,9 @@ class Inbox(Provider):
         outdir.mkdir(parents=True, exist_ok=True)
         for f in files:
             shutil.copy2(f, outdir / f.name)
-        write_meta(outdir, provider=self.name, ref=claim["ref"], as_of=day.isoformat(),
+        write_meta(outdir, provider=self.name, ref=claim["ref"], as_of=as_of.isoformat(),
                    files=[f.name for f in files])
-        return day
+        return as_of
 
     def parse(self, indir: Path) -> Parsed:
         meta = read_meta(indir)
@@ -118,7 +109,7 @@ class Inbox(Provider):
 def parse_csv(raw: bytes, ref: str, as_of: date) -> Parsed:
     """A CSV holdings table: an issuer's own download, or a hand-made
     file with at least `name` and `weight` columns."""
-    return parse_rows(list(csv.reader(io.StringIO(raw.decode("utf-8-sig")))), ref, as_of)
+    return parse_rows(table.csv_rows(raw.decode("utf-8-sig")), ref, as_of)
 
 
 def parse_rows(rows, ref: str, as_of: date) -> Parsed:

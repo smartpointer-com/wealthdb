@@ -1,15 +1,13 @@
 """spdr: the fund finder claims a fund; the holdings workbook parses by
 its header words. Every fund, holding and identifier is invented."""
 
-import json
 from datetime import date
 
 import pytest
 
-import fetcher
 from providers.base import Context, ProviderError
 from providers.spdr import FILES, FINDER, Spdr, parse_holdings
-from tests.helpers import make_xlsx
+from tests.helpers import FakeClient, make_xlsx
 from wanted import Fund
 
 EMEA = [
@@ -50,7 +48,6 @@ def test_a_ucits_workbook():
     assert (cash["isin"], cash["weight"], cash["name"]) == (None, None, "Euro")
     # SEDOL is never read.
     assert all("sedol" not in line["payload"] for line in p.lines)
-    assert p.funds[0]["isin"] == "XX0000000501"
 
 
 def test_a_us_workbook_keys_its_lines_by_cusip():
@@ -65,24 +62,20 @@ def test_a_workbook_without_holdings_is_an_error():
         parse_holdings(make_xlsx([["Fund Name:", "X"]]), "symbol:X", provider="spdr")
 
 
-class _FakeSsga:
-    def __init__(self):
-        self.urls = []
+def _finder(url, params):
+    datas = {"us": [{"fundUri": "/us/en/intermediary/etfs/example-us-value-etf-qval",
+                     "keywords": "Example US Value ETF, QVAL, XX0000000502, 000000AB7"}],
+             "ch": [{"fundUri": "/ch/en_gb/intermediary/etfs/example-europe-equity-ucits-etf-qeur-gy",
+                     "keywords": "Example Europe Equity UCITS ETF, QEUR, XX0000000501, QEUR GY"}]}
+    return {"data": {"funds": {"etfs": {"datas": datas[params["country"]]}}}}
 
-    def get(self, url, params=None):
-        self.urls.append((url, (params or {}).get("country")))
-        if url == FINDER:
-            datas = {"us": [{"fundUri": "/us/en/intermediary/etfs/example-us-value-etf-qval",
-                             "keywords": "Example US Value ETF, QVAL, XX0000000502, 000000AB7"}],
-                     "ch": [{"fundUri": "/ch/en_gb/intermediary/etfs/example-europe-equity-ucits-etf-qeur-gy",
-                             "keywords": "Example Europe Equity UCITS ETF, QEUR, XX0000000501, QEUR GY"}]}
-            doc = {"data": {"funds": {"etfs": {"datas": datas[params["country"]]}}}}
-            return fetcher.Response(url, 200, json.dumps(doc).encode(), "application/json")
-        return fetcher.Response(url, 200, make_xlsx(EMEA), "application/vnd.ms-excel")
+
+def ssga(workbook=None):
+    return FakeClient({FINDER: _finder, ".xlsx": make_xlsx(EMEA) if workbook is None else workbook})
 
 
 def test_claims_by_isin_and_fetches_the_ucits_file(tmp_path):
-    client = _FakeSsga()
+    client = ssga()
     ctx = Context(client=client)
     p = Spdr()
     claim = p.claim(Fund(ref="isin:XX0000000501", isin="XX0000000501"), ctx)
@@ -90,14 +83,31 @@ def test_claims_by_isin_and_fetches_the_ucits_file(tmp_path):
     assert p.claim(Fund(ref="symbol:QVAL", symbol="QVAL"), ctx)["ticker"] == "qval"
     assert p.claim(Fund(ref="symbol:NONE", symbol="NONE"), ctx) is None
     assert p.fetch(claim, None, tmp_path, ctx) == date(2026, 10, 12)
-    assert client.urls[-1][0] == FILES["emea"].format(ticker="qeur-gy")
-    assert len([u for u in client.urls if u[0] == FINDER]) == 2
+    assert client.urls()[-1] == FILES["emea"].format(ticker="qeur-gy")
+    assert client.urls().count(FINDER) == 2
     assert p.parse(tmp_path).lines
 
 
 def test_a_bare_ticker_matches_a_us_fund_only():
-    client = _FakeSsga()
-    ctx = Context(client=client)
+    ctx = Context(client=ssga())
     p = Spdr()
     # QEUR is a UCITS listing's ticker: a US broker's symbol:QEUR is not it.
     assert p.claim(Fund(ref="symbol:QEUR", symbol="QEUR"), ctx) is None
+
+
+@pytest.mark.parametrize("workbook,error", [
+    (b"<html>not here</html>", "not a workbook"),
+    (make_xlsx([["Fund Name:", "X"]]), "no holdings header"),
+    (make_xlsx([row for row in EMEA if row[:1] != ["Holdings As Of:"]]), "states no holdings date"),
+])
+def test_a_file_that_is_no_dated_holdings_workbook_is_not_stored(tmp_path, workbook, error):
+    claim = {"ref": "isin:XX0000000501", "region": "emea", "ticker": "qeur-gy"}
+    with pytest.raises(ProviderError, match=error):
+        Spdr().fetch(claim, None, tmp_path / "f", Context(client=ssga(workbook)))
+    assert not (tmp_path / "f").exists()
+
+
+def test_the_probe_reads_both_fund_finders():
+    client = ssga()
+    assert Spdr().probe(Context(client=client)) == "SPDR fund finders: 8 identifiers"
+    assert client.urls() == [FINDER, FINDER]

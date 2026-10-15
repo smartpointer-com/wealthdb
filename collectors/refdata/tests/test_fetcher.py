@@ -1,37 +1,31 @@
-"""The HTTP client: a pace per host and a User-Agent that names the tool."""
+"""The HTTP client: https only, a pace per host, a User-Agent that names
+the tool, and redirects that keep the client's rules."""
 
-import io
+import email.message
+import json
+import logging
+import urllib.request
 
 import pytest
 
 import fetcher
+from collectorkit import debugcap
+from tests.helpers import FakeHttps
+
+OK = (200, b'{"ok": true}', {"Content-Type": "application/json"})
 
 
-class FakeResp(io.BytesIO):
-    status = 200
-    headers = {"Content-Type": "application/json"}
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
-def make_client(contact="ops@example.org"):
+def make_client(routes=None, default=OK, contact="ops@example.org", trace=None):
     now = [0.0]
-    sleeps, seen = [], []
-
-    def opener(req, timeout):
-        seen.append(req)
-        return FakeResp(b'{"ok": true}')
+    sleeps = []
 
     def sleep(s):
         sleeps.append(round(s, 3))
         now[0] += s
 
-    c = fetcher.Client(contact, sleep=sleep, clock=lambda: now[0], opener=opener)
-    return c, sleeps, seen
+    https = FakeHttps(routes, default)
+    c = fetcher.Client(contact, sleep=sleep, clock=lambda: now[0], https=https, trace=trace)
+    return c, sleeps, https.seen
 
 
 def test_one_request_a_second_per_host_and_eight_for_the_sec():
@@ -54,50 +48,74 @@ def test_the_sec_hosts_share_one_pace():
     assert sleeps == [0.125, 0.125]
 
 
-def _refusing(code):
-    import urllib.error
-    calls = []
-
-    def opener(req, timeout):
-        calls.append(req.full_url)
-        raise urllib.error.HTTPError(req.full_url, code, "Refused", {}, None)
-
-    return fetcher.Client(opener=opener, sleep=lambda s: None), calls
+def test_openfigi_and_gleif_keep_under_their_stated_limits():
+    c, sleeps, _ = make_client()
+    for _ in range(2):
+        c.post_json("https://api.openfigi.com/v3/mapping", [])
+    for _ in range(2):
+        c.get("https://api.gleif.org/api/v1/lei-records")
+    assert sleeps == [2.5, 1.2]
 
 
 def test_a_source_that_refuses_is_not_asked_again():
-    c, calls = _refusing(403)
+    c, _, seen = make_client(default=(403, b"", {}))
     for url in ("https://www.sec.gov/a", "https://data.sec.gov/b"):
         with pytest.raises(fetcher.FetchError):
             c.get(url)
-    assert calls == ["https://www.sec.gov/a"]
+    assert [r.full_url for r in seen] == ["https://www.sec.gov/a"]
 
 
 def test_a_plain_403_elsewhere_is_one_page_only():
-    c, calls = _refusing(403)
+    c, _, seen = make_client(default=(403, b"", {}))
     for url in ("https://example.org/a", "https://example.org/b"):
         with pytest.raises(fetcher.FetchError):
             c.get(url)
-    assert len(calls) == 2
+    assert len(seen) == 2
 
 
 def test_a_429_stops_any_source():
-    c, calls = _refusing(429)
+    c, _, seen = make_client(default=(429, b"", {}))
     for url in ("https://example.org/a", "https://example.org/b"):
         with pytest.raises(fetcher.FetchError):
             c.get(url)
-    assert len(calls) == 1
+    assert len(seen) == 1
 
 
 def test_http_error_becomes_a_fetch_error():
-    import urllib.error
-
-    def opener(req, timeout):
-        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
-
-    c = fetcher.Client(opener=opener, sleep=lambda s: None)
-    with pytest.raises(fetcher.FetchError, match="404"):
+    c, _, _ = make_client(default=(404, b"", {}))
+    with pytest.raises(fetcher.FetchError, match="404") as e:
         c.get("https://example.org/missing")
+    assert e.value.status == 404
+
+
+def test_no_answer_becomes_a_fetch_error_without_a_status():
+    c, _, _ = make_client({"https://example.org/down": OSError("unreachable")})
+    with pytest.raises(fetcher.FetchError, match="no answer OSError: unreachable") as e:
+        c.get("https://example.org/down")
+    assert e.value.status is None
+
+
+def test_only_https_is_sent():
+    c, _, seen = make_client()
+    for url in ("http://example.org/a", "file:///etc/hosts", "ftp://example.org/a"):
+        with pytest.raises(fetcher.FetchError, match="https"):
+            c.get(url)
+    assert seen == []
+
+
+def test_params_are_encoded_into_the_url():
+    c, _, seen = make_client()
+    resp = c.get("https://example.org/find", params={"text": "a b", "q": "x&y"})
+    assert seen[0].full_url == "https://example.org/find?text=a+b&q=x%26y"
+    assert resp.json() == {"ok": True} and resp.status == 200
+
+
+def test_a_lookup_is_posted_as_json():
+    c, _, seen = make_client()
+    c.post_json("https://example.org/map", [{"idType": "TICKER"}], headers={"Accept": "application/json"})
+    req = seen[-1]
+    assert (req.get_method(), json.loads(req.data), req.get_header("Content-type"), req.get_header("Accept")) == \
+        ("POST", [{"idType": "TICKER"}], "application/json", "application/json")
 
 
 def test_a_disclaimer_is_posted_as_a_form():
@@ -108,10 +126,20 @@ def test_a_disclaimer_is_posted_as_a_form():
         ("POST", b"_action_set=I+agree", "application/x-www-form-urlencoded")
 
 
-def test_cookies_are_kept_for_a_session_host_only():
-    import email.message
-    import urllib.request
+def test_a_header_never_replaces_the_user_agent():
+    c, _, seen = make_client()
+    c.get("https://example.org/a", headers={"User-Agent": "Mozilla/5.0"})
+    assert seen[0].get_header("User-agent") == "wealthdb-refdata/1"
 
+
+def test_an_answer_that_is_not_json_fails_the_request():
+    resp = fetcher.Response("https://example.org/a", 200, b"<html>busy</html>", "text/html")
+    with pytest.raises(fetcher.FetchError, match="not JSON"):
+        resp.json()
+    assert fetcher.Response("https://example.org/a", 200, b'\xef\xbb\xbf{"a": 1}', "").json() == {"a": 1}
+
+
+def test_cookies_are_kept_for_a_session_host_only():
     class Resp:
         def __init__(self, headers):
             self._h = headers
@@ -119,7 +147,7 @@ def test_cookies_are_kept_for_a_session_host_only():
         def info(self):
             return self._h
 
-    c = fetcher.Client(opener=lambda req, timeout: None)
+    c, _, _ = make_client()
     # A host's own cookie and one set for its whole domain are kept; a
     # cookie from any other host is not.
     for host, cookie in (("www.swissfunddata.ch", "JSESSIONID=x1; Path=/"),
@@ -135,3 +163,68 @@ def test_cookies_are_kept_for_a_session_host_only():
     other = urllib.request.Request("https://www.example.org/b")
     c.cookies.add_cookie_header(other)
     assert not other.has_header("Cookie")
+
+
+ENTRY = "https://www.swissfunddata.ch/sfdpub/sfd-entry/private?url=%2Fen%2F"
+MOVED = "https://www.swissfunddata.ch/sfdpub/en/"
+
+
+def test_a_same_host_redirect_is_followed_at_the_pace_with_the_session():
+    # The disclaimer's answer sets the session and redirects to a page
+    # the site does not have.
+    c, sleeps, seen = make_client({ENTRY: (302, b"", {"Location": MOVED, "Set-Cookie": "JSESSIONID=s1; Path=/"}),
+                                   MOVED: (404, b"", {})})
+    with pytest.raises(fetcher.FetchError, match="404") as e:
+        c.post_form(ENTRY, {"_action_set": "I agree"})
+    assert e.value.url == MOVED
+    assert [(r.get_method(), r.full_url) for r in seen] == [("POST", ENTRY), ("GET", MOVED)]
+    assert seen[1].get_header("Cookie") == "JSESSIONID=s1" and sleeps == [1.0]
+    # A 404 is no refusal: the site is asked again.
+    assert c.refused == {}
+
+
+def test_a_redirect_to_another_host_drops_the_contact():
+    moved = "https://files.example.org/tickers.json"
+    c, sleeps, seen = make_client({"https://www.sec.gov/files/tickers.json": (301, b"", {"Location": moved})})
+    assert c.get("https://www.sec.gov/files/tickers.json").url == moved
+    assert seen[0].get_header("User-agent") == "wealthdb-refdata/1 ops@example.org"
+    assert seen[1].get_header("User-agent") == "wealthdb-refdata/1"
+    # Each host keeps its own pace: the first request to the new host
+    # waits for nothing.
+    assert sleeps == []
+
+
+def test_a_redirect_the_client_would_not_send_is_refused():
+    c, _, seen = make_client({"https://example.org/plain": (302, b"", {"Location": "http://example.org/plain"}),
+                              "https://example.org/sec": (302, b"", {"Location": "https://data.sec.gov/x"}),
+                              "https://data.sec.gov/y": (403, b"", {})})
+    with pytest.raises(fetcher.FetchError, match="https"):
+        c.get("https://example.org/plain")
+    with pytest.raises(fetcher.FetchError):
+        c.get("https://data.sec.gov/y")
+    # The SEC refused: a redirect does not lead back to it.
+    with pytest.raises(fetcher.FetchError, match="refused an earlier request"):
+        c.get("https://example.org/sec")
+    assert [r.full_url for r in seen] == ["https://example.org/plain", "https://data.sec.gov/y",
+                                          "https://example.org/sec"]
+
+
+def test_a_refusal_after_a_redirect_counts_against_the_host_that_refused():
+    c, _, _ = make_client({"https://example.org/a": (302, b"", {"Location": "https://www.sec.gov/a"}),
+                           "https://www.sec.gov/a": (403, b"", {})})
+    with pytest.raises(fetcher.FetchError):
+        c.get("https://example.org/a")
+    assert set(c.refused) == {"sec"}
+
+
+def test_every_exchange_is_traced(tmp_path):
+    trace = debugcap.HttpTrace(tmp_path, log=logging.getLogger("test"), enabled=True)
+    c, _, _ = make_client({"https://example.org/old": (302, b"", {"Location": "https://example.org/new"}),
+                           "https://example.org/down": OSError("unreachable")}, trace=trace)
+    c.get("https://example.org/old")
+    with pytest.raises(fetcher.FetchError):
+        c.get("https://example.org/down")
+    lines = [json.loads(ln) for ln in (tmp_path / debugcap.SCREENSHOTS_DIR / "http-trace.jsonl").read_text().splitlines()]
+    assert [(e["url"], e.get("status")) for e in lines] == [
+        ("https://example.org/old", 302), ("https://example.org/new", 200), ("https://example.org/down", None)]
+    assert lines[1]["bytes"] == len(OK[1]) and "unreachable" in lines[2]["error"]

@@ -1,9 +1,18 @@
-"""Shared test helpers: an invented wanted list, a fake provider."""
+"""Shared test helpers: an invented wanted list, a fake provider, fake
+sources, and invented workbooks and PDFs."""
 
+import email.message
+import http
+import io
 import json
+import urllib.request
+import urllib.response
+import zipfile
 from datetime import date
+from xml.sax.saxutils import escape
 
-from providers.base import Parsed, Provider, Unavailable, write_meta
+import fetcher
+from providers.base import Parsed, Provider, Unavailable, read_meta, write_meta
 
 
 def wanted_doc(funds=(), securities=(), as_of="2026-07-15"):
@@ -23,16 +32,18 @@ def write_wanted(path, doc):
 
 class FakeProvider(Provider):
     """Claims every fund whose symbol it knows; serves the month-ends of
-    2026; writes one tiny CSV-shaped file per date."""
+    2026; writes one tiny CSV-shaped file per date. `claimed` and
+    `fetched` record what it was asked."""
     name = "fake"
     serves_funds = True
 
     def __init__(self, known=("FUNDA",), dates_=None, latest_=None):
-        self.known, self.fetched = set(known), []
+        self.known, self.claimed, self.fetched = set(known), [], []
         self.dates_ = dates_ if dates_ is not None else [date(2026, m, 28) for m in range(1, 7)]
         self.latest_ = latest_
 
     def claim(self, f, ctx):
+        self.claimed.append(f.ref)
         return {"ref": f.ref} if f.symbol in self.known else None
 
     def dates(self, claim, since, until, ctx):
@@ -52,7 +63,6 @@ class FakeProvider(Provider):
         return day
 
     def parse(self, indir):
-        from providers.base import read_meta
         meta = read_meta(indir)
         day = date.fromisoformat(meta["as_of"])
         name, weight = (indir / "holdings.txt").read_text().split()
@@ -63,13 +73,69 @@ class FakeProvider(Provider):
                     "name": name, "weight": weight}])
 
 
-def make_xlsx(rows) -> bytes:
-    """An invented one-sheet workbook: every cell an inline string, as
-    simple as a spreadsheet gets. A row is a list of cell texts."""
-    import io
-    import zipfile
-    from xml.sax.saxutils import escape
+class FakeClient:
+    """A stand-in for fetcher.Client. Each route maps a URL substring to
+    its answer, the first match winning: bytes, a str, an object sent as
+    JSON, an int (an HTTP error of that status), or a callable of the
+    request's (url, data) that returns one. A URL no route matches is a
+    404. `asked` records every request as (method, url, data): the
+    params, the JSON payload or the form fields."""
 
+    def __init__(self, routes=None):
+        self.routes, self.asked = dict(routes or {}), []
+
+    def get(self, url, params=None, headers=None):
+        return self._answer("GET", url, params)
+
+    def post_json(self, url, payload, headers=None):
+        return self._answer("POST", url, payload)
+
+    def post_form(self, url, fields, headers=None):
+        return self._answer("POST", url, fields)
+
+    def urls(self, method=None) -> list:
+        return [u for m, u, _ in self.asked if method in (None, m)]
+
+    def _answer(self, method, url, data):
+        self.asked.append((method, url, data))
+        answer = next((a for key, a in self.routes.items() if key in url), 404)
+        if callable(answer):
+            answer = answer(url, data)
+        if isinstance(answer, int):
+            raise fetcher.FetchError(url, answer, http.HTTPStatus(answer).phrase)
+        body = answer if isinstance(answer, bytes) else answer.encode() if isinstance(answer, str) \
+            else json.dumps(answer).encode()
+        return fetcher.Response(url, 200, body, "")
+
+
+class FakeHttps(urllib.request.BaseHandler):
+    """Stands in for the network beneath a real fetcher.Client. Each route
+    maps a URL to (status, body, headers), or to an exception it raises;
+    any other URL answers `default`. `seen` records every request the
+    client's opener sends."""
+
+    def __init__(self, routes=None, default=(404, b"", {})):
+        self.routes, self.default, self.seen = dict(routes or {}), default, []
+
+    def https_open(self, req):
+        self.seen.append(req)
+        answer = self.routes.get(req.full_url, self.default)
+        if isinstance(answer, Exception):
+            raise answer
+        status, body, headers = answer
+        msg = email.message.Message()
+        for k, v in headers.items():
+            msg[k] = v
+        resp = urllib.response.addinfourl(io.BytesIO(body), msg, req.full_url, status)
+        resp.msg = http.HTTPStatus(status).phrase
+        return resp
+
+
+def make_xlsx(rows=(), *, sheet=None, shared=None, target="worksheets/sheet1.xml") -> bytes:
+    """An invented one-sheet workbook. By default every cell of `rows` is
+    an inline string, as simple as a spreadsheet gets; `sheet` gives the
+    sheet's rows as XML instead, `shared` its shared strings, and
+    `target` where the workbook says the sheet lies."""
     def col(i):
         s = ""
         i += 1
@@ -78,11 +144,12 @@ def make_xlsx(rows) -> bytes:
             s = chr(65 + r) + s
         return s
 
-    body = "".join(
-        f'<row r="{r + 1}">' + "".join(
-            f'<c r="{col(c)}{r + 1}" t="inlineStr"><is><t>{escape(str(v))}</t></is></c>'
-            for c, v in enumerate(row) if v != "") + "</row>"
-        for r, row in enumerate(rows))
+    if sheet is None:
+        sheet = "".join(
+            f'<row r="{r + 1}">' + "".join(
+                f'<c r="{col(c)}{r + 1}" t="inlineStr"><is><t>{escape(str(v))}</t></is></c>'
+                for c, v in enumerate(cells) if v != "") + "</row>"
+            for r, cells in enumerate(rows))
     ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
     rel = 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
     buf = io.BytesIO()
@@ -91,10 +158,15 @@ def make_xlsx(rows) -> bytes:
                                       f'r:id="rId1"/></sheets></workbook>')
         z.writestr("xl/_rels/workbook.xml.rels",
                    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                   '<Relationship Id="rId1" Target="worksheets/sheet1.xml" '
+                   f'<Relationship Id="rId1" Target="{target}" '
                    'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"/>'
                    '</Relationships>')
-        z.writestr("xl/worksheets/sheet1.xml", f"<worksheet {ns}><sheetData>{body}</sheetData></worksheet>")
+        if shared is not None:
+            z.writestr("xl/sharedStrings.xml", f"<sst {ns}>" + "".join(f"<si><t>{escape(s)}</t></si>" for s in shared)
+                       + "</sst>")
+        path = target.lstrip("/")
+        z.writestr(path if path.startswith("xl/") else f"xl/{path}",
+                   f"<worksheet {ns}><sheetData>{sheet}</sheetData></worksheet>")
     return buf.getvalue()
 
 

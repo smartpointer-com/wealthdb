@@ -7,9 +7,9 @@ from datetime import date
 
 import pytest
 
-import fetcher
 from providers.base import Context, ProviderError
 from providers.sprott import HOST, Sprott, parse_page
+from tests.helpers import FakeClient
 from wanted import Fund
 
 CSV = ("Security,Market Value,Symbol,SEDOL,Quantity,Weight\n"
@@ -43,12 +43,12 @@ def test_a_page_without_a_table_or_a_date_is_refused():
         parse_page(PAGE.replace("As of 10/13/2026", ""), "symbol:QURM", provider="sprott")
 
 
+def site(page=PAGE):
+    return FakeClient({"-sprott-": page, HOST: HOME})
+
+
 def test_the_home_page_claims_a_fund(tmp_path):
-    class Site:
-        def get(self, url, params=None, headers=None):
-            body = HOME if url == HOST + "/" else PAGE
-            return fetcher.Response(url, 200, body.encode(), "text/html")
-    ctx = Context(client=Site())
+    ctx = Context(client=site())
     s = Sprott()
     claim = s.claim(Fund(ref="isin:US0000000901", isin="US0000000901", symbol="QURM"), ctx)
     assert claim == {"ref": "isin:US0000000901", "ticker": "QURM", "page": "/qurm-sprott-quarry-miners-etf/"}
@@ -60,13 +60,15 @@ def test_the_home_page_claims_a_fund(tmp_path):
 
 
 def test_a_page_without_a_date_is_not_stored(tmp_path):
-    class Site:
-        def get(self, url, params=None, headers=None):
-            body = HOME if url == HOST + "/" else PAGE.replace("As of 10/13/2026", "")
-            return fetcher.Response(url, 200, body.encode(), "text/html")
-    ctx = Context(client=Site())
+    ctx = Context(client=site(PAGE.replace("As of 10/13/2026", "")))
     s = Sprott()
     claim = s.claim(Fund(ref="symbol:QURM", symbol="QURM"), ctx)
     with pytest.raises(ProviderError, match="no holdings date"):
         s.fetch(claim, None, tmp_path / "f", ctx)
     assert not (tmp_path / "f").exists()
+
+
+def test_the_probe_reads_the_home_page():
+    client = site()
+    assert Sprott().probe(Context(client=client)) == "Sprott home page: 2 fund pages"
+    assert client.urls() == [HOST + "/"]

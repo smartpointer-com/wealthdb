@@ -1,6 +1,6 @@
 """
-One small HTTP client for every provider: reads only, a User-Agent that
-names the tool, and a pace per host.
+One small HTTP client for every provider: reads only, https only, a
+User-Agent that names the tool, and a pace per host.
 
 Every host gets one request a second. Where a source states a limit,
 the client keeps under it:
@@ -11,10 +11,14 @@ the client keeps under it:
 - GLEIF allows 60 a minute; the client sends 50.
 
 The client sends GET, and a POST only for a lookup whose API has no GET
-form (OpenFIGI's mapping), a read either way, or for a disclaimer a
-source shows before its pages (swissfunddata's investor category). It
-keeps cookies only for a source that holds that statement in a session,
-and never signs in anywhere.
+form (OpenFIGI's mapping, Amundi's product API), a read either way, or
+for a disclaimer a source shows before its pages (swissfunddata's
+investor category). It keeps cookies only for a source that holds that
+statement in a session, and never signs in anywhere.
+
+A redirect is a request of its own: it keeps the pace and the refusals
+of the host it leads to, and that host's User-Agent, so the SEC contact
+never follows a redirect to another host.
 
 A source that refuses a request for its rate (HTTP 429, or the SEC's
 403) is not asked again in the same run: every later request to it
@@ -63,7 +67,8 @@ WANTS_CONTACT = {"sec"}
 
 
 class FetchError(Exception):
-    """A request failed: no answer, or an HTTP error status."""
+    """A request failed: no answer, an HTTP error status, or an answer
+    that is not what it should be."""
 
     def __init__(self, url, status=None, reason=""):
         self.url, self.status, self.reason = url, status, reason
@@ -78,22 +83,65 @@ class Response:
     content_type: str
 
     def json(self):
-        return json.loads(self.body.decode("utf-8"))
+        """The body as JSON, a byte order mark allowed. A body that is
+        not JSON fails the request."""
+        try:
+            return json.loads(self.body.decode("utf-8-sig"))
+        except ValueError as e:
+            raise FetchError(self.url, self.status, f"not JSON: {e}") from e
 
     def text(self, encoding="utf-8"):
         return self.body.decode(encoding, "replace")
 
 
+def source_of(url: str) -> str:
+    """The source a URL goes to: its host, or the group the host is in."""
+    host = urllib.parse.urlsplit(url).hostname or ""
+    return HOST_GROUPS.get(host, host)
+
+
+class _Redirects(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect as a request of the client's own: traced, and
+    sent only where the client's rules allow it, with the User-Agent of
+    the host it leads to."""
+
+    def __init__(self, client: Client):
+        self.client = client
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        self.client.trace.record(req.get_method(), req.full_url, status=code, headers=headers)
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        try:
+            source = self.client.admit(new.full_url)
+        except FetchError:
+            fp.close()
+            raise
+        new.add_header("User-Agent", self.client.user_agent(source))
+        return new
+
+
+def build_opener(client: Client, https=None) -> urllib.request.OpenerDirector:
+    """The client's opener: HTTPS only, the session cookies, redirects
+    through the client's rules, and an HTTP error status raised as an
+    error. `https` stands in for the network in tests."""
+    opener = urllib.request.OpenerDirector()
+    for handler in (https or urllib.request.HTTPSHandler(), urllib.request.HTTPCookieProcessor(client.cookies),
+                    _Redirects(client), urllib.request.HTTPErrorProcessor(),
+                    urllib.request.HTTPDefaultErrorHandler(), urllib.request.UnknownHandler()):
+        opener.add_handler(handler)
+    return opener
+
+
 class Client:
     def __init__(self, contact: str = "", *, trace: debugcap.HttpTrace | None = None,
-                 sleep=time.sleep, clock=time.monotonic, opener=None, timeout: int = 60):
+                 sleep=time.sleep, clock=time.monotonic, https=None, timeout: int = 60):
         self.contact = contact
         self.trace = trace or debugcap.HttpTrace(None, log=log, enabled=False)
         self._sleep, self._clock = sleep, clock
         self._last: dict[str, float] = {}
         self.refused: dict[str, str] = {}
         self.cookies = http.cookiejar.CookieJar(http.cookiejar.DefaultCookiePolicy(allowed_domains=SESSION_DOMAINS))
-        self._open = opener or urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookies)).open
+        self._open = build_opener(self, https).open
         self.timeout = timeout
 
     def user_agent(self, source: str = "") -> str:
@@ -108,6 +156,17 @@ class Client:
             if wait > 0:
                 self._sleep(wait)
         self._last[source] = self._clock()
+
+    def admit(self, url: str) -> str:
+        """The source a request goes to, once the client's rules let it
+        go: an https URL, to a source that has not refused, at its pace."""
+        if urllib.parse.urlsplit(url).scheme != "https":
+            raise FetchError(url, None, "not sent: the client asks https:// URLs only")
+        source = source_of(url)
+        if source in self.refused:
+            raise FetchError(url, None, f"not sent: {source} refused an earlier request ({self.refused[source]})")
+        self._pace(source)
+        return source
 
     def get(self, url: str, *, params=None, headers=None) -> Response:
         if params:
@@ -126,28 +185,27 @@ class Client:
         return self._send("POST", url, body, {"Content-Type": "application/x-www-form-urlencoded", **(headers or {})})
 
     def _send(self, method, url, body, headers) -> Response:
-        host = urllib.parse.urlsplit(url).hostname or ""
-        source = HOST_GROUPS.get(host, host)
-        if source in self.refused:
-            raise FetchError(url, None, f"not sent: {source} refused an earlier request ({self.refused[source]})")
-        self._pace(source)
+        source = self.admit(url)
         req = urllib.request.Request(url, data=body, method=method,
-                                     headers={"User-Agent": self.user_agent(source), **(headers or {})})
+                                     headers={**(headers or {}), "User-Agent": self.user_agent(source)})
         t0 = time.monotonic()
         try:
             with self._open(req, timeout=self.timeout) as resp:
                 data = resp.read()
-                self.trace.record(method, url, status=resp.status, elapsed_ms=(time.monotonic() - t0) * 1000,
-                                  bytes_=len(data), headers=resp.headers)
-                return Response(url=url, status=resp.status, body=data,
+                self.trace.record(method, resp.geturl(), status=resp.status,
+                                  elapsed_ms=(time.monotonic() - t0) * 1000, bytes_=len(data), headers=resp.headers)
+                return Response(url=resp.geturl(), status=resp.status, body=data,
                                 content_type=resp.headers.get("Content-Type", ""))
         except urllib.error.HTTPError as e:
-            self.trace.record(method, url, status=e.code, elapsed_ms=(time.monotonic() - t0) * 1000,
+            # A redirect may have led elsewhere: the source that refused
+            # is the one that answered.
+            self.trace.record(method, e.filename or url, status=e.code, elapsed_ms=(time.monotonic() - t0) * 1000,
                               error=str(e.reason), headers=e.headers)
-            if e.code == 429 or (e.code == 403 and source in REFUSES_WITH_403):
-                self.refused[source] = f"{e.code} {e.reason}"
-                log.warning("%s refused a request (%s %s); not asking it again this run", source, e.code, e.reason)
-            raise FetchError(url, e.code, str(e.reason)) from e
+            refusing = source_of(e.filename or url)
+            if e.code == 429 or (e.code == 403 and refusing in REFUSES_WITH_403):
+                self.refused[refusing] = f"{e.code} {e.reason}"
+                log.warning("%s refused a request (%s %s); not asking it again this run", refusing, e.code, e.reason)
+            raise FetchError(e.filename or url, e.code, str(e.reason)) from e
         except OSError as e:
             self.trace.record(method, url, elapsed_ms=(time.monotonic() - t0) * 1000,
                               error=f"{type(e).__name__}: {e}")

@@ -22,10 +22,7 @@ EDGAR.
 N-PORT carries no sector. Public filings are quarterly and two to five
 months old, and quarter ends differ by fund.
 
-Terms: "Information presented on sec.gov is considered public
-information and may be copied or further distributed by users of the web
-site without the SEC's permission." The SEC asks for a contact address
-in the User-Agent and at most ten requests a second.
+Terms: README.md, sec-nport.
 """
 
 from __future__ import annotations
@@ -33,12 +30,14 @@ from __future__ import annotations
 import logging
 import xml.etree.ElementTree as ET
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 from collectorkit import bronze, compress
+from collectorkit.parse import iso_date
 
-from .base import (Parsed, Provider, ProviderError, Unavailable, blank_to_none, dec, read_meta,
-                   write_meta)
+from . import table
+from .base import Parsed, Provider, ProviderError, Unavailable, blank_to_none, dec, read_meta, row, write_meta
 
 FUND_TICKERS = "https://www.sec.gov/files/company_tickers_mf.json"
 COMPANY_TICKERS = "https://www.sec.gov/files/company_tickers.json"
@@ -50,6 +49,12 @@ DOC = "primary_doc.xml"
 ATOM = "{http://www.w3.org/2005/Atom}"
 
 log = logging.getLogger("refdata.sec-nport")
+
+
+def company_tickers(ctx):
+    """The SEC's company ticker file as served, asked for once a run by
+    every provider that reads it."""
+    return ctx.once("sec_company_tickers", lambda: ctx.client.get(COMPANY_TICKERS).json())
 
 
 class SecNport(Provider):
@@ -64,17 +69,17 @@ class SecNport(Provider):
             doc = ctx.client.get(FUND_TICKERS).json()
             idx = {f: i for i, f in enumerate(doc.get("fields") or [])}
             out = {}
-            for row in doc.get("data") or []:
-                sym = str(row[idx["symbol"]] or "").strip().upper()
+            for r in doc.get("data") or []:
+                sym = str(r[idx["symbol"]] or "").strip().upper()
                 if sym:
-                    out[sym] = {"cik": int(row[idx["cik"]]), "series": row[idx["seriesId"]] or None,
-                                "class": row[idx["classId"]] or None}
+                    out[sym] = {"cik": int(r[idx["cik"]]), "series": r[idx["seriesId"]] or None,
+                                "class": r[idx["classId"]] or None}
             return out
         return ctx.once("nport_mf", load)
 
     def _company_tickers(self, ctx) -> dict:
         def load():
-            doc = ctx.client.get(COMPANY_TICKERS).json()
+            doc = company_tickers(ctx)
             return {str(v.get("ticker", "")).upper(): {"cik": int(v["cik_str"]), "series": None, "class": None}
                     for v in (doc.values() if isinstance(doc, dict) else doc) if v.get("ticker")}
         return ctx.once("nport_co", load)
@@ -142,7 +147,6 @@ class SecNport(Provider):
         resp = ctx.client.get(PRIMARY_DOC.format(cik=claim["cik"], acc=acc))
         if b"edgarSubmission" not in resp.body[:20000]:
             raise ProviderError(f"{resp.url} is not an N-PORT document")
-        outdir.mkdir(parents=True, exist_ok=True)
         bronze.atomic_write_bytes(outdir / DOC, resp.body)
         compress.compress_best_effort(outdir / DOC, log)
         write_meta(outdir, provider=self.name, ref=claim["ref"], symbol=claim["symbol"], cik=claim["cik"],
@@ -158,8 +162,7 @@ class SecNport(Provider):
         if path is None:
             raise ProviderError(f"{indir}: no {DOC}")
         with compress.open_bytes(path) as fh:
-            return parse_nport(fh.read(), meta["ref"], provider=self.name, symbol=meta.get("symbol"),
-                               provider_id=meta.get("series"))
+            return parse_nport(fh.read(), meta["ref"], provider=self.name)
 
     def probe(self, ctx) -> str:
         n = len(self._fund_tickers(ctx))
@@ -223,7 +226,7 @@ def _find(el, name):
     return None
 
 
-def parse_nport(xml: bytes, ref: str, *, provider: str, symbol=None, provider_id=None) -> Parsed:
+def parse_nport(xml: bytes, ref: str, *, provider: str) -> Parsed:
     """One N-PORT primary_doc.xml as silver rows for fund `ref`."""
     try:
         root = ET.fromstring(xml)
@@ -238,7 +241,6 @@ def parse_nport(xml: bytes, ref: str, *, provider: str, symbol=None, provider_id
         raise ProviderError("N-PORT document states no report date")
     as_of = date.fromisoformat(period)
     out = Parsed()
-    lines = []
     cps: dict = {}
     for n, sec in enumerate((s for s in root.iter() if _local(s.tag) == "invstOrSec"), start=1):
         ids = _child(sec, "identifiers")
@@ -261,22 +263,19 @@ def parse_nport(xml: bytes, ref: str, *, provider: str, symbol=None, provider_id
         if cat is None:
             cond = _child(sec, "assetConditional")
             cat = blank_to_none(cond.get("assetCat")) if cond is not None else None
-        line = {
-            "fund_ref": ref, "as_of": as_of, "basis": "holdings", "line_no": n,
-            "isin": isin, "cusip": _cusip(_text(sec, "cusip")), "figi": None, "ticker": ticker, "exchange": None,
-            "name": _text(sec, "name") or _text(sec, "title"), "asset_type": cat,
-            "weight": dec(_text(sec, "pctVal")), "quantity": dec(_text(sec, "balance")),
-            "market_value": dec(_text(sec, "valUSD")), "currency": cur, "country": _country(_text(sec, "invCountry")),
-            "risk_country": None, "sector": None, "industry": None, "maturity": None, "coupon": None,
-            "long_currency": None, "long_amount": None, "short_currency": None, "short_amount": None,
-            "payload": {k: v for k, v in {
+        line = row(
+            "lines", fund_ref=ref, as_of=as_of, basis="holdings", line_no=n, isin=isin,
+            cusip=_cusip(_text(sec, "cusip")), ticker=ticker, name=_text(sec, "name") or _text(sec, "title"),
+            asset_type=cat, weight=dec(_text(sec, "pctVal")), quantity=dec(_text(sec, "balance")),
+            market_value=dec(_text(sec, "valUSD")), currency=cur, country=_country(_text(sec, "invCountry")),
+            payload={k: v for k, v in {
                 "lei": _lei(_text(sec, "lei")), "title": _text(sec, "title"), "units": _text(sec, "units"),
                 "payoff": _text(sec, "payoffProfile"), "issuer_cat": _text(sec, "issuerCat"),
-                "fair_value_level": _text(sec, "fairValLevel"), "other_ids": other or None}.items() if v},
-        }
+                "fair_value_level": _text(sec, "fairValLevel"), "other_ids": other or None}.items() if v})
         debt = _find(sec, "debtSec")
         if debt is not None:
-            line["maturity"] = _iso(_text(debt, "maturityDt"))
+            maturity = iso_date(_text(debt, "maturityDt"))
+            line["maturity"] = maturity.isoformat() if maturity else None
             line["coupon"] = dec(_text(debt, "annualizedRt"))
         deriv = _find(sec, "derivativeInfo")
         if deriv is not None:
@@ -290,29 +289,20 @@ def parse_nport(xml: bytes, ref: str, *, provider: str, symbol=None, provider_id
             for cp in (c for c in deriv.iter() if _local(c.tag) == "counterparties"):
                 name = _text(cp, "counterpartyName")
                 if name:
-                    k = (role, name)
-                    entry = cps.setdefault(k, {"lei": _lei(_text(cp, "counterpartyLei")), "share": 0})
-                    w = dec(line["weight"])
-                    if w is not None:
-                        entry["share"] += abs(float(w))
-        lines.append(line)
-    weights = [float(line["weight"]) for line in lines if line["weight"] is not None]
-    out.lines = lines
-    out.compositions.append({
-        "fund_ref": ref, "as_of": as_of, "basis": "holdings", "provider": provider, "source_kind": "filing",
-        "fund_name": _text(gen, "seriesName") or _text(gen, "regName"), "currency": "USD",
-        "net_assets": dec(_text(fund_info, "netAssets")) if fund_info is not None else None,
-        "line_count": len(lines), "weight_sum": dec(round(sum(weights), 8)) if weights else None,
-        "units_outstanding": None,
-        "payload": {k: v for k, v in {"series": _text(gen, "seriesId"), "registrant": _text(gen, "regName"),
-                                      "period_end": _text(gen, "repPdEnd")}.items() if v},
-    })
-    out.counterparties = [{"fund_ref": ref, "as_of": as_of, "role": role, "name": name, "lei": v["lei"],
-                           "share": dec(round(v["share"], 8)) if v["share"] else None, "payload": {}}
+                    entry = cps.setdefault((role, name), {"lei": _lei(_text(cp, "counterpartyLei")),
+                                                          "share": Decimal(0)})
+                    if line["weight"] is not None:
+                        entry["share"] += abs(Decimal(line["weight"]))
+        out.lines.append(line)
+    out.compositions.append(table.composition(
+        ref, as_of, out.lines, provider=provider, source_kind="filing",
+        fund_name=_text(gen, "seriesName") or _text(gen, "regName"), currency="USD",
+        net_assets=dec(_text(fund_info, "netAssets")),
+        payload={k: v for k, v in {"series": _text(gen, "seriesId"), "registrant": _text(gen, "regName"),
+                                   "period_end": _text(gen, "repPdEnd")}.items() if v}))
+    out.counterparties = [row("counterparties", fund_ref=ref, as_of=as_of, role=role, name=name, lei=v["lei"],
+                              share=dec(v["share"]) if v["share"] else None)
                           for (role, name), v in sorted(cps.items())]
-    out.funds.append({"fund_ref": ref, "isin": None, "cusip": None, "symbol": symbol,
-                      "name": _text(gen, "seriesName") or _text(gen, "regName"), "provider": provider,
-                      "provider_id": provider_id or _text(gen, "seriesId"), "payload": {}})
     return out
 
 
@@ -335,10 +325,3 @@ def _cusip(v):
     if v is None or v.upper() in ("N/A", "NA", "000000000"):
         return None
     return v
-
-
-def _iso(v):
-    try:
-        return date.fromisoformat(v).isoformat() if v else None
-    except ValueError:
-        return None

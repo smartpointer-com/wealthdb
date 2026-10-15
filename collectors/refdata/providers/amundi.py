@@ -16,10 +16,7 @@ read.
   `exposure.proxies` names for it (EXPOSURE.md §5). The API lists an
   index's top ten only, so no index lines are read.
 
-Terms: Amundi's legal notice for its Swiss site lets a visitor download
-pages or parts of the site "ausschließlich für Ihren persönlichen
-Gebrauch" (for personal use only), and forbids reproducing it or using
-it for public or commercial purposes without Amundi's written consent.
+Terms: README.md, amundi.
 """
 
 from __future__ import annotations
@@ -33,7 +30,7 @@ from pathlib import Path
 from collectorkit import bronze
 
 from . import table
-from .base import Parsed, Provider, ProviderError, Unavailable, blank_to_none, dec, fund_isin, read_meta, write_meta
+from .base import Parsed, Provider, ProviderError, blank_to_none, dec, ident, read_meta, row, write_meta
 
 HOST = "https://www.amundietf.ch"
 API = f"{HOST}/mapi/ProductAPI/getProductsData"
@@ -57,38 +54,32 @@ class Amundi(Provider):
         """An ETF whose name names the issuer, as brokers write it; the API
         serves ETFs, not Amundi's other funds. No request: the fetch finds
         out whether the API knows the fund."""
-        isin, name = fund_isin(fund), fund.name or ""
+        isin, name = ident(fund, "isin"), fund.name or ""
         if not isin or not ISSUER.search(name) or not ETF.search(name):
             return None
         return {"ref": fund.ref, "isin": isin}
 
     def fetch(self, claim, as_of, outdir: Path, ctx):
-        if as_of is not None:
-            raise Unavailable("amundi serves the current holdings only")
         body = {"context": CONTEXT, "productIds": [claim["isin"]], "productType": "PRODUCT",
                 "characteristics": CHARACTERISTICS, "composition": {"compositionFields": FIELDS}}
         resp = ctx.client.post_json(API, body, headers={"Accept": "application/json"})
-        try:
-            product = _product(resp.json(), claim["isin"])
-        except ValueError as e:
-            raise ProviderError(f"{resp.url} is not JSON: {e}") from e
+        product = _product(resp.json(), claim["isin"])
         if product is None:
             raise ProviderError(f"Amundi's API does not know {claim['isin']}")
         day = _day(product)
         if day is None:
             raise ProviderError(f"Amundi's API lists no dated holdings for {claim['isin']}")
-        outdir.mkdir(parents=True, exist_ok=True)
         bronze.atomic_write_bytes(outdir / DOC, resp.body)
         write_meta(outdir, provider=self.name, ref=claim["ref"], isin=claim["isin"], as_of=day.isoformat())
         return day
 
     def parse(self, indir: Path) -> Parsed:
         meta = read_meta(indir)
-        doc = json.loads((indir / DOC).read_text(encoding="utf-8"))
+        doc = json.loads((indir / DOC).read_text(encoding="utf-8-sig"))
         product = _product(doc, meta["isin"])
         if product is None:
             raise ProviderError(f"the answer holds no product {meta['isin']}")
-        return parse_product(product, meta["ref"], meta["isin"], provider=self.name)
+        return parse_product(product, meta["ref"], provider=self.name)
 
     def probe(self, ctx) -> str:
         resp = ctx.client.post_json(API, {"context": CONTEXT, "productIds": [], "productType": "PRODUCT"},
@@ -114,7 +105,7 @@ def _percent(item: dict, c: dict) -> str | None:
     return dec(Decimal(w) * 100) if w is not None else None
 
 
-def parse_product(product: dict, ref: str, isin: str, *, provider: str) -> Parsed:
+def parse_product(product: dict, ref: str, *, provider: str) -> Parsed:
     """One Amundi fund's holdings as silver rows for fund `ref`."""
     as_of = _day(product)
     if as_of is None:
@@ -125,24 +116,16 @@ def parse_product(product: dict, ref: str, isin: str, *, provider: str) -> Parse
     out = Parsed()
     for item in (product.get("composition") or {}).get("compositionData") or []:
         c = item.get("compositionCharacteristics") or {}
-        out.lines.append({
-            "fund_ref": ref, "as_of": as_of, "basis": basis, "line_no": len(out.lines) + 1,
-            "isin": blank_to_none(c.get("isin")), "cusip": None, "figi": None, "ticker": None, "exchange": None,
-            "name": blank_to_none(c.get("name")), "asset_type": blank_to_none(c.get("type")),
-            "weight": _percent(item, c), "quantity": dec(c.get("quantity")), "market_value": None,
-            "currency": blank_to_none(c.get("currency")), "country": blank_to_none(c.get("country")),
-            "risk_country": blank_to_none(c.get("countryOfRisk")), "sector": blank_to_none(c.get("sector")),
-            "industry": None, "maturity": None, "coupon": None, "long_currency": None, "long_amount": None,
-            "short_currency": None, "short_amount": None, "payload": {},
-        })
-    name = characteristics.get("SHARE_MARKETING_NAME")
+        out.lines.append(row(
+            "lines", fund_ref=ref, as_of=as_of, basis=basis, line_no=len(out.lines) + 1,
+            isin=blank_to_none(c.get("isin")), name=blank_to_none(c.get("name")), asset_type=blank_to_none(c.get("type")),
+            weight=_percent(item, c), quantity=dec(c.get("quantity")), currency=blank_to_none(c.get("currency")),
+            country=blank_to_none(c.get("country")), risk_country=blank_to_none(c.get("countryOfRisk")),
+            sector=blank_to_none(c.get("sector"))))
     out.compositions.append(table.composition(ref, as_of, out.lines, provider=provider, basis=basis,
-                                              fund_name=name, currency=(product.get("currencies") or {}).get("CURRENCY")))
-    out.funds.append({"fund_ref": ref, "isin": isin, "cusip": None, "symbol": None, "name": name,
-                      "provider": provider, "provider_id": None, "payload": {}})
+                                              fund_name=characteristics.get("SHARE_MARKETING_NAME"),
+                                              currency=(product.get("currencies") or {}).get("CURRENCY")))
     if swap:
-        out.attributes.append({"fund_ref": ref, "as_of": as_of, "domicile": None, "legal_form": None,
-                               "ucits": None, "replication": "synthetic", "distribution": None, "ter": None,
-                               "hedged_currency": None, "lending": None, "index_name": None, "depositary": None,
-                               "payload": {"replication": characteristics.get("FUND_REPLICATION_METHODOLOGY")}})
+        out.attributes.append(row("attributes", fund_ref=ref, as_of=as_of, replication="synthetic",
+                                  payload={"replication": characteristics.get("FUND_REPLICATION_METHODOLOGY")}))
     return out

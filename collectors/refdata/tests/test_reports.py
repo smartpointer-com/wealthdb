@@ -2,18 +2,17 @@
 in each layout; the swisscanto and swissfunddata claims. Every fund,
 holding, figure and identifier is invented."""
 
-import json
 from datetime import date
 from decimal import Decimal
 
 import pytest
 
-import fetcher
+from providers import reports
 from providers.base import Context, ProviderError
 from providers.reports import number, own_title, parse_report, report_date
 from providers.swisscanto import Swisscanto
-from providers.swissfunddata import SwissFundData, documents
-from tests.helpers import pdf
+from providers.swissfunddata import ENTRY, SwissFundData, documents
+from tests.helpers import FakeClient, pdf
 from wanted import Fund
 
 # A Luxembourg schedule in English: a contents page that names the
@@ -166,29 +165,11 @@ SC_API = {"fundDetails": {"summary": {"fullName": "Swisscanto (CH) Index Equity 
                                                                         "fileLanguages": ["de"]}]}]}]}}
 
 
-class Site:
-    """A fake source: JSON or HTML by URL, a PDF for every report URL."""
-
-    def __init__(self, pages=None, report=b""):
-        self.pages, self.report, self.asked = pages or {}, report, []
-
-    def get(self, url, params=None, headers=None):
-        self.asked.append(url)
-        if url.endswith(".pdf"):
-            return fetcher.Response(url, 200, self.report, "application/pdf")
-        for key, body in self.pages.items():
-            if key in url:
-                data = body if isinstance(body, str) else json.dumps(body)
-                return fetcher.Response(url, 200, data.encode(), "text/html")
-        raise fetcher.FetchError(url, 404)
-
-    def post_form(self, url, fields, headers=None):
-        self.asked.append(("POST", url, tuple(fields.items())))
-        raise fetcher.FetchError(url, 404)
+SC_PDF = pdf([p.splitlines() for p in SC])
 
 
 def test_swisscanto_claims_its_fund_and_fetches_and_reads_both_reports(tmp_path):
-    site = Site({"/funds/CH0000000115": SC_API}, report=pdf([p.splitlines() for p in SC]))
+    site = FakeClient({"/funds/CH0000000115": SC_API, ".pdf": SC_PDF})
     ctx = Context(client=site)
     s = Swisscanto()
     claim = s.claim(Fund(ref="isin:CH0000000115", isin="CH0000000115", name="Swisscanto Index Qland NT"), ctx)
@@ -198,9 +179,10 @@ def test_swisscanto_claims_its_fund_and_fetches_and_reads_both_reports(tmp_path)
     assert s.claim(Fund(ref="isin:CH0000000116", isin="CH0000000116", name="Other Fund"), ctx) is None
     assert s.fetch(claim, None, tmp_path / "f", ctx) == date(2026, 2, 28)
     parsed = s.parse(tmp_path / "f")
-    # Each report is a composition; both name the same day here.
-    assert len(parsed.compositions) == 2 and len(parsed.lines) == 6
-    assert sum(1 for u in site.asked if str(u).endswith(".pdf")) == 2
+    # Each report is a composition; of two that name one day, the later
+    # report's stands alone.
+    assert len(parsed.compositions) == 1 and [ln["line_no"] for ln in parsed.lines] == [1, 2, 3]
+    assert sum(1 for u in site.urls() if u.endswith(".pdf")) == 2
 
 
 DOCS = ('<tr><td></td><td><a href="/sfdpub/en/funds/docs/9">\n  Qumbra (Lux) - Qumbra Core MSCI Qland UCITS ETF QLD dis\n'
@@ -210,8 +192,14 @@ DOCS = ('<tr><td></td><td><a href="/sfdpub/en/funds/docs/9">\n  Qumbra (Lux) - Q
         '</a></td></tr>')
 
 
+def swissfunddata(docs=DOCS, report=b"%PDF-1.4"):
+    # The disclaimer's answer leads to a page the site does not have.
+    return FakeClient({"/funds/documents": docs, "sfd-entry": lambda url, data: 404 if data else "<p>entry</p>",
+                       ".pdf": report})
+
+
 def test_swissfunddata_states_the_category_once_and_claims_by_the_document_list():
-    site = Site({"/funds/documents": DOCS, "sfd-entry": "<p>entry</p>"})
+    site = swissfunddata()
     ctx = Context(client=site)
     s = SwissFundData()
     claim = s.claim(Fund(ref="isin:LU0000000101", isin="LU0000000101", name="Qland ETF"), ctx)
@@ -220,15 +208,13 @@ def test_swissfunddata_states_the_category_once_and_claims_by_the_document_list(
                      "reports": [("annual", "https://www.swissfunddata.ch/sfdpub/docs/anr-1_01_01-20260612-en.pdf"),
                                  ("semiannual", "https://www.swissfunddata.ch/sfdpub/docs/sar-1_01_01-20260630-de.pdf")]}
     s.claim(Fund(ref="isin:IE0000000102", isin="IE0000000102", name="Other"), ctx)
-    posts = [a for a in site.asked if isinstance(a, tuple)]
-    assert posts == [("POST", "https://www.swissfunddata.ch/sfdpub/sfd-entry/private?url=%2Fen%2F",
-                      (("_action_set", "I agree"),))]
+    assert [(u, d) for m, u, d in site.asked if m == "POST"] == [(ENTRY, {"_action_set": "I agree"})]
     # A US fund is not asked.
     assert s.claim(Fund(ref="isin:US0000000105", isin="US0000000105", name="Q"), ctx) is None
 
 
 def test_swissfunddata_refuses_when_the_entry_comes_back():
-    site = Site({"/funds/documents": '<form><input name="_action_set" value="I agree"></form>', "sfd-entry": ""})
+    site = swissfunddata('<form><input name="_action_set" value="I agree"></form>')
     with pytest.raises(ProviderError, match="investor category"):
         SwissFundData().claim(Fund(ref="isin:LU0000000101", isin="LU0000000101", name="Q"), Context(client=site))
     assert documents("<p>nothing</p>") == (None, [])
@@ -272,13 +258,10 @@ def test_a_search_that_finds_several_funds_claims_none():
 
 
 def test_swisscanto_asks_the_retail_classes_where_the_institutional_ones_do_not_know_the_fund():
-    class Api(Site):
-        def get(self, url, params=None, headers=None):
-            if (params or {}).get("segment") == "INSTITUTIONAL":
-                raise fetcher.FetchError(url, 404)
-            return super().get(url, params, headers)
+    def details(url, params):
+        return 404 if params["segment"] == "INSTITUTIONAL" else SC_API
     claim = Swisscanto().claim(Fund(ref="isin:CH0000000115", isin="CH0000000115", name="Swisscanto Qland"),
-                               Context(client=Api({"/funds/CH0000000115": SC_API})))
+                               Context(client=FakeClient({"/funds/CH0000000115": details})))
     assert claim["name"] == "Swisscanto (CH) Index Equity Fund Qland NT QLD"
 
 
@@ -307,3 +290,62 @@ def test_a_report_read_for_a_small_share_of_its_fund_is_refused():
     with pytest.raises(ProviderError, match="cover 20.00% of the fund"):
         parse_report([SC[0], page], "Swisscanto (CH) Index Fund Q - Equity Fund Qland NT QLD", "isin:CH0000000115",
                      provider="swisscanto")
+
+
+SC_CLAIM = {"ref": "isin:CH0000000115", "isin": "CH0000000115", "name": "Swisscanto (CH) Index Equity Fund Qland NT QLD",
+            "reports": [("annual", "https://x/JB_Q_deu.pdf"), ("semiannual", "https://x/HJB_Q_deu.pdf")]}
+
+
+def test_a_report_that_is_not_a_pdf_or_states_no_day_is_refused(tmp_path):
+    with pytest.raises(ProviderError, match="is not a PDF"):
+        Swisscanto().fetch(SC_CLAIM, None, tmp_path / "a", Context(client=FakeClient({".pdf": "<html>moved</html>"})))
+    undated = pdf([["Jahresbericht", "Swisscanto (CH) Index Fund Q"]])
+    with pytest.raises(ProviderError, match="no report states the day"):
+        Swisscanto().fetch(SC_CLAIM, None, tmp_path / "b", Context(client=FakeClient({".pdf": undated})))
+
+
+def test_an_umbrella_report_is_fetched_once_for_each_sub_fund_a_run_holds(tmp_path, monkeypatch):
+    site = FakeClient({".pdf": SC_PDF})
+    ctx = Context(client=site)
+    other = {**SC_CLAIM, "ref": "isin:CH0000000117", "name": "Swisscanto (CH) Index Equity Fund Qland Small"}
+    s = Swisscanto()
+    s.fetch(SC_CLAIM, None, tmp_path / "f", ctx)
+    s.fetch(other, None, tmp_path / "g", ctx)
+    assert len(site.asked) == 2
+    assert (tmp_path / "g" / "annual.pdf").read_bytes() == SC_PDF
+    # The copies read once at load as well.
+    read = []
+    pages = reports.pdf_pages
+    monkeypatch.setattr(reports, "pdf_pages", lambda path, last=None: read.append(path) or pages(path, last))
+    monkeypatch.setattr(reports, "_pages", type(reports._pages)())
+    assert s.parse(tmp_path / "f").lines and s.parse(tmp_path / "g").lines
+    assert len(read) == 1
+
+
+def test_one_report_that_does_not_read_leaves_the_other(tmp_path):
+    ctx = Context(client=FakeClient({"HJB_Q": pdf([["Halbjahresbericht per 31.08.2026"]]), "JB_Q": SC_PDF}))
+    s = Swisscanto()
+    s.fetch(SC_CLAIM, None, tmp_path / "f", ctx)
+    (c,) = s.parse(tmp_path / "f").compositions
+    assert c["as_of"] == date(2026, 2, 28)
+    (tmp_path / "f" / "annual.pdf").write_bytes(pdf([["Jahresbericht per 28.02.2026"]]))
+    with pytest.raises(ProviderError, match="annual.pdf: .*; semiannual.pdf: "):
+        s.parse(tmp_path / "f")
+
+
+def test_swissfunddata_fetches_and_reads_a_fund_end_to_end(tmp_path):
+    ctx = Context(client=swissfunddata(report=pdf([p.splitlines() for p in LU])))
+    s = SwissFundData()
+    claim = s.claim(Fund(ref="isin:LU0000000101", isin="LU0000000101", name="Qland ETF"), ctx)
+    assert s.fetch(claim, None, tmp_path / "f", ctx) == date(2026, 6, 30)
+    (c,) = s.parse(tmp_path / "f").compositions
+    assert (c["fund_ref"], c["line_count"], c["payload"]) == \
+        ("isin:LU0000000101", 4, {"sub_fund": "Qumbra Core MSCI Qland UCITS ETF"})
+
+
+def test_the_report_probes():
+    site = FakeClient({"/translations": {}})
+    assert Swisscanto().probe(Context(client=site)) == "Swisscanto product API answered 200"
+    site = swissfunddata()
+    assert SwissFundData().probe(Context(client=site)) == "swissfunddata took the investor category"
+    assert [m for m, _, _ in site.asked] == ["GET", "POST", "GET"]

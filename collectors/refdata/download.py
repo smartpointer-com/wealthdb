@@ -4,13 +4,14 @@ refdata downloader: the wanted list in, raw provider files out.
 
 1. Read the wanted list: ask the engine (`wealthdb -r refdata-wanted`),
    or read --wanted FILE.
-2. For every wanted fund, ask the providers in refdata.cfg's order; the
-   first that claims it serves it, and the inbox serves it as well. Fetch
-   its current composition when the newest one had (in gold, or fetched
-   by an earlier run) is older than max_age_days and the provider has a
-   newer one. With --backfill, also fetch every past date the provider
-   can serve inside the days the fund was held, and the last one before
-   them, that has no composition within half a month.
+2. For every wanted fund, the inbox serves what it holds. A fund whose
+   newest composition had (in gold, or fetched by an earlier run) is older
+   than max_age_days wants its current one; with --backfill, it also
+   wants every past date the provider can serve inside the days the fund
+   was held, and the last one before them, that has no composition within
+   half a month. Only such a fund is offered to the providers, in
+   refdata.cfg's order: the first that claims it serves it, and the next
+   one claims it only should a fetch fail.
 3. For every wanted security held directly, ask every enabled security
    provider whose last answer is older than max_age_days; with
    `constituents`, then ask for the securities held through funds whose
@@ -58,6 +59,12 @@ NEAR_DAYS = 15
 # held today: it stands in for, widens or lies under a held fund.
 CURRENT_ROLES = frozenset({"proxy", "reference", "underlying"})
 
+# What a provider's answer can raise without failing the run: its own
+# error, an HTTP failure or an answer that is not JSON, or an answer that
+# does not parse (ValueError). Anything else is logged with its traceback,
+# and the run goes on all the same.
+LOOKUP_ERRORS = (ProviderError, fetcher.FetchError, ValueError)
+
 
 @dataclass
 class Request:
@@ -66,9 +73,10 @@ class Request:
     ref: str
     as_of: date | None = None   # None: the current composition
     claim: object = None
-    # Further providers that claim the fund, asked in order when this one
-    # cannot serve the current composition: (provider name, claim).
+    # The providers standing by, asked in order when this one cannot
+    # serve the current composition. Each claims `fund` only then.
     fallbacks: tuple = ()
+    fund: object = None
 
 
 def parse_args(argv):
@@ -79,22 +87,30 @@ def parse_args(argv):
     p.add_argument("--backfill", action="store_true",
                    help="Also fetch every past date a provider can serve inside the days a fund was held.")
     p.add_argument("--provider", action="append", default=None,
-                   help="Ask only this provider (repeatable); the rest of refdata.cfg's list is skipped.")
+                   help="Ask only this provider (repeatable); it must be one refdata.cfg enables.")
     p.add_argument("--ref", action="append", default=None,
                    help="Ask only for this fund reference or security key (repeatable).")
-    p.add_argument("--limit", type=int, default=None, help="Fetch at most N files this run.")
+    p.add_argument("--limit", type=int, default=None,
+                   help="Make at most N fetch attempts this run; the lookups that find a fund are not counted.")
     p.add_argument("--no-securities", action="store_true", help="Skip the security lookups.")
     p.add_argument("--check", action="store_true",
-                   help="Probe every enabled provider with one request and exit; writes nothing.")
+                   help="Ask every enabled provider for its cheapest answer and exit; writes nothing.")
     p.add_argument("--dry-run", action="store_true", help="Plan the requests, print them, fetch nothing.")
     p.add_argument("--debug", action="store_true",
-                   help="Trace every HTTP exchange into <run>/screenshots/http-trace.jsonl "
-                        "(status, timing, size; no body). prune reclaims it.")
+                   help="Trace every HTTP exchange of a run, its plan included, into "
+                        "<run>/screenshots/http-trace.jsonl (status, timing, size; no body). prune reclaims it.")
     cli.add_standard_args(p, verb="download", full_history=True)
     return p.parse_args(argv)
 
 
-def enabled_providers(cfg: config.Config, only):
+def enabled_providers(cfg: config.Config, only=None):
+    """The providers a run asks, in refdata.cfg's order; only those
+    --provider names, where given. A name refdata.cfg does not enable is
+    refused, so a typo never runs nothing."""
+    unknown = sorted(set(only or ()) - set(cfg.providers))
+    if unknown:
+        raise SystemExit(f"--provider {', '.join(unknown)}: not enabled in {cfg.path or 'refdata.cfg'}. "
+                         f"Enabled: {', '.join(cfg.providers)}.")
     out = []
     for name in cfg.providers:
         if only and name not in only:
@@ -151,95 +167,89 @@ def fetched_before(bronze_dir: Path | None) -> tuple[dict, dict]:
     return funds, lookups
 
 
-# What a provider's lookup can raise without failing the run: its own
-# error, an HTTP failure, or an answer that does not parse (ValueError,
-# JSON's included).
-LOOKUP_ERRORS = (ProviderError, fetcher.FetchError, ValueError)
-
-
-def _claim(p, fund, ctx):
+def _ask(ref: str, provider: str, what: str, call, *args):
+    """call(*args): a provider's answer about one fund or security, or
+    None where it fails. Its own error is a warning, anything else a
+    traceback; the run goes on either way."""
     try:
-        return p.claim(fund, ctx)
+        return call(*args)
     except LOOKUP_ERRORS as e:
-        log.warning("%s: %s could not claim it: %s", fund.ref, p.name, e)
-        return None
-
-
-def _dates(p, claim, fund, since, until, ctx):
-    try:
-        return p.dates(claim, since, until, ctx) or []
-    except LOOKUP_ERRORS as e:
-        log.warning("%s: %s could not list its dates: %s", fund.ref, p.name, e)
-        return []
+        log.warning("%s: %s could not %s: %s", ref, provider, what, e)
+    except Exception:  # noqa: BLE001 - one provider's surprise must not end the run
+        log.exception("%s: %s could not %s", ref, provider, what)
+    return None
 
 
 def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_age: int, backfill: bool,
          refs=None, securities=True, constituents=False, floor_pct=0, fetched=None, looked_up=None):
-    """The requests a run makes, and the funds no provider claims.
+    """The requests a run makes, and the funds that want a composition no
+    provider claims.
 
-    The first provider that claims a fund serves it, and the next ones
-    stand by for its current composition should it fail; an additive one
-    (the inbox) serves it as well. A fund held today, or wanted in one of
-    CURRENT_ROLES, wants its current composition once the newest one had
-    is older than max_age, unless the provider's newest is already had or
+    The inbox (an additive provider) serves every fund it has a folder
+    for. A fund held today, or wanted in one of CURRENT_ROLES, wants its
+    current composition once the newest one had is older than max_age. A
+    backfill wants every date inside the days the fund was held, and the
+    last one before them within max_gap_days: the composition in force
+    when the holding began. Only a fund that wants either is offered to
+    the other providers: the first that claims it serves it, and those
+    after it stand by for its current composition. The current one is
+    not asked for where the provider's newest is already had, or where
     the provider served one within max_age, as a report that states a day
-    long past. A backfill wants every date inside the days the fund was held,
-    and the last one before them within max_gap_days: the composition in
-    force when the holding began."""
+    long past."""
     reqs, unclaimed = [], []
-    fetched = fetched or {}
-    served_days = {}
-    for (q, r, _), day in fetched.items():
+    served_days, fetched_days = {}, {}
+    for (q, r, d), day in (fetched or {}).items():
         served_days[(q, r)] = max(served_days.get((q, r), day), day)
+        fetched_days.setdefault(r, set()).add(d)
     gap = timedelta(days=want.max_gap_days)
+    additive = [p for p in providers if p.serves_funds and p.additive]
+    others = [p for p in providers if p.serves_funds and not p.additive]
     for fund in want.funds:
         if refs and fund.ref not in refs:
             continue
-        served, standby = [], []
-        for p in providers:
-            if not p.serves_funds:
-                continue
-            claim = _claim(p, fund, ctx)
-            if claim is None:
-                continue
-            if p.additive or not any(not q.additive for q, _ in served):
-                served.append((p, claim))
-            else:
-                standby.append((p.name, claim))
-        if not served:
-            unclaimed.append(fund.ref)
-        have = set(fund.compositions) | {d for (_, r, d) in fetched if r == fund.ref}
-        current = fund.held_to is None or not CURRENT_ROLES.isdisjoint(fund.roles)
+        have = set(fund.compositions) | fetched_days.get(fund.ref, set())
         until = fund.held_to or today
         since = (fund.held_from or today) - gap
-        for p, claim in served:
-            if p.additive:
-                for d in _dates(p, claim, fund, since, until, ctx):
-                    if d not in have:
-                        reqs.append(Request("fund", p.name, fund.ref, d, claim))
-                        have.add(d)
+        claimed = False
+        for p in additive:
+            claim = _ask(fund.ref, p.name, "claim it", p.claim, fund, ctx)
+            if claim is None:
                 continue
-            newest = max(have) if have else None
+            claimed = True
+            for d in _ask(fund.ref, p.name, "list its dates", p.dates, claim, since, until, ctx) or []:
+                if d not in have:
+                    reqs.append(Request("fund", p.name, fund.ref, d, claim))
+                    have.add(d)
+        newest = max(have, default=None)
+        current = (fund.held_to is None or not CURRENT_ROLES.isdisjoint(fund.roles)) \
+            and (newest is None or (today - newest).days > max_age)
+        past = backfill and fund.held_from is not None
+        if not (current or past):
+            continue
+        for i, p in enumerate(others):
+            claim = _ask(fund.ref, p.name, "claim it", p.claim, fund, ctx)
+            if claim is None:
+                continue
+            claimed = True
             served_on = served_days.get((p.name, fund.ref))
-            if current and (newest is None or (today - newest).days > max_age) \
-                    and (served_on is None or (today - served_on).days > max_age):
-                try:
-                    latest = p.latest(claim, ctx)
-                except LOOKUP_ERRORS as e:
-                    log.warning("%s: %s could not name its newest date: %s", fund.ref, p.name, e)
-                    latest = None
+            if current and (served_on is None or (today - served_on).days > max_age):
+                latest = _ask(fund.ref, p.name, "name its newest date", p.latest, claim, ctx)
                 if latest is None or latest not in have:
-                    reqs.append(Request("fund", p.name, fund.ref, None, claim, tuple(standby)))
+                    reqs.append(Request("fund", p.name, fund.ref, None, claim,
+                                        tuple(q.name for q in others[i + 1:]), fund))
                     if latest is not None:
                         have.add(latest)
-            if backfill and fund.held_from is not None:
-                days = _dates(p, claim, fund, since, until, ctx)
+            if past:
+                days = _ask(fund.ref, p.name, "list its dates", p.dates, claim, since, until, ctx) or []
                 before = [d for d in days if d < fund.held_from]
                 for d in [*before[-1:], *(d for d in days if d >= fund.held_from)]:
                     if any(abs((d - h).days) <= NEAR_DAYS for h in have):
                         continue
                     reqs.append(Request("fund", p.name, fund.ref, d, claim))
                     have.add(d)
+            break
+        if not claimed:
+            unclaimed.append(fund.ref)
     if securities:
         for sec in security_order(want.securities, constituents, floor_pct):
             if refs and sec.key not in refs:
@@ -251,46 +261,55 @@ def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_ag
                            default=None)
                 if last is not None and (today - last).days <= max_age:
                     continue
-                try:
-                    claim = p.claim_security(sec, ctx)
-                except LOOKUP_ERRORS as e:
-                    log.warning("%s: %s could not claim it: %s", sec.key, p.name, e)
-                    continue
+                claim = _ask(sec.key, p.name, "claim it", p.claim_security, sec, ctx)
                 if claim is not None:
                     reqs.append(Request("security", p.name, sec.key, None, claim))
     return reqs, unclaimed
 
 
+def _folder(ref: str) -> str:
+    """A fund reference or security key as a folder name: `isin_XX…`, as
+    the inbox writes it. A reference with other characters a folder name
+    cannot hold gets a short hash of itself, so XYZ-B and XYZ/B never
+    share a folder."""
+    name = ref.replace(":", "_", 1)
+    stem = bronze.safe_stem(name)
+    return stem if stem == name else f"{stem}-{bronze.short_token(ref, 8)}"
+
+
 def request_dir(run: Path, r: Request) -> Path:
-    leaf = r.as_of.isoformat() if r.as_of else "current"
     if r.kind == "fund":
-        return run / "funds" / r.provider / bronze.safe_stem(r.ref) / leaf
-    return run / "securities" / r.provider / bronze.safe_stem(r.ref)
+        return run / "funds" / r.provider / _folder(r.ref) / (r.as_of.isoformat() if r.as_of else "current")
+    return run / "securities" / r.provider / _folder(r.ref)
 
 
 def execute(reqs, run: Path, ctx: Context, limit=None):
-    """Fetch every request into its bronze folder; one entry per request."""
-    results = []
-    fetched = 0
+    """Fetch every request into its bronze folder; one entry per request.
+    A provider standing by claims the fund only once the ones before it
+    failed. `limit` caps the fetch attempts, a standby's included; a
+    request it leaves no attempt for is deferred."""
+    results, attempts = [], 0
     for r in reqs:
         entry = {"kind": r.kind, "provider": r.provider, "ref": r.ref,
                  "asked": r.as_of.isoformat() if r.as_of else "current"}
-        if limit is not None and fetched >= limit:
-            entry["status"] = "deferred"
-            results.append(entry)
-            continue
-        # The provider that claimed the request, then each standing by:
-        # the first that serves it is recorded; the others' errors too.
+        # The first that serves the request is recorded; the others'
+        # errors too.
         tried = []
-        for name, claim in ((r.provider, r.claim), *r.fallbacks):
+        for name in (r.provider, *r.fallbacks):
+            if limit is not None and attempts >= limit:
+                break
+            claim = r.claim if name == r.provider else _ask(r.ref, name, "claim it", REGISTRY[name].claim, r.fund, ctx)
+            if claim is None:
+                continue
+            attempts += 1
             status, error = _fetch(Request(r.kind, name, r.ref, r.as_of, claim), run, ctx, entry)
             if status == "ok":
                 entry["provider"] = name
-                fetched += 1
                 break
             tried.append({"provider": name, "status": status, "error": error})
-        else:
+        if tried and entry.get("status") != "ok":
             entry["status"], entry["error"] = tried[0]["status"], tried[0]["error"]
+        entry.setdefault("status", "deferred")
         if len(tried) > 1 or (tried and entry["status"] == "ok"):
             entry["tried"] = tried
         results.append(entry)
@@ -305,7 +324,9 @@ def _fetch(r: Request, run: Path, ctx: Context, entry: dict):
     try:
         if r.kind == "fund":
             got = p.fetch(r.claim, r.as_of, out, ctx)
-            entry["as_of"] = got.isoformat() if got else None
+            if got is None:
+                raise ProviderError("the files fetched state no day")
+            entry["as_of"] = got.isoformat()
         else:
             p.fetch_security(r.claim, out, ctx)
         entry["status"] = "ok"
@@ -313,7 +334,7 @@ def _fetch(r: Request, run: Path, ctx: Context, entry: dict):
         return "ok", None
     except Unavailable as e:
         return "unavailable", str(e)
-    except (ProviderError, fetcher.FetchError, ValueError) as e:
+    except LOOKUP_ERRORS as e:
         log.warning("%s %s (%s): %s", r.provider, r.ref, entry["asked"], e)
         return "error", str(e)
     except Exception as e:  # noqa: BLE001 - one bad request must not abort the run
@@ -322,12 +343,16 @@ def _fetch(r: Request, run: Path, ctx: Context, entry: dict):
 
 
 def probe(providers, ctx) -> int:
+    """Ask every provider for its cheapest answer; 1 where any fails."""
     rc = 0
     for p in providers:
         try:
             log.info("%s: %s", p.name, p.probe(ctx))
-        except (ProviderError, fetcher.FetchError) as e:
+        except LOOKUP_ERRORS as e:
             log.error("%s: probe failed: %s", p.name, e)
+            rc = 1
+        except Exception:  # noqa: BLE001 - one provider's surprise must not hide the others' answers
+            log.exception("%s: probe failed", p.name)
             rc = 1
     return rc
 
@@ -343,8 +368,7 @@ def main(argv=None) -> int:
         log.error("%s", e)
         return 2
     providers = enabled_providers(cfg, args.provider)
-    data_dir = args.bronze_dir
-    ctx = Context(client=fetcher.Client(cfg.contact), contact=cfg.contact, data_dir=data_dir, config=cfg)
+    ctx = Context(client=fetcher.Client(cfg.contact), data_dir=args.bronze_dir, config=cfg)
     if args.check:
         return probe(providers, ctx)
     if args.bronze_dir is None:
@@ -354,10 +378,17 @@ def main(argv=None) -> int:
     except wantedmod.WantedError as e:
         log.error("%s", e)
         return 3
-    today = today_utc()
+    if not args.dry_run:
+        # The run dir comes before the plan, so --debug traces the
+        # requests the plan makes as well.
+        args.bronze_dir.mkdir(parents=True, exist_ok=True)
+        slug = bronze.ts_slug()
+        run = bronze.run_dir(args.bronze_dir, slug)
+        bronze.atomic_write_json(run / "run.json", {"slug": slug, "status": "in-progress"})
+        ctx.client.trace = debugcap.HttpTrace(run, log=log, enabled=args.debug)
     fetched_funds, looked_up = fetched_before(args.bronze_dir)
-    reqs, unclaimed = plan(want, providers, ctx, today=today, max_age=cfg.max_age_days, backfill=args.backfill,
-                           refs=set(args.ref or ()), securities=not args.no_securities,
+    reqs, unclaimed = plan(want, providers, ctx, today=today_utc(), max_age=cfg.max_age_days,
+                           backfill=args.backfill, refs=set(args.ref or ()), securities=not args.no_securities,
                            constituents=cfg.constituents, floor_pct=cfg.constituent_floor_pct,
                            fetched=fetched_funds, looked_up=looked_up)
     log.info("wanted: %d funds, %d securities; %d requests; %d funds no provider claims",
@@ -368,13 +399,9 @@ def main(argv=None) -> int:
         for r in reqs:
             print(f"{r.kind}\t{r.provider}\t{r.ref}\t{r.as_of.isoformat() if r.as_of else 'current'}")
         return 0
-    args.bronze_dir.mkdir(parents=True, exist_ok=True)
-    slug = bronze.ts_slug()
-    run = bronze.run_dir(args.bronze_dir, slug)
     manifest = {"slug": slug, "status": "in-progress", "wanted_as_of": want.as_of.isoformat(),
                 "providers": [p.name for p in providers], "unclaimed": unclaimed, "requests": []}
     bronze.atomic_write_json(run / "run.json", manifest)
-    ctx.client.trace = debugcap.HttpTrace(run, log=log, enabled=args.debug)
     manifest["requests"] = execute(reqs, run, ctx, args.limit)
     manifest["status"] = "complete"
     bronze.atomic_write_json(run / "run.json", manifest)

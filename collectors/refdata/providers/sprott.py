@@ -13,25 +13,21 @@ sprott: Sprott's US ETFs, from the holdings table each fund page embeds.
   as the shared table rule does with other local tickers. The SEDOL
   column is not read. The cash line is cash.
 
-Terms: the site links no terms of use (checked 2026-10-14); its privacy
-policy covers personal data only. The holdings are the fund's own
-publication, read once a run at one request a second.
+Terms: README.md, sprott.
 """
 
 from __future__ import annotations
 
-import csv
 import html
-import io
 import re
 import urllib.parse
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 from collectorkit import bronze
 
 from . import table
-from .base import Parsed, Provider, ProviderError, Unavailable, read_meta, write_meta
+from .base import Parsed, Provider, ProviderError, read_meta, us_symbol, write_meta
 
 HOST = "https://sprottetfs.com"
 DOC = "fund.html"
@@ -53,16 +49,13 @@ class Sprott(Provider):
         return ctx.once("sprott_pages", load)
 
     def claim(self, fund, ctx):
-        symbol = (fund.symbol or (fund.ref[7:] if fund.ref.startswith("symbol:") else "") or "").strip().upper()
-        isin = (fund.isin or "").strip().upper()
-        if not symbol or (isin and not isin.startswith("US")):
+        symbol = us_symbol(fund)
+        if not symbol:
             return None
         path = self._pages(ctx).get(symbol)
         return {"ref": fund.ref, "ticker": symbol, "page": path} if path else None
 
     def fetch(self, claim, as_of, outdir: Path, ctx):
-        if as_of is not None:
-            raise Unavailable("sprott serves the current holdings only")
         resp = ctx.client.get(HOST + claim["page"])
         page = resp.body.decode("utf-8", "replace")
         if not DATA.search(page):
@@ -70,7 +63,6 @@ class Sprott(Provider):
         day = _as_of(page)
         if day is None:
             raise ProviderError(f"{resp.url} states no holdings date")
-        outdir.mkdir(parents=True, exist_ok=True)
         bronze.atomic_write_bytes(outdir / DOC, resp.body)
         write_meta(outdir, provider=self.name, ref=claim["ref"], ticker=claim["ticker"], as_of=day.isoformat())
         return day
@@ -85,7 +77,7 @@ class Sprott(Provider):
 
 def _as_of(page: str) -> date | None:
     m = AS_OF.search(page)
-    return datetime.strptime(m.group(1), "%m/%d/%Y").date() if m else None
+    return table.parse_day(m.group(1)) if m else None
 
 
 def parse_page(page: str, ref: str, *, provider: str) -> Parsed:
@@ -96,7 +88,7 @@ def parse_page(page: str, ref: str, *, provider: str) -> Parsed:
     as_of = _as_of(page)
     if as_of is None:
         raise ProviderError("the page states no holdings date")
-    rows = list(csv.reader(io.StringIO(urllib.parse.unquote(html.unescape(m.group(1))))))
+    rows = table.csv_rows(urllib.parse.unquote(html.unescape(m.group(1))))
     start = table.header_index(rows, COLUMNS)
     if start is None:
         raise ProviderError("the holdings table has no header")
@@ -106,8 +98,4 @@ def parse_page(page: str, ref: str, *, provider: str) -> Parsed:
             ln["payload"]["local_ticker"], ln["ticker"] = ln["ticker"], None
         if (ln["name"] or "").lower().startswith("cash"):
             ln["asset_type"] = "Cash"
-    out = Parsed(lines=lns)
-    out.compositions.append(table.composition(ref, as_of, lns, provider=provider))
-    out.funds.append({"fund_ref": ref, "isin": None, "cusip": None, "symbol": None, "name": None,
-                      "provider": provider, "provider_id": None, "payload": {}})
-    return out
+    return Parsed(lines=lns, compositions=[table.composition(ref, as_of, lns, provider=provider)])

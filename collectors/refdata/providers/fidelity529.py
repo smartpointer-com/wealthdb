@@ -17,10 +17,10 @@ prefix a broker writes before the plan's portfolios are configured
   the portfolio's net assets, its asset type the section it is listed
   under, and its ticker where the SEC's list names one fund series so.
 
-Terms: the report is "submitted for the general information of the
-holders of units of the Portfolios"; the SEC's content may be copied
-and redistributed. The report is read for the portfolios held, at most
-once in max_age_days.
+The report is asked for once a run, whatever the number of portfolios
+it serves, and its pages are read once.
+
+Terms: README.md, fidelity-529.
 """
 
 from __future__ import annotations
@@ -30,16 +30,14 @@ import io
 import json
 import re
 from datetime import datetime
-from decimal import Decimal
 from pathlib import Path
 
 import fetcher
-
 from collectorkit import bronze
 
 from . import table
-from .base import Parsed, Provider, ProviderError, Unavailable, dec, read_meta, today_utc, write_meta
-from .reports import own_title, pdf_pages, save_pdf, words
+from .base import Parsed, Provider, ProviderError, dec, read_meta, row, today_utc, write_meta
+from .reports import fetch_pdf, number, own_title, pdf_pages, report_pages, words
 
 SERIES = ("https://www.sec.gov/files/investment/data/other/investment-company-series-class-information/"
           "investment-company-series-class-{year}.csv")
@@ -81,14 +79,10 @@ class Fidelity529(Provider):
         return {"ref": fund.ref, "plan": plan, "report": known[plan], "name": name}
 
     def fetch(self, claim, as_of, outdir: Path, ctx):
-        if as_of is not None:
-            raise Unavailable("fidelity-529 serves the newest report only")
-        outdir.mkdir(parents=True, exist_ok=True)
         url = claim["report"]
-        first = ctx.once(("report", url), lambda: save_pdf(ctx.client.get(url), outdir / REPORT))
-        if first != outdir / REPORT:
-            bronze.atomic_write_bytes(outdir / REPORT, first.read_bytes())
-        day, holdings, _ = schedule(pdf_pages(outdir / REPORT), claim["name"])
+        fetch_pdf(ctx, url, outdir / REPORT)
+        pages = ctx.once(("report_pages", url), lambda: pdf_pages(outdir / REPORT))
+        day, holdings, _ = schedule(pages, claim["name"])
         exact, by_words = ctx.once("sec_series", lambda: _series(ctx))
         rows = {h["name"]: exact.get(_exact(h["name"])) or by_words.get(_key(h["name"]), []) for h in holdings}
         bronze.atomic_write_bytes(outdir / SERIES_DOC, json.dumps(rows).encode("utf-8"))
@@ -98,7 +92,7 @@ class Fidelity529(Provider):
     def parse(self, indir: Path) -> Parsed:
         meta = read_meta(indir)
         series = json.loads((indir / SERIES_DOC).read_text(encoding="utf-8"))
-        return parse_schedule(pdf_pages(indir / REPORT), meta["name"], meta["ref"], series, provider=self.name)
+        return parse_schedule(report_pages(indir / REPORT), meta["name"], meta["ref"], series, provider=self.name)
 
     def probe(self, ctx) -> str:
         known = plans(ctx)
@@ -145,10 +139,6 @@ def _series(ctx) -> tuple:
     return listed(exact), listed(by_words)
 
 
-def _amount(text: str) -> Decimal:
-    return Decimal(text.replace(",", ""))
-
-
 def _portfolios(pages: list) -> dict:
     """Each portfolio's schedule text, by its title: a page's text up to
     the title over its "Schedule of Investments" footer, after any footer
@@ -161,7 +151,7 @@ def _portfolios(pages: list) -> dict:
             if MARK.match(ln) and i and lines[i - 1]:
                 part = lines[start:i - 1]
                 if any(AS_OF.search(x) for x in part) or lines[i - 1] in out:
-                    out[lines[i - 1]] = out.get(lines[i - 1], []) + part
+                    out.setdefault(lines[i - 1], []).extend(part)
                 start = i + 1
     return out
 
@@ -180,23 +170,23 @@ def schedule(pages: list, fund_name: str) -> tuple:
     holdings, section, pending, net, total, in_total = [], None, [], None, None, False
     for ln in lines:
         if in_total and (m := TRAILING.search(ln)):
-            total, in_total = _amount(m.group("v")), False
+            total, in_total = number(m.group("v"), "."), False
         if m := SECTION.match(ln):
             section, pending = m.group("s"), []
         elif m := NET_ASSETS.match(ln):
-            net = _amount(m.group("v"))
+            net = number(m.group("v"), ".")
         elif TOTAL.match(ln):
             # The total's figure ends its line, or the next one.
             m = TRAILING.search(ln)
-            total, in_total, pending = (_amount(m.group("v")) if m else None), m is None, []
+            total, in_total, pending = (number(m.group("v"), ".") if m else None), m is None, []
         elif re.fullmatch(r"\([a-z]\)", ln):
             continue  # a footnote's mark, between a name and its figures
         elif NOT_A_NAME.match(ln) or not ln:
             pending = []
         elif (m := HOLDING.match(ln)) and (pending or m.group("text")):
             name = " ".join([*pending, m.group("text")]).strip()
-            holdings.append({"name": name, "section": section, "shares": _amount(m.group("shares")),
-                             "value": _amount(m.group("value"))})
+            holdings.append({"name": name, "section": section, "shares": number(m.group("shares"), "."),
+                             "value": number(m.group("value"), ".")})
             pending = []
         else:
             pending.append(ln)
@@ -216,17 +206,11 @@ def parse_schedule(pages: list, fund_name: str, ref: str, series: dict, *, provi
     for h in holdings:
         found = series.get(h["name"]) or []
         tickers = found[0]["tickers"] if len(found) == 1 else []
-        out.lines.append({
-            "fund_ref": ref, "as_of": day, "basis": "holdings", "line_no": len(out.lines) + 1,
-            "isin": None, "cusip": None, "figi": None, "ticker": tickers[0] if tickers else None, "exchange": None,
-            "name": h["name"], "asset_type": h["section"], "weight": dec(round(h["value"] * 100 / net, 8)),
-            "quantity": dec(h["shares"]), "market_value": dec(h["value"]), "currency": "USD", "country": None,
-            "risk_country": None, "sector": None, "industry": None, "maturity": None, "coupon": None,
-            "long_currency": None, "long_amount": None, "short_currency": None, "short_amount": None,
-            "payload": {"series": found[0]["series"]} if len(found) == 1 else {},
-        })
+        out.lines.append(row(
+            "lines", fund_ref=ref, as_of=day, basis="holdings", line_no=len(out.lines) + 1,
+            ticker=tickers[0] if tickers else None, name=h["name"], asset_type=h["section"],
+            weight=dec(round(h["value"] * 100 / net, 8)), quantity=dec(h["shares"]), market_value=dec(h["value"]),
+            currency="USD", payload={"series": found[0]["series"]} if len(found) == 1 else {}))
     out.compositions.append(table.composition(ref, day, out.lines, provider=provider, source_kind="report",
                                               fund_name=fund_name, currency="USD", net_assets=dec(net)))
-    out.funds.append({"fund_ref": ref, "isin": None, "cusip": None, "symbol": None, "name": fund_name,
-                      "provider": provider, "provider_id": None, "payload": {}})
     return out

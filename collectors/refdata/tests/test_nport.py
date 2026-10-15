@@ -6,15 +6,18 @@ from pathlib import Path
 import pytest
 
 import fetcher
-from providers.base import Context, ProviderError
+from providers import sec_nport as m
+from providers.base import Context, ProviderError, Unavailable
+from providers.sec_edgar import SecEdgar
 from providers.sec_nport import SecNport, _atom_accessions, _submission_filings, parse_nport
-from wanted import Fund
+from tests.helpers import FakeClient
+from wanted import Fund, Security
 
 FIXTURE = Path(__file__).parent / "fixtures" / "nport_primary_doc.xml"
 
 
 def parsed():
-    return parse_nport(FIXTURE.read_bytes(), "symbol:EXMP", provider="sec-nport", symbol="EXMP")
+    return parse_nport(FIXTURE.read_bytes(), "symbol:EXMP", provider="sec-nport")
 
 
 def test_composition_is_dated_by_the_report_period():
@@ -70,101 +73,71 @@ def test_filing_lists():
     assert _atom_accessions(atom) == ["0000000001-26-000001"]
 
 
-class _RefusingClient:
-    """Answers every request with a 403, and counts them."""
-
-    def __init__(self):
-        self.urls = []
-
-    def get(self, url, **_):
-        self.urls.append(url)
-        raise fetcher.FetchError(url, 403, "Forbidden")
-
-
 def test_a_refused_ticker_file_is_asked_for_once():
-    client = _RefusingClient()
-    ctx = Context(client=client, contact="ops@example.org")
+    client = FakeClient({"": 403})
+    ctx = Context(client=client)
     p = SecNport()
     for sym in ("AAAA", "BBBB", "CCCC"):
         with pytest.raises(fetcher.FetchError):
             p.claim(Fund(ref=f"symbol:{sym}", symbol=sym), ctx)
-    assert len(client.urls) == 1
+    assert len(client.asked) == 1
 
 
-FIXTURE = Path(__file__).parent / "fixtures" / "nport_primary_doc.xml"
+RECENT = {"form": ["NPORT-P", "NPORT-P/A", "NPORT-P"],
+          "accessionNumber": ["0000000001-26-000001", "0000000001-26-000002", "0000000001-26-000003"],
+          "filingDate": ["2026-08-28", "2026-09-10", "2026-08-29"],
+          "reportDate": ["2026-06-30", "2026-06-30", "2026-06-30"]}
+OLDER = {"form": ["NPORT-P"], "accessionNumber": ["0000000001-25-000004"],
+         "filingDate": ["2025-02-27"], "reportDate": ["2024-12-31"]}
+# The series' own filings: not the third, another series' filing.
+ATOM = b"""<feed xmlns="http://www.w3.org/2005/Atom">""" + b"".join(
+    b"<entry><content><accession-number>%s</accession-number></content></entry>" % a
+    for a in (b"0000000001-26-000001", b"0000000001-26-000002", b"0000000001-25-000004")) + b"</feed>"
 
 
-class _FakeSec:
+def edgar(doc=None):
     """An invented corner of EDGAR: one fund series, one UIT, one company
     that files no N-PORT."""
-
-    def __init__(self, doc=None):
-        from providers import sec_nport as m
-        self.m, self.urls = m, []
-        recent = {"form": ["NPORT-P", "NPORT-P/A", "NPORT-P"],
-                  "accessionNumber": ["0000000001-26-000001", "0000000001-26-000002", "0000000001-26-000003"],
-                  "filingDate": ["2026-08-28", "2026-09-10", "2026-08-29"],
-                  "reportDate": ["2026-06-30", "2026-06-30", "2026-06-30"]}
-        older = {"form": ["NPORT-P"], "accessionNumber": ["0000000001-25-000004"],
-                 "filingDate": ["2025-02-27"], "reportDate": ["2024-12-31"]}
-        self.json = {
-            m.FUND_TICKERS: {"fields": ["cik", "seriesId", "classId", "symbol"],
-                             "data": [[1, "S000000001", "C000000001", "QFND"]]},
-            m.COMPANY_TICKERS: {"0": {"cik_str": 2, "ticker": "QUIT"}, "1": {"cik_str": 3, "ticker": "QCOM"}},
-            m.SUBMISSIONS.format(cik=1): {"filings": {"recent": recent, "files": [
-                {"name": "CIK0000000001-submissions-001.json", "filingFrom": "2023-01-02", "filingTo": "2025-06-30"}]}},
-            m.SUBMISSIONS_PAGE.format(name="CIK0000000001-submissions-001.json"): older,
-            m.SUBMISSIONS.format(cik=2): {"filings": {"recent": {
-                "form": ["NPORT-P"], "accessionNumber": ["0000000002-26-000001"],
-                "filingDate": ["2026-05-28"], "reportDate": ["2026-03-31"]}}},
-            m.SUBMISSIONS.format(cik=3): {"filings": {"recent": {
-                "form": ["10-K"], "accessionNumber": ["0000000003-26-000001"],
-                "filingDate": ["2026-02-28"], "reportDate": ["2025-12-31"]}}},
-        }
-        # The series' own filings: not the third, another series' filing.
-        self.atom = b"""<feed xmlns="http://www.w3.org/2005/Atom">""" + b"".join(
-            b"<entry><content><accession-number>%s</accession-number></content></entry>" % a
-            for a in (b"0000000001-26-000001", b"0000000001-26-000002", b"0000000001-25-000004")) + b"</feed>"
-        self.doc = doc if doc is not None else FIXTURE.read_bytes()
-
-    def get(self, url, params=None):
-        self.urls.append(url)
-        if url == self.m.BROWSE:
-            return fetcher.Response(url, 200, self.atom, "application/atom+xml")
-        if url in self.json:
-            import json
-            return fetcher.Response(url, 200, json.dumps(self.json[url]).encode(), "application/json")
-        if url.endswith("/primary_doc.xml"):
-            return fetcher.Response(url, 200, self.doc, "text/xml")
-        raise fetcher.FetchError(url, 404, "Not Found")
-
-
-def _ctx(client):
-    return Context(client=client, contact="ops@example.org")
+    return FakeClient({
+        m.BROWSE: ATOM,
+        m.FUND_TICKERS: {"fields": ["cik", "seriesId", "classId", "symbol"],
+                         "data": [[1, "S000000001", "C000000001", "QFND"]]},
+        m.COMPANY_TICKERS: {"0": {"cik_str": 2, "ticker": "QUIT"}, "1": {"cik_str": 3, "ticker": "QCOM"}},
+        m.SUBMISSIONS.format(cik=1): {"filings": {"recent": RECENT, "files": [
+            {"name": "CIK0000000001-submissions-001.json", "filingFrom": "2023-01-02", "filingTo": "2025-06-30"}]}},
+        m.SUBMISSIONS_PAGE.format(name="CIK0000000001-submissions-001.json"): OLDER,
+        m.SUBMISSIONS.format(cik=2): {"filings": {"recent": {
+            "form": ["NPORT-P"], "accessionNumber": ["0000000002-26-000001"],
+            "filingDate": ["2026-05-28"], "reportDate": ["2026-03-31"]}}},
+        m.SUBMISSIONS.format(cik=3): {"filings": {"recent": {
+            "form": ["10-K"], "accessionNumber": ["0000000003-26-000001"],
+            "filingDate": ["2026-02-28"], "reportDate": ["2025-12-31"]}}},
+        "/primary_doc.xml": FIXTURE.read_bytes() if doc is None else doc,
+    })
 
 
 def test_a_series_takes_its_own_filings_and_an_amendment_wins():
-    sec = _FakeSec()
+    sec = edgar()
+    ctx = Context(client=sec)
     p = SecNport()
-    claim = p.claim(Fund(ref="symbol:QFND", symbol="QFND"), _ctx(sec))
+    claim = p.claim(Fund(ref="symbol:QFND", symbol="QFND"), ctx)
     assert claim["series"] == "S000000001"
-    filings = p._filings(claim, _ctx(sec))
+    filings = p._filings(claim, ctx)
     assert list(filings) == [date(2026, 6, 30)]
     assert filings[date(2026, 6, 30)]["accession"] == "0000000001-26-000002"
 
 
 def test_backfill_reads_older_pages_only_as_far_back_as_asked():
-    sec = _FakeSec()
-    p, ctx = SecNport(), _ctx(sec)
+    sec = edgar()
+    p, ctx = SecNport(), Context(client=sec)
     claim = p.claim(Fund(ref="symbol:QFND", symbol="QFND"), ctx)
     assert p.dates(claim, date(2025, 7, 1), date(2026, 12, 31), ctx) == [date(2026, 6, 30)]
-    assert not any("submissions-001" in u for u in sec.urls)
+    assert not any("submissions-001" in u for u in sec.urls())
     assert p.dates(claim, date(2024, 1, 1), date(2026, 12, 31), ctx) == [date(2024, 12, 31), date(2026, 6, 30)]
 
 
 def test_a_uit_is_claimed_and_a_company_that_files_no_nport_is_not():
-    sec = _FakeSec()
-    p, ctx = SecNport(), _ctx(sec)
+    p, ctx = SecNport(), Context(client=edgar())
     uit = p.claim(Fund(ref="symbol:QUIT", symbol="QUIT"), ctx)
     assert uit["cik"] == 2 and uit["series"] is None
     assert p.latest(uit, ctx) == date(2026, 3, 31)
@@ -172,8 +145,7 @@ def test_a_uit_is_claimed_and_a_company_that_files_no_nport_is_not():
 
 
 def test_a_filing_is_kept_compressed_and_parses_back(tmp_path):
-    sec = _FakeSec()
-    p, ctx = SecNport(), _ctx(sec)
+    p, ctx = SecNport(), Context(client=edgar())
     claim = p.claim(Fund(ref="symbol:QFND", symbol="QFND"), ctx)
     assert p.fetch(claim, None, tmp_path, ctx) == date(2026, 6, 30)
     assert (tmp_path / "primary_doc.xml.zst").is_file() and not (tmp_path / "primary_doc.xml").exists()
@@ -182,8 +154,7 @@ def test_a_filing_is_kept_compressed_and_parses_back(tmp_path):
 
 
 def test_a_body_that_is_no_nport_document_is_an_error(tmp_path):
-    sec = _FakeSec(doc=b"<html>maintenance</html>")
-    p, ctx = SecNport(), _ctx(sec)
+    p, ctx = SecNport(), Context(client=edgar(doc=b"<html>maintenance</html>"))
     claim = p.claim(Fund(ref="symbol:QFND", symbol="QFND"), ctx)
     with pytest.raises(ProviderError, match="not an N-PORT document"):
         p.fetch(claim, None, tmp_path, ctx)
@@ -216,3 +187,28 @@ def test_an_unknown_country_is_no_country():
     doc = SWAP_DOC.replace(b"<assetCat>DE</assetCat>", b"<assetCat>DE</assetCat><invCountry>XX</invCountry>", 1)
     p = parse_nport(doc, "symbol:QSWP", provider="sec-nport")
     assert p.lines[0]["country"] is None
+
+
+def test_a_period_with_no_filing_is_unavailable_and_a_folder_without_its_document_does_not_parse(tmp_path):
+    p, ctx = SecNport(), Context(client=edgar())
+    claim = p.claim(Fund(ref="symbol:QFND", symbol="QFND"), ctx)
+    with pytest.raises(Unavailable, match="2026-03-31"):
+        p.fetch(claim, date(2026, 3, 31), tmp_path / "f", ctx)
+    with pytest.raises(Unavailable, match="no NPORT-P filing for QCOM"):
+        p.fetch({"ref": "symbol:QCOM", "symbol": "QCOM", "cik": 3, "series": None}, None, tmp_path / "g", ctx)
+    (tmp_path / "h").mkdir()
+    (tmp_path / "h" / "meta.json").write_text('{"ref": "symbol:QFND"}')
+    with pytest.raises(ProviderError, match="no primary_doc.xml"):
+        p.parse(tmp_path / "h")
+
+
+def test_both_sec_providers_read_one_company_ticker_file():
+    sec = edgar()
+    ctx = Context(client=sec)
+    assert SecNport().claim(Fund(ref="symbol:QUIT", symbol="QUIT"), ctx)["cik"] == 2
+    assert SecEdgar().claim_security(Security(key="symbol:QCOM"), ctx)["cik"] == 3
+    assert sec.urls().count(m.COMPANY_TICKERS) == 1
+
+
+def test_the_probe_reads_the_fund_ticker_file():
+    assert SecNport().probe(Context(client=edgar())) == "SEC fund ticker file: 1 tickers"

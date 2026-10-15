@@ -1,17 +1,16 @@
 """ishares, xtrackers and invesco on invented files in each issuer's
 layout. Every fund, holding and identifier is invented."""
 
-import json
 from datetime import date
 
 import pytest
 
 import fetcher
-from providers.base import Context, ProviderError
+from providers.base import Context, ProviderError, Unavailable
 from providers.invesco import Invesco, parse_docs
 from providers.ishares import IShares, holdings_page, parse_csv, parse_grid
-from providers.xtrackers import Xtrackers, parse_export
-from tests.helpers import make_xlsx
+from providers.xtrackers import EXPORT, Xtrackers, parse_export
+from tests.helpers import FakeClient, make_xlsx
 from wanted import Fund
 
 US_CSV = """Example Small Cap ETF
@@ -74,28 +73,20 @@ def test_ishares_grid_without_columns_is_an_error():
         parse_grid(GRID, ["A", "B"], "isin:X", date(2026, 10, 12), provider="ishares")
 
 
-class _FakeIShares:
-    def __init__(self):
-        self.urls = []
+def _products(url, params):
+    us = "/us/" in url
+    return {"1": {"isin": "XX0000000900" if not us else "US0000000909", "cusip": "000000AD3",
+                  "localExchangeTicker": "QSML" if us else "QCHF",
+                  "productPageUrl": "/us/products/1/example" if us else "/ch/individual/en/products/2/example",
+                  "fundName": "Example"}}
 
-    def get(self, url, params=None, headers=None):
-        self.urls.append((url, dict(params or {})))
-        if url.endswith(".jsn"):
-            us = "/us/" in url
-            doc = {"1": {"isin": "XX0000000900" if not us else "US0000000909", "cusip": "000000AD3",
-                         "localExchangeTicker": "QSML" if us else "QCHF",
-                         "productPageUrl": "/us/products/1/example" if us else "/ch/individual/en/products/2/example",
-                         "fundName": "Example"}}
-            return fetcher.Response(url, 200, json.dumps(doc).encode(), "application/json")
-        if url.endswith("latest-holdings.csv"):
-            return fetcher.Response(url, 200, US_CSV.encode(), "text/csv")
-        if url.endswith(".ajax"):
-            return fetcher.Response(url, 200, json.dumps(GRID).encode(), "application/json")
-        return fetcher.Response(url, 200, PAGE.encode(), "text/html")
+
+def ishares_site(**routes):
+    return FakeClient({".jsn": _products, "latest-holdings.csv": US_CSV, ".ajax": GRID, **routes, "/products/": PAGE})
 
 
 def test_ishares_claims_both_sites_and_backfills_the_swiss_dates(tmp_path):
-    client = _FakeIShares()
+    client = ishares_site()
     ctx = Context(client=client)
     p = IShares()
     ch = p.claim(Fund(ref="isin:XX0000000900", isin="XX0000000900"), ctx)
@@ -107,7 +98,7 @@ def test_ishares_claims_both_sites_and_backfills_the_swiss_dates(tmp_path):
     assert p.dates(us, date(2026, 1, 1), date(2026, 12, 31), ctx) is None
     assert p.latest(ch, ctx) == date(2026, 10, 12)
     assert p.fetch(ch, date(2026, 9, 30), tmp_path / "ch", ctx) == date(2026, 9, 30)
-    assert client.urls[-1][1]["asOfDate"] == "20260930"
+    assert client.asked[-1][2]["asOfDate"] == "20260930"
     assert p.parse(tmp_path / "ch").lines
     assert p.fetch(us, None, tmp_path / "us", ctx) == date(2026, 10, 12)
     assert len(p.parse(tmp_path / "us").lines) == 4
@@ -184,25 +175,8 @@ def test_invesco_us_fund_by_cusip():
     assert inv.claim(Fund(ref="symbol:QZQX", symbol="QZQX"), ctx) is None
 
 
-class _FakeApi:
-    """Answers by path suffix; a missing suffix is the status it maps to."""
-
-    def __init__(self, answers):
-        self.answers, self.urls = answers, []
-
-    def get(self, url, params=None, headers=None):
-        self.urls.append(url)
-        for suffix, body in self.answers.items():
-            if url.endswith(suffix):
-                if isinstance(body, int):
-                    raise fetcher.FetchError(url, body, "refused")
-                return fetcher.Response(url, 200, body if isinstance(body, bytes) else json.dumps(body).encode(),
-                                        "application/json")
-        raise fetcher.FetchError(url, 404, "Not Found")
-
-
 def test_invesco_fetch_skips_a_missing_index_and_swaps(tmp_path):
-    api = _FakeApi({"holdings/fund": {"effectiveDate": "2026-10-12", "holdings": [
+    api = FakeClient({"holdings/fund": {"effectiveDate": "2026-10-12", "holdings": [
         {"name": "Alpha Inc", "isin": "XX0000000941", "weight": 100.0, "currency": "USD"}]},
         "holdings/index": 500, "/swaps": 404})
     inv = Invesco()
@@ -216,7 +190,7 @@ def test_invesco_fetch_skips_a_missing_index_and_swaps(tmp_path):
 
 def test_invesco_fetch_fails_without_the_fund_holdings(tmp_path):
     inv = Invesco()
-    ctx = Context(client=_FakeApi({"holdings/fund": 500}))
+    ctx = Context(client=FakeClient({"holdings/fund": 500}))
     claim = {"ref": "isin:XX0000000940", "site": "ucits", "id": "XX0000000940"}
     with pytest.raises(fetcher.FetchError):
         inv.fetch(claim, None, tmp_path, ctx)
@@ -230,24 +204,52 @@ def test_invesco_claims_etfs_only():
 
 
 def test_xtrackers_fetch_and_claims(tmp_path):
-    from providers.xtrackers import EXPORT
     book = make_xlsx(XT)
-    api = _FakeApi({"/XX0000000910/": book})
+    api = FakeClient({"/XX0000000910/": book})
     x = Xtrackers()
     ctx = Context(client=api)
     claim = x.claim(Fund(ref="isin:XX0000000910", isin="XX0000000910", name="Xtrackers Example UCITS ETF"), ctx)
     x.fetch(claim, None, tmp_path, ctx)
-    assert api.urls == [EXPORT.format(isin="XX0000000910")]
+    assert api.urls() == [EXPORT.format(isin="XX0000000910")]
     assert len(x.parse(tmp_path).lines) == 3
     # A US Xtrackers ETF is no UCITS export's.
     assert x.claim(Fund(ref="isin:US0000000951", isin="US0000000951", name="Xtrackers Example ETF"), ctx) is None
     with pytest.raises(ProviderError, match="workbook"):
         x.fetch({"ref": "isin:XX0000000919", "isin": "XX0000000919"}, None, tmp_path / "bad",
-                Context(client=_FakeApi({"/XX0000000919/": b"<html>not here</html>"})))
+                Context(client=FakeClient({"/XX0000000919/": b"<html>not here</html>"})))
 
 
 def test_ishares_does_not_match_a_ucits_fund_by_a_us_ticker():
     p = IShares()
-    ctx = Context(client=_FakeIShares())
+    ctx = Context(client=ishares_site())
     # The fund's ISIN is in neither list; its ticker is a US fund's.
     assert p.claim(Fund(ref="isin:XX0000000999", isin="XX0000000999", symbol="QSML"), ctx) is None
+
+
+def test_ishares_fetch_refuses_a_day_the_site_does_not_serve_and_an_answer_that_is_not_json(tmp_path):
+    p = IShares()
+    ctx = Context(client=ishares_site())
+    ch = p.claim(Fund(ref="isin:XX0000000900", isin="XX0000000900"), ctx)
+    with pytest.raises(Unavailable, match="2026-08-31"):
+        p.fetch(ch, date(2026, 8, 31), tmp_path / "a", ctx)
+    ctx = Context(client=ishares_site(**{".ajax": "<html>maintenance</html>"}))
+    with pytest.raises(fetcher.FetchError, match="not JSON"):
+        p.fetch(p.claim(Fund(ref="isin:XX0000000900", isin="XX0000000900"), ctx), None, tmp_path / "b", ctx)
+    assert not (tmp_path / "b").exists()
+
+
+def test_ishares_probe_reads_both_product_lists():
+    client = ishares_site()
+    assert IShares().probe(Context(client=client)) == "iShares product lists: 4 identifiers"
+    assert len(client.urls()) == 2
+
+
+def test_xtrackers_and_invesco_have_nothing_cheap_to_ask():
+    for p in (Xtrackers(), Invesco()):
+        assert p.probe(Context(client=None)) == "nothing to probe"
+
+
+def test_invesco_fetch_refuses_an_answer_that_is_not_json(tmp_path):
+    ctx = Context(client=FakeClient({"holdings/fund": "<html>busy</html>"}))
+    with pytest.raises(fetcher.FetchError, match="not JSON"):
+        Invesco().fetch({"ref": "isin:XX0000000940", "site": "ucits", "id": "XX0000000940"}, None, tmp_path, ctx)

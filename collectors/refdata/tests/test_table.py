@@ -1,10 +1,11 @@
 """The holdings table and the XLSX reader, on invented files."""
 
-import io
-import zipfile
 from datetime import date
 
+import pytest
+
 from providers import table, xlsx
+from tests.helpers import make_xlsx
 
 DAY = date(2026, 10, 12)
 
@@ -33,31 +34,28 @@ def test_issuer_days():
     assert table.parse_day("someday") is None
 
 
-def _book(sheet_xml, shared=None, target="worksheets/sheet1.xml"):
-    ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
-    rel = 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as z:
-        z.writestr("xl/workbook.xml", f'<workbook {ns} {rel}><sheets><sheet name="S" sheetId="1" r:id="rId1"/>'
-                                      '</sheets></workbook>')
-        z.writestr("xl/_rels/workbook.xml.rels",
-                   '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                   f'<Relationship Id="rId1" Target="{target}" Type="worksheet"/></Relationships>')
-        if shared is not None:
-            z.writestr("xl/sharedStrings.xml", f"<sst {ns}>" + "".join(f"<si><t>{s}</t></si>" for s in shared)
-                       + "</sst>")
-        path = target.lstrip("/")
-        z.writestr(path if path.startswith("xl/") else f"xl/{path}",
-                   f"<worksheet {ns}><sheetData>{sheet_xml}</sheetData></worksheet>")
-    return buf.getvalue()
-
-
 def test_xlsx_shared_strings_numbers_sparse_cells_and_an_absolute_target():
     sheet = ('<row r="1"><c r="A1" t="s"><v>0</v></c><c r="C1" t="s"><v>1</v></c></row>'
              '<row r="3"><c t="s"><v>2</v></c><c><v>12.5</v></c></row>')
-    got = xlsx.rows(_book(sheet, shared=["Name", "Weight", "Alpha"], target="/xl/worksheets/data.xml"))
+    got = xlsx.rows(make_xlsx(sheet=sheet, shared=["Name", "Weight", "Alpha"], target="/xl/worksheets/data.xml"))
     # Row 2 is omitted by the file; a skipped column reads as "".
     assert got == [["Name", "", "Weight"], ["Alpha", "12.5"]]
+
+
+@pytest.mark.parametrize("data", [b"<html>not here</html>", make_xlsx([["Name"]])[:200]])
+def test_bytes_that_are_no_workbook_are_refused(data):
+    with pytest.raises(xlsx.XlsxError, match="not a readable workbook"):
+        xlsx.rows(data)
+
+
+def test_csv_rows_and_a_composition_of_its_lines():
+    rows = table.csv_rows('Name,Weight\n"Alpha, Inc",33.3\nBeta,33.3\nGamma,33.4\nDelta,-\n')
+    lns = table.lines(rows, 0, ref="r", as_of=DAY)
+    assert lns[0]["name"] == "Alpha, Inc"
+    c = table.composition("r", DAY, lns, provider="p", payload={"sub_fund": "Alpha"})
+    # The weights stated add up exactly; a line without one counts all the same.
+    assert (c["weight_sum"], c["line_count"], c["payload"]) == ("100", 4, {"sub_fund": "Alpha"})
+    assert table.composition("r", DAY, lns[3:], provider="p")["weight_sum"] is None
 
 
 def test_a_dash_is_no_label():

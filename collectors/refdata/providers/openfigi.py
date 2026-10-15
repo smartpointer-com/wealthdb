@@ -15,14 +15,12 @@ OpenFIGI's mapping API.
   bond's type names its market, and gold reads the bond's sector from
   it. An identifier it does not know is still a lookup.
 
-Terms: Bloomberg "hereby dedicates FIGI Identifiers to the public
-domain", including "redistribution of the FIGI Identifiers to your
-customers for their use" (OpenFIGI terms of service, §1). The API takes
-25 requests a minute without a key.
+Terms: README.md, openfigi.
 """
 
 from __future__ import annotations
 
+import itertools
 import json
 from datetime import date
 from pathlib import Path
@@ -30,7 +28,7 @@ from pathlib import Path
 import fetcher
 from collectorkit import bronze
 
-from .base import Parsed, Provider, ProviderError, read_meta, today_utc, write_meta
+from .base import Parsed, Provider, ProviderError, ident, read_meta, row, today_utc, write_meta
 
 API = "https://api.openfigi.com/v3/mapping"
 DOC = "mapping.json"
@@ -40,16 +38,12 @@ BATCH = 5
 def job(security) -> dict | None:
     """The mapping job that names a security, the strongest identifier
     first."""
-    key = security.key
-    isin = security.isin or (key[5:] if key.startswith("isin:") else None)
-    if isin:
-        return {"idType": "ID_ISIN", "idValue": isin.upper()}
-    cusip = security.cusip or (key[6:] if key.startswith("cusip:") else None)
-    if cusip:
-        return {"idType": "ID_CUSIP", "idValue": cusip.upper()}
-    symbol = security.symbol or (key[7:] if key.startswith("symbol:") else None)
-    if symbol:
-        return {"idType": "TICKER", "idValue": symbol.upper(), "exchCode": "US"}
+    if isin := ident(security, "isin"):
+        return {"idType": "ID_ISIN", "idValue": isin}
+    if cusip := ident(security, "cusip"):
+        return {"idType": "ID_CUSIP", "idValue": cusip}
+    if symbol := ident(security, "symbol"):
+        return {"idType": "TICKER", "idValue": symbol, "exchCode": "US"}
     return None
 
 
@@ -67,10 +61,7 @@ class OpenFigi(Provider):
         each a small share."""
         if security.symbol or "sector" not in security.missing or security.asset_class != "public_equity":
             return False
-        key = security.key
-        isin = (security.isin or (key[5:] if key.startswith("isin:") else "")).upper()
-        cusip = (security.cusip or (key[6:] if key.startswith("cusip:") else "")).upper()
-        return isin.startswith("US") or (cusip[:1].isdigit())
+        return ident(security, "isin").startswith("US") or ident(security, "cusip")[:1].isdigit()
 
     def claim_security(self, security, ctx):
         j = job(security)
@@ -82,20 +73,23 @@ class OpenFigi(Provider):
 
     def _answer(self, claim, ctx) -> dict:
         """This claim's job result; the request also answers the next jobs
-        waiting, up to BATCH in all."""
+        waiting, up to BATCH in all. The jobs are answered in the order
+        they were claimed, so a cursor past the answered ones finds the
+        next."""
         answers = ctx.cache.setdefault("openfigi_answers", {})
         if claim["key"] not in answers:
-            pending = [c for c in ctx.cache.get("openfigi_pending", []) if c["key"] not in answers
-                       and c["key"] != claim["key"]]
-            batch = [claim, *pending[:BATCH - 1]]
+            pending = ctx.cache.get("openfigi_pending", [])
+            start = ctx.cache.get("openfigi_cursor", 0)
+            while start < len(pending) and pending[start]["key"] in answers:
+                start += 1
+            ctx.cache["openfigi_cursor"] = start
+            others = (c for c in itertools.islice(pending, start, None)
+                      if c["key"] not in answers and c["key"] != claim["key"])
+            batch = [claim, *itertools.islice(others, BATCH - 1)]
             try:
-                resp = ctx.client.post_json(API, [c["job"] for c in batch])
-                try:
-                    results = resp.json()
-                except ValueError as e:
-                    raise ProviderError(f"{resp.url} is not JSON: {e}") from e
+                results = ctx.client.post_json(API, [c["job"] for c in batch]).json()
                 if not isinstance(results, list) or len(results) != len(batch):
-                    raise ProviderError(f"{resp.url} answered {len(batch)} jobs with something else")
+                    raise ProviderError(f"{API} answered {len(batch)} jobs with something else")
             except (ProviderError, fetcher.FetchError) as e:
                 for c in batch:
                     answers[c["key"]] = e
@@ -109,7 +103,6 @@ class OpenFigi(Provider):
 
     def fetch_security(self, claim, outdir: Path, ctx):
         result = self._answer(claim, ctx)
-        outdir.mkdir(parents=True, exist_ok=True)
         bronze.atomic_write_json(outdir / DOC, {"job": claim["job"], "result": result})
         write_meta(outdir, provider=self.name, key=claim["key"], as_of=today_utc().isoformat())
 
@@ -129,17 +122,16 @@ def parse_mapping(doc: dict, key: str, as_of: date, *, provider: str) -> Parsed:
     data = result.get("data") or []
     first = next((d for d in data if d.get("exchCode") == "US"), data[0] if data else {})
     us = first.get("exchCode") == "US"
-    row = {"security_key": key, "as_of": as_of, "provider": provider,
-           "isin": j.get("idValue") if j.get("idType") == "ID_ISIN" else None,
-           "cusip": j.get("idValue") if j.get("idType") == "ID_CUSIP" else None,
-           "figi": first.get("compositeFIGI") or first.get("figi"), "lei": None,
-           "ticker": first.get("ticker") if us else None, "exchange": first.get("exchCode"),
-           "name": first.get("name"),
-           "security_type": first.get("securityType2") or first.get("securityType"), "listing_currency": None,
-           "payload": {k: v for k, v in {"found": bool(data), "listings": len(data),
-                                         "local_ticker": None if us else first.get("ticker"),
-                                         "market_sector": first.get("marketSector"),
-                                         "share_class_figi": first.get("shareClassFIGI"),
-                                         "message": result.get("error") or result.get("warning")}.items()
-                       if v not in (None, "")}}
-    return Parsed(securities=[row])
+    return Parsed(securities=[row(
+        "securities", security_key=key, as_of=as_of, provider=provider,
+        isin=j.get("idValue") if j.get("idType") == "ID_ISIN" else None,
+        cusip=j.get("idValue") if j.get("idType") == "ID_CUSIP" else None,
+        figi=first.get("compositeFIGI") or first.get("figi"), ticker=first.get("ticker") if us else None,
+        exchange=first.get("exchCode"), name=first.get("name"),
+        security_type=first.get("securityType2") or first.get("securityType"),
+        payload={k: v for k, v in {"found": bool(data), "listings": len(data),
+                                   "local_ticker": None if us else first.get("ticker"),
+                                   "market_sector": first.get("marketSector"),
+                                   "share_class_figi": first.get("shareClassFIGI"),
+                                   "message": result.get("error") or result.get("warning")}.items()
+                 if v not in (None, "")})])
