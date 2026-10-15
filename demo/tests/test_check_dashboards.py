@@ -26,7 +26,7 @@ class RunCard(unittest.TestCase):
 
     def test_two_cut_off_responses_fail(self):
         ok, _rows, err, n = self.run_with((202, None), (202, None))
-        self.assertEqual((ok, err, n), (False, "None", 2))
+        self.assertEqual((ok, err, n), (False, "no result", 2))
 
     def test_a_reported_error_fails_at_once(self):
         ok, _rows, err, n = self.run_with((202, {"status": "failed", "error": "bad column"}))

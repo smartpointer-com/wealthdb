@@ -39,32 +39,42 @@ def ledger(root, name):
     return list(csv.DictReader((root / "overrides" / name).read_text().splitlines()))
 
 
+BUILT = {}
+
+
+def setUpModule():
+    """One full build of the default household, shared by every test:
+    no test writes to it."""
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="demo-inv-"))
+    root = tmp / "root"
+    generate.build(root, AS_OF, SEED)
+    inputs = spec.load()
+    sources = [s["id"] for s in inputs.spec["sources"]]
+    rows = {}
+    for src in sources:
+        con = sqlite3.connect(root / "silver" / f"{src}.db")
+        con.row_factory = sqlite3.Row
+        rows[src] = {t: [dict(r) for r in con.execute(f"SELECT * FROM {t}")]
+                     for t in ("accounts", "portfolios", "instruments", "positions", "position_lots",
+                               "cash_balances", "fx_rates", "transactions", "realized_lots",
+                               "dump_runs", "meta", *silver.REFERENCE_TABLES)}
+        con.close()
+    BUILT.update(tmp=tmp, root=root, inputs=inputs, sources=sources, rows=rows,
+                 cadence={s["id"]: s["cadence"] for s in inputs.spec["sources"]},
+                 config=json.loads((root / "wealthdb.cfg").read_text()))
+
+
+def tearDownModule():
+    shutil.rmtree(BUILT["tmp"], ignore_errors=True)
+
+
 class Built(unittest.TestCase):
-    """One full build of the default household, shared by every test."""
+    """A test of the module's one build."""
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = pathlib.Path(tempfile.mkdtemp(prefix="demo-inv-"))
-        cls.root = cls.tmp / "root"
-        generate.build(cls.root, AS_OF, SEED)
-        cls.inputs = spec.load()
-        cls.sources = [s["id"] for s in cls.inputs.spec["sources"]]
-        cls.cadence = {s["id"]: s["cadence"] for s in cls.inputs.spec["sources"]}
-        cls.reference = {s["id"] for s in cls.inputs.spec["sources"] if s.get("reference")}
-        cls.rows = {}
-        for src in cls.sources:
-            con = sqlite3.connect(cls.root / "silver" / f"{src}.db")
-            con.row_factory = sqlite3.Row
-            cls.rows[src] = {t: [dict(r) for r in con.execute(f"SELECT * FROM {t}")]
-                             for t in ("accounts", "portfolios", "instruments", "positions", "position_lots",
-                                       "cash_balances", "fx_rates", "transactions", "realized_lots",
-                                       "dump_runs", "meta", *silver.REFERENCE_TABLES)}
-            con.close()
-        cls.config = json.loads((cls.root / "wealthdb.cfg").read_text())
-
-    @classmethod
-    def tearDownClass(cls):
-        shutil.rmtree(cls.tmp, ignore_errors=True)
+        for name, value in BUILT.items():
+            setattr(cls, name, value)
 
     def all(self, table):
         for src in self.sources:
@@ -404,9 +414,9 @@ class TestCalendar(Built):
                     month = dates.add_months(month, 1)
 
     def test_every_source_is_fresh_at_as_of(self):
-        # A reference source is dated by the month-ends it describes.
+        # The reference source is dated by the month-ends it describes.
         for src in self.sources:
-            if src in self.reference:
+            if src == silver.REFERENCE_SOURCE:
                 continue
             latest = max(dates.day_of(r["snapshot_at"]) for t in ("positions", "cash_balances", "fx_rates")
                          for r in self.rows[src][t]) if any(self.rows[src][t] for t in
@@ -434,9 +444,11 @@ class TestReference(Built):
     with the gaps the catalogue gives, keyed the way gold keys the
     holdings they describe."""
 
-    def setUp(self):
-        self.ref = self.rows[silver.REFERENCE_SOURCE]
-        self.cat = reference.load()
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.ref = cls.rows[silver.REFERENCE_SOURCE]
+        cls.cat = reference.load()
 
     def test_only_the_reference_source_states_reference_rows(self):
         for src in self.sources:
@@ -469,9 +481,6 @@ class TestReference(Built):
             self.assertIn(c["basis"], ("holdings", "collateral", "index"))
 
     def test_the_catalogue_exercises_every_rule(self):
-        by_ref = collections.defaultdict(set)
-        for c in self.ref["compositions"]:
-            by_ref[c["fund_ref"]].add((c["basis"], dates.day_of(c["as_of"])))
         swap = [f for f in self.cat["funds"] if f.get("basis") == "collateral"]
         self.assertTrue(swap and all("index" in f for f in swap), "a swap fund with index lines")
         self.assertTrue(any(a.get("hedged_currency") for f in self.cat["funds"] for a in [f.get("attributes", {})]))
@@ -480,12 +489,31 @@ class TestReference(Built):
         self.assertTrue(any(sid in funds for f in self.cat["funds"] for sid in f["lines"]), "a fund of funds")
         late = [f for f in self.cat["funds"] if dates.parse(f["from"]) > self.inputs.history_start]
         self.assertTrue(late, "a fund whose compositions start after it is held")
+
+    def test_each_fund_has_the_compositions_its_entry_gives(self):
+        """From the month-end of `from`, none inside a gap, on the bases
+        the entry names, and no cash line where the fund leaves a
+        remainder."""
+        days, bases = collections.defaultdict(set), collections.defaultdict(set)
+        for c in self.ref["compositions"]:
+            days[c["fund_ref"]].add(dates.day_of(c["as_of"]))
+            bases[c["fund_ref"]].add(c["basis"])
+        cash = {r["fund_ref"] for r in self.ref["lines"] if r["asset_type"] == "Cash"}
         for f in self.cat["funds"]:
             ref = reference.fund_ref(self.inputs.instruments[f["instrument"]])
-            self.assertTrue(by_ref[ref], f"{f['instrument']} has compositions under {ref}")
+            self.assertTrue(days[ref], f"{f['instrument']} has compositions under {ref}")
+            first = dates.parse(f["from"])
+            self.assertEqual(min(days[ref]), dates.month_end(first.year, first.month), ref)
+            for lo, hi in f.get("gaps", []):
+                self.assertFalse([d for d in days[ref] if lo <= f"{d:%Y-%m}" <= hi], ref)
+            want = {f.get("basis", "holdings")} | ({"index"} if "index" in f else set())
+            self.assertEqual(bases[ref], want, ref)
+            if f.get("remainder"):
+                self.assertNotIn(ref, cash, ref)
 
     def test_the_config_proxies_and_tags_name_what_exists(self):
         exposure = self.config["exposure"]
+        self.assertLessEqual(set(exposure["custody"]), set(self.sources))
         refs = {reference.fund_ref(i) for i in self.inputs.instruments.values()}
         for key, p in exposure["proxies"].items():
             self.assertIn(key, refs)
@@ -498,9 +526,20 @@ class TestReference(Built):
             self.assertIn(t["instrument"], held, f"{t['silver_source_id']}/{t['instrument']}")
 
     def test_isins_have_the_demo_shape(self):
-        for r in self.ref["lines"]:
-            if r["isin"]:
-                self.assertRegex(r["isin"], r"^[A-Z]{2}000[A-Z0-9]{4}[0-9]{3}$")
+        """Every ISIN the catalogues state, and so every one a line or a
+        holding carries."""
+        isins = [s["isin"] for s in self.cat["securities"] if s.get("isin")]
+        isins += [i["isin"] for i in self.inputs.instruments.values() if i.get("isin")]
+        self.assertTrue(isins)
+        for isin in isins:
+            self.assertRegex(isin, r"^[A-Z]{2}000[A-Z0-9]{4}[0-9]{3}$")
+
+    def test_a_security_that_is_an_instrument_restates_none_of_it(self):
+        for s in self.cat["securities"]:
+            inst = self.inputs.instruments.get(s["id"])
+            if inst:
+                self.assertFalse({"name", "currency", "ticker"} & set(s), s["id"])
+                self.assertFalse(inst.get("isin") and "isin" in s, s["id"])
 
 
 if __name__ == "__main__":

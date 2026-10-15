@@ -41,3 +41,11 @@ wealthdb_image_tag() {
     fi
     printf '%s\n' "$_wit_tag"
 }
+
+# wealthdb_export_image_tag ROOT: set WEALTHDB_IMAGE_TAG to the tag for
+# the checkout at ROOT and export it, so a wrapper the caller starts
+# reads the same tag; exit status 2 as wealthdb_image_tag's.
+wealthdb_export_image_tag() {
+    WEALTHDB_IMAGE_TAG="$(wealthdb_image_tag "$1")" || return 2
+    export WEALTHDB_IMAGE_TAG
+}

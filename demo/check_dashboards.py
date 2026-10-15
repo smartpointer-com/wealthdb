@@ -131,7 +131,7 @@ def run_card(base, auth, dash, dc, ptypes, values):
         if ok or (isinstance(res, dict) and res.get("error")):
             break
     rows = (res.get("data") or {}).get("rows", []) if isinstance(res, dict) else []
-    err = None if ok else (res.get("error") if isinstance(res, dict) else str(res))
+    err = None if ok else (res.get("error") if isinstance(res, dict) else res) or "no result"
     return ok, rows, err, body["parameters"]
 
 
@@ -149,11 +149,12 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--base", default=f"http://127.0.0.1:{config.WEB_PORT}")
     ap.add_argument("--email", default="admin@wealthdb.local")
-    ap.add_argument("--password-file", default=str(demo_root() / "web/admin-password.txt"))
+    ap.add_argument("--password-file")
     ap.add_argument("--first-year", type=int, default=spec.load().history_start.year)
     ap.add_argument("--workers", type=int, default=3)
     a = ap.parse_args(argv)
-    password = pathlib.Path(a.password_file).read_text().strip()
+    password_file = pathlib.Path(a.password_file) if a.password_file else demo_root() / "web/admin-password.txt"
+    password = password_file.read_text().strip()
     admin_auth, key_id, auth = mint_key(a.base, a.email, password)
     today = dt.datetime.now(dt.timezone.utc).date()
     try:

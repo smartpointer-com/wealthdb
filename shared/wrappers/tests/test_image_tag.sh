@@ -24,7 +24,8 @@ mkdir -p "$TMP/bin" "$TMP/cfg" "$TMP/data" "$TMP/cache"
 TREE="$TMP/tree"
 mkdir -p "$TREE/wealthdb" "$TREE/shared/wrappers"
 cp "$ROOT/wealthdb/wealthdb" "$ROOT/wealthdb/wealthdb-go" "$TREE/wealthdb/"
-cp "$ROOT/shared/wrappers/wrapper-lib.sh" "$ROOT/shared/wrappers/image-tag.sh" "$TREE/shared/wrappers/"
+cp "$ROOT/shared/wrappers/wrapper-lib.sh" "$ROOT/shared/wrappers/image-tag.sh" \
+    "$ROOT/shared/wrappers/demo-root.sh" "$TREE/shared/wrappers/"
 mkdir -p "$TREE/mcp" "$TREE/web"
 cp "$ROOT/Makefile" "$TREE/"
 cp "$ROOT/mcp/mcp" "$TREE/mcp/"
@@ -34,7 +35,7 @@ ln -s "$TREE/wealthdb/wealthdb" "$TMP/bin/wealthdb"
 
 # make_tag: the tag the Makefile resolves, from a dry run of `help`.
 make_tag() {
-    (cd "$TMP" && env "$@" make -f "$TREE/Makefile" -np help 2>&1) | sed -n 's/^TAG := //p'
+    (cd "$TMP" && env "$@" make -f "$TREE/Makefile" -np help 2>/dev/null) | sed -n 's/^TAG := //p'
 }
 # knob_tag SCRIPT: the image mcp or web resolves, sourced as their tests
 # do. Sourced, each finds its directory from $0, so $0 is a path beside it.
@@ -109,7 +110,8 @@ has "mcp reads .image-tag" "wealthdb:pinned" "$(knob_tag "$TREE/mcp/mcp")"
 has "web reads .image-tag" "wealthdb/metabase:pinned" "$(knob_tag "$TREE/web/web")"
 rm -f "$TREE/.image-tag"
 has "make defaults to latest" "latest" "$(make_tag -u WEALTHDB_IMAGE_TAG)"
-printf 'pinned\n' > "$TREE/.image-tag"
+has "mcp defaults to latest" "wealthdb:latest" "$(knob_tag "$TREE/mcp/mcp")"
+has "web defaults to latest" "wealthdb/metabase:latest" "$(knob_tag "$TREE/web/web")"
 
 # A malformed .image-tag stops the wrapper before docker runs: it never
 # falls back to latest.
@@ -123,10 +125,12 @@ fi
 out="$(collector_build "" 2>&1)"; rc=$?
 if [ "$rc" -eq 2 ]; then ok "a malformed .image-tag stops a collector wrapper"
 else bad "a malformed .image-tag stops a collector wrapper (exit $rc)"; fi
-if (cd "$TMP" && env -u WEALTHDB_IMAGE_TAG make -f "$TREE/Makefile" -n help >/dev/null 2>&1); then
+if out="$(cd "$TMP" && env -u WEALTHDB_IMAGE_TAG make -f "$TREE/Makefile" -n help 2>&1 >/dev/null)"; then
     bad "a malformed .image-tag stops make"
-else
+elif printf '%s\n' "$out" | grep -qF '*** no image tag'; then
     ok "a malformed .image-tag stops make"
+else
+    bad "a malformed .image-tag stops make, for another reason: $out"
 fi
 rm -f "$TREE/.image-tag"
 
@@ -142,12 +146,10 @@ done
 
 # Every Dockerfile that builds on a shared base takes the tag from the
 # build argument, so no checkout silently builds on another's bases.
-for f in "$ROOT"/collectors/*/Dockerfile "$ROOT"/shared/images/*.Dockerfile; do
-    if grep -qE '^FROM wealthdb/.*:latest' "$f"; then
-        bad "${f#"$ROOT"/} pins a shared base to :latest"
-    fi
-done
-ok "no Dockerfile pins a shared base to :latest"
+untagged="$(cd "$ROOT" && grep -HE '^FROM[[:space:]]+wealthdb/' collectors/*/Dockerfile shared/images/*.Dockerfile |
+    grep -vF ':${WEALTHDB_IMAGE_TAG}')"
+if [ -z "$untagged" ]; then ok "every FROM a shared base takes the tag"
+else bad "a FROM a shared base without the tag: $untagged"; fi
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

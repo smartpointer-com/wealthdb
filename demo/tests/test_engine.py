@@ -82,8 +82,8 @@ class TestThroughTheEngine(unittest.TestCase):
         cls.root, cls.load = build_and_load("short", FIRST)
 
     def test_every_source_loads(self):
-        for src in ("fx", "brindlecove", "quayvane", "tamberlow", "aubervane", "driftwren", "homestead", "refdata"):
-            self.assertIn(f"load: {src}:", self.load)
+        for src in spec.load().spec["sources"]:
+            self.assertIn(f"load: {src['id']}:", self.load)
         self.assertNotIn("*", engine(self.root, "status", read_only=True))
 
     def test_nothing_uncategorised(self):
@@ -124,8 +124,9 @@ class TestThroughTheEngine(unittest.TestCase):
         proxied: none is a leaf."""
         day = ["-d", FIRST.isoformat()]
         total = Decimal(report(self.root, "holdings", "global", *day)[0]["total_value_USD"])
-        for view in ("classes", "sectors", "countries", "currencies", "securities", "funds"):
-            rows = report(self.root, "exposure", view, *day)
+        views = {view: report(self.root, "exposure", view, *day)
+                 for view in ("classes", "sectors", "countries", "currencies", "securities", "funds")}
+        for view, rows in views.items():
             got = sum(Decimal(r["value_USD"] or 0) for r in rows)
             self.assertLessEqual(abs(got - total), Decimal("0.01") * len(rows), view)
         how = [r for r in report(self.root, "exposure", "coverage", *day) if r["section"] == "how"]
@@ -134,11 +135,14 @@ class TestThroughTheEngine(unittest.TestCase):
         inputs = spec.load()
         covered = {reference.fund_ref(inputs.instruments[f["instrument"]])
                    for f in reference.load()["funds"] if dates.parse(f["from"]) <= FIRST}
-        funds = {r["fund"]: r["via"] for r in report(self.root, "exposure", "funds", *day)}
+        funds = {r["fund"]: r["via"] for r in views["funds"]}
         self.assertTrue(covered)
         for ref in covered:
             self.assertEqual(funds.get(ref), "direct", ref)
-        self.assertEqual(funds.get("isin:US000LW52900"), "proxy", "the 529 portfolio's proxy")
+        proxies = inputs.spec["config"]["exposure"]["proxies"]
+        self.assertTrue(proxies)
+        for ref in proxies:
+            self.assertEqual(funds.get(ref), "proxy", ref)
 
     def test_nothing_unpaired(self):
         rows = report(self.root, "cashflow", "flows", "-", "today", "--period", "total", "--level", "group")
@@ -183,6 +187,7 @@ class TestRollForward(unittest.TestCase):
             ("cashflow", "flows", "-", "today", "--level", "group"), ("cashflow", "coverage", "-", "today"),
             ("gains", "positions", "-", "today", "-C", "all"), ("gains", "realized", "-", "today", "--documents", "all"),
             ("transactions", "-", "today", "-C", "all"),
+            *(("exposure", view, "-d", SECOND.isoformat()) for view in ("funds", "classes", "coverage")),
         ]
         for args in reports:
             rolled = sorted(engine(self.rolled, *args, "-f", "csv", read_only=True).splitlines())

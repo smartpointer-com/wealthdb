@@ -20,12 +20,9 @@
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-# The image's tag: WEALTHDB_IMAGE_TAG, else the checkout's .image-tag,
-# else latest (shared/wrappers/image-tag.sh).
 # shellcheck disable=SC1091
 . "$ROOT/shared/wrappers/image-tag.sh"
-WEALTHDB_IMAGE_TAG="$(wealthdb_image_tag "$ROOT")" || exit 2
-export WEALTHDB_IMAGE_TAG
+wealthdb_export_image_tag "$ROOT" || exit 2
 WEALTHDB="${WEALTHDB_BIN:-$ROOT/wealthdb/wealthdb}"
 
 INSECURE_WARNING="INSECURE: authentication is off; any process on this machine can read this household's finances."
@@ -37,7 +34,7 @@ INSECURE_WARNING="INSECURE: authentication is off; any process on this machine c
 # data root and config resolve exactly as the engine wrapper resolves
 # them, so the same-path mounts land where the config expects.
 _resolve_knobs() {
-    IMAGE="wealthdb:${WEALTHDB_IMAGE_TAG:-latest}"
+    IMAGE="wealthdb:$WEALTHDB_IMAGE_TAG"
     CONTAINER="${WEALTHDB_MCP_CONTAINER:-wealthdb-mcp}"
     DATA_DIR="${WEALTHDB_MCP_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb/mcp}"
     BIND="${WEALTHDB_MCP_BIND:-both}"   # both | v4 | v6
@@ -221,10 +218,10 @@ _gen_token() {
 # the current engine image — after a rebuild, the server still runs
 # the old binary until it is restarted.
 _image_outdated() {
-    local running latest
+    local running current
     running="$(docker inspect -f '{{.Image}}' "$CONTAINER" 2>/dev/null)" || return 1
-    latest="$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null)" || return 1
-    [ -n "$running" ] && [ -n "$latest" ] && [ "$running" != "$latest" ]
+    current="$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null)" || return 1
+    [ -n "$running" ] && [ -n "$current" ] && [ "$running" != "$current" ]
 }
 
 # _base_url prints the server's base URL on the loopback address the

@@ -14,11 +14,8 @@
 set -eu
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
-# The image's tag: WEALTHDB_IMAGE_TAG, else the checkout's .image-tag,
-# else latest (shared/wrappers/image-tag.sh).
 . "$REPO/../shared/wrappers/image-tag.sh"
-WEALTHDB_IMAGE_TAG="$(wealthdb_image_tag "$REPO/..")" || exit 2
-export WEALTHDB_IMAGE_TAG
+wealthdb_export_image_tag "$REPO/.." || exit 2
 IMAGE="wealthdb:$WEALTHDB_IMAGE_TAG"
 # Go toolchain caches under the XDG cache dir, namespaced with the
 # rest of the fleet's caches (debug dirs, startupcache).

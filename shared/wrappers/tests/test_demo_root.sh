@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Behaviour test: the demo root a checkout builds into. WEALTHDB_DEMO_ROOT
 # wins; unset, the checkout's .demo-root names it, else ~/wealthdb-demo;
-# a .demo-root that names no directory stops make. The Makefile runs
-# from a copy of the tree, so the checkout's own .demo-root plays no part.
+# a variable or a .demo-root that names no directory stops make. The
+# Makefile runs from a copy of the tree, so the checkout's own .demo-root
+# plays no part.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -31,6 +32,11 @@ printf '  ~/wealthdb-other-demo  \n' > "$TREE/.demo-root"
 is ".demo-root names it, ~ expanded" "/home/u/wealthdb-other-demo" "$(make_root -u WEALTHDB_DEMO_ROOT)"
 is "the variable wins" "/srv/demo" "$(make_root WEALTHDB_DEMO_ROOT=/srv/demo)"
 is "an empty variable is unset" "/home/u/wealthdb-other-demo" "$(make_root WEALTHDB_DEMO_ROOT=)"
+if (cd "$TMP" && env WEALTHDB_DEMO_ROOT='  ' make -f "$TREE/Makefile" -n help >/dev/null 2>&1); then
+    bad "a blank variable stops make"
+else
+    ok "a blank variable stops make"
+fi
 
 for bad_root in 'two words' ''; do
     printf '%s\n' "$bad_root" > "$TREE/.demo-root"

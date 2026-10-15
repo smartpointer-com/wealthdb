@@ -61,7 +61,7 @@ _TABLES = {
 
 # The reference tables: what the funds hold and what the securities are
 # (demohouse/reference.py). Only the reference source writes them.
-REFERENCE_TABLES = ("compositions", "lines", "attributes", "counterparties", "securities", "security_facts")
+REFERENCE_TABLES = reference.TABLES
 
 # The tables of dated facts. The rest are dimensions, which an append
 # re-sends whole and the file keeps once.

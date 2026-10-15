@@ -43,21 +43,16 @@
 # have no `.` entry), so non-collector files don't leak into the list.
 COLLECTORS := $(sort $(notdir $(patsubst %/.,%,$(wildcard collectors/*/.))))
 
-# The tag of every image this tree builds, runs and removes: the engine,
-# the collectors, the shared bases and Metabase. WEALTHDB_IMAGE_TAG wins,
-# else .image-tag, else latest, as shared/wrappers/image-tag.sh decides
-# for every wrapper too. A second checkout pins its own tag and so never
-# rebuilds the images another checkout runs. Exported, so the wrappers
-# the targets call read the same tag.
+# The image tag (see the header), as shared/wrappers/image-tag.sh resolves
+# it for every wrapper. override: an empty WEALTHDB_IMAGE_TAG= on the
+# command line resolves like an unset one. Exported, so the wrappers the
+# targets call read the same tag.
 ROOT_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
-IMAGE_TAG := $(shell WEALTHDB_IMAGE_TAG='$(WEALTHDB_IMAGE_TAG)' sh -c \
+override WEALTHDB_IMAGE_TAG := $(shell WEALTHDB_IMAGE_TAG='$(WEALTHDB_IMAGE_TAG)' sh -c \
 	'. "$$1/shared/wrappers/image-tag.sh" && wealthdb_image_tag "$$1"' sh '$(ROOT_DIR)')
-ifeq ($(IMAGE_TAG),)
+ifeq ($(WEALTHDB_IMAGE_TAG),)
 $(error no image tag: fix .image-tag, or set WEALTHDB_IMAGE_TAG)
 endif
-# override: an empty WEALTHDB_IMAGE_TAG= on the command line resolves
-# like an unset one.
-override WEALTHDB_IMAGE_TAG := $(IMAGE_TAG)
 export WEALTHDB_IMAGE_TAG
 TAG := $(WEALTHDB_IMAGE_TAG)
 
@@ -276,10 +271,8 @@ cleanall-wealthdb: clean-wealthdb
 #
 #   make demo [WEALTHDB_DEMO_ROOT=~/wealthdb-demo] [AS_OF=YYYY-MM-DD] [SEED=…] [FINDINGS=1]
 #
-# WEALTHDB_DEMO_ROOT wins; else the first line of the checkout's
-# git-ignored .demo-root; else ~/wealthdb-demo
-# (shared/wrappers/demo-root.sh). A second checkout pins its own demo
-# there, so it never builds into another checkout's.
+# WEALTHDB_DEMO_ROOT resolves as shared/wrappers/demo-root.sh says, and,
+# as with the image tag, an empty one on the command line reads as unset.
 #
 # `demo` rebuilds silver and gold from scratch; `demo-roll` appends the
 # days since the last build to silver and loads only those. The generator
@@ -287,18 +280,17 @@ cleanall-wealthdb: clean-wealthdb
 # run only against a marked one.
 # AS_OF, SEED and FINDINGS are plain assignments, so only the command line
 # sets them: a variable of that name exported for another tool is ignored.
-DEMO_ROOT_NAMED := $(shell WEALTHDB_DEMO_ROOT='$(WEALTHDB_DEMO_ROOT)' sh -c \
+override WEALTHDB_DEMO_ROOT := $(shell WEALTHDB_DEMO_ROOT='$(WEALTHDB_DEMO_ROOT)' sh -c \
 	'. "$$1/shared/wrappers/demo-root.sh" && wealthdb_demo_root "$$1"' sh '$(ROOT_DIR)')
-ifeq ($(DEMO_ROOT_NAMED),)
+ifeq ($(WEALTHDB_DEMO_ROOT),)
 $(error no demo root: fix .demo-root, or set WEALTHDB_DEMO_ROOT)
 endif
-override WEALTHDB_DEMO_ROOT := $(DEMO_ROOT_NAMED)
 AS_OF    =
 SEED     = harlow-19
 FINDINGS =
 # Absolute and with a leading ~ expanded, so the generator and the engine
 # container see the same directory.
-DEMO_ROOT := $(abspath $(patsubst ~/%,$(HOME)/%,$(patsubst ~,$(HOME),$(strip $(WEALTHDB_DEMO_ROOT)))))
+DEMO_ROOT := $(abspath $(patsubst ~/%,$(HOME)/%,$(patsubst ~,$(HOME),$(WEALTHDB_DEMO_ROOT))))
 DEMO_ENV := WEALTHDB_DATA_ROOT="$(DEMO_ROOT)" XDG_CONFIG_HOME="$(DEMO_ROOT)"
 DEMO_ENGINE := $(DEMO_ENV) $(WEALTHDB) -c "$(DEMO_ROOT)/wealthdb.cfg"
 DEMO_WEB := $(DEMO_ENV) WEALTHDB_CONFIG="$(DEMO_ROOT)/wealthdb.cfg" \
@@ -310,19 +302,16 @@ DEMO_MCP := $(DEMO_ENV) WEALTHDB_CONFIG="$(DEMO_ROOT)/wealthdb.cfg" \
             WEALTHDB_MCP_DATA_DIR="$(DEMO_ROOT)/mcp" \
             WEALTHDB_MCP_ENV_FILE="$(DEMO_ROOT)/mcp.env" $(WEALTHDB) mcp
 DEMO_GEN_ARGS = --root "$(DEMO_ROOT)" --seed "$(SEED)" $(if $(AS_OF),--as-of $(AS_OF))
-DEMO_ROOT_SET = @test -n "$(DEMO_ROOT)" || { echo "$@: WEALTHDB_DEMO_ROOT is empty" >&2; exit 2; }
 DEMO_ROOT_MARKED = @test -f "$(DEMO_ROOT)/.wealthdb-demo" || \
 	{ echo "$@: $(DEMO_ROOT) is not a demo root; run make demo first" >&2; exit 2; }
 
 demo: build-wealthdb
-	$(DEMO_ROOT_SET)
 	@echo "==> generate the demo household into $(DEMO_ROOT)"
 	@$(PYTHON) demo/generate.py $(DEMO_GEN_ARGS) $(if $(FINDINGS),--with-findings)
 	@$(DEMO_ENGINE) init
 	@$(DEMO_ENGINE) load -a
 
 demo-roll: build-wealthdb
-	$(DEMO_ROOT_SET)
 	@echo "==> append the days since the last demo build"
 	@$(PYTHON) demo/generate.py $(DEMO_GEN_ARGS) --append
 	@$(DEMO_ENGINE) load -a
@@ -330,26 +319,22 @@ demo-roll: build-wealthdb
 # `web refresh` re-materializes returns, gains and exposure and re-snapshots gold (restarting
 # the container when it runs); `web start` then brings it up if it does not.
 demo-web: build-web
-	$(DEMO_ROOT_SET)
 	$(DEMO_ROOT_MARKED)
 	@$(DEMO_WEB) refresh
 	@$(DEMO_WEB) status | grep -q '^web: running' || $(DEMO_WEB) start
 
 demo-web-stop:
-	$(DEMO_ROOT_SET)
 	$(DEMO_ROOT_MARKED)
 	@$(DEMO_WEB) stop
 
 # The MCP server reads live gold, so there is nothing to refresh: a
 # rebuilt image needs a restart, and `restart` also starts a stopped one.
 demo-mcp: build-wealthdb
-	$(DEMO_ROOT_SET)
 	$(DEMO_ROOT_MARKED)
 	@$(DEMO_MCP) restart
 	@$(DEMO_MCP) url
 
 demo-mcp-stop:
-	$(DEMO_ROOT_SET)
 	$(DEMO_ROOT_MARKED)
 	@$(DEMO_MCP) stop
 

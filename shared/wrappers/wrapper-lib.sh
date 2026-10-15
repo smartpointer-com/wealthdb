@@ -102,10 +102,7 @@ wrapper_source_cfg() {
 #   4. the ~/.secrets and ${XDG_DATA_HOME:-~/.local/share}/wealthdb/<name>
 #      defaults
 wrapper_init() {
-    # The image's tag: WEALTHDB_IMAGE_TAG, else the checkout's
-    # .image-tag, else latest (image-tag.sh).
-    WEALTHDB_IMAGE_TAG="$(wealthdb_image_tag "$_WRAPPER_ROOT")" || exit 2
-    export WEALTHDB_IMAGE_TAG
+    wealthdb_export_image_tag "$_WRAPPER_ROOT" || exit 2
     IMAGE="$(_envvar IMAGE "wealthdb/${NAME}:${WEALTHDB_IMAGE_TAG}")"
     CONTAINER_NAME="$(_envvar CONTAINER "$NAME")"
 

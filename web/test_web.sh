@@ -48,8 +48,6 @@ check     "v6 → IPv6 flag"   "[::1]:4567:3000"     "$out"
 check_not "v6 → no IPv4"     "127.0.0.1"           "$out"
 
 echo "== _resolve_knobs (image tag) =="
-WEALTHDB_WEB_IMAGE= WEALTHDB_IMAGE_TAG= _resolve_knobs
-check "image tag defaults to latest" "wealthdb/metabase:latest"  "$IMAGE"
 WEALTHDB_WEB_IMAGE= WEALTHDB_IMAGE_TAG=feature _resolve_knobs
 check "image follows the tag"        "wealthdb/metabase:feature" "$IMAGE"
 WEALTHDB_WEB_IMAGE=other/mb:1 WEALTHDB_IMAGE_TAG=feature _resolve_knobs

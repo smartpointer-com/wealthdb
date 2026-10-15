@@ -772,7 +772,13 @@ PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)",
                         # reuse; a widget listing the accounts is not, so
                         # the twin builds its own from
                         # PRIVACY_INCOME_FILTERS.
-                        "Uncategorized share"}
+                        "Uncategorized share",
+                        # The Exposure charts over time: each month end's
+                        # shares of net worth, no value column, and no
+                        # picker beyond the currency and the time range.
+                        "Asset classes over time", "Regions over time",
+                        "Currencies over time", "Held directly or through funds",
+                        "How the figures are classified"}
 
 # Denominator-neutral by design: each card's body text names its own
 # denominator (latest total, chosen day's total, peak month, or the
@@ -892,13 +898,12 @@ INVESTING_TAG = {"id": "inv-tag", "name": "investing",
 
 # The gold columns backing the native cards' field filters: the returns
 # charts filter report_returns; every other native card filters the
-# web_* serving views (gold migrations 0032, 0043, 0072, 0084, 0113
-# and 0117). Field
-# ids are per-Metabase-instance (assigned when the DB syncs), so main()
-# resolves them at provision time into FIELD_IDS — they can't be
-# hard-coded. A missing id (fresh install before the first sync) leaves
-# that filter off the affected cards; the next provision — post-sync —
-# wires it up.
+# web_* serving views (gold migrations 0032, 0043, 0072, 0084, 0113,
+# 0117 and 0127). Field ids are per-Metabase-instance (assigned when the
+# DB syncs), so main() resolves them at provision time into FIELD_IDS —
+# they can't be hard-coded. A missing id (fresh install before the first
+# sync) leaves that filter off the affected cards; the next provision —
+# post-sync — wires it up.
 FILTER_FIELD_COLUMNS = {
     "report_returns": ("currency", "silver_source_id"),
     # The Wealth Overview's headline figures (migration 0113). Their time
@@ -940,9 +945,9 @@ FILTER_FIELD_COLUMNS = {
     # The gains view (migration 0117). Its currency is a row filter
     # through the {{currency}} variable, so no field filter binds it.
     "web_gains": ("period", "silver_source_id", "tax_wrapper"),
-    # The exposure view (migration 0128): month ends, a row set per
-    # currency like web_gains. No source column: the look-through is of
-    # net worth, across every source.
+    # The exposure view (migration 0127): month ends and today, a row set
+    # per currency like web_gains. No source column: the look-through is
+    # of net worth, across every source.
     "web_exposure": ("as_of_day",),
 }
 FIELD_IDS = {}          # (table, column) -> field id, filled by main()
@@ -1999,8 +2004,7 @@ def question_defs(db_id, mid):
                    "order-by": [["desc", ["expression", "days_stale"]]]}),
             {}),
         **gains_question_defs(db_id),
-        **{name: card[1:] for name, card in exposure_cards(db_id).items()
-           if not name.endswith(PRIVACY_SUFFIX)},
+        **exposure_cards(db_id, privacy=False),
     }
 
 
@@ -2564,9 +2568,9 @@ def base_dashboards():
             "net worth the figures rest on. " + note,
             "range", [
             # The allocation first, then where it sits and what it moves
-            # with, each as of the window's end beside its history; then
-            # public equity by size beside what funds hold; last, how
-            # much the figures cover.
+            # with: breakdowns at the window's end, beside their history
+            # where there is one; then public equity by size beside what
+            # funds hold; last, how much the figures cover.
             ("Exposure by asset class", 0, 0, 8, 8, "as_of_day"),
             ("Asset classes over time", 0, 8, 16, 8, "as_of_day"),
             ("Exposure by sector", 8, 0, 12, 9, "as_of_day"),
@@ -2590,56 +2594,52 @@ def base_dashboards():
     }
 
 
-def exposure_cards(db_id):
-    """The Exposure dashboard's cards and their privacy variants, one
-    pair per tile: name -> ("question", display, description,
-    dataset_query, viz). Native SQL over web_exposure (gold migrations
-    0128 and 0133), the look-through at every month end and today,
-    materialized per reporting currency, so {{currency}} is a row filter
-    as on Gains. A breakdown reads the latest day in the window; a chart
-    over time shows each month end's shares. The base card shows the
-    value and its share of net worth, or of public equity for sizes; the
-    privacy card the share alone, a share being scale-free.
-    docs/EXPOSURE.md defines every figure."""
+def exposure_cards(db_id, privacy):
+    """The Exposure dashboard's cards, or with `privacy` their privacy
+    variants: name -> (display, description, dataset_query, viz). Native
+    SQL over web_exposure (gold migration 0127), the look-through at
+    every month end and today, materialized per reporting currency, so
+    {{currency}} is a row filter as on Gains. A breakdown reads the
+    latest day in the window. Its base card shows the value beside its
+    share of net worth, or of public equity for sizes; its privacy card
+    the share alone, a share being scale-free. A chart over time shows
+    each month end's shares on both, so it is privacy-exempt and has no
+    privacy variant. docs/EXPOSURE.md defines every figure."""
     tags = spend_tags("web_exposure", EXPOSURE_FILTERS)
-    note = (" Built for the Exposure dashboard; opened standalone it runs in "
-            f"{DEFAULT_CURRENCY}, the currency variable's default, over every month end.")
-    where = _spend_where(tags) + "\n     AND currency = {{currency}}"
-    rows = "  FROM web_exposure" + where
-    end = ("WITH w AS (\n  SELECT * FROM web_exposure" + where + "),\n"
+    desc_end = (" Built for the Exposure dashboard; opened standalone it runs in "
+                f"{DEFAULT_CURRENCY}, the currency variable's default, over every month end."
+                + (PRIVACY_DESC if privacy else ""))
+    rows = "  FROM web_exposure" + _spend_where(tags) + "\n     AND currency = {{currency}}"
+    end = ("WITH w AS (\n  SELECT *\n" + rows + "),\n"
            "e AS (SELECT * FROM w WHERE as_of_day = (SELECT max(as_of_day) FROM w))\n")
+    money = "" if privacy else ",\n       sum(value) AS value"
     out = {}
 
-    def pair(name, display, desc, sql_for, viz_for):
-        """sql_for(privacy) and viz_for(privacy) give each variant."""
-        for privacy in (False, True):
-            card = privacy_name(name) if privacy else name
-            register_native_targets(card, tags, EXPOSURE_PICKERS)
-            out[card] = ("question", display, desc + (PRIVACY_DESC if privacy else note),
-                         _native(db_id, sql_for(privacy), tags), viz_for(privacy))
+    def card(name, display, desc, sql, viz):
+        """One tile's card; an exempt tile has no privacy variant."""
+        if privacy and name in PRIVACY_EXEMPT_CARDS:
+            return
+        name = privacy_name(name) if privacy else name
+        register_native_targets(name, tags, EXPOSURE_PICKERS)
+        out[name] = (display, desc + desc_end, _native(db_id, sql, tags), viz)
 
     def at_end(name, display, desc, dim, label, limit=None, extra=()):
         """A breakdown at the window's end: one row per value of `dim`
         and of the `extra` columns shown beside it."""
         cols = "".join(f",\n       {c}" for c in extra)
-
-        def sql(privacy):
-            money = "" if privacy else ",\n       sum(value) AS value"
-            return (end + f"SELECT {dim} AS {label}{cols}{money},\n       sum(share_pct) AS share_pct\n"
-                    f"  FROM e\n GROUP BY ALL\n ORDER BY sum(share_pct) DESC, 1"
-                    + (f"\n LIMIT {limit}" if limit else ""))
-        pair(name, display, desc, sql,
-             lambda privacy: {"graph.dimensions": [label],
-                              "graph.metrics": ["share_pct"] if privacy else ["value"]}
+        card(name, display, desc,
+             end + f"SELECT {dim} AS {label}{cols}{money},\n       sum(share_pct) AS share_pct\n"
+             "  FROM e\n GROUP BY ALL\n ORDER BY sum(share_pct) DESC, 1" + (f"\n LIMIT {limit}" if limit else ""),
+             {"graph.dimensions": [label], "graph.metrics": ["share_pct" if privacy else "value"]}
              if display in ("bar", "row") else {})
 
     def over_time(name, desc, dim, label):
         """Each month end's shares, stacked by the values of `dim`."""
-        pair(name, "area", desc,
-             lambda privacy: (f"SELECT as_of_day, {dim} AS {label},\n       sum(share_pct) AS share_pct\n"
-                              + rows + "\n GROUP BY 1, 2\n ORDER BY 1, 2"),
-             lambda privacy: {"graph.dimensions": ["as_of_day", label], "graph.metrics": ["share_pct"],
-                              "stackable.stack_type": "stacked"})
+        card(name, "area", desc,
+             f"SELECT as_of_day, {dim} AS {label},\n       sum(share_pct) AS share_pct\n"
+             + rows + "\n GROUP BY 1, 2\n ORDER BY 1, 2",
+             {"graph.dimensions": ["as_of_day", label], "graph.metrics": ["share_pct"],
+              "stackable.stack_type": "stacked"})
 
     at_end("Exposure by asset class", "bar",
            "Net worth by asset class after every fund is looked through to "
@@ -2675,19 +2675,17 @@ def exposure_cards(db_id):
     over_time("Held directly or through funds",
               "Each month end's net worth split into what is held directly "
               "and what through funds.", "held", "held")
-    def by_size(privacy):
-        money = "" if privacy else ",\n       sum(value) AS value"
-        return (end + f"SELECT size{money},\n"
-                "       100 * sum(share_pct) / sum(sum(share_pct)) OVER () AS class_share_pct\n"
-                "  FROM e\n WHERE asset_class = 'public_equity'\n GROUP BY 1\n"
-                " ORDER BY CASE size WHEN 'large' THEN 1 WHEN 'mid' THEN 2 WHEN 'small' THEN 3 ELSE 4 END")
-    pair("Public equity by size", "bar",
+    card("Public equity by size", "bar",
          "Public equity by the size of each company, at the latest day in "
          "the window, as shares of public equity: large from 10bn US "
          "dollars of market cap, mid from 2bn, small below, else by the "
          "company's rank in a broad fund. Unclassified is what neither "
-         "sizes, and any fund nothing looks through.", by_size,
-         lambda privacy: {"graph.dimensions": ["size"], "graph.metrics": ["class_share_pct"]})
+         "sizes, and any fund nothing looks through.",
+         end + f"SELECT size{money},\n"
+         "       100 * sum(share_pct) / sum(sum(share_pct)) OVER () AS class_share_pct\n"
+         "  FROM e\n WHERE asset_class = 'public_equity'\n GROUP BY 1\n"
+         " ORDER BY CASE size WHEN 'large' THEN 1 WHEN 'mid' THEN 2 WHEN 'small' THEN 3 ELSE 4 END",
+         {"graph.dimensions": ["size"], "graph.metrics": ["class_share_pct"]})
     over_time("How the figures are classified",
               "Each month end's net worth by how its figures are classified: "
               "looked through, proxied, a security a source describes, "
@@ -3129,7 +3127,9 @@ def privacy_card_defs(db_id, model_ids):
     returns twin redacts instead — returns are already scale-free
     ratios. The Spending twin both normalizes and redacts: its cards are
     shares of their own window's total (or of its peak month) and never
-    render a merchant or account label — see spending_privacy_defs."""
+    render a merchant or account label — see spending_privacy_defs.
+    Exposure's shares are of net worth already, so its twin only drops
+    the value columns — see exposure_cards."""
     out = {}
 
     # -- Wealth Overview scalars: a ratio of sums is scale-free, and both
@@ -3411,8 +3411,7 @@ def privacy_card_defs(db_id, model_ids):
     out.update(spending_privacy_defs(db_id, model_ids))
     out.update(income_privacy_defs(db_id))
     out.update(cashflow_privacy_defs(db_id))
-    out.update({name: card for name, card in exposure_cards(db_id).items()
-                if name.endswith(PRIVACY_SUFFIX)})
+    out.update({name: ("question", *card) for name, card in exposure_cards(db_id, privacy=True).items()})
     return out
 
 

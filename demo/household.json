@@ -51,7 +51,7 @@
       {"id": "hs-home-01", "kind": "other", "name": "Residence", "nickname": "Home", "wrapper": "taxable_joint", "style": "self_directed", "currency": "USD"}
     ]},
     {"id": "fx", "institution": "Rates", "short": "RATES", "cadence": "daily", "accounts": []},
-    {"id": "refdata", "institution": "Reference data", "short": "REFDATA", "cadence": "monthly", "reference": true, "accounts": []}
+    {"id": "refdata", "institution": "Reference data", "short": "REFDATA", "cadence": "daily", "accounts": []}
   ],
 
   "declared": {"kids-savings": {"account_kind": "cash", "tax_wrapper": "taxable_joint", "nickname": "Kids' savings", "currency": "USD"}},

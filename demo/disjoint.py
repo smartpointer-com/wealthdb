@@ -66,7 +66,14 @@ def text_query(table, column):
     norm = f"regexp_replace(lower(trim(CAST({column} AS VARCHAR))), '\\s+', ' ', 'g')"
     side = "SELECT DISTINCT {norm} AS v FROM {db}.{table} WHERE {col} IS NOT NULL AND trim(CAST({col} AS VARCHAR)) <> ''"
     return (f"SELECT v FROM ({side.format(norm=norm, db='demo', table=table, col=column)}) "
-            f"INTERSECT SELECT v FROM ({side.format(norm=norm, db='live', table=table, col=column)}) ORDER BY v")
+            f"INTERSECT SELECT v FROM ({side.format(norm=norm, db='live', table=table, col=column)})")
+
+
+def fields_query(fields):
+    """The shared values of every (label, table, column) field, as
+    (f, v) rows of one query, so DuckDB attaches both golds once."""
+    return ("\nUNION ALL\n".join(f"SELECT '{label}' AS f, v FROM ({text_query(table, column)})"
+                                  for label, table, column in fields) + "\nORDER BY f, v")
 
 
 # The tables each gold holds; a gold older than a table has none to share.
@@ -115,17 +122,19 @@ def main(argv=None):
         if "'" in q:
             print(f"disjoint: refusing a path with a quote in it: {q}", file=sys.stderr)
             return 2
-    tables = run(a.demo, a.live, TABLES_QUERY)
-    both = {r["table_name"] for r in tables if r["n"] == 2}
-    shared_total = 0
-    for label, table, column in TEXT_FIELDS:
-        if table not in both:
+    both = {r["table_name"] for r in run(a.demo, a.live, TABLES_QUERY) if r["n"] == 2}
+    fields = [f for f in TEXT_FIELDS if f[1] in both]
+    shared = {label: [] for label, _table, _column in fields}
+    if fields:
+        for r in run(a.demo, a.live, fields_query(fields)):
+            shared[r["f"]].append(r["v"])
+    for label, table, _column in TEXT_FIELDS:
+        if label not in shared:
             print(f"{label:20} {'n/a':>6} ({table} is not in both golds)")
             continue
-        rows = run(a.demo, a.live, text_query(table, column))
-        shared_total += len(rows)
-        print(f"{label:20} {len(rows):6} shared")
-        show(rows, a.show, lambda r: r["v"])
+        print(f"{label:20} {len(shared[label]):6} shared")
+        show(shared[label], a.show, str)
+    shared_total = sum(len(v) for v in shared.values())
     pairs = run(a.demo, a.live, PAIR_QUERY)
     print(f"{'(date, amount)':20} {len(pairs):6} shared")
     show(pairs, a.show, lambda r: f"{r['d']}  {r['a']}")
