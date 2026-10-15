@@ -147,7 +147,7 @@ func TestExposurePrivacyHidesAmounts(t *testing.T) {
 		"currencies": {"USD", "fiat"},
 		"securities": {"symbol:AAAA", "Alpha Corp", "40.00", "technology"},
 		"funds":      {"symbol:IDXF", "57.14"},
-		"coverage":   {"looked_through", "untagged", "brk"},
+		"coverage":   {"looked_through", "undeclared", "brk"},
 	}
 	for _, v := range exposureViews {
 		out, errb, code := runExposure(t, cfg, v, "-d", "2026-06-30", "-p", "-f", "csv", "-C", "all")
@@ -164,6 +164,65 @@ func TestExposurePrivacyHidesAmounts(t *testing.T) {
 				t.Errorf("%s -p lost %q:\n%s", v, k, out)
 			}
 		}
+	}
+}
+
+// coverage -f ndjson prints one skeleton record per undeclared holding,
+// its dimensions empty and its note the holding's name, and nothing else;
+// the other views, a series, a column set and -p refuse it.
+func TestExposureCoverageSkeletons(t *testing.T) {
+	t.Parallel()
+	cfg := setupExposureGold(t,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, name, currency,
+		 first_seen_at, last_seen_at) VALUES ('brk', 'PRIV-5521', 'private_equity', 'spv', 'Example SPV <A&B>', 'USD', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, quantity, market_value) VALUES ('brk', ?, 'ACCT-7781', 'PRIV-5521', 'PRIV-5521',
+		 'private_equity', 'spv', 'USD', 1, 500)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, quantity, market_value) VALUES ('brk', ?, 'ACCT-7781', 'PRIV-0', 'PRIV-0',
+		 'private_equity', 'spv', 'USD', 1, 0)`)
+	out, errb, code := runExposure(t, cfg, "coverage", "-d", "2026-06-30", "-f", "ndjson")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errb)
+	}
+	want := `{"silver_source_id":"brk","instrument":"PRIV-5521","country":{},"currency":{},"sector":{},` +
+		`"note":"Example SPV <A&B>"}` + "\n"
+	if out != want {
+		t.Errorf("skeletons:\n%s\nwant\n%s", out, want)
+	}
+	for _, args := range [][]string{
+		{"classes", "-f", "ndjson"},
+		{"coverage", "-f", "ndjson", "-p"},
+		{"coverage", "-f", "ndjson", "-C", "reason"},
+		{"coverage", "-f", "ndjson", "--period", "monthly"},
+	} {
+		if _, errb, code := runExposure(t, cfg, args...); code != 2 || !strings.Contains(errb, "ndjson") {
+			t.Errorf("%v: exit %d, %s", args, code, errb)
+		}
+	}
+	if _, errb, code := runExposure(t, cfg, "funds", "-f", "jsonl"); code != 2 {
+		t.Errorf("an unknown format: exit %d, %s", code, errb)
+	}
+}
+
+// funds shows what a declaration states of a fund held directly: via
+// declared, the record's date and its dimensions.
+func TestExposureFundsShowADeclaration(t *testing.T) {
+	t.Parallel()
+	cfg := setupExposureGold(t,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, name, currency,
+		 first_seen_at, last_seen_at) VALUES ('brk', 'PRIVF', 'private_equity', 'fund', 'Example Private Fund', 'USD', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, quantity, market_value) VALUES ('brk', ?, 'ACCT-7781', 'PRIVF', 'PRIVF',
+		 'private_equity', 'fund', 'USD', 1, 400)`,
+		`INSERT INTO exposure_declarations (line_no, silver_source_id, instrument_external_id, as_of, dimensions)
+		 VALUES (1, 'brk', 'PRIVF', 1719705600, 'region,asset_class')`,
+		`INSERT INTO exposure_declaration_leaves (line_no, leaf_no, share, region, asset_class)
+		 VALUES (1, 1, 0.45, 'europe', 'private_equity'), (1, 2, 0.55, 'other', 'private_debt')`)
+	out, errb, code := runExposure(t, cfg, "funds", "-d", "2026-06-30", "-f", "csv", "-C",
+		"fund,via,declaration_date,declared,quality")
+	if code != 0 || !strings.Contains(out, `,declared,2024-06-30,"region,asset_class",declared`+"\n") {
+		t.Errorf("exit %d %s\n%s", code, errb, out)
 	}
 }
 

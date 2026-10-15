@@ -41,6 +41,10 @@ import (
 //	        QT4, QT4 STKA; GLEIF places QT4 in Luxembourg
 //	NOCF    a fund with no composition, domiciled in Ireland
 //	STKD    a stock nothing describes but its ISIN
+//	HOUSE   declared: Switzerland, Swiss francs
+//	QPRV    a private fund declared by region (north_america 55, europe
+//	        30, rest 15), asset class (private_equity 72, infrastructure
+//	        28) and currency (USD 60, EUR 40)
 var (
 	exAsOf = time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC).Unix()
 	exSnap = time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
@@ -91,6 +95,7 @@ func seedExposureFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 		{"STKD", "public_equity", "stock", "DE0000000007", "", "Stock D", "USD", 20},
 		{"COIN1", "crypto", "physical", "", "BTC", "Bitcoin", "USD", 30},
 		{"QBTP", "crypto", "etf", "", "QBTP", "Example Bitcoin ETP", "USD", 15},
+		{"QPRV", "private_equity", "fund", "", "", "Private Fund Two", "USD", 200},
 	} {
 		ex(`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, symbol, name, currency, first_seen_at, last_seen_at)
 		    VALUES ('test-src', ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, 0, 0)`, i.id, i.class, i.vehicle, i.isin, i.symbol, i.name, i.ccy)
@@ -170,20 +175,86 @@ func seedExposureFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 	           ('test-src', 'isin:XX0000000001', 'risk_country', ?, 'otherprov', 'IE'),
 	           ('test-src', 'symbol:BBB', 'risk_country', ?, 'eodhd', 'NL'),
 	           ('test-src', 'symbol:QT4', 'legal_country', ?, 'gleif', 'LU')`, may, may, may, may, may)
-	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
-		Proxies: []canonical.ExposureProxy{
-			{FundRef: "isin:XX00000000L3", ProxyRef: "symbol:IDX1", Leverage: 3},
-			{FundRef: "symbol:LEV3", ProxyRef: "symbol:IDX1", Leverage: 2},
-		},
-		Tags: []canonical.ExposureTag{{SilverSourceID: "test-src", InstrumentExternalID: "HOUSE", Country: "CH", Currency: "CHF"}},
-		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: canonical.DefaultAgedDays,
-			PartialPct: canonical.DefaultPartialPct},
-	}); err != nil {
+	if _, err := SyncExposure(ctx, db, exposureFixtureRows()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// exposureFixtureRows is the fixture's exposure block, for a test to
+// extend and stamp again.
+func exposureFixtureRows() canonical.ExposureRows {
+	return canonical.ExposureRows{
+		Proxies: []canonical.ExposureProxy{
+			{FundRef: "isin:XX00000000L3", ProxyRef: "symbol:IDX1", Leverage: 3},
+			{FundRef: "symbol:LEV3", ProxyRef: "symbol:IDX1", Leverage: 2},
+		},
+		Declarations: []canonical.ExposureDeclaration{
+			declaration(1, "HOUSE", nil, split{"country", []string{"CH"}, []float64{100}},
+				split{"currency", []string{"CHF"}, []float64{100}}),
+			declaration(2, "QPRV", nil,
+				split{"region", []string{"north_america", "europe", "other"}, []float64{55, 30, 15}},
+				split{"currency", []string{"USD", "EUR"}, []float64{60, 40}},
+				split{"asset_class", []string{"private_equity", "infrastructure"}, []float64{72, 28}}),
+		},
+		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: canonical.DefaultAgedDays,
+			PartialPct: canonical.DefaultPartialPct},
+	}
+}
+
+// stampDeclarations stamps the fixture's exposure block with ds added to
+// its declarations.
+func stampDeclarations(t *testing.T, db *sql.DB, ctx context.Context, ds ...canonical.ExposureDeclaration) {
+	t.Helper()
+	rows := exposureFixtureRows()
+	rows.Declarations = append(rows.Declarations, ds...)
+	if _, err := SyncExposure(ctx, db, rows); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// split is one dimension of a declaration: its values and their shares
+// in percent.
+type split struct {
+	dim    string
+	values []string
+	pcts   []float64
+}
+
+// declaration is a record of the declarations ledger for a test-src
+// holding, its splits crossed into leaves as the config's reader crosses
+// them. The splits come in the order of canonical.DeclarationDimensions.
+func declaration(line int, iid string, asOf *int64, splits ...split) canonical.ExposureDeclaration {
+	d := canonical.ExposureDeclaration{Line: line, SilverSourceID: "test-src", InstrumentExternalID: iid, AsOf: asOf}
+	leaves := []canonical.ExposureDeclaredLeaf{{Share: 1}}
+	for _, s := range splits {
+		d.Dimensions = append(d.Dimensions, s.dim)
+		var next []canonical.ExposureDeclaredLeaf
+		for _, l := range leaves {
+			for i, v := range s.values {
+				n := l
+				n.Share *= s.pcts[i] / 100
+				switch s.dim {
+				case canonical.DimensionRegion:
+					n.Region = v
+				case canonical.DimensionCountry:
+					n.Country = v
+				case canonical.DimensionCurrency:
+					n.Currency = v
+				case canonical.DimensionSector:
+					n.Sector = v
+				case canonical.DimensionAssetClass:
+					n.AssetClass = v
+				}
+				next = append(next, n)
+			}
+		}
+		leaves = next
+	}
+	d.Leaves = leaves
+	return d
 }
 
 func nullIfEmpty(s string) any {
@@ -371,10 +442,10 @@ func TestExposureLooksThroughEachKindOfFund(t *testing.T) {
 	// the short currency although the line states the long one.
 	close("QFXF's long EUR leg", leafValue(t, db, ctx, `top_key = 'symbol:QFXF' AND key = 'symbol:FWD' AND currency = 'EUR'`), 55)
 	close("QFXF's short USD leg", leafValue(t, db, ctx, `top_key = 'symbol:QFXF' AND key = 'symbol:FWD' AND currency = 'USD'`), -55)
-	// The house is tagged; the private fund and the unknown stock are not.
-	// Nothing looks through the private fund: it reads diversified.
-	if f := leafFlags(t, db, ctx, `iid = 'PE1'`); f != "opaque,untagged" {
-		t.Errorf("PE1 flags = %q, want opaque,untagged", f)
+	// The house is declared; the private fund and the unknown stock are
+	// not. Nothing looks through the private fund: it reads diversified.
+	if f := leafFlags(t, db, ctx, `iid = 'PE1'`); f != "opaque,undeclared" {
+		t.Errorf("PE1 flags = %q, want opaque,undeclared", f)
 	}
 	close("PE1 diversified", leafValue(t, db, ctx, `iid = 'PE1' AND sector = 'diversified'`), 80)
 	if f := leafFlags(t, db, ctx, `iid = 'UNK'`); f != "unmatched" {
@@ -466,7 +537,7 @@ func TestExposureCoverageNamesUnmappedLabels(t *testing.T) {
 			t.Errorf("unmapped row = %+v, want the provider named", r)
 		}
 	}
-	for _, want := range []string{"unmapped|sector: Conglomerates", "how|looked_through", "how|proxied", "how|tagged",
+	for _, want := range []string{"unmapped|sector: Conglomerates", "how|looked_through", "how|proxied", "how|declared",
 		"how|cash", "how|asset_class", "how|security", "how|unclassified", "how|remainder", "unmatched|symbol:UNK"} {
 		if !found[want] {
 			t.Errorf("coverage lacks %s", want)
@@ -474,10 +545,10 @@ func TestExposureCoverageNamesUnmappedLabels(t *testing.T) {
 	}
 }
 
-// A tag marks a private holding tagged even where it leaves a field
-// blank, and a private company's stock is private, not a listed security;
-// holdings and labels with no value share one coverage line each.
-func TestExposureTagsAndZeroValueCoverage(t *testing.T) {
+// A declaration marks a private holding declared whatever it states, and
+// a private company's stock is private, not a listed security; holdings
+// and labels with no value share one coverage line each.
+func TestExposureDeclarationsAndZeroValueCoverage(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	for _, i := range []struct {
@@ -500,18 +571,16 @@ func TestExposureTagsAndZeroValueCoverage(t *testing.T) {
 			}
 		}
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO exposure_tags (silver_source_id, instrument_external_id, country, currency)
-	    VALUES ('test-src', 'PE2', 'US', 'USD')`); err != nil {
-		t.Fatal(err)
+	stampDeclarations(t, db, ctx, declaration(3, "PE2", nil,
+		split{"sector", []string{"unclassified"}, []float64{100}}))
+	if f := leafFlags(t, db, ctx, `iid = 'PE2'`); f != "declared,opaque" {
+		t.Errorf("declared PE2 flags = %q, want declared,opaque", f)
 	}
-	if f := leafFlags(t, db, ctx, `iid = 'PE2'`); f != "opaque" {
-		t.Errorf("tagged PE2 flags = %q, want opaque", f)
+	if got := leafText(t, db, ctx, "how || '|' || COALESCE(sector, '-')", `iid = 'PE2'`); got != "declared|-" {
+		t.Errorf("declared PE2 is %q, want declared with no sector", got)
 	}
-	if got := leafText(t, db, ctx, "how", `iid = 'PE2'`); got != "tagged" {
-		t.Errorf("tagged PE2 is %q", got)
-	}
-	if f := leafFlags(t, db, ctx, `iid = 'PSTK'`); f != "untagged" {
-		t.Errorf("a private company's stock flags %q, want untagged", f)
+	if f := leafFlags(t, db, ctx, `iid = 'PSTK'`); f != "undeclared" {
+		t.Errorf("a private company's stock flags %q, want undeclared", f)
 	}
 	// A label no map knows, on a line of no weight.
 	if _, err := db.ExecContext(ctx, `INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no,
@@ -522,12 +591,12 @@ func TestExposureTagsAndZeroValueCoverage(t *testing.T) {
 	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := ExposureCoverage(ctx, db, exAsOf, "USD")
+	cov, err := ExposureCoverage(ctx, db, exAsOf, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
 	none := map[string]int64{}
-	for _, r := range rows {
+	for _, r := range cov {
 		if strings.Contains(r.Reason, "MEMO") || strings.Contains(r.Reason, "Quasi") {
 			t.Errorf("an item with no value has a line of its own: %+v", r)
 		}
@@ -536,21 +605,21 @@ func TestExposureTagsAndZeroValueCoverage(t *testing.T) {
 		}
 	}
 	// The fixture's zero-weight future adds to the unmapped count.
-	if none["untagged"] != 2 || none["unmapped"] < 1 {
-		t.Errorf("(no value) lines = %v, want 2 untagged and the unmapped zero lines", none)
+	if none["undeclared"] != 2 || none["unmapped"] < 1 {
+		t.Errorf("(no value) lines = %v, want 2 undeclared and the unmapped zero lines", none)
 	}
-	// A private holding with no tag is listed by what a ledger row names;
-	// a listed one no source describes stays unmatched.
+	// A private holding with no declaration is listed by what a record
+	// names; a listed one no source describes stays unmatched.
 	var pe1, unk *ExposureCoverageRow
-	for i, r := range rows {
+	for i, r := range cov {
 		switch r.Reason {
 		case "holding:test-src:PE1":
-			pe1 = &rows[i]
+			pe1 = &cov[i]
 		case "symbol:UNK":
-			unk = &rows[i]
+			unk = &cov[i]
 		}
 	}
-	if pe1 == nil || pe1.Section != "untagged" || pe1.SilverSourceID == nil || *pe1.SilverSourceID != "test-src" ||
+	if pe1 == nil || pe1.Section != "undeclared" || pe1.SilverSourceID == nil || *pe1.SilverSourceID != "test-src" ||
 		pe1.Instrument == nil || *pe1.Instrument != "PE1" {
 		t.Errorf("PE1 coverage = %+v", pe1)
 	}
@@ -574,12 +643,12 @@ func TestExposureTagsAndZeroValueCoverage(t *testing.T) {
 	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	rows, err = ExposureCoverage(ctx, db, exAsOf, "USD")
+	cov, err = ExposureCoverage(ctx, db, exAsOf, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var srcs []string
-	for _, r := range rows {
+	for _, r := range cov {
 		if r.Reason == "symbol:UNK" {
 			srcs = append(srcs, *r.SilverSourceID)
 		}

@@ -12,8 +12,8 @@ import (
 
 // ExposureConfig is the `exposure` block of wealthdb.cfg: what the
 // exposure report needs that no source knows. Absent block ⇒ no proxies,
-// no reference or size funds, no tags, no custody, and the default
-// settings. The load writes it into gold's exposure tables
+// no reference or size funds, no declarations, no custody, and the
+// default settings. The load writes it into gold's exposure tables
 // (gold.SyncExposure).
 type ExposureConfig struct {
 	// Proxies maps a fund reference to the fund whose composition stands
@@ -29,11 +29,13 @@ type ExposureConfig struct {
 	// percent: 100 for an all-cap fund, 85 for a large and mid cap one.
 	// They are fetched like reference funds and need not be held.
 	SizeFunds map[string]float64 `json:"size_funds,omitempty"`
-	// Tags is the path to the tags ledger, a CSV of what no public
-	// source can know: a private holding's country, currency and sector
-	// (exposure_tags.go). Expanded like equity_transfers; a missing file
-	// holds no tags.
-	Tags TagsPath `json:"tags,omitempty"`
+	// Declarations is the path to the declarations ledger, NDJSON of
+	// what no public source can know: where a private holding's value
+	// is, as a split per dimension (exposure_declarations.go). Expanded
+	// like equity_transfers; a missing file holds no declarations.
+	Declarations DeclarationsPath `json:"declarations,omitempty"`
+	// Tags is refused: the declarations ledger replaces it.
+	Tags *retiredTags `json:"tags,omitempty"`
 	// Custody names who keeps each source's assets, keyed by
 	// silver_source_id.
 	Custody map[string]ExposureCustody `json:"custody,omitempty"`
@@ -66,8 +68,8 @@ const maxLeverage = 10
 
 // validateExposure checks the exposure block: every fund reference
 // parses, no proxy chains or points at itself, every custody entry names
-// a configured source. The tags ledger is checked where a load reads it
-// (ExposureRows).
+// a configured source. The declarations ledger is checked where a load
+// reads it (ExposureRows).
 func (c *Config) validateExposure(seenIDs map[string]bool) error {
 	e := c.Exposure
 	if e == nil {
@@ -161,9 +163,9 @@ func sectorNames() string {
 }
 
 // ExposureRows is the exposure block as gold stores it, in a stable
-// order, with every fund reference in the form gold builds, and the tags
-// ledger read and checked. Call after Validate. An absent block yields
-// the default settings alone.
+// order, with every fund reference in the form gold builds, and the
+// declarations ledger read and checked. Call after Validate. An absent
+// block yields the default settings alone.
 func (c *Config) ExposureRows() (canonical.ExposureRows, error) {
 	out := canonical.ExposureRows{Settings: canonical.ExposureSettings{
 		MaxGapDays: canonical.DefaultMaxGapDays,
@@ -201,11 +203,11 @@ func (c *Config) ExposureRows() (canonical.ExposureRows, error) {
 	for _, s := range c.SilverSources {
 		sources[s.ID] = true
 	}
-	tags, err := readTagLedgerFile(string(e.Tags), sources)
+	declarations, err := readDeclarationsFile(string(e.Declarations), sources)
 	if err != nil {
 		return out, err
 	}
-	out.Tags = tags
+	out.Declarations = declarations
 	for _, src := range slices.Sorted(maps.Keys(e.Custody)) {
 		cu := e.Custody[src]
 		out.Custody = append(out.Custody, canonical.ExposureCustody{SilverSourceID: src,

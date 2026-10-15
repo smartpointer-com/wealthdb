@@ -511,19 +511,29 @@ class TestReference(Built):
             if f.get("remainder"):
                 self.assertNotIn(ref, cash, ref)
 
-    def test_the_config_proxies_and_tags_name_what_exists(self):
+    def test_the_config_proxies_and_declarations_name_what_exists(self):
         exposure = self.config["exposure"]
         self.assertLessEqual(set(exposure["custody"]), set(self.sources))
         refs = {reference.fund_ref(i) for i in self.inputs.instruments.values()}
         for key, p in exposure["proxies"].items():
             self.assertIn(key, refs)
             self.assertIn(p["fund"], refs)
-        self.assertEqual(exposure["tags"], "overrides/exposure_tags.csv")
-        tags = ledger(self.root, "exposure_tags.csv")
-        self.assertTrue(tags, "the tags ledger has rows")
-        for t in tags:
-            held = {r["instrument_id"] for r in self.rows[t["silver_source_id"]]["positions"]}
-            self.assertIn(t["instrument"], held, f"{t['silver_source_id']}/{t['instrument']}")
+        self.assertEqual(exposure["declarations"], "overrides/exposure_declarations.ndjson")
+        lines = (self.root / "overrides" / "exposure_declarations.ndjson").read_text().splitlines()
+        self.assertTrue(lines, "the declarations ledger has records")
+        dims = ("region", "country", "currency", "sector", "asset_class")
+        split = 0
+        for line in lines:
+            d = json.loads(line)
+            name = f"{d['silver_source_id']}/{d['instrument']}"
+            held = {r["instrument_id"] for r in self.rows[d["silver_source_id"]]["positions"]}
+            self.assertIn(d["instrument"], held, name)
+            stated = [k for k in dims if k in d]
+            self.assertTrue(stated, name)
+            for k in stated:
+                self.assertAlmostEqual(sum(d[k].values()), 100, delta=0.5, msg=f"{name} {k}")
+            split += any(len(d[k]) > 1 for k in stated)
+        self.assertEqual(split, 1, "one record splits a dimension")
 
     def test_isins_have_the_demo_shape(self):
         """Every ISIN the catalogues state, and so every one a line or a

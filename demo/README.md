@@ -121,12 +121,19 @@ the look-through handles:
 - The real-estate fund's compositions start a year after it is first
   held.
 - One stock carries a sector label outside the vocabulary.
-- A structured note has neither a composition nor a tag, so `wealthdb
-  exposure coverage` lists it as `untagged`.
+- A structured note has neither a composition nor a declaration, so
+  `wealthdb exposure coverage` lists it as `undeclared`.
 
 The 529 portfolio has no composition of its own. The config names a
-target-date fund as its proxy, and tags the home, the loan and the
-private holdings with their country and currency.
+target-date fund as its proxy. The declarations ledger states what no
+source knows:
+
+- The home and its loan are in the US, in US dollars.
+- The SPV is a US industrial company, in US dollars.
+- The private fund declares a split from its offering document: three
+  regions, two currencies, and two asset classes, private equity and
+  infrastructure. `wealthdb exposure classes` shows the fund in both
+  classes.
 
 ## How it is built
 

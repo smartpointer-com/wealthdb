@@ -55,6 +55,15 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
 - **How far to trust exposure** — `wealthdb exposure coverage`; how old each
   fund's data is, and which fund's holdings stand in for it (`proxy`, a key):
   `wealthdb exposure funds`
+- **What the household states about a private holding** — a fund:
+  `wealthdb exposure funds` (`via` reads `declared`, with the record's
+  `declaration_date` and the dimensions it `declared`); a property, a
+  loan or an SPV: `wealthdb exposure securities | grep -i <name>` (quality
+  `declared`); the private holdings with no record:
+  `wealthdb exposure coverage | grep undeclared`
+- **Records still to write** — `wealthdb exposure coverage -f ndjson`: one
+  skeleton per undeclared holding, for the user to fill into the
+  declarations ledger
 - **Return of the portfolio / each account** —
   `wealthdb returns global 2025 --period total` / `wealthdb returns accounts 2025 --period total`
   (the account column is `entity`; one account: `| grep -i 'brokerage'`)
@@ -172,10 +181,23 @@ a share of net worth (a loan is negative), `class_share_pct` a share of the
 row's asset class.
 
 - **Read `quality` first.** `proxy` (another fund's composition stands in),
-  `aged`/`forward` (a composition from another day), `partial`,
-  `unmapped`, `untagged`, `unmatched` (part of the value is not fully
-  classified), `by_name` (a sector found by matching a name), `opaque` (a
-  private fund nothing looks through).
+  `declared` (the household's own statement: a target split from a fund's
+  documents, or a property's country), `aged`/`forward` (a composition
+  from another day), `partial`, `unmapped`, `undeclared`, `unmatched`
+  (part of the value is not fully classified), `by_name` (a sector found
+  by matching a name), `opaque` (a private fund nothing looks through).
+- In an aggregate row each flag reads `flag=NN%`: the share of the row's
+  gross value that carries the flag (`proxy=12%`, `aged=<1%`).
+- A declared split is marginal: a fund declared 40% Europe and 80% private
+  equity shows both, but how its regions and classes combine is assumed,
+  not known.
+- `securities` shows a declared holding as one row, with its largest
+  part's class, sector, country and currency. The split itself is in
+  `classes`, `sectors`, `countries` and `currencies`; `funds` says which
+  dimensions a declared fund states.
+- In `countries`, a part declared by region alone reads country
+  `unclassified` under its region, and a declared rest of the world reads
+  region `other`. Both are declared (quality `declared`), not unknown.
 - `unclassified` is real money nothing describes, not zero.
 - Sizes are `large` (from 10bn USD market cap), `mid` (from 2bn), `small`;
   `unclassified` where nothing sizes a stock.

@@ -242,8 +242,9 @@ type Config struct {
 	// per call. See mcp/DESIGN.md.
 	MCP *MCPConfig `json:"mcp,omitempty"`
 	// Exposure configures the exposure report: proxies for funds no
-	// source describes, reference funds, size funds, tags for opaque
-	// holdings, custody, and how far a composition may lie from a day.
+	// source describes, reference funds, size funds, the declarations
+	// ledger for private holdings, custody, and how far a composition may
+	// lie from a day.
 	// Absent block ⇒ none of them and the default settings. See
 	// ExposureConfig and docs/EXPOSURE.md §9.
 	Exposure *ExposureConfig `json:"exposure,omitempty"`
@@ -1244,12 +1245,12 @@ func Load(path string) (*Config, error) {
 		}
 		c.EquityTransfers = expanded
 	}
-	if c.Exposure != nil && c.Exposure.Tags != "" {
-		expanded, err := expandPath(string(c.Exposure.Tags), configDir)
+	if c.Exposure != nil && c.Exposure.Declarations != "" {
+		expanded, err := expandPath(string(c.Exposure.Declarations), configDir)
 		if err != nil {
-			return nil, fmt.Errorf("config: exposure.tags: %w", err)
+			return nil, fmt.Errorf("config: exposure.declarations: %w", err)
 		}
-		c.Exposure.Tags = TagsPath(expanded)
+		c.Exposure.Declarations = DeclarationsPath(expanded)
 	}
 	if c.Spending != nil && c.Spending.Pins != "" {
 		expanded, err := expandPath(c.Spending.Pins, configDir)

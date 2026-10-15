@@ -75,7 +75,7 @@ class TestAppend(TempRoot):
             self.assertEqual(silver.table_rows(db), silver.table_rows(rolled / "silver" / db.name), db.name)
             self.assertEqual(silver.recorded(db), silver.recorded(rolled / "silver" / db.name), db.name)
         for name in ("wealthdb.cfg", "overrides/equity_transfers.csv", "overrides/spending_pins.csv",
-                     "overrides/transfer_overrides.csv", "overrides/exposure_tags.csv"):
+                     "overrides/transfer_overrides.csv", "overrides/exposure_declarations.ndjson"):
             self.assertEqual((full / name).read_bytes(), (rolled / name).read_bytes(), name)
 
     def test_an_append_across_an_opening_and_a_rename_equals_a_full_build(self):

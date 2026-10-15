@@ -6,7 +6,7 @@ type ExposureRows struct {
 	Proxies        []ExposureProxy
 	ReferenceFunds []string
 	SizeFunds      []ExposureSizeFund
-	Tags           []ExposureTag
+	Declarations   []ExposureDeclaration
 	Custody        []ExposureCustody
 	Settings       ExposureSettings
 }
@@ -29,15 +29,53 @@ type ExposureSizeFund struct {
 	CoveragePct float64
 }
 
-// ExposureTag states what one holding is, where no composition and no
-// security fact says so. A blank field states nothing.
-type ExposureTag struct {
+// ExposureDeclaration is one record of the declarations ledger: what the
+// household states about a holding no public source describes, split
+// into the leaves the look-through gives it.
+type ExposureDeclaration struct {
+	// Line is the record's line in the ledger, and its id in gold.
+	Line                 int
 	SilverSourceID       string
 	InstrumentExternalID string
-	Sector               string
-	Country              string
-	Currency             string
+	// AsOf is the UTC midnight of the record's date, nil for a record
+	// that is simply true.
+	AsOf *int64
+	// Dimensions are the dimensions the record declares, in the order of
+	// DeclarationDimensions.
+	Dimensions []string
+	// Source is the record's source as JSON text, "" when it has none.
+	Source string
+	Note   string
+	// Leaves are the cross product of the declared dimensions. Their
+	// shares sum to exactly one.
+	Leaves []ExposureDeclaredLeaf
 }
+
+// ExposureDeclaredLeaf is one part of a declared holding. A field is ""
+// where the record does not declare its dimension, and Unclassified for
+// the part of a declared dimension the record leaves open.
+type ExposureDeclaredLeaf struct {
+	// Share is the leaf's fraction of the holding's value.
+	Share                                         float64
+	AssetClass, Region, Country, Currency, Sector string
+}
+
+// The dimensions a declaration may state, in the order gold lists them.
+const (
+	DimensionRegion     = "region"
+	DimensionCountry    = "country"
+	DimensionCurrency   = "currency"
+	DimensionSector     = "sector"
+	DimensionAssetClass = "asset_class"
+)
+
+// DeclarationDimensions are the dimensions a declaration may state.
+var DeclarationDimensions = []string{DimensionRegion, DimensionCountry, DimensionCurrency, DimensionSector,
+	DimensionAssetClass}
+
+// Unclassified is the value of every dimension for what a declaration
+// leaves open.
+const Unclassified = "unclassified"
 
 // ExposureCustody names who keeps a source's assets.
 type ExposureCustody struct {

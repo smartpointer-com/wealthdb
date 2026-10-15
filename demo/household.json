@@ -218,12 +218,20 @@
     "income_rules": [{"match": "\\bSTILLCREST HEALTH\\b", "type": "INCOME_SALARY"}],
     "exposure": {
       "proxies": {"isin:US000LW52900": {"fund": "isin:US000HTRF500"}},
-      "tags": {
-        "homestead": {"home": {"country": "US", "currency": "USD"}},
-        "brindlecove": {"loan": {"country": "US", "currency": "USD"}},
-        "emberwright": {"fund-ii": {"sector": "technology", "country": "US", "currency": "USD"},
-                        "spv-lmnr": {"sector": "industrials", "country": "US", "currency": "USD"}}
-      },
+      "declarations": [
+        {"silver_source_id": "brindlecove", "instrument": "loan", "country": {"US": 100}, "currency": {"USD": 100},
+         "note": "the mortgage on the home"},
+        {"silver_source_id": "emberwright", "instrument": "fund-ii", "as_of": "2024-12-02",
+         "region": {"north_america": 62, "europe": 26, "rest": 12},
+         "currency": {"USD": 85, "EUR": 15},
+         "asset_class": {"private_equity": 78, "infrastructure": 22},
+         "source": {"document": "private placement memorandum", "page": 12},
+         "note": "target split 55-69 / 20-32 / 6-18; midpoints"},
+        {"silver_source_id": "emberwright", "instrument": "spv-lmnr", "country": {"US": 100}, "currency": {"USD": 100},
+         "sector": {"industrials": 100}},
+        {"silver_source_id": "homestead", "instrument": "home", "country": {"US": 100}, "currency": {"USD": 100},
+         "note": "the home"}
+      ],
       "custody": {
         "brindlecove": {"custodian": "Brindlecove Credit Union", "country": "US"},
         "quayvane": {"custodian": "Quayvane Securities", "country": "US"},

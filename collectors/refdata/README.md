@@ -147,6 +147,19 @@ A structured product's basket comes only this way. No provider reads
 one. Exchange reference data lists no constituents, and issuers'
 product pages do not allow automated download.
 
+A factsheet that states a split rather than a roster (40% Europe, 35%
+North America, 25% the rest) has no lines to look through, and
+neither has a private fund's offering document. Such a split goes into
+the engine's declarations ledger, one record per holding and date
+([EXPOSURE.md §9](../../wealthdb/docs/EXPOSURE.md#9-config)):
+
+```json
+{"silver_source_id":"bank","instrument":"XX0000000001","as_of":"2026-06-30","region":{"europe":40,"north_america":35,"rest":25},"currency":{"EUR":64,"USD":36},"source":{"document":"factsheet"}}
+```
+
+No provider reads factsheets. One that does would write the same shape
+into silver, as a composition of basis `breakdown`.
+
 ### sec-nport
 
 US registered funds and ETFs, from their N-PORT filings on SEC EDGAR.

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -26,7 +27,8 @@ import (
 // today). --country belongs to the views that place a security in a
 // country, countries and securities, and is refused elsewhere. --period
 // P turns the as-of view into a series over a positional window (FROM
-// [TO]); it applies to exposureSeriesViews and refuses -d.
+// [TO]); it applies to exposureSeriesViews and refuses -d. -f ndjson is
+// coverage's alone: the declarations ledger's records still to fill in.
 func init() {
 	register("exposure", cmdExposure)
 }
@@ -62,6 +64,15 @@ func cmdExposure(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	fs.Usage = func() { fmt.Fprintln(stderr, exposureUsage()) }
 	if err := parseFlags(fs, rest, "exposure"); err != nil {
 		return err
+	}
+	skeletons := *rf.format == skeletonFormat
+	if skeletons {
+		if err := checkSkeletonFlags(fs, view, *period, *rf.privacy); err != nil {
+			return err
+		}
+		// The shared parser knows the table formats only; the skeletons
+		// are written below.
+		*rf.format = string(output.FormatTable)
 	}
 	now := time.Now()
 	var series []seriesPoint
@@ -104,9 +115,74 @@ func cmdExposure(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	if err != nil {
 		return err
 	}
-	rep := exposureReport(request{view: view, currency: outCcy, asOf: asOfEpoch, country: *country, series: series})
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
+	if skeletons {
+		return writeDeclarationSkeletons(ctx, open, asOfEpoch, outCcy, stdout)
+	}
+	rep := exposureReport(request{view: view, currency: outCcy, asOf: asOfEpoch, country: *country, series: series})
 	return writeReport(ctx, rep, *rf.cols, "exposure", open, *rf.privacy, fmtChoice, stdout)
+}
+
+// skeletonFormat is the -f value that turns coverage into declaration
+// skeletons.
+const skeletonFormat = "ndjson"
+
+// checkSkeletonFlags refuses what -f ndjson cannot honour: another view,
+// a series, a column set, and -p, since a record names its instrument.
+func checkSkeletonFlags(fs *flag.FlagSet, view, period string, privacy bool) error {
+	switch {
+	case view != "coverage":
+		return errs.Newf(2, "exposure: -f ndjson belongs to the coverage view")
+	case period != "":
+		return errs.Newf(2, "exposure: -f ndjson prints the holdings undeclared on one day; it takes no --period")
+	case isSet(fs, "C", "columns"):
+		return errs.Newf(2, "exposure: -f ndjson prints whole records; it takes no -C")
+	case privacy:
+		return errs.Newf(2, "exposure: -f ndjson names each holding's instrument, which -p hides")
+	}
+	return nil
+}
+
+// declarationSkeleton is a record of the declarations ledger with its
+// holding named and its dimensions empty. An empty dimension is refused
+// at load, so a skeleton loads only once it is filled in or the
+// dimension is taken out.
+type declarationSkeleton struct {
+	SilverSourceID string          `json:"silver_source_id"`
+	Instrument     string          `json:"instrument"`
+	Country        json.RawMessage `json:"country"`
+	Currency       json.RawMessage `json:"currency"`
+	Sector         json.RawMessage `json:"sector"`
+	Note           string          `json:"note,omitempty"`
+}
+
+// writeDeclarationSkeletons writes one skeleton per line of coverage's
+// undeclared section, its note the holding's name. A holding with no
+// instrument, or no value, takes no record.
+func writeDeclarationSkeletons(ctx context.Context, open func() (*sql.DB, error), asOf int64, ccy string,
+	w io.Writer) error {
+	db, err := open()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	rows, err := gold.ExposureCoverage(ctx, db, asOf, ccy)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	empty := json.RawMessage(`{}`)
+	for _, r := range rows {
+		if r.Section != "undeclared" || strOrEmpty(r.SilverSourceID) == "" || strOrEmpty(r.Instrument) == "" {
+			continue
+		}
+		if err := enc.Encode(declarationSkeleton{SilverSourceID: *r.SilverSourceID, Instrument: *r.Instrument,
+			Country: empty, Currency: empty, Sector: empty, Note: strOrEmpty(r.Detail)}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // exposureReport is one view of the exposure family, the runner the CLI
@@ -396,12 +472,14 @@ func buildExposureFundColumns(ccy string) []columnSpec[gold.ExposureFundRow] {
 		textCol("replication", func(r row) *string { return r.Replication }),
 		{Name: "lending", Align: output.AlignLeft, Extract: func(r row) string { return yesNo(r.Lending) }},
 		textCol("hedged_currency", func(r row) *string { return r.HedgedCurrency }),
+		datePtrCol("declaration_date", func(r row) *int64 { return r.DeclarationAsOf }),
+		textCol("declared", func(r row) *string { return r.DeclaredDimensions }),
 		qualityCol(func(r row) string { return r.Quality }),
 	}
 }
 
 var defaultExposureFundColumns = []string{"fund", "name", "value", "share", "via", "proxy", "provider",
-	"composition_date", "gap_days", "lines", "weight_sum", "quality"}
+	"composition_date", "gap_days", "lines", "weight_sum", "declaration_date", "declared", "quality"}
 
 func buildExposureCoverageColumns(ccy string) []columnSpec[gold.ExposureCoverageRow] {
 	type row = gold.ExposureCoverageRow
@@ -413,7 +491,7 @@ func buildExposureCoverageColumns(ccy string) []columnSpec[gold.ExposureCoverage
 		outCcyCol("value", ccy, func(r row) *string { return r.Value }),
 		pctCol("share", func(r row) *float64 { return r.SharePct }),
 		textCol("detail", func(r row) *string { return r.Detail }),
-		// What a tags ledger row names; -p hides the instrument id whole.
+		// What a declaration names; -p hides the instrument id whole.
 		textCol("silver_source_id", func(r row) *string { return r.SilverSourceID }),
 		{Name: "instrument", Align: output.AlignLeft, Privacy: PrivacyFreeText,
 			Extract: func(r row) string { return strOrEmpty(r.Instrument) }},
@@ -427,6 +505,7 @@ var defaultExposureCoverageColumns = []string{"section", "reason", "items", "val
 // what each means: the CLI usage and the MCP help both render them.
 var exposureQualityTags = []struct{ tag, meaning string }{
 	{"proxy", "another fund's composition stands in"},
+	{"declared", "a declaration states it"},
 	{"aged", fmt.Sprintf("the composition is older than %d days", canonical.DefaultAgedDays)},
 	{"forward", "the composition is dated after the day"},
 	{"partial", fmt.Sprintf("the weights leave more than %g%% unexplained, a forward states no legs, "+
@@ -435,9 +514,9 @@ var exposureQualityTags = []struct{ tag, meaning string }{
 	{"by_name", "a receipt's or a report line's sector or country comes from a share matched by name " +
 		"among all shares"},
 	{"opaque", "a private equity fund nothing looks through; it reads diversified"},
-	{"untagged", "a private holding has no row in the tags ledger"},
+	{"undeclared", "a private holding has no declaration"},
 	{"unmatched", "a listed security or fund no source describes"},
-	{"no_composition", "a fund nothing describes on the day, in the funds view"},
+	{"no_composition", "a fund no composition and no declaration describes on the day, in the funds view"},
 }
 
 // exposureQualityNotes are the quality tags as an aligned list, each
@@ -517,8 +596,8 @@ Views
   coverage     what the figures rest on: how each part of net worth is
                classified, how old the compositions are, the labels no
                map knows, the securities no source describes, the
-               private holdings the tags ledger has no row for, and how
-               far each fund read from a report lies from its proxy
+               private holdings no declaration describes, and how far
+               each fund read from a report lies from its proxy
 
 Flags
   -d, --as-of DATE   the day (default today UTC)
@@ -529,7 +608,9 @@ Flags
                      countries, currencies and coverage
   --country C        risk (default) | domicile: the country a security
                      counts in, on countries and securities
-  -f FORMAT          table | csv | csv_plain | json
+  -f FORMAT          table | csv | csv_plain | json; on coverage also
+                     ndjson: one skeleton record per undeclared holding,
+                     for the declarations ledger
   -C COLS            comma-separated names, 'default', 'all', or a
                      +ADD,-REMOVE delta on the default set
   -x CCY             output currency (default: config.default_currency)

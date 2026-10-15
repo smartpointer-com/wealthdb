@@ -90,7 +90,15 @@ const (
 	RegionEurope           Region = "europe"
 	RegionMiddleEastAfrica Region = "middle_east_africa"
 	RegionAsiaPacific      Region = "asia_pacific"
+	// RegionOther is the rest of the world a declaration names as a
+	// whole (`rest`); no country belongs to it.
+	RegionOther Region = "other"
 )
+
+// Regions are the regions a country belongs to.
+func Regions() []Region {
+	return []Region{RegionNorthAmerica, RegionLatinAmerica, RegionEurope, RegionMiddleEastAfrica, RegionAsiaPacific}
+}
 
 // Country is an ISO 3166-1 alpha-2 code with its English short name and
 // its region.

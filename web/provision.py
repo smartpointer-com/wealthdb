@@ -2654,9 +2654,10 @@ def exposure_cards(db_id, privacy):
            "and real estate for holdings that are no company. Unclassified "
            "is what no source describes.", "sector", "sector")
     at_end("Exposure by region", "row",
-           "Net worth by region of the country of risk, at the latest day "
-           "in the window. A metal or a coin has no country. A bar, not a "
-           "pie: a loan can make a region negative.", "region", "region")
+           "Net worth by region, at the latest day in the window: the "
+           "region of the country of risk, or the one a declaration "
+           "states. A metal or a coin has no country. A bar, not a pie: a "
+           "loan can make a region negative.", "region", "region")
     over_time("Regions over time",
               "Each month end's net worth by region, as shares that stack to 100.",
               "region", "region")
@@ -2689,7 +2690,7 @@ def exposure_cards(db_id, privacy):
     over_time("How the figures are classified",
               "Each month end's net worth by how its figures are classified: "
               "looked through, proxied, a security a source describes, "
-              "tagged, cash, metal or crypto, a fund's remainder, a fund "
+              "declared, cash, metal or crypto, a fund's remainder, a fund "
               "too deep to follow, or unclassified. The lower the unclassified band, the more the "
               "other charts cover.", "how", "how")
     return out

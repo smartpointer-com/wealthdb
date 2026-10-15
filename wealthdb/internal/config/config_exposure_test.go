@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -38,8 +40,9 @@ func TestExposureRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	c.Exposure.Tags = TagsPath(writeLedger(t, "silver_source_id,instrument,country,currency,sector,note\n"+
-		"manual,pe-fund-1,US,USD,technology,\nmanual,house-1,CH,CHF,,the house\n"))
+	c.Exposure.Declarations = DeclarationsPath(writeLedger(t,
+		`{"silver_source_id":"manual","instrument":"pe-fund-1","sector":{"technology":100},"country":{"US":100}}`+"\n"+
+			`{"silver_source_id":"manual","instrument":"house-1","country":{"CH":100},"note":"the house"}`+"\n"))
 	rows, err := c.ExposureRows()
 	if err != nil {
 		t.Fatal(err)
@@ -64,9 +67,10 @@ func TestExposureRows(t *testing.T) {
 		{FundRef: "symbol:ALL9", CoveragePct: 100}}; !slices.Equal(rows.SizeFunds, want) {
 		t.Errorf("size funds = %+v, want %+v", rows.SizeFunds, want)
 	}
-	if len(rows.Tags) != 2 || rows.Tags[0].InstrumentExternalID != "house-1" || rows.Tags[0].Country != "CH" ||
-		rows.Tags[1].Sector != "technology" {
-		t.Errorf("tags = %+v", rows.Tags)
+	if d := rows.Declarations; len(d) != 2 || d[0].Line != 1 || d[1].InstrumentExternalID != "house-1" ||
+		d[1].Note != "the house" || strings.Join(d[0].Dimensions, ",") != "country,sector" ||
+		d[0].Leaves[0] != (canonical.ExposureDeclaredLeaf{Share: 1, Country: "US", Sector: "technology"}) {
+		t.Errorf("declarations = %+v", d)
 	}
 	if len(rows.Custody) != 1 || rows.Custody[0].Custodian != "Example Bank AG" {
 		t.Errorf("custody = %+v", rows.Custody)
@@ -78,13 +82,14 @@ func TestExposureRows(t *testing.T) {
 }
 
 // Without the block, gold still gets the default settings; a ledger
-// path that names no file holds no tags.
+// path that names no file holds no declarations.
 func TestExposureRowsDefaults(t *testing.T) {
 	t.Parallel()
-	for _, c := range []*Config{{}, {Exposure: &ExposureConfig{Tags: TagsPath(filepath.Join(t.TempDir(), "none.csv"))}}} {
+	none := DeclarationsPath(filepath.Join(t.TempDir(), "none.ndjson"))
+	for _, c := range []*Config{{}, {Exposure: &ExposureConfig{Declarations: none}}} {
 		rows, err := c.ExposureRows()
 		if err != nil || rows.Settings.MaxGapDays != canonical.DefaultMaxGapDays ||
-			len(rows.Proxies)+len(rows.Tags)+len(rows.Custody)+len(rows.ReferenceFunds)+len(rows.SizeFunds) != 0 {
+			len(rows.Proxies)+len(rows.Declarations)+len(rows.Custody)+len(rows.ReferenceFunds)+len(rows.SizeFunds) != 0 {
 			t.Errorf("rows = %+v, err %v", rows, err)
 		}
 	}
@@ -92,26 +97,57 @@ func TestExposureRowsDefaults(t *testing.T) {
 
 func writeLedger(t *testing.T, body string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "exposure-tags.csv")
+	path := filepath.Join(t.TempDir(), "exposure-declarations.ndjson")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
 }
 
-// The config's path reaches the ledger relative to the config, and a row
-// the ledger refuses names its line.
-func TestTagLedger(t *testing.T) {
+// declarations reads a ledger body through the config of one source,
+// manual.
+func declarations(t *testing.T, body string) ([]canonical.ExposureDeclaration, error) {
+	t.Helper()
+	c := &Config{SilverSources: []SilverSource{{ID: "manual"}}, Exposure: &ExposureConfig{
+		Declarations: DeclarationsPath(writeLedger(t, body))}}
+	rows, err := c.ExposureRows()
+	return rows.Declarations, err
+}
+
+// leafText is a declaration's leaves, one per line: share, then each
+// dimension's value or "-".
+func leafText(leaves []canonical.ExposureDeclaredLeaf) string {
+	var b strings.Builder
+	for _, l := range leaves {
+		dash := func(s string) string {
+			if s == "" {
+				return "-"
+			}
+			return s
+		}
+		fmt.Fprintf(&b, "%.6f %s %s %s %s %s\n", l.Share, dash(l.Region), dash(l.Country), dash(l.Currency),
+			dash(l.Sector), dash(l.AssetClass))
+	}
+	return b.String()
+}
+
+// The config's path reaches the ledger relative to the config; a record
+// keeps its date, source and note, and its dimensions in a fixed order.
+func TestDeclarationsLedger(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "tags.csv"),
-		[]byte("instrument, silver_source_id ,country\nhouse-1,manual,CH\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "declarations.ndjson"), []byte("\ufeff"+
+		`{"silver_source_id":"manual","instrument":"house-1","currency":{"CHF":100},"country":{"CH":100}}`+"\n\n"+
+		`{"silver_source_id":"manual","instrument":"fund-1","as_of":"2024-06-30","region":{"europe":100},`+
+		`"source":{"document": "factsheet", "page": 2},"note":"stated as ~100%"}`+"\n"+
+		`{"silver_source_id":"manual","instrument":"fund-1","as_of":"2025-06-30","region":{"europe":100}}`+"\n"+
+		`{"silver_source_id":"manual","instrument":"fund-1","region":{"rest":100}}`+"\r\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfgPath := filepath.Join(dir, "wealthdb.cfg")
 	if err := os.WriteFile(cfgPath, []byte(`{"gold_db": "/tmp/x", "default_currency": "USD",
         "silver_sources": [{"id": "manual", "kind": "manual", "path": "/tmp/m.db"}],
-        "exposure": {"tags": "tags.csv"}}`), 0o600); err != nil {
+        "exposure": {"declarations": "declarations.ndjson"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	c, err := Load(cfgPath)
@@ -119,41 +155,123 @@ func TestTagLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := c.ExposureRows()
-	if err != nil || len(rows.Tags) != 1 || rows.Tags[0].InstrumentExternalID != "house-1" || rows.Tags[0].Country != "CH" {
-		t.Fatalf("tags = %+v, err %v", rows.Tags, err)
-	}
-	// A spreadsheet's byte-order mark and an empty trailing header cell
-	// are no columns.
-	c.Exposure.Tags = TagsPath(writeLedger(t, "\ufeffsilver_source_id,instrument,country,\nmanual,house-1,CH,\n"))
-	if rows, err := c.ExposureRows(); err != nil || len(rows.Tags) != 1 {
-		t.Errorf("BOM and trailing cell: %+v, %v", rows.Tags, err)
-	}
-	// The map form of tags is refused with what the field takes.
-	if err := os.WriteFile(cfgPath, []byte(`{"gold_db": "/tmp/x", "default_currency": "USD",
-        "silver_sources": [{"id": "manual", "kind": "manual", "path": "/tmp/m.db"}],
-        "exposure": {"tags": {"manual": {"house-1": {"country": "CH"}}}}}`), 0o600); err != nil {
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(cfgPath); err == nil || !strings.Contains(err.Error(), "path to the tags ledger") {
-		t.Errorf("map form: %v", err)
+	d := rows.Declarations
+	if len(d) != 4 {
+		t.Fatalf("declarations = %+v", d)
 	}
-	head := "silver_source_id,instrument,country,currency,sector\n"
+	if d[0].Line != 1 || d[0].AsOf != nil || strings.Join(d[0].Dimensions, ",") != "country,currency" ||
+		leafText(d[0].Leaves) != "1.000000 - CH CHF - -\n" {
+		t.Errorf("the house: %+v", d[0])
+	}
+	if d[1].Line != 3 || d[1].AsOf == nil || *d[1].AsOf != 1719705600 || d[1].Source != `{"document":"factsheet","page":2}` ||
+		d[1].Note != "stated as ~100%" {
+		t.Errorf("the dated record: %+v", d[1])
+	}
+	if d[3].Line != 5 || leafText(d[3].Leaves) != "1.000000 other - - - -\n" {
+		t.Errorf("rest reads other: %+v", d[3])
+	}
+}
+
+// The leaves are the cross product of the declared dimensions, each
+// padded with its unclassified part, so their shares sum to one.
+func TestDeclarationLeaves(t *testing.T) {
+	t.Parallel()
 	for body, want := range map[string]string{
-		"silver_source_id,instrument,contry\n":          "unknown column \"contry\"",
-		"silver_source_id,instrument,country,country\n": "column \"country\" twice",
-		"silver_source_id,country\nmanual,CH\n":         "column \"instrument\" is required",
-		head + "nope,x,CH,,\n":                          "line 2: silver_source_id \"nope\"",
-		head + "manual,,CH,,\n":                         "line 2: silver_source_id and instrument are required",
-		head + "\nmanual,x,,,\n":                        "line 3: at least one of",
-		head + "manual,x,,,tech\n":                      "sector \"tech\" is not one of",
-		head + "manual,x,ch,,\n":                        "not an ISO 3166",
-		head + "manual,x,QQ,,\n":                        "not an ISO 3166",
-		head + "manual,x,,chf,\n":                       "ISO 4217",
-		head + "manual,x,CH,,\nmanual,x,,CHF,\n":        "line 3: manual x is tagged on line 2 already",
+		// A split of three regions by two classes, one currency: six leaves.
+		`"region":{"north_america":55,"europe":30,"rest":15},"asset_class":{"private_equity":72,"private_debt":28},` +
+			`"currency":{"USD":100}`: "0.396000 north_america - USD - private_equity\n" +
+			"0.154000 north_america - USD - private_debt\n" +
+			"0.216000 europe - USD - private_equity\n" +
+			"0.084000 europe - USD - private_debt\n" +
+			"0.108000 other - USD - private_equity\n" +
+			"0.042000 other - USD - private_debt\n",
+		// What the shares leave of 100 is unclassified; a share of zero
+		// states nothing.
+		`"sector":{"technology":33.3,"health_care":33.3,"financials":33.3,"energy":0}`: "0.333000 - - - technology -\n" +
+			"0.333000 - - - health_care -\n0.333000 - - - financials -\n0.001000 - - - unclassified -\n",
+		// What they take beyond it too, as a negative part.
+		`"country":{"US":60.2,"unclassified":40.1}`: "0.602000 - US - - -\n0.398000 - unclassified - - -\n",
+		`"country":{"US":50.2,"CA":50.1}`:           "0.502000 - US - - -\n0.501000 - CA - - -\n-0.003000 - unclassified - - -\n",
 	} {
-		c.Exposure.Tags = TagsPath(writeLedger(t, body))
-		if _, err := c.ExposureRows(); err == nil || !strings.Contains(err.Error(), want) {
+		d, err := declarations(t, `{"silver_source_id":"manual","instrument":"x",`+body+"}\n")
+		if err != nil {
+			t.Errorf("%s: %v", body, err)
+			continue
+		}
+		if got := leafText(d[0].Leaves); got != want {
+			t.Errorf("%s:\n%s\nwant\n%s", body, got, want)
+		}
+		sum := 0.0
+		for _, l := range d[0].Leaves {
+			sum += l.Share
+		}
+		if math.Abs(sum-1) > 1e-12 {
+			t.Errorf("%s: the shares sum to %v", body, sum)
+		}
+	}
+}
+
+func TestDeclarationRejects(t *testing.T) {
+	t.Parallel()
+	rec := func(body string) string { return `{"silver_source_id":"manual","instrument":"x",` + body + "}\n" }
+	for body, want := range map[string]string{
+		rec(`"contry":{"CH":100}`):                       `line 1: unknown key "contry"`,
+		rec(`"country":{"CH":100},"country":{"CH":100}`): `key "country" twice`,
+		rec(`"country":{"CH":60,"CH":40}`):               `country: key "CH" twice`,
+		`{"silver_source_id":"manual",` + "\n" + `"instrument":"x","country":{"CH":100}}` + "\n": "line 1: not JSON",
+		`["manual","x"]` + "\n": "want a JSON object",
+		rec(`"country":{"CH":100}`) + `{"silver_source_id":"manual","instrument":"y"} {}` + "\n": "line 2: something follows",
+		rec(`"note":"no dimension"`):                                               "line 1: a record declares at least one of",
+		rec(`"region":{"europe":100},"country":{"CH":100}`):                        "region and country are one dimension",
+		rec(`"region":{"europe":60,"rest":39.4}`):                                  "region: the shares sum to 99.4%, want 100",
+		rec(`"region":{"europe":60,"rest":40.6}`):                                  "region: the shares sum to 100.6%",
+		rec(`"region":{"europe":60,"rest":39.499}`):                                "region: the shares sum to 99.499%",
+		rec(`"region":{}`):                                                         "region: the shares sum to 0%",
+		rec(`"region":{"europe":"55-65","rest":40}`):                               `region: europe: a share is a number in percent, not "55-65"`,
+		rec(`"region":{"europe":-10,"rest":110}`):                                  "a share is a number from 0 to 100, not -10",
+		rec(`"region":{"europe":150}`):                                             "not 150",
+		rec(`"region":"europe"`):                                                   "region: want a JSON object",
+		rec(`"region":{"other":100}`):                                              `"other" is not a region`,
+		rec(`"region":{"Europe":100}`):                                             `"Europe" is not a region`,
+		rec(`"country":{"ch":100}`):                                                "not an ISO 3166",
+		rec(`"country":{"QQ":100}`):                                                "not an ISO 3166",
+		rec(`"currency":{"chf":100}`):                                              "ISO 4217",
+		rec(`"sector":{"tech":100}`):                                               `"tech" is not one of`,
+		rec(`"asset_class":{"private_fund":100}`):                                  `"private_fund" is not one of`,
+		rec(`"as_of":"2024-6-30","country":{"CH":100}`):                            `as_of "2024-6-30" is not a date`,
+		rec(`"as_of":20240630,"country":{"CH":100}`):                               "as_of is a string",
+		rec(`"note":7,"country":{"CH":100}`):                                       "note is a string",
+		`{"silver_source_id":"nope","instrument":"x","country":{"CH":100}}` + "\n": `silver_source_id "nope"`,
+		`{"silver_source_id":"manual","country":{"CH":100}}` + "\n":                "silver_source_id and instrument are required",
+		rec(`"country":{"CH":100}`) + rec(`"currency":{"CHF":100}`):                "line 2: manual x is declared without a date on line 1 already",
+		rec(`"as_of":"2024-06-30","country":{"CH":100}`) + rec(`"as_of":"2024-06-30","country":{"DE":100}`): "line 2: manual x is declared as of 2024-06-30 on line 1",
+	} {
+		if _, err := declarations(t, body); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: err %v, want %q", body, err, want)
+		}
+	}
+	// The path is named, and a record split over two lines says how a
+	// record is written.
+	_, err := declarations(t, `{"silver_source_id":"manual",`+"\n"+`"instrument":"x"}`)
+	if err == nil || !strings.Contains(err.Error(), "exposure.declarations: ") ||
+		!strings.Contains(err.Error(), "one JSON object on one line") {
+		t.Errorf("split record: %v", err)
+	}
+}
+
+// The tags key the declarations ledger replaces is refused with where it
+// went, and the ledger's path takes a string alone.
+func TestDeclarationsConfigKey(t *testing.T) {
+	t.Parallel()
+	for block, want := range map[string]string{
+		`{"tags": "overrides/exposure_tags.csv"}`:       "the declarations ledger replaces the tags ledger",
+		`{"declarations": {"manual": {"house-1": {}}}}`: "path to the declarations ledger",
+	} {
+		if _, err := exposureConfig(t, block); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err %v, want %q", block, err, want)
 		}
 	}
 }

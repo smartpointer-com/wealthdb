@@ -70,22 +70,23 @@ func TestStalePinFailsBeforeGoldIsOpened(t *testing.T) {
 	}
 }
 
-// A tags ledger row the build refuses stops load and reload before gold
-// is opened read-write, as a stale pin does, and names its line.
-func TestBadTagLedgerFailsBeforeGoldIsOpened(t *testing.T) {
+// A declaration the build refuses stops load and reload before gold is
+// opened read-write, as a stale pin does, and names its line.
+func TestBadDeclarationFailsBeforeGoldIsOpened(t *testing.T) {
 	t.Parallel()
 	for _, args := range [][]string{{"load", "schwab-test"}, {"reload", "schwab-test"}, {"reload", "-a"}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
 			cfgPath := setupCLITest(t)
 			dir := filepath.Dir(cfgPath)
-			tags := filepath.Join(dir, "exposure_tags.csv")
-			if err := os.WriteFile(tags, []byte("silver_source_id,instrument,country\nschwab-test,QPRIV,ch\n"), 0o600); err != nil {
+			ledger := filepath.Join(dir, "exposure_declarations.ndjson")
+			if err := os.WriteFile(ledger, []byte(`{"silver_source_id":"schwab-test","instrument":"QPRIV","country":{"CH":100}}`+"\n"+
+				`{"silver_source_id":"schwab-test","instrument":"QPRIV2","region":{"europe":60,"rest":30}}`+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD",
                 "silver_sources": [{"id":"schwab-test","kind":"schwab","path":%q}],
-                "exposure": {"tags": %q}}`, goldPathFromCfg(cfgPath), filepath.Join(dir, "schwab.db"), tags)
+                "exposure": {"declarations": %q}}`, goldPathFromCfg(cfgPath), filepath.Join(dir, "schwab.db"), ledger)
 			if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -95,7 +96,7 @@ func TestBadTagLedgerFailsBeforeGoldIsOpened(t *testing.T) {
 			goldPath := goldPathFromCfg(cfgPath)
 			behind := putGoldOneMigrationBehind(t, goldPath)
 			so, se, code := run(t, append([]string{"-c", cfgPath}, args...)...)
-			if code == 0 || !strings.Contains(se, "exposure.tags") || !strings.Contains(se, "line 2") {
+			if code == 0 || !strings.Contains(se, "exposure.declarations") || !strings.Contains(se, "line 2: region") {
 				t.Fatalf("exit %d, stderr:\n%s", code, se)
 			}
 			version, loads, sources := goldState(t, goldPath)
@@ -104,6 +105,32 @@ func TestBadTagLedgerFailsBeforeGoldIsOpened(t *testing.T) {
 					loads, sources)
 			}
 		})
+	}
+}
+
+// A declaration whose holding no source states loads, and the load warns
+// with its line: the record declares nothing.
+func TestLoadWarnsOfADeclarationNamingNoHolding(t *testing.T) {
+	t.Parallel()
+	cfgPath := setupCLITest(t)
+	dir := filepath.Dir(cfgPath)
+	ledger := filepath.Join(dir, "exposure_declarations.ndjson")
+	if err := os.WriteFile(ledger, []byte(`{"silver_source_id":"schwab-test","instrument":"QNOPE","country":{"CH":100}}`+"\n"),
+		0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD",
+        "silver_sources": [{"id":"schwab-test","kind":"schwab","path":%q}],
+        "exposure": {"declarations": %q}}`, goldPathFromCfg(cfgPath), filepath.Join(dir, "schwab.db"), ledger)
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, se, code := run(t, "-c", cfgPath, "init"); code != 0 {
+		t.Fatalf("init failed: %s", se)
+	}
+	_, se, code := run(t, "-c", cfgPath, "load", "schwab-test")
+	if code != 0 || !strings.Contains(se, "1 declaration(s) name a holding no source states (exposure.declarations line 1)") {
+		t.Errorf("exit %d, stderr:\n%s", code, se)
 	}
 }
 

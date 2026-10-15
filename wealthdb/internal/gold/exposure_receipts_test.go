@@ -242,7 +242,10 @@ func TestExposurePassCompletesAReceipt(t *testing.T) {
 func TestMigration0126DDLIsRerunnable(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
+	// 0128 re-creates the look-through over the declarations, so it is
+	// replayed after 0126, as Migrate would.
 	rerunMigrationDDL(t, db, ctx, "0126_exposure_report.sql")
+	rerunMigrationDDL(t, db, ctx, "0128_exposure_declarations.sql")
 	n, err := RebuildExposure(ctx, db)
 	if err != nil {
 		t.Fatal(err)
@@ -250,7 +253,7 @@ func TestMigration0126DDLIsRerunnable(t *testing.T) {
 	if n.Securities == 0 || n.Aliases == 0 {
 		t.Errorf("after replay: rebuilt %+v", n)
 	}
-	if f := leafFlags(t, db, ctx, `iid = 'PE1'`); f != "opaque,untagged" {
+	if f := leafFlags(t, db, ctx, `iid = 'PE1'`); f != "opaque,undeclared" {
 		t.Errorf("after replay: PE1 flags = %q", f)
 	}
 	if rows, err := ExposureSizes(ctx, db, exAsOf, "USD"); err != nil || len(rows) == 0 {

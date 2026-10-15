@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
@@ -11,7 +12,7 @@ import (
 // SyncExposure makes the exposure config tables hold exactly the
 // config's `exposure` block: each table is replaced whole, so an entry
 // taken out of the config leaves on the next load. Returns how many
-// proxies, reference and size funds, tags and custody entries it
+// proxies, reference and size funds, declarations and custody entries it
 // stamped.
 func SyncExposure(ctx context.Context, db *sql.DB, rows canonical.ExposureRows) (int, error) {
 	tx, err := db.BeginTx(ctx, nil)
@@ -19,8 +20,8 @@ func SyncExposure(ctx context.Context, db *sql.DB, rows canonical.ExposureRows) 
 		return 0, fmt.Errorf("SyncExposure: begin: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck — no-op after Commit
-	for _, t := range []string{"exposure_proxies", "exposure_reference_funds", "exposure_size_funds", "exposure_tags",
-		"exposure_custody", "exposure_settings"} {
+	for _, t := range []string{"exposure_proxies", "exposure_reference_funds", "exposure_size_funds",
+		"exposure_declarations", "exposure_declaration_leaves", "exposure_custody", "exposure_settings"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t); err != nil {
 			return 0, fmt.Errorf("SyncExposure: clear %s: %w", t, err)
 		}
@@ -48,12 +49,29 @@ func SyncExposure(ctx context.Context, db *sql.DB, rows canonical.ExposureRows) 
 			return 0, err
 		}
 	}
-	for _, t := range rows.Tags {
-		if err := insert(`INSERT INTO exposure_tags (silver_source_id, instrument_external_id, sector, country, currency)
-VALUES (?, ?, ?, ?, ?)`, t.SilverSourceID, t.InstrumentExternalID,
-			nullableEnumValue(t.Sector), nullableEnumValue(t.Country), nullableEnumValue(t.Currency)); err != nil {
+	type leaf struct {
+		line, no int
+		canonical.ExposureDeclaredLeaf
+	}
+	var leaves []leaf
+	for _, d := range rows.Declarations {
+		if err := insert(`INSERT INTO exposure_declarations (line_no, silver_source_id, instrument_external_id, as_of,
+dimensions, source, note) VALUES (?, ?, ?, ?, ?, ?, ?)`, d.Line, d.SilverSourceID, d.InstrumentExternalID, d.AsOf,
+			strings.Join(d.Dimensions, ","), nullableEnumValue(d.Source), nullableEnumValue(d.Note)); err != nil {
 			return 0, err
 		}
+		for i, l := range d.Leaves {
+			leaves = append(leaves, leaf{d.Line, i + 1, l})
+		}
+	}
+	if err := InsertChunked(ctx, tx, "exposure_declaration_leaves", `INSERT INTO exposure_declaration_leaves
+(line_no, leaf_no, share, asset_class, region, country, currency, sector) VALUES `, `(?, ?, ?, ?, ?, ?, ?, ?)`,
+		len(leaves), func(i int, args []any) []any {
+			l := leaves[i]
+			return append(args, l.line, l.no, l.Share, nullableEnumValue(l.AssetClass), nullableEnumValue(l.Region),
+				nullableEnumValue(l.Country), nullableEnumValue(l.Currency), nullableEnumValue(l.Sector))
+		}); err != nil {
+		return 0, fmt.Errorf("SyncExposure: %w", err)
 	}
 	for _, c := range rows.Custody {
 		if err := insert(`INSERT INTO exposure_custody (silver_source_id, custodian, country) VALUES (?, ?, ?)`,
@@ -69,5 +87,27 @@ VALUES (?, ?, ?, ?, ?)`, t.SilverSourceID, t.InstrumentExternalID,
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("SyncExposure: commit: %w", err)
 	}
-	return len(rows.Proxies) + len(rows.ReferenceFunds) + len(rows.SizeFunds) + len(rows.Tags) + len(rows.Custody), nil
+	return len(rows.Proxies) + len(rows.ReferenceFunds) + len(rows.SizeFunds) + len(rows.Declarations) + len(rows.Custody), nil
+}
+
+// DeclarationsNamingNoHolding are the ledger lines of the declarations
+// whose holding no source states: a misspelt instrument, say, or a
+// source not loaded yet. Such a record declares nothing.
+func DeclarationsNamingNoHolding(ctx context.Context, db *sql.DB) ([]int, error) {
+	var lines []int
+	err := scanAll(ctx, db, `
+SELECT d.line_no FROM exposure_declarations d
+  ANTI JOIN instruments i ON i.silver_source_id = d.silver_source_id AND i.instrument_external_id = d.instrument_external_id
+ ORDER BY 1`, func(rows *sql.Rows) error {
+		var n int
+		if err := rows.Scan(&n); err != nil {
+			return err
+		}
+		lines = append(lines, n)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("DeclarationsNamingNoHolding: %w", err)
+	}
+	return lines, nil
 }

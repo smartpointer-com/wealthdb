@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -126,9 +128,10 @@ func selectSources(cfg *config.Config, id, cmd string) ([]config.SilverSource, e
 // stampConfig writes what gold takes from the config once the sources
 // are in: the FX source precedence, which the SQL FX layer (fx_daily)
 // reads, the declared accounts, the holding aliases and the exposure
-// rows (read, with the tags ledger, before gold opened). The precedence
-// re-stamps every source, so a single-source load keeps it globally
-// correct; failing to stamp it degrades a conversion and is a warning.
+// rows (read, with the declarations ledger, before gold opened). The
+// precedence re-stamps every source, so a single-source load keeps it
+// globally correct; failing to stamp it degrades a conversion and is a
+// warning.
 // A failure to sync the rows is an error (syncConfigRows).
 func stampConfig(ctx context.Context, db *sql.DB, cfg *config.Config, exposure canonical.ExposureRows, verb string,
 	stdout, stderr io.Writer) error {
@@ -139,7 +142,33 @@ func stampConfig(ctx context.Context, db *sql.DB, cfg *config.Config, exposure c
 		fmt.Fprintf(stderr, "%s: %s\n", verb, err.Error())
 		return err
 	}
+	warnUnmatchedDeclarations(ctx, db, verb, stderr)
 	return nil
+}
+
+// warnUnmatchedDeclarations names the declarations whose holding no
+// source states. Such a record declares nothing, and the holding it was
+// meant for stays undeclared, so the warning is what shows a misspelt
+// instrument.
+func warnUnmatchedDeclarations(ctx context.Context, db *sql.DB, verb string, stderr io.Writer) {
+	lines, err := gold.DeclarationsNamingNoHolding(ctx, db)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: warning: could not check the declarations: %s\n", verb, err.Error())
+		return
+	}
+	if len(lines) == 0 {
+		return
+	}
+	const shown = 10
+	names := make([]string, 0, shown)
+	for _, n := range lines[:min(len(lines), shown)] {
+		names = append(names, strconv.Itoa(n))
+	}
+	if len(lines) > shown {
+		names = append(names, "…")
+	}
+	fmt.Fprintf(stderr, "%s: warning: %d declaration(s) name a holding no source states (exposure.declarations line %s)\n",
+		verb, len(lines), strings.Join(names, ", "))
 }
 
 // syncConfigRows stamps the config's declared accounts into the
@@ -184,7 +213,8 @@ type enrichmentLedgers struct {
 
 // readLoadLedgers reads what a load or reload applies beside the
 // sources, before gold is opened read-write (parseEnrichmentLedgers):
-// the enrichment ledgers, and the exposure rows with the tags ledger.
+// the enrichment ledgers, and the exposure rows with the declarations
+// ledger.
 func readLoadLedgers(cfg *config.Config) (enrichmentLedgers, canonical.ExposureRows, error) {
 	enrichment, err := parseEnrichmentLedgers(cfg)
 	if err != nil {

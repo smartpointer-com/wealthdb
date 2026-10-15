@@ -162,7 +162,8 @@ SELECT security, name, ticker, asset_class, sector, country, currency,
 }
 
 // ExposureFundRow is one fund held directly, and what describes it at
-// the instant; the last row is every other holding.
+// the instant: a composition, or a declaration; the last row is every
+// other holding.
 type ExposureFundRow struct {
 	Fund                     string
 	Name                     *string
@@ -177,26 +178,31 @@ type ExposureFundRow struct {
 	Domicile, Replication    *string
 	Lending                  *bool
 	HedgedCurrency           *string
-	Quality                  string
+	// DeclarationAsOf is the declaration's date, nil for one without a
+	// date; DeclaredDimensions are the dimensions it states.
+	DeclarationAsOf    *int64
+	DeclaredDimensions *string
+	Quality            string
 }
 
 // ExposureFunds runs report_exposure_funds.
 func ExposureFunds(ctx context.Context, db *sql.DB, asOf int64, ccy string) ([]ExposureFundRow, error) {
 	return scanRows(ctx, db, "ExposureFunds", `
 SELECT fund, name, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, via, proxy, leverage, provider, basis,
-       composition_as_of, gap_days, lines, weight_sum, domicile, replication, lending, hedged_currency, quality
+       composition_as_of, gap_days, lines, weight_sum, domicile, replication, lending, hedged_currency,
+       declaration_as_of, declared_dimensions, quality
   FROM report_exposure_funds(?, ?)`, []any{asOf, ccy}, func(r *ExposureFundRow) []any {
 		return []any{&r.Fund, str(&r.Name), dec(&r.Value), flt(&r.SharePct), str(&r.Via), str(&r.Proxy),
 			flt(&r.Leverage), str(&r.Provider), str(&r.Basis), i64(&r.CompositionAsOf), i64(&r.GapDays),
 			i64(&r.Lines), flt(&r.WeightSum), str(&r.Domicile), str(&r.Replication), boolp(&r.Lending),
-			str(&r.HedgedCurrency), &r.Quality}
+			str(&r.HedgedCurrency), i64(&r.DeclarationAsOf), str(&r.DeclaredDimensions), &r.Quality}
 	})
 }
 
 // ExposureCoverageRow is one line of the coverage view: a section (how,
-// age, unmapped, unmatched, untagged, divergence), a reason, and the
-// value behind it. A holding's line names its source and instrument, as a tags
-// ledger row does.
+// age, unmapped, unmatched, undeclared, divergence), a reason, and the
+// value behind it. A holding's line names its source and instrument, as a
+// declaration does.
 type ExposureCoverageRow struct {
 	Section, Reason            string
 	Items                      int64

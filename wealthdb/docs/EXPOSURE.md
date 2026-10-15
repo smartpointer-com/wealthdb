@@ -9,7 +9,7 @@ the report shows and the rules behind them.
 Related design: DESIGN.md §4.17 (the `exposure` command), §7.6 (the
 reference and config tables), §10.14 (the derived tables and macros);
 [adapters/refdata.md](adapters/refdata.md) (how reference data loads,
-the keys and aliases, and the wanted list); migrations 0125 to 0127.
+the keys and aliases, and the wanted list); migrations 0125 to 0128.
 
 Every figure is a share of a holding's market value, the value
 `holdings` reports. The look-through moves value between rows; it never
@@ -32,9 +32,12 @@ creates or loses any. Every view therefore sums to `holdings global`.
   and a line that names its ISIN are one security.
   [adapters/refdata.md §3](adapters/refdata.md#3-identity) gives the key
   scheme and the alias rules.
-- **A leaf** is what the look-through ends at: a holding no composition
-  describes, a fund's line, a remainder, or the cash leg of a leveraged
-  proxy.
+- **A declaration** is what the household states about a holding no
+  public source describes: a property's country, or a private fund's
+  target split by region (§9).
+- **A leaf** is what the look-through ends at: a holding nothing
+  describes, a part of a declared holding, a fund's line, a remainder,
+  or the cash leg of a leveraged proxy.
 - **Net worth** is the sum of every leaf, as `holdings global` reports
   it. A loan is a negative leaf.
 
@@ -63,12 +66,31 @@ For a day:
 6. Every leaf gets an asset class, a sector, a country and a currency
    (§3, §6).
 
-A holding without a composition is a leaf of its own. A listed
-security takes its attributes from §3. A fund takes its tags alone,
-held directly or named by a line no level expands: where it is
-domiciled says nothing of where its value is. A real estate fund keeps
-the `real_estate` sector. Anything else takes its tags (§9), or stays
-unclassified.
+What describes a holding, in this order:
+
+1. its fund's own composition, within `max_gap_days` (§4);
+2. its declaration (§9);
+3. a proxy's composition (§5).
+
+A declaration never stands in for a fund's own composition. Where the
+config says a proxy always replaces that composition (§5), the proxy
+still does, declaration or not. A declaration describes a holding held
+directly: a fund that another fund holds reads its composition or its
+proxy, never a declaration.
+
+A holding none of them describes is a leaf of its own. A listed
+security takes its attributes from §3. A fund takes none of them, held
+directly or named by a line no level expands: where it is domiciled
+says nothing of where its value is. A real estate fund keeps the
+`real_estate` sector. Anything else stays unclassified.
+
+A declared holding splits into parts, each a share of its value (§9).
+A part takes the class, region, country, currency and sector the
+record states for it. A dimension the record leaves out reads as it
+would without a record: a listed security's sector and country come
+from §3, a private holding counts in its own currency. A part of class
+cash, metal or crypto follows the rules of its class first, as every
+leaf does (§3, §6). The parts are held directly.
 
 ## 3. What a security is
 
@@ -84,8 +106,8 @@ whose label a map knows, and keeps where it came from:
 | country of domicile | the legal country (GLEIF); the country of incorporation (EDGAR); the ISIN prefix |
 | market cap | a vendor; another provider's market cap; for a US filer, EDGAR's shares outstanding times the US-dollar price a position held directly implies, else the newest fund line's |
 
-A row in the tags ledger (§9) wins over every source for the holding it
-names.
+A declaration (§9) wins over every source for the holding it names, in
+each dimension it states.
 
 The fund files are the security master: a stock held directly takes its
 sector and country from any fund line that names the same security.
@@ -203,7 +225,9 @@ through.
   fund nothing looks through reads `diversified` (§5).
 - **Countries** are ISO 3166 alpha-2 codes, each in one of five
   regions: `north_america`, `latin_america`, `europe`,
-  `middle_east_africa`, `asia_pacific`.
+  `middle_east_africa`, `asia_pacific`. A sixth region, `other`, is the
+  rest of the world a declaration states as a whole. No country
+  belongs to it.
 - **Asset classes** are the taxonomy's (TAXONOMY.md). A fund line's
   asset type maps onto one; a line without one takes its fund's class.
 
@@ -270,19 +294,20 @@ mark describes the holding.
   type.
 - **Private holdings.** No public source describes a property, a loan,
   a private fund, or a startup's shares and notes. The last are a stock
-  or a bond in a private asset class. A tag states such a holding's
-  country, currency and sector. A private equity fund nothing looks
-  through reads the sector `diversified`, unless a tag says otherwise. It
-  carries the `opaque` flag.
+  or a bond in a private asset class. A declaration states such a
+  holding's country, currency and sector, or a split of them (§9). A
+  private equity fund nothing looks through reads the sector
+  `diversified`, unless a declaration states one. It carries the
+  `opaque` flag.
 - **Structured products.** No provider reads the basket of a
   structured product (a certificate or a note). The basket comes
   through the refdata
   [inbox](../../collectors/refdata/README.md#inbox) instead, from the
-  issuer's factsheet or term sheet. Its composition wins over a tag.
-  Without one, the product is a private holding. A tag (§9) states its
-  country, currency and sector, and `exposure coverage` lists it under
-  `untagged` until one does. A product whose asset class is metal or
-  crypto counts by its class.
+  issuer's factsheet or term sheet. Its composition wins over a
+  declaration. Without one, the product is a private holding. A
+  declaration (§9) states its country, currency and sector, and
+  `exposure coverage` lists it under `undeclared` until one does. A
+  product whose asset class is metal or crypto counts by its class.
 
 ## 6. Currency
 
@@ -295,7 +320,8 @@ priced in:
   held physically or through a fund the look-through does not split.
 - A coin held in a wallet counts as its symbol. A product or a fund line
   that holds a coin counts as the coin its name states: bitcoin as BTC,
-  ether as ETH. Any other coin reads `unclassified`.
+  ether as ETH. Any other coin reads `unclassified`, unless a
+  declaration states its currency (§9).
 - A hedged class counts in its hedge currency (§5).
 
 The `currencies` view marks each row's kind: `fiat`, `metal` or
@@ -333,14 +359,24 @@ suffix, in a table's header and as a JSON key: `share_pct`,
 exposure` lists every view's columns.
 
 A row with no value for its dimension reads `unclassified`. In
-`countries`, a metal or a coin reads `(none)`: it has no country. In
-`sizes`, anything but public equity reads `(none)`.
+`countries`, a metal or a coin reads `(none)`: it has no country. A
+part declared by region alone reads `unclassified` with its region, in
+a row for each region. In `sizes`, anything but public equity reads
+`(none)`. A declared part of public equity has its holding's size: a
+listed stock's, else `unclassified`.
 
 `securities` gives a leaf without a security a row of its own: cash per
 currency, any other fund line by its fund and name, a holding by its
-instrument, a fund's remainder. `funds` lists each fund held directly,
-then one row for all other holdings together. Both therefore sum to net
-worth, like the other views.
+instrument, a fund's remainder. The parts of a declared holding are one
+row, the holding's, with the class, sector, country and currency of its
+largest part. The split itself shows in `classes`, `sectors`,
+`countries` and `currencies`.
+
+`funds` lists each fund held directly, then one row for all other
+holdings together. `securities` and `funds` therefore sum to net worth,
+like the other views. A fund a declaration describes reads `via`
+`declared`, with the record's `declaration_date` and the dimensions it
+`declared`.
 
 `-p` hides every amount and every instrument id a holding is named by.
 Shares, names, labels and public identifiers stay.
@@ -365,15 +401,16 @@ flags.
 | Flag | Meaning |
 | --- | --- |
 | `proxy` | another fund's composition stands in |
+| `declared` | a declaration states it (§9) |
 | `aged` | the composition is more than 35 days older than the day |
 | `forward` | the composition is dated after the day |
 | `partial` | the weights leave more than 3% of the fund unexplained (the remainder), a forward states no legs, or a fund lies deeper than three levels |
 | `unmapped` | a provider's label has no place in the vocabulary |
 | `by_name` | a depositary receipt's or a named line's sector or country comes from a share matched by name among all shares, not in a proxy's lines (§3) |
 | `opaque` | a private equity fund nothing looks through; it reads `diversified` |
-| `untagged` | a private holding (§5) has no tag. A tag that leaves a field blank is still a tag |
+| `undeclared` | a private holding (§5) has no declaration on the day. A record that leaves a dimension out still declares the holding |
 | `unmatched` | a listed security or fund no source describes |
-| `no_composition` | in `funds` only: no composition describes the fund on the day |
+| `no_composition` | in `funds` only: no composition and no declaration describes the fund on the day |
 
 ## 9. Config
 
@@ -388,7 +425,7 @@ The `exposure` block of `wealthdb.cfg` holds what no source knows
   },
   "reference_funds": ["symbol:IDX9"],
   "size_funds": { "symbol:ALL9": 100, "isin:XX0000000003": 85 },
-  "tags": "~/ledgers/exposure-tags.csv",
+  "declarations": "~/ledgers/exposure-declarations.ndjson",
   "custody": { "bank-1": { "custodian": "Example Bank AG", "country": "CH" } },
   "max_gap_days": 400
 }
@@ -405,8 +442,8 @@ The `exposure` block of `wealthdb.cfg` holds what no source knows
   covers, in percent, from 50 to 100: 100 for an all-cap fund, 85 for a
   large and mid cap one. A small-cap fund is no size fund. They are
   fetched like reference funds.
-- `tags` is the path to the tags ledger, below. It expands like every
-  path in the config (DESIGN.md §5).
+- `declarations` is the path to the declarations ledger, below. It
+  expands like every path in the config (DESIGN.md §5).
 - `custody` names who keeps each configured source's assets:
   `custodian`, and optionally `country` (ISO 3166). A cash balance
   counts in its custodian's country.
@@ -414,45 +451,95 @@ The `exposure` block of `wealthdb.cfg` holds what no source knows
   default 400.
 
 The block is checked when the config loads. A load writes it, with the
-tags ledger, into the `exposure_*` tables whole (DESIGN.md §7.6), so an
-entry taken out leaves on the next load.
+declarations ledger, into the `exposure_*` tables whole (DESIGN.md
+§7.6), so an entry taken out leaves on the next load.
 
-The tags ledger is a CSV of what no public source can know: the
-country, currency and sector of a private holding (§5). It has one row
-per holding:
+### The declarations ledger
 
-```csv
-silver_source_id,instrument,country,currency,sector,note
-manual,house-1,CH,CHF,,the house
-manual,loan-1,CH,CHF,,its mortgage
-venture,fund-7,US,USD,technology,
+The declarations ledger states what no public source can know: where a
+private holding's value is (§5). It is newline-delimited JSON, one
+record per line, for one holding and date:
+
+```json
+{"silver_source_id":"manual","instrument":"house-1","country":{"CH":100},"currency":{"CHF":100},"note":"the house"}
+{"silver_source_id":"manual","instrument":"loan-1","country":{"CH":100},"currency":{"CHF":100},"note":"its mortgage"}
+{"silver_source_id":"venture","instrument":"fund-7","as_of":"2026-03-31","region":{"north_america":55,"europe":30,"rest":15},"asset_class":{"private_equity":72,"private_debt":28},"currency":{"USD":90,"EUR":10},"source":{"document":"offering memorandum","page":9},"note":"states 50-60 / 25-35 / 10-20; midpoints"}
 ```
 
 - `silver_source_id` and `instrument` name the holding, as `exposure
   coverage` prints them.
-- A row states at least one of `country` (ISO 3166), `currency`
-  (ISO 4217) and `sector` (§3). `note` is free text.
-- The columns may come in any order. An unknown column is refused, so
-  a misspelt header cannot drop a field.
-- A load reads the ledger before it opens gold, so a bad row stops it
-  early. The error names the line.
-- A missing file holds no tags.
+- `as_of` is the date of the document the record comes from,
+  `YYYY-MM-DD`. A record without one is simply true.
+- A record declares at least one dimension. Each is an object of values
+  and their shares:
+  - `region`: a region (§3), or `rest` for the rest of the world, which
+    reads as the region `other`;
+  - `country`: an ISO 3166 code. A country implies its region, so a
+    record declares a region or a country, not both;
+  - `currency`: a code of three capital letters, such as `USD`, `XAU`
+    for gold or `BTC` (§6);
+  - `sector`: a sector (§3);
+  - `asset_class`: an asset class (TAXONOMY.md).
+- `unclassified` is a value of every dimension: the part the record
+  leaves open.
+- A share is a number in percent, from 0 to 100. A dimension's shares
+  sum to 100, within half a point for rounding. What they leave of 100,
+  or take beyond it, counts as `unclassified`, so the dimension sums to
+  exactly 100.
+- A document often states a range ("40–50%"). The record states one
+  number, usually the middle, and the range goes into `note`.
+- `source` and `note` are free. `source` may be any JSON value, such as
+  the document and its page.
+- Any other key is refused, so a misspelt dimension cannot drop a split.
+  So is a key stated twice.
+- A holding has one record per date: a second record needs another
+  date.
+- A load reads the ledger before it opens gold, so a bad record stops
+  it early. The error names the line.
+- A missing file holds no declarations.
 
-The ledger is filled in a loop. `wealthdb exposure coverage -f csv`
-lists each private holding without a row in the section `untagged`,
-with its `silver_source_id` and `instrument`. A row for it goes into the
-ledger, and the next load takes it. A holding its source names by no
-instrument has an empty `instrument` and cannot take a row.
+A record states each dimension on its own. The holding splits into one
+part per combination of the values. A part's share is the product of
+its values' shares. A fund declared 55/30/15 by region and 72/28 by
+class has six parts. Every view of one dimension then shows exactly the
+declared split, and the totals still reconcile. A view that combines two
+dimensions, such as `sectors` within a class, assumes they are
+independent: the record does not say which region holds which class.
+
+An `asset_class` split gives each part its class, so `classes` shows a
+fund that is part private equity, part private debt in both rows. The
+part the record leaves `unclassified` keeps the holding's own class.
+
+On a day, the record that describes a holding is the latest one dated on
+or before that day. A record without a date serves the days before the
+first dated one. A record has no age limit: a target split does not go
+stale as a fund's list of holdings does. Before its first record, a
+holding is undeclared.
+
+The ledger is filled in a loop. `wealthdb exposure coverage -f ndjson`
+prints one skeleton record for each private holding without a record
+(the section `undeclared`). Its dimensions are empty, and its note is
+the holding's name. A record filled in from the skeleton goes into the
+ledger, and the next load takes it. An empty dimension is refused, so a
+skeleton loads only once each dimension is filled in or taken out. A
+holding its source names by no instrument has an empty `instrument` and
+cannot take a record. A holding with no value, in the `(no value)` line,
+takes no skeleton.
+
+A load warns of a record whose holding no source states, with its line:
+such a record declares nothing, and a misspelt instrument would
+otherwise show only as a holding still undeclared.
 
 ## 10. Coverage
 
 `wealthdb exposure coverage` says what the figures rest on, in six
-sections:
+sections. With `-f ndjson` it prints the skeleton records of §9
+instead.
 
 - `how` splits net worth by how each leaf is classified, and sums to
   it: `looked_through`, `proxied`, `security` (a listed security a
   source describes; its ISIN's country prefix alone does not count),
-  `tagged`, `cash`, `asset_class` (metal, crypto), `remainder`,
+  `declared`, `cash`, `asset_class` (metal, crypto), `remainder`,
   `truncated` (a fund deeper than three levels) and `unclassified`.
 - `age` splits what the compositions describe by their distance from
   the day: `0-35 days`, `36-95 days`, `96-185 days`, `186+ days` and
@@ -460,8 +547,9 @@ sections:
 - `unmapped` lists each provider label no map knows, with the value it
   touches.
 - `unmatched` lists each listed security held directly that no source
-  describes and no tag covers.
-- `untagged` lists each private holding the tags ledger has no row for.
+  describes and no declaration covers.
+- `undeclared` lists each private holding no declaration describes on
+  the day.
 - `divergence` lists each fund held and read from a report whose config
   names a proxy with a composition of its own on the day. It gives the
   value held through the fund. Its detail says how far the report's
@@ -470,12 +558,12 @@ sections:
   country's share, in points. Each mix holds only the lines that state
   that dimension. A dimension one side states for no line is left out.
 
-`unmatched` and `untagged` name each holding by `silver_source_id` and
-`instrument`, the two columns a ledger row starts with. A holding at two
-sources has a line for each. In `unmapped`, `unmatched` and `untagged`,
-the labels and holdings with no value share one line, `(no value)`,
-with their count. A label or holding whose leaves offset each other
-still has value and keeps its own line.
+`unmatched` and `undeclared` name each holding by `silver_source_id`
+and `instrument`, the two keys a declaration starts with. A holding at
+two sources has a line for each. In `unmapped`, `unmatched` and
+`undeclared`, the labels and holdings with no value share one line,
+`(no value)`, with their count. A label or holding whose leaves offset
+each other still has value and keeps its own line.
 
 ## 11. What exposure is not
 
@@ -491,8 +579,8 @@ still has value and keeps its own line.
 The Metabase Exposure dashboard (`wealthdb web`) charts the same
 figures at every month end and today, by country of risk
 ([web/DESIGN.md](../../web/DESIGN.md) §6 and §8). Every refresh
-recomputes the whole history, so a new composition or tag shows in
-past months too. A security's attributes, its size among them, are
+recomputes the whole history, so a new composition or declaration shows
+in past months too. A security's attributes, its size among them, are
 today's at every month end, as in a `--period` series (§7).
 
 The MCP server has an `exposure` tool with the same eight views, an
