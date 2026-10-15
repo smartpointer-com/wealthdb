@@ -218,7 +218,7 @@ func TestTaxonomyMapping(t *testing.T) {
 		{"Liquidity", "Liquidity in CHF", canonical.AssetClassCash, canonical.VehicleDemandDeposit},
 		{"Liquidity ", "Liquidity in CHF", canonical.AssetClassCash, canonical.VehicleDemandDeposit},
 		// The physical-bullion sleeve hides under "Alternatives".
-		{"Alternatives", "Swisscanto (CH) Index Precious Metal Fund Gold Physical CHF hedged", canonical.AssetClassMetal, canonical.VehicleFund},
+		{"Alternatives", "Swisscanto (CH) Precious Metal Fund Placeholder Gold Physical CHF hedged", canonical.AssetClassMetal, canonical.VehicleFund},
 		// Any other Alternatives sleeve is a manager-strategy fund.
 		{"Alternatives", "Swisscanto (CH) Placeholder Hedge Strategies Fund CHF", canonical.AssetClassHedgeFund, canonical.VehicleFund},
 		// Indirect listed real estate: real_estate exposure, fund wrapper.
