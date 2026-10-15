@@ -9,6 +9,7 @@ import (
 )
 
 func TestIssuerWords(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name    string
 		receipt bool
@@ -60,6 +61,7 @@ func TestIssuerWords(t *testing.T) {
 }
 
 func TestLinkReceipts(t *testing.T) {
+	t.Parallel()
 	shares := []shareName{
 		{"isin:XD0000000701", "DE", "DE", "QORVANT N AG"},
 		{"isin:XD0000000702", "DE", "DE", "QORVANT ENERGY N AG"},
@@ -179,6 +181,7 @@ func TestLinkReceipts(t *testing.T) {
 // implied. A domicile a source states stays, and a receipt whose stated
 // country differs stays unmatched.
 func TestExposurePassCompletesAReceipt(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	ex := func(q string, args ...any) {
 		t.Helper()
@@ -236,40 +239,32 @@ func TestExposurePassCompletesAReceipt(t *testing.T) {
 	}
 }
 
-func TestMigration0129DDLIsRerunnable(t *testing.T) {
+func TestMigration0126DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openExposureFixture(t)
-	rerunMigrationDDL(t, db, ctx, "0129_exposure_opaque_receipts.sql")
-	if _, err := RebuildExposure(ctx, db); err != nil {
+	rerunMigrationDDL(t, db, ctx, "0126_exposure_report.sql")
+	n, err := RebuildExposure(ctx, db)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if n.Securities == 0 || n.Aliases == 0 {
+		t.Errorf("after replay: rebuilt %+v", n)
 	}
 	if f := leafFlags(t, db, ctx, `iid = 'PE1'`); f != "opaque,untagged" {
 		t.Errorf("after replay: PE1 flags = %q", f)
 	}
-}
-
-func TestMigration0130DDLIsRerunnable(t *testing.T) {
-	db, ctx := openExposureFixture(t)
-	rerunMigrationDDL(t, db, ctx, "0130_exposure_tags_ledger.sql")
-	rows, err := ExposureCoverage(ctx, db, exAsOf, "USD")
-	if err != nil || len(rows) == 0 {
-		t.Errorf("after replay: %d rows, %v", len(rows), err)
+	if rows, err := ExposureSizes(ctx, db, exAsOf, "USD"); err != nil || len(rows) == 0 {
+		t.Errorf("sizes after replay: %d rows, %v", len(rows), err)
 	}
-}
-
-func TestMigration0131DDLIsRerunnable(t *testing.T) {
-	db, ctx := openExposureFixture(t)
-	rerunMigrationDDL(t, db, ctx, "0131_exposure_divergence.sql")
-	// 0133 redefines exposure_divergence; Migrate would replay it after.
-	rerunMigrationDDL(t, db, ctx, "0133_exposure_divergence_sizes.sql")
-	rows, err := ExposureCoverage(ctx, db, exAsOf, "USD")
-	if err != nil || len(rows) == 0 {
-		t.Errorf("after replay: %d rows, %v", len(rows), err)
+	if rows, err := ExposureCoverage(ctx, db, exAsOf, "USD"); err != nil || len(rows) == 0 {
+		t.Errorf("coverage after replay: %d rows, %v", len(rows), err)
 	}
 }
 
 // GLEIF's link wins over a name: a receipt whose issuer's ISINs name an
 // equity share takes that share, and its leaf carries no by_name flag.
 func TestExposureLinksAReceiptByItsIssuer(t *testing.T) {
+	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	for _, q := range []string{
 		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, name, currency,
@@ -340,6 +335,7 @@ func TestExposureLinksAReceiptByItsIssuer(t *testing.T) {
 // found shares of one country; in a fund of no one market it stays
 // unmatched.
 func TestExposureLinksANamedLineToItsShare(t *testing.T) {
+	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	for _, q := range []string{
 		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency)
@@ -404,6 +400,7 @@ func TestExposureLinksANamedLineToItsShare(t *testing.T) {
 // lacks finds its share among all, and carries the flag. The coverage
 // view sets the report's sector and country mix against its proxy's.
 func TestExposureLinksANamedLineInItsProxyFirst(t *testing.T) {
+	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	for _, q := range []string{
 		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, name, currency,
@@ -515,6 +512,7 @@ func TestExposureLinksANamedLineInItsProxyFirst(t *testing.T) {
 // name yields to a share the world names exactly, which may be a
 // holding off the index. A line whose funds have no roster stays out.
 func TestLinkRostersKeepsToOneIssuer(t *testing.T) {
+	t.Parallel()
 	rosters := map[string][]shareName{
 		"c1": {{key: "isin:JP0000000911", country: "JP", name: "QORVANT TRADING"}},
 		"c2": {{key: "isin:GB0000000912", country: "GB", name: "QORVANT TRADING"}},
@@ -543,6 +541,7 @@ func TestLinkRostersKeepsToOneIssuer(t *testing.T) {
 // vote for its composition's market: here the one line that votes finds
 // a British share, so a name two countries share reads British.
 func TestLinkLinesGivesASizeOnlyLineNoVote(t *testing.T) {
+	t.Parallel()
 	shares := []shareName{
 		{key: "isin:JP0000000E01", country: "JP", name: "QLAND ALPHA"},
 		{key: "isin:JP0000000E02", country: "JP", name: "QLAND BETA"},
@@ -573,6 +572,7 @@ func TestLinkLinesGivesASizeOnlyLineNoVote(t *testing.T) {
 // whose lines state no country, and that no source places, compares on
 // sectors alone.
 func TestExposureDivergenceComparesWhatEachSideStates(t *testing.T) {
+	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	for _, q := range []string{
 		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, name, currency,

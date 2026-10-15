@@ -16,6 +16,7 @@ import (
 // other. A Canadian bond is no municipal one. The wanted list still asks
 // a lookup for the sector.
 func TestExposureReadsABondByItsDescription(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
 	for _, q := range []string{

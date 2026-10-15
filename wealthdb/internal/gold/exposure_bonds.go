@@ -14,10 +14,9 @@ import (
 // with US).
 const bondDescriptionSQL = `
 SELECT s.security_key, ins.name, s.security_key LIKE 'isin:US%'
-  FROM instrument_keys ik
+  FROM (SELECT *, exposure_key(security_key) AS key FROM instrument_keys) ik
   JOIN instruments ins USING (silver_source_id, instrument_external_id)
-  LEFT JOIN security_aliases sa ON sa.alias = ik.security_key
-  JOIN securities s ON s.security_key = COALESCE(sa.security_key, ik.security_key)
+  JOIN securities s ON s.security_key = ik.key
  WHERE ins.vehicle = 'bond' AND s.sector IS NULL AND trim(COALESCE(ins.name, '')) <> ''
  ORDER BY 1, 2`
 

@@ -31,16 +31,10 @@ import (
 const (
 	KeyISIN   = "isin:"
 	KeyCUSIP  = "cusip:"
-	KeyFIGI   = "figi:"
+	keyFIGI   = "figi:"
 	KeySymbol = "symbol:"
-	KeyName   = "name:"
+	keyName   = "name:"
 )
-
-// FundRef is the reference of a fund held under these identifiers:
-// isin:, else cusip:, else symbol:, else "".
-func FundRef(isin, cusip, symbol string) string {
-	return SecurityKey(isin, cusip, "", symbol, "")
-}
 
 // ParseFundRef reads a fund reference written by hand (a config entry):
 // isin:<ISIN>, cusip:<CUSIP> or symbol:<SYMBOL>, in any case. It returns
@@ -52,7 +46,7 @@ func ParseFundRef(s string) (string, error) {
 	}
 	switch strings.ToLower(prefix) + ":" {
 	case KeyISIN:
-		if i := NormalizeISIN(body); i != "" {
+		if i := normalizeISIN(body); i != "" {
 			return KeyISIN + i, nil
 		}
 		return "", fmt.Errorf("fund reference %q: not an ISIN", s)
@@ -70,29 +64,29 @@ func ParseFundRef(s string) (string, error) {
 // SecurityKey is the key of a security with these identifiers, in the
 // order the scheme above gives; "" when every one is blank.
 func SecurityKey(isin, cusip, figi, ticker, name string) string {
-	if i := NormalizeISIN(isin); i != "" {
+	if i := normalizeISIN(isin); i != "" {
 		return KeyISIN + i
 	}
 	if c := normalizeID(cusip); c != "" {
 		return KeyCUSIP + c
 	}
 	if f := normalizeID(figi); f != "" {
-		return KeyFIGI + f
+		return keyFIGI + f
 	}
 	if t := normalizeID(ticker); t != "" {
 		return KeySymbol + t
 	}
 	if n := normalizeName(name); n != "" {
 		h := sha256.Sum256([]byte(n))
-		return KeyName + hex.EncodeToString(h[:6])
+		return keyName + hex.EncodeToString(h[:6])
 	}
 	return ""
 }
 
-// NormalizeISIN is s upper-cased and trimmed when it has an ISIN's shape
+// normalizeISIN is s upper-cased and trimmed when it has an ISIN's shape
 // (two letters, nine alphanumerics, a digit), else "". The check digit is
 // not verified: a provider's ISIN is its key even where the digit is off.
-func NormalizeISIN(s string) string {
+func normalizeISIN(s string) string {
 	s = normalizeID(s)
 	if len(s) != 12 || !isLetter(s[0]) || !isLetter(s[1]) || !isDigit(s[11]) {
 		return ""

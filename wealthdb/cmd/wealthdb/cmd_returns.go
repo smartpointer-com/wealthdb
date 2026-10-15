@@ -219,7 +219,8 @@ func formatPctOrBlank(p *float64) string {
 	if p == nil {
 		return ""
 	}
-	return fmt.Sprintf("%.2f", *p*100)
+	pct := *p * 100
+	return formatPercent(&pct)
 }
 
 func returnsUsage() string {

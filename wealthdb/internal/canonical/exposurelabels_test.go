@@ -3,9 +3,10 @@ package canonical
 import "testing"
 
 func TestExposureLabelsAreConsistent(t *testing.T) {
+	t.Parallel()
 	seen := map[[3]string]string{}
 	for _, l := range ExposureLabels() {
-		if l.Label != NormalizeLabel(l.Label) {
+		if l.Label != normalizeLabel(l.Label) {
 			t.Errorf("label %q is not normalized", l.Label)
 		}
 		k := [3]string{l.Provider, string(l.Field), l.Label}
@@ -71,16 +72,24 @@ func TestExposureLabelsAreConsistent(t *testing.T) {
 		{"security_type", "pool"}: "securitised", {"security_type", "common stock"}: "",
 		{"security_type_country", "muni"}: "US", {"security_type_country", "govt"}: "",
 	} {
-		if got := seen[[3]string{OpenFigiProvider, k[0], k[1]}]; got != want {
+		if got := seen[[3]string{openFigiProvider, k[0], k[1]}]; got != want {
 			t.Errorf("OpenFIGI %s %q maps to %q, want %q", k[0], k[1], got, want)
 		}
 		if _, generic := seen[[3]string{"", k[0], k[1]}]; generic {
 			t.Errorf("OpenFIGI %s %q is in the generic map", k[0], k[1])
 		}
 	}
+	// EDGAR's codes, lower-cased; one whose country the vocabulary lacks
+	// (p8, the Netherlands Antilles) is in no map.
+	for code, want := range map[string]string{"v8": "CH", "x0": "GB", "ny": "US", "k3": "HK", "a6": "CA", "p8": ""} {
+		if got := seen[[3]string{edgarProvider, "country", code}]; got != want {
+			t.Errorf("EDGAR %q maps to %q, want %q", code, got, want)
+		}
+	}
 }
 
 func TestSICRanges(t *testing.T) {
+	t.Parallel()
 	first := func(code int) Sector {
 		for _, r := range SICRanges {
 			if code >= r.Lo && code <= r.Hi {

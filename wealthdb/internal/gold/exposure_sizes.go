@@ -19,25 +19,22 @@ const marketCapSQL = `
 UPDATE securities SET market_cap = securities.shares_outstanding * p.price, market_cap_origin = 'shares_x_price'
   FROM (
     WITH keyed AS (
-        SELECT ik.silver_source_id, ik.instrument_external_id, COALESCE(sa.security_key, ik.security_key) AS k
-          FROM instrument_keys ik LEFT JOIN security_aliases sa ON sa.alias = ik.security_key),
+        SELECT silver_source_id, instrument_external_id, exposure_key(security_key) AS k FROM instrument_keys),
     priced AS (
         SELECT k.k, p.market_value::DOUBLE / p.quantity::DOUBLE AS price, p.snapshot_at AS seen_at
           FROM positions p JOIN keyed k USING (silver_source_id, instrument_external_id)
          WHERE p.vehicle = 'stock' AND upper(p.currency) = 'USD' AND p.quantity > 0 AND p.market_value > 0
         UNION ALL
-        SELECT COALESCE(sa.security_key, l.security_key), l.market_value::DOUBLE / l.quantity::DOUBLE, l.as_of
+        SELECT exposure_key(l.security_key), l.market_value::DOUBLE / l.quantity::DOUBLE, l.as_of
           FROM fund_lines l
           JOIN fund_compositions c USING (silver_source_id, fund_ref, as_of, basis)
           LEFT JOIN fund_line_labels la ON la.provider = c.provider AND la.field = 'asset_type' AND la.raw = l.asset_type
-          LEFT JOIN security_aliases sa ON sa.alias = l.security_key
          WHERE l.security_key IS NOT NULL AND COALESCE(la.value, 'public_equity') = 'public_equity'
            AND upper(c.currency) = 'USD' AND upper(l.currency) = 'USD' AND l.quantity > 0 AND l.market_value > 0),
     receipts AS (
         SELECT security_key AS k FROM security_underlyings
         UNION
-        SELECT COALESCE(sa.security_key, i.security_key) FROM security_identities i
-          LEFT JOIN security_aliases sa ON sa.alias = i.security_key
+        SELECT exposure_key(i.security_key) FROM security_identities i
          WHERE i.security_type = 'Depositary Receipt' OR regexp_matches(upper(COALESCE(i.name, '')), $1)
         UNION
         SELECT k.k FROM keyed k JOIN instruments ins USING (silver_source_id, instrument_external_id)
@@ -69,21 +66,19 @@ CREATE OR REPLACE TEMP TABLE exposure_size_ranks AS
 WITH f AS (
     SELECT c.*, sf.coverage_pct
       FROM exposure_comps() c
-      JOIN (SELECT COALESCE(sa.security_key, s.fund_ref) AS fund_ref, MAX(s.coverage_pct) AS coverage_pct
-              FROM exposure_size_funds s LEFT JOIN security_aliases sa ON sa.alias = s.fund_ref
-             GROUP BY 1) sf USING (fund_ref)
+      JOIN (SELECT exposure_key(fund_ref) AS fund_ref, MAX(coverage_pct) AS coverage_pct
+              FROM exposure_size_funds GROUP BY 1) sf USING (fund_ref)
    QUALIFY ROW_NUMBER() OVER (PARTITION BY c.fund_ref ORDER BY c.as_of DESC) = 1),
 lines AS (
-    SELECT f.fund_ref, f.coverage_pct, COALESCE(sa.security_key, l.security_key) AS k, SUM(l.weight)::DOUBLE AS w,
+    SELECT f.fund_ref, f.coverage_pct, l.key AS k, SUM(l.weight)::DOUBLE AS w,
            MIN(COALESCE(lc.value, sec.risk_country, sec.domicile)) AS country
       FROM f
-      JOIN fund_lines l ON l.silver_source_id = f.silver_source_id AND l.fund_ref = f.stored_ref
-                       AND l.as_of = f.as_of AND l.basis = f.basis
+      JOIN (SELECT *, exposure_key(security_key) AS key FROM fund_lines) l
+        ON l.silver_source_id = f.silver_source_id AND l.fund_ref = f.stored_ref AND l.as_of = f.as_of AND l.basis = f.basis
       LEFT JOIN fund_line_labels la ON la.provider = f.provider AND la.field = 'asset_type' AND la.raw = l.asset_type
       LEFT JOIN fund_line_labels lc ON lc.provider = f.provider AND lc.field = 'country'
                                    AND lc.raw = COALESCE(l.risk_country, l.country)
-      LEFT JOIN security_aliases sa ON sa.alias = l.security_key
-      LEFT JOIN securities sec ON sec.security_key = COALESCE(sa.security_key, l.security_key)
+      LEFT JOIN securities sec ON sec.security_key = l.key
      WHERE COALESCE(la.value, 'public_equity') = 'public_equity' AND l.security_key IS NOT NULL
      GROUP BY 1, 2, 3
     HAVING SUM(l.weight) > 0),

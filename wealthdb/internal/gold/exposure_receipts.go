@@ -12,43 +12,14 @@ import (
 
 // A depositary receipt (an ADR, a GDR) stands for shares of a company
 // listed elsewhere, and takes that share's sector, country and domicile
-// where no source states its own. Where GLEIF maps the receipt's ISIN to
-// an issuer and lists that issuer's other ISINs, the share is the equity
-// line among them. Else, since no free source states which share an
-// over-the-counter receipt stands for (the depositaries' directories
-// forbid automated reading, and OpenFIGI states no ISIN), the exposure
-// pass finds the share by the issuer's name among the non-US equity
-// shares the fund lines describe.
-//
-// The match is strict, since a wrong one would pass unnoticed:
-//
-//   - Names are reduced to the issuer's words. The receipt's wording
-//     (ADR, sponsored, each representing two shares), the legal form,
-//     single letters and numbers drop out. A share keeps what its
-//     parentheses say (NAME (M) is another company than NAME).
-//   - Each name the receipt goes by is matched on its own. Equal words
-//     match first. Else the receipt's words lead the share's, each the
-//     start of the share's word in its place or the other way round,
-//     the first equal or, at six letters or more, the start of the
-//     share's first word. A share whose further words name a country
-//     the receipt's names do not is no lead (NAME INDIA for NAME). A
-//     name of one word leads only a share with one telling word (NAME
-//     BANK, NAMECO for NAME). The first tier with any hit decides, even
-//     where none of its shares fits.
-//   - A legal form in a receipt's name tells where the company sits (AG,
-//     SPA, PLC, BHD); a share outside those countries does not fit. A
-//     receipt whose country a source states fits only a share of that
-//     country.
-//   - A name whose fitting hits are one issuer's (they share an ISIN or
-//     a name) in one country votes for it; any other name abstains. The
-//     votes must agree. Anything else stays unmatched.
-//
-// A line a fund's report states by name alone (no identifier) finds its
-// share by the same rules, both names reduced alike (lineWords). It looks
-// first among the lines of its fund's proxy, a fund of the same index
-// whose lines carry identifiers, and only then among the shares of every
-// country. It takes the share's sector and country as a receipt does; a
-// share found outside the proxy's roster carries the receipts' flag.
+// where no source states its own. GLEIF names the share where it maps
+// the receipt to an issuer with other ISINs. Else, since no free source
+// states which share an over-the-counter receipt stands for, the pass
+// finds it by the issuer's name among the non-US equity shares the fund
+// lines describe. A line a report names by name alone finds its share
+// the same way, first among the lines of its fund's proxy. The match is
+// strict, since a wrong one would pass unnoticed; docs/EXPOSURE.md §3
+// states its rules.
 
 // receiptSQL lists every security that lacks a sector or a risk country,
 // and every one a lookup or a name calls a depositary receipt (the
@@ -57,18 +28,13 @@ import (
 // a source describes still finds its share, for the share's size.
 const receiptSQL = `
 WITH names AS (
-    SELECT COALESCE(sa.security_key, i.security_key) AS k, i.name,
-           i.security_type = 'Depositary Receipt' AS receipt
-      FROM security_identities i LEFT JOIN security_aliases sa ON sa.alias = i.security_key
+    SELECT exposure_key(security_key) AS k, name, security_type = 'Depositary Receipt' AS receipt
+      FROM security_identities
     UNION ALL
-    SELECT COALESCE(sa.security_key, ik.security_key), ins.name, FALSE
-      FROM instrument_keys ik
-      JOIN instruments ins USING (silver_source_id, instrument_external_id)
-      LEFT JOIN security_aliases sa ON sa.alias = ik.security_key
+    SELECT exposure_key(ik.security_key), ins.name, FALSE
+      FROM instrument_keys ik JOIN instruments ins USING (silver_source_id, instrument_external_id)
     UNION ALL
-    SELECT DISTINCT COALESCE(sa.security_key, l.security_key), l.name, FALSE
-      FROM fund_lines l LEFT JOIN security_aliases sa ON sa.alias = l.security_key
-     WHERE l.security_key IS NOT NULL)
+    SELECT DISTINCT exposure_key(security_key), name, FALSE FROM fund_lines WHERE security_key IS NOT NULL)
 SELECT s.security_key,
        COALESCE(s.risk_country, CASE WHEN s.domicile_origin <> 'isin_prefix' THEN s.domicile END, ''),
        n.name, COALESCE(n.receipt, FALSE)
@@ -83,16 +49,14 @@ SELECT s.security_key,
 // lines and the lookups give it.
 const shareSQL = `
 WITH eq AS (
-    SELECT DISTINCT COALESCE(sa.security_key, l.security_key) AS k
+    SELECT DISTINCT exposure_key(l.security_key) AS k
       FROM fund_lines l
       JOIN fund_compositions c USING (silver_source_id, fund_ref, as_of, basis)
       JOIN fund_line_labels lab ON lab.provider = c.provider AND lab.field = 'asset_type' AND lab.raw = l.asset_type
-      LEFT JOIN security_aliases sa ON sa.alias = l.security_key
      WHERE l.security_key IS NOT NULL AND lab.value = 'public_equity'),
 names AS (
-    SELECT COALESCE(sa.security_key, l.security_key) AS k, l.name
-      FROM fund_lines l LEFT JOIN security_aliases sa ON sa.alias = l.security_key
-     WHERE l.security_key IS NOT NULL AND l.name IS NOT NULL
+    SELECT exposure_key(security_key) AS k, name FROM fund_lines
+     WHERE security_key IS NOT NULL AND name IS NOT NULL
     UNION SELECT security_key, name FROM securities WHERE name IS NOT NULL)
 SELECT DISTINCT s.security_key, COALESCE(s.risk_country, ''), COALESCE(s.domicile, ''), n.name
   FROM securities s JOIN eq ON eq.k = s.security_key JOIN names n ON n.k = s.security_key
@@ -101,9 +65,8 @@ SELECT DISTINCT s.security_key, COALESCE(s.risk_country, ''), COALESCE(s.domicil
 // lineCompSQL lists the compositions each line named by name alone sits
 // in.
 const lineCompSQL = `
-SELECT DISTINCT COALESCE(sa.security_key, l.security_key), l.fund_ref || '@' || l.as_of || '@' || l.basis
-  FROM fund_lines l LEFT JOIN security_aliases sa ON sa.alias = l.security_key
- WHERE l.security_key LIKE 'name:%'`
+SELECT DISTINCT exposure_key(security_key), fund_ref || '@' || as_of || '@' || basis
+  FROM fund_lines WHERE security_key LIKE 'name:%'`
 
 // lineSQL lists the equity lines a fund names by name alone (a report's
 // inventory), as securities that lack a sector or a risk country, with
@@ -111,17 +74,13 @@ SELECT DISTINCT COALESCE(sa.security_key, l.security_key), l.fund_ref || '@' || 
 // whatever it states: it finds its share for the share's size
 // (exposure_sizes.go), and one that lacks nothing is so marked.
 const lineSQL = `
-WITH sized AS (
-    SELECT COALESCE(sa.security_key, s.fund_ref) AS fund_ref
-      FROM exposure_size_funds s LEFT JOIN security_aliases sa ON sa.alias = s.fund_ref),
+WITH sized AS (SELECT exposure_key(fund_ref) AS fund_ref FROM exposure_size_funds),
 eq AS (
-    SELECT COALESCE(sa.security_key, l.security_key) AS k, l.name,
-           BOOL_OR(COALESCE(fa.security_key, l.fund_ref) IN (SELECT fund_ref FROM sized)) AS in_size_fund
+    SELECT exposure_key(l.security_key) AS k, l.name,
+           BOOL_OR(exposure_key(l.fund_ref) IN (SELECT fund_ref FROM sized)) AS in_size_fund
       FROM fund_lines l
       JOIN fund_compositions c USING (silver_source_id, fund_ref, as_of, basis)
       JOIN fund_line_labels lab ON lab.provider = c.provider AND lab.field = 'asset_type' AND lab.raw = l.asset_type
-      LEFT JOIN security_aliases sa ON sa.alias = l.security_key
-      LEFT JOIN security_aliases fa ON fa.alias = l.fund_ref
      WHERE l.security_key LIKE 'name:%' AND lab.value = 'public_equity' AND trim(COALESCE(l.name, '')) <> ''
      GROUP BY 1, 2)
 SELECT eq.k, COALESCE(s.risk_country, ''), eq.name, s.sector IS NOT NULL AND s.risk_country IS NOT NULL
@@ -134,30 +93,19 @@ SELECT eq.k, COALESCE(s.risk_country, ''), eq.name, s.sector IS NOT NULL AND s.r
 // CUSIP, a ticker) with a sector, by the name the proxy gives it. A line
 // without an asset type counts as equity, as in an equity fund's file.
 const rosterSQL = `
-WITH px AS (
-    SELECT COALESCE(a1.security_key, p.fund_ref) AS fund_ref, COALESCE(a2.security_key, p.proxy_ref) AS proxy_ref
-      FROM exposure_proxies p
-      LEFT JOIN security_aliases a1 ON a1.alias = p.fund_ref
-      LEFT JOIN security_aliases a2 ON a2.alias = p.proxy_ref
-    -- One proxy per fund, as exposure_funds_at picks it.
-   QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(a1.security_key, p.fund_ref)
-                              ORDER BY a1.security_key IS NOT NULL, p.fund_ref) = 1),
-comps AS (
-    SELECT DISTINCT l.fund_ref || '@' || l.as_of || '@' || l.basis AS comp,
-           COALESCE(sa.security_key, l.fund_ref) AS fund_ref, l.as_of
-      FROM fund_lines l LEFT JOIN security_aliases sa ON sa.alias = l.fund_ref
-     WHERE l.security_key LIKE 'name:%'),
+WITH comps AS (
+    SELECT DISTINCT fund_ref || '@' || as_of || '@' || basis AS comp, exposure_key(fund_ref) AS fund_ref, as_of
+      FROM fund_lines WHERE security_key LIKE 'name:%'),
 near AS (
     SELECT c.comp, f.silver_source_id, f.stored_ref, f.as_of, f.basis, f.provider
-      FROM comps c JOIN px USING (fund_ref) JOIN exposure_comps() f ON f.fund_ref = px.proxy_ref
+      FROM comps c JOIN exposure_proxy_refs() px USING (fund_ref) JOIN exposure_comps() f ON f.fund_ref = px.proxy_ref
    QUALIFY ROW_NUMBER() OVER (PARTITION BY c.comp ORDER BY abs(f.as_of - c.as_of), f.as_of DESC, f.silver_source_id) = 1)
 SELECT DISTINCT n.comp, s.security_key, COALESCE(s.risk_country, ''), COALESCE(s.domicile, ''), l.name
   FROM near n
-  JOIN fund_lines l ON l.silver_source_id = n.silver_source_id AND l.fund_ref = n.stored_ref
-                   AND l.as_of = n.as_of AND l.basis = n.basis
+  JOIN (SELECT *, exposure_key(security_key) AS key FROM fund_lines) l
+    ON l.silver_source_id = n.silver_source_id AND l.fund_ref = n.stored_ref AND l.as_of = n.as_of AND l.basis = n.basis
   LEFT JOIN fund_line_labels lab ON lab.provider = n.provider AND lab.field = 'asset_type' AND lab.raw = l.asset_type
-  LEFT JOIN security_aliases sa ON sa.alias = l.security_key
-  JOIN securities s ON s.security_key = COALESCE(sa.security_key, l.security_key)
+  JOIN securities s ON s.security_key = l.key
  WHERE COALESCE(lab.value, 'public_equity') = 'public_equity' AND s.security_key NOT LIKE 'name:%'
    AND s.sector IS NOT NULL AND trim(COALESCE(l.name, '')) <> ''`
 
@@ -165,9 +113,8 @@ SELECT DISTINCT n.comp, s.security_key, COALESCE(s.risk_country, ''), COALESCE(s
 // with those ISINs.
 const issuerSQL = `
 WITH f AS (
-    SELECT DISTINCT COALESCE(sa.security_key, f.security_key) AS k, 'isin:' || upper(trim(i.isin)) AS share
-      FROM security_facts f LEFT JOIN security_aliases sa ON sa.alias = f.security_key,
-           unnest(string_split(f.value, ' ')) AS i(isin)
+    SELECT DISTINCT exposure_key(f.security_key) AS k, 'isin:' || upper(trim(i.isin)) AS share
+      FROM security_facts f, unnest(string_split(f.value, ' ')) AS i(isin)
      WHERE f.field = 'issuer_isins' AND trim(i.isin) <> '')
 SELECT f.k, f.share FROM f JOIN securities s ON s.security_key = f.k`
 
@@ -338,20 +285,6 @@ func writeReceipts(ctx context.Context, tx *sql.Tx) error {
 		return err
 	}
 	return execAll(ctx, tx, receiptFillSQL)
-}
-
-func scanAll(ctx context.Context, tx *sql.Tx, q string, scan func(*sql.Rows) error, args ...any) error {
-	rows, err := tx.QueryContext(ctx, q, args...)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		if err := scan(rows); err != nil {
-			return err
-		}
-	}
-	return rows.Err()
 }
 
 // receiptNames is a security that may be a receipt, or a line named by
@@ -780,8 +713,8 @@ var countryWords = setOf("INDIA", "MALAYSIA", "THAILAND", "INDONESIA", "PHILIPPI
 
 // genericWords say nothing of which issuer: a name of these alone is
 // matched to nothing.
-var genericWords = setOf("HOLDINGS", "HOLDING", "HLDGS", "HLDG", "GROUP", "GRUPPE", "GRP", "INTERNATIONAL", "INTL",
-	"INDUSTRIES", "INDUSTRY", "BANK", "FINANCIAL", "OF")
+var genericWords = setOf("HOLDINGS", "HOLDING", "GROUP", "GRUPPE", "INTERNATIONAL", "INDUSTRIES", "INDUSTRY",
+	"BANK", "FINANCIAL", "OF")
 
 func setOf(words ...string) map[string]bool {
 	m := make(map[string]bool, len(words))

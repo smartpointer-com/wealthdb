@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +31,7 @@ var updateGolden = flag.Bool("update-wanted", false, "rewrite testdata/refdata_w
 //   - NOTE1, a note on a basket, is wanted like a fund.
 //   - A private fund and a coin are not wanted.
 func TestRefdataWantedPinned(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	day := func(m time.Month, d int) int64 { return time.Date(2026, m, d, 0, 0, 0, 0, time.UTC).Unix() }
 	mustExec := func(q string, args ...any) {
@@ -101,15 +103,12 @@ func TestRefdataWantedPinned(t *testing.T) {
 	}
 }
 
-// A gold the exposure migration has not reached yet (a read-only open of
-// an older file) yields the held funds and securities with nothing known.
+// A gold the exposure migrations have not reached yet (a read-only open
+// of an older file) yields the held funds and securities with nothing
+// known.
 func TestRefdataWantedBeforeMigration(t *testing.T) {
-	db, ctx := openMigrated(t)
-	for _, tbl := range []string{"exposure_settings", "exposure_proxies", "exposure_reference_funds"} {
-		if _, err := db.ExecContext(ctx, `DROP TABLE `+tbl); err != nil {
-			t.Fatal(err)
-		}
-	}
+	t.Parallel()
+	db, ctx := openAtVersion(t, 124)
 	if _, err := db.ExecContext(ctx, `
 	    INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, first_seen_at, last_seen_at)
 	        VALUES ('test-src', 'S', 'public_equity', 'stock', 'S', 0, 0);
@@ -131,6 +130,7 @@ func TestRefdataWantedBeforeMigration(t *testing.T) {
 // ISIN are asked for once each, under the ISIN. What a provider answered
 // under the ticker counts for the ISIN.
 func TestRefdataWantedReadsKeysThroughAliases(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
 	for _, q := range []string{
@@ -179,6 +179,7 @@ func TestRefdataWantedReadsKeysThroughAliases(t *testing.T) {
 // abroad that also trades in New York); a bank abroad's local ticker is
 // never one.
 func TestRefdataWantedStatesUSSymbols(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
 	for _, q := range []string{
@@ -238,6 +239,7 @@ func TestRefdataWantedStatesUSSymbols(t *testing.T) {
 // source describes, a cash line, a line naming a fund, a line with no
 // identifier and a security held directly are not.
 func TestRefdataWantedNamesConstituents(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
 	for _, q := range []string{
@@ -318,6 +320,7 @@ func TestRefdataWantedNamesConstituents(t *testing.T) {
 // A receipt that took its sector and country from a share matched by name
 // is still wanted, so a lookup can tie it to its share.
 func TestRefdataWantedKeepsAskingAboutANameMatch(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
 	for _, q := range []string{
@@ -368,6 +371,7 @@ func TestRefdataWantedKeepsAskingAboutANameMatch(t *testing.T) {
 // identifier. A line named by name alone, an older composition's line
 // and a swap fund's basket are not.
 func TestRefdataWantedNamesTheFundsAHeldFundHolds(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
 	for _, q := range []string{
@@ -448,6 +452,7 @@ func TestRefdataWantedNamesTheFundsAHeldFundHolds(t *testing.T) {
 // another key that found nothing does not count for the bond: its own
 // identifier may find it. One that found it does.
 func TestRefdataWantedReadsABondByItsType(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
 	for _, q := range []string{
@@ -537,5 +542,43 @@ func TestRefdataWantedReadsABondByItsType(t *testing.T) {
 	}
 	if s := got["isin:US00000000A1"]; s != nil && s.Lookups["gleif"] != "2026-06-30" {
 		t.Errorf("the municipal bond's lookups = %v, want gleif's answer under its CUSIP", s.Lookups)
+	}
+}
+
+// A proxy of a fund that is not held is wanted from today, as a
+// reference fund is; a proxy the config names under an alias is wanted
+// under the key the alias names.
+func TestRefdataWantedProxiesOfFundsNotHeld(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
+		Proxies: []canonical.ExposureProxy{
+			{FundRef: "symbol:QNH1", ProxyRef: "symbol:QPX1", Leverage: 1},
+			{FundRef: "symbol:QNH2", ProxyRef: "symbol:QPX2", Leverage: 1},
+		},
+		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: canonical.DefaultAgedDays,
+			PartialPct: canonical.DefaultPartialPct},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO security_aliases VALUES ('symbol:QPX2', 'isin:XX0000000021', 'lookup')`); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	w, err := RefdataWanted(ctx, db, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, f := range w.Funds {
+		from := ""
+		if f.HeldFrom != nil {
+			from = *f.HeldFrom
+		}
+		got = append(got, f.Ref+" "+strings.Join(f.Roles, ",")+" "+from+" "+strconv.FormatBool(f.HeldTo == nil))
+	}
+	want := []string{"isin:XX0000000021 proxy 2026-06-30 true", "symbol:QPX1 proxy 2026-06-30 true"}
+	if !slices.Equal(got, want) {
+		t.Errorf("funds = %q, want %q", got, want)
 	}
 }

@@ -5,38 +5,33 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-	"time"
 )
 
-// exposureInsertSQL is the look-through at one instant, its leaves
+// exposureInsertSQL is the look-through at the instant $1, its leaves
 // grouped by the dashboard's dimensions and valued in every reporting
-// currency. The tree is walked once, in US dollars. Each leaf is a fixed
-// share of the holding it descends from, so its value in another
-// currency is its dollar value times the ratio of that holding's two
-// values. A holding no rate converts to US dollars is left out in every
-// currency. A stock's size is today's at every instant: securities holds
-// one row per security. %s is the UNION of exposure_holdings per
-// currency. The instant is bound twice, once per currency, then after
-// computed_at.
+// currency, stamped computed_at $2. The tree is walked once, in US
+// dollars. Each leaf is a fixed share of the holding it descends from,
+// so its value in another currency is its dollar value times the ratio
+// of that holding's two values. A holding no rate converts to US dollars
+// is left out in every currency. A stock's size is today's at every
+// instant: securities holds one row per security. %s is the UNION of
+// exposure_holdings per reporting currency, US dollars among them.
 const exposureInsertSQL = `INSERT INTO report_exposure BY NAME
-WITH l AS (SELECT * FROM exposure_leaves(CAST(? AS BIGINT), 'USD')),
-usd AS (
-    SELECT src, acct, position_key, value AS v
-      FROM exposure_holdings(CAST(? AS BIGINT), 'USD') WHERE value IS NOT NULL AND value <> 0),
-h AS (%s)
-SELECT CAST(? AS BIGINT) AS computed_at, h.out_ccy AS currency, CAST(? AS BIGINT) AS as_of,
+WITH l AS (SELECT * FROM exposure_leaves(CAST($1 AS BIGINT), 'USD')),
+h AS MATERIALIZED (%s),
+usd AS (SELECT src, acct, position_key, value AS v FROM h WHERE out_ccy = 'USD' AND value <> 0)
+SELECT CAST($2 AS BIGINT) AS computed_at, h.out_ccy AS currency, CAST($1 AS BIGINT) AS as_of,
        l.asset_class, l.sector, l.country, l.region, l.currency AS exposure_currency, l.currency_kind,
-       l.depth > 0 AS via_funds, l.how, s.size,
+       l.depth > 0 AS via_funds, l.how, l.size,
        SUM(l.value * h.value / usd.v) AS value
   FROM l
   JOIN usd ON usd.src = l.src AND usd.acct = l.acct AND usd.position_key = l.position_key
   JOIN h ON h.src = l.src AND h.acct = l.acct AND h.position_key = l.position_key
-  LEFT JOIN securities s ON s.security_key = l.key AND l.asset_class = 'public_equity' AND NOT l.fund_leaf
  GROUP BY ALL`
 
 // exposureHoldingsSQL is one currency's holdings for exposureInsertSQL.
 const exposureHoldingsSQL = `SELECT '%s' AS out_ccy, src, acct, position_key, value
-      FROM exposure_holdings(CAST(? AS BIGINT), '%s') WHERE value IS NOT NULL`
+      FROM exposure_holdings(CAST($1 AS BIGINT), '%s') WHERE value IS NOT NULL`
 
 // MaterializeExposure rewrites report_exposure: the look-through at the
 // last second of every month from the first holding gold holds, and at
@@ -66,13 +61,8 @@ func MaterializeExposure(ctx context.Context, db *sql.DB, toEpoch, computedAt in
 	}
 	insert := fmt.Sprintf(exposureInsertSQL, strings.Join(parts, "\n    UNION ALL "))
 	n := 0
-	for _, at := range ExposureInstants(first, toEpoch) {
-		args := []any{at, at}
-		for range materializeCurrencies {
-			args = append(args, at)
-		}
-		args = append(args, computedAt, at)
-		res, err := tx.ExecContext(ctx, insert, args...)
+	for _, at := range PeriodEnds(first, toEpoch, 1) {
+		res, err := tx.ExecContext(ctx, insert, at, computedAt)
 		if err != nil {
 			return 0, fmt.Errorf("MaterializeExposure at %d: %w", at, err)
 		}
@@ -88,14 +78,9 @@ func MaterializeExposure(ctx context.Context, db *sql.DB, toEpoch, computedAt in
 	return n, nil
 }
 
-// rowQuerier is what *sql.DB and *sql.Tx share for a one-row read.
-type rowQuerier interface {
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
-
 // FirstHoldingsAt is the earliest snapshot gold holds, of a position or
 // of a cash balance. ok is false when gold holds neither.
-func FirstHoldingsAt(ctx context.Context, q rowQuerier) (at int64, ok bool, err error) {
+func FirstHoldingsAt(ctx context.Context, q querier) (at int64, ok bool, err error) {
 	var first sql.NullInt64
 	if err := q.QueryRowContext(ctx, `SELECT MIN(t) FROM (
 	    SELECT MIN(snapshot_at) AS t FROM positions
@@ -103,22 +88,4 @@ func FirstHoldingsAt(ctx context.Context, q rowQuerier) (at int64, ok bool, err 
 		return 0, false, fmt.Errorf("FirstHoldingsAt: %w", err)
 	}
 	return first.Int64, first.Valid, nil
-}
-
-// ExposureInstants are the instants the Exposure dashboard charts: the
-// last second of every month from the month of from, before to, and to
-// itself.
-func ExposureInstants(from, to int64) []int64 {
-	var out []int64
-	m := time.Unix(from, 0).UTC()
-	m = time.Date(m.Year(), m.Month(), 1, 0, 0, 0, 0, time.UTC)
-	for {
-		end := m.AddDate(0, 1, 0).Unix() - 1
-		if end >= to {
-			break
-		}
-		out = append(out, end)
-		m = m.AddDate(0, 1, 0)
-	}
-	return append(out, to)
 }

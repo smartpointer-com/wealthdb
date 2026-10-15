@@ -217,7 +217,7 @@ Example: {view: "accounts", tax_wrapper: "roth_ira"}.`,
 Example: {view: "sources", from: "2024", to: "2025", period: "annual", method: "twr"}.`,
 	"gains": `gain = realized + unrealized_change, the price gain on what is held; income, fees and taxes are in returns. Realized is what the sale's documents state, else what the lot engine rebuilt from the trades; unrealized is the clean value (market value less accrued interest) less the cost basis. basis_stamp says which notion of cost basis a figure is. summary, sources, portfolios and accounts add up. The quality column names every gap (describe topic=quality); the coverage view says per account where the figures are blind, and the check view compares the lot engine with the stated lots.
 Example: {view: "accounts", from: "2025", to: "2025", tax_wrapper: "taxable_joint"}.`,
-	"exposure": `Every view sums to net worth, as holdings view=global gives it: what a fund's composition does not explain is a remainder row, and a holding nothing describes is unclassified, never dropped. A fund's composition is the one nearest the as-of day (the funds view says which, and how old); quality flags such as proxy, aged or partial carry the share of the row they touch. The view sums are in the output currency; the shares need none.
+	"exposure": `Every view sums to net worth, as holdings view=global gives it: what a fund's composition does not explain is a remainder row, and a holding nothing describes is unclassified, never dropped. A fund's composition is the one nearest the as-of day (the funds view says which, and how old); quality flags such as proxy, aged or partial carry the share of the row they touch (describe topic=quality). The view sums are in the output currency; the shares need none.
 Example: {view: "sectors", as_of: "2025-12-31", currency: "CHF"}.`,
 	"transactions": `Money leaving an account is negative. kind is the booked kind: buy, sell, dividend, interest, fee, tax, deposit, withdrawal, purchase, refund, card_payment and others.
 Example: {from: "last month", to: "last month", kind: "dividend"}.`,
@@ -238,7 +238,11 @@ from snaps to the start of its unit, to and as_of to the end: from="2025", to="2
 Defaults: holdings and exposure as of today; transactions the past 30 days; spending, income, cashflow and gains the last twelve months; returns since the first snapshot.
 Every result header states the dates it used, as ISO dates.`
 
-const qualityHelp = `The returns quality column gives the reason for every n/a and tags every approximation. Common tags:
+// qualityHelp is describe topic=quality: the tags of the returns, gains
+// and exposure quality columns.
+var qualityHelp = returnsGainsQualityHelp + "\n\n" + exposureQualityHelp()
+
+const returnsGainsQualityHelp = `The returns quality column gives the reason for every n/a and tags every approximation. Common tags:
 - since_data_inception: the return runs from the entity's first snapshot, not from when the account opened.
 - configured_inception: the window starts at an inception date set in the config.
 - staggered_inception: the entity's parts began on different dates.
@@ -280,6 +284,16 @@ The gains quality column names each way a figure can be incomplete:
 - fee_unvalued=N: N fees in a third currency had no rate and are left out of the cost or proceeds.
 - basis_assumed_zero=N: under missing_basis=zero, N positions and lots took 0 for a cost no one states.
 - fx_missing=N: N figures had no exchange rate and are left out.`
+
+// exposureQualityHelp lists the exposure quality tags (exposureQualityTags).
+func exposureQualityHelp() string {
+	var b strings.Builder
+	b.WriteString("The exposure quality column names what a figure rests on, each tag with the share of the row it covers (proxy=12%):")
+	for _, q := range exposureQualityTags {
+		b.WriteString("\n- " + q.tag + ": " + q.meaning + ".")
+	}
+	return b.String()
+}
 
 func (s *mcpServer) privacyHelp() string {
 	if s.privacy {

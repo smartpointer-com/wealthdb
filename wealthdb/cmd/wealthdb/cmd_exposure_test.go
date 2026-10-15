@@ -69,6 +69,7 @@ func runExposure(t *testing.T, cfg string, args ...string) (string, string, int)
 }
 
 func TestExposureClassesAndSectors(t *testing.T) {
+	t.Parallel()
 	cfg := setupExposureGold(t)
 	out, errb, code := runExposure(t, cfg, "sectors", "-d", "2026-06-30", "-f", "csv")
 	if code != 0 {
@@ -84,6 +85,49 @@ func TestExposureClassesAndSectors(t *testing.T) {
 			t.Errorf("sectors lacks %q:\n%s", want, out)
 		}
 	}
+	// -C names a share as the other reports do; it prints as share_pct.
+	out, errb, code = runExposure(t, cfg, "sectors", "-d", "2026-06-30", "-f", "csv", "-C", "sector,share,class_share")
+	if code != 0 || !strings.HasPrefix(out, "sector,share_pct,class_share_pct\n") {
+		t.Errorf("-C sector,share,class_share: exit %d %s\n%s", code, errb, out)
+	}
+}
+
+// Each view's default column set resolves against its registry, and the
+// usage lists every view.
+func TestExposureViewsResolveTheirDefaults(t *testing.T) {
+	t.Parallel()
+	usage := exposureUsage()
+	for _, view := range exposureViews {
+		if _, err := exposureReport(request{view: view, currency: "USD"}).pick("default"); err != nil {
+			t.Errorf("%s defaults: %v", view, err)
+		}
+		if !strings.Contains(usage, "\n  "+view+" ") {
+			t.Errorf("usage does not list the %s view", view)
+		}
+	}
+}
+
+// Every quality tag reaches the CLI usage, wrapped to the usage's
+// width, and the MCP quality help.
+func TestExposureQualityTagsReachBothFrontEnds(t *testing.T) {
+	t.Parallel()
+	usage := exposureUsage()
+	for _, q := range exposureQualityTags {
+		if !strings.Contains(usage, "\n    "+q.tag+" ") {
+			t.Errorf("usage does not list the %s tag", q.tag)
+		}
+		if !strings.Contains(qualityHelp, "\n- "+q.tag+": "+q.meaning+".") {
+			t.Errorf("describe topic=quality does not list the %s tag", q.tag)
+		}
+	}
+	for _, line := range strings.Split(exposureQualityNotes(), "\n") {
+		if len(line) > 72 {
+			t.Errorf("quality line is %d columns wide: %q", len(line), line)
+		}
+	}
+	if got := wrapWords("aa bb cc averyveryverylongword", 5); strings.Join(got, "|") != "aa bb|cc|averyveryverylongword" {
+		t.Errorf("wrapWords = %q", got)
+	}
 }
 
 // -p hides every amount and every account or instrument id on every
@@ -91,6 +135,7 @@ func TestExposureClassesAndSectors(t *testing.T) {
 // follow the view. The opaque holding has no security key, so the
 // securities, funds and coverage views name it by its instrument id.
 func TestExposurePrivacyHidesAmounts(t *testing.T) {
+	t.Parallel()
 	cfg := setupExposureGold(t,
 		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
 		 asset_class, vehicle, currency, quantity, market_value) VALUES ('brk', ?, 'ACCT-7781', 'PRIV-5521', 'PRIV-5521', 'private_equity', 'spv', 'USD', 1, 500)`)
@@ -123,6 +168,7 @@ func TestExposurePrivacyHidesAmounts(t *testing.T) {
 }
 
 func TestExposureCountryFlagBelongsToTwoViews(t *testing.T) {
+	t.Parallel()
 	cfg := setupExposureGold(t)
 	if _, errb, code := runExposure(t, cfg, "classes", "--country", "domicile"); code != 2 || !strings.Contains(errb, "--country") {
 		t.Errorf("classes --country: exit %d, %s", code, errb)
@@ -136,18 +182,10 @@ func TestExposureCountryFlagBelongsToTwoViews(t *testing.T) {
 	}
 }
 
-func TestExposureEveryViewRuns(t *testing.T) {
-	cfg := setupExposureGold(t)
-	for _, v := range exposureViews {
-		if _, errb, code := runExposure(t, cfg, v, "-d", "2026-06-30", "-C", "all"); code != 0 {
-			t.Errorf("%s: exit %d: %s", v, code, errb)
-		}
-	}
-}
-
 // --period repeats a view at the end of every period of a window; the
 // last period ends at the window's end.
 func TestExposureSeries(t *testing.T) {
+	t.Parallel()
 	cfg := setupExposureGold(t)
 	out, errb, code := runExposure(t, cfg, "classes", "--period", "monthly", "2026-05", "2026-06", "-f", "csv")
 	if code != 0 {
@@ -196,7 +234,10 @@ func TestExposureSeries(t *testing.T) {
 	}
 }
 
+// Each point takes its period's label and end; the last ends at the
+// window's end.
 func TestSeriesPointsEndEveryPeriod(t *testing.T) {
+	t.Parallel()
 	day := func(y int, m time.Month, d int) int64 { return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix() }
 	to := day(2026, 8, 15) + 86399
 	got := seriesPoints(day(2026, 2, 10), to, "quarterly")

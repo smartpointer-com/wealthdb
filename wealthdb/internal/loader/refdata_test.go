@@ -16,6 +16,7 @@ import (
 // A refdata silver loads its reference records into gold, a later run
 // replaces only the days it re-served, and a reset clears them.
 func TestLoadRefdata(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	schema, err := os.ReadFile("../silver/refdata/testdata/silver_schema.sql")
 	if err != nil {

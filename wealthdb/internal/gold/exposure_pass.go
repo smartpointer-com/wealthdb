@@ -9,8 +9,8 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-// RebuildExposure rewrites the exposure report's derived tables
-// (migrations 0126, 0129, 0132) from what gold holds: the label maps and
+// RebuildExposure rewrites the exposure report's derived tables from
+// what gold holds: the label maps and
 // vocabularies, the labels the fund lines carry, each instrument's
 // security key, the aliases that tie two keys of one security together,
 // the best-known attributes of every security, the share each
@@ -107,18 +107,12 @@ const lineLabelsSQL = `
 DELETE FROM fund_line_labels;
 INSERT INTO fund_line_labels
 WITH raw AS (
-    SELECT DISTINCT c.provider, 'sector' AS field, l.sector AS raw
-      FROM fund_lines l JOIN fund_compositions c USING (silver_source_id, fund_ref, as_of, basis)
-     WHERE l.sector IS NOT NULL
-    UNION SELECT DISTINCT c.provider, 'country', l.country
-      FROM fund_lines l JOIN fund_compositions c USING (silver_source_id, fund_ref, as_of, basis)
-     WHERE l.country IS NOT NULL
-    UNION SELECT DISTINCT c.provider, 'country', l.risk_country
-      FROM fund_lines l JOIN fund_compositions c USING (silver_source_id, fund_ref, as_of, basis)
-     WHERE l.risk_country IS NOT NULL
-    UNION SELECT DISTINCT c.provider, 'asset_type', l.asset_type
-      FROM fund_lines l JOIN fund_compositions c USING (silver_source_id, fund_ref, as_of, basis)
-     WHERE l.asset_type IS NOT NULL)
+    SELECT DISTINCT provider, field, raw FROM (
+        SELECT c.provider, unnest([{'field': 'sector', 'raw': l.sector}, {'field': 'country', 'raw': l.country},
+                                   {'field': 'country', 'raw': l.risk_country},
+                                   {'field': 'asset_type', 'raw': l.asset_type}], recursive := true)
+          FROM fund_lines l JOIN fund_compositions c USING (silver_source_id, fund_ref, as_of, basis))
+     WHERE raw IS NOT NULL)
 SELECT r.provider, r.field, r.raw, COALESCE(p.value, g.value)
   FROM raw r
   LEFT JOIN exposure_labels p ON p.provider = r.provider AND p.field = r.field AND p.label = exposure_norm(r.raw)
@@ -131,31 +125,24 @@ func writeInstrumentKeys(ctx context.Context, tx *sql.Tx) error {
 	if err := execAll(ctx, tx, `DELETE FROM instrument_keys`); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, `
+	type row struct{ src, iid, key string }
+	var out []row
+	if err := scanAll(ctx, tx, `
 SELECT i.silver_source_id, i.instrument_external_id, COALESCE(i.isin, ''), COALESCE(i.cusip, ''), COALESCE(il.symbol, '')
   FROM instruments i
   LEFT JOIN instrument_labels() il ON il.silver_source_id = i.silver_source_id
-       AND il.instrument_external_id = i.instrument_external_id`)
-	if err != nil {
-		return err
-	}
-	type row struct{ src, iid, key string }
-	var out []row
-	for rows.Next() {
+       AND il.instrument_external_id = i.instrument_external_id`, func(rows *sql.Rows) error {
 		var src, iid, isin, cusip, symbol string
 		if err := rows.Scan(&src, &iid, &isin, &cusip, &symbol); err != nil {
-			rows.Close()
 			return err
 		}
 		if k := canonical.SecurityKey(isin, cusip, "", symbol, ""); k != "" {
 			out = append(out, row{src, iid, k})
 		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
+		return nil
+	}); err != nil {
 		return err
 	}
-	rows.Close()
 	return InsertChunked(ctx, tx, "instrument_keys",
 		`INSERT INTO instrument_keys (silver_source_id, instrument_external_id, security_key) VALUES `,
 		`(?, ?, ?)`, len(out), func(i int, args []any) []any {
@@ -172,13 +159,11 @@ SELECT i.silver_source_id, i.instrument_external_id, COALESCE(i.isin, ''), COALE
 // digit may as well be Canadian. A broker's symbol and CUSIP fill each
 // other's gaps (aliasesSQL).
 func writeAliases(ctx context.Context, tx *sql.Tx) error {
-	if err := execAll(ctx, tx,
-		`DELETE FROM security_aliases`,
-		`CREATE TEMP TABLE IF NOT EXISTS exposure_cusip_rule (alias TEXT, security_key TEXT)`,
-		`DELETE FROM exposure_cusip_rule`); err != nil {
+	if err := execAll(ctx, tx, `DELETE FROM security_aliases`); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, `
+	var aliases, keys []string
+	if err := scanAll(ctx, tx, `
 SELECT DISTINCT k FROM (
     SELECT security_key AS k FROM instrument_keys
     UNION ALL SELECT security_key FROM fund_lines
@@ -186,34 +171,20 @@ SELECT DISTINCT k FROM (
     UNION ALL SELECT fund_ref FROM fund_compositions
     UNION ALL SELECT security_key FROM security_identities
     UNION ALL SELECT fund_ref FROM exposure_proxies UNION ALL SELECT proxy_ref FROM exposure_proxies)
- WHERE k LIKE 'cusip:%'`)
-	if err != nil {
-		return err
-	}
-	type pair struct{ alias, key string }
-	var rule []pair
-	for rows.Next() {
+ WHERE k LIKE 'cusip:%'`, func(rows *sql.Rows) error {
 		var k string
 		if err := rows.Scan(&k); err != nil {
-			rows.Close()
 			return err
 		}
 		if isin := canonical.ISINFromCUSIP(strings.TrimPrefix(k, canonical.KeyCUSIP)); isin != "" {
-			rule = append(rule, pair{k, canonical.KeyISIN + isin})
+			aliases, keys = append(aliases, k), append(keys, canonical.KeyISIN+isin)
 		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
+		return nil
+	}); err != nil {
 		return err
 	}
-	rows.Close()
-	if err := InsertChunked(ctx, tx, "exposure_cusip_rule", `INSERT INTO exposure_cusip_rule (alias, security_key) VALUES `,
-		`(?, ?)`, len(rule), func(i int, args []any) []any {
-			return append(args, rule[i].alias, rule[i].key)
-		}); err != nil {
-		return err
-	}
-	return execAll(ctx, tx, aliasesSQL)
+	_, err := tx.ExecContext(ctx, aliasesSQL, aliases, keys)
+	return err
 }
 
 // usLineSQL holds where a fund line names a US listing: a US ISIN, a US
@@ -229,7 +200,8 @@ const usLineSQL = `(upper(trim(isin)) LIKE 'US%'
                                            'euronext|omx|nordic|baltic|helsinki|stockholm|copenhagen|iceland|tallinn|riga|vilnius|armenia|dubai|canada|australia|europe|japan|\bneo\b')))`
 
 // aliasesSQL picks one ISIN per identifier from what the sources state
-// beside each other, the CUSIP rule last. A fund line's ticker names a
+// beside each other, the CUSIP rule last: $1 the CUSIPs the rule ties, $2
+// their ISINs' keys. A fund line's ticker names a
 // US symbol only where the line names a US listing (usLineSQL). A
 // broker's symbol does so only where the instrument has a US ISIN or is
 // priced in US dollars. A local ticker elsewhere (ROP in Zurich) is a
@@ -240,8 +212,8 @@ const usLineSQL = `(upper(trim(isin)) LIKE 'US%'
 // for a CINS code, which no rule ties to an ISIN, it reads as the ISIN a
 // source states for its symbol, never a US one (a CINS issuer sits
 // outside North America); for a US or Canadian CUSIP, as that ISIN only
-// where it holds the CUSIP (a Canadian one), else as the rule's. A reused
-// ticker so leaves the CUSIP alone. A symbol no source names
+// where it holds the CUSIP (a Canadian one), else as the rule's, so a
+// ticker another issuer reuses never moves the CUSIP. A symbol no source names
 // reads as its CUSIP does, or as the CUSIP itself, so a lookup's answer
 // under it stays with the holding. Only a symbol priced in US dollars
 // takes part, by the US-listing rule above.
@@ -275,8 +247,8 @@ stated AS (
            CASE origin WHEN 'instrument' THEN 1 WHEN 'lookup' THEN 2 ELSE 3 END AS orank
       FROM valid WHERE alias NOT LIKE 'isin:%' GROUP BY alias, isin, origin),
 ruled AS (
-    SELECT alias, security_key, 'cusip_rule' AS origin, 0 AS n, 0 AS latest, 2 AS rnk, 0 AS orank
-      FROM exposure_cusip_rule),
+    SELECT unnest(CAST($1 AS VARCHAR[])) AS alias, unnest(CAST($2 AS VARCHAR[])) AS security_key,
+           'cusip_rule' AS origin, 0 AS n, 0 AS latest, 2 AS rnk, 0 AS orank),
 picked AS (
     SELECT * FROM (SELECT * FROM stated UNION ALL SELECT * FROM ruled)
     QUALIFY ROW_NUMBER() OVER (PARTITION BY alias ORDER BY rnk, orank, n DESC, latest DESC, security_key) = 1),
@@ -324,23 +296,22 @@ DELETE FROM securities;
 INSERT INTO securities (security_key, name, currency, sector, sector_origin, risk_country, risk_country_origin,
                         domicile, domicile_origin, market_cap, market_cap_origin, shares_outstanding)
 WITH ln AS (
-    SELECT COALESCE(sa.security_key, l.security_key) AS k, l.as_of, c.provider, l.name, l.currency,
+    SELECT exposure_key(l.security_key) AS k, l.as_of, c.provider, l.name, l.currency,
            l.sector, COALESCE(l.risk_country, l.country) AS country
       FROM fund_lines l
       JOIN fund_compositions c USING (silver_source_id, fund_ref, as_of, basis)
-      LEFT JOIN security_aliases sa ON sa.alias = l.security_key
      WHERE l.security_key IS NOT NULL),
 -- cmap: the country map a fact reads, the provider's own where it has
 -- one (EDGAR's codes would read as other countries in the generic map).
 fx AS (
-    SELECT COALESCE(sa.security_key, f.security_key) AS k, f.field, f.value, f.provider, f.as_of,
+    SELECT exposure_key(f.security_key) AS k, f.field, f.value, f.provider, f.as_of,
            CASE WHEN f.provider IN (SELECT provider FROM exposure_labels WHERE field = 'country' AND provider <> '')
                 THEN f.provider ELSE '' END AS cmap
-      FROM security_facts f LEFT JOIN security_aliases sa ON sa.alias = f.security_key),
+      FROM security_facts f),
 idn AS (
-    SELECT COALESCE(sa.security_key, i.security_key) AS k, i.name, i.listing_currency, i.provider, i.as_of,
+    SELECT exposure_key(i.security_key) AS k, i.name, i.listing_currency, i.provider, i.as_of,
            lt.value AS type_sector, lc.value AS type_country
-      FROM security_identities i LEFT JOIN security_aliases sa ON sa.alias = i.security_key
+      FROM security_identities i
       LEFT JOIN exposure_labels lt ON lt.provider = i.provider AND lt.field = 'security_type'
                                   AND lt.label = exposure_norm(i.security_type)
       LEFT JOIN exposure_labels lc ON lc.provider = i.provider AND lc.field = 'security_type_country'
@@ -352,8 +323,7 @@ sic AS (
    QUALIFY ROW_NUMBER() OVER (PARTITION BY fx.k, fx.as_of, fx.provider ORDER BY s.rank) = 1),
 allkeys AS (
     SELECT k FROM ln UNION SELECT k FROM fx UNION SELECT k FROM idn
-    UNION SELECT COALESCE(sa.security_key, ik.security_key) FROM instrument_keys ik
-      LEFT JOIN security_aliases sa ON sa.alias = ik.security_key),
+    UNION SELECT exposure_key(security_key) FROM instrument_keys),
 cand AS (
     SELECT fx.k, 'sector' AS f, COALESCE(lp.value, lg.value) AS v, 'fact:' || fx.provider AS origin,
            CASE WHEN fx.provider = 'eodhd' THEN 1 ELSE 3 END AS rnk, fx.as_of

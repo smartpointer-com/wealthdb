@@ -18,7 +18,7 @@ func init() {
 
 // cmdRefdataWanted prints the wanted list, the JSON document the refdata
 // collector reads to learn which funds and securities gold wants
-// reference data for (gold.Wanted; docs/adapters/refdata.md §3). It is
+// reference data for (gold.Wanted; docs/adapters/refdata.md §5). It is
 // the one way the collector reads gold. Read-only, and hidden from
 // `wealthdb help`, like mcp-config: the collector runs it as
 // `wealthdb -r refdata-wanted`.
@@ -29,10 +29,11 @@ func cmdRefdataWanted(ctx context.Context, g globalFlags, subargs []string, _ io
 		fmt.Fprintln(stderr, `usage: wealthdb -r refdata-wanted
 
 Print the wanted list (JSON, contract version `+fmt.Sprint(gold.WantedContractVersion)+`) the refdata
-collector reads: every held fund, proxy and reference fund with the days
-it was held and the days gold has a composition for, every directly
-held security with the attributes still missing, and the securities the
-funds held today reach that lack a sector or a country.`)
+collector reads: every fund gold wants (held, proxy, reference or size
+fund, or one a held fund holds) with the days it was held and the days
+gold has a composition for, every directly held security with the
+attributes still missing, and the securities the funds held today reach
+that lack a sector or a country.`)
 	}
 	if err := parseFlags(fs, subargs, "refdata-wanted"); err != nil {
 		return err

@@ -18,6 +18,7 @@ import (
 // it. Size funds are wanted as reference funds; the
 // sizes view splits public equity.
 func TestExposureSizesStocks(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
 	for _, q := range []string{
@@ -204,16 +205,5 @@ func TestExposureSizesStocks(t *testing.T) {
 	}
 	if !slices.Equal(roles["symbol:QLM"], []string{"reference"}) {
 		t.Errorf("the size fund's roles = %v, want reference", roles["symbol:QLM"])
-	}
-}
-
-func TestMigration0132DDLIsRerunnable(t *testing.T) {
-	db, ctx := openExposureFixture(t)
-	rerunMigrationDDL(t, db, ctx, "0132_exposure_sizes.sql")
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	if rows, err := ExposureSizes(ctx, db, exAsOf, "USD"); err != nil || len(rows) == 0 {
-		t.Errorf("after replay: %d rows, %v", len(rows), err)
 	}
 }

@@ -1248,7 +1248,7 @@ func TestSnapshotsCarryReferenceRecords(t *testing.T) {
 // loads as before.
 func TestSnapshotsWithoutReferenceTables(t *testing.T) {
 	path, db := newFixture(t)
-	for _, tbl := range []string{"compositions", "lines", "attributes", "counterparties", "securities", "security_facts"} {
+	for _, tbl := range silver.ReferenceTables {
 		exec(t, db, `DROP TABLE `+tbl)
 	}
 	exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-02')`, day(1), day(2))

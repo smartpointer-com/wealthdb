@@ -9,6 +9,7 @@ import (
 // The exposure tables hold exactly the config's block after each sync,
 // and the settings row is always there.
 func TestSyncExposure(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	rows := canonical.ExposureRows{
 		Proxies: []canonical.ExposureProxy{

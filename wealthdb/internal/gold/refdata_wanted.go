@@ -15,7 +15,7 @@ import (
 // The wanted list: what gold asks the refdata collector for. It is the
 // one way the collector reads gold, through the hidden read-only
 // subcommand `refdata-wanted`, and its JSON is a versioned contract
-// (docs/adapters/refdata.md §3). Gold names every fund reference and
+// (docs/adapters/refdata.md §5). Gold names every fund reference and
 // security key; the collector answers them, and the composition it
 // stores under a reference joins back exactly.
 
@@ -110,32 +110,32 @@ type heldInstrument struct {
 }
 
 // RefdataWanted builds the wanted list as of now. A gold opened
-// read-only before migration 0125 reached it has no reference or
-// exposure tables yet; it is read as holding none, so the first fetch
+// read-only before the exposure migrations reached it has no reference
+// or exposure tables yet; it is read as holding none, so the first fetch
 // can run before the first load.
 func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, error) {
 	held, err := heldInstruments(ctx, db, now)
 	if err != nil {
 		return nil, err
 	}
-	migrated, err := hasTable(ctx, db, "exposure_settings")
+	migrated, err := hasTable(ctx, db, "security_aliases")
 	if err != nil {
 		return nil, err
 	}
-	keys, err := readAliases(ctx, db)
-	if err != nil {
-		return nil, err
-	}
-	settings := canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays}
+	keys := keyReader{aliases: map[string]string{}}
+	maxGap := canonical.DefaultMaxGapDays
 	if migrated {
-		if settings, err = exposureSettings(ctx, db); err != nil {
+		if keys, err = readAliases(ctx, db); err != nil {
 			return nil, err
+		}
+		if err := db.QueryRowContext(ctx, `SELECT max_gap_days FROM exposure_settings_row()`).Scan(&maxGap); err != nil {
+			return nil, fmt.Errorf("wanted: settings: %w", err)
 		}
 	}
 	w := &Wanted{
 		Contract: "refdata-wanted", Version: WantedContractVersion,
 		GeneratedAt: now.UTC().Format(time.RFC3339), AsOf: now.UTC().Format(time.DateOnly),
-		Settings: WantedSettings{MaxGapDays: settings.MaxGapDays},
+		Settings: WantedSettings{MaxGapDays: maxGap},
 		Funds:    []WantedFund{}, Securities: []WantedSecurity{},
 	}
 
@@ -150,12 +150,7 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		}
 		switch {
 		case slices.Contains(lookThroughVehicles, h.vehicle) && slices.Contains(lookThroughClasses, h.assetClass):
-			f := funds[ref]
-			if f == nil {
-				f = &WantedFund{Ref: ref, Roles: []string{"held"}}
-				funds[ref] = f
-				spans[ref] = &span{}
-			}
+			f := wantFund(funds, spans, ref, "held")
 			fillIDs(&f.ISIN, &f.CUSIP, &f.Symbol, &f.Name, &f.Currency, h)
 			spans[ref].add(span{from: h.firstAt, to: h.lastAt, open: h.open, set: true})
 		case h.vehicle == "stock" || h.vehicle == "bond":
@@ -174,6 +169,10 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 	}
 	stated := map[[2]string]bool{}
 	if migrated {
+		ids, err := readAliasIDs(ctx, db)
+		if err != nil {
+			return nil, err
+		}
 		if err := addProxiesAndReferences(ctx, db, funds, spans, now, keys); err != nil {
 			return nil, err
 		}
@@ -184,18 +183,16 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 			}
 		}
 		slices.Sort(open)
-		if err := addUnderlying(ctx, db, funds, spans, open, now); err != nil {
+		if err := addUnderlying(ctx, db, funds, spans, open, now, ids); err != nil {
 			return nil, err
 		}
 		if err := addCompositionDates(ctx, db, funds, keys); err != nil {
 			return nil, err
 		}
-		if err := addConstituents(ctx, db, securities, open, now); err != nil {
+		if err := addConstituents(ctx, db, securities, open, now, ids); err != nil {
 			return nil, err
 		}
-		if err := addUSSymbols(ctx, db, securities); err != nil {
-			return nil, err
-		}
+		addUSSymbols(securities, ids)
 		if stated, err = addSecurityState(ctx, db, securities, keys); err != nil {
 			return nil, err
 		}
@@ -260,7 +257,8 @@ func fillFromKey(key string, isin, cusip, symbol **string) {
 // stillHeldDays of now; a source that stopped reporting ends it at its
 // last snapshot.
 func heldInstruments(ctx context.Context, db *sql.DB, now time.Time) ([]heldInstrument, error) {
-	rows, err := db.QueryContext(ctx, `
+	var out []heldInstrument
+	err := scanAll(ctx, db, `
 WITH last_snap AS (
     SELECT p.silver_source_id, MAX(p.snapshot_at) AS s,
            GREATEST(MAX(p.snapshot_at), COALESCE(MAX(ss.observed_snapshots_through), -1)) AS seen
@@ -290,21 +288,19 @@ SELECT h.src, h.iid, h.asset_class, COALESCE(h.vehicle, ''), i.isin, i.cusip, il
   FROM held h
   LEFT JOIN instruments i ON i.silver_source_id = h.src AND i.instrument_external_id = h.iid
   LEFT JOIN instrument_labels() il ON il.silver_source_id = h.src AND il.instrument_external_id = h.iid
- ORDER BY h.src, h.iid`, now.Unix()-stillHeldDays*86400)
-	if err != nil {
-		return nil, fmt.Errorf("wanted: held instruments: %w", err)
-	}
-	defer rows.Close()
-	var out []heldInstrument
-	for rows.Next() {
+ ORDER BY h.src, h.iid`, func(rows *sql.Rows) error {
 		var h heldInstrument
 		if err := rows.Scan(&h.src, &h.iid, &h.assetClass, &h.vehicle, &h.isin, &h.cusip, &h.symbol, &h.name, &h.ccy,
 			&h.firstAt, &h.lastAt, &h.open); err != nil {
-			return nil, fmt.Errorf("wanted: held instruments scan: %w", err)
+			return err
 		}
 		out = append(out, h)
+		return nil
+	}, now.Unix()-stillHeldDays*86400)
+	if err != nil {
+		return nil, fmt.Errorf("wanted: held instruments: %w", err)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // usQuoted reports whether a holding's symbol is a US one: the
@@ -321,14 +317,18 @@ const stillHeldDays = 90
 
 // fillIDs keeps the first non-blank value of each identifier.
 func fillIDs(isin, cusip, symbol, name, ccy **string, h heldInstrument) {
-	for _, f := range []struct {
-		dst **string
-		v   sql.NullString
-	}{{isin, h.isin}, {cusip, h.cusip}, {symbol, h.symbol}, {name, h.name}, {ccy, h.ccy}} {
-		if *f.dst == nil && f.v.Valid && f.v.String != "" {
-			v := f.v.String
-			*f.dst = &v
-		}
+	setOnce(isin, h.isin)
+	setOnce(cusip, h.cusip)
+	setOnce(symbol, h.symbol)
+	setOnce(name, h.name)
+	setOnce(ccy, h.ccy)
+}
+
+// setOnce sets *dst to v where *dst is unset and v is not blank.
+func setOnce(dst **string, v sql.NullString) {
+	if *dst == nil && v.Valid && v.String != "" {
+		s := v.String
+		*dst = &s
 	}
 }
 
@@ -350,6 +350,25 @@ func (s *span) add(o span) {
 	s.from, s.to, s.open = min(s.from, o.from), max(s.to, o.to), s.open || o.open
 }
 
+// fromToday is the span of a fund wanted from today on.
+func fromToday(now time.Time) span {
+	today := now.UTC().Truncate(24 * time.Hour).Unix()
+	return span{from: today, to: today, open: true, set: true}
+}
+
+// wantFund is the wanted fund of that reference, added with no span
+// where it is new, holding role.
+func wantFund(funds map[string]*WantedFund, spans map[string]*span, ref, role string) *WantedFund {
+	f := funds[ref]
+	if f == nil {
+		f = &WantedFund{Ref: ref}
+		funds[ref] = f
+		spans[ref] = &span{}
+	}
+	addRole(f, role)
+	return f
+}
+
 // dates is the span as YYYY-MM-DD bounds, the end nil while open.
 func (s *span) dates() (from, to *string) {
 	if s == nil || !s.set {
@@ -368,39 +387,20 @@ func (s *span) dates() (from, to *string) {
 // reference or size fund, wanted from today in the role reference.
 func addProxiesAndReferences(ctx context.Context, db *sql.DB, funds map[string]*WantedFund,
 	spans map[string]*span, now time.Time, keys keyReader) error {
-	rows, err := db.QueryContext(ctx, `SELECT fund_ref, proxy_ref FROM exposure_proxies ORDER BY 1`)
-	if err != nil {
-		return fmt.Errorf("wanted: proxies: %w", err)
-	}
 	type proxy struct{ from, to string }
 	var proxies []proxy
-	for rows.Next() {
+	if err := scanAll(ctx, db, `SELECT fund_ref, proxy_ref FROM exposure_proxies ORDER BY 1`, func(rows *sql.Rows) error {
 		var p proxy
 		if err := rows.Scan(&p.from, &p.to); err != nil {
-			rows.Close()
 			return err
 		}
-		p.from, p.to = keys.key(p.from), keys.key(p.to)
-		proxies = append(proxies, p)
+		proxies = append(proxies, proxy{keys.key(p.from), keys.key(p.to)})
+		return nil
+	}); err != nil {
+		return fmt.Errorf("wanted: proxies: %w", err)
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-	want := func(ref, role string) *WantedFund {
-		f := funds[ref]
-		if f == nil {
-			f = &WantedFund{Ref: ref}
-			funds[ref] = f
-			spans[ref] = &span{}
-		}
-		addRole(f, role)
-		return f
-	}
-	today := now.UTC().Truncate(24 * time.Hour).Unix()
 	for _, p := range proxies {
-		want(p.to, "proxy")
+		wantFund(funds, spans, p.to, "proxy")
 		if held := spans[p.from]; held != nil {
 			spans[p.to].add(*held)
 		}
@@ -409,32 +409,24 @@ func addProxiesAndReferences(ctx context.Context, db *sql.DB, funds map[string]*
 	// reference fund is.
 	for _, p := range proxies {
 		if !spans[p.to].set {
-			spans[p.to].add(span{from: today, to: today, open: true, set: true})
+			spans[p.to].add(fromToday(now))
 		}
 	}
-	q := `SELECT fund_ref FROM exposure_reference_funds`
-	sized, err := hasTable(ctx, db, "exposure_size_funds")
-	if err != nil {
-		return err
-	}
-	if sized {
-		q += ` UNION SELECT fund_ref FROM exposure_size_funds`
-	}
-	refs, err := db.QueryContext(ctx, q+` ORDER BY 1`)
-	if err != nil {
-		return fmt.Errorf("wanted: reference funds: %w", err)
-	}
-	defer refs.Close()
-	for refs.Next() {
+	err := scanAll(ctx, db, `SELECT fund_ref FROM exposure_reference_funds UNION SELECT fund_ref FROM exposure_size_funds
+	 ORDER BY 1`, func(rows *sql.Rows) error {
 		var ref string
-		if err := refs.Scan(&ref); err != nil {
+		if err := rows.Scan(&ref); err != nil {
 			return err
 		}
 		ref = keys.key(ref)
-		want(ref, "reference")
-		spans[ref].add(span{from: today, to: today, open: true, set: true})
+		wantFund(funds, spans, ref, "reference")
+		spans[ref].add(fromToday(now))
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("wanted: reference funds: %w", err)
 	}
-	return refs.Err()
+	return nil
 }
 
 // addUnderlying adds the funds a held fund holds, one level down: each
@@ -447,65 +439,51 @@ func addProxiesAndReferences(ctx context.Context, db *sql.DB, funds map[string]*
 // keyed by a ticker with no US listing stays out, since a lookup by that
 // ticker finds another fund.
 func addUnderlying(ctx context.Context, db *sql.DB, funds map[string]*WantedFund, spans map[string]*span,
-	held []string, now time.Time) error {
-	ok, err := hasTable(ctx, db, "fund_line_labels")
-	if err != nil || !ok || len(held) == 0 {
-		return err
+	held []string, now time.Time, ids map[string]aliasIDs) error {
+	if len(held) == 0 {
+		return nil
 	}
-	rows, err := db.QueryContext(ctx, `
+	err := scanAll(ctx, db, `
 WITH newest AS (
     SELECT silver_source_id, stored_ref, as_of, basis, provider
       FROM exposure_comps()
      WHERE fund_ref IN (SELECT unnest(CAST(? AS VARCHAR[])))
    QUALIFY ROW_NUMBER() OVER (PARTITION BY fund_ref ORDER BY as_of DESC) = 1),
 u AS (
-    SELECT COALESCE(sa.security_key, l.security_key) AS k, MIN(l.isin) AS isin, MIN(l.cusip) AS cusip,
+    SELECT exposure_key(l.security_key) AS k, MIN(l.isin) AS isin, MIN(l.cusip) AS cusip,
            MIN(l.name) AS name, BOOL_OR(`+usLineSQL+`) AS us_line
       FROM fund_lines l
       JOIN newest n ON n.silver_source_id = l.silver_source_id AND n.stored_ref = l.fund_ref
                    AND n.as_of = l.as_of AND n.basis = l.basis
       JOIN fund_line_labels lab ON lab.provider = n.provider AND lab.field = 'asset_type' AND lab.raw = l.asset_type
-      LEFT JOIN security_aliases sa ON sa.alias = l.security_key
      WHERE lab.value = 'multi_asset' AND l.security_key IS NOT NULL AND l.security_key NOT LIKE 'name:%'
      GROUP BY 1)
-SELECT u.k, u.isin, u.cusip,
-       COALESCE((SELECT MIN(substr(alias, 8)) FROM security_aliases a WHERE a.security_key = u.k
-                  AND a.alias LIKE 'symbol:%' AND a.origin IN ('fund_line', 'lookup')),
-                CASE WHEN u.k LIKE 'symbol:%' THEN substr(u.k, 8) END),
-       u.name
-  FROM u
- WHERE u.k NOT LIKE 'symbol:%' OR u.us_line
- ORDER BY 1`, held)
+SELECT k, isin, cusip, name FROM u
+ WHERE k NOT LIKE 'symbol:%' OR us_line
+ ORDER BY 1`, func(rows *sql.Rows) error {
+		var ref string
+		var isin, cusip, name sql.NullString
+		if err := rows.Scan(&ref, &isin, &cusip, &name); err != nil {
+			return err
+		}
+		symbol := ids[ref].symbol
+		if !symbol.Valid {
+			if body, ok := strings.CutPrefix(ref, canonical.KeySymbol); ok {
+				symbol = sql.NullString{String: body, Valid: true}
+			}
+		}
+		f := wantFund(funds, spans, ref, "underlying")
+		setOnce(&f.ISIN, isin)
+		setOnce(&f.CUSIP, cusip)
+		setOnce(&f.Symbol, symbol)
+		setOnce(&f.Name, name)
+		spans[ref].add(fromToday(now))
+		return nil
+	}, held)
 	if err != nil {
 		return fmt.Errorf("wanted: underlying funds: %w", err)
 	}
-	defer rows.Close()
-	today := now.UTC().Truncate(24 * time.Hour).Unix()
-	for rows.Next() {
-		var ref string
-		var isin, cusip, ticker, name sql.NullString
-		if err := rows.Scan(&ref, &isin, &cusip, &ticker, &name); err != nil {
-			return err
-		}
-		f := funds[ref]
-		if f == nil {
-			f = &WantedFund{Ref: ref}
-			funds[ref] = f
-			spans[ref] = &span{}
-		}
-		addRole(f, "underlying")
-		for _, v := range []struct {
-			dst **string
-			v   sql.NullString
-		}{{&f.ISIN, isin}, {&f.CUSIP, cusip}, {&f.Symbol, ticker}, {&f.Name, name}} {
-			if *v.dst == nil && v.v.Valid && v.v.String != "" {
-				s := v.v.String
-				*v.dst = &s
-			}
-		}
-		spans[ref].add(span{from: today, to: today, open: true, set: true})
-	}
-	return rows.Err()
+	return nil
 }
 
 func addRole(f *WantedFund, role string) {
@@ -517,22 +495,22 @@ func addRole(f *WantedFund, role string) {
 // addCompositionDates lists the days gold has a composition for, per
 // wanted fund.
 func addCompositionDates(ctx context.Context, db *sql.DB, funds map[string]*WantedFund, keys keyReader) error {
-	rows, err := db.QueryContext(ctx, `SELECT DISTINCT `+keys.sql("c.fund_ref")+`, c.as_of FROM fund_compositions c ORDER BY 1, 2`)
+	err := scanAll(ctx, db, `SELECT DISTINCT `+keys.sql("fund_ref")+`, as_of FROM fund_compositions ORDER BY 1, 2`,
+		func(rows *sql.Rows) error {
+			var ref string
+			var asOf int64
+			if err := rows.Scan(&ref, &asOf); err != nil {
+				return err
+			}
+			if f := funds[ref]; f != nil {
+				f.Compositions = append(f.Compositions, time.Unix(asOf, 0).UTC().Format(time.DateOnly))
+			}
+			return nil
+		})
 	if err != nil {
 		return fmt.Errorf("wanted: composition dates: %w", err)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var ref string
-		var asOf int64
-		if err := rows.Scan(&ref, &asOf); err != nil {
-			return err
-		}
-		if f := funds[ref]; f != nil {
-			f.Compositions = append(f.Compositions, time.Unix(asOf, 0).UTC().Format(time.DateOnly))
-		}
-	}
-	return rows.Err()
+	return nil
 }
 
 // The fields a security wants, and the facts, fund-line columns and
@@ -565,18 +543,13 @@ var wantedFields = []struct {
 // listing or a lookup, never from a broker's local ticker. A gold
 // without the exposure macros has none.
 func addConstituents(ctx context.Context, db *sql.DB, securities map[string]*WantedSecurity, held []string,
-	now time.Time) error {
-	ok, err := hasTable(ctx, db, "security_aliases")
-	if err != nil || !ok || len(held) == 0 {
-		return err
+	now time.Time, ids map[string]aliasIDs) error {
+	if len(held) == 0 {
+		return nil
 	}
-	rows, err := db.QueryContext(ctx, `
+	err := scanAll(ctx, db, `
 WITH l AS (SELECT * FROM exposure_leaves(?, 'USD')),
 t AS (SELECT SUM(value) AS total FROM l),
-funds AS (
-    SELECT fund_ref FROM exposure_comps()
-    UNION SELECT COALESCE(sa.security_key, a.fund_ref) FROM fund_attributes a
-      LEFT JOIN security_aliases sa ON sa.alias = a.fund_ref),
 c AS (
     SELECT l.key, SUM(abs(l.value)) AS v, MAX(l.name) AS name, arg_max(l.asset_class, abs(l.value)) AS asset_class,
            BOOL_OR(l.sector IS NULL OR starts_with(COALESCE(s.sector_origin, ''), 'underlying:')) AS no_sector,
@@ -587,47 +560,35 @@ c AS (
       FROM l
       LEFT JOIN securities s ON s.security_key = l.key
      WHERE l.depth > 0 AND l.kind = 'line' AND NOT l.truncated AND l.key IS NOT NULL AND l.key NOT LIKE 'name:%'
-       AND l.key NOT IN (SELECT fund_ref FROM funds)
+       AND l.key NOT IN (SELECT fund_ref FROM exposure_fund_keys())
        AND l.top_key IN (SELECT unnest(CAST(? AS VARCHAR[])))
        AND l.asset_class IN ('public_equity', 'fixed_income')
      GROUP BY l.key)
-SELECT c.key, 100 * c.v / NULLIF(t.total, 0), c.name, c.asset_class, s.currency, c.no_sector, c.no_country,
-       (SELECT MIN(substr(alias, 8)) FROM security_aliases a
-         WHERE a.security_key = c.key AND a.alias LIKE 'symbol:%' AND a.origin IN ('fund_line', 'lookup')),
-       (SELECT MIN(substr(alias, 7)) FROM security_aliases a WHERE a.security_key = c.key AND a.alias LIKE 'cusip:%')
+SELECT c.key, 100 * c.v / NULLIF(t.total, 0), c.name, c.asset_class, s.currency, c.no_sector, c.no_country
   FROM c CROSS JOIN t
   LEFT JOIN securities s ON s.security_key = c.key
  WHERE c.no_sector OR c.no_country
- ORDER BY 1`, now.Unix(), held)
-	if err != nil {
-		return fmt.Errorf("wanted: constituents: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+ ORDER BY 1`, func(rows *sql.Rows) error {
 		var key string
 		var share sql.NullFloat64
-		var name, class, ccy, symbol, cusip sql.NullString
+		var name, class, ccy sql.NullString
 		var noSector, noCountry bool
-		if err := rows.Scan(&key, &share, &name, &class, &ccy, &noSector, &noCountry, &symbol, &cusip); err != nil {
-			return fmt.Errorf("wanted: constituents scan: %w", err)
+		if err := rows.Scan(&key, &share, &name, &class, &ccy, &noSector, &noCountry); err != nil {
+			return err
 		}
 		if securities[key] != nil {
-			continue
+			return nil
 		}
 		s := &WantedSecurity{Key: key, Scope: "constituent", Lookups: map[string]string{}, Missing: []string{}}
 		if share.Valid {
 			v := share.Float64
 			s.SharePct = &v
 		}
-		for _, f := range []struct {
-			dst **string
-			v   sql.NullString
-		}{{&s.Name, name}, {&s.AssetClass, class}, {&s.Currency, ccy}, {&s.Symbol, symbol}, {&s.CUSIP, cusip}} {
-			if f.v.Valid && f.v.String != "" {
-				v := f.v.String
-				*f.dst = &v
-			}
-		}
+		setOnce(&s.Name, name)
+		setOnce(&s.AssetClass, class)
+		setOnce(&s.Currency, ccy)
+		setOnce(&s.Symbol, ids[key].symbol)
+		setOnce(&s.CUSIP, ids[key].cusip)
 		if noSector {
 			s.Missing = append(s.Missing, "sector")
 		}
@@ -635,34 +596,23 @@ SELECT c.key, 100 * c.v / NULLIF(t.total, 0), c.name, c.asset_class, s.currency,
 			s.Missing = append(s.Missing, "country")
 		}
 		securities[key] = s
+		return nil
+	}, now.Unix(), held)
+	if err != nil {
+		return fmt.Errorf("wanted: constituents: %w", err)
 	}
-	return rows.Err()
+	return nil
 }
 
 // addUSSymbols gives a security held directly that has no US symbol of
 // its own the one a lookup or a fund line on a US listing states, so a
 // lookup by ticker finds the company.
-func addUSSymbols(ctx context.Context, db *sql.DB, securities map[string]*WantedSecurity) error {
-	ok, err := hasTable(ctx, db, "security_aliases")
-	if err != nil || !ok {
-		return err
-	}
-	rows, err := db.QueryContext(ctx, `SELECT security_key, MIN(substr(alias, 8)) FROM security_aliases
-	 WHERE alias LIKE 'symbol:%' AND origin IN ('fund_line', 'lookup') GROUP BY 1`)
-	if err != nil {
-		return fmt.Errorf("wanted: US symbols: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var key, symbol string
-		if err := rows.Scan(&key, &symbol); err != nil {
-			return fmt.Errorf("wanted: US symbols scan: %w", err)
-		}
-		if s := securities[key]; s != nil && s.Scope == "direct" && s.Symbol == nil {
-			s.Symbol = &symbol
+func addUSSymbols(securities map[string]*WantedSecurity, ids map[string]aliasIDs) {
+	for key, s := range securities {
+		if s.Scope == "direct" {
+			setOnce(&s.Symbol, ids[key].symbol)
 		}
 	}
-	return rows.Err()
 }
 
 // addSecurityState fills the day each provider last answered for each
@@ -671,7 +621,7 @@ func addUSSymbols(ctx context.Context, db *sql.DB, securities map[string]*Wanted
 // security's own identifier may find it (a broker's CUSIP asked as a
 // ticker finds no bond).
 func addSecurityState(ctx context.Context, db *sql.DB, securities map[string]*WantedSecurity, keys keyReader) (map[[2]string]bool, error) {
-	rows, err := db.QueryContext(ctx, `
+	err := scanAll(ctx, db, `
 SELECT k, provider, MAX(as_of) FROM (
     SELECT `+keys.sql("x.security_key")+` AS k, x.* FROM (
         SELECT security_key, provider, as_of, TRUE AS found FROM security_facts
@@ -679,31 +629,19 @@ SELECT k, provider, MAX(as_of) FROM (
                          COALESCE(TRY_CAST(json_extract_string(payload, '$.found') AS BOOLEAN), TRUE)
           FROM security_identities) x)
  WHERE found OR k = security_key
- GROUP BY 1, 2`)
-	if err != nil {
-		return nil, fmt.Errorf("wanted: lookups: %w", err)
-	}
-	for rows.Next() {
+ GROUP BY 1, 2`, func(rows *sql.Rows) error {
 		var key, provider string
 		var asOf int64
 		if err := rows.Scan(&key, &provider, &asOf); err != nil {
-			rows.Close()
-			return nil, err
+			return err
 		}
 		if s := securities[key]; s != nil {
 			s.Lookups[provider] = time.Unix(asOf, 0).UTC().Format(time.DateOnly)
 		}
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	labels, err := hasTable(ctx, db, "exposure_labels")
+		return nil
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("wanted: lookups: %w", err)
 	}
 	stated := map[[2]string]bool{}
 	for _, wf := range wantedFields {
@@ -716,29 +654,22 @@ SELECT k, provider, MAX(as_of) FROM (
 			q += ` UNION SELECT DISTINCT ` + keys.sql("l.security_key") + ` FROM fund_lines l WHERE l.` + wf.lineColumn +
 				` IS NOT NULL AND l.security_key IS NOT NULL`
 		}
-		if wf.typeLabels != "" && labels {
+		if wf.typeLabels != "" {
 			q += ` UNION SELECT DISTINCT ` + keys.sql("i.security_key") + ` FROM security_identities i
 			  JOIN exposure_labels lt ON lt.provider = i.provider AND lt.field = ?
 			   AND lt.label = exposure_norm(i.security_type)`
 			args = append(args, string(wf.typeLabels))
 		}
-		rows, err := db.QueryContext(ctx, q, args...)
-		if err != nil {
-			return nil, fmt.Errorf("wanted: %s: %w", wf.field, err)
-		}
-		for rows.Next() {
+		if err := scanAll(ctx, db, q, func(rows *sql.Rows) error {
 			var key string
 			if err := rows.Scan(&key); err != nil {
-				rows.Close()
-				return nil, err
+				return err
 			}
 			stated[[2]string{key, wf.field}] = true
+			return nil
+		}, args...); err != nil {
+			return nil, fmt.Errorf("wanted: %s: %w", wf.field, err)
 		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		rows.Close()
 	}
 	return stated, nil
 }
@@ -755,33 +686,25 @@ func placeholders(n int) string {
 }
 
 // keyReader reads a key as the security key it names through
-// security_aliases: the key itself where no alias names it, or where
-// gold has no alias table yet.
+// security_aliases: the key itself where no alias names it.
 type keyReader struct {
 	aliases map[string]string
-	has     bool
 }
 
 func readAliases(ctx context.Context, db *sql.DB) (keyReader, error) {
 	kr := keyReader{aliases: map[string]string{}}
-	ok, err := hasTable(ctx, db, "security_aliases")
-	if err != nil || !ok {
-		return kr, err
-	}
-	kr.has = true
-	rows, err := db.QueryContext(ctx, `SELECT alias, security_key FROM security_aliases`)
+	err := scanAll(ctx, db, `SELECT alias, security_key FROM security_aliases`, func(rows *sql.Rows) error {
+		var a, k string
+		if err := rows.Scan(&a, &k); err != nil {
+			return err
+		}
+		kr.aliases[a] = k
+		return nil
+	})
 	if err != nil {
 		return kr, fmt.Errorf("wanted: aliases: %w", err)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var a, k string
-		if err := rows.Scan(&a, &k); err != nil {
-			return kr, err
-		}
-		kr.aliases[a] = k
-	}
-	return kr, rows.Err()
+	return kr, nil
 }
 
 func (kr keyReader) key(k string) string {
@@ -791,14 +714,38 @@ func (kr keyReader) key(k string) string {
 	return k
 }
 
-// sql is the same reading of a key column, in SQL. col is qualified by
-// its table: security_aliases has a security_key of its own, which a bare
-// security_key would name.
+// sql is the same reading of a key column, in SQL.
 func (kr keyReader) sql(col string) string {
-	if !kr.has {
-		return col
+	return `exposure_key(` + col + `)`
+}
+
+// aliasIDs are the identifiers the aliases of one security key state: a
+// US symbol (one a lookup or a fund line on a US listing states, never a
+// broker's local ticker) and a CUSIP.
+type aliasIDs struct {
+	symbol, cusip sql.NullString
+}
+
+// readAliasIDs is the aliasIDs of every security key an alias names.
+func readAliasIDs(ctx context.Context, db *sql.DB) (map[string]aliasIDs, error) {
+	out := map[string]aliasIDs{}
+	err := scanAll(ctx, db, `
+SELECT security_key,
+       MIN(substr(alias, 8)) FILTER (WHERE alias LIKE 'symbol:%' AND origin IN ('fund_line', 'lookup')),
+       MIN(substr(alias, 7)) FILTER (WHERE alias LIKE 'cusip:%')
+  FROM security_aliases GROUP BY 1`, func(rows *sql.Rows) error {
+		var key string
+		var ids aliasIDs
+		if err := rows.Scan(&key, &ids.symbol, &ids.cusip); err != nil {
+			return err
+		}
+		out[key] = ids
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("wanted: alias identifiers: %w", err)
 	}
-	return `COALESCE((SELECT sa.security_key FROM security_aliases sa WHERE sa.alias = ` + col + `), ` + col + `)`
+	return out, nil
 }
 
 // hasTable reports whether gold holds a table of that name.
@@ -806,17 +753,4 @@ func hasTable(ctx context.Context, db *sql.DB, name string) (bool, error) {
 	var n int
 	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?`, name).Scan(&n)
 	return n > 0, err
-}
-
-// exposureSettings reads the settings row, the defaults where a gold
-// never loaded since the exposure tables arrived has none.
-func exposureSettings(ctx context.Context, db *sql.DB) (canonical.ExposureSettings, error) {
-	s := canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays,
-		AgedDays: canonical.DefaultAgedDays, PartialPct: canonical.DefaultPartialPct}
-	err := db.QueryRowContext(ctx, `SELECT max_gap_days, aged_days, partial_pct FROM exposure_settings LIMIT 1`).
-		Scan(&s.MaxGapDays, &s.AgedDays, &s.PartialPct)
-	if err == sql.ErrNoRows {
-		err = nil
-	}
-	return s, err
 }

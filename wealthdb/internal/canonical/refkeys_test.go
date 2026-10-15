@@ -30,6 +30,7 @@ func luhnValid(isin string) bool {
 }
 
 func TestISINCheckDigit(t *testing.T) {
+	t.Parallel()
 	// The ISO 6166 worked example, letters in its body.
 	if got := ISINCheckDigit("AU0000XVGZA"); got != 3 {
 		t.Errorf("ISINCheckDigit(AU0000XVGZA) = %d, want 3", got)
@@ -43,6 +44,7 @@ func TestISINCheckDigit(t *testing.T) {
 }
 
 func TestISINFromCUSIP(t *testing.T) {
+	t.Parallel()
 	got := ISINFromCUSIP(" 00000aa01")
 	if len(got) != 12 || got[:11] != "US00000AA01" || !luhnValid(got) {
 		t.Errorf("ISINFromCUSIP = %q, want US00000AA01 and a valid check digit", got)
@@ -55,6 +57,7 @@ func TestISINFromCUSIP(t *testing.T) {
 }
 
 func TestSecurityKeyOrder(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		isin, cusip, figi, ticker, name, want string
 	}{
@@ -72,26 +75,19 @@ func TestSecurityKeyOrder(t *testing.T) {
 }
 
 func TestSecurityKeyNameHashIsStable(t *testing.T) {
+	t.Parallel()
 	a := SecurityKey("", "", "", "", "Example Holdings, Inc.")
 	b := SecurityKey("", "", "", "", "  EXAMPLE holdings inc ")
 	if a == "" || a != b {
 		t.Fatalf("name keys differ: %q vs %q", a, b)
 	}
-	if len(a) != len(KeyName)+12 {
+	if len(a) != len(keyName)+12 {
 		t.Errorf("name key %q: want a 12-hex-digit hash", a)
 	}
 }
 
-func TestFundRef(t *testing.T) {
-	if got := FundRef("", "", "idx1"); got != "symbol:IDX1" {
-		t.Errorf("FundRef symbol = %q", got)
-	}
-	if got := FundRef("", "00000AA01", "IDX1"); got != "cusip:00000AA01" {
-		t.Errorf("FundRef cusip = %q", got)
-	}
-}
-
 func TestCompositionBasisValid(t *testing.T) {
+	t.Parallel()
 	for _, b := range []CompositionBasis{CompositionHoldings, CompositionCollateral, CompositionIndex} {
 		if !b.Valid() {
 			t.Errorf("%q should be valid", b)
@@ -103,6 +99,7 @@ func TestCompositionBasisValid(t *testing.T) {
 }
 
 func TestParseFundRef(t *testing.T) {
+	t.Parallel()
 	ok := map[string]string{
 		"isin:xx0000000001": "isin:XX0000000001",
 		"ISIN:XX0000000001": "isin:XX0000000001",

@@ -176,6 +176,12 @@ func TestReportHeadersAreIdentifiers(t *testing.T) {
 	for _, v := range gainsViews {
 		reports["gains "+v] = gainsReport(request{view: v, currency: "USD", period: "monthly"})
 	}
+	for _, v := range exposureViews {
+		reports["exposure "+v] = exposureReport(request{view: v, currency: "USD"})
+	}
+	// A series adds its period column ahead of the view's own.
+	reports["exposure classes series"] = exposureReport(request{view: "classes", currency: "USD",
+		series: []seriesPoint{{label: "2026-06", at: 1}}})
 	for name, rep := range reports {
 		for _, c := range rep.columns {
 			if !ident.MatchString(c.name) || !ident.MatchString(c.header) {

@@ -98,8 +98,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 // compositions and security facts a generator wrote) to the stream. A
 // file older than the tables states none.
 func (c *Connection) withReference(ctx context.Context, w canonical.Window, s silver.SnapshotStream) (silver.SnapshotStream, error) {
-	ok, err := silver.HasTables(ctx, c.db, "compositions", "lines", "attributes",
-		"counterparties", "securities", "security_facts")
+	ok, err := silver.HasTables(ctx, c.db, silver.ReferenceTables...)
 	if err != nil || !ok {
 		return s, err
 	}

@@ -38,8 +38,8 @@ type ExposureConfig struct {
 	// silver_source_id.
 	Custody map[string]ExposureCustody `json:"custody,omitempty"`
 	// MaxGapDays is how far a composition may lie from a day and still
-	// describe it, before or after; default 400, so a report from the
-	// previous year still qualifies.
+	// describe it, before or after; default canonical.DefaultMaxGapDays,
+	// so a report from the previous year still qualifies.
 	MaxGapDays int `json:"max_gap_days,omitempty"`
 }
 
@@ -138,13 +138,18 @@ func (c *Config) validateExposure(seenIDs map[string]bool) error {
 		if strings.TrimSpace(cu.Custodian) == "" {
 			return fmt.Errorf("config: exposure.custody[%q]: custodian is required", sourceID)
 		}
-		if cu.Country != "" {
-			if _, ok := canonical.CountryByCode(cu.Country); !ok || cu.Country != strings.ToUpper(cu.Country) {
-				return fmt.Errorf("config: exposure.custody[%q]: country %q is not an ISO 3166 alpha-2 code", sourceID, cu.Country)
-			}
+		if cu.Country != "" && !isCountryCode(cu.Country) {
+			return fmt.Errorf("config: exposure.custody[%q]: country %q is not an ISO 3166 alpha-2 code", sourceID, cu.Country)
 		}
 	}
 	return nil
+}
+
+// isCountryCode reports whether s is a country code of the exposure
+// vocabulary, upper-case as gold stores it.
+func isCountryCode(s string) bool {
+	c, ok := canonical.CountryByCode(s)
+	return ok && c.Code == s
 }
 
 func sectorNames() string {

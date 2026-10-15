@@ -46,7 +46,8 @@ type ExposureCustody struct {
 	Country        string
 }
 
-// ExposureSettings are the block's scalars.
+// ExposureSettings are the scalars gold reads: max_gap_days from the
+// config block, the other two fixed.
 type ExposureSettings struct {
 	// MaxGapDays is how far a composition may lie from a day, before or
 	// after, and still describe it.
@@ -58,7 +59,7 @@ type ExposureSettings struct {
 	PartialPct float64
 }
 
-// Defaults of the exposure settings.
+// Values of the exposure settings; only MaxGapDays has a config key.
 const (
 	DefaultMaxGapDays = 400
 	DefaultAgedDays   = 35

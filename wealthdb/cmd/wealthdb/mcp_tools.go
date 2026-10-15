@@ -182,7 +182,7 @@ func (s *mcpServer) tools() []toolSpec {
 				stringParam("view", "Which breakdown (default classes).", exposureFamily.views...),
 				stringParam("as_of", "As-of date: "+dateDoc+" Default: today."),
 				stringParam("country", "countries and securities only: the country a security counts in, risk (default) or domicile.",
-					"risk", "domicile"),
+					exposureCountryBases...),
 			),
 			family: exposureFamily,
 		},
@@ -428,14 +428,14 @@ var exposureFamily = &family{
 	currency:  true,
 	narrow:    "a coarser view",
 	prepare: func(a *toolArgs, req *request, _ *[]string) error {
-		req.country = "risk"
+		req.country = exposureCountryBases[0]
 		if !a.has("country") {
 			return nil
 		}
 		if !slices.Contains(exposureCountryViews, req.view) {
-			return fmt.Errorf("exposure: country belongs to the %s views", strings.Join(exposureCountryViews, " and "))
+			return errCountryView("country")
 		}
-		req.country = a.str("country") // the enum admits risk or domicile alone
+		req.country = a.str("country") // the enum admits exposureCountryBases alone
 		return nil
 	},
 	build: func(_ *config.Config, req request, _ *toolArgs) *report { return exposureReport(req) },

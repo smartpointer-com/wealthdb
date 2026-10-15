@@ -242,10 +242,10 @@ type Config struct {
 	// per call. See mcp/DESIGN.md.
 	MCP *MCPConfig `json:"mcp,omitempty"`
 	// Exposure configures the exposure report: proxies for funds no
-	// source describes, reference funds, tags for opaque holdings,
-	// custody, and how far a composition may lie from a day. Absent
-	// block ⇒ none of them and the default settings. See ExposureConfig
-	// and docs/EXPOSURE.md §9.
+	// source describes, reference funds, size funds, tags for opaque
+	// holdings, custody, and how far a composition may lie from a day.
+	// Absent block ⇒ none of them and the default settings. See
+	// ExposureConfig and docs/EXPOSURE.md §9.
 	Exposure *ExposureConfig `json:"exposure,omitempty"`
 }
 

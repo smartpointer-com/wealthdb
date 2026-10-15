@@ -128,6 +128,14 @@ func takesValue(fs *flag.FlagSet, name string) bool {
 	return !ok || !b.IsBoolFlag()
 }
 
+// registerAsOf declares -d / --as-of, the day an as-of report is taken
+// at.
+func registerAsOf(fs *flag.FlagSet) *string {
+	asOf := fs.String("d", "", "as-of date (YYYY-MM-DD; default today UTC)")
+	fs.StringVar(asOf, "as-of", "", "as-of date (YYYY-MM-DD; default today UTC)")
+	return asOf
+}
+
 // checkChoice refuses a flag value outside its vocabulary, naming the
 // values it takes.
 func checkChoice(cmd, flagName, value string, allowed ...string) error {

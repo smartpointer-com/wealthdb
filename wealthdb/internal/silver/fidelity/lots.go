@@ -129,8 +129,9 @@ SELECT snapshot_at, account_external_id, instrument_key, lot_index, cusip,
 func (c *Connection) instrumentCUSIPs(ctx context.Context) (map[string]string, error) {
 	out := map[string]string{}
 	for _, t := range []struct{ table, column, query string }{
-		// Closed lots carry their document kind from migration 0012 on,
-		// the column RealizedLots checks for.
+		// security_name marks migration 0012, which brought
+		// disposed_date and the closed_positions kind; RealizedLots
+		// guards on the same column.
 		{"closed_lots", "security_name", `
 SELECT instrument_key, upper(trim(cusip)) FROM closed_lots
  WHERE document_kind = 'closed_positions' AND instrument_key IS NOT NULL AND trim(COALESCE(cusip, '')) <> ''

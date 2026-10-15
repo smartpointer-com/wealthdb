@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
@@ -17,12 +18,15 @@ import (
 
 // `wealthdb exposure <view>` — what is really owned, every fund looked
 // through to what it holds, as of a day. docs/EXPOSURE.md defines every
-// figure; the look-through is gold's (migration 0126), and this file is
-// the views, their columns and the usage text.
+// figure; the look-through is gold's (gold/exposure.go and the exposure
+// migrations), and this file is the views, their columns and the usage
+// text.
 //
 // The holdings idiom: a positional view and an as-of day (-d, default
 // today). --country belongs to the views that place a security in a
-// country, countries and securities, and is refused elsewhere.
+// country, countries and securities, and is refused elsewhere. --period
+// P turns the as-of view into a series over a positional window (FROM
+// [TO]); it applies to exposureSeriesViews and refuses -d.
 func init() {
 	register("exposure", cmdExposure)
 }
@@ -33,6 +37,16 @@ var exposureViews = []string{"classes", "sectors", "sizes", "countries", "curren
 // exposureCountryViews are the views --country applies to.
 var exposureCountryViews = []string{"countries", "securities"}
 
+// exposureCountryBases are the bases a security's country is read on,
+// the default first.
+var exposureCountryBases = []string{"risk", "domicile"}
+
+// errCountryView refuses the country basis, by the name its front-end
+// gives it, on a view that places no security in a country.
+func errCountryView(name string) error {
+	return errs.Newf(2, "exposure: %s belongs to the %s views", name, strings.Join(exposureCountryViews, " and "))
+}
+
 func cmdExposure(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
 	view, rest, err := routeView("exposure", subargs, exposureViews, exposureUsage, stderr)
 	if err != nil {
@@ -40,15 +54,16 @@ func cmdExposure(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	}
 	fs := flag.NewFlagSet("wealthdb exposure "+view, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	asOf := fs.String("d", "", "as-of date (YYYY-MM-DD; default today UTC)")
-	fs.StringVar(asOf, "as-of", "", "as-of date (YYYY-MM-DD; default today UTC)")
+	asOf := registerAsOf(fs)
 	period := fs.String("period", "", strings.Join(exposurePeriods, " | ")+" — a series over a window")
-	country := fs.String("country", "risk", "risk | domicile — which country a security counts in")
+	country := fs.String("country", exposureCountryBases[0],
+		strings.Join(exposureCountryBases, " | ")+" — which country a security counts in")
 	rf := registerReportFlags(fs, true)
 	fs.Usage = func() { fmt.Fprintln(stderr, exposureUsage()) }
 	if err := parseFlags(fs, rest, "exposure"); err != nil {
 		return err
 	}
+	now := time.Now()
 	var series []seriesPoint
 	if *period == "" {
 		if err := noPositionals(fs, "exposure"); err != nil {
@@ -64,7 +79,6 @@ func cmdExposure(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 		if isSet(fs, "d", "as-of") {
 			return errs.Newf(2, "exposure: -d names one day; a series takes a window instead (FROM [TO])")
 		}
-		now := time.Now()
 		from, to, err := parseTrailingYearWindow(fs.Args(), now)
 		if err != nil {
 			fs.Usage()
@@ -77,12 +91,12 @@ func cmdExposure(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 		}
 	}
 	if !slices.Contains(exposureCountryViews, view) && isSet(fs, "country") {
-		return errs.Newf(2, "exposure: --country belongs to the %s views", strings.Join(exposureCountryViews, " and "))
+		return errCountryView("--country")
 	}
-	if err := checkChoice("exposure", "country", *country, "risk", "domicile"); err != nil {
+	if err := checkChoice("exposure", "country", *country, exposureCountryBases...); err != nil {
 		return err
 	}
-	asOfEpoch, err := parseAsOf(*asOf, time.Now())
+	asOfEpoch, err := parseAsOf(*asOf, now)
 	if err != nil {
 		return errs.Newf(2, "exposure: %s", err.Error())
 	}
@@ -206,8 +220,12 @@ func seriesReport[T any](registry []columnSpec[T], defaults []string, points []s
 	})
 }
 
-// exposurePeriods are the periods a series takes; a finer one would
-// repeat the look-through more often than compositions change.
+// exposurePeriodMonths are the periods a series takes, each with its
+// length in months; a finer one would repeat the look-through more often
+// than compositions change.
+var exposurePeriodMonths = map[string]int{"monthly": 1, "quarterly": 3, "annual": 12}
+
+// exposurePeriods is exposurePeriodMonths' key set in display order.
 var exposurePeriods = []string{"monthly", "quarterly", "annual"}
 
 // exposureSeriesViews are the views a series takes: the aggregates and
@@ -215,63 +233,46 @@ var exposurePeriods = []string{"monthly", "quarterly", "annual"}
 // period.
 var exposureSeriesViews = []string{"classes", "sectors", "sizes", "countries", "currencies", "coverage"}
 
-// seriesPoints are the ends of the periods of `period` that meet the
-// window [from, to]: each period's last second, the window's end for the
-// last one. None when from is after to.
+// seriesPoints are the periods of `period` that meet the window [from,
+// to], each taken at its end (gold.PeriodEnds) and labelled by it. None
+// when from is after to.
 func seriesPoints(from, to int64, period string) []seriesPoint {
-	if from > to {
-		return nil
-	}
-	t := time.Unix(from, 0).UTC()
-	start := time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
-	var step int
-	switch period {
-	case "monthly":
-		step = 1
-	case "quarterly":
-		step = 3
-		start = start.AddDate(0, -((int(start.Month()) - 1) % 3), 0)
-	case "annual":
-		step = 12
-		start = time.Date(start.Year(), 1, 1, 0, 0, 0, 0, time.UTC)
-	default:
-		return nil
-	}
 	var out []seriesPoint
-	for ; start.Unix() <= to; start = start.AddDate(0, step, 0) {
-		b := start.Unix()
-		out = append(out, seriesPoint{label: periodLabel(&b, period), at: min(start.AddDate(0, step, 0).Unix()-1, to)})
+	for _, at := range gold.PeriodEnds(from, to, exposurePeriodMonths[period]) {
+		out = append(out, seriesPoint{label: periodLabel(&at, period), at: at})
 	}
 	return out
 }
 
 // ---- column registries ---------------------------------------------------
 //
-// value prints as value_<CCY>, a share of net worth as share_pct. -p
-// hides every amount and keeps the shares.
-
-// pctCol is a column that is already in percent: two decimals, blank
-// for nil.
-func pctCol[T any](name string, get func(T) *float64) columnSpec[T] {
-	return columnSpec[T]{Name: name, Align: output.AlignRight, Extract: func(r T) string {
-		if p := get(r); p != nil {
-			return fmt.Sprintf("%.2f", *p)
-		}
-		return ""
-	}}
-}
+// value prints as value_<CCY>; a share of net worth is named share and
+// prints as share_pct. -p hides every amount and keeps the shares.
 
 // shareCols are the share columns of the aggregate views.
 func shareCols[T any](get func(T) gold.ExposureShares) []columnSpec[T] {
 	return []columnSpec[T]{
-		pctCol("share_pct", func(r T) *float64 { return get(r).SharePct }),
-		pctCol("direct_pct", func(r T) *float64 { return get(r).DirectPct }),
-		pctCol("via_funds_pct", func(r T) *float64 { return get(r).ViaFundsPct }),
+		pctCol("share", func(r T) *float64 { return get(r).SharePct }),
+		pctCol("direct", func(r T) *float64 { return get(r).DirectPct }),
+		pctCol("via_funds", func(r T) *float64 { return get(r).ViaFundsPct }),
 	}
 }
 
 func qualityCol[T any](get func(T) string) columnSpec[T] {
 	return columnSpec[T]{Name: "quality", Align: output.AlignLeft, Extract: get}
+}
+
+// holdingKeyCol is a key column. A security key is a public identifier
+// and stays legible under -p, as position_key does; a holding no key
+// names reads as its source and instrument id, which -p hides whole.
+func holdingKeyCol[T any](name string, get func(T) string) columnSpec[T] {
+	return columnSpec[T]{Name: name, Align: output.AlignLeft, Extract: get,
+		PrivacyFunc: func(r T) PrivacyClass {
+			if strings.HasPrefix(get(r), gold.HoldingKeyPrefix) {
+				return PrivacyFreeText
+			}
+			return PrivacyNone
+		}}
 }
 
 func buildExposureClassColumns(ccy string) []columnSpec[gold.ExposureClassRow] {
@@ -284,7 +285,7 @@ func buildExposureClassColumns(ccy string) []columnSpec[gold.ExposureClassRow] {
 	return append(cols, qualityCol(func(r row) string { return r.Quality }))
 }
 
-var defaultExposureClassColumns = []string{"asset_class", "value", "share_pct", "direct_pct", "via_funds_pct", "quality"}
+var defaultExposureClassColumns = []string{"asset_class", "value", "share", "direct", "via_funds", "quality"}
 
 func buildExposureSectorColumns(ccy string) []columnSpec[gold.ExposureSectorRow] {
 	type row = gold.ExposureSectorRow
@@ -295,11 +296,11 @@ func buildExposureSectorColumns(ccy string) []columnSpec[gold.ExposureSectorRow]
 	}
 	cols = append(cols, shareCols(func(r row) gold.ExposureShares { return r.ExposureShares })...)
 	return append(cols,
-		pctCol("class_share_pct", func(r row) *float64 { return r.ClassSharePct }),
+		pctCol("class_share", func(r row) *float64 { return r.ClassSharePct }),
 		qualityCol(func(r row) string { return r.Quality }))
 }
 
-var defaultExposureSectorColumns = []string{"asset_class", "sector", "value", "share_pct", "class_share_pct", "quality"}
+var defaultExposureSectorColumns = []string{"asset_class", "sector", "value", "share", "class_share", "quality"}
 
 func buildExposureSizeColumns(ccy string) []columnSpec[gold.ExposureSizeRow] {
 	type row = gold.ExposureSizeRow
@@ -310,11 +311,11 @@ func buildExposureSizeColumns(ccy string) []columnSpec[gold.ExposureSizeRow] {
 	}
 	cols = append(cols, shareCols(func(r row) gold.ExposureShares { return r.ExposureShares })...)
 	return append(cols,
-		pctCol("class_share_pct", func(r row) *float64 { return r.ClassSharePct }),
+		pctCol("class_share", func(r row) *float64 { return r.ClassSharePct }),
 		qualityCol(func(r row) string { return r.Quality }))
 }
 
-var defaultExposureSizeColumns = []string{"asset_class", "size", "value", "share_pct", "class_share_pct", "quality"}
+var defaultExposureSizeColumns = []string{"asset_class", "size", "value", "share", "class_share", "quality"}
 
 func buildExposureCountryColumns(ccy string) []columnSpec[gold.ExposureCountryRow] {
 	type row = gold.ExposureCountryRow
@@ -328,8 +329,8 @@ func buildExposureCountryColumns(ccy string) []columnSpec[gold.ExposureCountryRo
 	return append(cols, qualityCol(func(r row) string { return r.Quality }))
 }
 
-var defaultExposureCountryColumns = []string{"country", "country_name", "region", "value", "share_pct",
-	"direct_pct", "via_funds_pct", "quality"}
+var defaultExposureCountryColumns = []string{"country", "country_name", "region", "value", "share",
+	"direct", "via_funds", "quality"}
 
 func buildExposureCurrencyColumns(ccy string) []columnSpec[gold.ExposureCurrencyRow] {
 	type row = gold.ExposureCurrencyRow
@@ -342,22 +343,12 @@ func buildExposureCurrencyColumns(ccy string) []columnSpec[gold.ExposureCurrency
 	return append(cols, qualityCol(func(r row) string { return r.Quality }))
 }
 
-var defaultExposureCurrencyColumns = []string{"currency", "kind", "value", "share_pct", "direct_pct", "via_funds_pct", "quality"}
+var defaultExposureCurrencyColumns = []string{"currency", "kind", "value", "share", "direct", "via_funds", "quality"}
 
 func buildExposureSecurityColumns(ccy string) []columnSpec[gold.ExposureSecurityRow] {
 	type row = gold.ExposureSecurityRow
 	return []columnSpec[row]{
-		// A security key is a public identifier and stays legible under
-		// -p, as position_key does; a holding of one source keys by its
-		// instrument id, which -p hides whole.
-		{Name: "security", Align: output.AlignLeft,
-			PrivacyFunc: func(r row) PrivacyClass {
-				if strings.HasPrefix(r.Security, "holding:") {
-					return PrivacyFreeText
-				}
-				return PrivacyNone
-			},
-			Extract: func(r row) string { return r.Security }},
+		holdingKeyCol("security", func(r row) string { return r.Security }),
 		textCol("name", func(r row) *string { return r.Name }),
 		textCol("ticker", func(r row) *string { return r.Ticker }),
 		textCol("asset_class", func(r row) *string { return r.AssetClass }),
@@ -372,28 +363,21 @@ func buildExposureSecurityColumns(ccy string) []columnSpec[gold.ExposureSecurity
 		outCcyCol("direct_value", ccy, func(r row) *string { return r.DirectValue }),
 		outCcyCol("via_funds_value", ccy, func(r row) *string { return r.ViaFundsValue }),
 		countCol("funds", func(r row) int64 { return r.Funds }),
-		pctCol("share_pct", func(r row) *float64 { return r.SharePct }),
+		pctCol("share", func(r row) *float64 { return r.SharePct }),
 		qualityCol(func(r row) string { return r.Quality }),
 	}
 }
 
 var defaultExposureSecurityColumns = []string{"security", "name", "asset_class", "sector", "country", "currency",
-	"value", "direct_value", "via_funds_value", "share_pct", "quality"}
+	"value", "direct_value", "via_funds_value", "share", "quality"}
 
 func buildExposureFundColumns(ccy string) []columnSpec[gold.ExposureFundRow] {
 	type row = gold.ExposureFundRow
 	return []columnSpec[row]{
-		{Name: "fund", Align: output.AlignLeft,
-			PrivacyFunc: func(r row) PrivacyClass {
-				if strings.HasPrefix(r.Fund, "holding:") {
-					return PrivacyFreeText
-				}
-				return PrivacyNone
-			},
-			Extract: func(r row) string { return r.Fund }},
+		holdingKeyCol("fund", func(r row) string { return r.Fund }),
 		textCol("name", func(r row) *string { return r.Name }),
 		outCcyCol("value", ccy, func(r row) *string { return r.Value }),
-		pctCol("share_pct", func(r row) *float64 { return r.SharePct }),
+		pctCol("share", func(r row) *float64 { return r.SharePct }),
 		textCol("via", func(r row) *string { return r.Via }),
 		textCol("proxy", func(r row) *string { return r.Proxy }),
 		{Name: "leverage", Align: output.AlignRight, Extract: func(r row) string {
@@ -404,15 +388,10 @@ func buildExposureFundColumns(ccy string) []columnSpec[gold.ExposureFundRow] {
 		}},
 		textCol("provider", func(r row) *string { return r.Provider }),
 		textCol("basis", func(r row) *string { return r.Basis }),
-		{Name: "composition_date", Align: output.AlignLeft, Extract: func(r row) string {
-			if r.CompositionAsOf == nil {
-				return ""
-			}
-			return formatDate(*r.CompositionAsOf)
-		}},
+		datePtrCol("composition_date", func(r row) *int64 { return r.CompositionAsOf }),
 		{Name: "gap_days", Align: output.AlignRight, Extract: func(r row) string { return intOrEmpty(r.GapDays) }},
 		{Name: "lines", Align: output.AlignRight, Extract: func(r row) string { return intOrEmpty(r.Lines) }},
-		pctCol("weight_sum_pct", func(r row) *float64 { return r.WeightSum }),
+		pctCol("weight_sum", func(r row) *float64 { return r.WeightSum }),
 		textCol("domicile", func(r row) *string { return r.Domicile }),
 		textCol("replication", func(r row) *string { return r.Replication }),
 		{Name: "lending", Align: output.AlignLeft, Extract: func(r row) string { return yesNo(r.Lending) }},
@@ -421,26 +400,18 @@ func buildExposureFundColumns(ccy string) []columnSpec[gold.ExposureFundRow] {
 	}
 }
 
-var defaultExposureFundColumns = []string{"fund", "name", "value", "share_pct", "via", "proxy", "provider",
-	"composition_date", "gap_days", "lines", "weight_sum_pct", "quality"}
+var defaultExposureFundColumns = []string{"fund", "name", "value", "share", "via", "proxy", "provider",
+	"composition_date", "gap_days", "lines", "weight_sum", "quality"}
 
 func buildExposureCoverageColumns(ccy string) []columnSpec[gold.ExposureCoverageRow] {
 	type row = gold.ExposureCoverageRow
 	return []columnSpec[row]{
 		{Name: "section", Align: output.AlignLeft, Extract: func(r row) string { return r.Section }},
-		// An unmatched holding no key names reads as its instrument id,
-		// which -p hides whole.
-		{Name: "reason", Align: output.AlignLeft,
-			PrivacyFunc: func(r row) PrivacyClass {
-				if strings.HasPrefix(r.Reason, "holding:") {
-					return PrivacyFreeText
-				}
-				return PrivacyNone
-			},
-			Extract: func(r row) string { return r.Reason }},
+		// An unmatched holding no key names reads as its instrument id.
+		holdingKeyCol("reason", func(r row) string { return r.Reason }),
 		countCol("items", func(r row) int64 { return r.Items }),
 		outCcyCol("value", ccy, func(r row) *string { return r.Value }),
-		pctCol("share_pct", func(r row) *float64 { return r.SharePct }),
+		pctCol("share", func(r row) *float64 { return r.SharePct }),
 		textCol("detail", func(r row) *string { return r.Detail }),
 		// What a tags ledger row names; -p hides the instrument id whole.
 		textCol("silver_source_id", func(r row) *string { return r.SilverSourceID }),
@@ -449,8 +420,62 @@ func buildExposureCoverageColumns(ccy string) []columnSpec[gold.ExposureCoverage
 	}
 }
 
-var defaultExposureCoverageColumns = []string{"section", "reason", "items", "value", "share_pct", "detail",
+var defaultExposureCoverageColumns = []string{"section", "reason", "items", "value", "share", "detail",
 	"silver_source_id", "instrument"}
+
+// exposureQualityTags are the tags of the exposure quality column and
+// what each means: the CLI usage and the MCP help both render them.
+var exposureQualityTags = []struct{ tag, meaning string }{
+	{"proxy", "another fund's composition stands in"},
+	{"aged", fmt.Sprintf("the composition is older than %d days", canonical.DefaultAgedDays)},
+	{"forward", "the composition is dated after the day"},
+	{"partial", fmt.Sprintf("the weights leave more than %g%% unexplained, a forward states no legs, "+
+		"or a fund lies deeper than three levels", canonical.DefaultPartialPct)},
+	{"unmapped", "a provider's label has no place in the vocabulary"},
+	{"by_name", "a receipt's or a report line's sector or country comes from a share matched by name " +
+		"among all shares"},
+	{"opaque", "a private equity fund nothing looks through; it reads diversified"},
+	{"untagged", "a private holding has no row in the tags ledger"},
+	{"unmatched", "a listed security or fund no source describes"},
+	{"no_composition", "a fund nothing describes on the day, in the funds view"},
+}
+
+// exposureQualityNotes are the quality tags as an aligned list, each
+// meaning wrapped beside its tag.
+func exposureQualityNotes() string {
+	width := 0
+	for _, q := range exposureQualityTags {
+		width = max(width, len(q.tag))
+	}
+	var b strings.Builder
+	for _, q := range exposureQualityTags {
+		tag := q.tag
+		for _, line := range wrapWords(q.meaning, 72-4-width-2) {
+			fmt.Fprintf(&b, "\n    %-*s  %s", width, tag, line)
+			tag = ""
+		}
+	}
+	return b.String()
+}
+
+// wrapWords breaks s at spaces into lines of at most width bytes; a
+// longer word stands alone on its line.
+func wrapWords(s string, width int) []string {
+	var lines []string
+	line := ""
+	for _, w := range strings.Fields(s) {
+		switch {
+		case line == "":
+			line = w
+		case len(line)+1+len(w) > width:
+			lines = append(lines, line)
+			line = w
+		default:
+			line += " " + w
+		}
+	}
+	return append(lines, line)
+}
 
 func exposureUsage() string {
 	cols := map[string]string{
@@ -471,7 +496,7 @@ What is really owned. Every fund is looked through to what it holds, a
 fund of funds down to three levels, and the result is added to what is
 held directly. Each holding joins the fund composition nearest the day:
 the latest on or before it, else the earliest after, within
-exposure.max_gap_days (default 400). Every view sums to net worth, as
+exposure.max_gap_days (default ` + fmt.Sprint(canonical.DefaultMaxGapDays) + `). Every view sums to net worth, as
 'wealthdb holdings global' gives it; what a composition does not explain
 is a remainder row. Read the quality column, and the coverage view,
 before trusting a figure. docs/EXPOSURE.md defines every figure.
@@ -511,25 +536,16 @@ Flags
   -p                 hide every amount; shares, names and labels stay
 
 Notes
-  share_pct is a share of net worth, so a loan is a negative row;
-  direct_pct and via_funds_pct split it into what is held directly and
-  what through funds.
+  share is a share of net worth, so a loan is a negative row; direct
+  and via_funds split it into what is held directly and what through
+  funds. A share prints with a _pct suffix: share_pct.
 
-  quality names what a figure rests on: proxy (another fund's
-  composition stands in), aged (the composition is older than 35 days),
-  forward (the composition is dated after the day), partial (the
-  weights leave more than 3% unexplained, a forward states no legs, or
-  a fund lies deeper than three levels), unmapped (a provider's label
-  has no place in the vocabulary), by_name (a receipt's or a report
-  line's sector or country comes from a share matched by name among all
-  shares), opaque (a private equity fund nothing looks through; it reads
-  diversified), untagged (a private holding has no row in the tags
-  ledger), unmatched (a listed security no source describes). In funds,
-  no_composition marks a fund nothing describes on the day.
+  quality names what a figure rests on, each tag with the share of the
+  row it covers (proxy=12%):` + exposureQualityNotes() + `
 
-  A stock's size comes from its market cap (large from 10bn US dollars,
-  mid from 2bn), else from its rank in a broad fund the config names
-  (exposure.size_funds).
+  ` + strings.Join(wrapWords("A stock's size comes from its market cap (large from "+capBn(canonical.LargeCapUSD)+
+		" US dollars, mid from "+capBn(canonical.MidCapUSD)+"), else from its rank in a broad fund the config names "+
+		"(exposure.size_funds).", 70), "\n  ") + `
 
 Available columns (per view):
   classes      ` + cols["classes"] + `
@@ -550,4 +566,9 @@ Default column sets:
   securities   ` + strings.Join(defaultExposureSecurityColumns, ", ") + `
   funds        ` + strings.Join(defaultExposureFundColumns, ", ") + `
   coverage     ` + strings.Join(defaultExposureCoverageColumns, ", ")
+}
+
+// capBn is a market cap in billions: 10bn.
+func capBn(usd float64) string {
+	return fmt.Sprintf("%gbn", usd/1e9)
 }

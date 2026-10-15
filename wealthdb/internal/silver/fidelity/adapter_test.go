@@ -913,10 +913,19 @@ func TestSnapshotsPendingActivityIsCash(t *testing.T) {
 		t.Fatal(err)
 	}
 	conn := openAdapter(t, path)
-	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, _ := conn.Snapshots(context.Background(), w)
+	w, err := conn.ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer stream.Close()
-	batch, _, _ := stream.Next(context.Background())
+	batch, _, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(batch.Positions) != 0 {
 		t.Errorf("positions = %+v, want none", batch.Positions)
 	}
@@ -927,5 +936,23 @@ func TestSnapshotsPendingActivityIsCash(t *testing.T) {
 	want := map[string]string{"ACC1|USD|current": "125.5", "ACC2|USD|current": "-7.25"}
 	if len(got) != len(want) || got["ACC1|USD|current"] != want["ACC1|USD|current"] || got["ACC2|USD|current"] != want["ACC2|USD|current"] {
 		t.Errorf("cash = %v, want %v", got, want)
+	}
+}
+
+// addCurrentCash keeps one current balance per account and currency: two
+// core rows sum, and the core position's payload stands whichever row
+// came first.
+func TestAddCurrentCashSumsAndKeepsTheCorePayload(t *testing.T) {
+	var b canonical.SnapshotBatch
+	addCurrentCash(&b, 1000, "ACC1", "USD", canonical.NewDecimalFromInt(5), `{"row":"pending"}`, false)
+	addCurrentCash(&b, 1000, "ACC1", "USD", canonical.NewDecimalFromInt(100), `{"row":"core-1"}`, true)
+	addCurrentCash(&b, 1000, "ACC1", "USD", canonical.NewDecimalFromInt(20), `{"row":"core-2"}`, true)
+	addCurrentCash(&b, 1000, "ACC1", "EUR", canonical.NewDecimalFromInt(7), `{"row":"eur"}`, true)
+	if len(b.CashBalances) != 2 {
+		t.Fatalf("balances = %+v, want one per currency", b.CashBalances)
+	}
+	usd := b.CashBalances[0]
+	if usd.Currency != "USD" || usd.Amount.String() != "125" || string(usd.Payload) != `{"row":"core-2"}` {
+		t.Errorf("USD balance = %s %s %s, want 125 with the last core row's payload", usd.Currency, usd.Amount.String(), usd.Payload)
 	}
 }

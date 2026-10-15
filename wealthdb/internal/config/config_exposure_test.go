@@ -23,6 +23,7 @@ func exposureConfig(t *testing.T, block string) (*Config, error) {
 // The block expands into gold's rows: every fund reference in gold's own
 // form, a proxy's leverage defaulting to 1, rows in a stable order.
 func TestExposureRows(t *testing.T) {
+	t.Parallel()
 	c, err := exposureConfig(t, `{
         "proxies": {
             "isin:xx0000000001": {"fund": "cusip:00000aa01"},
@@ -79,10 +80,11 @@ func TestExposureRows(t *testing.T) {
 // Without the block, gold still gets the default settings; a ledger
 // path that names no file holds no tags.
 func TestExposureRowsDefaults(t *testing.T) {
+	t.Parallel()
 	for _, c := range []*Config{{}, {Exposure: &ExposureConfig{Tags: TagsPath(filepath.Join(t.TempDir(), "none.csv"))}}} {
 		rows, err := c.ExposureRows()
-		if err != nil || rows.Settings.MaxGapDays != 400 ||
-			len(rows.Proxies)+len(rows.Tags)+len(rows.Custody)+len(rows.ReferenceFunds) != 0 {
+		if err != nil || rows.Settings.MaxGapDays != canonical.DefaultMaxGapDays ||
+			len(rows.Proxies)+len(rows.Tags)+len(rows.Custody)+len(rows.ReferenceFunds)+len(rows.SizeFunds) != 0 {
 			t.Errorf("rows = %+v, err %v", rows, err)
 		}
 	}
@@ -100,6 +102,7 @@ func writeLedger(t *testing.T, body string) string {
 // The config's path reaches the ledger relative to the config, and a row
 // the ledger refuses names its line.
 func TestTagLedger(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "tags.csv"),
 		[]byte("instrument, silver_source_id ,country\nhouse-1,manual,CH\n"), 0o600); err != nil {
@@ -156,6 +159,7 @@ func TestTagLedger(t *testing.T) {
 }
 
 func TestExposureRejects(t *testing.T) {
+	t.Parallel()
 	for block, want := range map[string]string{
 		`{"proxies": {"XX0000000001": {"fund": "isin:XX0000000002"}}}`:                       "want isin:",
 		`{"proxies": {"isin:XX0000000001": {"fund": "isin:bad"}}}`:                           "not an ISIN",
@@ -170,7 +174,11 @@ func TestExposureRejects(t *testing.T) {
 		`{"size_funds": {"A": 100}}`:                                                         "want isin:",
 		`{"custody": {"bank": {"custodian": " "}}}`:                                          "custodian is required",
 		`{"custody": {"nope": {"custodian": "X"}}}`:                                          "no silver_sources[].id matches",
+		`{"custody": {"bank": {"custodian": "X", "country": "ch"}}}`:                         "not an ISO 3166",
+		`{"custody": {"bank": {"custodian": "X", "country": "QQ"}}}`:                         "not an ISO 3166",
+		`{"reference_funds": ["XX1"]}`:                                                       "reference_funds[0]",
 		`{"max_gap_days": -1}`:                                                               "max_gap_days",
+		`{"max_gap_days": 4000}`:                                                             "max_gap_days",
 	} {
 		if _, err := exposureConfig(t, block); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: err %v, want %q", block, err, want)

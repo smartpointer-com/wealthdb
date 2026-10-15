@@ -184,6 +184,32 @@ func dateCol[T any](name string, get func(T) int64) columnSpec[T] {
 	}}
 }
 
+// datePtrCol is a date column, blank for nil.
+func datePtrCol[T any](name string, get func(T) *int64) columnSpec[T] {
+	return columnSpec[T]{Name: name, Align: output.AlignLeft, Extract: func(r T) string {
+		if epoch := get(r); epoch != nil {
+			return formatDate(*epoch)
+		}
+		return ""
+	}}
+}
+
+// pctCol is a figure already in percent, named name and printed
+// name_pct. A percentage is a proportion, not an amount: -p leaves it.
+func pctCol[T any](name string, get func(T) *float64) columnSpec[T] {
+	return columnSpec[T]{Name: name, Header: name + "_pct", Align: output.AlignRight,
+		Extract: func(r T) string { return formatPercent(get(r)) }}
+}
+
+// formatPercent is a figure already in percent with two decimals, blank
+// for nil.
+func formatPercent(p *float64) string {
+	if p == nil {
+		return ""
+	}
+	return fmt.Sprintf("%.2f", *p)
+}
+
 // countCol is a legible count.
 func countCol[T any](name string, get func(T) int64) columnSpec[T] {
 	return columnSpec[T]{Name: name, Align: output.AlignRight, Extract: func(r T) string { return fmt.Sprintf("%d", get(r)) }}

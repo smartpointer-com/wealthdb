@@ -46,8 +46,7 @@ func cmdHoldings(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 func runHoldingsView(ctx context.Context, g globalFlags, view string, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("wealthdb holdings "+view, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	asOf := fs.String("d", "", "as-of date (YYYY-MM-DD; default today UTC)")
-	fs.StringVar(asOf, "as-of", "", "as-of date (YYYY-MM-DD; default today UTC)")
+	asOf := registerAsOf(fs)
 	rf := registerReportFlags(fs, view != "global")
 	var withCash *bool
 	var missing *string

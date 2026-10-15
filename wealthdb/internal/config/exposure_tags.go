@@ -29,10 +29,7 @@ import (
 // header cannot drop a field.
 
 // tagColumns are the tags ledger's columns; the first two are required.
-var (
-	tagColumns         = []string{"silver_source_id", "instrument", "country", "currency", "sector", "note"}
-	requiredTagColumns = []string{"silver_source_id", "instrument"}
-)
+var tagColumns = []string{"silver_source_id", "instrument", "country", "currency", "sector", "note"}
 
 // TagsPath is `exposure.tags`: the path to the tags ledger. Anything but
 // a string in its place is refused with what the field takes.
@@ -97,7 +94,7 @@ func readTagLedger(r io.Reader, sources map[string]bool) ([]canonical.ExposureTa
 		}
 		col[name] = i
 	}
-	for _, need := range requiredTagColumns {
+	for _, need := range tagColumns[:2] {
 		if _, ok := col[need]; !ok {
 			return nil, fmt.Errorf("header: column %q is required", need)
 		}
@@ -162,11 +159,8 @@ func checkTag(t canonical.ExposureTag, sources map[string]bool) error {
 		return fmt.Errorf("sector %q is not one of %s", t.Sector, sectorNames())
 	case t.Currency != "" && !IsLikelyISO4217(t.Currency):
 		return fmt.Errorf("currency %q is not a 3-letter ISO 4217 code", t.Currency)
-	}
-	if t.Country != "" {
-		if _, ok := canonical.CountryByCode(t.Country); !ok || t.Country != strings.ToUpper(t.Country) {
-			return fmt.Errorf("country %q is not an ISO 3166 alpha-2 code", t.Country)
-		}
+	case t.Country != "" && !isCountryCode(t.Country):
+		return fmt.Errorf("country %q is not an ISO 3166 alpha-2 code", t.Country)
 	}
 	return nil
 }

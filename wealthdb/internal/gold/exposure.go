@@ -5,10 +5,31 @@ import (
 	"database/sql"
 )
 
-// The exposure report's readers: one per view of migration 0126's
-// report_exposure_* macros. docs/EXPOSURE.md defines every figure. Money
-// leaves the macros as DOUBLE (the look-through splits values by weight)
-// and is read here at four decimals, as every money column is.
+// The exposure report's readers: one per report_exposure_* macro.
+// docs/EXPOSURE.md defines every figure. Money leaves the macros as
+// DOUBLE (the look-through splits values by weight) and is read here at
+// four decimals, as every money column is.
+
+// querier is what *sql.DB and *sql.Tx share for a read.
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// scanAll runs a query and hands each row to scan.
+func scanAll(ctx context.Context, q querier, query string, scan func(*sql.Rows) error, args ...any) error {
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if err := scan(rows); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
 
 // ExposureShares are the share columns every aggregate view carries, in
 // percent of net worth.
@@ -173,8 +194,8 @@ SELECT fund, name, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, via, proxy,
 }
 
 // ExposureCoverageRow is one line of the coverage view: a section (how,
-// age, unmapped, unmatched, untagged), a reason, and the value behind
-// it. A holding's line names its source and instrument, as a tags
+// age, unmapped, unmatched, untagged, divergence), a reason, and the
+// value behind it. A holding's line names its source and instrument, as a tags
 // ledger row does.
 type ExposureCoverageRow struct {
 	Section, Reason            string

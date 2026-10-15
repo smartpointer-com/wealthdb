@@ -1,5 +1,5 @@
 -- ============================================================
--- gold schema, migration 0128 — the Exposure dashboard: the
+-- gold schema, migration 0127 — the Exposure dashboard: the
 -- look-through at every month end, materialized per reporting
 -- currency (docs/EXPOSURE.md §12).
 --
@@ -25,13 +25,15 @@ CREATE TABLE IF NOT EXISTS report_exposure (
     currency_kind      TEXT,               -- fiat | metal | crypto
     via_funds          BOOLEAN  NOT NULL,  -- held through funds, not directly
     how                TEXT     NOT NULL,   -- how the leaves are classified (EXPOSURE.md §10)
-    value              DOUBLE   NOT NULL
+    value              DOUBLE   NOT NULL,
+    size               TEXT                -- a public equity leaf's size
 );
 
 -- web_exposure: report_exposure as the dashboard reads it. A missing
 -- dimension reads `unclassified` (a metal or a coin has no country:
--- `(none)`), as in the CLI views; share_pct is the share of that
--- instant's net worth in that currency.
+-- `(none)`; outside public equity there is no size: `(none)`), as in
+-- the CLI views; share_pct is the share of that instant's net worth in
+-- that currency.
 CREATE OR REPLACE VIEW web_exposure AS
 SELECT CAST(epoch_ms(r.as_of * 1000) AS DATE) AS as_of_day,
        r.currency,
@@ -44,6 +46,8 @@ SELECT CAST(epoch_ms(r.as_of * 1000) AS DATE) AS as_of_day,
            AS region,
        COALESCE(r.exposure_currency, 'unclassified') AS exposure_currency,
        r.currency_kind,
+       CASE WHEN r.asset_class <> 'public_equity' THEN '(none)' ELSE COALESCE(r.size, 'unclassified') END
+           AS size,
        CASE WHEN r.via_funds THEN 'via funds' ELSE 'direct' END AS held,
        r.how,
        r.value,
@@ -52,4 +56,4 @@ SELECT CAST(epoch_ms(r.as_of * 1000) AS DATE) AS as_of_day,
   LEFT JOIN exposure_countries co ON co.code = r.country;
 
 INSERT INTO schema_meta (gold_schema_version, applied_at)
-    VALUES (128, CAST(epoch(now()) AS BIGINT));
+    VALUES (127, CAST(epoch(now()) AS BIGINT));

@@ -132,8 +132,8 @@ func hostSideCommand(name string) (commandHelp, bool) {
 // `web-config` and `mcp-config` emit resolved settings for the
 // host-side `wealthdb web` and `wealthdb mcp` wrappers;
 // `web-materialize` rewrites the report_returns, report_gains and
-// report_exposure tables before the wrapper snapshots gold; `refdata-wanted` prints the wanted list the
-// refdata collector reads.
+// report_exposure tables before the wrapper snapshots gold;
+// `refdata-wanted` prints the wanted list the refdata collector reads.
 var hiddenSubcommands = map[string]bool{
 	"web-config":      true,
 	"web-materialize": true,

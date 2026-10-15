@@ -36,9 +36,10 @@ type Label struct {
 	Value    string
 }
 
-// NormalizeLabel is the form a label is matched in: lower-cased, trimmed,
-// inner whitespace collapsed to one space.
-func NormalizeLabel(s string) string {
+// normalizeLabel is the form a label is matched in: lower-cased, trimmed,
+// inner whitespace collapsed to one space, as the exposure_norm macro
+// does.
+func normalizeLabel(s string) string {
 	return strings.Join(strings.Fields(strings.ToLower(s)), " ")
 }
 
@@ -105,9 +106,9 @@ var genericAssetTypes = map[AssetClass][]string{
 		"investmentfonds", "domestic equity funds", "international equity funds", "bond funds", "short-term funds"},
 }
 
-// OpenFigiProvider is the lookup whose security types name a bond's
+// openFigiProvider is the lookup whose security types name a bond's
 // market.
-const OpenFigiProvider = "openfigi"
+const openFigiProvider = "openfigi"
 
 // The types OpenFIGI gives a bond, and the bond sector each reads as. A
 // bond's type is the last source of its sector, after every vendor, fund
@@ -157,9 +158,10 @@ var countryAliases = map[string][]string{
 	"EU": {"european union", "supranational", "euro area"},
 }
 
-// ExposureLabels is every map entry, in a stable order: the generic
-// sectors, asset types and countries (each country's code, its name and
-// its other spellings), EDGAR's country codes and OpenFIGI's bond types.
+// ExposureLabels is every map entry, sorted by provider, field and
+// label: the generic sectors, asset types and countries (each country's
+// code, its name and its other spellings), EDGAR's country codes and
+// OpenFIGI's bond types.
 func ExposureLabels() []Label {
 	var out []Label
 	sectors := map[string]bool{}
@@ -181,7 +183,7 @@ func ExposureLabels() []Label {
 	}
 	seen := map[string]bool{}
 	add := func(label, code string) {
-		l := NormalizeLabel(label)
+		l := normalizeLabel(label)
 		if seen[l] {
 			return
 		}
@@ -199,10 +201,10 @@ func ExposureLabels() []Label {
 	}
 	out = append(out, edgarLabels()...)
 	for t, sector := range openFigiBondTypes {
-		out = append(out, Label{Provider: OpenFigiProvider, Field: LabelSecurityType, Label: t, Value: string(sector)})
+		out = append(out, Label{Provider: openFigiProvider, Field: LabelSecurityType, Label: t, Value: string(sector)})
 	}
 	for t, code := range openFigiTypeCountries {
-		out = append(out, Label{Provider: OpenFigiProvider, Field: LabelSecurityTypeCountry, Label: t, Value: code})
+		out = append(out, Label{Provider: openFigiProvider, Field: LabelSecurityTypeCountry, Label: t, Value: code})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		a, b := out[i], out[j]

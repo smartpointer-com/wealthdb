@@ -1,7 +1,6 @@
 package canonical
 
 import (
-	"regexp"
 	"strings"
 	"sync"
 )
@@ -57,8 +56,6 @@ var usStates = setOfWords("ALABAMA", "ALASKA", "ARIZONA", "ARKANSAS", "CALIFORNI
 	"WISCONSIN", "WYOMING", "DISTRICT OF COLUMBIA", "PUERTO RICO", "GUAM", "VIRGIN ISLANDS", "AMERICAN SAMOA",
 	"NORTHERN MARIANA ISLANDS")
 
-var descriptionWord = regexp.MustCompile(`[A-Z]+`)
-
 // ReadBondDescription reads a bond's issuer from a broker's description,
 // for a bond no source gives a sector. The rules apply in this order:
 //
@@ -76,8 +73,8 @@ var descriptionWord = regexp.MustCompile(`[A-Z]+`)
 //
 // ok is false where the description says none of these.
 func ReadBondDescription(desc string, usID bool) (BondReading, bool) {
-	upper := strings.ToUpper(desc)
-	words := descriptionWord.FindAllString(strings.ReplaceAll(upper, ".", ""), -1)
+	plain := strings.ReplaceAll(strings.ToUpper(desc), ".", "")
+	words := strings.FieldsFunc(plain, func(r rune) bool { return r < 'A' || r > 'Z' })
 	count := func(set map[string]bool) int {
 		n := 0
 		for _, w := range words {
@@ -87,25 +84,28 @@ func ReadBondDescription(desc string, usID bool) (BondReading, bool) {
 		}
 		return n
 	}
-	lead := leadWords(upper)
+	lead := leadWords(plain)
+	companies := count(companyWords)
 	if usID && (named(lead, usStates, stateWords) != "" ||
-		count(companyWords) == 0 && (count(municipalWords) > 0 || count(municipalHints) > 1)) {
+		companies == 0 && (count(municipalWords) > 0 || count(municipalHints) > 1)) {
 		return BondReading{Sector: SectorMunicipal, Country: "US", Currency: "USD"}, true
 	}
-	if code := countryNames()[named(lead, countryNameSet(), sovereignWords)]; code != "" {
+	names := countryNames()
+	if code := names[named(lead, names, sovereignWords)]; code != "" {
 		return BondReading{Sector: SectorGovernment, Country: code}, true
 	}
-	if count(companyWords) > 0 || count(sharedFormWords) > 0 {
+	if companies > 0 || count(sharedFormWords) > 0 {
 		return BondReading{Sector: SectorCorporate}, true
 	}
 	return BondReading{}, false
 }
 
 // leadWords are a description's words before its first figure, after
-// any it opens with (a coupon before the issuer), without dots.
-func leadWords(upper string) []string {
+// any it opens with (a coupon before the issuer). plain is the
+// description upper-cased, without dots.
+func leadWords(plain string) []string {
 	var lead []string
-	for _, f := range strings.Fields(strings.ReplaceAll(upper, ".", "")) {
+	for _, f := range strings.Fields(plain) {
 		figure := strings.ContainsAny(f, "0123456789%")
 		if figure && len(lead) > 0 {
 			break
@@ -117,15 +117,16 @@ func leadWords(upper string) []string {
 	return lead
 }
 
-// named is the name in names the lead words state, where every other
-// lead word is one of beside; "" where none is.
-func named(lead []string, names, beside map[string]bool) string {
+// named is the name among the keys of names the lead words state, where
+// every other lead word is one of beside; "" where none is.
+func named[V any](lead []string, names map[string]V, beside map[string]bool) string {
 	for start := range lead {
 		if !allIn(lead[:start], beside) {
 			break
 		}
 		for end := len(lead); end > start; end-- {
-			if name := strings.Join(lead[start:end], " "); names[name] && allIn(lead[end:], beside) {
+			name := strings.Join(lead[start:end], " ")
+			if _, ok := names[name]; ok && allIn(lead[end:], beside) {
 				return name
 			}
 		}
@@ -156,14 +157,6 @@ var countryNames = sync.OnceValue(func() map[string]string {
 				out[l] = code
 			}
 		}
-	}
-	return out
-})
-
-var countryNameSet = sync.OnceValue(func() map[string]bool {
-	out := map[string]bool{}
-	for name := range countryNames() {
-		out[name] = true
 	}
 	return out
 })

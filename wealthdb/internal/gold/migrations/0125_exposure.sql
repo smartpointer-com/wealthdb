@@ -13,8 +13,9 @@
 --     holding on any day can be joined to the composition nearest in
 --     time.
 --   * Config, replaced whole at every load like holding_aliases:
---     exposure_proxies, exposure_reference_funds, exposure_tags,
---     exposure_custody and exposure_settings (gold.SyncExposure).
+--     exposure_proxies, exposure_reference_funds, exposure_size_funds,
+--     exposure_tags, exposure_custody and exposure_settings
+--     (gold.SyncExposure).
 --
 -- `refdata` joins the silver_kind whitelist. DuckDB can't widen a
 -- CHECK constraint in place — the rename-recreate workaround of 0109,
@@ -129,8 +130,8 @@ CREATE TABLE IF NOT EXISTS fund_attributes (
     PRIMARY KEY (silver_source_id, fund_ref, as_of)
 );
 
--- fund_counterparties: a party a fund is exposed to, by role (swap,
--- lending, custodian, depositary); share in percent of net assets.
+-- fund_counterparties: a party a fund is exposed to, by role (swap for
+-- a swap's counterparty); share in percent of net assets.
 CREATE TABLE IF NOT EXISTS fund_counterparties (
     silver_source_id   TEXT          NOT NULL,
     fund_ref           TEXT          NOT NULL,
@@ -196,6 +197,14 @@ CREATE TABLE IF NOT EXISTS exposure_proxies (
 -- which widen the security master.
 CREATE TABLE IF NOT EXISTS exposure_reference_funds (
     fund_ref   TEXT  NOT NULL PRIMARY KEY
+);
+
+-- exposure_size_funds: the broad funds whose weights size the stocks no
+-- market cap sizes, each with the share of its markets' value it
+-- covers, in percent.
+CREATE TABLE IF NOT EXISTS exposure_size_funds (
+    fund_ref      TEXT    NOT NULL PRIMARY KEY,
+    coverage_pct  DOUBLE  NOT NULL
 );
 
 -- exposure_tags: what a holding no composition and no security fact

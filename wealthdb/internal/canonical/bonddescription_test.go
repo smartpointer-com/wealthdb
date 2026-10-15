@@ -3,6 +3,7 @@ package canonical
 import "testing"
 
 func TestReadBondDescription(t *testing.T) {
+	t.Parallel()
 	muni := BondReading{SectorMunicipal, "US", "USD"}
 	corp := BondReading{Sector: SectorCorporate}
 	for _, c := range []struct {

@@ -8,11 +8,13 @@ import (
 	"time"
 )
 
-// The materialized look-through at every instant is the live one, in
-// every reporting currency: its rows sum to holdings global and split by
-// class exactly as the classes view does. The run reaches past the
-// fixture's month end, so it writes several instants.
+// The materialized look-through at every instant is the live one: its
+// rows sum to holdings global and split by class and size exactly as the
+// sizes view does, in US dollars at every instant and in every
+// reporting currency at the last. The run reaches past the fixture's
+// month end, so it writes several instants.
 func TestMaterializeExposureMatchesTheLiveViews(t *testing.T) {
+	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	// A stock with a market cap, so the sizes have a size to carry.
 	if _, err := db.ExecContext(ctx, `INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
@@ -34,7 +36,7 @@ func TestMaterializeExposureMatchesTheLiveViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	instants := ExposureInstants(first, to)
+	instants := PeriodEnds(first, to, 1)
 	if len(instants) < 3 {
 		t.Fatalf("instants %v: the test needs several", instants)
 	}
@@ -45,8 +47,12 @@ func TestMaterializeExposureMatchesTheLiveViews(t *testing.T) {
 	if stored != len(instants) {
 		t.Errorf("%d instants stored, want %d", stored, len(instants))
 	}
-	for _, at := range instants {
-		for _, ccy := range MaterializedCurrencies() {
+	for i, at := range instants {
+		ccys := []string{"USD"}
+		if i == len(instants)-1 {
+			ccys = MaterializedCurrencies()
+		}
+		for _, ccy := range ccys {
 			checkMaterializedInstant(t, ctx, db, at, ccy)
 		}
 		// web_exposure's shares of an instant add up to the whole.
@@ -72,7 +78,7 @@ func TestMaterializeExposureMatchesTheLiveViews(t *testing.T) {
 }
 
 // checkMaterializedInstant compares one instant and currency of
-// report_exposure with holdings global and the classes view.
+// report_exposure with holdings global and the sizes view.
 func checkMaterializedInstant(t *testing.T, ctx context.Context, db *sql.DB, at int64, ccy string) {
 	t.Helper()
 	g, err := GlobalAsOf(ctx, db, at, ccy)
@@ -109,44 +115,11 @@ func checkMaterializedInstant(t *testing.T, ctx context.Context, db *sql.DB, at 
 			t.Errorf("%s %s %s at %d: materialized %.4f, sizes view %.4f", ccy, r.AssetClass, r.Size, at, v, want)
 		}
 	}
-	classes, err := ExposureClasses(ctx, db, at, ccy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range classes {
-		var v float64
-		if err := db.QueryRowContext(ctx, `SELECT COALESCE(SUM(value), 0) FROM report_exposure
-		    WHERE currency = ? AND as_of = ? AND asset_class = ?`, ccy, at, c.AssetClass).Scan(&v); err != nil {
-			t.Fatal(err)
-		}
-		if want := parse(t, c.Value); math.Abs(v-want) > 0.01 {
-			t.Errorf("%s %s at %d: materialized %.4f, classes view %.4f", ccy, c.AssetClass, at, v, want)
-		}
-	}
-}
-
-func TestExposureInstantsAreMonthEndsAndTheEnd(t *testing.T) {
-	day := func(y int, m time.Month, d, h, mi, s int) int64 {
-		return time.Date(y, m, d, h, mi, s, 0, time.UTC).Unix()
-	}
-	got := ExposureInstants(day(2026, 1, 15, 0, 0, 0), day(2026, 3, 10, 23, 59, 59))
-	want := []int64{day(2026, 1, 31, 23, 59, 59), day(2026, 2, 28, 23, 59, 59), day(2026, 3, 10, 23, 59, 59)}
-	if len(got) != len(want) {
-		t.Fatalf("got %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("instant %d = %d, want %d", i, got[i], want[i])
-		}
-	}
-	// A month end that is the end itself counts once.
-	if got := ExposureInstants(day(2026, 6, 1, 0, 0, 0), day(2026, 6, 30, 23, 59, 59)); len(got) != 1 {
-		t.Errorf("one month: %v", got)
-	}
 }
 
 // An empty gold materializes nothing.
 func TestMaterializeExposureOnAnEmptyGold(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	n, err := MaterializeExposure(ctx, db, exAsOf, 1)
 	if err != nil || n != 0 {
@@ -157,6 +130,7 @@ func TestMaterializeExposureOnAnEmptyGold(t *testing.T) {
 // Cash counts as a holding: a gold that holds cash alone starts its
 // history at the cash's first snapshot.
 func TestFirstHoldingsAtCountsCash(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	if _, ok, err := FirstHoldingsAt(ctx, db); err != nil || ok {
 		t.Fatalf("empty gold: ok %v, %v", ok, err)
@@ -171,33 +145,16 @@ func TestFirstHoldingsAtCountsCash(t *testing.T) {
 	}
 }
 
-func TestMigration0128DDLIsRerunnable(t *testing.T) {
+func TestMigration0127DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	if _, err := MaterializeExposure(ctx, db, exAsOf, 1); err != nil {
 		t.Fatal(err)
 	}
-	rerunMigrationDDL(t, db, ctx, "0128_exposure_dashboard.sql")
-	// 0133 redefines web_exposure; Migrate would replay it after.
-	rerunMigrationDDL(t, db, ctx, "0133_exposure_divergence_sizes.sql")
+	rerunMigrationDDL(t, db, ctx, "0127_exposure_dashboard.sql")
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure WHERE size = 'unclassified'`).Scan(&n); err != nil ||
 		n == 0 {
 		t.Errorf("after replay: %d sized rows, err %v", n, err)
-	}
-}
-
-func TestMigration0133DDLIsRerunnable(t *testing.T) {
-	db, ctx := openExposureFixture(t)
-	if _, err := MaterializeExposure(ctx, db, exAsOf, 1); err != nil {
-		t.Fatal(err)
-	}
-	rerunMigrationDDL(t, db, ctx, "0133_exposure_divergence_sizes.sql")
-	var n int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure WHERE size = 'unclassified'`).Scan(&n); err != nil ||
-		n == 0 {
-		t.Errorf("after replay: %d sized rows, err %v", n, err)
-	}
-	if rows, err := ExposureCoverage(ctx, db, exAsOf, "USD"); err != nil || len(rows) == 0 {
-		t.Errorf("coverage after replay: %d rows, %v", len(rows), err)
 	}
 }

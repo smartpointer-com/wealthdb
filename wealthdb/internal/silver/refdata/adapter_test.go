@@ -114,12 +114,14 @@ func collect(t *testing.T, conn silver.Connection, w canonical.Window) canonical
 }
 
 func TestKindIsRefdata(t *testing.T) {
+	t.Parallel()
 	if got := (&Adapter{}).Kind(); got != "refdata" {
 		t.Fatalf("Kind() = %q", got)
 	}
 }
 
 func TestStatusEmpty(t *testing.T) {
+	t.Parallel()
 	path, _ := newFixtureSilver(t)
 	st, err := openAdapter(t, path).Status(context.Background())
 	if err != nil {
@@ -131,6 +133,7 @@ func TestStatusEmpty(t *testing.T) {
 }
 
 func TestStatus(t *testing.T) {
+	t.Parallel()
 	path, db := newFixtureSilver(t)
 	seed(t, db)
 	st, err := openAdapter(t, path).Status(context.Background())
@@ -151,6 +154,7 @@ func TestStatus(t *testing.T) {
 // The first load spans every as-of; a later one spans only the days the
 // runs loaded since wrote, and re-emits every row inside that span.
 func TestChangeWindowSpansTheNewRunsDays(t *testing.T) {
+	t.Parallel()
 	path, db := newFixtureSilver(t)
 	seed(t, db)
 	conn := openAdapter(t, path)
@@ -188,6 +192,7 @@ func TestChangeWindowSpansTheNewRunsDays(t *testing.T) {
 // A run fetched before the watermark's run but loaded after it, such as
 // an import from another machine, still reaches gold.
 func TestChangeWindowTakesALateLoadedRun(t *testing.T) {
+	t.Parallel()
 	path, db := newFixtureSilver(t)
 	seed(t, db)
 	early, dLate := run1-50_000, d1-86400
@@ -205,6 +210,7 @@ func TestChangeWindowTakesALateLoadedRun(t *testing.T) {
 
 // A run that wrote nothing advances the watermark without a window.
 func TestChangeWindowEmptyRun(t *testing.T) {
+	t.Parallel()
 	path, db := newFixtureSilver(t)
 	seed(t, db)
 	load3 := load2 + 1000
@@ -219,6 +225,7 @@ func TestChangeWindowEmptyRun(t *testing.T) {
 }
 
 func TestSnapshotsMapRecords(t *testing.T) {
+	t.Parallel()
 	path, db := newFixtureSilver(t)
 	seed(t, db)
 	conn := openAdapter(t, path)
@@ -261,55 +268,60 @@ func TestSnapshotsMapRecords(t *testing.T) {
 	}
 }
 
-// A window wider than one batch's line budget (20000) splits between
-// fund-days and loses none.
+// lowerBudgets shrinks the reference stream's batch budgets for one
+// test, so a few rows span several batches. The budgets are package
+// state, so a test that lowers them does not run in parallel.
+func lowerBudgets(t *testing.T, lines, tail int) {
+	t.Helper()
+	l, s := silver.ReferenceLineBudget, silver.ReferenceTailBudget
+	silver.ReferenceLineBudget, silver.ReferenceTailBudget = lines, tail
+	t.Cleanup(func() { silver.ReferenceLineBudget, silver.ReferenceTailBudget = l, s })
+}
+
+// A window wider than one batch's line budget splits between fund-days
+// and loses none.
 func TestSnapshotsBatchLargeWindows(t *testing.T) {
+	lowerBudgets(t, 20, 5)
 	path, db := newFixtureSilver(t)
 	exec(t, db, `INSERT INTO dump_runs VALUES (?, 1, '/x/1', ?)`, run1, load1)
-	tx, err := db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	const days, perDay = 3, 12000
+	const days, perDay = 3, 12
 	for d := int64(0); d < days; d++ {
 		asOf := d1 + d*86400
-		if _, err := tx.Exec(`INSERT INTO compositions (fund_ref, as_of, basis, provider, source_kind, line_count, run_at)
-		    VALUES ('symbol:BIG', ?, 'holdings', 'inbox', 'inbox', ?, ?)`, asOf, perDay, run1); err != nil {
-			t.Fatal(err)
-		}
+		exec(t, db, `INSERT INTO compositions (fund_ref, as_of, basis, provider, source_kind, line_count, run_at)
+		    VALUES ('symbol:BIG', ?, 'holdings', 'inbox', 'inbox', ?, ?)`, asOf, perDay, run1)
 		for i := 0; i < perDay; i++ {
-			if _, err := tx.Exec(`INSERT INTO lines (fund_ref, as_of, basis, line_no, ticker, weight)
-			    VALUES ('symbol:BIG', ?, 'holdings', ?, 'T', '0.001')`, asOf, i); err != nil {
-				t.Fatal(err)
-			}
+			exec(t, db, `INSERT INTO lines (fund_ref, as_of, basis, line_no, ticker, weight)
+			    VALUES ('symbol:BIG', ?, 'holdings', ?, 'T', '0.001')`, asOf, i)
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	conn := openAdapter(t, path)
-	stream, err := conn.Snapshots(context.Background(), canonical.Window{Start: d1, End: d1 + 10*86400, HasChanges: true})
+	stream, err := openAdapter(t, path).Snapshots(context.Background(),
+		canonical.Window{Start: d1, End: d1 + 10*86400, HasChanges: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	batches, lines := 0, 0
+	defer stream.Close()
+	var batches []int
 	for {
 		b, more, err := stream.Next(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
-		batches++
-		lines += len(b.FundLines)
+		if len(b.FundLines) > 0 {
+			batches = append(batches, len(b.FundLines))
+		}
 		if !more {
 			break
 		}
 	}
-	if lines != days*perDay || batches < 2 {
-		t.Errorf("lines = %d in %d batches, want %d in at least 2", lines, batches, days*perDay)
+	// Two fund-days fill the first batch past its budget; the third
+	// rides in the second.
+	if len(batches) != 2 || batches[0] != 2*perDay || batches[1] != perDay {
+		t.Errorf("lines per batch = %v, want [%d %d]", batches, 2*perDay, perDay)
 	}
 }
 
 func TestTransactionsEmpty(t *testing.T) {
+	t.Parallel()
 	path, _ := newFixtureSilver(t)
 	stream, err := openAdapter(t, path).Transactions(context.Background(), canonical.Window{})
 	if err != nil {
@@ -325,46 +337,63 @@ func TestTransactionsEmpty(t *testing.T) {
 	}
 }
 
-// Security facts come a page (5000) at a time and none is lost.
-func TestSnapshotsPageSecurityFacts(t *testing.T) {
+// Security identities and facts come a page at a time, and the keyset
+// cursor neither skips nor repeats a row: the identities share keys and
+// days, so a page can end inside a key.
+func TestSnapshotsPageSecurities(t *testing.T) {
+	lowerBudgets(t, 20, 5)
 	path, db := newFixtureSilver(t)
 	exec(t, db, `INSERT INTO dump_runs VALUES (?, 1, '/x/1', ?)`, run1, load1)
-	tx, err := db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	const n = 12001
-	for i := 0; i < n; i++ {
-		if _, err := tx.Exec(`INSERT INTO security_facts (security_key, field, as_of, provider, value, run_at)
-		    VALUES (?, 'sic', ?, 'sec-edgar', '3571', ?)`, fmt.Sprintf("symbol:S%05d", i), d1, run1); err != nil {
-			t.Fatal(err)
+	for _, key := range []string{"symbol:AAA", "symbol:BBB", "symbol:CCC"} {
+		for _, asOf := range []int64{d1, d2} {
+			for _, provider := range []string{"openfigi", "sec-edgar"} {
+				exec(t, db, `INSERT INTO securities (security_key, as_of, provider, run_at) VALUES (?, ?, ?, ?)`,
+					key, asOf, provider, run1)
+			}
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
+	const n = 12
+	for i := 0; i < n; i++ {
+		exec(t, db, `INSERT INTO security_facts (security_key, field, as_of, provider, value, run_at)
+		    VALUES (?, 'sic', ?, 'sec-edgar', '3571', ?)`, fmt.Sprintf("symbol:S%02d", i), d1, run1)
 	}
-	stream, err := openAdapter(t, path).Snapshots(context.Background(), canonical.Window{Start: d1, End: d1, HasChanges: true})
+	stream, err := openAdapter(t, path).Snapshots(context.Background(), canonical.Window{Start: d1, End: d2, HasChanges: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	seen := map[string]bool{}
-	pages := 0
+	defer stream.Close()
+	secs, facts := map[string]int{}, map[string]int{}
+	secPages, factPages := 0, 0
 	for {
 		b, more, err := stream.Next(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
+		if len(b.Securities) > 0 {
+			secPages++
+		}
 		if len(b.SecurityFacts) > 0 {
-			pages++
+			factPages++
+		}
+		for _, s := range b.Securities {
+			secs[fmt.Sprintf("%s|%d|%s", s.SecurityKey, s.AsOf, s.Provider)]++
 		}
 		for _, f := range b.SecurityFacts {
-			seen[f.SecurityKey] = true
+			facts[f.SecurityKey]++
 		}
 		if !more {
 			break
 		}
 	}
-	if len(seen) != n || pages != 3 {
-		t.Errorf("facts = %d in %d pages, want %d in 3", len(seen), pages, n)
+	if len(secs) != 12 || secPages != 3 {
+		t.Errorf("identities = %v in %d pages, want 12 in 3", secs, secPages)
+	}
+	if len(facts) != n || factPages != 3 {
+		t.Errorf("facts = %v in %d pages, want %d in 3", facts, factPages, n)
+	}
+	for k, c := range secs {
+		if c != 1 {
+			t.Errorf("identity %s read %d times", k, c)
+		}
 	}
 }

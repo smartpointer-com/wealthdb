@@ -26,9 +26,10 @@ func init() {
 // rows `wealthdb gains <grain> --period monthly -x <CCY>` sums.
 // report_exposure holds the look-through at every month end and today
 // per reporting currency; an instant's class totals are those of
-// `wealthdb exposure classes -d <day> -x <CCY>`. The host-side `wealthdb web` wrapper runs it right before
-// snapshotting so the Metabase Returns, Gains and Exposure dashboards are
-// as fresh as the holdings. Hidden from `wealthdb help`; it's plumbing
+// `wealthdb exposure classes -d <day> -x <CCY>`. The host-side
+// `wealthdb web` wrapper runs it right before snapshotting so the
+// Metabase Returns, Gains and Exposure dashboards are as fresh as the
+// holdings. Hidden from `wealthdb help`; it's plumbing
 // for `wealthdb web`, not a user-facing command (diagnostic knobs stay
 // on `wealthdb returns` and `wealthdb gains`). A concurrent write command
 // holds the gold write mutex, so the gate fails cleanly here and the

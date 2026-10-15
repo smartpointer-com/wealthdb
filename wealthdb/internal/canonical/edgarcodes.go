@@ -53,20 +53,16 @@ var usStateCodes = []string{
 	"ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
 }
 
-// EdgarProvider is the provider whose country labels are EDGAR codes.
-const EdgarProvider = "sec-edgar"
+// edgarProvider is the provider whose country labels are EDGAR codes.
+const edgarProvider = "sec-edgar"
 
 // edgarLabels is the sec-edgar country map: every EDGAR code whose
 // country the vocabulary knows.
 func edgarLabels() []Label {
-	known := map[string]bool{}
-	for _, c := range Countries() {
-		known[c.Code] = true
-	}
 	var out []Label
 	add := func(code, iso string) {
-		if known[iso] {
-			out = append(out, Label{Provider: EdgarProvider, Field: LabelCountry, Label: NormalizeLabel(code), Value: iso})
+		if _, ok := countries[iso]; ok {
+			out = append(out, Label{Provider: edgarProvider, Field: LabelCountry, Label: normalizeLabel(code), Value: iso})
 		}
 	}
 	for _, s := range usStateCodes {

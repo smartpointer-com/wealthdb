@@ -192,7 +192,8 @@ func TestMCPCallShapes(t *testing.T) {
 }
 
 // TestMCPExposureRefusals: country belongs to two views and takes two
-// values; anything else is a tool error that says so.
+// values; anything else is a tool error that says so. A result by
+// domicile says so in its header.
 func TestMCPExposureRefusals(t *testing.T) {
 	t.Parallel()
 	cs := connect(t, newTestMCP(setupExposureGold(t), false), time.Now())
@@ -212,6 +213,17 @@ func TestMCPExposureRefusals(t *testing.T) {
 		if !res.IsError || !strings.Contains(resultText(res), c.want) {
 			t.Errorf("%v: isError %v, %s", c.args, res.IsError, resultText(res))
 		}
+	}
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "exposure",
+		Arguments: map[string]any{"view": "countries", "as_of": "2026-06-30", "country": "domicile"}})
+	if err != nil {
+		t.Fatalf("by domicile: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("by domicile: %s", resultText(res))
+	}
+	if header, _, _ := strings.Cut(resultText(res), "\n"); !strings.Contains(header, "country by domicile") {
+		t.Errorf("by domicile: header %q", header)
 	}
 }
 

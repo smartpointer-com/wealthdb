@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"math"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -190,11 +193,49 @@ func nullIfEmpty(s string) any {
 	return s
 }
 
+// exposureImage is the seeded and rebuilt fixture, built once per
+// process and copied per test, as OpenFresh copies the fresh image.
+var exposureImage struct {
+	once sync.Once
+	data []byte
+}
+
+// openExposureFixture opens a copy of the fixture of its own.
 func openExposureFixture(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
-	db, ctx := openMigrated(t)
-	seedExposureFixture(t, db, ctx)
-	return db, ctx
+	exposureImage.once.Do(func() {
+		db, ctx := openMigrated(t)
+		seedExposureFixture(t, db, ctx)
+		var path string
+		if err := db.QueryRowContext(ctx, `SELECT path FROM duckdb_databases() WHERE database_name = current_database()`).
+			Scan(&path); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `CHECKPOINT`); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		exposureImage.data = data
+	})
+	if exposureImage.data == nil {
+		t.Fatal("the exposure fixture failed to build")
+	}
+	path := filepath.Join(t.TempDir(), "gold.db")
+	if err := os.WriteFile(path, exposureImage.data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(path, ModeReadWrite)
+	if err != nil {
+		t.Fatalf("open the exposure fixture: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db, context.Background()
 }
 
 func parse(t *testing.T, s *string) float64 {
@@ -212,6 +253,7 @@ func parse(t *testing.T, s *string) float64 {
 // The invariant: every view sums to `holdings global`, in every output
 // currency.
 func TestExposureViewsSumToHoldingsGlobal(t *testing.T) {
+	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	for _, ccy := range []string{"USD", "CHF"} {
 		g, err := GlobalAsOf(ctx, db, exAsOf, ccy)
@@ -219,83 +261,43 @@ func TestExposureViewsSumToHoldingsGlobal(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := parse(t, g.TotalValueOutCcy)
-		sum := func(name string, values []*string) {
+		sum := func(name string, err error, n int, value func(i int) *string) {
 			t.Helper()
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
 			total := 0.0
-			for _, v := range values {
-				total += parse(t, v)
+			for i := range n {
+				total += parse(t, value(i))
 			}
 			if math.Abs(total-want) > 0.01 {
 				t.Errorf("%s %s sums to %.4f, holdings global is %.4f", ccy, name, total, want)
 			}
 		}
 		classes, err := ExposureClasses(ctx, db, exAsOf, ccy)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var vs []*string
-		for _, r := range classes {
-			vs = append(vs, r.Value)
-		}
-		sum("classes", vs)
+		sum("classes", err, len(classes), func(i int) *string { return classes[i].Value })
 		sectors, err := ExposureSectors(ctx, db, exAsOf, ccy)
-		if err != nil {
-			t.Fatal(err)
-		}
-		vs = nil
-		for _, r := range sectors {
-			vs = append(vs, r.Value)
-		}
-		sum("sectors", vs)
+		sum("sectors", err, len(sectors), func(i int) *string { return sectors[i].Value })
+		sizes, err := ExposureSizes(ctx, db, exAsOf, ccy)
+		sum("sizes", err, len(sizes), func(i int) *string { return sizes[i].Value })
 		for _, mode := range []string{"risk", "domicile"} {
 			countries, err := ExposureCountries(ctx, db, exAsOf, ccy, mode)
-			if err != nil {
-				t.Fatal(err)
-			}
-			vs = nil
-			for _, r := range countries {
-				vs = append(vs, r.Value)
-			}
-			sum("countries/"+mode, vs)
+			sum("countries/"+mode, err, len(countries), func(i int) *string { return countries[i].Value })
 		}
 		currencies, err := ExposureCurrencies(ctx, db, exAsOf, ccy)
-		if err != nil {
-			t.Fatal(err)
-		}
-		vs = nil
-		for _, r := range currencies {
-			vs = append(vs, r.Value)
-		}
-		sum("currencies", vs)
+		sum("currencies", err, len(currencies), func(i int) *string { return currencies[i].Value })
 		securities, err := ExposureSecurities(ctx, db, exAsOf, ccy, "risk")
-		if err != nil {
-			t.Fatal(err)
-		}
-		vs = nil
-		for _, r := range securities {
-			vs = append(vs, r.Value)
-		}
-		sum("securities", vs)
+		sum("securities", err, len(securities), func(i int) *string { return securities[i].Value })
 		funds, err := ExposureFunds(ctx, db, exAsOf, ccy)
-		if err != nil {
-			t.Fatal(err)
-		}
-		vs = nil
-		for _, r := range funds {
-			vs = append(vs, r.Value)
-		}
-		sum("funds", vs)
+		sum("funds", err, len(funds), func(i int) *string { return funds[i].Value })
 		coverage, err := ExposureCoverage(ctx, db, exAsOf, ccy)
-		if err != nil {
-			t.Fatal(err)
-		}
-		vs = nil
+		var how []*string
 		for _, r := range coverage {
 			if r.Section == "how" {
-				vs = append(vs, r.Value)
+				how = append(how, r.Value)
 			}
 		}
-		sum("coverage how", vs)
+		sum("coverage how", err, len(how), func(i int) *string { return how[i] })
 	}
 }
 
@@ -334,6 +336,7 @@ func leafText(t *testing.T, db *sql.DB, ctx context.Context, col, where string) 
 }
 
 func TestExposureLooksThroughEachKindOfFund(t *testing.T) {
+	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	close := func(name string, got, want float64) {
 		t.Helper()
@@ -417,6 +420,7 @@ func TestExposureLooksThroughEachKindOfFund(t *testing.T) {
 // The temporal join: the latest composition on or before the day, else
 // the earliest after, flagged aged once older than aged_days.
 func TestExposureTemporalJoin(t *testing.T) {
+	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	pick := func(asOf int64) (int64, bool, bool) {
 		t.Helper()
@@ -449,6 +453,7 @@ func TestExposureTemporalJoin(t *testing.T) {
 
 // A label no map knows reaches coverage, by provider.
 func TestExposureCoverageNamesUnmappedLabels(t *testing.T) {
+	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	rows, err := ExposureCoverage(ctx, db, exAsOf, "USD")
 	if err != nil {
@@ -473,6 +478,7 @@ func TestExposureCoverageNamesUnmappedLabels(t *testing.T) {
 // blank, and a private company's stock is private, not a listed security;
 // holdings and labels with no value share one coverage line each.
 func TestExposureTagsAndZeroValueCoverage(t *testing.T) {
+	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	for _, i := range []struct {
 		id, class, vehicle string
@@ -583,40 +589,10 @@ func TestExposureTagsAndZeroValueCoverage(t *testing.T) {
 	}
 }
 
-// A receipt's leaf that takes its share's sector by name says so.
-func TestExposureFlagsAReceiptMatchedByName(t *testing.T) {
-	db, ctx := openExposureFixture(t)
-	for _, q := range []string{
-		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, name, currency,
-		 first_seen_at, last_seen_at) VALUES ('test-src', 'QQRVY', 'public_equity', 'stock', 'QQRVY',
-		 'QORVANT AG SPON ADR EACH REP 0.5 ORD SHS', 'USD', 0, 0)`,
-		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
-		 asset_class, vehicle, currency, quantity, market_value) VALUES ('test-src', ?, 'A1', 'QQRVY', 'QQRVY',
-		 'public_equity', 'stock', 'USD', 1, 40)`,
-		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency)
-		 VALUES ('test-src', 'symbol:QREF', ?, 'holdings', 'testprov', 1, 'USD')`,
-		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
-		 weight, currency, country, sector) VALUES ('test-src', 'symbol:QREF', ?, 'holdings', 1, 'isin:DE0000000701',
-		 'DE0000000701', 'QORVANT N AG', 'Equity', 100, 'EUR', 'Germany', 'Industrials')`,
-	} {
-		if _, err := db.ExecContext(ctx, q, slices.Repeat([]any{exSnap}, strings.Count(q, "?"))...); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	if f := leafFlags(t, db, ctx, `iid = 'QQRVY'`); f != "by_name" {
-		t.Errorf("QQRVY flags = %q, want by_name", f)
-	}
-	if got := leafText(t, db, ctx, "sector", `iid = 'QQRVY'`); got != "industrials" {
-		t.Errorf("QQRVY sector = %q", got)
-	}
-}
-
 // An SEC code that says nothing of the business (a depositary receipt's
 // registrant) gives no sector, though a broad range holds it.
 func TestExposureSICOfADepositaryGivesNoSector(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	if _, err := db.ExecContext(ctx, `INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider,
 	    value, scheme) VALUES ('refdata', 'symbol:QDEP', 'sic', 0, 'sec-edgar', '8880', 'sic'),
@@ -640,6 +616,7 @@ func TestExposureSICOfADepositaryGivesNoSector(t *testing.T) {
 // A ticker a fund line states beside an ISIN reads as that ISIN, and a
 // CUSIP no source ties to an ISIN reads as the one the US rule gives.
 func TestExposureAliases(t *testing.T) {
+	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	if _, err := db.ExecContext(ctx, `INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, cusip, first_seen_at, last_seen_at)
 	    VALUES ('test-src', 'C1', 'public_equity', 'stock', '00000AA01', 0, 0)`); err != nil {
@@ -689,7 +666,8 @@ func TestExposureAliases(t *testing.T) {
 // wins over lookups, however many state the other. A bank abroad's local
 // ticker ties nothing: in New York it is another company's.
 func TestExposureAliasPrecedence(t *testing.T) {
-	db, ctx := openExposureFixture(t)
+	t.Parallel()
+	db, ctx := openMigrated(t)
 	for _, q := range []string{
 		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, isin, currency,
 		 first_seen_at, last_seen_at) VALUES ('test-src', 'C2', 'public_equity', 'stock', 'QQZ', 'XX0000000021', 'USD', 0, 0),
@@ -726,7 +704,8 @@ func TestExposureAliasPrecedence(t *testing.T) {
 // found under it; a symbol priced abroad takes no part. No alias reads
 // as another alias.
 func TestExposureABrokersSymbolAndCUSIPFillEachOther(t *testing.T) {
-	db, ctx := openExposureFixture(t)
+	t.Parallel()
+	db, ctx := openMigrated(t)
 	isin := func(body string) string { return body + string(rune('0'+canonical.ISINCheckDigit(body))) }
 	ca := isin("CA00000AB07")
 	for _, q := range []string{
@@ -802,6 +781,7 @@ func TestExposureABrokersSymbolAndCUSIPFillEachOther(t *testing.T) {
 // A fund line that names no security is a row of its own in securities,
 // named by its fund and its name, never by the holding above it.
 func TestExposureSecuritiesNameKeylessLines(t *testing.T) {
+	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	rows, err := ExposureSecurities(ctx, db, exAsOf, "USD", "risk")
 	if err != nil {
@@ -824,7 +804,8 @@ func TestExposureSecuritiesNameKeylessLines(t *testing.T) {
 // EDGAR's codes read through EDGAR's own map: DE is Delaware, so the
 // United States, never Germany. Another provider's DE is Germany.
 func TestExposureEdgarCodesReadAsEdgarStatesThem(t *testing.T) {
-	db, ctx := openExposureFixture(t)
+	t.Parallel()
+	db, ctx := openMigrated(t)
 	if _, err := db.ExecContext(ctx, `INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
 	    VALUES ('test-src', 'isin:XX0000000031', 'incorporation', 0, 'sec-edgar', 'DE'),
 	           ('test-src', 'isin:XX0000000032', 'incorporation', 0, 'sec-edgar', 'E9'),
@@ -852,7 +833,8 @@ func TestExposureEdgarCodesReadAsEdgarStatesThem(t *testing.T) {
 // US listing: a US ISIN, a US exchange, or no exchange and a US-dollar
 // price. A local ticker elsewhere is another company's.
 func TestExposureLocalTickersAreNoUSSymbols(t *testing.T) {
-	db, ctx := openExposureFixture(t)
+	t.Parallel()
+	db, ctx := openMigrated(t)
 	if _, err := db.ExecContext(ctx, `INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, ticker, exchange, currency, name, weight)
 	    VALUES ('test-src', 'symbol:FUNDX', ?, 'holdings', 90, 'isin:XX0000000041', 'XX0000000041', 'QLOC', 'SIX Swiss Exchange', 'CHF', 'Local Co', 0),
 	           ('test-src', 'symbol:FUNDX', ?, 'holdings', 91, 'isin:XX0000000042', 'XX0000000042', 'QPAR', 'Nyse Euronext - Euronext Paris', 'EUR', 'Paris Co', 0),

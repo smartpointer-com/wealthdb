@@ -23,13 +23,17 @@ import (
 // Every row carries as_of, the UTC midnight of the day it describes; all
 // but lines carry run_at, the run that wrote it.
 
-// referenceLineBudget bounds the lines one batch carries. A batch holds
-// whole fund-days, so a fund with more lines than this rides alone.
-const referenceLineBudget = 20000
+// ReferenceTables are the reference tables, as the list above names them.
+var ReferenceTables = []string{"compositions", "lines", "attributes", "counterparties", "securities", "security_facts"}
 
-// referenceTailBudget bounds the security records of one batch: a page
-// of identities or of facts.
-const referenceTailBudget = 5000
+// ReferenceLineBudget bounds the lines one batch carries. A batch holds
+// whole fund-days, so a fund with more lines than this rides alone. It
+// is a variable so a test can lower it.
+var ReferenceLineBudget = 20000
+
+// ReferenceTailBudget bounds the security records of one batch: a page
+// of identities or of facts. It is a variable so a test can lower it.
+var ReferenceTailBudget = 5000
 
 // fundDay is one fund on one day: the unit a batch holds whole.
 type fundDay struct {
@@ -85,7 +89,7 @@ func (s *referenceStream) Close() error { return nil }
 func (s *referenceStream) Next(ctx context.Context) (canonical.SnapshotBatch, bool, error) {
 	var b canonical.SnapshotBatch
 	if s.next < len(s.days) {
-		for s.next < len(s.days) && len(b.FundLines) < referenceLineBudget {
+		for s.next < len(s.days) && len(b.FundLines) < ReferenceLineBudget {
 			if err := s.readFundDay(ctx, s.days[s.next], &b); err != nil {
 				return b, false, err
 			}
@@ -127,9 +131,9 @@ SELECT basis, provider, source_kind, fund_name, currency, net_assets, line_count
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			basis, provider, kind, payload string
-			name, ccy, net, sum, units     sql.NullString
-			lines, runAt                   int64
+			basis, provider, kind               string
+			name, ccy, net, sum, units, payload sql.NullString
+			lines, runAt                        int64
 		)
 		if err := rows.Scan(&basis, &provider, &kind, &name, &ccy, &net, &lines, &sum, &units, &runAt, &payload); err != nil {
 			return fmt.Errorf("reference compositions scan: %w", err)
@@ -140,7 +144,7 @@ SELECT basis, provider, source_kind, fund_name, currency, net_assets, line_count
 			FundName: NullStringPtr(name), Currency: NullStringPtr(ccy),
 			NetAssets: DecimalPtrOrNil(net), LineCount: lines,
 			WeightSum: DecimalPtrOrNil(sum), UnitsOutstanding: DecimalPtrOrNil(units),
-			FetchedAt: runAt, Payload: JSONOrNil(sql.NullString{String: payload, Valid: true}),
+			FetchedAt: runAt, Payload: JSONOrNil(payload),
 		})
 	}
 	return rows.Err()
@@ -158,9 +162,10 @@ SELECT basis, line_no, isin, cusip, figi, ticker, exchange, name, asset_type,
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			basis, payload                                   string
+			basis                                            string
 			lineNo                                           int64
 			isin, cusip, figi, ticker, exch, name, assetType sql.NullString
+			payload                                          sql.NullString
 			weight, qty, mv, ccy, country, risk              sql.NullString
 			sector, industry, maturity, coupon               sql.NullString
 			longCcy, longAmt, shortCcy, shortAmt             sql.NullString
@@ -182,7 +187,7 @@ SELECT basis, line_no, isin, cusip, figi, ticker, exchange, name, asset_type,
 			Maturity: ISODate(maturity.String), Coupon: DecimalPtrOrNil(coupon),
 			LongCurrency: NullStringPtr(longCcy), LongAmount: DecimalPtrOrNil(longAmt),
 			ShortCurrency: NullStringPtr(shortCcy), ShortAmount: DecimalPtrOrNil(shortAmt),
-			Payload: JSONOrNil(sql.NullString{String: payload, Valid: true}),
+			Payload: JSONOrNil(payload),
 		})
 	}
 	return rows.Err()
@@ -199,8 +204,8 @@ SELECT domicile, legal_form, ucits, replication, distribution, ter, hedged_curre
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			payload                                       string
 			dom, form, repl, dist, ter, hedged, idx, depo sql.NullString
+			payload                                       sql.NullString
 			ucits, lending                                sql.NullBool
 		)
 		if err := rows.Scan(&dom, &form, &ucits, &repl, &dist, &ter, &hedged, &lending, &idx, &depo, &payload); err != nil {
@@ -212,7 +217,7 @@ SELECT domicile, legal_form, ucits, replication, distribution, ter, hedged_curre
 			Replication: NullStringPtr(repl), Distribution: NullStringPtr(dist), TER: DecimalPtrOrNil(ter),
 			HedgedCurrency: NullStringPtr(hedged), Lending: boolPtr(lending),
 			IndexName: NullStringPtr(idx), Depositary: NullStringPtr(depo),
-			Payload: JSONOrNil(sql.NullString{String: payload, Valid: true}),
+			Payload: JSONOrNil(payload),
 		})
 	}
 	return rows.Err()
@@ -228,8 +233,8 @@ SELECT role, name, lei, share, payload
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			role, name, payload string
-			lei, share          sql.NullString
+			role, name          string
+			lei, share, payload sql.NullString
 		)
 		if err := rows.Scan(&role, &name, &lei, &share, &payload); err != nil {
 			return fmt.Errorf("reference counterparties scan: %w", err)
@@ -237,7 +242,7 @@ SELECT role, name, lei, share, payload
 		b.FundCounterparties = append(b.FundCounterparties, canonical.FundCounterpartyChange{
 			FundRef: d.ref, AsOf: d.asOf, Role: role, Name: name,
 			LEI: NullStringPtr(lei), Share: DecimalPtrOrNil(share),
-			Payload: JSONOrNil(sql.NullString{String: payload, Valid: true}),
+			Payload: JSONOrNil(payload),
 		})
 	}
 	return rows.Err()
@@ -252,7 +257,7 @@ SELECT security_key, as_of, provider, isin, cusip, figi, lei, ticker, exchange, 
   FROM securities
  WHERE as_of BETWEEN ? AND ? AND (security_key, as_of, provider) > (?, ?, ?)
  ORDER BY security_key, as_of, provider LIMIT ?`,
-		append(append([]any{s.w.Start, s.w.End}, s.secAfter...), referenceTailBudget)...)
+		append(append([]any{s.w.Start, s.w.End}, s.secAfter...), ReferenceTailBudget)...)
 	if err != nil {
 		return nil, fmt.Errorf("reference securities: %w", err)
 	}
@@ -260,9 +265,10 @@ SELECT security_key, as_of, provider, isin, cusip, figi, lei, ticker, exchange, 
 	var out []canonical.SecurityChange
 	for rows.Next() {
 		var (
-			key, provider, payload                              string
+			key, provider                                       string
 			asOf                                                int64
 			isin, cusip, figi, lei, ticker, exch, name, typ, lc sql.NullString
+			payload                                             sql.NullString
 		)
 		if err := rows.Scan(&key, &asOf, &provider, &isin, &cusip, &figi, &lei, &ticker, &exch, &name,
 			&typ, &lc, &payload); err != nil {
@@ -273,11 +279,11 @@ SELECT security_key, as_of, provider, isin, cusip, figi, lei, ticker, exchange, 
 			ISIN: NullStringPtr(isin), CUSIP: NullStringPtr(cusip), FIGI: NullStringPtr(figi),
 			LEI: NullStringPtr(lei), Ticker: NullStringPtr(ticker), Exchange: NullStringPtr(exch),
 			Name: NullStringPtr(name), SecurityType: NullStringPtr(typ), ListingCurrency: NullStringPtr(lc),
-			Payload: JSONOrNil(sql.NullString{String: payload, Valid: true}),
+			Payload: JSONOrNil(payload),
 		})
 		s.secAfter = []any{key, asOf, provider}
 	}
-	s.secsDone = len(out) < referenceTailBudget
+	s.secsDone = len(out) < ReferenceTailBudget
 	return out, rows.Err()
 }
 
@@ -288,7 +294,7 @@ SELECT security_key, field, as_of, provider, value, scheme, payload
   FROM security_facts
  WHERE as_of BETWEEN ? AND ? AND (security_key, field, as_of, provider) > (?, ?, ?, ?)
  ORDER BY security_key, field, as_of, provider LIMIT ?`,
-		append(append([]any{s.w.Start, s.w.End}, s.factAfter...), referenceTailBudget)...)
+		append(append([]any{s.w.Start, s.w.End}, s.factAfter...), ReferenceTailBudget)...)
 	if err != nil {
 		return nil, fmt.Errorf("reference security facts: %w", err)
 	}
@@ -296,20 +302,20 @@ SELECT security_key, field, as_of, provider, value, scheme, payload
 	var out []canonical.SecurityFactChange
 	for rows.Next() {
 		var (
-			key, field, provider, value, payload string
-			asOf                                 int64
-			scheme                               sql.NullString
+			key, field, provider, value string
+			asOf                        int64
+			scheme, payload             sql.NullString
 		)
 		if err := rows.Scan(&key, &field, &asOf, &provider, &value, &scheme, &payload); err != nil {
 			return nil, fmt.Errorf("reference security facts scan: %w", err)
 		}
 		out = append(out, canonical.SecurityFactChange{
 			SecurityKey: key, Field: field, AsOf: asOf, Provider: provider, Value: value,
-			Scheme: NullStringPtr(scheme), Payload: JSONOrNil(sql.NullString{String: payload, Valid: true}),
+			Scheme: NullStringPtr(scheme), Payload: JSONOrNil(payload),
 		})
 		s.factAfter = []any{key, field, asOf, provider}
 	}
-	s.factsDone = len(out) < referenceTailBudget
+	s.factsDone = len(out) < ReferenceTailBudget
 	return out, rows.Err()
 }
 

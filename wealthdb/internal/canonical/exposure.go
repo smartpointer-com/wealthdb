@@ -66,14 +66,18 @@ func Sectors() []Sector {
 	return append(out, assetSectors...)
 }
 
+// sectorSet is the sector vocabulary as a set.
+var sectorSet = func() map[Sector]bool {
+	out := map[Sector]bool{}
+	for _, s := range Sectors() {
+		out[s] = true
+	}
+	return out
+}()
+
 // Valid reports whether s is in the sector vocabulary.
 func (s Sector) Valid() bool {
-	for _, v := range Sectors() {
-		if v == s {
-			return true
-		}
-	}
-	return false
+	return sectorSet[s]
 }
 
 // Region is the part of the world a country belongs to, from a fixed
@@ -87,11 +91,6 @@ const (
 	RegionMiddleEastAfrica Region = "middle_east_africa"
 	RegionAsiaPacific      Region = "asia_pacific"
 )
-
-// Regions is every region, in a fixed order.
-func Regions() []Region {
-	return []Region{RegionNorthAmerica, RegionLatinAmerica, RegionEurope, RegionMiddleEastAfrica, RegionAsiaPacific}
-}
 
 // Country is an ISO 3166-1 alpha-2 code with its English short name and
 // its region.
