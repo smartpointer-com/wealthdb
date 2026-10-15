@@ -127,6 +127,16 @@ def test_a_series_takes_its_own_filings_and_an_amendment_wins():
     assert filings[date(2026, 6, 30)]["accession"] == "0000000001-26-000002"
 
 
+def test_a_fund_is_found_by_its_us_ticker_only():
+    p, ctx = SecNport(), Context(client=edgar())
+    # Named by a US ISIN, the fund is found by its ticker and keeps its
+    # reference; a fund with another country's ISIN files no N-PORT, so
+    # a US fund's ticker on it finds nothing.
+    claim = p.claim(Fund(ref="isin:US0000000901", isin="US0000000901", symbol="QFND"), ctx)
+    assert (claim["ref"], claim["series"]) == ("isin:US0000000901", "S000000001")
+    assert p.claim(Fund(ref="isin:XX0000000901", isin="XX0000000901", symbol="QFND"), ctx) is None
+
+
 def test_backfill_reads_older_pages_only_as_far_back_as_asked():
     sec = edgar()
     p, ctx = SecNport(), Context(client=sec)

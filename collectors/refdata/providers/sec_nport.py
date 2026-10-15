@@ -2,10 +2,11 @@
 sec-nport: US registered funds and ETFs, from their N-PORT filings on SEC
 EDGAR.
 
-- Claim: the fund's ticker, looked up in the SEC's ticker file for funds
-  (company_tickers_mf.json: CIK, series and class per ticker). A ticker
-  missing there (a UIT ETF has no series) is looked up in the company
-  ticker file instead, which gives the registrant's CIK alone.
+- Claim: the fund's US ticker (none for another country's ISIN), looked
+  up in the SEC's ticker file for funds (company_tickers_mf.json: CIK,
+  series and class per ticker). A ticker missing there (a UIT ETF has no
+  series) is looked up in the company ticker file instead, which gives
+  the registrant's CIK alone.
 - Dates: the period of every NPORT-P filing of the series. The series'
   filing list (EDGAR's browse feed) names the filings; the registrant's
   submissions file gives each filing's report date, its older pages read
@@ -37,7 +38,8 @@ from collectorkit import bronze, compress
 from collectorkit.parse import iso_date
 
 from . import table
-from .base import Parsed, Provider, ProviderError, Unavailable, blank_to_none, dec, read_meta, row, write_meta
+from .base import (Parsed, Provider, ProviderError, Unavailable, blank_to_none, dec, read_meta, row, us_symbol,
+                   write_meta)
 
 FUND_TICKERS = "https://www.sec.gov/files/company_tickers_mf.json"
 COMPANY_TICKERS = "https://www.sec.gov/files/company_tickers.json"
@@ -85,7 +87,8 @@ class SecNport(Provider):
         return ctx.once("nport_co", load)
 
     def claim(self, fund, ctx):
-        symbol = (fund.symbol or "").strip().upper()
+        # N-PORT covers US funds only (base.us_symbol).
+        symbol = us_symbol(fund)
         if not symbol:
             return None
         hit = self._fund_tickers(ctx).get(symbol)

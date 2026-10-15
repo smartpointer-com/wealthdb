@@ -190,6 +190,13 @@ composition:
 Such a fund states a US symbol only, as a security does below. A fund
 named by a ticker with no US listing stays out of the list.
 
+A fund states the identifiers gold knows for it, so a provider can
+claim it by the one it reads. Where several state one field, the
+holding's or the fund line's wins. Next come the CUSIP and the US symbol
+its aliases state (§3). Last comes the one its reference is made of. A size fund named by
+its ISIN thus states its ticker once a lookup or a fund line ties the
+two.
+
 A security:
 
 | Field | Meaning |

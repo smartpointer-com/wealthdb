@@ -7,7 +7,12 @@ generic; adding a provider is one module and one registry line.
 A fund provider:
 
     claim(fund, ctx)            -> a claim (the provider's own handle on
-                                   the fund) or None
+                                   the fund) or None. Its optional `ids`
+                                   ({isin, cusip, symbol}, the symbol a
+                                   US ticker only) are what the source
+                                   states for the fund; they fill the
+                                   fund's gaps before a provider
+                                   standing by claims it
     dates(claim, since, until, ctx)
                                 -> the dates it can serve in [since,
                                    until], or None when it serves the

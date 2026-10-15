@@ -92,6 +92,9 @@ def test_ishares_claims_both_sites_and_backfills_the_swiss_dates(tmp_path):
     ch = p.claim(Fund(ref="isin:XX0000000900", isin="XX0000000900"), ctx)
     us = p.claim(Fund(ref="symbol:QSML", symbol="QSML"), ctx)
     assert (ch["site"], us["site"]) == ("ch", "us")
+    # Each claim states the identifiers its list gives the fund.
+    assert (ch["ids"], us["ids"]) == ({"isin": "XX0000000900"},
+                                      {"isin": "US0000000909", "cusip": "000000AD3", "symbol": "QSML"})
     # A bare ticker matches the US site only.
     assert p.claim(Fund(ref="symbol:QCHF", symbol="QCHF"), ctx) is None
     assert p.dates(ch, date(2026, 1, 1), date(2026, 12, 31), ctx) == [date(2026, 9, 30), date(2026, 10, 12)]

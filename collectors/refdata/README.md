@@ -74,9 +74,12 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
 - `providers` are asked in this order. The first that claims a fund
   serves it; the inbox serves beside it. A fund is offered only while it
   wants a composition. The next provider claims it only when the fetch
-  of the one before fails. Every security provider is asked for every
-  security held directly that it can claim. A security held through
-  funds is asked only of a provider that can fill what it lacks.
+  of the one before fails. A provider standing by also reads the
+  identifiers the first one found. So N-PORT finds a fund named by its
+  ISIN by the ticker iShares lists for it. Every security provider is
+  asked for every security held directly that it can claim. A security
+  held through funds is asked only of a provider that can fill what it
+  lacks.
 - `max_age_days` (1 to 3650, default 30) is how old a composition or a
   lookup may be before it is fetched again.
 - `constituents` lets the security providers look up the securities a

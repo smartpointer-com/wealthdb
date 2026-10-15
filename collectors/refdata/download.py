@@ -39,7 +39,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -74,7 +74,8 @@ class Request:
     as_of: date | None = None   # None: the current composition
     claim: object = None
     # The providers standing by, asked in order when this one cannot
-    # serve the current composition. Each claims `fund` only then.
+    # serve the current composition. Each claims `fund` only then. `fund`
+    # carries the identifiers this one's claim adds (described).
     fallbacks: tuple = ()
     fund: object = None
 
@@ -180,6 +181,15 @@ def _ask(ref: str, provider: str, what: str, call, *args):
     return None
 
 
+def described(fund: wantedmod.Fund, claim: dict) -> wantedmod.Fund:
+    """The fund with its empty identifiers filled from the claim's `ids`.
+    A provider standing by can then claim it by the one it reads: N-PORT
+    finds a fund named by its ISIN by its ticker."""
+    ids = claim.get("ids") or {}
+    ids = {k: v for k in ("isin", "cusip", "symbol") if (v := ids.get(k)) and not getattr(fund, k)}
+    return replace(fund, **ids) if ids else fund
+
+
 def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_age: int, backfill: bool,
          refs=None, securities=True, constituents=False, floor_pct=0, fetched=None, looked_up=None):
     """The requests a run makes, and the funds that want a composition no
@@ -236,7 +246,7 @@ def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_ag
                 latest = _ask(fund.ref, p.name, "name its newest date", p.latest, claim, ctx)
                 if latest is None or latest not in have:
                     reqs.append(Request("fund", p.name, fund.ref, None, claim,
-                                        tuple(q.name for q in others[i + 1:]), fund))
+                                        tuple(q.name for q in others[i + 1:]), described(fund, claim)))
                     if latest is not None:
                         have.add(latest)
             if past:

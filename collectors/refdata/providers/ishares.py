@@ -13,7 +13,8 @@ serves. Two sites:
   those.
 
 - Claim: the fund's ISIN in either site's product list; on the US site
-  also its CUSIP or ticker.
+  also its CUSIP or ticker. The claim's `ids` are the identifiers the
+  list states for the fund (base.py).
 - Parse: every line with its ISIN (Swiss site) or ticker and CUSIP (US
   site), name, weight, shares, market value, sector, asset class,
   location and market currency. A local ticker of a non-US listing goes
@@ -80,8 +81,12 @@ class IShares(Provider):
             if hit is None or (us_only and hit[0] != "us"):
                 continue
             site, product = hit
+            ids = {"isin": product.get("isin")}
+            if site == "us":
+                ids.update(cusip=product.get("cusip"), symbol=product.get("localExchangeTicker"))
             return {"ref": fund.ref, "site": site, "page": product["productPageUrl"],
-                    "name": product.get("fundName")}
+                    "name": product.get("fundName"),
+                    "ids": {k: str(v).strip().upper() for k, v in ids.items() if v}}
         return None
 
     def _page(self, claim, ctx) -> dict:

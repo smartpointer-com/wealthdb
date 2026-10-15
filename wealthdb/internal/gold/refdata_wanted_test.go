@@ -159,6 +159,10 @@ func TestRefdataWantedReadsKeysThroughAliases(t *testing.T) {
 	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	// A lookup's other ticker for the fund: the holding's symbol wins.
+	if _, err := db.ExecContext(ctx, `INSERT INTO security_aliases VALUES ('symbol:FUNDA', 'isin:XX0000000011', 'lookup')`); err != nil {
+		t.Fatal(err)
+	}
 	w, err := RefdataWanted(ctx, db, time.Unix(day+86400, 0))
 	if err != nil {
 		t.Fatal(err)
@@ -579,6 +583,45 @@ func TestRefdataWantedProxiesOfFundsNotHeld(t *testing.T) {
 	}
 	want := []string{"isin:XX0000000021 proxy 2026-06-30 true", "symbol:QPX1 proxy 2026-06-30 true"}
 	if !slices.Equal(got, want) {
+		t.Errorf("funds = %q, want %q", got, want)
+	}
+}
+
+// A fund the config names states the CUSIP and US symbol its aliases
+// give. A size fund named by its ISIN gains a lookup's ticker and a fund
+// line's CUSIP. A proxy named by its ticker reads as its ISIN and keeps
+// the ticker. A ticker only a broker states is no US symbol.
+func TestRefdataWantedFundsStateTheirAliases(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
+		Proxies:        []canonical.ExposureProxy{{FundRef: "symbol:QNH1", ProxyRef: "symbol:QPX1", Leverage: 1}},
+		ReferenceFunds: []string{"isin:XX0000000032"},
+		SizeFunds:      []canonical.ExposureSizeFund{{FundRef: "isin:XX0000000031", CoveragePct: 90}},
+		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: canonical.DefaultAgedDays,
+			PartialPct: canonical.DefaultPartialPct},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO security_aliases VALUES
+	    ('symbol:QSZ1', 'isin:XX0000000031', 'lookup'), ('cusip:Q0000SZ31', 'isin:XX0000000031', 'fund_line'),
+	    ('symbol:QPX1', 'isin:XX0000000021', 'fund_line'), ('symbol:QRF2', 'isin:XX0000000032', 'instrument')`); err != nil {
+		t.Fatal(err)
+	}
+	w, err := RefdataWanted(ctx, db, time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, f := range w.Funds {
+		got[f.Ref] = strings.Join([]string{derefOr(f.ISIN), derefOr(f.CUSIP), derefOr(f.Symbol)}, " ")
+	}
+	want := map[string]string{
+		"isin:XX0000000021": "XX0000000021 <nil> QPX1",
+		"isin:XX0000000031": "XX0000000031 Q0000SZ31 QSZ1",
+		"isin:XX0000000032": "XX0000000032 <nil> <nil>",
+	}
+	if !maps.Equal(got, want) {
 		t.Errorf("funds = %q, want %q", got, want)
 	}
 }

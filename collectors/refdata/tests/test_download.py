@@ -162,6 +162,37 @@ def test_a_failed_current_fetch_falls_through_to_the_next_claimant(tmp_path, fak
     assert entry["tried"][0]["provider"] == "failing" and fake.claimed == ["symbol:FUNDA"]
 
 
+class _Listed(_Failing):
+    """Claims every fund and states the ISIN and ticker an issuer's list
+    would give it; fails every fetch."""
+    name = "listed"
+
+    def claim(self, f, c):
+        self.claimed.append(f.ref)
+        return {"ref": f.ref, "ids": {"isin": "XX0000000001", "cusip": "", "symbol": "FUNDA"}}
+
+
+def test_a_standby_claims_by_an_identifier_the_first_claim_states(tmp_path, fake, monkeypatch):
+    # The fund is named by its ISIN, and the one standing by finds a fund
+    # by ticker only: the one the first provider's list gives. The
+    # composition keeps the fund's reference.
+    listed = _Listed()
+    monkeypatch.setitem(download.REGISTRY, "listed", listed)
+    want = wantedmod.parse(wanted_doc([fund("isin:XX0000000001")]))
+    (r,) = plan(want, [listed, fake])[0]
+    assert (r.fund.isin, r.fund.cusip, r.fund.symbol) == ("XX0000000001", None, "FUNDA")
+    (entry,) = download.execute([r], tmp_path, ctx())
+    assert (entry["status"], entry["provider"], entry["ref"]) == ("ok", "fake", "isin:XX0000000001")
+    assert fake.fetched == [("isin:XX0000000001", date(2026, 7, 14))]
+
+
+def test_a_claim_fills_only_the_identifiers_a_fund_lacks():
+    f = wantedmod.Fund(ref="symbol:FUNDA", symbol="FUNDA")
+    d = download.described(f, {"ids": {"isin": "XX0000000001", "symbol": "OTHER"}})
+    assert (d.ref, d.isin, d.symbol) == ("symbol:FUNDA", "XX0000000001", "FUNDA")
+    assert download.described(f, {"ref": "symbol:FUNDA"}) is f
+
+
 def test_a_standby_is_not_claimed_when_the_first_serves(tmp_path, fake, failing):
     want = wantedmod.parse(wanted_doc([fund("symbol:FUNDA", "FUNDA")]))
     (entry,) = download.execute(plan(want, [fake, failing])[0], tmp_path, ctx())

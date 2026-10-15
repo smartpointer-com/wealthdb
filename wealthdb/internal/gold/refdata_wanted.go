@@ -168,9 +168,9 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		}
 	}
 	stated := map[[2]string]bool{}
+	var ids map[string]aliasIDs
 	if migrated {
-		ids, err := readAliasIDs(ctx, db)
-		if err != nil {
+		if ids, err = readAliasIDs(ctx, db); err != nil {
 			return nil, err
 		}
 		if err := addProxiesAndReferences(ctx, db, funds, spans, now, keys); err != nil {
@@ -183,7 +183,7 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 			}
 		}
 		slices.Sort(open)
-		if err := addUnderlying(ctx, db, funds, spans, open, now, ids); err != nil {
+		if err := addUnderlying(ctx, db, funds, spans, open, now); err != nil {
 			return nil, err
 		}
 		if err := addCompositionDates(ctx, db, funds, keys); err != nil {
@@ -215,8 +215,13 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 			s.Missing = append(s.Missing, wf.field)
 		}
 	}
+	// A fund states the identifiers gold knows for it, so a provider can
+	// claim it by the one it reads. The holding's or fund line's win, then
+	// the CUSIP and US symbol its aliases state (aliasIDs), then its key's.
 	for _, ref := range slices.Sorted(maps.Keys(funds)) {
 		f := funds[ref]
+		setOnce(&f.CUSIP, ids[ref].cusip)
+		setOnce(&f.Symbol, ids[ref].symbol)
 		fillFromKey(ref, &f.ISIN, &f.CUSIP, &f.Symbol)
 		w.Funds = append(w.Funds, *f)
 	}
@@ -434,12 +439,10 @@ func addProxiesAndReferences(ctx context.Context, db *sql.DB, funds map[string]*
 // (exposure_comps: holdings before index lines, never a swap fund's
 // basket) whose asset type is a fund and that names it by an identifier,
 // wanted from today in the role underlying, so the look-through can read
-// it too. Its symbol is a US one only, as a constituent's: one a source
-// ties to it, or its own key where its line names a US listing. A fund
-// keyed by a ticker with no US listing stays out, since a lookup by that
-// ticker finds another fund.
+// it too. A fund keyed by a ticker with no US listing stays out, since a
+// lookup by that ticker finds another fund.
 func addUnderlying(ctx context.Context, db *sql.DB, funds map[string]*WantedFund, spans map[string]*span,
-	held []string, now time.Time, ids map[string]aliasIDs) error {
+	held []string, now time.Time) error {
 	if len(held) == 0 {
 		return nil
 	}
@@ -466,16 +469,9 @@ SELECT k, isin, cusip, name FROM u
 		if err := rows.Scan(&ref, &isin, &cusip, &name); err != nil {
 			return err
 		}
-		symbol := ids[ref].symbol
-		if !symbol.Valid {
-			if body, ok := strings.CutPrefix(ref, canonical.KeySymbol); ok {
-				symbol = sql.NullString{String: body, Valid: true}
-			}
-		}
 		f := wantFund(funds, spans, ref, "underlying")
 		setOnce(&f.ISIN, isin)
 		setOnce(&f.CUSIP, cusip)
-		setOnce(&f.Symbol, symbol)
 		setOnce(&f.Name, name)
 		spans[ref].add(fromToday(now))
 		return nil
