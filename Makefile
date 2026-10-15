@@ -267,7 +267,9 @@ cleanall-wealthdb: clean-wealthdb
 # trying wealthdb without a bank (demo/README.md). Everything lives under
 # WEALTHDB_DEMO_ROOT: the engine is pointed at that directory as its data
 # root and its config dir, so it sees nothing else, and the demo's
-# Metabase runs as its own container on the port its config names.
+# Metabase runs as its own container on the port its config names. The
+# containers are named after the demo root: wealthdb-metabase-demo for
+# ~/wealthdb-demo, wealthdb-metabase-other-demo for ~/wealthdb-other-demo.
 #
 #   make demo [WEALTHDB_DEMO_ROOT=~/wealthdb-demo] [AS_OF=YYYY-MM-DD] [SEED=…] [FINDINGS=1]
 #
@@ -291,14 +293,18 @@ FINDINGS =
 # Absolute and with a leading ~ expanded, so the generator and the engine
 # container see the same directory.
 DEMO_ROOT := $(abspath $(patsubst ~/%,$(HOME)/%,$(patsubst ~,$(HOME),$(WEALTHDB_DEMO_ROOT))))
+# The demo's containers take their name from its root, so two checkouts
+# that build two demo roots never share a container.
+DEMO_NAME := $(shell sh -c '. "$$1/shared/wrappers/demo-root.sh" && wealthdb_demo_name "$$2"' \
+	sh '$(ROOT_DIR)' '$(DEMO_ROOT)')
 DEMO_ENV := WEALTHDB_DATA_ROOT="$(DEMO_ROOT)" XDG_CONFIG_HOME="$(DEMO_ROOT)"
 DEMO_ENGINE := $(DEMO_ENV) $(WEALTHDB) -c "$(DEMO_ROOT)/wealthdb.cfg"
 DEMO_WEB := $(DEMO_ENV) WEALTHDB_CONFIG="$(DEMO_ROOT)/wealthdb.cfg" \
-            WEALTHDB_WEB_CONTAINER=wealthdb-metabase-demo \
+            WEALTHDB_WEB_CONTAINER=wealthdb-metabase-$(DEMO_NAME) \
             WEALTHDB_WEB_DATA_DIR="$(DEMO_ROOT)/web" \
             WEALTHDB_WEB_ENV_FILE="$(DEMO_ROOT)/web.env" $(WEALTHDB) web
 DEMO_MCP := $(DEMO_ENV) WEALTHDB_CONFIG="$(DEMO_ROOT)/wealthdb.cfg" \
-            WEALTHDB_MCP_CONTAINER=wealthdb-mcp-demo \
+            WEALTHDB_MCP_CONTAINER=wealthdb-mcp-$(DEMO_NAME) \
             WEALTHDB_MCP_DATA_DIR="$(DEMO_ROOT)/mcp" \
             WEALTHDB_MCP_ENV_FILE="$(DEMO_ROOT)/mcp.env" $(WEALTHDB) mcp
 DEMO_GEN_ARGS = --root "$(DEMO_ROOT)" --seed "$(SEED)" $(if $(AS_OF),--as-of $(AS_OF))

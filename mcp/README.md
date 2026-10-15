@@ -75,7 +75,7 @@ Give the full path to `wealthdb` if the client does not see the shell's
 
 To try it without real data, `make demo` builds a synthetic household
 and `make demo-mcp` serves it on port 3400 (container
-`wealthdb-mcp-demo`).
+`wealthdb-mcp-demo` for the default demo root).
 
 ## Claude Desktop
 

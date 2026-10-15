@@ -36,3 +36,14 @@ wealthdb_demo_root() {
     esac
     printf '%s\n' "$_wdr_dir"
 }
+
+# wealthdb_demo_name DIR: the name the demo's containers take from its
+# root DIR: the last part of the path less a leading wealthdb-, each
+# character a container name cannot hold read as -. The default root,
+# ~/wealthdb-demo, gives demo: containers wealthdb-metabase-demo and
+# wealthdb-mcp-demo. Two checkouts with two roots never share one.
+wealthdb_demo_name() {
+    _wdn_name="$(basename "$1")"
+    _wdn_name="$(printf '%s' "${_wdn_name#wealthdb-}" | tr -c 'A-Za-z0-9_.-' '-')"
+    printf '%s\n' "${_wdn_name:-demo}"
+}

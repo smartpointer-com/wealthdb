@@ -2,8 +2,9 @@
 # Behaviour test: the demo root a checkout builds into. WEALTHDB_DEMO_ROOT
 # wins; unset, the checkout's .demo-root names it, else ~/wealthdb-demo;
 # a variable or a .demo-root that names no directory stops make. The
-# Makefile runs from a copy of the tree, so the checkout's own .demo-root
-# plays no part.
+# demo's containers take their name from the root. The Makefile runs
+# from a copy of the tree, so the checkout's own .demo-root plays no
+# part.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -26,6 +27,11 @@ make_root() {
     (cd "$TMP" && env "$@" HOME=/home/u make -f "$TREE/Makefile" -np help 2>/dev/null) | sed -n 's/^DEMO_ROOT := //p'
 }
 
+# make_name: the name the demo's containers take, from the same dry run.
+make_name() {
+    (cd "$TMP" && env "$@" HOME=/home/u make -f "$TREE/Makefile" -np help 2>/dev/null) | sed -n 's/^DEMO_NAME := //p'
+}
+
 echo "demo root:"
 is "the default is ~/wealthdb-demo" "/home/u/wealthdb-demo" "$(make_root -u WEALTHDB_DEMO_ROOT)"
 printf '  ~/wealthdb-other-demo  \n' > "$TREE/.demo-root"
@@ -37,6 +43,15 @@ if (cd "$TMP" && env WEALTHDB_DEMO_ROOT='  ' make -f "$TREE/Makefile" -n help >/
 else
     ok "a blank variable stops make"
 fi
+
+echo "container name:"
+rm -f "$TREE/.demo-root"
+is "the default root gives demo" "demo" "$(make_name -u WEALTHDB_DEMO_ROOT)"
+is "a leading wealthdb- goes" "other-demo" "$(make_name WEALTHDB_DEMO_ROOT=~/wealthdb-other-demo)"
+is "any other name stays" "demo" "$(make_name WEALTHDB_DEMO_ROOT=/srv/demo)"
+is "what a container name cannot hold reads as -" "my-demo.2" "$(make_name WEALTHDB_DEMO_ROOT='/srv/my+demo.2')"
+is "the bare prefix gives demo" "demo" "$(make_name WEALTHDB_DEMO_ROOT=/srv/wealthdb-)"
+is "a trailing slash is dropped" "x" "$(make_name WEALTHDB_DEMO_ROOT=/srv/x/)"
 
 for bad_root in 'two words' ''; do
     printf '%s\n' "$bad_root" > "$TREE/.demo-root"

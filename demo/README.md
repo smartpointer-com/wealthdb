@@ -17,10 +17,10 @@ rather than a holding.
 
 ```sh
 make demo                 # build silver and gold into the demo root
-make demo-web             # dashboards on http://127.0.0.1:3100/ (container wealthdb-metabase-demo)
+make demo-web             # dashboards on http://127.0.0.1:3100/
 make demo-roll            # later: add the days since the last build, load only those
 make demo-web-stop        # stop the demo's dashboards
-make demo-mcp             # MCP on http://127.0.0.1:3400/mcp (container wealthdb-mcp-demo); prints the token
+make demo-mcp             # MCP on http://127.0.0.1:3400/mcp; prints the token
 make demo-mcp-stop        # stop the demo's MCP server
 ```
 
@@ -31,7 +31,11 @@ checkout's git-ignored `.demo-root`, else `~/wealthdb-demo`),
 extends. The dashboards' admin password is in `web/admin-password.txt`
 under the demo root, and the MCP server's token in `mcp/token`. The demo
 shares the engine and dashboard images with a real setup. Its make
-targets build them from the checkout, as `make all` does.
+targets build them from the checkout, as `make all` does. Its
+containers take their name from the demo root: `wealthdb-metabase-demo`
+and `wealthdb-mcp-demo` for `~/wealthdb-demo`,
+`wealthdb-metabase-other-demo` for `~/wealthdb-other-demo`. So a second
+checkout with a demo root of its own never touches the first one's.
 
 The engine reads the demo when its data root and config dir both point
 at the demo root. The web settings point `demo web …` at the demo's
