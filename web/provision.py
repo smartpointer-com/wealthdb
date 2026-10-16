@@ -852,6 +852,12 @@ def _percent_viz(*cols):
                                 for c in cols}}
 
 
+def _share_viz(*cols):
+    """Viz settings for columns already in percent (7.0 -> 7%): a
+    percent sign, on the axis, the labels and the tooltip alike."""
+    return {"column_settings": {f'["name","{c}"]': {"suffix": "%"} for c in cols}}
+
+
 # The native returns charts carry three template variables — currency, start
 # year, and (a multi-value field filter) source. The Returns dashboard's
 # Currency / Start-year / Source pickers map onto them; the same pickers map
@@ -1116,7 +1122,10 @@ def _donut(threshold=0, total=True):
     description's own sentence and is wrong while doing it."""
     return {"pie.show_total": total,
             "pie.percent_visibility": "legend",
-            "pie.slice_threshold": threshold}
+            "pie.slice_threshold": threshold,
+            # Metabase migrates settings saved without a version, and that
+            # moves the percentages from the legend onto the slices.
+            "version": 2}
 
 
 def allocation_note():
@@ -2563,25 +2572,29 @@ def base_dashboards():
             "holds and added to what is held directly, by asset class, "
             "sector, size, region, country and currency, at each month end and "
             f"today, in a chosen currency (default {DEFAULT_CURRENCY}). A "
-            "breakdown reads the latest day in the window; a chart over "
-            "time shows every month end. The last chart says how much of "
-            "net worth the figures rest on. " + note,
+            "breakdown reads the latest day in the window; the map colours "
+            "each country by its share; a chart over time shows every month "
+            "end. The last chart says how much of net worth the figures rest "
+            "on. " + note,
             "range", [
-            # The allocation first, then where it sits and what it moves
-            # with: breakdowns at the window's end, beside their history
-            # where there is one; then public equity by size beside what
-            # funds hold; last, how much the figures cover.
-            ("Exposure by asset class", 0, 0, 8, 8, "as_of_day"),
-            ("Asset classes over time", 0, 8, 16, 8, "as_of_day"),
-            ("Exposure by sector", 8, 0, 12, 9, "as_of_day"),
-            ("Exposure by region", 8, 12, 12, 9, "as_of_day"),
-            ("Regions over time", 17, 0, 12, 8, "as_of_day"),
-            ("Exposure by country", 17, 12, 12, 8, "as_of_day"),
-            ("Exposure by currency", 25, 0, 12, 8, "as_of_day"),
-            ("Currencies over time", 25, 12, 12, 8, "as_of_day"),
-            ("Public equity by size", 33, 0, 12, 8, "as_of_day"),
-            ("Held directly or through funds", 33, 12, 12, 8, "as_of_day"),
-            ("How the figures are classified", 41, 0, 24, 7, "as_of_day"),
+            # The allocation first, the ring beside the sectors and the
+            # classes over time full width; then where it sits: the map
+            # full width, the regions beside every region's countries, the
+            # regions over time; then what it moves with, the currency
+            # ring beside its history; then public equity by size beside
+            # what funds hold; last, how much the figures cover.
+            ("Exposure by asset class", 0, 0, 12, 9, "as_of_day"),
+            ("Exposure by sector", 0, 12, 12, 9, "as_of_day"),
+            ("Asset classes over time", 9, 0, 24, 8, "as_of_day"),
+            ("Exposure by country", 17, 0, 24, 10, "as_of_day"),
+            ("Exposure by region", 27, 0, 11, 9, "as_of_day"),
+            ("Exposure by region and country", 27, 11, 13, 9, "as_of_day"),
+            ("Regions over time", 36, 0, 24, 8, "as_of_day"),
+            ("Exposure by currency", 44, 0, 12, 9, "as_of_day"),
+            ("Currencies over time", 44, 12, 12, 9, "as_of_day"),
+            ("Public equity by size", 53, 0, 12, 7, "as_of_day"),
+            ("Held directly or through funds", 53, 12, 12, 7, "as_of_day"),
+            ("How the figures are classified", 60, 0, 24, 7, "as_of_day"),
         ]),
         "Data Freshness": (
             "How long ago each source was last read — which feeds need a "
@@ -2600,11 +2613,14 @@ def exposure_cards(db_id, privacy):
     SQL over web_exposure (gold migration 0127), the look-through at
     every month end and today, materialized per reporting currency, so
     {{currency}} is a row filter as on Gains. A breakdown reads the
-    latest day in the window. Its base card shows the value beside its
-    share of net worth, or of public equity for sizes; its privacy card
-    the share alone, a share being scale-free. A chart over time shows
-    each month end's shares on both, so it is privacy-exempt and has no
-    privacy variant. docs/EXPOSURE.md defines every figure."""
+    latest day in the window and plots each share of net worth, or of
+    public equity for sizes: a bar carries its figure, a ring its
+    percentage in the legend, a map colours each country by its share.
+    Its base card keeps the value as a column and shows it in the
+    tooltip, or draws the ring from it; its privacy card has the share
+    alone, a share being scale-free. A chart over time shows each month
+    end's shares on both, so it is privacy-exempt and has no privacy
+    variant. docs/EXPOSURE.md defines every figure."""
     tags = spend_tags("web_exposure", EXPOSURE_FILTERS)
     desc_end = (" Built for the Exposure dashboard; opened standalone it runs in "
                 f"{DEFAULT_CURRENCY}, the currency variable's default, over every month end."
@@ -2623,15 +2639,33 @@ def exposure_cards(db_id, privacy):
         register_native_targets(name, tags, EXPOSURE_PICKERS)
         out[name] = (display, desc + desc_end, _native(db_id, sql, tags), viz)
 
-    def at_end(name, display, desc, dim, label, limit=None, extra=()):
-        """A breakdown at the window's end: one row per value of `dim`
-        and of the `extra` columns shown beside it."""
+    def bars(label, metric):
+        """The viz of a breakdown's bars: the share, its figure on each
+        bar, and on a base card the value in the tooltip."""
+        viz = {"graph.dimensions": [label], "graph.metrics": [metric],
+               "graph.show_values": True, **_share_viz(metric)}
+        if not privacy:
+            viz["graph.tooltip_columns"] = ["value"]
+        return viz
+
+    def ring(label):
+        """The viz of a breakdown's ring, slices under one percent folded.
+        A base card draws the ring from the values, so a slice's hover
+        gives the amount with the percent; a privacy card draws it from
+        the shares, with no figure in the hole (see _donut). Metabase
+        leaves a negative slice out with a warning, which the card's
+        description says."""
+        return {"pie.dimension": label, "pie.metric": "share_pct" if privacy else "value",
+                **_donut(threshold=1, total=not privacy)}
+
+    def at_end(name, display, desc, dim, label, extra=()):
+        """A breakdown at the window's end, a ring or bars: one row per
+        value of `dim` and of the `extra` columns shown beside it."""
         cols = "".join(f",\n       {c}" for c in extra)
         card(name, display, desc,
              end + f"SELECT {dim} AS {label}{cols}{money},\n       sum(share_pct) AS share_pct\n"
-             "  FROM e\n GROUP BY ALL\n ORDER BY sum(share_pct) DESC, 1" + (f"\n LIMIT {limit}" if limit else ""),
-             {"graph.dimensions": [label], "graph.metrics": ["share_pct" if privacy else "value"]}
-             if display in ("bar", "row") else {})
+             "  FROM e\n GROUP BY ALL\n ORDER BY sum(share_pct) DESC, 1",
+             ring(label) if display == "pie" else bars(label, "share_pct"))
 
     def over_time(name, desc, dim, label):
         """Each month end's shares, stacked by the values of `dim`."""
@@ -2639,12 +2673,13 @@ def exposure_cards(db_id, privacy):
              f"SELECT as_of_day, {dim} AS {label},\n       sum(share_pct) AS share_pct\n"
              + rows + "\n GROUP BY 1, 2\n ORDER BY 1, 2",
              {"graph.dimensions": ["as_of_day", label], "graph.metrics": ["share_pct"],
-              "stackable.stack_type": "stacked"})
+              "stackable.stack_type": "stacked", **_share_viz("share_pct")})
 
-    at_end("Exposure by asset class", "bar",
+    at_end("Exposure by asset class", "pie",
            "Net worth by asset class after every fund is looked through to "
            "what it holds, at the latest day in the window. A loan is a "
-           "negative share.", "asset_class", "asset_class")
+           "negative share, which a ring cannot draw: it is left out, with "
+           "a warning, and the other slices read a little high.", "asset_class", "asset_class")
     over_time("Asset classes over time",
               "Each month end's net worth by asset class, after look-through, "
               "as shares that stack to 100.", "asset_class", "asset_class")
@@ -2661,15 +2696,37 @@ def exposure_cards(db_id, privacy):
     over_time("Regions over time",
               "Each month end's net worth by region, as shares that stack to 100.",
               "region", "region")
-    at_end("Exposure by country", "table",
-           "The 25 countries net worth is most exposed to, at the latest "
-           "day in the window, with each country's region.", "country", "country",
-           limit=25, extra=("country_name", "region"))
-    at_end("Exposure by currency", "bar",
+    card("Exposure by country", "map",
+         "Where net worth sits, at the latest day in the window: each "
+         "country coloured by its share, by the country of risk or the one "
+         "a declaration states. Metals, coins and what no source places "
+         "have no country and are not on the map.",
+         end + f"SELECT country,\n       country_name{money},\n       sum(share_pct) AS share_pct\n"
+         "  FROM e\n WHERE country NOT IN ('(none)', 'unclassified')\n GROUP BY ALL\n"
+         " ORDER BY sum(share_pct) DESC, 1",
+         {"map.type": "region", "map.region": "world_countries", "map.dimension": "country",
+          "map.metric": "share_pct", **_share_viz("share_pct")})
+    card("Exposure by region and country",
+         "table",
+         "Every region with its total, then the countries inside it, at "
+         "the latest day in the window, largest first. A region's own row "
+         "names no country. Metals and coins have no country, and what no "
+         "source places is unclassified.",
+         end + "SELECT * EXCLUDE (region_rank)\n"
+         f"  FROM (SELECT region, country, country_name{money},\n"
+         "               sum(share_pct) AS share_pct,\n"
+         "               sum(sum(share_pct)) OVER (PARTITION BY region) AS region_rank\n"
+         "          FROM e\n"
+         "         GROUP BY GROUPING SETS ((region), (region, country, country_name)))\n"
+         " ORDER BY region_rank DESC, region, country IS NOT NULL, share_pct DESC, country",
+         _share_viz("share_pct"))
+    at_end("Exposure by currency", "pie",
            "Net worth by the currency each value moves with, at the "
            "latest day in the window: a stock in its trading currency, a "
            "hedged class in its hedge currency, metals and coins as "
-           "themselves.", "exposure_currency", "currency", extra=("currency_kind",))
+           "themselves. Currencies below one percent share the Other slice; "
+           "a negative share cannot be drawn and is left out, with a "
+           "warning.", "exposure_currency", "currency", extra=("currency_kind",))
     over_time("Currencies over time",
               "Each month end's net worth by the currency it moves with, as "
               "shares that stack to 100.", "exposure_currency", "currency")
@@ -2686,7 +2743,7 @@ def exposure_cards(db_id, privacy):
          "       100 * sum(share_pct) / sum(sum(share_pct)) OVER () AS class_share_pct\n"
          "  FROM e\n WHERE asset_class = 'public_equity'\n GROUP BY 1\n"
          " ORDER BY CASE size WHEN 'large' THEN 1 WHEN 'mid' THEN 2 WHEN 'small' THEN 3 ELSE 4 END",
-         {"graph.dimensions": ["size"], "graph.metrics": ["class_share_pct"]})
+         bars("size", "class_share_pct"))
     over_time("How the figures are classified",
               "Each month end's net worth by how its figures are classified: "
               "looked through, proxied, a security a source describes, "

@@ -199,8 +199,10 @@ The **Exposure** dashboard shows what is really owned once every fund
 is looked through ([wealthdb/docs/EXPOSURE.md](../wealthdb/docs/EXPOSURE.md)).
 It reads in this order:
 
-- net worth by asset class, sector, region, country and currency on the
-  latest day in the range;
+- net worth by asset class and by currency as rings, by sector and by
+  region as bars, on the latest day in the range;
+- a world map of the countries, each coloured by its share, beside a
+  table of every region and the countries inside it;
 - the classes, regions and currencies over time, as shares that stack
   to 100;
 - public equity by size (large, mid, small) on the latest day, as shares
@@ -212,7 +214,9 @@ It reads in this order:
 
 Every figure is a share of net worth, or of public equity, which is
 scale-free. So the Exposure twin needs no normalisation. Each breakdown
-has a privacy card that drops the money column and keeps the shares.
+plots the shares: a bar carries its percentage, a ring lists them in
+its legend. The base card shows the value on hover, and its privacy
+card drops the value column.
 The charts over time show shares alone. They are privacy-exempt, so the
 twin shows the same cards. Country, region and currency labels stay,
 since none names an account. Its tiles read `web_exposure` (migration

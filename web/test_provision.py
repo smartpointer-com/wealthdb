@@ -164,6 +164,8 @@ check("the privacy model scales by the latest net worth, per currency",
 # ---- the cards --------------------------------------------------------
 
 CARDS = all_cards(1, MID)
+VIZ = {n: viz for n, (_d, _desc, _q, viz) in p.question_defs(1, MID).items()}
+VIZ.update({n: viz for n, (_t, _d, _desc, _q, viz) in p.privacy_card_defs(1, MID).items()})
 DEFS = p.dashboard_defs()
 
 section("spending cards")
@@ -1437,10 +1439,48 @@ check("...and reads the picked currency too",
       all(q.count("FROM web_exposure") == q.count("AND currency = {{currency}}") for q in _ex_twin.values()))
 check("the base breakdowns show the value beside the share, the charts over time shares alone",
       all(("sum(value)" in q) == (CARDS[n][0] != "area") for n, q in _ex_sql.items()))
-# A loan can make a class, sector or region negative, which a ring
-# cannot draw.
+# A reader wants the shares first: every bar plots a share, with its
+# figure on the bar and a percent sign; the base card keeps the value for
+# the tooltip, where the privacy card has none to show.
+_ex_bars = {n: VIZ[n] for n in _ex_tiles if n in CARDS and CARDS[n][0] in ("bar", "row")}
+check("every Exposure bar plots a share, labelled, with the value in its tooltip",
+      bool(_ex_bars) and all(
+          v.get("graph.metrics") in (["share_pct"], ["class_share_pct"])
+          and v.get("graph.show_values") is True
+          and v.get("graph.tooltip_columns") == ["value"]
+          and any(c.get("suffix") == "%" for c in v.get("column_settings", {}).values())
+          for v in _ex_bars.values()),
+      [n for n, v in _ex_bars.items() if v.get("graph.tooltip_columns") != ["value"]])
+check("...and its privacy card plots the share with no value to show",
+      all(VIZ[n].get("graph.metrics") in (["share_pct"], ["class_share_pct"])
+          and "graph.tooltip_columns" not in VIZ[n]
+          for n in _ex_twin if n in CARDS and CARDS[n][0] in ("bar", "row")))
+# A loan can make a class or a currency negative, which a ring cannot
+# draw: Metabase leaves the slice out with a warning, so only the two
+# rings whose descriptions say so are rings; the sector and region
+# charts stay bars.
+_ex_rings = {"Exposure by asset class", "Exposure by currency"}
 _ex_pies = [n for n in _ex_tiles + list(_ex_twin) if n in CARDS and CARDS[n][0] == "pie"]
-check("no Exposure tile is a ring", not _ex_pies, _ex_pies)
+check("the asset class and currency tiles are rings, and their twins",
+      set(_ex_pies) == _ex_rings | {p.privacy_name(n) for n in _ex_rings}, _ex_pies)
+check("...whose descriptions say a negative slice is left out",
+      all("left out" in CARDS[n][1] for n in _ex_pies))
+check("...drawn from the value on the base card, with its total in the hole, the share on the twin",
+      all(VIZ[n].get("pie.metric") == ("share_pct" if "(privacy)" in n else "value")
+          and VIZ[n].get("pie.show_total") is ("(privacy)" not in n)
+          and VIZ[n].get("pie.percent_visibility") == "legend" for n in _ex_pies))
+# The countries on a world map, keyed by their ISO alpha-2 code as the
+# exposure view carries it, beside every region and its countries.
+check("the country tile is a world map of the shares",
+      CARDS["Exposure by country"][0] == "map"
+      and VIZ["Exposure by country"].get("map.region") == "world_countries"
+      and VIZ["Exposure by country"].get("map.dimension") == "country"
+      and VIZ["Exposure by country"].get("map.metric") == "share_pct")
+check("...that leaves out what has no country",
+      "WHERE country NOT IN ('(none)', 'unclassified')" in _ex_sql["Exposure by country"])
+check("the region and country table carries a row per region and one per country",
+      CARDS["Exposure by region and country"][0] == "table"
+      and "GROUPING SETS ((region), (region, country, country_name))" in _ex_sql["Exposure by region and country"])
 
 section("the Wealth Overview and Allocation read the chosen currency")
 
