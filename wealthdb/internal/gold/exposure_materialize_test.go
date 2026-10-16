@@ -16,7 +16,9 @@ import (
 func TestMaterializeExposureMatchesTheLiveViews(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
-	// A stock with a market cap, so the sizes have a size to carry.
+	// A stock with a market cap, so the sizes have a size to carry, and
+	// a holding of each situs basis.
+	seedSitus(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
 	    VALUES ('refdata', 'isin:XX0000000001', 'market_cap', 0, 'testfact', '50000000000')`); err != nil {
 		t.Fatal(err)
@@ -78,7 +80,8 @@ func TestMaterializeExposureMatchesTheLiveViews(t *testing.T) {
 }
 
 // checkMaterializedInstant compares one instant and currency of
-// report_exposure with holdings global and the sizes view.
+// report_exposure with holdings global, the sizes view and the situs
+// view.
 func checkMaterializedInstant(t *testing.T, ctx context.Context, db *sql.DB, at int64, ccy string) {
 	t.Helper()
 	g, err := GlobalAsOf(ctx, db, at, ccy)
@@ -113,6 +116,21 @@ func checkMaterializedInstant(t *testing.T, ctx context.Context, db *sql.DB, at 
 		}
 		if want := parse(t, r.Value); math.Abs(v-want) > 0.01 {
 			t.Errorf("%s %s %s at %d: materialized %.4f, sizes view %.4f", ccy, r.AssetClass, r.Size, at, v, want)
+		}
+	}
+	situs, err := ExposureSitus(ctx, db, at, ccy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range situs {
+		var v float64
+		if err := db.QueryRowContext(ctx, `SELECT COALESCE(SUM(value), 0) FROM web_exposure
+		    WHERE currency = ? AND as_of_day = CAST(epoch_ms(? * 1000) AS DATE) AND situs = ?`,
+			ccy, at, r.Situs).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		if want := parse(t, r.Value); math.Abs(v-want) > 0.01 {
+			t.Errorf("%s situs %s at %d: materialized %.4f, situs view %.4f", ccy, r.Situs, at, v, want)
 		}
 	}
 }
@@ -151,7 +169,10 @@ func TestMigration0127DDLIsRerunnable(t *testing.T) {
 	if _, err := MaterializeExposure(ctx, db, exAsOf, 1); err != nil {
 		t.Fatal(err)
 	}
+	// 0129 re-creates web_exposure with the situs, so it is replayed
+	// after 0127, as Migrate would.
 	rerunMigrationDDL(t, db, ctx, "0127_exposure_dashboard.sql")
+	rerunMigrationDDL(t, db, ctx, "0129_exposure_situs.sql")
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure WHERE size = 'unclassified'`).Scan(&n); err != nil ||
 		n == 0 {

@@ -217,7 +217,7 @@ Example: {view: "accounts", tax_wrapper: "roth_ira"}.`,
 Example: {view: "sources", from: "2024", to: "2025", period: "annual", method: "twr"}.`,
 	"gains": `gain = realized + unrealized_change, the price gain on what is held; income, fees and taxes are in returns. Realized is what the sale's documents state, else what the lot engine rebuilt from the trades; unrealized is the clean value (market value less accrued interest) less the cost basis. basis_stamp says which notion of cost basis a figure is. summary, sources, portfolios and accounts add up. The quality column names every gap (describe topic=quality); the coverage view says per account where the figures are blind, and the check view compares the lot engine with the stated lots.
 Example: {view: "accounts", from: "2025", to: "2025", tax_wrapper: "taxable_joint"}.`,
-	"exposure": `Every view sums to net worth, as holdings view=global gives it: what a fund's composition does not explain is a remainder row, and a holding nothing describes is unclassified, never dropped. A fund's composition is the one nearest the as-of day (the funds view says which, and how old); quality flags such as proxy, aged or partial carry the share of the row they touch (describe topic=quality). The view sums are in the output currency; the shares need none.
+	"exposure": `Every view sums to net worth, as holdings view=global gives it: what a fund's composition does not explain is a remainder row, and a holding nothing describes is unclassified, never dropped. A fund's composition is the one nearest the as-of day (the funds view says which, and how old); quality flags such as proxy, aged or partial carry the share of the row they touch (describe topic=quality). view=situs reads every holding whole, at its legal situs: it looks through no fund, and its quality says what each situs rests on; coverage's situs section lists the holdings whose situs is unclassified. The view sums are in the output currency; the shares need none.
 Example: {view: "sectors", as_of: "2025-12-31", currency: "CHF"}.`,
 	"transactions": `Money leaving an account is negative. kind is the booked kind: buy, sell, dividend, interest, fee, tax, deposit, withdrawal, purchase, refund, card_payment and others.
 Example: {from: "last month", to: "last month", kind: "dividend"}.`,
@@ -285,11 +285,16 @@ The gains quality column names each way a figure can be incomplete:
 - basis_assumed_zero=N: under missing_basis=zero, N positions and lots took 0 for a cost no one states.
 - fx_missing=N: N figures had no exchange rate and are left out.`
 
-// exposureQualityHelp lists the exposure quality tags (exposureQualityTags).
+// exposureQualityHelp lists the exposure quality tags (exposureQualityTags)
+// and the situs bases (exposureSitusBases).
 func exposureQualityHelp() string {
 	var b strings.Builder
 	b.WriteString("The exposure quality column names what a figure rests on, each tag with the share of the row it covers (proxy=12%):")
 	for _, q := range exposureQualityTags {
+		b.WriteString("\n- " + q.tag + ": " + q.meaning + ".")
+	}
+	b.WriteString("\n\nIn view=situs, quality gives the share of the row each basis of the situs covers (isin=80%):")
+	for _, q := range exposureSitusBases {
 		b.WriteString("\n- " + q.tag + ": " + q.meaning + ".")
 	}
 	return b.String()

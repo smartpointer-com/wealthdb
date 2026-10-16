@@ -2610,15 +2610,17 @@ def base_dashboards():
             f"today, in a chosen currency (default {DEFAULT_CURRENCY}). A "
             "breakdown reads the latest day in the window; the map colours "
             "each country by its share; a chart over time shows every month "
-            "end. The last chart says how much of net worth the figures rest "
-            "on. " + note,
+            "end. Exposure by legal situs shows where each holding legally "
+            "sits, a fund whole at its own. The last chart says how much of "
+            "net worth the figures rest on. " + note,
             "range", [
             # The allocation first, the ring beside the sectors and the
             # classes over time full width; then where it sits: the map
             # full width, the regions beside every region's countries, the
-            # regions over time; then what it moves with, the currency
-            # ring beside its history; then public equity by size beside
-            # what funds hold; last, how much the figures cover.
+            # regions over time, and where it legally sits, full width;
+            # then what it moves with, the currency ring beside its
+            # history; then public equity by size beside what funds hold;
+            # last, how much the figures cover.
             ("Exposure by asset class", 0, 0, 12, 9, "as_of_day"),
             ("Exposure by sector", 0, 12, 12, 9, "as_of_day"),
             ("Asset classes over time", 9, 0, 24, 8, "as_of_day"),
@@ -2626,11 +2628,12 @@ def base_dashboards():
             ("Exposure by region", 27, 0, 11, 9, "as_of_day"),
             ("Exposure by region and country", 27, 11, 13, 9, "as_of_day"),
             ("Regions over time", 36, 0, 24, 8, "as_of_day"),
-            ("Exposure by currency", 44, 0, 12, 9, "as_of_day"),
-            ("Currencies over time", 44, 12, 12, 9, "as_of_day"),
-            ("Public equity by size", 53, 0, 12, 7, "as_of_day"),
-            ("Held directly or through funds", 53, 12, 12, 7, "as_of_day"),
-            ("How the figures are classified", 60, 0, 24, 7, "as_of_day"),
+            ("Exposure by legal situs", 44, 0, 24, 8, "as_of_day"),
+            ("Exposure by currency", 52, 0, 12, 9, "as_of_day"),
+            ("Currencies over time", 52, 12, 12, 9, "as_of_day"),
+            ("Public equity by size", 61, 0, 12, 7, "as_of_day"),
+            ("Held directly or through funds", 61, 12, 12, 7, "as_of_day"),
+            ("How the figures are classified", 68, 0, 24, 7, "as_of_day"),
         ]),
         "Data Freshness": (
             "How long ago each source was last read — which feeds need a "
@@ -2768,6 +2771,13 @@ def exposure_cards(db_id, privacy):
          "         GROUP BY GROUPING SETS ((region), (region, country, country_name)))\n"
          " ORDER BY region_rank DESC, region, country IS NOT NULL, share_pct DESC, country",
          _share_viz("share_pct"))
+    at_end("Exposure by legal situs", "bar",
+           "Net worth by legal situs, at the latest day in the window. A "
+           "holding's situs is the one country whose law it is an interest "
+           "under: a fund's domicile, a share's issuer, the bank that holds "
+           "a deposit. No fund is looked through: a fund counts whole at its "
+           "own situs, so this is not where the value is exposed. "
+           "Unclassified is what nothing places, coins among it.", "situs", "situs")
     at_end("Exposure by currency", "pie",
            "Net worth by the currency each value moves with, at the "
            "latest day in the window: a stock in its trading currency, a "

@@ -3,13 +3,14 @@
 What is really owned. The exposure report looks through every fund to
 what it holds, down to the single security, and adds the result to
 what is held directly. It answers by asset class, sector, country,
-currency and security, as of any day. This file defines every figure
-the report shows and the rules behind them.
+currency and security, as of any day. It also says where each holding
+legally sits (§13). This file defines every figure the report shows and
+the rules behind them.
 
 Related design: DESIGN.md §4.17 (the `exposure` command), §7.6 (the
 reference and config tables), §10.14 (the derived tables and macros);
 [adapters/refdata.md](adapters/refdata.md) (how reference data loads,
-the keys and aliases, and the wanted list); migrations 0125 to 0128.
+the keys and aliases, and the wanted list); migrations 0125 to 0129.
 
 Every figure is a share of a holding's market value, the value
 `holdings` reports. The look-through moves value between rows; it never
@@ -40,6 +41,8 @@ creates or loses any. Every view therefore sums to `holdings global`.
   or the cash leg of a leveraged proxy.
 - **Net worth** is the sum of every leaf, as `holdings global` reports
   it. A loan is a negative leaf.
+- **A legal situs** is the one country whose law a holding is an
+  interest under (§13).
 
 ## 2. The look-through
 
@@ -340,6 +343,7 @@ The `currencies` view marks each row's kind: `fiat`, `metal` or
 | `sizes` | asset class and size | large, mid and small caps (§3), and each one's share within its class |
 | `countries` | country | where the value is, with each country's region |
 | `currencies` | currency | what the value moves with |
+| `situs` | legal situs | where each holding legally sits, each fund whole (§13) |
 | `securities` | security | each security held directly and through every fund |
 | `funds` | fund held directly | what describes it on the day, and how old that is |
 | `coverage` | reason | what the figures rest on (§10) |
@@ -349,7 +353,7 @@ Columns every aggregate view shares, by the names `-C` takes:
 - `value`: the sum of the leaves, in the output currency.
 - `share`: the share of net worth. A loan is a negative share.
 - `direct` and `via_funds`: the part held directly and the part held
-  through funds. They sum to `share`.
+  through funds. They sum to `share`. `situs` has neither (§13).
 - `quality`: the flags of §8.
 
 `sectors` and `sizes` add `class_share`, the share within the asset
@@ -387,16 +391,18 @@ column first. The last period ends at the window's end, so a window to
 today ends with today's figures. The window defaults to the last twelve
 months. It starts no earlier than the first holding and ends no later
 than today. It works on `classes`, `sectors`, `sizes`, `countries`,
-`currencies` and `coverage`. Each period is a separate look-through: its
-holdings and compositions are the ones of its own day (§4). A security's
-attributes, its market cap and size among them, are today's.
+`currencies`, `situs` and `coverage`. Each period is a separate
+look-through: its holdings and compositions are the ones of its own day
+(§4). A security's attributes, its market cap and size among them, are
+today's.
 
 ## 8. Quality
 
 Each row says what its figure rests on. A flag carries the share of the
 row's gross value it covers: `proxy=12%`, `aged=<1%`. `wealthdb help
 exposure` and the MCP server's `describe topic=quality` list the same
-flags.
+flags. In `situs`, the quality column gives the bases of the situs
+instead (§13).
 
 | Flag | Meaning |
 | --- | --- |
@@ -408,7 +414,7 @@ flags.
 | `unmapped` | a provider's label has no place in the vocabulary |
 | `by_name` | a depositary receipt's or a named line's sector or country comes from a share matched by name among all shares, not in a proxy's lines (§3) |
 | `opaque` | a private equity fund nothing looks through; it reads `diversified` |
-| `undeclared` | a private holding (§5) has no declaration on the day. A record that leaves a dimension out still declares the holding |
+| `undeclared` | a private holding (§5) has no declaration on the day. A record that leaves a dimension out still declares the holding; one that states only a situs does not |
 | `unmatched` | a listed security or fund no source describes |
 | `no_composition` | in `funds` only: no composition and no declaration describes the fund on the day |
 
@@ -446,7 +452,8 @@ The `exposure` block of `wealthdb.cfg` holds what no source knows
   expands like every path in the config (DESIGN.md §5).
 - `custody` names who keeps each configured source's assets:
   `custodian`, and optionally `country` (ISO 3166). A cash balance
-  counts in its custodian's country.
+  counts in its custodian's country, and its legal situs is that
+  country, as is a vault's metal's (§13).
 - `max_gap_days` bounds the temporal join (§4): 1 to 3650 days,
   default 400.
 
@@ -457,21 +464,23 @@ declarations ledger, into the `exposure_*` tables whole (DESIGN.md
 ### The declarations ledger
 
 The declarations ledger states what no public source can know: where a
-private holding's value is (§5). It is newline-delimited JSON, one
-record per line, for one holding and date:
+private holding's value is (§5), and where any holding legally sits
+(§13). It is newline-delimited JSON, one record per line, for one
+holding and date:
 
 ```json
 {"silver_source_id":"manual","instrument":"house-1","country":{"CH":100},"currency":{"CHF":100},"note":"the house"}
 {"silver_source_id":"manual","instrument":"loan-1","country":{"CH":100},"currency":{"CHF":100},"note":"its mortgage"}
 {"silver_source_id":"venture","instrument":"fund-7","as_of":"2026-03-31","region":{"north_america":55,"europe":30,"rest":15},"asset_class":{"private_equity":72,"private_debt":28},"currency":{"USD":90,"EUR":10},"source":{"document":"offering memorandum","page":9},"note":"states 50-60 / 25-35 / 10-20; midpoints"}
+{"silver_source_id":"venture","instrument":"fund-7","situs":{"LU":100},"note":"its domicile"}
 ```
 
 - `silver_source_id` and `instrument` name the holding, as `exposure
   coverage` prints them.
 - `as_of` is the date of the document the record comes from,
   `YYYY-MM-DD`. A record without one is simply true.
-- A record declares at least one dimension. Each is an object of values
-  and their shares:
+- A record declares at least one dimension, or a `situs`. Each
+  dimension is an object of values and their shares:
   - `region`: a region (§3), or `rest` for the rest of the world, which
     reads as the region `other`;
   - `country`: an ISO 3166 code. A country implies its region, so a
@@ -482,6 +491,11 @@ record per line, for one holding and date:
   - `asset_class`: an asset class (TAXONOMY.md).
 - `unclassified` is a value of every dimension: the part the record
   leaves open.
+- `situs` is the holding's legal situs (§13): one ISO 3166 code at 100,
+  such as `{"KY": 100}`. A split, a region, `EU` and `unclassified` are
+  refused. A record that states only a `situs` is no record for the
+  other dimensions: they read the holding's other records as if it were
+  not there.
 - A share is a number in percent, from 0 to 100. A dimension's shares
   sum to 100, within half a point for rounding. What they leave of 100,
   or take beyond it, counts as `unclassified`, so the dimension sums to
@@ -492,8 +506,9 @@ record per line, for one holding and date:
   the document and its page.
 - Any other key is refused, so a misspelt dimension cannot drop a split.
   So is a key stated twice.
-- A holding has one record per date: a second record needs another
-  date.
+- A holding has one record per date that states its dimensions, and one
+  per date that states its situs. A record may state both. So a
+  situs-only line sits beside the record of a split of the same date.
 - A load reads the ledger before it opens gold, so a bad record stops
   it early. The error names the line.
 - A missing file holds no declarations.
@@ -511,20 +526,26 @@ fund that is part private equity, part private debt in both rows. The
 part the record leaves `unclassified` keeps the holding's own class.
 
 On a day, the record that describes a holding is the latest one dated on
-or before that day. A record without a date serves the days before the
-first dated one. A record has no age limit: a target split does not go
-stale as a fund's list of holdings does. Before its first record, a
-holding is undeclared.
+or before that day that states a dimension. A record without a date
+serves the days before the first dated one. A record has no age limit: a
+target split does not go stale as a fund's list of holdings does. Before
+its first record, a holding is undeclared. The situs has a precedence of
+its own (§13).
 
 The ledger is filled in a loop. `wealthdb exposure coverage -f ndjson`
-prints one skeleton record for each private holding without a record
-(the section `undeclared`). Its dimensions are empty, and its note is
-the holding's name. A record filled in from the skeleton goes into the
-ledger, and the next load takes it. An empty dimension is refused, so a
-skeleton loads only once each dimension is filled in or taken out. A
-holding its source names by no instrument has an empty `instrument` and
-cannot take a record. A holding with no value, in the `(no value)` line,
-takes no skeleton.
+prints a skeleton record for each holding still to declare:
+
+- a private holding without a record (the section `undeclared`) gets
+  one with an empty `country`, `currency` and `sector`;
+- a holding whose situs is `unclassified` gets one with an empty
+  `situs` alone. It loads beside the holding's other records.
+
+Its note is the holding's name. A record filled in from the skeleton
+goes into the ledger, and the next load takes it. An empty dimension is
+refused, so a skeleton loads only once each dimension is filled in or
+taken out. A holding its source names by no instrument has an empty
+`instrument` and cannot take a record. A holding with no value, in the
+`(no value)` line, takes no skeleton.
 
 A load warns of a record whose holding no source states, with its line:
 such a record declares nothing, and a misspelt instrument would
@@ -532,7 +553,7 @@ otherwise show only as a holding still undeclared.
 
 ## 10. Coverage
 
-`wealthdb exposure coverage` says what the figures rest on, in six
+`wealthdb exposure coverage` says what the figures rest on, in seven
 sections. With `-f ndjson` it prints the skeleton records of §9
 instead.
 
@@ -557,13 +578,17 @@ instead.
   measure is half the sum of the differences in each sector's or
   country's share, in points. Each mix holds only the lines that state
   that dimension. A dimension one side states for no line is left out.
+- `situs` splits net worth by the basis of each holding's legal situs
+  (§13), in the rule's order, and sums to it. Then it lists each holding
+  whose situs is `unclassified`. Its items count holdings, not leaves.
 
-`unmatched` and `undeclared` name each holding by `silver_source_id`
-and `instrument`, the two keys a declaration starts with. A holding at
-two sources has a line for each. In `unmapped`, `unmatched` and
-`undeclared`, the labels and holdings with no value share one line,
-`(no value)`, with their count. A label or holding whose leaves offset
-each other still has value and keeps its own line.
+`unmatched`, `undeclared` and the holdings of `situs` name each holding
+by `silver_source_id` and `instrument`, the two keys a declaration
+starts with. A holding at two sources has a line for each. In
+`unmapped`, `unmatched`, `undeclared` and `situs`, the labels and
+holdings with no value share one line, `(no value)`, with their count.
+A label or holding whose leaves offset each other still has value and
+keeps its own line.
 
 ## 11. What exposure is not
 
@@ -573,16 +598,118 @@ each other still has value and keeps its own line.
   or its domicile is.
 - Not gains. A fund's unrealized gain stays with the fund; the
   look-through does not split it across its lines.
+- Not the legal situs. A fund counts in its lines' countries here.
+  `situs` says where each holding legally sits (§13).
 
 ## 12. The dashboard and MCP
 
 The Metabase Exposure dashboard (`wealthdb web`) charts the same
-figures at every month end and today, by country of risk
-([web/DESIGN.md](../../web/DESIGN.md) §6 and §8). Every refresh
-recomputes the whole history, so a new composition or declaration shows
-in past months too. A security's attributes, its size among them, are
-today's at every month end, as in a `--period` series (§7).
+figures at every month end and today, by country of risk, and each
+holding's legal situs ([web/DESIGN.md](../../web/DESIGN.md) §6 and
+§8). Every refresh recomputes the whole history, so a new composition
+or declaration shows in past months too. A security's attributes, its
+size among them, are today's at every month end, as in a `--period`
+series (§7).
 
-The MCP server has an `exposure` tool with the same eight views, an
+The MCP server has an `exposure` tool with the same nine views, an
 `as_of` day and the `country` choice, but no `--period` series. Its
 rows equal the command's, cell for cell.
+
+## 13. Legal situs
+
+`wealthdb exposure situs` says where each holding legally sits. The
+situs of a holding is the one country whose law it is an interest
+under:
+
+- a fund, an ETF, a feeder or a plan sleeve: where the vehicle is
+  domiciled;
+- a share: where its issuer is incorporated. A depositary receipt
+  reads as the share it stands for;
+- a bond or a structured product: its issuer's country;
+- cash: the country of the bank that holds it, since a deposit is a
+  claim on that bank. Metal in a vault: its custodian's country;
+- a property: where it stands. A private loan: the debtor's country;
+- a coin: no situs the engine can know.
+
+A holding has one situs, never a split. Its region is its country's.
+What a law makes of a situs, such as a treaty or an exception for bank
+deposits, is outside the engine. The view gives the country and what it
+rests on.
+
+### The rule
+
+For each holding, the first of these that applies:
+
+1. `declared`: a declaration states its `situs` (§9).
+2. `underlying`: it is a depositary receipt whose share is known (§3).
+   It takes the share's situs, by the rules below. A receipt whose
+   share is unknown stays `unclassified`: its US ISIN says where the
+   receipt was issued, not where the issuer is.
+3. `isin`: the prefix of an ISIN a source states, where the prefix is a
+   country. A prefix that is no country gives nothing: XS, XA to XD,
+   and EU, the European Union. Nor does an ISIN only the US CUSIP rule
+   gives: it is a guess.
+4. `domicile`: the holding's country of domicile, where it has no ISIN
+   of a country. It comes from:
+   - a fund's attributes;
+   - else, for a fund whose latest composition is an SEC N-PORT filing,
+     the US: only a US registered investment company files one;
+   - else a security's legal country at GLEIF, or its state of
+     incorporation at EDGAR (§3).
+5. `custody`: cash at a bank and metal in a vault take the country of
+   their source's custodian (`exposure.custody`, §9). Nothing else does:
+   an ETF kept at a Swiss bank is not Swiss. Cash swept into a money
+   market fund is a fund and reads by rules 3 and 4.
+6. `country`: a private holding (§5) takes the one country its
+   declaration in force on the day states at 100 (§9). This holds only
+   where no composition of its own describes it. A split or a region
+   states nothing here.
+7. `unclassified`.
+
+The declared situs has a precedence of its own. On a day, it is the one
+the latest record on or before that day states; a record without a date
+counts as before every dated one. A later record that states no situs
+leaves it standing. What a situs-only record does to the other
+dimensions is in §9.
+
+A depositary receipt is a holding that a lookup or GLEIF calls one
+(§3), or whose name says so (ADR, GDR). A fund is never one, and nor is
+a holding whose ISIN is of a country other than the US.
+
+A coin held in a wallet has no issuer. Only a declaration places it.
+
+An issuer's own code in the shape of an ISIN gives nothing where its
+prefix is no country. Under a country's prefix it reads as an ISIN.
+
+### No look-through
+
+The situs never looks through a fund. A fund's whole value sits at its
+own situs; its lines, a proxy and a composition's date play no part.
+Every leaf of the look-through carries the situs of the holding it
+comes from, so the view sums to `holdings global` like every other
+view.
+
+### Three readings of country
+
+| Reading | View | What it answers |
+| --- | --- | --- |
+| country of risk | `countries`, the default | where the value is exposed: each fund looked through, each company in its country of risk |
+| country of domicile | `countries --country domicile` | the same look-through, each company in the country it is incorporated in |
+| legal situs | `situs` | where each holding legally sits, each fund whole at its own |
+
+### The view
+
+`situs` has one row per situs, `unclassified` among them. Its columns
+are `situs`, `country_name`, `region`, `value`, `share`, `funds` and
+`quality`:
+
+- `funds` is the share of the row's gross value held in pooled
+  vehicles, the vehicles `etf` and `fund` (TAXONOMY.md).
+- `quality` gives the share of the row's gross value each basis
+  covers, in the rule's order: `declared=12%,isin=80%`.
+- There is no `direct` or `via_funds`: nothing is looked through.
+
+`funds` shows each fund's `situs` and `situs_basis` beside its
+`domicile`, so a declared situs that differs from the domicile shows.
+A fund held in two accounts takes the situs of its larger holding.
+`coverage` lists each holding whose situs is `unclassified` (§10).

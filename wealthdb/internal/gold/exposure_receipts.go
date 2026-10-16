@@ -21,20 +21,25 @@ import (
 // strict, since a wrong one would pass unnoticed; docs/EXPOSURE.md §3
 // states its rules.
 
-// receiptSQL lists every security that lacks a sector or a risk country,
-// and every one a lookup or a name calls a depositary receipt (the
-// parameter is receiptWording), with each name a lookup, a broker or a
-// fund line gives it and whether a lookup calls it a receipt. A receipt
-// a source describes still finds its share, for the share's size.
-const receiptSQL = `
-WITH names AS (
+// securityNamesSQL is a CTE, names: each name a lookup, a broker or a
+// fund line gives a security (k), and whether a lookup calls it a
+// depositary receipt.
+const securityNamesSQL = `names AS (
     SELECT exposure_key(security_key) AS k, name, security_type = 'Depositary Receipt' AS receipt
       FROM security_identities
     UNION ALL
     SELECT exposure_key(ik.security_key), ins.name, FALSE
       FROM instrument_keys ik JOIN instruments ins USING (silver_source_id, instrument_external_id)
     UNION ALL
-    SELECT DISTINCT exposure_key(security_key), name, FALSE FROM fund_lines WHERE security_key IS NOT NULL)
+    SELECT DISTINCT exposure_key(security_key), name, FALSE FROM fund_lines WHERE security_key IS NOT NULL)`
+
+// receiptSQL lists every security that lacks a sector or a risk country,
+// and every one a lookup or a name calls a depositary receipt (the
+// parameter is receiptWording), with each name a lookup, a broker or a
+// fund line gives it and whether a lookup calls it a receipt. A receipt
+// a source describes still finds its share, for the share's size.
+const receiptSQL = `
+WITH ` + securityNamesSQL + `
 SELECT s.security_key,
        COALESCE(s.risk_country, CASE WHEN s.domicile_origin <> 'isin_prefix' THEN s.domicile END, ''),
        n.name, COALESCE(n.receipt, FALSE)

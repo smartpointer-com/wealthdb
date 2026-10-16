@@ -14,7 +14,8 @@ import (
 // so its value in another currency is its dollar value times the ratio
 // of that holding's two values. A holding no rate converts to US dollars
 // is left out in every currency. A stock's size is today's at every
-// instant: securities holds one row per security. %s is the UNION of
+// instant: securities holds one row per security. A leaf carries its
+// holding's legal situs and its basis. %s is the UNION of
 // exposure_holdings per reporting currency, US dollars among them.
 const exposureInsertSQL = `INSERT INTO report_exposure BY NAME
 WITH l AS (SELECT * FROM exposure_leaves(CAST($1 AS BIGINT), 'USD')),
@@ -22,7 +23,7 @@ h AS MATERIALIZED (%s),
 usd AS (SELECT src, acct, position_key, value AS v FROM h WHERE out_ccy = 'USD' AND value <> 0)
 SELECT CAST($2 AS BIGINT) AS computed_at, h.out_ccy AS currency, CAST($1 AS BIGINT) AS as_of,
        l.asset_class, l.sector, l.country, l.region, l.currency AS exposure_currency, l.currency_kind,
-       l.depth > 0 AS via_funds, l.how, l.size,
+       l.depth > 0 AS via_funds, l.how, l.size, l.situs, l.situs_basis,
        SUM(l.value * h.value / usd.v) AS value
   FROM l
   JOIN usd ON usd.src = l.src AND usd.acct = l.acct AND usd.position_key = l.position_key

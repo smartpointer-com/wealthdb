@@ -242,10 +242,11 @@ func TestExposurePassCompletesAReceipt(t *testing.T) {
 func TestMigration0126DDLIsRerunnable(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
-	// 0128 re-creates the look-through over the declarations, so it is
-	// replayed after 0126, as Migrate would.
+	// 0128 and 0129 re-create the look-through, so they are replayed
+	// after 0126, as Migrate would.
 	rerunMigrationDDL(t, db, ctx, "0126_exposure_report.sql")
 	rerunMigrationDDL(t, db, ctx, "0128_exposure_declarations.sql")
+	rerunMigrationDDL(t, db, ctx, "0129_exposure_situs.sql")
 	n, err := RebuildExposure(ctx, db)
 	if err != nil {
 		t.Fatal(err)

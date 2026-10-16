@@ -100,6 +100,11 @@ func Regions() []Region {
 	return []Region{RegionNorthAmerica, RegionLatinAmerica, RegionEurope, RegionMiddleEastAfrica, RegionAsiaPacific}
 }
 
+// EuropeanUnion is the code the country table reserves for the European
+// Union: a place a value can be exposed to, but no one country's law, so
+// never a legal situs.
+const EuropeanUnion = "EU"
+
 // Country is an ISO 3166-1 alpha-2 code with its English short name and
 // its region.
 type Country struct {

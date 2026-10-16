@@ -10,15 +10,15 @@ import (
 )
 
 // RebuildExposure rewrites the exposure report's derived tables from
-// what gold holds: the label maps and
-// vocabularies, the labels the fund lines carry, each instrument's
-// security key, the aliases that tie two keys of one security together,
-// the best-known attributes of every security, the share each
-// depositary receipt stands for, what a bond's description says where
-// nothing else does, and each stock's market cap and size. It runs after
-// the per-source loads, like the lot pass: an alias may tie a line one
-// source loaded to an instrument another one did. One transaction; the
-// tables are replaced whole.
+// what gold holds: the label maps and vocabularies, the labels the fund
+// lines carry, each instrument's security key, the aliases that tie two
+// keys of one security together, the best-known attributes of every
+// security, the share each depositary receipt stands for, what a bond's
+// description says where nothing else does, each stock's market cap and
+// size, and each holding's legal situs. It runs after the per-source
+// loads and the config's exposure block, like the lot pass: an alias may
+// tie a line one source loaded to an instrument another one did. One
+// transaction; the tables are replaced whole.
 func RebuildExposure(ctx context.Context, db *sql.DB) (ExposureCounts, error) {
 	var n ExposureCounts
 	tx, err := db.BeginTx(ctx, nil)
@@ -38,6 +38,7 @@ func RebuildExposure(ctx context.Context, db *sql.DB) (ExposureCounts, error) {
 		{"receipts", func() error { return writeReceipts(ctx, tx) }},
 		{"bonds", func() error { return writeBondReadings(ctx, tx) }},
 		{"sizes", func() error { return writeSizes(ctx, tx) }},
+		{"situs", func() error { return writeSitus(ctx, tx) }},
 	}
 	for _, s := range steps {
 		if err := s.run(); err != nil {

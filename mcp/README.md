@@ -143,7 +143,7 @@ Thirteen tools, every parameter optional:
 | `holdings` | what is held, where, and what it is worth, on a date |
 | `returns` | how investments performed, as time- and money-weighted returns |
 | `gains` | what was gained or lost, realized and unrealized |
-| `exposure` | what is really owned once every fund is looked through, by class, sector, country and currency |
+| `exposure` | what is really owned once every fund is looked through, by class, sector, country and currency; and where each holding legally sits |
 | `transactions` | the individual booked lines over a window |
 | `spending` | what was spent, on what |
 | `income` | what was received, from whom |

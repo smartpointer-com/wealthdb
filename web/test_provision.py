@@ -1530,6 +1530,23 @@ check("...with the legend reading largest first",
       all(VIZ[n].get("legend.is_reversed") is False for n in _ex_areas))
 check("...and only the currencies fold their tail into an other band",
       all(("ELSE 'other'" in q) == (n == "Currencies over time") for n, q in _ex_areas.items()))
+# The legal situs reads no fund through: a bar of each situs's share, the
+# value in the tooltip, under the country map and the region table, with
+# its twin, and named in the dashboard's description.
+_situs = "Exposure by legal situs"
+_ex_at = {t[0]: t for t in _ex_spec}
+check("the legal situs tile is a bar of the shares by situs, the value in its tooltip",
+      CARDS[_situs][0] == "bar" and VIZ[_situs].get("graph.dimensions") == ["situs"]
+      and VIZ[_situs].get("graph.metrics") == ["share_pct"]
+      and VIZ[_situs].get("graph.tooltip_columns") == ["value"]
+      and "GROUP BY ALL" in _ex_sql[_situs] and "SELECT situs AS situs" in _ex_sql[_situs])
+check("...placed under the country map and the region table",
+      all(_ex_at[_situs][1] >= _ex_at[n][1] + _ex_at[n][4]
+          for n in ("Exposure by country", "Exposure by region and country")))
+check("...with its privacy twin", p.privacy_name(_situs) in _ex_twin
+      and VIZ[p.privacy_name(_situs)].get("graph.metrics") == ["share_pct"])
+check("...and its description says no fund is looked through", "No fund is looked through" in CARDS[_situs][1])
+check("the Exposure dashboard's description names the legal situs", "legal situs" in DEFS["Exposure"][0])
 check("the region and country table carries a row per region and one per country",
       CARDS["Exposure by region and country"][0] == "table"
       and "GROUPING SETS ((region), (region, country, country_name))" in _ex_sql["Exposure by region and country"])

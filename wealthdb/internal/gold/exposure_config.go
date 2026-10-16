@@ -56,8 +56,9 @@ func SyncExposure(ctx context.Context, db *sql.DB, rows canonical.ExposureRows) 
 	var leaves []leaf
 	for _, d := range rows.Declarations {
 		if err := insert(`INSERT INTO exposure_declarations (line_no, silver_source_id, instrument_external_id, as_of,
-dimensions, source, note) VALUES (?, ?, ?, ?, ?, ?, ?)`, d.Line, d.SilverSourceID, d.InstrumentExternalID, d.AsOf,
-			strings.Join(d.Dimensions, ","), nullableEnumValue(d.Source), nullableEnumValue(d.Note)); err != nil {
+dimensions, situs, source, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, d.Line, d.SilverSourceID, d.InstrumentExternalID,
+			d.AsOf, strings.Join(d.Dimensions, ","), nullableEnumValue(d.Situs), nullableEnumValue(d.Source),
+			nullableEnumValue(d.Note)); err != nil {
 			return 0, err
 		}
 		for i, l := range d.Leaves {

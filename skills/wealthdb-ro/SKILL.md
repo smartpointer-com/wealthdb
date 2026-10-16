@@ -1,6 +1,6 @@
 ---
 name: wealthdb-ro
-description: Query the user's consolidated cross-institution investment portfolio through the read-only `wealthdb` CLI — holdings, account and portfolio balances, net worth, asset allocation, transaction history, investment returns (TWR and MWR/XIRR), look-through exposure by asset class, sector, size, country and currency, realized and unrealized gains with their cost basis and tax lots, categorised spending, categorised income, and the household cash flow statement with its Sankey. Use whenever a question is about current holdings, what an account or portfolio is worth, allocation, money in or out, what is really owned once every fund is looked through, how something performed over a period, what was gained or lost (realized or unrealized, or a holding's cost basis), what was spent and on what, what was received and from whom, or where the household's cash came from and where it went.
+description: Query the user's consolidated cross-institution investment portfolio through the read-only `wealthdb` CLI — holdings, account and portfolio balances, net worth, asset allocation, transaction history, investment returns (TWR and MWR/XIRR), look-through exposure by asset class, sector, size, country and currency, each holding's legal situs, realized and unrealized gains with their cost basis and tax lots, categorised spending, categorised income, and the household cash flow statement with its Sankey. Use whenever a question is about current holdings, what an account or portfolio is worth, allocation, money in or out, what is really owned once every fund is looked through, how something performed over a period, what was gained or lost (realized or unrealized, or a holding's cost basis), what was spent and on what, what was received and from whom, or where the household's cash came from and where it went.
 ---
 
 # wealthdb — portfolio queries (read-only)
@@ -61,9 +61,14 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
   loan or an SPV: `wealthdb exposure securities | grep -i <name>` (quality
   `declared`); the private holdings with no record:
   `wealthdb exposure coverage | grep undeclared`
-- **Records still to write** — `wealthdb exposure coverage -f ndjson`: one
-  skeleton per undeclared holding, for the user to fill into the
-  declarations ledger
+- **Where holdings legally sit** (for an estate question) —
+  `wealthdb exposure situs`; one fund's situs:
+  `wealthdb exposure funds -C fund,name,domicile,situs,situs_basis`; what
+  each situs rests on, and the holdings whose situs is unknown:
+  `wealthdb exposure coverage -f csv | grep '^situs,'`
+- **Records still to write** — `wealthdb exposure coverage -f ndjson`: a
+  skeleton per undeclared holding, and a situs-only one per holding of
+  unclassified situs, for the user to fill into the declarations ledger
 - **Return of the portfolio / each account** —
   `wealthdb returns global 2025 --period total` / `wealthdb returns accounts 2025 --period total`
   (the account column is `entity`; one account: `| grep -i 'brokerage'`)
@@ -105,7 +110,7 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
 | The question | Command | Views |
 |---|---|---|
 | Net worth, balances, holdings (as of a day) | `holdings` | `global`, `sources`, `portfolios`, `accounts`, `positions` |
-| What is **really owned** once funds are looked through (as of a day) | `exposure` | `classes`, `sectors`, `sizes`, `countries`, `currencies`, `securities`, `funds`, `coverage` |
+| What is **really owned** once funds are looked through (as of a day); where holdings legally sit | `exposure` | `classes`, `sectors`, `sizes`, `countries`, `currencies`, `situs`, `securities`, `funds`, `coverage` |
 | Trades, dividends, fees, cash in and out | `transactions` | — |
 | How something **performed** (return %) | `returns` | `global`, `sources`, `portfolios`, `accounts` |
 | **Gained or lost**; cost basis; tax lots | `gains` | `summary`, `sources`, `portfolios`, `accounts`, `positions`, `realized`, `lots`, `coverage`, `check` |
@@ -203,6 +208,15 @@ row's asset class.
   `unclassified` where nothing sizes a stock.
 - `--country risk|domicile` (on `countries`, `securities`): where the
   business is (default) or where the company is registered.
+- **`situs` is not exposure.** It gives the one country whose law each
+  holding is an interest under, and looks through no fund: an Irish ETF
+  of US stocks is Irish there, and US in `countries`. Use it for an
+  estate question, never for allocation. Its `quality` gives what each
+  situs rests on (`isin=80%`, `declared`, `custody`, ...), and `funds_pct`
+  the share of the row held in funds. `unclassified` is a coin or a fund
+  with no known domicile, which a declaration can place, or cash at a
+  source whose `exposure.custody` names no country. A declared situs
+  changes no other view.
 
 ## Spending, income, cash flow
 

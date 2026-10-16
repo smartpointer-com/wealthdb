@@ -522,7 +522,7 @@ class TestReference(Built):
         lines = (self.root / "overrides" / "exposure_declarations.ndjson").read_text().splitlines()
         self.assertTrue(lines, "the declarations ledger has records")
         dims = ("region", "country", "currency", "sector", "asset_class")
-        split = 0
+        split, situs = 0, []
         for line in lines:
             d = json.loads(line)
             name = f"{d['silver_source_id']}/{d['instrument']}"
@@ -533,7 +533,11 @@ class TestReference(Built):
             for k in stated:
                 self.assertAlmostEqual(sum(d[k].values()), 100, delta=0.5, msg=f"{name} {k}")
             split += any(len(d[k]) > 1 for k in stated)
+            if "situs" in d:
+                situs.append(name)
+                self.assertEqual(list(d["situs"].values()), [100], name)
         self.assertEqual(split, 1, "one record splits a dimension")
+        self.assertEqual(situs, ["emberwright/fund-ii"], "the private fund declares its situs")
 
     def test_isins_have_the_demo_shape(self):
         """Every ISIN the catalogues state, and so every one a line or a

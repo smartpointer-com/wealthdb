@@ -133,7 +133,8 @@ source knows:
 - The private fund declares a split from its offering document: three
   regions, two currencies, and two asset classes, private equity and
   infrastructure. `wealthdb exposure classes` shows the fund in both
-  classes.
+  classes. It declares its legal situs too, Luxembourg, which
+  `wealthdb exposure situs` shows.
 
 ## How it is built
 

@@ -31,7 +31,8 @@ type ExposureSizeFund struct {
 
 // ExposureDeclaration is one record of the declarations ledger: what the
 // household states about a holding no public source describes, split
-// into the leaves the look-through gives it.
+// into the leaves the look-through gives it, and the holding's legal
+// situs.
 type ExposureDeclaration struct {
 	// Line is the record's line in the ledger, and its id in gold.
 	Line                 int
@@ -43,11 +44,14 @@ type ExposureDeclaration struct {
 	// Dimensions are the dimensions the record declares, in the order of
 	// DeclarationDimensions.
 	Dimensions []string
+	// Situs is the legal situs the record declares, an ISO 3166 code, ""
+	// for none.
+	Situs string
 	// Source is the record's source as JSON text, "" when it has none.
 	Source string
 	Note   string
 	// Leaves are the cross product of the declared dimensions. Their
-	// shares sum to exactly one.
+	// shares sum to exactly one; a record that declares none has none.
 	Leaves []ExposureDeclaredLeaf
 }
 
@@ -72,6 +76,10 @@ const (
 // DeclarationDimensions are the dimensions a declaration may state.
 var DeclarationDimensions = []string{DimensionRegion, DimensionCountry, DimensionCurrency, DimensionSector,
 	DimensionAssetClass}
+
+// DeclarationSitus is the key that declares a holding's legal situs: one
+// country, never split, so never crossed with the dimensions.
+const DeclarationSitus = "situs"
 
 // Unclassified is the value of every dimension for what a declaration
 // leaves open.

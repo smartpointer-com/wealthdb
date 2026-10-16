@@ -119,7 +119,7 @@ wealthdb lots rebuild [--force]       (RW)    Replay the trades into lots: the c
 wealthdb holdings <view> [flags]      (RO)    Point-in-time views: positions, accounts, portfolios, sources, global.
 wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, portfolios, sources, global.
 wealthdb gains   <view> [flags]       (RO)    Realized and unrealized gains: summary, sources, portfolios, accounts, positions, realized, lots, coverage, check.
-wealthdb exposure <view> [flags]      (RO)    What is really owned, every fund looked through: classes, sectors, sizes, countries, currencies, securities, funds, coverage.
+wealthdb exposure <view> [flags]      (RO)    What is really owned, every fund looked through: classes, sectors, sizes, countries, currencies, situs, securities, funds, coverage.
 wealthdb transactions [FROM [TO]] [flags] (RO) Print transactions over a date range.
 wealthdb spending <view> [flags]      (RO)    Spending reports: summary, categories, transactions.
 wealthdb income   <view> [flags]      (RO)    Income reports: summary, types, transactions.
@@ -672,17 +672,18 @@ disposals, blips and anchors.
 
 What is really owned, as of a day: every fund looked through to what
 it holds, added to what is held directly (docs/EXPOSURE.md for the
-figures, §10.14 for the macros). The holdings idiom: a positional view,
-`-d` for the day, and the shared `-f`, `-C`, `-x`, `-p`. `--period`
-turns a view into a series over a window.
+figures, §10.14 for the macros). `situs` gives where each holding
+legally sits, each fund whole (EXPOSURE.md §13). The holdings idiom: a
+positional view, `-d` for the day, and the shared `-f`, `-C`, `-x`,
+`-p`. `--period` turns a view into a series over a window.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `<view>` | required | `classes` \| `sectors` \| `sizes` \| `countries` \| `currencies` \| `securities` \| `funds` \| `coverage`. |
+| `<view>` | required | `classes` \| `sectors` \| `sizes` \| `countries` \| `currencies` \| `situs` \| `securities` \| `funds` \| `coverage`. |
 | `-d`, `--as-of` | today | The day. |
 | `--country` | `risk` | `risk` \| `domicile`: the country a security counts in, on `countries` and `securities`. Refused on the other views. |
 | `--period` | none | `monthly` \| `quarterly` \| `annual`: the view at the end of every period of the window `[FROM [TO]]`, a `period` column first (EXPOSURE.md §7). Refused on `securities` and `funds`, and with `-d`. |
-| `-f`, `-C`, `-x`, `-p` | as §4.12 | `-C` names a share column without its `_pct` suffix. `-p` hides every amount and every instrument id (EXPOSURE.md §7). On `coverage`, `-f ndjson` prints one skeleton record of the declarations ledger per undeclared holding (EXPOSURE.md §9); it takes no `-C`, `-p` or `--period`. |
+| `-f`, `-C`, `-x`, `-p` | as §4.12 | `-C` names a share column without its `_pct` suffix. `-p` hides every amount and every instrument id (EXPOSURE.md §7). On `coverage`, `-f ndjson` prints the declarations ledger's skeleton records still to fill in (EXPOSURE.md §9); it takes no `-C`, `-p` or `--period`. |
 
 Every view sums to `holdings global`, and every row carries a
 `quality` column naming what its figure rests on.
@@ -1526,8 +1527,8 @@ is documented where it is used:
 - `report_returns` (migration `0026`) — §10.9.
 - `report_gains` (migration `0117`) — §10.13.
 - The exposure tables: the reference and config tables (migrations
-  `0125` and `0128`) — §7.6; the derived tables (migration `0126`) and
-  `report_exposure` (migration `0127`) — §10.14.
+  `0125` and `0128`) — §7.6; the derived tables (migrations `0126` and
+  `0129`) and `report_exposure` (migration `0127`) — §10.14.
 - The spending overlay: `spend_categories` (migration `0040`;
   docs/SPENDING.md §2), and `spend_txn_enrichment`,
   `spend_merchant_categories` and `spend_account_scope` (migration
@@ -2058,7 +2059,8 @@ config or the ledger leaves on the next load:
 - `exposure_reference_funds`: funds fetched for their lines alone;
 - `exposure_size_funds`: broad funds whose weights size stocks, each
   with the share of its markets it covers;
-- `exposure_declarations`: the declarations ledger's records;
+- `exposure_declarations`: the declarations ledger's records, a
+  record's situs among them (migration 0129);
 - `exposure_declaration_leaves`: each record's parts, the cross product
   of the dimensions it declares, each a share of the holding;
 - `exposure_custody`: who keeps each source's assets;
@@ -2964,7 +2966,8 @@ The exposure macros look every holding through to what it holds.
 [EXPOSURE.md](EXPOSURE.md) defines every figure they return.
 
 Migration 0126 adds the derived tables and the macros; migration 0128
-re-creates the macros the declarations change. The exposure pass
+re-creates the macros the declarations change, and migration 0129 those
+the legal situs changes. The exposure pass
 (`gold.RebuildExposure`) runs after the lot pass at the end of every
 load and reload, and rewrites the derived tables:
 
@@ -2978,7 +2981,9 @@ load and reload, and rewrites the derived tables:
   where each came from, its market cap and its size among them
   (EXPOSURE.md §3);
 - `security_underlyings`: the share each depositary receipt, or each
-  line a report names by name alone, stands for, and how it was found.
+  line a report names by name alone, stands for, and how it was found;
+- `exposure_situs`: each holding's legal situs and its basis, from each
+  day its reading changes (EXPOSURE.md §13; `exposure_situs.go`).
 
 The macros:
 
@@ -2993,17 +2998,22 @@ The macros:
   `exposure_funds_at(asof)`: the composition that describes each fund at
   the instant (the temporal join, proxies, leverage);
 - `exposure_declarations_at(asof)`: the declaration that describes each
-  holding at the instant (migration 0128);
+  holding's exposure at the instant (migration 0128), a record that
+  states only a situs aside (migration 0129);
+- `exposure_situs_at(asof)`: each holding's situs at the instant
+  (migration 0129);
 - `exposure_leaves(asof, ccy, country)`: the look-through, one row per
-  leaf, with its class, sector, country, currency, a stock's size, flags
-  and `how`. It expands only the funds a holding reaches within three
-  levels, and splits a declared holding into its parts;
-- `exposure_quality(flags, value)`: the aggregate behind every
-  `quality` column;
+  leaf, with its class, sector, country, currency, a stock's size, flags,
+  `how`, and its holding's situs and basis. It expands only the funds a
+  holding reaches within three levels, and splits a declared holding
+  into its parts;
+- `exposure_quality(flags, value)` and `exposure_situs_quality(basis,
+  value)`: the aggregates behind the `quality` columns;
 - `exposure_divergence(asof)`: how far each fund read from a report lies
   from its proxy, by sector and by country;
 - `report_exposure_classes`, `_sectors`, `_sizes`, `_countries`,
-  `_currencies`, `_securities`, `_funds` and `_coverage`: the views.
+  `_currencies`, `_situs`, `_securities`, `_funds` and `_coverage`: the
+  views.
 
 Values leave the leaves as DOUBLE: the look-through splits a line by
 weight. Each view's total equals `holdings global`; the printed rows,
@@ -3020,8 +3030,8 @@ the leaves at the last second of every month from the first holding,
 and at the end of today:
 
 - grouped by the dimensions the dashboard charts: class, sector,
-  country, region, currency, size, held directly or through funds, and
-  `how`;
+  country, region, currency, size, held directly or through funds,
+  `how`, and the situs with its basis;
 - in every reporting currency. The tree is walked once per instant, in
   US dollars. A leaf is a fixed share of the holding it descends from.
   So its value in another currency is its dollar value times the

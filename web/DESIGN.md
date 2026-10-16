@@ -209,6 +209,9 @@ It reads in this order:
   region as bars, on the latest day in the range;
 - a world map of the countries, each coloured by its share, beside a
   table of every region and the countries inside it;
+- net worth by legal situs as a bar, on the latest day: where each
+  holding legally sits, each fund whole at its own
+  (wealthdb/docs/EXPOSURE.md §13);
 - the classes, regions and currencies over time, as shares that stack
   to 100;
 - public equity by size (large, mid, small) on the latest day, as shares
@@ -224,9 +227,9 @@ plots the shares: a bar carries its percentage, a ring lists them in
 its legend. The base card shows the value on hover, and its privacy
 card drops the value column.
 The charts over time show shares alone. They are privacy-exempt, so the
-twin shows the same cards. Country, region and currency labels stay,
-since none names an account. Its tiles read `web_exposure` (migration
-0127), a view over a materialized table (§8).
+twin shows the same cards. Country, region, situs and currency labels
+stay, since none names an account. Its tiles read `web_exposure`
+(migration 0127), a view over a materialized table (§8).
 
 **Data Freshness** counts a source's age from its last read, not from
 its latest snapshot: gold's `source_observed` (migration 0122) says
@@ -451,15 +454,17 @@ the holdings reach, and the dashboard charts every month end. So
 wealthdb/docs/DESIGN.md §10.14 says how it stores them. One instant's
 rows add up to `wealthdb exposure classes -d <day> -x CCY`, class by
 class, and to net worth. A Go test compares each instant with
-`holdings global` and with every row of `wealthdb exposure sizes`,
-which splits each class. Countries are by country of risk. A stock's
-size is today's at every month end: gold keeps one size per security.
+`holdings global`, with every row of `wealthdb exposure sizes`, which
+splits each class, and with every row of `wealthdb exposure situs`.
+Countries are by country of risk; each row also carries its holdings'
+legal situs. A stock's size is today's at every month end: gold keeps
+one size per security.
 
 The `web_exposure` view does three things:
 
-- it names a missing dimension `unclassified`, a metal's or a coin's
-  country `(none)`, and the size of anything but public equity
-  `(none)`;
+- it names a missing dimension `unclassified`, a missing situs too, a
+  metal's or a coin's country `(none)`, and the size of anything but
+  public equity `(none)`;
 - it labels each row direct or via funds;
 - it adds each row's share of that instant's net worth.
 

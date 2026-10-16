@@ -29,12 +29,16 @@ import (
 // P turns the as-of view into a series over a positional window (FROM
 // [TO]); it applies to exposureSeriesViews and refuses -d. -f ndjson is
 // coverage's alone: the declarations ledger's records still to fill in.
+// situs reads every holding whole, at its legal situs: it looks through
+// no fund.
 func init() {
 	register("exposure", cmdExposure)
 }
 
-// exposureViews are the views, coarse to fine, then the diagnostics.
-var exposureViews = []string{"classes", "sectors", "sizes", "countries", "currencies", "securities", "funds", "coverage"}
+// exposureViews are the views: the breakdowns coarse to fine, the legal
+// situs, then the lists and the diagnostics.
+var exposureViews = []string{"classes", "sectors", "sizes", "countries", "currencies", "situs", "securities", "funds",
+	"coverage"}
 
 // exposureCountryViews are the views --country applies to.
 var exposureCountryViews = []string{"countries", "securities"}
@@ -134,7 +138,7 @@ func checkSkeletonFlags(fs *flag.FlagSet, view, period string, privacy bool) err
 	case view != "coverage":
 		return errs.Newf(2, "exposure: -f ndjson belongs to the coverage view")
 	case period != "":
-		return errs.Newf(2, "exposure: -f ndjson prints the holdings undeclared on one day; it takes no --period")
+		return errs.Newf(2, "exposure: -f ndjson prints the records still to write on one day; it takes no --period")
 	case isSet(fs, "C", "columns"):
 		return errs.Newf(2, "exposure: -f ndjson prints whole records; it takes no -C")
 	case privacy:
@@ -150,14 +154,18 @@ func checkSkeletonFlags(fs *flag.FlagSet, view, period string, privacy bool) err
 type declarationSkeleton struct {
 	SilverSourceID string          `json:"silver_source_id"`
 	Instrument     string          `json:"instrument"`
-	Country        json.RawMessage `json:"country"`
-	Currency       json.RawMessage `json:"currency"`
-	Sector         json.RawMessage `json:"sector"`
+	Country        json.RawMessage `json:"country,omitempty"`
+	Currency       json.RawMessage `json:"currency,omitempty"`
+	Sector         json.RawMessage `json:"sector,omitempty"`
+	Situs          json.RawMessage `json:"situs,omitempty"`
 	Note           string          `json:"note,omitempty"`
 }
 
-// writeDeclarationSkeletons writes one skeleton per line of coverage's
-// undeclared section, its note the holding's name. A holding with no
+// writeDeclarationSkeletons writes a skeleton for each holding coverage
+// lists as undeclared, with country, currency and sector, and one for
+// each of unclassified situs, with situs alone. Its note is the
+// holding's name. A situs-only record leaves a holding's other records
+// as they are, so each skeleton loads beside them. A holding with no
 // instrument, or no value, takes no record.
 func writeDeclarationSkeletons(ctx context.Context, open func() (*sql.DB, error), asOf int64, ccy string,
 	w io.Writer) error {
@@ -173,12 +181,25 @@ func writeDeclarationSkeletons(ctx context.Context, open func() (*sql.DB, error)
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	empty := json.RawMessage(`{}`)
+	type written struct{ section, src, iid string }
+	seen := map[written]bool{}
 	for _, r := range rows {
-		if r.Section != "undeclared" || strOrEmpty(r.SilverSourceID) == "" || strOrEmpty(r.Instrument) == "" {
+		if (r.Section != "undeclared" && r.Section != "situs") || strOrEmpty(r.SilverSourceID) == "" ||
+			strOrEmpty(r.Instrument) == "" {
 			continue
 		}
-		if err := enc.Encode(declarationSkeleton{SilverSourceID: *r.SilverSourceID, Instrument: *r.Instrument,
-			Country: empty, Currency: empty, Sector: empty, Note: strOrEmpty(r.Detail)}); err != nil {
+		k := written{r.Section, *r.SilverSourceID, *r.Instrument}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		s := declarationSkeleton{SilverSourceID: k.src, Instrument: k.iid, Note: strOrEmpty(r.Detail)}
+		if r.Section == "undeclared" {
+			s.Country, s.Currency, s.Sector = empty, empty, empty
+		} else {
+			s.Situs = empty
+		}
+		if err := enc.Encode(s); err != nil {
 			return err
 		}
 	}
@@ -215,6 +236,11 @@ func exposureReport(req request) *report {
 		return exposureView(req, buildExposureCurrencyColumns(ccy), defaultExposureCurrencyColumns,
 			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureCurrencyRow, error) {
 				return gold.ExposureCurrencies(ctx, db, at, ccy)
+			})
+	case "situs":
+		return exposureView(req, buildExposureSitusColumns(ccy), defaultExposureSitusColumns,
+			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureSitusRow, error) {
+				return gold.ExposureSitus(ctx, db, at, ccy)
 			})
 	case "securities":
 		return exposureView(req, buildExposureSecurityColumns(ccy), defaultExposureSecurityColumns,
@@ -307,7 +333,7 @@ var exposurePeriods = []string{"monthly", "quarterly", "annual"}
 // exposureSeriesViews are the views a series takes: the aggregates and
 // coverage. A series of securities or funds would be thousands of rows a
 // period.
-var exposureSeriesViews = []string{"classes", "sectors", "sizes", "countries", "currencies", "coverage"}
+var exposureSeriesViews = []string{"classes", "sectors", "sizes", "countries", "currencies", "situs", "coverage"}
 
 // seriesPoints are the periods of `period` that meet the window [from,
 // to], each taken at its end (gold.PeriodEnds) and labelled by it. None
@@ -421,6 +447,23 @@ func buildExposureCurrencyColumns(ccy string) []columnSpec[gold.ExposureCurrency
 
 var defaultExposureCurrencyColumns = []string{"currency", "kind", "value", "share", "direct", "via_funds", "quality"}
 
+// buildExposureSitusColumns: no direct or via_funds, since no fund is
+// looked through; funds is the share of the row held in funds.
+func buildExposureSitusColumns(ccy string) []columnSpec[gold.ExposureSitusRow] {
+	type row = gold.ExposureSitusRow
+	return []columnSpec[row]{
+		{Name: "situs", Align: output.AlignLeft, Extract: func(r row) string { return r.Situs }},
+		textCol("country_name", func(r row) *string { return r.CountryName }),
+		textCol("region", func(r row) *string { return r.Region }),
+		outCcyCol("value", ccy, func(r row) *string { return r.Value }),
+		pctCol("share", func(r row) *float64 { return r.SharePct }),
+		pctCol("funds", func(r row) *float64 { return r.FundsPct }),
+		qualityCol(func(r row) string { return r.Quality }),
+	}
+}
+
+var defaultExposureSitusColumns = []string{"situs", "country_name", "region", "value", "share", "funds", "quality"}
+
 func buildExposureSecurityColumns(ccy string) []columnSpec[gold.ExposureSecurityRow] {
 	type row = gold.ExposureSecurityRow
 	return []columnSpec[row]{
@@ -469,6 +512,8 @@ func buildExposureFundColumns(ccy string) []columnSpec[gold.ExposureFundRow] {
 		{Name: "lines", Align: output.AlignRight, Extract: func(r row) string { return intOrEmpty(r.Lines) }},
 		pctCol("weight_sum", func(r row) *float64 { return r.WeightSum }),
 		textCol("domicile", func(r row) *string { return r.Domicile }),
+		textCol("situs", func(r row) *string { return r.Situs }),
+		textCol("situs_basis", func(r row) *string { return r.SitusBasis }),
 		textCol("replication", func(r row) *string { return r.Replication }),
 		{Name: "lending", Align: output.AlignLeft, Extract: func(r row) string { return yesNo(r.Lending) }},
 		textCol("hedged_currency", func(r row) *string { return r.HedgedCurrency }),
@@ -514,20 +559,35 @@ var exposureQualityTags = []struct{ tag, meaning string }{
 	{"by_name", "a receipt's or a report line's sector or country comes from a share matched by name " +
 		"among all shares"},
 	{"opaque", "a private equity fund nothing looks through; it reads diversified"},
-	{"undeclared", "a private holding has no declaration"},
+	{"undeclared", "a private holding has no declaration of its exposure"},
 	{"unmatched", "a listed security or fund no source describes"},
 	{"no_composition", "a fund no composition and no declaration describes on the day, in the funds view"},
 }
 
-// exposureQualityNotes are the quality tags as an aligned list, each
-// meaning wrapped beside its tag.
-func exposureQualityNotes() string {
+// exposureSitusBases are what a holding's legal situs rests on, in the
+// rule's order (docs/EXPOSURE.md §13): the situs view's quality column
+// gives each one's share. The CLI usage and the MCP help both render
+// them.
+var exposureSitusBases = []struct{ tag, meaning string }{
+	{"declared", "a declaration states it"},
+	{"underlying", "a depositary receipt reads as the share it stands for"},
+	{"isin", "the country of the holding's ISIN prefix"},
+	{"domicile", "a fund's domicile (the US for one that files N-PORT) or a security's, where it has no ISIN " +
+		"of a country"},
+	{"custody", "cash or metal sits in its custodian's country (exposure.custody)"},
+	{"country", "the one country a declaration states for a private holding"},
+	{"unclassified", "none of these: a coin, cash at a custodian with no country, or a holding to declare"},
+}
+
+// exposureNotes are tags as an aligned list, each meaning wrapped beside
+// its tag.
+func exposureNotes(tags []struct{ tag, meaning string }) string {
 	width := 0
-	for _, q := range exposureQualityTags {
+	for _, q := range tags {
 		width = max(width, len(q.tag))
 	}
 	var b strings.Builder
-	for _, q := range exposureQualityTags {
+	for _, q := range tags {
 		tag := q.tag
 		for _, line := range wrapWords(q.meaning, 72-4-width-2) {
 			fmt.Fprintf(&b, "\n    %-*s  %s", width, tag, line)
@@ -563,6 +623,7 @@ func exposureUsage() string {
 		"sizes":      joinColumnNames(buildExposureSizeColumns("CCY")),
 		"countries":  joinColumnNames(buildExposureCountryColumns("CCY")),
 		"currencies": joinColumnNames(buildExposureCurrencyColumns("CCY")),
+		"situs":      joinColumnNames(buildExposureSitusColumns("CCY")),
 		"securities": joinColumnNames(buildExposureSecurityColumns("CCY")),
 		"funds":      joinColumnNames(buildExposureFundColumns("CCY")),
 		"coverage":   joinColumnNames(buildExposureCoverageColumns("CCY")),
@@ -589,6 +650,8 @@ Views
   countries    one row per country, with its region
   currencies   one row per currency a value moves with: a fiat currency,
                a metal (XAU) or a coin (BTC)
+  situs        one row per legal situs: the country whose law a holding
+               is an interest under; no fund is looked through
   securities   one row per security, held directly and through every fund
   funds        one row per fund held directly: what describes it on the
                day, and how old it is; then one row for all other
@@ -596,8 +659,9 @@ Views
   coverage     what the figures rest on: how each part of net worth is
                classified, how old the compositions are, the labels no
                map knows, the securities no source describes, the
-               private holdings no declaration describes, and how far
-               each fund read from a report lies from its proxy
+               private holdings no declaration describes, how far
+               each fund read from a report lies from its proxy, and
+               what each situs rests on
 
 Flags
   -d, --as-of DATE   the day (default today UTC)
@@ -605,12 +669,13 @@ Flags
                      every period of the window FROM..TO (default the
                      last twelve months; never past today), a period
                      column first; on classes, sectors, sizes,
-                     countries, currencies and coverage
+                     countries, currencies, situs and coverage
   --country C        risk (default) | domicile: the country a security
                      counts in, on countries and securities
   -f FORMAT          table | csv | csv_plain | json; on coverage also
-                     ndjson: one skeleton record per undeclared holding,
-                     for the declarations ledger
+                     ndjson: a skeleton record for each holding
+                     undeclared, and a situs-only one for each of
+                     unclassified situs, for the declarations ledger
   -C COLS            comma-separated names, 'default', 'all', or a
                      +ADD,-REMOVE delta on the default set
   -x CCY             output currency (default: config.default_currency)
@@ -622,7 +687,12 @@ Notes
   funds. A share prints with a _pct suffix: share_pct.
 
   quality names what a figure rests on, each tag with the share of the
-  row it covers (proxy=12%):` + exposureQualityNotes() + `
+  row it covers (proxy=12%):` + exposureNotes(exposureQualityTags) + `
+
+  situs is where a holding legally sits, not what it is exposed to: a
+  fund counts whole at its own situs. Its quality column gives the share
+  of the row each basis covers (isin=80%):` + exposureNotes(exposureSitusBases) + `
+  funds is the share of the row held in funds.
 
   ` + strings.Join(wrapWords("A stock's size comes from its market cap (large from "+capBn(canonical.LargeCapUSD)+
 		" US dollars, mid from "+capBn(canonical.MidCapUSD)+"), else from its rank in a broad fund the config names "+
@@ -634,6 +704,7 @@ Available columns (per view):
   sizes        ` + cols["sizes"] + `
   countries    ` + cols["countries"] + `
   currencies   ` + cols["currencies"] + `
+  situs        ` + cols["situs"] + `
   securities   ` + cols["securities"] + `
   funds        ` + cols["funds"] + `
   coverage     ` + cols["coverage"] + `
@@ -644,6 +715,7 @@ Default column sets:
   sizes        ` + strings.Join(defaultExposureSizeColumns, ", ") + `
   countries    ` + strings.Join(defaultExposureCountryColumns, ", ") + `
   currencies   ` + strings.Join(defaultExposureCurrencyColumns, ", ") + `
+  situs        ` + strings.Join(defaultExposureSitusColumns, ", ") + `
   securities   ` + strings.Join(defaultExposureSecurityColumns, ", ") + `
   funds        ` + strings.Join(defaultExposureFundColumns, ", ") + `
   coverage     ` + strings.Join(defaultExposureCoverageColumns, ", ")

@@ -88,7 +88,13 @@ func readDeclarations(r io.Reader, sources map[string]bool) ([]canonical.Exposur
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	var out []canonical.ExposureDeclaration
-	type holdingDate struct{ src, iid, date string } // date "" for a record without one
+	// A holding has one record per date for its exposure, and one per date
+	// that states its situs: the two have precedences of their own
+	// (docs/EXPOSURE.md §9). A record that states both counts in both.
+	type holdingDate struct {
+		src, iid, date string // date "" for a record without one
+		situs          bool
+	}
 	seen := map[holdingDate]int{}
 	for line := 1; sc.Scan(); line++ {
 		text := bytes.TrimSpace(sc.Bytes())
@@ -108,14 +114,25 @@ func readDeclarations(r io.Reader, sources map[string]bool) ([]canonical.Exposur
 		if d.AsOf != nil {
 			k.date = time.Unix(*d.AsOf, 0).UTC().Format(time.DateOnly)
 		}
-		if first, dup := seen[k]; dup {
-			when := "without a date"
-			if k.date != "" {
-				when = "as of " + k.date
-			}
-			return nil, fmt.Errorf("line %d: %s %s is declared %s on line %d already", line, k.src, k.iid, when, first)
+		when := "without a date"
+		if k.date != "" {
+			when = "as of " + k.date
 		}
-		seen[k] = line
+		for _, kind := range []struct {
+			situs  bool
+			states bool
+			what   string
+		}{{false, len(d.Dimensions) > 0, "declared"}, {true, d.Situs != "", "given a situs"}} {
+			if !kind.states {
+				continue
+			}
+			k.situs = kind.situs
+			if first, dup := seen[k]; dup {
+				return nil, fmt.Errorf("line %d: %s %s is %s %s on line %d already", line, k.src, k.iid, kind.what,
+					when, first)
+			}
+			seen[k] = line
+		}
 		out = append(out, d)
 	}
 	if err := sc.Err(); err != nil {
@@ -125,8 +142,8 @@ func readDeclarations(r io.Reader, sources map[string]bool) ([]canonical.Exposur
 }
 
 // parseDeclaration reads one record: its keys checked, each dimension's
-// shares summed and padded to 100, and the dimensions crossed into
-// leaves.
+// shares summed and padded to 100, the dimensions crossed into leaves,
+// and its situs read.
 func parseDeclaration(text []byte, sources map[string]bool) (canonical.ExposureDeclaration, error) {
 	var d canonical.ExposureDeclaration
 	fields, err := jsonObject(text)
@@ -138,6 +155,10 @@ func parseDeclaration(text []byte, sources map[string]bool) (canonical.ExposureD
 		switch {
 		case slices.Contains(canonical.DeclarationDimensions, f.key):
 			if dims[f.key], err = parseDimension(f.key, f.value); err != nil {
+				return d, err
+			}
+		case f.key == canonical.DeclarationSitus:
+			if d.Situs, err = parseSitus(f.value); err != nil {
 				return d, err
 			}
 		case f.key == "source":
@@ -167,8 +188,9 @@ func parseDeclaration(text []byte, sources map[string]bool) (canonical.ExposureD
 				d.AsOf = &at
 			}
 		default:
-			return d, fmt.Errorf("unknown key %q; a record takes %s and the dimensions %s", f.key,
-				strings.Join(declarationKeys, ", "), strings.Join(canonical.DeclarationDimensions, ", "))
+			return d, fmt.Errorf("unknown key %q; a record takes %s, the dimensions %s, and %s", f.key,
+				strings.Join(declarationKeys, ", "), strings.Join(canonical.DeclarationDimensions, ", "),
+				canonical.DeclarationSitus)
 		}
 	}
 	switch {
@@ -176,8 +198,9 @@ func parseDeclaration(text []byte, sources map[string]bool) (canonical.ExposureD
 		return d, fmt.Errorf("silver_source_id and instrument are required")
 	case !sources[d.SilverSourceID]:
 		return d, fmt.Errorf("silver_source_id %q: no silver_sources[].id matches", d.SilverSourceID)
-	case len(dims) == 0:
-		return d, fmt.Errorf("a record declares at least one of %s", strings.Join(canonical.DeclarationDimensions, ", "))
+	case len(dims) == 0 && d.Situs == "":
+		return d, fmt.Errorf("a record declares at least one of %s or %s",
+			strings.Join(canonical.DeclarationDimensions, ", "), canonical.DeclarationSitus)
 	case dims[canonical.DimensionRegion] != nil && dims[canonical.DimensionCountry] != nil:
 		return d, fmt.Errorf("region and country are one dimension: a country implies its region, so declare one of them")
 	}
@@ -186,8 +209,44 @@ func parseDeclaration(text []byte, sources map[string]bool) (canonical.ExposureD
 			d.Dimensions = append(d.Dimensions, dim)
 		}
 	}
-	d.Leaves = crossDimensions(d.Dimensions, dims)
+	if len(d.Dimensions) > 0 {
+		d.Leaves = crossDimensions(d.Dimensions, dims)
+	}
 	return d, nil
+}
+
+// parseSitus reads the situs: one country at 100, since a holding sits
+// under one country's law.
+func parseSitus(raw json.RawMessage) (string, error) {
+	fields, err := jsonObject(raw)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", canonical.DeclarationSitus, err)
+	}
+	if len(fields) != 1 {
+		return "", fmt.Errorf("%s: %d countries; a holding has one situs, stated as one country at 100",
+			canonical.DeclarationSitus, len(fields))
+	}
+	f := fields[0]
+	switch {
+	case f.key == canonical.Unclassified:
+		return "", fmt.Errorf("%s: %s states nothing; leave %s out", canonical.DeclarationSitus, f.key,
+			canonical.DeclarationSitus)
+	case f.key == regionRest || slices.Contains(canonical.Regions(), canonical.Region(f.key)):
+		return "", fmt.Errorf("%s: %q is a region; a situs is a country", canonical.DeclarationSitus, f.key)
+	case f.key == canonical.EuropeanUnion:
+		return "", fmt.Errorf("%s: %s is the European Union, no one country's law", canonical.DeclarationSitus, f.key)
+	case !isCountryCode(f.key):
+		return "", fmt.Errorf("%s: %q is not an ISO 3166 alpha-2 code", canonical.DeclarationSitus, f.key)
+	}
+	pct, err := percent(f.value)
+	if err != nil {
+		return "", fmt.Errorf("%s: %s: %w", canonical.DeclarationSitus, f.key, err)
+	}
+	if pct.Cmp(hundred) != 0 {
+		return "", fmt.Errorf("%s: %s at %s%%; a situs is one country at 100", canonical.DeclarationSitus, f.key,
+			percentText(pct))
+	}
+	return f.key, nil
 }
 
 // share is one value of a dimension and its share of the holding, as a

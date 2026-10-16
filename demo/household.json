@@ -225,6 +225,7 @@
          "region": {"north_america": 62, "europe": 26, "rest": 12},
          "currency": {"USD": 85, "EUR": 15},
          "asset_class": {"private_equity": 78, "infrastructure": 22},
+         "situs": {"LU": 100},
          "source": {"document": "private placement memorandum", "page": 12},
          "note": "target split 55-69 / 20-32 / 6-18; midpoints"},
         {"silver_source_id": "emberwright", "instrument": "spv-lmnr", "country": {"US": 100}, "currency": {"USD": 100},

@@ -107,22 +107,24 @@ func TestExposureViewsResolveTheirDefaults(t *testing.T) {
 	}
 }
 
-// Every quality tag reaches the CLI usage, wrapped to the usage's
-// width, and the MCP quality help.
+// Every quality tag and situs basis reaches the CLI usage, wrapped to
+// the usage's width, and the MCP quality help.
 func TestExposureQualityTagsReachBothFrontEnds(t *testing.T) {
 	t.Parallel()
 	usage := exposureUsage()
-	for _, q := range exposureQualityTags {
-		if !strings.Contains(usage, "\n    "+q.tag+" ") {
-			t.Errorf("usage does not list the %s tag", q.tag)
+	for _, tags := range [][]struct{ tag, meaning string }{exposureQualityTags, exposureSitusBases} {
+		for _, q := range tags {
+			if !strings.Contains(usage, "\n    "+q.tag+" ") {
+				t.Errorf("usage does not list the %s tag", q.tag)
+			}
+			if !strings.Contains(qualityHelp, "\n- "+q.tag+": "+q.meaning+".") {
+				t.Errorf("describe topic=quality does not list the %s tag", q.tag)
+			}
 		}
-		if !strings.Contains(qualityHelp, "\n- "+q.tag+": "+q.meaning+".") {
-			t.Errorf("describe topic=quality does not list the %s tag", q.tag)
-		}
-	}
-	for _, line := range strings.Split(exposureQualityNotes(), "\n") {
-		if len(line) > 72 {
-			t.Errorf("quality line is %d columns wide: %q", len(line), line)
+		for _, line := range strings.Split(exposureNotes(tags), "\n") {
+			if len(line) > 72 {
+				t.Errorf("quality line is %d columns wide: %q", len(line), line)
+			}
 		}
 	}
 	if got := wrapWords("aa bb cc averyveryverylongword", 5); strings.Join(got, "|") != "aa bb|cc|averyveryverylongword" {
@@ -145,6 +147,7 @@ func TestExposurePrivacyHidesAmounts(t *testing.T) {
 		"sizes":      {"public_equity", "unclassified"},
 		"countries":  {"US", "40.00"},
 		"currencies": {"USD", "fiat"},
+		"situs":      {"unclassified", "100.00"},
 		"securities": {"symbol:AAAA", "Alpha Corp", "40.00", "technology"},
 		"funds":      {"symbol:IDXF", "57.14"},
 		"coverage":   {"looked_through", "undeclared", "brk"},
@@ -167,9 +170,12 @@ func TestExposurePrivacyHidesAmounts(t *testing.T) {
 	}
 }
 
-// coverage -f ndjson prints one skeleton record per undeclared holding,
-// its dimensions empty and its note the holding's name, and nothing else;
-// the other views, a series, a column set and -p refuse it.
+// coverage -f ndjson prints a skeleton record per holding undeclared,
+// with its economic dimensions empty, and a situs-only one per holding
+// of unclassified situs, a holding with a record among them; each note
+// is the holding's name, and nothing else is printed. Cash names no
+// instrument and takes none. The other views, a series, a column set and
+// -p refuse it.
 func TestExposureCoverageSkeletons(t *testing.T) {
 	t.Parallel()
 	cfg := setupExposureGold(t,
@@ -180,13 +186,27 @@ func TestExposureCoverageSkeletons(t *testing.T) {
 		 'private_equity', 'spv', 'USD', 1, 500)`,
 		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
 		 asset_class, vehicle, currency, quantity, market_value) VALUES ('brk', ?, 'ACCT-7781', 'PRIV-0', 'PRIV-0',
-		 'private_equity', 'spv', 'USD', 1, 0)`)
+		 'private_equity', 'spv', 'USD', 1, 0)`,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, name, currency,
+		 first_seen_at, last_seen_at) VALUES ('brk', 'PRIV-7', 'private_equity', 'fund', 'Example Fund Seven', 'USD', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, quantity, market_value) VALUES ('brk', ?, 'ACCT-7781', 'PRIV-7', 'PRIV-7',
+		 'private_equity', 'fund', 'USD', 1, 70)`,
+		`INSERT INTO exposure_declarations (line_no, silver_source_id, instrument_external_id, dimensions)
+		 VALUES (3, 'brk', 'PRIV-7', 'region')`,
+		`INSERT INTO exposure_declaration_leaves (line_no, leaf_no, share, region) VALUES (3, 1, 1, 'europe')`)
 	out, errb, code := runExposure(t, cfg, "coverage", "-d", "2026-06-30", "-f", "ndjson")
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errb)
 	}
+	if errb != "" {
+		t.Errorf("stderr = %q", errb)
+	}
 	want := `{"silver_source_id":"brk","instrument":"PRIV-5521","country":{},"currency":{},"sector":{},` +
-		`"note":"Example SPV <A&B>"}` + "\n"
+		`"note":"Example SPV <A&B>"}` + "\n" +
+		`{"silver_source_id":"brk","instrument":"IDXF","situs":{},"note":"Index Fund"}` + "\n" +
+		`{"silver_source_id":"brk","instrument":"PRIV-5521","situs":{},"note":"Example SPV <A&B>"}` + "\n" +
+		`{"silver_source_id":"brk","instrument":"PRIV-7","situs":{},"note":"Example Fund Seven"}` + "\n"
 	if out != want {
 		t.Errorf("skeletons:\n%s\nwant\n%s", out, want)
 	}
@@ -223,6 +243,37 @@ func TestExposureFundsShowADeclaration(t *testing.T) {
 		"fund,via,declaration_date,declared,quality")
 	if code != 0 || !strings.Contains(out, `,declared,2024-06-30,"region,asset_class",declared`+"\n") {
 		t.Errorf("exit %d %s\n%s", code, errb, out)
+	}
+}
+
+// situs is one row per legal situs, a fund whole at its own: its
+// domicile here, the cash at its custodian's country. funds shows the
+// situs beside the domicile; a series takes it; --country does not.
+func TestExposureSitusView(t *testing.T) {
+	t.Parallel()
+	cfg := setupExposureGold(t,
+		`INSERT INTO fund_attributes (silver_source_id, fund_ref, as_of, domicile) VALUES ('brk', 'symbol:IDXF', ?, 'IE')`,
+		`INSERT INTO exposure_custody (silver_source_id, custodian, country) VALUES ('brk', 'Example Bank', 'US')`)
+	for args, want := range map[string]string{
+		"situs -d 2026-06-30 -f csv": "situs,country_name,region,value_USD,share_pct,funds_pct,quality\n" +
+			"IE,Ireland,europe,1000.00,80.00,100.00,domicile=100%\n" +
+			"US,United States,north_america,250.00,20.00,0.00,custody=100%\n",
+		"situs -d 2026-06-30 -f csv -p": "situs,country_name,region,value_USD,share_pct,funds_pct,quality\n" +
+			"IE,Ireland,europe,,80.00,100.00,domicile=100%\nUS,United States,north_america,,20.00,0.00,custody=100%\n",
+		"funds -d 2026-06-30 -f csv -C fund,domicile,situs,situs_basis": "fund,domicile,situs,situs_basis\n" +
+			"symbol:IDXF,IE,IE,domicile\n(other holdings),,,\n",
+	} {
+		out, errb, code := runExposure(t, cfg, strings.Fields(args)...)
+		if code != 0 || out != want {
+			t.Errorf("%s: exit %d %s\n%s\nwant\n%s", args, code, errb, out, want)
+		}
+	}
+	out, errb, code := runExposure(t, cfg, "situs", "--period", "monthly", "2026-06", "2026-06", "-f", "csv")
+	if code != 0 || !strings.Contains(out, "2026-06,IE,Ireland,europe,1000.00,80.00,100.00,domicile=100%\n") {
+		t.Errorf("situs series: exit %d %s\n%s", code, errb, out)
+	}
+	if _, errb, code := runExposure(t, cfg, "situs", "--country", "domicile"); code != 2 || !strings.Contains(errb, "--country") {
+		t.Errorf("situs --country: exit %d, %s", code, errb)
 	}
 }
 

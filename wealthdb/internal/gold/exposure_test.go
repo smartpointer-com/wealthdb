@@ -357,18 +357,24 @@ func TestExposureViewsSumToHoldingsGlobal(t *testing.T) {
 		}
 		currencies, err := ExposureCurrencies(ctx, db, exAsOf, ccy)
 		sum("currencies", err, len(currencies), func(i int) *string { return currencies[i].Value })
+		situs, err := ExposureSitus(ctx, db, exAsOf, ccy)
+		sum("situs", err, len(situs), func(i int) *string { return situs[i].Value })
 		securities, err := ExposureSecurities(ctx, db, exAsOf, ccy, "risk")
 		sum("securities", err, len(securities), func(i int) *string { return securities[i].Value })
 		funds, err := ExposureFunds(ctx, db, exAsOf, ccy)
 		sum("funds", err, len(funds), func(i int) *string { return funds[i].Value })
 		coverage, err := ExposureCoverage(ctx, db, exAsOf, ccy)
-		var how []*string
+		var how, bases []*string
 		for _, r := range coverage {
-			if r.Section == "how" {
+			switch {
+			case r.Section == "how":
 				how = append(how, r.Value)
+			case r.Section == "situs" && r.SilverSourceID == nil && r.Reason != "(no value)":
+				bases = append(bases, r.Value)
 			}
 		}
 		sum("coverage how", err, len(how), func(i int) *string { return how[i] })
+		sum("coverage situs", err, len(bases), func(i int) *string { return bases[i] })
 	}
 }
 
@@ -609,9 +615,13 @@ func TestExposureDeclarationsAndZeroValueCoverage(t *testing.T) {
 		t.Errorf("(no value) lines = %v, want 2 undeclared and the unmapped zero lines", none)
 	}
 	// A private holding with no declaration is listed by what a record
-	// names; a listed one no source describes stays unmatched.
+	// names; a listed one no source describes stays unmatched. Both are
+	// of unclassified situs too, which the situs section lists apart.
 	var pe1, unk *ExposureCoverageRow
 	for i, r := range cov {
+		if r.Section == "situs" {
+			continue
+		}
 		switch r.Reason {
 		case "holding:test-src:PE1":
 			pe1 = &cov[i]
@@ -649,7 +659,7 @@ func TestExposureDeclarationsAndZeroValueCoverage(t *testing.T) {
 	}
 	var srcs []string
 	for _, r := range cov {
-		if r.Reason == "symbol:UNK" {
+		if r.Section == "unmatched" && r.Reason == "symbol:UNK" {
 			srcs = append(srcs, *r.SilverSourceID)
 		}
 	}

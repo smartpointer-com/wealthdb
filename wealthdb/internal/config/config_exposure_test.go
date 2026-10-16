@@ -175,6 +175,34 @@ func TestDeclarationsLedger(t *testing.T) {
 	}
 }
 
+// A record may state a situs, one country at 100, beside its dimensions
+// or alone; alone it has no leaves.
+func TestDeclarationSitus(t *testing.T) {
+	t.Parallel()
+	d, err := declarations(t, `{"silver_source_id":"manual","instrument":"x","situs":{"KY":100},`+
+		`"region":{"europe":100}}`+"\n"+`{"silver_source_id":"manual","instrument":"y","situs":{"LU":100.0}}`+"\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d[0].Situs != "KY" || strings.Join(d[0].Dimensions, ",") != "region" || len(d[0].Leaves) != 1 {
+		t.Errorf("situs beside a region: %+v", d[0])
+	}
+	if d[1].Situs != "LU" || len(d[1].Dimensions) != 0 || d[1].Leaves != nil {
+		t.Errorf("situs alone: %+v", d[1])
+	}
+	// The situs and the exposure each take one record per date, so a
+	// situs-only line sits beside the record of the split.
+	if _, err := declarations(t, `{"silver_source_id":"manual","instrument":"x","region":{"europe":100}}`+"\n"+
+		`{"silver_source_id":"manual","instrument":"x","situs":{"LU":100}}`+"\n"); err != nil {
+		t.Errorf("a situs-only line beside a split: %v", err)
+	}
+	_, err = declarations(t, `{"silver_source_id":"manual","instrument":"x","situs":{"KY":100}}`+"\n"+
+		`{"silver_source_id":"manual","instrument":"x","situs":{"LU":100},"region":{"europe":100}}`+"\n")
+	if err == nil || !strings.Contains(err.Error(), "line 2: manual x is given a situs without a date on line 1 already") {
+		t.Errorf("two undated situs: %v", err)
+	}
+}
+
 // The leaves are the cross product of the declared dimensions, each
 // padded with its unclassified part, so their shares sum to one.
 func TestDeclarationLeaves(t *testing.T) {
@@ -244,6 +272,15 @@ func TestDeclarationRejects(t *testing.T) {
 		rec(`"as_of":"2024-6-30","country":{"CH":100}`):                            `as_of "2024-6-30" is not a date`,
 		rec(`"as_of":20240630,"country":{"CH":100}`):                               "as_of is a string",
 		rec(`"note":7,"country":{"CH":100}`):                                       "note is a string",
+		rec(`"situs":{"US":60,"IE":40}`):                                           "situs: 2 countries; a holding has one situs",
+		rec(`"situs":{}`):                                                          "situs: 0 countries",
+		rec(`"situs":{"KY":99.8}`):                                                 "situs: KY at 99.8%; a situs is one country at 100",
+		rec(`"situs":{"europe":100}`):                                              `situs: "europe" is a region`,
+		rec(`"situs":{"rest":100}`):                                                `situs: "rest" is a region`,
+		rec(`"situs":{"QQ":100}`):                                                  `situs: "QQ" is not an ISO 3166`,
+		rec(`"situs":{"unclassified":100}`):                                        "situs: unclassified states nothing",
+		rec(`"situs":{"EU":100}`):                                                  "situs: EU is the European Union",
+		rec(`"situs":"KY"`):                                                        "situs: want a JSON object",
 		`{"silver_source_id":"nope","instrument":"x","country":{"CH":100}}` + "\n": `silver_source_id "nope"`,
 		`{"silver_source_id":"manual","country":{"CH":100}}` + "\n":                "silver_source_id and instrument are required",
 		rec(`"country":{"CH":100}`) + rec(`"currency":{"CHF":100}`):                "line 2: manual x is declared without a date on line 1 already",
