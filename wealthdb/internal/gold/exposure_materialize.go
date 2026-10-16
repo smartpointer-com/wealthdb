@@ -15,8 +15,10 @@ import (
 // of that holding's two values. A holding no rate converts to US dollars
 // is left out in every currency. A stock's size is today's at every
 // instant: securities holds one row per security. A leaf carries its
-// holding's legal situs and its basis. %s is the UNION of
-// exposure_holdings per reporting currency, US dollars among them.
+// holding's legal situs and its basis, and its holding's source and
+// account's tax wrapper, which the dashboard's pickers narrow to. %s is
+// the UNION of exposure_holdings per reporting currency, US dollars
+// among them.
 const exposureInsertSQL = `INSERT INTO report_exposure BY NAME
 WITH l AS (SELECT * FROM exposure_leaves(CAST($1 AS BIGINT), 'USD')),
 h AS MATERIALIZED (%s),
@@ -24,10 +26,12 @@ usd AS (SELECT src, acct, position_key, value AS v FROM h WHERE out_ccy = 'USD' 
 SELECT CAST($2 AS BIGINT) AS computed_at, h.out_ccy AS currency, CAST($1 AS BIGINT) AS as_of,
        l.asset_class, l.sector, l.country, l.region, l.currency AS exposure_currency, l.currency_kind,
        l.depth > 0 AS via_funds, l.how, l.size, l.situs, l.situs_basis,
+       l.src AS silver_source_id, a.tax_wrapper,
        SUM(l.value * h.value / usd.v) AS value
   FROM l
   JOIN usd ON usd.src = l.src AND usd.acct = l.acct AND usd.position_key = l.position_key
   JOIN h ON h.src = l.src AND h.acct = l.acct AND h.position_key = l.position_key
+  LEFT JOIN accounts a ON a.silver_source_id = l.src AND a.account_external_id = l.acct
  GROUP BY ALL`
 
 // exposureHoldingsSQL is one currency's holdings for exposureInsertSQL.
@@ -37,7 +41,8 @@ const exposureHoldingsSQL = `SELECT '%s' AS out_ccy, src, acct, position_key, va
 // MaterializeExposure rewrites report_exposure: the look-through at the
 // last second of every month from the first holding gold holds, and at
 // toEpoch, in every reporting currency, grouped by the dimensions the
-// Metabase Exposure dashboard charts. It returns the number of rows
+// Metabase Exposure dashboard charts and the source and tax wrapper its
+// pickers narrow to. It returns the number of rows
 // written. One transaction, so a reader sees the old table or the new
 // one.
 func MaterializeExposure(ctx context.Context, db *sql.DB, toEpoch, computedAt int64) (int, error) {

@@ -221,8 +221,13 @@ It reads in this order:
 - how the figures are classified over time, so a growing unclassified
   band shows where the other charts stop covering.
 
-Every figure is a share of net worth, or of public equity, which is
-scale-free. So the Exposure twin needs no normalisation. Each breakdown
+Two pickers narrow every tile, the source and the tax wrapper, the
+pair Gains carries: `report_exposure` holds the look-through per source
+and account wrapper (migration 0130), and each tile computes its share
+over the rows it reads. So every figure is a share of the selection's
+net worth, or of its public equity, and of net worth itself with
+nothing picked; either way scale-free. So the Exposure twin needs no
+normalisation. Each breakdown
 plots the shares: a bar carries its percentage, a ring lists them in
 its legend. The base card shows the value on hover, and its privacy
 card drops the value column.

@@ -10,7 +10,7 @@ the rules behind them.
 Related design: DESIGN.md §4.17 (the `exposure` command), §7.6 (the
 reference and config tables), §10.14 (the derived tables and macros);
 [adapters/refdata.md](adapters/refdata.md) (how reference data loads,
-the keys and aliases, and the wanted list); migrations 0125 to 0129.
+the keys and aliases, and the wanted list); migrations 0125 to 0130.
 
 Every figure is a share of a holding's market value, the value
 `holdings` reports. The look-through moves value between rows; it never
@@ -606,7 +606,10 @@ keeps its own line.
 The Metabase Exposure dashboard (`wealthdb web`) charts the same
 figures at every month end and today, by country of risk, and each
 holding's legal situs ([web/DESIGN.md](../../web/DESIGN.md) §6 and
-§8). Every refresh recomputes the whole history, so a new composition
+§8). Its Source and Tax wrapper pickers narrow every chart to a
+selection, and each share then reads as a share of the selection's net
+worth; with nothing picked, of net worth, as here. The command has no
+such filter. Every refresh recomputes the whole history, so a new composition
 or declaration shows in past months too. A security's attributes, its
 size among them, are today's at every month end, as in a `--period`
 series (§7).
