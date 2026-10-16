@@ -1403,6 +1403,46 @@ for _d, (_desc, _mode, _spec) in p.base_dashboards().items():
               (a[0], b[0]) for i, a in enumerate(_spec) for b in _spec[i + 1:]
               if a[2] < b[2] + b[3] and b[2] < a[2] + a[3] and a[1] < b[1] + b[4] and b[1] < a[1] + a[4]])
 
+section("stacked area charts")
+
+# Metabase stacks the band whose rows appear last at the bottom and, by
+# default, reverses a stacked chart's legend. So every stacked area with
+# bands ranks its rows smallest first, which puts the largest band on
+# the axis, and switches the reversal off, which lists the largest first.
+# The Exposure charts over time rank with an aggregate of their own (see
+# over_time); the Exposure section checks them.
+_stacked_areas = {n: sql_of(q) or "" for n, (d, _desc, q) in CARDS.items()
+                  if d == "area" and VIZ[n].get("stackable.stack_type") == "stacked"
+                  and len(VIZ[n].get("graph.dimensions", [])) == 2}
+check("every stacked area with bands ranks its rows by band",
+      bool(_stacked_areas) and all("series_rank" in q or "AS latest FROM e" in q for q in _stacked_areas.values()),
+      [n for n, q in _stacked_areas.items() if "series_rank" not in q and "AS latest FROM e" not in q])
+check("...and lists its legend in the bands' own order",
+      all(VIZ[n].get("legend.is_reversed") is False for n in _stacked_areas),
+      [n for n in _stacked_areas if VIZ[n].get("legend.is_reversed") is not False])
+# A stack of two metrics is the mirror case: the first metric sits at
+# the bottom, so positions, the larger, come first and the legend reads
+# the same way.
+check("the cash and positions stacks list positions first, legend unreversed",
+      all(VIZ[n]["graph.metrics"][0].startswith("positions") and VIZ[n].get("legend.is_reversed") is False
+          for n in ("Cash vs positions over time", "Cash vs positions over time (privacy)")))
+check("...ending in that order and nothing after it",
+      all(q.rstrip().endswith(("NULLS FIRST, month", "NULLS FIRST, as_of_day")) or "AS latest FROM e" in q
+          for q in _stacked_areas.values()))
+
+section("line charts list their legend top line first")
+
+# A line chart takes its series in the order their rows first appear,
+# so a chart with one line per series ranks its rows by the series'
+# latest value, largest first, and keeps the legend in that order.
+_LINE_RANKED = ("Unrealized gain over time", "Card balances over time",
+                "Card balances over time (privacy)", "Cumulative return (TWR)")
+check("the ranked line charts order their rows largest series first",
+      all("series_rank DESC NULLS LAST" in (sql_of(CARDS[n][2]) or "") for n in _LINE_RANKED),
+      [n for n in _LINE_RANKED if "series_rank DESC" not in (sql_of(CARDS[n][2]) or "")])
+check("...and keep the legend in that order",
+      all(VIZ[n].get("legend.is_reversed") is False for n in _LINE_RANKED))
+
 section("the Exposure dashboard")
 
 _ex_spec = p.base_dashboards()["Exposure"][2]
@@ -1478,6 +1518,18 @@ check("the country tile is a world map of the shares",
       and VIZ["Exposure by country"].get("map.metric") == "share_pct")
 check("...that leaves out what has no country",
       "WHERE country NOT IN ('(none)', 'unclassified')" in _ex_sql["Exposure by country"])
+# The charts over time rank their bands smallest first by the share at
+# the window's end, as every stacked area does (the section above), with
+# an aggregate of their own; the currencies, a long tail, fold the small
+# ones.
+_ex_areas = {n: q for n, q in _ex_sql.items() if CARDS[n][0] == "area"}
+check("every chart over time ranks its bands by the latest share, smallest first",
+      bool(_ex_areas) and all("ORDER BY max(" in q and "AS latest FROM e" in q
+                              and "DESC" not in q.split("ORDER BY")[-1] for q in _ex_areas.values()))
+check("...with the legend reading largest first",
+      all(VIZ[n].get("legend.is_reversed") is False for n in _ex_areas))
+check("...and only the currencies fold their tail into an other band",
+      all(("ELSE 'other'" in q) == (n == "Currencies over time") for n, q in _ex_areas.items()))
 check("the region and country table carries a row per region and one per country",
       CARDS["Exposure by region and country"][0] == "table"
       and "GROUPING SETS ((region), (region, country, country_name))" in _ex_sql["Exposure by region and country"])

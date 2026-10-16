@@ -1083,8 +1083,43 @@ def returns_growth_sql():
         "SELECT source, make_date(yr, 1, 1) AS year,\n"
         "       first_value(1 + twr) OVER (PARTITION BY source ORDER BY yr)\n"
         "           / (1 + twr) - 1 AS cumulative_return\n"
-        "  FROM f\n"
-        " ORDER BY yr")
+        "  FROM f")
+
+
+def _series_order(sql, t, series, metric, by, largest_first=False):
+    """A chart's query with its rows ordered by series, since Metabase
+    takes the series in the order their rows first appear. `by` ranks a
+    series by its value at the last `t` ("latest", a level that carries
+    on) or by its sum over the window ("total", a flow). A stacked chart
+    wants the smallest first: the band whose rows appear last lands on
+    the axis, so the largest band sits at the bottom and, with the
+    legend's default reversal switched off (STACKED_VIZ), the legend
+    lists the largest first. A line chart wants `largest_first`, the
+    legend's own order, top line first. A series with no value at the
+    last `t` ranks last. `sql` ends without an ORDER BY; the result
+    keeps its columns."""
+    if by == "latest":
+        inner = f"SELECT q0.*, max({t}) OVER () AS t_max\n          FROM (\n{sql}\n) q0"
+        rank, drop = f"max(CASE WHEN {t} = t_max THEN {metric} END)", "series_rank, t_max"
+    else:
+        inner, rank, drop = f"\n{sql}\n", f"sum({metric})", "series_rank"
+    order = "series_rank DESC NULLS LAST" if largest_first else "series_rank NULLS FIRST"
+    return (f"SELECT * EXCLUDE ({drop})\n"
+            f"  FROM (SELECT q.*, {rank} OVER (PARTITION BY {series}) AS series_rank\n"
+            f"          FROM ({inner}) q)\n"
+            f" ORDER BY {order}, {t}")
+
+
+# A line chart with one line per series: the legend in the lines' order.
+LINES_VIZ = {"legend.is_reversed": False}
+
+
+# A stacked chart's viz: bands stacked, the legend in the bands' own
+# order (Metabase reverses a stacked chart's legend by default). A
+# stack of metrics rather than bands is the mirror case: the FIRST
+# metric sits at the bottom, so such a card lists its metrics largest
+# first and the legend then reads the same way.
+STACKED_VIZ = {"stackable.stack_type": "stacked", "legend.is_reversed": False}
 
 
 def _series_viz(time_col, series_col, metric, *, percent=False):
@@ -1356,12 +1391,11 @@ def question_defs(db_id, mid):
             "Net worth for every day since the first snapshot (value "
             "carried forward between snapshots), stacked by source; the "
             "envelope is total net worth.",
-            "SELECT as_of_day, silver_source_id,\n"
-            f"       sum({_ccy_case('total_value')})::DOUBLE AS net_worth\n"
-            "  FROM web_sources_history" + _spend_where(hist_tags) +
-            "\n GROUP BY 1, 2\n ORDER BY 1",
-            {**_series_viz("as_of_day", "silver_source_id", "net_worth"),
-             "stackable.stack_type": "stacked"}),
+            _series_order("SELECT as_of_day, silver_source_id,\n"
+                     f"       sum({_ccy_case('total_value')})::DOUBLE AS net_worth\n"
+                     "  FROM web_sources_history" + _spend_where(hist_tags) +
+                     "\n GROUP BY 1, 2", "as_of_day", "silver_source_id", "net_worth", "latest"),
+            {**_series_viz("as_of_day", "silver_source_id", "net_worth"), **STACKED_VIZ}),
         "Cash vs positions over time": overview_native(
             "Cash vs positions over time", hist_tags, "area",
             "Daily cash balance and positions value, stacked; the envelope "
@@ -1372,8 +1406,7 @@ def question_defs(db_id, mid):
             "  FROM web_sources_history" + _spend_where(hist_tags) +
             "\n GROUP BY 1\n ORDER BY 1",
             {"graph.dimensions": ["as_of_day"],
-             "graph.metrics": ["cash_balance", "positions_value"],
-             "stackable.stack_type": "stacked"}),
+             "graph.metrics": ["positions_value", "cash_balance"], **STACKED_VIZ}),
         # Reads the income base (migration 0072), so this tile and the
         # Income dashboard agree to the cent.
         #
@@ -1506,11 +1539,11 @@ def question_defs(db_id, mid):
         "Spending by month": spend_native("Spending by month", "area",
             "Net spend per month, stacked by primary category — the shape of "
             "the window: which months were heavy and what carried them.",
-            f"SELECT {sp_month},\n       spend_primary_label AS category,\n"
-            f"       {sp_val} AS net_spend\n"
-            "  FROM web_spending" + sp_where + "\n GROUP BY 1, 2\n ORDER BY 1",
-            {"graph.dimensions": ["month", "category"],
-             "stackable.stack_type": "stacked"}),
+            _series_order(f"SELECT {sp_month},\n       spend_primary_label AS category,\n"
+                     f"       {sp_val} AS net_spend\n"
+                     "  FROM web_spending" + sp_where + "\n GROUP BY 1, 2",
+                     "month", "category", "net_spend", "total"),
+            {"graph.dimensions": ["month", "category"], **STACKED_VIZ}),
         # The two breakdowns are donuts: the question they answer is how
         # the window DIVIDES, and a ring reads that as one shape where a
         # bar chart reads it as a ranking. The ring's hole carries the
@@ -1616,13 +1649,14 @@ def question_defs(db_id, mid):
             "carried forward between statement closings. Stated the way an "
             "issuer states it: the line is what is owed, and a paid-off "
             "card returns to zero." + native_note,
-            _native(db_id,
+            _native(db_id, _series_order(
                 "SELECT as_of_day, account_label,\n"
                 f"       sum({_ccy_case('balance', neg=True)}) AS owed\n"
                 "  FROM web_card_balances_history"
                 + _spend_where(bal_tags, " ") + "\n"
-                " GROUP BY 1, 2\n ORDER BY 1", bal_tags),
-            _series_viz("as_of_day", "account_label", "owed")),
+                " GROUP BY 1, 2", "as_of_day", "account_label", "owed", "latest",
+                largest_first=True), bal_tags),
+            {**_series_viz("as_of_day", "account_label", "owed"), **LINES_VIZ}),
         # The one tile that lists LINES rather than grouping them: over
         # the long model it would get each line once per reporting
         # currency, with no aggregation to fold them back.
@@ -1681,12 +1715,12 @@ def question_defs(db_id, mid):
             "Net income per month, stacked by type — the shape of the "
             "window. A type can dip negative in a month whose reversals "
             "beat its receipts.",
-            f"SELECT {sp_month},\n       income_label AS type,\n"
-            f"       {in_val} AS net_income\n"
-            "  FROM web_income" + in_where + "\n GROUP BY 1, 2\n ORDER BY 1",
+            _series_order(f"SELECT {sp_month},\n       income_label AS type,\n"
+                     f"       {in_val} AS net_income\n"
+                     "  FROM web_income" + in_where + "\n GROUP BY 1, 2",
+                     "month", "type", "net_income", "total"),
             {"graph.dimensions": ["month", "type"],
-             "graph.metrics": ["net_income"],
-             "stackable.stack_type": "stacked"}),
+             "graph.metrics": ["net_income"], **STACKED_VIZ}),
         # No slice threshold: the income vocabulary is small enough to
         # name in full, unlike the spending one, so nothing is folded
         # into an "other" wedge a reader cannot open. The ring rule
@@ -1822,26 +1856,26 @@ def question_defs(db_id, mid):
             "What came in each month, stacked by class: earnings, yield, "
             "pensions and benefits, other receipts, and the backlog no "
             "tier could place.",
-            f"SELECT {sp_month},\n       class_node AS class,\n"
-            f"       {cf_val} AS value\n"
-            "  FROM web_cashflow" + cf_where +
-            "\n   AND section = 'operating_in'\n GROUP BY 1, 2\n ORDER BY 1",
+            _series_order(f"SELECT {sp_month},\n       class_node AS class,\n"
+                     f"       {cf_val} AS value\n"
+                     "  FROM web_cashflow" + cf_where +
+                     "\n   AND section = 'operating_in'\n GROUP BY 1, 2",
+                     "month", "class", "value", "total"),
             {"graph.dimensions": ["month", "class"],
-             "graph.metrics": ["value"],
-             "stackable.stack_type": "stacked"}),
+             "graph.metrics": ["value"], **STACKED_VIZ}),
         "Outflows by class by month": cashflow_native(
             "Outflows by class by month", "area",
             "What went out each month, stacked by class: consumption, "
             "fees, taxes, giving, and the backlog. Fees, taxes and giving "
             "are lifted out of consumption because each is worth a line "
             "of its own.",
-            f"SELECT {sp_month},\n       class_node AS class,\n"
-            f"       -({cf_val}) AS value\n"
-            "  FROM web_cashflow" + cf_where +
-            "\n   AND section = 'operating_out'\n GROUP BY 1, 2\n ORDER BY 1",
+            _series_order(f"SELECT {sp_month},\n       class_node AS class,\n"
+                     f"       -({cf_val}) AS value\n"
+                     "  FROM web_cashflow" + cf_where +
+                     "\n   AND section = 'operating_out'\n GROUP BY 1, 2",
+                     "month", "class", "value", "total"),
             {"graph.dimensions": ["month", "class"],
-             "graph.metrics": ["value"],
-             "stackable.stack_type": "stacked"}),
+             "graph.metrics": ["value"], **STACKED_VIZ}),
         "Investing by month": cashflow_native("Investing by month", "bar",
             "Investing per month, signed: above the axis the portfolio fed "
             "the household, below it the household fed the portfolio. One "
@@ -1934,8 +1968,9 @@ def question_defs(db_id, mid):
             "engine's since-<year> returns (so it matches the scalars and the "
             "by-source table exactly). Annual granularity. Built for the "
             "Returns dashboard.",
-            returns_growth_sql(),
-            _series_viz("year", "source", "cumulative_return", percent=True)),
+            _series_order(returns_growth_sql(), "year", "source", "cumulative_return", "latest",
+                          largest_first=True),
+            {**_series_viz("year", "source", "cumulative_return", percent=True), **LINES_VIZ}),
         "Monthly returns (TWR)": returns_native("Monthly returns (TWR)",
             "Time-weighted return per month, one line per source plus the "
             "'(all sources)' portfolio line. Built for the Returns dashboard "
@@ -2175,14 +2210,15 @@ def gains_question_defs(db_id):
             "source plus an '(all sources)' line the Source picker does not "
             "narrow. In the output currency, so it moves with exchange "
             "rates as well as prices.",
-            "SELECT period AS month, silver_source_id AS source,\n"
-            "       sum(unrealized_end) AS unrealized\n"
-            "  FROM web_gains" + where + "\n     AND at_end\n GROUP BY 1, 2\n"
-            "UNION ALL\n"
-            "SELECT period, '(all sources)', sum(unrealized_end)\n"
-            "  FROM web_gains" + where_all + "\n     AND at_end\n GROUP BY 1\n"
-            " ORDER BY 1",
-            _series_viz("month", "source", "unrealized")),
+            _series_order(
+                "SELECT period AS month, silver_source_id AS source,\n"
+                "       sum(unrealized_end) AS unrealized\n"
+                "  FROM web_gains" + where + "\n     AND at_end\n GROUP BY 1, 2\n"
+                "UNION ALL\n"
+                "SELECT period, '(all sources)', sum(unrealized_end)\n"
+                "  FROM web_gains" + where_all + "\n     AND at_end\n GROUP BY 1",
+                "month", "source", "unrealized", "latest", largest_first=True),
+            {**_series_viz("month", "source", "unrealized"), **LINES_VIZ}),
         "Largest unrealized gains": unrealized_table("Largest unrealized gains",
             "The ten positions held at the window's end with the largest "
             "unrealized gain.",
@@ -2667,13 +2703,24 @@ def exposure_cards(db_id, privacy):
              "  FROM e\n GROUP BY ALL\n ORDER BY sum(share_pct) DESC, 1",
              ring(label) if display == "pie" else bars(label, "share_pct"))
 
-    def over_time(name, desc, dim, label):
-        """Each month end's shares, stacked by the values of `dim`."""
+    def over_time(name, desc, dim, label, fold=False):
+        """Each month end's shares, stacked by the values of `dim`, the
+        rows smallest first by the share at the window's end, as
+        _series_order orders any stacked chart. With `fold`, a value
+        under one percent at the window's end, or gone by then, joins the
+        `other` band, which tops the stack. It ranks with an aggregate of
+        its own: the DuckDB in Metabase's driver fails on that helper's
+        window functions over web_exposure, whose share is a window
+        function itself."""
+        rank = "CASE WHEN r.latest >= 1 THEN r.latest ELSE -1 END" if fold else "COALESCE(r.latest, -1)"
+        band = f"CASE WHEN r.latest >= 1 THEN w.{dim} ELSE 'other' END" if fold else f"w.{dim}"
         card(name, "area", desc,
-             f"SELECT as_of_day, {dim} AS {label},\n       sum(share_pct) AS share_pct\n"
-             + rows + "\n GROUP BY 1, 2\n ORDER BY 1, 2",
+             end.rstrip("\n") + f",\nr AS (SELECT {dim} AS k, sum(share_pct) AS latest FROM e GROUP BY 1)\n"
+             f"SELECT w.as_of_day, {band} AS {label},\n       sum(w.share_pct) AS share_pct\n"
+             f"  FROM w\n  LEFT JOIN r ON r.k = w.{dim}\n GROUP BY 1, 2\n"
+             f" ORDER BY max({rank}), 1",
              {"graph.dimensions": ["as_of_day", label], "graph.metrics": ["share_pct"],
-              "stackable.stack_type": "stacked", **_share_viz("share_pct")})
+              **STACKED_VIZ, **_share_viz("share_pct")})
 
     at_end("Exposure by asset class", "pie",
            "Net worth by asset class after every fund is looked through to "
@@ -2682,7 +2729,8 @@ def exposure_cards(db_id, privacy):
            "a warning, and the other slices read a little high.", "asset_class", "asset_class")
     over_time("Asset classes over time",
               "Each month end's net worth by asset class, after look-through, "
-              "as shares that stack to 100.", "asset_class", "asset_class")
+              "as shares that stack to 100, the largest at the latest day "
+              "at the bottom.", "asset_class", "asset_class")
     at_end("Exposure by sector", "bar",
            "Net worth by sector at the latest day in the window: a "
            "company's sector, a bond's issuer kind, or cash, metal, crypto "
@@ -2694,8 +2742,8 @@ def exposure_cards(db_id, privacy):
            "states. A metal or a coin has no country. A bar, not a pie: a "
            "loan can make a region negative.", "region", "region")
     over_time("Regions over time",
-              "Each month end's net worth by region, as shares that stack to 100.",
-              "region", "region")
+              "Each month end's net worth by region, as shares that stack to "
+              "100, the largest at the latest day at the bottom.", "region", "region")
     card("Exposure by country", "map",
          "Where net worth sits, at the latest day in the window: each "
          "country coloured by its share, by the country of risk or the one "
@@ -2729,7 +2777,9 @@ def exposure_cards(db_id, privacy):
            "warning.", "exposure_currency", "currency", extra=("currency_kind",))
     over_time("Currencies over time",
               "Each month end's net worth by the currency it moves with, as "
-              "shares that stack to 100.", "exposure_currency", "currency")
+              "shares that stack to 100, the largest at the latest day at the bottom. "
+              "A currency under one percent at the latest day, or gone by "
+              "then, is in the other band.", "exposure_currency", "currency", fold=True)
     over_time("Held directly or through funds",
               "Each month end's net worth split into what is held directly "
               "and what through funds.", "held", "held")
@@ -3256,14 +3306,13 @@ def privacy_card_defs(db_id, model_ids):
         "window's end, stacked by source: the envelope ends at 100 and "
         "exceeds 100 wherever earlier net worth topped the window-end "
         "total." + PRIVACY_DESC,
-        _native(db_id, nw_cte +
+        _native(db_id, _series_order(nw_cte +
             "SELECT as_of_day, silver_source_id,\n"
             f"       sum({total})::DOUBLE / (SELECT denom FROM nw)"
             " * 100 AS total_value_pct\n"
             "  FROM web_sources_history" + sh_where + "\n"
-            " GROUP BY 1, 2\n ORDER BY 1", sh_tags),
-        {**_series_viz("as_of_day", "silver_source_id", "total_value_pct"),
-         "stackable.stack_type": "stacked"})
+            " GROUP BY 1, 2", "as_of_day", "silver_source_id", "total_value_pct", "latest"), sh_tags),
+        {**_series_viz("as_of_day", "silver_source_id", "total_value_pct"), **STACKED_VIZ})
     out["Cash vs positions over time (privacy)"] = ("question", "area",
         "Daily cash and positions shares of the selected sources' total "
         "at the window's end, stacked; the two bands sum to 100 at the "
@@ -3277,8 +3326,7 @@ def privacy_card_defs(db_id, model_ids):
             "  FROM web_sources_history" + sh_where + "\n"
             " GROUP BY 1\n ORDER BY 1", sh_tags),
         {"graph.dimensions": ["as_of_day"],
-         "graph.metrics": ["cash_pct", "positions_pct"],
-         "stackable.stack_type": "stacked"})
+         "graph.metrics": ["positions_pct", "cash_pct"], **STACKED_VIZ})
     for name in ("Net worth — monthly trend (privacy)",
                  "Net worth over time (privacy)",
                  "Cash vs positions over time (privacy)"):
@@ -3596,16 +3644,17 @@ def cashflow_privacy_defs(db_id):
             ("Financing and vehicles by month",
              "\n   AND section IN ('financing', 'vehicles')", False,
              "class_node", "Debt and the earmarked pools per month, signed")):
-        cashflow_card(privacy_name(name), "area" if "class by month" in name else "bar",
+        area = "class by month" in name
+        sql = (month_cte(f"{grp} AS class,\n         ", filt, sign="-" if neg else "")
+               + "   GROUP BY 1, 2),\n" + peak_cte +
+               f"SELECT month, class,\n       {PEAK_DIV} AS share_pct\n  FROM m")
+        cashflow_card(privacy_name(name), "area" if area else "bar",
             f"{blurb}, each as % of the window's biggest month by gross "
             "movement.",
-            month_cte(f"{grp} AS class,\n         ", filt, sign="-" if neg else "")
-            + "   GROUP BY 1, 2),\n" + peak_cte +
-            f"SELECT month, class,\n       {PEAK_DIV} AS share_pct\n"
-            "  FROM m\n ORDER BY 1",
+            _series_order(sql, "month", "class", "share_pct", "total") if area else sql + "\n ORDER BY 1",
             {"graph.dimensions": ["month", "class"],
              "graph.metrics": ["share_pct"],
-             "stackable.stack_type": "stacked"})
+             **(STACKED_VIZ if area else {"stackable.stack_type": "stacked"})})
 
     # The one card that redacts rather than normalising: the base
     # version names the account a line moved through and the payer or
@@ -3682,12 +3731,12 @@ def income_privacy_defs(db_id):
         "Net income per month, stacked by type, as % of the window's "
         "biggest income month — the peak reads 100. A type can dip "
         "negative in a month whose reversals beat its receipts.",
-        month_cte("income_label AS type,\n         ")
-        + "   GROUP BY 1, 2),\n" + PEAK_CTE +
-        f"SELECT month, type, {PEAK_DIV} AS income_pct\n  FROM m\n ORDER BY 1",
+        _series_order(month_cte("income_label AS type,\n         ")
+                 + "   GROUP BY 1, 2),\n" + PEAK_CTE +
+                 f"SELECT month, type, {PEAK_DIV} AS income_pct\n  FROM m",
+                 "month", "type", "income_pct", "total"),
         {"graph.dimensions": ["month", "type"],
-         "graph.metrics": ["income_pct"],
-         "stackable.stack_type": "stacked"})
+         "graph.metrics": ["income_pct"], **STACKED_VIZ})
     # The share ring carries no figure in its hole: a total of shares is
     # 100 by construction and says nothing, and the hole is where the
     # base ring puts the money this one exists not to show.
@@ -3821,12 +3870,12 @@ def spending_privacy_defs(db_id, model_ids):
         "window's biggest spending month — the peak reads 100. A "
         "category can dip negative (a month whose refunds beat its "
         "purchases).",
-        month_cte("spend_primary_label AS category,\n         ")
-        + "   GROUP BY 1, 2),\n" + PEAK_CTE +
-        f"SELECT month, category, {PEAK_DIV} AS spend_pct\n"
-        "  FROM m\n ORDER BY 1",
+        _series_order(month_cte("spend_primary_label AS category,\n         ")
+                 + "   GROUP BY 1, 2),\n" + PEAK_CTE +
+                 f"SELECT month, category, {PEAK_DIV} AS spend_pct\n"
+                 "  FROM m", "month", "category", "spend_pct", "total"),
         {"graph.dimensions": ["month", "category"],
-         "graph.metrics": ["spend_pct"], "stackable.stack_type": "stacked"})
+         "graph.metrics": ["spend_pct"], **STACKED_VIZ})
 
     # The window-total denominator: every bucket over the summed total of
     # the same filtered rows, so the buckets total 100. Signed, so a
@@ -3935,7 +3984,7 @@ def spending_privacy_defs(db_id, model_ids):
         "window's deepest total owed: the peak reads 100, and a "
         "paid-off card returns to 0. Split by source; account labels are "
         "redacted." + PRIVACY_DESC,
-        _native(db_id,
+        _native(db_id, _series_order(
             "WITH d AS (\n"
             "  SELECT as_of_day, silver_source_id,\n"
             f"         sum({_ccy_case('balance', neg=True)})::DOUBLE AS v\n"
@@ -3945,8 +3994,9 @@ def spending_privacy_defs(db_id, model_ids):
             "        FROM (SELECT sum(v) AS t FROM d GROUP BY as_of_day))\n"
             "SELECT as_of_day, silver_source_id,\n"
             "       v / (SELECT peak FROM p) * 100 AS balance_pct\n"
-            "  FROM d\n ORDER BY 1", bal_tags),
-        _series_viz("as_of_day", "silver_source_id", "balance_pct"))
+            "  FROM d", "as_of_day", "silver_source_id", "balance_pct", "latest",
+            largest_first=True), bal_tags),
+        {**_series_viz("as_of_day", "silver_source_id", "balance_pct"), **LINES_VIZ})
     register_native_targets(bal_name, bal_tags, CARD_BALANCE_PICKERS)
 
     # The largest lines, with both counterparty columns dropped: what is

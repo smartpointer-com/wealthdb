@@ -144,6 +144,12 @@ Wealth Overview's three headline figures read `web_sources_latest`
 (migration 0113), each source's latest snapshot, so they print what
 `wealthdb holdings sources` prints. A native tile has no "see these
 records" drill-through. That is the price of the picker.
+Metabase takes a chart's series in the order their rows first appear.
+So every chart with one band or line per series orders its rows by the
+series' size. A level ranks by its value on the last day, a flow by its
+total over the window. A stacked chart puts its largest band on the
+axis, a line chart lists its top line first, and both legends read
+largest first.
 Each dashboard but Gains also gets a **privacy twin** (linked from the
 dashboard's top row): same layout and filters, but every card shows
 shares (%) instead of money. Gains has none. Its tiles are gains on
