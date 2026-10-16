@@ -68,7 +68,7 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
   `wealthdb exposure coverage -f csv | grep '^situs,'`
 - **Records still to write** — `wealthdb exposure coverage -f ndjson`: a
   skeleton per undeclared holding, and a situs-only one per holding of
-  unclassified situs, for the user to fill into the declarations ledger
+  unknown situs, for the user to fill into the declarations ledger
 - **Return of the portfolio / each account** —
   `wealthdb returns global 2025 --period total` / `wealthdb returns accounts 2025 --period total`
   (the account column is `entity`; one account: `| grep -i 'brokerage'`)
@@ -201,11 +201,11 @@ row's asset class.
   `classes`, `sectors`, `countries` and `currencies`; `funds` says which
   dimensions a declared fund states.
 - In `countries`, a part declared by region alone reads country
-  `unclassified` under its region, and a declared rest of the world reads
-  region `other`. Both are declared (quality `declared`), not unknown.
-- `unclassified` is real money nothing describes, not zero.
+  `unknown` under its region, and a declared rest of the world reads
+  region `other`. Both are declared (quality `declared`), not gaps.
+- `unknown` is real money nothing describes, not zero.
 - Sizes are `large` (from 10bn USD market cap), `mid` (from 2bn), `small`;
-  `unclassified` where nothing sizes a stock.
+  `unknown` where nothing sizes a stock.
 - `--country risk|domicile` (on `countries`, `securities`): where the
   business is (default) or where the company is registered.
 - **`situs` is not exposure.** It gives the one country whose law each
@@ -213,7 +213,7 @@ row's asset class.
   of US stocks is Irish there, and US in `countries`. Use it for an
   estate question, never for allocation. Its `quality` gives what each
   situs rests on (`isin=80%`, `declared`, `custody`, ...), and `funds_pct`
-  the share of the row held in funds. `unclassified` is a coin or a fund
+  the share of the row held in funds. `unknown` is a coin or a fund
   with no known domicile, which a declaration can place, or cash at a
   source whose `exposure.custody` names no country. A declared situs
   changes no other view.

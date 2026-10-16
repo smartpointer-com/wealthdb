@@ -201,7 +201,7 @@ type ExposureFundRow struct {
 	WeightSum                *float64
 	Domicile                 *string
 	// Situs is the legal situs of the fund's largest holding, nil where
-	// it is unclassified; SitusBasis what it rests on.
+	// it is unknown; SitusBasis what it rests on.
 	Situs, SitusBasis *string
 	Replication       *string
 	Lending           *bool

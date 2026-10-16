@@ -56,7 +56,7 @@ type ExposureDeclaration struct {
 }
 
 // ExposureDeclaredLeaf is one part of a declared holding. A field is ""
-// where the record does not declare its dimension, and Unclassified for
+// where the record does not declare its dimension, and Unknown for
 // the part of a declared dimension the record leaves open.
 type ExposureDeclaredLeaf struct {
 	// Share is the leaf's fraction of the holding's value.
@@ -81,9 +81,9 @@ var DeclarationDimensions = []string{DimensionRegion, DimensionCountry, Dimensio
 // country, never split, so never crossed with the dimensions.
 const DeclarationSitus = "situs"
 
-// Unclassified is the value of every dimension for what a declaration
+// Unknown is the value of every dimension for what a declaration
 // leaves open.
-const Unclassified = "unclassified"
+const Unknown = "unknown"
 
 // ExposureCustody names who keeps a source's assets.
 type ExposureCustody struct {

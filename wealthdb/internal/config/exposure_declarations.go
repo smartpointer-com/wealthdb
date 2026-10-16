@@ -228,7 +228,7 @@ func parseSitus(raw json.RawMessage) (string, error) {
 	}
 	f := fields[0]
 	switch {
-	case f.key == canonical.Unclassified:
+	case f.key == canonical.Unknown:
 		return "", fmt.Errorf("%s: %s states nothing; leave %s out", canonical.DeclarationSitus, f.key,
 			canonical.DeclarationSitus)
 	case f.key == regionRest || slices.Contains(canonical.Regions(), canonical.Region(f.key)):
@@ -259,7 +259,7 @@ type share struct {
 // parseDimension reads one dimension's object: each key a value of its
 // vocabulary, each share a number from 0 to 100 percent, the shares
 // summing to 100 within declarationTolerance. What they leave of 100, or
-// take beyond it, goes to the dimension's unclassified part, so the
+// take beyond it, goes to the dimension's unknown part, so the
 // shares sum to exactly one. A share of zero states nothing.
 func parseDimension(dim string, raw json.RawMessage) ([]share, error) {
 	fields, err := jsonObject(raw)
@@ -267,7 +267,7 @@ func parseDimension(dim string, raw json.RawMessage) ([]share, error) {
 		return nil, fmt.Errorf("%s: %w", dim, err)
 	}
 	sum := new(big.Rat)
-	unclassified := new(big.Rat)
+	unknown := new(big.Rat)
 	var out []share
 	for _, f := range fields {
 		value, err := declaredValue(dim, f.key)
@@ -281,20 +281,20 @@ func parseDimension(dim string, raw json.RawMessage) ([]share, error) {
 		sum.Add(sum, pct)
 		frac := new(big.Rat).Quo(pct, hundred)
 		switch {
-		case value == canonical.Unclassified:
-			unclassified.Add(unclassified, frac)
+		case value == canonical.Unknown:
+			unknown.Add(unknown, frac)
 		case frac.Sign() > 0:
 			out = append(out, share{value: value, frac: frac})
 		}
 	}
 	gap := new(big.Rat).Sub(hundred, sum)
 	if new(big.Rat).Abs(gap).Cmp(declarationTolerance) > 0 {
-		return nil, fmt.Errorf("%s: the shares sum to %s%%, want 100 within half a point; state the rest as unclassified",
+		return nil, fmt.Errorf("%s: the shares sum to %s%%, want 100 within half a point; state the rest as unknown",
 			dim, percentText(sum))
 	}
-	unclassified.Add(unclassified, gap.Quo(gap, hundred))
-	if unclassified.Sign() != 0 {
-		out = append(out, share{value: canonical.Unclassified, frac: unclassified})
+	unknown.Add(unknown, gap.Quo(gap, hundred))
+	if unknown.Sign() != 0 {
+		out = append(out, share{value: canonical.Unknown, frac: unknown})
 	}
 	return out, nil
 }
@@ -302,7 +302,7 @@ func parseDimension(dim string, raw json.RawMessage) ([]share, error) {
 // declaredValue checks one key of a dimension against its vocabulary
 // and returns the value gold stores: `rest` reads as the region other.
 func declaredValue(dim, key string) (string, error) {
-	if key == canonical.Unclassified {
+	if key == canonical.Unknown {
 		return key, nil
 	}
 	switch dim {
@@ -316,7 +316,7 @@ func declaredValue(dim, key string) (string, error) {
 				names = append(names, string(r))
 			}
 			return "", fmt.Errorf("%q is not a region; the regions are %s, %s (the rest of the world) and %s",
-				key, strings.Join(names, ", "), regionRest, canonical.Unclassified)
+				key, strings.Join(names, ", "), regionRest, canonical.Unknown)
 		}
 	case canonical.DimensionCountry:
 		if !isCountryCode(key) {

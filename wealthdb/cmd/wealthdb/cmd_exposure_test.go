@@ -144,10 +144,10 @@ func TestExposurePrivacyHidesAmounts(t *testing.T) {
 	kept := map[string][]string{
 		"classes":    {"public_equity", "57.14"},
 		"sectors":    {"technology", "40.00"},
-		"sizes":      {"public_equity", "unclassified"},
+		"sizes":      {"public_equity", "unknown"},
 		"countries":  {"US", "40.00"},
 		"currencies": {"USD", "fiat"},
-		"situs":      {"unclassified", "100.00"},
+		"situs":      {"unknown", "100.00"},
 		"securities": {"symbol:AAAA", "Alpha Corp", "40.00", "technology"},
 		"funds":      {"symbol:IDXF", "57.14"},
 		"coverage":   {"looked_through", "undeclared", "brk"},
@@ -172,7 +172,7 @@ func TestExposurePrivacyHidesAmounts(t *testing.T) {
 
 // coverage -f ndjson prints a skeleton record per holding undeclared,
 // with its economic dimensions empty, and a situs-only one per holding
-// of unclassified situs, a holding with a record among them; each note
+// of unknown situs, a holding with a record among them; each note
 // is the holding's name, and nothing else is printed. Cash names no
 // instrument and takes none. The other views, a series, a column set and
 // -p refuse it.

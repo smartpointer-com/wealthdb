@@ -1528,7 +1528,8 @@ is documented where it is used:
 - `report_gains` (migration `0117`) — §10.13.
 - The exposure tables: the reference and config tables (migrations
   `0125` and `0128`) — §7.6; the derived tables (migrations `0126` and
-  `0129`) and `report_exposure` (migrations `0127` and `0130`) — §10.14.
+  `0129`) and `report_exposure` (migrations `0127` and `0130`); migration
+  `0131` touches both — §10.14.
 - The spending overlay: `spend_categories` (migration `0040`;
   docs/SPENDING.md §2), and `spend_txn_enrichment`,
   `spend_merchant_categories` and `spend_account_scope` (migration
@@ -2966,8 +2967,9 @@ The exposure macros look every holding through to what it holds.
 [EXPOSURE.md](EXPOSURE.md) defines every figure they return.
 
 Migration 0126 adds the derived tables and the macros; migration 0128
-re-creates the macros the declarations change, and migration 0129 those
-the legal situs changes. The exposure pass
+re-creates the macros the declarations change, migration 0129 those
+the legal situs changes, and migration 0131 those that name what
+nothing describes. The exposure pass
 (`gold.RebuildExposure`) runs after the lot pass at the end of every
 load and reload, and rewrites the derived tables:
 

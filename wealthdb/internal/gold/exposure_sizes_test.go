@@ -156,7 +156,7 @@ func TestExposureSizesStocks(t *testing.T) {
 	// fund nothing looks through: no size, whatever its own cap) and a
 	// bond 100 (no size applies). The rows sum to what is held.
 	want := []string{"public_equity large 355", "public_equity mid 210", "public_equity small 135",
-		"public_equity unclassified 100", "fixed_income (none) 100"}
+		"public_equity unknown 100", "fixed_income (none) 100"}
 	if !slices.Equal(got, want) {
 		t.Errorf("sizes = %v, want %v", got, want)
 	}

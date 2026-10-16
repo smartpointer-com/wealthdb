@@ -204,7 +204,7 @@ func TestDeclarationSitus(t *testing.T) {
 }
 
 // The leaves are the cross product of the declared dimensions, each
-// padded with its unclassified part, so their shares sum to one.
+// padded with its unknown part, so their shares sum to one.
 func TestDeclarationLeaves(t *testing.T) {
 	t.Parallel()
 	for body, want := range map[string]string{
@@ -216,13 +216,13 @@ func TestDeclarationLeaves(t *testing.T) {
 			"0.084000 europe - USD - private_debt\n" +
 			"0.108000 other - USD - private_equity\n" +
 			"0.042000 other - USD - private_debt\n",
-		// What the shares leave of 100 is unclassified; a share of zero
+		// What the shares leave of 100 is unknown; a share of zero
 		// states nothing.
 		`"sector":{"technology":33.3,"health_care":33.3,"financials":33.3,"energy":0}`: "0.333000 - - - technology -\n" +
-			"0.333000 - - - health_care -\n0.333000 - - - financials -\n0.001000 - - - unclassified -\n",
+			"0.333000 - - - health_care -\n0.333000 - - - financials -\n0.001000 - - - unknown -\n",
 		// What they take beyond it too, as a negative part.
-		`"country":{"US":60.2,"unclassified":40.1}`: "0.602000 - US - - -\n0.398000 - unclassified - - -\n",
-		`"country":{"US":50.2,"CA":50.1}`:           "0.502000 - US - - -\n0.501000 - CA - - -\n-0.003000 - unclassified - - -\n",
+		`"country":{"US":60.2,"unknown":40.1}`: "0.602000 - US - - -\n0.398000 - unknown - - -\n",
+		`"country":{"US":50.2,"CA":50.1}`:      "0.502000 - US - - -\n0.501000 - CA - - -\n-0.003000 - unknown - - -\n",
 	} {
 		d, err := declarations(t, `{"silver_source_id":"manual","instrument":"x",`+body+"}\n")
 		if err != nil {
@@ -278,7 +278,7 @@ func TestDeclarationRejects(t *testing.T) {
 		rec(`"situs":{"europe":100}`):                                              `situs: "europe" is a region`,
 		rec(`"situs":{"rest":100}`):                                                `situs: "rest" is a region`,
 		rec(`"situs":{"QQ":100}`):                                                  `situs: "QQ" is not an ISO 3166`,
-		rec(`"situs":{"unclassified":100}`):                                        "situs: unclassified states nothing",
+		rec(`"situs":{"unknown":100}`):                                             "situs: unknown states nothing",
 		rec(`"situs":{"EU":100}`):                                                  "situs: EU is the European Union",
 		rec(`"situs":"KY"`):                                                        "situs: want a JSON object",
 		`{"silver_source_id":"nope","instrument":"x","country":{"CH":100}}` + "\n": `silver_source_id "nope"`,

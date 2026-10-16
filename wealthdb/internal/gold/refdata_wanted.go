@@ -95,7 +95,7 @@ type WantedSecurity struct {
 var lookThroughVehicles = []string{"etf", "fund", "structured_product"}
 
 // The asset classes of a fund whose lines describe its exposure, other
-// among them: an unclassified fund may well publish lines. A metal or
+// among them: a fund of no known class may well publish lines. A metal or
 // coin fund holds what its asset class already says, and a private fund
 // publishes no lines.
 var lookThroughClasses = []string{"public_equity", "fixed_income", "multi_asset", "real_estate", "infrastructure", "cash", "other"}

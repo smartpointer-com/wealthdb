@@ -2744,7 +2744,7 @@ def exposure_cards(db_id, privacy):
     at_end("Exposure by sector", "bar",
            "Net worth by sector at the latest day in the window: a "
            "company's sector, a bond's issuer kind, or cash, metal, crypto "
-           "and real estate for holdings that are no company. Unclassified "
+           "and real estate for holdings that are no company. Unknown "
            "is what no source describes.", "sector", "sector")
     at_end("Exposure by region", "row",
            "Net worth by region, at the latest day in the window: the "
@@ -2760,7 +2760,7 @@ def exposure_cards(db_id, privacy):
          "a declaration states. Metals, coins and what no source places "
          "have no country and are not on the map.",
          end + f"SELECT country,\n       country_name{money},\n       sum(share_pct) AS share_pct\n"
-         "  FROM e\n WHERE country NOT IN ('(none)', 'unclassified')\n GROUP BY ALL\n"
+         "  FROM e\n WHERE country NOT IN ('(none)', 'unknown')\n GROUP BY ALL\n"
          " ORDER BY sum(share_pct) DESC, 1",
          {"map.type": "region", "map.region": "world_countries", "map.dimension": "country",
           "map.metric": "share_pct", **_share_viz("share_pct")})
@@ -2769,7 +2769,7 @@ def exposure_cards(db_id, privacy):
          "Every region with its total, then the countries inside it, at "
          "the latest day in the window, largest first. A region's own row "
          "names no country. Metals and coins have no country, and what no "
-         "source places is unclassified.",
+         "source places is unknown.",
          end + "SELECT * EXCLUDE (region_rank)\n"
          f"  FROM (SELECT region, country, country_name{money},\n"
          "               sum(share_pct) AS share_pct,\n"
@@ -2784,7 +2784,7 @@ def exposure_cards(db_id, privacy):
            "under: a fund's domicile, a share's issuer, the bank that holds "
            "a deposit. No fund is looked through: a fund counts whole at its "
            "own situs, so this is not where the value is exposed. "
-           "Unclassified is what nothing places, coins among it.", "situs", "situs")
+           "Unknown is what nothing places, coins among it.", "situs", "situs")
     at_end("Exposure by currency", "pie",
            "Net worth by the currency each value moves with, at the "
            "latest day in the window: a stock in its trading currency, a "
@@ -2804,7 +2804,7 @@ def exposure_cards(db_id, privacy):
          "Public equity by the size of each company, at the latest day in "
          "the window, as shares of public equity: large from 10bn US "
          "dollars of market cap, mid from 2bn, small below, else by the "
-         "company's rank in a broad fund. Unclassified is what neither "
+         "company's rank in a broad fund. Unknown is what neither "
          "sizes, and any fund nothing looks through.",
          end + f"SELECT size{money},\n"
          "       100 * sum(share_pct) / sum(sum(share_pct)) OVER () AS class_share_pct\n"
@@ -2815,7 +2815,7 @@ def exposure_cards(db_id, privacy):
               "Each month end's net worth by how its figures are classified: "
               "looked through, proxied, a security a source describes, "
               "declared, cash, metal or crypto, a fund's remainder, a fund "
-              "too deep to follow, or unclassified. The lower the unclassified band, the more the "
+              "too deep to follow, or unknown. The lower the unknown band, the more the "
               "other charts cover.", "how", "how")
     return out
 

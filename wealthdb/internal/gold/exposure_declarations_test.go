@@ -61,19 +61,19 @@ func TestExposureDeclaredSplit(t *testing.T) {
 			t.Errorf("infrastructure = %v %q", parse(t, r.Value), r.Quality)
 		}
 	}
-	// countries: a declared region is a row of its own under unclassified.
+	// countries: a declared region is a row of its own under unknown.
 	countries, err := ExposureCountries(ctx, db, exAsOf, "USD", "risk")
 	if err != nil {
 		t.Fatal(err)
 	}
 	byRegion := map[string]float64{}
 	for _, r := range countries {
-		if r.Country == "unclassified" && r.Region != nil {
+		if r.Country == "unknown" && r.Region != nil {
 			byRegion[*r.Region] = parse(t, r.Value)
 		}
 	}
 	if math.Abs(byRegion["north_america"]-110)+math.Abs(byRegion["europe"]-60)+math.Abs(byRegion["other"]-30) > 0.015 {
-		t.Errorf("unclassified countries by region = %v", byRegion)
+		t.Errorf("unknown countries by region = %v", byRegion)
 	}
 	// securities: the parts are one row, the holding's.
 	secs, err := ExposureSecurities(ctx, db, exAsOf, "USD", "risk")
@@ -199,7 +199,7 @@ func TestExposureDeclarationAsOf(t *testing.T) {
 		t.Errorf("before the dated record: %q, want the record without a date", got)
 	}
 	stampDeclarations(t, db, ctx, country(5, &jul, "AT"))
-	if got := read(exAsOf); got != "unclassified|-|opaque,undeclared" {
+	if got := read(exAsOf); got != "unknown|-|opaque,undeclared" {
 		t.Errorf("before the only record: %q, want undeclared", got)
 	}
 }
@@ -214,14 +214,14 @@ func TestExposureDeclarationLeavesTheRest(t *testing.T) {
 	before := leafText(t, db, ctx, "sector || '|' || country || '|' || currency", stka)
 	stampDeclarations(t, db, ctx,
 		declaration(3, "STKA", nil, split{"sector", []string{"energy"}, []float64{100}}),
-		declaration(4, "PE1", nil, split{"country", []string{"US", "unclassified"}, []float64{64, 36}}))
+		declaration(4, "PE1", nil, split{"country", []string{"US", "unknown"}, []float64{64, 36}}))
 	_, rest, _ := strings.Cut(before, "|")
 	if got := leafText(t, db, ctx, "sector || '|' || country || '|' || currency", stka); got != "energy|"+rest {
 		t.Errorf("STKA = %q, was %q: want the declared sector and the rest as before", got, before)
 	}
 	if got := leafText(t, db, ctx, "string_agg(COALESCE(country, '-') || ':' || round(value, 6) || ':' || currency, ',' "+
 		"ORDER BY value)", `iid = 'PE1'`); got != "-:28.8:USD,US:51.2:USD" {
-		t.Errorf("PE1 = %q, want 64%% US, the rest unclassified, both in its own currency", got)
+		t.Errorf("PE1 = %q, want 64%% US, the rest unknown, both in its own currency", got)
 	}
 }
 
@@ -334,7 +334,7 @@ func TestExposureDeclaredCashAndCryptoParts(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	stampDeclarations(t, db, ctx, declaration(3, "PE1", nil,
-		split{"currency", []string{"BTC", "unclassified"}, []float64{45, 55}},
+		split{"currency", []string{"BTC", "unknown"}, []float64{45, 55}},
 		split{"asset_class", []string{"crypto", "cash"}, []float64{40, 60}}))
 	got := leafText(t, db, ctx, "string_agg(asset_class || '/' || COALESCE(sector, '-') || '/' || COALESCE(currency, '-') "+
 		"|| '/' || round(value, 6), ' ' ORDER BY asset_class, currency NULLS LAST)", `iid = 'PE1'`)
@@ -355,18 +355,18 @@ func TestExposureDeclaredCashAndCryptoParts(t *testing.T) {
 	}
 }
 
-// What a dimension's shares take beyond 100 is a negative unclassified
+// What a dimension's shares take beyond 100 is a negative unknown
 // part, and the holding still sums to its value.
 func TestExposureDeclaredNegativePart(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	stampDeclarations(t, db, ctx, declaration(3, "PE1", nil,
-		split{"country", []string{"US", "unclassified"}, []float64{100.3, -0.3}}))
+		split{"country", []string{"US", "unknown"}, []float64{100.3, -0.3}}))
 	if v := leafValue(t, db, ctx, `iid = 'PE1'`); math.Abs(v-80) > 1e-9 {
 		t.Errorf("PE1 = %v, want 80", v)
 	}
 	if v := leafValue(t, db, ctx, `iid = 'PE1' AND country IS NULL`); math.Abs(v+0.24) > 1e-9 {
-		t.Errorf("PE1's unclassified part = %v, want -0.24", v)
+		t.Errorf("PE1's unknown part = %v, want -0.24", v)
 	}
 }
 

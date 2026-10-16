@@ -25,20 +25,20 @@ func TestSitusRuleOrder(t *testing.T) {
 		situs, basis      string
 	}{
 		{"a declared situs wins over every other", all, "KY", "DE", "KY", situsDeclared},
-		{"a coin's ticker names no issuer", situsFacts{coin: true, isin: "US"}, "", "", "", situsUnclassified},
+		{"a coin's ticker names no issuer", situsFacts{coin: true, isin: "US"}, "", "", "", situsUnknown},
 		{"a declared coin", situsFacts{coin: true}, "KY", "", "KY", situsDeclared},
 		{"a receipt reads as its share", all, "", "", "NL", situsUnderlying},
 		{"a receipt without its share has none, its ISIN notwithstanding",
-			situsFacts{receipt: true, isin: "US", domicile: "US"}, "", "", "", situsUnclassified},
+			situsFacts{receipt: true, isin: "US", domicile: "US"}, "", "", "", situsUnknown},
 		{"the ISIN prefix outranks a domicile", situsFacts{isin: "IE", domicile: "LU"}, "", "", "IE", situsISIN},
 		{"a domicile serves a holding with no ISIN of a country", situsFacts{domicile: "LU", banked: true, custody: "CH"},
 			"", "", "LU", situsDomicile},
 		{"cash sits at its custodian", situsFacts{banked: true, custody: "CH"}, "", "", "CH", situsCustody},
-		{"a custodian with no country", situsFacts{banked: true}, "", "", "", situsUnclassified},
-		{"an ETF at a bank is not the bank's", situsFacts{custody: "CH"}, "", "", "", situsUnclassified},
+		{"a custodian with no country", situsFacts{banked: true}, "", "", "", situsUnknown},
+		{"an ETF at a bank is not the bank's", situsFacts{custody: "CH"}, "", "", "", situsUnknown},
 		{"a private holding's one declared country", situsFacts{private: true}, "", "DE", "DE", situsCountry},
-		{"a listed security's declared country is its risk, not its situs", situsFacts{}, "", "DE", "", situsUnclassified},
-		{"a private holding no record names", situsFacts{private: true}, "", "", "", situsUnclassified},
+		{"a listed security's declared country is its risk, not its situs", situsFacts{}, "", "DE", "", situsUnknown},
+		{"a private holding no record names", situsFacts{private: true}, "", "", "", situsUnknown},
 	} {
 		if situs, basis := situsOf(c.f, c.declared, c.country); situs != c.situs || basis != c.basis {
 			t.Errorf("%s: %q %s, want %q %s", c.name, situs, basis, c.situs, c.basis)
@@ -70,18 +70,18 @@ func TestSitusReadings(t *testing.T) {
 		records []situsRecord
 		want    string
 	}{
-		{"no record", private, nil, "-:/unclassified"},
+		{"no record", private, nil, "-:/unknown"},
 		{"an undated country, then a dated split that states none", private, []situsRecord{
-			{country: "CH", economic: true}, {asOf: day(5), economic: true}}, "-:CH/country 5:/unclassified"},
+			{country: "CH", economic: true}, {asOf: day(5), economic: true}}, "-:CH/country 5:/unknown"},
 		{"a situs-only record leaves the country rule's record in force", private, []situsRecord{
 			{country: "CH", economic: true}, {asOf: day(5), situs: "KY"}}, "-:CH/country 5:KY/declared"},
 		{"a later record that states no situs keeps the declared one", private, []situsRecord{
 			{situs: "KY"}, {asOf: day(5), economic: true}, {asOf: day(9), situs: "LU", economic: true}},
 			"-:KY/declared 9:LU/declared"},
 		{"a dated situs alone: none before it", private, []situsRecord{{asOf: day(5), situs: "KY"}},
-			"-:/unclassified 5:KY/declared"},
+			"-:/unknown 5:KY/declared"},
 		{"a day's two records count together", private, []situsRecord{
-			{asOf: day(5), economic: true, country: "DE"}, {asOf: day(5), situs: "KY"}}, "-:/unclassified 5:KY/declared"},
+			{asOf: day(5), economic: true, country: "DE"}, {asOf: day(5), situs: "KY"}}, "-:/unknown 5:KY/declared"},
 		{"an economic record that changes nothing starts no reading", situsFacts{isin: "IE"}, []situsRecord{
 			{country: "CH", economic: true}, {asOf: day(5), economic: true}}, "-:IE/isin"},
 	} {
@@ -198,25 +198,25 @@ func TestExposureSitusOfEachKindOfHolding(t *testing.T) {
 	for key, want := range map[string]string{
 		"QPRV":     "KY declared",
 		"QADR":     "NL underlying",
-		"QADX":     "- unclassified",
+		"QADX":     "- unknown",
 		"QADF":     "US isin",
 		"QADS":     "FI isin",
-		"QEUB":     "- unclassified",
+		"QEUB":     "- unknown",
 		"NOCF":     "IE isin",
 		"STKD":     "DE isin",
-		"QXSB":     "- unclassified",
+		"QXSB":     "- unknown",
 		"BOND9":    "DE domicile",
 		"QCSP":     "US domicile",
 		"GAPF":     "IE domicile",
 		"QNPF":     "US domicile",
-		"OLDF":     "- unclassified",
-		"STKA":     "- unclassified",
+		"OLDF":     "- unknown",
+		"STKA":     "- unknown",
 		"cash:USD": "CH custody",
 		"GOLD":     "CH custody",
 		"HOUSE":    "CH country",
-		"LOAN":     "- unclassified",
-		"PE1":      "- unclassified",
-		"COIN1":    "- unclassified",
+		"LOAN":     "- unknown",
+		"PE1":      "- unknown",
+		"COIN1":    "- unknown",
 	} {
 		if got := situsAt(t, db, ctx, exAsOf, key); got != want {
 			t.Errorf("%s: %s, want %s", key, got, want)
@@ -280,8 +280,8 @@ func TestExposureSitusViews(t *testing.T) {
 		qualityTags(ch.Quality) != "custody,country" {
 		t.Errorf("CH = %v, want %v; funds %v %q", parse(t, ch.Value), want, ch.FundsPct, ch.Quality)
 	}
-	if u := by["unclassified"]; u.Region != nil || u.Quality != "unclassified=100%" {
-		t.Errorf("unclassified = %v %q", u.Region, u.Quality)
+	if u := by["unknown"]; u.Region != nil || u.Quality != "unknown=100%" {
+		t.Errorf("unknown = %v %q", u.Region, u.Quality)
 	}
 
 	funds, err := ExposureFunds(ctx, db, exAsOf, "USD")
@@ -291,7 +291,7 @@ func TestExposureSitusViews(t *testing.T) {
 	for _, f := range funds {
 		got := strOrDash(f.Situs) + " " + strOrDash(f.SitusBasis)
 		want := map[string]string{"symbol:GAPF": "IE domicile", "holding:test-src:QPRV": "KY declared",
-			"symbol:FOF": "- unclassified", "(other holdings)": "- -"}[f.Fund]
+			"symbol:FOF": "- unknown", "(other holdings)": "- -"}[f.Fund]
 		if want != "" && got != want {
 			t.Errorf("funds %s: situs %s, want %s", f.Fund, got, want)
 		}
@@ -320,7 +320,7 @@ func TestExposureSitusViews(t *testing.T) {
 	if len(order) < 2 || order[0] != "declared" {
 		t.Errorf("situs section = %v, want the bases first, in the rule's order", order)
 	}
-	// Each holding of unclassified situs, by what a record names; the
+	// Each holding of unknown situs, by what a record names; the
 	// funds by their own name, not a line's.
 	if r, ok := listed["symbol:FOF"]; !ok || r.Detail == nil || *r.Detail != "Fund of Funds" || r.Items != 1 ||
 		r.Instrument == nil || *r.Instrument != "FOF" {
@@ -427,7 +427,7 @@ func TestExposureSitusOnlyRecord(t *testing.T) {
 func TestExposureSitusFollowsAHoldingAlias(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
-	if got := situsAt(t, db, ctx, exAsOf, "UNK"); got != "- unclassified" {
+	if got := situsAt(t, db, ctx, exAsOf, "UNK"); got != "- unknown" {
 		t.Fatalf("UNK before the alias: %s", got)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO holding_aliases (silver_source_id, account_external_id, from_key, to_key)

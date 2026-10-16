@@ -175,12 +175,12 @@ func TestMigration0127DDLIsRerunnable(t *testing.T) {
 	if _, err := MaterializeExposure(ctx, db, exAsOf, 1); err != nil {
 		t.Fatal(err)
 	}
-	// 0129 re-creates web_exposure with the situs, so it is replayed
-	// after 0127, as Migrate would.
+	// 0131 re-creates web_exposure, so it is replayed after 0127, as
+	// Migrate would.
 	rerunMigrationDDL(t, db, ctx, "0127_exposure_dashboard.sql")
-	rerunMigrationDDL(t, db, ctx, "0129_exposure_situs.sql")
+	rerunMigrationDDL(t, db, ctx, "0131_exposure_unknown.sql")
 	var n int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure WHERE size = 'unclassified'`).Scan(&n); err != nil ||
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure WHERE size = 'unknown'`).Scan(&n); err != nil ||
 		n == 0 {
 		t.Errorf("after replay: %d sized rows, err %v", n, err)
 	}
@@ -192,12 +192,26 @@ func TestMigration0130DDLIsRerunnable(t *testing.T) {
 	if _, err := MaterializeExposure(ctx, db, exAsOf, 1); err != nil {
 		t.Fatal(err)
 	}
-	// 0129 re-creates web_exposure with the situs, so it is replayed
-	// after 0130, as Migrate would.
+	// 0131 re-creates web_exposure, so it is replayed after 0130, as
+	// Migrate would.
 	rerunMigrationDDL(t, db, ctx, "0130_exposure_filters.sql")
-	rerunMigrationDDL(t, db, ctx, "0129_exposure_situs.sql")
+	rerunMigrationDDL(t, db, ctx, "0131_exposure_unknown.sql")
 	var n int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure WHERE size = 'unclassified'`).Scan(&n); err != nil ||
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure WHERE size = 'unknown'`).Scan(&n); err != nil ||
+		n == 0 {
+		t.Errorf("after replay: %d sized rows, err %v", n, err)
+	}
+}
+
+func TestMigration0131DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
+	db, ctx := openExposureFixture(t)
+	if _, err := MaterializeExposure(ctx, db, exAsOf, 1); err != nil {
+		t.Fatal(err)
+	}
+	rerunMigrationDDL(t, db, ctx, "0131_exposure_unknown.sql")
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure WHERE size = 'unknown'`).Scan(&n); err != nil ||
 		n == 0 {
 		t.Errorf("after replay: %d sized rows, err %v", n, err)
 	}

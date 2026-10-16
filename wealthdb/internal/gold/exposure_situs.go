@@ -21,13 +21,13 @@ const nportProvider = "sec-nport"
 
 // The bases a situs rests on, in the rule's order.
 const (
-	situsDeclared     = "declared"
-	situsUnderlying   = "underlying"
-	situsISIN         = "isin"
-	situsDomicile     = "domicile"
-	situsCustody      = "custody"
-	situsCountry      = "country"
-	situsUnclassified = "unclassified"
+	situsDeclared   = "declared"
+	situsUnderlying = "underlying"
+	situsISIN       = "isin"
+	situsDomicile   = "domicile"
+	situsCustody    = "custody"
+	situsCountry    = "country"
+	situsUnknown    = "unknown"
 )
 
 // situsFacts is what the rule reads of one holding.
@@ -75,14 +75,14 @@ func situsOf(f situsFacts, declared, country string) (situs, basis string) {
 	case declared != "":
 		return declared, situsDeclared
 	case f.coin:
-		return "", situsUnclassified
+		return "", situsUnknown
 	case f.receipt:
 		// A receipt's own ISIN is the depositary's: without its share it
 		// has no situs.
 		if f.share != "" {
 			return f.share, situsUnderlying
 		}
-		return "", situsUnclassified
+		return "", situsUnknown
 	case f.isin != "":
 		return f.isin, situsISIN
 	case f.domicile != "":
@@ -92,7 +92,7 @@ func situsOf(f situsFacts, declared, country string) (situs, basis string) {
 	case f.private && country != "":
 		return country, situsCountry
 	}
-	return "", situsUnclassified
+	return "", situsUnknown
 }
 
 // situsReading is a holding's situs and basis from asOf on, nil for the
@@ -228,14 +228,14 @@ SELECT k.src, k.acct, k.position_key, COALESCE(k.iid, ''),
 
 // situsRecordsSQL lists every record of the declarations ledger, oldest
 // first, with the situs it declares, the one country it declares at 100
-// if any (a country every part names, other than unclassified), and
+// if any (a country every part names, other than unknown), and
 // whether it declares the economic dimensions.
 const situsRecordsSQL = `
 SELECT d.silver_source_id, d.instrument_external_id, d.as_of, COALESCE(d.situs, ''), COALESCE(c.country, ''),
        d.dimensions <> ''
   FROM exposure_declarations d
   LEFT JOIN (SELECT line_no, MIN(country) AS country FROM exposure_declaration_leaves GROUP BY 1
-              HAVING COUNT(country) = COUNT(*) AND MIN(country) = MAX(country) AND MIN(country) <> 'unclassified') c
+              HAVING COUNT(country) = COUNT(*) AND MIN(country) = MAX(country) AND MIN(country) <> 'unknown') c
          USING (line_no)
  ORDER BY d.as_of NULLS FIRST, d.line_no`
 

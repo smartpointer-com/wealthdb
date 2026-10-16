@@ -163,7 +163,7 @@ type declarationSkeleton struct {
 
 // writeDeclarationSkeletons writes a skeleton for each holding coverage
 // lists as undeclared, with country, currency and sector, and one for
-// each of unclassified situs, with situs alone. Its note is the
+// each of unknown situs, with situs alone. Its note is the
 // holding's name. A situs-only record leaves a holding's other records
 // as they are, so each skeleton loads beside them. A holding with no
 // instrument, or no value, takes no record.
@@ -576,7 +576,7 @@ var exposureSitusBases = []struct{ tag, meaning string }{
 		"of a country"},
 	{"custody", "cash or metal sits in its custodian's country (exposure.custody)"},
 	{"country", "the one country a declaration states for a private holding"},
-	{"unclassified", "none of these: a coin, cash at a custodian with no country, or a holding to declare"},
+	{"unknown", "none of these: a coin, cash at a custodian with no country, or a holding to declare"},
 }
 
 // exposureNotes are tags as an aligned list, each meaning wrapped beside
@@ -675,7 +675,7 @@ Flags
   -f FORMAT          table | csv | csv_plain | json; on coverage also
                      ndjson: a skeleton record for each holding
                      undeclared, and a situs-only one for each of
-                     unclassified situs, for the declarations ledger
+                     unknown situs, for the declarations ledger
   -C COLS            comma-separated names, 'default', 'all', or a
                      +ADD,-REMOVE delta on the default set
   -x CCY             output currency (default: config.default_currency)

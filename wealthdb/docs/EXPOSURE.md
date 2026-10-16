@@ -10,7 +10,7 @@ the rules behind them.
 Related design: DESIGN.md §4.17 (the `exposure` command), §7.6 (the
 reference and config tables), §10.14 (the derived tables and macros);
 [adapters/refdata.md](adapters/refdata.md) (how reference data loads,
-the keys and aliases, and the wanted list); migrations 0125 to 0130.
+the keys and aliases, and the wanted list); migrations 0125 to 0131.
 
 Every figure is a share of a holding's market value, the value
 `holdings` reports. The look-through moves value between rows; it never
@@ -85,7 +85,7 @@ A holding none of them describes is a leaf of its own. A listed
 security takes its attributes from §3. A fund takes none of them, held
 directly or named by a line no level expands: where it is domiciled
 says nothing of where its value is. A real estate fund keeps the
-`real_estate` sector. Anything else stays unclassified.
+`real_estate` sector. Anything else stays unknown.
 
 A declared holding splits into parts, each a share of its value (§9).
 A part takes the class, region, country, currency and sector the
@@ -213,7 +213,7 @@ A stock's size is `large`, `mid` or `small`:
 `securities.size_origin` says which: `market_cap`, `size_fund:` and the
 fund, `size_fund_name:` and the fund for a size found by name, or the
 share as `lei:`, `roster:` or `underlying:` with its key. A
-stock nothing sizes is `unclassified`, and so is a fund nothing looks
+stock nothing sizes is `unknown`, and so is a fund nothing looks
 through.
 
 ### Vocabularies
@@ -323,7 +323,7 @@ priced in:
   held physically or through a fund the look-through does not split.
 - A coin held in a wallet counts as its symbol. A product or a fund line
   that holds a coin counts as the coin its name states: bitcoin as BTC,
-  ether as ETH. Any other coin reads `unclassified`, unless a
+  ether as ETH. Any other coin reads `unknown`, unless a
   declaration states its currency (§9).
 - A hedged class counts in its hedge currency (§5).
 
@@ -362,12 +362,12 @@ suffix, in a table's header and as a JSON key: `share_pct`,
 `class_share_pct`, and `weight_sum_pct` in `funds`. `wealthdb help
 exposure` lists every view's columns.
 
-A row with no value for its dimension reads `unclassified`. In
+A row with no value for its dimension reads `unknown`. In
 `countries`, a metal or a coin reads `(none)`: it has no country. A
-part declared by region alone reads `unclassified` with its region, in
+part declared by region alone reads `unknown` with its region, in
 a row for each region. In `sizes`, anything but public equity reads
 `(none)`. A declared part of public equity has its holding's size: a
-listed stock's, else `unclassified`.
+listed stock's, else `unknown`.
 
 `securities` gives a leaf without a security a row of its own: cash per
 currency, any other fund line by its fund and name, a holding by its
@@ -489,16 +489,16 @@ holding and date:
     for gold or `BTC` (§6);
   - `sector`: a sector (§3);
   - `asset_class`: an asset class (TAXONOMY.md).
-- `unclassified` is a value of every dimension: the part the record
+- `unknown` is a value of every dimension: the part the record
   leaves open.
 - `situs` is the holding's legal situs (§13): one ISO 3166 code at 100,
-  such as `{"KY": 100}`. A split, a region, `EU` and `unclassified` are
+  such as `{"KY": 100}`. A split, a region, `EU` and `unknown` are
   refused. A record that states only a `situs` is no record for the
   other dimensions: they read the holding's other records as if it were
   not there.
 - A share is a number in percent, from 0 to 100. A dimension's shares
   sum to 100, within half a point for rounding. What they leave of 100,
-  or take beyond it, counts as `unclassified`, so the dimension sums to
+  or take beyond it, counts as `unknown`, so the dimension sums to
   exactly 100.
 - A document often states a range ("40–50%"). The record states one
   number, usually the middle, and the range goes into `note`.
@@ -523,7 +523,7 @@ independent: the record does not say which region holds which class.
 
 An `asset_class` split gives each part its class, so `classes` shows a
 fund that is part private equity, part private debt in both rows. The
-part the record leaves `unclassified` keeps the holding's own class.
+part the record leaves `unknown` keeps the holding's own class.
 
 On a day, the record that describes a holding is the latest one dated on
 or before that day that states a dimension. A record without a date
@@ -537,7 +537,7 @@ prints a skeleton record for each holding still to declare:
 
 - a private holding without a record (the section `undeclared`) gets
   one with an empty `country`, `currency` and `sector`;
-- a holding whose situs is `unclassified` gets one with an empty
+- a holding whose situs is `unknown` gets one with an empty
   `situs` alone. It loads beside the holding's other records.
 
 Its note is the holding's name. A record filled in from the skeleton
@@ -561,7 +561,7 @@ instead.
   it: `looked_through`, `proxied`, `security` (a listed security a
   source describes; its ISIN's country prefix alone does not count),
   `declared`, `cash`, `asset_class` (metal, crypto), `remainder`,
-  `truncated` (a fund deeper than three levels) and `unclassified`.
+  `truncated` (a fund deeper than three levels) and `unknown`.
 - `age` splits what the compositions describe by their distance from
   the day: `0-35 days`, `36-95 days`, `96-185 days`, `186+ days` and
   `forward`.
@@ -580,7 +580,7 @@ instead.
   that dimension. A dimension one side states for no line is left out.
 - `situs` splits net worth by the basis of each holding's legal situs
   (§13), in the rule's order, and sums to it. Then it lists each holding
-  whose situs is `unclassified`. Its items count holdings, not leaves.
+  whose situs is `unknown`. Its items count holdings, not leaves.
 
 `unmatched`, `undeclared` and the holdings of `situs` name each holding
 by `silver_source_id` and `instrument`, the two keys a declaration
@@ -646,7 +646,7 @@ For each holding, the first of these that applies:
 1. `declared`: a declaration states its `situs` (§9).
 2. `underlying`: it is a depositary receipt whose share is known (§3).
    It takes the share's situs, by the rules below. A receipt whose
-   share is unknown stays `unclassified`: its US ISIN says where the
+   share nothing names stays `unknown`: its US ISIN says where the
    receipt was issued, not where the issuer is.
 3. `isin`: the prefix of an ISIN a source states, where the prefix is a
    country. A prefix that is no country gives nothing: XS, XA to XD,
@@ -667,7 +667,7 @@ For each holding, the first of these that applies:
    declaration in force on the day states at 100 (§9). This holds only
    where no composition of its own describes it. A split or a region
    states nothing here.
-7. `unclassified`.
+7. `unknown`.
 
 The declared situs has a precedence of its own. On a day, it is the one
 the latest record on or before that day states; a record without a date
@@ -702,7 +702,7 @@ view.
 
 ### The view
 
-`situs` has one row per situs, `unclassified` among them. Its columns
+`situs` has one row per situs, `unknown` among them. Its columns
 are `situs`, `country_name`, `region`, `value`, `share`, `funds` and
 `quality`:
 
@@ -715,4 +715,4 @@ are `situs`, `country_name`, `region`, `value`, `share`, `funds` and
 `funds` shows each fund's `situs` and `situs_basis` beside its
 `domicile`, so a declared situs that differs from the domicile shows.
 A fund held in two accounts takes the situs of its larger holding.
-`coverage` lists each holding whose situs is `unclassified` (§10).
+`coverage` lists each holding whose situs is `unknown` (§10).

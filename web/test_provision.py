@@ -1524,7 +1524,7 @@ check("the country tile is a world map of the shares",
       and VIZ["Exposure by country"].get("map.dimension") == "country"
       and VIZ["Exposure by country"].get("map.metric") == "share_pct")
 check("...that leaves out what has no country",
-      "WHERE country NOT IN ('(none)', 'unclassified')" in _ex_sql["Exposure by country"])
+      "WHERE country NOT IN ('(none)', 'unknown')" in _ex_sql["Exposure by country"])
 # The charts over time rank their bands smallest first by the share at
 # the window's end, as every stacked area does (the section above), with
 # an aggregate of their own; the currencies, a long tail, fold the small

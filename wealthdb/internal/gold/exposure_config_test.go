@@ -24,7 +24,7 @@ func TestSyncExposure(t *testing.T) {
 			Leaves: []canonical.ExposureDeclaredLeaf{{Share: 1, Country: "CH", Currency: "CHF"}}},
 			{Line: 2, SilverSourceID: "manual", InstrumentExternalID: "fund-1", AsOf: &asOf, Dimensions: []string{"region"},
 				Source: `{"page":4}`, Leaves: []canonical.ExposureDeclaredLeaf{{Share: 0.6, Region: "europe"},
-					{Share: 0.4, Region: "unclassified"}}}},
+					{Share: 0.4, Region: "unknown"}}}},
 		Custody:  []canonical.ExposureCustody{{SilverSourceID: "bank", Custodian: "Example Bank AG"}},
 		Settings: canonical.ExposureSettings{MaxGapDays: 400, AgedDays: 35, PartialPct: 3},
 	}
@@ -44,7 +44,7 @@ func TestSyncExposure(t *testing.T) {
 	if records != `1 house-1 - country,currency - the house; 2 fund-1 1719705600 region {"page":4} -` {
 		t.Errorf("declarations = %q", records)
 	}
-	if leaves != "1.1 1.0 - CH CHF; 2.1 0.6 europe - -; 2.2 0.4 unclassified - -" {
+	if leaves != "1.1 1.0 - CH CHF; 2.1 0.6 europe - -; 2.2 0.4 unknown - -" {
 		t.Errorf("leaves = %q", leaves)
 	}
 	rows.Proxies = rows.Proxies[:1]

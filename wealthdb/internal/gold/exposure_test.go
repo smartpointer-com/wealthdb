@@ -478,8 +478,8 @@ func TestExposureLooksThroughEachKindOfFund(t *testing.T) {
 	// A fund no composition describes has no country, though GLEIF states
 	// its domicile; a stock only its ISIN places is not described.
 	for _, iid := range []string{"NOCF", "STKD"} {
-		if how := leafText(t, db, ctx, "how", `iid = '`+iid+`'`); how != "unclassified" {
-			t.Errorf("%s is %q, want unclassified", iid, how)
+		if how := leafText(t, db, ctx, "how", `iid = '`+iid+`'`); how != "unknown" {
+			t.Errorf("%s is %q, want unknown", iid, how)
 		}
 	}
 	if c := leafText(t, db, ctx, "country", `iid = 'NOCF'`); c != "" {
@@ -544,7 +544,7 @@ func TestExposureCoverageNamesUnmappedLabels(t *testing.T) {
 		}
 	}
 	for _, want := range []string{"unmapped|sector: Conglomerates", "how|looked_through", "how|proxied", "how|declared",
-		"how|cash", "how|asset_class", "how|security", "how|unclassified", "how|remainder", "unmatched|symbol:UNK"} {
+		"how|cash", "how|asset_class", "how|security", "how|unknown", "how|remainder", "unmatched|symbol:UNK"} {
 		if !found[want] {
 			t.Errorf("coverage lacks %s", want)
 		}
@@ -578,7 +578,7 @@ func TestExposureDeclarationsAndZeroValueCoverage(t *testing.T) {
 		}
 	}
 	stampDeclarations(t, db, ctx, declaration(3, "PE2", nil,
-		split{"sector", []string{"unclassified"}, []float64{100}}))
+		split{"sector", []string{"unknown"}, []float64{100}}))
 	if f := leafFlags(t, db, ctx, `iid = 'PE2'`); f != "declared,opaque" {
 		t.Errorf("declared PE2 flags = %q, want declared,opaque", f)
 	}
@@ -616,7 +616,7 @@ func TestExposureDeclarationsAndZeroValueCoverage(t *testing.T) {
 	}
 	// A private holding with no declaration is listed by what a record
 	// names; a listed one no source describes stays unmatched. Both are
-	// of unclassified situs too, which the situs section lists apart.
+	// of unknown situs too, which the situs section lists apart.
 	var pe1, unk *ExposureCoverageRow
 	for i, r := range cov {
 		if r.Section == "situs" {

@@ -218,7 +218,7 @@ It reads in this order:
   of public equity;
 - what is held directly against what is held through funds, over
   time;
-- how the figures are classified over time, so a growing unclassified
+- how the figures are classified over time, so a growing unknown
   band shows where the other charts stop covering.
 
 Two pickers narrow every tile, the source and the tax wrapper, the
@@ -467,7 +467,7 @@ one size per security.
 
 The `web_exposure` view does three things:
 
-- it names a missing dimension `unclassified`, a missing situs too, a
+- it names a missing dimension `unknown`, a missing situs too, a
   metal's or a coin's country `(none)`, and the size of anything but
   public equity `(none)`;
 - it labels each row direct or via funds;
