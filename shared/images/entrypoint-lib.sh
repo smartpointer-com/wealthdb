@@ -10,8 +10,8 @@
 
 VFB_DISPLAY=99
 
-# Symlink the pre-staged camoufox cache (populated at image build time by
-# `python3 -m camoufox fetch` and copied to /opt) into the runtime user's
+# Symlink the pre-staged camoufox cache (fetched at image build time by
+# fetch-camoufox.py and copied to /opt) into the runtime user's
 # $HOME/.cache/camoufox so camoufox skips its first-run download. HOME is
 # /tmp inside the container (set by the wrapper for the non-root user); we
 # always overwrite the symlink so a stale /tmp/.cache/camoufox from a
@@ -28,6 +28,12 @@ fi
 # start_xvfb — bring up the virtual X11 display Firefox needs to run headed
 # in the container, then export DISPLAY. Polls for the socket (a
 # version-independent ready signal); returns non-zero if Xvfb never comes up.
+#
+# Xvfb is started directly, not via `xvfb-run`. The Ubuntu Noble
+# xvfb-run script's SIGUSR1 ready-signalling hangs when the parent shell
+# is non-root: it sets the parent's SIGUSR1 handler to `:` rather than
+# SIG_IGN, so Xvfb never sends the ready signal and the parent waits
+# forever.
 start_xvfb() {
     Xvfb ":$VFB_DISPLAY" -screen 0 1280x800x24 -nolisten tcp \
         >/tmp/xvfb.log 2>&1 &
@@ -41,6 +47,20 @@ start_xvfb() {
     echo "entrypoint: Xvfb failed to start within 5s; /tmp/xvfb.log:" >&2
     tail -20 /tmp/xvfb.log >&2 || true
     return 1
+}
+
+# exec_if_help <script> [args…] — exec /app/<script> with the args when one
+# of them asks for help, so reading a verb's flags starts no display and
+# announces no single-use VNC password. Returns otherwise.
+exec_if_help() {
+    local script="$1"
+    shift
+    local a
+    for a in "$@"; do
+        case "$a" in
+            --help|-h) exec python3 "/app/$script" "$@" ;;
+        esac
+    done
 }
 
 # start_x11vnc <label> — serve the Xvfb display over VNC and print the tunnel

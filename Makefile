@@ -2,26 +2,7 @@
 #
 # Run every target from the repo root — no cd-ing into subdirectories,
 # so a `git pull` or an agent refactor is followed by a single command.
-#
-#   make                  show this help
-#   make all              build everything (gold engine + web + all collectors)
-#   make test             test everything
-#   make build-wealthdb   build the Go gold-engine image
-#   make test-wealthdb    run `go test ./...` in the wealthdb container
-#   make build-collectors build every collector
-#   make test-collectors  test every collector
-#   make test-collectorkit test the shared collectorkit library
-#   make lint             gofmt + go vet over the gold engine, ruff over the Python
-#   make build-<name>     build one collector   (e.g. make build-schwab-web)
-#   make test-<name>      test one collector    (e.g. make test-schwab-web)
-#   make install          symlink wealthdb + wealthdb-collect into ~/.local/bin,
-#                         and install the git hooks (make hooks)
-#   make hooks            run `make lint` before every commit (.githooks/)
-#   make demo             build the synthetic demo household into WEALTHDB_DEMO_ROOT
-#   make demo-roll        append the days since the last demo build, load them
-#   make demo-web         serve the demo's dashboards (own container and port)
-#   make demo-mcp         serve the demo to AI agents over MCP (own container and port)
-#   make test-demo        test the demo generator, and load a short demo through the engine
+# `make` with no target lists the targets.
 #
 # WEALTHDB_IMAGE_TAG is the tag of every image built, run and removed:
 # when it is unset, the first line of the checkout's git-ignored
@@ -32,7 +13,8 @@
 # `<wrapper> build` and tests with pytest inside the container; a host-venv
 # collector (fred, manual, plaid, refdata, svb, ubs-psn) builds its .venv from
 # requirements.txt. schwab-api and fidelity-web are hybrids: they
-# Docker-build AND carry a host venv (`.host-venv` marker).
+# Docker-build AND carry a host venv (`.host-venv` marker), and test on
+# that venv.
 # Collectors that ship no tests are a no-op for the test target. Each
 # test-<x> rebuilds its <x> first, so testing always runs current code.
 # `make test` also runs the shared collectorkit library's own suite
@@ -67,9 +49,24 @@ WEALTHDB_GO   := wealthdb/wealthdb-go
 # python3.X from PATH, then a Homebrew install, then plain python3.
 # Override explicitly:  make build-schwab-api PYTHON=python3.12
 PYTHON := $(or \
-  $(shell command -v python3.14 python3.13 python3.12 python3.11 python3.10 2>/dev/null | head -n1),\
+  $(shell for p in python3.14 python3.13 python3.12 python3.11 python3.10; do command -v $$p && break; done 2>/dev/null),\
   $(firstword $(wildcard /opt/homebrew/bin/python3.1[0-9] /usr/local/bin/python3.1[0-9])),\
   python3)
+
+# ENSURE_VENV dir,label,target — create the venv at dir from $(PYTHON),
+# unless one on Python >=3.10 is there. label names what needs it in the
+# error, and target is the make target to re-run with a newer PYTHON.
+define ENSURE_VENV
+if [ ! -x $(1)/bin/python ] || \
+   ! $(1)/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then \
+	$(PYTHON) -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null || { \
+		echo "    ERROR: '$(PYTHON)' is older than 3.10; $(2) needs >=3.10." >&2; \
+		echo "    Re-run with a newer interpreter, e.g.: make $(3) PYTHON=python3.14" >&2; \
+		exit 1; }; \
+	rm -rf $(1); \
+	$(PYTHON) -m venv $(1); \
+fi
+endef
 
 .DEFAULT_GOAL := help
 .PHONY: all build test help install uninstall hooks \
@@ -79,7 +76,7 @@ PYTHON := $(or \
         test-collectorkit clean-collectorkit cleanall-collectorkit \
         test-wrappers \
         clean cleanall clean-wealthdb cleanall-wealthdb \
-        clean-collectors cleanall-collectors base-images \
+        clean-collectors cleanall-collectors base-images cleanall-bases \
         update update-venvs update-wealthdb update-bases \
         lint lint-go lint-python cleanall-lint \
         demo demo-roll demo-web demo-web-stop demo-mcp demo-mcp-stop test-demo
@@ -99,15 +96,14 @@ test: test-wealthdb test-web test-mcp test-collectors test-collectorkit test-wra
 # matching the config default under ~/.config); override e.g.
 # `make install BINDIR=/usr/local/bin`.
 # Per-collector wrappers stay in the repo (the dispatcher resolves them).
-BINDIR    ?= $(HOME)/.local/bin
-REPO_ROOT := $(abspath .)
+BINDIR ?= $(HOME)/.local/bin
 
 install: hooks
 	@mkdir -p "$(BINDIR)"
-	@ln -sf "$(REPO_ROOT)/wealthdb/wealthdb"     "$(BINDIR)/wealthdb"
-	@ln -sf "$(REPO_ROOT)/bin/wealthdb-collect"  "$(BINDIR)/wealthdb-collect"
-	@echo "  linked $(BINDIR)/wealthdb         -> $(REPO_ROOT)/wealthdb/wealthdb"
-	@echo "  linked $(BINDIR)/wealthdb-collect -> $(REPO_ROOT)/bin/wealthdb-collect"
+	@ln -sf "$(ROOT_DIR)/wealthdb/wealthdb"     "$(BINDIR)/wealthdb"
+	@ln -sf "$(ROOT_DIR)/bin/wealthdb-collect"  "$(BINDIR)/wealthdb-collect"
+	@echo "  linked $(BINDIR)/wealthdb         -> $(ROOT_DIR)/wealthdb/wealthdb"
+	@echo "  linked $(BINDIR)/wealthdb-collect -> $(ROOT_DIR)/bin/wealthdb-collect"
 	@case ":$$PATH:" in *":$(BINDIR):"*) ;; \
 	  *) echo "  note: $(BINDIR) is not on your PATH — add it to run these bare";; esac
 
@@ -131,13 +127,18 @@ test-collectors:  $(addprefix test-,$(COLLECTORS))
 
 # Shared Docker base images: shared/images/*.Dockerfile, built with
 # context=shared/ so they can bake in collectorkit. Docker collectors
-# FROM these. Building one Docker collector on its own? run this first.
+# FROM these.
 #
 # The order matters: base-camoufox FROMs base-playwright, so the parent
 # has to be built first. Explicit list rather than the alphabetised glob
 # (which would put camoufox before playwright).
 BASE_IMAGES := base-python base-playwright base-camoufox
 
+# BUILD_BASES quiet,pull — build the shared bases in order, and stop at
+# the first that fails. quiet hides docker's output. pull refreshes the
+# upstream image a base builds FROM; a base FROM a local wealthdb/ image
+# never pulls.
+#
 # --provenance=false on every docker build: buildx attaches a provenance
 # attestation by default, and it embeds build metadata, so the image digest
 # changes on EVERY build even when all layers are CACHED. A base image whose
@@ -146,22 +147,41 @@ BASE_IMAGES := base-python base-playwright base-camoufox
 # and all) on every build.
 # These images are local-only and never pushed; nothing consumes the
 # attestation.
+define BUILD_BASES
+@for img in $(BASE_IMAGES); do \
+	f="shared/images/$$img.Dockerfile"; \
+	[ -e "$$f" ] || continue; \
+	pull=; \
+	if [ -n "$(2)" ] && ! grep -qE '^FROM[[:space:]]+wealthdb/' "$$f"; then pull=--pull; fi; \
+	echo "==> build base image wealthdb/$$img:$(TAG)$${pull:+ ($$pull)}"; \
+	docker build $(if $(1),-q) $$pull --provenance=false \
+		--build-arg WEALTHDB_IMAGE_TAG=$(TAG) \
+		-f "$$f" -t "wealthdb/$$img:$(TAG)" shared/ $(if $(1),>/dev/null) || exit 1; \
+done
+endef
+
 base-images:
-	@for img in $(BASE_IMAGES); do \
-		f="shared/images/$$img.Dockerfile"; \
-		[ -e "$$f" ] || continue; \
-		echo "==> build base image wealthdb/$$img:$(TAG)"; \
-		docker build -q --provenance=false --build-arg WEALTHDB_IMAGE_TAG=$(TAG) \
-			-f "$$f" -t "wealthdb/$$img:$(TAG)" shared/ >/dev/null; \
-	done
+	$(call BUILD_BASES,quiet,)
 
 # clean    = build artefacts (pycache, pytest cache, Go build cache)
 # cleanall = clean + the heavy outputs (docker images, venvs)
 clean:    clean-wealthdb clean-web clean-collectors clean-collectorkit
-cleanall: cleanall-wealthdb cleanall-web cleanall-collectors cleanall-collectorkit cleanall-lint
+cleanall: cleanall-wealthdb cleanall-web cleanall-collectors cleanall-bases \
+          cleanall-collectorkit cleanall-lint
 
 clean-collectors:    $(addprefix clean-,$(COLLECTORS))
 cleanall-collectors: $(addprefix cleanall-,$(COLLECTORS))
+
+# Child first: docker frees an image's layers only once no image builds
+# on it. cleanall runs this after the collectors, whose images build on
+# the bases.
+cleanall-bases:
+	@echo "==> cleanall bases (shared base images)"
+	@order=; for img in $(BASE_IMAGES); do order="$$img $$order"; done; \
+	for img in $$order; do \
+		echo "    rm image wealthdb/$$img:$(TAG)"; \
+		docker image rm -f "wealthdb/$$img:$(TAG)" >/dev/null 2>&1 || true; \
+	done
 
 # ---- collectorkit (shared library) tests ------------------------------
 # collectorkit is a dependency-free library installed editable into every
@@ -174,18 +194,17 @@ CK_VENV := $(CK_DIR)/.venv
 # dependency-free). Shared with update-venvs so the two can't drift.
 CK_TEST_DEPS := pytest zstandard
 
+# pip runs only when the venv's .stamp is older than collectorkit's
+# pyproject.toml, or names other test deps than CK_TEST_DEPS. The
+# editable install picks up source edits without a reinstall.
 test-collectorkit:
 	@echo "==> test collectorkit"
-	@if [ ! -x $(CK_VENV)/bin/python ] || \
-	   ! $(CK_VENV)/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then \
-		$(PYTHON) -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null || { \
-			echo "    ERROR: '$(PYTHON)' is older than 3.10; collectorkit needs >=3.10." >&2; \
-			echo "    Re-run with a newer interpreter, e.g.: make test-collectorkit PYTHON=python3.14" >&2; \
-			exit 1; }; \
-		rm -rf $(CK_VENV); \
-		$(PYTHON) -m venv $(CK_VENV); \
+	@$(call ENSURE_VENV,$(CK_VENV),collectorkit,test-collectorkit)
+	@if [ ! $(CK_VENV)/.stamp -nt $(CK_DIR)/pyproject.toml ] || \
+	   [ "$$(cat $(CK_VENV)/.stamp)" != "$(CK_TEST_DEPS)" ]; then \
+		$(CK_VENV)/bin/pip install -q -e $(CK_DIR) $(CK_TEST_DEPS) && \
+		echo "$(CK_TEST_DEPS)" > $(CK_VENV)/.stamp || exit 1; \
 	fi
-	@$(CK_VENV)/bin/pip install -q -e $(CK_DIR) $(CK_TEST_DEPS)
 	@$(CK_VENV)/bin/python -m pytest -q -p no:cacheprovider $(CK_DIR)/tests
 
 test-wrappers:
@@ -247,20 +266,20 @@ test-wealthdb: build-wealthdb
 	@echo "==> test wealthdb (go test ./...)"
 	$(WEALTHDB_TEST) ./...
 
-# Where wealthdb-test parks the containerised Go toolchain caches
-# (must mirror the CACHE default in wealthdb/wealthdb-test).
-GO_TEST_CACHE := $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb/go-test
+# Where wealthdb-go parks the containerised Go toolchain caches
+# (must mirror CACHE in wealthdb/wealthdb-go).
+GO_CACHE := $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb/go
 
 clean-wealthdb:
 	@echo "==> clean wealthdb (go build cache)"
-	@chmod -R u+w $(GO_TEST_CACHE)/go-build 2>/dev/null || true
-	@rm -rf $(GO_TEST_CACHE)/go-build
+	@chmod -R u+w $(GO_CACHE)/go-build 2>/dev/null || true
+	@rm -rf $(GO_CACHE)/go-build
 
 cleanall-wealthdb: clean-wealthdb
 	@echo "==> cleanall wealthdb (image + go caches)"
 	@docker image rm -f wealthdb:$(TAG) >/dev/null 2>&1 || true
-	@chmod -R u+w $(GO_TEST_CACHE) 2>/dev/null || true
-	@rm -rf $(GO_TEST_CACHE)
+	@chmod -R u+w $(GO_CACHE) 2>/dev/null || true
+	@rm -rf $(GO_CACHE)
 
 # ---- demo household ----------------------------------------------------
 # A fully synthetic household, built through the real load path, for
@@ -293,8 +312,9 @@ FINDINGS =
 # Absolute and with a leading ~ expanded, so the generator and the engine
 # container see the same directory.
 DEMO_ROOT := $(abspath $(patsubst ~/%,$(HOME)/%,$(patsubst ~,$(HOME),$(WEALTHDB_DEMO_ROOT))))
-# The demo's containers take their name from its root, so two checkouts
-# that build two demo roots never share a container.
+# The demo's containers take their name from the last part of its root.
+# Demo roots whose last parts differ get their own containers. Every demo
+# serves on the same ports, so one runs at a time.
 DEMO_NAME := $(shell sh -c '. "$$1/shared/wrappers/demo-root.sh" && wealthdb_demo_name "$$2"' \
 	sh '$(ROOT_DIR)' '$(DEMO_ROOT)')
 DEMO_ENV := WEALTHDB_DATA_ROOT="$(DEMO_ROOT)" XDG_CONFIG_HOME="$(DEMO_ROOT)"
@@ -388,48 +408,56 @@ define COLLECTOR_RULES
 # A Dockerfile makes a collector Docker-built; a requirements.txt makes
 # it host-venv-built. A HYBRID collector has both a Dockerfile AND a
 # `.host-venv` marker (e.g. schwab-api: a Camoufox/VNC `login` image plus
-# a host venv for download/load) — it builds and tests both.
-# base-images first: collectorkit is BAKED INTO the base images, so a
-# collector container only sees a collectorkit change once the bases are
-# rebuilt. Hanging this off the per-collector build (rather than the
-# build-collectors aggregate) is what makes a bare `make test-<one>` correct
-# too — otherwise it silently exercises whatever collectorkit the image was
-# last built with, and a stale green looks exactly like a real one. Make
-# updates a prerequisite at most once per invocation, so the fleet-wide
-# targets still pay for it only once.
-build-$(1): base-images
+# a host venv for download/load) — it builds both, and tests on the host
+# venv.
+# A Docker collector depends on base-images: collectorkit is BAKED INTO
+# the base images, so a collector container only sees a collectorkit
+# change once the bases are rebuilt. Hanging this off the per-collector
+# build (rather than the build-collectors aggregate) is what makes a bare
+# `make test-<one>` correct too — otherwise it silently exercises whatever
+# collectorkit the image was last built with, and a stale green looks
+# exactly like a real one. Make updates a prerequisite at most once per
+# invocation, so the fleet-wide targets still pay for it only once.
+#
+# A host venv reruns pip only when its .stamp is older than the
+# collector's requirements.txt or collectorkit's pyproject.toml. The
+# editable collectorkit picks up source edits without a reinstall.
+build-$(1): $(if $(wildcard collectors/$(1)/Dockerfile),base-images)
 	@echo "==> build collector: $(1)"
 	@if [ -x collectors/$(1)/$(1) ] && [ -f collectors/$(1)/Dockerfile ]; then \
 		collectors/$(1)/$(1) build; \
 	fi
 	@if [ -f collectors/$(1)/requirements.txt ] && { [ ! -f collectors/$(1)/Dockerfile ] || [ -f collectors/$(1)/.host-venv ]; }; then \
-		if [ ! -x collectors/$(1)/.venv/bin/python ] || \
-		   ! collectors/$(1)/.venv/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then \
-			$(PYTHON) -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null || { \
-				echo "    ERROR: '$(PYTHON)' is older than 3.10; $(1) needs >=3.10." >&2; \
-				echo "    Re-run with a newer interpreter, e.g.: make build-$(1) PYTHON=python3.14" >&2; \
-				exit 1; }; \
-			rm -rf collectors/$(1)/.venv; \
-			$(PYTHON) -m venv collectors/$(1)/.venv; \
+		$(call ENSURE_VENV,collectors/$(1)/.venv,$(1),build-$(1)); \
+		if [ ! collectors/$(1)/.venv/.stamp -nt collectors/$(1)/requirements.txt ] || \
+		   [ ! collectors/$(1)/.venv/.stamp -nt $(CK_DIR)/pyproject.toml ]; then \
+			collectors/$(1)/.venv/bin/pip install -q -r collectors/$(1)/requirements.txt && \
+			collectors/$(1)/.venv/bin/pip install -q -e $(CK_DIR) && \
+			touch collectors/$(1)/.venv/.stamp || exit 1; \
 		fi; \
-		collectors/$(1)/.venv/bin/pip install -q -r collectors/$(1)/requirements.txt; \
-		collectors/$(1)/.venv/bin/pip install -q -e shared/collectorkit; \
 	elif [ ! -f collectors/$(1)/Dockerfile ]; then \
 		echo "    $(1): nothing to build"; \
 	fi
 
+# A host-venv or hybrid collector tests on its venv. A Docker collector
+# tests in its image, run directly rather than through the wrapper: no
+# secrets or data mount, and a name docker picks, so a test never meets a
+# live run's container. The checkout is mounted at /app, since not every
+# image copies its tests.
 test-$(1): build-$(1)
 	@echo "==> test collector: $(1)"
 	@if [ ! -d collectors/$(1)/tests ] && ! ls collectors/$(1)/test_*.py >/dev/null 2>&1; then \
 		echo "    $(1): no tests"; \
-	elif [ -f collectors/$(1)/.host-venv ] && [ -x collectors/$(1)/.venv/bin/python ]; then \
-		collectors/$(1)/.venv/bin/python -m pytest -q -p no:cacheprovider collectors/$(1); \
-	elif [ -x collectors/$(1)/$(1) ] && [ -f collectors/$(1)/Dockerfile ]; then \
-		collectors/$(1)/$(1) sh -c "cd /app && pytest -q -p no:cacheprovider"; \
-	elif [ -x collectors/$(1)/.venv/bin/python ]; then \
-		collectors/$(1)/.venv/bin/python -m pytest -q -p no:cacheprovider collectors/$(1); \
+	elif [ -f collectors/$(1)/.host-venv ] || [ ! -f collectors/$(1)/Dockerfile ]; then \
+		if [ -x collectors/$(1)/.venv/bin/python ]; then \
+			collectors/$(1)/.venv/bin/python -m pytest -q -p no:cacheprovider collectors/$(1); \
+		else \
+			echo "    $(1): cannot run tests (no venv)"; \
+		fi; \
 	else \
-		echo "    $(1): cannot run tests (no image or venv)"; \
+		docker run --rm --user "$$$$(id -u):$$$$(id -g)" -e HOME=/tmp \
+			-v "$(ROOT_DIR)/collectors/$(1):/app" "wealthdb/$(1):$(TAG)" \
+			sh -c "cd /app && pytest -q -p no:cacheprovider"; \
 	fi
 
 clean-$(1):
@@ -461,9 +489,8 @@ $(foreach c,$(COLLECTORS),$(eval $(call COLLECTOR_RULES,$(c))))
 #   - Shared Docker base images, rebuilt with --pull so the underlying
 #     OS layers also refresh
 #
-# After this, run `make all` if you want the collector Docker images
-# rebuilt on top of the refreshed bases (the host venvs and the gold
-# engine pick up their updates immediately).
+# `make all` then rebuilds the collector images on the refreshed bases.
+# The host venvs and the gold engine pick up their updates at once.
 #
 # Host venvs are auto-discovered as any collectors/<name>/.venv that
 # already exists — the venv has to have been created by `make build-<name>`
@@ -518,19 +545,7 @@ update-wealthdb:
 	$(WEALTHDB) build
 
 update-bases:
-	@for img in $(BASE_IMAGES); do \
-		f="shared/images/$$img.Dockerfile"; \
-		[ -e "$$f" ] || continue; \
-		if grep -qE '^FROM[[:space:]]+wealthdb/' "$$f"; then \
-			echo "==> rebuild base wealthdb/$$img:$(TAG) (FROM is local, no --pull)"; \
-			docker build --provenance=false --build-arg WEALTHDB_IMAGE_TAG=$(TAG) \
-				-f "$$f" -t "wealthdb/$$img:$(TAG)" shared/; \
-		else \
-			echo "==> rebuild base wealthdb/$$img:$(TAG) (--pull)"; \
-			docker build --pull --provenance=false --build-arg WEALTHDB_IMAGE_TAG=$(TAG) \
-				-f "$$f" -t "wealthdb/$$img:$(TAG)" shared/; \
-		fi; \
-	done
+	$(call BUILD_BASES,,pull)
 
 # ---- help --------------------------------------------------------------
 
@@ -552,6 +567,7 @@ help:
 	@echo "  make lint-go / lint-python"
 	@echo "  make build-<name>       build one collector (e.g. build-schwab-web)"
 	@echo "  make test-<name>        test one collector  (e.g. test-schwab-web)"
+	@echo "  make base-images        build the shared Docker bases the collector images FROM"
 	@echo ""
 	@echo "  make install            symlink wealthdb + wealthdb-collect into BINDIR (~/.local/bin)"
 	@echo "  make hooks              run make lint before every commit (install runs it too)"
@@ -559,7 +575,7 @@ help:
 	@echo ""
 	@echo "  make clean              remove build artefacts (pycache, caches)"
 	@echo "  make cleanall           also remove docker images + venvs"
-	@echo "  make clean-<name> / cleanall-<name>   (incl. -wealthdb, -collectors)"
+	@echo "  make clean-<name> / cleanall-<name>   (incl. -wealthdb, -collectors; cleanall-bases)"
 	@echo ""
 	@echo "  make demo               build the synthetic demo household (WEALTHDB_DEMO_ROOT,"
 	@echo "                          default .demo-root's first line, else ~/wealthdb-demo;"

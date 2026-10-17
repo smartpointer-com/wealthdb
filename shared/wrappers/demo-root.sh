@@ -41,7 +41,8 @@ wealthdb_demo_root() {
 # root DIR: the last part of the path less a leading wealthdb-, each
 # character a container name cannot hold read as -. The default root,
 # ~/wealthdb-demo, gives demo: containers wealthdb-metabase-demo and
-# wealthdb-mcp-demo. Two checkouts with two roots never share one.
+# wealthdb-mcp-demo. Demo roots whose last parts differ get their own
+# containers. Every demo serves on the same ports, so one runs at a time.
 wealthdb_demo_name() {
     _wdn_name="$(basename "$1")"
     _wdn_name="$(printf '%s' "${_wdn_name#wealthdb-}" | tr -c 'A-Za-z0-9_.-' '-')"

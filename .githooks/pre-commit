@@ -10,11 +10,21 @@
 # `make lint` only checks; a lint step that ever rewrites a staged file
 # fails the hook too, since the commit would then not be what passed.
 #
+# The checkout's git-ignored .image-tag is not in the index, so the hook
+# resolves the tag in the checkout and exports it. The lint then runs on
+# this checkout's engine image, and builds one under this tag if none
+# exists, never another checkout's.
+#
 # Installed by `make hooks` (core.hooksPath); `git commit --no-verify`
 # skips it.
 set -eu
 
 repo="$(git rev-parse --show-toplevel)"
+. "$repo/shared/wrappers/image-tag.sh"
+if ! wealthdb_export_image_tag "$repo"; then
+	echo "pre-commit: no image tag for this checkout; commit refused" >&2
+	exit 1
+fi
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb"
 mkdir -p "$cache"
 tree="$(mktemp -d "$cache/pre-commit.XXXXXX")"

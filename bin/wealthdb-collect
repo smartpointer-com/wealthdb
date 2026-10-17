@@ -35,10 +35,12 @@
 #                         so passing it to another subcommand is an error
 #                         rather than a silent no-op. ${PREFIX}_SILVER_DB is
 #                         ambient config and is simply unused elsewhere.
-#   --debug               (download) capture diagnostics into the bronze run
-#                         dir: page DOM + screenshots for the browser
-#                         sources, request traces for the REST ones. Never
-#                         read by load. Off by default; prune reclaims them.
+#   --debug               (download) capture diagnostics: into the bronze run
+#                         dir, or into the collector's debug cache for some
+#                         browser sources. Page DOM + screenshots for the
+#                         browser sources, request traces for the REST ones.
+#                         Never read by load. Off by default; prune reclaims
+#                         them.
 #   --dry-run             (prune) print the deletion plan without removing
 #                         anything; (download) walk without exporting.
 #

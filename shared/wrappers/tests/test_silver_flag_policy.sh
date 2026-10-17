@@ -62,10 +62,9 @@ check "--silver-db on load is accepted" "$rc" "0"
 case "$r" in *"--silver-db /silver/x.db"*) ok "load rewrites to the /silver mount path" ;;
              *) bad "load rewrites to the /silver mount path (got: $r)" ;; esac
 
-# The regression that motivated the env/flag split: an exported
-# ${PREFIX}_SILVER_DB used to append --silver-db to EVERY verb, so a shell
-# that exported it broke every login with an argparse "unrecognized
-# arguments" error.
+# An exported ${PREFIX}_SILVER_DB must not append --silver-db to every
+# verb: a shell that exports it would break every login with an argparse
+# error.
 r="$(_wl /tmp/x.db login --check)"; rc=$?
 check "exported SILVER_DB does not break login" "$rc" "0"
 case "$r" in *--silver-db*) bad "exported SILVER_DB must not reach login (got: $r)" ;;
@@ -81,6 +80,33 @@ r="$(SILVER_SUBCOMMANDS=(load fetch-prices); _wl "" fetch-prices --silver-db "$S
 check "SILVER_SUBCOMMANDS extends the accepting set" "$rc" "0"
 r="$(SILVER_SUBCOMMANDS=(load fetch-prices); _wl "" login --silver-db "$SILVERTMP/x.db")"; rc=$?
 check "SILVER_SUBCOMMANDS REPLACES rather than adds (login still rejects)" "$rc" "2"
+
+# The host-side prune of the docker wrappers rejects the flag too. A stub
+# python3 stands in for prune.py, so an accepted flag prints its argv
+# instead of running anything.
+mkdir -p "$SILVERTMP/bin"
+printf '#!/bin/sh\necho "python3 $*"\n' > "$SILVERTMP/bin/python3"
+chmod +x "$SILVERTMP/bin/python3"
+_wp() {  # _wp <args...> -> the outcome of wrapper_host_prune prune <args...>
+    (
+        PATH="$SILVERTMP/bin:$PATH"
+        NAME=testcol; ENV_PREFIX=TESTCOL
+        # shellcheck disable=SC1091
+        source "$HERE/../wrapper-lib.sh" 2>/dev/null
+        # The wrapper's own dir, where prune.py would sit.
+        HERE="$SILVERTMP"; HOST_DATA="$SILVERTMP/data"
+        exec 2>&1
+        wrapper_host_prune prune "$@"
+    )
+}
+r="$(_wp --dry-run --silver-db "$SILVERTMP/x.db")"; rc=$?
+check "--silver-db on prune is rejected" "$rc" "2"
+r="$(_wp --dry-run --silver-db="$SILVERTMP/x.db")"; rc=$?
+check "--silver-db=VALUE on prune is rejected" "$rc" "2"
+case "$r" in *"does not apply to 'prune'"*) ok "prune's reject message names the verb" ;;
+             *) bad "prune's reject message names the verb (got: $r)" ;; esac
+r="$(_wp --dry-run)"; rc=$?
+check "prune without --silver-db still runs" "$rc" "0"
 
 # ------------------------------------------------------------------ host-lib
 echo "host-lib (host-venv wrappers):"

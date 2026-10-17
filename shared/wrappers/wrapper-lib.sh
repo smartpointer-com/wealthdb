@@ -37,6 +37,14 @@
 #                     against macOS Screen Sharing, prior crashed runs,
 #                     other VNC servers) and passes the chosen port as
 #                     VNC_HOST_PORT inside the container.
+#   VNC_SUBCOMMANDS   Bash array of the subcommands that get the VNC port
+#                     under HAS_VNC=1. Replaces the default (vnc-login).
+#   SILVER_SUBCOMMANDS
+#                     Bash array of the subcommands that read --silver-db.
+#                     Replaces the default (load).
+#   HAS_ENV_FILE=1    Source the credentials env file host-side before
+#                     `docker run`, so the ENV_VARS it sets are forwarded
+#                     (see wrapper_source_env_file).
 #
 # A wrapper with a config file calls `wrapper_source_cfg PREFIX DEFAULT`
 # before wrapper_init.
@@ -64,6 +72,13 @@ _WRAPPER_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 _envvar() {
     local var="${ENV_PREFIX}_$1"
     echo "${!var:-$2}"
+}
+
+# _abs_dir DIR — echo the existing directory DIR as an absolute path.
+# `docker run -v` reads a bare relative source such as `mydata` as a
+# named volume, not a host path, so every mount source goes through this.
+_abs_dir() {
+    (CDPATH='' cd -- "$1" && pwd)
 }
 
 # ----------------------------------------------------------------------
@@ -197,12 +212,36 @@ wrapper_resolve_dir_args() {
     fi
     if [[ -n "$silver" ]]; then
         local d b
-        d="$(cd "$(dirname "$silver")" 2>/dev/null && pwd)" || d="$(dirname "$silver")"
+        mkdir -p "$(dirname "$silver")"
+        d="$(_abs_dir "$(dirname "$silver")")"
         b="$(basename "$silver")"
-        mkdir -p "$d"
         SILVER_MOUNT=(-v "$d:/silver")
         FORWARD_ARGS+=(--silver-db "/silver/$b")
     fi
+}
+
+# wrapper_source_env_file — under HAS_ENV_FILE=1, source the collector's
+# credentials env file host-side, so the ENV_VARS it sets reach
+# `docker run -e`. The file is ${ENV_PREFIX}_ENV_FILE when set, else
+# <secrets-dir>/<name>.env; wrapper_main calls this after
+# wrapper_resolve_dir_args, so a --secrets-dir flag names the dir. The
+# file is bash: it is checked with `bash -n`, then sourced with every
+# assignment exported, so a plain KEY=VALUE line is forwarded too. A
+# missing file is fine. One that does not parse is skipped with a
+# warning, and its error output is dropped, since it may quote a secret.
+wrapper_source_env_file() {
+    [[ "${HAS_ENV_FILE:-0}" == "1" ]] || return 0
+    local f
+    f="$(_envvar ENV_FILE "$HOST_SECRETS/$NAME.env")"
+    [[ -f "$f" ]] || return 0
+    if ! bash -n "$f" 2>/dev/null; then
+        echo "${NAME}: env file $f has a bash syntax error; not sourcing it" >&2
+        return 0
+    fi
+    set -a
+    # shellcheck disable=SC1090
+    source "$f"
+    set +a
 }
 
 # The silver-consuming verbs as a display string, for the reject message.
@@ -214,7 +253,7 @@ wrapper_silver_verbs_str() {
     fi
 }
 
-# Three lines for the "Mounted into the container:" block in usage().
+# The mount lines for the "Mounted into the container:" block in usage().
 # Callers paste with $(wrapper_mounts_help).
 wrapper_mounts_help() {
     echo "  $HOST_SECRETS  ->  /secrets"
@@ -265,11 +304,10 @@ wrapper_build() {
 #
 # The uniform directory-override flags are honoured here too (the
 # dispatcher promises them on every verb): --data-dir retargets the
-# bronze root, while --secrets-dir and --silver-db are meaningless to a
-# bronze file-walk and are absorbed rather than forwarded (prune.py's
-# parser knows only --bronze-dir/--debug-dir/--dry-run/--min-age-hours,
-# so a forwarded --silver-db would argparse-reject). Both `--flag VALUE`
-# and `--flag=VALUE`; everything else forwards to prune.py.
+# bronze root, and --secrets-dir, meaningless to a bronze file-walk, is
+# absorbed rather than forwarded. --silver-db is rejected, as on every
+# other verb that does not read it. Both `--flag VALUE` and
+# `--flag=VALUE`; everything else forwards to prune.py.
 wrapper_host_prune() {
     shift  # drop "prune"
     local bronze="$HOST_DATA"
@@ -280,8 +318,10 @@ wrapper_host_prune() {
             --data-dir=*)    bronze="${1#*=}"; shift ;;
             --secrets-dir)   shift 2 ;;
             --secrets-dir=*) shift ;;
-            --silver-db)     shift 2 ;;
-            --silver-db=*)   shift ;;
+            --silver-db|--silver-db=*)
+                echo "$NAME: --silver-db does not apply to 'prune'" \
+                     "— it is only read by: $(wrapper_silver_verbs_str)." >&2
+                exit 2 ;;
             *)               rest+=("$1"); shift ;;
         esac
     done
@@ -302,27 +342,32 @@ wrapper_host_prune() {
 # ----------------------------------------------------------------------
 
 # Make sure the mount-point dirs exist on the host (docker would
-# otherwise silently create them as root-owned). Errors if the secrets
-# dir is missing — that's a configuration issue, not something the
-# wrapper should paper over.
+# otherwise silently create them as root-owned), then make each mount
+# source absolute (see _abs_dir). Errors if the secrets dir is missing —
+# that's a configuration issue, not something the wrapper should paper
+# over.
 wrapper_check_mounts() {
     mkdir -p "$HOST_DATA"
     # Per-collector, not the shared root: the tree below holds the
     # source's own financial record, and the container runs as this uid.
     chmod 700 "$HOST_DATA"
+    HOST_DATA="$(_abs_dir "$HOST_DATA")"
     # 0700 here is authoritative: the container's own chmod of the mounted
     # cache root is rejected by the VM file share (non-owner uid), so
     # collectorkit treats that as best-effort and relies on this.
     mkdir -p "$HOST_STARTUPCACHE"
     chmod 700 "$HOST_STARTUPCACHE"
+    HOST_STARTUPCACHE="$(_abs_dir "$HOST_STARTUPCACHE")"
     if [[ "${HAS_DEBUG:-0}" == "1" ]]; then
         mkdir -p "$HOST_DEBUG"
+        HOST_DEBUG="$(_abs_dir "$HOST_DEBUG")"
     fi
     if [[ ! -d "$HOST_SECRETS" ]]; then
         echo "${NAME}: secrets dir does not exist: $HOST_SECRETS" >&2
         echo "Create it with: mkdir -p $HOST_SECRETS && chmod 700 $HOST_SECRETS" >&2
         exit 1
     fi
+    HOST_SECRETS="$(_abs_dir "$HOST_SECRETS")"
 }
 
 # Allocate `-it` only when stdin AND stdout are TTYs, so the wrapper is
@@ -402,6 +447,7 @@ wrapper_main() {
     # then continue with the remaining args as the positional parameters.
     wrapper_resolve_dir_args "$@"
     set -- ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+    wrapper_source_env_file
 
     wrapper_check_mounts
     wrapper_tty_args

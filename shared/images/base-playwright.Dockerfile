@@ -10,7 +10,7 @@ FROM mcr.microsoft.com/playwright/python:v1.62.0-noble
 # the connection times out rather than being refused, so apt burns minutes
 # of retries per index before failing the build — while port 443 to the very
 # same hosts answers normally. Every apt-get in this image's descendants
-# (base-camoufox, and carta / angellist / equityzen on top of it) inherits
+# (base-camoufox, and every collector image built on either) inherits
 # these sources, so the switch belongs here rather than at each call site.
 # apt >= 1.5 speaks HTTPS natively and the image already ships
 # ca-certificates, so this needs no extra package and no extra layer cost.

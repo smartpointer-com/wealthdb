@@ -20,7 +20,9 @@ trap 'rm -rf "$TMP"' EXIT
 resolve_debug() {
     (
         NAME=testcol; ENV_PREFIX=TESTCOL; ENV_VARS=()
-        unset WEALTHDB_SECRETS_DIR WEALTHDB_DATA_ROOT TESTCOL_DEBUG_DIR
+        unset WEALTHDB_SECRETS_DIR WEALTHDB_DATA_ROOT TESTCOL_DEBUG_DIR TESTCOL_DATA_DIR
+        # host_resolve_dirs creates the data dir, so it goes in $TMP too.
+        export XDG_DATA_HOME="$TMP/xdgdata"
         case "$1" in
             wrapper)
                 HAS_DEBUG=1

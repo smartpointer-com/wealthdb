@@ -43,8 +43,7 @@ RUN pip install 'camoufox[geoip]>=0.4.11,<0.5' 'playwright==1.49.0'
 # under /root/.cache/camoufox/. The runtime user has HOME=/tmp, so a
 # naive setup would force a 700MB re-download on every container start.
 # Stage the fetched tree under a world-readable /opt/camoufox-cache;
-# each collector's entrypoint.sh symlinks it into the runtime user's
-# cache path.
+# /opt/entrypoint-lib.sh symlinks it into the runtime user's cache path.
 COPY images/fetch-camoufox.py /tmp/fetch-camoufox.py
 RUN python3 /tmp/fetch-camoufox.py "$CAMOUFOX_BUILD" && \
     rm /tmp/fetch-camoufox.py && \

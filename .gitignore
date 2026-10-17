@@ -1,7 +1,35 @@
-
-# Python bytecode caches
+# Python, test, editor and OS artefacts, wherever a tool leaves them.
+# A collector's own .gitignore adds what that source must never commit.
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.venv/
+venv/
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Names too broad to ignore repo-wide, ignored inside the collectors:
+# packaging output, a venv named env/, and logs, which can hold a
+# session.
+collectors/**/build/
+collectors/**/dist/
+collectors/**/env/
+collectors/**/*.log
 
 # Browser coredumps. The explore verbs live-mount the collector dir as the
 # container's /app cwd, so a crashing camoufox drops its core file into the
