@@ -95,8 +95,9 @@ reports (+ all-time `report_transactions`), the daily `_history` reports
 (migration 0043), the income model over `web_income` (migration 0072),
 the `report_cashflow` model over `web_cashflow` (migration 0084) — which
 backs the Cash Flow dashboard's Section picker rather than any card —
-and `_pct` privacy variants of the models the privacy
-surface reads.
+and `_pct` privacy variants for standalone privacy browsing. Two of
+them, `report_sources_latest_pct` and `report_spending_pct`, also back
+the privacy twins' MBQL cards.
 
 On top of the models, provisioning creates pre-defined questions and
 nine dashboards. Their pickers:
@@ -109,7 +110,7 @@ nine dashboards. Their pickers:
   a *Tax wrapper* picker, and an *Asset class* picker. The Top 100
   positions tile carries a *Vehicle* picker of its own.
 - **Returns**: a required currency (returns are stored one row set per
-  currency).
+  currency), a required start year (0 is since inception) and a source.
 - **Gains**: the time range and source, a required currency, a *Tax
   wrapper* picker, and a required *Missing cost basis* picker (ignore or
   zero; the default is `lots.missing_basis` from wealthdb.cfg, else
@@ -118,11 +119,11 @@ nine dashboards. Their pickers:
   account, and a category multi-select.
 - **Income**: the same five, with a *type* picker in place of the
   category one.
-- **Cash Flow**: the time range and source, a required currency, and two
-  grain pickers of its own. The required *Investing* picker nets the
-  section whole or by asset class. The *Section* picker is narrower than
-  the rest: the by-month charts and the line list take it, and the
-  headline figures and the Sankey do not. There is no account picker,
+- **Cash Flow**: the time range and source, a required currency, an
+  *Investing* grain picker and a *Section* picker. The required
+  *Investing* picker nets the section whole or by asset class. The
+  *Section* picker is narrower than the rest: the by-month charts and
+  the line list take it, and the headline figures and the Sankey do not. There is no account picker,
   because the household boundary defines the pool.
 - **Exposure**: a required currency, a time range, a source, a *Tax
   wrapper* picker, and an *Asset class* picker. A breakdown reads the
@@ -150,11 +151,12 @@ Wealth Overview's three headline figures read `web_sources_latest`
 `wealthdb holdings sources` prints. A native tile has no "see these
 records" drill-through. That is the price of the picker.
 Metabase takes a chart's series in the order their rows first appear.
-So every chart with one band or line per series orders its rows by the
-series' size. A level ranks by its value on the last day, a flow by its
-total over the window. A stacked chart puts its largest band on the
-axis, a line chart lists its top line first, and both legends read
-largest first.
+So two kinds of chart order their rows by the series' size: every
+stacked area with a band per series, and every line chart of a level
+with a line per series. A level ranks by its value on the last day, a
+flow by its total over the window. A stacked area puts its largest band
+on the axis, a line chart lists its top line first, and both legends
+read largest first.
 Each dashboard but Gains also gets a **privacy twin** (linked from the
 dashboard's top row): same layout and filters, but every card shows
 shares (%) instead of money. Gains has none. Its tiles are gains on
@@ -210,21 +212,24 @@ The **Exposure** dashboard shows what is really owned once every fund
 is looked through ([wealthdb/docs/EXPOSURE.md](../wealthdb/docs/EXPOSURE.md)).
 It reads in this order:
 
-- net worth by asset class and by currency as rings, by sector and by
-  region as bars, on the latest day in the range;
-- a world map of the countries, each coloured by its share, beside a
-  table of every region and the countries inside it;
-- net worth by legal situs as a bar, on the latest day: where each
-  holding legally sits, each fund whole at its own
-  (wealthdb/docs/EXPOSURE.md §13);
-- the classes, regions and currencies over time, as shares that stack
-  to 100;
-- public equity by size (large, mid, small) on the latest day, as shares
-  of public equity;
-- what is held directly against what is held through funds, over
-  time;
+- net worth by asset class as a ring, beside net worth by sector as
+  bars;
+- the classes over time;
+- a world map of the countries, each coloured by its share;
+- the regions as bars, beside a table of every region and the countries
+  inside it;
+- the regions over time;
+- net worth by legal situs as bars: where each holding legally sits,
+  each fund whole at its own (wealthdb/docs/EXPOSURE.md §13);
+- the currencies as a ring, beside the currencies over time;
+- public equity by size (large, mid, small), as shares of public
+  equity, beside what is held directly against what is held through
+  funds, over time;
 - how the figures are classified over time, so a growing unknown
   band shows where the other charts stop covering.
+
+A breakdown reads the latest day in the range. A chart over time shows
+each month end's shares, stacked to 100.
 
 Three pickers narrow every tile. The source and the tax wrapper are the
 pair Gains carries: `report_exposure` holds the look-through per source
@@ -300,8 +305,9 @@ A stale snapshot is caught before any of this is written. Provisioning
 probes the driver for the snapshot's schema version and for the serving
 views **by name**. It aborts with a "run `wealthdb web refresh`" message
 rather than converging the cards to a degraded shape. The version check
-catches a snapshot older than 0114: its views exist by name, but they lack
-the GBP columns every money card reads. A Metabase listing that fails
+catches a snapshot older than 0132. Its views exist by name, but it lacks
+the serving tables the models read and the tax wrapper and asset class
+columns the tiles filter on. A Metabase listing that fails
 aborts the run too. Read as empty, it would create a second collection,
 database, card or dashboard of the same name.
 
@@ -508,7 +514,8 @@ them: `holdings_lines_history` and `holdings_lines_latest` hold each
 position line and each account's cash. A line carries its
 account's tax wrapper and its asset class, cash being the class `cash`.
 The holdings `web_*` views group these lines, so every holdings tile
-can filter by both. The flow views carry the tax wrapper alone.
+can filter by both. The two flow views the Wealth Overview reads,
+`web_transactions` and `web_income`, carry the tax wrapper alone.
 
 The refresh hook: `web refresh` (and `web start`'s initial snapshot)
 runs the engine's hidden `web-materialize` subcommand *before*
@@ -548,6 +555,7 @@ payload needs a live instance: `demo/check_dashboards.py` runs every
 card of a running demo Metabase through its API (demo/README.md).
 The Go side (`web` config block,
 validation, the `web-config` emitter, `MaterializeReturns`,
-`MaterializeGains` and the `web-materialize` command) is covered by `go test ./...`
+`MaterializeGains`, `MaterializeExposure`, `MaterializeServingTables`
+and the `web-materialize` command) is covered by `go test ./...`
 (`make test-wealthdb`). End-to-end (build → start → provision → query
 through the driver) is the manual smoke test in §3.

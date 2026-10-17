@@ -32,10 +32,11 @@ extends. The dashboards' admin password is in `web/admin-password.txt`
 under the demo root, and the MCP server's token in `mcp/token`. The demo
 shares the engine and dashboard images with a real setup. Its make
 targets build them from the checkout, as `make all` does. Its
-containers take their name from the demo root: `wealthdb-metabase-demo`
-and `wealthdb-mcp-demo` for `~/wealthdb-demo`,
-`wealthdb-metabase-other-demo` for `~/wealthdb-other-demo`. So a second
-checkout with a demo root of its own never touches the first one's.
+containers take their name from the last part of the demo root:
+`wealthdb-metabase-demo` and `wealthdb-mcp-demo` for `~/wealthdb-demo`,
+`wealthdb-metabase-other-demo` for `~/wealthdb-other-demo`. Demo roots
+whose last parts differ get their own containers. Every demo serves on
+the same ports, so one runs at a time.
 
 The engine reads the demo when its data root and config dir both point
 at the demo root. The web settings point `demo web …` at the demo's
@@ -207,14 +208,16 @@ A findings build is a one-off picture: it cannot be appended to.
   engine image in a scratch root under the cache dir.
 - `demo/check_dashboards.py` runs every card of every dashboard of a
   running demo Metabase through its API. It covers each time window,
-  each source, every currency the Currency picker offers, and the investing
-  grain, section, start year and as-of pickers. It uses a temporary API
-  key, so no filter values stay behind on the admin account. Its
-  defaults are the demo's port and the demo root `make demo` uses.
-  Another root needs `--password-file`.
+  each source, every currency the Currency picker offers, and the
+  investing grain, section, start year, as-of, missing cost basis, asset
+  class and tax wrapper pickers. It uses a temporary API key, so no
+  filter values stay behind on the admin account. Its defaults are the
+  demo's port and the demo root `make demo` uses. Another root needs
+  `--password-file`.
 - `demo/disjoint.py --demo <gold> --live <gold>` lists every
   identifying value a demo gold shares with another gold: ids, names,
-  symbols, ISINs, counterparties, descriptions, signatures, and
-  (date, amount) pairs. It prints counts and values only, at most N
-  values per field with `--show N`. It needs the `duckdb` command-line
-  tool on PATH.
+  symbols, ISINs, counterparties, descriptions, signatures, fund
+  references and lines, security keys, names and FIGIs, and (date,
+  amount) pairs. A table one gold lacks is reported and skipped. It
+  prints counts and values only, at most N values per field with
+  `--show N`. It needs the `duckdb` command-line tool on PATH.

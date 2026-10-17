@@ -366,7 +366,8 @@ env overrides: WEALTHDB_CONFIG (non-default wealthdb.cfg path),
 WEALTHDB_IMAGE_TAG (the image's tag; unset, the checkout's .image-tag,
 else latest), WEALTHDB_WEB_IMAGE,
 WEALTHDB_WEB_CONTAINER, WEALTHDB_WEB_DATA_DIR,
-WEALTHDB_WEB_BIND (both|v4|v6).
+WEALTHDB_WEB_BIND (both|v4|v6), WEALTHDB_WEB_ENV_FILE (default
+~/.secrets/wealthdb-web.env, read for the variables above).
 EOF
 }
 

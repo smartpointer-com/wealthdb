@@ -16,7 +16,9 @@ flags.
 1. **Run only these commands:** `holdings`, `exposure`, `transactions`,
    `returns`, `gains`, `spending`, `income`, `cashflow`, `status`,
    `snapshots`, `help`, `version`. Every other command writes or serves
-   other clients and is forbidden. Never write; just query.
+   other clients and is forbidden. Never write; just query. Put `-r`
+   before the command on every call (`wealthdb -r holdings global`):
+   without it a report may open the database read-write.
 2. **One number for a whole window: add `--period total`.** The default is
    one row per month (per quarter for `returns`). Never add rows up yourself.
 3. **There are no row-filter flags** (`--source`, `--account`, `--category`,
@@ -25,8 +27,10 @@ flags.
 4. **Read tables; parse JSON only to sort.** `-f json | jq`: the output is one
    JSON **array** (start with `.[] |` or `map(...)`). Keys are the table
    headers, currency suffix included (`value_USD`, `net_spend_USD`,
-   `twr_pct`). Money is a decimal **string**: `tonumber` before comparing. An
-   empty column is **omitted**, so `map(select(.value_USD))` before sorting.
+   `twr_pct`). The suffix is the output currency (the config's default, or
+   `-x`); the recipes pass `-x USD` so the key is known. Every value is a
+   **string**: `tonumber` before comparing. An empty column is **omitted**,
+   so `map(select(.value_USD))` before sorting.
    A return that cannot be computed is `"n/a"`, reason in `quality`.
 5. **Signs.** In line views (`transactions`, `spending transactions`,
    `cashflow transactions`) money leaving is negative. In `summary`,
@@ -44,7 +48,7 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
 - **One wrapper, account, property or loan** —
   `wealthdb holdings accounts | grep -i roth` (or `401`, `mortgage`)
 - **Largest holdings** —
-  `wealthdb holdings positions -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber) | reverse | .[0:5]'`
+  `wealthdb holdings positions -x USD -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber) | reverse | .[0:5]'`
   (a house or a loan is a position too)
 - **Allocation once funds are looked through** — `wealthdb exposure classes`
 - **Sectors, company sizes, countries, currencies** — `wealthdb exposure sectors`,
@@ -79,7 +83,7 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
   (`unrealized_end`); never sum positions
 - **Lots sold in a year** — `wealthdb gains realized 2025`
 - **Holdings that gained most** —
-  `wealthdb gains positions 2025 -f json | jq 'map(select(.gain_USD and .symbol)) | sort_by(.gain_USD|tonumber) | reverse | .[0:5]'`
+  `wealthdb gains positions 2025 -x USD -f json | jq 'map(select(.gain_USD and .symbol)) | sort_by(.gain_USD|tonumber) | reverse | .[0:5]'`
   (one row per account and holding: a symbol in two accounts has two rows)
 - **A holding's cost basis and unrealized gain** —
   `wealthdb holdings positions -C +cost_basis,unrealized_gain,basis_stamp | grep -i btc`
@@ -87,14 +91,15 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
   figures, `rebuilt/<method>/…` rebuilt from the trades); lots:
   `wealthdb gains lots | grep -i btc`
 - **Where gains are missing or rebuilt** — `wealthdb gains coverage 2025`
-  (`no_basis`, `no_realized`: missing, not zero); against the statements:
-  `wealthdb gains check 2025`. `--missing-basis zero` on a `gains` view or
-  `holdings positions` counts an unknown cost as zero.
+  (`verdict` `no_basis`, `no_realized` or `partial`: missing, not zero);
+  against the statements: `wealthdb gains check 2025`. `--missing-basis
+  zero` on `holdings positions` or any `gains` view but `coverage` and
+  `check` counts an unknown cost as zero.
 - **Spent in a window / by category** — `wealthdb spending summary 2025 --period total` /
   `wealthdb spending categories 2025 --period total` (add `--level detailed`
   for groceries, restaurants, flights …, then `| grep -i grocer`)
 - **Biggest purchases in a month** —
-  `wealthdb spending transactions 2026-03 -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber) | .[0:5]'`
+  `wealthdb spending transactions 2026-03 -x USD -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber) | .[0:5]'`
 - **Income / by type** — `wealthdb income summary 2025 --period total` /
   `wealthdb income types 2025 --period total | grep -i dividend`
 - **Net cash flow / by class** — `wealthdb cashflow summary 2025 --period total` /
@@ -102,7 +107,7 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
 - **Mortgage, retirement or education payments** —
   `wealthdb cashflow flows 2025 --period total --level class | grep -i -E 'mortgage|retirement|education'`
 - **Largest transactions** —
-  `wealthdb transactions 2025 -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber|fabs) | reverse | .[0:10]'`
+  `wealthdb transactions 2025 -x USD -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber|fabs) | reverse | .[0:10]'`
 - **Is the data current / which dates exist** — `wealthdb status` / `wealthdb snapshots <source>`
 
 ## Pick the command
@@ -137,15 +142,16 @@ today's date and pass them (`2025`, `2026-01-01 today`).
 
 ## Flags and columns
 
-`-f table|json|csv` · `-x CCY` output currency · `-C COLS` columns (names,
-`all`, or `+add,-drop`) · `-p` redact · `--period` on `returns`,
-`spending`, `income`, `cashflow`, `gains`, `exposure` · `--level` on
-`spending`, `income`, `cashflow`.
+`-f table|json|csv` (`ndjson` on `exposure coverage`) · `-x CCY` output
+currency · `-C COLS` columns (names, `all`, or `+add,-drop`) · `-p`
+redact · `--period` on `returns`, `spending`, `income`, `cashflow`,
+`gains`; on `exposure` a series only (`monthly|quarterly|annual`, not on
+`securities` or `funds`) · `--level` on `spending`, `income`, `cashflow`.
 
 `-C` takes column **names**, not headers: ask for `value`, `share`,
 `net_flow`, `twr`; they print as `value_USD`, `share_pct`, `net_flow_CHF`,
-`twr_pct`. `-C all` lists them; `wealthdb help <command>` lists each view's
-defaults.
+`twr_pct`. `wealthdb help <command>` lists each view's column names and
+defaults; `-C all` prints every column.
 
 `-p` prints amounts as `*****.**` (and drops them from JSON) and narrative
 text as `***`; categories, classes and shares stay legible.
@@ -154,14 +160,16 @@ Account attributes, for `grep` or `-C`: `silver_source` (the institution:
 `schwab`, `ubs`, …), `account_kind`, `tax_wrapper` (`roth_ira`, `529`,
 `pillar_3a`, `trust_*`, …), `management_style`.
 
-`category`, `income_type`, `class` and `group` are display labels; the
-taxonomy values (`cash_withdrawal`) are in `spend_detailed`,
-`income_type_id`, `class_id`, `group_id`. Filter on the value, quote the
-label.
+`category`, `type`, `income_type`, `class` and `group` are display labels.
+The taxonomy values (`cash_withdrawal`) are in `category_id`
+(`spend_detailed` on lines), `type_id` (`income_type_id` on lines) and
+`class_id` / `group_id` (dotted keys like `financing.mortgage`). Filter on
+the value, quote the label.
 
 `counterparty`, `description`, `merchant_signature` and `payer_signature`
 are raw statement text that can name a private person: request them only
-when needed, never echo them wholesale.
+when needed. `merchant`, `payer` and cashflow's `name` are shown by default
+and can name one too. Never echo any of them wholesale.
 
 ## Returns
 
@@ -172,11 +180,14 @@ quarterly plus a since-inception row. Returns are after fees and taxes
 paid.
 
 **Read `quality`:** an `n/a` always has its reason there.
-`nonpositive_base` (a loan: no return), `mwr_no_flows` (no flows: no MWR),
-`nav_only…` (value-only source: rough), `since_data_inception` (since the
-first snapshot, not the account's opening), `stale_snapshot` (old
-valuation). Account returns are exact; portfolios, sources and global are
+`nonpositive_base` (an opening value zero, negative or unpriced, e.g. a
+loan: no return), `mwr_no_flows` (no flows: no MWR), `nav_only…`
+(value-only source: rough), `since_data_inception` (since the first
+snapshot, not the account's opening), `stale_snapshot` (old valuation).
+Account returns are exact; portfolios, sources and global are
 best-effort. Returns never add across views: query the grain you want.
+Cash accounts and deposit banks have no return rows of their own; their
+money still counts in `global`. A card is in no return at all.
 
 ## Exposure
 
@@ -187,10 +198,12 @@ row's asset class.
 
 - **Read `quality` first.** `proxy` (another fund's composition stands in),
   `declared` (the household's own statement: a target split from a fund's
-  documents, or a property's country), `aged`/`forward` (a composition
-  from another day), `partial`, `unmapped`, `undeclared`, `unmatched`
-  (part of the value is not fully classified), `by_name` (a sector found
-  by matching a name), `opaque` (a private fund nothing looks through).
+  documents, or a property's country), `aged` (a composition over 35
+  days older than the day), `forward` (one dated after it), `partial`,
+  `unmapped`, `undeclared`, `unmatched` (part of the value is not fully
+  classified), `by_name` (a sector found by matching a name), `opaque` (a
+  private fund nothing looks through), `no_composition` (in `funds`:
+  nothing describes the fund on the day).
 - In an aggregate row each flag reads `flag=NN%`: the share of the row's
   gross value that carries the flag (`proxy=12%`, `aged=<1%`).
 - A declared split is marginal: a fund declared 40% Europe and 80% private
@@ -203,7 +216,9 @@ row's asset class.
 - In `countries`, a part declared by region alone reads country
   `unknown` under its region, and a declared rest of the world reads
   region `other`. Both are declared (quality `declared`), not gaps.
-- `unknown` is real money nothing describes, not zero.
+- `unknown` is real money nothing describes, not zero. `(none)` means the
+  dimension does not apply: a metal's or a coin's country, the size of
+  anything but public equity.
 - Sizes are `large` (from 10bn USD market cap), `mid` (from 2bn), `small`;
   `unknown` where nothing sizes a stock.
 - `--country risk|domicile` (on `countries`, `securities`): where the
@@ -213,9 +228,9 @@ row's asset class.
   of US stocks is Irish there, and US in `countries`. Use it for an
   estate question, never for allocation. Its `quality` gives what each
   situs rests on (`isin=80%`, `declared`, `custody`, ...), and `funds_pct`
-  the share of the row held in funds. `unknown` is a coin or a fund
-  with no known domicile, which a declaration can place, or cash at a
-  source whose `exposure.custody` names no country. A declared situs
+  the share of the row held in funds. `unknown` is a coin, cash at a
+  source whose `exposure.custody` names no country, or any holding
+  nothing else places; a declaration can place it. A declared situs
   changes no other view.
 
 ## Spending, income, cash flow
@@ -225,8 +240,8 @@ row's asset class.
   spending. `--level detailed` for a named category (groceries).
   `(uncategorized)` is the backlog: say so when it is large.
 - `income` defaults to `--level detailed`. Tax withheld is on the spending
-  side; `-C +withheld` shows it beside the income. A private fund's
-  `distribution` is a `capital_return`, not income.
+  side; `income summary -C +withheld` shows it beside the income. A
+  private fund's `distribution` is a `capital_return`, not income.
 - `cashflow`: positive is cash arriving. `operating`, `investing`,
   `financing` and `vehicles` sum to `net_cash_flow`; `operating_in` and
   `operating_out` are positive magnitudes. Retirement, education and health
@@ -235,7 +250,7 @@ row's asset class.
   `spending`'s. `sankey --period`, `sankey --level section` and
   `coverage -x` are refused. `coverage` says per account how far the
   statement can be trusted (`status`: `measured`, `obscured`, `opening`,
-  `unmeasurable`).
+  `ended`, `unmeasurable`).
 
 ## Diagnostics and gotchas
 

@@ -61,6 +61,8 @@ port-forward; auth is Metabase's own login.
   the single registry both the field-id resolution and the startup probe
   read, and the probe aborts the run rather than converging every card
   to a degraded shape when a view the cards need is missing.
+- A card that starts reading a newer migration's view or table raises
+  `MIN_GOLD_SCHEMA` to that migration. A test holds it there.
 - The gold DuckDB connection is added at runtime by `provision.py`,
   never baked into the image.
 - This component holds **no source credentials**. Its one secret is the

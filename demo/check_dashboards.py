@@ -17,11 +17,11 @@ filter values a user ran a dashboard with and shows them to that user
 next time.
 
 Each card runs at its dashboard's defaults, once per time window with no
-source picked, and once per source over the full history. Six more
+source picked, and once per source over the full history. Eight more
 pickers are varied one at a time around their defaults: currency,
-investing grain, section, start year, as-of day and the reading of a
-missing cost basis. The account, category, income type, asset class and
-vehicle pickers stay at their defaults.
+investing grain, section, start year, as-of day, the reading of a
+missing cost basis, the asset class and the tax wrapper. The account,
+category, income type and vehicle pickers stay at their defaults.
 
 A run fails when Metabase reports an error. A response cut off with no
 error and no result is asked once more first. A card that returns no rows

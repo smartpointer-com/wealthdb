@@ -64,23 +64,27 @@ def resolve_field_ids():
     p.FIELD_IDS = {(t, c): 1000 + i * 10 + j
                    for i, (t, cols) in enumerate(p.FILTER_FIELD_COLUMNS.items())
                    for j, c in enumerate(cols)}
-    p.CURRENCY_FIELD_ID = p.FIELD_IDS[("report_returns", "currency")]
-    p.SOURCE_FIELD_ID = p.FIELD_IDS[("report_returns", "silver_source_id")]
 
 
 def model_ids():
     return {name: i for i, name in enumerate(p.report_models(), start=1)}
 
 
-def all_cards(db_id, mid):
-    """name -> (display, description, dataset_query) for every card
-    provisioning defines, in the shape ensure_cards assembles them."""
-    cards = {}
-    for name, (display, desc, query, _viz) in p.question_defs(db_id, mid).items():
-        cards[name] = (display, desc, query)
-    for name, (_t, display, desc, query, _viz) in p.privacy_card_defs(db_id, mid).items():
-        cards[name] = (display, desc, query)
+def cards_of(qdefs, pdefs):
+    """name -> (display, description, dataset_query) for the base and
+    privacy definitions `qdefs` and `pdefs`, in the shape ensure_cards
+    assembles them."""
+    cards = {name: (display, desc, query)
+             for name, (display, desc, query, _viz) in qdefs.items()}
+    cards.update({name: (display, desc, query)
+                  for name, (_t, display, desc, query, _viz) in pdefs.items()})
     return cards
+
+
+def all_cards(db_id, mid):
+    """Every card provisioning defines (cards_of), built afresh — which
+    also rebuilds the picker registry, NATIVE_PARAM_TARGETS."""
+    return cards_of(p.question_defs(db_id, mid), p.privacy_card_defs(db_id, mid))
 
 
 def sql_of(query):
@@ -91,8 +95,6 @@ def sql_of(query):
 # ---- the filter-field registry ----------------------------------------
 
 section("filter-field registry (the two spending views)")
-check("web_spending registered",
-      "web_spending" in p.FILTER_FIELD_COLUMNS)
 # The category field is the LABEL column: the Category picker is shared
 # with the money dashboard, whose model column of the same name holds the
 # label, so both sides of the filter must speak one vocabulary.
@@ -107,8 +109,6 @@ check("web_card_balances_history columns: day, source, account label",
 check("the account filter binds account_label, never the external id",
       not any("account_external_id" in cols
               for cols in p.FILTER_FIELD_COLUMNS.values()))
-check("both spending views are in the wanted serving-view set",
-      {"web_spending", "web_card_balances_history"} <= set(p.web_views_wanted()))
 
 # ---- parameter ids ----------------------------------------------------
 
@@ -163,9 +163,13 @@ check("the privacy model scales by the latest net worth, per currency",
 
 # ---- the cards --------------------------------------------------------
 
-CARDS = all_cards(1, MID)
-VIZ = {n: viz for n, (_d, _desc, _q, viz) in p.question_defs(1, MID).items()}
-VIZ.update({n: viz for n, (_t, _d, _desc, _q, viz) in p.privacy_card_defs(1, MID).items()})
+# Built once, which also fills the picker registry. A test that changes
+# DEFAULT_CURRENCY or FIELD_IDS rebuilds what it reads and restores the
+# registry after.
+_QDEFS = p.question_defs(1, MID)
+_PDEFS = p.privacy_card_defs(1, MID)
+CARDS = cards_of(_QDEFS, _PDEFS)
+VIZ = {n: tup[-1] for defs in (_QDEFS, _PDEFS) for n, tup in defs.items()}
 DEFS = p.dashboard_defs()
 
 section("spending cards")
@@ -198,8 +202,6 @@ check("the money cards render account labels",
 # "Other", and so is a real category here — and neither ring carries a
 # LIMIT: a limited ring renormalizes onto what it drew, so its printed
 # shares would disagree with its own values.
-_QDEFS = p.question_defs(1, MID)
-_PDEFS = p.privacy_card_defs(1, MID)
 _RINGS = {n: (_QDEFS[n][0], _QDEFS[n][3]) for n in ("Spending by category",
                                                     "Spending by subcategory")}
 _RINGS.update({n: (_PDEFS[n][1], _PDEFS[n][4])
@@ -451,7 +453,6 @@ check("the twin's scalar is a scale-free ratio over the _pct model",
 # ---- native picker wiring ---------------------------------------------
 
 section("native card picker wiring")
-p.privacy_card_defs(1, MID)                 # rebuild the registry
 targets = p.NATIVE_PARAM_TARGETS
 check("the currency picker reaches a native card as a VARIABLE "
       "(a template variable names a value, never a column)",
@@ -496,7 +497,7 @@ check("...and leaves its picker unmapped",
       p.CATEGORY_PARAM_ID not in
       [pid for pid, _ in p.NATIVE_PARAM_TARGETS["Top 50 merchants (privacy)"]])
 p.FIELD_IDS = saved
-p.privacy_card_defs(1, MID)
+all_cards(1, MID)                           # restore the registry
 
 # ---- a snapshot that predates migration 0043 --------------------------
 
@@ -671,6 +672,23 @@ check("every account kind the flow charts fence out is one gold can store",
       set(p.FLOW_CHART_EXCLUDED_ACCOUNT_KINDS) <= KIND_VOCAB,
       f"{p.FLOW_CHART_EXCLUDED_ACCOUNT_KINDS} not all in {sorted(KIND_VOCAB)}")
 
+# The same for the transaction kinds the fees-and-taxes charts select: a
+# kind renamed in the engine would empty the tile with no error.
+_CANONICAL = os.path.join(_REPO, "wealthdb", "internal", "canonical")
+
+
+def _go_consts(file, type_name):
+    """The values of the `Name Type = "value"` constants in a canonical
+    Go file."""
+    text = open(os.path.join(_CANONICAL, file), encoding="utf-8").read()
+    return set(re.findall(rf'\w+\s+{type_name}\s*=\s*"([^"]+)"', text))
+
+
+_TX_KINDS = _go_consts("enums.go", "TxKind")
+check("every cost kind the fees-and-taxes charts select is an engine transaction kind",
+      bool(_TX_KINDS) and set(p.COST_KINDS) <= _TX_KINDS,
+      f"{p.COST_KINDS} not all in {sorted(_TX_KINDS)}")
+
 # The fence is written the long way ON PURPOSE, in both the MBQL and the
 # native form: a bare `!=` drops the rows whose account_kind is NULL — a
 # transaction with no matching accounts row — and those are flows the chart
@@ -682,12 +700,30 @@ for _n in ("Fees & taxes by month", "Fees & taxes by month (privacy)"):
           in (sql_of(CARDS[_n][2]) or ""),
           "the fence dropped its null branch; a bare NOT IN drops unmatched rows")
 
-# The guard's version is a migration that exists, and the newest one the
-# cards read: the one that gave every serving view its GBP columns.
+# The guard's version is a migration that exists, and no older than the
+# newest one that (re)defines an object the cards read: a web_* view in
+# the registry or a serving_* table a model names. A snapshot older than
+# that can carry every view by name; only the version tells it apart.
 _MIG_FILES = sorted(f for f in os.listdir(GOLD_MIGRATIONS) if f.endswith(".sql"))
 check("the cards' minimum gold schema is a migration on disk",
       any(f.startswith(f"{p.MIN_GOLD_SCHEMA:04d}_") for f in _MIG_FILES),
       p.MIN_GOLD_SCHEMA)
+_MIG_TEXT = {int(f[:4]): open(os.path.join(GOLD_MIGRATIONS, f), encoding="utf-8").read()
+             for f in _MIG_FILES}
+_SERVED = sorted(set(re.findall(r"\bserving_\w+", "\n".join(
+    sql for sql, _d in MODELS.values()))))
+
+
+def _defined_in(obj):
+    """The migrations that create or redefine view or table `obj`."""
+    pat = rf"CREATE (?:OR REPLACE )?(?:VIEW|TABLE) (?:IF NOT EXISTS )?{obj}\b"
+    return [n for n, text in _MIG_TEXT.items() if re.search(pat, text)]
+
+
+_NEWEST = {o: max(_defined_in(o), default=None) for o in p.web_views_wanted() + _SERVED}
+check("the cards' minimum gold schema is no older than any view or table they read",
+      bool(_SERVED) and all(n is not None and n <= p.MIN_GOLD_SCHEMA for n in _NEWEST.values()),
+      {o: n for o, n in _NEWEST.items() if n is None or n > p.MIN_GOLD_SCHEMA})
 
 # ---- the dashboard PUT payloads ---------------------------------------
 
@@ -836,6 +872,19 @@ check("the accounts, positions and sources latest models and the transactions on
           ("report_portfolios_latest", "serving_portfolios_latest"),
           ("report_transactions", "serving_transactions"),
           ("report_transactions_pct", "serving_transactions"))))
+# The tables are a cross-language contract: the models name them here,
+# and web-materialize rewrites the ones serving_materialize.go lists. A
+# table renamed on one side would break every model that reads it at
+# runtime only.
+_sm = open(os.path.join(_REPO, "wealthdb", "internal", "gold", "serving_materialize.go"),
+           encoding="utf-8").read()
+_sm_list = re.search(r"var servingTables = .*?\n\}", _sm, re.S)
+_GO_SERVING = set(re.findall(r'\{"(serving_\w+)",', _sm_list.group(0))) if _sm_list else set()
+check("every serving table a model reads is one web-materialize rewrites",
+      bool(_SERVED) and set(_SERVED) <= _GO_SERVING,
+      sorted(set(_SERVED) - _GO_SERVING) if _GO_SERVING else "servingTables not found")
+check("...and one a migration creates",
+      all(_defined_in(t) for t in _SERVED), [t for t in _SERVED if not _defined_in(t)])
 
 
 # ---- Income dashboards ----------------------------------------------
@@ -1100,8 +1149,8 @@ check("the Income type picker binds to the detailed label",
 # define leaves one card standing in for two — whichever was merged last
 # — and a dashboard renders the wrong chart. The models share the
 # collection's name map, so a card named like a model would overwrite it.
-_base_names = set(p.question_defs(1, MID))
-_twin_names = set(p.privacy_card_defs(1, MID))
+_base_names = set(_QDEFS)
+_twin_names = set(_PDEFS)
 _clashes = sorted((_base_names & _twin_names)
                   | ((_base_names | _twin_names) & set(MODELS)))
 check("no card name is defined twice, nor shared with a model",
@@ -1149,6 +1198,19 @@ check("...and names the four investment income types",
       [t for t in p.INVESTMENT_INCOME_TYPES if t not in _wo])
 check("...and fences no card accounts",
       "account_kind" not in _wo, _wo[:200])
+# ...each of them an income type the engine's taxonomy holds: a type
+# renamed there would drop out of the chart with no error. The rows are
+# read the way demo/tests/goref.py reads them.
+_tax = open(os.path.join(_CANONICAL, "spendtaxonomy.go"), encoding="utf-8").read()
+_tax_consts = dict(re.findall(r'(\w+)\s*=\s*"([^"]+)"', _tax))
+_INCOME_TYPES = {
+    d.strip('"') if d.startswith('"') else _tax_consts.get(d, d)
+    for d, fam in re.findall(r'\{\s*(?:"[A-Za-z_]+"|\w+),\s*("[A-Za-z_]+"|\w+),'
+                             r'\s*"(?:[^"\\]|\\.)*",\s*(Family\w+)\}', _tax, re.S)
+    if fam in ("FamilyIncome", "FamilyBoth")}
+check("...and each of them is an income type of the engine's taxonomy",
+      bool(_INCOME_TYPES) and set(p.INVESTMENT_INCOME_TYPES) <= _INCOME_TYPES,
+      sorted(set(p.INVESTMENT_INCOME_TYPES) - _INCOME_TYPES))
 
 section("the merchant ranking carries every currency")
 MERCH = CARDS["Top 50 merchants"][2]["query"]
@@ -1224,7 +1286,7 @@ for _n in ("Cash flow", "Investing by month"):
 
 # The diagram is what the dashboard is for, and a Sankey visualisation
 # reads three named columns.
-_sankey_viz = p.question_defs(1, MID)["Cash flow"][3]
+_sankey_viz = _QDEFS["Cash flow"][3]
 check("the diagram is wired as a Sankey over source/target/value",
       _sankey_viz.get("sankey.source") == "source"
       and _sankey_viz.get("sankey.target") == "target"
@@ -1234,7 +1296,7 @@ check("...and it computes the hub where the pickers apply",
 # Metabase lays a node out at the depth its INCOMING edge puts it at, so
 # a class with no leaves would sit on the middle level as a dead end
 # beside the classes that have them, and read as though it were one.
-_twin_sankey_viz = p.privacy_card_defs(1, MID)[p.privacy_name("Cash flow")][4]
+_twin_sankey_viz = _PDEFS[p.privacy_name("Cash flow")][4]
 for _n, _viz in (("Cash flow", _sankey_viz),
                  ("Cash flow (privacy)", _twin_sankey_viz)):
     check(f"'{_n}' draws every ending on the last level",
@@ -1351,12 +1413,6 @@ for _dash, _def in p.dashboard_defs().items():
                   _param.get("values_query_type") == "list", _param)
 check("...and that check read every dashboard that has one",
       _seen_listed >= 8, _seen_listed)
-
-# The serving view is in the registry that drives the pre-view abort, so
-# a stale gold snapshot halts provisioning rather than converging every
-# cashflow card to a degraded shape.
-check("web_cashflow is one of the views provisioning requires",
-      "web_cashflow" in p.web_views_wanted(), p.web_views_wanted())
 
 # The Section picker is not a picker the design asked for, so its scope
 # is pinned rather than left to whichever card was written last. It
@@ -1651,8 +1707,6 @@ for _c in ("Net worth", "Positions value", "Cash balance",
           "FROM web_sources_latest" in (sql_of(_q) or "")
           and _q["native"]["template-tags"]["time_range"]["dimension"][1]
           == p.FIELD_IDS[("web_sources_latest", "snapshot_at")])
-check("web_sources_latest is one of the views provisioning requires",
-      "web_sources_latest" in p.web_views_wanted(), p.web_views_wanted())
 
 # ensure_cards archives every retired name it finds AFTER saving the live
 # cards, so a name on both lists would be saved and then archived — a
@@ -1701,6 +1755,16 @@ _missing = {v: [c for c in p.REPORTING_CURRENCIES
             for v in p.web_views_wanted() if v not in _LONG_VIEWS}
 check("every wide serving view carries a value column per reporting currency",
       not any(_missing.values()), {v: m for v, m in _missing.items() if m})
+# The Exposure cards compare against labels web_exposure renders and
+# vocabularies the engine defines. A label respelt on either side would
+# empty or overfill a tile with no error.
+_wx = _latest_definition("web_exposure")
+check("web_exposure renders the '(none)' and 'unknown' labels the country map leaves out",
+      "THEN '(none)' ELSE 'unknown' END AS country" in _wx, _wx[:300])
+check("the size tile's class and sizes are the engine's",
+      "public_equity" in _go_consts("taxonomy.go", "AssetClass")
+      and {"large", "mid", "small"} <= _go_consts("size.go", "Size"),
+      sorted(_go_consts("size.go", "Size")))
 _gm = open(os.path.join(_REPO, "wealthdb", "internal", "gold",
                         "gains_materialize.go"), encoding="utf-8").read()
 check("the gains materializer writes the same currency list",
@@ -1760,7 +1824,7 @@ try:
           "runs in GBP" in _gbp_cards["Net worth"][1])
 finally:
     p.DEFAULT_CURRENCY = _saved
-    p.privacy_card_defs(1, MID)     # rebuild the picker registry at the default
+    all_cards(1, MID)               # rebuild the picker registry at the default
 
 section("a percent-styled column is a fraction, not a percentage")
 
@@ -1769,7 +1833,7 @@ section("a percent-styled column is a fraction, not a percentage")
 # 5.1k%, and no shape test would see it — the column exists, the viz
 # setting is attached, and only the figure is wrong.
 _PCT_CARDS = {}
-for _defs in (p.question_defs(1, MID), p.privacy_card_defs(1, MID)):
+for _defs in (_QDEFS, _PDEFS):
     for _name, _tup in _defs.items():
         _query, _viz = _tup[-2], _tup[-1]
         _sql = sql_of(_query)

@@ -474,11 +474,12 @@ class TestReference(Built):
                 self.assertEqual(total, Decimal(100), key)
 
     def test_compositions_are_month_ends_inside_the_history(self):
+        bases = goref.composition_bases()
         for c in self.ref["compositions"]:
             day = dates.day_of(c["as_of"])
             self.assertEqual(day, dates.month_end(day.year, day.month))
             self.assertLessEqual(day, AS_OF)
-            self.assertIn(c["basis"], ("holdings", "collateral", "index"))
+            self.assertIn(c["basis"], bases)
 
     def test_the_catalogue_exercises_every_rule(self):
         swap = [f for f in self.cat["funds"] if f.get("basis") == "collateral"]

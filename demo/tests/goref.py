@@ -1,10 +1,10 @@
 """The engine's vocabularies, read from its Go source.
 
-The generator stamps taxonomy values, account kinds, tax wrappers and
-transaction kinds that the engine validates. Reading them from the Go
-files rather than restating them here means a value renamed in the
-engine fails these tests instead of silently becoming an uncategorised
-row in gold.
+The generator stamps taxonomy values, account kinds, tax wrappers,
+transaction kinds and composition bases that the engine validates.
+Reading them from the Go files rather than restating them here means a
+value renamed in the engine fails these tests instead of silently
+becoming an uncategorised row in gold.
 """
 
 import pathlib
@@ -46,6 +46,11 @@ def management_styles():
 def tx_kinds():
     t = _read("enums.go")
     return _set_values(t, "txKindValues", _consts(t, "TxKind"))
+
+
+def composition_bases():
+    """What a fund composition's lines can describe (CompositionBasis)."""
+    return set(_consts(_read("refdata.go"), "CompositionBasis").values())
 
 
 def taxonomy_pairs():
