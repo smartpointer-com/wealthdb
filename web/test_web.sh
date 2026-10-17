@@ -35,6 +35,10 @@ check() { # desc, expected-substring, actual
 check_not() { # desc, unwanted-substring, actual
     if printf '%s' "$3" | grep -qF -- "$2"; then fail "$1"; else pass "$1"; fi
 }
+check_eq() { # desc, expected, actual
+    if [ "$3" = "$2" ]; then pass "$1"
+    else fail "$1"; printf '       wanted: %s\n       got:    %s\n' "$2" "$3"; fi
+}
 
 echo "== _publish_args =="
 out="$(_publish_args 3000 both)"
@@ -145,6 +149,59 @@ echo "== _provision: the admin password reaches provision.py by env, never argv 
 check_not "password not in argv"     "Synthetic-pw-1!" "$(cat "$tmp/prov-args" 2>/dev/null)"
 check_not "no --password flag"       "--password"      "$(cat "$tmp/prov-args" 2>/dev/null)"
 check     "password in the env var"  "Synthetic-pw-1!" "$(cat "$tmp/prov-env" 2>/dev/null)"
+
+echo "== web start and refresh read provision.py's exit status =="
+# web_start against stubs, in a subshell: no Docker, a snapshot already
+# in place (so start takes none), and a python3 stub that exits with the
+# status under test. Prints start's status; its stderr lands in
+# $tmp/start-err and its docker calls in $tmp/docker-calls.
+start_with() { # provision.py's exit status
+    : > "$tmp/docker-calls"
+    (
+        stub_rc="$1"
+        _load_config() { ENABLED=1; PORT=3000; GOLD_DB="$tmp/gold.db"; }
+        _is_running()  { return 1; }
+        _exists()      { return 1; }
+        docker()       { printf '%s\n' "$*" >> "$tmp/docker-calls"; }
+        python3()      { return "$stub_rc"; }
+        DATA_DIR="$tmp/start" H2_DIR="$tmp/start/metabase" SPILL_DIR="$tmp/start/spill"
+        SNAP="$tmp/start/snapshot/wealthdb.db" BIND=v4 IMAGE=img CONTAINER=wealthdb-metabase
+        WEALTHDB_WEB_ADMIN_PASSWORD="Synthetic-pw-1!"
+        mkdir -p "$(dirname "$SNAP")" && : > "$SNAP"
+        web_start >/dev/null 2> "$tmp/start-err"
+        echo "$?"
+    )
+}
+rc="$(start_with 3)"
+err="$(cat "$tmp/start-err")"
+check_eq  "a stale snapshot fails start with provision.py's status" "3" "$rc"
+check_not "...without the browser hint"  "finish setup in the browser"  "$err"
+check     "...naming refresh"   "'wealthdb web refresh' re-snapshots a migrated gold" "$err"
+check     "...with the login, which stands"  "log in as"                "$err"
+check_eq  "...and the server run, never stopped or removed" "run" \
+          "$(cut -d' ' -f1 < "$tmp/docker-calls" | tr '\n' ' ' | sed 's/ $//')"
+rc="$(start_with 1)"
+err="$(cat "$tmp/start-err")"
+check_eq  "any other failure leaves start's status 0"  "0"              "$rc"
+check     "...and points at the browser"   "finish setup in the browser"  "$err"
+check_not "...not at refresh"              "re-snapshots a migrated gold" "$err"
+rc="$(start_with 0)"
+check_eq  "a clean provision starts with status 0"  "0"                 "$rc"
+check     "...and prints the login"        "log in as"     "$(cat "$tmp/start-err")"
+# Refresh re-snapshots first, so a stale result there means gold itself is
+# older than the cards: the restart's failure is refresh's.
+rc="$(
+    _load_config() { GOLD_DB="$tmp/gold.db"; }
+    _materialize() { :; }
+    _snapshot()    { :; }
+    _mtime()       { echo now; }
+    _is_running()  { return 0; }
+    web_stop()     { :; }
+    web_start()    { return 3; }
+    web_refresh >/dev/null 2>&1
+    echo "$?"
+)"
+check_eq "refresh passes a stale restart's status on" "3" "$rc"
 
 echo "== web help smoke =="
 hout="$(web_help)"

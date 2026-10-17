@@ -18,7 +18,10 @@ flags.
    `snapshots`, `help`, `version`. Every other command writes or serves
    other clients and is forbidden. Never write; just query. Put `-r`
    before the command on every call (`wealthdb -r holdings global`):
-   without it a report may open the database read-write.
+   without it a report may open the database read-write. A `-r` after
+   `transactions` or `gains realized` is a different flag. It lists the
+   newest first (`--reverse`) and is not read-only. The read-only `-r`
+   always sits between `wealthdb` and the command.
 2. **One number for a whole window: add `--period total`.** The default is
    one row per month (per quarter for `returns`). Never add rows up yourself.
 3. **There are no row-filter flags** (`--source`, `--account`, `--category`,
@@ -35,80 +38,80 @@ flags.
 5. **Signs.** In line views (`transactions`, `spending transactions`,
    `cashflow transactions`) money leaving is negative. In `summary`,
    `categories` and `types`, `spend`, `refunds` and `income` are positive.
-6. **`wealthdb help <command>`** prints everything this file leaves out.
+6. **`wealthdb -r help <command>`** prints everything this file leaves out.
 
 ## Recipes
 
 Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
 
-- **Net worth or total cash, now / at a date / in CHF** — `wealthdb holdings global`
+- **Net worth or total cash, now / at a date / in CHF** — `wealthdb -r holdings global`
   (one row: cash, positions, total), then `-d 2025-12-31` or `-x CHF`
-- **Each account, with its tax wrapper** — `wealthdb holdings accounts`
-- **One institution's total** — `wealthdb holdings sources | grep -i schwab`
+- **Each account, with its tax wrapper** — `wealthdb -r holdings accounts`
+- **One institution's total** — `wealthdb -r holdings sources | grep -i schwab`
 - **One wrapper, account, property or loan** —
-  `wealthdb holdings accounts | grep -i roth` (or `401`, `mortgage`)
+  `wealthdb -r holdings accounts | grep -i roth` (or `401`, `mortgage`)
 - **Largest holdings** —
-  `wealthdb holdings positions -x USD -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber) | reverse | .[0:5]'`
+  `wealthdb -r holdings positions -x USD -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber) | reverse | .[0:5]'`
   (a house or a loan is a position too)
-- **Allocation once funds are looked through** — `wealthdb exposure classes`
-- **Sectors, company sizes, countries, currencies** — `wealthdb exposure sectors`,
+- **Allocation once funds are looked through** — `wealthdb -r exposure classes`
+- **Sectors, company sizes, countries, currencies** — `wealthdb -r exposure sectors`,
   `sizes`, `countries`, `currencies` (`-d 2025-12-31` for a past day)
 - **One company, directly and through funds** —
-  `wealthdb exposure securities | grep -i <company>` (`value` is the total)
-- **Exposure over time** — `wealthdb exposure countries --period quarterly 2025`
-- **How far to trust exposure** — `wealthdb exposure coverage`; how old each
+  `wealthdb -r exposure securities | grep -i <company>` (`value` is the total)
+- **Exposure over time** — `wealthdb -r exposure countries --period quarterly 2025`
+- **How far to trust exposure** — `wealthdb -r exposure coverage`; how old each
   fund's data is, and which fund's holdings stand in for it (`proxy`, a key):
-  `wealthdb exposure funds`
+  `wealthdb -r exposure funds`
 - **What the household states about a private holding** — a fund:
-  `wealthdb exposure funds` (`via` reads `declared`, with the record's
+  `wealthdb -r exposure funds` (`via` reads `declared`, with the record's
   `declaration_date` and the dimensions it `declared`); a property, a
-  loan or an SPV: `wealthdb exposure securities | grep -i <name>` (quality
+  loan or an SPV: `wealthdb -r exposure securities | grep -i <name>` (quality
   `declared`); the private holdings with no record:
-  `wealthdb exposure coverage | grep undeclared`
+  `wealthdb -r exposure coverage | grep undeclared`
 - **Where holdings legally sit** (for an estate question) —
-  `wealthdb exposure situs`; one fund's situs:
-  `wealthdb exposure funds -C fund,name,domicile,situs,situs_basis`; what
+  `wealthdb -r exposure situs`; one fund's situs:
+  `wealthdb -r exposure funds -C fund,name,domicile,situs,situs_basis`; what
   each situs rests on, and the holdings whose situs is unknown:
-  `wealthdb exposure coverage -f csv | grep '^situs,'`
-- **Records still to write** — `wealthdb exposure coverage -f ndjson`: a
+  `wealthdb -r exposure coverage -f csv | grep '^situs,'`
+- **Records still to write** — `wealthdb -r exposure coverage -f ndjson`: a
   skeleton per undeclared holding, and a situs-only one per holding of
   unknown situs, for the user to fill into the declarations ledger
 - **Return of the portfolio / each account** —
-  `wealthdb returns global 2025 --period total` / `wealthdb returns accounts 2025 --period total`
+  `wealthdb -r returns global 2025 --period total` / `wealthdb -r returns accounts 2025 --period total`
   (the account column is `entity`; one account: `| grep -i 'brokerage'`)
 - **Best account by return** —
-  `wealthdb returns accounts 2025 --period total -f json | jq 'map(select(.twr_pct != "n/a")) | sort_by(.twr_pct|tonumber) | reverse | .[0:3]'`
-- **Realized gains of a year** — `wealthdb gains summary 2025 --period total` (`realized`)
-- **Total unrealized gain now** — `wealthdb gains summary --period total`
+  `wealthdb -r returns accounts 2025 --period total -f json | jq 'map(select(.twr_pct != "n/a")) | sort_by(.twr_pct|tonumber) | reverse | .[0:3]'`
+- **Realized gains of a year** — `wealthdb -r gains summary 2025 --period total` (`realized`)
+- **Total unrealized gain now** — `wealthdb -r gains summary --period total`
   (`unrealized_end`); never sum positions
-- **Lots sold in a year** — `wealthdb gains realized 2025`
+- **Lots sold in a year** — `wealthdb -r gains realized 2025`
 - **Holdings that gained most** —
-  `wealthdb gains positions 2025 -x USD -f json | jq 'map(select(.gain_USD and .symbol)) | sort_by(.gain_USD|tonumber) | reverse | .[0:5]'`
+  `wealthdb -r gains positions 2025 -x USD -f json | jq 'map(select(.gain_USD and .symbol)) | sort_by(.gain_USD|tonumber) | reverse | .[0:5]'`
   (one row per account and holding: a symbol in two accounts has two rows)
 - **A holding's cost basis and unrealized gain** —
-  `wealthdb holdings positions -C +cost_basis,unrealized_gain,basis_stamp | grep -i btc`
+  `wealthdb -r holdings positions -C +cost_basis,unrealized_gain,basis_stamp | grep -i btc`
   (`basis_stamp`: `stated/…` the institution's, `derived/…` computed from its
   figures, `rebuilt/<method>/…` rebuilt from the trades); lots:
-  `wealthdb gains lots | grep -i btc`
-- **Where gains are missing or rebuilt** — `wealthdb gains coverage 2025`
+  `wealthdb -r gains lots | grep -i btc`
+- **Where gains are missing or rebuilt** — `wealthdb -r gains coverage 2025`
   (`verdict` `no_basis`, `no_realized` or `partial`: missing, not zero);
-  against the statements: `wealthdb gains check 2025`. `--missing-basis
+  against the statements: `wealthdb -r gains check 2025`. `--missing-basis
   zero` on `holdings positions` or any `gains` view but `coverage` and
   `check` counts an unknown cost as zero.
-- **Spent in a window / by category** — `wealthdb spending summary 2025 --period total` /
-  `wealthdb spending categories 2025 --period total` (add `--level detailed`
+- **Spent in a window / by category** — `wealthdb -r spending summary 2025 --period total` /
+  `wealthdb -r spending categories 2025 --period total` (add `--level detailed`
   for groceries, restaurants, flights …, then `| grep -i grocer`)
 - **Biggest purchases in a month** —
-  `wealthdb spending transactions 2026-03 -x USD -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber) | .[0:5]'`
-- **Income / by type** — `wealthdb income summary 2025 --period total` /
-  `wealthdb income types 2025 --period total | grep -i dividend`
-- **Net cash flow / by class** — `wealthdb cashflow summary 2025 --period total` /
-  `wealthdb cashflow flows 2025 --period total --level class`
+  `wealthdb -r spending transactions 2026-03 -x USD -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber) | .[0:5]'`
+- **Income / by type** — `wealthdb -r income summary 2025 --period total` /
+  `wealthdb -r income types 2025 --period total | grep -i dividend`
+- **Net cash flow / by class** — `wealthdb -r cashflow summary 2025 --period total` /
+  `wealthdb -r cashflow flows 2025 --period total --level class`
 - **Mortgage, retirement or education payments** —
-  `wealthdb cashflow flows 2025 --period total --level class | grep -i -E 'mortgage|retirement|education'`
+  `wealthdb -r cashflow flows 2025 --period total --level class | grep -i -E 'mortgage|retirement|education'`
 - **Largest transactions** —
-  `wealthdb transactions 2025 -x USD -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber|fabs) | reverse | .[0:10]'`
-- **Is the data current / which dates exist** — `wealthdb status` / `wealthdb snapshots <source>`
+  `wealthdb -r transactions 2025 -x USD -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber|fabs) | reverse | .[0:10]'`
+- **Is the data current / which dates exist** — `wealthdb -r status` / `wealthdb -r snapshots <source>`
 
 ## Pick the command
 
@@ -150,7 +153,7 @@ redact · `--period` on `returns`, `spending`, `income`, `cashflow`,
 
 `-C` takes column **names**, not headers: ask for `value`, `share`,
 `net_flow`, `twr`; they print as `value_USD`, `share_pct`, `net_flow_CHF`,
-`twr_pct`. `wealthdb help <command>` lists each view's column names and
+`twr_pct`. `wealthdb -r help <command>` lists each view's column names and
 defaults; `-C all` prints every column.
 
 `-p` prints amounts as `*****.**` (and drops them from JSON) and narrative
@@ -254,8 +257,8 @@ row's asset class.
 
 ## Diagnostics and gotchas
 
-- `wealthdb status` — per source, the date its data was last observed and
-  whether newer data waits to load. `wealthdb snapshots <source>` — the
+- `wealthdb -r status` — per source, the date its data was last observed and
+  whether newer data waits to load. `wealthdb -r snapshots <source>` — the
   dates gold has, to check a date exists before calling a balance zero.
 - A source holds nothing before its first snapshot: an early zero is
   missing history, not a real zero. A blank value means no exchange rate

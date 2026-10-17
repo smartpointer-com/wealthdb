@@ -172,6 +172,22 @@ CARDS = cards_of(_QDEFS, _PDEFS)
 VIZ = {n: tup[-1] for defs in (_QDEFS, _PDEFS) for n, tup in defs.items()}
 DEFS = p.dashboard_defs()
 
+section("retired models")
+check("no retired model is still defined",
+      not set(p.RETIRED_MODEL_NAMES) & set(MODELS),
+      sorted(set(p.RETIRED_MODEL_NAMES) & set(MODELS)))
+check("the retired names are distinct",
+      len(set(p.RETIRED_MODEL_NAMES)) == len(p.RETIRED_MODEL_NAMES))
+# A privacy (_pct) model exists for the MBQL twin cards that run over it:
+# the privacy charts are native over the serving views, so a variant no
+# card reads is retired rather than kept for browsing.
+_CARD_SOURCES = {int(i) for i in re.findall(
+    r'"card__(\d+)"', json.dumps([q for _d, _desc, q in CARDS.values()]))}
+_PCT_MODELS = sorted(n for n in MODELS if n.endswith("_pct"))
+check("every _pct model backs a card",
+      bool(_PCT_MODELS) and all(MID[n] in _CARD_SOURCES for n in _PCT_MODELS),
+      [n for n in _PCT_MODELS if MID[n] not in _CARD_SOURCES])
+
 section("spending cards")
 SPEND_TILES = [t[0] for t in DEFS["Spending"][3]]
 for want in ("Spend — monthly trend", "Net spend", "Uncategorized share",
@@ -543,6 +559,45 @@ class FlakyMetadataAPI(FakeAPI):
         return super().__call__(base, path, method, data, session, timeout)
 
 
+class FakeMetabase(FakeAPI):
+    """FakeAPI that also answers the steps main() takes before the schema
+    check: health, an admin already set up, its login and the gold
+    database."""
+
+    def __call__(self, base, path, method="GET", data=None, session=None,
+                 timeout=30):
+        if path == "/api/session/properties":
+            self.calls.append((method, path))
+            return 200, {"has-user-setup": True}
+        if path == "/api/session":
+            self.calls.append((method, path))
+            return 200, {"id": "sid"}
+        if path == "/api/database" and method == "GET":
+            self.calls.append((method, path))
+            return 200, {"data": [{"id": 1, "name": "gold", "engine": "duckdb",
+                                   "details": {}}]}
+        return super().__call__(base, path, method, data, session, timeout)
+
+
+def run_main():
+    """main()'s exit status against the stand-in in p.req, with the
+    arguments web/web passes; the globals main() sets are restored."""
+    saved = (sys.argv, os.environ.get("WEALTHDB_WEB_ADMIN_PASSWORD"),
+             p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS)
+    sys.argv = ["provision.py", "--base", "http://127.0.0.1:3000",
+                "--email", "admin@wealthdb.local", "--gold-path", "/gold/wealthdb.db"]
+    os.environ["WEALTHDB_WEB_ADMIN_PASSWORD"] = "Synthetic-pw-1!"
+    try:
+        with quiet():
+            return p.main()
+    finally:
+        sys.argv, pw, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS = saved
+        if pw is None:
+            os.environ.pop("WEALTHDB_WEB_ADMIN_PASSWORD", None)
+        else:
+            os.environ["WEALTHDB_WEB_ADMIN_PASSWORD"] = pw
+
+
 def tables_for(views):
     """Synced metadata carrying every registry column of `views`."""
     return [{"name": t, "fields": [{"name": c, "id": 900 + i}
@@ -614,15 +669,20 @@ try:
     api = p.req = FakeAPI(ALL_VIEWS, tables_for(ALL_VIEWS + ["report_returns"]),
                           version=p.MIN_GOLD_SCHEMA - 1)
     with quiet():
-        old_schema = p.ensure_synced("b", "s", 1, tries=1, delay=0) is None
-    check("a snapshot older than the cards' schema aborts the run", old_schema)
-    check("...before reading the metadata or attempting a sync",
+        old_schema = p.check_gold_schema("b", "s", 1)
+    check("a snapshot older than the cards' schema fails with a status of its own",
+          old_schema == p.EXIT_STALE_SNAPSHOT, old_schema)
+    check("...which no other failure (1) or a usage error (2) exits with",
+          p.EXIT_STALE_SNAPSHOT not in (0, 1, 2), p.EXIT_STALE_SNAPSHOT)
+    check("...found before reading the metadata or attempting a sync",
           [c for c in api.calls if c[1] == "/api/dataset"] == api.calls, str(api.calls))
     p.req = FakeAPI(ALL_VIEWS, tables_for(ALL_VIEWS + ["report_returns"]))
+    check("a snapshot at the cards' schema passes", p.check_gold_schema("b", "s", 1) == 0)
     p.req.version = "unreadable"
     with quiet():
-        unknown = p.ensure_synced("b", "s", 1, tries=1, delay=0) is None
-    check("a schema version the probe cannot read aborts too", unknown)
+        unknown = p.check_gold_schema("b", "s", 1)
+    check("a schema version the probe cannot read is an ordinary failure",
+          unknown == 1, unknown)
 
     # The invariant that abort protects: a metadata read that fails says
     # nothing about the schema, and must never be coerced to an empty table
@@ -630,6 +690,21 @@ try:
     p.req = FakeAPI(ALL_VIEWS, None)
     check("a failed metadata read is never coerced to an empty table list",
           p.gold_metadata("b", "s", 1) is None)
+
+    # web/web reads main()'s exit status: the stale one names `wealthdb
+    # web refresh`, any other the browser wizard.
+    api = p.req = FakeMetabase(ALL_VIEWS, tables_for(ALL_VIEWS + ["report_returns"]),
+                               version=p.MIN_GOLD_SCHEMA - 1)
+    check("provisioning onto an older snapshot exits with the stale status",
+          run_main() == p.EXIT_STALE_SNAPSHOT)
+    check("...having synced and written nothing",
+          not [c for c in api.calls
+               if "sync_schema" in c[1] or "/metadata" in c[1] or c[1].startswith("/api/card")
+               or c[1].startswith("/api/collection")], str(api.calls))
+    api = p.req = FakeMetabase(ALL_VIEWS, tables_for(ALL_VIEWS + ["report_returns"]))
+    api.version = "unreadable"
+    check("...and onto one whose version cannot be read with 1, at the probe",
+          run_main() == 1 and ("POST", "/api/dataset") in api.calls, str(api.calls))
 finally:
     p.req = real_req
 
@@ -724,6 +799,29 @@ _NEWEST = {o: max(_defined_in(o), default=None) for o in p.web_views_wanted() + 
 check("the cards' minimum gold schema is no older than any view or table they read",
       bool(_SERVED) and all(n is not None and n <= p.MIN_GOLD_SCHEMA for n in _NEWEST.values()),
       {o: n for o, n in _NEWEST.items() if n is None or n > p.MIN_GOLD_SCHEMA})
+
+
+def _view_body(view):
+    """The newest migration's CREATE statement for `view`, up to its `;`."""
+    text = _MIG_TEXT.get(_NEWEST.get(view), "")
+    m = re.search(rf"CREATE (?:OR REPLACE )?VIEW {view} AS(.*?);", text, re.S)
+    return m.group(1) if m else ""
+
+
+# The gains and exposure views read a missing tax wrapper as
+# taxable_personal, as the holdings views do, so a card reads the column
+# as it stands and the Tax wrapper picker offers one value for it.
+_FILLED = ("web_gains", "web_exposure")
+check("the gains and exposure views fill a missing tax wrapper in",
+      all(re.search(r"COALESCE\(\w+\.tax_wrapper, 'taxable_personal'\) AS tax_wrapper",
+                    _view_body(v)) for v in _FILLED),
+      [v for v in _FILLED if "taxable_personal" not in _view_body(v)])
+_over_filled = {n: sql_of(q) for n, (_d, _desc, q) in CARDS.items()
+                if sql_of(q) and any(f"FROM {v}" in sql_of(q) for v in _FILLED)}
+check("...so no card over them fills it in again",
+      bool(_over_filled) and not [n for n, q in _over_filled.items()
+                                  if re.search(r"coalesce\(\s*tax_wrapper", q, re.I)],
+      [n for n, q in _over_filled.items() if re.search(r"coalesce\(\s*tax_wrapper", q, re.I)])
 
 # ---- the dashboard PUT payloads ---------------------------------------
 
@@ -870,8 +968,7 @@ check("the accounts, positions and sources latest models and the transactions on
           ("report_sources_latest", "serving_sources_latest"),
           ("report_global_latest", "serving_global_latest"),
           ("report_portfolios_latest", "serving_portfolios_latest"),
-          ("report_transactions", "serving_transactions"),
-          ("report_transactions_pct", "serving_transactions"))))
+          ("report_transactions", "serving_transactions"))))
 # The tables are a cross-language contract: the models name them here,
 # and web-materialize rewrites the ones serving_materialize.go lists. A
 # table renamed on one side would break every model that reads it at
@@ -1514,23 +1611,38 @@ for _d, (_desc, _mode, _spec) in p.base_dashboards().items():
               (a[0], b[0]) for i, a in enumerate(_spec) for b in _spec[i + 1:]
               if a[2] < b[2] + b[3] and b[2] < a[2] + a[3] and a[1] < b[1] + b[4] and b[1] < a[1] + a[4]])
 
-section("stacked area charts")
+section("stacked charts with a band per series")
 
 # Metabase stacks the band whose rows appear last at the bottom and, by
-# default, reverses a stacked chart's legend. So every stacked area with
-# bands ranks its rows smallest first, which puts the largest band on
-# the axis, and switches the reversal off, which lists the largest first.
-# The Exposure charts over time rank with an aggregate of their own (see
-# over_time); the Exposure section checks them.
-_stacked_areas = {n: sql_of(q) or "" for n, (d, _desc, q) in CARDS.items()
-                  if d == "area" and VIZ[n].get("stackable.stack_type") == "stacked"
+# default, reverses a stacked chart's legend. So every stacked chart with
+# bands, area or bar, ranks its rows smallest first, which puts the
+# largest band on the axis, and switches the reversal off, which lists
+# the largest first. The Exposure charts over time rank with an
+# aggregate of their own (see over_time); the Exposure section checks
+# them.
+_stacked_bands = {n: sql_of(q) or "" for n, (d, _desc, q) in CARDS.items()
+                  if d in ("area", "bar", "combo")
+                  and VIZ[n].get("stackable.stack_type") == "stacked"
                   and len(VIZ[n].get("graph.dimensions", [])) == 2}
-check("every stacked area with bands ranks its rows by band",
-      bool(_stacked_areas) and all("series_rank" in q or "AS latest FROM e" in q for q in _stacked_areas.values()),
-      [n for n, q in _stacked_areas.items() if "series_rank" not in q and "AS latest FROM e" not in q])
+_STACKED_BARS = {c + s for c in ("Investment income by month", "Fees & taxes by month",
+                                 "Cash flow statement by month", "Investing by month",
+                                 "Financing and vehicles by month")
+                 for s in ("", p.PRIVACY_SUFFIX)}
+check("the population holds the stacked bars as well as the areas",
+      _STACKED_BARS <= set(_stacked_bands)
+      and {CARDS[n][0] for n in _stacked_bands} == {"area", "bar", "combo"},
+      sorted(_STACKED_BARS - set(_stacked_bands)))
+check("every stacked chart with bands ranks its rows by band",
+      bool(_stacked_bands) and all("series_rank" in q or "AS latest FROM e" in q for q in _stacked_bands.values()),
+      [n for n, q in _stacked_bands.items() if "series_rank" not in q and "AS latest FROM e" not in q])
+check("...the bars, flows each, by the band's total over the window",
+      all(f"sum({VIZ[n]['graph.metrics'][0]}) OVER (PARTITION BY {VIZ[n]['graph.dimensions'][1]})"
+          in _stacked_bands.get(n, "") for n in _STACKED_BARS),
+      [n for n in sorted(_STACKED_BARS)
+       if f"sum({VIZ[n]['graph.metrics'][0]}) OVER" not in _stacked_bands.get(n, "")])
 check("...and lists its legend in the bands' own order",
-      all(VIZ[n].get("legend.is_reversed") is False for n in _stacked_areas),
-      [n for n in _stacked_areas if VIZ[n].get("legend.is_reversed") is not False])
+      all(VIZ[n].get("legend.is_reversed") is False for n in _stacked_bands),
+      [n for n in _stacked_bands if VIZ[n].get("legend.is_reversed") is not False])
 # A stack of two metrics is the mirror case: the first metric sits at
 # the bottom, so positions, the larger, come first and the legend reads
 # the same way.
@@ -1539,7 +1651,7 @@ check("the cash and positions stacks list positions first, legend unreversed",
           for n in ("Cash vs positions over time", "Cash vs positions over time (privacy)")))
 check("...ending in that order and nothing after it",
       all(q.rstrip().endswith(("NULLS FIRST, month", "NULLS FIRST, as_of_day")) or "AS latest FROM e" in q
-          for q in _stacked_areas.values()))
+          for q in _stacked_bands.values()))
 
 section("line charts list their legend top line first")
 

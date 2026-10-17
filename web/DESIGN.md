@@ -95,9 +95,9 @@ reports (+ all-time `report_transactions`), the daily `_history` reports
 (migration 0043), the income model over `web_income` (migration 0072),
 the `report_cashflow` model over `web_cashflow` (migration 0084) — which
 backs the Cash Flow dashboard's Section picker rather than any card —
-and `_pct` privacy variants for standalone privacy browsing. Two of
-them, `report_sources_latest_pct` and `report_spending_pct`, also back
-the privacy twins' MBQL cards.
+and two `_pct` privacy variants, `report_sources_latest_pct` and
+`report_spending_pct`. They back the privacy twins' MBQL cards and
+their drill-through.
 
 On top of the models, provisioning creates pre-defined questions and
 nine dashboards. Their pickers:
@@ -151,12 +151,12 @@ Wealth Overview's three headline figures read `web_sources_latest`
 `wealthdb holdings sources` prints. A native tile has no "see these
 records" drill-through. That is the price of the picker.
 Metabase takes a chart's series in the order their rows first appear.
-So two kinds of chart order their rows by the series' size: every
-stacked area with a band per series, and every line chart of a level
-with a line per series. A level ranks by its value on the last day, a
-flow by its total over the window. A stacked area puts its largest band
-on the axis, a line chart lists its top line first, and both legends
-read largest first.
+So two kinds of chart order their rows by the series' size. One is
+every stacked area or bar with a band per series. The other is every
+line chart of a level with a line per series. A level ranks by its
+value on the last day, a flow by its total over the window. A stacked
+chart puts its largest band on the axis, a line chart lists its top
+line first, and both legends read largest first.
 Each dashboard but Gains also gets a **privacy twin** (linked from the
 dashboard's top row): same layout and filters, but every card shows
 shares (%) instead of money. Gains has none. Its tiles are gains on
@@ -305,9 +305,18 @@ A stale snapshot is caught before any of this is written. Provisioning
 probes the driver for the snapshot's schema version and for the serving
 views **by name**. It aborts with a "run `wealthdb web refresh`" message
 rather than converging the cards to a degraded shape. The version check
-catches a snapshot older than 0132. Its views exist by name, but it lacks
-the serving tables the models read and the tax wrapper and asset class
-columns the tiles filter on. A Metabase listing that fails
+catches a snapshot older than 0133. Its views exist by name, but they
+do not read as the cards expect:
+
+- before 0132, it lacks the serving tables the models read and the tax
+  wrapper and asset class columns the tiles filter on;
+- before 0133, its gains and exposure views leave a missing tax wrapper
+  blank, where the holdings views read `taxable_personal`.
+
+On such a snapshot `provision.py` exits 3, where any other failure exits
+1. `web start`, `web restart` and `web refresh` then exit 3 as well.
+They name `wealthdb web refresh` instead of the browser wizard and leave
+Metabase running with the cards it had. A Metabase listing that fails
 aborts the run too. Read as empty, it would create a second collection,
 database, card or dashboard of the same name.
 
@@ -541,7 +550,9 @@ helpers with no Docker: the dual-stack `-p` flag construction, the
 read-only snapshot mount in the `docker run` args, the `.wal` guard,
 the generated-password complexity, and — against a stubbed engine —
 the `_materialize` invocation plus `web_refresh`'s
-materialize-then-snapshot ordering. It then runs
+materialize-then-snapshot ordering. Against a stubbed `provision.py`,
+it checks that a stale snapshot fails `web start` and `web refresh`
+without the browser hint. It then runs
 [`test_provision.py`](test_provision.py), which asserts everything
 `provision.py` builds *before* it talks to the API — the definitions are
 pure functions of module constants, so the filter registry, the model
@@ -550,7 +561,8 @@ template-tag wiring all check statically. Two behaviours worth naming:
 the privacy twin is asserted to render no merchant or account label in
 any card it defines, and a snapshot missing a serving view or older
 than the schema the cards read is asserted to abort the run (against a
-stubbed API) instead of half-provisioning. Whether Metabase *accepts* a
+stubbed API) instead of half-provisioning, the older one with exit
+status 3. Whether Metabase *accepts* a
 payload needs a live instance: `demo/check_dashboards.py` runs every
 card of a running demo Metabase through its API (demo/README.md).
 The Go side (`web` config block,

@@ -186,6 +186,14 @@ web_start() {
     fi
     _provision
     _start_banner
+    # A snapshot older than the cards need leaves the server up with the
+    # cards it had. Setup in the browser cannot mend that, so start says
+    # what does and fails.
+    if [ "$PROV_RC" = "$PROV_STALE_SNAPSHOT" ]; then
+        echo "web: the gold snapshot is older than the dashboards need, so they were left as they were." >&2
+        echo "     'wealthdb web refresh' re-snapshots a migrated gold." >&2
+        return "$PROV_RC"
+    fi
 }
 
 web_stop() {
@@ -268,12 +276,18 @@ _materialize() {
     fi
 }
 
+# provision.py's exit status for a gold snapshot older than the cards
+# need (its EXIT_STALE_SNAPSHOT); any other failure exits 1.
+PROV_STALE_SNAPSHOT=3
+
 # _provision creates the admin (skipping the browser setup wizard) and
 # pre-adds the gold DuckDB database via web/provision.py. Idempotent.
 # Admin email/password come from env (WEALTHDB_WEB_ADMIN_EMAIL/PASSWORD,
 # e.g. from ~/.secrets/wealthdb-web.env); an unset password is generated
-# once and saved (chmod 600). Sets PROV_LOGIN for the start banner.
+# once and saved (chmod 600). Sets PROV_LOGIN for the start banner and
+# PROV_RC to provision.py's exit status (0 when it does not run).
 _provision() {
+    PROV_RC=0
     if [ "${WEALTHDB_WEB_NO_PROVISION:-0}" = 1 ]; then
         echo "web: auto-provision disabled (WEALTHDB_WEB_NO_PROVISION=1)." >&2
         return 0
@@ -297,15 +311,16 @@ _provision() {
     echo "web: provisioning Metabase (admin + gold database + report models + dashboards)…" >&2
     # The password travels in the environment, never in argv, where any
     # process on the host could read it from `ps`.
-    if WEALTHDB_WEB_ADMIN_PASSWORD="$pw" python3 "$HERE/provision.py" \
+    WEALTHDB_WEB_ADMIN_PASSWORD="$pw" python3 "$HERE/provision.py" \
          --base "http://127.0.0.1:$PORT" \
          --email "$email" --gold-path /gold/wealthdb.db --db-name gold \
          --default-currency "${WEALTHDB_DEFAULT_CURRENCY:-USD}" \
-         --missing-basis "${WEALTHDB_MISSING_BASIS:-ignore}"; then
-        PROV_LOGIN="log in as $email (password $pwhint)"
-    else
-        PROV_LOGIN="auto-provision incomplete — finish setup in the browser"
-    fi
+         --missing-basis "${WEALTHDB_MISSING_BASIS:-ignore}" || PROV_RC=$?
+    case "$PROV_RC" in
+        # The schema check follows the admin login, so the login stands.
+        0|"$PROV_STALE_SNAPSHOT") PROV_LOGIN="log in as $email (password $pwhint)" ;;
+        *) PROV_LOGIN="auto-provision incomplete — finish setup in the browser" ;;
+    esac
 }
 
 _start_banner() {
@@ -361,6 +376,10 @@ skipping the browser setup wizard. Credentials:
   WEALTHDB_WEB_ADMIN_PASSWORD  (unset = generated + saved chmod 600)
   WEALTHDB_WEB_NO_PROVISION=1  (skip it; use the browser wizard instead)
 Secrets may also live in ~/.secrets/wealthdb-web.env.
+
+When the gold snapshot is older than the dashboards need, start, restart
+and refresh leave Metabase running with the dashboards it had and exit 3.
+'refresh' re-snapshots a migrated gold.
 
 env overrides: WEALTHDB_CONFIG (non-default wealthdb.cfg path),
 WEALTHDB_IMAGE_TAG (the image's tag; unset, the checkout's .image-tag,

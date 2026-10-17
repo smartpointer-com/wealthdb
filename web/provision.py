@@ -8,6 +8,10 @@ every `wealthdb web start`. Standard library only.
 Called by web/web; not meant to be run by hand (but it can be). The
 admin password arrives in WEALTHDB_WEB_ADMIN_PASSWORD, never on the
 command line, where `ps` would show it.
+
+Exit status: 0 when provisioned, EXIT_STALE_SNAPSHOT (3) when the
+mounted gold snapshot is older than the cards need (MIN_GOLD_SCHEMA),
+and 1 on any other failure.
 """
 import argparse
 import json
@@ -107,6 +111,9 @@ def main():
     if db_id is None:
         return 1
 
+    status = check_gold_schema(a.base, sid, db_id)
+    if status:
+        return status
     tables = ensure_synced(a.base, sid, db_id)
     if tables is None:
         return 1
@@ -202,13 +209,21 @@ def _ccy_case(col, neg=False):
 # user builds by hand).
 COLLECTION_NAME = "wealthdb (pre-defined)"
 
-# Un-suffixed model names retired when the snapshot reports gained the
-# `_latest` suffix, plus the per-widget flow models retired when the
-# privacy flow charts moved to native SQL over web_transactions;
-# archived on provision so a re-run cleans them up.
-RETIRED_MODEL_NAMES = ["report_global", "report_portfolios",
+# Model names retired by renames and removals, each group noted where it
+# is listed; archived on provision so a re-run cleans them up.
+RETIRED_MODEL_NAMES = [
+                       # Un-suffixed snapshot reports -> `_latest`
+                       "report_global", "report_portfolios",
                        "report_accounts", "report_positions",
-                       "report_income_monthly_pct", "report_costs_monthly_pct"]
+                       # Per-widget flow models: the privacy flow charts
+                       # are native SQL over web_transactions.
+                       "report_income_monthly_pct", "report_costs_monthly_pct",
+                       # Privacy variants no card, picker or drill-through
+                       # read: the privacy charts are native SQL over the
+                       # web_* serving views.
+                       "report_sources_history_pct", "report_accounts_history_pct",
+                       "report_positions_history_pct", "report_transactions_pct",
+                       "report_asset_classes_history_pct", "report_vehicles_history_pct"]
 
 # report_returns' absolute money columns: the redacted model drops them,
 # and only the base by-source table lists them.
@@ -230,14 +245,13 @@ def report_models():
     money/quantity columns and one value column set per reporting currency
     (REPORTING_CURRENCIES), so no value casting is needed here. The `_latest` reports
     are as of each source's latest snapshot; the `_history` reports carry value
-    forward per day; the `_pct` family are the privacy variants for standalone
-    privacy browsing (values as % of the latest global net worth,
-    absolute-value columns dropped) — the privacy dashboards' charts are
-    native SQL over the gold web_* serving views instead, recomputing their
-    denominator per query so the dashboard pickers rescale them (see
-    privacy_card_defs). The returns models wrap the materialized
-    report_returns TABLE (migration 0026) instead of a macro, with the same
-    epoch-to-TIMESTAMP rendering."""
+    forward per day; the two `_pct` models are the privacy variants the privacy
+    twins' MBQL cards run over (values as % of the latest global net worth,
+    absolute-value columns dropped) — every other privacy chart is native SQL
+    over the gold web_* serving views, recomputing its denominator per query
+    so the dashboard pickers rescale it (see privacy_card_defs). The returns
+    models wrap the materialized report_returns TABLE (migration 0026) instead
+    of a macro, with the same epoch-to-TIMESTAMP rendering."""
     def wrap(from_expr, ts_cols=(), exclude=(), where=""):
         parts = [f"epoch_ms({c} * 1000) AS {c}" for c in ts_cols]
         excl = f" EXCLUDE ({', '.join(exclude)})" if exclude else ""
@@ -248,8 +262,8 @@ def report_models():
     # shared normalization constant of the privacy (_pct) models. A fixed
     # constant keeps every aggregate's shape; the privacy dashboards'
     # charts recompute a selection-aware denominator per query instead
-    # (privacy_card_defs), so this constant only backs standalone model
-    # browsing and the drill-through of the twins' MBQL cards. Guarded to NULL
+    # (privacy_card_defs), so this constant only backs the twins' MBQL
+    # cards and their drill-through. Guarded to NULL
     # when the latest total is zero or negative (empty or under-water
     # gold): dividing would render inf/NaN resp. sign-flipped
     # percentages, where NULL just blanks the values.
@@ -271,18 +285,12 @@ def report_models():
         return (f"SELECT * EXCLUDE ({excl}) REPLACE ({', '.join(repl)}) "
                 f"FROM {from_expr}, {NW_LATEST}")
 
-    def taxonomy_history(view, pct=False):
+    def taxonomy_history(view):
         """Breakdown-by-taxonomy models over the gold web_* serving views
         (migration 0032), which already render as_of_day as TIMESTAMP and
         fold each source's cash balance into a class/vehicle of its own so
-        the rows sum exactly to net worth. pct=True rescales to % of the
-        latest global net worth (per currency)."""
-        if not pct:
-            return f"SELECT * FROM {view}"
-        vals = ", ".join(f"value_{c} / nw.nw_{c} * 100 AS value_{c}"
-                         for c in _ccy_lower())
-        return (f"SELECT * EXCLUDE ({', '.join(NW_COLS)}) "
-                f"REPLACE ({vals}) FROM {view}, {NW_LATEST}")
+        the rows sum exactly to net worth."""
+        return f"SELECT * FROM {view}"
 
     def spending(pct=False):
         """The spending models over the gold web_spending view (migration
@@ -411,7 +419,6 @@ def report_models():
 
     V3 = [f"{p}_{c}" for p in ("positions_value", "cash_balance", "total_value")
           for c in _ccy_lower()]
-    V1 = [f"value_{c}" for c in _ccy_lower()]
     BASE3 = ("positions_value_base", "cash_balance_base", "total_value_base")
 
     # Each source's latest snapshot, the latest mark it rides on
@@ -515,13 +522,12 @@ def report_models():
             "so privacy is redaction rather than normalization — the absolute "
             "money columns are dropped and only the sources and global grains "
             "are kept (no account / portfolio labels)."),
-        # Privacy (_pct) variants for standalone privacy browsing: same
-        # columns and grain, but monetary values are % of the latest
-        # global net worth (per currency) and columns that would leak
-        # absolute values (base-currency totals, quantities, amounts,
-        # prices) are dropped. Two of them, report_sources_latest_pct and
-        # report_spending_pct, also back the twins' MBQL cards (the
-        # freshness table, the spending scalars) and their drill-through;
+        # The privacy (_pct) variant the twins' freshness table runs over:
+        # same columns and grain, but monetary values are % of the latest
+        # global net worth (per currency) and the base-currency totals,
+        # which would leak absolute values, are dropped. The other is
+        # report_spending_pct, under the spending tiles that are MBQL. An
+        # MBQL card and its drill-through read a model, so these two stay;
         # every other privacy card is native SQL over the web_* serving
         # views (privacy_card_defs), whose denominators follow the pickers.
         "report_sources_latest_pct": (
@@ -529,29 +535,6 @@ def report_models():
             "Privacy variant of report_sources_latest: totals as % of the "
             "latest global net worth (per currency); base-currency columns "
             "dropped."),
-        "report_sources_history_pct": (
-            pct_wrap("serving_sources_history", V3, ["as_of_day"], BASE3),
-            "Privacy variant of report_sources_history: totals as % of the "
-            "latest global net worth (per currency); base-currency columns "
-            "dropped."),
-        "report_accounts_history_pct": (
-            pct_wrap("serving_accounts_history", V3, ["as_of_day"], BASE3),
-            "Privacy variant of report_accounts_history: totals as % of the "
-            "latest global net worth (per currency); base-currency columns "
-            "dropped."),
-        "report_positions_history_pct": (
-            pct_wrap("serving_positions_history", V1,
-                     ["as_of_day", "snapshot_at"], ("quantity", "market_value")),
-            "Privacy variant of report_positions_history: values as % of the "
-            "latest global net worth (per currency); quantity and "
-            "native-currency market value dropped."),
-        "report_transactions_pct": (
-            pct_wrap("serving_transactions", V1,
-                     ["occurred_at"],
-                     ("gross_amount", "net_amount", "quantity", "price")),
-            "Privacy variant of report_transactions: values as % of the "
-            "latest global net worth (per currency); native-currency "
-            "amounts, quantity and price dropped."),
         # Asset classes incl. cash, so the asset-class widget sums exactly
         # to net worth: positions grouped by class, with each source's
         # cash balance folded in as a 'cash' class (money-market-fund
@@ -564,10 +547,6 @@ def report_models():
             "One row per asset class (incl. a 'cash' class) per source per "
             f"day, carried forward, in {_ccy_slash()}. Sums to net worth by "
             "construction; liability classes are negative."),
-        "report_asset_classes_history_pct": (
-            taxonomy_history("web_asset_classes_history", pct=True),
-            "Privacy variant of report_asset_classes_history: values as % of "
-            "the latest global net worth (per currency)."),
         # Vehicle (wrapper) breakdown — the second taxonomy dimension.
         # Same construction as asset classes: sums to net worth, cash
         # balances counted as a 'demand_deposit' vehicle.
@@ -576,10 +555,6 @@ def report_models():
             "One row per vehicle (wrapper, incl. a 'demand_deposit' vehicle "
             f"for cash) per source per day, carried forward, in {_ccy_slash()}. "
             "Sums to net worth by construction."),
-        "report_vehicles_history_pct": (
-            taxonomy_history("web_vehicles_history", pct=True),
-            "Privacy variant of report_vehicles_history: values as % of the "
-            "latest global net worth (per currency)."),
         # Spending: one row per spending line per reporting currency, so
         # the Spending dashboard's currency picker is a row filter (see
         # spending() above). `value` keeps the canonical sign — spend
@@ -1430,28 +1405,27 @@ def question_defs(db_id, mid):
             "fund distributions — per month, stacked by type. Reads the "
             "same income base as the Income dashboard, so the two agree; "
             "own-account moves and returned capital are already out of it.",
-            f"SELECT {OCCURRED_MONTH},\n"
-            "       income_label AS type,\n"
-            f"       sum({_ccy_case('value')})::DOUBLE AS value\n"
-            "  FROM web_income" + _native_where(wo_income_tags) + "\n"
-            "   AND income_detailed IN (" + WO_INCOME_TYPE_LIST + ")\n"
-            " GROUP BY 1, 2\n ORDER BY 1",
+            _series_order(f"SELECT {OCCURRED_MONTH},\n"
+                     "       income_label AS type,\n"
+                     f"       sum({_ccy_case('value')})::DOUBLE AS value\n"
+                     "  FROM web_income" + _native_where(wo_income_tags) + "\n"
+                     "   AND income_detailed IN (" + WO_INCOME_TYPE_LIST + ")\n"
+                     " GROUP BY 1, 2", "month", "type", "value", "total"),
             {"graph.dimensions": ["month", "type"],
-             "graph.metrics": ["value"],
-             "stackable.stack_type": "stacked"}),
+             "graph.metrics": ["value"], **STACKED_VIZ}),
         "Fees & taxes by month": overview_native(
             "Fees & taxes by month", tx_tags, "bar",
             "Fees and withheld taxes per month, stacked by kind; debits are "
             "negated so costs read as positive bars. Credit-card accounts "
             "are excluded — card fees are spending costs, not portfolio "
             "costs.",
-            f"SELECT {OCCURRED_MONTH},\n       kind,\n"
-            f"       sum({_ccy_case('value', neg=True)})::DOUBLE AS cost\n"
-            "  FROM web_transactions" + _native_where(tx_tags) +
-            _flow_fence(COST_KINDS) + "\n GROUP BY 1, 2\n ORDER BY 1",
+            _series_order(f"SELECT {OCCURRED_MONTH},\n       kind,\n"
+                     f"       sum({_ccy_case('value', neg=True)})::DOUBLE AS cost\n"
+                     "  FROM web_transactions" + _native_where(tx_tags) +
+                     _flow_fence(COST_KINDS) + "\n GROUP BY 1, 2",
+                     "month", "kind", "cost", "total"),
             {"graph.dimensions": ["month", "kind"],
-             "graph.metrics": ["cost"],
-             "stackable.stack_type": "stacked"}),
+             "graph.metrics": ["cost"], **STACKED_VIZ}),
         # The Allocation tiles read the daily-history views so the
         # dashboard can show holdings as of any chosen day (history@today
         # equals the latest snapshot by construction). The dashboard
@@ -1853,14 +1827,14 @@ def question_defs(db_id, mid):
             "the vehicles as stacked signed bars, with net cash flow as a "
             "line over them. A section below the axis drew cash down that "
             "month.",
-            f"SELECT {OCCURRED_MONTH},\n"
-            "       CASE WHEN section IN ('operating_in', 'operating_out')\n"
-            "            THEN 'operating' ELSE section END AS statement_section,\n"
-            f"       {cf_val} AS value\n"
-            "  FROM web_cashflow" + cf_where + "\n GROUP BY 1, 2\n ORDER BY 1",
+            _series_order(f"SELECT {OCCURRED_MONTH},\n"
+                     "       CASE WHEN section IN ('operating_in', 'operating_out')\n"
+                     "            THEN 'operating' ELSE section END AS statement_section,\n"
+                     f"       {cf_val} AS value\n"
+                     "  FROM web_cashflow" + cf_where + "\n GROUP BY 1, 2",
+                     "month", "statement_section", "value", "total"),
             {"graph.dimensions": ["month", "statement_section"],
-             "graph.metrics": ["value"],
-             "stackable.stack_type": "stacked"}),
+             "graph.metrics": ["value"], **STACKED_VIZ}),
         "Inflows by class by month": cashflow_native(
             "Inflows by class by month", "area",
             "What came in each month, stacked by class: earnings, yield, "
@@ -1892,28 +1866,28 @@ def question_defs(db_id, mid):
             "series or one per asset class, per the Investing picker — and "
             "the difference between the two is the reallocation the whole "
             "nets away.",
-            f"SELECT {OCCURRED_MONTH},\n"
-            "       CASE WHEN {{investing}} = 'whole' THEN 'Investments'\n"
-            "            ELSE class_node END AS class,\n"
-            f"       {cf_val} AS value\n"
-            "  FROM web_cashflow" + cf_where +
-            "\n   AND section = 'investing'\n GROUP BY 1, 2\n ORDER BY 1",
+            _series_order(f"SELECT {OCCURRED_MONTH},\n"
+                     "       CASE WHEN {{investing}} = 'whole' THEN 'Investments'\n"
+                     "            ELSE class_node END AS class,\n"
+                     f"       {cf_val} AS value\n"
+                     "  FROM web_cashflow" + cf_where +
+                     "\n   AND section = 'investing'\n GROUP BY 1, 2",
+                     "month", "class", "value", "total"),
             {"graph.dimensions": ["month", "class"],
-             "graph.metrics": ["value"],
-             "stackable.stack_type": "stacked"}),
+             "graph.metrics": ["value"], **STACKED_VIZ}),
         "Financing and vehicles by month": cashflow_native(
             "Financing and vehicles by month", "bar",
             "Debt serviced or drawn, and the earmarked pools funded or "
             "drawn on, per month and signed. A mortgage being repaid while "
             "a loan is drawn are two bars, and so are a retirement plan "
             "being funded while a trust pays out.",
-            f"SELECT {OCCURRED_MONTH},\n       class_node AS class,\n"
-            f"       {cf_val} AS value\n"
-            "  FROM web_cashflow" + cf_where +
-            "\n   AND section IN ('financing', 'vehicles')\n GROUP BY 1, 2\n ORDER BY 1",
+            _series_order(f"SELECT {OCCURRED_MONTH},\n       class_node AS class,\n"
+                     f"       {cf_val} AS value\n"
+                     "  FROM web_cashflow" + cf_where +
+                     "\n   AND section IN ('financing', 'vehicles')\n GROUP BY 1, 2",
+                     "month", "class", "value", "total"),
             {"graph.dimensions": ["month", "class"],
-             "graph.metrics": ["value"],
-             "stackable.stack_type": "stacked"}),
+             "graph.metrics": ["value"], **STACKED_VIZ}),
         "Largest flows": cashflow_native("Largest flows", "table",
             "The fifty largest single lines of the window, with the node "
             "each landed on and the account it moved through. The name is "
@@ -2103,14 +2077,14 @@ def gains_question_defs(db_id):
                       _percent_viz("realized_pct"))
 
     def split_bars(name, desc, dim, label, metrics):
-        """Stacked bars per value of `dim`, one series per metric,
-        largest total first; a value none of the metrics has is left
-        out."""
+        """Stacked bars per value of SQL expression `dim`, one series per
+        metric, largest total first; a value none of the metrics has is
+        left out."""
         cols = ",\n".join(f"       sum({c}) AS {a}" for c, a in metrics)
         total = " + ".join(f"coalesce(sum({c}), 0)" for c, _ in metrics)
         some = " OR ".join(f"count({c}) > 0" for c, _ in metrics)
         return native(name, "bar", desc,
-                      f"SELECT coalesce({dim}, '(none)') AS {label},\n{cols}\n"
+                      f"SELECT {dim} AS {label},\n{cols}\n"
                       "  FROM web_gains" + where +
                       f"\n GROUP BY 1\nHAVING {some}\n ORDER BY {total} DESC",
                       {"graph.dimensions": [label],
@@ -2244,7 +2218,7 @@ def gains_question_defs(db_id):
             "Each asset class's gain on positions sold and on positions held "
             "over the window, stacked. '(none)' holds the lots of a holding "
             "no snapshot shows.",
-            "asset_class", "asset_class", gain_split),
+            "coalesce(asset_class, '(none)')", "asset_class", gain_split),
         "Realized gains by tax wrapper": split_bars(
             "Realized gains by tax wrapper",
             "Realized gain over the window per tax wrapper, by holding "
@@ -3408,15 +3382,14 @@ def privacy_card_defs(db_id, model_ids):
 
     def peak_share(m_cte):
         """The month x kind rows of CTE body `m_cte`, each as % of the
-        window's peak month."""
-        return ("WITH m AS (\n" + m_cte + "\n   GROUP BY 1, 2),\n" + PEAK_CTE +
-                f"SELECT month, kind,\n       {PEAK_DIV} AS value_pct\n"
-                "  FROM m\n ORDER BY 1")
+        window's peak month, the kinds in band order (_series_order)."""
+        return _series_order("WITH m AS (\n" + m_cte + "\n   GROUP BY 1, 2),\n" + PEAK_CTE +
+                             f"SELECT month, kind,\n       {PEAK_DIV} AS value_pct\n"
+                             "  FROM m", "month", "kind", "value_pct", "total")
 
     month = f"  SELECT {OCCURRED_MONTH},\n"
     flow_viz = {"graph.dimensions": ["month", "kind"],
-                "graph.metrics": ["value_pct"],
-                "stackable.stack_type": "stacked"}
+                "graph.metrics": ["value_pct"], **STACKED_VIZ}
     # The twin of the Wealth Overview's income tile, over the same income
     # base and the same four types.
     out["Investment income by month (privacy)"] = ("question", "bar",
@@ -3653,15 +3626,15 @@ def cashflow_privacy_defs(db_id):
         "The statement per month, each section as % of the window's "
         "biggest month by gross movement — the peak month's bars sum to "
         "100.",
-        month_cte("CASE WHEN section IN ('operating_in', 'operating_out')\n"
-                  "              THEN 'operating' ELSE section END"
-                  " AS statement_section,\n         ")
-        + "   GROUP BY 1, 2),\n" + peak_cte +
-        f"SELECT month, statement_section,\n       {PEAK_DIV} AS share_pct\n"
-        "  FROM m\n ORDER BY 1",
+        _series_order(
+            month_cte("CASE WHEN section IN ('operating_in', 'operating_out')\n"
+                      "              THEN 'operating' ELSE section END"
+                      " AS statement_section,\n         ")
+            + "   GROUP BY 1, 2),\n" + peak_cte +
+            f"SELECT month, statement_section,\n       {PEAK_DIV} AS share_pct\n"
+            "  FROM m", "month", "statement_section", "share_pct", "total"),
         {"graph.dimensions": ["month", "statement_section"],
-         "graph.metrics": ["share_pct"],
-         "stackable.stack_type": "stacked"})
+         "graph.metrics": ["share_pct"], **STACKED_VIZ})
 
     # The grouping expression rides in the tuple rather than being
     # inferred from the filter text: the investing row is the one that
@@ -3680,17 +3653,15 @@ def cashflow_privacy_defs(db_id):
             ("Financing and vehicles by month",
              "\n   AND section IN ('financing', 'vehicles')", False,
              "class_node", "Debt and the earmarked pools per month, signed")):
-        area = "class by month" in name
         sql = (month_cte(f"{grp} AS class,\n         ", filt, sign="-" if neg else "")
                + "   GROUP BY 1, 2),\n" + peak_cte +
                f"SELECT month, class,\n       {PEAK_DIV} AS share_pct\n  FROM m")
-        cashflow_card(privacy_name(name), "area" if area else "bar",
+        cashflow_card(privacy_name(name), "area" if "class by month" in name else "bar",
             f"{blurb}, each as % of the window's biggest month by gross "
             "movement.",
-            _series_order(sql, "month", "class", "share_pct", "total") if area else sql + "\n ORDER BY 1",
+            _series_order(sql, "month", "class", "share_pct", "total"),
             {"graph.dimensions": ["month", "class"],
-             "graph.metrics": ["share_pct"],
-             **(STACKED_VIZ if area else {"stackable.stack_type": "stacked"})})
+             "graph.metrics": ["share_pct"], **STACKED_VIZ})
 
     # The one card that redacts rather than normalising: the base
     # version names the account a line moved through and the payer or
@@ -4428,11 +4399,18 @@ def missing_web_views(base, sid, db_id):
     return [t for t in want if t not in have]
 
 
-# The oldest gold schema the cards can read: the migration that gave the
-# report models their serving tables and the holdings views their tax
-# wrapper and asset class (0132). A snapshot older than it can carry
-# every view by name; only the version tells it apart.
-MIN_GOLD_SCHEMA = 132
+# The oldest gold schema the cards can read: the migration whose gains
+# and exposure views read a missing tax wrapper as taxable_personal, as
+# the holdings views do (0133). The serving tables the report models
+# read, and the holdings views' tax wrapper and asset class, are 0132's.
+# A snapshot older than it can carry every view by name; only the
+# version tells it apart.
+MIN_GOLD_SCHEMA = 133
+
+# main()'s exit status for a snapshot older than MIN_GOLD_SCHEMA; every
+# other failure exits 1. web/web tells the two apart, because only
+# `wealthdb web refresh` mends this one and the browser wizard does not.
+EXIT_STALE_SNAPSHOT = 3
 
 
 def gold_schema_version(base, sid, db_id):
@@ -4449,6 +4427,27 @@ def gold_schema_version(base, sid, db_id):
         return None
 
 
+def check_gold_schema(base, sid, db_id):
+    """0 when the mounted gold snapshot is at MIN_GOLD_SCHEMA or newer,
+    else the status main() exits with: EXIT_STALE_SNAPSHOT for an older
+    snapshot, 1 when the version probe does not answer. Checked before
+    anything is synced or converged: an older snapshot carries its views
+    by name but not what the cards read from them, so every card would
+    converge onto SQL that fails or reads them wrong."""
+    version = gold_schema_version(base, sid, db_id)
+    if version is None:
+        print("provision: cannot read the gold snapshot's schema version; "
+              "leaving the existing cards untouched", file=sys.stderr)
+        return 1
+    if version < MIN_GOLD_SCHEMA:
+        print(f"provision: the gold snapshot is at schema {version} and the "
+              f"cards need {MIN_GOLD_SCHEMA} — run `wealthdb web refresh` to "
+              "re-snapshot a migrated gold; leaving the existing cards "
+              "untouched", file=sys.stderr)
+        return EXIT_STALE_SNAPSHOT
+    return 0
+
+
 def ensure_synced(base, sid, db_id, tries=20, delay=3):
     """Make every column behind FILTER_FIELD_COLUMNS available: when
     some are missing from the synced metadata, either Metabase simply
@@ -4459,18 +4458,8 @@ def ensure_synced(base, sid, db_id, tries=20, delay=3):
     stale snapshot that would break the view-backed models, or a sync
     that was still incomplete when the budget ran out. All three end the
     same way, because a partial answer is what a filter-less card is
-    built from.
-
-    A snapshot older than MIN_GOLD_SCHEMA is refused first: its views
-    exist by name but lack columns the cards read, so every card would
-    converge onto SQL that fails."""
-    version = gold_schema_version(base, sid, db_id)
-    if version is None or version < MIN_GOLD_SCHEMA:
-        print(f"provision: the gold snapshot is at schema {version or 'unknown'} "
-              f"and the cards need {MIN_GOLD_SCHEMA} — run `wealthdb web "
-              "refresh` to re-snapshot a migrated gold; leaving the existing "
-              "cards untouched", file=sys.stderr)
-        return None
+    built from. main() has already refused a snapshot older than
+    MIN_GOLD_SCHEMA (check_gold_schema)."""
     tables = gold_metadata(base, sid, db_id)
     if tables is None:
         print("provision: cannot read the gold metadata — aborting before "
