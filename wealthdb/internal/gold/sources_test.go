@@ -173,7 +173,7 @@ func TestSourcesAsOfMixedBaseNull(t *testing.T) {
 	}
 	// Output currency still totals: 1000 CHF→1250 USD + 1000 USD = 2250 USD.
 	if v := r.TotalValueOutCcy; v == nil || *v != "2250" {
-		t.Errorf("total_value_USD = %v, want 2250", derefOr(v))
+		t.Errorf("total_value_USD = %v, want 2250", show(v))
 	}
 }
 

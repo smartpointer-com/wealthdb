@@ -33,6 +33,18 @@ func OpenReadOnlySQLite(path, label string) (*sql.DB, error) {
 	return db, nil
 }
 
+// CloseDB closes the handle *db holds and clears it, so a second call is a
+// no-op; a nil handle closes nothing. Every adapter's Close runs it on its
+// silver handle.
+func CloseDB(db **sql.DB) error {
+	if db == nil || *db == nil {
+		return nil
+	}
+	err := (*db).Close()
+	*db = nil
+	return err
+}
+
 // HasColumn reports whether `table` has a column named `column`,
 // via PRAGMA table_info. Adapters use it to read newer
 // promoted columns from a silver DB when present without breaking
@@ -110,6 +122,40 @@ func SnapshotTimes(ctx context.Context, db *sql.DB, w canonical.Window, extra []
 	}
 	slices.Sort(out)
 	return slices.Compact(out), nil
+}
+
+// SnapshotTimesOf is SnapshotTimes over the snapshot_at column of each named
+// table: every snapshot_at inside w that any of them holds, together with
+// each extra time inside w. The names are the adapter's own constants.
+func SnapshotTimesOf(ctx context.Context, db *sql.DB, w canonical.Window, extra []int64,
+	tables ...string) ([]int64, error) {
+	parts := make([]string, len(tables))
+	args := make([]any, 0, 2*len(tables))
+	for i, t := range tables {
+		parts[i] = "SELECT snapshot_at FROM " + t + " WHERE snapshot_at BETWEEN ? AND ?"
+		args = append(args, w.Start, w.End)
+	}
+	return SnapshotTimes(ctx, db, w, extra, strings.Join(parts, "\nUNION ALL "), args...)
+}
+
+// Extrema runs queries that each yield one (MIN, MAX) row, every one bound
+// by args, and returns the widest range they report, or (-1, -1) when every
+// one is empty. what names the range in errors.
+func Extrema(ctx context.Context, db *sql.DB, what string, queries []string, args ...any) (lo, hi int64, err error) {
+	lo, hi = -1, -1
+	for _, q := range queries {
+		var a, b sql.NullInt64
+		if err := db.QueryRowContext(ctx, q, args...).Scan(&a, &b); err != nil {
+			return -1, -1, fmt.Errorf("%s: %w", what, err)
+		}
+		if a.Valid && (lo < 0 || a.Int64 < lo) {
+			lo = a.Int64
+		}
+		if b.Valid && b.Int64 > hi {
+			hi = b.Int64
+		}
+	}
+	return lo, hi, nil
 }
 
 // DecimalPtrOrNil parses a string-encoded decimal from a silver

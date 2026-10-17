@@ -40,8 +40,8 @@ func (b CompositionBasis) Valid() bool {
 // one fund's composition as of one day, on one basis.
 type FundCompositionChange struct {
 	SilverSourceID string
-	// FundRef is the fund's reference (FundRef): isin:…, cusip:… or
-	// symbol:….
+	// FundRef is the fund's reference in the key scheme of refkeys.go:
+	// isin:…, cusip:… or symbol:….
 	FundRef string
 	// AsOf is the UTC midnight of the day the composition describes,
 	// never the day it was fetched or filed.

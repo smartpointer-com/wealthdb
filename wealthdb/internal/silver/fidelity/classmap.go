@@ -33,10 +33,7 @@ func assetClassVehicleFor(silverClass, name string) (canonical.AssetClass, canon
 	case "etf":
 		return silver.RefineETFExposure(name), canonical.VehicleETF
 	case "mutual_fund":
-		if silver.NamesMoneyMarket(name) {
-			return canonical.AssetClassCash, canonical.VehicleFund
-		}
-		return silver.RefineETFExposure(name), canonical.VehicleFund
+		return silver.FundExposure(name), canonical.VehicleFund
 	case "plan_fund":
 		// 529 investment-option wrapper: a blended allocation, so
 		// multi_asset exposure held through a fund vehicle.
@@ -111,11 +108,8 @@ var (
 //   - option → (public_equity, option): equity-underlying option legs.
 //   - money-market sweep / net-cash sleeve / XX-ticker money fund → (cash, fund).
 //   - 529 plan sleeve → (multi_asset, fund): a blended allocation wrapper.
-//   - bond (CUSIP-9 or coupon in the description) → (fixed_income, bond).
-//   - ETF-by-name or ETF-only-issuer name → (RefineETFExposure(desc), etf).
-//   - mutual-fund ticker → (RefineETFExposure(desc), fund).
-//   - fall-through → (public_equity, stock): plain stock/ADR rows, the
-//     statements' overwhelming majority.
+//   - anything else → silver.StatementShapePair: bond, ETF, mutual fund,
+//     else (public_equity, stock).
 //
 // Every pair returned satisfies canonical.ValidTaxonomyPair.
 func classifyHistoricalPair(instrumentKey, description string) (canonical.AssetClass, canonical.Vehicle) {
@@ -138,23 +132,8 @@ func classifyHistoricalPair(instrumentKey, description string) (canonical.AssetC
 	case histPlanKeyRe.MatchString(instrumentKey),
 		histPlanDescRe.MatchString(description):
 		return canonical.AssetClassMultiAsset, canonical.VehicleFund
-	case silver.StmtCUSIPRe.MatchString(instrumentKey),
-		silver.StmtBondDescRe.MatchString(description):
-		return canonical.AssetClassFixedIncome, canonical.VehicleBond
-	case silver.StmtETFDescRe.MatchString(description):
-		return silver.RefineETFExposure(description), canonical.VehicleETF
-	case silver.StmtMutualFundRe.MatchString(instrumentKey):
-		// A money fund whose name lacks the "MONEY MARKET" token
-		// histMoneyMktRe caught above (e.g. "… MONEY FUND") but still
-		// reads as cash.
-		if silver.NamesMoneyMarket(description) {
-			return canonical.AssetClassCash, canonical.VehicleFund
-		}
-		return silver.RefineETFExposure(description), canonical.VehicleFund
-	case silver.StmtETFIssuerRe.MatchString(description):
-		return silver.RefineETFExposure(description), canonical.VehicleETF
 	}
-	return canonical.AssetClassPublicEquity, canonical.VehicleStock
+	return silver.StatementShapePair(instrumentKey, description)
 }
 
 // isStatementConstruct reports whether a keyless historical row is one

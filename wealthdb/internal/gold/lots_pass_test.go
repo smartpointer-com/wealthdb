@@ -73,8 +73,6 @@ func queryString(t *testing.T, db *sql.DB, q string, args ...any) string {
 	return v.String
 }
 
-func feq(a, b float64) bool { return math.Abs(a-b) < 1e-4 }
-
 // tradesSeed: two buys and a sale of XYZ in account A, with snapshots
 // that state no basis. FIFO sells the day-1 lot: cost 100 of 10 units
 // sold for 300, the day-400 lot of 10 at 300 stays.
@@ -101,7 +99,7 @@ func TestLotPassFillsPositionsAndRealizes(t *testing.T) {
 		want float64
 	}{{2, 100}, {450, 400}, {600, 300}} {
 		got := queryFloat(t, db, `SELECT book_value FROM positions WHERE snapshot_at = ?`, c.day*lotDay)
-		if !feq(got, c.want) {
+		if !closeEnough(got, c.want) {
 			t.Errorf("day %d: book_value %v, want %v", c.day, got, c.want)
 		}
 	}
@@ -115,7 +113,7 @@ func TestLotPassFillsPositionsAndRealizes(t *testing.T) {
 	                         FROM lot_realized`).Scan(&id, &term, &kind, &primary, &cost, &proceeds); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(id, "s1#") || term != "long" || kind != "engine" || !primary || !feq(cost, 100) || !feq(proceeds, 300) {
+	if !strings.HasPrefix(id, "s1#") || term != "long" || kind != "engine" || !primary || !closeEnough(cost, 100) || !closeEnough(proceeds, 300) {
 		t.Errorf("realized lot %s %s %s %v %v %v", id, term, kind, primary, cost, proceeds)
 	}
 	// The ledger: two lots, one closed by the sale.
@@ -130,7 +128,7 @@ func TestLotPassFillsPositionsAndRealizes(t *testing.T) {
 func TestLotPassMethodChangesTheBasis(t *testing.T) {
 	db, ctx := lotFixture(t, tradesSeed)
 	rebuild(t, db, ctx, fillCfg(lots.LIFO), false)
-	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE snapshot_at = ?`, 600*lotDay); !feq(got, 100) {
+	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE snapshot_at = ?`, 600*lotDay); !closeEnough(got, 100) {
 		t.Errorf("LIFO keeps the day-1 lot: %v", got)
 	}
 	if s := queryString(t, db, `SELECT basis_method FROM lot_realized`); s != "lifo" {
@@ -234,7 +232,7 @@ func TestLotPassMovesLotsBetweenAccounts(t *testing.T) {
             ('lot-src', 20*86400, 'A', 'XYZ', 'XYZ', 'public_equity', 'USD', 6, 90),
             ('lot-src', 20*86400, 'B', 'XYZ', 'XYZ', 'public_equity', 'USD', 4, 60);`)
 	rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
-	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE account_external_id = 'B'`); !feq(got, 40) {
+	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE account_external_id = 'B'`); !closeEnough(got, 40) {
 		t.Errorf("B's basis %v, want 40", got)
 	}
 	if n := queryFloat(t, db, `SELECT count(*) FROM lot_findings WHERE finding IN ('seed', 'implied', 'unpaired_transfer')`); n != 0 {
@@ -266,10 +264,10 @@ func TestLotPassCorporateActions(t *testing.T) {
             ('lot-src', 20*86400, 'A', 'NEW', 'NEW', 'public_equity', 'USD', 5, 250),
             ('lot-src', 20*86400, 'A', 'SPL', 'SPL', 'public_equity', 'USD', 8, 800);`)
 	rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
-	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE position_key = 'NEW'`); !feq(got, 100) {
+	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE position_key = 'NEW'`); !closeEnough(got, 100) {
 		t.Errorf("merged basis %v, want 100", got)
 	}
-	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE position_key = 'SPL'`); !feq(got, 50) {
+	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE position_key = 'SPL'`); !closeEnough(got, 50) {
 		t.Errorf("split basis %v, want 50", got)
 	}
 	var proceeds, cost float64
@@ -278,7 +276,7 @@ func TestLotPassCorporateActions(t *testing.T) {
 		Scan(&proceeds, &cost, &disposal); err != nil {
 		t.Fatal(err)
 	}
-	if !feq(proceeds, 90) || !feq(cost, 30) || disposal != "tender" {
+	if !closeEnough(proceeds, 90) || !closeEnough(cost, 30) || disposal != "tender" {
 		t.Errorf("cash merger %v %v %s", proceeds, cost, disposal)
 	}
 	if n := queryFloat(t, db, `SELECT count(*) FROM lot_findings WHERE finding IN ('seed', 'implied')`); n != 0 {
@@ -337,14 +335,14 @@ func TestLotPassPoolsAPortfolio(t *testing.T) {
 	rebuild(t, db, ctx, cfg, false)
 	w1 := queryFloat(t, db, `SELECT book_value FROM positions WHERE account_external_id = 'W1'`)
 	w2 := queryFloat(t, db, `SELECT book_value FROM positions WHERE account_external_id = 'W2'`)
-	if !feq(w1+w2, 98) || !feq(w1/w2, 4/5.8) {
+	if !closeEnough(w1+w2, 98) || !closeEnough(w1/w2, 4/5.8) {
 		t.Errorf("pool shares %v, %v; want 98 split by quantity", w1, w2)
 	}
 	var proceeds, cost float64
 	if err := db.QueryRow(`SELECT proceeds, book_value FROM lot_realized WHERE disposal = 'fee'`).Scan(&proceeds, &cost); err != nil {
 		t.Fatal(err)
 	}
-	if !feq(proceeds, 4) || !feq(cost, 2) {
+	if !closeEnough(proceeds, 4) || !closeEnough(cost, 2) {
 		t.Errorf("network fee realized %v for cost %v; want 4 and 2", proceeds, cost)
 	}
 	if n := queryFloat(t, db, `SELECT count(*) FROM lot_disposals WHERE kind = 'move'`); n != 0 {
@@ -371,7 +369,7 @@ func TestLotPassValuesReceiptsInKind(t *testing.T) {
             ('lot-src', 4*86400,  'A', 'COIN', 'COIN', 'crypto', 'USD', 3, 120),
             ('lot-src', 31*86400, 'A', 'COIN', 'COIN', 'crypto', 'USD', 4, 160);`)
 	rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
-	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE snapshot_at = ?`, 4*lotDay); !feq(got, 90) {
+	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE snapshot_at = ?`, 4*lotDay); !closeEnough(got, 90) {
 		t.Errorf("basis with the staked coins at market value %v, want 90", got)
 	}
 	var known, missing float64
@@ -379,7 +377,7 @@ func TestLotPassValuesReceiptsInKind(t *testing.T) {
 		Scan(&known, &missing); err != nil {
 		t.Fatal(err)
 	}
-	if !feq(known, 90) || !feq(missing, 1) {
+	if !closeEnough(known, 90) || !closeEnough(missing, 1) {
 		t.Errorf("partial basis %v with %v units uncosted; want 90 and 1", known, missing)
 	}
 	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE snapshot_at = ?`, 31*lotDay); !math.IsNaN(got) {
@@ -401,13 +399,13 @@ func TestLotPassAdoptsAnchorsAndResolvesSeeds(t *testing.T) {
             ('lot-src', 20*86400, 'A', 'XYZ', 'L1', 'XYZ', 'USD', 4, 20, DATE '1970-01-02', 'stated'),
             ('lot-src', 20*86400, 'A', 'XYZ', 'L2', 'XYZ', 'USD', 6, 50, DATE '1970-01-05', 'stated');`)
 	rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
-	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE snapshot_at = ?`, 10*lotDay); !feq(got, 70) {
+	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE snapshot_at = ?`, 10*lotDay); !closeEnough(got, 70) {
 		t.Errorf("the snapshot before the anchor resolves to %v, want 70", got)
 	}
 	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE snapshot_at = ?`, 20*lotDay); got != 70 {
 		t.Errorf("the anchor's own row is stated: %v", got)
 	}
-	if got := queryFloat(t, db, `SELECT resolved_quantity FROM lot_anchors`); !feq(got, 10) {
+	if got := queryFloat(t, db, `SELECT resolved_quantity FROM lot_anchors`); !closeEnough(got, 10) {
 		t.Errorf("resolved %v", got)
 	}
 }
@@ -424,7 +422,7 @@ func TestLotPassTakesALedgerReceiptsStatedBasis(t *testing.T) {
                                instrument_external_id, asset_class, currency, quantity, market_value) VALUES
             ('lot-src', 2*86400, 'A', 'XYZ', 'XYZ', 'public_equity', 'USD', 10, 900);`)
 	rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
-	if got := queryFloat(t, db, `SELECT book_value FROM positions`); !feq(got, 140) {
+	if got := queryFloat(t, db, `SELECT book_value FROM positions`); !closeEnough(got, 140) {
 		t.Errorf("basis %v, want the ledger's 140", got)
 	}
 	if co := queryString(t, db, `SELECT cost_origin FROM lots`); co != "stated" {
@@ -458,7 +456,7 @@ func TestLotPassPairsAcrossSourcesOfOneKindOnly(t *testing.T) {
 		cfg.Sources["lot-b"] = lots.SourceConfig{Mode: &fill}
 		rebuild(t, db, ctx, cfg, false)
 		got := queryFloat(t, db, `SELECT book_value FROM positions WHERE silver_source_id = 'lot-b'`)
-		if (math.IsNaN(c.want) && !math.IsNaN(got)) || (!math.IsNaN(c.want) && !feq(got, c.want)) {
+		if (math.IsNaN(c.want) && !math.IsNaN(got)) || (!math.IsNaN(c.want) && !closeEnough(got, c.want)) {
 			t.Errorf("into a %s source: basis %v, want %v", c.kindB, got, c.want)
 		}
 	}
@@ -481,7 +479,7 @@ func TestLotPassSharesAReorgByStatedValue(t *testing.T) {
             ('lot-src', 20*86400, 'A', 'NEW2', 'NEW2', 'public_equity', 'USD', 2, 100);`)
 	rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
 	for k, want := range map[string]float64{"NEW1": 75, "NEW2": 25} {
-		if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE position_key = ?`, k); !feq(got, want) {
+		if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE position_key = ?`, k); !closeEnough(got, want) {
 			t.Errorf("%s: basis %v, want %v", k, got, want)
 		}
 		if n := queryFloat(t, db, `SELECT count(DISTINCT acquisition_date) FROM lots
@@ -509,7 +507,7 @@ func TestLotPassKeepsAStatedIdTheTradesUse(t *testing.T) {
             VALUES ('lot-src', 'Y1', 'A', '000000XY9', 'form_1099b', 1970, FALSE, DATE '1970-02-20',
                     DATE '1969-06-01', 'USD', 10, 300, 120, TRUE, 'stated', 'lots', 'included');`)
 	rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
-	if got := queryFloat(t, db, `SELECT book_value FROM lot_realized`); !feq(got, 120) {
+	if got := queryFloat(t, db, `SELECT book_value FROM lot_realized`); !closeEnough(got, 120) {
 		t.Errorf("the sale's seed should take the stated cost: %v", got)
 	}
 }
@@ -535,7 +533,7 @@ func TestLotPassTakesTheSalesOwnAccountsStatedLotsFirst(t *testing.T) {
             ('lot-src', 'RB', 'B', 'XYZ', 'form_1099b', 1970, FALSE, DATE '1970-02-19', DATE '1969-12-01', 'USD',
              10, 300, 999, TRUE, 'stated', 'lots', 'included');`)
 	rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
-	if got := queryFloat(t, db, `SELECT book_value FROM lot_realized`); !feq(got, 120) {
+	if got := queryFloat(t, db, `SELECT book_value FROM lot_realized`); !closeEnough(got, 120) {
 		t.Errorf("A's sale took %v, want A's own stated 120", got)
 	}
 }
@@ -585,17 +583,17 @@ func TestLotPassMovesAtTheReceiptWhenItComesFirst(t *testing.T) {
 		}
 		return v
 	}
-	if b := basis("B", 11); !b.Valid || !feq(b.Float64, 40) {
+	if b := basis("B", 11); !b.Valid || !closeEnough(b.Float64, 40) {
 		t.Errorf("B between the legs: basis %v, want 40", b)
 	}
 	if b := basis("A", 11); b.Valid {
 		t.Errorf("A between the legs: basis %v, want unknown", b)
 	}
 	if missing := queryFloat(t, db, `SELECT quantity_without_basis FROM positions WHERE account_external_id = 'A' AND snapshot_at = ?`,
-		11*lotDay); !feq(missing, 4) {
+		11*lotDay); !closeEnough(missing, 4) {
 		t.Errorf("A between the legs: %v without basis, want 4", missing)
 	}
-	if b := basis("A", 20); !b.Valid || !feq(b.Float64, 60) {
+	if b := basis("A", 20); !b.Valid || !closeEnough(b.Float64, 60) {
 		t.Errorf("A after the legs: basis %v, want 60", b)
 	}
 }
@@ -624,7 +622,7 @@ func TestLotPassCarriesAWalletASnapshotLeavesOut(t *testing.T) {
 	if n := queryFloat(t, db, `SELECT count(*) FROM lot_findings WHERE finding IN ('seed', 'implied')`); n != 0 {
 		t.Errorf("findings %v", n)
 	}
-	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE snapshot_at = ?`, 10*lotDay); !feq(got, 40) {
+	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE snapshot_at = ?`, 10*lotDay); !closeEnough(got, 40) {
 		t.Errorf("A's share of the pool with B left out: %v, want 40", got)
 	}
 }
@@ -650,7 +648,7 @@ func TestLotPassDropsAWalletItsTradesEmptied(t *testing.T) {
 	if n := queryFloat(t, db, `SELECT count(*) FROM lot_findings WHERE finding IN ('seed', 'implied')`); n != 0 {
 		t.Errorf("findings %v", n)
 	}
-	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE snapshot_at = ?`, 10*lotDay); !feq(got, 100) {
+	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE snapshot_at = ?`, 10*lotDay); !closeEnough(got, 100) {
 		t.Errorf("B's basis %v, want 100", got)
 	}
 }
@@ -669,7 +667,7 @@ func TestLotPassTakesAKeysCurrencyFromItsPositions(t *testing.T) {
             ('lot-src', 2*86400, 'A', 'XYZ', 'XYZ', 'public_equity', 'USD', 10, 150);`)
 	rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
 	want := queryFloat(t, db, `SELECT 100 * rate FROM fx_daily WHERE from_ccy = 'CHF' AND to_ccy = 'USD'`)
-	if got := queryFloat(t, db, `SELECT book_value FROM positions`); math.IsNaN(want) || !feq(got, want) || feq(got, 100) {
+	if got := queryFloat(t, db, `SELECT book_value FROM positions`); math.IsNaN(want) || !closeEnough(got, want) || closeEnough(got, 100) {
 		t.Errorf("basis %v, want %v in USD", got, want)
 	}
 }
@@ -700,7 +698,7 @@ func TestLotPassLeavesADocumentedYearToItsDocuments(t *testing.T) {
 	if p := queryString(t, db, `SELECT is_primary::VARCHAR FROM lot_realized`); p != "false" {
 		t.Errorf("the engine's row in a documented year must not be primary: %s", p)
 	}
-	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE position_key = 'XYZ' AND snapshot_at = ?`, 10*lotDay); !feq(got, 120) {
+	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE position_key = 'XYZ' AND snapshot_at = ?`, 10*lotDay); !closeEnough(got, 120) {
 		t.Errorf("the stated lot resolves the seed back to its opening: %v", got)
 	}
 }
@@ -822,7 +820,7 @@ func TestLotPassCostsUnknownLotsFromTheConfigBasis(t *testing.T) {
 	if err := db.QueryRow(`SELECT SUM(book_value), string_agg(DISTINCT term, ',') FROM lot_realized`).Scan(&cost, &term); err != nil {
 		t.Fatal(err)
 	}
-	if !feq(cost, 30) || term != "long" {
+	if !closeEnough(cost, 30) || term != "long" {
 		t.Errorf("the sale relieved %v %s, want 30 long", cost, term)
 	}
 	if !rebuild(t, db, ctx, cfg, false).Unchanged {

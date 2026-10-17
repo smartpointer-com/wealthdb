@@ -15,30 +15,30 @@ type BondReading struct {
 // The words of a broker's description that only a US state's, county's,
 // city's or district's bond carries: general obligation, revenue,
 // authority, county, school district and the like.
-var municipalWords = setOfWords("GO", "REV", "REVS", "REVENUE", "AUTH", "AUTHORITY", "CNTY", "CNTYS", "COUNTY",
+var municipalWords = WordSet("GO", "REV", "REVS", "REVENUE", "AUTH", "AUTHORITY", "CNTY", "CNTYS", "COUNTY",
 	"TWP", "SCH", "SCHS", "SCHOOL", "DIST", "DISTRICT", "ISD", "MUN", "MUNI", "MUNICIPAL")
 
 // The words a municipal bond's description often carries, as some
-// companies' do too (AMERICAN WTR): two of them read municipal.
-var municipalHints = setOfWords("WTR", "SWR", "PUB", "CTFS", "PARTN", "TRANSN", "IMPT", "HSG", "BRD", "ARPT", "TPK",
+// companies' do too (QLAND WTR): two of them read municipal.
+var municipalHints = WordSet("WTR", "SWR", "PUB", "CTFS", "PARTN", "TRANSN", "IMPT", "HSG", "BRD", "ARPT", "TPK",
 	"COMWLTH")
 
 // The legal forms only a company has, and those a municipal issuer may
 // share: many a municipal issuer is a corporation, CO stands for a county
 // and LTD for a limited obligation.
-var companyWords = setOfWords("INC", "LLC", "PLC", "LP", "NV", "AG", "SA", "SE", "SPA", "BV", "GMBH")
-var sharedFormWords = setOfWords("CORP", "CORPORATION", "CO", "COMPANY", "LTD", "LIMITED")
+var companyWords = WordSet("INC", "LLC", "PLC", "LP", "NV", "AG", "SA", "SE", "SPA", "BV", "GMBH")
+var sharedFormWords = WordSet("CORP", "CORPORATION", "CO", "COMPANY", "LTD", "LIMITED")
 
 // The words that may stand beside a country's name in its own bond's
 // description: the issuer's form and the kind of paper.
-var sovereignWords = setOfWords("REP", "REPUBLIC", "KINGDOM", "GOVT", "GOVERNMENT", "FED", "FEDERAL", "FEDERATIVE",
+var sovereignWords = WordSet("REP", "REPUBLIC", "KINGDOM", "GOVT", "GOVERNMENT", "FED", "FEDERAL", "FEDERATIVE",
 	"STATE", "BUNDESREPUB", "BUNDESREPUBLIK", "TREAS", "TREASURY", "TSY", "GILT", "GILTS", "NTS", "NOTE", "NOTES",
 	"BD", "BDS", "BOND", "BONDS", "BILL", "BILLS", "OF", "THE")
 
 // The words that may stand beside a US state's or territory's name in
 // its own bond's description: a sovereign's, and these.
 var stateWords = func() map[string]bool {
-	out := setOfWords("ST", "COMMONWEALTH", "COMWLTH", "TERR", "TERRITORY", "GEN", "OBLIG", "LTD")
+	out := WordSet("ST", "COMMONWEALTH", "COMWLTH", "TERR", "TERRITORY", "GEN", "OBLIG", "LTD")
 	for w := range sovereignWords {
 		out[w] = true
 	}
@@ -47,7 +47,7 @@ var stateWords = func() map[string]bool {
 
 // The US states, the District of Columbia and the territories whose
 // bonds are municipal.
-var usStates = setOfWords("ALABAMA", "ALASKA", "ARIZONA", "ARKANSAS", "CALIFORNIA", "COLORADO", "CONNECTICUT",
+var usStates = WordSet("ALABAMA", "ALASKA", "ARIZONA", "ARKANSAS", "CALIFORNIA", "COLORADO", "CONNECTICUT",
 	"DELAWARE", "FLORIDA", "GEORGIA", "HAWAII", "IDAHO", "ILLINOIS", "INDIANA", "IOWA", "KANSAS", "KENTUCKY",
 	"LOUISIANA", "MAINE", "MARYLAND", "MASSACHUSETTS", "MICHIGAN", "MINNESOTA", "MISSISSIPPI", "MISSOURI",
 	"MONTANA", "NEBRASKA", "NEVADA", "NEW HAMPSHIRE", "NEW JERSEY", "NEW MEXICO", "NEW YORK", "NORTH CAROLINA",
@@ -161,7 +161,8 @@ var countryNames = sync.OnceValue(func() map[string]string {
 	return out
 })
 
-func setOfWords(words ...string) map[string]bool {
+// WordSet is a set of words, for a membership test.
+func WordSet(words ...string) map[string]bool {
 	out := make(map[string]bool, len(words))
 	for _, w := range words {
 		out[w] = true

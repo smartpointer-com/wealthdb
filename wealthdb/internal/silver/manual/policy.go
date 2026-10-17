@@ -16,7 +16,7 @@ import (
 // those: value can reach this book from another tracked vehicle with no
 // bank in between, and the ledger row that supplies the cash half of
 // such a move lands here as a transfer_in or transfer_out (docs/DESIGN.md
-// §13.10; the runbook is collectors/manual/DESIGN.md §6). A sell is the
+// §13.9; the runbook is collectors/manual/DESIGN.md §6). A sell is the
 // internal half of an exit, whose cash the banks book, so it is no flow.
 // No transfer-like set: a ledger leg has nothing on this source to net
 // against.

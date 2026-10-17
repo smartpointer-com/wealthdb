@@ -9,6 +9,7 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 
 	_ "modernc.org/sqlite"
 )
@@ -19,27 +20,12 @@ var silverSchemaSQL string
 // Synthetic IBAN: placeholder-letter body with a numeric tail (never real).
 const iban = "ATkkBBBBBKKKKKKK1234"
 
-// day is a calendar date at UTC midnight (unix seconds) — matching how the
-// collector stores posted_at / balance_date / doc_date.
-func day(y int, m time.Month, d int) int64 {
-	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix()
-}
-
 // loadUnix is a full-timestamp load clock (a bronze dump slug time).
 var loadUnix = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC).Unix()
 
 func newFixture(t *testing.T) (string, *sql.DB) {
 	t.Helper()
-	path := t.TempDir() + "/raiffeisen_at.db"
-	db, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(silverSchemaSQL); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
-	return path, db
+	return silvertest.NewDB(t, silverSchemaSQL)
 }
 
 // seed builds one checking account with four transactions and a daily-balance
@@ -58,7 +44,7 @@ func seed(t *testing.T, db *sql.DB) {
 	// the CURRENT balance is the live roster value). Nickname empty → the
 	// display name comes from the account type + mask.
 	exec(`INSERT INTO accounts VALUES (?,?,?,?,?,?,?,?)`,
-		loadUnix, iban, "Gehaltekonto", "", "…1234", "EUR", 1500.00, "{}")
+		loadUnix, iban, "Testkonto", "", "…1234", "EUR", 1500.00, "{}")
 
 	// transactions: 12 columns (no per-row balance). Kind is classified from
 	// the category / description, not the coarse silver `kind`.
@@ -66,46 +52,29 @@ func seed(t *testing.T, db *sql.DB) {
 		exec(`INSERT INTO transactions VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 			id, iban, d, d, amt, "EUR", "", category, desc, "ACME GmbH", "history", "{}")
 	}
-	tx("t1", day(2026, 1, 10), 1000.00, "income_other", "SALARY")
-	tx("t2", day(2026, 1, 20), -300.00, "tv_phone_internet", "COFFEE")
-	tx("t3", day(2026, 2, 5), -50.00, "fees_bank", "KONTOENTGELT")
-	tx("t4", day(2026, 2, 15), 2.50, "interest_income", "ZINSEN")
+	tx("t1", silvertest.Day(2026, 1, 10), 1000.00, "income_other", "SALARY")
+	tx("t2", silvertest.Day(2026, 1, 20), -300.00, "tv_phone_internet", "COFFEE")
+	tx("t3", silvertest.Day(2026, 2, 5), -50.00, "fees_bank", "KONTOENTGELT")
+	tx("t4", silvertest.Day(2026, 2, 15), 2.50, "interest_income", "ZINSEN")
 
 	// daily_balances: the kontostaende series, keyed (account, day).
 	bal := func(d int64, amt float64) {
 		exec(`INSERT INTO daily_balances VALUES (?,?,?,?)`, iban, d, amt, loadUnix)
 	}
-	bal(day(2025, 12, 31), 900.00) // predates the first transaction
-	bal(day(2026, 1, 10), 1000.00)
-	bal(day(2026, 1, 20), 700.00)
-	bal(day(2026, 2, 5), 650.00)
-	bal(day(2026, 2, 15), 652.50)
+	bal(silvertest.Day(2025, 12, 31), 900.00) // predates the first transaction
+	bal(silvertest.Day(2026, 1, 10), 1000.00)
+	bal(silvertest.Day(2026, 1, 20), 700.00)
+	bal(silvertest.Day(2026, 2, 5), 650.00)
+	bal(silvertest.Day(2026, 2, 15), 652.50)
 
 	// A statement document (ignored by the projection).
 	exec(`INSERT INTO documents VALUES ('s1',?,?,?,'statement','pdf','s1.pdf',100,'{}')`,
-		loadUnix, iban, day(2026, 1, 31))
+		loadUnix, iban, silvertest.Day(2026, 1, 31))
 }
 
 func openConn(t *testing.T, path string) silver.Connection {
 	t.Helper()
-	conn, err := (&Adapter{}).Open(context.Background(), silver.OpenSpec{Path: path})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { conn.Close() })
-	return conn
-}
-
-func fullWindow(t *testing.T, conn silver.Connection) canonical.Window {
-	t.Helper()
-	w, err := conn.ChangeWindow(context.Background(), 0)
-	if err != nil {
-		t.Fatalf("ChangeWindow: %v", err)
-	}
-	if !w.HasChanges {
-		t.Fatal("ChangeWindow: expected changes")
-	}
-	return w
+	return silvertest.Open(t, &Adapter{}, path)
 }
 
 func TestKind(t *testing.T) {
@@ -128,21 +97,21 @@ func TestStatusAndChangeWindow(t *testing.T) {
 		t.Errorf("LatestChangeNumber = %d, want %d", st.LatestChangeNumber, loadUnix)
 	}
 	// The span reaches the earliest daily balance (before the first transaction).
-	if st.OldestSnapshotAt != day(2025, 12, 31) {
-		t.Errorf("OldestSnapshotAt = %d, want %d", st.OldestSnapshotAt, day(2025, 12, 31))
+	if st.OldestSnapshotAt != silvertest.Day(2025, 12, 31) {
+		t.Errorf("OldestSnapshotAt = %d, want %d", st.OldestSnapshotAt, silvertest.Day(2025, 12, 31))
 	}
 	if st.LatestSnapshotAt != loadUnix {
 		t.Errorf("LatestSnapshotAt = %d, want %d", st.LatestSnapshotAt, loadUnix)
 	}
-	if st.OldestTransactionAt != day(2026, 1, 10) || st.LatestTransactionAt != day(2026, 2, 15) {
+	if st.OldestTransactionAt != silvertest.Day(2026, 1, 10) || st.LatestTransactionAt != silvertest.Day(2026, 2, 15) {
 		t.Errorf("tx range = [%d,%d]", st.OldestTransactionAt, st.LatestTransactionAt)
 	}
 
-	w := fullWindow(t, conn)
+	w := silvertest.FullWindow(t, conn)
 	if w.NewChangeNumber != loadUnix {
 		t.Errorf("NewChangeNumber = %d, want %d", w.NewChangeNumber, loadUnix)
 	}
-	if w.Start != day(2025, 12, 31) || w.End != loadUnix {
+	if w.Start != silvertest.Day(2025, 12, 31) || w.End != loadUnix {
 		t.Errorf("window = [%d,%d]", w.Start, w.End)
 	}
 
@@ -161,7 +130,7 @@ func TestSnapshots(t *testing.T) {
 	seed(t, db)
 	conn := openConn(t, path)
 	ctx := context.Background()
-	w := fullWindow(t, conn)
+	w := silvertest.FullWindow(t, conn)
 
 	stream, err := conn.Snapshots(ctx, w)
 	if err != nil {
@@ -181,7 +150,7 @@ func TestSnapshots(t *testing.T) {
 	if a.AccountKind != canonical.AccountKindCash {
 		t.Errorf("AccountKind = %q, want cash", a.AccountKind)
 	}
-	if a.DisplayName == nil || *a.DisplayName != "Gehaltekonto …1234" {
+	if a.DisplayName == nil || *a.DisplayName != "Testkonto …1234" {
 		t.Errorf("DisplayName = %v", a.DisplayName)
 	}
 	if a.BaseCurrency == nil || *a.BaseCurrency != "EUR" {
@@ -197,12 +166,12 @@ func TestSnapshots(t *testing.T) {
 		kind canonical.BalanceKind
 		amt  string
 	}{
-		unixKey(loadUnix):          {canonical.BalanceKindCurrent, "1500"},
-		unixKey(day(2025, 12, 31)): {canonical.BalanceKindClosing, "900"},
-		unixKey(day(2026, 1, 10)):  {canonical.BalanceKindClosing, "1000"},
-		unixKey(day(2026, 1, 20)):  {canonical.BalanceKindClosing, "700"},
-		unixKey(day(2026, 2, 5)):   {canonical.BalanceKindClosing, "650"},
-		unixKey(day(2026, 2, 15)):  {canonical.BalanceKindClosing, "652.5"},
+		unixKey(loadUnix):                     {canonical.BalanceKindCurrent, "1500"},
+		unixKey(silvertest.Day(2025, 12, 31)): {canonical.BalanceKindClosing, "900"},
+		unixKey(silvertest.Day(2026, 1, 10)):  {canonical.BalanceKindClosing, "1000"},
+		unixKey(silvertest.Day(2026, 1, 20)):  {canonical.BalanceKindClosing, "700"},
+		unixKey(silvertest.Day(2026, 2, 5)):   {canonical.BalanceKindClosing, "650"},
+		unixKey(silvertest.Day(2026, 2, 15)):  {canonical.BalanceKindClosing, "652.5"},
 	}
 	if len(batch.CashBalances) != len(want) {
 		t.Fatalf("cash balances = %d, want %d", len(batch.CashBalances), len(want))
@@ -230,7 +199,7 @@ func TestTransactions(t *testing.T) {
 	seed(t, db)
 	conn := openConn(t, path)
 	ctx := context.Background()
-	w := fullWindow(t, conn)
+	w := silvertest.FullWindow(t, conn)
 
 	stream, err := conn.Transactions(ctx, w)
 	if err != nil {
@@ -332,7 +301,7 @@ func TestQuietAccountCurrentAtSourceLatest(t *testing.T) {
 	}
 	conn := openConn(t, path)
 	ctx := context.Background()
-	stream, err := conn.Snapshots(ctx, fullWindow(t, conn))
+	stream, err := conn.Snapshots(ctx, silvertest.FullWindow(t, conn))
 	if err != nil {
 		t.Fatalf("Snapshots: %v", err)
 	}

@@ -137,7 +137,7 @@ verdict.`)
 			}
 		})
 		if dumpFlag != "" {
-			return errs.Newf(2, "categorizations: %s applies to the dump, not to --forget", dumpFlag)
+			return errs.Newf(errs.ExitUsage, "categorizations: %s applies to the dump, not to --forget", dumpFlag)
 		}
 		cfg, err := config.Load(g.ConfigPath)
 		if err != nil {
@@ -146,12 +146,12 @@ verdict.`)
 		return forgetCategorizations(ctx, g, cfg, families, forget, *dryRun, stdout)
 	}
 	if *dryRun {
-		return errs.Newf(2, "categorizations: --dry-run applies to --forget only")
+		return errs.Newf(errs.ExitUsage, "categorizations: --dry-run applies to --forget only")
 	}
 
 	fmtChoice, err := output.Parse(*format)
 	if err != nil {
-		return errs.Newf(2, "categorizations: %s", err.Error())
+		return errs.Newf(errs.ExitUsage, "categorizations: %s", err.Error())
 	}
 	cfg, err := config.Load(g.ConfigPath)
 	if err != nil {

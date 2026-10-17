@@ -5,7 +5,7 @@ import (
 	"database/sql"
 )
 
-// AccountRow is one row of the `accounts` subcommand's output: the
+// AccountRow is one row of the `wealthdb holdings accounts` output: the
 // gold `accounts` row's promoted columns plus derived aggregate
 // columns (positions / cash / total in the account's base currency
 // and in the requested output currency), computed by the

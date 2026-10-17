@@ -6,12 +6,14 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 
 	_ "modernc.org/sqlite"
 )
@@ -27,33 +29,12 @@ func day(d int) int64 {
 
 func newFixture(t *testing.T) (string, *sql.DB) {
 	t.Helper()
-	path := t.TempDir() + "/synthetic.db"
-	db, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(silverSchemaSQL); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
-	return path, db
-}
-
-func exec(t *testing.T, db *sql.DB, q string, args ...any) {
-	t.Helper()
-	if _, err := db.Exec(q, args...); err != nil {
-		t.Fatalf("exec %q: %v", q, err)
-	}
+	return silvertest.NewDB(t, silverSchemaSQL)
 }
 
 func openConn(t *testing.T, path string) silver.Connection {
 	t.Helper()
-	conn, err := (&Adapter{}).Open(context.Background(), silver.OpenSpec{Path: path})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { conn.Close() })
-	return conn
+	return silvertest.Open(t, &Adapter{}, path)
 }
 
 const (
@@ -95,7 +76,7 @@ func insertTx(t *testing.T, db *sql.DB, x txn) {
 	if payload == "" {
 		payload = "{}"
 	}
-	exec(t, db, insertTxn, x.id, x.at, x.account, null(x.instrument), null(x.assetClass),
+	silvertest.Exec(t, db, insertTxn, x.id, x.at, x.account, null(x.instrument), null(x.assetClass),
 		null(x.vehicle), null(x.hint), x.kind, "USD", null(x.gross), null(x.net),
 		null(x.quantity), null(x.price), null(x.description), null(x.memo),
 		null(x.counterparty), null(x.category), null(x.check), payload)
@@ -114,14 +95,14 @@ func insertTx(t *testing.T, db *sql.DB, x txn) {
 //   - acct-side and inst-bond are named only by run 2's transactions.
 func seed(t *testing.T, db *sql.DB) {
 	t.Helper()
-	exec(t, db, `INSERT INTO meta (key, value) VALUES ('schema_version', '2')`)
-	exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-02'), (2, ?, ?, '2031-01-04')`,
+	silvertest.Exec(t, db, `INSERT INTO meta (key, value) VALUES ('schema_version', '2')`)
+	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-02'), (2, ?, ?, '2031-01-04')`,
 		day(1), day(2), day(3), day(4))
 
-	exec(t, db, `INSERT INTO portfolios (portfolio_id, display_name, base_currency, nickname, payload) VALUES
+	silvertest.Exec(t, db, `INSERT INTO portfolios (portfolio_id, display_name, base_currency, nickname, payload) VALUES
         ('pf-main', 'Example Household', 'USD', NULL, '{}'),
         ('pf-side', 'Example Side Book', 'USD', 'Side', '{}')`)
-	exec(t, db, `INSERT INTO accounts (account_id, account_kind, display_name, base_currency,
+	silvertest.Exec(t, db, `INSERT INTO accounts (account_id, account_kind, display_name, base_currency,
             nickname, account_category, tax_wrapper, management_style, portfolio_id, payload) VALUES
         ('acct-cash', 'cash',       'Example Checking',  'USD', 'Everyday', 'Checking',
             'taxable_personal', 'self_directed', 'pf-main', '{"bank":"Example Bank"}'),
@@ -131,7 +112,7 @@ func seed(t *testing.T, db *sql.DB) {
             'mattress', 'whim', NULL, '{}'),
         ('acct-side', 'cash',       'Example Side Cash', 'USD', NULL, NULL,
             NULL, NULL, 'pf-side', '{}')`)
-	exec(t, db, `INSERT INTO instruments (instrument_id, valid_from, asset_class, vehicle,
+	silvertest.Exec(t, db, `INSERT INTO instruments (instrument_id, valid_from, asset_class, vehicle,
             isin, cusip, symbol, name, currency, payload) VALUES
         ('inst-eq',   ?, 'public_equity', 'etf',  NULL, NULL, 'EXIX', 'Example Index Fund',           'USD', '{}'),
         ('inst-eq',   ?, 'public_equity', 'etf',  NULL, NULL, 'EXIY', 'Example Index Fund (Renamed)', 'USD', '{}'),
@@ -141,23 +122,23 @@ func seed(t *testing.T, db *sql.DB) {
 		day(1), day(3), day(3), day(1), day(4))
 
 	// Day 1: an fx rate and nothing else snapshot-grain.
-	exec(t, db, insertFx, day(1), "USD", "EUR", "1.1", nil, nil, "{}")
+	silvertest.Exec(t, db, insertFx, day(1), "USD", "EUR", "1.1", nil, nil, "{}")
 	// Day 2.
-	exec(t, db, insertPosition, day(2), "acct-brok", "inst-eq", "inst-eq", "public_equity", "etf",
+	silvertest.Exec(t, db, insertPosition, day(2), "acct-brok", "inst-eq", "inst-eq", "public_equity", "etf",
 		"USD", "10", "1000", "900", nil, nil, "{}")
-	exec(t, db, insertPosition, day(2), "acct-odd", "inst-late", "inst-late", "moon_rocks", "etf",
+	silvertest.Exec(t, db, insertPosition, day(2), "acct-odd", "inst-late", "inst-late", "moon_rocks", "etf",
 		"EUR", "1", "5", nil, nil, nil, "{}")
-	exec(t, db, insertCash, day(2), "acct-cash", "USD", "closing", "500", "{}")
+	silvertest.Exec(t, db, insertCash, day(2), "acct-cash", "USD", "closing", "500", "{}")
 	// Day 3.
-	exec(t, db, insertPosition, day(3), "acct-brok", "inst-eq", "inst-eq", "public_equity", "etf",
+	silvertest.Exec(t, db, insertPosition, day(3), "acct-brok", "inst-eq", "inst-eq", "public_equity", "etf",
 		"USD", "10", "1020", "900", nil, nil, "{}")
-	exec(t, db, insertCash, day(3), "acct-cash", "USD", "closing", "400", "{}")
-	exec(t, db, insertFx, day(3), "USD", "EUR", "1.2", "1.19", "1.21", `{"source":"example"}`)
+	silvertest.Exec(t, db, insertCash, day(3), "acct-cash", "USD", "closing", "400", "{}")
+	silvertest.Exec(t, db, insertFx, day(3), "USD", "EUR", "1.2", "1.19", "1.21", `{"source":"example"}`)
 	// Day 4.
-	exec(t, db, insertPosition, day(4), "acct-brok", "inst-eq", "inst-eq", "public_equity", "etf",
+	silvertest.Exec(t, db, insertPosition, day(4), "acct-brok", "inst-eq", "inst-eq", "public_equity", "etf",
 		"USD", "12", "1250", "1100", "3.5", "2030-06-30", `{"lot":"a"}`)
-	exec(t, db, insertCash, day(4), "acct-cash", "USD", "closing", "350", "{}")
-	exec(t, db, insertCash, day(4), "acct-odd", "EUR", "wobbly", "7", "{}")
+	silvertest.Exec(t, db, insertCash, day(4), "acct-cash", "USD", "closing", "350", "{}")
+	silvertest.Exec(t, db, insertCash, day(4), "acct-odd", "EUR", "wobbly", "7", "{}")
 
 	for _, x := range []txn{
 		// Stored with the wrong sign for a buy; the instrument is known,
@@ -190,25 +171,10 @@ func seed(t *testing.T, db *sql.DB) {
 
 func collectSnapshots(t *testing.T, conn silver.Connection, w canonical.Window) []canonical.SnapshotBatch {
 	t.Helper()
-	stream, err := conn.Snapshots(context.Background(), w)
-	if err != nil {
-		t.Fatalf("Snapshots: %v", err)
-	}
-	defer stream.Close()
-	var batches []canonical.SnapshotBatch
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatalf("Snapshots Next: %v", err)
-		}
-		if len(b.Accounts)+len(b.Portfolios)+len(b.Instruments)+len(b.Positions)+
-			len(b.CashBalances)+len(b.FxRates) > 0 {
-			batches = append(batches, b)
-		}
-		if !more {
-			return batches
-		}
-	}
+	return slices.DeleteFunc(silvertest.Snapshots(t, conn, w), func(b canonical.SnapshotBatch) bool {
+		return len(b.Accounts)+len(b.Portfolios)+len(b.Instruments)+len(b.Positions)+
+			len(b.CashBalances)+len(b.FxRates) == 0
+	})
 }
 
 func collectTransactions(t *testing.T, conn silver.Connection, w canonical.Window) []canonical.TransactionChange {
@@ -571,16 +537,16 @@ func TestTransactionOnlyDimensions(t *testing.T) {
 // row whether the days load in one window or in two.
 func TestDimensionsIgnoreWindowCuts(t *testing.T) {
 	path, db := newFixture(t)
-	exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES
+	silvertest.Exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES
         ('acct-brok', 'brokerage', '{}'), ('acct-cash', 'cash', '{}')`)
-	exec(t, db, `INSERT INTO instruments (instrument_id, valid_from, asset_class, vehicle, name, currency, payload)
+	silvertest.Exec(t, db, `INSERT INTO instruments (instrument_id, valid_from, asset_class, vehicle, name, currency, payload)
         VALUES ('inst-x', ?, 'public_equity', 'etf', 'Example Fund', 'USD', '{}'),
                ('inst-x', ?, 'public_equity', 'etf', 'Example Fund (Renamed)', 'USD', '{}')`, day(1), day(3))
 	for _, d := range []int{1, 2} {
-		exec(t, db, insertPosition, day(d), "acct-brok", "inst-x", "inst-x", "public_equity", "etf",
+		silvertest.Exec(t, db, insertPosition, day(d), "acct-brok", "inst-x", "inst-x", "public_equity", "etf",
 			"USD", "1", "10", nil, nil, nil, "{}")
 	}
-	exec(t, db, insertCash, day(3), "acct-cash", "USD", "closing", "10", "{}")
+	silvertest.Exec(t, db, insertCash, day(3), "acct-cash", "USD", "closing", "10", "{}")
 	insertTx(t, db, txn{id: "t-sell", at: day(3), account: "acct-brok", instrument: "inst-x",
 		kind: "sell", net: "10", quantity: "-1", price: "10"})
 	conn := openConn(t, path)
@@ -667,9 +633,9 @@ func TestTransactionDimensionsJoinAnExistingBatch(t *testing.T) {
 // snapshot still carries the dimensions they name.
 func TestTransactionOnlyWindowGetsABatch(t *testing.T) {
 	path, db := newFixture(t)
-	exec(t, db, `INSERT INTO dump_runs VALUES (0, ?, ?, '2031-01-01')`, day(1), day(1))
-	exec(t, db, `INSERT INTO portfolios (portfolio_id, payload) VALUES ('pf-main', '{}')`)
-	exec(t, db, `INSERT INTO accounts (account_id, account_kind, portfolio_id, payload)
+	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (0, ?, ?, '2031-01-01')`, day(1), day(1))
+	silvertest.Exec(t, db, `INSERT INTO portfolios (portfolio_id, payload) VALUES ('pf-main', '{}')`)
+	silvertest.Exec(t, db, `INSERT INTO accounts (account_id, account_kind, portfolio_id, payload)
         VALUES ('acct-cash', 'cash', 'pf-main', '{}')`)
 	insertTx(t, db, txn{id: "t-dep", at: day(1), account: "acct-cash", kind: "deposit", net: "10"})
 	conn := openConn(t, path)
@@ -771,10 +737,10 @@ func TestBalanceKindFallbackCollision(t *testing.T) {
 	for _, kinds := range [][2]string{{"closing", "ledger"}, {"eod", "ledger"}} {
 		t.Run(kinds[0]+"+"+kinds[1], func(t *testing.T) {
 			path, db := newFixture(t)
-			exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-01')`, day(1), day(1))
-			exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES ('acct-cash', 'cash', '{}')`)
-			exec(t, db, insertCash, day(1), "acct-cash", "USD", kinds[0], "100", "{}")
-			exec(t, db, insertCash, day(1), "acct-cash", "USD", kinds[1], "98", "{}")
+			silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-01')`, day(1), day(1))
+			silvertest.Exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES ('acct-cash', 'cash', '{}')`)
+			silvertest.Exec(t, db, insertCash, day(1), "acct-cash", "USD", kinds[0], "100", "{}")
+			silvertest.Exec(t, db, insertCash, day(1), "acct-cash", "USD", kinds[1], "98", "{}")
 			conn := openConn(t, path)
 			_, err := conn.Snapshots(context.Background(), window(t, conn, -1))
 			if want := fmt.Sprintf("%q and %q", kinds[0], kinds[1]); err == nil || !strings.Contains(err.Error(), want) {
@@ -923,10 +889,10 @@ func TestRequiredValuesFailTheLoad(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path, db := newFixture(t)
-			exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-01')`, day(1), day(1))
-			exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload)
+			silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-01')`, day(1), day(1))
+			silvertest.Exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload)
                 VALUES ('acct-cash', 'cash', '{}')`)
-			exec(t, db, tc.insert, tc.args...)
+			silvertest.Exec(t, db, tc.insert, tc.args...)
 			conn := openConn(t, path)
 			_, err := conn.Snapshots(context.Background(), window(t, conn, -1))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -944,33 +910,33 @@ func TestDanglingReferenceFailsTheLoad(t *testing.T) {
 		setup       func(t *testing.T, db *sql.DB)
 	}{
 		{"account named by a cash balance", "acct-ghost", func(t *testing.T, db *sql.DB) {
-			exec(t, db, insertCash, day(1), "acct-ghost", "USD", "closing", "1", "{}")
+			silvertest.Exec(t, db, insertCash, day(1), "acct-ghost", "USD", "closing", "1", "{}")
 		}},
 		{"portfolio named by an account", "pf-ghost", func(t *testing.T, db *sql.DB) {
-			exec(t, db, `INSERT INTO accounts (account_id, account_kind, portfolio_id, payload)
+			silvertest.Exec(t, db, `INSERT INTO accounts (account_id, account_kind, portfolio_id, payload)
                 VALUES ('acct-cash', 'cash', 'pf-ghost', '{}')`)
-			exec(t, db, insertCash, day(1), "acct-cash", "USD", "closing", "1", "{}")
+			silvertest.Exec(t, db, insertCash, day(1), "acct-cash", "USD", "closing", "1", "{}")
 		}},
 		{"instrument named by a position", "inst-ghost", func(t *testing.T, db *sql.DB) {
-			exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES ('acct-brok', 'brokerage', '{}')`)
-			exec(t, db, insertPosition, day(1), "acct-brok", "inst-ghost", "inst-ghost", "public_equity", "etf",
+			silvertest.Exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES ('acct-brok', 'brokerage', '{}')`)
+			silvertest.Exec(t, db, insertPosition, day(1), "acct-brok", "inst-ghost", "inst-ghost", "public_equity", "etf",
 				"USD", "1", "10", nil, nil, nil, "{}")
 		}},
 		{"account named only by a transaction", "acct-ghost", func(t *testing.T, db *sql.DB) {
 			insertTx(t, db, txn{id: "t-ghost", at: day(1), account: "acct-ghost", kind: "deposit", net: "1"})
 		}},
 		{"instrument named only by a transaction", "inst-ghost", func(t *testing.T, db *sql.DB) {
-			exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES ('acct-brok', 'brokerage', '{}')`)
+			silvertest.Exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES ('acct-brok', 'brokerage', '{}')`)
 			insertTx(t, db, txn{id: "t-ghost", at: day(1), account: "acct-brok", instrument: "inst-ghost",
 				kind: "dividend", net: "1"})
 		}},
 		{"position named by a lot", "inst-ghost", func(t *testing.T, db *sql.DB) {
-			exec(t, db, insertLot, day(1), "acct-brok", "inst-ghost", "1", "1", "10", nil, nil, "{}")
+			silvertest.Exec(t, db, insertLot, day(1), "acct-brok", "inst-ghost", "1", "1", "10", nil, nil, "{}")
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path, db := newFixture(t)
-			exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-01')`, day(1), day(1))
+			silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-01')`, day(1), day(1))
 			tc.setup(t, db)
 			conn := openConn(t, path)
 			_, err := conn.Snapshots(context.Background(), window(t, conn, -1))
@@ -998,26 +964,26 @@ const (
 // day 3 the first ETF with one lot left.
 func seedLots(t *testing.T, db *sql.DB) {
 	t.Helper()
-	exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-02'), (2, ?, ?, '2031-01-03')`,
+	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-02'), (2, ?, ?, '2031-01-03')`,
 		day(1), day(2), day(3), day(3))
-	exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES
+	silvertest.Exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES
         ('acct-brok', 'brokerage', '{}'), ('acct-coin', 'crypto_exchange', '{}')`)
-	exec(t, db, `INSERT INTO instruments (instrument_id, valid_from, asset_class, vehicle, payload) VALUES
+	silvertest.Exec(t, db, `INSERT INTO instruments (instrument_id, valid_from, asset_class, vehicle, payload) VALUES
         ('inst-eq',   ?, 'public_equity', 'etf',      '{}'),
         ('inst-avg',  ?, 'public_equity', 'etf',      '{}'),
         ('inst-coin', ?, 'crypto',        'physical', '{}')`, day(1), day(1), day(1))
-	exec(t, db, insertPosition, day(2), "acct-brok", "inst-eq", "inst-eq", "public_equity", "etf",
+	silvertest.Exec(t, db, insertPosition, day(2), "acct-brok", "inst-eq", "inst-eq", "public_equity", "etf",
 		"USD", "15", "1800", "1600", nil, "2029-03-01", "{}")
-	exec(t, db, insertLot, day(2), "acct-brok", "inst-eq", "1", "10", "1000", "2029-03-01", "long", "{}")
-	exec(t, db, insertLot, day(2), "acct-brok", "inst-eq", "2", "5", "600", "2030-12-15", "short", `{"note":"x"}`)
-	exec(t, db, insertPosition, day(2), "acct-brok", "inst-avg", "inst-avg", "public_equity", "etf",
+	silvertest.Exec(t, db, insertLot, day(2), "acct-brok", "inst-eq", "1", "10", "1000", "2029-03-01", "long", "{}")
+	silvertest.Exec(t, db, insertLot, day(2), "acct-brok", "inst-eq", "2", "5", "600", "2030-12-15", "short", `{"note":"x"}`)
+	silvertest.Exec(t, db, insertPosition, day(2), "acct-brok", "inst-avg", "inst-avg", "public_equity", "etf",
 		"USD", "1", "120", "100", nil, nil, "{}")
-	exec(t, db, insertPosition, day(2), "acct-coin", "inst-coin", "inst-coin", "crypto", "physical",
+	silvertest.Exec(t, db, insertPosition, day(2), "acct-coin", "inst-coin", "inst-coin", "crypto", "physical",
 		"EUR", "2", "1200", "1010.5", nil, "2030-11-01", "{}")
-	exec(t, db, insertLot, day(2), "acct-coin", "inst-coin", "1", "2", "1010.5", "2030-11-01", "soonish", "{}")
-	exec(t, db, insertPosition, day(3), "acct-brok", "inst-eq", "inst-eq", "public_equity", "etf",
+	silvertest.Exec(t, db, insertLot, day(2), "acct-coin", "inst-coin", "1", "2", "1010.5", "2030-11-01", "soonish", "{}")
+	silvertest.Exec(t, db, insertPosition, day(3), "acct-brok", "inst-eq", "inst-eq", "public_equity", "etf",
 		"USD", "5", "610", "600", nil, "2030-12-15", "{}")
-	exec(t, db, insertLot, day(3), "acct-brok", "inst-eq", "2", "5", "600", "2030-12-15", "short", "{}")
+	silvertest.Exec(t, db, insertLot, day(3), "acct-brok", "inst-eq", "2", "5", "600", "2030-12-15", "short", "{}")
 }
 
 func TestPositionLots(t *testing.T) {
@@ -1087,8 +1053,8 @@ func TestPositionLots(t *testing.T) {
 func TestSilverWithoutLotTables(t *testing.T) {
 	path, db := newFixture(t)
 	seedLots(t, db)
-	exec(t, db, `DROP TABLE position_lots`)
-	exec(t, db, `DROP TABLE realized_lots`)
+	silvertest.Exec(t, db, `DROP TABLE position_lots`)
+	silvertest.Exec(t, db, `DROP TABLE realized_lots`)
 	conn := openConn(t, path)
 	for _, b := range collectSnapshots(t, conn, window(t, conn, -1)) {
 		if len(b.PositionLots) != 0 {
@@ -1109,7 +1075,7 @@ func TestSilverWithoutLotTables(t *testing.T) {
 func TestRealizedLots(t *testing.T) {
 	path, db := newFixture(t)
 	seedLots(t, db)
-	exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES ('acct-mand', 'brokerage', '{}')`)
+	silvertest.Exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES ('acct-mand', 'brokerage', '{}')`)
 	for _, r := range [][]any{
 		// One sale on the form and restated by a statement: the form
 		// counts it. The form states no gain; quantities are magnitudes.
@@ -1124,7 +1090,7 @@ func TestRealizedLots(t *testing.T) {
 		{"r-5", "acct-mand", nil, "EXAMPLE NOTE", "statement", 2030, nil, "2030-09-01",
 			"USD", "1000", "990", "1000", "-10", "maybe", "{}"},
 	} {
-		exec(t, db, insertRealized, r...)
+		silvertest.Exec(t, db, insertRealized, r...)
 	}
 	conn := openConn(t, path)
 	got, err := conn.(silver.RealizedLotReader).RealizedLots(context.Background())
@@ -1177,7 +1143,7 @@ func TestRealizedLots(t *testing.T) {
 
 func TestRealizedLotDocumentKindFailsTheLoad(t *testing.T) {
 	path, db := newFixture(t)
-	exec(t, db, insertRealized, "r-odd", "acct-brok", nil, nil, "napkin", 2030, nil, "2030-06-03",
+	silvertest.Exec(t, db, insertRealized, "r-odd", "acct-brok", nil, nil, "napkin", 2030, nil, "2030-06-03",
 		"USD", "1", "10", "9", nil, nil, "{}")
 	conn := openConn(t, path)
 	_, err := conn.(silver.RealizedLotReader).RealizedLots(context.Background())
@@ -1191,16 +1157,16 @@ func TestRealizedLotDocumentKindFailsTheLoad(t *testing.T) {
 // window, and none outside it.
 func TestSnapshotsCarryReferenceRecords(t *testing.T) {
 	path, db := newFixture(t)
-	exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-02'), (2, ?, ?, '2031-01-04')`,
+	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-02'), (2, ?, ?, '2031-01-04')`,
 		day(1), day(2), day(3), day(4))
-	exec(t, db, insertFx, day(3), "USD", "EUR", "1.1", nil, nil, "{}")
+	silvertest.Exec(t, db, insertFx, day(3), "USD", "EUR", "1.1", nil, nil, "{}")
 	for _, d := range []int{2, 4} {
-		exec(t, db, `INSERT INTO compositions (fund_ref, as_of, basis, provider, source_kind, line_count, weight_sum, run_at)
+		silvertest.Exec(t, db, `INSERT INTO compositions (fund_ref, as_of, basis, provider, source_kind, line_count, weight_sum, run_at)
 		    VALUES ('symbol:IDX1', ?, 'holdings', 'demo', 'daily_file', 1, '100', ?)`, day(d), d/2)
-		exec(t, db, `INSERT INTO lines (fund_ref, as_of, basis, line_no, ticker, name, weight, sector)
+		silvertest.Exec(t, db, `INSERT INTO lines (fund_ref, as_of, basis, line_no, ticker, name, weight, sector)
 		    VALUES ('symbol:IDX1', ?, 'holdings', 1, 'ABCD', 'Invented Corp', '100', 'Technology')`, day(d))
 	}
-	exec(t, db, `INSERT INTO security_facts (security_key, field, as_of, provider, value, run_at)
+	silvertest.Exec(t, db, `INSERT INTO security_facts (security_key, field, as_of, provider, value, run_at)
 	    VALUES ('symbol:ABCD', 'sector', ?, 'demo', 'Technology', 2)`, day(4))
 
 	conn := openConn(t, path)
@@ -1249,10 +1215,10 @@ func TestSnapshotsCarryReferenceRecords(t *testing.T) {
 func TestSnapshotsWithoutReferenceTables(t *testing.T) {
 	path, db := newFixture(t)
 	for _, tbl := range silver.ReferenceTables {
-		exec(t, db, `DROP TABLE `+tbl)
+		silvertest.Exec(t, db, `DROP TABLE `+tbl)
 	}
-	exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-02')`, day(1), day(2))
-	exec(t, db, insertFx, day(1), "USD", "EUR", "1.1", nil, nil, "{}")
+	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-02')`, day(1), day(2))
+	silvertest.Exec(t, db, insertFx, day(1), "USD", "EUR", "1.1", nil, nil, "{}")
 	conn := openConn(t, path)
 	stream, err := conn.Snapshots(context.Background(), canonical.Window{Start: day(1), End: day(2), HasChanges: true})
 	if err != nil {

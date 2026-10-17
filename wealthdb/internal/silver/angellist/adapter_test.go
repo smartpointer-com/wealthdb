@@ -4,11 +4,11 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
-	"path/filepath"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 //go:embed testdata/silver_schema.sql
@@ -16,26 +16,12 @@ var silverSchemaSQL string
 
 func newFixtureSilver(t *testing.T) (string, *sql.DB) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "angellist.db")
-	db, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(silverSchemaSQL); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
-	return path, db
+	return silvertest.NewDB(t, silverSchemaSQL)
 }
 
 func openAdapter(t *testing.T, path string) silver.Connection {
 	t.Helper()
-	conn, err := (&Adapter{}).Open(context.Background(), silver.OpenSpec{Path: path})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { conn.Close() })
-	return conn
+	return silvertest.Open(t, &Adapter{}, path)
 }
 
 // seed builds an event-sourced book exercising every forward-fill path: p1
@@ -76,16 +62,7 @@ func TestKindIsAngellist(t *testing.T) {
 }
 
 func TestStatusEmpty(t *testing.T) {
-	path, _ := newFixtureSilver(t)
-	conn := openAdapter(t, path)
-	s, err := conn.Status(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := canonical.UnknownStatus()
-	if s != want {
-		t.Errorf("Status = %+v, want %+v", s, want)
-	}
+	silvertest.AssertEmptyStatus(t, &Adapter{}, silverSchemaSQL)
 }
 
 func TestStatusAndChangeWindow(t *testing.T) {
@@ -477,23 +454,7 @@ func collectBatches(t *testing.T, conn silver.Connection) []canonical.SnapshotBa
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream, err := conn.Snapshots(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
-	var batches []canonical.SnapshotBatch
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		batches = append(batches, b)
-		if !more {
-			break
-		}
-	}
-	return batches
+	return silvertest.Snapshots(t, conn, w)
 }
 
 // TestAPositionADumpStopsListingLeavesAtThatDump pins the roster step: a

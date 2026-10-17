@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // seedTextRows inserts the ledger rows the text-column projection is pinned
@@ -21,25 +22,25 @@ func seedTextRows(t *testing.T, db *sql.DB) {
 	}
 	exec(`INSERT INTO dump_runs VALUES (?,1,'/run')`, loadUnix)
 	exec(`INSERT INTO accounts VALUES (?,?,?,?,?,?,?,?)`,
-		loadUnix, iban, "Gehaltekonto", "", "…1234", "EUR", 100.00, "{}")
+		loadUnix, iban, "Testkonto", "", "…1234", "EUR", 100.00, "{}")
 	tx := func(id string, d int64, amt float64, category, desc, cp, payload string) {
 		exec(`INSERT INTO transactions VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 			id, iban, d, d, amt, "EUR", "", category, desc, cp, "history", payload)
 	}
 	// Promoted columns all present: everything verbatim.
-	tx("r1", day(2026, 3, 1), -25.00, "shopping", "GROCERIES WEEKLY", "EXAMPLE MARKET", `{}`)
+	tx("r1", silvertest.Day(2026, 3, 1), -25.00, "shopping", "GROCERIES WEEKLY", "EXAMPLE MARKET", `{}`)
 	// Card row: no purpose line, no participant line. The merchant lives in
 	// the card-network object and the reference is the only narrative.
-	tx("r2", day(2026, 3, 2), -12.00, "restaurants", "", "",
+	tx("r2", silvertest.Day(2026, 3, 2), -12.00, "restaurants", "", "",
 		`{"ethocaHaendler":{"id":"m1","name":"EXAMPLE CAFE"},"zahlungsreferenz":"POS 4711 EXAMPLE CAFE","folgenummerKarte":1}`)
 	// No purpose line, but a short order purpose and a payment reference.
-	tx("r3", day(2026, 3, 3), -30.00, "insurance", "", "EXAMPLE INSURER",
+	tx("r3", silvertest.Day(2026, 3, 3), -30.00, "insurance", "", "EXAMPLE INSURER",
 		`{"auftragskurzVerwendungszweck":"POLICY 9","zahlungsreferenz":"REF 2026-01"}`)
 	// Nothing at all: every text column must stay NULL.
-	tx("r4", day(2026, 3, 4), 15.00, "", "", "", `{}`)
+	tx("r4", silvertest.Day(2026, 3, 4), 15.00, "", "", "", `{}`)
 	// Primary purpose present: the fallback reference must NOT be appended,
 	// and the fee classification still reads the raw purpose column.
-	tx("r5", day(2026, 3, 5), -5.00, "fees_bank", "KONTOENTGELT", "", `{"zahlungsreferenz":"Q1"}`)
+	tx("r5", silvertest.Day(2026, 3, 5), -5.00, "fees_bank", "KONTOENTGELT", "", `{"zahlungsreferenz":"Q1"}`)
 }
 
 func emitTextRows(t *testing.T) map[string]canonical.TransactionChange {
@@ -48,7 +49,7 @@ func emitTextRows(t *testing.T) map[string]canonical.TransactionChange {
 	seedTextRows(t, db)
 	conn := openConn(t, path)
 	ctx := context.Background()
-	stream, err := conn.Transactions(ctx, fullWindow(t, conn))
+	stream, err := conn.Transactions(ctx, silvertest.FullWindow(t, conn))
 	if err != nil {
 		t.Fatalf("Transactions: %v", err)
 	}
@@ -140,13 +141,13 @@ func shapeOf(tx canonical.TransactionChange) txShape {
 func TestTextProjectionLeavesNonTextColumnsUnchanged(t *testing.T) {
 	got := emitTextRows(t)
 	want := map[string]txShape{
-		"r1": {"r1", day(2026, 3, 1), iban, canonical.TxKindWithdrawal, "EUR", "-25", "-25", `{}`},
-		"r2": {"r2", day(2026, 3, 2), iban, canonical.TxKindWithdrawal, "EUR", "-12", "-12",
+		"r1": {"r1", silvertest.Day(2026, 3, 1), iban, canonical.TxKindWithdrawal, "EUR", "-25", "-25", `{}`},
+		"r2": {"r2", silvertest.Day(2026, 3, 2), iban, canonical.TxKindWithdrawal, "EUR", "-12", "-12",
 			`{"ethocaHaendler":{"id":"m1","name":"EXAMPLE CAFE"},"zahlungsreferenz":"POS 4711 EXAMPLE CAFE","folgenummerKarte":1}`},
-		"r3": {"r3", day(2026, 3, 3), iban, canonical.TxKindWithdrawal, "EUR", "-30", "-30",
+		"r3": {"r3", silvertest.Day(2026, 3, 3), iban, canonical.TxKindWithdrawal, "EUR", "-30", "-30",
 			`{"auftragskurzVerwendungszweck":"POLICY 9","zahlungsreferenz":"REF 2026-01"}`},
-		"r4": {"r4", day(2026, 3, 4), iban, canonical.TxKindDeposit, "EUR", "15", "15", `{}`},
-		"r5": {"r5", day(2026, 3, 5), iban, canonical.TxKindFee, "EUR", "-5", "-5", `{"zahlungsreferenz":"Q1"}`},
+		"r4": {"r4", silvertest.Day(2026, 3, 4), iban, canonical.TxKindDeposit, "EUR", "15", "15", `{}`},
+		"r5": {"r5", silvertest.Day(2026, 3, 5), iban, canonical.TxKindFee, "EUR", "-5", "-5", `{"zahlungsreferenz":"Q1"}`},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("emitted %d rows, want %d", len(got), len(want))

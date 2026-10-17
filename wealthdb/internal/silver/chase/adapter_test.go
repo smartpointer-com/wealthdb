@@ -10,6 +10,7 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 
 	_ "modernc.org/sqlite"
 )
@@ -17,27 +18,12 @@ import (
 //go:embed testdata/silver_schema.sql
 var silverSchemaSQL string
 
-// day is a calendar date at UTC midnight (unix seconds) — matching how the
-// collector stores posted_at / txn_date / period_end / doc_date.
-func day(y int, m time.Month, d int) int64 {
-	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix()
-}
-
 // loadUnix is a full-timestamp load clock (a bronze dump slug time).
 var loadUnix = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC).Unix()
 
 func newFixture(t *testing.T) (string, *sql.DB) {
 	t.Helper()
-	path := t.TempDir() + "/chase.db"
-	db, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(silverSchemaSQL); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
-	return path, db
+	return silvertest.NewDB(t, silverSchemaSQL)
 }
 
 const insertAccount = `INSERT INTO accounts
@@ -55,41 +41,34 @@ const insertStmtBalance = `INSERT INTO statement_balances
      snapshot_at, transactions_covered)
     VALUES (?,?,?,?,?,?,?)`
 
-func exec(t *testing.T, db *sql.DB, q string, args ...any) {
-	t.Helper()
-	if _, err := db.Exec(q, args...); err != nil {
-		t.Fatalf("exec %q: %v", q, err)
-	}
-}
-
 // seed builds one checking account with four transactions carrying a running
 // balance, plus statements (which the projection ignores — the cash series
 // comes from the transaction running balances, not the statement dates).
 func seed(t *testing.T, db *sql.DB) {
 	t.Helper()
-	exec(t, db, `INSERT INTO dump_runs VALUES (?,3,'/run')`, loadUnix)
+	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (?,3,'/run')`, loadUnix)
 	// Roster: current balance 1500.00 (deliberately later than the last
 	// statement, to show the CURRENT balance is the live roster value).
-	exec(t, db, insertAccount,
+	silvertest.Exec(t, db, insertAccount,
 		loadUnix, "acct-1", "CHK", "Example Checking", "…9999", "USD",
 		1500.00, "{}", "dda", nil)
 
 	tx := func(fitid string, d int64, amt float64, kind string, bal any) {
-		exec(t, db, insertTxn, fitid, d, "acct-1", amt, kind, "desc "+fitid,
+		silvertest.Exec(t, db, insertTxn, fitid, d, "acct-1", amt, kind, "desc "+fitid,
 			nil, bal, "csv", "{}", nil, nil, nil, nil)
 	}
-	tx("t1", day(2026, 1, 10), 1000.00, "CREDIT", 1000.00)
-	tx("t2", day(2026, 1, 20), -300.00, "DEBIT", 700.00)
-	tx("t3", day(2026, 2, 5), -50.00, "FEE", 650.00)
-	tx("t4", day(2026, 2, 15), 2.50, "INT", 652.50)
+	tx("t1", silvertest.Day(2026, 1, 10), 1000.00, "CREDIT", 1000.00)
+	tx("t2", silvertest.Day(2026, 1, 20), -300.00, "DEBIT", 700.00)
+	tx("t3", silvertest.Day(2026, 2, 5), -50.00, "FEE", 650.00)
+	tx("t4", silvertest.Day(2026, 2, 15), 2.50, "INT", 652.50)
 
 	stmt := func(sha string, d int64) {
-		exec(t, db, `INSERT INTO documents VALUES (?,?,?,?,'statement','pdf',?,100,'{}')`,
+		silvertest.Exec(t, db, `INSERT INTO documents VALUES (?,?,?,?,'statement','pdf',?,100,'{}')`,
 			sha, loadUnix, "acct-1", d, sha+".pdf")
 	}
-	stmt("s0", day(2025, 12, 31)) // before any transaction → skipped
-	stmt("s1", day(2026, 1, 31))  // last tx on/before = t2 → 700.00
-	stmt("s2", day(2026, 2, 28))  // last tx on/before = t4 → 652.50
+	stmt("s0", silvertest.Day(2025, 12, 31)) // before any transaction → skipped
+	stmt("s1", silvertest.Day(2026, 1, 31))  // last tx on/before = t2 → 700.00
+	stmt("s2", silvertest.Day(2026, 2, 28))  // last tx on/before = t4 → 652.50
 }
 
 // The card's live figure, as the roster reports it: POSITIVE, the amount owed.
@@ -109,84 +88,67 @@ const cardRosterBalance = 525.00
 // second time.
 func seedCard(t *testing.T, db *sql.DB) {
 	t.Helper()
-	exec(t, db, insertAccount,
+	silvertest.Exec(t, db, insertAccount,
 		loadUnix, "card-1", "CARD", "Example Card", "…1111", "USD",
 		cardRosterBalance, "{}", "card", 25.00)
 
 	stmtBal := func(start, end int64, opening, closing float64, covered int) {
-		exec(t, db, insertStmtBalance,
+		silvertest.Exec(t, db, insertStmtBalance,
 			"card-1", start, end, opening, closing, loadUnix, covered)
 	}
 	// A quiet period whose transactions never reached silver. Its printed
 	// closing figure is still the balance truth for that month — and its
 	// period_end is the earliest date the whole projection touches.
-	stmtBal(day(2025, 10, 1), day(2025, 10, 31), 0.00, 100.00, 0)
+	stmtBal(silvertest.Day(2025, 10, 1), silvertest.Day(2025, 10, 31), 0.00, 100.00, 0)
 	// Statement era: rows landed, no reconstructed balance anywhere in the
 	// period, so the closing figure is emitted.
-	stmtBal(day(2025, 11, 1), day(2025, 11, 30), 100.00, 300.00, 1)
-	stmtBal(day(2025, 12, 1), day(2025, 12, 31), 300.00, 400.00, 1)
+	stmtBal(silvertest.Day(2025, 11, 1), silvertest.Day(2025, 11, 30), 100.00, 300.00, 1)
+	stmtBal(silvertest.Day(2025, 12, 1), silvertest.Day(2025, 12, 31), 300.00, 400.00, 1)
 	// Export era: the reconstruction covers these periods, so their closing
 	// figures stay out of the projection.
-	stmtBal(day(2026, 1, 1), day(2026, 1, 31), 400.00, 580.00, 1)
-	stmtBal(day(2026, 2, 1), day(2026, 2, 28), 580.00, 500.00, 1)
+	stmtBal(silvertest.Day(2026, 1, 1), silvertest.Day(2026, 1, 31), 400.00, 580.00, 1)
+	stmtBal(silvertest.Day(2026, 2, 1), silvertest.Day(2026, 2, 28), 580.00, 500.00, 1)
 
 	tx := func(fitid string, d int64, amt float64, kind string, bal any,
 		merchant, category any, source string) {
-		exec(t, db, insertTxn, fitid, d, "card-1", amt, kind, "desc "+fitid,
+		silvertest.Exec(t, db, insertTxn, fitid, d, "card-1", amt, kind, "desc "+fitid,
 			nil, bal, source, `{"fitid":"F-`+fitid+`"}`, d, merchant, category, nil)
 	}
 	// Statement era — no per-row balance, section kinds.
-	tx("stmt_a", day(2025, 11, 15), -25.00, "STMT_PURCHASE", nil,
+	tx("stmt_a", silvertest.Day(2025, 11, 15), -25.00, "STMT_PURCHASE", nil,
 		"Example Merchant", nil, "statement")
-	tx("stmt_b", day(2025, 12, 10), 25.00, "STMT_PAYMENT", nil,
+	tx("stmt_b", silvertest.Day(2025, 12, 10), 25.00, "STMT_PAYMENT", nil,
 		nil, nil, "statement")
-	tx("stmt_c", day(2025, 12, 12), -3.00, "STMT_FEE", nil,
+	tx("stmt_c", silvertest.Day(2025, 12, 12), -3.00, "STMT_FEE", nil,
 		nil, nil, "statement")
-	tx("stmt_d", day(2025, 12, 20), -2.00, "STMT_INTEREST", nil,
+	tx("stmt_d", silvertest.Day(2025, 12, 20), -2.00, "STMT_INTEREST", nil,
 		nil, nil, "statement")
 	// Export era — the reconstructed running balance rolls the amount OFF the
 	// balance owed (spend negative raises it).
-	tx("card:card-1:c1:0", day(2026, 1, 15), -120.00, "Sale", 520.00,
+	tx("card:card-1:c1:0", silvertest.Day(2026, 1, 15), -120.00, "Sale", 520.00,
 		"EXAMPLE GROCER", "Groceries", "csv")
-	tx("card:card-1:c2:0", day(2026, 1, 20), -60.00, "Sale", 580.00,
+	tx("card:card-1:c2:0", silvertest.Day(2026, 1, 20), -60.00, "Sale", 580.00,
 		"EXAMPLE CAFE", "Food & Drink", "csv")
-	tx("card:card-1:c3:0", day(2026, 2, 20), 200.00, "Payment", 380.00,
+	tx("card:card-1:c3:0", silvertest.Day(2026, 2, 20), 200.00, "Payment", 380.00,
 		nil, nil, "csv")
-	tx("card:card-1:c4:0", day(2026, 2, 22), 15.00, "Return", 365.00,
+	tx("card:card-1:c4:0", silvertest.Day(2026, 2, 22), 15.00, "Return", 365.00,
 		"EXAMPLE GROCER", "Groceries", "csv")
-	tx("card:card-1:c5:0", day(2026, 2, 24), 10.00, "Adjustment", 355.00,
+	tx("card:card-1:c5:0", silvertest.Day(2026, 2, 24), 10.00, "Adjustment", 355.00,
 		nil, nil, "csv")
-	tx("card:card-1:c6:0", day(2026, 2, 25), -95.00, "Fee", 450.00,
+	tx("card:card-1:c6:0", silvertest.Day(2026, 2, 25), -95.00, "Fee", 450.00,
 		nil, "Fees & Adjustments", "csv")
 	// A type this adapter version does not know.
-	tx("card:card-1:c7:0", day(2026, 2, 26), -50.00, "Cash Advance", 500.00,
+	tx("card:card-1:c7:0", silvertest.Day(2026, 2, 26), -50.00, "Cash Advance", 500.00,
 		"EXAMPLE ATM", nil, "csv")
 	// An Adjustment the other way round: a debit that re-bills prior
 	// spend, raising the balance owed like any purchase.
-	tx("card:card-1:c10:0", day(2026, 2, 28), -20.00, "Adjustment", 520.00,
+	tx("card:card-1:c10:0", silvertest.Day(2026, 2, 28), -20.00, "Adjustment", 520.00,
 		nil, nil, "csv")
 }
 
 func openConn(t *testing.T, path string) silver.Connection {
 	t.Helper()
-	conn, err := (&Adapter{}).Open(context.Background(), silver.OpenSpec{Path: path})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { conn.Close() })
-	return conn
-}
-
-func fullWindow(t *testing.T, conn silver.Connection) canonical.Window {
-	t.Helper()
-	w, err := conn.ChangeWindow(context.Background(), 0)
-	if err != nil {
-		t.Fatalf("ChangeWindow: %v", err)
-	}
-	if !w.HasChanges {
-		t.Fatal("ChangeWindow: expected changes")
-	}
-	return w
+	return silvertest.Open(t, &Adapter{}, path)
 }
 
 // project runs the whole projection over the full window.
@@ -194,7 +156,7 @@ func project(t *testing.T, path string) (canonical.SnapshotBatch, canonical.Tran
 	t.Helper()
 	ctx := context.Background()
 	conn := openConn(t, path)
-	w := fullWindow(t, conn)
+	w := silvertest.FullWindow(t, conn)
 
 	snaps, err := conn.Snapshots(ctx, w)
 	if err != nil {
@@ -224,45 +186,25 @@ func TestKind(t *testing.T) {
 	}
 }
 
+// TestStatusAndChangeWindow pins spanExtrema: the snapshot range and the
+// re-emit window run from the first transaction (the first cash mark) to the
+// load. The load clock itself is silver's (TestLoadClock).
 func TestStatusAndChangeWindow(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
 	conn := openConn(t, path)
-	ctx := context.Background()
 
-	st, err := conn.Status(ctx)
+	st, err := conn.Status(context.Background())
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if st.LatestChangeNumber != loadUnix {
-		t.Errorf("LatestChangeNumber = %d, want %d", st.LatestChangeNumber, loadUnix)
+	first := silvertest.Day(2026, 1, 10)
+	if st.OldestSnapshotAt != first || st.LatestSnapshotAt != loadUnix {
+		t.Errorf("snapshot range = [%d,%d], want [%d,%d]",
+			st.OldestSnapshotAt, st.LatestSnapshotAt, first, loadUnix)
 	}
-	// Snapshot extrema span the first transaction (first cash mark) to the load.
-	if st.OldestSnapshotAt != day(2026, 1, 10) {
-		t.Errorf("OldestSnapshotAt = %d, want %d", st.OldestSnapshotAt, day(2026, 1, 10))
-	}
-	if st.LatestSnapshotAt != loadUnix {
-		t.Errorf("LatestSnapshotAt = %d, want %d", st.LatestSnapshotAt, loadUnix)
-	}
-	if st.OldestTransactionAt != day(2026, 1, 10) || st.LatestTransactionAt != day(2026, 2, 15) {
-		t.Errorf("tx range = [%d,%d]", st.OldestTransactionAt, st.LatestTransactionAt)
-	}
-
-	w := fullWindow(t, conn)
-	if w.NewChangeNumber != loadUnix {
-		t.Errorf("NewChangeNumber = %d, want %d", w.NewChangeNumber, loadUnix)
-	}
-	if w.Start != day(2026, 1, 10) || w.End != loadUnix {
-		t.Errorf("window = [%d,%d]", w.Start, w.End)
-	}
-
-	// An idle reload (watermark already at the latest load) yields nothing.
-	idle, err := conn.ChangeWindow(ctx, loadUnix)
-	if err != nil {
-		t.Fatalf("ChangeWindow idle: %v", err)
-	}
-	if idle.HasChanges {
-		t.Error("idle reload reported changes")
+	if w := silvertest.FullWindow(t, conn); w.Start != first || w.End != loadUnix {
+		t.Errorf("window = [%d,%d], want [%d,%d]", w.Start, w.End, first, loadUnix)
 	}
 }
 
@@ -277,8 +219,8 @@ func TestChangeWindowCoversStatementPeriodEnds(t *testing.T) {
 	seedCard(t, db)
 	conn := openConn(t, path)
 
-	quiet := day(2025, 10, 31) // earlier than any transaction or roster row
-	w := fullWindow(t, conn)
+	quiet := silvertest.Day(2025, 10, 31) // earlier than any transaction or roster row
+	w := silvertest.FullWindow(t, conn)
 	if w.Start != quiet {
 		t.Errorf("window Start = %d, want %d (the earliest statement period_end)",
 			w.Start, quiet)
@@ -326,11 +268,11 @@ func TestSnapshots(t *testing.T) {
 	// Cash balances: one CURRENT (roster) + one CLOSING per transaction day,
 	// valued at that day's running balance. Statements contribute nothing.
 	assertBalances(t, sb.CashBalances, "acct-1", map[int64]wantBalance{
-		loadUnix:         {canonical.BalanceKindCurrent, "1500"},
-		day(2026, 1, 10): {canonical.BalanceKindClosing, "1000"},
-		day(2026, 1, 20): {canonical.BalanceKindClosing, "700"},
-		day(2026, 2, 5):  {canonical.BalanceKindClosing, "650"},
-		day(2026, 2, 15): {canonical.BalanceKindClosing, "652.5"},
+		loadUnix:                    {canonical.BalanceKindCurrent, "1500"},
+		silvertest.Day(2026, 1, 10): {canonical.BalanceKindClosing, "1000"},
+		silvertest.Day(2026, 1, 20): {canonical.BalanceKindClosing, "700"},
+		silvertest.Day(2026, 2, 5):  {canonical.BalanceKindClosing, "650"},
+		silvertest.Day(2026, 2, 15): {canonical.BalanceKindClosing, "652.5"},
 	})
 }
 
@@ -350,13 +292,13 @@ func TestStatementBalancesAreCardOnly(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
 	seedCard(t, db)
-	exec(t, db, insertStmtBalance,
-		"acct-1", day(2025, 10, 1), day(2025, 10, 31), 0.00, 999.00, loadUnix, 1)
+	silvertest.Exec(t, db, insertStmtBalance,
+		"acct-1", silvertest.Day(2025, 10, 1), silvertest.Day(2025, 10, 31), 0.00, 999.00, loadUnix, 1)
 
 	sb, _ := project(t, path)
 
 	for _, cb := range sb.CashBalances {
-		if cb.AccountExternalID == "acct-1" && cb.SnapshotAt == day(2025, 10, 31) {
+		if cb.AccountExternalID == "acct-1" && cb.SnapshotAt == silvertest.Day(2025, 10, 31) {
 			t.Errorf("a deposit account's statement closing was emitted (%s); "+
 				"the statement-balance source is card-only", cb.Amount.String())
 		}
@@ -365,7 +307,7 @@ func TestStatementBalancesAreCardOnly(t *testing.T) {
 	// fails for the guard rather than for an empty projection.
 	var sawCard bool
 	for _, cb := range sb.CashBalances {
-		if cb.AccountExternalID == "card-1" && cb.SnapshotAt == day(2025, 10, 31) {
+		if cb.AccountExternalID == "card-1" && cb.SnapshotAt == silvertest.Day(2025, 10, 31) {
 			sawCard = true
 		}
 	}
@@ -401,18 +343,18 @@ func TestCardSnapshots(t *testing.T) {
 		// CURRENT: the live amount owed, negated.
 		loadUnix: {canonical.BalanceKindCurrent, "-525"},
 		// Statement era — the periods the reconstruction cannot reach.
-		day(2025, 10, 31): {canonical.BalanceKindClosing, "-100"},
-		day(2025, 11, 30): {canonical.BalanceKindClosing, "-300"},
-		day(2025, 12, 31): {canonical.BalanceKindClosing, "-400"},
+		silvertest.Day(2025, 10, 31): {canonical.BalanceKindClosing, "-100"},
+		silvertest.Day(2025, 11, 30): {canonical.BalanceKindClosing, "-300"},
+		silvertest.Day(2025, 12, 31): {canonical.BalanceKindClosing, "-400"},
 		// Export era — the reconstructed running balance, one per move day.
-		day(2026, 1, 15): {canonical.BalanceKindClosing, "-520"},
-		day(2026, 1, 20): {canonical.BalanceKindClosing, "-580"},
-		day(2026, 2, 20): {canonical.BalanceKindClosing, "-380"},
-		day(2026, 2, 22): {canonical.BalanceKindClosing, "-365"},
-		day(2026, 2, 24): {canonical.BalanceKindClosing, "-355"},
-		day(2026, 2, 25): {canonical.BalanceKindClosing, "-450"},
-		day(2026, 2, 26): {canonical.BalanceKindClosing, "-500"},
-		day(2026, 2, 28): {canonical.BalanceKindClosing, "-520"},
+		silvertest.Day(2026, 1, 15): {canonical.BalanceKindClosing, "-520"},
+		silvertest.Day(2026, 1, 20): {canonical.BalanceKindClosing, "-580"},
+		silvertest.Day(2026, 2, 20): {canonical.BalanceKindClosing, "-380"},
+		silvertest.Day(2026, 2, 22): {canonical.BalanceKindClosing, "-365"},
+		silvertest.Day(2026, 2, 24): {canonical.BalanceKindClosing, "-355"},
+		silvertest.Day(2026, 2, 25): {canonical.BalanceKindClosing, "-450"},
+		silvertest.Day(2026, 2, 26): {canonical.BalanceKindClosing, "-500"},
+		silvertest.Day(2026, 2, 28): {canonical.BalanceKindClosing, "-520"},
 	})
 
 	// The 2026-01 and 2026-02 statement closings (580.00 / 500.00) are the
@@ -420,7 +362,7 @@ func TestCardSnapshots(t *testing.T) {
 	// second mark on a covered period. Nothing lands at those period ends
 	// beyond what the ledger already carries.
 	for _, cb := range sb.CashBalances {
-		if cb.AccountExternalID == "card-1" && cb.SnapshotAt == day(2026, 1, 31) {
+		if cb.AccountExternalID == "card-1" && cb.SnapshotAt == silvertest.Day(2026, 1, 31) {
 			t.Errorf("covered period 2026-01 emitted a statement closing (%s)",
 				cb.Amount.String())
 		}
@@ -428,11 +370,11 @@ func TestCardSnapshots(t *testing.T) {
 
 	// The deposit account's own marks are untouched by the card's arrival.
 	assertBalances(t, sb.CashBalances, "acct-1", map[int64]wantBalance{
-		loadUnix:         {canonical.BalanceKindCurrent, "1500"},
-		day(2026, 1, 10): {canonical.BalanceKindClosing, "1000"},
-		day(2026, 1, 20): {canonical.BalanceKindClosing, "700"},
-		day(2026, 2, 5):  {canonical.BalanceKindClosing, "650"},
-		day(2026, 2, 15): {canonical.BalanceKindClosing, "652.5"},
+		loadUnix:                    {canonical.BalanceKindCurrent, "1500"},
+		silvertest.Day(2026, 1, 10): {canonical.BalanceKindClosing, "1000"},
+		silvertest.Day(2026, 1, 20): {canonical.BalanceKindClosing, "700"},
+		silvertest.Day(2026, 2, 5):  {canonical.BalanceKindClosing, "650"},
+		silvertest.Day(2026, 2, 15): {canonical.BalanceKindClosing, "652.5"},
 	})
 }
 
@@ -472,8 +414,8 @@ func TestCurrentBalancesStampedAtSourceLatestSnapshot(t *testing.T) {
 	// A later load re-observes the deposit account only; the card's roster row
 	// was unchanged and content-deduped away, so it keeps the older stamp.
 	later := loadUnix + 86400
-	exec(t, db, `INSERT INTO dump_runs VALUES (?,3,'/run2')`, later)
-	exec(t, db, insertAccount,
+	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (?,3,'/run2')`, later)
+	silvertest.Exec(t, db, insertAccount,
 		later, "acct-1", "CHK", "Example Checking", "…9999", "USD",
 		1600.00, "{}", "dda", nil)
 
@@ -641,9 +583,9 @@ func TestCardTransactions(t *testing.T) {
 	}
 
 	// OccurredAt is the post date; the transaction date rides in the payload.
-	if spend.OccurredAt != day(2026, 1, 15) {
+	if spend.OccurredAt != silvertest.Day(2026, 1, 15) {
 		t.Errorf("OccurredAt = %d, want the post date %d",
-			spend.OccurredAt, day(2026, 1, 15))
+			spend.OccurredAt, silvertest.Day(2026, 1, 15))
 	}
 	p := decodePayload(t, spend.Payload)
 	if p["txn_date"] != "2026-01-15" {
@@ -671,10 +613,10 @@ func TestCardSignsAreForcedByKind(t *testing.T) {
 	seedCard(t, db)
 	// A purchase booked positive and a payment booked negative — neither
 	// direction the provider actually writes, both fixed on the way through.
-	exec(t, db, insertTxn, "card:card-1:c8:0", day(2026, 2, 27), "card-1", 77.00,
-		"Sale", "desc", nil, nil, "csv", "{}", day(2026, 2, 27), "EXAMPLE SHOP", nil, nil)
-	exec(t, db, insertTxn, "card:card-1:c9:0", day(2026, 2, 27), "card-1", -88.00,
-		"Payment", "desc", nil, nil, "csv", "{}", day(2026, 2, 27), nil, nil, nil)
+	silvertest.Exec(t, db, insertTxn, "card:card-1:c8:0", silvertest.Day(2026, 2, 27), "card-1", 77.00,
+		"Sale", "desc", nil, nil, "csv", "{}", silvertest.Day(2026, 2, 27), "EXAMPLE SHOP", nil, nil)
+	silvertest.Exec(t, db, insertTxn, "card:card-1:c9:0", silvertest.Day(2026, 2, 27), "card-1", -88.00,
+		"Payment", "desc", nil, nil, "csv", "{}", silvertest.Day(2026, 2, 27), nil, nil, nil)
 
 	_, tb := project(t, path)
 	got := map[string]string{}
@@ -696,8 +638,8 @@ func TestTransactionRowCurrency(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
 	seedCard(t, db)
-	exec(t, db, insertTxn, "card:card-1:fx:0", day(2026, 2, 27), "card-1", -40.00,
-		"Sale", "desc", nil, nil, "csv", "{}", day(2026, 2, 27), "EXAMPLE SHOP", nil, "EUR")
+	silvertest.Exec(t, db, insertTxn, "card:card-1:fx:0", silvertest.Day(2026, 2, 27), "card-1", -40.00,
+		"Sale", "desc", nil, nil, "csv", "{}", silvertest.Day(2026, 2, 27), "EXAMPLE SHOP", nil, "EUR")
 
 	_, tb := project(t, path)
 	for _, tx := range tb.Transactions {
@@ -808,7 +750,7 @@ func TestCheckNumberOnlyOnAnOutflow(t *testing.T) {
 	seed(t, db)
 
 	row := func(fitid string, amt float64, checkNo any) {
-		exec(t, db, insertTxn, fitid, day(2026, 3, 2), "acct-1", amt, "DEBIT",
+		silvertest.Exec(t, db, insertTxn, fitid, silvertest.Day(2026, 3, 2), "acct-1", amt, "DEBIT",
 			"desc "+fitid, checkNo, nil, "csv", "{}", nil, nil, nil, nil)
 	}
 	row("chk-out", -250.00, "9042") // a cheque the holder wrote

@@ -107,15 +107,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return nil, err
 	}
 
-	byInstant := map[int64]*canonical.SnapshotBatch{}
-	at := func(t int64) *canonical.SnapshotBatch {
-		b, ok := byInstant[t]
-		if !ok {
-			b = &canonical.SnapshotBatch{}
-			byInstant[t] = b
-		}
-		return b
-	}
+	byInstant := silver.Batches{}
 
 	var (
 		lastCash    []cashKey
@@ -133,7 +125,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 			continue
 		}
 		newest, snapshotted = r.at, true
-		b := at(r.at)
+		b := byInstant.At(r.at)
 		cash, err := c.appendRun(ctx, b, r.at, secs, stated, &unsummed)
 		if err != nil {
 			return nil, err
@@ -154,15 +146,12 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return nil, err
 	}
 	if snapshotted {
-		if err := c.appendStatementCloses(ctx, w, newest, latest, stated, at); err != nil {
+		if err := c.appendStatementCloses(ctx, w, newest, latest, stated, byInstant.At); err != nil {
 			return nil, err
 		}
 	}
 
-	batches := make([]canonical.SnapshotBatch, 0, len(byInstant))
-	for _, t := range slices.Sorted(maps.Keys(byInstant)) {
-		batches = append(batches, *byInstant[t])
-	}
+	batches := byInstant.Sorted()
 
 	tail, err := c.transactionDimensions(ctx, w, latest, secs)
 	if err != nil {

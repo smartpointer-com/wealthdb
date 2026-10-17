@@ -49,12 +49,8 @@ func (c *Connection) historicalSnapshotTimes(ctx context.Context, w canonical.Wi
 	if err != nil || !ok {
 		return nil, err
 	}
-	return silver.SnapshotTimes(ctx, c.db, w, nil, `
-SELECT DISTINCT snapshot_at FROM (
-    SELECT snapshot_at FROM historical_position_snapshots WHERE snapshot_at BETWEEN ? AND ?
-    UNION ALL SELECT snapshot_at FROM historical_cash_balances    WHERE snapshot_at BETWEEN ? AND ?
-)`,
-		w.Start, w.End, w.Start, w.End)
+	return silver.SnapshotTimesOf(ctx, c.db, w, nil,
+		"historical_position_snapshots", "historical_cash_balances")
 }
 
 // historicalAccount is the account a historical row attributes to on
@@ -92,37 +88,10 @@ func (c *Connection) historicalRange(ctx context.Context) (int64, int64, error) 
 	if err != nil || !ok {
 		return -1, -1, err
 	}
-	var (
-		posMin, posMax   sql.NullInt64
-		cashMin, cashMax sql.NullInt64
-	)
-	if err := c.db.QueryRowContext(ctx,
+	return silver.Extrema(ctx, c.db, "historicalRange", []string{
 		`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM historical_position_snapshots`,
-	).Scan(&posMin, &posMax); err != nil {
-		return -1, -1, fmt.Errorf("historicalRange positions: %w", err)
-	}
-	if err := c.db.QueryRowContext(ctx,
 		`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM historical_cash_balances`,
-	).Scan(&cashMin, &cashMax); err != nil {
-		return -1, -1, fmt.Errorf("historicalRange cash: %w", err)
-	}
-	lo, hi := int64(-1), int64(-1)
-	merge := func(n sql.NullInt64) {
-		if !n.Valid {
-			return
-		}
-		if lo == -1 || n.Int64 < lo {
-			lo = n.Int64
-		}
-		if hi == -1 || n.Int64 > hi {
-			hi = n.Int64
-		}
-	}
-	merge(posMin)
-	merge(posMax)
-	merge(cashMin)
-	merge(cashMax)
-	return lo, hi, nil
+	})
 }
 
 // appendHistoricalPositions reads historical_position_snapshots and

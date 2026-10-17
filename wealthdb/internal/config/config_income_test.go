@@ -1,31 +1,15 @@
 package config
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
-
-// writeIncomeCfg writes a config holding the given `income` block and
-// loads it, returning the config or the load error.
-func writeIncomeCfg(t *testing.T, body string) (*Config, error) {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "wealthdb.cfg")
-	cfg := `{"gold_db": "/tmp/g.db", "default_currency": "USD", ` +
-		`"silver_sources": [{"id": "bank", "kind": "chase", "path": "/tmp/s.db"}], ` + body + `}`
-	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	return Load(path)
-}
 
 // TestIncomeBlockParses pins the shape of `income`: its own account
 // scope, rules whose value field is `type`, a pins path, and a
 // categorization block.
 func TestIncomeBlockParses(t *testing.T) {
-	c, err := writeIncomeCfg(t, `"income": {
+	c, err := loadWith(t, `"income": {
         "accounts": {"exclude": {"bank": ["ACC1"]}},
         "rules": [{"match": "EXAMPLE EMPLOYER", "type": "INCOME_SALARY"}],
         "pins": "/tmp/income_pins.csv",
@@ -64,7 +48,7 @@ func TestIncomeRuleTypeMustBeAnIncomeValue(t *testing.T) {
 		{"nonsense", "NOT_A_TYPE", "income.rules[0].type"},
 		{"wrong case", "income_salary", "income.rules[0].type"},
 	} {
-		_, err := writeIncomeCfg(t, `"income": {"rules": [{"match": "X", "type": "`+tc.value+`"}]}`)
+		_, err := loadWith(t, `"income": {"rules": [{"match": "X", "type": "`+tc.value+`"}]}`)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: err = %v, want one naming %s", tc.name, err, tc.want)
 		}
@@ -72,7 +56,7 @@ func TestIncomeRuleTypeMustBeAnIncomeValue(t *testing.T) {
 	// ...and the values that ARE income's, including the deltas both
 	// families read.
 	for _, value := range []string{"INCOME_SALARY", "INCOME_RENTAL", "INCOME_ALIMONY", "gift", "internal_transfer", "capital_return"} {
-		if _, err := writeIncomeCfg(t, `"income": {"rules": [{"match": "X", "type": "`+value+`"}]}`); err != nil {
+		if _, err := loadWith(t, `"income": {"rules": [{"match": "X", "type": "`+value+`"}]}`); err != nil {
 			t.Errorf("income rule %q rejected: %v", value, err)
 		}
 	}
@@ -85,7 +69,7 @@ func TestIncomeRuleTypeMustBeAnIncomeValue(t *testing.T) {
 func TestRetiredRuleTypeNamesWhatToWrite(t *testing.T) {
 	// The whole message once, at an index past the first, so the entry
 	// can be found in a list of several.
-	_, err := writeIncomeCfg(t, `"income": {"rules": [
+	_, err := loadWith(t, `"income": {"rules": [
         {"match": "A", "type": "INCOME_SALARY"},
         {"match": "B", "type": "INCOME_WAGES"}]}`)
 	const want = `config: income.rules[1].type "INCOME_WAGES" is retired: ` +
@@ -104,7 +88,7 @@ func TestRetiredRuleTypeNamesWhatToWrite(t *testing.T) {
 		{"INCOME_ALIMONY_AND_CHILD_SUPPORT", `"INCOME_ALIMONY_AND_CHILD_SUPPORT" is retired: ` +
 			`use INCOME_CHILD_SUPPORT for child support, or INCOME_ALIMONY for maintenance from a former partner`},
 	} {
-		_, err := writeIncomeCfg(t, `"income": {"rules": [{"match": "X", "type": "`+tc.value+`"}]}`)
+		_, err := loadWith(t, `"income": {"rules": [{"match": "X", "type": "`+tc.value+`"}]}`)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: err = %v, want one containing %q", tc.value, err, tc.want)
 		}
@@ -114,7 +98,7 @@ func TestRetiredRuleTypeNamesWhatToWrite(t *testing.T) {
 	// a SPENDING rule is not a spending value under either name, so it
 	// takes the ordinary refusal rather than a pointer to an income
 	// value the rule could not use either.
-	_, err = writeIncomeCfg(t, `"spending": {"rules": [{"match": "X", "category": "INCOME_WAGES"}]}`)
+	_, err = loadWith(t, `"spending": {"rules": [{"match": "X", "category": "INCOME_WAGES"}]}`)
 	if err == nil || !strings.Contains(err.Error(), `category "INCOME_WAGES" is not a spend_detailed value`) {
 		t.Errorf("a spending rule naming a retired income value: err = %v, want the ordinary refusal", err)
 	}
@@ -127,7 +111,7 @@ func TestIncomeCategorizationInherits(t *testing.T) {
         "model": {"name": "shared", "baseUrl": "http://localhost:1/v1", "api": "openai"}}}`
 
 	// No income block at all.
-	c, err := writeIncomeCfg(t, spendBlock)
+	c, err := loadWith(t, spendBlock)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -139,7 +123,7 @@ func TestIncomeCategorizationInherits(t *testing.T) {
 	}
 
 	// An income block with no categorization inside it inherits too.
-	c, err = writeIncomeCfg(t, spendBlock+`, "income": {"pins": "/tmp/p.csv"}`)
+	c, err = loadWith(t, spendBlock+`, "income": {"pins": "/tmp/p.csv"}`)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -151,7 +135,7 @@ func TestIncomeCategorizationInherits(t *testing.T) {
 	}
 
 	// Its own block wins, whole.
-	c, err = writeIncomeCfg(t, spendBlock+`, "income": {"categorization":
+	c, err = loadWith(t, spendBlock+`, "income": {"categorization":
         {"model": {"name": "own", "baseUrl": "http://localhost:2/v1", "api": "openai"}}}`)
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -167,7 +151,7 @@ func TestIncomeCategorizationInherits(t *testing.T) {
 	}
 
 	// Neither: nothing to run on, and the accessor says so.
-	c, err = writeIncomeCfg(t, `"income": {"pins": "/tmp/p.csv"}`)
+	c, err = loadWith(t, `"income": {"pins": "/tmp/p.csv"}`)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -188,7 +172,7 @@ func TestPersonNameFenceDefaultsOnAndIsInherited(t *testing.T) {
 
 	// Absent: on. A missing configuration must never be the thing that
 	// sends a name to a third party.
-	c, err := writeIncomeCfg(t, `"spending": {"categorization": {`+model+`}}`)
+	c, err := loadWith(t, `"spending": {"categorization": {`+model+`}}`)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -203,7 +187,7 @@ func TestPersonNameFenceDefaultsOnAndIsInherited(t *testing.T) {
 
 	// Explicit false: off, and it round-trips rather than being read
 	// as absent.
-	c, err = writeIncomeCfg(t, `"spending": {"categorization": {`+model+`, "fence_person_names": false}}`)
+	c, err = loadWith(t, `"spending": {"categorization": {`+model+`, "fence_person_names": false}}`)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -212,7 +196,7 @@ func TestPersonNameFenceDefaultsOnAndIsInherited(t *testing.T) {
 	}
 
 	// Explicit true: on.
-	c, err = writeIncomeCfg(t, `"spending": {"categorization": {`+model+`, "fence_person_names": true}}`)
+	c, err = loadWith(t, `"spending": {"categorization": {`+model+`, "fence_person_names": true}}`)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -223,7 +207,7 @@ func TestPersonNameFenceDefaultsOnAndIsInherited(t *testing.T) {
 	// Income inherits it with the rest of the block. One household, one
 	// answer to what may leave the machine — which is the point of
 	// inheriting whole rather than per field.
-	c, err = writeIncomeCfg(t, `"spending": {"categorization": {`+model+`, "fence_person_names": false}},
+	c, err = loadWith(t, `"spending": {"categorization": {`+model+`, "fence_person_names": false}},
         "income": {"pins": "/tmp/p.csv"}`)
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -236,7 +220,7 @@ func TestPersonNameFenceDefaultsOnAndIsInherited(t *testing.T) {
 	// back to the DEFAULT rather than to spending's value. That is the
 	// same rule ContextLevel is held to above, and it errs safe here:
 	// a half-inherited block cannot quietly turn the fence off.
-	c, err = writeIncomeCfg(t, `"spending": {"categorization": {`+model+`, "fence_person_names": false}},
+	c, err = loadWith(t, `"spending": {"categorization": {`+model+`, "fence_person_names": false}},
         "income": {"categorization": {`+model+`}}`)
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -275,7 +259,7 @@ func TestIncomeHasNoMatcherKnobs(t *testing.T) {
 		`"income": {"internal_transfer_matching": {"window_days": 9}}`,
 		`"income": {"transfer_overrides": "/tmp/o.csv"}`,
 	} {
-		if _, err := writeIncomeCfg(t, body); err == nil {
+		if _, err := loadWith(t, body); err == nil {
 			t.Errorf("%s was accepted; income has no matcher of its own", body)
 		}
 	}

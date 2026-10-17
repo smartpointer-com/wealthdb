@@ -172,12 +172,12 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	}
 	if *batch < 1 {
 		fs.Usage()
-		return errs.Newf(2, "categorize: --batch must be at least 1, got %d", *batch)
+		return errs.Newf(errs.ExitUsage, "categorize: --batch must be at least 1, got %d", *batch)
 	}
 	// Beside the other flag check, and before the pass takes the gold
 	// write lock: a usage error must not cost a full overlay rewrite.
 	if *all && *refine {
-		return errs.Newf(2, "categorize: --all and --refine choose different backlogs; pass one")
+		return errs.Newf(errs.ExitUsage, "categorize: --all and --refine choose different backlogs; pass one")
 	}
 
 	cfg, err := config.Load(g.ConfigPath)
@@ -192,11 +192,11 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		modelKey := fam.categorizationKey(cfg) + ".model"
 		modelCfg := cz.CategorizationModel()
 		if modelCfg == nil {
-			return errs.Newf(2, "categorize: %s is not set; add a `%s` block to %s",
+			return errs.Newf(errs.ExitUsage, "categorize: %s is not set; add a `%s` block to %s",
 				modelKey, modelKey, g.ConfigPath)
 		}
 		if err := validateModelConfig(modelKey, modelCfg); err != nil {
-			return errs.Newf(2, "categorize: %s", err.Error())
+			return errs.Newf(errs.ExitUsage, "categorize: %s", err.Error())
 		}
 	}
 

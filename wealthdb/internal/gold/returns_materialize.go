@@ -214,7 +214,7 @@ func appendReturnRow(dst []any, computedAt int64, currency, grain, granularity s
 	return append(dst,
 		computedAt, currency, grain, granularity, windowFromYear,
 		r.SilverSourceID, r.EntityID, r.EntityLabel, r.Period, r.IsSummary,
-		r.StartDay*86400, r.EndDay*86400, r.StartValue, r.EndValue, r.NetFlow,
+		r.StartDay*SecondsPerDay, r.EndDay*SecondsPerDay, r.StartValue, r.EndValue, r.NetFlow,
 		r.TWR, r.TWRAnnualized, r.MWR, r.MWRAnnualized,
 		strings.Join(r.Quality, ";"))
 }
@@ -238,7 +238,7 @@ func datasetYearRange(datasets map[string]*returnsDataset, toEpoch int64) (int, 
 	if minDay < 0 {
 		return 1, 0 // no data → empty range
 	}
-	minYear := time.Unix(minDay*86400, 0).UTC().Year()
+	minYear := time.Unix(minDay*SecondsPerDay, 0).UTC().Year()
 	maxYear := time.Unix(toEpoch, 0).UTC().Year()
 	return minYear, maxYear
 }
@@ -292,7 +292,7 @@ func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds, ov m
 			_ = rows.Close()
 			return nil, fmt.Errorf("MaterializeReturns history scan: %w", err)
 		}
-		day := asOf / 86400
+		day := EpochDay(asOf)
 		for i, ccy := range materializeCurrencies {
 			appendSeries(byCcy[ccy], kinds, pfNames, ov, src, acct, kind, label, base, pf, day, tots[i])
 		}

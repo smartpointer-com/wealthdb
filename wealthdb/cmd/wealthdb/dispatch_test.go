@@ -481,7 +481,7 @@ func TestReloadIsResetThenLoad(t *testing.T) {
 	}
 }
 
-// TestReloadAll covers the -a path. Empty config + -a should error
+// TestReloadAllNoSources covers the -a path. Empty config + -a should error
 // (mirrors load -a) rather than silently succeed.
 func TestReloadAllNoSources(t *testing.T) {
 	t.Parallel()

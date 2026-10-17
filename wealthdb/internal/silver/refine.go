@@ -45,6 +45,19 @@ func NamesMoneyMarket(name string) bool {
 	return moneyMarketRe.MatchString(name)
 }
 
+// FundExposure is the exposure of a fund that is not exchange traded, read
+// from its name: a money-market fund is cash, any other fund takes
+// RefineETFExposure. A purchased money fund reaches a fund classification
+// path rather than the account's cash sweep, and it is a cash equivalent,
+// not the exposure RefineETFExposure would guess from a bond keyword in its
+// name.
+func FundExposure(name string) canonical.AssetClass {
+	if NamesMoneyMarket(name) {
+		return canonical.AssetClassCash
+	}
+	return RefineETFExposure(name)
+}
+
 // RefineETFExposure returns the EXPOSURE (asset_class) of a fund/ETF
 // already known to be a collective vehicle, from its security name:
 // crypto → crypto, bullion → metal, bond keywords → fixed_income,

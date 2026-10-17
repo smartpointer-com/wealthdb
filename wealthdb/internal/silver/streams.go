@@ -2,6 +2,8 @@ package silver
 
 import (
 	"context"
+	"maps"
+	"slices"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
@@ -30,6 +32,43 @@ func (s *sliceSnapshotStream) Next(context.Context) (canonical.SnapshotBatch, bo
 }
 
 func (s *sliceSnapshotStream) Close() error { return nil }
+
+// Batches collects a snapshot stream's batches by snapshot time: an adapter
+// seeds the times it reads, routes each row to its time's batch, and streams
+// the result.
+type Batches map[int64]*canonical.SnapshotBatch
+
+// NewBatches returns an empty batch at each of times.
+func NewBatches(times []int64) Batches {
+	b := make(Batches, len(times))
+	for _, t := range times {
+		b[t] = &canonical.SnapshotBatch{}
+	}
+	return b
+}
+
+// At returns the batch at t, adding an empty one when there is none.
+func (b Batches) At(t int64) *canonical.SnapshotBatch {
+	if batch, ok := b[t]; ok {
+		return batch
+	}
+	batch := &canonical.SnapshotBatch{}
+	b[t] = batch
+	return batch
+}
+
+// Sorted returns the batches in ascending time order.
+func (b Batches) Sorted() []canonical.SnapshotBatch {
+	out := make([]canonical.SnapshotBatch, 0, len(b))
+	for _, t := range slices.Sorted(maps.Keys(b)) {
+		out = append(out, *b[t])
+	}
+	return out
+}
+
+// Stream yields the batches in ascending time order, which gold's
+// earlier-wins FirstSeenAt accounting on instruments and accounts relies on.
+func (b Batches) Stream() SnapshotStream { return NewSnapshotStream(b.Sorted()) }
 
 // NewTransactionStream returns a TransactionStream that yields the
 // given batch exactly once. Every adapter assembles a single

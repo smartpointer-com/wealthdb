@@ -161,12 +161,12 @@ func resolveCategorizeFamilies(arg string) ([]categorizeFamily, bool) {
 func categorizeFamilyArg(fs *flag.FlagSet, cmd string) ([]categorizeFamily, error) {
 	if fs.NArg() > 1 {
 		fs.Usage()
-		return nil, errs.Newf(2, "%s: unexpected positional argument %q", cmd, fs.Arg(1))
+		return nil, errs.Newf(errs.ExitUsage, "%s: unexpected positional argument %q", cmd, fs.Arg(1))
 	}
 	families, ok := resolveCategorizeFamilies(fs.Arg(0))
 	if !ok {
 		fs.Usage()
-		return nil, errs.Newf(2, "%s: unknown family %q (want spending | income, or neither for both)", cmd, fs.Arg(0))
+		return nil, errs.Newf(errs.ExitUsage, "%s: unknown family %q (want spending | income, or neither for both)", cmd, fs.Arg(0))
 	}
 	return families, nil
 }

@@ -55,7 +55,7 @@ empty configs.`)
 	// aren't *os.File, so we skip the check and proceed.
 	if f, ok := stdin.(*os.File); ok {
 		if !term.IsTerminal(int(f.Fd())) {
-			return errs.Newf(2,
+			return errs.Newf(errs.ExitUsage,
 				"wealthdb config requires an interactive terminal; "+
 					"re-run with `docker run -it ...` or hand-edit the JSON per docs/DESIGN.md §5.")
 		}

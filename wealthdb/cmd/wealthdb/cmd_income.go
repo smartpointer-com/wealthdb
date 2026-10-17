@@ -69,7 +69,7 @@ func runIncomeView(ctx context.Context, g globalFlags, view string, args []strin
 	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), time.Now())
 	if err != nil {
 		fs.Usage()
-		return errs.Newf(2, "income: %s", err.Error())
+		return errs.Newf(errs.ExitUsage, "income: %s", err.Error())
 	}
 
 	fmtChoice, cfg, outCcy, err := rf.resolve(g, "income")
@@ -146,10 +146,7 @@ func buildIncomeTypeColumnRegistry(outCcy, period string) []columnSpec[gold.Inco
 		outCcyCol("income", outCcy, func(r gold.IncomeTypeRow) *string { return r.Income }),
 		outCcyCol("reversals", outCcy, func(r gold.IncomeTypeRow) *string { return r.Reversals }),
 		outCcyCol("net_income", outCcy, func(r gold.IncomeTypeRow) *string { return r.NetIncome }),
-		// A share is a proportion, not an amount: it survives -p, which
-		// is what makes the privacy twin of this report readable.
-		{Name: "share", Header: "share_pct", Align: output.AlignRight,
-			Extract: func(r gold.IncomeTypeRow) string { return formatPct(r.Share) }},
+		ratioCol("share", func(r gold.IncomeTypeRow) *float64 { return r.Share }),
 	}
 }
 

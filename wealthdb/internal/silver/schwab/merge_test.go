@@ -3,27 +3,20 @@ package schwab
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // newBridgeSeedDB creates a fresh on-disk SQLite under t.TempDir()
 // holding only the accounts shape one side of the bridge queries.
 func newBridgeSeedDB(t *testing.T, schema string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "bridge.db"))
-	if err != nil {
-		t.Fatalf("open seed DB: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(schema); err != nil {
-		t.Fatalf("apply seed schema: %v", err)
-	}
+	_, db := silvertest.NewDB(t, schema)
 	return db
 }
 

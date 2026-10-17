@@ -32,7 +32,7 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 	fromEpoch, toEpoch, err := parseDateRange(fs.Args(), time.Now())
 	if err != nil {
 		fs.Usage()
-		return errs.Newf(2, "transactions: %s", err.Error())
+		return errs.Newf(errs.ExitUsage, "transactions: %s", err.Error())
 	}
 
 	fmtChoice, cfg, outCcy, err := rf.resolve(g, "transactions")

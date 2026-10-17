@@ -40,10 +40,8 @@ ORDER BY snapshot_at`
 }
 
 // ListSilverSources returns every silver_source_id currently
-// registered in gold, sorted alphabetically. Convenience wrapper
-// (loader.ListSourceIDs does the same, but having it on the gold
-// side too keeps cmd subcommands from importing loader just for
-// this).
+// registered in gold, sorted. loader.ListSourceIDs wraps it; cmd
+// subcommands call it directly so they need not import loader.
 func ListSilverSources(ctx context.Context, db *sql.DB) ([]string, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT silver_source_id FROM silver_sources ORDER BY silver_source_id`)

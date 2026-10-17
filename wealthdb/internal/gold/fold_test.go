@@ -13,7 +13,7 @@ import (
 
 // ---- fold ≡ record-by-record equivalence ----------------------------------
 //
-// The loader's ChangeAccumulator claims: for an entity gold has not
+// The ChangeAccumulator claims: for an entity gold has not
 // seen, folding a load's records and upserting once stores exactly
 // what upserting record-by-record would. These sweeps drive every
 // permutation of small record alphabets through both paths and
@@ -142,10 +142,10 @@ func readRow(t *testing.T, ctx context.Context, db *sql.DB, table, idCol, id str
 	return row
 }
 
-// runSequential upserts records one call at a time (the pre-fold
-// write path); runFolded accumulates then flushes once. Both write
-// under a distinct external id in the same DB so their rows can be
-// compared directly.
+// upsertSeq upserts records one call at a time, the record-by-record
+// path a fold must equal. Each test writes the sequential and the
+// folded copy under distinct external ids in one DB, so their rows
+// compare directly.
 func upsertSeq[T any](t *testing.T, ctx context.Context, db *sql.DB, seq []T, up func(*Writer, context.Context, []T) error) {
 	t.Helper()
 	inTx(t, db, ctx, func(w *Writer) error {

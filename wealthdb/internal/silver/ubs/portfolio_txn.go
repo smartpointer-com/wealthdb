@@ -552,7 +552,7 @@ func (r *webReader) portfolioTxnRange(ctx context.Context) (int64, int64, error)
 	if err != nil || !ok {
 		return -1, -1, err
 	}
-	return r.span(ctx, "portfolioTxnRange", []string{
+	return silver.Extrema(ctx, r.db, "portfolioTxnRange", []string{
 		`SELECT MIN(value_date), MAX(value_date) FROM portfolio_transactions`,
 	})
 }

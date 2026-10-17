@@ -18,10 +18,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
-	byTime := make(map[int64]*canonical.SnapshotBatch, len(times))
-	for _, t := range times {
-		byTime[t] = &canonical.SnapshotBatch{}
-	}
+	byTime := silver.NewBatches(times)
 
 	if err := c.appendAccounts(ctx, w, byTime); err != nil {
 		return nil, err
@@ -33,11 +30,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return nil, err
 	}
 
-	out := make([]canonical.SnapshotBatch, 0, len(times))
-	for _, t := range times {
-		out = append(out, *byTime[t])
-	}
-	return silver.NewSnapshotStream(out), nil
+	return byTime.Stream(), nil
 }
 
 // snapshotTimesInWindow returns the union of distinct snapshot_at
@@ -51,16 +44,8 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 // in Snapshots() aware of every snapshot the adapter is about to
 // emit a batch for.
 func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
-	return silver.SnapshotTimes(ctx, c.db, w, nil, `
-SELECT DISTINCT snapshot_at FROM (
-    SELECT snapshot_at FROM dump_runs         WHERE snapshot_at BETWEEN ? AND ?
-    UNION ALL
-    SELECT snapshot_at FROM positions         WHERE snapshot_at BETWEEN ? AND ?
-    UNION ALL
-    SELECT snapshot_at FROM currency_balances WHERE snapshot_at BETWEEN ? AND ?
-)
-ORDER BY snapshot_at`,
-		w.Start, w.End, w.Start, w.End, w.Start, w.End)
+	return silver.SnapshotTimesOf(ctx, c.db, w, nil,
+		"dump_runs", "positions", "currency_balances")
 }
 
 // ---- accounts ------------------------------------------------------------

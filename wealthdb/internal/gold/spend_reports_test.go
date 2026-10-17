@@ -8,12 +8,6 @@ import (
 	"time"
 )
 
-// spendAt is the epoch second at noon UTC on the given date — noon so a
-// bucket boundary is never ambiguous about which day a row belongs to.
-func spendAt(y int, m time.Month, d int) int64 {
-	return time.Date(y, m, d, 12, 0, 0, 0, time.UTC).Unix()
-}
-
 // bucketAt is the epoch second at UTC midnight, which is what
 // spend_period_bucket emits for the period a date opens.
 func bucketAt(y int, m time.Month, d int) int64 {
@@ -44,8 +38,8 @@ func seedSpendingReportFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 
 	// 1 EUR = 1.10 USD, 1 CHF = 1.25 USD. USD->CHF and EUR->CHF (via
 	// USD) fall out of fx_norm's reciprocal + the macros' triangulation.
-	seedFX(t, db, spendAt(2026, time.January, 1), "USD", "EUR", "1.10")
-	seedFX(t, db, spendAt(2026, time.January, 1), "USD", "CHF", "1.25")
+	seedFX(t, db, dy(2026, time.January, 1), "USD", "EUR", "1.10")
+	seedFX(t, db, dy(2026, time.January, 1), "USD", "CHF", "1.25")
 
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
@@ -73,15 +67,15 @@ func seedSpendingReportFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 		prov  string
 		descr string
 	}{
-		{"T-GROC-JAN", spendAt(2026, time.January, 5), "CARD1", "purchase", "USD", "-100", "sig-market", "", "signature-only", "CORNER MARKET"},
-		{"T-FLIGHT-JAN", spendAt(2026, time.January, 6), "CARD1", "purchase", "USD", "-50", "sig-air", "TRAVEL_FLIGHTS", "provider", "AIRLINE"},
-		{"T-GROC-REFUND", spendAt(2026, time.January, 7), "CARD1", "refund", "USD", "20", "sig-market", "", "signature-only", "CORNER MARKET"},
-		{"T-CARDPAY-JAN", spendAt(2026, time.January, 15), "CASH1", "withdrawal", "USD", "-500", "sig-bank", "internal_transfer", "matcher", "PAYMENT TO CARD"},
-		{"T-ATM-JAN", spendAt(2026, time.January, 20), "CASH1", "withdrawal", "USD", "-200", "sig-atm", "cash_withdrawal", "rule", "ATM WITHDRAWAL"},
-		{"T-SUBSCR-JAN", spendAt(2026, time.January, 22), "CASH1", "withdrawal", "USD", "-700", "sig-sub", "investment", "manual", "SUBSCRIPTION"},
-		{"T-BACKLOG-JAN", spendAt(2026, time.January, 21), "CARD1", "purchase", "USD", "-30", "sig-unknown", "", "signature-only", "UNKNOWN SHOP"},
-		{"T-REST-FEB", spendAt(2026, time.February, 3), "CARD1", "purchase", "USD", "-60", "sig-diner", "FOOD_AND_DRINK_RESTAURANT", "provider", "THE DINER"},
-		{"T-HOTEL-FEB", spendAt(2026, time.February, 4), "CARDE", "purchase", "EUR", "-40", "sig-hotel", "TRAVEL_LODGING", "provider", "HOTEL"},
+		{"T-GROC-JAN", dy(2026, time.January, 5), "CARD1", "purchase", "USD", "-100", "sig-market", "", "signature-only", "CORNER MARKET"},
+		{"T-FLIGHT-JAN", dy(2026, time.January, 6), "CARD1", "purchase", "USD", "-50", "sig-air", "TRAVEL_FLIGHTS", "provider", "AIRLINE"},
+		{"T-GROC-REFUND", dy(2026, time.January, 7), "CARD1", "refund", "USD", "20", "sig-market", "", "signature-only", "CORNER MARKET"},
+		{"T-CARDPAY-JAN", dy(2026, time.January, 15), "CASH1", "withdrawal", "USD", "-500", "sig-bank", "internal_transfer", "matcher", "PAYMENT TO CARD"},
+		{"T-ATM-JAN", dy(2026, time.January, 20), "CASH1", "withdrawal", "USD", "-200", "sig-atm", "cash_withdrawal", "rule", "ATM WITHDRAWAL"},
+		{"T-SUBSCR-JAN", dy(2026, time.January, 22), "CASH1", "withdrawal", "USD", "-700", "sig-sub", "investment", "manual", "SUBSCRIPTION"},
+		{"T-BACKLOG-JAN", dy(2026, time.January, 21), "CARD1", "purchase", "USD", "-30", "sig-unknown", "", "signature-only", "UNKNOWN SHOP"},
+		{"T-REST-FEB", dy(2026, time.February, 3), "CARD1", "purchase", "USD", "-60", "sig-diner", "FOOD_AND_DRINK_RESTAURANT", "provider", "THE DINER"},
+		{"T-HOTEL-FEB", dy(2026, time.February, 4), "CARDE", "purchase", "EUR", "-40", "sig-hotel", "TRAVEL_LODGING", "provider", "HOTEL"},
 	}
 	for _, x := range txns {
 		if _, err := db.ExecContext(ctx, `
@@ -108,7 +102,7 @@ func seedSpendingReportFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 
 // spendWindow is the whole fixture window.
 func spendWindow() (int64, int64) {
-	return spendAt(2026, time.January, 1), spendAt(2026, time.March, 1)
+	return dy(2026, time.January, 1), dy(2026, time.March, 1)
 }
 
 type spendSummaryRow struct {
@@ -176,8 +170,6 @@ func readSpendingCategories(t *testing.T, db *sql.DB, ctx context.Context, ccy, 
 	return out
 }
 
-func nearly(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
-
 // TestSpendingSummaryBuckets pins the period bucketing and the
 // sign-split magnitudes against known amounts: `spend` and `refunds`
 // are both positive, `net_spend` is their difference, and the
@@ -206,13 +198,13 @@ func TestSpendingSummaryBuckets(t *testing.T) {
 		if got.txnCount != w.count {
 			t.Errorf("bucket[%d] txn_count = %d, want %d", i, got.txnCount, w.count)
 		}
-		if !nearly(got.spend.Float64, w.spend) {
+		if !near(got.spend.Float64, w.spend) {
 			t.Errorf("bucket[%d] spend = %v, want %v", i, got.spend.Float64, w.spend)
 		}
-		if !nearly(got.refunds.Float64, w.refunds) {
+		if !near(got.refunds.Float64, w.refunds) {
 			t.Errorf("bucket[%d] refunds = %v, want %v", i, got.refunds.Float64, w.refunds)
 		}
-		if !nearly(got.netSp.Float64, w.netSp) {
+		if !near(got.netSp.Float64, w.netSp) {
 			t.Errorf("bucket[%d] net_spend = %v, want %v", i, got.netSp.Float64, w.netSp)
 		}
 	}
@@ -226,7 +218,7 @@ func TestSpendingSummaryBuckets(t *testing.T) {
 	if total[0].period.Valid {
 		t.Errorf("total bucket period_start = %v, want NULL", total[0].period)
 	}
-	if !nearly(total[0].netSp.Float64, 464) || total[0].txnCount != 7 {
+	if !near(total[0].netSp.Float64, 464) || total[0].txnCount != 7 {
 		t.Errorf("total bucket = (%d txns, net %v), want (7, 464)",
 			total[0].txnCount, total[0].netSp.Float64)
 	}
@@ -241,7 +233,7 @@ func TestSpendingSummaryBuckets(t *testing.T) {
 			n += b.txnCount
 			net += b.netSp.Float64
 		}
-		if n != 7 || !nearly(net, 464) {
+		if n != 7 || !near(net, 464) {
 			t.Errorf("period %q covers %d txns / net %v, want 7 / 464", period, n, net)
 		}
 	}
@@ -259,12 +251,12 @@ func TestSpendingSummaryConvertsAtTheTransactionDay(t *testing.T) {
 	seedSpendingReportFixture(t, db, ctx)
 
 	feb := readSpendingSummary(t, db, ctx, "USD", "month")[1]
-	if !nearly(feb.spend.Float64, 104) { // 60 USD + 40 EUR * 1.10
+	if !near(feb.spend.Float64, 104) { // 60 USD + 40 EUR * 1.10
 		t.Errorf("February spend in USD = %v, want 104", feb.spend.Float64)
 	}
 	// CHF: 1 CHF = 1.25 USD, so the same two lines are 48 + 35.2.
 	febCHF := readSpendingSummary(t, db, ctx, "CHF", "month")[1]
-	if !nearly(febCHF.spend.Float64, 83.2) {
+	if !near(febCHF.spend.Float64, 83.2) {
 		t.Errorf("February spend in CHF = %v, want 83.2", febCHF.spend.Float64)
 	}
 }
@@ -337,13 +329,13 @@ func TestSpendingCategoriesReconcileWithSummary(t *testing.T) {
 						{"refunds", got.refunds, s.refunds.Float64},
 						{"net_spend", got.netSp, s.netSp.Float64},
 					} {
-						if !nearly(f.cat, f.sum) {
+						if !near(f.cat, f.sum) {
 							t.Errorf("%s/%s/%s bucket %v: Σ category %s = %v, summary = %v",
 								ccy, period, level, s.period, f.name, f.cat, f.sum)
 						}
 					}
 					// Shares are over magnitudes, so a bucket's shares always sum to 1.
-					if !nearly(got.share, 1) {
+					if !near(got.share, 1) {
 						t.Errorf("%s/%s/%s bucket %v: Σ share = %v, want 1",
 							ccy, period, level, s.period, got.share)
 					}
@@ -386,8 +378,8 @@ func TestSpendingCategoriesLevelsAndLabel(t *testing.T) {
 			t.Errorf("detailed level is missing %q", cat)
 			continue
 		}
-		if !nearly(got.spend.Float64, want[0]) || !nearly(got.refunds.Float64, want[1]) ||
-			!nearly(got.netSp.Float64, want[2]) {
+		if !near(got.spend.Float64, want[0]) || !near(got.refunds.Float64, want[1]) ||
+			!near(got.netSp.Float64, want[2]) {
 			t.Errorf("detailed %q = (%v, %v, %v), want %v", cat,
 				got.spend.Float64, got.refunds.Float64, got.netSp.Float64, want)
 		}
@@ -414,7 +406,7 @@ func TestSpendingCategoriesLevelsAndLabel(t *testing.T) {
 			t.Errorf("primary level is missing %q", cat)
 			continue
 		}
-		if !nearly(got.netSp.Float64, want) {
+		if !near(got.netSp.Float64, want) {
 			t.Errorf("primary %q net_spend = %v, want %v", cat, got.netSp.Float64, want)
 		}
 	}
@@ -422,7 +414,7 @@ func TestSpendingCategoriesLevelsAndLabel(t *testing.T) {
 		t.Errorf("primary level = %d categories, want 4: %v", len(primary), primary)
 	}
 	// The share is over magnitudes: 200 of a 464 net-spend window.
-	if got := primary["cash_withdrawal"].share.Float64; !nearly(got, 200.0/464.0) {
+	if got := primary["cash_withdrawal"].share.Float64; !near(got, 200.0/464.0) {
 		t.Errorf("cash_withdrawal share = %v, want %v", got, 200.0/464.0)
 	}
 }
@@ -459,7 +451,7 @@ func TestSpendingInBaseDeltasAreLines(t *testing.T) {
         INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
                                   account_external_id, kind, currency, net_amount, description) VALUES
             ('test-src', ?, ?, 'CASH1', 'withdrawal', 'USD', ?, ?)`,
-				id, spendAt(2026, time.January, 25), -tc.amount, tc.description); err != nil {
+				id, dy(2026, time.January, 25), -tc.amount, tc.description); err != nil {
 				t.Fatalf("seed %s line: %v", tc.detailed, err)
 			}
 			if _, err := db.ExecContext(ctx, `
@@ -473,7 +465,7 @@ func TestSpendingInBaseDeltasAreLines(t *testing.T) {
 
 			net := float64(464 + tc.amount)
 			total := readSpendingSummary(t, db, ctx, "USD", "total")
-			if len(total) != 1 || total[0].txnCount != 8 || !nearly(total[0].netSp.Float64, net) {
+			if len(total) != 1 || total[0].txnCount != 8 || !near(total[0].netSp.Float64, net) {
 				t.Errorf("total summary = %+v, want 8 txns / net %v (the %s line is counted)", total, net, tc.detailed)
 			}
 
@@ -488,10 +480,10 @@ func TestSpendingInBaseDeltasAreLines(t *testing.T) {
 					continue
 				}
 				want := float64(tc.amount)
-				if line.txnCount != 1 || !nearly(line.spend.Float64, want) || !nearly(line.netSp.Float64, want) {
+				if line.txnCount != 1 || !near(line.spend.Float64, want) || !near(line.netSp.Float64, want) {
 					t.Errorf("level %s %s = %+v, want 1 txn / %v", level, tc.detailed, line, want)
 				}
-				if !nearly(line.share.Float64, want/net) {
+				if !near(line.share.Float64, want/net) {
 					t.Errorf("level %s %s share = %v, want %v", level, tc.detailed, line.share.Float64, want/net)
 				}
 				for _, excluded := range []string{"internal_transfer", "investment"} {
@@ -581,7 +573,7 @@ func TestSpendingDeltaLinesCarryNoMerchant(t *testing.T) {
         INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
                                   account_external_id, kind, currency, net_amount, description)
         VALUES ('test-src', ?, ?, ?, ?, 'USD', ?, ?)`,
-			l.id, spendAt(2026, time.January, 25), l.acct, l.kind, l.net, l.descr); err != nil {
+			l.id, dy(2026, time.January, 25), l.acct, l.kind, l.net, l.descr); err != nil {
 			t.Fatalf("seed %s: %v", l.id, err)
 		}
 		if _, err := db.ExecContext(ctx, `
@@ -778,26 +770,26 @@ func TestSpendingLinesFallBackToTheirSignature(t *testing.T) {
 		// The provider filed both under a merchant category, so neither
 		// is ever a model candidate and the store never sees the key.
 		{"T-PROV-JAN", "CARD1", "purchase", "FOOD_AND_DRINK_GROCERIES", "provider",
-			&branchSig, "", spendAt(2026, time.January, 26), -40},
+			&branchSig, "", dy(2026, time.January, 26), -40},
 		{"T-PROV-FEB", "CARD1", "purchase", "FOOD_AND_DRINK_GROCERIES", "provider",
-			&branchSig, "", spendAt(2026, time.February, 6), -35},
+			&branchSig, "", dy(2026, time.February, 6), -35},
 		// A rule placed this one and the store happens to hold a name
 		// for its signature: the name outranks the fold.
 		{"T-RULE-NAMED", "CARD1", "purchase", "FOOD_AND_DRINK_GROCERIES", "rule",
-			&sigMarket, "", spendAt(2026, time.February, 7), -15},
+			&sigMarket, "", dy(2026, time.February, 7), -15},
 		// A delta with a label: the issuer, never the fold.
 		{"T-CARDBILL", "CASH1", "withdrawal", "card_spend", "rule",
-			&sigIssuer, "Example Card Issuer", spendAt(2026, time.February, 8), -250},
+			&sigIssuer, "Example Card Issuer", dy(2026, time.February, 8), -250},
 		// Nothing to fall back to.
 		{"T-EMPTYSIG", "CARD1", "purchase", "TRAVEL_LODGING", "provider",
-			&empty, "", spendAt(2026, time.February, 9), -22},
+			&empty, "", dy(2026, time.February, 9), -22},
 		{"T-NOSIG", "CARD1", "purchase", "TRAVEL_LODGING", "provider",
-			nil, "", spendAt(2026, time.February, 10), -18},
+			nil, "", dy(2026, time.February, 10), -18},
 		// Normalize joins tokens and cannot emit one, but the column
 		// carries no CHECK: a blank fold is guarded like an empty one
 		// rather than ranking as a merchant made of spaces.
 		{"T-BLANKSIG", "CARD1", "purchase", "TRAVEL_LODGING", "provider",
-			&blank, "", spendAt(2026, time.February, 11), -12},
+			&blank, "", dy(2026, time.February, 11), -12},
 	}
 	for _, l := range lines {
 		if _, err := db.ExecContext(ctx, `
@@ -997,7 +989,7 @@ func TestSpendingTransactionsMacro(t *testing.T) {
 		t.Errorf("T-GROC-JAN provenance = %q, want model (the store answered it)",
 			groc.provenance.String)
 	}
-	if !nearly(groc.value.Float64, -100) {
+	if !near(groc.value.Float64, -100) {
 		t.Errorf("T-GROC-JAN value = %v, want -100 (canonical sign at transaction grain)", groc.value.Float64)
 	}
 	backlog := got["T-BACKLOG-JAN"]
@@ -1008,7 +1000,7 @@ func TestSpendingTransactionsMacro(t *testing.T) {
 		t.Errorf("T-BACKLOG-JAN provenance = %q, want signature-only", backlog.provenance.String)
 	}
 	hotel := got["T-HOTEL-FEB"]
-	if !nearly(hotel.value.Float64, -44) {
+	if !near(hotel.value.Float64, -44) {
 		t.Errorf("T-HOTEL-FEB value = %v, want -44 (40 EUR at 1.10)", hotel.value.Float64)
 	}
 }
@@ -1040,7 +1032,7 @@ func TestSpendingWronglyMatchedTransferStaysVisible(t *testing.T) {
                                   account_external_id, kind, currency, net_amount, description) VALUES
             ('test-src', 'T-LOOKALIKE-BUY',  ?, 'CARD1', 'purchase',   'USD', -300, 'FURNITURE STORE'),
             ('test-src', 'T-LOOKALIKE-CASH', ?, 'CASH1', 'withdrawal', 'USD', -300, 'COUNTER WITHDRAWAL')`,
-		spendAt(2026, time.January, 10), spendAt(2026, time.January, 12)); err != nil {
+		dy(2026, time.January, 10), dy(2026, time.January, 12)); err != nil {
 		t.Fatalf("seed look-alike pair: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, `
@@ -1074,7 +1066,7 @@ func TestSpendingWronglyMatchedTransferStaysVisible(t *testing.T) {
 
 	beforeNet := readSpendingSummary(t, db, ctx, "USD", "total")[0].netSp.Float64
 	beforeLegs, beforeAudit := auditMagnitude()
-	if !nearly(beforeNet, 464+600) {
+	if !near(beforeNet, 464+600) {
 		t.Fatalf("net_spend before the wrong match = %v, want 1064", beforeNet)
 	}
 
@@ -1088,7 +1080,7 @@ func TestSpendingWronglyMatchedTransferStaysVisible(t *testing.T) {
 	}
 
 	afterNet := readSpendingSummary(t, db, ctx, "USD", "total")[0].netSp.Float64
-	if !nearly(afterNet, 464) {
+	if !near(afterNet, 464) {
 		t.Fatalf("net_spend after the wrong match = %v, want 464", afterNet)
 	}
 
@@ -1098,7 +1090,7 @@ func TestSpendingWronglyMatchedTransferStaysVisible(t *testing.T) {
 	for _, c := range readSpendingCategories(t, db, ctx, "USD", "total", "detailed") {
 		catSum += c.netSp.Float64
 	}
-	if !nearly(catSum, afterNet) {
+	if !near(catSum, afterNet) {
 		t.Errorf("Σ categories = %v, summary = %v: the identity broke, which is not what a wrong match does",
 			catSum, afterNet)
 	}
@@ -1122,7 +1114,7 @@ func TestSpendingWronglyMatchedTransferStaysVisible(t *testing.T) {
 	if afterLegs != beforeLegs+2 {
 		t.Errorf("matcher-removed legs = %d, want %d (the two new ones)", afterLegs, beforeLegs+2)
 	}
-	if !nearly(afterAudit-beforeAudit, beforeNet-afterNet) {
+	if !near(afterAudit-beforeAudit, beforeNet-afterNet) {
 		t.Errorf("audit surface accounts for %v of removed spend, but the report lost %v",
 			afterAudit-beforeAudit, beforeNet-afterNet)
 	}

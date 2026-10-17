@@ -3,6 +3,7 @@ package schwab
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -78,20 +79,16 @@ type Connection struct {
 // Close releases both readers. Safe to call multiple times, and on a
 // Connection Open is still assembling.
 func (c *Connection) Close() error {
-	var firstErr error
+	var apiErr, webErr error
 	if c.api != nil {
-		if err := c.api.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
+		apiErr = c.api.Close()
 		c.api = nil
 	}
 	if c.web != nil {
-		if err := c.web.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
+		webErr = c.web.Close()
 		c.web = nil
 	}
-	return firstErr
+	return errors.Join(apiErr, webErr)
 }
 
 // feed is a configured subsource, named for error messages, with what
@@ -192,21 +189,13 @@ func (c *Connection) snapshotsWebDimensions(
 	if err != nil {
 		return nil, fmt.Errorf("schwab web: %w", err)
 	}
-	byTime := make(map[int64]*canonical.SnapshotBatch, len(times))
-	for _, t := range times {
-		byTime[t] = &canonical.SnapshotBatch{}
-	}
+	byTime := silver.NewBatches(times)
 	if err := c.web.snapshotsDimensions(ctx, w, byTime, bridge); err != nil {
 		return nil, err
 	}
-	batches := make([]canonical.SnapshotBatch, 0, len(times))
-	for _, t := range times {
-		b := byTime[t]
-		if len(b.Accounts) == 0 {
-			continue
-		}
-		batches = append(batches, *b)
-	}
+	batches := slices.DeleteFunc(byTime.Sorted(), func(b canonical.SnapshotBatch) bool {
+		return len(b.Accounts) == 0
+	})
 	return silver.NewSnapshotStream(batches), nil
 }
 

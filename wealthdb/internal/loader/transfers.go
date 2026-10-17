@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/ledgercsv"
 )
 
 // transferIDPrefix marks the synthetic transaction_external_id of every
@@ -66,50 +66,23 @@ func ParseTransferLedger(path string) (map[string][]TransferEntry, error) {
 }
 
 func parseTransferLedger(r io.Reader) (map[string][]TransferEntry, error) {
-	cr := csv.NewReader(r)
-	cr.TrimLeadingSpace = true
-	cr.FieldsPerRecord = -1 // tolerate trailing/blank columns; we index by header
-
-	header, err := cr.Read()
-	if err == io.EOF {
+	lr, err := ledgercsv.Open(r, requiredTransferCols)
+	if err != nil {
+		return nil, fmt.Errorf("equity_transfers: %w", err)
+	}
+	if lr == nil { // no header: an empty ledger
 		return nil, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("equity_transfers: read header: %w", err)
-	}
-	col := map[string]int{}
-	for i, h := range header {
-		col[strings.ToLower(strings.TrimSpace(h))] = i
-	}
-	for _, c := range requiredTransferCols {
-		if _, ok := col[c]; !ok {
-			return nil, fmt.Errorf("equity_transfers: missing required column %q", c)
-		}
-	}
-
-	get := func(rec []string, name string) string {
-		i, ok := col[name]
-		if !ok || i >= len(rec) {
-			return ""
-		}
-		return strings.TrimSpace(rec[i])
-	}
-
 	out := map[string][]TransferEntry{}
-	line := 1
 	for {
-		rec, err := cr.Read()
+		row, line, err := lr.Next()
 		if err == io.EOF {
 			break
 		}
-		line++
 		if err != nil {
-			return nil, fmt.Errorf("equity_transfers: line %d: %w", line, err)
+			return nil, fmt.Errorf("equity_transfers: %w", err)
 		}
-		if isBlankRecord(rec) {
-			continue
-		}
-		e, err := transferFromRecord(rec, get)
+		e, err := transferFromRecord(row)
 		if err != nil {
 			return nil, fmt.Errorf("equity_transfers: line %d: %w", line, err)
 		}
@@ -118,14 +91,14 @@ func parseTransferLedger(r io.Reader) (map[string][]TransferEntry, error) {
 	return out, nil
 }
 
-func transferFromRecord(rec []string, get func([]string, string) string) (TransferEntry, error) {
+func transferFromRecord(row ledgercsv.Row) (TransferEntry, error) {
 	e := TransferEntry{
-		SilverSourceID: get(rec, "silver_source_id"),
-		Account:        get(rec, "account"),
-		Direction:      strings.ToLower(get(rec, "direction")),
-		Currency:       strings.ToUpper(get(rec, "currency")),
-		Instrument:     get(rec, "instrument"),
-		Note:           get(rec, "note"),
+		SilverSourceID: row.Get("silver_source_id"),
+		Account:        row.Get("account"),
+		Direction:      strings.ToLower(row.Get("direction")),
+		Currency:       strings.ToUpper(row.Get("currency")),
+		Instrument:     row.Get("instrument"),
+		Note:           row.Get("note"),
 	}
 	if e.SilverSourceID == "" || e.Account == "" {
 		return e, fmt.Errorf("silver_source_id and account are required")
@@ -134,22 +107,22 @@ func transferFromRecord(rec []string, get func([]string, string) string) (Transf
 		return e, fmt.Errorf("direction must be 'in' or 'out', got %q", e.Direction)
 	}
 	if len(e.Currency) != 3 {
-		return e, fmt.Errorf("currency must be a 3-letter ISO code, got %q", get(rec, "currency"))
+		return e, fmt.Errorf("currency must be a 3-letter ISO code, got %q", row.Get("currency"))
 	}
-	ts, err := time.Parse("2006-01-02", get(rec, "occurred_at"))
+	ts, err := time.Parse("2006-01-02", row.Get("occurred_at"))
 	if err != nil {
-		return e, fmt.Errorf("occurred_at must be YYYY-MM-DD, got %q", get(rec, "occurred_at"))
+		return e, fmt.Errorf("occurred_at must be YYYY-MM-DD, got %q", row.Get("occurred_at"))
 	}
 	e.OccurredAt = ts.UTC().Unix()
 	// value/quantity/cost_basis tolerate 0 / blank — a not-yet-known row is a
 	// 0-value placeholder (it books nothing) until filled in.
-	if e.Value, err = parseLedgerFloat(get(rec, "value")); err != nil {
+	if e.Value, err = parseLedgerFloat(row.Get("value")); err != nil {
 		return e, fmt.Errorf("value: %w", err)
 	}
-	if e.Quantity, err = parseLedgerFloat(get(rec, "quantity")); err != nil {
+	if e.Quantity, err = parseLedgerFloat(row.Get("quantity")); err != nil {
 		return e, fmt.Errorf("quantity: %w", err)
 	}
-	if e.CostBasis, err = parseLedgerFloat(get(rec, "cost_basis")); err != nil {
+	if e.CostBasis, err = parseLedgerFloat(row.Get("cost_basis")); err != nil {
 		return e, fmt.Errorf("cost_basis: %w", err)
 	}
 	if e.Value < 0 {
@@ -164,15 +137,6 @@ func parseLedgerFloat(s string) (float64, error) {
 		return 0, nil
 	}
 	return strconv.ParseFloat(strings.ReplaceAll(s, ",", ""), 64)
-}
-
-func isBlankRecord(rec []string) bool {
-	for _, f := range rec {
-		if strings.TrimSpace(f) != "" {
-			return false
-		}
-	}
-	return true
 }
 
 // toChange converts a ledger entry to a canonical transfer transaction.

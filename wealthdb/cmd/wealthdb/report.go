@@ -54,7 +54,8 @@ type request struct {
 	view     string
 	currency string
 	// from and to bound a window, inclusive, in epoch seconds; from 0
-	// is an open start. asOf is the holdings' as-of instant.
+	// is an open start. asOf is the as-of instant of holdings and
+	// exposure.
 	from, to int64
 	asOf     int64
 
@@ -135,7 +136,7 @@ func (r *report) allColumns() []int {
 func writeReport(ctx context.Context, rep *report, colsExpr, prefix string, open func() (*sql.DB, error), privacy bool, format output.Format, w io.Writer) error {
 	cols, err := rep.pick(colsExpr)
 	if err != nil {
-		return errs.Newf(2, "%s: %s", prefix, err.Error())
+		return errs.Newf(errs.ExitUsage, "%s: %s", prefix, err.Error())
 	}
 	db, err := open()
 	if err != nil {

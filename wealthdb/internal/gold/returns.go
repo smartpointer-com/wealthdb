@@ -15,7 +15,8 @@ import (
 
 // acctKey is the in-memory map key for an account: source id + a NUL separator
 // + account id (NUL can't appear in an id, so the join is unambiguous). Reused
-// for the source+portfolio grouping key, which has the same shape.
+// for every key of the same shape: the source+portfolio grouping key, the
+// change accumulator's dimension keys, NamedAccount.
 func acctKey(a, b string) string { return a + "\x00" + b }
 
 // ReturnRow is one row of `wealthdb returns`: an entity's return over one
@@ -306,7 +307,7 @@ func (ds *returnsDataset) finalize() {
 // synthetic-onboarding mechanism applies uniformly.
 func computeReturns(ds *returnsDataset, p ReturnParams) []ReturnRow {
 	// Never value past the latest available data (also guards a future ToEpoch).
-	toDay := p.ToEpoch / 86400
+	toDay := EpochDay(p.ToEpoch)
 	if toDay > ds.globalMax {
 		toDay = ds.globalMax
 	}
@@ -583,7 +584,7 @@ func loadAccountData(ctx context.Context, db *sql.DB, outCcy string, ov map[stri
 		if err := rows.Scan(&asOf, &src, &acct, &kind, &label, &base, &pf, &tot); err != nil {
 			return nil, fmt.Errorf("RunReturns scan: %w", err)
 		}
-		appendSeries(byKey, kinds, pfNames, ov, src, acct, kind, label, base, pf, asOf/86400, tot)
+		appendSeries(byKey, kinds, pfNames, ov, src, acct, kind, label, base, pf, EpochDay(asOf), tot)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -616,32 +617,11 @@ func newAccountData(kinds, pfNames map[string]string, ov map[string]ReturnsPolic
 	return a
 }
 
-// returnsInvisibleKind reports whether an account_kind contributes nothing to
-// any return series, at any grain. Only `card` is: a revolving-credit liability
-// is a spending instrument, not an investment — its balance swings are purchases
-// and payments, and running them through TWR/MWR would report shopping as
-// performance. Excluding it at the loader (rather than zeroing it later) is what
-// makes the exclusion total:
-//
-//   - the account never enters the accounts map, so no grain — accounts,
-//     portfolios, sources, global — can enumerate it;
-//   - attachOneFlow's nil-account gate then drops every card flow, so purchases,
-//     refunds, card payments and rewards are not external flows anywhere;
-//   - transfer-matching candidacy requires attachment, so a card leg can never
-//     net against a real transfer and silently erase it;
-//   - loadSnapshotDays and matchCrossTransfers already skip unknown accounts,
-//     and groupAccounts / the materializer only ever walk the map.
-//
-// Deliberately NOT a ReturnsPolicy knob: policies are keyed by adapter kind and
-// default to a no-op, so a card arriving from a source with no registered policy
-// would leak into the aggregates. The rule belongs to the engine and keys on the
-// account kind itself.
-//
-// Consequence of record: with cards loaded, the returns global no longer equals
-// `report_global` — the returns value spine deliberately omits them. Same
-// precedent as mortgages and other liabilities, which the rollups already drop
-// (splitLiabilities); unlike a mortgage, a card is not even reported on the
-// liability line, because it produces no row at all.
+// returnsInvisibleKind reports whether an account kind contributes nothing to
+// any return series, at any grain: only `card`. appendSeries drops such an
+// account at load, so no grain enumerates it and attachOneFlow drops its flows.
+// docs/RETURNS-NOTES.md, "Credit cards are returns-invisible", has the why and
+// the report_global contract.
 func returnsInvisibleKind(kind string) bool {
 	return kind == string(canonical.AccountKindCard)
 }
@@ -874,7 +854,7 @@ func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct
 	if !ok {
 		return false // unresolved FX on the flow — skip (documented limitation)
 	}
-	day := occurredAt / 86400
+	day := EpochDay(occurredAt)
 	if kind == canonical.TxKindJournal {
 		a.journalPresent = true
 	}
@@ -915,7 +895,7 @@ func appendCrossCandidate(cands []crossCandidate, src, acct, txID, ccy string, o
 		return cands
 	}
 	return append(cands, crossCandidate{
-		src: src, acct: acct, txID: txID, day: occurredAt / 86400, ccy: ccy, amt: amt,
+		src: src, acct: acct, txID: txID, day: EpochDay(occurredAt), ccy: ccy, amt: amt,
 	})
 }
 

@@ -255,12 +255,11 @@ func fillFromKey(key string, isin, cusip, symbol **string) {
 
 // heldInstruments is every instrument a position names with a value or a
 // quantity, the span of the snapshots it appears in, and whether it is
-// still held. A position's key goes through holding_aliases and
-// instrument_aliases() first, as the gains reports read it, so a holding
-// a source keys two ways is one instrument. It is still held when its
-// source's latest snapshot lists it and that source was observed within
-// stillHeldDays of now; a source that stopped reporting ends it at its
-// last snapshot.
+// still held. A position's key goes through holdingAliasJoins first, as
+// the gains reports read it, so a holding a source keys two ways is one
+// instrument. It is still held when its source's latest snapshot lists
+// it and that source was observed within stillHeldDays of now; a source
+// that stopped reporting ends it at its last snapshot.
 func heldInstruments(ctx context.Context, db *sql.DB, now time.Time) ([]heldInstrument, error) {
 	var out []heldInstrument
 	err := scanAll(ctx, db, `
@@ -271,12 +270,8 @@ WITH last_snap AS (
      GROUP BY 1),
 pos AS (
     SELECT p.*, COALESCE(ha.to_key, hd.to_key, ia.k, p.instrument_external_id) AS iid
-      FROM positions p
-      LEFT JOIN holding_aliases ha ON ha.silver_source_id = p.silver_source_id
-           AND ha.account_external_id = p.account_external_id AND ha.from_key = holding_key(p.instrument_external_id, p.position_key)
-      LEFT JOIN holding_aliases hd ON hd.silver_source_id = p.silver_source_id
-           AND hd.account_external_id = '' AND hd.from_key = holding_key(p.instrument_external_id, p.position_key)
-      LEFT JOIN instrument_aliases() ia ON ia.src = p.silver_source_id AND ia.alias = p.instrument_external_id
+      FROM positions p`+holdingAliasJoins("p.silver_source_id", "p.account_external_id", "p.instrument_external_id",
+		"p.position_key")+`
      WHERE p.instrument_external_id IS NOT NULL
        AND (COALESCE(p.market_value, 0) <> 0 OR COALESCE(p.quantity, 0) <> 0)),
 held AS (
@@ -523,7 +518,7 @@ var wantedFields = []struct {
 	{"sector", []string{"sector", "sic"}, "sector", canonical.LabelSecurityType, false},
 	{"country", []string{"risk_country", "hq_country", "legal_country", "incorporation"}, "country",
 		canonical.LabelSecurityTypeCountry, false},
-	{"market_cap", []string{"market_cap", "shares_outstanding", "size"}, "", "", true},
+	{"market_cap", []string{"market_cap", "shares_outstanding"}, "", "", true},
 }
 
 // addConstituents adds the securities the lines of the funds held today
@@ -641,11 +636,9 @@ SELECT k, provider, MAX(as_of) FROM (
 	}
 	stated := map[[2]string]bool{}
 	for _, wf := range wantedFields {
-		q := `SELECT DISTINCT ` + keys.sql("f.security_key") + ` FROM security_facts f WHERE f.field IN (` + placeholders(len(wf.facts)) + `)`
-		args := make([]any, len(wf.facts))
-		for i, f := range wf.facts {
-			args[i] = f
-		}
+		q := `SELECT DISTINCT ` + keys.sql("f.security_key") + ` FROM security_facts f
+		  WHERE f.field IN (SELECT unnest(CAST(? AS VARCHAR[])))`
+		args := []any{wf.facts}
 		if wf.lineColumn != "" {
 			q += ` UNION SELECT DISTINCT ` + keys.sql("l.security_key") + ` FROM fund_lines l WHERE l.` + wf.lineColumn +
 				` IS NOT NULL AND l.security_key IS NOT NULL`
@@ -668,17 +661,6 @@ SELECT k, provider, MAX(as_of) FROM (
 		}
 	}
 	return stated, nil
-}
-
-func placeholders(n int) string {
-	out := make([]byte, 0, 3*n)
-	for i := range n {
-		if i > 0 {
-			out = append(out, ", "...)
-		}
-		out = append(out, '?')
-	}
-	return string(out)
 }
 
 // keyReader reads a key as the security key it names through

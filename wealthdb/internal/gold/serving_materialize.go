@@ -6,8 +6,8 @@ import (
 	"fmt"
 )
 
-// latestArg is the as-of a report macro reads as "the latest snapshot",
-// the argument the report models pass too.
+// latestArg is the as-of a report macro reads as "the latest snapshot";
+// migration 0132 creates the tables with it.
 const latestArg = "9223372036854775807"
 
 // servingTables are the tables MaterializeServingTables rewrites, each

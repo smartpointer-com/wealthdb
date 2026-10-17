@@ -57,9 +57,20 @@ func TestMCPInitialize(t *testing.T) {
 		if strings.Contains(init.Instructions, privacyNotice) != privacy {
 			t.Errorf("privacy %v: the privacy notice present = %v", privacy, !privacy)
 		}
-		caps := init.Capabilities
-		if caps.Tools == nil || caps.Resources == nil || caps.Logging != nil || caps.Prompts != nil {
-			t.Errorf("capabilities = %+v, want tools and resources only", caps)
+		// The capabilities as the wire carries them: one key per
+		// capability offered.
+		raw, err := json.Marshal(init.Capabilities)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var caps map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &caps); err != nil {
+			t.Fatal(err)
+		}
+		_, tools := caps["tools"]
+		_, resources := caps["resources"]
+		if !tools || !resources || len(caps) != 2 {
+			t.Errorf("capabilities = %s, want tools and resources only", raw)
 		}
 		if init.ServerInfo.Name != "wealthdb" {
 			t.Errorf("server name = %q", init.ServerInfo.Name)

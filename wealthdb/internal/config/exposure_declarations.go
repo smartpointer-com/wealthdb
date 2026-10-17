@@ -53,15 +53,6 @@ func (p *DeclarationsPath) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// retiredTags is `exposure.tags`, which the declarations ledger replaces:
-// any value is refused with where it went.
-type retiredTags struct{}
-
-func (retiredTags) UnmarshalJSON([]byte) error {
-	return fmt.Errorf("exposure.tags: the declarations ledger replaces the tags ledger; name it in exposure.declarations, " +
-		"one record per holding (docs/EXPOSURE.md §9)")
-}
-
 // readDeclarationsFile reads the declarations ledger at path, each record
 // checked against the configured sources and the vocabularies. An empty
 // path or a missing file holds no declarations.
@@ -311,12 +302,8 @@ func declaredValue(dim, key string) (string, error) {
 			return string(canonical.RegionOther), nil
 		}
 		if !slices.Contains(canonical.Regions(), canonical.Region(key)) {
-			var names []string
-			for _, r := range canonical.Regions() {
-				names = append(names, string(r))
-			}
 			return "", fmt.Errorf("%q is not a region; the regions are %s, %s (the rest of the world) and %s",
-				key, strings.Join(names, ", "), regionRest, canonical.Unknown)
+				key, joinNames(canonical.Regions()), regionRest, canonical.Unknown)
 		}
 	case canonical.DimensionCountry:
 		if !isCountryCode(key) {
@@ -328,15 +315,11 @@ func declaredValue(dim, key string) (string, error) {
 		}
 	case canonical.DimensionSector:
 		if !canonical.Sector(key).Valid() {
-			return "", fmt.Errorf("%q is not one of %s", key, sectorNames())
+			return "", fmt.Errorf("%q is not one of %s", key, joinNames(canonical.Sectors()))
 		}
 	case canonical.DimensionAssetClass:
 		if !canonical.AssetClass(key).Valid() {
-			var names []string
-			for _, a := range canonical.AssetClasses() {
-				names = append(names, string(a))
-			}
-			return "", fmt.Errorf("%q is not one of %s (docs/TAXONOMY.md §2)", key, strings.Join(names, ", "))
+			return "", fmt.Errorf("%q is not one of %s (docs/TAXONOMY.md §2)", key, joinNames(canonical.AssetClasses()))
 		}
 	}
 	return key, nil
@@ -382,18 +365,7 @@ func crossDimensions(order []string, dims map[string][]share) []canonical.Exposu
 		for _, p := range acc {
 			for _, s := range dims[dim] {
 				l := p.leaf
-				switch dim {
-				case canonical.DimensionRegion:
-					l.Region = s.value
-				case canonical.DimensionCountry:
-					l.Country = s.value
-				case canonical.DimensionCurrency:
-					l.Currency = s.value
-				case canonical.DimensionSector:
-					l.Sector = s.value
-				case canonical.DimensionAssetClass:
-					l.AssetClass = s.value
-				}
+				l.Set(dim, s.value)
 				next = append(next, partial{leaf: l, frac: new(big.Rat).Mul(p.frac, s.frac)})
 			}
 		}

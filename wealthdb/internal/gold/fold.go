@@ -29,6 +29,11 @@ import (
 // TestChangeAccumulatorPreexistingRow.
 //
 // An accumulator is single-use: Add batches, then Flush once.
+//
+// Each index keys an entity by acctKey(silver_source_id, external id),
+// matching the dimension tables' composite primary keys. Loads stamp
+// one source id across the whole stream, but the fold does not rely on
+// that.
 type ChangeAccumulator struct {
 	portfolioIdx  map[string]int
 	portfolios    []canonical.PortfolioChange
@@ -58,7 +63,7 @@ func NewChangeAccumulator() *ChangeAccumulator {
 func (a *ChangeAccumulator) AddBatch(b *canonical.SnapshotBatch) error {
 	for i := range b.Portfolios {
 		r := b.Portfolios[i]
-		k := dimKey(r.SilverSourceID, r.PortfolioExternalID)
+		k := acctKey(r.SilverSourceID, r.PortfolioExternalID)
 		if j, ok := a.portfolioIdx[k]; ok {
 			a.portfolios[j] = foldPortfolio(a.portfolios[j], r)
 			continue
@@ -71,7 +76,7 @@ func (a *ChangeAccumulator) AddBatch(b *canonical.SnapshotBatch) error {
 		if err := validateAccountEnums("AddBatch account", i, &r); err != nil {
 			return err
 		}
-		k := dimKey(r.SilverSourceID, r.AccountExternalID)
+		k := acctKey(r.SilverSourceID, r.AccountExternalID)
 		if j, ok := a.accountIdx[k]; ok {
 			a.accounts[j] = foldAccount(a.accounts[j], r)
 			continue
@@ -84,7 +89,7 @@ func (a *ChangeAccumulator) AddBatch(b *canonical.SnapshotBatch) error {
 		if err := validateTaxonomyPair("AddBatch instrument", i, r.AssetClass, r.Vehicle); err != nil {
 			return err
 		}
-		k := dimKey(r.SilverSourceID, r.InstrumentExternalID)
+		k := acctKey(r.SilverSourceID, r.InstrumentExternalID)
 		if j, ok := a.instrumentIdx[k]; ok {
 			a.instruments[j] = foldInstrument(a.instruments[j], r)
 			continue
@@ -106,14 +111,6 @@ func (a *ChangeAccumulator) Flush(ctx context.Context, w *Writer) error {
 		return err
 	}
 	return w.UpsertInstruments(ctx, a.instruments)
-}
-
-// dimKey scopes an external id by its silver_source_id, matching
-// the dimension tables' composite primary keys. Loads stamp one
-// source id across the whole stream, but the fold shouldn't have
-// to rely on that.
-func dimKey(sourceID, externalID string) string {
-	return sourceID + "\x00" + externalID
 }
 
 // foldPortfolio applies next onto acc exactly as the §8.4 upsert

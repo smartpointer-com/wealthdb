@@ -2,13 +2,13 @@ package ubs
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // newWebTxFixture builds an in-memory ubs-web silver with the accounts and
@@ -16,11 +16,6 @@ import (
 // IBAN-spec placeholder letters (AGENTS.md §4).
 func newWebTxFixture(t *testing.T) *webReader {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/ubs-web.db")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
 	const schema = `
 CREATE TABLE accounts (
     snapshot_at INTEGER NOT NULL, account_external_id TEXT NOT NULL,
@@ -32,9 +27,7 @@ CREATE TABLE transactions (
     currency_iso TEXT NOT NULL, amount_debit REAL, amount_credit REAL,
     counterparty TEXT, description_kind TEXT, payload TEXT NOT NULL,
     PRIMARY KEY (transaction_external_id, account_external_id));`
-	if _, err := db.Exec(schema); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
+	_, db := silvertest.NewDB(t, schema)
 	return &webReader{db: db}
 }
 

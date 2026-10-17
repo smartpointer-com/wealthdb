@@ -64,6 +64,23 @@ type ExposureDeclaredLeaf struct {
 	AssetClass, Region, Country, Currency, Sector string
 }
 
+// Set sets the leaf's value in the dimension dim, one of
+// DeclarationDimensions; any other dim sets nothing.
+func (l *ExposureDeclaredLeaf) Set(dim, value string) {
+	switch dim {
+	case DimensionRegion:
+		l.Region = value
+	case DimensionCountry:
+		l.Country = value
+	case DimensionCurrency:
+		l.Currency = value
+	case DimensionSector:
+		l.Sector = value
+	case DimensionAssetClass:
+		l.AssetClass = value
+	}
+}
+
 // The dimensions a declaration may state, in the order gold lists them.
 const (
 	DimensionRegion     = "region"

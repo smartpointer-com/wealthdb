@@ -1,6 +1,10 @@
 package schwab
 
-import "database/sql"
+import (
+	"database/sql"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+)
 
 // apiReader reads from the schwab-api silver SQLite. Methods
 // are spread across snapshots.go / transactions.go / status.go —
@@ -10,11 +14,4 @@ type apiReader struct {
 	db *sql.DB
 }
 
-func (r *apiReader) Close() error {
-	if r == nil || r.db == nil {
-		return nil
-	}
-	err := r.db.Close()
-	r.db = nil
-	return err
-}
+func (c *apiReader) Close() error { return silver.CloseDB(&c.db) }

@@ -132,10 +132,10 @@ func TestParseWrapperDestination(t *testing.T) {
 	}
 }
 
-// TestVehicleTransferDetailed pins each pool to the delta that stands
-// for a crossing the product cannot see the far side of, and that
-// `unpaired` has none: nothing places a row there, only the absence
-// of a far account puts one there.
+// TestVehicleTransferDetailed pins each pool, and the deposits class,
+// to the delta that stands for a crossing the product cannot see the
+// far side of, and that `unpaired` has none: nothing places a row
+// there, only the absence of a far account puts one there.
 func TestVehicleTransferDetailed(t *testing.T) {
 	for _, tc := range []struct {
 		class    CashflowClass
@@ -145,6 +145,7 @@ func TestVehicleTransferDetailed(t *testing.T) {
 		{ClassEducation, DetailedEducationTransfer},
 		{ClassHealth, DetailedHealthTransfer},
 		{ClassTrusts, DetailedTrustTransfer},
+		{ClassDeposits, DetailedDepositTransfer},
 	} {
 		got, ok := VehicleTransferDetailed(tc.class)
 		if !ok || got != tc.detailed {

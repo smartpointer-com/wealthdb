@@ -9,6 +9,7 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // testdata/silver_schema.sql is a copy of
@@ -31,33 +32,12 @@ const (
 
 func newFixtureSilver(t *testing.T) (string, *sql.DB) {
 	t.Helper()
-	path := t.TempDir() + "/refdata.db"
-	db, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(silverSchemaSQL); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
-	return path, db
+	return silvertest.NewDB(t, silverSchemaSQL)
 }
 
 func openAdapter(t *testing.T, path string) silver.Connection {
 	t.Helper()
-	conn, err := (&Adapter{}).Open(context.Background(), silver.OpenSpec{Path: path})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { conn.Close() })
-	return conn
-}
-
-func exec(t *testing.T, db *sql.DB, q string, args ...any) {
-	t.Helper()
-	if _, err := db.Exec(q, args...); err != nil {
-		t.Fatalf("%s: %v", q, err)
-	}
+	return silvertest.Open(t, &Adapter{}, path)
 }
 
 // seed writes two runs of an invented fund: run1 serves 2025-12-31 and
@@ -65,26 +45,26 @@ func exec(t *testing.T, db *sql.DB, q string, args ...any) {
 // security looked up in run2.
 func seed(t *testing.T, db *sql.DB) {
 	t.Helper()
-	exec(t, db, `INSERT INTO dump_runs VALUES (?, 1, '/x/1', ?), (?, 1, '/x/2', ?)`, run1, load1, run2, load2)
+	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (?, 1, '/x/1', ?), (?, 1, '/x/2', ?)`, run1, load1, run2, load2)
 	for _, c := range []struct {
 		asOf, run int64
 	}{{d1, run1}, {d2, run1}, {d3, run2}, {d0, run2}} {
-		exec(t, db, `INSERT INTO compositions (fund_ref, as_of, basis, provider, source_kind, fund_name,
+		silvertest.Exec(t, db, `INSERT INTO compositions (fund_ref, as_of, basis, provider, source_kind, fund_name,
 		    currency, net_assets, line_count, weight_sum, run_at)
 		    VALUES ('isin:XX0000000001', ?, 'holdings', 'inbox', 'inbox', 'Example Index Fund', 'USD', '1000', 2, '99.5', ?)`,
 			c.asOf, c.run)
-		exec(t, db, `INSERT INTO lines (fund_ref, as_of, basis, line_no, isin, name, asset_type, weight, currency, country, sector)
+		silvertest.Exec(t, db, `INSERT INTO lines (fund_ref, as_of, basis, line_no, isin, name, asset_type, weight, currency, country, sector)
 		    VALUES ('isin:XX0000000001', ?, 'holdings', 1, 'xx0000000002', 'Example Corp', 'Equity', '60.5', 'USD', 'United States', 'Information Technology'),
 		           ('isin:XX0000000001', ?, 'holdings', 2, NULL, 'USD CASH', 'Cash', '39', 'USD', NULL, NULL)`,
 			c.asOf, c.asOf)
 	}
-	exec(t, db, `INSERT INTO attributes (fund_ref, as_of, domicile, ucits, hedged_currency, run_at)
+	silvertest.Exec(t, db, `INSERT INTO attributes (fund_ref, as_of, domicile, ucits, hedged_currency, run_at)
 	    VALUES ('isin:XX0000000001', ?, 'IE', 1, 'CHF', ?)`, d3, run2)
-	exec(t, db, `INSERT INTO counterparties (fund_ref, as_of, role, name, share, run_at)
+	silvertest.Exec(t, db, `INSERT INTO counterparties (fund_ref, as_of, role, name, share, run_at)
 	    VALUES ('isin:XX0000000001', ?, 'swap', 'Example Bank', '12.5', ?)`, d3, run2)
-	exec(t, db, `INSERT INTO securities (security_key, as_of, provider, isin, figi, ticker, name, run_at)
+	silvertest.Exec(t, db, `INSERT INTO securities (security_key, as_of, provider, isin, figi, ticker, name, run_at)
 	    VALUES ('symbol:EXMP', ?, 'openfigi', 'XX0000000002', 'BBG000000002', 'EXMP', 'Example Corp', ?)`, d3, run2)
-	exec(t, db, `INSERT INTO security_facts (security_key, field, as_of, provider, value, scheme, run_at)
+	silvertest.Exec(t, db, `INSERT INTO security_facts (security_key, field, as_of, provider, value, scheme, run_at)
 	    VALUES ('symbol:EXMP', 'sic', ?, 'sec-edgar', '3571', 'sic', ?)`, d3, run2)
 }
 
@@ -196,8 +176,8 @@ func TestChangeWindowTakesALateLoadedRun(t *testing.T) {
 	path, db := newFixtureSilver(t)
 	seed(t, db)
 	early, dLate := run1-50_000, d1-86400
-	exec(t, db, `INSERT INTO dump_runs VALUES (?, 1, '/x/0', ?)`, early, load2+100)
-	exec(t, db, `INSERT INTO compositions (fund_ref, as_of, basis, provider, source_kind, line_count, run_at)
+	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (?, 1, '/x/0', ?)`, early, load2+100)
+	silvertest.Exec(t, db, `INSERT INTO compositions (fund_ref, as_of, basis, provider, source_kind, line_count, run_at)
 	    VALUES ('symbol:OTHER', ?, 'holdings', 'inbox', 'inbox', 0, ?)`, dLate, early)
 	w, err := openAdapter(t, path).ChangeWindow(context.Background(), load2)
 	if err != nil {
@@ -214,7 +194,7 @@ func TestChangeWindowEmptyRun(t *testing.T) {
 	path, db := newFixtureSilver(t)
 	seed(t, db)
 	load3 := load2 + 1000
-	exec(t, db, `INSERT INTO dump_runs VALUES (?, 1, '/x/3', ?)`, run2+1000, load3)
+	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (?, 1, '/x/3', ?)`, run2+1000, load3)
 	w, err := openAdapter(t, path).ChangeWindow(context.Background(), load2)
 	if err != nil {
 		t.Fatal(err)
@@ -283,14 +263,14 @@ func lowerBudgets(t *testing.T, lines, tail int) {
 func TestSnapshotsBatchLargeWindows(t *testing.T) {
 	lowerBudgets(t, 20, 5)
 	path, db := newFixtureSilver(t)
-	exec(t, db, `INSERT INTO dump_runs VALUES (?, 1, '/x/1', ?)`, run1, load1)
+	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (?, 1, '/x/1', ?)`, run1, load1)
 	const days, perDay = 3, 12
 	for d := int64(0); d < days; d++ {
 		asOf := d1 + d*86400
-		exec(t, db, `INSERT INTO compositions (fund_ref, as_of, basis, provider, source_kind, line_count, run_at)
+		silvertest.Exec(t, db, `INSERT INTO compositions (fund_ref, as_of, basis, provider, source_kind, line_count, run_at)
 		    VALUES ('symbol:BIG', ?, 'holdings', 'inbox', 'inbox', ?, ?)`, asOf, perDay, run1)
 		for i := 0; i < perDay; i++ {
-			exec(t, db, `INSERT INTO lines (fund_ref, as_of, basis, line_no, ticker, weight)
+			silvertest.Exec(t, db, `INSERT INTO lines (fund_ref, as_of, basis, line_no, ticker, weight)
 			    VALUES ('symbol:BIG', ?, 'holdings', ?, 'T', '0.001')`, asOf, i)
 		}
 	}
@@ -343,18 +323,18 @@ func TestTransactionsEmpty(t *testing.T) {
 func TestSnapshotsPageSecurities(t *testing.T) {
 	lowerBudgets(t, 20, 5)
 	path, db := newFixtureSilver(t)
-	exec(t, db, `INSERT INTO dump_runs VALUES (?, 1, '/x/1', ?)`, run1, load1)
+	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (?, 1, '/x/1', ?)`, run1, load1)
 	for _, key := range []string{"symbol:AAA", "symbol:BBB", "symbol:CCC"} {
 		for _, asOf := range []int64{d1, d2} {
 			for _, provider := range []string{"openfigi", "sec-edgar"} {
-				exec(t, db, `INSERT INTO securities (security_key, as_of, provider, run_at) VALUES (?, ?, ?, ?)`,
+				silvertest.Exec(t, db, `INSERT INTO securities (security_key, as_of, provider, run_at) VALUES (?, ?, ?, ?)`,
 					key, asOf, provider, run1)
 			}
 		}
 	}
 	const n = 12
 	for i := 0; i < n; i++ {
-		exec(t, db, `INSERT INTO security_facts (security_key, field, as_of, provider, value, run_at)
+		silvertest.Exec(t, db, `INSERT INTO security_facts (security_key, field, as_of, provider, value, run_at)
 		    VALUES (?, 'sic', ?, 'sec-edgar', '3571', ?)`, fmt.Sprintf("symbol:S%02d", i), d1, run1)
 	}
 	stream, err := openAdapter(t, path).Snapshots(context.Background(), canonical.Window{Start: d1, End: d2, HasChanges: true})

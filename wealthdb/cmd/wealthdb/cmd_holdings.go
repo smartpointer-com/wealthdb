@@ -64,7 +64,7 @@ func runHoldingsView(ctx context.Context, g globalFlags, view string, args []str
 
 	asOfEpoch, err := parseAsOf(*asOf, time.Now())
 	if err != nil {
-		return errs.Newf(2, "%s: %s", view, err.Error())
+		return errs.Newf(errs.ExitUsage, "%s: %s", view, err.Error())
 	}
 	fmtChoice, cfg, outCcy, err := rf.resolve(g, view)
 	if err != nil {

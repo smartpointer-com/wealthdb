@@ -46,14 +46,7 @@ type Connection struct {
 	db *sql.DB
 }
 
-func (c *Connection) Close() error {
-	if c == nil || c.db == nil {
-		return nil
-	}
-	err := c.db.Close()
-	c.db = nil
-	return err
-}
+func (c *Connection) Close() error { return silver.CloseDB(&c.db) }
 
 // Snapshots emits the reference records whose as_of lies in the window.
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {

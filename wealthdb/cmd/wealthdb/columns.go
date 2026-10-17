@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
@@ -173,6 +174,14 @@ func textCol[T any](name string, get func(T) *string) columnSpec[T] {
 	return columnSpec[T]{Name: name, Align: output.AlignLeft, Extract: func(r T) string { return strOrEmpty(get(r)) }}
 }
 
+// strOrEmpty is a nullable text, blank for nil.
+func strOrEmpty(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
 // dateCol is a date column, blank where the epoch is 0: a source that
 // has produced no observations at all.
 func dateCol[T any](name string, get func(T) int64) columnSpec[T] {
@@ -194,11 +203,24 @@ func datePtrCol[T any](name string, get func(T) *int64) columnSpec[T] {
 	}}
 }
 
+// formatDate is an epoch second's UTC date.
+func formatDate(epoch int64) string {
+	return time.Unix(epoch, 0).UTC().Format("2006-01-02")
+}
+
 // pctCol is a figure already in percent, named name and printed
 // name_pct. A percentage is a proportion, not an amount: -p leaves it.
 func pctCol[T any](name string, get func(T) *float64) columnSpec[T] {
 	return columnSpec[T]{Name: name, Header: name + "_pct", Align: output.AlignRight,
 		Extract: func(r T) string { return formatPercent(get(r)) }}
+}
+
+// ratioCol is a ratio, named name and printed name_pct in percent, n/a
+// for nil. A ratio is a proportion, not an amount: it survives -p,
+// which keeps the privacy twin of a report readable.
+func ratioCol[T any](name string, get func(T) *float64) columnSpec[T] {
+	return columnSpec[T]{Name: name, Header: name + "_pct", Align: output.AlignRight,
+		Extract: func(r T) string { return formatPct(get(r)) }}
 }
 
 // formatPercent is a figure already in percent with two decimals, blank
@@ -213,6 +235,36 @@ func formatPercent(p *float64) string {
 // countCol is a legible count.
 func countCol[T any](name string, get func(T) int64) columnSpec[T] {
 	return columnSpec[T]{Name: name, Align: output.AlignRight, Extract: func(r T) string { return fmt.Sprintf("%d", get(r)) }}
+}
+
+// intPtrCol is a legible count, blank for nil.
+func intPtrCol[T any](name string, get func(T) *int64) columnSpec[T] {
+	return columnSpec[T]{Name: name, Align: output.AlignRight, Extract: func(r T) string { return intOrEmpty(get(r)) }}
+}
+
+// intOrEmpty is a nullable count, blank for nil.
+func intOrEmpty(p *int64) string {
+	if p == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d", *p)
+}
+
+// yesNoCol is a stated flag, blank where the source states nothing.
+func yesNoCol[T any](name string, get func(T) *bool) columnSpec[T] {
+	return columnSpec[T]{Name: name, Align: output.AlignLeft, Extract: func(r T) string { return yesNo(get(r)) }}
+}
+
+// yesNo renders a stated flag, empty where the source states nothing.
+func yesNo(b *bool) string {
+	switch {
+	case b == nil:
+		return ""
+	case *b:
+		return "yes"
+	default:
+		return "no"
+	}
 }
 
 func joinColumnNames[T any](registry []columnSpec[T]) string {

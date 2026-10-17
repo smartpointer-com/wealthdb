@@ -198,3 +198,42 @@ func parseRangeBound(s string, now time.Time, isTo bool) (int64, error) {
 	}
 	return t.Unix(), nil
 }
+
+// parseTrailingYearWindow defaults a bare invocation to the trailing
+// twelve months — the same day one year ago through today — otherwise
+// reuses the transactions-style positional range. It does NOT default
+// to since-inception the way the returns window does: the reports that
+// take it answer "what is happening lately", and a window reaching back
+// past the day a source's ledger begins covers a different population,
+// so a total over it would read as a different product.
+func parseTrailingYearWindow(args []string, now time.Time) (int64, int64, error) {
+	if len(args) == 0 {
+		nowUTC := now.UTC()
+		from := anchorToDay(nowUTC.AddDate(-1, 0, 0), false).Unix()
+		return from, anchorToDay(nowUTC, true).Unix(), nil
+	}
+	return parseDateRange(args, now)
+}
+
+// periodLabel renders a bucket the way the returns family's
+// `period` column does: the calendar label of the bucket the epoch
+// second falls in (a SQL bucket passes its first second, an exposure
+// series point its last), and "total" for the single NULL bucket
+// --period total emits. Daily and weekly buckets label as their
+// opening date (DuckDB truncates a week to its Monday).
+func periodLabel(at *int64, period string) string {
+	if at == nil {
+		return "total"
+	}
+	t := time.Unix(*at, 0).UTC()
+	switch period {
+	case "daily", "weekly":
+		return t.Format("2006-01-02")
+	case "monthly":
+		return t.Format("2006-01")
+	case "annual":
+		return t.Format("2006")
+	default: // quarterly
+		return fmt.Sprintf("%d-Q%d", t.Year(), (int(t.Month())-1)/3+1)
+	}
+}

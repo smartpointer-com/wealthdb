@@ -23,28 +23,28 @@ import (
 // booked here, on the accounts it does not speak for: the other leg of a
 // conversion one of its rows describes (conversionMirrors), and the cash a
 // corporate action paid (corporateActionCashLegs).
-func (c *psnReader) Transactions(ctx context.Context, w canonical.Window, hints psnHints) (silver.TransactionStream, error) {
+func (r *psnReader) Transactions(ctx context.Context, w canonical.Window, hints psnHints) (silver.TransactionStream, error) {
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
 
-	ibans, err := c.cashAccountIBANs(ctx)
+	ibans, err := r.cashAccountIBANs(ctx)
 	if err != nil {
 		return nil, err
 	}
-	settled, err := c.buildSettlementFold(ctx, ibans)
+	settled, err := r.buildSettlementFold(ctx, ibans)
 	if err != nil {
 		return nil, err
 	}
-	coverage, err := c.cashCoverage(ctx)
+	coverage, err := r.cashCoverage(ctx)
 	if err != nil {
 		return nil, err
 	}
-	mirrors, err := c.conversionMirrors(ctx)
+	mirrors, err := r.conversionMirrors(ctx)
 	if err != nil {
 		return nil, err
 	}
-	cashLegs, err := c.corporateActionCashLegs(ctx, w, coverage, ibans)
+	cashLegs, err := r.corporateActionCashLegs(ctx, w, coverage, ibans)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +53,7 @@ func (c *psnReader) Transactions(ctx context.Context, w canonical.Window, hints 
 SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, payload
   FROM events
  WHERE timestamp BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
+	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return nil, fmt.Errorf("ubs Transactions: %w", err)
 	}
@@ -239,12 +239,12 @@ func newSettlementKey(account, currency string, amount *canonical.Decimal, settl
 
 // buildSettlementFold reads every trade confirmation the silver holds
 // and records the cash leg each one settles.
-func (c *psnReader) buildSettlementFold(ctx context.Context, ibans map[string]string) (*settlementFold, error) {
+func (r *psnReader) buildSettlementFold(ctx context.Context, ibans map[string]string) (*settlementFold, error) {
 	out := &settlementFold{unpaired: map[settlementKey]int{}, ibans: ibans}
-	if c == nil || c.db == nil {
+	if r == nil || r.db == nil {
 		return out, nil
 	}
-	rows, err := c.db.QueryContext(ctx, `
+	rows, err := r.db.QueryContext(ctx, `
 SELECT currency_iso, payload FROM events WHERE kind = 'trade_confirmation'`)
 	if err != nil {
 		return nil, fmt.Errorf("ubs buildSettlementFold: %w", err)
@@ -314,12 +314,12 @@ func (f *settlementFold) covers(kind, account string, currencyISO *string, occur
 // by. The master-data feed states both, and the MT940 feed already
 // names accounts by IBAN; only the MT515 confirmation uses the internal
 // form, so without the map its rows name an account nothing else does.
-func (c *psnReader) cashAccountIBANs(ctx context.Context) (map[string]string, error) {
+func (r *psnReader) cashAccountIBANs(ctx context.Context) (map[string]string, error) {
 	out := map[string]string{}
-	if c == nil || c.db == nil {
+	if r == nil || r.db == nil {
 		return out, nil
 	}
-	rows, err := c.db.QueryContext(ctx, `
+	rows, err := r.db.QueryContext(ctx, `
 SELECT DISTINCT json_extract(payload, '$.AcctId'), account_external_id
   FROM cash_accounts`)
 	if err != nil {

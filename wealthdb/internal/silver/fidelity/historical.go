@@ -119,7 +119,7 @@ SELECT DISTINCT account_external_id, COALESCE(instrument_key, ''), description
 
 // appendHistoricalAccounts projects the per-account master rows
 // captured in the live `accounts` table backwards onto each
-// historical as_of_date. Without this, `wealthdb accounts
+// historical as_of_date. Without this, `wealthdb holdings accounts
 // --as-of <historical-date>` would show no account for a date
 // the historical positions cover.
 //

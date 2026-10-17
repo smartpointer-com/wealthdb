@@ -44,26 +44,18 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return nil, err
 	}
 
-	byInstant := map[int64]*canonical.SnapshotBatch{}
-	at := func(t int64) *canonical.SnapshotBatch {
-		b, ok := byInstant[t]
-		if !ok {
-			b = &canonical.SnapshotBatch{}
-			byInstant[t] = b
-		}
-		return b
-	}
+	byInstant := silver.Batches{}
 	lots, err := c.readPositionLots(ctx, w)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.readPositions(ctx, w, lots, at); err != nil {
+	if err := c.readPositions(ctx, w, lots, byInstant.At); err != nil {
 		return nil, err
 	}
-	if err := c.readCashBalances(ctx, w, at); err != nil {
+	if err := c.readCashBalances(ctx, w, byInstant.At); err != nil {
 		return nil, err
 	}
-	if err := c.readFxRates(ctx, w, at); err != nil {
+	if err := c.readFxRates(ctx, w, byInstant.At); err != nil {
 		return nil, err
 	}
 

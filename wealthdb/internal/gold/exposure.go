@@ -10,27 +10,6 @@ import (
 // DOUBLE (the look-through splits values by weight) and is read here at
 // four decimals, as every money column is.
 
-// querier is what *sql.DB and *sql.Tx share for a read.
-type querier interface {
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
-
-// scanAll runs a query and hands each row to scan.
-func scanAll(ctx context.Context, q querier, query string, scan func(*sql.Rows) error, args ...any) error {
-	rows, err := q.QueryContext(ctx, query, args...)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		if err := scan(rows); err != nil {
-			return err
-		}
-	}
-	return rows.Err()
-}
-
 // ExposureShares are the share columns every aggregate view carries, in
 // percent of net worth.
 type ExposureShares struct {

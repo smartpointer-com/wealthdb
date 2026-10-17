@@ -78,17 +78,17 @@ func cmdMCPServe(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 		return err
 	}
 	if *stdio == (*httpAddr != "") {
-		return errs.Newf(2, "mcp-serve: pass exactly one of --stdio and --http ADDR")
+		return errs.Newf(errs.ExitUsage, "mcp-serve: pass exactly one of --stdio and --http ADDR")
 	}
 	if *privacy && !*stdio {
-		return errs.Newf(2, "mcp-serve: --privacy applies to --stdio; over HTTP the /mcp/privacy endpoint redacts")
+		return errs.Newf(errs.ExitUsage, "mcp-serve: --privacy applies to --stdio; over HTTP the /mcp/privacy endpoint redacts")
 	}
 	if *httpAddr != "" && !*allInterfaces && !loopbackAddr(*httpAddr) {
-		return errs.Newf(2, "mcp-serve: --http %s listens beyond loopback; use 127.0.0.1:PORT, or pass --all-interfaces "+
+		return errs.Newf(errs.ExitUsage, "mcp-serve: --http %s listens beyond loopback; use 127.0.0.1:PORT, or pass --all-interfaces "+
 			"where a container's publish keeps it on loopback, as 'wealthdb mcp start' does", *httpAddr)
 	}
 	if *rows < 1 || *maxRows < 0 {
-		return errs.Newf(2, "mcp-serve: --rows must be 1 or more and --max-rows 0 or more")
+		return errs.Newf(errs.ExitUsage, "mcp-serve: --rows must be 1 or more and --max-rows 0 or more")
 	}
 	if *maxRows > 0 && *rows > *maxRows {
 		*rows = *maxRows
@@ -99,7 +99,7 @@ func cmdMCPServe(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 		return err
 	}
 	if err := os.MkdirAll(*tempDir, 0o700); err != nil {
-		return errs.Newf(2, "mcp-serve: the DuckDB spill directory %q is not writable: %v", *tempDir, err)
+		return errs.Newf(errs.ExitUsage, "mcp-serve: the DuckDB spill directory %q is not writable: %v", *tempDir, err)
 	}
 
 	level := slog.LevelInfo
@@ -137,20 +137,20 @@ func cmdMCPServe(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	switch *auth {
 	case config.MCPAuthToken:
 		if *insecure {
-			return errs.Newf(2, "mcp-serve: --insecure acknowledges --auth none; with a token it means nothing")
+			return errs.Newf(errs.ExitUsage, "mcp-serve: --insecure acknowledges --auth none; with a token it means nothing")
 		}
 		t, err := readToken(*tokenFile, s.log)
 		if err != nil {
-			return errs.Newf(2, "mcp-serve: %v", err)
+			return errs.Newf(errs.ExitUsage, "mcp-serve: %v", err)
 		}
 		token = t
 	case config.MCPAuthNone:
 		if !*insecure {
-			return errs.Newf(2, "mcp-serve: --auth none serves the data to any local process; pass --insecure as well to mean it")
+			return errs.Newf(errs.ExitUsage, "mcp-serve: --auth none serves the data to any local process; pass --insecure as well to mean it")
 		}
 		s.log.Warn(insecureWarning)
 	default:
-		return errs.Newf(2, "mcp-serve: --auth %q is not a mode (want token | none)", *auth)
+		return errs.Newf(errs.ExitUsage, "mcp-serve: --auth %q is not a mode (want token | none)", *auth)
 	}
 	return serveHTTP(ctx, s, *httpAddr, token, allowHosts)
 }

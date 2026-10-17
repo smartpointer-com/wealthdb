@@ -6,12 +6,14 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 
 	_ "modernc.org/sqlite"
 )
@@ -29,33 +31,12 @@ func runAt(d int) int64 { return day(d) + 7*3600 }
 
 func newFixture(t *testing.T) (string, *sql.DB) {
 	t.Helper()
-	path := t.TempDir() + "/plaid.db"
-	db, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(silverSchemaSQL); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
-	return path, db
-}
-
-func exec(t *testing.T, db *sql.DB, q string, args ...any) {
-	t.Helper()
-	if _, err := db.Exec(q, args...); err != nil {
-		t.Fatalf("exec %q: %v", q, err)
-	}
+	return silvertest.NewDB(t, silverSchemaSQL)
 }
 
 func openConn(t *testing.T, path string) silver.Connection {
 	t.Helper()
-	conn, err := (&Adapter{}).Open(context.Background(), silver.OpenSpec{Path: path})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { conn.Close() })
-	return conn
+	return silvertest.Open(t, &Adapter{}, path)
 }
 
 func null(s string) any {
@@ -75,7 +56,7 @@ var noInvestments = map[string]string{"holdings": "not_linked",
 // starting at `since`, only where the ledger was read.
 func run(t *testing.T, db *sql.DB, at, since int64, statuses map[string]string) {
 	t.Helper()
-	exec(t, db, `INSERT INTO dump_runs (snapshot_at, silver_schema_version, run_dir, loaded_at)
+	silvertest.Exec(t, db, `INSERT INTO dump_runs (snapshot_at, silver_schema_version, run_dir, loaded_at)
 	             VALUES (?, 1, 'run', ?)`, at, at)
 	for _, p := range []string{"accounts", "holdings", "investment_transactions",
 		"transactions", "liabilities"} {
@@ -87,21 +68,21 @@ func run(t *testing.T, db *sql.DB, at, since int64, statuses map[string]string) 
 		if strings.HasSuffix(p, "transactions") && (status == "fetched" || status == "partial") {
 			start, end = since, at
 		}
-		exec(t, db, `INSERT INTO run_products (run_at, product, status, window_start, window_end)
+		silvertest.Exec(t, db, `INSERT INTO run_products (run_at, product, status, window_start, window_end)
 		             VALUES (?, ?, ?, ?, ?)`, at, p, status, start, end)
 	}
 }
 
 func acct(t *testing.T, db *sql.DB, at int64, id, typ, subtype, balance string) {
 	t.Helper()
-	exec(t, db, `INSERT INTO accounts (snapshot_at, account_id, name, mask, type, subtype,
+	silvertest.Exec(t, db, `INSERT INTO accounts (snapshot_at, account_id, name, mask, type, subtype,
 	             currency, balance_current, payload) VALUES (?, ?, ?, '0000', ?, ?, 'USD', ?, ?)`,
 		at, id, "Synthetic "+subtype, typ, subtype, null(balance), `{"account_id":"`+id+`"}`)
 }
 
 func sec(t *testing.T, db *sql.DB, id, name, ticker, typ string) {
 	t.Helper()
-	exec(t, db, `INSERT OR IGNORE INTO securities (security_id, name, ticker_symbol, type, currency,
+	silvertest.Exec(t, db, `INSERT OR IGNORE INTO securities (security_id, name, ticker_symbol, type, currency,
 	             first_seen_at, last_seen_at, payload) VALUES (?, ?, ?, ?, 'USD', 0, 0, '{}')`,
 		id, name, null(ticker), typ)
 }
@@ -109,7 +90,7 @@ func sec(t *testing.T, db *sql.DB, id, name, ticker, typ string) {
 func hold(t *testing.T, db *sql.DB, at int64, accountID, securityID string, seq int,
 	quantity, value, cost string) {
 	t.Helper()
-	exec(t, db, `INSERT INTO holdings (snapshot_at, account_id, security_id, seq, quantity,
+	silvertest.Exec(t, db, `INSERT INTO holdings (snapshot_at, account_id, security_id, seq, quantity,
 	             institution_value, cost_basis, currency, tax_lots, payload)
 	             VALUES (?, ?, ?, ?, ?, ?, ?, 'USD', '[]', ?)`,
 		at, accountID, securityID, seq, null(quantity), null(value), null(cost),
@@ -141,7 +122,7 @@ func bank(t *testing.T, db *sql.DB, r bankRow) {
 	if r.legacy != "" {
 		legacy = `"` + r.legacy + `"`
 	}
-	exec(t, db, `INSERT INTO transactions (transaction_id, account_id, posted_at, amount,
+	silvertest.Exec(t, db, `INSERT INTO transactions (transaction_id, account_id, posted_at, amount,
 	             currency, name, merchant_name, original_description, pending,
 	             category_primary, category_detailed, check_number, run_at, payload)
 	             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
@@ -171,7 +152,7 @@ func inv(t *testing.T, db *sql.DB, r invRow) {
 	if name == "" {
 		name = r.typ + " synthetic"
 	}
-	exec(t, db, `INSERT INTO investment_transactions (investment_transaction_id, account_id,
+	silvertest.Exec(t, db, `INSERT INTO investment_transactions (investment_transaction_id, account_id,
 	             security_id, posted_at, transaction_at, name, type, subtype, amount, quantity,
 	             price, fees, currency, cancel_transaction_id, run_at, payload)
 	             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, 0, '{}')`,
@@ -181,7 +162,7 @@ func inv(t *testing.T, db *sql.DB, r invRow) {
 
 func liability(t *testing.T, db *sql.DB, at int64, accountID, balance string, issued int64) {
 	t.Helper()
-	exec(t, db, `INSERT INTO liabilities (snapshot_at, account_id, kind, last_statement_balance,
+	silvertest.Exec(t, db, `INSERT INTO liabilities (snapshot_at, account_id, kind, last_statement_balance,
 	             last_statement_issue_date, payload) VALUES (?, ?, 'credit', ?, ?, '{}')`,
 		at, accountID, balance, issued)
 }
@@ -206,24 +187,9 @@ func window(t *testing.T, conn silver.Connection) canonical.Window {
 
 func collectSnapshots(t *testing.T, conn silver.Connection) []canonical.SnapshotBatch {
 	t.Helper()
-	stream, err := conn.Snapshots(context.Background(), window(t, conn))
-	if err != nil {
-		t.Fatalf("Snapshots: %v", err)
-	}
-	defer stream.Close()
-	var out []canonical.SnapshotBatch
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatalf("Snapshots Next: %v", err)
-		}
-		if len(b.Accounts)+len(b.Instruments)+len(b.Positions)+len(b.CashBalances) > 0 {
-			out = append(out, b)
-		}
-		if !more {
-			return out
-		}
-	}
+	return slices.DeleteFunc(silvertest.Snapshots(t, conn, window(t, conn)), func(b canonical.SnapshotBatch) bool {
+		return len(b.Accounts)+len(b.Instruments)+len(b.Positions)+len(b.CashBalances) == 0
+	})
 }
 
 func collectTransactions(t *testing.T, conn silver.Connection) map[string]canonical.TransactionChange {
@@ -707,13 +673,13 @@ func TestAccountNames(t *testing.T) {
 	run(t, db, runAt(10), day(1), noInvestments)
 	acct(t, db, runAt(10), "acct-a", "depository", "checking", "1")
 	acct(t, db, runAt(10), "acct-b", "depository", "savings", "2")
-	exec(t, db, `UPDATE accounts SET official_name = 'Official Savings' WHERE account_id = 'acct-b'`)
+	silvertest.Exec(t, db, `UPDATE accounts SET official_name = 'Official Savings' WHERE account_id = 'acct-b'`)
 	acct(t, db, runAt(10), "acct-c", "depository", "cd", "3")
-	exec(t, db, `UPDATE accounts SET name = NULL WHERE account_id = 'acct-c'`)
+	silvertest.Exec(t, db, `UPDATE accounts SET name = NULL WHERE account_id = 'acct-c'`)
 	acct(t, db, runAt(10), "acct-d", "depository", "money market", "4")
-	exec(t, db, `UPDATE accounts SET official_name = name WHERE account_id = 'acct-d'`)
+	silvertest.Exec(t, db, `UPDATE accounts SET official_name = name WHERE account_id = 'acct-d'`)
 	acct(t, db, runAt(10), "acct-e", "depository", "hsa", "5")
-	exec(t, db, `UPDATE accounts SET official_name = 'Official HSA', mask = NULL WHERE account_id = 'acct-e'`)
+	silvertest.Exec(t, db, `UPDATE accounts SET official_name = 'Official HSA', mask = NULL WHERE account_id = 'acct-e'`)
 	batches := collectSnapshots(t, openConn(t, path))
 
 	cases := map[string]struct{ display, nickname, category string }{
@@ -772,8 +738,8 @@ func TestACashAccountWithNoCurrentBalanceUsesTheAvailableOne(t *testing.T) {
 	acct(t, db, runAt(10), "acct-checking", "depository", "checking", "")
 	// A card's available balance is unused credit, never cash.
 	acct(t, db, runAt(10), "acct-card", "credit", "credit card", "")
-	exec(t, db, `UPDATE accounts SET balance_available = '75.5' WHERE account_id = 'acct-checking'`)
-	exec(t, db, `UPDATE accounts SET balance_available = '4600' WHERE account_id = 'acct-card'`)
+	silvertest.Exec(t, db, `UPDATE accounts SET balance_available = '75.5' WHERE account_id = 'acct-checking'`)
+	silvertest.Exec(t, db, `UPDATE accounts SET balance_available = '4600' WHERE account_id = 'acct-card'`)
 	batches := collectSnapshots(t, openConn(t, path))
 	if got := cashAt(batches, runAt(10), "acct-checking", canonical.BalanceKindCurrent); len(got) != 0 {
 		t.Errorf("CURRENT = %+v, want none", got)
@@ -847,7 +813,7 @@ func TestAnAccountThatLeftTheItemKeepsItsLedger(t *testing.T) {
 	for d := 10; d <= 11; d++ {
 		acct(t, db, runAt(d), "acct-card", "credit", "credit card", "50")
 	}
-	exec(t, db, `UPDATE accounts SET name = 'Synthetic old name'
+	silvertest.Exec(t, db, `UPDATE accounts SET name = 'Synthetic old name'
 	             WHERE account_id = 'acct-card' AND snapshot_at = ?`, runAt(10))
 	bank(t, db, bankRow{id: "tx-card", account: "acct-card", amount: "-5", name: "Kiosk", at: day(3)})
 	conn := openConn(t, path)
@@ -958,7 +924,7 @@ func TestABalancePlaidLeavesEmptyIsCarried(t *testing.T) {
 	acct(t, db, runAt(11), "acct-checking", "depository", "checking", "")
 	acct(t, db, runAt(11), "acct-card", "credit", "credit card", "")
 	acct(t, db, runAt(11), "acct-home", "loan", "mortgage", "")
-	exec(t, db, `UPDATE accounts SET balance_available = '4600' WHERE account_id = 'acct-card'`)
+	silvertest.Exec(t, db, `UPDATE accounts SET balance_available = '4600' WHERE account_id = 'acct-card'`)
 	batches := collectSnapshots(t, openConn(t, path))
 
 	for id, want := range map[string]string{"acct-checking": "1200.50", "acct-card": "-410.25"} {
@@ -989,7 +955,7 @@ func TestAListingWithoutACurrencyCarriesTheStatedOne(t *testing.T) {
 	acct(t, db, runAt(11), "acct-checking", "depository", "checking", "110")
 	acct(t, db, runAt(11), "acct-card", "credit", "credit card", "420")
 	acct(t, db, runAt(11), "acct-home", "loan", "mortgage", "249000")
-	exec(t, db, `UPDATE accounts SET currency = NULL WHERE snapshot_at = ?`, runAt(11))
+	silvertest.Exec(t, db, `UPDATE accounts SET currency = NULL WHERE snapshot_at = ?`, runAt(11))
 	batches := collectSnapshots(t, openConn(t, path))
 
 	for id, want := range map[string]string{"acct-checking": "100", "acct-card": "-410"} {
@@ -1017,7 +983,7 @@ func TestACarryKeepsTheStatedCurrency(t *testing.T) {
 	acct(t, db, runAt(10), "acct-checking", "depository", "checking", "100")
 	run(t, db, runAt(11), day(1), noInvestments)
 	acct(t, db, runAt(11), "acct-checking", "depository", "checking", "")
-	exec(t, db, `UPDATE accounts SET currency = 'EUR' WHERE snapshot_at = ?`, runAt(11))
+	silvertest.Exec(t, db, `UPDATE accounts SET currency = 'EUR' WHERE snapshot_at = ?`, runAt(11))
 	batches := collectSnapshots(t, openConn(t, path))
 	got := cashAt(batches, runAt(11), "acct-checking", canonical.BalanceKindCurrent)
 	if len(got) != 1 || got[0].Currency != "USD" || !got[0].Amount.Equal(dec(t, "100")) {
@@ -1119,7 +1085,7 @@ func TestAnOtherSecurityFallsBackOnItsCFICode(t *testing.T) {
 	run(t, db, runAt(10), day(1), nil)
 	acct(t, db, runAt(10), "acct-ira", "investment", "ira", "0")
 	sec(t, db, "sec-x", "PLACEHOLDER TREASURY BOND ETF", "EXE", "other")
-	exec(t, db, `UPDATE securities SET cfi_code = 'CEXXXX' WHERE security_id = 'sec-x'`)
+	silvertest.Exec(t, db, `UPDATE securities SET cfi_code = 'CEXXXX' WHERE security_id = 'sec-x'`)
 	hold(t, db, runAt(10), "acct-ira", "sec-x", 0, "10", "300", "")
 	batches := collectSnapshots(t, openConn(t, path))
 	got := positionsAt(batches, runAt(10))
@@ -1164,7 +1130,7 @@ func TestOnlyVestedSharesArePositions(t *testing.T) {
 	for i, c := range cases {
 		sec(t, db, c.security, "PLACEHOLDER CORP "+c.security, fmt.Sprintf("EX%d", i), "equity")
 		hold(t, db, runAt(10), "acct-plan", c.security, 0, "100", "5000", "4000")
-		exec(t, db, `UPDATE holdings SET institution_price = ?, vested_quantity = ?, vested_value = ?
+		silvertest.Exec(t, db, `UPDATE holdings SET institution_price = ?, vested_quantity = ?, vested_value = ?
 		             WHERE security_id = ?`, null(c.price), null(c.vestedQuantity), null(c.vestedValue), c.security)
 	}
 	byKey := map[string]canonical.PositionChange{}
@@ -1214,7 +1180,7 @@ func TestAStatementRestatedWithoutItsBalanceKeepsItsClose(t *testing.T) {
 		acct(t, db, runAt(d), "acct-card", "credit", "credit card", "410.25")
 	}
 	liability(t, db, runAt(10), "acct-card", "380", day(5))
-	exec(t, db, `INSERT INTO liabilities (snapshot_at, account_id, kind, last_statement_balance,
+	silvertest.Exec(t, db, `INSERT INTO liabilities (snapshot_at, account_id, kind, last_statement_balance,
 	             last_statement_issue_date, payload) VALUES (?, 'acct-card', 'credit', NULL, ?, '{}')`,
 		runAt(11), day(5))
 	batches := collectSnapshots(t, openConn(t, path))
@@ -1606,7 +1572,7 @@ func TestABondPlaidTypesAsCashIsAPosition(t *testing.T) {
 	hold(t, db, runAt(10), "acct-ira", "sec-note", 0, "5000", "5100", "")
 	hold(t, db, runAt(10), "acct-ira", "sec-held", 0, "2000", "1960", "")
 	hold(t, db, runAt(10), "acct-ira", "sec-idle", 0, "50", "50", "")
-	exec(t, db, `UPDATE holdings SET institution_price = CASE security_id
+	silvertest.Exec(t, db, `UPDATE holdings SET institution_price = CASE security_id
 	             WHEN 'sec-held' THEN '98' WHEN 'sec-cash' THEN '1' WHEN 'sec-idle' THEN '0' END`)
 	for _, r := range []invRow{
 		{id: "itx-buy", account: "acct-ira", security: "sec-note", typ: "buy", subtype: "buy",

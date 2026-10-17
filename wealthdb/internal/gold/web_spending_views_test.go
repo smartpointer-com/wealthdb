@@ -8,10 +8,11 @@ import (
 )
 
 // TestWebSpendingLabelsUncategorized pins what the view adds over the
-// macro it wraps: the epoch is rendered as a TIMESTAMP, and a category
-// nothing could resolve is labelled rather than left NULL — a NULL
-// would show up in a Metabase breakdown as an unlabelled slice, which
-// reads as a rendering fault instead of as the backlog it is.
+// materialized report macro it reads: the epoch is rendered as a
+// TIMESTAMP, and a category nothing could resolve is labelled rather
+// than left NULL — a NULL would show up in a Metabase breakdown as an
+// unlabelled slice, which reads as a rendering fault instead of as the
+// backlog it is.
 func TestWebSpendingLabelsUncategorized(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedSpendingReportFixture(t, db, ctx)
@@ -65,7 +66,7 @@ func TestWebSpendingLabelsUncategorized(t *testing.T) {
 	if groceries.merchant.String != "Corner Market" || groceries.display.String != "Everyday Card" {
 		t.Errorf("groceries row = %+v, want the merchant and the account label", groceries)
 	}
-	if !nearly(groceries.valUSD.Float64, -100) || !nearly(groceries.valCHF.Float64, -80) {
+	if !near(groceries.valUSD.Float64, -100) || !near(groceries.valCHF.Float64, -80) {
 		t.Errorf("groceries values = (%v USD, %v CHF), want (-100, -80)",
 			groceries.valUSD.Float64, groceries.valCHF.Float64)
 	}
@@ -79,8 +80,8 @@ func seedCardBalanceFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 	t.Helper()
 	// 1 CHF = 1.25 USD, 1 EUR = 1.10 USD, so USD, CHF and EUR resolve for a
 	// USD-native card.
-	seedFX(t, db, spendAt(2026, time.January, 1), "USD", "CHF", "1.25")
-	seedFX(t, db, spendAt(2026, time.January, 1), "USD", "EUR", "1.10")
+	seedFX(t, db, dy(2026, time.January, 1), "USD", "CHF", "1.25")
+	seedFX(t, db, dy(2026, time.January, 1), "USD", "EUR", "1.10")
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
                               display_name, base_currency, first_seen_at, last_seen_at) VALUES
@@ -95,10 +96,10 @@ func seedCardBalanceFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 		kind string
 		amt  string
 	}{
-		{spendAt(2026, time.January, 10), "CARD1", "closing", "-500"}, // statement closing
-		{spendAt(2026, time.January, 11), "CASH1", "current", "900"},  // deposit re-dump
-		{spendAt(2026, time.January, 12), "CARD1", "closing", "-600"}, // next closing
-		{spendAt(2026, time.January, 14), "CARD1", "closing", "0"},    // paid off
+		{dy(2026, time.January, 10), "CARD1", "closing", "-500"}, // statement closing
+		{dy(2026, time.January, 11), "CASH1", "current", "900"},  // deposit re-dump
+		{dy(2026, time.January, 12), "CARD1", "closing", "-600"}, // next closing
+		{dy(2026, time.January, 14), "CARD1", "closing", "0"},    // paid off
 	}
 	for _, b := range balances {
 		if _, err := db.ExecContext(ctx, `
@@ -219,10 +220,10 @@ func TestCardBalancesHistoryCarriesEachAccountIndependently(t *testing.T) {
 			t.Errorf("no card row on Jan %d", w.d)
 			continue
 		}
-		if !nearly(r.bal.Float64, w.want) {
+		if !near(r.bal.Float64, w.want) {
 			t.Errorf("Jan %d balance = %v, want %v", w.d, r.bal.Float64, w.want)
 		}
-		if !nearly(r.usd.Float64, w.want) {
+		if !near(r.usd.Float64, w.want) {
 			t.Errorf("Jan %d balance_usd = %v, want %v (native USD)", w.d, r.usd.Float64, w.want)
 		}
 		if r.display != "Everyday Card" || r.ccy != "USD" {
@@ -234,12 +235,12 @@ func TestCardBalancesHistoryCarriesEachAccountIndependently(t *testing.T) {
 		t.Error("a card row exists before the card's first balance")
 	}
 
-	// The view is the macro with the epoch rendered as a TIMESTAMP, and
-	// the rendering is UTC whatever zone the session is set to. The
-	// query runs on a connection pinned to a non-UTC zone (a pooled
-	// *sql.DB would not carry the per-connection SET to the query), so
-	// a zone-dependent rendering shifts the day off midnight and the
-	// equality below misses.
+	// The view is the materialized macro with the epoch rendered as a
+	// TIMESTAMP, and the rendering is UTC whatever zone the session is
+	// set to. The query runs on a connection pinned to a non-UTC zone (a
+	// pooled *sql.DB would not carry the per-connection SET to the
+	// query), so a zone-dependent rendering shifts the day off midnight
+	// and the equality below misses.
 	mustMaterializeServing(t, db, ctx)
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -261,7 +262,7 @@ func TestCardBalancesHistoryCarriesEachAccountIndependently(t *testing.T) {
 	if viewDay != "2026-01-12 00:00:00" {
 		t.Errorf("web_card_balances_history as_of_day = %q, want a UTC-midnight TIMESTAMP", viewDay)
 	}
-	if !nearly(viewBal.Float64, -480) { // -600 USD at 1 CHF = 1.25 USD
+	if !near(viewBal.Float64, -480) { // -600 USD at 1 CHF = 1.25 USD
 		t.Errorf("balance_chf = %v, want -480", viewBal.Float64)
 	}
 }
@@ -293,7 +294,7 @@ func TestMigration0043DDLIsRerunnable(t *testing.T) {
 func seedWebViewEpochFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 	t.Helper()
 	seedSpendingReportFixture(t, db, ctx)
-	snap := spendAt(2026, time.January, 10)
+	snap := dy(2026, time.January, 10)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
                               display_name, base_currency, tax_wrapper, management_style,

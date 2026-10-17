@@ -11,7 +11,7 @@ import (
 // are deliberately NOT external.
 //
 // transfer_in/transfer_out are external and transfer-like. The adapter never
-// emits them; only the equity-transfer ledger does (docs/DESIGN.md §13.10),
+// emits them; only the equity-transfer ledger does (docs/DESIGN.md §13.9),
 // for an exit paid in shares: the vehicle's out-leg, dated and valued as the
 // receiving brokerage's in-leg, so the vehicle realizes its gain on the day
 // the shares leave and the pair nets in every aggregate holding both

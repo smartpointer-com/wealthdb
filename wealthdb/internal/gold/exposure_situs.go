@@ -27,7 +27,7 @@ const (
 	situsDomicile   = "domicile"
 	situsCustody    = "custody"
 	situsCountry    = "country"
-	situsUnknown    = "unknown"
+	situsUnknown    = canonical.Unknown
 )
 
 // situsFacts is what the rule reads of one holding.
@@ -142,8 +142,8 @@ func sameDay(a, b *int64) bool {
 // names its holding, with the facts situsOf reads. A position reads as
 // its latest snapshot; a cash balance is the holding cash:<currency>.
 // Its key is read as exposure_holdings reads it (0126): through
-// holding_aliases and instrument_aliases(), then instrument_keys and
-// security_aliases. The parameter is receiptWording.
+// holdingAliasJoins, then instrument_keys and security_aliases. The
+// parameter is receiptWording.
 //
 //   - countries: the codes a situs may be, every country
 //     exposure_countries knows but the European Union;
@@ -151,7 +151,7 @@ func sameDay(a, b *int64) bool {
 //     only the US CUSIP rule gives is a guess and is not among them;
 //   - domiciles: a security's own country of domicile, never one its
 //     ISIN's prefix implies.
-const situsHoldingsSQL = `
+var situsHoldingsSQL = `
 WITH ` + securityNamesSQL + `,
 held AS (
     (SELECT silver_source_id AS src, account_external_id AS acct, position_key,
@@ -165,12 +165,7 @@ held AS (
 keyed AS (
     SELECT h.*, exposure_key(COALESCE(ik1.security_key, ik2.security_key)) AS key
       FROM (SELECT h.*, COALESCE(ha.to_key, hd.to_key, ia.k) AS akey
-              FROM held h
-              LEFT JOIN holding_aliases ha ON ha.silver_source_id = h.src AND ha.account_external_id = h.acct
-                   AND ha.from_key = holding_key(h.iid, h.position_key)
-              LEFT JOIN holding_aliases hd ON hd.silver_source_id = h.src AND hd.account_external_id = ''
-                   AND hd.from_key = holding_key(h.iid, h.position_key)
-              LEFT JOIN instrument_aliases() ia ON ia.src = h.src AND ia.alias = h.iid) h
+              FROM held h` + holdingAliasJoins("h.src", "h.acct", "h.iid", "h.position_key") + `) h
       LEFT JOIN instrument_keys ik1 ON ik1.silver_source_id = h.src AND ik1.instrument_external_id = h.akey
       LEFT JOIN instrument_keys ik2 ON ik2.silver_source_id = h.src AND ik2.instrument_external_id = h.iid),
 countries AS (SELECT code FROM exposure_countries WHERE code <> '` + canonical.EuropeanUnion + `'),
@@ -235,7 +230,7 @@ SELECT d.silver_source_id, d.instrument_external_id, d.as_of, COALESCE(d.situs, 
        d.dimensions <> ''
   FROM exposure_declarations d
   LEFT JOIN (SELECT line_no, MIN(country) AS country FROM exposure_declaration_leaves GROUP BY 1
-              HAVING COUNT(country) = COUNT(*) AND MIN(country) = MAX(country) AND MIN(country) <> 'unknown') c
+              HAVING COUNT(country) = COUNT(*) AND MIN(country) = MAX(country) AND MIN(country) <> '` + canonical.Unknown + `') c
          USING (line_no)
  ORDER BY d.as_of NULLS FIRST, d.line_no`
 

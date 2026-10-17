@@ -6,9 +6,9 @@ import (
 )
 
 // CashAsOf returns one synthetic PositionRow per (silver_source_id,
-// account_external_id, currency) whose latest non-zero cash balance
-// ≤ asOf is non-zero, with the amount converted to outCcy. Multi-
-// currency accounts get one row per currency.
+// account_external_id, currency) whose latest cash balance at or
+// before asOf is non-zero (cash_chosen), with the amount converted to
+// outCcy. Multi-currency accounts get one row per currency.
 //
 // When multiple balance_kind rows exist for the same (account,
 // currency, snapshot), the highest-precedence kind wins — `current`

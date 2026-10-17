@@ -1,30 +1,14 @@
 package config
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// writeCashflowCfg writes a config holding the given `cashflow` block
-// and loads it, returning the config or the load error.
-func writeCashflowCfg(t *testing.T, body string) (*Config, error) {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "wealthdb.cfg")
-	cfg := `{"gold_db": "/tmp/g.db", "default_currency": "USD", ` +
-		`"silver_sources": [{"id": "bank", "kind": "chase", "path": "/tmp/s.db"}], ` + body + `}`
-	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	return Load(path)
-}
-
 // TestCashflowBlockParses pins the shape: one block, two fields, both
 // optional, and an accessor for each.
 func TestCashflowBlockParses(t *testing.T) {
-	c, err := writeCashflowCfg(t, `"cashflow": {
+	c, err := loadWith(t, `"cashflow": {
         "accounts": {"exclude": {"bank": ["ACC1", "ACC2"]}},
         "wrappers": {"529": "household", "trust_grantor": "trusts"}
     }`)
@@ -47,7 +31,7 @@ func TestCashflowBlockParses(t *testing.T) {
 // TestCashflowBlockIsOptional pins the absent-block default: every
 // account pooled, and the engine's own boundary.
 func TestCashflowBlockIsOptional(t *testing.T) {
-	c, err := writeCashflowCfg(t, `"web": {"enabled": false}`)
+	c, err := loadWith(t, `"web": {"enabled": false}`)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -65,7 +49,7 @@ func TestCashflowBlockIsOptional(t *testing.T) {
 // that is absent. The loader disallows unknown fields, so writing it is
 // an error rather than a silent no-op.
 func TestCashflowAccountsHasNoIncludeField(t *testing.T) {
-	_, err := writeCashflowCfg(t, `"cashflow": {"accounts": {"include": {"bank": ["ACC1"]}}}`)
+	_, err := loadWith(t, `"cashflow": {"accounts": {"include": {"bank": ["ACC1"]}}}`)
 	if err == nil {
 		t.Fatal("cashflow.accounts.include was accepted")
 	}
@@ -88,7 +72,7 @@ func TestCashflowWrapperValidation(t *testing.T) {
 		{"a side is not a destination", `"cashflow": {"wrappers": {"hsa": "vehicle"}}`, "vehicle"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := writeCashflowCfg(t, tc.body)
+			_, err := loadWith(t, tc.body)
 			if err == nil {
 				t.Fatalf("%s was accepted", tc.body)
 			}
@@ -104,7 +88,7 @@ func TestCashflowWrapperValidation(t *testing.T) {
 // story fails here rather than at the stamp.
 func TestCashflowWrapperDestinationsAreAllAccepted(t *testing.T) {
 	for _, dest := range []string{"household", "retirement", "education", "health", "trusts", "giving"} {
-		if _, err := writeCashflowCfg(t,
+		if _, err := loadWith(t,
 			`"cashflow": {"wrappers": {"hsa": "`+dest+`"}}`); err != nil {
 			t.Errorf("destination %q was refused: %v", dest, err)
 		}
@@ -116,11 +100,11 @@ func TestCashflowWrapperDestinationsAreAllAccepted(t *testing.T) {
 // may not be listed twice — a repeat would raise a primary-key
 // violation mid-load, after every source had already been written.
 func TestCashflowPoolExclusionValidation(t *testing.T) {
-	if _, err := writeCashflowCfg(t,
+	if _, err := loadWith(t,
 		`"cashflow": {"accounts": {"exclude": {"nosuch": ["ACC1"]}}}`); err == nil {
 		t.Error("an undeclared source was accepted")
 	}
-	if _, err := writeCashflowCfg(t,
+	if _, err := loadWith(t,
 		`"cashflow": {"accounts": {"exclude": {"bank": ["ACC1", "ACC1"]}}}`); err == nil {
 		t.Error("a repeated id was accepted")
 	}

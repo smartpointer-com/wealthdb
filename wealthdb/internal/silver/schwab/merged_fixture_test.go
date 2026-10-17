@@ -4,12 +4,12 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 //go:embed testdata/web_silver_schema.sql
@@ -45,15 +45,7 @@ func newMergedFixture(t *testing.T) *mergedFixture {
 		t.Fatalf("seed api: %v", err)
 	}
 
-	webPath := filepath.Join(t.TempDir(), "schwab-web.db")
-	web, err := sql.Open("sqlite", "file:"+webPath)
-	if err != nil {
-		t.Fatalf("open web seed: %v", err)
-	}
-	t.Cleanup(func() { web.Close() })
-	if _, err := web.Exec(webSilverSchemaSQL); err != nil {
-		t.Fatalf("apply web schema: %v", err)
-	}
+	webPath, web := silvertest.NewDB(t, webSilverSchemaSQL)
 	if _, err := web.Exec(`
         INSERT INTO accounts(snapshot_at, account_external_id, payload) VALUES
             (1000, '5678', '{}'), (1000, '0042', '{}'), (1000, '9999', '{}');

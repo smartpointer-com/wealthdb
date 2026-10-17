@@ -11,6 +11,11 @@ import "fmt"
 // Process exit codes. Code 0 is reserved for success, code 1 for
 // unexpected runtime errors / panics.
 const (
+	// ExitUsage — a usage error: an unknown subcommand, a bad flag
+	// or argument. It is the code the flag package uses, and it
+	// shares 2 with ExitRWNeeded.
+	ExitUsage = 2
+
 	// ExitRWNeeded — a write-requiring subcommand was invoked but
 	// the gold DB is read-only (or -r was specified).
 	ExitRWNeeded = 2
@@ -34,9 +39,9 @@ const (
 	//
 	// ALLOCATED BUT NOT RETURNED: nothing wraps an error with it
 	// today, so a silver open failure reaches the dispatcher as a
-	// plain error and exits 1 (docs/DESIGN.md §4.10, row 6). The
-	// code is kept reserved so a later wiring does not have to
-	// renumber the ones below it.
+	// plain error and exits 1 (docs/DESIGN.md §4.10, the exit-6
+	// row). The code is kept reserved so a later wiring does not
+	// have to renumber the ones below it.
 	ExitSilverIO = 6
 )
 

@@ -19,7 +19,7 @@ import (
 var updateGolden = flag.Bool("update-wanted", false, "rewrite testdata/refdata_wanted.json")
 
 // The wanted list of a small invented household, pinned as JSON: the
-// contract the refdata collector reads (docs/adapters/refdata.md §3).
+// contract the refdata collector reads (docs/adapters/refdata.md §5).
 //
 //   - FUNDA is held at one source under a symbol and at another under a
 //     CUSIP; nothing ties the two keys yet, so they are two funds, each
@@ -614,7 +614,7 @@ func TestRefdataWantedFundsStateTheirAliases(t *testing.T) {
 	}
 	got := map[string]string{}
 	for _, f := range w.Funds {
-		got[f.Ref] = strings.Join([]string{derefOr(f.ISIN), derefOr(f.CUSIP), derefOr(f.Symbol)}, " ")
+		got[f.Ref] = strings.Join([]string{show(f.ISIN), show(f.CUSIP), show(f.Symbol)}, " ")
 	}
 	want := map[string]string{
 		"isin:XX0000000021": "XX0000000021 <nil> QPX1",

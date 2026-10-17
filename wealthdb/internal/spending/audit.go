@@ -161,8 +161,9 @@ func MatchedPairs(ctx context.Context, db querier, windowDays int, tolerancePct 
 // liftPairs turns the core's matched pairs into the audit shape, ordered so
 // that the pairs worth a human's attention survive the listing's cap.
 //
-// ASSERTED pairs come FIRST, ahead of the chronological order everything else
-// keeps, and in phase order among themselves. The cap exists so the listing
+// ASSERTED pairs (override, reference, stated-counter) come FIRST, ahead of the
+// chronological order the named and amount pairs keep, and in MatchTransferLegs'
+// phase order among themselves (assertedRank). The cap exists so the listing
 // stays a signal rather than a dump, but a day-ordered listing of a long
 // history is the OLDEST pairs, and a road that only started asserting pairs
 // on the last reload would never appear in one — which is the newest road
@@ -180,11 +181,8 @@ func liftPairs(raw []gold.TransferMatchPair, byKey map[txKey]Leg) []Pair {
 	}
 	sort.Slice(out, func(i, j int) bool {
 		a, b := out[i], out[j]
-		if ar, br := a.By != gold.MatchedByAmount, b.By != gold.MatchedByAmount; ar != br {
-			return ar
-		}
-		if a.By != b.By {
-			return a.By < b.By
+		if ar, br := phaseRank(a.By), phaseRank(b.By); ar != br {
+			return ar < br
 		}
 		if a.Debit.Day != b.Debit.Day {
 			return a.Debit.Day < b.Debit.Day
@@ -195,4 +193,21 @@ func liftPairs(raw []gold.TransferMatchPair, byKey map[txKey]Leg) []Pair {
 		return a.Debit.TxID < b.Debit.TxID
 	})
 	return out
+}
+
+// assertedRank is the listing order of the asserted phases: MatchTransferLegs'
+// own phase order. A phase absent from it asserted nothing.
+var assertedRank = map[gold.TransferMatchPhase]int{
+	gold.MatchedByOverride:      0,
+	gold.MatchedByReference:     1,
+	gold.MatchedByStatedCounter: 2,
+}
+
+// phaseRank places the asserted phases in assertedRank order and every other
+// phase after them, all at one rank.
+func phaseRank(by gold.TransferMatchPhase) int {
+	if r, ok := assertedRank[by]; ok {
+		return r
+	}
+	return len(assertedRank)
 }

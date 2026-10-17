@@ -136,9 +136,9 @@ type CashflowResult struct {
 // cash pool's exclusions into gold, replacing whatever was there.
 //
 // The wrapper table is stamped WHOLE — every value of the enum, not
-// just the overridden ones — which is what makes
-// canonical.DefaultWrapperSide the single place a wrapper's side is
-// decided. Stamping only the overrides would mean the defaults lived a
+// just the overridden ones, from canonical.WrapperBoundaries — which
+// is what makes the engine's defaultWrapperSides table the single
+// place a wrapper's side is decided. Stamping only the overrides would mean the defaults lived a
 // second time in SQL, and a wrapper added for a new jurisdiction would
 // take two edits to reach the statement instead of one.
 func stampCashflowBoundary(ctx context.Context, tx *sql.Tx, opts CashflowOptions, out *CashflowResult) error {

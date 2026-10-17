@@ -2,24 +2,16 @@ package main
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
-// refdata-wanted stays out of the help listing, reads gold read-only and
-// prints the wanted list under its contract version; it takes no
-// positional argument.
-func TestRefdataWantedHiddenButDispatched(t *testing.T) {
+// refdata-wanted reads gold read-only and prints the wanted list under
+// its contract version; it takes no positional argument.
+// TestUsageListsEverySubcommand keeps it out of the help listing.
+func TestRefdataWantedPrintsTheWantedList(t *testing.T) {
 	t.Parallel()
-	_, se, code := run(t, "help")
-	if code != 0 || !strings.Contains(se, "exposure") {
-		t.Fatalf("help listing looks wrong: exit=%d\n%s", code, se)
-	}
-	if strings.Contains(se, "refdata-wanted") {
-		t.Errorf("help should not list refdata-wanted:\n%s", se)
-	}
 	cfg := setupExposureGold(t)
 	so, se, code := run(t, "-r", "-c", cfg, "refdata-wanted")
 	if code != 0 {

@@ -12,30 +12,27 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
-func (c *psnReader) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
+func (r *psnReader) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
 	}
 
-	times, err := c.snapshotTimesInWindow(ctx, w)
+	times, err := r.snapshotTimesInWindow(ctx, w)
 	if err != nil {
 		return nil, err
 	}
-	byTime := make(map[int64]*canonical.SnapshotBatch, len(times))
-	for _, t := range times {
-		byTime[t] = &canonical.SnapshotBatch{}
-	}
+	byTime := silver.NewBatches(times)
 
 	// Instruments first — appendHoldings joins against them via
 	// an in-memory map for asset_class and currency.
-	instrMap, err := c.appendInstruments(ctx, w, byTime)
+	instrMap, err := r.appendInstruments(ctx, w, byTime)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.appendCashAccounts(ctx, w, byTime); err != nil {
+	if err := r.appendCashAccounts(ctx, w, byTime); err != nil {
 		return nil, err
 	}
-	mandatePortfolios, err := c.appendSafekeepingAccounts(ctx, w, byTime)
+	mandatePortfolios, err := r.appendSafekeepingAccounts(ctx, w, byTime)
 	if err != nil {
 		return nil, err
 	}
@@ -52,30 +49,26 @@ func (c *psnReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 	for snap, batch := range byTime {
 		propagateManagementStyleByPortfolio(batch.Accounts, mandatePortfolios[snap])
 	}
-	if err := c.appendPortfolios(ctx, w, byTime); err != nil {
+	if err := r.appendPortfolios(ctx, w, byTime); err != nil {
 		return nil, err
 	}
-	if err := c.appendHoldings(ctx, w, byTime, instrMap); err != nil {
+	if err := r.appendHoldings(ctx, w, byTime, instrMap); err != nil {
 		return nil, err
 	}
-	if err := c.appendCashBalances(ctx, w, byTime); err != nil {
+	if err := r.appendCashBalances(ctx, w, byTime); err != nil {
 		return nil, err
 	}
-	if err := c.appendBookBalances(ctx, w, byTime); err != nil {
+	if err := r.appendBookBalances(ctx, w, byTime); err != nil {
 		return nil, err
 	}
-	if err := c.appendFxRates(ctx, w, byTime); err != nil {
+	if err := r.appendFxRates(ctx, w, byTime); err != nil {
 		return nil, err
 	}
-	if err := c.appendForwardContracts(ctx, w, byTime); err != nil {
+	if err := r.appendForwardContracts(ctx, w, byTime); err != nil {
 		return nil, err
 	}
 
-	batches := make([]canonical.SnapshotBatch, 0, len(times))
-	for _, t := range times {
-		batches = append(batches, *byTime[t])
-	}
-	return silver.NewSnapshotStream(batches), nil
+	return byTime.Stream(), nil
 }
 
 // snapshotTimesInWindow returns the union of distinct snapshot_at
@@ -87,45 +80,10 @@ func (c *psnReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 // content rows never match a dump_runs timestamp; without the
 // union, the byTime dispatch in Snapshots() silently drops
 // every content row.
-func (c *psnReader) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
-	const q = `
-SELECT DISTINCT snapshot_at FROM (
-    SELECT snapshot_at FROM dump_runs            WHERE snapshot_at BETWEEN ? AND ?
-    UNION ALL
-    SELECT snapshot_at FROM cash_accounts        WHERE snapshot_at BETWEEN ? AND ?
-    UNION ALL
-    SELECT snapshot_at FROM safekeeping_accounts WHERE snapshot_at BETWEEN ? AND ?
-    UNION ALL
-    SELECT snapshot_at FROM portfolios           WHERE snapshot_at BETWEEN ? AND ?
-    UNION ALL
-    SELECT snapshot_at FROM holdings             WHERE snapshot_at BETWEEN ? AND ?
-    UNION ALL
-    SELECT snapshot_at FROM cash_balances        WHERE snapshot_at BETWEEN ? AND ?
-    UNION ALL
-    SELECT snapshot_at FROM instruments          WHERE snapshot_at BETWEEN ? AND ?
-    UNION ALL
-    SELECT snapshot_at FROM fx_rates             WHERE snapshot_at BETWEEN ? AND ?
-    UNION ALL
-    SELECT snapshot_at FROM forward_contracts    WHERE snapshot_at BETWEEN ? AND ?
-)
-ORDER BY snapshot_at`
-	rows, err := c.db.QueryContext(ctx, q,
-		w.Start, w.End, w.Start, w.End, w.Start, w.End,
-		w.Start, w.End, w.Start, w.End, w.Start, w.End,
-		w.Start, w.End, w.Start, w.End, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("snapshotTimesInWindow: %w", err)
-	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var t int64
-		if err := rows.Scan(&t); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
+func (r *psnReader) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
+	return silver.SnapshotTimesOf(ctx, r.db, w, nil,
+		"dump_runs", "cash_accounts", "safekeeping_accounts", "portfolios", "holdings",
+		"cash_balances", "instruments", "fx_rates", "forward_contracts")
 }
 
 // ---- accounts ------------------------------------------------------------
@@ -141,13 +99,13 @@ type cashAccountPayload struct {
 	AcctTpDesc   string `json:"AcctTpDesc"`
 }
 
-func (c *psnReader) appendCashAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (r *psnReader) appendCashAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	const q = `
 SELECT snapshot_at, relationship_id, account_external_id,
        portfolio_external_id, payload
   FROM cash_accounts
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
+	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendCashAccounts: %w", err)
 	}
@@ -215,13 +173,13 @@ type safekeepingPayload struct {
 // non-empty AcctDesc (strategy name). Used by the cash-
 // propagation pass to gate which cash accounts inherit their
 // portfolio's safekeeping mandate.
-func (c *psnReader) appendSafekeepingAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) (map[int64]map[string]bool, error) {
+func (r *psnReader) appendSafekeepingAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) (map[int64]map[string]bool, error) {
 	const q = `
 SELECT snapshot_at, relationship_id, account_external_id,
        portfolio_external_id, payload
   FROM safekeeping_accounts
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
+	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return nil, fmt.Errorf("appendSafekeepingAccounts: %w", err)
 	}
@@ -278,7 +236,7 @@ SELECT snapshot_at, relationship_id, account_external_id,
 	return mandatePortfolios, rows.Err()
 }
 
-func (c *psnReader) appendPortfolios(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (r *psnReader) appendPortfolios(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	// base_currency is a promoted column, read directly. The
 	// payload carries the full PrtflKey (with
 	// PrtflElmntData, performance, etc.) for forensics.
@@ -287,7 +245,7 @@ SELECT snapshot_at, relationship_id, portfolio_external_id,
        base_currency, payload
   FROM portfolios
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
+	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendPortfolios: %w", err)
 	}
@@ -368,7 +326,7 @@ func (n instrumentNames) Best() string {
 // snapshot most of the time. Latest-known-per-ISIN is the right
 // resolution — instrument metadata is functionally immutable
 // (name, asset class) and stale-by-one-snapshot is harmless.
-func (c *psnReader) appendInstruments(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) (map[string]instrumentMeta, error) {
+func (r *psnReader) appendInstruments(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) (map[string]instrumentMeta, error) {
 	// ORDER BY snapshot_at ASC so the map[isin] write inside the
 	// loop ends up holding the LATEST row's meta (later writes
 	// overwrite earlier).
@@ -376,7 +334,7 @@ func (c *psnReader) appendInstruments(ctx context.Context, w canonical.Window, b
 SELECT snapshot_at, isin, payload
   FROM instruments
  ORDER BY snapshot_at ASC`
-	rows, err := c.db.QueryContext(ctx, q)
+	rows, err := r.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("appendInstruments: %w", err)
 	}
@@ -450,8 +408,8 @@ type holdingsPayloadShape struct {
 // Holdings and safekeeping_accounts use the same AcctId form for the
 // safekeeping ID (e.g. BBBBxxxxxxxxxxS1); no cross-table translation
 // is needed.
-func (c *psnReader) appendHoldings(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, instr map[string]instrumentMeta) error {
-	hasCost, err := silver.HasColumn(ctx, c.db, "holdings", "cost_basis")
+func (r *psnReader) appendHoldings(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, instr map[string]instrumentMeta) error {
+	hasCost, err := silver.HasColumn(ctx, r.db, "holdings", "cost_basis")
 	if err != nil {
 		return fmt.Errorf("appendHoldings: %w", err)
 	}
@@ -463,7 +421,7 @@ func (c *psnReader) appendHoldings(ctx context.Context, w canonical.Window, byTi
 SELECT snapshot_at, safekeeping_external_id, isin, payload, ` + costCols + `
   FROM holdings
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
+	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendHoldings: %w", err)
 	}
@@ -577,12 +535,12 @@ type cashBalancePayload struct {
 // cash_balances.account_external_id is the IBAN, matching
 // cash_accounts.account_external_id; no cross-table translation is
 // needed.
-func (c *psnReader) appendCashBalances(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (r *psnReader) appendCashBalances(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	const q = `
 SELECT snapshot_at, account_external_id, balance_kind, currency_iso, payload
   FROM cash_balances
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
+	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendCashBalances: %w", err)
 	}
@@ -658,7 +616,7 @@ SELECT snapshot_at, account_external_id, balance_kind, currency_iso, payload
 // the balance KIND: an account-day the statement rail spoke for at all
 // is one this pass has nothing to add to, and a second closing figure
 // standing beside the statement's own is the outcome being avoided.
-func (c *psnReader) appendBookBalances(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (r *psnReader) appendBookBalances(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	type key struct {
 		snapshotAt int64
 		account    string
@@ -674,7 +632,7 @@ func (c *psnReader) appendBookBalances(ctx context.Context, w canonical.Window, 
 SELECT snapshot_at, account_external_id, payload
   FROM cash_accounts
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
+	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendBookBalances: %w", err)
 	}
@@ -776,12 +734,12 @@ func firstFxPeriod(raw json.RawMessage) (fxRatePeriod, bool, error) {
 	}
 }
 
-func (c *psnReader) appendFxRates(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (r *psnReader) appendFxRates(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	const q = `
 SELECT snapshot_at, base_currency_iso, quote_currency_iso, payload
   FROM fx_rates
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
+	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendFxRates: %w", err)
 	}
@@ -834,12 +792,12 @@ type forwardPayload struct {
 // position remains owned by an `accounts` row and the totals
 // across `accounts` and `portfolios` tie out against `positions
 // --with-cash`. See docs/adapters/ubs.md.
-func (c *psnReader) appendForwardContracts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (r *psnReader) appendForwardContracts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	const q = `
 SELECT snapshot_at, contract_external_id, payload
   FROM forward_contracts
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
+	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendForwardContracts: %w", err)
 	}

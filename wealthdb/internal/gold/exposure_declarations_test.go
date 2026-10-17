@@ -16,27 +16,21 @@ import (
 func TestExposureDeclaredSplit(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
-	close := func(name string, got, want float64) {
-		t.Helper()
-		if math.Abs(got-want) > 1e-6 {
-			t.Errorf("%s = %.6f, want %.6f", name, got, want)
-		}
-	}
 	var parts int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM exposure_leaves(?, 'USD') WHERE iid = 'QPRV'`, exAsOf).
 		Scan(&parts); err != nil || parts != 12 {
 		t.Errorf("QPRV has %d parts (%v), want 3 regions x 2 currencies x 2 classes", parts, err)
 	}
-	close("QPRV", leafValue(t, db, ctx, `iid = 'QPRV'`), 200)
+	closeTo(t, "QPRV", leafValue(t, db, ctx, `iid = 'QPRV'`), 200)
 	for region, want := range map[string]float64{"north_america": 110, "europe": 60, "other": 30} {
-		close("QPRV in "+region, leafValue(t, db, ctx, `iid = 'QPRV' AND region = ?`, region), want)
+		closeTo(t, "QPRV in "+region, leafValue(t, db, ctx, `iid = 'QPRV' AND region = ?`, region), want)
 	}
 	for ccy, want := range map[string]float64{"USD": 120, "EUR": 80} {
-		close("QPRV in "+ccy, leafValue(t, db, ctx, `iid = 'QPRV' AND currency = ?`, ccy), want)
+		closeTo(t, "QPRV in "+ccy, leafValue(t, db, ctx, `iid = 'QPRV' AND currency = ?`, ccy), want)
 	}
-	close("QPRV's private equity", leafValue(t, db, ctx, `iid = 'QPRV' AND asset_class = 'private_equity'`), 144)
-	close("QPRV's infrastructure", leafValue(t, db, ctx, `iid = 'QPRV' AND asset_class = 'infrastructure'`), 56)
-	close("one part", leafValue(t, db, ctx, `iid = 'QPRV' AND region = 'europe' AND currency = 'EUR'
+	closeTo(t, "QPRV's private equity", leafValue(t, db, ctx, `iid = 'QPRV' AND asset_class = 'private_equity'`), 144)
+	closeTo(t, "QPRV's infrastructure", leafValue(t, db, ctx, `iid = 'QPRV' AND asset_class = 'infrastructure'`), 56)
+	closeTo(t, "one part", leafValue(t, db, ctx, `iid = 'QPRV' AND region = 'europe' AND currency = 'EUR'
 	    AND asset_class = 'infrastructure'`), 200*0.30*0.4*0.28)
 	if got := leafText(t, db, ctx, "string_agg(DISTINCT how || '/' || COALESCE(country, '-'), ',')", `iid = 'QPRV'`); got != "declared/-" {
 		t.Errorf("QPRV parts read %q, want declared with no country", got)
@@ -49,7 +43,7 @@ func TestExposureDeclaredSplit(t *testing.T) {
 	if f := leafFlags(t, db, ctx, `iid = 'QPRV' AND asset_class = 'infrastructure'`); f != "declared" {
 		t.Errorf("infrastructure part flags = %q", f)
 	}
-	close("diversified", leafValue(t, db, ctx, `iid = 'QPRV' AND sector = 'diversified'`), 144)
+	closeTo(t, "diversified", leafValue(t, db, ctx, `iid = 'QPRV' AND sector = 'diversified'`), 144)
 
 	// The classes view shows the fund in both classes.
 	classes, err := ExposureClasses(ctx, db, exAsOf, "USD")
@@ -138,15 +132,9 @@ func TestExposureDeclarationPrecedence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dash := func(s *string) string {
-		if s == nil {
-			return "-"
-		}
-		return *s
-	}
 	got := map[string]string{}
 	for _, f := range funds {
-		got[f.Fund] = dash(f.Via) + "|" + dash(f.Proxy) + "|" + dash(f.DeclaredDimensions) + "|" +
+		got[f.Fund] = fmtStrPtr(f.Via) + "|" + fmtStrPtr(f.Proxy) + "|" + fmtStrPtr(f.DeclaredDimensions) + "|" +
 			strings.Join(keepFlags(strings.Split(f.Quality, ","), "declared", "no_composition", "proxy"), ",")
 	}
 	for fund, want := range map[string]string{
@@ -228,10 +216,11 @@ func TestExposureDeclarationLeavesTheRest(t *testing.T) {
 func TestMigration0128DDLIsRerunnable(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
-	// 0129 re-creates the look-through with the situs, so it is replayed
-	// after 0128, as Migrate would.
+	// 0129 and 0131 re-create the look-through and its views, so they
+	// are replayed after 0128, as Migrate would.
 	rerunMigrationDDL(t, db, ctx, "0128_exposure_declarations.sql")
 	rerunMigrationDDL(t, db, ctx, "0129_exposure_situs.sql")
+	rerunMigrationDDL(t, db, ctx, "0131_exposure_unknown.sql")
 	if _, err := SyncExposure(ctx, db, exposureFixtureRows()); err != nil {
 		t.Fatal(err)
 	}

@@ -58,7 +58,8 @@ func computeEntityReturn(assets []*accountData, p ReturnParams, toDay int64, fx 
 		StartDay: winFrom, EndDay: winTo,
 	}
 
-	// Entity-level quality that applies to every row.
+	// Entity-level quality, carried on the summary row (and the
+	// nonpositive-base row that replaces it).
 	entityQ := append([]string{}, incFlags...)
 	entityQ = append(entityQ, qFlowTags...)
 	entityQ = append(entityQ, regimeFlags(assets, winFrom, winTo)...)
@@ -158,7 +159,7 @@ func staleAt(snaps []int64, day int64, gap float64, ok bool) bool {
 func bucketRow(base ReturnRow, bs, be int64, period string, av func(int64) (float64, bool), flows []returns.Flow) ReturnRow {
 	r := base
 	r.StartDay, r.EndDay = bs, be
-	r.Period = periodLabel(bs, be, period)
+	r.Period = periodLabel(be, period)
 	v0, ok0 := av(bs)
 	v1, ok1 := av(be)
 	r.StartValue = decStrOrNil(v0, ok0)
@@ -786,14 +787,14 @@ func entityWindow(assets []*accountData, p ReturnParams, toDay int64) (from, to 
 	a0 := assets[0]
 	configured := false
 	if cfg, ok := p.InceptionOverrides.resolve(p.Level, a0.src, a0.portfolio, a0.acct); ok {
-		if cfgDay := cfg / 86400; cfgDay > entityInception {
+		if cfgDay := EpochDay(cfg); cfgDay > entityInception {
 			entityInception = cfgDay
 			configured = true
 		}
 	}
 
 	if p.FromEpoch > 0 {
-		from = p.FromEpoch / 86400
+		from = EpochDay(p.FromEpoch)
 		if from < entityInception {
 			from = entityInception
 			flags = append(flags, "partial_window")
@@ -1030,7 +1031,7 @@ func hasObservedFlowIn(a *accountData, from, to int64) bool {
 	return false
 }
 
-func periodLabel(bs, be int64, period string) string {
+func periodLabel(be int64, period string) string {
 	t := returns.DayToTimeUTC(be - 1) // a day inside the bucket
 	switch period {
 	case "monthly":

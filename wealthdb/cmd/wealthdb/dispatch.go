@@ -25,15 +25,15 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		// flag has already written the usage through fs.Usage, and
 		// asking for help succeeds. Everything else that fails to
 		// parse is a usage error, which flag has also already
-		// reported — 2, the code the stdlib uses for those.
+		// reported.
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
-		return 2
+		return errs.ExitUsage
 	}
 	if len(rest) == 0 {
 		printGlobalUsage(stderr)
-		return 2
+		return errs.ExitUsage
 	}
 
 	subcommand, subargs := rest[0], rest[1:]
@@ -45,10 +45,10 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		if c, host := hostSideCommand(subcommand); host {
 			fmt.Fprintf(stderr, "wealthdb: %q is served by the host-side wealthdb wrapper, not this binary.\n%s\n",
 				subcommand, c.detail())
-			return 2
+			return errs.ExitUsage
 		}
 		fmt.Fprintf(stderr, "wealthdb: unknown subcommand %q\n\n%s", subcommand, usageString())
-		return 2
+		return errs.ExitUsage
 	}
 
 	ctx := context.Background()

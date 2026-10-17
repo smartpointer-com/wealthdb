@@ -51,7 +51,7 @@ load semantics.`)
 	if err != nil {
 		return err
 	}
-	enrichment, exposure, err := readLoadLedgers(cfg)
+	in, err := readLoadLedgers(cfg)
 	if err != nil {
 		return err
 	}
@@ -89,8 +89,8 @@ load semantics.`)
 		}
 		printLoadResult(stdout, res)
 	}
-	firstErr = errors.Join(firstErr, stampConfig(ctx, db, cfg, exposure, "load", stdout, stderr))
-	return errors.Join(firstErr, runGoldPasses(ctx, db, cfg, enrichment, "load", stdout, stderr))
+	firstErr = errors.Join(firstErr, stampConfig(ctx, db, cfg, in, "load", stdout, stderr))
+	return errors.Join(firstErr, runGoldPasses(ctx, db, cfg, in.enrichment, "load", stdout, stderr))
 }
 
 // sourceArg reads the `<silver_source_id> | -a` argument the
@@ -99,14 +99,14 @@ func sourceArg(fs *flag.FlagSet, all bool, cmd string) (string, error) {
 	switch {
 	case all && fs.NArg() > 0:
 		fs.Usage()
-		return "", errs.Newf(2, "%s: '-a' and a positional id are mutually exclusive", cmd)
+		return "", errs.Newf(errs.ExitUsage, "%s: '-a' and a positional id are mutually exclusive", cmd)
 	case all:
 		return "", nil
 	case fs.NArg() == 1:
 		return fs.Arg(0), nil
 	}
 	fs.Usage()
-	return "", errs.Newf(2, "%s: expected one silver_source_id or -a", cmd)
+	return "", errs.Newf(errs.ExitUsage, "%s: expected one silver_source_id or -a", cmd)
 }
 
 // selectSources is the configured sources a load or reload covers:
@@ -133,12 +133,12 @@ func selectSources(cfg *config.Config, id, cmd string) ([]config.SilverSource, e
 // globally correct; failing to stamp it degrades a conversion and is a
 // warning.
 // A failure to sync the rows is an error (syncConfigRows).
-func stampConfig(ctx context.Context, db *sql.DB, cfg *config.Config, exposure canonical.ExposureRows, verb string,
+func stampConfig(ctx context.Context, db *sql.DB, cfg *config.Config, in loadInputs, verb string,
 	stdout, stderr io.Writer) error {
 	if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
 		fmt.Fprintf(stderr, "%s: warning: could not stamp FX priorities: %s\n", verb, err.Error())
 	}
-	if err := syncConfigRows(ctx, db, cfg, exposure, verb, stdout); err != nil {
+	if err := syncConfigRows(ctx, db, cfg, in, verb, stdout); err != nil {
 		fmt.Fprintf(stderr, "%s: %s\n", verb, err.Error())
 		return err
 	}
@@ -174,12 +174,11 @@ func warnUnmatchedDeclarations(ctx context.Context, db *sql.DB, verb string, std
 // syncConfigRows stamps the config's declared accounts into the
 // accounts dimension, its holding aliases into holding_aliases and its
 // exposure block into the exposure tables, after the per-source loads
-// and before the enrichment pass that reads them. A failure is an error
-// rather than a warning, like the pass itself: a rule naming a
-// declaration the dimension does not hold would place its rows onto a
-// far account the statement cannot resolve, which is the hole the
-// declarations exist to close.
-func syncConfigRows(ctx context.Context, db *sql.DB, cfg *config.Config, exposure canonical.ExposureRows, verb string,
+// and before the passes that read them. A failure is an error rather
+// than a warning: a rule naming a declared account the dimension does
+// not hold would place its rows onto a far account the statement cannot
+// resolve, which is the hole declared accounts exist to close.
+func syncConfigRows(ctx context.Context, db *sql.DB, cfg *config.Config, in loadInputs, verb string,
 	stdout io.Writer) error {
 	n, err := gold.SyncDeclaredAccounts(ctx, db, cfg.DeclaredAccountChanges(time.Now().Unix()))
 	if err != nil {
@@ -194,7 +193,7 @@ func syncConfigRows(ctx context.Context, db *sql.DB, cfg *config.Config, exposur
 	if n > 0 {
 		fmt.Fprintf(stdout, "%s: %d holding alias(es) stamped\n", verb, n)
 	}
-	if n, err = gold.SyncExposure(ctx, db, exposure); err != nil {
+	if n, err = gold.SyncExposure(ctx, db, in.exposure); err != nil {
 		return fmt.Errorf("exposure: %w", err)
 	}
 	if n > 0 {
@@ -211,20 +210,26 @@ type enrichmentLedgers struct {
 	overrides  []gold.TransferOverrideRule
 }
 
-// readLoadLedgers reads what a load or reload applies beside the
-// sources, before gold is opened read-write (parseEnrichmentLedgers):
-// the enrichment ledgers, and the exposure rows with the declarations
-// ledger.
-func readLoadLedgers(cfg *config.Config) (enrichmentLedgers, canonical.ExposureRows, error) {
+// loadInputs is what a load or reload applies beside the sources, read
+// before gold is opened read-write: the enrichment ledgers, and the
+// exposure rows with the declarations ledger.
+type loadInputs struct {
+	enrichment enrichmentLedgers
+	exposure   canonical.ExposureRows
+}
+
+// readLoadLedgers reads the loadInputs (parseEnrichmentLedgers,
+// config.ExposureRows).
+func readLoadLedgers(cfg *config.Config) (loadInputs, error) {
 	enrichment, err := parseEnrichmentLedgers(cfg)
 	if err != nil {
-		return enrichmentLedgers{}, canonical.ExposureRows{}, err
+		return loadInputs{}, err
 	}
 	exposure, err := cfg.ExposureRows()
 	if err != nil {
-		return enrichmentLedgers{}, canonical.ExposureRows{}, err
+		return loadInputs{}, err
 	}
-	return enrichment, exposure, nil
+	return loadInputs{enrichment: enrichment, exposure: exposure}, nil
 }
 
 // parseEnrichmentLedgers reads the ledgers the pass applies. Every

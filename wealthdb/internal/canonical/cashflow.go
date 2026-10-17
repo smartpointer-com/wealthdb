@@ -190,7 +190,8 @@ var vehicleClassValues = map[CashflowClass]struct{}{
 }
 
 // ValidVehicleClass reports whether c is one of the four pools a
-// wrapper may be moved to.
+// wrapper may be moved to. A test accessor: the tests hold the
+// boundary table to it.
 func (c CashflowClass) ValidVehicleClass() bool {
 	_, ok := vehicleClassValues[c]
 	return ok
@@ -241,6 +242,11 @@ func (s WrapperSide) Valid() bool {
 // wrapper. Every value of the TaxWrapper enum appears exactly once —
 // TestDefaultWrapperSideCoversEveryWrapper holds it to that, so a
 // wrapper added for a new jurisdiction cannot arrive without a side.
+//
+// It is the one place a wrapper's side is decided. WrapperBoundaries
+// hands it to the enrichment pass, which composes the config's
+// `cashflow.wrappers` overrides over it and stamps the result into
+// gold; nothing re-derives the boundary anywhere else.
 //
 // An education plan and a custodial account for the same child land on
 // different sides, which is the two-question test doing its work: the
@@ -302,9 +308,8 @@ var defaultWrapperSides = map[TaxWrapper]struct {
 // silently removed from the statement. It is not free, and it is why
 // `status -v` counts pooled accounts with no wrapper set.
 //
-// One place decides a wrapper's side. The config's `cashflow.wrappers`
-// composes an override map over this, and the enrichment pass stamps
-// the result into gold; nothing re-derives the boundary anywhere else.
+// A test accessor over defaultWrapperSides: production reads the
+// boundary through WrapperBoundaries.
 func DefaultWrapperSide(w TaxWrapper) (WrapperSide, CashflowClass) {
 	if d, ok := defaultWrapperSides[w]; ok {
 		return d.side, d.class
@@ -326,10 +331,10 @@ type WrapperBoundary struct {
 //
 // It exists so the enrichment pass can write the boundary into gold
 // without enumerating the enum itself. Stamping every wrapper rather
-// than only the overridden ones is what keeps DefaultWrapperSide the
-// single place a wrapper's side is decided: the alternative would put
-// the defaults in SQL a second time, where a wrapper added for a new
-// jurisdiction would take two edits to reach the statement.
+// than only the overridden ones is what keeps the defaultWrapperSides
+// table the single place a wrapper's side is decided: the alternative
+// would put the defaults in SQL a second time, where a wrapper added
+// for a new jurisdiction would take two edits to reach the statement.
 func WrapperBoundaries() []WrapperBoundary {
 	out := make([]WrapperBoundary, 0, len(defaultWrapperSides))
 	for w, d := range defaultWrapperSides {
@@ -399,7 +404,10 @@ func ParseWrapperDestination(s string) (WrapperSide, CashflowClass, bool) {
 //
 // Reported per class rather than as a lookup table so that a class
 // without a delta — `unpaired`, which no rule can place — is a
-// compile-time-visible absence rather than a missing map entry.
+// compile-time-visible absence rather than a missing map entry. The
+// cashflow resolution's SQL CASE restates the mapping, and
+// TestVehicleTransferDetailedMatchesTheResolution holds the two
+// together.
 func VehicleTransferDetailed(c CashflowClass) (string, bool) {
 	switch c {
 	case ClassRetirement:

@@ -790,10 +790,11 @@ func TestMigration0086DDLIsRerunnable(t *testing.T) {
 // ---- the serving view ----------------------------------------------------
 
 // TestWebCashflowIsLineGrainAndReadyToDraw pins what the serving view
-// adds over the report macro it wraps: a row per (line, reporting
-// currency), and node NAMES a Sankey can key on. A visualisation keys a
-// node by the string it is called, so a gift given and a gift received
-// sharing a name would merge into one node with a self-edge.
+// adds over the materialized report macro it reads: a row per (line,
+// reporting currency), and node NAMES a Sankey can key on. A
+// visualisation keys a node by the string it is called, so a gift given
+// and a gift received sharing a name would merge into one node with a
+// self-edge.
 func TestWebCashflowIsLineGrainAndReadyToDraw(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)

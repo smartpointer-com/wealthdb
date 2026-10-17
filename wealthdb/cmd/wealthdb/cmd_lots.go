@@ -37,7 +37,7 @@ func cmdLots(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, 
 		if len(subargs) > 0 && (subargs[0] == "-h" || subargs[0] == "--help" || subargs[0] == "help") {
 			return flag.ErrHelp
 		}
-		return errs.Newf(2, "lots: the verb is 'rebuild'")
+		return errs.Newf(errs.ExitUsage, "lots: the verb is 'rebuild'")
 	}
 	fs := flag.NewFlagSet("wealthdb lots rebuild", flag.ContinueOnError)
 	fs.SetOutput(stderr)

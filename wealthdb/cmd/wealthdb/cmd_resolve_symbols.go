@@ -67,13 +67,6 @@ type resolution struct {
 	Symbol         string
 }
 
-// tickerShapeRe is the strict ticker-shape pattern: 1-12 chars of
-// uppercase ASCII letters, digits, dots, or hyphens. Captures the
-// surface forms brokers emit (BRK.B,
-// XDEW, TFLO, EUNH.DE, etc.) and rejects obvious garbage like
-// "BANK INT 07/30".
-var tickerShapeRe = regexp.MustCompile(`^[A-Z0-9.\-]{1,12}$`)
-
 // isinShapeRe matches the ISO 6166 ISIN surface form: two-letter
 // country code + nine alphanumerics + one Luhn check digit, total
 // 12 chars. Used to reject the "model echoed the lookup_value"
@@ -217,7 +210,7 @@ func parseResolveSymbolsFlags(subargs []string, stderr io.Writer) (resolveSymbol
 	}
 	if o.batch < 1 {
 		fs.Usage()
-		return o, errs.Newf(2, "resolve-symbols: --batch must be at least 1, got %d", o.batch)
+		return o, errs.Newf(errs.ExitUsage, "resolve-symbols: --batch must be at least 1, got %d", o.batch)
 	}
 	return o, nil
 }
@@ -235,11 +228,11 @@ func resolveModel(cfg *config.Config, cfgPath string, opts resolveSymbolsOpts) (
 		modelCfg = cfg.SymbolResolution.Model
 	}
 	if modelCfg == nil {
-		return nil, errs.Newf(2, "resolve-symbols: %s is not set; add a `%s` block to %s (or use --overrides-only)",
+		return nil, errs.Newf(errs.ExitUsage, "resolve-symbols: %s is not set; add a `%s` block to %s (or use --overrides-only)",
 			modelKey, modelKey, cfgPath)
 	}
 	if err := validateModelConfig(modelKey, modelCfg); err != nil {
-		return nil, errs.Newf(2, "resolve-symbols: %s", err.Error())
+		return nil, errs.Newf(errs.ExitUsage, "resolve-symbols: %s", err.Error())
 	}
 	return modelCfg, nil
 }
@@ -300,8 +293,9 @@ type batchTally struct {
 // returned, and a store failure wins over the model's error.
 func runResolveBatches(ctx context.Context, run resolveRun, batches [][]candidate, anchors []anchor, stdout, stderr io.Writer) (batchTally, error) {
 	t := batchTally{stored: map[string]int{}}
+	call := modelCaller(run.model)
 	for i, b := range batches {
-		got, n, invalid, err := resolveWithLLM(ctx, run.model, b, anchorsFor(anchors, b),
+		got, n, invalid, err := resolveWithLLM(ctx, call, b, anchorsFor(anchors, b),
 			candidateKeyset(b), run.sources, run.opts.maxAttempts, run.opts.noCurrency,
 			run.opts.showPrompt, stdout, stderr)
 		t.attempts += n
@@ -814,16 +808,16 @@ func sortedKeys(m map[string]int) []string {
 
 // ---- retry loop -----------------------------------------------------------
 
-// resolveWithLLM runs the candidate set through the model. On each
-// attempt, it parses the response, partitions into valid + invalid,
-// merges valid rows into the running set (deduped by key), and
-// re-prompts with targeted feedback if any invalid rows remain.
-// Returns the union of valid resolutions across all attempts, the
-// number of attempts spent, and the total number of invalid rows
+// resolveWithLLM runs the candidate set through the model, by way of
+// call. On each attempt, it parses the response, partitions into
+// valid + invalid, merges valid rows into the running set (deduped by
+// key), and re-prompts with targeted feedback if any invalid rows
+// remain. Returns the union of valid resolutions across all attempts,
+// the number of attempts spent, and the total number of invalid rows
 // rejected.
 func resolveWithLLM(
 	ctx context.Context,
-	cfg *config.ModelConfig,
+	call llmCall,
 	candidates []candidate,
 	anchors []anchor,
 	candKeyset map[string]bool,
@@ -844,7 +838,7 @@ func resolveWithLLM(
 		if showPrompt {
 			fmt.Fprintf(stderr, "--- LLM prompt (attempt %d) ---\n%s\n--- end prompt ---\n", attempts, userPrompt)
 		}
-		raw, err := callLLM(ctx, cfg, systemPrompt, userPrompt)
+		raw, err := call(ctx, systemPrompt, userPrompt)
 		if err != nil {
 			return validUnion, attempts, totalInvalid, fmt.Errorf("LLM call (attempt %d): %w", attempts, err)
 		}
@@ -1062,7 +1056,7 @@ func parseAndValidate(body string, candKeyset map[string]bool, configuredSources
 // identifier as a symbol teaches the model to answer with identifiers.
 func symbolProblem(symbol string) string {
 	switch {
-	case !tickerShapeRe.MatchString(symbol):
+	case !config.TickerShape.MatchString(symbol):
 		return fmt.Sprintf("symbol %q does not look ticker-shaped", symbol)
 	case isinShapeRe.MatchString(symbol):
 		return fmt.Sprintf("symbol %q is ISIN-shaped (not a real ticker)", symbol)

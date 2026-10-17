@@ -646,7 +646,7 @@ func TestTransferShaped(t *testing.T) {
 		// a Swiss legal form in front of a postal code, a canton in
 		// front of an ESR reference, the word No. in front of an
 		// invoice number, and the reference prefixes a bank writes on
-		// an ordinary domestic payment. Each of these used to fence a
+		// an ordinary domestic payment. None of these may fence a
 		// tradesman's bill out of candidacy. Every value is invented.
 		"EXAMPLE VERSICHERUNG AG 9999 EXAMPLE 000000123456789012345",
 		"EXAMPLE SCHULEN 9999 ZH 25 12345 00500 12345 00012 34567",
@@ -766,11 +766,10 @@ func TestP2PRowCandidacy(t *testing.T) {
 // The signature is the creditor and nothing else — the type code and
 // the address are the bank's filing and are trimmed off it (§4) — so
 // the two bills that differ only in a house number key alike, which
-// is the point of the trim. That also closes on the signature side an
-// old gap in the unanchored IBAN match: a two-digit house number in
-// front of the country code used to read as an account number on the
-// key itself (`...SE12CHEXAMPLE...`), and no address reaches the key
-// now. The raw narrative still carries every one of those shapes, and
+// is the point of the trim. No address reaches the key, so a two-digit
+// house number in front of the country code cannot read as an account
+// number there (`...SE12CHEXAMPLE...`) for the unanchored IBAN match.
+// The raw narrative still carries every one of those shapes, and
 // the fence reads it whole — a postal code in front of more text is
 // two letters and two digits at a token start there
 // (`...LE9999ORDENTLICHE...`), and it is the registry length and the
@@ -998,9 +997,8 @@ func TestNormalizeDropsTheAddressBehindThePayee(t *testing.T) {
 
 // TestABookingCodeAloneIsNoSignature: a narrative that is nothing but
 // the MT940 :86: structured-field tag names no one. Reading it down to
-// its head leaves nothing, and the fallback to the whole line used to
-// put the code back — so the bank's filing became the key, and then the
-// merchant name on a report.
+// its head leaves nothing, and nothing may put the code back: the bank's
+// filing must not become the key, and so the merchant name on a report.
 func TestABookingCodeAloneIsNoSignature(t *testing.T) {
 	for _, narrative := range []string{"K52?", "Z77?", "B37?", "W05?"} {
 		if got := Normalize("", narrative); got != "" {

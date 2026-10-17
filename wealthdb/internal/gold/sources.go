@@ -5,10 +5,11 @@ import (
 	"database/sql"
 )
 
-// SourceRow is one row of the `wealthdb sources` output: every
-// account of a silver source rolled into a single line — the
-// source-grain rollup sitting between `wealthdb accounts` /
-// `portfolios` (finer) and `wealthdb global` (the whole portfolio).
+// SourceRow is one row of the `wealthdb holdings sources` output:
+// every account of a silver source rolled into a single line — the
+// source-grain rollup sitting between `holdings accounts` /
+// `holdings portfolios` (finer) and `holdings global` (the whole
+// portfolio).
 //
 // Aggregation, the base/taxonomy rollup, FX, and ordering are all
 // the report_sources macro (migration 0123); this is the scan.

@@ -23,13 +23,15 @@ func exposureConfig(t *testing.T, block string) (*Config, error) {
 }
 
 // The block expands into gold's rows: every fund reference in gold's own
-// form, a proxy's leverage defaulting to 1, rows in a stable order.
+// form, a proxy's leverage defaulting to 1 (an inverse fund's negative),
+// rows in a stable order.
 func TestExposureRows(t *testing.T) {
 	t.Parallel()
 	c, err := exposureConfig(t, `{
         "proxies": {
             "isin:xx0000000001": {"fund": "cusip:00000aa01"},
             "symbol:lev3":       {"fund": "symbol:IDX1", "leverage": 3},
+            "symbol:inv2":       {"fund": "symbol:IDX2", "leverage": -2},
             "isin:XX0000000003": {"fund": "isin:XX0000000004", "always": true}
         },
         "reference_funds": ["symbol:idx9", "isin:XX0000000005"],
@@ -50,6 +52,7 @@ func TestExposureRows(t *testing.T) {
 	wantProxies := []canonical.ExposureProxy{
 		{FundRef: "isin:XX0000000001", ProxyRef: "cusip:00000AA01", Leverage: 1},
 		{FundRef: "isin:XX0000000003", ProxyRef: "isin:XX0000000004", Always: true, Leverage: 1},
+		{FundRef: "symbol:INV2", ProxyRef: "symbol:IDX2", Leverage: -2},
 		{FundRef: "symbol:LEV3", ProxyRef: "symbol:IDX1", Leverage: 3},
 	}
 	if len(rows.Proxies) != len(wantProxies) {
@@ -91,6 +94,24 @@ func TestExposureRowsDefaults(t *testing.T) {
 		if err != nil || rows.Settings.MaxGapDays != canonical.DefaultMaxGapDays ||
 			len(rows.Proxies)+len(rows.Declarations)+len(rows.Custody)+len(rows.ReferenceFunds)+len(rows.SizeFunds) != 0 {
 			t.Errorf("rows = %+v, err %v", rows, err)
+		}
+	}
+}
+
+// A ledger path that names no readable file fails with the path: a
+// directory, and a path under a file.
+func TestDeclarationsFileUnreadable(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	file := writeLedger(t, "")
+	for path, want := range map[string]string{
+		dir:                           "exposure.declarations: " + dir + ": ",
+		filepath.Join(file, "ledger"): "exposure.declarations: open " + filepath.Join(file, "ledger") + ": ",
+	} {
+		c := &Config{SilverSources: []SilverSource{{ID: "manual"}}, Exposure: &ExposureConfig{
+			Declarations: DeclarationsPath(path)}}
+		if _, err := c.ExposureRows(); err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("%s: err %v, want %q", path, err, want)
 		}
 	}
 }
@@ -299,17 +320,12 @@ func TestDeclarationRejects(t *testing.T) {
 	}
 }
 
-// The tags key the declarations ledger replaces is refused with where it
-// went, and the ledger's path takes a string alone.
+// The ledger's path takes a string alone.
 func TestDeclarationsConfigKey(t *testing.T) {
 	t.Parallel()
-	for block, want := range map[string]string{
-		`{"tags": "overrides/exposure_tags.csv"}`:       "the declarations ledger replaces the tags ledger",
-		`{"declarations": {"manual": {"house-1": {}}}}`: "path to the declarations ledger",
-	} {
-		if _, err := exposureConfig(t, block); err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("%s: err %v, want %q", block, err, want)
-		}
+	block := `{"declarations": {"manual": {"house-1": {}}}}`
+	if _, err := exposureConfig(t, block); err == nil || !strings.Contains(err.Error(), "path to the declarations ledger") {
+		t.Errorf("%s: err %v, want the path the key takes", block, err)
 	}
 }
 

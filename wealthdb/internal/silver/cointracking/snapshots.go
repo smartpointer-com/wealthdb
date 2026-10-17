@@ -50,10 +50,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return silver.NewSnapshotStream([]canonical.SnapshotBatch{batch}), nil
 	}
 
-	byTime := make(map[int64]*canonical.SnapshotBatch, len(snapDates))
-	for _, t := range snapDates {
-		byTime[t] = &canonical.SnapshotBatch{}
-	}
+	byTime := silver.NewBatches(snapDates)
 	if err := c.appendPositionsAcrossSnapshots(ctx, byTime); err != nil {
 		return nil, err
 	}
@@ -73,11 +70,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return nil, err
 	}
 
-	batches := make([]canonical.SnapshotBatch, 0, len(snapDates))
-	for _, t := range snapDates {
-		batches = append(batches, *byTime[t])
-	}
-	return silver.NewSnapshotStream(batches), nil
+	return byTime.Stream(), nil
 }
 
 // snapshotTimestamps returns the sorted list of distinct

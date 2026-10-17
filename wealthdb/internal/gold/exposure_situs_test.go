@@ -289,7 +289,7 @@ func TestExposureSitusViews(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, f := range funds {
-		got := strOrDash(f.Situs) + " " + strOrDash(f.SitusBasis)
+		got := fmtStrPtr(f.Situs) + " " + fmtStrPtr(f.SitusBasis)
 		want := map[string]string{"symbol:GAPF": "IE domicile", "holding:test-src:QPRV": "KY declared",
 			"symbol:FOF": "- unknown", "(other holdings)": "- -"}[f.Fund]
 		if want != "" && got != want {
@@ -411,12 +411,12 @@ func TestExposureSitusOnlyRecord(t *testing.T) {
 	for _, f := range funds {
 		switch f.Fund {
 		case "holding:test-src:PE1":
-			if f.Via != nil || f.Quality != "no_composition" || strOrDash(f.Situs) != "DE" {
-				t.Errorf("PE1 in funds: via %v, quality %q, situs %s", f.Via, f.Quality, strOrDash(f.Situs))
+			if f.Via != nil || f.Quality != "no_composition" || fmtStrPtr(f.Situs) != "DE" {
+				t.Errorf("PE1 in funds: via %v, quality %q, situs %s", f.Via, f.Quality, fmtStrPtr(f.Situs))
 			}
 		case "holding:test-src:QPRV":
-			if strOrDash(f.Via) != "declared" || strOrDash(f.DeclaredDimensions) != "region,currency,asset_class" {
-				t.Errorf("QPRV in funds: via %s, declared %s", strOrDash(f.Via), strOrDash(f.DeclaredDimensions))
+			if fmtStrPtr(f.Via) != "declared" || fmtStrPtr(f.DeclaredDimensions) != "region,currency,asset_class" {
+				t.Errorf("QPRV in funds: via %s, declared %s", fmtStrPtr(f.Via), fmtStrPtr(f.DeclaredDimensions))
 			}
 		}
 	}
@@ -449,7 +449,10 @@ func TestMigration0129DDLIsRerunnable(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	seedSitus(t, db, ctx)
+	// 0131 re-creates the look-through and the situs views, so it is
+	// replayed after 0129, as Migrate would.
 	rerunMigrationDDL(t, db, ctx, "0129_exposure_situs.sql")
+	rerunMigrationDDL(t, db, ctx, "0131_exposure_unknown.sql")
 	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)
 	}
@@ -464,11 +467,4 @@ func TestMigration0129DDLIsRerunnable(t *testing.T) {
 // qualityTags is a quality cell's tags without their shares.
 func qualityTags(q string) string {
 	return regexp.MustCompile(`=[<0-9]+%`).ReplaceAllString(q, "")
-}
-
-func strOrDash(s *string) string {
-	if s == nil {
-		return "-"
-	}
-	return *s
 }

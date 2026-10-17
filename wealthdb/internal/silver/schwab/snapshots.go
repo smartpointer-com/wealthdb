@@ -31,10 +31,7 @@ func (c *apiReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 
 	// One batch per snapshot_at. The map gives O(1) routing as we
 	// walk each table's rows.
-	byTime := make(map[int64]*canonical.SnapshotBatch, len(snapshotTimes))
-	for _, t := range snapshotTimes {
-		byTime[t] = &canonical.SnapshotBatch{}
-	}
+	byTime := silver.NewBatches(snapshotTimes)
 
 	if err := c.appendAccounts(ctx, w, byTime); err != nil {
 		return nil, err
@@ -56,11 +53,7 @@ func (c *apiReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 		return nil, err
 	}
 
-	batches := make([]canonical.SnapshotBatch, 0, len(snapshotTimes))
-	for _, t := range snapshotTimes {
-		batches = append(batches, *byTime[t])
-	}
-	return silver.NewSnapshotStream(batches), nil
+	return byTime.Stream(), nil
 }
 
 // dumpTimesInWindow returns the distinct dump_runs.snapshot_at values

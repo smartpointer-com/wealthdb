@@ -214,8 +214,9 @@ SELECT p.deal_external_id, CAST(strftime('%s', p.as_of_date) AS INTEGER),
 			inst.Name = &company
 		}
 		// EquityZen assigns single-company SPVs a per-company symbol (an
-		// EZ-internal ticker, not a public listing); funds have none. Surfacing
-		// it lets `wealthdb positions` show a symbol like public equities.
+		// EZ-internal ticker, not a public listing); funds have none.
+		// Surfacing it lets `wealthdb holdings positions` show a symbol
+		// like public equities.
 		if symbol != "" {
 			inst.Symbol = &symbol
 		}

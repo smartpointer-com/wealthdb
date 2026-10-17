@@ -191,13 +191,8 @@ SELECT CAST(l.eid AS TEXT),
 // (dump_runs is otherwise the download time, not a holding event, so it is
 // excluded).
 func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window, extra []int64) ([]int64, error) {
-	return silver.SnapshotTimes(ctx, c.db, w, extra, `
-SELECT DISTINCT snapshot_at FROM (
-    SELECT snapshot_at FROM entities     WHERE snapshot_at BETWEEN ? AND ?
-    UNION ALL SELECT snapshot_at FROM securities   WHERE snapshot_at BETWEEN ? AND ?
-    UNION ALL SELECT snapshot_at FROM fund_metrics WHERE snapshot_at BETWEEN ? AND ?
-)`,
-		w.Start, w.End, w.Start, w.End, w.Start, w.End)
+	return silver.SnapshotTimesOf(ctx, c.db, w, extra,
+		"entities", "securities", "fund_metrics")
 }
 
 // entInfo is the stable per-entity metadata (name + fund flag + raw payload)

@@ -35,7 +35,7 @@ UPDATE securities SET market_cap = securities.shares_outstanding * p.price, mark
         SELECT security_key AS k FROM security_underlyings
         UNION
         SELECT exposure_key(i.security_key) FROM security_identities i
-         WHERE i.security_type = 'Depositary Receipt' OR regexp_matches(upper(COALESCE(i.name, '')), $1)
+         WHERE i.security_type = '` + receiptType + `' OR regexp_matches(upper(COALESCE(i.name, '')), $1)
         UNION
         SELECT k.k FROM keyed k JOIN instruments ins USING (silver_source_id, instrument_external_id)
          WHERE regexp_matches(upper(COALESCE(ins.name, '')), $1))
@@ -126,8 +126,7 @@ UPDATE securities SET size = n.size, size_origin = 'size_fund_name:' || n.fund_r
 // issuer's size. The origin names the share as receiptFillSQL's do.
 const sizeFillSQL = `
 UPDATE securities SET size = u.size, size_origin = x.how || u.security_key
-  FROM (SELECT *, CASE origin WHEN 'lei' THEN 'lei:' WHEN 'roster' THEN 'roster:' ELSE 'underlying:' END AS how
-          FROM security_underlyings) x
+  FROM ` + underlyingsHowSQL + ` x
   JOIN securities u ON u.security_key = x.underlying_key
  WHERE x.security_key = securities.security_key AND securities.size IS NULL AND u.size IS NOT NULL`
 

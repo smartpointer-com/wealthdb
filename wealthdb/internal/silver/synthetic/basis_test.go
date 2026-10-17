@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 func TestBasisFor(t *testing.T) {
@@ -44,14 +45,14 @@ func TestBasisFor(t *testing.T) {
 // carries none.
 func TestPositionsCarryTheBasisStamp(t *testing.T) {
 	path, db := newFixture(t)
-	exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-01')`, day(1), day(1))
-	exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES ('acct-pm', 'brokerage', '{}')`)
-	exec(t, db, `INSERT INTO instruments (instrument_id, valid_from, asset_class, vehicle, payload) VALUES
+	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-01')`, day(1), day(1))
+	silvertest.Exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES ('acct-pm', 'brokerage', '{}')`)
+	silvertest.Exec(t, db, `INSERT INTO instruments (instrument_id, valid_from, asset_class, vehicle, payload) VALUES
         ('inst-fund', ?, 'private_equity', 'fund', '{}'),
         ('inst-etf',  ?, 'public_equity',  'etf',  '{}')`, day(1), day(1))
-	exec(t, db, insertPosition, day(1), "acct-pm", "inst-fund", "inst-fund", "private_equity", "fund",
+	silvertest.Exec(t, db, insertPosition, day(1), "acct-pm", "inst-fund", "inst-fund", "private_equity", "fund",
 		"USD", nil, "1100", "1000", nil, nil, "{}")
-	exec(t, db, insertPosition, day(1), "acct-pm", "inst-etf", "inst-etf", "public_equity", "etf",
+	silvertest.Exec(t, db, insertPosition, day(1), "acct-pm", "inst-etf", "inst-etf", "public_equity", "etf",
 		"USD", "10", "500", nil, nil, nil, "{}")
 	conn := openConn(t, path)
 	got := map[string]canonical.PositionChange{}

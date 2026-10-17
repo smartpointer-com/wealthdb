@@ -4,11 +4,11 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
-	"path/filepath"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 //go:embed testdata/silver_schema.sql
@@ -16,26 +16,12 @@ var silverSchemaSQL string
 
 func newFixtureSilver(t *testing.T) (string, *sql.DB) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "relevate.db")
-	db, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(silverSchemaSQL); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
-	return path, db
+	return silvertest.NewDB(t, silverSchemaSQL)
 }
 
 func openAdapter(t *testing.T, path string) silver.Connection {
 	t.Helper()
-	conn, err := (&Adapter{}).Open(context.Background(), silver.OpenSpec{Path: path})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { conn.Close() })
-	return conn
+	return silvertest.Open(t, &Adapter{}, path)
 }
 
 func TestKindIsRelevate(t *testing.T) {
@@ -45,16 +31,7 @@ func TestKindIsRelevate(t *testing.T) {
 }
 
 func TestStatusEmpty(t *testing.T) {
-	path, _ := newFixtureSilver(t)
-	conn := openAdapter(t, path)
-	s, err := conn.Status(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := canonical.UnknownStatus()
-	if s != want {
-		t.Errorf("Status = %+v, want %+v", s, want)
-	}
+	silvertest.AssertEmptyStatus(t, &Adapter{}, silverSchemaSQL)
 }
 
 // TestSnapshotsDerivedMarketValue covers relevate's distinctive
@@ -203,8 +180,8 @@ func TestTransactionsCreditNote(t *testing.T) {
 }
 
 // TestTaxonomyMapping covers the 2-D (exposure, vehicle) pair the
-// adapter derives from the sleeve label. Every sleeve is a Swisscanto
-// index fund → vehicle `fund`, except the uninvested Liquidity sleeve
+// adapter derives from the sleeve label. Every sleeve is an index
+// fund → vehicle `fund`, except the uninvested Liquidity sleeve
 // → `cash`/`demand_deposit`; the label (and, for Alternatives, the
 // fund name) picks the exposure.
 func TestTaxonomyMapping(t *testing.T) {
@@ -213,18 +190,18 @@ func TestTaxonomyMapping(t *testing.T) {
 		wantAC    canonical.AssetClass
 		wantVeh   canonical.Vehicle
 	}{
-		{"Stocks", "Swisscanto (CH) Index Equity Fund Placeholder CHF", canonical.AssetClassPublicEquity, canonical.VehicleFund},
-		{"Bonds", "Swisscanto (CH) Index Bond Fund Placeholder CHF", canonical.AssetClassFixedIncome, canonical.VehicleFund},
+		{"Stocks", "Qarvel Equity Index Sleeve CHF", canonical.AssetClassPublicEquity, canonical.VehicleFund},
+		{"Bonds", "Qarvel Bond Index Sleeve CHF", canonical.AssetClassFixedIncome, canonical.VehicleFund},
 		{"Liquidity", "Liquidity in CHF", canonical.AssetClassCash, canonical.VehicleDemandDeposit},
 		{"Liquidity ", "Liquidity in CHF", canonical.AssetClassCash, canonical.VehicleDemandDeposit},
 		// The physical-bullion sleeve hides under "Alternatives".
-		{"Alternatives", "Swisscanto (CH) Precious Metal Fund Placeholder Gold Physical CHF hedged", canonical.AssetClassMetal, canonical.VehicleFund},
+		{"Alternatives", "Qarvel Gold Bullion Sleeve CHF", canonical.AssetClassMetal, canonical.VehicleFund},
 		// Any other Alternatives sleeve is a manager-strategy fund.
-		{"Alternatives", "Swisscanto (CH) Placeholder Hedge Strategies Fund CHF", canonical.AssetClassHedgeFund, canonical.VehicleFund},
+		{"Alternatives", "Qarvel Multi-Manager Sleeve CHF", canonical.AssetClassHedgeFund, canonical.VehicleFund},
 		// Indirect listed real estate: real_estate exposure, fund wrapper.
-		{"Real Estate", "Swisscanto (CH) Index Real Estate Fund Placeholder CHF", canonical.AssetClassRealEstate, canonical.VehicleFund},
+		{"Real Estate", "Qarvel Real Estate Index Sleeve CHF", canonical.AssetClassRealEstate, canonical.VehicleFund},
 		// Unrecognised label defaults to a blended robo sleeve.
-		{"Something New", "Swisscanto (CH) Future Sleeve CHF", canonical.AssetClassMultiAsset, canonical.VehicleFund},
+		{"Something New", "Qarvel Future Sleeve CHF", canonical.AssetClassMultiAsset, canonical.VehicleFund},
 	}
 	for _, c := range cases {
 		gotAC, gotVeh := taxonomyFor(c.raw, c.name)

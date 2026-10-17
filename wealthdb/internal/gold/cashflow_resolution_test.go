@@ -121,7 +121,7 @@ func seedLines(t *testing.T, db *sql.DB, ctx context.Context, lines []line) map[
                                       account_external_id, instrument_external_id,
                                       kind, currency, net_amount, description)
                  VALUES ('cf', ?, 1728000, ?, ?, ?, 'USD', ?, ?)`,
-			l.id, l.account, nullable(l.instrument), l.kind, l.amount, l.id); err != nil {
+			l.id, l.account, nullIfEmpty(l.instrument), l.kind, l.amount, l.id); err != nil {
 			t.Fatalf("seed transaction %s: %v", l.id, err)
 		}
 		if l.spend != "" || l.farAccount != "" || l.farClass != "" || l.spendClass != "" {
@@ -131,9 +131,9 @@ func seedLines(t *testing.T, db *sql.DB, ctx context.Context, lines []line) map[
                         far_silver_source_id, far_account_external_id, far_class,
                         stated_asset_class, assigned_at)
                      VALUES ('cf', ?, 'sig', 1, ?, 'rule', ?, ?, ?, ?, 100)`,
-				l.id, nullable(l.spend),
-				nullable(map[bool]string{true: "cf", false: ""}[l.farAccount != ""]),
-				nullable(l.farAccount), nullable(l.farClass), nullable(l.spendClass)); err != nil {
+				l.id, nullIfEmpty(l.spend),
+				nullIfEmpty(map[bool]string{true: "cf", false: ""}[l.farAccount != ""]),
+				nullIfEmpty(l.farAccount), nullIfEmpty(l.farClass), nullIfEmpty(l.spendClass)); err != nil {
 				t.Fatalf("seed spending overlay for %s: %v", l.id, err)
 			}
 		}
@@ -143,7 +143,7 @@ func seedLines(t *testing.T, db *sql.DB, ctx context.Context, lines []line) map[
                         payer_signature, signature_version, income_detailed, provenance,
                         stated_asset_class, assigned_at)
                      VALUES ('cf', ?, 'sig', 1, ?, 'rule', ?, 100)`,
-				l.id, nullable(l.income), nullable(l.incomeClass)); err != nil {
+				l.id, nullIfEmpty(l.income), nullIfEmpty(l.incomeClass)); err != nil {
 				t.Fatalf("seed income overlay for %s: %v", l.id, err)
 			}
 		}
@@ -175,7 +175,7 @@ func seedLines(t *testing.T, db *sql.DB, ctx context.Context, lines []line) map[
 	return out
 }
 
-func nullable(s string) any {
+func nullIfEmpty(s string) any {
 	if s == "" {
 		return nil
 	}
@@ -521,6 +521,32 @@ func TestTheCrossingDeltasAreDirectional(t *testing.T) {
 		{id: "D-DEBT", account: "CASH", kind: "withdrawal", amount: -400,
 			spend: "debt_repayment", want: "financing.loans.debt_repayment",
 			why: "an instalment to a lender the product does not track"},
+	}
+	check(t, seedLines(t, db, ctx, lines), lines)
+}
+
+// TestVehicleTransferDetailedMatchesTheResolution pins
+// canonical.VehicleTransferDetailed to the resolution's own CASE: for
+// every class that has a crossing delta, a row placed with that delta
+// and no far account lands on that class, read from either family.
+func TestVehicleTransferDetailedMatchesTheResolution(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedResolutionFixture(t, db, ctx)
+	var lines []line
+	for _, c := range canonical.CashflowClasses() {
+		d, ok := canonical.VehicleTransferDetailed(c)
+		if !ok {
+			continue
+		}
+		want := "vehicles." + string(c) + "." + string(c)
+		lines = append(lines,
+			line{id: "VT-OUT-" + string(c), account: "CASH", kind: "withdrawal", amount: -500,
+				spend: d, want: want, why: d + " on the spending side"},
+			line{id: "VT-IN-" + string(c), account: "CASH", kind: "deposit", amount: 500,
+				income: d, want: want, why: d + " on the income side"})
+	}
+	if len(lines) == 0 {
+		t.Fatal("no class has a crossing delta; the walk proves nothing")
 	}
 	check(t, seedLines(t, db, ctx, lines), lines)
 }

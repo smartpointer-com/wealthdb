@@ -7,7 +7,7 @@
 // parallel to the chase / firstcitizens siblings):
 //
 //   - One ACCOUNT (AccountKind 'cash') per deposit account. DisplayName from
-//     the account type (e.g. 'Gehaltekonto') and the last-4 mask; TaxWrapper
+//     the account type (Kontoart) and the last-4 mask; TaxWrapper
 //     'taxable_personal', ManagementStyle 'self_directed'. All overridable via
 //     account_overrides. These are conduit accounts — cash passes through them
 //     between other sources — so the registered ReturnsPolicy (policy.go)
@@ -64,11 +64,4 @@ type Connection struct {
 	db *sql.DB
 }
 
-func (c *Connection) Close() error {
-	if c == nil || c.db == nil {
-		return nil
-	}
-	err := c.db.Close()
-	c.db = nil
-	return err
-}
+func (c *Connection) Close() error { return silver.CloseDB(&c.db) }

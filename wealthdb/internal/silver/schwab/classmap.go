@@ -19,7 +19,7 @@ import (
 //
 //   - EQUITY                                     → (public_equity, stock)
 //   - COLLECTIVE_INVESTMENT + EXCHANGE_TRADED_FUND → (RefineETFExposure(name), etf)
-//   - COLLECTIVE_INVESTMENT (other) / MUTUAL_FUND  → (RefineETFExposure(name), fund)
+//   - COLLECTIVE_INVESTMENT (other) / MUTUAL_FUND  → (FundExposure(name), fund)
 //   - ETF (the standalone assetType enum value)  → (RefineETFExposure(name), etf)
 //   - BOND / FIXED_INCOME                        → (fixed_income, bond)
 //   - OPTION                                     → (public_equity, option)  [equity underlying]
@@ -39,12 +39,12 @@ func taxonomyFor(rawAssetType, rawInstrumentType, name string) (canonical.AssetC
 	case "ETF":
 		return silver.RefineETFExposure(name), canonical.VehicleETF
 	case "MUTUAL_FUND":
-		return fundExposure(name), canonical.VehicleFund
+		return silver.FundExposure(name), canonical.VehicleFund
 	case "COLLECTIVE_INVESTMENT":
 		if rawInstrumentType == "EXCHANGE_TRADED_FUND" {
 			return silver.RefineETFExposure(name), canonical.VehicleETF
 		}
-		return fundExposure(name), canonical.VehicleFund
+		return silver.FundExposure(name), canonical.VehicleFund
 	case "BOND", "FIXED_INCOME":
 		return canonical.AssetClassFixedIncome, canonical.VehicleBond
 	case "OPTION":
@@ -53,19 +53,6 @@ func taxonomyFor(rawAssetType, rawInstrumentType, name string) (canonical.AssetC
 		return canonical.AssetClassPublicEquity, canonical.VehicleFuture
 	}
 	return canonical.AssetClassOther, canonical.VehicleOther
-}
-
-// fundExposure reads the exposure of a (non-exchange-traded) fund from
-// its name, routing money-market funds to cash — a purchased money
-// fund reaches the MUTUAL_FUND / COLLECTIVE_INVESTMENT path (Schwab's
-// cash sweep is CASH_EQUIVALENT, filtered earlier), and it is a cash
-// equivalent, not the exposure RefineETFExposure would guess from a
-// bond keyword in the fund name.
-func fundExposure(name string) canonical.AssetClass {
-	if silver.NamesMoneyMarket(name) {
-		return canonical.AssetClassCash
-	}
-	return silver.RefineETFExposure(name)
 }
 
 // Instrument-key and description shapes for the statement-history
@@ -124,20 +111,8 @@ func taxonomyHistoricalByShape(instrumentKey, description string) (canonical.Ass
 	case histMoneyMktRe.MatchString(description),
 		silver.StmtMoneyMktKeyRe.MatchString(instrumentKey):
 		return canonical.AssetClassCash, canonical.VehicleFund
-	case silver.StmtCUSIPRe.MatchString(instrumentKey),
-		silver.StmtBondDescRe.MatchString(description):
-		return canonical.AssetClassFixedIncome, canonical.VehicleBond
-	case silver.StmtETFDescRe.MatchString(description):
-		return silver.RefineETFExposure(description), canonical.VehicleETF
-	case silver.StmtMutualFundRe.MatchString(instrumentKey):
-		if silver.NamesMoneyMarket(description) {
-			return canonical.AssetClassCash, canonical.VehicleFund
-		}
-		return silver.RefineETFExposure(description), canonical.VehicleFund
-	case silver.StmtETFIssuerRe.MatchString(description):
-		return silver.RefineETFExposure(description), canonical.VehicleETF
 	}
-	return canonical.AssetClassPublicEquity, canonical.VehicleStock
+	return silver.StatementShapePair(instrumentKey, description)
 }
 
 // isCashAssetType reports whether a Schwab position's assetType

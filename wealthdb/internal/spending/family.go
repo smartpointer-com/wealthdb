@@ -223,6 +223,6 @@ func spendingBuiltinRule(_, signature, counterparty, description, providerCatego
 // rule's alone, and the one inflow built-in names cash paid in over a
 // counter, which is not an own-account move at all.
 func incomeBuiltinRule(kind, signature, counterparty, description, providerCategory, _ string) (detailed, label, farClass string, ok bool) {
-	detailed, label, ok = IncomeRuleCategory(kind, signature, counterparty, description, providerCategory)
-	return detailed, label, "", ok
+	detailed, ok = IncomeRuleCategory(kind, signature, counterparty, description, providerCategory)
+	return detailed, "", "", ok
 }

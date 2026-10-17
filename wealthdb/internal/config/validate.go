@@ -18,13 +18,14 @@ import (
 // reject bad ids at prompt time against the same shape.
 var IDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
-// symbolOverrideShapeRe matches the ticker shape we'll accept in
-// `symbol_resolution.overrides[].symbol`. Same surface form the runtime
-// validator in cmd_resolve_symbols uses for LLM responses (kept
-// in sync intentionally — overrides are held to the same shape
-// rules so they don't sneak past the read-time COALESCE as
-// garbage). 1-12 chars uppercase letters/digits/dot/hyphen.
-var symbolOverrideShapeRe = regexp.MustCompile(`^[A-Z0-9.\-]{1,12}$`)
+// TickerShape is the strict ticker-shape pattern: 1-12 chars of
+// uppercase ASCII letters, digits, dots, or hyphens. It captures the
+// surface forms brokers emit (BRK.B, XDEW, TFLO, EUNH.DE, etc.) and
+// rejects obvious garbage like "BANK INT 07/30". Both
+// `symbol_resolution.overrides[].symbol` and the symbols
+// resolve-symbols accepts from a model are held to it, so neither
+// slips past the read-time COALESCE as garbage.
+var TickerShape = regexp.MustCompile(`^[A-Z0-9.\-]{1,12}$`)
 
 // Validate checks the structural requirements on a parsed Config.
 // Returns a non-nil error describing the first failure; runs no
@@ -127,6 +128,11 @@ func (c *Config) validateSources() (map[string]bool, error) {
 			if rel.WebID == "" && rel.PSNID == "" {
 				return nil, fmt.Errorf("config: silver_sources[%d].relationships[%d]: at least one of web_id or psn_id must be set", i, j)
 			}
+			if rel.PSNStartOverride != "" {
+				if _, err := parseYYYYMMDD(rel.PSNStartOverride); err != nil {
+					return nil, fmt.Errorf("config: silver_sources[%d].relationships[%d].psn_start_override: %w", i, j, err)
+				}
+			}
 		}
 	}
 	return seenIDs, nil
@@ -158,7 +164,7 @@ func (c *Config) validateSymbolResolution(seenIDs map[string]bool) error {
 			case o.Delete:
 				// Deletion entry — nothing else to validate.
 			default:
-				if !symbolOverrideShapeRe.MatchString(o.Symbol) {
+				if !TickerShape.MatchString(o.Symbol) {
 					return fmt.Errorf("config: symbol_resolution.overrides[%d].symbol %q must be 1-12 chars of uppercase letters/digits/dots/hyphens", i, o.Symbol)
 				}
 			}
@@ -176,11 +182,13 @@ func (c *Config) validateSymbolResolution(seenIDs map[string]bool) error {
 // account_overrides but keyed by portfolio_external_id, with tax_wrapper and
 // exclude as the only fields.
 func (c *Config) validatePortfolioOverrides(seenIDs map[string]bool) error {
-	for sourceID, perPortfolio := range c.PortfolioOverrides {
+	for _, sourceID := range slices.Sorted(maps.Keys(c.PortfolioOverrides)) {
+		perPortfolio := c.PortfolioOverrides[sourceID]
 		if !seenIDs[sourceID] {
 			return fmt.Errorf("config: portfolio_overrides[%q]: no silver_sources[].id matches", sourceID)
 		}
-		for portfolioID, ov := range perPortfolio {
+		for _, portfolioID := range slices.Sorted(maps.Keys(perPortfolio)) {
+			ov := perPortfolio[portfolioID]
 			if portfolioID == "" {
 				return fmt.Errorf("config: portfolio_overrides[%q]: empty portfolio_external_id key", sourceID)
 			}
@@ -274,11 +282,13 @@ func (c *Config) declares(id string) bool {
 // almost always user error); typed fields validate against the canonical
 // enums.
 func (c *Config) validateAccountOverrides(seenIDs map[string]bool) error {
-	for sourceID, perAccount := range c.AccountOverrides {
+	for _, sourceID := range slices.Sorted(maps.Keys(c.AccountOverrides)) {
+		perAccount := c.AccountOverrides[sourceID]
 		if !seenIDs[sourceID] {
 			return fmt.Errorf("config: account_overrides[%q]: no silver_sources[].id matches", sourceID)
 		}
-		for acctID, ov := range perAccount {
+		for _, acctID := range slices.Sorted(maps.Keys(perAccount)) {
+			ov := perAccount[acctID]
 			if acctID == "" {
 				return fmt.Errorf("config: account_overrides[%q]: empty account_external_id key", sourceID)
 			}
@@ -311,11 +321,13 @@ func (c *Config) validateAccountOverrides(seenIDs map[string]bool) error {
 // (the exposure) and vehicle are required and must form an admitted taxonomy
 // pair.
 func (c *Config) validateInstrumentOverrides(seenIDs map[string]bool) error {
-	for sourceID, perInstrument := range c.InstrumentOverrides {
+	for _, sourceID := range slices.Sorted(maps.Keys(c.InstrumentOverrides)) {
+		perInstrument := c.InstrumentOverrides[sourceID]
 		if !seenIDs[sourceID] {
 			return fmt.Errorf("config: instrument_overrides[%q]: no silver_sources[].id matches", sourceID)
 		}
-		for instrID, ov := range perInstrument {
+		for _, instrID := range slices.Sorted(maps.Keys(perInstrument)) {
+			ov := perInstrument[instrID]
 			if instrID == "" {
 				return fmt.Errorf("config: instrument_overrides[%q]: empty instrument_external_id key", sourceID)
 			}
@@ -342,11 +354,13 @@ func (c *Config) validateInstrumentOverrides(seenIDs map[string]bool) error {
 // (no DB access at config load) — the same known gap the families above
 // carry — so a typo'd id resolves to a dimension row that is not there.
 func (c *Config) validateTransactionInstruments(seenIDs map[string]bool) error {
-	for sourceID, byToken := range c.TransactionInstruments {
+	for _, sourceID := range slices.Sorted(maps.Keys(c.TransactionInstruments)) {
+		byToken := c.TransactionInstruments[sourceID]
 		if !seenIDs[sourceID] {
 			return fmt.Errorf("config: transaction_instruments[%q]: no silver_sources[].id matches", sourceID)
 		}
-		for token, instrID := range byToken {
+		for _, token := range slices.Sorted(maps.Keys(byToken)) {
+			instrID := byToken[token]
 			if strings.TrimSpace(token) == "" {
 				return fmt.Errorf("config: transaction_instruments[%q]: empty lookup token key", sourceID)
 			}
@@ -368,7 +382,8 @@ func (c *Config) validateReturns(seenIDs map[string]bool) error {
 	// account ids can't be checked against gold here (no DB access at
 	// load), so a typo'd inner key silently no-ops.
 	if o := c.InceptionOverrides; o != nil {
-		for sourceID, d := range o.Sources {
+		for _, sourceID := range slices.Sorted(maps.Keys(o.Sources)) {
+			d := o.Sources[sourceID]
 			if !seenIDs[sourceID] {
 				return fmt.Errorf("config: inception_overrides.sources[%q]: no silver_sources[].id matches", sourceID)
 			}
@@ -417,7 +432,8 @@ func (c *Config) validateReturns(seenIDs map[string]bool) error {
 	// returns_policy_overrides: source ids must name a declared silver
 	// source; flow_regime and accounts_grain must name known values. An
 	// empty or null override object is a no-op, not an error.
-	for sourceID, ov := range c.ReturnsPolicyOverrides {
+	for _, sourceID := range slices.Sorted(maps.Keys(c.ReturnsPolicyOverrides)) {
+		ov := c.ReturnsPolicyOverrides[sourceID]
 		if !seenIDs[sourceID] {
 			return fmt.Errorf("config: returns_policy_overrides[%q]: no silver_sources[].id matches", sourceID)
 		}
@@ -591,7 +607,8 @@ func validateAccountScope(key string, a *SpendingAccounts, seenIDs map[string]bo
 	if err := validateIDListNested(key, "exclude", a.Exclude, seenIDs); err != nil {
 		return err
 	}
-	for sourceID, ids := range a.Include {
+	for _, sourceID := range slices.Sorted(maps.Keys(a.Include)) {
+		ids := a.Include[sourceID]
 		excluded := make(map[string]bool, len(a.Exclude[sourceID]))
 		for _, id := range a.Exclude[sourceID] {
 			excluded[id] = true
@@ -606,7 +623,8 @@ func validateAccountScope(key string, a *SpendingAccounts, seenIDs map[string]bo
 		name string
 		m    map[string][]string
 	}{{"include", a.Include}, {"exclude", a.Exclude}} {
-		for sourceID, ids := range grain.m {
+		for _, sourceID := range slices.Sorted(maps.Keys(grain.m)) {
+			ids := grain.m[sourceID]
 			seen := make(map[string]bool, len(ids))
 			for _, id := range ids {
 				if seen[id] {
@@ -649,11 +667,13 @@ func validateCategorization(key, levels string, cz *SpendingCategorization, vali
 // load — so a typo'd one silently no-ops, as the other override
 // families' do.
 func validateNestedDates(block, grain string, m map[string]map[string]string, seenIDs map[string]bool) error {
-	for sourceID, inner := range m {
+	for _, sourceID := range slices.Sorted(maps.Keys(m)) {
+		inner := m[sourceID]
 		if !seenIDs[sourceID] {
 			return fmt.Errorf("config: %s.%s[%q]: no silver_sources[].id matches", block, grain, sourceID)
 		}
-		for id, d := range inner {
+		for _, id := range slices.Sorted(maps.Keys(inner)) {
+			d := inner[id]
 			if id == "" {
 				return fmt.Errorf("config: %s.%s[%q]: empty external-id key", block, grain, sourceID)
 			}
@@ -857,7 +877,8 @@ func validateMatchKnobs(block string, windowDays *int, tolerancePct *float64) er
 // of the spending, income and cashflow `accounts` blocks: every source
 // id must be declared, every listed id non-empty.
 func validateIDListNested(block, grain string, m map[string][]string, seenIDs map[string]bool) error {
-	for sourceID, ids := range m {
+	for _, sourceID := range slices.Sorted(maps.Keys(m)) {
+		ids := m[sourceID]
 		if !seenIDs[sourceID] {
 			return fmt.Errorf("config: %s.%s[%q]: no silver_sources[].id matches", block, grain, sourceID)
 		}
@@ -872,7 +893,7 @@ func validateIDListNested(block, grain string, m map[string][]string, seenIDs ma
 
 // IsLikelyISO4217 does a sanity check, not a full ISO 4217 lookup:
 // exactly 3 uppercase ASCII letters. Pragmatically enough at this
-// scale; we don't want a vendored currency-code table in the binary.
+// scale. A vendored currency table is deliberately absent.
 // Exported so the setup wizard validates currency input identically.
 func IsLikelyISO4217(s string) bool {
 	if len(s) != 3 {

@@ -47,7 +47,7 @@ func registerReportFlags(fs *flag.FlagSet, withColumns bool) *reportFlags {
 func (rf *reportFlags) resolve(g globalFlags, cmd string) (output.Format, *config.Config, string, error) {
 	fmtChoice, err := output.Parse(*rf.format)
 	if err != nil {
-		return "", nil, "", errs.Newf(2, "%s: %s", cmd, err.Error())
+		return "", nil, "", errs.Newf(errs.ExitUsage, "%s: %s", cmd, err.Error())
 	}
 	cfg, err := config.Load(g.ConfigPath)
 	if err != nil {
@@ -57,8 +57,8 @@ func (rf *reportFlags) resolve(g globalFlags, cmd string) (output.Format, *confi
 	if outCcy == "" {
 		outCcy = cfg.DefaultCurrency
 	}
-	if !isCurrencyCode(outCcy) {
-		return "", nil, "", errs.Newf(2, "%s: invalid -x/--currency %q (want a 3-letter ISO 4217 code)", cmd, outCcy)
+	if !config.IsLikelyISO4217(outCcy) {
+		return "", nil, "", errs.Newf(errs.ExitUsage, "%s: invalid -x/--currency %q (want a 3-letter ISO 4217 code)", cmd, outCcy)
 	}
 	return fmtChoice, cfg, outCcy, nil
 }
@@ -70,7 +70,7 @@ func (rf *reportFlags) resolve(g globalFlags, cmd string) (output.Format, *confi
 func routeView(cmd string, subargs, views []string, usage func() string, stderr io.Writer) (string, []string, error) {
 	if len(subargs) == 0 {
 		fmt.Fprintln(stderr, usage())
-		return "", nil, errs.Newf(2, "%s: a view subcommand is required", cmd)
+		return "", nil, errs.Newf(errs.ExitUsage, "%s: a view subcommand is required", cmd)
 	}
 	view := subargs[0]
 	switch {
@@ -79,7 +79,7 @@ func routeView(cmd string, subargs, views []string, usage func() string, stderr 
 		return "", nil, flag.ErrHelp
 	case !slices.Contains(views, view):
 		fmt.Fprintln(stderr, usage())
-		return "", nil, errs.Newf(2, "%s: unknown view %q (want %s)", cmd, view, strings.Join(views, " | "))
+		return "", nil, errs.Newf(errs.ExitUsage, "%s: unknown view %q (want %s)", cmd, view, strings.Join(views, " | "))
 	}
 	return view, subargs[1:], nil
 }

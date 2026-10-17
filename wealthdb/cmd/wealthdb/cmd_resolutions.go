@@ -52,7 +52,7 @@ The model_name column tells you each row's provenance:
 
 	fmtChoice, err := output.Parse(*format)
 	if err != nil {
-		return errs.Newf(2, "resolutions: %s", err.Error())
+		return errs.Newf(errs.ExitUsage, "resolutions: %s", err.Error())
 	}
 
 	cfg, err := config.Load(g.ConfigPath)

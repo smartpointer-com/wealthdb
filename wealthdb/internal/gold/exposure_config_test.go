@@ -72,3 +72,20 @@ func TestSyncExposure(t *testing.T) {
 			settings)
 	}
 }
+
+// A gold whose settings were never stamped reads the defaults the config
+// stamps: the macro's fallbacks are canonical's.
+func TestExposureSettingsRowDefaultsAreCanonicals(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	var maxGap, aged int
+	var partial float64
+	if err := db.QueryRowContext(ctx, `SELECT max_gap_days, aged_days, partial_pct FROM exposure_settings_row()`).
+		Scan(&maxGap, &aged, &partial); err != nil {
+		t.Fatal(err)
+	}
+	if maxGap != canonical.DefaultMaxGapDays || aged != canonical.DefaultAgedDays || partial != canonical.DefaultPartialPct {
+		t.Errorf("exposure_settings_row() = %d, %d, %v; canonical's defaults are %d, %d, %v", maxGap, aged, partial,
+			canonical.DefaultMaxGapDays, canonical.DefaultAgedDays, canonical.DefaultPartialPct)
+	}
+}

@@ -107,6 +107,35 @@ func TestExposureViewsResolveTheirDefaults(t *testing.T) {
 	}
 }
 
+// The usage names the views --period and --country apply to, as the
+// refusals do, every line within the usage's width.
+func TestExposureUsageNamesTheFlagsViews(t *testing.T) {
+	t.Parallel()
+	usage := exposureUsage()
+	flat := strings.Join(strings.Fields(usage), " ")
+	for _, want := range []string{
+		"--period P " + strings.Join(exposurePeriods, " | ") + ":",
+		"a period column first; on classes, sectors, sizes, countries, currencies, situs and coverage",
+		"--country C risk (default) | domicile:",
+		"counts in, on countries and securities",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("usage does not say %q", want)
+		}
+	}
+	for _, line := range strings.Split(usage, "\n") {
+		if (strings.HasPrefix(line, "  --") || strings.HasPrefix(line, strings.Repeat(" ", 21))) && len(line) > 74 {
+			t.Errorf("flag line is %d columns wide: %q", len(line), line)
+		}
+	}
+	if got := andList([]string{"a", "b", "c"}); got != "a, b and c" {
+		t.Errorf("andList = %q", got)
+	}
+	if got := andList([]string{"a"}); got != "a" {
+		t.Errorf("andList of one = %q", got)
+	}
+}
+
 // Every quality tag and situs basis reaches the CLI usage, wrapped to
 // the usage's width, and the MCP quality help.
 func TestExposureQualityTagsReachBothFrontEnds(t *testing.T) {

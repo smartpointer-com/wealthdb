@@ -2,9 +2,6 @@ package chase
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
-	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -50,78 +47,30 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 }
 
 // appendAccounts emits one AccountChange per roster account from its latest
-// snapshot, plus that account's CURRENT balance when the roster captured one.
-//
-// The CURRENT balance is stamped at the SOURCE's latest roster snapshot, not
-// at the account's own. Silver content-dedups an unchanged roster row, so a
-// quiet account's MAX(snapshot_at) falls behind the source's; gold's
-// cash_chosen keeps only the rows carrying the source's single
-// MAX(snapshot_at), so an account stamped at its own would drop out of the
-// latest net-worth view the moment it stopped changing — silently, and a card
-// would take its debt with it. The figure is still that account's latest known
-// balance; the stamp says "as of this load", which is exactly what a roster
-// row that did not change asserts.
+// snapshot, plus that account's CURRENT balance when the roster captured one,
+// stamped at the source's latest roster snapshot
+// (silver.BankRosterRow.CurrentBalance).
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window,
 	facts map[string]accountFacts, batch *canonical.SnapshotBatch) error {
-	const q = `
-SELECT a.account_external_id,
-       COALESCE(a.nickname, ''), COALESCE(a.mask, ''),
-       a.balance, a.payload,
-       (SELECT MIN(snapshot_at) FROM accounts a2 WHERE a2.account_external_id = a.account_external_id),
-       a.snapshot_at,
-       (SELECT MAX(snapshot_at) FROM accounts)
-  FROM accounts a
- WHERE a.snapshot_at = (SELECT MAX(snapshot_at) FROM accounts a3
-                         WHERE a3.account_external_id = a.account_external_id)
- ORDER BY a.account_external_id`
-	rows, err := c.db.QueryContext(ctx, q)
+	roster, err := silver.ReadBankRoster(ctx, c.db, "chase appendAccounts", "nickname", "")
 	if err != nil {
-		return fmt.Errorf("chase appendAccounts: %w", err)
+		return err
 	}
-	defer rows.Close()
-
-	wrapper := canonical.TaxWrapperTaxablePersonal
-	style := canonical.ManagementStyleSelfDirected
-	for rows.Next() {
-		var (
-			id, nickname, mask, payload       string
-			bal                               sql.NullFloat64
-			firstSeen, lastSeen, sourceLatest int64
-		)
-		if err := rows.Scan(&id, &nickname, &mask, &bal, &payload,
-			&firstSeen, &lastSeen, &sourceLatest); err != nil {
-			return err
-		}
-		display := nickname
-		if display == "" {
-			display = mask
-		}
-		card := isCard(facts, id)
+	for _, r := range roster {
+		card := isCard(facts, r.ID)
 		kind := canonical.AccountKindCash
 		if card {
 			kind = canonical.AccountKindCard
 		}
-		currency := currencyOf(facts, id)
-		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
-			AccountExternalID: id,
-			AccountKind:       kind,
-			DisplayName:       silver.StrPtrIfNonEmpty(display),
-			Nickname:          silver.StrPtrIfNonEmpty(nickname),
-			BaseCurrency:      &currency,
-			TaxWrapper:        &wrapper,
-			ManagementStyle:   &style,
-			FirstSeenAt:       firstSeen,
-			LastSeenAt:        lastSeen,
-			Payload:           json.RawMessage(payload),
-		})
-
-		if bal.Valid && sourceLatest >= w.Start && sourceLatest <= w.End {
-			batch.CashBalances = append(batch.CashBalances, silver.CashBalance(
-				sourceLatest, id, currency, canonical.BalanceKindCurrent,
-				signedBalance(bal.Float64, card), `{"basis":"roster"}`))
+		currency := currencyOf(facts, r.ID)
+		acc := r.Account(kind, r.DisplayName(), currency)
+		acc.Nickname = silver.StrPtrIfNonEmpty(r.Name)
+		batch.Accounts = append(batch.Accounts, acc)
+		if cb, ok := r.CurrentBalance(w, currency, signedBalance(r.Balance.Float64, card)); ok {
+			batch.CashBalances = append(batch.CashBalances, cb)
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 // appendRunningBalances emits one CLOSING balance per day the balance moved,
@@ -139,44 +88,20 @@ SELECT a.account_external_id,
 // balance at all. The statement era carries none by design. Those gaps are
 // what appendStatementBalances fills, at period granularity.
 //
-// posted_at is day-granular, so a day with several transactions has one
-// end-of-day balance, and the fitid-highest row of the day is taken as its
-// representative. On a card that is exact — the reconstruction rolls forward
-// in (posted_at, fitid) order, so the fitid-highest row of a day IS the one
-// carrying its end-of-day balance. On a deposit account the balance is the
-// provider's own column and the ledger has no intra-day order, so the pick is
-// arbitrary among that day's rows; the imprecision is bounded by same-day
-// activity and resolves by the next day.
+// The fitid-highest row of a day stands for its end-of-day balance
+// (silver.RunningBalanceQuery). On a card that is exact — the reconstruction
+// rolls forward in (posted_at, fitid) order, so the fitid-highest row of a day
+// IS the one carrying its end-of-day balance. On a deposit account the balance
+// is the provider's own column and the ledger has no intra-day order, so the
+// pick is arbitrary among that day's rows; the imprecision is bounded by
+// same-day activity and resolves by the next day.
 func (c *Connection) appendRunningBalances(ctx context.Context, w canonical.Window,
 	facts map[string]accountFacts, batch *canonical.SnapshotBatch) error {
-	const q = `
-SELECT account_external_id, posted_at, balance FROM (
-    SELECT account_external_id, posted_at, balance,
-           ROW_NUMBER() OVER (PARTITION BY account_external_id, posted_at
-                              ORDER BY fitid DESC) AS rn
-      FROM transactions
-     WHERE balance IS NOT NULL AND posted_at BETWEEN ? AND ?
-) WHERE rn = 1
- ORDER BY account_external_id, posted_at`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("chase appendRunningBalances: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			id       string
-			postedAt int64
-			bal      float64
-		)
-		if err := rows.Scan(&id, &postedAt, &bal); err != nil {
-			return err
-		}
-		batch.CashBalances = append(batch.CashBalances, silver.CashBalance(
-			postedAt, id, currencyOf(facts, id), canonical.BalanceKindClosing,
-			signedBalance(bal, isCard(facts, id)), `{"basis":"running_balance"}`))
-	}
-	return rows.Err()
+	return silver.AppendClosingBalances(ctx, c.db, "chase appendRunningBalances",
+		silver.RunningBalanceQuery, []any{w.Start, w.End}, `{"basis":"running_balance"}`,
+		func(id string) string { return currencyOf(facts, id) },
+		func(id string, v float64) canonical.Decimal { return signedBalance(v, isCard(facts, id)) },
+		batch)
 }
 
 // appendStatementBalances emits one CLOSING balance at a card statement's
@@ -213,27 +138,13 @@ SELECT sb.account_external_id, sb.period_end, sb.closing
                       AND t.balance IS NOT NULL
                       AND t.posted_at BETWEEN sb.period_start AND sb.period_end)
  ORDER BY sb.account_external_id, sb.period_end`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End, productCard)
-	if err != nil {
-		return fmt.Errorf("chase appendStatementBalances: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			id        string
-			periodEnd int64
-			closing   float64
-		)
-		if err := rows.Scan(&id, &periodEnd, &closing); err != nil {
-			return err
-		}
-		// Every row here is a card's by the product guard above, so the
-		// printed owed-positive figure is unconditionally negated.
-		batch.CashBalances = append(batch.CashBalances, silver.CashBalance(
-			periodEnd, id, currencyOf(facts, id), canonical.BalanceKindClosing,
-			signedBalance(closing, true), `{"basis":"statement_closing"}`))
-	}
-	return rows.Err()
+	// Every row here is a card's by the product guard above, so the printed
+	// owed-positive figure is unconditionally negated.
+	return silver.AppendClosingBalances(ctx, c.db, "chase appendStatementBalances",
+		q, []any{w.Start, w.End, productCard}, `{"basis":"statement_closing"}`,
+		func(id string) string { return currencyOf(facts, id) },
+		func(_ string, v float64) canonical.Decimal { return signedBalance(v, true) },
+		batch)
 }
 
 // signedBalance converts a silver balance to the canonical sign. Silver stores

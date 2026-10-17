@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"slices"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -46,34 +45,15 @@ func (r *webReader) snapshotsHistorical(
 		return silver.NewSnapshotStream(nil), nil
 	}
 
-	byTime := make(map[int64]*canonical.SnapshotBatch)
-	getBatch := func(t int64) *canonical.SnapshotBatch {
-		if b, ok := byTime[t]; ok {
-			return b
-		}
-		b := &canonical.SnapshotBatch{}
-		byTime[t] = b
-		return b
-	}
-
-	if err := r.appendHistoricalPositions(ctx, w, getBatch, bridge); err != nil {
+	byTime := silver.Batches{}
+	if err := r.appendHistoricalPositions(ctx, w, byTime.At, bridge); err != nil {
 		return nil, err
 	}
-	if err := r.appendHistoricalCashBalances(ctx, w, getBatch, bridge); err != nil {
+	if err := r.appendHistoricalCashBalances(ctx, w, byTime.At, bridge); err != nil {
 		return nil, err
 	}
 
-	times := make([]int64, 0, len(byTime))
-	for t := range byTime {
-		times = append(times, t)
-	}
-	slices.Sort(times)
-
-	batches := make([]canonical.SnapshotBatch, 0, len(times))
-	for _, t := range times {
-		batches = append(batches, *byTime[t])
-	}
-	return silver.NewSnapshotStream(batches), nil
+	return byTime.Stream(), nil
 }
 
 // appendHistoricalPositions emits one PositionChange per row in
@@ -283,37 +263,10 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 // Used by ChangeWindow to extend Start backwards so the loader's
 // window-DELETE covers existing historical rows before re-insert.
 func (r *webReader) historicalRange(ctx context.Context) (int64, int64, error) {
-	var (
-		posMin, posMax   sql.NullInt64
-		cashMin, cashMax sql.NullInt64
-	)
-	if err := r.db.QueryRowContext(ctx,
+	return silver.Extrema(ctx, r.db, "schwab-web historicalRange", []string{
 		`SELECT MIN(as_of_date), MAX(as_of_date) FROM historical_position_snapshots`,
-	).Scan(&posMin, &posMax); err != nil {
-		return -1, -1, fmt.Errorf("schwab-web historicalRange positions: %w", err)
-	}
-	if err := r.db.QueryRowContext(ctx,
 		`SELECT MIN(period_start), MAX(period_end) FROM historical_cash_balances`,
-	).Scan(&cashMin, &cashMax); err != nil {
-		return -1, -1, fmt.Errorf("schwab-web historicalRange cash: %w", err)
-	}
-	lo, hi := int64(-1), int64(-1)
-	merge := func(n sql.NullInt64) {
-		if !n.Valid {
-			return
-		}
-		if lo == -1 || n.Int64 < lo {
-			lo = n.Int64
-		}
-		if hi == -1 || n.Int64 > hi {
-			hi = n.Int64
-		}
-	}
-	merge(posMin)
-	merge(posMax)
-	merge(cashMin)
-	merge(cashMax)
-	return lo, hi, nil
+	})
 }
 
 // hasHistoricalTables reports whether the schwab-web silver

@@ -3,7 +3,6 @@ package spending
 import (
 	"context"
 	"database/sql"
-	"encoding/csv"
 	"errors"
 	"fmt"
 	"io"
@@ -15,34 +14,14 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/ledgercsv"
 )
 
 // The pins ledger: per-transaction category pins, the top of the
-// precedence lattice.
-//
-// A pin exists for the row nothing else can classify — no descriptor
-// to match a rule on, no counter-leg for the matcher to pair, no
-// provider label: an FX roll settling as a bare withdrawal, a
-// subscription booked as a plain debit. The only thing that identifies
-// such a row is WHICH row it is, so the ledger keys on the
-// transaction's observable identity — source, account, day, amount,
-// currency — and never on gold's transaction_external_id, which is
-// opaque, adapter-specific and not something a person can read off a
-// statement.
-//
-// That key is deliberately not unique. Two identical rows on one day
-// — two legs of the same roll, two draws of the same size — are
-// indistinguishable by design, and a pin applies to every row it
-// describes. Anyone who needs to pin exactly one of two identical rows
-// has a distinction gold does not carry either.
-//
-// A pin is the override surface, so its category may be ANY valid
-// value, vendored or delta: it says what the holder knows the row to
-// be. It is written with provenance `manual`, after every other tier,
-// and — because the ledger is config-sourced — re-stamped by every
-// pass. The pass owns `manual` rows the way it owns the derived ones:
-// removing a pin from the ledger removes its effect on the next pass,
-// and a fresh-file rebuild needs no carry-across.
+// precedence lattice. A pin keys on what a statement shows (source,
+// account, day, amount, currency), applies to every row it describes,
+// may set any valid value, and is re-stamped by every pass with
+// provenance `manual` (docs/SPENDING.md §3, "Pins").
 
 // Pin is one row of the ledger.
 type Pin struct {
@@ -114,25 +93,12 @@ func ParsePinLedgerAs(path, family, valueCol, investingValue string, valid func(
 }
 
 func parsePinLedger(r io.Reader, family, valueCol, investingValue string, valid func(string) bool) ([]Pin, error) {
-	cr := csv.NewReader(r)
-	cr.TrimLeadingSpace = true
-	cr.FieldsPerRecord = -1 // tolerate trailing/blank columns; we index by header
-
-	header, err := cr.Read()
-	if err == io.EOF {
-		return nil, nil
-	}
+	lr, err := ledgercsv.Open(r, append(append([]string(nil), requiredPinCols...), valueCol))
 	if err != nil {
-		return nil, fmt.Errorf("%s.pins: read header: %w", family, err)
+		return nil, fmt.Errorf("%s.pins: %w", family, err)
 	}
-	col := map[string]int{}
-	for i, h := range header {
-		col[strings.ToLower(strings.TrimSpace(h))] = i
-	}
-	for _, c := range append(append([]string(nil), requiredPinCols...), valueCol) {
-		if _, ok := col[c]; !ok {
-			return nil, fmt.Errorf("%s.pins: missing required column %q", family, c)
-		}
+	if lr == nil { // no header: an empty ledger
+		return nil, nil
 	}
 	// And every header must be one this format knows — see
 	// requiredPinCols on why an unknown one is an error rather than
@@ -141,8 +107,7 @@ func parsePinLedger(r io.Reader, family, valueCol, investingValue string, valid 
 	for _, c := range requiredPinCols {
 		known[c] = struct{}{}
 	}
-	for _, h := range header {
-		name := strings.ToLower(strings.TrimSpace(h))
+	for _, name := range lr.Columns() {
 		if name == "" {
 			continue
 		}
@@ -150,13 +115,6 @@ func parsePinLedger(r io.Reader, family, valueCol, investingValue string, valid 
 			return nil, fmt.Errorf("%s.pins: unknown column %q; the format is %v plus %q, note and asset_class",
 				family, name, requiredPinCols, valueCol)
 		}
-	}
-	get := func(rec []string, name string) string {
-		i, ok := col[name]
-		if !ok || i >= len(rec) {
-			return ""
-		}
-		return strings.TrimSpace(rec[i])
 	}
 
 	// Two rows describing the same transactions must agree: the pass
@@ -170,20 +128,15 @@ func parsePinLedger(r io.Reader, family, valueCol, investingValue string, valid 
 	}
 	var out []Pin
 	seen := map[string]seenPin{}
-	line := 1
 	for {
-		rec, err := cr.Read()
+		row, line, err := lr.Next()
 		if err == io.EOF {
 			break
 		}
-		line++
 		if err != nil {
-			return nil, fmt.Errorf("%s.pins: line %d: %w", family, line, err)
+			return nil, fmt.Errorf("%s.pins: %w", family, err)
 		}
-		if isBlankRecord(rec) {
-			continue
-		}
-		p, err := pinFromRecord(rec, get, valueCol, investingValue, valid)
+		p, err := pinFromRecord(row, valueCol, investingValue, valid)
 		if err != nil {
 			return nil, fmt.Errorf("%s.pins: line %d: %w", family, line, err)
 		}
@@ -210,22 +163,22 @@ func parsePinLedger(r io.Reader, family, valueCol, investingValue string, valid 
 	return out, nil
 }
 
-func pinFromRecord(rec []string, get func([]string, string) string, valueCol, investingValue string, valid func(string) bool) (Pin, error) {
+func pinFromRecord(row ledgercsv.Row, valueCol, investingValue string, valid func(string) bool) (Pin, error) {
 	p := Pin{
-		Source:   get(rec, "silver_source_id"),
-		Account:  get(rec, "account"),
-		Currency: strings.ToUpper(get(rec, "currency")),
-		Detailed: get(rec, valueCol),
+		Source:   row.Get("silver_source_id"),
+		Account:  row.Get("account"),
+		Currency: strings.ToUpper(row.Get("currency")),
+		Detailed: row.Get(valueCol),
 	}
 	if p.Source == "" || p.Account == "" {
 		return p, fmt.Errorf("silver_source_id and account are required")
 	}
-	ts, err := time.Parse("2006-01-02", get(rec, "occurred_at"))
+	ts, err := time.Parse("2006-01-02", row.Get("occurred_at"))
 	if err != nil {
-		return p, fmt.Errorf("occurred_at must be YYYY-MM-DD, got %q", get(rec, "occurred_at"))
+		return p, fmt.Errorf("occurred_at must be YYYY-MM-DD, got %q", row.Get("occurred_at"))
 	}
 	p.Day = ts.UTC().Unix()
-	amount := get(rec, "amount")
+	amount := row.Get("amount")
 	if amount == "" {
 		return p, fmt.Errorf("amount is required")
 	}
@@ -233,7 +186,7 @@ func pinFromRecord(rec []string, get func([]string, string) string, valueCol, in
 		return p, fmt.Errorf("amount: %w", err)
 	}
 	if len(p.Currency) != 3 {
-		return p, fmt.Errorf("currency must be a 3-letter ISO code, got %q", get(rec, "currency"))
+		return p, fmt.Errorf("currency must be a 3-letter ISO code, got %q", row.Get("currency"))
 	}
 	// Exact spelling: the vendored values are uppercase, the deltas
 	// lowercase, and the casing is what says where a value came from.
@@ -246,7 +199,7 @@ func pinFromRecord(rec []string, get func([]string, string) string, valueCol, in
 		}
 		return p, fmt.Errorf("%s %q is not a value of this family's taxonomy (vendored values are uppercase, the deltas lowercase)", valueCol, p.Detailed)
 	}
-	if p.AssetClass = get(rec, "asset_class"); p.AssetClass != "" {
+	if p.AssetClass = row.Get("asset_class"); p.AssetClass != "" {
 		if p.Detailed != investingValue {
 			return p, fmt.Errorf("asset_class is only meaningful beside %s %q, which is this family's one investing verdict; got %q",
 				valueCol, investingValue, p.Detailed)
@@ -266,15 +219,6 @@ func (p Pin) identity() string {
 		p.Source, p.Account, strconv.FormatInt(p.Day, 10),
 		strconv.FormatFloat(math.Round(p.Amount*100)/100, 'f', 2, 64), p.Currency,
 	}, "|")
-}
-
-func isBlankRecord(rec []string) bool {
-	for _, f := range rec {
-		if strings.TrimSpace(f) != "" {
-			return false
-		}
-	}
-	return true
 }
 
 // pinnedRow is a pin resolved onto one gold transaction: the row's

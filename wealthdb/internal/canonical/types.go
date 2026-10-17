@@ -24,9 +24,8 @@ type AccountChange struct {
 	DisplayName       *string
 	BaseCurrency      *string
 	RelationshipID    *string
-	// Nickname is a free-text user-friendly label. Schwab silver
-	// supplies it directly; UBS / Swissquote silvers don't have
-	// one today (the config-side override fills in for those).
+	// Nickname is a free-text label the source supplies; a config
+	// override fills it where the source has none.
 	Nickname *string
 	// AccountCategory is a free-text bank-supplied descriptor —
 	// UBS's "Custody / Cash-Custody", Schwab's "Personal" /
@@ -46,11 +45,11 @@ type AccountChange struct {
 	// to AccountKind and TaxWrapper.
 	ManagementStyle *ManagementStyle
 	// PortfolioExternalID names the parent portfolio in the
-	// `portfolios` table that this account belongs to. UBS cash
-	// and safekeeping accounts use it; Schwab and Swissquote
-	// leave it nil (no portfolio grouping). Accounts whose
+	// `portfolios` table that this account belongs to; a source
+	// with no portfolio grouping leaves it nil. Accounts whose
 	// PortfolioExternalID is nil aggregate into the sentinel
-	// NULL portfolio per silver_source in `wealthdb portfolios`.
+	// NULL portfolio per silver_source in
+	// `wealthdb holdings portfolios`.
 	PortfolioExternalID *string
 	// FirstSeenAt is the earliest snapshot_at where this account
 	// has been observed in the current batch. Gold takes the min
@@ -64,9 +63,9 @@ type AccountChange struct {
 
 // PortfolioChange is one upsert into gold's `portfolios` table.
 // Portfolios are wealth-management wrappers that group component
-// accounts (UBS, cointracking and fidelity emit them). They do not hold positions or
-// cash directly; their value is the sum of their component
-// accounts'. See docs/DESIGN.md §13.9 and §7.2.
+// accounts; only some sources emit them. They do not hold positions
+// or cash directly; their value is the sum of their component
+// accounts'. See docs/DESIGN.md §13.8 and §7.2.
 type PortfolioChange struct {
 	SilverSourceID      string
 	PortfolioExternalID string

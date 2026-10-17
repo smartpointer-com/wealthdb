@@ -78,23 +78,12 @@ func TestWebMaterializeCLIEndToEnd(t *testing.T) {
 	}
 }
 
-// TestWebMaterializeHiddenButDispatched keeps the subcommand out of the help
-// listing while `wealthdb web-materialize` still dispatches (the web-config
-// precedent).
-func TestWebMaterializeHiddenButDispatched(t *testing.T) {
+// `wealthdb web-materialize` dispatches although the help listing leaves
+// it out (TestUsageListsEverySubcommand): the config load fails, not the
+// dispatch.
+func TestWebMaterializeDispatches(t *testing.T) {
 	t.Parallel()
-	_, se, code := run(t, "help")
-	if code != 0 {
-		t.Fatalf("help exit=%d", code)
-	}
-	if !strings.Contains(se, "returns") {
-		t.Fatalf("help listing looks wrong:\n%s", se)
-	}
-	if strings.Contains(se, "web-materialize") {
-		t.Errorf("help should not list web-materialize:\n%s", se)
-	}
-	// Dispatch reaches the handler (config load fails, not "unknown subcommand").
-	_, se, code = run(t, "-c", "/nonexistent/wealthdb.cfg", "web-materialize")
+	_, se, code := run(t, "-c", "/nonexistent/wealthdb.cfg", "web-materialize")
 	if code == 0 || strings.Contains(se, "unknown subcommand") {
 		t.Errorf("web-materialize did not dispatch: exit=%d stderr=%s", code, se)
 	}

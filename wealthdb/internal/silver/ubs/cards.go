@@ -142,7 +142,7 @@ func cardDisplayName(product, accountNumber sql.NullString) string {
 // missing one — the carry-forward rule fills a gap from the neighbouring
 // observation, but nothing corrects a figure that is present and wrong.
 func (r *webReader) appendCardStatementBalances(ctx context.Context,
-	w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+	w canonical.Window, byTime silver.Batches) error {
 	ok, err := r.hasCardTables(ctx)
 	if err != nil || !ok {
 		return err
@@ -175,15 +175,11 @@ SELECT period_end, account_external_id, COALESCE(currency_iso, ''),
 			skipped++
 			continue
 		}
-		batch, ok := byTime[periodEnd]
-		if !ok {
-			// A period end is a billing date, not a dump time, so it
-			// rarely coincides with a snapshot the run already has.
-			// Give it its own batch — the balance belongs at the date
-			// the bank drew it, never at the date it was fetched.
-			batch = &canonical.SnapshotBatch{}
-			byTime[periodEnd] = batch
-		}
+		// A period end is a billing date, not a dump time, so it rarely
+		// coincides with a snapshot the run already has. It gets its own
+		// batch then — the balance belongs at the date the bank drew it,
+		// never at the date it was fetched.
+		batch := byTime.At(periodEnd)
 		batch.CashBalances = append(batch.CashBalances, canonical.CashBalanceChange{
 			SnapshotAt:        periodEnd,
 			AccountExternalID: extID,
@@ -362,7 +358,7 @@ func (r *webReader) cardRange(ctx context.Context) (int64, int64, error) {
 	if err != nil || !ok {
 		return -1, -1, err
 	}
-	return r.span(ctx, "cardRange", []string{
+	return silver.Extrema(ctx, r.db, "cardRange", []string{
 		`SELECT MIN(value_date), MAX(value_date) FROM card_transactions`,
 		`SELECT MIN(period_end), MAX(period_end) FROM card_invoices`,
 	})

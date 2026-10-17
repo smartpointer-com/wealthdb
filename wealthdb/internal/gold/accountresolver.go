@@ -18,10 +18,10 @@ var ErrUnknownAccount = errors.New("account not found")
 
 // AccountResolver maps a user-written account reference — a gold
 // account_external_id or an account nickname — to the
-// account_external_id, within one source. It is what every
-// config-sourced ledger keyed by account uses (the equity-transfer
-// ledger, the spending pins), so a nickname resolves the same way
-// wherever a person writes it.
+// account_external_id, within one source. The equity-transfer ledger
+// and the pins ledgers use it, so a nickname resolves the same way in
+// each. The transfer-override ledger takes the account_external_id
+// alone and does not resolve through it.
 type AccountResolver func(account string) (string, error)
 
 // NewAccountResolver reads the source's accounts once and returns the

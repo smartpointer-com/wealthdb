@@ -5,6 +5,7 @@ package ubs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -79,18 +80,14 @@ type Connection struct {
 }
 
 func (c *Connection) Close() error {
-	var firstErr error
+	var psnErr, webErr error
 	if c.psn != nil {
-		if err := c.psn.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
+		psnErr = c.psn.Close()
 		c.psn = nil
 	}
 	if c.web != nil {
-		if err := c.web.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
+		webErr = c.web.Close()
 		c.web = nil
 	}
-	return firstErr
+	return errors.Join(psnErr, webErr)
 }

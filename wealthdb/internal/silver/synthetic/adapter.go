@@ -52,14 +52,7 @@ type Connection struct {
 	db *sql.DB
 }
 
-func (c *Connection) Close() error {
-	if c == nil || c.db == nil {
-		return nil
-	}
-	err := c.db.Close()
-	c.db = nil
-	return err
-}
+func (c *Connection) Close() error { return silver.CloseDB(&c.db) }
 
 // annotations collects the raw values a fallback replaced, keyed
 // `source_<column>`, so the payload keeps what the row said. The zero value

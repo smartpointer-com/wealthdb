@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // A depositary receipt (an ADR, a GDR) stands for shares of a company
@@ -21,11 +23,15 @@ import (
 // strict, since a wrong one would pass unnoticed; docs/EXPOSURE.md §3
 // states its rules.
 
+// receiptType is the security type a lookup (OpenFIGI) gives a
+// depositary receipt.
+const receiptType = "Depositary Receipt"
+
 // securityNamesSQL is a CTE, names: each name a lookup, a broker or a
 // fund line gives a security (k), and whether a lookup calls it a
 // depositary receipt.
 const securityNamesSQL = `names AS (
-    SELECT exposure_key(security_key) AS k, name, security_type = 'Depositary Receipt' AS receipt
+    SELECT exposure_key(security_key) AS k, name, security_type = '` + receiptType + `' AS receipt
       FROM security_identities
     UNION ALL
     SELECT exposure_key(ik.security_key), ins.name, FALSE
@@ -123,12 +129,18 @@ WITH f AS (
      WHERE f.field = 'issuer_isins' AND trim(i.isin) <> '')
 SELECT f.k, f.share FROM f JOIN securities s ON s.security_key = f.k`
 
+// underlyingsHowSQL is security_underlyings with how, the start of the
+// origin a fill from the share writes, which says how the share was
+// found: lei: by GLEIF, roster: by name among a proxy's lines,
+// underlying: by name among all shares.
+const underlyingsHowSQL = `(SELECT *, CASE origin WHEN 'lei' THEN 'lei:' WHEN 'roster' THEN 'roster:' ELSE 'underlying:' END AS how
+          FROM security_underlyings)`
+
 // receiptFillSQL completes each receipt or named line that lacks a sector
 // or a risk country from its share: a sector or a risk country no source
 // states, and a domicile only an ISIN's prefix implies (a receipt's ISIN
-// is the depositary's). The origin names the share and how it was found:
-// lei:… by GLEIF, roster:… by name among a proxy's lines, underlying:…
-// by name among all shares.
+// is the depositary's). The origin names the share and how it was found
+// (underlyingsHowSQL).
 const receiptFillSQL = `
 UPDATE securities SET
     sector = COALESCE(securities.sector, u.sector),
@@ -141,8 +153,7 @@ UPDATE securities SET
                     THEN u.domicile ELSE securities.domicile END,
     domicile_origin = CASE WHEN COALESCE(securities.domicile_origin, 'isin_prefix') = 'isin_prefix' AND u.domicile IS NOT NULL
                            THEN x.how || u.security_key ELSE securities.domicile_origin END
-  FROM (SELECT *, CASE origin WHEN 'lei' THEN 'lei:' WHEN 'roster' THEN 'roster:' ELSE 'underlying:' END AS how
-          FROM security_underlyings) x
+  FROM ` + underlyingsHowSQL + ` x
   JOIN securities u ON u.security_key = x.underlying_key
  WHERE x.security_key = securities.security_key AND (securities.sector IS NULL OR securities.risk_country IS NULL)`
 
@@ -318,9 +329,11 @@ type shareEntry struct {
 	key, country, domicile string
 }
 
-// shareIndex finds shares by their words.
+// shareIndex finds shares by their words. firsts holds byFirst's keys,
+// sorted, for a lookup by prefix.
 type shareIndex struct {
 	exact, byFirst map[string][]shareEntry
+	firsts         []string
 }
 
 func newShareIndex(shares []shareName, reduce func(string) []string) shareIndex {
@@ -334,6 +347,7 @@ func newShareIndex(shares []shareName, reduce func(string) []string) shareIndex 
 		idx.exact[e.joined] = append(idx.exact[e.joined], e)
 		idx.byFirst[w[0]] = append(idx.byFirst[w[0]], e)
 	}
+	idx.firsts = slices.Sorted(maps.Keys(idx.byFirst))
 	return idx
 }
 
@@ -588,10 +602,12 @@ func (idx shareIndex) candidates(first string) []shareEntry {
 		return idx.byFirst[first]
 	}
 	var out []shareEntry
-	for w, es := range idx.byFirst {
-		if strings.HasPrefix(w, first) {
-			out = append(out, es...)
+	i, _ := slices.BinarySearch(idx.firsts, first)
+	for _, w := range idx.firsts[i:] {
+		if !strings.HasPrefix(w, first) {
+			break
 		}
+		out = append(out, idx.byFirst[w]...)
 	}
 	return out
 }
@@ -669,14 +685,14 @@ var (
 // receiptWords are what a receipt's name says of the receipt rather than
 // of its issuer, and the share-class words that do not tell two issuers
 // apart.
-var receiptWords = setOf("ADR", "ADRS", "ADS", "GDR", "GDRS", "DR", "DRS", "AMERICAN", "GLOBAL", "DEPOSITARY",
+var receiptWords = canonical.WordSet("ADR", "ADRS", "ADS", "GDR", "GDRS", "DR", "DRS", "AMERICAN", "GLOBAL", "DEPOSITARY",
 	"DEPOSITORY", "DEPOSIT", "RECEIPT", "RECEIPTS", "SHARE", "SHARES", "SHS", "SH", "ORD", "ORDS", "ORDINARY",
 	"EACH", "EA", "REP", "REPR", "REPRESENTING", "REPRESENTS", "REG", "REGS", "LEVEL", "NPV", "UNITARY", "NEW", "CLASS",
 	"CL", "PAR", "PREF", "PFD", "PREFERENCE", "BEARER", "REGISTERED", "UNS", "SP", "SPN", "UN", "EDR")
 
 // legalWords are legal forms and filler, "and" in the languages issuers
 // name themselves in among it.
-var legalWords = setOf("AG", "SE", "SA", "SAU", "NV", "PLC", "LTD", "LIMITED", "CORP", "CORPORATION", "CO",
+var legalWords = canonical.WordSet("AG", "SE", "SA", "SAU", "NV", "PLC", "LTD", "LIMITED", "CORP", "CORPORATION", "CO",
 	"COMPANY", "INC", "INCORPORATED", "SPA", "AB", "PUBL", "ASA", "AS", "OYJ", "ABP", "KK", "BHD", "TBK", "PCL",
 	"LTDA", "SAB", "DE", "CV", "GMBH", "KGAA", "THE", "AND", "UND", "ET", "LLC", "LP", "NL", "BV", "SAS", "SCA",
 	"SGPS", "PJSC", "OJSC", "JSC")
@@ -693,7 +709,7 @@ var legalCountries = func() map[string]map[string]bool {
 	}
 	out := map[string]map[string]bool{}
 	for form, cs := range m {
-		out[form] = setOf(strings.Fields(cs)...)
+		out[form] = canonical.WordSet(strings.Fields(cs)...)
 	}
 	return out
 }()
@@ -706,7 +722,7 @@ var abbreviations = map[string]string{"INTL": "INTERNATIONAL", "HLDGS": "HOLDING
 
 // countryWords name a country or a region in a company's name: a share
 // whose name adds one is a subsidiary there.
-var countryWords = setOf("INDIA", "MALAYSIA", "THAILAND", "INDONESIA", "PHILIPPINES", "VIETNAM", "PAKISTAN",
+var countryWords = canonical.WordSet("INDIA", "MALAYSIA", "THAILAND", "INDONESIA", "PHILIPPINES", "VIETNAM", "PAKISTAN",
 	"BANGLADESH", "LANKA", "CHINA", "HONG", "KONG", "TAIWAN", "KOREA", "JAPAN", "SINGAPORE", "AUSTRALIA",
 	"ZEALAND", "BRASIL", "BRAZIL", "MEXICO", "ARGENTINA", "CHILE", "PERU", "COLOMBIA", "CANADA", "AMERICA",
 	"AMERICAS", "USA", "UK", "IRELAND", "DEUTSCHLAND", "GERMANY", "FRANCE", "ESPANA", "SPAIN", "ITALIA", "ITALY",
@@ -718,16 +734,8 @@ var countryWords = setOf("INDIA", "MALAYSIA", "THAILAND", "INDONESIA", "PHILIPPI
 
 // genericWords say nothing of which issuer: a name of these alone is
 // matched to nothing.
-var genericWords = setOf("HOLDINGS", "HOLDING", "GROUP", "GRUPPE", "INTERNATIONAL", "INDUSTRIES", "INDUSTRY",
+var genericWords = canonical.WordSet("HOLDINGS", "HOLDING", "GROUP", "GRUPPE", "INTERNATIONAL", "INDUSTRIES", "INDUSTRY",
 	"BANK", "FINANCIAL", "OF")
-
-func setOf(words ...string) map[string]bool {
-	m := make(map[string]bool, len(words))
-	for _, w := range words {
-		m[w] = true
-	}
-	return m
-}
 
 // nameTokens splits a name into upper-case words, an initialism (S.P.A.,
 // N.V.) written as one word and A/S as AS.
@@ -776,7 +784,7 @@ func issuerWords(name string, receipt bool) []string {
 // holds, not whose; parValue is a par value printed with its currency
 // (CHF0.10).
 var (
-	classWords = setOf("SHARE", "SHARES", "SHS", "SH", "ORD", "ORDS", "ORDINARY", "REG", "REGS", "REGD", "NPV",
+	classWords = canonical.WordSet("SHARE", "SHARES", "SHS", "SH", "ORD", "ORDS", "ORDINARY", "REG", "REGS", "REGD", "NPV",
 		"CLASS", "CL", "SER", "SERIES", "PAR", "PREF", "PFD", "PREFERENCE", "BEARER", "REGISTERED", "UNITARY", "PTG",
 		"CERT", "CHF", "EUR", "USD", "GBP")
 	parValue = regexp.MustCompile(`^(?:CHF|EUR|USD|GBP|SEK|NOK|DKK|JPY|CAD|AUD|HKD|SGD|NZD|ZAR|ILS|PLN|CZK|HUF)[0-9]+$`)

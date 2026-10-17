@@ -36,14 +36,7 @@ type webReader struct {
 	db *sql.DB
 }
 
-func (r *webReader) Close() error {
-	if r == nil || r.db == nil {
-		return nil
-	}
-	err := r.db.Close()
-	r.db = nil
-	return err
-}
+func (r *webReader) Close() error { return silver.CloseDB(&r.db) }
 
 // Status reports the silver-side observable range for the web
 // feed. Snapshot-time extrema come from dump_runs plus the

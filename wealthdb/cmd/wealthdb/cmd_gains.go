@@ -65,10 +65,10 @@ func runGainsView(ctx context.Context, g globalFlags, view string, args []string
 		return err
 	}
 	if view != "realized" && isSet(fs, "documents", "r", "reverse") {
-		return errs.Newf(2, "gains: --documents and -r belong to the realized view")
+		return errs.Newf(errs.ExitUsage, "gains: --documents and -r belong to the realized view")
 	}
 	if !gainsReadsBasis(view) && isSet(fs, "missing-basis") {
-		return errs.Newf(2, "gains: --missing-basis does not apply to the %s view", view)
+		return errs.Newf(errs.ExitUsage, "gains: --missing-basis does not apply to the %s view", view)
 	}
 	if err := checkChoice("gains", "period", *period, reportPeriodNames...); err != nil {
 		return err
@@ -79,7 +79,7 @@ func runGainsView(ctx context.Context, g globalFlags, view string, args []string
 	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), time.Now())
 	if err != nil {
 		fs.Usage()
-		return errs.Newf(2, "gains: %s", err.Error())
+		return errs.Newf(errs.ExitUsage, "gains: %s", err.Error())
 	}
 	fmtChoice, cfg, outCcy, err := rf.resolve(g, "gains")
 	if err != nil {
@@ -159,7 +159,7 @@ func resolveMissingBasis(asked string, cfg *config.Config, cmd string) (lots.Mis
 	}
 	m, err := lots.ParseMissingBasis(asked)
 	if err != nil {
-		return "", errs.Newf(2, "%s: invalid --missing-basis %q (want %s)", cmd, asked,
+		return "", errs.Newf(errs.ExitUsage, "%s: invalid --missing-basis %q (want %s)", cmd, asked,
 			strings.Join(lotNames(lots.MissingBasisReadings), " | "))
 	}
 	return m, nil
@@ -182,25 +182,6 @@ func gainsReadsBasis(view string) bool { return view != "coverage" && view != "c
 // market_value's twin, as on holdings. A figure only the output
 // currency carries (the window's gains) has no twin and keeps its own
 // name, its header taking the currency suffix.
-
-// yesNo renders a stated flag, empty where the source states nothing.
-func yesNo(b *bool) string {
-	switch {
-	case b == nil:
-		return ""
-	case *b:
-		return "yes"
-	default:
-		return "no"
-	}
-}
-
-func intOrEmpty(p *int64) string {
-	if p == nil {
-		return ""
-	}
-	return fmt.Sprintf("%d", *p)
-}
 
 // buildGainsBucketColumnRegistry is the registry of the four aggregate
 // views: the grain's identifying columns, then the figures they share.
@@ -336,7 +317,7 @@ func buildRealizedLotColumnRegistry(outCcy string) []columnSpec[gold.RealizedLot
 		{Name: "date", Align: output.AlignLeft, Extract: func(r row) string { return r.EffectiveDate }},
 		// The date is the tax year's last day when the document states
 		// no disposal or settlement date.
-		{Name: "undated", Align: output.AlignLeft, Extract: func(r row) string { return yesNo(&r.Undated) }},
+		yesNoCol("undated", func(r row) *bool { return &r.Undated }),
 		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r row) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
 		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
@@ -356,9 +337,9 @@ func buildRealizedLotColumnRegistry(outCcy string) []columnSpec[gold.RealizedLot
 				return strOrEmpty(r.AcquisitionDate)
 			}},
 		textCol("term", func(r row) *string { return r.Term }),
-		{Name: "covered", Align: output.AlignLeft, Extract: func(r row) string { return yesNo(r.Covered) }},
+		yesNoCol("covered", func(r row) *bool { return r.Covered }),
 		textCol("form_8949_box", func(r row) *string { return r.Form8949Box }),
-		{Name: "held_days", Align: output.AlignRight, Extract: func(r row) string { return intOrEmpty(r.HeldDays) }},
+		intPtrCol("held_days", func(r row) *int64 { return r.HeldDays }),
 		moneyCol("proceeds", "", func(r row) *string { return r.Proceeds }),
 		moneyCol("cost_basis", "", func(r row) *string { return r.BookValue }),
 		moneyCol("gain", "", func(r row) *string { return r.Gain }),
@@ -374,7 +355,7 @@ func buildRealizedLotColumnRegistry(outCcy string) []columnSpec[gold.RealizedLot
 		outCcyTwin("gain", outCcy, func(r row) *string { return r.GainOutCcy }),
 		{Name: "document", Align: output.AlignLeft, Extract: func(r row) string { return r.DocumentKind }},
 		{Name: "tax_year", Align: output.AlignLeft, Extract: func(r row) string { return fmt.Sprintf("%d", r.TaxYear) }},
-		{Name: "primary", Align: output.AlignLeft, Extract: func(r row) string { return yesNo(&r.IsPrimary) }},
+		yesNoCol("primary", func(r row) *bool { return &r.IsPrimary }),
 		textCol("basis_stamp", func(r row) *string { return r.BasisStamp }),
 		{Name: "lot_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r row) string { return r.RealizedLotExternalID }},
@@ -404,9 +385,9 @@ func buildOpenLotColumnRegistry(outCcy string) []columnSpec[gold.OpenLotRow] {
 		{Name: "position_key", Align: output.AlignLeft, Extract: func(r row) string { return r.PositionKey }},
 		{Name: "lot_id", Align: output.AlignLeft, Privacy: PrivacyAccountID, Extract: func(r row) string { return r.LotKey }},
 		textCol("acquisition_date", func(r row) *string { return r.AcquisitionDate }),
-		{Name: "held_days", Align: output.AlignRight, Extract: func(r row) string { return intOrEmpty(r.HeldDays) }},
+		intPtrCol("held_days", func(r row) *int64 { return r.HeldDays }),
 		textCol("term", func(r row) *string { return r.Term }),
-		{Name: "covered", Align: output.AlignLeft, Extract: func(r row) string { return yesNo(r.Covered) }},
+		yesNoCol("covered", func(r row) *bool { return r.Covered }),
 		quantityCol("quantity", func(r row) *string { return r.Quantity }),
 		moneyCol("cost_basis", "", func(r row) *string { return r.BookValue }),
 		moneyCol("market_value", "", func(r row) *string { return r.MarketValue }),

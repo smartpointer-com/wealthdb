@@ -59,11 +59,11 @@ func silverKindCheckList(t *testing.T) []string {
 // TestEveryCheckKindHasAdapterAndPolicy pins the three-way invariant between
 // the migration CHECK list, the adapter registry, and the policy registry: a
 // kind admitted into gold must have an adapter, and every adapter kind must
-// register a ReturnsPolicy — except the reference sources (fred, FX rates;
-// refdata, fund compositions and security facts), which emit no
-// accounts/positions/transactions, so nothing of them ever reaches the
-// returns engine (its Known=false fallback is pinned by
-// TestRegisteredFlowPolicies).
+// register a ReturnsPolicy — except the reference sources, fred (FX rates)
+// and refdata (fund compositions and security facts). They emit no
+// accounts, positions or transactions, so nothing of theirs reaches the
+// returns engine; TestRegisteredFlowPolicies pins their Known=false
+// fallback.
 func TestEveryCheckKindHasAdapterAndPolicy(t *testing.T) {
 	checkKinds := silverKindCheckList(t)
 	registered := silver.Kinds()

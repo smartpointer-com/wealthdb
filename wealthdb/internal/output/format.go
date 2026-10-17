@@ -5,8 +5,8 @@ package output
 
 import "fmt"
 
-// Format names the chosen output format for `wealthdb positions`
-// and friends.
+// Format names the chosen output format for `wealthdb holdings
+// positions` and friends.
 type Format string
 
 const (

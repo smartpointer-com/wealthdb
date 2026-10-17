@@ -2,10 +2,10 @@ package ubs
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // newCardFixture builds an in-memory ubs-web silver holding just the
@@ -13,11 +13,6 @@ import (
 // are invented throughout.
 func newCardFixture(t *testing.T) *webReader {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/ubs-web-cards.db")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
 	const schema = `
 CREATE TABLE dump_runs (snapshot_at INTEGER PRIMARY KEY, run_dir TEXT);
 CREATE TABLE card_accounts (
@@ -40,9 +35,7 @@ CREATE TABLE card_invoices (
     total_debit REAL, total_credit REAL, reconciles INTEGER,
     statement_type TEXT, payment_method TEXT, invoice_status TEXT,
     transactions_covered INTEGER, payload TEXT);`
-	if _, err := db.Exec(schema); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
+	_, db := silvertest.NewDB(t, schema)
 	return &webReader{db: db}
 }
 

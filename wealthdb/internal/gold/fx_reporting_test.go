@@ -77,7 +77,7 @@ func TestFxReportingValueMatchesTheReference(t *testing.T) {
 func seedReportingFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 	t.Helper()
 	seedWebViewEpochFixture(t, db, ctx)
-	snap := spendAt(2026, time.January, 10)
+	snap := dy(2026, time.January, 10)
 	for i, ccy := range []string{"EUR", "GBP", "JPY", "CAD", "XAU", "CHF"} {
 		if _, err := db.Exec(`
             INSERT INTO positions (silver_source_id, snapshot_at, account_external_id,

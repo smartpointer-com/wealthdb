@@ -10,18 +10,13 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 
 	_ "modernc.org/sqlite"
 )
 
 //go:embed testdata/silver_schema.sql
 var silverSchemaSQL string
-
-// day is a calendar date at UTC midnight (unix seconds) — matching how the
-// collector stores posted_at / period_end / doc_date.
-func day(y int, m time.Month, d int) int64 {
-	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix()
-}
 
 // The two load clocks (bronze dump slug times) the fixture is seeded with. A
 // second load is what makes the CURRENT stamp observable: it is the SOURCE's
@@ -39,16 +34,7 @@ const (
 
 func newFixture(t *testing.T) (string, *sql.DB) {
 	t.Helper()
-	path := t.TempDir() + "/amex.db"
-	db, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(silverSchemaSQL); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
-	return path, db
+	return silvertest.NewDB(t, silverSchemaSQL)
 }
 
 // The seeds name their columns rather than relying on the fixture's order.
@@ -102,7 +88,7 @@ func seed(t *testing.T, db *sql.DB) {
 		balance float64) {
 		exec(insertAccount,
 			snap, id, token, name, mask, "USD", balance, 25.00,
-			day(2026, 4, 5), "Active", "CONSUMER", "ACCOUNT_HOLDER",
+			silvertest.Day(2026, 4, 5), "Active", "CONSUMER", "ACCOUNT_HOLDER",
 			`{"product":"card"}`)
 	}
 	// The first card's balance moved between the loads, so it has a row at
@@ -118,22 +104,22 @@ func seed(t *testing.T, db *sql.DB) {
 		txnDate any, pending int) {
 		exec(insertTxn,
 			id, d, acct, amt, kind, merchant, merchant, category, "C1",
-			txnDate, day(2026, 3, 12), nil, pending, "activity", "{}")
+			txnDate, silvertest.Day(2026, 3, 12), nil, pending, "activity", "{}")
 	}
 	// A purchase, a fee, a merchant refund (categorised), the monthly bill
 	// (uncategorised — the tell that separates it from a refund), the
 	// reversal of the fee, and a pending purchase.
-	tx("100000000000000001", day(2026, 2, 10), -60.00, "DEBIT",
-		"Merchandise & Supplies", "EXAMPLE STORE", day(2026, 2, 9), 0)
-	tx("100000000000000002", day(2026, 2, 20), -12.00, "DEBIT",
+	tx("100000000000000001", silvertest.Day(2026, 2, 10), -60.00, "DEBIT",
+		"Merchandise & Supplies", "EXAMPLE STORE", silvertest.Day(2026, 2, 9), 0)
+	tx("100000000000000002", silvertest.Day(2026, 2, 20), -12.00, "DEBIT",
 		"Fees & Adjustments", "ANNUAL MEMBERSHIP FEE", nil, 0)
-	tx("100000000000000003", day(2026, 3, 2), 15.00, "CREDIT",
+	tx("100000000000000003", silvertest.Day(2026, 3, 2), 15.00, "CREDIT",
 		"Merchandise & Supplies", "EXAMPLE STORE", nil, 0)
-	tx("100000000000000004", day(2026, 3, 5), 400.00, "CREDIT",
+	tx("100000000000000004", silvertest.Day(2026, 3, 5), 400.00, "CREDIT",
 		"", "PAYMENT RECEIVED THANK YOU", nil, 0)
-	tx("100000000000000005", day(2026, 3, 6), 12.00, "CREDIT",
+	tx("100000000000000005", silvertest.Day(2026, 3, 6), 12.00, "CREDIT",
 		"Fees & Adjustments", "ANNUAL FEE REVERSAL", nil, 0)
-	tx("P0001ABCDEF0000000", day(2026, 3, 14), -25.00, "DEBIT",
+	tx("P0001ABCDEF0000000", silvertest.Day(2026, 3, 14), -25.00, "DEBIT",
 		"Restaurants", "EXAMPLE CAFE", nil, 1)
 
 	period := func(start, end int64, opening, closing float64) {
@@ -143,60 +129,29 @@ func seed(t *testing.T, db *sql.DB) {
 	// The statement archive reaches back further than the ledger does (the
 	// real shape: ~7 years of statements over ~24 months of activity), so the
 	// oldest period end predates every transaction.
-	period(day(2025, 12, 13), day(2026, 1, 12), 100.00, 160.00)
-	period(day(2026, 2, 13), day(2026, 3, 12), 160.00, 420.00)
+	period(silvertest.Day(2025, 12, 13), silvertest.Day(2026, 1, 12), 100.00, 160.00)
+	period(silvertest.Day(2026, 2, 13), silvertest.Day(2026, 3, 12), 160.00, 420.00)
 
 	exec(insertDocument,
-		"sha-1", loadUnix, acct, day(2026, 3, 12), "statement", "pdf",
+		"sha-1", loadUnix, acct, silvertest.Day(2026, 3, 12), "statement", "pdf",
 		"2026-03-12.pdf", 100, "{}")
 }
 
 func openConn(t *testing.T, path string) silver.Connection {
 	t.Helper()
-	conn, err := (&Adapter{}).Open(context.Background(), silver.OpenSpec{Path: path})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { conn.Close() })
-	return conn
-}
-
-func fullWindow(t *testing.T, conn silver.Connection) canonical.Window {
-	t.Helper()
-	w, err := conn.ChangeWindow(context.Background(), 0)
-	if err != nil {
-		t.Fatalf("ChangeWindow: %v", err)
-	}
-	if !w.HasChanges {
-		t.Fatal("ChangeWindow: expected changes")
-	}
-	return w
+	return silvertest.Open(t, &Adapter{}, path)
 }
 
 // snapshots drains the snapshot stream into one batch.
 func snapshots(t *testing.T, conn silver.Connection, w canonical.Window) canonical.SnapshotBatch {
 	t.Helper()
-	ctx := context.Background()
-	stream, err := conn.Snapshots(ctx, w)
-	if err != nil {
-		t.Fatalf("Snapshots: %v", err)
-	}
-	defer stream.Close()
 	var all canonical.SnapshotBatch
-	for {
-		// Next yields a batch and says whether another FOLLOWS, so the
-		// batch is accumulated before the loop decides to stop.
-		b, more, err := stream.Next(ctx)
-		if err != nil {
-			t.Fatalf("Snapshots Next: %v", err)
-		}
+	for _, b := range silvertest.Snapshots(t, conn, w) {
 		all.Accounts = append(all.Accounts, b.Accounts...)
 		all.CashBalances = append(all.CashBalances, b.CashBalances...)
 		all.Positions = append(all.Positions, b.Positions...)
-		if !more {
-			return all
-		}
 	}
+	return all
 }
 
 // transactions drains the transaction stream.
@@ -244,15 +199,15 @@ func TestStatusAndChangeWindow(t *testing.T) {
 	// end, which predates every transaction: a card's balance history comes
 	// only from the periods, so a window derived from the ledger alone would
 	// leave the oldest anchors outside the re-emit range.
-	if st.OldestSnapshotAt != day(2026, 1, 12) {
-		t.Errorf("OldestSnapshotAt = %d, want %d", st.OldestSnapshotAt, day(2026, 1, 12))
+	if st.OldestSnapshotAt != silvertest.Day(2026, 1, 12) {
+		t.Errorf("OldestSnapshotAt = %d, want %d", st.OldestSnapshotAt, silvertest.Day(2026, 1, 12))
 	}
 	if st.LatestSnapshotAt != laterLoadUnix {
 		t.Errorf("LatestSnapshotAt = %d, want %d", st.LatestSnapshotAt, laterLoadUnix)
 	}
 
-	w := fullWindow(t, conn)
-	if w.Start != day(2026, 1, 12) || w.End != laterLoadUnix {
+	w := silvertest.FullWindow(t, conn)
+	if w.Start != silvertest.Day(2026, 1, 12) || w.End != laterLoadUnix {
 		t.Errorf("window = [%d,%d]", w.Start, w.End)
 	}
 
@@ -279,7 +234,7 @@ func TestAccountIsACardLiability(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
 	conn := openConn(t, path)
-	batch := snapshots(t, conn, fullWindow(t, conn))
+	batch := snapshots(t, conn, silvertest.FullWindow(t, conn))
 
 	if len(batch.Accounts) != 2 {
 		t.Fatalf("accounts = %d, want one per card", len(batch.Accounts))
@@ -310,7 +265,7 @@ func TestBalancesAreNegatedExactlyOnce(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
 	conn := openConn(t, path)
-	batch := snapshots(t, conn, fullWindow(t, conn))
+	batch := snapshots(t, conn, silvertest.FullWindow(t, conn))
 
 	type mark struct {
 		id   string
@@ -330,8 +285,8 @@ func TestBalancesAreNegatedExactlyOnce(t *testing.T) {
 		{quietAcct, laterLoadUnix, canonical.BalanceKindCurrent, "-250"},
 		// One closing mark per statement period — the only historic balance
 		// truth a card has.
-		{acct, day(2026, 1, 12), canonical.BalanceKindClosing, "-160"},
-		{acct, day(2026, 3, 12), canonical.BalanceKindClosing, "-420"},
+		{acct, silvertest.Day(2026, 1, 12), canonical.BalanceKindClosing, "-160"},
+		{acct, silvertest.Day(2026, 3, 12), canonical.BalanceKindClosing, "-420"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("cash balances = %+v, want %d marks", got, len(want))
@@ -368,7 +323,7 @@ func TestCurrentIsStampedAtTheSourcesLatestSnapshot(t *testing.T) {
 
 	conn := openConn(t, path)
 	current := map[string]int64{}
-	for _, b := range snapshots(t, conn, fullWindow(t, conn)).CashBalances {
+	for _, b := range snapshots(t, conn, silvertest.FullWindow(t, conn)).CashBalances {
 		if b.BalanceKind == canonical.BalanceKindCurrent {
 			current[b.AccountExternalID] = b.SnapshotAt
 		}
@@ -388,7 +343,7 @@ func TestTransactionKinds(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
 	conn := openConn(t, path)
-	txs := transactions(t, conn, fullWindow(t, conn))
+	txs := transactions(t, conn, silvertest.FullWindow(t, conn))
 
 	byID := map[string]canonical.TransactionChange{}
 	for _, tx := range txs {
@@ -449,15 +404,15 @@ func TestStatementEraKindsComeFromTheSection(t *testing.T) {
 	}
 	for _, r := range rows {
 		if _, err := db.Exec(insertTxn,
-			r.id, day(2020, 2, 5), acct, r.amount, r.section, "OLD ROW",
-			"OLD ROW", nil, nil, day(2020, 2, 5), nil, nil, 0, "statement",
+			r.id, silvertest.Day(2020, 2, 5), acct, r.amount, r.section, "OLD ROW",
+			"OLD ROW", nil, nil, silvertest.Day(2020, 2, 5), nil, nil, 0, "statement",
 			"{}"); err != nil {
 			t.Fatalf("seed %s: %v", r.id, err)
 		}
 	}
 	conn := openConn(t, path)
 	got := map[string]canonical.TxKind{}
-	for _, tx := range transactions(t, conn, fullWindow(t, conn)) {
+	for _, tx := range transactions(t, conn, silvertest.FullWindow(t, conn)) {
 		got[tx.TransactionExternalID] = tx.Kind
 	}
 	for _, r := range rows {
@@ -471,7 +426,7 @@ func TestProviderCategoryAndMerchantAreCarriedVerbatim(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
 	conn := openConn(t, path)
-	txs := transactions(t, conn, fullWindow(t, conn))
+	txs := transactions(t, conn, silvertest.FullWindow(t, conn))
 
 	for _, tx := range txs {
 		if tx.TransactionExternalID != "100000000000000001" {
@@ -493,7 +448,7 @@ func TestPendingAndChargeDateRideInThePayload(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
 	conn := openConn(t, path)
-	txs := transactions(t, conn, fullWindow(t, conn))
+	txs := transactions(t, conn, silvertest.FullWindow(t, conn))
 
 	payloadOf := func(id string) map[string]any {
 		t.Helper()
@@ -535,7 +490,7 @@ func TestAnUnknownDirectionFallsBackWithoutLosingTheRow(t *testing.T) {
 	odd := func(id string, amt float64) {
 		t.Helper()
 		if _, err := db.Exec(insertTxn,
-			id, day(2026, 3, 10), acct, amt, "SOMETHING NEW", "ODD ROW",
+			id, silvertest.Day(2026, 3, 10), acct, amt, "SOMETHING NEW", "ODD ROW",
 			"ODD ROW", "Travel", "C9", nil, nil, nil, 0, "activity",
 			"{}"); err != nil {
 			t.Fatalf("seed %s: %v", id, err)
@@ -546,7 +501,7 @@ func TestAnUnknownDirectionFallsBackWithoutLosingTheRow(t *testing.T) {
 
 	conn := openConn(t, path)
 	byID := map[string]canonical.TransactionChange{}
-	for _, tx := range transactions(t, conn, fullWindow(t, conn)) {
+	for _, tx := range transactions(t, conn, silvertest.FullWindow(t, conn)) {
 		byID[tx.TransactionExternalID] = tx
 	}
 	for _, tc := range []struct {

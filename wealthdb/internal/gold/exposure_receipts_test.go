@@ -239,32 +239,6 @@ func TestExposurePassCompletesAReceipt(t *testing.T) {
 	}
 }
 
-func TestMigration0126DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openExposureFixture(t)
-	// 0128 and 0129 re-create the look-through, so they are replayed
-	// after 0126, as Migrate would.
-	rerunMigrationDDL(t, db, ctx, "0126_exposure_report.sql")
-	rerunMigrationDDL(t, db, ctx, "0128_exposure_declarations.sql")
-	rerunMigrationDDL(t, db, ctx, "0129_exposure_situs.sql")
-	n, err := RebuildExposure(ctx, db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n.Securities == 0 || n.Aliases == 0 {
-		t.Errorf("after replay: rebuilt %+v", n)
-	}
-	if f := leafFlags(t, db, ctx, `iid = 'PE1'`); f != "opaque,undeclared" {
-		t.Errorf("after replay: PE1 flags = %q", f)
-	}
-	if rows, err := ExposureSizes(ctx, db, exAsOf, "USD"); err != nil || len(rows) == 0 {
-		t.Errorf("sizes after replay: %d rows, %v", len(rows), err)
-	}
-	if rows, err := ExposureCoverage(ctx, db, exAsOf, "USD"); err != nil || len(rows) == 0 {
-		t.Errorf("coverage after replay: %d rows, %v", len(rows), err)
-	}
-}
-
 // GLEIF's link wins over a name: a receipt whose issuer's ISINs name an
 // equity share takes that share, and its leaf carries no by_name flag.
 func TestExposureLinksAReceiptByItsIssuer(t *testing.T) {
@@ -569,51 +543,5 @@ func TestLinkLinesGivesASizeOnlyLineNoVote(t *testing.T) {
 		"name:b": "isin:GB0000000E05", "name:d": "isin:GB0000000E04"}
 	if !maps.Equal(got, want) {
 		t.Errorf("links = %v, want %v", got, want)
-	}
-}
-
-// Each side's mix holds only the lines that state the dimension: a proxy
-// whose lines state no country, and that no source places, compares on
-// sectors alone.
-func TestExposureDivergenceComparesWhatEachSideStates(t *testing.T) {
-	t.Parallel()
-	db, ctx := openExposureFixture(t)
-	for _, q := range []string{
-		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, name, currency,
-		 first_seen_at, last_seen_at) VALUES ('test-src', 'QRP3', 'public_equity', 'fund', 'QRP3', 'Report Fund', 'USD', 0, 0)`,
-		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
-		 asset_class, vehicle, currency, quantity, market_value)
-		 VALUES ('test-src', ?, 'A1', 'QRP3', 'QRP3', 'public_equity', 'fund', 'USD', 1, 100)`,
-		`INSERT INTO exposure_proxies (fund_ref, proxy_ref, always, leverage) VALUES ('symbol:QRP3', 'symbol:QPX3', FALSE, 1)`,
-		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, source_kind, line_count, currency)
-		 VALUES ('test-src', 'symbol:QRP3', ?, 'holdings', 'swissfunddata', 'report', 2, 'USD'),
-		        ('test-src', 'symbol:QPX3', ?, 'holdings', 'testprov', 'issuer', 2, 'USD')`,
-		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
-		 weight, currency, country, sector) VALUES
-		 ('test-src', 'symbol:QRP3', ?, 'holdings', 1, 'isin:JP0000000F01', 'JP0000000F01', 'QLAND ONE', 'Equity', 60, 'JPY', 'Japan', 'Materials'),
-		 ('test-src', 'symbol:QRP3', ?, 'holdings', 2, 'isin:JP0000000F02', 'JP0000000F02', 'QLAND TWO', 'Equity', 40, 'JPY', 'Japan', 'Industrials'),
-		 ('test-src', 'symbol:QPX3', ?, 'holdings', 1, 'symbol:QPF1', NULL, 'QLAND ONE', 'Equity', 50, 'JPY', NULL, 'Materials'),
-		 ('test-src', 'symbol:QPX3', ?, 'holdings', 2, 'symbol:QPF2', NULL, 'QLAND THREE', 'Equity', 50, 'JPY', NULL, 'Utilities')`,
-	} {
-		if _, err := db.ExecContext(ctx, q, slices.Repeat([]any{exSnap}, strings.Count(q, "?"))...); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	cov, err := ExposureCoverage(ctx, db, exAsOf, "USD")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var div []string
-	for _, r := range cov {
-		if r.Section == "divergence" {
-			div = append(div, r.Reason+": "+*r.Detail)
-		}
-	}
-	// Materials 60/50, industrials 40/0, utilities 0/50: 50 points.
-	if want := []string{"symbol:QRP3: sector 50.0 points from symbol:QPX3"}; !slices.Equal(div, want) {
-		t.Errorf("divergence = %v, want %v", div, want)
 	}
 }

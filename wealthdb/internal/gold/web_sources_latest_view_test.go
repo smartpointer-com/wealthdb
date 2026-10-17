@@ -5,7 +5,8 @@ import "testing"
 // TestWebSourcesLatestMatchesTheMacro pins that the view splits each
 // source by tax wrapper and asset class and nothing else: summed per
 // source, the same snapshot and the same value columns
-// report_sources_multi returns as of the latest snapshot. The Wealth
+// report_sources_multi returns as of the latest snapshot, and every
+// source the macro reports with lines. The Wealth
 // Overview's headline figures read it, and they promise the numbers
 // `wealthdb holdings sources` prints.
 func TestWebSourcesLatestMatchesTheMacro(t *testing.T) {
@@ -43,6 +44,22 @@ func TestWebSourcesLatestMatchesTheMacro(t *testing.T) {
 	}
 	if differ != 0 {
 		t.Errorf("%d web_sources_latest row(s) differ from report_sources_multi", differ)
+	}
+
+	// The reverse direction: no source the macro reports with lines may be
+	// missing from the view. A source with no lines at all reads snapshot_at
+	// 0 in the macro and has no row to split, so it is left out.
+	var dropped int
+	if err := db.QueryRowContext(ctx, `
+        SELECT COUNT(*) FROM (
+            SELECT silver_source_id FROM report_sources_multi(9223372036854775807)
+             WHERE snapshot_at > 0
+            EXCEPT
+            SELECT DISTINCT silver_source_id FROM web_sources_latest)`).Scan(&dropped); err != nil {
+		t.Fatalf("compare report_sources_multi with the view: %v", err)
+	}
+	if dropped != 0 {
+		t.Errorf("%d source(s) report_sources_multi reports are missing from web_sources_latest", dropped)
 	}
 }
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // psnReader reads from the ubs-psn silver SQLite. Methods are
@@ -21,14 +23,7 @@ type psnReader struct {
 	mirrors  *conversionMirrors
 }
 
-func (r *psnReader) Close() error {
-	if r == nil || r.db == nil {
-		return nil
-	}
-	err := r.db.Close()
-	r.db = nil
-	return err
-}
+func (r *psnReader) Close() error { return silver.CloseDB(&r.db) }
 
 // psnCashRow is one cash_movement event of the PSN silver.
 type psnCashRow struct {

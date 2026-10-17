@@ -176,7 +176,7 @@ func (s *mcpServer) tools() []toolSpec {
 			description: "What is really owned: every fund looked through to what it holds, down to the single security, added to what is held directly, as of a date (default today). " +
 				"view=classes: by asset class. view=sectors: by asset class and sector. view=sizes: public equity by large, mid and small caps. view=countries: by country with its region. view=currencies: by the currency a value moves with (a fiat currency, a metal such as XAU, a coin such as BTC). " +
 				"view=situs: by legal situs, the country whose law each holding is an interest under; it looks through no fund, so a fund counts whole at its own situs, and it is no exposure. " +
-				"view=securities: each security, held directly and through every fund. view=funds: each fund held directly, what describes it and how old that is. view=coverage: what the figures rest on, the labels no map knows, the holdings no source describes, the private holdings no declaration describes, and what each situs rests on. " +
+				"view=securities: each security, held directly and through every fund. view=funds: each fund held directly, what describes it and how old that is. view=coverage: what the figures rest on, the labels no map knows, the holdings no source describes, the private holdings no declaration describes, how far each fund read from a report lies from its proxy, and what each situs rests on. " +
 				"Every view sums to net worth; share_pct is a share of it, direct_pct and via_funds_pct split it. Read the quality column and view=coverage before trusting a figure. " +
 				`Example: {view: "countries", as_of: "2025-12-31"}.`,
 			params: s.rowParams(false,
@@ -780,7 +780,7 @@ func (s *mcpServer) settle(tool string, fam *family, cfg *config.Config, a *tool
 		if req.currency == "" {
 			req.currency = cfg.DefaultCurrency
 		}
-		if !isCurrencyCode(req.currency) {
+		if !config.IsLikelyISO4217(req.currency) {
 			return request{}, nil, fmt.Errorf("%s: currency %q is not a 3-letter code such as USD or CHF", tool, a.str("currency"))
 		}
 	}
@@ -1033,18 +1033,6 @@ func finerViews(fam *family, view string, named []string) []string {
 		after = after || v == view
 	}
 	return out
-}
-
-func isCurrencyCode(s string) bool {
-	if len(s) != 3 {
-		return false
-	}
-	for _, c := range s {
-		if c < 'A' || c > 'Z' {
-			return false
-		}
-	}
-	return true
 }
 
 func plural(n int, one, many string) string {

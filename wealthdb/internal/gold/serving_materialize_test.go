@@ -3,6 +3,7 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"slices"
 	"testing"
 	"time"
 )
@@ -65,6 +66,29 @@ func TestMaterializeServingTablesHoldsTheMacrosRows(t *testing.T) {
 		t.Fatalf("second run: %v", err)
 	}
 	assertTablesHoldTheMacros(t, db, ctx)
+
+	// A serving table the schema adds without an entry here would stay
+	// empty, and the views on it read nothing.
+	var inSchema, listed []string
+	if err := scanAll(ctx, db, `SELECT table_name FROM information_schema.tables
+	    WHERE table_type = 'BASE TABLE' AND table_name LIKE 'serving\_%' ESCAPE '\' ORDER BY 1`,
+		func(rows *sql.Rows) error {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				return err
+			}
+			inSchema = append(inSchema, name)
+			return nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range servingTables {
+		listed = append(listed, s.table)
+	}
+	slices.Sort(listed)
+	if !slices.Equal(inSchema, listed) {
+		t.Errorf("the schema's serving tables are %v, servingTables lists %v", inSchema, listed)
+	}
 }
 
 // TestWebHistoryViewsSumToTheSources: per day and source, every history
@@ -112,7 +136,7 @@ func TestWebHistoryViewsSumToTheSources(t *testing.T) {
 func TestWebHistoryViewsCarryTheWrapperAndClass(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedWebViewEpochFixture(t, db, ctx)
-	snap := spendAt(2026, time.January, 10)
+	snap := dy(2026, time.January, 10)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
                               display_name, base_currency, tax_wrapper, management_style,

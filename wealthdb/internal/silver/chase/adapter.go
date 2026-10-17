@@ -1,40 +1,9 @@
-// Package chase projects the chase collector's silver — a JPMorgan Chase
-// retail relationship holding deposit accounts (checking / savings) and credit
-// cards — into canonical change records. See collectors/chase/ for the
-// bronze/silver schema and the gold mapping this implements.
-//
-// Both products live in the same silver tables and are told apart by
-// `accounts.product` ('dda' | 'card'). Neither carries an instrument, so the
-// projection emits no positions:
-//
-//   - ACCOUNTS. One per roster account: AccountKind 'cash' for a deposit
-//     account, 'card' for a credit card. DisplayName from the nickname
-//     (falling back to the last-4 mask); TaxWrapper 'taxable_personal',
-//     ManagementStyle 'self_directed'. The tax wrapper and management style
-//     are overridable via account_overrides.
-//
-//   - CASH BALANCES, not positions or instruments — cash is not an instrument,
-//     and a card is a revolving-credit liability that gold carries as negative
-//     cash rather than a position. They land in gold's cash_balances table
-//     (report_cash synthesises a read-time cash position from them, so they
-//     still surface in holdings): a CLOSING balance for every day the balance
-//     moved, plus a CURRENT balance from the roster's live figure so the latest
-//     net worth reflects the balance now. An as-of query at any statement date
-//     returns that statement's closing balance. See snapshots.go for the three
-//     sources of a closing mark and how they are kept apart.
-//
-//     SIGN: silver stores every card figure the provider's way, so a card
-//     balance is the POSITIVE amount owed. This adapter negates it — the
-//     canonical convention for a liability is negative cash. Available credit
-//     and the credit limit are not balances of anything owned and never become
-//     rows.
-//
-//   - TRANSACTIONS: the whole ledger of both products. See transactions.go for
-//     the sign treatment and the kind mapping.
-//
-// Requires chase silver schema 3 or later (cards and their statement coverage
-// flag). `load` applies the migrations in place, so any silver a load has
-// touched is at the current version.
+// Package chase projects the chase collector's silver (a JPMorgan Chase
+// retail relationship: deposit accounts and credit cards, told apart by
+// `accounts.product`) into canonical change records: one account per roster
+// account, its balances as cash with a card's debt negated, and the whole
+// ledger of both products. It needs chase silver schema 3 or later. See
+// docs/adapters/chase.md for the mapping contract.
 package chase
 
 import (
@@ -70,14 +39,7 @@ type Connection struct {
 	db *sql.DB
 }
 
-func (c *Connection) Close() error {
-	if c == nil || c.db == nil {
-		return nil
-	}
-	err := c.db.Close()
-	c.db = nil
-	return err
-}
+func (c *Connection) Close() error { return silver.CloseDB(&c.db) }
 
 // accountFacts is what a projection needs to know about an account beyond the
 // row it is reading: its ISO currency and its product. Transactions have no

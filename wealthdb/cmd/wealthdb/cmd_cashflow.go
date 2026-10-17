@@ -77,18 +77,18 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 	// money, and converting it would add a rate error to the very
 	// number the report exists to make trustworthy.
 	if view == "coverage" && isSet(fs, "x", "currency") {
-		return errs.Newf(2, "cashflow: coverage takes no -x/--currency — "+
+		return errs.Newf(errs.ExitUsage, "cashflow: coverage takes no -x/--currency — "+
 			"each account is measured against its own balances, in its own currency")
 	}
 	// `sankey --period annual` is refused for what it means, not for
 	// being misspelled.
 	if view == "sankey" {
 		if isSet(fs, "period") {
-			return errs.Newf(2, "cashflow: sankey takes no --period — a diagram is a window, not a series; "+
+			return errs.Newf(errs.ExitUsage, "cashflow: sankey takes no --period — a diagram is a window, not a series; "+
 				"loop over the years instead")
 		}
 		if *level == "section" {
-			return errs.Newf(2, "cashflow: sankey --level section would draw no inner column (want class | group)")
+			return errs.Newf(errs.ExitUsage, "cashflow: sankey --level section would draw no inner column (want class | group)")
 		}
 	}
 
@@ -105,7 +105,7 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), time.Now())
 	if err != nil {
 		fs.Usage()
-		return errs.Newf(2, "cashflow: %s", err.Error())
+		return errs.Newf(errs.ExitUsage, "cashflow: %s", err.Error())
 	}
 
 	fmtChoice, cfg, outCcy, err := rf.resolve(g, "cashflow")
@@ -153,24 +153,6 @@ func cashflowReport(req request) *report {
 	}
 }
 
-// isSet reports whether any of the given spellings of a flag was typed
-// on the command line, as opposed to sitting at its default. The
-// refusals need it twice over: `--period monthly` is the default value
-// AND a thing a caller can type at a sankey, and a flag registered
-// under both a short and a long name is a different *flag.Flag under
-// each, so a refusal that asks for one spelling misses the other.
-func isSet(fs *flag.FlagSet, names ...string) bool {
-	found := false
-	fs.Visit(func(f *flag.Flag) {
-		for _, name := range names {
-			if f.Name == name {
-				found = true
-			}
-		}
-	})
-	return found
-}
-
 // ---- column registries ---------------------------------------------------
 
 func buildCashflowSummaryColumnRegistry(outCcy, period string) []columnSpec[gold.CashflowSummaryRow] {
@@ -198,10 +180,7 @@ func buildCashflowSummaryColumnRegistry(outCcy, period string) []columnSpec[gold
 		outCcyCol("taxes", outCcy, func(r gold.CashflowSummaryRow) *string { return r.Taxes }),
 		outCcyCol("fees", outCcy, func(r gold.CashflowSummaryRow) *string { return r.Fees }),
 		outCcyCol("giving", outCcy, func(r gold.CashflowSummaryRow) *string { return r.Giving }),
-		// A rate is a proportion, not an amount: it survives -p, which
-		// is what makes the privacy twin of this report readable.
-		{Name: "savings_rate", Header: "savings_rate_pct", Align: output.AlignRight,
-			Extract: func(r gold.CashflowSummaryRow) string { return formatPct(r.SavingsRate) }},
+		ratioCol("savings_rate", func(r gold.CashflowSummaryRow) *float64 { return r.SavingsRate }),
 		// The reconciliation memo. It is the one check that can catch a
 		// wrong POPULATION rather than wrong arithmetic — the pool's
 		// balances are observed, and the statement's cash section is
@@ -247,8 +226,7 @@ func buildCashflowFlowColumnRegistry(outCcy, period string) []columnSpec[gold.Ca
 		outCcyCol("inflow", outCcy, func(r gold.CashflowFlowRow) *string { return r.Inflow }),
 		outCcyCol("outflow", outCcy, func(r gold.CashflowFlowRow) *string { return r.Outflow }),
 		outCcyCol("net", outCcy, func(r gold.CashflowFlowRow) *string { return r.Net }),
-		{Name: "share", Header: "share_pct", Align: output.AlignRight,
-			Extract: func(r gold.CashflowFlowRow) string { return formatPct(r.Share) }},
+		ratioCol("share", func(r gold.CashflowFlowRow) *float64 { return r.Share }),
 	}
 }
 
@@ -289,8 +267,7 @@ func buildCashflowSankeyColumnRegistry(outCcy string) []columnSpec[gold.Cashflow
 			Extract: func(r gold.CashflowSankeyRow) string { return r.TargetID }},
 		textCol("section", func(r gold.CashflowSankeyRow) *string { return r.Section }),
 		outCcyCol("value", outCcy, func(r gold.CashflowSankeyRow) *string { return r.Value }),
-		{Name: "share", Header: "share_pct", Align: output.AlignRight,
-			Extract: func(r gold.CashflowSankeyRow) string { return formatPct(r.Share) }},
+		ratioCol("share", func(r gold.CashflowSankeyRow) *float64 { return r.Share }),
 	}
 }
 

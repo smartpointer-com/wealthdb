@@ -37,8 +37,8 @@ func (l *Loader) Reset(ctx context.Context, sourceID string) error {
 	// from the transactions being deleted and are recomputed by the
 	// next enrichment pass, which writes them in one transaction. So
 	// does the lot engine's ledger (gold.LotLedgerTables), which the
-	// next lot pass rewrites, and the reference records the source
-	// loaded (gold.ReferenceTables).
+	// next lot pass rewrites. The reference records the source loaded
+	// (gold.ReferenceTables) go with its other facts.
 	//
 	// Six tables deliberately survive a reset, two per family. The
 	// verdict stores — spend_merchant_categories and
@@ -47,7 +47,9 @@ func (l *Loader) Reset(ctx context.Context, sourceID string) error {
 	// reappears under every account and those verdicts were paid for.
 	// The three account scopes and the cashflow wrapper boundary are
 	// configuration stamped into gold (the fx_priority precedent), not
-	// source data.
+	// source data. The exposure config tables survive too: every load
+	// re-stamps them from the config (gold.SyncExposure), and the next
+	// exposure pass rebuilds the tables it derives.
 	stmts := []string{
 		`DELETE FROM symbol_resolutions   WHERE silver_source_id = ?`,
 		`DELETE FROM spend_txn_enrichment  WHERE silver_source_id = ?`,

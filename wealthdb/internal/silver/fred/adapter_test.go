@@ -8,6 +8,7 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 //go:embed testdata/silver_schema.sql
@@ -15,26 +16,12 @@ var silverSchemaSQL string
 
 func newFixtureSilver(t *testing.T) (string, *sql.DB) {
 	t.Helper()
-	path := t.TempDir() + "/fred.db"
-	db, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(silverSchemaSQL); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
-	return path, db
+	return silvertest.NewDB(t, silverSchemaSQL)
 }
 
 func openAdapter(t *testing.T, path string) silver.Connection {
 	t.Helper()
-	conn, err := (&Adapter{}).Open(context.Background(), silver.OpenSpec{Path: path})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { conn.Close() })
-	return conn
+	return silvertest.Open(t, &Adapter{}, path)
 }
 
 func collectFx(t *testing.T, conn silver.Connection, w canonical.Window) []canonical.FxRateChange {

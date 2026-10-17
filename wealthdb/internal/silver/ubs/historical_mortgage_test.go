@@ -2,10 +2,10 @@ package ubs
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // newWebFixture builds an in-memory ubs-web silver with just the
@@ -13,11 +13,6 @@ import (
 // driver the PSN fixture uses.
 func newWebFixture(t *testing.T) *webReader {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/ubs-web.db")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
 	const schema = `
 CREATE TABLE historical_position_snapshots (
     as_of_date INTEGER, portfolio_external_id TEXT, account_external_id TEXT,
@@ -33,9 +28,7 @@ CREATE TABLE historical_mortgages (
     as_of_date INTEGER, account_external_id TEXT, currency_iso TEXT,
     outstanding_balance REAL, product_name TEXT, rate_type TEXT,
     collateral_description TEXT, source_doc_token TEXT, payload TEXT);`
-	if _, err := db.Exec(schema); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
+	_, db := silvertest.NewDB(t, schema)
 	return &webReader{db: db}
 }
 

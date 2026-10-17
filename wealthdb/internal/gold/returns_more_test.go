@@ -13,6 +13,8 @@ import (
 
 func decp(n int64) *canonical.Decimal { v := canonical.NewDecimalFromInt(n); return &v }
 
+// dy is the epoch second at noon UTC on the given date — noon so a
+// bucket boundary is never ambiguous about which day a row belongs to.
 func dy(y int, m time.Month, d int) int64 {
 	return time.Date(y, m, d, 12, 0, 0, 0, time.UTC).Unix()
 }

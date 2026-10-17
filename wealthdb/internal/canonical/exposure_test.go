@@ -40,3 +40,18 @@ func TestSectors(t *testing.T) {
 		t.Error("tech is not a sector")
 	}
 }
+
+// Set fills the field of each declarable dimension and no other.
+func TestExposureDeclaredLeafSet(t *testing.T) {
+	t.Parallel()
+	l := ExposureDeclaredLeaf{Share: 0.5}
+	for _, dim := range DeclarationDimensions {
+		l.Set(dim, dim)
+	}
+	l.Set(DeclarationSitus, "CH")
+	want := ExposureDeclaredLeaf{Share: 0.5, AssetClass: "asset_class", Region: "region", Country: "country",
+		Currency: "currency", Sector: "sector"}
+	if l != want {
+		t.Errorf("leaf = %+v, want %+v", l, want)
+	}
+}

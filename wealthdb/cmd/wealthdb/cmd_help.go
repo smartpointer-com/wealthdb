@@ -61,28 +61,30 @@ var helpGroups = []struct{ key, title string }{
 // commandHelps is the one place a subcommand is described, and the
 // usage listing is generated from it — there is no second copy to
 // drift. Within a group the order is the one a reader meets the
-// commands in, not the alphabetical order.
+// commands in, not the alphabetical order. A report's line lists its
+// views from the slice its command checks a view against.
 //
 // TestUsageListsEverySubcommand holds this against the dispatch
 // table, so a subcommand that registers without an entry here fails
 // the suite rather than going quietly unlisted.
 var commandHelps = []commandHelp{
 	{name: "holdings", args: "<view>", group: "report",
-		short: "what is held and what it is worth, as of a date: global, sources, portfolios, accounts, positions"},
+		short: "what is held and what it is worth, as of a date: " + strings.Join(holdingsViews, ", ")},
 	{name: "returns", args: "<view>", group: "report",
-		short: "how it performed over a window, as TWR / MWR %: global, sources, portfolios, accounts"},
+		short: "how it performed over a window, as TWR / MWR %: " + strings.Join(returnsViews, ", ")},
 	{name: "gains", args: "<view>", group: "report",
-		short: "what was gained or lost (P&L), realized and unrealized, over a window: summary, sources, portfolios, accounts, positions, realized, lots, coverage, check"},
+		short: "what was gained or lost (P&L), realized and unrealized, over a window: " + strings.Join(gainsViews, ", ")},
 	{name: "exposure", args: "<view>", group: "report",
-		short: "what is really owned, every fund looked through, as of a date: classes, sectors, sizes, countries, currencies, securities, funds, coverage"},
+		short: "what is really owned, every fund looked through, as of a date: " + strings.Join(exposureViews, ", ")},
 	{name: "transactions", args: "[FROM [TO]]", group: "report",
 		short: "the individual booked lines over a window; totals by kind are the three reports below"},
 	{name: "spending", args: "<view>", group: "report",
-		short: "what was spent, on what, as totals by category: summary, categories, transactions"},
+		short: "what was spent, on what, as totals by category: " + strings.Join(spendingViews, ", ")},
 	{name: "income", args: "<view>", group: "report",
-		short: "what was received (salary, dividends, interest, rent), as totals by type: summary, types, transactions"},
+		short: "what was received (salary, dividends, interest, rent), as totals by type: " + strings.Join(incomeViews, ", ")},
 	{name: "cashflow", args: "<view>", group: "report",
-		short: "where the cash came from and went, mortgage and plan contributions included: summary, flows, sankey, transactions, coverage"},
+		short: "where the cash came from and went, mortgage and plan contributions included: " +
+			strings.Join(cashflowViews, ", ")},
 	{name: "status", args: "[<id>] [-v]", group: "report",
 		short: "is the data current, and what each source holds"},
 	{name: "snapshots", args: "<id> | -a", group: "report",

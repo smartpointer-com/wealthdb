@@ -56,7 +56,7 @@ stops updating behind a current deposit population is visible.`)
 	}
 	if fs.NArg() > 1 {
 		fs.Usage()
-		return errs.Newf(2, "status: at most one silver_source_id allowed")
+		return errs.Newf(errs.ExitUsage, "status: at most one silver_source_id allowed")
 	}
 
 	cfg, err := config.Load(g.ConfigPath)

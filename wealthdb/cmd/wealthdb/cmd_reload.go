@@ -59,7 +59,7 @@ or below the high watermark. Reload forces a full re-projection.`)
 	}
 	if *inPlace && !*all {
 		fs.Usage()
-		return errs.Newf(2, "reload: --in-place only applies to '-a'")
+		return errs.Newf(errs.ExitUsage, "reload: --in-place only applies to '-a'")
 	}
 	id, err := sourceArg(fs, *all, "reload")
 	if err != nil {
@@ -74,7 +74,7 @@ or below the high watermark. Reload forces a full re-projection.`)
 	if err != nil {
 		return err
 	}
-	enrichment, exposure, err := readLoadLedgers(cfg)
+	in, err := readLoadLedgers(cfg)
 	if err != nil {
 		return err
 	}
@@ -97,10 +97,10 @@ or below the high watermark. Reload forces a full re-projection.`)
 
 	// Default '-a': build a fresh file from scratch and swap it in.
 	if *all && !*inPlace {
-		return reloadFreshAndSwap(ctx, cfg, targets, ledger, enrichment, exposure, stdout, stderr)
+		return reloadFreshAndSwap(ctx, cfg, targets, ledger, in, stdout, stderr)
 	}
 
-	return reloadInPlace(ctx, cfg, targets, ledger, enrichment, exposure, stdout, stderr)
+	return reloadInPlace(ctx, cfg, targets, ledger, in, stdout, stderr)
 }
 
 // reloadFreshAndSwap builds a complete gold DB from every target
@@ -114,8 +114,7 @@ func reloadFreshAndSwap(
 	cfg *config.Config,
 	targets []config.SilverSource,
 	ledger map[string][]loader.TransferEntry,
-	enrichment enrichmentLedgers,
-	exposure canonical.ExposureRows,
+	in loadInputs,
 	stdout, stderr io.Writer,
 ) error {
 	var buildErr error
@@ -148,7 +147,7 @@ func reloadFreshAndSwap(
 			fmt.Fprintf(stdout, "reload: %s: %d snapshot row(s) + %d transaction(s)%s (watermark → %d)\n",
 				s.ID, res.SnapshotsLoaded, res.TransactionsLoaded, realizedLotsNote(res), res.ChangeNumberAfter)
 		}
-		firstErr = errors.Join(firstErr, stampConfig(ctx, db, cfg, exposure, "reload", stdout, stderr))
+		firstErr = errors.Join(firstErr, stampConfig(ctx, db, cfg, in, "reload", stdout, stderr))
 		// Carry the paid-for stores over from the outgoing file. A hard
 		// error: those verdicts were bought from a model and have no
 		// config backup to re-stamp them from. Both spending families
@@ -190,7 +189,7 @@ func reloadFreshAndSwap(
 		// empty and carry nothing forward. Before the CHECKPOINT, so the
 		// swapped-in file is enriched and its lots rebuilt rather than
 		// needing a follow-up load to become correct.
-		firstErr = errors.Join(firstErr, runGoldPasses(ctx, db, cfg, enrichment, "reload", stdout, stderr))
+		firstErr = errors.Join(firstErr, runGoldPasses(ctx, db, cfg, in.enrichment, "reload", stdout, stderr))
 		// Checkpoint then close so the temp file is complete and clean
 		// (no leftover WAL) before it is verified and swapped.
 		if _, err := db.ExecContext(ctx, "CHECKPOINT"); err != nil {
@@ -498,8 +497,7 @@ func reloadInPlace(
 	cfg *config.Config,
 	targets []config.SilverSource,
 	ledger map[string][]loader.TransferEntry,
-	enrichment enrichmentLedgers,
-	exposure canonical.ExposureRows,
+	in loadInputs,
 	stdout, stderr io.Writer,
 ) error {
 	db, err := retryGoldLock(ctx, func() (*sql.DB, error) { return gold.Open(cfg.GoldDB, gold.ModeReadWrite) })
@@ -547,6 +545,6 @@ func reloadInPlace(
 				s.ID, res.SnapshotsLoaded, res.TransactionsLoaded, realizedLotsNote(res), res.ChangeNumberAfter)
 		}
 	}
-	firstErr = errors.Join(firstErr, stampConfig(ctx, db, cfg, exposure, "reload", stdout, stderr))
-	return errors.Join(firstErr, runGoldPasses(ctx, db, cfg, enrichment, "reload", stdout, stderr))
+	firstErr = errors.Join(firstErr, stampConfig(ctx, db, cfg, in, "reload", stdout, stderr))
+	return errors.Join(firstErr, runGoldPasses(ctx, db, cfg, in.enrichment, "reload", stdout, stderr))
 }

@@ -15,7 +15,7 @@ import (
 // midnight, which can be earlier than the dump's wall-clock run
 // time. LatestChangeNumber = MAX(dump_runs.snapshot_at) so an
 // idle reload stays a no-op.
-func (c *psnReader) Status(ctx context.Context) (canonical.Status, error) {
+func (r *psnReader) Status(ctx context.Context) (canonical.Status, error) {
 	const q = `
 SELECT
     COALESCE((SELECT MIN(t) FROM (
@@ -44,7 +44,7 @@ SELECT
     COALESCE((SELECT MAX(timestamp)   FROM events),    -1),
     COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), -1)
 `
-	s, err := silver.ContentStatus(ctx, c.db, "ubs", q)
+	s, err := silver.ContentStatus(ctx, r.db, "ubs", q)
 	if err != nil {
 		return s, err
 	}
@@ -77,7 +77,7 @@ const psnBusinessDayLookback = int64(7 * 24 * 3600)
 // NewChangeNumber stays a live-time concept
 // (MAX(dump_runs.snapshot_at)) so subsequent loads with no new
 // dump don't re-trigger.
-func (c *psnReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
+func (r *psnReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
 	w := canonical.Window{NewChangeNumber: since}
 
 	const q = `
@@ -132,7 +132,7 @@ SELECT
 	}
 	var start, end, newCN sql.NullInt64
 	var contentLo, contentHi sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, q, args...).
+	if err := r.db.QueryRowContext(ctx, q, args...).
 		Scan(&start, &end, &newCN, &contentLo, &contentHi); err != nil {
 		return w, fmt.Errorf("ubs ChangeWindow: %w", err)
 	}

@@ -23,10 +23,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
-	byTime := make(map[int64]*canonical.SnapshotBatch, len(times))
-	for _, t := range times {
-		byTime[t] = &canonical.SnapshotBatch{}
-	}
+	byTime := silver.NewBatches(times)
 
 	if err := c.appendPortfolios(ctx, w, byTime); err != nil {
 		return nil, err
@@ -65,14 +62,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		}
 	}
 
-	// times is the sorted union of live + historical times, so batches
-	// stream in chronological order (important for gold's earlier-wins
-	// FirstSeenAt accounting on instruments + accounts).
-	out := make([]canonical.SnapshotBatch, 0, len(times))
-	for _, t := range times {
-		out = append(out, *byTime[t])
-	}
-	return silver.NewSnapshotStream(out), nil
+	return byTime.Stream(), nil
 }
 
 // snapshotTimesInWindow returns the union of distinct snapshot_at
@@ -82,15 +72,8 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 // same-timestamp positions/accounts/portfolios rows), but the union
 // is defensive against partial dumps.
 func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window, extra []int64) ([]int64, error) {
-	return silver.SnapshotTimes(ctx, c.db, w, extra, `
-SELECT DISTINCT snapshot_at FROM (
-    SELECT snapshot_at FROM dump_runs  WHERE snapshot_at BETWEEN ? AND ?
-    UNION ALL SELECT snapshot_at FROM positions  WHERE snapshot_at BETWEEN ? AND ?
-    UNION ALL SELECT snapshot_at FROM accounts   WHERE snapshot_at BETWEEN ? AND ?
-    UNION ALL SELECT snapshot_at FROM portfolios WHERE snapshot_at BETWEEN ? AND ?
-)
-ORDER BY snapshot_at`,
-		w.Start, w.End, w.Start, w.End, w.Start, w.End, w.Start, w.End)
+	return silver.SnapshotTimesOf(ctx, c.db, w, extra,
+		"dump_runs", "positions", "accounts", "portfolios")
 }
 
 func (c *Connection) appendPortfolios(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
@@ -131,9 +114,8 @@ SELECT snapshot_at, portfolio_external_id, kind, payload
 
 // portfolioDisplay is a portfolio's DisplayName: its label with the
 // silver `kind` ('529' / 'trust_managed' / 'daf') promoted beside it,
-// so the `wealthdb portfolios` output shows something more meaningful
-// than the bare label. The label stays the PortfolioExternalID for
-// joins.
+// so `wealthdb holdings portfolios` shows something more meaningful than
+// the bare label. The label stays the PortfolioExternalID for joins.
 func portfolioDisplay(id, kind string) string {
 	if kind != "" && kind != "other" {
 		return fmt.Sprintf("%s (%s)", id, kind)
@@ -312,8 +294,8 @@ func addCurrentCash(batch *canonical.SnapshotBatch, snap int64, acct, currency s
 //     BalanceKindCurrent. Fidelity surfaces money-market core
 //     positions (FDRXX / SPAXX / ...) as ordinary positions
 //     rows; the gold convention is to route them into
-//     cash_balances so `wealthdb positions --with-cash` and the
-//     cash_balance aggregate column populate uniformly across
+//     cash_balances so `wealthdb holdings positions --with-cash` and
+//     the cash_balance aggregate column populate uniformly across
 //     sources.
 //   - everything else → InstrumentChange (registers identity with
 //     the CUSIP of instrumentCUSIPs, name and asset class) plus

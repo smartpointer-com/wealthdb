@@ -286,21 +286,18 @@ func valuesUnderPrimary(primary string) map[string]bool {
 // builtinRules are evaluated in order, first match wins, so the order
 // is part of the contract. Card payments lead because their narratives
 // are the most specific; a row matching two rules is a row whose
-// narrative already named the more specific thing.
+// narrative already named the more specific thing. Each rule's reason
+// for its verdict is the "why" column of docs/SPENDING.md §3, "The rule
+// tier".
 //
-// Two rules assign one detailed value, deliberately: a security-level
-// pass-through and an account's management fee are both what holding
-// the assets costs, and the extension exists to keep them together.
-// Provenance in gold is the tier, not the rule, so nothing but the
-// tests asks which of the two fired.
+// Two rules assign one detailed value (investment_fee and
+// management_fee). Provenance in gold is the tier, not the rule, so
+// nothing but the tests asks which of the two fired.
 var builtinRules = []spendRule{
 	{
-		// A card bill leaving a cash account that the matcher did not pair
-		// with the card's own leg — a card no collector exists for, or a
-		// bill older than the card's ledger — is the only trace of that
-		// spending, so it is kept in the base as `card_spend`
-		// (docs/SPENDING.md §2). Collecting the card flips the verdict on
-		// the next pass, since the matcher outranks this rule.
+		// card_payment: an unpaired card bill stays in the base as
+		// `card_spend`. The matcher outranks this rule, so a bill whose
+		// card is in gold never reaches it.
 		//
 		// Three pattern sets: the generic phrases for paying a card, the
 		// issuer descriptors of cardIssuers — a match on one also labels
@@ -313,12 +310,8 @@ var builtinRules = []spendRule{
 		// this rule reads as a bill, and it is cash out, never card spend.
 		//
 		// A row the provider filed under another value is left to the
-		// tiers below. AUTOPAY, EPAY and "AUTOMATIC PAYMENT" say how a bill
-		// was paid. They do not say to whom: a lender or a utility is paid
-		// that way as often as a card. A provider that filed the row under
-		// a loan or a merchant category has said to whom. Where it filed
-		// only a catch-all, the row goes on to the model, which reads the
-		// merchant name.
+		// tiers below: AUTOPAY, EPAY and "AUTOMATIC PAYMENT" say how a
+		// bill was paid, not to whom.
 		refusedBy: &cashWithdrawalRule,
 		yieldsTo:  filedOtherThan(canonical.SpendDetailedCardSpend),
 		detailed:  canonical.SpendDetailedCardSpend,
@@ -343,90 +336,46 @@ var builtinRules = []spendRule{
 	},
 	cashWithdrawalRule,
 	{
-		// A mortgage payment is an own-account move by the product's own
-		// definition: the mortgage is a tracked account
-		// (AccountKindMortgage), so the payment moves value between two
-		// accounts already on the balance sheet rather than out of them.
-		// Counting it as spend would double-count against the liability
-		// the payment reduces.
-		//
-		// It is a NARRATIVE rule, not an account one: it fires on the
-		// words a mortgage payment is described with, whether or not
-		// the lender is tracked. Where the lender is not, no pair
-		// exists and nothing else on the row says where the money
-		// went, so the rule records the class it stands for. The
-		// cashflow statement reads that as debt service — the same
-		// place a payment the matcher DID pair with a mortgage account
-		// lands — rather than as a crossing to an account nobody
-		// collects.
-		//
-		// Part of that payment — the interest — really IS consumed,
-		// and only the principal share is the own-account move. The
-		// transaction does not carry the split and no narrative yields
-		// it, so the cash flow statement derives it from the mortgage
-		// balance's observed change between snapshots — the allocation
-		// inside `cashflow_lines_base`. The rule stays whole: it
-		// places the payment and names the class, and the statement
-		// splits the amount. A rule cannot do the splitting — it sees
-		// one row's text and never the lender's balance.
+		// mortgage: a NARRATIVE rule, so it fires whether or not the
+		// lender is tracked. It records the class it stands for
+		// (farClass), which the cash flow statement reads as debt
+		// service, and places the payment whole: the statement derives
+		// the interest/principal split from the mortgage balance
+		// (cashflow_lines_base).
 		detailed: canonical.SpendDetailedInternalTransfer,
 		farClass: string(canonical.ClassMortgage),
 		tokens:   []string{"MORTGAGE", "HYPOTHEK", "HYPOTHEKARZINS"},
 		phrases:  []string{"HOME LOAN", "MORTGAGE PAYMENT"},
 	},
 	{
-		// A custodian's SECURITY-level pass-through: the depositary
-		// fee an ADR charges against the position that holds it,
-		// booked once per security per period. The narrative names
-		// the security, never a payee, and each charge is small enough
-		// that only the count of them adds up to anything — none of it
-		// bought the household a thing it chose.
-		//
-		// It is spend all the same: the money is gone, and the
-		// alternative — leaving it out of the base — hides a real
-		// outflow rather than explaining it. It is a cost of
-		// INVESTING rather than of banking, which is what the
-		// extension exists to say, so a report can set the whole
-		// class aside in one line.
-		//
-		// "FEE CHARGED" also ends a bank's own fee narratives, such as
-		// an overdraft fee, so like every fee rule it yields to a
-		// provider that named the fee.
+		// investment_fee: a custodian's security-level pass-through,
+		// such as an ADR depositary fee. "FEE CHARGED" also ends a
+		// bank's own fee narratives, such as an overdraft fee, so like
+		// every fee rule it yields to a provider that named the fee.
 		detailed: canonical.SpendDetailedInvestmentFees,
 		phrases:  []string{"FEE CHARGED", "ADR FEE", "DEPOSITARY FEE"},
 		yieldsTo: filedAsSpecificFee,
 	},
 	{
-		// A broker's charge for SENDING a wire. It sits on the same
-		// statements as the pass-throughs above and is deliberately
-		// NOT one: paying to move money is a banking service, and
-		// filing it as an investment fee would overstate what holding
-		// the assets costs. Not to be confused with the wire itself,
-		// which no rule places.
+		// wire_fee: a broker's charge for SENDING a wire, a banking
+		// fee rather than an investment one. The wire itself is no
+		// rule's to place.
 		detailed: "BANK_FEES_OTHER_BANK_FEES",
 		phrases: []string{"WIRED FUNDS FEE", "WIRE FEE",
 			"WIRE TRANSFER FEE"},
 		yieldsTo: filedAsSpecificFee,
 	},
 	{
-		// Tax withheld at source on foreign dividend income. The
-		// household never sees the money, but it is tax it paid, and
-		// the gross dividend is booked as income — so leaving the
-		// withholding out would report the gross as though it were
-		// net.
+		// withholding: tax withheld at source on foreign dividend
+		// income.
 		detailed: canonical.SpendDetailedWithholdingTax,
 		phrases: []string{"FOREIGN TAX PAID", "TAX WITHHELD",
 			"WITHHOLDING TAX", "NRA TAX"},
 	},
 	{
-		// The fee an account pays for being managed. It is levied on
-		// the ACCOUNT, where the pass-through above is levied on the
-		// security — but both are the cost of holding the
-		// assets, and keeping them together is the point of the
-		// extension: an accountant's bill is professional services, a
-		// manager's bill is what the portfolio costs to run. Fidelity
-		// prints both "Advisor Fee" and "Investment Mgr Fee" under
-		// one action verb.
+		// management_fee: the fee an account pays for being managed.
+		// Fidelity prints both "Advisor Fee" and "Investment Mgr Fee"
+		// under one action verb.
 		detailed: canonical.SpendDetailedInvestmentFees,
 		// "MANAGEMENT FEE" subsumes any longer phrase ending in it, so
 		// none is listed beside it.
@@ -514,17 +463,17 @@ func rulePlacement(rules []spendRule, signature, counterparty, description, prov
 // built-ins are the engine's guesses from prose, and a guess that
 // contradicts a kind the data states is the wrong kind of guess.
 //
-// It never labels: the label column is the card rule's alone and the
-// income overlay has none.
-func IncomeRuleCategory(kind, signature, counterparty, description, providerCategory string) (detailed, label string, ok bool) {
+// It returns no label: the label column is the card rule's alone and
+// the income overlay has none.
+func IncomeRuleCategory(kind, signature, counterparty, description, providerCategory string) (detailed string, ok bool) {
 	if kind != string(canonical.TxKindDeposit) {
-		return "", "", false
+		return "", false
 	}
 	r, _, ok := matchRuleIn(builtinIncomeRules, signature, counterparty, description, providerCategory, "")
 	if !ok {
-		return "", "", false
+		return "", false
 	}
-	return r.detailed, "", true
+	return r.detailed, true
 }
 
 // matchRuleIn matches one narrative against a named rule table and

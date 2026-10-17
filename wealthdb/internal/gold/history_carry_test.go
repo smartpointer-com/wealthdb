@@ -166,7 +166,7 @@ func wantAccounts(t *testing.T, got map[string]histValues, off int64, want map[s
 			t.Errorf("day %+d: account %s missing, want %v", off, acct, w)
 			continue
 		}
-		if !nearly(g.pos, w.pos) || !nearly(g.cash, w.cash) || !nearly(g.total, w.total) {
+		if !near(g.pos, w.pos) || !near(g.cash, w.cash) || !near(g.total, w.total) {
 			t.Errorf("day %+d: account %s = %v, want %v", off, acct, g, w)
 		}
 	}
@@ -210,7 +210,7 @@ func TestHistoryCarriesAccountsAcrossPartialRuns(t *testing.T) {
 			t.Errorf("day %+d: no source total", c.off)
 			continue
 		}
-		if !nearly(got, c.want) {
+		if !near(got, c.want) {
 			t.Errorf("day %+d: source total = %v, want %v (every account's last balance)",
 				c.off, got, c.want)
 		}
@@ -244,7 +244,7 @@ func TestHistoryZeroObservationWins(t *testing.T) {
 			"DEP-0001": {cash: 100, total: 100},
 		})
 	}
-	if got, ok := histSourceTotalOn(t, db, ctx, src, 0); !ok || !nearly(got, 100) {
+	if got, ok := histSourceTotalOn(t, db, ctx, src, 0); !ok || !near(got, 100) {
 		t.Errorf("today's source total = %v (ok=%v), want 100 — the zero must not "+
 			"carry the drained account's old 500", got, ok)
 	}
@@ -274,7 +274,7 @@ func TestHistoryZeroLineNeedsNoFxRate(t *testing.T) {
          WHERE as_of_day = ?`, dayAt(0)).Scan(&global); err != nil {
 		t.Fatalf("report_global_history_multi: %v", err)
 	}
-	if !global.Valid || !nearly(global.Float64, 1000) {
+	if !global.Valid || !near(global.Float64, 1000) {
 		t.Errorf("global total = %v (valid=%v), want 1000 — an unconvertible zero "+
 			"must contribute 0, not blank the account", global.Float64, global.Valid)
 	}
@@ -305,11 +305,11 @@ func TestHistoryFullDumpSupersedesADroppedAccount(t *testing.T) {
 			"B-0000": {cash: 100, total: 100},
 		})
 	}
-	if got, ok := histSourceTotalOn(t, db, ctx, src, 0); !ok || !nearly(got, 100) {
+	if got, ok := histSourceTotalOn(t, db, ctx, src, 0); !ok || !near(got, 100) {
 		t.Errorf("today's source total = %v (ok=%v), want 100 — a re-dump without "+
 			"A-0000 ends it", got, ok)
 	}
-	if got := latestTotals(t, db, ctx, src); !nearly(got["A-0000"], 0) || !nearly(got["B-0000"], 100) {
+	if got := latestTotals(t, db, ctx, src); !near(got["A-0000"], 0) || !near(got["B-0000"], 100) {
 		t.Errorf("report_accounts today = %v, want A-0000 at 0 and B-0000 at 100 — "+
 			"history and the point-in-time report must agree that A-0000 is gone", got)
 	}
@@ -399,7 +399,7 @@ func TestHistoryFullDumpSupersedesSeveralDroppedKeys(t *testing.T) {
 			want += v
 		}
 		got, ok := histSourceTotalOn(t, db, ctx, src, 0)
-		if !ok || !nearly(got, want) || !nearly(want, 100) {
+		if !ok || !near(got, want) || !near(want, 100) {
 			t.Errorf("%s: history total today = %v (ok=%v), report_accounts total = %v, "+
 				"want both at 100 — every key of the closing run must end on the next dump",
 				src, got, ok, want)
@@ -486,7 +486,7 @@ func TestHistorySlowCadenceAccountKeepsEveryDay(t *testing.T) {
 		want float64
 	}{{-800, 5000}, {-421, 5000}, {-420, 6000}, {-41, 6000}, {-40, 7000}, {0, 7000}} {
 		got := histAccountsOn(t, db, ctx, src, c.off)
-		if v, ok := got["M-0000"]; !ok || !nearly(v.pos, c.want) {
+		if v, ok := got["M-0000"]; !ok || !near(v.pos, c.want) {
 			t.Errorf("day %+d: M-0000 = %v (present=%v), want positions %v",
 				c.off, v, ok, c.want)
 		}
@@ -708,10 +708,10 @@ func TestHistoryZeroBalanceEmitsItsOwnRow(t *testing.T) {
 			"Z-0001": {cash: 100, total: 100},
 		})
 	}
-	if got, ok := histSourceTotalOn(t, db, ctx, src, 0); !ok || !nearly(got, 100) {
+	if got, ok := histSourceTotalOn(t, db, ctx, src, 0); !ok || !near(got, 100) {
 		t.Errorf("today's source total = %v (ok=%v), want 100", got, ok)
 	}
-	if got := latestTotals(t, db, ctx, src); !nearly(got["Z-0000"], 0) || !nearly(got["Z-0001"], 100) {
+	if got := latestTotals(t, db, ctx, src); !near(got["Z-0000"], 0) || !near(got["Z-0001"], 100) {
 		t.Errorf("report_accounts today = %v, want Z-0000 at 0 and Z-0001 at 100 — "+
 			"the explicit zero row is what makes the two agree", got)
 	}

@@ -66,7 +66,7 @@ func runSpendingView(ctx context.Context, g globalFlags, view string, args []str
 	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), time.Now())
 	if err != nil {
 		fs.Usage()
-		return errs.Newf(2, "spending: %s", err.Error())
+		return errs.Newf(errs.ExitUsage, "spending: %s", err.Error())
 	}
 
 	fmtChoice, cfg, outCcy, err := rf.resolve(g, "spending")
@@ -99,44 +99,6 @@ func spendingReport(req request) *report {
 			func(ctx context.Context, db *sql.DB) ([]gold.SpendTransactionRow, error) {
 				return gold.SpendingTransactions(ctx, db, req.from, req.to, req.currency)
 			})
-	}
-}
-
-// parseTrailingYearWindow defaults a bare invocation to the trailing
-// twelve months — the same day one year ago through today — otherwise
-// reuses the transactions-style positional range. It does NOT default
-// to since-inception the way the returns window does: these reports
-// answer "what is happening lately", and a window reaching back past
-// the day a source's ledger begins covers a different population, so a
-// total over it would read as a different product.
-func parseTrailingYearWindow(args []string, now time.Time) (int64, int64, error) {
-	if len(args) == 0 {
-		nowUTC := now.UTC()
-		from := anchorToDay(nowUTC.AddDate(-1, 0, 0), false).Unix()
-		return from, anchorToDay(nowUTC, true).Unix(), nil
-	}
-	return parseDateRange(args, now)
-}
-
-// periodLabel renders a bucket the way the returns family's
-// `period` column does: the calendar label of the bucket the epoch
-// second opens, and "total" for the single NULL bucket --period total
-// emits. Daily and weekly buckets label as their opening date (DuckDB
-// truncates a week to its Monday).
-func periodLabel(periodStart *int64, period string) string {
-	if periodStart == nil {
-		return "total"
-	}
-	t := time.Unix(*periodStart, 0).UTC()
-	switch period {
-	case "daily", "weekly":
-		return t.Format("2006-01-02")
-	case "monthly":
-		return t.Format("2006-01")
-	case "annual":
-		return t.Format("2006")
-	default: // quarterly
-		return fmt.Sprintf("%d-Q%d", t.Year(), (int(t.Month())-1)/3+1)
 	}
 }
 
@@ -192,10 +154,7 @@ func buildSpendCategoryColumnRegistry(outCcy, period string) []columnSpec[gold.S
 		outCcyCol("spend", outCcy, func(r gold.SpendCategoryRow) *string { return r.Spend }),
 		outCcyCol("refunds", outCcy, func(r gold.SpendCategoryRow) *string { return r.Refunds }),
 		outCcyCol("net_spend", outCcy, func(r gold.SpendCategoryRow) *string { return r.NetSpend }),
-		// A share is a ratio, not an amount — it stays visible under
-		// -p exactly as the returns percentages do.
-		{Name: "share", Header: "share_pct", Align: output.AlignRight,
-			Extract: func(r gold.SpendCategoryRow) string { return formatPct(r.Share) }},
+		ratioCol("share", func(r gold.SpendCategoryRow) *float64 { return r.Share }),
 	}
 }
 

@@ -12,31 +12,10 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
-// The deterministic enrichment pass.
-//
-// It runs after every load, over the whole history, and re-asserts
-// every verdict it is capable of reaching. That is a deliberate choice
-// over an incremental pass, for three reasons a cheaper design would
-// have to give up:
-//
-//   - LATE ARRIVALS. A provider's category can appear on a row days
-//     after the row itself; a counter-leg loaded from a different
-//     source turns a withdrawal that looked like spending last night
-//     into an own-account move today. Only re-deriving both sides
-//     catches either.
-//   - IDEMPOTENCE. A full re-assert has no accumulated state to be
-//     wrong about, so a re-run after a crash, a partial load, or a
-//     reset produces exactly what an unbroken run would have.
-//   - EVOLUTION. When a rule or the normalisation changes, the whole
-//     history moves to the new answer at once instead of leaving a
-//     stratum of rows enriched by whichever build happened to see them
-//     first.
-//
-// FALLBACK IF IT EVER MEASURES BADLY: narrow the recompute to the
-// sources touched by the load plus every source holding a potential
-// counter-leg within the matcher's day window, and keep the full pass
-// as an explicit flag. At personal scale the full pass costs a fraction
-// of the load it follows, so the complexity is not yet earned.
+// The deterministic enrichment pass. It runs after every load, over the
+// whole history, and re-derives every verdict it can reach.
+// docs/SPENDING.md §3, "The full re-assert", says why it is not
+// incremental.
 
 // ProvenanceSignatureOnly tags a row the pass could reach but not
 // categorise. It is not a failure: it is how the model tier finds its

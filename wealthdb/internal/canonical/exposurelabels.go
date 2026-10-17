@@ -38,7 +38,8 @@ type Label struct {
 
 // normalizeLabel is the form a label is matched in: lower-cased, trimmed,
 // inner whitespace collapsed to one space, as the exposure_norm macro
-// does.
+// does. The macro collapses ASCII whitespace alone, the only whitespace
+// the map's labels hold.
 func normalizeLabel(s string) string {
 	return strings.Join(strings.Fields(strings.ToLower(s)), " ")
 }
@@ -162,15 +163,20 @@ var countryAliases = map[string][]string{
 // label: the generic sectors, asset types and countries (each country's
 // code, its name and its other spellings), EDGAR's country codes and
 // OpenFIGI's bond types.
+//
+// A label listed twice with one value is kept once. A label listed with
+// two values is kept twice, so the conflict breaks exposure_labels' key
+// (and its test) rather than resolving to whichever value map order
+// reaches first.
 func ExposureLabels() []Label {
 	var out []Label
-	sectors := map[string]bool{}
+	sectors := map[string]string{}
 	for s, labels := range genericSectors {
 		for _, l := range labels {
 			// Issuers write "and" and "&" alike.
 			for _, v := range []string{l, strings.ReplaceAll(l, " and ", " & "), strings.ReplaceAll(l, " & ", " and ")} {
-				if !sectors[v] {
-					sectors[v] = true
+				if prev, ok := sectors[v]; !ok || prev != string(s) {
+					sectors[v] = string(s)
 					out = append(out, Label{Field: LabelSector, Label: v, Value: string(s)})
 				}
 			}
@@ -181,13 +187,13 @@ func ExposureLabels() []Label {
 			out = append(out, Label{Field: LabelAssetType, Label: l, Value: string(a)})
 		}
 	}
-	seen := map[string]bool{}
+	seen := map[string]string{}
 	add := func(label, code string) {
 		l := normalizeLabel(label)
-		if seen[l] {
+		if prev, ok := seen[l]; ok && prev == code {
 			return
 		}
-		seen[l] = true
+		seen[l] = code
 		out = append(out, Label{Field: LabelCountry, Label: l, Value: code})
 	}
 	for _, c := range Countries() {

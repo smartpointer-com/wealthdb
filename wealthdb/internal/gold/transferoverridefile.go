@@ -1,19 +1,22 @@
 package gold
 
 import (
-	"encoding/csv"
 	"fmt"
 	"io"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/ledgercsv"
 )
 
 // The transfer-override ledger on disk: a CSV in the same idiom as the pins
 // ledger, and readable by the same person for the same reason. Columns are
 // found by header name, so their order does not matter and an extra column —
 // `note`, the annotation that makes the file worth keeping — is ignored.
+// Unlike the pins, `account` is the gold account_external_id itself; a
+// nickname names nothing here.
 //
 // One line names one or two legs:
 //
@@ -52,49 +55,23 @@ func ParseTransferOverrideLedger(path string) ([]TransferOverrideRule, error) {
 }
 
 func parseTransferOverrideLedger(r io.Reader) ([]TransferOverrideRule, error) {
-	cr := csv.NewReader(r)
-	cr.TrimLeadingSpace = true
-	cr.FieldsPerRecord = -1
-
-	header, err := cr.Read()
-	if err == io.EOF {
+	lr, err := ledgercsv.Open(r, requiredOverrideCols)
+	if err != nil {
+		return nil, err
+	}
+	if lr == nil { // no header: an empty ledger
 		return nil, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("read header: %w", err)
-	}
-	col := map[string]int{}
-	for i, h := range header {
-		col[strings.ToLower(strings.TrimSpace(h))] = i
-	}
-	for _, c := range requiredOverrideCols {
-		if _, ok := col[c]; !ok {
-			return nil, fmt.Errorf("missing required column %q", c)
-		}
-	}
-	get := func(rec []string, name string) string {
-		i, ok := col[name]
-		if !ok || i >= len(rec) {
-			return ""
-		}
-		return strings.TrimSpace(rec[i])
-	}
-
 	var out []TransferOverrideRule
-	line := 1
 	for {
-		rec, err := cr.Read()
+		row, line, err := lr.Next()
 		if err == io.EOF {
 			break
 		}
-		line++
 		if err != nil {
-			return nil, fmt.Errorf("line %d: %w", line, err)
+			return nil, err
 		}
-		if blankRecord(rec) {
-			continue
-		}
-		rule, err := overrideFromRecord(rec, get)
+		rule, err := overrideFromRecord(row)
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", line, err)
 		}
@@ -103,20 +80,20 @@ func parseTransferOverrideLedger(r io.Reader) ([]TransferOverrideRule, error) {
 	return out, nil
 }
 
-func overrideFromRecord(rec []string, get func([]string, string) string) (TransferOverrideRule, error) {
-	verb := strings.ToLower(get(rec, "verb"))
+func overrideFromRecord(row ledgercsv.Row) (TransferOverrideRule, error) {
+	verb := strings.ToLower(row.Get("verb"))
 	if verb != "match" && verb != "unmatch" {
-		return TransferOverrideRule{}, fmt.Errorf("verb %q is neither match nor unmatch", get(rec, "verb"))
+		return TransferOverrideRule{}, fmt.Errorf("verb %q is neither match nor unmatch", row.Get("verb"))
 	}
-	a, err := selectorFrom(rec, get, "")
+	a, err := selectorFrom(row, "")
 	if err != nil {
 		return TransferOverrideRule{}, fmt.Errorf("first leg: %w", err)
 	}
-	rule := TransferOverrideRule{Verb: verb, A: a, Note: get(rec, "note")}
+	rule := TransferOverrideRule{Verb: verb, A: a, Note: row.Get("note")}
 
 	anyB := false
 	for _, c := range bLegCols {
-		if get(rec, c) != "" {
+		if row.Get(c) != "" {
 			anyB = true
 			break
 		}
@@ -127,7 +104,7 @@ func overrideFromRecord(rec []string, get func([]string, string) string) (Transf
 		}
 		return rule, nil
 	}
-	b, err := selectorFrom(rec, get, "_b")
+	b, err := selectorFrom(row, "_b")
 	if err != nil {
 		return TransferOverrideRule{}, fmt.Errorf("second leg: %w", err)
 	}
@@ -135,35 +112,26 @@ func overrideFromRecord(rec []string, get func([]string, string) string) (Transf
 	return rule, nil
 }
 
-func selectorFrom(rec []string, get func([]string, string) string, suffix string) (TransferOverrideSelector, error) {
+func selectorFrom(row ledgercsv.Row, suffix string) (TransferOverrideSelector, error) {
 	s := TransferOverrideSelector{
-		Source:   get(rec, "silver_source_id"+suffix),
-		Account:  get(rec, "account"+suffix),
-		Currency: strings.ToUpper(get(rec, "currency"+suffix)),
+		Source:   row.Get("silver_source_id" + suffix),
+		Account:  row.Get("account" + suffix),
+		Currency: strings.ToUpper(row.Get("currency" + suffix)),
 	}
 	if s.Source == "" || s.Account == "" || s.Currency == "" {
 		return s, fmt.Errorf("silver_source_id, account and currency are all required")
 	}
-	day := get(rec, "occurred_at"+suffix)
+	day := row.Get("occurred_at" + suffix)
 	t, err := time.Parse("2006-01-02", day)
 	if err != nil {
 		return s, fmt.Errorf("occurred_at %q is not YYYY-MM-DD", day)
 	}
 	s.Day = t.UTC().Unix()
-	amt := get(rec, "amount"+suffix)
+	amt := row.Get("amount" + suffix)
 	v, err := strconv.ParseFloat(strings.ReplaceAll(amt, "'", ""), 64)
 	if err != nil {
 		return s, fmt.Errorf("amount %q is not a number", amt)
 	}
 	s.Amount = v
 	return s, nil
-}
-
-func blankRecord(rec []string) bool {
-	for _, f := range rec {
-		if strings.TrimSpace(f) != "" {
-			return false
-		}
-	}
-	return true
 }

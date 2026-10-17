@@ -188,6 +188,23 @@ SELECT DISTINCT k FROM (
 	return err
 }
 
+// holdingAliasJoins joins a holding to the aliases that rename it, as
+// exposure_holdings (0126) and the gains reports read a holding's key:
+// holding_aliases for its account (ha), then for every account (hd),
+// then instrument_aliases() (ia). src, acct, iid and posKey name the
+// holding's columns; its aliased key is COALESCE(ha.to_key, hd.to_key,
+// ia.k). A migration that changes exposure_holdings' keying changes
+// this too.
+func holdingAliasJoins(src, acct, iid, posKey string) string {
+	from := `holding_key(` + iid + `, ` + posKey + `)`
+	return `
+      LEFT JOIN holding_aliases ha ON ha.silver_source_id = ` + src + ` AND ha.account_external_id = ` + acct + `
+           AND ha.from_key = ` + from + `
+      LEFT JOIN holding_aliases hd ON hd.silver_source_id = ` + src + ` AND hd.account_external_id = ''
+           AND hd.from_key = ` + from + `
+      LEFT JOIN instrument_aliases() ia ON ia.src = ` + src + ` AND ia.alias = ` + iid
+}
+
 // usLineSQL holds where a fund line names a US listing: a US ISIN, a US
 // exchange, or, where the line states no exchange, a price in US dollars.
 // It reads the line's isin, exchange and currency columns unqualified.
@@ -205,8 +222,8 @@ const usLineSQL = `(upper(trim(isin)) LIKE 'US%'
 // their ISINs' keys. A fund line's ticker names a
 // US symbol only where the line names a US listing (usLineSQL). A
 // broker's symbol does so only where the instrument has a US ISIN or is
-// priced in US dollars. A local ticker elsewhere (ROP in Zurich) is a
-// different US symbol's (ROP in New York).
+// priced in US dollars. A local ticker elsewhere (QZR in Zurich) is a
+// different US symbol's (QZR in New York).
 //
 // A broker's symbol and CUSIP, stated together with no ISIN, fill each
 // other's gaps. The CUSIP reads as the ISIN a source states for it. Else,
@@ -327,7 +344,7 @@ allkeys AS (
     UNION SELECT exposure_key(security_key) FROM instrument_keys),
 cand AS (
     SELECT fx.k, 'sector' AS f, COALESCE(lp.value, lg.value) AS v, 'fact:' || fx.provider AS origin,
-           CASE WHEN fx.provider = 'eodhd' THEN 1 ELSE 3 END AS rnk, fx.as_of
+           3 AS rnk, fx.as_of
       FROM fx
       LEFT JOIN exposure_labels lp ON lp.provider = fx.provider AND lp.field = 'sector' AND lp.label = exposure_norm(fx.value)
       LEFT JOIN exposure_labels lg ON lg.provider = '' AND lg.field = 'sector' AND lg.label = exposure_norm(fx.value)
@@ -341,7 +358,7 @@ cand AS (
     SELECT k, 'sector', type_sector, 'type:' || provider, 5, as_of FROM idn WHERE type_sector IS NOT NULL
     UNION ALL
     SELECT fx.k, 'risk_country', cl.value, 'fact:' || fx.provider,
-           CASE WHEN fx.field = 'hq_country' THEN 4 WHEN fx.provider = 'eodhd' THEN 1 ELSE 3 END, fx.as_of
+           CASE WHEN fx.field = 'hq_country' THEN 4 ELSE 3 END, fx.as_of
       FROM fx JOIN exposure_labels cl ON cl.provider = fx.cmap AND cl.field = 'country' AND cl.label = exposure_norm(fx.value)
      WHERE fx.field IN ('risk_country', 'hq_country')
     UNION ALL
@@ -358,8 +375,7 @@ cand AS (
     SELECT k, 'domicile', substr(k, 6, 2), 'isin_prefix', 3, 0
       FROM allkeys WHERE k LIKE 'isin:%' AND substr(k, 6, 2) IN (SELECT code FROM exposure_countries)
     UNION ALL
-    SELECT fx.k, 'market_cap', CAST(TRY_CAST(fx.value AS DOUBLE) AS VARCHAR), 'fact:' || fx.provider,
-           CASE WHEN fx.provider = 'eodhd' THEN 1 ELSE 2 END, fx.as_of
+    SELECT fx.k, 'market_cap', CAST(TRY_CAST(fx.value AS DOUBLE) AS VARCHAR), 'fact:' || fx.provider, 2, fx.as_of
       FROM fx WHERE fx.field = 'market_cap'
     UNION ALL
     SELECT fx.k, 'shares_outstanding', CAST(TRY_CAST(fx.value AS DOUBLE) AS VARCHAR), 'fact:' || fx.provider, 1, fx.as_of

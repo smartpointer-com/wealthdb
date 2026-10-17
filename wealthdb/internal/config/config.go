@@ -33,7 +33,7 @@ type Config struct {
 	// between custodians, whose value would otherwise read as in-account
 	// performance. The loader turns each row into a canonical
 	// transfer_in/transfer_out transaction at load time. Absent ⇒ no
-	// ledger. See docs/DESIGN.md §13.10 and internal/loader/transfers.go.
+	// ledger. See docs/DESIGN.md §13.9 and internal/loader/transfers.go.
 	EquityTransfers string `json:"equity_transfers,omitempty"`
 	// AccountOverrides replace the per-account
 	// `nickname` and `account_category` columns adapters would
@@ -43,7 +43,7 @@ type Config struct {
 	// value may be empty/omitted; an empty value is treated as "no
 	// override for that column". The loader applies overrides AFTER
 	// the adapter has stamped its own values, so config wins on
-	// overlap. See docs/DESIGN.md §13.9.
+	// overlap. See docs/DESIGN.md §13.8.
 	AccountOverrides map[string]map[string]AccountOverride `json:"account_overrides,omitempty"`
 	// DeclaredAccounts are the holder's own accounts at institutions the
 	// product does not collect, keyed by an id the holder chooses. A
@@ -83,7 +83,7 @@ type Config struct {
 	// `instruments` table). The loader applies these AFTER the
 	// adapter has classified, to both the instrument dimension and
 	// every position row referencing it, so config wins on
-	// overlap. See docs/DESIGN.md §13.9.
+	// overlap. See docs/DESIGN.md §13.8.
 	InstrumentOverrides map[string]map[string]InstrumentOverride `json:"instrument_overrides,omitempty"`
 	// TransactionInstruments links a row (a securities trade, or an
 	// income or withholding row of a security) whose own feed states its
@@ -108,7 +108,7 @@ type Config struct {
 	//
 	// It states the IDENTITY only. What the instrument IS remains
 	// `instrument_overrides`' question, and the two compose: pin the
-	// link here, pin its classification there. See docs/DESIGN.md §13.9.
+	// link here, pin its classification there. See docs/DESIGN.md §13.8.
 	TransactionInstruments map[string]map[string]string `json:"transaction_instruments,omitempty"`
 	// Supersession ends a silver source's account at a date, because
 	// something else carries it from there. An account can outlive its
@@ -135,7 +135,7 @@ type Config struct {
 	//
 	// An entry matching nothing is a silent no-op, as the other override
 	// families' are — a source that stops emitting the account on its own
-	// is a success, not an error. See docs/DESIGN.md §13.9.
+	// is a success, not an error. See docs/DESIGN.md §13.8.
 	Supersession *Supersession `json:"supersession,omitempty"`
 	// InceptionOverrides pins the returns-window START date per silver
 	// source, portfolio, or account, so an entity's track record can
@@ -325,7 +325,7 @@ type SymbolResolutionConfig struct {
 	// instrument tickers. Required for normal `resolve-symbols`
 	// runs; can be omitted when only --overrides-only is used.
 	Model *ModelConfig `json:"model,omitempty"`
-	// Overrides is the user-authored ticker-mapping override list.
+	// Overrides are the configured ticker-mapping overrides.
 	// Each entry replaces (or suppresses) a row in
 	// symbol_resolutions under model_name='manual-override'.
 	// Applied at the start of every `wealthdb resolve-symbols`
@@ -365,13 +365,8 @@ type ModelConfig struct {
 	API     string `json:"api"`
 	APIKey  string `json:"apiKey,omitempty"`
 	Name    string `json:"name"`
-	// ThinkingFormat is accepted and ignored: nothing reads it,
-	// and `<think>` stripping runs for every model regardless.
-	// It stays declared because Load decodes with
-	// DisallowUnknownFields, so dropping the field turns any
-	// config that still sets `thinkingFormat` into a hard parse
-	// failure on every subcommand — remove it only together with
-	// the key in the deployment's config file.
+	// ThinkingFormat is accepted and ignored so an older config
+	// still parses; `<think>` stripping runs for every model.
 	ThinkingFormat string `json:"thinkingFormat,omitempty"`
 }
 
@@ -768,7 +763,7 @@ type SpendingConfig struct {
 	// Pins is an optional path to the CSV ledger of per-transaction
 	// category pins — the top of the precedence lattice, for the row
 	// nothing else can classify. Expanded like EquityTransfers; a
-	// missing file is a no-op. See docs/DESIGN.md §13.11 and
+	// missing file is a no-op. See docs/DESIGN.md §13.10 and
 	// internal/spending/pins.go.
 	Pins string `json:"pins,omitempty"`
 	// TransferOverrides is an optional path to the CSV ledger of manual
@@ -1437,7 +1432,7 @@ type CashflowConfig struct {
 	// Wrappers moves a tax wrapper across the household boundary,
 	// keyed by wrapper and valued by where a crossing to it lands —
 	// one of canonical.WrapperDestinations. An unlisted wrapper keeps
-	// the engine default (canonical.DefaultWrapperSide); an unknown
+	// the engine default (canonical.WrapperBoundaries); an unknown
 	// wrapper or destination fails the load naming the entry.
 	//
 	// Per WRAPPER, not per account. An account a source mis-labelled
@@ -1470,7 +1465,7 @@ func (c *Config) CashflowAccountScope() (include, exclude map[string][]string) {
 
 // CashflowWrappers returns the per-wrapper boundary overrides, or nil
 // when none are set. Only call after Validate has vetted them (Load
-// does): the pass composes them over canonical.DefaultWrapperSide and
+// does): the pass composes them over canonical.WrapperBoundaries and
 // stamps the result, so an unvetted destination would reach gold.
 func (c *Config) CashflowWrappers() map[string]string {
 	if c.Cashflow == nil {

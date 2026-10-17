@@ -145,10 +145,9 @@ func TestAccountsAsOfNoBaseCurrency(t *testing.T) {
 }
 
 // TestAccountsAsOfNoCrossAccountRollup confirms that
-// `wealthdb accounts` reports each account's OWN positions+cash
-// only. Migration 0004 moved portfolios into their own entity;
-// the portfolio rollup is now `wealthdb portfolios`. Summing the
-// accounts column must not double-count.
+// `wealthdb holdings accounts` reports each account's OWN positions
+// and cash only; the portfolio rollup is `holdings portfolios`.
+// Summing the accounts must not double-count.
 func TestAccountsAsOfNoCrossAccountRollup(t *testing.T) {
 	db, ctx := openMigrated(t)
 

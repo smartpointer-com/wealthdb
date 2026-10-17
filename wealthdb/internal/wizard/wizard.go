@@ -2,15 +2,12 @@ package wizard
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-
-	_ "modernc.org/sqlite"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -199,26 +196,22 @@ func probeSilverDB(path string) error {
 		}
 		return err
 	}
-	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=query_only(true)", path)
-	db, err := sql.Open("sqlite", dsn)
+	db, err := silver.OpenReadOnlySQLite(path, "silver")
 	if err != nil {
-		return fmt.Errorf("could not open as SQLite: %w", err)
-	}
-	defer db.Close()
-	if err := db.Ping(); err != nil {
 		return fmt.Errorf("could not read as SQLite: %w", err)
 	}
-	var n int
-	err = db.QueryRowContext(context.Background(),
-		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('dump_runs', 'load_runs')`,
-	).Scan(&n)
-	if err != nil {
-		return fmt.Errorf("could not inspect schema: %w", err)
+	defer db.Close()
+	ctx := context.Background()
+	for _, table := range []string{"dump_runs", "load_runs"} {
+		ok, err := silver.HasTables(ctx, db, table)
+		if err != nil {
+			return fmt.Errorf("could not inspect schema: %w", err)
+		}
+		if ok {
+			return nil
+		}
 	}
-	if n == 0 {
-		return fmt.Errorf("file has neither a `dump_runs` nor a `load_runs` table — is it really a silver SQLite from a wealthdb collector?")
-	}
-	return nil
+	return fmt.Errorf("file has neither a `dump_runs` nor a `load_runs` table — is it really a silver SQLite from a wealthdb collector?")
 }
 
 // expandLeadingHome expands a leading `~` or `$HOME` the way the

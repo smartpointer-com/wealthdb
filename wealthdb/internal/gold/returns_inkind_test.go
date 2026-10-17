@@ -10,7 +10,7 @@ import (
 
 // TestAnInKindExitPairsAcrossSources pins the equity-transfer ledger's
 // treatment of a private-market exit paid in shares (docs/DESIGN.md
-// §13.10): the vehicle's source books a transfer_out and the receiving
+// §13.9): the vehicle's source books a transfer_out and the receiving
 // brokerage a transfer_in, same day, same value. The vehicle realizes the
 // gain from its last mark to that value, the brokerage receives it as
 // capital, and global sees the pair as no flow at all.

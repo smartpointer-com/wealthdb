@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
@@ -158,17 +157,6 @@ unless a download dated the snapshot after marks it found unchanged.
 
 Default column set:
   ` + strings.Join(defaultColumns, ", ")
-}
-
-func formatDate(epoch int64) string {
-	return time.Unix(epoch, 0).UTC().Format("2006-01-02")
-}
-
-func strOrEmpty(p *string) string {
-	if p == nil {
-		return ""
-	}
-	return *p
 }
 
 // mergeSorted interleaves two already-(silver_source, account,

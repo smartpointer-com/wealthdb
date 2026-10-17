@@ -29,8 +29,9 @@ empty watermark.
 
 A single-source reset clears only that source's rows in BOTH
 enrichment overlays, spending and income; the two verdict stores
-and the two account scopes survive, being paid-for knowledge and
-configuration rather than source data.
+and the configuration stamped into gold (account scopes, exposure)
+survive, being paid-for knowledge and configuration rather than
+source data.
 
 The matcher writes its internal_transfer verdict onto BOTH legs of
 a cross-source pair, so the surviving leg on another source keeps a

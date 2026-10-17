@@ -9,7 +9,8 @@ import (
 // GlobalRow is the single-row, whole-portfolio rollup: it sums every
 // account's output-currency aggregates and records the span of their
 // snapshot dates. Computed (by the report_global macro) as Σ over
-// report_accounts, so it reconciles exactly with `wealthdb accounts`.
+// report_accounts, so it reconciles exactly with
+// `wealthdb holdings accounts`.
 type GlobalRow struct {
 	// MinSnapshotAt / MaxSnapshotAt bound the per-account snapshot
 	// dates; both 0 when no account has any data as of the requested

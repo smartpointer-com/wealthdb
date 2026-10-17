@@ -5,7 +5,7 @@ import (
 	"database/sql"
 )
 
-// PortfolioRow is one row of the `wealthdb portfolios` output. Each
+// PortfolioRow is one row of the `wealthdb holdings portfolios` output. Each
 // row aggregates the positions and cash of every account whose
 // portfolio_external_id matches the row's portfolio.
 //

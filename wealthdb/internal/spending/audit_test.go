@@ -2,6 +2,8 @@ package spending
 
 import (
 	"testing"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
 // TestMatchedPairsListsBothLegs is the audit surface's contract: the
@@ -166,5 +168,52 @@ func TestMatchedPairsFlagsPopulationLegs(t *testing.T) {
 
 	if len(unmatched) != 1 || unmatched[0].TxID != "T-LONE" || !unmatched[0].InPopulation {
 		t.Errorf("unmatched = %+v, want just T-LONE, flagged in the population", unmatched)
+	}
+}
+
+// TestLiftPairsListsAssertedPhasesFirst pins the listing order the pair cap
+// relies on: override, reference and stated-counter pairs lead, in that
+// order and whatever their day, and the named and amount pairs follow
+// together in day order. A named pair is banded on amount like an amount
+// pair, so it must not outrank an asserted one.
+func TestLiftPairsListsAssertedPhasesFirst(t *testing.T) {
+	type spec struct {
+		id  string
+		day int64
+		by  gold.TransferMatchPhase
+	}
+	// Shuffled on purpose: neither the input order nor the day order is
+	// the listing order.
+	specs := []spec{
+		{"AMOUNT-LATE", 9, gold.MatchedByAmount},
+		{"STATED", 1, gold.MatchedByStatedCounter},
+		{"NAMED-EARLY", 2, gold.MatchedByName},
+		{"OVERRIDE", 8, gold.MatchedByOverride},
+		{"AMOUNT-EARLY", 3, gold.MatchedByAmount},
+		{"REFERENCE", 5, gold.MatchedByReference},
+		{"NAMED-LATE", 7, gold.MatchedByName},
+	}
+	raw := make([]gold.TransferMatchPair, 0, len(specs))
+	byKey := map[txKey]Leg{}
+	for _, sp := range specs {
+		d := gold.TransferLeg{Group: "bank", Owner: "CASH1", ID: sp.id + "-D", Day: sp.day}
+		c := gold.TransferLeg{Group: "bank", Owner: "CASH2", ID: sp.id + "-C", Day: sp.day}
+		raw = append(raw, gold.TransferMatchPair{Debit: d, Credit: c, By: sp.by})
+		byKey[txKey{d.Group, d.ID}] = Leg{Source: d.Group, TxID: d.ID, Account: d.Owner, Day: d.Day}
+		byKey[txKey{c.Group, c.ID}] = Leg{Source: c.Group, TxID: c.ID, Account: c.Owner, Day: c.Day}
+	}
+
+	got := liftPairs(raw, byKey)
+	want := []string{
+		"OVERRIDE-D", "REFERENCE-D", "STATED-D",
+		"NAMED-EARLY-D", "AMOUNT-EARLY-D", "NAMED-LATE-D", "AMOUNT-LATE-D",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("pairs = %d, want %d", len(got), len(want))
+	}
+	for i, p := range got {
+		if p.Debit.TxID != want[i] {
+			t.Errorf("pair %d = %s (%s), want %s", i, p.Debit.TxID, p.By, want[i])
+		}
 	}
 }

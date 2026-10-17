@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -59,40 +58,21 @@ func (r *webReader) snapshotsHistorical(
 		return silver.NewSnapshotStream(nil), nil
 	}
 
-	byTime := make(map[int64]*canonical.SnapshotBatch)
-	getBatch := func(t int64) *canonical.SnapshotBatch {
-		if b, ok := byTime[t]; ok {
-			return b
-		}
-		b := &canonical.SnapshotBatch{}
-		byTime[t] = b
-		return b
-	}
-
-	if err := r.appendHistoricalSecurities(ctx, w, getBatch, safekeepingByPortfolio, portfolioCutoff); err != nil {
+	byTime := silver.Batches{}
+	if err := r.appendHistoricalSecurities(ctx, w, byTime.At, safekeepingByPortfolio, portfolioCutoff); err != nil {
 		return nil, err
 	}
-	if err := r.appendHistoricalCashBalances(ctx, w, getBatch, accountCutoff); err != nil {
+	if err := r.appendHistoricalCashBalances(ctx, w, byTime.At, accountCutoff); err != nil {
 		return nil, err
 	}
-	// Mortgages run LAST and peek at byTime directly (not getBatch)
+	// Mortgages run LAST and peek at byTime directly (not byTime.At)
 	// so they attach to existing portfolio snapshots without
 	// creating new ones — see the function comment.
 	if err := r.appendHistoricalMortgages(ctx, w, byTime); err != nil {
 		return nil, err
 	}
 
-	times := make([]int64, 0, len(byTime))
-	for t := range byTime {
-		times = append(times, t)
-	}
-	slices.Sort(times)
-
-	batches := make([]canonical.SnapshotBatch, 0, len(times))
-	for _, t := range times {
-		batches = append(batches, *byTime[t])
-	}
-	return silver.NewSnapshotStream(batches), nil
+	return byTime.Stream(), nil
 }
 
 // appendHistoricalSecurities emits security positions from
@@ -464,7 +444,7 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 // by the UBS-internal mortgage account number, AccountKind /
 // AssetClass = mortgage, MarketValue already negative from silver.
 //
-// It takes `byTime` directly (not getBatch) and PEEKS rather than
+// It takes `byTime` directly (not byTime.At) and PEEKS rather than
 // creates: a mortgage row is only emitted when a real portfolio
 // snapshot already exists at its as_of_date (a Statement-of-Assets
 // securities batch or an Account-Statement cash batch). Maturity
@@ -580,5 +560,5 @@ func (r *webReader) historicalRange(ctx context.Context) (int64, int64, error) {
 	if ok {
 		queries = append(queries, `SELECT MIN(as_of_date), MAX(as_of_date) FROM historical_mortgages`)
 	}
-	return r.span(ctx, "historicalRange", queries)
+	return silver.Extrema(ctx, r.db, "historicalRange", queries)
 }

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // A position the cost_basis series covers takes its book value from the
@@ -23,7 +24,7 @@ func TestACostBasisSeriesSetsTheBookValue(t *testing.T) {
 	conn := openAdapter(t, path)
 	w, _ := conn.ChangeWindow(context.Background(), -1)
 	book := map[int64]map[string]*canonical.Decimal{}
-	for _, b := range collectSnapshots(t, conn, w) {
+	for _, b := range silvertest.Snapshots(t, conn, w) {
 		for _, p := range b.Positions {
 			if book[p.SnapshotAt] == nil {
 				book[p.SnapshotAt] = map[string]*canonical.Decimal{}
@@ -68,7 +69,7 @@ func TestASilverWithoutTheCostBasisTableStillLoads(t *testing.T) {
 		t.Fatal(err)
 	}
 	var pf *canonical.Decimal
-	for _, b := range collectSnapshots(t, conn, w) {
+	for _, b := range silvertest.Snapshots(t, conn, w) {
 		for _, p := range b.Positions {
 			if p.PositionKey == "pf-1" && p.SnapshotAt == iso(t, "2023-01-01") {
 				pf = p.BookValue
@@ -89,7 +90,7 @@ func stampsOn(t *testing.T, path, date string) map[string]canonical.Basis {
 		t.Fatal(err)
 	}
 	got := map[string]canonical.Basis{}
-	for _, b := range collectSnapshots(t, conn, w) {
+	for _, b := range silvertest.Snapshots(t, conn, w) {
 		for _, p := range b.Positions {
 			if p.SnapshotAt == iso(t, date) {
 				got[p.PositionKey] = p.Basis

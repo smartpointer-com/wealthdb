@@ -63,7 +63,7 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 	fromEpoch, toEpoch, err := parseReturnsWindow(fs.Args(), time.Now())
 	if err != nil {
 		fs.Usage()
-		return errs.Newf(2, "returns: %s", err.Error())
+		return errs.Newf(errs.ExitUsage, "returns: %s", err.Error())
 	}
 
 	fmtChoice, cfg, outCcy, err := rf.resolve(g, "returns")

@@ -127,8 +127,8 @@ func seedExposureFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 		}
 	}
 	line := func(key, isin, ticker, name, assetType string, w float64, ccy, country, sector string) []any {
-		return []any{nullIfEmpty(key), nullIfEmpty(isin), nullIfEmpty(ticker), name, nullIfEmpty(assetType), w, ccy,
-			nullIfEmpty(country), nullIfEmpty(sector), nil, nil, nil}
+		return []any{nullableEnumValue(key), nullableEnumValue(isin), nullableEnumValue(ticker), name,
+			nullableEnumValue(assetType), w, ccy, nullableEnumValue(country), nullableEnumValue(sector), nil, nil, nil}
 	}
 	may := exDay(5, 31)
 	comp("symbol:FUNDX", may, "holdings", "USD", nil,
@@ -173,7 +173,7 @@ func seedExposureFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 	    VALUES ('test-src', 'isin:XX0000000009', 'legal_country', ?, 'gleif', 'DE'),
 	           ('test-src', 'isin:IE0000000005', 'legal_country', ?, 'gleif', 'IE'),
 	           ('test-src', 'isin:XX0000000001', 'risk_country', ?, 'otherprov', 'IE'),
-	           ('test-src', 'symbol:BBB', 'risk_country', ?, 'eodhd', 'NL'),
+	           ('test-src', 'symbol:BBB', 'risk_country', ?, 'otherprov', 'NL'),
 	           ('test-src', 'symbol:QT4', 'legal_country', ?, 'gleif', 'LU')`, may, may, may, may, may)
 	if _, err := SyncExposure(ctx, db, exposureFixtureRows()); err != nil {
 		t.Fatal(err)
@@ -236,18 +236,7 @@ func declaration(line int, iid string, asOf *int64, splits ...split) canonical.E
 			for i, v := range s.values {
 				n := l
 				n.Share *= s.pcts[i] / 100
-				switch s.dim {
-				case canonical.DimensionRegion:
-					n.Region = v
-				case canonical.DimensionCountry:
-					n.Country = v
-				case canonical.DimensionCurrency:
-					n.Currency = v
-				case canonical.DimensionSector:
-					n.Sector = v
-				case canonical.DimensionAssetClass:
-					n.AssetClass = v
-				}
+				n.Set(s.dim, v)
 				next = append(next, n)
 			}
 		}
@@ -255,13 +244,6 @@ func declaration(line int, iid string, asOf *int64, splits ...split) canonical.E
 	}
 	d.Leaves = leaves
 	return d
-}
-
-func nullIfEmpty(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
 }
 
 // exposureImage is the seeded and rebuilt fixture, built once per
@@ -389,6 +371,14 @@ func leafValue(t *testing.T, db *sql.DB, ctx context.Context, where string, args
 	return v.Float64
 }
 
+// closeTo fails the test where got is not want within 1e-6.
+func closeTo(t *testing.T, name string, got, want float64) {
+	t.Helper()
+	if math.Abs(got-want) > 1e-6 {
+		t.Errorf("%s = %.6f, want %.6f", name, got, want)
+	}
+}
+
 func leafFlags(t *testing.T, db *sql.DB, ctx context.Context, where string) string {
 	t.Helper()
 	var s sql.NullString
@@ -415,57 +405,51 @@ func leafText(t *testing.T, db *sql.DB, ctx context.Context, col, where string) 
 func TestExposureLooksThroughEachKindOfFund(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
-	close := func(name string, got, want float64) {
-		t.Helper()
-		if math.Abs(got-want) > 1e-6 {
-			t.Errorf("%s = %.6f, want %.6f", name, got, want)
-		}
-	}
 	// FUNDX 1000: half in Stock A, which a fund line ties to the ISIN the
 	// stock is held under; the 2% its weights leave is a remainder.
-	close("FUNDX's Stock A", leafValue(t, db, ctx, `top_key = 'symbol:FUNDX' AND key = 'isin:XX0000000001'`), 500)
-	close("FUNDX's remainder", leafValue(t, db, ctx, `top_key = 'symbol:FUNDX' AND kind = 'remainder'`), 20)
+	closeTo(t, "FUNDX's Stock A", leafValue(t, db, ctx, `top_key = 'symbol:FUNDX' AND key = 'isin:XX0000000001'`), 500)
+	closeTo(t, "FUNDX's remainder", leafValue(t, db, ctx, `top_key = 'symbol:FUNDX' AND kind = 'remainder'`), 20)
 	// FOF 500: 60% is FUNDX, looked through again.
-	close("FOF's Stock A", leafValue(t, db, ctx, `top_key = 'symbol:FOF' AND key = 'isin:XX0000000001' AND depth = 2`), 150)
+	closeTo(t, "FOF's Stock A", leafValue(t, db, ctx, `top_key = 'symbol:FOF' AND key = 'isin:XX0000000001' AND depth = 2`), 150)
 	// LEV3 200 at leverage 3 of IDX1: 600 of Stock A, minus 400 of cash.
-	close("LEV3's Stock A", leafValue(t, db, ctx, `top_key = 'isin:XX00000000L3' AND key = 'isin:XX0000000001'`), 600)
-	close("LEV3's cash leg", leafValue(t, db, ctx, `top_key = 'isin:XX00000000L3' AND kind = 'leverage'`), -400)
+	closeTo(t, "LEV3's Stock A", leafValue(t, db, ctx, `top_key = 'isin:XX00000000L3' AND key = 'isin:XX0000000001'`), 600)
+	closeTo(t, "LEV3's cash leg", leafValue(t, db, ctx, `top_key = 'isin:XX00000000L3' AND kind = 'leverage'`), -400)
 	if f := leafFlags(t, db, ctx, `top_key = 'isin:XX00000000L3'`); !strings.Contains(f, "proxy") {
 		t.Errorf("LEV3 flags = %q, want proxy", f)
 	}
 	// GAPF: the later composition, the earlier one past max_gap_days.
-	close("GAPF's later line", leafValue(t, db, ctx, `top_key = 'symbol:GAPF' AND key = 'symbol:NEW'`), 100)
+	closeTo(t, "GAPF's later line", leafValue(t, db, ctx, `top_key = 'symbol:GAPF' AND key = 'symbol:NEW'`), 100)
 	if f := leafFlags(t, db, ctx, `top_key = 'symbol:GAPF'`); f != "forward" {
 		t.Errorf("GAPF flags = %q, want forward", f)
 	}
 	// QHDG: a EUR stock hedged into USD.
-	close("QHDG in USD", leafValue(t, db, ctx, `top_key = 'symbol:QHDG' AND currency = 'USD'`), 300)
+	closeTo(t, "QHDG in USD", leafValue(t, db, ctx, `top_key = 'symbol:QHDG' AND currency = 'USD'`), 300)
 	// SWP: the index lines, never the basket.
-	close("SWP's basket", leafValue(t, db, ctx, `top_key = 'symbol:SWP' AND key = 'symbol:BSK'`), 0)
-	close("SWP's index", leafValue(t, db, ctx, `top_key = 'symbol:SWP' AND key IN ('symbol:QEMA', 'symbol:QEMB')`), 400)
+	closeTo(t, "SWP's basket", leafValue(t, db, ctx, `top_key = 'symbol:SWP' AND key = 'symbol:BSK'`), 0)
+	closeTo(t, "SWP's index", leafValue(t, db, ctx, `top_key = 'symbol:SWP' AND key IN ('symbol:QEMA', 'symbol:QEMB')`), 400)
 	// QFXF 100, net assets 1000: the forward's long leg is 500 EUR at 1.1,
 	// 55% of the fund in EUR; the short leg is the rest of the line, in
 	// the short currency although the line states the long one.
-	close("QFXF's long EUR leg", leafValue(t, db, ctx, `top_key = 'symbol:QFXF' AND key = 'symbol:FWD' AND currency = 'EUR'`), 55)
-	close("QFXF's short USD leg", leafValue(t, db, ctx, `top_key = 'symbol:QFXF' AND key = 'symbol:FWD' AND currency = 'USD'`), -55)
+	closeTo(t, "QFXF's long EUR leg", leafValue(t, db, ctx, `top_key = 'symbol:QFXF' AND key = 'symbol:FWD' AND currency = 'EUR'`), 55)
+	closeTo(t, "QFXF's short USD leg", leafValue(t, db, ctx, `top_key = 'symbol:QFXF' AND key = 'symbol:FWD' AND currency = 'USD'`), -55)
 	// The house is declared; the private fund and the unknown stock are
 	// not. Nothing looks through the private fund: it reads diversified.
 	if f := leafFlags(t, db, ctx, `iid = 'PE1'`); f != "opaque,undeclared" {
 		t.Errorf("PE1 flags = %q, want opaque,undeclared", f)
 	}
-	close("PE1 diversified", leafValue(t, db, ctx, `iid = 'PE1' AND sector = 'diversified'`), 80)
+	closeTo(t, "PE1 diversified", leafValue(t, db, ctx, `iid = 'PE1' AND sector = 'diversified'`), 80)
 	if f := leafFlags(t, db, ctx, `iid = 'UNK'`); f != "unmatched" {
 		t.Errorf("UNK flags = %q, want unmatched", f)
 	}
-	close("the house in CH", leafValue(t, db, ctx, `iid = 'HOUSE' AND country = 'CH'`), 1250)
+	closeTo(t, "the house in CH", leafValue(t, db, ctx, `iid = 'HOUSE' AND country = 'CH'`), 1250)
 	// Gold counts in XAU; a bond takes its domicile from GLEIF.
-	close("gold in XAU", leafValue(t, db, ctx, `iid = 'GOLD' AND currency = 'XAU' AND sector = 'metal'`), 70)
-	close("the bond in DE", leafValue(t, db, ctx, `iid = 'BOND9' AND country = 'DE'`), 110)
+	closeTo(t, "gold in XAU", leafValue(t, db, ctx, `iid = 'GOLD' AND currency = 'XAU' AND sector = 'metal'`), 70)
+	closeTo(t, "the bond in DE", leafValue(t, db, ctx, `iid = 'BOND9' AND country = 'DE'`), 110)
 	// A2 is left out whole, as holdings global leaves it out.
-	close("A2", leafValue(t, db, ctx, `acct = 'A2'`), 0)
+	closeTo(t, "A2", leafValue(t, db, ctx, `acct = 'A2'`), 0)
 	// QT1: three levels expand; QT4, a fund the third level names, stays
 	// a leaf, flagged partial.
-	close("QT4 at depth 3", leafValue(t, db, ctx, `top_key = 'symbol:QT1' AND depth = 3 AND key = 'symbol:QT4'`), 40)
+	closeTo(t, "QT4 at depth 3", leafValue(t, db, ctx, `top_key = 'symbol:QT1' AND depth = 3 AND key = 'symbol:QT4'`), 40)
 	if how := leafText(t, db, ctx, "how", `top_key = 'symbol:QT1'`); how != "truncated" {
 		t.Errorf("QT1's leaf is %q, want truncated", how)
 	}
@@ -724,10 +708,9 @@ func TestExposureAliases(t *testing.T) {
 	if sector != "technology" || origin != "fund_line:testprov" {
 		t.Errorf("Stock A sector = %s from %s", sector, origin)
 	}
-	// The country of risk: a vendor's first, then a fund line's, then
-	// another provider's.
+	// The country of risk: a fund line's wins over a provider's.
 	for key, want := range map[string]string{
-		"symbol:BBB":        "NL|fact:eodhd",
+		"symbol:BBB":        "DE|fund_line:testprov",
 		"isin:XX0000000001": "US|fund_line:testprov",
 	} {
 		var got string
@@ -938,5 +921,90 @@ func TestExposureLocalTickersAreNoUSSymbols(t *testing.T) {
 		if got.String != want {
 			t.Errorf("%s reads as %q, want %q", alias, got.String, want)
 		}
+	}
+}
+
+func TestMigration0126DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
+	db, ctx := openExposureFixture(t)
+	// 0128, 0129 and 0131 re-create the look-through and its views, so
+	// they are replayed after 0126, as Migrate would.
+	rerunMigrationDDL(t, db, ctx, "0126_exposure_report.sql")
+	rerunMigrationDDL(t, db, ctx, "0128_exposure_declarations.sql")
+	rerunMigrationDDL(t, db, ctx, "0129_exposure_situs.sql")
+	rerunMigrationDDL(t, db, ctx, "0131_exposure_unknown.sql")
+	n, err := RebuildExposure(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.Securities == 0 || n.Aliases == 0 {
+		t.Errorf("after replay: rebuilt %+v", n)
+	}
+	if f := leafFlags(t, db, ctx, `iid = 'PE1'`); f != "opaque,undeclared" {
+		t.Errorf("after replay: PE1 flags = %q", f)
+	}
+	if rows, err := ExposureSizes(ctx, db, exAsOf, "USD"); err != nil || len(rows) == 0 {
+		t.Errorf("sizes after replay: %d rows, %v", len(rows), err)
+	}
+	if rows, err := ExposureCoverage(ctx, db, exAsOf, "USD"); err != nil || len(rows) == 0 {
+		t.Errorf("coverage after replay: %d rows, %v", len(rows), err)
+	}
+	// Only the current views read what nothing describes as unknown.
+	sectors, err := ExposureSectors(ctx, db, exAsOf, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var labels []string
+	for _, r := range sectors {
+		labels = append(labels, r.Sector)
+	}
+	if !slices.Contains(labels, canonical.Unknown) || slices.Contains(labels, "unclassified") {
+		t.Errorf("sectors after replay: %v, want unknown and no unclassified", labels)
+	}
+}
+
+// Each side's mix holds only the lines that state the dimension: a proxy
+// whose lines state no country, and that no source places, compares on
+// sectors alone.
+func TestExposureDivergenceComparesWhatEachSideStates(t *testing.T) {
+	t.Parallel()
+	db, ctx := openExposureFixture(t)
+	for _, q := range []string{
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, name, currency,
+		 first_seen_at, last_seen_at) VALUES ('test-src', 'QRP3', 'public_equity', 'fund', 'QRP3', 'Report Fund', 'USD', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, quantity, market_value)
+		 VALUES ('test-src', ?, 'A1', 'QRP3', 'QRP3', 'public_equity', 'fund', 'USD', 1, 100)`,
+		`INSERT INTO exposure_proxies (fund_ref, proxy_ref, always, leverage) VALUES ('symbol:QRP3', 'symbol:QPX3', FALSE, 1)`,
+		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, source_kind, line_count, currency)
+		 VALUES ('test-src', 'symbol:QRP3', ?, 'holdings', 'swissfunddata', 'report', 2, 'USD'),
+		        ('test-src', 'symbol:QPX3', ?, 'holdings', 'testprov', 'issuer', 2, 'USD')`,
+		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
+		 weight, currency, country, sector) VALUES
+		 ('test-src', 'symbol:QRP3', ?, 'holdings', 1, 'isin:JP0000000F01', 'JP0000000F01', 'QLAND ONE', 'Equity', 60, 'JPY', 'Japan', 'Materials'),
+		 ('test-src', 'symbol:QRP3', ?, 'holdings', 2, 'isin:JP0000000F02', 'JP0000000F02', 'QLAND TWO', 'Equity', 40, 'JPY', 'Japan', 'Industrials'),
+		 ('test-src', 'symbol:QPX3', ?, 'holdings', 1, 'symbol:QPF1', NULL, 'QLAND ONE', 'Equity', 50, 'JPY', NULL, 'Materials'),
+		 ('test-src', 'symbol:QPX3', ?, 'holdings', 2, 'symbol:QPF2', NULL, 'QLAND THREE', 'Equity', 50, 'JPY', NULL, 'Utilities')`,
+	} {
+		if _, err := db.ExecContext(ctx, q, slices.Repeat([]any{exSnap}, strings.Count(q, "?"))...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	cov, err := ExposureCoverage(ctx, db, exAsOf, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var div []string
+	for _, r := range cov {
+		if r.Section == "divergence" {
+			div = append(div, r.Reason+": "+*r.Detail)
+		}
+	}
+	// Materials 60/50, industrials 40/0, utilities 0/50: 50 points.
+	if want := []string{"symbol:QRP3: sector 50.0 points from symbol:QPX3"}; !slices.Equal(div, want) {
+		t.Errorf("divergence = %v, want %v", div, want)
 	}
 }

@@ -16,13 +16,25 @@ import (
 func TestMaterializeExposureMatchesTheLiveViews(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
-	// A stock with a market cap, so the sizes have a size to carry, and
-	// a holding of each situs basis.
+	// A stock with a market cap, so the sizes have a size to carry, a
+	// holding of each situs basis, and an account in a tax wrapper beside
+	// the fixture's, which state none.
 	seedSitus(t, db, ctx)
-	if _, err := db.ExecContext(ctx, `INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
-	    VALUES ('refdata', 'isin:XX0000000001', 'market_cap', 0, 'testfact', '50000000000')`); err != nil {
-		t.Fatal(err)
+	ex := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
 	}
+	ex(`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
+	    VALUES ('refdata', 'isin:XX0000000001', 'market_cap', 0, 'testfact', '50000000000')`)
+	ex(`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency, tax_wrapper,
+	    first_seen_at, last_seen_at) VALUES ('test-src', 'A3', 'brokerage', 'Wrapped', 'USD', 'roth_ira', 0, 0)`)
+	ex(`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+	    asset_class, vehicle, currency, quantity, market_value)
+	    VALUES ('test-src', ?, 'A3', 'FUNDX', 'FUNDX', 'public_equity', 'etf', 'USD', 1, 300)`, exSnap)
+	ex(`INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id, currency, balance_kind, amount)
+	    VALUES ('test-src', ?, 'A3', 'USD', 'current', 40)`, exSnap)
 	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +84,7 @@ func TestMaterializeExposureMatchesTheLiveViews(t *testing.T) {
 		if unsourced > 0 || math.Abs(whole-bySource) > 1e-6 {
 			t.Errorf("at %d: %d rows without a source; by source %.6f, whole %.6f", at, unsourced, bySource, whole)
 		}
+		checkMaterializedWrappers(t, ctx, db, at)
 	}
 	var sized int
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure WHERE size = 'large'`).Scan(&sized); err != nil ||
@@ -141,6 +154,47 @@ func checkMaterializedInstant(t *testing.T, ctx context.Context, db *sql.DB, at 
 	}
 }
 
+// checkMaterializedWrappers compares the US-dollar value of each tax
+// wrapper in web_exposure at one instant with its accounts' totals, an
+// account that states no wrapper as "-".
+func checkMaterializedWrappers(t *testing.T, ctx context.Context, db *sql.DB, at int64) {
+	t.Helper()
+	accounts, err := AccountsAsOf(ctx, db, at, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]float64{}
+	for _, a := range accounts {
+		if a.TotalValueOutCcy != nil {
+			want[fmtStrPtr(a.TaxWrapper)] += parse(t, a.TotalValueOutCcy)
+		}
+	}
+	if want["roth_ira"] == 0 || want["-"] == 0 {
+		t.Fatalf("at %d: accounts by wrapper %v; the test needs a wrapped and an unwrapped one", at, want)
+	}
+	got := map[string]float64{}
+	if err := scanAll(ctx, db, `SELECT COALESCE(tax_wrapper, '-'), SUM(value) FROM web_exposure
+	    WHERE currency = 'USD' AND as_of_day = CAST(epoch_ms(? * 1000) AS DATE) GROUP BY 1`, func(rows *sql.Rows) error {
+		var w string
+		var v float64
+		if err := rows.Scan(&w, &v); err != nil {
+			return err
+		}
+		got[w] = v
+		return nil
+	}, at); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Errorf("at %d: wrappers %v, accounts give %v", at, got, want)
+	}
+	for w, v := range want {
+		if math.Abs(got[w]-v) > 0.01 {
+			t.Errorf("at %d: wrapper %s materialized %.4f, its accounts %.4f", at, w, got[w], v)
+		}
+	}
+}
+
 // An empty gold materializes nothing.
 func TestMaterializeExposureOnAnEmptyGold(t *testing.T) {
 	t.Parallel()
@@ -169,50 +223,29 @@ func TestFirstHoldingsAtCountsCash(t *testing.T) {
 	}
 }
 
-func TestMigration0127DDLIsRerunnable(t *testing.T) {
+// 0127, 0130 and 0131 each replay safely. 0131 re-creates web_exposure
+// last, so it is replayed after an earlier one, as Migrate would.
+func TestMigrations0127To0131DDLAreRerunnable(t *testing.T) {
 	t.Parallel()
-	db, ctx := openExposureFixture(t)
-	if _, err := MaterializeExposure(ctx, db, exAsOf, 1); err != nil {
-		t.Fatal(err)
-	}
-	// 0131 re-creates web_exposure, so it is replayed after 0127, as
-	// Migrate would.
-	rerunMigrationDDL(t, db, ctx, "0127_exposure_dashboard.sql")
-	rerunMigrationDDL(t, db, ctx, "0131_exposure_unknown.sql")
-	var n int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure WHERE size = 'unknown'`).Scan(&n); err != nil ||
-		n == 0 {
-		t.Errorf("after replay: %d sized rows, err %v", n, err)
-	}
-}
-
-func TestMigration0130DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openExposureFixture(t)
-	if _, err := MaterializeExposure(ctx, db, exAsOf, 1); err != nil {
-		t.Fatal(err)
-	}
-	// 0131 re-creates web_exposure, so it is replayed after 0130, as
-	// Migrate would.
-	rerunMigrationDDL(t, db, ctx, "0130_exposure_filters.sql")
-	rerunMigrationDDL(t, db, ctx, "0131_exposure_unknown.sql")
-	var n int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure WHERE size = 'unknown'`).Scan(&n); err != nil ||
-		n == 0 {
-		t.Errorf("after replay: %d sized rows, err %v", n, err)
-	}
-}
-
-func TestMigration0131DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openExposureFixture(t)
-	if _, err := MaterializeExposure(ctx, db, exAsOf, 1); err != nil {
-		t.Fatal(err)
-	}
-	rerunMigrationDDL(t, db, ctx, "0131_exposure_unknown.sql")
-	var n int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure WHERE size = 'unknown'`).Scan(&n); err != nil ||
-		n == 0 {
-		t.Errorf("after replay: %d sized rows, err %v", n, err)
+	for _, replay := range [][]string{
+		{"0127_exposure_dashboard.sql", "0131_exposure_unknown.sql"},
+		{"0130_exposure_filters.sql", "0131_exposure_unknown.sql"},
+		{"0131_exposure_unknown.sql"},
+	} {
+		t.Run(replay[0], func(t *testing.T) {
+			t.Parallel()
+			db, ctx := openExposureFixture(t)
+			if _, err := MaterializeExposure(ctx, db, exAsOf, 1); err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range replay {
+				rerunMigrationDDL(t, db, ctx, file)
+			}
+			var n int
+			if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure WHERE size = 'unknown'`).Scan(&n); err != nil ||
+				n == 0 {
+				t.Errorf("after replay: %d sized rows, err %v", n, err)
+			}
+		})
 	}
 }

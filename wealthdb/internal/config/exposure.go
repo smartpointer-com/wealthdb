@@ -34,8 +34,6 @@ type ExposureConfig struct {
 	// is, as a split per dimension (exposure_declarations.go). Expanded
 	// like equity_transfers; a missing file holds no declarations.
 	Declarations DeclarationsPath `json:"declarations,omitempty"`
-	// Tags is refused: the declarations ledger replaces it.
-	Tags *retiredTags `json:"tags,omitempty"`
 	// Custody names who keeps each source's assets, keyed by
 	// silver_source_id.
 	Custody map[string]ExposureCustody `json:"custody,omitempty"`
@@ -154,10 +152,11 @@ func isCountryCode(s string) bool {
 	return ok && c.Code == s
 }
 
-func sectorNames() string {
-	var names []string
-	for _, s := range canonical.Sectors() {
-		names = append(names, string(s))
+// joinNames is a vocabulary's names as a comma list.
+func joinNames[T ~string](vs []T) string {
+	names := make([]string, len(vs))
+	for i, v := range vs {
+		names[i] = string(v)
 	}
 	return strings.Join(names, ", ")
 }

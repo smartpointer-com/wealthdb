@@ -12,12 +12,13 @@ import (
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // taxLots sets a holding's tax_lots, a JSON array as Plaid sends it.
 func taxLots(t *testing.T, db *sql.DB, securityID string, seq int, array string) {
 	t.Helper()
-	exec(t, db, `UPDATE holdings SET tax_lots = ? WHERE security_id = ? AND seq = ?`,
+	silvertest.Exec(t, db, `UPDATE holdings SET tax_lots = ? WHERE security_id = ? AND seq = ?`,
 		array, securityID, seq)
 }
 
@@ -244,7 +245,7 @@ func TestSummedHoldingsPoolTheirLots(t *testing.T) {
 func TestAProRatedPositionHasNoLots(t *testing.T) {
 	path, db := lotsFixture(t)
 	hold(t, db, runAt(10), "acct-brk", "sec-a", 0, "100", "5000", "4000")
-	exec(t, db, `UPDATE holdings SET institution_price = '50', vested_quantity = '40'`)
+	silvertest.Exec(t, db, `UPDATE holdings SET institution_price = '50', vested_quantity = '40'`)
 	taxLots(t, db, "sec-a", 0, `[{"quantity":60,"cost_basis":2400},{"quantity":40,"cost_basis":1600}]`)
 	positions, lots := snapshotsOf(t, path)
 	if len(positions) != 1 {

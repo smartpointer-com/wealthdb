@@ -121,21 +121,9 @@ func matchedPartners(pairs []gold.TransferMatchPair) map[txKey]gold.TransferLeg 
 	return out
 }
 
-// The card-bill rail.
-//
-// A card statement records being paid as a receipt — "payment thank you",
-// "payment received thank you" — and that line is unmistakable: nothing but a
-// payment TO that card produces it. The bank-side half of the same movement is
-// not unmistakable at all. It may name the issuer ("american express ach pmt",
-// "chase credit crd epay"), but it may equally carry only the cardholder's own
-// name, or nothing.
-//
-// So the receipt is the side that constrains: it demands a card payment
-// opposite it, and the paying side demands nothing. Without that demand the
-// receipt pairs on amount and date alone, and any debit of about the right
-// size within the window will do — a utility bill, a cheque, a payment to a
-// person. The pair then removes BOTH legs from spending, so the false half is
-// real spending that silently disappears.
+// The card-bill rail: a card's own receipt demands a card payment opposite
+// it; the paying side demands nothing (gold.TransferLeg.Rail;
+// docs/SPENDING.md §3).
 const (
 	railCardPayment = "card_payment"
 	railCardReceipt = "card_receipt"

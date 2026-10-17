@@ -49,8 +49,8 @@ func TestADeclaredAccountPlacesTheMoveByItsWrapper(t *testing.T) {
                     merchant_signature, signature_version, spend_detailed, provenance,
                     far_silver_source_id, far_account_external_id, assigned_at)
                  VALUES ('cf', ?, 'sig', 1, 'internal_transfer', 'rule', ?, ?, 100)`,
-			r.id, nullable(map[bool]string{true: canonical.DeclaredSourceID, false: ""}[r.far != ""]),
-			nullable(r.far)); err != nil {
+			r.id, nullIfEmpty(map[bool]string{true: canonical.DeclaredSourceID, false: ""}[r.far != ""]),
+			nullIfEmpty(r.far)); err != nil {
 			t.Fatalf("seed overlay for %s: %v", r.id, err)
 		}
 		if r.kind == "deposit" {

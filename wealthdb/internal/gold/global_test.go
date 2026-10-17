@@ -56,13 +56,13 @@ func TestGlobalAsOfRollup(t *testing.T) {
 		t.Errorf("MaxSnapshotAt = %d, want 2000", g.MaxSnapshotAt)
 	}
 	// positions: 800 + 400 = 1200 CHF; cash: 200 + 100 = 300 CHF; total: 1500 CHF.
-	if got := derefOr(g.PositionsValueOutCcy); got != "1200" {
+	if got := show(g.PositionsValueOutCcy); got != "1200" {
 		t.Errorf("positions_value (CHF) = %q, want 1200", got)
 	}
-	if got := derefOr(g.CashBalanceOutCcy); got != "300" {
+	if got := show(g.CashBalanceOutCcy); got != "300" {
 		t.Errorf("cash_balance (CHF) = %q, want 300", got)
 	}
-	if got := derefOr(g.TotalValueOutCcy); got != "1500" {
+	if got := show(g.TotalValueOutCcy); got != "1500" {
 		t.Errorf("total_value (CHF) = %q, want 1500", got)
 	}
 }
@@ -78,14 +78,7 @@ func TestGlobalAsOfEmpty(t *testing.T) {
 	if g.MinSnapshotAt != 0 || g.MaxSnapshotAt != 0 {
 		t.Errorf("snapshot span = [%d,%d], want [0,0]", g.MinSnapshotAt, g.MaxSnapshotAt)
 	}
-	if got := derefOr(g.TotalValueOutCcy); got != "0" {
+	if got := show(g.TotalValueOutCcy); got != "0" {
 		t.Errorf("total_value = %q, want 0", got)
 	}
-}
-
-func derefOr(p *string) string {
-	if p == nil {
-		return "<nil>"
-	}
-	return *p
 }

@@ -35,6 +35,27 @@ func scanRows[T any](ctx context.Context, db *sql.DB, label, q string, args []an
 	return out, rows.Err()
 }
 
+// querier is what *sql.DB and *sql.Tx share for a read.
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// scanAll runs a query and hands each row to scan.
+func scanAll(ctx context.Context, q querier, query string, scan func(*sql.Rows) error, args ...any) error {
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if err := scan(rows); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 // cell is a nullable scan destination that writes its field after the
 // scan.
 type cell interface{ apply() }

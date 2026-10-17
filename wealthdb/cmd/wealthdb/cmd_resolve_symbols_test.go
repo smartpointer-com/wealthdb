@@ -77,28 +77,6 @@ func TestStripCodeFences(t *testing.T) {
 	}
 }
 
-func TestTickerShapeRe(t *testing.T) {
-	t.Parallel()
-	goodTickers := []string{"AAPL", "BRK.B", "XDEW", "TFLO", "005930", "9988", "BRK-B", "DBK.DE"}
-	for _, s := range goodTickers {
-		if !tickerShapeRe.MatchString(s) {
-			t.Errorf("%q should be ticker-shaped", s)
-		}
-	}
-	badTickers := []string{
-		"",                   // empty
-		"aapl",               // lowercase
-		"BANK INT 07/30",     // spaces + slash
-		"VERY-LONG-TICKER-X", // too long
-		"$$$",                // junk
-	}
-	for _, s := range badTickers {
-		if tickerShapeRe.MatchString(s) {
-			t.Errorf("%q should NOT be ticker-shaped", s)
-		}
-	}
-}
-
 func TestIsinShapeRe(t *testing.T) {
 	t.Parallel()
 	isins := []string{"US0000000030", "IE0000000040", "CH0000000020", "DE0000000050"}

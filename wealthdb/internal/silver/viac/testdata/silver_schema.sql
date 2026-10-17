@@ -1,9 +1,10 @@
 -- Minimal viac silver schema for adapter tests: the tables and
--- columns the adapter SELECTs, with the post-migration-0003 shape
+-- columns the adapter SELECTs, with the shape through migration 0005
 -- (positions.quantity, positions.market_value_chf, accounts.
--- management_style, and positions/cash_balances.source — 'live'
+-- management_style, positions/cash_balances.source — 'live'
 -- for scraped rows, 'report:<docid>' for PDF-reconstructed
--- historical snapshots). SQLite syntax.
+-- historical snapshots — and transactions.instrument_external_id).
+-- SQLite syntax.
 
 CREATE TABLE dump_runs (
     snapshot_at           INTEGER NOT NULL PRIMARY KEY,

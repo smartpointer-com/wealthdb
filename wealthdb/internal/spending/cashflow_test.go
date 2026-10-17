@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"sort"
 	"testing"
 
@@ -60,11 +61,11 @@ func poolAccounts(t *testing.T, db *sql.DB, ctx context.Context) []string {
 	return out
 }
 
-// TestTheBoundaryIsStampedWhole pins the decision that keeps
-// canonical.DefaultWrapperSide the single place a wrapper's side is
-// decided: every wrapper reaches gold, defaults included, so no macro
-// re-derives the boundary and a wrapper added for a new jurisdiction
-// takes one edit to reach the statement.
+// TestTheBoundaryIsStampedWhole pins the decision that keeps the
+// engine's boundary table (canonical.WrapperBoundaries) the single
+// place a wrapper's side is decided: every wrapper reaches gold,
+// defaults included, so no macro re-derives the boundary and a wrapper
+// added for a new jurisdiction takes one edit to reach the statement.
 func TestTheBoundaryIsStampedWhole(t *testing.T) {
 	db, ctx := openGold(t)
 	res := runPass(t, db, ctx, Options{})
@@ -141,7 +142,7 @@ func TestThePoolIsTheHouseholdsAccounts(t *testing.T) {
 	res := runPass(t, db, ctx, Options{})
 
 	want := []string{"bank/CARD1", "bank/CASH1", "other-bank/CASH2"}
-	if got := poolAccounts(t, db, ctx); !equalStrings(got, want) {
+	if got := poolAccounts(t, db, ctx); !slices.Equal(got, want) {
 		t.Errorf("pool = %v, want %v", got, want)
 	}
 	// CARD1 and CASH2 carry no wrapper at all: in the pool, and counted.
@@ -166,11 +167,11 @@ func TestThePoolScopeInheritsNothing(t *testing.T) {
 	}
 	got := poolAccounts(t, db, ctx)
 	for _, want := range []string{"bank/CASH1", "bank/CARD1"} {
-		if !contains(got, want) {
+		if !slices.Contains(got, want) {
 			t.Errorf("%s left the pool because a family excluded it", want)
 		}
 	}
-	if contains(got, "other-bank/CUST2") {
+	if slices.Contains(got, "other-bank/CUST2") {
 		t.Error("cashflow.accounts did not take an account out of the pool")
 	}
 }
@@ -237,25 +238,4 @@ func TestTheBoundaryStampChangesNoFamilyReport(t *testing.T) {
 			t.Errorf("row %d moved: %q vs %q", i, before[i], after[i])
 		}
 	}
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func contains(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
 }

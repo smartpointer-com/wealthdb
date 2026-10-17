@@ -69,7 +69,7 @@ func psnHoldingPositions(t *testing.T, withCost bool, seed string) map[string]ca
 	return got
 }
 
-// holdingPayload is an MT535 holding with a HOLD leg per currency.
+// holdUSD and holdCHFUSD are MT535 holdings with a HOLD leg per currency.
 const (
 	holdUSD    = `'{"fields":{"19A":[":HOLD//USD1500,",":BOOK//USD1000,"],"93B":[":AGGR//UNIT/10,"]}}'`
 	holdCHFUSD = `'{"fields":{"19A":[":HOLD//CHF1200,",":HOLD//USD1500,",":BOOK//USD1000,"],"93B":[":AGGR//UNIT/10,"]}}'`

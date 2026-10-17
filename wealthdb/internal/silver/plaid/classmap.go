@@ -65,7 +65,7 @@ func pairFor(s security) (canonical.AssetClass, canonical.Vehicle, bool) {
 	case "etf":
 		return silver.RefineETFExposure(s.name), canonical.VehicleETF, true
 	case "mutual fund":
-		return fundExposure(s.name), canonical.VehicleFund, true
+		return silver.FundExposure(s.name), canonical.VehicleFund, true
 	case "cash":
 		// A money market fund: cash with a ticker of its own. Without one,
 		// the security is priced, and Plaid's type is wrong (isCash).
@@ -89,16 +89,7 @@ func pairFor(s security) (canonical.AssetClass, canonical.Vehicle, bool) {
 	case strings.HasPrefix(cfi, "CE"):
 		return silver.RefineETFExposure(s.name), canonical.VehicleETF, false
 	case strings.HasPrefix(cfi, "C"):
-		return fundExposure(s.name), canonical.VehicleFund, false
+		return silver.FundExposure(s.name), canonical.VehicleFund, false
 	}
 	return canonical.AssetClassOther, canonical.VehicleOther, false
-}
-
-// fundExposure is a mutual fund's exposure: a money market fund is cash,
-// and any other fund reads its exposure off its name, as an ETF does.
-func fundExposure(name string) canonical.AssetClass {
-	if silver.NamesMoneyMarket(name) {
-		return canonical.AssetClassCash
-	}
-	return silver.RefineETFExposure(name)
 }

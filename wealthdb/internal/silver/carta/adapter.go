@@ -1,50 +1,9 @@
-// Package carta projects the carta silver SQLite (private-market
-// holdings on carta.com) into canonical change records.
-//
-// This source is one Carta "individual portfolio" holding one or more
-// ENTITIES, each either:
-//
-//   - a cap-table corporation (is_fund_investment=0): direct
-//     private-company equity and equity-comp — shares, option
-//     grants (with strike + vesting), RSUs/RSAs, SAFEs/notes,
-//     warrants. Mapped to AssetClassPrivateEquity.
-//
-//   - a fund investment (is_fund_investment=1): an LP interest in a
-//     venture/PE fund, with a structured capital account
-//     (commitment / called / contributed / distributions / NAV).
-//     Mapped to (AssetClassPrivateEquity, VehicleFund).
-//
-// Gold projection:
-//
-//   - ONE custody ACCOUNT for the whole portfolio (account_external_id
-//     = the Carta individual_id; AccountKind 'custody', TaxWrapper
-//     'taxable_personal', ManagementStyle 'self_directed' — the
-//     fund-vs-equity split rides on each position's asset_class). The
-//     tax wrapper and management style are overridable via
-//     account_overrides.
-//
-//   - One INSTRUMENT per held company (the issuer / the fund), keyed
-//     by the entity id. Carta private securities have no
-//     ISIN/CUSIP/symbol, so the instrument is adapter-scoped.
-//
-//   - One POSITION per held company: the cap-table share / option lots
-//     aggregated (Quantity = the share count, MarketValue the per-date
-//     valuation, BookValue = the cash paid; the per-lot detail in the
-//     payload), or the fund's capital account (MarketValue = NAV,
-//     BookValue = contributed, less the basis a K-1 says left in kind).
-//     Forward-filled per event date (snapshots.go). Each held share
-//     certificate is also one POSITION LOT of its company's position, at
-//     the cash paid for it. Each book value is stamped by what it sums
-//     (basis.go, docs/DESIGN.md §7.4).
-//
-//   - TRANSACTIONS: the cash-flow ledger (silver migration 0003)
-//     projected as balanced double-entry pairs on the custody account
-//     (transactions.go): the deposit/withdrawal legs are the external
-//     boundary flows the returns policy counts, and each event's pair
-//     nets to 0, so no cash position is implied.
-//
-// Vesting schedules, documents, and cap-call rows stay silver-only —
-// gold has no canonical home for them today.
+// Package carta projects the carta silver SQLite (private-market holdings
+// on carta.com: cap-table equity and LP fund interests) into canonical
+// change records: one custody account for the portfolio, one instrument and
+// one forward-filled position per held company, a position lot per held
+// share certificate, and the cash-flow ledger as balanced double-entry
+// pairs. See docs/adapters/carta.md for the mapping contract.
 package carta
 
 import (
@@ -86,11 +45,4 @@ type Connection struct {
 	exercise bool
 }
 
-func (c *Connection) Close() error {
-	if c == nil || c.db == nil {
-		return nil
-	}
-	err := c.db.Close()
-	c.db = nil
-	return err
-}
+func (c *Connection) Close() error { return silver.CloseDB(&c.db) }

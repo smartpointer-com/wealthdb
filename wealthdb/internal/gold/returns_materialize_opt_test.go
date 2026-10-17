@@ -3,6 +3,7 @@ package gold
 import (
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -64,10 +65,10 @@ func TestLoadReturnsDatasetsMultiMatchesSingle(t *testing.T) {
 					[]bool{a.cryptoExcluded, a.journalPresent, a.hasClampedFlow, a.droppedNonzero},
 					[]bool{b.cryptoExcluded, b.journalPresent, b.hasClampedFlow, b.droppedNonzero})
 			}
-			if !sameSeries(a.series, b.series) {
+			if !slices.Equal(a.series, b.series) {
 				t.Errorf("%s/%s: value series differ:\n single %v\n multi  %v", ccy, key, a.series, b.series)
 			}
-			if !sameInts(a.snapDays, b.snapDays) {
+			if !slices.Equal(a.snapDays, b.snapDays) {
 				t.Errorf("%s/%s: snapDays differ", ccy, key)
 			}
 			if !sameFlows(a.nonTransfer, b.nonTransfer) {
@@ -78,30 +79,6 @@ func TestLoadReturnsDatasetsMultiMatchesSingle(t *testing.T) {
 			}
 		}
 	}
-}
-
-func sameSeries(a, b []dayVal) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].day != b[i].day || a[i].val != b[i].val {
-			return false
-		}
-	}
-	return true
-}
-
-func sameInts(a, b []int64) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func sameFlows(a, b []returns.Flow) bool {

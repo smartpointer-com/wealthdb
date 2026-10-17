@@ -1,11 +1,11 @@
 // Package silver defines the contract between per-bank silver
-// adapters and the load orchestration in cmd/wealthdb. See
+// adapters and the load sequence in internal/loader. See
 // docs/DESIGN.md §6 for the full design.
 //
 // Adapters never touch the gold database directly; they read silver
-// SQLite files and yield canonical change records via the streams
-// defined here. The main app owns all gold writes, transaction
-// boundaries, and watermark bookkeeping.
+// SQLite (or, for cointracking, DuckDB) files and yield canonical
+// change records via the streams defined here. The main app owns all
+// gold writes, transaction boundaries, and watermark bookkeeping.
 package silver
 
 import (
@@ -104,10 +104,11 @@ type Connection interface {
 	ChangeWindow(ctx context.Context, sinceChangeNumber int64) (canonical.Window, error)
 
 	// Snapshots iterates dimension upserts and snapshot-grain
-	// facts (positions, cash balances, fx rates, account and
-	// instrument updates) whose snapshot_at falls inside the
-	// given window. Pull-model batched iterator: caller loops
-	// Next() until ok=false.
+	// facts (positions, open lots, cash balances, fx rates,
+	// reference records, and portfolio, account and instrument
+	// updates) whose snapshot_at falls inside the given window.
+	// Pull-model batched iterator: caller loops Next() until
+	// more=false.
 	Snapshots(ctx context.Context, window canonical.Window) (SnapshotStream, error)
 
 	// Transactions iterates event-grain facts whose occurred_at
@@ -117,7 +118,7 @@ type Connection interface {
 
 // SnapshotStream yields batches of canonical snapshot-grain
 // records. Each Next call returns one batch and whether more
-// batches follow. An ok=false return still delivers a valid (but
+// batches follow. A more=false return still delivers a valid (but
 // possibly empty) final batch; callers should apply it before
 // stopping.
 type SnapshotStream interface {

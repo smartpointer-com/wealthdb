@@ -70,7 +70,7 @@ func parseFlags(fs *flag.FlagSet, args []string, cmd string) error {
 	if err == nil || errors.Is(err, flag.ErrHelp) {
 		return err
 	}
-	return errs.Newf(2, "%s: bad flags", cmd)
+	return errs.Newf(errs.ExitUsage, "%s: bad flags", cmd)
 }
 
 // noPositionals refuses positional arguments on a command that takes
@@ -80,7 +80,7 @@ func noPositionals(fs *flag.FlagSet, cmd string) error {
 		return nil
 	}
 	fs.Usage()
-	return errs.Newf(2, "%s: unexpected positional argument %q", cmd, fs.Arg(0))
+	return errs.Newf(errs.ExitUsage, "%s: unexpected positional argument %q", cmd, fs.Arg(0))
 }
 
 // reorderFlagsFirst moves the flag tokens of args, each with the value
@@ -142,5 +142,23 @@ func checkChoice(cmd, flagName, value string, allowed ...string) error {
 	if slices.Contains(allowed, value) {
 		return nil
 	}
-	return errs.Newf(2, "%s: invalid --%s %q (want %s)", cmd, flagName, value, strings.Join(allowed, " | "))
+	return errs.Newf(errs.ExitUsage, "%s: invalid --%s %q (want %s)", cmd, flagName, value, strings.Join(allowed, " | "))
+}
+
+// isSet reports whether any of the given spellings of a flag was typed
+// on the command line, as opposed to sitting at its default. The
+// refusals need it twice over: `--period monthly` is the default value
+// AND a thing a caller can type at a sankey, and a flag registered
+// under both a short and a long name is a different *flag.Flag under
+// each, so a refusal that asks for one spelling misses the other.
+func isSet(fs *flag.FlagSet, names ...string) bool {
+	found := false
+	fs.Visit(func(f *flag.Flag) {
+		for _, name := range names {
+			if f.Name == name {
+				found = true
+			}
+		}
+	})
+	return found
 }

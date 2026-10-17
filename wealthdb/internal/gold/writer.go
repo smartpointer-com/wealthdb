@@ -138,10 +138,10 @@ ON CONFLICT (silver_source_id, account_external_id) DO UPDATE SET
 		}
 		if _, err := stmt.ExecContext(ctx,
 			r.SilverSourceID, r.AccountExternalID, string(r.AccountKind),
-			nullableString(r.DisplayName), nullableString(r.BaseCurrency),
-			nullableString(r.RelationshipID),
-			nullableString(r.Nickname), nullableString(r.AccountCategory),
-			nullableString(r.PortfolioExternalID),
+			nullable(r.DisplayName), nullable(r.BaseCurrency),
+			nullable(r.RelationshipID),
+			nullable(r.Nickname), nullable(r.AccountCategory),
+			nullable(r.PortfolioExternalID),
 			nullableEnumString(r.TaxWrapper), nullableEnumString(r.ManagementStyle),
 			r.FirstSeenAt, r.LastSeenAt, nullableJSON(r.Payload),
 		); err != nil {
@@ -165,7 +165,7 @@ func nullableEnumString[T ~string](p *T) any {
 // UpsertPortfolios writes portfolio rows with the same §8.4 guard
 // semantics as UpsertAccounts. Portfolios are gold's own entity
 // (distinct from accounts) — see migration 0004 and docs/DESIGN.md
-// §13.9.
+// §13.8.
 func (w *Writer) UpsertPortfolios(ctx context.Context, batch []canonical.PortfolioChange) error {
 	if len(batch) == 0 {
 		return nil
@@ -200,8 +200,8 @@ ON CONFLICT (silver_source_id, portfolio_external_id) DO UPDATE SET
 		r := &batch[i]
 		if _, err := stmt.ExecContext(ctx,
 			r.SilverSourceID, r.PortfolioExternalID,
-			nullableString(r.DisplayName), nullableString(r.BaseCurrency),
-			nullableString(r.RelationshipID), nullableString(r.Nickname),
+			nullable(r.DisplayName), nullable(r.BaseCurrency),
+			nullable(r.RelationshipID), nullable(r.Nickname),
 			r.FirstSeenAt, r.LastSeenAt, nullableJSON(r.Payload),
 		); err != nil {
 			return fmt.Errorf("UpsertPortfolios row %d: %w", i, err)
@@ -256,9 +256,9 @@ ON CONFLICT (silver_source_id, instrument_external_id) DO UPDATE SET
 		}
 		if _, err := stmt.ExecContext(ctx,
 			r.SilverSourceID, r.InstrumentExternalID, string(r.AssetClass), string(r.Vehicle),
-			nullableString(r.ISIN), nullableString(r.CUSIP),
-			nullableString(r.Symbol), nullableString(r.Name),
-			nullableString(r.Currency),
+			nullable(r.ISIN), nullable(r.CUSIP),
+			nullable(r.Symbol), nullable(r.Name),
+			nullable(r.Currency),
 			r.FirstSeenAt, r.LastSeenAt, nullableJSON(r.Payload),
 		); err != nil {
 			return fmt.Errorf("UpsertInstruments row %d: %w", i, err)
@@ -352,12 +352,12 @@ INSERT INTO positions (
 			r := &batch[i]
 			return append(args,
 				r.SilverSourceID, r.SnapshotAt, nullableInstant(r.ValuedAt), r.AccountExternalID, r.PositionKey,
-				nullableString(r.InstrumentExternalID), string(r.AssetClass), string(r.Vehicle), r.Currency,
-				nullableDecimal(r.Quantity), nullableDecimal(r.MarketValue),
-				nullableDecimal(r.BookValue), nullableEnumValue(r.Basis.Origin),
+				nullable(r.InstrumentExternalID), string(r.AssetClass), string(r.Vehicle), r.Currency,
+				nullable(r.Quantity), nullable(r.MarketValue),
+				nullable(r.BookValue), nullableEnumValue(r.Basis.Origin),
 				nullableEnumValue(r.Basis.Method), nullableEnumValue(r.Basis.Fees),
-				nullableDecimal(r.AccruedInterest),
-				nullableTime(r.AcquisitionDate), nullableJSON(r.Payload))
+				nullable(r.AccruedInterest),
+				nullable(r.AcquisitionDate), nullableJSON(r.Payload))
 		})
 }
 
@@ -389,10 +389,10 @@ INSERT INTO position_lots (
 			r := &batch[i]
 			return append(args,
 				r.SilverSourceID, r.SnapshotAt, r.AccountExternalID, r.PositionKey, r.LotKey,
-				nullableString(r.InstrumentExternalID), r.Currency,
-				nullableDecimal(r.Quantity), nullableDecimal(r.BookValue), nullableDecimal(r.MarketValue),
-				nullableTime(r.AcquisitionDate), nullableEnumValue(r.Term), nullableBool(r.Covered),
-				nullableEnumValue(r.BasisOrigin), nullableString(r.SourceDocument), nullableJSON(r.Payload))
+				nullable(r.InstrumentExternalID), r.Currency,
+				nullable(r.Quantity), nullable(r.BookValue), nullable(r.MarketValue),
+				nullable(r.AcquisitionDate), nullableEnumValue(r.Term), nullable(r.Covered),
+				nullableEnumValue(r.BasisOrigin), nullable(r.SourceDocument), nullableJSON(r.Payload))
 		})
 }
 
@@ -549,7 +549,7 @@ INSERT INTO fx_rates (
 			return append(args,
 				r.SilverSourceID, r.SnapshotAt,
 				r.BaseCurrency, r.QuoteCurrency,
-				r.MidRate, nullableDecimal(r.BidRate), nullableDecimal(r.AskRate),
+				r.MidRate, nullable(r.BidRate), nullable(r.AskRate),
 				nullableJSON(r.Payload))
 		})
 }
@@ -588,15 +588,15 @@ INSERT INTO transactions (
 			r := &batch[i]
 			return append(args,
 				r.SilverSourceID, r.TransactionExternalID, r.OccurredAt,
-				r.AccountExternalID, nullableString(r.InstrumentExternalID),
+				r.AccountExternalID, nullable(r.InstrumentExternalID),
 				nullableEnumValue(r.AssetClass), nullableEnumValue(r.Vehicle),
 				nullableEnumValue(r.InstrumentHint),
 				string(r.Kind), r.Currency,
-				nullableDecimal(r.GrossAmount), nullableDecimal(r.NetAmount),
-				nullableDecimal(r.Quantity), nullableDecimal(r.Price),
+				nullable(r.GrossAmount), nullable(r.NetAmount),
+				nullable(r.Quantity), nullable(r.Price),
 				storedDescription(r),
-				nullableString(r.Counterparty), nullableString(r.ProviderCategory),
-				nullableString(r.CheckNumber),
+				nullable(r.Counterparty), nullable(r.ProviderCategory),
+				nullable(r.CheckNumber),
 				nullableJSON(r.Payload))
 		})
 }
@@ -634,31 +634,10 @@ func storedDescription(r *canonical.TransactionChange) any {
 
 // ---- nullable conversion helpers ------------------------------------------
 
-// nullableString returns nil for a nil pointer, the dereferenced
-// value otherwise. DuckDB's database/sql driver interprets a nil
-// interface as SQL NULL.
-func nullableString(p *string) any {
-	if p == nil {
-		return nil
-	}
-	return *p
-}
-
-func nullableDecimal(p *canonical.Decimal) any {
-	if p == nil {
-		return nil
-	}
-	return *p
-}
-
-func nullableBool(p *bool) any {
-	if p == nil {
-		return nil
-	}
-	return *p
-}
-
-func nullableTime(p *time.Time) any {
+// nullable returns nil for a nil pointer, the dereferenced value
+// otherwise. DuckDB's database/sql driver interprets a nil interface
+// as SQL NULL.
+func nullable[T any](p *T) any {
 	if p == nil {
 		return nil
 	}

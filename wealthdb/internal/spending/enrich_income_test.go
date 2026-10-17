@@ -216,10 +216,10 @@ func TestIncomeBuiltinRuleIsGatedOnDeposit(t *testing.T) {
 
 	// The gate is the function's own, not the caller's, so a direct
 	// call cannot get past it either.
-	if _, _, ok := IncomeRuleCategory("interest", "CASH DEPOSIT BRANCH", "", "", ""); ok {
+	if _, ok := IncomeRuleCategory("interest", "CASH DEPOSIT BRANCH", "", "", ""); ok {
 		t.Error("IncomeRuleCategory fired on an interest row")
 	}
-	if _, _, ok := IncomeRuleCategory("deposit", "CASH DEPOSIT BRANCH", "", "", ""); !ok {
+	if _, ok := IncomeRuleCategory("deposit", "CASH DEPOSIT BRANCH", "", "", ""); !ok {
 		t.Error("IncomeRuleCategory did not fire on a deposit row")
 	}
 }

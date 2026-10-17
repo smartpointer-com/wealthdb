@@ -20,6 +20,15 @@ func writeConfig(t *testing.T, body string) string {
 	return path
 }
 
+// loadWith writes a minimal config, one chase source `bank`, with the
+// given top-level blocks added, and loads it, returning the config or
+// the load error.
+func loadWith(t *testing.T, body string) (*Config, error) {
+	t.Helper()
+	return Load(writeConfig(t, `{"gold_db": "/tmp/g.db", "default_currency": "USD", `+
+		`"silver_sources": [{"id": "bank", "kind": "chase", "path": "/tmp/s.db"}], `+body+`}`))
+}
+
 func TestLoadValid(t *testing.T) {
 	path := writeConfig(t, `{
         "gold_db": "/tmp/wealthdb.db",
@@ -479,6 +488,49 @@ func TestExcludeCannotBeCombinedWithAColumnOverride(t *testing.T) {
 	}
 }
 
+// TestValidateNamesTheFirstBadEntryInKeyOrder pins that a config with
+// two bad override entries reports the same one on every run, the
+// first in key order, so a re-run after a fix names the next one
+// rather than whichever a map iteration happened to reach.
+func TestValidateNamesTheFirstBadEntryInKeyOrder(t *testing.T) {
+	c := &Config{
+		GoldDB: "/x", DefaultCurrency: "USD",
+		SilverSources: []SilverSource{{ID: "a", Kind: "schwab", Path: "/x"}},
+		AccountOverrides: map[string]map[string]AccountOverride{
+			"a": {
+				"ACC-C": {TaxWrapper: "not-a-wrapper"},
+				"ACC-A": {TaxWrapper: "not-a-wrapper"},
+				"ACC-B": {TaxWrapper: "not-a-wrapper"},
+			},
+		},
+	}
+	for range 20 {
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), `"ACC-A"`) {
+			t.Fatalf("Validate = %v, want the error to name ACC-A", err)
+		}
+	}
+}
+
+// TestValidateRefusesAMalformedPSNStartOverride pins that a
+// relationship's psn_start_override is checked at Load, as every other
+// date in the config is, rather than first at load or status time.
+func TestValidateRefusesAMalformedPSNStartOverride(t *testing.T) {
+	c := &Config{
+		GoldDB: "/x", DefaultCurrency: "USD",
+		SilverSources: []SilverSource{{ID: "u", Kind: "ubs", Subsources: []SilverSubsource{{Kind: "ubs-psn", Path: "/p"}},
+			Relationships: []RelationshipPair{{Label: "main", PSNID: "SYNTH01", PSNStartOverride: "2024-13-01"}}}},
+	}
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "relationships[0].psn_start_override") {
+		t.Fatalf("Validate = %v, want a psn_start_override refusal", err)
+	}
+	c.SilverSources[0].Relationships[0].PSNStartOverride = "2024-01-31"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate with a valid psn_start_override: %v", err)
+	}
+}
+
 func TestValidateRejectsOrphanOverride(t *testing.T) {
 	c := &Config{
 		GoldDB: "/x", DefaultCurrency: "USD",
@@ -577,6 +629,30 @@ func TestInstrumentOverrides(t *testing.T) {
 			t.Fatalf("err = %v, want empty-key complaint", err)
 		}
 	})
+}
+
+// TestTickerShape pins the ticker shape both the symbol overrides and
+// resolve-symbols' model answers are held to.
+func TestTickerShape(t *testing.T) {
+	t.Parallel()
+	goodTickers := []string{"AAPL", "BRK.B", "XDEW", "TFLO", "005930", "9988", "BRK-B", "DBK.DE"}
+	for _, s := range goodTickers {
+		if !TickerShape.MatchString(s) {
+			t.Errorf("%q should be ticker-shaped", s)
+		}
+	}
+	badTickers := []string{
+		"",                   // empty
+		"aapl",               // lowercase
+		"BANK INT 07/30",     // spaces + slash
+		"VERY-LONG-TICKER-X", // too long
+		"$$$",                // junk
+	}
+	for _, s := range badTickers {
+		if TickerShape.MatchString(s) {
+			t.Errorf("%q should NOT be ticker-shaped", s)
+		}
+	}
 }
 
 func TestValidateSymbolOverrides(t *testing.T) {

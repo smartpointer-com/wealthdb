@@ -205,8 +205,9 @@ func (l *Loader) Load(ctx context.Context, spec SourceSpec) (*LoadResult, error)
 
 	switch {
 	case status.LatestChangeNumber == watermark:
-		// Nothing to do; commit so silver_sources.last_loaded_at
-		// still advances (proof we ran).
+		// Nothing to do. Commit so the observed watermarks and the
+		// refreshed kind/path stick; last_loaded_at keeps the last
+		// load that advanced.
 		res.AlreadyUpToDate = true
 		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("Load(%s): commit no-op: %w", spec.ID, err)
@@ -408,7 +409,7 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 		// Stamp the silver_source_id on every record before write.
 		stampSnapshotBatch(&batch, spec.ID)
 		// Config-file statements go on top of whatever the adapter
-		// emitted; see DESIGN.md §13.9. Widest scope first, so a named
+		// emitted; see DESIGN.md §13.8. Widest scope first, so a named
 		// account still overrules the blanket rule on the same column.
 		applyTaxableWrapper(batch.Accounts, spec.TaxableWrapper)
 		applyPortfolioOverrides(batch.Accounts, spec.PortfolioOverrides)
@@ -695,7 +696,7 @@ func applyTransactions(ctx context.Context, tx *sql.Tx, conn silver.Connection, 
 		}
 		stampTransactionBatch(&batch, spec.ID)
 		// Config-file overrides go on top of whatever the adapter
-		// emitted, as they do on the snapshot side; see DESIGN.md §13.9.
+		// emitted, as they do on the snapshot side; see DESIGN.md §13.8.
 		applyTransactionInstruments(batch.Transactions, spec.TransactionInstruments)
 		batch.Transactions = dropSuperseded(batch.Transactions, spec.Supersession,
 			func(x canonical.TransactionChange) (string, int64) {

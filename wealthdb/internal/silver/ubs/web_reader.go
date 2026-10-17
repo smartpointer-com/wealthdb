@@ -35,14 +35,7 @@ type webReader struct {
 	valors map[string]string
 }
 
-func (r *webReader) Close() error {
-	if r == nil || r.db == nil {
-		return nil
-	}
-	err := r.db.Close()
-	r.db = nil
-	return err
-}
+func (r *webReader) Close() error { return silver.CloseDB(&r.db) }
 
 // Status mirrors the canonical.Status contract using web silver
 // columns. Snapshot times come from `dump_runs`; transaction
@@ -130,7 +123,7 @@ SELECT window_since, COALESCE(window_until, snapshot_at) FROM dump_runs WHERE wi
 // advances. This means re-running with no new dump_run is a
 // no-op even when historical data is present.
 func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	lo, hi, err := r.span(ctx, "ubs-web ChangeWindow", []string{
+	lo, hi, err := silver.Extrema(ctx, r.db, "ubs-web ChangeWindow", []string{
 		`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM dump_runs WHERE snapshot_at > ?`,
 		`SELECT MIN(value_date), MAX(value_date) FROM transactions WHERE value_date > ?`,
 	}, since)
@@ -158,25 +151,6 @@ func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Wi
 		}
 	}
 	return w, nil
-}
-
-// span runs MIN/MAX queries, each with the same args, and returns the
-// widest range they report, or (-1, -1) when every one is empty.
-func (r *webReader) span(ctx context.Context, what string, queries []string, args ...any) (lo, hi int64, err error) {
-	lo, hi = -1, -1
-	for _, q := range queries {
-		var a, b sql.NullInt64
-		if err := r.db.QueryRowContext(ctx, q, args...).Scan(&a, &b); err != nil {
-			return -1, -1, fmt.Errorf("%s: %w", what, err)
-		}
-		if a.Valid && (lo < 0 || a.Int64 < lo) {
-			lo = a.Int64
-		}
-		if b.Valid && b.Int64 > hi {
-			hi = b.Int64
-		}
-	}
-	return lo, hi, nil
 }
 
 // snapshotsForOverlap emits dimensions (portfolios, accounts,
@@ -211,10 +185,7 @@ func (r *webReader) snapshotsForOverlap(
 	if err != nil {
 		return nil, err
 	}
-	byTime := make(map[int64]*canonical.SnapshotBatch, len(times))
-	for _, t := range times {
-		byTime[t] = &canonical.SnapshotBatch{}
-	}
+	byTime := silver.NewBatches(times)
 
 	// Dimensions only — portfolios, accounts, instruments. Positions / cash
 	// come from the PSN side (with web payload folded in by the orchestrator).
@@ -250,23 +221,12 @@ func (r *webReader) snapshotsForOverlap(
 		return nil, err
 	}
 
-	// Re-read the batch times: the statement balances above can add a
-	// period end that was not a dump time.
-	allTimes := make([]int64, 0, len(byTime))
-	for t := range byTime {
-		allTimes = append(allTimes, t)
-	}
-	sort.Slice(allTimes, func(i, j int) bool { return allTimes[i] < allTimes[j] })
-
-	batches := make([]canonical.SnapshotBatch, 0, len(allTimes))
-	for _, t := range allTimes {
-		b := byTime[t]
-		if len(b.Portfolios)+len(b.Accounts)+len(b.Instruments)+
-			len(b.Positions)+len(b.CashBalances) == 0 {
-			continue
-		}
-		batches = append(batches, *b)
-	}
+	// Every batch time streams, including a period end the statement
+	// balances above added that was not a dump time.
+	batches := slices.DeleteFunc(byTime.Sorted(), func(b canonical.SnapshotBatch) bool {
+		return len(b.Portfolios)+len(b.Accounts)+len(b.Instruments)+
+			len(b.Positions)+len(b.CashBalances) == 0
+	})
 	return silver.NewSnapshotStream(batches), nil
 }
 

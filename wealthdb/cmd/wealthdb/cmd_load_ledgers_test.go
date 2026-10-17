@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -109,28 +111,48 @@ func TestBadDeclarationFailsBeforeGoldIsOpened(t *testing.T) {
 }
 
 // A declaration whose holding no source states loads, and the load warns
-// with its line: the record declares nothing.
+// with its line: the record declares nothing. Past ten lines the warning
+// cuts the list short. The load says what it stamped and what the
+// exposure pass built.
 func TestLoadWarnsOfADeclarationNamingNoHolding(t *testing.T) {
 	t.Parallel()
-	cfgPath := setupCLITest(t)
-	dir := filepath.Dir(cfgPath)
-	ledger := filepath.Join(dir, "exposure_declarations.ndjson")
-	if err := os.WriteFile(ledger, []byte(`{"silver_source_id":"schwab-test","instrument":"QNOPE","country":{"CH":100}}`+"\n"),
-		0o600); err != nil {
-		t.Fatal(err)
-	}
-	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD",
-        "silver_sources": [{"id":"schwab-test","kind":"schwab","path":%q}],
-        "exposure": {"declarations": %q}}`, goldPathFromCfg(cfgPath), filepath.Join(dir, "schwab.db"), ledger)
-	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, se, code := run(t, "-c", cfgPath, "init"); code != 0 {
-		t.Fatalf("init failed: %s", se)
-	}
-	_, se, code := run(t, "-c", cfgPath, "load", "schwab-test")
-	if code != 0 || !strings.Contains(se, "1 declaration(s) name a holding no source states (exposure.declarations line 1)") {
-		t.Errorf("exit %d, stderr:\n%s", code, se)
+	for records, lines := range map[int]string{
+		1:  "1 declaration(s) name a holding no source states (exposure.declarations line 1)",
+		12: "12 declaration(s) name a holding no source states (exposure.declarations line 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, …)",
+	} {
+		t.Run(strconv.Itoa(records), func(t *testing.T) {
+			t.Parallel()
+			cfgPath := setupCLITest(t)
+			dir := filepath.Dir(cfgPath)
+			ledger := filepath.Join(dir, "exposure_declarations.ndjson")
+			var body strings.Builder
+			for i := range records {
+				fmt.Fprintf(&body, `{"silver_source_id":"schwab-test","instrument":"QNOPE%d","country":{"CH":100}}`+"\n", i)
+			}
+			if err := os.WriteFile(ledger, []byte(body.String()), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD",
+                "silver_sources": [{"id":"schwab-test","kind":"schwab","path":%q}],
+                "exposure": {"declarations": %q}}`, goldPathFromCfg(cfgPath), filepath.Join(dir, "schwab.db"), ledger)
+			if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, se, code := run(t, "-c", cfgPath, "init"); code != 0 {
+				t.Fatalf("init failed: %s", se)
+			}
+			so, se, code := run(t, "-c", cfgPath, "load", "schwab-test")
+			if code != 0 || !strings.Contains(se, lines) {
+				t.Errorf("exit %d, stderr:\n%s", code, se)
+			}
+			if want := fmt.Sprintf("load: %d exposure entr(ies) stamped", records); !strings.Contains(so, want) {
+				t.Errorf("stdout lacks %q:\n%s", want, so)
+			}
+			if !regexp.MustCompile(`(?m)^exposure: [1-9][0-9]* securities, [0-9]+ aliases, [0-9]+ unmapped label\(s\)$`).
+				MatchString(so) {
+				t.Errorf("stdout lacks the exposure pass's summary:\n%s", so)
+			}
+		})
 	}
 }
 

@@ -28,9 +28,9 @@ func (*Adapter) Kind() string { return kindName }
 
 // Open attaches the configured Schwab silvers.
 //
-// Single-file mode (spec.Path set): legacy form — treats the
-// file as a schwab-api silver. Used by tests and by users who
-// only have the api feed configured at the top level.
+// Single-file mode (spec.Path set): the file is a schwab-api
+// silver, the form for a source configured with the api feed
+// alone at the top level.
 //
 // Subsources mode: kind is "schwab-api" or "schwab-web". The api
 // entry is required and the web entry optional: the web silver
@@ -43,7 +43,7 @@ func (*Adapter) Kind() string { return kindName }
 func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	c := &Connection{}
 
-	// Single-path form (legacy + tests).
+	// Single-path form: a schwab-api silver.
 	if spec.Path != "" {
 		db, err := silver.OpenReadOnlySQLite(spec.Path, "schwab (single path)")
 		if err != nil {
