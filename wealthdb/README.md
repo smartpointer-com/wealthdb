@@ -97,7 +97,7 @@ data (FX rates, what funds hold). See
 
 Each account has a kind, a tax wrapper and a management style.
 Adapters fill what silver carries, and the config fills the rest
-([docs/DESIGN.md §13.9](docs/DESIGN.md)).
+([docs/DESIGN.md §13.8](docs/DESIGN.md)).
 
 ## Quickstart
 

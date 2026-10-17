@@ -168,7 +168,7 @@ fall within 7 days of each other and their quantities within 5%:
   and unknown date.
 
 A transfer in nothing pairs opens a lot of unknown cost and unknown
-date. A row of the equity-transfer ledger (DESIGN.md §13.10) that
+date. A row of the equity-transfer ledger (DESIGN.md §13.9) that
 states a cost basis opens at that cost instead, and a basis config
 states for the instrument (§7) costs what neither does. A transfer out nothing
 pairs relieves lots with no proceeds.

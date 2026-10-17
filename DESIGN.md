@@ -24,8 +24,8 @@ one owner and a stable contract with the next.
 
 Four collectors stand in for the rest above; the diagram shows the
 shape, not the roster. [collectors/README.md](collectors/README.md)
-carries the roster — every source, what it fetches, how it is driven and
-where it stands — and is the one place that list is written down.
+carries the roster. It names every source, what it fetches and how it is
+driven, and is the one place that list is written down.
 
 - **Bronze** — exactly what the source returned, untouched. Owned
   by each collector's `download.py`. Lands under
@@ -73,7 +73,7 @@ without conflating them:
 
 The values of each are not listed here — three copies of a list is
 three chances to drift.
-[wealthdb/docs/DESIGN.md §13.9](wealthdb/docs/DESIGN.md) carries them,
+[wealthdb/docs/DESIGN.md §13.8](wealthdb/docs/DESIGN.md) carries them,
 beside the rule for what an adapter must stamp and what config may
 override.
 
@@ -90,6 +90,7 @@ resolved.
 | --- | --- |
 | Gold schema, CLI, plugin contract, load semantics, package layout | [wealthdb/docs/DESIGN.md](wealthdb/docs/DESIGN.md) |
 | Returns method (TWR / MWR) and its rationale | [wealthdb/docs/RETURNS-NOTES.md](wealthdb/docs/RETURNS-NOTES.md) |
+| The reports: gains, exposure, lots, spending, income, cash flow, taxonomy | [wealthdb/docs/](wealthdb/docs/) ([README.md § Documentation](README.md#documentation) lists each) |
 | Per-source adapter design (gold side) | [wealthdb/docs/adapters/](wealthdb/docs/adapters/) |
 | A given source's bronze/silver internals | `collectors/<source>/DESIGN.md` |
 | Agent ground rules (shared) | [AGENTS.md](AGENTS.md) |

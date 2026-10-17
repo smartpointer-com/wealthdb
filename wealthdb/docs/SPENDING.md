@@ -16,7 +16,7 @@ Related design in [DESIGN.md](DESIGN.md):
 - §4.12: the `spending` read command and its flags;
 - §5.1: the `spending` config block;
 - §10.10: the report macros;
-- §13.11: the pins ledger.
+- §13.10: the pins ledger.
 
 Each mechanism below names the gold migration that defines it.
 
@@ -483,7 +483,7 @@ as it owns the derived provenances (see *Pins* below).
 ### Pins
 
 `spending.pins` names a CSV ledger of per-transaction corrections
-(DESIGN.md §13.11 has the columns and the mechanics). It exists for the
+(DESIGN.md §13.10 has the columns and the mechanics). It exists for the
 row nothing else can classify: an FX roll settling as a bare
 withdrawal has no descriptor for a rule and no counter-leg for the
 matcher; a subscription booked as a plain debit looks exactly like a
@@ -663,7 +663,8 @@ source, account, day, amount, currency — never by gold's opaque
 transaction id. The columns are `verb`, `silver_source_id`, `account`,
 `occurred_at`, `amount` and `currency` for the first leg, the same
 names with a `_b` suffix for the second, and an optional `note`.
-Columns are found by header name.
+Columns are found by header name. `account` is an
+`account_external_id`; a nickname does not resolve here.
 
 | verb | legs given | meaning |
 |---|---|---|
@@ -2165,7 +2166,7 @@ Each decision points to the section that argues it.
   `spending.rules` validates against `ValidSpendDetailed`, as the pins
   do.
 
-## 10. Open follow-ups
+## 10. Known limits
 
 - **Model-tier measurements.** The `categorize` loop is covered against
   a scripted client, and a batch of 40 sits well inside the transport's

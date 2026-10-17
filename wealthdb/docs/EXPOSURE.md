@@ -104,10 +104,10 @@ whose label a map knows, and keeps where it came from:
 
 | Field | Order |
 | --- | --- |
-| sector | a vendor; the newest fund line; another provider's sector; the SEC SIC code; a bond's type at OpenFIGI; a bond's description |
-| country of risk | a vendor's risk country; the newest fund line's country; another provider's risk country; the headquarters country (GLEIF, EDGAR's business address); the country a bond's type or description implies |
+| sector | the newest fund line; a provider's sector; the SEC SIC code; a bond's type at OpenFIGI; a bond's description |
+| country of risk | the newest fund line's country; a provider's risk country; the headquarters country (GLEIF, EDGAR's business address); the country a bond's type or description implies |
 | country of domicile | the legal country (GLEIF); the country of incorporation (EDGAR); the ISIN prefix |
-| market cap | a vendor; another provider's market cap; for a US filer, EDGAR's shares outstanding times the US-dollar price a position held directly implies, else the newest fund line's |
+| market cap | a provider's market cap; for a US filer, EDGAR's shares outstanding times the newest US-dollar price a position held directly or a fund line implies |
 
 A declaration (§9) wins over every source for the holding it names, in
 each dimension it states.
@@ -186,7 +186,8 @@ security's attributes name the share as their origin: `lei:isin:…`,
 matched among all shares carry the flag `by_name`.
 
 `--country risk` (the default) places a security in its country of
-risk, else its domicile. `--country domicile` does the opposite.
+risk, else its domicile, on `countries` and `securities`.
+`--country domicile` does the opposite. The other views refuse it.
 
 ### Size
 
@@ -288,11 +289,11 @@ mark describes the holding.
   currency counts every leaf below it in that currency. The fund's own
   attributes decide, even where a proxy describes its lines.
 - **Currency forwards.** A forward line that states its long leg at
-  notional splits in two: the long leg in its currency, at the leg's
-  share of the fund's net assets, and the rest of the line, the short
-  leg, in the short currency, else the line's. The two sum to the
-  line. A forward that states no legs, held directly or in a fund,
-  counts in its own currency and is flagged `partial`.
+  notional splits in two. The long leg counts in its own currency, at
+  the leg's share of the fund's net assets. The rest of the line is the
+  short leg. It counts in the short currency, else in the line's. The
+  two sum to the line. A forward that states no legs, held directly or
+  in a fund, counts in its own currency and is flagged `partial`.
 - **Cash and derivatives inside a fund** stay leaves of their own asset
   type.
 - **Private holdings.** No public source describes a property, a loan,
@@ -457,9 +458,8 @@ The `exposure` block of `wealthdb.cfg` holds what no source knows
 - `max_gap_days` bounds the temporal join (§4): 1 to 3650 days,
   default 400.
 
-The block is checked when the config loads. A load writes it, with the
-declarations ledger, into the `exposure_*` tables whole (DESIGN.md
-§7.6), so an entry taken out leaves on the next load.
+The block is checked when the config loads. DESIGN.md §7.6 says how a
+load stores it.
 
 ### The declarations ledger
 
@@ -478,7 +478,8 @@ holding and date:
 - `silver_source_id` and `instrument` name the holding, as `exposure
   coverage` prints them.
 - `as_of` is the date of the document the record comes from,
-  `YYYY-MM-DD`. A record without one is simply true.
+  `YYYY-MM-DD`. A record without one holds before the holding's first
+  dated record (below).
 - A record declares at least one dimension, or a `situs`. Each
   dimension is an object of values and their shares:
   - `region`: a region (§3), or `rest` for the rest of the world, which
@@ -532,8 +533,8 @@ target split does not go stale as a fund's list of holdings does. Before
 its first record, a holding is undeclared. The situs has a precedence of
 its own (§13).
 
-The ledger is filled in a loop. `wealthdb exposure coverage -f ndjson`
-prints a skeleton record for each holding still to declare:
+`wealthdb exposure coverage -f ndjson` prints a skeleton record for
+each holding still to declare:
 
 - a private holding without a record (the section `undeclared`) gets
   one with an empty `country`, `currency` and `sector`;
@@ -607,12 +608,12 @@ The Metabase Exposure dashboard (`wealthdb web`) charts the same
 figures at every month end and today, by country of risk, and each
 holding's legal situs ([web/DESIGN.md](../../web/DESIGN.md) §6 and
 §8). Its Source, Tax wrapper and Asset class pickers narrow every
-chart to a selection, and each share then reads as a share of the
-selection's net worth; with nothing picked, of net worth, as here. The command has no
-such filter. Every refresh recomputes the whole history, so a new composition
-or declaration shows in past months too. A security's attributes, its
-size among them, are today's at every month end, as in a `--period`
-series (§7).
+chart to a selection. A share then reads as a share of the selection's
+net worth. With nothing picked, it is a share of net worth, as here.
+The command has no such filter. Every refresh recomputes the whole
+history, so a new composition or declaration shows in past months too.
+A security's attributes, its size among them, are today's at every
+month end, as in a `--period` series (§7).
 
 The MCP server has an `exposure` tool with the same nine views, an
 `as_of` day and the `country` choice, but no `--period` series. Its

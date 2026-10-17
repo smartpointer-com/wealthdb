@@ -45,6 +45,9 @@ Conventions:
 | `securities` | `security_identities` | security, lookup day and provider |
 | `security_facts` | `security_facts` | security, field, lookup day and provider |
 
+Gold's `securities` is a different table. The exposure pass builds it
+from every source that describes a security (DESIGN.md §10.14).
+
 Columns pass through by name. Two things are added:
 
 - A composition's `fetched_at` is the row's `run_at`.
@@ -207,7 +210,7 @@ A security:
 | `share_pct` | a constituent's share of net worth through funds, in percent, so a collector asks the biggest first; `null` for a security held directly |
 | `asset_class` | the security's asset class: the holding's, or the one its fund lines state, so a lookup that finds companies can skip a bond |
 | `missing` | the fields no source states yet: `sector`, `country` and, for a stock held directly, `market_cap` (the fact fields below). A bond's type from a lookup states its sector. A municipal bond's type states its country too. For a constituent, a country only an ISIN's prefix implies counts as missing, and so does a sector or a country a depositary receipt took from a share matched by name (EXPOSURE.md §3). |
-| `lookups` | the day each provider last answered for the security, so a collector refreshes what is older than its `max_age`. An answer under another key that found nothing does not count, so the security's own identifier is asked. |
+| `lookups` | the day each provider last answered for the security, so a collector refreshes what is older than its `max_age_days`. An answer under another key that found nothing does not count, so the security's own identifier is asked. |
 
 A security is wanted when a position holds it as a `stock` or a `bond`,
 or when the look-through of the day reaches it through a fund held today
@@ -233,7 +236,7 @@ The fact fields a provider writes, and the wanted field each answers:
 | `sector` | `sector`, in the provider's own words (`scheme` names the scheme) |
 | `sic` | `sector`, as an SEC SIC code |
 | `risk_country`, `hq_country`, `legal_country`, `incorporation` | `country` |
-| `market_cap`, `shares_outstanding`, `size` | `market_cap` |
+| `market_cap`, `shares_outstanding` | `market_cap` |
 | `issuer_isins` | `sector` and `country` of a depositary receipt: the other ISINs of its issuer, space-separated, among which gold finds the share it stands for |
 
 A gold opened read-only before the exposure tables existed has no

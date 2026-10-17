@@ -80,8 +80,7 @@ script, login-form fill); the recording half is `collectorkit.explore`,
 shared by every harness. Pick the archetype from the
 Auth/Runtime columns of the roster table in
 [collectors/README.md](collectors/README.md), newest sibling first
-(date candidates with `git log --diff-filter=A -- collectors/<name>`
-and prefer rows the roster notes as validated):
+(date candidates with `git log --diff-filter=A -- collectors/<name>`):
 
 | Archetype | Marker |
 | --- | --- |

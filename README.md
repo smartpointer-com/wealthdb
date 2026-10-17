@@ -8,6 +8,7 @@ consolidates them into one local database. From that database,
 one CLI and an optional set of dashboards answer:
 
 - what was held, anywhere, as of any date;
+- what is really owned, every fund looked through to what it holds;
 - what each account, each portfolio and the whole returned;
 - what came in and what went out, typed and categorised;
 - where the cash went, as a cash flow statement with the household's
@@ -15,7 +16,7 @@ one CLI and an optional set of dashboards answer:
 
 The collectors download, the engine consolidates, the reports read.
 All data stays on the local machine, and no service sits in between,
-with two exceptions:
+with three exceptions:
 
 - A login linked through [Plaid](collectors/plaid/). Plaid reads that
   institution and keeps a copy of its data.
@@ -23,6 +24,10 @@ with two exceptions:
   it runs on a remote endpoint, it receives the merchant, payer and
   instrument names it is asked about
   ([SPENDING.md §5](wealthdb/docs/SPENDING.md#5-what-leaves-the-machine)).
+- The [`refdata`](collectors/refdata/) collector. It asks public
+  sources about each fund and security held, by its identifier. They
+  see which securities are asked about. No amount, account or bank is
+  sent.
 
 ## ⚠️ Security & liability disclaimer
 
@@ -96,9 +101,10 @@ out by default. Every rebuilt figure says so.
 
 **Exposure.** What is really owned: every fund looked through to the
 stocks and bonds it holds, added to what is held directly, by asset
-class, sector, country and currency. The fund data comes from public
-sources the `refdata` collector reads. Where nothing describes a fund, a
-proxy the config names stands in, and every gap is listed.
+class, sector, size, country and currency, and where each holding
+legally sits. The fund data comes from public sources the `refdata`
+collector reads. Where nothing describes a fund, a proxy the config
+names stands in, and every gap is listed.
 
 **Income and spending.** What arrived — wages, interest, dividends,
 rent — and what left, grouped by category, across all cards and
@@ -158,15 +164,18 @@ for irreversible damage. wealthdb keeps the two apart:
    changes a setting, and no CLI flag can enable one.
 3. **The data lands locally.** Everything is parsed into local
    databases and consolidated into one queryable gold store.
-   Nothing is sent to any third-party service, with the two
-   exceptions named at the top: Plaid, and a remote model that
-   `categorize` and `resolve-symbols` ask.
+   Nothing is sent to any third-party service, with the three
+   exceptions named at the top: Plaid, a remote model that
+   `categorize` and `resolve-symbols` ask, and the public sources
+   `refdata` asks about each holding.
 4. **Agent access is read-only by construction.** The MCP server
    (`wealthdb mcp`, [mcp/README.md](mcp/README.md)) serves the
    reports as tools. It has no tool that writes, it opens the
    database read-only for one call at a time, and its container
    mounts the data read-only. An agent with a shell can run the CLI
-   instead, with `--read-only`. Either way, an agent sees only
+   instead, with `--read-only`.
+   [skills/wealthdb-ro/SKILL.md](skills/wealthdb-ro/SKILL.md) teaches
+   an agent which commands to run. Either way, an agent sees only
    consolidated, local, read-only queries.
 
 The result is a clean separation. An agent runs the same reports a
@@ -195,9 +204,9 @@ There is one collector per provider.
 - **Private markets** — [AngelList](collectors/angellist/),
   [Carta](collectors/carta/), [EquityZen](collectors/equityzen/).
 - **Archives and reference** — [SVB](collectors/svb/) statement
-  archives (load-only), [`manual`](collectors/manual/) for holdings
-  with no portal — property, private loans, escrow claims —
-  [FRED](collectors/fred/) for historic FX, and
+  archives (load-only); [`manual`](collectors/manual/) for holdings
+  with no portal, such as property, private loans and escrow claims;
+  [FRED](collectors/fred/) for historic FX;
   [`refdata`](collectors/refdata/) for what each fund holds.
 
 ## Adding a data source
@@ -241,7 +250,7 @@ Four parts, and a demo, in one repository:
 ```
 collectors/<source>/         wealthdb/
   download  → bronze            load  ─┐
-  load      → silver  ────────────────┼─→ gold (DuckDB)  →  wealthdb holdings | returns
+  load      → silver  ────────────────┼─→ gold (DuckDB)  →  wealthdb holdings | returns | gains | exposure
   (one SQLite per source)             │                     wealthdb spending | income | cashflow
                                       │                     wealthdb transactions
                                       │                     wealthdb web  (Metabase, over a snapshot)
@@ -324,6 +333,8 @@ describes the household and how to query it from the command line.
   the `asset_class` × `vehicle` classification.
 - **[AGENTS.md](AGENTS.md)** — agent ground rules shared across
   every component (security, PII, read-only access).
+- **[skills/wealthdb-ro/SKILL.md](skills/wealthdb-ro/SKILL.md)** — a
+  skill that teaches an AI agent which read-only reports to run.
 - **[NEW-COLLECTOR-PROMPT.md](NEW-COLLECTOR-PROMPT.md)** — the
   playbook for building a collector with a coding agent.
 - **[collectors/README.md](collectors/README.md)**,

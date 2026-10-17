@@ -39,7 +39,7 @@ writes to it.
 
 Gold is the **agent- and human-facing** layer: canonical, indexed,
 strictly relational, and the surface the reports (holdings, returns,
-spending, income, cash flow) read.
+gains, exposure, spending, income, cash flow) read.
 
 ## 3. Goals and non-goals
 
@@ -80,9 +80,9 @@ spending, income, cash flow) read.
   optional dashboards are Metabase over a snapshot of gold
   ([web/](../../web/)).
 - **Built-in market-data feeds.** Real-time prices, ex-dividend
-  dates, ratings and volatility are out of scope. Gold operates on
-  whatever each silver carries. §13.8 sketches where such a feed
-  would land.
+  dates, ratings and volatility are out of scope. Gold reads what each
+  silver carries. Reference data on funds and securities arrives
+  through the `refdata` source (§7.6).
 - **Performance attribution.** No command computes it. Gold carries
   the cost basis, open lots and realized lots each source states
   (§7.4), the lot engine fills what a source leaves out (§7.5), and
@@ -90,8 +90,8 @@ spending, income, cash flow) read.
 - **Cross-silver instrument deduplication.** Two silvers may hold the
   "same" equity under different `instrument_external_id`s; gold keeps
   them separate at the row level. `instruments.isin` is the join key
-  for queries that want a unified view. A canonical-instrument
-  mapping table can be added later if it earns its keep.
+  for queries that want a unified view. The exposure report's security
+  keys (§10.14) are the one cross-source mapping.
 - **Bitemporal corrections.** Same trade-off as silver — monotemporal
   on source time. When silver retracts a past event, gold loses the
   prior version too.
@@ -127,7 +127,7 @@ wealthdb cashflow <view> [flags]      (RO)    Cash flow statement: summary, flow
 wealthdb status  [<id>]               (RO)    Report gold state vs each silver source.
 wealthdb snapshots <id> | -a [--latest] (RO)  List snapshots gold has loaded (one silver, or all).
 wealthdb resolve-symbols              (RW)    Back-fill missing instrument ticker symbols via the configured LLM; skips hinted rows and cash-class instruments.
-wealthdb resolutions                  (RO)    Dump the symbol_resolutions table (LLM + manual-override tickers).
+wealthdb resolutions [-s <id>]        (RO)    Dump the symbol_resolutions table (LLM + manual-override tickers), optionally for one source.
 wealthdb categorize [spending|income] (RW)    Categorise the unplaced merchants and payers via the configured LLM.
 wealthdb categorizations [spending|income] (RO) Dump the model-derived verdict stores; --forget SIG removes one (RW).
 wealthdb mcp-serve --stdio | --http ADDR (RO) Serve the read-only reports to AI agents over MCP (mcp/DESIGN.md).
@@ -447,6 +447,7 @@ crash.
 | --- | --- | --- |
 | RW subcommand on read-only-detected DB | 2 | `wealthdb: '<cmd>' requires write access to the gold database, but '<path>' is read-only (detected: <reason>).` |
 | RW subcommand with `-r` / `--read-only` flag set | 2 | `wealthdb: '<cmd>' requires write access, but -r/--read-only was specified. Drop the flag or run a different subcommand.` |
+| Usage error: an unknown subcommand, a bad flag or argument | 2 | the `flag` package's own message; `wealthdb: unknown subcommand "<cmd>"` with the usage; or the subcommand's own `wealthdb: <cmd>: <reason>` |
 | RO subcommand on non-existent DB | 3 | `wealthdb: gold database '<path>' does not exist. Run 'wealthdb init' first (requires write access).` |
 | `init` on existing DB | 4 | `wealthdb: gold database '<path>' already exists. Use 'wealthdb reset -a' to clear data, or delete the file manually if you really want a fresh DB.` |
 | DuckDB open fails mid-run | 5 | the driver's own error, passed through whole and prefixed by the stage that hit it: `wealthdb: ping duckdb "<path>": <driver error>` (or `open duckdb` / `migrate gold`) |
@@ -464,12 +465,13 @@ file and the run is a retry once that one finishes (§13.6).
 Corruption and a stale WAL surface the same way, each as its own
 driver error.
 
-Exit codes 2–6 are distinct so callers (shell scripts, CI) can
-discriminate; 6 is allocated but unused — nothing returns it, and a
-silver open failure exits 1 with the plain error (`errs.ExitSilverIO`
-carries the same note). Exit code 1 is reserved
-for unexpected runtime errors (panics, etc.) — and for the
-failures no row above claims.
+Codes 3–6 are distinct, so callers (shell scripts, CI) can
+discriminate. Code 2 covers both a usage error and a write refused on
+a read-only gold. Code 6 is allocated but unused. Nothing returns it,
+and a silver open failure exits 1 with the plain error
+(`errs.ExitSilverIO` carries the same note). Exit code 1 is for
+unexpected runtime errors, such as panics, and for the failures no row
+above claims.
 
 #### Write-suppression in shared helpers
 
@@ -777,7 +779,7 @@ Example config file:
 | --- | --- | --- |
 | `gold_db` | string | Filesystem path to the DuckDB file. Created by `wealthdb init`. Expanded as above. |
 | `default_currency` | string | ISO 4217. The output currency of every command that values money, and of the MCP server, when `-x`/`--currency` is not given. When it is a reporting currency (USD, CHF, EUR or GBP, §10.8), the web dashboards open in it too. |
-| `equity_transfers` | string | Optional. Filesystem path to a CSV ledger of equity transfers in/out of a tracked account that the collectors don't capture as valued flows. The loader injects each row as a canonical `transfer_in`/`transfer_out` transaction. Expanded as above; a missing file is a no-op. See §13.10. |
+| `equity_transfers` | string | Optional. Filesystem path to a CSV ledger of equity transfers in/out of a tracked account that the collectors don't capture as valued flows. The loader injects each row as a canonical `transfer_in`/`transfer_out` transaction. Expanded as above; a missing file is a no-op. See §13.9. |
 | `web` | object | Optional. Enables the dockerized Metabase BI server driven by `wealthdb web` (host-side). See [web/README.md](../../web/README.md). |
 | `web.enabled` | bool | `true` to allow `wealthdb web start`. Absent block or `false` = the server is not configured. |
 | `web.port` | integer | Host loopback port Metabase is published on (127.0.0.1 + [::1] → container 3000). Default 3000. |
@@ -791,7 +793,7 @@ Example config file:
 | `silver_sources[].kind` | string | Picks the adapter (e.g. `schwab`, `ubs`, `swissquote`, `fred`, …), or `auto` to auto-detect (§5.2). The full set is the `silver_kind` whitelist enforced in gold (`internal/gold/migrations`) and mirrors the registered adapters under `internal/silver/`. |
 | `silver_sources[].path` | string | Filesystem path to the silver database, expanded as above. Used by single-file adapters (Schwab, Swissquote, single-source UBS, fred). Mutually exclusive with `subsources`. |
 | `silver_sources[].fx_priority` | integer | Optional. FX-rate precedence when several sources publish the same `(base, quote)` pair: lower = higher priority, absent/null = lowest. Ties broken by the order sources appear in this array. Affects only FX resolution (§10.6 / §13.2) — no effect on positions or transactions. |
-| `silver_sources[].taxable_wrapper` | string | Optional. The taxable wrapper this source's taxable accounts actually sit in, validated against the canonical `tax_wrapper` enum at config-load time. A bank feed says what a product IS and never who holds it, so an adapter emits the generic `taxable_personal` for any taxable account; this states the deployment's answer once per source instead of once per account, so an account opened later is right on the load that first sees it. It rewrites `taxable_personal` and nothing else — a retirement, trust or custodial wrapper the adapter had positive evidence for is kept, and an account with no wrapper at all is left alone. A per-account `account_overrides.tax_wrapper` still wins. See §13.9. |
+| `silver_sources[].taxable_wrapper` | string | Optional. The taxable wrapper this source's taxable accounts actually sit in, validated against the canonical `tax_wrapper` enum at config-load time. A bank feed says what a product IS and never who holds it, so an adapter emits the generic `taxable_personal` for any taxable account; this states the deployment's answer once per source instead of once per account, so an account opened later is right on the load that first sees it. It rewrites `taxable_personal` and nothing else — a retirement, trust or custodial wrapper the adapter had positive evidence for is kept, and an account with no wrapper at all is left alone. A per-account `account_overrides.tax_wrapper` still wins. See §13.8. |
 | `silver_sources[].subsources[]` | array | Optional. For adapters that merge several backing silvers under one logical source (UBS = `ubs-web` + `ubs-psn`). Each entry has its own `kind` and `path`. At least one entry required when present. |
 | `silver_sources[].subsources[].kind` | string | Subsource discriminator. UBS recognises `ubs-web` and `ubs-psn`. |
 | `silver_sources[].subsources[].path` | string | Filesystem path to that subsource's silver SQLite. Expanded like `path`. |
@@ -800,14 +802,14 @@ Example config file:
 | `silver_sources[].relationships[].web_id` | string | Optional. Web silver's `banking_relationship_id` (opaque SPA token, or `account_number_prefix` fallback). |
 | `silver_sources[].relationships[].psn_id` | string | Optional. PSN silver's `relationship_id` (SFTP server identifier like `SFTPCHxx`). At least one of `web_id` / `psn_id` must be set. |
 | `silver_sources[].relationships[].psn_start_override` | string | Optional `YYYY-MM-DD`. Overrides the auto-detected web↔PSN transaction-splice cutover for this relationship. Defaults to `MIN(snapshot_at)` in PSN's data for the paired `psn_id`. |
-| `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname`, `category`, `tax_wrapper`, and/or `management_style` strings, or `exclude: true` to drop the account and every fact keyed to it (a sweep over gold after the load's streams drain, §13.9). All inner fields are optional but at least one must be set per entry, and `exclude` may not be combined with a column override. `tax_wrapper` and `management_style` values are validated against the canonical enums (`internal/canonical/enums.go`) at config-load time. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
+| `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname`, `category`, `tax_wrapper`, and/or `management_style` strings, or `exclude: true` to drop the account and every fact keyed to it (a sweep over gold after the load's streams drain, §13.8). All inner fields are optional but at least one must be set per entry, and `exclude` may not be combined with a column override. `tax_wrapper` and `management_style` values are validated against the canonical enums (`internal/canonical/enums.go`) at config-load time. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
 | `declared_accounts` | object | Optional. Map keyed by an id the holder chooses (`[A-Za-z0-9_-]+`) of accounts the household OWNS at institutions the product does not collect: `account_kind` and `tax_wrapper` required and validated against the canonical enums, `nickname` and `currency` optional. The load writes each one as an account row under the reserved source `declared` (no `silver_sources[].id` may take that name), after the per-source loads and before the enrichment pass, and prints how many it stamped; a declaration removed from the config leaves on the next load. A declared account carries no balance and no facts: it exists so a rule's `far` can name it as the other side of an own-account move, which the cash flow statement then places by the declared wrapper exactly as it places a collected far account — a household wrapper makes the move pool-internal, a vehicle wrapper draws it as that vehicle's crossing (docs/CASHFLOW.md §4). Nothing the product measures can falsify a declaration, which is why the wrapper is required and the load prints how many declarations sit inside the pool. Deployment-specific: lives in the user's config. |
-| `exposure` | object | Optional. What the exposure report needs that no source knows: `proxies` (a fund whose composition stands in for another, with `always` and `leverage`), `reference_funds`, `size_funds`, `declarations` (the path to the declarations ledger, NDJSON; expanded as above), `custody` and `max_gap_days` (default 400). docs/EXPOSURE.md §9 defines each key and its bounds, and the ledger's records. The block is validated at config-load time. Every load reads and checks the declarations ledger before gold opens, then writes the block and the ledger into the `exposure_*` tables whole (§7.6). Deployment-specific: lives in the user's config. |
+| `exposure` | object | Optional. What the exposure report needs that no source knows: `proxies` (a fund whose composition stands in for another, with `always` and `leverage`), `reference_funds`, `size_funds`, `declarations` (the path to the declarations ledger, NDJSON; expanded as above), `custody` and `max_gap_days` (default 400). Validated at config-load time. docs/EXPOSURE.md §9 defines each key, its bounds and the ledger's records; §7.6 says how a load stores them. Deployment-specific: lives in the user's config. |
 | `holding_aliases` | array | Optional. Entries `{ "source", "account"?, "key", "as", "note"? }` naming a holding a source keys two ways, so the gains reports read both keys as one: a statement's overview line (`key`) until a daily feed lists the same holding by ISIN (`as`), say. `account` scopes the alias to one account; absent, it covers every account of the source. The load writes the block into gold's `holding_aliases` table whole, and `gains_windows` maps every position, lot and event key through it before a bucket's start meets its end (docs/GAINS.md §5). Validated for a configured source, two different keys, one alias per key, and no alias of an alias. Deployment-specific: lives in the user's config. |
-| `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole crypto portfolio inside an IRA / trust / Stiftung wrapper. Accepts `tax_wrapper` (unlike `account_overrides`, which also takes nickname / category / management_style) or `exclude: true`, which drops the portfolio and every account inside it with their facts; one of the two must be set and they may not be combined. A per-account `tax_wrapper` override still wins over a portfolio one. See §13.9. |
-| `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. See §13.9. |
-| `transaction_instruments` | object | Optional. Nested map keyed by `silver_source_id` (outer) and the **lookup token** an adapter failed on (inner), naming the `instrument_external_id` that token means. Closes a row (a securities trade, or an income or withholding row of a security) whose feed states its instrument in a way nothing else in the product can resolve — a Swiss valor for a line the instrument dimension has no valor for, a fund renamed since the trade, a ticker of neither shape, a statement name that fits two holdings. The token is whatever the row's `instrument_hint` holds (§10.8); read the open set with `wealthdb transactions -C +instrument_hint`. Validated for a declared source and non-empty halves at config-load time; the instrument id itself cannot be checked without gold, as with the override families above. It states the IDENTITY only — what the instrument IS stays `instrument_overrides`' question. See §13.9. |
-| `supersession` | object | Optional. Ends a source's account at a date because something else carries it from there. An account can outlive its source — a deposit account whose bank is acquired keeps running under the acquirer's collector, a holding moves custodian — and gold keys an account on `(silver_source_id, account_external_id)`, so the two are two accounts and BOTH count. One grain-keyed map (`accounts`), keyed by `silver_source_id` to `account_external_id` to `YYYY-MM-DD` (UTC), validated for a declared source and a parseable date at config-load time. The loader drops that account's positions, cash balances and transactions dated on or AFTER the date, and writes one zero row AT it for whatever the account still held — dropping alone is not enough, because gold carries a key forward until something supersedes it and a source that simply stops reporting supersedes nothing (§10.7). Cutting by date rather than dropping the account keeps the earlier half of a statement or dump that straddles the handover. The drop is of what the adapter read: an `equity_transfers` (§13.10) row dated on or after the date is refused by name and fails the load instead. This bounds a series at the END; `inception_overrides` below bounds the start. An entry matching nothing is a silent no-op. See §13.9. |
+| `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole crypto portfolio inside an IRA / trust / Stiftung wrapper. Accepts `tax_wrapper` (unlike `account_overrides`, which also takes nickname / category / management_style) or `exclude: true`, which drops the portfolio and every account inside it with their facts; one of the two must be set and they may not be combined. A per-account `tax_wrapper` override still wins over a portfolio one. See §13.8. |
+| `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. See §13.8. |
+| `transaction_instruments` | object | Optional. Nested map keyed by `silver_source_id` (outer) and the **lookup token** an adapter failed on (inner), naming the `instrument_external_id` that token means. Closes a row (a securities trade, or an income or withholding row of a security) whose feed states its instrument in a way nothing else in the product can resolve — a Swiss valor for a line the instrument dimension has no valor for, a fund renamed since the trade, a ticker of neither shape, a statement name that fits two holdings. The token is whatever the row's `instrument_hint` holds (§10.8); read the open set with `wealthdb transactions -C +instrument_hint`. Validated for a declared source and non-empty halves at config-load time; the instrument id itself cannot be checked without gold, as with the override families above. It states the IDENTITY only — what the instrument IS stays `instrument_overrides`' question. See §13.8. |
+| `supersession` | object | Optional. Ends a source's account at a date because something else carries it from there. An account can outlive its source — a deposit account whose bank is acquired keeps running under the acquirer's collector, a holding moves custodian — and gold keys an account on `(silver_source_id, account_external_id)`, so the two are two accounts and BOTH count. One grain-keyed map (`accounts`), keyed by `silver_source_id` to `account_external_id` to `YYYY-MM-DD` (UTC), validated for a declared source and a parseable date at config-load time. The loader drops that account's positions, cash balances and transactions dated on or AFTER the date, and writes one zero row AT it for whatever the account still held — dropping alone is not enough, because gold carries a key forward until something supersedes it and a source that simply stops reporting supersedes nothing (§10.7). Cutting by date rather than dropping the account keeps the earlier half of a statement or dump that straddles the handover. The drop is of what the adapter read: an `equity_transfers` (§13.9) row dated on or after the date is refused by name and fails the load instead. This bounds a series at the END; `inception_overrides` below bounds the start. An entry matching nothing is a silent no-op. See §13.8. |
 | `inception_overrides` | object | Optional. Pins the returns-window START date per source / portfolio / account so an entity's track record begins at its first real capital rather than a tiny pre-history dust base. Three grain-keyed maps (`sources`, `portfolios`, `accounts`), values `YYYY-MM-DD` (UTC). Consumed by the returns engine at query time — it stamps no gold column. See §5.4. |
 | `returns_exclude` | object | Optional. Omits whole accounts or portfolios from HIGHER-grain return aggregates (`sources`, `global`) while still reporting them at their own grain — e.g. keep holdings tracked in a shared login that belong to another person out of the source/global returns. Two grain-keyed maps (`portfolios`, `accounts`), each keyed by `silver_source_id` to a list of external ids; a listed source id must name a declared silver source. Returns only — holdings / net-worth are unaffected. See §5.5. |
 | `returns_policy_overrides` | object | Optional. Per-source adjustments to the registered ReturnsPolicy, keyed by `silver_source_id` (not adapter kind). `flow_regime` replaces the source's flow classification with a named regime's canonical kind sets (`"flow_complete"` \| `"crypto_partial"` \| `"nav_only"`); `accounts_grain` sets the per-account display mode (`"normal"` \| `"blanked"` \| `"hidden"`). Unset fields keep the registered policy's values. See §5.6. |
@@ -820,13 +822,13 @@ Example config file:
 | `income` | object | Optional. Groups the income feature's per-deployment knobs — `accounts`, `rules[]`, `pins`, `categorization` — in `spending`'s shapes. Two blocks spending has are deliberately absent: there is one internal-transfer matcher and one transfer-override ledger, and both families read them (docs/INCOME.md §1). Absent ⇒ every account counts, no rules and no pins apply, and the model tier inherits `spending.categorization`. |
 | `income.accounts` | object | Optional. The income account scope, in `spending.accounts`' shape and stamped into gold's `income_account_scope`. Its own table on purpose: an account excluded from spending because its outflows double-count something is not thereby an account whose inflows are not income. |
 | `income.rules[]` | array | Optional, default empty. As `spending.rules[]`, with the value field named **`type`** and validated against the INCOME vocabulary — a spending value here fails the load naming `income.rules[i].type`. So does a spelling the vocabulary retired, and the error names the value to write instead (docs/INCOME.md §2). Its optional `asset_class` is admitted only where `type` is `capital_return`, and its optional `far` only where `type` is `internal_transfer`; the far account of an inbound leg is written onto the spending overlay, the one overlay with far columns (docs/CASHFLOW.md §4). |
-| `income.pins` | string | Optional. Path to the income pins ledger: the spending ledger's format with an `income_detailed` column. See §13.11. |
+| `income.pins` | string | Optional. Path to the income pins ledger: the spending ledger's format with an `income_detailed` column. See §13.10. |
 | `income.categorization` | object | Optional. As `spending.categorization`, `fence_person_names` included. **Absent ⇒ inherits `spending.categorization` whole** — one household, one local model, one answer to what may leave the machine. Whole-block rather than per-field: a half-inherited endpoint is a configuration nobody wrote down, and a half-inherited fence would be one that quietly turned itself off. `context` additionally accepts `payer`, the income spelling of the narrowest level. |
 | `spending` | object | Optional. Groups the spending feature's per-deployment knobs. Absent ⇒ every account counts, the internal-transfer matcher runs on its defaults, no rules and no pins apply, and `wealthdb categorize` refuses for want of a model. See docs/SPENDING.md. |
 | `spending.accounts` | object | Optional. Account-scope overrides, keyed by `silver_source_id` in the `returns_exclude` shape, with `include` / `exclude` lists of account ids. An account may not appear in both. Stamped into gold's `spend_account_scope` by every enrichment pass, so removing an entry removes its effect. An entry naming an account gold does not hold scopes nothing; the pass counts such entries and the load summary reports how many. Which way round the overrides bite is the scope rule — see docs/SPENDING.md §1. |
 | `spending.internal_transfer_matching` | object | Optional. Knobs for the matcher that pairs the two legs of an own-account move so neither counts as spending: `window_days` (0–30, default 5) and `tolerance_pct` (0–5, default 0.5). Deliberately the same defaults as `returns_transfer_matching` — one matching core, one banding. Both bound the matcher's banded passes only: a pair the override ledger states, or one a source asserts — by stamping a reference on both legs, or by describing one leg's currency and figure on the other — is not a guess and is not banded. `names` (list of `{source, account?, match}`, each `match` a regular expression) says which narratives name which account as the other side of a movement; a leg that names one pairs with nothing else, and named pairs are claimed before the amount pass. See docs/SPENDING.md §3. |
 | `spending.rules[]` | array | Optional, default empty. The deployment's own entries in the rule tier, each `{ "match": <regex>, "category": <spend_detailed>, "scope"?, "asset_class"?, "far"? }`. `match` is compiled case-insensitively and tested against `counterparty`, the full `description` and `provider_category`; among config rules the first written wins. `category` may be any valid `spend_detailed` value, vendored or delta. `scope` narrows a rule to a `source`, `portfolio` or `account` and an inclusive `from`/`to` date range. `asset_class` is admitted only beside `investment` and `far` (a `declared_accounts` id) only beside `internal_transfer` ([CASHFLOW.md §4 and §7](CASHFLOW.md)). An invalid pattern, one matching the empty string, or an unknown value fails the load naming `spending.rules[i]`. Deployment-specific: lives in the config, never in the repository. [SPENDING.md §3](SPENDING.md), *Config-supplied rules*, owns the semantics. |
-| `spending.pins` | string | Optional. Filesystem path to a CSV ledger of per-transaction category pins — the top of the precedence lattice, for the row nothing else can classify. Columns `silver_source_id, account, occurred_at (YYYY-MM-DD), amount, currency, spend_detailed, asset_class, note` and no others — an unknown header fails the parse, and `asset_class` is optional; `account` is a gold `account_external_id` or a nickname, resolved as `equity_transfers` resolves it; `spend_detailed` may be any valid value, vendored or delta; `note` is free text kept for the ledger's own readability and is not carried into gold. `~` / `$HOME` / `${VAR}` expanded, a relative path resolved against the config file's directory; a missing file is a no-op. Re-stamped by every enrichment pass, so removing a row removes its effect. See §13.11. |
+| `spending.pins` | string | Optional. Filesystem path to a CSV ledger of per-transaction category pins — the top of the precedence lattice, for the row nothing else can classify. Columns `silver_source_id, account, occurred_at (YYYY-MM-DD), amount, currency, spend_detailed, asset_class, note` and no others — an unknown header fails the parse, and `asset_class` is optional; `account` is a gold `account_external_id` or a nickname, resolved as `equity_transfers` resolves it; `spend_detailed` may be any valid value, vendored or delta; `note` is free text kept for the ledger's own readability and is not carried into gold. `~` / `$HOME` / `${VAR}` expanded, a relative path resolved against the config file's directory; a missing file is a no-op. Re-stamped by every enrichment pass, so removing a row removes its effect. See §13.10. |
 | `spending.transfer_overrides` | string | Optional. Path to a CSV ledger of manual match and unmatch decisions for the internal-transfer matcher, for a pair the data cannot settle. Expanded as above; a missing file is a no-op. Both families read it. See [SPENDING.md §3](SPENDING.md), *Manual overrides on the matcher*. |
 | `spending.categorization` | object | Optional. Configures `wealthdb categorize`: the model endpoint (`model`), how much of a transaction reaches it (`context`), and the per-merchant narrative cap (`descriptor_samples`). Absent ⇒ the subcommand refuses; the deterministic tiers are unaffected and keep running on load. |
 | `spending.categorization.model` | object | Optional. LLM endpoint asked for a category per merchant signature. Same shape and same API support as `symbol_resolution.model` (`baseUrl`, `api`, `apiKey`, `name`). |
@@ -918,7 +920,7 @@ tracked in a shared login that belong to another person.
   the sources and global grains, an excluded account, and every account of an
   excluded portfolio, are omitted from the aggregate.
 - **Returns only.** Holdings and net-worth views are unaffected. To drop
-  an account from gold entirely, use `account_overrides.exclude` (§13.9).
+  an account from gold entirely, use `account_overrides.exclude` (§13.8).
 - Absent ⇒ nothing excluded.
 
 ### 5.6 Returns policy overrides (per source)
@@ -1073,140 +1075,70 @@ then-INSERT model exactly — see §8.
 
 ### 6.2 Interface
 
+`internal/silver/adapter.go` defines the contract. An `Adapter` opens
+a `Connection`, and the connection answers four calls.
+
 ```go
 package silver
 
 type Adapter interface {
     Kind() string                                       // "schwab", "ubs", "swissquote"
-    // Open attaches to the silver source(s) in spec. Single-file
-    // adapters read spec.Path; merged adapters (UBS = web + PSN)
-    // read spec.Subsources and align identities via spec.Relationships.
     Open(ctx context.Context, spec OpenSpec) (Connection, error)
-}
-
-type OpenSpec struct {
-    Path          string             // single-file adapters
-    Subsources    []Subsource        // merged adapters (UBS = ubs-web + ubs-psn)
-    Relationships []RelationshipPair
-}
-
-type Subsource struct {
-    Kind string
-    Path string
-}
-
-// RelationshipPair pairs a web banking_relationship_id with a PSN
-// relationship_id under one label so downstream sees a single key.
-type RelationshipPair struct {
-    Label            string
-    WebID            string
-    PSNID            string
-    PSNStartOverride int64 // Unix seconds UTC; 0 = auto-detect the web↔PSN cutover
 }
 
 type Connection interface {
     Close() error
-
-    // Status is a read-only snapshot of where the silver DB stands.
-    // Cheap to call (a few aggregate queries). The main app calls
-    // this on every `wealthdb load` and `wealthdb status`.
     Status(ctx context.Context) (canonical.Status, error)
-
-    // ChangeWindow returns the time window of changes in silver
-    // since the given logical change number, plus the new change
-    // number to advance the watermark to upon successful load.
-    //
-    // If HasChanges is false, the caller skips the Snapshots /
-    // Transactions calls; the new change number may still differ
-    // from `sinceChangeNumber` (silver advanced but produced no
-    // observable changes inside the window).
     ChangeWindow(ctx context.Context, sinceChangeNumber int64) (canonical.Window, error)
-
-    // Snapshots iterates dimension upserts and snapshot-grain facts
-    // (positions, open lots, cash balances, fx rates, account,
-    // portfolio and instrument updates) whose snapshot_at falls
-    // inside the given window. Pull-model batched iterator: the
-    // caller loops Next until done.
     Snapshots(ctx context.Context, window canonical.Window) (SnapshotStream, error)
-
-    // Transactions iterates event-grain facts whose occurred_at
-    // falls inside the given window. Pull-model batched iterator.
     Transactions(ctx context.Context, window canonical.Window) (TransactionStream, error)
 }
 
-// Optional: a connection whose silver states realized lots also
-// implements silver.RealizedLotReader (§8.3).
-
-// In internal/canonical:
-type Status struct {
-    OldestSnapshotAt     int64  // Unix seconds UTC; -1 if silver has no snapshots
-    LatestSnapshotAt     int64  // -1 if no snapshots
-    OldestTransactionAt  int64  // Unix seconds UTC; -1 if silver has no transactions
-    LatestTransactionAt  int64  // -1 if no transactions
-    LatestChangeNumber   int64  // monotone, opaque to gold; valid values start at 0; -1 = "silver is empty / nothing observable yet"
-    ObservedSnapshotsThrough    int64  // when a run last read the holdings (§6.4); -1 if unknown
-    ObservedTransactionsThrough int64  // through when the ledger is held without a gap (§6.4); -1 if unknown
-}
-
-type Window struct {
-    Start              int64    // earliest changed timestamp (inclusive, Unix seconds UTC)
-    End                int64    // latest changed timestamp (inclusive)
-    NewChangeNumber    int64    // value to write into silver_sources.high_watermark on success
-    HasChanges         bool     // false ⇒ no data fetch needed, just advance the watermark
-}
-
 type SnapshotStream interface {
-    // Next returns the next batch and whether more batches follow.
-    // more=false signals stream end; the returned batch is still
-    // valid and must be applied. Each batch contains zero or more
-    // records of each kind, multiplexed.
     Next(ctx context.Context) (batch canonical.SnapshotBatch, more bool, err error)
     Close() error
-}
-
-type SnapshotBatch struct {
-    Portfolios   []PortfolioChange
-    Accounts     []AccountChange
-    Instruments  []InstrumentChange
-    Positions    []PositionChange
-    PositionLots []PositionLotChange
-    CashBalances []CashBalanceChange
-    FxRates      []FxRateChange
 }
 
 type TransactionStream interface {
     Next(ctx context.Context) (batch canonical.TransactionBatch, more bool, err error)
     Close() error
 }
-
-type TransactionBatch struct {
-    Transactions []TransactionChange
-}
-
-// The *Change types mirror the gold-table column shapes one-to-one.
-// They live in internal/canonical so an adapter imports only the
-// canonical types, never the gold-writer implementation.
-type PositionChange struct {
-    SilverSourceID        string
-    SnapshotAt            int64
-    ValuedAt              int64   // the mark's instant; 0 = SnapshotAt (§6.4)
-    AccountExternalID     string
-    PositionKey           string
-    InstrumentExternalID  *string // nil if NULL in gold
-    AssetClass            AssetClass  // exposure (§7.2, TAXONOMY.md)
-    Vehicle               Vehicle     // wrapper (§7.2, TAXONOMY.md)
-    Currency              string
-    Quantity              *Decimal
-    MarketValue           *Decimal
-    BookValue             *Decimal
-    Basis                 Basis       // the stamp on BookValue (§7.4)
-    AccruedInterest       *Decimal
-    AcquisitionDate       *time.Time
-    Payload               json.RawMessage
-}
-// ...the other *Change types (PositionLotChange, TransactionChange,
-// RealizedLotChange, …) similarly mirror their tables.
 ```
+
+- **`Open`.** A single-file adapter reads `spec.Path`. A merged
+  adapter (UBS = ubs-web + ubs-psn) reads `spec.Subsources` and aligns
+  identities through `spec.Relationships`.
+- **`Status`.** A cheap read of where silver stands. Every
+  `wealthdb load` and `wealthdb status` calls it. Its timestamps are
+  Unix seconds UTC, and -1 means nothing is observable.
+  `LatestChangeNumber` is monotone and opaque to gold. Its valid values
+  start at 0, and -1 means silver is empty. The two `Observed*Through`
+  watermarks are §6.4's.
+- **`ChangeWindow`.** The window of changes since the given change
+  number, and the number to write into `silver_sources.high_watermark`
+  once the load succeeds. With `HasChanges` false, the caller skips
+  `Snapshots` and `Transactions`. The new number may still differ from
+  the old one: silver advanced, but nothing observable changed inside
+  the window.
+- **`Snapshots`.** The dimension upserts and snapshot-grain facts whose
+  `snapshot_at` falls inside the window. A `SnapshotBatch` multiplexes
+  the dimensions (portfolios, accounts, instruments), the facts
+  (positions, open lots, cash balances, FX rates) and the reference
+  records (§7.6).
+- **`Transactions`.** The event-grain facts whose `occurred_at` falls
+  inside the window.
+- **The streams.** Both are pull-model batched iterators (§6.5). The
+  batch that comes with `more=false` is still valid and is applied.
+- **Realized lots.** A connection whose silver states realized lots
+  also implements `silver.RealizedLotReader` (§8.3).
+
+The records live in `internal/canonical`, so an adapter imports only
+the canonical types, never the gold writer. Each `*Change` type mirrors
+one gold table's columns. The field lists are not restated here, since
+they would drift. They are in `canonical/types.go` (the dimensions,
+positions, cash, FX, transactions, `Status`, `Window` and the batches),
+`canonical/basis.go` (the lots) and `canonical/refdata.go` (the
+reference records).
 
 ### 6.3 Registration
 
@@ -1423,7 +1355,7 @@ A few rules apply to every adapter regardless of bank:
   they hold stocks), bond / fixed-income ETFs → `fixed_income`,
   everything else → `public_equity`. Products whose names don't give
   away the exposure are pinned via the config's
-  `instrument_overrides` (§5.1, §13.9).
+  `instrument_overrides` (§5.1, §13.8).
 - **Deferred silver tables** — silver tables not yet projected
   into gold by any adapter are catalogued per-bank in the adapter
   doc and globally in §13.7.
@@ -1606,7 +1538,7 @@ CREATE TABLE load_audit (
 -- The `payload` column carries the latest silver payload for forensics.
 -- ============================================================
 
--- account_kind is the technical container; §13.9 lists its values.
+-- account_kind is the technical container; §13.8 lists its values.
 --
 -- portfolio_external_id (nullable) names the parent portfolio in
 -- the `portfolios` table. Schwab and Swissquote accounts leave it
@@ -1615,15 +1547,15 @@ CREATE TABLE load_audit (
 CREATE TABLE accounts (
     silver_source_id        TEXT    NOT NULL,
     account_external_id     TEXT    NOT NULL,
-    account_kind            TEXT    NOT NULL,   -- technical container; see §13.9
+    account_kind            TEXT    NOT NULL,   -- technical container; see §13.8
     display_name            TEXT,               -- user-facing label, payload-derived
     base_currency           TEXT,               -- ISO 4217 if known
     relationship_id         TEXT,               -- UBS relationship dimension; NULL otherwise
     nickname                TEXT,               -- user-set label; Schwab silver supplies, config override fills others
-    account_category        TEXT,               -- free-text bank descriptor; see §13.9
+    account_category        TEXT,               -- free-text bank descriptor; see §13.8
     portfolio_external_id   TEXT,               -- parent portfolio (NULL when ungrouped)
-    tax_wrapper             TEXT,               -- tax / regulatory registration; see §13.9
-    management_style        TEXT,               -- self_directed / advisory / discretionary / automated; see §13.9
+    tax_wrapper             TEXT,               -- tax / regulatory registration; see §13.8
+    management_style        TEXT,               -- self_directed / advisory / discretionary / automated; see §13.8
     first_seen_at           BIGINT  NOT NULL,   -- earliest snapshot_at observed
     last_seen_at            BIGINT  NOT NULL,   -- latest snapshot_at observed
     payload                 JSON,
@@ -2457,8 +2389,9 @@ This is implemented as the `report_accounts` table macro (migration
 to a single converted value per account, grouped under its silver
 source. The conversion to `:output_currency` is the §10.6 `fx_daily`
 lookup applied per line; the macro takes `:output_currency` and an
-as-of as parameters and is invoked from both the CLI
-(`SELECT * FROM report_accounts(?, ?)`) and the Metabase models.
+as-of as parameters and is invoked from the CLI
+(`SELECT * FROM report_accounts(?, ?)`). `web-materialize` reads its
+multi-currency twin, `report_accounts_multi` (§10.8).
 
 `report_sources` (migration 0025) takes this one step coarser: it
 buckets the same lines by `silver_source_id` instead of account, so
@@ -2521,8 +2454,8 @@ direction without a separate fallback.
 
 **Which day's rate.** A line converts at the rate of its own
 snapshot's day. The as-of passed to a macro picks the snapshot, not
-the rate: the CLI passes the `-d` date (default today), and the
-Metabase models pass `MAX(BIGINT)`, so each source's latest snapshot.
+the rate: the CLI passes the `-d` date (default today), and
+`web-materialize` passes `MAX(BIGINT)`, so each source's latest snapshot.
 There is no linear interpolation between rates.
 
 **Cross-silver precedence** is data, not runtime state: a stamped
@@ -2547,8 +2480,8 @@ line is valued **once** at its own snapshot's FX day, then expanded onto a daily
 spine via an at-or-before ASOF join — so per-day compute stays cheap. A day an
 entity has no line on at all is omitted (a day it is observed at zero on is
 not: that emits an explicit 0 row). `report_global_history_multi` is
-`Σ report_accounts_history_multi`. The Metabase models wrap the
-multi-currency series.
+`Σ report_accounts_history_multi`. The serving tables hold the
+multi-currency series for the Metabase models (§10.8).
 
 The active snapshot is resolved **per key per day** — migration `0051`,
 `hist_active_pos()` / `hist_active_cash()`. Each key is ASOF-joined onto the day
@@ -2650,6 +2583,10 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   conversion order; see the helper below). They are Metabase-only, so they
   emit **DECIMAL** money directly (no CLI VARCHAR-trim round-trip); the
   `web/provision.py` wrapper then only casts epoch columns to TIMESTAMP.
+- **Serving tables.** The dashboards do not call these macros.
+  `web-materialize` copies each one's rows into a `serving_*` table
+  (migration 0132, [web/DESIGN.md](../../web/DESIGN.md) §8). The `web_*`
+  views and the Metabase models read those.
 - **One conversion helper** (migration 0114). Every `_multi` macro converts
   through the same three objects:
   - `fx_reporting_legs`: each currency's rate to each reporting currency;
@@ -2720,7 +2657,7 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   succeeded, so `instrument_external_id IS NULL AND instrument_hint IS NOT
   NULL` is exactly the set a `transaction_instruments` entry can still close,
   and `wealthdb transactions -C +instrument_hint` is how that set is read. `wealthdb resolve-symbols` does not put such a row to its
-  model: the token is config's to close. See §13.9.
+  model: the token is config's to close. See §13.8.
 - **Account display defaults.** `report_accounts_multi` and
   `report_accounts_history_multi` apply the conventional
   `tax_wrapper='taxable_personal'` / `management_style='self_directed'` defaults,
@@ -2835,12 +2772,14 @@ Two serving views reduce timestamps with `epoch_ms`, so Metabase syncs them
 like tables:
 
 - **`web_spending`**: transaction grain over
+  `serving_spending_transactions`, the materialized rows of
   `report_spending_transactions_multi`, with the account's identity for the
   picker and both category levels for the breakdowns. NULL renders as
   `(uncategorized)` here.
 - **`web_card_balances_history`**: a card account's owed balance per UTC day,
   carried forward, in the reporting currencies
-  (`report_card_balances_history_multi()`). One row per (source, account,
+  (`serving_card_balances_history`, the rows of
+  `report_card_balances_history_multi()`). One row per (source, account,
   **currency**), with the native balance beside the converted values. It
   resolves a day per key as §10.7 does, but bounds nothing at the end: a card
   its source stops reporting keeps its last owed balance to the end of this
@@ -2971,12 +2910,10 @@ exposes `missing_basis` for the dashboard's picker.
 The exposure macros look every holding through to what it holds.
 [EXPOSURE.md](EXPOSURE.md) defines every figure they return.
 
-Migration 0126 adds the derived tables and the macros; migration 0128
-re-creates the macros the declarations change, migration 0129 those
-the legal situs changes, and migration 0131 those that name what
-nothing describes. The exposure pass
-(`gold.RebuildExposure`) runs after the lot pass at the end of every
-load and reload, and rewrites the derived tables:
+Migrations 0126, 0128, 0129 and 0131 define the derived tables and the
+macros. A macro's last definition is the one in force. The exposure
+pass (`gold.RebuildExposure`) runs after the lot pass at the end of
+every load and reload, and rewrites the derived tables:
 
 - `exposure_labels`, `exposure_countries`, `exposure_sic`: the label
   maps and vocabularies of `internal/canonical`;
@@ -3038,11 +2975,13 @@ and at the end of today:
 
 - grouped by the dimensions the dashboard charts: class, sector,
   country, region, currency, size, held directly or through funds,
-  `how`, and the situs with its basis;
+  `how`, the situs with its basis, and the holding's source and its
+  account's tax wrapper, which the pickers narrow to (migration 0130);
 - in every reporting currency. The tree is walked once per instant, in
   US dollars. A leaf is a fixed share of the holding it descends from.
   So its value in another currency is its dollar value times the
-  holding's value in that currency, over the holding's dollar value.
+  holding's value in that currency, over the holding's dollar value. A
+  holding no rate converts to US dollars is left out in every currency.
 
 `web_exposure` is the dashboard's reading of it
 ([web/DESIGN.md](../../web/DESIGN.md) §8).
@@ -3136,8 +3075,9 @@ untouched.
 
 ### 12.1 Image
 
-Base: `golang:1.26-bookworm` (glibc, full Go toolchain, gcc/g++
-for CGO). The Dockerfile:
+Base: the official `golang` bookworm image whose tag
+`wealthdb/Dockerfile` pins (glibc, full Go toolchain, gcc/g++ for
+CGO). The Dockerfile:
 
 1. Copies `go.mod` / `go.sum` and runs `go mod download` in its own
    layer for cache friendliness.
@@ -3209,7 +3149,7 @@ docker run --rm $TTY \
     -u "$(id -u):$(id -g)" \
     -v "$CFG_DIR/wealthdb.cfg:$CFG_DIR/wealthdb.cfg" \
     -v "$DATA_ROOT:$DATA_ROOT" \
-    wealthdb:latest \
+    "wealthdb:$WEALTHDB_IMAGE_TAG" \
     "$@"
 ```
 
@@ -3229,7 +3169,7 @@ docker run --rm \
     -u "$(id -u):$(id -g)" \
     -v "$CFG_DIR/wealthdb.cfg:$CFG_DIR/wealthdb.cfg:ro" \
     -v "/mnt/shared/wealthdb:$DATA_ROOT:ro" \
-    wealthdb:latest \
+    "wealthdb:$WEALTHDB_IMAGE_TAG" \
     "$@"
 ```
 
@@ -3317,33 +3257,11 @@ on an export of the staged tree, so a commit is linted as committed.
 #### Wrapper shape
 
 `./wealthdb-test` is a thin alias over `./wealthdb-go`, which owns the
-container geometry and runs ANY `go` subcommand in the image:
-
-```sh
-#!/bin/sh
-# wealthdb-go — run a `go` subcommand inside the wealthdb container
-set -eu
-REPO="$(cd "$(dirname "$0")" && pwd)"
-
-# Persist Go's caches across invocations so incremental builds
-# stay fast — bind-mount the host's cache dirs (or dedicated
-# named-volumes; the host paths are simpler to inspect).
-CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/go"
-mkdir -p "$CACHE/go-build" "$CACHE/go-mod" "$CACHE/gopath"
-
-docker run --rm \
-    -u "$(id -u):$(id -g)" \
-    -e HOME="$HOME" \
-    -e GOCACHE="$CACHE/go-build" \
-    -e GOMODCACHE="$CACHE/go-mod" \
-    -e GOPATH="$CACHE/gopath" \
-    -v "$REPO:$REPO" \
-    -v "$CACHE:$CACHE" \
-    -w "$REPO" \
-    --entrypoint go \
-    wealthdb:latest \
-    "$@"
-```
+container geometry and runs any `go` subcommand in the image.
+`./wealthdb-go` runs `docker run --entrypoint go` on the engine image
+(§12). It mounts the repo and the Go caches under
+`${XDG_CACHE_HOME:-~/.cache}/wealthdb/go` at the same paths inside, and
+runs in the repo directory. The script is `wealthdb/wealthdb-go`.
 
 #### The image toolchain owns the module graph
 
@@ -3358,10 +3276,10 @@ none) cannot influence the result.
 
 #### One image, not two
 
-`./wealthdb-go` uses the same `wealthdb:latest` image as the
-production wrapper, just with `--entrypoint go`. The single image
-carries the full Go toolchain so `go test` works against the
-mounted source tree; no separate builder image is needed.
+`./wealthdb-go` uses the production wrapper's image (§12), with
+`--entrypoint go`. The single image carries the full Go toolchain so
+`go test` works against the mounted source tree; no separate builder
+image is needed.
 
 #### Cache locations
 
@@ -3380,16 +3298,15 @@ itself.
 ## 13. Further mechanisms and open questions
 
 This section holds mechanisms that cut across the sections above
-(§13.2, §13.9 to §13.11) and the questions still open.
+(§13.2, §13.8 to §13.10) and the questions still open.
 
 ### 13.1 Cross-silver instrument canonicalisation
 
-If both UBS and Schwab hold AAPL, gold has two `instruments`
-rows. Queries that want "all AAPL holdings" join on `isin`. This
-works but is awkward. A future `instruments_canonical` table with
-a mapping from `(silver_source_id, instrument_external_id)` to a
-canonical instrument ID would tidy this up. Hold until the awkwardness
-actually bites.
+The exposure pass keys every instrument to a security
+(`instrument_keys`, `security_aliases`, §10.14). The exposure report
+therefore reads one security across sources. The other reports keep
+one `instruments` row per source. They join on `isin` where they need
+one view.
 
 ### 13.2 FX-rate precedence among silvers
 
@@ -3523,44 +3440,7 @@ Projecting them needs a `loan` kind. That is engine-wide work:
 - a cashflow arm;
 - a taxonomy pair.
 
-### 13.8 Market data
-
-A planned future addition: pricing and instrument metadata that
-no bank silver carries — real-time and historic prices, ex-
-dividend dates and amounts, agency ratings, historic and implied
-volatility, option chains, fundamental metrics, etc. These are
-properties of an instrument (the asset itself) rather than of a
-holding (who owns how much at which bank), so they don't fit any
-existing silver.
-
-Sketch of where this lands when designed:
-
-- **Source.** TBD — candidates include a paid market-data vendor
-  API (Polygon, Tiingo, EOD historical data), a free-tier feed
-  with caveats (Alpha Vantage), or local scraping of public IR
-  pages. The chosen source dictates the bronze format.
-- **Layer.** Likely its own silver-equivalent (a separate
-  bronze→silver pipeline, possibly as a new sibling collector like
-  `marketdata`), feeding into gold via the same plugin
-  contract as the bank silvers — `Adapter`, `Status`, `ChangeWindow`,
-  `Snapshots`, `Transactions`. Reusing the plugin pattern means
-  gold doesn't have to special-case market data.
-- **Gold tables.** New tables joined to `instruments` via
-  `(silver_source_id, instrument_external_id)` or via `isin`:
-  - `instrument_prices`  — snapshot grain `(instrument, timestamp, price, currency)`
-  - `instrument_events`  — event grain `(instrument, kind, occurred_at, ...)`
-                            for ex-div, splits, ratings changes, etc.
-  - `instrument_vol`     — snapshot grain `(instrument, timestamp, hist_vol, impl_vol_atm, ...)`
-- **Impact on existing schema.** Additive only. The
-  `positions.market_value` (sourced from the bank's view) coexists
-  with future `instrument_prices`-derived mark-to-market — queries
-  pick whichever they prefer, with the bank's number remaining the
-  authoritative bank-reported figure.
-
-This is a sketch only; the source and ingest design will be
-fleshed out when the feature is scheduled.
-
-### 13.9 Account taxonomy (kind / tax_wrapper / management_style) and nickname
+### 13.8 Account taxonomy (kind / tax_wrapper / management_style) and nickname
 
 Several distinct kinds of accounts typically coexist at the
 same bank — personal brokerage, managed wealth account, UTMA /
@@ -3724,7 +3604,7 @@ keeps the earlier half of a statement or dump that straddles the
 handover, and bounds the series at the END where `inception_overrides`
 (§5.4) bounds its start.
 
-What is cut is what the adapter read. An `equity_transfers` (§13.10)
+What is cut is what the adapter read. An `equity_transfers` (§13.9)
 row dated on or after the date is refused by name instead, failing the
 load: a ledger row is written by hand, one at a time, asserting a
 capital flow nothing else in silver carries, so dropping it silently
@@ -3789,7 +3669,7 @@ column set; the descriptor columns (`account_category`,
 The reports take no row filters (`wealthdb help`): a view is picked,
 then its output filtered.
 
-### 13.10 Equity-transfer ledger
+### 13.9 Equity-transfer ledger
 
 Securities transferred *into* a tracked account (e.g. shares
 transferred in from another custodian at appreciated value) are a
@@ -3828,7 +3708,7 @@ staggered-inception onboarding flow* (§10.9) — it is not
 double-counted — while a mid-life transfer is booked in full. A row
 dated on or after the account's `supersession` (§5.1) date is refused
 and fails the load, rather than dropped the way the adapter's own
-rows are (§13.9). The ledger is source-agnostic; any source's
+rows are (§13.8). The ledger is source-agnostic; any source's
 transfers are just rows with that `silver_source_id`.
 
 That includes the positions-only source. `manual` collects no
@@ -3863,7 +3743,7 @@ angellist, lp-account, 2098-03-04, out, 500, 10000, 42000, USD, XMPL, Example Co
 schwab,    Brokerage,  2098-03-04, in,  500, 10000, 42000, USD, XMPL, Example Co SPV: 500 XMPL received
 ```
 
-### 13.11 Spending and income pins ledgers
+### 13.10 Spending and income pins ledgers
 
 Some rows on a cash account cannot be classified from anything gold
 holds. An FX roll settling as a bare withdrawal carries no descriptor

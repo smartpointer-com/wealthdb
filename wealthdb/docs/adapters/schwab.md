@@ -74,9 +74,9 @@ Every other position lands in `positions`. `taxonomyFor` derives the
 | --- | --- |
 | `EQUITY` | `(public_equity, stock)` |
 | `COLLECTIVE_INVESTMENT` with `instrument.type = EXCHANGE_TRADED_FUND` | `(RefineETFExposure(name), etf)`. This is how the Trader API types ETFs. |
-| `COLLECTIVE_INVESTMENT`, other | `(fundExposure(name), fund)` |
+| `COLLECTIVE_INVESTMENT`, other | `(FundExposure(name), fund)` |
 | `ETF` | `(RefineETFExposure(name), etf)`. In the API's enum; position dumps use `COLLECTIVE_INVESTMENT`. |
-| `MUTUAL_FUND` | `(fundExposure(name), fund)` |
+| `MUTUAL_FUND` | `(FundExposure(name), fund)` |
 | `BOND` / `FIXED_INCOME` | `(fixed_income, bond)` |
 | `OPTION` | `(public_equity, option)` (equity underlying) |
 | `FUTURE` | `(public_equity, future)` (equity underlying) |
@@ -86,10 +86,10 @@ Every other position lands in `positions`. `taxonomyFor` derives the
   `crypto`, bullion → `metal` (miners funds stay `public_equity`: they
   hold stocks), bond and fixed-income → `fixed_income`, else
   `public_equity`.
-- `fundExposure` first routes a money-market fund's name to `cash`,
+- `silver.FundExposure` first routes a money-market fund's name to `cash`,
   then refines the rest the same way.
 - Config `instrument_overrides` pins a product whose name hides its
-  exposure ([../DESIGN.md](../DESIGN.md) §13.9).
+  exposure ([../DESIGN.md](../DESIGN.md) §13.8).
 
 ### Instrument names
 

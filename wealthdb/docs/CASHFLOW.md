@@ -112,8 +112,9 @@ residual.
 A household does not count its retirement plan, its education accounts,
 its health savings account, its donor-advised fund or a trust it funded
 as itself, even when it holds every login. The boundary is drawn by
-**tax wrapper** (`canonical.DefaultWrapperSide`). A deployment can
-override it per wrapper (§7).
+**tax wrapper**: the `defaultWrapperSides` table, which
+`canonical.WrapperBoundaries` reads. A deployment can override it per
+wrapper (§7).
 
 Two questions decide where a wrapper sits. They are asked in order:
 
@@ -190,7 +191,7 @@ both count pooled accounts with no wrapper (§10).
   non-grantor trust.
 - **The boundary is time-invariant.** A wrapper is one column with no
   validity range. A grantor trust that becomes non-grantor changes every
-  year at once. A dated override is an open follow-up (§11).
+  year at once.
 
 ---
 
@@ -226,8 +227,8 @@ The first matching step places a row:
    They are `fx`, `fx_forward`, `fx_swap`, `corporate_action`, `journal`
    and `other`. Their direction is a per-source convention, so a
    section that reads direction cannot admit them. Admitting the FX
-   family or corporate actions needs a per-adapter sign pin first
-   (§11). The two catch-alls are excluded by both families too.
+   family or corporate actions needs a per-adapter sign pin first. The
+   two catch-alls are excluded by both families too.
 2. **`internal_transfer`** is placed by the far account, whatever the
    kind (see *Own-account moves* below).
 3. **`mortgage_transfer`** goes to `financing · Mortgage`.
@@ -1049,10 +1050,11 @@ Nothing is stored for the memo. It reads `cash_balances` and the
 resolution at query time.
 
 The wrapper table is stamped **whole**: every value of the enum,
-defaults included. That keeps `canonical.DefaultWrapperSide` the single
-place a wrapper's side is decided. Stamping only the overrides would
-put the defaults in SQL a second time. A wrapper added for a new
-jurisdiction would then take two edits to reach the statement.
+defaults included. That keeps the `defaultWrapperSides` table
+(`canonical.WrapperBoundaries`) the single place a wrapper's side is
+decided. Stamping only the overrides would put the defaults in SQL a
+second time. A wrapper added for a new jurisdiction would then take two
+edits to reach the statement.
 
 `wealthdb load` prints a `cashflow:` block. It reports:
 
@@ -1133,25 +1135,15 @@ Each names a way the statement can be quietly wrong:
 
 ---
 
-## 11. Open follow-ups
+## 11. Known limits
 
-1. **A per-vehicle statement.** The same statement with the edge drawn
-   around one plan or one trust. Every mechanism here applies
-   unchanged; only the boundary moves. It would show a payroll-funded
-   plan's growth and giving routed through a vehicle.
-2. **A sign pin for the unsigned kinds.** A per-adapter pin, recorded
-   where the canonical signs live, would let the cash leg of a merger
-   or a rights issue join investing.
-3. **A dated wrapper override.** The boundary is time-invariant (§3).
-   An effective-from date is the fix.
-4. **Memo pairs for what the boundary removes**: the vehicles' own
-   income and spending, and the tax they withheld before the household
-   saw the money.
-5. **The two families' standing follow-ups**, which show up here too:
-   - platform custody deposits ([INCOME.md](INCOME.md) §11);
-   - reimbursement netting ([INCOME.md](INCOME.md) §11);
-   - cross-currency own-account moves no assertion reaches. These are a
-     movement whose source neither stamps one reference on both halves
-     nor describes the counter leg, and a card bill whose two feeds
-     share no id space.
-6. **Net cash flow on the Wealth Overview.**
+- **What the boundary removes has no memo.** The vehicles' own income
+  and spending, and the tax they withheld before the household saw the
+  money, appear on no line and in no memo (§3).
+- **The two families' limits show here too:**
+  - platform custody deposits ([INCOME.md](INCOME.md) §11);
+  - reimbursements, which nothing nets ([INCOME.md](INCOME.md) §11);
+  - cross-currency own-account moves no assertion reaches. These are a
+    movement whose source neither stamps one reference on both halves
+    nor describes the counter leg, and a card bill whose two feeds
+    share no id space.

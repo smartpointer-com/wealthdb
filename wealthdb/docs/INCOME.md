@@ -37,8 +37,8 @@ What is deliberately **not** here:
   the deductions and the employer's contributions are on a payslip the
   product does not collect. Income is what arrived (§5).
 - **Netting reimbursements against spending.** An expense reimbursement
-  is money back for money spent. Income excludes it. Netting it on
-  spending's refund side is an open follow-up (§11).
+  is money back for money spent. Income excludes it, and spending does
+  not net it either (§11).
 - **Tax reporting.** Withholding is visible beside income (§5), but no
   view claims to be a tax figure. Jurisdictions differ on staking, on
   capital-gains distributions and on gifts.
@@ -86,8 +86,7 @@ that recur across banks.
 
 The remedy is `income.accounts.exclude`. A platform's wallet and custody
 accounts are not accounts whose inflows are income, and the income scope
-exists for this kind of reason. §11 records the ingestion follow-up and
-the general fix.
+exists for this kind of reason. §11 states the two limits behind it.
 
 ### Which kinds are income
 
@@ -698,8 +697,8 @@ which is the default, one number answers for both.
 8. **One matcher.** Income pairs nothing and reads the shared verdicts.
    `spending.transfer_overrides` serves both families.
 9. The Wealth Overview's investment-income card reads the income base.
-10. **Reimbursements are excluded** via the delta. Netting them against
-    spending is an open follow-up (§11).
+10. **Reimbursements are excluded** via the delta. Spending does not
+    net them (§11).
 11. Window default: **trailing twelve months**.
 12. **Reversals net inside their type.** `interest` enters positive
     only, because the sign is the only thing that separates two
@@ -716,15 +715,12 @@ which is the default, one number answers for both.
 
 ---
 
-## 11. Open follow-ups
+## 11. Known limits
 
-- **The package name.** The deterministic pass for both families lives
-  in `internal/spending`. Renaming it (`internal/enrichment`) would
-  touch every import for no behavioural gain.
-- **Reimbursement netting** on the spending side. An expense claim is
-  money back for a specific outflow, and spending's refund side is
-  where it would net. Income excludes it; the netting is not designed.
-  An insurance payout is NOT this case and is income (§2).
+- **Reimbursements are not netted.** An expense claim is money back for
+  a specific outflow. Income excludes it, and spending does not net it
+  against that outflow. An insurance payout is NOT this case and is
+  income (§2).
 - **A rewards credit reaches gold as `refund`.** Card adapters map a
   statement credit to `refund`. Once the issuer's descriptor is gone
   they cannot tell it from a merchant credit. No adapter emits the
@@ -736,18 +732,16 @@ which is the default, one number answers for both.
   the payer's type. The net is the same either way; the account of it
   is not. The remedy, if one is wanted, is the transfer-override ledger
   that exists for every other matcher false positive.
-- **Transactions for a balances-only source.** A source whose bronze
-  holds statements read for balances alone contributes no
-  transactions. Every funding wire it sent has no leg for the matcher
-  to pair, and the receiving leg stays in the income base as an
-  unplaced receipt (§1). Parsing those statements into transactions
-  fixes it at the root and needs no income change. It is collector
-  work. `income.accounts.exclude` is the remedy until then.
-- **A built-in income rule for platform custody deposits.** A `deposit`
+- **A balances-only source has no transactions.** A source whose
+  bronze holds statements read for balances alone contributes none.
+  Every funding wire it sent has no leg for the matcher to pair. The
+  receiving leg stays in the income base as an unplaced receipt (§1).
+  `income.accounts.exclude` takes the receiving account out.
+- **No built-in rule places a platform custody deposit.** A `deposit`
   on a private-market custody account is the holder's own capital going
-  in, and should read `capital_return`. This is the general version of
-  the exclusion above. It needs something the rule hook does not carry:
-  the account kind and the source, not a narrative.
+  in. A rule cannot say so, because the rule hook carries a narrative,
+  not the account kind or the source. `income.accounts.exclude` is the
+  remedy (§1).
 - **Only the transaction report has a `_multi` form.** The same holds
   for spending. The web reads the lines in every reporting currency and
   buckets them itself, so a summary or types `_multi` would have no
