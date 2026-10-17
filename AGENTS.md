@@ -44,10 +44,13 @@ a challenge is a real session whatever the flag is called, and it
 belongs with the verbs below. Which of the two a collector's dry run is
 belongs in its own AGENTS.md; where nothing says, assume it signs in.
 Not allowed unless explicitly asked: any verb that can sign in or fire a
-challenge — full `login` (mints a session, pushes MFA), a real
-`download`, a `--dry-run` that signs in — plus any live navigation from
-a REPL/one-off, and adding scheduling (cron/launchd) that would fire
-logins automatically. These toolkits are human-triggered by design.
+challenge — full `login` (mints a session, pushes MFA), a `download`
+that signs in, a `--dry-run` that signs in — plus any live navigation
+from a REPL/one-off, and adding scheduling (cron/launchd) that would fire
+logins automatically. These toolkits are human-triggered by design. A
+collector that signs in nowhere and fires no challenge (refdata reads
+public sources) says in its own AGENTS.md which of its live runs need
+no asking.
 
 ## 3. Do not weaken authentication
 

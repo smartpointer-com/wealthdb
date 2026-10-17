@@ -290,7 +290,7 @@ refreshed CSV as a clean diff instead of sitting beside it.
 ### Two validity predicates, and why
 
 `canonical.ValidSpendDetailed` admits everything storable — the 82
-vendored values, our extensions, *and* the thirteen deltas.
+vendored values, the extensions, *and* the thirteen deltas.
 `canonical.ModelSpendDetailed` is the stricter sibling: it admits
 what a model may emit — vendored and extension — and refuses only the
 deltas.
@@ -663,7 +663,8 @@ source, account, day, amount, currency — never by gold's opaque
 transaction id. The columns are `verb`, `silver_source_id`, `account`,
 `occurred_at`, `amount` and `currency` for the first leg, the same
 names with a `_b` suffix for the second, and an optional `note`.
-Columns are found by header name. `account` is an
+Columns are found by header name, and a column the format does not
+know is refused, as in the pins. `account` is an
 `account_external_id`; a nickname does not resolve here.
 
 | verb | legs given | meaning |
@@ -989,7 +990,7 @@ Each entry has these fields:
 
 That third field is how a rule reaches a class of merchant the
 descriptor never names, such as a membership or a trade. It makes the
-issuer an input to our classification rather than a tier that outranks
+issuer an input to the engine's classification rather than a tier that outranks
 it. The key is named `rules` because the entries are rules in the same
 tier as the built-ins, with the same provenance.
 
@@ -1182,15 +1183,15 @@ gold stores at the end of the description behind the memo separator
 ### The issuer's view, kept
 
 `transactions.provider_category` holds what the issuer called a row,
-verbatim. `spend_txn_enrichment.provider_spend_detailed` holds what our
-vocabulary translates that string to (migration 0057), and
-`spend_txn_categories()` publishes it beside our own verdict together
+verbatim. `spend_txn_enrichment.provider_spend_detailed` holds what the
+provider vocabulary translates that string to (migration 0057), and
+`spend_txn_categories()` publishes it beside the engine's own verdict together
 with the primary it rolls up to.
 
 It is a record, never a verdict of ours. It is written for every row
 the vocabulary translates — whether or not the tier went on to claim
 the row, and whether or not a tier above overruled it — so the
-disagreement between the issuer and us is a reportable number instead
+disagreement between the issuer and the engine is a reportable number instead
 of a silent overwrite. Three values, three meanings:
 
 | `provider_spend_detailed` | the issuer |
@@ -1203,12 +1204,12 @@ The last two must never be collapsed. A mapped catch-all is a real if
 uninformative opinion; NULL is no opinion at all, and the distinction
 is exactly what the decline rule turns on.
 
-Reports show our verdict by default and the issuer's on request.
+Reports show the engine's verdict by default and the issuer's on request.
 Nothing sums across the two. They often disagree, which is the reason
 both are kept.
 
 A rule may also MATCH on `provider_category` (*The rule tier*, above), which
-is what makes the issuer an input to our own classification rather
+is what makes the issuer an input to the engine's own classification rather
 than a tier that outranks it.
 
 ---

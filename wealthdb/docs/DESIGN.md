@@ -1430,7 +1430,7 @@ applied migration, always add a new file.
     The choices left are (a) drop the FK declarations, (b) split
     reset across multiple transactions (loses atomicity), or
     (c) DROP / re-ADD the constraint around the reset (DDL
-    inside the live data path). We picked (a): the loader is
+    inside the live data path). Gold takes (a): the loader is
     the sole writer to gold, so application logic is the
     authority on referential integrity. The intended FKs remain
     documented in this §7.2 schema sketch as the conceptual
@@ -1697,7 +1697,7 @@ CREATE TABLE cash_balances (
 --
 -- Multiple silvers may publish overlapping rates (UBS TDFXR,
 -- Swissquote List-of-Assets row's `rate_to_chf`, the `fred` reference
--- feed). We keep all rows and let the `fx_daily` view (§10.6) pick per
+-- feed). Gold keeps all rows and lets the `fx_daily` view (§10.6) pick per
 -- (pair, UTC day): it prefers the rate from the highest-priority source
 -- covering that day, falling back to the next. Priority is the per-source
 -- `silver_sources[].fx_priority` config field (lower = higher priority,
@@ -2014,7 +2014,7 @@ materialized view of silver, and the load procedure brings that
 view up to date by processing exactly the bounded delta produced
 since the last refresh. The same shape — watermark, delta window,
 delete-in-window then re-emit — is what streaming engines do for
-continuous queries. We just trigger it manually.
+continuous queries, here triggered by a load rather than a stream.
 
 ### 8.1 The full sequence for `wealthdb load <id>`
 
@@ -3050,7 +3050,7 @@ wealthdb is an application, not a library.
 
 Single-stage Dockerfile, one image (`wealthdb:latest` by default),
 used unchanged for development, testing, and production. See §12.4
-for why we don't separate stages.
+for why there are no separate stages.
 
 The image tag replaces `latest` in every image name the tree builds,
 runs and removes: the engine, the collectors, their shared bases and
@@ -3246,6 +3246,23 @@ gold under its own `t.TempDir()` and talks to the command through
 `Run`'s readers and writers, never the process's own. The exceptions
 stay serial on purpose — a test that sets an environment variable, and
 one that times a persist into a reader's wall-clock window.
+
+**Reload verification.** `TestTaxonomyInvariants`
+(internal/gold/taxonomy_invariants_test.go) checks a real gold, not a
+fixture, and is skipped unless `WEALTHDB_GOLD_VERIFY` names one. It
+asserts that every position and instrument carries an admitted
+(asset class, vehicle) pair. With `WEALTHDB_GOLD_BEFORE` naming a copy
+taken before a `reload -a`, it also asserts that the reload moved no
+money: the market value per source, account and snapshot, and the row
+counts per source, are identical. Run it after any adapter change.
+`./wealthdb-go` forwards both variables and mounts each file's
+directory read-only, so the copies sit where Docker can see them:
+
+```sh
+cp "$GOLD" ~/gold-check/before.db && wealthdb reload -a && cp "$GOLD" ~/gold-check/after.db
+WEALTHDB_GOLD_VERIFY=~/gold-check/after.db WEALTHDB_GOLD_BEFORE=~/gold-check/before.db \
+  ./wealthdb-test ./internal/gold/ -run TestTaxonomyInvariants -v -count=1
+```
 
 `make lint` runs `gofmt -l` and `go vet ./...` through `./wealthdb-go`
 on the same toolchain (gofmt as `go run cmd/gofmt`, the wrapper's
