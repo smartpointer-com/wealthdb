@@ -311,6 +311,8 @@ func TestWebTransactionsAccountKindFence(t *testing.T) {
 		t.Fatalf("seed orphan transaction: %v", err)
 	}
 
+	mustMaterializeServing(t, db, ctx)
+
 	got := dumpTable(t, db, ctx, `
 		SELECT kind, account_kind FROM web_transactions
 		 WHERE account_kind IS NULL OR account_kind NOT IN ('card')

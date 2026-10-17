@@ -130,11 +130,6 @@ def main():
     return ensure_dashboards(a.base, sid, coll_id, card_ids, model_ids)
 
 
-# MAX_BIGINT as the as-of epoch means "latest snapshot" (the macros'
-# current mode), so the models stay current without re-provisioning;
-# report_transactions spans all of time (filter in Metabase).
-MAX_BIGINT = 9223372036854775807
-
 # The reporting currencies: the value column sets the `_multi` report
 # macros and the web_* serving views carry (gold migration 0114), and the
 # rows report_returns carries. Every currency list, CASE and picker below
@@ -220,14 +215,16 @@ RETIRED_MODEL_NAMES = ["report_global", "report_portfolios",
 
 def report_models():
     """model name -> (native SQL, description). The report_*_multi DuckDB
-    macros (migration 0024) are the single source of truth; each model only
-    wraps a macro to bind the as-of and to render epoch columns as TIMESTAMP
-    (`epoch_ms` -> zone-free UTC, not `to_timestamp`, which is
-    TIMESTAMPTZ and renders in the reading session's zone) for Metabase
-    — except the taxonomy, spending, income and cashflow models, which
-    wrap the web_* serving views (migrations 0032, 0043, 0049, 0072 and
-    0084) that do that rendering, the cash fold-in and the
-    '(uncategorized)' labelling themselves. The macros already emit DECIMAL
+    macros (migration 0024) are the single source of truth. Each model
+    wraps the serving table `web refresh` fills with a macro's output
+    (gold migration 0132), a macro computing its whole output on every
+    read, and renders epoch columns as TIMESTAMP (`epoch_ms` -> zone-free
+    UTC, not `to_timestamp`, which is TIMESTAMPTZ and renders in the
+    reading session's zone) for Metabase — except the taxonomy, spending,
+    income and cashflow models, which wrap the web_* serving views
+    (migrations 0032, 0043, 0049, 0072, 0084 and 0132) that do that
+    rendering, the cash fold-in and the '(uncategorized)' labelling
+    themselves. The macros already emit DECIMAL
     money/quantity columns and one value column set per reporting currency
     (REPORTING_CURRENCIES), so no value casting is needed here. The `_latest` reports
     are as of each source's latest snapshot; the `_history` reports carry value
@@ -257,7 +254,7 @@ def report_models():
     NW_LATEST = ("(SELECT " + ", ".join(
         f"CASE WHEN total_value_{c} > 0 THEN total_value_{c} END AS nw_{c}"
         for c in _ccy_lower()) +
-        f" FROM report_global_multi({MAX_BIGINT})) AS nw")
+        " FROM serving_global_latest) AS nw")
     NW_COLS = [f"nw_{c}" for c in _ccy_lower()]
 
     def pct_wrap(from_expr, value_cols, ts_cols=(), exclude=()):
@@ -415,7 +412,6 @@ def report_models():
     V1 = [f"value_{c}" for c in _ccy_lower()]
     BASE3 = ("positions_value_base", "cash_balance_base", "total_value_base")
 
-    L = f"({MAX_BIGINT})"   # _multi _latest macro arg (as-of = latest snapshot)
     # Each source's latest snapshot, the latest mark it rides on
     # (valued_at, gold migration 0123) and the instant a run last read it
     # (gold source_observed, migration 0122): a quiet source is observed
@@ -423,12 +419,12 @@ def report_models():
     # Unknown reads as the snapshot itself.
     sources_latest = (
         "(SELECT r.*, GREATEST(COALESCE(o.observed_snapshots_through, r.snapshot_at),"
-        f" r.snapshot_at) AS observed_at FROM report_sources_multi{L} r"
+        " r.snapshot_at) AS observed_at FROM serving_sources_latest r"
         " LEFT JOIN source_observed o USING (silver_source_id)) s")
     SOURCES_TS = ["snapshot_at", "valued_at", "observed_at"]
     return {
         "report_global_latest": (
-            wrap(f"report_global_multi{L}", ["min_snapshot_at", "max_snapshot_at"]),
+            wrap("serving_global_latest", ["min_snapshot_at", "max_snapshot_at"]),
             "Whole-portfolio rollup as of the latest snapshot: cash, positions and "
             f"total value in {_ccy_words()} (one column set per currency), with the "
             "min/max snapshot date span. Mirrors `wealthdb holdings global`."),
@@ -440,21 +436,21 @@ def report_models():
             "rides on, and observed_at, when a run last read the source. Mirrors "
             "`wealthdb holdings sources`."),
         "report_portfolios_latest": (
-            wrap(f"report_portfolios_multi{L}", ["snapshot_at"]),
+            wrap("serving_portfolios_latest", ["snapshot_at"]),
             "One row per portfolio as of the latest snapshot: positions + cash totalled "
             f"in the portfolio's base currency and in {_ccy_slash()}, with rolled-up tax "
             "wrapper / management style. Mirrors `wealthdb holdings portfolios`."),
         "report_accounts_latest": (
-            wrap(f"report_accounts_multi{L}", ["snapshot_at"]),
+            wrap("serving_accounts_latest", ["snapshot_at"]),
             "One row per account as of the latest snapshot: positions + cash totalled "
             f"in the account's base currency and in {_ccy_slash()}, with kind, tax wrapper "
             "and management style. Mirrors `wealthdb holdings accounts`."),
         "report_positions_latest": (
-            wrap(f"report_positions_multi{L}", ["snapshot_at"]),
+            wrap("serving_positions_latest", ["snapshot_at"]),
             "One row per held position as of the latest snapshot, with market value in "
             f"{_ccy_words()}. Mirrors `wealthdb holdings positions`."),
         "report_transactions": (
-            wrap(f"report_transactions_multi(0, {MAX_BIGINT})", ["occurred_at"]),
+            wrap("serving_transactions", ["occurred_at"]),
             f"Every transaction over all time, with net amount in {_ccy_words()} at the "
             "transaction date. Mirrors `wealthdb transactions` (filter the date range in "
             "Metabase)."),
@@ -466,28 +462,32 @@ def report_models():
         # _latest report on totals for a source that writes every account in one run;
         # where runs are partial the history carries every account while _latest values
         # only the last run's. In report_positions_history, snapshot_at is the ACCOUNT's
-        # active snapshot, so several values can share one source-day.
+        # active snapshot, so several values can share one source-day. Each reads the
+        # serving table `web refresh` fills from its macro (gold migration 0132): a
+        # macro computes the whole history on every read, and every tile of a
+        # dashboard would pay for it at once. So do the latest models and the
+        # transactions ones.
         "report_global_history": (
-            wrap("report_global_history_multi()", ["as_of_day"]),
+            wrap("serving_global_history", ["as_of_day"]),
             "Whole-portfolio value for every day from the first snapshot to today "
             f"(carried forward between snapshots), in {_ccy_words()}. The net-worth-"
             "over-time series — chart total_value_usd (or another currency's "
             "column) against as_of_day."),
         "report_sources_history": (
-            wrap("report_sources_history_multi()", ["as_of_day"]),
+            wrap("serving_sources_history", ["as_of_day"]),
             "Per-silver-source value for every day (carried forward), in the source's "
             f"base currency and in {_ccy_slash()}. Filter to a source and chart against "
             "as_of_day."),
         "report_accounts_history": (
-            wrap("report_accounts_history_multi()", ["as_of_day"]),
+            wrap("serving_accounts_history", ["as_of_day"]),
             "Per-account value for every day (carried forward), in the account's base "
             f"currency and in {_ccy_slash()}. Filter to an account and chart against as_of_day."),
         "report_portfolios_history": (
-            wrap("report_portfolios_history_multi()", ["as_of_day"]),
+            wrap("serving_portfolios_history", ["as_of_day"]),
             "Per-portfolio value for every day (carried forward), in the portfolio's base "
             f"currency and in {_ccy_slash()}. Filter to a portfolio and chart against as_of_day."),
         "report_positions_history": (
-            wrap("report_positions_history_multi()", ["as_of_day", "snapshot_at"]),
+            wrap("serving_positions_history", ["as_of_day", "snapshot_at"]),
             f"Per-position value for every day (carried forward), in {_ccy_words()}. "
             "Large (days x held positions) — filter to a position / account / date range "
             "before charting."),
@@ -528,23 +528,23 @@ def report_models():
             "latest global net worth (per currency); base-currency columns "
             "dropped."),
         "report_sources_history_pct": (
-            pct_wrap("report_sources_history_multi()", V3, ["as_of_day"], BASE3),
+            pct_wrap("serving_sources_history", V3, ["as_of_day"], BASE3),
             "Privacy variant of report_sources_history: totals as % of the "
             "latest global net worth (per currency); base-currency columns "
             "dropped."),
         "report_accounts_history_pct": (
-            pct_wrap("report_accounts_history_multi()", V3, ["as_of_day"], BASE3),
+            pct_wrap("serving_accounts_history", V3, ["as_of_day"], BASE3),
             "Privacy variant of report_accounts_history: totals as % of the "
             "latest global net worth (per currency); base-currency columns "
             "dropped."),
         "report_positions_history_pct": (
-            pct_wrap("report_positions_history_multi()", V1,
+            pct_wrap("serving_positions_history", V1,
                      ["as_of_day", "snapshot_at"], ("quantity", "market_value")),
             "Privacy variant of report_positions_history: values as % of the "
             "latest global net worth (per currency); quantity and "
             "native-currency market value dropped."),
         "report_transactions_pct": (
-            pct_wrap(f"report_transactions_multi(0, {MAX_BIGINT})", V1,
+            pct_wrap("serving_transactions", V1,
                      ["occurred_at"],
                      ("gross_amount", "net_amount", "quantity", "price")),
             "Privacy variant of report_transactions: values as % of the "
@@ -905,7 +905,7 @@ INVESTING_TAG = {"id": "inv-tag", "name": "investing",
 # The gold columns backing the native cards' field filters: the returns
 # charts filter report_returns; every other native card filters the
 # web_* serving views (gold migrations 0032, 0043, 0072, 0084, 0113,
-# 0117 and 0127). Field ids are per-Metabase-instance (assigned when the
+# 0117, 0127 and 0132). Field ids are per-Metabase-instance (assigned when the
 # DB syncs), so main() resolves them at provision time into FIELD_IDS —
 # they can't be hard-coded. A missing id (fresh install before the first
 # sync) leaves that filter off the affected cards; the next provision —
@@ -914,14 +914,16 @@ FILTER_FIELD_COLUMNS = {
     "report_returns": ("currency", "silver_source_id"),
     # The Wealth Overview's headline figures (migration 0113). Their time
     # filter lands on the snapshot, so a source whose latest snapshot
-    # falls outside the window drops out of them.
-    "web_sources_latest": ("snapshot_at", "silver_source_id"),
-    "web_sources_history": ("as_of_day", "silver_source_id"),
-    "web_transactions": ("occurred_at", "silver_source_id"),
-    "web_asset_classes_history": ("as_of_day", "silver_source_id"),
-    "web_vehicles_history": ("as_of_day", "silver_source_id"),
-    "web_accounts_history": ("as_of_day", "silver_source_id"),
-    "web_positions_history": ("as_of_day", "silver_source_id",
+    # falls outside the window drops out of them. The holdings views carry
+    # each line's account tax wrapper and asset class, the flow views the
+    # tax wrapper (migration 0132).
+    "web_sources_latest": ("snapshot_at", "silver_source_id", "tax_wrapper", "asset_class"),
+    "web_sources_history": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
+    "web_transactions": ("occurred_at", "silver_source_id", "tax_wrapper"),
+    "web_asset_classes_history": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
+    "web_vehicles_history": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
+    "web_accounts_history": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
+    "web_positions_history": ("as_of_day", "silver_source_id", "tax_wrapper",
                               "asset_class", "vehicle"),
     # The spending views (migration 0043). On the money dashboard both
     # bind their account picker to account_label rather than
@@ -945,7 +947,7 @@ FILTER_FIELD_COLUMNS = {
     # dropdown would offer a handful of values and hide every distinction
     # a reader opens the dashboard to filter by.
     "web_income": ("occurred_at", "silver_source_id", "account_label",
-                   "income_label"),
+                   "income_label", "tax_wrapper"),
     "web_card_balances_history": ("as_of_day", "silver_source_id",
                                   "account_label"),
     # The gains view (migration 0117). Its currency is a row filter
@@ -1315,10 +1317,10 @@ def question_defs(db_id, mid):
     wo_note = (" Built for the Wealth Overview; opened standalone it runs "
                f"in {DEFAULT_CURRENCY}, the currency variable's default.")
     al_note = allocation_note()
-    lat_tags = spend_tags("web_sources_latest", range_filters("snapshot_at"))
-    hist_tags = spend_tags("web_sources_history", range_filters("as_of_day"))
-    wo_income_tags = spend_tags("web_income", range_filters("occurred_at"))
-    tx_tags = spend_tags("web_transactions", range_filters("occurred_at"))
+    lat_tags = spend_tags("web_sources_latest", holdings_filters("snapshot_at"))
+    hist_tags = spend_tags("web_sources_history", holdings_filters("as_of_day"))
+    wo_income_tags = spend_tags("web_income", flow_filters("occurred_at"))
+    tx_tags = spend_tags("web_transactions", flow_filters("occurred_at"))
     pos_tags = spend_tags("web_positions_history", POSITION_FILTERS)
 
     def overview_native(name, tags, display, desc, sql, viz):
@@ -1474,12 +1476,12 @@ def question_defs(db_id, mid):
             "web_accounts_history", "management_style", "total_value", "row",
             "Total account value (incl. cash) by management style as of a "
             "day."),
-        # A fixed hundred: the inline asset-class and vehicle filters
-        # narrow the list rather than a K picker sizing it.
+        # A fixed hundred: the inline vehicle filter and the dashboard's
+        # pickers narrow the list rather than a K picker sizing it.
         "Top 100 positions": ("table",
             "The hundred largest positions by market value as of a day, "
             "aggregated across accounts; narrow with the widget's "
-            "asset-class and vehicle filters." + al_note,
+            "vehicle filter." + al_note,
             _native(db_id,
                 "SELECT symbol, name, asset_class, vehicle,\n"
                 f"       sum({_ccy_case('value')})::DOUBLE AS value\n"
@@ -2381,6 +2383,8 @@ CATEGORY_PARAM_ID = "aa5df109"
 # and their twins: the same static list as the Spending one, landing on
 # every tile's {{currency}} variable.
 WEALTH_CURRENCY_PARAM_ID = "aa5df110"
+# Their tax wrapper picker. Their asset class picker is ASSET_PARAM_ID.
+WEALTH_TAX_WRAPPER_PARAM_ID = "aa5df118"
 
 # The dashboards carrying the spending pickers (the base view and its
 # privacy twin). Named rather than modelled as a filter mode of their
@@ -2403,10 +2407,11 @@ NO_PRIVACY_TWIN = GAINS_DASHBOARDS
 # The Exposure dashboards: the currency and the time range, no source.
 EXPOSURE_DASHBOARDS = {"Exposure", "Exposure" + PRIVACY_SUFFIX}
 
-# The asset-class and vehicle filters (the two taxonomy dimensions) are
-# linked only to these tiles: the Top-positions widgets, which list
-# individual holdings. The breakdown widgets each already group by one of
-# the dimensions, so filtering them by it would mostly self-select.
+# The vehicle filter is linked only to these tiles, the Top-positions
+# widgets, which list individual holdings, and renders on them: the
+# breakdowns each group by a taxonomy dimension, so filtering them by
+# the vehicle would mostly self-select. The asset class is a dashboard
+# picker, on every tile.
 POSITION_FILTERED_CARDS = {"Top 100 positions", "Top 100 positions (privacy)"}
 
 # Spending cards that carry every reporting currency as its own column,
@@ -2979,17 +2984,38 @@ CARD_BALANCE_PICKERS = [t for t in SPEND_PICKERS if t[1] != "category"]
 # and takes the Currency picker as the {{currency}} variable: the views
 # carry the reporting currencies as columns, and a picker selects rows but
 # never a column.
+#
+# Both narrow to a tax wrapper and an asset class: every holdings view
+# carries each line's account wrapper and class, a cash balance being the
+# class `cash` (gold migration 0132). The Overview's two flow tiles take
+# the wrapper alone, since a fee or an interest line often names no
+# instrument and so no class; a class picker would drop it silently.
+SELECTION_FILTERS = {"tax_wrapper": ("tax_wrapper", "string/="),
+                     "asset_class": ("asset_class", "string/=")}
 ASOF_FILTERS = {"as_of_day": ("as_of_day", "date/single"),
-                "source": ("silver_source_id", "string/=")}
-POSITION_FILTERS = {**ASOF_FILTERS,
-                    "asset_class": ("asset_class", "string/="),
-                    "vehicle": ("vehicle", "string/=")}
+                "source": ("silver_source_id", "string/="), **SELECTION_FILTERS}
+POSITION_FILTERS = {**ASOF_FILTERS, "vehicle": ("vehicle", "string/=")}
+
+
+def holdings_filters(col):
+    """A holdings tile's filters on the Wealth Overview: the range pair on
+    `col`, the tax wrapper and the asset class."""
+    return {**range_filters(col), **SELECTION_FILTERS}
+
+
+def flow_filters(col):
+    """A flow tile's filters on the Wealth Overview: the range pair on
+    `col` and the tax wrapper."""
+    return {**range_filters(col), "tax_wrapper": SELECTION_FILTERS["tax_wrapper"]}
+
+
 OVERVIEW_PICKERS = [(WEALTH_CURRENCY_PARAM_ID, "currency"),
-                    (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source")]
+                    (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
+                    (WEALTH_TAX_WRAPPER_PARAM_ID, "tax_wrapper"), (ASSET_PARAM_ID, "asset_class")]
 ALLOCATION_PICKERS = [(WEALTH_CURRENCY_PARAM_ID, "currency"),
-                      (ASOF_PARAM_ID, "as_of_day"), (SOURCE_PARAM_ID, "source")]
-POSITION_PICKERS = ALLOCATION_PICKERS + [(ASSET_PARAM_ID, "asset_class"),
-                                         (VEHICLE_PARAM_ID, "vehicle")]
+                      (ASOF_PARAM_ID, "as_of_day"), (SOURCE_PARAM_ID, "source"),
+                      (WEALTH_TAX_WRAPPER_PARAM_ID, "tax_wrapper"), (ASSET_PARAM_ID, "asset_class")]
+POSITION_PICKERS = ALLOCATION_PICKERS + [(VEHICLE_PARAM_ID, "vehicle")]
 
 
 def _flow_fence(kinds):
@@ -3269,7 +3295,7 @@ def privacy_card_defs(db_id, model_ids):
     # selected sources' latest total. The > 0 guard blanks an empty or
     # under-water selection rather than rendering inf or a sign-flipped
     # share.
-    lat_tags = spend_tags("web_sources_latest", range_filters("snapshot_at"))
+    lat_tags = spend_tags("web_sources_latest", holdings_filters("snapshot_at"))
 
     def share(name, num_col, desc):
         out[name] = ("question", "scalar", desc + PRIVACY_DESC,
@@ -3302,8 +3328,9 @@ def privacy_card_defs(db_id, model_ids):
     # higher. The > 0 guard blanks a selection whose anchor total is
     # zero or negative — dividing would render inf/NaN resp.
     # sign-flipped bands.
-    sh_tags = spend_tags("web_sources_history", range_filters("as_of_day"))
+    sh_tags = spend_tags("web_sources_history", holdings_filters("as_of_day"))
     total = _ccy_case("total_value")
+    selection = _cl(sh_tags, "source") + _cl(sh_tags, "tax_wrapper") + _cl(sh_tags, "asset_class")
     nw_cte = (
         "WITH nw AS (\n"
         f"  SELECT CASE WHEN sum({total}) > 0\n"
@@ -3311,9 +3338,8 @@ def privacy_card_defs(db_id, model_ids):
         "    FROM web_sources_history\n"
         "   WHERE as_of_day = (SELECT max(as_of_day) FROM web_sources_history\n"
         "                       WHERE TRUE" + _cl(sh_tags, "time_range") + ")"
-        + _cl(sh_tags, "source") + ")\n")
-    sh_where = ("\n WHERE TRUE" + _cl(sh_tags, "time_range")
-                + _cl(sh_tags, "source"))
+        + selection + ")\n")
+    sh_where = "\n WHERE TRUE" + _cl(sh_tags, "time_range") + selection
     out["Net worth — monthly trend (privacy)"] = ("question", "smartscalar",
         "Average daily net worth per month as % of the selected sources' "
         "net worth at the window's end, with the change vs the month "
@@ -3364,8 +3390,8 @@ def privacy_card_defs(db_id, model_ids):
     # month's bar past 100 (and a big-income-but-net-negative window to
     # blank). The peak > 0 guard blanks a window with no positive flow
     # at all — better blank than sign-flipped bars.
-    tx_tags = spend_tags("web_transactions", range_filters("occurred_at"))
-    wo_tags = spend_tags("web_income", range_filters("occurred_at"))
+    tx_tags = spend_tags("web_transactions", flow_filters("occurred_at"))
+    wo_tags = spend_tags("web_income", flow_filters("occurred_at"))
 
     def peak_share(m_cte):
         """The month x kind rows of CTE body `m_cte`, each as % of the
@@ -3425,7 +3451,8 @@ def privacy_card_defs(db_id, model_ids):
             "WITH r AS (\n"
             f"  SELECT {dim}, sum({_ccy_case(col)})::DOUBLE AS v\n"
             f"    FROM {view}\n"
-            "   WHERE TRUE" + _cl(tags, "as_of_day") + _cl(tags, "source") + "\n"
+            "   WHERE TRUE" + _cl(tags, "as_of_day") + _cl(tags, "source")
+            + _cl(tags, "tax_wrapper") + _cl(tags, "asset_class") + "\n"
             "   GROUP BY 1)\n"
             f"SELECT {dim},\n"
             "       v / (SELECT CASE WHEN sum(v) <> 0 THEN sum(v) END FROM r)"
@@ -3468,30 +3495,32 @@ def privacy_card_defs(db_id, model_ids):
               "Management-style shares (%) of the selected sources' total "
               "account value (incl. cash) as of a day; always sums to 100.")
 
-    # -- Top positions: each position's share of the selected sources'
-    # TOTAL positions value at the day. The inline asset-class / vehicle
-    # pickers narrow the list but not the denominator, so a position's
-    # share reads the same however the list is narrowed.
+    # -- Top positions: each position's share of the selection's TOTAL
+    # positions value at the day: the selected sources, tax wrappers and
+    # asset classes. The inline vehicle picker narrows the list but not
+    # the denominator, so a position's share reads the same however the
+    # list is narrowed.
     top_tags = spend_tags("web_positions_history", POSITION_FILTERS)
     value = _ccy_case("value")
     out["Top 100 positions (privacy)"] = ("question", "table",
         "The hundred largest positions as of a day, each as % of the "
-        "selected sources' total positions value; the widget's "
-        "asset-class and vehicle filters narrow the list but not the "
-        "denominator." + standalone + PRIVACY_DESC,
+        "selection's total positions value; the widget's vehicle "
+        "filter narrows the list but not the denominator."
+        + standalone + PRIVACY_DESC,
         _native(db_id,
             "WITH tot AS (\n"
             f"  SELECT sum({value})::DOUBLE AS t\n"
             "    FROM web_positions_history\n"
             "   WHERE TRUE" + _cl(top_tags, "as_of_day")
-            + _cl(top_tags, "source") + "),\n"
+            + _cl(top_tags, "source") + _cl(top_tags, "tax_wrapper")
+            + _cl(top_tags, "asset_class") + "),\n"
             "p AS (\n"
             "  SELECT symbol, name, asset_class, vehicle,"
             f" sum({value})::DOUBLE AS v\n"
             "    FROM web_positions_history\n"
             "   WHERE TRUE" + _cl(top_tags, "as_of_day")
-            + _cl(top_tags, "source") + _cl(top_tags, "asset_class")
-            + _cl(top_tags, "vehicle") + "\n"
+            + _cl(top_tags, "source") + _cl(top_tags, "tax_wrapper")
+            + _cl(top_tags, "asset_class") + _cl(top_tags, "vehicle") + "\n"
             "   GROUP BY 1, 2, 3, 4)\n"
             "SELECT symbol, name, asset_class, vehicle,\n"
             "       v / (SELECT CASE WHEN t <> 0 THEN t END FROM tot)"
@@ -4131,9 +4160,10 @@ def dashboard_parameters(model_ids, mode, name=""):
     dropdown values from the sources model. The Exposure, Gains,
     Spending, Income and Cash Flow dashboards are 'range' with pickers of
     their own, so they are matched by NAME rather than by mode: Exposure
-    first (a tax wrapper beside the source), then Gains, Cash Flow,
-    Income and Spending, with the Wealth Overview as the plain 'range'
-    case. Spending and Income each carry one more picker than
+    first (a tax wrapper and an asset class beside the source), then
+    Gains, Cash Flow, Income and Spending, with the Wealth Overview as
+    the plain 'range' case, which adds a tax wrapper and an asset class
+    as Allocation does. Spending and Income each carry one more picker than
     their twin, which has no account picker; Cash Flow's twin carries
     the same set, having no account picker to drop."""
     if mode is None:
@@ -4177,6 +4207,13 @@ def dashboard_parameters(model_ids, mode, name=""):
 
     source = card_picker(SOURCE_PARAM_ID, "Source", "source",
                          "report_sources_latest", "silver_source_id")
+    # The Wealth Overview's and Allocation's tax wrapper and asset class.
+    # The classes come off the asset class history, which reads cash as
+    # the class `cash`, the way every holdings view does.
+    wealth_tax_wrapper = card_picker(WEALTH_TAX_WRAPPER_PARAM_ID, "Tax wrapper", "tax_wrapper",
+                                     "report_accounts_latest", "tax_wrapper")
+    asset_class = card_picker(ASSET_PARAM_ID, "Asset class", "asset_class",
+                              "report_asset_classes_history", "asset_class")
     if mode == "returns":
         # report_returns carries one row set per currency, so a card
         # running with the currency cleared would show every period once
@@ -4212,16 +4249,14 @@ def dashboard_parameters(model_ids, mode, name=""):
         # Required + dynamic "today" default: the as-of cards sum daily
         # history (one row per entity per day), so they must never run
         # with the day filter cleared — a required parameter resets to
-        # its default instead of clearing. The asset-class and vehicle
-        # pickers draw their values from the positions model and are
-        # linked only to POSITION_FILTERED_CARDS.
+        # its default instead of clearing. The vehicle picker draws its
+        # values from the positions model and is linked only to
+        # POSITION_FILTERED_CARDS.
         return [currency_picker(WEALTH_CURRENCY_PARAM_ID),
                 {"id": ASOF_PARAM_ID, "name": "As of day", "slug": "as_of_day",
                  "type": "date/single", "sectionId": "date",
                  "default": "thisday", "required": True},
-                source,
-                card_picker(ASSET_PARAM_ID, "Asset class", "asset_class",
-                            "report_positions_history", "asset_class"),
+                source, wealth_tax_wrapper, asset_class,
                 card_picker(VEHICLE_PARAM_ID, "Vehicle", "vehicle",
                             "report_positions_history", "vehicle")]
     # "past12months~": the trailing ~ means "include this month".
@@ -4236,13 +4271,13 @@ def dashboard_parameters(model_ids, mode, name=""):
         # The currency is required, as report_exposure holds a row set
         # per currency; the source, the tax wrapper and the asset class
         # narrow the look-through to a selection, whose shares the cards
-        # compute. The asset class picker lists the positions' classes,
-        # the taxonomy every leaf's class is one of.
+        # compute. The asset class picker lists the classes the asset
+        # class history holds, the taxonomy every leaf's class is one of.
         return [currency_picker(EXPOSURE_CURRENCY_PARAM_ID), time_range, source,
                 card_picker(EXPOSURE_TAX_WRAPPER_PARAM_ID, "Tax wrapper",
                             "tax_wrapper", "report_accounts_latest", "tax_wrapper"),
                 card_picker(EXPOSURE_ASSET_CLASS_PARAM_ID, "Asset class", "asset_class",
-                            "report_positions_history", "asset_class")]
+                            "report_asset_classes_history", "asset_class")]
     if name in GAINS_DASHBOARDS:
         # The tax wrapper's values come off the accounts model, the
         # vocabulary web_gains joins in from the same table. Missing cost
@@ -4303,7 +4338,10 @@ def dashboard_parameters(model_ids, mode, name=""):
                                    "report_income", "income_detailed"))
         return pickers
     if name not in SPENDING_DASHBOARDS:
-        return [currency_picker(WEALTH_CURRENCY_PARAM_ID), time_range, source]
+        # The Wealth Overview: its holdings tiles take both the tax
+        # wrapper and the asset class, its flow tiles the wrapper alone.
+        return [currency_picker(WEALTH_CURRENCY_PARAM_ID), time_range, source,
+                wealth_tax_wrapper, asset_class]
     currency = currency_picker(SPEND_CURRENCY_PARAM_ID)
     # The account picker targets `display_name` — the model's name for
     # the account LABEL (migration 0063) — and NOT
@@ -4510,13 +4548,12 @@ def ensure_database(base, sid, db_name, gold_path):
 
     The cap is INSTANCE-level, so every tile of a dashboard shares it,
     and a dashboard opens by firing all of its tiles at once — so it is
-    sized against the busiest page rather than against one query. The
-    busiest is Cash Flow, whose tiles each scan the statement over all
-    history: measured at eight threads, a 2 GB pool serves six such
-    tiles, 3 GB twelve, and 4 GB twenty. Four, because a dashboard that
-    gains a tile should not take the page down; a pool too small
-    surfaces as "There was a problem displaying this chart" on most of
-    the page rather than as anything naming memory.
+    sized against the busiest page rather than against one query. Each
+    tile reads a serving table (gold migration 0132), not a report
+    macro, so a tile's memory grows with the rows it keeps, not with the
+    length of the history. Four GB leaves a page room to gain tiles; a
+    pool too small surfaces as "There was a problem displaying this
+    chart" on most of the page rather than as anything naming memory.
 
     Lowering `threads` instead does NOT trade off the same way — it
     makes matters worse, because a query that cannot parallelise holds
@@ -4839,16 +4876,16 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids):
 
         # The switch link occupies row 0, so the tiles shift down one row;
         # a dashboard without a twin has no link and no shift.
-        # The asset-class and vehicle filters render on the Top-positions
-        # tile itself (inline_parameters) rather than in the dashboard's
-        # filter bar — they only apply to that one widget.
+        # The vehicle filter renders on the Top-positions tile itself
+        # (inline_parameters) rather than in the dashboard's filter bar:
+        # it only applies to that one widget.
         dashcards = [text_dashcard(-99, link)] if link else []
         shift = 1 if link else 0
         dashcards += [{"id": -(i + 1), "card_id": card_ids[card], "row": row + shift,
                        "col": col, "size_x": sx, "size_y": sy, "series": [],
                        "visualization_settings": {},
                        "inline_parameters":
-                           [ASSET_PARAM_ID, VEHICLE_PARAM_ID] if mode == "asof"
+                           [VEHICLE_PARAM_ID] if mode == "asof"
                            and card in POSITION_FILTERED_CARDS else [],
                        "parameter_mappings": tile_mappings(card, tcol)}
                       for i, (card, row, col, sx, sy, tcol) in enumerate(tiles)]

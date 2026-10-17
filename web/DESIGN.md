@@ -82,11 +82,12 @@ OSS **setup API** ([`provision.py`](provision.py), stdlib only): create
 the admin (`POST /api/setup`, which also finishes the wizard), pre-add
 the gold DuckDB database (`POST /api/database`, `read_only`), and create
 the pre-defined report models (`POST /api/card`, `type: "model"`) as native-query
-shims over the gold **multi-currency** report macros — `SELECT * FROM
-report_x_multi(…)` (migration 0024), which build on the same line bases the
-CLI's single-currency macros use and emit one value-column set per currency
-(USD/CHF/EUR/GBP), so the models track command output by construction and bake in
-no data. In a `wealthdb (pre-defined)` collection: the `_latest` snapshot
+shims over the gold **multi-currency** report macros (migration 0024). The
+macros build on the same line bases the CLI's single-currency macros use and
+emit one value-column set per currency (USD/CHF/EUR/GBP). A model reads a
+macro's rows from the serving table `web refresh` fills with them (§8), so
+the models track command output by construction and bake in no data. In a
+`wealthdb (pre-defined)` collection: the `_latest` snapshot
 reports (+ all-time `report_transactions`), the daily `_history` reports
 (migration 0022) for time-series charts, the two taxonomy models over the
 `web_*` breakdown views (migration 0032), cast-only shims over the materialized
@@ -100,9 +101,13 @@ surface reads.
 On top of the models, provisioning creates pre-defined questions and
 nine dashboards. Their pickers:
 
-- **Wealth Overview**: a required currency, a time range, and a source.
-- **Allocation**: a required currency, a required as-of day, and a
-  source.
+- **Wealth Overview**: a required currency, a time range, a source, a
+  *Tax wrapper* picker, and an *Asset class* picker. The fees and income
+  tiles take the tax wrapper alone. A fee or an interest line often
+  names no instrument, so it has no asset class.
+- **Allocation**: a required currency, a required as-of day, a source,
+  a *Tax wrapper* picker, and an *Asset class* picker. The Top 100
+  positions tile carries a *Vehicle* picker of its own.
 - **Returns**: a required currency (returns are stored one row set per
   currency).
 - **Gains**: the time range and source, a required currency, a *Tax
@@ -324,8 +329,8 @@ Four settings work together, each load-bearing:
   as connection *details*, which the driver forwards as instance-level
   JDBC config. Instance-level means every tile a dashboard fires at once
   shares one pool, so the cap is sized against the busiest page rather
-  than a single query (`ensure_database`'s docstring carries the
-  measured thresholds). They must NOT move into `init_sql`: that runs
+  than a single query (`ensure_database`'s docstring says why). They
+  must NOT move into `init_sql`: that runs
   per pooled connection, and DuckDB refuses to re-`SET` a used
   `temp_directory` — the second connection then poisons every query
   after it.
@@ -341,7 +346,18 @@ Four settings work together, each load-bearing:
   comes back on its own (metadata is safe on the H2 volume); a plain
   `web stop` still stops it for good.
 
-## 8. Materialized returns, gains and exposure
+The settings cap what the queries take. The serving tables (§8) keep
+what the queries need small:
+
+- A report macro computes its whole output on every read.
+- A history macro computes every day from the first snapshot, whatever
+  the tile filters on.
+- So every holdings, history and transaction model and view reads a
+  table that holds a macro's rows.
+- A tile then scans only the rows it keeps. Its memory grows with the
+  rows it reads, not with the length of the history.
+
+## 8. Materialized returns, gains, exposure and serving tables
 
 The Returns dashboards can't be views or macros: MWR is XIRR (iterative
 root-finding), and the returns engine leans on things that only exist
@@ -350,9 +366,9 @@ inception overrides and exclusions, the transfer-netting heuristic,
 synthetic onboarding. A SQL re-implementation would be a second returns
 engine that drifts. So the existing engine computes and the result is
 **materialized** into `report_returns` (migration 0026). It,
-`report_gains` and `report_exposure` (below) are gold's *derived*
-tables; everything else is loader-written source of truth or computed
-on read.
+`report_gains`, `report_exposure` and the serving tables (below) are
+gold's *derived* tables; everything else is loader-written source of
+truth or computed on read.
 
 The contract keeps it honest: each `(grain, granularity, currency)`
 partition is the **verbatim output of one `RunReturns` call with the
@@ -475,11 +491,30 @@ The `web_exposure` view does three things:
 - it labels each row direct or via funds;
 - it adds each row's share of that instant's net worth.
 
+The **serving tables** (`serving_*`, migration 0132) hold report macros'
+rows verbatim, for the reason §7 gives. They are:
+
+- the daily histories: global, per source, account, portfolio and
+  position, and the card balances;
+- the latest holdings: global, per source, portfolio, account and
+  position;
+- every transaction line: all of them, and the spending, income and
+  cash flow lines.
+
+Each table is one macro's output. `web-materialize` rewrites them all
+in one transaction, so a reader sees all old or all new. A Go test
+compares every table with its macro, row by row. Two views build on
+them: `holdings_lines_history` and `holdings_lines_latest` hold each
+position line and each account's cash. A line carries its
+account's tax wrapper and its asset class, cash being the class `cash`.
+The holdings `web_*` views group these lines, so every holdings tile
+can filter by both. The flow views carry the tax wrapper alone.
+
 The refresh hook: `web refresh` (and `web start`'s initial snapshot)
 runs the engine's hidden `web-materialize` subcommand *before*
-`_snapshot`, so returns, gains and exposure are exactly as fresh as the
-holdings and `wealthdb load && wealthdb web refresh` remains the whole
-update flow.
+`_snapshot`, so the serving tables, returns, gains and exposure are
+exactly as fresh as the holdings and `wealthdb load && wealthdb web
+refresh` remains the whole update flow.
 It is an engine-owned write to live gold — the same class as `load` and
 mutually exclusive with it under the engine's write mutex, an advisory
 flock on a `<gold_db>.wealthdb.lock` sidecar taken before gold is

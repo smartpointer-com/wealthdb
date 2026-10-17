@@ -804,6 +804,8 @@ func TestWebCashflowIsLineGrainAndReadyToDraw(t *testing.T) {
 		{id: "W-UNPLACED-OUT", account: "CASH", kind: "withdrawal", amount: -30},
 	})
 
+	mustMaterializeServing(t, db, ctx)
+
 	// The node names, read straight off the view.
 	named, err := db.QueryContext(ctx, `
         SELECT DISTINCT section, class_node, group_node FROM web_cashflow

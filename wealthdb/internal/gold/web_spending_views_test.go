@@ -15,6 +15,7 @@ import (
 func TestWebSpendingLabelsUncategorized(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedSpendingReportFixture(t, db, ctx)
+	mustMaterializeServing(t, db, ctx)
 
 	rows, err := db.QueryContext(ctx, `
         SELECT CAST(occurred_at AS VARCHAR), silver_source_id, account_external_id,
@@ -239,6 +240,7 @@ func TestCardBalancesHistoryCarriesEachAccountIndependently(t *testing.T) {
 	// *sql.DB would not carry the per-connection SET to the query), so
 	// a zone-dependent rendering shifts the day off midnight and the
 	// equality below misses.
+	mustMaterializeServing(t, db, ctx)
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		t.Fatalf("Conn: %v", err)
@@ -284,7 +286,8 @@ func TestMigration0043DDLIsRerunnable(t *testing.T) {
 // view: the spending fixture's accounts and transactions, a position
 // snapshot on a brokerage account (the positions, asset-class and
 // vehicle histories) and deposit and card balances (the source,
-// account and card-balance histories). It extends the spending
+// account and card-balance histories), then materializes the serving
+// tables those views read, as a refresh does. It extends the spending
 // fixture rather than composing it with seedCardBalanceFixture, whose
 // accounts and FX rows carry the same keys.
 func seedWebViewEpochFixture(t *testing.T, db *sql.DB, ctx context.Context) {
@@ -314,6 +317,7 @@ func seedWebViewEpochFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 		snap, snap); err != nil {
 		t.Fatalf("seed balances: %v", err)
 	}
+	mustMaterializeServing(t, db, ctx)
 }
 
 // webViews pairs each serving view with the epoch column it renders and
@@ -417,6 +421,7 @@ func TestWebSpendingLabelsAnUnnamedAccount(t *testing.T) {
     `); err != nil {
 		t.Fatalf("unname CASH1: %v", err)
 	}
+	mustMaterializeServing(t, db, ctx)
 	rows, err := db.QueryContext(ctx, `
         SELECT DISTINCT account_external_id, display_name FROM web_spending
          ORDER BY 1`)
@@ -462,6 +467,7 @@ func TestWebSpendingLabelsAnAccountWithSourceAndKind(t *testing.T) {
     `); err != nil {
 		t.Fatalf("unname CASH1: %v", err)
 	}
+	mustMaterializeServing(t, db, ctx)
 	rows, err := db.QueryContext(ctx, `
         SELECT DISTINCT account_external_id, silver_source_id, account_kind,
                display_name, account_label
@@ -510,6 +516,7 @@ func TestWebSpendingLabelsAnAccountWithSourceAndKind(t *testing.T) {
 func TestCardBalancesLabelsAnAccountWithSourceAndKind(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedCardBalanceFixture(t, db, ctx)
+	mustMaterializeServing(t, db, ctx)
 	rows, err := db.QueryContext(ctx, `
         SELECT DISTINCT display_name, account_label FROM web_card_balances_history`)
 	if err != nil {

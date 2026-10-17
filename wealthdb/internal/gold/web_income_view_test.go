@@ -18,6 +18,7 @@ var seededSeconds = map[int64]bool{1000: true, 9000: true, 2700000: true, 530000
 func TestWebIncomeViewShape(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedIncomeReportFixture(t, db, ctx)
+	mustMaterializeServing(t, db, ctx)
 
 	rows, err := db.QueryContext(ctx, `
         SELECT occurred_at, display_name, account_label, income_label,

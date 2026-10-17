@@ -1530,6 +1530,7 @@ is documented where it is used:
   `0125` and `0128`) — §7.6; the derived tables (migrations `0126` and
   `0129`) and `report_exposure` (migrations `0127` and `0130`); migration
   `0131` touches both — §10.14.
+- The serving tables `serving_*` (migration `0132`) — web/DESIGN.md §8.
 - The spending overlay: `spend_categories` (migration `0040`;
   docs/SPENDING.md §2), and `spend_txn_enrichment`,
   `spend_merchant_categories` and `spend_account_scope` (migration
@@ -1926,7 +1927,10 @@ CREATE TABLE realized_lots (
   it. The serving views for the optional Metabase server are named
   `web_*` (§10.10), and nothing in the engine depends on one.
 - **Materialised positions-as-of cache.** The as-of query in §10 runs
-  fast on the index; no cache needed at personal scale.
+  fast on the index; no cache needed at personal scale. The serving
+  tables hold report output for the Metabase dashboards alone, which
+  fire many queries at once (web/DESIGN.md §7). No engine command
+  reads them.
 - **A surrogate `account_id` / `instrument_id` integer key.** Tuple
   PKs `(silver_source_id, account_external_id)` are noisier in
   joins but eliminate a whole class of "how do I generate a stable
@@ -2356,11 +2360,12 @@ stores are carried across (`carryVerdictStore`, once per entry in
 in its category column respelled to its successor
 (`canonical.RetiredDetailed`), so a carry from a file older than
 migration 0111 brings none into the rebuilt file. `report_returns` does
-not survive the swap, nor do `report_gains` and `report_exposure`.
-`web-materialize` writes them (§10.9, §10.13, §10.14), so the rebuilt
-file has none until a materialization follows.
+not survive the swap, nor do `report_gains`, `report_exposure` and the
+serving tables. `web-materialize` writes them (§10.9, §10.13, §10.14,
+web/DESIGN.md §8), so the rebuilt file has none until a materialization
+follows.
 `reload -a --in-place` keeps the live file instead. It forgoes the
-compaction and leaves the three tables alone, but the per-source reset
+compaction and leaves these tables alone, but the per-source reset
 still clears `symbol_resolutions` there. Removing the gold DB and
 re-running `wealthdb init` is the manual fallback.
 

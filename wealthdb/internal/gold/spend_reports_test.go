@@ -686,6 +686,7 @@ func TestSpendingDeltaLinesCarryNoMerchant(t *testing.T) {
 	// dashboard reads it: by category. Every delta line is blank, both
 	// gift lines are there (so the pinned row is among them), and the
 	// grocery lines keep their name.
+	mustMaterializeServing(t, db, ctx)
 	rows, err := db.QueryContext(ctx, `SELECT spend_detailed, merchant_name FROM web_spending`)
 	if err != nil {
 		t.Fatalf("web_spending: %v", err)
@@ -922,6 +923,7 @@ func TestSpendingLinesFallBackToTheirSignature(t *testing.T) {
             SELECT merchant_name, COUNT(*) AS n
               FROM report_spending_transactions(?, ?, 'USD')
              WHERE merchant_name = ? GROUP BY merchant_name)`, from, to, branch)
+	mustMaterializeServing(t, db, ctx)
 	grouped("web_spending", `
         SELECT COUNT(*), COALESCE(SUM(n), 0) FROM (
             SELECT merchant_name, COUNT(*) AS n

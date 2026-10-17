@@ -150,7 +150,7 @@ echo "== web help smoke =="
 hout="$(web_help)"
 check "help mentions snapshot" "read-only SNAPSHOT" "$hout"
 check "help lists refresh"     "refresh"            "$hout"
-check "help mentions returns"  "materialize returns" "$hout"
+check "help mentions serving"  "materialize serving tables" "$hout"
 
 # provision.py's definitions (models, cards, filters, dashboards) are
 # pure functions of module constants, so they assert statically. The

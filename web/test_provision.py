@@ -396,14 +396,21 @@ check("no picker on the twin is bound to an account column",
            or "account_external_id" in json.dumps(x.get("values_source_config", {}))],
       json.dumps(TWIN_PARAMS))
 for _d in ("Wealth Overview", "Wealth Overview (privacy)"):
-    check(f"'{_d}' carries the currency picker and the range pair",
+    check(f"'{_d}' carries the currency picker, the range pair, the tax wrapper and the asset class",
           [x["id"] for x in p.dashboard_parameters(MID, "range", _d)]
-          == [p.WEALTH_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID])
+          == [p.WEALTH_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
+              p.WEALTH_TAX_WRAPPER_PARAM_ID, p.ASSET_PARAM_ID])
 for _d in ("Allocation", "Allocation (privacy)"):
-    check(f"'{_d}' carries the currency picker and the as-of pickers",
+    check(f"'{_d}' carries the currency picker, the as-of pickers, the tax wrapper and the asset class",
           [x["id"] for x in p.dashboard_parameters(MID, "asof", _d)]
           == [p.WEALTH_CURRENCY_PARAM_ID, p.ASOF_PARAM_ID, p.SOURCE_PARAM_ID,
-              p.ASSET_PARAM_ID, p.VEHICLE_PARAM_ID])
+              p.WEALTH_TAX_WRAPPER_PARAM_ID, p.ASSET_PARAM_ID, p.VEHICLE_PARAM_ID])
+# The class picker lists the asset class history's classes, cash among
+# them: a cash balance is the class `cash` in every holdings view.
+for _mode, _d in (("range", "Wealth Overview"), ("asof", "Allocation"), ("range", "Exposure")):
+    _ac = [x for x in p.dashboard_parameters(MID, _mode, _d) if x["slug"] == "asset_class"][0]
+    check(f"'{_d}' lists its asset classes off the asset class history",
+          _ac["values_source_config"]["card_id"] == MID["report_asset_classes_history"], _ac)
 _wccy = p.dashboard_parameters(MID, "range", "Wealth Overview")[0]
 check("that currency picker is required, defaults to USD and offers every "
       "reporting currency",
@@ -473,7 +480,9 @@ check("a privacy chart maps its field filters as dimensions and the "
       sorted(targets["Net worth over time (privacy)"]) == sorted([
           (p.WEALTH_CURRENCY_PARAM_ID, ["variable", ["template-tag", "currency"]]),
           (p.TIME_PARAM_ID, ["dimension", ["template-tag", "time_range"]]),
-          (p.SOURCE_PARAM_ID, ["dimension", ["template-tag", "source"]])]),
+          (p.SOURCE_PARAM_ID, ["dimension", ["template-tag", "source"]]),
+          (p.WEALTH_TAX_WRAPPER_PARAM_ID, ["dimension", ["template-tag", "tax_wrapper"]]),
+          (p.ASSET_PARAM_ID, ["dimension", ["template-tag", "asset_class"]])]),
       targets["Net worth over time (privacy)"])
 
 # An unsynced column drops its filter rather than emitting a {{tag}} the
@@ -766,22 +775,67 @@ if twin:
 # Every Wealth Overview, Allocation and Exposure tile, on the base and on
 # the twin, answers every picker its dashboard carries — the currency one
 # above all, since a tile it misses silently keeps showing USD.
+# The Overview's flow tiles take the tax wrapper but not the asset
+# class (a fee or an interest line often names no instrument); the
+# Top-positions tiles take the vehicle as well.
 _TOP = {card_ids[c] for c in p.POSITION_FILTERED_CARDS}
+_FLOWS = {card_ids[c + s] for c in ("Investment income by month", "Fees & taxes by month")
+          for s in ("", p.PRIVACY_SUFFIX)}
+_SELECTION = {p.WEALTH_TAX_WRAPPER_PARAM_ID, p.ASSET_PARAM_ID}
 for _d, _want in (("Wealth Overview", {p.WEALTH_CURRENCY_PARAM_ID,
-                                       p.TIME_PARAM_ID, p.SOURCE_PARAM_ID}),
+                                       p.TIME_PARAM_ID, p.SOURCE_PARAM_ID} | _SELECTION),
                   ("Allocation", {p.WEALTH_CURRENCY_PARAM_ID,
-                                  p.ASOF_PARAM_ID, p.SOURCE_PARAM_ID}),
+                                  p.ASOF_PARAM_ID, p.SOURCE_PARAM_ID} | _SELECTION),
                   ("Exposure", {p.EXPOSURE_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
                                 p.EXPOSURE_TAX_WRAPPER_PARAM_ID, p.EXPOSURE_ASSET_CLASS_PARAM_ID})):
     for _name in (_d, _d + p.PRIVACY_SUFFIX):
         _body = [d for d in layouts if d.get("name") == _name][0]
         _tiles = [dc for dc in _body["dashcards"] if dc["card_id"] is not None]
+
+        def _expected(cid, want=_want):
+            if cid in _TOP:
+                return want | {p.VEHICLE_PARAM_ID}
+            if cid in _FLOWS:
+                return want - {p.ASSET_PARAM_ID}
+            return want
         _off = [dc["card_id"] for dc in _tiles
-                if {m["parameter_id"] for m in dc["parameter_mappings"]}
-                != (_want | {p.ASSET_PARAM_ID, p.VEHICLE_PARAM_ID}
-                    if dc["card_id"] in _TOP else _want)]
+                if {m["parameter_id"] for m in dc["parameter_mappings"]} != _expected(dc["card_id"])]
         check(f"every '{_name}' tile answers every picker the dashboard carries",
               bool(_tiles) and not _off, _off)
+        check(f"on '{_name}', only the Top-positions tile carries a filter of its own, the vehicle",
+              all(dc.get("inline_parameters") == ([p.VEHICLE_PARAM_ID] if dc["card_id"] in _TOP else [])
+                  for dc in _tiles),
+              [(dc["card_id"], dc.get("inline_parameters")) for dc in _tiles if dc.get("inline_parameters")])
+
+# Each tile's SQL holds the clauses its pickers land on: a picker
+# mapped onto a tag the SQL never references filters nothing.
+_WA = {n for d in ("Wealth Overview", "Allocation") for s in ("", p.PRIVACY_SUFFIX)
+       for n, *_ in DEFS[d + s][3]}
+_FLOW_NAMES = {c + s for c in ("Investment income by month", "Fees & taxes by month")
+               for s in ("", p.PRIVACY_SUFFIX)}
+_wa_sql = {n: sql_of(CARDS[n][2]) or "" for n in _WA}
+check("every Wealth Overview and Allocation tile narrows to the tax wrapper",
+      all("[[AND {{tax_wrapper}}]]" in q for q in _wa_sql.values()),
+      [n for n, q in _wa_sql.items() if "{{tax_wrapper}}" not in q])
+check("every holdings tile narrows to the asset class, and no flow tile does",
+      all(("[[AND {{asset_class}}]]" in q) != (n in _FLOW_NAMES) for n, q in _wa_sql.items()),
+      [n for n, q in _wa_sql.items() if ("{{asset_class}}" in q) == (n in _FLOW_NAMES)])
+
+# The history and latest models read the tables `web refresh` fills, not
+# the macros: a macro computes every day of history on each read.
+_MODELS_SQL = {n: sql for n, (sql, _d) in p.report_models().items()}
+check("no report model reads a history macro",
+      not any("_history_multi()" in q for q in _MODELS_SQL.values()),
+      [n for n, q in _MODELS_SQL.items() if "_history_multi()" in q])
+check("the accounts, positions and sources latest models and the transactions ones read their tables",
+      all(f"FROM {t}" in _MODELS_SQL[m] for m, t in (
+          ("report_accounts_latest", "serving_accounts_latest"),
+          ("report_positions_latest", "serving_positions_latest"),
+          ("report_sources_latest", "serving_sources_latest"),
+          ("report_global_latest", "serving_global_latest"),
+          ("report_portfolios_latest", "serving_portfolios_latest"),
+          ("report_transactions", "serving_transactions"),
+          ("report_transactions_pct", "serving_transactions"))))
 
 
 # ---- Income dashboards ----------------------------------------------
