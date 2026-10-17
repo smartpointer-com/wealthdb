@@ -200,20 +200,20 @@ func TestBookingTypeCatchAllStillClaims(t *testing.T) {
 	seedTxns(t, db, ctx,
 		// The bank's own booking type for a fee of its own. It resolves
 		// to the BANK_FEES catch-all, and that IS the verdict.
-		txn{"swiss-bank", "T-CUSTODY", "CASH3", "fee", day(10), -40, "", "", "CUSTODY PRICE"},
+		txn{"swiss-bank", "T-SAFE", "CASH3", "fee", day(10), -40, "", "", "RENTAL FEE SAFE BOX"},
 	)
 	res := runPass(t, db, ctx, Options{})
 
-	if d, p := verdictOf(t, db, ctx, "swiss-bank", "T-CUSTODY"); d != "BANK_FEES_OTHER_BANK_FEES" || p != ProvenanceProvider {
-		t.Errorf("T-CUSTODY = (%q, %q), want the bank's own filing to claim", d, p)
+	if d, p := verdictOf(t, db, ctx, "swiss-bank", "T-SAFE"); d != "BANK_FEES_OTHER_BANK_FEES" || p != ProvenanceProvider {
+		t.Errorf("T-SAFE = (%q, %q), want the bank's own filing to claim", d, p)
 	}
 	if res.ProviderRows != 1 {
 		t.Errorf("ProviderRows = %d, want 1", res.ProviderRows)
 	}
 	// The row could not be rescued by the model if the tier declined:
 	// its signature is nothing but the bank's own filing.
-	sig := Normalize("", "CUSTODY PRICE")
-	if !FilingOnly(sig, "CUSTODY PRICE") && !Uninformative(sig) {
+	sig := Normalize("", "RENTAL FEE SAFE BOX")
+	if !FilingOnly(sig, "RENTAL FEE SAFE BOX") && !Uninformative(sig) {
 		t.Errorf("signature %q is model-candidate; this test's premise needs revisiting", sig)
 	}
 }

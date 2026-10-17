@@ -23,6 +23,27 @@ CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/go"
 
 mkdir -p "$CACHE/go-build" "$CACHE/go-mod" "$CACHE/gopath"
 
+# The reload-verification harness (TestTaxonomyInvariants, docs/DESIGN.md
+# §12.5) reads gold files that live outside the repo. When its variables
+# are set, each is forwarded as an absolute path and its file's directory
+# is mounted read-only at the same path. The image and the go argv end
+# the positional list; docker's own options go in front of them.
+set -- "$IMAGE" "$@"
+mounted=""
+for var in WEALTHDB_GOLD_VERIFY WEALTHDB_GOLD_BEFORE; do
+    eval "val=\${$var:-}"
+    [ -n "$val" ] || continue
+    dir="$(cd "$(dirname "$val")" && pwd)" || { echo "wealthdb-go: $var: no directory for $val" >&2; exit 2; }
+    eval "$var=\$dir/\$(basename \"\$val\")"
+    export "$var"
+    set -- -e "$var" "$@"
+    # One mount per directory: docker refuses a target mounted twice.
+    case "|$mounted|" in
+        *"|$dir|"*) ;;
+        *) set -- -v "$dir:$dir:ro" "$@"; mounted="$mounted|$dir" ;;
+    esac
+done
+
 exec docker run --rm \
     -u "$(id -u):$(id -g)" \
     -e HOME="$HOME" \
@@ -33,5 +54,4 @@ exec docker run --rm \
     -v "$CACHE:$CACHE" \
     -w "$REPO" \
     --entrypoint go \
-    "$IMAGE" \
     "$@"

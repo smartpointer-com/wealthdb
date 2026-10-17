@@ -106,10 +106,10 @@ func TestProviderCategoryUnmappedSource(t *testing.T) {
 func TestProviderCategoryUBSBookingTypes(t *testing.T) {
 	cases := map[string]string{
 		// Fees, per era.
-		"UBS ADVICE":                        "BANK_FEES_OTHER_BANK_FEES",
-		"CUSTODY PRICE":                     "BANK_FEES_OTHER_BANK_FEES",
+		"UBS ADVICE":                        canonical.SpendDetailedInvestmentFees,
+		"CUSTODY PRICE":                     canonical.SpendDetailedInvestmentFees,
+		"ADR/GDR HANDLING FEES":             canonical.SpendDetailedInvestmentFees,
 		"RENTAL FEE SAFE BOX":               "BANK_FEES_OTHER_BANK_FEES",
-		"ADR/GDR HANDLING FEES":             "BANK_FEES_OTHER_BANK_FEES",
 		"THIRD-PARTY CHARGES":               "BANK_FEES_OTHER_BANK_FEES",
 		"BALANCE CLOSING OF SERVICE PRICES": "BANK_FEES_OTHER_BANK_FEES",
 		"NCHG":                              "BANK_FEES_OTHER_BANK_FEES",

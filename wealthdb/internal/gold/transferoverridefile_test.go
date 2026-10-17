@@ -88,6 +88,17 @@ func TestParseTransferOverrideLedger(t *testing.T) {
 		}
 	})
 
+	t.Run("an unknown column is refused by name", func(t *testing.T) {
+		// A misspelled second-leg header would read the rule as a
+		// one-leg isolate.
+		_, err := parseTransferOverrideLedger(strings.NewReader(
+			"verb,silver_source_id,account,occurred_at,amount,currency,acount_b,note\n" +
+				"unmatch,bank,CHECKING,2099-02-01,-1.00,USD,SAVINGS,\n"))
+		if err == nil || !strings.Contains(err.Error(), `unknown column "acount_b"`) {
+			t.Errorf("want the unknown column named, got %v", err)
+		}
+	})
+
 	t.Run("blank lines and an empty ledger are not errors", func(t *testing.T) {
 		got, err := parseTransferOverrideLedger(strings.NewReader(header +
 			"\n" + "unmatch,bank,CHECKING,2099-02-01,-1.00,USD,,,,,,\n" + "\n"))

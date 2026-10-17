@@ -173,10 +173,13 @@ var amexUncategorized = map[string]bool{"other": true}
 // but they are not what keeps those rows out of spending; the kind is.
 var ubsBookingTypes = map[string]string{
 	// Fees.
-	"UBS ADVICE":                        "BANK_FEES_OTHER_BANK_FEES",
-	"CUSTODY PRICE":                     "BANK_FEES_OTHER_BANK_FEES",
+	// What an account pays for advice, for custody or for a security it
+	// holds is an investment fee (docs/SPENDING.md §2, Extensions), as
+	// the rule tier files it; the bank's other charges are not.
+	"UBS ADVICE":                        canonical.SpendDetailedInvestmentFees,
+	"CUSTODY PRICE":                     canonical.SpendDetailedInvestmentFees,
+	"ADR/GDR HANDLING FEES":             canonical.SpendDetailedInvestmentFees,
 	"RENTAL FEE SAFE BOX":               "BANK_FEES_OTHER_BANK_FEES",
-	"ADR/GDR HANDLING FEES":             "BANK_FEES_OTHER_BANK_FEES",
 	"THIRD-PARTY CHARGES":               "BANK_FEES_OTHER_BANK_FEES",
 	"BALANCE CLOSING OF SERVICE PRICES": "BANK_FEES_OTHER_BANK_FEES",
 	"NCHG":                              "BANK_FEES_OTHER_BANK_FEES", // MT940: charges
@@ -988,7 +991,7 @@ func ProviderIncomeCategoryClaims(silverKind, accountKind, detailed string) bool
 //     recorded and the row declined.
 //
 //   - A bank's booking-type vocabulary names how the entry was BOOKED.
-//     Its catch-alls are not shrugs: "CUSTODY PRICE" resolving to
+//     Its catch-alls are not shrugs: "RENTAL FEE SAFE BOX" resolving to
 //     BANK_FEES_OTHER_BANK_FEES is the bank saying the movement was a
 //     fee of its own, which is the most any tier will ever know about
 //     that row. There is no merchant name to read — and the signature

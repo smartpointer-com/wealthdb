@@ -155,8 +155,9 @@ func checkMaterializedInstant(t *testing.T, ctx context.Context, db *sql.DB, at 
 }
 
 // checkMaterializedWrappers compares the US-dollar value of each tax
-// wrapper in web_exposure at one instant with its accounts' totals, an
-// account that states no wrapper as "-".
+// wrapper in web_exposure at one instant with its accounts' totals. An
+// account that states no wrapper reads taxable_personal, as on the
+// holdings dashboards.
 func checkMaterializedWrappers(t *testing.T, ctx context.Context, db *sql.DB, at int64) {
 	t.Helper()
 	accounts, err := AccountsAsOf(ctx, db, at, "USD")
@@ -164,16 +165,24 @@ func checkMaterializedWrappers(t *testing.T, ctx context.Context, db *sql.DB, at
 		t.Fatal(err)
 	}
 	want := map[string]float64{}
+	unwrapped := false
 	for _, a := range accounts {
-		if a.TotalValueOutCcy != nil {
-			want[fmtStrPtr(a.TaxWrapper)] += parse(t, a.TotalValueOutCcy)
+		if a.TotalValueOutCcy == nil {
+			continue
 		}
+		w := "taxable_personal"
+		if a.TaxWrapper != nil {
+			w = *a.TaxWrapper
+		} else {
+			unwrapped = true
+		}
+		want[w] += parse(t, a.TotalValueOutCcy)
 	}
-	if want["roth_ira"] == 0 || want["-"] == 0 {
+	if want["roth_ira"] == 0 || !unwrapped {
 		t.Fatalf("at %d: accounts by wrapper %v; the test needs a wrapped and an unwrapped one", at, want)
 	}
 	got := map[string]float64{}
-	if err := scanAll(ctx, db, `SELECT COALESCE(tax_wrapper, '-'), SUM(value) FROM web_exposure
+	if err := scanAll(ctx, db, `SELECT tax_wrapper, SUM(value) FROM web_exposure
 	    WHERE currency = 'USD' AND as_of_day = CAST(epoch_ms(? * 1000) AS DATE) GROUP BY 1`, func(rows *sql.Rows) error {
 		var w string
 		var v float64
@@ -223,14 +232,16 @@ func TestFirstHoldingsAtCountsCash(t *testing.T) {
 	}
 }
 
-// 0127, 0130 and 0131 each replay safely. 0131 re-creates web_exposure
-// last, so it is replayed after an earlier one, as Migrate would.
-func TestMigrations0127To0131DDLAreRerunnable(t *testing.T) {
+// 0127, 0130, 0131 and 0133 each replay safely. 0133 re-creates
+// web_exposure last, so it is replayed after an earlier one, as Migrate
+// would.
+func TestMigrations0127To0133DDLAreRerunnable(t *testing.T) {
 	t.Parallel()
 	for _, replay := range [][]string{
-		{"0127_exposure_dashboard.sql", "0131_exposure_unknown.sql"},
-		{"0130_exposure_filters.sql", "0131_exposure_unknown.sql"},
-		{"0131_exposure_unknown.sql"},
+		{"0127_exposure_dashboard.sql", "0131_exposure_unknown.sql", "0133_deterministic_labels.sql"},
+		{"0130_exposure_filters.sql", "0131_exposure_unknown.sql", "0133_deterministic_labels.sql"},
+		{"0131_exposure_unknown.sql", "0133_deterministic_labels.sql"},
+		{"0133_deterministic_labels.sql"},
 	} {
 		t.Run(replay[0], func(t *testing.T) {
 			t.Parallel()

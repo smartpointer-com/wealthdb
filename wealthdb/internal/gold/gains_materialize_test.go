@@ -72,9 +72,10 @@ func TestMaterializedRealizedCostBasis(t *testing.T) {
 	}
 }
 
-// web_gains labels the account and carries its tax wrapper, and its
-// period is the month's start, the first bucket's too, which opens at
-// the first snapshot.
+// web_gains labels the account and carries its tax wrapper, an account
+// that states none reading taxable_personal, and its period is the
+// month's start, the first bucket's too, which opens at the first
+// snapshot.
 func TestWebGainsLabelsTheAccount(t *testing.T) {
 	db, ctx := openGainsFixture(t)
 	if _, err := MaterializeGains(ctx, db, gainsTo, 1); err != nil {
@@ -89,6 +90,14 @@ func TestWebGainsLabelsTheAccount(t *testing.T) {
 	if account != "Brokerage (test-src brokerage)" || wrapper != "taxable_personal" || period != "1970-01-01 00:00:00" {
 		t.Errorf("DDD's first row: %q %q %q", account, wrapper, period)
 	}
+	var unwrapped string
+	if err := db.QueryRowContext(ctx, `
+        SELECT string_agg(DISTINCT tax_wrapper, ',') FROM web_gains WHERE account_external_id = 'BRK2'`).Scan(&unwrapped); err != nil {
+		t.Fatal(err)
+	}
+	if unwrapped != "taxable_personal" {
+		t.Errorf("an account with no wrapper reads %q", unwrapped)
+	}
 }
 
 func TestMigration0117DDLIsRerunnable(t *testing.T) {
@@ -97,7 +106,13 @@ func TestMigration0117DDLIsRerunnable(t *testing.T) {
 		t.Fatal(err)
 	}
 	rerunMigrationDDL(t, db, ctx, "0117_gains_dashboard.sql")
+	// 0118 to 0121 and 0133 re-issue its view and macros, as Migrate
+	// would apply them.
 	rerunMigrationDDL(t, db, ctx, "0118_lot_engine.sql")
+	rerunMigrationDDL(t, db, ctx, "0119_gains_one_pass.sql")
+	rerunMigrationDDL(t, db, ctx, "0120_gains_held_sold.sql")
+	rerunMigrationDDL(t, db, ctx, "0121_private_exits.sql")
+	rerunMigrationDDL(t, db, ctx, "0133_deterministic_labels.sql")
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_gains`).Scan(&n); err != nil || n == 0 {
 		t.Errorf("after replay: %d rows, err %v", n, err)
@@ -178,11 +193,12 @@ func TestMaterializeGainsCopiesAReadingThatChangesNothing(t *testing.T) {
 	matchesBuckets(t, ctx, db)
 }
 
-func TestMigrations0119To0121DDLAreRerunnable(t *testing.T) {
+func TestMigrations0119To0133DDLAreRerunnable(t *testing.T) {
 	db, ctx := openGainsFixture(t)
 	rerunMigrationDDL(t, db, ctx, "0119_gains_one_pass.sql")
 	rerunMigrationDDL(t, db, ctx, "0120_gains_held_sold.sql")
 	rerunMigrationDDL(t, db, ctx, "0121_private_exits.sql")
+	rerunMigrationDDL(t, db, ctx, "0133_deterministic_labels.sql")
 	if _, err := MaterializeGains(ctx, db, gainsTo, 42); err != nil {
 		t.Fatal(err)
 	}

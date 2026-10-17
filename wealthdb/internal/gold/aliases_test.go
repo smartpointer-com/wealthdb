@@ -84,3 +84,38 @@ func TestAHoldingAliasPairsAKeyAcrossFeeds(t *testing.T) {
 		}
 	}
 }
+
+// Two instruments an alias folds into one key, held at one instant
+// under different names: the holding reads under the smaller name on
+// every read, not whichever line a scan meets first.
+func TestAnAliasedHoldingReadsOneName(t *testing.T) {
+	db, ctx := openGainsFixture(t)
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, first_seen_at, last_seen_at)
+            VALUES ('test-src', 'BRK5', 'brokerage', 'Fifth', 1, 1);
+        INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, symbol, name, currency, first_seen_at, last_seen_at)
+            VALUES ('test-src', 'ZZ', 'public_equity', 'ZZ', 'Zeta Holdings', 'USD', 1, 1),
+                   ('test-src', 'AA', 'public_equity', 'AA', 'Alpha Holdings', 'USD', 1, 1);
+        INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+                               asset_class, vehicle, currency, quantity, market_value, book_value, basis_origin, basis_method, basis_fees) VALUES
+            ('test-src', 6000000, 'BRK5', 'ZZ', 'ZZ', 'public_equity', 'stock', 'USD', 1, 10, 5, 'stated', 'lots', 'included'),
+            ('test-src', 6000000, 'BRK5', 'AA', 'AA', 'public_equity', 'stock', 'USD', 1, 20, 5, 'stated', 'lots', 'included')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SyncHoldingAliases(ctx, db, []canonical.HoldingAlias{
+		{SilverSourceID: "test-src", AccountExternalID: "BRK5", FromKey: "ZZ", ToKey: "AA"}}); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		var symbol, name string
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT min(symbol), min(name), count(DISTINCT name)
+		      FROM gains_windows_all(0, 31535999, 'month', ['USD'], ['ignore'])
+		     WHERE account_external_id = 'BRK5' AND at_end`).Scan(&symbol, &name, &n); err != nil {
+			t.Fatal(err)
+		}
+		if symbol != "AA" || name != "Alpha Holdings" || n != 1 {
+			t.Fatalf("aliased holding reads %q %q (%d names), want AA Alpha Holdings", symbol, name, n)
+		}
+	}
+}

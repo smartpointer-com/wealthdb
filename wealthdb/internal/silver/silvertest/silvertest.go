@@ -32,8 +32,8 @@ func NewDB(t testing.TB, schemaSQL string) (string, *sql.DB) {
 	return path, db
 }
 
-// Open opens a on the single silver at path. The connection closes when the
-// test ends.
+// Open opens adapter a on the single silver at path. The connection
+// closes when the test ends.
 func Open(t testing.TB, a silver.Adapter, path string) silver.Connection {
 	t.Helper()
 	conn, err := a.Open(context.Background(), silver.OpenSpec{Path: path})

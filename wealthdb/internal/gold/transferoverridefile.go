@@ -13,8 +13,10 @@ import (
 
 // The transfer-override ledger on disk: a CSV in the same idiom as the pins
 // ledger, and readable by the same person for the same reason. Columns are
-// found by header name, so their order does not matter and an extra column —
-// `note`, the annotation that makes the file worth keeping — is ignored.
+// found by header name, so their order does not matter; `note` is the
+// annotation that makes the file worth keeping. A column the format does not
+// know is an error, as in the pins: a misspelled `_b` header would otherwise
+// turn a two-leg unmatch into a one-leg one, a far broader statement.
 // Unlike the pins, `account` is the gold account_external_id itself; a
 // nickname names nothing here.
 //
@@ -61,6 +63,16 @@ func parseTransferOverrideLedger(r io.Reader) ([]TransferOverrideRule, error) {
 	}
 	if lr == nil { // no header: an empty ledger
 		return nil, nil
+	}
+	known := map[string]bool{"note": true}
+	for _, c := range append(append([]string{}, requiredOverrideCols...), bLegCols...) {
+		known[c] = true
+	}
+	for _, name := range lr.Columns() {
+		if name != "" && !known[name] {
+			return nil, fmt.Errorf("unknown column %q; the format is %v, the second leg's %v, and note",
+				name, requiredOverrideCols, bLegCols)
+		}
 	}
 	var out []TransferOverrideRule
 	for {
