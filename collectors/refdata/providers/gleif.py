@@ -30,7 +30,7 @@ from pathlib import Path
 import fetcher
 from collectorkit import bronze
 
-from .base import Parsed, Provider, ident, read_meta, row, today_utc, write_meta
+from .base import Parsed, Provider, ident, present, read_json, read_meta, row, today_utc, write_meta
 
 API = "https://api.gleif.org/api/v1/lei-records"
 DOC = "lei-records.json"
@@ -81,11 +81,10 @@ class Gleif(Provider):
     def parse(self, indir: Path) -> Parsed:
         meta = read_meta(indir)
         as_of = date.fromisoformat(meta["as_of"])
-        doc = json.loads((indir / DOC).read_text(encoding="utf-8-sig"))
-        out = parse_records(doc, meta["key"], meta["isin"], as_of, provider=self.name)
+        out = parse_records(read_json(indir, DOC), meta["key"], meta["isin"], as_of, provider=self.name)
         if (indir / ISINS_DOC).is_file():
-            isins = json.loads((indir / ISINS_DOC).read_text(encoding="utf-8"))
-            out.security_facts += issuer_isins(isins, meta["key"], meta["isin"], as_of, provider=self.name)
+            out.security_facts += issuer_isins(read_json(indir, ISINS_DOC), meta["key"], meta["isin"], as_of,
+                                               provider=self.name)
         return out
 
     def probe(self, ctx) -> str:
@@ -151,8 +150,8 @@ def parse_records(doc: dict, key: str, isin: str, as_of: date, *, provider: str)
     out.securities.append(row(
         "securities", security_key=key, as_of=as_of, provider=provider, isin=isin, lei=lei,
         name=(entity.get("legalName") or {}).get("name"),
-        payload={k: v for k, v in {"category": entity.get("category"), "jurisdiction": entity.get("jurisdiction"),
-                                   "status": entity.get("status"), "records": len(records)}.items() if v}))
+        payload=present({"category": entity.get("category"), "jurisdiction": entity.get("jurisdiction"),
+                         "status": entity.get("status"), "records": len(records)})))
     for field, value in (("legal_country", legal), ("hq_country", hq)):
         if value:
             out.security_facts.append(row("security_facts", security_key=key, field=field, as_of=as_of,

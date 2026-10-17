@@ -21,16 +21,15 @@ Terms: README.md, amundi.
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import date
-from decimal import Decimal
 from pathlib import Path
 
 from collectorkit import bronze
 
 from . import table
-from .base import Parsed, Provider, ProviderError, blank_to_none, dec, ident, read_meta, row, write_meta
+from .base import (Parsed, Provider, ProviderError, blank_to_none, dec, ident, percent, read_json, read_meta, row,
+                   write_meta)
 
 HOST = "https://www.amundietf.ch"
 API = f"{HOST}/mapi/ProductAPI/getProductsData"
@@ -75,8 +74,7 @@ class Amundi(Provider):
 
     def parse(self, indir: Path) -> Parsed:
         meta = read_meta(indir)
-        doc = json.loads((indir / DOC).read_text(encoding="utf-8-sig"))
-        product = _product(doc, meta["isin"])
+        product = _product(read_json(indir, DOC), meta["isin"])
         if product is None:
             raise ProviderError(f"the answer holds no product {meta['isin']}")
         return parse_product(product, meta["ref"], provider=self.name)
@@ -101,8 +99,7 @@ def _day(product: dict) -> date | None:
 
 def _percent(item: dict, c: dict) -> str | None:
     """A holding's weight in percent: the API states a fraction."""
-    w = dec(item.get("weight") if item.get("weight") is not None else c.get("weight"))
-    return dec(Decimal(w) * 100) if w is not None else None
+    return percent(item.get("weight") if item.get("weight") is not None else c.get("weight"))
 
 
 def parse_product(product: dict, ref: str, *, provider: str) -> Parsed:

@@ -54,9 +54,16 @@ def test_a_bond_states_maturity_and_coupon():
     assert (bond["maturity"], bond["coupon"]) == ("2030-05-15", "2.5")
 
 
-def test_not_an_nport_document():
-    with pytest.raises(ProviderError):
-        parse_nport(b"<html></html>", "symbol:X", provider="sec-nport")
+@pytest.mark.parametrize("read,error", [
+    (lambda: parse_nport(b"<html></html>", "symbol:X", provider="sec-nport"), "has no genInfo"),
+    (lambda: parse_nport(b"<edgarSubmission><genInfo>", "symbol:X", provider="sec-nport"), "document is not XML"),
+    (lambda: parse_nport(b"<edgarSubmission><formData><genInfo><regName>Example Trust</regName></genInfo>"
+                         b"</formData></edgarSubmission>", "symbol:X", provider="sec-nport"), "states no report date"),
+    (lambda: _atom_accessions(b"<html><p>The feed is busy.</html>"), "filing feed is not XML"),
+])
+def test_a_document_or_feed_that_does_not_read_is_refused(read, error):
+    with pytest.raises(ProviderError, match=error):
+        read()
 
 
 def test_filing_lists():

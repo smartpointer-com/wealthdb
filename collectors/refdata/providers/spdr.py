@@ -25,7 +25,7 @@ from pathlib import Path
 from collectorkit import bronze
 
 from . import table, xlsx
-from .base import Parsed, Provider, ProviderError, ident, read_meta, us_symbol, write_meta
+from .base import Parsed, Provider, ProviderError, listed, read_meta, write_meta
 
 FINDER = "https://www.ssga.com/bin/v1/ssmp/fund/fundfinder"
 FINDERS = {
@@ -76,13 +76,7 @@ class Spdr(Provider):
         return ctx.once("spdr_index", load)
 
     def claim(self, fund, ctx):
-        index = self._index(ctx)
-        # A ticker matches a US fund only (base.us_symbol).
-        for i, us_only in ((ident(fund, "isin"), False), (ident(fund, "cusip"), False), (us_symbol(fund), True)):
-            hit = index.get(i) if i else None
-            if hit is None or (us_only and hit[0] != "us"):
-                continue
-            region, d = hit
+        for region, d in listed(self._index(ctx), fund, "us"):
             ticker = _file_ticker(region, d.get("fundUri"))
             if ticker:
                 return {"ref": fund.ref, "region": region, "ticker": ticker, "name": d.get("fundName")}
@@ -93,9 +87,8 @@ class Spdr(Provider):
         if not resp.body.startswith(b"PK"):
             raise ProviderError(f"{resp.url} is not a workbook")
         rows = xlsx.rows(resp.body)
-        if table.header_index(rows) is None:
-            raise ProviderError(f"{resp.url} has no holdings header")
-        day = _as_of(rows)
+        start = table.require_header(rows, f"{resp.url} has no holdings header")
+        day = _as_of(table.preamble(rows, start))
         if day is None:
             raise ProviderError(f"{resp.url} states no holdings date")
         bronze.atomic_write_bytes(outdir / DOC, resp.body)
@@ -111,27 +104,23 @@ class Spdr(Provider):
         return f"SPDR fund finders: {len(self._index(ctx))} identifiers"
 
 
-def _as_of(rows) -> date | None:
-    start = table.header_index(rows)
-    pre = table.preamble(rows, start if start is not None else len(rows))
+def _as_of(pre: dict) -> date | None:
+    """The holdings day a workbook's preamble states."""
     for key in ("holdings as of", "as of", "holdings"):
-        if key in pre and table.parse_day(pre[key]):
-            return table.parse_day(pre[key])
+        if d := table.parse_day(pre.get(key)):
+            return d
     for line in pre.get("_lines", []):
-        if table.parse_day(line):
-            return table.parse_day(line)
+        if d := table.parse_day(line):
+            return d
     return None
 
 
 def parse_holdings(data: bytes, ref: str, *, provider: str) -> Parsed:
     """One SPDR holdings workbook as silver rows for fund `ref`."""
     rows = xlsx.rows(data)
-    start = table.header_index(rows)
-    if start is None:
-        raise ProviderError("the workbook has no holdings header")
-    as_of = _as_of(rows)
+    start = table.require_header(rows, "the workbook has no holdings header")
+    pre = table.preamble(rows, start)
+    as_of = _as_of(pre)
     if as_of is None:
         raise ProviderError("the workbook states no holdings date")
-    lns = table.lines(rows, start, ref=ref, as_of=as_of)
-    name = table.preamble(rows, start).get("fund name")
-    return Parsed(lines=lns, compositions=[table.composition(ref, as_of, lns, provider=provider, fund_name=name)])
+    return table.parse(rows, start, ref, as_of, provider=provider, fund_name=pre.get("fund name"))

@@ -251,15 +251,19 @@ def test_sec_edgar_states_no_address_for_a_depositary_receipt():
     assert {f["field"]: f["value"] for f in p.security_facts} == {"incorporation": "M0"}
 
 
+# The LEI record of a depositary receipt's issuer, a company abroad.
+RECEIPT_LEI = "XXXXXXXXXXXXXXXXXX31"
+RECEIPT_RECORD = {"data": [{"id": RECEIPT_LEI, "attributes": {"lei": RECEIPT_LEI, "entity": {
+    "legalName": {"name": "Qorvant Holdings"}, "jurisdiction": "KR", "legalAddress": {"country": "KR"}}}}]}
+
+
 def test_gleif_fetches_the_issuer_isins_of_a_receipt(tmp_path):
-    record = {"data": [{"id": "XXXXXXXXXXXXXXXXXX31", "attributes": {"lei": "XXXXXXXXXXXXXXXXXX31", "entity": {
-        "legalName": {"name": "Qorvant Holdings"}, "jurisdiction": "KR", "legalAddress": {"country": "KR"}}}}]}
     isins = {"data": [{"attributes": {"isin": "US0000000641"}}, {"attributes": {"isin": "XK0000000642"}}]}
-    g, api = Gleif(), FakeClient({"/isins": isins, "lei-records": record})
+    g, api = Gleif(), FakeClient({"/isins": isins, "lei-records": RECEIPT_RECORD})
     ctx = Context(client=api)
     receipt = Security(key="isin:US0000000641", isin="US0000000641", asset_class="public_equity")
     g.fetch_security(g.claim_security(receipt, ctx), tmp_path / "r", ctx)
-    assert any(u.endswith("XXXXXXXXXXXXXXXXXX31/isins") for u in api.urls())
+    assert any(u.endswith(f"{RECEIPT_LEI}/isins") for u in api.urls())
     facts = [(f["field"], f["value"]) for f in g.parse(tmp_path / "r").security_facts]
     assert ("issuer_isins", "XK0000000642") in facts
     # A bond, or a share under an ISIN from abroad, asks for no ISIN list.
@@ -273,15 +277,13 @@ def test_gleif_fetches_the_issuer_isins_of_a_receipt(tmp_path):
 def test_gleif_pages_the_issuer_isins_up_to_its_cap_and_keeps_the_issuer_without_them(tmp_path, monkeypatch):
     monkeypatch.setattr(gleif_mod, "ISIN_PAGE_SIZE", 2)
     monkeypatch.setattr(gleif_mod, "ISIN_PAGES", 3)
-    record = {"data": [{"id": "XXXXXXXXXXXXXXXXXX32", "attributes": {"lei": "XXXXXXXXXXXXXXXXXX32", "entity": {
-        "legalName": {"name": "Qorvant Holdings"}, "jurisdiction": "KR", "legalAddress": {"country": "KR"}}}}]}
 
     def page(url, params):
         n = int(params["page[number]"])
         return {"data": [{"attributes": {"isin": f"XK00000006{n}{i}"}} for i in range(2)]}
     g = Gleif()
     receipt = Security(key="isin:US0000000651", isin="US0000000651", asset_class="public_equity")
-    api = FakeClient({"/isins": page, "lei-records": record})
+    api = FakeClient({"/isins": page, "lei-records": RECEIPT_RECORD})
     ctx = Context(client=api)
     g.fetch_security(g.claim_security(receipt, ctx), tmp_path / "full", ctx)
     # Every page full: the cap stops it.
@@ -289,7 +291,7 @@ def test_gleif_pages_the_issuer_isins_up_to_its_cap_and_keeps_the_issuer_without
     (fact,) = [f for f in g.parse(tmp_path / "full").security_facts if f["field"] == "issuer_isins"]
     assert len(fact["value"].split()) == 6
     # The list failing leaves the issuer's own answer.
-    ctx = Context(client=FakeClient({"/isins": 503, "lei-records": record}))
+    ctx = Context(client=FakeClient({"/isins": 503, "lei-records": RECEIPT_RECORD}))
     g.fetch_security(g.claim_security(receipt, ctx), tmp_path / "failed", ctx)
     fields = {f["field"] for f in g.parse(tmp_path / "failed").security_facts}
     assert "legal_country" in fields and "issuer_isins" not in fields

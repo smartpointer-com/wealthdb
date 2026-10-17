@@ -18,13 +18,6 @@ TODAY = date(2026, 7, 15)
 
 
 @pytest.fixture
-def fake(monkeypatch):
-    p = FakeProvider()
-    monkeypatch.setitem(download.REGISTRY, "fake", p)
-    return p
-
-
-@pytest.fixture
 def failing(monkeypatch):
     p = _Failing()
     monkeypatch.setitem(download.REGISTRY, "failing", p)

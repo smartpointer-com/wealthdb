@@ -80,7 +80,6 @@ class Response:
     url: str
     status: int
     body: bytes
-    content_type: str
 
     def json(self):
         """The body as JSON, a byte order mark allowed. A body that is
@@ -194,8 +193,7 @@ class Client:
                 data = resp.read()
                 self.trace.record(method, resp.geturl(), status=resp.status,
                                   elapsed_ms=(time.monotonic() - t0) * 1000, bytes_=len(data), headers=resp.headers)
-                return Response(url=resp.geturl(), status=resp.status, body=data,
-                                content_type=resp.headers.get("Content-Type", ""))
+                return Response(url=resp.geturl(), status=resp.status, body=data)
         except urllib.error.HTTPError as e:
             # A redirect may have led elsewhere: the source that refused
             # is the one that answered.

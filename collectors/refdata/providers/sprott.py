@@ -44,7 +44,7 @@ class Sprott(Provider):
     def _pages(self, ctx) -> dict:
         """ticker -> fund page path, from the home page."""
         def load():
-            body = ctx.client.get(HOST + "/").body.decode("utf-8", "replace")
+            body = ctx.client.get(HOST + "/").text()
             return {t.upper(): path for path, t in PAGE.findall(body)}
         return ctx.once("sprott_pages", load)
 
@@ -57,7 +57,7 @@ class Sprott(Provider):
 
     def fetch(self, claim, as_of, outdir: Path, ctx):
         resp = ctx.client.get(HOST + claim["page"])
-        page = resp.body.decode("utf-8", "replace")
+        page = resp.text()
         if not DATA.search(page):
             raise ProviderError(f"{resp.url} embeds no holdings table")
         day = _as_of(page)
@@ -89,13 +89,11 @@ def parse_page(page: str, ref: str, *, provider: str) -> Parsed:
     if as_of is None:
         raise ProviderError("the page states no holdings date")
     rows = table.csv_rows(urllib.parse.unquote(html.unescape(m.group(1))))
-    start = table.header_index(rows, COLUMNS)
-    if start is None:
-        raise ProviderError("the holdings table has no header")
-    lns = table.lines(rows, start, ref=ref, as_of=as_of, columns=COLUMNS)
-    for ln in lns:
+    start = table.require_header(rows, "the holdings table has no header", COLUMNS)
+    out = table.parse(rows, start, ref, as_of, provider=provider, columns=COLUMNS)
+    for ln in out.lines:
         if ln["ticker"] and " " in ln["ticker"]:
             ln["payload"]["local_ticker"], ln["ticker"] = ln["ticker"], None
         if (ln["name"] or "").lower().startswith("cash"):
             ln["asset_type"] = "Cash"
-    return Parsed(lines=lns, compositions=[table.composition(ref, as_of, lns, provider=provider)])
+    return out

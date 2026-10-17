@@ -16,7 +16,11 @@ directly or through funds. `refdata` fetches what is missing or old
 from public sources and loads it into its silver. `wealthdb load`
 brings it into gold.
 
-There is no login anywhere. Every provider reads public pages.
+There is no login anywhere. Every provider reads public pages. A
+request names the fund or security it asks about by its ISIN, CUSIP or
+ticker. Some sources take their own page or number for it instead. So
+each source sees which funds and securities are asked about. No amount,
+account or bank is sent.
 
 ## Use
 
@@ -25,6 +29,7 @@ There is no login anywhere. Every provider reads public pages.
 ./refdata download                 # fetch what the wanted list lacks
 ./refdata download --backfill      # also fetch past dates while each fund was held
 ./refdata load                     # parse bronze into silver
+./refdata load --force             # rebuild silver from every kept run, as after a parser fix
 wealthdb load refdata              # bring it into gold (the source's id in wealthdb.cfg)
 wealthdb exposure coverage         # see what is described, and what is not
 ```
@@ -71,15 +76,21 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
 }
 ```
 
-- `providers` are asked in this order. The first that claims a fund
-  serves it; the inbox serves beside it. A fund is offered only while it
-  wants a composition. The next provider claims it only when the fetch
-  of the one before fails. A provider standing by also reads the
-  identifiers the first one found. So N-PORT finds a fund named by its
-  ISIN by the ticker iShares lists for it. Every security provider is
-  asked for every security held directly that it can claim. A security
-  held through funds is asked only of a provider that can fill what it
-  lacks.
+- `providers` are asked in this order. For a fund:
+  - A fund is offered only while it wants a composition.
+  - The first provider that claims it serves it. The inbox serves
+    beside it.
+  - The next provider claims it only when the fetch of the one before
+    fails.
+  - A provider standing by also reads the identifiers the first one
+    found. So N-PORT finds a fund named by its ISIN by the ticker
+    iShares lists for it.
+
+  For a security:
+  - Every security provider is asked for every security held directly
+    that it can claim.
+  - A security held through funds is asked only of a provider that can
+    fill what it lacks.
 - `max_age_days` (1 to 3650, default 30) is how old a composition or a
   lookup may be before it is fetched again.
 - `constituents` lets the security providers look up the securities a
@@ -137,7 +148,9 @@ composition file:
   its `weight` (percent of net assets), and may name `isin`, `cusip`,
   `ticker`, `country`, `currency`, `sector`, `industry`, `asset_type`,
   `quantity` and `market_value`, in an issuer's wording too. Lines above
-  the header and notes below the table are skipped;
+  the header and notes below the table are skipped. A row with a name
+  alone ends the table, so a file with holdings after such a row is
+  refused;
 - or an N-PORT `primary_doc.xml`.
 
 A download copies each folder into bronze once, beside whatever
@@ -148,17 +161,11 @@ one. Exchange reference data lists no constituents, and issuers'
 product pages do not allow automated download.
 
 A factsheet that states a split rather than a roster (40% Europe, 35%
-North America, 25% the rest) has no lines to look through, and
-neither has a private fund's offering document. Such a split goes into
-the engine's declarations ledger, one record per holding and date
-([EXPOSURE.md §9](../../wealthdb/docs/EXPOSURE.md#9-config)):
-
-```json
-{"silver_source_id":"bank","instrument":"XX0000000001","as_of":"2026-06-30","region":{"europe":40,"north_america":35,"rest":25},"currency":{"EUR":64,"USD":36},"source":{"document":"factsheet"}}
-```
-
-No provider reads factsheets. One that does would write the same shape
-into silver, as a composition of basis `breakdown`.
+North America, 25% the rest) has no lines to look through. Neither has
+a private fund's offering document. Such a split goes into the engine's
+declarations ledger
+([EXPOSURE.md, The declarations ledger](../../wealthdb/docs/EXPOSURE.md#the-declarations-ledger)).
+No provider reads factsheets.
 
 ### sec-nport
 

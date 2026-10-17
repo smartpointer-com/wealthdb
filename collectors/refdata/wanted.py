@@ -102,20 +102,27 @@ def from_file(path: Path) -> Wanted:
         raise WantedError(f"{path} is not JSON: {e}") from e
 
 
-def from_engine(engine: str, timeout: int = 600) -> Wanted:
+def from_engine(engine: str, timeout: float = 600) -> Wanted:
     """Ask the engine: `<engine> -r refdata-wanted`. The engine finds its
-    config and data root the way it always does, from the environment."""
+    config and data root the way it always does, from the environment.
+    An engine that cannot run, or runs past `timeout` seconds, is a
+    WantedError like any other."""
     try:
         out = subprocess.run([engine, "-r", "refdata-wanted"], capture_output=True, text=True,
                              timeout=timeout, check=False)
     except FileNotFoundError as e:
         raise WantedError(f"engine {engine!r} not found; set REFDATA_WEALTHDB or `engine` in "
                           f"refdata.cfg, or pass --wanted FILE") from e
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise WantedError(f"engine {engine!r} could not run: {e}") from e
     if out.returncode != 0:
-        tail = (out.stderr or out.stdout).strip().splitlines()[-3:]
-        if any("unknown subcommand" in line for line in tail):
+        # An engine without the subcommand prints its whole usage after
+        # the line that says so.
+        err = (out.stderr or out.stdout).strip()
+        if "unknown subcommand" in err:
             raise WantedError(f"engine {engine!r} has no refdata-wanted subcommand; it is older than "
                               f"this collector")
+        tail = err.splitlines()[-3:]
         raise WantedError(f"engine {engine!r} failed ({out.returncode}): {' | '.join(tail)}")
     try:
         return parse(json.loads(out.stdout))

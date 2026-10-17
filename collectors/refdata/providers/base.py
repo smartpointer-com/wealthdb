@@ -189,8 +189,24 @@ def write_meta(outdir: Path, **meta) -> None:
     bronze.atomic_write_json(outdir / META, meta)
 
 
+def read_json(indir: Path, name: str):
+    """A JSON file of a request's folder, a byte order mark allowed: a
+    source's answer as stored, or a file the provider wrote."""
+    return json.loads((indir / name).read_text(encoding="utf-8-sig"))
+
+
 def read_meta(indir: Path) -> dict:
-    return json.loads((indir / META).read_text(encoding="utf-8"))
+    return read_json(indir, META)
+
+
+def folder_name(ref: str) -> str:
+    """A fund reference or security key as a folder name: `isin_XX…`, as
+    the inbox writes it. A reference with other characters a folder name
+    cannot hold gets a short hash of itself, so XYZ-B and XYZ/B never
+    share a folder."""
+    name = ref.replace(":", "_", 1)
+    stem = bronze.safe_stem(name)
+    return stem if stem == name else f"{stem}-{bronze.short_token(ref, 8)}"
 
 
 def today_utc() -> date:
@@ -216,6 +232,16 @@ def us_symbol(fund) -> str:
     return ident(fund, "symbol") if not isin or isin.startswith("US") else ""
 
 
+def listed(index: dict, fund, us_site: str):
+    """An issuer's product list's entries for a fund, as (site, entry):
+    by its ISIN, then its CUSIP, then its ticker, which matches a fund of
+    the US site only (us_symbol)."""
+    for key, us_only in ((ident(fund, "isin"), False), (ident(fund, "cusip"), False), (us_symbol(fund), True)):
+        hit = index.get(key) if key else None
+        if hit is not None and not (us_only and hit[0] != us_site):
+            yield hit
+
+
 def dec(value) -> str | None:
     """A number as silver's decimal string: no exponent, no trailing
     zeros. None for a blank, an unparseable value, or a comma that is no
@@ -223,8 +249,6 @@ def dec(value) -> str | None:
     if value is None:
         return None
     s = str(value).strip().replace("’", "").replace("'", "")
-    if s in ("", "-", "N/A", "n/a", "NA", "--"):
-        return None
     if s.endswith("%"):
         s = s[:-1].strip()
     if "," in s:
@@ -238,7 +262,22 @@ def dec(value) -> str | None:
     if not d.is_finite():
         return None
     out = format(d.normalize(), "f")
-    return "0" if out in ("-0", "") else out
+    return "0" if out == "-0" else out
+
+
+def percent(fraction) -> str | None:
+    """A fraction as silver's decimal string in percent: 0.25 is 25."""
+    d = dec(fraction)
+    return dec(Decimal(d) * 100) if d is not None else None
+
+
+def present(values: dict, *, keep_falsy: bool = False) -> dict:
+    """A payload's entries that hold a value: none that is None or "",
+    and, unless keep_falsy, no other falsy one (False, 0, an empty
+    list)."""
+    if keep_falsy:
+        return {k: v for k, v in values.items() if v not in (None, "")}
+    return {k: v for k, v in values.items() if v}
 
 
 def blank_to_none(value):

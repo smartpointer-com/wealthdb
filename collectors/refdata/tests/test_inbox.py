@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import wanted
-from providers.base import Context, ProviderError, Unavailable
+from providers.base import Context, ProviderError, Unavailable, folder_name
 from providers.inbox import Inbox, parse_csv
 from tests.helpers import make_xlsx
 
@@ -21,6 +21,9 @@ def test_claims_a_fund_by_its_folder_in_either_spelling(tmp_path):
     b = inbox.claim(wanted.Fund(ref="symbol:ABC"), ctx)
     assert a and b and inbox.claim(wanted.Fund(ref="symbol:NONE"), ctx) is None
     assert inbox.dates(b, date(2026, 1, 1), date(2026, 12, 31), ctx) == [date(2026, 4, 30)]
+    # A reference no folder name can hold is found by its bronze folder's name.
+    (tmp_path / "inbox" / folder_name("symbol:XYZ/B") / "2026-05-29").mkdir(parents=True)
+    assert inbox.claim(wanted.Fund(ref="symbol:XYZ/B"), ctx)
 
 
 def test_csv_needs_name_and_weight():
@@ -34,6 +37,17 @@ def test_csv_reads_optional_columns_and_keeps_the_rest():
     (line,) = p.lines
     assert (line["name"], line["weight"], line["ticker"], line["payload"]) == \
         ("Example Corp", "1250.5", "EXC", {"note": "first"})
+
+
+def test_a_row_with_a_name_alone_ends_the_table_and_holdings_after_it_refuse_the_file():
+    # A weight left blank ends the table: the holdings after it would go
+    # unread, so the file is refused.
+    with pytest.raises(ProviderError, match="ends at row 3, .* holdings follow"):
+        parse_csv(b"name,weight\nAlpha,50\nBeta,\nGamma,30\nDelta,20\n", "isin:XX", date(2026, 1, 31))
+    # A footnote, then a blank row before more notes: the table ends there.
+    p = parse_csv(b"name,weight\nAlpha,60\nBeta,40\nNot an offer.\n\nSource:,Example\n", "isin:XX",
+                  date(2026, 1, 31))
+    assert [(ln["name"], ln["weight"]) for ln in p.lines] == [("Alpha", "60"), ("Beta", "40")]
 
 
 def _placed(tmp_path, *files):

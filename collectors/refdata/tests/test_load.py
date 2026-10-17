@@ -1,23 +1,13 @@
 """load: bronze runs into silver, idempotent, a later run winning."""
 
+import logging
 import sqlite3
 from datetime import date
-
-import pytest
 
 import download
 import load
 from collectorkit import bronze
 from providers.base import Context
-from tests.helpers import FakeProvider
-
-
-@pytest.fixture
-def fake(monkeypatch):
-    # download and load share one registry.
-    p = FakeProvider()
-    monkeypatch.setitem(load.REGISTRY, "fake", p)
-    return p
 
 
 def make_run(data, slug, reqs):
@@ -119,6 +109,18 @@ def test_an_incomplete_run_is_not_loaded(tmp_path, fake):
     bronze.atomic_write_json(run / "run.json", {"status": "in-progress", "requests": []})
     run_load(data, db)
     assert rows(db, "SELECT COUNT(*) FROM dump_runs") == [(0,)]
+
+
+def test_a_run_whose_provider_is_gone_loads_without_its_requests(tmp_path, fake, monkeypatch, caplog):
+    # A provider renamed or removed while kept bronze still names it.
+    data, db = tmp_path / "data", tmp_path / "refdata.db"
+    make_run(data, "20260715T010000Z", [request("FUNDA")])
+    monkeypatch.delitem(load.REGISTRY, "fake")
+    caplog.set_level(logging.WARNING, logger="refdata.load")
+    assert run_load(data, db) == 0
+    assert rows(db, "SELECT COUNT(*) FROM dump_runs") == [(1,)]
+    assert rows(db, "SELECT COUNT(*) FROM compositions") + rows(db, "SELECT COUNT(*) FROM lines") == [(0,), (0,)]
+    assert "no provider fake here; skipping symbol:FUNDA" in caplog.text
 
 
 def test_force_rebuilds_with_a_new_load_clock(tmp_path, fake):

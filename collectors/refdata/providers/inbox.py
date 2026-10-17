@@ -12,7 +12,8 @@ composition describes. A folder holds one composition file, either
   (percent of net assets), and any of `isin`, `cusip`, `ticker`,
   `country`, `currency`, `sector`, `industry`, `asset_type`,
   `quantity`, `market_value`. Preamble lines above the header and notes
-  below the table are skipped; or
+  below the table are skipped. A row with a name alone ends the table,
+  as a footnote does, so holdings after it refuse the file; or
 - an N-PORT `primary_doc.xml`.
 
 A download copies each folder of a wanted fund into bronze once, beside
@@ -23,12 +24,13 @@ for any issuer.
 
 from __future__ import annotations
 
+import itertools
 import shutil
 from datetime import date
 from pathlib import Path
 
 from . import table, xlsx
-from .base import Parsed, Provider, ProviderError, Unavailable, read_meta, write_meta
+from .base import Parsed, Provider, ProviderError, Unavailable, folder_name, read_meta, write_meta
 from .sec_nport import DOC as NPORT_DOC
 from .sec_nport import parse_nport
 
@@ -36,8 +38,9 @@ INBOX = "inbox"
 
 
 def folder_for(data_dir: Path, ref: str) -> Path | None:
-    """The inbox folder of a fund reference, in either spelling."""
-    for name in (ref, ref.replace(":", "_", 1)):
+    """The inbox folder of a fund reference, in either spelling, or by
+    the name its bronze folder takes (base.folder_name)."""
+    for name in dict.fromkeys((ref, ref.replace(":", "_", 1), folder_name(ref))):
         p = data_dir / INBOX / name
         if p.is_dir():
             return p
@@ -114,10 +117,12 @@ def parse_csv(raw: bytes, ref: str, as_of: date) -> Parsed:
 
 def parse_rows(rows, ref: str, as_of: date) -> Parsed:
     """A holdings table, its header row found by its words (table.py),
-    as the composition of `ref` on the folder's day."""
-    start = table.header_index(rows)
-    if start is None:
-        raise ProviderError("an inbox table needs a header row with at least a name and a weight column")
-    lines = table.lines(rows, start, ref=ref, as_of=as_of)
-    comp = table.composition(ref, as_of, lines, provider="inbox", source_kind="inbox")
-    return Parsed(lines=lines, compositions=[comp])
+    as the composition of `ref` on the folder's day. A row with a name
+    alone ends the table, as a footnote does; holdings after it, before a
+    blank row, refuse the file rather than go unread."""
+    start = table.require_header(rows, "an inbox table needs a header row with at least a name and a weight column")
+    end = table.end_index(rows, start)
+    if any(table.filled(r) >= 2 for r in itertools.takewhile(table.filled, rows[end:])):
+        raise ProviderError(f"the table ends at row {end + 1}, a row of one cell, yet holdings follow it; "
+                            "every row states its weight")
+    return table.parse(rows, start, ref, as_of, provider="inbox", source_kind="inbox")

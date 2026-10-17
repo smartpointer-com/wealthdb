@@ -26,7 +26,6 @@ Terms: README.md, ishares.
 from __future__ import annotations
 
 import html
-import json
 import re
 from datetime import date
 from pathlib import Path
@@ -34,7 +33,7 @@ from pathlib import Path
 from collectorkit import bronze
 
 from . import table
-from .base import Parsed, Provider, ProviderError, Unavailable, ident, read_meta, us_symbol, write_meta
+from .base import Parsed, Provider, ProviderError, Unavailable, listed, read_json, read_meta, write_meta
 
 HOST = "https://www.ishares.com"
 SCREENERS = {
@@ -74,20 +73,16 @@ class IShares(Provider):
         return ctx.once("ishares_index", load)
 
     def claim(self, fund, ctx):
-        index = self._index(ctx)
-        # A ticker matches a US fund only (base.us_symbol).
-        for i, us_only in ((ident(fund, "isin"), False), (ident(fund, "cusip"), False), (us_symbol(fund), True)):
-            hit = index.get(i) if i else None
-            if hit is None or (us_only and hit[0] != "us"):
-                continue
-            site, product = hit
-            ids = {"isin": product.get("isin")}
-            if site == "us":
-                ids.update(cusip=product.get("cusip"), symbol=product.get("localExchangeTicker"))
-            return {"ref": fund.ref, "site": site, "page": product["productPageUrl"],
-                    "name": product.get("fundName"),
-                    "ids": {k: str(v).strip().upper() for k, v in ids.items() if v}}
-        return None
+        hit = next(listed(self._index(ctx), fund, "us"), None)
+        if hit is None:
+            return None
+        site, product = hit
+        ids = {"isin": product.get("isin")}
+        if site == "us":
+            ids.update(cusip=product.get("cusip"), symbol=product.get("localExchangeTicker"))
+        return {"ref": fund.ref, "site": site, "page": product["productPageUrl"],
+                "name": product.get("fundName"),
+                "ids": {k: str(v).strip().upper() for k, v in ids.items() if v}}
 
     def _page(self, claim, ctx) -> dict:
         """A Swiss-site fund page's holdings columns and dates."""
@@ -136,10 +131,12 @@ class IShares(Provider):
         meta = read_meta(indir)
         as_of = date.fromisoformat(meta["as_of"])
         if meta["site"] == "us":
-            return parse_csv((indir / CSV_DOC).read_bytes().decode("utf-8-sig"), meta["ref"], as_of,
+            # Decoded as the fetch checked it, so a stray byte costs one
+            # character rather than the composition.
+            return parse_csv((indir / CSV_DOC).read_bytes().decode("utf-8-sig", "replace"), meta["ref"], as_of,
                              provider=self.name)
-        doc = json.loads((indir / JSON_DOC).read_bytes().decode("utf-8-sig"))
-        return parse_grid(doc, meta["columns"], meta["ref"], as_of, provider=self.name, fund_name=meta.get("name"))
+        return parse_grid(read_json(indir, JSON_DOC), meta["columns"], meta["ref"], as_of, provider=self.name,
+                          fund_name=meta.get("name"))
 
     def probe(self, ctx) -> str:
         return f"iShares product lists: {len(self._index(ctx))} identifiers"
@@ -156,12 +153,9 @@ def _csv_day(rows: list) -> date | None:
 def parse_csv(text: str, ref: str, as_of: date, *, provider: str) -> Parsed:
     """A US-site holdings CSV as silver rows for fund `ref`."""
     rows = table.csv_rows(text)
-    start = table.header_index(rows)
-    if start is None:
-        raise ProviderError("the holdings file has no header row")
-    lns = table.lines(rows, start, ref=ref, as_of=as_of)
+    start = table.require_header(rows, "the holdings file has no header row")
     name = rows[0][0].strip() if rows and rows[0] else None
-    return Parsed(lines=lns, compositions=[table.composition(ref, as_of, lns, provider=provider, fund_name=name)])
+    return table.parse(rows, start, ref, as_of, provider=provider, fund_name=name)
 
 
 def parse_grid(doc: dict, columns: list, ref: str, as_of: date, *, provider: str, fund_name=None) -> Parsed:
@@ -176,8 +170,7 @@ def parse_grid(doc: dict, columns: list, ref: str, as_of: date, *, provider: str
                      for v in r])
     if table.header_index(rows) != 0:
         raise ProviderError(f"the page's holdings columns name no holding and weight: {columns}")
-    lns = table.lines(rows, 0, ref=ref, as_of=as_of)
-    return Parsed(lines=lns, compositions=[table.composition(ref, as_of, lns, provider=provider, fund_name=fund_name)])
+    return table.parse(rows, 0, ref, as_of, provider=provider, fund_name=fund_name)
 
 
 def holdings_page(page: str) -> dict:
@@ -191,7 +184,8 @@ def holdings_page(page: str) -> dict:
     tbl = part.find('id="allHoldingsTable"')
     columns = []
     if tbl >= 0:
-        head = part[tbl:part.find("</thead>", tbl) if part.find("</thead>", tbl) > 0 else tbl + 20000]
+        thead = part.find("</thead>", tbl)
+        head = part[tbl:thead if thead > 0 else tbl + 20000]
         columns = [" ".join(html.unescape(re.sub(r"<[^>]+>", " ", th)).split())
                    for th in re.findall(r"<th[^>]*>(.*?)</th>", head, re.S)]
     days = set()

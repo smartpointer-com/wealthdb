@@ -6,7 +6,7 @@ import traceback
 import pytest
 
 import wanted
-from providers.base import COLUMNS, Context, dec, ident, row, us_symbol
+from providers.base import COLUMNS, Context, dec, ident, percent, present, row, us_symbol
 
 
 def test_a_row_holds_every_column_but_run_at():
@@ -24,10 +24,23 @@ def test_a_row_holds_every_column_but_run_at():
     ("3.99E-01", "0.399"), ("-0", "0"), (60.0, "60"),
     # A comma that separates no groups of three could be a decimal mark.
     ("0,25", None), ("12,5", None), ("1,23", None), ("1,2345", None),
-    ("", None), ("-", None), ("N/A", None), ("abc", None), ("NaN", None), (None, None),
+    ("", None), ("-", None), ("--", None), ("N/A", None), ("n/a", None), ("NA", None), ("abc", None), ("NaN", None),
+    (None, None),
 ])
 def test_dec(value, want):
     assert dec(value) == want
+
+
+def test_a_fraction_reads_as_percent():
+    assert (percent("0.25"), percent(0.001), percent("3.99E-01"), percent("abc"), percent(None)) == \
+        ("25", "0.1", "39.9", None, None)
+
+
+def test_a_payload_keeps_what_holds_a_value():
+    payload = {"found": False, "listings": 0, "name": "", "lei": None, "tickers": ["QABC"]}
+    assert present(payload) == {"tickers": ["QABC"]}
+    # An answer of no or none is a value too, where the payload says so.
+    assert present(payload, keep_falsy=True) == {"found": False, "listings": 0, "tickers": ["QABC"]}
 
 
 def test_ident_reads_the_field_else_the_reference():

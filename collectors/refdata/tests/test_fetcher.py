@@ -133,10 +133,10 @@ def test_a_header_never_replaces_the_user_agent():
 
 
 def test_an_answer_that_is_not_json_fails_the_request():
-    resp = fetcher.Response("https://example.org/a", 200, b"<html>busy</html>", "text/html")
+    resp = fetcher.Response("https://example.org/a", 200, b"<html>busy</html>")
     with pytest.raises(fetcher.FetchError, match="not JSON"):
         resp.json()
-    assert fetcher.Response("https://example.org/a", 200, b'\xef\xbb\xbf{"a": 1}', "").json() == {"a": 1}
+    assert fetcher.Response("https://example.org/a", 200, b'\xef\xbb\xbf{"a": 1}').json() == {"a": 1}
 
 
 def test_cookies_are_kept_for_a_session_host_only():

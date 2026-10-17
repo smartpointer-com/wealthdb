@@ -9,7 +9,7 @@ import pytest
 
 import fetcher
 from providers.amundi import API, Amundi, parse_product
-from providers.base import Context, ProviderError
+from providers.base import Context, ProviderError, write_meta
 from tests.helpers import FakeClient
 from wanted import Fund
 
@@ -110,3 +110,14 @@ def test_the_probe_asks_the_product_api():
     client = api()
     assert Amundi().probe(Context(client=client)) == "Amundi's product API answered 200"
     assert client.urls("POST") == [API]
+
+
+@pytest.mark.parametrize("stored,error", [
+    ({"products": [product("Direct (Physical)", LINES, isin="XX0000000307")]}, "holds no product XX0000000301"),
+    ({"products": [product("Direct (Physical)", [])]}, "lists no holdings with a date"),
+])
+def test_a_stored_answer_without_the_fund_or_its_dated_holdings_does_not_parse(tmp_path, stored, error):
+    (tmp_path / "products.json").write_text(json.dumps(stored))
+    write_meta(tmp_path, provider="amundi", ref="isin:" + ISIN, isin=ISIN, as_of="2026-10-12")
+    with pytest.raises(ProviderError, match=error):
+        Amundi().parse(tmp_path)

@@ -59,11 +59,15 @@ def test_the_home_page_claims_a_fund(tmp_path):
     assert len(s.parse(tmp_path / "f").lines) == 3
 
 
-def test_a_page_without_a_date_is_not_stored(tmp_path):
-    ctx = Context(client=site(PAGE.replace("As of 10/13/2026", "")))
+@pytest.mark.parametrize("page,error", [
+    ("<p>As of 10/13/2026</p><p>The holdings are shown once a day.</p>", "embeds no holdings table"),
+    (PAGE.replace("As of 10/13/2026", ""), "states no holdings date"),
+])
+def test_a_page_without_a_table_or_a_date_is_not_stored(tmp_path, page, error):
+    ctx = Context(client=site(page))
     s = Sprott()
     claim = s.claim(Fund(ref="symbol:QURM", symbol="QURM"), ctx)
-    with pytest.raises(ProviderError, match="no holdings date"):
+    with pytest.raises(ProviderError, match=error):
         s.fetch(claim, None, tmp_path / "f", ctx)
     assert not (tmp_path / "f").exists()
 

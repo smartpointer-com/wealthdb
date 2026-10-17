@@ -9,8 +9,8 @@ A ticker is kept only where it names a US listing: on a line whose
 exchange column names a US exchange, or, in a file with no exchange
 column, a line traded in US dollars (or stating no currency). A local
 ticker elsewhere (`WBD` in Milan) would read as a different US symbol,
-so it moves to the payload. Gold's aliases apply the same rule
-(exposure_pass.go).
+so it moves to the payload. Gold reads a fund line's ticker by the same
+exchange patterns (usLineSQL, exposure_pass.go).
 
 A SEDOL column is never read: SEDOL codes are licensed.
 """
@@ -23,7 +23,7 @@ import re
 from datetime import date, datetime
 from decimal import Decimal
 
-from .base import blank_to_none, dec, row
+from .base import Parsed, ProviderError, blank_to_none, dec, percent, row
 
 # Header words per line field, lower case. The first header that names a
 # field wins.
@@ -56,8 +56,8 @@ ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")
 CUSIP_RE = re.compile(r"^[0-9A-Z]{9}$")
 
 
-# The same two patterns sit in gold's aliasesSQL (exposure_pass.go);
-# keep them equal.
+# The same two patterns sit in gold's usLineSQL (exposure_pass.go); keep
+# them equal.
 US_EXCHANGE = re.compile(r"nyse|new york|nasdaq|cboe|bats|arca|american stock exchange|\biex\b|otc markets")
 # Exchanges that carry a US operator's name and list no US security:
 # Euronext ("Nyse Euronext - Euronext Paris"), Nasdaq's Nordic, Baltic
@@ -92,6 +92,27 @@ def header_index(rows, columns=None) -> int | None:
         if cells & names and cells & weights:
             return i
     return None
+
+
+def require_header(rows, missing: str, columns=None) -> int:
+    """The index of the header row (header_index); a table without one
+    raises ProviderError(missing), in the provider's own words."""
+    start = header_index(rows, columns)
+    if start is None:
+        raise ProviderError(missing)
+    return start
+
+
+def filled(r) -> int:
+    """How many cells of a row hold text."""
+    return sum(1 for c in r if str(c).strip())
+
+
+def end_index(rows, start: int) -> int:
+    """The index of the row that ends the table below the header row at
+    `start`: the first with fewer than two filled cells, a blank row or a
+    footnote in one cell; len(rows) where none does."""
+    return next((i for i in range(start + 1, len(rows)) if filled(rows[i]) < 2), len(rows))
 
 
 def preamble(rows, end: int) -> dict:
@@ -134,17 +155,16 @@ def _ident(value):
     return None, None
 
 
-def lines(rows, start: int, *, ref: str, as_of: date, basis: str = "holdings", columns=None,
-          weight_scale=1) -> list:
-    """Silver line rows below the header row at `start`, up to the first
-    row with fewer than two filled cells: a blank row, or a footnote in
-    one cell. A row with neither a name nor a weight is skipped. A column
-    no header word names lands in the payload.
+def lines(rows, start: int, *, ref: str, as_of: date, columns=None, fractions=False) -> list:
+    """Silver line rows below the header row at `start`, up to the row
+    that ends the table (end_index). A row with neither a name nor a
+    weight is skipped. A column no header word names lands in the
+    payload.
 
     `columns` names a provider's own header words for a field, ahead of
     the shared ones (an issuer whose "Industry Classification" is its
-    sector). `weight_scale` turns a file's weights into percent (100 for
-    a file that states fractions)."""
+    sector). `fractions` reads a file's weights as fractions, turned into
+    percent."""
     header = [_norm(c) for c in rows[start]]
     col = {}
     for field, words in COLUMNS.items():
@@ -155,10 +175,7 @@ def lines(rows, start: int, *, ref: str, as_of: date, basis: str = "holdings", c
     by_exchange = "exchange" in col
     known = set(col.values()) | {i for i, h in enumerate(header) if h in NEVER}
     out = []
-    for r in rows[start + 1:]:
-        if sum(1 for c in r if str(c).strip()) < 2:
-            break
-
+    for r in rows[start + 1:end_index(rows, start)]:
         def cell(field, r=r):
             i = col.get(field)
             v = blank_to_none(r[i]) if i is not None and i < len(r) else None
@@ -182,12 +199,10 @@ def lines(rows, start: int, *, ref: str, as_of: date, basis: str = "holdings", c
         if ticker and not (us_exchange(cell("exchange")) if by_exchange
                            else (cell("currency") or "USD").upper() == "USD"):
             payload["local_ticker"], ticker = ticker, None
-        weight = dec(cell("weight"))
-        if weight is not None and weight_scale != 1:
-            weight = dec(Decimal(weight) * weight_scale)
+        weight = percent(cell("weight")) if fractions else dec(cell("weight"))
         maturity = parse_day(cell("maturity")) if cell("maturity") else None
         out.append(row(
-            "lines", fund_ref=ref, as_of=as_of, basis=basis, line_no=len(out) + 1, isin=isin, cusip=cusip,
+            "lines", fund_ref=ref, as_of=as_of, basis="holdings", line_no=len(out) + 1, isin=isin, cusip=cusip,
             ticker=ticker, exchange=cell("exchange"), name=name, asset_type=cell("asset_type"), weight=weight,
             quantity=dec(cell("quantity")), market_value=dec(cell("market_value")), currency=cell("currency"),
             country=cell("country"), sector=cell("sector"), industry=cell("industry"),
@@ -204,3 +219,12 @@ def composition(ref: str, as_of: date, lns: list, *, provider: str, basis: str =
     return row("compositions", fund_ref=ref, as_of=as_of, basis=basis, provider=provider,
                source_kind=source_kind, fund_name=fund_name, currency=currency, net_assets=net_assets,
                line_count=len(lns), weight_sum=dec(sum(weights)) if weights else None, payload=payload or {})
+
+
+def parse(rows, start: int, ref: str, as_of: date, *, provider: str, columns=None, fractions=False,
+          source_kind: str = "daily_file", fund_name=None) -> Parsed:
+    """The lines below the header row at `start` and their composition,
+    as silver rows for fund `ref`."""
+    lns = lines(rows, start, ref=ref, as_of=as_of, columns=columns, fractions=fractions)
+    return Parsed(lines=lns, compositions=[composition(ref, as_of, lns, provider=provider, source_kind=source_kind,
+                                                       fund_name=fund_name)])

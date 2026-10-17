@@ -26,12 +26,13 @@ refdata downloader: the wanted list in, raw provider files out.
    and the run's manifest, run.json, with the outcome of every request.
    One failed request does not fail the run.
 
-Reads public pages only: no login, a User-Agent that names the tool, one
-request a second per host (eight for the SEC, under its limit of ten).
+Reads public pages only: no login, a User-Agent that names the tool, a
+pace per host (fetcher.py).
 
 Usage:
-    download.py --bronze-dir DIR [--wanted FILE] [--backfill]
-                [--provider NAME] [--ref REF] [--limit N] [--dry-run]
+    download.py --bronze-dir DIR [--wanted FILE] [--backfill] [--provider NAME]
+                [--ref REF] [--limit N] [--no-securities] [--dry-run] [--debug]
+    download.py --check [--provider NAME]
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ import fetcher
 import wanted as wantedmod
 from collectorkit import bronze, cli, debugcap
 from providers import REGISTRY
-from providers.base import Context, ProviderError, Unavailable, today_utc
+from providers.base import Context, ProviderError, Unavailable, folder_name, today_utc
 
 log = logging.getLogger("refdata.download")
 
@@ -192,8 +193,19 @@ def described(fund: wantedmod.Fund, claim: dict) -> wantedmod.Fund:
 
 def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_age: int, backfill: bool,
          refs=None, securities=True, constituents=False, floor_pct=0, fetched=None, looked_up=None):
-    """The requests a run makes, and the funds that want a composition no
-    provider claims.
+    """The requests a run makes, the funds' then the securities', and the
+    funds that want a composition no provider claims."""
+    reqs, unclaimed = _fund_requests(want, providers, ctx, today=today, max_age=max_age, backfill=backfill,
+                                     refs=refs, fetched=fetched)
+    if securities:
+        reqs += _security_requests(want, providers, ctx, today=today, max_age=max_age, refs=refs,
+                                   constituents=constituents, floor_pct=floor_pct, looked_up=looked_up)
+    return reqs, unclaimed
+
+
+def _fund_requests(want, providers, ctx, *, today, max_age, backfill, refs, fetched):
+    """The fund requests a run makes, and the funds that want a
+    composition no provider claims.
 
     The inbox (an additive provider) serves every fund it has a folder
     for. A fund held today, or wanted in one of CURRENT_ROLES, wants its
@@ -260,37 +272,34 @@ def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_ag
             break
         if not claimed:
             unclaimed.append(fund.ref)
-    if securities:
-        for sec in security_order(want.securities, constituents, floor_pct):
-            if refs and sec.key not in refs:
-                continue
-            for p in providers:
-                if not p.serves_securities or (sec.scope == "constituent" and not p.wants_constituent(sec)):
-                    continue
-                last = max(filter(None, (sec.lookups.get(p.name), (looked_up or {}).get((p.name, sec.key)))),
-                           default=None)
-                if last is not None and (today - last).days <= max_age:
-                    continue
-                claim = _ask(sec.key, p.name, "claim it", p.claim_security, sec, ctx)
-                if claim is not None:
-                    reqs.append(Request("security", p.name, sec.key, None, claim))
     return reqs, unclaimed
 
 
-def _folder(ref: str) -> str:
-    """A fund reference or security key as a folder name: `isin_XX…`, as
-    the inbox writes it. A reference with other characters a folder name
-    cannot hold gets a short hash of itself, so XYZ-B and XYZ/B never
-    share a folder."""
-    name = ref.replace(":", "_", 1)
-    stem = bronze.safe_stem(name)
-    return stem if stem == name else f"{stem}-{bronze.short_token(ref, 8)}"
+def _security_requests(want, providers, ctx, *, today, max_age, refs, constituents, floor_pct, looked_up):
+    """The security requests a run makes, in security_order: each
+    security of every security provider that wants it, can claim it, and
+    has not answered for it within max_age, here or in an earlier run."""
+    reqs = []
+    for sec in security_order(want.securities, constituents, floor_pct):
+        if refs and sec.key not in refs:
+            continue
+        for p in providers:
+            if not p.serves_securities or (sec.scope == "constituent" and not p.wants_constituent(sec)):
+                continue
+            last = max(filter(None, (sec.lookups.get(p.name), (looked_up or {}).get((p.name, sec.key)))),
+                       default=None)
+            if last is not None and (today - last).days <= max_age:
+                continue
+            claim = _ask(sec.key, p.name, "claim it", p.claim_security, sec, ctx)
+            if claim is not None:
+                reqs.append(Request("security", p.name, sec.key, None, claim))
+    return reqs
 
 
 def request_dir(run: Path, r: Request) -> Path:
     if r.kind == "fund":
-        return run / "funds" / r.provider / _folder(r.ref) / (r.as_of.isoformat() if r.as_of else "current")
-    return run / "securities" / r.provider / _folder(r.ref)
+        return run / "funds" / r.provider / folder_name(r.ref) / (r.as_of.isoformat() if r.as_of else "current")
+    return run / "securities" / r.provider / folder_name(r.ref)
 
 
 def execute(reqs, run: Path, ctx: Context, limit=None):

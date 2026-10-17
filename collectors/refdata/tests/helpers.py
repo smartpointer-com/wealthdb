@@ -105,7 +105,7 @@ class FakeClient:
             raise fetcher.FetchError(url, answer, http.HTTPStatus(answer).phrase)
         body = answer if isinstance(answer, bytes) else answer.encode() if isinstance(answer, str) \
             else json.dumps(answer).encode()
-        return fetcher.Response(url, 200, body, "")
+        return fetcher.Response(url, 200, body)
 
 
 class FakeHttps(urllib.request.BaseHandler):

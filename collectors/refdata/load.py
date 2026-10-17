@@ -136,18 +136,12 @@ def main(argv=None) -> int:
         silver.reset(args.silver_db)
     conn = silver.open_db(args.silver_db)
     version = silver.apply_migrations(conn, MIGRATIONS)
-    loaded = silver.loaded_snapshots(conn)
     n_runs = n_rows = n_skipped = 0
-    for run_dir in bronze.iter_run_dirs(args.bronze_dir):
+    for run_dir in bronze.pending_run_dirs(conn, args.bronze_dir, log=log):
         run_ts = bronze.parse_run_ts(run_dir.name)
-        if run_ts in loaded:
-            continue
         manifest = bronze.read_manifest(run_dir / "run.json")
         if manifest is None:
             log.warning("run %s: run.json cannot be read; skipping", run_dir.name)
-            continue
-        if not bronze.is_loadable_status(manifest.get("status")):
-            log.info("run %s: status=%s — not a complete dump; skipping", run_dir.name, manifest.get("status"))
             continue
         with silver.transaction(conn):
             rows, skipped = load_run(conn, run_dir, manifest, run_ts)

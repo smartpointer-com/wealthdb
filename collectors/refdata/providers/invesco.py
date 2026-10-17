@@ -25,7 +25,6 @@ Terms: README.md, invesco.
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import date
 from pathlib import Path
@@ -35,7 +34,7 @@ from collectorkit import bronze
 from collectorkit.parse import iso_date
 
 from . import table
-from .base import Parsed, Provider, ProviderError, blank_to_none, dec, ident, read_meta, row, write_meta
+from .base import Parsed, Provider, ProviderError, blank_to_none, dec, ident, read_json, read_meta, row, write_meta
 
 API = "https://dng-api.invesco.com/cache/v1/accounts/{locale}/shareclasses/{id}/"
 ISSUER = re.compile(r"invesco|powershares", re.I)
@@ -90,8 +89,7 @@ class Invesco(Provider):
 
     def parse(self, indir: Path) -> Parsed:
         meta = read_meta(indir)
-        docs = {k: json.loads((indir / DOCS[k]).read_text(encoding="utf-8-sig")) for k in meta["files"]}
-        return parse_docs(docs, meta["ref"], provider=self.name)
+        return parse_docs({k: read_json(indir, DOCS[k]) for k in meta["files"]}, meta["ref"], provider=self.name)
 
 
 def _day(doc: dict) -> date | None:

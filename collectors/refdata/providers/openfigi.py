@@ -21,14 +21,13 @@ Terms: README.md, openfigi.
 from __future__ import annotations
 
 import itertools
-import json
 from datetime import date
 from pathlib import Path
 
 import fetcher
 from collectorkit import bronze
 
-from .base import Parsed, Provider, ProviderError, ident, read_meta, row, today_utc, write_meta
+from .base import Parsed, Provider, ProviderError, ident, present, read_json, read_meta, row, today_utc, write_meta
 
 API = "https://api.openfigi.com/v3/mapping"
 DOC = "mapping.json"
@@ -108,8 +107,7 @@ class OpenFigi(Provider):
 
     def parse(self, indir: Path) -> Parsed:
         meta = read_meta(indir)
-        doc = json.loads((indir / DOC).read_text(encoding="utf-8"))
-        return parse_mapping(doc, meta["key"], date.fromisoformat(meta["as_of"]), provider=self.name)
+        return parse_mapping(read_json(indir, DOC), meta["key"], date.fromisoformat(meta["as_of"]), provider=self.name)
 
     def probe(self, ctx) -> str:
         resp = ctx.client.post_json(API, [{"idType": "TICKER", "idValue": "IBM", "exchCode": "US"}])
@@ -129,9 +127,9 @@ def parse_mapping(doc: dict, key: str, as_of: date, *, provider: str) -> Parsed:
         figi=first.get("compositeFIGI") or first.get("figi"), ticker=first.get("ticker") if us else None,
         exchange=first.get("exchCode"), name=first.get("name"),
         security_type=first.get("securityType2") or first.get("securityType"),
-        payload={k: v for k, v in {"found": bool(data), "listings": len(data),
-                                   "local_ticker": None if us else first.get("ticker"),
-                                   "market_sector": first.get("marketSector"),
-                                   "share_class_figi": first.get("shareClassFIGI"),
-                                   "message": result.get("error") or result.get("warning")}.items()
-                 if v not in (None, "")})])
+        # `found: False` and `listings: 0` are answers too, and stay.
+        payload=present({"found": bool(data), "listings": len(data),
+                         "local_ticker": None if us else first.get("ticker"),
+                         "market_sector": first.get("marketSector"),
+                         "share_class_figi": first.get("shareClassFIGI"),
+                         "message": result.get("error") or result.get("warning")}, keep_falsy=True))])

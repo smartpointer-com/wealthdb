@@ -49,9 +49,7 @@ class Xtrackers(Provider):
         resp = ctx.client.get(EXPORT.format(isin=claim["isin"]))
         if not resp.body.startswith(b"PK"):
             raise ProviderError(f"{resp.url} is not a workbook")
-        rows = xlsx.rows(resp.body)
-        if table.header_index(rows) is None:
-            raise ProviderError(f"{resp.url} has no constituents header")
+        table.require_header(xlsx.rows(resp.body), f"{resp.url} has no constituents header")
         bronze.atomic_write_bytes(outdir / DOC, resp.body)
         day = today_utc()
         write_meta(outdir, provider=self.name, ref=claim["ref"], isin=claim["isin"], as_of=day.isoformat())
@@ -66,11 +64,9 @@ class Xtrackers(Provider):
 def parse_export(data: bytes, ref: str, as_of, *, provider: str) -> Parsed:
     """One Xtrackers constituent export as silver rows for fund `ref`."""
     rows = xlsx.rows(data)
-    start = table.header_index(rows)
-    if start is None:
-        raise ProviderError("the export has no constituents header")
-    lns = table.lines(rows, start, ref=ref, as_of=as_of, columns={"sector": ("industry classification",)},
-                      weight_scale=100)
-    for line in lns:
+    start = table.require_header(rows, "the export has no constituents header")
+    out = table.parse(rows, start, ref, as_of, provider=provider, columns={"sector": ("industry classification",)},
+                      fractions=True)
+    for line in out.lines:
         line["industry"] = None
-    return Parsed(lines=lns, compositions=[table.composition(ref, as_of, lns, provider=provider)])
+    return out

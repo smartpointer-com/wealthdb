@@ -19,7 +19,6 @@ Terms: README.md, sec-edgar.
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import date
 from pathlib import Path
@@ -27,7 +26,7 @@ from pathlib import Path
 import fetcher
 from collectorkit import bronze
 
-from .base import Parsed, Provider, ident, read_meta, row, today_utc, write_meta
+from .base import Parsed, Provider, ident, present, read_json, read_meta, row, today_utc, write_meta
 from .sec_nport import SUBMISSIONS, company_tickers
 
 SHARES = "https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/dei/EntityCommonStockSharesOutstanding.json"
@@ -123,10 +122,8 @@ class SecEdgar(Provider):
 
     def parse(self, indir: Path) -> Parsed:
         meta = read_meta(indir)
-        sub = json.loads((indir / SUB_DOC).read_text(encoding="utf-8-sig"))
-        shares = None
-        if (indir / SHARES_DOC).is_file():
-            shares = json.loads((indir / SHARES_DOC).read_text(encoding="utf-8-sig"))
+        sub = read_json(indir, SUB_DOC)
+        shares = read_json(indir, SHARES_DOC) if (indir / SHARES_DOC).is_file() else None
         return parse_company(sub, shares, meta["key"], date.fromisoformat(meta["as_of"]), provider=self.name)
 
     def probe(self, ctx) -> str:
@@ -158,8 +155,8 @@ def parse_company(sub: dict, shares: dict | None, key: str, as_of: date, *, prov
         "securities", security_key=key, as_of=as_of, provider=provider, lei=sub.get("lei") or None,
         ticker=tickers[0] if tickers else None, exchange=exchanges[0] if exchanges else None, name=sub.get("name"),
         security_type=sub.get("entityType"),
-        payload={k: v for k, v in {"cik": sub.get("cik"), "tickers": tickers or None, "exchanges": exchanges or None,
-                                   "sic_description": sub.get("sicDescription")}.items() if v}))
+        payload=present({"cik": sub.get("cik"), "tickers": tickers or None, "exchanges": exchanges or None,
+                         "sic_description": sub.get("sicDescription")})))
 
     def fact(field, value, scheme, **payload):
         if value not in (None, ""):

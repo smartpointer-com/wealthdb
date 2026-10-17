@@ -36,7 +36,7 @@ import fetcher
 from collectorkit import bronze
 
 from . import table
-from .base import Parsed, Provider, ProviderError, dec, read_meta, row, today_utc, write_meta
+from .base import Parsed, Provider, ProviderError, dec, read_json, read_meta, row, today_utc, write_meta
 from .reports import fetch_pdf, number, own_title, pdf_pages, report_pages, words
 
 SERIES = ("https://www.sec.gov/files/investment/data/other/investment-company-series-class-information/"
@@ -91,8 +91,8 @@ class Fidelity529(Provider):
 
     def parse(self, indir: Path) -> Parsed:
         meta = read_meta(indir)
-        series = json.loads((indir / SERIES_DOC).read_text(encoding="utf-8"))
-        return parse_schedule(report_pages(indir / REPORT), meta["name"], meta["ref"], series, provider=self.name)
+        return parse_schedule(report_pages(indir / REPORT), meta["name"], meta["ref"], read_json(indir, SERIES_DOC),
+                              provider=self.name)
 
     def probe(self, ctx) -> str:
         known = plans(ctx)

@@ -76,9 +76,8 @@ class SwissFundData(ReportProvider):
     def _documents(self, text, ctx) -> str:
         """The document list a search finds, once the category is stated."""
         self._enter(ctx)
-        resp = ctx.client.get(f"{HOST}/en/funds/documents",
-                              params={"text": text, "max": "10", "offset": "0", "sort": "name", "order": "asc"})
-        page = resp.body.decode("utf-8", "replace")
+        page = ctx.client.get(f"{HOST}/en/funds/documents",
+                              params={"text": text, "max": "10", "offset": "0", "sort": "name", "order": "asc"}).text()
         if 'name="_action_set"' in page:
             raise ProviderError("swissfunddata did not take the investor category")
         return page

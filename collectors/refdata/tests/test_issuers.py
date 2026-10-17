@@ -256,3 +256,48 @@ def test_invesco_fetch_refuses_an_answer_that_is_not_json(tmp_path):
     ctx = Context(client=FakeClient({"holdings/fund": "<html>busy</html>"}))
     with pytest.raises(fetcher.FetchError, match="not JSON"):
         Invesco().fetch({"ref": "isin:XX0000000940", "site": "ucits", "id": "XX0000000940"}, None, tmp_path, ctx)
+
+
+US_CLAIM = {"ref": "symbol:QSML", "site": "us", "page": "/us/products/1/example"}
+CH_CLAIM = {"ref": "isin:XX0000000900", "site": "ch", "page": "/ch/individual/en/products/2/example"}
+INVESCO_US = {"ref": "symbol:QZQX", "site": "us", "id": "000000AF8"}
+
+
+def _fetch(provider, claim, routes):
+    return lambda out: provider.fetch(claim, None, out, Context(client=FakeClient(routes)))
+
+
+def _call(parse, *args, **kwargs):
+    return lambda out: parse(*args, **kwargs)
+
+
+@pytest.mark.parametrize("ask,error", [
+    pytest.param(_fetch(IShares(), US_CLAIM, {"latest-holdings.csv": US_CSV.replace("Fund Holdings as of", "Run")}),
+                 "is not a holdings file", id="ishares-us-no-day"),
+    pytest.param(_fetch(IShares(), US_CLAIM, {"latest-holdings.csv": 'Example ETF\nFund Holdings as of,"Oct 12, 2026"\n'}),
+                 "is not a holdings file", id="ishares-us-no-header"),
+    pytest.param(_fetch(IShares(), CH_CLAIM, {"/products/": "<html><p>Holdings are not shown.</p></html>"}),
+                 "names no holdings columns or dates", id="ishares-ch-no-table"),
+    pytest.param(_call(parse_grid, {"data": []}, ["Name", "Weight (%)"], "isin:XX0000000900", date(2026, 10, 12),
+                       provider="ishares"), "no aaData grid", id="ishares-ch-no-grid"),
+    pytest.param(_fetch(Xtrackers(), {"ref": "isin:XX0000000910", "isin": "XX0000000910"},
+                        {"/XX0000000910/": make_xlsx([["Example export"], ["No constituents on this day."]])}),
+                 "has no constituents header", id="xtrackers-no-header"),
+    pytest.param(_fetch(Invesco(), INVESCO_US, {"holdings/fund": {"holdings": []}}),
+                 "states no holdings or no date", id="invesco-no-date"),
+    pytest.param(_fetch(Invesco(), INVESCO_US, {"holdings/fund": {"effectiveDate": "2026-10-12", "holdings": None}}),
+                 "states no holdings or no date", id="invesco-no-holdings"),
+    pytest.param(_call(parse_docs, {"fund": {"holdings": []}}, "isin:XX0000000920", provider="invesco"),
+                 "states no date", id="invesco-parse-no-date"),
+])
+def test_an_answer_that_states_no_holdings_is_refused_and_not_stored(tmp_path, ask, error):
+    with pytest.raises(ProviderError, match=error):
+        ask(tmp_path / "f")
+    assert not (tmp_path / "f").exists()
+
+
+def test_ishares_us_reads_a_stray_byte_as_its_fetch_did(tmp_path):
+    csv = US_CSV.encode().replace(b"ALPHA INC", b"ALPHA\xff INC")
+    p = IShares()
+    p.fetch(US_CLAIM, None, tmp_path, Context(client=ishares_site(**{"latest-holdings.csv": csv})))
+    assert [ln["name"] for ln in p.parse(tmp_path).lines][:2] == ["ALPHA\ufffd INC", "BETA SPA"]

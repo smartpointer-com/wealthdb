@@ -38,8 +38,8 @@ from collectorkit import bronze, compress
 from collectorkit.parse import iso_date
 
 from . import table
-from .base import (Parsed, Provider, ProviderError, Unavailable, blank_to_none, dec, read_meta, row, us_symbol,
-                   write_meta)
+from .base import (Parsed, Provider, ProviderError, Unavailable, blank_to_none, dec, present, read_meta, row,
+                   us_symbol, write_meta)
 
 FUND_TICKERS = "https://www.sec.gov/files/company_tickers_mf.json"
 COMPANY_TICKERS = "https://www.sec.gov/files/company_tickers.json"
@@ -271,10 +271,10 @@ def parse_nport(xml: bytes, ref: str, *, provider: str) -> Parsed:
             cusip=_cusip(_text(sec, "cusip")), ticker=ticker, name=_text(sec, "name") or _text(sec, "title"),
             asset_type=cat, weight=dec(_text(sec, "pctVal")), quantity=dec(_text(sec, "balance")),
             market_value=dec(_text(sec, "valUSD")), currency=cur, country=_country(_text(sec, "invCountry")),
-            payload={k: v for k, v in {
+            payload=present({
                 "lei": _lei(_text(sec, "lei")), "title": _text(sec, "title"), "units": _text(sec, "units"),
                 "payoff": _text(sec, "payoffProfile"), "issuer_cat": _text(sec, "issuerCat"),
-                "fair_value_level": _text(sec, "fairValLevel"), "other_ids": other or None}.items() if v})
+                "fair_value_level": _text(sec, "fairValLevel"), "other_ids": other or None}))
         debt = _find(sec, "debtSec")
         if debt is not None:
             maturity = iso_date(_text(debt, "maturityDt"))
@@ -301,8 +301,8 @@ def parse_nport(xml: bytes, ref: str, *, provider: str) -> Parsed:
         ref, as_of, out.lines, provider=provider, source_kind="filing",
         fund_name=_text(gen, "seriesName") or _text(gen, "regName"), currency="USD",
         net_assets=dec(_text(fund_info, "netAssets")),
-        payload={k: v for k, v in {"series": _text(gen, "seriesId"), "registrant": _text(gen, "regName"),
-                                   "period_end": _text(gen, "repPdEnd")}.items() if v}))
+        payload=present({"series": _text(gen, "seriesId"), "registrant": _text(gen, "regName"),
+                         "period_end": _text(gen, "repPdEnd")})))
     out.counterparties = [row("counterparties", fund_ref=ref, as_of=as_of, role=role, name=name, lei=v["lei"],
                               share=dec(v["share"]) if v["share"] else None)
                           for (role, name), v in sorted(cps.items())]

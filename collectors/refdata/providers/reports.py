@@ -118,7 +118,7 @@ class ReportProvider(Provider):
 
     def parse(self, indir: Path) -> Parsed:
         """Each report's composition; of two that state the same day, the
-        later report's, so the day's lines are one report's."""
+        semi-annual report's, so the day's lines are one report's."""
         meta = read_meta(indir)
         by_day, errors = {}, []
         for f in meta["files"]:
@@ -171,7 +171,8 @@ def report_pages(path: Path) -> tuple:
 
 def pdf_pages(path: Path, last: int | None = None) -> list:
     """Each page's text, in layout order; the first `last` pages only
-    where given."""
+    where given. collectorkit.pdf joins the pages; a report is read page
+    by page."""
     import pypdfium2 as pdfium
 
     pdf = pdfium.PdfDocument(str(path))
