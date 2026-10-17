@@ -21,18 +21,9 @@ RUN apt-get update \
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# Vanilla Playwright Firefox, installed as a fallback engine. The
-# explore phase settled the question: login.py and download.py run on
-# Camoufox (the base image's stealth-patched Firefox), which the
-# EquityZen portal's Cloudflare/Akamai-style bot detection needs. This
-# plain-Firefox install is kept as cheap insurance and mirrors the
-# cointracking image.
-RUN playwright install firefox && playwright install-deps firefox
-
-# Copy scripts last. Listed explicitly so accidentally-present host
-# artefacts (.venv, real-credential JSONs, recorded traces, sample
-# portal HTML) never make it into the image even if .dockerignore is
-# incomplete.
+# Copy scripts last, by name, so stray host artefacts (.venv,
+# real-credential JSONs, traces, sample portal HTML) never enter the
+# image.
 COPY explore.py login.py download.py load.py statements.py prune.py /app/
 COPY migrations /app/migrations
 COPY entrypoint.sh /app/

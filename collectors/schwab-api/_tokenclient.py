@@ -57,7 +57,7 @@ def oauth_error_types() -> tuple[type, ...]:
     return tuple(types)
 
 
-def explain_token_failure(token_path: Path, err: Exception) -> str:
+def explain_token_failure(err: Exception) -> str:
     """Turn an authlib OAuth refresh failure into an actionable message.
 
     `str(err)` carries Schwab's OAuth response (e.g. invalid_grant /
@@ -79,7 +79,6 @@ def explain_token_failure(token_path: Path, err: Exception) -> str:
             "The refresh token has expired or been revoked. Schwab refresh "
             "tokens live 7 days from the last interactive login and cannot "
             "be renewed programmatically.",
-            "Fix: mint a new one with login.py:",
-            f"    login.py --token-path {token_path}",
+            "Fix: mint a new one with `./schwab-api login`.",
         ]
     return "\n".join(lines)

@@ -21,17 +21,9 @@ RUN pip install -r requirements.txt
 RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Vanilla Playwright Firefox, installed as a fallback engine. Carta's
-# login is fronted by Cloudflare Turnstile bot detection, so login.py
-# and download.py run on Camoufox (the base image's stealth-patched
-# Firefox), which clears it. This plain-Firefox install is kept as
-# cheap insurance and mirrors the cointracking image.
-RUN playwright install firefox && playwright install-deps firefox
-
-# Copy scripts last. Listed explicitly so accidentally-present host
-# artefacts (.venv, real-credential JSONs, recorded traces, sample
-# holder-UI HTML) never make it into the image even if .dockerignore is
-# incomplete.
+# Copy scripts last, by name, so stray host artefacts (.venv,
+# real-credential JSONs, traces, sample holder-UI HTML) never enter the
+# image.
 COPY explore.py login.py download.py load.py k1.py prune.py /app/
 COPY migrations /app/migrations
 COPY tests /app/tests

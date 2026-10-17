@@ -562,16 +562,23 @@ case-insensitively. A miss reports the identifiers of every visible
 control. That tells a drifted control apart from a provider that did not
 offer registration, and the two want different responses.
 
-**The statement era is rebuilt on every load.** The seam is
+**The statement era is rebuilt on every load that ingests a run.** The
+seam is
 `MIN(posted_at)` over activity rows, and it MOVES. A wider window reaches
 further back, so periods below the seam become covered by the activity. An
 incremental import never withdraws what it already wrote, so two loads at
 different `--lookback` windows would carry the same charges twice. The
 loader therefore applies the fleet's rebuild-derived-tables rule, as it
 does for pending rows. It drops the statement-sourced rows and rebuilds
-them from all of bronze on every load. The result depends only on what
-bronze holds, never on the order loads happened in. A test widens the
-window between two loads to pin this.
+them from all of bronze. The result depends only on what bronze holds,
+never on the order loads happened in. A test widens the window between two
+loads to pin this.
+
+**An unfinished rebuild is retried.** Each ingested run clears the
+statement generation stamp in its own transaction. Only a committed
+rebuild writes the stamp back. A rebuild that fails or is killed leaves the
+stamp stale, so the next load rebuilds even when it ingests no run. A
+parser change reads stale the same way.
 
 **Statement parses are deduped on the PERIOD.** Every run re-fetches the
 same statements, so a tree with N runs holds N copies of each. Each copy

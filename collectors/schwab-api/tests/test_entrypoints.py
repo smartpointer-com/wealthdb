@@ -5,8 +5,7 @@ expression before argparse prints and exits, so this catches NameError /
 typos in defaults — e.g. a `cli.default_data_root()` default where `cli`
 was never imported — that `py_compile` and import-only checks miss
 (argparse defaults are evaluated at runtime, when the parser is built).
-No network / no side effects: `--help` exits before any login / download
-/ SFTP work.
+No network, no side effects: `--help` exits before any work.
 """
 import subprocess
 import sys

@@ -18,7 +18,6 @@ loads into /data/relevate.db.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import logging
 import sqlite3
@@ -81,7 +80,7 @@ open_db = silver.open_db
 
 # Relevate's API serves fileNames in German; the older English
 # needles are kept as defence in case the API ever serves an
-# en-locale flag we don't pass.
+# en-locale flag the collector doesn't pass.
 DOC_KIND_PATTERNS: tuple[tuple[str, str], ...] = (
     ("Fee statement",        "quarterly_fee"),
     ("Gebührenabrechnung",   "quarterly_fee"),
@@ -121,11 +120,6 @@ def iso_timestamp_to_epoch(value: str | None) -> int | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return int(dt.timestamp())
-
-
-def slug_for_account(external_id: str) -> str:
-    """Same slug download.py uses for the bronze portfolio dir."""
-    return hashlib.sha256(external_id.encode("utf-8")).hexdigest()[:16]
 
 
 # ============================================================
@@ -234,7 +228,8 @@ def load_portfolio_artefacts(
     external_id = portfolio.get("externalId")
     if not external_id:
         return
-    slug = slug_for_account(external_id)
+    # download.py names the portfolio dir with the same token.
+    slug = bronze.short_token(external_id)
     pdir = run_dir / "portfolios" / slug
     if not pdir.is_dir():
         logger.warning("no portfolios dir for %s in %s", slug, run_dir)
@@ -349,10 +344,10 @@ def load_documents_phase(
     The provider's document id is the IDENTITY and content_sha256 the
     version: new content under an id silver already holds is a
     RESTATEMENT — Relevate re-issued the document — and the row it
-    supersedes gives way to it. Without that, the insert collided with
-    UNIQUE(relevate_doc_id) and took the whole DUMP down with it: the
-    transaction rolls back, its `dump_runs` row with it, so the dump
-    stays pending and every later dump plus both PDF passes never run.
+    supersedes gives way to it. Without that, the insert would collide
+    with UNIQUE(relevate_doc_id) and roll back the whole dump, its
+    `dump_runs` row included, so the dump would stay pending and block
+    every later dump and both PDF passes.
     One row per document id is also what the ids derived from it need:
     `credit_note:<doc id>` transaction ids and `historical_*.document_id`
     would both be ambiguous with two. A missing PDF can be an
@@ -566,8 +561,8 @@ def load_credit_note_transactions(
 
     Idempotent: `transaction_external_id` is derived deterministically
     from the document id so re-running collapses to the same row.
-    `snapshot_at` is the *latest* dump_run (the last load that saw the
-    credit note), rewritten on every load.
+    `snapshot_at` is the newest dump_runs snapshot, rewritten on every
+    load.
 
     Runs in its own transaction so a parser hiccup never rolls back
     the per-dump rows committed before it.

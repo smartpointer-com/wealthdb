@@ -1,77 +1,47 @@
 """
-Unit tests for prune.py + the run.json status lifecycle it keys on.
+Unit tests for prune.py's carta configuration + the run.json status
+lifecycle it keys on.
 
-tmp_path bronze trees, synthetic data only (no real ids/holdings). Two
-categories are removed: a whole non-complete run dir, and the
-`screenshots/` subdir `download --debug` writes into a dump that is
-otherwise kept. (The `./carta explore` diagnostics land in /debug, outside
-bronze, and prune never sees them.) Covers:
-  * complete dump: kept, load inputs untouched, screenshots/ reclaimed
-  * statusless legacy manifest: classified complete (carta wrote run.json
-    only at the end of a successful walk), kept
-  * non-complete dumps (absent run.json / status="in-progress") deleted
-    whole once quiescent
-  * in-flight guard keyed on write activity, not slug age: a long walk
-    (old slug, fresh writes, no terminal run.json) is protected
-  * unreadable / corrupt run.json is UNKNOWN → skipped, never deleted
-  * calendar-invalid slug is skipped, not a crash
-  * symlinked run dir is left alone
-  * --dry-run deletes nothing
-  * non-run entries at the bronze root (silver DB, side-loaded override
-    CSVs) are never touched
-  * validate_target refuses paths outside the expected shapes
+The shared engine's own suite (shared/collectorkit/tests/test_prune.py)
+covers the generic cases: the in-flight age guard, unreadable manifests,
+bad slugs, symlinks, --dry-run and target validation. These cover what
+carta's PruneConfig decides, over tmp_path bronze trees in carta's layout
+(synthetic data only, no real ids or holdings):
+  * a complete dump keeps its load inputs and loses screenshots/, the one
+    debug subdir `download --debug` writes
+  * a statusless manifest counts as complete and is kept whole
+  * `main()` wires that config: a dump with no run.json or a status other
+    than complete is deleted, and the bronze-root siblings (silver DB,
+    side-loaded override CSVs) are never touched
 
 Plus the load-side half of the lifecycle (load.load_run):
-  * a status="in-progress" dump is NOT loaded (the guard keeps a crashed
-    walk's partial capture out of silver)
-  * a status="complete" dump and a statusless legacy dump ARE loaded
+  * a status="in-progress" dump or one with no run.json is NOT loaded (the
+    guard keeps a crashed walk's partial capture out of silver)
+  * a status="complete" dump and a statusless dump ARE loaded
+
+And `load --force` rebuilds exactly the silver an incremental load builds.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
-import sys
-import time
-from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
+import load
+import prune
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import prune  # noqa: E402
-import load   # noqa: E402
-
-MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
-
-
-# ============================================================
-# Fixtures
-# ============================================================
-
-OLD_TS = "20260101T010000Z"          # older than any guard by slug
-STALE_S = 3 * 3600                    # comfortably past the 1h default
-FRESH_FMT = "%Y%m%dT%H%M%SZ"
-
-
-def fresh_slug(age_s: float = 0.0) -> str:
-    dt = datetime.fromtimestamp(time.time() - age_s, tz=timezone.utc)
-    return dt.strftime(FRESH_FMT)
+OLD_TS = "20260101T010000Z"
 
 
 def make_dump(root: Path, slug: str, status: str | None = "complete",
-              run_json: bool = True, age_s: float = 0.0,
-              entities: bool = True, documents: bool = True,
-              screenshots: bool = True) -> Path:
+              run_json: bool = True, entities: bool = True,
+              documents: bool = True, screenshots: bool = True) -> Path:
     """Build a synthetic carta bronze run dir mirroring download.py's
     layout: bootstrap/ + entities/<slug>/ (meta + holdings + a security
     list) + documents/ (index + a PDF) + screenshots/ (the --debug
-    landing capture) + run.json. ``age_s`` backdates every mtime so the
-    write-activity guard sees an abandoned dump; the default (0) leaves it
-    fresh. ``status`` controls the run.json status field (``None`` → a
-    statusless legacy manifest)."""
+    landing capture) + run.json. ``status`` controls the run.json status
+    field (``None`` → a statusless manifest)."""
     d = root / slug
     boot = d / "bootstrap"
     boot.mkdir(parents=True)
@@ -103,19 +73,7 @@ def make_dump(root: Path, slug: str, status: str | None = "complete",
         if status is not None:
             manifest["status"] = status
         (d / "run.json").write_text(json.dumps(manifest))
-    if age_s:
-        backdate(d, age_s)
     return d
-
-
-def backdate(path: Path, age_s: float) -> None:
-    t = time.time() - age_s
-    for p in list(path.rglob("*")) + [path]:
-        os.utime(p, (t, t), follow_symlinks=False)
-
-
-def run_main(root: Path, *extra: str) -> int:
-    return prune.main(["--bronze-dir", str(root), *extra])
 
 
 def assert_inputs_intact(d: Path) -> None:
@@ -128,181 +86,23 @@ def assert_inputs_intact(d: Path) -> None:
 
 
 # ============================================================
-# Complete dumps: screenshots reclaimed, load inputs kept
+# carta's PruneConfig
 # ============================================================
 
 def test_complete_dump_screenshots_pruned_inputs_kept(tmp_path):
     d = make_dump(tmp_path, OLD_TS)
-    assert run_main(tmp_path) == 0
+    assert prune.main(["--bronze-dir", str(tmp_path)]) == 0
     assert not (d / "screenshots").exists()
     assert_inputs_intact(d)
 
 
-def test_complete_dump_without_screenshots_untouched(tmp_path):
-    # The common case: --debug was off, so the dump has no capture dir and
-    # prune finds nothing to reclaim.
-    d = make_dump(tmp_path, OLD_TS, screenshots=False)
-    assert run_main(tmp_path) == 0
-    assert d.exists()
+def test_statusless_manifest_kept_as_complete(tmp_path):
+    # A download that writes no status writes its manifest only once the
+    # walk finished, so a statusless run.json means the dump is complete.
+    d = make_dump(tmp_path, OLD_TS, status=None, screenshots=False)
+    assert prune.main(["--bronze-dir", str(tmp_path),
+                       "--min-age-hours", "0"]) == 0
     assert_inputs_intact(d)
-
-
-def test_fresh_complete_dump_screenshots_still_pruned(tmp_path):
-    # The write-activity guard protects non-complete dumps only; a
-    # finalised run.json means the walk is over, so its captures are
-    # reclaimable however recently they were written.
-    d = make_dump(tmp_path, fresh_slug(age_s=60))
-    assert run_main(tmp_path) == 0
-    assert d.exists()
-    assert not (d / "screenshots").exists()
-    assert_inputs_intact(d)
-
-
-def test_statusless_manifest_kept_as_legacy_complete(tmp_path):
-    # A run.json with no `status` key predates the status lifecycle: such
-    # a dump only ever got a run.json at the end of a successful walk, so
-    # its presence means the dump finished — classify COMPLETE and keep
-    # its load inputs.
-    d = make_dump(tmp_path, OLD_TS, status=None, age_s=STALE_S)
-    assert run_main(tmp_path) == 0
-    assert d.exists()
-    assert_inputs_intact(d)
-
-
-# ============================================================
-# Non-complete dumps: deleted once quiescent
-# ============================================================
-
-def test_missing_run_json_dump_deleted(tmp_path):
-    d = make_dump(tmp_path, OLD_TS, run_json=False, age_s=STALE_S)
-    run_main(tmp_path)
-    assert not d.exists()
-
-
-def test_in_progress_status_dump_deleted_when_stale(tmp_path):
-    # An abandoned walk leaves status="in-progress" (the marker download.py
-    # drops at run-dir creation); once quiescent it is prunable.
-    d = make_dump(tmp_path, OLD_TS, status="in-progress", age_s=STALE_S)
-    run_main(tmp_path)
-    assert not d.exists()
-
-
-# ============================================================
-# In-flight guard: keyed on write activity, not slug age
-# ============================================================
-
-def test_long_walk_old_slug_fresh_writes_kept(tmp_path):
-    # The load-bearing fix: a walk whose slug is hours old but which is
-    # still writing artefacts (fresh mtimes, no terminal run.json) must NOT
-    # be classified abandoned and deleted.
-    d = make_dump(tmp_path, OLD_TS, run_json=False, age_s=0.0)
-    run_main(tmp_path)
-    assert d.exists()
-    assert (d / "entities" / "corp_100" / "meta.json").exists()
-
-
-def test_fresh_incomplete_dump_kept_by_age_guard(tmp_path):
-    d = make_dump(tmp_path, fresh_slug(age_s=60), run_json=False)
-    run_main(tmp_path)
-    assert d.exists()
-
-
-def test_stale_incomplete_dump_deleted_with_zero_min_age(tmp_path):
-    d = make_dump(tmp_path, OLD_TS, run_json=False, age_s=STALE_S)
-    run_main(tmp_path, "--min-age-hours", "0")
-    assert not d.exists()
-
-
-# ============================================================
-# Unreadable / corrupt / invalid manifests: never deleted
-# ============================================================
-
-def test_corrupt_json_run_json_kept(tmp_path):
-    # Corrupt bytes are UNKNOWN, not evidence of incompleteness — skip,
-    # never delete (could be a complete dump with a mangled manifest).
-    d = make_dump(tmp_path, OLD_TS, age_s=STALE_S)
-    (d / "run.json").write_text("{not valid json")
-    run_main(tmp_path)
-    assert d.exists()
-    assert_inputs_intact(d)
-
-
-def test_unreadable_run_json_kept(tmp_path):
-    # An I/O error reading run.json (here: run.json is a directory, a
-    # deterministic OSError) must not classify the dump as non-complete and
-    # delete its load inputs.
-    d = make_dump(tmp_path, OLD_TS, run_json=False, age_s=STALE_S)
-    (d / "run.json").mkdir()
-    run_main(tmp_path)
-    assert d.exists()
-    assert (d / "entities" / "corp_100" / "meta.json").exists()
-
-
-def test_invalid_calendar_slug_skipped_not_crash(tmp_path):
-    # A slug that matches the regex but is not a real date (Feb 30) must be
-    # skipped, not abort the whole prune.
-    bad = make_dump(tmp_path, "20260230T010000Z", run_json=False,
-                    age_s=STALE_S)
-    good = make_dump(tmp_path, OLD_TS, run_json=False, age_s=STALE_S)
-    assert run_main(tmp_path) == 0
-    assert bad.exists()          # unparseable age → left alone
-    assert not good.exists()     # the valid stale dump still pruned
-
-
-# ============================================================
-# Symlinks: left alone
-# ============================================================
-
-def test_symlinked_run_dir_skipped(tmp_path):
-    external = tmp_path / "external_run"
-    external.mkdir()
-    (external / "keep.txt").write_text("precious")
-    link = tmp_path / OLD_TS
-    link.symlink_to(external, target_is_directory=True)
-    run_main(tmp_path)
-    assert link.is_symlink()
-    assert (external / "keep.txt").exists()
-
-
-# ============================================================
-# --dry-run and root-level safety
-# ============================================================
-
-def test_dry_run_deletes_nothing(tmp_path):
-    complete = make_dump(tmp_path, OLD_TS)
-    crashed = make_dump(tmp_path, "20260102T010000Z", run_json=False,
-                        age_s=STALE_S)
-    run_main(tmp_path, "--dry-run")
-    assert_inputs_intact(complete)
-    assert crashed.exists()
-
-
-def test_non_run_entries_never_touched(tmp_path):
-    # The silver DB and the side-loaded override CSVs live at the bronze
-    # ROOT (run_dir.parent), not under a run dir; prune only iterates
-    # timestamped run dirs, so these are safe by construction.
-    make_dump(tmp_path, OLD_TS)
-    (tmp_path / "carta.db").write_bytes(b"sqlite fake")
-    (tmp_path / "100-valuations.csv").write_text("date,fmv\n2025-01-01,1.0\n")
-    (tmp_path / "100-transactions.csv").write_text("date,amount\n")
-    run_main(tmp_path)
-    assert (tmp_path / "carta.db").exists()
-    assert (tmp_path / "100-valuations.csv").exists()
-    assert (tmp_path / "100-transactions.csv").exists()
-
-
-def test_missing_bronze_dir_exits(tmp_path):
-    with pytest.raises(SystemExit):
-        prune.main(["--bronze-dir", str(tmp_path / "nope")])
-
-
-# ============================================================
-# Target validation
-# ============================================================
-
-def test_validate_target_accepts_whole_run_dir(tmp_path):
-    (tmp_path / OLD_TS).mkdir()
-    prune.CONFIG.validate_target(tmp_path / OLD_TS, tmp_path)
 
 
 def test_validate_target_accepts_screenshots_subdir(tmp_path):
@@ -311,66 +111,64 @@ def test_validate_target_accepts_screenshots_subdir(tmp_path):
     prune.CONFIG.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
 
 
-def test_validate_target_refuses_stray_paths(tmp_path):
-    with pytest.raises(SystemExit):
-        prune.CONFIG.validate_target(tmp_path / "carta.db", tmp_path)
-    with pytest.raises(SystemExit):
-        # entities/ is a load input, not the debug subdir, so a subdir
-        # target that is not screenshots/ must be refused.
-        prune.CONFIG.validate_target(tmp_path / OLD_TS / "entities", tmp_path)
-    with pytest.raises(SystemExit):
-        prune.CONFIG.validate_target(tmp_path.parent / OLD_TS, tmp_path)
-
-
-def test_validate_target_refuses_symlink(tmp_path):
-    external = tmp_path / "ext"
-    external.mkdir()
-    link = tmp_path / OLD_TS
-    link.symlink_to(external, target_is_directory=True)
-    with pytest.raises(SystemExit):
-        prune.CONFIG.validate_target(link, tmp_path)
+def test_main_deletes_unfinished_dumps_and_nothing_at_the_root(tmp_path):
+    complete = make_dump(tmp_path, OLD_TS)
+    crashed = make_dump(tmp_path, "20260102T010000Z", status="in-progress")
+    unmarked = make_dump(tmp_path, "20260103T010000Z", run_json=False)
+    # The silver DB and the side-loaded override CSVs live at the bronze
+    # root, beside the run dirs.
+    root_files = [tmp_path / "carta.db", tmp_path / "100-valuations.csv",
+                  tmp_path / "100-transactions.csv"]
+    for f in root_files:
+        f.write_text("synthetic\n")
+    assert prune.main(["--bronze-dir", str(tmp_path),
+                       "--min-age-hours", "0"]) == 0
+    assert_inputs_intact(complete)
+    assert not crashed.exists()
+    assert not unmarked.exists()
+    assert all(f.exists() for f in root_files)
 
 
 # ============================================================
 # Load-side of the lifecycle: load.load_run gating on status
 # ============================================================
 
-@pytest.fixture
-def conn():
-    c = sqlite3.connect(":memory:")
-    c.execute("PRAGMA foreign_keys = ON")
-    load.silver.apply_migrations(c, MIGRATIONS_DIR)
-    yield c
-    c.close()
-
-
 def _dump_runs_count(conn) -> int:
     return conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0]
 
 
-def test_load_skips_in_progress_dump(tmp_path, conn):
+def test_load_skips_in_progress_dump(tmp_path, migrated):
     # A crashed walk left status="in-progress"; load must not ingest its
     # partial capture as a silver snapshot.
     d = make_dump(tmp_path, OLD_TS, status="in-progress",
                   entities=False, documents=False)
-    assert load.load_run(conn, d) is False
-    assert _dump_runs_count(conn) == 0
+    assert load.load_run(migrated, d) is False
+    assert _dump_runs_count(migrated) == 0
 
 
-def test_load_loads_complete_dump(tmp_path, conn):
+def test_load_skips_dump_without_run_json(tmp_path, migrated):
+    # The walk crashed before writing run.json, or is still writing; prune
+    # reclaims the dir, and load neither loads nor records it.
+    d = make_dump(tmp_path, OLD_TS, run_json=False,
+                  entities=False, documents=False)
+    assert load.load_run(migrated, d) is False
+    assert _dump_runs_count(migrated) == 0
+
+
+def test_load_loads_complete_dump(tmp_path, migrated):
     d = make_dump(tmp_path, OLD_TS, status="complete",
                   entities=False, documents=False)
-    assert load.load_run(conn, d) is True
-    assert _dump_runs_count(conn) == 1
+    assert load.load_run(migrated, d) is True
+    assert _dump_runs_count(migrated) == 1
 
 
-def test_load_loads_statusless_legacy_dump(tmp_path, conn):
-    # Backward compat: a statusless (pre-lifecycle) manifest is still
-    # loadable — carta wrote it only at the end of a successful walk.
+def test_load_loads_statusless_dump(tmp_path, migrated):
+    # A statusless manifest is loadable: a download that writes no status
+    # writes its manifest only at the end of a successful walk.
     d = make_dump(tmp_path, OLD_TS, status=None,
                   entities=False, documents=False)
-    assert load.load_run(conn, d) is True
-    assert _dump_runs_count(conn) == 1
+    assert load.load_run(migrated, d) is True
+    assert _dump_runs_count(migrated) == 1
 
 
 # ============================================================
@@ -430,9 +228,8 @@ def _seed_holdings(run_dir: Path) -> Path:
 
 
 def test_force_rebuild_equals_incremental(tmp_path):
-    # The reworked --force contract (load.main): --force DELETEs the silver DB
-    # and rebuilds it from ALL bronze, superseding the old "re-load only the
-    # already-seen snapshots" behaviour. For UNCHANGED bronze that rebuild must
+    # The --force contract (load.main): --force DELETEs the silver DB and
+    # rebuilds it from ALL bronze. For UNCHANGED bronze that rebuild must
     # land exactly where a plain incremental load did — a faithful replay,
     # table for table, not a subtly different result.
     bronze_root = tmp_path / "bronze"

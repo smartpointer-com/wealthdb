@@ -43,11 +43,7 @@ def date_to_epoch(s: str) -> int:
 def load_run(conn, run_dir: Path) -> int:
     """Upsert every (date, base, quote) rate in one bronze run. Returns
     the number of rows written."""
-    manifest_path = run_dir / "run.json"
-    if not manifest_path.is_file():
-        log.warning("no run.json in %s; skipping run", run_dir)
-        return 0
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     written = 0
     for sid, meta in manifest.get("series", {}).items():
         base, quote = meta.get("base"), meta.get("quote")
@@ -93,22 +89,13 @@ def main(argv: list[str] | None = None) -> int:
         silver.reset(args.silver_db)
     conn = silver.open_db(args.silver_db)
     version = silver.apply_migrations(conn, MIGRATIONS)
-    loaded = silver.loaded_snapshots(conn)
 
     n_runs = n_rows = 0
-    for run_dir in bronze.iter_run_dirs(args.bronze_dir):
+    # A run dir with no run.json, or one whose status is not complete, is
+    # skipped without a dump_runs row, so a later load picks it up once
+    # its walk finalises.
+    for run_dir in bronze.pending_run_dirs(conn, args.bronze_dir, log=log):
         run_ts = bronze.parse_run_ts(run_dir.name)
-        if run_ts in loaded:
-            log.debug("run %s already loaded; skipping", run_dir.name)
-            continue
-        status = bronze.run_status(run_dir / "run.json")
-        if not bronze.is_loadable_status(status):
-            # A crashed / in-flight / dry-run dump. Skip it WITHOUT
-            # recording it in dump_runs so that if the walk later finalises
-            # to status="complete" a subsequent load still picks it up.
-            log.info("run %s: status=%s — not a complete dump; skipping",
-                     run_dir.name, status)
-            continue
         conn.execute("BEGIN")
         try:
             rows = load_run(conn, run_dir)

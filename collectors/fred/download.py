@@ -54,10 +54,8 @@ DEFAULT_BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
 # (value = base per quote). This is the direction the gold engine and the
 # ubs-psn silver use, so a gold adapter maps straight across. A FRED H.10
 # value IS "base per quote" for these series — e.g. DEXSZUS = Swiss Francs
-# per USD = "1 USD = v CHF", hence base=CHF, quote=USD. Verified live
-# against the API and cross-checked against the ubs-psn silver
-# (CHF/USD @ ~0.797). The README lists FRED IDs for more currencies; add
-# them here with the correct base/quote.
+# per USD = "1 USD = v CHF", hence base=CHF, quote=USD. The README lists
+# FRED IDs for more currencies; add them here with the correct base/quote.
 FX_SERIES: dict[str, tuple[str, str]] = {
     "DEXSZUS": ("CHF", "USD"),  # CHF per USD  -> 1 USD = v CHF
     "DEXUSEU": ("USD", "EUR"),  # USD per EUR  -> 1 EUR = v USD

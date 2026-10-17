@@ -88,6 +88,10 @@ GET    /external-login/public/authentication/               (200; session confir
 POST   /rest/web/customer/loginHook                         (204; web-side activate)
 ```
 
+`GET /rest/web/heartbeat` probes a stored session: 204 when it is
+live. `login --check` sends only this call, and `download` sends it
+before its walk.
+
 After step 4 the `AL_SESS-S` cookie is server-side promoted
 from anonymous to authenticated; the cookie value itself
 doesn't rotate. `CSRFT<N>-S` (digit suffix is bundle-build-

@@ -14,7 +14,7 @@ and captures the investor GraphQL responses as raw bronze.
     (primaryTransaction.sharesRemainingPostSplit), and the cash-flow ledger
     (primaryTransaction + distributedTransactions + transfers). This
     holdings surface carries everything valuation needs, including the
-    reliable CLOSED-deal prices (your purchase + your tenders). See the
+    reliable CLOSED-deal prices (the buyer's purchase and tenders). See the
     "Why no /equity/ capture" note in DESIGN.md §4.
   * document blobs (default; --no-documents skips) — each offering's PDFs
     (capital-account statements, K-1s, etc.) fetched via node.documents[].downloadUrl
@@ -62,14 +62,13 @@ from __future__ import annotations
 
 import argparse
 import base64
-import hashlib
 import json
 import logging
 import sys
 import time
 from pathlib import Path
 
-from collectorkit import bronze, cli, debugcap, docdedup, envfile, launch
+from collectorkit import bronze, cli, debugcap, docdedup, launch
 
 from login import _authenticated
 
@@ -80,7 +79,6 @@ GRAPHQL_PATH = "/api/graphql"
 PORTFOLIO_URL = f"{BASE}/portfolio/"
 
 DEFAULT_PROFILE_DIR = Path("/secrets/equityzen-profile")
-DEFAULT_ENV_FILE = Path("/secrets/equityzen.env")
 DEFAULT_BRONZE_DIR = Path("/data")
 
 # Document metadata (id / type / downloadUrl) rides on getMyInvestmentDetails
@@ -97,8 +95,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="A UTC-timestamped run dir is created here per invocation. Default: %(default)s.")
     p.add_argument("--profile-dir", type=Path, default=DEFAULT_PROFILE_DIR,
                    help="Persistent browser profile from login.py. Default: %(default)s.")
-    p.add_argument("--env-file", type=Path, default=DEFAULT_ENV_FILE,
-                   help="Bash-sourced env file. Default: %(default)s.")
     p.add_argument("--no-documents", dest="documents", action="store_false",
                    help="Skip fetching each offering's document PDF blobs (capital-account "
                         "statements, K-1s, etc.). Documents are fetched by DEFAULT via "
@@ -142,10 +138,6 @@ def _deal_numeric(deal_id_b64: str) -> str | None:
         return None
     n = raw.split(":", 1)[1]
     return n if n.isdigit() else None
-
-
-def _slug(s: str) -> str:
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
 
 
 def _buyer_deal_nodes(body) -> list[dict]:
@@ -272,11 +264,11 @@ def _process_document(skip, *, deal_slug: str, doc: dict, target_dir: Path,
     load records a null local_path for it) without touching the fetch/dedup
     path. Otherwise it dispatches to :func:`docdedup.process` by the
     document's class: link-mode for the executed-once legal/offering docs,
-    fetch-verify for the parsed/restatement-prone docs, plain fetch for anything
+    fetch-verify for the parsed / restatement-prone docs and for anything
     unclassified. ``force`` bypasses the download-avoidance index. The fetch
     closure is the collector's own ``fetch_blob``, so any hardlink failure falls
     straight through to the real fetch."""
-    doc_slug = _slug(doc["id"])
+    doc_slug = bronze.short_token(doc["id"])
     if not doc.get("downloadUrl"):
         return docdedup.NO_BLOB
     return docdedup.process(
@@ -293,7 +285,6 @@ def main(argv: list[str]) -> int:
                               what="every offering, position and cash flow")
     timeout_ms = args.timeout * 1000
 
-    envfile.source_env_file(args.env_file)  # aligns mounts; no creds used here
     if not args.dry_run:
         bronze.ensure_writable_dir(args.bronze_dir)
 
@@ -329,7 +320,7 @@ def main(argv: list[str]) -> int:
         return None
 
     snapshot_at = int(time.time())
-    run = bronze.run_dir(args.bronze_dir, bronze.ts_slug())
+    run = bronze.run_dir(args.bronze_dir)
 
     # Captures land in the run dir, and --dry-run returns before one is ever
     # created (prune's contract: no dry-run shell to reclaim), so --debug
@@ -410,7 +401,8 @@ def main(argv: list[str]) -> int:
 
         if args.dry_run:
             for did in deal_ids:
-                log.info("  would fetch offering %s (deal #%s)", _slug(did), _deal_numeric(did) or "?")
+                log.info("  would fetch offering %s (deal #%s)",
+                         bronze.short_token(did), _deal_numeric(did) or "?")
             log.info("--dry-run: no bronze written")
             return 0
 
@@ -466,7 +458,7 @@ def main(argv: list[str]) -> int:
         offerings_meta = []
         document_blobs = docdedup.empty_audit(docdedup.NO_BLOB_BUCKET)
         for did in deal_ids:
-            slug, n = _slug(did), _deal_numeric(did)
+            slug, n = bronze.short_token(did), _deal_numeric(did)
             if not n:
                 log.warning("offering %s: deal id did not decode; skipping detail", slug)
                 offerings_meta.append({"slug": slug, "detail": False})

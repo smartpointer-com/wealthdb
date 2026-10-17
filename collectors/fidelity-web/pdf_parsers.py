@@ -3,8 +3,8 @@ Parsers for Fidelity 529 College Investing Plan statement PDFs.
 
 The bronze fetch saves quarterly and annual statement PDFs under
 ``<dump-dir>/documents/`` (DESIGN.md §4.5). For 529 accounts
-those PDFs contain a per-account ``Holdings`` block from which we can
-reconstruct point-in-time position snapshots for any quarter
+those PDFs contain a per-account ``Holdings`` block from which the
+loader reconstructs point-in-time position snapshots for any quarter
 the statement archive covers, going back well before the toolkit
 itself started running.
 
@@ -30,15 +30,9 @@ hand-crafted fixtures without needing a real PDF.
 that opens the PDF via pdfplumber and delegates to the
 text-level parsers.
 
-Performance note: extraction stays on pdfplumber. A trial swap
-(2026-07) of both fidelity parser modules to collectorkit's
-``extract_text_pdfium`` (measured ~27x faster) round-tripped this
-module's output byte-identically, but the supplied-statement
-parser (``pdf_parsers_supplied``) produced differing rows, so both
-modules stayed put; the parse cache in load.py absorbs the cost on
-warm runs. Migrating this module alone, or reworking the
-supplied-statement parser to hold under PDFium's text layout,
-unlocks the swap.
+Performance note: extraction stays on pdfplumber; see the note in
+``pdf_parsers_supplied``. The parse cache in load.py absorbs the cost
+on warm runs.
 """
 
 from __future__ import annotations
@@ -84,7 +78,7 @@ def parse_account_blocks(text):
     Portfolio Summary on page 2 mentions every account but
     doesn't carry a ``Holdings`` table; only the per-account
     pages do, and those carry a fresh ``Account #`` header that
-    we anchor on.
+    the split anchors on.
 
     Summary-only references (no subsequent ``Holdings`` block)
     still produce an ``AccountBlock`` here;
@@ -145,9 +139,9 @@ def parse_holdings_block(account_text):
 
         <fund>  <pct>%  <qty>  $<price>  $<value>
 
-    We tokenize each candidate line by whitespace, identify the
-    contiguous run of trailing numeric tokens, and route on its
-    length (4 vs 5). Everything before the numeric tail is the
+    Each candidate line is tokenized by whitespace, the contiguous
+    run of trailing numeric tokens identified, and the row routed on
+    its length (4 vs 5). Everything before the numeric tail is the
     fund description. The ``%`` and ``$`` glyphs are optional on
     every column — Fidelity's PDF renderer drops them on
     continuation rows — so the regex tolerates either.
@@ -217,7 +211,7 @@ def _parse_holdings_line(line):
     pct = _parse_percent(pct_tok)
     # Refuse the row if every load-bearing dollars-and-cents
     # number is None — that means the regex matched some column-
-    # header fragment we shouldn't keep.
+    # header fragment that must not be kept.
     if quantity is None and price is None and market_value is None:
         return None
     return HoldingRow(
@@ -243,7 +237,7 @@ def _parse_number(tok):
 
 def _parse_percent(tok):
     """Parse a ``45%`` / ``45`` token to a 0..1 fraction; ``None``
-    if it isn't numeric. We accept the bare-digit form because
+    if it isn't numeric. The bare-digit form is accepted because
     Fidelity's PDF renderer occasionally drops the ``%`` glyph on
     the second-and-subsequent rows of the Holdings table."""
     v = _parse_number(tok)

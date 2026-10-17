@@ -70,13 +70,11 @@ fixtures without a real PDF. ``parse_supplied_statement_pdf(path)``
 is the orchestration entry-point that opens the PDF via
 pdfplumber and delegates to the text-level parsers.
 
-Performance note: this module is why fidelity-web stays on
-pdfplumber. In a trial swap (2026-07) to collectorkit's
-``extract_text_pdfium`` (measured ~27x faster), ``pdf_parsers``
-round-tripped byte-identically but this module's parsed rows
-differed. Reworking the line heuristics to hold under PDFium's
-text layout unlocks the swap for both modules (see the note in
-``pdf_parsers``).
+Performance note: this module keeps fidelity-web on pdfplumber.
+Under collectorkit's ``extract_text_pdfium`` (measured ~27x faster),
+``pdf_parsers`` output stays byte-identical, but this module's parsed
+rows differ. Reworking the line heuristics to hold under PDFium's
+text layout unlocks the swap for both modules.
 """
 
 from __future__ import annotations
@@ -166,10 +164,10 @@ def parse_account_blocks(text):
 
 _HOLDINGS_START_RE = re.compile(r"^\s*Holdings\s*$", re.MULTILINE)
 
-# End-of-Holdings markers we recognise inside an account section.
+# End-of-Holdings markers recognised inside an account section.
 # The first ``Assets Held Away`` line ends the in-scope rows even
 # if the Holdings table continues — those are not Fidelity-
-# custodied so we drop them by design.
+# custodied, so they are dropped by design.
 _HOLDINGS_END_RE = re.compile(
     r"^\s*(?:Activity|Assets Held Away)\s*$", re.MULTILINE,
 )

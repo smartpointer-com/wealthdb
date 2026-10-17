@@ -27,14 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import load  # noqa: E402
-
-MIGRATIONS = ROOT / "migrations"
-
-
-def _apply_all_migrations(db_path: Path) -> sqlite3.Connection:
-    conn = load.open_db(db_path)
-    load.silver.apply_migrations(conn, MIGRATIONS)
-    return conn
+from tests.helpers import apply_all_migrations  # noqa: E402
 
 
 class ParsePositionDetailsTests(unittest.TestCase):
@@ -60,7 +53,7 @@ class MigrationSequenceTests(unittest.TestCase):
     def test_migrations_apply_and_columns_exist(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "silver.db"
-            conn = _apply_all_migrations(db_path)
+            conn = apply_all_migrations(db_path)
             self.assertEqual(load.silver.current_schema_version(conn), 7)
             cols = [r["name"] for r in conn.execute(
                 "PRAGMA table_info(positions);")]
@@ -90,7 +83,7 @@ class NonAsciiRoundTripTests(unittest.TestCase):
         non_ascii_name = "Société Générale ČEZ Nestlé Telefónica €"
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "silver.db"
-            conn = _apply_all_migrations(db_path)
+            conn = apply_all_migrations(db_path)
             conn.execute(
                 "INSERT INTO positions("
                 " snapshot_at, account_external_id, symbol, currency,"

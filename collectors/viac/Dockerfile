@@ -8,10 +8,8 @@ FROM wealthdb/base-python:${WEALTHDB_IMAGE_TAG}
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# Copy scripts last. Listed explicitly so accidentally-present
-# host artefacts (.venv, real-credential env files, bronze
-# downloads) never make it into the image even if .dockerignore
-# is incomplete.
+# Copy scripts last, by name, so stray host artefacts (.venv,
+# real-credential env files, bronze downloads) never enter the image.
 COPY login.py download.py load.py prune.py viac_client.py pdf_parsers.py /app/
 COPY migrations /app/migrations
 COPY tests /app/tests

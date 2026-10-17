@@ -2,8 +2,8 @@
 """angellist silver loader.
 
 Parses the venture GraphQL captured by download.py (bronze `captures.jsonl`)
-plus the downloaded Schedule K-1 CSVs into the source-shaped SQLite silver DB
-— the input contract to the gold engine.
+plus the downloaded Schedule K-1 CSVs and fund financial reports into the
+source-shaped SQLite silver DB — the input contract to the gold engine.
 
 Model (see migrations/0005 + DESIGN.md): immutable per-investment identity
 lives in `offerings` (one row per position / SPV stake); the per-position
@@ -17,9 +17,10 @@ Tables:
   offerings           immutable per-position identity (company, SPV legal
                       name + EIN, investment date)
   position_snapshots  per-position valuation events: 'investment' (cost, at
-                      the investment date), 'statement' (annual K-1 tax-basis
-                      NAV, at year-end), 'valuation' (current portal FMV, at
-                      the portfolio data date)
+                      the investment date), 'statement' (a K-1's tax-basis
+                      capital at year-end, or a fund report's fair-value
+                      capital at its period end), 'valuation' (current
+                      portal FMV, at the portfolio data date)
   vehicles            one row per company (investableGuid)
   k1_capital_accounts per (tax_year, SPV) capital-account analysis plus the
                       property-distribution and gain lines (K-1 CSV)
@@ -27,6 +28,9 @@ Tables:
   portfolio_summary   per-snapshot dashboard totals + IRR/TVPI/DPI
   portfolio_timeseries  ~monthly NAV history, latest-snapshot-wins
   commitments         per-snapshot open (unfunded) commitments
+  funding_accounts / funding_transactions
+                      the funding account's balance and its dated, signed
+                      cash ledger
   dump_runs           per-snapshot bookkeeping
 
 Money: GraphQL returns `{currency, fractional}` where `fractional` is the
@@ -929,6 +933,7 @@ def main(argv: list[str]) -> int:
 
     n = 0
     for run_dir in bronze.iter_run_dirs(args.bronze_dir):
+        # A slug that names no real date is skipped; prune leaves it too.
         try:
             snap = bronze.parse_run_ts(run_dir.name)
         except ValueError:
@@ -939,13 +944,11 @@ def main(argv: list[str]) -> int:
         # A dump whose walk never finished (no run.json, or a status other
         # than complete) may hold a truncated captures.jsonl; prune
         # reclaims it instead.
-        run_json = run_dir / "run.json"
-        if not run_json.is_file():
-            log.info("skipping %s — no run.json", run_dir.name)
-            continue
-        status = bronze.run_status(run_json)
-        if not bronze.is_loadable_status(status):
-            log.info("skipping %s — run.json status=%s", run_dir.name, status)
+        if not bronze.run_is_loadable(run_dir):
+            run_json = run_dir / "run.json"
+            log.info("skipping %s — %s", run_dir.name,
+                     f"run.json status={bronze.run_status(run_json)}"
+                     if run_json.is_file() else "no run.json")
             continue
         load_snapshot(conn, snap, run_dir)
         n += 1

@@ -30,18 +30,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import download  # noqa: E402
 from collectorkit import bronze, docdedup  # noqa: E402
 
-# Synthetic identifiers — hashed by download._slug, so any stable string works.
+# Synthetic identifiers — hashed by bronze.short_token, so any stable string works.
 DID = "deal-node-synthetic-0001"
 STMT_ID = "document-capital-account-0001"
 K1_ID = "document-k1-0001"
 LEGAL_ID = "document-sub-agt-0001"          # an executed-once legal doc (link)
 OTHER_ID = "document-side-letter-0001"
 
-DEAL_SLUG = download._slug(DID)
-STMT_SLUG = download._slug(STMT_ID)
-K1_SLUG = download._slug(K1_ID)
-LEGAL_SLUG = download._slug(LEGAL_ID)
-OTHER_SLUG = download._slug(OTHER_ID)
+DEAL_SLUG = bronze.short_token(DID)
+STMT_SLUG = bronze.short_token(STMT_ID)
+K1_SLUG = bronze.short_token(K1_ID)
+LEGAL_SLUG = bronze.short_token(LEGAL_ID)
+OTHER_SLUG = bronze.short_token(OTHER_ID)
 
 BODY = b"%PDF-1.4 synthetic statement body " + b"x" * 200
 BODY2 = b"%PDF-1.4 corrected synthetic body " + b"y" * 200
@@ -64,8 +64,8 @@ def _prior_run(root: Path, doc_slug: str, body: bytes,
 
 def _stub_fetch(target_dir: Path, doc_slug: str, body: bytes, calls: list):
     """Mimics download.fetch_blob: writes the blob under its content-typed name
-    (.pdf here) and returns the path; records the call so we can assert whether
-    the fetch actually ran."""
+    (.pdf here) and returns the path; records the call so a test can assert
+    whether the fetch actually ran."""
     def _fetch():
         calls.append(doc_slug)
         path = target_dir / f"{doc_slug}.pdf"
@@ -78,7 +78,7 @@ def _dispatch(run: Path, skip, doc_id: str, doc_class_type: str | None,
               body: bytes, calls: list, *, force: bool = False) -> str:
     """Replays download.py's per-document dispatch for one doc."""
     doc = {"id": doc_id, "documentType": doc_class_type}
-    doc_slug = download._slug(doc_id)
+    doc_slug = bronze.short_token(doc_id)
     target_dir = run / "documents" / DEAL_SLUG
     return docdedup.process(
         skip, key=(DEAL_SLUG, doc_slug), doc_class=download._document_class(doc),

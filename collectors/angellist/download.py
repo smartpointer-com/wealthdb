@@ -4,15 +4,16 @@
 Why a browser (not a plain HTTP client): AngelList's venture login is
 bot-walled (invisible Turnstile/reCAPTCHA flags the automation stack) and
 its GraphQL endpoint requires a per-request `x-al-gql` signature computed
-by obfuscated venture-web JS (not a plain hash — see DESIGN.md). So we
-can neither log in headlessly nor replay queries browserlessly. Instead
-we inject the BYO session cookies that `login` / extract_cookies.py
-lifted from a real Firefox, let the venture-web SPA fetch and *sign* its
-own GraphQL requests, and capture the responses off the wire.
+by obfuscated venture-web JS (not a plain hash — see DESIGN.md). So the
+collector can neither log in headlessly nor replay queries browserlessly.
+Instead it injects the BYO session cookies that `login` /
+extract_cookies.py lifted from a real Firefox, lets the venture-web SPA
+fetch and *sign* its own GraphQL requests, and captures the responses off
+the wire.
 
 The injected session lands on the authenticated portal with no
-re-challenge. We navigate the LP read-only surfaces and capture the
-venture GraphQL the SPA fires:
+re-challenge. The walk navigates the LP read-only surfaces and captures
+the venture GraphQL the SPA fires:
 
   Viewer               currentUser: identity + invest accounts
   PortfolioDashboard   portfolio summary
@@ -45,9 +46,9 @@ Bronze layout (collectorkit.bronze conventions):
                        terminal status is the signal `prune` keys on to
                        tell a finished dump from a crashed one.
 
-Read-only (AGENTS.md): navigation + passive capture only. We never click
-an invest/commit/fund/settings control, and stay off any lead/admin
-surface. `--dry-run` walks the navigation but writes no bronze.
+Read-only (AGENTS.md): navigation + passive capture only. The walk never
+clicks an invest/commit/fund/settings control, and stays off any
+lead/admin surface. `--dry-run` walks the navigation but writes no bronze.
 """
 from __future__ import annotations
 
@@ -77,7 +78,7 @@ DEFAULT_BRONZE_DIR = Path("/data")
 
 # The positions table is infinite-scroll paginated (~20/page). Scroll
 # every scrollable element to the bottom to trigger the next page until
-# we've captured all of totalCount.
+# the captures hold all of totalCount.
 SCROLL_JS = """() => {
   window.scrollTo(0, document.body.scrollHeight);
   document.querySelectorAll('*').forEach(el => {
@@ -92,10 +93,11 @@ def _abs_url(u):
 
 
 def _is_incomplete(taxdoc):
-    """A tax year is incomplete — re-download every run until it settles —
-    when AngelList hasn't marked it 'complete', or fewer K-1s have arrived
-    than are expected (k1Count < totalK1Count). This runs through ~Aug of the
-    following tax year, after which the year goes 'complete' and is skipped."""
+    """A tax year is incomplete — its copy on disk is replaced every run
+    until it settles — when AngelList hasn't marked it 'complete', or fewer
+    K-1s have arrived than are expected (k1Count < totalK1Count). This runs
+    through ~Aug of the following tax year, after which the year goes
+    'complete' and its copy on disk is kept."""
     if taxdoc.get("documentType") != "complete":
         return True
     k1, total = taxdoc.get("k1Count"), taxdoc.get("totalK1Count")
@@ -138,14 +140,16 @@ def download_documents(cookies, captures, docs_dir, dry_run):
     """Download the tax documents AccountDocumentsQuery lists — the K-1 PDF +
     structured CSV and the quarterly financial statements — into docs_dir,
     saved with the server's own filename (the same names `login`
-    produces). Incomplete tax years (documentType != 'complete', or
-    k1Count < totalK1Count) are re-fetched every run until they go complete
-    (which runs through ~Aug of the following tax year); complete years
-    already on disk are skipped.
+    produces). Every listed document is fetched, since only the response
+    names its file. A copy of a complete year already on disk is kept as it
+    is; an incomplete year's copy (documentType != 'complete', or k1Count <
+    totalK1Count, which runs through ~Aug of the following tax year) is
+    replaced. Each file is written atomically, so a crash mid-write leaves
+    no truncated copy for a later run to keep.
 
     Browserless cookie GET — the file endpoints accept it but need a fresher
     session than GraphQL does; if the cookie is too stale they return the
-    login page, which we detect and report without failing the run."""
+    login page, which is detected and reported without failing the run."""
     import gzip
     import urllib.error
     import urllib.request
@@ -184,7 +188,7 @@ def download_documents(cookies, captures, docs_dir, dry_run):
                       "Gecko/20100101 Firefox/135.0",
         "referer": f"{VENTURE}/v/",
     }
-    fetched = skipped = 0
+    written = kept = 0
     for url, incomplete in targets:
         try:
             with urllib.request.urlopen(
@@ -207,7 +211,7 @@ def download_documents(cookies, captures, docs_dir, dry_run):
             log.warning("tax-doc download hit the login wall — the cookie is too "
                         "stale for the file endpoints (GraphQL still worked). Re-run "
                         "`./angellist login` to refresh, then download again. "
-                        "(%d fetched before this.)", fetched)
+                        "(%d written before this.)", written)
             return
         cd = resp.headers.get("content-disposition", "")
         m = re.search(r"filename\*?=(?:UTF-8'')?\"?([^\";]+)\"?", cd)
@@ -215,12 +219,12 @@ def download_documents(cookies, captures, docs_dir, dry_run):
                  else url.rstrip("/").rsplit("/", 1)[-1])
         dest = docs_dir / fname.replace("/", "_")
         if dest.exists() and not incomplete:
-            skipped += 1
+            kept += 1
             continue
-        dest.write_bytes(raw)
-        fetched += 1
-    log.info("documents: %d fetched, %d already-complete skipped -> %s",
-             fetched, skipped, docs_dir)
+        bronze.atomic_write_bytes(dest, raw)
+        written += 1
+    log.info("documents: %d fetched and written, %d complete copies kept -> %s",
+             written, kept, docs_dir)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -393,7 +397,7 @@ def main(argv: list[str]) -> int:
             viewer = latest_by_op.get(VIEWER_OP, {}).get("data")
             cu = (viewer or {}).get("currentUser") if viewer else None
             if not cu:
-                # Fallback: the SPA may have redirected us straight onto a
+                # Fallback: the SPA may have redirected straight onto a
                 # slug URL even if ViewerQuery wasn't seen.
                 m = re.search(r"/v/([^/]+)/i/([^/]+)", page.url)
                 if not m:

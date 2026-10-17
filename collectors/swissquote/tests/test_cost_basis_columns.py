@@ -25,12 +25,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import xlwt
-
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import load  # noqa: E402
+from tests.helpers import write_xls  # noqa: E402
 
 MIGRATIONS = ROOT / "migrations"
 ACCOUNT = "SYN-0001"
@@ -105,16 +104,6 @@ STATEMENT_PAGE = """\
 """
 
 
-def _write_xls(path: Path, rows: list[list]) -> Path:
-    wb = xlwt.Workbook()
-    sheet = wb.add_sheet("export")
-    for r, row in enumerate(rows):
-        for c, val in enumerate(row):
-            sheet.write(r, c, val)
-    wb.save(str(path))
-    return path
-
-
 def _statement(_pdf_path: Path) -> dict:
     """Stand-in for parse_portfolio_performance: the PDF read is
     covered elsewhere; this feeds the synthetic page to the parser."""
@@ -143,7 +132,7 @@ class _DbCase(unittest.TestCase):
         csv_path.write_text("\n".join([CSV_HEADER, *TX_ROWS]) + "\n",
                             encoding="utf-8")
         load.load_transactions_csv(self.conn, ACCOUNT, csv_path)
-        xls_path = _write_xls(self.tmp / "positions.xls",
+        xls_path = write_xls(self.tmp / "positions.xls",
                               [load.POSITIONS_EXPECTED_HEADER,
                                *POSITIONS_BODY])
         load.load_positions(self.conn, SNAPSHOT_AT, ACCOUNT, xls_path)

@@ -12,7 +12,8 @@ Usage:
 
 Each immediate subdirectory of <bronze-dir> whose name matches the
 schwab-api timestamp format (YYYYMMDDTHHMMSSZ) is considered a dump.
-Already-loaded dumps (recorded in dump_runs) are skipped.
+Already-loaded dumps (recorded in dump_runs) are skipped, and so is any
+dump `prune` reclaims as non-complete.
 """
 
 from __future__ import annotations
@@ -24,16 +25,17 @@ import logging
 import re
 import sqlite3
 import sys
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import _txartefacts
-from collectorkit import bronze, cli, compress, silver
+from collectorkit import bronze, cli, compress, parse, prune, silver
+
+from prune import CONFIG as PRUNE_CONFIG
 
 log = logging.getLogger("schwab-load")
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
-SNAPSHOT_DIR_RE = re.compile(r"^(\d{8}T\d{6}Z)$")
 
 # Balance kinds inside securitiesAccount, mapping silver-column value -> source key.
 SECURITIES_ACCOUNT_BALANCE_KINDS = (
@@ -47,19 +49,11 @@ SECURITIES_ACCOUNT_BALANCE_KINDS = (
 # Small helpers
 # --------------------------------------------------------------------------
 
-def parse_snapshot_at(dump_dir_name: str) -> int:
-    """Parse a dump directory name like '20260512T104753Z' to Unix seconds UTC."""
-    m = SNAPSHOT_DIR_RE.match(dump_dir_name)
-    if not m:
-        raise ValueError(f"Not a snapshot directory name: {dump_dir_name!r}")
-    return bronze.parse_run_ts(m.group(1))
-
-
 def parse_schwab_timestamp(s: str) -> int:
     """Parse Schwab's `time` field (e.g. '2024-01-01T12:00:00+0000') to Unix seconds.
 
     Schwab emits a numeric-only offset (`+0000`); Python's fromisoformat needs
-    `+00:00`. We normalise before parsing."""
+    `+00:00`, so the offset is normalised before parsing."""
     if re.search(r"[+-]\d{4}$", s):
         s = s[:-5] + s[-5:-2] + ":" + s[-2:]
     return int(datetime.fromisoformat(s).timestamp())
@@ -104,6 +98,17 @@ def read_json(path: Path):
         raise FileNotFoundError(path)
     with compress.open_text(resolved) as f:
         return json.load(f)
+
+
+def read_optional(path: Path, *, warn: bool = True):
+    """Parse the artefact at logical `path` like `read_json`, or return None
+    when it is absent: logged as a warning unless `warn` is False (for
+    `instruments.json`, which is optional by design)."""
+    if compress.resolve_variant(path) is None:
+        if warn:
+            log.warning("Missing artefact: %s", path)
+        return None
+    return read_json(path)
 
 
 def transaction_files(dump_dir: Path) -> list[Path]:
@@ -215,12 +220,12 @@ def _strip_user_preference_noise(pref: dict) -> dict:
     return out
 
 
-def load_user_preference(conn, snapshot_at: int, dump_dir: Path) -> int:
-    path = dump_dir / "user_preference.json"
-    if compress.resolve_variant(path) is None:
-        log.warning("Missing artefact: %s", path)
+def load_user_preference(conn, snapshot_at: int, pref: dict | None) -> int:
+    """Insert the parsed user_preference artefact (None when absent) when
+    its canonical payload differs from the latest row."""
+    if pref is None:
         return 0
-    payload = canonical_json(_strip_user_preference_noise(read_json(path)))
+    payload = canonical_json(_strip_user_preference_noise(pref))
     row = conn.execute(
         "SELECT payload FROM user_preference ORDER BY snapshot_at DESC LIMIT 1"
     ).fetchone()
@@ -246,15 +251,13 @@ def _open_profit_loss(pos: dict) -> float | None:
 
 
 def load_accounts_positions(
-    conn, snapshot_at: int, dump_dir: Path, acct_map: dict[str, str]
+    conn, snapshot_at: int, wrappers: list[dict] | None,
+    acct_map: dict[str, str],
 ) -> tuple[int, int]:
-    """Returns (positions_inserted, balances_inserted)."""
-    path = dump_dir / "accounts_positions.json"
-    if compress.resolve_variant(path) is None:
-        log.warning("Missing artefact: %s", path)
+    """Insert the parsed accounts_positions artefact (None when absent).
+    Returns (positions_inserted, balances_inserted)."""
+    if wrappers is None:
         return 0, 0
-
-    wrappers = read_json(path)
     pos_rows: list[tuple] = []
     bal_rows: list[tuple] = []
     for wrapper in wrappers:
@@ -309,25 +312,23 @@ def load_accounts_positions(
     return len(pos_rows), len(bal_rows)
 
 
-def load_transactions(conn, dump_dir: Path) -> int:
-    """Window-DELETE then INSERT for each transactions_NNN.json file.
+def load_transactions(conn, windows: list[dict]) -> int:
+    """Window-DELETE then INSERT for each parsed transactions_NNN.json file.
 
     Each file declares its own (account_hash, window_start, window_end);
-    we replace exactly that range so upstream removals are caught.
+    exactly that range is replaced, so upstream removals are caught.
 
     Schwab occasionally returns transactions whose `time` field falls
     *outside* the declared window — JOURNAL entries appear to be filtered
     by posting/settlement date while the row's `time` is the underlying
     event time, which can be days earlier. The window DELETE would not
     catch a prior dump's row at such an out-of-window timestamp, so a
-    re-fetch would PK-collide on `activity_id`. We therefore also DELETE
-    the exact activity_ids we're about to INSERT, which preserves the
+    re-fetch would PK-collide on `activity_id`. The exact activity_ids
+    about to be inserted are therefore deleted too, which preserves the
     window-DELETE-as-removal-detection semantics for in-window rows and
     avoids the boundary collision."""
-    files = transaction_files(dump_dir)
     total = 0
-    for path in files:
-        data = read_json(path)
+    for data in windows:
         acct_hash = data["account_hash"]
         window_start = parse_iso_date_start_of_day(data["window_start"])
         window_end = parse_iso_date_end_of_day(data["window_end"])
@@ -373,18 +374,16 @@ def load_transactions(conn, dump_dir: Path) -> int:
     return total
 
 
-def load_instruments(conn, snapshot_at: int, dump_dir: Path) -> int:
-    """Insert one row per symbol from instruments.json when present.
+def load_instruments(conn, snapshot_at: int, response: dict | None) -> int:
+    """Insert one row per symbol from the parsed instruments.json, None when
+    absent.
 
     Optional artefact — written by download.py's default instrument lookup
     (suppressed only by --no-instruments). Dedup per symbol: insert only when
     the new canonical payload differs from the most recent row for that symbol.
     Direct text comparison, matches the accounts/user_preference pattern."""
-    path = dump_dir / "instruments.json"
-    if compress.resolve_variant(path) is None:
-        # Not a warning — this artefact is optional by design.
+    if response is None:
         return 0
-    response = read_json(path)
     n = 0
     for inst in response.get("instruments") or []:
         symbol = inst.get("symbol")
@@ -422,16 +421,6 @@ _TREASURY_CUSIP_PREFIXES = {
 }
 
 
-def _parse_iso_date_only(iso: str | None) -> date | None:
-    """Extract just the date portion (YYYY-MM-DD) from a Schwab timestamp."""
-    if not iso or len(iso) < 10:
-        return None
-    try:
-        return date.fromisoformat(iso[:10])
-    except ValueError:
-        return None
-
-
 def _synthesize_bond_description(
     symbol: str, maturity: str | None, rate: float | int | None,
 ) -> str | None:
@@ -440,12 +429,12 @@ def _synthesize_bond_description(
     Schwab does not return a description for fixed-income instruments
     via /instruments. The transferItem payload, however, carries
     maturityDate and variableRate; the CUSIP itself encodes the issuer
-    family via its first 6 chars. Returns None when maturity is missing
-    (the most useful field; we won't synthesize a less-informative label
-    than the bare CUSIP already provides)."""
+    family via its first 6 chars. Returns None when maturity is missing:
+    it is the most useful field, and a label without it says less than the
+    bare CUSIP already does."""
     if not symbol or len(symbol) < 6:
         return None
-    mat = _parse_iso_date_only(maturity)
+    mat = parse.iso_date(maturity)
     if mat is None:
         return None
     issuer = _TREASURY_CUSIP_PREFIXES.get(symbol[:6], "Bond")
@@ -466,14 +455,16 @@ def _synthesize_option_description(
     reference.description: 'UNDERLYING MM/DD/YYYY STRIKE.NN C|P'."""
     if not (underlying and put_call and strike is not None):
         return None
-    exp = _parse_iso_date_only(expiration)
+    exp = parse.iso_date(expiration)
     if exp is None:
         return None
     short = "C" if put_call.upper().startswith("C") else "P"
     return f"{underlying} {exp.strftime('%m/%d/%Y')} {float(strike):.2f} {short}"
 
 
-def load_synthesized_instruments(conn, snapshot_at: int, dump_dir: Path) -> int:
+def load_synthesized_instruments(conn, snapshot_at: int,
+                                 instruments: dict | None,
+                                 windows: list[dict]) -> int:
     """Synthesise instruments table rows for bonds and options.
 
     Schwab does not return descriptions for FIXED_INCOME or OPTION
@@ -482,28 +473,26 @@ def load_synthesized_instruments(conn, snapshot_at: int, dump_dir: Path) -> int:
     transferItems within transactions (maturity, coupon, expiry, strike,
     put/call) to build a usable description locally.
 
-    We scan this dump's transactions, collect every unique
-    (symbol, FIXED_INCOME|OPTION) we see, synthesise a record per
-    symbol, and INSERT into the instruments table with the same
+    This dump's parsed transaction windows are scanned for every unique
+    (symbol, FIXED_INCOME|OPTION), a record is synthesised per symbol and
+    INSERTed into the instruments table with the same
     content-dedup pattern as load_instruments. The synthesised payload
     is shaped to match what /instruments would have returned, so
     downstream consumers can treat all instrument rows uniformly.
 
-    When the same symbol is *also* present in this dump's
-    instruments.json (rare, but Schwab does occasionally return a live
-    option contract through /instruments), we defer to the API row and
-    skip synthesising — Schwab's record is authoritative when available."""
+    When the same symbol is *also* present in this dump's parsed
+    `instruments` (rare, but Schwab does occasionally return a live
+    option contract through /instruments), the API row wins and nothing
+    is synthesised — Schwab's record is authoritative when available."""
     api_symbols: set[str] = set()
-    inst_path = dump_dir / "instruments.json"
-    if compress.resolve_variant(inst_path) is not None:
-        for inst in read_json(inst_path).get("instruments") or []:
-            sym = inst.get("symbol")
-            if sym:
-                api_symbols.add(sym)
+    for inst in (instruments or {}).get("instruments") or []:
+        sym = inst.get("symbol")
+        if sym:
+            api_symbols.add(sym)
 
     seen: dict[str, dict] = {}
-    for txn_path in transaction_files(dump_dir):
-        for txn in read_json(txn_path).get("transactions") or []:
+    for data in windows:
+        for txn in data.get("transactions") or []:
             for item in txn.get("transferItems") or []:
                 inst = item.get("instrument") or {}
                 sym = inst.get("symbol")
@@ -564,13 +553,11 @@ def load_synthesized_instruments(conn, snapshot_at: int, dump_dir: Path) -> int:
 
 
 def load_open_orders(
-    conn, snapshot_at: int, dump_dir: Path, acct_map: dict[str, str]
+    conn, snapshot_at: int, data: dict | None, acct_map: dict[str, str]
 ) -> int:
-    path = dump_dir / "open_orders.json"
-    if compress.resolve_variant(path) is None:
-        log.warning("Missing artefact: %s", path)
+    """Insert the parsed open_orders artefact (None when absent)."""
+    if data is None:
         return 0
-    data = read_json(path)
     rows = []
     for order in data.get("orders") or []:
         acct_plain = order.get("accountNumber")
@@ -604,13 +591,17 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path) -> dict:
     Atomic: if any step raises, the entire dump is rolled back and
     dump_runs is *not* written. Re-running will retry the dump.
 
-    A dump whose run.json status is not loadable (an "in-progress"
-    marker from a crashed or still-running download) is skipped and
-    left pending: its artefacts are partial, and loading them would
-    record the dump as done with, say, account rows built without their
-    positions."""
+    A dump `prune` classifies non-complete is skipped and left pending:
+    an "in-progress" marker from a crashed or still-running download, or
+    a run dir with neither a manifest nor the terminal `open_orders.json`
+    (a download that died before its first artefact). Its artefacts are
+    partial, and loading them would record the dump as done with, say,
+    account rows built without their positions. Sharing prune's
+    predicate keeps the two in step: a dump load skips is one prune
+    reclaims, and a legacy dump prune keeps (no manifest, terminal
+    artefact present) still loads."""
     name = dump_dir.name
-    snapshot_at = parse_snapshot_at(name)
+    snapshot_at = bronze.parse_run_ts(name)
 
     already = conn.execute(
         "SELECT 1 FROM dump_runs WHERE snapshot_at = ?", (snapshot_at,)
@@ -618,10 +609,9 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path) -> dict:
     if already is not None:
         return {"name": name, "skipped": True, "reason": "already loaded"}
 
-    status = bronze.run_status(dump_dir / "run.json")
-    if not bronze.is_loadable_status(status):
-        return {"name": name, "skipped": True,
-                "reason": f"run.json status={status}"}
+    state, reason = prune.classify(dump_dir, PRUNE_CONFIG)
+    if state == prune.NON_COMPLETE:
+        return {"name": name, "skipped": True, "reason": reason}
 
     log.info("Loading dump %s (snapshot_at=%d)", name, snapshot_at)
 
@@ -636,19 +626,15 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path) -> dict:
     accounts_data = read_json(accounts_path)
     acct_map = {a["accountNumber"]: a["hashValue"] for a in accounts_data}
 
-    # The accounts silver row is built from three sibling artefacts;
-    # read the optional companions here so the merge in
-    # _build_account_metadata can include them when present. Each guard
-    # resolves the on-disk variant (plain or .zst) rather than probing a
-    # single fixed name.
-    ap_path = dump_dir / "accounts_positions.json"
-    positions_wrappers = (read_json(ap_path)
-                          if compress.resolve_variant(ap_path) is not None
-                          else None)
-    up_path = dump_dir / "user_preference.json"
-    user_preference = (read_json(up_path)
-                       if compress.resolve_variant(up_path) is not None
-                       else None)
+    # Each artefact is read (and decompressed) once, here, and handed to
+    # the per-table loaders. The accounts silver row merges three of them,
+    # so _build_account_metadata includes the optional companions when
+    # present.
+    positions_wrappers = read_optional(dump_dir / "accounts_positions.json")
+    user_preference = read_optional(dump_dir / "user_preference.json")
+    open_orders = read_optional(dump_dir / "open_orders.json")
+    instruments = read_optional(dump_dir / "instruments.json", warn=False)
+    windows = [read_json(p) for p in transaction_files(dump_dir)]
     merged_accounts = _build_account_metadata(
         accounts_data, positions_wrappers, user_preference,
     )
@@ -659,15 +645,19 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path) -> dict:
     # COMMIT on clean exit, ROLLBACK on exception.
     with conn:
         stats["accounts"] = load_accounts(conn, snapshot_at, merged_accounts)
-        stats["user_preference"] = load_user_preference(conn, snapshot_at, dump_dir)
-        pos, bal = load_accounts_positions(conn, snapshot_at, dump_dir, acct_map)
+        stats["user_preference"] = load_user_preference(
+            conn, snapshot_at, user_preference)
+        pos, bal = load_accounts_positions(
+            conn, snapshot_at, positions_wrappers, acct_map)
         stats["positions"] = pos
         stats["balances"] = bal
-        stats["transactions"] = load_transactions(conn, dump_dir)
-        stats["open_orders"] = load_open_orders(conn, snapshot_at, dump_dir, acct_map)
+        stats["transactions"] = load_transactions(conn, windows)
+        stats["open_orders"] = load_open_orders(
+            conn, snapshot_at, open_orders, acct_map)
         stats["instruments"] = (
-            load_instruments(conn, snapshot_at, dump_dir)
-            + load_synthesized_instruments(conn, snapshot_at, dump_dir)
+            load_instruments(conn, snapshot_at, instruments)
+            + load_synthesized_instruments(conn, snapshot_at, instruments,
+                                           windows)
         )
 
         # dump_runs at the END so a mid-load failure leaves no trace.

@@ -46,6 +46,7 @@ sys.path.insert(0, str(COLLECTOR))
 
 import download  # noqa: E402
 from collectorkit import bronze, debugcap, docdedup  # noqa: E402
+from collectorkit import session as ck_session  # noqa: E402
 
 
 class _FakeResp:
@@ -124,6 +125,23 @@ def test_dry_run_does_not_create_bronze_dir(tmp_path, monkeypatch):
 
     assert rc == 0
     assert not bronze.exists()
+
+
+def test_session_from_state_carries_the_dashboard_headers(tmp_path):
+    # The download session is login's session with the SPA's dashboard
+    # Referer and its literal-undefined Authorization, plus the stored
+    # cookies.
+    state = tmp_path / "state.json"
+    ck_session.save_state(state, {
+        "minted_at": "2099-01-01T00:00:00+00:00",
+        "cookies": [{"name": "AL_SESS-S", "value": "synthetic",
+                     "domain": "portal.pens-expert.ch", "path": "/"}]})
+    sess, minted_at = download.new_session_from_state(state)
+    assert minted_at == "2099-01-01T00:00:00+00:00"
+    assert sess.headers["Authorization"] == "bearer undefined"
+    assert sess.headers["Referer"] == download.DASHBOARD_REFERER
+    assert sess.headers["Sec-Fetch-Site"] == "same-origin"
+    assert sess.cookies.get("AL_SESS-S") == "synthetic"
 
 
 # ============================================================
@@ -411,19 +429,6 @@ def test_documents_force_bypasses_index(tmp_path):
 # ------------------------------------------------------------
 # Audit tally
 # ------------------------------------------------------------
-
-def test_tally_and_counts():
-    counts = download._empty_doc_counts()
-    for s in (docdedup.LINKED, docdedup.LINKED, docdedup.FETCHED,
-              docdedup.VERIFIED, docdedup.CHANGED, docdedup.FETCH_FAILED):
-        docdedup.tally(counts, s)
-    assert counts["linked"] == 2
-    assert counts["fetched"] == 1
-    assert counts["verified"] == 1
-    assert counts["changed"] == 1
-    assert counts["errors"] == 1
-    assert counts["other"] == 0
-
 
 def test_fetch_failure_is_error(tmp_path):
     # A fetch that yields no PDF (the closure returns None: non-200, network

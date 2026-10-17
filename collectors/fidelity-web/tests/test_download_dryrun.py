@@ -3,11 +3,8 @@ Regression tests for download.walk() persistence behaviour.
 
 The invariant under test (root AGENTS.md §2 "export nothing"):
 ``download --dry-run`` must persist NOTHING under the bronze dest —
-no run dir, no ``run.json``. A leftover run.json, even one carrying
-only master ``account_dimensions``, is a dump that ``load`` would
-ingest into silver (fidelity-web's ``load._load_master`` reads
-account_dimensions with no dry-run guard), so a dry-run must not
-create one at all.
+no run dir, no ``run.json``. No dir means ``load`` and ``prune`` never
+see one.
 
 These tests drive ``walk()`` with a fake Playwright page (mirroring
 how test_load.py mocks the load surface) so no live session or
@@ -42,7 +39,7 @@ class FakePage:
 
     ``walk()`` only touches the page via ``live_url()`` (a
     ``location.href`` evaluate) and ``enumerate_account_dimensions()``
-    (the account-selector DOM probe evaluate). We route on the JS
+    (the account-selector DOM probe evaluate). The fake routes on the JS
     source: the href probe returns a post-auth URL so walk() does not
     try to navigate; anything else returns the synthetic dimensions.
     """

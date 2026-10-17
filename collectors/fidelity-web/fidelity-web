@@ -110,7 +110,7 @@ Override mounts via env:
 Credentials:
   Read from \$FIDELITY_WEB_USERNAME / \$FIDELITY_WEB_PASSWORD inside
   the container (the unprefixed \$FIDELITY_USERNAME / \$FIDELITY_PASSWORD
-  still work as a legacy fallback). The script sources
+  work as a fallback). The script sources
   /secrets/fidelity-web.env automatically
   (= \$HOME/.secrets/fidelity-web.env on the host).
 
@@ -145,12 +145,13 @@ fi
 # host-side bypasses the single-writer safety guard so it can run while a
 # `download` container is mid-flight (an in-flight dump is protected by
 # prune's own age guard). Each resolves the uniform directory-override
-# flags through the shared host helper — `host_resolve_dirs <verb> "$@"`
-# consumes --data-dir / --secrets-dir / --silver-db (both `--flag VALUE` and
-# `--flag=VALUE`), sets DATA_DIR (the bronze tree), SILVER_DB
+# flags through the shared host helper. `host_resolve_dirs <verb> "$@"`
+# consumes --data-dir / --secrets-dir / --silver-db (both `--flag VALUE`
+# and `--flag=VALUE`). It sets DATA_DIR (the bronze tree), SILVER_DB
 # (<data>/fidelity-web.db by default, or ${FIDELITY_WEB_SILVER_DB}) and
-# DEBUG_DIR (the /debug mount source), and leaves the rest in FORWARD_ARGS. It takes the verb so --silver-db is
-# rejected on prune / recompress, which never read it — so these verbs honour the dir flags
+# DEBUG_DIR (the /debug mount source), and leaves the rest in
+# FORWARD_ARGS. It takes the verb, so --silver-db is rejected on prune /
+# recompress, which never read it. These verbs thus honour the dir flags
 # like every other, and --help / the real flags reach the inner .py's
 # argparse rather than a hand-rolled help that hides --force et al.
 

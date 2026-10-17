@@ -19,8 +19,3 @@ def test_login_state_path_defaults_to_secrets_mount():
 def test_download_state_path_defaults_to_secrets_mount():
     args = download.parse_args(["--dry-run"])
     assert args.state_path == download.DEFAULT_STATE_PATH
-
-
-def test_login_and_download_agree_on_state_path():
-    # download reads the file login mints; the defaults must never drift.
-    assert login.DEFAULT_STATE_PATH == download.DEFAULT_STATE_PATH

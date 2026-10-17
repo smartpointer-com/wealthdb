@@ -206,7 +206,7 @@ def _currency(fname, rownum, col, value):
     return value
 
 
-def _decimal(fname, rownum, col, value, *, non_negative=True) -> Decimal:
+def _decimal(fname, rownum, col, value) -> Decimal:
     raw = _req(fname, rownum, col, value)
     try:
         d = Decimal(raw)
@@ -214,7 +214,7 @@ def _decimal(fname, rownum, col, value, *, non_negative=True) -> Decimal:
         _fail(fname, rownum, col, "not a number", value)
     if not d.is_finite():
         _fail(fname, rownum, col, "not a finite number", value)
-    if non_negative and d < 0:
+    if d < 0:
         _fail(fname, rownum, col,
               "must be a positive magnitude (direction comes from kind)",
               value)

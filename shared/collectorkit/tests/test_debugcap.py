@@ -1367,37 +1367,105 @@ class StopTraceTest(unittest.TestCase):
                 self._context(raises=True), True, Path(d), "x", log=log))
 
 
-class ApiCallSampleTest(unittest.TestCase):
-    def test_url_shape_masks_ids_and_credentials(self):
-        shape = debugcap.url_shape(
-            "https://www.example.com/api/0123abcd4567ef89/status"
-            "?token=SYNTHETIC&page=2")
-        self.assertNotIn("0123abcd4567ef89", shape)
-        self.assertNotIn("SYNTHETIC", shape)
-        self.assertIn("/api/<id>/status", shape)
-        self.assertIn("page=2", shape)
+class UrlShapeTest(unittest.TestCase):
+    """A page's API calls are logged as SHAPES so a moved route can be
+    re-derived: the path is the diagnostic, while the ids in it are
+    session-scoped, and the line has to be safe to paste into a report."""
 
-    def test_sample_reads_the_timing_buffer_and_survives_a_navigation(self):
-        import types
-        page = types.SimpleNamespace(evaluate=lambda js: [["u", 5]])
-        self.assertEqual(debugcap.sample_api_calls(page), [["u", 5]])
+    def test_a_session_id_is_elided_but_the_path_survives(self):
+        got = debugcap.url_shape(
+            "https://www.example.com/api/challenge/feedback/listen"
+            "/0123456789abcdef0123456789abcdef?cache=false&timeout=20000")
+        self.assertNotIn("0123456789abcdef", got)
+        self.assertIn("feedback/listen/<id>?", got)
+        # The parts that identify the endpoint are all still readable.
+        for keep in ("/api/challenge/", "cache=false", "timeout=20000"):
+            self.assertIn(keep, got)
 
-        def boom(js):
-            raise RuntimeError("context destroyed")
-        page = types.SimpleNamespace(evaluate=boom)
-        self.assertEqual(debugcap.sample_api_calls(page), [])
+    def test_a_credential_query_parameter_is_redacted(self):
+        got = debugcap.url_shape(
+            "https://www.example.com/x/api/y?token=SYNTHETIC&cache=false")
+        self.assertNotIn("SYNTHETIC", got)
+        self.assertIn("cache=false", got)
 
-    def test_merge_takes_maxima_not_sums(self):
+    def test_short_hex_like_words_are_left_alone(self):
+        # "feedback" and a six-letter hex run are not ids; eliding them
+        # would destroy the very path the reader needs.
+        got = debugcap.url_shape("https://h/api/feedback/listen/abcdef")
+        self.assertIn("feedback/listen/abcdef", got)
+        self.assertNotIn("<id>", got)
+
+
+class SampleApiCallsTest(unittest.TestCase):
+    class _Page:
+        def __init__(self, result):
+            self._result = result
+
+        def evaluate(self, _script):
+            if isinstance(self._result, Exception):
+                raise self._result
+            return self._result
+
+    def test_returns_the_entries_as_given(self):
+        self.assertEqual(
+            debugcap.sample_api_calls(self._Page([["a", 12]])), [["a", 12]])
+
+    def test_a_page_mid_navigation_yields_nothing_rather_than_raising(self):
+        # Diagnostics must never take down the run they are diagnosing.
+        self.assertEqual(debugcap.sample_api_calls(
+            self._Page(RuntimeError("context destroyed"))), [])
+
+    def test_a_null_result_is_tolerated(self):
+        self.assertEqual(debugcap.sample_api_calls(self._Page(None)), [])
+
+
+class MergeApiSampleTest(unittest.TestCase):
+    LONG = "https://h/api/challenge/check/0123456789abcdef"
+    SHORT = "https://h/api/challenge?urlId=0123456789abcdef"
+
+    def _row(self, seen, url):
+        return seen[debugcap.url_shape(url)]
+
+    def test_counts_repeated_calls_to_one_shape(self):
+        seen = debugcap.merge_api_sample(
+            {}, [[self.SHORT, 5], [self.SHORT, 7], [self.LONG, 20001]])
+        self.assertEqual(self._row(seen, self.SHORT), {"calls": 2, "ms": 7})
+        self.assertEqual(self._row(seen, self.LONG), {"calls": 1, "ms": 20001})
+
+    def test_repeated_samples_do_not_multiply_the_same_entries(self):
+        # The timing buffer is cumulative, so each sample re-reports every
+        # earlier entry; summing across samples would inflate the counts.
+        sample = [[self.SHORT, 5], [self.SHORT, 7]]
         seen = {}
-        url = "https://www.example.com/poll/deadbeef01"
-        sample = [[url, 100], [url, 9000], ["https://www.example.com/x", 3]]
-        debugcap.merge_api_sample(seen, sample)
-        debugcap.merge_api_sample(seen, sample)   # the same buffer, again
-        self.assertEqual(seen["https://www.example.com/poll/<id>"],
-                         {"calls": 2, "ms": 9000})
-        self.assertEqual(seen["https://www.example.com/x"],
-                         {"calls": 1, "ms": 3})
+        for _ in range(4):
+            debugcap.merge_api_sample(seen, sample)
+        self.assertEqual(self._row(seen, self.SHORT)["calls"], 2)
 
+    def test_a_growing_buffer_raises_the_count(self):
+        seen = {}
+        debugcap.merge_api_sample(seen, [[self.SHORT, 5]])
+        debugcap.merge_api_sample(seen, [[self.SHORT, 5], [self.SHORT, 6]])
+        self.assertEqual(self._row(seen, self.SHORT)["calls"], 2)
+
+    def test_the_longest_duration_survives(self):
+        seen = {}
+        debugcap.merge_api_sample(seen, [[self.LONG, 19998]])
+        debugcap.merge_api_sample(seen, [[self.LONG, 3]])
+        self.assertEqual(self._row(seen, self.LONG)["ms"], 19998)
+
+    def test_ids_are_elided_so_one_shape_aggregates_every_call(self):
+        seen = debugcap.merge_api_sample({}, [
+            ["https://h/api/x/0123456789abcdef", 1],
+            ["https://h/api/x/fedcba9876543210", 1],
+        ])
+        self.assertEqual(seen, {"https://h/api/x/<id>": {"calls": 2, "ms": 1}})
+
+    def test_a_missing_duration_is_treated_as_zero(self):
+        seen = debugcap.merge_api_sample({}, [[self.SHORT, None]])
+        self.assertEqual(self._row(seen, self.SHORT)["ms"], 0)
+
+
+class ReportApiCallsTest(unittest.TestCase):
     def test_report_logs_longest_first_and_saves_the_list(self):
         import tempfile
         seen = {"https://a/fast": {"calls": 3, "ms": 20},

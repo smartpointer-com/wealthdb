@@ -12,27 +12,12 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
-import sys
 import zipfile
 from pathlib import Path
 
-import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import k1  # noqa: E402
-import load  # noqa: E402
-
-MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
-
-
-@pytest.fixture
-def migrated():
-    c = sqlite3.connect(":memory:")
-    c.execute("PRAGMA foreign_keys = ON")
-    load.silver.apply_migrations(c, MIGRATIONS_DIR)
-    yield c
-    c.close()
+import k1
+import load
+from conftest import MIGRATIONS_DIR, docs_dir
 
 
 # ---- exercise detail -> certificate ----------------------------------------
@@ -199,17 +184,6 @@ def test_statement_flows_read_the_nil_dash_as_zero():
     assert load._statement_flows_from_text(text) == (None, 0.0)
 
 
-def _docs(root: Path, rows: list[dict]) -> Path:
-    docs = root / "documents"
-    docs.mkdir(parents=True, exist_ok=True)
-    for row in rows:
-        row.setdefault("document_name", f"document {row['id']}")
-        (docs / f"doc_{row['id']}.pdf").write_bytes(
-            f"%PDF- {row['id']}".encode())
-    (docs / "index.json").write_text(json.dumps({"results": rows}))
-    return docs
-
-
 def _partner_metrics(edir: Path, *, sharing: str, accepted: str | None) -> None:
     (edir / "fund-admin").mkdir(parents=True, exist_ok=True)
     (edir / "fund-admin" / "partner-metrics.json").write_text(json.dumps([{
@@ -240,7 +214,7 @@ def test_a_statement_adds_its_lines_to_partner_metrics_of_the_same_day(
     _partner_metrics(edir, sharing="12/31/2098", accepted=None)
     snap = load._date_ts("12/31/2098")
     load.load_fund_metrics(migrated, snap, 9, edir)
-    docs = _docs(tmp_path, [{"id": 5, "document_type": "Capital account statements",
+    docs = docs_dir(tmp_path, [{"id": 5, "document_type": "Capital account statements",
                              "document_date": "12/31/2098", "fund_id": 9}])
     monkeypatch.setattr(load, "_pdf_text", lambda pdf: _STATEMENT)
     assert load.load_statement_nav(migrated, docs, 9) == 1
@@ -261,7 +235,7 @@ def _fund_run(root: Path, name: str, *, documents: bool) -> Path:
         {"corporation_id": 9, "is_fund_investment": True}))
     _partner_metrics(fdir, sharing="12/31/2098", accepted=None)
     if documents:
-        _docs(run, [{"id": 5, "document_type": "Capital account statements",
+        docs_dir(run, [{"id": 5, "document_type": "Capital account statements",
                      "document_date": "12/31/2098", "fund_id": 9}])
     (run / "run.json").write_text(json.dumps(
         {"status": "complete", "individual_id": "ind-1"}))
@@ -272,12 +246,18 @@ def test_a_run_without_documents_keeps_the_statement_lines(
         tmp_path, monkeypatch):
     # Partial on full: a later run with the same sharing date but no
     # statements rewrites the partner-metrics figures and leaves the
-    # statement lines merged onto that row in place.
+    # statement lines merged onto that row in place, and the fund's calls
+    # and distributions as the run with documents built them.
     monkeypatch.setattr(load, "_pdf_text", lambda pdf: _STATEMENT)
     conn = load.silver.open_db(tmp_path / "carta.db")
     load.silver.apply_migrations(conn, MIGRATIONS_DIR)
     assert load.load_run(conn, _fund_run(tmp_path, "20990101T000000Z",
                                          documents=True))
+    ledger = ("SELECT cash_flow_external_id, kind, flow_date, amount "
+              "FROM cash_flows ORDER BY 1")
+    full = [tuple(r) for r in conn.execute(ledger)]
+    assert full == [("call:9:5", "capital_call", "12/31/2098", 103457.0),
+                    ("dist:9:5", "distribution", "12/31/2098", 1623.0)]
     assert load.load_run(conn, _fund_run(tmp_path, "20990102T000000Z",
                                          documents=False))
     assert [tuple(r) for r in conn.execute(
@@ -285,6 +265,7 @@ def test_a_run_without_documents_keeps_the_statement_lines(
         "realized_gain, unrealized_gain, carried_interest "
         "FROM fund_metrics")] == [
             ("104286.37", "-6139", "731", "0", "12846", "-2519")]
+    assert [tuple(r) for r in conn.execute(ledger)] == full
     conn.close()
 
 
@@ -421,7 +402,7 @@ def test_k1_decimal():
 
 def test_k1_rows_load_once_per_document(migrated, tmp_path, monkeypatch,
                                         caplog):
-    docs = _docs(tmp_path, [
+    docs = docs_dir(tmp_path, [
         {"id": 1, "document_type": "Tax - Schedule K-1", "fund_id": 9},
         {"id": 2, "document_type": "Tax", "fund_id": 9},          # a 1042-S
         {"id": 3, "document_type": "Capital account statements", "fund_id": 9},
@@ -450,7 +431,7 @@ def test_k1_rows_load_once_per_document(migrated, tmp_path, monkeypatch,
 
 def test_a_k1_without_its_year_takes_the_index_year(migrated, tmp_path,
                                                    monkeypatch):
-    docs = _docs(tmp_path, [{"id": 1, "document_type": "Tax", "fund_id": 9,
+    docs = docs_dir(tmp_path, [{"id": 1, "document_type": "Tax", "fund_id": 9,
                              "tax_year": "2097"}])
     face = [w for w in _k1_face() if 'yMin="84.' not in w]   # the year line
     monkeypatch.setattr(k1, "bbox_xhtml", lambda pdf, timeout=None: _bbox(face))
@@ -461,7 +442,7 @@ def test_a_k1_without_its_year_takes_the_index_year(migrated, tmp_path,
 
 def test_a_k1_typed_document_without_a_face_page_warns(migrated, tmp_path,
                                                       monkeypatch, caplog):
-    docs = _docs(tmp_path, [{"id": 1, "document_type": "Tax - Schedule K-1",
+    docs = docs_dir(tmp_path, [{"id": 1, "document_type": "Tax - Schedule K-1",
                              "fund_id": 9}])
     monkeypatch.setattr(k1, "bbox_xhtml", lambda pdf, timeout=None: _bbox(_COVER))
     assert load.load_k1_capital_accounts(migrated, docs) == 0
@@ -471,7 +452,7 @@ def test_a_k1_typed_document_without_a_face_page_warns(migrated, tmp_path,
 
 def test_a_reissued_k1_replaces_the_row_for_its_document(migrated, tmp_path,
                                                          monkeypatch):
-    docs = _docs(tmp_path, [{"id": 1, "document_type": "Tax", "fund_id": 9}])
+    docs = docs_dir(tmp_path, [{"id": 1, "document_type": "Tax", "fund_id": 9}])
     monkeypatch.setattr(k1, "bbox_xhtml",
                         lambda pdf, timeout=None: _bbox(_k1_face()))
     load.load_k1_capital_accounts(migrated, docs)
@@ -484,7 +465,7 @@ def test_a_reissued_k1_replaces_the_row_for_its_document(migrated, tmp_path,
 def test_a_tax_document_that_is_not_a_pdf_is_not_parsed(migrated, tmp_path,
                                                         monkeypatch, caplog):
     # The file holds document_url's JSON envelope, not the PDF it names.
-    docs = _docs(tmp_path, [{"id": 1, "document_type": "Tax - Schedule K-1",
+    docs = docs_dir(tmp_path, [{"id": 1, "document_type": "Tax - Schedule K-1",
                              "fund_id": 9}])
     (docs / "doc_1.pdf").write_text('{"url": "https://cdn.example/doc_1"}')
     calls = []
@@ -532,7 +513,7 @@ def test_a_fiscal_year_k1_takes_the_tax_year_its_period_begins_in(
     # The index files the form under the year the fiscal year ends in, and
     # the heading's calendar year is not printed; the form's own period
     # names the tax year.
-    docs = _docs(tmp_path, [{"id": 1, "document_type": "Tax", "fund_id": 9,
+    docs = docs_dir(tmp_path, [{"id": 1, "document_type": "Tax", "fund_id": 9,
                              "tax_year": "2099"}])
     face = [w for w in _k1_face() if 'yMin="84.' not in w]   # the year line
     face += _heading_period("07/01/2098", "06/30/2099")
@@ -612,7 +593,7 @@ def test_a_run_loads_every_cost_basis_fact(tmp_path, monkeypatch):
         {"corporation_id": 9, "is_fund_investment": True}))
     _partner_metrics(fdir, sharing="12/31/2098",
                      accepted="2097-05-06T00:00:00.000000")
-    _docs(run, [
+    docs_dir(run, [
         {"id": 5, "document_type": "Capital account statements",
          "document_date": "09/30/2098", "fund_id": 9},
         {"id": 6, "document_type": "Tax - Schedule K-1", "fund_id": 9},

@@ -8,10 +8,6 @@
 # from the terminal (`vnc-login` is the by-hand fallback). `login` has nothing
 # durable to persist, so it folds into `download` (except `login --check`, a
 # read-only session probe). `load` / `prune` are pure Python, no browser.
-#
-# Xvfb is started directly (not via xvfb-run) — the Noble xvfb-run's SIGUSR1
-# ready-signalling hangs under a non-root parent; socket-existence polling is
-# version-independent.
 
 set -euo pipefail
 
@@ -21,9 +17,10 @@ source /opt/entrypoint-lib.sh
 case "${1:-help}" in
     explore)
         # Discovery harness: Camoufox over VNC + trace capture.
+        shift
+        exec_if_help explore.py "$@"
         start_xvfb
         start_x11vnc explore
-        shift
         exec python3 /app/explore.py "$@"
         ;;
     download)
@@ -31,8 +28,9 @@ case "${1:-help}" in
         # scrape. Headed Camoufox under Xvfb for stealth, but x11vnc is NOT
         # started — login.py drives the challenge over stdin. Falls back to
         # `vnc-login` when a challenge control can't be driven.
-        start_xvfb
         shift
+        exec_if_help login.py "$@"
+        start_xvfb
         exec python3 /app/login.py --cli-mfa --bronze-dir /data "$@"
         ;;
     vnc-login)
@@ -40,9 +38,10 @@ case "${1:-help}" in
         # the browser, then scrape. Use when the CLI-MFA drive can't find a
         # challenge control (the challenge UI selectors are trace-derived —
         # DESIGN.md §5).
+        shift
+        exec_if_help login.py "$@"
         start_xvfb
         start_x11vnc vnc-login
-        shift
         exec python3 /app/login.py --no-cli-mfa --bronze-dir /data "$@"
         ;;
     login)
@@ -50,7 +49,9 @@ case "${1:-help}" in
         # Xvfb, no VNC, no 2FA push). A bare `login` has nothing to persist
         # separately — it folds into `download` — so it is a clean no-op that
         # an orchestrator's login→download→load can call without tripping.
+        # `--help` prints the flags and starts nothing.
         shift
+        exec_if_help login.py "$@"
         for a in "$@"; do
             if [[ "$a" == "--check" ]]; then
                 start_xvfb

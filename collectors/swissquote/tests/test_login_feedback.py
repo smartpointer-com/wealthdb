@@ -1,11 +1,13 @@
 """
-The MFA page's API-call recorder.
+The MFA page's API-call report.
 
 login.py logs what the wait page requested, and how long each call was held,
 through the shared `collectorkit.debugcap` recorder, because the page's
-approval channel is its own status endpoint, whose route can move. Recording the page's own calls — id-masked, so a line can be pasted
-into a report, and ordered by duration, because a held call is the one worth
-polling — makes such a move diagnosable instead of guessable.
+approval channel is its own status endpoint, whose route can move. Recording
+the page's own calls — id-masked, so a line can be pasted into a report, and
+ordered by duration, because a held call is the one worth polling — makes
+such a move diagnosable instead of guessable. collectorkit's own suite
+covers the recorder; these tests cover login.py's report.
 
 Run from the repo root inside the container:
     python3 -m unittest discover tests
@@ -22,109 +24,6 @@ sys.path.insert(0, str(ROOT))
 
 import login  # noqa: E402
 from collectorkit import debugcap  # noqa: E402
-
-
-class UrlShapeTests(unittest.TestCase):
-    """The MFA page's API calls are logged so a moved route can be re-derived.
-
-    They are logged as SHAPES: the path is the diagnostic, while the ids in
-    it are session-scoped and the whole point is that the line can be pasted
-    into a bug report.
-    """
-
-    def test_a_session_id_is_elided_but_the_path_survives(self):
-        got = debugcap.url_shape(
-            "https://trade.swissquote.ch/sq-thirdlevel-plugin/api/thirdlevel"
-            "/smartL3/feedback/listen/0123456789abcdef0123456789abcdef"
-            "?cache=false&timeout=20000"
-        )
-        self.assertNotIn("0123456789abcdef", got)
-        self.assertIn("<id>", got)
-        # The parts that identify the endpoint are all still readable.
-        for keep in ("/api/thirdlevel/", "smartL3", "feedback/listen",
-                     "timeout=20000"):
-            self.assertIn(keep, got)
-
-    def test_a_credential_query_parameter_is_redacted(self):
-        got = debugcap.url_shape(
-            "https://trade.swissquote.ch/x/api/y?token=s3cret&cache=false")
-        self.assertNotIn("s3cret", got)
-        self.assertIn("cache=false", got)
-
-    def test_short_hex_like_words_are_left_alone(self):
-        # "feedback"/"added" are not long hex runs; eliding them would
-        # destroy the very path the caller needs to read.
-        got = debugcap.url_shape("https://h/api/feedback/listen/abcdef")
-        self.assertIn("feedback/listen", got)
-        self.assertNotIn("<id>", got)
-
-
-class SampleApiCallsTests(unittest.TestCase):
-    class _Page:
-        def __init__(self, result):
-            self._result = result
-
-        def evaluate(self, _script):
-            if isinstance(self._result, Exception):
-                raise self._result
-            return self._result
-
-    def test_returns_the_entries_as_given(self):
-        self.assertEqual(
-            debugcap.sample_api_calls(self._Page([["a", 12]])), [["a", 12]])
-
-    def test_a_page_mid_navigation_yields_nothing_rather_than_raising(self):
-        # Diagnostics must never take down the login they are diagnosing.
-        self.assertEqual(
-            debugcap.sample_api_calls(self._Page(RuntimeError("navigating"))), [])
-
-    def test_a_null_result_is_tolerated(self):
-        self.assertEqual(debugcap.sample_api_calls(self._Page(None)), [])
-
-
-class MergeApiSampleTests(unittest.TestCase):
-    LONG = "https://h/api/thirdlevel/smartL3/check-challenge/0123456789abcdef"
-    SHORT = "https://h/api/thirdlevel?urlId=0123456789abcdef"
-
-    def test_counts_repeated_calls_to_one_shape(self):
-        seen = debugcap.merge_api_sample(
-            {}, [[self.SHORT, 5], [self.SHORT, 7], [self.LONG, 20001]])
-        short = seen[debugcap.url_shape(self.SHORT)]
-        self.assertEqual(short["calls"], 2)
-        self.assertEqual(short["ms"], 7)
-
-    def test_repeated_samples_do_not_multiply_the_same_entries(self):
-        # The timing buffer is cumulative, so each sample re-reports every
-        # earlier entry; summing across samples would inflate the counts.
-        sample = [[self.SHORT, 5], [self.SHORT, 7]]
-        seen = {}
-        for _ in range(4):
-            debugcap.merge_api_sample(seen, sample)
-        self.assertEqual(seen[debugcap.url_shape(self.SHORT)]["calls"], 2)
-
-    def test_a_growing_buffer_raises_the_count(self):
-        seen = {}
-        debugcap.merge_api_sample(seen, [[self.SHORT, 5]])
-        debugcap.merge_api_sample(seen, [[self.SHORT, 5], [self.SHORT, 6]])
-        self.assertEqual(seen[debugcap.url_shape(self.SHORT)]["calls"], 2)
-
-    def test_the_longest_duration_survives(self):
-        seen = {}
-        debugcap.merge_api_sample(seen, [[self.LONG, 19998]])
-        debugcap.merge_api_sample(seen, [[self.LONG, 3]])
-        self.assertEqual(seen[debugcap.url_shape(self.LONG)]["ms"], 19998)
-
-    def test_ids_are_elided_so_one_shape_aggregates_every_call(self):
-        seen = debugcap.merge_api_sample({}, [
-            ["https://h/api/x/0123456789abcdef", 1],
-            ["https://h/api/x/fedcba9876543210", 1],
-        ])
-        self.assertEqual(len(seen), 1)
-        self.assertEqual(next(iter(seen.values()))["calls"], 2)
-
-    def test_a_missing_duration_is_treated_as_zero(self):
-        seen = debugcap.merge_api_sample({}, [[self.SHORT, None]])
-        self.assertEqual(seen[debugcap.url_shape(self.SHORT)]["ms"], 0)
 
 
 class ReportApiCallsTests(unittest.TestCase):

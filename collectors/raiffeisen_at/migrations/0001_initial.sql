@@ -69,7 +69,7 @@ CREATE TABLE dump_runs (
 -- ============================================================
 --
 -- account_type is the Kontoart from the account-information detail
--- ('Gehaltekonto', a savings-account label, …) when captured, else the roster
+-- (e.g. '<Kontoart>') when captured, else the roster
 -- product type ('KONTO'); not constrained at the schema layer so a new deposit
 -- product needs no migration. `mask` is the human-facing last-4 ("…1234"); the
 -- full IBAN is the external id, not a separate stored account number. The
@@ -79,7 +79,7 @@ CREATE TABLE dump_runs (
 CREATE TABLE accounts (
     snapshot_at         INTEGER NOT NULL,
     account_external_id TEXT    NOT NULL,                 -- the IBAN
-    account_type        TEXT,                             -- Kontoart, e.g. 'Gehaltekonto'
+    account_type        TEXT,                             -- Kontoart, e.g. '<Kontoart>'
     nickname            TEXT,                             -- user account label, if any
     mask                TEXT,                             -- last-4, e.g. "…1234"
     currency            TEXT,                             -- ISO code, e.g. 'EUR'

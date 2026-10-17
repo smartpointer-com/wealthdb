@@ -44,15 +44,13 @@ from pathlib import Path
 
 from collectorkit import bronze, cli, silver, srcfp
 from collectorkit.money import parse_money
+from collectorkit.parse import epoch_day
 
 import statement_parser
 
 log = logging.getLogger("amex.load")
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
-
-# Re-export so tests can call load.apply_migrations directly.
-apply_migrations = silver.apply_migrations
 
 # transactions.source tags. The activity JSON is the single source of record
 # for the era it reaches; SOURCE_STATEMENT is the deeper tail the
@@ -80,12 +78,6 @@ _YEAR_SUMMARY_PREFIX = "yes-"
 # ============================================================
 # Date / money parsing
 # ============================================================
-
-def epoch_day(d) -> int:
-    """Unix seconds UTC at midnight of the given datetime or date."""
-    return int(datetime(d.year, d.month, d.day,
-                        tzinfo=timezone.utc).timestamp())
-
 
 def parse_date(raw) -> int | None:
     """An activity row's date → epoch-midnight seconds.
@@ -814,10 +806,12 @@ def _account_stems(conn) -> dict[str, str]:
 
 def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
     """Load one bronze run dir. Returns True if ingested, False if skipped
-    (non-complete dump, or already loaded). Idempotent."""
-    status = bronze.run_status(run_dir / "run.json")
-    if not bronze.is_loadable_status(status):
-        log.info("skip %s (status=%s)", run_dir.name, status)
+    (no manifest, non-complete dump, or already loaded). Idempotent."""
+    if not bronze.run_is_loadable(run_dir):
+        run_json = run_dir / "run.json"
+        log.info("skip %s (%s)", run_dir.name,
+                 f"status={bronze.run_status(run_json)}"
+                 if run_json.is_file() else "no run.json")
         return False
     try:
         snapshot_at = bronze.parse_run_ts(run_dir.name)
@@ -836,6 +830,12 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
     # One transaction per dump: a failure part-way leaves silver as it was,
     # with no dump_runs row, so the next load retries the whole dump.
     with silver.transaction(conn):
+        # The statement era is derived from every run together, so a new run
+        # owes it a rebuild. Clearing the stamp with the run records that
+        # debt: the stamp reads stale until `rebuild_statements` commits, and
+        # a rebuild that fails or is killed is retried by the next load.
+        conn.execute("DELETE FROM parser_generations WHERE scope = ?",
+                     (STATEMENT_GENERATION_SCOPE,))
         # The activity pass runs first: it is what reports the unposted total the
         # roster snapshot records.
         pending_by_account: dict[str, float | None] = {}
@@ -932,8 +932,9 @@ def main(argv: list[str]) -> int:
         for run_dir in bronze.iter_run_dirs(args.bronze_dir):
             if load_run(conn, run_dir):
                 loaded += 1
-        # A moved statement parser owes the rebuild a run just as a new
-        # bronze run does: a parser-only change lands no run.
+        # A stale stamp owes the rebuild a run: a moved statement parser (a
+        # parser-only change lands no run), or an ingested run whose rebuild
+        # has not committed yet (`load_run` clears the stamp).
         if loaded or silver.stale_generation(conn, STATEMENT_GENERATION_SCOPE,
                                              STATEMENT_GENERATION):
             # Only after every run is in: the seam this depends on is the

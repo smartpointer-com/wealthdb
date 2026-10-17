@@ -25,8 +25,15 @@ ACCT_PLAIN = "12345678"
 ACCT_HASH = "HASH00000000000000000001"
 
 
-def _seed_bronze(root: Path) -> Path:
-    dump = root / RUN_SLUG
+def _mark_complete(dump: Path) -> Path:
+    """Write the terminal manifest a finished download leaves."""
+    (dump / "run.json").write_text(json.dumps({"status": "complete"}),
+                                   encoding="utf-8")
+    return dump
+
+
+def _seed_bronze(root: Path, slug: str = RUN_SLUG) -> Path:
+    dump = root / slug
     dump.mkdir(parents=True, exist_ok=True)
     (dump / "account_numbers.json").write_text(json.dumps([
         {"accountNumber": ACCT_PLAIN, "hashValue": ACCT_HASH},
@@ -44,7 +51,7 @@ def _seed_bronze(root: Path) -> Path:
             "currentBalances": {"liquidationValue": 2500.00},
         }},
     ]), encoding="utf-8")
-    return dump
+    return _mark_complete(dump)
 
 
 def _fresh_db(tmp_path: Path) -> sqlite3.Connection:
@@ -105,9 +112,41 @@ def test_skips_non_complete_dump(tmp_path, status):
     assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 0
 
     # Once the download finishes, the same dump loads.
-    (dump / "run.json").write_text(json.dumps({"status": "complete"}),
-                                   encoding="utf-8")
+    _mark_complete(dump)
     assert loader.load_dump(conn, dump)["skipped"] is False
+
+
+def test_a_dir_with_no_run_json_is_neither_loaded_nor_recorded(tmp_path):
+    """A `download --debug` that dies at the token refresh can leave a run
+    dir holding only its HTTP trace. prune reclaims it, so load skips it
+    and goes on to the other dumps."""
+    bronze = tmp_path / "bronze"
+    _seed_bronze(bronze)
+    shell = bronze / "20240402T000000Z"
+    (shell / "screenshots").mkdir(parents=True)
+    (shell / "screenshots" / "http-trace.jsonl").write_text("{}\n")
+
+    db = tmp_path / "silver.db"
+    assert loader.main(["--silver-db", str(db),
+                        "--bronze-dir", str(bronze)]) == 0
+    c = sqlite3.connect(str(db))
+    try:
+        assert c.execute("SELECT snapshot_at FROM dump_runs").fetchall() == [
+            (loader.bronze.parse_run_ts(RUN_SLUG),)]
+    finally:
+        c.close()
+
+
+def test_a_legacy_dump_without_run_json_still_loads(tmp_path):
+    """A dump that holds the terminal open_orders.json but no manifest is
+    complete to prune, so load reads it."""
+    dump = _seed_bronze(tmp_path / "bronze")
+    (dump / "run.json").unlink()
+    (dump / "open_orders.json").write_text(json.dumps({"orders": []}),
+                                           encoding="utf-8")
+    conn = _fresh_db(tmp_path)
+    assert loader.load_dump(conn, dump)["skipped"] is False
+    assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 1
 
 
 def _seed_with_txns(root: Path, slug: str,
@@ -149,7 +188,7 @@ def _seed_with_txns(root: Path, slug: str,
             } for aid, t in txn_specs
         ],
     }), encoding="utf-8")
-    return dump
+    return _mark_complete(dump)
 
 
 def test_txn_outside_declared_window_does_not_pk_collide(tmp_path):
@@ -274,7 +313,7 @@ def _seed_cost_positions(root: Path) -> Path:
             "positions": list(_COST_POSITIONS.values()),
         }},
     ]), encoding="utf-8")
-    return dump
+    return _mark_complete(dump)
 
 
 def _cost_columns(conn) -> dict:

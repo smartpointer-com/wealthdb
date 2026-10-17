@@ -265,12 +265,14 @@ non-zero exit, on any of these:
   `positions.csv`;
 - a malformed JSON `payload`, or one that is not a JSON object.
 
-It warns (but loads) in three cases:
+It warns (but loads) in two cases:
 
 - a valuation predates the position's `acquired_at`;
 - an account holds no position (usually a typo in an `account_id`, or a
-  sleeve left behind after its last holding closed);
-- `positions.csv` is missing or empty.
+  sleeve left behind after its last holding closed).
+
+When `positions.csv` is missing or empty, load stops with a warning and
+silver keeps its previous contents.
 
 ## Reclaiming disk (`prune`)
 

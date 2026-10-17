@@ -46,13 +46,13 @@ A collector's runtime is set by whether it ships a Dockerfile (the
 | **Docker** | a Dockerfile + `entrypoint.sh` — browser-based scrapers run headed inside the container | A host wrapper script drives `docker run`: `./<tool> {build,login,download,load}`. `prune` runs on the host. |
 
 Two collectors are **hybrid**, and a `.host-venv` marker tells the
-Makefile to build and test both halves. `schwab-api`'s weekly OAuth
-`login` runs in a Camoufox/VNC container (Schwab's 7-day refresh token
-needs an interactive browser grant) while `download`/`load` run on the
-host venv. `fidelity-web` splits the same way for a different reason:
-its session lives only as long as the browser, so the container is
-where a run happens and `vnc-login` seeds the profile dir, while the
-file-only verbs run on the host.
+Makefile to build both halves and to test on the host venv.
+`schwab-api`'s weekly OAuth `login` runs in a Camoufox/VNC container
+(Schwab's 7-day refresh token needs an interactive browser grant) while
+`download`/`load` run on the host venv. `fidelity-web` splits the same
+way for a different reason: its session lives only as long as the
+browser, so the container is where a run happens and `vnc-login` seeds
+the profile dir, while the file-only verbs run on the host.
 
 ## Conventions shared across collectors
 
@@ -100,10 +100,10 @@ bind-mounts `~/.secrets → /secrets` and `$XDG_DATA_HOME/wealthdb/<source> →
 without a new MFA push. Where a session persists, `download --dry-run`
 walks with it but exports nothing. The one-shot collectors keep no
 session between runs, so their `download` signs in itself: schwab-web,
-chase, raiffeisen_at, amex and fidelity-web. There a dry run signs in
-too. Which dry runs an agent may start without asking is set by root
-[AGENTS.md](../AGENTS.md) §2 and each collector's own `AGENTS.md`; amex
-is the case that matters (see the exceptions below).
+chase, raiffeisen_at, amex, fidelity-web and firstcitizens. There a dry
+run signs in too. Which dry runs an agent may start without asking is
+set by root [AGENTS.md](../AGENTS.md) §2 and each collector's own
+`AGENTS.md`; amex is the case that matters (see the exceptions below).
 
 ## Gold consumes silver — not the other way round
 
@@ -227,7 +227,7 @@ are the escape, not opt-ins. The canonical spelling per concept:
 | login identity env | `${PREFIX}_USERNAME` | — |
 | other credentials env | under `${PREFIX}_*`, unless a share is deliberate and documented | — |
 | env file | `/secrets/<source>.env` (container) / `~/.secrets/<source>.env` (host) | — |
-| env-file override | `--env-file` flag **and** `${PREFIX}_ENV_FILE` env var | — |
+| env-file override | `--env-file` flag; a host-venv wrapper also honours a `${PREFIX}_ENV_FILE` env var | — |
 | credential precedence | the env file wins over an inherited shell env value | — |
 | session-state file | `<source>-state.json` / `<source>-token.json` / `<source>-profile/` | — |
 | load-only bronze layout | `<data-dir>/bronze/` (the svb shape) | — |
@@ -302,7 +302,11 @@ structurally cannot narrow a fetch, the collector says so at runtime
   default is that file, not `<data-dir>/<name>.db`.
 - **schwab-web** and **schwab-api** deliberately share
   `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD` (one consent login for two
-  silvers whose identifier spaces are disjoint).
+  silvers whose identifier spaces are disjoint). schwab-api's OAuth app
+  keys are `SCHWAB_CLIENT_ID` / `SCHWAB_CLIENT_SECRET`.
+- **relevate** and **viac** name the login id `RELEVATE_LOGIN` /
+  `VIAC_LOGIN`, and **cointracking** reads its Binance key as
+  `BINANCE_API_KEY`. Renaming them would break existing env files.
 - **ubs-web** reads the bank-level `ubs.env` (the contract number)
   when its own `ubs-web.env` does not exist.
 - **viac** `--no-transaction-documents` opts out of only the per-event
@@ -667,10 +671,10 @@ through a Go **adapter** under
 [`../wealthdb/internal/silver/`](../wealthdb/internal/silver/) that reads
 the silver DB and emits canonical snapshot/transaction batches, mapping
 into the canonical enums (`account_kind`, `tax_wrapper`,
-`management_style`, `asset_class`, `tx_kind`) and the transaction
-sign convention. The adapter registers itself from `init()` via
-`silver.Register` and is imported in `cmd/wealthdb`; several adapters
-also carry a design doc under
+`management_style`, `asset_class` and the transaction kind, `TxKind`)
+and the transaction sign convention. The adapter registers itself from
+`init()` via `silver.Register` and is imported in `cmd/wealthdb`;
+several adapters also carry a design doc under
 [`../wealthdb/docs/adapters/`](../wealthdb/docs/adapters/). The
 interface, canonical vocabulary, and fixture-test pattern live on the
 gold side — see [`../wealthdb/docs/DESIGN.md`](../wealthdb/docs/DESIGN.md)
@@ -689,9 +693,9 @@ restated here.
 | [`swissquote`](swissquote/) | Swissquote eBanking | scraped session + push | Docker |
 | [`fidelity-web`](fidelity-web/) | Fidelity web | scraped session + 2FA | hybrid: Docker (Camoufox) + host venv |
 | [`chase`](chase/) | Chase retail banking (checking + savings) | scraped session + 2FA | Docker (Camoufox) |
-| [`firstcitizens`](firstcitizens/) | First Citizens retail banking (checking + savings) | Q2 REST + terminal 2FA (persistent device trust) | Docker (Camoufox login + REST download), full pipeline through gold |
-| [`raiffeisen_at`](raiffeisen_at/) | Austrian Raiffeisen retail banking, Mein ELBA (checking + savings) | Camoufox login + pushTAN, then REST | Docker (Camoufox login + REST fetch), full pipeline through gold; bank-supplied transaction listings in `supplied/` backfill the deep past |
-| [`amex`](amex/) | American Express card portal (credit + charge cards) | scraped session + one-time passcode (login folds into `download`), then REST | Docker (Camoufox sign-in + REST fetch), full pipeline through gold; `login --check` reads the profile only, `download --dry-run` still signs in |
+| [`firstcitizens`](firstcitizens/) | First Citizens retail banking (checking + savings) | Q2 REST + terminal 2FA (persistent device trust) | Docker (Camoufox login + REST download) |
+| [`raiffeisen_at`](raiffeisen_at/) | Austrian Raiffeisen retail banking, Mein ELBA (checking + savings) | Camoufox login + pushTAN, then REST | Docker (Camoufox login + REST fetch); bank-supplied listings in `supplied/` backfill the deep past |
+| [`amex`](amex/) | American Express card portal (credit + charge cards) | scraped session + one-time passcode (login folds into `download`), then REST | Docker (Camoufox sign-in + REST fetch) |
 | [`relevate`](relevate/) | Relevate / Pensexpert (Pillar 2) | REST + mTAN | Docker |
 | [`viac`](viac/) | VIAC (Pillar 3a) | REST + mTAN | Docker |
 | [`cointracking`](cointracking/) | Crypto aggregator | scraped session + 2FA | Docker (Camoufox) |

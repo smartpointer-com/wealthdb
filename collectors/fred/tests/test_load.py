@@ -159,6 +159,29 @@ def test_in_progress_dump_not_loaded_then_loads_on_completion(tmp_path):
     assert len(_rows(db)) == 4
 
 
+def test_run_dir_without_manifest_neither_loaded_nor_recorded(tmp_path):
+    # A run dir whose walk has not written run.json yet holds series files
+    # but no manifest. load must skip it and record no dump_runs row, so
+    # the run loads once its manifest lands.
+    bronze = tmp_path / "bronze"
+    run = _seed_bronze(bronze)
+    manifest = (run / "run.json").read_text(encoding="utf-8")
+    (run / "run.json").unlink()
+
+    db = tmp_path / "fred.db"
+    assert loader.main(["--silver-db", str(db), "--bronze-dir", str(bronze)]) == 0
+    assert _rows(db) == []
+    conn = silver.open_db(db)
+    try:
+        assert silver.loaded_snapshots(conn) == set()
+    finally:
+        conn.close()
+
+    (run / "run.json").write_text(manifest, encoding="utf-8")
+    assert loader.main(["--silver-db", str(db), "--bronze-dir", str(bronze)]) == 0
+    assert len(_rows(db)) == 4
+
+
 def test_schema_meta_version(tmp_path):
     db = tmp_path / "fred.db"
     loader.main(["--silver-db", str(db), "--bronze-dir", str(tmp_path / "empty")])

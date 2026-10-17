@@ -38,11 +38,11 @@ and hand it to `prune`. Nothing gates on the coverage block: it records which
 product fell short, for the run log and for anyone reading run.json.
 
 The selectors and routes follow the deposit and card UIs (DESIGN.md §E/§C).
-The browserless helpers (roster reducers, run layout, the export window,
-filename sanitising, the manifest) are unit-tested, and so are the
+The browserless helpers (roster reducers, run layout, the statement-year
+window, filename sanitising, the manifest) are unit-tested, and so are the
 browser-side steps whose failure would be silent rather than loud: the
-export form's account guard and the statement pass's failure accounting,
-against a stub page.
+export form's account, window and format guards and the statement pass's
+failure accounting, against a stub page.
 
 Read-only: this only navigates, filters, and exports. Per AGENTS.md it never
 touches Pay & transfer / Zelle / settings, nor any card *management* surface
@@ -534,7 +534,7 @@ def parse_statement_date(text: str) -> date | None:
 def statement_years(since: date | None, until: date | None,
                     available: list[int] | None = None) -> list[int]:
     """Years to page the statements filter through, newest first. Bounded by
-    the export window [since, until]; intersected with `available` (the years
+    the lookback window [since, until]; intersected with `available` (the years
     the filter actually offers) when known, so a request never selects a year
     Chase doesn't list."""
     hi = (until or date.today()).year
@@ -815,10 +815,17 @@ def _export_account(page, acct: dict, run_dir: Path, timeout_ms: int) -> int:
             # "All transactions" is Chase's widest export window here (last 24
             # months, both products). --lookback narrower is covered; wider
             # Chase cannot export, which `walk` warns about once per run.
-            _select_option(page, SEL_ACTIVITY_SELECT, OPT_ACTIVITY_ALL,
-                           OPT_ACTIVITY_ALL_LABEL)
-            _select_option(page, SEL_FILE_SELECT, opt_prefix,
-                           EXPORT_FORMAT_LABELS.get(fmt))
+            # A pick that did not take leaves the form on its default
+            # selection (a narrower window, the CSV format), whose file is
+            # not the export it would be saved as: refuse it like a wrong
+            # account.
+            if not _select_option(page, SEL_ACTIVITY_SELECT, OPT_ACTIVITY_ALL,
+                                  OPT_ACTIVITY_ALL_LABEL):
+                raise RuntimeError(
+                    f"could not pick the {OPT_ACTIVITY_ALL_LABEL!r} window")
+            if not _select_option(page, SEL_FILE_SELECT, opt_prefix,
+                                  EXPORT_FORMAT_LABELS.get(fmt)):
+                raise RuntimeError(f"could not pick the {fmt} format")
             # Re-picking the already-selected format (CSV is the default) leaves
             # the option listbox open, overlaying #downloadButton so its click
             # can't land. Dismiss any open dropdown before triggering.
@@ -952,7 +959,7 @@ def _download_card_statements(page, cards, captured_bodies: list,
 
 def _save_statements(page, out_dir: Path, since, until,
                      timeout_ms: int) -> tuple[int, int]:
-    """Page the statements table through each year in the export window,
+    """Page the statements table through each year in the lookback window,
     saving every statement PDF whose date falls in [since, until]. Returns
     (files saved, failures) — a failure count, not just a success count, so
     the caller can tell a complete pass from one that reached the table and
@@ -1196,7 +1203,7 @@ def _export_picker_state(page) -> tuple[str, str | None]:
       mid-rerender), or the variant rendered keys its options by POSITION
       instead of by account id, so nothing in it names an account.
     * `(PICKER_ABSENT, None)` — no picker at all; the route alone decides the
-      account, which is how the deposit path has always worked."""
+      account (the deposit form's normal shape)."""
     host = mdsui.first_in_frames(page, SEL_ACCOUNT_SELECT)
     if host is None:
         if mdsui.first_in_frames(page, SEL_ACCOUNT_SELECT_INDEXED) is not None:

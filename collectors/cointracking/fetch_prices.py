@@ -20,11 +20,14 @@ The "held" set comes from positions_daily.amount > 0 — every coin
 held on at least one day across any portfolio. Prices outside
 the held range are not fetched.
 
-Provider: Binance public-spot (api.binance.com, no key, no signup).
-USDT-denominated; the small USDT/USD basis is absorbed into the
-stored price_usd values. Stablecoins (USDT, USDC, DAI, …) are
-emitted as synthetic 1.0. See binance.py for the polite-client
-details.
+Providers: crypto from Binance public-spot (api.binance.com, no
+key, no signup), USDT-denominated; the small USDT/USD basis is
+absorbed into the stored price_usd values. Stablecoins (USDT, USDC,
+DAI, …) are emitted as synthetic 1.0. See binance.py for the
+polite-client details. Fiat from the ECB's reference rates via
+Frankfurter (frankfurter.py). Either mode ends by backfilling a held
+day before a coin's first price from the next price
+(`backfill_first_day_gaps`).
 """
 from __future__ import annotations
 

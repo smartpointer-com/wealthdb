@@ -1,8 +1,8 @@
 # Marker: this is a HYBRID collector. It has a Dockerfile (the Camoufox
 # `download` / `vnc-login` image) AND needs a host venv (`load`,
-# `prune`, `recompress` run on the host). The Makefile builds/tests both
-# when this file is present; without it, a Dockerfile would make
-# build/test Docker-only.
+# `prune`, `recompress` run on the host). With this file present the
+# Makefile builds both, and tests on the host venv; without it, a
+# Dockerfile would make build and test Docker-only.
 #
 # Why host-side load needs a venv (unlike a pure-stdlib loader): bronze
 # HTML/CSV artefacts are zstd-compressed, and load.py decompresses

@@ -1,8 +1,8 @@
 """Unit tests for download.py's browserless helpers — the roster reducers,
-export window, filename sanitising, coverage and manifest — plus the
-browser-side helpers whose failure is silent: the statement row-save driver,
-the statement pass's failure accounting, and the export form's account-picker
-guard, all exercised against a stub page. The stub models sync Playwright's
+the statement-year window, filename sanitising, coverage and manifest — plus
+the browser-side helpers whose failure is silent: the statement row-save
+driver, the statement pass's failure accounting, and the export form's
+account-picker, window and format guards, all exercised against a stub page. The stub models sync Playwright's
 download expectation faithfully enough to price a missing trigger. The scrape
 itself needs a live authenticated page and is validated on a real run.
 Synthetic data only.
@@ -400,7 +400,7 @@ def test_export_route_is_a_product_tuple():
     assert dda.endswith("/downloads/900001/DDA/CHK")
     assert card.endswith("/downloads/900003/CARD/BAC")
     # a savings account routes through the deposit tuple like checking, and a
-    # record with no product predates the discriminator
+    # record with no product reads as a deposit account
     assert download.export_route(
         {"account_external_id": "900002", "product": "dda",
          "account_type": "SAV"}).endswith("/DDA/CHK")
@@ -822,8 +822,8 @@ def _picker_page(bound, clickable=(PICKER,), nodes=None, **kwargs):
 
 
 def test_ensure_export_account_proceeds_when_the_form_has_no_picker(monkeypatch):
-    # No picker at all: the route alone decides the account, which is how the
-    # deposit path has always worked — but only after polling for it.
+    # No picker at all: the route alone decides the account (the deposit
+    # form's normal shape) — but only after polling for it.
     page = _StubPage()
     _stub_mdsui(monkeypatch)
     assert download._ensure_export_account(page, "900001") is True
@@ -893,6 +893,41 @@ def test_ensure_export_account_refuses_when_the_switch_does_not_take(monkeypatch
     _stub_mdsui(monkeypatch)
     assert download._ensure_export_account(page, "900001") is False
     assert option in page.clicks
+
+
+def _export_page(monkeypatch, *, failing_options):
+    """A stub export form whose account guard holds and whose option picks
+    succeed except for the option-testid prefixes in `failing_options`."""
+    page = _StubPage([download.SEL_DOWNLOAD_BUTTON])
+    _stub_mdsui(monkeypatch)
+    monkeypatch.setattr(download, "_open", lambda *_a, **_k: True)
+    monkeypatch.setattr(download, "_ensure_export_account", lambda *_a: True)
+    monkeypatch.setattr(download, "_dismiss_dropdown", lambda _page: None)
+    monkeypatch.setattr(
+        download, "_select_option",
+        lambda _page, _sel, prefix, _label=None: prefix not in failing_options)
+    return page
+
+
+def test_a_failed_format_pick_saves_nothing_under_that_format(monkeypatch,
+                                                              tmp_path):
+    # The form keeps its default (CSV) selection when the QFX pick does not
+    # take, so the file it would save under `.qfx` would be a CSV body.
+    page = _export_page(monkeypatch,
+                        failing_options={download.EXPORT_FORMATS["qfx"]})
+    acct = {"account_external_id": "900001", "product": "dda", "mask": "…1234"}
+    assert download._export_account(page, acct, tmp_path, 1000) == 1
+    assert page.saved == [str(tmp_path / "transactions" / "900001.csv")]
+
+
+def test_a_failed_window_pick_saves_no_format(monkeypatch, tmp_path):
+    # The default window is narrower than "All transactions", so a file
+    # saved off it would claim a full export it did not get.
+    page = _export_page(monkeypatch,
+                        failing_options={download.OPT_ACTIVITY_ALL})
+    acct = {"account_external_id": "900001", "product": "dda", "mask": "…1234"}
+    assert download._export_account(page, acct, tmp_path, 1000) == 0
+    assert page.saved == []
 
 
 def test_new_coverage_counts_accounts_per_product():

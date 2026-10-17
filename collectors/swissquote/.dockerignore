@@ -36,7 +36,6 @@ CLAUDE.md
 *.pem
 *.key
 storageState*.json
-swissquote_state*.json
 .env
 .envrc
 data/

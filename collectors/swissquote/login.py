@@ -12,8 +12,9 @@ landmark URL without re-logging in (no MFA push). See AGENTS.md §2:
 non-check invocations must be explicitly authorised.
 
 Usage:
-    login.py [--state-path <file>] [--username <name>] [--check]
-             [--mfa-timeout <sec>] [--screenshot-dir <dir>] [--trace]
+    login.py [--state-path <file>] [--username <name>] [--env-file <file>]
+             [--check] [--mfa-timeout <sec>] [--screenshot-dir <dir>]
+             [--trace] [-v]
 """
 
 from __future__ import annotations
@@ -22,15 +23,13 @@ import argparse
 import getpass
 import logging
 import os
-import subprocess
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 import landmarks as sq  # local module: DOM landmarks + URL constants
 
-from collectorkit import cli, debugcap, envfile, launch, session
+from collectorkit import bronze, cli, debugcap, envfile, launch, session
 
 log = logging.getLogger("swissquote.login")
 
@@ -38,7 +37,7 @@ log = logging.getLogger("swissquote.login")
 # `HeadlessChrome` and either block or add extra anti-bot steps; this
 # string matches the Chrome major version that Playwright 1.62 ships,
 # so it's plausible without being deceptive about capabilities. The
-# only signal we strip is the "Headless" qualifier. download.py uses
+# only signal stripped is the "Headless" qualifier. download.py uses
 # the same UA: the anti-bot heuristics may key on it across requests
 # within a session, so it is held constant.
 USER_AGENT = (
@@ -82,9 +81,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--env-file", default=None, type=Path,
-        help=("KEY=VALUE env file with SWISSQUOTE_USERNAME / "
-              "SWISSQUOTE_PASSWORD, sourced before resolving credentials. "
-              "Defaults to /secrets/swissquote.env, else ~/.secrets/swissquote.env."),
+        help=("Bash-sourced env file with SWISSQUOTE_USERNAME / "
+              "SWISSQUOTE_PASSWORD, read before the credentials are resolved "
+              "(default: /secrets/swissquote.env, else "
+              "~/.secrets/swissquote.env)."),
     )
     p.add_argument(
         "--check", action="store_true",
@@ -110,18 +110,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     cli.add_standard_args(p, verb="login")
     return p.parse_args(argv)
-
-
-def resolve_username(cli_value: str | None) -> str:
-    """Prefer CLI, fall back to env var, raise if neither set."""
-    if cli_value:
-        return cli_value
-    env = os.environ.get("SWISSQUOTE_USERNAME")
-    if env:
-        return env
-    raise SystemExit(
-        "Missing username: pass --username or set SWISSQUOTE_USERNAME."
-    )
 
 
 def resolve_password() -> str:
@@ -214,7 +202,7 @@ def _announce_operation_code(page, *, waiting_note: str = "") -> None:
 
 def new_context(p, *, storage_state: Path | None,
                 accept_downloads: bool = False):
-    """Construct a Chromium browser + context with our standard knobs,
+    """Construct a Chromium browser + context with the standard knobs,
     shared with download.py.
 
     --no-sandbox is required because the container runs as a non-root
@@ -282,7 +270,7 @@ def check_session(args: argparse.Namespace) -> int:
             f"run login.py without --check to mint one."
         )
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = bronze.ts_slug()
     with sync_playwright() as p:
         browser, context = new_context(p, storage_state=state_path)
         _maybe_start_trace(context, args.trace)
@@ -329,9 +317,10 @@ def login(args: argparse.Namespace) -> int:
     """Mint a fresh storageState.json by driving the live login + MFA."""
     from playwright.sync_api import sync_playwright
 
-    username = resolve_username(args.username)
+    username = envfile.resolve_credential(
+        args.username, "SWISSQUOTE_USERNAME", "--username")
     password = resolve_password()
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = bronze.ts_slug()
 
     args.state_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -341,13 +330,14 @@ def login(args: argparse.Namespace) -> int:
         page = context.new_page()
         try:
             log.info("Hitting login-trigger URL %s", sq.LOGIN_TRIGGER_URL)
-            # F5 BIG-IP intercepts and redirects us to /my.policy with
-            # the login form. We follow the redirect chain to settle.
+            # F5 BIG-IP intercepts and redirects to /my.policy with
+            # the login form. The redirect chain is followed until it
+            # settles.
             page.goto(sq.LOGIN_TRIGGER_URL, wait_until="domcontentloaded")
             log.info("Landed at %s", page.url)
             screenshot(page, args.screenshot_dir, f"login_{ts}_01_form")
             if sq.F5_AUTH_PATH not in page.url:
-                # Surprise: we expected /my.policy. Either the cookie
+                # Surprise: /my.policy was expected. Either the cookie
                 # is still valid (rare on a fresh state-less context)
                 # or Swissquote changed their auth gateway.
                 raise SystemExit(
@@ -356,9 +346,9 @@ def login(args: argparse.Namespace) -> int:
                     f"submitting credentials."
                 )
 
-            # Log every main-frame navigation while we're waiting on
-            # the auth flow. F5's redirect chain is opaque; without
-            # this we can't tell why a wait-for-URL predicate didn't
+            # Log every main-frame navigation while the auth flow is
+            # awaited. F5's redirect chain is opaque; without this
+            # nothing tells why a wait-for-URL predicate didn't
             # fire. Logged at DEBUG (`-v`) by default.
             page.on(
                 "framenavigated",
@@ -375,9 +365,9 @@ def login(args: argparse.Namespace) -> int:
             #   (b) skips MFA on a recently-trusted device fingerprint
             #   (c) shows an inline error (wrong password etc.)
             # Branches (a) and (b) both end at the post-auth landing
-            # URL — we wait for THAT positive landmark as the
-            # "logged in" signal. Branch (c) leaves us at /my.policy
-            # forever, and we'll time out cleanly.
+            # URL — THAT positive landmark is the awaited
+            # "logged in" signal. Branch (c) stays at /my.policy
+            # forever, and the wait times out cleanly.
             #
             # Along the way, opportunistically scrape the TAN if the
             # MFA page renders. Brief (5s) wait — if no MFA page,
@@ -521,10 +511,7 @@ def login(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    cli.configure_logging(args.verbose)
     # Source the credentials env file before resolving SWISSQUOTE_USERNAME /
     # _PASSWORD, so a plain env file works without a manual `source` and the
     # login isn't forced to getpass-prompt. --env-file wins, else the first
@@ -534,7 +521,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if envfile.source_env_file(env_path, prefer_file=True):
                 log.info("env sourced from %s", env_path)
-        except (subprocess.CalledProcessError, ValueError) as e:
+        except ValueError as e:
             log.error("env file %s failed to source: %s", env_path, e)
 
     # --trace must be paired with --screenshot-dir. The trace bundle

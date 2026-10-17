@@ -481,8 +481,8 @@ def test_split_reports_no_gap_when_every_window_lands(tmp_path, monkeypatch):
 
 
 def test_both_formats_bisect_on_the_same_cap(tmp_path, monkeypatch):
-    """MT940 always bisected; CSV used to be exported "one shot over
-    the full window (no observed cap)" and stalled on a busy account."""
+    """Both formats bisect on the same cap, so neither exports a window
+    over it."""
     since, until = date(2024, 1, 1), date(2026, 9, 7)
     span = (until - since).days
     dates = [since + timedelta(days=i % span)
@@ -567,8 +567,8 @@ def test_only_runs_the_named_pass_and_skips_the_rest(tmp_path, monkeypatch):
 
 
 def test_a_one_pass_dump_is_not_called_complete(tmp_path, monkeypatch):
-    # `prune` reclaims anything not "complete", and a reader must not
-    # take a dump of one surface for a record of them all.
+    # A reader must not take a dump of one surface for a record of them
+    # all.
     for name in ("export_positions", "export_portfolio_transactions",
                  "harvest_documents"):
         monkeypatch.setattr(download, name, lambda *a, **k: [])
@@ -589,3 +589,88 @@ def test_a_whole_walk_is_still_complete(tmp_path, monkeypatch):
     manifest = json.loads(next(dest.glob("*/run.json")).read_text())
     assert manifest["status"] == "complete"
     assert "partial_pass" not in manifest
+
+
+# --------------------------------------------------------------------
+# Portfolio transactions: one file per portfolio the exports name
+# --------------------------------------------------------------------
+
+def _portfolio_csv(portfolio: str, trade: str) -> bytes:
+    return (f"Valuation date;Trade;Portfolio;Amount\n"
+            f"01.06.2098;{trade};{portfolio};100.00\n").encode()
+
+
+def _portfolio_walk(monkeypatch, tmp_path, answers: dict[str, bytes]):
+    """Run export_portfolio_transactions over a switcher whose entries
+    answer with `answers[title]`, with the browser layer stubbed out."""
+    state = {"title": None}
+    page = types.SimpleNamespace(url="https://example.invalid/app#/home",
+                                 goto=lambda *_a, **_k: None)
+    monkeypatch.setattr(download, "_enumerate_portfolios", lambda *_a: [
+        {"portfolio_uid": "UID-1", "banking_relation_id": "REL-1"}])
+    monkeypatch.setattr(download, "_dismiss_open_overlays", lambda _p: None)
+    monkeypatch.setattr(download, "_portfolio_switcher_options",
+                        lambda _p: list(answers))
+    monkeypatch.setattr(download, "_switch_portfolio",
+                        lambda _p, title: state.update(title=title) or True)
+    monkeypatch.setattr(download, "_apply_portfolio_window",
+                        lambda *_a: True)
+    monkeypatch.setattr(download, "_click_portfolio_export",
+                        lambda _p: answers[state["title"]])
+    run_dir = tmp_path / "run"
+    results = download.export_portfolio_transactions(
+        page, run_dir, date(2098, 1, 1), date(2098, 6, 30), None)
+    return results, run_dir / "portfolio_transactions"
+
+
+def test_a_portfolio_reported_twice_keeps_its_first_file(tmp_path,
+                                                         monkeypatch):
+    # A consolidated view in the switcher answers for a portfolio already
+    # fetched. The file kept for that portfolio must survive, and the
+    # manifest must name a file that is there.
+    results, out = _portfolio_walk(monkeypatch, tmp_path, {
+        "Portfolio A": _portfolio_csv("PF-A", "first"),
+        "Consolidated": _portfolio_csv("PF-A", "second"),
+        "Portfolio B": _portfolio_csv("PF-B", "only"),
+    })
+    assert [r["portfolio"] for r in results] == ["PF-A", "PF-B"]
+    files = {p.name for p in out.iterdir()}
+    assert files == {r["filename"] for r in results}
+    kept = (out / results[0]["filename"]).read_text(encoding="utf-8")
+    assert ";first;" in kept
+
+
+def test_exports_that_name_no_portfolio_do_not_collide(tmp_path,
+                                                       monkeypatch):
+    # An export whose first row names no portfolio is filed under the
+    # switcher entry it came from, so one cannot overwrite another.
+    results, out = _portfolio_walk(monkeypatch, tmp_path, {
+        "View 1": _portfolio_csv("", "one"),
+        "View 2": _portfolio_csv("", "two"),
+    })
+    assert [r["portfolio"] for r in results] == [None, None]
+    assert len({r["filename"] for r in results}) == 2
+    assert {p.name for p in out.iterdir()} == {r["filename"] for r in results}
+
+
+# --------------------------------------------------------------------
+# --dry-run: the plan names the passes a real run would make
+# --------------------------------------------------------------------
+
+def test_the_dry_run_plan_follows_only_and_no_cards():
+    plan = download.dry_run_plan(download.parse_args(["--dry-run"]), 2)
+    assert "2 cash account(s)" in plan and "card roster" in plan
+    assert "statement PDFs" in plan
+
+    only_cards = download.dry_run_plan(
+        download.parse_args(["--dry-run", "--only", "cards"]), 2)
+    assert "card roster" in only_cards
+    assert "cash account" not in only_cards
+    assert "securities-transaction" not in only_cards
+
+    no_cards = download.dry_run_plan(
+        download.parse_args(["--dry-run", "--no-cards"]), 2)
+    assert "card" not in no_cards
+
+    assert download.dry_run_plan(download.parse_args(
+        ["--dry-run", "--only", "cards", "--no-cards"]), 2) == "nothing"

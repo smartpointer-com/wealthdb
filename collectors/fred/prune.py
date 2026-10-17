@@ -14,9 +14,8 @@ across every timestamped run dir under ``--bronze-dir``:
 * whole run dirs that are not complete dumps: ``run.json`` is missing
   (the walk crashed before writing any manifest), or its ``status`` is
   anything other than ``"complete"`` (an ``"in-progress"`` marker from a
-  crashed or still-running walk). ``load`` already skips such a dump;
-  prune reclaims its disk. After pruning one, the next ``load --force``
-  rebuild reflects the removal.
+  crashed or still-running walk). ``load`` skips such dirs, so removing
+  one never changes silver.
 
 Every other file in a complete run dir is a ``load`` input — the
 ``run.json`` manifest and one ``<series_id>.json`` observations document

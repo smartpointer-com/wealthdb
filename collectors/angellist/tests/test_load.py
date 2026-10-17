@@ -849,6 +849,9 @@ def test_an_unfinished_dump_is_not_loaded(tmp_path):
     unmarked = write_run(dest, "20240103T000000Z",
                          [positions_capture([pos_node("p3", "third-co-s")])])
     (unmarked / "run.json").unlink()
+    # A slug that is no real date (Feb 30) is skipped, not a crash.
+    write_run(dest, "20240230T000000Z",
+              [positions_capture([pos_node("p4", "fourth-co-s")])])
 
     assert load.main(["--bronze-dir", str(dest), "--silver-db", str(db)]) == 0
     c = sqlite3.connect(db)

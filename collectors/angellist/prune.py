@@ -16,14 +16,14 @@ prune engine) with angellist's configuration. Two categories are removed:
   marker the walk drops at run-dir creation) rather than ``"complete"``,
   or which has no ``run.json`` at all (the walk crashed before minting
   it, or ``--debug`` created the dir for captures and the walk then found
-  no session to capture). ``load`` already skips such a dir, but its
-  partial ``captures.jsonl`` otherwise lingers on disk.
+  no session to capture). ``load`` skips such a dir, so removing one never
+  changes silver; its partial ``captures.jsonl`` would otherwise linger on
+  disk.
 
 Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
 at run-dir creation, atomically overwritten with ``"complete"`` at the
-end). A manifest with no ``status`` key predates the field and is
-classified COMPLETE: such a dump only ever got a ``run.json`` as the
-walk's final step, so its presence alone means the walk finished. No
+end). A manifest with no ``status`` key counts as complete: a download
+that writes no status writes its manifest only at the end. No
 ``run.json`` at all (``meta is None``) → NON_COMPLETE. An unreadable or
 corrupt ``run.json`` is UNKNOWN and never deleted.
 

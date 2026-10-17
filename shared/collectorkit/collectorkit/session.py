@@ -25,7 +25,7 @@ def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def save_state(path: Path, payload: dict, mode: int = STATE_FILE_MODE,
+def save_state(path: Path, payload: dict | list, mode: int = STATE_FILE_MODE,
                indent: int = 2) -> None:
     """Atomically write `payload` as JSON to `path`, then chmod.
 

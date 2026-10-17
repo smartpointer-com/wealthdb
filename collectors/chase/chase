@@ -89,12 +89,7 @@ EOF
     exit 0
 fi
 
-# prune is a pure file walk (collectorkit.prune + stdlib) — no browser, no
-# container. Run it host-side like the other collectors so it bypasses the
-# single-writer safety guard and can reclaim disk while a download is
-# mid-flight (its own --min-age guard protects an in-flight dump). With
-# HAS_DEBUG=1 the wrapper also passes --debug-dir so the /debug cache is
-# reclaimed.
+# prune runs host-side (wrapper_host_prune).
 if [[ "${1:-}" == "prune" ]]; then
     wrapper_host_prune "$@"
 fi

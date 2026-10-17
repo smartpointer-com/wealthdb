@@ -27,8 +27,7 @@ The second is whole run dirs that are **not complete dumps**:
 * a ``--dry-run`` shell — ``status`` ``"dry-run"``, or (pre-``status``)
   a manifest with ``dry_run: true``.
 
-``load`` already skips such a dir; pruning reclaims the space, and the
-next ``load --force`` rebuild reflects the removal.
+``load`` skips such dirs, so removing one never changes silver.
 
 Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
 at run-dir creation, atomically overwritten with ``"complete"`` /

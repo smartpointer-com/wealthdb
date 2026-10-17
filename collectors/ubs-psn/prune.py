@@ -43,9 +43,6 @@ An unreadable or corrupt ``run.json`` is UNKNOWN and never deleted. An
 in-flight guard skips non-complete shells written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir.
 ``--dry-run`` prints the plan without removing anything.
-
-Usage:
-    prune.py [--bronze-dir /data] [--dry-run] [--min-age-hours N]
 """
 
 from __future__ import annotations
@@ -77,12 +74,8 @@ def _is_complete(run_dir, meta):
     # pull leaves when nothing was queued. No load input is at stake, so
     # defer to the status lifecycle: a "complete" marker keeps it,
     # anything else (empty / in-progress / statusless / no manifest) is
-    # NON_COMPLETE. The legacy_complete predicate echoes the has-zip
-    # invariant above as a belt-and-braces guard (it is False here since
-    # this branch is zip-less).
-    return prune.status_classification(
-        meta, run_dir=run_dir,
-        legacy_complete=lambda rd, m: any(rd.glob("*.zip")))
+    # NON_COMPLETE.
+    return prune.status_classification(meta, run_dir=run_dir)
 
 
 CONFIG = prune.PruneConfig(

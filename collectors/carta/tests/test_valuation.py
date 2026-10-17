@@ -11,32 +11,14 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import sqlite3
-import sys
 from pathlib import Path
 
-import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import load  # noqa: E402
-
-MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
+import load
 
 
 def _ts(iso: str) -> int:
     return int(dt.datetime.fromisoformat(iso)
                .replace(tzinfo=dt.timezone.utc).timestamp())
-
-
-@pytest.fixture
-def migrated():
-    """Fresh in-memory silver with all migrations applied."""
-    c = sqlite3.connect(":memory:")
-    c.execute("PRAGMA foreign_keys = ON")
-    load.silver.apply_migrations(c, MIGRATIONS_DIR)
-    yield c
-    c.close()
 
 
 # ---- CSV parsing + carry-forward -------------------------------------------

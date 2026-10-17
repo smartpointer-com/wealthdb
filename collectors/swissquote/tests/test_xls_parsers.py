@@ -18,24 +18,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import xlwt
-
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import load  # noqa: E402
+from tests.helpers import write_xls  # noqa: E402
 
 POSITIONS_LABELS = load.POSITIONS_EXPECTED_HEADER
 LOA_LABELS = load.LOA_EXPECTED_HEADER
-
-
-def _write_xls(path: Path, rows: list[list]) -> None:
-    wb = xlwt.Workbook()
-    sheet = wb.add_sheet("export")
-    for r, row in enumerate(rows):
-        for c, val in enumerate(row):
-            sheet.write(r, c, val)
-    wb.save(str(path))
 
 
 # A minimal positions sheet: one section header, one position row,
@@ -62,7 +52,7 @@ class PositionsXlsTests(unittest.TestCase):
     def _parse(self, header: list) -> list[dict]:
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "positions.xls"
-            _write_xls(p, [header] + _POSITIONS_BODY)
+            write_xls(p, [header] + _POSITIONS_BODY)
             return load.parse_positions_xls(p)
 
     def _check_rows(self, rows: list[dict]) -> None:
@@ -107,7 +97,7 @@ class ListOfAssetsXlsTests(unittest.TestCase):
     def _parse(self, header: list) -> list[dict]:
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "list_of_assets.xls"
-            _write_xls(p, [header] + _LOA_BODY)
+            write_xls(p, [header] + _LOA_BODY)
             return load.parse_list_of_assets_xls(p)
 
     def _check_rows(self, rows: list[dict]) -> None:

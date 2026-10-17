@@ -8,7 +8,8 @@ network fetch stubbed (no network), asserting:
     data artefact zstd-compressed in place (.json.zst) while run.json
     itself stays uncompressed
   * a mid-walk crash leaves run.json status=in-progress (so prune can
-    reclaim the dump once quiescent) and no terminal manifest
+    reclaim the dump once quiescent) and no terminal manifest, and so
+    does a `--debug` walk that dies at the token refresh
   * --dry-run creates no run dir at all (nothing for prune to see)
 
 Synthetic account hash / values only.
@@ -122,6 +123,29 @@ def test_crash_mid_walk_leaves_status_in_progress(tmp_path, monkeypatch):
     # classifies this NON_COMPLETE and reclaims it once quiescent.
     assert meta == {"status": "in-progress"}
     assert not (run_dir / "open_orders.json").exists()
+
+
+def test_a_failed_token_refresh_leaves_an_in_progress_shell(tmp_path,
+                                                          monkeypatch):
+    # --debug builds the HTTP trace before the first request; the manifest
+    # lands before it, so the shell is one load skips and prune reclaims.
+    _stub_schwab(monkeypatch)
+
+    def _rejected(_c, **_k):
+        raise SystemExit("Schwab rejected the stored OAuth token")
+    monkeypatch.setattr(download, "fetch_account_numbers", _rejected)
+    token = tmp_path / "token.json"
+    token.write_text("{}")
+    dest = tmp_path / "bronze"
+    dest.mkdir()
+
+    with pytest.raises(SystemExit):
+        download.main(_argv(token, dest, "--debug"))
+
+    dirs = _run_dirs(dest)
+    assert len(dirs) == 1
+    assert json.loads((dirs[0] / "run.json").read_text()) == {
+        "status": "in-progress"}
 
 
 def test_dry_run_creates_no_run_dir(tmp_path, monkeypatch):

@@ -40,6 +40,12 @@ case "$cmd" in
         awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"
         exit 0
         ;;
+    login|download|load|prune)
+        ;;
+    *)
+        echo "ubs-psn: unknown command '$cmd' (expected: login|download|load|prune)" >&2
+        exit 2
+        ;;
 esac
 
 host_resolve_dirs "$cmd" "$@"
@@ -53,11 +59,8 @@ case "$cmd" in
         # closes one authenticated SSH session, consuming no files.
         case " ${FORWARD_ARGS[*]-} " in
             *" --check "*)
-                client_args=()
-                [[ -n "${UBS_PSN_CLIENT_ID:-}" ]] && client_args=(--client-id "$UBS_PSN_CLIENT_ID")
                 exec "$py" "$HERE/download.py" --bronze-dir "$DATA_DIR" \
                     --key "$SECRETS_DIR/ubs_psn_key" \
-                    ${client_args[@]+"${client_args[@]}"} \
                     ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
                 ;;
         esac
@@ -70,11 +73,10 @@ EOF
         exit 0
         ;;
     download)
-        client_args=()
-        [[ -n "${UBS_PSN_CLIENT_ID:-}" ]] && client_args=(--client-id "$UBS_PSN_CLIENT_ID")
+        # download.py reads the login id from UBS_PSN_CLIENT_ID, which
+        # host_source_env_file exported; --client-id overrides it.
         exec "$py" "$HERE/download.py" --bronze-dir "$DATA_DIR" \
             --key "$SECRETS_DIR/ubs_psn_key" \
-            ${client_args[@]+"${client_args[@]}"} \
             ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
         ;;
     load)
@@ -85,9 +87,5 @@ EOF
         # --bronze-dir first so an override in FORWARD_ARGS wins.
         exec "$py" "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
             ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
-        ;;
-    *)
-        echo "ubs-psn: unknown command '$cmd' (expected: login|download|load|prune)" >&2
-        exit 2
         ;;
 esac

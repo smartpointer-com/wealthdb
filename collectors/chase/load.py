@@ -92,15 +92,13 @@ from pathlib import Path
 
 from collectorkit import bronze, cli, silver, srcfp
 from collectorkit.money import parse_money
+from collectorkit.parse import epoch_day
 
 import statement_parser
 
 log = logging.getLogger("chase.load")
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
-
-# Re-export so tests + siblings can call load.apply_migrations directly.
-apply_migrations = silver.apply_migrations
 
 # transactions.source tags. The export seam's correctness hangs on the
 # export set staying in sync with what merge_transactions writes — one home.
@@ -150,10 +148,8 @@ PRODUCT_DEPOSIT = "dda"
 
 
 def account_product(acct: dict) -> str:
-    """A bronze roster record's product discriminator. Runs written before
-    cards were walked carry no `product` key at all and are deposit-only, so a
-    missing key reads as the deposit default and loads exactly as it always
-    did."""
+    """A bronze roster record's product discriminator. A record with no
+    `product` key reads as the deposit default."""
     return str(acct.get("product") or PRODUCT_DEPOSIT).strip().lower()
 
 
@@ -168,11 +164,6 @@ def card_account_ids(accounts: list[dict]) -> set[str]:
 # ============================================================
 # Date / money parsing
 # ============================================================
-
-def _epoch_day(d) -> int:
-    """Unix seconds UTC at midnight of the given datetime or date."""
-    return int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp())
-
 
 def _iso_day(epoch: int) -> str:
     """An epoch-midnight timestamp back as `YYYY-MM-DD`, for log messages."""
@@ -189,7 +180,7 @@ def parse_ofx_date(raw: str) -> int | None:
     if not m:
         return None
     try:
-        return _epoch_day(datetime(int(m[1]), int(m[2]), int(m[3])))
+        return epoch_day(datetime(int(m[1]), int(m[2]), int(m[3])))
     except ValueError:
         return None
 
@@ -199,7 +190,7 @@ def parse_csv_date(raw: str) -> int | None:
     raw = (raw or "").strip()
     for fmt in ("%m/%d/%Y", "%m/%d/%y"):
         try:
-            return _epoch_day(datetime.strptime(raw, fmt))
+            return epoch_day(datetime.strptime(raw, fmt))
         except ValueError:
             continue
     return None
@@ -919,7 +910,7 @@ def _statement_date_from_name(name: str) -> int | None:
     if not m:
         return None
     try:
-        return _epoch_day(datetime(int(m[1]), int(m[2]), int(m[3])))
+        return epoch_day(datetime(int(m[1]), int(m[2]), int(m[3])))
     except ValueError:
         return None
 
@@ -979,7 +970,7 @@ def _import_statement(conn, account_external_id: str, seg, seam) -> int:
     occ_seen: dict[tuple, int] = {}
     n = 0
     for txn, bal in statement_parser.running_balances(seg):
-        posted = _epoch_day(txn.posted_at)
+        posted = epoch_day(txn.posted_at)
         if seam is not None and posted >= seam:
             continue                                # export owns this period
         amount = float(txn.amount)
@@ -1040,7 +1031,7 @@ def _chain_segments(conn, account_external_id: str, parsed_stmts: list) -> list:
         if expected is None:
             anchors = _export_balances_between(
                 conn, account_external_id,
-                _epoch_day(parsed.period_start), _epoch_day(parsed.period_end))
+                epoch_day(parsed.period_start), epoch_day(parsed.period_end))
         else:
             anchors = {expected}
         cands = [s for s in parsed.segments if s.ending_balance is not None
@@ -1177,7 +1168,8 @@ def _purge_stale_statement_rows(conn: sqlite3.Connection, stale: bool) -> int:
     return dropped
 
 
-def load_statement_transactions(conn: sqlite3.Connection, bronze_dir: Path) -> int:
+def load_statement_transactions(conn: sqlite3.Connection, bronze_dir: Path,
+                                card_ids: set[str] | None = None) -> int:
     """Parse the statement PDFs under the bronze tree and import the
     transactions older than the export window. Run after the export runs so
     every seam is complete; idempotent (synthetic ids, deterministic per
@@ -1201,9 +1193,11 @@ def load_statement_transactions(conn: sqlite3.Connection, bronze_dir: Path) -> i
     period line, per-row signs, no combined segments), their own parser and
     their own pass (`load_card_statements`). Which accounts those are is
     decided by `card_account_ids_in_tree` — the same file-content signal that
-    routes the exports, not one run's roster."""
+    routes the exports, not one run's roster. `card_ids` passes that set in
+    when the caller already holds it; None walks the tree for it."""
     seams = _export_seams(conn)
-    card_ids = card_account_ids_in_tree(bronze_dir)
+    if card_ids is None:
+        card_ids = card_account_ids_in_tree(bronze_dir)
     deposit_seams = {ext: seam for ext, seam in seams.items()
                      if ext not in card_ids}
     if not deposit_seams:
@@ -1222,7 +1216,7 @@ def load_statement_transactions(conn: sqlite3.Connection, bronze_dir: Path) -> i
         # Per account: the statements whose period OPENED before its seam —
         # the others carry nothing the export does not already own.
         stmts = sorted((p for p in pool.values()
-                        if _epoch_day(p.period_start) < seam),
+                        if epoch_day(p.period_start) < seam),
                        key=lambda p: p.period_end, reverse=True)
         for parsed, seg in _chain_segments(conn, ext_id, stmts):
             if not statement_parser.segment_reconciles(seg):
@@ -1271,11 +1265,13 @@ def _names_a_payee(description: str | None) -> bool:
     return any(ch.isalpha() for ch in rest)
 
 
-def annotate_export_cheques(conn: sqlite3.Connection, bronze_dir: Path) -> int:
+def annotate_export_cheques(conn: sqlite3.Connection, bronze_dir: Path,
+                            card_ids: set[str] | None = None) -> int:
     """Give each export-era cheque the payee its statement prints, and
     return how many rows took one. Cheap when there is nothing to do: the
     statements are opened only for rows still owed a read, and the bronze
-    tree is walked for its card set only when some row is."""
+    tree is walked for its card set only when some row is and `card_ids`
+    does not already carry it."""
     todo = []
     for fitid, acct, posted, amount, check, desc, payload in conn.execute(
             "SELECT fitid, account_external_id, posted_at, amount, "
@@ -1292,7 +1288,8 @@ def annotate_export_cheques(conn: sqlite3.Connection, bronze_dir: Path) -> int:
                      (check or m.group(1)).strip(), body))
     if not todo:
         return 0
-    card_ids = card_account_ids_in_tree(bronze_dir)
+    if card_ids is None:
+        card_ids = card_account_ids_in_tree(bronze_dir)
     todo = [(fitid, posted, amount, number, body)
             for fitid, acct, posted, amount, number, body in todo
             if acct not in card_ids]
@@ -1306,8 +1303,8 @@ def annotate_export_cheques(conn: sqlite3.Connection, bronze_dir: Path) -> int:
     named = 0
     for fitid, posted, amount, number, body in todo:
         covering = [p for p in pool.values()
-                    if _epoch_day(p.period_start) <= posted
-                    <= _epoch_day(p.period_end)]
+                    if epoch_day(p.period_start) <= posted
+                    <= epoch_day(p.period_end)]
         if not covering:
             continue                    # its statement is not out yet
         matches = [t for p in covering for seg in p.segments
@@ -1425,8 +1422,8 @@ def _insert_statement_balance(conn, account_external_id: str, snapshot_at: int,
         "opening = excluded.opening, closing = excluded.closing, "
         "snapshot_at = excluded.snapshot_at, "
         "transactions_covered = excluded.transactions_covered",
-        (account_external_id, _epoch_day(stmt.period_start),
-         _epoch_day(stmt.period_end), float(stmt.previous_balance),
+        (account_external_id, epoch_day(stmt.period_start),
+         epoch_day(stmt.period_end), float(stmt.previous_balance),
          float(stmt.new_balance), snapshot_at, int(transactions_covered)))
 
 
@@ -1476,10 +1473,10 @@ def _import_card_statement(conn, account_external_id: str, stmt) -> int:
     is what the design says: the per-row reconstruction is for the export
     era, statement closing balances for the rest."""
     occ_seen: dict[tuple, int] = {}
-    period_end = _epoch_day(stmt.period_end)
+    period_end = epoch_day(stmt.period_end)
     n = 0
     for txn in stmt.transactions:
-        posted = _epoch_day(txn.posted_at)
+        posted = epoch_day(txn.posted_at)
         amount = -float(txn.amount)
         desc = txn.description or None
         key = (posted, round(amount, 2), (desc or "").strip())
@@ -1576,7 +1573,8 @@ def _card_statements_in_tree(bronze_dir: Path, card_ids: set[str]) -> dict:
     return out
 
 
-def load_card_statements(conn: sqlite3.Connection, bronze_dir: Path) -> int:
+def load_card_statements(conn: sqlite3.Connection, bronze_dir: Path,
+                         card_ids: set[str] | None = None) -> int:
     """Parse the card statement PDFs under the bronze tree into
     `statement_balances` (every era) and `transactions` (below the export
     seam only). Returns the number of transactions imported.
@@ -1608,8 +1606,12 @@ def load_card_statements(conn: sqlite3.Connection, bronze_dir: Path) -> int:
     unexplainable residual.
 
     Idempotent: balances upsert on (account, period_end), transactions
-    INSERT OR IGNORE on a synthetic id deterministic in the parse."""
-    card_ids = card_account_ids_in_tree(bronze_dir)
+    INSERT OR IGNORE on a synthetic id deterministic in the parse.
+
+    `card_ids` is the routing set (`card_account_ids_in_tree`) when the
+    caller already holds it; None walks the tree for it."""
+    if card_ids is None:
+        card_ids = card_account_ids_in_tree(bronze_dir)
     if not card_ids:
         return 0
     seams = _export_seams(conn)
@@ -1637,17 +1639,17 @@ def load_card_statements(conn: sqlite3.Connection, bronze_dir: Path) -> int:
                 # importing here would double every row the first export
                 # lands (see the section comment).
                 covered = False
-            elif _epoch_day(stmt.period_end) >= seam:
+            elif epoch_day(stmt.period_end) >= seam:
                 # The export owns this period's rows — unless the period also
                 # OPENED before the seam, in which case its pre-seam days
                 # belong to neither source. That hole is the price of gating
                 # per period rather than per row (see the section comment): it
                 # is one period per card and cannot grow, but it is invisible
                 # unless said out loud.
-                covered = _epoch_day(stmt.period_start) >= seam
+                covered = epoch_day(stmt.period_start) >= seam
                 if not covered:
                     given_up = sum(1 for t in stmt.transactions
-                                   if _epoch_day(t.posted_at) < seam)
+                                   if epoch_day(t.posted_at) < seam)
                     log.warning(
                         "card statements: the period %s - %s straddles the "
                         "export seam (%s), so the export owns it and none of "
@@ -1850,8 +1852,9 @@ def _tail_lands(conn, account_external_id: str, end_cents: int) -> bool:
     return False
 
 
-def derive_card_balances(conn: sqlite3.Connection,
-                         bronze_dir: Path) -> tuple[int, int, int]:
+def derive_card_balances(conn: sqlite3.Connection, bronze_dir: Path,
+                         card_export_ids: set[str] | None = None
+                         ) -> tuple[int, int, int]:
     """Reconstruct `transactions.balance` for every card's export-era rows.
     Returns (rows derived, spans landed, spans discarded).
 
@@ -1869,11 +1872,12 @@ def derive_card_balances(conn: sqlite3.Connection,
     restore. A roster row alone must never authorise that (a mis-stamped or
     corrupted `accounts.product` would otherwise wipe a deposit account's
     provider balances), and neither must a card-shaped export alone. Where
-    the two disagree, nothing is rewritten."""
+    the two disagree, nothing is rewritten. `card_export_ids` passes the
+    file signal in when the caller already holds it; None walks the tree."""
     seams = _export_seams(conn)
-    cards = sorted(_card_account_ids(conn)
-                   & card_export_ids_in_tree(bronze_dir)
-                   & seams.keys())
+    if card_export_ids is None:
+        card_export_ids = card_export_ids_in_tree(bronze_dir)
+    cards = sorted(_card_account_ids(conn) & card_export_ids & seams.keys())
     rows = landed = discarded = 0
     for ext_id in cards:
         r, ok, bad = _derive_card_account_balances(conn, ext_id, seams[ext_id])
@@ -1943,7 +1947,8 @@ def card_export_ids_in_tree(bronze_dir: Path) -> set[str]:
     return ids
 
 
-def card_account_ids_in_tree(bronze_dir: Path) -> set[str]:
+def card_account_ids_in_tree(bronze_dir: Path,
+                             export_ids: set[str] | None = None) -> set[str]:
     """Every external id that is a card account anywhere in the bronze tree:
     the file-content signal (`card_export_ids_in_tree`) plus every run's
     roster.
@@ -1959,8 +1964,12 @@ def card_account_ids_in_tree(bronze_dir: Path) -> set[str]:
 
     `derive_card_balances` deliberately does NOT use this set: it rewrites
     balances, so there a wrong answer costs data and the two signals must
-    AGREE rather than either being enough."""
-    ids = card_export_ids_in_tree(bronze_dir)
+    AGREE rather than either being enough.
+
+    `export_ids` is the file signal when the caller already holds it; None
+    walks the tree for it."""
+    ids = set(export_ids) if export_ids is not None else \
+        card_export_ids_in_tree(bronze_dir)
     for run_dir in bronze.iter_run_dirs(bronze_dir):
         ids |= card_account_ids(_read_accounts(run_dir))
     return ids
@@ -1968,10 +1977,12 @@ def card_account_ids_in_tree(bronze_dir: Path) -> set[str]:
 
 def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
     """Load one bronze run dir. Returns True if ingested, False if skipped
-    (non-complete dump, or already loaded). Idempotent."""
-    status = bronze.run_status(run_dir / "run.json")
-    if not bronze.is_loadable_status(status):
-        log.info("skip %s (status=%s)", run_dir.name, status)
+    (no manifest, non-complete dump, or already loaded). Idempotent."""
+    if not bronze.run_is_loadable(run_dir):
+        run_json = run_dir / "run.json"
+        log.info("skip %s (%s)", run_dir.name,
+                 f"status={bronze.run_status(run_json)}"
+                 if run_json.is_file() else "no run.json")
         return False
     try:
         snapshot_at = bronze.parse_run_ts(run_dir.name)
@@ -2190,6 +2201,7 @@ def main(argv: list[str]) -> int:
         # produces.
         reparse = silver.stale_generation(conn, STATEMENT_GENERATION_SCOPE,
                                           STATEMENT_GENERATION)
+        card_ids = None
         if _post_passes_pending(conn) or reparse:
             if reparse:
                 log.info("the statement parser has changed since silver was "
@@ -2199,9 +2211,14 @@ def main(argv: list[str]) -> int:
                          "re-running them")
             before = _statement_row_count(conn)
             _purge_stale_statement_rows(conn, reparse)
-            load_statement_transactions(conn, args.bronze_dir)
-            load_card_statements(conn, args.bronze_dir)
-            derive_card_balances(conn, args.bronze_dir)
+            # Bronze does not change during a load, so the card sets every
+            # pass reads are walked for once.
+            card_export_ids = card_export_ids_in_tree(args.bronze_dir)
+            card_ids = card_account_ids_in_tree(args.bronze_dir,
+                                                card_export_ids)
+            load_statement_transactions(conn, args.bronze_dir, card_ids)
+            load_card_statements(conn, args.bronze_dir, card_ids)
+            derive_card_balances(conn, args.bronze_dir, card_export_ids)
             after = _statement_row_count(conn)
             if reparse and after < before:
                 # The re-derivation came back short: a PDF that no longer
@@ -2224,7 +2241,7 @@ def main(argv: list[str]) -> int:
         # On every load, not only when the passes above are owed: a cheque
         # can reach the export before the statement that names its payee
         # does, and the pass reads nothing once every cheque is settled.
-        annotate_export_cheques(conn, args.bronze_dir)
+        annotate_export_cheques(conn, args.bronze_dir, card_ids)
         log.info("done: %d run(s) ingested into %s", loaded, db_path)
     finally:
         conn.close()

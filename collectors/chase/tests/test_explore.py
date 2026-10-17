@@ -1,8 +1,8 @@
 """Unit tests for the browserless half of explore.py: argument parsing,
 the chase.com origin gate, the click-recorder-JS ↔ Python contract, and
-the login pre-fill logic — the latter driven against stub Playwright
-objects, so no browser is needed. The shared recording machinery is
-tested in collectorkit.
+the host gate the login pre-fill is given — the latter driven against stub
+Playwright objects, so no browser is needed. The shared recording and
+pre-fill machinery is tested in collectorkit.
 
 Synthetic values only (no real credentials or account data).
 """
@@ -100,33 +100,17 @@ def test_js_mirrors_the_python_host_gate():
     assert json.dumps(explore.HOST_RE.pattern) in explore.CLICK_RECORDER_JS
 
 
-def test_js_redacts_password_values():
-    assert "<redacted>" in explore.CLICK_RECORDER_JS
-    assert "type === 'password'" in explore.CLICK_RECORDER_JS
-
-
-def test_the_click_recorder_never_logs_a_form_value():
-    # innerText is always empty on INPUT/TEXTAREA, so a button or link keeps
-    # its label while no field value can contribute anything — which keeps a
-    # filled username or a typed one-time code out of the click log.
-    assert ".value" not in explore.CLICK_RECORDER_JS
-
-
 # ============================================================
-# Login pre-fill — stub Playwright objects, no browser
+# Login pre-fill — what chase's arguments decide
 # ============================================================
+# The fill itself is collectorkit.explore.prefill_login, tested in its own
+# suite. These pin what chase hands it: the chase.com host gate.
 
 class StubField:
-    """Stands in for a Playwright Locator resolving to one input field.
+    """A Playwright Locator resolving to one visible input field."""
 
-    ``sticky=False`` models a field whose page JS rejects programmatic
-    fills (the read-back never matches), driving the retry-then-warn
-    path."""
-
-    def __init__(self, value="", visible=True, sticky=True):
+    def __init__(self, value=""):
         self.value = value
-        self.visible = visible
-        self.sticky = sticky
         self.fill_calls = []
 
     @property
@@ -137,35 +121,24 @@ class StubField:
         return 1
 
     def is_visible(self):
-        return self.visible
+        return True
 
     def fill(self, v, timeout=None):
         self.fill_calls.append(v)
-        if self.sticky or v == "":
-            self.value = v
+        self.value = v
 
     def input_value(self, timeout=None):
         return self.value
 
 
-class AbsentField:
+class AbsentField(StubField):
     """A Locator that matches nothing."""
-
-    @property
-    def first(self):
-        return self
 
     def count(self):
         return 0
 
-    def is_visible(self):
-        return False
-
     def fill(self, v, timeout=None):
         raise AssertionError("fill() on an absent field")
-
-    def input_value(self, timeout=None):
-        raise AssertionError("input_value() on an absent field")
 
 
 class StubFrame:
@@ -186,48 +159,17 @@ class StubPage:
         self.url = frames[0].url
 
 
-def chase_frame(**kw):
-    return StubFrame("https://secure.chase.com/", **kw)
-
-
-def test_prefill_fills_both_fields_and_only_once():
+def test_prefill_fills_a_chase_form():
     user, pwd = StubField(), StubField()
-    page = StubPage(chase_frame(user=user, pwd=pwd))
-    filled: set = set()
-    assert explore._maybe_prefill_login(page, USERNAME, PASSWORD, filled)
-    assert user.value == USERNAME
-    assert pwd.value == PASSWORD
-    # Second poll is a no-op: the fields are marked done, nothing re-fills.
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, filled)
-    assert user.fill_calls == [USERNAME]
-    assert pwd.fill_calls == [PASSWORD]
+    page = StubPage(StubFrame("https://secure.chase.com/", user=user, pwd=pwd))
+    assert explore._maybe_prefill_login(page, USERNAME, PASSWORD, set())
+    assert user.value == USERNAME and pwd.value == PASSWORD
 
 
 def test_prefill_rejects_foreign_host():
     user, pwd = StubField(), StubField()
     page = StubPage(StubFrame("https://chase.com.evil.example/login",
                               user=user, pwd=pwd))
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, set())
-    assert user.fill_calls == [] and pwd.fill_calls == []
-
-
-def test_prefill_requires_both_fields_in_same_frame():
-    # A lone matching input (e.g. the 2FA code entry, or a search box the
-    # user selector accidentally matches) must never receive a credential.
-    lone_user = StubField()
-    page = StubPage(chase_frame(user=lone_user))
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, set())
-    assert lone_user.fill_calls == []
-
-    lone_pwd = StubField()
-    page = StubPage(chase_frame(pwd=lone_pwd))
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, set())
-    assert lone_pwd.fill_calls == []
-
-
-def test_prefill_ignores_invisible_form():
-    user, pwd = StubField(visible=False), StubField()
-    page = StubPage(chase_frame(user=user, pwd=pwd))
     assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, set())
     assert user.fill_calls == [] and pwd.fill_calls == []
 
@@ -255,59 +197,3 @@ def test_prefill_never_reaches_foreign_iframe():
     )
     assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, set())
     assert user.fill_calls == [] and pwd.fill_calls == []
-
-
-def test_prefill_leaves_hand_typed_values_alone():
-    user = StubField(value="typed-by-hand")
-    pwd = StubField()
-    page = StubPage(chase_frame(user=user, pwd=pwd))
-    filled: set = set()
-    assert explore._maybe_prefill_login(page, USERNAME, PASSWORD, filled)
-    assert user.value == "typed-by-hand"    # untouched, marked done
-    assert user.fill_calls == []
-    assert pwd.value == PASSWORD
-
-
-def test_prefill_retries_once_then_gives_up_without_refighting():
-    # A field that rejects programmatic fills: fill → verify-fail →
-    # clear + refill → verify-fail → marked done (so later polls never
-    # fight whatever gets hand-typed), reported as not-filled.
-    user = StubField(sticky=False)
-    pwd = StubField(sticky=False)
-    page = StubPage(chase_frame(user=user, pwd=pwd))
-    filled: set = set()
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, filled)
-    assert user.fill_calls == [USERNAME, "", USERNAME]
-    # Marked done: a second poll touches nothing.
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, filled)
-    assert user.fill_calls == [USERNAME, "", USERNAME]
-
-
-def test_prefill_tracks_fills_per_page():
-    # The fill-once bookkeeping is keyed per page: a second tab with its
-    # own login form still gets filled.
-    filled: set = set()
-    page1 = StubPage(chase_frame(user=StubField(), pwd=StubField()))
-    page2 = StubPage(chase_frame(user=StubField(), pwd=StubField()))
-    assert explore._maybe_prefill_login(page1, USERNAME, PASSWORD, filled)
-    assert explore._maybe_prefill_login(page2, USERNAME, PASSWORD, filled)
-
-
-class FailingField(StubField):
-    """A field whose fill() raises the way Playwright does: the message ends
-    in a Call log block that reproduces the value being typed."""
-
-    def fill(self, v, timeout=None):
-        self.fill_calls.append(v)
-        raise RuntimeError(f"Timeout 2000ms exceeded.\nCall log:\n"
-                           f"  - fill(\"{v}\")")
-
-
-def test_a_failed_fill_never_logs_the_typed_value(caplog):
-    page = StubPage(chase_frame(user=FailingField(), pwd=FailingField()))
-    with caplog.at_level("DEBUG", logger="chase.explore"):
-        assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD,
-                                                set())
-    assert "prefill pwd field failed" in caplog.text
-    assert PASSWORD not in caplog.text
-    assert USERNAME not in caplog.text

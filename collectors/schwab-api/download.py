@@ -18,8 +18,8 @@ NEVER compressed (it is the forward completeness signal `prune` and
 
 OAuth tokens are loaded from a local token file. Schwab refresh tokens
 expire 7 days after issue and cannot be renewed without an interactive
-browser login; run `login.py` to mint a fresh token when this script
-reports refresh failure.
+browser login; run `./schwab-api login` to mint a fresh token when this
+script reports refresh failure.
 
 Usage:
     download.py --token-path <file> --bronze-dir <dir> \\
@@ -40,7 +40,7 @@ from pathlib import Path
 
 import _tokenclient
 import _txartefacts
-from collectorkit import cli, compress, debugcap, envfile
+from collectorkit import bronze, cli, compress, debugcap, envfile
 
 # schwab-py is a thin wrapper over the Schwab Trader API. _tokenclient
 # imports it lazily, so --help works on a fresh checkout without the
@@ -63,8 +63,8 @@ ARTIFACT_INSTRUMENTS = "instruments.json"
 # `load` key on: a dump whose status is not "complete" is never loaded.
 RUN_MANIFEST = "run.json"
 
-# Schwab caps the transactions endpoint window at 1 year per request. We
-# chunk longer ranges into successive sub-ranges to stay within the cap.
+# Schwab caps the transactions endpoint window at 1 year per request.
+# Longer ranges are chunked into successive sub-ranges to stay within it.
 TRANSACTION_WINDOW_DAYS = 365
 
 # Order statuses considered "open" — i.e. the order can still execute,
@@ -91,7 +91,7 @@ OPEN_ORDER_STATUSES = {
 }
 
 # Schwab's orders endpoint caps the entered-datetime window at "not more
-# than a year". The span we send is `start@midnight_UTC -> end@end_of_day_UTC`,
+# than a year". The span sent is `start@midnight_UTC -> end@end_of_day_UTC`,
 # so 365 lookback days yields ~366 elapsed-day units, which Schwab rejects
 # with HTTP 400. 364 days plus end-of-day gives just under 365 elapsed days
 # and passes the validator. Limit/stop orders rarely live longer than that
@@ -99,10 +99,10 @@ OPEN_ORDER_STATUSES = {
 # surfaces every open order.
 OPEN_ORDERS_LOOKBACK_DAYS = 364
 
-# Transaction types we ask for. The Schwab enum (per schwab-py) is the
-# union of all activity categories; we request all of them so the silver
-# layer can classify on its own terms rather than relying on the API to
-# pre-filter.
+# Transaction types requested. The Schwab enum (per schwab-py) is the
+# union of all activity categories; all of them are requested so the
+# silver layer can classify on its own terms rather than relying on the
+# API to pre-filter.
 TRANSACTION_TYPES_ALL = [
     "TRADE",
     "RECEIVE_AND_DELIVER",
@@ -123,8 +123,9 @@ TRANSACTION_TYPES_ALL = [
 
 # HTTP resilience. schwab-py sets a flat 30s timeout on its httpx client;
 # Schwab's /transactions and /instruments endpoints regularly take longer,
-# so we raise the read timeout and retry transient transport faults
-# (read/connect timeouts, dropped connections) with exponential backoff.
+# so the read timeout is raised and transient transport faults
+# (read/connect timeouts, dropped connections) are retried with
+# exponential backoff.
 # HTTP *status* errors are never retried — see schwab_get_json.
 DEFAULT_READ_TIMEOUT_S = 60.0
 MAX_TRANSIENT_RETRIES = 4
@@ -138,7 +139,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=Path,
         default=Path.home() / ".secrets" / "schwab-api-token.json",
         help="Path to the schwab-py token JSON file. The file must already "
-             "exist (mint it with login.py first). Default: "
+             "exist (mint it with `./schwab-api login` first). Default: "
              "~/.secrets/schwab-api-token.json.",
     )
     p.add_argument(
@@ -189,9 +190,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         metavar="SECONDS",
         help="Per-request read timeout in seconds (default: %(default)s). "
              "schwab-py defaults to a flat 30s; Schwab's /transactions and "
-             "/instruments endpoints are often slower, so we raise it and "
-             "retry transient timeouts. Bump this if downloads keep hitting "
-             "read timeouts.",
+             "/instruments endpoints are often slower, so it is raised and "
+             "transient timeouts are retried. Bump this if downloads keep "
+             "hitting read timeouts.",
     )
     p.add_argument(
         "--debug", action="store_true",
@@ -209,14 +210,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def write_json(path: Path, payload) -> None:
-    """Write payload to path as pretty-printed JSON, creating parents."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Use a tmpfile + rename to avoid partial writes on interruption.
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        json.dump(payload, fh, indent=2, sort_keys=True, default=str)
-        fh.write("\n")
-    tmp.rename(path)
+    """Write payload to path as pretty-printed JSON (tmp file + rename, so an
+    interruption never leaves a partial file), creating parents."""
+    bronze.atomic_write_json(path, payload)
     log.info("Wrote %s (%d bytes)", path, path.stat().st_size)
 
 
@@ -235,9 +231,9 @@ def write_data_artefact(path: Path, payload) -> Path:
 def schwab_get_json(response):
     """Validate a schwab-py HTTPX response and return its parsed JSON.
 
-    Raises a SystemExit on non-2xx; we deliberately do not retry HTTP
-    *status* errors here (rate-limit / 5xx handling belongs in a
-    scheduler). Transient *transport* faults are retried a level up in
+    Raises a SystemExit on non-2xx; HTTP *status* errors are deliberately
+    not retried here (rate-limit / 5xx handling belongs in a scheduler).
+    Transient *transport* faults are retried a level up in
     _request_json."""
     if response.status_code // 100 != 2:
         raise SystemExit(
@@ -361,14 +357,14 @@ def fetch_open_orders(client, since: date, until: date, *,
                       trace=_NO_TRACE) -> list[dict]:
     """GET /orders, filtered client-side to non-terminal statuses.
 
-    Schwab requires from_entered_datetime/to_entered_datetime; we use the
-    last OPEN_ORDERS_LOOKBACK_DAYS as the window since orders entered
-    before that have either filled, been cancelled, or expired.
+    Schwab requires from_entered_datetime/to_entered_datetime; the window
+    is the last OPEN_ORDERS_LOOKBACK_DAYS, since orders entered before
+    that have either filled, been cancelled, or expired.
 
-    We call get_orders_for_all_linked_accounts() once without a status
-    filter (one request returns all statuses) and then drop any order
-    whose status is terminal. This is cheaper than 15 per-status calls
-    and produces the same final set."""
+    get_orders_for_all_linked_accounts() is called once without a status
+    filter (one request returns all statuses), then any order whose
+    status is terminal is dropped. This is cheaper than 15 per-status
+    calls and produces the same final set."""
     start_dt = datetime.combine(since, datetime.min.time(), tzinfo=timezone.utc)
     end_dt = datetime.combine(until, datetime.max.time(), tzinfo=timezone.utc)
     all_orders = _request_json(
@@ -388,7 +384,7 @@ def collect_instrument_symbols_from_run(run_dir: Path) -> list[str]:
     Walks accounts_positions.json and every transactions_*.json file,
     extracting `instrument.symbol` from positions and from each
     transferItems entry. The result is the de-duplicated, sorted list of
-    symbols we will look up via /instruments. Each artefact is resolved
+    symbols to look up via /instruments. Each artefact is resolved
     to its on-disk variant and decompressed in memory — by the time this
     runs the data artefacts are already zstd-compressed in place."""
     symbols: set[str] = set()
@@ -421,11 +417,11 @@ def fetch_instruments(client, symbols: list[str], *, trace=_NO_TRACE) -> dict:
     Schwab is inconsistent across its own endpoints on class-share
     tickers: /accounts and /transactions emit the dot form (BRK.B),
     while /instruments only indexes the slash form (BRK/B). For any
-    sent symbol containing '.', we include *both* forms in the same
-    request. Schwab returns whichever variant it actually knows about;
-    we then rewrite '/' back to '.' on the returned `symbol` field so
-    the bronze file is symbol-consistent with sibling artefacts and
-    silver joins cleanly downstream.
+    sent symbol containing '.', *both* forms go into the same request.
+    Schwab returns whichever variant it actually knows about, and the
+    returned `symbol` field has '/' rewritten back to '.' so the bronze
+    file is symbol-consistent with sibling artefacts and silver joins
+    cleanly downstream.
 
     Symbols that Schwab still does not recognise after this fallback
     are logged for visibility but not retried. They are typically:
@@ -471,9 +467,9 @@ def fetch_transactions(client, account_hash: str, start: date, end: date, *,
                        trace=_NO_TRACE) -> list[dict]:
     """GET /accounts/{hash}/transactions for a date range.
 
-    schwab-py expects start_date / end_date as datetimes; we promote
-    date -> midnight-UTC start and end-of-day-UTC end so the response
-    includes all activity on the boundary days."""
+    schwab-py expects start_date / end_date as datetimes; the dates are
+    promoted to a midnight-UTC start and an end-of-day-UTC end so the
+    response includes all activity on the boundary days."""
     start_dt = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
     end_dt = datetime.combine(end, datetime.max.time(), tzinfo=timezone.utc)
     types = [client.Transactions.TransactionType[t] for t in TRANSACTION_TYPES_ALL]
@@ -493,7 +489,8 @@ def run(args: argparse.Namespace) -> int:
     if not args.token_path.is_file():
         raise SystemExit(
             f"Token file {args.token_path} does not exist. "
-            f"Run login.py first to mint one (interactive browser flow)."
+            f"Run `./schwab-api login` first to mint one (interactive "
+            f"browser flow)."
         )
 
     client_id = envfile.resolve_credential(args.client_id, "SCHWAB_CLIENT_ID", "--client-id")
@@ -501,13 +498,17 @@ def run(args: argparse.Namespace) -> int:
 
     # The run dir is settled before the first request so --debug's trace can
     # cover the account-hash listing too — the call that forces the token
-    # refresh, and so the one most often needing an explanation. A walk that
-    # dies there leaves the trace behind in a run dir with no manifest, which
-    # prune reclaims as a non-complete dump. A --dry-run mints no run dir, so
-    # its trace has nowhere to land: HttpTrace(None) makes that an explicit
-    # no-op. Without --debug the trace is inert and creates nothing.
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = None if args.dry_run else args.bronze_dir / ts
+    # refresh, and so the one most often needing an explanation. Its
+    # "in-progress" manifest lands first (the write also mkdirs the run dir)
+    # and is overwritten with the terminal status at the end. So a walk that
+    # dies anywhere, the token refresh included, leaves a dump `load` skips
+    # and `prune` reclaims once it goes quiescent, never a run dir with no
+    # manifest. A --dry-run mints no run dir, so its trace has nowhere to
+    # land: HttpTrace(None) makes that an explicit no-op. Without --debug
+    # the trace is inert and creates nothing.
+    run_dir = None if args.dry_run else bronze.run_dir(args.bronze_dir)
+    if run_dir is not None:
+        write_json(run_dir / RUN_MANIFEST, {"status": "in-progress"})
     trace = debugcap.HttpTrace(run_dir, log=log, enabled=args.debug)
 
     # Both building the client and the first request can force a token
@@ -523,7 +524,7 @@ def run(args: argparse.Namespace) -> int:
         account_numbers = fetch_account_numbers(client, trace=trace)
     except oauth_errors as e:
         raise SystemExit(
-            _tokenclient.explain_token_failure(args.token_path, e)) from e
+            _tokenclient.explain_token_failure(e)) from e
     log.info("Schwab returned %d linked account(s)", len(account_numbers))
 
     if args.dry_run:
@@ -543,14 +544,6 @@ def run(args: argparse.Namespace) -> int:
     log.info("Transaction window: %s -> %s", since, until)
 
     log.info("Writing artefacts to %s", run_dir)
-
-    # Drop an "in-progress" manifest up front and overwrite it with the
-    # terminal status at the end. This makes the run's state legible to
-    # `prune` while the walk is still running (a crashed walk leaves
-    # status="in-progress" — a non-complete dump prune can reclaim once
-    # it goes quiescent) and closes the ambiguity of a run dir with no
-    # manifest at all. The first write also mkdirs the run dir.
-    write_json(run_dir / RUN_MANIFEST, {"status": "in-progress"})
 
     write_data_artefact(run_dir / ARTIFACT_ACCOUNT_NUMBERS, account_numbers)
 
@@ -583,8 +576,8 @@ def run(args: argparse.Namespace) -> int:
 
     # Open orders are fetched once (cross-account, not per-account) and
     # filtered client-side to non-terminal statuses. Closed/cancelled/
-    # expired orders are intentionally dropped — for this dump we only
-    # care about orders that can still affect the portfolio.
+    # expired orders are intentionally dropped — this dump keeps only
+    # orders that can still affect the portfolio.
     orders_since = today - timedelta(days=OPEN_ORDERS_LOOKBACK_DAYS)
     log.info("Fetching open orders (entered %s -> %s) ...", orders_since, today)
     open_orders = fetch_open_orders(client, orders_since, today, trace=trace)
@@ -599,8 +592,8 @@ def run(args: argparse.Namespace) -> int:
 
     # Optional instrument-metadata fetch. Schwab omits `description` on
     # equity positions/transactions but populates it via /instruments
-    # (any projection). We harvest every symbol that appeared in the
-    # state/event artefacts we just wrote and look them up in one batch.
+    # (any projection). Every symbol that appeared in the state/event
+    # artefacts just written is looked up in one batch.
     instruments_count = None
     if args.with_instruments:
         symbols = collect_instrument_symbols_from_run(run_dir)
@@ -638,11 +631,7 @@ def run(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-
+    cli.configure_logging(args.verbose)
     return run(args)
 
 

@@ -33,8 +33,8 @@ case "${1:-help}" in
         ;;
     prune)
         # Delete non-complete dumps (crashed/in-progress walks and
-        # --dry-run shells) and `download --debug` HTTP traces from the
-        # bronze tree. No browser, no Xvfb. --dry-run previews.
+        # legacy --dry-run shells) and `download --debug` HTTP traces
+        # from the bronze tree. No browser, no Xvfb. --dry-run previews.
         shift
         exec python3 /app/prune.py "$@"
         ;;
@@ -63,7 +63,8 @@ Subcommands:
   load      Parse bronze into silver SQLite. Idempotent:
             skips dumps already loaded.
   prune     Delete non-complete dumps (crashed/in-progress
-            walks and --dry-run shells) from the bronze tree.
+            walks and legacy --dry-run shells) and `download
+            --debug` HTTP traces from the bronze tree.
             --dry-run prints the plan first.
   sh|bash   Open an interactive shell inside the container.
   help      Show this message.

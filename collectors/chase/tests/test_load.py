@@ -141,13 +141,6 @@ def test_parse_csv_rows_and_balance():
     assert rows[3]["description"] == "PENDING COFFEE"
 
 
-def test_parse_money_variants():
-    assert load.parse_money("$1,234.56") == 1234.56
-    assert load.parse_money("(50.00)") == -50.00
-    assert load.parse_money("") is None
-    assert load.parse_money(None) is None
-
-
 def test_parse_dates():
     assert load.parse_ofx_date("20260715120000") == _epoch(2026, 7, 15)
     assert load.parse_csv_date("07/15/2026") == _epoch(2026, 7, 15)
@@ -383,7 +376,7 @@ def _make_run(root: Path, slug: str, *, status="complete", card=False,
 def _conn():
     # Manual transaction control, as `silver.open_db` opens the real DB.
     c = sqlite3.connect(":memory:", isolation_level=None)
-    load.apply_migrations(c, MIGRATIONS)
+    silver.apply_migrations(c, MIGRATIONS)
     return c
 
 
@@ -424,7 +417,7 @@ def test_failed_load_run_leaves_silver_unchanged(tmp_path, monkeypatch):
     # flag, so the next load retries the whole dump.
     run = _make_run(tmp_path, "20260801T120000Z")
     conn = silver.open_db(tmp_path / "chase.db")
-    load.apply_migrations(conn, MIGRATIONS)
+    silver.apply_migrations(conn, MIGRATIONS)
 
     def boom(*_args, **_kwargs):
         raise OSError("synthetic read failure")
@@ -452,6 +445,24 @@ def test_load_run_skips_in_progress():
         assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 0
 
 
+def test_a_run_without_a_manifest_is_neither_loaded_nor_recorded(tmp_path):
+    # A run dir whose download has not written run.json yet (or crashed
+    # before it did) is prune's to reclaim, never a load input.
+    root = tmp_path / "bronze"
+    root.mkdir()
+    run = _make_run(root, "20260801T120000Z")
+    (run / "run.json").unlink()
+    db = tmp_path / "chase.db"
+    assert load.main(["--bronze-dir", str(root), "--silver-db", str(db)]) == 0
+    conn = sqlite3.connect(db)
+    try:
+        for table in ("accounts", "transactions", "documents", "dump_runs"):
+            assert conn.execute(
+                f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0, table
+    finally:
+        conn.close()
+
+
 def test_main_force_rebuild_equals_incremental(tmp_path):
     root = tmp_path / "bronze"
     root.mkdir()
@@ -476,7 +487,7 @@ def test_main_refuses_a_db_still_holding_pre_0002_ids(tmp_path):
     _make_run(root, "20260801T120000Z")
     db = tmp_path / "chase.db"
     conn = sqlite3.connect(db)
-    load.apply_migrations(conn, MIGRATIONS)
+    silver.apply_migrations(conn, MIGRATIONS)
     _seed_export(conn, [(_epoch(2026, 7, 15), -42.50)])     # bare-FITID id
     conn.close()
 
@@ -494,7 +505,7 @@ def _post_pass_calls(monkeypatch, *, failing=None):
     ran = []
 
     def spy(name):
-        def run(conn, bronze_dir):
+        def run(conn, bronze_dir, _card_ids=None):
             ran.append(name)
             if name == failing:
                 raise RuntimeError("pdf tooling unavailable")
@@ -509,10 +520,10 @@ def _post_pass_calls(monkeypatch, *, failing=None):
 def test_post_passes_rerun_after_one_of_them_failed(tmp_path, monkeypatch):
     # The three passes are tree-wide, and ingest has already committed each
     # run into `dump_runs` by the time they start. Gated on "this invocation
-    # ingested something", a load that died inside one of them left silver
-    # permanently without its statement backfill and its reconstructed card
-    # balances, with nothing reporting it. The pending flag survives the
-    # crash, so the next ordinary load runs all three again.
+    # ingested something" alone, a load that died inside one of them would
+    # leave silver permanently without its statement backfill and its
+    # reconstructed card balances, with nothing reporting it. The pending flag
+    # survives the crash, so the next ordinary load runs all three again.
     root = tmp_path / "bronze"
     root.mkdir()
     _make_run(root, "20260801T120000Z")
@@ -537,6 +548,25 @@ def test_post_passes_rerun_after_one_of_them_failed(tmp_path, monkeypatch):
     ran = _post_pass_calls(monkeypatch)
     assert load.main(args) == 0
     assert ran == []
+
+
+def test_a_load_walks_the_tree_for_its_card_set_once(tmp_path, monkeypatch):
+    # Bronze does not change during a load, so the post passes and the
+    # cheque pass share one walk of the export files.
+    root = tmp_path / "bronze"
+    root.mkdir()
+    _make_run(root, "20260801T120000Z", card=True)
+    walks = []
+    real = load.card_export_ids_in_tree
+
+    def counted(bronze_dir):
+        walks.append(bronze_dir)
+        return real(bronze_dir)
+
+    monkeypatch.setattr(load, "card_export_ids_in_tree", counted)
+    assert load.main(["--bronze-dir", str(root),
+                      "--silver-db", str(tmp_path / "chase.db")]) == 0
+    assert walks == [root]
 
 
 def _interrupt_when_the_first_run_returns(monkeypatch):

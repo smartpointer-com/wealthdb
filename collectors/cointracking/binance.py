@@ -4,11 +4,11 @@ history.
 Free, no API key required, geographically generous (api.binance.com
 serves most non-US regions; the U.S. endpoint at api.binance.us
 has narrower coverage if needed). 1,200 requests/min IP weight on
-the public endpoint — orders of magnitude more than we need.
+the public endpoint — orders of magnitude more than the collector needs.
 
 USDT-denominated, NOT USD. The tracking error of USDT/USD around
 parity is a few basis points; the schema's `coin_prices` table
-is labelled `price_usd` and we store the Binance close in that
+is labelled `price_usd` and holds the Binance close in that
 column — the small USDT/USD basis is silently absorbed.
 
 Two endpoints used:
@@ -51,7 +51,7 @@ USER_AGENT = "wealthdb-cointracking/0.1"
 
 # Binance allows 1,200 requests/min on the public-spot endpoint
 # with a per-route weight system. 0.1s pacing = 600 req/min, well
-# below the ceiling for any path we use.
+# below the ceiling for any path this client calls.
 RATE_LIMIT_DELAY_S = 0.1
 
 # Maximum daily klines per /api/v3/klines call.
@@ -59,8 +59,8 @@ KLINES_MAX_PER_CALL = 1000
 
 PROVIDER = "binance"
 
-# Optional Pro / authenticated key for the higher rate-limit tier.
-# Unused on the free public endpoint.
+# Optional key, sent as X-MBX-APIKEY when set, for the higher
+# rate-limit tier; the public endpoint needs none.
 ENV_API_KEY = "BINANCE_API_KEY"
 
 # Sentinel `coin_id` returned by build_mapping for stablecoins.
@@ -68,7 +68,7 @@ ENV_API_KEY = "BINANCE_API_KEY"
 # instead of hitting the API.
 STABLECOIN_SENTINEL = "__stablecoin__"
 
-# USD-pegged stablecoins. For each of these we emit synthetic
+# USD-pegged stablecoins. Each of these gets a synthetic
 # price=1.0; the small USDT/USD basis (a few bps) absorbs the
 # tracking error.
 STABLECOINS: set[str] = {

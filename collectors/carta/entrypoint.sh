@@ -11,17 +11,12 @@
 #   Xvfb, then the JSON endpoints via the context request API. No VNC.
 # - `load`:    pure SQLite + Python, no browser.
 # - `prune`:   pure file walk, no browser.
-#
-# When Xvfb IS started, it's started directly rather than via `xvfb-run`:
-# the Ubuntu Noble xvfb-run script's SIGUSR1 ready-signaling hangs under
-# a non-root parent. Socket-existence polling is a version-independent
-# ready signal.
 
 set -euo pipefail
 
 # Xvfb / x11vnc / camoufox-cache bootstrap (VFB_DISPLAY, start_xvfb,
-# start_x11vnc) is shared across the camoufox collectors, baked into
-# base-camoufox at /opt/entrypoint-lib.sh.
+# start_x11vnc), shared by the browser collectors and baked into
+# base-playwright at /opt/entrypoint-lib.sh.
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
@@ -30,9 +25,10 @@ case "${1:-help}" in
         # Discovery harness. Drives Camoufox over VNC, records every
         # click + every network fetch into /debug/<ts>/ so login.py +
         # download.py can be written from real traces.
+        shift
+        exec_if_help explore.py "$@"
         start_xvfb
         start_x11vnc explore
-        shift
         exec python3 /app/explore.py "$@"
         ;;
     login)
@@ -40,16 +36,18 @@ case "${1:-help}" in
         # 2FA code is read from stdin). Camoufox (not vanilla Firefox) is
         # required to clear Carta's Cloudflare challenge; headed-under-Xvfb
         # matches the proven explore config.
-        start_xvfb
         shift
+        exec_if_help login.py "$@"
+        start_xvfb
         exec python3 /app/login.py "$@"
         ;;
     download)
         # Reuses the login.py session profile. Drives headed Camoufox under
         # Xvfb (Cloudflare again), then calls the JSON endpoints via the
         # context request API. No VNC.
-        start_xvfb
         shift
+        exec_if_help download.py "$@"
+        start_xvfb
         exec python3 /app/download.py "$@"
         ;;
     load)
@@ -61,10 +59,11 @@ case "${1:-help}" in
         ;;
     prune)
         # Delete non-complete dumps (a crashed walk left run.json
-        # status="in-progress", or a pre-status run left no run.json) from
-        # the bronze tree, plus screenshots/ (the download --debug
-        # captures) from complete dumps. Pure file walk — no browser, no
-        # Xvfb. A complete dump's load inputs are never touched.
+        # status="in-progress", or a walk that crashed before writing
+        # run.json left none) from the bronze tree, plus screenshots/ (the
+        # download --debug captures) from complete dumps. Pure file walk —
+        # no browser, no Xvfb. A complete dump's load inputs are never
+        # touched.
         # Also reachable host-side via the wrapper (the usual path).
         shift
         exec python3 /app/prune.py "$@"
@@ -99,8 +98,8 @@ Subcommands:
   load        Ingest bronze snapshots into the SQLite silver: entities,
               securities, vesting_schedules + vesting_events,
               fund_metrics, cap_calls, capital_events, cash_flows,
-              documents. Pass --force to delete the silver DB and
-              rebuild it from all bronze.
+              documents, k1_capital_accounts. Pass --force to delete the
+              silver DB and rebuild it from all bronze.
   prune       Delete non-complete dumps (crashed walks) from the bronze
               tree, and strip screenshots/ (the download --debug captures)
               from complete dumps, whose load inputs are never touched.

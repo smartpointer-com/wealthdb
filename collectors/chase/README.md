@@ -112,7 +112,8 @@ Other verbs:
   `./chase login --check` probes the stored profile without a 2FA push. It
   reports the session dead between runs, by design.
 - `./chase prune --dry-run` previews the reclaim; `./chase prune` deletes
-  non-complete dumps and the aged debug cache.
+  non-complete dumps, the `--debug` bodies under `raw/svc/` and the aged
+  debug cache.
 - `./chase help` and `./chase <verb> --help` list the flags.
 
 The 2FA dialog is a standalone, tested module,
@@ -133,6 +134,7 @@ Each `download` writes one bronze run dir under the collector's data dir
 | `run.json` | status manifest, plus a per-product coverage block |
 | `accounts.json` | the account roster, with card detail on card records |
 | `raw/*.json` | the raw roster responses, for provenance |
+| `raw/svc/*.json` | with `--debug`, every other `/svc/` JSON body; `prune` removes them |
 | `transactions/<id>.csv`, `transactions/<id>.qfx` | the two activity exports per account |
 | `statements/<id>/<YYYY-MM-DD>.pdf` | statement PDFs |
 

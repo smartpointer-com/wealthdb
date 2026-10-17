@@ -8,10 +8,6 @@ that it drifts silently in BOTH directions: a value gold accepts but the
 mirror omits aborts an otherwise good load, and a value the mirror allows
 but gold rejects reaches the adapter and is laundered or refused there.
 
-It had already drifted by four values (`401k`, `403b`, `457b`, `529` — every
-one of them a no-portal plan, which is exactly what the manual collector
-exists for) before anything noticed.
-
 This test lives in collectorkit rather than in either side because it is the
 only suite that runs on the HOST: the collector's pytest sees only its own
 directory inside its image, and `go test` is mounted at the inner

@@ -9,9 +9,9 @@ timestamped run dir under ``--bronze-dir``, ``prune`` removes:
 * whole run dirs that are not complete dumps: ``run.json`` is missing
   (the walk crashed before creating the marker) or its ``status`` is
   anything other than ``"complete"`` (an ``"in-progress"`` marker left
-  by a crashed walk). ``load`` already skips such a dir, but its partial
-  ``cu_<id>/`` CSVs otherwise linger on disk; after pruning one, the
-  next ``load --force`` rebuild reflects the removal.
+  by a crashed walk). ``load`` skips such dirs, so removing one never
+  changes silver; its partial ``cu_<id>/`` CSVs would otherwise linger
+  on disk.
 * ``screenshots/`` inside a complete dump — the DOM + screenshot
   captures ``download --debug`` writes for the portfolio-discovery page
   and for any portfolio that failed. Everything else in a run dir is a
@@ -34,13 +34,16 @@ An in-flight guard skips non-complete dumps written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir so
 a long multi-portfolio walk is protected. ``--dry-run`` prints the plan
 without removing anything. The only paths ever deleted are whole
-non-complete run dirs and ``screenshots/`` subdirs; complete dumps' load
-inputs (``run.json`` + ``cu_<id>/{trades,balance,overview}.csv[.zst]``)
-and non-run entries at the bronze root (``known_portfolios.json``, the
-silver ``cointracking.duckdb``) are never touched.
+non-complete run dirs, ``screenshots/`` subdirs, and the stale entries
+of the ``--debug-dir`` cache (the wrapper passes its ``/debug`` dir);
+complete dumps' load inputs (``run.json`` +
+``cu_<id>/{trades,balance,overview}.csv[.zst]``) and non-run entries at
+the bronze root (``known_portfolios.json``, the silver
+``cointracking.duckdb``) are never touched.
 
 Usage:
-    prune.py [--bronze-dir /data] [--dry-run] [--min-age-hours N]
+    prune.py [--bronze-dir /data] [--debug-dir DIR] [--dry-run]
+             [--min-age-hours N]
 """
 
 from __future__ import annotations

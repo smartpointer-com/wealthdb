@@ -93,9 +93,9 @@ persists, and do not invalidate it without cause:
   the session genuinely expires. Each fresh login fires a real 2FA
   challenge.
 - Don't log out programmatically at the end of `download`.
-- `/secrets/carta-profile/` is the persistent browser profile dir (Camoufox
-  or vanilla Firefox). It holds the session cookie and any device-trust
-  value. Keep it at 0700; treat the whole dir as a credential.
+- `/secrets/carta-profile/` is the persistent Camoufox profile dir. It
+  holds the session cookie and any device-trust value. Keep it at 0700;
+  treat the whole dir as a credential.
 
 ## 3. login must not weaken authentication
 

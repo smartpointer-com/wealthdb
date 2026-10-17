@@ -37,7 +37,6 @@ DESIGN.md
 *.pem
 *.key
 storageState*.json
-schwab_web_state*.json
 .env
 .envrc
 data/

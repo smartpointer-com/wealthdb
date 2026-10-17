@@ -61,7 +61,7 @@ DEFAULT_SILVER_DB = Path("/data/viac.db")
 # ============================================================
 
 # VIAC's top-level assetsByClasses key → wealthdb canonical
-# asset_class. Anything VIAC adds that we haven't catalogued
+# asset_class. Anything VIAC adds that is not catalogued here
 # falls through to 'other'; the original VIAC label is preserved
 # on positions.viac_asset_class for downstream review.
 VIAC_ASSET_CLASS_MAP: dict[str, str] = {
@@ -114,15 +114,11 @@ VIAC_DECIMAL_TYPE = "VIAC_DECIMAL"
 def viac_decimal(value: Any) -> float | None:
     """One VIAC decimal field as a float, from either wire shape.
 
-    Absent stays absent. An unrecognised shape RAISES rather than
-    yielding None: the envelope arrived unannounced and aborted a load,
-    which is how it was noticed at all — coercing the unknown to None
-    would instead have written a whole series of silent nulls. The
-    message names the shape only; the value is a real balance.
-
-    A float is what the column holds (REAL) and what the bare-number era
-    already stored, so the envelope's extra precision is dropped exactly
-    where it always was.
+    Absent stays absent. An unrecognised shape raises rather than
+    returning None, so a new wire shape stops the load instead of
+    writing a run of silent nulls. The message names the shape only;
+    the value is a real balance. The column is REAL, so the envelope's
+    extra precision is dropped.
     """
     if value is None:
         return None
@@ -256,7 +252,8 @@ def load_accounts_phase(
     for entry in flat:
         number = entry.get("number")
         if not number:
-            logger.warning("portfolio entry missing 'number': %s", entry)
+            logger.warning("portfolio entry missing 'number' (keys %s)",
+                           sorted(entry))
             continue
         product_code, portfolio_index = parse_account_id(number)
 
@@ -270,7 +267,8 @@ def load_accounts_phase(
             try:
                 strategy_payload = json.loads(strategy_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError as e:
-                logger.warning("strategy.json for %s parse failed: %s", number, e)
+                logger.warning("strategy.json for %s parse failed: %s",
+                               bronze.log_id(number), e)
 
         current_strategy = strategy_payload.get("currentStrategy") or {}
         strategy_obj = entry.get("strategy") or {}
@@ -374,11 +372,11 @@ def load_positions_phase(
                 isin = pos.get("isin")
                 if not isin:
                     # ISIN-less positions shouldn't happen for VIAC's
-                    # ETF/fund universe — log so we notice if it
-                    # does and decide how to key them.
+                    # ETF/fund universe — logged, so a new shape is
+                    # seen and a key for it can be chosen.
                     logger.warning(
                         "position without ISIN in %s (%s): %s",
-                        number, viac_class, pos.get("name"),
+                        bronze.log_id(number), viac_class, pos.get("name"),
                     )
                     continue
                 # VIAC's JSON key `amount` carries units (NOT CHF —
@@ -482,8 +480,8 @@ def load_transactions_phase(
     ``since`` / ``until`` come from the bronze run's `windows` block
     (populated by download.py). Items whose ``valueDate`` falls
     outside [since, until] are dropped client-side — the REST
-    endpoint has no date filter so we always receive the full
-    history in bronze. Either bound can be None ("no bound", load
+    endpoint has no date filter, so bronze always holds the full
+    history. Either bound can be None ("no bound", load
     every transaction)."""
     tx_path = run_dir / "transactions" / "all.json"
     if not tx_path.is_file():
@@ -504,7 +502,7 @@ def load_transactions_phase(
                 continue
             # Date-window filter (download-time windows from run.json).
             # Apply on the raw YYYY-MM-DD slice rather than re-deriving
-            # from the epoch we just computed — keeps the window check
+            # from the epoch computed above — keeps the window check
             # in calendar-date terms and avoids a timezone round-trip.
             if since is not None or until is not None:
                 vd = parse.iso_date(vd_str)
@@ -522,8 +520,8 @@ def load_transactions_phase(
             )
             # INSERT OR REPLACE on the synthetic id → re-loading
             # converges. snapshot_at records the dump that first
-            # observed the event; we keep the original first-
-            # observation timestamp on conflict via a guard.
+            # observed the event; a guard keeps the original first-
+            # observation timestamp on conflict.
             existing = conn.execute(
                 "SELECT snapshot_at FROM transactions WHERE transaction_external_id = ?",
                 (tx_id,),
@@ -622,11 +620,10 @@ def _upsert_report_instrument(
     existing (live-load) metadata — only fills nulls, lowers
     first_seen_at, raises last_seen_at — and leaves etf_link_en /
     payload untouched, so a richer live row is never clobbered by an
-    older report row. This is how the report-only ISINs (instruments
-    held historically but sold before live scraping began, e.g. the
-    pre-2024-fusion CS/iShares funds) enter the catalogue, while the
-    still-held instruments keep their live metadata and merely gain an
-    earlier first_seen_at."""
+    older report row. This is how an ISIN held only in the past (sold
+    before the first live scrape) enters the catalogue, while a
+    still-held instrument keeps its live metadata and gains an earlier
+    first_seen_at."""
     conn.execute(
         """
         INSERT INTO instruments (
@@ -691,9 +688,9 @@ def load_historical_reports_phase(
             continue
         pdf_path = run_dir / "documents" / f"{doc_id}.pdf"
         if not pdf_path.is_file():
-            # Not in this dump's documents/ (gated tier, or the
-            # hard-link landed it in a different dump). Another dump
-            # carries it; skip here.
+            # Not in this dump's documents/: outside the run's
+            # --lookback window, or its fetch failed. A dump whose
+            # window covers it carries it; skip here.
             continue
         try:
             parsed = pdf_parsers.parse_investment_report(pdf_path)
@@ -783,9 +780,9 @@ def load_documents_phase(
 ) -> None:
     """Read documents/index.json + the PDFs on disk, content-dedup,
     upsert `documents`. PDFs themselves stay on disk; this is just
-    the index. A document indexed but not on disk was skipped via
-    `--no-transaction-documents` or failed to fetch; the next dump that
-    downloads it catches up."""
+    the index. A document indexed but not on disk was outside the run's
+    --lookback window, skipped by `--no-transaction-documents`, or failed
+    to fetch. A later dump that downloads it catches up."""
     index_path = run_dir / "documents" / "index.json"
     if not index_path.is_file():
         logger.info("  documents phase: no index.json — skipping")

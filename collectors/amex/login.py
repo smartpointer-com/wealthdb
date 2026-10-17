@@ -2,13 +2,11 @@
 """American Express sign-in driver — the machinery `download` signs in with,
 and the cheap `login --check` device-trust probe.
 
-**There is no `login` verb.** It folded into `download` (DESIGN.md §L): the
-sign-in budget is small enough that a handful of sign-ins in a short
-window fires a captcha (§K), and a separate `login` doubled the cost of
-every routine run for nothing — the device trust it minted is minted just
-as well inside `download`, by this same code, on the same profile. The
-wrapper traps a bare `login` host-side as a no-op so an orchestrator's
-login → download → load never trips.
+`download` is the one verb that signs in (DESIGN.md §L): the sign-in
+budget is small enough that a handful of sign-ins in a short window fires a
+captcha (§K). A bare `login` is a host-side no-op, so an orchestrator's
+login → download → load never trips; `login --check` reads the device trust
+from the profile.
 
 The sign-in form is classic light DOM on www.americanexpress.com, and
 submitting it posts to a legacy logon endpoint whose JSON response is the
@@ -56,19 +54,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from collectorkit import cli, debugcap, envfile, launch
+from collectorkit import bronze, cli, debugcap, launch
+from collectorkit import explore as kit_explore
 from collectorkit.launch import page_url, pump, wait_for
 
 import amexclient
 import auth_dialog
-# Reuse explore's validated, frame-aware, origin-gated login pre-fill rather
-# than a second copy — same collector, same selectors.
-from explore import _maybe_prefill_login, PASS_ENV, USER_ENV
+# Reuse explore's validated, frame-aware, origin-gated login pre-fill and its
+# paths rather than a second copy — same collector, same selectors, and the
+# one profile that carries the device trust.
+from explore import DEFAULT_PROFILE_DIR, PASS_ENV, USER_ENV, _maybe_prefill_login
 
 log = logging.getLogger("amex.login")
-
-DEFAULT_PROFILE_DIR = Path("/secrets/amex-profile")
-DEFAULT_ENV_FILE = Path("/secrets/amex.env")
 
 # The three ways a passcode challenge is answered:
 TWOFACTOR_CLI = "cli"     # drive the challenge screens, code read from stdin
@@ -111,7 +108,7 @@ def camoufox(profile_dir: Path, fresh: bool = False):
     mistaken --fresh does not cost a real passcode permanently. Yields
     (context, page)."""
     if fresh and profile_dir.exists():
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stamp = bronze.ts_slug()
         aside = profile_dir.with_name(f"{profile_dir.name}.pre-fresh-{stamp}")
         shutil.move(str(profile_dir), str(aside))
         log.warning("--fresh: moved the profile to %s — the next login is "
@@ -603,17 +600,6 @@ def _capture(page, args, name: str) -> None:
                               redact=lambda html: blank_otp(mask(html)))
 
 
-def _load_credentials(env_file: Path) -> tuple[str, str]:
-    if envfile.source_env_file(env_file):
-        log.info("env file: %s (sourced)", env_file)
-    username = os.environ.get(USER_ENV, "")
-    password = os.environ.get(PASS_ENV, "")
-    if not (username and password):
-        log.warning("%s / %s not set — the form will not be pre-filled.",
-                    USER_ENV, PASS_ENV)
-    return username, password
-
-
 def _reveal_login_form(page) -> None:
     """Click the homepage "Log In" link. Best-effort: if the link isn't there
     (a layout change, or already on the sign-in page), the prefill poll below
@@ -657,7 +643,9 @@ def _submit(page) -> bool:
 
 def _prefill_and_submit(page, args) -> bool:
     """Front half of every login: open the form, prefill, submit."""
-    username, password = _load_credentials(args.env_file)
+    username, password, _ = kit_explore.load_credentials(
+        args.env_file, (USER_ENV,), (PASS_ENV,), no_prefill=False,
+        host="americanexpress.com", log=log)
     page.goto(amexclient.START_URL, wait_until="domcontentloaded",
               timeout=45_000)
     _reveal_login_form(page)

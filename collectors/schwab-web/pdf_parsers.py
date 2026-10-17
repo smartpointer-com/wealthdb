@@ -1,14 +1,14 @@
 """
-Parsers for Schwab monthly brokerage statement PDFs.
+Parsers for Schwab brokerage statement PDFs: the period, activity rows,
+holdings and their tax lots, the cash summary, the account value, the
+registration label and the account number.
 
-The primary use case is reconstructing transaction history for
-ACCOUNTS THAT HAVE BEEN CLOSED — closed accounts disappear from
-the Transaction History page, so archived monthly statements are
-the only retrievable record (fetchable via download.py while any
-open account shares the login).
-
-For active accounts the Transaction History page is the
-authoritative source; PDF parsing remains for cross-checks and
+Statements are this collector's only position history, and the only
+record of a closed account's transactions: a closed account disappears
+from the Transaction History page, while its archived statements stay
+fetchable via download.py as long as an open account shares the login.
+For an active account's transactions the Transaction History page is
+the authoritative source; the statement rows serve cross-checks and
 backfill.
 
 Design notes:
@@ -22,11 +22,11 @@ Schwab's tabular layout in the source PDF survives reasonably
 well into the line stream because each row starts at the same x
 and columns are space-separated when there is no value collision.
 Where rows wrap (long descriptions, "IndustryFee$0.16" notes,
-continuation symbols), we attach the continuation to the
+continuation symbols), the continuation is attached to the
 previously-seen row via heuristics on the leading character set.
 
-The Date column is MM/DD — no year. We parse the statement period
-from the first page header to attach the correct year.
+The Date column is MM/DD — no year. The statement period, parsed from
+the first page header, supplies the correct year.
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ _MONTH_NUMS = statement_period.MONTH_NUMS
 # 1, adjacent to the account number. This is the only Schwab-
 # side signal for the per-account tax wrapper — the Trader API
 # doesn't surface it (see schwab-api DESIGN.md §4.10).
-# wealthdb's gold adapter maps the verbatim string we return
+# wealthdb's gold adapter maps the verbatim string returned
 # here to its canonical `tax_wrapper` enum.
 #
 # Three layout eras to handle, each with a distinct anchor:
@@ -172,7 +172,7 @@ def _detect_registration_label(lines: list[str]) -> str | None:
 
     # Era 2 (2020-2024): "<LABEL> of" (the holder name follows
     # on the next line). Many lines on page 1 end in " of" so
-    # we additionally require a registration keyword to land
+    # a registration keyword is additionally required to land
     # on the legitimate header.
     for ln in lines:
         if not ln:
@@ -209,7 +209,7 @@ def _augment_custodial_subtype(label: str, lines: list[str]) -> str:
 
     The header line "Schwab One® Custodial Account of" is the
     same string for UTMA and UGMA accounts, so it's the only
-    place in silver where we look BEYOND the header for a
+    place in silver that looks BEYOND the header for a
     resolution. Doing it here keeps wealthdb's gold adapter
     out of bronze and gives it a single column to key off.
 
@@ -383,7 +383,7 @@ _TX_END_RE = re.compile(
 
 # A row's leading token is either MM/DD (a new date), a category
 # keyword (same date as the previous row), or "(continued)" /
-# noise. We use a wide category whitelist rather than a closed
+# noise. The category whitelist is wide rather than a closed
 # set, since Schwab adds new ones occasionally.
 #
 # A row's date is printed without a year. A line that opens with a
@@ -399,7 +399,7 @@ _CATEGORY_KEYWORDS = (
 )
 _CAT_RE = re.compile(r"^(?P<cat>" + "|".join(_CATEGORY_KEYWORDS) + r")\b")
 
-# Numeric fields. We accept comma-grouped numbers, optional
+# Numeric fields: comma-grouped numbers, optional
 # parens for negatives ((1,234.56)), optional sign, and an
 # optional trailing ",(ST)" / "(LT)" tag for the realised
 # gain/loss column.
@@ -412,7 +412,7 @@ _REALIZED_RE = re.compile(
 
 # Tickers are 1-5 uppercase letters, occasionally with a dot
 # (e.g. BRK.B) or slash; CUSIPs are 9 alphanumerics ending in a
-# digit. We accept either.
+# digit. Either is accepted.
 _TICKER_RE = re.compile(r"^[A-Z][A-Z0-9./-]{0,8}$")
 _CUSIP_RE = re.compile(r"^[A-Z0-9]{8}\d$")
 
@@ -767,7 +767,7 @@ def _parse_new_tx_block(block_lines: list[str],
 #
 # Description continuations follow the data row and frequently
 # carry the ticker via a "<NAME>: <TICKER>" pattern (e.g.
-# "CLASS A: EXMP"). We extract that as the row's symbol.
+# "CLASS A: EXMP"), extracted as the row's symbol.
 
 _LEGACY_TX_SECTION_HEADER_RE = re.compile(
     r"^Transaction\s+Detail"
@@ -785,8 +785,8 @@ _LEGACY_TX_SECTION_END_RE = re.compile(
 # these stops a Bank-Interest row whose data lives on the very last
 # row of a sub-section would absorb the entire trailing page chrome
 # (full account-holder name, account number, disclosure boilerplate,
-# pending trades — i.e. a PII leak into silver). Note we don't drop
-# `in_section`: more legitimate data rows may follow on a later page.
+# pending trades — i.e. a PII leak into silver). `in_section` is not
+# dropped: more legitimate data rows may follow on a later page.
 # Page-chrome / sibling-section markers that flush the current
 # row in the legacy parser. The keep-list mixes structural
 # anchors (Statement Period / Account Number) and the
@@ -794,8 +794,8 @@ _LEGACY_TX_SECTION_END_RE = re.compile(
 # / IRA pages — those carry the full custodian + beneficiary
 # names ("Education Savings of <NAME> FBO <NAME> ED SAVINGS
 # ACCT CHARLES SCHWAB & CO INC CUST", "<NAME> CUST FOR <NAME>
-# UCAUTMA UNTIL AGE <N>") which we absolutely don't want
-# bleeding into the description column.
+# UCAUTMA UNTIL AGE <N>") which must never bleed into the
+# description column.
 _LEGACY_TX_ROW_STOP_RE = re.compile(
     r"^(?:"
     r"Page\s+\d+\s+of\s+\d+\b"
@@ -865,15 +865,15 @@ _LEGACY_TX_DATE_RE = re.compile(
     r"(?P<trade>\d{1,2}/\d{1,2}(?:/\d{2,4})?)\s+(?P<rest>.+)$"
 )
 # In-description "<NAME>: <TICKER>" pattern. Ticker is the LAST
-# colon-led uppercase token on the line (we look at the whole
-# logical row, including continuation lines).
+# colon-led uppercase token on the line (the whole logical row,
+# continuation lines included, is searched).
 _LEGACY_TX_SYMBOL_IN_DESC_RE = re.compile(
     r":\s+([A-Z][A-Z0-9./-]{0,8})\b"
 )
 # Known transaction-type phrases — longest first so multi-word
 # phrases match before their single-word shortcuts (e.g.
 # "Cash Dividend" wins over "Dividend"). Each value is the
-# `kind` we surface in the silver row; the gold layer maps to
+# `kind` surfaced in the silver row; the gold layer maps it to
 # its canonical taxonomy.
 _LEGACY_TX_KIND_PHRASES: list[tuple[str, str]] = [
     ("Reinvested Shares",       "Reinvest"),
@@ -927,7 +927,7 @@ _LEGACY_TX_FOOTNOTE_SUFFIX = r"(?:[A-Za-z](?:,[A-Za-z]){0,4})?"
 # Compiled once from _LEGACY_TX_KIND_PHRASES: matches a kind
 # phrase at the start of the description, optionally followed by
 # a glued footnote marker, then whitespace or end-of-string. The
-# phrase group lets us look up the (kind, phrase-len) to surface.
+# phrase group looks up the (kind, phrase-len) to surface.
 _LEGACY_TX_KIND_RE = re.compile(
     r"^(?P<phrase>" +
     "|".join(re.escape(p) for p, _ in _LEGACY_TX_KIND_PHRASES) +
@@ -957,7 +957,7 @@ def _parse_legacy_tx_row_line(line: str, statement_year: int,
                               period_end: date | None = None):
     """If `line` begins with a Settle Date + Trade Date pair,
     parse it into a TransactionRow with .amount / .date / .symbol
-    populated from what we can recover. Continuation lines (no
+    populated from what can be recovered. Continuation lines (no
     date prefix) return None; the caller appends them to the
     last row's description.
     """
@@ -1117,7 +1117,7 @@ def _parse_transactions_legacy(text: str,
             current_row.description = (
                 current_row.description + " " + line
             ).strip()
-            # If we just crossed the cap, truncate cleanly so
+            # If this line crossed the cap, truncate cleanly so
             # consumers see a deterministic length rather than
             # whatever the last line happened to add.
             if len(current_row.description) > _LEGACY_TX_DESC_MAX_CHARS:
@@ -1148,7 +1148,7 @@ def _parse_transactions_legacy(text: str,
 # typically Yield + AnnualIncome on non-income-bearing equities).
 #
 # A "Positions - Summary" block also exists (one-line roll-up of
-# values) — we explicitly EXCLUDE it from position parsing
+# values) — it is explicitly EXCLUDED from position parsing
 # because it's not per-instrument data.
 
 _POSITIONS_HEADER_RE = re.compile(
@@ -1195,8 +1195,8 @@ _OPTION_CONTRACT_RE = re.compile(
 # first line that carries three or more of them.
 _WRAPPED_COLUMN_SECTIONS = frozenset({"Options", "Fixed Income"})
 
-# Per-row leading token must look like a ticker or CUSIP. We
-# reuse _TICKER_RE / _CUSIP_RE from the transactions parser.
+# Per-row leading token must look like a ticker or CUSIP, by
+# _TICKER_RE / _CUSIP_RE from the transactions parser.
 # Note: section headings sometimes carry a parenthesised marker
 # like "(M)" right after the ticker in row body — that's handled
 # at parse-time, not via the regex.
@@ -1246,7 +1246,7 @@ def parse_positions(text: str) -> list[dict]:
 # All-caps ADR description-continuation words that happen to fit the
 # ticker shape (<= 9 chars) and so must NOT be mistaken for a new
 # position-row header. "UNSPONSORED" is 11 chars and already fails
-# _TICKER_RE, but we list it for clarity / robustness.
+# _TICKER_RE, but is listed for clarity / robustness.
 _POSITIONS_CONT_WORDS = frozenset({"SPONSORED", "UNSPONSORED"})
 
 
@@ -1257,8 +1257,8 @@ def _parse_positions_new(text: str) -> list[dict]:
     glyph layout and tends to split each position row across
     THREE lines for Schwab statements ("TICKER COMPANY NAME" /
     "(M)" / "100.0000 50.0 5000 ..."). A line-at-a-time parser
-    would mis-segment those. We instead accumulate consecutive
-    lines into a per-row buffer; flushing happens whenever the
+    would mis-segment those, so consecutive lines accumulate
+    into a per-row buffer instead; flushing happens whenever the
     next line starts with a fresh ticker (or at a section
     footer / end of input).
     """
@@ -1768,8 +1768,8 @@ _VERY_OLD_FOOTER_RE = re.compile(
 def _parse_positions_very_old(text: str) -> list[dict]:
     """Parse the 2017-2019 "Investment Detail" / "Investments"
     layout. Returns the same dict shape as the other tiers, with
-    cost_basis / unrealized_gain_loss / accrued_interest / yield
-    / annual_income / pct_of_acct all NULL (the source PDF
+    cost_basis / unrealized_gain_loss / accrued_interest / est_yield
+    / est_annual_income / pct_of_acct all NULL (the source PDF
     simply doesn't carry them)."""
     lines = [ln.rstrip() for ln in text.split("\n")]
     rows: list[dict] = []
@@ -1936,9 +1936,9 @@ def _is_trailing_col_token(s: str) -> bool:
 # option / short / third-party-edited line. The right-to-left column
 # scan must step OVER such a marker instead of stopping at it;
 # otherwise the columns shift left (quantity reads the unrealized gain,
-# market value reads blank). We only skip a marker that sits BETWEEN
-# two column tokens, so a description ending in a lone letter
-# ("… CLASS A") is never consumed.
+# market value reads blank). Only a marker that sits BETWEEN
+# two column tokens is skipped, so a description ending in a lone
+# letter ("… CLASS A") is never consumed.
 _POSITION_FOOTNOTE_RE = re.compile(r"[A-Za-z](?:,[A-Za-z]){0,4}")
 # A footnote marker glued (no whitespace) to the FRONT of a numeric
 # column token — pypdfium2 emits this when the marked column is a
@@ -2338,7 +2338,7 @@ def _parse_cash_summary_new(text: str) -> dict | None:
 # The pre-2025 layout puts the cash-flow numbers in a multi-line
 # block under "Cash Transactions Summary", one labelled row per
 # category. Each row carries TWO values: this period and YTD.
-# We extract the this-period number.
+# The this-period number is extracted.
 
 _LEGACY_CASH_HEADER_RE = re.compile(
     r"^Cash\s+Transactions\s+Summary\b"
@@ -2394,7 +2394,7 @@ def _parse_cash_summary_legacy(text: str) -> dict | None:
                     captured[attr] = _parse_number(m.group(1))
                 break
         if "closing_balance" in captured:
-            break  # Ending Cash row reached; we're done.
+            break  # Ending Cash row reached; done.
     if not captured:
         return None
 
@@ -2449,8 +2449,8 @@ def _parse_cash_summary_legacy(text: str) -> dict | None:
 #   DEPOSIT ACCOUNTS X,Z 5,000.00
 # so their opening balance is unknown.
 # Per-category cash flow (deposits / withdrawals / etc.) is not
-# itemised in this layout; we surface only opening/closing and
-# leave the per-category fields NULL.
+# itemised in this layout; only opening/closing are surfaced and
+# the per-category fields stay NULL.
 
 _VERY_OLD_CASH_SUBHEADER_RE = re.compile(
     r"^(?:Cash\s+and\s+Bank\s+Sweep"
@@ -2511,7 +2511,7 @@ def _parse_cash_summary_very_old(text: str) -> dict | None:
     if rows_seen == 0:
         return None
 
-    # Period dates are added by the caller; here we just emit
+    # Period dates are added by the caller; this emits only
     # the cash numbers. Use 2017-2019 NULLs for the per-category
     # fields the source doesn't carry.
     return {
@@ -2723,7 +2723,7 @@ def parse_distribution_text(text: str, filename: str | None = None) -> list[dict
     One row per security line for a securities transfer; one row for a
     cash transfer. Rows carry the counterparty, direction, method, and
     (for securities) symbol / quantity / market value. Returns [] for
-    an unrecognised layout (logged) so a format we haven't seen drops
+    an unrecognised layout (logged) so an unseen format drops
     cleanly instead of corrupting the load."""
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     joined = "\n".join(lines)

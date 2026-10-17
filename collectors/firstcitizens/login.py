@@ -20,10 +20,10 @@ signed-in or presents a Secure Access Code (2FA) challenge:
 
 Authentication is detected from the **live SPA route**, never a bare URL and
 never a single response event: the pinned Camoufox can drop `.on()` events
-across navigations (the chase/schwab-web lesson), so the signal is
-`page.url` reaching `#/landingPage` (authed) or `#/login/mfa/*` (2FA),
-polled. A `GET accounts` probe backs it up only *off* the login flow — never
-mid-login, where it would poison the challenge session (DESIGN.md §4.2).
+across navigations, so the signal is `page.url` reaching `#/landingPage`
+(authed) or `#/login/mfa/*` (2FA), polled. A `GET accounts` probe backs it
+up only *off* the login flow — never mid-login, where it would poison the
+challenge session (DESIGN.md §4.2).
 
 Read-only (AGENTS.md): the browser only ever touches the sign-in form and
 the access-code challenge; the deposit-account data is fetched over REST by
@@ -34,13 +34,12 @@ from __future__ import annotations
 import argparse
 import contextlib
 import logging
-import os
-import shutil
 import sys
 import time
 from pathlib import Path
 
-from collectorkit import cli, debugcap, envfile, launch, session
+from collectorkit import cli, debugcap, launch, session
+from collectorkit import explore as kit_explore
 from collectorkit.launch import page_url, pump, wait_for
 
 import auth_dialog
@@ -83,11 +82,9 @@ def camoufox(profile_dir: Path, fresh: bool = False):
     (DESIGN.md §3). `fresh` wipes it first, so the next logon is treated as an
     unrecognised device and the full Secure Access Code (2FA) challenge fires.
     Yields (context, page)."""
-    if fresh and profile_dir.exists():
-        log.warning("--fresh: wiping profile dir %s — the next login will "
-                    "hit the full 2FA challenge (untrusted device)",
-                    profile_dir)
-        shutil.rmtree(profile_dir)
+    kit_explore.prepare_profile(
+        profile_dir, fresh=fresh, log=log,
+        note="the next login hits the full 2FA challenge (untrusted device)")
     with launch.persistent_camoufox(profile_dir) as (context, page):
         yield context, page
 
@@ -114,8 +111,8 @@ class _LogonWatch:
                     # empty body — and classify_logon reads a 200 carrying no
                     # targets as AUTHENTICATED, so taking one for the outcome
                     # would declare a sign-in that never happened. The Q2 app
-                    # is same-origin today and sends none; the guard costs
-                    # nothing and the amex sibling hit exactly this live.
+                    # is same-origin and sends none; the guard costs nothing,
+                    # and a cross-origin sign-in (amex) does send one.
                     return
                 self.status = resp.status
                 with contextlib.suppress(Exception):
@@ -241,8 +238,7 @@ def _is_mfa(page, watch: _LogonWatch) -> bool:
 def _click_q2btn(loc) -> bool:
     """Click a Q2/Stencil `q2-btn` by its **inner `<button>`** (the reliable
     clickable element), reached through the open shadow root, falling back to
-    the host — the standard way to drive a Stencil button (the chase
-    shadow-DOM lesson)."""
+    the host — the standard way to drive a Stencil button."""
     with contextlib.suppress(Exception):
         inner = loc.locator("button").first
         if inner.count():
@@ -412,7 +408,7 @@ def _await_outcome(context, page, watch: _LogonWatch) -> str | None:
 
 
 def authenticate(context, page, watch: _LogonWatch, *, two_factor: str,
-                 mfa_timeout: int = MFA_TIMEOUT_S, args=None) -> bool:
+                 args) -> bool:
     """Take a submitted login to an authenticated session.
 
     Reveal + prefill + submit are the caller's job (drive_to_auth); this polls
@@ -443,6 +439,9 @@ def authenticate(context, page, watch: _LogonWatch, *, two_factor: str,
         raise NeedsLogin(
             "device trust has expired — the login hit a Secure Access Code "
             "challenge. Run `login` to re-register this device.")
+    # Only `login` gets here: `download` has no --mfa-timeout, and its
+    # TWOFACTOR_NONE never waits on a challenge.
+    mfa_timeout = args.mfa_timeout
 
     if two_factor == TWOFACTOR_CLI:
         try:
@@ -476,27 +475,33 @@ def _capture(page, args, name: str) -> None:
                               redact=debugcap.env_redactor(USER_ENV, PASS_ENV))
 
 
-def _load_credentials(env_file: Path) -> tuple[str, str]:
-    if envfile.source_env_file(env_file):
-        log.info("env file: %s (sourced)", env_file)
-    username = os.environ.get(USER_ENV, "")
-    password = os.environ.get(PASS_ENV, "")
-    if not (username and password):
-        log.warning("%s / %s not set — the form will not be pre-filled.",
-                    USER_ENV, PASS_ENV)
-    return username, password
-
-
-def _reveal_prefill_submit(page, args) -> bool:
+def _reveal_prefill_submit(page, args, *, by_hand: bool = False) -> bool:
     """Front half of every login: open the modal, prefill, submit. Returns
     True once the form is submitted (a _LogonWatch is attached first so the
-    SPA's logonUser is captured)."""
-    username, password = _load_credentials(args.env_file)
+    SPA's logonUser is captured).
+
+    A form that is not pre-filled (no credentials, or the fields never
+    appeared) is never submitted: a blank or half-filled submit counts as a
+    failed sign-in. With `by_hand` (vnc-login) Sign In is left to the person
+    at the VNC display and True is returned, so the outcome poll waits for
+    it; otherwise the login ends here with False."""
+    username, password, ready = kit_explore.load_credentials(
+        args.env_file, (USER_ENV,), (PASS_ENV,), no_prefill=False,
+        host="firstcitizens.com", log=log)
     page.goto(q2client.START_URL, wait_until="domcontentloaded", timeout=45_000)
     _reveal_login_form(page)
-    if username and password and _prefill(page, username, password):
-        log.info("login form pre-filled")
+    filled = ready and _prefill(page, username, password)
     _capture(page, args, "signin")
+    if not filled:
+        reason = ("the sign-in form did not pre-fill" if ready
+                  else "no credentials to pre-fill")
+        if by_hand:
+            log.info("%s — Sign In by hand over VNC", reason)
+            return True
+        log.error("%s; the form is not submitted blank. Retry with "
+                  "vnc-login. (DOM captured with --debug.)", reason)
+        return False
+    log.info("login form pre-filled")
     if not _submit(page):
         _capture(page, args, "submit-failed")
         log.error("could not submit the login form. Retry with vnc-login. "
@@ -511,12 +516,10 @@ def drive_to_auth(context, page, args, *, two_factor: str) -> bool:
     authenticated session. Raises NeedsLogin when an unattended run
     (`two_factor=none`) meets a 2FA challenge (download's case)."""
     watch = _LogonWatch().attach(context)
-    if not _reveal_prefill_submit(page, args):
+    if not _reveal_prefill_submit(page, args,
+                                  by_hand=two_factor == TWOFACTOR_VNC):
         return False
-    # `download` has no --mfa-timeout: it never waits on a challenge.
-    ok = authenticate(context, page, watch, two_factor=two_factor,
-                      mfa_timeout=getattr(args, "mfa_timeout", MFA_TIMEOUT_S),
-                      args=args)
+    ok = authenticate(context, page, watch, two_factor=two_factor, args=args)
     _capture(page, args, "post-auth" if ok else "auth-failed")
     return ok
 
@@ -595,8 +598,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "reads the Secure Access Code from stdin (needs a "
                         "TTY). Trusted devices skip 2FA entirely.")
     p.add_argument("--no-cli-mfa", dest="cli_mfa", action="store_false",
-                   help="Complete Sign In + 2FA by hand over VNC "
-                        "(the vnc-login fallback).")
+                   help="Complete the 2FA by hand over VNC (and Sign In "
+                        "too when the form is not pre-filled); the vnc-login "
+                        "fallback.")
     p.add_argument("--mfa-timeout", type=int, default=MFA_TIMEOUT_S,
                    help="Seconds to wait for 2FA to complete. "
                         "Default: %(default)s.")

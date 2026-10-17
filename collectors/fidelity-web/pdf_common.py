@@ -24,7 +24,7 @@ from collectorkit import statement_period
 # ``January 1, 2026 - March 31, 2026`` (quarterly) or
 # ``January 1, 2025 - December 31, 2025`` (annual). The
 # leading ``<year> YEAR-END`` prefix on annual reports is
-# harmless — we anchor on the inner date pair regardless.
+# harmless — the match anchors on the inner date pair regardless.
 _PERIOD_RE = statement_period.month_range_pattern(r"\s*[-–]\s*")
 
 

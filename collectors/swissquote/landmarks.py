@@ -9,7 +9,7 @@ which SPA hosts them.
 
 UI surfaces this module references are read-only by contract — see
 AGENTS.md §1. The Buy/Sell buttons that appear inside every position
-row are inside the DOM we parse; reading them is fine but they must
+row are inside the parsed DOM; reading them is fine but they must
 never be clicked.
 """
 
@@ -32,7 +32,7 @@ HOST = "trade.swissquote.ch"
 EBANKING_PATH = "/sqc-web-client-portal/"
 TRADING_PLATFORM_PATH = "/eding_trading-platform/"
 
-# There is no static "login URL" — we must request a protected resource
+# There is no static "login URL" — a protected resource must be requested
 # to trigger F5's interception. The eBanking SPA root works reliably
 # as the trigger.
 LOGIN_TRIGGER_URL = f"https://{HOST}{EBANKING_PATH}"
@@ -79,7 +79,7 @@ def is_profile_validation_url(url: str) -> bool:
     validation plugin (e.g. the "executive position" question that
     Swissquote refreshes annually for regulatory reasons). The script
     cannot answer this automatically — it has to be done once
-    via a regular browser. We detect it so we can fail fast with an
+    via a regular browser. It is detected so the login fails fast with an
     actionable message instead of hanging on wait_for_url.
     """
     return "sq-profile-validation-plugin" in url
@@ -120,8 +120,8 @@ LOGIN_SUBMIT_BUTTON = "button#loginText"
 # ============================================================
 
 # The MFA page does not have a stable form; the push is approved
-# on the phone and the page transitions on its own. We detect
-# arrival on this page by a text landmark, and detect departure by
+# on the phone and the page transitions on its own. Arrival on
+# this page is detected by a text landmark, and departure by
 # *navigation away* from it (URL change), not by DOM mutation.
 MFA_PAGE_TEXT_LANDMARK = "Mobile Level 3 Authentication"
 
@@ -158,14 +158,14 @@ MFA_OPERATION_CODE_SELECTOR = ".SmartL3__operation"
 # ============================================================
 
 # Top-right "download" dropdown trigger. Opens a menu containing
-# CSV / PDF / etc. The CSV item label depends on the locale; we
-# force the UI to English before clicking.
+# CSV / PDF / etc. The CSV item label depends on the locale; the UI
+# is forced to English before clicking.
 TXN_EXPORT_DROPDOWN_TRIGGER = ".Dropdown__trigger--export"
 
 # Menu items inside the transactions export dropdown. The dropdown
 # renders these only after the trigger is clicked. Items are
 # `<li class="Menu__item Menu__item--export">` with text "CSV report"
-# / "PDF report". We match by class + has-text so a future label
+# / "PDF report". The match is by class + has-text so a future label
 # change like "CSV file" still hits.
 TXN_EXPORT_MENU_CSV = 'li.Menu__item--export:has-text("CSV")'
 

@@ -9,10 +9,6 @@
 # persist, so it folds into `download` (except `login --check`, a read-only
 # session probe). `vnc-login` is the by-hand fallback. `load` builds the
 # silver. `prune` is a pure file walk.
-#
-# Xvfb is started directly (not via xvfb-run) — the Noble xvfb-run's SIGUSR1
-# ready-signalling hangs under a non-root parent; socket-existence polling is
-# version-independent.
 
 set -euo pipefail
 
@@ -23,26 +19,29 @@ case "${1:-help}" in
     explore)
         # Discovery harness: Camoufox over VNC + HAR/network log/click log/
         # DOM snapshots under /debug.
+        shift
+        exec_if_help explore.py "$@"
         start_xvfb
         start_x11vnc explore
-        shift
         exec python3 /app/explore.py "$@"
         ;;
     download)
         # One-shot: fill/confirm the login → pushTAN approved on the phone →
         # REST fetch. Headed Camoufox under Xvfb, no VNC (nothing to type).
         # Falls back to `vnc-login` when a control can't be driven.
-        start_xvfb
         shift
+        exec_if_help login.py "$@"
+        start_xvfb
         exec python3 /app/login.py --cli-mfa --bronze-dir /data "$@"
         ;;
     vnc-login)
         # Fallback: expose VNC and complete the whole login (form/card +
         # pushTAN) by hand, then fetch. Use when the automated form-drive
         # can't find a control.
+        shift
+        exec_if_help login.py "$@"
         start_xvfb
         start_x11vnc vnc-login
-        shift
         exec python3 /app/login.py --no-cli-mfa --bronze-dir /data "$@"
         ;;
     login)
@@ -51,6 +50,7 @@ case "${1:-help}" in
         # separately — it folds into `download` — so it is a clean no-op that
         # an orchestrator's login→download→load can call without tripping.
         shift
+        exec_if_help login.py "$@"
         for a in "$@"; do
             if [[ "$a" == "--check" ]]; then
                 start_xvfb

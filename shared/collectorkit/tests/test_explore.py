@@ -522,11 +522,14 @@ class _Field:
     """A Playwright locator's `.first`, holding one field's value."""
 
     def __init__(self, *, present=True, visible=True, value="",
-                 sticky_prefix=""):
+                 sticky_prefix="", takes_fill=True):
         self.present, self.visible, self.value = present, visible, value
         # An autofill that prepends to the first fill, as a stray saved
         # login would.
         self.sticky_prefix = sticky_prefix
+        # False: page script rejects a programmatic fill, so the read-back
+        # never matches; only a clear takes.
+        self.takes_fill = takes_fill
         self.fills = []
 
     @property
@@ -544,8 +547,21 @@ class _Field:
 
     def fill(self, value, timeout=None):
         self.fills.append(value)
-        self.value = (self.sticky_prefix + value) if value else ""
+        if not value:
+            self.value = ""
+        elif self.takes_fill:
+            self.value = self.sticky_prefix + value
         self.sticky_prefix = ""
+
+
+class _FailingField(_Field):
+    """A field whose fill() raises the way Playwright does: the message ends
+    in a Call log block that reproduces the value being typed."""
+
+    def fill(self, value, timeout=None):
+        self.fills.append(value)
+        raise RuntimeError(f'Timeout 2000ms exceeded.\nCall log:\n'
+                           f'  - fill("{value}")')
 
 
 class _FormFrame:
@@ -595,6 +611,22 @@ class PrefillLoginTest(unittest.TestCase):
         self.assertFalse(self._fill(page))
         self.assertEqual(pwd.fills, [])
 
+    def test_a_lone_username_shaped_field_is_left_alone(self):
+        # A search box the username selector happens to match.
+        user = _Field()
+        page = self._page(_FormFrame("https://www.example.com/",
+                                     {self.USER: user}))
+        self.assertFalse(self._fill(page))
+        self.assertEqual(user.fills, [])
+
+    def test_an_invisible_form_is_ignored(self):
+        for hidden in (self.USER, self.PWD):
+            fields = {self.USER: _Field(), self.PWD: _Field()}
+            fields[hidden].visible = False
+            page = self._page(_FormFrame("https://www.example.com/", fields))
+            self.assertFalse(self._fill(page))
+            self.assertEqual([f.fills for f in fields.values()], [[], []])
+
     def test_a_remembered_username_control_is_left_alone(self):
         alt, pwd = _Field(value="remembered"), _Field()
         page = self._page(_FormFrame("https://www.example.com/",
@@ -628,6 +660,43 @@ class PrefillLoginTest(unittest.TestCase):
                           _FormFrame("https://login.example.com/", b))
         self._fill(page)
         self.assertEqual(b[self.PWD].fills, [])
+
+    def test_a_rejected_fill_is_retried_once_then_left(self):
+        # fill, read-back mismatch, clear and refill, mismatch again: the
+        # field is marked done, so a later poll never fights a value typed
+        # by hand, and the call reports nothing filled.
+        user, pwd = _Field(takes_fill=False), _Field(takes_fill=False)
+        page = self._page(_FormFrame("https://www.example.com/",
+                                     {self.USER: user, self.PWD: pwd}))
+        filled = set()
+        with self.assertLogs(log, "WARNING") as logs:
+            self.assertFalse(self._fill(page, filled))
+        self.assertEqual(user.fills, [USERNAME, "", USERNAME])
+        self.assertEqual(pwd.fills, [PASSWORD, "", PASSWORD])
+        self.assertEqual(len(logs.output), 2)
+        self.assertFalse(self._fill(page, filled))
+        self.assertEqual(user.fills, [USERNAME, "", USERNAME])
+
+    def test_fills_are_tracked_per_page(self):
+        # A second tab with its own sign-in form is filled too.
+        filled = set()
+        pages = [self._page(_FormFrame("https://www.example.com/",
+                                       {self.USER: _Field(),
+                                        self.PWD: _Field()}))
+                 for _ in range(2)]
+        self.assertTrue(self._fill(pages[0], filled))
+        self.assertTrue(self._fill(pages[1], filled))
+
+    def test_a_failed_fill_never_logs_the_typed_value(self):
+        page = self._page(_FormFrame("https://www.example.com/",
+                                     {self.USER: _FailingField(),
+                                      self.PWD: _FailingField()}))
+        with self.assertLogs(log, "DEBUG") as logs:
+            self.assertFalse(self._fill(page))
+        text = "\n".join(logs.output)
+        self.assertIn("prefill pwd field failed", text)
+        self.assertNotIn(PASSWORD, text)
+        self.assertNotIn(USERNAME, text)
 
 
 if __name__ == "__main__":

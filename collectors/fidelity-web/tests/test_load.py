@@ -40,12 +40,6 @@ def conn():
     c.close()
 
 
-@pytest.fixture
-def migrated(conn):
-    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
-    return conn
-
-
 # Synthetic bronze dump: one 529 + one Authorized sleeve. Two activity
 # rows, two positions (one in summary only, one in both views to
 # exercise the merge), one statement PDF, one tax-form PDF.
@@ -619,7 +613,8 @@ def test_compressed_bronze_converges_to_identical_silver(tmp_path):
 
     # 1) Load the plain tree.
     db_plain = tmp_path / "plain.db"
-    load.main(["--silver-db", str(db_plain), "--bronze-dir", str(bronze)])
+    load.main(["--silver-db", str(db_plain), "--bronze-dir", str(bronze),
+               "--parse-cache-dir", str(tmp_path / "cache")])
     plain = _dump_tables(db_plain)
 
     # 2) Compress every compressible artefact IN PLACE (same dir), so
@@ -632,7 +627,8 @@ def test_compressed_bronze_converges_to_identical_silver(tmp_path):
 
     # 3) Load the now-compressed tree into a fresh DB.
     db_zst = tmp_path / "zst.db"
-    load.main(["--silver-db", str(db_zst), "--bronze-dir", str(bronze)])
+    load.main(["--silver-db", str(db_zst), "--bronze-dir", str(bronze),
+               "--parse-cache-dir", str(tmp_path / "cache")])
     zst = _dump_tables(db_zst)
 
     # Every table identical — proves decompressed-hash + logical-name.
@@ -942,7 +938,7 @@ def test_a_row_the_scraped_feed_already_has_is_skipped(migrated):
         "account_external_id, kind, amount, currency, source_sha256, payload) "
         "VALUES ('scraped-1', ?, '100000001', 'withdrawal', -4321.0, 'USD', "
         "'sha', '{}')",
-        (load.ts_from_iso("2026-01-12"),),          # one day off: same event
+        (load.iso_date_to_epoch("2026-01-12"),),          # one day off: same event
     )
     n, dup = load._insert_supplied_activity_rows(
         migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha0")
@@ -961,7 +957,7 @@ def test_a_row_the_feed_reached_later_leaves_silver(migrated):
         "account_external_id, kind, amount, currency, source_sha256, payload) "
         "VALUES ('scraped-3', ?, '100000001', 'FEE', -4321.0, 'USD', "
         "'sha', '{}')",
-        (load.ts_from_iso("2026-01-11"),),
+        (load.iso_date_to_epoch("2026-01-11"),),
     )
     n, dup = load._insert_supplied_activity_rows(
         migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha0")
@@ -979,7 +975,7 @@ def test_a_fee_the_feed_debits_days_later_is_the_same_fee(migrated):
         "account_external_id, kind, amount, currency, source_sha256, payload) "
         "VALUES ('scraped-4', ?, '100000001', 'FEE', -4321.0, 'USD', "
         "'sha', '{}')",
-        (load.ts_from_iso("2026-01-20"),),           # nine days after
+        (load.iso_date_to_epoch("2026-01-20"),),           # nine days after
     )
     n, dup = load._insert_supplied_activity_rows(
         migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha0")
@@ -995,7 +991,7 @@ def test_the_redemption_that_funds_a_fee_is_not_mistaken_for_it(migrated):
         "account_external_id, kind, amount, currency, source_sha256, payload) "
         "VALUES ('scraped-2', ?, '100000001', 'other', 4321.0, 'USD', "
         "'sha', '{}')",
-        (load.ts_from_iso("2026-01-11"),),
+        (load.iso_date_to_epoch("2026-01-11"),),
     )
     n, dup = load._insert_supplied_activity_rows(
         migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha0")
@@ -1094,7 +1090,7 @@ def test_two_statement_rows_cannot_both_claim_one_feed_row(migrated):
         "account_external_id, kind, amount, currency, source_sha256, payload) "
         "VALUES ('scraped-wire-1', ?, '100000001', 'withdrawal', -1650.0, "
         "'USD', 'sha', '{}')",
-        (load.ts_from_iso("2026-01-06"),),
+        (load.iso_date_to_epoch("2026-01-06"),),
     )
     n, dup = load._insert_supplied_activity_rows(
         migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha0")
@@ -1117,7 +1113,7 @@ def test_a_repeat_sighting_does_not_claim_a_second_feed_row(migrated):
             "account_external_id, kind, amount, currency, source_sha256, "
             "payload) VALUES (?, ?, '100000001', 'withdrawal', -1650.0, "
             "'USD', 'sha', '{}')",
-            (f"scraped-wire-{i}", load.ts_from_iso("2026-01-06")),
+            (f"scraped-wire-{i}", load.iso_date_to_epoch("2026-01-06")),
         )
     claims = load._FeedClaims()
     first = load._insert_supplied_activity_rows(

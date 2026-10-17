@@ -27,14 +27,6 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 ACCT = "100000001"
 
 
-@pytest.fixture
-def migrated():
-    c = sqlite3.connect(":memory:")
-    load.silver.apply_migrations(c, MIGRATIONS_DIR)
-    yield c
-    c.close()
-
-
 # ============================================================
 # Consolidated 1099 — a stub parser over JSON fixtures
 # ============================================================

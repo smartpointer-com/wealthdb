@@ -8,8 +8,8 @@ login page (login id + password), a 2FA challenge, an account-selection
 step, and a final "Allow"/"Accept" consent screen. On consent Schwab
 redirects the browser to the registered callback URL
 (`https://127.0.0.1:8182/?code=…&session=…`) — nothing listens there,
-so the browser shows a connection error, but the URL is what we capture
-and hand to schwab-py's token exchange.
+so the browser shows a connection error, but the URL is what the flow
+captures and hands to schwab-py's token exchange.
 
 The login + 2FA portion mirrors the schwab.com web login that the
 `schwab-web` collector drives, so the selector candidates below are
@@ -31,13 +31,13 @@ import urllib.parse
 # The registered callback the consent step redirects to. Must match the
 # value in the Schwab developer portal exactly; schwab-py builds the
 # authorize URL from it. Nothing listens on this port — the browser just
-# surfaces the `?code=…` in its address bar, which we scrape.
+# surfaces the `?code=…` in its address bar, which the flow reads.
 DEFAULT_CALLBACK_URL = "https://127.0.0.1:8182"
 
 
 def is_callback_url(url: str, callback_url: str) -> bool:
     """True once the browser has navigated to the OAuth callback — i.e.
-    consent succeeded and Schwab handed back the `?code=…`. We compare on
+    consent succeeded and Schwab handed back the `?code=…`. The match is on
     the scheme+host+port prefix because the path/query carry the code."""
     return url.startswith(callback_url)
 
@@ -162,7 +162,7 @@ MFA_CONTINUE_BUTTON_CANDIDATES = (
 #   4. redirect to the callback with ?code=…
 
 # Heading that identifies the account-selection page (case-insensitive
-# substring). We only auto-tick checkboxes when this is present, so the
+# substring). Checkboxes are auto-ticked only when this is present, so the
 # login page's "remember me" box is never touched.
 ACCOUNT_LINK_HEADING = "Select your Schwab accounts to link"
 

@@ -47,7 +47,7 @@ log = logging.getLogger("carta.explore")
 DEFAULT_URL = "https://app.carta.com"
 DEFAULT_PROFILE_DIR = Path("/secrets/carta-profile")
 DEFAULT_ENV_FILE = Path("/secrets/carta.env")
-# Same order login.py resolves: canonical name first, legacy alias second.
+# Same order login.py resolves: canonical name first, its alias second.
 # They must agree — an env file carrying only the canonical name would
 # otherwise log in fine and silently fail to pre-fill here.
 USER_ENVS = ("CARTA_USERNAME", "CARTA_EMAIL")

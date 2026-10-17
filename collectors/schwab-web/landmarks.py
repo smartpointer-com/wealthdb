@@ -209,11 +209,11 @@ TX_DATE_RANGE_VALUES = (
 )
 # Tx-history applies date-range / symbol filters via a Search
 # button (NOT an Apply button — that's only inside the
-# type-filter modal, which we don't currently drive).
+# type-filter modal, which the walk does not drive).
 TX_SEARCH_BUTTON_ID = "lbl_search-button"
 
 # Tx-history results table is virtualized: only ~5 of N rendered
-# rows are in the DOM at any time. We side-step the lossy DOM
+# rows are in the DOM at any time. The walk side-steps the lossy DOM
 # scrape by driving the "Export Transactions Data" modal that
 # Schwab exposes — same data, machine-readable, complete in one
 # fetch. The modal offers a choice of format (CSV/JSON/XML); all

@@ -36,7 +36,6 @@ DESIGN.md
 # Credentials and downloaded data — must never enter the image
 *.pem
 *.key
-relevate_state*.json
 .env
 .envrc
 relevate.env

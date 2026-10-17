@@ -43,12 +43,12 @@ from __future__ import annotations
 import argparse
 import contextlib
 import logging
-import os
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
-from collectorkit import cli, debugcap, envfile, launch
+from collectorkit import cli, debugcap, launch
+from collectorkit import explore as kit_explore
 from collectorkit.launch import page_url, pump, wait_for
 
 import auth_dialog
@@ -58,15 +58,13 @@ import mdsui
 from mdsui import (locate as _locate, first_in_frames as _first_in_frames,
                    activate as _activate, click_text as _click_text,
                    click_role as _click_role, deep_click_text as _deep_click_text)
-# Reuse explore's validated, frame-aware login pre-fill rather than a second
-# copy — same collector, same selectors.
-from explore import _maybe_prefill_login, USER_ENV, PASS_ENV
+# Reuse explore's validated, frame-aware login pre-fill and its paths rather
+# than a second copy — same collector, same selectors, and the one profile.
+from explore import (DEFAULT_ENV_FILE, DEFAULT_PROFILE_DIR, PASS_ENV,
+                     USER_ENV, _maybe_prefill_login)
+from explore import DEFAULT_URL as START_URL
 
 log = logging.getLogger("chase.login")
-
-DEFAULT_PROFILE_DIR = Path("/secrets/chase-profile")
-DEFAULT_ENV_FILE = Path("/secrets/chase.env")
-START_URL = "https://secure.chase.com"
 
 # See the module docstring: authenticated iff a signed-in /svc/ call is seen.
 AUTHED_SVC_MARKERS = ("/user/router/list", "/accounts/secure/")
@@ -142,7 +140,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Walk after login but export nothing.")
     p.add_argument("--debug", action="store_true",
                    help="Capture the login + challenge DOM/screenshots into "
-                        "--screenshot-dir (for pinning selectors).")
+                        "--screenshot-dir (for pinning selectors), and keep "
+                        "every /svc/ JSON body under the run's raw/svc/.")
     p.add_argument("--screenshot-dir", type=Path, default=Path("/debug"),
                    help="Where login diagnostics land (outside bronze). "
                         "Default: %(default)s.")
@@ -427,18 +426,17 @@ def _cli_two_factor(page, watch: _AuthWatch, args) -> int:
     _capture(page, args, "after-next")
 
     if factor == auth_dialog.FACTOR_INAPP:
-        # Push is sent when the method is selected. Confirm the invocation
-        # fired (so a "click" that didn't register isn't mistaken for a sent
-        # push) before waiting on the approval.
+        # The push is sent once Next is clicked. Confirm the invocation fired
+        # (so a click that did not register is not mistaken for a sent push)
+        # before waiting on the approval.
         if not wait_for(lambda: watch.invoked or watch.ok, page, 20):
             _capture(page, args, "push-not-sent")
             log.error("selected the app-approval method but Chase sent no "
                       "push — the control didn't register the click. Retry "
                       "with vnc-login. (DOM captured with --debug.)")
             return 1
-        device = menu.devices[0].label if menu.devices else "your device"
-        log.info("approve the sign-in in the Chase app on %s — it continues "
-                 "automatically once approved.", device)
+        log.info("approve the sign-in in the Chase app — it continues "
+                 "automatically once approved.")
         # Auto-detect the approval (Chase's JS completes the sign-in on its
         # own). The pinned camoufox can drop the completion events across that
         # navigation, so if it isn't confirmed within a short window, fall back
@@ -504,13 +502,9 @@ def _select_phone(page, last4: str) -> bool:
 
 
 def run_login_and_scrape(args: argparse.Namespace) -> int:
-    if envfile.source_env_file(args.env_file):
-        log.info("env file: %s (sourced)", args.env_file)
-    username = os.environ.get(USER_ENV, "")
-    password = os.environ.get(PASS_ENV, "")
-    if not (username and password):
-        log.warning("%s / %s not set — the form will not be pre-filled.",
-                    USER_ENV, PASS_ENV)
+    username, password, _ = kit_explore.load_credentials(
+        args.env_file, (USER_ENV,), (PASS_ENV,), no_prefill=False,
+        host="chase.com", log=log)
 
     since, until = cli.resolve_standard(args, verb="download", log=log)
 

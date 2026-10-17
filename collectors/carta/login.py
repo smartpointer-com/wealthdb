@@ -25,7 +25,8 @@ CLI surface (shared with the other carta subcommands):
                        /secrets/carta-profile/, shared with explore /
                        download). Holds the session + device-trust cookie.
                        Treat the dir as a credential.
-  --env-file PATH      Bash-sourced env with CARTA_USERNAME (or legacy CARTA_EMAIL) / CARTA_PASSWORD.
+  --env-file PATH      Bash-sourced env with CARTA_USERNAME (or its alias
+                       CARTA_EMAIL) / CARTA_PASSWORD.
   --check              Probe the existing profile (load app.carta.com), exit
                        0 if authenticated, 1 if not. No credentials posted,
                        no 2FA push — safe for cron healthchecks.
@@ -139,8 +140,9 @@ def is_authenticated(page) -> bool:
 
 def probe(page) -> bool:
     """Load app.carta.com and report whether the session is authenticated.
-    Carta resolves the redirect chain client-side, so we wait for the app
-    (or the login host) to settle rather than trusting the first response."""
+    Carta resolves the redirect chain client-side, so the probe waits for
+    the app (or the login host) to settle rather than trusting the first
+    response."""
     page.goto(BASE, wait_until="domcontentloaded", timeout=45_000)
     # Give the SPA redirect chain a moment to resolve to its final host.
     for _ in range(20):
@@ -158,8 +160,8 @@ def login(page, email: str, password: str) -> None:
     RuntimeError on any unrecoverable failure."""
     page.goto(BASE, wait_until="domcontentloaded", timeout=45_000)
 
-    # Renewal short-circuit: a still-valid device-trust cookie lands us
-    # straight in the app without a login form.
+    # Renewal short-circuit: a still-valid device-trust cookie lands the
+    # page straight in the app without a login form.
     if is_authenticated(page):
         log.info("existing session still valid; no login needed")
         return
@@ -222,8 +224,8 @@ def login(page, email: str, password: str) -> None:
 
     # Tick "remember this device" (#enable-bypass) so future logins skip the
     # 2FA push. Carta styles it as a custom checkbox (the native <input> is
-    # visually replaced by a styled label), so we set .checked via JS and
-    # fire a change event rather than relying on a click landing on the
+    # visually replaced by a styled label), so .checked is set via JS with
+    # a change event rather than relying on a click landing on the
     # invisible input. Non-fatal if it doesn't stick — login still works,
     # just without the long-lived device cookie.
     remember = page.locator(REMEMBER_SELECTOR).first
@@ -275,7 +277,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--env-file", type=Path, default=DEFAULT_ENV_FILE,
-        help=("Bash-sourced env file with CARTA_USERNAME (or legacy CARTA_EMAIL) / CARTA_PASSWORD. "
+        help=("Bash-sourced env file with CARTA_USERNAME (or its alias "
+              "CARTA_EMAIL) / CARTA_PASSWORD. "
               "Skipped silently if absent. Default: %(default)s."),
     )
     p.add_argument(

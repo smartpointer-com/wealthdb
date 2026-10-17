@@ -5,7 +5,7 @@ Prune non-complete dumps from the ubs-web bronze tree.
 Thin wrapper over :mod:`collectorkit.prune` (the shared, unit-tested
 prune engine) with ubs-web's configuration. Two things are reclaimed:
 
-* ``screenshots/`` inside a complete dump — the landmark DOM +
+* ``screenshots/`` inside a dump it keeps — the landmark DOM +
   screenshot captures ``download --debug`` writes. ``load`` never reads
   them, so reclaiming them cannot change silver. (The rest of ubs-web's
   troubleshooting output — per-landmark screenshots, the Playwright
@@ -15,11 +15,11 @@ prune engine) with ubs-web's configuration. Two things are reclaimed:
   ``/debug`` mount. ``prune`` reclaims that dir separately, via the
   shared engine's own ``--debug-dir``, which ages out each entry
   directly under it — an ``explore`` capture is one such entry.)
-* whole run dirs that ``load`` does not read — a ``--dry-run`` shell
-  (``status: "dry-run"``, only a manifest and no exports), or a walk
-  that crashed before finalising (``status: "in-progress"``, or no
-  ``run.json`` at all). ``load`` skips such dirs, so pruning one only
-  reclaims disk.
+* whole run dirs that ``load`` does not read — a legacy ``--dry-run``
+  shell (``status: "dry-run"``, only a manifest and no exports), or a
+  walk that crashed before finalising (``status: "in-progress"``, or no
+  ``run.json`` at all). ``load`` skips such dirs, so removing one never
+  changes silver.
 
 Completeness signal: the ``run.json`` ``status`` field the walk
 writes (``"in-progress"`` at run-dir creation, atomically overwritten
@@ -35,12 +35,9 @@ An in-flight guard skips non-complete dumps written within
 so a long multi-window backfill is protected. ``--dry-run`` prints
 the plan without removing anything. The only paths ever deleted are
 whole non-complete run dirs and ``screenshots/`` subdirs; load inputs
-of complete dumps (``run.json``, ``positions/``, ``transactions/``,
-``documents/``) and non-run entries at the bronze root (the silver DB)
-are never touched.
-
-Usage:
-    prune.py [--bronze-dir /data] [--dry-run] [--min-age-hours N]
+of the dumps it keeps (``run.json``, ``positions/``, ``transactions/``,
+``portfolio_transactions/``, ``documents/``, ``cards/``) and non-run
+entries at the bronze root (the silver DB) are never touched.
 """
 
 from __future__ import annotations

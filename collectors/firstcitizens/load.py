@@ -44,6 +44,7 @@ from pathlib import Path
 
 from collectorkit import bronze, cli, silver
 from collectorkit.money import parse_money
+from collectorkit.parse import epoch_day
 
 
 log = logging.getLogger("firstcitizens.load")
@@ -59,11 +60,6 @@ SOURCE_HISTORY = "history"
 # Date / money parsing
 # ============================================================
 
-def _epoch_day(d) -> int:
-    """Unix seconds UTC at midnight of the given datetime or date."""
-    return int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp())
-
-
 def parse_posted_date(raw) -> int | None:
     """A history row's `postedDate` → epoch-midnight seconds. First Citizens
     posts at day granularity; the Q2 API renders the date as `M/D/YYYY` (or
@@ -78,7 +74,7 @@ def parse_posted_date(raw) -> int | None:
         if n > 10_000_000_000:          # too large for seconds → milliseconds
             n //= 1000
         try:
-            return _epoch_day(datetime.fromtimestamp(n, tz=timezone.utc))
+            return epoch_day(datetime.fromtimestamp(n, tz=timezone.utc))
         except (ValueError, OSError, OverflowError):
             return None
     s = str(raw).strip()
@@ -88,12 +84,12 @@ def parse_posted_date(raw) -> int | None:
     m = re.match(r"(\d{4})-(\d{2})-(\d{2})", s)
     if m:
         try:
-            return _epoch_day(datetime(int(m[1]), int(m[2]), int(m[3])))
+            return epoch_day(datetime(int(m[1]), int(m[2]), int(m[3])))
         except ValueError:
             return None
     for fmt in ("%m/%d/%Y", "%m/%d/%y"):
         try:
-            return _epoch_day(datetime.strptime(s.split(" ")[0], fmt))
+            return epoch_day(datetime.strptime(s.split(" ")[0], fmt))
         except ValueError:
             continue
     return None
@@ -103,13 +99,13 @@ def parse_posted_date(raw) -> int | None:
 # History JSON → ledger rows
 # ============================================================
 
-def _first(d: dict, *keys, default=None):
+def _first(d: dict, *keys):
     """First present, non-None value among `keys` — tolerance for minor wire
     naming drift (the capture the field names were pinned from is not kept)."""
     for k in keys:
         if k in d and d[k] is not None:
             return d[k]
-    return default
+    return None
 
 
 def _signed_amount(row: dict) -> float | None:
@@ -306,7 +302,7 @@ def _statement_date_from_name(name: str) -> int | None:
             return None
         yyyy, mm, dd = m[1], m[2], m[3]
     try:
-        return _epoch_day(datetime(int(yyyy), int(mm), int(dd)))
+        return epoch_day(datetime(int(yyyy), int(mm), int(dd)))
     except ValueError:
         return None
 
@@ -324,8 +320,8 @@ def _read_accounts(run_dir: Path) -> list[dict]:
     except ValueError:
         log.warning("%s: accounts.json is not valid JSON; skipping", run_dir.name)
         return []
-    if isinstance(data, dict):
-        data = data.get("accounts", [])
+    if not isinstance(data, list):
+        return []
     return [a for a in data if isinstance(a, dict)]
 
 
@@ -345,25 +341,10 @@ def _read_history(path: Path) -> tuple[str | None, list]:
             txs if isinstance(txs, list) else [])
 
 
-def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
-    """Load one bronze run dir in one transaction. Returns True if ingested,
-    False if skipped (no run.json yet, a non-complete dump, or already
-    loaded). Idempotent."""
-    if not (run_dir / "run.json").is_file():
-        log.info("skip %s (no run.json — still writing?)", run_dir.name)
-        return False
-    status = bronze.run_status(run_dir / "run.json")
-    if not bronze.is_loadable_status(status):
-        log.info("skip %s (status=%s)", run_dir.name, status)
-        return False
-    try:
-        snapshot_at = bronze.parse_run_ts(run_dir.name)
-    except ValueError:
-        log.warning("skip %s (unparseable run slug)", run_dir.name)
-        return False
-    if snapshot_at in silver.loaded_snapshots(conn):
-        return False
-
+def load_run(conn: sqlite3.Connection, run_dir: Path) -> None:
+    """Load one pending bronze run dir (`bronze.pending_run_dirs`) in one
+    transaction. Idempotent."""
+    snapshot_at = bronze.parse_run_ts(run_dir.name)
     accounts = _read_accounts(run_dir)
     # Map a statement dir's safe-stemmed name back to the raw account id, so a
     # document links to the same account_external_id the roster + history use.
@@ -398,7 +379,6 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
             " silver_schema_version, run_dir) VALUES (?,?,?)",
             (snapshot_at, silver.current_schema_version(conn), str(run_dir)))
     log.info("loaded %s (%d accounts)", run_dir.name, len(accounts))
-    return True
 
 
 def main(argv: list[str]) -> int:
@@ -418,9 +398,9 @@ def main(argv: list[str]) -> int:
     try:
         silver.apply_migrations(conn, MIGRATIONS_DIR)
         loaded = 0
-        for run_dir in bronze.iter_run_dirs(args.bronze_dir):
-            if load_run(conn, run_dir):
-                loaded += 1
+        for run_dir in bronze.pending_run_dirs(conn, args.bronze_dir, log=log):
+            load_run(conn, run_dir)
+            loaded += 1
         log.info("done: %d run(s) ingested into %s", loaded, db_path)
     finally:
         conn.close()

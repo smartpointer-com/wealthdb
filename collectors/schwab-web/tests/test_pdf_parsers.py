@@ -85,7 +85,7 @@ def _wrap(rows_text: str) -> str:
 
 
 class TestAccountRegistration:
-    """The header line we surface as silver's
+    """The header line surfaced as silver's
     `accounts.account_registration` — verbatim from the
     statement-PDF header so wealthdb's gold adapter can map to
     its `tax_wrapper` enum. Three layout eras, three anchors."""
@@ -169,7 +169,7 @@ class TestAccountRegistration:
 
     def test_custodial_without_marker_stays_unaugmented(self):
         # Defensive: if neither UTMA nor UGMA appears in the
-        # holder block (no real statement we've observed), the
+        # holder block (no known statement layout omits both), the
         # raw header survives unaugmented.
         text = (
             "Schwab One® Custodial Account of\n"
@@ -231,7 +231,7 @@ class TestAccountRegistration:
 
 
 class TestAccountNumber:
-    """The page-1 header account number we surface into
+    """The page-1 header account number surfaced into
     `accounts.payload.account_number_full` — the api↔web bridge
     key (INTEROP.md §1). Returned exactly as printed (dash kept);
     the gold join normalises to digits-only on both sides. Two
@@ -504,13 +504,12 @@ class TestSectionBoundaries:
 
     def test_total_transactions_spaced_form_terminates(self):
         # pypdfium2 emits "Total Transactions" with a space
-        # (pdfplumber's tight output gave us "TotalTransactions"
-        # — the original anchor). Both must terminate the
-        # section; without the spaced-form support, a statement
-        # with no Pending block would leave the section open and
-        # sweep the trailing Endnotes / disclosure paragraphs
-        # (which carry the custodian name + account number) into
-        # the last row's description.
+        # (pdfplumber's tight output yields "TotalTransactions").
+        # Both must terminate the section; without the spaced-form
+        # support, a statement with no Pending block would leave the
+        # section open and sweep the trailing Endnotes / disclosure
+        # paragraphs (which carry the custodian name + account
+        # number) into the last row's description.
         text = (
             PERIOD_HEADER
             + "Transaction Details\n"
@@ -805,7 +804,7 @@ class TestParsePositions:
             "SYN5 SyntheticFive(M) 100.0000 50.00000 5,000.00\n"
         )
         rows = pp.parse_positions(text)
-        # The 3-column row should give us quantity / price /
+        # The 3-column row should yield quantity / price /
         # market_value with cost_basis None.
         assert len(rows) == 1
         r = rows[0]
@@ -878,8 +877,8 @@ class TestParseCashSummary:
         assert pp.parse_cash_summary(text) is None
 
     def test_data_line_with_seven_amounts_still_parses(self):
-        # Edge: if Schwab ever ships a missing column, we should
-        # still capture what's there. Seven $-amounts (no
+        # Edge: if Schwab ever ships a missing column, what's there
+        # is still captured. Seven $-amounts (no
         # Expenses column).
         seven = "$100.00 $50.00 ($25.00) $0.00 $30.00 $5.00 $160.00\n"
         cash = pp.parse_cash_summary(self._wrap_cash_summary(seven))
@@ -890,7 +889,7 @@ class TestParseCashSummary:
         assert cash["closing_balance"] is None
 
     def test_nulls_preserved_when_input_missing(self):
-        # If a column was blank in the row (e.g. parser gives us
+        # If a column was blank in the row (e.g. parser yields
         # only six numbers), the derived totals should be None
         # rather than 0.0.
         six_line = "$100.00 $50.00 ($25.00) $0.00 $30.00 $5.00\n"
@@ -1301,7 +1300,7 @@ class TestParsePositionsLegacy:
     def test_legacy_falls_back_only_when_new_format_absent(self):
         # If a text has the NEW "Positions - Equities" anchor and
         # produces rows, the legacy parser must NOT be invoked.
-        # We assert that by including BOTH an old-style block and
+        # Asserted by including BOTH an old-style block and
         # a new-style block; the new-style rows win.
         text = (
             "Positions - Equities\n"
@@ -2029,7 +2028,7 @@ class TestParseTransactionsLegacy:
 class TestStatementPdfReturnShape:
     def test_dict_carries_positions_and_cash_keys(self):
         # Build a tiny synthetic full-text that has every section
-        # the high-level function looks at. We then call the
+        # the high-level function looks at, then call the
         # public functions individually since parse_statement_pdf
         # itself opens a real PDF (covered separately by
         # test_pdf_parsers_fixture).

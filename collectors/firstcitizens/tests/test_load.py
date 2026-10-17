@@ -208,8 +208,7 @@ def test_load_run_end_to_end(tmp_path):
     bronze_dir = tmp_path / "bronze"
     _write_bronze_run(bronze_dir, "20260801T120000Z")
     conn = _load(tmp_path)
-    run = bronze_dir / "20260801T120000Z"
-    assert load.load_run(conn, run) is True
+    load.load_run(conn, bronze_dir / "20260801T120000Z")
 
     acct = conn.execute("SELECT account_external_id, account_type, nickname, "
                         "mask, currency, balance FROM accounts").fetchone()
@@ -233,17 +232,27 @@ def test_load_run_end_to_end(tmp_path):
     assert doc["doc_kind"] == "statement" and doc["file_format"] == "pdf"
 
 
-def test_load_run_is_idempotent(tmp_path):
+def _main(tmp_path: Path, bronze_dir: Path) -> load.sqlite3.Connection:
+    """Run `load.main` over `bronze_dir`, then open its silver DB."""
+    db = tmp_path / "firstcitizens.db"
+    assert load.main(["--bronze-dir", str(bronze_dir),
+                      "--silver-db", str(db)]) == 0
+    return load.silver.open_db(db)
+
+
+def _counts(conn) -> dict[str, int]:
+    return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            for t in ("accounts", "transactions", "documents", "dump_runs")}
+
+
+def test_load_is_idempotent(tmp_path):
     bronze_dir = tmp_path / "bronze"
     _write_bronze_run(bronze_dir, "20260801T120000Z")
-    conn = _load(tmp_path)
-    run = bronze_dir / "20260801T120000Z"
-    assert load.load_run(conn, run) is True
+    _main(tmp_path, bronze_dir).close()
     # Re-loading the same dump is a no-op (already-loaded snapshot).
-    assert load.load_run(conn, run) is False
-    assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 3
-    assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1
-    assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
+    conn = _main(tmp_path, bronze_dir)
+    assert _counts(conn) == {"accounts": 1, "transactions": 3,
+                             "documents": 1, "dump_runs": 1}
 
 
 def test_account_content_dedup_across_runs(tmp_path):
@@ -261,19 +270,18 @@ def test_non_complete_run_skipped(tmp_path):
     bronze_dir = tmp_path / "bronze"
     run = _write_bronze_run(bronze_dir, "20260801T120000Z")
     (run / "run.json").write_text(json.dumps({"status": "in-progress"}))
-    conn = _load(tmp_path)
-    assert load.load_run(conn, run) is False
-    assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 0
+    conn = _main(tmp_path, bronze_dir)
+    assert _counts(conn) == dict.fromkeys(_counts(conn), 0)
 
 
-def test_run_without_run_json_skipped(tmp_path):
-    # A run dir whose manifest is not yet written is still being written.
+def test_run_without_run_json_is_neither_loaded_nor_recorded(tmp_path):
+    # A run dir whose manifest is not yet written is still being written;
+    # prune reclaims it, so load must not record it as loaded either.
     bronze_dir = tmp_path / "bronze"
     run = _write_bronze_run(bronze_dir, "20260801T120000Z")
     (run / "run.json").unlink()
-    conn = _load(tmp_path)
-    assert load.load_run(conn, run) is False
-    assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 0
+    conn = _main(tmp_path, bronze_dir)
+    assert _counts(conn) == dict.fromkeys(_counts(conn), 0)
 
 
 def test_failed_load_leaves_silver_unchanged(tmp_path, monkeypatch):
@@ -293,5 +301,5 @@ def test_failed_load_leaves_silver_unchanged(tmp_path, monkeypatch):
         assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
 
     monkeypatch.undo()
-    assert load.load_run(conn, run) is True
+    load.load_run(conn, run)
     assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 3

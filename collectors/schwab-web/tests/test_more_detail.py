@@ -116,20 +116,8 @@ def test_recover_reports_reload_failure():
 
 
 # ============================================================
-# _apply_tx_filter — probe gating and window preference
+# _apply_tx_filter — window preference
 # ============================================================
-
-def test_apply_filter_probe_only_under_debug(monkeypatch):
-    page = MagicMock()
-    probed = []
-    monkeypatch.setattr(download, "select_date_range", lambda p, v: None)
-    monkeypatch.setattr(download, "probe_custom_date_range",
-                        lambda *a: probed.append(1))
-    download._apply_tx_filter(page, "999", "All", None)
-    assert probed == []
-    download._apply_tx_filter(page, "999", "All", None, debug=True)
-    assert probed == [1]
-
 
 def test_apply_filter_prefers_exact_window(monkeypatch):
     page = MagicMock()

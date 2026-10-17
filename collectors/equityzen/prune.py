@@ -22,11 +22,10 @@ reclaimed:
 
 Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
 at run-dir creation, atomically overwritten with ``"complete"`` at the
-end). A manifest with no ``status`` key predates the field and is
-classified COMPLETE, keeping its load inputs: such a dump only ever got a
-``run.json`` at the very end, after every artefact, so its presence alone
-means the walk finished. An unreadable or corrupt ``run.json`` is UNKNOWN
-and never deleted.
+end). A manifest with no ``status`` key counts as complete, keeping its
+load inputs: a download that writes no status writes its manifest only at
+the end. An unreadable or corrupt ``run.json`` is UNKNOWN and never
+deleted.
 
 A COMPLETE dump's load inputs (``investments.json``,
 ``offerings/*/detail.json``, and the ``documents/<deal-slug>/*.pdf`` /

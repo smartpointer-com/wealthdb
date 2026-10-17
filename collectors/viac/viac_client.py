@@ -9,7 +9,7 @@ SPA echoes back as an `x-csrft<N>` request header on every
 state-mutating verb (POST / PUT / PATCH / DELETE).
 
 The `<N>` digit suffix is deploy-bound — bundle-build-version
-shaped, rotates on the next VIAC release. We detect it at
+shaped, rotates on the next VIAC release. It is detected at
 runtime from the cookie jar (regex `^CSRFT\\d+-S$`) and derive
 the header name by stripping the `-S` and lowercasing.
 
@@ -40,7 +40,7 @@ USER_AGENT = (
 )
 
 # Headers the SPA sends on every request. Included defensively —
-# we don't know which are load-bearing, so we ship them all.
+# which ones are load-bearing is unknown, so all of them are sent.
 DEFAULT_HEADERS = {
     "accept": "application/json",
     "accept-language": "en-US,en;q=0.9",

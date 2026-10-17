@@ -20,7 +20,7 @@ pdfplumber>=0.11,<1
 # until a document actually needs OCR, so the unit tests need neither. What
 # rapidocr's wheel does not carry is the inference runtime those models
 # execute on, so onnxruntime is pinned beside it under the same marker.
-pypdfium2>=4,<6
+pypdfium2>=4.30,<6
 ocrmac>=1,<2 ; sys_platform == "darwin"
 rapidocr>=3,<4 ; sys_platform != "darwin"
 onnxruntime>=1.17 ; sys_platform != "darwin"

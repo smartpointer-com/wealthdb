@@ -5,7 +5,7 @@
 runs unattended: it launches the same persistent Camoufox profile, submits
 the login form (the trusted device makes `logonUser` return 200 with no
 2FA — DESIGN.md §3), and then fetches the deposit-account data over the
-Q2 `mobilews` REST API via `page.request` (the data calls carry no Akamai
+Q2 `mobilews` REST API via `context.request` (the data calls carry no Akamai
 sensor, only the session cookie + `q2token`, so no DOM scraping is needed).
 
 If the device-trust has expired, `logonUser` returns a 2FA challenge and
@@ -181,15 +181,14 @@ def _download_statements(context, acct: dict, run_dir: Path,
     return written
 
 
-def walk(context, bronze_dir: Path, *, since: date | None = None,
-         until: date | None = None, formats: tuple[str, ...] = (),
+def walk(context, bronze_dir: Path, *, formats: tuple[str, ...],
+         since: date | None = None, until: date | None = None,
          documents: bool = True, dry_run: bool = False) -> dict:
     """Fetch the deposit-account data into a fresh bronze run dir over the
     authenticated context, narrowed to the `[since, until]` window
     (`--lookback`). --dry-run records the roster and logs each account's
     transaction total, but fetches no history, exports or statements, and
     stamps the manifest 'dry-run'."""
-    formats = formats or q2client.DEFAULT_EXPORT_FORMATS
     # The server-side window carried on the history + export URLs (§3). None
     # when no window was resolved → the account's full history.
     posted_date = (q2client.posted_date_range(since, until)
@@ -210,7 +209,7 @@ def walk(context, bronze_dir: Path, *, since: date | None = None,
     if status != 200 or roster is None:
         raise RuntimeError(f"could not fetch the account roster (HTTP {status})")
     bronze.atomic_write_json(run_dir / "raw" / "accounts.json", roster)
-    accounts = q2client.parse_accounts(roster, deposit_only=True)
+    accounts = q2client.parse_accounts(roster)
     bronze.atomic_write_json(run_dir / "accounts.json", accounts)
     log.info("roster: %d deposit account(s)", len(accounts))
 

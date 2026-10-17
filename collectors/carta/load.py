@@ -57,7 +57,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import hashlib
 import json
 import logging
 import re
@@ -671,12 +670,22 @@ def _index_rows(docs_dir: Path) -> list[dict]:
     return [row for row in rows or [] if isinstance(row, dict)]
 
 
+def _doc_id(row: dict):
+    """An index row's document id: its `id`, or its `uuid` when it carries
+    none. download names the row's blob by the same rule."""
+    return row.get("id") or row.get("uuid")
+
+
+def _document_path(docs_dir: Path, row: dict) -> Path:
+    """Where the run keeps the blob of an index row: `doc_<id>.pdf`."""
+    return docs_dir / f"doc_{_doc_id(row)}.pdf"
+
+
 def _document_pdf(docs_dir: Path, row: dict) -> Path | None:
-    """The PDF an index row names, or None when the run holds none. The file
-    is absent when the document was not fetched. It can also hold the JSON
-    envelope that document_url answers with in place of the PDF. Both read
-    as not downloaded."""
-    pdf = docs_dir / f"doc_{row.get('id')}.pdf"
+    """The PDF an index row names, or None when the run holds none: the file
+    is absent, or does not start with the PDF magic number (such as the JSON
+    envelope document_url answers with). Both read as not downloaded."""
+    pdf = _document_path(docs_dir, row)
     return pdf if pdf.is_file() and docdedup.is_pdf(pdf) else None
 
 
@@ -708,7 +717,7 @@ def _warn_unowned_fund_documents(docs_dir: Path, fund_eids: list) -> None:
         if (_fund_ledger_kind(row.get("document_type"))
                 and str(row.get("fund_id")) not in owners):
             log.warning("document %s (%s) belongs to no fund entity of this "
-                        "run; not read", row.get("id"), row.get("document_type"))
+                        "run; not read", _doc_id(row), row.get("document_type"))
 
 
 def load_documents(conn, snap: int, run_name: str, docs_dir: Path) -> int:
@@ -717,15 +726,14 @@ def load_documents(conn, snap: int, run_name: str, docs_dir: Path) -> int:
     PDF (_document_pdf) is counted in one log line and not indexed."""
     n = not_pdf = 0
     for row in _index_rows(docs_dir):
-        doc_id = row.get("id")
+        doc_id = _doc_id(row)
         pdf = _document_pdf(docs_dir, row)
         if pdf is None:
-            # Indexed but not downloaded (e.g. dry-run, or a fetch failure) —
-            # skip; a later real run will pick it up.
-            not_pdf += (docs_dir / f"doc_{doc_id}.pdf").is_file()
+            # Not downloaded: the row has no document_url, the fetch failed,
+            # or the file holds no PDF. A later run fetches it again.
+            not_pdf += _document_path(docs_dir, row).is_file()
             continue
-        data = pdf.read_bytes()
-        sha = hashlib.sha256(data).hexdigest()
+        sha, size = bronze.sha256_file(pdf)
         bronze_path = f"{run_name}/documents/{pdf.name}"
         existing = conn.execute(
             "SELECT first_seen_at, last_seen_at FROM documents "
@@ -747,7 +755,7 @@ def load_documents(conn, snap: int, run_name: str, docs_dir: Path) -> int:
                  _s(row.get("fund_id")), _s(row.get("fund_name")),
                  _s(row.get("firm_id")), _s(row.get("firm_name")),
                  _s(row.get("capital_account_name")),
-                 _s(row.get("stakeholder_name")), len(data), bronze_path,
+                 _s(row.get("stakeholder_name")), size, bronze_path,
                  snap, snap, _cj(row)),
             )
             n += 1
@@ -1013,7 +1021,7 @@ def load_statement_nav(conn, docs_dir: Path, fund_eid) -> int:
             (snap, fund_eid, "USD", nav, contributed,
              _s(row.get("document_date")), *(st[c] for c in itd_cols),
              _cj({"source": "capital_account_statement",
-                  "document_id": row.get("id"), "net_asset_value": nav,
+                  "document_id": _doc_id(row), "net_asset_value": nav,
                   "capital_contributed": contributed})))
         n += 1
     return n
@@ -1044,7 +1052,7 @@ def load_k1_capital_accounts(conn, docs_dir: Path) -> int:
         pdf = _document_pdf(docs_dir, row)
         if pdf is None:
             continue
-        sha = hashlib.sha256(pdf.read_bytes()).hexdigest()
+        sha = bronze.sha256_file(pdf)[0]
         if conn.execute("SELECT 1 FROM k1_capital_accounts "
                         "WHERE content_sha256 = ?", (sha,)).fetchone():
             continue
@@ -1069,13 +1077,13 @@ def load_k1_capital_accounts(conn, docs_dir: Path) -> int:
                          "form states %d", pdf.name, indexed, year)
         fund = row.get("fund_id")
         conn.execute("DELETE FROM k1_capital_accounts WHERE doc_id = ?",
-                     (row.get("id"),))
+                     (_doc_id(row),))
         conn.execute(
             "INSERT INTO k1_capital_accounts "
             "(content_sha256, doc_id, entity_external_id, tax_year, "
             f" period_start, period_end, {', '.join(_K1_COLUMNS)}, payload) "
             f"VALUES (?,?,?,?,?,?,{','.join('?' * len(_K1_COLUMNS))},?)",
-            (sha, row.get("id"),
+            (sha, _doc_id(row),
              int(fund) if str(fund or "").isdigit() else None, year,
              parsed["period_start"], parsed["period_end"],
              *(parsed[c] for c in _K1_COLUMNS), _cj(parsed["printed"])))
@@ -1193,7 +1201,12 @@ def _fund_cash_flows(conn, eid, docs_dir: Path, snap: int,
     rows do not account for. A row dated after the lump cannot be part of it
     and is skipped with a warning. Where the fund reports no lump for a kind
     at all, the supplied rows are that kind's whole ledger.
+
+    A run without a document index (`download --no-documents`) leaves the
+    ledger as the last run with documents built it.
     """
+    if not (docs_dir / "index.json").is_file():
+        return 0
     supplied = []
     path = bronze_root / f"{eid}-transactions.csv"
     for i, tx in enumerate(_read_transactions_csv(path)):
@@ -1213,11 +1226,11 @@ def _fund_cash_flows(conn, eid, docs_dir: Path, snap: int,
             if not date:
                 continue
             contrib, dist = _parse_statement_flows(pdf)
-            stmts.append((date, row.get("id"), contrib, dist))
+            stmts.append((date, _doc_id(row), contrib, dist))
         else:
             parsed = _parse_notice(pdf)
             if parsed:
-                parsed["docid"] = row.get("id")
+                parsed["docid"] = _doc_id(row)
                 notices.append(parsed)
 
     # The fund ledger is DERIVED WHOLLY from the documents this run holds, so
@@ -1225,8 +1238,8 @@ def _fund_cash_flows(conn, eid, docs_dir: Path, snap: int,
     # emits dated calls where an earlier run — whose copies of those notices
     # were url envelopes, unreadable — emitted statement-differenced ones under
     # different ids. Left to accumulate, both shapes survive and the fund's
-    # called capital doubles. Runs load oldest-first, so the newest view wins,
-    # and a run only ever holds MORE documents than its predecessor.
+    # called capital doubles. Runs load oldest-first, so the newest view wins.
+    # A run without a document index never reaches this delete (see above).
     conn.execute("DELETE FROM cash_flows WHERE entity_external_id = ? "
                  "  AND kind IN ('capital_call', 'distribution')", (eid,))
 

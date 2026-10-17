@@ -105,18 +105,7 @@ EOF
     exit 0
 fi
 
-# `./angellist prune [args...]` → host-side python invocation.
-#
-# Like fidelity-web's `load`/`prune`: a pure file walk needs no
-# container, and running it host-side bypasses the single-writer safety
-# guard so it can reclaim disk while a `download` container is mid-flight
-# (the in-flight dump is protected by prune's own age guard). prune.py +
-# collectorkit.prune/bronze are pure stdlib. The default --bronze-dir
-# comes first so an explicit flag in [args...] overrides it (argparse
-# last-wins). --bronze-dir points at the bronze ROOT ($HOST_DATA); the
-# engine iterates only timestamped run dirs, so the sibling
-# angellist-documents/ tree and the silver angellist.db are never
-# touched.
+# prune runs host-side (wrapper_host_prune).
 if [[ "${1:-}" == "prune" ]]; then
     wrapper_host_prune "$@"
 fi

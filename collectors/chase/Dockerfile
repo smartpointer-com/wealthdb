@@ -25,9 +25,8 @@ RUN apt-get update \
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# Copy scripts last, listed explicitly so accidentally-present host
-# artefacts (.venv, recorded traces, downloaded statements) never make it
-# into the image even if .dockerignore is incomplete.
+# Copy scripts last, by name, so stray host artefacts (.venv, traces,
+# captures, downloaded statements) never enter the image.
 #   explore.py     discovery harness
 #   login.py       one-shot login + scrape driver (backs `download`)
 #   download.py    the walk() scrape + bronze layout

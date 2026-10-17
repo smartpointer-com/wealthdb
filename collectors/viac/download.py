@@ -11,7 +11,7 @@ Bronze layout (mirrors the sibling toolkits):
     ├── run.json                          manifest
     ├── customer.json                     customer profile
     ├── wealth/
-    │   ├── portfolio-inventory.json      list of all portfolios (p3a + pvb)
+    │   ├── portfolio-inventory.json      list of all portfolios (p3a + pvb + inv)
     │   ├── summary.json                  daily NAV time series
     │   └── allocation.json               overall allocation
     ├── positions/<portfolio-num>/
@@ -47,8 +47,8 @@ loader can re-apply it without taking its own CLI args.
 `--dry-run` walks every URL (verifying the session and enumerating
 the export surfaces) and logs the plan, but persists NOTHING under
 `--bronze-dir`: no run dir, no manifest, no JSON, no PDFs. It leaves no
-bronze dump for load/prune to see — useful for checking that
-selectors/endpoints still match landmarks without touching bronze.
+bronze dump for load/prune to see — useful for checking that the
+endpoints still answer without touching bronze.
 
 PDF fetches are download-avoidant via the shared
 `collectorkit.docdedup` engine, keyed by document number and chosen
@@ -107,8 +107,6 @@ DEFAULT_BRONZE_DIR = Path("/data")
 # discover the new suffixes (see DESIGN.md §2.2).
 ENDPOINT_SUFFIXES = {
     "customer/current": "7-5",
-    "notification": "6-2",
-    "p3a/portfolio/moneyPaymentInfo": "6-2",
     "document": "7-0",
 }
 PORTFOLIO_FEES_SUFFIX = "70"  # /p3a/portfolio/<num>/fees-<this>
@@ -317,7 +315,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     # Shared date-window contract. VIAC's REST endpoints don't take
     # a date filter (the transactions and documents-index calls
-    # always return the full history), so we apply the windows
+    # always return the full history), so the windows apply
     # client-side: documents are filtered AT FETCH (skip the PDF
     # binaries whose `timestamp` falls outside [documents-since,
     # documents-until]) and transactions are written full to bronze
@@ -332,7 +330,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=("Walk the REST API (verify the session, enumerate the "
               "surfaces, log the plan) but persist NOTHING under "
               "--bronze-dir — no run dir, manifest, JSON, or PDFs. "
-              "Useful for landmark checks without touching bronze."),
+              "Useful for checking that the endpoints still answer "
+              "without touching bronze."),
     )
     p.add_argument(
         "--debug", action="store_true",
@@ -382,11 +381,11 @@ def fetch_json(client: ViacClient, path: str, dest_file: Path,
 def _doc_date(doc: dict) -> date | None:
     """Extract a YYYY-MM-DD date from a doc-index entry's `timestamp`.
     Returns None if the field is missing or unparseable — callers
-    treat "unknown date" as "in window" so we never silently drop a
-    document the source didn't time-stamp.
+    treat "unknown date" as "in window", so a document the source
+    didn't time-stamp is never silently dropped.
 
     VIAC's timestamps come back as `YYYY-MM-DDTHH:MM:SS.ffffff` with
-    no timezone suffix; we only need the date portion so the first
+    no timezone suffix; only the date portion matters, so the first
     10 chars are enough."""
     return parse.iso_date(doc.get("timestamp"))
 
@@ -396,8 +395,8 @@ def should_download_pdf(doc: dict, with_tx: bool,
     """True if this document should be downloaded under the gate."""
     # Date gate first: drop anything outside [docs_since, docs_until]
     # regardless of type. Docs with no/unparseable timestamp are kept
-    # — we'd rather over-fetch than silently lose a document the
-    # source didn't time-stamp.
+    # — over-fetching beats silently losing a document the source
+    # didn't time-stamp.
     d = _doc_date(doc)
     if d is not None and (d < docs_since or d > docs_until):
         return False
@@ -427,10 +426,10 @@ def fetch_pdf(client: ViacClient, doc: dict, docid: str, target: Path,
     url = BASE_URL + path
 
     def _stream_to_disk() -> int:
-        # If a prior attempt wrote a partial file, drop it — we
-        # restart from scratch on retry (range-resume isn't
-        # supported by VIAC's CDN as far as we can tell, and
-        # PDFs are small enough that re-fetching is cheap).
+        # If a prior attempt wrote a partial file, drop it — a
+        # retry restarts from scratch (VIAC's CDN shows no
+        # range-resume support, and PDFs are small enough that
+        # re-fetching is cheap).
         if target.exists():
             target.unlink()
         n = 0
@@ -486,7 +485,7 @@ def walk(client: ViacClient, dest_root: Path, *,
     block so the silver loader can re-apply them at insert time
     without taking its own CLI args. Per the fetch/load split:
     document PDFs are filtered AT FETCH (PDF binaries are big; don't
-    download what we won't insert), but transactions are written
+    download what load won't insert), but transactions are written
     full and filtered AT LOAD (the REST envelope is one small JSON;
     keeping it complete preserves bronze faithfulness).
 
@@ -560,7 +559,7 @@ def walk(client: ViacClient, dest_root: Path, *,
     p3a_portfolios = inventory.get("p3a") if isinstance(inventory, dict) else []
     for pf in p3a_portfolios:
         num = pf["number"]
-        log.info("portfolio %s (%s)", num, pf.get("name", "?"))
+        log.info("portfolio %s (%s)", bronze.log_id(num), pf.get("name", "?"))
         get(f"/rest/web/p3a/portfolio/{num}/strategySummary",
             f"positions/{num}/strategy.json")
         get(f"/rest/web/p3a/portfolio/{num}/assetsOverview",

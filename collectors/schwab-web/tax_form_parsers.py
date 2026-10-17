@@ -12,9 +12,9 @@ long-held positions.
 
 Schwab ships the 1099 Composite in three bronze formats: a PDF (the
 human copy), an OFX-2.x **XML**, and a flat **CSV**. The XML and CSV
-are machine-readable twins of the same data. We prefer the **XML**
+are machine-readable twins of the same data. The **XML** is preferred
 (cleaner per-field structure, an explicit "Various" acquisition flag,
-and a `TAXYEAR` element) and fall back to the CSV. The PDF's 1099-B
+and a `TAXYEAR` element), with the CSV as the fallback. The PDF's 1099-B
 pages are not read; its Year-End Summary half is.
 
 Output: one normalised row dict per 1099-B lot, shaped for the silver
@@ -164,7 +164,8 @@ def _lot_row(*, security_name: str, sale_description: str | None,
     gold layer can tell a real zero from an unknown one.
 
     `date`/`amount`/`description` feed the loader's synthetic-activity_id
-    derivation; `kind='Sale'` maps to the gold sell taxonomy."""
+    derivation; `kind='Sale'` names the row; gold reads these lots from
+    `closed_lots`, not as transactions."""
     if cost_basis_raw is not None and basis_not_shown and cost_basis_raw == 0:
         cost_basis = None
     else:
@@ -177,7 +178,7 @@ def _lot_row(*, security_name: str, sale_description: str | None,
         "amount": proceeds,           # proceeds = flow magnitude + id input
         "description": desc,          # id input
         "symbol": None,               # 1099-B carries no ticker / CUSIP
-        "kind": "Sale",               # gold webKind: Sale → TxKindSell
+        "kind": "Sale",               # a sale lot, never a gold transaction
         "instrument_key": None,       # name-only; gold resolves by name
         "security_name": security_name,
         "sale_description": sale_description,
@@ -279,7 +280,7 @@ def parse_1099b_csv(csv_text: str) -> dict:
 
     The section is introduced by a 'Form 1099 B' row, followed by a
     box-number header ('1a','1b',...), then a human-label header, then
-    one row per lot. We index columns by box number so column-order
+    one row per lot. Columns are indexed by box number so column-order
     drift doesn't break the mapping. Returns the same shape as
     `parse_1099b_xml`."""
     rows = list(csv.reader(io.StringIO(csv_text)))

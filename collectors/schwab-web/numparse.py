@@ -8,7 +8,7 @@ leading-minus negatives (``-$5.00``), and parenthesised negatives
 
 This function is the single implementation the surface-specific helpers
 (``load._parse_money``, ``tax_form_parsers._to_float``,
-``pdf_parsers._parse_number`` and the cash-summary cleaner) delegate to.
+``pdf_parsers._parse_number`` and the cash-summary reader) delegate to.
 Each surface enables only the shapes its source actually emits, via the
 keyword flags — the defaults handle the plain ``(neg)`` / comma / number
 case shared by all of them:

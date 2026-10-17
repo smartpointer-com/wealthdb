@@ -4,8 +4,8 @@ Prune debug artefacts and non-complete dumps from the fidelity-web
 bronze tree.
 
 Thin wrapper over :mod:`collectorkit.prune` (the shared, unit-tested
-prune engine) with fidelity-web's configuration. Two categories are
-removed, across every timestamped run dir under ``--bronze-dir``:
+prune engine) with fidelity-web's configuration. Three categories are
+removed:
 
 * ``<run>/screenshots/`` — debug captures (HTML DOM dumps, PNG
   screenshots, ``--explore`` DOM inventories). Written only when
@@ -13,11 +13,13 @@ removed, across every timestamped run dir under ``--bronze-dir``:
   ``load``. Deleting them leaves silver byte-identical.
 
 * whole run dirs that are not complete dumps: ``run.json`` is missing
-  (the walk crashed before finalising) or its ``status`` is anything
-  other than ``"complete"`` (an ``"in-progress"`` marker from a crashed
-  walk, or a ``"dry-run"`` shell). ``load`` would otherwise keep
-  re-ingesting whatever partial artefacts such a dir holds; after
-  pruning one, the next ``load --force`` rebuild reflects the removal.
+  (the walk crashed before its first manifest write) or its ``status``
+  is anything other than ``"complete"`` (an ``"in-progress"`` marker
+  from a crashed walk, or a ``"dry-run"`` shell). ``load`` skips such dirs, so
+  removing one never changes silver.
+
+* aged entries of the host ``/debug`` cache (``--debug-dir``, which the
+  wrapper passes): the ``--screenshot-dir`` / ``--trace`` output.
 
 Completeness signal: the ``run.json`` ``status`` field
 (``"in-progress"`` at start, atomically overwritten with
@@ -44,20 +46,18 @@ untouched. Only ``screenshots/`` is debug (``debug_subdirs``); PDFs and
 separate manual ``recompress`` verb's job, not ``prune``'s.
 
 Usage:
-    prune.py [--bronze-dir /data] [--dry-run] [--min-age-hours N]
+    prune.py [--bronze-dir /data] [--debug-dir DIR] [--dry-run] [--min-age-hours N]
 """
 
 from __future__ import annotations
 
 import sys
 
-from collectorkit import prune
-
-SCREENSHOTS_DIR = "screenshots"
+from collectorkit import debugcap, prune
 
 
 CONFIG = prune.PruneConfig(
-    debug_subdirs=(SCREENSHOTS_DIR,),
+    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
     # A status key decides; a statusless but readable run.json is
     # COMPLETE (see the module docstring).
     is_complete=prune.lenient_classification,

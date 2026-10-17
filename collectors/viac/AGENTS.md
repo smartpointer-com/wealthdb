@@ -19,34 +19,38 @@ Which verbs open a session (root [AGENTS.md](../../AGENTS.md) §2):
 Root [AGENTS.md](../../AGENTS.md) §1 mandates read-only access. The
 concrete surface for viac:
 
-Allowed surfaces — `login.py` and `download.py` (the only scripts
-that touch the network) may reach only the following; treat
-anything not listed as forbidden:
+Allowed calls — `login.py` and `download.py` (the only scripts
+that touch the network) replay VIAC's REST API and drive no
+browser. They may make only the following calls; treat anything
+not listed as forbidden:
 
-- The VIAC login form and the MFA approval page that follows it.
-- The REST endpoints listed in DESIGN.md §2.2 (customer profile,
-  wealth summary / allocation, per-portfolio strategy / assets /
-  fees, transactions, document index, individual PDFs).
-- Logout (optional; not required between runs, but harmless).
+- The auth flow of [DESIGN.md](DESIGN.md) §2.1: `GET /`, the
+  `DELETE /external-login/public/authentication/flow/` flow reset,
+  the two `POST` checks (`password/check/`, `mtan/otp/check/`),
+  the `GET /external-login/public/authentication/` confirm, and
+  `POST /rest/web/customer/loginHook`.
+- `GET /rest/web/heartbeat`, the session probe of `login --check`
+  and of `download` before its walk.
+- The `GET` endpoints listed in DESIGN.md §2.2 (customer profile,
+  portfolio inventory, wealth summary / allocation, per-portfolio
+  strategy / assets / fees, transactions, document index,
+  individual PDFs).
 
-Forbidden — do not navigate to, click, or scrape:
+Forbidden — do not call:
 
-- Contribution / deposit forms ("Einzahlung", "Beitrag",
+- Any other `POST` / `PUT` / `PATCH` / `DELETE`.
+- Contribution / deposit endpoints ("Einzahlung", "Beitrag",
   "Vorsorge-Beitrag").
-- Strategy change / fund-switch forms ("Strategie ändern",
+- Strategy change / fund-switch endpoints ("Strategie ändern",
   "Anlage anpassen").
-- Withdrawal / payout request forms ("Auszahlung", "Bezug",
+- Withdrawal / payout requests ("Auszahlung", "Bezug",
   "Vorbezug").
 - Beneficiary management ("Begünstigung", "Erbschaft").
 - Card management or any "request card / change limits" surface
   VIAC may expose for its WIR-bank-side cash accounts.
-- Profile / settings pages that mutate account state (notification
-  prefs, MFA factor management, contact details).
-- Any "confirm" / "submit" / "bestätigen" / "absenden" button
-  outside the login form itself.
-- Anything that performs a `POST` other than the login form, the
-  read-only filter Apply actions, and explicit export-generation
-  triggers.
+- Payment-information endpoints.
+- Profile / settings endpoints that mutate account state
+  (notification prefs, MFA factor management, contact details).
 
 ## Authentication & private data
 

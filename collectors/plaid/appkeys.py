@@ -47,23 +47,6 @@ def environment(args: argparse.Namespace) -> str:
     return "sandbox" if args.sandbox else "production"
 
 
-def source_env_file(explicit: Path | None) -> None:
-    """Source --env-file (or $PLAID_ENV_FILE) so its values win. A path
-    that was asked for and is absent is an error, not a fallback to
-    whatever the environment happens to hold."""
-    named = explicit or (Path(os.environ["PLAID_ENV_FILE"])
-                         if os.environ.get("PLAID_ENV_FILE") else None)
-    if named is None:
-        return
-    if not named.is_file():
-        raise SystemExit(f"{'--env-file' if explicit else 'PLAID_ENV_FILE'} "
-                         f"names no file: {named}")
-    try:
-        envfile.source_env_file(named, prefer_file=True)
-    except ValueError as e:
-        raise SystemExit(str(e)) from e
-
-
 def make_client(environment: str, client_id: str | None) -> plaidapi.Client:
     """The client for one environment, from the keys in the process
     environment."""

@@ -401,11 +401,12 @@ def is_pdf(path: Path) -> bool:
     """True if the file really starts with the PDF magic number.
 
     The ``usable`` predicate every adopter wants, because every adopter links
-    PDFs: statements, notices, tax forms. It exists here rather than four times
-    over because what it guards against is not a per-collector accident — a
+    PDFs: statements, notices, tax forms. It exists here rather than once per
+    adopter because what it guards against is not a per-collector accident — a
     document endpoint that answers with an error page, or with a JSON envelope
     naming the real url, writes something that is not a PDF, and link-mode
-    would hardlink that forward for ever.
+    would hardlink that forward for ever. carta's loader applies the same test
+    before it indexes or parses a blob.
 
     An unreadable file counts as unusable: the caller then fetches, which is
     the safe direction.

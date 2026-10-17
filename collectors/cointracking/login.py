@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """cointracking session minter — headless Playwright Firefox, CLI-MFA.
 
-Pure-HTTP login proved unviable: /login.php's POST 1 sends the
+Pure-HTTP login does not work: /login.php's POST 1 sends the
 password as a session-encrypted blob (32 chars of mixed-case ASCII
 including `#`/`%`/`^` — not any standard hash or encoding) computed
 by JS on the page. The server accepts md5(password) in POST 1 far
@@ -9,7 +9,7 @@ enough to return the 2FA challenge form, but the post-1 session
 state isn't fully valid and POST 2 gets bounced back to /login.php.
 Reverse-engineering the JS encryption would be fragile.
 
-So we drive a real browser instead. Vanilla Playwright Firefox in
+So login drives a real browser instead. Vanilla Playwright Firefox in
 headless mode — no Camoufox stealth, no Xvfb, no VNC, no display.
 The browser runs the page's JS-side encryption for free. CLI-MFA
 prompt unchanged (stdin); the browser fills the field.
@@ -151,8 +151,8 @@ def login(page, username: str, password: str) -> None:
     if not code:
         raise RuntimeError("no 2FA code entered; aborting login")
     if not re.fullmatch(r"\d{6}", code):
-        log.warning("2FA code is %d chars (%r) — expected 6 digits, "
-                    "submitting anyway", len(code), code)
+        log.warning("2FA code is %d chars, expected 6 digits; submitting "
+                    "it anyway", len(code))
 
     page.locator(CODE_2FA_SELECTOR).fill(code, timeout=10_000)
 
@@ -162,8 +162,8 @@ def login(page, username: str, password: str) -> None:
     # cointracking styles this as a custom checkbox: the native
     # <input> has display:none and a sibling label/div carries the
     # visible UI. Playwright's check() / set_checked() — even with
-    # force=True — refuse to "click" an invisible element. So we
-    # drive it through JS directly: set .checked and dispatch a
+    # force=True — refuse to "click" an invisible element. So it is
+    # driven through JS directly: set .checked and dispatch a
     # change event so any client-side listeners see the state
     # change. Form submission picks up the checked property from
     # the native input regardless of display state.
@@ -195,8 +195,8 @@ def login(page, username: str, password: str) -> None:
     try:
         page.wait_for_url("**/dashboard*", timeout=30_000)
     except Exception as exc:
-        # Dump the current page so we can see exactly what went
-        # wrong (cointracking sometimes re-renders with a visible
+        # Dump the current page, which shows what went wrong
+        # (cointracking sometimes re-renders with a visible
         # error: "Invalid 2FA code", "Session expired", etc.).
         # Scrubbed before truncation: a re-render can bring the sign-in
         # form back with the password still in it, and this string is raised.

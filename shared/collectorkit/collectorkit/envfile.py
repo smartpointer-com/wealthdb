@@ -146,7 +146,7 @@ def source_named_env_file(explicit: Path | None, env_var: str) -> Path | None:
     if path is None:
         return None
     if not Path(path).is_file():
-        raise SystemExit(f"--env-file does not exist: {path}")
+        raise SystemExit(f"{'--env-file' if explicit else env_var} names no file: {path}")
     try:
         source_env_file(path, prefer_file=True)
     except ValueError as e:

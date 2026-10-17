@@ -13,7 +13,7 @@ Also scans `<bronze-dir>/manual/` for out-of-band artefacts
 `documents` table by content sha256.
 
 Usage:
-    load.py --silver-db <file> --bronze-dir <dir> [-v]
+    load.py --silver-db <file> --bronze-dir <dir> [--force] [-v]
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ log = logging.getLogger("swissquote.load")
 SWISSQUOTE_TZ = ZoneInfo("Europe/Zurich")
 
 # CSV transactions: a literal "00000000" Order # is the source's
-# placeholder for non-trade rows; we normalise to NULL.
+# placeholder for non-trade rows; the loader normalises it to NULL.
 ORDER_NUM_PLACEHOLDER = "00000000"
 
 # A 3-letter uppercase string in the first column of the List of
@@ -57,56 +57,6 @@ ISO_CCY_RE = re.compile(r"^[A-Z]{3}$")
 # collectorkit's silver.open_db provides.
 open_db = silver.open_db
 canonical_json = silver.canonical_json
-
-
-# ============================================================
-# Bronze scanner
-# ============================================================
-
-def find_pending_dumps(
-    conn: sqlite3.Connection, bronze_dir: Path,
-) -> list[Path]:
-    """Return complete run-dirs in bronze not yet recorded in dump_runs.
-
-    A dump is complete only once its run.json carries
-    ``status == "complete"`` — the terminal manifest download.py writes
-    atomically at the end of a successful walk (a legacy statusless
-    run.json counts too; see `bronze.manifest_is_complete`). A
-    timestamp-named dir with no run.json, or one still carrying the
-    in-progress marker download.py drops at run-dir creation, is a
-    crashed/interrupted or still-running download; ingesting its
-    partial artefacts would leak a partial balance snapshot into silver
-    (and thence gold). Such dirs are skipped with a warning rather than
-    aborting the whole load, so one bad download never blocks loading
-    the good dumps around it.
-    """
-    loaded = {
-        row["snapshot_at"]
-        for row in conn.execute("SELECT snapshot_at FROM dump_runs;")
-    }
-    out = []
-    for child in sorted(bronze_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        if not bronze.RUN_DIR_RE.match(child.name):
-            continue
-        ts = _run_dir_to_epoch(child.name)
-        if ts in loaded:
-            continue
-        if not bronze.manifest_is_complete(child):
-            log.warning(
-                "Skipping incomplete dump %s (run.json absent or "
-                "status != 'complete' — likely a crashed, interrupted, "
-                "or still-running download)", child.name,
-            )
-            continue
-        out.append(child)
-    return out
-
-
-def _run_dir_to_epoch(name: str) -> int:
-    """Convert a YYYYMMDDTHHMMSSZ run-dir name to a UTC epoch second."""
-    return bronze.parse_run_ts(name)
 
 
 # ============================================================
@@ -408,7 +358,7 @@ def parse_position_details(path: Path) -> dict[tuple[str, str | None], dict]:
 # "Asset allocation" table lists every held position at year-end
 # (date in the title: "Portfolio performance at DD.MM.YYYY") with
 # quantity, ISIN, average cost, market price, and CHF valuation.
-# We parse it into a `pp:<doc_id>`-tagged set of `positions` rows
+# It is parsed into a `pp:<doc_id>`-tagged set of `positions` rows
 # so the silver `positions` table also covers historical year-ends
 # rather than only the cluster of recent live snapshots.
 #
@@ -491,8 +441,8 @@ def parse_portfolio_performance(pdf_path: Path) -> dict:
     # The asset-allocation table is on a single page; layout-mode
     # extraction keeps columns aligned enough for line-based parse.
     # Multiple pages may match the surface "Asset allocation" text
-    # (the Table of Contents on page 0 includes it). We try every
-    # candidate and return the first that yields rows; the TOC will
+    # (the Table of Contents on page 0 includes it). Every candidate
+    # is tried and the first that yields rows is returned; the TOC will
     # parse to zero rows and quietly skip.
     positions: list[dict] = []
     for page in reader.pages:
@@ -640,8 +590,8 @@ def load_portfolio_performance_docs(
     insert source-tagged positions rows.
 
     A doc is "already ingested" if any positions row has
-    source='pp:<doc_id>'. Re-parses are idempotent: we DELETE then
-    INSERT under that source tag in a transaction.
+    source='pp:<doc_id>'. Re-parses are idempotent: a DELETE then an
+    INSERT under that source tag, in a transaction.
 
     Returns the number of newly-loaded docs.
     """
@@ -682,14 +632,13 @@ def load_portfolio_performance_docs(
         )
         account_id = r["account_external_id"] or result["account_external_id"]
 
-        conn.execute("BEGIN;")
-        try:
+        with silver.transaction(conn):
             conn.execute(
                 "DELETE FROM positions WHERE source = ?;", (source_tag,),
             )
             for pos in result["positions"]:
                 # PP doesn't surface the live-XLS-style ticker; the
-                # human-readable security name is our best symbol
+                # human-readable security name is the best symbol
                 # value. wealthdb-side joins should key on ISIN.
                 symbol = pos["name"]
                 currency = pos["currency"] or ""
@@ -709,11 +658,7 @@ def load_portfolio_performance_docs(
                      pos["price_quote"], pos.get("accrued_interest_chf"),
                      canonical_json(fields), source_tag),
                 )
-            conn.execute("COMMIT;")
-            loaded += 1
-        except Exception:
-            conn.execute("ROLLBACK;")
-            raise
+        loaded += 1
     return loaded
 
 
@@ -889,8 +834,7 @@ def ingest_manual_dir(conn: sqlite3.Connection, bronze_root: Path) -> int:
         return 0
     now = int(datetime.now(timezone.utc).timestamp())
     n = 0
-    conn.execute("BEGIN;")
-    try:
+    with silver.transaction(conn):
         for f in sorted(manual.rglob("*")):
             if not f.is_file():
                 continue
@@ -914,10 +858,6 @@ def ingest_manual_dir(conn: sqlite3.Connection, bronze_root: Path) -> int:
                 (digest, now, str(f.relative_to(bronze_root)), payload),
             )
             n += 1
-        conn.execute("COMMIT;")
-    except Exception:
-        conn.execute("ROLLBACK;")
-        raise
     return n
 
 
@@ -971,7 +911,7 @@ def load_one_dump(
     bronze_root: Path,
     schema_version: int,
 ) -> None:
-    snapshot_at = _run_dir_to_epoch(run_dir.name)
+    snapshot_at = bronze.parse_run_ts(run_dir.name)
     log.info("Loading dump %s (snapshot_at=%d)", run_dir.name, snapshot_at)
 
     run_meta_path = run_dir / "run.json"
@@ -1001,8 +941,7 @@ def load_one_dump(
             {"account_external_id": customer_id, "account_product": ""},
         ]
 
-    conn.execute("BEGIN;")
-    try:
+    with silver.transaction(conn):
         # accounts (content-dedup per (external_id, product))
         for entry in account_entries:
             product = (
@@ -1060,11 +999,6 @@ def load_one_dump(
             (snapshot_at, schema_version, str(run_dir)),
         )
 
-        conn.execute("COMMIT;")
-    except Exception:
-        conn.execute("ROLLBACK;")
-        raise
-
 
 # ============================================================
 # Entry point
@@ -1085,7 +1019,12 @@ def run(args: argparse.Namespace) -> int:
         silver.apply_migrations(conn, migrations_dir)
         schema_version = silver.current_schema_version(conn)
 
-        pending = find_pending_dumps(conn, args.bronze_dir)
+        # Only complete dumps load: a dir with no run.json, or one still
+        # carrying the in-progress marker, is a crashed, interrupted or
+        # still-running download, and its partial artefacts would leak a
+        # partial snapshot into silver. It is skipped without a dump_runs
+        # row, so it loads once its walk finalises.
+        pending = bronze.pending_run_dirs(conn, args.bronze_dir, log=log)
         log.info("%d pending dump(s) to load", len(pending))
         for run_dir in pending:
             load_one_dump(conn, run_dir, args.bronze_dir, schema_version)

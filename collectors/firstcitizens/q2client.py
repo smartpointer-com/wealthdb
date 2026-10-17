@@ -14,7 +14,7 @@ The **login itself is not here** — the Akamai Bot Manager sensor on
 `preLogonUser`/`logonUser` (DESIGN.md §3) means the logon must run through
 the real browser's JS; login.py drives that. Once authenticated, the data
 calls carry only the session cookie + a `q2token` header (no sensor), so
-download.py replays them over `page.request`.
+download.py replays them over `context.request`.
 """
 from __future__ import annotations
 
@@ -34,6 +34,8 @@ START_URL = "https://www.firstcitizens.com/"
 
 # The Q2 single-page app (hash-routed): #/login → #/login/interstitial →
 # #/landingPage on success, or #/login/mfa/* when a device is not trusted.
+# Nothing navigates here directly (the homepage form leads in); kept as the
+# pinned record of where the SPA lives.
 APP_UUX = f"{APP_BASE}/uux.aspx"
 
 # Login-form controls, pinned from the explore DOM snapshots (DESIGN.md §3):
@@ -161,10 +163,9 @@ HISTORY_SORT = "postedDate%1Fd"          # postedDate, descending
 
 
 def account_history_page_url(account_id: str, page_number: int,
-                             page_size: int = HISTORY_PAGE_SIZE,
                              posted_date: str | None = None) -> str:
     url = (f"{account_history_url(account_id)}"
-           f"?page[number]={page_number}&page[size]={page_size}"
+           f"?page[number]={page_number}&page[size]={HISTORY_PAGE_SIZE}"
            f"&sort={HISTORY_SORT}")
     if posted_date:
         url += "&postedDate=" + quote(posted_date)
@@ -278,7 +279,7 @@ def _logon_data(body: dict) -> dict:
 
 def _data_list(body: dict) -> list:
     """The `data` array Q2 wraps list responses in (accounts roster,
-    statement listing, transaction history), or () if absent/misshaped."""
+    statement listing), or [] if absent or misshaped."""
     if not isinstance(body, dict):
         return []
     data = body.get("data")
@@ -294,9 +295,9 @@ def is_deposit_account(acct: dict) -> bool:
     return str(ext.get("hydraProductTypeCode", "")).upper() == DEPOSIT_PRODUCT_TYPE_CODE
 
 
-def parse_accounts(body: dict, *, deposit_only: bool = True) -> list[dict]:
+def parse_accounts(body: dict) -> list[dict]:
     """Project the `accounts` roster to the fields download.py needs, keeping
-    only deposit accounts by default. Each row: `id` (the endpoint key),
+    only deposit accounts. Each row: `id` (the endpoint key),
     `account_external_id` (the bank-masked number), `product_type_name`
     (Checking / Savings), `nickname`, and the raw `balances` labels/values as
     the source gives them. Pure — tested on synthetic payloads (no real
@@ -305,7 +306,7 @@ def parse_accounts(body: dict, *, deposit_only: bool = True) -> list[dict]:
     for acct in _data_list(body):
         if not isinstance(acct, dict):
             continue
-        if deposit_only and not is_deposit_account(acct):
+        if not is_deposit_account(acct):
             continue
         ext = acct.get("extended") or {}
         rows.append({

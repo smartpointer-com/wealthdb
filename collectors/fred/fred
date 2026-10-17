@@ -14,13 +14,14 @@
 #                       backfill).
 #   load [args...]      Parse bronze into the silver SQLite DB.
 #   prune [args...]     Delete non-complete (crashed / in-flight) bronze run
-#                       dirs; complete dumps are kept. --dry-run to preview.
+#                       dirs and the --debug trace in complete ones; their
+#                       load inputs are kept. --dry-run to preview.
 #
 # Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
-# > default), accepted on any subcommand:
+# > default):
 #   --secrets-dir DIR   API-key env file          (default ~/.secrets)
 #   --data-dir    DIR   bronze dumps root          (default $XDG_DATA_HOME/wealthdb/fred)
-#   --silver-db   PATH  silver DB path             (default <data-dir>/fred.db)
+#   --silver-db   PATH  silver DB path, load only  (default <data-dir>/fred.db)
 # The API key is read from FRED_API_KEY, auto-sourced from
 # <secrets-dir>/fred.env (override the path with $FRED_ENV_FILE).
 set -euo pipefail
@@ -38,6 +39,12 @@ case "$cmd" in
     -h|--help|help)
         awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"
         exit 0
+        ;;
+    login|download|load|prune)
+        ;;
+    *)
+        echo "fred: unknown command '$cmd' (expected: login|download|load|prune)" >&2
+        exit 2
         ;;
 esac
 
@@ -77,9 +84,5 @@ EOF
     prune)
         exec "$py" "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
             ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
-        ;;
-    *)
-        echo "fred: unknown command '$cmd' (expected: login|download|load|prune)" >&2
-        exit 2
         ;;
 esac

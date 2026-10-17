@@ -10,10 +10,10 @@ recorded in DESIGN.md §5; the two facts that decide the shape:
   subset of the card accounts, so anchors scraped from it under-collect
   with nothing to show for it. Every walk starts at
   ``/api/v2/credit-card-accounts``.
-* **The JSON is strictly richer than the export.** It carries a stable
-  per-row identity (``_id``), which the CSV has no column for, plus both
-  dates, both currencies' amounts, the row's billing state and the
-  merchant category. Capturing the CSV as well would cost a request per
+* **The JSON is strictly richer than the export.** It carries a per-row
+  ``_id`` the CSV has no column for (a per-session handle, not a key:
+  DESIGN.md §5.3), plus both dates, both currencies' amounts, the row's
+  billing state and the merchant category. Capturing the CSV as well would cost a request per
   account for a lossy copy, so the export endpoint is deliberately not
   fetched.
 

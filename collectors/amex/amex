@@ -8,10 +8,8 @@
 # session.
 #
 # The sign-in must run in the browser (Akamai — DESIGN.md §A), and
-# `download` is the only verb that performs one: `login` folded into it (§L)
-# because Amex's sign-in budget is small enough that a handful of sign-ins
-# in a short window fires a captcha (§K), and a separate `login` doubled
-# the cost of every routine run for nothing. `download` answers a passcode
+# `download` is the only verb that performs one, because Amex's sign-in
+# budget is small (DESIGN.md §K, §L). `download` answers a passcode
 # from the terminal when it has a TTY and registers the device while it is
 # there; `vnc-login` is the same walk behind a hand-driven sign-in, the only
 # way to answer a captcha. `load` and `prune` are pure Python. `explore` and
@@ -124,12 +122,7 @@ if [[ "${1:-}" == "login" ]]; then
     fi
 fi
 
-# prune is a pure file walk (collectorkit.prune + stdlib) — no browser, no
-# container. Run it host-side like the other collectors so it bypasses the
-# single-writer safety guard and can reclaim disk while a download is
-# mid-flight (its own --min-age guard protects an in-flight dump). With
-# HAS_DEBUG=1 the wrapper also passes --debug-dir so the /debug cache is
-# reclaimed.
+# prune runs host-side (wrapper_host_prune).
 if [[ "${1:-}" == "prune" ]]; then
     wrapper_host_prune "$@"
 fi

@@ -1,7 +1,7 @@
 """Unit tests for the browserless half of explore.py: argument parsing,
 the firstcitizens.com origin gate, the click-recorder-JS ↔ Python
-contract, and the login pre-fill logic — the latter driven against stub
-Playwright objects, so no browser is needed.
+contract, and which frames the login pre-fill reaches — the latter driven
+against stub Playwright objects, so no browser is needed.
 
 Synthetic values only (no real credentials or account data).
 """
@@ -109,18 +109,15 @@ def test_js_redacts_password_values():
 # ============================================================
 # Login pre-fill — stub Playwright objects, no browser
 # ============================================================
+#
+# The fill itself is collectorkit.explore.prefill_login, tested there. These
+# cover what this collector's arguments decide: which frames are reached.
 
 class StubField:
-    """Stands in for a Playwright Locator resolving to one input field.
+    """Stands in for a Playwright Locator resolving to one visible input."""
 
-    ``sticky=False`` models a field whose page JS rejects programmatic
-    fills (the read-back never matches), driving the retry-then-warn
-    path."""
-
-    def __init__(self, value="", visible=True, sticky=True):
-        self.value = value
-        self.visible = visible
-        self.sticky = sticky
+    def __init__(self):
+        self.value = ""
         self.fill_calls = []
 
     @property
@@ -131,12 +128,11 @@ class StubField:
         return 1
 
     def is_visible(self):
-        return self.visible
+        return True
 
     def fill(self, v, timeout=None):
         self.fill_calls.append(v)
-        if self.sticky or v == "":
-            self.value = v
+        self.value = v
 
     def input_value(self, timeout=None):
         return self.value
@@ -154,12 +150,6 @@ class AbsentField:
 
     def is_visible(self):
         return False
-
-    def fill(self, v, timeout=None):
-        raise AssertionError("fill() on an absent field")
-
-    def input_value(self, timeout=None):
-        raise AssertionError("input_value() on an absent field")
 
 
 class StubFrame:
@@ -180,48 +170,10 @@ class StubPage:
         self.url = frames[0].url
 
 
-def fcb_frame(**kw):
-    return StubFrame("https://www.firstcitizens.com/", **kw)
-
-
-def test_prefill_fills_both_fields_and_only_once():
-    user, pwd = StubField(), StubField()
-    page = StubPage(fcb_frame(user=user, pwd=pwd))
-    filled: set = set()
-    assert explore._maybe_prefill_login(page, USERNAME, PASSWORD, filled)
-    assert user.value == USERNAME
-    assert pwd.value == PASSWORD
-    # Second poll is a no-op: the fields are marked done, nothing re-fills.
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, filled)
-    assert user.fill_calls == [USERNAME]
-    assert pwd.fill_calls == [PASSWORD]
-
-
 def test_prefill_rejects_foreign_host():
     user, pwd = StubField(), StubField()
     page = StubPage(StubFrame("https://firstcitizens.com.evil.example/login",
                               user=user, pwd=pwd))
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, set())
-    assert user.fill_calls == [] and pwd.fill_calls == []
-
-
-def test_prefill_requires_both_fields_in_same_frame():
-    # A lone matching input (e.g. a 2FA code entry, or a search box the
-    # user selector accidentally matches) must never receive a credential.
-    lone_user = StubField()
-    page = StubPage(fcb_frame(user=lone_user))
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, set())
-    assert lone_user.fill_calls == []
-
-    lone_pwd = StubField()
-    page = StubPage(fcb_frame(pwd=lone_pwd))
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, set())
-    assert lone_pwd.fill_calls == []
-
-
-def test_prefill_ignores_invisible_form():
-    user, pwd = StubField(visible=False), StubField()
-    page = StubPage(fcb_frame(user=user, pwd=pwd))
     assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, set())
     assert user.fill_calls == [] and pwd.fill_calls == []
 
@@ -250,39 +202,3 @@ def test_prefill_never_reaches_foreign_iframe():
     )
     assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, set())
     assert user.fill_calls == [] and pwd.fill_calls == []
-
-
-def test_prefill_leaves_hand_typed_values_alone():
-    user = StubField(value="typed-by-hand")
-    pwd = StubField()
-    page = StubPage(fcb_frame(user=user, pwd=pwd))
-    filled: set = set()
-    assert explore._maybe_prefill_login(page, USERNAME, PASSWORD, filled)
-    assert user.value == "typed-by-hand"    # untouched, marked done
-    assert user.fill_calls == []
-    assert pwd.value == PASSWORD
-
-
-def test_prefill_retries_once_then_gives_up_without_refighting():
-    # A field that rejects programmatic fills: fill → verify-fail →
-    # clear + refill → verify-fail → marked done (so later polls never
-    # fight whatever gets hand-typed), reported as not-filled.
-    user = StubField(sticky=False)
-    pwd = StubField(sticky=False)
-    page = StubPage(fcb_frame(user=user, pwd=pwd))
-    filled: set = set()
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, filled)
-    assert user.fill_calls == [USERNAME, "", USERNAME]
-    # Marked done: a second poll touches nothing.
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, filled)
-    assert user.fill_calls == [USERNAME, "", USERNAME]
-
-
-def test_prefill_tracks_fills_per_page():
-    # The fill-once bookkeeping is keyed per page: a second tab with its
-    # own login form still gets filled.
-    filled: set = set()
-    page1 = StubPage(fcb_frame(user=StubField(), pwd=StubField()))
-    page2 = StubPage(fcb_frame(user=StubField(), pwd=StubField()))
-    assert explore._maybe_prefill_login(page1, USERNAME, PASSWORD, filled)
-    assert explore._maybe_prefill_login(page2, USERNAME, PASSWORD, filled)

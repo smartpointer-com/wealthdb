@@ -3,80 +3,41 @@
 Prune debug artefacts and non-complete dumps from the schwab-web
 bronze tree.
 
-Thin wrapper over :mod:`collectorkit.prune` (the shared, unit-tested
-prune engine) with schwab-web's configuration. Three categories are
-removed, across every timestamped run dir under ``--bronze-dir``:
+A run dir holds the load inputs (``statements/<suffix>/`` PDFs, the
+``transactions/<suffix>/`` CSV/JSON/XML exports and
+``more-details.json``) and the ``run.json`` manifest. None of them is
+ever deleted from a complete dump.
 
-* ``<run>/screenshots/`` — debug captures (the per-account
-  tx-history landing-page HTML baseline). Written only when
-  ``download`` runs with ``--debug``; never read by ``load``.
-  Deleting them leaves silver byte-identical.
+Two kinds of path are debug-only and reclaimed from complete dumps:
+``<run>/screenshots/`` (the tx-history landing-page HTML ``download
+--debug`` writes) and ``<run>/transactions/*/page-*.html`` (landing-page
+HTML beside the exports, never a load input). The glob can match no
+load input: every sibling is ``more-details.json`` or a ``.csv`` /
+``.json`` / ``.xml`` export. The login captures land in the debug dir
+outside bronze, which the wrapper passes as ``--debug-dir``.
 
-* ``<run>/transactions/*/page-*.html`` — debug orphans stranded inside
-  the tx-history load-input dir. The landing-page HTML capture lands
-  under ``--debug`` in ``<run>/screenshots/`` (reclaimed by the
-  ``screenshots`` debug_subdir above), but older run dirs also carry an
-  ungated copy at ``transactions/<suffix>/page-001.html``. ``load`` has
-  NEVER read them: the tx-history loop reads only ``more-details.json``
-  and the per-account export files the ``run.json`` manifest names
-  (``.csv`` / ``.json`` / ``.xml``) — never ``page-*.html``, which was
-  never a manifest export. This is expressed as ``debug_globs`` (a
-  top-level ``debug_subdirs`` name cannot reach two levels deep). The
-  glob is scoped as narrowly as possible so it can match ONLY these
-  orphans and never a load-input sibling: every sibling is either
-  ``more-details.json`` or an export whose name ends
-  ``.csv``/``.json``/``.xml`` — none can match ``page-*.html`` (a name
-  that both starts ``page-`` and ends ``.html``). ``validate_target``
-  re-derives and re-checks the glob against the run-dir-relative path
-  immediately before the unlink, so a planner bug can never delete a
-  load input.
-
-* whole run dirs that are not complete dumps: ``run.json`` is
-  missing (the walk crashed before its first manifest write) or its
-  ``status`` is anything other than ``"complete"`` (an
-  ``"in-progress"`` marker from a crashed walk, or a ``"dry-run"``
-  shell). ``load`` skips such dumps too; after pruning one, the next
-  ``load --force`` rebuild reflects the removal.
-
-Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
-at start, atomically overwritten with ``"complete"`` / ``"dry-run"`` at
-the end). A statusless manifest falls back to ``dry_run``: schwab-web
-writes ``run.json`` INCREMENTALLY (present from the first account
-onward), so presence alone can't prove completion. A statusless real
-dump (``dry_run=false``) keeps its load inputs, while a statusless
-``--dry-run`` shell (``dry_run=true``) is a non-complete dump. A
-crashed statusless non-dry dump keeps a partial manifest and is
-conservatively classified COMPLETE (kept) — the safe direction
-(never delete a load input); such crash-dumps simply are not
-reclaimed. An unreadable or corrupt ``run.json`` is UNKNOWN and
-never deleted.
-
-An in-flight guard skips non-complete dumps written within
-``--min-age-hours`` (default 1), keyed on the newest mtime in the dir
-so a long backfill is protected. ``--dry-run`` prints the plan
-without removing anything. The only paths ever deleted are
-``<run>/screenshots/`` subtrees, the ``<run>/transactions/*/page-*.html``
-orphan files, and whole non-complete run dirs; the load inputs
-of complete dumps (``statements/``, ``transactions/`` CSV/JSON/XML +
-``more-details.json``, ``run.json``) and non-run entries at the bronze
-root (the silver DB) are never touched.
+Completeness comes from the ``run.json`` status. ``run.json`` is
+written incrementally, so a statusless one falls back to ``dry_run``: a
+real dump (``dry_run`` false) is complete and keeps its load inputs, a
+``--dry-run`` shell is not. ``load`` skips a dump whose status is not
+``"complete"``, so removing one never changes silver. The safety
+envelope (the age guard, ``--dry-run``, symlinks, an unreadable
+manifest) is the shared engine's: see collectors/README.md.
 
 Usage:
-    prune.py [--bronze-dir /data] [--dry-run] [--min-age-hours N]
+    prune.py [--bronze-dir /data] [--debug-dir DIR] [--dry-run] [--min-age-hours N]
 """
 
 from __future__ import annotations
 
 import sys
 
-from collectorkit import prune
+from collectorkit import debugcap, prune
 
-SCREENSHOTS_DIR = "screenshots"
-# Per-account landing-HTML orphans stranded inside the tx-history
-# load-input dir by an older ungated capture. `load` never reads them;
-# this glob matches ONLY files named page-*.html two levels deep, never a
-# load-input sibling (all of which are more-details.json or
-# .csv/.json/.xml exports).
+# Per-account landing-page HTML beside the tx-history exports. `load`
+# never reads it; this glob matches ONLY files named page-*.html two
+# levels deep, never a load-input sibling (all of which are
+# more-details.json or .csv/.json/.xml exports).
 TX_PAGE_HTML_ORPHAN_GLOB = "transactions/*/page-*.html"
 
 
@@ -97,7 +58,7 @@ def _is_complete(run_dir, meta):
 
 
 CONFIG = prune.PruneConfig(
-    debug_subdirs=(SCREENSHOTS_DIR,),
+    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
     debug_globs=(TX_PAGE_HTML_ORPHAN_GLOB,),
     is_complete=_is_complete,
 )

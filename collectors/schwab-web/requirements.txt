@@ -10,7 +10,9 @@
 # renderer Chrome uses). Pure-C++ under the hood, an order of
 # magnitude faster than a pure-Python extractor — pdf_parsers.py
 # does text-only extraction across hundreds of monthly statement
-# PDFs. Apache/BSD-licensed, wheel-distributed.
+# PDFs. Apache/BSD-licensed, wheel-distributed. Capped below 5:
+# load.py puts the pypdfium2 version in its parser fingerprint, so a
+# bump re-parses every schwab-web statement.
 pypdfium2>=4.30,<5
 
 # pytest is bundled in the image so tests can be run inside the

@@ -244,9 +244,10 @@ How the SPA renews it is still open (§H). A
   a rolling ~36-month server-side cap on history. The statement archive
   predates it by only a few months (§G).
 - **Balances:** `GET /api/bankingzv-umsatz/umsatz-ui/rest/kontostaende/
-  <IBAN>?von=<date>&bis=<date>` → `{"tagessalden": [{"tag", "saldo"},
-  …], "kontostand", "verfuegbarerBetrag"}` — a **parameterizable
-  daily closing-balance series** plus the current balance. Gold's
+  <IBAN>?von=<date>&bis=<date>` → `{"von", "bis", "tagessalden":
+  [{"tag", "saldo"}, …], "kontostand", "verfuegbarerBetrag"}` — a
+  **parameterizable daily closing-balance series** plus the current
+  balance; `von`/`bis` echo the window the server applied. Gold's
   closing-balance series comes from here. How far back `von` may lie is
   open (§H).
 - **Account information:**

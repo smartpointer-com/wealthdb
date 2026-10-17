@@ -60,8 +60,9 @@ Subcommands:
                       --format picks export formats; --no-documents skips
                       statements; --dry-run enumerates without exporting.
   load [args...]      Ingest bronze into the SQLite silver.
-  prune [args...]     Delete non-complete dumps from the bronze tree (runs
-                      host-side). --dry-run prints the plan.
+  prune [args...]     Delete non-complete dumps from the bronze tree, and
+                      aged entries of the /debug cache (runs host-side).
+                      --dry-run prints the plan.
   explore [args...]   Discovery harness: Camoufox over VNC + HAR / network
                       log / click log / DOM snapshots under /debug. --fresh
                       wipes the profile so the next login forces a full 2FA.
@@ -86,12 +87,7 @@ EOF
     exit 0
 fi
 
-# prune is a pure file walk (collectorkit.prune + stdlib) — no browser, no
-# container. Run it host-side like the other collectors so it bypasses the
-# single-writer safety guard and can reclaim disk while a download is
-# mid-flight (its own --min-age guard protects an in-flight dump). With
-# HAS_DEBUG=1 the wrapper also passes --debug-dir so the /debug cache is
-# reclaimed.
+# prune runs host-side (wrapper_host_prune).
 if [[ "${1:-}" == "prune" ]]; then
     wrapper_host_prune "$@"
 fi

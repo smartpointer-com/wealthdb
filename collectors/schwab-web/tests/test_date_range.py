@@ -109,6 +109,6 @@ def test_specify_date_range_needs_the_fill_helper():
         download.select_date_range(MagicMock(), "SpecifyDateRange")
 
 
-def test_sample_era_custom_value_is_gone():
+def test_an_unknown_value_is_rejected():
     with pytest.raises(ValueError, match="unknown date range"):
         download.select_date_range(MagicMock(), "Custom")

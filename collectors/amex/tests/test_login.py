@@ -22,6 +22,8 @@ import amexclient  # noqa: E402
 import login  # noqa: E402
 
 CODE = "123456"
+# The logon endpoint the sign-in form posts to, as the watcher sees it.
+LOGON_URL = amexclient.APP_ORIGIN + amexclient.LOGON_PATH
 
 
 # ============================================================
@@ -29,8 +31,8 @@ CODE = "123456"
 # ============================================================
 
 def test_parse_args_is_only_the_check_probe():
-    # Everything that signs in lives on `download` now; this parser carries
-    # only what the probe reads.
+    # Everything that signs in lives on `download`; this parser carries only
+    # what the probe reads.
     args = login.parse_args(["--check"])
     assert args.profile_dir == Path("/secrets/amex-profile")
     assert args.check is True
@@ -38,7 +40,7 @@ def test_parse_args_is_only_the_check_probe():
 
 def test_a_bare_login_is_refused_by_the_script_too():
     # The wrapper and the entrypoint both trap it; this closes the path where
-    # something addresses login.py directly expecting a verb that is gone.
+    # something addresses login.py directly expecting it to sign in.
     assert login.main([]) == 2
 
 
@@ -47,14 +49,13 @@ def test_a_bare_login_is_refused_by_the_script_too():
     ["--check", "--cli-mfa"],
     ["--check", "--no-cli-mfa"],
     ["--check", "--vnc-mfa"],
-    ["--check", "--state-path", "x"],
     ["--check", "--mfa-timeout", "10"],
 ])
-def test_the_sign_in_flags_moved_to_download(argv):
-    # Leaving them parsing here would let a caller think login still signs
-    # in. Each argv would parse cleanly if its flag still existed here, so
-    # the only thing that can raise is the flag being unknown — a trailing
-    # junk positional would raise either way and prove nothing.
+def test_the_probe_parser_rejects_sign_in_flags(argv):
+    # Parsing them here would let a caller think login signs in. Each argv
+    # would parse cleanly if its flag existed here, so the only thing that
+    # can raise is the flag being unknown — a trailing junk positional would
+    # raise either way and prove nothing.
     with pytest.raises(SystemExit):
         login.parse_args(argv)
 
@@ -110,7 +111,7 @@ class _Context:
 def _watch_with(status, body, method="POST"):
     ctx = _Context()
     watch = login._LogonWatch().attach(ctx)
-    ctx.fire(_Resp(amexclient.LOGON_URL, status, body, method))
+    ctx.fire(_Resp(LOGON_URL, status, body, method))
     return watch
 
 
@@ -137,8 +138,8 @@ def test_the_preflight_does_not_mask_the_real_response():
     # Both arrive, preflight first; the verdict must be the POST's.
     ctx = _Context()
     watch = login._LogonWatch().attach(ctx)
-    ctx.fire(_Resp(amexclient.LOGON_URL, 200, None, "OPTIONS"))
-    ctx.fire(_Resp(amexclient.LOGON_URL, 200,
+    ctx.fire(_Resp(LOGON_URL, 200, None, "OPTIONS"))
+    ctx.fire(_Resp(LOGON_URL, 200,
                    {"statusCode": 0, "challenge": False,
                     "reauth": {"trust": True}}, "POST"))
     assert watch.outcome().authenticated

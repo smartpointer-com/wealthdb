@@ -1,8 +1,10 @@
 """Unit tests for download.py pure helpers.
 
-Covers the tax-document completeness decision (which years get re-downloaded
-each run until they settle) and relative→absolute URL resolution. The
-browser/network paths are exercised live, not here.
+Covers the tax-document completeness decision (which years' copies are
+replaced each run until they settle), the document fetch loop over a
+stubbed `urllib.request.urlopen`, and relative→absolute URL resolution. The
+browser paths are exercised live, not here. Synthetic urls, names and bytes
+only.
 """
 from __future__ import annotations
 
@@ -165,3 +167,124 @@ def test_exchanges_batched_request_pairs_each_operation_with_its_result():
     ]
     assert download._exchanges({"operationName": "Viewer"}, None) == [
         {"op": "Viewer", "variables": {}, "data": None, "errors": None}]
+
+
+# ============================================================
+# download_documents over a stubbed urlopen
+# ============================================================
+
+class _Resp:
+    """The parts of an http.client response download_documents reads."""
+
+    def __init__(self, body: bytes, headers: dict):
+        self._body = body
+        self.headers = headers
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _file(name: str, body: bytes, ctype: str = "text/csv") -> _Resp:
+    return _Resp(body, {"content-type": ctype,
+                        "content-disposition": f'attachment; filename="{name}"'})
+
+
+def _stub_urlopen(monkeypatch, answers: dict) -> list[str]:
+    """Answer each GET from `answers` (absolute url -> _Resp) and return the
+    list of urls requested, in order."""
+    import urllib.request
+    calls: list[str] = []
+
+    def urlopen(req, timeout=None):
+        calls.append(req.full_url)
+        return answers[req.full_url]
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    return calls
+
+
+def _documents_capture(tax: list[dict], financial: list[dict] = ()) -> list:
+    return [{"op": "AccountDocumentsQuery", "data": {"invest": {
+        "accountDocuments": {"taxDocuments": tax,
+                             "financialDocuments": list(financial)}}}}]
+
+
+_VENTURE = "https://venture.angellist.com"
+_COOKIES = [{"name": "_angellist_v2", "value": "synthetic"}]
+
+
+def test_documents_keep_a_complete_copy_and_replace_an_incomplete_one(
+        tmp_path, monkeypatch, caplog):
+    # Every listed file is fetched, since only the response names it. A
+    # complete year's copy on disk is kept as it is; an incomplete year's
+    # copy and a file not yet on disk are written.
+    docs = tmp_path / "angellist-documents"
+    docs.mkdir()
+    (docs / "2097 K-1 Package.csv").write_bytes(b"complete, as first fetched\n")
+    (docs / "2098 K-1 Package.csv").write_bytes(b"estimate\n")
+    calls = _stub_urlopen(monkeypatch, {
+        f"{_VENTURE}/k1_packets/1/csv": _file("2097 K-1 Package.csv",
+                                              b"complete, refetched\n"),
+        f"{_VENTURE}/k1_packets/2/csv": _file("2098 K-1 Package.csv",
+                                              b"revised estimate\n"),
+        f"{_VENTURE}/financial_reports/3/download": _file(
+            "Fund Report.pdf", b"%PDF-1.7 synthetic", "application/pdf"),
+    })
+    captures = _documents_capture(
+        [{"documentType": "complete", "csvUrl": "/k1_packets/1/csv"},
+         {"documentType": "estimate_provided", "csvUrl": "/k1_packets/2/csv"}],
+        [{"pdfUrl": "/financial_reports/3/download"}])
+
+    with caplog.at_level("INFO"):
+        download.download_documents(_COOKIES, captures, docs, dry_run=False)
+
+    assert len(calls) == 3
+    assert (docs / "2097 K-1 Package.csv").read_bytes() == \
+        b"complete, as first fetched\n"
+    assert (docs / "2098 K-1 Package.csv").read_bytes() == b"revised estimate\n"
+    assert (docs / "Fund Report.pdf").read_bytes() == b"%PDF-1.7 synthetic"
+    assert sorted(p.name for p in docs.iterdir()) == [
+        "2097 K-1 Package.csv", "2098 K-1 Package.csv", "Fund Report.pdf"]
+    assert any("2 fetched and written, 1 complete copies kept" in m
+               for m in caplog.messages)
+
+
+def test_documents_stop_at_the_login_wall(tmp_path, monkeypatch, caplog):
+    # A stale cookie gets the login page in place of a file: the loop stops
+    # there, writes nothing for it or after it, and the run goes on.
+    docs = tmp_path / "angellist-documents"
+    calls = _stub_urlopen(monkeypatch, {
+        f"{_VENTURE}/k1_packets/1/csv": _file("2097 K-1 Package.csv", b"k1\n"),
+        f"{_VENTURE}/k1_packets/1/download": _Resp(
+            b"<html>sign in</html>", {"content-type": "text/html"}),
+        f"{_VENTURE}/k1_packets/2/csv": _file("2098 K-1 Package.csv", b"k1\n"),
+    })
+    captures = _documents_capture(
+        [{"documentType": "complete", "csvUrl": "/k1_packets/1/csv",
+          "pdfUrl": "/k1_packets/1/download"},
+         {"documentType": "complete", "csvUrl": "/k1_packets/2/csv"}])
+
+    with caplog.at_level("WARNING"):
+        download.download_documents(_COOKIES, captures, docs, dry_run=False)
+
+    assert calls == [f"{_VENTURE}/k1_packets/1/csv",
+                     f"{_VENTURE}/k1_packets/1/download"]
+    assert [p.name for p in docs.iterdir()] == ["2097 K-1 Package.csv"]
+    assert any("login wall" in m and "(1 written before this.)" in m
+               for m in caplog.messages)
+
+
+def test_documents_dry_run_fetches_nothing(tmp_path, monkeypatch):
+    calls = _stub_urlopen(monkeypatch, {})
+    captures = _documents_capture(
+        [{"documentType": "complete", "csvUrl": "/k1_packets/1/csv"}])
+    download.download_documents(_COOKIES, captures, tmp_path / "docs",
+                                dry_run=True)
+    assert calls == []
+    assert not (tmp_path / "docs").exists()

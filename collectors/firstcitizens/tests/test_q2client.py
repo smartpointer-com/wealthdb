@@ -24,7 +24,6 @@ def test_history_page_url_paginates_and_sorts():
     assert "page[number]=2" in url
     assert f"page[size]={q2client.HISTORY_PAGE_SIZE}" in url
     assert "sort=postedDate%1Fd" in url          # postedDate, descending (US-sep)
-    assert "page[size]=25" in q2client.account_history_page_url("A1", 1, 25)
 
 
 def test_history_data_and_transactions():
@@ -199,7 +198,7 @@ def test_is_deposit_account():
     assert not q2client.is_deposit_account({"extended": {}})
 
 
-def test_parse_accounts_keeps_only_deposits_by_default():
+def test_parse_accounts_keeps_only_deposits():
     body = {"data": [_acct(code="D", acct_id="7000001"),
                      _acct(code="C", ptype="Card", acct_id="7000002")]}
     rows = q2client.parse_accounts(body)
@@ -208,11 +207,6 @@ def test_parse_accounts_keeps_only_deposits_by_default():
     assert r["product_type_name"] == "Checking"
     assert r["hydra_product_type_code"] == "D"
     assert {"description": "Available Balance", "value": "0.00"} in r["balances"]
-
-
-def test_parse_accounts_can_include_non_deposits():
-    body = {"data": [_acct(code="D"), _acct(code="C", acct_id="7000002")]}
-    assert len(q2client.parse_accounts(body, deposit_only=False)) == 2
 
 
 def test_parse_accounts_tolerates_junk():

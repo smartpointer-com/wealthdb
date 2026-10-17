@@ -3,10 +3,10 @@
 Frankfurter (https://api.frankfurter.app/) wraps the European
 Central Bank's daily reference rates with a clean REST surface.
 Free, no API key, no signup, no rate-limit announced (in practice
-a single call per fiat × held-range chunk is all we ever need).
+a single call per fiat × held-range chunk is all the collector needs).
 
-Used to fill the FX coverage gap for non-USD fiat held as cash
-balances (EUR, CHF). For those instruments, `price_usd` is
+Used to fill the FX coverage gap for non-USD fiat cash balances
+(e.g. EUR). For those instruments, `price_usd` is
 populated with the ECB closing reference rate for that day —
 inserted into the same `coin_prices` table the crypto path uses,
 under `source='frankfurter'`.
@@ -38,10 +38,10 @@ RATE_LIMIT_DELAY_S = 0.2  # Conservative; service has no published cap.
 
 PROVIDER = "frankfurter"
 
-# Fiat tickers we'd ever want to convert. binance.py excludes the
+# The fiat tickers this client converts. binance.py excludes the
 # same set, plus USD, from its lookup; frankfurter is the destination
-# for them. USD is trivially 1.0 and is excluded here so we don't
-# waste API calls.
+# for them. USD is trivially 1.0 and is excluded here, so it costs no
+# API call.
 SUPPORTED_FIATS: set[str] = {
     "EUR", "CHF", "GBP", "JPY", "AUD", "CAD", "NZD",
     "SEK", "NOK", "DKK", "PLN", "CZK", "HUF",
@@ -93,9 +93,9 @@ class FrankfurterClient:
         # The result rate is "USD per 1 base" — exactly the
         # price_usd of one unit of the base fiat.
         #
-        # We extend the query start by 10 days so we have a published
-        # rate to forward-fill from if the requested from_date is
-        # itself a weekend / ECB holiday.
+        # The query starts 10 days early, so a published rate exists
+        # to forward-fill from when the requested from_date is itself
+        # a weekend / ECB holiday.
         padded_from = from_date - timedelta(days=10)
         data = self._request(
             f"/{padded_from.isoformat()}..{to_date.isoformat()}",

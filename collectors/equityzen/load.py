@@ -37,7 +37,6 @@ See DESIGN.md §4/§5/§6.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import logging
 import os
@@ -59,7 +58,7 @@ MIGRATIONS_DIR = HERE / "migrations"
 DEFAULT_BRONZE_DIR = Path("/data")
 DEFAULT_SILVER_DB = Path("/data/equityzen.db")
 
-# EquityZen assetClass -> wealthdb offering kind (DESIGN.md §6.3).
+# EquityZen assetClass -> wealthdb offering kind (DESIGN.md §6, Enums).
 ASSET_CLASS_KIND = {
     "ASSET_COMPANY": "spv",
     "ASSET_MULTI_COMPANY_FUND": "private_fund",
@@ -98,13 +97,11 @@ def _r(x):
     return round(x, 2) if isinstance(x, (int, float)) else None
 
 
-def _slug(s: str) -> str:
-    """Match download.py's blob naming: sha256(id)[:16]."""
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
-
-
 def _find_blob(run_dir: Path, deal_id: str, doc_id: str):
-    matches = list((run_dir / "documents" / _slug(deal_id)).glob(_slug(doc_id) + ".*"))
+    """The blob download saved for a document: both path components are the
+    fleet's file-name token (`bronze.short_token`) of the Relay ids."""
+    deal_dir = run_dir / "documents" / bronze.short_token(deal_id)
+    matches = list(deal_dir.glob(bronze.short_token(doc_id) + ".*"))
     return matches[0] if matches else None
 
 
@@ -359,13 +356,13 @@ def _parse_documents(run_dir: Path, snapshot_at: int, node: dict):
 
 # ---- per-run load --------------------------------------------------------
 
-def load_run(conn: sqlite3.Connection, run_dir: Path, force: bool) -> dict:
+def load_run(conn: sqlite3.Connection, run_dir: Path) -> dict:
     snapshot_at = bronze.parse_run_ts(run_dir.name)
     snapshot_iso = datetime.fromtimestamp(snapshot_at, timezone.utc).date().isoformat()
     already = conn.execute(
         "SELECT 1 FROM dump_runs WHERE snapshot_at = ?", (snapshot_at,)
     ).fetchone()
-    if already is not None and not force:
+    if already is not None:
         return {"name": run_dir.name, "skipped": True,
                 "reason": "already loaded"}
     # A walk that crashed or is still running holds a partial capture: its
@@ -408,9 +405,6 @@ def load_run(conn: sqlite3.Connection, run_dir: Path, force: bool) -> dict:
     _prewarm_parses(_pdf_blobs(run_dir, nodes))
 
     with conn:  # BEGIN … COMMIT (ROLLBACK on error)
-        if force:
-            conn.execute("DELETE FROM dump_runs WHERE snapshot_at = ?", (snapshot_at,))
-
         for did, (_stage, node, _body) in nodes.items():
             conn.execute(
                 "INSERT OR REPLACE INTO offerings(deal_external_id, kind, "
@@ -512,7 +506,7 @@ def main(argv: list[str]) -> int:
     runs = list(bronze.iter_run_dirs(args.bronze_dir))
     log.info("found %d bronze run(s) under %s", len(runs), args.bronze_dir)
     for run_dir in runs:
-        stats = load_run(conn, run_dir, args.force)
+        stats = load_run(conn, run_dir)
         if stats.get("skipped"):
             log.info("  %s: skipped (%s)", stats["name"], stats["reason"])
         else:

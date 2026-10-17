@@ -12,8 +12,8 @@ import os as _os
 # whole tree is created owner-only rather than at the login shell's umask.
 #
 # Set here, at the package import, because it is the only hook every
-# collector actually passes through: there is no shared entrypoint (four
-# collectors are host-venv with no Dockerfile at all), a `umask` in the
+# collector actually passes through: there is no shared entrypoint (the
+# host-venv collectors have no Dockerfile at all), a `umask` in the
 # wrappers would not cross into a container, and the alternative is a chmod
 # beside each of the ~90 write sites — which is what produced a guarantee
 # covering the silver DBs and nothing around them. A library mutating

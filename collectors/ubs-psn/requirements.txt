@@ -1,6 +1,5 @@
-# pytest is bundled so the collector test suite can run inside the
-# container (`./<tool> sh -c "cd /app && pytest"`) / host venv with
-# no extra toolchain.
+# pytest is bundled so the test suite runs in the venv with no extra
+# toolchain.
 pytest>=8,<9
 
 paramiko>=4.0

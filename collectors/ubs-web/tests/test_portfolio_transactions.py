@@ -11,7 +11,6 @@ cannot have booked in.
 """
 from __future__ import annotations
 
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -22,9 +21,8 @@ COLLECTOR = HERE.parent
 sys.path.insert(0, str(COLLECTOR))
 
 import load as loader  # noqa: E402
-from collectorkit import silver  # noqa: E402
+from silverdb import fresh_db  # noqa: E402
 
-MIGRATIONS_DIR = COLLECTOR / "migrations"
 
 HEADER = ";".join(
     "Ccy." if c in ("ISIN currency", "Settlement currency") else c
@@ -70,13 +68,6 @@ def _csv(*rows: str) -> str:
     return "\r\n".join((HEADER, *rows, FOOTER)) + "\r\n"
 
 
-def _fresh_db(tmp_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(tmp_path / "ubs-web.db"))
-    conn.row_factory = sqlite3.Row
-    silver.apply_migrations(conn, MIGRATIONS_DIR)
-    return conn
-
-
 def _seed(root: Path, text: str) -> Path:
     dump = root / "20990101T000000Z"
     (dump / "portfolio_transactions").mkdir(parents=True, exist_ok=True)
@@ -117,7 +108,7 @@ def test_unconvertible_identifiers_are_refused(bad):
 
 def test_loads_trades_with_signs_valor_and_isin(tmp_path):
     dump = _seed(tmp_path / "bronze", _csv(BUY, SELL))
-    conn = _fresh_db(tmp_path)
+    conn = fresh_db(tmp_path)
     with conn:
         n = loader._load_portfolio_transactions(conn, 1700000000, dump)
     assert n == 2
@@ -146,7 +137,7 @@ def test_loads_trades_with_signs_valor_and_isin(tmp_path):
 
 def test_settlement_currency_and_rate_survive(tmp_path):
     dump = _seed(tmp_path / "bronze", _csv(FX_SETTLED))
-    conn = _fresh_db(tmp_path)
+    conn = fresh_db(tmp_path)
     with conn:
         loader._load_portfolio_transactions(conn, 1700000000, dump)
     row = conn.execute("SELECT * FROM portfolio_transactions").fetchone()
@@ -159,7 +150,7 @@ def test_settlement_currency_and_rate_survive(tmp_path):
 
 def test_a_row_without_a_reference_is_still_keyed(tmp_path):
     dump = _seed(tmp_path / "bronze", _csv(RIGHTS))
-    conn = _fresh_db(tmp_path)
+    conn = fresh_db(tmp_path)
     with conn:
         n = loader._load_portfolio_transactions(conn, 1700000000, dump)
     assert n == 1
@@ -174,7 +165,7 @@ def test_a_row_without_a_reference_is_still_keyed(tmp_path):
 
 def test_reloading_the_same_dump_does_not_duplicate(tmp_path):
     dump = _seed(tmp_path / "bronze", _csv(BUY, SELL, RIGHTS))
-    conn = _fresh_db(tmp_path)
+    conn = fresh_db(tmp_path)
     with conn:
         loader._load_portfolio_transactions(conn, 1700000000, dump)
     with conn:
@@ -187,7 +178,7 @@ def test_reloading_the_same_dump_does_not_duplicate(tmp_path):
 
 def test_footer_is_not_data(tmp_path):
     dump = _seed(tmp_path / "bronze", _csv(BUY))
-    conn = _fresh_db(tmp_path)
+    conn = fresh_db(tmp_path)
     with conn:
         n = loader._load_portfolio_transactions(conn, 1700000000, dump)
     assert n == 1
@@ -198,7 +189,7 @@ def test_a_changed_header_is_refused_rather_than_read_positionally(tmp_path):
     # the rows must be refused, not silently mis-parsed.
     text = _csv(BUY).replace("Valor;", "Valor;New Column;", 1)
     dump = _seed(tmp_path / "bronze", text)
-    conn = _fresh_db(tmp_path)
+    conn = fresh_db(tmp_path)
     with conn:
         n = loader._load_portfolio_transactions(conn, 1700000000, dump)
     assert n == 0
@@ -209,7 +200,7 @@ def test_a_changed_header_is_refused_rather_than_read_positionally(tmp_path):
 def test_a_dump_without_the_surface_loads_unchanged(tmp_path):
     dump = tmp_path / "bronze" / "20990101T000000Z"
     dump.mkdir(parents=True)
-    conn = _fresh_db(tmp_path)
+    conn = fresh_db(tmp_path)
     with conn:
         assert loader._load_portfolio_transactions(conn, 1700000000, dump) == 0
 
@@ -219,7 +210,7 @@ def test_rows_of_two_portfolios_coexist(tmp_path):
                .replace("1234 00000001.S5", "1234 00000001.S1") \
                .replace("PM00000001", "PM00000009")
     dump = _seed(tmp_path / "bronze", _csv(BUY, other))
-    conn = _fresh_db(tmp_path)
+    conn = fresh_db(tmp_path)
     with conn:
         n = loader._load_portfolio_transactions(conn, 1700000000, dump)
     assert n == 2
@@ -248,7 +239,7 @@ def test_names_a_portfolio_rejects_a_consolidated_id():
 ])
 def test_the_copy_naming_a_portfolio_wins(tmp_path, order):
     dump = _seed(tmp_path / "bronze", _csv(*order))
-    conn = _fresh_db(tmp_path)
+    conn = fresh_db(tmp_path)
     with conn:
         loader._load_portfolio_transactions(conn, 1700000000, dump)
     rows = conn.execute("SELECT * FROM portfolio_transactions").fetchall()
@@ -260,7 +251,7 @@ def test_the_copy_naming_a_portfolio_wins(tmp_path, order):
 def test_a_booking_only_a_consolidated_scope_reported_is_kept(tmp_path):
     # Losing it would be worse than carrying one gold cannot place.
     dump = _seed(tmp_path / "bronze", _csv(CONSOLIDATED_BUY))
-    conn = _fresh_db(tmp_path)
+    conn = fresh_db(tmp_path)
     with conn:
         n = loader._load_portfolio_transactions(conn, 1700000000, dump)
     assert n == 1
@@ -290,7 +281,7 @@ def test_a_scope_valuing_the_same_booking_differently_is_one_row(
     # event. Keyed on it, the booking reached silver twice — and gold
     # would have settled the same trade against the cash account twice.
     dump = _seed(tmp_path / "bronze", _csv(*order))
-    conn = _fresh_db(tmp_path)
+    conn = fresh_db(tmp_path)
     with conn:
         loader._load_portfolio_transactions(conn, 1700000000, dump)
     rows = conn.execute("SELECT * FROM portfolio_transactions").fetchall()

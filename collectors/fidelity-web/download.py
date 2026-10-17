@@ -43,10 +43,9 @@ order, otherwise the named single phase):
   through the page's own download response. Prospectuses + supplementary material are out of scope
   (DESIGN.md §8.5).
 
-* ``balances`` — Persist ``balances.html``. Fidelity offers no
-  direct CSV / Excel export on this surface; the on-page values
-  live in ``data-testid$='-totalaccountvalue-label'`` for silver
-  to scrape.
+* ``balances`` — Persist ``balances.html``; silver indexes it as a
+  document. Fidelity offers no direct CSV / Excel export on this
+  surface.
 
 * ``performance`` — Persist ``performance.html``. Pure Highcharts
   UI with no structured export.
@@ -179,8 +178,8 @@ DOWNLOAD_TIMEOUT_MS = 30_000
 # windows no wider than the page's own default bounds the damage: a
 # stale answer is then a SUPERSET of what was asked for rather than a
 # truncation of it, and a superset is recoverable where a truncation
-# is a hole nothing reports. A 93-day window had the opposite
-# property and silently returned 30 days.
+# is a hole nothing reports. A 93-day window has the opposite
+# property and can silently return 30 days.
 #
 # It is a floor under the damage, not the mechanism that prevents it.
 # `activity_export_matches` is that: it refuses any export whose rows
@@ -285,7 +284,7 @@ SEL_TRUST_BROWSER_CHECKBOX = "#dom-trust-device-checkbox"
 SEL_TRUST_BROWSER_LABEL = "label[for='dom-trust-device-checkbox']"
 
 # Logout: best-effort. The user menu surfaces a 'Log Out' anchor;
-# we click it before the Camoufox context tears down so Fidelity
+# the run clicks it before the Camoufox context tears down so Fidelity
 # invalidates the session cookie server-side. If selectors drift
 # the context.close() still cleans up locally — Fidelity's idle
 # timeout (~15 min) will eventually invalidate the cookie too.
@@ -361,9 +360,9 @@ def enumerate_account_dimensions(page):
     such section (rare) get ``portfolio = null`` and end up under
     a synthetic ``"(unknown)"`` bucket in run.json."""
     # The link's textContent runs nickname / account-number /
-    # balance / gains-losses on one line. We only want the
-    # nickname prefix — split on the account-id digit sequence
-    # (which we already have from the testid) and trim. Falls
+    # balance / gains-losses on one line. Only the nickname prefix
+    # is wanted — split on the account-id digit sequence (already
+    # known from the testid) and trim. Falls
     # back to the first newline-delimited line if the split
     # misses.
     js = """
@@ -509,7 +508,7 @@ PHASE_OK_STATUS = {
     "documents": ("walked",),
     "balances": ("explored-no-export",),
     "performance": ("explored-no-export",),
-    "daf": ("complete", "dry-run", "no-daf"),
+    "daf": ("complete", "no-daf"),
     "lots": ("complete",),
 }
 
@@ -822,7 +821,7 @@ def goto_and_wait(page, url, wait_selector=None, wait_timeout_s=30):
     try:
         page.goto(url, wait_until="domcontentloaded")
     except Exception as e:
-        # A lingering async route from the previous phase can race our
+        # A lingering async route from the previous phase can race this
         # goto ("interrupted by another navigation"); a single retry
         # after a brief settle clears it.
         if "interrupted by another navigation" in str(e):
@@ -1159,12 +1158,13 @@ def previous_lot_index(dest_root, current_slug):
     """The newest lot index in a complete dump before ``current_slug``,
     or None. An index carries forward the fetch each position's lots
     came from, so the newest one alone says what is already in bronze.
-    A dump that did not complete is passed over: `load` never reads it,
-    so a fetch it holds never reaches silver, and `prune` deletes it."""
+    A dump that did not complete, or has no manifest, is passed over:
+    `load` never reads it (`bronze.run_is_loadable`), so a fetch it holds
+    never reaches silver, and `prune` deletes it."""
     for run_dir in reversed(list(bronze.iter_run_dirs(dest_root))):
         if run_dir.name >= current_slug:
             continue
-        if bronze.run_status(run_dir / "run.json") not in (None, "complete"):
+        if not bronze.run_is_loadable(run_dir):
             continue
         index = lot_parsers.read_lot_index(run_dir / "lots")
         if index is not None:
@@ -1252,7 +1252,7 @@ def _lot_pause():
         time.sleep(random.uniform(*LOT_REQUEST_PAUSE_S))
 
 
-def _capture_positions_context(page, timeout_s=LOT_CONTEXT_TIMEOUT_S):
+def _capture_positions_context(page):
     """Load the positions page and copy what its own positions request
     carries: the CSRF header, the preset-view header and the JSON body
     (with its `pico` account context). Returns None when the page sends
@@ -1272,7 +1272,7 @@ def _capture_positions_context(page, timeout_s=LOT_CONTEXT_TIMEOUT_S):
     page.on("request", on_request)
     try:
         goto_and_wait(page, URL_POSITIONS, wait_selector=SEL_KEBAB_MENU)
-        deadline = time.monotonic() + timeout_s
+        deadline = time.monotonic() + LOT_CONTEXT_TIMEOUT_S
         while "body" not in seen and time.monotonic() < deadline:
             page.wait_for_timeout(500)
     finally:
@@ -1531,10 +1531,7 @@ def scrape_lots(page, bronze_dir, accounts, prev_index, *, refresh=False,
 # Activity & Orders — one consolidated CSV per date-window
 # ---------------------------------------------------------------------------
 
-# The time-period dropdown renders its Recent/Custom radios + date
-# inputs only while open, so their presence is a reliable
-# open-state probe.
-# The activity time filter, in both generations Fidelity has served.
+# The activity time filter, in the generations Fidelity has served.
 #
 # The time-period control is a `<filter-by-time>` button (the `fds-*`
 # design system) that expands a panel. The button carries the open
@@ -1657,7 +1654,7 @@ def _click_custom_timeperiod_tab(page):
 
     Three generations of this control have shipped, and the locators
     below cover all of them so a partial rollback on Fidelity's side
-    does not break us. Returns True when a Custom control was found
+    does not break the walk. Returns True when a Custom control was found
     and clicked.
 
     The current one (`fds-*` design system) is a segmented
@@ -1671,8 +1668,8 @@ def _click_custom_timeperiod_tab(page):
 
     Before that came a PVD radio group keyed on ``id="Custom"``, and
     before that an ``apex-kit-segment`` web component. Both are kept
-    below. Whichever matches first, we click the radio itself (or the
-    input nested in the legacy wrapper)."""
+    below. Whichever matches first, the radio itself (or the input
+    nested in the legacy wrapper) is clicked."""
     for sel in (
         "input.fds-segment__radio[type='radio'][value='custom' i]",
         "input[type='radio'][value='custom' i]",
@@ -1749,12 +1746,9 @@ def _probe_activity_date_bounds(page, capture_dir):
 
     Called once at the start of an activity backfill so the
     chunker can clamp the requested ``--lookback`` window to
-    Fidelity's available retention window. Without this clamp, a
-    ``--lookback all`` against multi-decade history burns one
-    pointless round-trip per window walking from the
-    requested start up to Fidelity's retention floor (each clamps
-    to the same single-day window and overwrites the same CSV
-    file).
+    Fidelity's available retention window. Without the clamp,
+    ``--lookback all`` walks one refused window per month from the
+    requested start up to the retention floor.
     """
     if not _ensure_timepicker_open(page):
         log.debug("timepicker pill not found; bounds probe aborted")
@@ -1809,7 +1803,7 @@ def _select_activity_custom_range(page, since_date, until_date,
     correctness reason — see its comment.
     """
     # Open the dropdown idempotently — the bounds probe ran just
-    # before us and left it open; a blind pill-click here would
+    # before this and left it open; a blind pill-click here would
     # toggle it shut and lose the Custom tab.
     if not _ensure_timepicker_open(page):
         log.debug("page-level timepicker pill not found")
@@ -1828,9 +1822,9 @@ def _select_activity_custom_range(page, since_date, until_date,
 
     # Fill since + until dates. Inputs are HTML5 ``<input type=
     # "date">`` and want ISO YYYY-MM-DD. Where the input carries
-    # min/max attributes bounding the per-export retention window we
-    # clamp to them, so an over-eager since= doesn't silently
-    # truncate; the current generation sets neither, in which case
+    # min/max attributes bounding the per-export retention window,
+    # the dates are clamped to them, so an over-eager since= doesn't
+    # silently truncate; the current generation sets neither, in which case
     # there is nothing to clamp to and the panel's own validation is
     # what refuses an out-of-range request.
     def _fill_date(input_locator, dt):
@@ -1908,7 +1902,7 @@ def _select_activity_custom_range(page, since_date, until_date,
         return None
     # Defensive: if both endpoints collapsed onto the same boundary
     # after clamping (and the caller's original window was wider),
-    # we're outside Fidelity's retention — fetching would return
+    # the window is outside Fidelity's retention — fetching would return
     # the same single-day CSV over and over, overwriting any real
     # data the same chunker emits for in-range windows. Bail out
     # of just this window; `scrape_activity` does a one-time
@@ -1967,7 +1961,7 @@ def _select_activity_custom_range(page, since_date, until_date,
     except Exception:
         time.sleep(8.0)
 
-    # Wait for the page to SAY it is showing the range we asked for.
+    # Wait for the page to SAY it is showing the range asked for.
     # `networkidle` cannot answer that — prior unrelated requests may
     # already have gone idle while the new range fetch has not
     # started — and downloading a window early exports the PREVIOUS
@@ -2027,7 +2021,7 @@ def _click_activity_download(page, capture_dir, label_suffix):
     # activity table after a Custom-range Apply. `networkidle` is
     # too lenient: prior unrelated requests may have already gone
     # idle while the new range fetch hasn't started, leaving the
-    # button briefly disabled when we try to click. Poll for the
+    # button briefly disabled at the click. Poll for the
     # disabled state to clear before clicking.
     #
     # The state is read from BOTH generations of the control: the
@@ -2234,8 +2228,8 @@ def scrape_activity(page, since_date, until_date,
     """Consolidated activity CSV(s). Fidelity's Activity & Orders
     export is **all-accounts** regardless of the account-selector
     state — every visible account's rows show up in a single CSV
-    discriminated by the ``Account Number`` column. So we drive
-    the page once per date-window, not per-account.
+    discriminated by the ``Account Number`` column. So the page is
+    driven once per date-window, not per-account.
 
     The resolved ``--lookback`` window [since_date..until_date] is
     bisected into ≤``MAX_ACTIVITY_WINDOW_DAYS``-day windows via
@@ -2255,12 +2249,9 @@ def scrape_activity(page, since_date, until_date,
         log.exception("activity-nav failed")
         return [{"ok": False, "error": f"navigate: {e}"}]
 
-    # Pre-flight: clamp the requested range to whatever
-    # Fidelity exposes in its Custom-tab min/max attributes
-    # (typically ~5 years of retention). Without this clamp,
-    # a `--lookback all` against a 30-year requested window
-    # would chunk into ~120 same-empty-CSV iterations before
-    # the cursor reaches the available range.
+    # Pre-flight: clamp the requested range to the retention the
+    # Custom tab publishes, or to ACTIVITY_RETENTION_FLOOR_DAYS when
+    # it publishes none (clamp_activity_window).
     fmin, fmax = _probe_activity_date_bounds(page, capture_dir)
     since_date, until_date = clamp_activity_window(
         since_date, until_date, fmin, fmax, date.today())
@@ -2292,8 +2283,8 @@ def scrape_activity(page, since_date, until_date,
 
 
 # Statement row labels are heterogeneous (monthly: "January 2026 — ...",
-# quarterly: "Jan-March 2026 — ...", annual: "Annual 2026 — ..."), so we
-# anchor on the 4-digit '20YY' year token, which every label form
+# quarterly: "Jan-March 2026 — ...", annual: "Annual 2026 — ..."), so the
+# filter anchors on the 4-digit '20YY' year token, which every label form
 # contains. Year-precision filtering keeps the per-row download path
 # index-stable; finer granularity would need per-label format-specific
 # parsing.
@@ -2416,8 +2407,9 @@ def _pdf_from_docapi_body(body):
     JSON response. The endpoint returns the PDF as base64 in
     ``document.docDetail.content`` (``contentType: application/pdf``).
     The ``deflated`` flag is unreliable — some payloads are plain
-    base64(PDF), so we decode, use it directly if it's already a PDF,
-    and only zlib-inflate as a fallback. Returns bytes or None."""
+    base64(PDF), so the payload is decoded, used directly if it is
+    already a PDF, and only zlib-inflated as a fallback. Returns bytes
+    or None."""
     try:
         d = json.loads(body)
     except Exception:
@@ -2468,8 +2460,8 @@ def _doccenter_download_row(page, context, row_loc):
     authenticated POST to ``.../financial-documents/download`` that
     returns the PDF as base64-in-JSON, which the SPA then renders as
     an in-memory blob. Chasing the rendered blob is fragile (revoked
-    URLs, viewer-context fetch errors), so we wait for that JSON
-    response (canonical expect_response) and decode it. Returns the
+    URLs, viewer-context fetch errors), so the walk waits for that
+    JSON response (canonical expect_response) and decodes it. Returns the
     decoded PDF bytes or raises."""
     pages_before = set(context.pages)
     try:
@@ -2700,6 +2692,60 @@ def scrape_documents(page, context, bronze_dir, capture_dir,
 # Balances + Performance — exploratory + structured export
 # ---------------------------------------------------------------------------
 
+def _save_rendered_page(page, bronze_dir, capture_dir, *, url, name,
+                        ready_selector=None):
+    """Visit `url` and save its rendered, scrubbed DOM as
+    ``<bronze_dir>/<name>/<name>.html`` (zstd-compressed best-effort):
+    the shared body of the balances and performance phases, neither of
+    which offers a structured export. With `ready_selector`, waits up to
+    15 s for a matching element before the DOM is read.
+
+    Returns the phase result: ``explored-no-export`` with the saved
+    file, so run.json records the (intentional) gap, or an ``error`` /
+    ``session-timeout`` status."""
+    out_dir = bronze_dir / name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        goto_and_wait(page, url, wait_timeout_s=30)
+        time.sleep(SPA_HYDRATE_WAIT_S)
+    except Exception as e:
+        log.exception("%s nav failed", name)
+        return {"status": "error", "error": str(e)}
+    capture(page, capture_dir, f"{name}-landed")
+    landed = live_url(page)
+    if not landed.startswith(POST_AUTH_PREFIX):
+        log.warning(
+            "%s nav landed at %s — likely session-timeout "
+            "redirect; aborting", name, landed,
+        )
+        return {"status": "session-timeout", "landed_url": landed}
+    if ready_selector is not None:
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            if page.locator(ready_selector).count() > 0:
+                break
+            time.sleep(0.5)
+    try:
+        html = page.content()
+    except Exception:
+        html = page.evaluate(
+            "() => document.documentElement.outerHTML"
+        )
+    out_path = out_dir / f"{name}.html"
+    # Scrubbed like every serialized DOM: a post-auth page carries no
+    # password input, so the markup is written byte for byte.
+    out_path.write_text(debugcap.scrub_dom(html), encoding="utf-8")
+    log.info(
+        "saved %s/%s (%d bytes; no structured export on this surface)",
+        name, out_path.name, out_path.stat().st_size,
+    )
+    final = compress.compress_best_effort(out_path, log)
+    return {
+        "status": "explored-no-export",
+        "file": str(final.relative_to(bronze_dir)),
+    }
+
+
 def scrape_balances(page, bronze_dir, capture_dir):
     """Visit the Balances page and save the rendered DOM. Like
     Performance (§4.7), this surface has no direct structured
@@ -2716,118 +2762,31 @@ def scrape_balances(page, bronze_dir, capture_dir):
       of the on-screen balance table.
     * 'Print' opens the browser print dialog (not useful).
 
-    The structured balance data IS recoverable from the rendered
-    DOM (per-account totalaccountvalue-label data-testids carry
-    the dollar figures, accessible to the silver loader). We
-    therefore persist the full balances HTML the same way we
-    persist performance HTML, and leave the Balance Letter
-    wizard as a follow-up; the formal PDF artefact is
-    fetched on demand."""
-    out_dir = bronze_dir / "balances"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        goto_and_wait(page, URL_BALANCES, wait_timeout_s=30)
-        time.sleep(SPA_HYDRATE_WAIT_S)
-    except Exception as e:
-        log.exception("balances nav failed")
-        return {"status": "error", "error": str(e)}
-    capture(page, capture_dir, "balances-landed")
-    url = live_url(page)
-    if not url.startswith(POST_AUTH_PREFIX):
-        log.warning(
-            "balances nav landed at %s — likely session-timeout "
-            "redirect; aborting", url,
-        )
-        return {"status": "session-timeout", "landed_url": url}
-    # Poll for hydration: wait until at least one per-account
-    # totalaccountvalue-label is present (those carry the actual
-    # dollar figures the silver loader will scrape).
-    deadline = time.monotonic() + 15.0
-    while time.monotonic() < deadline:
-        if page.locator(
-            "[data-testid$='-totalaccountvalue-label']"
-        ).count() > 0:
-            break
-        time.sleep(0.5)
-    try:
-        html = page.content()
-    except Exception:
-        html = page.evaluate(
-            "() => document.documentElement.outerHTML"
-        )
-    out_path = out_dir / "balances.html"
-    # Scrubbed like every serialized DOM: a post-auth page carries no
-    # password input, so the markup is written byte for byte.
-    out_path.write_text(debugcap.scrub_dom(html), encoding="utf-8")
-    log.info(
-        "saved balances/%s (%d bytes; no direct export; "
-        "per-account values in totalaccountvalue-label testids)",
-        out_path.name, out_path.stat().st_size,
-    )
-    final = compress.compress_best_effort(out_path, log)
-    return {
-        "status": "explored-no-export",
-        "file": str(final.relative_to(bronze_dir)),
-    }
+    The page is saved as rendered and indexed in `documents`
+    (DESIGN.md §4.7); the Balance Letter wizard is never opened.
+    The save waits for a per-account total to render, so the saved
+    page carries the figures."""
+    return _save_rendered_page(
+        page, bronze_dir, capture_dir, url=URL_BALANCES, name="balances",
+        ready_selector="[data-testid$='-totalaccountvalue-label']")
 
 
 def scrape_performance(page, bronze_dir, capture_dir):
-    """Visit the Performance page and capture a full-page snapshot
-    of the rendered metrics tiles.
+    """Visit the Performance page and save the rendered DOM of its
+    metrics tiles.
 
     The page has NO structured-data export — no CSV, no PDF, no
     kebab/menu Download item. The data surfaces as a Highcharts SVG +
     a column of collapsible info tiles (return percentages by period,
     benchmark deltas). The load input for this surface is
-    ``performance/performance.html`` (persisted unconditionally
-    below); downstream silver work either scrapes return
-    percentages from that DOM text or accepts the gap (most return
-    metrics are derivable from positions + activity time-series
-    anyway). The separate ``screenshots/performance-landed`` HTML +
+    ``performance/performance.html``, which silver indexes as a
+    document. The separate ``screenshots/performance-landed`` HTML +
     PNG is an opt-in ``--debug`` diagnostic that ``prune`` deletes.
-
-    Returns a result dict with ``status: 'explored-no-export'``
-    so run.json captures the (intentional) gap. Compare to
-    ``balances``, which similarly has no CSV but does offer a
-    PDF 'Balance Letter' via its actions menu."""
-    out_dir = bronze_dir / "performance"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        goto_and_wait(page, URL_PERFORMANCE, wait_timeout_s=30)
-        time.sleep(SPA_HYDRATE_WAIT_S)
-    except Exception as e:
-        log.exception("performance nav failed")
-        return {"status": "error", "error": str(e)}
-    capture(page, capture_dir, "performance-landed")
-    url = live_url(page)
-    if not url.startswith(POST_AUTH_PREFIX):
-        log.warning(
-            "performance nav landed at %s — likely session-"
-            "timeout redirect; aborting", url,
-        )
-        return {"status": "session-timeout", "landed_url": url}
-    # Persist a copy of the rendered HTML under the bronze dir
-    # itself (not just screenshots/), so the silver loader can
-    # extract returns text without rummaging through the
-    # diagnostics directory.
-    try:
-        html = page.content()
-    except Exception:
-        html = page.evaluate(
-            "() => document.documentElement.outerHTML"
-        )
-    out_path = out_dir / "performance.html"
-    out_path.write_text(debugcap.scrub_dom(html), encoding="utf-8")
-    log.info(
-        "saved performance/%s (%d bytes; no structured export "
-        "available on this surface)",
-        out_path.name, out_path.stat().st_size,
-    )
-    final = compress.compress_best_effort(out_path, log)
-    return {
-        "status": "explored-no-export",
-        "file": str(final.relative_to(bronze_dir)),
-    }
+    Compare to ``balances``, which similarly has no CSV but does offer
+    a PDF 'Balance Letter' via its actions menu."""
+    return _save_rendered_page(
+        page, bronze_dir, capture_dir, url=URL_PERFORMANCE,
+        name="performance")
 
 
 # ---------------------------------------------------------------------------
@@ -2851,6 +2810,8 @@ DAF_ORIGIN = f"https://{DAF_HOST}"
 # directly) is what plants the charitablegift.fidelity.com session
 # cookies that page.request then reuses.
 DAF_SSO_URL = f"{DAF_ORIGIN}/cgfweb/CGFLogon.cgfdo?Ref_at=ng"
+# The donor SPA the SSO hop lands on. Nothing navigates here directly;
+# kept as the pinned record of where the walk stands after the hop.
 DAF_SPA_URL = f"{DAF_ORIGIN}/cgfweb/fc-donor/?Ref_at=ng"
 DAF_API = f"{DAF_ORIGIN}/fc-services/api/v1"
 # The API bootstrap: POST identity/self mints the per-session auth JWT
@@ -3421,14 +3382,10 @@ def walk(context, page, config):
     slug = bronze.ts_slug()
     if dry_run:
         # A dry-run is a read-only walk: reach the export surfaces,
-        # enumerate account_dimensions, and log the plan — but persist
-        # NOTHING under the bronze dest (root AGENTS.md §2 "export
-        # nothing"). Crucially we do NOT create the run dir or write
-        # run.json: even a run.json-only shell is a dump that `load`
-        # would ingest, and fidelity-web's `load._load_master` reads
-        # account_dimensions from run.json with no dry-run guard — so a
-        # persisted dry-run manifest would silently populate silver
-        # portfolios/accounts. No dir means `load` never sees one.
+        # enumerate account_dimensions, and log the plan. It persists
+        # nothing under the bronze dest, not even run.json (root
+        # AGENTS.md §2 "export nothing"). No dir means `load` and
+        # `prune` never see one.
         bronze_dir = None
         capture_dir = None
         log.info(
@@ -3441,8 +3398,9 @@ def walk(context, page, config):
         # the terminal status at the end. This makes the run's state
         # legible to `prune` while the walk is still running (a crashed
         # walk leaves status="in-progress" — a non-complete dump prune
-        # can reclaim once it goes quiescent), and closes the ambiguity
-        # of a run dir that has no run.json at all.
+        # can reclaim once it goes quiescent). Until it lands, the run
+        # dir has no run.json, which `load` skips as still being
+        # written.
         bronze.atomic_write_json(
             bronze_dir / "run.json", {"status": "in-progress"})
         # Debug captures (HTML DOM dump + PNG per landmark, plus the
@@ -3454,7 +3412,7 @@ def walk(context, page, config):
         log.info("walk: bronze dir %s%s", bronze_dir,
                  " (debug captures on)" if debug else "")
 
-    # Ensure we're on a portfolio surface where the account
+    # Ensure the page is on a portfolio surface where the account
     # selector renders.
     if not live_url(page).startswith(POST_AUTH_PREFIX):
         goto_and_wait(page, URL_PORTFOLIO_SUMMARY, wait_timeout_s=20)
@@ -3540,11 +3498,8 @@ def walk(context, page, config):
     # at year granularity (label parsing for statements; year-
     # selector for tax forms), so the effective floor is the year
     # the window starts in. --lookback widens it.
-    documents_since = parse_iso_date(config.get("since"))
-    if documents_since is None:
-        documents_since = (
-            datetime.now(timezone.utc).date() - timedelta(days=90)
-        )
+    documents_since = since_date or (
+        datetime.now(timezone.utc).date() - timedelta(days=90))
     docs_min_year = documents_since.year
 
     run_json = {
@@ -3743,7 +3698,7 @@ def restart_trace_after_signin(context, trace, screenshot_dir) -> None:
 
     The DOM snapshots that make a trace worth reading are the same ones
     that would carry the typed password, so they are off until the
-    credential screens are behind us and on for the walk. Best effort: a
+    credential screens are done and on for the walk. Best effort: a
     trace that will not restart costs diagnostics, never the run.
     """
     if not debugcap.stop_trace_if_active(context, trace, screenshot_dir,
@@ -3811,8 +3766,12 @@ def _username_input(page):
     return None, None
 
 
-def _fill_verified(loc, value, what, attempts=3):
-    """Fill ``loc`` and read the value back, retrying a few times.
+# How many times _fill_verified fills a field before giving up.
+FILL_ATTEMPTS = 3
+
+
+def _fill_verified(loc, value, what):
+    """Fill ``loc`` and read the value back, up to FILL_ATTEMPTS times.
     True when the field ends up holding it.
 
     A PVD input is a web component, and the framework can overwrite
@@ -3826,7 +3785,7 @@ def _fill_verified(loc, value, what, attempts=3):
 
     Only LENGTHS are logged, never the value: this runs on a username
     and a password."""
-    for attempt in range(1, attempts + 1):
+    for attempt in range(1, FILL_ATTEMPTS + 1):
         try:
             loc.fill(value)
             got = loc.input_value(timeout=2_000)
@@ -3934,36 +3893,14 @@ def wait_for_mfa_input_or_post_auth(page, timeout_s):
     return (None, None)
 
 
-def prompt_for_mfa_code():
-    """Print a prompt to stderr and read a code from stdin. stderr
-    is used so the prompt is visible even when stdout is redirected
-    to a log file. Returns the stripped code; empty input returns
-    ''. Blocking — Ctrl-C to abort."""
-    sys.stderr.write("\n")
-    sys.stderr.write("=" * 60 + "\n")
-    sys.stderr.write(
-        "Fidelity 2FA: enter your security code, then press Enter.\n"
-    )
-    sys.stderr.write("> ")
-    sys.stderr.flush()
-    try:
-        code = sys.stdin.readline()
-    except KeyboardInterrupt:
-        sys.stderr.write("\n")
-        raise
-    sys.stderr.write("=" * 60 + "\n")
-    sys.stderr.flush()
-    return code.strip()
-
-
 def ensure_trust_browser_checked(page):
     """Best-effort: tick the 'Trust this browser' checkbox so the
     device-trust cookie suppresses MFA on subsequent runs.
 
     PVD wraps the <input> in a <label> whose ::before overlay
     intercepts pointer events on the input. .check() would retry
-    for the full 60s default — burning TOTP validity. We click the
-    LABEL instead. Bounded to 2s; non-fatal on failure."""
+    for the full 60s default — burning TOTP validity. The LABEL is
+    clicked instead. Bounded to 2s; non-fatal on failure."""
     try:
         cb = page.locator(SEL_TRUST_BROWSER_CHECKBOX)
         if cb.count() == 0:
@@ -4029,8 +3966,7 @@ def wait_for_post_auth_url(page, timeout_s):
 
 def login(page, args, username, password):
     """Drive the SPA login: IUA → credentials → 2FA → post-auth.
-    Returns True on success, False on failure (caller decides
-    whether to exit non-zero or fall through to walk anyway)."""
+    Returns True on success, False on failure."""
     log.info("navigating to %s", SIGNIN_URL)
     page.goto(SIGNIN_URL, wait_until="domcontentloaded")
     capture(page, args.screenshot_dir, "01-initial-load")
@@ -4145,7 +4081,8 @@ def login(page, args, username, password):
                 "--no-trust-this-browser: leaving the checkbox "
                 "unticked"
             )
-        code = prompt_for_mfa_code()
+        code = cli.prompt_on_stderr(
+            "Fidelity 2FA: enter your security code, then press Enter.")
         if not code:
             log.error("no 2FA code entered; aborting")
             return False
@@ -4184,7 +4121,7 @@ def login(page, args, username, password):
 def logout(page, screenshot_dir):
     """Best-effort logout: click any visible Log Out link. Never
     raises. If selectors drift the Camoufox context teardown is
-    still our cleanup and Fidelity's idle timeout (~15 min)
+    still the cleanup and Fidelity's idle timeout (~15 min)
     invalidates the session cookie server-side anyway."""
     for sel in SEL_LOGOUT_CANDIDATES:
         try:
@@ -4324,7 +4261,7 @@ def parse_args(argv):
     )
     p.add_argument(
         "--env-file", type=Path, default=None,
-        help=("KEY=VALUE env file. When omitted, falls back to "
+        help=("Bash-sourced env file. When omitted, falls back to "
               "/secrets/fidelity-web.env then "
               "$HOME/.secrets/fidelity-web.env. Supplies "
               "FIDELITY_WEB_USERNAME / FIDELITY_WEB_PASSWORD (the "
@@ -4453,10 +4390,7 @@ def _exit_on_sigterm(signum, frame):
 def main(argv=None):
     signal.signal(signal.SIGTERM, _exit_on_sigterm)
     args = parse_args(argv or sys.argv[1:])
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    cli.configure_logging(args.verbose)
     if args.trace and args.screenshot_dir is None:
         log.error("--trace requires --screenshot-dir")
         return 2

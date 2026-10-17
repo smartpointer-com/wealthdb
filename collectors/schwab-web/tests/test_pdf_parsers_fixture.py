@@ -86,7 +86,7 @@ def test_account_number_extracted(parsed):
 
 def test_extracts_some_transactions(parsed):
     """A statement with zero parsed transactions almost certainly
-    means the section header / row regex drifted out from under us."""
+    means the section header / row regex drifted."""
     assert len(parsed["transactions"]) > 0
 
 
@@ -103,7 +103,7 @@ def test_every_transaction_has_a_date_in_period(parsed):
         d = date.fromisoformat(d_str)
         # Schwab sometimes back-dates pending settlements; give a
         # small margin on each side. Stay tight enough to catch
-        # year-drift bugs (where we'd see dates a year off).
+        # year-drift bugs (dates a year off).
         assert (start.replace(day=1).replace(month=max(1, start.month - 1))
                 <= d
                 <= end.replace(day=min(28, end.day)) + (end - start)), (
@@ -113,8 +113,8 @@ def test_every_transaction_has_a_date_in_period(parsed):
 
 
 def test_every_transaction_has_amount(parsed):
-    """An amount-less transaction is a parser miss in every Schwab
-    statement format we've seen."""
+    """An amount-less transaction is a parser miss in every known Schwab
+    statement format."""
     if not parsed["transactions"]:
         pytest.skip("no transactions to validate")
     no_amount = [tx for tx in parsed["transactions"] if tx.get("amount") is None]
@@ -131,8 +131,8 @@ def test_every_transaction_has_category(parsed):
 
 
 def test_categories_in_known_set(parsed):
-    """Catches a new category Schwab introduces — we'd want to know
-    and update _CATEGORY_KEYWORDS."""
+    """Catches a new category Schwab introduces, which belongs in
+    _CATEGORY_KEYWORDS."""
     if not parsed["transactions"]:
         pytest.skip("no transactions to validate")
     known = set(pp._CATEGORY_KEYWORDS)

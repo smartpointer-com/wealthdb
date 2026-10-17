@@ -45,7 +45,7 @@ from collectorkit import bronze, debugcap
 
 log = logging.getLogger("schwab-web.download")
 
-# Same as login.py — generous defaults for the heavy SPA.
+# Generous defaults for the heavy SPA.
 NAV_TIMEOUT_MS = 60_000
 LANDMARK_TIMEOUT_MS = 60_000
 # A pagination swap re-fetches the page's rows server-side, which on
@@ -98,9 +98,8 @@ _SUFFIX_RE = re.compile(r"(?:…|\.{3})(\d{3,5})")
 def _suffix_of(label: str) -> str:
     m = _SUFFIX_RE.search(label)
     if not m:
-        # Fall back to a stable hash of the label so we still
-        # produce a per-account directory; not pretty, but never
-        # collides.
+        # Fall back to a stable hash of the label so there is still
+        # a per-account directory; not pretty, but never collides.
         return "x" + hashlib.sha256(label.encode("utf-8")).hexdigest()[:8]
     return m.group(1)
 
@@ -111,8 +110,8 @@ def enumerate_accounts(page) -> list[dict]:
     "entry_id": <DOM id>}` dicts. Closes the dropdown when done.
 
     The DOM ids follow `account-selector-header-0-account-<N>`
-    — stable across the sample HTML drops we've seen. We anchor
-    on the prefix and let N grow with the account count.
+    — stable across the sample HTML drops. The match anchors on
+    the prefix and lets N grow with the account count.
     """
     log.info("enumerating accounts via account selector")
     selector_button = page.locator(
@@ -209,8 +208,9 @@ def configure_doc_type_filter(page) -> None:
     shadow DOM, so `:has-text(...)` matches nothing). Reads
     selection state from the `selected` HTML attribute, NOT a CSS
     class — the rendered DOM has no `sdps-chips--selected` class.
-    Clicks via dispatch_event
-    so an overlay (W-8 banner et al.) can't intercept the toggle.
+    Clicks with a forced real click: it skips the actionability
+    checks a zero-size Stencil host fails during hydration and still
+    emits a trusted event.
     """
     chips_container = page.locator(".sdps-chips__container").first
     chips_container.wait_for(state="visible", timeout=LANDMARK_TIMEOUT_MS)
@@ -295,8 +295,8 @@ def select_date_range(page, value: str) -> None:
 def _set_date_range_raw(page, value: str) -> int:
     """JS-set every date-range <select> to `value` (no validation, no
     custom-mode guard) and fire change/input. Returns how many selects
-    took the value. select_date_range is the guarded public face; the
-    --debug custom-mode probe uses this directly."""
+    took the value. select_date_range is the guarded public face;
+    fill_custom_date_range uses this directly."""
     return page.evaluate(
         """(args) => {
             const els = document.querySelectorAll('#' + args.id);
@@ -345,127 +345,8 @@ def fill_custom_date_range(page, since, until) -> None:
         # Playwright's fill fires input events; Angular's model sync
         # additionally wants a change on blur.
         el.dispatch_event("change")
-    log.info("tx-history custom range set: %s..%s", since, until)
+    log.info("custom date range set: %s..%s", since, until)
 
-
-def _date_range_facts(page) -> list:
-    """Structured snapshot of every date-range filter widget: the
-    select's state plus the attributes and values of any input-like
-    elements in its enclosing container. Dates and widget metadata
-    only — no result rows, no account data."""
-    return page.evaluate(
-        """(id) => {
-            const out = [];
-            for (const el of document.querySelectorAll('#' + id)) {
-                let wrap = el;
-                for (let i = 0; i < 3 && wrap.parentElement; i++)
-                    wrap = wrap.parentElement;
-                const inputs = [];
-                for (const inp of wrap.querySelectorAll(
-                        'input, sdps-datepicker, [role="textbox"]')) {
-                    inputs.push({
-                        tag: inp.tagName.toLowerCase(),
-                        id: inp.id || null,
-                        name: inp.getAttribute('name'),
-                        type: inp.getAttribute('type'),
-                        placeholder: inp.getAttribute('placeholder'),
-                        ariaLabel: inp.getAttribute('aria-label'),
-                        value: inp.value ?? null,
-                        visible: !!(inp.offsetWidth || inp.offsetHeight),
-                    });
-                }
-                out.push({
-                    selected: el.value,
-                    options: Array.from(el.options).map(o => o.value),
-                    inputs,
-                    containerText:
-                        wrap.textContent.replace(/\\s+/g, ' ')
-                            .trim().slice(0, 400),
-                    containerHtml: wrap.outerHTML,
-                });
-            }
-            // Custom-mode date inputs mount in a sibling subtree, not
-            // near the select — sweep the whole page for them too.
-            const pickers = [];
-            for (const dp of document.querySelectorAll(
-                    'sdps-datepicker, #datepicker-input,' +
-                    ' input[name="datepicker"]')) {
-                pickers.push({
-                    tag: dp.tagName.toLowerCase(),
-                    id: dp.id || null,
-                    value: dp.value ?? null,
-                    nearText: (dp.closest('sdps-datepicker')?.parentElement
-                               ?? dp.parentElement)
-                        ?.textContent.replace(/\\s+/g, ' ')
-                        .trim().slice(0, 120) ?? null,
-                });
-            }
-            if (pickers.length)
-                out.push({ pageDatepickers: pickers });
-            return out;
-        }""",
-        schwab.DATE_RANGE_SELECT_ID,
-    )
-
-
-_CUSTOM_PROBES_DONE: set = set()
-
-
-def probe_custom_date_range(page, screenshot_dir, custom_value: str,
-                            restore_value: str) -> None:
-    """--debug discovery aid for the custom date-range mode (both
-    pages share the "SpecifyDateRange" value): momentarily selects it,
-    records
-    what the SPA mounts (input ids/names/placeholders/values, container
-    text, a DOM fragment + screenshot when a screenshot dir is given),
-    then restores `restore_value`. Runs once per mode per process,
-    before any Search/Apply — the filter is never applied in the custom
-    state. Best-effort: failures warn and the walk continues."""
-    if custom_value in _CUSTOM_PROBES_DONE:
-        return
-    _CUSTOM_PROBES_DONE.add(custom_value)
-    try:
-        before = _date_range_facts(page)
-        log.info("date-range-probe[%s] preset facts: %s",
-                 restore_value,
-                 json.dumps([{k: v for k, v in f.items()
-                               if k != "containerHtml"} for f in before]))
-        if not _set_date_range_raw(page, custom_value):
-            log.info("date-range-probe[%s]: no select offers this option",
-                     custom_value)
-            return
-        page.wait_for_timeout(750)
-        after = _date_range_facts(page)
-        log.info("date-range-probe[%s] custom facts: %s",
-                 custom_value,
-                 json.dumps([{k: v for k, v in f.items()
-                               if k != "containerHtml"} for f in after]))
-        if screenshot_dir is not None:
-            try:
-                screenshot_dir.mkdir(parents=True, exist_ok=True)
-                frag = screenshot_dir / (
-                    f"{bronze.ts_slug()}-date-range-{custom_value}"
-                    "-fragment.html")
-                frag.write_text(
-                    "\n\n".join(f["containerHtml"] for f in after
-                                if "containerHtml" in f),
-                    encoding="utf-8")
-                log.info("date-range-probe[%s]: fragment -> %s",
-                         custom_value, frag)
-            except Exception as e:
-                log.warning("date-range-probe[%s]: fragment write "
-                            "failed: %s", custom_value, e)
-            maybe_screenshot(page, screenshot_dir,
-                             f"date-range-{custom_value}")
-    except Exception as e:
-        log.warning("date-range-probe[%s] failed: %s", custom_value, e)
-    finally:
-        try:
-            _set_date_range_raw(page, restore_value)
-            page.wait_for_timeout(250)
-        except Exception as e:
-            log.warning("date-range-probe[%s]: restore to %r failed: %s",
-                        custom_value, restore_value, e)
 
 # ============================================================
 # Result-table walking
@@ -473,7 +354,7 @@ def probe_custom_date_range(page, screenshot_dir, custom_value: str,
 
 # Result-count banner format:
 #   "123 document(s) found from 05/19/2016 to 05/19/2026"
-# We just need the leading integer.
+# Only the leading integer is read.
 _COUNT_RE = re.compile(r"^\s*(\d+)\s*document")
 
 def wait_for_results(page) -> int:
@@ -495,8 +376,8 @@ def iter_visible_rows(page):
     """Yield one dict per row visible on the current results page.
 
     Cells (in this order): Date, Type, Account, Document, Inserts,
-    Download. We extract the text of the first four and enumerate
-    every download button in the Download cell — Schwab exposes
+    Download. The text of the first four is extracted, and every
+    download button in the Download cell is enumerated — Schwab exposes
     one per available format (PDF for all, +XML +CSV for 1099
     Composite et al.), all sharing the
     `Click to Download <FORMAT>` aria-label prefix.
@@ -546,11 +427,11 @@ def click_next_page(page, pagination_id: str) -> bool:
     Statements: Schwab renders it as `id="document-pagination"`
     on page 1 but **renames it to `id="pagination"`** after the
     first click (the same id tx-history uses). The inner
-    `#pagination-N-link` ids are stable across the rename, so we
-    query for them directly and skip the host-element lookup
+    `#pagination-N-link` ids are stable across the rename, so they
+    are queried directly and the host-element lookup is skipped
     entirely. `pagination_id` is kept only for diagnostic logging.
 
-    Returns True after a click; False when we're on the last
+    Returns True after a click; False on the last
     page (no `#pagination-{N+1}-link` exists).
     """
     # Read the currently-selected page number from
@@ -691,7 +572,7 @@ def _current_page_num(page) -> int | None:
 # Per-document download
 # ============================================================
 
-# Filename-safe replacement for the parts we want to embed.
+# Filename-safe replacement for the parts embedded in a file name.
 _FN_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 def _safe(s: str, fallback: str = "x") -> str:
@@ -829,8 +710,8 @@ def _confirm_export_tax_modal(page) -> None:
     PDF, or Schwab dropped the gate), silently return.
 
     The modal is a `[role="dialog"]` containing the literal text
-    "Export Tax Data"; we scope the Download-button lookup to it
-    so we don't collide with the "Download" column header in the
+    "Export Tax Data"; the Download-button lookup is scoped to it
+    so it never collides with the "Download" column header in the
     results table.
     """
     try:
@@ -967,7 +848,6 @@ def download_account(page, account: dict, dest_dir: Path,
                      dry_run: bool,
                      screenshot_dir: Path | None,
                      date_range: str,
-                     debug: bool = False,
                      exact_window: tuple | None = None) -> dict:
     """Walk every page of results for `account`, downloading each
     document into <dest_dir>/statements/<suffix>/. Returns a
@@ -991,9 +871,6 @@ def download_account(page, account: dict, dest_dir: Path,
                         e, date_range)
     if not custom_set:
         select_date_range(page, date_range)
-        if debug:
-            probe_custom_date_range(page, screenshot_dir,
-                                    "SpecifyDateRange", date_range)
     click_search(page)
 
     expected = wait_for_results(page)
@@ -1007,8 +884,8 @@ def download_account(page, account: dict, dest_dir: Path,
     )
 
     if dry_run:
-        # In dry-run mode we still walk pages so we can verify the
-        # row parser, but we never click a download button.
+        # A dry run still walks the pages, so the row parser is
+        # exercised, but never clicks a download button.
         rows_seen = 0
         while True:
             for row in iter_visible_rows(page):
@@ -1055,9 +932,8 @@ def download_account(page, account: dict, dest_dir: Path,
                     account["suffix"], rows_downloaded, expected,
                     len(documents),
                 )
-            # Tiny breather to keep Schwab happy — they have no
-            # published per-document rate limit but we shouldn't
-            # hammer.
+            # Tiny breather between documents: Schwab publishes no
+            # per-document rate limit, and the walk should not hammer.
             page.wait_for_timeout(150)
         if not click_next_page(page, schwab.PAGINATION_ELEMENT_ID):
             break
@@ -1153,8 +1029,8 @@ def _export_tx_history(page, account_suffix: str, out_dir: Path) -> list[dict]:
             _dismiss_open_modal(page)
             continue
         # Modal submit. Scoping by-role inside the modal makes
-        # sure we don't hit the main-page Export button which is
-        # also still in DOM beneath the overlay.
+        # sure the main-page Export button, which is also still in
+        # the DOM beneath the overlay, is never hit.
         target = None
         for attempt in range(1, DOWNLOAD_MAX_ATTEMPTS + 1):
             try:
@@ -1308,7 +1184,7 @@ def _parse_more_modal_text(text: str) -> dict:
         Action                Sell to Open
 
     i.e. a label column then a value column, separated by 2+
-    spaces. We skip section headers and the modal chrome.
+    spaces. Section headers and the modal chrome are skipped.
     """
     skip = {
         "Print",
@@ -1440,8 +1316,8 @@ def _scrape_more_details(page, account_suffix: str,
                         # Playwright 1.49's Locator.filter() doesn't take
                         # a `visible` kwarg — that's a newer-version API.
                         # Use the Playwright-specific `:visible` CSS
-                        # extension so we still pick only the currently-
-                        # displayed dialog (a previously-dismissed modal
+                        # extension so only the currently-displayed
+                        # dialog is picked (a previously-dismissed modal
                         # may still be in the DOM, just `display:none`).
                         modal = page.locator('[role="dialog"]:visible').first
                         modal.wait_for(state="visible", timeout=5_000)
@@ -1520,9 +1396,7 @@ def _click_main_export_button(page) -> bool:
 # the export lacks.
 
 def _apply_tx_filter(page, account_suffix: str, tx_range: str,
-                     exact_window: tuple | None,
-                     debug: bool = False,
-                     screenshot_dir: Path | None = None) -> None:
+                     exact_window: tuple | None) -> None:
     """Set the tx-history date-range filter and click Search.
 
     Tx-history's date-range <select> sits on the main page (the
@@ -1534,11 +1408,8 @@ def _apply_tx_filter(page, account_suffix: str, tx_range: str,
     An exact window (an ISO-date --lookback) beats the nearest-preset
     mapping: SpecifyDateRange + the two datepickers give tx-history
     the window as asked, no over-fetch; any failure falls back to the
-    preset that covers the window. Under ``debug`` the custom-mode
-    discovery probe runs between the preset set and the Search (once
-    per process). Also the re-establishment step after a
-    degraded-SPA recovery reload, where ``debug`` stays off so the
-    probe never re-fires.
+    preset that covers the window. Also the re-establishment step
+    after a degraded-SPA recovery reload.
     """
     custom_set = False
     if exact_window is not None:
@@ -1552,9 +1423,6 @@ def _apply_tx_filter(page, account_suffix: str, tx_range: str,
     if not custom_set:
         try:
             select_date_range(page, tx_range)
-            if debug:
-                probe_custom_date_range(page, screenshot_dir,
-                                        "SpecifyDateRange", tx_range)
         except Exception as e:
             log.warning("tx-history …%s: could not set date range to %r: %s",
                         account_suffix, tx_range, e)
@@ -1614,8 +1482,7 @@ def capture_transactions(page, account: dict, dest_dir: Path,
         "Last10Years":  "All",
     }
     tx_range = _STATEMENT_TO_TX_RANGE.get(date_range, date_range)
-    _apply_tx_filter(page, account["suffix"], tx_range, exact_window,
-                     debug=debug, screenshot_dir=screenshot_dir)
+    _apply_tx_filter(page, account["suffix"], tx_range, exact_window)
 
     try:
         url = page.evaluate("() => location.href") or page.url
@@ -1628,8 +1495,8 @@ def capture_transactions(page, account: dict, dest_dir: Path,
     out_dir = dest_dir / "transactions" / account["suffix"]
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Drive the "Export Transactions Data" modal — Schwab gives
-    # us CSV + JSON + XML of the full filtered set, side-stepping
+    # Drive the "Export Transactions Data" modal — Schwab hands
+    # back CSV + JSON + XML of the full filtered set, side-stepping
     # the table's row-virtualisation. CSV/JSON/XML all carry the
     # full row set; JSON/XML add `AcctgRuleCd`. None carry the
     # per-row "More" modal extras (Settle Date / CUSIP /
@@ -1647,8 +1514,7 @@ def capture_transactions(page, account: dict, dest_dir: Path,
     html_pages = 0
     if debug:
         try:
-            shots_dir = dest_dir / "screenshots"
-            shots_dir.mkdir(parents=True, exist_ok=True)
+            shots_dir = debugcap.capture_dir(dest_dir)
             html_path = shots_dir / f"tx-{account['suffix']}-landing.html"
             html_path.write_text(debugcap.scrub_dom(page.content()),
                                  encoding="utf-8")
@@ -1876,8 +1742,7 @@ def walk(page, dest_root: Path, *, mode: str = "all",
                 try:
                     per_acct = download_account(
                         page, acct, run_dir, dry_run, screenshot_dir,
-                        date_range, debug=debug,
-                        exact_window=exact_window,
+                        date_range, exact_window=exact_window,
                     )
                 except Exception as e:
                     log.error(

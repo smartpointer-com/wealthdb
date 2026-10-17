@@ -9,17 +9,17 @@ forms resolve, and DuckDB decompresses .csv.zst natively inside
 read_csv_auto) and ingests into the DuckDB silver layer:
 
   - `transactions` is fully replaced with the rows from the latest
-    processed snapshot. (Every download is a complete dump; we
-    don't keep per-snapshot transaction history in silver.) The
+    processed snapshot. (Every download is a complete dump; silver
+    keeps no per-snapshot transaction history.) The
     export's `Date` is local time in the portfolio's CoinTracking
     timezone; `occurred_at` converts it to UTC with the zone
     --timezone sets for the portfolio.
 
   - `positions_daily` is INCREMENTALLY upserted via the
     aggregate-then-window replay. The full new time series is
-    computed; we find the first as_of_date where new vs existing
-    rows differ (changed amount, new row, or removed row) and
-    rewrite only from that day onwards. Pre-deviation rows keep
+    computed, and only the rows from the first as_of_date where new
+    vs existing differ (changed amount, new row, or removed row)
+    onwards are rewritten. Pre-deviation rows keep
     their original snapshot_at so gold downstream doesn't
     re-process unchanged history.
 
@@ -129,7 +129,7 @@ SELL_TYPES = (
 def _sql_str_list(values: tuple[str, ...]) -> str:
     """Render string constants as a SQL IN-list body: ``'a', 'b'``.
     These are internal constants, never user input; a stray apostrophe
-    would be a source-level typo, so we assert rather than escape."""
+    would be a source-level typo, so it is asserted rather than escaped."""
     for v in values:
         assert "'" not in v, f"type literal must not contain a quote: {v!r}"
     return ", ".join(f"'{v}'" for v in values)
@@ -225,9 +225,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--no-fetch-prices", dest="fetch_prices", action="store_false",
         help=("Skip the post-ingest USD price fill. By DEFAULT, after "
-              "ingest, missing USD prices are fetched from the active price "
-              "provider (Binance, USDT-denominated) for every coin held in "
-              "any portfolio on every day, inserted into coin_prices with ON "
+              "ingest, missing USD prices are fetched for every coin held "
+              "in any portfolio on every day (crypto from Binance, "
+              "USDT-denominated; fiat from the ECB via Frankfurter), and "
+              "a held day before a coin's first price takes the next "
+              "price. They are inserted into coin_prices with ON "
               "CONFLICT DO NOTHING (already-fetched dates untouched); the "
               "previous run's latest priced day is always re-fetched (an "
               "intraday snapshot upgraded to the close). Equivalent to "
@@ -396,28 +398,20 @@ def ingest_transactions(
     manifest: dict, run_dir: Path, snapshot_at: int,
     timezones: dict[str, str],
 ) -> int:
-    """Replace `transactions` for the portfolios present in this
-    snapshot and re-populate from each one's trades.csv. Returns
-    the row count written. Each portfolio's trades.csv is a
-    complete dump (CT replays the full trade history on every
-    export), so per-portfolio truncate-and-reinsert is safe.
-    Portfolios missing from this snapshot keep whatever they were
-    last loaded with — relevant when CT's flaky linked-user
-    discovery drops one off a refresh.
+    """Replace `transactions` for each portfolio whose trades.csv this
+    snapshot holds, re-populating it from that file. Returns the row
+    count written. Each portfolio's trades.csv is a complete dump (CT
+    replays the full trade history on every export), so per-portfolio
+    truncate-and-reinsert is safe. A portfolio missing from this
+    snapshot, or whose trades.csv does not resolve, keeps whatever it
+    was last loaded with — relevant when CT's linked-user discovery
+    drops one off a refresh.
 
     `Date` is kept as printed in `occurred_local`; `occurred_at` is
     that wall time read in the portfolio's zone (`timezones`, else
     UTC) and converted to UTC. A wall time a daylight-saving change
     repeats reads as its later occurrence; one the change skips reads
     with the offset in force before the change (DuckDB's ICU rules)."""
-    portfolio_ids = [f"cu_{p['id']}" for p in manifest["portfolios"]]
-    if portfolio_ids:
-        placeholders = ", ".join(["?"] * len(portfolio_ids))
-        conn.execute(
-            f"DELETE FROM transactions WHERE portfolio_external_id IN ({placeholders})",
-            portfolio_ids,
-        )
-
     total = 0
     for portfolio in manifest["portfolios"]:
         cu_id = portfolio["id"]
@@ -425,8 +419,11 @@ def ingest_transactions(
         if trades_csv is None:
             log.warning("no trades.csv for cu_%s — skipping", cu_id)
             continue
+        conn.execute(
+            "DELETE FROM transactions WHERE portfolio_external_id = ?",
+            [f"cu_{cu_id}"])
 
-        # Load the CSV into a temp table first so we can map columns.
+        # Load the CSV into a temp table first, so its columns can be mapped.
         # all_varchar=true so numeric columns with '' (empty) values
         # parse cleanly; TRY_CAST below promotes them to DECIMAL.
         conn.execute("""
@@ -609,7 +606,7 @@ def ingest_portfolio_prices(
             continue
 
         # Stage the CSV (all_varchar=true so empty cells parse cleanly
-        # and we control numeric promotion).
+        # and numeric promotion stays explicit).
         conn.execute("""
             CREATE OR REPLACE TEMP TABLE raw_overview AS
             SELECT * FROM read_csv_auto(?, header=true, all_varchar=true)
@@ -715,7 +712,7 @@ def ingest_portfolio_prices(
         ).fetchone()[0]
         # Distinct fiats observed — if more than 1, the CT
         # main-fiat preference was likely changed at some point
-        # and we'd want to flag it (the gold layer needs to know).
+        # and that is worth flagging (the gold layer needs to know).
         fiats = sorted({fiat for _, fiat in pairs})
         log.info("cu_%s: portfolio_prices %d row(s) total; %d coin "
                  "pair(s) ingested; quote=%s",
@@ -776,7 +773,7 @@ def reconcile_balances(
     failures.
 
     CoinTracking's UI filters zero-balance entries from
-    /balance_by_exchange.php; our replay retains them. So:
+    /balance_by_exchange.php; the replay retains them. So:
       - rows in both → must agree within tolerance
       - rows only in CT → coverage gap (warn)
       - rows only in mine with abs(amount) > tol → unreported
@@ -905,8 +902,8 @@ def ensure_coin_mapping(
     {ticker: provider_coin_id} dict for the held coin set; entries
     without a provider match are omitted (logged in build_mapping).
 
-    The mapping is cached in silver.coin_mapping so we don't hit
-    the provider's master-list endpoint on every fetch-prices run.
+    The mapping is cached in silver.coin_mapping, so a fetch-prices
+    run does not call the provider's master-list endpoint every time.
     Updated lazily — only when a new ticker shows up that isn't
     already cached for the active provider."""
     held = [r[0] for r in conn.execute(
@@ -1117,7 +1114,7 @@ def backfill_first_day_gaps(
     approximation when the listing gap is short relative to the
     coin's price stability.
 
-    Source tag stays the same as the data we're extending
+    Source tag stays the same as the data it extends
     ('binance'); from the gold layer's POV the row is
     indistinguishable from a real Binance kline.
 
@@ -1407,14 +1404,16 @@ def run_load(conn: duckdb.DuckDBPyConnection, args: argparse.Namespace) -> int:
         return 0
 
     log.info("found %d bronze snapshot(s) to consider", len(snapshots))
+    failed = False
     for snap in snapshots:
         try:
             process_snapshot(conn, snap, args.force, args.timezones, version)
         except Exception as exc:
             log.error("snapshot %s failed: %s", snap.name, exc)
-            # Continue with the next snapshot — partial progress
-            # is better than a full rollback.
-            continue
+            # Continue with the next snapshot — partial progress is
+            # better than a full rollback — but exit non-zero, so the
+            # unloaded snapshot does not pass for a clean load.
+            failed = True
 
     # Ingest the newest loaded export again when the schema or a
     # timezone has changed since it was loaded, so neither change waits
@@ -1429,6 +1428,7 @@ def run_load(conn: duckdb.DuckDBPyConnection, args: argparse.Namespace) -> int:
             process_snapshot(conn, newest, True, args.timezones, version)
         except Exception as exc:
             log.error("snapshot %s failed: %s", newest.name, exc)
+            failed = True
 
     if args.fetch_prices:
         log.info("price-fill: filling missing USD prices "
@@ -1444,6 +1444,9 @@ def run_load(conn: duckdb.DuckDBPyConnection, args: argparse.Namespace) -> int:
                  "rate row(s) written", fiats, fx_rows)
         backfill_first_day_gaps(conn)
 
+    if failed:
+        log.error("done, with failed snapshot(s); see above")
+        return 1
     log.info("done")
     return 0
 
@@ -1472,7 +1475,8 @@ def main(argv: list[str]) -> int:
             conn.close()
         if promote:
             # Only reached on a clean run — a hard failure propagates
-            # before this and leaves the original silver DB untouched.
+            # before this and leaves the silver DB as it was before this
+            # run (already deleted under --force).
             _promote_work_db(work_db, args.silver_db)
         return rc
     finally:

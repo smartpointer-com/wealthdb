@@ -47,10 +47,11 @@ import logging
 import re
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 from collectorkit import bronze, cli, compress, debugcap, launch
+
+from login import UNAUTH_MARKER
 
 log = logging.getLogger("cointracking.download")
 
@@ -67,9 +68,6 @@ DEFAULT_BRONZE_DIR = Path("/data")
 # columns: Type, Buy, Cur., Sell, Cur., Fee, Cur., Exchange, Group,
 # Comment, Date, LPN, Tx-ID. value=0 / 1 give simpler table views.
 TABLE_MODE_VALUE = "2"
-
-# Same un-auth marker login.py uses for the probe.
-UNAUTH_MARKER = "text=You need to be logged in"
 
 # Selectors. Both <select name="extended"> instances on the page
 # control the same setting (top + bottom of table); .first wins.
@@ -104,9 +102,8 @@ def _wait_for_anchor_stability(page, max_wait_s: float = 15.0) -> int:
     """Poll the change_user anchor count until it stays the same
     across two consecutive 500 ms checks (or until max_wait_s
     elapses). cointracking injects the linked-user dropdown
-    anchors via JS that doesn't reliably complete by networkidle —
-    this is the root of the flaky-portfolio-discovery issue. The
-    poll loop catches the late-injection case. Returns the final
+    anchors via JS that does not reliably finish by networkidle;
+    the poll catches a late injection. Returns the final
     observed count; the caller decides whether to fall back to
     the cache when the count is suspicious."""
     prev_count = -1
@@ -301,7 +298,7 @@ def trigger_overview_csv_export(page, out_path: Path,
                                 dry_run: bool) -> Path | None:
     """/overview.php's Export menu has a sub-menu pattern: Export →
     CSV → Comma separated. The first CSV click opens the submenu;
-    we then pick the comma-separated variant."""
+    the comma-separated variant is then picked."""
     if dry_run:
         log.info("(dry-run) would click Export → CSV → Comma separated "
                  "→ save to %s", out_path)
@@ -448,8 +445,8 @@ def main(argv: list[str]) -> int:
     cli.warn_lookback_ignored(
         args.lookback, log,
         what="the complete trade history its holdings replay requires")
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = args.bronze_dir / ts
+    run_dir = bronze.run_dir(args.bronze_dir)
+    ts = run_dir.name
     if not args.dry_run:
         run_dir.mkdir(parents=True, exist_ok=True)
         # In-progress marker: a crash before write_manifest leaves a

@@ -4,16 +4,11 @@
 #
 # The sign-in must run in the browser (Akamai's script is cookie-borne and
 # runs in the page — DESIGN.md §A), and `download` is the one verb that
-# performs one: `login` folded into it (§L) because the sign-in budget is too
-# small to spend one on a separate verb. Session cookies die with the browser
+# performs one (§L). Session cookies die with the browser
 # while the device trust persists (§G), so a run on a trusted device signs in
 # with no challenge and then fetches the data over REST. `vnc-login` is the
 # same walk behind a by-hand sign-in. `load` ingests bronze into the SQLite
 # silver — pure Python, no browser.
-#
-# Xvfb is started directly (not via xvfb-run) — the Noble xvfb-run's SIGUSR1
-# ready-signalling hangs under a non-root parent; socket-existence polling is
-# version-independent.
 
 set -euo pipefail
 
@@ -23,16 +18,9 @@ source /opt/entrypoint-lib.sh
 case "${1:-help}" in
     explore)
         # Discovery harness: Camoufox over VNC + HAR / network log / click
-        # log / DOM snapshots under /debug. `explore --help` prints
-        # argparse's usage and exits, so it starts neither Xvfb nor the VNC
-        # server — reading the flags should cost no display and announce no
-        # single-use VNC password.
+        # log / DOM snapshots under /debug.
         shift
-        for a in "$@"; do
-            case "$a" in
-                --help|-h) exec python3 /app/explore.py "$@" ;;
-            esac
-        done
+        exec_if_help explore.py "$@"
         start_xvfb
         start_x11vnc explore
         exec python3 /app/explore.py "$@"
@@ -61,9 +49,10 @@ case "${1:-help}" in
         # The same walk as `download`, behind a sign-in completed BY HAND in
         # the browser: the only way to answer a captcha, and the way to
         # register a device without a terminal. One sign-in, not two.
+        shift
+        exec_if_help download.py "$@"
         start_xvfb
         start_x11vnc vnc-login
-        shift
         exec python3 /app/download.py --vnc-mfa --bronze-dir /data "$@"
         ;;
     download)
@@ -72,8 +61,9 @@ case "${1:-help}" in
         # A challenge is answered from the TERMINAL when the wrapper gave the
         # container a TTY, and is a loud failure when it did not — see
         # download.resolve_two_factor.
-        start_xvfb
         shift
+        exec_if_help download.py "$@"
+        start_xvfb
         exec python3 /app/download.py --bronze-dir /data "$@"
         ;;
     load)

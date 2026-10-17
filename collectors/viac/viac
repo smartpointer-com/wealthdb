@@ -38,7 +38,7 @@ Subcommands:
                       --no-transaction-documents skips them.
   load [args...]      Parse bronze into the silver SQLite DB.
   prune [args...]     Delete non-complete dumps (crashed/in-progress
-                      walks and --dry-run shells) and \`download
+                      walks and legacy --dry-run shells) and \`download
                       --debug\` HTTP traces from the bronze tree.
                       --dry-run previews; --min-age-hours N protects
                       an in-flight download (default 1).
@@ -66,13 +66,7 @@ EOF
     exit 0
 fi
 
-# `prune [args...]` runs host-side (like fidelity-web), not in the
-# container: a pure file walk needs no image deps, and running host-side
-# bypasses the single-writer safety guard so prune can reclaim disk while
-# a download container is mid-flight (prune's own --min-age guard protects
-# an in-flight dump). --bronze-dir is passed first so an explicit flag in
-# [args...] overrides it (argparse last-wins); the container entrypoint
-# keeps a `prune)` arm too, for a direct `docker run`.
+# prune runs host-side (wrapper_host_prune).
 if [[ "${1:-}" == "prune" ]]; then
     wrapper_host_prune "$@"
 fi

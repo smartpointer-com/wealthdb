@@ -187,7 +187,7 @@ def test_parse_holdings_bond_uses_cusip_fallback():
 # ============================================================
 
 def test_parse_returns_signature_mismatch_when_substring_absent(monkeypatch):
-    # Stub the PDF text extractor so we don't need a real PDF on
+    # Stub the PDF text extractor so no real PDF is needed on
     # disk; the function under test should bail out before
     # reaching any text parsing when the signature is absent.
     monkeypatch.setattr(

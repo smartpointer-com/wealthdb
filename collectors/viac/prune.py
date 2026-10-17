@@ -16,10 +16,8 @@ prune engine) with viac's configuration. Two categories are reclaimed:
 * whole run dirs that are not complete dumps — ``run.json`` is missing
   (the walk crashed before writing even the in-progress marker), or its
   ``status`` is anything other than ``"complete"`` (an ``"in-progress"``
-  marker from a crashed walk, or a ``"dry-run"`` shell). ``load`` would
-  otherwise keep re-ingesting whatever partial artefacts such a dir
-  holds; after pruning one, the next ``load --force`` rebuild reflects
-  the removal.
+  marker from a crashed walk, or a legacy ``"dry-run"`` shell).
+  ``load`` skips such dirs, so removing one never changes silver.
 
 Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
 at run-dir creation, atomically overwritten with ``"complete"`` /

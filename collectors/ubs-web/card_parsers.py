@@ -25,9 +25,10 @@ DESIGN.md §5.3–5.4. The three that matter here:
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from datetime import datetime, timezone
+
+from collectorkit.silver import canonical_json
 
 # The status that means "this is a settled ledger row". Everything else
 # the ledger returns is an authorisation that has not posted.
@@ -74,11 +75,6 @@ def money(node) -> tuple[float | None, str | None]:
         return float(str(raw).strip()), currency
     except ValueError:
         return None, currency
-
-
-def _payload(node) -> str:
-    return json.dumps(node, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False)
 
 
 def _content_id(prefix: str, parts, occurrence: int = 0) -> str:
@@ -253,7 +249,7 @@ def _booked_row(txn: dict, account: str | None) -> dict | None:
         "merchant_group_code": txn.get("merchantGroupCode"),
         "card_number": txn.get("cardNr"),
         "settled_in_invoice": None if settled is None else int(bool(settled)),
-        "payload": _payload(txn),
+        "payload": canonical_json(txn),
     }
 
 
@@ -331,7 +327,7 @@ def parse_accounts(roster: dict, reserved_counts: dict | None = None,
             "account_status": node.get("accountStatus")
             or node.get("cardStatus"),
             "structure_type": node.get("structureType"),
-            "payload": _payload(node),
+            "payload": canonical_json(node),
         })
     return rows
 
@@ -342,7 +338,6 @@ def parse_accounts(roster: dict, reserved_counts: dict | None = None,
 
 def parse_invoices(listing: dict,
                    details: list[dict] | None = None,
-                   account_external_id: str | None = None,
                    accounts: dict[str, str] | None = None) -> list[dict]:
     """Billing periods -> one row per (account, period end).
 
@@ -355,11 +350,11 @@ def parse_invoices(listing: dict,
     is checked here rather than at insert time, so `reconciles` is a
     property of the parse and testable without a database.
 
-    `account_external_id` is the account the listing was fetched for. It
-    is the fallback for a detail-only period: the detail payload does not
-    repeat the account, so without it such a row could not be keyed.
-    `accounts` is :func:`stable_account_ids`, which turns the session
-    handle each node names into the identity silver stores.
+    A period is keyed by the account its node names; one whose node names
+    none (a detail-only period: the detail payload does not repeat the
+    account) is dropped. `accounts` is :func:`stable_account_ids`, which
+    turns the session handle each node names into the identity silver
+    stores.
 
     The merge runs on the API's invoice id and the stored id is minted
     after it: the two payloads agree on the handle within one session,
@@ -369,7 +364,7 @@ def parse_invoices(listing: dict,
     accounts = accounts or {}
     by_id: dict[str, dict] = {}
     for node in _walk(listing, _is_invoice_node):
-        row = _invoice_row(node, account_external_id, accounts)
+        row = _invoice_row(node, accounts)
         if row is not None:
             by_id[row["invoice_external_id"]] = row
 
@@ -378,7 +373,7 @@ def parse_invoices(listing: dict,
             invoice_id = node.get("id")
             row = by_id.get(invoice_id)
             if row is None:
-                row = _invoice_row(node, account_external_id, accounts)
+                row = _invoice_row(node, accounts)
                 if row is None:
                     continue
                 by_id[invoice_id] = row
@@ -517,15 +512,14 @@ def _dedup(values) -> list[str]:
     return out
 
 
-def _invoice_row(node: dict, account_external_id: str | None,
-                 accounts: dict[str, str]) -> dict | None:
+def _invoice_row(node: dict, accounts: dict[str, str]) -> dict | None:
     period_start = ts(node.get("periodFrom"))
     period_end = ts(node.get("periodTo"))
     if period_start is None or period_end is None:
         return None
     due_amount, currency = money(node.get("dueAmount"))
     minimal, _ = money(node.get("minimalDueAmount"))
-    account = node.get("creditCardAccountId") or account_external_id
+    account = node.get("creditCardAccountId")
     return {
         "account_external_id": accounts.get(account, account),
         "period_end": period_end,
@@ -547,7 +541,7 @@ def _invoice_row(node: dict, account_external_id: str | None,
         # straight into a TEXT column raises and takes the whole dump's
         # load down with it.
         "invoice_status": _scalar(node.get("invoiceStatus"), "statusCode"),
-        "payload": _payload(node),
+        "payload": canonical_json(node),
     }
 
 
@@ -561,7 +555,7 @@ def _merge_detail(row: dict, node: dict) -> None:
     row["total_credit"] = total_credit
     # The detail is the fuller record, so its payload replaces the
     # listing's; the listing's own columns are already promoted above.
-    row["payload"] = _payload(node)
+    row["payload"] = canonical_json(node)
     row["reconciles"] = reconciles(balance_forward, total_debit,
                                    total_credit, row.get("due_amount"))
 

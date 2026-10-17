@@ -14,22 +14,27 @@ Allowed UI surfaces — these are the only pages `download.py` may
 navigate to or click within:
 - F5 BIG-IP login form at `/my.policy` and the Mobile Level 3 MFA
   page that follows it.
-- Trading Platform SPA `#transactions` route — date-range filter
-  inputs and the export dropdown only.
+- Trading Platform SPA `#transactions` route — the date-range
+  filter inputs, its Apply button, and the export dropdown only.
 - Trading Platform SPA `#portfoliooverview` route — the three
   export buttons (Positions, List of Assets, Export account
-  overview), and hovering the per-position symbol cells to expose
-  the long-name tooltip. The Buy/Sell buttons inside position rows
+  overview), clicking a collapsed widget's header to expand it,
+  and hovering the per-position symbol cells to expose the
+  long-name tooltip. The Buy/Sell buttons inside position rows
   are present in the DOM but must never be clicked.
+- eBanking SPA `#accountOverview/main` route — read the account
+  list (DOM scrape only).
 - eBanking SPA `#documents` route — date-range filter and Apply
   only; document PDFs are fetched via Playwright's request API
   (the `getPdfDocument` REST endpoint with the session cookie),
   not by clicking download links.
 - eBanking SPA root (`/sqc-web-client-portal/`) used by
-  `login.py --check` to test session liveness via URL transition. F5 may
-  redirect that request on to the Trading Platform
-  (`/eding_trading-platform/`); both count as authenticated, and neither
-  is read as such when opened directly.
+  `login.py --check` and by `download.py`'s session check to test
+  session liveness via URL transition. F5 may redirect that request
+  on to the Trading Platform (`/eding_trading-platform/`); both count
+  as authenticated, and neither is read as such when opened directly.
+  `download.py` also opens it as the entry to `#accountOverview/main`
+  and `#documents`.
 
 Permitted client-side DOM cleanup (not a write action): removing
 Pendo in-app-guide overlay nodes (`#pendo-base` / `._pendo-backdrop`

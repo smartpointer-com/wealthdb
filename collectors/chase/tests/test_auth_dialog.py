@@ -113,16 +113,8 @@ def test_choose_factor_raises_when_only_call_us():
         ad.choose_factor(m, input_fn=Driver().input_fn, output_fn=Driver().output_fn)
 
 
-def test_choose_factor_reprompts_then_raises_on_junk():
-    m = menu(["INAPP", "OTP_SMS"], phones=[("1001", "xxx-xxx-1111")],
-             devices=["Example Phone"])
-    d = Driver("9", "x", "0")  # all invalid
-    with pytest.raises(ad.ChallengeError):
-        ad.choose_factor(m, input_fn=d.input_fn, output_fn=d.output_fn)
-
-
 # ============================================================
-# choose_phone — the dialog the task asked to replicate
+# choose_phone
 # ============================================================
 
 def test_choose_phone_lists_and_selects():
@@ -148,33 +140,15 @@ def test_choose_phone_raises_without_phones():
                         input_fn=Driver().input_fn, output_fn=Driver().output_fn)
 
 
-def test_choose_phone_eof_raises():
-    m = menu(["OTP_SMS"], phones=[("1001", "xxx-xxx-1111"),
-                                  ("1002", "xxx-xxx-2222")])
-    with pytest.raises(ad.ChallengeError):
-        ad.choose_phone(m, input_fn=Driver().input_fn, output_fn=Driver().output_fn)
-
-
 # ============================================================
 # read_otp
 # ============================================================
-
-def test_read_otp_strips_separators():
-    d = Driver("1234 5678")
-    code = ad.read_otp(input_fn=d.input_fn, output_fn=d.output_fn)
-    assert code == "12345678"
-
 
 def test_read_otp_shows_no_anti_phishing_prefix():
     # Chase's code arrives numeric-only; the prompt must not invent a prefix.
     d = Driver("12345678")
     ad.read_otp(input_fn=d.input_fn, output_fn=d.output_fn)
     assert not any("begins with" in line for line in d.out)
-
-
-def test_read_otp_rejects_nondigits_then_accepts():
-    d = Driver("nope", "12345678")
-    assert ad.read_otp(input_fn=d.input_fn, output_fn=d.output_fn) == "12345678"
 
 
 def test_read_otp_accepts_off_length_with_note():
@@ -190,67 +164,6 @@ def test_read_otp_never_echoes_code():
     d = Driver("12345678")
     ad.read_otp(input_fn=d.input_fn, output_fn=d.output_fn)
     assert "12345678" not in d.text()
-
-
-def test_read_otp_eof_raises():
-    with pytest.raises(ad.ChallengeError):
-        ad.read_otp(input_fn=Driver().input_fn, output_fn=Driver().output_fn)
-
-
-# ============================================================
-# payload builders — the wire contract
-# ============================================================
-
-def test_build_invocation_sms_carries_method_and_contact():
-    m = menu(["OTP_SMS"], phones=[("1001", "xxx-xxx-1111")])
-    payload = ad.build_invocation(m, "OTP_SMS", m.phones[0])
-    assert payload == {
-        "challengeTokenIdentifier": "TOK",
-        "communicationMethodTypeCode": "S",
-        "contactReferenceIdentifier": "1001",
-    }
-
-
-def test_build_invocation_inapp_carries_device_and_method_i():
-    # Push shares the invocation shape with SMS: method "I" + the device's
-    # contact id (from inAppDeviceList), per the 2026-08-11 capture.
-    m = menu(["INAPP"], devices=[("2001", "Example Phone")])
-    assert ad.build_invocation(m, "INAPP", m.devices[0]) == {
-        "challengeTokenIdentifier": "TOK",
-        "communicationMethodTypeCode": "I",
-        "contactReferenceIdentifier": "2001",
-    }
-
-
-def test_build_invocation_voice_carries_method_v():
-    # OTP_VOICE is method "V" + a phone contact (2026-08-11 capture); it
-    # behaves as SMS does, differing only in this code.
-    m = menu(["OTP_VOICE"], phones=[("1001", "xxx-xxx-1111")])
-    assert ad.build_invocation(m, "OTP_VOICE", m.phones[0]) == {
-        "challengeTokenIdentifier": "TOK",
-        "communicationMethodTypeCode": "V",
-        "contactReferenceIdentifier": "1001",
-    }
-
-
-def test_build_invocation_unknown_factor_raises():
-    # A factor with no method code (e.g. CALL_US, never automatable) must
-    # fail loudly rather than emit a null code.
-    m = menu(["CALL_US"])
-    with pytest.raises(ad.ChallengeError):
-        ad.build_invocation(m, "CALL_US", ad.Target("x", "x"))
-
-
-def test_build_verification_shape():
-    m = menu(["OTP_SMS"], phones=[("1001", "xxx-xxx-1111")])
-    v = ad.build_verification(m, "OTP_SMS", m.phones[0], "ABC", "12345678")
-    assert v == {
-        "challengeTokenIdentifier": "TOK",
-        "communicationMethodTypeCode": "S",
-        "contactReferenceIdentifier": "1001",
-        "otp": {"oneTimeUserPasswordText": "12345678",
-                "oneTimePasswordPrefixText": "ABC"},
-    }
 
 
 # ============================================================
@@ -276,19 +189,20 @@ def test_demo_sms_branch_runs_end_to_end(monkeypatch, capsys):
     _scripted_input(monkeypatch, "2", "1", "12345678")
     assert ad.main(["--demo"]) == 0
     out = capsys.readouterr().out
-    assert "challenge-invocations" in out and "challenge-verifications" in out
-    # The prefix is echoed back on the verification; the code never is.
-    assert ad.DEMO_OTP_PREFIX in out
+    # It reports the page actions login.py takes; the code is never echoed.
+    assert "xxx-xxx-1111" in out
+    assert "type the code into the secure field" in out
     assert "12345678" not in out
 
 
 def test_demo_push_branch_runs_end_to_end(monkeypatch, capsys):
-    # Factor 1 (approve in the app): one device, then the "press Enter"
-    # acknowledgement — no code is read on this branch.
+    # Factor 1 (approve in the app), then the "press Enter" acknowledgement —
+    # no phone is picked and no code is read on this branch.
     _scripted_input(monkeypatch, "1", "")
     assert ad.main(["--demo"]) == 0
     out = capsys.readouterr().out
-    assert "challenge-statuses" in out
+    assert "wait for the sign-in to complete" in out
+    assert "xxx-xxx-1111" not in out
 
 
 def test_demo_reports_a_dialog_that_ends(monkeypatch, capsys):

@@ -40,13 +40,6 @@ def _day(epoch):
 # Scalar parsers
 # ============================================================
 
-def test_parse_date_variants():
-    assert load.parse_date("2026-07-15") == _epoch(2026, 7, 15)
-    assert load.parse_date("2026-07-15T01:02:03.4") == _epoch(2026, 7, 15)
-    assert load.parse_date("garbage") is None
-    assert load.parse_date(None) is None
-
-
 def test_parse_money_variants():
     assert load.parse_money(-12.34) == -12.34
     assert load.parse_money("500.0") == 500.0
@@ -119,7 +112,7 @@ def _details():
             {"bezeichnung": "Kontoführendes Institut", "inhalt": ["Test Bank"]},
             {"bezeichnung": "Währung", "inhalt": ["EUR"]},
             {"bezeichnung": "Kontobezeichnung", "inhalt": ["Doe John"]},
-            {"bezeichnung": "Kontoart", "inhalt": ["Gehaltekonto"]},
+            {"bezeichnung": "Kontoart", "inhalt": ["Testkonto"]},
         ]},
         {"ueberschrift": "Zinsinformationen", "details": [
             {"bezeichnung": "Aktueller Zinssatz Haben",
@@ -135,7 +128,7 @@ def _details():
 
 def test_parse_details_curates_and_drops_cards_and_name():
     d = load.parse_details(_details())
-    assert d["kontoart"] == "Gehaltekonto"
+    assert d["kontoart"] == "Testkonto"
     assert d["currency"] == "EUR"
     assert d["institution"] == "Test Bank"
     assert d["bic"] == "RZTESTXXXXX"
@@ -173,8 +166,8 @@ def test_mask_is_last_four_only():
 
 
 def test_statement_date_from_name():
-    assert load._statement_date_from_name("2026-08-01_EAZ_ELOOE_9.pdf") == _epoch(2026, 8, 1)
-    assert load._statement_date_from_name("2023-04-01_KDM_RBGO9_v1.pdf") == _epoch(2023, 4, 1)
+    assert load._statement_date_from_name("2026-08-01_EAZ_DOC_9.pdf") == _epoch(2026, 8, 1)
+    assert load._statement_date_from_name("2023-04-01_KDM_DOC_8_v1.pdf") == _epoch(2023, 4, 1)
     assert load._statement_date_from_name("no-date.pdf") is None
 
 
@@ -202,7 +195,7 @@ def _write_bronze_run(root: Path, slug: str) -> Path:
         "von": "2023-07-31", "bis": "2026-08-15", "kontostand": 1000.00,
         "tagessalden": [{"tag": "2026-07-31", "saldo": 1000.00},
                         {"tag": "2026-07-15", "saldo": 900.00}]}))
-    (run / "statements" / IBAN / "2026-08-01_EAZ_ELOOE_9.pdf").write_bytes(
+    (run / "statements" / IBAN / "2026-08-01_EAZ_DOC_9.pdf").write_bytes(
         b"%PDF-1.4 synthetic")
     (run / "run.json").write_text(json.dumps(
         {"source": "raiffeisen_at", "status": "complete"}))
@@ -224,7 +217,7 @@ def test_load_run_end_to_end(tmp_path):
     acct = conn.execute("SELECT account_external_id, account_type, mask, "
                         "currency, balance, payload FROM accounts").fetchone()
     assert acct["account_external_id"] == IBAN
-    assert acct["account_type"] == "Gehaltekonto"
+    assert acct["account_type"] == "Testkonto"
     assert acct["mask"] == "…1234"
     assert acct["currency"] == "EUR"
     assert acct["balance"] == 1000.00
@@ -281,6 +274,23 @@ def test_non_complete_run_skipped(tmp_path):
     conn = _load(tmp_path)
     assert load.load_run(conn, run) is False
     assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 0
+
+
+def test_run_dir_without_manifest_neither_loaded_nor_recorded(tmp_path):
+    # A run dir whose walk crashed before the first manifest write, or
+    # is still writing, holds artefacts but no run.json. It is skipped
+    # without a dump_runs row, so it loads once its manifest lands.
+    bronze_dir = tmp_path / "bronze"
+    run = _write_bronze_run(bronze_dir, "20260815T120000Z")
+    manifest = (run / "run.json").read_text()
+    (run / "run.json").unlink()
+    conn = _load(tmp_path)
+    assert load.load_run(conn, run) is False
+    assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 0
+    assert load.silver.loaded_snapshots(conn) == set()
+
+    (run / "run.json").write_text(manifest)
+    assert load.load_run(conn, run) is True
 
 
 # ============================================================

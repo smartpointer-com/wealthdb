@@ -11,26 +11,10 @@ holdings or figures.
 from __future__ import annotations
 
 import json
-import sqlite3
-import sys
 from pathlib import Path
 
-import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import load  # noqa: E402
-
-MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
-
-
-@pytest.fixture
-def migrated():
-    c = sqlite3.connect(":memory:")
-    c.execute("PRAGMA foreign_keys = ON")
-    load.silver.apply_migrations(c, MIGRATIONS_DIR)
-    yield c
-    c.close()
+import load
+from conftest import MIGRATIONS_DIR, docs_dir
 
 
 # ---- statement inception-to-date parsing -----------------------------------
@@ -55,7 +39,7 @@ def test_statement_flows_absent_lines():
 def test_statement_nav_row_carries_contributed_capital(migrated, tmp_path, monkeypatch):
     # A statement-sourced fund_metrics row states the inception-to-date
     # capital contributed beside the NAV, so it has a book value too.
-    docs = _fund_docs(tmp_path, [
+    docs = docs_dir(tmp_path, [
         _STMT_ROW,
         {"id": "s2", "document_type": "Capital account statement",
          "document_date": "03/31/2099", "fund_id": "42"},
@@ -279,19 +263,6 @@ def test_the_residue_is_what_the_earliest_notice_says_preceded_it():
 # the fund ledger: notices reconciled against statements
 # ============================================================
 
-def _fund_docs(tmp_path: Path, rows: list[dict]) -> Path:
-    """A documents dir holding an index and one stub PDF per row. The
-    parsers are stubbed per test, so the bytes never matter — only that the
-    file the index names is a PDF, which is what _fund_cash_flows checks."""
-    docs = tmp_path / "docs"
-    docs.mkdir()
-    (docs / "index.json").write_text(json.dumps({"results": rows}))
-    for row in rows:
-        (docs / f"doc_{row['id']}.pdf").write_bytes(
-            f"%PDF- {row['id']}".encode())
-    return docs
-
-
 def _stub_parsers(monkeypatch, statements: dict, notices: dict):
     """Keyed by document id: `statements` yields (contributions, distributions)
     inception-to-date, `notices` yields a parsed notice."""
@@ -334,7 +305,7 @@ def test_fund_notices_win_and_the_remainder_is_one_residue_row(migrated, tmp_pat
     # — dated at the earliest notice's issue date, the last day it is known to
     # have been called. Distributions have no notices here, so they fall back
     # to statement differencing and keep the period-end date that implies.
-    docs = _fund_docs(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
+    docs = docs_dir(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
     _stub_parsers(monkeypatch, {"s1": (281250.0, 46250.0)}, _two_call_notices())
 
     assert load._fund_cash_flows(migrated, 42, docs, 1_700_000_000, tmp_path) == 4
@@ -359,7 +330,7 @@ def test_fund_falls_back_to_statement_differencing_without_notices(migrated,
     # jump in the inception-to-date figure becomes one flow at the period end.
     rows = [_STMT_ROW, {"id": "s2", "document_type": "Capital account statement",
                         "document_date": "12/31/2099", "fund_id": "42"}]
-    docs = _fund_docs(tmp_path, rows)
+    docs = docs_dir(tmp_path, rows)
     _stub_parsers(monkeypatch,
                   {"s1": (281250.0, 0.0), "s2": (358750.0, 46250.0)}, {})
 
@@ -381,7 +352,7 @@ def test_fund_ledger_is_rebuilt_not_accumulated(migrated, tmp_path, monkeypatch)
         "snapshot_at, kind, currency, payload) VALUES "
         "('call:42:s1', 42, 1, 'capital_call', 'USD', '{}'), "
         "('exercise:42:c1', 42, 1, 'exercise', 'USD', '{}')")
-    docs = _fund_docs(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
+    docs = docs_dir(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
     _stub_parsers(monkeypatch, {"s1": (281250.0, 0.0)}, _two_call_notices())
 
     load._fund_cash_flows(migrated, 42, docs, 1_700_000_000, tmp_path)
@@ -396,7 +367,7 @@ def test_fund_warns_when_the_two_sources_leave_capital_unaccounted(
     # The notice's own running total wins over the differenced figure. Below
     # it is the ordinary case of a notice issued since the last statement, and
     # says nothing; above it means called capital neither source accounts for.
-    docs = _fund_docs(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
+    docs = docs_dir(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
     _stub_parsers(monkeypatch, {"s1": (406250.0, 0.0)}, _two_call_notices())
 
     with caplog.at_level("WARNING"):
@@ -423,7 +394,7 @@ def test_supplied_calls_itemise_the_residue_before_the_earliest_notice(
     # The earliest notice says 156250 was called before it and dates none of
     # it. The holder's own records do: each supplied call lands at its own
     # date, and a residue fully accounted for leaves no row behind.
-    docs = _fund_docs(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
+    docs = docs_dir(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
     _stub_parsers(monkeypatch, {"s1": (281250.0, 0.0)}, _two_call_notices())
     _supplied(tmp_path,
               "2097-03-01,capital_call,90000,,first call",
@@ -444,7 +415,7 @@ def test_supplied_calls_itemise_the_residue_before_the_earliest_notice(
 
 def test_the_residue_keeps_what_the_supplied_calls_leave(migrated, tmp_path,
                                                          monkeypatch):
-    docs = _fund_docs(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
+    docs = docs_dir(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
     _stub_parsers(monkeypatch, {"s1": (281250.0, 0.0)}, _two_call_notices())
     _supplied(tmp_path, "2097-03-01,capital_call,90000,,")
 
@@ -458,7 +429,7 @@ def test_a_supplied_call_after_the_lump_is_not_part_of_it(migrated, tmp_path,
                                                           monkeypatch, caplog):
     # The lump is everything before the earliest notice; a later call is the
     # notices' to state, and counting it would double what they already do.
-    docs = _fund_docs(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
+    docs = docs_dir(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
     _stub_parsers(monkeypatch, {"s1": (281250.0, 0.0)}, _two_call_notices())
     _supplied(tmp_path, "2098-07-01,capital_call,40000,,")
 
@@ -474,7 +445,7 @@ def test_supplied_calls_beyond_the_lump_are_kept_and_the_excess_logged(
         migrated, tmp_path, monkeypatch, caplog):
     # The supplied rows are dated and the lump is not, so they stand; the
     # fund's own figure is what says something is off, and the log says so.
-    docs = _fund_docs(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
+    docs = docs_dir(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
     _stub_parsers(monkeypatch, {"s1": (281250.0, 0.0)}, _two_call_notices())
     _supplied(tmp_path, "2097-03-01,capital_call,210000,,")
 
@@ -492,7 +463,7 @@ def test_supplied_calls_itemise_the_first_statement_without_notices(
     # lump; later statements' deltas are per period and stay as they are.
     rows = [_STMT_ROW, {"id": "s2", "document_type": "Capital account statement",
                         "document_date": "12/31/2099", "fund_id": "42"}]
-    docs = _fund_docs(tmp_path, rows)
+    docs = docs_dir(tmp_path, rows)
     _stub_parsers(monkeypatch,
                   {"s1": (281250.0, 0.0), "s2": (358750.0, 0.0)}, {})
     _supplied(tmp_path, "2097-03-01,capital_call,210000,,")
@@ -509,7 +480,7 @@ def test_a_fund_ignores_a_supplied_row_it_cannot_pair(migrated, tmp_path,
                                                       monkeypatch, caplog):
     # A fund's ledger holds calls and distributions; a company's kinds in its
     # file would reach gold as unpaired legs.
-    docs = _fund_docs(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
+    docs = docs_dir(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
     _stub_parsers(monkeypatch, {"s1": (281250.0, 0.0)}, _two_call_notices())
     _supplied(tmp_path, "2097-03-01,deposit,90000,,")
 
@@ -548,9 +519,7 @@ def _two_fund_run(root: Path) -> Path:
         {"id": "u1", "document_type": "Capital account statements",
          "document_date": "12/31/2098", "fund_id": "44"},
     ]
-    for row in rows:
-        row["document_name"] = f"document {row['id']}"
-    _fund_docs(run, rows).rename(run / "documents")
+    docs_dir(run, rows)
     (run / "run.json").write_text(json.dumps(
         {"status": "complete", "individual_id": "ind-1"}))
     return run
@@ -591,12 +560,18 @@ def test_each_fund_reads_only_its_own_documents(tmp_path, monkeypatch, caplog):
 def test_a_file_that_is_not_a_pdf_reads_as_not_downloaded(tmp_path,
                                                           monkeypatch, caplog):
     # Fund 42's statement and notice files hold document_url's JSON envelope.
-    # Neither is indexed or parsed, and the run says so once. Fund 43 loads
-    # as before.
+    # Neither is indexed or parsed, and the run says so once. A row whose
+    # blob was never fetched has no file, so the count leaves it out. Fund
+    # 43 loads as before.
     run = _two_fund_run(tmp_path)
     for doc_id in ("s1", "n1"):
         (run / "documents" / f"doc_{doc_id}.pdf").write_text(
             '{"url": "https://cdn.example/' + doc_id + '"}')
+    index = run / "documents" / "index.json"
+    rows = json.loads(index.read_text())["results"]
+    rows.append({"id": "m1", "document_type": "Distributions", "fund_id": "43",
+                 "document_name": "document m1"})
+    index.write_text(json.dumps({"results": rows}))
     texts = {"t1": _statement("95,380", "101,742"), "d1": _DIST_NOTICE,
              "u1": _statement("70,113", "73,309")}
     monkeypatch.setattr(load, "_pdf_text",
@@ -627,3 +602,19 @@ def test_document_pdf_is_the_file_only_when_it_is_a_pdf(tmp_path):
     assert load._document_pdf(tmp_path, {"id": 1}) == tmp_path / "doc_1.pdf"
     assert load._document_pdf(tmp_path, {"id": 2}) is None
     assert load._document_pdf(tmp_path, {"id": 3}) is None
+
+
+def test_a_row_with_only_a_uuid_names_its_blob_by_the_uuid(migrated, tmp_path):
+    # download names the blob of a row without an `id` by its `uuid`; the
+    # loader finds it under the same name and indexes it under that id.
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    row = {"uuid": "u-0001", "document_name": "document u-0001",
+           "document_type": "Annual and quarterly report"}
+    (docs / "index.json").write_text(json.dumps({"results": [row]}))
+    (docs / "doc_u-0001.pdf").write_bytes(b"%PDF-1.7 synthetic\n")
+    assert load._document_pdf(docs, row) == docs / "doc_u-0001.pdf"
+    assert load.load_documents(migrated, 0, "20990101T000000Z", docs) == 1
+    assert migrated.execute(
+        "SELECT doc_id, uuid, file_size, bronze_path FROM documents").fetchall() == [
+            ("u-0001", "u-0001", 19, "20990101T000000Z/documents/doc_u-0001.pdf")]

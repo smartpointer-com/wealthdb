@@ -10,15 +10,15 @@ real traces. A login form or 2FA challenge in a cross-origin iframe never
 reaches the top-document click listener — and a server-rendered data path
 leaves the DOM snapshots as the only record selectors can be pinned from.
 
-With `RAIFFEISEN_AT_USERNAME` / `RAIFFEISEN_AT_PASSWORD` set (sourced from
-`/secrets/raiffeisen_at.env`) the login form is pre-filled; sign-in and
-the pushTAN are still driven by hand. `--no-prefill` skips the fill.
+The pre-fill hooks are wired but stay idle here (DESIGN.md §2): the
+Verfüger field has no name hook and takes a region-prefixed value, so the
+credentials are typed by hand. `--no-prefill` skips the hooks.
 
 The session should walk the three discovery flows DESIGN.md §3 details:
-the login (the pushTAN challenge, its completion signal, and any "trust
-this browser" control), the on-demand statement generator (its range
-parameters, maximum range, and reach), and each account's transaction
-history plus the CSV export.
+the login (the pushTAN screen and its completion), the document archive
+(Dokumente: its listing, one PDF download, and its reach), and each
+account's Umsätze view (its paging and date filters; the CSV export may be
+run once for comparison).
 
 This is read-only observation. Per AGENTS.md, never click a payment /
 transfer / standing-order / confirm control (Überweisung, Auftrag,
@@ -42,9 +42,10 @@ from pathlib import Path
 
 from collectorkit import cli, debugcap, explore
 
+import elba_client as elba
+
 log = logging.getLogger("raiffeisen_at.explore")
 
-DEFAULT_URL = "https://mein.elba.raiffeisen.at/"
 DEFAULT_PROFILE_DIR = Path("/secrets/raiffeisen_at-profile")
 DEFAULT_ENV_FILE = Path("/secrets/raiffeisen_at.env")
 USER_ENV = "RAIFFEISEN_AT_USERNAME"
@@ -107,7 +108,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         description=__doc__.strip(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    explore.add_args(p, url=DEFAULT_URL, env_file=DEFAULT_ENV_FILE,
+    explore.add_args(p, url=elba.START_URL, env_file=DEFAULT_ENV_FILE,
                      profile_dir=DEFAULT_PROFILE_DIR, dom_snapshots=True)
     return p.parse_args(argv)
 
@@ -128,12 +129,10 @@ def _prefill(page, username: str, password: str, filled: set) -> bool:
 
 # What the person at the VNC session is asked to walk (DESIGN.md §3).
 WALK = ("walk the three discovery flows (DESIGN.md §3): 1) log in via VNC, "
-        "noting the pushTAN challenge's screen + completion signal and any "
-        "'trust this browser' control; 2) open the statement generator "
-        "(Kontoauszug) and generate at least one PDF over an explicit date "
-        "range, probing its maximum range; 3) open each account's "
-        "transaction history and run the CSV export with an explicit date "
-        "range.")
+        "noting the pushTAN screen and its completion; 2) open the document "
+        "archive (Dokumente): its listing, one PDF download, and its reach; "
+        "3) open each account's Umsätze view, its paging and date filters; "
+        "the CSV export may be run once for comparison.")
 
 
 def main(argv: list[str]) -> int:

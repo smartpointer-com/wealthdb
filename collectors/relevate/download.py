@@ -67,13 +67,12 @@ from typing import Any
 import requests
 from requests.exceptions import RequestException
 
-from collectorkit import cli, debugcap, docdedup, parse, session as ck_session
+from collectorkit import bronze, cli, debugcap, docdedup, parse, session as ck_session
 
 # doc_kind_from_filename is the SAME fileName -> kind derivation load.py parses
 # on, so the download-avoidance mode is chosen off the exact label load reads
 # figures from (a parsed kind can never be mis-linked). See _document_class.
-# slug_for_account names the bronze portfolio dir load.py reads back.
-from load import doc_kind_from_filename, slug_for_account
+from load import doc_kind_from_filename
 # login.py owns the portal constants, the session probe and the state
 # file's schema, so they are imported rather than duplicated.
 from login import (
@@ -87,7 +86,7 @@ DEFAULT_BRONZE_DIR = Path("/data")
 
 # Endpoints. Note the inconsistent casing of "Portfolio" vs
 # "portfolio" — the API spells them so; do NOT normalise.
-# /portfolio/services (400 without query params we can't synthesise)
+# /portfolio/services (400 without query params that cannot be synthesised)
 # and /contact/language (405 on GET) are deliberately omitted.
 EP_INVESTMENT_OVERVIEW = "/middlelayer/v2/portfolio/investment-overview"
 EP_DOCUMENTS_INDEX = "/middlelayer/v2/documents"
@@ -142,10 +141,6 @@ logger = logging.getLogger("download")
 # ----------------------------------------------------------------------
 
 
-def load_state(path: Path) -> dict[str, Any] | None:
-    return ck_session.load_state(path)
-
-
 def new_session_from_state(
     state_path: Path,
 ) -> tuple[requests.Session, str | None]:
@@ -153,7 +148,7 @@ def new_session_from_state(
     requests.Session. Returns (session, minted_at) where minted_at
     is the ISO timestamp the state was minted at (or None if
     absent from the file)."""
-    state = load_state(state_path)
+    state = ck_session.load_state(state_path)
     if state is None:
         raise FileNotFoundError(
             f"state file missing: {state_path}. Run "
@@ -349,7 +344,7 @@ def get_and_save_json(
                  bytes_=len(resp.content), headers=resp.headers)
     if resp.status_code == 204:
         # No-content success. Save a marker so the silver loader
-        # can tell "we asked, Relevate said no data" vs "we never
+        # can tell "asked, Relevate said no data" from "never
         # asked". Not an error.
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         dest_path.write_text(
@@ -524,7 +519,9 @@ def fetch_portfolio(
             {k: v for k, v in portfolio.items() if k in ("id", "externalId")},
         )
         return
-    slug = slug_for_account(str(external_id))
+    # bronze.short_token names the portfolio dir; load.py reads it back
+    # with the same token.
+    slug = bronze.short_token(str(external_id))
     pdir = run_dir / "portfolios" / slug
     pdir.mkdir(parents=True, exist_ok=True)
 
@@ -598,8 +595,8 @@ def fetch_portfolio(
 def _doc_create_date(entry: dict) -> date | None:
     """Extract a YYYY-MM-DD date from a /middlelayer/v2/documents index
     entry's `createDate`. Returns None on missing / unparseable —
-    callers treat None as "in window" so we never silently drop an
-    entry the source didn't time-stamp.
+    callers treat None as "in window", so an entry the source didn't
+    time-stamp is never silently dropped.
 
     Relevate's createDate format is `YYYY-MM-DDTHH:MM:SS` with no
     timezone suffix; the first 10 chars are the date portion."""
@@ -889,7 +886,7 @@ def do_download(args: argparse.Namespace) -> int:
         )
         return 1
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = bronze.ts_slug()
 
     if args.dry_run:
         # Root AGENTS.md §2: `download --dry-run` must export NOTHING.
@@ -916,7 +913,7 @@ def do_download(args: argparse.Namespace) -> int:
             manifest.finish(status="dry-run")
             return rc
 
-    run_dir = args.bronze_dir / ts
+    run_dir = bronze.run_dir(args.bronze_dir, ts)
     run_dir.mkdir(parents=True, exist_ok=True)
     logger.info("bronze run dir: %s", run_dir)
 
@@ -1011,15 +1008,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         choices=("all", "accounts", "portfolios", "documents"),
         default="all",
         help=(
-            "Restrict the run to one phase. 'accounts' = master "
-            "listing + ancillaries only. 'portfolios' = listing + "
-            "per-portfolio endpoints. 'documents' = doc index + "
-            "PDFs. Use 'all' for everything (default)."
+            "Restrict the run to one phase. 'accounts' = the "
+            "investment-overview listing only (the ancillary endpoints "
+            "come with 'all'). 'portfolios' = listing + per-portfolio "
+            "endpoints. 'documents' = doc index + PDFs. Use 'all' for "
+            "everything (default)."
         ),
     )
     p.add_argument(
         "--no-documents", dest="no_documents", action="store_true",
-        help="Skip document PDFs (fetched by default in --mode all).",
+        help="Skip the documents phase: no document index, no PDFs.",
     )
     p.add_argument(
         "--documents-force", action="store_true",
@@ -1037,8 +1035,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     # the /middlelayer/v2/documents listing has no server-side date
     # filter (do_download applies it to each entry's createDate in
     # fetch_documents() — see DESIGN §4.2). There is deliberately no
-    # explicit-year escape hatch: a second window knob is what let a
-    # bare year silently override the resolved window.
+    # explicit-year escape hatch: a second window knob would let a bare
+    # year silently override the resolved window.
     cli.add_standard_args(p, verb="download")
     p.add_argument(
         "--limit-portfolios", type=int, default=None,

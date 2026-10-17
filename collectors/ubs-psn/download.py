@@ -24,10 +24,7 @@ Host authenticity is verified against the SHA-256 fingerprints UBS
 publishes in the SFTP Pull factsheet. A connection to a host whose key
 does not match is rejected before authentication.
 
-Usage:
-    download.py --client-id <login> --bronze-dir <dir> \\
-                [--host <ip-or-hostname>] [--port <port>] [--key <path>] \\
-                [--ignore-fingerprint-mismatch] [--dry-run] [--recover]
+`--help` lists every flag.
 """
 
 from __future__ import annotations
@@ -36,7 +33,6 @@ import argparse
 import base64
 import hashlib
 import logging
-import os
 import re
 import sys
 import zipfile
@@ -140,8 +136,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--port", type=int, default=26701,
                    help="UBS SFTP server port (default: 26701).")
     p.add_argument("--env-file", type=Path, default=None,
-                   help="KEY=VALUE credentials env file, sourced before the "
-                        "client id is resolved (also honours the "
+                   help="Bash-sourced env file with UBS_PSN_CLIENT_ID, read "
+                        "before the client id is resolved (also honours the "
                         "UBS_PSN_ENV_FILE env var). The wrapper already "
                         "sources <secrets-dir>/ubs-psn.env, so this is for "
                         "running download.py directly.")
@@ -464,22 +460,6 @@ def recover_all(sftp: paramiko.SFTPClient, run_dir: Path,
     return downloaded, empty
 
 
-def _source_env_file(explicit: Path | None) -> None:
-    """Source an explicit --env-file (or $UBS_PSN_ENV_FILE) before the client
-    id is resolved, so a direct `download.py` run needs no wrapper. The
-    wrapper already sources <secrets-dir>/ubs-psn.env; this one is sourced
-    last, so its values win. A path that was asked for but is absent is an
-    error, not a silent fallback to whatever the environment happened to
-    hold."""
-    path = explicit or (Path(os.environ["UBS_PSN_ENV_FILE"])
-                        if os.environ.get("UBS_PSN_ENV_FILE") else None)
-    if path is None:
-        return
-    if not path.is_file():
-        raise SystemExit(f"--env-file does not exist: {path}")
-    envfile.load_env_file(path, ("UBS_PSN_CLIENT_ID",), logger=log)
-
-
 def _check_credential(args: argparse.Namespace) -> int:
     """Open and close one SSH session to prove UBS accepts the key.
 
@@ -508,14 +488,17 @@ def _check_credential(args: argparse.Namespace) -> int:
 
 def main() -> int:
     args = parse_args()
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-    )
+    cli.configure_logging(args.verbose)
+    # An explicit --env-file (or $UBS_PSN_ENV_FILE) is sourced before the
+    # client id is resolved, so a direct `download.py` run needs no wrapper.
+    # The wrapper already sources <secrets-dir>/ubs-psn.env; this one is
+    # sourced last, so its values win. A path that was asked for but is
+    # absent is an error, not a silent fallback to whatever the environment
+    # happened to hold.
+    envfile.source_named_env_file(args.env_file, "UBS_PSN_ENV_FILE")
     # value-with-env-fallback (AGENTS.md §3): --client-id VALUE else
     # UBS_PSN_CLIENT_ID, so a direct `download.py` with the env var exported
     # works, matching fred.
-    _source_env_file(args.env_file)
     args.client_id = envfile.resolve_credential(
         args.client_id, "UBS_PSN_CLIENT_ID", "--client-id")
 
@@ -534,10 +517,7 @@ def main() -> int:
     # Validate the bronze root up front, before connecting. UBS deletes
     # each queue zip immediately on a successful download, so a local
     # write failure after a download would silently destroy data.
-    if not args.bronze_dir.is_dir():
-        raise SystemExit(f"--bronze-dir does not exist: {args.bronze_dir}")
-    if not os.access(args.bronze_dir, os.W_OK):
-        raise SystemExit(f"--bronze-dir is not writable: {args.bronze_dir}")
+    bronze.ensure_writable_dir(args.bronze_dir)
 
     client = connect(args)
     try:
@@ -551,8 +531,7 @@ def main() -> int:
             return 0
 
         mode = "recover" if args.recover else "download"
-        run_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        run_dir = args.bronze_dir / run_ts
+        run_dir = bronze.run_dir(args.bronze_dir)
         run_dir.mkdir(parents=True, exist_ok=False)
         # Forward status marker (fleet convention): "in-progress" at run-dir
         # creation, atomically overwritten with a terminal status once the

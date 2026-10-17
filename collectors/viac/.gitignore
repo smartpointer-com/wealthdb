@@ -1,46 +1,9 @@
-# Python build artefacts
-__pycache__/
-*.py[cod]
-*$py.class
-build/
-dist/
-*.egg-info/
-*.egg
+# Python, test, editor and OS artefacts are ignored by the root
+# .gitignore. This file adds what this collector must never commit.
 
-# Virtual environments (this repo runs entirely inside Docker, but
-# editors sometimes create these for LSP convenience)
-.venv/
-venv/
-env/
-.python-version
-
-# Test / lint / type-check caches
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.tox/
-.coverage
-.coverage.*
-htmlcov/
-coverage.xml
-
-# IDE / editor
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-
-# Linux coredumps — defensive. The toolkit is REST-only now (no
-# browser, no Xvfb), so we don't expect any; the pattern stays
-# in to catch the unexpected.
-core
+# Linux coredumps; the root .gitignore covers a plain `core`. The
+# toolkit is REST-only (no browser, no Xvfb), so none is expected; the
+# pattern catches the unexpected.
 core.*
 
 # Network-capture artefacts. The toolkit is REST-only and doesn't

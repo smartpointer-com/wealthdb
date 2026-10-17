@@ -7,19 +7,15 @@
 # - `login`:   the auth path — a genuine stock Firefox driven by hand
 #   over VNC (the SPA login is bot-walled), lifting the session cookie
 #   on close. Needs Xvfb + x11vnc.
-# - `download`: headless Camoufox + the injected cookie; needs a display.
+# - `download`: headless Camoufox + the injected cookie; no display.
 # - `load`:    pure SQLite + Python, no browser.
-#
-# When Xvfb IS started, it's started directly rather than via `xvfb-run`:
-# the Ubuntu Noble xvfb-run script's SIGUSR1 ready-signaling hangs under
-# a non-root parent. Socket-existence polling is a version-independent
-# ready signal.
+# - `prune`:   pure file walk, no browser.
 
 set -euo pipefail
 
 # Xvfb / x11vnc / camoufox-cache bootstrap (VFB_DISPLAY, start_xvfb,
-# start_x11vnc) is shared across the camoufox collectors, baked into
-# base-camoufox at /opt/entrypoint-lib.sh.
+# start_x11vnc), shared by the browser collectors and baked into
+# base-playwright at /opt/entrypoint-lib.sh.
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
@@ -28,9 +24,10 @@ case "${1:-help}" in
         # Discovery harness. Drives Camoufox over VNC, records every
         # click + every network fetch into /debug/<ts>/ so download.py
         # can be written from real traces.
+        shift
+        exec_if_help explore.py "$@"
         start_xvfb
         start_x11vnc explore
-        shift
         exec python3 /app/explore.py "$@"
         ;;
     login)
@@ -53,6 +50,18 @@ case "${1:-help}" in
         # Xvfb + VNC so the login is cleared by hand; on a clean close,
         # lift the session from its plaintext cookies.sqlite.
         shift
+        # A help request anywhere among the flags must never probe the
+        # server, start a display or open Firefox.
+        for a in "$@"; do
+            case "$a" in
+                -h|--help)
+                    echo "angellist login — BYO-cookie auth path." >&2
+                    echo "  --check  probe the saved session (exit 0 valid / 1 stale); never opens Firefox." >&2
+                    echo "  --fresh  skip the check and always re-login by hand over VNC." >&2
+                    echo "  (no flag) probe; if stale, open Firefox under VNC for a by-hand login." >&2
+                    exit 0 ;;
+            esac
+        done
         # Fixed in-container paths under the /secrets mount. To relocate
         # them, override the mount itself (ANGELLIST_SECRETS_DIR) — an env
         # var read only here would never reach the container.
@@ -62,13 +71,6 @@ case "${1:-help}" in
         case "${1:-}" in
             --check) login_mode=check; shift ;;
             --fresh) login_mode=fresh; shift ;;
-            -h|--help)
-                # A help request must never probe the server or open Firefox.
-                echo "angellist login — BYO-cookie auth path." >&2
-                echo "  --check  probe the saved session (exit 0 valid / 1 stale); never opens Firefox." >&2
-                echo "  --fresh  skip the check and always re-login by hand over VNC." >&2
-                echo "  (no flag) probe; if stale, open Firefox under VNC for a by-hand login." >&2
-                exit 0 ;;
             -*) echo "angellist login: unknown flag '$1' (try --check / --fresh / --help)." >&2
                 exit 2 ;;
         esac
@@ -179,8 +181,8 @@ Subcommands:
               routes and capture the venture GraphQL (positions / summary /
               commitments / funding-account cash ledger) the SPA signs
               itself, and download tax documents (K-1 CSV/PDF, financial
-              statements), re-fetching incomplete tax years. Pass --dry-run
-              to walk without writing bronze.
+              statements), replacing the copies of incomplete tax years.
+              Pass --dry-run to walk without writing bronze.
   load        Ingest bronze + tax docs into the SQLite silver: offerings +
               event-sourced position_snapshots, vehicles, k1_capital_accounts,
               tax_documents, portfolio_summary / timeseries, commitments,

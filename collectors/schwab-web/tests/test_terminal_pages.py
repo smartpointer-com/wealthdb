@@ -168,7 +168,7 @@ def test_wait_for_post_auth_raises_on_notice(monkeypatch):
     monkeypatch.setattr(login, "_live_url", lambda p: NOTICE)
     monkeypatch.setattr(login.time, "sleep", lambda s: None)
     with pytest.raises(login.TerminalPageError):
-        login._wait_for_post_auth(page, context, timeout_s=5, poll_s=0.01)
+        login._wait_for_post_auth(context, timeout_s=5, poll_s=0.01)
 
 
 def test_wait_for_post_auth_still_finds_the_app(monkeypatch):
@@ -177,5 +177,5 @@ def test_wait_for_post_auth_still_finds_the_app(monkeypatch):
     context = MagicMock()
     context.pages = [page]
     monkeypatch.setattr(login, "_live_url", lambda p: POST_AUTH)
-    assert login._wait_for_post_auth(page, context, timeout_s=5,
+    assert login._wait_for_post_auth(context, timeout_s=5,
                                      poll_s=0.01) is page

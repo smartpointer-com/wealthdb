@@ -37,7 +37,7 @@ DESIGN.md
 *.pem
 *.key
 storageState*.json
-ubs_web_state*.json
+ubs-web-state*.json
 .env
 .envrc
 data/

@@ -9,10 +9,6 @@
 # 2FA). `vnc-login` is the by-hand fallback. `load` ingests bronze into the
 # SQLite silver; `prune` is a pure file walk. `explore` is the retained
 # discovery harness.
-#
-# Xvfb is started directly (not via xvfb-run) — the Noble xvfb-run's SIGUSR1
-# ready-signalling hangs under a non-root parent; socket-existence polling is
-# version-independent.
 
 set -euo pipefail
 
@@ -23,35 +19,38 @@ case "${1:-help}" in
     explore)
         # Discovery harness: Camoufox over VNC + HAR / network log / click
         # log / DOM snapshots under /debug.
+        shift
+        exec_if_help explore.py "$@"
         start_xvfb
         start_x11vnc explore
-        shift
         exec python3 /app/explore.py "$@"
         ;;
     login)
         # Interactive login (device registration). 2FA is driven from the
         # TERMINAL over stdin — headed Camoufox under Xvfb, no VNC.
-        # `--check`/`--help` are headless-friendly but still launch Camoufox
-        # to submit the form (the only way past Akamai), so Xvfb is started
-        # for them too.
-        start_xvfb
+        # `--check` still launches Camoufox to submit the form (the only way
+        # past Akamai), so Xvfb is started for it too.
         shift
+        exec_if_help login.py "$@"
+        start_xvfb
         exec python3 /app/login.py "$@"
         ;;
     vnc-login)
         # Fallback: expose VNC and complete Sign In + 2FA by hand in the
         # browser (use when the terminal 2FA drive can't find a control).
+        shift
+        exec_if_help login.py --no-cli-mfa "$@"
         start_xvfb
         start_x11vnc vnc-login
-        shift
         exec python3 /app/login.py --no-cli-mfa "$@"
         ;;
     download)
         # Unattended: submit the form on the trusted device (no 2FA), then
         # fetch the deposit data over REST. Headed Camoufox under Xvfb, no
         # VNC. Fails loudly if device-trust has expired (run `login`).
-        start_xvfb
         shift
+        exec_if_help download.py "$@"
+        start_xvfb
         exec python3 /app/download.py --bronze-dir /data "$@"
         ;;
     load)
@@ -92,8 +91,9 @@ Subcommands:
               export formats; --no-documents skips statements; --dry-run
               enumerates without exporting.
   load        Ingest bronze into the SQLite silver.
-  prune       Delete non-complete dumps from the bronze tree. --dry-run
-              prints the plan. Usually run host-side via the wrapper.
+  prune       Delete non-complete dumps from the bronze tree, and aged
+              entries of the /debug cache. --dry-run prints the plan.
+              Usually run host-side via the wrapper.
   sh|bash     Open an interactive shell.
   help        Show this message.
 

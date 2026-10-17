@@ -17,8 +17,8 @@ RUN pip install -r requirements.txt
 # Stock Mozilla Firefox (arm64/amd64 from Mozilla's own APT repo) for the
 # BYO-session login: a genuine, un-instrumented browser, driven by hand
 # over VNC to clear AngelList's invisible anti-bot login challenge, which
-# flags the Camoufox/Playwright automation stack (see DESIGN.md). We then
-# read its plaintext cookies.sqlite to lift the session. libdbus-glib-1-2
+# flags the Camoufox/Playwright automation stack (see DESIGN.md). Its
+# plaintext cookies.sqlite is then read to lift the session. libdbus-glib-1-2
 # is the one runtime lib Firefox needs that the Playwright/Camoufox deps
 # don't already pull in. poppler-utils provides `pdftotext`, used by
 # statements.py to parse the fund financial-report PDFs (load step).
@@ -35,10 +35,9 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends firefox libdbus-glib-1-2 poppler-utils \
  && rm -rf /var/lib/apt/lists/*
 
-# Copy scripts last. Listed explicitly so accidentally-present host
-# artefacts (.venv, real-credential JSONs, recorded traces, sample
-# Investor-Portal HTML) never make it into the image even if
-# .dockerignore is incomplete.
+# Copy scripts last, by name, so stray host artefacts (.venv,
+# real-credential JSONs, traces, sample Investor-Portal HTML) never enter
+# the image.
 COPY explore.py download.py load.py statements.py graphql_ops.py extract_cookies.py fxprofile.py prune.py /app/
 COPY migrations /app/migrations
 COPY entrypoint.sh /app/

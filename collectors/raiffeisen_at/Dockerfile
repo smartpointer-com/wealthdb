@@ -1,16 +1,12 @@
-# Headed-browser (Camoufox) discovery harness for Mein ELBA, the Austrian
+# Headed-browser (Camoufox) collector for Mein ELBA, the Austrian
 # Raiffeisen retail e-banking portal (mein.elba.raiffeisen.at: checking +
 # savings). Builds on the shared base-camoufox image, which provides
 # Firefox/Xvfb/x11vnc OS deps, camoufox + the matching Playwright pin, the
 # pre-fetched Firefox bundle at /opt/camoufox-cache, and the collectorkit
 # shared package.
 #
-# Camoufox from the start, not vanilla Playwright: ELBA's bot-defense
-# stack is unmapped, but the fleet's browser-scraped banks (chase,
-# fidelity-web, schwab-web) all measured Akamai-class defense blocking
-# vanilla engines outright — the vanilla rungs are skipped rather than
-# re-measured, and Camoufox costs nothing if ELBA turns out lenient. No
-# fallback engine is installed until a real capture shows one is needed.
+# Camoufox, the fleet's standard browser; ELBA shows no bot defense
+# (DESIGN.md §1).
 ARG WEALTHDB_IMAGE_TAG=latest
 FROM wealthdb/base-camoufox:${WEALTHDB_IMAGE_TAG}
 
@@ -27,9 +23,8 @@ RUN apt-get update \
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# Copy scripts last, listed explicitly so accidentally-present host
-# artefacts (.venv, recorded traces, downloaded statements) never make it
-# into the image even if .dockerignore is incomplete.
+# Copy scripts last, by name, so stray host artefacts (.venv, traces,
+# captures, downloaded statements) never enter the image.
 #   explore.py      discovery harness
 #   elba_client.py  Mein ELBA wire contract (pure: endpoints, bodies, parsers)
 #   login.py        one-shot login (pushTAN) + shared authenticate()

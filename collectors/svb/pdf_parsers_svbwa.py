@@ -311,7 +311,7 @@ _HOLDINGS_END_RE = re.compile(
 )
 
 # A statement with no positions renders this sentence instead of a
-# table. Detected so we return an empty (not failed) account.
+# table. Detected so the parse returns an empty (not failed) account.
 _NO_POSITIONS_RE = re.compile(
     r"There were no positions in your account at the close",
     re.IGNORECASE,

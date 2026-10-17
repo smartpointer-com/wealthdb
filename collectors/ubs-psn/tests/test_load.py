@@ -939,3 +939,193 @@ def test_backfill_fills_rows_loaded_before_migration_0005(tmp_path):
 
     with old:
         assert loader.backfill_cost_fields(old) == (0, 0)
+
+
+# --------------------------------------------------------------------------
+# Loaders with a rule of their own: MT566 dating and retraction, MT537 per
+# safekeeping account, SDSA's account id, SDPO's section-header walk
+# --------------------------------------------------------------------------
+
+def _mt566(seme: str, *, status: str = "NEWM", dates: str = "") -> str:
+    return (
+        "{1:F01TESTXXXXAXXX0000000000}{2:I566TESTXXXXXXXXN}{4:\n"
+        ":16R:GENL\n"
+        ":20C::CORP//CORP0001\n"
+        f":20C::SEME//{seme}\n"
+        f":23G:{status}\n"
+        ":22F::CAEV//DVCA\n"
+        f"{dates}"
+        ":16S:GENL\n"
+        ":16R:USECU\n"
+        ":97A::SAFE//SK123\n"
+        ":35B:ISIN XX0000000001\n"
+        "EXAMPLE FUND\n"
+        ":16S:USECU\n"
+        "-}"
+    )
+
+
+def _day(y: int, m: int, d: int) -> int:
+    return int(datetime(y, m, d, tzinfo=timezone.utc).timestamp())
+
+
+def test_load_mt566_dates_by_posting_then_payment_then_value_date(tmp_path):
+    conn = _fresh_db(tmp_path)
+    cases = (
+        ("ALL00001", ":98A::VALU//20981203\n:98A::PAYD//20981202\n"
+                     ":98A::POST//20981201\n", _day(2098, 12, 1)),
+        ("PAYVAL01", ":98A::VALU//20981203\n:98A::PAYD//20981202\n",
+         _day(2098, 12, 2)),
+        ("VALU0001", ":98A::VALU//20981203\n", _day(2098, 12, 3)),
+        ("NODATE01", "", 1700000000),
+    )
+    with conn:
+        for seme, dates, _ in cases:
+            assert loader.load_mt566(conn, 1700000000, REL,
+                                     _mt566(seme, dates=dates)) == 1
+    for seme, _, want in cases:
+        row = conn.execute(
+            "SELECT timestamp, account_external_id, kind FROM events "
+            "WHERE event_external_id = ?", (f"mt566:{seme}",)).fetchone()
+        assert row["timestamp"] == want, seme
+        assert row["account_external_id"] == "SK123"
+        assert row["kind"] == "corporate_action_confirmation"
+
+
+def test_load_mt566_retraction_replaces_the_confirmation(tmp_path):
+    # UBS retracts a confirmation with a fresh MT566 under the same SEME
+    # carrying status CANC; the row is replaced, never doubled.
+    conn = _fresh_db(tmp_path)
+    dates = ":98A::PAYD//20981202\n"
+    with conn:
+        loader.load_mt566(conn, 1700000000, REL, _mt566("SEME0001",
+                                                        dates=dates))
+        loader.load_mt566(conn, 1700000100, REL,
+                          _mt566("SEME0001", status="CANC", dates=dates))
+    rows = conn.execute("SELECT payload FROM events").fetchall()
+    assert len(rows) == 1
+    payload = json.loads(rows[0]["payload"])
+    assert ["23G", "CANC"] in payload["fields"]
+    assert payload["isin"] == "XX0000000001"
+
+
+def test_load_mt566_without_a_sender_reference_is_skipped(tmp_path):
+    conn = _fresh_db(tmp_path)
+    text = _mt566("SEME0001").replace(":20C::SEME//SEME0001\n", "")
+    with conn:
+        assert loader.load_mt566(conn, 1700000000, REL, text) == 0
+    assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+
+
+def _mt537(safe: str | None, activity: str = "Y") -> str:
+    safe_line = f":97A::SAFE//{safe}\n" if safe else ""
+    return (
+        "{1:F01TESTXXXXAXXX0000000000}{2:I537TESTXXXXXXXXN}{4:\n"
+        ":16R:GENL\n"
+        ":20C::SEME//PEND0001\n"
+        f"{safe_line}"
+        f":17B::ACTI//{activity}\n"
+        ":16S:GENL\n"
+        "-}"
+    )
+
+
+def test_load_mt537_keeps_one_row_per_safekeeping_account(tmp_path):
+    # A header-only "no activity" message is stored as such, so a reader
+    # can tell it apart from a missing message.
+    conn = _fresh_db(tmp_path)
+    with conn:
+        assert loader.load_mt537(conn, 1700000000, REL, _mt537("SK123")) == 1
+        assert loader.load_mt537(conn, 1700000000, REL,
+                                 _mt537("SK123", activity="N")) == 1
+        assert loader.load_mt537(conn, 1700000000, REL, _mt537(None)) == 0
+    rows = conn.execute(
+        "SELECT safekeeping_external_id, payload "
+        "FROM pending_securities").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["safekeeping_external_id"] == "SK123"
+    assert [":ACTI//N"] == [v for t, v in json.loads(
+        rows[0]["payload"])["fields"] if t == "17B"]
+
+
+def _psn_xml(type_code: str, root_tag: str, data: str) -> str:
+    return ('<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
+            '<Document xmlns="PsNMasterData">\n'
+            f"  <{root_tag}>\n"
+            f"    <Header><FlInf><TypeCd>{type_code}</TypeCd></FlInf></Header>\n"
+            f"    <Data>{data}</Data>\n"
+            f"  </{root_tag}>\n"
+            "</Document>")
+
+
+def test_load_sdsa_keys_on_acctid_not_the_dashed_display_form(tmp_path):
+    # AcctId is the form MT535's :97A::SAFE// and the events use; the
+    # dashed ExtAcctId is a display form, kept in the payload only.
+    xml = _psn_xml("SDSA", "PsNSafekeepingAccounts", (
+        "<ClntSfkData>"
+        "<SfkInfo><AcctId>SK123</AcctId><ExtAcctId>SK-1-23</ExtAcctId>"
+        "<PrtflId>PF0001</PrtflId></SfkInfo>"
+        "<SfkInfo><ExtAcctId>SK-4-56</ExtAcctId></SfkInfo>"
+        "</ClntSfkData>"))
+    conn = _fresh_db(tmp_path)
+    with conn:
+        assert _load_xml(loader.load_sdsa, conn, 1700000000, xml) == 2
+    rows = conn.execute(
+        "SELECT account_external_id, portfolio_external_id "
+        "FROM safekeeping_accounts ORDER BY account_external_id").fetchall()
+    # Without an AcctId the display form is all there is.
+    assert [tuple(r) for r in rows] == [("SK-4-56", None),
+                                        ("SK123", "PF0001")]
+
+
+def test_load_sdpo_groups_elements_under_the_portfolio_key_before_them(
+        tmp_path):
+    # SDPO is flat: each <PrtflKey> opens a portfolio, and the
+    # <PrtflElmntData> siblings after it belong to it until the next key.
+    xml = _psn_xml("SDPO", "PsNPortfolioComposition", (
+        "<ClntPrtflCompData>"
+        "<ClntKey><ClntId>CLNT9999</ClntId></ClntKey>"
+        "<PrtflKey><PrtflId>PF0001</PrtflId>"
+        "<PrtflCcyIsoCd>CHF</PrtflCcyIsoCd></PrtflKey>"
+        "<PrtflElmntData><ElmntId>E1</ElmntId></PrtflElmntData>"
+        "<PrtflElmntData><ElmntId>E2</ElmntId></PrtflElmntData>"
+        "<PrtflKey><PrtflId>PF0002</PrtflId>"
+        "<PrtflCcyIsoCd>USD</PrtflCcyIsoCd></PrtflKey>"
+        "<PrtflElmntData><ElmntId>E3</ElmntId></PrtflElmntData>"
+        "</ClntPrtflCompData>"))
+    conn = _fresh_db(tmp_path)
+    with conn:
+        assert _load_xml(loader.load_sdpo, conn, 1700000000, xml) == 2
+    rows = conn.execute(
+        "SELECT portfolio_external_id, base_currency, payload "
+        "FROM portfolios ORDER BY portfolio_external_id").fetchall()
+    assert [(r["portfolio_external_id"], r["base_currency"]) for r in rows] \
+        == [("PF0001", "CHF"), ("PF0002", "USD")]
+    elements = [[e["ElmntId"] for e in json.loads(r["payload"])[
+        "PrtflElmntData"]] for r in rows]
+    assert elements == [["E1", "E2"], ["E3"]]
+
+
+# --------------------------------------------------------------------------
+# Which entries of the bronze dir are dumps
+# --------------------------------------------------------------------------
+
+def test_load_reads_only_timestamped_run_dirs(tmp_path):
+    # A look-alike suffix, a malformed slug and a matching-named FILE are
+    # not dumps; only the timestamped directory is loaded.
+    bronze_dir = tmp_path / "bronze"
+    _write_zip(bronze_dir / "20260601T120000Z", "ZAH.zip",
+               {"2026-05-28_ZAH_synthetic.txt": MT535})
+    _write_zip(bronze_dir / "20260601T120000Z_bak", "ZAH.zip",
+               {"2026-05-28_ZAH_synthetic.txt": MT535})
+    (bronze_dir / "020260602T120000Z").mkdir()
+    (bronze_dir / "20260603T120000Z").write_text("stray", encoding="utf-8")
+    db = tmp_path / "ubs-psn.db"
+    assert loader.main(["--bronze-dir", str(bronze_dir),
+                        "--silver-db", str(db)]) == 0
+    conn = sqlite3.connect(db)
+    try:
+        runs = [r[0] for r in conn.execute("SELECT run_dir FROM dump_runs")]
+    finally:
+        conn.close()
+    assert [Path(r).name for r in runs] == ["20260601T120000Z"]

@@ -85,7 +85,7 @@ def _prefill(page, username: str, password: str, filled: set) -> bool:
 
 
 # What the person at the VNC session is asked to do.
-WALK = ("log in via VNC, click through the pages we want to scrape.")
+WALK = ("log in via VNC, click through the pages download scrapes.")
 
 
 def main(argv: list[str]) -> int:

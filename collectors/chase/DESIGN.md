@@ -193,8 +193,7 @@ from. **There are two completion paths:**
 Voice (`OTP_VOICE`) is method `"V"` + a phone contact, and its invocation
 returns the same 3-char prefix. So voice is SMS with the code read out over
 a call, and the same completion (`challenge-verifications`) applies.
-`CALL_US` is a human phone call and is never automatable. All method codes
-are mapped in `auth_dialog.py`.
+`CALL_US` is a human phone call and is never automatable.
 
 Both paths then finish with a `randomize` + `login` pair and
 `POST /svc/wl/auth/l4/v1/user/router/list` into the app.
@@ -235,11 +234,11 @@ control through the pair.
 
 **Encoded in [`auth_dialog.py`](auth_dialog.py)**, the browserless CLI
 core login.py drives. It parses `challenge-options`, chooses a factor,
-**picks a phone when several are listed**, reads the 8-digit code, and
-builds the invocation / verification payloads. It is pure (no network, no
-browser) and unit-tested, with a `--demo` that replays the dialog on
-synthetic data (README, "Quick start"). login.py drives the matching MDS
-controls (the "Pinned UI controls" above).
+**picks a phone when several are listed** and reads the 8-digit code. It is
+pure (no network, no browser) and unit-tested, with a `--demo` that replays
+the dialog on synthetic data (README, "Quick start"). login.py drives the
+matching MDS controls (the "Pinned UI controls" above), and the page's own
+JS makes the challenge calls.
 
 ### §B — Accounts
 
@@ -547,6 +546,7 @@ login and scrape run in one browser lifetime, and `login` folds into
   `transactions/<id>.{csv,qfx}`, `statements/<id>/<YYYY-MM-DD>.pdf` and
   `raw/*.json`. With `--debug`, every other `/svc/` JSON body lands in
   `raw/svc/` too, so an unmapped shape can be pinned from one run.
+  `prune` reclaims those bodies from the dumps it keeps.
 - **Per-product coverage.** `run.json` carries a `coverage` block that
   scores each product on its own (`score_coverage`): accounts discovered,
   accounts exported, statement passes completed, and a `complete` flag.

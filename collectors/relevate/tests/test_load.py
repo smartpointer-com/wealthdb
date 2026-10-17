@@ -44,7 +44,7 @@ def _seed_bronze(root: Path) -> Path:
             "securitiesBalance": 1000.0,
         }],
     })
-    slug = loader.slug_for_account(ACC)
+    slug = bronze.short_token(ACC)
     _write_json(run_dir / "portfolios" / slug / "modelportfolio.json", {
         "positions": [{
             "security": {
@@ -133,7 +133,7 @@ def test_a_dump_that_raises_mid_load_rolls_back_whole(tmp_path):
     # half-written rows, no transaction left open on the connection, and
     # no dump_runs row, so the dump stays pending.
     run_dir = _seed_bronze(tmp_path / "bronze")
-    slug = loader.slug_for_account(ACC)
+    slug = bronze.short_token(ACC)
     (run_dir / "portfolios" / slug / "performance.json").write_text(
         "{not json", encoding="utf-8")
     conn, version = _fresh_db(tmp_path)

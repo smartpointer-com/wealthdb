@@ -16,8 +16,9 @@ set -euo pipefail
 NAME=cointracking
 ENV_PREFIX=COINTRACKING
 # BINANCE_API_KEY is optional — it raises the Binance rate limit for the
-# default price fill on `load`; forwarded so a host-exported key reaches
-# the container (it also works via /secrets/cointracking.env).
+# default price fill on `load`; forwarded so a key exported in the shell
+# or set in cointracking.cfg reaches the container. load and fetch-prices
+# do not read cointracking.env.
 # COINTRACKING_TIMEZONES names the timezone each portfolio's CoinTracking
 # account is set to; `load` reads the trade export's dates in it.
 ENV_VARS=(COINTRACKING_USERNAME COINTRACKING_PASSWORD BINANCE_API_KEY
@@ -75,11 +76,13 @@ Subcommands:
                       CoinTracking timezone (see Settings) and
                       stores it in UTC.
                       Pass --replay-only / --force for diagnostics.
-                      The price fill (missing USDT-denominated prices
-                      from Binance) runs by default at the end;
-                      --no-fetch-prices skips it.
-  fetch-prices [args] USDT-denominated price backfill from Binance
-                      public spot into \`coin_prices\`. --missing
+                      The price fill (missing prices: crypto from
+                      Binance, fiat from the ECB via Frankfurter)
+                      runs by default at the end; --no-fetch-prices
+                      skips it.
+  fetch-prices [args] Price backfill into \`coin_prices\`: crypto
+                      (USDT-denominated) from Binance public spot,
+                      fiat from the ECB via Frankfurter. --missing
                       fills (held, unpriced) gaps (same as the
                       default \`load\` price fill); no flag re-fetches
                       the full held range (corruption recovery).
@@ -93,8 +96,9 @@ Subcommands:
                       dumps (a crashed / in-progress walk) from the
                       data dir (\$HOST_DATA), and strip screenshots/
                       (the download --debug captures) from complete
-                      dumps, whose load inputs are untouched. Runs
-                      host-side (no image deps). --dry-run prints the
+                      dumps, whose load inputs are untouched, plus
+                      stale entries of the /debug dir (\$HOST_DEBUG).
+                      Runs host-side (no image deps). --dry-run prints the
                       plan; --min-age-hours N (default 1) protects a
                       walk still in flight.
   recompress [args..] One-time backlog sweep: replace plain
@@ -143,13 +147,7 @@ EOF
     exit 0
 fi
 
-# `prune [args...]` runs host-side (like fidelity-web), not in the
-# container: a pure file walk needs no image deps, and running host-side
-# bypasses the single-writer safety guard so prune can reclaim disk while
-# a download container is mid-flight (prune's own --min-age guard protects
-# an in-flight dump). --bronze-dir is passed first so an explicit flag in
-# [args...] overrides it (argparse last-wins); the container entrypoint
-# keeps a `prune)` arm too, for a direct `docker run`.
+# prune runs host-side (wrapper_host_prune).
 if [[ "${1:-}" == "prune" ]]; then
     wrapper_host_prune "$@"
 fi

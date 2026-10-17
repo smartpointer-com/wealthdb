@@ -309,8 +309,8 @@ _KIND_BY_VERB = {
     "CANCELLED BUY": "ADJUSTMENT",
     "CANCELLED SELL": "ADJUSTMENT",
     # A brokerage statement's checking sub-section. The number stays in the
-    # description, as the deposit ledger's cleared checks do — gold's
-    # `check_number` column is filled by no svb path today.
+    # description, as the deposit ledger's cleared checks do — no svb path
+    # fills gold's `check_number` column.
     "CHECK PAID": "WITHDRAWAL",
     # The deposit ledger has no Transaction column. A row's direction is the
     # column its figure lands in, and its KIND is what the statement's own
@@ -1218,9 +1218,7 @@ def main(argv=None) -> int:
     # so --force parses but cannot change the outcome.
     cli.add_standard_args(p, verb="load", always_rebuilds=True)
     args = p.parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(levelname)s %(message)s")
+    cli.configure_logging(args.verbose)
     sigs = read_signatures(args.bronze_dir, args.statement_signature)
     if not sigs:
         log.warning("no signature configured (--statement-signature or "

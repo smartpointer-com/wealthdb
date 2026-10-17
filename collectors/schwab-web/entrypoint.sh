@@ -5,19 +5,12 @@
 # X11 display first so Firefox can run headed (Schwab's anti-bot
 # detection flags headless markers, so running without a display
 # is not an option).
-#
-# start_xvfb starts Xvfb directly rather than via `xvfb-run`. The
-# Ubuntu Noble xvfb-run script's SIGUSR1 ready-signaling hangs when
-# the parent shell is non-root: it sets the parent SIGUSR1 handler to
-# `:` rather than SIG_IGN, so Xvfb declines to send the ready signal
-# and the parent waits forever. Socket-existence polling is a
-# version-independent ready signal.
 
 set -euo pipefail
 
 # Xvfb / x11vnc / camoufox-cache bootstrap (VFB_DISPLAY, start_xvfb,
-# start_x11vnc) is shared across the camoufox collectors, baked into
-# base-camoufox at /opt/entrypoint-lib.sh.
+# start_x11vnc), shared by the browser collectors and baked into
+# base-playwright at /opt/entrypoint-lib.sh.
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
@@ -29,8 +22,9 @@ case "${1:-help}" in
         # happen in one Firefox lifetime — each invocation pays
         # one MFA challenge, in exchange for not having to
         # babysit a long-lived process. Stdin must be a TTY.
-        start_xvfb
         shift
+        exec_if_help login.py "$@"
+        start_xvfb
         exec python3 /app/login.py \
             --profile-dir /secrets/schwab-web-profile \
             --cli-mfa --bronze-dir /data "$@"
@@ -45,10 +39,11 @@ case "${1:-help}" in
         # launch and printed to stderr; the wrapper publishes
         # the port on 127.0.0.1 only (typically 5900, but moves
         # +1 each time 5900 is already taken on the host) —
-        # tunnel from your laptop with ssh -L.
+        # tunnel to it with ssh -L.
+        shift
+        exec_if_help login.py "$@"
         start_xvfb
         start_x11vnc vnc-login
-        shift
         exec python3 /app/login.py \
             --profile-dir /secrets/schwab-web-profile \
             --no-cli-mfa --bronze-dir /data "$@"
@@ -70,9 +65,10 @@ case "${1:-help}" in
         exec python3 /app/dedup.py "$@"
         ;;
     prune)
-        # Delete debug artefacts (<run>/screenshots/) and
-        # non-complete dumps from the bronze tree. No browser, no
-        # Xvfb. Also reachable host-side via the wrapper.
+        # Delete debug artefacts (<run>/screenshots/, stray
+        # transactions/*/page-*.html) and non-complete dumps from the
+        # bronze tree. No browser, no Xvfb. Also reachable host-side
+        # via the wrapper.
         shift
         exec python3 /app/prune.py "$@"
         ;;
@@ -103,13 +99,14 @@ Subcommands:
               per-download byte churn the fleet `wealthdb-collect
               dedup` byte-identical sweep can't). --dry-run prints
               the evidence report first.
-  prune       Delete debug artefacts (<run>/screenshots/) and
-              non-complete dumps from the bronze tree. --dry-run
-              prints the plan first.
+  prune       Delete <run>/screenshots/ and stray
+              transactions/*/page-*.html from complete dumps, whole
+              non-complete dumps, and idle entries of the /debug
+              cache. --dry-run prints the plan first.
   vnc-login   Fallback to a VNC-driven login + scrape when the
               CLI-MFA selectors drift or a non-code challenge is
               required. Starts x11vnc on 127.0.0.1:5900; tunnel
-              + connect from your local VNC client.
+              to it and connect a local VNC client.
   sh|bash     Open an interactive shell inside the container.
   help        Show this message.
 

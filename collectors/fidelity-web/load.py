@@ -52,6 +52,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from collectorkit import bronze, cli, compress, silver, srcfp
+from collectorkit.parse import iso_date_to_epoch
 
 import lot_parsers
 import pdf_parsers
@@ -155,7 +156,7 @@ CASH_ONLY_ACTIONS = {
     "GRANT", "GIFT", "EXCHANGE",
 }
 
-# Fidelity selector group labels we know how to classify. Anything
+# Fidelity selector group labels the loader classifies. Anything
 # else falls through to 'other' so the loader doesn't fail on a
 # future label change.
 PORTFOLIO_KIND = {
@@ -385,13 +386,13 @@ def txn_staleness_days(latest_act_dump, latest_txn):
 
 
 def scan_bronze(bronze_dir):
-    """The dumps worth loading: every run dir whose manifest does not
-    say it is unfinished (`bronze.is_loadable_status`).
+    """The dumps worth loading: every run dir with a manifest that does
+    not say it is unfinished (`bronze.run_is_loadable`).
 
     A status other than `complete` marks a crashed or still-running
-    dump whose partial artefacts must not be ingested. A dump with no
-    manifest at all predates the field and is admitted, as
-    `bronze.run_status` documents.
+    dump whose partial artefacts must not be ingested. A manifest with
+    no `status` key predates the field and is admitted; a dir with no
+    manifest is still being written and is skipped.
 
     A phase that came back SHORT is not this gate's business: such a
     dump is finished, its status is `complete`, and its artefacts are
@@ -401,9 +402,14 @@ def scan_bronze(bronze_dir):
         raise SystemExit(f"--bronze-dir does not exist: {bronze_dir}")
     keep = []
     for run_dir in bronze.iter_run_dirs(bronze_dir):
-        status = bronze.run_status(run_dir / "run.json")
-        if not bronze.is_loadable_status(status):
-            log.info("skipping %s: status=%s", run_dir.name, status)
+        if not bronze.run_is_loadable(run_dir):
+            run_json = run_dir / "run.json"
+            if run_json.is_file():
+                log.info("skipping %s: status=%s", run_dir.name,
+                         bronze.run_status(run_json))
+            else:
+                log.info("skipping %s: no run.json (still writing?)",
+                         run_dir.name)
             continue
         keep.append(run_dir)
     return keep
@@ -423,16 +429,6 @@ def already_loaded(conn, dump_dir):
 
 def ts_from_dir(name):
     return bronze.parse_run_ts(name)
-
-
-def ts_from_iso(s):
-    if not s:
-        return None
-    try:
-        dt = datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        return int(dt.timestamp())
-    except (TypeError, ValueError):
-        return None
 
 
 def ts_from_mdy(s):
@@ -608,7 +604,7 @@ def _insert_dump_run(conn, snapshot_at, schema_version, dump_dir, run_meta,
     window = run_meta.get("activity_window") or {}
     # balances / performance presence is recoverable from the
     # documents table via doc_kind IN ('balances_html',
-    # 'performance_html'); we only persist the explicit flags
+    # 'performance_html'); only the explicit flags are persisted
     # for the structured-data phases.
     conn.execute(
         "INSERT INTO dump_runs ("
@@ -619,8 +615,8 @@ def _insert_dump_run(conn, snapshot_at, schema_version, dump_dir, run_meta,
         (
             snapshot_at, schema_version, str(dump_dir),
             cfg.get("mode"),
-            ts_from_iso(window.get("since")),
-            ts_from_iso(window.get("until")),
+            iso_date_to_epoch(window.get("since")),
+            iso_date_to_epoch(window.get("until")),
             positions_present,
             _phase_present(dump_dir, "activity"),
             _phase_present(dump_dir, "documents"),
@@ -652,8 +648,8 @@ def _load_master(conn, snapshot_at, run_meta):
     if not dims:
         log.debug("no account_dimensions in run.json; skipping master load")
         return 0, 0
-    # account_dimensions is keyed by sha256-prefix; we want the raw
-    # 9-digit id, which lives in accounts_in_scope + accounts_enumerated.
+    # account_dimensions is keyed by sha256-prefix; the raw 9-digit
+    # id lives in accounts_in_scope + accounts_enumerated.
     enumerated = set(run_meta.get("accounts_enumerated") or [])
     in_scope = set(run_meta.get("accounts_in_scope") or [])
     # Build hash → raw-id map.
@@ -747,7 +743,7 @@ def _load_positions(conn, snapshot_at, merged):
     for (account_ext, raw_instr), views in merged.items():
         # Strip trailing '*' chars Fidelity appends to money-market
         # core-position symbols (e.g. 'CORE_X**' → 'CORE_X'). The
-        # asterisks are a channel signal we promote to the
+        # asterisks are a channel signal promoted to the
         # is_core_position flag; the silver instrument_key joins
         # cleanly against transactions where the same fund appears
         # without the suffix.
@@ -996,7 +992,7 @@ def _iter_positions_rows(csv_path):
     # decompresses by suffix in memory. Keep utf-8-sig (BOM strip) +
     # newline="" so a compressed load reads byte-identical rows.
     with compress.open_text(csv_path, encoding="utf-8-sig", newline="") as f:
-        # Read raw lines first so we can stop at the disclaimer.
+        # Read raw lines first so the parse can stop at the disclaimer.
         text = f.read()
     # Disclaimers start with 'Brokerage services' or '"The data...'.
     cutoff = len(text)
@@ -1332,7 +1328,8 @@ def _synthesise_activity_id(identity, occurrence):
     """Stable, file-independent dedup key for one activity row.
 
     Fidelity's Activity export is consolidated across all accounts
-    and the backfill downloads it window-by-window (≤93-day chunks)
+    and the backfill downloads it window by window
+    (`download.MAX_ACTIVITY_WINDOW_DAYS`-day chunks)
     on every run. The SAME real-world transaction therefore lands
     in many distinct CSV files — different windows, different runs.
     The dedup key must depend only on the transaction's intrinsic
@@ -1347,15 +1344,9 @@ def _synthesise_activity_id(identity, occurrence):
     Nth identical copy is assigned the same occurrence index N in
     every file.
 
-    NOTE: two earlier schemes failed. Folding the source-file
-    sha256 + global CSV row index into the key made every file's
-    copy unique — the table grew a fresh copy of every transaction
-    on each backfill run. Hashing the full normalized payload fixed
-    that but still leaked Fidelity's mutable description text into
-    the identity, so a security re-label between exports duplicated
-    its transactions (migration 0005 rebuilt the table onto the
-    structural key). source_sha256 is still stored as a column for
-    provenance, just not in the identity.
+    Neither the source file nor the description text enters the key:
+    both vary between copies of one transaction. source_sha256 is
+    stored as a column for provenance only.
     """
     h = hashlib.sha256()
     h.update(identity.encode("utf-8"))
@@ -1418,7 +1409,7 @@ def _load_documents(conn, snapshot_at, dump_dir):
 
 
 def _classify_documents_pdf(filename):
-    """Heuristic kind + tax_year + account for documents/*.pdf
+    """Heuristic kind + tax_year for documents/*.pdf
     based on Fidelity's filename conventions:
 
       Statement<MMDDYYYY>.pdf
@@ -1526,7 +1517,7 @@ def _daf_ts(value):
     'MM/DD/YYYY') to Unix seconds UTC, or None."""
     if not value or not isinstance(value, str):
         return None
-    return ts_from_iso(value[:10]) or ts_from_mdy(value)
+    return iso_date_to_epoch(value) or ts_from_mdy(value)
 
 
 def _daf_first(rec, keys):
@@ -1873,7 +1864,7 @@ def _load_daf_historical(conn, dump_dir, coord=None):
                 "daf historical: %s failed reconciliation (%s); skipped",
                 path.name, parsed.get("reconcile_error"))
             continue
-        as_of = ts_from_iso(parsed.get("as_of_date"))
+        as_of = iso_date_to_epoch(parsed.get("as_of_date"))
         aid = _daf_account_for_statement(path)
         if as_of is None or not aid:
             log.warning("daf historical: %s missing as-of date or "
@@ -2185,7 +2176,7 @@ def _insert_historical_rows(conn, pdf_path, parsed, sha):
             "historical: no period in %s; skipping", pdf_path.name,
         )
         return 0
-    as_of = ts_from_iso(period_end)
+    as_of = iso_date_to_epoch(period_end)
     if as_of is None:
         return 0
     inserted = 0
@@ -2578,7 +2569,7 @@ def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha, *, claims=None):
         if not aid:
             continue
         for row in account.get("activity", []):
-            ts = ts_from_iso(row.get("date"))
+            ts = iso_date_to_epoch(row.get("date"))
             amount = row.get("amount")
             if ts is None or amount is None:
                 continue
@@ -2651,7 +2642,7 @@ def _insert_supplied_historical_rows(conn, pdf_path, parsed, sha):
             "supplied-statements: no period in %s; skipping", pdf_path.name,
         )
         return 0
-    as_of = ts_from_iso(period_end)
+    as_of = iso_date_to_epoch(period_end)
     if as_of is None:
         return 0
     inserted = 0
@@ -3093,7 +3084,7 @@ SELECT h.account_external_id, MAX(h.as_of_date)
         # Portfolio master too: the historical projection joins
         # accounts → portfolios on (snapshot_at, portfolio_external_id),
         # so the synthetic accounts row needs a same-snapshot_at
-        # portfolio companion. INSERT OR IGNORE so we don't trample
+        # portfolio companion. INSERT OR IGNORE so it never tramples
         # a real portfolio row that the live loader already wrote.
         try:
             conn.execute(

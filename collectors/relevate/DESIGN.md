@@ -189,9 +189,10 @@ token at all**: the session is 100% cookie-based (§1).
 
 The script reproduces what the Angular SPA does:
 
-1. Read `RELEVATE_LOGIN` and `RELEVATE_PASSWORD` from env (the
-   wrapper sources them from `~/.secrets/relevate.env`). Missing →
-   exit 64.
+1. Read `RELEVATE_LOGIN` and `RELEVATE_PASSWORD` from env. The
+   wrapper sources them from `<secrets-dir>/relevate.env` once it has
+   read `--secrets-dir` (default `~/.secrets`; `$RELEVATE_ENV_FILE`
+   names another file). Missing → exit 64.
 2. `GET /auth/ui/app/auth/flow/b2c/password?lang=en` primes the
    cookie jar. Airlock sets `AL_SESS-S` (68 chars, httpOnly,
    secure), `CSRFT759-S` (22 chars, not httpOnly) and
@@ -724,9 +725,10 @@ sh|bash     Interactive shell in the container.
 help        Show usage.
 ```
 
-The wrapper sources `~/.secrets/relevate.env` and the optional
-`relevate.cfg`, manages the mounts, and allocates a TTY when stdin and
-stdout are both TTYs. It refuses to evict a running container unless
+The wrapper sources the optional `relevate.cfg` first. Once it has read
+`--secrets-dir`, it sources `<secrets-dir>/relevate.env` (or
+`$RELEVATE_ENV_FILE`). It manages the mounts, and allocates a TTY when
+stdin and stdout are both TTYs. It refuses to evict a running container unless
 `RELEVATE_FORCE_REPLACE=1` is set.
 
 ### 9.3 Mounts

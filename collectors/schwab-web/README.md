@@ -194,12 +194,15 @@ few behaviours worth knowing:
 - `--dry-run` signs in and walks the account and result pages without
   downloading a statement document. Its tx-history exports go to a
   temporary directory. Nothing is written under the bronze dir.
+- A walk that finds no accounts exits 1. An interrupt (Ctrl-C)
+  exits 130.
 - `--debug` saves the tx-history landing page HTML under
   `<run>/screenshots/`. `load` never reads it.
 - `--screenshot-dir /debug/<name>` saves login and landmark captures,
   and a DEBUG-level `run.log`, outside bronze. `--trace` and
   `--capture-bodies` need it and write there too. These files are
-  unredacted: never commit them.
+  unredacted: never commit them. The pinned Playwright tracer crashes
+  the pinned Camoufox build, so `--trace` ends the login.
 
 ### VNC sign-in
 

@@ -19,6 +19,11 @@ def iso_date(value) -> date | None:
         return None
 
 
+def epoch_day(d) -> int:
+    """Unix seconds UTC at midnight of the given date or datetime."""
+    return int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp())
+
+
 def iso_date_to_epoch(s: str | None) -> int | None:
     """Parse a `YYYY-MM-DD` date (with optional trailing time) to Unix
     epoch seconds at midnight UTC. Returns None for falsy / unparseable

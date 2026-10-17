@@ -59,6 +59,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from collectorkit import bronze, cli, silver, srcfp
+from collectorkit.parse import iso_date_to_epoch
 
 import pdf_parsers as pp
 import tax_form_parsers as tf
@@ -99,8 +100,8 @@ DEFAULT_MIGRATIONS_DIRS = (
 )
 
 # Manifest doc_type → silver doc_kind. Trade Confirms are
-# explicitly skipped upstream by download.py, but we include the
-# mapping for forward-compat.
+# explicitly skipped upstream by download.py; the mapping stays for
+# forward-compat.
 _DOC_KIND_BY_TYPE = {
     "Statements":       "statement",
     "Tax Forms":        "tax_form",
@@ -150,7 +151,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=("Number of parallel worker processes for PDF parsing. "
               "Default: os.cpu_count(). PDF parsing is CPU-bound "
               "(text extraction via PDFium runs in C++ but each PDF "
-              "is one shot, so we get the speedup by sharding across "
+              "is one shot, so the speedup comes from sharding across "
               "cores). Pass --workers 1 to force serial — useful for "
               "debugging."),
     )
@@ -304,18 +305,6 @@ def parse_doc_date(s: str) -> int | None:
         return None
 
 
-def parse_iso_date(s: str | None) -> int | None:
-    """Parse "YYYY-MM-DD" (pdf_parsers output format) → Unix
-    seconds UTC at midnight. Returns None for blank/unparseable."""
-    if not s:
-        return None
-    try:
-        return int(datetime.strptime(s, "%Y-%m-%d")
-                   .replace(tzinfo=timezone.utc).timestamp())
-    except ValueError:
-        return None
-
-
 def _resolve_migrations_dir(arg: Path | None) -> Path:
     if arg is not None:
         if not arg.is_dir():
@@ -428,7 +417,7 @@ def _synthesize_activity_id(account_external_id: str,
     day.
 
     Hex SHA-256, first 32 chars (128 bits — collision probability is
-    negligible at our scale)."""
+    negligible at this scale)."""
     parts = [
         account_external_id,
         tx.get("date") or "",
@@ -595,14 +584,14 @@ def _insert_dump_run(conn: sqlite3.Connection, snapshot_at: int,
     )
 
 
-def _account_nickname(label: str | None, suffix: str) -> str | None:
+def _account_nickname(label: str | None) -> str | None:
     """Heuristic: extract a human-friendly nickname from a Schwab
     dropdown label.
 
     The label is rendered as the literal text of the dropdown's
     sdps-account-selector__left-col + …NNN suffix + an "Account
-    ending in N N N" sr-only span. We strip the suffix and the
-    sr-only echo, leaving just the chosen account name.
+    ending in N N N" sr-only span. Any `…NNN` tail and the sr-only
+    echo are stripped, leaving just the chosen account name.
 
     If the label is missing or pure-numeric, return None — the
     nickname column should not store the suffix again.
@@ -725,7 +714,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
         suffix = acct.get("suffix")
         if not suffix:
             continue
-        nickname = _account_nickname(acct.get("label"), suffix)
+        nickname = _account_nickname(acct.get("label"))
         acct_payload = {
             "suffix": suffix,
             "label": acct.get("label"),
@@ -823,8 +812,8 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
 
         # Harvest the account-registration label from one
         # parsed statement per account. The label is stable
-        # across statements for a given account; we take the
-        # first non-null value we see. The wealthdb gold
+        # across statements for a given account; the first
+        # non-null value seen is kept. The wealthdb gold
         # adapter keys off this string (verbatim) for its
         # `tax_wrapper` enum mapping — see migration 0003
         # comment + DESIGN.md §8.
@@ -859,11 +848,11 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
             )
 
             period_end_ts = (
-                parse_iso_date(parsed.get("period_end"))
+                iso_date_to_epoch(parsed.get("period_end"))
                 or job["doc_date"]
             )
             period_start_ts = (
-                parse_iso_date(parsed.get("period_start"))
+                iso_date_to_epoch(parsed.get("period_start"))
                 or job["doc_date"]
             )
             if period_end_ts != job["doc_date"]:
@@ -909,8 +898,8 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
         # Tax-form fallback: for any account whose statements
         # didn't surface a registration (e.g. a brand-new
         # account that hasn't received a monthly statement
-        # yet, or one whose statement format we don't handle
-        # yet), check the documents table for the cleanest
+        # yet, or one whose statement format the parser does not
+        # handle yet), check the documents table for the cleanest
         # tax-form signal — Schwab's 5498 / 5498-ESA filenames
         # carry the account type by definition (the forms are
         # only ever issued for IRA / ESA accounts).
@@ -958,7 +947,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
             continue
         # Optional per-account More-detail sidecar (written by
         # download.py's default per-row detail pass, unless
-        # --no-more-detail). We merge its fields into matching
+        # --no-more-detail). Its fields are merged into matching
         # transactions' payload.
         more_details = _load_more_details(acct_dir)
         for export in acct.get("exports", []):
@@ -1178,7 +1167,7 @@ def _insert_statement_transactions(conn: sqlite3.Connection,
         activity_id = _synthesize_activity_id(
             account_external_id, tx, idx,
         )
-        timestamp = parse_iso_date(tx.get("date"))
+        timestamp = iso_date_to_epoch(tx.get("date"))
         if timestamp is None:
             log.warning("skipping transaction with no parseable date: %s",
                         tx.get("date"))
@@ -1216,7 +1205,7 @@ def _insert_parsed_transactions(conn: sqlite3.Connection,
     a warning rather than failing the load."""
     inserted = 0
     for idx, row in enumerate(rows):
-        timestamp = parse_iso_date(row.get("date"))
+        timestamp = iso_date_to_epoch(row.get("date"))
         if timestamp is None:
             log.warning("skipping %s row with no parseable date: %r",
                         source, row.get("date"))
@@ -1340,9 +1329,9 @@ def _load_1099b_forms(conn: sqlite3.Connection, run_dir: Path,
     Schwab ships each logical form as a PDF plus, where it offers them,
     machine-readable XML and CSV twins. The twins share a base filename;
     the PDF is named apart. All three share the manifest row (date and
-    document name). We prefer the XML, fall back to the CSV, and key the
-    logical_doc_key on the **base filename (without extension)** so the
-    XML and CSV twins dedup to one set of rows. A PDF without an XML or
+    document name). The XML is preferred, the CSV is the fallback, and the
+    logical_doc_key is keyed on the **base filename (without extension)**
+    so the XML and CSV twins dedup to one set of rows. A PDF without an XML or
     CSV on its manifest row is logged as a coverage gap (no
     machine-readable lot detail to parse).
 
@@ -1378,7 +1367,7 @@ def _load_1099b_forms(conn: sqlite3.Connection, run_dir: Path,
         if doc_date is None:
             continue
         # Format-independent key: the XML and CSV twins share `base`,
-        # so whichever we parse first wins and the other is skipped.
+        # so whichever is parsed first wins and the other is skipped.
         ldk = _logical_doc_key(suffix, doc_date, base)
         seen_key = (ldk, "form_1099b")
         if seen_key in seen_logical_docs or (

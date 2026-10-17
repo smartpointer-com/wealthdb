@@ -81,7 +81,7 @@ similar REST + mTAN shape).
 ./relevate download                                # bronze dump; documents from the last ~90 days
 ./relevate download --lookback all                 # every document in the archive
 ./relevate download --lookback 2020-01-01          # an ISO start date works too
-./relevate download --no-documents                 # everything except the PDFs
+./relevate download --no-documents                 # everything except the document index and PDFs
 ./relevate download --mode portfolios --limit-portfolios 1
 ./relevate load                                    # parse bronze into silver
 ./relevate prune --dry-run                         # print what prune would delete
@@ -115,7 +115,7 @@ The wrapper sources `${XDG_CONFIG_HOME:-$HOME/.config}/relevate.cfg` (or
 RELEVATE_SECRETS_DIR=/path/to/secrets
 RELEVATE_DATA_DIR=/path/to/wealthdb/relevate
 RELEVATE_DEBUG_DIR=/path/to/cache/relevate-debug
-RELEVATE_IMAGE=wealthdb/relevate:latest
+RELEVATE_IMAGE=wealthdb/relevate:<tag>   # default: the checkout's image tag
 RELEVATE_CONTAINER=relevate
 ```
 

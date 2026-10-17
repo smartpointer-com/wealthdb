@@ -124,7 +124,7 @@ def test_watch_ignores_the_cors_preflight():
     # The browser preflights the logon URL, and that OPTIONS answers 200
     # with an EMPTY BODY — which classify_logon reads as a trusted-device
     # login. Taken for the outcome it declares a sign-in that never
-    # happened; the amex sibling hit exactly this live.
+    # happened.
     assert _watch_with(200, None, method="OPTIONS").outcome() is None
 
 
@@ -146,3 +146,66 @@ def test_watch_ignores_an_unrelated_response():
     watch = login._LogonWatch().attach(ctx)
     ctx.fire(_StubResponse(q2client.accounts_url(), 200, {"data": []}))
     assert watch.outcome() is None
+
+
+# ============================================================
+# The front half: never submit a form that is not pre-filled
+# ============================================================
+
+class _StubPage:
+    url = "about:blank"
+
+    def goto(self, *_args, **_kwargs):
+        pass
+
+    def locator(self, _selector):
+        raise LookupError("no DOM in a unit test")
+
+
+@pytest.fixture
+def front_half(monkeypatch, tmp_path):
+    """`_reveal_prefill_submit` against a stub page: no env file, no
+    credentials in the environment, and a recorder in place of `_submit`.
+    Returns (run, submits), where `run(by_hand, creds, prefills)` calls it."""
+    for var in (login.USER_ENV, login.PASS_ENV):
+        monkeypatch.delenv(var, raising=False)
+    submits = []
+    monkeypatch.setattr(login, "_submit",
+                        lambda page: submits.append(page) or True)
+    args = login.parse_args(["--env-file", str(tmp_path / "absent.env")])
+
+    def run(*, by_hand=False, creds=False, prefills=True):
+        if creds:
+            monkeypatch.setenv(login.USER_ENV, "example-user")
+            monkeypatch.setenv(login.PASS_ENV, "example-pass")
+        monkeypatch.setattr(login, "_prefill", lambda *_a: prefills)
+        return login._reveal_prefill_submit(_StubPage(), args, by_hand=by_hand)
+    return run, submits
+
+
+def test_a_prefilled_form_is_submitted(front_half):
+    run, submits = front_half
+    assert run(creds=True) is True
+    assert len(submits) == 1
+
+
+def test_no_credentials_is_not_submitted(front_half):
+    # A blank submit counts as a failed sign-in: login, download and
+    # --check stop here instead.
+    run, submits = front_half
+    assert run() is False
+    assert submits == []
+
+
+def test_a_form_that_did_not_prefill_is_not_submitted(front_half):
+    run, submits = front_half
+    assert run(creds=True, prefills=False) is False
+    assert submits == []
+
+
+def test_vnc_login_leaves_sign_in_to_the_person(front_half):
+    # vnc-login waits for the outcome without clicking Sign In itself.
+    run, submits = front_half
+    assert run(by_hand=True) is True
+    assert run(by_hand=True, creds=True, prefills=False) is True
+    assert submits == []

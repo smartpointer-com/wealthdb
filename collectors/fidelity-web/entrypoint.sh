@@ -3,19 +3,12 @@
 # to the corresponding Python script under /app/. The browser-
 # driving subcommands (download, vnc-login) start an Xvfb virtual
 # X11 display first so Camoufox can run headed.
-#
-# Xvfb is started directly rather than via `xvfb-run`. The Ubuntu
-# Noble xvfb-run script's SIGUSR1 ready-signaling hangs when the
-# parent shell is non-root: it sets the parent SIGUSR1 handler to
-# `:` rather than SIG_IGN, so Xvfb declines to send the ready
-# signal and the parent waits forever. Socket-existence polling
-# is a version-independent ready signal.
 
 set -euo pipefail
 
 # Xvfb / x11vnc / camoufox-cache bootstrap (VFB_DISPLAY, start_xvfb,
-# start_x11vnc) is shared across the camoufox collectors, baked into
-# base-camoufox at /opt/entrypoint-lib.sh.
+# start_x11vnc), shared by the browser collectors and baked into
+# base-playwright at /opt/entrypoint-lib.sh.
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
@@ -25,9 +18,10 @@ case "${1:-help}" in
         # Camoufox over VNC + HAR / network log / click log / DOM
         # snapshots under /debug. The human drives; the harness
         # records. See DESIGN.md §12.
+        shift
+        exec_if_help explore.py "$@"
         start_xvfb
         start_x11vnc explore
-        shift
         exec python3 /app/explore.py "$@"
         ;;
     download)
@@ -36,8 +30,9 @@ case "${1:-help}" in
         # code on stdin (Duo / Google Authenticator / Symantec VIP,
         # whichever is configured), runs the requested
         # walk phases, attempts a clean logout, exits.
-        start_xvfb
         shift
+        exec_if_help download.py "$@"
+        start_xvfb
         exec python3 /app/download.py "$@"
         ;;
     vnc-login)
@@ -45,17 +40,18 @@ case "${1:-help}" in
         # pre-filled login form, then HAND OFF to a VNC session.
         # Start x11vnc on the Xvfb display; the wrapper publishes
         # the port on 127.0.0.1 only (typically 5900, but moves +1
-        # each time 5900 is already taken on the host) — tunnel from
-        # your laptop with ssh -L. A VNC password is required
+        # each time 5900 is already taken on the host) — tunnel to
+        # it with ssh -L. A VNC password is required
         # regardless (macOS Screen Sharing refuses no-auth servers);
-        # we generate a fresh one every launch.
+        # a fresh one is generated every launch.
         #
         # By default the walk runs after the VNC-driven login lands;
         # pass `--mode none` to just seed the profile dir and exit
         # without scraping.
+        shift
+        exec_if_help download.py --vnc "$@"
         start_xvfb
         start_x11vnc vnc-login
-        shift
         exec python3 /app/download.py --vnc "$@"
         ;;
     load)
@@ -63,9 +59,10 @@ case "${1:-help}" in
         exec python3 /app/load.py "$@"
         ;;
     prune)
-        # Delete debug artefacts (<run>/screenshots/) and
-        # non-complete dumps from the bronze tree. No browser, no
-        # Xvfb. Also reachable host-side via the wrapper.
+        # Delete debug artefacts (<run>/screenshots/), non-complete
+        # dumps from the bronze tree, and aged entries of the /debug
+        # cache. No browser, no Xvfb. Also reachable host-side via the
+        # wrapper.
         shift
         exec python3 /app/prune.py "$@"
         ;;
@@ -106,7 +103,8 @@ Subcommands:
               to skip the walk and just seed cookies.
   load        Parse bronze into the silver SQLite database.
   prune       Delete debug artefacts and non-complete dumps from
-              the bronze tree. --dry-run prints the plan first.
+              the bronze tree, and aged entries of the /debug cache.
+              --dry-run prints the plan first.
   recompress  Convert the pre-compression bronze backlog: replace
               plain HTML/CSV inside complete dumps with sha256-
               verified .zst twins. Manual one-time sweep; --dry-run
@@ -140,7 +138,7 @@ EOF
         # e.g. `docker run fidelity-web python -c '...'`. Note this
         # execs the literal argv, so an unrecognised subcommand-like
         # word runs as a system command (see the `login` arm above
-        # for why we special-case the most likely such mistake).
+        # for why the most likely such mistake is special-cased).
         exec "$@"
         ;;
 esac

@@ -120,7 +120,7 @@ def write_run(root: Path, slug: str, *, accounts=None, activity=None,
 @pytest.fixture()
 def db(tmp_path):
     conn = silver.open_db(tmp_path / "amex.db")
-    load.apply_migrations(conn, load.MIGRATIONS_DIR)
+    silver.apply_migrations(conn, load.MIGRATIONS_DIR)
     yield conn
     conn.close()
 
@@ -139,14 +139,6 @@ def db(tmp_path):
 ])
 def test_parse_date(raw, expected):
     assert load.parse_date(raw) == expected
-
-
-@pytest.mark.parametrize("raw,expected", [
-    ("10.00", 10.0), ("1,234.56", 1234.56), ("$12.00", 12.0),
-    ("(5.00)", -5.0), (7, 7.0), ("", None), (None, None), ("x", None),
-])
-def test_parse_money(raw, expected):
-    assert load.parse_money(raw) == expected
 
 
 # ============================================================
@@ -298,6 +290,25 @@ def test_an_incomplete_run_is_skipped(db, tmp_path):
                     status="in-progress")
     assert load.load_run(db, run) is False
     assert db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 0
+
+
+def test_a_run_without_a_manifest_is_neither_loaded_nor_recorded(tmp_path):
+    # A run dir whose download has not written run.json yet (or crashed
+    # before it did) is prune's to reclaim, never a load input.
+    root = tmp_path / "bronze"
+    run = write_run(root, "20260312T000000Z",
+                    activity={KEY_A: _activity([_tx(1)])})
+    (run / "run.json").unlink()
+    db_path = tmp_path / "amex.db"
+    assert load.main(["--bronze-dir", str(root),
+                      "--silver-db", str(db_path)]) == 0
+    conn = silver.open_db(db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM transactions").fetchone()[0] == 0
+    finally:
+        conn.close()
 
 
 def test_an_unchanged_roster_does_not_add_a_snapshot(db, tmp_path):
@@ -483,7 +494,7 @@ def test_force_rebuilds_from_bronze(tmp_path):
 
 def test_migrations_are_idempotent(db):
     before = silver.current_schema_version(db)
-    load.apply_migrations(db, load.MIGRATIONS_DIR)
+    silver.apply_migrations(db, load.MIGRATIONS_DIR)
     assert silver.current_schema_version(db) == before
 
 
@@ -1060,10 +1071,8 @@ def test_a_row_the_ledger_cannot_key_is_not_a_short_fetch(db, tmp_path,
 # ============================================================
 
 def test_a_moved_parser_rebuilds_without_a_new_bronze_run(tmp_path, monkeypatch):
-    # `rebuild_statements` already parses, deletes the whole statement era
-    # and re-imports, inside one transaction. What it lacked was a reason to
-    # run: its gate was whether a dump had been ingested, so editing the
-    # parser and re-loading did nothing at all.
+    # A parser edit lands no bronze run, so the generation stamp is what
+    # gives `rebuild_statements` a reason to run.
     root = tmp_path / "bronze"
     write_run(root, "20260312T000000Z", activity={KEY_A: _activity([_tx(1)])})
     db_path = tmp_path / "amex.db"
@@ -1075,7 +1084,7 @@ def test_a_moved_parser_rebuilds_without_a_new_bronze_run(tmp_path, monkeypatch)
     monkeypatch.setattr(load, "rebuild_statements",
                         lambda *a, **k: (ran.append(1), real(*a, **k))[1])
 
-    # Nothing new in bronze: the old gate would skip the rebuild entirely.
+    # Nothing new in bronze and a current stamp: no rebuild.
     assert load.main(args) == 0
     assert ran == []
 
@@ -1095,3 +1104,40 @@ def test_a_moved_parser_rebuilds_without_a_new_bronze_run(tmp_path, monkeypatch)
             load.STATEMENT_GENERATION
     finally:
         conn.close()
+
+
+def test_an_unfinished_rebuild_is_retried_by_the_next_load(tmp_path,
+                                                           monkeypatch):
+    # The run commits on its own; the rebuild runs after it. A rebuild that
+    # fails leaves the stamp stale, so a later load with nothing new in
+    # bronze still rebuilds.
+    root = tmp_path / "bronze"
+    write_run(root, "20260312T000000Z", activity={KEY_A: _activity([_tx(1)])})
+    db_path = tmp_path / "amex.db"
+    args = ["--bronze-dir", str(root), "--silver-db", str(db_path)]
+
+    calls = []
+    real = load.rebuild_statements
+
+    def flaky(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("synthetic rebuild failure")
+        return real(*a, **k)
+
+    monkeypatch.setattr(load, "rebuild_statements", flaky)
+    assert load.main(args) == 1
+    assert load.main(args) == 0
+    assert calls == [1, 1]
+
+    conn = silver.open_db(db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 1
+        assert not silver.stale_generation(
+            conn, load.STATEMENT_GENERATION_SCOPE, load.STATEMENT_GENERATION)
+    finally:
+        conn.close()
+
+    # Once a rebuild has committed, a load with nothing new skips it.
+    assert load.main(args) == 0
+    assert calls == [1, 1]

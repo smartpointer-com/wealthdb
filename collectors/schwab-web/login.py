@@ -26,11 +26,8 @@ Modes:
                off to download.walk() against the same page.
                --bronze-dir is required (the bronze tree root).
 
-Browser choice: Firefox rather than Chromium. Schwab's Akamai
-rejects every Chromium-family automation surface we tried
-(headless Chromium, patchright-patched Chromium, real Chrome
-unavailable in the container). See README.md "Browser choice" for
-the full diagnostic chain.
+Browser: Camoufox (Firefox). Schwab's Akamai rejects Chromium-family
+automation; README.md "Sign-in and 2FA" has the details.
 """
 
 from __future__ import annotations
@@ -65,17 +62,11 @@ class TerminalPageError(RuntimeError):
         self.page_text = page_text
         self.locked = locked
 
-# Playwright timeouts (milliseconds). Generous defaults — WAN
-# latency from arbitrary cloud regions to Schwab can be high, and
-# the gateway SPA bundle is heavy.
-NAV_TIMEOUT_MS = 60_000
-LANDMARK_TIMEOUT_MS = 60_000
-
 # Default env-file locations. The wrapper mounts ~/.secrets to
 # /secrets inside the container, so /secrets/schwab-web.env is the
-# canonical place to drop the login-id/password env vars. We also
-# look at $HOME/.secrets/schwab-web.env so the script works outside
-# the container for local dev.
+# canonical place to drop the login-id/password env vars.
+# $HOME/.secrets/schwab-web.env is the fallback, so the script works
+# outside the container for local dev.
 DEFAULT_ENV_FILE_CANDIDATES = (
     Path("/secrets/schwab-web.env"),
     Path.home() / ".secrets" / "schwab-web.env",
@@ -112,9 +103,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--env-file", default=None, type=Path,
-        help=("Path to a KEY=VALUE env file to load before resolving "
-              "credentials. Defaults to /secrets/schwab-web.env if "
-              "present, else ~/.secrets/schwab-web.env."),
+        help=("Bash-sourced env file with SCHWAB_LOGIN_ID / "
+              "SCHWAB_PASSWORD, read before the credentials are resolved "
+              "(default: /secrets/schwab-web.env if present, else "
+              "~/.secrets/schwab-web.env)."),
     )
     p.add_argument(
         "--check", action="store_true",
@@ -199,7 +191,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--trace", action="store_true",
         help=("Capture a Playwright trace bundle. Requires "
               "--screenshot-dir; the bundle lands there alongside "
-              "screenshots."),
+              "screenshots. The pinned Playwright tracer crashes the "
+              "pinned Camoufox build, so a trace ends the login."),
     )
     p.add_argument(
         "--capture-bodies", action="store_true",
@@ -349,7 +342,7 @@ def run_check(profile_dir: Path, screenshot_dir: Path | None,
     log.info("validating session at %s", schwab.ACCOUNT_SUMMARY_URL)
     with open_camoufox_context(profile_dir, trace) as context:
         page = open_page(context)
-        page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
+        page.set_default_navigation_timeout(download.NAV_TIMEOUT_MS)
         try:
             page.goto(schwab.ACCOUNT_SUMMARY_URL, wait_until="domcontentloaded")
             url = _live_url(page)
@@ -436,11 +429,12 @@ def run_manual(profile_dir: Path,
                 if not will_prefill:
                     log.warning(
                         "--cli-mfa requested but credentials are not set "
-                        "in the environment; skipping auto-submit (you'll "
-                        "have to drive Log In + 2FA manually)"
+                        "in the environment; skipping auto-submit (Log In "
+                        "+ 2FA must be driven by hand over VNC)"
                     )
                 else:
-                    verdict = _run_cli_mfa(page, screenshot_dir)
+                    verdict = _run_cli_mfa(page, screenshot_dir,
+                                           mfa_wait_s=mfa_timeout_s)
                     if verdict == "abort":
                         log.error(
                             "CLI-MFA could not complete; re-run download "
@@ -452,7 +446,7 @@ def run_manual(profile_dir: Path,
                         log.warning(
                             "CLI-MFA path failed; falling back to manual "
                             "drive — open a VNC session (./schwab-web "
-                            "vnc-login) and complete the login yourself"
+                            "vnc-login) and complete the login by hand"
                         )
 
             if cli_mfa:
@@ -463,13 +457,11 @@ def run_manual(profile_dir: Path,
                 )
             else:
                 log.info(
-                    "Firefox ready. Via VNC: click Log In, enter your "
+                    "Firefox ready. Via VNC: click Log In, enter the "
                     "2FA code, land on Account Summary. Then the script "
                     "takes over and scrapes."
                 )
-            auth_page = _wait_for_post_auth(
-                page, context, mfa_timeout_s,
-            )
+            auth_page = _wait_for_post_auth(context, mfa_timeout_s)
             if auth_page is None:
                 maybe_screenshot(page, screenshot_dir, "post-auth-timeout")
                 log.error(
@@ -487,7 +479,7 @@ def run_manual(profile_dir: Path,
                 page = auth_page
             log.info(
                 "post-auth detected at %s; taking over in 3s — "
-                "move your mouse out of the browser window",
+                "move the mouse out of the browser window",
                 _live_url(page),
             )
             # Tiny grace period leaving a moment for the pointer to
@@ -497,7 +489,7 @@ def run_manual(profile_dir: Path,
             # the next click.
             time.sleep(3)
             maybe_screenshot(page, screenshot_dir, "post-auth-handoff")
-            page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
+            page.set_default_navigation_timeout(download.NAV_TIMEOUT_MS)
             summary = download.walk(
                 page, bronze_dir,
                 mode=mode, dry_run=dry_run,
@@ -507,6 +499,12 @@ def run_manual(profile_dir: Path,
                 debug=debug,
                 exact_window=exact_window,
             )
+            if summary.get("status") not in ("complete", "dry-run"):
+                # The walk stopped short (no accounts enumerated) and left
+                # its dump in-progress: a failure, not an empty success.
+                log.error("scrape did not finish (status=%s)",
+                          summary.get("status"))
+                return 1
             log.info(
                 "scrape complete: %d statement entries, %d tx entries",
                 len(summary.get("statements", [])),
@@ -515,7 +513,7 @@ def run_manual(profile_dir: Path,
             return 0
         except KeyboardInterrupt:
             log.info("interrupted; closing browser")
-            return 0
+            return 130
         except TerminalPageError as e:
             maybe_screenshot(page, screenshot_dir, "terminal-page")
             _report_terminal_page(e)
@@ -542,8 +540,7 @@ def _live_url(page) -> str:
     value after a top-level navigation completes (the Firefox UI
     URL bar updates, but Playwright's cached accessor doesn't).
     `location.href` via evaluate forces Firefox to answer from its
-    actual document state, which is what we want for landmark
-    detection.
+    actual document state, which is what landmark detection needs.
 
     Returns the cached page.url on evaluation failure — page mid-
     navigation, page closing, or other races — so a transient
@@ -631,14 +628,13 @@ def _report_terminal_page(exc: TerminalPageError) -> None:
                   "with Schwab directly before another login attempt.")
 
 
-def _wait_for_post_auth(page, context, timeout_s: float,
-                        poll_s: float = 1.0):
+def _wait_for_post_auth(context, timeout_s: float, poll_s: float = 1.0):
     """Wait for any page in `context` to land on a post-auth URL.
 
     Schwab's login flow can either redirect the same tab to
     client.schwab.com or open a NEW tab/window for the
-    authenticated session, so we enumerate context.pages on each
-    poll and return whichever page matches.
+    authenticated session, so each poll enumerates context.pages and
+    returns whichever page matches.
 
     Reads each page's URL via `_live_url` (location.href in-page)
     rather than `p.url` because the camoufox/playwright pin doesn't
@@ -874,9 +870,8 @@ def _wait_for_mfa_input(page, timeout_s: float, poll_s: float = 0.5):
 
     Returns `(scope_label, Locator)` on hit, or `None` on timeout
     / if the page already redirected to a post-auth URL. Raises
-    TerminalPageError on the gateway's terminal notice route — the
-    challenge is never coming there (this is where a locked account
-    previously burned the whole timeout)."""
+    TerminalPageError on the gateway's terminal notice route: the
+    challenge never comes there."""
     deadline = time.monotonic() + timeout_s
     last_log = 0.0
     while time.monotonic() < deadline:
@@ -1032,11 +1027,12 @@ def _visible_error_text_anywhere(page) -> str:
     return "\n  - ".join(dict.fromkeys(texts))
 
 
-def _run_cli_mfa(page, screenshot_dir: Path | None,
-                 mfa_wait_s: float = 300) -> str:
+def _run_cli_mfa(page, screenshot_dir: Path | None, *,
+                 mfa_wait_s: float) -> str:
     """Auto-submit the login form (single submit gesture with one
-    DOM-verified fallback), wait for the 2FA page, prompt for the code,
-    submit it ONCE, and verify the outcome. No cleverer than the web
+    DOM-verified fallback), wait up to `mfa_wait_s` (--mfa-timeout) for
+    the 2FA page, prompt for the code, submit it ONCE, and verify the
+    outcome. No cleverer than the web
     page: any failure after the submissions is terminal — Schwab's own
     on-page error is logged verbatim and re-running the command is the
     fresh start. Repeated challenge submissions are the defect class
@@ -1057,8 +1053,8 @@ def _run_cli_mfa(page, screenshot_dir: Path | None,
         _dump_visible_form_elements(page, "login-submit-failed")
         return "manual"
     # Two captures: immediate (during transition) and ~3s later
-    # (after navigation settles) so we can see what Schwab served
-    # without burning a fresh MFA round to inspect manually.
+    # (after navigation settles) record what Schwab served without
+    # burning a fresh MFA round to inspect it by hand.
     maybe_screenshot(page, screenshot_dir, "post-login-submit-immediate")
     time.sleep(3)
     maybe_screenshot(page, screenshot_dir, "post-login-submit-settled")
@@ -1122,7 +1118,8 @@ def _prefill_login_iframe(page, login_id_value: str, password_value: str) -> Non
         gateway.locator(f"#{schwab.PASSWORD_INPUT_ID}").fill(password_value)
         log.info("login form pre-filled")
     except Exception as e:
-        log.warning("pre-fill failed (%s); type the credentials yourself", e)
+        log.warning("pre-fill failed (%s); the credentials must be typed "
+                    "by hand over VNC", e)
 
 
 # ============================================================
@@ -1178,10 +1175,7 @@ def _exact_window(lookback, since, until):
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     console_level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(
-        level=console_level,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    logging.basicConfig(level=console_level, format=cli.LOG_FORMAT)
     debugcap.tee_debug_log(args.screenshot_dir, console_level, log=log)
     if args.trace and args.screenshot_dir is None:
         raise SystemExit("--trace requires --screenshot-dir (see AGENTS.md §3).")

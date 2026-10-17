@@ -92,10 +92,9 @@ import logging
 import re
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import cli, debugcap, docdedup, launch
+from collectorkit import bronze, cli, debugcap, docdedup, launch
 
 log = logging.getLogger("carta.download")
 
@@ -114,7 +113,8 @@ SECURITY_TYPES = (
     "convertibles", "sar", "piu", "equity-grants",
 )
 
-# Browser-class headers so the Django views treat us like the SPA's XHRs.
+# Browser-class headers, so the Django views treat each call like one of the
+# SPA's own XHRs.
 API_HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
     "Accept": "application/json, text/plain, */*",
@@ -169,8 +169,8 @@ class Api:
         try:
             return resp.status, resp.json()
         except Exception:
-            # Some endpoints we treat as JSON return HTML on edge cases;
-            # keep the text so the manifest/loader can see what happened.
+            # Some endpoints read as JSON return HTML on edge cases; the
+            # text is kept so the manifest/loader can see what happened.
             return resp.status, {"_non_json_text": resp.text()[:2000]}
 
 
@@ -193,13 +193,6 @@ def write_json(path: Path, obj) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(obj, indent=2, sort_keys=True, default=str),
                    encoding="utf-8")
-    tmp.replace(path)
-
-
-def write_bytes(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_bytes(data)
     tmp.replace(path)
 
 
@@ -315,8 +308,8 @@ def capture_exercises(api: Api, grant_ids: set[str], edir: Path) -> int:
                 f"{APP}/options/{gid}/exercise_request/{erid}"
                 f"/attachment?file_type=edr", expect="bytes")
             if data and data[:2] == b"PK":   # xlsx is a zip archive
-                write_bytes(edir / "exercises" / f"grant_{gid}_er_{erid}.xlsx",
-                            data)
+                bronze.atomic_write_bytes(
+                    edir / "exercises" / f"grant_{gid}_er_{erid}.xlsx", data)
                 n += 1
     if n:
         log.info("  %d exercise-detail xlsx", n)
@@ -397,7 +390,7 @@ def capture_captable_summary(api: Api, firm_id: str, entity_id: str,
 
 def capture_fund(api: Api, iid: str, entity_id: str, edir: Path) -> None:
     """Fund-LP structured capture. Best-effort: the fund-admin metrics need
-    org/fund uuids that we only partly discover, so missing pieces are
+    org/fund uuids that discovery finds only in part, so missing pieces are
     recorded (in api.errors) rather than fatal. The fund's substance —
     statements, K-1s, capital calls — is captured comprehensively as
     documents elsewhere."""
@@ -523,21 +516,23 @@ def extract_carta(run_dir: Path, manifest):
 def _fetch_document(api: Api, url: str, out: Path) -> Path | None:
     """Follow a document_url envelope to its signed CDN url and write the PDF
     bytes to `out`. Returns `out` on success, or None on any failure (no signed
-    url in the envelope, an empty body, or a JSON/HTML error page in place of the
-    binary) — which docdedup treats as a fetch failure. document_url returns a
-    JSON envelope { "url": <signed CDN url> }, NOT the PDF bytes, so it is
-    followed to documents.carta.com for the binary."""
+    url in the envelope, or a body that is not a PDF, such as an empty one or a
+    JSON/HTML error page) — which docdedup treats as a fetch failure.
+    document_url returns a JSON envelope { "url": <signed CDN url> }, NOT the
+    PDF bytes, so it is followed to documents.carta.com for the binary. A body
+    must start with the PDF magic number, the rule `docdedup.is_pdf` and the
+    loader apply to a blob on disk."""
     _, env = api.get(url)
     signed = env.get("url") if isinstance(env, dict) else None
     if not signed:
         log.warning("doc fetch: no signed url in envelope for %s", _short(url))
         return None
     _, data = api.get(signed, expect="bytes")
-    if not data or data[:1] in (b"{", b"<"):   # guard vs JSON/HTML error
-        log.warning("doc fetch: signed-url body empty / not a binary for %s",
+    if not data or data[:5] != b"%PDF-":
+        log.warning("doc fetch: signed-url body is not a PDF for %s",
                     _short(url))
         return None
-    write_bytes(out, data)
+    bronze.atomic_write_bytes(out, data)
     return out
 
 
@@ -811,8 +806,7 @@ def main(argv: list[str]) -> int:
     cli.warn_lookback_ignored(args.lookback, log,
                               what="the full holdings snapshot")
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = args.bronze_dir / ts
+    run_dir = bronze.run_dir(args.bronze_dir)
     if not args.dry_run:
         run_dir.mkdir(parents=True, exist_ok=True)
         # Stamp the run dir in-progress from birth so its lifecycle is

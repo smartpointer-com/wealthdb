@@ -36,7 +36,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -233,9 +232,7 @@ def mint_session(state_path: Path, username: str, password: str) -> int:
         if resp.status_code != 200:
             log.error("authentication confirm returned %d", resp.status_code)
             return 2
-        confirm = (resp.json().get("data") or {}).get("attributes") or {}
-        user_id = confirm.get("userId", "<unknown>")
-        log.info("authenticated as user %s", user_id)
+        log.info("authentication confirmed")
 
         # Step 7: activate the web-side session.
         log.info("POST /rest/web/customer/loginHook")
@@ -284,7 +281,7 @@ def main(argv: list[str]) -> int:
         try:
             if envfile.source_env_file(env_path, prefer_file=True):
                 log.info("env sourced from %s", env_path)
-        except (subprocess.CalledProcessError, ValueError) as e:
+        except ValueError as e:
             log.error("env file %s failed to source: %s", env_path, e)
             return 2
 
@@ -305,7 +302,7 @@ def main(argv: list[str]) -> int:
             "%s must start with a country code (`+`) and be an "
             "E.164 phone number, e.g. `+CC<digits>`. Got %r. "
             "The web UI hides the country code behind a drop-down; "
-            "the API call we replay does not — the country code "
+            "the API call login replays does not — the country code "
             "must be in viac.env.",
             LOGIN_ENV, _redact_login(username))
         return 2

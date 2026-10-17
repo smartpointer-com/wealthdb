@@ -1,6 +1,6 @@
 """Unit tests for login.py's browserless parts — the authenticated-response
-predicate, the response watcher, the event-loop-pumping waiter, and argument
-parsing. The browser flow (pre-fill, submit, CLI 2FA, handoff to
+predicate, the response watcher (preflight guard included), the frame-aware
+element lookup, the factor-control map, and argument parsing. The browser flow (pre-fill, submit, CLI 2FA, handoff to
 download.walk) needs a live session and is validated on a real run. No
 credentials or live navigation.
 """

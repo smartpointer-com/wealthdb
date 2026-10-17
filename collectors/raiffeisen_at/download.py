@@ -18,6 +18,7 @@ Captured, into a UTC-stamped bronze run dir (the firstcitizens layout):
                                    institution/BIC, interest rates)
       history/<iban>.json          full kontoumsaetze ledger (stable id per row)
       balances/<iban>.json         kontostaende daily closing-balance series
+                                   (+ the von/bis window the server applied)
       statements/<iban>/*.pdf      Kontoauszug PDFs (skipped with --no-documents)
       raw/*.json                   raw roster / listing bodies (provenance)
 
@@ -125,7 +126,6 @@ def _fetch_balances(context, watch, iban: str, since: date,
     return body
 
 
-DOC_PAGE_LIMIT = 50
 MAX_DOC_PAGES = 50                          # cap: 50 * 50 = 2500 documents
 
 
@@ -140,14 +140,14 @@ def _fetch_document_archive(context, watch) -> list:
     for _ in range(MAX_DOC_PAGES):
         st, body = login.api_post_json(
             context, watch, elba.dokumente_filter_url(),
-            elba.dokumente_filter_body(skip=skip, limit=DOC_PAGE_LIMIT))
+            elba.dokumente_filter_body(skip=skip))
         if st != 200 or not isinstance(body, list):
             log.warning("document filter (skip %d): HTTP %s", skip, st)
             break
         all_docs.extend(body)
-        if len(body) < DOC_PAGE_LIMIT:
+        if len(body) < elba.DOC_PAGE_LIMIT:
             break
-        skip += DOC_PAGE_LIMIT
+        skip += elba.DOC_PAGE_LIMIT
     return all_docs
 
 
@@ -220,7 +220,7 @@ def walk(context, watch, bronze_dir: Path, *, since: date | None = None,
     if status != 200 or not isinstance(roster, list):
         raise RuntimeError(f"could not fetch the product roster (HTTP {status})")
     bronze.atomic_write_json(run_dir / "raw" / "produkte.json", roster)
-    accounts = elba.parse_produkte(roster, deposit_only=True)
+    accounts = elba.parse_produkte(roster)
     bronze.atomic_write_json(run_dir / "accounts.json", accounts)
     log.info("roster: %d deposit account(s)", len(accounts))
 

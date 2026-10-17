@@ -265,11 +265,14 @@ from `payload`, so they need no re-parse.
 a fresher session than GraphQL: a stale cookie lands on the login wall,
 which `download` reports without failing the run. After the GraphQL
 capture, `download.py` fetches each file with `urllib` and the session
-cookie. It re-fetches incomplete tax years (`estimate_provided`, or
-`k1Count < totalK1Count`) on every run until they are `complete`, which
-runs through about August of the following year. A file downloaded by
-hand during `login` saves into the same `angellist-documents/`
-directory.
+cookie. It fetches every listed file on every run, since only the
+response names the file. A copy of a `complete` tax year already on disk
+is kept as it is. The copy of an incomplete year (`estimate_provided`, or
+`k1Count < totalK1Count`) is replaced on every run until the year is
+`complete`, which runs through about August of the following year. Each
+file is written atomically, so a crash leaves no truncated copy. A file
+downloaded by hand during `login` saves into the same
+`angellist-documents/` directory.
 
 **Fed into the timeline.** Each K-1 becomes a `statement` event in
 `position_snapshots` (tax-basis ending capital as the mark, dated Dec-31,
@@ -367,7 +370,7 @@ later, lower statement, so none is written.
 
 An exit paid in shares — an SPV distributing the listed stock it received
 into a brokerage account — is booked through gold's equity-transfer
-ledger (`wealthdb/docs/DESIGN.md` §13.10): the SPV's `transfer_out` on the
+ledger (`wealthdb/docs/DESIGN.md` §13.9): the SPV's `transfer_out` on the
 day the shares land at the broker, at that day's value, paired with the
 broker's `transfer_in`. The returns policy admits the ledger's two kinds
 for that and nothing else produces them; the SPV's own mark follows its

@@ -95,10 +95,9 @@ stays valid across runs until an explicit logout or a server-side expiry.
   the session genuinely expires. Each fresh login fires a real TOTP
   challenge to the user's authenticator.
 - Don't log out programmatically at the end of any verb.
-- `/secrets/equityzen-profile/` is the persistent browser profile dir
-  (Camoufox or vanilla Firefox), shared by `explore` / `login` /
-  `download`. It holds the session cookie. Keep it at 0700; treat the
-  whole dir as a credential.
+- `/secrets/equityzen-profile/` is the persistent Camoufox profile dir,
+  shared by `explore` / `login` / `download`. It holds the session cookie.
+  Keep it at 0700; treat the whole dir as a credential.
 - `login --check` and `download --dry-run` reuse the session in that
   profile and never sign in. With a dead session they exit non-zero and
   send no TOTP prompt. Both are in the set root

@@ -30,8 +30,7 @@ def transaction_files(run_dir: Path) -> list[Path]:
     matching `transactions_*.json`, dedup, then resolve each variant —
     plain wins over a coexisting `.zst` twin (a recompress interrupted
     between verify and unlink), so each window ingests exactly once.
-    Sorted by logical name for deterministic ordering (matching the
-    prior `sorted(glob(...))`)."""
+    Sorted by logical name for deterministic ordering."""
     logical_names: set[str] = set()
     for entry in run_dir.iterdir():
         if not entry.is_file():

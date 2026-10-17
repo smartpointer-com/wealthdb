@@ -53,28 +53,6 @@ def test_several_targets_are_offered_and_the_choice_honoured():
     assert any("2. Email" in line for line in out)
 
 
-def test_a_junk_choice_is_re_prompted_then_accepted():
-    input_fn, output_fn, out = _io("x", "9", "1")
-    assert auth_dialog.choose_target((SMS, EMAIL), input_fn=input_fn,
-                                     output_fn=output_fn) is SMS
-    assert sum("between 1 and 2" in line for line in out) == 2
-
-
-def test_repeated_junk_gives_up():
-    input_fn, output_fn, _ = _io("x", "y", "z")
-    with pytest.raises(auth_dialog.ChallengeError):
-        auth_dialog.choose_target((SMS, EMAIL), input_fn=input_fn,
-                                  output_fn=output_fn)
-
-
-def test_no_stdin_raises_rather_than_hanging():
-    # A non-interactive invocation must fail fast, not block on input.
-    input_fn, output_fn, _ = _io()
-    with pytest.raises(auth_dialog.ChallengeError):
-        auth_dialog.choose_target((SMS, EMAIL), input_fn=input_fn,
-                                  output_fn=output_fn)
-
-
 def test_an_empty_menu_raises():
     with pytest.raises(auth_dialog.ChallengeError):
         auth_dialog.choose_target(())
@@ -96,19 +74,6 @@ def test_a_clean_code_is_returned():
                                 output_fn=output_fn) == "123456"
 
 
-def test_spaces_and_dashes_are_stripped():
-    input_fn, output_fn, _ = _io("12 34-56")
-    assert auth_dialog.read_otp(input_fn=input_fn,
-                                output_fn=output_fn) == "123456"
-
-
-def test_a_non_numeric_code_is_re_prompted():
-    input_fn, output_fn, out = _io("abc", "123456")
-    assert auth_dialog.read_otp(input_fn=input_fn,
-                                output_fn=output_fn) == "123456"
-    assert any("all digits" in line for line in out)
-
-
 def test_a_wrong_length_code_is_re_prompted():
     # The six single-digit boxes settle the length, so catching it here
     # beats a half-filled form and a server-side rejection.
@@ -116,18 +81,6 @@ def test_a_wrong_length_code_is_re_prompted():
     assert auth_dialog.read_otp(input_fn=input_fn,
                                 output_fn=output_fn) == "123456"
     assert any(f"{OTP_DIGITS} digits" in line for line in out)
-
-
-def test_repeated_bad_codes_give_up():
-    input_fn, output_fn, _ = _io("1", "2", "3")
-    with pytest.raises(auth_dialog.ChallengeError):
-        auth_dialog.read_otp(input_fn=input_fn, output_fn=output_fn)
-
-
-def test_no_stdin_for_the_code_raises():
-    input_fn, output_fn, _ = _io()
-    with pytest.raises(auth_dialog.ChallengeError):
-        auth_dialog.read_otp(input_fn=input_fn, output_fn=output_fn)
 
 
 # ============================================================

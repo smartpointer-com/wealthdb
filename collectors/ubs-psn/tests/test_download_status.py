@@ -40,7 +40,6 @@ import json
 import logging
 import sys
 import zipfile
-from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -403,16 +402,9 @@ def test_recover_lookback_bounds_the_replay(tmp_path, monkeypatch):
 def test_recover_is_freely_rerunnable(tmp_path, monkeypatch):
     # Dated copies survive their own fetch, so a second recovery run
     # finds and lands the same files again, in its own run dir.
-    class _TickingDT(datetime):
-        _tick = 0
-
-        @classmethod
-        def now(cls, tz=None):
-            _TickingDT._tick += 1
-            return (datetime(2026, 7, 1, 12, 0, 0, tzinfo=tz)
-                    + timedelta(seconds=10 * _TickingDT._tick))
-
-    monkeypatch.setattr(download, "datetime", _TickingDT)
+    slugs = iter(["20260701T120010Z", "20260701T120020Z"])
+    monkeypatch.setattr(download.bronze, "ts_slug",
+                        lambda now=None: next(slugs))
     files = {"download/ZAH": {".ZAH_20260601.zip": _zip_bytes()}}
     for _ in range(2):
         client = _fake_client(files)

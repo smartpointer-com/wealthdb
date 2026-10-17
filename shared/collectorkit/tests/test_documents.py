@@ -83,6 +83,7 @@ def test_pending_run_dirs(tmp_path, caplog):
     corrupt = _run(tmp_path, "20980107T000000Z", manifest=False)
     (corrupt / "run.json").write_text("{not json", encoding="utf-8")
     _run(tmp_path, "20980108T000000Z", "incomplete")     # a status not known
+    _run(tmp_path, "20980230T000000Z", "complete")         # no such day
     (tmp_path / "not-a-run").mkdir()
 
     log = logging.getLogger("test_pending")
@@ -92,6 +93,7 @@ def test_pending_run_dirs(tmp_path, caplog):
     assert "no run.json" in caplog.text
     assert "status=in-progress" in caplog.text and "status=dry-run" in caplog.text
     assert "status=incomplete" in caplog.text
+    assert "20980230T000000Z — not a valid run timestamp" in caplog.text
 
 
 def test_pending_run_dirs_without_a_bronze_dir(tmp_path):

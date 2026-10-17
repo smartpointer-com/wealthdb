@@ -59,42 +59,43 @@ def test_is_pushtan_url():
 # Region (Mandant) resolution — the login twist (§B)
 # ============================================================
 
+# Synthetic codes and prefixes in the wire shape; none names a real region.
 MANDANTEN = [
-    {"code": "rbgbgld", "verfuegerKennung": "ELVIE33V", "sortOrder": 1,
+    {"code": "zz01", "verfuegerKennung": "ELXXX01V", "sortOrder": 1,
      "disabled": False},
-    {"code": "rbgk", "verfuegerKennung": "ELOOE03V", "sortOrder": 2},
-    {"code": "rbgooe", "verfuegerKennung": "ELOOE01V", "sortOrder": 4},
-    {"code": "rbgt", "verfuegerKennung": "ELOOE11V", "sortOrder": 7},
+    {"code": "zz02", "verfuegerKennung": "ELXXX02V", "sortOrder": 2},
+    {"code": "zz03", "verfuegerKennung": "ELXXX03V", "sortOrder": 4},
+    {"code": "zz04", "verfuegerKennung": "ELXXX04V", "sortOrder": 7},
 ]
 
 
 def test_resolve_mandant_maps_code_to_option_index_and_prefix():
     # Option index is the position in sortOrder order + 1 (a leading empty
     # placeholder option precedes the real regions in the dropdown).
-    idx, kennung = elba.resolve_mandant(MANDANTEN, "rbgbgld")
-    assert (idx, kennung) == (1, "ELVIE33V")
-    idx, kennung = elba.resolve_mandant(MANDANTEN, "rbgooe")
-    assert (idx, kennung) == (3, "ELOOE01V")     # 3rd in sortOrder → option 3
-    idx, kennung = elba.resolve_mandant(MANDANTEN, "rbgt")
-    assert (idx, kennung) == (4, "ELOOE11V")
+    idx, kennung = elba.resolve_mandant(MANDANTEN, "zz01")
+    assert (idx, kennung) == (1, "ELXXX01V")
+    idx, kennung = elba.resolve_mandant(MANDANTEN, "zz03")
+    assert (idx, kennung) == (3, "ELXXX03V")     # 3rd in sortOrder → option 3
+    idx, kennung = elba.resolve_mandant(MANDANTEN, "zz04")
+    assert (idx, kennung) == (4, "ELXXX04V")
 
 
 def test_resolve_mandant_orders_by_sortorder_not_input_order():
     shuffled = list(reversed(MANDANTEN))
-    idx, kennung = elba.resolve_mandant(shuffled, "rbgbgld")
-    assert (idx, kennung) == (1, "ELVIE33V")     # still first by sortOrder
+    idx, kennung = elba.resolve_mandant(shuffled, "zz01")
+    assert (idx, kennung) == (1, "ELXXX01V")     # still first by sortOrder
 
 
 def test_resolve_mandant_unknown_region_raises():
     import pytest
     with pytest.raises(KeyError):
-        elba.resolve_mandant(MANDANTEN, "rbgxx")
+        elba.resolve_mandant(MANDANTEN, "zz99")
 
 
 def test_full_verfueger_prefixes_unless_already_prefixed():
-    assert elba.full_verfueger("ELOOE01V", "3V000042") == "ELOOE01V3V000042"
+    assert elba.full_verfueger("ELXXX01V", "3V000042") == "ELXXX01V3V000042"
     # A stored full id is kept as-is (no double prefix).
-    assert elba.full_verfueger("ELOOE01V", "ELOOE01V3V000042") == "ELOOE01V3V000042"
+    assert elba.full_verfueger("ELXXX01V", "ELXXX01V3V000042") == "ELXXX01V3V000042"
 
 
 # ============================================================
@@ -143,12 +144,6 @@ def test_parse_produkte_keeps_only_konto():
     assert [r["iban"] for r in rows] == [IBAN_A]
     assert rows[0]["balance"] == {"amount": 1000.0, "currency": "EUR"}
     assert rows[0]["available"] == {"amount": 1000.0, "currency": "EUR"}
-
-
-def test_parse_produkte_deposit_only_false_keeps_all():
-    roster = [_prod(IBAN_A), _prod(IBAN_B, typ="DEPOT")]
-    rows = elba.parse_produkte(roster, deposit_only=False)
-    assert [r["iban"] for r in rows] == [IBAN_A, IBAN_B]
 
 
 def test_parse_produkte_tolerates_junk():
@@ -227,23 +222,23 @@ def test_konto_details_url():
 
 def test_dokumente_filter_body():
     assert elba.dokumente_filter_body() == {
-        "von": None, "bis": None, "skip": 0, "limit": 50}
-    assert elba.dokumente_filter_body(skip=50, limit=25, von=date(2023, 1, 1)) == {
-        "von": "2023-01-01", "bis": None, "skip": 50, "limit": 25}
+        "von": None, "bis": None, "skip": 0, "limit": elba.DOC_PAGE_LIMIT}
+    assert elba.dokumente_filter_body(skip=50, limit=25) == {
+        "von": None, "bis": None, "skip": 50, "limit": 25}
 
 
 def test_dokument_download_url():
     # No version (newer EAZ documents): plain path.
-    assert elba.dokument_download_url("EAZ", "ELOOE_42").endswith(
-        "/dokumente/EAZ/ELOOE_42/download")
-    assert elba.dokument_download_url("EAZ", "ELOOE_42", None).endswith(
-        "/dokumente/EAZ/ELOOE_42/download")
+    assert elba.dokument_download_url("EAZ", "DOC_42").endswith(
+        "/dokumente/EAZ/DOC_42/download")
+    assert elba.dokument_download_url("EAZ", "DOC_42", None).endswith(
+        "/dokumente/EAZ/DOC_42/download")
     # With a version (older KDM documents): the versionsId is in the path.
-    assert elba.dokument_download_url("KDM", "RBGO9", 1).endswith(
-        "/dokumente/KDM/RBGO9/1/download")
+    assert elba.dokument_download_url("KDM", "DOC_9", 1).endswith(
+        "/dokumente/KDM/DOC_9/1/download")
     # Empty string is treated as "no version".
-    assert elba.dokument_download_url("KDM", "RBGO9", "").endswith(
-        "/dokumente/KDM/RBGO9/download")
+    assert elba.dokument_download_url("KDM", "DOC_9", "").endswith(
+        "/dokumente/KDM/DOC_9/download")
 
 
 # ============================================================
@@ -273,7 +268,7 @@ def test_parse_statements_keeps_only_kontoauszug_for_iban():
 
 
 def test_parse_statements_carries_versionsid_for_kdm():
-    body = [{"systemId": "KDM", "dokumentenId": "RBGO9", "versionsId": 1,
+    body = [{"systemId": "KDM", "dokumentenId": "DOC_9", "versionsId": 1,
              "dokumentenName": {"de": "Kontoauszug"},
              "erstellungsDatum": "2024-06-01T01:00:00", "dateiTyp": "PDF",
              "referenzIds": [{"typ": "IBAN", "iban": IBAN_A}]}]
@@ -282,7 +277,7 @@ def test_parse_statements_carries_versionsid_for_kdm():
     # …and that version drives the download path.
     assert elba.dokument_download_url(
         row["system_id"], row["dokument_id"], row["version_id"]).endswith(
-        "/dokumente/KDM/RBGO9/1/download")
+        "/dokumente/KDM/DOC_9/1/download")
 
 
 def test_parse_statements_since_floor():

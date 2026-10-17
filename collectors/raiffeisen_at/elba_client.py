@@ -52,7 +52,7 @@ KONTOINFO_API = f"{APP_ORIGIN}/api/bankingzv-kontoinformationen/kontoinformation
 # route (`/bankingws-widgetsystem/<route>`, e.g. `meine-produkte/…`) appears
 # post-auth — that is what `is_authed_route` matches. The definitive auth
 # signal, though, is possession of a working OIDC Bearer (login.py); the
-# route only tells us the login flow reached the app so a re-harvest is
+# route only shows the login flow reached the app, so a re-harvest is
 # worth a nudge.
 URL_MARK_LOGIN = "/mein-login"
 URL_MARK_PUSHTAN = "/sca"           # /mein-login/sca, /mein-login/sca/pushTAN
@@ -217,9 +217,9 @@ def _amount(obj) -> dict | None:
             "currency": obj.get("currency") or obj.get("currencyCode")}
 
 
-def parse_produkte(body, *, deposit_only: bool = True) -> list[dict]:
+def parse_produkte(body) -> list[dict]:
     """Project the `produkte` roster to the fields download.py needs, keeping
-    only deposit accounts by default. Each row: `iban` (the account key, used
+    only deposit accounts. Each row: `iban` (the account key, used
     in every other endpoint), `type`, the current `balance` and `available`
     money objects, and `last_updated`. Pure — tested on synthetic payloads.
 
@@ -228,7 +228,7 @@ def parse_produkte(body, *, deposit_only: bool = True) -> list[dict]:
     for prod in body if isinstance(body, list) else []:
         if not isinstance(prod, dict):
             continue
-        if deposit_only and not is_deposit_product(prod):
+        if not is_deposit_product(prod):
             continue
         det = prod.get("details") or {}
         rows.append({
@@ -343,8 +343,7 @@ def konto_details_url(iban: str) -> str:
     """The account-information detail endpoint (the "Kontoinformationen"
     page). Returns `{konto: {kontoart}, detailgruppen: [{ueberschrift,
     details: [{bezeichnung, inhalt}]}]}` — grouped attribute rows the roster
-    (`produkte`) doesn't carry: the account type (Kontoart, e.g. a salary
-    account), currency, holding institution + BIC, and the debit/credit
+    (`produkte`) doesn't carry: the account type (Kontoart), currency, holding institution + BIC, and the debit/credit
     interest rates (Zinssatz Soll/Haben) and statement-cycle dates. Read-only
     (DESIGN.md §C). The response also carries an incidental card-limits block;
     it is captured as provenance but never acted on (deposit-only scope,
@@ -363,7 +362,8 @@ def konto_details_url(iban: str) -> str:
 
 def kontostaende_url(iban: str, von: date, bis: date) -> str:
     """Daily closing-balance series for `[von, bis]` (DESIGN.md §C):
-    `{tagessalden: [{tag, saldo}], kontostand, verfuegbarerBetrag}`."""
+    `{von, bis, tagessalden: [{tag, saldo}], kontostand, verfuegbarerBetrag}`,
+    where `von`/`bis` echo the window the server applied."""
     return (f"{UMSATZ_API}/kontostaende/{quote(iban)}"
             f"?von={von.isoformat()}&bis={bis.isoformat()}")
 
@@ -374,18 +374,15 @@ def dokumente_filter_url() -> str:
     return f"{DOCS_API}/dokumente/filter"
 
 
-def dokumente_filter_body(*, skip: int = 0, limit: int = 50,
-                          von: date | None = None,
-                          bis: date | None = None) -> dict:
-    """The `dokumente/filter` POST body. `von`/`bis` null returns the whole
-    archive (not per-account — it is filtered client-side by IBAN);
+# The page size of a `dokumente/filter` listing.
+DOC_PAGE_LIMIT = 50
+
+
+def dokumente_filter_body(*, skip: int = 0, limit: int = DOC_PAGE_LIMIT) -> dict:
+    """The `dokumente/filter` POST body. `von`/`bis` stay null, which returns
+    the whole archive (not per-account — it is filtered client-side by IBAN);
     `skip`/`limit` paginate (DESIGN.md §E)."""
-    return {
-        "von": von.isoformat() if von else None,
-        "bis": bis.isoformat() if bis else None,
-        "skip": skip,
-        "limit": limit,
-    }
+    return {"von": None, "bis": None, "skip": skip, "limit": limit}
 
 
 def dokument_download_url(system_id: str, dokument_id: str,
@@ -430,7 +427,7 @@ def parse_statements(body, iban: str, *, since: date | None = None) -> list[dict
     `referenzIds` include `iban`, on or after `since`. Each row:
     `system_id`, `dokument_id`, `version_id` (the `versionsId`, or None —
     the triple is the stable dedup key and drives the download URL, §E),
-    `created` (erstellungsDatum), `file_type`. Newest-first is preserved as
+    `created` (erstellungsDatum). Newest-first is preserved as
     the source returns it. Pure — tested on synthetic payloads."""
     rows = []
     for doc in body if isinstance(body, list) else []:
@@ -455,6 +452,5 @@ def parse_statements(body, iban: str, *, since: date | None = None) -> list[dict
             "dokument_id": doc_id,
             "version_id": version_id,
             "created": created,
-            "file_type": str(doc.get("dateiTyp", "") or ""),
         })
     return rows

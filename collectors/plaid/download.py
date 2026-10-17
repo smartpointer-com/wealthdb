@@ -41,7 +41,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from collectorkit import bronze, cli, debugcap
+from collectorkit import bronze, cli, debugcap, envfile
 
 import appkeys
 import config
@@ -594,7 +594,7 @@ def _log_product(item: items.Item, product: Product, entry: dict,
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     cli.configure_logging(args.verbose)
-    appkeys.source_env_file(args.env_file)
+    envfile.source_named_env_file(args.env_file, "PLAID_ENV_FILE")
     environment = appkeys.environment(args)
     try:
         chosen, unreadable = items.select(args.secrets_dir, environment,

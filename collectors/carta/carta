@@ -64,13 +64,15 @@ Subcommands:
   load [args...]      Ingest bronze snapshots into the SQLite silver:
                       entities, securities, vesting_schedules +
                       vesting_events, fund_metrics, cap_calls,
-                      capital_events, cash_flows, documents.
+                      capital_events, cash_flows, documents,
+                      k1_capital_accounts.
                       --force deletes the silver DB and rebuilds from all bronze.
   prune [args...]     Delete non-complete dumps (a crashed walk left
-                      run.json status="in-progress", or a pre-status run
-                      left no run.json) from the bronze tree. Runs
-                      host-side (pure file walk; no container), so it can
-                      reclaim disk while a download is mid-flight. Also
+                      run.json status="in-progress", or a walk that crashed
+                      before writing run.json left none) from the bronze
+                      tree. Runs host-side (pure file walk; no container),
+                      so it can reclaim disk while a download is
+                      mid-flight. Also
                       strips screenshots/ (the download --debug captures)
                       from complete dumps; their load inputs are never
                       touched. --dry-run prints the plan without deleting
@@ -87,9 +89,9 @@ Override mounts via env:
   CARTA_DEBUG_DIR=/path/to/debug
 
 Credentials:
-  CARTA_USERNAME (or the legacy CARTA_EMAIL) / CARTA_PASSWORD are read
-  from /secrets/carta.env inside
-  the container (= \$HOME/.secrets/carta.env on the host). chmod 0600.
+  CARTA_USERNAME (or its alias CARTA_EMAIL) / CARTA_PASSWORD are read
+  from /secrets/carta.env inside the container
+  (= \$HOME/.secrets/carta.env on the host). chmod 0600.
   The 2FA code is prompted on stdin during \`login\`; the session that
   lands in /secrets/carta-profile/ keeps future logins from firing a 2FA
   push (exact persistence lifetime not measured).
@@ -97,17 +99,7 @@ EOF
     exit 0
 fi
 
-# `./carta prune [args...]` → host-side python invocation.
-#
-# prune is a pure file walk (collectorkit.prune + stdlib) — no browser, no
-# poppler, no container. carta's `load` runs in-container ONLY because it
-# needs poppler-utils (pdftotext) to parse statement PDFs; prune has no such
-# dependency, so per the collectors/ prune convention it runs host-side.
-# Host-side execution also bypasses the single-writer safety guard, so disk
-# can be reclaimed while a `download`/`login` container is mid-2FA/mid-walk
-# (the in-flight dump is protected by prune's own --min-age-hours guard).
-# The default --bronze-dir comes first so an explicit flag in [args...]
-# overrides it (argparse last-wins).
+# prune runs host-side (wrapper_host_prune).
 if [[ "${1:-}" == "prune" ]]; then
     wrapper_host_prune "$@"
 fi

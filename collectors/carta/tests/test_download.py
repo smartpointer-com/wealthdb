@@ -361,11 +361,20 @@ def test_missing_signed_url_is_fetch_failed(tmp_path):
     assert counts["errors"] == 1 and counts["no_blob"] == 0
 
 
-def test_non_binary_body_is_fetch_failed(tmp_path):
-    # Signed url resolves but returns a JSON/HTML error page, not a binary →
-    # FETCH_FAILED (the data[:1] guard), no blob written.
+@pytest.mark.parametrize("body", [
+    b'{"error": "expired"}',
+    b"<html>error</html>",
+    b' \n{"error": "expired"}',            # leading whitespace before JSON
+    b'\xef\xbb\xbf{"error": "expired"}',   # a byte-order mark before JSON
+    b"PK\x03\x04 a zip, not a PDF",
+    b"",
+], ids=["json", "html", "whitespace-json", "bom-json", "zip", "empty"])
+def test_a_body_that_is_not_a_pdf_is_fetch_failed(tmp_path, body):
+    # Signed url resolves but its body does not start with the PDF magic
+    # number → FETCH_FAILED, no blob written: the same rule load and link
+    # mode apply to a blob on disk.
     run = _new_run(tmp_path)
-    api = _StubApi(binary=b'{"error": "expired"}')
+    api = _StubApi(binary=body)
     row = {"id": K1_ID, "document_type": "Tax - Schedule K-1",
            "document_url": DOC_URL}
     status = download._process_document(

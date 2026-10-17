@@ -1,0 +1,5 @@
+# Keep the host venv and any browser coredump out of the build context.
+# The Dockerfile copies files by name, so neither reaches the image.
+.venv/
+__pycache__/
+core

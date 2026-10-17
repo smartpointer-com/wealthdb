@@ -3,8 +3,11 @@
 UBS Switzerland e-banking bronze downloader.
 
 Reuses the Playwright session minted by login.py to export:
-  - per-account transactions CSV   — `button-csvExport`
+  - per-portfolio positions CSV    — `button-csvExport`
+  - per-account transactions CSV   — `button[title="CSV"]`
   - per-account transactions MT940 — `button-swiftMt940Export`
+  - per-portfolio securities transactions — the portfolio transaction
+    list's own CSV export, reached through the header's switcher
   - bank-document PDFs             — `/api/v1/digital-banking/files/…`
   - the credit-card surface        — the SPA's own card API (cards.py):
     the roster, each card account's ledger, its billing periods and
@@ -13,11 +16,6 @@ Reuses the Playwright session minted by login.py to export:
 Files land in <bronze-dir>/<UTC-timestamp>/<artefact>. Read-only — see
 AGENTS.md §1. Per AGENTS.md §2, non-dry-run invocations must be
 explicitly authorised.
-
-Usage:
-    download.py [--state-path <file>] [--bronze-dir <dir>]
-                [--lookback PRESET|YYYY-MM-DD]
-                [--dry-run] [--debug] [--screenshot-dir <dir>] [--trace]
 """
 
 from __future__ import annotations
@@ -111,10 +109,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Bronze tree root (default: %(default)s, the wrapper's "
                         "/data mount); a UTC-timestamped subdir is created per run.")
     # Shared date-window contract: a single --lookback naming the
-    # start of the [start..today] window. UBS's UI caps its own
-    # 'Maximum' preset to ~3 years; older transactions are reached by
-    # an ISO start date (e.g. --lookback 2015-01-01) or
-    # --lookback all (~30y).
+    # start of the [start..today] window. The transaction export is
+    # clamped to the floor its period popover states (the current month
+    # and the last 24 months), so a wider --lookback widens the
+    # documents walk, while older cash history comes from the statement
+    # PDFs.
     cli.add_standard_args(p, verb="download")
     # Heavy passes are on by default and opted OUT of, per the fleet's
     # CLI contract: a bare `download` pulls everything there is.
@@ -149,11 +148,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "the bronze run dir under <run>/screenshots/: the "
                         "homepage the account and portfolio anchors are "
                         "scraped from, the documents list once its filters "
-                        "render, and the page any account's transaction export "
-                        "failed on. Off by default — the captures are never "
-                        "read by `load`, and `prune` reclaims "
-                        "<run>/screenshots/ from complete dumps. No-op under "
-                        "--dry-run, which persists nothing to bronze. Distinct "
+                        "render, the page any account's transaction export "
+                        "failed on, and the page the portfolio-transaction "
+                        "pass failed on. Off by default — the captures are "
+                        "never read by `load`, and `prune` reclaims "
+                        "<run>/screenshots/ from the dumps it keeps. No-op "
+                        "under --dry-run, which persists nothing to bronze. "
+                        "Distinct "
                         "from --screenshot-dir / --trace, whose per-landmark "
                         "screenshots and trace bundle land in the /debug "
                         "mount, outside bronze.")
@@ -483,7 +484,8 @@ def _set_transaction_period_custom(page, since: date, until: date,
 
     Returns the actually-applied (since, until) window. UBS may
     clamp `since` (or `until`) to its accepted range — the
-    transactions UI is hard-capped at ~28 months — and the caller
+    transactions UI reaches back over the current month and the last 24
+    months — and the caller
     needs the clamped values to bisect correctly.
     """
     _dismiss_open_overlays(page)
@@ -635,7 +637,8 @@ def _fill_custom_dates(page, since: date, until: date,
     inputs.nth(1).press("Tab")
 
     # If the popover validation rejects `since` for being too old
-    # (UBS caps transactions at ~28 months), it shows an inline
+    # (UBS caps transactions at the current month and the last 24
+    # months), it shows an inline
     # error like "The start date must be later than DD.MM.YYYY".
     # Clamp `since` to the offered minimum and retry — once.
     applied_since, applied_until = since, until
@@ -867,17 +870,13 @@ def _suggest_extension(suggested: str | None, fmt: str) -> str:
 
 def harvest_documents(page, since: date, until: date, run_dir: Path,
                       context, screenshot_dir: Path | None,
-                      debug: bool = False, mask=None) -> list[dict]:
+                      capture=lambda _page, _name: None) -> list[dict]:
     """Scrape document URLs across [since, until], paginating
     through the 999-row UBS cap by bisecting the window.
 
-    ``debug`` additionally writes the settled documents page into
-    ``run_dir/screenshots/`` — the DOM the window-bisect walk reads its
-    counts and rows out of, masked through ``mask`` (the run's session
-    mask) on the way. Only reached on a real run, so ``run_dir`` is always
-    a real dir here."""
-    if mask is None:
-        mask = debugcap.SessionMask()
+    ``capture(page, name)`` is the run's landmark capture (a no-op without
+    ``--debug``): it records the settled documents page, the DOM the
+    window-bisect walk reads its counts and rows out of."""
     docs_dir = run_dir / "documents"
     docs_dir.mkdir(parents=True, exist_ok=True)
     _dismiss_open_overlays(page)
@@ -889,17 +888,13 @@ def harvest_documents(page, since: date, until: date, run_dir: Path,
                                timeout=LANDMARK_TIMEOUT_MS)
     except Exception:
         maybe_screenshot(page, screenshot_dir, "docs-no-filters")
-        if debug:
-            debugcap.capture_page(page, run_dir, "30-documents", log=log,
-                                  redact=mask.for_page(page))
+        capture(page, "30-documents")
         raise SystemExit(
             "Documents page filter buttons did not appear. Session "
             "may have expired, or UBS may have redesigned the page."
         ) from None
     maybe_screenshot(page, screenshot_dir, "docs-rendered")
-    if debug:
-        debugcap.capture_page(page, run_dir, "30-documents", log=log,
-                              redact=mask.for_page(page))
+    capture(page, "30-documents")
 
     seen_tokens: set[str] = set()
     harvested: list[dict] = []
@@ -1217,8 +1212,8 @@ def export_positions(page, run_dir: Path,
     (`preselectFirstPortfolio=true`) only covers the first portfolio
     of the active banking relationship; users with multiple portfolios
     (for example a managed one beside a self-directed one) need a
-    per-portfolio sweep. We enumerate (portfolioUid,
-    bankingRelationId) pairs from the homepage and download one CSV
+    per-portfolio sweep. The walk enumerates (portfolioUid,
+    bankingRelationId) pairs from the homepage and downloads one CSV
     per portfolio. The flat default-positions CSV is still captured
     as a fallback when no portfolioUids are discoverable."""
     out_dir = run_dir / "positions"
@@ -1376,9 +1371,10 @@ def export_portfolio_transactions(page, run_dir: Path,
     `portfolioUid` for — so the rest are reached the way a person
     reaches them, through the switcher in the SPA's header. Each is
     exported under the window this walk asks for, and a portfolio
-    already harvested is not fetched twice: the switcher also lists
+    already harvested is not kept twice: the switcher also lists
     consolidated views, which report the same bookings under an id of
-    their own."""
+    their own. Which portfolio an export holds is read off the export
+    itself, so the decision is made before anything is written."""
     out_dir = run_dir / "portfolio_transactions"
     out_dir.mkdir(parents=True, exist_ok=True)
     portfolios = _enumerate_portfolios(page, screenshot_dir)
@@ -1407,19 +1403,23 @@ def export_portfolio_transactions(page, run_dir: Path,
     for title in titles:
         if title is not None and not _switch_portfolio(page, title):
             continue
-        meta = _fetch_portfolio_transactions_csv(
-            page, since, until, out_dir, route)
-        if not meta:
+        fetched = _fetch_portfolio_transactions_csv(page, since, until)
+        if fetched is None:
             continue
+        body, portfolio, covered = fetched
         # The switcher lists the relationship and the consolidated views
         # beside the real portfolios, and those answer for a portfolio
-        # already fetched. What came back says which it was.
-        if meta["portfolio"] and meta["portfolio"] in harvested:
-            (out_dir / meta["filename"]).unlink(missing_ok=True)
+        # already fetched. What came back says which it was; the copy
+        # already kept stays as it is.
+        if portfolio and portfolio in harvested:
             continue
-        if meta["portfolio"]:
-            harvested.add(meta["portfolio"])
-        results.append(meta)
+        if portfolio:
+            harvested.add(portfolio)
+        # An export that names no portfolio is filed under the route and
+        # the switcher entry it came from, so two of them cannot collide.
+        scope = portfolio or "|".join(p for p in (route, title) if p)
+        results.append(_save_portfolio_transactions(
+            out_dir, body, portfolio, covered, scope))
     return results
 
 
@@ -1462,10 +1462,13 @@ def _switch_portfolio(page, title: str) -> bool:
         return False
 
 
-def _fetch_portfolio_transactions_csv(page, since: date, until: date,
-                                      out_dir: Path,
-                                      route: str) -> dict | None:
-    """The loaded portfolio's transactions over [since..until].
+def _fetch_portfolio_transactions_csv(
+        page, since: date, until: date,
+) -> tuple[bytes, str | None, tuple[str, str] | None] | None:
+    """The loaded portfolio's transactions over [since..until], as
+    `(body, portfolio, covered)`: the CSV, the portfolio its first row
+    names, and the period its footer states. None when nothing usable
+    came back.
 
     The window is set through the filter panel and the file taken from
     the list's own CSV button, because the surface answers an export
@@ -1497,9 +1500,16 @@ def _fetch_portfolio_transactions_csv(page, since: date, until: date,
     if covered and covered[0] != _fmt_dmy(since):
         log.info("portfolio archive begins %s; requested %s",
                  covered[0], _fmt_dmy(since))
-    portfolio = _exported_portfolio(text)
-    short = bronze.short_token(portfolio or route)
-    out_path = out_dir / f"transactions_{short}.csv"
+    return body, _exported_portfolio(text), covered
+
+
+def _save_portfolio_transactions(out_dir: Path, body: bytes,
+                                 portfolio: str | None,
+                                 covered: tuple[str, str] | None,
+                                 scope: str) -> dict:
+    """Write one portfolio export as `transactions_<short_token(scope)>.csv`
+    and return its run.json entry."""
+    out_path = out_dir / f"transactions_{bronze.short_token(scope)}.csv"
     out_path.write_bytes(body)
     log.info("portfolio transactions saved: %s (%d bytes)",
              out_path.name, len(body))
@@ -1654,12 +1664,30 @@ def _export_window(text: str) -> tuple[str, str] | None:
 # Main
 # ============================================================
 
+def dry_run_plan(args: argparse.Namespace, cash_accounts: int) -> str:
+    """What a real run with these flags would export, for the dry-run log:
+    the passes `--only` selects, without the card pass under
+    `--no-cards`."""
+    what = {
+        "positions": "the positions of each portfolio",
+        "transactions": f"the transactions of {cash_accounts} cash "
+                        "account(s)",
+        "portfolio-transactions": "one securities-transaction export per "
+                                  "managed portfolio",
+        "documents": "the documents archive",
+        "cards": "the card roster, each card's ledger and its invoices"
+                 + ("" if args.no_card_statements else " and statement PDFs"),
+    }
+    passes = [p for p in PASSES if args.only in (None, p)
+              and not (p == "cards" and args.no_cards)]
+    if not passes:
+        return "nothing"
+    return "would export " + "; ".join(what[p] for p in passes)
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    cli.configure_logging(args.verbose)
 
     if args.trace and args.screenshot_dir is None:
         raise SystemExit("--trace requires --screenshot-dir.")
@@ -1735,17 +1763,8 @@ def main(argv: list[str]) -> int:
                     # would fetch) but write nothing — run_dir is None,
                     # so there is no bronze dump and load never sees one.
                     log.info("--dry-run set; skipping exports")
-                    log.info("dry-run plan: would export positions + "
-                             "transactions + documents for %d cash "
-                             "account(s), plus one securities-transaction "
-                             "export per managed portfolio, in [%s..%s]%s",
-                             len(accounts), since, until,
-                             "" if args.no_cards else
-                             ", plus the card roster, each card's ledger "
-                             "and its invoices" +
-                             ("" if args.no_card_statements
-                              else " and statement PDFs"))
-                    txn_results = accounts  # echo discovery only
+                    log.info("dry-run plan: %s, in [%s..%s]",
+                             dry_run_plan(args, len(accounts)), since, until)
                 else:
                     def run(name):
                         return args.only in (None, name)
@@ -1790,8 +1809,7 @@ def main(argv: list[str]) -> int:
                     if run("documents"):
                         doc_results = harvest_documents(
                             page, since, until, run_dir,
-                            context, args.screenshot_dir, debug=args.debug,
-                            mask=mask,
+                            context, args.screenshot_dir, capture=capture,
                         )
                     if not args.no_cards and run("cards"):
                         cards_meta = _capture_cards(

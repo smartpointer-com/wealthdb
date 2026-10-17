@@ -189,8 +189,10 @@ since no source system enforces anything. A bad row fails the entire
 load: one DB transaction rolls back, the exit is non-zero, and the
 message carries `file:row:column`. [README.md](README.md#validation)
 lists the checks. The taxonomy sets in `load.py` mirror
-`internal/canonical/enums.go`, and a collectorkit test
-(`test_canonical_enum_mirrors.py`) pins the two copies together.
+`internal/canonical/enums.go` (account kinds, tax wrappers, management
+styles) and `taxonomy.go` (vehicles). A collectorkit test
+(`test_canonical_enum_mirrors.py`) pins the `enums.go` sets to their Go
+source.
 
 ## 6. Gold mapping
 
@@ -283,7 +285,7 @@ example, as an `other`/`escrow` position. The position alone would make the
 returns engine read the arrival as performance — a mark stepping up with
 nothing to fund it — and a later release as a loss of the whole claim. The
 missing half is supplied by a row in the config-side equity-transfer ledger
-([DESIGN.md](../../wealthdb/docs/DESIGN.md) §13.10) written against this source's single
+([DESIGN.md](../../wealthdb/docs/DESIGN.md) §13.9) written against this source's single
 account; the loader injects it as a `transfer_in` / `transfer_out`, and the
 source's returns policy admits exactly those two kinds. The invariant, for
 every date something happens to such a claim:

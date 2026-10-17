@@ -99,10 +99,11 @@ needed. Three rules are specific to this source:
 
 - it **negates every amount**, because Amex states spend as positive and
   the fleet's card convention is negative;
-- it **replaces** pending rows on every load, because their ids are
-  provisional;
+- it **replaces** pending rows on every load that ingests a run, because
+  their ids are provisional;
 - it **rebuilds** the statement-sourced rows from all of bronze on every
-  load, because the seam they are gated on moves as wider windows land.
+  load that ingests a run, and after a parser change or an unfinished
+  rebuild, because the seam they are gated on moves as wider windows land.
 
 The **statement backfill** reaches past the 24 months where the activity
 and the exports stop, into the provider's ~7-year PDF archive. A statement

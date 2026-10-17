@@ -178,7 +178,7 @@ class TestMigrations:
                 "historical_cash_balances"} <= names
 
     def test_0004_backfills_logical_doc_key_and_collapses_churn(self, conn, tmp_path):
-        # Apply only 0001..0003 so we can seed pre-0004 sha256-churn rows.
+        # Apply only 0001..0003 so pre-0004 sha256-churn rows can be seeded.
         early = tmp_path / "m"
         early.mkdir()
         for name in ("0001_initial.sql", "0002_historical_snapshots.sql",
@@ -329,20 +329,20 @@ class TestAccountUpsert:
 
 
 class TestAccountNickname:
-    @pytest.mark.parametrize("label,suffix,expected", [
+    @pytest.mark.parametrize("label,expected", [
         # Dropdown-style label with U+2026 suffix marker. The
         # download.py inventory rendering doubles the nickname
-        # (visible name + sr-only echo); we collapse that.
+        # (visible name + sr-only echo); the echo is collapsed.
         ("Demo Account Demo Account …000 Account ending in 0 0 0",
-         "000", "Demo Account"),
+         "Demo Account"),
         # No ellipsis: pass-through.
-        ("Just A Label", "000", "Just A Label"),
+        ("Just A Label", "Just A Label"),
         # Empty label.
-        ("", "000", None),
-        (None, "000", None),
+        ("", None),
+        (None, None),
     ])
-    def test_nickname_extraction(self, label, suffix, expected):
-        assert load._account_nickname(label, suffix) == expected
+    def test_nickname_extraction(self, label, expected):
+        assert load._account_nickname(label) == expected
 
 
 # ============================================================
@@ -730,7 +730,7 @@ class TestTxHistoryIngest:
 class TestPositionsAndCashLoad:
     """End-to-end loader tests for migration 0002 (positions +
     cash). Monkeypatches pp.parse_statement_pdf to return a known
-    result, so we exercise the dispatcher + insert helpers + DB
+    result, so the test exercises the dispatcher + insert helpers + DB
     schema without reading a real PDF.
     """
 
@@ -865,12 +865,12 @@ class TestPositionsAndCashLoad:
             lambda path, statement_year=None: dict(self.PARSED_STATEMENT),
         )
         # Build a bronze run where the same logical doc appears
-        # under TWO different bytes-on-disk (Schwab regen). We
-        # do this by emitting two doc entries pointing at the
+        # under TWO different bytes-on-disk (Schwab regen), by
+        # emitting two doc entries pointing at the
         # same filename — _make_bronze_run rewrites the file
         # content per filename, but the second write doesn't
         # change the filename. To force two distinct sha256s,
-        # we write them to separate run dirs.
+        # they go to separate run dirs.
         run1 = _make_bronze_run(tmp_path, "20260520T120000Z", [
             {"suffix": "NNN", "label": "L",
              "documents": [{"date": "02/28/2026", "type": "Statements",

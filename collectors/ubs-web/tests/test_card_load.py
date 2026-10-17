@@ -22,6 +22,8 @@ import pytest
 
 import card_parsers
 import load
+from collectorkit import silver
+from silverdb import MIGRATIONS_DIR
 
 
 # --------------------------------------------------------------------
@@ -334,10 +336,11 @@ def test_reconcile_tolerance_admits_a_rounding_cent_but_not_a_real_gap():
 # --------------------------------------------------------------------
 
 def _silver() -> sqlite3.Connection:
+    """An in-memory silver DB migrated by the production runner, with the
+    foreign keys `load.main` turns on. Rows come back as tuples."""
     conn = sqlite3.connect(":memory:")
     conn.execute("PRAGMA foreign_keys = ON;")
-    for path in sorted((Path(load.__file__).parent / "migrations").glob("*.sql")):
-        conn.executescript(path.read_text())
+    silver.apply_migrations(conn, MIGRATIONS_DIR)
     return conn
 
 

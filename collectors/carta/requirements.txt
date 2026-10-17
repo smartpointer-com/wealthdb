@@ -19,8 +19,7 @@ pytest>=8,<9
 # dependency is needed here. See DESIGN.md §"Why SQLite, not DuckDB".
 
 # login.py + download.py drive Camoufox, which the base-camoufox image
-# provides; the Dockerfile adds vanilla Playwright Firefox as a fallback
-# engine. Nothing is added here.
+# provides. Nothing is added here.
 
 # Document downloads (3921 / 1099-B / legal-doc PDFs) are fetched through
 # Playwright's authenticated request API using the live session cookie —

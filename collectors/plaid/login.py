@@ -30,7 +30,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from collectorkit import cli
+from collectorkit import cli, envfile
 
 import appkeys
 import items
@@ -159,7 +159,7 @@ def check(args: argparse.Namespace, client: plaidapi.Client) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     cli.configure_logging(args.verbose)
-    appkeys.source_env_file(args.env_file)
+    envfile.source_named_env_file(args.env_file, "PLAID_ENV_FILE")
     environment = appkeys.environment(args)
     try:
         if args.check:

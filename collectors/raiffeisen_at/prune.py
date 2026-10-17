@@ -6,7 +6,7 @@ engine) with this collector's configuration. It reclaims whole run dirs that
 are not complete dumps — ``run.json`` is missing (a crashed walk) or its
 ``status`` is anything other than ``"complete"`` (an ``"in-progress"``
 marker or a ``"dry-run"`` shell). ``load`` skips such dirs, so removing one
-only surfaces on the next ``load --force`` rebuild.
+never changes silver.
 
 A COMPLETE dump's load inputs (``accounts.json``, ``details/*.json``,
 ``history/*.json``, ``balances/*.json``, ``statements/*/*.pdf``) are

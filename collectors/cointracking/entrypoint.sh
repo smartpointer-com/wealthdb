@@ -10,20 +10,12 @@
 # - `download`: headless Playwright Firefox per-portfolio loop, same
 #   persistent profile as `login`. No Xvfb, no VNC.
 # - `load`: pure DuckDB + Python, no browser.
-#
-# When Xvfb IS started (explore only), it's started
-# directly rather than via `xvfb-run`. The Ubuntu
-# Noble xvfb-run script's SIGUSR1 ready-signaling hangs when the
-# parent shell is non-root: it sets the parent SIGUSR1 handler to
-# `:` rather than SIG_IGN, so Xvfb declines to send the ready
-# signal and the parent waits forever. Socket-existence polling
-# is a version-independent ready signal.
 
 set -euo pipefail
 
 # Xvfb / x11vnc / camoufox-cache bootstrap (VFB_DISPLAY, start_xvfb,
-# start_x11vnc) is shared across the camoufox collectors, baked into
-# base-camoufox at /opt/entrypoint-lib.sh.
+# start_x11vnc), shared by the browser collectors and baked into
+# base-playwright at /opt/entrypoint-lib.sh.
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
@@ -32,9 +24,10 @@ case "${1:-help}" in
         # Discovery harness. Drives Camoufox over VNC, records every
         # click + every network fetch into /debug/<ts>/
         # so login.py + download.py can be written from real traces.
+        shift
+        exec_if_help explore.py "$@"
         start_xvfb
         start_x11vnc explore
-        shift
         exec python3 /app/explore.py "$@"
         ;;
     login)
@@ -58,8 +51,8 @@ case "${1:-help}" in
         # then-window replay (incremental upsert from first deviation
         # day), populates portfolio_prices from overview.csv, and
         # reconciles vs balance.csv per portfolio. By default also
-        # pulls missing USDT-denominated prices from Binance at the
-        # end (--no-fetch-prices skips it).
+        # fills missing prices at the end, crypto from Binance and
+        # fiat from the ECB via Frankfurter (--no-fetch-prices skips it).
         #
         # --scratch-dir /tmp writes the DuckDB silver to the container-
         # local overlay instead of straight onto the /data VirtioFS
@@ -74,8 +67,9 @@ case "${1:-help}" in
     prune)
         # Delete non-complete dumps (crashed / in-progress) from the
         # bronze tree, and strip screenshots/ (the download --debug
-        # captures) from complete dumps. No browser, no Xvfb. A complete
-        # dump's load inputs are left intact.
+        # captures) from complete dumps; --debug-dir also reclaims the
+        # /debug cache. No browser, no Xvfb. A complete dump's load
+        # inputs are left intact.
         shift
         exec python3 /app/prune.py "$@"
         ;;
@@ -88,9 +82,10 @@ case "${1:-help}" in
         exec python3 /app/recompress.py "$@"
         ;;
     fetch-prices)
-        # USDT-denominated price backfill from Binance public spot
-        # API. --missing for gap-fill (the same fill `load` runs by
-        # default), no-flag for full re-fetch (corruption recovery).
+        # Price backfill: crypto from Binance public spot, fiat from
+        # the ECB via Frankfurter. --missing for gap-fill (the same
+        # fill `load` runs by default), no-flag for full re-fetch
+        # (corruption recovery).
         # Always re-fetches the latest priced day because that row
         # was an intraday snapshot when first written.
         shift
@@ -123,7 +118,8 @@ Subcommands:
               firing a 2FA push.
   download    Headless Firefox per-portfolio loop: trade history
               (Extended-with-additional-columns blob CSV) + balance
-              by exchange CSV per portfolio. Writes a UTC-timestamped
+              by exchange CSV + the daily balance overview CSV per
+              portfolio. Writes a UTC-timestamped
               bronze subdir + run.json manifest; each CSV export is
               zstd-compressed in place as it lands (.csv.zst). Pass
               --dry-run to walk the navigation without firing exports.
@@ -135,10 +131,12 @@ Subcommands:
               balances vs the balance.csv. Pass --replay-only to
               re-run the holdings replay without re-ingesting
               bronze; --force to delete the silver DB and rebuild
-              it from all bronze. Missing USDT-denominated prices are pulled
-              from Binance after ingest by default; --no-fetch-prices skips it.
-  fetch-prices Fetch USDT-denominated prices for every held coin
-              from Binance public spot. --missing fills gaps (same
+              it from all bronze. Missing prices are filled after
+              ingest by default, crypto from Binance and fiat from the
+              ECB via Frankfurter; --no-fetch-prices skips it.
+  fetch-prices Fetch prices for every held coin: crypto
+              (USDT-denominated) from Binance public spot, fiat from
+              the ECB via Frankfurter. --missing fills gaps (same
               as the default `load` price fill); no flag re-fetches the
               full held range (corruption recovery). Either mode
               always re-fetches the latest priced day so an intraday
@@ -146,8 +144,10 @@ Subcommands:
               close price. Stablecoins (USDT, USDC, DAI, …) emit
               synthetic 1.0 USD prices.
   prune       Delete non-complete dumps (crashed / in-progress) from
-              the bronze tree; complete dumps and their load inputs
-              are kept intact. --dry-run prints the plan first.
+              the bronze tree, and strip screenshots/ (the download
+              --debug captures) from complete dumps, whose load inputs
+              are kept intact. --debug-dir also reclaims the /debug
+              cache. --dry-run prints the plan first.
   recompress  Convert the pre-compression bronze backlog: replace
               plain cu_<id>/*.csv inside complete dumps with
               sha256-verified .csv.zst twins. Manual one-time sweep;

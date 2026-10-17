@@ -257,11 +257,11 @@ PERIOD_POPOVER_DATE_INPUTS = 'dialog[open] input[placeholder="DD.MM.YYYY"]'
 PERIOD_POPOVER_APPLY_BUTTON_PRIMARY = 'dialog[open] button[data-name="filter-item-submit-button"]'
 PERIOD_POPOVER_APPLY_BUTTON_FALLBACK = 'dialog[open] form button[type="submit"]'
 
-# UBS hard-caps the transactions UI at ~28 months of history; any
-# `from` date earlier than the cap triggers an inline validation
-# message like:
+# UBS caps the transactions UI at the current month and the last 24
+# months; any `from` date earlier than the cap triggers an inline
+# validation message like:
 #   "The start date must be later than 01.01.2024."
-# We detect this and clamp `since` to the offered minimum date.
+# The walk detects this and clamps `since` to the offered minimum date.
 # Bank documents have a longer (10y) retention and use a different
 # minimum, so the same regex applies to both surfaces.
 PERIOD_POPOVER_MIN_DATE_RE = re.compile(
@@ -317,8 +317,8 @@ DOC_FILTER_INDEX_PERIOD = 0
 #   "Not all documents are displayed right now. If you cannot find
 #    a document, try applying filters."
 #
-# Our window-splitting strategy: harvest a half-window at a time,
-# and when a window's count hits the cap, recursively bisect.
+# The window-splitting strategy: harvest the window, and bisect it
+# recursively while its count is at the cap.
 DOC_LIST_CAP = 999
 
 

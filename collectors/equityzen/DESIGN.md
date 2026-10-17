@@ -42,7 +42,7 @@ No published API serves an individual buyer:
 
 - **`status.equityzen.com/public-api` is a Statuspage.io feed, not a
   product.** It exposes only `/v3/summary.json` + `/v3/components.json`
-  (uptime + incident data for EquityZen's *own* monitoring). It tells us
+  (uptime + incident data for EquityZen's *own* monitoring). It shows that
   an internal API exists and is monitored; it documents nothing about its
   surface or access rules.
 - **No investor-facing *published* API exists.** `developers.equityzen.com`
@@ -157,7 +157,8 @@ stealth fingerprint, not a headless guess — on a persistent context at
 `/secrets/equityzen-profile/`. Navigate
 to `/accounts/login/`; short-circuit if a prior session is still valid;
 else fill credentials and complete the two-step auth, reading the 6-digit
-**TOTP** from stdin. `EQUITYZEN_USERNAME` (alias `EQUITYZEN_EMAIL`) /
+**TOTP** from stdin. A typed code that is not six digits is asked for
+again, up to three times. `EQUITYZEN_USERNAME` (alias `EQUITYZEN_EMAIL`) /
 `EQUITYZEN_PASSWORD` from the env file; `--totp CODE` supplies the code
 non-interactively; `--debug` saves a screenshot to `--screenshot-dir`
 (default `/debug`) and logs the auth GraphQL ops on failure.

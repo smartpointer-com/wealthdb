@@ -97,8 +97,9 @@ except the login sequence itself):
   account statements (Kontoauszüge):
   `POST …/dokumentenablage-ui/rest/dokumente/filter` (list; a
   read-only search `POST`),
-  `POST …/rest/dokumente/<systemId>/<dokumentenId>/download` and
-  `GET …/rest/dokumente/metadata/<systemId>/<dokumentenId>`. This is a
+  `POST …/rest/dokumente/<systemId>/<dokumentenId>[/<versionsId>]/download`
+  and `GET …/rest/dokumente/metadata/<systemId>/<dokumentenId>[/<versionsId>]`
+  (a document that carries a `versionsId` puts it in the path). This is a
   pre-generated archive, not an on-demand generator; the download
   `POST` returns a copy and mutates nothing. Keep to the statement
   documents for the scoped deposit IBANs — do not fetch documents for

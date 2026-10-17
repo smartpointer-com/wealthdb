@@ -99,7 +99,7 @@ def _dump_state(db_path: Path) -> dict:
 def test_load_offering_and_position(tmp_path):
     run_dir = _seed_bronze(tmp_path / "bronze")
     conn = _fresh_db(tmp_path)
-    stats = loader.load_run(conn, run_dir, force=False)
+    stats = loader.load_run(conn, run_dir)
     assert stats["skipped"] is False
     assert stats["offerings"] == 1
     assert stats["positions"] >= 1
@@ -129,9 +129,9 @@ def test_load_offering_and_position(tmp_path):
 def test_skips_already_loaded(tmp_path):
     run_dir = _seed_bronze(tmp_path / "bronze")
     conn = _fresh_db(tmp_path)
-    loader.load_run(conn, run_dir, force=False)
-    # Second load without --force is a no-op (dump_runs guard).
-    again = loader.load_run(conn, run_dir, force=False)
+    loader.load_run(conn, run_dir)
+    # A second load of the same run is a no-op (dump_runs guard).
+    again = loader.load_run(conn, run_dir)
     assert again["skipped"] is True
     assert conn.execute("SELECT COUNT(*) FROM offerings").fetchone()[0] == 1
 
@@ -139,7 +139,7 @@ def test_skips_already_loaded(tmp_path):
 def test_skips_a_dump_whose_walk_never_finished(tmp_path):
     run_dir = _seed_bronze(tmp_path / "bronze", {"status": "in-progress"})
     conn = _fresh_db(tmp_path)
-    stats = loader.load_run(conn, run_dir, force=False)
+    stats = loader.load_run(conn, run_dir)
     assert stats["skipped"] is True
     assert conn.execute("SELECT COUNT(*) FROM offerings").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 0
@@ -149,7 +149,7 @@ def test_skips_a_dump_without_run_json(tmp_path):
     run_dir = _seed_bronze(tmp_path / "bronze")
     (run_dir / "run.json").unlink()
     conn = _fresh_db(tmp_path)
-    assert loader.load_run(conn, run_dir, force=False)["skipped"] is True
+    assert loader.load_run(conn, run_dir)["skipped"] is True
     assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 0
 
 
@@ -158,7 +158,7 @@ def test_loads_a_statusless_manifest(tmp_path):
     # finished walk, so it is complete.
     run_dir = _seed_bronze(tmp_path / "bronze", {"source": "equityzen"})
     conn = _fresh_db(tmp_path)
-    assert loader.load_run(conn, run_dir, force=False)["skipped"] is False
+    assert loader.load_run(conn, run_dir)["skipped"] is False
     assert conn.execute("SELECT COUNT(*) FROM offerings").fetchone()[0] == 1
 
 

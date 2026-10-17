@@ -30,7 +30,7 @@ import logging
 import re
 import shutil
 import sys
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 
 import landmarks as sq  # local module
@@ -46,16 +46,13 @@ DOWNLOAD_TIMEOUT_MS = 60_000
 # The storageState login.py mints (the wrapper's /secrets mount).
 DEFAULT_STATE_PATH = login.DEFAULT_STATE_PATH
 
-# The --lookback default is resolved through
-# collectorkit.cli.resolve_lookback (default
-# DEFAULT_LOOKBACK_DAYS = 90). Sensible for incremental runs because
-# silver's window-DELETE-INSERT replaces overlapping rows on each
-# load, and the content-sha256 dedup means a wider re-run does not
-# re-download already-captured PDFs.
+# The --lookback default (90 days) suits incremental runs: load replaces
+# each CSV's own row span, and a document whose id a complete earlier
+# dump holds is not fetched again.
 
 # Customer ID is captured from the Positions XLS download filename
 # (`Positions_<cust>_<ddmmyyyy>_<hh>_<mm>.xls`). This regex pulls it
-# out and serves as a sanity check that we got the expected file.
+# out and serves as a sanity check that the expected file arrived.
 POSITIONS_FILENAME_RE = re.compile(
     r"^Positions_(?P<customer>\d+)_\d{8}_\d{2}_\d{2}\.xls$"
 )
@@ -142,7 +139,7 @@ def dismiss_guide_overlays(page) -> None:
 
     Swissquote occasionally shows a Pendo product-tour walkthrough
     whose full-page backdrop intercepts pointer events, blocking
-    clicks on otherwise-visible export buttons. We clear it before
+    clicks on otherwise-visible export buttons. It is cleared before
     each export interaction. Never raises — if there's no overlay,
     or the evaluate fails, the run proceeds unchanged.
     """
@@ -162,7 +159,7 @@ def _maybe_start_trace(context, enabled: bool):
 
 
 def _verify_session(page) -> None:
-    """Hit an F5-protected URL; raise unless we land at the post-auth URL.
+    """Hit an F5-protected URL; raise unless the page lands at the post-auth URL.
 
     Navigating DIRECTLY to the Trading Platform proves nothing (F5 lets
     it load as a blank SPA when unauthenticated), so the probe is always
@@ -202,8 +199,8 @@ def _set_date_picker(page, picker_index: int, d: date) -> None:
     the visible value reverted as soon as the page re-rendered. The
     trick that works is to bypass React's input wrapper by calling
     the *native* HTMLInputElement value setter and then dispatching
-    a synthetic `input` event ourselves — the React onChange handler
-    listens for that and accepts our value.
+    a synthetic `input` event — the React onChange handler listens
+    for that and accepts the value.
     """
     page.evaluate(
         """({idx, day, month, year}) => {
@@ -232,13 +229,11 @@ def _set_date_picker(page, picker_index: int, d: date) -> None:
 
 
 def export_transactions_window(
-    page, run_dir: Path, n: int, window_start: date, window_end: date,
+    page, run_dir: Path, window_start: date, window_end: date,
 ) -> dict:
-    """Export one (window_start, window_end) chunk as transactions_NNN.csv.
-
-    Returns the metadata entry for run.json. The dropdown's CSV menu
-    item is discovered at click-time; the dropdown is closed before
-    we return, so subsequent windows start from a clean state.
+    """Export the whole window as one CSV, transactions_000.csv, and
+    return its run.json entry. The dropdown's CSV menu item is
+    discovered at click-time.
     """
     log.info("Transactions window %s -> %s", window_start, window_end)
 
@@ -246,10 +241,10 @@ def export_transactions_window(
     _set_date_picker(page, 0, window_start)
     _set_date_picker(page, 1, window_end)
 
-    # After setting dates we also need the page to apply them. The
+    # After the dates are set, the page has to apply them. The
     # Filters panel has an "Apply" button that becomes enabled once
     # the range changes; clicking it before opening the export
-    # dropdown ensures the export covers our intended window.
+    # dropdown ensures the export covers the intended window.
     try:
         apply_btn = page.get_by_role("button", name="Apply")
         if apply_btn.is_enabled(timeout=2000):
@@ -263,7 +258,7 @@ def export_transactions_window(
         page.locator(sq.TXN_EXPORT_MENU_CSV).click()
     dl = dl_info.value
 
-    target = run_dir / f"transactions_{n:03d}.csv"
+    target = run_dir / "transactions_000.csv"
     dl.save_as(str(target))
     log.info("Saved %s (source filename: %s)", target, dl.suggested_filename)
 
@@ -305,16 +300,13 @@ def scrape_accounts(page, run_dir: Path) -> list[dict]:
     """Scrape the eBanking #accountOverview/main account list.
 
     Each account is rendered as `<TYPE> <CUSTOMER_ID>` text inside
-    `li.AccountListItem .AccountDetails__portfolioTitle`. We parse
-    those strings into structured entries and write them to
+    `li.AccountListItem .AccountDetails__portfolioTitle`. Those
+    strings are parsed into structured entries and written to
     `accounts.json` in the run dir.
 
-    The list also drives silver's `accounts.account_product` column.
-    For single-account customers the result is one entry; the schema
-    supports multi-account customers natively (the wealthdb gold
-    adapter maps these to `tax_wrapper`: "Trading"/"Savings" →
-    taxable_personal, "Säule 3a" → pillar_3a, "Freizügigkeit" →
-    vested_benefits).
+    The list drives silver's `accounts.account_product`; the gold
+    adapter maps it to a tax wrapper (wealthdb/docs/adapters/swissquote.md).
+    The schema holds any number of accounts per customer.
     """
     page.goto(sq.EBANKING_BASE_URL, wait_until="domcontentloaded")
     page.wait_for_load_state("networkidle", timeout=LANDMARK_TIMEOUT_MS)
@@ -353,7 +345,7 @@ def scrape_position_details(page, run_dir: Path) -> list[dict]:
       - ISIN as the first path segment in each row's FullQuote link
         href (`…#fullQuote/{ISIN}/{type}_{CCY}`), available at rest.
       - Long instrument name in a hover tooltip on the symbol cell.
-        Not in the DOM at rest — we hover each cell once.
+        Not in the DOM at rest — each cell is hovered once.
 
     Writes one entry per (symbol, currency) position to
     `position_details.json`. The loader joins on (symbol, currency)
@@ -397,9 +389,9 @@ def scrape_position_details(page, run_dir: Path) -> list[dict]:
 
         # Currency lives in a sibling column. Cheaper to derive at
         # load time by joining against positions.xls on symbol, but
-        # we record the row's column for the loader's safety net.
+        # the row's column is recorded for the loader's safety net.
         # The href's trailing fragment (`…/4_CHF`) encodes the
-        # market+currency; we extract the currency suffix.
+        # market+currency; the currency suffix is extracted.
         ccy = None
         ccy_re = re.search(r"_([A-Z]{3})$", href)
         if ccy_re:
@@ -426,7 +418,7 @@ def scrape_position_details(page, run_dir: Path) -> list[dict]:
                 symbol, e,
             )
         # Move the mouse to a corner so the tooltip dismisses before
-        # we hover the next row.
+        # the next row is hovered.
         page.mouse.move(0, 0)
         page.wait_for_timeout(150)
 
@@ -536,7 +528,7 @@ def set_documents_period(page, since: date, until: date) -> None:
     _set_date_picker(page, 0, since)
     _set_date_picker(page, 1, until)
     page.get_by_role("button", name="Apply").click(timeout=LANDMARK_TIMEOUT_MS)
-    # Tiny pause so the spinner has a chance to render before we
+    # Tiny pause so the spinner has a chance to render before the
     # wait for its disappearance. Without this, wait_for(state="hidden")
     # races and returns immediately because the spinner hasn't been
     # added to the DOM yet.
@@ -550,9 +542,9 @@ def discover_documents(page) -> list[dict]:
     """Scrape the rendered DOM of the documents page for fetch URLs.
 
     Each document row contains an <a class="...downloadDocument">
-    whose href is the same REST endpoint we will call directly. We
-    pull absolute hrefs of every such anchor, then parse the path
-    and query string into structured metadata.
+    whose href is the same REST endpoint the download calls directly.
+    The absolute href of every such anchor is pulled, then its path
+    and query string are parsed into structured metadata.
 
     URL format:
       /sqc-ctrp-notifications-plugin/webapi/notifications/
@@ -646,8 +638,8 @@ def run(args: argparse.Namespace) -> int:
 
     since, until = cli.resolve_lookback(args)
 
-    run_ts_str = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = args.bronze_dir / run_ts_str
+    run_dir = bronze.run_dir(args.bronze_dir)
+    run_ts_str = run_dir.name
 
     existing_doc_ids = collect_existing_doc_ids(args.bronze_dir)
     log.info("Bronze tree contains %d already-downloaded document(s)",
@@ -728,7 +720,7 @@ def run(args: argparse.Namespace) -> int:
             accounts = scrape_accounts(page, run_dir)
 
             # --- Portfolio: positions + list_of_assets ---------------
-            # Doing this before transactions gives us the customer_id
+            # Doing this before transactions yields the customer_id
             # (parsed from the Positions XLS filename) early, which
             # other steps stamp into run.json.
             page.goto(
@@ -767,7 +759,7 @@ def run(args: argparse.Namespace) -> int:
             capture(page, "20_transactions_page")
 
             # Single CSV covering the whole window — no chunking.
-            entry = export_transactions_window(page, run_dir, 0, since, until)
+            entry = export_transactions_window(page, run_dir, since, until)
             txn_entries = [entry]
 
             # --- Documents -------------------------------------------
@@ -870,10 +862,7 @@ def run(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    cli.configure_logging(args.verbose)
 
     if args.trace and not args.screenshot_dir:
         raise SystemExit(

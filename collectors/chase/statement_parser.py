@@ -2,9 +2,11 @@
 """Parse a Chase statement PDF into transactions + balances.
 
 Two layouts live here, one per product, sharing only the `pdftotext -layout`
-extraction and the MM/DD row dating. `parse_statement_text` reads the
-**deposit** statement, `parse_card_statement_text` the **credit-card** one;
-see the card section below for why neither can read the other's document.
+extraction, the `StatementTxn` row and the amount parse; each dates its MM/DD
+rows its own way (`_row_date`, `_card_row_date`). `parse_statement_text`
+reads the **deposit** statement, `parse_card_statement_text` the
+**credit-card** one; see the card section below for why neither can read the
+other's document.
 
 Deposit statements
 ------------------

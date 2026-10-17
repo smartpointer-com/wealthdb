@@ -10,13 +10,6 @@ until UBS invalidates the session.
 The `--check` mode validates an existing state file against a live
 landmark URL without re-logging in (no QR challenge). See AGENTS.md
 §2: non-check invocations must be explicitly authorised.
-
-Usage:
-    login.py [--contract-number <num>]
-             [--env-file <path>] [--state-path <file>]
-             [--check] [--mfa-timeout <sec>]
-             [--qr-png <path>] [--no-terminal-qr]
-             [--screenshot-dir <dir>] [--trace]
 """
 
 from __future__ import annotations
@@ -143,15 +136,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 # ============================================================
-# Env-file loader
+# Contract number
 # ============================================================
 
 def resolve_contract_number(args: argparse.Namespace) -> str:
-    """CLI flag → env var → error. Honours --env-file.
+    """CLI flag, else env var, else exit; honours --env-file.
 
-    Per AGENTS.md §3 (secrets / value-with-env-fallback memory):
-    the contract number can be passed by value on the CLI or read
-    from an env var, but never as a password-style flag.
+    AGENTS.md §3: the contract number is passed by value or read from
+    the environment, never through a password-style flag.
     """
     env_files: list[Path]
     if args.env_file is not None:
@@ -477,7 +469,7 @@ def run_login(contract_number: str, state_path: Path, mfa_timeout: int,
             sys.stdout.flush()
 
             last_data_url = _render_qr_from_locator(
-                page, qr_locator, qr_png, terminal_qr,
+                qr_locator, qr_png, terminal_qr,
             )
 
             # ---------- Stage 3: wait for approval ----------
@@ -500,7 +492,7 @@ def run_login(contract_number: str, state_path: Path, mfa_timeout: int,
                 if current and current != last_data_url and current.startswith("data:image/"):
                     log.info("QR rotated; re-rendering")
                     last_data_url = _render_qr_from_locator(
-                        page, qr_locator, qr_png, terminal_qr,
+                        qr_locator, qr_png, terminal_qr,
                     )
                 # Short sleep — match the SPA's 2s cadence.
                 page.wait_for_timeout(ubs.QR_POLL_INTERVAL_SECONDS * 1000)
@@ -630,7 +622,7 @@ def _wait_for_qr_data_url(page, locator, timeout_s: int = 30) -> None:
     )
 
 
-def _render_qr_from_locator(page, locator, qr_png: Path | None,
+def _render_qr_from_locator(locator, qr_png: Path | None,
                             terminal_qr: bool) -> str:
     """Read the img data URL, decode, render to terminal + write PNG.
 
@@ -678,10 +670,7 @@ def _upscale_qr_png(png_bytes: bytes, factor: int) -> bytes:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    cli.configure_logging(args.verbose)
 
     # `--no-terminal-qr` is only sensible if we still have a way to
     # see the QR, i.e. via `--qr-png`. Enforce that pairing.

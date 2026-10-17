@@ -635,7 +635,7 @@ def test_a_separator_slip_does_not_cost_the_mortgage_date():
 
 
 def test_a_separator_slip_does_not_cost_the_balance_summary():
-    # Those dates are matched but never read, so a slip in one used to
+    # Those dates are matched but never read, so a slip in one must not
     # cost the whole summary — and with it the section.
     text = _COMBINED_TEXT.replace("Beginning Balance as of 01-01-23 $1,000.00",
                                   "Beginning Balance as of 01.01.23 $1,000.00")

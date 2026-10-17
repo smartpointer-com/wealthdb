@@ -185,7 +185,9 @@ device trust, and `download` signs in with the password against it.
 
 **`login` (Camoufox, interactive).** It opens the modal, pre-fills and
 submits the form. The SPA and Akamai JS then make the sensor-bearing
-`preLogonUser`/`logonUser` calls.
+`preLogonUser`/`logonUser` calls. A form that did not pre-fill is never
+submitted, since a blank submit counts as a failed sign-in. `vnc-login`
+then leaves Sign In to the person at the VNC display.
 
 - **Auth is detected by polling the SPA route.** The pinned Camoufox
   drops `.on()` response events across navigations, so no lone response

@@ -51,7 +51,7 @@ from typing import Any
 import requests
 from requests.exceptions import RequestException
 
-from collectorkit import cli, session
+from collectorkit import cli, session as ck_session
 
 BASE = "https://portal.pens-expert.ch"
 
@@ -65,7 +65,7 @@ DEFAULT_STATE_PATH = Path("/secrets/relevate-state.json")
 
 # Realistic Chrome-on-macOS UA + matching client-hint headers.
 # Airlock didn't appear to fingerprint beyond accepting valid
-# headers, but the SPA sends these values so we mirror them.
+# headers, but the SPA sends these values, so they are mirrored.
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -117,17 +117,13 @@ def state_into_jar(state: list[dict[str, Any]], jar: requests.cookies.RequestsCo
 
 def save_state(path: Path, jar: requests.cookies.RequestsCookieJar) -> None:
     payload = {
-        "minted_at": session.iso_now(),
+        "minted_at": ck_session.iso_now(),
         "issuer": "portal.pens-expert.ch",
         "schema_version": 1,
         "cookies": jar_to_state(jar),
     }
-    session.save_state(path, payload)
+    ck_session.save_state(path, payload)
     logger.info("state saved: %s (%d cookies)", path, len(payload["cookies"]))
-
-
-def load_state(path: Path) -> dict[str, Any] | None:
-    return session.load_state(path)
 
 
 # ----------------------------------------------------------------------
@@ -208,8 +204,8 @@ def step_b2c_access(session: requests.Session) -> dict[str, Any]:
     """
     POST with no body. Expected: 401 with a JSON:API envelope
     declaring the next step (PASSWORD_CHECK / similar). Captures
-    the challenge metadata even though we don't strictly need to
-    thread it back.
+    the challenge metadata even though nothing strictly needs it
+    threaded back.
     """
     logger.info("POST /b2c/access (probe)")
     resp = session.post(
@@ -253,7 +249,7 @@ def step_password_check(
     )
     if resp.status_code != 200:
         # Don't include resp.text in the exception — Airlock may
-        # echo the username back, and we don't want it in a stack
+        # echo the username back, and it must not reach a stack
         # trace destined for stderr.
         raise LoginError(
             f"/password/check expected 200, got {resp.status_code}",
@@ -314,7 +310,7 @@ def step_probe(session: requests.Session) -> bool:
 # ----------------------------------------------------------------------
 
 def do_check(state_path: Path) -> int:
-    state = load_state(state_path)
+    state = ck_session.load_state(state_path)
     if state is None:
         print("MISSING", flush=True)
         return 1
@@ -390,8 +386,8 @@ def do_login(args: argparse.Namespace) -> int:
         )
 
     # Loop the OTP prompt so a fat-finger doesn't burn the session.
-    # The prompt blocks indefinitely, which is what honours the
-    # wrapper's wider 1-hour expectation. Typing "resend" (or "r")
+    # The prompt has no wall clock, like every stdin-code collector
+    # (collectors/README.md). Typing "resend" (or "r")
     # re-runs /password/check to ask Airlock for a fresh mTAN —
     # necessary when the first SMS doesn't arrive or when the prior
     # code has timed out. Resends don't count against

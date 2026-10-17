@@ -63,17 +63,17 @@ def test_env_file_prefers_an_explicit_path(tmp_path):
 
 
 def test_env_file_returns_none_when_nothing_exists(monkeypatch, tmp_path):
-    monkeypatch.setattr(explore, "DEFAULT_ENV_FILE", tmp_path / "a.env")
-    monkeypatch.setattr(explore, "LEGACY_ENV_FILE", tmp_path / "b.env")
+    monkeypatch.setattr(explore, "DEFAULT_ENV_FILE_CANDIDATES",
+                        (tmp_path / "a.env", tmp_path / "b.env"))
     assert explore.resolve_env_file(None) is None
 
 
 def test_env_file_falls_back_to_the_bank_level_file(monkeypatch, tmp_path):
-    primary, legacy = tmp_path / "ubs-web.env", tmp_path / "ubs.env"
-    legacy.write_text("x=1\n")
-    monkeypatch.setattr(explore, "DEFAULT_ENV_FILE", primary)
-    monkeypatch.setattr(explore, "LEGACY_ENV_FILE", legacy)
-    assert explore.resolve_env_file(None) == legacy
+    primary, fallback = tmp_path / "ubs-web.env", tmp_path / "ubs.env"
+    fallback.write_text("x=1\n")
+    monkeypatch.setattr(explore, "DEFAULT_ENV_FILE_CANDIDATES",
+                        (primary, fallback))
+    assert explore.resolve_env_file(None) == fallback
 
 
 # --------------------------------------------------------------------

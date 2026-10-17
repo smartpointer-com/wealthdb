@@ -114,7 +114,7 @@ WALK = ("walk the three discovery flows (DESIGN.md §3): 1) log in via VNC, "
         "noting the 2FA factor offered and any 'remember this device' "
         "control; 2) open the statements/documents area and fetch at least "
         "one statement PDF; 3) open each account's full transaction history "
-        "and run every export format offered (CSV/QFX/OFX).")
+        "and run every export format offered (CSV/QFX/QIF/QBO).")
 
 
 def main(argv: list[str]) -> int:

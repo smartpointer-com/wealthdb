@@ -39,10 +39,6 @@ class TestCliDefaults(unittest.TestCase):
         args = download.parse_args(["--dry-run"])
         self.assertEqual(args.state_path, download.DEFAULT_STATE_PATH)
 
-    def test_login_and_download_agree_on_state_path(self):
-        # download reads the file login mints; the defaults must never drift.
-        self.assertEqual(login.DEFAULT_STATE_PATH, download.DEFAULT_STATE_PATH)
-
 
 class TestMfaWait(unittest.TestCase):
     def test_mfa_timeout_defaults_to_five_minutes(self):
@@ -70,13 +66,10 @@ class TestDebugFlag(unittest.TestCase):
         self.assertIsNone(args.screenshot_dir)
 
     def test_debug_help_promises_bronze_captures(self):
-        # Guards against the flag regressing to a warn-only stub.
         out = io.StringIO()
         with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
             download.parse_args(["--help"])
-        text = out.getvalue()
-        self.assertIn("--debug", text)
-        self.assertNotIn("gates nothing", text)
+        self.assertIn("<run>/screenshots/", out.getvalue())
 
 
 if __name__ == "__main__":

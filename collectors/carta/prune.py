@@ -7,9 +7,8 @@ prune engine) with carta's configuration. Two categories are removed,
 across every timestamped run dir under ``--bronze-dir``:
 
 * whole run dirs that are not complete dumps: ``run.json`` is missing (a
-  pre-status walk crashed before finalising) or its ``status`` is anything
-  other than ``"complete"`` (an ``"in-progress"`` marker from a crashed
-  walk). ``load`` skips such dirs; ``prune`` reclaims them once quiescent.
+  walk crashed before writing it) or its ``status`` is anything other than
+  ``"complete"`` (an ``"in-progress"`` marker from a crashed walk). ``load`` skips such dirs; ``prune`` reclaims them once quiescent.
 * ``screenshots/`` inside a complete dump: the landing-page DOM +
   screenshot ``download --debug`` writes. ``load`` never reads them, so
   reclaiming them cannot change silver. ``./carta explore``'s diagnostics
@@ -18,10 +17,9 @@ across every timestamped run dir under ``--bronze-dir``:
 
 Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
 at run-dir creation, atomically overwritten with ``"complete"`` at the
-end). A manifest with no ``status`` key predates the field and is
-classified COMPLETE: such a dump only ever got a ``run.json`` as the
-walk's final step, so its presence alone means the walk finished. An
-unreadable or corrupt ``run.json`` is UNKNOWN and never deleted.
+end). A manifest with no ``status`` key counts as complete: a download
+that writes no status writes its manifest only at the end. An unreadable
+or corrupt ``run.json`` is UNKNOWN and never deleted.
 ``--dry-run`` never creates a run dir, so there is no dry-run shell to
 prune.
 

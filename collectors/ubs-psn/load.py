@@ -7,9 +7,6 @@ into a SQLite silver database. Applies any pending schema migrations on
 startup. Each dump is loaded atomically: a failure mid-load rolls back
 to the prior state.
 
-Usage:
-    load.py --silver-db <path> --bronze-dir <path> [--relationship-id ID]
-
 Each immediate subdirectory of <bronze-dir> whose name matches the
 ubs-psn timestamp format (YYYYMMDDTHHMMSSZ) is considered a dump.
 Already-loaded dumps (recorded in dump_runs) are skipped. Inside a dump,
@@ -60,23 +57,14 @@ from pathlib import Path
 
 from collectorkit import bronze, cli, silver
 
-log = logging.getLogger("ubs-load")
+log = logging.getLogger("ubs-psn.load")
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
-SNAPSHOT_DIR_RE = re.compile(r"^(\d{8}T\d{6}Z)$")
 
 
 # --------------------------------------------------------------------------
 # Small helpers
 # --------------------------------------------------------------------------
-
-def parse_snapshot_at(dump_dir_name: str) -> int:
-    """'20200101T000000Z' -> Unix seconds UTC."""
-    m = SNAPSHOT_DIR_RE.match(dump_dir_name)
-    if not m:
-        raise ValueError(f"Not a snapshot directory name: {dump_dir_name!r}")
-    return bronze.parse_run_ts(m.group(1))
-
 
 def parse_yymmdd(s: str) -> int:
     """'YYMMDD' (e.g. '260511') -> Unix seconds UTC at 00:00:00.
@@ -127,7 +115,7 @@ def file_snapshot_at(fname: str) -> int | None:
 # open_db + schema versioning + the migration runner live in
 # collectorkit.silver. ubs-psn wraps each dump in `with conn:` for per-dump
 # atomicity, so it shares silver's default-isolation opener (mkdir + connect +
-# foreign_keys, no row_factory/WAL) rather than keeping its own copy.
+# foreign keys + WAL, no row_factory) rather than keeping its own copy.
 open_db = silver.open_db_default_isolation
 
 
@@ -638,8 +626,8 @@ def load_tdcapi(conn, snapshot_at, relationship_id, entities):
 
     AcctId is canonicalised to IBAN via cash_accounts.payload.AcctId
     (same convention as MT940). If the lookup misses (SDCA not yet
-    loaded for this account), we fall back to the raw AcctId with a
-    warning; a later reload after SDCA lands will canonicalise it.
+    loaded for this account), the raw AcctId is stored with a warning;
+    the row keeps that form, since no later load revisits it.
     """
     n = 0
     for elem in entities:
@@ -1000,9 +988,8 @@ def load_mt940(conn, snapshot_at, relationship_id, mt_text):
     # pair tells it apart from its sibling. A re-delivered statement
     # prints the same lines in the same order, so the position is as
     # stable across re-loads as the reference is. The first occurrence
-    # keeps the bare id, as the ubs-web statement loader does with its
-    # split bundles (_stmt_txn_id), so a single-entry reference keeps
-    # the plain reference-based id.
+    # keeps the bare id, so a single-entry reference keeps the plain
+    # reference-based id.
     occurrence: dict[str, int] = {}
     for parsed_61, narrative in movements:
         # event_external_id: prefer the bank reference; fall back to a deterministic
@@ -1069,8 +1056,8 @@ def load_mt566(conn, snapshot_at, relationship_id, mt_text):
     """MT566 Corporate Action Confirmation.
 
     Event id = SEME (sender's reference) from :20C::SEME//.
-    timestamp = posting/payment date (try :98A::POST// / :98A::PAYD// /
-    statement-prep date, in that order).
+    timestamp = the first of :98A::POST//, :98A::PAYD//, :98A::VALU//;
+    else the file's snapshot_at.
     account = safekeeping ID from :97A::SAFE//, when present.
     Row-level upsert (INSERT OR REPLACE) on event_external_id; UBS issues
     a fresh MT566 with status CANC for retractions, not a silent delete.
@@ -1424,7 +1411,7 @@ MT_LOADERS = {
 def load_dump(conn: sqlite3.Connection, dump_dir: Path,
               relationship_id: str) -> dict:
     name = dump_dir.name
-    snapshot_at = parse_snapshot_at(name)
+    snapshot_at = bronze.parse_run_ts(name)
 
     if conn.execute(
         "SELECT 1 FROM dump_runs WHERE snapshot_at = ?", (snapshot_at,)

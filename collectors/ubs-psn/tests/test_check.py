@@ -103,3 +103,35 @@ def test_probe_runs_before_the_bronze_dir_check(monkeypatch, tmp_path):
     ])
     assert download.main() == 0
     assert client.closed is True
+
+
+def test_a_named_env_file_supplies_the_client_id(monkeypatch, tmp_path):
+    # The file a run names is sourced before the client id is resolved, and
+    # its values win over what the environment already holds.
+    env = tmp_path / "ubs-psn.env"
+    env.write_text('UBS_PSN_CLIENT_ID="FILE-ID"\n', encoding="utf-8")
+    monkeypatch.setenv("UBS_PSN_CLIENT_ID", "ENV-ID")
+    seen = []
+    client = _FakeClient()
+
+    def connect(args):
+        seen.append(args.client_id)
+        return client
+    monkeypatch.setattr(download, "connect", connect)
+    monkeypatch.setattr(sys, "argv", ["download.py", "--check",
+                                      "--env-file", str(env)])
+    assert download.main() == 0
+    assert seen == ["FILE-ID"]
+
+
+def test_a_named_env_file_that_is_absent_exits(monkeypatch, tmp_path):
+    monkeypatch.setattr(download, "connect", lambda args: _FakeClient())
+    missing = tmp_path / "absent.env"
+    monkeypatch.setattr(sys, "argv", ["download.py", "--check",
+                                      "--env-file", str(missing)])
+    with pytest.raises(SystemExit, match="--env-file names no file"):
+        download.main()
+    monkeypatch.setenv("UBS_PSN_ENV_FILE", str(missing))
+    monkeypatch.setattr(sys, "argv", ["download.py", "--check"])
+    with pytest.raises(SystemExit, match="UBS_PSN_ENV_FILE names no file"):
+        download.main()

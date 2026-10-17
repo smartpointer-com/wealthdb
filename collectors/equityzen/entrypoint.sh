@@ -9,17 +9,13 @@
 # - `download`: same per-surface browse pattern as explore (headed
 #   Camoufox under Xvfb, no VNC).
 # - `load`:    pure SQLite + Python (+ pdftotext for PDF parsing), no browser.
-#
-# When Xvfb IS started, it's started directly rather than via `xvfb-run`:
-# the Ubuntu Noble xvfb-run script's SIGUSR1 ready-signaling hangs under
-# a non-root parent. Socket-existence polling is a version-independent
-# ready signal.
+# - `prune`:   pure file walk, no browser.
 
 set -euo pipefail
 
 # Xvfb / x11vnc / camoufox-cache bootstrap (VFB_DISPLAY, start_xvfb,
-# start_x11vnc) is shared across the camoufox collectors, baked into
-# base-camoufox at /opt/entrypoint-lib.sh.
+# start_x11vnc), shared by the browser collectors and baked into
+# base-playwright at /opt/entrypoint-lib.sh.
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
@@ -28,9 +24,10 @@ case "${1:-help}" in
         # Discovery harness. Drives Camoufox over VNC, records every
         # click + every network fetch into /debug/<ts>/ so login.py +
         # download.py can be written from real traces.
+        shift
+        exec_if_help explore.py "$@"
         start_xvfb
         start_x11vnc explore
-        shift
         exec python3 /app/explore.py "$@"
         ;;
     login)
@@ -38,16 +35,18 @@ case "${1:-help}" in
         # headed Camoufox in the Xvfb virtual display (the proven stealth
         # fingerprint) — no VNC. Xvfb is needed for the headed browser; the
         # only interaction is the CLI TOTP prompt.
-        start_xvfb
         shift
+        exec_if_help login.py "$@"
+        start_xvfb
         exec python3 /app/login.py "$@"
         ;;
     download)
         # Per-surface browse + GraphQL-capture loop. Headed Camoufox in the
         # Xvfb display (same engine/fingerprint as login), no VNC. Uses the
         # same persistent profile as login.py so authentication carries over.
-        start_xvfb
         shift
+        exec_if_help download.py "$@"
+        start_xvfb
         exec python3 /app/download.py "$@"
         ;;
     load)

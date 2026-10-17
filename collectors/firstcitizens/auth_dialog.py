@@ -33,12 +33,6 @@ KIND_LABELS = {
     "other": "Send me a code",
 }
 
-# Observed one-time-code length is not pinned (the code never reached this
-# dialog in the read-only captures), so no length is asserted — the server's
-# validate call is the final ruling, and asserting a wrong length would wedge
-# a real login. Only empty / non-numeric input is rejected.
-
-
 def choose_target(targets: tuple[AccessCodeTarget, ...], *,
                   input_fn: Callable[[str], str] = input,
                   output_fn: Callable[[str], None] = print) -> AccessCodeTarget:

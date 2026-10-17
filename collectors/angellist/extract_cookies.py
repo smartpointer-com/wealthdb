@@ -13,11 +13,12 @@ This reads the `angellist`-host cookies out of a Firefox cookie DB and
 writes them as a Playwright `add_cookies()`-shaped JSON list (the format
 download.py / explore.py inject with `context.add_cookies`). Cookie
 VALUES are never printed/logged — only names, hosts, and flags — and the
-output file is chmod 0600 (it is a credential).
+output file is written atomically at 0600 (it is a credential).
 
-Firefox keeps cookies.sqlite open (WAL), so we copy the DB + -wal + -shm
-to a temp dir and read the copy, which replays any pending WAL writes;
-that way a freshly-set login cookie is visible even while Firefox runs.
+Firefox keeps cookies.sqlite open (WAL), so the DB + -wal + -shm are
+copied to a temp dir and the copy is read, which replays any pending WAL
+writes; that way a freshly-set login cookie is visible even while Firefox
+runs.
 Run it AFTER closing Firefox for the most reliable capture of any
 session-scoped cookies (Firefox flushes those on a clean shutdown when
 session-restore is enabled — login seeds that pref).
@@ -25,15 +26,15 @@ session-restore is enabled — login seeds that pref).
 from __future__ import annotations
 
 import argparse
-import json
 import logging
-import os
 import shutil
 import sqlite3
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+from collectorkit import cli, session
 
 log = logging.getLogger("angellist.extract_cookies")
 
@@ -156,10 +157,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    cli.configure_logging(args.verbose)
     # --require-valid: the `login` fast path — succeed only if the saved
     # profile is still logged in, otherwise signal "needs a fresh login" (3)
     # without touching the output file.
@@ -182,14 +180,9 @@ def main(argv: list[str]) -> int:
                   "re-run.)", args.host_filter, args.db)
         return 1
 
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    # Write 0600 from the start (mode honored only on create), then chmod
-    # to be sure on an overwrite.
-    fd = os.open(str(args.out), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fp:
-        json.dump(cookies, fp, indent=2)
-        fp.write("\n")
-    os.chmod(args.out, 0o600)
+    # A tmp file at 0600, renamed into place: a crash mid-write leaves the
+    # previous jar whole, and the jar is never readable wider than 0600.
+    session.save_state(args.out, cookies)
 
     # Summary — names/hosts/flags only, never values.
     hosts = sorted({c["domain"] for c in cookies})

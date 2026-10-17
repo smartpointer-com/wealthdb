@@ -44,7 +44,7 @@ import sys
 import time
 from pathlib import Path
 
-from collectorkit import bronze, cli, session
+from collectorkit import bronze, cli, envfile, session
 
 import appkeys
 import items
@@ -731,7 +731,7 @@ def _link(args: argparse.Namespace, client: plaidapi.Client) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     cli.configure_logging(args.verbose)
-    appkeys.source_env_file(args.env_file)
+    envfile.source_named_env_file(args.env_file, "PLAID_ENV_FILE")
     client = make_client(appkeys.environment(args), args.client_id)
     try:
         return link(args, client)

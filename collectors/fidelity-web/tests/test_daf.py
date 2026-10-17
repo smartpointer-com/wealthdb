@@ -163,8 +163,8 @@ def test_doc_stem_is_pii_free():
 
 def test_fetch_paged_follows_pages_and_stops_at_total():
     # 3 items total across 2 pages of size 100 (synthetic: page 1 has 100,
-    # page 2 has the remaining — but we fake small counts and rely on the
-    # total to stop).
+    # page 2 has the remaining — but the fake uses small counts and relies
+    # on the total to stop).
     def grants_route(q):
         page_no = int(q.get("page", ["1"])[0])
         if page_no == 1:
@@ -366,7 +366,7 @@ def test_scrape_daf_no_daf_when_sso_bounces(tmp_path):
     page = FakePage(FakeRequestCtx({}),
                     url="https://digital.fidelity.com/prgw/digital/signin/")
 
-    # goto keeps us on a non-DAF host; navigate_sso should give up.
+    # goto stays on a non-DAF host; navigate_sso should give up.
     def _stay(url, wait_until=None, timeout=None):
         page._url = "https://digital.fidelity.com/prgw/digital/signin/"
     page.goto = _stay

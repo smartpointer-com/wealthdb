@@ -14,14 +14,14 @@ browser the `schwab-web` collector uses), pre-fills the Schwab login
 credentials, auto-submits, prompts for the 2FA code on stdin, drives the
 Terms / account-selection / review consent pages (ticking every account
 checkbox), captures the `?code=…` redirect to the callback URL, and
-exchanges it for the token bundle. All browser activity can be traced
-(--trace).
+exchanges it for the token bundle. --screenshot-dir captures each page;
+--trace adds a Playwright trace, which crashes the pinned browser build.
 
 Modes:
   - default (--cli-mfa) Camoufox flow that auto-submits the login form,
                        prompts for the 2FA code on stdin, and drives the
                        consent / account-link pages. Used by `login`.
-  - --no-cli-mfa       Camoufox flow you drive yourself over VNC — the
+  - --no-cli-mfa       Camoufox flow driven by hand over VNC — the
                        `vnc-login` subcommand uses this (fallback on UI
                        drift). The account checkboxes are still auto-ticked.
   - --manual           No browser: print the authorize URL, paste the
@@ -75,7 +75,7 @@ _CRED_OVERRIDE_VARS = frozenset({
 
 # Env files sourced (first existing path of each set, container then host
 # form). schwab-api.env carries the OAuth app credentials; schwab-web.env
-# carries the Schwab login id/password we pre-fill into the consent login.
+# carries the Schwab login id/password pre-filled into the consent login.
 _ENV_FILE_SETS = (
     (Path("/secrets/schwab-api.env"), Path.home() / ".secrets" / "schwab-api.env"),
     (Path("/secrets/schwab-web.env"), Path.home() / ".secrets" / "schwab-web.env"),
@@ -96,7 +96,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--env-file", type=Path, default=None,
-        help="Extra KEY=VALUE credentials env file, sourced last so its "
+        help="Extra Bash-sourced credentials env file, read last so its "
              "values win over the default schwab-api.env / schwab-web.env "
              "(also honours the SCHWAB_API_ENV_FILE env var).",
     )
@@ -111,7 +111,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--callback-url", default=lm.DEFAULT_CALLBACK_URL,
-        help=f"OAuth callback URL registered with your Schwab app "
+        help=f"OAuth callback URL registered with the Schwab app "
              f"(default: {lm.DEFAULT_CALLBACK_URL}). Must match the portal "
              f"value exactly.",
     )
@@ -127,8 +127,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--no-cli-mfa", dest="cli_mfa", action="store_false",
-        help="Don't automate — drive login / 2FA / consent yourself over "
-             "VNC (the `vnc-login` subcommand uses this).",
+        help="Don't automate — login / 2FA / consent are driven by hand "
+             "over VNC (the `vnc-login` subcommand uses this).",
     )
     p.set_defaults(cli_mfa=True)
     p.add_argument(
@@ -183,7 +183,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 # ============================================================
-# Env-file loading (mirrors schwab-web)
+# Env-file loading
 # ============================================================
 
 def source_env_files(explicit: Path | None = None) -> None:
@@ -196,8 +196,8 @@ def source_env_files(explicit: Path | None = None) -> None:
             if path.exists():
                 envfile.load_env_file(path, _CRED_OVERRIDE_VARS, logger=log)
                 break
-    # An explicit --env-file / ${SCHWAB_API}_ENV_FILE is sourced LAST so its
-    # credential values win over the defaults.
+    # An explicit --env-file (or $SCHWAB_API_ENV_FILE) is sourced last, so
+    # its credential values win.
     lead = explicit or (Path(os.environ["SCHWAB_API_ENV_FILE"])
                         if os.environ.get("SCHWAB_API_ENV_FILE") else None)
     if lead is not None:
@@ -273,7 +273,7 @@ def probe_token(args: argparse.Namespace) -> int:
             args.token_path, client_id, client_secret)
         response = client.get_account_numbers()
     except _tokenclient.oauth_error_types() as exc:
-        print(_tokenclient.explain_token_failure(args.token_path, exc))
+        print(_tokenclient.explain_token_failure(exc))
         print("Session:           REJECTED")
         return CHECK_REJECTED
     except Exception as exc:  # noqa: BLE001 - any transport fault
@@ -709,7 +709,7 @@ def select_all_link_accounts(page, screenshot_dir=None, seen=None) -> int:
         return 0
     if seen is not None and not seen[0]:
         seen[0] = True
-        # Report what we can see so the selector + state-read is verifiable
+        # Report what is visible so the selector + state-read is verifiable
         # from the CLI log even on a run where everything is already ticked.
         try:
             boxes = page.locator(lm.ACCOUNT_CHECKBOX_SELECTOR)
@@ -1076,10 +1076,7 @@ def cmd_login_manual(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     console_level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(
-        level=console_level,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    logging.basicConfig(level=console_level, format=cli.LOG_FORMAT)
     debugcap.tee_debug_log(args.screenshot_dir, console_level, log=log)
     if args.trace and args.screenshot_dir is None:
         raise SystemExit("--trace requires --screenshot-dir (see AGENTS.md §4).")

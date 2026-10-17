@@ -4,7 +4,7 @@ UBS web-scrape silver loader.
 
 Walks the bronze directory laid down by `download.py`, applies any
 pending schema migrations, and loads each new dump into the silver
-SQLite database defined by `migrations/0001_initial.sql`.
+SQLite database defined by `migrations/`.
 
 Load semantics
 --------------
@@ -27,9 +27,6 @@ Load semantics
   positions) take a new row per `snapshot_at` (dedup-by-PK only).
 - Documents are indexed by `doc_token` (UBS API token); the binary
   itself stays on disk under bronze.
-
-Usage:
-    load.py --silver-db <file> --bronze-dir <dir> [-v]
 """
 
 from __future__ import annotations
@@ -94,9 +91,8 @@ SUPPLIED_STMT_OF_ASSETS_DOC_TYPE = "Statement of assets"
 # whole point of it, since the number is what carries the row to the twin
 # leg the export already holds, and why `_assign_export_txn_ids` leaves that
 # number on the payment rather than on its fee — so from the id alone it is
-# indistinguishable
-# from an export row, and a prefix delete would either miss it or take the
-# export with it. It is recognised by the marker the parser writes into its
+# indistinguishable from an export row, and a prefix delete would either
+# miss it or take the export with it. It is recognised by the marker the parser writes into its
 # payload instead (`document` = `payment_advice_pdf`), which no export row
 # carries — an export payload being the CSV line verbatim — and no statement
 # row spells.
@@ -157,7 +153,7 @@ def _purge_stale_document_rows(conn: sqlite3.Connection) -> int:
              "written; dropped %d for re-derivation", dropped)
     return dropped
 
-# UBS positions.csv columns we care about (semicolon-delimited,
+# The UBS positions.csv columns the loader reads (semicolon-delimited,
 # UTF-8 BOM, CRLF). Header row defines them in the order below.
 POSITIONS_COLS = [
     "Banking relationship", "Portfolio", "Group of products",
@@ -172,13 +168,8 @@ POSITIONS_COLS = [
     "% of accrued interest",
 ]
 
-# Transactions CSV header (UTF-8 BOM, semicolon, CRLF). Header row
-# is the 9th line; first 8 are metadata.
-TXN_DATA_HEADER = (
-    "Trade date;Trade time;Booking date;Value date;Currency;"
-    "Debit;Credit;Individual amount;Balance;Transaction no.;"
-    "Description1;Description2;Description3;Footnotes;"
-)
+# Transactions CSV (UTF-8 BOM, semicolon, CRLF): a metadata block, then
+# the data header row that starts with "Trade date;".
 TXN_HEADER_FROM = "From:"
 TXN_HEADER_IBAN = "IBAN:"
 # The metadata block sits within the first lines of the file.
@@ -301,23 +292,6 @@ def ts_from_dir(name: str) -> int:
     return bronze.parse_run_ts(name)
 
 
-def ts_from_iso(s: str | None) -> int | None:
-    """Parse 'YYYY-MM-DD' (or full ISO timestamp) -> Unix seconds UTC."""
-    if not s:
-        return None
-    # Accept both 'YYYY-MM-DD' and 'YYYYMMDDTHHMMSSZ' forms.
-    try:
-        if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
-            dt = datetime.strptime(s, "%Y-%m-%d")
-        else:
-            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp())
-
-
 def ts_from_dmy(s: str | None) -> int | None:
     """Parse 'DD.MM.YYYY' -> Unix seconds UTC, midnight."""
     if not s:
@@ -397,12 +371,13 @@ def normalize_payload(data: dict) -> str:
 # ============================================================
 
 def load_dump(conn: sqlite3.Connection, dump_dir: Path,
-              schema_version: int, parse_cache: dict) -> None:
+              schema_version: int, parse_cache: dict,
+              mt940_floors: dict[str, int]) -> None:
     """Load one bronze dump into silver. Single transaction.
 
     `parse_cache` is shared across the whole load run so each document
-    in the cumulative archive is parsed once (see
-    `_load_historical_from_pdfs`)."""
+    in the cumulative archive is parsed once, and `mt940_floors` is the
+    run's per-account MT940 cut-over (see `_load_historical_from_pdfs`)."""
     snapshot_at = ts_from_dir(dump_dir.name)
     log.info("loading %s (snapshot_at=%d)", dump_dir.name, snapshot_at)
 
@@ -415,7 +390,7 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
     ptxn_count = _load_portfolio_transactions(conn, snapshot_at, dump_dir)
     doc_count = _load_documents(conn, snapshot_at, dump_dir, run_meta)
     hist_pos, hist_cash, hist_mort, hist_txn = _load_historical_from_pdfs(
-        conn, snapshot_at, dump_dir, parse_cache)
+        conn, snapshot_at, dump_dir, parse_cache, mt940_floors)
     card_acc, card_txn, card_inv, card_stmt = _load_cards(
         conn, snapshot_at, dump_dir)
 
@@ -451,8 +426,8 @@ def _insert_dump_run(conn: sqlite3.Connection, snapshot_at: int,
         ") VALUES (?, ?, ?, ?, ?)",
         (
             snapshot_at, schema_version, str(dump_dir),
-            ts_from_iso(window.get("since")),
-            ts_from_iso(window.get("until")),
+            card_parsers.ts(window.get("since")),
+            card_parsers.ts(window.get("until")),
         ),
     )
 
@@ -485,7 +460,7 @@ def _load_positions(conn: sqlite3.Connection, snapshot_at: int,
     # portfolio code; loading it last means the `INSERT OR IGNORE`
     # on accounts keeps the real per-portfolio mapping where one
     # exists, and only the truly-unassigned accounts inherit the
-    # catch-all. For positions we additionally track (account, isin)
+    # catch-all. For positions the loader also tracks (account, isin)
     # pairs already inserted from a per-portfolio CSV and skip the
     # consolidated row for them, otherwise every holding ends up
     # double-counted (once under its real portfolio, once under the
@@ -591,7 +566,7 @@ def _ingest_positions_row(conn: sqlite3.Connection, snapshot_at: int,
     isin = row["ISIN"] or None
 
     # banking_relationships (one synthetic row per relationship-prefix).
-    # We don't see the opaque bankingRelationId token in positions.csv,
+    # positions.csv does not carry the opaque bankingRelationId token,
     # so the prefix doubles as the id here.
     if relationship_prefix and relationship_prefix not in seen_relationships:
         seen_relationships.add(relationship_prefix)
@@ -727,8 +702,8 @@ def _ingest_mortgage_row(conn: sqlite3.Connection, snapshot_at: int,
     """Insert a single 'Pro memoria - Mortgages' row into the
     `mortgages` silver table. The CSV uses the IBAN / Category /
     Date columns as overflow slots for mortgage-specific data —
-    we promote the parts we know about and stash the rest in
-    `payload` for forensics. See migration 0004."""
+    the known parts are promoted and the rest is kept in `payload`
+    for forensics. See migration 0004."""
     account_ext = (row.get("Product") or "").strip()
     if not account_ext:
         return 0
@@ -1308,7 +1283,7 @@ def _parse_transactions_csv(csv_path: Path) -> list[dict]:
         if not txn_no:
             continue
         value_date_s = _cell(raw, idx, "Value date") or trade_date
-        value_date_ts = ts_from_iso(value_date_s)
+        value_date_ts = card_parsers.ts(value_date_s)
         if not value_date_ts:
             log.warning("unparseable value_date %r in %s; skipping row",
                         value_date_s, csv_path.name)
@@ -1317,8 +1292,8 @@ def _parse_transactions_csv(csv_path: Path) -> list[dict]:
         rows.append({
             "txn_no": txn_no,
             "account_external_id": account_ext,
-            "trade_date": ts_from_iso(trade_date),
-            "booking_date": ts_from_iso(_cell(raw, idx, "Booking date")),
+            "trade_date": card_parsers.ts(trade_date),
+            "booking_date": card_parsers.ts(_cell(raw, idx, "Booking date")),
             "value_date": value_date_ts,
             "currency_iso": _cell(raw, idx, "Currency"),
             "amount_debit": parse_decimal(_cell(raw, idx, "Debit")),
@@ -1812,8 +1787,9 @@ def _parse_one_pdf(args: tuple[str, str, str, str | None]
 
 
 def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
-                               dump_dir: Path,
-                               parse_cache: dict) -> tuple[int, int, int, int]:
+                               dump_dir: Path, parse_cache: dict,
+                               mt940_floors: dict[str, int],
+                               ) -> tuple[int, int, int, int]:
     """Walk every PDF tracked in the documents table whose label
     indicates a Statement of assets, an Account Statement, a
     Maturity notice, a payment advice or a securities advice; parse it
@@ -1837,7 +1813,15 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     dump. The per-dump inserts below still run for every dump, so the
     silver tables stay byte-identical to parsing every dump afresh —
     including the last-dump snapshot_at stamping on statement-derived
-    transaction upserts."""
+    transaction upserts.
+
+    `mt940_floors` is the per-account MT940 cut-over
+    (`_mt940_floors_by_account`): coverage can begin at different dates
+    per account (or be absent), so a single global floor would silently
+    drop movements. PDF movements are ingested only BELOW each account's
+    own floor; MT940 owns everything from the floor onward. It is computed
+    once per load from the dumps the load reads, so it is independent of
+    dump load order."""
     docs_dir = dump_dir / "documents"
     if not docs_dir.is_dir():
         return 0, 0, 0, 0
@@ -1870,14 +1854,6 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     # whose archive lists nothing parseable, returns above this line — and
     # purging there would empty the historical tables and put nothing back.
     _purge_stale_document_rows(conn)
-
-    # Per-account MT940 cut-over floors: coverage can begin at
-    # different dates per account (or be absent), so a single global
-    # floor would silently drop movements. PDF movements are ingested
-    # only BELOW each account's own MT940 floor; MT940 owns everything
-    # from the floor onward. Computed from the bronze tree, so it is
-    # independent of dump load order.
-    mt940_floors = _mt940_floors_by_account(dump_dir)
 
     # Split the archive into already-parsed docs (replay cached rows)
     # and docs this run has not parsed yet (submit to the pool once).
@@ -2077,24 +2053,26 @@ def _insert_hist_cash_balances(conn: sqlite3.Connection,
                         _HIST_CASH_BALANCE_COLUMNS, rows)
 
 
-def _mt940_floors_by_account(dump_dir: Path) -> dict[str, int]:
+def _mt940_floors_by_account(dumps: list[Path]) -> dict[str, int]:
     """Per-account MT940 coverage floor (Unix seconds), read from the
-    `From:` line of every `transactions/cash_*.csv` in the WHOLE
-    bronze tree (all dumps), keyed by canonical IBAN.
+    `From:` line of every `transactions/cash_*.csv` in `dumps` (the
+    dumps the load reads, `loadable_dumps`), keyed by canonical IBAN.
 
     The MT940/CSV feed is authoritative from its declared `From:`
     date onward for the account it covers; below that date the PDF
     Account Statements are the only source. Coverage is uneven per
-    account, so we take the EARLIEST `From:` seen for each account.
+    account, so the EARLIEST `From:` seen for each account is taken.
     Accounts that never appear in any CSV are absent from the map —
-    the PDF then owns all of their history (no cut-over)."""
+    the PDF then owns all of their history (no cut-over). A dump the
+    load skips (a crashed walk) is not read: its export never reaches
+    silver, so it must not move a floor."""
     floors: dict[str, int] = {}
-    root = dump_dir.parent if dump_dir.parent.is_dir() else dump_dir
-    for csv_path in sorted(root.glob("*/transactions/cash_*.csv")):
+    for csv_path in (path for dump_dir in dumps
+                     for path in sorted((dump_dir / "transactions")
+                                        .glob("cash_*.csv"))):
         iban = None
         frm = None
-        # Only the metadata block is read: this walks every export in the
-        # tree once per dump loaded.
+        # Only the metadata block is read.
         try:
             with csv_path.open(encoding="utf-8-sig") as f:
                 lines = [ln.rstrip("\r\n")
@@ -2107,7 +2085,7 @@ def _mt940_floors_by_account(dump_dir: Path) -> dict[str, int]:
             elif ln.startswith(TXN_HEADER_FROM):
                 frm = _txn_header_value(ln)
         acct = iban_canonical(iban)
-        floor = ts_from_iso(frm)
+        floor = card_parsers.ts(frm)
         if not acct or not floor:
             continue
         if acct not in floors or floor < floors[acct]:
@@ -2424,14 +2402,16 @@ def _derive_documents_without_a_new_dump(
     Runs against the newest dump that has an archive directory. Which
     dump is immaterial to what is derived — the file paths come from the
     `documents` table, which spans every dump — and the newest is the
-    right stamp for rows written now.
+    right stamp for rows written now. With no such dump there is nothing
+    to walk, and the parser fingerprint (which imports pdfplumber) is
+    never computed.
     """
+    newest = next((d for d in reversed(dumps) if (d / "documents").is_dir()), None)
+    if newest is None:
+        return
     stale = silver.stale_generation(conn, DOCUMENT_GENERATION_SCOPE,
                                     _document_generation())
     if not stale and not supplied:
-        return
-    newest = next((d for d in reversed(dumps) if (d / "documents").is_dir()), None)
-    if newest is None:
         return
     log.info("%s and no loaded dump walked the archive; deriving it "
              "against %s",
@@ -2441,7 +2421,8 @@ def _derive_documents_without_a_new_dump(
     try:
         conn.execute("BEGIN")
         pos, cash, mort, txn = _load_historical_from_pdfs(
-            conn, ts_from_dir(newest.name), newest, parse_cache)
+            conn, ts_from_dir(newest.name), newest, parse_cache,
+            _mt940_floors_by_account(dumps))
         conn.execute("COMMIT")
     except Exception:  # noqa: BLE001 — log + rollback, as the dump loop does
         conn.execute("ROLLBACK")
@@ -2491,14 +2472,20 @@ def main(argv: list[str]) -> int:
     # Shared across dumps: parse each archived document once, replay the
     # cached rows for the later dumps that re-list it.
     parse_cache: dict = {}
+    # Read off the loadable dumps' exports once, on the first dump this
+    # run loads; bronze does not change during a load.
+    mt940_floors: dict[str, int] | None = None
     for dump_dir in dumps:
         if already_loaded(conn, dump_dir):
             n_skipped += 1
             log.debug("skipping already-loaded dump %s", dump_dir.name)
             continue
+        if mt940_floors is None:
+            mt940_floors = _mt940_floors_by_account(dumps)
         try:
             conn.execute("BEGIN")
-            load_dump(conn, dump_dir, schema_version, parse_cache)
+            load_dump(conn, dump_dir, schema_version, parse_cache,
+                      mt940_floors)
             conn.execute("COMMIT")
             n_loaded += 1
             walked = walked or (dump_dir / "documents").is_dir()

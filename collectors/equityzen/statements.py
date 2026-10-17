@@ -120,9 +120,9 @@ def parse_k1(text: str) -> dict:
     tax-basis NAV. The Part III box amounts (income / gains / distributions)
     are NOT extracted: in `pdftotext` output they sit in a form grid and a
     naive label→value scan grabs adjacent box *numbers*, not amounts (e.g.
-    "14"/"15"). Rather than store wrong figures we leave them out; they can be
-    re-parsed from the bronze PDF when a grid-aware extractor exists. We also
-    deliberately do NOT keep the full K-1 text (it carries SSN/EIN/address)."""
+    "14"/"15"). Rather than store wrong figures they are left out; they can be
+    re-parsed from the bronze PDF when a grid-aware extractor exists. The full
+    K-1 text is deliberately NOT kept either (it carries SSN/EIN/address)."""
     return {
         "tax_year": _tax_year(text),
         "is_final": bool(re.search(r"Final\s+K-?1\s*\n?\s*X", text, re.I)),

@@ -22,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import amexclient  # noqa: E402
 import download  # noqa: E402
 import login  # noqa: E402
-from collectorkit import bronze  # noqa: E402
 
 KEY = "0123456789ABCDEF0123456789ABCDEF"
 KEY_B = "FEDCBA9876543210FEDCBA9876543210"
@@ -107,8 +106,8 @@ def test_the_mfa_flags_parse_and_default_to_auto():
     assert download.parse_args(["--bronze-dir", "/d", "--vnc-mfa"]).vnc_mfa is True
 
 
-def test_download_owns_the_sign_in_flags_login_used_to():
-    # login folded into download, and its flags came with it.
+def test_download_parses_fresh():
+    # `download` is the verb that signs in, so it carries the sign-in flags.
     args = download.parse_args(["--bronze-dir", "/d", "--fresh"])
     assert args.fresh is True
     assert download.parse_args(["--bronze-dir", "/d"]).fresh is False
@@ -202,36 +201,6 @@ def test_an_unparseable_period_is_kept():
 
 def test_no_window_keeps_everything():
     assert download._statement_in_window("2001-01-01", None)
-
-
-# ============================================================
-# Filesystem-safe stems
-# ============================================================
-
-def test_log_id_shortens_an_account_key_but_files_keep_it():
-    # Terminal output is the fleet's primary debugging channel and gets
-    # pasted around, so a 32-hex account key is shortened for the log — while
-    # the file name keeps the whole key, which is what the loader joins on.
-    key = "0123456789ABCDEF0123456789ABCDEF"
-    assert bronze.log_id(key) == "01234567…"
-    assert bronze.safe_stem(key) == key
-
-
-def test_log_id_leaves_a_short_key_alone():
-    assert bronze.log_id("ABC123") == "ABC123"
-
-
-@pytest.mark.parametrize("raw,expected", [
-    ("0123ABC", "0123ABC"),
-    ("2026-03-12", "2026-03-12"),
-    ("../../etc/passwd", "etc-passwd"),
-    ("a/b", "a-b"),
-    (".hidden", "hidden"),
-    ("", "item"),
-    ("///", "item"),
-])
-def test_safe_stem(raw, expected):
-    assert bronze.safe_stem(raw) == expected
 
 
 # ============================================================

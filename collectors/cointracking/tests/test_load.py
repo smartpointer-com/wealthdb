@@ -346,6 +346,26 @@ def test_ingest_replaces_per_portfolio(tmp_path):
         "SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
 
 
+def test_ingest_keeps_a_portfolio_whose_trades_csv_is_missing(tmp_path):
+    # A manifest portfolio whose trades.csv does not resolve keeps the
+    # rows it was last loaded with; only the portfolios with a file are
+    # replaced.
+    conn = _fresh_db(tmp_path)
+    first = _seed_export(tmp_path / "b1", "20240201T000000Z",
+                         {"1": [TRADE_ROW], "2": [TRADE_ROW]})
+    loader.ingest_transactions(conn, json.loads((first / "run.json").read_text()),
+                               first, snapshot_at=1706745600, timezones={})
+    second = _seed_export(tmp_path / "b2", "20240202T000000Z",
+                          {"1": [TRADE_ROW], "2": [TRADE_ROW]})
+    (second / "cu_2" / "trades.csv").unlink()
+    loader.ingest_transactions(conn, json.loads((second / "run.json").read_text()),
+                               second, snapshot_at=1706832000, timezones={})
+    assert dict(conn.execute(
+        "SELECT portfolio_external_id, MAX(snapshot_at) FROM transactions "
+        "GROUP BY 1 ORDER BY 1").fetchall()) == {
+            "cu_1": 1706832000, "cu_2": 1706745600}
+
+
 # overview.csv header: the Date column, two coin pairs (each a
 # "<SYM> Value in <FIAT>" + "<SYM> Amount" pair), and one multi-word
 # aggregate column that the coin-pair regex must exclude.
@@ -814,7 +834,7 @@ def test_a_failed_snapshot_leaves_silver_as_the_last_one_did(tmp_path):
     # The second export's cu_2 trades.csv lacks a column, so its snapshot
     # fails after the cu_1 rows were already replaced. The whole snapshot
     # rolls back: silver keeps the first export's rows and records only
-    # the first snapshot as loaded.
+    # the first snapshot as loaded, and the load exits non-zero.
     bronze = tmp_path / "bronze"
     _seed_export(bronze, "20240201T000000Z", {
         "1": [_row("Deposit", buy="1", buy_cur="BTC")],
@@ -829,7 +849,7 @@ def test_a_failed_snapshot_leaves_silver_as_the_last_one_did(tmp_path):
         "2": [_row("Deposit", buy="6", buy_cur="ETH")]})
     (run2 / "cu_2" / "trades.csv").write_text(
         '"Type","Buy","Cur."\n"Deposit","6","ETH"\n', encoding="utf-8")
-    assert loader.main(argv) == 0
+    assert loader.main(argv) == 1
 
     assert _dump_silver_state(db) == before
     assert _query(tmp_path, "SELECT COUNT(*) FROM dump_runs") == [(1,)]

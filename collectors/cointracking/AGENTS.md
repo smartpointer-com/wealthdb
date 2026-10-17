@@ -15,8 +15,8 @@ UI change moves them to.
 
 Allowed — only these surfaces may be navigated or clicked:
 
-- The cointracking.info login form and the Duo / Google
-  Authenticator 2FA challenge page that follows it.
+- The cointracking.info login form and the TOTP 2FA challenge
+  page that follows it.
 - Read-only listing pages for: consolidated portfolio,
   per-exchange / per-wallet positions, transaction history,
   realised gains, tax-report views, balance history.

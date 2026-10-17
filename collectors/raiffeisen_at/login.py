@@ -55,20 +55,19 @@ from collectorkit.launch import page_url, pump, wait_for
 import elba_client as elba
 # explore's frame-aware prefill does not apply here — the Verfüger value is
 # region-prefixed and the form is single-frame Angular — so login drives the
-# RDS controls directly. Only the credential env-var names are shared, to keep
-# them defined in one place.
-from explore import USER_ENV, PASS_ENV
+# RDS controls directly. Only the credential env-var names and the profile /
+# env-file paths are shared, to keep them defined in one place.
+from explore import DEFAULT_ENV_FILE, DEFAULT_PROFILE_DIR, PASS_ENV, USER_ENV
 
 log = logging.getLogger("raiffeisen_at.login")
 
-DEFAULT_PROFILE_DIR = Path("/secrets/raiffeisen_at-profile")
-DEFAULT_ENV_FILE = Path("/secrets/raiffeisen_at.env")
 REGION_ENV = "RAIFFEISEN_AT_REGION"
 
-# How long to wait for a login outcome after the form is submitted (the
-# pushTAN wait screen or an authenticated session), and how long to then wait
-# for the human to approve the pushTAN in the app.
-OUTCOME_TIMEOUT_S = 120
+# How long to wait for the login screen (the form or the saved-user card) to
+# render, for the pushTAN screen once the login is submitted, and for the
+# human to approve the pushTAN in the app.
+LOGIN_SCREEN_TIMEOUT_S = 120
+PUSHTAN_SCREEN_TIMEOUT_S = 30
 PUSHTAN_TIMEOUT_S = 300          # the server-declared pushTAN `timeout`
 
 
@@ -368,7 +367,7 @@ def _drive_to_pushtan(context, page, watch: _Watch, args) -> bool:
     # probe instead.
     if not wait_for(lambda: _form_present(page) or _profile_card_present(page)
                     or _probe_authenticated(context, watch),
-                    page, OUTCOME_TIMEOUT_S):
+                    page, LOGIN_SCREEN_TIMEOUT_S):
         _capture(page, args, "no-login-screen")
         log.error("neither the login form nor a saved-user card appeared. "
                   "Retry with vnc-login. (DOM captured with --debug.)")
@@ -414,7 +413,8 @@ def authenticate(context, page, watch: _Watch, *, args, cli_mfa: bool,
         # Camoufox can drop the pushtan response event).
         wait_for(lambda: watch.pushtan_display is not None
                  or elba.is_pushtan_url(page_url(page))
-                 or _probe_authenticated(context, watch), page, 30)
+                 or _probe_authenticated(context, watch), page,
+                 PUSHTAN_SCREEN_TIMEOUT_S)
         code = watch.pushtan_display or _read_vergleichswert(page)
         if code:
             log.info("pushTAN sent — approve the sign-in in the Raiffeisen "
@@ -495,10 +495,10 @@ def run_check(args: argparse.Namespace) -> int:
 
 
 def run_login_and_fetch(args: argparse.Namespace) -> int:
-    """Log in (pushTAN), then — if --bronze-dir is set — fetch via
-    download.walk(). A bare login (no --bronze-dir) authenticates and exits,
-    but that is not a persisted session, so the wrapper's `login` verb is a
-    no-op instead (this path is reached only via `download` / `vnc-login`)."""
+    """Log in (pushTAN), then fetch via download.walk() into --bronze-dir.
+    The session does not persist, so a sign-in only serves this fetch; the
+    wrapper's `login` verb is a no-op instead (this path is reached only via
+    `download` / `vnc-login`)."""
     since, until = cli.resolve_standard(args, verb="download", log=log)
     with camoufox(args.profile_dir, fresh=args.fresh) as (context, page):
         watch = _Watch().attach(context)
@@ -506,9 +506,6 @@ def run_login_and_fetch(args: argparse.Namespace) -> int:
                             cli_mfa=args.cli_mfa,
                             pushtan_timeout=args.mfa_timeout):
             return 1
-        if args.bronze_dir is None:
-            log.info("no --bronze-dir: login only, nothing to fetch")
-            return 0
         # authenticate() only returns True once the produkte probe succeeded
         # with a harvested Bearer, so the token is in hand here — no separate
         # wait is needed before the fetch replays the same calls.
@@ -529,7 +526,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Persistent Camoufox profile dir (holds the saved-user "
                         "identity). Default: %(default)s.")
     p.add_argument("--bronze-dir", type=Path, default=None,
-                   help="Bronze tree root; required for the fetch path (the "
+                   help="Bronze tree root; required unless --check (the "
                         "download verb passes /data).")
     p.add_argument("--env-file", type=Path, default=DEFAULT_ENV_FILE,
                    help="Bash-sourced env file with RAIFFEISEN_AT_USERNAME / "
@@ -575,6 +572,12 @@ def main(argv: list[str]) -> int:
                       "(a read-only probe never wipes the profile).")
             return 2
         return run_check(args)
+    if args.bronze_dir is None:
+        # The session does not persist (§F), so a sign-in without a fetch
+        # would cost a pushTAN for nothing.
+        log.error("--bronze-dir is required to sign in: the sign-in serves "
+                  "the fetch (the download verb passes /data).")
+        return 2
     return run_login_and_fetch(args)
 
 

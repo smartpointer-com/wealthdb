@@ -49,7 +49,6 @@ FUNCTIONS_ORIGIN = "https://functions.americanexpress.com"
 # The legacy logon endpoint the sign-in form posts to. Its JSON response is
 # the authoritative login outcome (see classify_logon).
 LOGON_PATH = "/myca/logon/us/action/login"
-LOGON_URL = f"{APP_ORIGIN}{LOGON_PATH}"
 
 # --- sign-in and challenge selectors (pinned from the captures, §B) -------
 
@@ -340,7 +339,8 @@ class ChallengeTarget:
 
     `value` is the button's DOM index (login.py clicks it by index),
     `display` the label the human sees — which already carries the masked
-    destination — and `kind` a coarse sms/email/other read from that label.
+    destination — and `kind` a coarse sms/email/voice/other read from that
+    label.
     The delivery id itself never reaches this side: the page sends an opaque
     `encryptedValue` (DESIGN.md §B)."""
     value: str

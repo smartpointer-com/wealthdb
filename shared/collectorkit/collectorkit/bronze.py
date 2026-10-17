@@ -76,7 +76,9 @@ def read_manifest(path: Path) -> dict | None:
 
 def run_status(run_json_path: Path) -> str | None:
     """The ``status`` field of a bronze run's ``run.json``, or ``None`` when
-    the manifest is unreadable/corrupt or carries no ``status`` key.
+    the manifest is absent, unreadable/corrupt or carries no ``status``
+    key. A loader tells an absent manifest from a statusless one with
+    :func:`run_is_loadable`.
 
     Silver loaders use this to decide loadability: ``download`` stamps
     ``status="in-progress"`` at run-dir creation and atomically overwrites it
@@ -108,6 +110,19 @@ def is_loadable_status(status: str | None) -> bool:
     return status is None or status == COMPLETE_STATUS
 
 
+def run_is_loadable(run_dir: Path) -> bool:
+    """Whether a loader reads `run_dir`: its ``run.json`` is a file, and its
+    status is loadable (:func:`is_loadable_status`).
+
+    A run dir without a manifest is still being written, or its download
+    crashed before the first manifest write; ``prune`` reclaims it, so no
+    loader reads it either. An unreadable manifest stays loadable, so the
+    load surfaces the error (see :func:`run_status`).
+    """
+    run_json = Path(run_dir) / "run.json"
+    return run_json.is_file() and is_loadable_status(run_status(run_json))
+
+
 def manifest_is_complete(run_dir: Path, manifest_name: str = "run.json") -> bool:
     """Whether `run_dir` holds a finished dump: its manifest reads, and its
     status is loadable (:func:`is_loadable_status`).
@@ -127,23 +142,28 @@ def pending_run_dirs(conn, bronze_dir: Path, *, log) -> list[Path]:
 
     A run dir without a ``run.json`` is still being written, and one whose
     status is not loadable (:func:`is_loadable_status`) never finished;
-    both are skipped with a line on `log`. A statusless or unreadable
-    manifest stays loadable (see :func:`run_status`).
+    both are skipped with a line on `log`, and so is a slug that names no
+    real instant (a 30 February). A statusless or unreadable manifest stays
+    loadable (see :func:`run_status`).
     """
     if not Path(bronze_dir).is_dir():
         return []
     loaded = loaded_snapshots(conn)
     pending: list[Path] = []
     for d in iter_run_dirs(bronze_dir):
-        if parse_run_ts(d.name) in loaded:
+        try:
+            ts = parse_run_ts(d.name)
+        except ValueError:
+            log.warning("skipping %s — not a valid run timestamp", d.name)
             continue
-        run_json = d / "run.json"
-        if not run_json.is_file():
-            log.info("skipping %s — no run.json (still writing?)", d.name)
+        if ts in loaded:
             continue
-        status = run_status(run_json)
-        if not is_loadable_status(status):
-            log.info("skipping %s — run.json status=%s", d.name, status)
+        if not run_is_loadable(d):
+            run_json = d / "run.json"
+            if run_json.is_file():
+                log.info("skipping %s — run.json status=%s", d.name, run_status(run_json))
+            else:
+                log.info("skipping %s — no run.json (still writing?)", d.name)
             continue
         pending.append(d)
     return pending

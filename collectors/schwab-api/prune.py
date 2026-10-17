@@ -3,72 +3,27 @@
 Prune debug artefacts and non-complete dumps from the schwab-api bronze
 tree.
 
-Thin wrapper over :mod:`collectorkit.prune` (the shared, unit-tested
-prune engine) with schwab-api's configuration. A bronze run dir is a flat
-set of JSON artefacts (``account_numbers.json``, ``user_preference.json``,
-``accounts_positions.json``, ``transactions_NNN.json``,
-``open_orders.json``, and optionally ``instruments.json``) plus the
-``run.json`` manifest — every one of those is a ``load`` input or the
-manifest, and is never deleted. The one artefact that is not:
-``<run>/screenshots/``, holding the HTTP trace ``download --debug``
-writes (``http-trace.jsonl``: one metadata line per Schwab request,
-retries included). It is written only under ``--debug`` and never read by
-``load``, so deleting it leaves silver byte-identical. The browser-flow
-page captures / Playwright traces are a different thing again — they
-belong to ``login.py`` and land in a separate ``/debug`` dir, never in
-bronze.
+A run dir holds the JSON load inputs (``account_numbers``,
+``user_preference``, ``accounts_positions``, ``transactions_NNN``,
+``open_orders`` and the optional ``instruments``, each ``.json`` or
+``.json.zst``) and the uncompressed ``run.json`` manifest. None of them
+is ever deleted from a complete dump.
 
-That separate ``/debug`` dir is reclaimed too — the wrapper passes it as
-the engine's ``--debug-dir``, since every ``login --trace`` leaves a
-bundle there and nothing else ever clears them out.
+The one debug-only path in bronze is ``<run>/screenshots/``: the HTTP
+trace ``download --debug`` writes, which ``load`` never reads. The login
+captures land in the debug dir outside bronze, which the wrapper passes
+as ``--debug-dir``; its idle entries are reclaimed too.
 
-Data artefacts are zstd-compressed as they land
-(``accounts_positions.json.zst`` etc.; both the plain and the ``.zst``
-form are ``load`` inputs), while ``run.json`` stays uncompressed — it is
-the ``status`` manifest this classification keys on. For a
-manifest-bearing dump compression is inert to prune: classification is
-purely status-based. The one place it bites: a statusless dump's
-completeness signal is the terminal DATA artefact ``open_orders.json``,
-which the ``recompress`` sweep may leave as ``open_orders.json.zst``, so
-``_is_complete`` resolves the on-disk variant (plain **or** ``.zst``)
-rather than probing the plain name — probing the plain name alone would
-flip a recompressed dump to NON_COMPLETE and prune it. Compressing a
-dump is the separate manual ``recompress`` verb's job, not prune's.
-The categories:
-
-* ``<run>/screenshots/`` — the ``--debug`` HTTP trace, reclaimed from
-  complete dumps (see above).
-
-* ``run.json`` is missing and ``open_orders.json`` was never written
-  (a crashed dump), or its ``status`` is anything other
-  than ``"complete"`` (an ``"in-progress"`` marker from a crashed walk,
-  or a ``"dry-run"`` shell — though ``--dry-run`` never creates a run
-  dir here). ``load`` skips a dump whose status is not ``"complete"``,
-  but a statusless one is a load input: left in place, a crashed dump's
-  partial artefacts would load as a truncated snapshot. After pruning
-  one, the next ``load --force`` rebuild reflects the removal.
-
-Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
-at run-dir creation, atomically overwritten with ``"complete"`` at the
-end). A dump carrying no ``status`` — including one with no ``run.json``
-at all (``meta is None``) — falls back to the presence of
-``open_orders.json`` (plain or ``.zst`` — see above), the last
-unconditional artefact a complete run writes (only the optional
-``instruments.json`` may follow it, and ``load`` treats that as
-optional). So a run dir holding ``open_orders.json`` but no manifest is
-a complete dump and keeps its load inputs. An unreadable or corrupt
-``run.json`` is UNKNOWN and never deleted.
-
-An in-flight guard skips non-complete dumps written within
-``--min-age-hours`` (default 1), keyed on the newest mtime in the dir so
-a long transaction backfill (which keeps writing ``transactions_NNN.json``)
-is protected. ``--dry-run`` prints the plan without removing anything.
-The only paths ever deleted are ``<run>/screenshots/`` subtrees and whole
-non-complete run dirs; load inputs of complete dumps and non-run entries
-at the bronze root (the silver ``schwab-api.db``) are never touched.
+Completeness comes from the ``run.json`` status. A dump carrying no
+status, including one with no ``run.json`` at all, is complete when it
+holds ``open_orders.json`` (plain or ``.zst``), the last file a finished
+run always writes. ``load`` applies the same rule, so removing a
+non-complete dump never changes silver. The safety envelope (the age
+guard, ``--dry-run``, symlinks, an unreadable manifest) is the shared
+engine's: see collectors/README.md.
 
 Usage:
-    prune.py [--bronze-dir /data] [--dry-run] [--min-age-hours N]
+    prune.py [--bronze-dir /data] [--debug-dir DIR] [--dry-run] [--min-age-hours N]
 """
 
 from __future__ import annotations

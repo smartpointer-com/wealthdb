@@ -2,7 +2,8 @@
 
 Builds a synthetic Firefox cookies.sqlite (moz_cookies) and checks the
 extraction's tricky bits: host filtering, the millisecond→second expiry
-normalisation, session-cookie sentinel, and sameSite mapping.
+normalisation, session-cookie sentinel, sameSite mapping, and the
+owner-only write of the jar.
 """
 from __future__ import annotations
 
@@ -124,3 +125,17 @@ def test_require_valid_missing_session_cookie(tmp_path):
 def test_require_valid_no_profile(tmp_path):
     db, out = tmp_path / "absent.sqlite", tmp_path / "out.json"
     assert ec.main(["--db", str(db), "--out", str(out), "--require-valid"]) == 3
+
+
+def test_the_jar_is_written_owner_only_in_place_of_the_old_one(tmp_path):
+    # The jar replaces an older, wider-moded one whole: 0600, the new
+    # cookies only, and no tmp file left beside it.
+    db, out = tmp_path / "cookies.sqlite", tmp_path / "out.json"
+    build_cookiedb(db)
+    out.write_text('[{"name": "stale"}]')
+    out.chmod(0o644)
+    assert ec.main(["--db", str(db), "--out", str(out)]) == 0
+    assert out.stat().st_mode & 0o777 == 0o600
+    assert "stale" not in {c["name"] for c in json.loads(out.read_text())}
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["cookies.sqlite",
+                                                          "out.json"]

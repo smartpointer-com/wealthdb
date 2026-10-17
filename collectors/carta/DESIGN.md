@@ -269,9 +269,11 @@ below. (No values reproduced here — PII.)
   falls through to a real fetch; any other/unknown `document_type` is
   fetch-verified (the safe default). The classifier is fetch-verify-first and
   its statement keywords are a case-folded superset of every trigger `load`
-  parses, so nothing `load` parses can fall to link-mode. A hardlink is a real in-run file, so run
-  dirs stay self-contained and the loader is unchanged; `--documents-force`
-  bypasses the cross-run index (re-fetch everything).
+  parses, so nothing `load` parses can fall to link-mode. A hardlink is a real
+  in-run file, so run dirs stay self-contained and the loader is unchanged;
+  `--documents-force` bypasses the cross-run index (re-fetch everything).
+  A fetched body that does not start with the PDF magic number counts as a
+  failed fetch and is not saved.
 
 **Implication:** the "worst case, just scrape the PDFs" fallback is *not*
 needed for the holdings — holdings, grants, vesting, exercises, cap calls,
@@ -279,9 +281,11 @@ and the latest fund metrics are all clean JSON. PDFs (K-1 / statements /
 financials / notices) are captured as a document **archive** (metadata →
 silver `documents` table; blobs → disk). `load` parses the ones that carry
 figures the JSON lacks: capital-account statements and notices (§5.1, §5.2)
-and K-1s (§5.3). A blob that fails `docdedup.is_pdf` reads as not
-downloaded: it is neither indexed nor parsed. Filenames embed the holder's legal name + fund name → slug
-on capture; never let them reach the repo.
+and K-1s (§5.3). A blob that does not start with the PDF magic number
+(`docdedup.is_pdf`) reads as not downloaded. `load` neither indexes nor
+parses it. Carta's own file names carry the holder's legal name and the fund
+name. Bronze names each blob `doc_<id>.pdf` instead, and neither name may
+reach the repo.
 
 ## 4. login + download
 
@@ -291,7 +295,7 @@ Mirrors the `cointracking` / `fidelity-web` pattern: launch a persistent
 browser context on `/secrets/carta-profile/`, navigate to Carta,
 short-circuit if a prior session is still valid, else walk the two-step
 form (§3: email screen, then password screen; a single-screen variant is
-also handled) with `CARTA_USERNAME` (or the legacy `CARTA_EMAIL`) and
+also handled) with `CARTA_USERNAME` (or its alias `CARTA_EMAIL`) and
 `CARTA_PASSWORD`, submit, read the 2FA code from stdin, tick the "remember
 this device" box (`#enable-bypass`), and `context.close()` to flush the
 session back to the profile. `--check` loads the app and exits 0 or 1. It
@@ -496,6 +500,10 @@ expose:
   the lump keeps only what they leave. A row dated after the lump is skipped,
   and rows that exceed it are kept with a warning, since they are dated and the
   lump is not.
+
+  Each run with a document index rebuilds a fund's calls and distributions
+  from the documents it holds. A run without one (`download --no-documents`)
+  leaves them as the last run with documents built them.
 
 The gold adapter (§6.1) pairs each auto-derived event into a balanced
 double-entry on the custody account, so each event nets to exactly 0; a

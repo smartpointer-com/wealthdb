@@ -28,13 +28,14 @@ case "${1:-help}" in
         # over VNC so the session is driven by hand. The harness only
         # records — every navigation and click is made by hand. Artefacts
         # land in the /debug mount, never bronze.
+        shift
+        exec_if_help explore.py "$@"
         start_xvfb
         start_x11vnc explore
-        shift
         exec python3 /app/explore.py "$@"
         ;;
     prune)
-        # Delete non-complete dumps (crashed walks, --dry-run shells)
+        # Delete non-complete dumps (crashed walks, legacy dry-run shells)
         # from the bronze tree. No browser, no Xvfb — a pure file walk
         # over the /data mount.
         shift

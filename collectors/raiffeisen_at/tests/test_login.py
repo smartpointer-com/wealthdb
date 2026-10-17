@@ -45,6 +45,16 @@ def test_parse_args_download_flags():
     assert args.cli_mfa is False
 
 
+def test_a_sign_in_without_a_bronze_dir_is_refused(monkeypatch):
+    # The session does not persist, so a sign-in that fetches nothing
+    # would fire a pushTAN for nothing: refused before any browser starts.
+    def no_browser(*a, **kw):
+        raise AssertionError("a browser was started")
+
+    monkeypatch.setattr(login, "camoufox", no_browser)
+    assert login.main([]) == 2
+
+
 def test_no_password_flag_exists():
     # Credentials reach the driver via env only (root AGENTS.md §3).
     import pytest
@@ -65,9 +75,9 @@ def test_lookback_rejects_garbage():
 def test_load_credentials_reads_all_three(monkeypatch, tmp_path):
     monkeypatch.setenv(login.USER_ENV, "3V000042")
     monkeypatch.setenv(login.PASS_ENV, "12345")
-    monkeypatch.setenv(login.REGION_ENV, "rbgooe")
+    monkeypatch.setenv(login.REGION_ENV, "zz00")
     user, pwd, region = login._load_credentials(tmp_path / "absent.env")
-    assert (user, pwd, region) == ("3V000042", "12345", "rbgooe")
+    assert (user, pwd, region) == ("3V000042", "12345", "zz00")
 
 
 # ============================================================

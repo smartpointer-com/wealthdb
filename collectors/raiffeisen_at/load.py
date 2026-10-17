@@ -34,7 +34,7 @@ Bronze run-dir layout consumed:
       accounts.json                 [{iban, type, balance:{amount,currency}, …}, …]
       details/<iban>.json           account-information detail (detailgruppen)
       history/<iban>.json           {iban, minBuchungstag, complete, transactions:[…]}
-      balances/<iban>.json          {tagessalden:[{tag, saldo}], kontostand, …}
+      balances/<iban>.json          {von, bis, tagessalden:[{tag, saldo}], kontostand, …}
       statements/<iban>/<date>_<sys>_<id>[_v<n>].pdf
 
 and beside the run dirs:
@@ -55,7 +55,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, pdftotext, silver
+from collectorkit import bronze, cli, money, parse, pdftotext, silver
 
 import listing_parser
 import stitch
@@ -82,24 +82,9 @@ SUPPLIED_DIRNAME = "supplied"
 # Date / money parsing
 # ============================================================
 
-def _epoch_day(d) -> int:
-    """Unix seconds UTC at midnight of the given datetime or date."""
-    return int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp())
-
-
-def parse_date(raw) -> int | None:
-    """An ISO date (`YYYY-MM-DD`, optionally with a time) → epoch-midnight
-    seconds. Mein ELBA renders `buchungstag` / `valuta` / `tag` as ISO dates.
-    None on anything unparseable."""
-    if raw is None:
-        return None
-    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", str(raw).strip())
-    if not m:
-        return None
-    try:
-        return _epoch_day(datetime(int(m[1]), int(m[2]), int(m[3])))
-    except ValueError:
-        return None
+# Mein ELBA renders `buchungstag` / `valuta` / `tag` as ISO dates,
+# optionally with a time; parse.iso_date_to_epoch reads them to
+# epoch-midnight seconds, None on anything unparseable.
 
 
 def parse_money(raw) -> float | None:
@@ -162,7 +147,7 @@ def history_rows(iban: str, transactions: list) -> list[dict]:
     for row in transactions:
         if not isinstance(row, dict):
             continue
-        posted_at = parse_date(row.get("buchungstag"))
+        posted_at = parse.iso_date_to_epoch(row.get("buchungstag"))
         amount, currency = _amount_and_currency(row)
         if posted_at is None or amount is None:
             continue
@@ -176,7 +161,7 @@ def history_rows(iban: str, transactions: list) -> list[dict]:
         out.append({
             "txn_id": txn_id,
             "posted_at": posted_at,
-            "value_at": parse_date(row.get("valuta")),
+            "value_at": parse.iso_date_to_epoch(row.get("valuta")),
             "amount": amount,
             "currency": currency,
             "kind": "DEBIT" if amount < 0 else "CREDIT",
@@ -247,7 +232,7 @@ def balance_rows(balances: dict) -> list[dict]:
     for entry in balances.get("tagessalden") or []:
         if not isinstance(entry, dict):
             continue
-        day = parse_date(entry.get("tag"))
+        day = parse.iso_date_to_epoch(entry.get("tag"))
         saldo = parse_money(entry.get("saldo"))
         if day is None or saldo is None:
             continue
@@ -348,7 +333,7 @@ def _statement_date_from_name(name: str) -> int | None:
     if not m:
         return None
     try:
-        return _epoch_day(datetime(int(m[1]), int(m[2]), int(m[3])))
+        return parse.epoch_day(datetime(int(m[1]), int(m[2]), int(m[3])))
     except ValueError:
         return None
 
@@ -380,9 +365,11 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
     `run_windows` for the supplied-listing stitch. Returns True if ingested,
     False if skipped (non-complete dump, or already loaded). Idempotent; the
     caller owns the transaction (`main` makes each run one)."""
-    status = bronze.run_status(run_dir / "run.json")
-    if not bronze.is_loadable_status(status):
-        log.info("skip %s (status=%s)", run_dir.name, status)
+    run_json = run_dir / "run.json"
+    if not bronze.run_is_loadable(run_dir):
+        log.info("skip %s (%s)", run_dir.name,
+                 f"status={bronze.run_status(run_json)}" if run_json.is_file()
+                 else "no run.json")
         return False
     try:
         snapshot_at = bronze.parse_run_ts(run_dir.name)
@@ -455,15 +442,6 @@ def _day(epoch: int) -> date:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).date()
 
 
-def _iso_day(raw) -> date | None:
-    epoch = parse_date(raw)
-    return _day(epoch) if epoch is not None else None
-
-
-def _cents(amount: float) -> int:
-    return int(round(amount * 100))
-
-
 def _printed_epoch(listing: listing_parser.Listing) -> int:
     """A listing's print time as printed (the branch's local wall clock),
     stamped as UTC — deterministic, so a re-derived row keeps its stamp."""
@@ -488,18 +466,18 @@ def run_windows(run_dir: Path) -> list[tuple[str, str, int, int]]:
         return []
     manifest = _read_json(run_dir / "run.json", quiet=True)
     manifest = manifest if isinstance(manifest, dict) else {}
-    since = _iso_day(manifest.get("since"))
-    until = _iso_day(manifest.get("until")) or run_day
+    since = parse.iso_date(manifest.get("since"))
+    until = parse.iso_date(manifest.get("until")) or run_day
     out = []
     for hist in sorted((run_dir / "history").glob("*.json")):
         data = _read_json(hist, quiet=True)
         if not isinstance(data, dict):
             continue
         iban = str(data.get("iban") or hist.stem).strip()
-        booked = [d for d in (_iso_day(t.get("buchungstag"))
+        booked = [d for d in (parse.iso_date(t.get("buchungstag"))
                               for t in data.get("transactions") or []
                               if isinstance(t, dict)) if d]
-        declared = [d for d in (since, _iso_day(data.get("minBuchungstag"))) if d]
+        declared = [d for d in (since, parse.iso_date(data.get("minBuchungstag"))) if d]
         if data.get("complete") is True:
             start = max(declared) if declared else (min(booked) if booked else None)
         else:
@@ -507,14 +485,14 @@ def run_windows(run_dir: Path) -> list[tuple[str, str, int, int]]:
             if start and declared:
                 start = max(start, max(declared))
         if start and start <= until:
-            out.append((iban, "transactions", _epoch_day(start), _epoch_day(until)))
+            out.append((iban, "transactions", parse.epoch_day(start), parse.epoch_day(until)))
     for balf in sorted((run_dir / "balances").glob("*.json")):
         data = _read_json(balf, quiet=True)
         if not isinstance(data, dict):
             continue
-        von, bis = _iso_day(data.get("von")), _iso_day(data.get("bis")) or until
+        von, bis = parse.iso_date(data.get("von")), parse.iso_date(data.get("bis")) or until
         if von and von <= bis:
-            out.append((balf.stem, "balances", _epoch_day(von), _epoch_day(bis)))
+            out.append((balf.stem, "balances", parse.epoch_day(von), parse.epoch_day(bis)))
     return out
 
 
@@ -555,8 +533,8 @@ def _live_view(conn, iban: str, windows) -> stitch.LiveView:
     for posted_at, amount in conn.execute(
             f"SELECT posted_at, amount FROM transactions WHERE "
             f"account_external_id=? AND source IN ({marks})", (iban, *LIVE_SOURCES)):
-        postings[_day(posted_at)][_cents(amount)] += 1
-    balances = {_day(d): _cents(b) for d, b in conn.execute(
+        postings[_day(posted_at)][money.to_cents(amount)] += 1
+    balances = {_day(d): money.to_cents(b) for d, b in conn.execute(
         f"SELECT balance_date, balance FROM daily_balances WHERE "
         f"account_external_id=? AND source IN ({marks})", (iban, *LIVE_SOURCES))}
     txn, bal = windows.get(iban, ([], []))
@@ -691,7 +669,7 @@ def _posting_row(iban: str, doc: _Doc, posting, occurrence: int,
     if live_seen:
         payload["live_seen"] = live_seen
     return (listing_parser.txn_id(iban, posting, occurrence), iban,
-            _epoch_day(posting.butag), _epoch_day(posting.valuta),
+            parse.epoch_day(posting.butag), parse.epoch_day(posting.valuta),
             posting.amount_cents / 100, lst.currency,
             "DEBIT" if posting.amount_cents < 0 else "CREDIT", None,
             posting.description, posting.counterparty, SOURCE_SUPPLIED,
@@ -707,7 +685,7 @@ def _doc_row(doc: _Doc, outcome: stitch.Outcome) -> tuple:
         "coverage": [lst.coverage_start.isoformat(), lst.print_day.isoformat()],
         "owned": [[a.isoformat(), b.isoformat()] for a, b in outcome.owned],
     }
-    return (doc.sha, _printed_epoch(lst), doc.iban, _epoch_day(lst.print_day),
+    return (doc.sha, _printed_epoch(lst), doc.iban, parse.epoch_day(lst.print_day),
             DOC_KIND_LISTING, "pdf", doc.path.name, doc.size,
             silver.canonical_json(payload))
 
@@ -756,7 +734,7 @@ def _new_layer(docs: list[_Doc], views: dict[str, stitch.LiveView]):
             # certified one — including over a download's own, partial day.
             for day, saldo in lst.closing_balances().items():
                 if day in owned and day not in live.balance_certified:
-                    layer.balances[(iban, _epoch_day(day))] = (
+                    layer.balances[(iban, parse.epoch_day(day))] = (
                         saldo / 100, _printed_epoch(lst))
             log.info("supplied: %s accepted — speaks for %d day(s) since %s",
                      doc.path.name, len(owned),
@@ -835,7 +813,7 @@ def _check_one_truth_per_day(conn, views: dict[str, stitch.LiveView],
     for iban, posted_at, amount in conn.execute(
             "SELECT account_external_id, posted_at, amount FROM transactions "
             "WHERE source=?", (SOURCE_SUPPLIED,)):
-        got[(iban, _day(posted_at))][_cents(amount)] += 1
+        got[(iban, _day(posted_at))][money.to_cents(amount)] += 1
     for (iban, day), supplied in got.items():
         view = _view(views, iban)
         if view.certifies(day):

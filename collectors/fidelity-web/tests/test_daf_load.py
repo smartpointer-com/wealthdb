@@ -11,32 +11,20 @@ grants/contributions, documents from PDFs).
 from __future__ import annotations
 
 import json
-import sqlite3
 import sys
 from pathlib import Path
 
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import load  # noqa: E402
 
-MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
 # Synthetic ids — obviously fake, never a real DAF account/pool/grant.
 DAF_ACCT = "9990001"
 POOL_ID = "POOLX1"
 GRANT_ID = "G1000001"
 CONTRIB_ID = "C2000002"
-
-
-@pytest.fixture
-def migrated():
-    c = sqlite3.connect(":memory:")
-    c.execute("PRAGMA foreign_keys = ON")
-    load.silver.apply_migrations(c, MIGRATIONS_DIR)
-    yield c
-    c.close()
 
 
 def _pdf(tag: str) -> bytes:

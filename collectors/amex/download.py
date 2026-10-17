@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
 """American Express bronze download — the whole run, sign-in included.
 
-**`login` folds into this verb** (DESIGN.md §L). Amex's sign-in budget is
-small enough that a handful of sign-ins in a short window fires a captcha
-(§K), and a separate `login` verb doubled the cost of every routine run for
-nothing: the device trust it minted is minted just as well here, by the same
-code, on the same profile. So this is the one verb that signs in — it
-launches the persistent Camoufox profile, submits the form (a trusted device
-is signed in with no challenge, §G), answers a passcode from the terminal
-when there is one and registers the device while it is there, and then
-fetches the card data over REST via `page.request`, because no data endpoint
-carries a bot-defense sensor header (§A). No DOM scraping.
+`download` is the one verb that signs in (DESIGN.md §L): it launches the
+persistent Camoufox profile, submits the form (a trusted device is signed in
+with no challenge, §G), answers a passcode from the terminal when there is
+one and registers the device while it is there, and then fetches the card
+data over REST via `page.request`, because no data endpoint carries a
+bot-defense sensor header (§A). No DOM scraping.
 
 Without a terminal the unattended contract still holds: a challenge raises
 `NeedsLogin` and fails loudly rather than blocking on a prompt nobody will
@@ -54,6 +50,7 @@ from pathlib import Path
 from collectorkit import bronze, cli, debugcap
 
 import amexclient
+import explore
 import login
 
 log = logging.getLogger("amex.download")
@@ -437,7 +434,7 @@ def resolve_two_factor(cli_mfa: bool | None, *, vnc: bool = False,
                        isatty: bool = False) -> str:
     """Which mode a passcode challenge is answered in.
 
-    With `login` folded into this verb (DESIGN.md §L), a challenge is a
+    This is the one verb that signs in (DESIGN.md §L), so a challenge is a
     routine event on any run rather than an exceptional one — so the default
     is **auto**: drive it from the terminal when stdin is a TTY, and keep the
     unattended contract when it is not, where a cron run fails loudly rather
@@ -511,12 +508,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--profile-dir", type=Path,
-                   default=login.DEFAULT_PROFILE_DIR,
+                   default=explore.DEFAULT_PROFILE_DIR,
                    help="Persistent Camoufox profile dir (holds the "
                         "device-trust cookie). Default: %(default)s.")
     p.add_argument("--bronze-dir", type=Path, required=True,
                    help="Bronze tree root (the wrapper passes /data).")
-    p.add_argument("--env-file", type=Path, default=login.DEFAULT_ENV_FILE,
+    p.add_argument("--env-file", type=Path, default=explore.DEFAULT_ENV_FILE,
                    help="Bash-sourced env file with the credentials. "
                         "Default: %(default)s.")
     p.add_argument("--format", action="append",

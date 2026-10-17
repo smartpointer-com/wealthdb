@@ -92,7 +92,8 @@ def parse_lot_date(text):
 
 
 class _TableReader(HTMLParser):
-    """Collects the header texts and the body rows of the first table."""
+    """Collects the header texts and the body rows of the HTML's tables
+    (the openlots response holds one)."""
 
     def __init__(self):
         super().__init__(convert_charrefs=True)

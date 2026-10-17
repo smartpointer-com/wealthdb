@@ -479,13 +479,10 @@ def test_fetch_pdf_non_200_raises(tmp_path):
 # The audit block
 # ============================================================
 
-def test_tally_and_counts():
-    counts = download._empty_doc_counts()
-    for s in (docdedup.LINKED, docdedup.LINKED, docdedup.FETCHED,
-              docdedup.VERIFIED, docdedup.CHANGED, docdedup.FETCH_FAILED):
-        docdedup.tally(counts, s)
-    assert counts == {"total": 0, "fetched": 1, "linked": 2, "verified": 1,
-                      "changed": 1, "skipped": 0, "errors": 1, "other": 0}
+def test_doc_counts_carry_a_skipped_bucket():
+    # viac's audit block adds `skipped` (a document the date or type gate
+    # leaves out, or any document under --dry-run) to the docdedup buckets.
+    assert download._empty_doc_counts()["skipped"] == 0
 
 
 def test_fetch_failed_is_error(tmp_path):

@@ -17,15 +17,17 @@ Flow:
      rather than risking a headless bot-challenge on the one flow that
      submits credentials. Only the CLI is visible; the browser is not.
      Firefox's password manager is disabled so a saved credential can't
-     autofill on top of our fill.
+     autofill on top of the scripted fill.
   2. Navigate to /accounts/login/. EquityZen keeps a session alive until an
      explicit logout (TOTP-only 2FA, no "remember this device" checkbox),
      so if the profile already holds a valid session the portal bounces
-     straight to the dashboard — we detect that and return without touching
-     credentials or firing a 2FA push (the nightly-cron short-circuit).
+     straight to the dashboard — detected, and login returns without
+     touching credentials or firing a 2FA push (the nightly-cron
+     short-circuit).
   3. Otherwise fill EQUITYZEN_USERNAME (alias EQUITYZEN_EMAIL) /
      EQUITYZEN_PASSWORD (clear → fill → verify each field), submit, wait for
-     the TOTP field, read the 6-digit code from stdin, submit it.
+     the TOTP field, read the 6-digit code from stdin (re-prompted a
+     bounded number of times when it is not six digits), submit it.
   4. Wait for the authenticated dashboard, then context.close() to flush
      cookies + storage back to the profile.
 
@@ -182,8 +184,8 @@ def _authenticated(page) -> bool:
 
 def _await_settled_auth(page, timeout_ms: int) -> bool:
     """After a goto, wait until the SPA has either rendered the login form
-    (`#email`) or redirected off the login path, then report whether we are
-    authenticated. This defeats the render race: right after
+    (`#email`) or redirected off the login path, then report whether the
+    page is authenticated. This defeats the render race: right after
     domcontentloaded the React form has not mounted, so an immediate
     `#email`-absent check would look falsely authenticated."""
     try:
@@ -215,17 +217,25 @@ def _fill_verify(page, selector: str, value: str, label: str, timeout_ms: int) -
     )
 
 
-def _read_totp(supplied: str | None) -> str:
+def _read_totp(supplied: str | None, *, input_fn=input) -> str:
+    """The 6-digit authenticator code. A `--totp` value must be exactly six
+    digits. A typed code goes through the shared reader: spaces and dashes
+    are stripped, and anything other than six digits is re-prompted a
+    bounded number of times before the login stops."""
     if supplied is not None:
         code = supplied.strip()
-    else:
-        if not sys.stdin.isatty():
-            log.warning("stdin is not a TTY; reading the TOTP code from a "
-                        "piped line. Use --totp for automation.")
-        code = input("EquityZen 6-digit authenticator code: ").strip()
-    if not TOTP_RE.match(code):
-        raise SystemExit(f"TOTP code must be exactly 6 digits (got {len(code)} chars).")
-    return code
+        if not TOTP_RE.match(code):
+            raise SystemExit(
+                f"TOTP code must be exactly 6 digits (got {len(code)} chars).")
+        return code
+    if not sys.stdin.isatty():
+        log.warning("stdin is not a TTY; reading the TOTP code from a "
+                    "piped line. Use --totp for automation.")
+    try:
+        return cli.read_code(prompt="EquityZen 6-digit authenticator code: ",
+                             digits=6, exact=True, input_fn=input_fn)
+    except cli.ChallengeError as exc:
+        raise SystemExit(f"TOTP code: {exc}.") from None
 
 
 def _wait_off_login(page, timeout_ms: int) -> bool:
@@ -376,7 +386,7 @@ def main(argv: list[str]) -> int:
 
         if args.check:
             # Probe only — no credentials, no 2FA. Load the dashboard; if
-            # the session is dead EquityZen redirects us to the login form.
+            # the session is dead EquityZen redirects to the login form.
             page.goto(DASHBOARD_URL, wait_until="domcontentloaded")
             ok = _await_settled_auth(page, timeout_ms)
             log.info("session %s", "valid" if ok else "INVALID / expired")

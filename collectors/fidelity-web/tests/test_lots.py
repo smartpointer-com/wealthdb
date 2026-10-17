@@ -15,7 +15,6 @@ import gzip
 import hashlib
 import json
 import logging
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -27,7 +26,6 @@ import download  # noqa: E402
 import load  # noqa: E402
 import lot_parsers  # noqa: E402
 
-MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
 ACCT = "300000003"
 ACCT_529 = "400000004"
@@ -380,7 +378,10 @@ def test_previous_index_is_the_newest_earlier_one(tmp_path):
         (tmp_path / slug / "lots").mkdir(parents=True)
         (tmp_path / slug / "lots" / "index.json").write_text(
             json.dumps({"marker": marker}))
+        (tmp_path / slug / "run.json").write_text(
+            json.dumps({"status": "complete"}))
     (tmp_path / "20990102T120000Z").mkdir()     # a dump with no lot step
+    (tmp_path / "20990102T120000Z" / "run.json").write_text("{}")
     assert download.previous_lot_index(
         tmp_path, "20990103T000000Z") == {"marker": "b"}
     # A dump that never completed is never loaded, so its fetches don't count.
@@ -388,6 +389,9 @@ def test_previous_index_is_the_newest_earlier_one(tmp_path):
         json.dumps({"status": "in-progress"}))
     assert download.previous_lot_index(
         tmp_path, "20990103T000000Z") == {"marker": "a"}
+    # Nor is a dump with no manifest at all.
+    (tmp_path / "20990101T000000Z" / "run.json").unlink()
+    assert download.previous_lot_index(tmp_path, "20990103T000000Z") is None
     assert download.previous_lot_index(tmp_path, "20990101T000000Z") is None
 
 
@@ -461,14 +465,6 @@ def test_closed_lot_row_reads_the_term_from_its_gain_column(
 # ============================================================
 # Load side
 # ============================================================
-
-@pytest.fixture
-def migrated():
-    c = sqlite3.connect(":memory:")
-    load.silver.apply_migrations(c, MIGRATIONS_DIR)
-    yield c
-    c.close()
-
 
 def _write_step(dump, index, bodies):
     """A dump's lot step: its index, and a plain bundle holding

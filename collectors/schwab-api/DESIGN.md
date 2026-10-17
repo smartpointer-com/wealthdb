@@ -105,8 +105,10 @@ Schwab specifics:
   at run-dir creation, atomically overwritten with `complete` (plus a
   few counts, no identifiers) once every artefact is written. It is the
   completeness signal `prune` and `load` key on: `load` skips a dump
-  whose status is present and not `complete`. `--dry-run` returns
-  before the run dir exists, so it leaves no shell and no manifest.
+  `prune` counts as not complete (§3.4). The manifest lands before the
+  first request, so a run that dies at the token refresh leaves an
+  `in-progress` shell too. `--dry-run` creates no run dir, so it leaves
+  no shell and no manifest.
 - Never imports or calls write endpoints (`place_order`, etc.).
   This is enforced by code review and documented in `AGENTS.md`. An
   order rate limit of 0 on the Schwab app adds a safeguard.
@@ -180,9 +182,9 @@ Three discipline points:
 
 3. **Skip already-loaded dumps** by checking `dump_runs` at the top
    of the load function. The unique `snapshot_at` PK on `dump_runs`
-   ensures re-running on the same bronze dir is a no-op. A dump whose
-   `run.json` status is present and not `complete` is skipped too and
-   stays pending (`collectorkit.bronze.is_loadable_status`). Its
+   ensures re-running on the same bronze dir is a no-op. A dump that
+   `prune` counts as not complete (§3.4) is skipped too and stays
+   pending: the loader classifies it with prune's own predicate. Its
    artefacts are partial: loading them would record the dump as done
    with, say, accounts but no positions.
 
@@ -218,9 +220,9 @@ Completeness comes from the `run.json` status. A dump carrying no
 status falls back to the presence of `open_orders.json`, the last
 unconditional artefact a complete run writes. The in-flight guard
 (`--min-age-hours`) protects a long transaction backfill that is still
-writing `transactions_NNN.json`. Deleting a non-complete dump only
-removes bronze. Silver rows already sourced from it persist until the
-next `load --force` rebuild.
+writing `transactions_NNN.json`. `load` applies the same predicate, so
+a non-complete dump was never loaded and deleting it never changes
+silver.
 
 Bronze compression is inert to `prune` for a manifest-bearing dump —
 classification is status-based, and the data artefacts are load inputs
@@ -653,5 +655,5 @@ Will need adaptation:
   real bronze samples.
 
 A new collector's build order is the phased playbook in
-[NEW-COLLECTOR-PROMPT.md](../../NEW-COLLECTOR-PROMPT.md#phases). Its
+[NEW-COLLECTOR-PROMPT.md](../../NEW-COLLECTOR-PROMPT.md#the-kickoff-prompt-template). Its
 core rule holds here too: inspect real bronze before designing silver.

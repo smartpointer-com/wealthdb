@@ -141,10 +141,12 @@ Schwab's error and a non-zero exit. It opens no browser and fires no
 `login --manual` is a no-browser fallback: it prints the authorize URL
 and reads the redirected URL back.
 
-Browser captures are opt-in. Pass `--screenshot-dir /debug --trace`
-through the wrapper. They land in the debug dir
+Browser captures are opt-in. Pass `--screenshot-dir /debug` through the
+wrapper. They land in the debug dir
 (`~/.cache/wealthdb/debug/schwab-api`, or `$SCHWAB_API_DEBUG_DIR`),
-outside bronze. `prune` reclaims them.
+outside bronze. `prune` reclaims them. `--trace` adds a Playwright trace,
+but the pinned Playwright tracer crashes the pinned Camoufox build, so it
+ends the login.
 
 ## download
 
@@ -198,7 +200,8 @@ $XDG_DATA_HOME/wealthdb/schwab-api/
 
 - `run.json` follows the fleet's status lifecycle
   ([collectors/README.md](../README.md#debug-artefacts-run-status-and-pruning-bronze)).
-  `load` skips a dump whose status is present and not `complete`.
+  `load` skips a dump that is not complete. [prune](#prune) states the
+  rule.
 - Each data file is zstd-compressed as it lands. If compression fails,
   the plain `.json` stays and the run still succeeds. `load` reads
   either form. Older dumps may hold plain `.json`.
@@ -286,8 +289,8 @@ For schwab-api it removes:
 
 A dump without a `run.json` status counts as complete when it holds
 `open_orders.json` or `open_orders.json.zst`, the last file a finished
-run always writes. Silver rows from a pruned dump stay until the next
-`load --force`.
+run always writes. `load` applies the same rule, so pruning a dump never
+changes silver.
 
 ```sh
 ./schwab-api prune --dry-run   # print the deletion plan

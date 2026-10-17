@@ -175,11 +175,11 @@ def test_walk_marks_a_history_cut_short(monkeypatch, tmp_path):
 
 def test_walk_downloads_kdm_via_versioned_url(monkeypatch, tmp_path):
     # The older KDM document carries a versionsId; its download URL must
-    # include it (…/KDM/RBGO9/1/download) or the server 422s. The stub 422s
+    # include it (…/KDM/DOC_9/1/download) or the server 422s. The stub 422s
     # any KDM download that OMITS the version, so this passes only when the
     # versioned URL is used.
     docs = [_statement_doc(doc_id="eaz1", created="2026-08-01T01:00:00"),
-            {"systemId": "KDM", "dokumentenId": "RBGO9", "versionsId": 1,
+            {"systemId": "KDM", "dokumentenId": "DOC_9", "versionsId": 1,
              "dokumentenName": {"de": "Kontoauszug"},
              "erstellungsDatum": "2024-06-01T01:00:00", "dateiTyp": "PDF",
              "referenzIds": [{"typ": "IBAN", "iban": IBAN_A}]}]
@@ -188,7 +188,7 @@ def test_walk_downloads_kdm_via_versioned_url(monkeypatch, tmp_path):
         history_pages=[([{"id": 1, "buchungstag": "2026-06-01"}], False)],
         balances={"tagessalden": []}, docs=docs)
     # A KDM download missing the version segment 422s; the versioned path 200s.
-    ctx = _Context(_RequestCtx(fail_status_for={"/KDM/RBGO9/download": 422}))
+    ctx = _Context(_RequestCtx(fail_status_for={"/KDM/DOC_9/download": 422}))
     summary = download.walk(ctx, watch=login._Watch(),
                             bronze_dir=tmp_path, since=date(2024, 1, 1),
                             until=date(2026, 8, 15))

@@ -1,4 +1,5 @@
 # Marker: this is a HYBRID collector. It has a Dockerfile (the Camoufox
 # OAuth `login` image) AND needs a host venv (download/load run on the
-# host via schwab-py). The Makefile builds/tests both when this file is
-# present; without it, a Dockerfile would make build/test Docker-only.
+# host via schwab-py). With this file present the Makefile builds both,
+# and tests on the host venv; without it, a Dockerfile would make build
+# and test Docker-only.

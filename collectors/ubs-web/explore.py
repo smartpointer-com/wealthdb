@@ -60,11 +60,13 @@ from collectorkit import cli, debugcap, envfile, explore, launch, session
 
 import landmarks as ubs
 
-# The state-file locations and the user agent are login.py's, imported
-# rather than restated: a session minted or reused here is the one
-# `download` picks up, and UBS's anti-bot heuristics must see one UA
-# across all three scripts.
-from login import DEFAULT_STATE_PATH, LEGACY_STATE_PATH, USER_AGENT
+# The state-file locations, the user agent and the env files are login.py's,
+# imported rather than restated: a session minted or reused here is the one
+# `download` picks up, UBS's anti-bot heuristics must see one UA across all
+# three scripts, and the contract number comes from the same file login
+# reads.
+from login import (CONTRACT_NUMBER_ENV, DEFAULT_ENV_FILE_CANDIDATES,
+                   DEFAULT_STATE_PATH, LEGACY_STATE_PATH, USER_AGENT)
 
 log = logging.getLogger("ubs-web.explore")
 
@@ -77,12 +79,6 @@ UBS_HOST_RE = re.compile(r'(^|\.)ubs\.com$', re.I)
 # Console-message prefix the init script tags its events with, so page
 # logging and harness events don't have to be told apart by guesswork.
 EVENT_PREFIX = "__UBS_EXPLORE__ "
-
-DEFAULT_ENV_FILE = Path("/secrets/ubs-web.env")
-# The bank-level env file ubs-web falls back to (shared with any ubs-*
-# sibling).
-LEGACY_ENV_FILE = Path("/secrets/ubs.env")
-CONTRACT_ENV = "UBS_CONTRACT_NUMBER"
 
 # The in-page click recorder plus two detectors
 # (collectorkit.explore.click_recorder_js), on UBS frames only: the login
@@ -116,9 +112,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     explore.add_args(
         p, url=ubs.LOGIN_ENTRY_URL, env_file=None, dom_snapshots=True,
-        env_help=(f"Bash-sourced env file supplying {CONTRACT_ENV} for the "
-                  "login-form pre-fill. Defaults to the ubs-web env file "
-                  "under /secrets, falling back to the bank-level one. "
+        env_help=(f"Bash-sourced env file supplying {CONTRACT_NUMBER_ENV} "
+                  "for the login-form pre-fill. Defaults to login's: the "
+                  "ubs-web env file, falling back to the bank-level one. "
                   "Skipped silently when absent."))
     p.add_argument(
         "--no-save-state", action="store_true",
@@ -143,9 +139,10 @@ def is_ubs_host(url: str) -> bool:
 
 
 def resolve_env_file(explicit: Path | None) -> Path | None:
-    """The env file to source: the explicit one, else ubs-web's, else the
-    bank-level fallback the README documents. None when none exists."""
-    return envfile.resolve_env_file(explicit, (DEFAULT_ENV_FILE, LEGACY_ENV_FILE))
+    """The env file to source: the explicit one, else the first of login's
+    candidates that exists (ubs-web's, else the bank-level fallback the
+    README documents). None when none exists."""
+    return envfile.resolve_env_file(explicit, DEFAULT_ENV_FILE_CANDIDATES)
 
 
 def _looks_authenticated(context) -> bool:
@@ -205,14 +202,11 @@ def prefill_contract(page, contract: str, filled: set) -> bool:
 # ============================================================
 
 # What the person at the VNC session is asked to walk.
-WALK = ("drive the session in the VNC window. The card surface is what this "
-        "session is for: the card roster, a card's transactions, one "
-        "transaction's DETAIL view, and the invoice/statement archive "
-        "including one statement download. Read-only surfaces only "
-        "(AGENTS.md §1) — never a payment form and never a card-management "
-        "control. Prefer Ctrl-C: it keeps the session readable, so a "
-        "sign-in made here is saved and `download` need not challenge "
-        "again.")
+WALK = ("drive the session in the VNC window, on the surface being mapped. "
+        "Read-only surfaces only (AGENTS.md §1) — never a payment form and "
+        "never a card-management control. Prefer Ctrl-C: it keeps the "
+        "session readable, so a sign-in made here is saved and `download` "
+        "need not challenge again.")
 
 
 def main(argv: list[str]) -> int:
@@ -220,23 +214,25 @@ def main(argv: list[str]) -> int:
     cli.configure_logging(args.verbose)
 
     # Read from whichever name holds a session (resolve_state_path honours
-    # the pre-rename one); always write to the canonical path, so a session
+    # the legacy name); always write to the canonical path, so a session
     # found under the legacy name migrates on the way out.
     write_state_path = args.state_path or DEFAULT_STATE_PATH
     state_path = session.resolve_state_path(
         write_state_path, DEFAULT_STATE_PATH, LEGACY_STATE_PATH)
     have_state = state_path.is_file()
 
+    # Sourced as login sources it: the file's value wins.
     env_file = resolve_env_file(args.env_file)
-    if env_file is not None and envfile.source_env_file(env_file):
+    if env_file is not None and envfile.source_env_file(env_file,
+                                                        prefer_file=True):
         log.info("env file:    %s (sourced)", env_file)
-    contract = os.environ.get(CONTRACT_ENV, "")
+    contract = os.environ.get(CONTRACT_NUMBER_ENV, "")
     prefill = bool(contract) and not args.no_prefill
     if args.no_prefill:
         log.info("--no-prefill: contract-number pre-fill disabled")
     elif not contract:
         log.warning("%s not set; contract-number pre-fill disabled",
-                    CONTRACT_ENV)
+                    CONTRACT_NUMBER_ENV)
     log.info("state file:  %s (%s)", state_path,
              "loaded" if have_state else "absent — sign in by hand")
 

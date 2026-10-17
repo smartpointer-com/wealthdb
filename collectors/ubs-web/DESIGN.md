@@ -407,11 +407,9 @@ both whole and in parts.
 ### 3.7 Documents (PDFs)
 
 Web-only — PSN has no document concept. The silver `documents`
-table is one row per PDF, indexed by date and type. The web loader
-populates `documents.account_external_id` /
-`documents.portfolio_external_id` via best-effort label parsing,
-when the listing-row label contains a discoverable IBAN / portfolio
-code.
+table is one row per PDF, indexed by date and type. The scraped rows
+carry no account or portfolio. A supplied Statement of assets carries
+the portfolio its body prints (§3.7a).
 
 The PDF binaries live on disk under
 `<bronze-root>/<dump-ts>/documents/`, named by their content hash
@@ -421,8 +419,9 @@ filename across runs (UBS otherwise serves it under a fresh per-session
 token each time), so the tree does not accrete a new name per
 re-download and each document gains a stable cross-run identity
 (`content_sha256`, recorded in `run.json`) for later dedup tooling. The
-loader is filename-agnostic — it catalogs whatever `*.pdf` the manifest
-lists — so dumps with token-named PDFs load the same way.
+loader is filename-agnostic — it catalogs every `*.pdf` in `documents/`,
+taking token and label from the manifest where it lists the file — so
+dumps with token-named PDFs load the same way.
 
 A document the archive never listed has no manifest entry and so no
 label; §3.7a covers how one is taken in.
@@ -1105,8 +1104,8 @@ Three tables plus a document index, added by
 [migrations/0007_cards.sql](migrations/0007_cards.sql), kept apart from
 the cash tables for the reason §3.8 gives for the historical ones — the
 identity model differs. A cash account is keyed by IBAN and carries the
-columns that join it to PSN; a card is keyed by an opaque token and has
-no PSN twin at all.
+columns that join it to PSN; a card account is keyed by its account
+number and has no PSN twin at all.
 
 | Table | Grain | Carries |
 | --- | --- | --- |
@@ -1122,8 +1121,8 @@ The decisions of record:
   keying on it made a re-download append a second copy of the ledger
   rather than UPSERT it (migration 0008). The key is `card:` plus a hash
   of the row's own facts — card, transaction and value dates, both
-  amounts and currencies, merchant — with an occurrence index, so two
-  identical purchases on one day stay two spends.
+  amounts and currencies — with an occurrence index, so two identical
+  purchases on one day stay two spends.
 - **`RESERVED` rows are counted, not stored and not summed.** They carry
   nothing that could key them, so the ledger keeps only what has posted.
   Their magnitude comes from the roster — each card's
@@ -1187,7 +1186,7 @@ listed here because they are properties of the feeds, not of gold.
   table; web carries only the CHF/* pairs in the `positions.csv`
   footer.
 - **Documents are not indexed by instrument.** `documents` is indexed
-  by type + date + account only. Capital calls and contract notes are
+  by type + date only. Capital calls and contract notes are
   parsed into `advices` (§3.9), which carry the ISIN. Trade
   confirmations and corporate-action notices also name ISINs in the
   PDF body, but no parser reads them.

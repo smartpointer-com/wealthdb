@@ -10,19 +10,20 @@
 #                      (schwab-web.env), auto-submits, prompts for the 2FA
 #                      code on stdin, drives the consent / account-link pages
 #                      (ticking every account), and writes the token to
-#                      <secrets>/schwab-api-token.json. --trace
-#                      --screenshot-dir /debug captures diagnostics to the
-#                      debug dir. --check probes the token; --manual is
-#                      the paste-the-URL fallback.
-#   vnc-login [args..] Manual fallback: drive login / 2FA / consent yourself
+#                      <secrets>/schwab-api-token.json.
+#                      --screenshot-dir /debug captures pages to the debug
+#                      dir. --check probes the token; --manual is the
+#                      paste-the-URL fallback.
+#   vnc-login [args..] Manual fallback: login / 2FA / consent driven by hand
 #                      over VNC (use if `login`'s selectors drift).
 #   download [args...] Fetch accounts / positions / transactions to bronze.
 #   load [args...]     Parse bronze into the silver SQLite DB.
-#   prune [args...]    Delete non-complete dumps (crashed / interrupted
-#                      downloads) from the bronze tree, and aged-out
-#                      entries from the login trace cache
-#                      (~/.cache/wealthdb/debug/schwab-api). Host-side; --dry-run
-#                      prints the plan without deleting.
+#   prune [args...]    Delete the `download --debug` trace
+#                      (<run>/screenshots/) from complete dumps, whole
+#                      non-complete dumps (crashed / interrupted downloads),
+#                      and idle login captures in
+#                      ~/.cache/wealthdb/debug/schwab-api. Host-side;
+#                      --dry-run prints the plan without deleting.
 #   recompress [args]  One-time backlog sweep: replace plain data JSON
 #                      (account_numbers / user_preference /
 #                      accounts_positions / transactions_NNN /
@@ -58,10 +59,6 @@ case "$cmd" in
         ;;
     build)
         # Docker login image.
-        ENV_VARS=()
-        HAS_VNC=1
-        HAS_DEBUG=1
-        HAS_SAFETY=1
         # shellcheck disable=SC1091
         source "$HERE/../../shared/wrappers/wrapper-lib.sh"
         wrapper_init

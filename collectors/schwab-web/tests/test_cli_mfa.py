@@ -97,44 +97,44 @@ def _wire(monkeypatch, outcomes, submit_results=None,
 
 def test_clean_landing_needs_one_code(monkeypatch):
     calls = _wire(monkeypatch, outcomes=["auth"])
-    assert login._run_cli_mfa(MagicMock(), None) == "ok"
+    assert login._run_cli_mfa(MagicMock(), None, mfa_wait_s=300) == "ok"
     assert calls["prompts"] == 1
 
 
 def test_rejection_is_terminal_after_one_submission(monkeypatch):
     calls = _wire(monkeypatch, outcomes=["rejected"])
-    assert login._run_cli_mfa(MagicMock(), None) == "abort"
+    assert login._run_cli_mfa(MagicMock(), None, mfa_wait_s=300) == "abort"
     assert calls["prompts"] == 1
     assert calls["submitted_codes"] == ["111111"]
 
 
 def test_login_form_back_aborts(monkeypatch):
     calls = _wire(monkeypatch, outcomes=["login"])
-    assert login._run_cli_mfa(MagicMock(), None) == "abort"
+    assert login._run_cli_mfa(MagicMock(), None, mfa_wait_s=300) == "abort"
     assert calls["prompts"] == 1
 
 
 def test_pending_defers_to_the_long_wait(monkeypatch):
     calls = _wire(monkeypatch, outcomes=["pending"])
-    assert login._run_cli_mfa(MagicMock(), None) == "ok"
+    assert login._run_cli_mfa(MagicMock(), None, mfa_wait_s=300) == "ok"
     assert calls["prompts"] == 1
 
 
 def test_empty_code_aborts(monkeypatch):
     calls = _wire(monkeypatch, outcomes=[], codes=("",))
-    assert login._run_cli_mfa(MagicMock(), None) == "abort"
+    assert login._run_cli_mfa(MagicMock(), None, mfa_wait_s=300) == "abort"
     assert calls["submitted_codes"] == []
 
 
 def test_unsubmittable_form_falls_back_to_manual(monkeypatch):
     calls = _wire(monkeypatch, outcomes=[], form_verdict="failed")
-    assert login._run_cli_mfa(MagicMock(), None) == "manual"
+    assert login._run_cli_mfa(MagicMock(), None, mfa_wait_s=300) == "manual"
     assert calls["prompts"] == 0
 
 
 def test_login_error_aborts_before_any_mfa(monkeypatch):
     calls = _wire(monkeypatch, outcomes=[], form_verdict="error")
-    assert login._run_cli_mfa(MagicMock(), None) == "abort"
+    assert login._run_cli_mfa(MagicMock(), None, mfa_wait_s=300) == "abort"
     assert calls["prompts"] == 0
     assert calls["submitted_codes"] == []
 
@@ -164,7 +164,7 @@ def test_rejection_reports_schwabs_own_words(monkeypatch, caplog):
     monkeypatch.setattr(login, "_visible_error_text_anywhere",
                         lambda p: "The code entered is not valid.")
     with caplog.at_level(_logging.WARNING, logger="schwab-web.login"):
-        assert login._run_cli_mfa(MagicMock(), None) == "abort"
+        assert login._run_cli_mfa(MagicMock(), None, mfa_wait_s=300) == "abort"
     assert any("Schwab reports:\n  - The code entered is not valid."
                in r.message for r in caplog.records)
 
@@ -282,3 +282,65 @@ def test_download_path_records_and_saves_a_trace(monkeypatch, tmp_path):
     assert rc == 1
     assert opened == [True]
     context.tracing.stop.assert_called_once()
+
+
+# ============================================================
+# run_manual: the --mfa-timeout wait and the exit codes
+# ============================================================
+
+def _signed_in_run(monkeypatch, walk, cli_mfa=lambda *a, **k: "ok"):
+    """Wire run_manual to a stub browser that signs in at once, with
+    `walk` in place of download.walk. Returns run_manual's kwargs."""
+    import contextlib
+
+    context = MagicMock()
+
+    @contextlib.contextmanager
+    def fake_context(profile_dir, trace):
+        yield context
+
+    monkeypatch.setattr(login, "open_camoufox_context", fake_context)
+    monkeypatch.setenv(login.LOGIN_ID_ENV, "example-id")
+    monkeypatch.setenv(login.PASSWORD_ENV, "example-pass")
+    monkeypatch.setattr(login, "_prefill_login_iframe", lambda *a: None)
+    monkeypatch.setattr(login, "_run_cli_mfa", cli_mfa)
+    monkeypatch.setattr(login, "_wait_for_post_auth",
+                        lambda ctx, timeout_s: context.new_page.return_value)
+    monkeypatch.setattr(login, "_live_url", lambda p: POST_AUTH)
+    monkeypatch.setattr(login.time, "sleep", lambda s: None)
+    monkeypatch.setattr(login.download, "walk", walk)
+
+
+def _run(tmp_path, **kw):
+    return login.run_manual(tmp_path / "profile", None,
+                            bronze_dir=tmp_path / "bronze",
+                            mfa_timeout_s=kw.pop("mfa_timeout_s", 300), **kw)
+
+
+def test_mfa_timeout_reaches_the_first_mfa_wait(monkeypatch, tmp_path):
+    waits = []
+    _signed_in_run(monkeypatch, lambda *a, **k: {"status": "complete"},
+                   cli_mfa=lambda page, shots, *, mfa_wait_s:
+                   waits.append(mfa_wait_s) or "ok")
+    assert _run(tmp_path, mfa_timeout_s=42) == 0
+    assert waits == [42]
+
+
+def test_a_dry_run_walk_exits_zero(monkeypatch, tmp_path):
+    _signed_in_run(monkeypatch, lambda *a, **k: {"status": "dry-run"})
+    assert _run(tmp_path, dry_run=True) == 0
+
+
+def test_a_walk_that_finds_no_accounts_fails(monkeypatch, tmp_path):
+    # walk() returns its summary still in-progress when the account
+    # selector yields nothing; that is a failed run, not an empty one.
+    _signed_in_run(monkeypatch, lambda *a, **k: {
+        "status": "in-progress", "statements": [], "transactions": []})
+    assert _run(tmp_path) == 1
+
+
+def test_an_interrupt_exits_130(monkeypatch, tmp_path):
+    def interrupted(*a, **k):
+        raise KeyboardInterrupt
+    _signed_in_run(monkeypatch, interrupted)
+    assert _run(tmp_path) == 130

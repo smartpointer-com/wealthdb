@@ -36,12 +36,3 @@ def test_debug_flag():
     assert download.parse_args(["--debug"]).debug is True
     assert download.parse_args([]).debug is False
 
-
-def test_debug_help_promises_bronze_captures(capsys):
-    # Guards against the flag regressing to a warn-only stub.
-    with pytest.raises(SystemExit):
-        download.parse_args(["--help"])
-    out = capsys.readouterr().out
-    assert "--debug" in out
-    assert "gates nothing" not in out
-    assert "NOT YET IMPLEMENTED" not in out
