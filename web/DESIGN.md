@@ -119,9 +119,9 @@ nine dashboards. Their pickers:
   the rest: the by-month charts and the line list take it, and the
   headline figures and the Sankey do not. There is no account picker,
   because the household boundary defines the pool.
-- **Exposure**: a required currency and a time range. A breakdown reads
-  the latest day in the range, and a chart over time each month end in
-  it.
+- **Exposure**: a required currency, a time range, a source, a *Tax
+  wrapper* picker, and an *Asset class* picker. A breakdown reads the
+  latest day in the range, and a chart over time each month end in it.
 - **Data Freshness**: no pickers.
 
 All of them are definitions only (MBQL or SQL), with no data baked in.
@@ -221,10 +221,12 @@ It reads in this order:
 - how the figures are classified over time, so a growing unknown
   band shows where the other charts stop covering.
 
-Two pickers narrow every tile, the source and the tax wrapper, the
+Three pickers narrow every tile. The source and the tax wrapper are the
 pair Gains carries: `report_exposure` holds the look-through per source
-and account wrapper (migration 0130), and each tile computes its share
-over the rows it reads. So every figure is a share of the selection's
+and account wrapper (migration 0130). The asset class picker keeps the
+leaves of the classes picked, so a reader can leave out real estate and
+its mortgages, or read public equity alone. Each tile computes its
+share over the rows it reads. So every figure is a share of the selection's
 net worth, or of its public equity, and of net worth itself with
 nothing picked; either way scale-free. So the Exposure twin needs no
 normalisation. Each breakdown

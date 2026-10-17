@@ -952,9 +952,10 @@ FILTER_FIELD_COLUMNS = {
     # through the {{currency}} variable, so no field filter binds it.
     "web_gains": ("period", "silver_source_id", "tax_wrapper"),
     # The exposure view (migration 0127): month ends and today, a row set
-    # per currency like web_gains. No source column: the look-through is
-    # of net worth, across every source.
-    "web_exposure": ("as_of_day", "silver_source_id", "tax_wrapper"),
+    # per currency like web_gains, and per source and account wrapper
+    # (migration 0130). The pickers narrow those and each leaf's asset
+    # class.
+    "web_exposure": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
 }
 FIELD_IDS = {}          # (table, column) -> field id, filled by main()
 CURRENCY_FIELD_ID = None
@@ -2654,7 +2655,8 @@ def exposure_cards(db_id, privacy):
     SQL over web_exposure (gold migrations 0127 and 0130), the look-through at
     every month end and today, materialized per reporting currency, so
     {{currency}} is a row filter as on Gains, and per source and tax
-    wrapper, which the pickers narrow. Every share is of the selection:
+    wrapper. The pickers narrow those and the asset class. Every share
+    is of the selection:
     its day's net worth with nothing picked, computed over the rows a
     card reads. A breakdown reads the latest day in the window and plots
     each share, or the share of public equity for sizes: a bar carries
@@ -2955,13 +2957,16 @@ GAINS_PICKERS = [(GAINS_CURRENCY_PARAM_ID, "currency"),
                  (GAINS_MISSING_PARAM_ID, "missing_basis")]
 
 # The Exposure dashboard's picker ids and filters: the currency (a row
-# filter, as on Gains) and the time range over the month ends. No source
-# picker: the look-through describes net worth across every source.
+# filter, as on Gains), the time range over the month ends, the source,
+# the tax wrapper and the asset class of each leaf.
 EXPOSURE_CURRENCY_PARAM_ID = "aa5df114"
 EXPOSURE_TAX_WRAPPER_PARAM_ID = "aa5df115"
-EXPOSURE_FILTERS = {**range_filters("as_of_day"), "tax_wrapper": ("tax_wrapper", "string/=")}
+EXPOSURE_ASSET_CLASS_PARAM_ID = "aa5df116"
+EXPOSURE_FILTERS = {**range_filters("as_of_day"), "tax_wrapper": ("tax_wrapper", "string/="),
+                    "asset_class": ("asset_class", "string/=")}
 EXPOSURE_PICKERS = [(EXPOSURE_CURRENCY_PARAM_ID, "currency"), (TIME_PARAM_ID, "time_range"),
-                    (SOURCE_PARAM_ID, "source"), (EXPOSURE_TAX_WRAPPER_PARAM_ID, "tax_wrapper")]
+                    (SOURCE_PARAM_ID, "source"), (EXPOSURE_TAX_WRAPPER_PARAM_ID, "tax_wrapper"),
+                    (EXPOSURE_ASSET_CLASS_PARAM_ID, "asset_class")]
 
 SPEND_PICKERS = [(SPEND_CURRENCY_PARAM_ID, "currency"),
                  (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
@@ -4229,11 +4234,15 @@ def dashboard_parameters(model_ids, mode, name=""):
                   "sectionId": "date", "default": "past12months~"}
     if name in EXPOSURE_DASHBOARDS:
         # The currency is required, as report_exposure holds a row set
-        # per currency; the source and the tax wrapper narrow the
-        # look-through to a selection, whose shares the cards compute.
+        # per currency; the source, the tax wrapper and the asset class
+        # narrow the look-through to a selection, whose shares the cards
+        # compute. The asset class picker lists the positions' classes,
+        # the taxonomy every leaf's class is one of.
         return [currency_picker(EXPOSURE_CURRENCY_PARAM_ID), time_range, source,
                 card_picker(EXPOSURE_TAX_WRAPPER_PARAM_ID, "Tax wrapper",
-                            "tax_wrapper", "report_accounts_latest", "tax_wrapper")]
+                            "tax_wrapper", "report_accounts_latest", "tax_wrapper"),
+                card_picker(EXPOSURE_ASSET_CLASS_PARAM_ID, "Asset class", "asset_class",
+                            "report_positions_history", "asset_class")]
     if name in GAINS_DASHBOARDS:
         # The tax wrapper's values come off the accounts model, the
         # vocabulary web_gains joins in from the same table. Missing cost

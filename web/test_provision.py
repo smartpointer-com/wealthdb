@@ -772,7 +772,7 @@ for _d, _want in (("Wealth Overview", {p.WEALTH_CURRENCY_PARAM_ID,
                   ("Allocation", {p.WEALTH_CURRENCY_PARAM_ID,
                                   p.ASOF_PARAM_ID, p.SOURCE_PARAM_ID}),
                   ("Exposure", {p.EXPOSURE_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
-                                p.EXPOSURE_TAX_WRAPPER_PARAM_ID})):
+                                p.EXPOSURE_TAX_WRAPPER_PARAM_ID, p.EXPOSURE_ASSET_CLASS_PARAM_ID})):
     for _name in (_d, _d + p.PRIVACY_SUFFIX):
         _body = [d for d in layouts if d.get("name") == _name][0]
         _tiles = [dc for dc in _body["dashcards"] if dc["card_id"] is not None]
@@ -1464,14 +1464,17 @@ check("...and every read of it is held to the picked currency",
       all(q.count("FROM web_exposure") == q.count("AND currency = {{currency}}")
           for q in _ex_sql.values()))
 _ex_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Exposure")]
-check("the Exposure dashboard carries the currency, the time range, the source and the tax wrapper",
-      _ex_pickers == ["currency", "time_range", "source", "tax_wrapper"], _ex_pickers)
+check("the Exposure dashboard carries the currency, the time range, the source, the tax wrapper "
+      "and the asset class",
+      _ex_pickers == ["currency", "time_range", "source", "tax_wrapper", "asset_class"], _ex_pickers)
 # A share of what the pickers select is each card's own, over the rows
 # it reads; nothing picked, it is the share of net worth.
-check("every Exposure tile reads the source and the tax wrapper and computes its shares",
+check("every Exposure tile reads the source, the tax wrapper and the asset class "
+      "and computes its shares",
       all("[[AND {{source}}]]" in q and "[[AND {{tax_wrapper}}]]" in q
+          and "[[AND {{asset_class}}]]" in q
           and "OVER (PARTITION BY as_of_day)" in q for q in _ex_sql.values()),
-      [n for n, q in _ex_sql.items() if "{{tax_wrapper}}" not in q])
+      [n for n, q in _ex_sql.items() if "{{asset_class}}" not in q])
 check("the Exposure dashboard has a privacy twin",
       DEFS["Exposure"][2] == "Exposure" + p.PRIVACY_SUFFIX
       and "Exposure" + p.PRIVACY_SUFFIX in DEFS)

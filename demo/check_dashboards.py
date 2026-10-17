@@ -109,6 +109,7 @@ def combos(params, sources, currencies, first_year, today):
         "start_year": [[y] for y in range(first_year, today.year + 1)],
         "as_of_day": [f"{first_year + 1}-12-31", today.isoformat()],
         "missing_basis": [["ignore"], ["zero"]],
+        "asset_class": [["public_equity"]],
     }
     for slug, values in variations.items():
         p = by_slug.get(slug)
