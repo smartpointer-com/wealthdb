@@ -690,6 +690,20 @@ def test_windows_of_runs_loaded_before_they_were_recorded_are_backfilled(tmp_pat
     assert supplied and max(supplied) < date(2024, 4, 1)
 
 
+def test_a_run_dir_without_a_manifest_backfills_no_window(tmp_path):
+    # A loaded run whose dir has since lost its run.json is prune's to
+    # reclaim: its history and balances record no window.
+    bronze_dir = tmp_path / "bronze"
+    run = _ledger_run(bronze_dir, date(2024, 4, 1), date(2024, 6, 29))
+    _main(bronze_dir)
+    conn = _db(bronze_dir)
+    conn.execute("DELETE FROM run_windows")
+    conn.commit()
+    (run / "run.json").unlink()
+    _main(bronze_dir)
+    assert _count(conn, "SELECT COUNT(*) FROM run_windows") == 0
+
+
 def test_supplied_balances_give_way_to_a_live_balance(tmp_path):
     bronze_dir = tmp_path / "bronze"
     _ledger_run(bronze_dir, date(2024, 4, 1), date(2024, 6, 29))

@@ -908,20 +908,18 @@ def upsert_account(
 def load_one_dump(
     conn: sqlite3.Connection,
     run_dir: Path,
+    run_meta: dict,
     bronze_root: Path,
     schema_version: int,
 ) -> None:
+    """Load the dump in `run_dir`, whose parsed run.json is `run_meta`."""
     snapshot_at = bronze.parse_run_ts(run_dir.name)
     log.info("Loading dump %s (snapshot_at=%d)", run_dir.name, snapshot_at)
 
-    run_meta_path = run_dir / "run.json"
-    if not run_meta_path.is_file():
-        raise SystemExit(f"Missing run.json in {run_dir}: incomplete dump.")
-    run_meta = json.loads(run_meta_path.read_text(encoding="utf-8"))
     customer_id = run_meta.get("customer_id")
     if not customer_id:
         raise SystemExit(
-            f"{run_meta_path}: customer_id not set. The dump cannot "
+            f"{run_dir / 'run.json'}: customer_id not set. The dump cannot "
             f"be loaded without knowing which account it belongs to."
         )
 
@@ -1027,7 +1025,16 @@ def run(args: argparse.Namespace) -> int:
         pending = bronze.pending_run_dirs(conn, args.bronze_dir, log=log)
         log.info("%d pending dump(s) to load", len(pending))
         for run_dir in pending:
-            load_one_dump(conn, run_dir, args.bronze_dir, schema_version)
+            # A run.json that cannot be read skips its dump with a warning
+            # and no dump_runs row, so the dumps after it still load and
+            # the next load retries it. prune keeps such a dir.
+            run_meta = bronze.read_manifest(run_dir / "run.json")
+            if run_meta is None:
+                log.warning("skipping %s — run.json cannot be read",
+                            run_dir.name)
+                continue
+            load_one_dump(conn, run_dir, run_meta, args.bronze_dir,
+                          schema_version)
 
         # Manual dir is scanned every invocation, regardless of new dumps.
         n_manual = ingest_manual_dir(conn, args.bronze_dir)

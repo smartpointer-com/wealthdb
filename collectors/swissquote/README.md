@@ -264,6 +264,8 @@ The swissquote specifics:
 
 - `load` skips a run dir with no `run.json`, or one whose `status` is
   not `complete`. A `run.json` without a `status` loads.
+- `load` also skips a run dir whose `run.json` cannot be read, with a
+  warning. The other run dirs still load. `prune` keeps that dir.
 - A failed `download` deletes its own partial run dir. With `--debug` it
   keeps the dir, so the captures survive the failure they explain.
 - `download --debug` saves DOM and screenshot captures in

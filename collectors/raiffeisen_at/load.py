@@ -504,10 +504,16 @@ def _insert_windows(conn, snapshot_at: int, windows) -> None:
 
 
 def _backfill_windows(conn, bronze_dir: Path) -> None:
-    """Record the windows of runs loaded before `run_windows` existed, once."""
+    """Record the windows of runs loaded before `run_windows` existed, once.
+
+    It reads only a run dir `load_run` would read (`bronze.run_is_loadable`):
+    one without a manifest, or whose download did not finish, is `prune`'s
+    to reclaim and records no window."""
     have = {r[0] for r in conn.execute("SELECT DISTINCT snapshot_at FROM run_windows")}
     loaded = silver.loaded_snapshots(conn)
     for run_dir in bronze.iter_run_dirs(bronze_dir):
+        if not bronze.run_is_loadable(run_dir):
+            continue
         try:
             snapshot_at = bronze.parse_run_ts(run_dir.name)
         except ValueError:

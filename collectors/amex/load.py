@@ -573,6 +573,10 @@ def _statement_copies(bronze_dir: Path,
                       stems: dict[str, str]) -> tuple[dict, dict]:
     """One walk of bronze for both things the rebuild reads from it.
 
+    The walk reads the runs `load_run` reads (`bronze.run_is_loadable`) and
+    no others: a run dir without a manifest, or one whose download did not
+    finish, is `prune`'s to reclaim and feeds the rebuild nothing.
+
     Returns (copies, runs_by_until):
 
     * `copies[account][file name]` — every copy of that period, NEWEST RUN
@@ -580,8 +584,8 @@ def _statement_copies(bronze_dir: Path,
       a new hash for the same statement, so byte-level dedup would parse it
       again (the fleet's dedupe-on-logical-identity rule). The older copies
       are kept because the newest is not always the readable one.
-    * `runs_by_until[period_end]` — (run_ts, run_dir) for the complete run
-      whose activity window closed on that day, which is the key an
+    * `runs_by_until[period_end]` — (run_ts, run_dir) for the run whose
+      activity window closed on that day, which is the key an
       activity-channel balance row is recorded under.
     """
     copies: dict[str, dict[str, list]] = {}
@@ -589,11 +593,10 @@ def _statement_copies(bronze_dir: Path,
     # iter_run_dirs yields oldest first, so inserting at the head leaves each
     # period's chain newest first.
     for run_dir in bronze.iter_run_dirs(bronze_dir):
-        manifest = (_read_json(run_dir / "run.json")
-                    if (run_dir / "run.json").is_file() else None)
-        manifest = manifest if isinstance(manifest, dict) else {}
-        if not bronze.is_loadable_status(manifest.get("status")):
+        if not bronze.run_is_loadable(run_dir):
             continue
+        manifest = _read_json(run_dir / "run.json")
+        manifest = manifest if isinstance(manifest, dict) else {}
         try:
             run_ts = bronze.parse_run_ts(run_dir.name)
         except ValueError:
@@ -727,7 +730,8 @@ def _import_statements(conn, account_external_id: str,
 
 
 def rebuild_statements(conn, bronze_dir: Path) -> None:
-    """Rebuild every statement-sourced row in silver, from all of bronze.
+    """Rebuild every statement-sourced row in silver, from every run
+    `load_run` reads (`_statement_copies`).
 
     **This is a derived table, not an incremental one, and it has to be.** The
     export seam is `MIN(posted_at)` over the account's ACTIVITY rows, and it
@@ -742,7 +746,7 @@ def rebuild_statements(conn, bronze_dir: Path) -> None:
     (DESIGN.md §M).
 
     So: drop every statement-sourced row and period, re-parse the PDFs across
-    all bronze runs, and re-apply the seam as it now stands. Idempotent by
+    those runs, and re-apply the seam as it now stands. Idempotent by
     construction — the result depends only on what bronze holds, never on the
     order loads happened in.
 

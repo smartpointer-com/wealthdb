@@ -8,8 +8,8 @@ or one still carrying the in-progress marker, is a crashed, interrupted
 or still-running download; loading its partial artefacts would leak a
 partial snapshot into silver. The load skips such a dir without a
 dump_runs row, so it loads once its walk finalises. An unreadable
-run.json is not skipped: the load fails on it, so the damage surfaces
-(prune keeps such a dir too).
+run.json skips its dump with a warning and no dump_runs row, and the
+dumps around it still load (prune keeps such a dir).
 
 Run from the repo root inside the container:
     python3 -m unittest discover tests
@@ -73,19 +73,33 @@ class PendingDumpsTests(unittest.TestCase):
             self.assertEqual(_load(bronze), 0)
             self.assertEqual(_loaded(bronze), set())
 
-    def test_corrupt_run_json_fails_the_load(self):
-        # An unparseable or undecodable run.json is not evidence of an
-        # unfinished walk: the load fails on it instead of skipping it
-        # for ever.
-        for body in (b"{not valid json", b'{"status": "\xff\xfe"}'):
-            with tempfile.TemporaryDirectory() as tmp:
+    def test_corrupt_run_json_skips_only_that_dump(self):
+        # An unparseable, undecodable or non-object run.json skips its
+        # own dump with a warning naming it; the dumps either side load.
+        for body in (b"{not valid json", b'{"status": "\xff\xfe"}',
+                     b'["complete"]'):
+            with self.subTest(body=body), \
+                    tempfile.TemporaryDirectory() as tmp:
                 bronze = Path(tmp)
-                d = bronze / "20260101T120000Z"
-                d.mkdir()
-                (d / "run.json").write_bytes(body)
-                with self.assertRaises(ValueError):
-                    _load(bronze)
-                self.assertEqual(_loaded(bronze), set())
+                for name in ("20260101T120000Z", "20260103T120000Z"):
+                    d = bronze / name
+                    d.mkdir()
+                    (d / "run.json").write_text(
+                        json.dumps({"status": "complete",
+                                    "customer_id": "SYN-0001"}),
+                        encoding="utf-8")
+                bad = bronze / "20260102T120000Z"
+                bad.mkdir()
+                (bad / "run.json").write_bytes(body)
+
+                with self.assertLogs(load.log, "WARNING") as logs:
+                    self.assertEqual(_load(bronze), 0)
+                self.assertEqual(_loaded(bronze), {
+                    load.bronze.parse_run_ts("20260101T120000Z"),
+                    load.bronze.parse_run_ts("20260103T120000Z"),
+                })
+                self.assertTrue(any(bad.name in line
+                                    for line in logs.output), logs.output)
 
 
 if __name__ == "__main__":

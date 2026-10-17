@@ -856,6 +856,36 @@ def test_a_year_end_summary_is_never_parsed_as_a_statement(db, tmp_path,
         "year_end_summary"
 
 
+def test_a_run_dir_without_a_manifest_feeds_the_rebuild_nothing(db, tmp_path,
+                                                                monkeypatch):
+    # A run dir whose download has not written run.json yet (or crashed
+    # before it did) is prune's to reclaim: the rebuild never parses its
+    # statements, as `load_run` never reads its activity.
+    import datetime
+    import statement_parser as sp
+    root = tmp_path / "bronze"
+    run = write_run(root, "20260315T120000Z",
+                    activity={KEY_A: _activity([_tx(1, post="2026-02-10")])})
+    _write_pdfs(run, KEY_A, ["2025-12-12.pdf"])
+    crashed = write_run(root, "20260316T120000Z",
+                        activity={KEY_A: _activity([_tx(2,
+                                                         post="2026-02-11")])})
+    _write_pdfs(crashed, KEY_A, ["2025-11-12.pdf"])
+    (crashed / "run.json").unlink()
+    opened = []
+    by_name = {"2025-12-12.pdf": _parsed(datetime.date(2025, 12, 12), []),
+               "2025-11-12.pdf": _parsed(datetime.date(2025, 11, 12), [])}
+    monkeypatch.setattr(sp, "rows_reconcile", lambda p: True)
+    monkeypatch.setattr(sp, "parse_card_statement_pdf",
+                        lambda path: (opened.append(Path(path).parents[2].name),
+                                      by_name[Path(path).name])[1])
+    assert load_all(db, root) == 1
+    assert opened == ["20260315T120000Z"]
+    assert [r[0] for r in db.execute(
+        "SELECT period_end FROM statement_balances WHERE source='statement'"
+    )] == [day(2025, 12, 12)]
+
+
 # ============================================================
 # One bad re-render must not erase a period an older run read cleanly
 # ============================================================

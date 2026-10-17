@@ -325,6 +325,16 @@ def test_deposit_ids_are_stable_across_reparses(tmp_path):
 # Full per-run load (idempotent)
 # ============================================================
 
+def _run_dir(root: Path, slug: str) -> Path:
+    """A bronze run dir holding a finished manifest and nothing else, which
+    is what makes the loader read it at all (`bronze.run_is_loadable`)."""
+    run = root / slug
+    run.mkdir(parents=True, exist_ok=True)
+    (run / "run.json").write_text(json.dumps({"schema": 1,
+                                              "status": "complete"}))
+    return run
+
+
 def _make_run(root: Path, slug: str, *, status="complete", card=False,
               coverage=None, card_formats=("qfx", "csv"),
               deposit_formats=("qfx", "csv")) -> Path:
@@ -898,7 +908,7 @@ def test_statement_pass_never_parses_a_card_statement(tmp_path, monkeypatch):
     conn = _conn()
     _seed_export_balance(conn, _epoch(2024, 8, 11), -10.0, 1400.0)
     _seed_export_balance(conn, _epoch(2024, 8, 11), -10.0, 900.0, ext=CARD_EXT)
-    run = tmp_path / "20260801T000000Z"
+    run = _run_dir(tmp_path, "20260801T000000Z")
     (run / "statements" / EXT).mkdir(parents=True)
     (run / "statements" / CARD_EXT).mkdir(parents=True)
     (run / "accounts.json").write_text(json.dumps([
@@ -926,7 +936,7 @@ def test_statement_routing_survives_an_unreadable_roster(tmp_path, monkeypatch):
     conn = _conn()
     _seed_export_balance(conn, _epoch(2024, 8, 11), -10.0, 1400.0)
     _seed_export_balance(conn, _epoch(2024, 8, 11), -10.0, 900.0, ext=CARD_EXT)
-    run = tmp_path / "20260801T000000Z"
+    run = _run_dir(tmp_path, "20260801T000000Z")
     (run / "transactions").mkdir(parents=True)
     (run / "statements" / EXT).mkdir(parents=True)
     (run / "statements" / CARD_EXT).mkdir(parents=True)
@@ -952,7 +962,7 @@ def test_the_two_card_signals_are_separable(tmp_path):
     # The ROUTING set unions the two signals (mis-routing a statement costs a
     # parse, so either one is enough); the DESTRUCTIVE pass intersects them.
     # That only works if the file-content signal is available on its own.
-    run = tmp_path / "20260801T000000Z"
+    run = _run_dir(tmp_path, "20260801T000000Z")
     (run / "transactions").mkdir(parents=True)
     (run / "transactions" / f"{CARD_EXT}.qfx").write_text(CARD_QFX)
     (run / "transactions" / f"{EXT}.qfx").write_text(QFX)
@@ -961,6 +971,34 @@ def test_the_two_card_signals_are_separable(tmp_path):
         [{"account_external_id": EXT2, "product": "card"}]))
     assert load.card_export_ids_in_tree(tmp_path) == {CARD_EXT}
     assert load.card_account_ids_in_tree(tmp_path) == {CARD_EXT, EXT2}
+
+
+def test_a_run_dir_without_a_manifest_feeds_no_tree_wide_pass(tmp_path,
+                                                              monkeypatch):
+    # A run dir whose download has not written run.json yet (or crashed
+    # before it did) is prune's to reclaim: no post pass reads its exports,
+    # its roster or its statements, as `load_run` reads none of them.
+    conn = _conn()
+    # Seams late enough that both statement PDFs in the run are wanted.
+    _seed_export_balance(conn, _epoch(2026, 7, 20), -10.0, 1400.0)
+    _seed_card_export(conn, [(_epoch(2026, 7, 20), -10.0)])
+    run = _make_run(tmp_path, "20260801T120000Z", card=True)
+    (run / "run.json").unlink()
+    opened = []
+
+    def fake_parse(path):
+        opened.append(path.name)
+        raise ValueError("synthetic: never reached")
+
+    monkeypatch.setattr(load.statement_parser, "parse_statement_pdf",
+                        fake_parse)
+    monkeypatch.setattr(load.statement_parser, "parse_card_statement_pdf",
+                        fake_parse)
+    assert load.card_export_ids_in_tree(tmp_path) == set()
+    assert load.card_account_ids_in_tree(tmp_path) == set()
+    assert load.load_statement_transactions(conn, tmp_path) == 0
+    assert load.load_card_statements(conn, tmp_path, {CARD_EXT}) == 0
+    assert opened == []
 
 
 # ============================================================
@@ -1512,7 +1550,7 @@ def test_load_statement_transactions_end_to_end(tmp_path, monkeypatch):
                "2026-07-19.pdf": post_seam}
 
     for run in ("20260801T000000Z", "20260802T000000Z"):     # overlapping runs
-        d = tmp_path / run / "statements" / EXT
+        d = _run_dir(tmp_path, run) / "statements" / EXT
         d.mkdir(parents=True)
         for name in by_name:
             (d / name).write_bytes(b"%PDF fake " + name.encode())
@@ -1546,7 +1584,7 @@ def test_statement_import_gates_on_the_accounts_own_seam(tmp_path, monkeypatch):
     conn = _conn()
     _seed_export(conn, [(_epoch(2020, 3, 1), -10.0)])
     _seed_export_balance(conn, _epoch(2025, 2, 1), -10.0, 1400.0, ext=EXT2)
-    run = tmp_path / "20260801T000000Z"
+    run = _run_dir(tmp_path, "20260801T000000Z")
     (run / "statements" / EXT2).mkdir(parents=True)
     (run / "accounts.json").write_text(json.dumps([
         {"account_external_id": EXT, "product": "dda"},
@@ -1573,7 +1611,7 @@ def test_statement_pass_imports_nothing_for_an_account_with_no_export(
     # is ever attributed to the unseamed account.
     conn = _conn()
     _seed_export(conn, [(_epoch(2020, 3, 1), -10.0)])            # EXT only
-    run = tmp_path / "20260801T000000Z"
+    run = _run_dir(tmp_path, "20260801T000000Z")
     (run / "statements" / EXT2).mkdir(parents=True)
     (run / "accounts.json").write_text(json.dumps([
         {"account_external_id": EXT, "product": "dda"},
@@ -1596,7 +1634,7 @@ def test_statement_pass_parses_nothing_without_a_deposit_export(
     # bound any statement era: the PDFs are never opened, which is what keeps
     # a tree with no export off the whole poppler cost.
     conn = _conn()
-    run = tmp_path / "20260801T000000Z"
+    run = _run_dir(tmp_path, "20260801T000000Z")
     (run / "statements" / EXT).mkdir(parents=True)
     (run / "accounts.json").write_text(json.dumps(
         [{"account_external_id": EXT, "product": "dda"}]))
@@ -1618,7 +1656,7 @@ def test_one_relationship_statement_serves_two_deposit_accounts(
     conn = _conn()
     _seed_export_balance(conn, _epoch(2024, 8, 12), -10.0, 1400.0)
     _seed_export_balance(conn, _epoch(2024, 8, 12), -20.0, 330.0, ext=EXT2)
-    run = tmp_path / "20260801T000000Z"
+    run = _run_dir(tmp_path, "20260801T000000Z")
     (run / "statements" / EXT).mkdir(parents=True)         # the bucket
     (run / "accounts.json").write_text(json.dumps([
         {"account_external_id": EXT, "product": "dda"},
@@ -1686,7 +1724,7 @@ def _card_bronze(root: Path, statements: dict, *, slug="20260801T000000Z",
     key of `statements` (the parse itself is monkeypatched, so the bytes only
     have to differ for the content-hash dedup). The roster stamps the account
     as a card so the pass routes its PDFs to the card parser."""
-    run = root / slug
+    run = _run_dir(root, slug)
     (run / "statements" / ext).mkdir(parents=True)
     (run / "accounts.json").write_text(json.dumps(
         [{"account_external_id": ext, "product": "card"}]))
@@ -2257,7 +2295,7 @@ def _card_export_tree(root: Path, *, ext=CARD_EXT,
     """A bronze tree whose export files call `ext` a card. Only the CSV header
     and the OFX message set are read (`is_card_export`); the rows are never
     parsed by this pass."""
-    tx = root / slug / "transactions"
+    tx = _run_dir(root, slug) / "transactions"
     tx.mkdir(parents=True, exist_ok=True)
     (tx / f"{ext}.csv").write_text(CARD_CSV)
     (tx / f"{ext}.qfx").write_text(CARD_QFX)
@@ -2268,7 +2306,7 @@ def _deposit_export_tree(root: Path, *, ext=EXT,
                          slug="20260801T000000Z") -> Path:
     """The same tree, with a DEPOSIT-shaped export for `ext` — the file
     content that must veto the rewrite however the roster is stamped."""
-    tx = root / slug / "transactions"
+    tx = _run_dir(root, slug) / "transactions"
     tx.mkdir(parents=True, exist_ok=True)
     (tx / f"{ext}.csv").write_text(CSV)
     (tx / f"{ext}.qfx").write_text(QFX)
@@ -2671,7 +2709,7 @@ def _seed_export_cheque(conn, posted, amount, number, fitid="FCHK"):
 
 
 def _statement_tree(tmp_path, *names):
-    run = tmp_path / "20980801T000000Z"
+    run = _run_dir(tmp_path, "20980801T000000Z")
     (run / "statements" / EXT).mkdir(parents=True)
     (run / "accounts.json").write_text(json.dumps(
         [{"account_external_id": EXT, "product": "dda"}]))

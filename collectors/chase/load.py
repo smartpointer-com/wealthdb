@@ -1054,10 +1054,19 @@ def _chain_segments(conn, account_external_id: str, parsed_stmts: list) -> list:
 _STATEMENT_SPAN = 45 * 86400
 
 
+def _loadable_runs(bronze_dir: Path):
+    """The run dirs under `bronze_dir` that `load_run` reads
+    (`bronze.run_is_loadable`), oldest first. The tree-wide passes walk these
+    and no others: a run dir without a manifest, or one whose download did
+    not finish, is `prune`'s to reclaim and feeds no pass."""
+    return (d for d in bronze.iter_run_dirs(bronze_dir)
+            if bronze.run_is_loadable(d))
+
+
 def _deposit_statements_in_tree(bronze_dir: Path, card_ids: set[str],
                                 wanted) -> dict:
-    """Parse the deposit statement PDFs in the bronze tree into
-    {period_end: parsed}, RELATIONSHIP-WIDE.
+    """Parse the deposit statement PDFs of the loadable runs
+    (`_loadable_runs`) into {period_end: parsed}, RELATIONSHIP-WIDE.
 
     One combined statement carries a segment per product and per deposit
     account (DESIGN.md §C/§E), and the documents surface it comes off has no
@@ -1079,7 +1088,7 @@ def _deposit_statements_in_tree(bronze_dir: Path, card_ids: set[str],
     pool: dict = {}
     seen: set[str] = set()
     cards_seen: set[str] = set()
-    for run_dir in bronze.iter_run_dirs(bronze_dir):
+    for run_dir in _loadable_runs(bronze_dir):
         stmt_dir = run_dir / "statements"
         if not stmt_dir.is_dir():
             continue
@@ -1515,7 +1524,8 @@ def _card_parse_rank(parsed) -> tuple[bool, bool]:
 
 
 def _card_statements_in_tree(bronze_dir: Path, card_ids: set[str]) -> dict:
-    """Parse every card statement PDF in the bronze tree, deduped.
+    """Parse every card statement PDF of the loadable runs
+    (`_loadable_runs`), deduped.
 
     Returns {account_external_id: {period_end date: (snapshot_at, parsed)}}.
     Bronze runs re-download overlapping months, so identical PDFs are skipped
@@ -1535,7 +1545,7 @@ def _card_statements_in_tree(bronze_dir: Path, card_ids: set[str]) -> dict:
     card no anchors at all."""
     out: dict[str, dict] = {}
     seen: set[tuple[str, str]] = set()
-    for run_dir in bronze.iter_run_dirs(bronze_dir):
+    for run_dir in _loadable_runs(bronze_dir):
         stmt_dir = run_dir / "statements"
         if not stmt_dir.is_dir():
             continue
@@ -1926,19 +1936,19 @@ _ROUTE_PROBE_CHARS = 8192
 
 
 def card_export_ids_in_tree(bronze_dir: Path) -> set[str]:
-    """Every external id whose EXPORT FILES are card-shaped, anywhere in the
-    bronze tree — the file-content signal on its own, with no roster claim
-    folded in.
+    """Every external id whose EXPORT FILES are card-shaped in a loadable run
+    (`_loadable_runs`) — the file-content signal on its own, with no roster
+    claim folded in.
 
-    `is_card_export` is the same test `load_run` routes an export pair on, so
-    an account is in this set exactly when its silver rows were keyed by the
-    card path. That is what makes it the right second signal for
-    `derive_card_balances`, whose rewrite must never be authorised by a
-    roster claim: a roster is a per-run assertion that can go missing or
-    arrive mis-stamped, while the export file either has the card's header
-    and message set or it does not."""
+    `is_card_export` is the same test `load_run` routes an export pair on, and
+    the runs read are the ones `load_run` reads, so an account is in this set
+    exactly when its silver rows were keyed by the card path. That is what
+    makes it the right second signal for `derive_card_balances`, whose
+    rewrite must never be authorised by a roster claim: a roster is a per-run
+    assertion that can go missing or arrive mis-stamped, while the export
+    file either has the card's header and message set or it does not."""
     ids: set[str] = set()
-    for run_dir in bronze.iter_run_dirs(bronze_dir):
+    for run_dir in _loadable_runs(bronze_dir):
         tx_dir = run_dir / "transactions"
         if tx_dir.is_dir():
             ids |= {ext for ext, qfx, csv in
@@ -1949,9 +1959,9 @@ def card_export_ids_in_tree(bronze_dir: Path) -> set[str]:
 
 def card_account_ids_in_tree(bronze_dir: Path,
                              export_ids: set[str] | None = None) -> set[str]:
-    """Every external id that is a card account anywhere in the bronze tree:
-    the file-content signal (`card_export_ids_in_tree`) plus every run's
-    roster.
+    """Every external id that is a card account in a loadable run
+    (`_loadable_runs`): the file-content signal (`card_export_ids_in_tree`)
+    plus each of those runs' rosters.
 
     This is the ROUTING set — which statement PDFs go to the card parser
     rather than the deposit one — and there the union is the safe direction.
@@ -1959,8 +1969,9 @@ def card_account_ids_in_tree(bronze_dir: Path,
     from feeding a card's statement PDFs to the deposit parser, which has a
     different period line, a different sign convention and no card in its
     balance chain; folding each run's roster in as a second POSITIVE signal
-    also catches a card whose export failed in every run present. Mis-routing a statement costs a parse,
-    and the file signal is all but sufficient on its own anyway.
+    also catches a card whose export failed in every run read. Mis-routing a
+    statement costs a parse, and the file signal is all but sufficient on its
+    own anyway.
 
     `derive_card_balances` deliberately does NOT use this set: it rewrites
     balances, so there a wrong answer costs data and the two signals must
@@ -1970,7 +1981,7 @@ def card_account_ids_in_tree(bronze_dir: Path,
     walks the tree for it."""
     ids = set(export_ids) if export_ids is not None else \
         card_export_ids_in_tree(bronze_dir)
-    for run_dir in bronze.iter_run_dirs(bronze_dir):
+    for run_dir in _loadable_runs(bronze_dir):
         ids |= card_account_ids(_read_accounts(run_dir))
     return ids
 
