@@ -1124,6 +1124,58 @@ def _projections(q):
     return out
 
 
+def _ctes(q):
+    """The top-level CTEs of `q`, name to body: `WITH a AS (...), b AS
+    (...)` before the query that reads them."""
+    flat = _strip_sql_comments(q)
+    m = re.match(r"\s*WITH\b", flat, re.I)
+    out, i = {}, m.end() if m else None
+    while i is not None:
+        head = re.compile(r"\s*([A-Za-z_]\w*)\s+AS\s*\(", re.I).match(flat, i)
+        if not head:
+            break
+        depth, j = 1, head.end()
+        while depth and j < len(flat):
+            depth += {"(": 1, ")": -1}.get(flat[j], 0)
+            j += 1
+        out[head.group(1)] = flat[head.end():j - 1]
+        comma = re.compile(r"\s*,").match(flat, j)
+        i = comma.end() if comma else None
+    return out
+
+
+_CTE_STAR = re.compile(r"\s*([A-Za-z_]\w*)\s*\.\s*\*\s*")
+
+
+def _output_projections(q):
+    """The projections whose columns reach a query's rows: its top-level
+    ones, with a `cte.*` item read through to that CTE's own, so a
+    wrapper that only orders a card's rows hides nothing."""
+    ctes, out = _ctes(q), []
+    for pr in _projections(q):
+        out.append(pr)
+        for item in pr.split(","):
+            m = _CTE_STAR.fullmatch(item)
+            if m and m.group(1) in ctes:
+                out += _output_projections(ctes[m.group(1)])
+    return out
+
+
+def _blind_star(q):
+    """True when a query's rows take columns it never names: a `*`, or
+    an `alias.*` that is not one of its own CTEs read through."""
+    ctes = _ctes(q)
+    for pr in _projections(q):
+        for item in pr.split(","):
+            m = _CTE_STAR.fullmatch(item)
+            if m and m.group(1) in ctes:
+                if _blind_star(ctes[m.group(1)]):
+                    return True
+            elif _star_projection(item):
+                return True
+    return False
+
+
 _REDACTED = ("payer_name", "account_label", "display_name", "account_external_id",
              "merchant_name", "merchant_signature", "payer_signature", "counterparty")
 
@@ -1145,10 +1197,10 @@ def _star_projection(proj):
 
 _leaks = {}
 for _n, _q in _twin_sql.items():
-    _projs = _projections(_q)
+    _projs = _output_projections(_q)
     _bad = [c for c in _REDACTED
             if any(re.search(rf"\b{c}\b", pr) for pr in _projs)]
-    if any(_star_projection(pr) for pr in _projs):
+    if _blind_star(_q):
         _bad.append("* (projects whatever the source carries)")
     if _bad:
         _leaks[_n] = _bad
@@ -1168,6 +1220,17 @@ check("...and it does not read a commented-out one",
 # A name wrapped in a function call is still a name. Dropping every
 # parenthesised group would delete the argument along with the parens
 # and see an empty projection.
+check("...and it reads through a CTE whose rows the query takes with `cte.*`",
+      any("payer_name" in pr for pr in _output_projections(
+          "WITH q AS (SELECT payer_name, v FROM t), r AS (SELECT 1 AS k)\nSELECT q.* FROM q")),
+      _output_projections("WITH q AS (SELECT payer_name, v FROM t), r AS (SELECT 1 AS k)\nSELECT q.* FROM q"))
+check("...but not into a CTE it only joins or groups",
+      not any("payer_name" in pr for pr in _output_projections(
+          "WITH g AS (SELECT payer_name, sum(v) AS v FROM t GROUP BY 1)\nSELECT rank FROM g")))
+check("...and a star over anything but its own CTE is blind",
+      _blind_star("SELECT x.* FROM t x") and _blind_star("SELECT * FROM t")
+      and not _blind_star("WITH q AS (SELECT a FROM t)\nSELECT q.* FROM q")
+      and _blind_star("WITH q AS (SELECT * FROM t)\nSELECT q.* FROM q"))
 check("...and it sees a column wrapped in a function call",
       any("payer_name" in pr for pr in _projections("SELECT upper(payer_name) AS p FROM m")),
       _projections("SELECT upper(payer_name) AS p FROM m"))
@@ -1430,8 +1493,8 @@ _cf_twin_sql = {p.privacy_name(n): (sql_of(CARDS[p.privacy_name(n)][2]) or "")
                 for n in CASHFLOW_CARD_NAMES if p.privacy_name(n) in CARDS}
 for _col in ("account_label", "display_name", "account_external_id", "name"):
     _leaking = [n for n, q in _cf_twin_sql.items()
-                if any(_star_projection(pr) or re.search(rf"\b{_col}\b", pr)
-                       for pr in _projections(q))]
+                if _blind_star(q) or any(re.search(rf"\b{_col}\b", pr)
+                                         for pr in _output_projections(q))]
     check(f"no Cash Flow twin card projects {_col}", not _leaking, _leaking)
 check("the twin's largest-flows card ranks instead of naming",
       "row_number() OVER" in _cf_twin_sql["Largest flows (privacy)"],
@@ -1636,10 +1699,16 @@ check("every stacked chart with bands ranks its rows by band",
       bool(_stacked_bands) and all("series_rank" in q or "AS latest FROM e" in q for q in _stacked_bands.values()),
       [n for n, q in _stacked_bands.items() if "series_rank" not in q and "AS latest FROM e" not in q])
 check("...the bars, flows each, by the band's total over the window",
-      all(f"sum({VIZ[n]['graph.metrics'][0]}) OVER (PARTITION BY {VIZ[n]['graph.dimensions'][1]})"
+      all(f"{VIZ[n]['graph.dimensions'][1]} AS series_key, sum({VIZ[n]['graph.metrics'][0]}) AS series_rank"
           in _stacked_bands.get(n, "") for n in _STACKED_BARS),
       [n for n in sorted(_STACKED_BARS)
-       if f"sum({VIZ[n]['graph.metrics'][0]}) OVER" not in _stacked_bands.get(n, "")])
+       if f"sum({VIZ[n]['graph.metrics'][0]}) AS series_rank" not in _stacked_bands.get(n, "")])
+# The driver's DuckDB fails on a window partitioned by a constant over
+# no rows: a card whose series is a constant (Investing, whole grain)
+# meets one when a picker contradicts its own filter.
+check("a series rank is an aggregate joined back, never a window",
+      all("OVER" not in p._series_order("SELECT 1 AS m, 'k' AS s, 2 AS v", "m", "s", "v", by)
+          for by in ("total", "latest")))
 check("...and lists its legend in the bands' own order",
       all(VIZ[n].get("legend.is_reversed") is False for n in _stacked_bands),
       [n for n in _stacked_bands if VIZ[n].get("legend.is_reversed") is not False])

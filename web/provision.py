@@ -1081,17 +1081,23 @@ def _series_order(sql, t, series, metric, by, largest_first=False):
     legend's default reversal switched off (STACKED_VIZ), the legend
     lists the largest first. A line chart wants `largest_first`, the
     legend's own order, top line first. A series with no value at the
-    last `t` ranks last. `sql` ends without an ORDER BY; the result
-    keeps its columns."""
+    last `t` ranks last. `sql` ends without an ORDER BY, and `t`,
+    `series` and `metric` are its column names; the result keeps its
+    columns.
+
+    The rank is an aggregate per series joined back, not a window: the
+    DuckDB the Metabase driver bundles fails on a window partitioned by
+    a constant over no rows, which is what a picker that contradicts a
+    card's own filter leaves."""
     if by == "latest":
-        inner = f"SELECT q0.*, max({t}) OVER () AS t_max\n          FROM (\n{sql}\n) q0"
-        rank, drop = f"max(CASE WHEN {t} = t_max THEN {metric} END)", "series_rank, t_max"
+        rank = f"max(CASE WHEN {t} = (SELECT max({t}) FROM q) THEN {metric} END)"
     else:
-        inner, rank, drop = f"\n{sql}\n", f"sum({metric})", "series_rank"
+        rank = f"sum({metric})"
     order = "series_rank DESC NULLS LAST" if largest_first else "series_rank NULLS FIRST"
-    return (f"SELECT * EXCLUDE ({drop})\n"
-            f"  FROM (SELECT q.*, {rank} OVER (PARTITION BY {series}) AS series_rank\n"
-            f"          FROM ({inner}) q)\n"
+    return (f"WITH q AS (\n{sql}\n),\n"
+            f"ranks AS (SELECT {series} AS series_key, {rank} AS series_rank FROM q GROUP BY 1)\n"
+            f"SELECT q.*\n"
+            f"  FROM q LEFT JOIN ranks ON ranks.series_key IS NOT DISTINCT FROM q.{series}\n"
             f" ORDER BY {order}, {t}")
 
 
