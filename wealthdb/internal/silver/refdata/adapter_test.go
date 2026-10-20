@@ -5,19 +5,25 @@ import (
 	"database/sql"
 	_ "embed"
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
-// testdata/silver_schema.sql is a copy of
-// collectors/refdata/migrations/0001_initial.sql; the collector's tests
-// check that the two agree.
+// testdata/silver_schema.sql is collectors/refdata/migrations/0001_initial.sql
+// and 0002_yield_facts.sql, one after the other; the collector's tests
+// check that it is the migrated schema.
 //
 //go:embed testdata/silver_schema.sql
 var silverSchemaSQL string
+
+// v2Header opens 0002's part of the schema.
+const v2Header = "-- refdata silver schema v2"
 
 const (
 	run1  = int64(1_790_000_000) // fetch runs
@@ -33,6 +39,17 @@ const (
 func newFixtureSilver(t *testing.T) (string, *sql.DB) {
 	t.Helper()
 	return silvertest.NewDB(t, silverSchemaSQL)
+}
+
+// newV1Silver is a silver its collector last loaded before migration
+// 0002: the schema's part before v2Header.
+func newV1Silver(t *testing.T) (string, *sql.DB) {
+	t.Helper()
+	v1, _, found := strings.Cut(silverSchemaSQL, v2Header)
+	if !found {
+		t.Fatalf("testdata/silver_schema.sql has no %q", v2Header)
+	}
+	return silvertest.NewDB(t, v1)
 }
 
 func openAdapter(t *testing.T, path string) silver.Connection {
@@ -66,31 +83,6 @@ func seed(t *testing.T, db *sql.DB) {
 	    VALUES ('symbol:EXMP', ?, 'openfigi', 'XX0000000002', 'BBG000000002', 'EXMP', 'Example Corp', ?)`, d3, run2)
 	silvertest.Exec(t, db, `INSERT INTO security_facts (security_key, field, as_of, provider, value, scheme, run_at)
 	    VALUES ('symbol:EXMP', 'sic', ?, 'sec-edgar', '3571', 'sic', ?)`, d3, run2)
-}
-
-func collect(t *testing.T, conn silver.Connection, w canonical.Window) canonical.SnapshotBatch {
-	t.Helper()
-	stream, err := conn.Snapshots(context.Background(), w)
-	if err != nil {
-		t.Fatalf("Snapshots: %v", err)
-	}
-	defer stream.Close()
-	var all canonical.SnapshotBatch
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatalf("Next: %v", err)
-		}
-		all.FundCompositions = append(all.FundCompositions, b.FundCompositions...)
-		all.FundLines = append(all.FundLines, b.FundLines...)
-		all.FundAttributes = append(all.FundAttributes, b.FundAttributes...)
-		all.FundCounterparties = append(all.FundCounterparties, b.FundCounterparties...)
-		all.Securities = append(all.Securities, b.Securities...)
-		all.SecurityFacts = append(all.SecurityFacts, b.SecurityFacts...)
-		if !more {
-			return all
-		}
-	}
 }
 
 func TestKindIsRefdata(t *testing.T) {
@@ -154,7 +146,7 @@ func TestChangeWindowSpansTheNewRunsDays(t *testing.T) {
 	if !w.HasChanges || w.Start != d0 || w.End != d3 {
 		t.Fatalf("window since load1 = %+v, want [d0, d3]", w)
 	}
-	got := collect(t, conn, w)
+	got := silvertest.Merged(t, conn, w)
 	// d0..d3 holds all four fund-days, d1 and d2 from run1 among them.
 	if len(got.FundCompositions) != 4 || len(got.FundLines) != 8 {
 		t.Errorf("compositions = %d, lines = %d; want 4 and 8", len(got.FundCompositions), len(got.FundLines))
@@ -209,7 +201,7 @@ func TestSnapshotsMapRecords(t *testing.T) {
 	path, db := newFixtureSilver(t)
 	seed(t, db)
 	conn := openAdapter(t, path)
-	got := collect(t, conn, canonical.Window{Start: d3, End: d3, HasChanges: true})
+	got := silvertest.Merged(t, conn, canonical.Window{Start: d3, End: d3, HasChanges: true})
 
 	if len(got.FundCompositions) != 1 {
 		t.Fatalf("compositions = %d", len(got.FundCompositions))
@@ -251,14 +243,14 @@ func TestSnapshotsMapRecords(t *testing.T) {
 // lowerBudgets shrinks the reference stream's batch budgets for one
 // test, so a few rows span several batches. The budgets are package
 // state, so a test that lowers them does not run in parallel.
-func lowerBudgets(t *testing.T, lines, tail int) {
+func lowerBudgets(t *testing.T, records, tail int) {
 	t.Helper()
-	l, s := silver.ReferenceLineBudget, silver.ReferenceTailBudget
-	silver.ReferenceLineBudget, silver.ReferenceTailBudget = lines, tail
-	t.Cleanup(func() { silver.ReferenceLineBudget, silver.ReferenceTailBudget = l, s })
+	r, s := silver.ReferenceRecordBudget, silver.ReferenceTailBudget
+	silver.ReferenceRecordBudget, silver.ReferenceTailBudget = records, tail
+	t.Cleanup(func() { silver.ReferenceRecordBudget, silver.ReferenceTailBudget = r, s })
 }
 
-// A window wider than one batch's line budget splits between fund-days
+// A window wider than one batch's record budget splits between fund-days
 // and loses none.
 func TestSnapshotsBatchLargeWindows(t *testing.T) {
 	lowerBudgets(t, 20, 5)
@@ -293,10 +285,33 @@ func TestSnapshotsBatchLargeWindows(t *testing.T) {
 			break
 		}
 	}
-	// Two fund-days fill the first batch past its budget; the third
-	// rides in the second.
+	// Two fund-days of a composition and its lines each fill the first
+	// batch past its budget; the third rides in the second.
 	if len(batches) != 2 || batches[0] != 2*perDay || batches[1] != perDay {
 		t.Errorf("lines per batch = %v, want [%d %d]", batches, 2*perDay, perDay)
+	}
+}
+
+// Fund-days without a line count against the budget too: a run of days
+// that state only characteristics splits like one of compositions.
+func TestSnapshotsBatchLinelessFundDays(t *testing.T) {
+	lowerBudgets(t, 20, 5)
+	path, db := newFixtureSilver(t)
+	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (?, 1, '/x/1', ?)`, run1, load1)
+	const days = 30
+	for d := int64(0); d < days; d++ {
+		silvertest.Exec(t, db, `INSERT INTO characteristics (fund_ref, as_of, provider, field, value, run_at)
+		    VALUES ('symbol:BND1', ?, 'ishares', 'sec_yield', '4.4', ?)`, d1+d*86400, run1)
+	}
+	var batches []int
+	for _, b := range silvertest.Snapshots(t, openAdapter(t, path),
+		canonical.Window{Start: d1, End: d1 + days*86400, HasChanges: true}) {
+		if len(b.FundCharacteristics) > 0 {
+			batches = append(batches, len(b.FundCharacteristics))
+		}
+	}
+	if !slices.Equal(batches, []int{20, 10}) {
+		t.Errorf("characteristics per batch = %v, want [20 10]", batches)
 	}
 }
 
@@ -337,13 +352,19 @@ func TestSnapshotsPageSecurities(t *testing.T) {
 		silvertest.Exec(t, db, `INSERT INTO security_facts (security_key, field, as_of, provider, value, run_at)
 		    VALUES (?, 'sic', ?, 'sec-edgar', '3571', ?)`, fmt.Sprintf("symbol:S%02d", i), d1, run1)
 	}
+	// Period facts share a key, a field and a period end, and differ by
+	// period start, the fourth of five key columns.
+	for i := 0; i < n; i++ {
+		silvertest.Exec(t, db, `INSERT INTO period_facts (security_key, field, as_of, period_start, provider, value, run_at)
+		    VALUES ('symbol:AAA', 'net_income', ?, ?, 'sec-edgar', '1', ?)`, d2, fmt.Sprintf("2025-%02d-01", i+1), run1)
+	}
 	stream, err := openAdapter(t, path).Snapshots(context.Background(), canonical.Window{Start: d1, End: d2, HasChanges: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer stream.Close()
-	secs, facts := map[string]int{}, map[string]int{}
-	secPages, factPages := 0, 0
+	secs, facts, periods := map[string]int{}, map[string]int{}, map[string]int{}
+	secPages, factPages, periodPages := 0, 0, 0
 	for {
 		b, more, err := stream.Next(context.Background())
 		if err != nil {
@@ -355,11 +376,17 @@ func TestSnapshotsPageSecurities(t *testing.T) {
 		if len(b.SecurityFacts) > 0 {
 			factPages++
 		}
+		if len(b.SecurityPeriodFacts) > 0 {
+			periodPages++
+		}
 		for _, s := range b.Securities {
 			secs[fmt.Sprintf("%s|%d|%s", s.SecurityKey, s.AsOf, s.Provider)]++
 		}
 		for _, f := range b.SecurityFacts {
 			facts[f.SecurityKey]++
+		}
+		for _, f := range b.SecurityPeriodFacts {
+			periods[f.PeriodStart.Format(time.DateOnly)]++
 		}
 		if !more {
 			break
@@ -371,9 +398,275 @@ func TestSnapshotsPageSecurities(t *testing.T) {
 	if len(facts) != n || factPages != 3 {
 		t.Errorf("facts = %v in %d pages, want %d in 3", facts, factPages, n)
 	}
-	for k, c := range secs {
-		if c != 1 {
-			t.Errorf("identity %s read %d times", k, c)
+	if len(periods) != n || periodPages != 3 {
+		t.Errorf("period facts = %v in %d pages, want %d in 3", periods, periodPages, n)
+	}
+	for _, read := range []map[string]int{secs, periods} {
+		for k, c := range read {
+			if c != 1 {
+				t.Errorf("%s read %d times", k, c)
+			}
 		}
+	}
+}
+
+// seedYield writes, in run2, one record of every kind schema v2 adds for
+// the fund-day d3: a debt line with every v2 column, an interest-rate and
+// a credit-spread risk row, a single figure and a breakdown part, and a
+// company's figure for the quarter that ends on d3.
+func seedYield(t *testing.T, db *sql.DB) {
+	t.Helper()
+	silvertest.Exec(t, db, `INSERT INTO lines (fund_ref, as_of, basis, line_no, cusip, name, asset_type, weight,
+	        coupon_kind, is_default, in_arrears, paid_in_kind, exchange_rate, duration, modified_duration,
+	        yield_to_maturity, yield_to_worst, yield_to_call, real_duration, real_yield, accrual_date)
+	    VALUES ('isin:XX0000000001', ?, 'holdings', 3, '000000001', 'Example Treasury 2036', 'Fixed Income', '0.5',
+	        'Fixed', 0, 1, 1, '1.085', '6.25', '6.1', '4.35', '4.2', '4.1', '5.5', '1.85', '2025-09-15')`, d3)
+	silvertest.Exec(t, db, `INSERT INTO fund_risk (fund_ref, as_of, currency, tenor, dv01, dv100, credit_ig_dv01,
+	        credit_hy_dv01, run_at, payload)
+	    VALUES ('isin:XX0000000001', ?, 'USD', '10Y', '125.5', '12400', NULL, NULL, ?, '{"r":1}'),
+	           ('isin:XX0000000001', ?, 'XXX', '5Y', NULL, NULL, '3.25', '1.5', ?, '{}')`, d3, run2, d3, run2)
+	silvertest.Exec(t, db, `INSERT INTO characteristics (fund_ref, as_of, provider, field, label, value, run_at, payload)
+	    VALUES ('isin:XX0000000001', ?, 'ishares', 'effective_duration', '', '6.31', ?, '{"c":1}'),
+	           ('isin:XX0000000001', ?, 'ishares', 'credit_quality', 'AAA', '42.5', ?, '{}')`, d3, run2, d3, run2)
+	silvertest.Exec(t, db, `INSERT INTO period_facts (security_key, field, as_of, period_start, provider, value,
+	        scheme, unit, fiscal_year, fiscal_period, form, filed, run_at, payload)
+	    VALUES ('symbol:EXMP', 'eps_diluted', ?, '2025-12-01', 'sec-edgar', '1.23',
+	        'us-gaap:EarningsPerShareDiluted', 'USD/shares', 2026, 'Q1', '10-Q', '2026-04-10', ?, '{"f":1}')`, d3, run2)
+}
+
+// fields renders optional values for a field-by-field comparison.
+func fields(vs ...any) []string {
+	out := make([]string, len(vs))
+	for i, v := range vs {
+		switch v := v.(type) {
+		case *string:
+			out[i] = "<nil>"
+			if v != nil {
+				out[i] = *v
+			}
+		case *bool:
+			out[i] = "<nil>"
+			if v != nil {
+				out[i] = fmt.Sprint(*v)
+			}
+		case *int64:
+			out[i] = "<nil>"
+			if v != nil {
+				out[i] = fmt.Sprint(*v)
+			}
+		case *canonical.Decimal:
+			out[i] = "<nil>"
+			if v != nil {
+				out[i] = v.String()
+			}
+		case *time.Time:
+			out[i] = "<nil>"
+			if v != nil {
+				out[i] = v.Format(time.DateOnly)
+			}
+		default:
+			out[i] = fmt.Sprint(v)
+		}
+	}
+	return out
+}
+
+func checkFields(t *testing.T, what string, got, want []string) {
+	t.Helper()
+	if !slices.Equal(got, want) {
+		t.Errorf("%s:\n got %q\nwant %q", what, got, want)
+	}
+}
+
+// Every v2 column and table maps into its canonical field.
+func TestSnapshotsMapYieldRecords(t *testing.T) {
+	t.Parallel()
+	path, db := newFixtureSilver(t)
+	seed(t, db)
+	seedYield(t, db)
+	got := silvertest.Merged(t, openAdapter(t, path), canonical.Window{Start: d3, End: d3, HasChanges: true})
+
+	if len(got.FundLines) != 3 {
+		t.Fatalf("lines = %d, want 3", len(got.FundLines))
+	}
+	l := got.FundLines[2]
+	checkFields(t, "debt line", fields(l.SecurityKey, l.CouponKind, l.IsDefault, l.InArrears, l.PaidInKind,
+		l.ExchangeRate, l.Duration, l.ModifiedDuration, l.YieldToMaturity, l.YieldToWorst, l.YieldToCall,
+		l.RealDuration, l.RealYield, l.AccrualDate),
+		[]string{"cusip:000000001", "Fixed", "false", "true", "true", "1.085",
+			"6.25", "6.1", "4.35", "4.2", "4.1", "5.5", "1.85", "2025-09-15"})
+	// An equity line states none of them.
+	e := got.FundLines[0]
+	checkFields(t, "equity line", fields(e.CouponKind, e.IsDefault, e.InArrears, e.PaidInKind, e.ExchangeRate,
+		e.Duration, e.AccrualDate), []string{"<nil>", "<nil>", "<nil>", "<nil>", "<nil>", "<nil>", "<nil>"})
+
+	if len(got.FundRisk) != 2 {
+		t.Fatalf("fund risk = %+v, want 2 rows", got.FundRisk)
+	}
+	for i, want := range [][]string{
+		{"isin:XX0000000001", fmt.Sprint(d3), "USD", "10Y", "125.5", "12400", "<nil>", "<nil>", `{"r":1}`},
+		{"isin:XX0000000001", fmt.Sprint(d3), canonical.NoCurrency, "5Y", "<nil>", "<nil>", "3.25", "1.5", `{}`},
+	} {
+		r := got.FundRisk[i]
+		checkFields(t, "fund risk", fields(r.FundRef, r.AsOf, r.Currency, r.Tenor, r.DV01, r.DV100,
+			r.CreditIGDV01, r.CreditHYDV01, string(r.Payload)), want)
+	}
+
+	if len(got.FundCharacteristics) != 2 {
+		t.Fatalf("characteristics = %+v, want 2", got.FundCharacteristics)
+	}
+	for i, want := range [][]string{
+		{"isin:XX0000000001", fmt.Sprint(d3), "ishares", "credit_quality", "AAA", "42.5", `{}`},
+		{"isin:XX0000000001", fmt.Sprint(d3), "ishares", "effective_duration", "", "6.31", `{"c":1}`},
+	} {
+		c := got.FundCharacteristics[i]
+		checkFields(t, "characteristic", fields(c.FundRef, c.AsOf, c.Provider, c.Field, c.Label,
+			c.Value.String(), string(c.Payload)), want)
+	}
+
+	if len(got.SecurityPeriodFacts) != 1 {
+		t.Fatalf("period facts = %+v, want 1", got.SecurityPeriodFacts)
+	}
+	f := got.SecurityPeriodFacts[0]
+	checkFields(t, "period fact", fields(f.SecurityKey, f.Field, f.AsOf, &f.PeriodStart, f.Provider,
+		f.Value.String(), f.Scheme, f.Unit, f.FiscalYear, f.FiscalPeriod, f.Form, f.Filed, string(f.Payload)),
+		[]string{"symbol:EXMP", "eps_diluted", fmt.Sprint(d3), "2025-12-01", "sec-edgar",
+			"1.23", "us-gaap:EarningsPerShareDiluted", "USD/shares", "2026", "Q1", "10-Q", "2026-04-10", `{"f":1}`})
+}
+
+// A silver still at schema v1 has none of the v2 tables or lines columns.
+// It loads as before, with every v2 field absent.
+func TestSnapshotsReadAV1Silver(t *testing.T) {
+	t.Parallel()
+	path, db := newV1Silver(t)
+	if ok, err := silver.HasTables(context.Background(), db, "fund_risk"); err != nil || ok {
+		t.Fatalf("the v1 fixture holds fund_risk (%v)", err)
+	}
+	seed(t, db)
+	conn := openAdapter(t, path)
+	st, err := conn.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.OldestSnapshotAt != d0 || st.LatestChangeNumber != load2 {
+		t.Errorf("status = %+v", st)
+	}
+	w, err := conn.ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !w.HasChanges || w.Start != d0 || w.End != d3 {
+		t.Fatalf("window = %+v, want [d0, d3]", w)
+	}
+	got := silvertest.Merged(t, conn, w)
+	if len(got.FundCompositions) != 4 || len(got.FundLines) != 8 || len(got.Securities) != 1 ||
+		len(got.SecurityFacts) != 1 {
+		t.Errorf("v1 records = %d compositions, %d lines, %d securities, %d facts",
+			len(got.FundCompositions), len(got.FundLines), len(got.Securities), len(got.SecurityFacts))
+	}
+	if n := len(got.FundRisk) + len(got.FundCharacteristics) + len(got.SecurityPeriodFacts); n != 0 {
+		t.Errorf("a v1 silver states %d v2 records", n)
+	}
+	for _, l := range got.FundLines {
+		if l.CouponKind != nil || l.IsDefault != nil || l.InArrears != nil || l.PaidInKind != nil || l.ExchangeRate != nil ||
+			l.Duration != nil || l.ModifiedDuration != nil || l.YieldToMaturity != nil || l.YieldToWorst != nil ||
+			l.YieldToCall != nil || l.RealDuration != nil || l.RealYield != nil || l.AccrualDate != nil {
+			t.Errorf("v1 line %+v carries a v2 field", l)
+		}
+	}
+}
+
+// A run that wrote one row of a v2 table alone opens a window on that
+// row's day, and the row comes back inside it: a risk row or a
+// characteristic as a fund-day of its own, a period fact by its period's
+// last day.
+func TestChangeWindowSpansAYieldOnlyRun(t *testing.T) {
+	t.Parallel()
+	const dX = int64(1_772_323_200) // 2026-03-01
+	for _, c := range []struct {
+		table, insert string
+		count         func(canonical.SnapshotBatch) int
+	}{
+		{"fund_risk", `INSERT INTO fund_risk (fund_ref, as_of, currency, tenor, dv01, run_at)
+		    VALUES ('isin:XX0000000009', ?, 'USD', '1Y', '1', ?)`,
+			func(b canonical.SnapshotBatch) int { return len(b.FundRisk) }},
+		{"characteristics", `INSERT INTO characteristics (fund_ref, as_of, provider, field, value, run_at)
+		    VALUES ('isin:XX0000000009', ?, 'ishares', 'sec_yield', '4.1', ?)`,
+			func(b canonical.SnapshotBatch) int { return len(b.FundCharacteristics) }},
+		{"period_facts", `INSERT INTO period_facts (security_key, field, as_of, period_start, provider, value, run_at)
+		    VALUES ('symbol:EXMP', 'cash', ?, '2026-03-01', 'sec-edgar', '100', ?)`,
+			func(b canonical.SnapshotBatch) int { return len(b.SecurityPeriodFacts) }},
+	} {
+		t.Run(c.table, func(t *testing.T) {
+			t.Parallel()
+			path, db := newFixtureSilver(t)
+			seed(t, db)
+			run3, load3 := run2+1000, load2+1000
+			silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (?, 2, '/x/3', ?)`, run3, load3)
+			silvertest.Exec(t, db, c.insert, dX, run3)
+			conn := openAdapter(t, path)
+			w, err := conn.ChangeWindow(context.Background(), load2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !w.HasChanges || w.Start != dX || w.End != dX || w.NewChangeNumber != load3 {
+				t.Fatalf("window = %+v, want [%d, %d] at load3", w, dX, dX)
+			}
+			got := silvertest.Merged(t, conn, w)
+			if n := c.count(got); n != 1 {
+				t.Errorf("%s rows in the window = %d, want 1", c.table, n)
+			}
+			if len(got.FundCompositions) != 0 {
+				t.Errorf("compositions = %+v, want none on that day", got.FundCompositions)
+			}
+		})
+	}
+}
+
+// A characteristic or a period fact whose value is no decimal, or a period
+// fact whose start is no date, fails the load with an error that names the
+// row.
+func TestSnapshotsRefuseABadYieldFigure(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name, insert string
+		want         []string
+	}{
+		{"characteristic value", `INSERT INTO characteristics (fund_ref, as_of, provider, field, label, value, run_at)
+		    VALUES ('isin:XX0000000001', ?, 'ishares', 'credit_quality', 'BBB', 'n/a', ?)`,
+			[]string{"isin:XX0000000001", "credit_quality", "BBB", "n/a"}},
+		{"period fact value", `INSERT INTO period_facts (security_key, field, as_of, period_start, provider, value, run_at)
+		    VALUES ('symbol:EXMP', 'revenue', ?, '2025-12-01', 'sec-edgar', '12,5', ?)`,
+			[]string{"symbol:EXMP", "revenue", "2025-12-01", "12,5"}},
+		{"period fact start", `INSERT INTO period_facts (security_key, field, as_of, period_start, provider, value, run_at)
+		    VALUES ('symbol:EXMP', 'revenue', ?, 'Q4', 'sec-edgar', '12', ?)`,
+			[]string{"symbol:EXMP", "revenue", "period_start", "Q4"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			path, db := newFixtureSilver(t)
+			seed(t, db)
+			silvertest.Exec(t, db, c.insert, d3, run2)
+			stream, err := openAdapter(t, path).Snapshots(context.Background(),
+				canonical.Window{Start: d3, End: d3, HasChanges: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stream.Close()
+			for {
+				_, more, err := stream.Next(context.Background())
+				if err != nil {
+					for _, w := range c.want {
+						if !strings.Contains(err.Error(), w) {
+							t.Errorf("error %q does not name %q", err, w)
+						}
+					}
+					return
+				}
+				if !more {
+					t.Fatal("the stream ended without an error")
+				}
+			}
+		})
 	}
 }

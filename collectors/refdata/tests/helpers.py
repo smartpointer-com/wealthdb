@@ -1,22 +1,33 @@
-"""Shared test helpers: an invented wanted list, a fake provider, fake
-sources, and invented workbooks and PDFs."""
+"""Shared test helpers: an invented wanted list and the plan of it, fake
+providers, fake sources, a run and a silver DB as the collector writes
+them, invented workbooks and PDFs, and the engine's vocabularies read
+from its Go source."""
 
 import email.message
 import http
 import io
 import json
+import re
 import urllib.request
 import urllib.response
 import zipfile
 from datetime import date
+from pathlib import Path
 from xml.sax.saxutils import escape
 
+import download
 import fetcher
-from providers.base import Parsed, Provider, Unavailable, read_meta, write_meta
+import load
+import wanted as wantedmod
+from collectorkit import bronze, silver
+from providers.base import Context, Parsed, Provider, Unavailable, read_meta, write_meta
+
+TODAY = date(2026, 7, 15)
+ENGINE = Path(__file__).resolve().parents[3] / "wealthdb" / "internal"
 
 
-def wanted_doc(funds=(), securities=(), as_of="2026-07-15"):
-    return {"contract": "refdata-wanted", "version": 1, "generated_at": f"{as_of}T00:00:00Z", "as_of": as_of,
+def wanted_doc(funds=(), securities=(), as_of="2026-07-15", version=1):
+    return {"contract": "refdata-wanted", "version": version, "generated_at": f"{as_of}T00:00:00Z", "as_of": as_of,
             "settings": {"max_gap_days": 400}, "funds": list(funds), "securities": list(securities)}
 
 
@@ -28,6 +39,38 @@ def fund(ref, symbol=None, held_from="2026-01-02", held_to=None, compositions=()
 def write_wanted(path, doc):
     path.write_text(json.dumps(doc), encoding="utf-8")
     return path
+
+
+def plan(want, providers, **kw):
+    """download.plan of a wanted list, parsed or a doc: its requests, the
+    funds no provider claims and its cover. By default on TODAY, with a
+    max_age of 30 days and no backfill."""
+    if isinstance(want, dict):
+        want = wantedmod.parse(want)
+    return download.plan(want, providers, Context(client=None),
+                         **{"today": TODAY, "max_age": 30, "backfill": False, **kw})
+
+
+def make_run(data, slug, reqs):
+    """A complete run in data/slug: the requests fetched into it and its
+    manifest, as download writes them."""
+    run = data / slug
+    run.mkdir(parents=True)
+    entries = download.execute(reqs, run, Context(client=None))
+    bronze.atomic_write_json(run / "run.json", {"status": "complete", "requests": entries})
+    return run
+
+
+def run_entries(run):
+    """The manifest entries of a run, one per request."""
+    return json.loads((run / "run.json").read_text())["requests"]
+
+
+def silver_db(tmp_path):
+    """An open silver DB in tmp_path, every migration applied."""
+    conn = silver.open_db(tmp_path / "refdata.db")
+    silver.apply_migrations(conn, load.MIGRATIONS)
+    return conn
 
 
 class FakeProvider(Provider):
@@ -71,6 +114,18 @@ class FakeProvider(Provider):
                            "source_kind": "daily_file", "line_count": 1, "weight_sum": weight}],
             lines=[{"fund_ref": meta["ref"], "as_of": day, "basis": "holdings", "line_no": 1, "ticker": name,
                     "name": name, "weight": weight}])
+
+
+class FakeLookup(Provider):
+    """A security provider that claims every security and answers the
+    wanted fields `answers`."""
+    serves_securities = True
+
+    def __init__(self, name="lookup", answers=("country",)):
+        self.name, self.answers = name, frozenset(answers)
+
+    def claim_security(self, sec, ctx):
+        return {"key": sec.key}
 
 
 class FakeClient:
@@ -195,3 +250,21 @@ def pdf(pages) -> bytes:
     out += b"".join(b"%010d 00000 n \n" % offsets[n] for n in sorted(objs))
     out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
     return bytes(out)
+
+
+def go_source(path) -> str:
+    """A Go file of the engine (wealthdb/internal/<path>): a vocabulary
+    the collector repeats is read from it, so a value renamed on one side
+    fails a test."""
+    return (ENGINE / path).read_text()
+
+
+def go_strings(text, var) -> list:
+    """The quoted strings of a `var <var> = []string{…}` slice."""
+    body = re.search(rf"var {var} = \[\]string\{{(.*?)\}}", text, re.S).group(1)
+    return re.findall(r'"([^"]*)"', body)
+
+
+def go_const(text, name) -> str:
+    """The value of a `const <name> = "…"` declaration."""
+    return re.search(rf'const {name} = "([^"]*)"', text).group(1)

@@ -85,6 +85,18 @@ func setupCLITest(t *testing.T) (configPath string) {
 	return cfgPath
 }
 
+// writeCLIConfig rewrites the config setupCLITest wrote, with blocks, a
+// JSON fragment that opens with a comma, added after its sources.
+func writeCLIConfig(t *testing.T, cfgPath, blocks string) {
+	t.Helper()
+	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD",
+        "silver_sources": [{"id":"schwab-test","kind":"schwab","path":%q}]%s}`,
+		goldPathFromCfg(cfgPath), filepath.Join(filepath.Dir(cfgPath), "schwab.db"), blocks)
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // run invokes Run() with stdio captured into buffers. The string
 // returns are stdout and stderr trimmed of trailing whitespace.
 func run(t *testing.T, args ...string) (stdout, stderr string, exit int) {

@@ -82,7 +82,8 @@ gains, exposure, spending, income, cash flow) read.
 - **Built-in market-data feeds.** Real-time prices, ex-dividend
   dates, ratings and volatility are out of scope. Gold reads what each
   silver carries. Reference data on funds and securities arrives
-  through the `refdata` source (§7.6).
+  through the `refdata` source, and public rate series through `fred`
+  (§7.6).
 - **Performance attribution.** No command computes it. Gold carries
   the cost basis, open lots and realized lots each source states
   (§7.4), the lot engine fills what a source leaves out (§7.5), and
@@ -805,6 +806,7 @@ Example config file:
 | `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname`, `category`, `tax_wrapper`, and/or `management_style` strings, or `exclude: true` to drop the account and every fact keyed to it (a sweep over gold after the load's streams drain, §13.8). All inner fields are optional but at least one must be set per entry, and `exclude` may not be combined with a column override. `tax_wrapper` and `management_style` values are validated against the canonical enums (`internal/canonical/enums.go`) at config-load time. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
 | `declared_accounts` | object | Optional. Map keyed by an id the holder chooses (`[A-Za-z0-9_-]+`) of accounts the household OWNS at institutions the product does not collect: `account_kind` and `tax_wrapper` required and validated against the canonical enums, `nickname` and `currency` optional. The load writes each one as an account row under the reserved source `declared` (no `silver_sources[].id` may take that name), after the per-source loads and before the enrichment pass, and prints how many it stamped; a declaration removed from the config leaves on the next load. A declared account carries no balance and no facts: it exists so a rule's `far` can name it as the other side of an own-account move, which the cash flow statement then places by the declared wrapper exactly as it places a collected far account — a household wrapper makes the move pool-internal, a vehicle wrapper draws it as that vehicle's crossing (docs/CASHFLOW.md §4). Nothing the product measures can falsify a declaration, which is why the wrapper is required and the load prints how many declarations sit inside the pool. Deployment-specific: lives in the user's config. |
 | `exposure` | object | Optional. What the exposure report needs that no source knows: `proxies` (a fund whose composition stands in for another, with `always` and `leverage`), `reference_funds`, `size_funds`, `declarations` (the path to the declarations ledger, NDJSON; expanded as above), `custody` and `max_gap_days` (default 400). Validated at config-load time. docs/EXPOSURE.md §9 defines each key, its bounds and the ledger's records; §7.6 says how a load stores them. Deployment-specific: lives in the user's config. |
+| `yield` | object | Optional. The yield inputs that no source knows: `curves` (a currency's public yield curve, one series of a configured source per tenor, `"3M": "fred:DGS3MO"`), `withholding` (percent withheld at source by situs country and tax wrapper, `default` for any wrapper), `rating_funds` (a rating-sliced fund's bucket or range, `BBB` or `AAA-A`), `conventions` (coupon frequency and day count per market: a currency, or a currency and a bond sector or `bill`; built-in defaults), `horizon_months` (1 to 36, default 12) and `cycles` (overrides of the built-in map from the eleven sectors to cyclical, defensive and sensitive). Validated at config-load time; §7.6 says how a load stores it. Deployment-specific: lives in the user's config. |
 | `holding_aliases` | array | Optional. Entries `{ "source", "account"?, "key", "as", "note"? }` naming a holding a source keys two ways, so the gains reports read both keys as one: a statement's overview line (`key`) until a daily feed lists the same holding by ISIN (`as`), say. `account` scopes the alias to one account; absent, it covers every account of the source. The load writes the block into gold's `holding_aliases` table whole, and `gains_windows` maps every position, lot and event key through it before a bucket's start meets its end (docs/GAINS.md §5). Validated for a configured source, two different keys, one alias per key, and no alias of an alias. Deployment-specific: lives in the user's config. |
 | `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole crypto portfolio inside an IRA / trust / Stiftung wrapper. Accepts `tax_wrapper` (unlike `account_overrides`, which also takes nickname / category / management_style) or `exclude: true`, which drops the portfolio and every account inside it with their facts; one of the two must be set and they may not be combined. A per-account `tax_wrapper` override still wins over a portfolio one. See §13.8. |
 | `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. See §13.8. |
@@ -1462,6 +1464,9 @@ is documented where it is used:
   `0125` and `0128`) — §7.6; the derived tables (migrations `0126` and
   `0129`) and `report_exposure` (migrations `0127` and `0130`); migration
   `0131` touches both — §10.14.
+- The reference tables `fund_risk`, `fund_characteristics`,
+  `security_period_facts` and `rate_observations`, and the `yield_*`
+  config tables (migration `0134`) — §7.6.
 - The serving tables `serving_*` (migration `0132`) — web/DESIGN.md §8.
 - The spending overlay: `spend_categories` (migration `0040`;
   docs/SPENDING.md §2), and `spend_txn_enrichment`,
@@ -1975,18 +1980,34 @@ beside a stated one for `gains check`.
 
 ### 7.6 Reference data
 
-A reference source writes dated facts about funds and securities, not
-about accounts: `fund_compositions`, `fund_lines`, `fund_attributes`,
-`fund_counterparties`, `security_identities` and `security_facts`. Each
-is keyed by `silver_source_id` and windowed by `as_of`, the day a row
-describes, as a snapshot table is windowed by `snapshot_at`. Every
-composition ever loaded is kept. The `refdata` kind writes them
-([adapters/refdata.md](adapters/refdata.md)), and the `synthetic` kind
-can too. Migration 0125 adds them. The refdata collector learns what to
-fetch from the hidden read-only subcommand `refdata-wanted`, whose JSON
-contract adapters/refdata.md §5 defines.
+A reference source writes dated facts about funds, securities and
+public rates, not about accounts. Each reference table is keyed by
+`silver_source_id` and windowed by `as_of`, the day a row describes, as
+a snapshot table is windowed by `snapshot_at`. Every composition ever
+loaded is kept. The `refdata` kind writes the fund and security tables
+([adapters/refdata.md](adapters/refdata.md)), the `fred` kind the rates,
+and the `synthetic` kind can write all of them.
 
-The same migration adds the tables of the `exposure` config block
+Migration 0125 adds `fund_compositions`, `fund_lines`,
+`fund_attributes`, `fund_counterparties`, `security_identities` and
+`security_facts`. Migration 0134 adds columns to `fund_lines`, such
+as a debt line's durations and yields. It also adds four tables:
+
+- `fund_risk`: a filing's rate sensitivities, per fund, day, currency and
+  tenor;
+- `fund_characteristics`: the figures a provider states for a fund as a
+  whole, such as its duration, its yields and its credit-quality
+  breakdown;
+- `security_period_facts`: a company's reported figures, each for its
+  period and dated by the period's last day;
+- `rate_observations`: one day's value of a public rate series, in
+  percent.
+
+The refdata collector learns what to fetch from the hidden read-only
+subcommand `refdata-wanted`, whose JSON contract adapters/refdata.md §5
+defines.
+
+Migration 0125 also adds the tables of the `exposure` config block
 (§5.1); migration 0128 adds those of its declarations ledger. Every load
 replaces them whole after the per-source loads, beside the holding
 aliases (`gold.SyncExposure`, §8.1), so an entry taken out of the
@@ -2003,8 +2024,21 @@ config or the ledger leaves on the next load:
 - `exposure_custody`: who keeps each source's assets;
 - `exposure_settings`: one row of settings.
 
-The exposure report reads both families ([EXPOSURE.md](EXPOSURE.md),
-§10.14).
+The exposure report reads the six reference tables of migration 0125
+and the `exposure_*` tables ([EXPOSURE.md](EXPOSURE.md), §10.14).
+
+Migration 0134 adds the tables of the `yield` config block (§5.1). A
+load replaces them whole the same way (`gold.SyncYield`):
+
+- `yield_curves`: each currency's curve, one series per tenor;
+- `yield_withholding`: percent withheld at source, by situs country and
+  tax wrapper;
+- `yield_rating_funds`: a rating-sliced fund's bucket or range;
+- `yield_conventions`: coupon frequency and day count per market, the
+  built-in defaults with the config's entries;
+- `yield_cycles`: each sector's cycle, the built-in map with the
+  config's overrides;
+- `yield_settings`: one row of settings.
 
 ## 8. Load semantics
 
@@ -2103,8 +2137,8 @@ its transactions, because none is a per-source fact:
    `silver_sources` (§13.2).
 2. The config's declared accounts are stamped into `accounts`
    (`declared_accounts`, §5.1), its `holding_aliases` into the
-   table of that name, and its `exposure` block into the `exposure_*`
-   tables (§7.6).
+   table of that name, its `exposure` block into the `exposure_*`
+   tables and its `yield` block into the `yield_*` tables (§7.6).
 3. The deterministic enrichment pass re-asserts every spend and income
    verdict in gold (§10.10, docs/SPENDING.md §3). An own-account move's
    two legs routinely arrive from two different sources, so neither is
@@ -3013,9 +3047,10 @@ wealthdb/
 │   │   └── migrations/             — 0001…NNNN SQL, //go:embed-ed by schema.go
 │   ├── returns/                    — source-agnostic TWR/MWR math + pluggable per-source policy
 │   ├── lots/                       — the lot engine, pure (docs/LOTS.md) + pluggable per-source policy
+│   ├── fixedincome/                — bond and rate arithmetic, pure (a currency's zero curve and forward rates)
 │   ├── spending/                   — the deterministic spend-enrichment pass (§10.10, docs/SPENDING.md)
 │   ├── loader/                     — the §8 silver→gold load orchestration (the only silver↔gold bridge)
-│   └── config/ · pathmode/ · wizard/ · output/ · errs/ · version/
+│   └── config/ · ledgercsv/ · pathmode/ · wizard/ · output/ · errs/ · version/
 └── (Dockerfile, wrappers per above)
 ```
 
@@ -3025,7 +3060,7 @@ import anything higher, never the reverse:
 ```
 canonical                    (zero deps)
    ↑
-lots, returns                import canonical
+lots, returns, fixedincome   import canonical
    ↑
 silver (interface)           imports canonical
    ↑

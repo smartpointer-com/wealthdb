@@ -3,10 +3,14 @@
 Money is Decimal throughout and never float. Amounts round half-even to
 cents when a transaction books them; balances and values are written with
 four decimals, gold's DECIMAL(28,4); quantities and prices with eight,
-gold's DECIMAL(28,8); rates with ten, DECIMAL(20,10).
+gold's DECIMAL(28,8); exchange rates with ten, DECIMAL(20,10).
 """
 
-from decimal import ROUND_HALF_EVEN, Decimal, localcontext
+from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
+
+# The context every computation runs in: Decimal's default, its 28
+# digits pinned, so a value never depends on the caller's context.
+PRECISE = Context(prec=28)
 
 ZERO = Decimal(0)
 CENT = Decimal("0.01")
@@ -47,10 +51,16 @@ def text(x, places=4):
     return format(v, "f")
 
 
+def compound(rate, years):
+    """(1 + rate) ** years, for any real number of years, through
+    Decimal's correctly rounded exp and ln."""
+    with localcontext(PRECISE):
+        return (D(years) * (1 + D(rate)).ln()).exp()
+
+
 def mul(*xs):
     """A product at working precision, before any rounding."""
-    with localcontext() as ctx:
-        ctx.prec = 28
+    with localcontext(PRECISE):
         out = Decimal(1)
         for x in xs:
             out *= D(x)

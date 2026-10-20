@@ -16,6 +16,8 @@ import hashlib
 import random
 from decimal import Decimal, localcontext
 
+from .money import PRECISE
+
 _ONE = Decimal(1)
 _HALF = Decimal("0.5")
 
@@ -55,8 +57,7 @@ def uniform(r):
 def normal(r):
     """A standard normal draw as a Decimal, platform-independent."""
     p = uniform(r)
-    with localcontext() as ctx:
-        ctx.prec = 28
+    with localcontext(PRECISE):
         if p < _P_LOW:
             q = (-2 * p.ln()).sqrt()
             return _tail(q)
@@ -79,8 +80,7 @@ def _tail(q):
 def lognormal_factor(r, sigma):
     """exp(sigma * z - sigma^2 / 2): a mean-one multiplicative jitter."""
     sigma = Decimal(str(sigma))
-    with localcontext() as ctx:
-        ctx.prec = 28
+    with localcontext(PRECISE):
         return (sigma * normal(r) - sigma * sigma / 2).exp()
 
 

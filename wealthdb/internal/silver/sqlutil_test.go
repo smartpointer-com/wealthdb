@@ -110,6 +110,43 @@ func TestHasTables(t *testing.T) {
 	}
 }
 
+// TestHasColumns pins the probe for columns a newer silver migration adds:
+// true only when the table has every named column, and false for a table
+// the file does not hold.
+func TestHasColumns(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "silver.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE a (x INTEGER, y TEXT, z TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		table   string
+		columns []string
+		want    bool
+	}{
+		{"a", []string{"x"}, true},
+		{"a", []string{"x", "z"}, true},
+		{"a", []string{"x", "w"}, false},
+		{"a", []string{"w"}, false},
+		{"b", []string{"x"}, false},
+		{"a", nil, true},
+	} {
+		got, err := HasColumns(context.Background(), db, c.table, c.columns...)
+		if err != nil {
+			t.Fatalf("HasColumns(%s, %q): %v", c.table, c.columns, err)
+		}
+		if got != c.want {
+			t.Errorf("HasColumns(%s, %q) = %v, want %v", c.table, c.columns, got, c.want)
+		}
+	}
+	if ok, err := HasColumn(context.Background(), db, "a", "y"); err != nil || !ok {
+		t.Errorf("HasColumn(a, y) = %v, %v; want true", ok, err)
+	}
+}
+
 func TestLotHelpers(t *testing.T) {
 	if d := ISODate(" 2024-03-05 "); d == nil || d.Format(time.DateOnly) != "2024-03-05" {
 		t.Errorf("ISODate = %v", d)

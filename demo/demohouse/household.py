@@ -49,7 +49,7 @@ class Simulation:
         self.findings = findings
         self.start = inputs.history_start
         self.opening = self.start - dt.timedelta(days=1)
-        self.fx_start = self.opening - dt.timedelta(days=self.spec["calendar"]["fx_lead_days"])
+        self.fx_start = inputs.fx_start
         if as_of < self.start:
             raise ValueError(f"as-of {as_of} is before history starts ({self.start})")
         self.market = Market(seed, list(inputs.instruments.values()), self.fx_start,

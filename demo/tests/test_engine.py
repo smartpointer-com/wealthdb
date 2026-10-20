@@ -3,8 +3,10 @@
 Builds the household's first months into scratch demo roots, runs the
 real `wealthdb init` and `load -a` on them through the engine image, and
 reads the reports the demo is meant to keep clean. A second case appends
-a month to a loaded root, loads only the new days, and requires every
-report to match a gold built from scratch at the later date. The engine
+six weeks to a loaded root, loads only the new days, and requires every
+report to match a gold built from scratch at the later date. The six
+weeks hold the filings of the quarter that ends on the first build's
+day, so the reference source's run reaches back past its new days. The engine
 runs with a scratch root as its data root and its config dir, so it sees
 nothing else.
 
@@ -19,6 +21,7 @@ engine wrapper.
 import csv
 import datetime as dt
 import io
+import json
 import os
 import pathlib
 import shutil
@@ -34,7 +37,7 @@ from demohouse import dates, reference, spec  # noqa: E402
 
 PARENT = os.environ.get("WEALTHDB_DEMO_TEST_ROOT")
 MARKER = ".wealthdb-demo-tests"
-FIRST, SECOND = dt.date(2023, 9, 30), dt.date(2023, 10, 31)
+FIRST, SECOND = dt.date(2023, 9, 30), dt.date(2023, 11, 15)
 SEED = "harlow-19"
 
 
@@ -175,7 +178,7 @@ class TestRollForward(unittest.TestCase):
         self.assertNotIn("*", engine(self.rolled, "status", read_only=True))
 
     def test_the_load_takes_only_the_appended_run(self):
-        self.assertIn("watermark 1696032000 → 1698710400", self.load)
+        self.assertIn("watermark 1696032000 → 1700006400", self.load)
 
     def test_every_report_matches_a_fresh_build(self):
         """Compared as row sets: some reports order ties arbitrarily."""
@@ -193,6 +196,20 @@ class TestRollForward(unittest.TestCase):
             rolled = sorted(engine(self.rolled, *args, "-f", "csv", read_only=True).splitlines())
             fresh = sorted(engine(self.fresh, *args, "-f", "csv", read_only=True).splitlines())
             self.assertEqual(rolled, fresh, " ".join(args))
+
+    def test_the_wanted_list_matches_a_fresh_build(self):
+        """It reads the reference records no report compared above reads:
+        the funds' risk rows, characteristics and line durations, and the
+        companies' reported figures. rate_observations has no reader to
+        compare."""
+        def wanted(root):
+            out = json.loads(engine(root, "refdata-wanted", read_only=True))
+            del out["generated_at"]
+            return out
+
+        rolled = wanted(self.rolled)
+        self.assertTrue(rolled["funds"] and rolled["securities"])
+        self.assertEqual(rolled, wanted(self.fresh))
 
 
 if __name__ == "__main__":

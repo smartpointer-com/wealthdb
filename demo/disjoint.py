@@ -8,8 +8,10 @@ in one DuckDB session and every identifying field is intersected —
 account, portfolio and instrument ids, display names, nicknames,
 symbols, ISINs, CUSIPs, counterparties, descriptions, merchant and payer
 signatures, cheque numbers, fund references and fund lines, security
-keys and names, and (date, amount) pairs of transactions. A table one
-gold lacks is reported and skipped.
+keys and names, rate series ids, the funds that state figures or rate
+risk of their own, the keys of companies' reported figures, and (date,
+amount) pairs of transactions. A table one gold lacks is reported and
+skipped.
 Text compares case- and space-insensitively. Prints each field's count
 and its shared values, and nothing else; --show N prints at most N
 values per field and says how many it left out.
@@ -59,6 +61,10 @@ TEXT_FIELDS = [
     ("security key", "security_facts", "security_key"),
     ("security name", "security_identities", "name"),
     ("security FIGI", "security_identities", "figi"),
+    ("rate series", "rate_observations", "series_id"),
+    ("characteristic fund", "fund_characteristics", "fund_ref"),
+    ("period fact key", "security_period_facts", "security_key"),
+    ("fund risk reference", "fund_risk", "fund_ref"),
 ]
 
 

@@ -30,8 +30,10 @@ guards every adapter applies.
     day's closing state.
   - `payload` is a JSON object. It is `'{}'` when there is nothing to
     add.
-  - Rows are append-only. A run adds the days after the previous run's
-    as-of. Nothing older is rewritten.
+  - Rows are append-only. Nothing already written changes.
+  - A run adds the rows dated after the previous run's as-of. It also
+    adds a company's reported figure filed since then, though the
+    figure is dated by its period's last day (§8).
 
 ## 2. Identifier conventions
 
@@ -69,7 +71,8 @@ find its positions row in the same way.
 | `fx_rates` | `fx_rates` | In the same per-instant batches, already in gold's direction. |
 | `transactions` | `transactions` | Re-signed as a guard — see §7. |
 | `realized_lots` | `realized_lots` | Read whole on every load — see §11. |
-| `compositions`, `lines`, `attributes`, `counterparties`, `securities`, `security_facts` | the reference tables | After the snapshots, by `as_of` — see §12. |
+| `compositions`, `lines`, `attributes`, `counterparties`, `securities`, `security_facts`, `fund_risk`, `characteristics`, `period_facts` | the reference tables | After the snapshots, by `as_of` — see §12. |
+| `rates` | `rate_observations` | After the reference records, by `as_of` — see §12. |
 
 ## 4. Account taxonomy
 
@@ -248,8 +251,11 @@ windows are cut.
 runs.
 
 A run's `[window_start, window_end]` (inclusive) bounds every
-`snapshot_at` and `occurred_at` it added, and the UTC midnight of
-every `disposal_date`. That is the contract the generator keeps.
+`snapshot_at` and `occurred_at` it added, the UTC midnight of every
+`disposal_date`, and every `as_of` (§12). That is the contract the
+generator keeps. So the window of a run that adds a company's figure
+filed after its period reaches back to that period's last day. That day
+can lie before the previous run's as-of.
 
 The holdings are observed through the latest `window_end`, and the
 ledger through the end of the first gapless stretch the windows
@@ -264,8 +270,8 @@ cover (DESIGN.md §6.4).
 
 A fresh gold has watermark `-1` and takes every run at once. A later
 load takes only the runs appended since. Gold's windowed delete then
-touches only those days. An append run leaves everything older exactly
-as the previous load wrote it.
+touches only their windows. An append run leaves everything before its
+window exactly as the previous load wrote it.
 
 This is the kind's point. The dump-driven kinds re-emit their whole
 history on every load, because a dump re-reads everything. An
@@ -359,18 +365,37 @@ A file without the table states no realized lots.
 
 ## 12. Reference records
 
-Six tables carry reference records: what a fund holds and what a
-security is. They repeat the refdata collector's silver shape column for
-column, so one reader serves both kinds (`silver.NewReferenceStream`;
-[refdata.md](refdata.md) §2 maps each table to its gold table).
+Nine tables carry reference records. They describe what a fund holds,
+what a fund is and what a security is. They repeat the refdata
+collector's silver shape column for column, so one reader serves both
+kinds (`silver.NewReferenceStream`; [refdata.md](refdata.md) §2 maps
+each table to its gold table).
 
-- `compositions`, `lines`, `attributes` and `counterparties` describe a
-  fund on a day. `as_of` is that day's UTC midnight.
+- `compositions`, `lines`, `attributes`, `counterparties`, `fund_risk`
+  and `characteristics` describe a fund on a day. `as_of` is that day's
+  UTC midnight.
 - `securities` and `security_facts` describe a security as one lookup
   found it on a day.
+- `period_facts` holds a company's reported figures. `as_of` is the UTC
+  midnight of the last day of the figure's period.
 - `run_at` is the instant the row was fetched. A generator states any
   instant at or after `as_of`.
 
+The `rates` table carries the public rate series. It repeats the fred
+collector's `rates` table column for column, so one reader serves both
+kinds (`silver.NewRateStream`). One row is one series on one day, in
+percent.
+
 Every `as_of` must lie inside the window of the run that adds the row
 (§8). `Snapshots` emits the window's reference records after its
-snapshots. A file without the tables states none.
+snapshots, and its rate observations after those.
+
+A file can predate some of these tables:
+
+- A file that lacks one of `compositions`, `lines`, `attributes`,
+  `counterparties`, `securities` and `security_facts` states no
+  reference records.
+- A file without `fund_risk`, `characteristics` and `period_facts`
+  states none of their records. Its lines may also lack the columns from
+  `coupon_kind` on; those fields are then absent.
+- A file without `rates` states no rate observations.

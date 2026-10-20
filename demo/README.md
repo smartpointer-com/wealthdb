@@ -82,8 +82,8 @@ History starts on 2023-07-01 and runs to the as-of date.
 | `tessarite` | a crypto exchange account | the `crypto_partial` regime, staking income, a deposit from and a withdrawal to a wallet nothing tracks, and no stated cost basis: the lot engine rebuilds it from the trades |
 | `driftwren` | a multi-currency account in EUR and GBP | spending abroad, a yearly USD wire paired across currencies |
 | `homestead` | the family home | a NAV-only holding valued by yearly appraisals |
-| `fx` | none | daily USD rates for EUR, GBP and CHF |
-| `refdata` | none | what the funds hold, every month-end, and what the directly held stocks and bonds are |
+| `fx` | none | daily USD rates for EUR, GBP and CHF, and a US dollar yield curve |
+| `refdata` | none | what the funds hold, every month-end, what the directly held stocks and bonds are, the bond fund's yields and rate risk, and the companies' reported figures |
 
 One account is declared rather than collected: `kids-savings`, a
 children's savings account at a bank nothing collects. A monthly
@@ -125,6 +125,15 @@ the look-through handles:
 - A structured note has neither a composition nor a declaration, so
   `wealthdb exposure coverage` lists it as `undeclared`.
 
+The bond fund's lines state each bond's coupon, duration and yields,
+from the `fx` source's curve. One bond floats, one is inflation-linked
+and one is callable. The fund states its duration, yields and credit
+quality every month-end, and its rate and credit-spread risk every
+quarter-end. Every fund with a payout states its distribution yield.
+The directly held US companies state their quarterly and yearly
+figures, each about 40 days after its period ends. Not every company
+pays a dividend, and one reports a loss.
+
 The 529 portfolio has no composition of its own. The config names a
 target-date fund as its proxy. The declarations ledger states what no
 source knows:
@@ -141,27 +150,30 @@ source knows:
 
 `demo/generate.py` reads `demo/household.json` (the household's accounts,
 amounts, schedules, dated events), `demo/catalogue/` (merchants,
-instruments, payers, and what the funds hold) and the `synthetic` kind's
-schema file in the engine's source tree. It reads nothing else: no
-environment, no real config, no network. The code is in `demo/demohouse/`:
+instruments, payers, the funds' holdings and sizes, and the bonds' and
+companies' terms) and the `synthetic` kind's schema file in the engine's
+source tree. It reads nothing else: no environment, no real config, no
+network. The code is in `demo/demohouse/`:
 
 | Module | Does |
 | --- | --- |
 | `spec.py` | loads the spec and the catalogue, and hashes them and the generator's code |
 | `keyed.py` | randomness keyed by (seed, stream, the draw's own keys), so adding days never changes an earlier day |
 | `market.py` | four price factors (stocks, bonds, gold, crypto), instrument prices, exchange rates |
+| `rates.py` | the US dollar yield curve, from the calendar and the seed |
 | `book.py` | the ledger: every balance is the running sum of its transactions, and every holding the sum of its lots |
 | `household.py` | the day-by-day simulation |
-| `reference.py` | the funds' month-end compositions and the securities' facts, from `catalogue/funds.json` and the instruments |
+| `reference.py` | the funds' month-end compositions, the bond fund's figures and the securities' facts, from `catalogue/funds.json` and the instruments |
+| `filings.py` | the companies' reported figures, each written once it is filed |
 | `silver.py` | writes a full build, or appends the new days to an earlier one |
-| `config.py` | renders `wealthdb.cfg` and the ledger CSVs |
+| `config.py` | renders `wealthdb.cfg`, the ledger CSVs and the declarations ledger |
 | `dates.py`, `money.py` | the calendar and timestamps, and Decimal rounding and formats |
 
 The demo root then holds `silver/<source>.db`, `wealthdb.cfg` (every
-path in it relative to the root), `overrides/*.csv`, the gold file and
-a `.wealthdb-demo` marker. The generator writes only into a root that
-is new, empty or marked. The web and MCP targets run only against a
-marked root.
+path in it relative to the root), `overrides/` (the ledger CSVs and the
+declarations ledger), the gold file and a `.wealthdb-demo` marker. The
+generator writes only into a root that is new, empty or marked. The web
+and MCP targets run only against a marked root.
 
 A full build also removes the root's gold file. Each run's change
 number is its as-of date. A rebuild at the same as-of carries the
@@ -174,14 +186,18 @@ ordinary: no crash, no boom, no instrument below half its starting
 value.
 
 **Appending.** `--append` replays the whole history in memory and adds
-only the rows dated after the as-of the files already reached. Each
-append records a run whose window is exactly the new days, and the
-`synthetic` adapter hands gold only the runs since its last load. So
-`make demo-roll` loads the new days and touches nothing older, and the
-result matches a fresh build at the same date in every report. An
-append refuses an earlier as-of, and it refuses when the generator,
-the spec, the catalogue, the seed or the findings switch differ from
-the ones that wrote the files. A full build is the way past that.
+only the rows dated after the as-of the files already reached. A
+company's reported figure is added on the day it is filed, not the day
+its period ends. Each append records a run whose window is the new
+days, and the `synthetic` adapter hands gold only the runs since its
+last load. A `refdata` run that adds a filed figure reaches back to the
+end of its period, and gold reads that source's rows of those days
+again, unchanged. So `make demo-roll` loads the new days and changes
+nothing older, and the result matches a fresh build at the same date in
+every report. An append refuses an earlier as-of, and it refuses when
+the generator, the spec, the catalogue, the seed or the findings switch
+differ from the ones that wrote the files. A full build is the way past
+that.
 
 ## The findings switch
 
@@ -216,8 +232,8 @@ A findings build is a one-off picture: it cannot be appended to.
   `--password-file`.
 - `demo/disjoint.py --demo <gold> --live <gold>` lists every
   identifying value a demo gold shares with another gold: ids, names,
-  symbols, ISINs, counterparties, descriptions, signatures, fund
-  references and lines, security keys, names and FIGIs, and (date,
-  amount) pairs. A table one gold lacks is reported and skipped. It
-  prints counts and values only, at most N values per field with
-  `--show N`. It needs the `duckdb` command-line tool on PATH.
+  symbols, keys, descriptions and (date, amount) pairs. The script's
+  docstring lists every field it compares. A table one gold lacks is
+  reported and skipped. It prints counts and values only, at most N
+  values per field with `--show N`. It needs the `duckdb` command-line
+  tool on PATH.

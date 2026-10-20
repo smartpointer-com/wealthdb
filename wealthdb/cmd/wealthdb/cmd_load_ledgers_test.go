@@ -86,12 +86,7 @@ func TestBadDeclarationFailsBeforeGoldIsOpened(t *testing.T) {
 				`{"silver_source_id":"schwab-test","instrument":"QPRIV2","region":{"europe":60,"rest":30}}`+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD",
-                "silver_sources": [{"id":"schwab-test","kind":"schwab","path":%q}],
-                "exposure": {"declarations": %q}}`, goldPathFromCfg(cfgPath), filepath.Join(dir, "schwab.db"), ledger)
-			if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			writeCLIConfig(t, cfgPath, fmt.Sprintf(`, "exposure": {"declarations": %q}`, ledger))
 			if _, se, code := run(t, "-c", cfgPath, "init"); code != 0 {
 				t.Fatalf("init failed: %s", se)
 			}
@@ -132,12 +127,7 @@ func TestLoadWarnsOfADeclarationNamingNoHolding(t *testing.T) {
 			if err := os.WriteFile(ledger, []byte(body.String()), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			cfg := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD",
-                "silver_sources": [{"id":"schwab-test","kind":"schwab","path":%q}],
-                "exposure": {"declarations": %q}}`, goldPathFromCfg(cfgPath), filepath.Join(dir, "schwab.db"), ledger)
-			if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			writeCLIConfig(t, cfgPath, fmt.Sprintf(`, "exposure": {"declarations": %q}`, ledger))
 			if _, se, code := run(t, "-c", cfgPath, "init"); code != 0 {
 				t.Fatalf("init failed: %s", se)
 			}
@@ -170,17 +160,10 @@ func writeStalePinConfig(t *testing.T) string {
 			"schwab-test,ACC1,2026-01-05,100.00,USD,INCOME_WAGES\n"), 0o600); err != nil {
 		t.Fatalf("write pins: %v", err)
 	}
-	body := fmt.Sprintf(`{
-        "gold_db": %q,
-        "default_currency": "USD",
-        "silver_sources": [{"id":"schwab-test","kind":"schwab","path":%q}],
+	writeCLIConfig(t, cfgPath, fmt.Sprintf(`,
         "spending": {"categorization": {"model":
             {"name": "test-model", "baseUrl": "http://127.0.0.1:1/v1", "api": "openai-completions"}}},
-        "income": {"pins": %q}
-    }`, goldPathFromCfg(cfgPath), filepath.Join(dir, "schwab.db"), pins)
-	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
-		t.Fatalf("write cfg: %v", err)
-	}
+        "income": {"pins": %q}`, pins))
 	return cfgPath
 }
 

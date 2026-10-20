@@ -20,9 +20,11 @@ import (
 // stores under a reference joins back exactly.
 
 // WantedContractVersion is the version of the wanted list's JSON. A
-// change that removes or renames a field, or changes a field's meaning,
-// takes a new version; a field added alone does not.
-const WantedContractVersion = 1
+// change a collector of the version before would misread takes a new
+// version: a field removed or renamed, a field's meaning changed, a
+// value a field did not hold before, or a field that asks for work the
+// older collector would skip. A field it may ignore does not.
+const WantedContractVersion = 2
 
 // Wanted is the wanted list.
 type Wanted struct {
@@ -60,6 +62,15 @@ type WantedFund struct {
 	// Compositions are the days gold already has a composition for, on
 	// any basis, ascending.
 	Compositions []string `json:"compositions"`
+	// Wants are the facts a held fund is wanted for beyond its
+	// compositions (fundWants), in that order; empty for a fund no
+	// holding names.
+	Wants []string `json:"wants"`
+	// Facts are the days gold holds each fact for, whatever the fund's
+	// role, ascending as Compositions, so a collector skips a day it has
+	// and reads freshness from the last. A fact gold holds nothing of is
+	// absent.
+	Facts map[string][]string `json:"facts"`
 }
 
 // WantedSecurity is one security gold wants attributes for.
@@ -72,8 +83,8 @@ type WantedSecurity struct {
 	Currency *string `json:"currency"`
 	// Scope is direct (held directly, and always completed) or
 	// constituent (named by the lines of a held fund, and lacking a
-	// sector or a country there). A collector skips a scope it does not
-	// know.
+	// sector or a country there or, for a stock, a recent period fact).
+	// A collector skips a scope it does not know.
 	Scope string `json:"scope"`
 	// SharePct is a constituent's share of net worth through funds, in
 	// percent, so a collector asks the biggest first; null for a security
@@ -83,11 +94,17 @@ type WantedSecurity struct {
 	// its fund lines state (a lookup that finds companies skips a bond).
 	AssetClass *string `json:"asset_class"`
 	// Missing are the fields no source states yet: sector, country and,
-	// for a stock held directly, market_cap.
+	// for a stock held directly, market_cap; then, for public equity,
+	// each family of period facts with no period ended within
+	// periodFreshDays of the list's day.
 	Missing []string `json:"missing"`
 	// Lookups are the day each provider last answered for the security,
 	// so a collector refreshes what is older than its max_age.
 	Lookups map[string]string `json:"lookups"`
+	// Periods are the newest period end gold holds for each family of
+	// period facts, so a collector asks only for later periods. A family
+	// gold holds nothing of is absent.
+	Periods map[string]string `json:"periods"`
 }
 
 // lookThroughVehicles hold a basket a composition can describe: a fund,
@@ -111,14 +128,21 @@ type heldInstrument struct {
 
 // RefdataWanted builds the wanted list as of now. A gold opened
 // read-only before the exposure migrations reached it has no reference
-// or exposure tables yet; it is read as holding none, so the first fetch
-// can run before the first load.
+// or exposure tables yet, and one before migration 0134 no fact tables;
+// it is read as holding none, so the first fetch can run before the
+// first load.
 func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, error) {
 	held, err := heldInstruments(ctx, db, now)
 	if err != nil {
 		return nil, err
 	}
 	migrated, err := hasTable(ctx, db, "security_aliases")
+	if err != nil {
+		return nil, err
+	}
+	// The tables of a fund's and a company's facts come with a later
+	// migration than the exposure tables.
+	withFacts, err := hasTable(ctx, db, "fund_risk")
 	if err != nil {
 		return nil, err
 	}
@@ -132,6 +156,12 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 			return nil, fmt.Errorf("wanted: settings: %w", err)
 		}
 	}
+	periods := map[string]map[string]string{}
+	if withFacts {
+		if periods, err = readPeriods(ctx, db, keys); err != nil {
+			return nil, err
+		}
+	}
 	w := &Wanted{
 		Contract: "refdata-wanted", Version: WantedContractVersion,
 		GeneratedAt: now.UTC().Format(time.RFC3339), AsOf: now.UTC().Format(time.DateOnly),
@@ -141,6 +171,7 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 
 	funds := map[string]*WantedFund{}
 	spans := map[string]*span{}
+	classes := map[string][]string{}
 	securities := map[string]*WantedSecurity{}
 	stocks := map[string]bool{}
 	for _, h := range held {
@@ -153,6 +184,7 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 			f := wantFund(funds, spans, ref, "held")
 			fillIDs(&f.ISIN, &f.CUSIP, &f.Symbol, &f.Name, &f.Currency, h)
 			spans[ref].add(span{from: h.firstAt, to: h.lastAt, open: h.open, set: true})
+			classes[ref] = append(classes[ref], h.assetClass)
 		case h.vehicle == "stock" || h.vehicle == "bond":
 			s := securities[ref]
 			if s == nil {
@@ -189,7 +221,12 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		if err := addCompositionDates(ctx, db, funds, keys); err != nil {
 			return nil, err
 		}
-		if err := addConstituents(ctx, db, securities, open, now, ids); err != nil {
+		if withFacts {
+			if err := addFundFacts(ctx, db, funds, keys); err != nil {
+				return nil, err
+			}
+		}
+		if err := addConstituents(ctx, db, securities, open, now, ids, periods); err != nil {
 			return nil, err
 		}
 		addUSSymbols(securities, ids)
@@ -202,8 +239,13 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		if f.Compositions == nil {
 			f.Compositions = []string{}
 		}
+		f.Wants = fundWants(f, classes[ref])
 	}
 	for key, s := range securities {
+		s.Periods = periods[key]
+		if s.Periods == nil {
+			s.Periods = map[string]string{}
+		}
 		if s.Scope == "constituent" {
 			continue // its Missing come from the look-through
 		}
@@ -213,6 +255,9 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 				continue
 			}
 			s.Missing = append(s.Missing, wf.field)
+		}
+		if stocks[key] && *s.AssetClass == "public_equity" {
+			s.Missing = append(s.Missing, stalePeriods(s.Periods, now)...)
 		}
 	}
 	// A fund states the identifiers gold knows for it, so a provider can
@@ -361,7 +406,7 @@ func fromToday(now time.Time) span {
 func wantFund(funds map[string]*WantedFund, spans map[string]*span, ref, role string) *WantedFund {
 	f := funds[ref]
 	if f == nil {
-		f = &WantedFund{Ref: ref}
+		f = &WantedFund{Ref: ref, Facts: map[string][]string{}}
 		funds[ref] = f
 		spans[ref] = &span{}
 	}
@@ -504,6 +549,95 @@ func addCompositionDates(ctx context.Context, db *sql.DB, funds map[string]*Want
 	return nil
 }
 
+// The facts a held fund is wanted for beyond its compositions, in the
+// order the list names them:
+//
+//   - risk_metrics: a bond or multi-asset fund's rate sensitivities, as
+//     its N-PORT filing states them (fund_risk);
+//   - characteristics: the figures its issuer's page states for the fund
+//     as a whole: duration, yields, credit quality (fund_characteristics);
+//   - money_market: a money-market fund's 7-day yields and weighted
+//     average maturity and life (fund_characteristics, moneyMarketFields);
+//   - line_durations: a bond fund's durations line by line, while its
+//     newest composition states none (fund_lines).
+const (
+	wantRiskMetrics     = "risk_metrics"
+	wantCharacteristics = "characteristics"
+	wantMoneyMarket     = "money_market"
+	wantLineDurations   = "line_durations"
+)
+
+// moneyMarketFields are the fund_characteristics fields of a
+// money-market fund; every other field is a characteristic.
+var moneyMarketFields = []string{"seven_day_yield", "seven_day_gross_yield", "weighted_average_maturity",
+	"weighted_average_life"}
+
+// fundWants are the facts a fund is wanted for, by the asset classes its
+// holdings state. A fund wanted only as a proxy, a reference or size
+// fund, or a held fund's underlying wants none. A bond fund with no
+// composition yet wants its lines' durations too.
+func fundWants(f *WantedFund, classes []string) []string {
+	wants := []string{}
+	if !slices.Contains(f.Roles, "held") {
+		return wants
+	}
+	of := func(cs ...string) bool {
+		return slices.ContainsFunc(classes, func(c string) bool { return slices.Contains(cs, c) })
+	}
+	if of("fixed_income", "multi_asset") {
+		wants = append(wants, wantRiskMetrics)
+	}
+	wants = append(wants, wantCharacteristics)
+	if of("cash") {
+		wants = append(wants, wantMoneyMarket)
+	}
+	if of("fixed_income") && (len(f.Compositions) == 0 ||
+		lastDay(f.Facts[wantLineDurations]) < lastDay(f.Compositions)) {
+		wants = append(wants, wantLineDurations)
+	}
+	return wants
+}
+
+// lastDay is the last of ascending days, "" where there is none.
+func lastDay(days []string) string {
+	if len(days) == 0 {
+		return ""
+	}
+	return days[len(days)-1]
+}
+
+// addFundFacts lists the days gold holds each fact for, per wanted fund,
+// the fund read through its aliases as its compositions are. A
+// composition's day counts for line_durations where one of its lines
+// states a duration or a modified duration.
+func addFundFacts(ctx context.Context, db *sql.DB, funds map[string]*WantedFund, keys keyReader) error {
+	err := scanAll(ctx, db, `
+WITH f AS (
+    SELECT fund_ref, '`+wantRiskMetrics+`' AS fact, as_of FROM fund_risk
+    UNION
+    SELECT fund_ref, CASE WHEN list_contains(CAST(? AS VARCHAR[]), field) THEN '`+wantMoneyMarket+`'
+                          ELSE '`+wantCharacteristics+`' END, as_of
+      FROM fund_characteristics
+    UNION
+    SELECT fund_ref, '`+wantLineDurations+`', as_of FROM fund_lines
+     WHERE duration IS NOT NULL OR modified_duration IS NOT NULL)
+SELECT DISTINCT `+keys.sql("fund_ref")+` AS k, fact, as_of FROM f ORDER BY 1, 2, 3`, func(rows *sql.Rows) error {
+		var ref, fact string
+		var asOf int64
+		if err := rows.Scan(&ref, &fact, &asOf); err != nil {
+			return err
+		}
+		if f := funds[ref]; f != nil {
+			f.Facts[fact] = append(f.Facts[fact], time.Unix(asOf, 0).UTC().Format(time.DateOnly))
+		}
+		return nil
+	}, moneyMarketFields)
+	if err != nil {
+		return fmt.Errorf("wanted: fund facts: %w", err)
+	}
+	return nil
+}
+
 // The fields a security wants, and the facts, fund-line columns and
 // lookup type maps that state each. A bond's type states its sector, and
 // a municipal bond's type its country too (canonical/exposurelabels.go).
@@ -521,20 +655,86 @@ var wantedFields = []struct {
 	{"market_cap", []string{"market_cap", "shares_outstanding"}, "", "", true},
 }
 
+// The families of period facts public equity wants, after wantedFields,
+// and the security_period_facts fields of each.
+var periodFamilies = []struct {
+	family string
+	fields []string
+}{
+	{"earnings", []string{"eps_diluted"}},
+	{"dividends", []string{"dividends_per_share"}},
+	{"financials", []string{"net_income", "revenue", "operating_income", "interest_expense", "long_term_debt", "cash",
+		"operating_cash_flow", "capex"}},
+}
+
+// periodFreshDays is how long before the list's day a family's newest
+// period may have ended and still count as stated.
+const periodFreshDays = 200
+
+// readPeriods is the newest period end gold holds per security key and
+// family of period facts, the key read through its aliases.
+func readPeriods(ctx context.Context, db *sql.DB, keys keyReader) (map[string]map[string]string, error) {
+	family := map[string]string{}
+	for _, pf := range periodFamilies {
+		for _, f := range pf.fields {
+			family[f] = pf.family
+		}
+	}
+	out := map[string]map[string]string{}
+	err := scanAll(ctx, db, `
+SELECT k, field, MAX(as_of) FROM (
+    SELECT `+keys.sql("security_key")+` AS k, field, as_of
+      FROM (SELECT security_key, field, MAX(as_of) AS as_of FROM security_period_facts GROUP BY 1, 2))
+ GROUP BY 1, 2`, func(rows *sql.Rows) error {
+		var key, field string
+		var asOf int64
+		if err := rows.Scan(&key, &field, &asOf); err != nil {
+			return err
+		}
+		fam := family[field]
+		if fam == "" {
+			return nil
+		}
+		if out[key] == nil {
+			out[key] = map[string]string{}
+		}
+		out[key][fam] = max(out[key][fam], time.Unix(asOf, 0).UTC().Format(time.DateOnly))
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("wanted: period facts: %w", err)
+	}
+	return out, nil
+}
+
+// stalePeriods are the families of period facts with no period in
+// periods that ended within periodFreshDays of now.
+func stalePeriods(periods map[string]string, now time.Time) []string {
+	since := now.UTC().AddDate(0, 0, -periodFreshDays).Format(time.DateOnly)
+	var out []string
+	for _, pf := range periodFamilies {
+		if periods[pf.family] < since {
+			out = append(out, pf.family)
+		}
+	}
+	return out
+}
+
 // addConstituents adds the securities the lines of the funds held today
 // reach on the day (any level of the look-through) that lack a sector or
-// a country there: equity and bond lines that name a company, each with
-// its share of net worth through funds. A line naming a fund, and a fund
-// the look-through stops at, stay out: no company lookup describes a
-// fund. A country only an ISIN's prefix implies counts as missing, and so
-// does what a receipt took from a share matched by name, so a lookup may
-// still tie it to its share (exposure_receipts.go). A security held
-// directly stays direct. Its identifiers are those its key
+// a country there or, for public equity, a recent period of a family of
+// period facts (stalePeriods): equity and bond lines that name a company,
+// each with its share of net worth through funds. A line naming a fund,
+// and a fund the look-through stops at, stay out: no company lookup
+// describes a fund. A country only an ISIN's prefix implies counts as
+// missing, and so does what a receipt took from a share matched by name,
+// so a lookup may still tie it to its share (exposure_receipts.go). A
+// security held directly stays direct. Its identifiers are those its key
 // and its aliases state: a US symbol only from a fund line on a US
 // listing or a lookup, never from a broker's local ticker. A gold
 // without the exposure macros has none.
 func addConstituents(ctx context.Context, db *sql.DB, securities map[string]*WantedSecurity, held []string,
-	now time.Time, ids map[string]aliasIDs) error {
+	now time.Time, ids map[string]aliasIDs, periods map[string]map[string]string) error {
 	if len(held) == 0 {
 		return nil
 	}
@@ -558,7 +758,7 @@ c AS (
 SELECT c.key, 100 * c.v / NULLIF(t.total, 0), c.name, c.asset_class, s.currency, c.no_sector, c.no_country
   FROM c CROSS JOIN t
   LEFT JOIN securities s ON s.security_key = c.key
- WHERE c.no_sector OR c.no_country
+ WHERE c.no_sector OR c.no_country OR c.asset_class = 'public_equity'
  ORDER BY 1`, func(rows *sql.Rows) error {
 		var key string
 		var share sql.NullFloat64
@@ -586,7 +786,12 @@ SELECT c.key, 100 * c.v / NULLIF(t.total, 0), c.name, c.asset_class, s.currency,
 		if noCountry {
 			s.Missing = append(s.Missing, "country")
 		}
-		securities[key] = s
+		if class.String == "public_equity" {
+			s.Missing = append(s.Missing, stalePeriods(periods[key], now)...)
+		}
+		if len(s.Missing) > 0 {
+			securities[key] = s
+		}
 		return nil
 	}, now.Unix(), held)
 	if err != nil {

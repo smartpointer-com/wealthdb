@@ -53,21 +53,31 @@ from collectorkit import bronze
 
 META = "meta.json"
 
-# Every silver table's columns (migrations/0001_initial.sql), in order.
+# Every silver table's columns (migrations/), in order.
 COLUMNS = {
     "compositions": ("fund_ref", "as_of", "basis", "provider", "source_kind", "fund_name", "currency",
                      "net_assets", "line_count", "weight_sum", "units_outstanding", "run_at", "payload"),
     "lines": ("fund_ref", "as_of", "basis", "line_no", "isin", "cusip", "figi", "ticker", "exchange", "name",
               "asset_type", "weight", "quantity", "market_value", "currency", "country", "risk_country",
               "sector", "industry", "maturity", "coupon", "long_currency", "long_amount", "short_currency",
-              "short_amount", "payload"),
+              "short_amount", "payload", "coupon_kind", "is_default", "in_arrears", "paid_in_kind", "exchange_rate",
+              "duration", "modified_duration", "yield_to_maturity", "yield_to_worst", "yield_to_call",
+              "real_duration", "real_yield", "accrual_date"),
     "attributes": ("fund_ref", "as_of", "domicile", "legal_form", "ucits", "replication", "distribution",
                    "ter", "hedged_currency", "lending", "index_name", "depositary", "run_at", "payload"),
     "counterparties": ("fund_ref", "as_of", "role", "name", "lei", "share", "run_at", "payload"),
     "securities": ("security_key", "as_of", "provider", "isin", "cusip", "figi", "lei", "ticker", "exchange",
                    "name", "security_type", "listing_currency", "run_at", "payload"),
     "security_facts": ("security_key", "field", "as_of", "provider", "value", "scheme", "run_at", "payload"),
+    "fund_risk": ("fund_ref", "as_of", "currency", "tenor", "dv01", "dv100", "credit_ig_dv01", "credit_hy_dv01",
+                  "run_at", "payload"),
+    "characteristics": ("fund_ref", "as_of", "provider", "field", "label", "value", "run_at", "payload"),
+    "period_facts": ("security_key", "field", "as_of", "period_start", "provider", "value", "scheme", "unit",
+                     "fiscal_year", "fiscal_period", "form", "filed", "run_at", "payload"),
 }
+
+# The silver columns that hold a flag: 1, 0 or NULL.
+FLAGS = frozenset({"ucits", "lending", "is_default", "in_arrears", "paid_in_kind"})
 
 # A number whose commas separate groups of three digits: 1,234.5.
 GROUPED = re.compile(r"^[-+]?\d{1,3}(?:,\d{3})+(?:\.\d*)?$")
@@ -121,14 +131,19 @@ class Parsed:
     counterparties: list = field(default_factory=list)
     securities: list = field(default_factory=list)
     security_facts: list = field(default_factory=list)
+    fund_risk: list = field(default_factory=list)
+    characteristics: list = field(default_factory=list)
+    period_facts: list = field(default_factory=list)
 
 
 def row(table: str, **values) -> dict:
-    """A row of a silver table: every column None and the payload {},
-    then the values given. load stamps run_at. A name that is no column
-    of the table is an error."""
+    """A row of a silver table: every column None, the payload {} and a
+    characteristic's label "", then the values given. load stamps run_at.
+    A name that is no column of the table is an error."""
     out = dict.fromkeys(c for c in COLUMNS[table] if c != "run_at")
     out["payload"] = {}
+    if table == "characteristics":
+        out["label"] = ""
     stray = values.keys() - out.keys()
     if stray:
         raise KeyError(f"{table} has no column {', '.join(sorted(stray))}")

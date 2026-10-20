@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -86,6 +87,21 @@ func Snapshots(t testing.TB, conn silver.Connection, w canonical.Window) []canon
 			return batches
 		}
 	}
+}
+
+// Merged drains conn's snapshot stream over w into one batch: each of
+// its slices holds the batches' records of that kind, in stream order.
+func Merged(t testing.TB, conn silver.Connection, w canonical.Window) canonical.SnapshotBatch {
+	t.Helper()
+	var all canonical.SnapshotBatch
+	v := reflect.ValueOf(&all).Elem()
+	for _, b := range Snapshots(t, conn, w) {
+		bv := reflect.ValueOf(b)
+		for i := range v.NumField() {
+			v.Field(i).Set(reflect.AppendSlice(v.Field(i), bv.Field(i)))
+		}
+	}
+	return all
 }
 
 // Day is the unix time of UTC midnight on the given date.

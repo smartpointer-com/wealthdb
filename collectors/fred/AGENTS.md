@@ -6,11 +6,11 @@ source, git/commit conventions) live in the repo-root
 top of those shared rules.
 
 `fred` has **no private account data**. It reads **public** FX
-reference rates from the US Federal Reserve H.10 release via the FRED
-API. FX rates, dates and FRED series IDs are public and fine to commit,
-as in the tests. Root [AGENTS.md](../../AGENTS.md) §4 here protects the
-one secret, the **API key**. Root §3 governs how that key reaches the
-tool.
+reference rates (the US Federal Reserve H.10 release) and Treasury
+yields (the H.15 release) via the FRED API. FX rates, dates and FRED
+series IDs are public and fine to commit, as in the tests. Root
+[AGENTS.md](../../AGENTS.md) §4 here protects the one secret, the **API
+key**. Root §3 governs how that key reaches the tool.
 
 ## 1. Read-only, public data — never call write/other endpoints
 

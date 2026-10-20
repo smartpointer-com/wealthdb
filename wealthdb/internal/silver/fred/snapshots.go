@@ -15,8 +15,9 @@ import (
 // multiple dates.
 const fxBatchSize = 2000
 
-// Snapshots emits one FxRateChange per fx_rates row in the window. fred has
-// no other snapshot-grain facts. The fx_rates direction already matches the
+// Snapshots emits one FxRateChange per fx_rates row in the window, then
+// one RateObservationChange per rates row in it (silver.NewRateStream),
+// each in batches of their own. The fx_rates direction already matches the
 // canonical convention ((base, quote, mid) = "1 quote = mid base"), so the
 // columns map straight across; SilverSourceID is filled by the loader from
 // config.
@@ -69,7 +70,11 @@ SELECT snapshot_at, base_currency_iso, quote_currency_iso, mid, payload
 	if len(cur.FxRates) > 0 {
 		batches = append(batches, cur)
 	}
-	return silver.NewSnapshotStream(batches), nil
+	fx := silver.NewSnapshotStream(batches)
+	if !c.rates {
+		return fx, nil
+	}
+	return silver.NewConcatSnapshotStream([]silver.SnapshotStream{fx, silver.NewRateStream(c.db, w)}), nil
 }
 
 // Transactions: fred is a reference-data source with no event-grain facts.

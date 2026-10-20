@@ -206,8 +206,9 @@ There is one collector per provider.
 - **Archives and reference** — [SVB](collectors/svb/) statement
   archives (load-only); [`manual`](collectors/manual/) for holdings
   with no portal, such as property, private loans and escrow claims;
-  [FRED](collectors/fred/) for historic FX;
-  [`refdata`](collectors/refdata/) for what each fund holds.
+  [FRED](collectors/fred/) for historic FX rates and the Treasury curve;
+  [`refdata`](collectors/refdata/) for what each fund holds and states
+  about itself, and what each company reports.
 
 ## Adding a data source
 

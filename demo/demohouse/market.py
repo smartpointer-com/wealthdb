@@ -18,7 +18,7 @@ import datetime as dt
 from decimal import Decimal, localcontext
 
 from . import dates, keyed
-from .money import D, q8, q10
+from .money import PRECISE, D, q8, q10
 
 # Annual drift and volatility of each factor. Crypto also jumps: on a
 # jump day its return gains a draw with the stated volatility.
@@ -45,8 +45,7 @@ class Market:
         self.prices = {}
         self.fx_start = fx_start
         self.fx_levels = {c: D(v) for c, v in fx_levels.items()}
-        with localcontext() as ctx:
-            ctx.prec = 28
+        with localcontext(PRECISE):
             self._fx_log0 = {c: v.ln() for c, v in self.fx_levels.items()}
         self._fx_log = dict(self._fx_log0)
         self.fx_rates = {c: q10(v) for c, v in self.fx_levels.items()}
@@ -80,8 +79,7 @@ class Market:
             r = self._instrument_return(iid, inst, model, day)
             if r is None:
                 continue
-            with localcontext() as ctx:
-                ctx.prec = 28
+            with localcontext(PRECISE):
                 price = self.prices[iid] * r.exp()
             ratio = self._splits.get((iid, day))
             if ratio:
@@ -98,13 +96,11 @@ class Market:
         return self.fx_rates[ccy]
 
     def to_usd(self, amount, ccy):
-        with localcontext() as ctx:
-            ctx.prec = 28
+        with localcontext(PRECISE):
             return D(amount) * self.usd_per(ccy)
 
     def from_usd(self, amount, ccy):
-        with localcontext() as ctx:
-            ctx.prec = 28
+        with localcontext(PRECISE):
             return D(amount) / self.usd_per(ccy)
 
     # ---- internals -----------------------------------------------------
@@ -115,8 +111,7 @@ class Market:
         n = _TRADING_DAYS[f["calendar"]]
         mu, sigma = D(f["mu"]), D(f["sigma"])
         r = keyed.rng(self.seed, "factor", name, day.isoformat())
-        with localcontext() as ctx:
-            ctx.prec = 28
+        with localcontext(PRECISE):
             ret = (mu - sigma * sigma / 2) / n + sigma / n.sqrt() * keyed.normal(r)
             if "jump_chance" in f and keyed.chance(r, f["jump_chance"]):
                 ret += D(f["jump_sigma"]) * keyed.normal(r)
@@ -148,8 +143,7 @@ class Market:
         idio = D(model.get("idio", "0"))
         alpha = D(model.get("alpha", "0"))
         r = keyed.rng(self.seed, "idio", iid, day.isoformat())
-        with localcontext() as ctx:
-            ctx.prec = 28
+        with localcontext(PRECISE):
             ret = sum(w * self.factor_ret[k] for k, w in weights.items())
             ret += alpha / n - idio * idio / (2 * n) + idio / n.sqrt() * keyed.normal(r)
         return ret
@@ -157,8 +151,7 @@ class Market:
     def _advance_fx(self, day):
         for ccy in sorted(self._fx_log):
             r = keyed.rng(self.seed, "fx", ccy, day.isoformat())
-            with localcontext() as ctx:
-                ctx.prec = 28
+            with localcontext(PRECISE):
                 x = self._fx_log[ccy]
                 x += FX_REVERSION * (self._fx_log0[ccy] - x) + FX_SIGMA / Decimal(365).sqrt() * keyed.normal(r)
                 self._fx_log[ccy] = x

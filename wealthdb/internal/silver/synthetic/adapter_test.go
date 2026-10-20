@@ -1210,11 +1210,11 @@ func TestSnapshotsCarryReferenceRecords(t *testing.T) {
 	}
 }
 
-// A file written before the reference tables existed states none, and
-// loads as before.
+// A file written before the reference tables and the rates table existed
+// states none of their records, and loads as before.
 func TestSnapshotsWithoutReferenceTables(t *testing.T) {
 	path, db := newFixture(t)
-	for _, tbl := range silver.ReferenceTables {
+	for _, tbl := range slices.Concat(silver.ReferenceTables, silver.ReferenceYieldTables, []string{silver.RatesTable}) {
 		silvertest.Exec(t, db, `DROP TABLE `+tbl)
 	}
 	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-02')`, day(1), day(2))
@@ -1231,5 +1231,84 @@ func TestSnapshotsWithoutReferenceTables(t *testing.T) {
 	}
 	if len(b.FxRates) != 1 || b.ReferenceRows() != 0 {
 		t.Errorf("batch = %+v", b)
+	}
+}
+
+// The records the refdata and fred silvers' v2 tables carry ride the
+// stream too: a line's v2 columns, the risk rows, characteristics and
+// period facts dated inside the window, and the rates observed inside it.
+func TestSnapshotsCarryYieldRecordsAndRates(t *testing.T) {
+	path, db := newFixture(t)
+	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-02'), (2, ?, ?, '2031-01-04')`,
+		day(1), day(2), day(3), day(4))
+	for _, d := range []int{2, 4} {
+		silvertest.Exec(t, db, `INSERT INTO compositions (fund_ref, as_of, basis, provider, source_kind, line_count, run_at)
+		    VALUES ('symbol:BND1', ?, 'holdings', 'demo', 'daily_file', 1, ?)`, day(d), d/2)
+		silvertest.Exec(t, db, `INSERT INTO lines (fund_ref, as_of, basis, line_no, cusip, name, weight,
+		        coupon_kind, is_default, yield_to_maturity, accrual_date)
+		    VALUES ('symbol:BND1', ?, 'holdings', 1, '000000001', 'Invented Note 2040', '100',
+		        'Fixed', 0, '4.5', '2030-12-15')`, day(d))
+		silvertest.Exec(t, db, `INSERT INTO fund_risk (fund_ref, as_of, currency, tenor, dv01, run_at)
+		    VALUES ('symbol:BND1', ?, 'USD', '10Y', '8.5', ?)`, day(d), d/2)
+		silvertest.Exec(t, db, `INSERT INTO characteristics (fund_ref, as_of, provider, field, value, run_at)
+		    VALUES ('symbol:BND1', ?, 'demo', 'sec_yield', '4.4', ?)`, day(d), d/2)
+		silvertest.Exec(t, db, `INSERT INTO period_facts (security_key, field, as_of, period_start, provider, value, run_at)
+		    VALUES ('symbol:ABCD', 'eps_diluted', ?, '2030-10-01', 'demo', '0.75', ?)`, day(d), d/2)
+		silvertest.Exec(t, db, `INSERT INTO rates (as_of, series_id, value) VALUES (?, 'DGS10', '4.2')`, day(d))
+	}
+
+	conn := openConn(t, path)
+	w, err := conn.ChangeWindow(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := silvertest.Merged(t, conn, w)
+	if len(all.FundLines) != 1 || all.FundLines[0].CouponKind == nil || *all.FundLines[0].CouponKind != "Fixed" ||
+		all.FundLines[0].IsDefault == nil || *all.FundLines[0].IsDefault ||
+		all.FundLines[0].YieldToMaturity == nil || all.FundLines[0].YieldToMaturity.String() != "4.5" {
+		t.Errorf("lines = %+v, want day 4's with its v2 columns", all.FundLines)
+	}
+	if len(all.FundRisk) != 1 || all.FundRisk[0].AsOf != day(4) {
+		t.Errorf("fund risk = %+v, want day 4's alone", all.FundRisk)
+	}
+	if len(all.FundCharacteristics) != 1 || all.FundCharacteristics[0].Value.String() != "4.4" {
+		t.Errorf("characteristics = %+v, want day 4's alone", all.FundCharacteristics)
+	}
+	if len(all.SecurityPeriodFacts) != 1 || all.SecurityPeriodFacts[0].AsOf != day(4) {
+		t.Errorf("period facts = %+v, want day 4's alone", all.SecurityPeriodFacts)
+	}
+	if len(all.RateObservations) != 1 || all.RateObservations[0].AsOf != day(4) ||
+		all.RateObservations[0].SeriesID != "DGS10" || all.RateObservations[0].Value.String() != "4.2" {
+		t.Errorf("rates = %+v, want day 4's alone", all.RateObservations)
+	}
+}
+
+// A file written before the v2 reference tables, the lines' v2 columns
+// and the rates table existed states none of those records, and loads as
+// before.
+func TestSnapshotsWithoutYieldTables(t *testing.T) {
+	path, db := newFixture(t)
+	for _, tbl := range append(slices.Clone(silver.ReferenceYieldTables), silver.RatesTable) {
+		silvertest.Exec(t, db, `DROP TABLE `+tbl)
+	}
+	for _, col := range silver.ReferenceLineYieldColumns {
+		silvertest.Exec(t, db, `ALTER TABLE lines DROP COLUMN `+col)
+	}
+	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-02')`, day(1), day(2))
+	silvertest.Exec(t, db, `INSERT INTO compositions (fund_ref, as_of, basis, provider, source_kind, line_count, run_at)
+	    VALUES ('symbol:IDX1', ?, 'holdings', 'demo', 'daily_file', 1, 1)`, day(2))
+	silvertest.Exec(t, db, `INSERT INTO lines (fund_ref, as_of, basis, line_no, ticker, weight)
+	    VALUES ('symbol:IDX1', ?, 'holdings', 1, 'ABCD', '100')`, day(2))
+	conn := openConn(t, path)
+	var lines []canonical.FundLineChange
+	for _, b := range silvertest.Snapshots(t, conn, window(t, conn, -1)) {
+		lines = append(lines, b.FundLines...)
+		if n := len(b.FundRisk) + len(b.FundCharacteristics) + len(b.SecurityPeriodFacts) +
+			len(b.RateObservations); n != 0 {
+			t.Errorf("batch states %d v2 records", n)
+		}
+	}
+	if len(lines) != 1 || lines[0].SecurityKey != "symbol:ABCD" || lines[0].CouponKind != nil {
+		t.Errorf("lines = %+v", lines)
 	}
 }

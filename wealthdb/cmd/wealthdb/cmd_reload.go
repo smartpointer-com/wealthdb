@@ -74,7 +74,7 @@ or below the high watermark. Reload forces a full re-projection.`)
 	if err != nil {
 		return err
 	}
-	in, err := readLoadLedgers(cfg)
+	in, err := readLoadInputs(cfg)
 	if err != nil {
 		return err
 	}

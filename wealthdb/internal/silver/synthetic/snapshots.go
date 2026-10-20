@@ -86,19 +86,32 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	return c.withReference(ctx, w, silver.NewSnapshotStream(batches))
 }
 
-// withReference appends the window's reference records (the fund
-// compositions and security facts a generator wrote) to the stream. A
-// file older than the tables states none.
+// withReference appends the window's reference records and rate
+// observations, as a generator wrote them, to the stream. A file older
+// than a table states none of its records.
 func (c *Connection) withReference(ctx context.Context, w canonical.Window, s silver.SnapshotStream) (silver.SnapshotStream, error) {
+	streams := []silver.SnapshotStream{s}
 	ok, err := silver.HasTables(ctx, c.db, silver.ReferenceTables...)
-	if err != nil || !ok {
-		return s, err
-	}
-	ref, err := silver.NewReferenceStream(ctx, c.db, w)
 	if err != nil {
 		return nil, err
 	}
-	return silver.NewConcatSnapshotStream([]silver.SnapshotStream{s, ref}), nil
+	if ok {
+		ref, err := silver.NewReferenceStream(ctx, c.db, w)
+		if err != nil {
+			return nil, err
+		}
+		streams = append(streams, ref)
+	}
+	if ok, err = silver.HasTables(ctx, c.db, silver.RatesTable); err != nil {
+		return nil, err
+	}
+	if ok {
+		streams = append(streams, silver.NewRateStream(c.db, w))
+	}
+	if len(streams) == 1 {
+		return s, nil
+	}
+	return silver.NewConcatSnapshotStream(streams), nil
 }
 
 // attach adds to b the dimension records its facts reference, all seen at t.

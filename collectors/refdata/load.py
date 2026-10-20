@@ -5,8 +5,13 @@ refdata silver loader: bronze runs in, silver rows out.
 Each complete run not loaded yet is parsed request by request: the
 provider that fetched a folder parses it (providers/), and its rows land
 in silver in one transaction per run. A fund and day a run serves again
-replaces what silver held for that fund and day, on every basis; a
-security answer replaces the same provider's answer for the same day.
+replaces what silver held for that fund and day, on every basis. A
+fund's rate sensitivities are replaced only by a request that states
+them, and its characteristics per provider, so an issuer's file and a
+filing for the same day stand side by side. A security answer replaces
+the same provider's answer for the same day, and a company's figure for
+a period the same provider's figure for that period, unless the one
+held was filed later.
 The run is recorded in dump_runs with loaded_at, the instant of this
 load, which gold's change window reads: a run fetched earlier but loaded
 later still reaches gold.
@@ -31,14 +36,28 @@ from pathlib import Path
 
 from collectorkit import bronze, cli, silver
 from providers import REGISTRY
-from providers.base import COLUMNS, Parsed, ProviderError
+from providers.base import COLUMNS, FLAGS, Parsed, ProviderError
 
 log = logging.getLogger("refdata.load")
 
 HERE = Path(__file__).resolve().parent
 MIGRATIONS = HERE / "migrations"
 
+# The tables a fund and day is replaced in whole, whichever request
+# serves it again.
 FUND_DAY_TABLES = ("compositions", "lines", "attributes", "counterparties")
+# Every table a request writes by key, in the order it writes them.
+TABLES = (*FUND_DAY_TABLES, "fund_risk", "characteristics", "securities", "security_facts")
+
+# A company's figure for a period: a row replaces the one silver holds
+# for its key unless that one was filed later.
+PERIOD_FACTS_UPSERT = (
+    f"INSERT INTO period_facts ({', '.join(COLUMNS['period_facts'])}) "
+    f"VALUES ({', '.join('?' for _ in COLUMNS['period_facts'])}) "
+    "ON CONFLICT (security_key, field, as_of, period_start, provider) DO UPDATE SET "
+    + ", ".join(f"{c} = excluded.{c}" for c in COLUMNS["period_facts"]
+                if c not in ("security_key", "field", "as_of", "period_start", "provider"))
+    + " WHERE excluded.filed IS NULL OR period_facts.filed IS NULL OR excluded.filed >= period_facts.filed")
 
 
 def epoch(d) -> int:
@@ -57,7 +76,7 @@ def _row(table, r, run_at):
             out.append(epoch(r[c]))
         elif c == "payload":
             out.append(silver.canonical_json(r.get("payload") or {}))
-        elif c in ("ucits", "lending"):
+        elif c in FLAGS:
             v = r.get(c)
             out.append(None if v is None else int(bool(v)))
         else:
@@ -67,15 +86,28 @@ def _row(table, r, run_at):
 
 
 def write(conn, parsed: Parsed, run_at: int) -> int:
-    """Write one request's rows. A fund-day the rows name is cleared first,
-    on every basis and table, so a re-served day replaces the old one."""
+    """Write one request's rows. A fund-day the rows' compositions or
+    attributes name is cleared first, on every basis and table, so a
+    re-served day replaces the old one. A fund-day's rate sensitivities
+    are cleared only by rows that state them, and a provider's
+    characteristics for a fund-day only by that provider's: an issuer's
+    file for a day leaves a filing's figures for it standing."""
     days = {(c["fund_ref"], epoch(c["as_of"])) for c in parsed.compositions}
     days |= {(a["fund_ref"], epoch(a["as_of"])) for a in parsed.attributes}
     for ref, at in sorted(days):
         for table in FUND_DAY_TABLES:
             conn.execute(f"DELETE FROM {table} WHERE fund_ref = ? AND as_of = ?", (ref, at))
-    return sum(silver.upsert_rows(conn, table, COLUMNS[table], [_row(table, r, run_at) for r in getattr(parsed, table)])
-               for table in (*FUND_DAY_TABLES, "securities", "security_facts"))
+    for ref, at in sorted({(r["fund_ref"], epoch(r["as_of"])) for r in parsed.fund_risk}):
+        conn.execute("DELETE FROM fund_risk WHERE fund_ref = ? AND as_of = ?", (ref, at))
+    stated = {(c["fund_ref"], epoch(c["as_of"]), c["provider"]) for c in parsed.characteristics}
+    for ref, at, provider in sorted(stated):
+        conn.execute("DELETE FROM characteristics WHERE fund_ref = ? AND as_of = ? AND provider = ?",
+                     (ref, at, provider))
+    n = sum(silver.upsert_rows(conn, table, COLUMNS[table], [_row(table, r, run_at) for r in getattr(parsed, table)])
+            for table in TABLES)
+    facts = [_row("period_facts", r, run_at) for r in parsed.period_facts]
+    conn.executemany(PERIOD_FACTS_UPSERT, facts)
+    return n + len(facts)
 
 
 def next_loaded_at(conn) -> int:

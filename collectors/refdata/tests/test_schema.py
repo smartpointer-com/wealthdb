@@ -2,9 +2,10 @@
 
 migrations/ is the schema the collector writes. The Go adapter's test
 fixture (wealthdb/internal/silver/refdata/testdata/silver_schema.sql) is
-a copy of it, and the synthetic kind repeats its six reference tables so
-a generator can write the same records through the same reader. These
-tests fail when the three drift apart.
+the migrations' text, in order: the Go tests cut it at a migration's
+header for an older silver. The synthetic kind repeats every reference
+table so a generator can write the same records through the same
+reader. These tests fail when the three drift apart.
 """
 
 from __future__ import annotations
@@ -18,7 +19,9 @@ REPO = COLLECTOR.parent.parent
 MIGRATIONS = sorted((COLLECTOR / "migrations").glob("[0-9][0-9][0-9][0-9]_*.sql"))
 GO_COPY = REPO / "wealthdb" / "internal" / "silver" / "refdata" / "testdata" / "silver_schema.sql"
 SYNTHETIC = REPO / "wealthdb" / "internal" / "silver" / "synthetic" / "testdata" / "silver_schema.sql"
-REFERENCE_TABLES = ("compositions", "lines", "attributes", "counterparties", "securities", "security_facts")
+# The tables of a silver that hold no reference record: its schema
+# version and its runs.
+BOOKKEEPING = frozenset({"schema_meta", "dump_runs"})
 
 
 def shape(*scripts: Path) -> dict[str, list[tuple]]:
@@ -35,11 +38,13 @@ def shape(*scripts: Path) -> dict[str, list[tuple]]:
         con.close()
 
 
-def test_the_go_fixture_is_the_migrated_schema():
-    assert shape(*MIGRATIONS) == shape(GO_COPY)
+def test_the_go_fixture_is_the_migrations_in_order():
+    assert GO_COPY.read_text() == "".join(m.read_text() for m in MIGRATIONS)
 
 
 def test_the_synthetic_kind_repeats_the_reference_tables():
     refdata, synthetic = shape(*MIGRATIONS), shape(SYNTHETIC)
-    for table in REFERENCE_TABLES:
+    tables = sorted(refdata.keys() - BOOKKEEPING)
+    assert "compositions" in tables
+    for table in tables:
         assert synthetic.get(table) == refdata[table], table

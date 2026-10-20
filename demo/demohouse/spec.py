@@ -6,6 +6,7 @@ append run can refuse to splice a history made from different inputs or
 a different generator onto the one already on disk.
 """
 
+import datetime as dt
 import hashlib
 import json
 import pathlib
@@ -37,6 +38,12 @@ class Inputs:
     @property
     def history_start(self):
         return dates.parse(self.spec["calendar"]["history_start"])
+
+    @property
+    def fx_start(self):
+        """The first day of the market series: the opening day less the
+        calendar's lead, so every foreign holding has rates before it."""
+        return self.history_start - dt.timedelta(days=1 + self.spec["calendar"]["fx_lead_days"])
 
 
 def code_hash():

@@ -28,12 +28,15 @@ func cmdRefdataWanted(ctx context.Context, g globalFlags, subargs []string, _ io
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, `usage: wealthdb -r refdata-wanted
 
-Print the wanted list (JSON, contract version `+fmt.Sprint(gold.WantedContractVersion)+`) the refdata
-collector reads: every fund gold wants (held, proxy, reference or size
-fund, or one a held fund holds) with the days it was held and the days
-gold has a composition for, every directly held security with the
-attributes still missing, and the securities the funds held today reach
-that lack a sector or a country.`)
+Print the wanted list the refdata collector reads, as JSON (contract
+version `+fmt.Sprint(gold.WantedContractVersion)+`). It names:
+  - every fund gold wants: a held, proxy, reference or size fund, or
+    one a held fund holds. Each lists the days it is wanted for, the
+    days gold has a composition for and the days gold has each fact
+    for. A held fund also lists the facts it is wanted for.
+  - every directly held security, with the attributes still missing.
+  - the securities the funds held today reach that lack a sector or a
+    country, or, for a stock, recent earnings, dividends or financials.`)
 	}
 	if err := parseFlags(fs, subargs, "refdata-wanted"); err != nil {
 		return err

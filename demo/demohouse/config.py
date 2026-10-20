@@ -12,6 +12,8 @@ import io
 import json
 import re
 
+from . import rates
+
 DEMO_MARKER = ".wealthdb-demo"
 WEB_PORT = 3100
 MCP_PORT = 3400
@@ -52,6 +54,9 @@ def render(spec):
         },
         "income": {"rules": spec["config"]["income_rules"]},
         "exposure": {**spec["config"]["exposure"], "declarations": "overrides/exposure_declarations.ndjson"},
+        # The curve names the series the rates source publishes, so the
+        # two cannot disagree.
+        "yield": {"curves": rates.curves_config(), **spec["config"]["yield"]},
         "web": {"enabled": True, "port": WEB_PORT},
         "mcp": {"enabled": True, "port": MCP_PORT},
     }

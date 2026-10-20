@@ -19,7 +19,7 @@ across every timestamped run dir under ``--bronze-dir``:
 
 Every other file in a complete run dir is a ``load`` input — the
 ``run.json`` manifest and one ``<series_id>.json`` observations document
-per fetched FX series — and is never touched.
+per fetched series — and is never touched.
 
 Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
 at run-dir creation, atomically overwritten with ``"complete"`` at the
@@ -30,8 +30,7 @@ is UNKNOWN and never deleted.
 
 An in-flight guard skips non-complete dumps written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir so a
-long ``--lookback all`` backfill (a sequence of series fetches) is
-protected while it runs. ``--dry-run`` prints the plan without removing
+long backfill (a sequence of series fetches) is protected while it runs. ``--dry-run`` prints the plan without removing
 anything. The only paths ever deleted are ``<run>/screenshots/`` subtrees
 and whole non-complete run dirs; load inputs of complete dumps, the silver
 ``fred.db`` and any other non-run entries at the bronze root are never

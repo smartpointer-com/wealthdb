@@ -9,15 +9,12 @@ merely *present* must not pass; only one FRED accepts does.
 """
 from __future__ import annotations
 
-import sys
+import logging
 import urllib.error
-from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import download  # noqa: E402
+import download
 
 
 def _http_error(code: int) -> urllib.error.HTTPError:
@@ -114,14 +111,30 @@ def test_main_check_probes_and_writes_nothing(monkeypatch, tmp_path):
     assert not list(tmp_path.iterdir())
 
 
+def test_check_refuses_a_malformed_base_url_without_showing_the_key(
+        monkeypatch, capsys, caplog):
+    # urllib's error for a URL with no scheme quotes it whole, api_key
+    # included. The probe refuses it at argument parsing, before any
+    # request is built.
+    requests = []
+    monkeypatch.setattr(download.urllib.request, "urlopen",
+                        lambda req, timeout=None: requests.append(req))
+    with caplog.at_level(logging.DEBUG), pytest.raises(SystemExit) as caught:
+        download.main(["--check", "--api-key", "SYNTHETIC_KEY",
+                       "--base-url", "api.example.invalid/x"])
+    assert caught.value.code != 0
+    assert requests == []
+    out = capsys.readouterr()
+    assert "--base-url" in out.err
+    assert "SYNTHETIC_KEY" not in out.out + out.err + caplog.text
+
+
 # --- --env-file (credentials for a direct download.py run) ------------------
 
 def test_env_file_is_sourced_before_the_credential_resolves(tmp_path,
                                                             monkeypatch):
     # The wrapper already sources <secrets>/fred.env; --env-file is what makes
     # a direct `download.py` run work, so it must land before resolution.
-    monkeypatch.delenv("FRED_API_KEY", raising=False)
-    monkeypatch.delenv("FRED_ENV_FILE", raising=False)
     env = tmp_path / "fred.env"
     env.write_text("FRED_API_KEY=FROM_FILE\n")
     seen = {}
@@ -133,7 +146,6 @@ def test_env_file_is_sourced_before_the_credential_resolves(tmp_path,
 
 
 def test_env_file_env_var_is_honoured(tmp_path, monkeypatch):
-    monkeypatch.delenv("FRED_API_KEY", raising=False)
     env = tmp_path / "fred.env"
     env.write_text("FRED_API_KEY=FROM_ENV_VAR_FILE\n")
     monkeypatch.setenv("FRED_ENV_FILE", str(env))
@@ -150,8 +162,6 @@ def test_env_file_is_read_by_bash_like_the_wrappers_source(tmp_path,
     # The wrapper sources the same file through bash. A value with a
     # comment or a reference must read the same here, or the direct run
     # would overwrite the wrapper's key with another one.
-    monkeypatch.delenv("FRED_API_KEY", raising=False)
-    monkeypatch.delenv("FRED_ENV_FILE", raising=False)
     # Set first, so the fixture restores it after the file writes over it.
     monkeypatch.setenv("FRED_PART", "inherited")
     env = tmp_path / "fred.env"
@@ -167,7 +177,6 @@ def test_env_file_is_read_by_bash_like_the_wrappers_source(tmp_path,
 
 def test_env_file_wins_over_the_inherited_key(tmp_path, monkeypatch):
     monkeypatch.setenv("FRED_API_KEY", "INHERITED")
-    monkeypatch.delenv("FRED_ENV_FILE", raising=False)
     env = tmp_path / "fred.env"
     env.write_text("FRED_API_KEY=FROM_FILE\n")
     seen = {}
@@ -178,10 +187,8 @@ def test_env_file_wins_over_the_inherited_key(tmp_path, monkeypatch):
     assert seen["key"] == "FROM_FILE"
 
 
-def test_env_file_with_a_syntax_error_never_shows_its_line(tmp_path,
-                                                          monkeypatch):
+def test_env_file_with_a_syntax_error_never_shows_its_line(tmp_path):
     # bash quotes the offending line; that line may hold the key.
-    monkeypatch.delenv("FRED_ENV_FILE", raising=False)
     env = tmp_path / "fred.env"
     env.write_text("FRED_API_KEY=SYNTHETIC-VALUE)x\n")
     with pytest.raises(SystemExit) as caught:

@@ -22,12 +22,23 @@ var updateGolden = flag.Bool("update-wanted", false, "rewrite testdata/refdata_w
 // contract the refdata collector reads (docs/adapters/refdata.md §5).
 //
 //   - FUNDA is held at one source under a symbol and at another under a
-//     CUSIP; nothing ties the two keys yet, so they are two funds, each
-//     with its own window. The second source has not been observed for
-//     months, so its holding ends at its last snapshot.
-//   - FUNDB was sold, so its window is closed.
-//   - IDX1 is FUNDB's proxy; IDX9 a reference fund.
-//   - STK1 is a stock with a sector from a fund line and a lookup day.
+//     CUSIP, which reads as the ISIN the US rule gives; nothing ties the
+//     two keys yet, so they are two funds, each with its own window. The
+//     second source has not been observed for months, so its holding
+//     ends at its last snapshot.
+//   - FUNDB, a bond fund, was sold, so its window is closed. With no
+//     composition yet, it wants its lines' durations.
+//   - IDX1 is FUNDB's proxy, with a filing's rate sensitivities but
+//     wanting no fact; IDX9 is a reference fund.
+//   - BNDF is a bond fund held with rate sensitivities and figures; its
+//     newest composition states no line's duration, an older one does.
+//   - MMF1 is a money-market fund with its 7-day yield and other figures.
+//   - STK1 is a stock with a sector from a fund line, a lookup day, an
+//     old period of earnings and a fresh one under its ticker, and an old
+//     period of dividends.
+//   - FUNDA's composition reaches Constituent One, whose line states its
+//     sector and country and which lacks only a recent period of
+//     earnings.
 //   - NOTE1, a note on a basket, is wanted like a fund.
 //   - A private fund and a coin are not wanted.
 func TestRefdataWantedPinned(t *testing.T) {
@@ -43,6 +54,8 @@ func TestRefdataWantedPinned(t *testing.T) {
 	mustExec(`INSERT INTO silver_sources(silver_source_id, silver_kind, silver_path, high_watermark, first_loaded_at, last_loaded_at)
 	    VALUES ('second-src', 'synthetic', '/tmp/s.db', -1, 0, 0)`)
 	mustExec(`UPDATE silver_sources SET observed_snapshots_through = ? WHERE silver_source_id = 'test-src'`, day(10, 1))
+	mustExec(`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
+	    first_seen_at, last_seen_at) VALUES ('test-src', 'A1', 'brokerage', 'Brokerage', 'USD', 0, 0)`)
 	mustExec(`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, cusip, symbol, name, currency, first_seen_at, last_seen_at) VALUES
 	    ('test-src',   'FUNDA', 'public_equity', 'etf',   NULL, NULL,        'FUNDA', 'Fund A ETF', 'USD', 0, 0),
 	    ('second-src', 'C1',    'public_equity', 'etf',   NULL, '00000AA01', NULL,    'Fund A',     'USD', 0, 0),
@@ -50,7 +63,9 @@ func TestRefdataWantedPinned(t *testing.T) {
 	    ('test-src',   'STK1',  'public_equity', 'stock', 'XX0000000009', NULL, 'STK1', 'Stock One', 'EUR', 0, 0),
 	    ('test-src',   'PE1',   'private_equity','fund',  NULL, NULL,        'PE1',   'Private Fund','USD', 0, 0),
 	    ('test-src',   'BTC',   'crypto',        'physical', NULL, NULL,     'BTC',   'Bitcoin',    'USD', 0, 0),
-	    ('test-src',   'NOTE1', 'public_equity', 'structured_product', 'XX0000000017', NULL, NULL, 'Basket Note', 'USD', 0, 0)`)
+	    ('test-src',   'NOTE1', 'public_equity', 'structured_product', 'XX0000000017', NULL, NULL, 'Basket Note', 'USD', 0, 0),
+	    ('test-src',   'BNDF',  'fixed_income',  'etf',   NULL, NULL,        'BNDF',  'Bond Fund F', 'USD', 0, 0),
+	    ('test-src',   'MMF1',  'cash',          'fund',  NULL, NULL,        'MMF1',  'Money Fund One', 'USD', 0, 0)`)
 	pos := func(src string, at int64, key string, ac, veh string, mv int) {
 		mustExec(`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
 		    asset_class, vehicle, currency, quantity, market_value) VALUES (?, ?, 'A1', ?, ?, ?, ?, 'USD', 1, ?)`,
@@ -63,19 +78,50 @@ func TestRefdataWantedPinned(t *testing.T) {
 	pos("test-src", day(6, 30), "STK1", "public_equity", "stock", 50)
 	pos("test-src", day(6, 30), "BTC", "crypto", "physical", 50)
 	pos("test-src", day(6, 30), "NOTE1", "public_equity", "structured_product", 40)
+	pos("test-src", day(6, 30), "BNDF", "fixed_income", "etf", 80)
+	pos("test-src", day(6, 30), "MMF1", "cash", "fund", 30)
 	pos("second-src", day(3, 31), "C1", "public_equity", "etf", 70)
 	mustExec(`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count) VALUES
-	    ('test-src', 'symbol:FUNDA', ?, 'holdings', 'inbox', 1), ('test-src', 'symbol:FUNDA', ?, 'index', 'inbox', 1)`,
-		day(3, 31), day(3, 31))
-	mustExec(`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, sector) VALUES
-	    ('test-src', 'symbol:FUNDA', ?, 'holdings', 1, 'isin:XX0000000009', 'Technology')`, day(3, 31))
+	    ('test-src', 'symbol:FUNDA', ?1, 'holdings', 'inbox', 2), ('test-src', 'symbol:FUNDA', ?1, 'index', 'inbox', 1),
+	    ('test-src', 'symbol:BNDF', ?1, 'holdings', 'inbox', 1), ('test-src', 'symbol:BNDF', ?2, 'holdings', 'inbox', 1)`,
+		day(3, 31), day(6, 30))
+	mustExec(`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, ticker, name,
+	    asset_type, weight, currency, country, sector, duration) VALUES
+	    ('test-src', 'symbol:FUNDA', ?1, 'holdings', 1, 'isin:XX0000000009', 'XX0000000009', 'STK1', NULL, NULL, NULL, 'USD',
+	     NULL, 'Technology', NULL),
+	    ('test-src', 'symbol:FUNDA', ?1, 'holdings', 2, 'isin:XX0000000019', 'XX0000000019', NULL, 'Constituent One',
+	     'Equity', 10, 'USD', 'US', 'Energy', NULL),
+	    ('test-src', 'symbol:BNDF', ?1, 'holdings', 1, NULL, NULL, NULL, NULL, NULL, 100, NULL, NULL, NULL, 6.25),
+	    ('test-src', 'symbol:BNDF', ?2, 'holdings', 1, NULL, NULL, NULL, NULL, NULL, 100, NULL, NULL, NULL, NULL)`,
+		day(3, 31), day(6, 30))
 	mustExec(`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value) VALUES
 	    ('test-src', 'isin:XX0000000009', 'legal_country', ?, 'gleif', 'DE')`, day(5, 1))
+	mustExec(`INSERT INTO fund_risk (silver_source_id, fund_ref, as_of, currency, tenor, dv01, dv100, credit_ig_dv01) VALUES
+	    ('refdata', 'symbol:BNDF', ?1, 'USD', '5Y', 120.5, 11800, NULL),
+	    ('refdata', 'symbol:BNDF', ?1, 'XXX', '5Y', NULL, NULL, 40.25),
+	    ('refdata', 'symbol:IDX1', ?2, 'USD', '10Y', 75, 7400, NULL)`, day(6, 30), day(1, 31))
+	mustExec(`INSERT INTO fund_characteristics (silver_source_id, fund_ref, as_of, provider, field, label, value) VALUES
+	    ('refdata', 'symbol:BNDF', ?1, 'issuer', 'effective_duration', '', 6.1),
+	    ('refdata', 'symbol:BNDF', ?1, 'issuer', 'credit_quality', 'AAA', 40),
+	    ('refdata', 'symbol:MMF1', ?1, 'issuer', 'distribution_yield', '', 4.0),
+	    ('refdata', 'symbol:MMF1', ?2, 'issuer', 'seven_day_yield', '', 4.1),
+	    ('refdata', 'symbol:MMF1', ?2, 'issuer', 'weighted_average_maturity', '', 35)`, day(9, 30), day(10, 9))
+	mustExec(`INSERT INTO security_period_facts (silver_source_id, security_key, field, as_of, period_start, provider, value)
+	    VALUES
+	    ('refdata', 'isin:XX0000000009', 'eps_diluted', ?1, '2025-10-01', 'sec-edgar', 1.10),
+	    ('refdata', 'symbol:STK1', 'eps_diluted', ?2, '2026-04-01', 'sec-edgar', 1.25),
+	    ('refdata', 'isin:XX0000000009', 'dividends_per_share', ?1, '2025-01-01', 'sec-edgar', 0.80),
+	    ('refdata', 'isin:XX0000000019', 'dividends_per_share', ?2, '2026-04-01', 'sec-edgar', 0.30),
+	    ('refdata', 'isin:XX0000000019', 'revenue', ?2, '2026-04-01', 'sec-edgar', 5000000)`,
+		time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC).Unix(), day(6, 30))
 	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
 		Proxies:        []canonical.ExposureProxy{{FundRef: "symbol:FUNDB", ProxyRef: "symbol:IDX1", Leverage: 1}},
 		ReferenceFunds: []string{"symbol:IDX9"},
 		Settings:       canonical.ExposureSettings{MaxGapDays: 400, AgedDays: 35, PartialPct: 3},
 	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)
 	}
 
@@ -120,7 +166,7 @@ func TestRefdataWantedBeforeMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(w.Securities) != 1 || len(w.Securities[0].Missing) != 3 || w.Settings.MaxGapDays != 400 {
+	if len(w.Securities) != 1 || len(w.Securities[0].Missing) != 6 || w.Settings.MaxGapDays != 400 {
 		t.Errorf("wanted = %+v", w)
 	}
 }
@@ -239,9 +285,10 @@ func TestRefdataWantedStatesUSSymbols(t *testing.T) {
 // A held fund's lines that lack a sector or a country are wanted as
 // constituents, with their share and asset class and the US symbol a
 // fund line or a lookup gives them, never a broker's local ticker; a
-// country only an ISIN's prefix implies counts as missing. A line a
-// source describes, a cash line, a line naming a fund, a line with no
-// identifier and a security held directly are not.
+// country only an ISIN's prefix implies counts as missing, and a stock
+// lacks its period facts too. A stock line a source describes and whose
+// period facts are recent, a cash line, a line naming a fund, a line with
+// no identifier and a security held directly are not wanted.
 func TestRefdataWantedNamesConstituents(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -271,6 +318,13 @@ func TestRefdataWantedNamesConstituents(t *testing.T) {
 		 ('test-src', 'symbol:FUNDC', ?, 'holdings', 8, 'symbol:SUBF', NULL, 'SUBF', 'Sub Fund', 'EC', 1, 'USD', NULL, NULL),
 		 ('test-src', 'symbol:FUNDC', ?, 'holdings', 9, 'name:000000000067', NULL, NULL, 'Unnamed Co', 'EC', 1, 'USD', NULL, NULL),
 		 ('test-src', 'symbol:SUBF', ?, 'holdings', 1, 'isin:XX0000000068', 'XX0000000068', NULL, 'Deep Co', 'EC', 100, 'USD', 'US', 'Energy')`,
+		`INSERT INTO security_period_facts (silver_source_id, security_key, field, as_of, period_start, provider, value) VALUES
+		 ('refdata', 'isin:XX0000000064', 'eps_diluted', ?, '2026-04-01', 'sec-edgar', 1),
+		 ('refdata', 'isin:XX0000000064', 'dividends_per_share', ?, '2026-04-01', 'sec-edgar', 1),
+		 ('refdata', 'isin:XX0000000064', 'cash', ?, '2026-06-30', 'sec-edgar', 1),
+		 ('refdata', 'isin:XX0000000068', 'eps_diluted', ?, '2026-04-01', 'sec-edgar', 1),
+		 ('refdata', 'isin:XX0000000068', 'dividends_per_share', ?, '2026-04-01', 'sec-edgar', 1),
+		 ('refdata', 'isin:XX0000000068', 'net_income', ?, '2026-04-01', 'sec-edgar', 1)`,
 	} {
 		args := make([]any, strings.Count(q, "?"))
 		for i := range args {
@@ -293,15 +347,17 @@ func TestRefdataWantedNamesConstituents(t *testing.T) {
 	}
 	big, small := got["isin:XX0000000061"], got["isin:XX0000000062"]
 	if big.Scope != "constituent" || big.SharePct == nil || *big.SharePct < 54 || *big.SharePct > 55 ||
-		strings.Join(big.Missing, ",") != "sector" || big.Symbol == nil || *big.Symbol != "QBIG" {
+		strings.Join(big.Missing, ",") != "sector,earnings,dividends,financials" || big.Symbol == nil ||
+		*big.Symbol != "QBIG" {
 		t.Errorf("big = %+v", big)
 	}
 	// QLOCAL is a broker's ticker for it: no symbol for a lookup by ticker.
-	if small.Scope != "constituent" || strings.Join(small.Missing, ",") != "sector,country" || small.Symbol != nil ||
+	if small.Scope != "constituent" || strings.Join(small.Missing, ",") != "sector,country,earnings,dividends,financials" ||
+		small.Symbol != nil ||
 		small.AssetClass == nil || *small.AssetClass != "public_equity" {
 		t.Errorf("small = %+v", small)
 	}
-	if p := got["isin:DE0000000065"]; strings.Join(p.Missing, ",") != "country" {
+	if p := got["isin:DE0000000065"]; strings.Join(p.Missing, ",") != "country,earnings,dividends,financials" {
 		t.Errorf("a country only the ISIN prefix gives = %+v", p)
 	}
 	if b := got["isin:XX0000000066"]; b.AssetClass == nil || *b.AssetClass != "fixed_income" ||
@@ -313,8 +369,10 @@ func TestRefdataWantedNamesConstituents(t *testing.T) {
 			t.Errorf("%s is wanted", key)
 		}
 	}
-	if _, ok := got["isin:XX0000000064"]; ok {
-		t.Error("a described line is wanted")
+	for _, key := range []string{"isin:XX0000000064", "isin:XX0000000068"} {
+		if s, ok := got[key]; ok {
+			t.Errorf("a described line with recent periods is wanted: %+v", s)
+		}
 	}
 	if held := got["isin:XX0000000063"]; held.Scope != "direct" || held.SharePct != nil {
 		t.Errorf("the held stock = %+v", held)
@@ -533,7 +591,8 @@ func TestRefdataWantedReadsABondByItsType(t *testing.T) {
 		got[w.Securities[i].Key] = &w.Securities[i]
 	}
 	for key, missing := range map[string][]string{"isin:US00000000A1": {}, "isin:XX0000000041": {},
-		"isin:US00000000B9": {"sector", "country"}, "isin:XX0000000043": {"sector", "market_cap"}} {
+		"isin:US00000000B9": {"sector", "country"},
+		"isin:XX0000000043": {"sector", "market_cap", "earnings", "dividends", "financials"}} {
 		if s := got[key]; s == nil || !slices.Equal(s.Missing, missing) {
 			t.Errorf("%s = %+v, want missing %v", key, s, missing)
 		}
@@ -623,5 +682,119 @@ func TestRefdataWantedFundsStateTheirAliases(t *testing.T) {
 	}
 	if !maps.Equal(got, want) {
 		t.Errorf("funds = %q, want %q", got, want)
+	}
+}
+
+// A fund held is wanted for the facts its asset class has: a bond or
+// multi-asset fund for its rate sensitivities, every fund for its
+// figures, a bond fund for its lines' durations while its newest
+// composition states none. Its facts list every day gold holds, read
+// through the aliases as its compositions are, whatever its role.
+func TestRefdataWantedNamesTheFactsAFundLacks(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
+	for _, q := range []string{
+		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
+		 first_seen_at, last_seen_at) VALUES ('test-src', 'A', 'brokerage', 'Brokerage', 'USD', 0, 0)`,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, symbol, currency,
+		 first_seen_at, last_seen_at) VALUES
+		 ('test-src', 'QBND', 'fixed_income', 'etf', NULL, 'QBND', 'USD', 0, 0),
+		 ('test-src', 'QMIX', 'multi_asset', 'fund', 'XX0000000501', 'QMIX', 'USD', 0, 0),
+		 ('test-src', 'QEQF', 'public_equity', 'etf', NULL, 'QEQF', 'USD', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, market_value) VALUES
+		 ('test-src', ?, 'A', 'QBND', 'QBND', 'fixed_income', 'etf', 'USD', 100),
+		 ('test-src', ?, 'A', 'QMIX', 'QMIX', 'multi_asset', 'fund', 'USD', 100),
+		 ('test-src', ?, 'A', 'QEQF', 'QEQF', 'public_equity', 'etf', 'USD', 100)`,
+		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count) VALUES
+		 ('test-src', 'symbol:QBND', ? - 86400 * 30, 'holdings', 'testprov', 1),
+		 ('test-src', 'symbol:QBND', ?, 'holdings', 'testprov', 2)`,
+		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, weight, duration,
+		 modified_duration) VALUES
+		 ('test-src', 'symbol:QBND', ? - 86400 * 30, 'holdings', 1, NULL, 100, 5.5, NULL),
+		 ('test-src', 'symbol:QBND', ?, 'holdings', 1, NULL, 60, NULL, NULL),
+		 ('test-src', 'symbol:QBND', ?, 'holdings', 2, NULL, 40, NULL, 5.25)`,
+		// The multi-asset fund's figures under its ticker; two filings'
+		// rows of one day are one day.
+		`INSERT INTO fund_risk (silver_source_id, fund_ref, as_of, currency, tenor, dv01) VALUES
+		 ('refdata', 'symbol:QMIX', ? - 86400 * 90, 'USD', '5Y', 10),
+		 ('refdata', 'symbol:QMIX', ?, 'USD', '5Y', 12),
+		 ('refdata', 'isin:XX0000000501', ?, 'EUR', '5Y', 3)`,
+		`INSERT INTO fund_characteristics (silver_source_id, fund_ref, as_of, provider, field, label, value) VALUES
+		 ('refdata', 'symbol:QEQF', ?, 'issuer', 'distribution_yield', '', 1.5),
+		 ('refdata', 'symbol:QEQF', ?, 'issuer', 'seven_day_yield', '', 0.1)`,
+	} {
+		if _, err := db.ExecContext(ctx, q, slices.Repeat([]any{day}, strings.Count(q, "?"))...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	w, err := RefdataWanted(ctx, db, time.Unix(day+86400, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]WantedFund{}
+	for _, f := range w.Funds {
+		got[f.Ref] = f
+	}
+	for ref, want := range map[string]struct {
+		wants []string
+		facts map[string][]string
+	}{
+		"symbol:QBND": {[]string{"risk_metrics", "characteristics"},
+			map[string][]string{"line_durations": {"2026-05-31", "2026-06-30"}}},
+		"isin:XX0000000501": {[]string{"risk_metrics", "characteristics"},
+			map[string][]string{"risk_metrics": {"2026-04-01", "2026-06-30"}}},
+		// A seven-day yield counts for a money-market fund's facts, which
+		// an equity fund does not want.
+		"symbol:QEQF": {[]string{"characteristics"},
+			map[string][]string{"characteristics": {"2026-06-30"}, "money_market": {"2026-06-30"}}},
+	} {
+		f := got[ref]
+		if !slices.Equal(f.Wants, want.wants) || !maps.EqualFunc(f.Facts, want.facts, slices.Equal) {
+			t.Errorf("%s wants %v, facts %v; want %v, %v", ref, f.Wants, f.Facts, want.wants, want.facts)
+		}
+	}
+}
+
+// A gold the fact tables have not reached yet (a read-only open of an
+// older file) lists the facts its funds and stocks want with no day.
+func TestRefdataWantedBeforeTheFactTables(t *testing.T) {
+	t.Parallel()
+	db, ctx := openAtVersion(t, 133)
+	if _, err := db.ExecContext(ctx, `
+	    INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, first_seen_at, last_seen_at)
+	        VALUES ('test-src', 'S', 'public_equity', 'stock', 'S', 0, 0), ('test-src', 'B', 'fixed_income', 'etf', 'B', 0, 0);
+	    INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+	        asset_class, vehicle, currency, market_value) VALUES
+	        ('test-src', 86400, 'A', 'S', 'S', 'public_equity', 'stock', 'USD', 1),
+	        ('test-src', 86400, 'A', 'B', 'B', 'fixed_income', 'etf', 'USD', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	w, err := RefdataWanted(ctx, db, time.Unix(86400*10, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(w.Funds) != 1 || strings.Join(w.Funds[0].Wants, ",") != "risk_metrics,characteristics,line_durations" ||
+		len(w.Funds[0].Facts) != 0 {
+		t.Errorf("funds = %+v", w.Funds)
+	}
+	if len(w.Securities) != 1 || strings.Join(w.Securities[0].Missing, ",") !=
+		"sector,country,market_cap,earnings,dividends,financials" || len(w.Securities[0].Periods) != 0 {
+		t.Errorf("securities = %+v", w.Securities)
+	}
+}
+
+// A family of period facts counts as stated while its newest period
+// ended no more than periodFreshDays before the day.
+func TestStalePeriods(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 13, 9, 30, 0, 0, time.UTC)
+	got := stalePeriods(map[string]string{"earnings": "2026-03-27", "dividends": "2026-03-26"}, now)
+	if !slices.Equal(got, []string{"dividends", "financials"}) {
+		t.Errorf("stale = %v, want dividends and financials", got)
 	}
 }

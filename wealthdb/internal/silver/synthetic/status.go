@@ -71,13 +71,16 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 // ChangeWindow spans the runs appended since `since`, and only those.
 //
 // The silver is append-only: a run adds the days after the previous run's
-// as-of, records itself in dump_runs, and rewrites nothing older. Its
-// [window_start, window_end] bounds every snapshot_at and occurred_at it
-// added. So the window is the union of the new runs' own windows, and
-// NewChangeNumber is the newest of them. A fresh gold (watermark -1) takes
-// every run at once; a later load takes only what was appended since, and
-// gold's windowed delete touches only those days. An append run therefore
-// leaves everything older exactly as the previous load wrote it.
+// as-of, and each company figure filed since then, whose as_of (its
+// period's last day) can lie before that as-of. It records itself in
+// dump_runs and changes nothing already written. Its [window_start,
+// window_end] bounds every snapshot_at, occurred_at and as_of it added,
+// so its window reaches back to such a figure's day. The window is the
+// union of the new runs' own windows, and NewChangeNumber is the newest of
+// them. A fresh gold (watermark -1) takes every run at once; a later load
+// takes only what was appended since, and gold's windowed delete touches
+// only those windows. An append run therefore leaves everything outside
+// its window exactly as the previous load wrote it.
 //
 // Snapshots and Transactions read by time, not by run, so the window stays
 // correct even where two runs' windows overlap: every row inside

@@ -51,7 +51,7 @@ load semantics.`)
 	if err != nil {
 		return err
 	}
-	in, err := readLoadLedgers(cfg)
+	in, err := readLoadInputs(cfg)
 	if err != nil {
 		return err
 	}
@@ -127,11 +127,11 @@ func selectSources(cfg *config.Config, id, cmd string) ([]config.SilverSource, e
 
 // stampConfig writes what gold takes from the config once the sources
 // are in: the FX source precedence, which the SQL FX layer (fx_daily)
-// reads, the declared accounts, the holding aliases and the exposure
-// rows (read, with the declarations ledger, before gold opened). The
-// precedence re-stamps every source, so a single-source load keeps it
-// globally correct; failing to stamp it degrades a conversion and is a
-// warning.
+// reads, the declared accounts, the holding aliases, the exposure rows
+// (read, with the declarations ledger, before gold opened) and the yield
+// rows. The precedence re-stamps every source, so a single-source load
+// keeps it globally correct; failing to stamp it degrades a conversion
+// and is a warning.
 // A failure to sync the rows is an error (syncConfigRows).
 func stampConfig(ctx context.Context, db *sql.DB, cfg *config.Config, in loadInputs, verb string,
 	stdout, stderr io.Writer) error {
@@ -172,12 +172,13 @@ func warnUnmatchedDeclarations(ctx context.Context, db *sql.DB, verb string, std
 }
 
 // syncConfigRows stamps the config's declared accounts into the
-// accounts dimension, its holding aliases into holding_aliases and its
-// exposure block into the exposure tables, after the per-source loads
-// and before the passes that read them. A failure is an error rather
-// than a warning: a rule naming a declared account the dimension does
-// not hold would place its rows onto a far account the statement cannot
-// resolve, which is the hole declared accounts exist to close.
+// accounts dimension, its holding aliases into holding_aliases, its
+// exposure block into the exposure tables and its yield block into the
+// yield tables, after the per-source loads and before the passes that
+// read them. A failure is an error rather than a warning: a rule naming
+// a declared account the dimension does not hold would place its rows
+// onto a far account the statement cannot resolve, which is the hole
+// declared accounts exist to close.
 func syncConfigRows(ctx context.Context, db *sql.DB, cfg *config.Config, in loadInputs, verb string,
 	stdout io.Writer) error {
 	n, err := gold.SyncDeclaredAccounts(ctx, db, cfg.DeclaredAccountChanges(time.Now().Unix()))
@@ -199,6 +200,12 @@ func syncConfigRows(ctx context.Context, db *sql.DB, cfg *config.Config, in load
 	if n > 0 {
 		fmt.Fprintf(stdout, "%s: %d exposure entr(ies) stamped\n", verb, n)
 	}
+	if n, err = gold.SyncYield(ctx, db, in.yield); err != nil {
+		return fmt.Errorf("yield: %w", err)
+	}
+	if n > 0 {
+		fmt.Fprintf(stdout, "%s: %d yield entr(ies) stamped\n", verb, n)
+	}
 	return nil
 }
 
@@ -211,16 +218,17 @@ type enrichmentLedgers struct {
 }
 
 // loadInputs is what a load or reload applies beside the sources, read
-// before gold is opened read-write: the enrichment ledgers, and the
-// exposure rows with the declarations ledger.
+// before gold is opened read-write: the enrichment ledgers, the exposure
+// rows with the declarations ledger, and the yield rows.
 type loadInputs struct {
 	enrichment enrichmentLedgers
 	exposure   canonical.ExposureRows
+	yield      canonical.YieldRows
 }
 
-// readLoadLedgers reads the loadInputs (parseEnrichmentLedgers,
-// config.ExposureRows).
-func readLoadLedgers(cfg *config.Config) (loadInputs, error) {
+// readLoadInputs reads the loadInputs (parseEnrichmentLedgers,
+// config.ExposureRows, config.YieldRows).
+func readLoadInputs(cfg *config.Config) (loadInputs, error) {
 	enrichment, err := parseEnrichmentLedgers(cfg)
 	if err != nil {
 		return loadInputs{}, err
@@ -229,7 +237,7 @@ func readLoadLedgers(cfg *config.Config) (loadInputs, error) {
 	if err != nil {
 		return loadInputs{}, err
 	}
-	return loadInputs{enrichment: enrichment, exposure: exposure}, nil
+	return loadInputs{enrichment: enrichment, exposure: exposure, yield: cfg.YieldRows()}, nil
 }
 
 // parseEnrichmentLedgers reads the ledgers the pass applies. Every

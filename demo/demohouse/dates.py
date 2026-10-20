@@ -9,6 +9,9 @@ no holidays.
 """
 
 import datetime as dt
+from decimal import Decimal, localcontext
+
+from .money import PRECISE
 
 DAY = 86400
 _NOON = 12 * 3600
@@ -100,3 +103,9 @@ def clamp_day(year, month, day):
 def add_months(day, n):
     m = day.month - 1 + n
     return clamp_day(day.year + m // 12, m % 12 + 1, day.day)
+
+
+def years(start, end):
+    """The years from start to end, as a Decimal of 365.25-day years."""
+    with localcontext(PRECISE):
+        return Decimal((end - start).days) / Decimal("365.25")

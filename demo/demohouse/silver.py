@@ -5,9 +5,14 @@ engine's source tree, so generator and adapter share one definition.
 
 A full build writes a file from scratch as one dump run. An append run
 opens an existing file, checks that the history on disk was made by the
-same generator from the same inputs, and adds only the rows dated after
-the as-of the file already reached, plus one dump run whose window is
-exactly those days. Nothing already in the file is rewritten.
+same generator from the same inputs, and adds only the rows that joined
+the history after the as-of the file already reached, plus one dump run
+whose window holds them. A row joins the history on the day it is dated
+by, except a company's reported figure, which joins it on the day it is
+filed, weeks after the period it describes. The window of a run that
+adds one reaches back to that period's last day, so it holds the as_of
+of every row the run adds, as the kind requires. Nothing already in the
+file is rewritten.
 
 Rows are inserted in a fixed order inside one transaction, so two full
 builds from the same inputs are byte-identical files.
@@ -16,10 +21,10 @@ builds from the same inputs are byte-identical files.
 import pathlib
 import sqlite3
 
-from . import dates, reference
+from . import dates, rates, reference
 from .spec import SCHEMA_PATH
 
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 
 # The source that carries the reference records.
 REFERENCE_SOURCE = "refdata"
@@ -50,13 +55,21 @@ _TABLES = {
     "lines": ("fund_ref", "as_of", "basis", "line_no", "isin", "cusip", "figi", "ticker", "exchange", "name",
               "asset_type", "weight", "quantity", "market_value", "currency", "country", "risk_country",
               "sector", "industry", "maturity", "coupon", "long_currency", "long_amount", "short_currency",
-              "short_amount", "payload"),
+              "short_amount", "payload", "coupon_kind", "is_default", "in_arrears", "paid_in_kind", "exchange_rate",
+              "duration", "modified_duration", "yield_to_maturity", "yield_to_worst", "yield_to_call",
+              "real_duration", "real_yield", "accrual_date"),
     "attributes": ("fund_ref", "as_of", "domicile", "legal_form", "ucits", "replication", "distribution", "ter",
                    "hedged_currency", "lending", "index_name", "depositary", "run_at", "payload"),
     "counterparties": ("fund_ref", "as_of", "role", "name", "lei", "share", "run_at", "payload"),
     "securities": ("security_key", "as_of", "provider", "isin", "cusip", "figi", "lei", "ticker", "exchange",
                    "name", "security_type", "listing_currency", "run_at", "payload"),
     "security_facts": ("security_key", "field", "as_of", "provider", "value", "scheme", "run_at", "payload"),
+    "fund_risk": ("fund_ref", "as_of", "currency", "tenor", "dv01", "dv100", "credit_ig_dv01", "credit_hy_dv01",
+                  "run_at", "payload"),
+    "characteristics": ("fund_ref", "as_of", "provider", "field", "label", "value", "run_at", "payload"),
+    "period_facts": ("security_key", "field", "as_of", "period_start", "provider", "value", "scheme", "unit",
+                     "fiscal_year", "fiscal_period", "form", "filed", "run_at", "payload"),
+    "rates": ("as_of", "series_id", "value", "payload"),
 }
 
 # The reference tables: what the funds hold and what the securities are
@@ -65,8 +78,8 @@ REFERENCE_TABLES = reference.TABLES
 
 # The tables of dated facts. The rest are dimensions, which an append
 # re-sends whole and the file keeps once.
-FACT_TABLES = ("positions", "position_lots", "cash_balances", "fx_rates", "transactions", "realized_lots",
-               *REFERENCE_TABLES)
+FACT_TABLES = ("positions", "position_lots", "cash_balances", "fx_rates", "rates", "transactions",
+               "realized_lots", *REFERENCE_TABLES)
 
 # The meta keys an append run requires to match before it may extend a file.
 IDENTITY_KEYS = ("schema_version", "generator_hash", "seed", "spec_hash", "catalogue_hash", "findings")
@@ -108,6 +121,7 @@ def source_rows(sim, source, as_of):
         "cash_balances": [dict(c, payload="{}") for c in book.rows[source]["cash"]],
         "fx_rates": [dict(f, bid_rate=None, ask_rate=None, payload="{}")
                      for f in (sim.fx_rows if source == "fx" else [])],
+        "rates": rates.rows(sim.seed, sim.fx_start, as_of) if source == rates.SOURCE else [],
         "transactions": [{k: v for k, v in t.items() if not k.startswith("_")}
                          | {"asset_class": None, "vehicle": None, "instrument_hint": None}
                          for t in book.rows[source]["transactions"]],
@@ -124,15 +138,25 @@ def _day_end(day):
 
 
 def _time_of(table, row):
+    """The instant a fact row is dated by, which its run's window holds;
+    None for a dimension row."""
     if table in ("positions", "position_lots", "cash_balances", "fx_rates"):
         return row["snapshot_at"]
     if table == "transactions":
         return row["occurred_at"]
     if table == "realized_lots":
         return dates.epoch(dates.parse(row["disposal_date"]))
-    if table in REFERENCE_TABLES:
+    if table in REFERENCE_TABLES or table == "rates":
         return row["as_of"]
     return None
+
+
+def _joined_at(table, row):
+    """The instant a row joins the history, which decides the run that
+    adds it: its filed day for a company's figure, else its own date."""
+    if table == "period_facts":
+        return row["run_at"]
+    return _time_of(table, row)
 
 
 def _insert(con, table, rows):
@@ -216,16 +240,19 @@ def check_append(path, meta, as_of):
 
 
 def append(path, rows, meta, prev_as_of, as_of):
-    """Add the rows dated after prev_as_of, and the dimensions they bring."""
+    """Add the rows that joined the history after prev_as_of, and the
+    dimensions they bring. The run's window starts the day after
+    prev_as_of, or at the earliest date of a row it adds, if earlier."""
     if as_of <= prev_as_of:
         raise AppendRefused(f"{path}: already at {prev_as_of}; nothing after it to add up to {as_of}")
     after = _day_end(prev_as_of) + 1
-    new = {table: [r for r in rs if (t := _time_of(table, r)) is None or t >= after]
+    new = {table: [r for r in rs if (t := _joined_at(table, r)) is None or t >= after]
            for table, rs in rows.items()}
+    lo, _ = _span(new)
     con = sqlite3.connect(path, isolation_level=None)
     try:
         con.execute("BEGIN")
-        _insert_run(con, dates.epoch(as_of), after, _day_end(as_of), as_of)
+        _insert_run(con, dates.epoch(as_of), after if lo is None else min(after, lo), _day_end(as_of), as_of)
         for table in _TABLES:
             _insert(con, table, new[table])
         con.execute("UPDATE meta SET value = ? WHERE key = 'as_of'", (as_of.isoformat(),))

@@ -4,6 +4,7 @@ it writes."""
 import datetime as dt
 import json
 import pathlib
+import re
 import shutil
 import sqlite3
 import sys
@@ -52,6 +53,12 @@ class TestKeyedRandomness(unittest.TestCase):
         self.assertLess(abs(var - 1), 0.08)
 
 
+class TestSchema(unittest.TestCase):
+    def test_the_recorded_version_is_the_schema_files(self):
+        header = spec.SCHEMA_PATH.read_text().splitlines()[0]
+        self.assertRegex(header, rf"\bversion {re.escape(silver.SCHEMA_VERSION)}\.$")
+
+
 class TestDeterminism(TempRoot):
     def test_two_builds_are_byte_identical(self):
         generate.build(self.root("a"), LATE, SEED)
@@ -92,6 +99,41 @@ class TestAppend(TempRoot):
         self.assertEqual(con.execute("SELECT COUNT(*) FROM accounts").fetchone()[0], 1)
         con.close()
 
+    def test_an_append_adds_the_figures_filed_in_its_days(self):
+        """The first quarter of 2024 ends before the first build, and its
+        figures are filed after it: the append adds them, and its run's
+        window reaches back to the quarter's end so a load reads them.
+        Every row an append adds lies inside its run's window, and every
+        other file's window starts the day after the first run's."""
+        before, after = dt.date(2024, 4, 20), dt.date(2024, 5, 31)
+        full, rolled = self.root("full"), self.root("rolled")
+        generate.build(full, after, SEED)
+        generate.build(rolled, before, SEED)
+        early = {db.name: silver.table_rows(db) for db in (rolled / "silver").glob("*.db")}
+        generate.build(rolled, after, SEED, append=True)
+        for db in sorted((full / "silver").glob("*.db")):
+            self.assertEqual(silver.table_rows(db), silver.table_rows(rolled / "silver" / db.name), db.name)
+        for name, table in (("fx.db", "rates"), ("refdata.db", "characteristics"), ("refdata.db", "period_facts")):
+            self.assertGreater(len(silver.table_rows(full / "silver" / name)[table]), len(early[name][table]), table)
+        dated = {"positions": "snapshot_at", "position_lots": "snapshot_at", "cash_balances": "snapshot_at",
+                 "fx_rates": "snapshot_at", "rates": "as_of", "transactions": "occurred_at",
+                 **dict.fromkeys(silver.REFERENCE_TABLES, "as_of")}
+        for db in sorted((rolled / "silver").glob("*.db")):
+            con = sqlite3.connect(db)
+            self.addCleanup(con.close)
+            (cn1, _, end1, _), (cn2, start2, end2, as_of2) = con.execute(
+                "SELECT change_number, window_start, window_end, as_of FROM dump_runs ORDER BY 1").fetchall()
+            self.assertLess(cn1, cn2, db.name)
+            self.assertEqual(as_of2, after.isoformat(), db.name)
+            for table, col in dated.items():
+                at = silver._TABLES[table].index(col)
+                new = set(silver.table_rows(db)[table]) - set(early[db.name][table])
+                self.assertTrue(all(start2 <= r[at] <= end2 for r in new), f"{db.name}.{table}")
+            if db.name == "refdata.db":
+                self.assertEqual(start2, dates.epoch(dt.date(2024, 3, 31)))
+            else:
+                self.assertEqual(start2, end1 + 1, db.name)
+
     def test_append_rewrites_nothing_already_on_disk(self):
         root = self.root("r")
         generate.build(root, EARLY, SEED)
@@ -101,24 +143,6 @@ class TestAppend(TempRoot):
             after = silver.table_rows(db)
             for table, rows in before[db.name].items():
                 self.assertTrue(set(rows) <= set(after[table]), f"{db.name}.{table} lost a row")
-
-    def test_the_new_run_windows_exactly_the_new_days(self):
-        root = self.root("r")
-        generate.build(root, EARLY, SEED)
-        generate.build(root, LATE, SEED, append=True)
-        con = sqlite3.connect(root / "silver" / "brindlecove.db")
-        self.addCleanup(con.close)
-        runs = con.execute("SELECT change_number, window_start, window_end, as_of FROM dump_runs ORDER BY 1").fetchall()
-        self.assertEqual(len(runs), 2)
-        (cn1, _, end1, _), (cn2, start2, end2, as_of2) = runs
-        self.assertLess(cn1, cn2)
-        self.assertEqual(start2, end1 + 1)
-        self.assertEqual(as_of2, LATE.isoformat())
-        lo, hi = con.execute("""SELECT MIN(t), MAX(t) FROM (
-            SELECT snapshot_at t FROM positions UNION ALL SELECT snapshot_at FROM cash_balances
-            UNION ALL SELECT occurred_at FROM transactions) WHERE t > ?""", (end1,)).fetchone()
-        self.assertGreaterEqual(lo, start2)
-        self.assertLessEqual(hi, end2)
 
     def test_append_at_the_same_as_of_adds_nothing(self):
         root = self.root("r")

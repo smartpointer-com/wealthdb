@@ -17,6 +17,8 @@ import (
 var ReferenceTables = []string{
 	"fund_compositions", "fund_lines", "fund_attributes",
 	"fund_counterparties", "security_identities", "security_facts",
+	"fund_risk", "fund_characteristics", "security_period_facts",
+	"rate_observations",
 }
 
 // InsertReference writes every reference record of a batch.
@@ -28,6 +30,10 @@ func (w *Writer) InsertReference(ctx context.Context, b *canonical.SnapshotBatch
 		func() error { return w.insertFundCounterparties(ctx, b.FundCounterparties) },
 		func() error { return w.insertSecurityIdentities(ctx, b.Securities) },
 		func() error { return w.insertSecurityFacts(ctx, b.SecurityFacts) },
+		func() error { return w.insertFundRisk(ctx, b.FundRisk) },
+		func() error { return w.insertFundCharacteristics(ctx, b.FundCharacteristics) },
+		func() error { return w.insertSecurityPeriodFacts(ctx, b.SecurityPeriodFacts) },
+		func() error { return w.insertRateObservations(ctx, b.RateObservations) },
 	} {
 		if err := insert(); err != nil {
 			return err
@@ -78,10 +84,14 @@ INSERT INTO fund_lines (
     isin, cusip, figi, ticker, exchange, name, asset_type,
     weight, quantity, market_value, currency, country, risk_country,
     sector, industry, maturity, coupon,
-    long_currency, long_amount, short_currency, short_amount, payload
+    long_currency, long_amount, short_currency, short_amount,
+    coupon_kind, is_default, in_arrears, paid_in_kind, exchange_rate,
+    duration, modified_duration, yield_to_maturity, yield_to_worst, yield_to_call,
+    real_duration, real_yield, accrual_date, payload
 ) VALUES `
 	return InsertChunked(ctx, w.tx, "fund_lines", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+
+			`?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
 		func(i int, args []any) []any {
 			r := &batch[i]
 			return append(args,
@@ -96,6 +106,11 @@ INSERT INTO fund_lines (
 				nullable(r.Maturity), nullable(r.Coupon),
 				nullable(r.LongCurrency), nullable(r.LongAmount),
 				nullable(r.ShortCurrency), nullable(r.ShortAmount),
+				nullable(r.CouponKind), nullable(r.IsDefault), nullable(r.InArrears),
+				nullable(r.PaidInKind), nullable(r.ExchangeRate),
+				nullable(r.Duration), nullable(r.ModifiedDuration),
+				nullable(r.YieldToMaturity), nullable(r.YieldToWorst), nullable(r.YieldToCall),
+				nullable(r.RealDuration), nullable(r.RealYield), nullable(r.AccrualDate),
 				nullableJSON(r.Payload))
 		})
 }
@@ -177,5 +192,80 @@ INSERT INTO security_facts (
 			return append(args,
 				r.SilverSourceID, r.SecurityKey, r.Field, r.AsOf, r.Provider,
 				r.Value, nullable(r.Scheme), nullableJSON(r.Payload))
+		})
+}
+
+func (w *Writer) insertFundRisk(ctx context.Context, batch []canonical.FundRiskChange) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	const head = `
+INSERT INTO fund_risk (
+    silver_source_id, fund_ref, as_of, currency, tenor,
+    dv01, dv100, credit_ig_dv01, credit_hy_dv01, payload
+) VALUES `
+	return InsertChunked(ctx, w.tx, "fund_risk", head,
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		func(i int, args []any) []any {
+			r := &batch[i]
+			return append(args,
+				r.SilverSourceID, r.FundRef, r.AsOf, r.Currency, r.Tenor,
+				nullable(r.DV01), nullable(r.DV100),
+				nullable(r.CreditIGDV01), nullable(r.CreditHYDV01), nullableJSON(r.Payload))
+		})
+}
+
+func (w *Writer) insertFundCharacteristics(ctx context.Context, batch []canonical.FundCharacteristicChange) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	const head = `
+INSERT INTO fund_characteristics (
+    silver_source_id, fund_ref, as_of, provider, field, label, value, payload
+) VALUES `
+	return InsertChunked(ctx, w.tx, "fund_characteristics", head,
+		`(?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		func(i int, args []any) []any {
+			r := &batch[i]
+			return append(args,
+				r.SilverSourceID, r.FundRef, r.AsOf, r.Provider, r.Field, r.Label,
+				r.Value, nullableJSON(r.Payload))
+		})
+}
+
+func (w *Writer) insertSecurityPeriodFacts(ctx context.Context, batch []canonical.SecurityPeriodFactChange) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	const head = `
+INSERT INTO security_period_facts (
+    silver_source_id, security_key, field, as_of, period_start, provider, value,
+    scheme, unit, fiscal_year, fiscal_period, form, filed, payload
+) VALUES `
+	return InsertChunked(ctx, w.tx, "security_period_facts", head,
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		func(i int, args []any) []any {
+			r := &batch[i]
+			return append(args,
+				r.SilverSourceID, r.SecurityKey, r.Field, r.AsOf, r.PeriodStart, r.Provider, r.Value,
+				nullable(r.Scheme), nullable(r.Unit), nullable(r.FiscalYear),
+				nullable(r.FiscalPeriod), nullable(r.Form), nullable(r.Filed), nullableJSON(r.Payload))
+		})
+}
+
+func (w *Writer) insertRateObservations(ctx context.Context, batch []canonical.RateObservationChange) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	const head = `
+INSERT INTO rate_observations (
+    silver_source_id, series_id, as_of, value, payload
+) VALUES `
+	return InsertChunked(ctx, w.tx, "rate_observations", head,
+		`(?, ?, ?, ?, ?)`, len(batch),
+		func(i int, args []any) []any {
+			r := &batch[i]
+			return append(args,
+				r.SilverSourceID, r.SeriesID, r.AsOf, r.Value, nullableJSON(r.Payload))
 		})
 }

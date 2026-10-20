@@ -50,47 +50,76 @@ func CloseDB(db **sql.DB) error {
 // promoted columns from a silver DB when present without breaking
 // on older silvers that predate the column. SQLite-only.
 func HasColumn(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
-	rows, err := db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
-	if err != nil {
-		return false, fmt.Errorf("HasColumn(%s.%s): %w", table, column, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			cid         int
-			name, ctype string
-			notnull, pk int
-			dflt        sql.NullString
-		)
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			return false, err
-		}
-		if name == column {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
+	return HasColumns(ctx, db, table, column)
+}
+
+// HasColumns reports whether `table` has every named column, for a
+// migration that adds several at once. The names are distinct.
+// SQLite-only.
+func HasColumns(ctx context.Context, db *sql.DB, table string, columns ...string) (bool, error) {
+	return hasAll(ctx, db, "HasColumns "+table, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE TRUE`,
+		[]any{table}, columns)
 }
 
 // HasTables reports whether a silver DB has every named table.
 // Adapters use it to read the tables a newer silver migration adds
 // without breaking on older silvers that predate them. SQLite-only.
 func HasTables(ctx context.Context, db *sql.DB, names ...string) (bool, error) {
+	return hasAll(ctx, db, "HasTables", `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'`, nil, names)
+}
+
+// hasAll reports whether a catalogue holds every one of names. q counts
+// the catalogue's rows and ends in a WHERE clause, which hasAll narrows
+// to the names. args bind q's own placeholders. what labels the error.
+func hasAll(ctx context.Context, db *sql.DB, what, q string, args []any, names []string) (bool, error) {
 	if len(names) == 0 {
 		return true, nil
 	}
-	args := make([]any, len(names))
-	for i, n := range names {
-		args[i] = n
+	for _, n := range names {
+		args = append(args, n)
 	}
 	var n int
-	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master
-         WHERE type = 'table' AND name IN (?`+strings.Repeat(", ?", len(names)-1)+`)`,
-		args...).Scan(&n)
-	if err != nil {
-		return false, fmt.Errorf("HasTables(%s): %w", strings.Join(names, ", "), err)
+	if err := db.QueryRowContext(ctx, q+` AND name IN (?`+strings.Repeat(", ?", len(names)-1)+`)`,
+		args...).Scan(&n); err != nil {
+		return false, fmt.Errorf("%s(%s): %w", what, strings.Join(names, ", "), err)
 	}
 	return n == len(names), nil
+}
+
+// keyset is the cursor of a table read a page at a time: the key the
+// last page ended on, and whether a short page ended the table.
+type keyset struct {
+	after []any
+	done  bool
+}
+
+// readPage reads the next page of a table read a page at a time: the
+// rows of the window w past the cursor k, at most budget of them. q binds
+// the window, the cursor and the budget, in that order. scan reads one
+// row into its record and its key; the last row's key is the next page's
+// cursor. A short page is the table's last, and sets k.done. what
+// prefixes the query's errors.
+func readPage[T any](ctx context.Context, db *sql.DB, w canonical.Window, budget int, what, q string, k *keyset,
+	scan func(*sql.Rows) (T, []any, error)) ([]T, error) {
+	rows, err := db.QueryContext(ctx, q, slices.Concat([]any{w.Start, w.End}, k.after, []any{budget})...)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", what, err)
+	}
+	defer rows.Close()
+	var out []T
+	for rows.Next() {
+		r, key, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+		k.after = key
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", what, err)
+	}
+	k.done = len(out) < budget
+	return out, nil
 }
 
 // SnapshotTimes are the times a snapshot stream emits a batch at: the

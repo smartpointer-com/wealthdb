@@ -1,16 +1,19 @@
 """The engine's vocabularies, read from its Go source.
 
 The generator stamps taxonomy values, account kinds, tax wrappers,
-transaction kinds and composition bases that the engine validates.
-Reading them from the Go files rather than restating them here means a
-value renamed in the engine fails these tests instead of silently
-becoming an uncategorised row in gold.
+transaction kinds, composition bases, risk tenors, the companies'
+period-fact fields and the yield config's vocabularies, all of which
+the engine validates or reads by name. Reading them from the Go files
+rather than restating them here means a value renamed in the engine
+fails these tests instead of silently becoming an uncategorised row in
+gold, or a figure gold ignores.
 """
 
 import pathlib
 import re
 
-CANONICAL = pathlib.Path(__file__).resolve().parents[2] / "wealthdb" / "internal" / "canonical"
+INTERNAL = pathlib.Path(__file__).resolve().parents[2] / "wealthdb" / "internal"
+CANONICAL = INTERNAL / "canonical"
 
 
 def _read(name):
@@ -95,3 +98,59 @@ def spending_values():
 
 def income_values():
     return {d for d, fam in spend_categories().items() if fam in ("FamilyIncome", "FamilyBoth")}
+
+
+def _list(text, var, consts=None):
+    """The values of a `var Name = []T{A, B}` slice: names looked up in
+    consts, or quoted strings and numbers as they are."""
+    body = re.search(rf"var {var} = \[\]\w+\{{(.*?)\}}", text, re.S).group(1)
+    if consts is None:
+        return [tok.strip('"') for tok in re.findall(r'"[^"]*"|-?\d+', body)]
+    return [consts[name] for name in re.findall(r"\w+", body)]
+
+
+def risk_tenors():
+    """The tenors a fund's rate sensitivity is stated at (RiskTenors)."""
+    return _list(_read("refdata.go"), "RiskTenors")
+
+
+def no_currency():
+    """The currency of a fund's credit-spread risk rows (NoCurrency)."""
+    return re.search(r'const NoCurrency = "([^"]+)"', _read("refdata.go")).group(1)
+
+
+def period_fields():
+    """The security_period_facts fields gold's wanted list counts, over
+    every family of gold's periodFamilies."""
+    t = (INTERNAL / "gold" / "refdata_wanted.go").read_text()
+    body = re.search(r"var periodFamilies = \[\]struct \{.*?\n\}\{(.*?)\n\}", t, re.S).group(1)
+    return {f for fields in re.findall(r"\[\]string\{([^}]*)\}", body) for f in re.findall(r'"([^"]+)"', fields)}
+
+
+def equity_sectors():
+    """The eleven broad sectors a yield cycle maps."""
+    return set(_list(_read("exposure.go"), "equitySectors", _consts(_read("exposure.go"), "Sector")))
+
+
+def rating_buckets():
+    """The credit-rating buckets, best first."""
+    t = _read("yield.go")
+    return _list(t, "ratingBuckets", _consts(t, "RatingBucket"))
+
+
+def withholding_default():
+    """The wrapper of the rate a country withholds from every wrapper it
+    names no rate for (WithholdingDefault)."""
+    return re.search(r'const WithholdingDefault = "([^"]+)"', _read("yield.go")).group(1)
+
+
+def cycles():
+    return set(_consts(_read("yield.go"), "Cycle").values())
+
+
+def day_counts():
+    return set(_consts(_read("yield.go"), "DayCount").values())
+
+
+def coupon_frequencies():
+    return {int(n) for n in _list(_read("yield.go"), "couponFrequencies")}

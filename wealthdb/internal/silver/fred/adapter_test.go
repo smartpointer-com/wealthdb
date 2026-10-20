@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -22,27 +24,6 @@ func newFixtureSilver(t *testing.T) (string, *sql.DB) {
 func openAdapter(t *testing.T, path string) silver.Connection {
 	t.Helper()
 	return silvertest.Open(t, &Adapter{}, path)
-}
-
-func collectFx(t *testing.T, conn silver.Connection, w canonical.Window) []canonical.FxRateChange {
-	t.Helper()
-	stream, err := conn.Snapshots(context.Background(), w)
-	if err != nil {
-		t.Fatalf("Snapshots: %v", err)
-	}
-	t.Cleanup(func() { stream.Close() })
-	var fx []canonical.FxRateChange
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatalf("Next: %v", err)
-		}
-		fx = append(fx, b.FxRates...)
-		if !more {
-			break
-		}
-	}
-	return fx
 }
 
 func TestKindIsFred(t *testing.T) {
@@ -99,7 +80,7 @@ func TestChangeWindowAndSnapshots(t *testing.T) {
 		t.Fatalf("window = %+v, want changes + new change number 1700000000", w)
 	}
 
-	fx := collectFx(t, conn, w)
+	fx := silvertest.Merged(t, conn, w).FxRates
 	if len(fx) != 3 {
 		t.Fatalf("fx rows = %d, want 3", len(fx))
 	}
@@ -146,5 +127,163 @@ func TestTransactionsEmpty(t *testing.T) {
 	}
 	if len(b.Transactions) != 0 {
 		t.Errorf("fred emits no transactions, got %d", len(b.Transactions))
+	}
+}
+
+// The Treasury series of a v2 silver: a ten-year yield from before 1970,
+// when as_of is negative, and two days of the three-month bill inside the
+// FX range.
+const (
+	d1962 = int64(-252_374_400)  // 1962-01-02
+	d2020 = int64(1_577_923_200) // 2020-01-02
+)
+
+func seedRates(t *testing.T, db *sql.DB) {
+	t.Helper()
+	silvertest.Exec(t, db, `INSERT INTO rates (as_of, series_id, value, payload) VALUES
+	    (?, 'DGS10', '4.06', '{"currency":"USD","tenor":"10Y","basis":"constant_maturity"}'),
+	    (?, 'DTB3', '1.54', '{}'),
+	    (?, 'DTB3', '1.52', '{}')`, d1962, d2020, d2020+86400)
+}
+
+// The rates rows ride the stream beside the FX rates, and the status and
+// the change window span both tables.
+func TestRatesInTheWindow(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	seed(t, db)
+	seedRates(t, db)
+	conn := openAdapter(t, path)
+
+	st, err := conn.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.OldestSnapshotAt != d1962 || st.LatestSnapshotAt != 1578009600 {
+		t.Errorf("snapshot range = [%d,%d], want [%d,1578009600]", st.OldestSnapshotAt, st.LatestSnapshotAt, d1962)
+	}
+	w, err := conn.ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !w.HasChanges || w.Start != d1962 || w.End != 1578009600 {
+		t.Fatalf("window = %+v, want [%d, 1578009600]", w, d1962)
+	}
+	if fx := silvertest.Merged(t, conn, w).FxRates; len(fx) != 3 {
+		t.Errorf("fx rows = %d, want 3", len(fx))
+	}
+	rates := silvertest.Merged(t, conn, w).RateObservations
+	if len(rates) != 3 {
+		t.Fatalf("rates = %+v, want 3", rates)
+	}
+	r := rates[0]
+	if r.SeriesID != "DGS10" || r.AsOf != d1962 || r.Value.String() != "4.06" ||
+		string(r.Payload) != `{"currency":"USD","tenor":"10Y","basis":"constant_maturity"}` {
+		t.Errorf("first rate = %+v", r)
+	}
+
+	// A narrower window holds only its own days.
+	got := silvertest.Merged(t, conn, canonical.Window{Start: d2020, End: d2020, HasChanges: true}).RateObservations
+	if len(got) != 1 || got[0].SeriesID != "DTB3" || got[0].Value.String() != "1.54" {
+		t.Errorf("rates on 2020-01-02 = %+v", got)
+	}
+}
+
+// The rates come a page at a time, and the keyset cursor neither skips
+// nor repeats a row: the pages end inside a day.
+func TestRatesPage(t *testing.T) {
+	lowered := silver.RateBatchSize
+	silver.RateBatchSize = 2
+	t.Cleanup(func() { silver.RateBatchSize = lowered })
+	path, db := newFixtureSilver(t)
+	seed(t, db)
+	for d := int64(0); d < 3; d++ {
+		for _, series := range []string{"DGS1", "DGS10", "DTB3"} {
+			silvertest.Exec(t, db, `INSERT INTO rates (as_of, series_id, value) VALUES (?, ?, '4')`, d2020+d*86400, series)
+		}
+	}
+	conn := openAdapter(t, path)
+	stream, err := conn.Snapshots(context.Background(), canonical.Window{Start: d2020, End: d2020 + 2*86400, HasChanges: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	seen, pages := map[string]int{}, 0
+	for {
+		b, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(b.RateObservations) > 0 {
+			pages++
+		}
+		for _, r := range b.RateObservations {
+			seen[fmt.Sprintf("%d|%s", r.AsOf, r.SeriesID)]++
+		}
+		if !more {
+			break
+		}
+	}
+	if len(seen) != 9 || pages != 5 {
+		t.Errorf("rates = %v in %d pages, want 9 in 5", seen, pages)
+	}
+	for k, n := range seen {
+		if n != 1 {
+			t.Errorf("rate %s read %d times", k, n)
+		}
+	}
+}
+
+// A rate value that is no decimal fails the load with an error that names
+// the row.
+func TestRateValueFailsTheLoad(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	seed(t, db)
+	silvertest.Exec(t, db, `INSERT INTO rates (as_of, series_id, value) VALUES (?, 'DGS10', '.')`, d2020)
+	stream, err := openAdapter(t, path).Snapshots(context.Background(),
+		canonical.Window{Start: d2020, End: d2020, HasChanges: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for {
+		_, more, err := stream.Next(context.Background())
+		if err != nil {
+			if !strings.Contains(err.Error(), "DGS10") || !strings.Contains(err.Error(), fmt.Sprint(d2020)) {
+				t.Errorf("error %q does not name the row", err)
+			}
+			return
+		}
+		if !more {
+			t.Fatal("the stream ended without an error")
+		}
+	}
+}
+
+// A silver its collector last loaded before migration 0002 has no rates
+// table. It loads as before: FX alone, with the status and window theirs.
+func TestV1SilverWithoutRates(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	silvertest.Exec(t, db, `DROP TABLE rates`)
+	seed(t, db)
+	conn := openAdapter(t, path)
+	st, err := conn.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.OldestSnapshotAt != 1577923200 || st.LatestSnapshotAt != 1578009600 {
+		t.Errorf("snapshot range = [%d,%d]", st.OldestSnapshotAt, st.LatestSnapshotAt)
+	}
+	w, err := conn.ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !w.HasChanges || w.Start != 1577923200 || w.End != 1578009600 {
+		t.Fatalf("window = %+v", w)
+	}
+	if fx := silvertest.Merged(t, conn, w).FxRates; len(fx) != 3 {
+		t.Errorf("fx rows = %d, want 3", len(fx))
+	}
+	if rates := silvertest.Merged(t, conn, w).RateObservations; len(rates) != 0 {
+		t.Errorf("rates = %+v, want none", rates)
 	}
 }

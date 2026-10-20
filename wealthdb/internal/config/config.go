@@ -248,6 +248,12 @@ type Config struct {
 	// Absent block ⇒ none of them and the default settings. See
 	// ExposureConfig and docs/EXPOSURE.md §9.
 	Exposure *ExposureConfig `json:"exposure,omitempty"`
+	// Yield configures the yield report: the public rate curves, the
+	// tax withheld at source, the funds sliced by credit rating, coupon
+	// conventions, the projection's horizon and the sectors' cycles.
+	// Absent block ⇒ the built-in conventions and cycles and the default
+	// horizon alone. See YieldConfig.
+	Yield *YieldConfig `json:"yield,omitempty"`
 }
 
 // DefaultWebPort is the host loopback port the Metabase server is

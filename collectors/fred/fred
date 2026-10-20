@@ -3,15 +3,15 @@
 #
 # Host-venv collector (no Docker): runs the collector's own .py under its
 # .venv, like ubs-psn. Pulls daily USD-centric FX reference rates (US Fed
-# H.10) from the FRED API. Subcommands:
+# H.10) and Treasury yields (H.15) from the FRED API. Subcommands:
 #   login               No-op (FRED uses an API key, not a session). The
 #                       key is read from FRED_API_KEY. `login --check`
 #                       probes it: it asks FRED for one observation, so a
 #                       key that is present but rejected fails here.
-#   download [args...]  Fetch FX rates into bronze. Bound the window with
-#                       --lookback (default ~90 days; `--lookback all` or
-#                       `--lookback 1971-01-01` for a full historic
-#                       backfill).
+#   download [args...]  Fetch FX rates and yields into bronze. Bound the
+#                       window with --lookback (default ~90 days;
+#                       an early date such as `--lookback 1950-01-01` for
+#                       each series' whole history).
 #   load [args...]      Parse bronze into the silver SQLite DB.
 #   prune [args...]     Delete non-complete (crashed / in-flight) bronze run
 #                       dirs and the --debug trace in complete ones; their

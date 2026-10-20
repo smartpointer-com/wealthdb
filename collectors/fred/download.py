@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """
-FRED FX-rate downloader.
+FRED downloader: FX reference rates and US Treasury yields.
 
-Pulls daily USD-centric foreign-exchange reference rates from the US
-Federal Reserve H.10 release via the FRED API — one series per currency
-pair (see FX_SERIES) — and writes each series' raw JSON into a
-UTC-timestamped bronze run directory plus a run.json manifest. load.py
-projects those into the silver `fx_rates` table.
+Pulls two families of daily series from the FRED API, each from a
+built-in map. FX_SERIES holds USD-centric foreign-exchange reference
+rates from the US Federal Reserve H.10 release, one series per currency
+pair. RATE_SERIES holds the US Treasury yield curve from the H.15
+release: the constant-maturity yields from one month to thirty years
+plus the three-month bill rate, in percent.
+
+Each series' raw JSON goes into a UTC-timestamped bronze run directory,
+beside a run.json manifest that records what each series is.
+load.py projects the FX series into the silver `fx_rates` table and the
+rates series into `rates`.
 
 API version: this uses FRED's classic ("v1") endpoint
 `https://api.stlouisfed.org/fred/series/observations`, authenticated with
@@ -16,12 +22,13 @@ read-only time-series fetch, so v1 is the default. Point --base-url
 elsewhere (e.g. a proxy or a future endpoint) if needed.
 
 Backfill: the shared --lookback flag bounds the observation window,
-running from the starting point it names to today (default ~90 days;
-`--lookback all` or `--lookback 1971-01-01` for a full historic
-backfill — FRED clamps to each series' own start).
+from the starting point it names to today. The default is ~90 days and
+`all` reaches back 30 years. An early date such as
+`--lookback 1950-01-01` fetches each series' whole history, since FRED
+clamps the window to each series' own start.
 
 Usage:
-    download.py --bronze-dir <dir> [--api-key KEY]
+    download.py --bronze-dir <dir> [--api-key KEY] [--series ID,...]
                 [--lookback PRESET|YYYY-MM-DD] [--dry-run]
 """
 
@@ -40,10 +47,10 @@ from pathlib import Path
 
 from collectorkit import bronze, cli, debugcap, envfile
 
-# Single source of truth for FRED's no-data / market-holiday sentinels — the
-# loader owns the constant (it filters rows on it); the downloader imports it
-# so the dated-row count and the silver row filter can never drift apart.
-from load import NO_DATA
+# The loader owns the manifest contract and the dated-observation filter.
+# The downloader writes each entry from the same field names and counts
+# with the same function, so the manifest and silver's rows cannot drift.
+from load import FX_MEANING, RATE_MEANING, dated_observations
 
 log = logging.getLogger("fred.download")
 
@@ -66,6 +73,55 @@ FX_SERIES: dict[str, tuple[str, str]] = {
     "DEXCHUS": ("CNY", "USD"),  # CNY per USD
     "DEXHKUS": ("HKD", "USD"),  # HKD per USD
 }
+
+# FRED H.15 series -> (currency, tenor, basis). The value is in percent.
+# constant_maturity: a Treasury par yield at a fixed maturity,
+# bond-equivalent, semiannual. discount: a bill's secondary-market rate
+# on a discount basis. The manifest records the triple per series and
+# load copies it into the silver row's payload.
+RATE_SERIES: dict[str, tuple[str, str, str]] = {
+    "DGS1MO": ("USD", "1M", "constant_maturity"),
+    "DGS3MO": ("USD", "3M", "constant_maturity"),
+    "DGS6MO": ("USD", "6M", "constant_maturity"),
+    "DGS1":   ("USD", "1Y", "constant_maturity"),
+    "DGS2":   ("USD", "2Y", "constant_maturity"),
+    "DGS3":   ("USD", "3Y", "constant_maturity"),
+    "DGS5":   ("USD", "5Y", "constant_maturity"),
+    "DGS7":   ("USD", "7Y", "constant_maturity"),
+    "DGS10":  ("USD", "10Y", "constant_maturity"),
+    "DGS20":  ("USD", "20Y", "constant_maturity"),
+    "DGS30":  ("USD", "30Y", "constant_maturity"),
+    "DTB3":   ("USD", "3M", "discount"),
+}
+
+# Each series' run.json entry, less its row count. load reads it back to
+# place and describe the rows. A rates entry names its family. An FX entry
+# names none, the shape every FX entry in bronze has.
+SERIES: dict[str, dict[str, str]] = {
+    **{sid: dict(zip(FX_MEANING, pair, strict=True))
+       for sid, pair in FX_SERIES.items()},
+    **{sid: {"family": "rates",
+             **dict(zip(RATE_MEANING, meaning, strict=True))}
+       for sid, meaning in RATE_SERIES.items()},
+}
+
+
+def _endpoint(value: str) -> str:
+    """argparse ``type`` for --base-url: an http(s) URL with a host.
+
+    Some malformed values make urllib raise an error that quotes the whole
+    request URL, api_key included. Every malformed value is refused here,
+    before any request, and the message never echoes it."""
+    try:
+        parts = urllib.parse.urlsplit(value)
+        _ = parts.port  # raises ValueError on a malformed port
+    except ValueError:  # also an unbalanced IPv6 bracket
+        parts = None
+    if (parts is None or parts.scheme not in ("http", "https")
+            or not parts.hostname
+            or any(c <= " " or c == "\x7f" for c in value)):
+        raise argparse.ArgumentTypeError("not an http(s) URL with a host")
+    return value
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -95,13 +151,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "variable (sourced from <secrets>/fred.env by the wrapper).",
     )
     p.add_argument(
-        "--base-url", default=DEFAULT_BASE_URL,
-        help=f"FRED observations endpoint (default: {DEFAULT_BASE_URL}).",
+        "--base-url", type=_endpoint, default=DEFAULT_BASE_URL,
+        help="FRED observations endpoint, an http(s) URL "
+             f"(default: {DEFAULT_BASE_URL}).",
     )
     p.add_argument(
         "--series", default=None,
         help="Comma-separated subset of the built-in series IDs to fetch "
-             "(default: all of them). IDs must be present in FX_SERIES.",
+             "(default: every series of both families). Each ID must be "
+             "in FX_SERIES or RATE_SERIES; one list may mix the two.",
     )
     cli.add_standard_args(p, verb="download")
     p.add_argument(
@@ -207,11 +265,12 @@ def _check_credential(base_url: str, api_key: str) -> int:
     return 0
 
 
-def _dated_count(doc: dict) -> int:
-    """Number of observations with a real value (a NO_DATA member is FRED's
-    no-data / holiday sentinel)."""
-    return sum(1 for o in doc.get("observations", [])
-               if o.get("value") not in NO_DATA)
+def _describe(sid: str) -> str:
+    """One series' meaning for the log: "CHF→USD" for an FX series,
+    "USD 10Y constant_maturity" for a rates series."""
+    if sid in FX_SERIES:
+        return "{}→{}".format(*FX_SERIES[sid])
+    return " ".join(RATE_SERIES[sid])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -232,16 +291,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.series:
         series_ids = [s.strip() for s in args.series.split(",") if s.strip()]
-        unknown = [s for s in series_ids if s not in FX_SERIES]
+        unknown = [s for s in series_ids if s not in SERIES]
         if unknown:
             raise SystemExit(
                 f"unknown series {unknown}: add them to FX_SERIES "
-                f"(series_id -> base,quote) in download.py first."
+                f"(series_id -> base,quote) or RATE_SERIES "
+                f"(series_id -> currency,tenor,basis) in download.py first."
             )
     else:
-        series_ids = list(FX_SERIES)
+        series_ids = list(SERIES)
 
-    log.info("FRED FX download: %s … %s, %d series", since, until,
+    log.info("FRED download: %s … %s, %d series", since, until,
              len(series_ids))
 
     args.bronze_dir.mkdir(parents=True, exist_ok=True)
@@ -272,7 +332,6 @@ def main(argv: list[str] | None = None) -> int:
 
     total = failures = 0
     for sid in series_ids:
-        base, quote = FX_SERIES[sid]
         try:
             doc = fetch_observations(args.base_url, sid, api_key, since, until,
                                      trace=trace)
@@ -285,10 +344,11 @@ def main(argv: list[str] | None = None) -> int:
             log.error("series %s fetch failed: %s — skipping", sid, e)
             failures += 1
             continue
-        n = _dated_count(doc)
+        n = len(dated_observations(doc))
         total += n
-        manifest["series"][sid] = {"base": base, "quote": quote, "rows": n}
-        log.info("series %s (%s→%s): %d dated rates", sid, base, quote, n)
+        manifest["series"][sid] = {**SERIES[sid], "rows": n}
+        log.info("series %s (%s): %d dated observations", sid,
+                 _describe(sid), n)
         if not args.dry_run:
             bronze.atomic_write_json(run / f"{sid}.json", doc)
 
@@ -296,13 +356,13 @@ def main(argv: list[str] | None = None) -> int:
     # dry run included.
     rc = 0 if manifest["series"] else 5
     if args.dry_run:
-        log.info("dry run: %d rates across %d series, %d failures "
+        log.info("dry run: %d observations across %d series, %d failures "
                  "(nothing written)", total, len(manifest["series"]), failures)
         return rc
 
     manifest["status"] = "complete"
     bronze.atomic_write_json(run / "run.json", manifest)
-    log.info("wrote %d series (%d rates, %d failures) to %s",
+    log.info("wrote %d series (%d observations, %d failures) to %s",
              len(manifest["series"]), total, failures, run)
     return rc
 

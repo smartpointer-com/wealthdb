@@ -12,33 +12,12 @@ behaviour. Two properties carry the weight:
 from __future__ import annotations
 
 import json
-import sys
 import urllib.error
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import download  # noqa: E402
+import download
+from conftest import FakeResponse
 
 SECRET = "SYNTHETIC_KEY_NOT_A_REAL_ONE"
-
-
-class _FakeResponse:
-    """The slice of http.client.HTTPResponse fetch_observations touches."""
-
-    def __init__(self, body: bytes, status: int = 200, headers=None):
-        self._body = body
-        self.status = status
-        self.headers = headers or {"Content-Type": "application/json"}
-
-    def read(self) -> bytes:
-        return self._body
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
 
 
 def _obs_doc() -> bytes:
@@ -57,7 +36,7 @@ def _fake_urlopen(resp_or_exc):
 def _run(monkeypatch, tmp_path, *extra, resp=None):
     monkeypatch.setattr(
         download.urllib.request, "urlopen",
-        _fake_urlopen(_FakeResponse(_obs_doc()) if resp is None else resp))
+        _fake_urlopen(FakeResponse(_obs_doc()) if resp is None else resp))
     return download.main([
         "--bronze-dir", str(tmp_path), "--api-key", SECRET,
         "--series", "DEXSZUS", *extra,
@@ -103,7 +82,7 @@ def test_debug_traces_a_request_and_redacts_the_api_key(monkeypatch, tmp_path):
 def test_debug_keeps_only_whitelisted_response_headers(monkeypatch, tmp_path):
     # A throttled FRED answers with Retry-After; that header is the whole
     # reason a trace beats the observations documents beside it.
-    resp = _FakeResponse(_obs_doc(), headers={
+    resp = FakeResponse(_obs_doc(), headers={
         "Content-Type": "application/json",
         "Retry-After": "30",
         "Set-Cookie": "session=SYNTHETIC_COOKIE",

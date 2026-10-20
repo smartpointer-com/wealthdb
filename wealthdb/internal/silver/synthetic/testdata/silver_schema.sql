@@ -1,4 +1,4 @@
--- Silver schema of the synthetic kind, version 3.
+-- Silver schema of the synthetic kind, version 4.
 --
 -- The one generic silver: one table per canonical record type, so a row
 -- here is the canonical change record it becomes, column for column. No
@@ -11,8 +11,11 @@
 --   * Timestamps are INTEGER unix seconds UTC. A snapshot is stamped at the
 --     UTC midnight of its day and holds that day's closing state.
 --   * payload is a JSON object, '{}' when there is nothing to add.
---   * Rows are append-only. A run adds the days after the previous run's
---     as-of and records itself in dump_runs; nothing older is rewritten.
+--   * Rows are append-only: nothing already written changes. A run adds
+--     the days after the previous run's as-of and records itself in
+--     dump_runs. It also adds each company figure filed since then. Such
+--     a row's as_of, its period's last day, can lie before the previous
+--     as-of; the run's own window then reaches back to it.
 
 -- Bookkeeping about the silver itself: the schema version and whatever
 -- the writer records about how the file was made (for the demo generator:
@@ -25,8 +28,8 @@ CREATE TABLE meta (
 
 -- One row per run. change_number is strictly increasing across runs and
 -- is what gold's watermark tracks; [window_start, window_end] (inclusive)
--- bounds every snapshot_at and occurred_at the run added, and the UTC
--- midnight of every disposal_date.
+-- bounds every snapshot_at, occurred_at and as_of the run added, and the
+-- UTC midnight of every disposal_date.
 CREATE TABLE dump_runs (
     change_number INTEGER NOT NULL PRIMARY KEY,
     window_start  INTEGER NOT NULL,
@@ -178,13 +181,15 @@ CREATE TABLE realized_lots (
     payload            TEXT    NOT NULL DEFAULT '{}'
 );
 
--- The reference records: what each fund holds and what each security is
--- (canonical/refdata.go). The six tables repeat the refdata collector's
--- silver shape column for column (collectors/refdata/migrations), so one
--- reader serves both kinds (silver.NewReferenceStream). as_of is the UTC
--- midnight of the day a row describes and must lie inside the window of
--- the run that adds it; run_at is the instant the row was fetched, at or
--- after as_of. Weights are in percent of the fund's net assets.
+-- The reference records: what each fund holds and states of itself, and
+-- what each security is and reports (canonical/refdata.go). The nine
+-- tables repeat the refdata collector's silver shape column for column
+-- (collectors/refdata/migrations), so one reader serves both kinds
+-- (silver.NewReferenceStream). as_of is the UTC midnight of the day a row
+-- describes (for a period fact, its period's last day) and must lie
+-- inside the window of the run that adds it; run_at is the instant the
+-- row was fetched, at or after as_of. Weights are in percent of the
+-- fund's net assets.
 
 CREATE TABLE compositions (
     fund_ref           TEXT    NOT NULL,
@@ -230,6 +235,19 @@ CREATE TABLE lines (
     short_currency  TEXT,
     short_amount    TEXT,
     payload         TEXT    NOT NULL DEFAULT '{}',
+    coupon_kind       TEXT,
+    is_default        INTEGER,
+    in_arrears        INTEGER,
+    paid_in_kind      INTEGER,
+    exchange_rate     TEXT,
+    duration          TEXT,
+    modified_duration TEXT,
+    yield_to_maturity TEXT,
+    yield_to_worst    TEXT,
+    yield_to_call     TEXT,
+    real_duration     TEXT,
+    real_yield        TEXT,
+    accrual_date      TEXT,
     PRIMARY KEY (fund_ref, as_of, basis, line_no)
 );
 
@@ -291,4 +309,61 @@ CREATE TABLE security_facts (
     run_at        INTEGER NOT NULL,
     payload       TEXT    NOT NULL DEFAULT '{}',
     PRIMARY KEY (security_key, field, as_of, provider)
+);
+
+CREATE TABLE fund_risk (
+    fund_ref        TEXT    NOT NULL,
+    as_of           INTEGER NOT NULL,
+    currency        TEXT    NOT NULL,
+    tenor           TEXT    NOT NULL,
+    dv01            TEXT,
+    dv100           TEXT,
+    credit_ig_dv01  TEXT,
+    credit_hy_dv01  TEXT,
+    run_at          INTEGER NOT NULL,
+    payload         TEXT    NOT NULL DEFAULT '{}',
+    PRIMARY KEY (fund_ref, as_of, currency, tenor)
+);
+
+CREATE TABLE characteristics (
+    fund_ref   TEXT    NOT NULL,
+    as_of      INTEGER NOT NULL,
+    provider   TEXT    NOT NULL,
+    field      TEXT    NOT NULL,
+    label      TEXT    NOT NULL DEFAULT '',
+    value      TEXT    NOT NULL,
+    run_at     INTEGER NOT NULL,
+    payload    TEXT    NOT NULL DEFAULT '{}',
+    PRIMARY KEY (fund_ref, as_of, provider, field, label)
+);
+
+CREATE TABLE period_facts (
+    security_key   TEXT    NOT NULL,
+    field          TEXT    NOT NULL,
+    as_of          INTEGER NOT NULL,
+    period_start   TEXT    NOT NULL,
+    provider       TEXT    NOT NULL,
+    value          TEXT    NOT NULL,
+    scheme         TEXT,
+    unit           TEXT,
+    fiscal_year    INTEGER,
+    fiscal_period  TEXT,
+    form           TEXT,
+    filed          TEXT,
+    run_at         INTEGER NOT NULL,
+    payload        TEXT    NOT NULL DEFAULT '{}',
+    PRIMARY KEY (security_key, field, as_of, period_start, provider)
+);
+
+-- The published rate series (canonical.RateObservationChange): the fred
+-- collector's rates table column for column (collectors/fred/migrations),
+-- so one reader serves both kinds (silver.NewRateStream). as_of is the
+-- observation day's UTC midnight and must lie inside the window of the
+-- run that adds it; value is in percent.
+CREATE TABLE rates (
+    as_of      INTEGER NOT NULL,
+    series_id  TEXT    NOT NULL,
+    value      TEXT    NOT NULL,
+    payload    TEXT    NOT NULL DEFAULT '{}',
+    PRIMARY KEY (as_of, series_id)
 );

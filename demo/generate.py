@@ -5,19 +5,21 @@
                              [--append] [--with-findings]
 
 Writes DIR/silver/<source>.db (the synthetic silver kind),
-DIR/wealthdb.cfg and DIR/overrides/*.csv. Reads only demo/household.json,
-demo/catalogue/ and the kind's schema file in the engine's source tree;
-never the environment, a real config or a real data root. Writes only
-into a DIR that is new, empty, or marked as a demo root by an earlier
-build.
+DIR/wealthdb.cfg and DIR/overrides/ (the ledger CSVs and the
+declarations ledger). Reads only demo/household.json, demo/catalogue/
+and the kind's schema file in the engine's source tree; never the
+environment, a real config or a real data root. Writes only into a DIR
+that is new, empty, or marked as a demo root by an earlier build.
 
 A full build (the default) rewrites every silver file from scratch and
 removes DIR's gold file. A rebuild at the same as-of carries the change
 number the old gold already read, so that gold would skip it.
 
 An append run replays the whole history in memory and adds only the
-days after the as-of the files already reached. It refuses when the
-generator or its inputs changed since the files were written.
+rows that joined it after the as-of the files already reached. A
+company's reported figure joins on the day it is filed. An append
+refuses when the generator or its inputs changed since the files were
+written.
 """
 
 import argparse

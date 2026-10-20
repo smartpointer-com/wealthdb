@@ -21,14 +21,37 @@ def test_parse_reads_funds_and_securities():
     w = wanted.parse(doc)
     (f,) = w.funds
     assert f.held_to is None and str(f.compositions[0]) == "2026-03-31"
+    # A version 1 list names no facts.
+    assert f.wants == () and f.facts == {}
     (s,) = w.securities
     assert s.missing == ("sector",) and str(s.lookups["gleif"]) == "2026-07-01"
+    assert s.periods == {}
+
+
+def test_parse_reads_the_facts_of_version_2():
+    doc = wanted_doc([{**fund("symbol:EXBF", "EXBF", compositions=["2026-03-31", "2026-06-30"]),
+                       "wants": ["risk_metrics", "characteristics", "line_durations"],
+                       "facts": {"risk_metrics": ["2026-03-31", "2026-06-30"], "line_durations": ["2026-03-31"]}}],
+                     [{"key": "isin:XX0000000302", "scope": "constituent", "share_pct": 1.5,
+                       "missing": ["earnings"], "lookups": {},
+                       "periods": {"dividends": "2026-06-30", "financials": "2026-03-31"}}], version=2)
+    w = wanted.parse(doc)
+    (f,) = w.funds
+    assert f.wants == ("risk_metrics", "characteristics", "line_durations")
+    assert f.facts == {"risk_metrics": (date(2026, 3, 31), date(2026, 6, 30)), "line_durations": (date(2026, 3, 31),)}
+    (s,) = w.securities
+    assert s.missing == ("earnings",)
+    assert s.periods == {"dividends": date(2026, 6, 30), "financials": date(2026, 3, 31)}
 
 
 @pytest.mark.parametrize("doc,msg", [
     ({"contract": "other", "version": 1}, "not a refdata-wanted"),
     ({"contract": "refdata-wanted", "version": 9}, "version 9"),
     ({"contract": "refdata-wanted", "version": 1, "funds": [{"held_from": "x"}]}, "malformed"),
+    ({"contract": "refdata-wanted", "version": 2, "as_of": "2026-07-15",
+      "funds": [{"ref": "symbol:EXBF", "facts": {"risk_metrics": ["x"]}}]}, "malformed"),
+    ({"contract": "refdata-wanted", "version": 2, "as_of": "2026-07-15",
+      "securities": [{"key": "isin:XX0000000302", "periods": {"earnings": "x"}}]}, "malformed"),
 ])
 def test_parse_refuses(doc, msg):
     with pytest.raises(wanted.WantedError, match=msg):
@@ -118,3 +141,14 @@ def test_parse_reads_the_engine_golden():
     assert [{k: v.isoformat() for k, v in s.lookups.items()} for s in w.securities] == \
         [s.get("lookups") or {} for s in raw["securities"]]
     assert any(s.lookups for s in w.securities)
+    assert raw["version"] in wanted.VERSIONS
+    assert [list(f.wants) for f in w.funds] == [f["wants"] for f in raw["funds"]]
+    assert {"risk_metrics", "characteristics", "money_market", "line_durations"} <= {x for f in w.funds for x in f.wants}
+    assert [{k: [d.isoformat() for d in v] for k, v in f.facts.items()} for f in w.funds] == \
+        [f["facts"] for f in raw["funds"]]
+    assert any(len(v) for f in w.funds for v in f.facts.values())
+    assert [s.missing for s in w.securities] == [tuple(s["missing"]) for s in raw["securities"]]
+    assert {"earnings", "dividends", "financials"} <= {x for s in w.securities for x in s.missing}
+    assert [{k: v.isoformat() for k, v in s.periods.items()} for s in w.securities] == \
+        [s["periods"] for s in raw["securities"]]
+    assert any(s.periods for s in w.securities)

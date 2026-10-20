@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -18,17 +20,23 @@ const (
 	latestFetch = `SELECT MAX(snapshot_at) FROM dump_runs`
 )
 
-// windowExtrema is the MIN/MAX as_of over the reference rows the runs
-// loaded after a change number wrote. A line belongs to its
+// runTables are the tables of every silver version whose rows carry
+// run_at: the reference tables but lines, since a line belongs to its
 // composition's run.
-const windowExtrema = `
+var runTables = []string{"compositions", "attributes", "counterparties", "securities", "security_facts"}
+
+// windowExtrema is the MIN/MAX as_of over the rows of tables that the
+// runs loaded after a change number wrote.
+func windowExtrema(tables []string) string {
+	parts := make([]string, len(tables))
+	for i, t := range tables {
+		parts[i] = "SELECT as_of FROM " + t + " WHERE run_at IN (SELECT snapshot_at FROM runs)"
+	}
+	return `
 WITH runs AS (SELECT snapshot_at FROM dump_runs WHERE loaded_at > ?)
 SELECT MIN(as_of), MAX(as_of) FROM (
-    SELECT as_of FROM compositions             WHERE run_at IN (SELECT snapshot_at FROM runs)
-    UNION ALL SELECT as_of FROM attributes     WHERE run_at IN (SELECT snapshot_at FROM runs)
-    UNION ALL SELECT as_of FROM counterparties WHERE run_at IN (SELECT snapshot_at FROM runs)
-    UNION ALL SELECT as_of FROM securities     WHERE run_at IN (SELECT snapshot_at FROM runs)
-    UNION ALL SELECT as_of FROM security_facts WHERE run_at IN (SELECT snapshot_at FROM runs))`
+    ` + strings.Join(parts, "\n    UNION ALL ") + `)`
+}
 
 // Status reports the as-of range of the compositions as the snapshot
 // range and pins LatestChangeNumber to the latest load. Both observed
@@ -74,8 +82,12 @@ func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.W
 		return w, nil
 	}
 	w.NewChangeNumber = latest
+	tables := runTables
+	if c.yield {
+		tables = slices.Concat(runTables, silver.ReferenceYieldTables)
+	}
 	var start, end sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, windowExtrema, since).Scan(&start, &end); err != nil {
+	if err := c.db.QueryRowContext(ctx, windowExtrema(tables), since).Scan(&start, &end); err != nil {
 		return w, fmt.Errorf("refdata ChangeWindow: %w", err)
 	}
 	if start.Valid && end.Valid {

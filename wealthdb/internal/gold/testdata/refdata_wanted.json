@@ -1,6 +1,6 @@
 {
   "contract": "refdata-wanted",
-  "version": 1,
+  "version": 2,
   "generated_at": "2026-10-13T09:30:00Z",
   "as_of": "2026-10-13",
   "settings": {
@@ -8,8 +8,8 @@
   },
   "funds": [
     {
-      "ref": "cusip:00000AA01",
-      "isin": null,
+      "ref": "isin:US00000AA018",
+      "isin": "US00000AA018",
       "cusip": "00000AA01",
       "symbol": null,
       "name": "Fund A",
@@ -19,7 +19,11 @@
       ],
       "held_from": "2026-03-31",
       "held_to": "2026-03-31",
-      "compositions": []
+      "compositions": [],
+      "wants": [
+        "characteristics"
+      ],
+      "facts": {}
     },
     {
       "ref": "isin:XX0000000017",
@@ -33,7 +37,44 @@
       ],
       "held_from": "2026-06-30",
       "held_to": null,
-      "compositions": []
+      "compositions": [],
+      "wants": [
+        "characteristics"
+      ],
+      "facts": {}
+    },
+    {
+      "ref": "symbol:BNDF",
+      "isin": null,
+      "cusip": null,
+      "symbol": "BNDF",
+      "name": "Bond Fund F",
+      "currency": "USD",
+      "roles": [
+        "held"
+      ],
+      "held_from": "2026-06-30",
+      "held_to": null,
+      "compositions": [
+        "2026-03-31",
+        "2026-06-30"
+      ],
+      "wants": [
+        "risk_metrics",
+        "characteristics",
+        "line_durations"
+      ],
+      "facts": {
+        "characteristics": [
+          "2026-09-30"
+        ],
+        "line_durations": [
+          "2026-03-31"
+        ],
+        "risk_metrics": [
+          "2026-06-30"
+        ]
+      }
     },
     {
       "ref": "symbol:FUNDA",
@@ -49,7 +90,11 @@
       "held_to": null,
       "compositions": [
         "2026-03-31"
-      ]
+      ],
+      "wants": [
+        "characteristics"
+      ],
+      "facts": {}
     },
     {
       "ref": "symbol:FUNDB",
@@ -63,7 +108,13 @@
       ],
       "held_from": "2026-01-31",
       "held_to": "2026-01-31",
-      "compositions": []
+      "compositions": [],
+      "wants": [
+        "risk_metrics",
+        "characteristics",
+        "line_durations"
+      ],
+      "facts": {}
     },
     {
       "ref": "symbol:IDX1",
@@ -77,7 +128,13 @@
       ],
       "held_from": "2026-01-31",
       "held_to": "2026-01-31",
-      "compositions": []
+      "compositions": [],
+      "wants": [],
+      "facts": {
+        "risk_metrics": [
+          "2026-01-31"
+        ]
+      }
     },
     {
       "ref": "symbol:IDX9",
@@ -91,7 +148,35 @@
       ],
       "held_from": "2026-10-13",
       "held_to": null,
-      "compositions": []
+      "compositions": [],
+      "wants": [],
+      "facts": {}
+    },
+    {
+      "ref": "symbol:MMF1",
+      "isin": null,
+      "cusip": null,
+      "symbol": "MMF1",
+      "name": "Money Fund One",
+      "currency": "USD",
+      "roles": [
+        "held"
+      ],
+      "held_from": "2026-06-30",
+      "held_to": null,
+      "compositions": [],
+      "wants": [
+        "characteristics",
+        "money_market"
+      ],
+      "facts": {
+        "characteristics": [
+          "2026-09-30"
+        ],
+        "money_market": [
+          "2026-10-09"
+        ]
+      }
     }
   ],
   "securities": [
@@ -106,10 +191,35 @@
       "share_pct": null,
       "asset_class": "public_equity",
       "missing": [
-        "market_cap"
+        "market_cap",
+        "dividends",
+        "financials"
       ],
       "lookups": {
         "gleif": "2026-05-01"
+      },
+      "periods": {
+        "dividends": "2025-12-31",
+        "earnings": "2026-06-30"
+      }
+    },
+    {
+      "key": "isin:XX0000000019",
+      "isin": "XX0000000019",
+      "cusip": null,
+      "symbol": null,
+      "name": "Constituent One",
+      "currency": "USD",
+      "scope": "constituent",
+      "share_pct": 3.0555555555555554,
+      "asset_class": "public_equity",
+      "missing": [
+        "earnings"
+      ],
+      "lookups": {},
+      "periods": {
+        "dividends": "2026-06-30",
+        "financials": "2026-06-30"
       }
     }
   ]

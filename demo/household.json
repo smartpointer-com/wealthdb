@@ -216,6 +216,12 @@
       {"match": "\\bPIPWHISTLE KIDS MUSIC\\b", "category": "GENERAL_SERVICES_EDUCATION", "scope": {"source": "brindlecove", "account": "bc-card-01"}}
     ],
     "income_rules": [{"match": "\\bSTILLCREST HEALTH\\b", "type": "INCOME_SALARY"}],
+    "yield": {
+      "withholding": {"CH": {"default": 35, "traditional_ira": 0}, "DE": {"default": 15}, "FR": {"default": 15}},
+      "conventions": {"EUR": {"frequency": 1, "day_count": "ACT/ACT"}},
+      "horizon_months": 12,
+      "cycles": {"real_estate": "sensitive"}
+    },
     "exposure": {
       "proxies": {"isin:US000LW52900": {"fund": "isin:US000HTRF500"}},
       "declarations": [
