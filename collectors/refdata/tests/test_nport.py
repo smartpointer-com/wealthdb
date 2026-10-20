@@ -6,18 +6,24 @@ from pathlib import Path
 import pytest
 
 import fetcher
+import load
 from providers import sec_nport as m
 from providers.base import Context, ProviderError, Unavailable
 from providers.sec_edgar import SecEdgar
 from providers.sec_nport import SecNport, _atom_accessions, _submission_filings, parse_nport
-from tests.helpers import FakeClient
+from tests.helpers import FakeClient, go_const, go_source, go_strings, silver_db
 from wanted import Fund, Security
 
 FIXTURE = Path(__file__).parent / "fixtures" / "nport_primary_doc.xml"
+BOND_FUND = Path(__file__).parent / "fixtures" / "nport_bond_fund.xml"
 
 
 def parsed():
     return parse_nport(FIXTURE.read_bytes(), "symbol:EXMP", provider="sec-nport")
+
+
+def bond_fund(doc=None):
+    return parse_nport(BOND_FUND.read_bytes() if doc is None else doc, "symbol:EXBF", provider="sec-nport")
 
 
 def test_composition_is_dated_by_the_report_period():
@@ -34,9 +40,11 @@ def test_lines_keep_the_filed_labels():
     assert (a["isin"], a["cusip"], a["weight"], a["currency"], a["country"], a["asset_type"]) == \
         ("XX0000000101", "000000AA1", "60", "USD", "US", "EC")
     assert a["payload"]["lei"] == "XXXXXXXXXXXXXXXXXX01"
-    # The currency and asset category can sit in conditional elements.
-    assert (b["currency"], b["asset_type"], b["ticker"], b["cusip"]) == ("EUR", "OTHER", "EXIA", None)
-    assert a["sector"] is None
+    # The currency, its exchange rate and the asset category can sit in
+    # conditional elements.
+    assert (b["currency"], b["exchange_rate"], b["asset_type"], b["ticker"], b["cusip"]) == \
+        ("EUR", "0.9", "OTHER", "EXIA", None)
+    assert a["sector"] is None and a["exchange_rate"] is None
 
 
 def test_a_forward_states_its_legs_and_counterparty():
@@ -51,7 +59,81 @@ def test_a_forward_states_its_legs_and_counterparty():
 
 def test_a_bond_states_maturity_and_coupon():
     bond = parsed().lines[3]
-    assert (bond["maturity"], bond["coupon"]) == ("2030-05-15", "2.5")
+    assert (bond["maturity"], bond["coupon"], bond["coupon_kind"]) == ("2030-05-15", "2.5", "Fixed")
+    # A filing that leaves the flags out states none.
+    assert (bond["is_default"], bond["in_arrears"]) == (None, None)
+
+
+def test_a_debt_line_keeps_its_flags_and_a_foreign_line_its_exchange_rate():
+    note, frn, mmf = bond_fund().lines
+    assert (note["coupon_kind"], note["is_default"], note["in_arrears"], note["exchange_rate"]) == \
+        ("Fixed", False, False, None)
+    assert (frn["currency"], frn["exchange_rate"], frn["maturity"], frn["coupon"]) == \
+        ("EUR", "0.912345", "2029-11-30", "3.875")
+    assert (frn["coupon_kind"], frn["is_default"], frn["in_arrears"]) == ("Floating", True, True)
+    # A coupon paid in kind, in more of the same paper.
+    assert (frn["paid_in_kind"], note["paid_in_kind"]) == (True, False)
+    assert "paid_in_kind" not in frn["payload"]
+    # A holding that is no debt states no debt facts.
+    assert (mmf["coupon_kind"], mmf["is_default"], mmf["in_arrears"], mmf["maturity"]) == (None, None, None, None)
+
+
+def test_a_blank_coupon_kind_and_a_flag_that_is_neither_y_nor_n_state_nothing():
+    doc = BOND_FUND.read_bytes().replace(b"<couponKind>Floating</couponKind>", b"<couponKind> </couponKind>") \
+        .replace(b"<isDefault>Y</isDefault>", b"<isDefault>N/A</isDefault>")
+    frn = bond_fund(doc).lines[1]
+    assert (frn["coupon_kind"], frn["is_default"], frn["in_arrears"]) == (None, None, True)
+
+
+def test_a_bond_fund_states_its_rate_and_spread_sensitivities():
+    assert "risk_metrics" in SecNport.facts
+    rows = bond_fund().fund_risk
+    assert {(r["fund_ref"], r["as_of"]) for r in rows} == {("symbol:EXBF", date(2026, 6, 30))}
+    got = {(r["currency"], r["tenor"]): (r["dv01"], r["dv100"], r["credit_ig_dv01"], r["credit_hy_dv01"])
+           for r in rows}
+    assert len(got) == len(rows)
+    assert got == {
+        ("USD", "3M"): ("12.34", "1234.5", None, None),
+        ("USD", "1Y"): ("56.78", "5678.9", None, None),
+        ("USD", "5Y"): ("90.12", "9012.3", None, None),
+        ("USD", "10Y"): ("34.56", "3456.7", None, None),
+        ("USD", "30Y"): ("78.9", "7890.1", None, None),
+        # A tenor one element leaves out keeps the other's figure; a
+        # tenor neither states (30Y) has no row.
+        ("EUR", "3M"): ("1.5", None, None, None),
+        ("EUR", "1Y"): ("2.25", "225", None, None),
+        ("EUR", "5Y"): ("-3", "-300", None, None),
+        ("EUR", "10Y"): ("4.75", "475", None, None),
+        # The credit-spread figures are the fund's as a whole.
+        ("XXX", "3M"): (None, None, "1.2", "0.1"),
+        ("XXX", "1Y"): (None, None, "3.4", "0.2"),
+        ("XXX", "5Y"): (None, None, "5.6", "0.3"),
+        ("XXX", "10Y"): (None, None, "7.8", "0.4"),
+        ("XXX", "30Y"): (None, None, "9", None),
+    }
+
+
+def test_the_tenors_and_the_spread_currency_are_the_engines():
+    refdata = go_source("canonical/refdata.go")
+    assert [tenor for tenor, _ in m.TENORS] == go_strings(refdata, "RiskTenors")
+    assert m.NO_CURRENCY == go_const(refdata, "NoCurrency")
+
+
+def test_a_filing_without_risk_metrics_has_no_fund_risk_rows():
+    assert parsed().fund_risk == []
+    assert parse_nport(SWAP_DOC, "symbol:QSWP", provider="sec-nport").fund_risk == []
+
+
+def test_a_bond_fund_filing_loads_into_silver(tmp_path):
+    conn = silver_db(tmp_path)
+    load.write(conn, bond_fund(), run_at=1)
+    assert [tuple(r) for r in conn.execute(
+        "SELECT line_no, coupon_kind, is_default, in_arrears, paid_in_kind, exchange_rate FROM lines"
+        " ORDER BY line_no")] == [
+        (1, "Fixed", 0, 0, 0, None), (2, "Floating", 1, 1, 1, "0.912345"), (3, None, None, None, None, None)]
+    assert [tuple(r) for r in conn.execute(
+        "SELECT currency, count(*) FROM fund_risk GROUP BY currency ORDER BY currency")] == [
+        ("EUR", 4), ("USD", 5), ("XXX", 5)]
 
 
 @pytest.mark.parametrize("read,error", [
@@ -72,7 +154,7 @@ def test_filing_lists():
         "accessionNumber": ["0000000001-26-000001", "x", "0000000001-26-000003", "0000000001-25-000009"],
         "filingDate": ["2026-08-28", "2026-03-01", "2026-09-10", "2025-11-27"],
         "reportDate": ["2026-06-30", "", "2026-06-30", "2025-09-30"]}}}
-    got = _submission_filings(sub)
+    got = _submission_filings(sub, m.NPORT_FORMS)
     assert [f["accession"] for f in got] == ["0000000001-26-000001", "0000000001-26-000003",
                                              "0000000001-25-000009"]
     atom = b"""<feed xmlns="http://www.w3.org/2005/Atom"><entry><content>

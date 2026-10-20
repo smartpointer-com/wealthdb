@@ -2,8 +2,9 @@
 # refdata — host wrapper for the wealthdb "refdata" collector.
 #
 # Host-venv collector (no Docker): reads public reference data, what each
-# fund holds and what each security is, for the funds and securities the
-# engine names in its wanted list. No login anywhere. Subcommands:
+# fund holds and states about itself and what each security is and
+# reports, for the funds and securities the engine names in its wanted
+# list. No login anywhere. Subcommands:
 #   login               No-op: there is no session. `login --check` asks
 #                       every enabled provider for its cheapest answer.
 #   download [args...]  Ask the engine for the wanted list (or read

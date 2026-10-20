@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- An invented N-MFP2 filing in the layout the SEC publishes. Every name,
+     identifier and figure is made up. -->
+<edgarSubmission xmlns="http://www.sec.gov/edgar/nmfp2" xmlns:ns3="http://www.sec.gov/edgar/nmfp2common">
+  <headerData>
+    <submissionType>N-MFP2</submissionType>
+    <filerInfo>
+      <filer><filerCredentials><cik>0000000001</cik></filerCredentials></filer>
+      <liveTestFlag>LIVE</liveTestFlag>
+    </filerInfo>
+  </headerData>
+  <formData>
+    <generalInfo>
+      <reportDate>2024-05-31</reportDate>
+      <cik>0000000001</cik>
+      <seriesId>S000000001</seriesId>
+      <totalShareClassesInSeries>2</totalShareClassesInSeries>
+      <finalFilingFlag>N</finalFilingFlag>
+      <fundAcqrdOrMrgdWthAnthrFlag>N</fundAcqrdOrMrgdWthAnthrFlag>
+    </generalInfo>
+    <seriesLevelInfo>
+      <moneyMarketFundCategory>Government</moneyMarketFundCategory>
+      <fundExemptRetailFlag>N</fundExemptRetailFlag>
+      <averagePortfolioMaturity>35</averagePortfolioMaturity>
+      <averageLifeMaturity>72</averageLifeMaturity>
+      <totalValueWeeklyLiquidAssets>
+        <ns3:fridayWeek1>600000.00</ns3:fridayWeek1>
+        <ns3:fridayWeek2>610000.00</ns3:fridayWeek2>
+        <ns3:fridayWeek3>620000.00</ns3:fridayWeek3>
+        <ns3:fridayWeek4>630000.00</ns3:fridayWeek4>
+      </totalValueWeeklyLiquidAssets>
+      <netAssetOfSeries>1000000.00</netAssetOfSeries>
+      <stablePricePerShare>1.0000</stablePricePerShare>
+      <sevenDayGrossYield>0.0540</sevenDayGrossYield>
+      <netAssetValue>
+        <ns3:fridayWeek1>1.0000</ns3:fridayWeek1>
+        <ns3:fridayWeek2>1.0000</ns3:fridayWeek2>
+        <ns3:fridayWeek3>1.0000</ns3:fridayWeek3>
+        <ns3:fridayWeek4>1.0000</ns3:fridayWeek4>
+      </netAssetValue>
+    </seriesLevelInfo>
+    <classLevelInfo>
+      <classesId>C000000001</classesId>
+      <minInitialInvestment>1000000.00</minInitialInvestment>
+      <netAssetsOfClass>800000.00</netAssetsOfClass>
+      <numberOfSharesOutstanding>800000.00</numberOfSharesOutstanding>
+      <sevenDayNetYield>0.0518</sevenDayNetYield>
+      <personPayForFundFlag>N</personPayForFundFlag>
+    </classLevelInfo>
+    <classLevelInfo>
+      <classesId>C000000002</classesId>
+      <minInitialInvestment>1000.00</minInitialInvestment>
+      <netAssetsOfClass>200000.00</netAssetsOfClass>
+      <numberOfSharesOutstanding>200000.00</numberOfSharesOutstanding>
+      <sevenDayNetYield>0.0498</sevenDayNetYield>
+      <personPayForFundFlag>N</personPayForFundFlag>
+    </classLevelInfo>
+    <scheduleOfPortfolioSecuritiesInfo>
+      <nameOfIssuer>Example Treasury</nameOfIssuer>
+      <titleOfIssuer>Example Treasury Bill</titleOfIssuer>
+      <CUSIPMember>000000001</CUSIPMember>
+      <investmentCategory>U.S. Treasury Debt</investmentCategory>
+      <yieldOfTheSecurityAsOfReportingDate>0.0530</yieldOfTheSecurityAsOfReportingDate>
+    </scheduleOfPortfolioSecuritiesInfo>
+  </formData>
+</edgarSubmission>

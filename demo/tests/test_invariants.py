@@ -8,6 +8,7 @@ the promise on the written files rather than on the simulation's own
 bookkeeping.
 """
 
+import ast
 import collections
 import csv
 import datetime as dt
@@ -32,11 +33,27 @@ from tests import goref  # noqa: E402
 AS_OF = dt.date(2026, 9, 29)
 SEED = "harlow-19"
 FIXED_SIGN_ZERO_OK = {"corporate_action"}
+SEC_EDGAR = pathlib.Path(__file__).resolve().parents[2] / "collectors" / "refdata" / "providers" / "sec_edgar.py"
 
 
 def ledger(root, name):
     """The rows of one of the ledger CSVs the build writes."""
     return list(csv.DictReader((root / "overrides" / name).read_text().splitlines()))
+
+
+def sec_figures():
+    """{field: {field, family, unit, instant, gaap, ifrs}}: the figures the
+    refdata collector reads from the SEC, from its FIGURES declaration."""
+    tree = ast.parse(SEC_EDGAR.read_text())
+    (figures,) = [n.value for n in tree.body
+                  if isinstance(n, ast.Assign) and [getattr(x, "id", None) for x in n.targets] == ["FIGURES"]]
+    names = ("field", "family", "unit", "instant", "gaap", "ifrs")
+    out = {}
+    for call in figures.elts:
+        f = dict(zip(names, map(ast.literal_eval, call.args), strict=False))
+        f |= {k.arg: ast.literal_eval(k.value) for k in call.keywords}
+        out[f["field"]] = f
+    return out
 
 
 BUILT = {}
@@ -844,6 +861,20 @@ class TestPeriodFacts(Built):
         """Gold's wanted list reads a company's figures by field name, so a
         field it does not name would be written and never read."""
         self.assertEqual(set(filings.FLOWS) | set(filings.BALANCES), goref.period_fields())
+
+    def test_schemes_and_units_are_the_collectors(self):
+        """Each figure is stated under a us-gaap concept the refdata
+        collector reads it from, in the unit it reads, and the balances are
+        exactly its figures that hold on a day."""
+        figures = sec_figures()
+        stated = filings.FLOWS | filings.BALANCES
+        self.assertEqual(set(stated), set(figures))
+        for field, (scheme, unit) in stated.items():
+            taxonomy, concept = scheme.split(":")
+            self.assertEqual(taxonomy, "us-gaap", field)
+            self.assertIn(concept, figures[field]["gaap"], field)
+            self.assertEqual(unit, figures[field]["unit"], field)
+        self.assertEqual(set(filings.BALANCES), {k for k, f in figures.items() if f["instant"]})
 
     def test_a_year_is_the_sum_of_its_quarters(self):
         sums = collections.defaultdict(lambda: collections.defaultdict(Decimal))

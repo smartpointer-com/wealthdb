@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- An invented N-MFP3 filing in the layout the SEC publishes. Every name,
+     identifier and figure is made up. Three business days stand for the
+     month's; a filing lists every one. -->
+<edgarSubmission xmlns="http://www.sec.gov/edgar/nmfp3" xmlns:ns3="http://www.sec.gov/edgar/nmfp3common">
+  <headerData>
+    <submissionType>N-MFP3</submissionType>
+    <filerInfo>
+      <filer><filerCredentials><cik>0000000001</cik></filerCredentials></filer>
+      <liveTestFlag>LIVE</liveTestFlag>
+    </filerInfo>
+  </headerData>
+  <formData>
+    <generalInfo>
+      <reportDate>2026-06-30</reportDate>
+      <registrantFullName>Example Money Trust</registrantFullName>
+      <cik>0000000001</cik>
+      <nameOfSeries>Example Government Money Market Fund</nameOfSeries>
+      <seriesId>S000000001</seriesId>
+      <totalShareClassesInSeries>2</totalShareClassesInSeries>
+      <finalFilingFlag>N</finalFilingFlag>
+    </generalInfo>
+    <seriesLevelInfo>
+      <moneyMarketFundCategory>Government</moneyMarketFundCategory>
+      <fundRetailMoneyMarketFlag>N</fundRetailMoneyMarketFlag>
+      <govMoneyMrktFundFlag>Y</govMoneyMrktFundFlag>
+      <averagePortfolioMaturity>28</averagePortfolioMaturity>
+      <averageLifeMaturity>61</averageLifeMaturity>
+      <liquidAssetsDetails>
+        <totalValueWeeklyLiquidAssets>600000.00</totalValueWeeklyLiquidAssets>
+        <percentageWeeklyLiquidAssets>0.6000</percentageWeeklyLiquidAssets>
+        <totalLiquidAssetsNearPercentDate>2026-06-30</totalLiquidAssetsNearPercentDate>
+      </liquidAssetsDetails>
+      <netAssetOfSeries>1000000.00</netAssetOfSeries>
+      <seekStablePricePerShare>Y</seekStablePricePerShare>
+      <stablePricePerShare>1.0000</stablePricePerShare>
+      <sevenDayGrossYield>
+        <sevenDayGrossYieldValue>0.0531</sevenDayGrossYieldValue>
+        <sevenDayGrossYieldDate>2026-06-26</sevenDayGrossYieldDate>
+      </sevenDayGrossYield>
+      <sevenDayGrossYield>
+        <sevenDayGrossYieldValue>0.0532</sevenDayGrossYieldValue>
+        <sevenDayGrossYieldDate>2026-06-29</sevenDayGrossYieldDate>
+      </sevenDayGrossYield>
+      <sevenDayGrossYield>
+        <sevenDayGrossYieldValue>0.0530</sevenDayGrossYieldValue>
+        <sevenDayGrossYieldDate>2026-06-30</sevenDayGrossYieldDate>
+      </sevenDayGrossYield>
+      <dailyNetAssetValuePerShareSeries>
+        <dailyNetAssetValuePerShareSeries>1.0000</dailyNetAssetValuePerShareSeries>
+        <dailyNetAssetValuePerShareDateSeries>2026-06-30</dailyNetAssetValuePerShareDateSeries>
+      </dailyNetAssetValuePerShareSeries>
+    </seriesLevelInfo>
+    <classLevelInfo>
+      <classFullName>Institutional Shares</classFullName>
+      <classesId>C000000001</classesId>
+      <minInitialInvestment>1000000.00</minInitialInvestment>
+      <netAssetsOfClass>800000.00</netAssetsOfClass>
+      <numberOfSharesOutstanding>800000.00</numberOfSharesOutstanding>
+      <sevenDayNetYield>
+        <sevenDayNetYieldValue>0.0511</sevenDayNetYieldValue>
+        <sevenDayNetYieldDate>2026-06-26</sevenDayNetYieldDate>
+      </sevenDayNetYield>
+      <sevenDayNetYield>
+        <sevenDayNetYieldValue>0.0512</sevenDayNetYieldValue>
+        <sevenDayNetYieldDate>2026-06-29</sevenDayNetYieldDate>
+      </sevenDayNetYield>
+      <sevenDayNetYield>
+        <sevenDayNetYieldValue>0.0510</sevenDayNetYieldValue>
+        <sevenDayNetYieldDate>2026-06-30</sevenDayNetYieldDate>
+      </sevenDayNetYield>
+      <personPayForFundFlag>N</personPayForFundFlag>
+    </classLevelInfo>
+    <classLevelInfo>
+      <classFullName>Investor Shares</classFullName>
+      <classesId>C000000002</classesId>
+      <minInitialInvestment>1000.00</minInitialInvestment>
+      <netAssetsOfClass>200000.00</netAssetsOfClass>
+      <numberOfSharesOutstanding>200000.00</numberOfSharesOutstanding>
+      <sevenDayNetYield>
+        <sevenDayNetYieldValue>0.0491</sevenDayNetYieldValue>
+        <sevenDayNetYieldDate>2026-06-26</sevenDayNetYieldDate>
+      </sevenDayNetYield>
+      <sevenDayNetYield>
+        <sevenDayNetYieldValue>0.0492</sevenDayNetYieldValue>
+        <sevenDayNetYieldDate>2026-06-29</sevenDayNetYieldDate>
+      </sevenDayNetYield>
+      <sevenDayNetYield>
+        <sevenDayNetYieldValue>0.0490</sevenDayNetYieldValue>
+        <sevenDayNetYieldDate>2026-06-30</sevenDayNetYieldDate>
+      </sevenDayNetYield>
+      <personPayForFundFlag>N</personPayForFundFlag>
+    </classLevelInfo>
+    <scheduleOfPortfolioSecuritiesInfo>
+      <nameOfIssuer>Example Treasury</nameOfIssuer>
+      <titleOfIssuer>Example Treasury Bill</titleOfIssuer>
+      <CUSIPMember>000000001</CUSIPMember>
+      <ISINId>US0000000001</ISINId>
+      <investmentCategory>U.S. Treasury Debt</investmentCategory>
+      <yieldOfTheSecurityAsOfReportingDate>0.0520</yieldOfTheSecurityAsOfReportingDate>
+      <percentageOfMoneyMarketFundNetAssets>1.0000</percentageOfMoneyMarketFundNetAssets>
+    </scheduleOfPortfolioSecuritiesInfo>
+  </formData>
+</edgarSubmission>

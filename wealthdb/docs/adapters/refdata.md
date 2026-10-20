@@ -4,13 +4,17 @@ Projects the **refdata** silver into canonical reference records.
 `internal/silver/refdata/`.
 
 The refdata collector (`collectors/refdata/`) downloads reference data
-from public sources: what a fund holds, what a fund is, and what a
-security is, and the figures a fund or a company states of itself: a
-fund's rate sensitivities and its own figures, and a company's reported
-figures by period. Its silver keeps that data as the providers served
-it.
-This adapter turns it into dated reference records. The exposure report
-reads them ([EXPOSURE.md](../EXPOSURE.md)).
+from public sources:
+
+- what a fund holds and what a fund is;
+- what a security is;
+- a fund's rate sensitivities, and the figures stated for the fund as a
+  whole;
+- a company's reported figures, by period.
+
+Its silver keeps that data as the providers served it. This adapter
+turns it into dated reference records. The exposure report reads the
+records of the first two kinds ([EXPOSURE.md](../EXPOSURE.md)).
 
 refdata is a reference source, like `fred`. It emits no accounts, no
 positions and no transactions. Nothing of it reaches the returns engine,
@@ -166,13 +170,13 @@ every reference table that has a run: `compositions`, `attributes`,
 composition's run. The clock is the load, not the fetch, so a run
 fetched earlier but loaded later still reaches gold: an import from
 another machine, or a re-parse of kept bronze. A composition for an old
-day that arrives late loads like any other. `Snapshots` re-emits every row inside
-the window, whichever run wrote it, so gold's windowed delete leaves the
-window as silver holds it. A run that wrote nothing advances the
-watermark without a window.
+day that arrives late loads like any other. `Snapshots` re-emits every
+row inside the window, whichever run wrote it, so gold's windowed
+delete leaves the window as silver holds it. A run that wrote nothing
+advances the watermark without a window.
 
 `Snapshots` streams the window (`silver.NewReferenceStream`). A batch
-holds whole fund-days, up to about twenty thousand lines. A fund-day
+holds whole fund-days, up to about twenty thousand records. A fund-day
 carries its rate sensitivities and its characteristics. Then come the
 security identities, the security facts and the period facts, five
 thousand to a batch. A backfill of years holds one batch in memory at a
@@ -254,7 +258,7 @@ A fund held (role `held`) wants these facts, in this order:
 | `risk_metrics` | a fund of class fixed income or multi asset | its N-PORT filing's rate sensitivities (`fund_risk`) |
 | `characteristics` | every fund held | the figures its issuer's page states: duration, yields, credit quality |
 | `money_market` | a fund of class cash, a money-market fund | its 7-day yields and its weighted average maturity and life |
-| `line_durations` | a fund of class fixed income whose newest composition has no line with a duration or a modified duration | the durations of its lines |
+| `line_durations` | a fund of class fixed income whose newest composition has no line with a duration or a modified duration | the durations of its lines, which come only with a composition that states them, such as an issuer's holdings file |
 
 The class is the one a holding states. A bond fund with no composition
 yet wants `line_durations` too. A fund that only the roles `proxy`,
@@ -298,8 +302,9 @@ A period fact is a figure a company reported for one period
 `earnings`, `dividends` and `financials` (the fact fields below). A
 security of class public equity wants all three: a stock held directly,
 or a constituent. A family is missing while gold holds no period of it
-that ended within 200 days of the list's `as_of`. A bond or a fund wants
-none of them.
+that ended within 135 days of the list's `as_of`: a quarter and the 45
+days a quarterly report may take. So the next quarter is asked for once
+it is due. A bond or a fund wants none of them.
 
 A security is wanted when a position holds it as a `stock` or a `bond`,
 or when the look-through of the day reaches it through a fund held today
@@ -345,5 +350,5 @@ stocks miss every family.
 
 The `synthetic` kind repeats the nine reference tables column for column
 ([synthetic.md](synthetic.md) §12), and reads them through the same
-stream. A generator such as the demo household can write compositions
-and security facts beside its accounts.
+stream. A generator such as the demo household can write any of these
+records beside its accounts.

@@ -12,9 +12,8 @@ import fetcher
 import wanted as wantedmod
 from providers.base import Context, Provider, ProviderError, Unavailable
 from providers.inbox import Inbox
-from tests.helpers import FakeHttps, FakeProvider, fund, wanted_doc, write_wanted
-
-TODAY = date(2026, 7, 15)
+from tests import helpers
+from tests.helpers import TODAY, FakeHttps, FakeLookup, FakeProvider, fund, wanted_doc, write_wanted
 
 
 @pytest.fixture
@@ -37,7 +36,8 @@ def ctx():
 
 
 def plan(want, providers, **kw):
-    return download.plan(want, providers, ctx(), **{"today": TODAY, "max_age": 30, "backfill": False, **kw})
+    """The requests and the unclaimed funds of a plan."""
+    return helpers.plan(want, providers, **kw)[:2]
 
 
 def configured(monkeypatch, **settings):
@@ -69,8 +69,8 @@ def test_plan_does_not_fetch_again_what_a_provider_served_within_max_age(fake):
     # recently it was fetched.
     want = wantedmod.parse(wanted_doc([fund("symbol:FUNDA", "FUNDA", compositions=["2026-01-31"])]))
     served = {(fake.name, "symbol:FUNDA", date(2026, 1, 31)): date(2026, 7, 1)}
-    assert plan(want, [fake], fetched=served)[0] == []
-    reqs, _ = plan(want, [fake], today=date(2026, 8, 15), fetched=served)
+    assert plan(want, [fake], earlier=download.Fetched.of(funds=served))[0] == []
+    reqs, _ = plan(want, [fake], today=date(2026, 8, 15), earlier=download.Fetched.of(funds=served))
     assert [(r.ref, r.as_of) for r in reqs] == [("symbol:FUNDA", None)]
 
 
@@ -123,7 +123,7 @@ def test_a_product_list_that_does_not_parse_is_no_claim(fake, error):
 def test_plan_asks_only_the_refs_given(fake):
     want = wantedmod.parse(wanted_doc([fund("symbol:FUNDA", "FUNDA"), fund("symbol:OTHER", "FUNDA")],
                                       [{"key": "isin:XX0000000081", "scope": "direct", "lookups": {}}]))
-    reqs, _ = plan(want, [fake, _FakeLookup()], refs={"symbol:OTHER"})
+    reqs, _ = plan(want, [fake, FakeLookup()], refs={"symbol:OTHER"})
     assert [r.ref for r in reqs] == ["symbol:OTHER"]
 
 
@@ -131,7 +131,7 @@ def test_the_inbox_serves_beside_the_provider_that_claims(tmp_path, fake):
     (tmp_path / "inbox" / "symbol_FUNDA" / "2026-03-15").mkdir(parents=True)
     want = wantedmod.parse(wanted_doc([fund("symbol:FUNDA", "FUNDA", compositions=["2026-07-10"])]))
     c = Context(client=None, data_dir=tmp_path)
-    reqs, unclaimed = download.plan(want, [Inbox(), fake], c, today=TODAY, max_age=30, backfill=False)
+    reqs, unclaimed, _ = download.plan(want, [Inbox(), fake], c, today=TODAY, max_age=30, backfill=False)
     assert [(r.provider, r.as_of) for r in reqs] == [("inbox", date(2026, 3, 15))]
     assert unclaimed == []
 
@@ -140,7 +140,7 @@ def test_an_inbox_composition_counts_as_had_whatever_the_order(tmp_path, fake):
     (tmp_path / "inbox" / "symbol_FUNDA" / "2026-07-01").mkdir(parents=True)
     want = wantedmod.parse(wanted_doc([fund("symbol:FUNDA", "FUNDA", compositions=["2026-03-31"])]))
     c = Context(client=None, data_dir=tmp_path)
-    reqs, _ = download.plan(want, [fake, Inbox()], c, today=TODAY, max_age=30, backfill=False)
+    reqs, _, _ = download.plan(want, [fake, Inbox()], c, today=TODAY, max_age=30, backfill=False)
     assert [(r.provider, r.as_of) for r in reqs] == [("inbox", date(2026, 7, 1))]
 
 
@@ -390,18 +390,8 @@ def test_plan_asks_no_constituent_below_the_floor():
     doc = wanted_doc(securities=[
         {"key": "isin:XX0000000078", "scope": "constituent", "share_pct": 0.05, "missing": ["country"], "lookups": {}},
         {"key": "isin:XX0000000079", "scope": "constituent", "share_pct": 0.5, "missing": ["country"], "lookups": {}}])
-    reqs, _ = plan(wantedmod.parse(doc), [_FakeLookup()], constituents=True, floor_pct=0.1)
+    reqs, _ = plan(wantedmod.parse(doc), [FakeLookup()], constituents=True, floor_pct=0.1)
     assert [r.ref for r in reqs] == ["isin:XX0000000079"]
-
-
-class _FakeLookup(Provider):
-    """A security provider that answers a country and claims everything."""
-    name = "lookup"
-    serves_securities = True
-    answers = frozenset({"country"})
-
-    def claim_security(self, sec, ctx):
-        return {"key": sec.key}
 
 
 def test_plan_asks_constituents_only_when_allowed_and_what_a_provider_answers():
@@ -414,14 +404,15 @@ def test_plan_asks_constituents_only_when_allowed_and_what_a_provider_answers():
         {"key": "isin:XX0000000094", "scope": "constituent", "share_pct": 3.0, "missing": ["country"],
          "lookups": {"lookup": "2026-07-10"}}])
     want = wantedmod.parse(doc)
-    lk = _FakeLookup()
+    lk = FakeLookup()
     keys = lambda reqs: [r.ref for r in reqs]  # noqa: E731
     assert keys(plan(want, [lk])[0]) == ["isin:XX0000000091"]
     # The direct one always; the constituents lacking a country, but not
     # one looked up recently, nor one lacking only what it cannot answer.
     assert keys(plan(want, [lk], constituents=True)[0]) == ["isin:XX0000000091", "isin:XX0000000092"]
     # An earlier run's answer counts until gold holds it.
-    again, _ = plan(want, [lk], constituents=True, looked_up={("lookup", "isin:XX0000000092"): TODAY})
+    again, _ = plan(want, [lk], constituents=True,
+                    earlier=download.Fetched.of(lookups={("lookup", "isin:XX0000000092"): TODAY}))
     assert keys(again) == ["isin:XX0000000091"]
     # Without securities, none is asked.
     assert plan(want, [lk], constituents=True, securities=False)[0] == []
@@ -439,6 +430,7 @@ def test_earlier_runs_count_their_lookups_and_compositions(tmp_path):
     crashed.mkdir()
     (crashed / "run.json").write_text(json.dumps({"status": "in-progress", "requests": [
         {"kind": "security", "provider": "gleif", "ref": "isin:XX0000000096", "status": "ok"}]}))
-    funds, lookups = download.fetched_before(tmp_path)
-    assert lookups == {("gleif", "isin:XX0000000095"): date(2026, 7, 14)}
-    assert funds == {("fake", "symbol:FUNDA", date(2026, 1, 31)): date(2026, 7, 14)}
+    earlier = download.fetched_before(tmp_path)
+    assert earlier.lookups == {("gleif", "isin:XX0000000095"): date(2026, 7, 14)}
+    assert earlier.funds == {("fake", "symbol:FUNDA", date(2026, 1, 31)): date(2026, 7, 14)}
+    assert earlier == download.Fetched.of(funds=earlier.funds, lookups=earlier.lookups)

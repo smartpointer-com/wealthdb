@@ -42,7 +42,7 @@ type WantedSettings struct {
 	MaxGapDays int `json:"max_gap_days"`
 }
 
-// WantedFund is one fund gold wants compositions for.
+// WantedFund is one fund gold wants compositions or facts for.
 type WantedFund struct {
 	Ref    string  `json:"ref"`
 	ISIN   *string `json:"isin"`
@@ -83,7 +83,8 @@ type WantedSecurity struct {
 	Currency *string `json:"currency"`
 	// Scope is direct (held directly, and always completed) or
 	// constituent (named by the lines of a held fund, and lacking a
-	// sector or a country there or, for a stock, a recent period fact).
+	// sector or a country there or, for public equity, a recent period
+	// of a family of period facts).
 	// A collector skips a scope it does not know.
 	Scope string `json:"scope"`
 	// SharePct is a constituent's share of net worth through funds, in
@@ -419,12 +420,17 @@ func (s *span) dates() (from, to *string) {
 	if s == nil || !s.set {
 		return nil, nil
 	}
-	f := time.Unix(s.from, 0).UTC().Format(time.DateOnly)
+	f := isoDay(s.from)
 	if s.open {
 		return &f, nil
 	}
-	t := time.Unix(s.to, 0).UTC().Format(time.DateOnly)
+	t := isoDay(s.to)
 	return &f, &t
+}
+
+// isoDay is the UTC day of a Unix time, as YYYY-MM-DD.
+func isoDay(unix int64) string {
+	return time.Unix(unix, 0).UTC().Format(time.DateOnly)
 }
 
 // addProxiesAndReferences adds the funds the exposure config names: a
@@ -539,7 +545,7 @@ func addCompositionDates(ctx context.Context, db *sql.DB, funds map[string]*Want
 				return err
 			}
 			if f := funds[ref]; f != nil {
-				f.Compositions = append(f.Compositions, time.Unix(asOf, 0).UTC().Format(time.DateOnly))
+				f.Compositions = append(f.Compositions, isoDay(asOf))
 			}
 			return nil
 		})
@@ -628,7 +634,7 @@ SELECT DISTINCT `+keys.sql("fund_ref")+` AS k, fact, as_of FROM f ORDER BY 1, 2,
 			return err
 		}
 		if f := funds[ref]; f != nil {
-			f.Facts[fact] = append(f.Facts[fact], time.Unix(asOf, 0).UTC().Format(time.DateOnly))
+			f.Facts[fact] = append(f.Facts[fact], isoDay(asOf))
 		}
 		return nil
 	}, moneyMarketFields)
@@ -668,8 +674,10 @@ var periodFamilies = []struct {
 }
 
 // periodFreshDays is how long before the list's day a family's newest
-// period may have ended and still count as stated.
-const periodFreshDays = 200
+// period may have ended and still count as stated: a quarter and the
+// 45 days a quarterly report may take, so the next quarter is asked for
+// once it is due.
+const periodFreshDays = 135
 
 // readPeriods is the newest period end gold holds per security key and
 // family of period facts, the key read through its aliases.
@@ -698,7 +706,7 @@ SELECT k, field, MAX(as_of) FROM (
 		if out[key] == nil {
 			out[key] = map[string]string{}
 		}
-		out[key][fam] = max(out[key][fam], time.Unix(asOf, 0).UTC().Format(time.DateOnly))
+		out[key][fam] = max(out[key][fam], isoDay(asOf))
 		return nil
 	})
 	if err != nil {
@@ -832,7 +840,7 @@ SELECT k, provider, MAX(as_of) FROM (
 			return err
 		}
 		if s := securities[key]; s != nil {
-			s.Lookups[provider] = time.Unix(asOf, 0).UTC().Format(time.DateOnly)
+			s.Lookups[provider] = isoDay(asOf)
 		}
 		return nil
 	})

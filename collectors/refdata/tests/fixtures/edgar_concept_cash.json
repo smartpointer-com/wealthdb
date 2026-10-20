@@ -1,0 +1,15 @@
+{
+  "cik": 7,
+  "taxonomy": "us-gaap",
+  "tag": "CashAndCashEquivalentsAtCarryingValue",
+  "label": "Cash and Cash Equivalents, at Carrying Value",
+  "description": "Amount of currency on hand as well as demand deposits with banks or financial institutions.",
+  "entityName": "EXAMPLE INDUSTRIES INC",
+  "units": {
+    "USD": [
+      {"end": "2025-12-31", "val": 5000000, "accn": "0000000007-26-000003", "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2026-02-20", "frame": "CY2025Q4I"},
+      {"end": "2025-12-31", "val": 5000000, "accn": "0000000007-26-000010", "fy": 2026, "fp": "Q2", "form": "10-Q", "filed": "2026-08-05"},
+      {"end": "2026-06-30", "val": 5200000, "accn": "0000000007-26-000010", "fy": 2026, "fp": "Q2", "form": "10-Q", "filed": "2026-08-05", "frame": "CY2026Q2I"}
+    ]
+  }
+}

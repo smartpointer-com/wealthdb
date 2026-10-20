@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 FILE_NAME = "refdata.cfg"
-DEFAULT_PROVIDERS = ("inbox", "sec-nport", "sec-edgar", "gleif", "openfigi")
+DEFAULT_PROVIDERS = ("inbox", "sec-nport", "sec-nmfp", "sec-edgar", "gleif", "openfigi")
 DEFAULT_MAX_AGE_DAYS = 30
 DEFAULT_CONSTITUENT_FLOOR_PCT = 0.0001
 SETTINGS = ("providers", "contact", "max_age_days", "engine", "constituents", "constituent_floor_pct",

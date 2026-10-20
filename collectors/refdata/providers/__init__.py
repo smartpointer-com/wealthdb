@@ -11,6 +11,7 @@ from .invesco import Invesco
 from .ishares import IShares
 from .openfigi import OpenFigi
 from .sec_edgar import SecEdgar
+from .sec_nmfp import SecNmfp
 from .sec_nport import SecNport
 from .spdr import Spdr
 from .sprott import Sprott
@@ -19,5 +20,5 @@ from .swissfunddata import SwissFundData
 from .xtrackers import Xtrackers
 
 REGISTRY = {p.name: p for p in (Inbox(), IShares(), Xtrackers(), Invesco(), Amundi(), Spdr(), Sprott(),
-                                Swisscanto(), SwissFundData(), Fidelity529(), SecNport(), SecEdgar(), Gleif(),
-                                OpenFigi())}
+                                Swisscanto(), SwissFundData(), Fidelity529(), SecNport(), SecNmfp(), SecEdgar(),
+                                Gleif(), OpenFigi())}

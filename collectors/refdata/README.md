@@ -4,17 +4,20 @@ Part of the **wealthdb** suite. See [the architecture overview](../../DESIGN.md)
 for the bronze → silver → gold model and [collectors/README.md](../README.md)
 for the shared collector conventions.
 
-A collector for **reference data**: what each fund holds, and what each
-security is. The engine's exposure report
-([EXPOSURE.md](../../wealthdb/docs/EXPOSURE.md)) reads it to look
-through every fund to the securities underneath.
+A collector for **reference data**: what each fund holds, what each
+fund states about itself, and what each security is. The engine's
+exposure report ([EXPOSURE.md](../../wealthdb/docs/EXPOSURE.md)) reads
+it to look through every fund to the securities underneath. It also
+keeps a bond fund's duration, yields and rate sensitivities, a
+money-market fund's yields, and each company's earnings, dividends and
+other reported figures by period.
 
 `refdata` reads only what gold asks for. The engine prints a **wanted
 list**: the funds held, the funds the config names (proxies, reference
 and size funds), the funds a held fund holds, and the securities held
-directly or through funds. `refdata` fetches what is missing or old
-from public sources and loads it into its silver. `wealthdb load`
-brings it into gold.
+directly or through funds, each with the facts gold still lacks for it.
+`refdata` fetches what is missing or old from public sources and loads
+it into its silver. `wealthdb load` brings it into gold.
 
 There is no login anywhere. Every provider reads public pages. A
 request names the fund or security it asks about by its ISIN, CUSIP or
@@ -41,11 +44,14 @@ run can be narrowed:
 
 - `--provider NAME` asks only that provider (repeatable). A name
   `refdata.cfg` does not enable stops the run.
-- `--ref REF` fetches only that fund or security (repeatable).
-- `--limit N` makes at most N fetch attempts. The lookups that find a
-  fund are not counted. A request left without an attempt is recorded
-  as deferred.
-- `--no-securities` skips the security lookups.
+- `--ref REF` fetches only that fund, security or bulk request
+  (repeatable). A bulk request is named by its own ref, such as a
+  frame's. A run that names only funds or securities makes no bulk
+  request.
+- `--limit N` makes at most N fetch attempts. A bulk request counts as
+  one. The lookups that find a fund are not counted. A request left
+  without an attempt is recorded as deferred.
+- `--no-securities` skips the security lookups and the bulk requests.
 
 `login` is a no-op, since there is no session. `login --check` asks each
 enabled provider for its cheapest answer (a product list, one lookup)
@@ -57,7 +63,56 @@ A fund counts as current while its newest composition is younger than
 is asked first, and a composition already had is not fetched again. A
 composition fetched by an earlier run counts as had before it reaches
 gold. A security looked up within `max_age_days` is not looked up
-again. So a second `download` on the same day fetches nothing.
+again. A stock that lacks a company's figures is asked for them unless
+a run within `max_age_days` asked for them. So a second `download` on
+the same day fetches nothing.
+
+A held fund also wants facts beyond its composition: its risk metrics,
+its characteristics, its money-market figures and the durations of its
+lines. The providers that answer a fact are offered it in `providers`
+order, even where another provider serves the composition. The first
+that knows the fund is asked; the next ones stand by. A provider asked
+for facts alone keeps only those facts in silver, never the composition
+its document also states. A fact counts as current while gold's newest
+day for it is younger than `max_age_days`. A fact an earlier run
+fetched counts as current for `max_age_days` after that run.
+`--backfill` also asks for each past date
+while the fund was held, from a provider that states the fact for past
+days, such as a filing. A date that gold holds the fact for, or that an
+earlier run fetched, is skipped.
+
+A bulk provider answers many securities with one request, such as a
+table of every company's figure for one quarter. It plans its requests
+after the security lookups. It decides itself which requests of earlier
+runs to make again.
+
+A dry run prints a `facts` section after its requests. For each fact
+wanted it prints one line of counts. Then it prints one line per fund
+or security that stays without the fact:
+
+```
+facts
+characteristics	3 wanted, 1 planned, 1 had
+characteristics	symbol:EXMB	no provider claims it
+earnings	2 wanted, 1 planned, 0 had
+earnings	isin:XX0000000002	no provider claims it
+```
+
+`planned` counts those that a request of this run asks for. `had`
+counts those that gold or an earlier run holds within `max_age_days`.
+For a company's figures, an earlier run counts only where it asked for
+them, or where a bulk answer stated one.
+The reason for one left is one of these:
+
+- `no enabled provider answers it`: no provider of the collector
+  answers the fact.
+- `provider off: NAMES`: only providers that the run does not ask
+  answer it.
+- `no provider claims it`: the providers that answer it do not know the
+  fund or security.
+- `deferred by --limit`: its request waits for the next run.
+
+A download logs the same counts, one line per fact.
 
 ## Settings
 
@@ -66,7 +121,7 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
 
 ```json
 {
-  "providers": ["inbox", "ishares", "invesco", "spdr", "sec-nport", "sec-edgar", "gleif", "openfigi"],
+  "providers": ["inbox", "ishares", "invesco", "spdr", "sec-nport", "sec-nmfp", "sec-edgar", "gleif", "openfigi"],
   "contact": "name@example.org",
   "max_age_days": 30,
   "engine": "/path/to/wealthdb",
@@ -77,7 +132,8 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
 ```
 
 - `providers` are asked in this order. For a fund:
-  - A fund is offered only while it wants a composition.
+  - A fund is offered for its composition only while it wants one, and
+    for a fact only to the providers that answer it.
   - The first provider that claims it serves it. The inbox serves
     beside it.
   - The next provider claims it only when the fetch of the one before
@@ -91,19 +147,22 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
     that it can claim.
   - A security held through funds is asked only of a provider that can
     fill what it lacks.
-- `max_age_days` (1 to 3650, default 30) is how old a composition or a
-  lookup may be before it is fetched again.
+- `max_age_days` (1 to 3650, default 30) is how old a composition, a
+  fund's fact or a lookup may be before it is fetched again.
 - `constituents` lets the security providers look up the securities a
   held fund's lines name that no source describes yet (an N-PORT filing
   states no sector), the biggest share of net worth first. Off by
   default: a broad fund names thousands, and OpenFIGI takes 25 requests
-  a minute. Securities held directly are always looked up.
+  a minute. Securities held directly are always looked up. It also
+  lets `sec-edgar` read the figures of the companies a held fund holds,
+  by frame.
 - `constituent_floor_pct` skips a security held through funds whose
   share of net worth, in percent, is below it. The default, 0.0001, is
   one millionth of net worth.
 - `contact` goes into the User-Agent of requests to the SEC, and to no
   other host. The SEC requires it. The providers that ask the SEC
-  (`sec-nport`, `sec-edgar` and `fidelity-529`) do not run without it.
+  (`sec-nport`, `sec-nmfp`, `sec-edgar` and `fidelity-529`) do not run
+  without it.
   It is kept in this file only, never in bronze, silver or a log.
 - `engine` is the wealthdb wrapper. `REFDATA_WEALTHDB` overrides it.
   Without either, the collector asks the wrapper of its own checkout,
@@ -115,13 +174,14 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
   provider does not run.
 
 With no file, the providers of public data run: `inbox`, `sec-nport`,
-`sec-edgar`, `gleif` and `openfigi`. The two SEC providers wait for a
-`contact`. An issuer's provider (`ishares`, `xtrackers`, `invesco`,
+`sec-nmfp`, `sec-edgar`, `gleif` and `openfigi`. The three SEC providers
+wait for a `contact`. An issuer's provider (`ishares`, `xtrackers`, `invesco`,
 `amundi`, `spdr`, `sprott`) and a report provider (`swisscanto`,
 `swissfunddata`, `fidelity-529`) run only once `providers` names them.
 Enabling one accepts its source's terms, quoted below. An issuer's
 daily file is fresher than a report or a quarterly N-PORT filing, so
-list the issuers first, then the report providers, then `sec-nport`.
+list the issuers first, then the report providers, then `sec-nport`
+and `sec-nmfp`.
 
 A setting or a provider name the collector does not know is an error,
 so a typo never passes for a switch that is off.
@@ -179,6 +239,18 @@ US registered funds and ETFs, from their N-PORT filings on SEC EDGAR.
   was held, and the last one before them: the composition in force when
   the holding began.
 
+A debt holding also states its coupon kind, and whether it is in
+default, its interest payments in arrears or its coupon paid in kind. A
+holding in another currency states the exchange rate it was valued at,
+in units of its currency per US dollar.
+A fund with a quarter or more of its net assets in debt states its rate
+sensitivities: what its value moves by for a move in rates of one and
+of one hundred basis points, per currency and tenor, and for a one
+basis point move of investment-grade and of non-investment-grade credit
+spreads. `sec-nport` is asked for a held bond or multi-asset fund's
+newest filing for these figures even where another provider serves its
+composition.
+
 N-PORT carries no sector. Public filings are quarterly and two to five
 months old, so a composition is often flagged `aged` in the report.
 
@@ -188,6 +260,32 @@ site without the SEC's permission." The SEC's fair-access rules allow at
 most ten requests a second and require a User-Agent that names the tool
 and a contact address. The collector sends
 `wealthdb-refdata/1 <contact>` and keeps to the limit.
+
+### sec-nmfp
+
+US money-market funds, from their N-MFP filings on SEC EDGAR.
+
+- A fund is asked for only when it wants money-market figures. Gold
+  wants them for a held fund of class cash.
+- The fund is found by its ticker in the SEC's ticker file, as for
+  `sec-nport`. A series that files no N-MFP is not claimed.
+- Each monthly filing states the series' weighted average maturity and
+  weighted average life, in days, and its 7-day gross yield. It states
+  each share class's 7-day net yield; the held class's is read. A class
+  the filing does not list has no net yield. The portfolio's securities
+  are not read.
+- An N-MFP3 filing states the yields for each business day of the
+  month. An N-MFP2 filing, the form before it, states them once, for the
+  report date. Each figure is dated the day it describes.
+- A filing states a yield as a fraction (0.0425). It is kept in percent
+  (4.25).
+- `--backfill` reads every monthly filing inside the days the fund was
+  held.
+
+A fund files within five business days of the month's end, so its
+figures are at most about five weeks old.
+
+**Terms.** As `sec-nport`.
 
 ### spdr
 
@@ -375,14 +473,42 @@ SEC's company ticker file:
 - its SIC code, which gold reads as a coarse sector;
 - its state or country of incorporation and of its business address,
   as EDGAR codes, which gold reads through EDGAR's own code list;
-- its latest reported shares outstanding.
+- its latest reported shares outstanding;
+- its reported figures, each for the period it covers: diluted earnings
+  and dividends per share, net income, revenue, operating income,
+  interest expense, long-term debt, cash, operating cash flow and
+  capital expenditure.
+
+The figures come from the SEC's XBRL API in two ways:
+
+- By concept, for a security held directly that lacks a family of
+  figures. One request per concept and company returns every period the
+  company reported. Where several filings state a period, the last one
+  filed counts. Some figures have a second concept, such as a newer one;
+  the first concept that states a period counts. A company that
+  reports none of the US GAAP concepts is asked for their IFRS twins,
+  as a 20-F filer reports. A figure keeps the unit its filing states,
+  so an IFRS filer's may be in its own currency. A concept a company
+  does not report leaves that figure unknown.
+- By frame, for the securities held through funds. One request per
+  concept and calendar period answers for every company at once. A run
+  asks for each quarter from the one the least current of these
+  securities last reported, at most eight back, up to the last quarter
+  that ended 45 days ago. It also asks for the calendar years of those
+  quarters. A frame fetched before is not asked for again, unless it was
+  fetched within 120 days of its period's end and is older than
+  `max_age_days`, since late filers arrive. A frame holds US GAAP
+  figures in US dollars only. It is stored zstd-compressed.
+
+A figure by concept counts only from 10-K, 10-Q, 20-F, 40-F and 6-K
+filings and their amendments. A frame states no form.
 
 A ticker abroad may be another company's in New York. So a security
-quoted abroad is asked only where its name and the SEC's agree on the
-first word. Quoted abroad means an ISIN from outside the US, or no ISIN
-and a price in another currency than US dollars. A depositary receipt's registrant
-(SIC 8880, or a name ending in `/ADR`) files from its depositary's
-address, so its business address states nothing.
+quoted abroad is asked for only where its name and the SEC's agree on
+the first word. Quoted abroad means an ISIN from outside the US, or no
+ISIN and a price in another currency than US dollars. A depositary
+receipt's registrant (SIC 8880, or a name ending in `/ADR`) files from
+its depositary's address, so its business address states nothing.
 
 **Terms.** As `sec-nport`.
 
@@ -444,20 +570,24 @@ Each `download` writes one UTC-timestamped run dir under
 <run>/run.json                                  the manifest: every request and its outcome
 <run>/funds/<provider>/<fund>/<YYYY-MM-DD | current>/   the provider's raw files
 <run>/securities/<provider>/<key>/
+<run>/bulk/<provider>/<ref>/                    a bulk request's answer
 ```
 
 A folder is named after the fund's reference or the security's key,
 `isin_XX…` as in the inbox. One failed request does not fail the run.
 The manifest follows the
 [shared status lifecycle](../README.md#debug-artefacts-run-status-and-pruning-bronze),
-so `load` never reads a crashed run. An N-PORT filing is stored
-zstd-compressed.
+so `load` never reads a crashed run. An N-PORT or N-MFP filing and a
+frame are stored zstd-compressed.
 
 The silver DB is `refdata.db`, beside the run dirs. It keeps what the
 providers state, labels in their own words: each fund's compositions
-and their lines, its attributes and counterparties, and each security's
-identifiers and facts. A fund and day served again replaces what silver
-held for them. [adapters/refdata.md](../../wealthdb/docs/adapters/refdata.md)
+and their lines, its attributes, counterparties and rate sensitivities,
+the figures it states for itself, each security's identifiers and
+facts, and each company's figures by period. A fund and day served
+again replaces what silver held for them; a provider's figure for a
+fund and day replaces that provider's same figure.
+[adapters/refdata.md](../../wealthdb/docs/adapters/refdata.md)
 describes the tables and how gold reads them.
 
 Gold reads the silver as a source of kind `refdata` in `wealthdb.cfg`:

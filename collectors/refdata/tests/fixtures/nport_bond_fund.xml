@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- An invented N-PORT filing of a bond fund in the layout the SEC
+     publishes. Every name, identifier and figure is made up. -->
+<edgarSubmission xmlns="http://www.sec.gov/edgar/nport" xmlns:com="http://www.sec.gov/edgar/common"
+                 xmlns:ncom="http://www.sec.gov/edgar/nportcommon">
+  <headerData><submissionType>NPORT-P</submissionType></headerData>
+  <formData>
+    <genInfo>
+      <regName>Example Bond Trust</regName>
+      <regCik>0000000002</regCik>
+      <seriesName>Example Global Bond ETF</seriesName>
+      <seriesId>S000000002</seriesId>
+      <repPdEnd>2026-06-30</repPdEnd>
+      <repPdDate>2026-06-30</repPdDate>
+    </genInfo>
+    <fundInfo>
+      <totAssets>2010000.00</totAssets>
+      <totLiabs>10000.00</totLiabs>
+      <netAssets>2000000.00</netAssets>
+      <curMetrics>
+        <curMetric>
+          <curCd>USD</curCd>
+          <intrstRtRiskdv01 period3Mon="12.34" period1Yr="56.78" period5Yr="90.12" period10Yr="34.56"
+                            period30Yr="78.90"/>
+          <intrstRtRiskdv100 period3Mon="1234.50" period1Yr="5678.90" period5Yr="9012.30" period10Yr="3456.70"
+                             period30Yr="7890.10"/>
+        </curMetric>
+        <curMetric>
+          <curCd>EUR</curCd>
+          <intrstRtRiskdv01 period3Mon="1.50" period1Yr="2.25" period5Yr="-3.00" period10Yr="4.75"/>
+          <intrstRtRiskdv100 period1Yr="225.00" period5Yr="-300.00" period10Yr="475.00"/>
+        </curMetric>
+      </curMetrics>
+      <creditSprdRiskInvstGrade period3Mon="1.2" period1Yr="3.4" period5Yr="5.6" period10Yr="7.8" period30Yr="9.0"/>
+      <creditSprdRiskNonInvstGrade period3Mon="0.1" period1Yr="0.2" period5Yr="0.3" period10Yr="0.4"/>
+      <isNonCashCollateral>N</isNonCashCollateral>
+    </fundInfo>
+    <invstOrSecs>
+      <invstOrSec>
+        <name>Example Treasury Note</name>
+        <lei>N/A</lei>
+        <title>Example Treasury Note 4.25% 2031</title>
+        <cusip>000000001</cusip>
+        <identifiers><isin value="US0000000001"/></identifiers>
+        <balance>1200000.00</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>1190000.00</valUSD>
+        <pctVal>59.500000000000</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>UST</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2031-05-15</maturityDt>
+          <couponKind>Fixed</couponKind>
+          <annualizedRt>4.25</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Exemplar Finanz AG</name>
+        <lei>XXXXXXXXXXXXXXXXXX21</lei>
+        <title>Exemplar Finanz AG FRN 2029</title>
+        <cusip>N/A</cusip>
+        <identifiers><isin value="XX0000000001"/></identifiers>
+        <balance>700000.00</balance>
+        <units>PA</units>
+        <currencyConditional curCd="EUR" exchangeRt="0.912345"/>
+        <valUSD>760000.00</valUSD>
+        <pctVal>38.000000000000</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>DE</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2029-11-30</maturityDt>
+          <couponKind>Floating</couponKind>
+          <annualizedRt>3.875</annualizedRt>
+          <isDefault>Y</isDefault>
+          <areIntrstPmntsInArrs>Y</areIntrstPmntsInArrs>
+          <isPaidKind>Y</isPaidKind>
+        </debtSec>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Example Money Market Fund</name>
+        <lei>XXXXXXXXXXXXXXXXXX22</lei>
+        <title>Example Money Market Fund</title>
+        <cusip>000000002</cusip>
+        <identifiers><isin value="US0000000002"/></identifiers>
+        <balance>50000.00</balance>
+        <units>NS</units>
+        <curCd>USD</curCd>
+        <valUSD>50000.00</valUSD>
+        <pctVal>2.500000000000</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>STIV</assetCat>
+        <issuerCat>RF</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+        <fairValLevel>1</fairValLevel>
+      </invstOrSec>
+    </invstOrSecs>
+  </formData>
+</edgarSubmission>

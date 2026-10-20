@@ -8,14 +8,7 @@ import download
 import load
 from collectorkit import bronze
 from providers.base import Context
-
-
-def make_run(data, slug, reqs):
-    run = data / slug
-    run.mkdir(parents=True)
-    entries = download.execute(reqs, run, Context(client=None))
-    bronze.atomic_write_json(run / "run.json", {"status": "complete", "requests": entries})
-    return run
+from tests.helpers import make_run
 
 
 def request(symbol, day=date(2026, 5, 28)):

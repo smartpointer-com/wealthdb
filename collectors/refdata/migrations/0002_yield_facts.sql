@@ -68,8 +68,9 @@ CREATE TABLE fund_risk (
 -- a yield or a share, years for a duration, days for a weighted average
 -- maturity or life; a field whose unit is another one names it
 -- (option_adjusted_spread_bp, weighted_average_maturity_years), and a
--- ratio is a plain number (convexity, price_earnings). A request that serves a fund and day replaces that
--- provider's rows for them.
+-- ratio is a plain number (convexity, price_earnings). A request that
+-- states a figure for a fund and day replaces that provider's rows of
+-- the figure for them, every part of a breakdown with it.
 CREATE TABLE characteristics (
     fund_ref   TEXT    NOT NULL,
     as_of      INTEGER NOT NULL,

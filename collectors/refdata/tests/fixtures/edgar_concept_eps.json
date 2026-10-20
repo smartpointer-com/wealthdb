@@ -1,0 +1,22 @@
+{
+  "cik": 7,
+  "taxonomy": "us-gaap",
+  "tag": "EarningsPerShareDiluted",
+  "label": "Earnings Per Share, Diluted",
+  "description": "The amount of net income or loss for the period per each share of common stock outstanding during the reporting period, including dilutive securities.",
+  "entityName": "EXAMPLE INDUSTRIES INC",
+  "units": {
+    "USD/shares": [
+      {"start": "2024-01-01", "end": "2024-12-31", "val": 3.6, "accn": "0000000007-25-000002", "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-21"},
+      {"start": "2024-01-01", "end": "2024-12-31", "val": 3.62, "accn": "0000000007-25-000003", "fy": 2024, "fp": "FY", "form": "10-K/A", "filed": "2025-02-21", "frame": "CY2024"},
+      {"start": "2025-04-01", "end": "2025-06-30", "val": 0.98, "accn": "0000000007-25-000011", "fy": 2025, "fp": "Q2", "form": "10-Q", "filed": "2025-08-06"},
+      {"start": "2025-01-01", "end": "2025-12-31", "val": 4.1, "accn": "0000000007-26-000003", "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2026-02-20", "frame": "CY2025"},
+      {"start": "2026-01-01", "end": "2026-03-31", "val": 0.93, "accn": "0000000007-26-000006", "fy": 2026, "fp": "Q1", "form": "10-Q", "filed": "2026-05-06"},
+      {"start": "2026-01-01", "end": "2026-03-31", "val": 0.95, "accn": "0000000007-26-000008", "fy": 2026, "fp": "Q1", "form": "10-Q/A", "filed": "2026-06-15", "frame": "CY2026Q1"},
+      {"start": "2026-01-01", "end": "2026-03-31", "val": 0.97, "accn": "0000000007-26-000009", "fy": 2026, "fp": "Q1", "form": "8-K", "filed": "2026-07-01"},
+      {"start": "2026-04-01", "end": "2026-06-30", "val": 1.12, "accn": "0000000007-26-000010", "fy": 2026, "fp": "Q2", "form": "10-Q", "filed": "2026-08-05", "frame": "CY2026Q2"},
+      {"start": "2026-01-01", "end": "2026-06-30", "val": 2.07, "accn": "0000000007-26-000010", "fy": 2026, "fp": "Q2", "form": "10-Q", "filed": "2026-08-05"},
+      {"start": "2025-04-01", "end": "2025-06-30", "val": 0.98, "accn": "0000000007-26-000010", "fy": 2026, "fp": "Q2", "form": "10-Q", "filed": "2026-08-05", "frame": "CY2025Q2"}
+    ]
+  }
+}

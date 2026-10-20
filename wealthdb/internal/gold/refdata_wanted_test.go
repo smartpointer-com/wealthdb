@@ -793,7 +793,7 @@ func TestRefdataWantedBeforeTheFactTables(t *testing.T) {
 func TestStalePeriods(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 13, 9, 30, 0, 0, time.UTC)
-	got := stalePeriods(map[string]string{"earnings": "2026-03-27", "dividends": "2026-03-26"}, now)
+	got := stalePeriods(map[string]string{"earnings": "2026-05-31", "dividends": "2026-05-30"}, now)
 	if !slices.Equal(got, []string{"dividends", "financials"}) {
 		t.Errorf("stale = %v, want dividends and financials", got)
 	}

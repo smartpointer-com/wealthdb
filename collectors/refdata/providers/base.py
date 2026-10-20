@@ -28,13 +28,49 @@ A fund provider:
                                    so a parser fix re-runs on kept bronze
                                    with `load --force`
 
+A fund provider may also answer some of the facts a fund `wants`
+(risk_metrics, money_market, characteristics, line_durations; the
+wanted list, adapters/refdata.md §5): it names them in `facts`, and is
+asked for a fund that wants one even where another provider serves the
+fund's compositions. Its fetch and parse are the same calls. The facts
+it can state for a past day, as a filing does, it names in
+`dated_facts` too; the others it states for today only. A fetch that
+succeeds without a fact it was asked for (a page that failed beside a
+file that did not) names it in meta.json's `facts_missing`, so the fact
+stays due. The facts it states with every composition it serves, as a
+holdings file states its lines' durations, it names in
+`composition_facts` instead: a request for the fund's composition
+answers them, and none is made for them alone.
+
 A security provider:
 
     claim_security(security, ctx) -> a claim or None
     fetch_security(claim, outdir, ctx)
     parse(indir)                -> Parsed rows (securities, facts)
 
-Both have probe(ctx), the cheapest answer `login --check` asks for.
+A bulk provider serves many securities from one request, such as a
+table of every company's figure for one period:
+
+    plan_bulk(securities, ctx, today, fetched, max_age)
+                                -> [(ref, claim)]: the requests a run
+                                   makes for these securities (the
+                                   wanted list's, in security_order).
+                                   ref names the request and its folder;
+                                   `fetched` maps the ref of each bulk
+                                   request an earlier run fetched to the
+                                   day of that run. A claim names the
+                                   securities it asks about in its
+                                   `keys` (a list, or lists by an
+                                   identifier such as a CIK), and the
+                                   wanted families it answers in its
+                                   `families`
+    fetch_bulk(claim, outdir, ctx)  writes meta.json with the claim and
+                                   `answered`, the keys the answer
+                                   states a figure for
+    parse(indir)                -> Parsed rows, for every security the
+                                   answer states
+
+Each has probe(ctx), the cheapest answer `login --check` asks for.
 
 fetch writes a meta.json beside the raw files: what was asked, the claim
 and anything parse needs that the files do not hold. parse reads it back.
@@ -49,7 +85,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from collectorkit import bronze
+from collectorkit import bronze, compress
 
 META = "meta.json"
 
@@ -156,6 +192,7 @@ class Provider:
     name = ""
     serves_funds = False
     serves_securities = False
+    serves_bulk = False
     # The SEC asks every client to name a contact; such a provider does not
     # run without one.
     needs_contact = False
@@ -169,6 +206,16 @@ class Provider:
     # security held through funds) is asked only of a provider that
     # answers one of its missing fields: a broad fund names thousands.
     answers = frozenset()
+    # The facts of a fund's `wants` a fund provider answers beside
+    # compositions (`facts`), those it can state for a past day
+    # (`dated_facts`), and those its compositions state
+    # (`composition_facts`).
+    facts = frozenset()
+    dated_facts = frozenset()
+    composition_facts = frozenset()
+    # A fund provider whose documents state a fund's facts and no holdings
+    # (a money-market filing) is never offered a fund's compositions.
+    serves_compositions = True
 
     def claim(self, fund, ctx):
         return None
@@ -191,6 +238,12 @@ class Provider:
     def fetch_security(self, claim, outdir: Path, ctx):
         raise NotImplementedError
 
+    def plan_bulk(self, securities, ctx, today, fetched, max_age) -> list:
+        return []
+
+    def fetch_bulk(self, claim, outdir: Path, ctx):
+        raise NotImplementedError
+
     def parse(self, indir: Path) -> Parsed:
         raise NotImplementedError
 
@@ -204,10 +257,21 @@ def write_meta(outdir: Path, **meta) -> None:
     bronze.atomic_write_json(outdir / META, meta)
 
 
+def read_bytes(indir: Path, name: str) -> bytes:
+    """A file of a request's folder, as stored or compressed (collectorkit
+    compress)."""
+    path = compress.resolve_variant(indir / name)
+    if path is None:
+        raise ProviderError(f"{indir}: no {name}")
+    with compress.open_bytes(path) as fh:
+        return fh.read()
+
+
 def read_json(indir: Path, name: str):
     """A JSON file of a request's folder, a byte order mark allowed: a
-    source's answer as stored, or a file the provider wrote."""
-    return json.loads((indir / name).read_text(encoding="utf-8-sig"))
+    source's answer as stored or compressed, or a file the provider
+    wrote."""
+    return json.loads(read_bytes(indir, name).decode("utf-8-sig"))
 
 
 def read_meta(indir: Path) -> dict:

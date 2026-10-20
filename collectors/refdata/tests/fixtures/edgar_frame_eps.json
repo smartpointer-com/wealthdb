@@ -1,0 +1,14 @@
+{
+  "taxonomy": "us-gaap",
+  "tag": "EarningsPerShareDiluted",
+  "ccp": "CY2026Q2",
+  "uom": "USD-per-shares",
+  "label": "Earnings Per Share, Diluted",
+  "description": "The amount of net income or loss for the period per each share of common stock outstanding during the reporting period, including dilutive securities.",
+  "pts": 3,
+  "data": [
+    {"accn": "0000000007-26-000010", "cik": 7, "entityName": "EXAMPLE INDUSTRIES INC", "loc": "US-DE", "start": "2026-04-01", "end": "2026-06-30", "val": 1.12},
+    {"accn": "0000000008-26-000004", "cik": 8, "entityName": "EXEMPLAR HOLDINGS CORP", "loc": "US-NY", "start": "2026-03-29", "end": "2026-06-27", "val": -0.4},
+    {"accn": "0000000009-26-000002", "cik": 9, "entityName": "QUILLMORE BIOLOGICS INC", "loc": "US-CA", "start": "2026-04-01", "end": "2026-06-30", "val": 0.21}
+  ]
+}

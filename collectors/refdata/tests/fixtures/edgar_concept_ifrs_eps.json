@@ -1,0 +1,14 @@
+{
+  "cik": 12,
+  "taxonomy": "ifrs-full",
+  "tag": "DilutedEarningsLossPerShare",
+  "label": "Diluted earnings (loss) per share",
+  "description": "The amount of profit (loss) attributable to ordinary equity holders of the parent entity, adjusted for the effects of all dilutive potential ordinary shares, divided by the weighted average number of ordinary shares outstanding, adjusted for the effects of all dilutive potential ordinary shares.",
+  "entityName": "EXEMPLAR MARITIME SA",
+  "units": {
+    "EUR/shares": [
+      {"start": "2024-01-01", "end": "2024-12-31", "val": 1.8, "accn": "0000000012-25-000004", "fy": 2024, "fp": "FY", "form": "20-F", "filed": "2025-04-10"},
+      {"start": "2025-01-01", "end": "2025-12-31", "val": 2.05, "accn": "0000000012-26-000004", "fy": 2025, "fp": "FY", "form": "20-F", "filed": "2026-04-09", "frame": "CY2025"}
+    ]
+  }
+}
