@@ -41,6 +41,8 @@ COLUMNS = {
     # A line's own currency before the fund's base currency, which some
     # files also call "Currency".
     "currency": ("market currency", "local currency", "trading currency", "currency"),
+    # The rate the line was valued at in the fund's currency.
+    "exchange_rate": ("fx rate", "exchange rate"),
     "country": ("trade country name", "location", "country", "country of risk"),
     "sector": ("sector classification", "sector", "industry sector"),
     "industry": ("industry classification", "industry"),
@@ -48,7 +50,22 @@ COLUMNS = {
     "exchange": ("exchange",),
     "maturity": ("maturity", "maturity date"),
     "coupon": ("coupon (%)", "coupon"),
+    # A debt line's figures, in the units the issuer's file states them:
+    # durations in years, yields in percent.
+    "duration": ("duration", "effective duration"),
+    "modified_duration": ("mod. duration", "modified duration", "mod duration"),
+    "yield_to_maturity": ("ytm (%)", "yield to maturity (%)", "yield to maturity", "ytm"),
+    "yield_to_worst": ("yield to worst (%)", "yield to worst", "ytw (%)"),
+    "yield_to_call": ("yield to call (%)", "yield to call", "ytc (%)"),
+    "real_duration": ("real duration",),
+    "real_yield": ("real ytm (%)", "real yield to maturity (%)", "real yield (%)", "real ytm", "real yield"),
+    "accrual_date": ("accrual date",),
 }
+# The line figures read as decimals; YIELDS are those a file that states
+# its weights as fractions states as fractions too.
+FIGURES = ("exchange_rate", "duration", "modified_duration", "yield_to_maturity", "yield_to_worst",
+           "yield_to_call", "real_duration", "real_yield")
+YIELDS = frozenset({"yield_to_maturity", "yield_to_worst", "yield_to_call", "real_yield"})
 NEVER = ("sedol",)
 # What an issuer writes in a cell that has no value.
 PLACEHOLDERS = {"-", "--", "—", "n/a", "na", "none", "unknown", "unassigned"}
@@ -135,8 +152,12 @@ def preamble(rows, end: int) -> dict:
 
 def parse_day(s) -> date | None:
     """A day as issuers write it: 12-Oct-2026, Oct 12 2026, 10/12/2026,
-    2026-10-12, with or without a leading "As of"."""
+    2026-10-12, 12/Sept/2026, 20261012, with or without a leading "As
+    of"."""
     s = re.sub(r"(?i)^\s*as of\s*", "", str(s or "")).strip().rstrip(".")
+    s = re.sub(r"(?i)\bsept\b", "Sep", s)
+    if re.fullmatch(r"\d{8}", s):
+        s = f"{s[:4]}-{s[4:6]}-{s[6:]}"
     for fmt in ("%d-%b-%Y", "%b %d %Y", "%b %d, %Y", "%d %b %Y", "%m/%d/%Y", "%Y-%m-%d", "%d/%b/%Y",
                 "%d.%m.%Y"):
         try:
@@ -163,8 +184,8 @@ def lines(rows, start: int, *, ref: str, as_of: date, columns=None, fractions=Fa
 
     `columns` names a provider's own header words for a field, ahead of
     the shared ones (an issuer whose "Industry Classification" is its
-    sector). `fractions` reads a file's weights as fractions, turned into
-    percent."""
+    sector). `fractions` reads a file's weights and yields as fractions,
+    turned into percent."""
     header = [_norm(c) for c in rows[start]]
     col = {}
     for field, words in COLUMNS.items():
@@ -200,13 +221,15 @@ def lines(rows, start: int, *, ref: str, as_of: date, columns=None, fractions=Fa
                            else (cell("currency") or "USD").upper() == "USD"):
             payload["local_ticker"], ticker = ticker, None
         weight = percent(cell("weight")) if fractions else dec(cell("weight"))
-        maturity = parse_day(cell("maturity")) if cell("maturity") else None
+        maturity, accrual = parse_day(cell("maturity")), parse_day(cell("accrual_date"))
         out.append(row(
             "lines", fund_ref=ref, as_of=as_of, basis="holdings", line_no=len(out) + 1, isin=isin, cusip=cusip,
             ticker=ticker, exchange=cell("exchange"), name=name, asset_type=cell("asset_type"), weight=weight,
             quantity=dec(cell("quantity")), market_value=dec(cell("market_value")), currency=cell("currency"),
             country=cell("country"), sector=cell("sector"), industry=cell("industry"),
-            maturity=maturity.isoformat() if maturity else None, coupon=dec(cell("coupon")), payload=payload))
+            maturity=maturity.isoformat() if maturity else None, coupon=dec(cell("coupon")),
+            accrual_date=accrual.isoformat() if accrual else None, payload=payload,
+            **{f: (percent if fractions and f in YIELDS else dec)(cell(f)) for f in FIGURES}))
     return out
 
 

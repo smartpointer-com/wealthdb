@@ -15,7 +15,7 @@ from wanted import Fund
 
 US_CSV = """Example Small Cap ETF
 Fund Holdings as of,"Oct 12, 2026"
-Inception Date,"Dec 10, 2007"
+Inception Date,"Nov 07, 2017"
 Shares Outstanding,"1,000,000.00"
 
 Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Notional Value,Quantity,Price,Location,Exchange,Currency,FX Rate,Market Currency,Accrual Date
@@ -258,8 +258,9 @@ def test_invesco_fetch_refuses_an_answer_that_is_not_json(tmp_path):
         Invesco().fetch({"ref": "isin:XX0000000940", "site": "ucits", "id": "XX0000000940"}, None, tmp_path, ctx)
 
 
-US_CLAIM = {"ref": "symbol:QSML", "site": "us", "page": "/us/products/1/example"}
-CH_CLAIM = {"ref": "isin:XX0000000900", "site": "ch", "page": "/ch/individual/en/products/2/example"}
+US_CLAIM = {"ref": "symbol:QSML", "site": "us", "page": "/us/products/1/example", "characteristics": False}
+CH_CLAIM = {"ref": "isin:XX0000000900", "site": "ch", "page": "/ch/individual/en/products/2/example",
+            "characteristics": False}
 INVESCO_US = {"ref": "symbol:QZQX", "site": "us", "id": "000000AF8"}
 
 

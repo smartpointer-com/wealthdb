@@ -1,0 +1,17 @@
+iShares Example Bond ETF
+Fund Holdings as of,"Oct 12, 2026"
+Inception Date,"Nov 07, 2017"
+Shares Outstanding,"1,000,000.00"
+Stock,"-"
+Bond,"-"
+Cash,"-"
+Other,"-"
+ 
+Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Notional Value,Par Value,CUSIP,ISIN,SEDOL,Price,Location,Exchange,Currency,Duration,YTM (%),FX Rate,Maturity,Coupon (%),Mod. Duration,Yield to Call (%),Yield to Worst (%),Real Duration,Real YTM (%),Market Currency,Accrual Date,Effective Date
+"QEXA","EXAMPLE TREASURY NOTE","Treasuries","Fixed Income","4,000.00","40.00","4,000.00","4,100.00","000000001","US0000000001","-","97.56","United States","-","USD","6.12","4.31","1.00","Mar 09, 2034","3.88","6.05","-","4.31","-","-","USD","Sep 09, 2026","Mar 09, 2024"
+"QEXB","EXAMPLE INFLATION LINKED NOTE","Treasuries","Fixed Income","2,000.00","20.00","2,000.00","1,900.00","000000002","US0000000002","-","105.26","United States","-","USD","4.40","4.02","1.00","Jan 21, 2031","0.13","4.38","-","4.02","4.75","1.85","USD","Jul 21, 2026","Jan 21, 2021"
+"QEXC","EXAMPLE INDUSTRIAL CORP","Industrial","Fixed Income","2,500.00","25.00","2,500.00","2,600.00","000000003","US0000000003","-","96.15","United States","-","USD","7.85","5.12","1.00","Apr 03, 2036","4.75","7.70","5.40","5.12","-","-","USD","Apr 03, 2026","Apr 03, 2026"
+"QEXD","EXAMPLE FINANCE BV","Banking","Fixed Income","1,500.00","15.00","1,500.00","1,350.00","000000004","XX0000000004","-","102.04","Netherlands","-","USD","3.20","3.66","1.0811","Jun 11, 2030","4.13","3.14","-","3.66","-","-","EUR","Jun 11, 2026","Jun 11, 2025"
+"USD","USD CASH","Cash and/or Derivatives","Cash","0.00","0.00","0.00","0.00","-","-","-","100.00","United States","-","USD","0.00","0.00","1.00","-","0.00","0.00","-","0.00","-","-","USD","-","-"
+ 
+"The content is for information only. Holdings are subject to change."

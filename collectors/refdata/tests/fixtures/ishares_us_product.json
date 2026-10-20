@@ -1,0 +1,17 @@
+{
+  "aladdinAssetClass": "Fixed Income",
+  "cusip": "000000901",
+  "effectiveDuration": {"d": "5.90", "r": 5.9},
+  "effectiveDurationAsOf": {"d": "Oct 11, 2026", "r": 20261011},
+  "fees": {"d": "0.05", "r": 0.05},
+  "fundName": "iShares Example Bond ETF",
+  "isin": "US0000000901",
+  "localExchangeTicker": "EXMP",
+  "navAmount": {"d": "99.12", "r": 99.12},
+  "navAmountAsOf": {"d": "Oct 12, 2026", "r": 20261012},
+  "productPageUrl": "/us/products/900001/ishares-example-bond-etf",
+  "secYieldUnsubsidized": {"d": "4.10", "r": 4.1},
+  "weightedAvgCoupon": {"d": "3.67", "r": 3.67},
+  "yieldToWorst": {"d": "4.20", "r": 4.2},
+  "yieldToWorstAsOf": {"d": "Oct 11, 2026", "r": 20261011}
+}

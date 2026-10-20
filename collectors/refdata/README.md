@@ -69,17 +69,24 @@ the same day fetches nothing.
 
 A held fund also wants facts beyond its composition: its risk metrics,
 its characteristics, its money-market figures and the durations of its
-lines. The providers that answer a fact are offered it in `providers`
-order, even where another provider serves the composition. The first
-that knows the fund is asked; the next ones stand by. A provider asked
-for facts alone keeps only those facts in silver, never the composition
-its document also states. A fact counts as current while gold's newest
-day for it is younger than `max_age_days`. A fact an earlier run
-fetched counts as current for `max_age_days` after that run.
-`--backfill` also asks for each past date
-while the fund was held, from a provider that states the fact for past
+lines ([adapters/refdata.md §5](../../wealthdb/docs/adapters/refdata.md#5-the-wanted-list)).
+The providers that answer a fact are offered it in `providers` order,
+even where another provider serves the composition. The first that
+knows the fund is asked; the next ones stand by. A provider asked for
+facts alone keeps only those facts in silver, never the composition its
+document also states. A fact counts as current while gold's newest day
+for it is younger than `max_age_days`. A fact an earlier run fetched
+counts as current for `max_age_days` after that run. `--backfill` also
+asks for each past date while the fund was held, and the last one
+before the holding began, from a provider that states the fact for past
 days, such as a filing. A date that gold holds the fact for, or that an
 earlier run fetched, is skipped.
+
+The durations of a fund's lines come only with a composition that
+states them, such as an iShares bond fund's holdings file. No request
+asks for them alone. A run asks for them when it asks such a provider
+for the fund's composition. A composition an earlier run fetched from
+it counts for `max_age_days` after that run.
 
 A bulk provider answers many securities with one request, such as a
 table of every company's figure for one quarter. It plans its requests
@@ -106,6 +113,9 @@ The reason for one left is one of these:
 
 - `no enabled provider answers it`: no provider of the collector
   answers the fact.
+- `comes only with a composition from: NAMES`: only a composition from
+  these providers states the fact, and the run asks none of them for
+  the fund's composition.
 - `provider off: NAMES`: only providers that the run does not ask
   answer it.
 - `no provider claims it`: the providers that answer it do not know the
@@ -247,9 +257,10 @@ A fund with a quarter or more of its net assets in debt states its rate
 sensitivities: what its value moves by for a move in rates of one and
 of one hundred basis points, per currency and tenor, and for a one
 basis point move of investment-grade and of non-investment-grade credit
-spreads. `sec-nport` is asked for a held bond or multi-asset fund's
-newest filing for these figures even where another provider serves its
-composition.
+spreads. `sec-nport` is asked for these figures for a fund whose
+wanted-list entry wants `risk_metrics`
+([adapters/refdata.md §5](../../wealthdb/docs/adapters/refdata.md#5-the-wanted-list)),
+even where another provider serves its composition.
 
 N-PORT carries no sector. Public filings are quarterly and two to five
 months old, so a composition is often flagged `aged` in the report.
@@ -265,8 +276,8 @@ and a contact address. The collector sends
 
 US money-market funds, from their N-MFP filings on SEC EDGAR.
 
-- A fund is asked for only when it wants money-market figures. Gold
-  wants them for a held fund of class cash.
+- A fund is asked for only when its wanted-list entry wants
+  `money_market`.
 - The fund is found by its ticker in the SEC's ticker file, as for
   `sec-nport`. A series that files no N-MFP is not claimed.
 - Each monthly filing states the series' weighted average maturity and
@@ -384,7 +395,8 @@ max_age_days. Off until `providers` names it.
 
 ### ishares
 
-BlackRock's iShares funds, from the holdings each fund page serves.
+BlackRock's iShares funds, from the holdings each fund page serves and
+the figures the page states.
 
 - **US funds** are found by ISIN, CUSIP or ticker in the US site's
   product list. The holdings file is a CSV dated in its preamble. Equity
@@ -396,7 +408,30 @@ BlackRock's iShares funds, from the holdings each fund page serves.
   and the last year end. `--backfill` fetches those.
 
 A local ticker of a non-US listing goes to the payload, not the ticker
-column: it would read as a different US symbol.
+column: it would read as a different US symbol. Bond lines add their
+duration, yields, exchange rate and accrual date. So a composition
+brings the durations of a bond fund's lines.
+
+The fund page states figures for the fund as a whole:
+
+- its effective duration;
+- its yields: average yield to maturity, yield to worst, distribution
+  yield, 30-day SEC yield and 12-month trailing yield;
+- its weighted average maturity and coupon, option-adjusted spread and
+  convexity;
+- an equity fund's P/E ratio;
+- on a US page, the credit-quality and maturity breakdowns.
+
+The weighted average maturity is kept in years. A page that states it
+in days is converted at 365.25 days a year.
+
+For a fund that wants characteristics, a US fetch makes one more
+request, for this page. It keeps the fund's entry in the product list,
+which fills a figure the page lacks. A Swiss fetch keeps the page it
+already reads. Each figure carries the day the page or the entry states
+for it, else the day of the site's newest holdings. Where the page does
+not come, or no figure is found, the characteristics stay due for the
+next run.
 
 **Terms.** BlackRock's terms forbid using "any robot, spider,
 intelligent agent, other automatic device, or manual process to search,
@@ -494,11 +529,13 @@ The figures come from the SEC's XBRL API in two ways:
   concept and calendar period answers for every company at once. A run
   asks for each quarter from the one the least current of these
   securities last reported, at most eight back, up to the last quarter
-  that ended 45 days ago. It also asks for the calendar years of those
-  quarters. A frame fetched before is not asked for again, unless it was
-  fetched within 120 days of its period's end and is older than
-  `max_age_days`, since late filers arrive. A frame holds US GAAP
-  figures in US dollars only. It is stored zstd-compressed.
+  that ended 45 days ago or earlier. For a figure summed over a period,
+  it also asks for the calendar years of those quarters. A balance, such
+  as debt or cash, is asked for at each quarter's end. A frame fetched
+  before is not asked for again, unless it was fetched within 120 days
+  of its period's end and is older than `max_age_days`, since late
+  filers arrive. A frame holds US GAAP figures in US dollars only. It is
+  stored zstd-compressed.
 
 A figure by concept counts only from 10-K, 10-Q, 20-F, 40-F and 6-K
 filings and their amendments. A frame states no form.
