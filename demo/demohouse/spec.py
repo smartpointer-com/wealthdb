@@ -11,7 +11,8 @@ import hashlib
 import json
 import pathlib
 
-from . import dates
+from . import bonds, dates
+from .money import D
 
 DEMO_DIR = pathlib.Path(__file__).resolve().parent.parent
 SPEC_PATH = DEMO_DIR / "household.json"
@@ -72,6 +73,8 @@ def load(spec_path=SPEC_PATH, catalogue_dir=CATALOGUE_DIR):
         digest.update(name.encode() + b"\0" + raw + b"\0")
         parts[name] = data
     instruments = _instrument_versions(parts["instruments.json"], spec)
+    for ladder in parts["instruments.json"].get("ladders", []):
+        instruments |= _instrument_versions({"instruments": ladder_issues(ladder)}, spec)
     merchants = {m["id"]: m for m in parts["merchants.json"]["merchants"]}
     payers = {p["id"]: p for p in parts["payers.json"]["payers"]}
     splits = parts["instruments.json"].get("splits", [])
@@ -79,15 +82,36 @@ def load(spec_path=SPEC_PATH, catalogue_dir=CATALOGUE_DIR):
                   hashlib.sha256(spec_raw).hexdigest(), digest.hexdigest(), code_hash())
 
 
+def ladder_issues(ladder):
+    """The discount notes of a ladder, as catalogue instruments: one per
+    issue, each maturing the day the next one is issued, numbered in the
+    order they are issued. A note's name puts its maturity between its
+    issuer and the kind of paper, as a broker's description does, so the
+    issuer's name ends at the date."""
+    out = []
+    terms = bonds.issue_dates(ladder["first_maturity"], ladder["weeks"], ladder["issues"])
+    ids = [f'{ladder["id"]}{maturity:%y%m%d}' for _, maturity in terms]
+    for n, ((issued, maturity), iid) in enumerate(zip(terms, ids, strict=True), start=1):
+        out.append({
+            "id": iid, "symbol": None, "isin": f'{ladder["isin_prefix"]}{n:03d}',
+            "name": f'{ladder["issuer"]} {maturity:%m/%d/%Y} {ladder["paper"]}', "asset_class": "fixed_income",
+            "vehicle": "bond",
+            "currency": ladder["currency"], "issued": issued.isoformat(), "maturity": maturity.isoformat(),
+            "model": {"type": "discount", "spread": ladder["spread"]}, "ladder": ladder["id"],
+            "next": ids[n] if n < len(ids) else None})
+    return out
+
+
 def _instrument_versions(cat, spec):
     """Index instruments, each with the descriptive versions it passes
-    through: the catalogue entry from the start of history, then one
-    version per rename from its date."""
+    through: the catalogue entry from the start of history, or from its
+    issue if later, then one version per rename from its date."""
     start = dates.epoch(dates.parse(spec["calendar"]["history_start"]))
     out = {}
     for inst in cat["instruments"]:
         entry = dict(inst)
-        entry["versions"] = [_version(inst, start, inst["name"])]
+        first = max(start, dates.epoch(dates.parse(inst["issued"]))) if "issued" in inst else start
+        entry["versions"] = [_version(inst, first, inst["name"])]
         out[inst["id"]] = entry
     for r in cat.get("renames", []):
         entry = out[r["instrument"]]
@@ -97,13 +121,36 @@ def _instrument_versions(cat, spec):
     return out
 
 
-def _version(inst, valid_from, name):
+def _version(inst, valid_from, name, payload=None):
     return {
         "instrument_id": inst["id"], "valid_from": valid_from,
         "asset_class": inst["asset_class"], "vehicle": inst["vehicle"],
         "isin": inst.get("isin"), "cusip": None, "symbol": inst.get("symbol"),
         "name": name, "currency": inst["currency"],
+        "payload": json.dumps(payload or stated_terms(inst), sort_keys=True, separators=(",", ":")),
     }
+
+
+def stated_terms(inst, coupon_pct=None):
+    """The terms a source's instrument record states, as the yield pass
+    reads them: its coupon in percent and its maturity, where the
+    catalogue marks the bond `states_terms`. A floating note states the
+    coupon of its current period, `coupon_pct`. Any other instrument
+    states none."""
+    if not inst.get("states_terms"):
+        return {}
+    out = {"maturity_date": inst["maturity"]}
+    if coupon_pct is None and "rate" in inst["coupon"]:
+        coupon_pct = D(inst["coupon"]["rate"]) * 100
+    if coupon_pct is not None:
+        out["interest_rate"] = format(coupon_pct.normalize(), "f")
+    return out
+
+
+def version(inst, valid_from, payload):
+    """A version of `inst` from `valid_from` on, under its name then, with
+    its record's payload."""
+    return _version(inst, valid_from, name_on(inst, dates.day_of(valid_from)), payload)
 
 
 def name_on(instrument, day):

@@ -18,8 +18,8 @@ import dataclasses
 import datetime as dt
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
-from . import dates, keyed
-from .book import Account, Book, market_value, unit_price
+from . import bonds, dates, keyed, rates, spec
+from .book import Account, Book, is_bond, market_value, unit_price
 from .market import Market
 from .money import CENT, ZERO, D, cents, q4, text
 from .spec import name_on
@@ -34,10 +34,15 @@ BASE_YEAR = 2024
 @dataclasses.dataclass
 class LedgerNotes:
     """What the simulation hands the config renderer besides silver:
-    rows of the three ledgers gold reads from CSV."""
+    rows of the three ledgers gold reads from CSV, and records of the
+    declarations ledger."""
     equity_transfers: list = dataclasses.field(default_factory=list)
     spending_pins: list = dataclasses.field(default_factory=list)
     transfer_overrides: list = dataclasses.field(default_factory=list)
+    # Declarations-ledger records of the terms and ratings of what the
+    # household holds, which no source states: the spec's and the
+    # catalogue's, written as the household takes each holding on.
+    declarations: list = dataclasses.field(default_factory=list)
 
 
 class Simulation:
@@ -52,11 +57,19 @@ class Simulation:
         self.fx_start = inputs.fx_start
         if as_of < self.start:
             raise ValueError(f"as-of {as_of} is before history starts ({self.start})")
+        # The dollar curve, which prices the bonds the household holds and
+        # sets the rates its cash and its money-market fund earn.
+        self.curve = rates.curve(seed, self.fx_start, as_of)
         self.market = Market(seed, list(inputs.instruments.values()), self.fx_start,
-                             self.spec["fx"]["start_usd_per"])
+                             self.spec["fx"]["start_usd_per"], self.curve)
         for s in inputs.splits:
             self.market.add_split(s["instrument"], dates.parse(s["date"]), s["ratio"])
-        self.book = Book(self.market, inputs.instruments)
+        self.book = Book(self.market, self._restated(inputs.instruments))
+        self.book.cash_terms = self._cash_terms
+        # The declarations ledger's yield records: what the household's
+        # banks pay and its companies declare (wealthdb/docs/EXPOSURE.md §9).
+        self._ledger = self.spec["config"]["exposure"]["declarations"]
+        self._term = None
         self.notes = LedgerNotes()
         self.fx_rows = []
         self._card_spend_quarter = ZERO
@@ -98,6 +111,7 @@ class Simulation:
         self._income_misc(day)
         self._brokerage(day)
         self._securities_income(day)
+        self._maturities(day)
         self._corporate_actions(day)
         self._roth(day)
         self._plan_529(day)
@@ -110,6 +124,8 @@ class Simulation:
         self._declared_transfer(day)
         self._findings(day)
         self._savings_interest(day)
+        self._balance_interest(day)
+        self._term_deposit(day)
         self._sweep(day)
 
     # ---- structure -----------------------------------------------------
@@ -146,15 +162,28 @@ class Simulation:
                 for ccy, amount in (cash.items() if isinstance(cash, dict) else [(acct.currency, cash)]):
                     acct.cash[ccy] = D(amount)
                 for iid, qty in a.get("holdings", {}).items():
-                    value = market_value(self.inputs.instruments[iid], D(qty), self.market.price(iid))
+                    inst = self.inputs.instruments[iid]
+                    value = market_value(inst, D(qty), self.market.price(iid))
                     # Opening lots carry a cost below today's value, as
-                    # holdings bought over earlier years would.
+                    # holdings bought over earlier years would; a bond's
+                    # lies near it, and a note issued weeks ago or a fund
+                    # whose price never moves cost what they are worth.
                     r = keyed.rng(self.seed, "opening-basis", a["id"], iid)
-                    basis = q4(value * (Decimal("0.72") + Decimal("0.2") * keyed.uniform(r)))
+                    u = keyed.uniform(r)
                     acquired = self.opening - dt.timedelta(days=400 + r.randrange(1500))
+                    if "issued" in inst:
+                        basis, acquired = q4(value), dates.parse(inst["issued"])
+                    elif inst["model"]["type"] == "stable":
+                        basis = q4(value)
+                    elif is_bond(inst):
+                        basis = q4(value * (Decimal("0.96") + Decimal("0.08") * u))
+                    else:
+                        basis = q4(value * (Decimal("0.72") + Decimal("0.2") * u))
                     self.book.add_units(a["id"], iid, D(qty), basis, day, acquired=acquired)
+                    self._declare(acct.source, iid)
         self._open_mortgage(day)
         self._open_home(day)
+        self._open_term_deposit()
 
     def _fx_row(self, day):
         at = dates.epoch(day)
@@ -231,9 +260,11 @@ class Simulation:
         return self._txn(aid, day, "buy", -cost, ccy=inst["currency"], instrument=iid,
                          qty=qty, price=price, desc=desc or f"BOUGHT {qty.normalize():f} {name.upper()}")
 
-    def _sell(self, aid, day, iid, qty, *, desc=None):
+    def _sell(self, aid, day, iid, qty, *, desc=None, price=None):
+        """Sell `qty` of iid at today's price, or at `price` (a bond's
+        redemption at par)."""
         inst = self.inputs.instruments[iid]
-        price = self.market.price(iid)
+        price = self.market.price(iid) if price is None else price
         per = unit_price(inst, price)
         held = self.book.qty(aid, iid)
         qty = held if D(qty) >= held else _floor_to(D(qty), _unit_step(inst))
@@ -282,6 +313,14 @@ class Simulation:
         self._loan_balance = balance
         self.book.set_mark(m["loan"], "loan", -balance, day, book=-principal,
                            acquired=dates.add_months(dates.parse(m["first_payment"]), -1))
+        # The loan's note: its rate, monthly payments to its last, and the
+        # end of its fixed period. No source states them.
+        first = dates.parse(m["first_payment"])
+        self._record(self.book.account(m["loan"]).source, "loan", "terms", {
+            "coupon": _number(D(m["rate"]) * 100), "frequency": 12,
+            "maturity": dates.add_months(first, n - 1).isoformat(),
+            "fixed_until": dates.add_months(first, m["fixed_months"] - 1).isoformat()},
+            "the loan's note: fixed for its first years, then adjustable")
 
     def _mortgage(self, day):
         m = self.spec["mortgage"]
@@ -360,16 +399,139 @@ class Simulation:
             self._txn(gift["account"], day, "deposit", D(gift["amount"]), desc=payer["descriptor"],
                       provider=payer["category"])
 
+    def _savings_tiers(self, day):
+        """The savings account's tiers in force on `day`: (rate in
+        percent, the balance it applies up to or None), and the day they
+        hold from, the first of their year."""
+        si = self.spec["savings_interest"]
+        by_year = si["rates_by_year"]
+        year = str(day.year) if str(day.year) in by_year else max(by_year)
+        first, above = by_year[year]
+        return [(D(first), D(si["limit"])), (D(above), None)], dt.date(int(year), 1, 1)
+
     def _savings_interest(self, day):
+        """Interest on the savings balance at every month-end, each tier's
+        rate on the part of the balance up to its limit."""
         si = self.spec["savings_interest"]
         if day != dates.month_end(day.year, day.month):
             return
         acct = self.book.account(si["account"])
-        apy = D(si["apy_by_year"][str(day.year)] if str(day.year) in si["apy_by_year"]
-                else list(si["apy_by_year"].values())[-1])
-        interest = cents(acct.balance() * apy / 12)
+        interest = cents(_tiered(self._savings_tiers(day)[0], acct.balance()) / 100 / 12)
         if interest > 0:
             self._txn(acct.id, day, "interest", interest, desc="INTEREST PAID")
+
+    def _balance_interest(self, day):
+        """Interest every month on a balance whose rate only the
+        declarations ledger states: the rate of the record in force for its
+        account and currency, at the month's end, or a business-day
+        source's last business day."""
+        month_end = dates.month_end(day.year, day.month)
+        if day < dates.last_business(day.year, day.month):
+            return
+        for aid, ccy in sorted({(r["account"], r["rate"].get("currency")) for r in self._ledger if "rate" in r},
+                               key=lambda k: (k[0], k[1] or "")):
+            acct = self.book.account(aid)
+            business = self.book.sources[acct.source]["cadence"] == "business"
+            if not acct.is_open(day) or day != (dates.last_business(day.year, day.month) if business else month_end):
+                continue
+            rec = self._in_force("rate", day, lambda r, k=(aid, ccy): (r["account"], r["rate"].get("currency")) == k)
+            if rec is None:
+                continue
+            ccy = ccy or acct.currency
+            interest = cents(acct.balance(ccy) * D(str(rec["rate"]["pct"])) / 100 / 12)
+            if interest > 0:
+                self._txn(aid, day, "interest", interest, ccy=ccy, desc=f"INTEREST ON {ccy} BALANCE")
+
+    def _open_term_deposit(self):
+        """The term the deposit is in on the opening day, which began
+        before history starts."""
+        td = self.spec["term_deposit"]
+        start = dates.parse(td["start"])
+        self._term = {"start": start, "end": dates.add_months(start, td["months"]), "rate": D(td["rate"])}
+
+    def _term_deposit(self, day):
+        """At its end a term deposit earns its interest, simple on ACT/365,
+        and rolls for another term at the curve's rate for the term less
+        the bank's margin."""
+        td = self.spec["term_deposit"]
+        t = self._term
+        if day != t["end"]:
+            return
+        acct = self.book.account(td["account"])
+        interest = cents(acct.balance() * t["rate"] / 100 * (t["end"] - t["start"]).days / 365)
+        self._txn(acct.id, day, "interest", interest, desc="TERM DEPOSIT INTEREST")
+        offered = self.market.curve_on(day)[td["tenor"]] - D(td["margin"])
+        self._term = {"start": day, "end": dates.add_months(day, td["months"]),
+                      "rate": max(offered, D(td["floor"])).quantize(CENT)}
+
+    def _cash_terms(self, acct, ccy, day):
+        """The rate a balance's snapshot states, in UBS's shape (wealthdb
+        reads CdtIntrstRate1 up to CdtLmtAmt1, then CdtIntrstRate2; the day
+        the rates hold from; a term's end, 9999-12-31 for none; the day
+        count): the savings account's tiers and the term deposit's term.
+        Any other balance states none."""
+        si = self.spec["savings_interest"]
+        if acct.id == si["account"] and ccy == acct.currency:
+            ((first, limit), (above, _)), since = self._savings_tiers(day)
+            return {"CdtIntrstRate1": text(first, 2), "CdtLmtAmt1": text(limit, 2), "CdtIntrstRate2": text(above, 2),
+                    "CdtIntrstVldFrmDt": since.isoformat(), "EndOfDurtn": "9999-12-31",
+                    "CalIntrstBasisDesc": si["day_count"]}
+        td = self.spec["term_deposit"]
+        if acct.id == td["account"] and self._term:
+            return {"CdtIntrstRate1": text(self._term["rate"], 2), "CdtIntrstVldFrmDt": self._term["start"].isoformat(),
+                    "EndOfDurtn": self._term["end"].isoformat(), "CalIntrstBasisDesc": td["day_count"]}
+        return None
+
+    def _in_force(self, kind, day, mine):
+        """The declarations ledger's record of `kind` that holds on `day`
+        among the records `mine` picks: the latest dated on or before it,
+        else the one without a date."""
+        records = [r for r in self._ledger if kind in r and mine(r)]
+        dated = [r for r in records if "as_of" in r and dates.parse(r["as_of"]) <= day]
+        if dated:
+            return max(dated, key=lambda r: r["as_of"])
+        return next((r for r in records if "as_of" not in r), None)
+
+    def _record(self, source, iid, kind, value, note):
+        self.notes.declarations.append({"silver_source_id": source, "instrument": iid, kind: value, "note": note})
+
+    def _declare(self, source, iid):
+        """The records of a bond the household takes on that its name and
+        its source leave unstated, from the catalogue: a discount note pays
+        no coupon and counts ACT/360; a floating note's coupon floats, at
+        its payments a year; a callable bond's call date; a rating."""
+        inst = self.inputs.instruments[iid]
+        if not is_bond(inst):
+            return
+        cp = inst.get("coupon") or {}
+        if "ladder" in inst:
+            self._record(source, iid, "terms", {"frequency": 0, "coupon_kind": "zero", "day_count": "ACT/360"},
+                         "a discount note; it pays no coupon")
+        elif "floating" in cp:
+            self._record(source, iid, "terms", {"coupon_kind": "floating", "frequency": len(cp["months"])},
+                         f'the offering circular: the {cp["floating"]} rate plus {cp["spread"]}%, reset at each coupon')
+        elif "call" in inst:
+            self._record(source, iid, "terms", {"call_date": inst["call"]}, "callable at par")
+        if "rating" in inst:
+            self._record(source, iid, "rating", {"bucket": inst["rating"]}, "from the bank's bond list")
+
+    def _restated(self, instruments):
+        """The instruments, with every floating note that states its terms
+        restated at each reset: one version per coupon period to as-of,
+        its record stating the period's coupon."""
+        out = dict(instruments)
+        for iid, inst in instruments.items():
+            cp = inst.get("coupon")
+            if not cp or "floating" not in cp or not inst.get("states_terms"):
+                continue
+            resets = [bonds.last_coupon(cp, self.opening)]
+            while (d := bonds.next_coupon(cp, resets[-1])) <= self.as_of and d < dates.parse(inst["maturity"]):
+                resets.append(d)
+            out[iid] = dict(inst, versions=[
+                spec.version(inst, dates.epoch(max(d, self.start)),
+                             spec.stated_terms(inst, self.market.coupon_rate(iid, d) * 100))
+                for d in resets])
+        return out
 
     # ---- spending ------------------------------------------------------
 
@@ -623,7 +785,7 @@ class Simulation:
                 inc = inst.get("income")
                 pay_day = inc and day.month in inc["months"] and \
                     day == dates.next_business(dt.date(day.year, day.month, 20))
-                per_share = q4(self.market.price(iid) * D(inc["yield"]) / len(inc["months"])) if pay_day else ZERO
+                per_share = self._dividend(acct.source, iid, inc, day) if pay_day else ZERO
                 amount = cents(h.qty * per_share)
                 if amount > 0:
                     self._txn(aid, day, "dividend", amount, ccy=inst["currency"], instrument=iid,
@@ -644,11 +806,61 @@ class Simulation:
                     if aid in reinvest:
                         self._buy(aid, day, iid, amount, desc=f"REINVEST {name}")
                 cp = inst.get("coupon")
-                if cp and day.month in cp["months"] and day == dates.next_business(
-                        dates.clamp_day(day.year, day.month, cp["day"])):
-                    amount = cents(h.qty * D(cp["rate"]) / len(cp["months"]))
+                due = dates.clamp_day(day.year, day.month, cp["day"]) if cp else None
+                if cp and day.month in cp["months"] and day == dates.next_business(due):
+                    # The coupon of the period that ends on its date.
+                    rate = self.market.coupon_rate(iid, due - dt.timedelta(days=1))
+                    amount = cents(h.qty * rate / len(cp["months"]))
                     self._txn(aid, day, "coupon", amount, ccy=inst["currency"], instrument=iid,
                               desc=f"COUPON {name}")
+                mm = inst.get("money_market")
+                if mm and day == dates.last_business(day.year, day.month):
+                    # A money-market fund pays the month's yield and
+                    # reinvests it at its dollar.
+                    pct = bonds.money_market_yield(self.market.curve_on(day), mm)
+                    amount = cents(h.qty * self.market.price(iid) * pct / 100 / 12)
+                    if amount > 0:
+                        self._txn(aid, day, "dividend", amount, ccy=inst["currency"], instrument=iid,
+                                  desc=f"DIVIDEND {name}")
+                        self._buy(aid, day, iid, amount, desc=f"REINVEST {name}")
+
+    def _dividend(self, source, iid, inc, day):
+        """The dividend per share a payment of iid pays on `day`: the one
+        the declarations ledger's record in force states, else the
+        payout yield's share of the price."""
+        declared = self._in_force("dividend", day,
+                                  lambda r: r["silver_source_id"] == source and r.get("instrument") == iid)
+        if declared:
+            return D(str(declared["dividend"]["amount"]))
+        if "yield" not in inc:
+            return ZERO
+        return q4(self.market.price(iid) * D(inc["yield"]) / len(inc["months"]))
+
+    def _maturities(self, day):
+        """A bond pays back its face on its redemption day, at par. A
+        discount note pays back its cost and earns its discount, the face
+        less the cost, as interest, which is how its holder reports it. A
+        note of a ladder rolls into the ladder's next issue, as much of it
+        as its face buys."""
+        for aid in sorted(self.book.accounts):
+            acct = self.book.account(aid)
+            if not acct.is_open(day):
+                continue
+            for iid in sorted(acct.holdings):
+                inst = self.inputs.instruments[iid]
+                if "maturity" not in inst or day != bonds.redemption_day(inst):
+                    continue
+                name = name_on(inst, day).upper()
+                h = acct.holdings[iid]
+                face = h.qty
+                price = h.book / h.qty * 100 if "ladder" in inst else Decimal(100)
+                sold = self._sell(aid, day, iid, face, desc=f"REDEMPTION {name}", price=price)
+                if "ladder" in inst:
+                    self._txn(aid, day, "interest", face - D(sold["net_amount"]), ccy=inst["currency"], instrument=iid,
+                              desc=f"DISCOUNT EARNED {name}")
+                if inst.get("next"):
+                    self._buy(aid, day, inst["next"], face)
+                    self._declare(acct.source, inst["next"])
 
     def _corporate_actions(self, day):
         for s in self.inputs.splits:
@@ -1005,13 +1217,31 @@ def _unit_step(inst):
     to the hundredth ounce, and anything else to four decimals."""
     if inst["vehicle"] == "stock" and inst["asset_class"] == "public_equity" and inst["currency"] != "USD":
         return ONE
-    if inst.get("coupon"):
+    if is_bond(inst):
         return Decimal(1000)
     if inst["asset_class"] == "crypto":
         return Decimal("0.00000001")
     if inst["id"] == "gold":
         return Decimal("0.01")
     return Decimal("0.0001")
+
+
+def _number(x):
+    """A Decimal as the JSON number a ledger record states."""
+    x = x.normalize()
+    return int(x) if x == x.to_integral_value() else float(x)
+
+
+def _tiered(tiers, balance):
+    """A hundred times what `balance` earns a year under tiered rates in
+    percent: each tier's rate on the part of the balance up to its limit."""
+    out, below = ZERO, ZERO
+    for rate, limit in tiers:
+        top = balance if limit is None else min(balance, limit)
+        if top > below:
+            out += (top - below) * rate
+            below = top
+    return out
 
 
 def _floor_to(x, step):

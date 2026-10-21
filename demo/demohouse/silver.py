@@ -114,20 +114,20 @@ def source_rows(sim, source, as_of):
             "base_currency": a.currency, "nickname": a.nickname, "account_category": None,
             "tax_wrapper": a.tax_wrapper, "management_style": a.style, "portfolio_id": a.portfolio,
             "payload": "{}"} for a in accounts],
-        "instruments": [dict(v, payload="{}") for (_, valid_from), v in
-                        sorted(book.instrument_versions[source].items()) if valid_from <= end],
+        "instruments": [v for (_, valid_from), v in sorted(book.instrument_versions[source].items())
+                        if valid_from <= end],
         "positions": [dict(p, payload="{}") for p in book.rows[source]["positions"]],
         "position_lots": [dict(lot, payload="{}") for lot in book.rows[source]["lots"]],
-        "cash_balances": [dict(c, payload="{}") for c in book.rows[source]["cash"]],
+        "cash_balances": book.rows[source]["cash"],
         "fx_rates": [dict(f, bid_rate=None, ask_rate=None, payload="{}")
                      for f in (sim.fx_rows if source == "fx" else [])],
-        "rates": rates.rows(sim.seed, sim.fx_start, as_of) if source == rates.SOURCE else [],
+        "rates": rates.rows({d: p for d, p in sim.curve.items() if d <= as_of}) if source == rates.SOURCE else [],
         "transactions": [{k: v for k, v in t.items() if not k.startswith("_")}
                          | {"asset_class": None, "vehicle": None, "instrument_hint": None}
                          for t in book.rows[source]["transactions"]],
         "realized_lots": book.rows[source]["realized"],
     }
-    ref = reference.rows(sim.inputs, sim.seed, as_of) if source == REFERENCE_SOURCE else {}
+    ref = reference.rows(sim.inputs, sim.seed, as_of, sim.curve) if source == REFERENCE_SOURCE else {}
     for table in REFERENCE_TABLES:
         rows[table] = ref.get(table, [])
     return rows

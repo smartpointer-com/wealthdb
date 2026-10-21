@@ -25,7 +25,7 @@ from decimal import Decimal
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import generate  # noqa: E402
-from demohouse import dates, filings, rates, reference, silver, spec  # noqa: E402
+from demohouse import bonds, dates, filings, rates, reference, silver, spec  # noqa: E402
 from demohouse.book import unit_price  # noqa: E402
 from demohouse.household import Simulation  # noqa: E402
 from tests import goref  # noqa: E402
@@ -543,11 +543,17 @@ class TestReference(Built):
         split, situs = 0, []
         for line in lines:
             d = json.loads(line)
+            if "account" in d:
+                # A rate names an account the source states, and nothing else.
+                accounts = {a["account_id"] for a in self.rows[d["silver_source_id"]]["accounts"]}
+                self.assertIn(d["account"], accounts, line)
+                self.assertFalse(set(d) - {"silver_source_id", "account", "as_of", "rate", "note"}, line)
+                continue
             name = f"{d['silver_source_id']}/{d['instrument']}"
             held = {r["instrument_id"] for r in self.rows[d["silver_source_id"]]["positions"]}
             self.assertIn(d["instrument"], held, name)
             stated = [k for k in dims if k in d]
-            self.assertTrue(stated, name)
+            self.assertTrue(stated or "situs" in d or set(d) & set(goref.yield_records()), name)
             for k in stated:
                 self.assertAlmostEqual(sum(d[k].values()), 100, delta=0.5, msg=f"{name} {k}")
             split += any(len(d[k]) > 1 for k in stated)
@@ -588,16 +594,21 @@ class TestReference(Built):
         """Every fund a risk row or a characteristic names is a catalogue
         fund, and every company figure a demo instrument's; a label is a
         rating bucket or Not Rated."""
-        funds = {reference.fund_ref(self.inputs.instruments[f["instrument"]]) for f in self.cat["funds"]}
+        funds = {reference.fund_ref(self.inputs.instruments[f["instrument"]])
+                 for f in self.cat["funds"] + self.cat["money_market"] + self.cat["pages"]}
         refs = {reference.fund_ref(i) for i in self.inputs.instruments.values()}
         self.assertTrue(self.ref["fund_risk"] and self.ref["characteristics"] and self.ref["period_facts"])
         for r in self.ref["fund_risk"] + self.ref["characteristics"]:
             self.assertIn(r["fund_ref"], funds)
         for r in self.ref["period_facts"]:
             self.assertIn(r["security_key"], refs)
-        labels = {r["label"] for r in self.ref["characteristics"]} - {""}
+        labels = {r["label"] for r in self.ref["characteristics"] if r["field"] == "credit_quality"}
         self.assertLessEqual(labels, {*goref.rating_buckets(), reference.NOT_RATED})
         self.assertEqual(list(reference.RATINGS), goref.rating_buckets())
+        bands = {r["label"] for r in self.ref["characteristics"] if r["field"] == "maturity_breakdown"}
+        self.assertLessEqual(bands, {label for label, _ in reference.MATURITY_BANDS} | {reference.CASH_BAND})
+        self.assertGreater(len(bands), 4)
+        self.assertEqual({r["label"] for r in self.ref["characteristics"]} - labels - bands, {""})
 
 
 class TestRates(Built):
@@ -813,6 +824,398 @@ class TestFundYields(Built):
         self.assertGreater(paying, 3)
 
 
+class TestFundFigures(Built):
+    """The money-market fund's filings and the page of the fund that
+    publishes no holdings: month-end figures, in the fields and the units
+    the yield report and the exposure views read."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.cat = reference.load()
+        cls.figures = collections.defaultdict(lambda: collections.defaultdict(dict))
+        for r in cls.rows[silver.REFERENCE_SOURCE]["characteristics"]:
+            cls.figures[r["fund_ref"]][dates.day_of(r["as_of"])][(r["field"], r["label"])] = Decimal(r["value"])
+
+    def month_ends(self, fund):
+        return list(reference.month_ends(dates.parse(fund["from"]), AS_OF))
+
+    def test_the_money_market_fund_files_its_yields_and_maturity(self):
+        """Its seven-day yield after expenses, below the yield before them,
+        and a weighted average maturity of at most the 60 days the rule
+        allows, in days."""
+        self.assertTrue(self.cat["money_market"])
+        self.assertLessEqual({"seven_day_yield", "weighted_average_maturity"}, goref.fund_fields())
+        for fund in self.cat["money_market"]:
+            ref = reference.fund_ref(self.inputs.instruments[fund["instrument"]])
+            self.assertEqual(sorted(self.figures[ref]), self.month_ends(fund), ref)
+            for day, f in self.figures[ref].items():
+                self.assertEqual(set(f), {("seven_day_yield", ""), ("seven_day_gross_yield", ""),
+                                          ("weighted_average_maturity", ""), ("weighted_average_life", "")}, day)
+                self.assertLess(f[("seven_day_yield", "")], f[("seven_day_gross_yield", "")], day)
+                self.assertTrue(1 <= f[("weighted_average_maturity", "")] <= 60, day)
+                self.assertLessEqual(f[("weighted_average_maturity", "")], f[("weighted_average_life", "")], day)
+
+    def test_the_money_market_fund_keeps_its_dollar_and_pays_its_yield(self):
+        """Its price is 1.00 on every snapshot. On each month's last business
+        day it pays its units times the seven-day yield its filing states
+        for the month, over twelve, and reinvests the payment at its
+        dollar."""
+        for fund in self.cat["money_market"]:
+            iid = fund["instrument"]
+            ref = reference.fund_ref(self.inputs.instruments[iid])
+            held = sorted((dates.day_of(p["snapshot_at"]), p) for _, p in self.all("positions")
+                          if p["instrument_id"] == iid)
+            self.assertTrue(held)
+            for day, p in held:
+                self.assertEqual(Decimal(p["market_value"]), Decimal(p["quantity"]), day)
+            moves = collections.defaultdict(dict)
+            for _, t in self.all("transactions"):
+                if t["instrument_id"] == iid:
+                    moves[dates.day_of(t["occurred_at"])][t["kind"]] = t
+            self.assertGreater(len(moves), 12)
+            for day, m in moves.items():
+                self.assertEqual(day, dates.last_business(day.year, day.month), day)
+                units = [Decimal(p["quantity"]) for d, p in held if d < day][-1]
+                pct = self.figures[ref][dates.month_end(day.year, day.month)][("seven_day_yield", "")]
+                self.assertLessEqual(abs(Decimal(m["dividend"]["net_amount"]) - units * pct / 100 / 12),
+                                     Decimal("0.01"), day)
+                self.assertEqual(Decimal(m["buy"]["net_amount"]), -Decimal(m["dividend"]["net_amount"]), day)
+                self.assertEqual(Decimal(m["buy"]["quantity"]), Decimal(m["dividend"]["net_amount"]), day)
+
+    def test_a_page_fund_states_what_the_report_reads_and_its_maturity_bands(self):
+        """Every month-end, and no composition: its yields, the worst below
+        the one to maturity and the SEC yield below that, its duration and
+        average life, and maturity bands whose shares sum to 100."""
+        self.assertTrue(self.cat["pages"])
+        self.assertIn("maturity_breakdown", goref.page_breakdowns())
+        scalars = {"effective_duration", "weighted_average_maturity_years", "yield_to_maturity", "yield_to_worst",
+                   "sec_yield", "distribution_yield"}
+        self.assertLessEqual(scalars, goref.fund_fields())
+        composed = {c["fund_ref"] for c in self.rows[silver.REFERENCE_SOURCE]["compositions"]}
+        for fund in self.cat["pages"]:
+            ref = reference.fund_ref(self.inputs.instruments[fund["instrument"]])
+            self.assertNotIn(ref, composed)
+            self.assertEqual(sorted(self.figures[ref]), self.month_ends(fund), ref)
+            for day, f in self.figures[ref].items():
+                self.assertEqual({field for field, label in f if not label}, scalars, day)
+                self.assertTrue(f[("sec_yield", "")] < f[("yield_to_worst", "")] < f[("yield_to_maturity", "")], day)
+                bands = {label: v for (field, label), v in f.items() if field == "maturity_breakdown"}
+                self.assertEqual(sum(bands.values()), 100, day)
+                self.assertLessEqual(set(bands), {label for label, _ in reference.MATURITY_BANDS} |
+                                     {reference.CASH_BAND}, day)
+
+    def test_the_bond_funds_maturity_bands_hold_its_lines(self):
+        """The bond fund's bands sum to 100 every month-end, and its cash
+        band is its cash lines' weight."""
+        (fund,) = [f for f in self.cat["funds"] if f.get("risk")]
+        ref = reference.fund_ref(self.inputs.instruments[fund["instrument"]])
+        cash = collections.defaultdict(Decimal)
+        for r in self.rows[silver.REFERENCE_SOURCE]["lines"]:
+            if r["fund_ref"] == ref and r["asset_type"] == "Cash":
+                cash[dates.day_of(r["as_of"])] += Decimal(r["weight"])
+        for day, f in self.figures[ref].items():
+            bands = {label: v for (field, label), v in f.items() if field == "maturity_breakdown"}
+            self.assertEqual(sum(bands.values()), 100, day)
+            self.assertEqual(bands.get(reference.CASH_BAND, Decimal(0)), cash[day], day)
+
+
+class TestHeldBonds(Built):
+    """The bonds the household holds directly: one of each coupon kind and
+    a ladder of discount notes, priced off the curve, each stating its
+    terms where the yield report reads them."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.bonds = {iid: i for iid, i in cls.inputs.instruments.items() if i["vehicle"] == "bond"}
+        cls.held = collections.defaultdict(list)
+        for src, p in cls.all(cls, "positions"):
+            if p["instrument_id"] in cls.bonds:
+                cls.held[p["instrument_id"]].append((src, p))
+        cls.txns = [(src, t) for src, t in cls.all(cls, "transactions") if t["instrument_id"] in cls.bonds]
+        cls.ledger = [json.loads(line) for line in
+                      (cls.root / "overrides" / "exposure_declarations.ndjson").read_text().splitlines()]
+
+    def held_on(self, day):
+        return {iid for iid, ps in self.held.items() for _, p in ps if dates.day_of(p["snapshot_at"]) == day}
+
+    def test_a_bond_of_each_coupon_kind_and_a_discount_note(self):
+        on = self.held_on(dates.prev_business(AS_OF))
+        kinds = set()
+        for iid in on:
+            cp = self.bonds[iid].get("coupon")
+            kinds.add("ladder" if "ladder" in self.bonds[iid] else "zero" if cp is None
+                      else "floating" if "floating" in cp else "fixed")
+        self.assertEqual(kinds, {"fixed", "zero", "floating", "ladder"})
+
+    def price(self, p):
+        """A bond position's clean price per 100 of face."""
+        return (Decimal(p["market_value"]) - Decimal(p["accrued_interest"] or 0)) / Decimal(p["quantity"]) * 100
+
+    def test_a_discount_note_trades_below_par_and_pays_par_at_maturity(self):
+        notes = [iid for iid in self.held if "ladder" in self.bonds[iid]]
+        self.assertGreater(len(notes), 3)
+        for iid in notes:
+            for _, p in self.held[iid]:
+                self.assertLess(self.price(p), 100, f'{iid} on {dates.day_of(p["snapshot_at"])}')
+                self.assertLess(dates.day_of(p["snapshot_at"]), dates.parse(self.bonds[iid]["maturity"]), iid)
+
+    def test_the_ladder_rolls_into_its_next_note(self):
+        """On its maturity a note pays back its cost, and its discount, the
+        face less the cost, as interest that names it; so its face comes
+        back whole, with no gain realized. The next note is bought the same
+        day, in the same account, with a terms record of paper that pays
+        no coupon and counts ACT/360. The note held at the as-of matures
+        after it."""
+        redeemed = [t for _, t in self.txns if t["description"].startswith("REDEMPTION")]
+        self.assertTrue(redeemed)
+        terms = {(d["silver_source_id"], d["instrument"]): d["terms"] for d in self.ledger if "terms" in d}
+        realized = {r["realized_lot_id"].rsplit("-", 1)[0]: r for _, r in self.all("realized_lots")}
+        for t in redeemed:
+            inst, day = self.bonds[t["instrument_id"]], dates.day_of(t["occurred_at"])
+            face, proceeds = -Decimal(t["quantity"]), Decimal(t["net_amount"])
+            self.assertEqual(day, dates.next_business(dates.parse(inst["maturity"])))
+            cost = [Decimal(p["book_value"]) for _, p in self.held[t["instrument_id"]]
+                    if dates.day_of(p["snapshot_at"]) < day][-1]
+            self.assertEqual(proceeds, cost.quantize(Decimal("0.01")), t["transaction_id"])
+            self.assertLessEqual(abs(proceeds - Decimal(realized[t["transaction_id"]]["book_value"])), Decimal("0.01"))
+            (earned,) = [i for _, i in self.txns if i["kind"] == "interest" and i["instrument_id"] == t["instrument_id"]
+                         and dates.day_of(i["occurred_at"]) == day and i["account_id"] == t["account_id"]]
+            self.assertEqual(Decimal(earned["net_amount"]) + proceeds, face, t["transaction_id"])
+            self.assertGreater(Decimal(earned["net_amount"]), 0)
+            buys = [b for _, b in self.txns if b["kind"] == "buy" and b["instrument_id"] == inst["next"]
+                    and dates.day_of(b["occurred_at"]) == day and b["account_id"] == t["account_id"]]
+            self.assertEqual(len(buys), 1, t["transaction_id"])
+            self.assertLessEqual(-Decimal(buys[0]["net_amount"]), face)
+        for iid, ps in self.held.items():
+            if "ladder" in self.bonds[iid]:
+                self.assertEqual(terms[(ps[0][0], iid)], {"frequency": 0, "coupon_kind": "zero", "day_count": "ACT/360"},
+                                 iid)
+        (last,) = [iid for iid in self.held_on(dates.prev_business(AS_OF)) if "ladder" in self.bonds[iid]]
+        self.assertGreater(dates.parse(self.bonds[last]["maturity"]), AS_OF)
+
+    def test_a_floating_note_restates_its_coupon_and_pays_it(self):
+        """One record per coupon period, each stating the period's coupon,
+        and every coupon is the face times the coupon of the period it
+        ends."""
+        floating = [iid for iid in self.held if "floating" in self.bonds[iid].get("coupon", {})]
+        self.assertTrue(floating)
+        for iid in floating:
+            cp = self.bonds[iid]["coupon"]
+            versions = sorted((r["valid_from"], json.loads(r["payload"])) for _, r in self.all("instruments")
+                              if r["instrument_id"] == iid)
+            self.assertEqual(versions[0][0], dates.epoch(self.inputs.history_start))
+            # The first record holds from history start, at the coupon set
+            # before it; the next from each reset after it, to the as-of.
+            starts = [dates.day_of(v) for v, _ in versions[1:]]
+            self.assertEqual(starts[0], bonds.next_coupon(cp, self.inputs.history_start - dt.timedelta(days=1)), iid)
+            for a, b in zip(starts, starts[1:], strict=False):
+                self.assertEqual(b, bonds.next_coupon(cp, a), iid)
+            self.assertGreater(bonds.next_coupon(cp, starts[-1]), AS_OF, iid)
+            coupons = [t for _, t in self.txns if t["kind"] == "coupon" and t["instrument_id"] == iid]
+            self.assertTrue(coupons)
+            for t in coupons:
+                due = dates.day_of(t["occurred_at"])
+                due = dates.clamp_day(due.year, due.month, cp["day"])
+                stated = [p for v, p in versions if v < dates.epoch(due)][-1]
+                self.assertEqual(stated["maturity_date"], self.bonds[iid]["maturity"])
+                face = [Decimal(p["quantity"]) for _, p in self.held[iid]
+                        if dates.day_of(p["snapshot_at"]) < dates.day_of(t["occurred_at"])][-1]
+                want = (face * Decimal(stated["interest_rate"]) / 100 / len(cp["months"])).quantize(Decimal("0.01"))
+                self.assertEqual(Decimal(t["net_amount"]), want, t["transaction_id"])
+
+    def test_a_bond_that_states_its_terms_states_the_catalogues(self):
+        """In the keys the yield pass reads from an instrument's record."""
+        for key in ("interest_rate", "maturity_date"):
+            self.assertTrue(f"'{key}'" in goref.yield_pass(), key)
+        stating = [iid for iid in self.held if self.bonds[iid].get("states_terms")]
+        self.assertGreater(len(stating), 1)
+        for _, r in self.all("instruments"):
+            inst = self.bonds.get(r["instrument_id"])
+            stated = json.loads(r["payload"])
+            if not inst or not inst.get("states_terms"):
+                self.assertEqual(stated, {}, r["instrument_id"])
+                continue
+            self.assertEqual(stated["maturity_date"], inst["maturity"])
+            if "rate" in inst["coupon"]:
+                self.assertEqual(Decimal(stated["interest_rate"]), Decimal(inst["coupon"]["rate"]) * 100)
+
+    def test_a_callable_bond_trades_above_par_and_its_record_states_its_call(self):
+        callable_ = [iid for iid in self.held if "call" in self.bonds[iid]]
+        self.assertTrue(callable_)
+        terms = {(d["silver_source_id"], d["instrument"]): d["terms"] for d in self.ledger if "terms" in d}
+        for iid in callable_:
+            src, last = self.held[iid][-1]
+            self.assertLess(AS_OF, dates.parse(self.bonds[iid]["call"]), iid)
+            self.assertGreater(self.price(last), 100, iid)
+            self.assertEqual(terms[(src, iid)], {"call_date": self.bonds[iid]["call"]})
+
+    def test_a_rating_record_rates_a_bond_its_name_does_not(self):
+        """In a bucket the engine knows, and as the funds' lines rate the
+        same bond."""
+        ratings = [d for d in self.ledger if "rating" in d]
+        self.assertTrue(ratings)
+        lines = {sid: s.get("rating") for sid, s in reference.securities(reference.load(), self.inputs.instruments).items()}
+        for d in ratings:
+            inst = self.bonds[d["instrument"]]
+            self.assertIn(d["instrument"], self.held)
+            self.assertNotRegex(inst["name"].upper(), r"\b(MOODY'?S|S&P|FITCH)\b")
+            self.assertIn(d["rating"]["bucket"], goref.rating_buckets())
+            self.assertEqual(d["rating"]["bucket"], inst["rating"])
+            if d["instrument"] in lines:
+                self.assertEqual(lines[d["instrument"]], inst["rating"])
+
+
+class TestStatedRates(Built):
+    """The rates the household's balances earn: a tiered savings rate and
+    a term deposit, both in UBS's shape on the balance's snapshot, and a
+    rate only the declarations ledger states. Each balance earns what its
+    rate says."""
+
+    UBS_KEYS = ("CdtIntrstRate1", "CdtLmtAmt1", "CdtIntrstRate2", "CdtIntrstVldFrmDt", "EndOfDurtn",
+                "CalIntrstBasisDesc")
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.spec = cls.inputs.spec
+        cls.cash = collections.defaultdict(dict)
+        for _, c in cls.all(cls, "cash_balances"):
+            cls.cash[(c["account_id"], c["currency"])][dates.day_of(c["snapshot_at"])] = c
+        cls.interest = collections.defaultdict(list)
+        cls.moves = collections.defaultdict(list)
+        for _, t in cls.all(cls, "transactions"):
+            cls.moves[(t["account_id"], t["currency"])].append(t)
+            if t["kind"] == "interest" and not t["instrument_id"]:
+                cls.interest[(t["account_id"], t["currency"])].append(t)
+
+    def test_the_rate_keys_are_the_ones_the_yield_pass_reads(self):
+        """It names a credit tier's keys by their side's prefix (Cdt) and
+        the tier's number."""
+        text = goref.yield_pass()
+        self.assertTrue('{"credit", "Cdt"}' in text)
+        for key in self.UBS_KEYS:
+            self.assertTrue(key.removeprefix("Cdt").rstrip("12") in text, key)
+
+    def before(self, key, t):
+        """A balance just before a transaction: its last snapshot before the
+        day, and the day's moves booked ahead of it."""
+        day = dates.day_of(t["occurred_at"])
+        last = max(d for d in self.cash[key] if d < day)
+        ahead = sum((Decimal(m["net_amount"]) for m in self.moves[key]
+                     if dates.day_of(m["occurred_at"]) == day and m["occurred_at"] < t["occurred_at"]), Decimal(0))
+        return Decimal(self.cash[key][last]["amount"]) + ahead
+
+    def test_the_savings_balance_states_its_tiers_and_earns_them(self):
+        si = self.spec["savings_interest"]
+        key = (si["account"], "USD")
+        for day, c in self.cash[key].items():
+            stated = json.loads(c["payload"])
+            self.assertEqual(set(stated), set(self.UBS_KEYS), day)
+            self.assertEqual(stated["EndOfDurtn"], "9999-12-31")
+            self.assertLessEqual(dates.parse(stated["CdtIntrstVldFrmDt"]), day)
+            self.assertGreater(Decimal(stated["CdtIntrstRate1"]), Decimal(stated["CdtIntrstRate2"]))
+        self.assertTrue(self.interest[key])
+        for t in self.interest[key]:
+            stated = json.loads(self.cash[key][dates.day_of(t["occurred_at"])]["payload"])
+            balance, limit = self.before(key, t), Decimal(stated["CdtLmtAmt1"])
+            earned = (min(balance, limit) * Decimal(stated["CdtIntrstRate1"])
+                      + max(balance - limit, Decimal(0)) * Decimal(stated["CdtIntrstRate2"]))
+            self.assertEqual(Decimal(t["net_amount"]), (earned / 100 / 12).quantize(Decimal("0.01")),
+                             t["transaction_id"])
+
+    def test_the_term_deposit_states_its_term_and_rolls_at_its_end(self):
+        """Every snapshot states a term that ends after it. At its end the
+        deposit earns its rate, simple on ACT/365, and the next term starts
+        that day, at a rate near the curve's for its tenor."""
+        td = self.spec["term_deposit"]
+        key = (td["account"], "USD")
+        terms = {}
+        for day, c in sorted(self.cash[key].items()):
+            stated = json.loads(c["payload"])
+            start, end = dates.parse(stated["CdtIntrstVldFrmDt"]), dates.parse(stated["EndOfDurtn"])
+            self.assertTrue(start <= day < end, day)
+            self.assertEqual(end, dates.add_months(start, td["months"]))
+            terms[start] = (end, Decimal(stated["CdtIntrstRate1"]))
+        self.assertGreater(len(terms), 2)
+        paid = {dates.day_of(t["occurred_at"]): Decimal(t["net_amount"]) for t in self.interest[key]}
+        for start, (end, rate) in terms.items():
+            if end <= AS_OF:
+                principal = Decimal(self.cash[key][end - dt.timedelta(days=1)]["amount"])
+                want = (principal * rate / 100 * (end - start).days / 365).quantize(Decimal("0.01"))
+                self.assertEqual(paid[end], want, end)
+                self.assertIn(end, terms)
+        self.assertEqual(set(paid), {end for end, _ in terms.values() if end <= AS_OF})
+
+    def test_a_balance_only_the_ledger_rates_earns_the_records_rate(self):
+        """Every month, on its source's last day of the month, at the rate
+        of the record in force for its account and currency."""
+        records = [d for d in self.config_ledger() if "rate" in d]
+        self.assertGreater(len({(d["account"], d["rate"]["currency"]) for d in records}), 1)
+        cadence = {a["account_id"]: self.cadence[src] for src, a in self.all("accounts")}
+        for d in records:
+            key = (d["account"], d["rate"]["currency"])
+            self.assertFalse(any(json.loads(c["payload"]) for c in self.cash[key].values()), key)
+            self.assertTrue(self.interest[key], key)
+        for key, ts in self.interest.items():
+            mine = [d for d in records if (d["account"], d["rate"]["currency"]) == key]
+            if not mine:
+                continue
+            for t in ts:
+                day = dates.day_of(t["occurred_at"])
+                end = dates.last_business(day.year, day.month) if cadence[key[0]] == "business" else \
+                    dates.month_end(day.year, day.month)
+                self.assertEqual(day, end, t["transaction_id"])
+                rec = max((d for d in mine if dates.parse(d["as_of"]) <= day), key=lambda d: d["as_of"])
+                want = (self.before(key, t) * Decimal(str(rec["rate"]["pct"])) / 100 / 12).quantize(Decimal("0.01"))
+                self.assertEqual(Decimal(t["net_amount"]), want, t["transaction_id"])
+
+    def config_ledger(self):
+        return [json.loads(line) for line in
+                (self.root / "overrides" / "exposure_declarations.ndjson").read_text().splitlines()]
+
+
+class TestLedgerRecords(Built):
+    """The declarations ledger's other yield records agree with what the
+    household's simulation does."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.ledger = [json.loads(line) for line in
+                      (cls.root / "overrides" / "exposure_declarations.ndjson").read_text().splitlines()]
+
+    def test_a_declared_dividend_pays_the_records_amount(self):
+        declared = [d for d in self.ledger if "dividend" in d]
+        self.assertTrue(declared)
+        paid = 0
+        for src, t in self.all("transactions"):
+            mine = [d for d in declared if (d["silver_source_id"], d["instrument"]) == (src, t["instrument_id"])]
+            if t["kind"] != "dividend" or not mine:
+                continue
+            day = dates.day_of(t["occurred_at"])
+            rec = max((d for d in mine if dates.parse(d["as_of"]) <= day), key=lambda d: d["as_of"])
+            (qty,) = [Decimal(p["quantity"]) for p in self.rows[src]["positions"]
+                      if p["instrument_id"] == t["instrument_id"] and p["account_id"] == t["account_id"]
+                      and dates.day_of(p["snapshot_at"]) == day]
+            self.assertEqual(Decimal(t["net_amount"]),
+                             (qty * Decimal(str(rec["dividend"]["amount"]))).quantize(Decimal("0.01")))
+            self.assertEqual(t["currency"], rec["dividend"]["currency"])
+            paid += 1
+        self.assertGreater(paid, 1)
+
+    def test_the_loans_terms_are_the_mortgages(self):
+        m = self.inputs.spec["mortgage"]
+        loans = [d for d in self.ledger if "terms" in d and d["instrument"] == "loan"]
+        (terms,) = [d["terms"] for d in loans]
+        first = dates.parse(m["first_payment"])
+        self.assertEqual(Decimal(str(terms["coupon"])), Decimal(m["rate"]) * 100)
+        self.assertEqual(terms["frequency"], 12)
+        self.assertEqual(terms["maturity"], dates.add_months(first, m["term_months"] - 1).isoformat())
+        self.assertEqual(terms["fixed_until"], dates.add_months(first, m["fixed_months"] - 1).isoformat())
+
+
 class TestPeriodFacts(Built):
     """The companies' reported figures: filed weeks after their periods,
     in the forms and periods a 10-Q and a 10-K state."""
@@ -919,8 +1322,22 @@ class TestYieldConfig(Built):
         cls.block = cls.config["yield"]
 
     def test_the_block_names_curves_withholding_conventions_cycles_and_a_horizon(self):
-        self.assertEqual(set(self.block), {"curves", "withholding", "conventions", "horizon_months", "cycles"})
+        self.assertEqual(set(self.block), {"curves", "withholding", "rating_funds", "conventions", "horizon_months",
+                                           "cycles"})
         self.assertEqual(self.block["horizon_months"], 12)
+
+    def test_a_rating_fund_is_a_held_fund_that_publishes_no_holdings(self):
+        """Sliced by rating to a range of buckets, best first: so its credit
+        comes from the config alone."""
+        pages = {reference.fund_ref(self.inputs.instruments[f["instrument"]]) for f in reference.load()["pages"]}
+        held = {reference.fund_ref(self.inputs.instruments[p["instrument_id"]])
+                for _, p in self.all("positions") if p["instrument_id"] in self.inputs.instruments}
+        buckets = goref.rating_buckets()
+        self.assertTrue(self.block["rating_funds"])
+        for ref, rating in self.block["rating_funds"].items():
+            self.assertIn(ref, pages & held)
+            best, _, worst = rating.partition("-")
+            self.assertLessEqual(buckets.index(best), buckets.index(worst or best), rating)
 
     def test_the_curve_names_the_published_series(self):
         published = {r["series_id"] for r in self.rows[rates.SOURCE]["rates"]}

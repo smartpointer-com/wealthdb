@@ -99,6 +99,27 @@ class TestAppend(TempRoot):
         self.assertEqual(con.execute("SELECT COUNT(*) FROM accounts").fetchone()[0], 1)
         con.close()
 
+    def test_an_append_across_a_notes_maturity_equals_a_full_build(self):
+        """A discount note matures inside the appended days and the next one
+        is bought: the append adds the new note, and the declarations
+        ledger the record of its terms. The rolled ledger matches a full
+        build's."""
+        before, after = dt.date(2024, 5, 20), dt.date(2024, 6, 5)
+        full, rolled = self.root("full"), self.root("rolled")
+        generate.build(full, after, SEED)
+        generate.build(rolled, before, SEED)
+        ledger = rolled / "overrides" / "exposure_declarations.ndjson"
+        early = ledger.read_text().splitlines()
+        generate.build(rolled, after, SEED, append=True)
+        for db in sorted((full / "silver").glob("*.db")):
+            self.assertEqual(silver.table_rows(db), silver.table_rows(rolled / "silver" / db.name), db.name)
+        self.assertEqual(ledger.read_bytes(), (full / ledger.relative_to(rolled)).read_bytes())
+        added = [json.loads(line) for line in ledger.read_text().splitlines()[len(early):]]
+        self.assertEqual([d["terms"] for d in added], [{"frequency": 0, "coupon_kind": "zero", "day_count": "ACT/360"}])
+        con = sqlite3.connect(rolled / "silver" / "quayvane.db")
+        self.addCleanup(con.close)
+        self.assertIn((added[0]["instrument"],), con.execute("SELECT instrument_id FROM instruments").fetchall())
+
     def test_an_append_adds_the_figures_filed_in_its_days(self):
         """The first quarter of 2024 ends before the first build, and its
         figures are filed after it: the append adds them, and its run's

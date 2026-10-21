@@ -59,8 +59,15 @@ class TestFields(unittest.TestCase):
         compared = {table for _, table, _ in disjoint.TEXT_FIELDS}
         self.assertLessEqual(tables - _COMPARED_ELSEWHERE, compared)
 
+    def test_every_pair_reads_gold_columns(self):
+        cols = gold_columns()
+        for label, table, columns, sql in disjoint.PAIRS:
+            self.assertLessEqual(set(columns), cols.get(table, set()), label)
+            for column in columns:
+                self.assertIn(column, sql, label)
+
     def test_labels_fit_the_report_column(self):
-        for label, _, _ in disjoint.TEXT_FIELDS:
+        for label, *_ in disjoint.TEXT_FIELDS + disjoint.PAIRS:
             self.assertLessEqual(len(label), 20, label)
 
 

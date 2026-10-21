@@ -7,18 +7,20 @@
     {"id": "brindlecove", "institution": "Brindlecove Credit Union", "short": "BRINDLECOVE CU", "cadence": "daily", "accounts": [
       {"id": "bc-chk-01", "tag": "CHK", "kind": "cash", "name": "Joint checking", "nickname": "Joint checking", "wrapper": "taxable_joint", "style": "self_directed", "currency": "USD", "cash": "12400.00"},
       {"id": "bc-sav-01", "tag": "SAV", "kind": "cash", "name": "Joint savings", "nickname": "Joint savings", "wrapper": "taxable_joint", "style": "self_directed", "currency": "USD", "cash": "100000.00"},
+      {"id": "bc-td-01", "kind": "cash", "name": "12-month term deposit", "nickname": "Term deposit", "wrapper": "taxable_joint", "style": "self_directed", "currency": "USD", "cash": "40000.00"},
       {"id": "bc-card-01", "kind": "card", "name": "Rewards card", "nickname": "Rewards card", "wrapper": "taxable_joint", "style": "self_directed", "currency": "USD", "cash": "-3850.12"},
       {"id": "bc-loan-01", "kind": "mortgage", "name": "Home loan", "nickname": "Home loan", "wrapper": "taxable_joint", "style": "self_directed", "currency": "USD"}
     ]},
     {"id": "quayvane", "institution": "Quayvane Securities", "short": "QUAYVANE SEC", "cadence": "business", "accounts": [
       {"id": "qv-brk-01", "tag": "BRK", "kind": "brokerage", "name": "Joint brokerage", "nickname": "Joint brokerage", "wrapper": "taxable_joint", "style": "self_directed", "currency": "USD", "cash": "4120.55",
-       "holdings": {"ortm": "409", "orie": "759", "ordg": "422", "pwem": "594", "pwre": "495", "orab": "251", "tvsd": "73", "qlmr": "99", "bkwf": "211", "vlcp": "63", "mrfk": "139"}},
+       "holdings": {"ortm": "409", "orie": "759", "ordg": "422", "pwem": "594", "pwre": "495", "orab": "251", "tvsd": "73", "qlmr": "99", "bkwf": "211", "vlcp": "63", "mrfk": "139",
+                    "hlfp34": "20000", "wywa36": "25000", "brnf31": "15000", "rvdn231129": "20000", "qvtr": "15000"}},
       {"id": "qv-roth-01", "tag": "ROTH S", "kind": "brokerage", "name": "Roth IRA - Sam", "nickname": "Sam's Roth", "wrapper": "roth_ira", "style": "self_directed", "currency": "USD", "cash": "310.20",
        "holdings": {"ortm": "119", "orie": "172"}},
       {"id": "qv-roth-02", "tag": "ROTH P", "kind": "brokerage", "name": "Roth IRA - Priya", "nickname": "Priya's Roth", "wrapper": "roth_ira", "style": "self_directed", "currency": "USD", "cash": "205.75",
        "holdings": {"ortm": "99", "orie": "158"}},
       {"id": "qv-ira-01", "kind": "brokerage", "name": "Rollover IRA", "wrapper": "traditional_ira", "style": "self_directed", "currency": "USD", "cash": "95.10",
-       "holdings": {"ortm": "226", "orab": "191"}},
+       "holdings": {"ortm": "226", "orab": "191", "pwhy": "2900"}},
       {"id": "qv-529-01", "tag": "529", "kind": "brokerage", "name": "529 college savings", "nickname": "Kids' 529", "wrapper": "529", "style": "self_directed", "currency": "USD", "cash": "40.00",
        "holdings": {"age529": "1135"}}
     ]},
@@ -68,7 +70,10 @@
   ],
   "hsa_reimbursements": {"account": "tb-hsa-01", "to": "bc-chk-01", "instrument": "tdf2050", "months": [5, 11], "day": 20,
                          "amounts": ["612.40", "845.10", "433.75", "710.30", "566.20", "904.85", "498.60"]},
-  "savings_interest": {"account": "bc-sav-01", "apy_by_year": {"2023": "0.043", "2024": "0.041", "2025": "0.038", "2026": "0.035"}},
+  "savings_interest": {"account": "bc-sav-01", "limit": "50000.00", "day_count": "act/365",
+                       "rates_by_year": {"2023": ["4.30", "3.30"], "2024": ["4.10", "3.10"], "2025": ["3.80", "2.90"], "2026": ["3.50", "2.60"]}},
+  "term_deposit": {"account": "bc-td-01", "start": "2023-04-17", "months": 12, "rate": "4.85", "tenor": "1Y", "margin": "0.40",
+                   "floor": "0.25", "day_count": "act/365"},
   "feed_in": {"payer": "kindlewater-feedin", "account": "bc-chk-01", "day": 12,
               "monthly": ["22.10", "31.40", "52.80", "68.30", "81.20", "88.90", "92.40", "86.10", "70.30", "49.80", "30.20", "19.60"]},
   "tax_refund": {"payer": "federal-refund", "account": "bc-chk-01", "month": 4, "day": 22, "amount": "2650.00"},
@@ -77,7 +82,7 @@
   "card": {"account": "bc-card-01", "funding": "bc-chk-01", "close_day": 20, "pay_day": 5, "first_statement": "2410.37",
            "reward_rate": "0.015", "reward_months": [1, 4, 7, 10], "annual_fee": {"month": 9, "day": 22, "amount": "95.00"}},
   "mortgage": {"loan": "bc-loan-01", "funding": "bc-chk-01", "principal": "608000.00", "rate": "0.0325", "term_months": 360,
-               "first_payment": "2019-08-01", "pay_day": 1},
+               "fixed_months": 120, "first_payment": "2019-08-01", "pay_day": 1},
   "sweep": {"checking": "bc-chk-01", "savings": "bc-sav-01", "days": [2, 16], "floor": "5000.00", "target": "12000.00", "ceiling": "16000.00"},
   "declared_transfer": {"from": "bc-chk-01", "day": 8, "amount": "200.00", "descriptor": "ONLINE TRANSFER THIMBLEWOOD SAVINGS"},
 
@@ -219,6 +224,7 @@
     "yield": {
       "withholding": {"CH": {"default": 35, "traditional_ira": 0}, "DE": {"default": 15}, "FR": {"default": 15}},
       "conventions": {"EUR": {"frequency": 1, "day_count": "ACT/ACT"}},
+      "rating_funds": {"isin:US000PWHY000": "BB-B"},
       "horizon_months": 12,
       "cycles": {"real_estate": "sensitive"}
     },
@@ -237,7 +243,20 @@
         {"silver_source_id": "emberwright", "instrument": "spv-lmnr", "country": {"US": 100}, "currency": {"USD": 100},
          "sector": {"industrials": 100}},
         {"silver_source_id": "homestead", "instrument": "home", "country": {"US": 100}, "currency": {"USD": 100},
-         "note": "the home"}
+         "note": "the home"},
+        {"silver_source_id": "driftwren", "account": "dw-mc-01", "as_of": "2023-07-01", "rate": {"pct": 1.75, "currency": "EUR"},
+         "note": "interest on the euro balance, from the app's rate notice"},
+        {"silver_source_id": "driftwren", "account": "dw-mc-01", "as_of": "2025-03-01", "rate": {"pct": 1.4, "currency": "EUR"},
+         "note": "the rate cut of March 2025"},
+        {"silver_source_id": "aubervane", "instrument": "rhwc", "as_of": "2023-05-04", "dividend": {"amount": 1.45, "frequency": 1, "currency": "EUR"},
+         "note": "the dividend the annual meeting resolved"},
+        {"silver_source_id": "aubervane", "instrument": "rhwc", "as_of": "2024-05-02", "dividend": {"amount": 1.52, "frequency": 1, "currency": "EUR"}},
+        {"silver_source_id": "aubervane", "instrument": "rhwc", "as_of": "2025-05-08", "dividend": {"amount": 1.6, "frequency": 1, "currency": "EUR"}},
+        {"silver_source_id": "aubervane", "instrument": "rhwc", "as_of": "2026-05-07", "dividend": {"amount": 1.68, "frequency": 1, "currency": "EUR"}},
+        {"silver_source_id": "quayvane", "account": "qv-brk-01", "as_of": "2023-07-01", "rate": {"pct": 2.25, "currency": "USD"},
+         "note": "the sweep rate on uninvested cash"},
+        {"silver_source_id": "quayvane", "account": "qv-brk-01", "as_of": "2025-01-02", "rate": {"pct": 1.9, "currency": "USD"},
+         "note": "the sweep rate after the January 2025 change"}
       ],
       "custody": {
         "brindlecove": {"custodian": "Brindlecove Credit Union", "country": "US"},

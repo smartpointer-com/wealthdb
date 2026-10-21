@@ -9,7 +9,9 @@ flows that moved it.
 
 A snapshot is complete for its source: on a snapshot day every open
 account of the source is written, unless the findings switch silences
-it, because gold reads a source's latest snapshot as its whole state.
+it, because gold reads a source's latest snapshot as its whole state. A
+balance's snapshot states the rate its account pays, where the bank
+states one there.
 
 A holding of units keeps its open lots. A buy adds a lot, and a sale
 relieves the oldest lots first. The holding's cost basis is the sum of
@@ -22,7 +24,7 @@ import dataclasses
 import datetime as dt
 import json
 
-from . import dates
+from . import bonds, dates
 from .money import D, ZERO, cents, mul, q4, q8, text
 
 
@@ -87,6 +89,7 @@ class Book:
         self.portfolios = {}            # source id -> [portfolio rows]
         self.instrument_versions = {}   # source id -> {(instrument, valid_from): row}
         self.quiet = lambda aid, day: False  # a snapshot the source does not publish
+        self.cash_terms = lambda acct, ccy, day: None  # the rate a balance's snapshot states
 
     # ---- structure -----------------------------------------------------
 
@@ -295,10 +298,12 @@ class Book:
             h = acct.holdings[key]
             inst = self.instruments[h.instrument]
             coupon = inst.get("coupon")
-            # A bond's accrued interest runs from its last coupon date.
-            # Gold's market value includes it (wealthdb/docs/DESIGN.md
-            # §7.1); accrued_interest says how much of it it is.
-            accrued = q4(mul(h.qty, D(coupon["rate"]), accrual_fraction(coupon, day))) if coupon else None
+            # A bond's accrued interest runs from its last coupon date, at
+            # the rate of the period. Gold's market value includes it
+            # (wealthdb/docs/DESIGN.md §7.1); accrued_interest says how
+            # much of it it is.
+            accrued = q4(mul(h.qty, self.market.coupon_rate(h.instrument, day),
+                             bonds.accrual_fraction(coupon, day))) if coupon else None
             value = q4(self.holding_value(h)) + (accrued or ZERO)
             rows["positions"].append({
                 "snapshot_at": at,
@@ -326,9 +331,11 @@ class Book:
                     "term": term(lot.acquired, day),
                 })
         for ccy in sorted(acct.cash):
+            stated = self.cash_terms(acct, ccy, day)
             rows["cash"].append({
                 "snapshot_at": at, "account_id": acct.id, "currency": ccy,
                 "balance_kind": "closing", "amount": text(acct.cash[ccy]),
+                "payload": json.dumps(stated or {}, sort_keys=True, separators=(",", ":")),
             })
 
 
@@ -345,28 +352,17 @@ def term(acquired, day):
     return "long" if (day - acquired).days > LONG_TERM_DAYS else "short"
 
 
+def is_bond(inst):
+    return inst["vehicle"] == "bond"
+
+
 def unit_price(inst, price):
     """The price of one unit of quantity. A bond's quantity is its face
     amount and its price is quoted per 100 of face."""
-    return price / 100 if inst.get("coupon") else price
+    return price / 100 if is_bond(inst) else price
 
 
 def market_value(inst, qty, price):
     """Quantity times price at working precision, a bond's per 100 of face."""
     value = mul(qty, price)
-    return value / 100 if inst.get("coupon") else value
-
-
-def accrual_fraction(coupon, day):
-    """Share of a year since the bond's last coupon date (actual/365)."""
-    months = sorted(coupon["months"])
-    last = None
-    for year in (day.year, day.year - 1):
-        for m in reversed(months):
-            d = dates.clamp_day(year, m, coupon["day"])
-            if d <= day:
-                last = d
-                break
-        if last:
-            break
-    return D((day - last).days) / 365
+    return value / 100 if is_bond(inst) else value

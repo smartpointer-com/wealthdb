@@ -9,9 +9,10 @@ account, portfolio and instrument ids, display names, nicknames,
 symbols, ISINs, CUSIPs, counterparties, descriptions, merchant and payer
 signatures, cheque numbers, fund references and fund lines, security
 keys and names, rate series ids, the funds that state figures or rate
-risk of their own, the keys of companies' reported figures, and (date,
-amount) pairs of transactions. A table one gold lacks is reported and
-skipped.
+risk of their own, the keys of companies' reported figures, the notes
+of the declarations ledger's records, (date, amount) pairs of
+transactions, and (coupon, maturity) pairs of bonds' terms. A table one
+gold lacks is reported and skipped.
 Text compares case- and space-insensitively. Prints each field's count
 and its shared values, and nothing else; --show N prints at most N
 values per field and says how many it left out.
@@ -65,6 +66,11 @@ TEXT_FIELDS = [
     ("characteristic fund", "fund_characteristics", "fund_ref"),
     ("period fact key", "security_period_facts", "security_key"),
     ("fund risk reference", "fund_risk", "fund_ref"),
+    ("declaration note", "exposure_declarations", "note"),
+    ("rate record note", "yield_declared_rates", "note"),
+    ("rating record note", "yield_declared_ratings", "note"),
+    ("dividend note", "yield_declared_dividends", "note"),
+    ("terms record note", "yield_declared_terms", "note"),
 ]
 
 
@@ -88,14 +94,24 @@ SELECT table_name, COUNT(DISTINCT table_catalog) AS n FROM information_schema.ta
  WHERE table_catalog IN ('demo', 'live') GROUP BY 1"""
 
 
-# A (day, amount) pair, the amount at cent precision and signed.
-PAIR_QUERY = """
-SELECT d, a FROM (SELECT DISTINCT CAST(to_timestamp(occurred_at) AS DATE) AS d, CAST(net_amount AS DECIMAL(28,2)) AS a
-                    FROM demo.transactions WHERE net_amount IS NOT NULL AND net_amount <> 0)
-INTERSECT
-SELECT d, a FROM (SELECT DISTINCT CAST(to_timestamp(occurred_at) AS DATE) AS d, CAST(net_amount AS DECIMAL(28,2)) AS a
-                    FROM live.transactions WHERE net_amount IS NOT NULL AND net_amount <> 0)
-ORDER BY d, a"""
+def pair_query(table, d, a, where):
+    """The (d, a) pairs of `table` both golds hold, d and a SQL over its
+    columns."""
+    side = f"SELECT DISTINCT {d} AS d, {a} AS a FROM {{db}}.{table} WHERE {where}"
+    return f"{side.format(db='demo')}\nINTERSECT\n{side.format(db='live')}\nORDER BY d, a"
+
+
+# The pairs compared, each with the columns it reads: a transaction's day
+# and its amount, at cent precision and signed; a bond's maturity and its
+# coupon, at a thousandth of a percent. A renamed copy of a real holding
+# shares either.
+PAIRS = [
+    ("(date, amount)", "transactions", ("occurred_at", "net_amount"), pair_query(
+        "transactions", "CAST(to_timestamp(occurred_at) AS DATE)", "CAST(net_amount AS DECIMAL(28,2))",
+        "net_amount IS NOT NULL AND net_amount <> 0")),
+    ("(coupon, maturity)", "instrument_terms", ("maturity", "coupon_pct"), pair_query(
+        "instrument_terms", "maturity", "CAST(coupon_pct AS DECIMAL(9,3))", "coupon_pct IS NOT NULL AND maturity IS NOT NULL")),
+]
 
 
 def run(demo, live, sql):
@@ -141,10 +157,16 @@ def main(argv=None):
         print(f"{label:20} {len(shared[label]):6} shared")
         show(shared[label], a.show, str)
     shared_total = sum(len(v) for v in shared.values())
-    pairs = run(a.demo, a.live, PAIR_QUERY)
-    print(f"{'(date, amount)':20} {len(pairs):6} shared")
-    show(pairs, a.show, lambda r: f"{r['d']}  {r['a']}")
-    print(f"\n{shared_total} shared identifying values, {len(pairs)} shared (date, amount) pairs")
+    counts = []
+    for label, table, _columns, sql in PAIRS:
+        if table not in both:
+            print(f"{label:20} {'n/a':>6} ({table} is not in both golds)")
+            continue
+        pairs = run(a.demo, a.live, sql)
+        print(f"{label:20} {len(pairs):6} shared")
+        show(pairs, a.show, lambda r: f"{r['d']}  {r['a']}")
+        counts.append(f"{len(pairs)} shared {label} pairs")
+    print(f"\n{shared_total} shared identifying values, " + ", ".join(counts))
     return 0
 
 

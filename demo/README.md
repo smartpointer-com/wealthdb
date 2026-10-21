@@ -63,6 +63,10 @@ demo -r transactions 2026-05-18 2026-05-18
 demo -r gains coverage 2025-07-01 today
 demo -r exposure sectors
 demo -r exposure funds -d 2024-03-31
+demo -r exposure credit
+demo -r yield global
+demo -r yield cash
+demo -r income projection -C +principal
 ```
 
 ## The household
@@ -74,16 +78,16 @@ History starts on 2023-07-01 and runs to the as-of date.
 
 | Source | Accounts | What it shows |
 | --- | --- | --- |
-| `brindlecove` | checking, savings, a rewards card, the home loan | payroll, bills, the card cycle, ATM cash, savings sweeps, the mortgage split into interest and amortisation |
-| `quayvane` | joint brokerage, two Roth IRAs, a rollover IRA, a 529 plan | monthly buying, dividends with foreign withholding, a 2-for-1 split, a fund rename, tax-loss selling, retirement and education vehicles |
+| `brindlecove` | checking, savings, a term deposit, a rewards card, the home loan | payroll, bills, the card cycle, ATM cash, savings sweeps, a tiered savings rate, a term deposit that rolls every year, the mortgage split into interest and amortisation |
+| `quayvane` | joint brokerage, two Roth IRAs, a rollover IRA, a 529 plan | monthly buying, dividends with foreign withholding, a 2-for-1 split, a fund rename, tax-loss selling, bonds held directly, a ladder of discount notes, a money-market fund, retirement and education vehicles |
 | `tamberlow` | two 401(k) plans, a health savings account | payroll contributions that never touch household cash, HSA reimbursements |
 | `aubervane` | a discretionary mandate in one portfolio | four currencies, currency conversions, coupons, withholding, management fees |
 | `emberwright` | a venture fund interest and an SPV, in one account | capital calls, a distribution, NAV marks, an SPV that exits in listed shares |
 | `tessarite` | a crypto exchange account | the `crypto_partial` regime, staking income, a deposit from and a withdrawal to a wallet nothing tracks, and no stated cost basis: the lot engine rebuilds it from the trades |
-| `driftwren` | a multi-currency account in EUR and GBP | spending abroad, a yearly USD wire paired across currencies |
+| `driftwren` | a multi-currency account in EUR and GBP | spending abroad, a yearly USD wire paired across currencies, interest on the euro balance |
 | `homestead` | the family home | a NAV-only holding valued by yearly appraisals |
 | `fx` | none | daily USD rates for EUR, GBP and CHF, and a US dollar yield curve |
-| `refdata` | none | what the funds hold, every month-end, what the directly held stocks and bonds are, the bond fund's yields and rate risk, and the companies' reported figures |
+| `refdata` | none | what the funds hold, every month-end, what the directly held stocks and bonds are, the bond funds' yields and rate risk, the money-market fund's filings, and the companies' reported figures |
 
 One account is declared rather than collected: `kids-savings`, a
 children's savings account at a bank nothing collects. A monthly
@@ -134,6 +138,31 @@ The directly held US companies state their quarterly and yearly
 figures, each about 40 days after its period ends. Not every company
 pays a dividend, and one reports a loss.
 
+The household holds what every view of `wealthdb yield` reads:
+
+- The joint brokerage holds three bonds: a callable fixed-coupon bond
+  above par, a zero and a floating note. The fx source's curve prices
+  them.
+- It holds a ladder of discount notes. Each one matures after 26 weeks.
+  Its discount is booked as interest, and its face buys the next note.
+- Its cash earns a sweep rate, so a maturing note earns that rate once
+  it lands in cash.
+- Its money-market fund keeps a price of one dollar and pays the
+  month's yield. The fund's filings state its seven-day yield and the
+  maturity of its holdings.
+- The rollover IRA holds a high-yield fund that publishes its page but
+  not its holdings. The config's `yield.rating_funds` gives its credit,
+  and its page gives its maturity bands. With no holdings to look
+  through, `wealthdb exposure coverage` lists it and the money-market
+  fund as `unmatched`.
+- The savings balance states two tiers of rates, and the term deposit
+  its rate and its end. Both use the shape of the UBS export.
+- The euro bond prices off the dollar curve, at a spread below zero.
+  The demo publishes no euro curve, so its euro holdings have no
+  benchmark.
+- A stock paid twice a year pays nothing in the first months of
+  history, so its dividend there is the one its filings report.
+
 The 529 portfolio has no composition of its own. The config names a
 target-date fund as its proxy. The declarations ledger states what no
 source knows:
@@ -145,6 +174,15 @@ source knows:
   infrastructure. `wealthdb exposure classes` shows the fund in both
   classes. It declares its legal situs too, Luxembourg, which
   `wealthdb exposure situs` shows.
+- The rates on the euro balance and on the brokerage's cash, which no
+  source states.
+- A German company's dividend, as its annual meeting resolves it each
+  year.
+- The generator writes the records whose figures the spec and the
+  catalogue hold, as the household takes each holding on: the loan's
+  terms (3.25%, fixed for ten years), the ratings of two bonds, the
+  floating note's coupon kind, the callable bond's call date, and each
+  discount note's terms (it pays no coupon and counts ACT/360).
 
 ## How it is built
 
@@ -161,9 +199,10 @@ network. The code is in `demo/demohouse/`:
 | `keyed.py` | randomness keyed by (seed, stream, the draw's own keys), so adding days never changes an earlier day |
 | `market.py` | four price factors (stocks, bonds, gold, crypto), instrument prices, exchange rates |
 | `rates.py` | the US dollar yield curve, from the calendar and the seed |
+| `bonds.py` | a bond's price, yield and duration off the curve, and its coupon dates |
 | `book.py` | the ledger: every balance is the running sum of its transactions, and every holding the sum of its lots |
 | `household.py` | the day-by-day simulation |
-| `reference.py` | the funds' month-end compositions, the bond fund's figures and the securities' facts, from `catalogue/funds.json` and the instruments |
+| `reference.py` | the funds' month-end compositions, the bond funds' and the money-market fund's figures and the securities' facts, from `catalogue/funds.json` and the instruments |
 | `filings.py` | the companies' reported figures, each written once it is filed |
 | `silver.py` | writes a full build, or appends the new days to an earlier one |
 | `config.py` | renders `wealthdb.cfg`, the ledger CSVs and the declarations ledger |
@@ -221,7 +260,10 @@ A findings build is a one-off picture: it cannot be appended to.
   append contract, the ledger and calendar invariants, and every value
   checked against the engine's own vocabularies (read from its Go
   source). It then loads the household's first months through the
-  engine image in a scratch root under the cache dir.
+  engine image in a scratch root under the cache dir. It also builds
+  and loads the whole history to today, because the income projection
+  starts from today's holdings. That case takes the longest. What it
+  expects follows the catalogue's maturities on the day it runs.
 - `demo/check_dashboards.py` runs every card of every dashboard of a
   running demo Metabase through its API. It covers each time window,
   each source, every currency the Currency picker offers, and the
@@ -235,8 +277,9 @@ A findings build is a one-off picture: it cannot be appended to.
   Another root needs `--password-file`.
 - `demo/disjoint.py --demo <gold> --live <gold>` lists every
   identifying value a demo gold shares with another gold: ids, names,
-  symbols, keys, descriptions and (date, amount) pairs. The script's
-  docstring lists every field it compares. A table one gold lacks is
-  reported and skipped. It prints counts and values only, at most N
-  values per field with `--show N`. It needs the `duckdb` command-line
+  symbols, keys, descriptions, the ledger's notes, (date, amount) pairs
+  and bonds' (coupon, maturity) pairs. The script's docstring lists
+  every field it compares. A table one gold lacks is reported and
+  skipped. It prints counts and values only, at most N values per field
+  with `--show N`. It needs the `duckdb` command-line
   tool on PATH.

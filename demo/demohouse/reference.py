@@ -11,11 +11,15 @@ quarter-end, as a lookup refreshed on a schedule would.
 
 A bond line states its durations and yields as an issuer file does.
 They follow from the bond's terms and the dollar curve on the day
-(demohouse/rates.py): a bond yields the curve at its remaining life
-plus its spread. A fund the catalogue marks with `risk` states its rate
-and credit-spread sensitivity every quarter-end, as a filing does, and
-its duration, yields and credit quality every month-end, as its page
-does. Every fund with a cash payout states its distribution yield.
+(demohouse/rates.py, demohouse/bonds.py): a bond yields the curve at its
+remaining life plus its spread. A fund the catalogue marks with `risk`
+states its rate and credit-spread sensitivity every quarter-end, as a
+filing does, and its duration, yields, credit quality and maturity
+bands every month-end, as its page does. Every fund with a cash payout
+states its distribution yield. A money-market fund states its yields
+and the maturity of its holdings every month-end, as its N-MFP filing
+does. A fund that publishes its page but not its holdings states the
+page's figures every month-end, and no composition.
 
 Every row is dated by the day it describes, and fetched that day: the
 rows of a month-end are the same in a full build and in an append that
@@ -30,6 +34,7 @@ import re
 from decimal import Decimal, localcontext
 
 from . import dates, filings, keyed, rates
+from . import bonds as bondmath
 from .money import PRECISE, ZERO, D, compound, text
 from .spec import CATALOGUE_DIR, name_on
 
@@ -54,10 +59,6 @@ INVESTMENT_GRADE = RATINGS[:4]
 # Inflation priced into the curve, in percent: an inflation-linked bond's
 # real yield is its nominal yield less this.
 BREAKEVEN = Decimal("2.3")
-# The lowest yield a line states, in percent, and the shortest life, in
-# years, a bond line's figures run over.
-MIN_YIELD = Decimal("0.05")
-MIN_LIFE = Decimal("0.01")
 # A floating note resets its coupon at these month-ends.
 RESET_MONTHS = (1, 4, 7, 10)
 # A sized fund grows by this a year, and its size jitters by this each
@@ -65,8 +66,16 @@ RESET_MONTHS = (1, 4, 7, 10)
 GROWTH = Decimal("0.06")
 SIZE_JITTER = "0.01"
 # A fund page's distribution yield jitters by this around the payout
-# rate the instruments catalogue gives.
+# rate the instruments catalogue gives, and its other stated figures by
+# PAGE_JITTER around their targets.
 YIELD_JITTER = "0.03"
+PAGE_JITTER = "0.02"
+# The maturity bands a bond fund page states, each to its upper bound in
+# years, and the band of its cash.
+MATURITY_BANDS = (("0-1 Years", 1), ("1-3 Years", 3), ("3-5 Years", 5), ("5-7 Years", 7), ("7-10 Years", 10),
+                  ("10-20 Years", 20), ("20+ Years", None))
+CASH_BAND = "Cash and/or Derivatives"
+
 
 
 def load():
@@ -76,17 +85,23 @@ def load():
 def securities(cat, instruments):
     """The catalogue's securities by id. One that is also a demo
     instrument takes its name, currency and ticker from it, its ISIN when
-    it has one, and its coupon when it pays one, so the two catalogues
-    cannot disagree; the entry in funds.json adds what a fund's line
-    states beside them."""
+    it has one, and a bond's coupon, maturity, spread and rating when it
+    has them, so the two catalogues cannot disagree; the entry in funds.json
+    adds what a fund's line states beside them."""
     out = {}
     for s in cat["securities"]:
         inst = instruments.get(s["id"])
         if inst:
             s = {**s, "name": inst["name"], "currency": inst["currency"], "ticker": inst.get("symbol"),
                  "isin": inst.get("isin") or s.get("isin")}
-            if "coupon" in inst:
+            if "rate" in inst.get("coupon", {}):
                 s["coupon"] = str(D(inst["coupon"]["rate"]) * 100)
+            if "maturity" in inst:
+                s["maturity"] = inst["maturity"]
+            if "spread" in inst.get("model", {}):
+                s["spread"] = inst["model"]["spread"]
+            if "rating" in inst:
+                s["rating"] = inst["rating"]
         out[s["id"]] = s
     return out
 
@@ -136,47 +151,6 @@ def _weights(seed, fund, day, basis, targets):
 # ---- bonds ----------------------------------------------------------------
 
 
-def _discount(ytm, life, frequency):
-    """(per-period yield, the discount factor over `life` years)."""
-    with localcontext(PRECISE):
-        y = ytm / 100 / frequency
-        return y, (-(life * frequency) * (1 + y).ln()).exp()
-
-
-def _price(coupon, ytm, life, frequency):
-    """The price per 100 of par of a bond that pays `coupon` percent a
-    year for `life` more years, at a yield of `ytm` percent."""
-    with localcontext(PRECISE):
-        y, v = _discount(ytm, life, frequency)
-        c = coupon / 100 / frequency
-        return 100 * (c / y * (1 - v) + v)
-
-
-def _modified_duration(coupon, ytm, life, frequency):
-    """The modified duration in years, from the closed form of the
-    Macaulay duration."""
-    with localcontext(PRECISE):
-        y, v = _discount(ytm, life, frequency)
-        c = coupon / 100 / frequency
-        n = life * frequency
-        macaulay = n if c == 0 else (1 + y) / y - (1 + y + n * (c - y)) / (c * (1 / v - 1) + y)
-        return macaulay / frequency / (1 + y)
-
-
-def _yield_at(price, coupon, life, frequency):
-    """The yield in percent at which the bond is worth `price`: the price
-    falls as the yield rises, so a bisection finds it."""
-    lo, hi = MIN_YIELD, Decimal(30)
-    with localcontext(PRECISE):
-        for _ in range(48):
-            mid = (lo + hi) / 2
-            if _price(coupon, mid, life, frequency) > price:
-                lo = mid
-            else:
-                hi = mid
-        return (lo + hi) / 2
-
-
 def _next_reset(day):
     """The first reset month-end after the month of `day`."""
     month = dt.date(day.year, day.month, 1)
@@ -184,16 +158,6 @@ def _next_reset(day):
         month = dates.add_months(month, 1)
         if month.month in RESET_MONTHS:
             return dates.month_end(month.year, month.month)
-
-
-def _life(day, until):
-    return max(dates.years(day, dates.parse(until)), MIN_LIFE)
-
-
-def _yield(curve, life, spread):
-    """The curve at `life` years plus `spread`, in percent."""
-    with localcontext(PRECISE):
-        return max(rates.at(curve, life) + spread, MIN_YIELD)
 
 
 # What a bond line states on a day (its line columns), and the effective
@@ -214,29 +178,29 @@ def bond(s, day, curve):
     cols = {"maturity": s["maturity"], "coupon_kind": s.get("coupon_kind", "Fixed"), "is_default": 0, "in_arrears": 0,
             "paid_in_kind": 0}
     if cols["coupon_kind"] == "Floating":
-        ytm = _yield(curve, RISK_TENORS["3M"], spread)
+        ytm = bondmath.curve_yield(curve, RISK_TENORS["3M"], spread)
         life = dates.years(day, _next_reset(day))
         cols |= {"coupon": text(ytm), "yield_to_maturity": text(ytm), "yield_to_worst": text(ytm),
                  "duration": text(life), "modified_duration": text(life)}
         return Bond(cols, Decimal(cols["duration"]), life)
     frequency = Decimal(s.get("frequency", 2))
     coupon = D(s["coupon"])
-    life = D(s["life"]) if "life" in s else _life(day, s["maturity"])
-    ytm = _yield(curve, life, spread)
+    life = D(s["life"]) if "life" in s else bondmath.life(day, s["maturity"])
+    ytm = bondmath.curve_yield(curve, life, spread)
     if s.get("inflation_linked"):
-        real = max(ytm - BREAKEVEN, MIN_YIELD)
-        modified = _modified_duration(coupon, real, life, frequency)
+        real = max(ytm - BREAKEVEN, bondmath.MIN_YIELD)
+        modified = bondmath.modified_duration(coupon, real, life, frequency)
         cols |= {"real_duration": text(modified), "real_yield": text(real)}
     else:
-        modified = _modified_duration(coupon, ytm, life, frequency)
+        modified = bondmath.modified_duration(coupon, ytm, life, frequency)
     duration, worst = modified, ytm
     if "call" in s:
-        to_call = _life(day, s["call"])
-        ytc = _yield_at(_price(coupon, ytm, life, frequency), coupon, to_call, frequency)
+        to_call = bondmath.life(day, s["call"])
+        ytc = bondmath.yield_at(bondmath.price(coupon, ytm, life, frequency), coupon, to_call, frequency)
         cols["yield_to_call"] = text(ytc)
         if ytc < ytm:
             worst, life = ytc, to_call
-            duration = _modified_duration(coupon, ytc, to_call, frequency)
+            duration = bondmath.modified_duration(coupon, ytc, to_call, frequency)
     cols |= {"coupon": text(coupon), "yield_to_maturity": text(ytm), "yield_to_worst": text(worst),
              "duration": text(duration), "modified_duration": text(modified)}
     return Bond(cols, Decimal(cols["duration"]), life)
@@ -319,33 +283,102 @@ def _figure(ref, at, provider, field, value, label=""):
             "value": text(value), "run_at": at, "payload": "{}"}
 
 
-def _bond_figures(ref, at, provider, weights, bonds, securities, ter):
+def _band(years):
+    """The maturity band a fund page puts `years` to maturity in."""
+    for label, top in MATURITY_BANDS:
+        if top is None or years < top:
+            return label
+    raise AssertionError("the last band is open")
+
+
+def _bond_figures(ref, day, provider, weights, bonds, securities, ter):
     """A bond fund page's figures: the effective duration over the whole
     fund (cash counts as zero), the yield to maturity over its bonds, the
     SEC yield as that yield less the expense ratio, and the share of each
-    credit-quality label. A line no rating covers, and the cash the
-    weights leave, is Not Rated, so the shares sum to 100."""
+    credit-quality label and of each maturity band. A line no rating
+    covers, and the cash the weights leave, is Not Rated, so the shares
+    sum to 100. A bond's band is its years to maturity, a pass-through's
+    its average life; the cash is a band of its own."""
+    at = dates.epoch(day)
     with localcontext(PRECISE):
         duration = sum(weights[sid] * b.duration for sid, b in bonds.items()) / 100
         ytm = (sum(weights[sid] * Decimal(b.cols["yield_to_maturity"]) for sid, b in bonds.items())
                / sum(weights[sid] for sid in bonds))
+    left = Decimal(100) - sum(weights.values(), ZERO)
     quality = dict.fromkeys((*RATINGS, NOT_RATED), ZERO)
-    quality[NOT_RATED] = Decimal(100) - sum(weights.values(), ZERO)
+    quality[NOT_RATED] = left
+    maturity = dict.fromkeys((label for label, _ in MATURITY_BANDS), ZERO)
     for sid, w in weights.items():
-        quality[securities[sid].get("rating", NOT_RATED)] += w
+        s = securities[sid]
+        quality[s.get("rating", NOT_RATED)] += w
+        if sid in bonds:
+            years = D(s["life"]) if "life" in s else dates.years(day, dates.parse(s["maturity"]))
+            maturity[_band(years)] += w
+    maturity[CASH_BAND] = left
     out = [_figure(ref, at, provider, "effective_duration", duration),
            _figure(ref, at, provider, "yield_to_maturity", ytm),
            _figure(ref, at, provider, "sec_yield", ytm - D(ter))]
     out += [_figure(ref, at, provider, "credit_quality", share, label) for label, share in quality.items() if share]
+    out += [_figure(ref, at, provider, "maturity_breakdown", share, label) for label, share in maturity.items() if share]
     return out
 
 
-def rows(inputs, seed, as_of):
+def _money_market(seed, fund, inst, curve, as_of, provider):
+    """A money-market fund's figures every month-end, as its N-MFP filing
+    states them: the seven-day yield before and after expenses, in
+    percent, and the weighted average maturity and life of its holdings,
+    in days."""
+    ref, terms = fund_ref(inst), inst["money_market"]
+    out = []
+    for day in month_ends(dates.parse(fund["from"]), as_of):
+        at, points = dates.epoch(day), rates.on(curve, day)
+        r = keyed.rng(seed, "money-market", fund["instrument"], day.isoformat())
+        out += [_figure(ref, at, provider, "seven_day_gross_yield", points[terms["tenor"]]),
+                _figure(ref, at, provider, "seven_day_yield", bondmath.money_market_yield(points, terms)),
+                _figure(ref, at, provider, "weighted_average_maturity",
+                        (D(fund["maturity_days"]) * keyed.lognormal_factor(r, PAGE_JITTER)).quantize(Decimal(1))),
+                _figure(ref, at, provider, "weighted_average_life",
+                        (D(fund["life_days"]) * keyed.lognormal_factor(r, PAGE_JITTER)).quantize(Decimal(1)))]
+    return out
+
+
+def _page(seed, fund, inst, curve, as_of, provider):
+    """The figures every month-end of a bond fund that publishes its page
+    but not its holdings: its duration, its average life and the maturity
+    bands of its targets, jittered; its yield to maturity, the curve at
+    its average life plus its spread; its yield to worst, less what its calls cost;
+    the SEC yield, that less its expenses; and its distribution yield,
+    near its payout. Its credit is the config's, as a fund sliced by
+    rating (yield.rating_funds)."""
+    ref = fund_ref(inst)
+    payout = D(inst["income"]["yield"]) * 100
+    out = []
+    for day in month_ends(dates.parse(fund["from"]), as_of):
+        at = dates.epoch(day)
+        r = keyed.rng(seed, "fund-page", fund["instrument"], day.isoformat())
+        ytm = bondmath.curve_yield(rates.on(curve, day), D(fund["life"]), D(fund["spread"]))
+        ytw = ytm - D(fund["call_drag"])
+        duration = D(fund["duration"]) * keyed.lognormal_factor(r, PAGE_JITTER)
+        out += [_figure(ref, at, provider, "effective_duration", duration),
+                _figure(ref, at, provider, "weighted_average_maturity_years",
+                        D(fund["life"]) * keyed.lognormal_factor(r, PAGE_JITTER)),
+                _figure(ref, at, provider, "yield_to_maturity", ytm),
+                _figure(ref, at, provider, "yield_to_worst", ytw),
+                _figure(ref, at, provider, "sec_yield", ytw - D(fund["ter"])),
+                _figure(ref, at, provider, "distribution_yield", payout * keyed.lognormal_factor(r, YIELD_JITTER))]
+        bands = _weights(seed, fund["instrument"], day, "maturity", fund["maturity_breakdown"])
+        bands[CASH_BAND] = Decimal(100) - sum(bands.values(), ZERO)
+        out += [_figure(ref, at, provider, "maturity_breakdown", share, label) for label, share in bands.items()]
+    return out
+
+
+def rows(inputs, seed, as_of, curve):
     """Every reference row dated on or before as_of, per table, and every
-    company figure filed by then. A column a row does not name is null."""
+    company figure filed by then, its bonds priced off `curve`, the dollar
+    curve to as_of (demohouse/rates.py). A column a row does not name is
+    null."""
     cat = load()
     listed = securities(cat, inputs.instruments)
-    curve = rates.curve(seed, inputs.fx_start, as_of)
     out = {t: [] for t in TABLES}
     for fund in cat["funds"]:
         inst = inputs.instruments[fund["instrument"]]
@@ -372,7 +405,7 @@ def rows(inputs, seed, as_of):
                     "line_count": len(lines), "weight_sum": text(sum((Decimal(r["weight"]) for r in lines), ZERO)),
                     "run_at": at, "payload": "{}"})
                 if fund.get("risk") and basis == "holdings":
-                    out["characteristics"] += _bond_figures(ref, at, cat["provider"], weights, bonds, listed,
+                    out["characteristics"] += _bond_figures(ref, day, cat["provider"], weights, bonds, listed,
                                                             a["ter"])
                     if day.month % 3 == 0:
                         out["fund_risk"] += _risk(ref, at, nav, weights, bonds, listed)
@@ -388,10 +421,20 @@ def rows(inputs, seed, as_of):
                 out["counterparties"].append({
                     "fund_ref": ref, "as_of": at, "role": cp["role"], "name": cp["name"], "share": cp["share"],
                     "run_at": at, "payload": "{}"})
+    for fund in cat["money_market"]:
+        out["characteristics"] += _money_market(seed, fund, inputs.instruments[fund["instrument"]], curve, as_of,
+                                                cat["provider"])
+    for fund in cat["pages"]:
+        out["characteristics"] += _page(seed, fund, inputs.instruments[fund["instrument"]], curve, as_of,
+                                        cat["provider"])
     facts = []
     for f in cat["facts"]:
-        inst = inputs.instruments[f["instrument"]]
-        facts.append((f, inst, fund_ref(inst), listed.get(f["instrument"], {}).get("isin")))
+        # A ladder's fact holds for every note of it.
+        ids = ([iid for iid, i in inputs.instruments.items() if i.get("ladder") == f["ladder"]]
+               if "ladder" in f else [f["instrument"]])
+        for iid in ids:
+            inst = inputs.instruments[iid]
+            facts.append((f, inst, fund_ref(inst), listed.get(iid, {}).get("isin")))
     for day in quarter_ends(inputs.history_start, as_of):
         at = dates.epoch(day)
         for f, inst, key, isin in facts:

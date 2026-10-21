@@ -1,5 +1,5 @@
 {
-  "comment": "What the demo's funds hold and what its securities are, for the exposure report. Every security here is invented: no name is a real company, issuer or bank, and every ISIN has the demo's shape (a country, 000, four letters, a digit tail), as in instruments.json, with a tail chosen rather than computed. The US government lines name no issuer. Unlike a Treasury coupon, none of their coupons is a multiple of 1/8, so no line matches a real issue. A security that is also a demo instrument takes its name, currency, ticker and ISIN from instruments.json, so its entry here states only what a fund's line adds: its sector, country and type, and an ISIN for an instrument that lists none. Labels are in the plain English an issuer file uses (sector, country), one sector label on purpose outside the vocabulary. A fund's lines carry target weights in percent; each month-end the generator jitters them and renormalises to their total, and a cash line takes what the weights leave of 100 unless the fund says it leaves a remainder. gaps are months with no composition; from is the first month-end with one. A bond states its maturity, its coupon in percent, its rating and its spread in percent over the dollar curve; a floating note states its spread over the three-month rate instead of a coupon. Where they apply, a bond also states its call date, its average life (a pass-through), its coupons a year when not two, and that it is inflation-linked. Its yields and durations follow from these and the day's curve. A fund with net_assets states its size, which grows from that figure at its first month-end; a fund with risk states its rate and credit-spread sensitivity every quarter-end and its duration, yields and credit quality every month-end. A fact with filings is a company that reports to the SEC: its price-earnings ratio and net margin at the start of history, its yearly growth, its debt and its cash, the last month of its fiscal year when not December, and from, the first period end it reports, when not a year before history starts.",
+  "comment": "What the demo's funds hold and what its securities are, for the exposure report. Every security here is invented: no name is a real company, issuer or bank, and every ISIN has the demo's shape (a country, 000, four letters, a digit tail), as in instruments.json, with a tail chosen rather than computed. The US government lines name no issuer. Unlike a Treasury coupon, none of their coupons is a multiple of 1/8, so no line matches a real issue. A security that is also a demo instrument takes its name, currency, ticker and ISIN, and a bond's coupon, maturity, spread and rating, from instruments.json, so its entry here states only what a fund's line adds: its sector, country and type, and an ISIN for an instrument that lists none. Labels are in the plain English an issuer file uses (sector, country), one sector label on purpose outside the vocabulary. A fund's lines carry target weights in percent; each month-end the generator jitters them and renormalises to their total, and a cash line takes what the weights leave of 100 unless the fund says it leaves a remainder. gaps are months with no composition; from is the first month-end with one. A bond states its maturity, its coupon in percent, its rating and its spread in percent over the dollar curve; a floating note states its spread over the three-month rate instead of a coupon. Where they apply, a bond also states its call date, its average life (a pass-through), its coupons a year when not two, and that it is inflation-linked. Its yields and durations follow from these and the day's curve. A fund with net_assets states its size, which grows from that figure at its first month-end; a fund with risk states its rate and credit-spread sensitivity every quarter-end and its duration, yields, credit quality and maturity bands every month-end. A fact with filings is a company that reports to the SEC: its price-earnings ratio and net margin at the start of history, its yearly growth, its debt and its cash, the last month of its fiscal year when not December, and from, the first period end it reports, when not a year before history starts. A fact that names a ladder holds for each of its notes. A money-market fund states its yields every month-end, as its N-MFP filing does, and the weighted average maturity and life of its holdings, in days. A fund in pages publishes its page but not its holdings: its duration, its average life and spread over the dollar curve, what its calls cost its yield to worst, its expenses, all in years or percent, and the maturity bands of its holdings, in percent, which the generator jitters as it does a fund's weights.",
   "provider": "demo",
   "securities": [
     {"id": "tvsd", "isin": "US000TVSD000", "sector": "Technology", "country": "United States"},
@@ -65,7 +65,7 @@
      "maturity": "2028-04-22", "coupon_kind": "Floating", "spread": "0.15", "rating": "AA"},
     {"id": "elsm", "isin": "US000ELSM360", "name": "Ellsmoor County Schools 4.00% 2036", "asset_type": "Fixed Income", "sector": "Municipal", "country": "United States", "currency": "USD",
      "maturity": "2036-08-01", "coupon": "4.00", "rating": "AA", "spread": "-0.55"},
-    {"id": "oxmr30", "asset_type": "Fixed Income", "sector": "Corporate", "country": "United States", "maturity": "2030-09-15", "rating": "BBB", "spread": "1.15"},
+    {"id": "oxmr30", "asset_type": "Fixed Income", "sector": "Corporate", "country": "United States"},
     {"id": "fnwb", "isin": "US000FNWB290", "name": "Fennwick Bancorp 5.10% 2029", "asset_type": "Fixed Income", "sector": "Corporate", "country": "United States", "currency": "USD",
      "maturity": "2029-04-15", "coupon": "5.10", "rating": "A", "spread": "0.85", "call": "2028-04-15"},
     {"id": "kstb", "isin": "US000KSTB340", "name": "Kestrovar Energy 4.60% 2034", "asset_type": "Fixed Income", "sector": "Corporate", "country": "United States", "currency": "USD",
@@ -131,6 +131,15 @@
       "lines": {"ortm": "57.0", "orie": "36.0", "orab": "5.0"}
     }
   ],
+  "money_market": [
+    {"instrument": "qvtr", "from": "2023-06-30", "maturity_days": "34", "life_days": "71"}
+  ],
+  "pages": [
+    {"instrument": "pwhy", "from": "2023-06-30", "duration": "3.4", "life": "4.9", "spread": "3.25", "call_drag": "0.40",
+     "ter": "0.52",
+     "maturity_breakdown": {"0-1 Years": "3.5", "1-3 Years": "21.0", "3-5 Years": "36.5", "5-7 Years": "22.0",
+                            "7-10 Years": "12.5", "10-20 Years": "2.5"}}
+  ],
   "facts": [
     {"instrument": "tvsd", "figi": "BBG000TVSD01", "sector": "Technology", "hq_country": "US", "market_cap": "184000000000",
      "filings": {"pe": "34", "margin": "0.26", "growth": "0.14", "debt": "9500000000", "cash": "21000000000"}},
@@ -148,6 +157,9 @@
     {"instrument": "csnr", "legal_country": "FR"},
     {"instrument": "rtbw", "legal_country": "CH"},
     {"instrument": "thbr", "legal_country": "GB"},
-    {"instrument": "sbmr32", "sector": "Corporate", "legal_country": "DE"}
+    {"instrument": "sbmr32", "sector": "Corporate", "hq_country": "DE", "legal_country": "LU"},
+    {"instrument": "hlfp34", "sector": "Corporate", "legal_country": "US"},
+    {"instrument": "brnf31", "sector": "Corporate", "legal_country": "US"},
+    {"ladder": "rvdn", "sector": "Corporate", "legal_country": "US"}
   ]
 }

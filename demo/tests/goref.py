@@ -2,8 +2,10 @@
 
 The generator stamps taxonomy values, account kinds, tax wrappers,
 transaction kinds, composition bases, risk tenors, the companies'
-period-fact fields and the yield config's vocabularies, all of which
-the engine validates or reads by name. Reading them from the Go files
+period-fact fields, the funds' figures, the keys of the records that
+state a bond's terms and a balance's rate, and the yield config's and
+ledger's vocabularies, all of which the engine validates or reads by
+name. Reading them from the Go files
 rather than restating them here means a value renamed in the engine
 fails these tests instead of silently becoming an uncategorised row in
 gold, or a figure gold ignores.
@@ -154,3 +156,31 @@ def day_counts():
 
 def coupon_frequencies():
     return {int(n) for n in _list(_read("yield.go"), "couponFrequencies")}
+
+
+def yield_records():
+    """The yield records a declarations-ledger line may carry
+    (DeclarationYieldKinds)."""
+    t = _read("exposure_config.go")
+    return _list(t, "DeclarationYieldKinds", dict(re.findall(r'(Declaration\w+)\s*=\s*"([^"]+)"', t)))
+
+
+def fund_fields():
+    """The fund_characteristics fields the yield report reads (gold's
+    fundFields)."""
+    t = (INTERNAL / "gold" / "yield_inputs.go").read_text()
+    body = re.search(r"var fundFields = map\[string\].*?\{\n(.*?)\n\}", t, re.S).group(1)
+    return set(re.findall(r'^\s*"(\w+)":', body, re.M))
+
+
+def page_breakdowns():
+    """The fields of a fund page's breakdowns the exposure views split a
+    leaf by."""
+    text = "".join(p.read_text() for p in sorted((INTERNAL / "gold" / "migrations").glob("*.sql")))
+    return set(re.findall(r"exposure_page_breakdown\(\w+, '(\w+)'\)", text))
+
+
+def yield_pass():
+    """The yield pass's source: the keys it reads from an instrument's
+    record and a cash balance's."""
+    return (INTERNAL / "gold" / "yield_pass.go").read_text()

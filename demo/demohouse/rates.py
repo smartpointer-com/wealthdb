@@ -131,12 +131,12 @@ def at(curve_on_day, horizon):
         return sum(curve_on_day[t] * w for t, w in weights(knots, horizon).items())
 
 
-def rows(seed, start, as_of):
-    """The rates rows of the publishing source, two decimals as the
-    Treasury publishes them. The payload says what the series is, as the
-    fred collector's map does."""
+def rows(points_by_day):
+    """The rates rows of the publishing source for a curve() result, two
+    decimals as the Treasury publishes them. The payload says what the
+    series is, as the fred collector's map does."""
     out = []
-    for day, points in curve(seed, start, as_of).items():
+    for day, points in points_by_day.items():
         stamp = dates.epoch(day)
         for tenor, rate in points.items():
             out.append({"as_of": stamp, "series_id": series_id(tenor), "value": text(rate, 2),

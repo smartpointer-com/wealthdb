@@ -11,13 +11,17 @@ Exchange rates are USD per unit of foreign currency, a slow
 mean-reverting random walk around their starting level.
 
 Instruments of type `nav` have no market; their value is set by the
-events that mark them (a fund statement, an appraisal).
+events that mark them (a fund statement, an appraisal). A `stable` one
+keeps its price, as a money-market fund keeps its dollar. A bond of
+type `curve`, `discount` or `floating` prices off the day's dollar
+curve (demohouse/bonds.py), on business days: a fixed coupon or a zero,
+a discount note, a floating note.
 """
 
 import datetime as dt
 from decimal import Decimal, localcontext
 
-from . import dates, keyed
+from . import bonds, dates, keyed, rates
 from .money import PRECISE, D, q8, q10
 
 # Annual drift and volatility of each factor. Crypto also jumps: on a
@@ -32,13 +36,19 @@ FACTORS = {
 FX_SIGMA = Decimal("0.07")
 FX_REVERSION = Decimal("0.002")
 _TRADING_DAYS = {"business": Decimal(252), "daily": Decimal(365)}
+# The price models the curve sets, and a floating coupon's precision, in
+# percent.
+CURVE_MODELS = ("curve", "discount", "floating")
+_COUPON_PLACES = Decimal("0.001")
 
 
 class Market:
     """Price and FX series, advanced one day at a time."""
 
-    def __init__(self, seed, instruments, fx_start, fx_levels):
+    def __init__(self, seed, instruments, fx_start, fx_levels, curve=None):
         self.seed = seed
+        # {day: {tenor: percent}}, every business day (demohouse/rates.py).
+        self.curve = curve or {}
         self.instruments = {i["id"]: i for i in instruments}
         self.day = None
         self.factor_ret = {}
@@ -51,7 +61,7 @@ class Market:
         self.fx_rates = {c: q10(v) for c, v in self.fx_levels.items()}
         self._splits = {}
         for i in instruments:
-            if i.get("model", {}).get("type") in (None, "nav"):
+            if i.get("model", {}).get("type") in (None, "nav", *CURVE_MODELS):
                 continue
             self.prices[i["id"]] = D(i["price"])
 
@@ -64,6 +74,8 @@ class Market:
             raise ValueError(f"market advanced from {self.day} to {day}")
         first = self.day is None
         self.day = day
+        if first or dates.is_business(day):
+            self._price_off_curve(day)
         if first:
             return
         if day > self.fx_start:
@@ -71,7 +83,7 @@ class Market:
         self.factor_ret = {name: self._factor(name, f, day) for name, f in FACTORS.items()}
         for iid, inst in self.instruments.items():
             model = inst.get("model", {})
-            if model.get("type") in (None, "nav"):
+            if model.get("type") in (None, "nav", "stable", *CURVE_MODELS):
                 continue
             listed = inst.get("listed")
             if listed and day <= dates.parse(listed):
@@ -89,6 +101,25 @@ class Market:
     def price(self, instrument):
         return self.prices[instrument]
 
+    def curve_on(self, day):
+        """The curve in force on `day`; before the first day it is
+        published, that day's, as a floating note's coupon set before the
+        history starts reads it."""
+        return rates.on(self.curve, max(day, self.fx_start))
+
+    def coupon_rate(self, instrument, day):
+        """The coupon rate, a fraction a year, of the period that holds
+        `day`: a fixed coupon's own; a floating one's the curve's tenor on
+        the period's first day plus its spread, in the precision a
+        coupon notice states."""
+        coupon = self.instruments[instrument]["coupon"]
+        if "rate" in coupon:
+            return D(coupon["rate"])
+        start = bonds.last_coupon(coupon, day)
+        with localcontext(PRECISE):
+            pct = self.curve_on(start)[coupon["floating"]] + D(coupon["spread"])
+        return pct.quantize(_COUPON_PLACES) / 100
+
     def usd_per(self, ccy):
         """USD value of one unit of `ccy` on the current day."""
         if ccy == "USD":
@@ -104,6 +135,25 @@ class Market:
             return D(amount) / self.usd_per(ccy)
 
     # ---- internals -----------------------------------------------------
+
+    def _price_off_curve(self, day):
+        """Price every bond the curve sets, from its issue until it
+        matures; a matured one stays at its face."""
+        points = None
+        for iid, inst in self.instruments.items():
+            kind = inst.get("model", {}).get("type")
+            if kind not in CURVE_MODELS or ("issued" in inst and day < dates.parse(inst["issued"])):
+                continue
+            points = points or self.curve_on(day)
+            if day >= dates.parse(inst["maturity"]):
+                price = Decimal(100)
+            elif kind == "curve":
+                price = bonds.fixed_price(inst, day, points)
+            elif kind == "discount":
+                price = bonds.discount_price(inst, day, points)
+            else:
+                price = bonds.floating_price(inst, day, self.coupon_rate(iid, day) * 100, points)
+            self.prices[iid] = q8(price)
 
     def _factor(self, name, f, day):
         if f["calendar"] == "business" and not dates.is_business(day):

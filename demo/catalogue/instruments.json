@@ -1,5 +1,5 @@
 {
-  "comment": "Every instrument here is invented. No name is a real fund or company and no ticker is a listed symbol, as far as web searches, public business registries and the exchanges' symbol lists show. The two coins keep their real tickers because they name an asset class, not a holding. model drives the price engine (demohouse/market.py): beta is the loading on the named factor and idio the annual volatility of the instrument's own noise; yield is an annual cash payout as a share of price; withholding is the share of a payout withheld at source.",
+  "comment": "Every instrument here is invented. No name is a real fund or company and no ticker is a listed symbol, as far as web searches, public business registries and the exchanges' symbol lists show. The two coins keep their real tickers because they name an asset class, not a holding. model drives the price engine (demohouse/market.py): beta is the loading on the named factor and idio the annual volatility of the instrument's own noise; a stable price never moves; a bond of type curve, discount or floating prices off the dollar curve at its spread, in percent, until its maturity, a callable one to the worse of its maturity and its call. yield is an annual cash payout as a share of price; a stock with no yield pays the dividend the declarations ledger declares; withholding is the share of a payout withheld at source. A coupon states its rate, or that it floats at a curve tenor plus a spread in percent. A bond that states_terms has a source record stating its coupon and maturity, as the yield pass reads them; any other bond's name states what it states. A money-market fund earns the curve at its tenor less its expenses, in percent. A ladder is a series of discount notes, each issued as the one before matures, which the generator names (issuer, maturity, paper) and numbers (the ISIN prefix and the issue's number). A bond's rating is the one the household records in the declarations ledger; no source states it.",
   "instruments": [
     {
       "id": "ortm",
@@ -119,7 +119,7 @@
       "currency": "USD",
       "price": "62.35",
       "model": {"type": "equity", "beta": "0.6", "idio": "0.25"},
-      "income": {"yield": "0.0310", "months": [3, 6, 9, 12]}
+      "income": {"yield": "0.0310", "months": [6, 12]}
     },
     {
       "id": "lmxr",
@@ -175,7 +175,7 @@
       "currency": "EUR",
       "price": "46.80",
       "model": {"type": "equity", "beta": "0.9", "idio": "0.24"},
-      "income": {"yield": "0.0330", "months": [5], "withholding": "0.15"}
+      "income": {"months": [5], "withholding": "0.15"}
     },
     {
       "id": "csnr",
@@ -221,21 +221,85 @@
       "asset_class": "fixed_income",
       "vehicle": "bond",
       "currency": "USD",
-      "price": "96.40",
-      "model": {"type": "bond", "idio": "0.04"},
+      "maturity": "2030-09-15",
+      "states_terms": true,
+      "rating": "BBB",
+      "model": {"type": "curve", "spread": "1.15"},
       "coupon": {"rate": "0.0375", "months": [3, 9], "day": 15}
     },
     {
       "id": "sbmr32",
       "symbol": null,
       "isin": "XS000SBMR320",
-      "name": "Siebenmoor Energie 2.10% 2032",
+      "name": "Siebenmoor Energie 2.10% 30.06.2032",
       "asset_class": "fixed_income",
       "vehicle": "bond",
       "currency": "EUR",
-      "price": "91.80",
-      "model": {"type": "bond", "idio": "0.05"},
+      "maturity": "2032-06-30",
+      "model": {"type": "curve", "spread": "-1.10"},
       "coupon": {"rate": "0.0210", "months": [6], "day": 30}
+    },
+    {
+      "id": "hlfp34",
+      "symbol": null,
+      "isin": "US000HLFP340",
+      "name": "Hallowfield Power 6.20% 06/01/2034",
+      "asset_class": "fixed_income",
+      "vehicle": "bond",
+      "currency": "USD",
+      "maturity": "2034-06-01",
+      "call": "2028-06-01",
+      "model": {"type": "curve", "spread": "1.30"},
+      "coupon": {"rate": "0.0620", "months": [6, 12], "day": 1}
+    },
+    {
+      "id": "wywa36",
+      "symbol": null,
+      "isin": "US000WYWA360",
+      "name": "Wyndlecombe Water Authority 0% 12/01/2036",
+      "asset_class": "fixed_income",
+      "vehicle": "bond",
+      "currency": "USD",
+      "maturity": "2036-12-01",
+      "model": {"type": "curve", "spread": "0.40"}
+    },
+    {
+      "id": "brnf31",
+      "symbol": null,
+      "isin": "US000BRNF310",
+      "name": "Brennacott Finance Senior Notes 01/15/2031",
+      "asset_class": "fixed_income",
+      "vehicle": "bond",
+      "currency": "USD",
+      "maturity": "2031-01-15",
+      "states_terms": true,
+      "rating": "A",
+      "model": {"type": "floating"},
+      "coupon": {"floating": "3M", "spread": "0.95", "months": [1, 4, 7, 10], "day": 15}
+    },
+    {
+      "id": "qvtr",
+      "symbol": null,
+      "isin": "US000QVTR000",
+      "name": "Quayvane Treasury Reserves Fund",
+      "asset_class": "cash",
+      "vehicle": "fund",
+      "currency": "USD",
+      "price": "1.00",
+      "model": {"type": "stable"},
+      "money_market": {"tenor": "1M", "expense": "0.18"}
+    },
+    {
+      "id": "pwhy",
+      "symbol": null,
+      "isin": "US000PWHY000",
+      "name": "Penwarden High Yield Bond Fund",
+      "asset_class": "fixed_income",
+      "vehicle": "fund",
+      "currency": "USD",
+      "price": "9.42",
+      "model": {"type": "bond", "idio": "0.03"},
+      "income": {"yield": "0.0640", "months": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]}
     },
     {"id": "gold", "symbol": null, "name": "Gold bullion, allocated", "asset_class": "metal", "vehicle": "physical", "currency": "USD", "price": "1912.00", "model": {"type": "gold"}},
     {
@@ -254,7 +318,11 @@
     {"id": "fund-ii", "symbol": null, "name": "Emberwright Ventures Fund II, L.P. interest", "asset_class": "private_equity", "vehicle": "fund", "currency": "USD", "model": {"type": "nav"}},
     {"id": "spv-lmnr", "symbol": null, "name": "Emberwright Ventures SPV — Lumenrise Robotics", "asset_class": "private_equity", "vehicle": "spv", "currency": "USD", "model": {"type": "nav"}},
     {"id": "home", "symbol": null, "name": "Residence", "asset_class": "real_estate", "vehicle": "physical", "currency": "USD", "model": {"type": "nav"}},
-    {"id": "loan", "symbol": null, "name": "30-year fixed home loan", "asset_class": "real_estate", "vehicle": "mortgage", "currency": "USD", "model": {"type": "nav"}}
+    {"id": "loan", "symbol": null, "name": "30-year home loan, rate fixed for 10 years", "asset_class": "real_estate", "vehicle": "mortgage", "currency": "USD", "model": {"type": "nav"}}
+  ],
+  "ladders": [
+    {"id": "rvdn", "isin_prefix": "US000RVDN", "issuer": "Ravensholt Funding", "paper": "Discount Note", "currency": "USD",
+     "first_maturity": "2023-11-29", "weeks": 26, "issues": 20, "spread": "0.12"}
   ],
   "renames": [{"instrument": "pwem", "date": "2025-04-01", "name": "Penwarden Developing Markets ETF"}],
   "splits": [{"instrument": "tvsd", "date": "2024-03-18", "ratio": "2"}]
