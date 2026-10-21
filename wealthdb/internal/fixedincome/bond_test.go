@@ -11,7 +11,7 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-var frequencies = []int{1, 2, 4, 12}
+var frequencies = canonical.BondFrequencies()
 
 // A bond priced at its coupon on a coupon date is at par, for every
 // frequency and day count, and par is priced at the coupon. The
@@ -208,7 +208,7 @@ func TestFlows(t *testing.T) {
 	settle := ymd(2029, 1, 10)
 	dirty, _ := b.Price(settle, 6)
 	prev, next := b.Period(settle)
-	w := float64(Days30360(settle, next)) / float64(Days30360(prev, next))
+	w := float64(days30360(settle, next, true)) / float64(days30360(prev, next, true))
 	pv := 0.0
 	for k, fl := range b.Flows(settle) {
 		pv += (fl.Coupon + fl.Principal) / math.Pow(1.03, float64(k)+w)
@@ -270,13 +270,6 @@ func TestEffectiveAnnual(t *testing.T) {
 	near(t, "monthly 6%", EffectiveAnnual(6, 12), (math.Pow(1.005, 12)-1)*100, 1e-12)
 	near(t, "annual", EffectiveAnnual(3.3, 1), 3.3, 1e-12)
 	near(t, "simple", EffectiveAnnual(3.3, 0), 3.3, 0)
-	near(t, "back from 4.04", FromEffectiveAnnual(4.04, 2), 4, 1e-12)
-	near(t, "back simple", FromEffectiveAnnual(3.3, 0), 3.3, 0)
-	for _, f := range frequencies {
-		for _, y := range []float64{-2, 0, 2.5, 12} {
-			near(t, "round trip", FromEffectiveAnnual(EffectiveAnnual(y, f), f), y, 1e-12)
-		}
-	}
 }
 
 func TestYieldRefuses(t *testing.T) {

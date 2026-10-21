@@ -3,14 +3,19 @@
 What is really owned. The exposure report looks through every fund to
 what it holds, down to the single security, and adds the result to
 what is held directly. It answers by asset class, sector, country,
-currency and security, as of any day. It also says where each holding
-legally sits (§13). This file defines every figure the report shows and
-the rules behind them.
+currency, credit, maturity, coupon, cycle, issuer and security, as of
+any day. It also says where each holding legally sits (§13). This file
+defines every figure the report shows and the rules behind them.
 
-Related design: DESIGN.md §4.17 (the `exposure` command), §7.6 (the
-reference and config tables), §10.14 (the derived tables and macros);
-[adapters/refdata.md](adapters/refdata.md) (how reference data loads,
-the keys and aliases, and the wanted list); migrations 0125 to 0131.
+Related design:
+
+- DESIGN.md §4.17: the `exposure` command;
+- DESIGN.md §7.6: the reference and config tables;
+- DESIGN.md §10.14: the derived tables and macros;
+- [adapters/refdata.md](adapters/refdata.md): how reference data loads,
+  the keys and aliases, and the wanted list;
+- migrations 0125 to 0131, 0137 and 0138; 0135 for the ledger's yield
+  records.
 
 Every figure is a share of a holding's market value, the value
 `holdings` reports. The look-through moves value between rows; it never
@@ -402,24 +407,28 @@ row.
   neither, and both are flagged `unknown`.
 - `maturities` buckets the time to maturity on the day: `under 1y`,
   `1-3y`, `3-5y`, `5-10y`, `10-20y`, `over 20y`. A maturity exactly N
-  years on counts in the longer bucket; one past, under a year. A
-  maturity a century on, or none on a name that says PERP, reads
-  `perpetual`; a fund's own name says nothing of its lines. A cash
-  balance or a time deposit matures with its term, where its terms or
-  its account's rates state one, else counts under a year. A debt leaf
-  with no maturity splits by its fund's maturity breakdown, each band by
-  its lower bound, a band in months as its part of a year. An open band
-  below 20 years (10+ Years) spans buckets and reads `unknown`. Else the
-  leaf reads `unknown`.
+  years on counts in the longer bucket. A maturity already past counts
+  under a year. A maturity a century on, or none on a name that says
+  PERP, reads `perpetual`; a fund's own name says nothing of its lines.
+  A cash balance or a time deposit matures with its term, where its
+  terms or its account's rates state one. Any other cash counts under a
+  year. A debt leaf with no maturity splits by its fund's maturity
+  breakdown. A band within one bucket reads that bucket, a band in
+  months as its part of a year. A band that spans buckets reads
+  `unknown`: a closed one across a bucket's edge (1 - 5 Years), an open
+  one from under 20 years (10+ Years), or one up to more than a year
+  (Under 3 Years). Else the leaf reads `unknown`.
 - `coupons` reads `fixed`, `floating`, `inflation_linked` or `zero`. A
   line that states a real yield, or whose name says TIPS or inflation,
   is inflation-linked. Any other line reads its fund's type, else its
   name (FRN), else its coupon (zero, else fixed). Nothing stated reads
   `unknown`.
 
-Cash has a row of its own in `credit`, and any leaf of no debt reads
-`(none)` in all three. In `maturities`, `coupons` and `cycles`,
-`unknown` is a row; in `credit` it is a flag on `unrated`.
+A label of either breakdown may be a camel-cased key (notRated,
+5to10Years), which reads as its words. Cash reads `cash` in `credit`,
+its term in `maturities` and `(none)` in `coupons`. Any other leaf of
+no debt reads `(none)` in all three. In `maturities`, `coupons` and
+`cycles`, `unknown` is a row; in `credit` it is a flag on `unrated`.
 
 `cycles` groups the public equity by its sector's cycle: `cyclical`,
 `defensive` or `sensitive`, as `yield.cycles` overrides the built-in map
@@ -427,25 +436,28 @@ Cash has a row of its own in `credit`, and any leaf of no debt reads
 sector's cycle, a declared one too. Without a sector it reads
 `unknown`. Anything else reads `(none)`.
 
-`issuers` puts a company's stock, bonds and deposits in one row. A leaf
-belongs to an issuer by the first of these that it has:
+`issuers` puts a company's stock, bonds and deposits in one row. A cash
+balance, a demand deposit or a time deposit belongs to its custodian
+(§9). That is the custodian's LEI where a GLEIF legal name of the
+book's securities reads the same, else the custodian's name, read by
+the rule below. With no custodian it belongs to its source. Any other
+leaf belongs to an issuer by the first of these that it has:
 
 - the LEI its fund line or GLEIF states;
-- its name, read by a rule below, where a GLEIF legal name of the
+- its name, read by the rule below, where a GLEIF legal name of the
   book's securities reads the same: that name's LEI;
 - its name, read by that rule;
-- for a cash balance or a time deposit, its custodian (§9), else its
-  source;
-- its security key, else its LEI, else `unknown`.
+- its security key, else `unknown`.
 
 The rule reads a name as follows:
 
 - accents, ß and Ø read as plain letters, the rest upper case;
 - the words end before the first figure after the first word (a
   coupon, a date);
-- N/B and A/S are one word, and U.S., UNITED STATES and TREAS read as US
-  and TREASURY;
-- punctuation and a leading THE drop;
+- N/B and A/S are one word;
+- a leading UNITED STATES, and U.S. and TREAS anywhere, read as US and
+  TREASURY;
+- punctuation other than & reads as a space, and a leading THE drops;
 - after the first word, a class letter (CLASS A), and the words of a
   legal form, a share class or a bond's kind (INC, CORP, PLC, AG, ADR,
   NOTE, MTN, SR UNSECURED) drop.
@@ -549,8 +561,8 @@ load stores it.
 The declarations ledger states what no public source can know: where a
 private holding's value is (§5), where any holding legally sits (§13),
 and the yield figures no source states (below). It is newline-delimited
-JSON, one record per line, for one holding, or one account for a rate,
-and date:
+JSON, one record per line. A record is for one holding and date, or for
+one account and date where it states a rate:
 
 ```json
 {"silver_source_id":"manual","instrument":"house-1","country":{"CH":100},"currency":{"CHF":100},"note":"the house"}
@@ -560,7 +572,8 @@ and date:
 ```
 
 - `silver_source_id` and `instrument` name the holding, as `exposure
-  coverage` prints them.
+  coverage` prints them. A `rate` record names an `account` instead
+  (below).
 - `as_of` is the date of the document the record comes from,
   `YYYY-MM-DD`. A record without one holds before the holding's first
   dated record (below).
@@ -640,8 +653,9 @@ undeclared.
 
 ### Yield records
 
-The same ledger states the yield figures no source states. A record
-carries one or more of four objects, beside its dimensions or alone:
+The same ledger states the yield figures no source states. A holding's
+record carries one or more of `rating`, `dividend` and `terms`, beside
+its dimensions or alone. An account's record carries a `rate` alone:
 
 ```json
 {"silver_source_id":"bank-1","account":"savings-1","as_of":"2026-01-01","rate":{"pct":0.75}}
@@ -661,12 +675,15 @@ carries one or more of four objects, beside its dimensions or alone:
 - `dividend` is a stock's indicated dividend: `amount` per share of one
   payment and `frequency`, the payments a year (1, 2, 4 or 12), and
   optionally `currency`.
-- `terms` is what a bond's, a note's or a mortgage's terms state: any of
-  `coupon` (percent a year), `frequency` (0 for a discount instrument),
-  `maturity`, `call_date`, `fixed_until`, `reset_date`, `coupon_kind`
-  (fixed, floating, inflation_linked, zero) and `day_count` (30/360,
-  30E/360, ACT/ACT, ACT/360, ACT/365). A fund that files nowhere public
-  states its factsheet's `duration` (years) and `yield` (percent) here.
+- `terms` is what a bond's, a note's or a mortgage's terms state. It
+  takes any of these keys:
+  - `coupon`: percent a year;
+  - `frequency`: the payments a year, 0 for a discount instrument;
+  - `maturity`, `call_date`, `fixed_until` and `reset_date`: dates;
+  - `coupon_kind`: fixed, floating, inflation_linked or zero;
+  - `day_count`: 30/360, 30E/360, ACT/ACT, ACT/360 or ACT/365;
+  - `duration` (years) and `yield` (percent): a factsheet's figures,
+    for a fund that files nowhere public.
 
 A date is `YYYY-MM-DD`. Any other key is refused, and so are terms that
 contradict one another: a coupon with a frequency of 0 or the kind
@@ -732,18 +749,16 @@ keeps its own line.
 
 The Metabase Exposure dashboard (`wealthdb web`) charts the same
 figures at every month end and today, by country of risk, and each
-holding's legal situs ([web/DESIGN.md](../../web/DESIGN.md) §6 and
-§8). Its Source, Tax wrapper and Asset class pickers narrow every
-chart to a selection. A share then reads as a share of the selection's
-net worth. With nothing picked, it is a share of net worth, as here.
-The command has no such filter. Every refresh recomputes the whole
-history, so a new composition or declaration shows in past months too.
-A security's attributes, its size among them, are today's at every
-month end, as in a `--period` series (§7). Five cards chart `credit`,
-`maturities`, `coupons`, `cycles` and the largest issuers, as of a day
-of the last twelve months: the refresh walks those views for today and
-the 12 month ends before. The issuers card follows no source or tax
-wrapper picker.
+holding's legal situs. Its pickers narrow a chart to a selection of
+sources, tax wrappers and asset classes. A share then reads as a share
+of the selection's net worth. With nothing picked, it is a share of net
+worth, as here. The command has no such filter. Every refresh
+recomputes the whole history, so a new composition or declaration shows
+in past months too. A security's attributes, its size among them, are
+today's at every month end, as in a `--period` series (§7). The debt
+and issuer cards cover today and the 12 month ends before.
+[web/DESIGN.md](../../web/DESIGN.md) §6 lists the cards, the pickers
+each one takes and the privacy twin, and §8 the tables they read.
 
 The MCP server has an `exposure` tool with the same fourteen views, an
 `as_of` day and the `country` choice, but no `--period` series. Its

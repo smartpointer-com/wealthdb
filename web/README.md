@@ -6,9 +6,10 @@ optional and fully dockerized (no host Java or Metabase). It only reads
 the data, and it is reachable only over an SSH tunnel plus Metabase's
 own login.
 
-It comes with nine dashboards: Wealth Overview, Allocation, Returns,
-Gains, Spending, Income, Cash Flow, Exposure and Data Freshness. Each
-but Gains has a privacy twin that shows shares (%) instead of amounts.
+It comes with ten dashboards: Wealth Overview, Allocation, Returns,
+Gains, Spending, Income, Cash Flow, Exposure, Yield and Data Freshness.
+Each but Gains has a privacy twin that shows shares (%) instead of
+amounts.
 
 Part of the **wealthdb** suite — see [the architecture
 overview](../DESIGN.md). Run it via the main wrapper:
@@ -90,6 +91,7 @@ web/
 ├── Dockerfile     # Metabase (from JAR, glibc base) + pinned DuckDB driver → /plugins
 ├── test_web.sh    # unit tests: lifecycle script, then provision.py (make test-web)
 ├── test_provision.py  # unit tests for provision.py's definitions (no Metabase)
+├── requirements-test.txt  # their duckdb module, in the web/.venv make test-web builds
 ├── README.md      # this file
 ├── DESIGN.md      # rationale: snapshot, glibc base, version pin, provisioning
 ├── AGENTS.md      # ground rules for agents

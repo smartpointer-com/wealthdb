@@ -449,11 +449,13 @@ func TestMigration0129DDLIsRerunnable(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	seedSitus(t, db, ctx)
-	// 0131 re-creates the look-through and the situs views and 0133
-	// web_exposure, so both are replayed after 0129, as Migrate would.
+	// 0131 and 0137 re-create the look-through, 0131 the situs views and
+	// 0133 web_exposure, so they are replayed after 0129, as Migrate
+	// would.
 	rerunMigrationDDL(t, db, ctx, "0129_exposure_situs.sql")
 	rerunMigrationDDL(t, db, ctx, "0131_exposure_unknown.sql")
 	rerunMigrationDDL(t, db, ctx, "0133_deterministic_labels.sql")
+	rerunMigrationDDL(t, db, ctx, "0137_exposure_yield_views.sql")
 	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)
 	}

@@ -6,11 +6,13 @@ import (
 	"encoding/csv"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
 // setupYieldGold seeds a gold with a bond its description gives terms,
@@ -81,6 +83,18 @@ func setupYieldGold(t *testing.T) string {
 // config at cfg: a holding of the fixture's account, invented.
 func addPrivateFund(t *testing.T, cfg string) {
 	t.Helper()
+	changeYieldGold(t, cfg,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, name, currency,
+		 first_seen_at, last_seen_at) VALUES ('brk', 'QPF', 'fixed_income', 'fund', 'Example Private Credit', 'USD', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, quantity, market_value) VALUES
+		 ('brk', ?, 'ACCT7781', 'QPF', 'QPF', 'fixed_income', 'fund', 'USD', 1, 1500)`)
+}
+
+// changeYieldGold runs stmts on the gold of the config at cfg, each `?`
+// the fixture's snapshot, then rebuilds the exposure and yield passes.
+func changeYieldGold(t *testing.T, cfg string, stmts ...string) {
+	t.Helper()
 	db, err := gold.Open(filepath.Join(filepath.Dir(cfg), "wealthdb.db"), gold.ModeReadWrite)
 	if err != nil {
 		t.Fatal(err)
@@ -88,13 +102,7 @@ func addPrivateFund(t *testing.T, cfg string) {
 	defer db.Close()
 	ctx := context.Background()
 	snap := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
-	for _, q := range []string{
-		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, name, currency,
-		 first_seen_at, last_seen_at) VALUES ('brk', 'QPF', 'fixed_income', 'fund', 'Example Private Credit', 'USD', 0, 0)`,
-		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
-		 asset_class, vehicle, currency, quantity, market_value) VALUES
-		 ('brk', ?, 'ACCT7781', 'QPF', 'QPF', 'fixed_income', 'fund', 'USD', 1, 1500)`,
-	} {
+	for _, q := range stmts {
 		args := make([]any, strings.Count(q, "?"))
 		for i := range args {
 			args[i] = snap
@@ -200,6 +208,13 @@ func TestYieldCashCurveAndCoverage(t *testing.T) {
 	if code != 0 || !strings.Contains(out, `{"silver_source_id":"brk","instrument":"QBND","rating":{},`) {
 		t.Errorf("skeletons %d\n%s", code, out)
 	}
+	// A note prints as the name reads, as exposure's skeletons do.
+	changeYieldGold(t, cfg, `UPDATE instruments SET name = 'QORVANT <A&B> CORP NOTE 4.00000% 06/30/2031'
+	    WHERE instrument_external_id = 'QBND'`)
+	out, _, code = runYield(t, cfg, "coverage", "-d", "2026-06-30", "-f", "ndjson")
+	if code != 0 || !strings.Contains(out, `"note":"QORVANT <A&B> CORP NOTE 4.00000% 06/30/2031"`) {
+		t.Errorf("a note with <, > and & %d\n%s", code, out)
+	}
 }
 
 func TestYieldPrivacyAndFlags(t *testing.T) {
@@ -232,19 +247,93 @@ func TestYieldPrivacyAndFlags(t *testing.T) {
 			}
 		}
 	}
-	for _, args := range [][]string{
-		{"positions", "--converted"},
-		{"positions", "--period", "quarterly", "2026"},
-		{"global", "-f", "ndjson"},
-		{"global", "--period", "quarterly", "-d", "2026-06-30"},
-		{"coverage", "-f", "ndjson", "-p"},
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"positions", "--converted"}, "--converted belongs to the global, sources, portfolios and accounts views"},
+		{[]string{"positions", "--period", "quarterly", "2026"}, "--period belongs to the global, sources"},
+		{[]string{"global", "--period", "weekly"}, "weekly"},
+		{[]string{"global", "-f", "ndjson"}, "-f ndjson belongs to the coverage view"},
+		{[]string{"coverage", "-f", "ndjson", "-C", "section"}, "it takes no -C"},
+		{[]string{"coverage", "-f", "ndjson", "--period", "quarterly"}, "it takes no --period"},
+		{[]string{"global", "--period", "quarterly", "-d", "2026-06-30"}, "-d names one day"},
+		{[]string{"coverage", "-f", "ndjson", "-p"}, "which -p hides"},
 	} {
-		if _, _, code := runYield(t, cfg, args...); code == 0 {
-			t.Errorf("%v: accepted", args)
+		if _, errb, code := runYield(t, cfg, c.args...); code != 2 || !strings.Contains(errb, c.want) {
+			t.Errorf("%v: exit %d, want 2 and %q:\n%s", c.args, code, c.want, errb)
 		}
 	}
 	out, errb, code := runYield(t, cfg, "global", "--period", "quarterly", "2026-04-01", "2026-06-30", "-f", "csv")
 	if code != 0 || !strings.Contains(out, "period,currency") || !strings.Contains(out, "2026-Q2") {
 		t.Errorf("series %d %s\n%s", code, errb, out)
+	}
+	// The curve's series: the period before each currency and tenor; May,
+	// before the first snapshot, has no rows.
+	out, errb, code = runYield(t, cfg, "curve", "--period", "monthly", "2026-05-01", "2026-06-30", "-f", "csv")
+	if rows := csvRows(t, out); code != 0 || len(rows) != 5 || rows[0]["period"] != "2026-06" || rows[0]["tenor"] != "3M" {
+		t.Errorf("curve series %d %s\n%s", code, errb, out)
+	}
+}
+
+// Each view's default column set resolves against its registry, and the
+// usage lists every view with its columns and defaults, and names the
+// views --period and --converted apply to, every flag line within the
+// usage's width.
+func TestYieldUsageListsEveryView(t *testing.T) {
+	t.Parallel()
+	usage := yieldUsage()
+	_, columns, _ := strings.Cut(usage, "Available columns (per view):")
+	_, defaults, _ := strings.Cut(columns, "Default column sets:")
+	for _, view := range yieldViews {
+		if _, err := yieldReport(request{view: view, currency: "USD"}).pick("default"); err != nil {
+			t.Errorf("%s defaults: %v", view, err)
+		}
+		for what, text := range map[string]string{"views": usage, "columns": columns, "defaults": defaults} {
+			if !strings.Contains(text, "\n  "+view+" ") {
+				t.Errorf("usage does not list the %s view under its %s", view, what)
+			}
+		}
+	}
+	flat := strings.Join(strings.Fields(usage), " ")
+	for _, want := range []string{"a period column first; on " + andList(yieldSeriesViews),
+		"currencies; on " + andList(yieldAggregateViews)} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("usage does not say %q", want)
+		}
+	}
+	for _, line := range strings.Split(usage, "\n") {
+		if (strings.HasPrefix(line, "  --") || strings.HasPrefix(line, strings.Repeat(" ", 21))) && len(line) > 74 {
+			t.Errorf("flag line is %d columns wide: %q", len(line), line)
+		}
+	}
+}
+
+// Every yield tag, mixed among them, reaches the CLI usage, wrapped to
+// the usage's width, and the MCP quality help.
+func TestYieldQualityTagsReachBothFrontEnds(t *testing.T) {
+	t.Parallel()
+	usage := yieldUsage()
+	var listed []string
+	for _, q := range yieldQualityTags {
+		listed = append(listed, q.tag)
+		if !strings.Contains(usage, "\n    "+q.tag+" ") {
+			t.Errorf("usage does not list the %s tag", q.tag)
+		}
+		if !strings.Contains(qualityHelp, "\n- "+q.tag+": "+q.meaning+".") {
+			t.Errorf("describe topic=quality does not list the %s tag", q.tag)
+		}
+	}
+	var want []string
+	for _, tag := range append(slices.Clone(yield.Tags), yield.TagMixed) {
+		want = append(want, string(tag))
+	}
+	if !slices.Equal(listed, want) {
+		t.Errorf("tags %v, want yield.Tags and mixed %v", listed, want)
+	}
+	for _, line := range strings.Split(tagNotes(yieldQualityTags), "\n") {
+		if len(line) > 72 {
+			t.Errorf("quality line is %d columns wide: %q", len(line), line)
+		}
 	}
 }

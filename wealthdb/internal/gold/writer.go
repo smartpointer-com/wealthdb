@@ -36,6 +36,12 @@ type Writer struct {
 // off by a column hides.
 const InsertChunkRows = 500
 
+// placeholders is InsertChunked's tuple for the comma-separated columns
+// cols: a `?` each.
+func placeholders(cols string) string {
+	return "(" + strings.Repeat("?, ", strings.Count(cols, ",")) + "?)"
+}
+
 // InsertChunked executes head + an n-row VALUES list in chunks of
 // InsertChunkRows, collecting each row's bind args via appendRow
 // (which must append exactly one tuple's worth per call). op labels

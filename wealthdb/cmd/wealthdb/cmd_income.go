@@ -6,10 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"slices"
 	"strings"
 	"time"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
@@ -71,14 +71,8 @@ func runIncomeView(ctx context.Context, g globalFlags, view string, args []strin
 		return err
 	}
 	forward := isForwardView(view)
-	if err := ff.check(fs, forward); err != nil {
+	if err := ff.check(fs, view, *period); err != nil {
 		return err
-	}
-	if forward && view != "projection" && isSet(fs, "period") {
-		return errs.Newf(errs.ExitUsage, "income: of the forward views, --period belongs to projection")
-	}
-	if forward && !slices.Contains(projectionPeriods, *period) {
-		return errs.Newf(errs.ExitUsage, "income: the forward views take --period %s", strings.Join(projectionPeriods, " | "))
 	}
 
 	fmtChoice, cfg, outCcy, err := rf.resolve(g, "income")
@@ -271,7 +265,8 @@ Window
   per calendar year: wealthdb income types 2025 --period annual
   A forward view's window may reach into the future: a lone FROM is its
   own span, and a bare invocation the projection's horizon after the
-  current month (yield.horizon_months, default 12, at most 36). It
+  current month (yield.horizon_months, default ` + fmt.Sprint(canonical.DefaultHorizonMonths) + `, at most ` +
+		fmt.Sprint(canonical.MaxHorizonMonths) + `). It
   takes no open bound (-), and of the forward views only projection
   takes --period:
   wealthdb income projection 2027 --period quarterly
@@ -283,9 +278,11 @@ Flags
                 taxonomy has one vendored primary, so the primary level
                 folds every earned and yielded type into INCOME beside
                 the deltas.
-  --rates R     ` + strings.Join(pathNames(), " | ") + ` (default constant) — how
+  --rates R     ` + strings.Join(pathNames(), " | ") + ` (default ` + string(yield.DefaultAssumptions.Path) +
+		`) — how
                 floating rates move, on the forward views
-  --maturing M  ` + strings.Join(ruleNames(), " | ") + ` (default cash) — what a
+  --maturing M  ` + strings.Join(ruleNames(), " | ") + ` (default ` + string(yield.DefaultAssumptions.Rule) +
+		`) — what a
                 maturing principal earns, on the forward views
   --shift BP    a parallel shift of the floating rates in basis points,
                 on the forward views
@@ -307,6 +304,14 @@ Notes
   On the forward views, withheld is what the yield.withholding table
   withholds at each holding's situs, received and expected alike; it is
   blank where the table names no rate.
+
+  On the forward views, basis says what an expected amount rests on:
+  projection gives each basis's share (declared=76% stated=24%), an
+  entity view the largest, calendar each row's own:` + tagNotes(incomeBasisTags) + `
+
+  quality gives the share of the reinvested income each way of
+  reinvesting earns (roll=100% roll_cash=0%), then shift=±Nbp where a
+  shift moves the income:` + tagNotes(incomeRungTags) + `
 
   A summary bucket can show txn_count 0 and blank money columns: that
   is a period in which tax was withheld and no income arrived. -C

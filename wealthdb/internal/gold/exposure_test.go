@@ -935,13 +935,14 @@ func TestExposureLocalTickersAreNoUSSymbols(t *testing.T) {
 func TestMigration0126DDLIsRerunnable(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
-	// 0128, 0129, 0131 and 0133 re-create the look-through and its
+	// 0128, 0129, 0131, 0133 and 0137 re-create the look-through and its
 	// views, so they are replayed after 0126, as Migrate would.
 	rerunMigrationDDL(t, db, ctx, "0126_exposure_report.sql")
 	rerunMigrationDDL(t, db, ctx, "0128_exposure_declarations.sql")
 	rerunMigrationDDL(t, db, ctx, "0129_exposure_situs.sql")
 	rerunMigrationDDL(t, db, ctx, "0131_exposure_unknown.sql")
 	rerunMigrationDDL(t, db, ctx, "0133_deterministic_labels.sql")
+	rerunMigrationDDL(t, db, ctx, "0137_exposure_yield_views.sql")
 	n, err := RebuildExposure(ctx, db)
 	if err != nil {
 		t.Fatal(err)
@@ -957,6 +958,9 @@ func TestMigration0126DDLIsRerunnable(t *testing.T) {
 	}
 	if rows, err := ExposureCoverage(ctx, db, exAsOf, "USD"); err != nil || len(rows) == 0 {
 		t.Errorf("coverage after replay: %d rows, %v", len(rows), err)
+	}
+	if rows, err := ExposureCredit(ctx, db, exAsOf, "USD"); err != nil || len(rows) == 0 {
+		t.Errorf("credit after replay: %d rows, %v", len(rows), err)
 	}
 	// Only the current views read what nothing describes as unknown.
 	sectors, err := ExposureSectors(ctx, db, exAsOf, "USD")

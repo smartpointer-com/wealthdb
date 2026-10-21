@@ -30,12 +30,17 @@ func TestRefineETFExposure(t *testing.T) {
 		{"iShares National Muni Bond ETF", canonical.AssetClassFixedIncome},
 		{"SPDR Bloomberg High Yield Bond ETF", canonical.AssetClassFixedIncome},
 		{"Qarvel Bond Index Sleeve CHF", canonical.AssetClassFixedIncome},
+		// Fixed income abbreviated, as a broker's short name prints it.
+		{"EXAMPLE FUND A FXD INC", canonical.AssetClassFixedIncome},
+		{"Example Fund B Fixed Inc", canonical.AssetClassFixedIncome},
+		{"Example Fund C Fxd Income", canonical.AssetClassFixedIncome},
 		// Everything else defaults to public equity.
 		{"iShares MSCI EAFE Small-Cap ETF", canonical.AssetClassPublicEquity},
 		{"Vanguard Total Stock Market ETF", canonical.AssetClassPublicEquity},
 		// Word boundaries: no false positives from lookalike names.
 		{"Goldman Sachs ActiveBeta US Large Cap ETF", canonical.AssetClassPublicEquity},
 		{"iShares MSCI Netherlands ETF", canonical.AssetClassPublicEquity},
+		{"Example Affxd Income Leaders ETF", canonical.AssetClassPublicEquity},
 	}
 	for _, c := range cases {
 		if got := RefineETFExposure(c.name); got != c.want {

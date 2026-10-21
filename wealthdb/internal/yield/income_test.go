@@ -14,8 +14,8 @@ import (
 // stock that paid nothing, a fund nothing describes, and an account that
 // received rent in March.
 func incomeBook() (*Book, []ReceivedLine) {
-	in := book()
-	in.Curves["USD"] = flatCurve("USD", 4)
+	in := inputs()
+	in.Curves["USD"] = flatCurve(4)
 	b := bondHolding("broker", "A", "QB", 20000, 20000)
 	bill := bondHolding("broker", "A", "QBILL", 5000, 4990)
 	d := cash("bank", "S", "USD", 12000)
@@ -273,7 +273,7 @@ func TestLastYearIsBlankUntilItIsOver(t *testing.T) {
 // A rung that earns nothing reads 0%.
 func TestARungThatEarnsNothing(t *testing.T) {
 	t.Parallel()
-	q := tally{rungs: map[string]float64{"roll": 50, "roll_cash": 0}, reinvested: 50}
+	q := tally{rungs: map[Rung]float64{RungRoll: 50, RungRollCash: 0}, reinvested: 50}
 	if got := q.quality(); got != "roll=100% roll_cash=0%" {
 		t.Errorf("quality %q", got)
 	}
@@ -283,7 +283,7 @@ func TestARungThatEarnsNothing(t *testing.T) {
 // its own currency's rate.
 func TestRentInTwoCurrencies(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	in.FXRates["CHF"] = 1.1
 	k := AccountKey{"bank", "S"}
 	in.AccountPayments = []AccountPayment{

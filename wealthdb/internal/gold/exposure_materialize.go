@@ -9,32 +9,41 @@ import (
 
 // exposureInsertSQL is the look-through at the instant $1, its leaves
 // grouped by the dashboard's dimensions and valued in every reporting
-// currency, stamped computed_at $2. The tree is walked once, in US
-// dollars. Each leaf is a fixed share of the holding it descends from,
-// so its value in another currency is its dollar value times the ratio
-// of that holding's two values. A holding no rate converts to US dollars
-// is left out in every currency. A stock's size is today's at every
-// instant: securities holds one row per security. A leaf carries its
-// holding's legal situs and its basis, and its holding's source and
-// account's tax wrapper, which the dashboard's pickers narrow to. %s is
-// the UNION of exposure_holdings per reporting currency, US dollars
-// among them.
-const exposureInsertSQL = `INSERT INTO report_exposure BY NAME
-WITH l AS (SELECT * FROM exposure_leaves(CAST($1 AS BIGINT), 'USD')),
-h AS MATERIALIZED (%s),
-usd AS (SELECT src, acct, position_key, value AS v FROM h WHERE out_ccy = 'USD' AND value <> 0)
-SELECT CAST($2 AS BIGINT) AS computed_at, h.out_ccy AS currency, CAST($1 AS BIGINT) AS as_of,
-       l.asset_class, l.sector, l.country, l.region, l.currency AS exposure_currency, l.currency_kind,
-       l.depth > 0 AS via_funds, l.how, l.size, l.situs, l.situs_basis,
-       l.src AS silver_source_id, a.tax_wrapper,
-       SUM(l.value * h.value / usd.v) AS value
-  FROM l
-  JOIN usd ON usd.src = l.src AND usd.acct = l.acct AND usd.position_key = l.position_key
-  JOIN h ON h.src = l.src AND h.acct = l.acct AND h.position_key = l.position_key
-  LEFT JOIN accounts a ON a.silver_source_id = l.src AND a.account_external_id = l.acct
+// currency (scaledLeavesSQL), stamped computed_at $2. A stock's size is
+// today's at every instant: securities holds one row per security. A
+// leaf carries its holding's legal situs and its basis, and its
+// holding's source and account's tax wrapper, which the dashboard's
+// pickers narrow to.
+var exposureInsertSQL = `INSERT INTO report_exposure BY NAME
+WITH ` + scaledLeavesSQL(`l AS (SELECT * FROM exposure_leaves(CAST($1 AS BIGINT), 'USD'))`) + `
+SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT) AS as_of,
+       asset_class, sector, country, region, currency AS exposure_currency, currency_kind,
+       depth > 0 AS via_funds, how, size, situs, situs_basis, src AS silver_source_id, wrapper AS tax_wrapper,
+       SUM(value * k) AS value
+  FROM s
  GROUP BY ALL`
 
-// exposureHoldingsSQL is one currency's holdings for exposureInsertSQL.
+// scaledLeavesSQL is the CTEs that value the leaves l (the look-through
+// at the instant $1, walked once in US dollars) in every reporting
+// currency: h, each holding in each currency (%s, the UNION of
+// exposure_holdings per reporting currency); and s, each leaf in each
+// currency with k, its holding's value in the currency over its dollar
+// value, and its account's tax wrapper. Each leaf is a fixed share of the
+// holding it descends from, so its value in a currency is its dollar
+// value times k. A holding no rate converts to US dollars is left out in
+// every currency.
+func scaledLeavesSQL(l string) string {
+	return l + `,
+h AS MATERIALIZED (%s),
+usd AS (SELECT src, acct, position_key, value AS v FROM h WHERE out_ccy = 'USD' AND value <> 0),
+s AS (SELECT l.*, h.out_ccy, h.value / usd.v AS k, a.tax_wrapper AS wrapper
+        FROM l
+        JOIN usd ON usd.src = l.src AND usd.acct = l.acct AND usd.position_key = l.position_key
+        JOIN h ON h.src = l.src AND h.acct = l.acct AND h.position_key = l.position_key
+        LEFT JOIN accounts a ON a.silver_source_id = l.src AND a.account_external_id = l.acct)`
+}
+
+// exposureHoldingsSQL is one currency's holdings for scaledLeavesSQL.
 const exposureHoldingsSQL = `SELECT '%s' AS out_ccy, src, acct, position_key, value
       FROM exposure_holdings(CAST($1 AS BIGINT), '%s') WHERE value IS NOT NULL`
 
@@ -52,7 +61,7 @@ func MaterializeExposure(ctx context.Context, db *sql.DB, toEpoch, computedAt in
 		return 0, fmt.Errorf("MaterializeExposure begin: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck — no-op after Commit
-	for _, t := range []string{"report_exposure", "report_exposure_debt", "report_exposure_issuers"} {
+	for _, t := range []string{"report_exposure", "report_exposure_debt", "report_exposure_issuer_ranks"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t); err != nil {
 			return 0, fmt.Errorf("MaterializeExposure delete %s: %w", t, err)
 		}

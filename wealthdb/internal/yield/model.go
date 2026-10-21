@@ -10,6 +10,7 @@
 package yield
 
 import (
+	"slices"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -61,9 +62,19 @@ type Inputs struct {
 	// Lines are what the largest line naming each security in the funds
 	// held says of it, by its key.
 	Lines map[string]LineInfo
-	// AverageAmount is each holding's average amount, in its own
-	// currency, at the month ends of the twelve months to the instant.
-	AverageAmount map[HoldingKey]float64
+	// Daily is each holding's amount, in its own currency, on each day of
+	// the twelve months to the instant. FormerDaily is, for each
+	// instrument held, its amount on those days in the positions that are
+	// no holding at the instant, such as an account's that sold it, in the
+	// currency of its holdings.
+	Daily       map[HoldingKey]Daily
+	FormerDaily map[InstrumentKey]Daily
+	// Held are the accounts whose positions held each instrument at some
+	// snapshot to the instant, sorted.
+	Held map[InstrumentKey][]string
+	// pools are the holdings of each instrument (poolKey), which Compute
+	// indexes.
+	pools map[string][]Holding
 	// Withholding is yield_withholding: percent by situs country and
 	// tax wrapper (canonical.WithholdingDefault for every other).
 	Withholding map[string]map[string]float64
@@ -201,18 +212,56 @@ type LineSummary struct {
 	AsOf  time.Time
 	Aged  bool
 	Yield *float64 // implied, in percent
-	// Duration is modified duration in years; MaturityYears the years to
-	// maturity.
+	// Duration is modified duration in years, over the lines that have
+	// one; MaturityYears the years to maturity.
 	Duration, MaturityYears *float64
 	// The shares of the fund's value, in percent: lines with an implied
-	// yield, floating lines, lines in default, paid-in-kind lines.
-	CoveredPct, FloatingPct, DefaultPct, PaidInKindPct float64
+	// yield, lines with a duration, floating lines, lines in default,
+	// paid-in-kind lines.
+	CoveredPct, DurationPct, FloatingPct, DefaultPct, PaidInKindPct float64
+	// The shares of the whole fund, in percent, a part its composition
+	// leaves out counting as neither: debt lines, the debt lines that
+	// mature within a year, equity lines.
+	DebtPct, ShortDebtPct, EquityPct float64
+	// Derivatives says a line is a derivative: a future, a swap, an
+	// option or a forward.
+	Derivatives bool
+}
+
+// Daily is a holding's amount, in its own currency, on each of the Days
+// of the twelve months to the instant: the sum of its spans. A day no
+// span covers was not held.
+type Daily struct {
+	Days  int
+	Spans []Span
+}
+
+// Span is an amount held over the days [From, To) of a Daily, the
+// window's first day 0.
+type Span struct {
+	From, To int
+	Amount   float64
+}
+
+// Mean is the mean daily amount: every day counts, a day not held as
+// zero. A span outside the window counts nothing; with no days it is
+// zero.
+func (d Daily) Mean() float64 {
+	if d.Days == 0 {
+		return 0
+	}
+	sum := 0.0
+	for _, s := range d.Spans {
+		if s.From >= 0 && s.To <= d.Days && s.From < s.To {
+			sum += s.Amount * float64(s.To-s.From)
+		}
+	}
+	return sum / float64(d.Days)
 }
 
 // Curve is a currency's public curve at the instant.
 type Curve struct {
-	Currency string
-	Zero     *fixedincome.Curve
+	Zero *fixedincome.Curve
 	// Benchmark is the rate of BenchmarkMonths, the currency's
 	// benchmark tenor (3M where the curve has it, else its shortest).
 	Benchmark       float64
@@ -241,14 +290,19 @@ type AccountPayment struct {
 }
 
 // HoldingOf is the holding a transaction belongs to: the holding of the
-// instrument it names in its account, else in the account's portfolio,
-// else the first at its source. A bank books a dividend to the cash
-// account beside the custody account that holds the security.
+// instrument it names in its account. An account that held the
+// instrument once and holds none of it now has none: its transactions
+// are its sold position's (Sold). Any other account's belong to the
+// first holding of the instrument in the account's portfolio: a bank
+// books a dividend to the cash account beside the custody account that
+// holds the security. Where none of the portfolio's accounts holds it but
+// one held it once, they are the sold position's too. Else they belong to
+// the first holding of it at its source.
 func (in *Inputs) HoldingOf(src, acct, iid string) (HoldingKey, bool) {
 	if iid == "" {
 		return HoldingKey{}, false
 	}
-	var first *HoldingKey
+	var sibling, first *HoldingKey
 	portfolio := in.Accounts[AccountKey{src, acct}].Portfolio
 	for i := range in.Holdings {
 		h := &in.Holdings[i]
@@ -258,17 +312,120 @@ func (in *Inputs) HoldingOf(src, acct, iid string) (HoldingKey, bool) {
 		if h.Account == acct {
 			return h.HoldingKey, true
 		}
-		if p := in.Accounts[AccountKey{h.Source, h.Account}].Portfolio; p != "" && p == portfolio {
-			return h.HoldingKey, true
+		if sibling == nil && portfolio != "" && in.Accounts[AccountKey{h.Source, h.Account}].Portfolio == portfolio {
+			sibling = &h.HoldingKey
 		}
 		if first == nil {
 			first = &h.HoldingKey
 		}
 	}
-	if first == nil {
+	ik := InstrumentKey{src, iid}
+	switch {
+	case slices.Contains(in.Held[ik], acct):
 		return HoldingKey{}, false
+	case sibling != nil:
+		return *sibling, true
+	case in.portfolioHeld(ik, portfolio):
+		return HoldingKey{}, false
+	case first != nil:
+		return *first, true
 	}
-	return *first, true
+	return HoldingKey{}, false
+}
+
+// portfolioHeld says an account of portfolio held instrument ik once
+// (Held).
+func (in *Inputs) portfolioHeld(ik InstrumentKey, portfolio string) bool {
+	return portfolio != "" && slices.ContainsFunc(in.Held[ik], func(a string) bool {
+		return in.Accounts[AccountKey{ik.Source, a}].Portfolio == portfolio
+	})
+}
+
+// Sold is the key of the position an account sold of an instrument, as
+// `income` names a holding no longer held: its account and the
+// instrument. false where neither the account nor its portfolio ever held
+// the instrument (Held). It holds the transactions HoldingOf gives no
+// holding.
+func (in *Inputs) Sold(src, acct, iid string) (HoldingKey, bool) {
+	ik := InstrumentKey{src, iid}
+	return HoldingKey{src, acct, iid}, iid != "" && (slices.Contains(in.Held[ik], acct) ||
+		in.portfolioHeld(ik, in.Accounts[AccountKey{src, acct}].Portfolio))
+}
+
+// poolKey names the holdings a holding's instrument pools with: those of
+// its security (SecurityID), which names one security at every source,
+// else those of its instrument at its source; "" for a holding of no
+// instrument.
+func poolKey(h Holding) string {
+	switch {
+	case h.SecurityID != "":
+		return "security\x00" + h.SecurityID
+	case h.Instrument != "":
+		return "instrument\x00" + h.Source + "\x00" + h.Instrument
+	}
+	return ""
+}
+
+// index pools the holdings by their instruments (poolKey), for
+// instrumentOf.
+func (in *Inputs) index() {
+	in.pools = map[string][]Holding{}
+	for _, h := range in.Holdings {
+		if k := poolKey(h); k != "" {
+			in.pools[k] = append(in.pools[k], h)
+		}
+	}
+}
+
+// instrumentOf is every holding of h's instrument, at any source
+// (poolKey), and the sold positions of it (Sold) at each source where it
+// is held: of the accounts, and the other accounts of the portfolios,
+// that held it there once and hold none of it.
+func (in *Inputs) instrumentOf(h Holding) (holdings []Holding, sold []HoldingKey) {
+	k := poolKey(h)
+	switch {
+	case k == "":
+		return []Holding{h}, nil
+	case in.pools != nil:
+		holdings = in.pools[k]
+	default:
+		for _, o := range in.Holdings {
+			if poolKey(o) == k {
+				holdings = append(holdings, o)
+			}
+		}
+	}
+	holds := map[InstrumentKey]map[string]bool{}
+	var iks []InstrumentKey
+	for _, o := range holdings {
+		ik := InstrumentKey{o.Source, o.Instrument}
+		if holds[ik] == nil {
+			holds[ik], iks = map[string]bool{}, append(iks, ik)
+		}
+		holds[ik][o.Account] = true
+	}
+	for _, ik := range iks {
+		var accts []string
+		portfolios := map[string]bool{}
+		for _, a := range in.Held[ik] {
+			accts = append(accts, a)
+			if p := in.Accounts[AccountKey{ik.Source, a}].Portfolio; p != "" {
+				portfolios[p] = true
+			}
+		}
+		for a, acct := range in.Accounts {
+			if a.Source == ik.Source && portfolios[acct.Portfolio] && !slices.Contains(accts, a.Account) {
+				accts = append(accts, a.Account)
+			}
+		}
+		slices.Sort(accts)
+		for _, a := range accts {
+			if !holds[ik][a] {
+				sold = append(sold, HoldingKey{ik.Source, a, ik.Instrument})
+			}
+		}
+	}
+	return holdings, sold
 }
 
 // fxOf is the rate from ccy to the output currency, 0 where none is
@@ -280,12 +437,55 @@ func (in *Inputs) fxOf(ccy string) float64 {
 	return in.FXRates[ccy]
 }
 
-// Payment is one payment a holding received.
+// Payment is one payment a holding received, in Currency ("" for the
+// holding's own), booked to Account.
 type Payment struct {
 	Day      time.Time
-	Amount   float64 // in the holding's own currency
-	Quantity *float64
-	Type     IncomeType
+	Amount   float64
+	Currency string
+	Account  string
+	// Quantity is the quantity of the instrument held as the payment's
+	// day began, in the units of the instrument at the instant; nil where
+	// none is known. Units says it may be in the day's units: no whole
+	// factor explains a change since, or no account held the instrument
+	// through some span since with its units read. Before is the quantity
+	// held RecordLagDays earlier, in the same units.
+	Quantity, Before *float64
+	Units            bool
+	Type             IncomeType
+}
+
+// RecordLagDays bound the days from a dividend's record day to its pay
+// day. A depositary receipt of a Japanese share pays about three months
+// after its record day.
+const RecordLagDays = 100
+
+// instrumentPayments are the payments of every holding of h's instrument
+// and of its sold positions (instrumentOf).
+func (in *Inputs) instrumentPayments(h Holding) []Payment {
+	holdings, sold := in.instrumentOf(h)
+	var out []Payment
+	for _, o := range holdings {
+		out = append(out, in.Payments[o.HoldingKey]...)
+	}
+	for _, k := range sold {
+		out = append(out, in.Payments[k]...)
+	}
+	return out
+}
+
+// inOwn is an amount in ccy ("" for the holding's own) in the holding's
+// own currency: converted to the output currency at the instant's rate,
+// and back at the holding's. false where no rate converts it.
+func (in *Inputs) inOwn(h Holding, amount float64, ccy string) (float64, bool) {
+	if ccy == "" || ccy == h.Currency {
+		return amount, true
+	}
+	from, own := in.fxOf(ccy), h.FX()
+	if from == 0 || own == 0 {
+		return 0, false
+	}
+	return amount * from / own, true
 }
 
 // Facts are a security's reported figures: trailing twelve months of

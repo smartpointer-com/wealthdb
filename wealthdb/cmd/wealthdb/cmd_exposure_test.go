@@ -114,7 +114,7 @@ func TestExposureUsageNamesTheFlagsViews(t *testing.T) {
 	usage := exposureUsage()
 	flat := strings.Join(strings.Fields(usage), " ")
 	for _, want := range []string{
-		"--period P " + strings.Join(exposurePeriods, " | ") + ":",
+		"--period P " + strings.Join(seriesPeriods, " | ") + ":",
 		"a period column first; on " + andList(exposureSeriesViews),
 		"--country C risk (default) | domicile:",
 		"counts in, on countries and securities",
@@ -141,7 +141,7 @@ func TestExposureUsageNamesTheFlagsViews(t *testing.T) {
 func TestExposureQualityTagsReachBothFrontEnds(t *testing.T) {
 	t.Parallel()
 	usage := exposureUsage()
-	for _, tags := range [][]struct{ tag, meaning string }{exposureQualityTags, exposureSitusBases} {
+	for _, tags := range [][]tagNote{exposureQualityTags, exposureSitusBases} {
 		for _, q := range tags {
 			if !strings.Contains(usage, "\n    "+q.tag+" ") {
 				t.Errorf("usage does not list the %s tag", q.tag)
@@ -150,7 +150,7 @@ func TestExposureQualityTagsReachBothFrontEnds(t *testing.T) {
 				t.Errorf("describe topic=quality does not list the %s tag", q.tag)
 			}
 		}
-		for _, line := range strings.Split(exposureNotes(tags), "\n") {
+		for _, line := range strings.Split(tagNotes(tags), "\n") {
 			if len(line) > 72 {
 				t.Errorf("quality line is %d columns wide: %q", len(line), line)
 			}
@@ -400,7 +400,7 @@ func TestSeriesPointsEndEveryPeriod(t *testing.T) {
 // The bucket views and issuers print their own first columns and the
 // shares; -p hides the values and keeps the names; --period runs on a
 // bucket view and is refused on issuers.
-func TestExposureYieldViewsOnTheCLI(t *testing.T) {
+func TestExposureBucketAndIssuerViews(t *testing.T) {
 	t.Parallel()
 	cfg := setupExposureGold(t)
 	for view, header := range map[string]string{

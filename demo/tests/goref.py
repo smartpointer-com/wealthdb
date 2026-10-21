@@ -5,10 +5,11 @@ transaction kinds, composition bases, risk tenors, the companies'
 period-fact fields, the funds' figures, the keys of the records that
 state a bond's terms and a balance's rate, and the yield config's and
 ledger's vocabularies, all of which the engine validates or reads by
-name. Reading them from the Go files
-rather than restating them here means a value renamed in the engine
-fails these tests instead of silently becoming an uncategorised row in
-gold, or a figure gold ignores.
+name. Reading them from the Go files rather than restating them here
+means a value renamed in the engine fails these tests instead of
+silently becoming an uncategorised row in gold, or a figure gold
+ignores. web/test_provision.py reads Go through go_consts and go_slice
+too.
 """
 
 import pathlib
@@ -22,7 +23,7 @@ def _read(name):
     return (CANONICAL / name).read_text()
 
 
-def _consts(text, type_name):
+def go_consts(text, type_name):
     """{ConstName: value} for `Name Type = "value"` declarations."""
     return dict(re.findall(rf'(\w+)\s+{type_name}\s*=\s*"([^"]+)"', text))
 
@@ -35,34 +36,34 @@ def _set_values(text, var, consts):
 
 def account_kinds():
     t = _read("enums.go")
-    return _set_values(t, "accountKindValues", _consts(t, "AccountKind"))
+    return _set_values(t, "accountKindValues", go_consts(t, "AccountKind"))
 
 
 def tax_wrappers():
     t = _read("enums.go")
-    return _set_values(t, "taxWrapperValues", _consts(t, "TaxWrapper"))
+    return _set_values(t, "taxWrapperValues", go_consts(t, "TaxWrapper"))
 
 
 def management_styles():
     t = _read("enums.go")
-    return _set_values(t, "managementStyleValues", _consts(t, "ManagementStyle"))
+    return _set_values(t, "managementStyleValues", go_consts(t, "ManagementStyle"))
 
 
 def tx_kinds():
     t = _read("enums.go")
-    return _set_values(t, "txKindValues", _consts(t, "TxKind"))
+    return _set_values(t, "txKindValues", go_consts(t, "TxKind"))
 
 
 def composition_bases():
     """What a fund composition's lines can describe (CompositionBasis)."""
-    return set(_consts(_read("refdata.go"), "CompositionBasis").values())
+    return set(go_consts(_read("refdata.go"), "CompositionBasis").values())
 
 
 def taxonomy_pairs():
     """The admitted (asset_class, vehicle) pairs."""
     enums, tax = _read("enums.go"), _read("taxonomy.go")
-    classes = {**_consts(enums, "AssetClass"), **_consts(tax, "AssetClass")}
-    vehicles = _consts(tax, "Vehicle")
+    classes = {**go_consts(enums, "AssetClass"), **go_consts(tax, "AssetClass")}
+    vehicles = go_consts(tax, "Vehicle")
     body = re.search(r"var validTaxonomyPairs = [^{]*\{(.*?)\n\}", tax, re.S).group(1)
     pairs = set()
     for cls, vs in re.findall(r"(\w+):\s*setOf\(([^)]*)\)", body):
@@ -74,7 +75,7 @@ def taxonomy_pairs():
 def canonical_signs():
     """{kind: +1 | -1} for the kinds sign.go pins a sign on."""
     t = _read("sign.go")
-    kinds = _consts(_read("enums.go"), "TxKind")
+    kinds = go_consts(_read("enums.go"), "TxKind")
     out = {}
     for cases, sign in re.findall(r"case ([\w,\s]+):\s*return ([+-]1)", t):
         for name in re.findall(r"\w+", cases):
@@ -102,7 +103,7 @@ def income_values():
     return {d for d, fam in spend_categories().items() if fam in ("FamilyIncome", "FamilyBoth")}
 
 
-def _list(text, var, consts=None):
+def go_slice(text, var, consts=None):
     """The values of a `var Name = []T{A, B}` slice: names looked up in
     consts, or quoted strings and numbers as they are."""
     body = re.search(rf"var {var} = \[\]\w+\{{(.*?)\}}", text, re.S).group(1)
@@ -113,7 +114,7 @@ def _list(text, var, consts=None):
 
 def risk_tenors():
     """The tenors a fund's rate sensitivity is stated at (RiskTenors)."""
-    return _list(_read("refdata.go"), "RiskTenors")
+    return go_slice(_read("refdata.go"), "RiskTenors")
 
 
 def no_currency():
@@ -131,13 +132,13 @@ def period_fields():
 
 def equity_sectors():
     """The eleven broad sectors a yield cycle maps."""
-    return set(_list(_read("exposure.go"), "equitySectors", _consts(_read("exposure.go"), "Sector")))
+    return set(go_slice(_read("exposure.go"), "equitySectors", go_consts(_read("exposure.go"), "Sector")))
 
 
 def rating_buckets():
     """The credit-rating buckets, best first."""
     t = _read("yield.go")
-    return _list(t, "ratingBuckets", _consts(t, "RatingBucket"))
+    return go_slice(t, "ratingBuckets", go_consts(t, "RatingBucket"))
 
 
 def withholding_default():
@@ -147,22 +148,22 @@ def withholding_default():
 
 
 def cycles():
-    return set(_consts(_read("yield.go"), "Cycle").values())
+    return set(go_consts(_read("yield.go"), "Cycle").values())
 
 
 def day_counts():
-    return set(_consts(_read("yield.go"), "DayCount").values())
+    return set(go_consts(_read("yield.go"), "DayCount").values())
 
 
 def coupon_frequencies():
-    return {int(n) for n in _list(_read("yield.go"), "couponFrequencies")}
+    return {int(n) for n in go_slice(_read("yield.go"), "couponFrequencies")}
 
 
 def yield_records():
     """The yield records a declarations-ledger line may carry
     (DeclarationYieldKinds)."""
     t = _read("exposure_config.go")
-    return _list(t, "DeclarationYieldKinds", dict(re.findall(r'(Declaration\w+)\s*=\s*"([^"]+)"', t)))
+    return go_slice(t, "DeclarationYieldKinds", dict(re.findall(r'(Declaration\w+)\s*=\s*"([^"]+)"', t)))
 
 
 def fund_fields():
@@ -184,7 +185,7 @@ def payload_term_keys():
     """The keys the yield pass reads a bond's terms by, from an
     instrument's record or a holding's (canonical.PayloadTermsKeys)."""
     t = _read("payloadterms.go")
-    return set(_list(t, "payloadTermsKeys", dict(re.findall(r'(Payload\w+)\s*=\s*"([^"]+)"', t))))
+    return set(go_slice(t, "payloadTermsKeys", dict(re.findall(r'(Payload\w+)\s*=\s*"([^"]+)"', t))))
 
 
 def balance_rate_keys():

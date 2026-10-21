@@ -1,5 +1,6 @@
 """check_dashboards: a cut-off response is asked once more; a reported
-error is not; each picker is varied alone around the defaults."""
+error is not; each picker is varied alone around the defaults, a listed
+one over the values the dashboard offers."""
 
 import datetime as dt
 import pathlib
@@ -10,6 +11,8 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import check_dashboards  # noqa: E402
+# check_dashboards puts web/ on the path.
+import provision  # noqa: E402
 
 DASH, DC = {"id": 1}, {"id": 2, "card_id": 3, "parameter_mappings": []}
 DONE = (202, {"status": "completed", "data": {"rows": [[1]]}})
@@ -35,46 +38,56 @@ class RunCard(unittest.TestCase):
 
 
 class Combos(unittest.TestCase):
-    """The picker values a dashboard's cards run under."""
+    """The picker values a dashboard's cards run under, over the pickers
+    provisioning gives it."""
 
-    PARAMS = [{"id": slug, "slug": slug, "default": default} for slug, default in (
-        ("currency", ["USD"]), ("time_range", "past12months~"), ("source", None),
-        ("rates", ["constant"]), ("maturing", ["cash"]), ("shift", [0]), ("horizon", ["12"]),
-        ("window", ["this year"]))]
+    def params(self, dashboard):
+        models = {name: i for i, name in enumerate(provision.report_models(), start=1)}
+        return provision.dashboard_parameters(models, "range", dashboard)
 
-    def combos(self):
-        return dict(check_dashboards.combos(self.PARAMS, ["src-1"], ["USD", "CHF"], 2024,
+    def combos(self, dashboard="Income"):
+        return dict(check_dashboards.combos(self.params(dashboard), ["src-1"], ["USD", "CHF"], 2024,
                                             dt.date(2026, 10, 21)))
 
-    def test_the_projection_pickers_are_varied_one_at_a_time(self):
-        defaults = self.combos()["defaults"]
-        for label, slug, value in (("rates ['forward']", "rates", ["forward"]),
-                                   ("maturing ['idle']", "maturing", ["idle"]),
-                                   ("maturing ['roll']", "maturing", ["roll"]),
-                                   ("shift [-100]", "shift", [-100]),
-                                   ("horizon ['36']", "horizon", ["36"]),
-                                   ("window ['last year']", "window", ["last year"]),
-                                   ("window ['next months']", "window", ["next months"])):
-            self.assertEqual(self.combos()[label], {**defaults, slug: value}, label)
-
-    def test_the_existing_variations_stay(self):
+    def test_a_listed_picker_runs_over_each_value_but_its_default(self):
         combos = self.combos()
-        self.assertEqual(combos["defaults"]["shift"], [0])
-        self.assertIn("currency ['CHF']", combos)
+        listed = [p for p in self.params("Income") if p.get("values_source_type") == "static-list"]
+        self.assertEqual({p["slug"] for p in listed}, {"currency", "window", "rates", "maturing", "horizon"})
+        for p in listed:
+            (default,) = p["default"]
+            self.assertNotIn(f"{p['slug']} {[default]}", combos)
+            for v in p["values_source_config"]["values"]:
+                if v != default:
+                    label = f"{p['slug']} {[v]}"
+                    self.assertEqual(combos[label], {**combos["defaults"], p["id"]: [v]}, label)
+        for label in ("rates ['forward']", "maturing ['idle']", "maturing ['roll']", "horizon ['24']",
+                      "horizon ['36']", "window ['last year']", "window ['next months']", "currency ['CHF']"):
+            self.assertIn(label, combos)
+
+    def test_the_shift_runs_100_basis_points_lower(self):
+        combos = self.combos()
+        self.assertEqual(combos["defaults"][provision.SHIFT_PARAM_ID], [0])
+        self.assertEqual(combos["shift [-100]"], {**combos["defaults"], provision.SHIFT_PARAM_ID: [-100]})
+
+    def test_the_time_range_and_source_variations(self):
+        combos = self.combos()
         self.assertIn("source src-1", combos)
-        self.assertIn("window 2024-01-01~2026-10-21", combos)
+        self.assertIn("time_range past7days~", combos)
+        self.assertIn("time_range 2024-01-01~2026-10-21", combos)
 
     def test_a_picker_the_dashboard_lacks_is_not_varied(self):
-        combos = dict(check_dashboards.combos(self.PARAMS[:3], [], ["USD"], 2024, dt.date(2026, 10, 21)))
-        self.assertFalse([label for label in combos if label.startswith(("rates", "shift", "window ["))])
+        combos = self.combos("Exposure")
+        self.assertIn("currency ['CHF']", combos)
+        self.assertFalse([label for label in combos
+                          if label.startswith(("rates", "maturing", "shift", "horizon", "window"))])
 
 
 class EmptyAtDefaults(unittest.TestCase):
     def test_an_empty_card_at_the_defaults_fails_but_the_calendar(self):
-        empties = {("defaults", "Income", "Expected payments"), ("defaults", "Income", "Expected income"),
+        empties = {("defaults", "Income", "Expected payments"), ("defaults", "Income", "Income in the window"),
                    ("defaults", "Income (privacy)", "Expected payments (privacy)"),
-                   ("window past7days~", "Income", "Net income")}
-        self.assertEqual(check_dashboards.empty_at_defaults(empties), [("Income", "Expected income")])
+                   ("time_range past7days~", "Income", "Net income")}
+        self.assertEqual(check_dashboards.empty_at_defaults(empties), [("Income", "Income in the window")])
 
 
 if __name__ == "__main__":

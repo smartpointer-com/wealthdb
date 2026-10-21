@@ -160,7 +160,7 @@ func resolveMissingBasis(asked string, cfg *config.Config, cmd string) (lots.Mis
 	m, err := lots.ParseMissingBasis(asked)
 	if err != nil {
 		return "", errs.Newf(errs.ExitUsage, "%s: invalid --missing-basis %q (want %s)", cmd, asked,
-			strings.Join(lotNames(lots.MissingBasisReadings), " | "))
+			strings.Join(stringsOf(lots.MissingBasisReadings), " | "))
 	}
 	return m, nil
 }

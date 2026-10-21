@@ -3,7 +3,15 @@ package fixedincome
 import (
 	"math"
 	"testing"
+	"time"
 )
+
+// billPrice is the price per 100 face of discount paper at a discount
+// yield in percent: 100 × (1 − d/100 × days/360). BillDiscount undoes
+// it.
+func billPrice(settle, maturity time.Time, discount float64) float64 {
+	return 100 * (1 - discount/100*float64(days(settle, maturity))/360)
+}
 
 // A 182-day bill at 97.50 has a discount yield of 4.945% and an
 // effective annual rate of 5.2086%.
@@ -14,7 +22,7 @@ func TestBillTextbook(t *testing.T) {
 	d := BillDiscount(settle, maturity, 97.5)
 	near(t, "discount", d, 4.945, 5e-4)
 	near(t, "discount exact", d, 2.5*360/182, 1e-12)
-	near(t, "price", BillPrice(settle, maturity, d), 97.5, 1e-12)
+	near(t, "price", billPrice(settle, maturity, d), 97.5, 1e-12)
 	ear := BillEffectiveAnnual(settle, maturity, 97.5)
 	near(t, "effective annual", ear, 5.2086, 5e-5)
 	near(t, "effective annual exact", ear, (math.Pow(100/97.5, 365.0/182)-1)*100, 1e-12)
@@ -37,19 +45,19 @@ func TestBillBondEquivalent(t *testing.T) {
 }
 
 // A price round-trips through its discount yield, at a premium too: a
-// negative discount yield prices above par.
+// price above par has a negative discount yield.
 func TestBillRoundTrip(t *testing.T) {
 	t.Parallel()
 	settle := ymd(2026, 3, 2)
 	for _, n := range []int{1, 28, 91, 364} {
 		maturity := settle.AddDate(0, 0, n)
 		for _, d := range []float64{-0.5, 0, 1.2, 5.3} {
-			p := BillPrice(settle, maturity, d)
+			p := billPrice(settle, maturity, d)
 			near(t, "discount", BillDiscount(settle, maturity, p), d, 1e-10)
 		}
 	}
-	if p := BillPrice(settle, settle.AddDate(0, 0, 91), -0.5); p <= 100 {
-		t.Errorf("price at a negative discount = %v, want above par", p)
+	if d := BillDiscount(settle, settle.AddDate(0, 0, 91), 100.1); d >= 0 {
+		t.Errorf("discount at a premium = %v, want below zero", d)
 	}
 }
 
@@ -100,12 +108,7 @@ func TestBillRefuses(t *testing.T) {
 			t.Errorf("modified at a price of %v = %v, want NaN", p, r.Modified)
 		}
 	}
-	near(t, "price at maturity", BillPrice(maturity, maturity, 4), 0, 0)
-	near(t, "price after maturity", BillPrice(maturity.AddDate(0, 0, 1), maturity, 4), 0, 0)
 	if r := BillRisk(maturity, maturity, 100); r != (Risk{}) {
 		t.Errorf("risk at maturity = %+v, want none", r)
-	}
-	if p := BillPrice(settle, maturity, math.NaN()); !math.IsNaN(p) {
-		t.Errorf("price at a NaN discount = %v, want NaN", p)
 	}
 }

@@ -8,7 +8,8 @@
 --     arrears flags, the exchange rate it was valued at, and the
 --     duration and yield figures an issuer's file states per line;
 --   * fund_risk: a filing's rate sensitivities, per fund, day,
---     currency and tenor;
+--     currency and tenor, as filed; fund_risk_signed reads them in one
+--     sign;
 --   * fund_characteristics: the figures a provider states for a fund as
 --     a whole (its duration and yields, its money-market yields, its
 --     credit-quality breakdown);
@@ -19,8 +20,7 @@
 --
 -- Config, replaced whole at every load like the exposure block
 -- (gold.SyncYield): yield_curves, yield_withholding,
--- yield_rating_funds, yield_conventions, yield_cycles and
--- yield_settings.
+-- yield_rating_funds, yield_conventions and yield_cycles.
 --
 -- OR REPLACE and IF NOT EXISTS keep this replayable (see gold.Migrate's
 -- REPLAY note).
@@ -46,8 +46,8 @@ ALTER TABLE fund_lines ADD COLUMN IF NOT EXISTS accrual_date      DATE;
 -- hundred basis points at the tenor. A credit-spread row has currency
 -- XXX and carries what it moves by for a one basis point move of
 -- investment-grade and of non-investment-grade spreads. Amounts are in
--- the currency of the fund's composition that day, signed as filed:
--- positive when the fund loses value as rates rise.
+-- the currency of the fund's composition that day, signed as filed.
+-- Filers follow no one convention, so fund_risk_signed reads them.
 CREATE TABLE IF NOT EXISTS fund_risk (
     silver_source_id  TEXT           NOT NULL,
     fund_ref          TEXT           NOT NULL,
@@ -61,6 +61,21 @@ CREATE TABLE IF NOT EXISTS fund_risk (
     payload           JSON,
     PRIMARY KEY (silver_source_id, fund_ref, as_of, currency, tenor)
 );
+
+-- fund_risk_signed: fund_risk in the yield report's sign, positive where
+-- the fund loses value as rates rise, as a long bond fund does on the
+-- whole. A filer's convention is one per filing (a fund on its day, from
+-- one source), so the filing flips whole where its dv01 sums below zero,
+-- else its dv100 where it states no dv01: every figure, dv100 and the
+-- credit-spread figures with dv01, its rows keeping their signs relative
+-- to each other. A fund that states a negative duration reads it in that
+-- sign instead (yield.fundRisk).
+CREATE OR REPLACE VIEW fund_risk_signed AS
+SELECT silver_source_id, fund_ref, as_of, currency, tenor, dv01 * flip AS dv01, dv100 * flip AS dv100,
+       credit_ig_dv01 * flip AS credit_ig_dv01, credit_hy_dv01 * flip AS credit_hy_dv01, payload
+  FROM (SELECT *, CASE WHEN COALESCE(SUM(dv01) OVER filing, SUM(dv100) OVER filing) < 0 THEN -1 ELSE 1 END AS flip
+          FROM fund_risk
+        WINDOW filing AS (PARTITION BY silver_source_id, fund_ref, as_of));
 
 -- fund_characteristics: one figure a provider states for a fund as a
 -- whole on one day. label is '' for a single figure, the provider's own
@@ -168,12 +183,6 @@ CREATE TABLE IF NOT EXISTS yield_cycles (
     sector  TEXT  NOT NULL PRIMARY KEY,
     cycle   TEXT  NOT NULL,
     origin  TEXT  NOT NULL
-);
-
--- yield_settings: one row. horizon_months is the projection's window
--- when none is given.
-CREATE TABLE IF NOT EXISTS yield_settings (
-    horizon_months  INTEGER  NOT NULL
 );
 
 INSERT INTO schema_meta (gold_schema_version, applied_at)

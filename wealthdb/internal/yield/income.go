@@ -65,9 +65,9 @@ type Amount struct {
 	// where the table names no rate for the holding's situs.
 	Withheld *float64
 	Basis    Basis
-	// Reinvested is how a maturity's principal earns it, one of Rungs; ""
-	// for a holding's own income.
-	Reinvested string
+	// Reinvested is how a maturity's principal earns it; "" for a
+	// holding's own income.
+	Reinvested Rung
 	// ShiftBP is the shift it moves with, where it rests on a floating
 	// rate.
 	ShiftBP float64
@@ -104,7 +104,7 @@ func (b *Book) Amounts(received []ReceivedLine, w Window, a Assumptions) []Amoun
 		day        time.Time
 		t          IncomeType
 		basis      Basis
-		reinvested string
+		reinvested Rung
 	}
 	sums := map[key]float64{}
 	floating := map[key]bool{}
@@ -185,7 +185,7 @@ func windowMonths(w Window) float64 {
 // the share of the reinvested income each rung earns, and the shift the
 // floating income moves with.
 type tally struct {
-	rungs      map[string]float64
+	rungs      map[Rung]float64
 	reinvested float64
 	shiftBP    float64
 }
@@ -196,7 +196,7 @@ func (t *tally) add(a Amount) {
 	}
 	if a.Reinvested != "" {
 		if t.rungs == nil {
-			t.rungs = map[string]float64{}
+			t.rungs = map[Rung]float64{}
 		}
 		t.rungs[a.Reinvested] += a.Value
 		t.reinvested += a.Value
@@ -220,7 +220,7 @@ func (t tally) quality() string {
 }
 
 // shares is the share of total each key of by holds, in the order of
-// keys: `key=NN%`, `key<1%` for a sliver, `key=0%` for none; a key alone
+// keys: pctLabel's `key=NN%` or `key<1%`, `key=0%` for none; a key alone
 // prints alone, and keys of no total print their names.
 func shares[K ~string](keys []K, by map[K]float64, total float64) string {
 	var held []K
@@ -238,13 +238,10 @@ func shares[K ~string](keys []K, by map[K]float64, total float64) string {
 	}
 	var parts []string
 	for _, k := range held {
-		switch pct := math.Round(by[k] / total * 100); {
-		case by[k] == 0:
+		if by[k] == 0 {
 			parts = append(parts, string(k)+"=0%")
-		case math.Abs(pct) < 1:
-			parts = append(parts, string(k)+"<1%")
-		default:
-			parts = append(parts, fmt.Sprintf("%s=%.0f%%", k, pct))
+		} else {
+			parts = append(parts, pctLabel(string(k), by[k], total))
 		}
 	}
 	return strings.Join(parts, " ")
@@ -396,48 +393,32 @@ func (r IncomeRow) Total() float64 { return r.Received + r.Expected }
 
 // IncomeRows is the income of a window per entity of grain, positions
 // for GrainPositions: every holding of the book, those that pay nothing
-// among them, then any that received income in the window and is no
-// longer held. lastYear are the amounts of the same window a year
-// earlier, nil where that window is not over; next12 the expected
-// amounts of the twelve months after the current one.
+// among them, then any no longer held that received income in the
+// window, or in the same window a year earlier. lastYear are the amounts
+// of the same window a year earlier, nil where that window is not over;
+// next12 the expected amounts of the twelve months after the current
+// one.
 func (b *Book) IncomeRows(g Grain, amounts, lastYear, next12 []Amount) []IncomeRow {
 	type agg struct {
 		row   IncomeRow
 		bases map[Basis]float64
 		tally tally
 	}
-	rows := map[[4]string]*agg{}
-	var order [][4]string
-	positions := map[HoldingKey]*Position{}
-	for i := range b.Positions {
-		positions[b.Positions[i].HoldingKey] = &b.Positions[i]
-	}
-	keyOf := func(h HoldingKey) [4]string {
-		a := b.In.Accounts[AccountKey{h.Source, h.Account}]
-		switch g {
-		case GrainSources:
-			return [4]string{h.Source}
-		case GrainPortfolios:
-			return [4]string{h.Source, a.Portfolio}
-		case GrainAccounts:
-			return [4]string{h.Source, "", h.Account}
-		case GrainPositions:
-			return [4]string{h.Source, "", h.Account, h.PositionKey}
-		}
-		return [4]string{}
-	}
+	rows := map[entity]*agg{}
+	var order []entity
+	positions := b.positionIndex()
 	get := func(h HoldingKey) *agg {
-		k := keyOf(h)
+		a := b.In.Accounts[AccountKey{h.Source, h.Account}]
+		k := entityOfKey(g, h, a)
 		r := rows[k]
 		if r == nil {
-			a := b.In.Accounts[AccountKey{h.Source, h.Account}]
-			r = &agg{row: IncomeRow{Source: k[0], Portfolio: k[1], AccountID: k[2]}, bases: map[Basis]float64{}}
+			r = &agg{row: IncomeRow{Source: k.source, Portfolio: k.portfolio, AccountID: k.account},
+				bases: map[Basis]float64{}}
 			if g != GrainSources {
 				r.row.Account, r.row.PortfolioName = a, a.PortfolioName
 			}
 			if g == GrainPositions {
 				r.row.Holding, r.row.Position = h, positions[h]
-				r.row.Account = a
 			}
 			rows[k] = r
 			order = append(order, k)
@@ -501,9 +482,6 @@ func (b *Book) IncomeRows(g Grain, amounts, lastYear, next12 []Amount) []IncomeR
 	return out
 }
 
-// GrainPositions is the grain of one row per holding.
-const GrainPositions Grain = "positions"
-
 // dominantBasis is the basis of the largest share of the expected
 // income, "(none)" where nothing is expected.
 func dominantBasis(by map[Basis]float64, expected float64) string {
@@ -539,10 +517,7 @@ type CalendarRow struct {
 // month-only amounts after its dated ones of that month. An amount of
 // zero, what an unknown holding expects, is no payment.
 func (b *Book) Calendar(amounts []Amount) []CalendarRow {
-	positions := map[HoldingKey]*Position{}
-	for i := range b.Positions {
-		positions[b.Positions[i].HoldingKey] = &b.Positions[i]
-	}
+	positions := b.positionIndex()
 	var out []CalendarRow
 	for _, a := range amounts {
 		if a.Received || (a.Value == 0 && !a.Principal) {

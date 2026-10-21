@@ -47,16 +47,13 @@ func TestUsageListsEverySubcommand(t *testing.T) {
 	}
 }
 
-// TestEveryListedCommandSaysWhatItDoes pins that no entry reaches the
-// listing blank — an empty column reads as a rendering fault, and the
-// listing is the only place many of these commands are documented.
 // A report's listing line ends with every view its command accepts, in
 // the command's order.
 func TestUsageListsEveryReportsViews(t *testing.T) {
 	t.Parallel()
 	families := map[string][]string{
 		"holdings": holdingsViews, "returns": returnsViews, "gains": gainsViews, "exposure": exposureViews,
-		"spending": spendingViews, "income": incomeViews, "cashflow": cashflowViews,
+		"yield": yieldViews, "spending": spendingViews, "income": incomeViews, "cashflow": cashflowViews,
 	}
 	for _, c := range commandHelps {
 		views, ok := families[c.name]
@@ -73,6 +70,9 @@ func TestUsageListsEveryReportsViews(t *testing.T) {
 	}
 }
 
+// TestEveryListedCommandSaysWhatItDoes pins that no entry reaches the
+// listing blank — an empty column reads as a rendering fault, and the
+// listing is the only place many of these commands are documented.
 func TestEveryListedCommandSaysWhatItDoes(t *testing.T) {
 	t.Parallel()
 	for _, c := range commandHelps {

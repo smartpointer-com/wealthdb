@@ -14,9 +14,8 @@
 -- dividend, terms; docs/EXPOSURE.md §9), replaced whole at every load
 -- (gold.SyncExposure) like its dimensions. instrument_terms_at lays the
 -- terms and rating records in force on a day over instrument_terms. The
--- yield config tables of 0134 are seeded with the built-in conventions,
--- cycles and horizon, so a gold that has not loaded since the upgrade
--- reads the defaults.
+-- yield config tables of 0134 are seeded with the built-in conventions
+-- and cycles, so a gold migrated but not yet loaded reads the defaults.
 --
 -- OR REPLACE, IF NOT EXISTS and seeds into empty tables keep this
 -- replayable (see gold.Migrate's REPLAY note).
@@ -140,8 +139,8 @@ CREATE TABLE IF NOT EXISTS yield_declared_terms (
     note                    TEXT
 );
 
--- The built-in conventions, cycles and horizon (canonical, yield.go),
--- seeded where no load has stamped the yield block yet.
+-- The built-in conventions and cycles (canonical, yield.go), seeded
+-- where no load has stamped the yield block yet.
 INSERT INTO yield_conventions (market, frequency, day_count, origin)
 SELECT * FROM (VALUES ('CHF', 1, '30/360', 'builtin'), ('EUR', 1, '30/360', 'builtin'),
                       ('USD', 2, '30/360', 'builtin'), ('USD:bill', 0, 'ACT/360', 'builtin'),
@@ -157,9 +156,6 @@ SELECT * FROM (VALUES ('energy', 'sensitive', 'builtin'), ('materials', 'cyclica
                       ('real_estate', 'cyclical', 'builtin'))
  WHERE NOT EXISTS (SELECT 1 FROM yield_cycles);
 
-INSERT INTO yield_settings (horizon_months)
-SELECT 12 WHERE NOT EXISTS (SELECT 1 FROM yield_settings);
-
 -- instrument_terms_at: each instrument's terms on a day: instrument_terms
 -- with the ledger's terms and rating records in force on it laid over,
 -- field by field, origin declared. The record in force is the latest
@@ -167,8 +163,12 @@ SELECT 12 WHERE NOT EXISTS (SELECT 1 FROM yield_settings);
 -- record replaces an older one whole. A record names an instrument no
 -- source states terms for too, a fund's factsheet figures among them
 -- (duration, yield_pct). A bond with a coupon and no kind stated is fixed
--- by convention, or zero at a coupon of 0. fixed_until and reset_date are
--- a record's alone; terms_as_of is its day.
+-- by convention, or zero at a coupon of 0. A record that makes a bond
+-- floating drops the frequency its market's convention gave it: a
+-- floating note's frequency is its reset's, quarterly where nothing
+-- states one. A rating record clears a source's default: the grade it
+-- states is the bond's. fixed_until and reset_date are a terms record's
+-- alone; terms_as_of is its day.
 CREATE OR REPLACE MACRO instrument_terms_at(p_asof) AS TABLE (
     WITH d AS (
         SELECT * FROM yield_declared_terms
@@ -190,8 +190,12 @@ CREATE OR REPLACE MACRO instrument_terms_at(p_asof) AS TABLE (
                CASE WHEN d.coupon_pct IS NOT NULL THEN 'declared' ELSE t.coupon_origin END AS coupon_origin,
                COALESCE(d.maturity, t.maturity) AS maturity,
                CASE WHEN d.maturity IS NOT NULL THEN 'declared' ELSE t.maturity_origin END AS maturity_origin,
-               COALESCE(d.frequency, t.frequency) AS frequency,
-               CASE WHEN d.frequency IS NOT NULL THEN 'declared' ELSE t.frequency_origin END AS frequency_origin,
+               CASE WHEN d.frequency IS NOT NULL THEN d.frequency
+                    WHEN d.coupon_kind = 'floating' AND t.frequency_origin = 'convention' THEN NULL
+                    ELSE t.frequency END AS frequency,
+               CASE WHEN d.frequency IS NOT NULL THEN 'declared'
+                    WHEN d.coupon_kind = 'floating' AND t.frequency_origin = 'convention' THEN NULL
+                    ELSE t.frequency_origin END AS frequency_origin,
                d.coupon_kind AS declared_kind, t.coupon_kind AS source_kind, t.coupon_kind_origin AS source_kind_origin,
                COALESCE(d.day_count, t.day_count) AS day_count,
                CASE WHEN d.day_count IS NOT NULL THEN 'declared' ELSE t.day_count_origin END AS day_count_origin,
@@ -200,19 +204,19 @@ CREATE OR REPLACE MACRO instrument_terms_at(p_asof) AS TABLE (
                COALESCE(t.make_whole, FALSE) AND d.call_date IS NULL AS make_whole,
                COALESCE(r.rating, t.rating) AS rating,
                CASE WHEN r.rating IS NOT NULL THEN 'declared' ELSE t.rating_origin END AS rating_origin,
-               COALESCE(t.in_default, FALSE) AS in_default,
-               d.fixed_until, d.reset_date, d.duration, d.yield_pct, COALESCE(d.as_of, r.as_of) AS terms_as_of
+               CASE WHEN r.rating IS NOT NULL THEN FALSE ELSE COALESCE(t.in_default, FALSE) END AS in_default,
+               d.fixed_until, d.reset_date, d.duration, d.yield_pct, d.as_of AS terms_as_of
           FROM k
           LEFT JOIN instrument_terms t USING (silver_source_id, instrument_external_id)
           LEFT JOIN d USING (silver_source_id, instrument_external_id)
           LEFT JOIN r USING (silver_source_id, instrument_external_id))
     SELECT m.* EXCLUDE (declared_kind, source_kind, source_kind_origin),
            CASE WHEN declared_kind IS NOT NULL THEN declared_kind
-                WHEN source_kind_origin IS DISTINCT FROM 'convention' AND source_kind IS NOT NULL THEN source_kind
+                WHEN source_kind IS NOT NULL THEN source_kind
                 WHEN vehicle = 'bond' AND coupon_pct = 0 THEN 'zero'
                 WHEN vehicle = 'bond' AND coupon_pct > 0 THEN 'fixed' END AS coupon_kind,
            CASE WHEN declared_kind IS NOT NULL THEN 'declared'
-                WHEN source_kind_origin IS DISTINCT FROM 'convention' AND source_kind IS NOT NULL THEN source_kind_origin
+                WHEN source_kind IS NOT NULL THEN source_kind_origin
                 WHEN vehicle = 'bond' AND coupon_pct IS NOT NULL THEN 'convention' END AS coupon_kind_origin
       FROM m
 );

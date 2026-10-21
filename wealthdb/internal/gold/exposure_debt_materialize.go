@@ -8,59 +8,58 @@ import (
 )
 
 // exposureScaledSQL is each leaf of the instant $1, with its debt and
-// issuer dimensions (exposure_yield_leaves), in each reporting
-// currency: the tree walked once in US dollars, a leaf scaled by its
-// holding's value in the currency over its dollar value (k), as
-// exposureInsertSQL scales it, with its account's tax wrapper. %s is the
-// UNION of exposure_holdings per reporting currency. Each statement walks
-// it for itself, so the memory of one instant's walk is freed before the
-// next.
-const exposureScaledSQL = `l AS MATERIALIZED (SELECT * FROM exposure_yield_leaves(CAST($1 AS BIGINT), 'USD')),
-h AS MATERIALIZED (%s),
-usd AS (SELECT src, acct, position_key, value AS v FROM h WHERE out_ccy = 'USD' AND value <> 0),
-s AS (SELECT l.*, h.out_ccy, h.value / usd.v AS k, a.tax_wrapper AS wrapper
-        FROM l
-        JOIN usd ON usd.src = l.src AND usd.acct = l.acct AND usd.position_key = l.position_key
-        JOIN h ON h.src = l.src AND h.acct = l.acct AND h.position_key = l.position_key
-        LEFT JOIN accounts a ON a.silver_source_id = l.src AND a.account_external_id = l.acct)`
+// issuer dimensions (exposure_yield_leaves), in each reporting currency
+// (scaledLeavesSQL). Each statement walks it for itself, so the memory
+// of one instant's walk is freed before the next.
+var exposureScaledSQL = scaledLeavesSQL(`l AS MATERIALIZED (SELECT * FROM exposure_yield_leaves(CAST($1 AS BIGINT), 'USD'))`)
+
+// The dimensions report_exposure_debt holds, one per debt and equity
+// view: the dashboard's debt cards filter on them.
+const (
+	debtDimensionCredit   = "credit"
+	debtDimensionMaturity = "maturity"
+	debtDimensionCoupon   = "coupon"
+	debtDimensionCycle    = "cycle"
+)
 
 // exposureDebtSQL is the instant's buckets of the four debt and equity
-// views (EXPOSURE.md §7) per reporting currency, source, tax wrapper and
-// held directly or through funds: a leaf's credit and maturity buckets
-// split by its page fund's breakdowns as exposure_credit_leaves and
-// exposure_maturity_leaves split them, its coupon kind and its cycle.
-// Each dimension sums to the instant's net worth.
-const exposureDebtSQL = `INSERT INTO report_exposure_debt BY NAME
+// views (EXPOSURE.md §7) per reporting currency, source and tax wrapper:
+// a leaf's credit and maturity buckets split by its page fund's
+// breakdowns as exposure_credit_leaves and exposure_maturity_leaves
+// split them, its coupon kind and its cycle. Each dimension sums to the
+// instant's net worth.
+var exposureDebtSQL = `INSERT INTO report_exposure_debt BY NAME
 WITH ` + exposureScaledSQL + `,
 c AS (
-    SELECT s.out_ccy, s.src, s.wrapper, s.depth > 0 AS via_funds, 'credit' AS dimension,
+    SELECT s.out_ccy, s.src, s.wrapper, '` + debtDimensionCredit + `' AS dimension,
            exposure_credit_bucket(s.asset_class, s.debt, s.rating, b.bucket) AS bucket,
            exposure_credit_unknown(s.debt, s.rating, b.unknown) AS unknown,
            s.value * s.k * COALESCE(b.share, 1) AS value
       FROM s LEFT JOIN exposure_page_breakdown(CAST($1 AS BIGINT), 'credit_quality') b
            ON s.debt AND s.rating IS NULL AND b.fund = s.page_fund
     UNION ALL
-    SELECT s.out_ccy, s.src, s.wrapper, s.depth > 0, 'maturity', exposure_maturity_split(s.maturity_bucket, b.bucket),
-           FALSE, s.value * s.k * COALESCE(b.share, 1)
+    SELECT s.out_ccy, s.src, s.wrapper, '` + debtDimensionMaturity + `', exposure_maturity_split(s.maturity_bucket, b.bucket), FALSE,
+           s.value * s.k * COALESCE(b.share, 1)
       FROM s LEFT JOIN exposure_page_breakdown(CAST($1 AS BIGINT), 'maturity_breakdown') b
            ON s.maturity_bucket = 'unknown' AND b.fund = s.page_fund
     UNION ALL
-    SELECT s.out_ccy, s.src, s.wrapper, s.depth > 0, 'coupon', s.coupon_bucket, FALSE, s.value * s.k FROM s
+    SELECT s.out_ccy, s.src, s.wrapper, '` + debtDimensionCoupon + `', s.coupon_bucket, FALSE, s.value * s.k FROM s
     UNION ALL
-    SELECT s.out_ccy, s.src, s.wrapper, s.depth > 0, 'cycle', s.cycle, FALSE, s.value * s.k FROM s)
+    SELECT s.out_ccy, s.src, s.wrapper, '` + debtDimensionCycle + `', s.cycle, FALSE, s.value * s.k FROM s)
 SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT) AS as_of, src AS silver_source_id,
-       wrapper AS tax_wrapper, via_funds, dimension, bucket, unknown, SUM(value) AS value
+       wrapper AS tax_wrapper, dimension, bucket, unknown, SUM(value) AS value
   FROM c
  GROUP BY ALL`
 
-// exposureIssuersShown is how many issuers report_exposure_issuers keeps
-// per instant and currency, beside the (none) row.
+// exposureIssuersShown is how many issuers report_exposure_issuer_ranks
+// keeps per instant and currency, beside the (none) row.
 const exposureIssuersShown = 100
 
 // exposureIssuersSQL is the instant's issuers per reporting currency as
-// report_exposure_issuers ranks them: the largest exposureIssuersShown
-// and the (none) row; the running share counts every issuer.
-const exposureIssuersSQL = `INSERT INTO report_exposure_issuers BY NAME
+// the report_exposure_issuers macro ranks them: the largest
+// exposureIssuersShown and the (none) row; the running share counts
+// every issuer.
+var exposureIssuersSQL = `INSERT INTO report_exposure_issuer_ranks BY NAME
 WITH ` + exposureScaledSQL + `,
 g AS (
     SELECT out_ccy, COALESCE(issuer_key, '(none)') AS ik,
@@ -87,7 +86,7 @@ SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT
  WHERE rank <= %d OR ik = '(none)'`
 
 // materializeExposureDebt fills report_exposure_debt and
-// report_exposure_issuers at the instants the yield tables hold
+// report_exposure_issuer_ranks at the instants the yield tables hold
 // (yieldInstants: today and the 12 month ends before), the walk with the
 // debt and issuer dimensions costing several times the plain one. parts
 // are exposure_holdings per reporting currency.

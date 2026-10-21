@@ -1,6 +1,7 @@
 package yield
 
 import (
+	"cmp"
 	"math"
 	"slices"
 	"time"
@@ -23,7 +24,7 @@ const (
 	RuleRoll Rule = "roll"
 )
 
-// Rules are the maturing rules, the default first.
+// Rules are the maturing rules, the default (DefaultAssumptions) first.
 var Rules = []Rule{RuleCash, RuleIdle, RuleRoll}
 
 // Path is how the floating rates move over the window.
@@ -36,7 +37,7 @@ const (
 	PathForward Path = "forward"
 )
 
-// Paths are the rate paths, the default first.
+// Paths are the rate paths, the default (DefaultAssumptions) first.
 var Paths = []Path{PathConstant, PathForward}
 
 // Basis is what an expected amount rests on.
@@ -56,10 +57,30 @@ const (
 var Bases = []Basis{BasisDeclared, BasisIndicated, BasisStated, BasisForward, BasisReinvested, BasisRealized,
 	BasisUnknown}
 
-// Rungs are the ways a principal earns after a maturity, in the order a
-// quality column lists them: the cash rule's, then the roll rule's rung
-// and its fallbacks (docs/INCOME.md §12).
-var Rungs = []string{"cash", "roll", "roll_constant", "roll_own", "roll_cash"}
+// Rung is a way a principal earns after a maturity (docs/INCOME.md §12,
+// the maturing rules).
+type Rung string
+
+const (
+	// RungCash: the cash rule's, at the rate of the account's cash.
+	RungCash Rung = "cash"
+	// RungRoll: the roll rule's, at the forward rate of the holding's
+	// term plus its own spread.
+	RungRoll Rung = "roll"
+	// RungRollConstant: a roll at the holding's own implied yield, held
+	// constant, where its currency has no curve.
+	RungRollConstant Rung = "roll_constant"
+	// RungRollOwn: a roll at its current yield, else its stated rate,
+	// held constant, where it implies none.
+	RungRollOwn Rung = "roll_own"
+	// RungRollCash: a roll into cash, where the holding has no yield at
+	// all.
+	RungRollCash Rung = "roll_cash"
+)
+
+// Rungs are the rungs in the order a quality column lists them: the cash
+// rule's, then the roll rule's and its fallbacks.
+var Rungs = []Rung{RungCash, RungRoll, RungRollConstant, RungRollOwn, RungRollCash}
 
 // Months is the longest window the projection computes: every view and
 // dashboard horizon cuts it.
@@ -99,8 +120,8 @@ type Part struct {
 	// each path; RollPrincipal the principal a shift moves it by.
 	RollConstant, RollForward, RollPrincipal float64
 	// Reinvested is "" for a holding's own income, else how its
-	// principal earns after a maturity, one of Rungs.
-	Reinvested string
+	// principal earns after a maturity.
+	Reinvested Rung
 }
 
 // Income is the part's income under a path and a parallel shift in
@@ -174,7 +195,8 @@ type Projection struct {
 	rates       map[rateKey]float64
 	Events      []Event
 	// Withholding is the percent withheld at source from each holding's
-	// income, where the withholding table names its situs.
+	// income, and from a sold position's of a security held (Sold), where
+	// the withholding table names its situs.
 	Withholding map[HoldingKey]float64
 	// Currency of each holding the parts name, and its rate to the
 	// output currency.
@@ -255,11 +277,10 @@ func (pj *projector) monthOf(d time.Time) int {
 	return (y-sy)*12 + int(m) - int(sm)
 }
 
-// Project computes the projection of the holdings, given each holding's
+// project computes the projection of the holdings, given each holding's
 // measures (its spread, its yields, its kind).
-func Project(in *Inputs, measures map[HoldingKey]*Measures) *Projection {
-	start := time.Date(in.Day.Year(), in.Day.Month(), 1, 0, 0, 0, 0, time.UTC)
-	out := &Projection{Start: start, From: in.Day.AddDate(0, 0, 1), Withholding: map[HoldingKey]float64{},
+func project(in *Inputs, measures map[HoldingKey]*Measures) *Projection {
+	out := &Projection{Start: monthStart(in.Day), From: in.Day.AddDate(0, 0, 1), Withholding: map[HoldingKey]float64{},
 		Currency: map[HoldingKey]string{}, FX: map[HoldingKey]float64{}}
 	pj := &projector{in: in, out: out, measures: measures, cash: map[AccountCurrency]Holding{}}
 	for _, h := range in.Holdings {
@@ -273,30 +294,51 @@ func Project(in *Inputs, measures map[HoldingKey]*Measures) *Projection {
 			continue
 		}
 		out.Currency[h.HoldingKey], out.FX[h.HoldingKey] = h.Currency, h.FX()
-		if w, ok := pj.withholding(h); ok {
+		if w, ok := pj.withholding(in.Situs[h.HoldingKey], AccountKey{h.Source, h.Account}); ok {
 			out.Withholding[h.HoldingKey] = w
 		}
 		pj.holding(h, m)
 	}
+	pj.soldWithholding()
 	pj.accountIncome()
 	out.rateTable(in.Curves)
 	return out
 }
 
-// withholding is the percent a holding's income is withheld at, by its
-// situs and its account's tax wrapper, the country's default where it
+// withholding is the percent income of situs is withheld at in account
+// acct, by the account's tax wrapper, the country's default where it
 // names none for the wrapper.
-func (pj *projector) withholding(h Holding) (float64, bool) {
-	situs := pj.in.Situs[h.HoldingKey]
+func (pj *projector) withholding(situs string, acct AccountKey) (float64, bool) {
 	rates := pj.in.Withholding[situs]
 	if situs == "" || rates == nil {
 		return 0, false
 	}
-	if r, ok := rates[pj.in.Accounts[AccountKey{h.Source, h.Account}].TaxWrapper]; ok {
+	if r, ok := rates[pj.in.Accounts[acct].TaxWrapper]; ok {
 		return r, true
 	}
 	r, ok := rates[canonical.WithholdingDefault]
 	return r, ok
+}
+
+// soldWithholding gives each sold position of a holding's instrument
+// (Inputs.Sold) the percent its received income is withheld at: by the
+// situs of the holding, at its own account's wrapper.
+func (pj *projector) soldWithholding() {
+	for _, h := range pj.in.Holdings {
+		situs := pj.in.Situs[h.HoldingKey]
+		if situs == "" {
+			continue
+		}
+		_, sold := pj.in.instrumentOf(h)
+		for _, k := range sold {
+			if _, ok := pj.out.Withholding[k]; ok {
+				continue
+			}
+			if w, ok := pj.withholding(situs, AccountKey{k.Source, k.Account}); ok {
+				pj.out.Withholding[k] = w
+			}
+		}
+	}
 }
 
 func (pj *projector) add(p Part) { pj.out.Parts = append(pj.out.Parts, p) }
@@ -444,8 +486,8 @@ func (pj *projector) holding(h Holding, m *Measures) {
 		default:
 			pj.unknown(h, TypeDistributions)
 		}
-	case KindEquityFund:
-		if !pj.indicated(h, TypeDistributions) && m.DividendYield != nil && m.Tags[TagStated] {
+	case KindEquityFund, KindMultiAsset:
+		if !pj.indicated(h, TypeDistributions) && m.statedDividend {
 			pj.fixed(h, TypeDistributions, BasisStated, h.Amount, *m.DividendYield, nil)
 		}
 	case KindStock:
@@ -527,16 +569,16 @@ func (pj *projector) matures(h Holding, m *Measures, day time.Time, principal fl
 		pj.out.Events = append(pj.out.Events, Event{Holding: h.HoldingKey, Month: pj.monthOf(day), Day: day, Rule: r,
 			Type: typ, Amount: principal, Basis: BasisDeclared})
 	}
-	pj.cashAfter(h, day, principal, RuleCash, "cash")
-	own := firstOf(m.Implied, m.CurrentYield, m.Stated)
+	pj.cashAfter(h, day, principal, RuleCash, RungCash)
+	own := first(m.Implied, m.CurrentYield, m.Stated)
 	c := pj.in.Curves[h.Currency]
 	switch {
 	case own == nil:
-		pj.cashAfter(h, day, principal, RuleRoll, "roll_cash")
+		pj.cashAfter(h, day, principal, RuleRoll, RungRollCash)
 	case m.Implied == nil:
-		pj.rollAt(h, day, principal, *own, typ, "roll_own")
+		pj.rollAt(h, day, principal, *own, typ, RungRollOwn)
 	case c == nil || c.Zero == nil:
-		pj.rollAt(h, day, principal, *own, typ, "roll_constant")
+		pj.rollAt(h, day, principal, *own, typ, RungRollConstant)
 	default:
 		pj.rollCurve(h, c, day, pj.term(h, m, day), principal, *own, typ)
 	}
@@ -564,18 +606,22 @@ func (pj *projector) term(h Holding, m *Measures, maturity time.Time) int {
 // cashAfter adds the principal's income from day first on, at what the
 // cash of the holding's account in its currency earns on it that day:
 // the tiers' rate on the balance with it, less on the balance without
-// it, a term's rate only before its end. Unknown where that cash states
-// no rate.
-func (pj *projector) cashAfter(h Holding, first time.Time, principal float64, rule Rule, rung string) {
+// it, a term's rate only before its end. Where the account holds no cash
+// in that currency today, only a rate that names the currency counts:
+// one that names none is the rate of the cash the account holds. Unknown
+// where the account states no rate for that cash.
+func (pj *projector) cashAfter(h Holding, first time.Time, principal float64, rule Rule, rung Rung) {
 	p := part(h, TypeInterest, BasisReinvested)
 	p.Reinvested = rung
-	var tiers []Rate
 	balance := 0.0
-	if cash, ok := pj.cash[AccountCurrency{AccountKey{h.Source, h.Account}, h.Currency}]; ok {
-		tiers = tiersOf(pj.in, Holding{HoldingKey: cash.HoldingKey, Currency: cash.Currency, Amount: principal}, first)
-		if cash.HoldingKey != h.HoldingKey && cash.Amount > 0 {
-			balance = cash.Amount
-		}
+	cash, held := pj.cash[AccountCurrency{AccountKey{h.Source, h.Account}, h.Currency}]
+	if held && cash.HoldingKey != h.HoldingKey && cash.Amount > 0 {
+		balance = cash.Amount
+	}
+	tiers := tiersOf(pj.in, Holding{HoldingKey: HoldingKey{h.Source, h.Account, "cash:" + h.Currency},
+		Currency: h.Currency, Amount: principal}, first)
+	if !held {
+		tiers = slices.DeleteFunc(tiers, func(r Rate) bool { return r.Currency == "" })
 	}
 	if len(tiers) == 0 {
 		p.Basis = BasisUnknown
@@ -592,7 +638,7 @@ func (pj *projector) cashAfter(h Holding, first time.Time, principal float64, ru
 
 // rollAt adds a rolled holding's income from day first on at one rate
 // under either path, rolling again every term at the same rate.
-func (pj *projector) rollAt(h Holding, first time.Time, principal, rate float64, typ IncomeType, rung string) {
+func (pj *projector) rollAt(h Holding, first time.Time, principal, rate float64, typ IncomeType, rung Rung) {
 	p := part(h, typ, BasisReinvested)
 	p.Reinvested, p.RollConstant, p.RollForward, p.RollPrincipal = rung, principal*rate/1200, principal*rate/1200,
 		principal
@@ -612,16 +658,16 @@ func (pj *projector) rollCurve(h Holding, c *Curve, first time.Time, term int, p
 		}
 		forward := c.Zero.Forward(max(pj.monthOf(start), 0), term) + spread
 		p := part(h, typ, BasisReinvested)
-		p.Reinvested, p.RollConstant, p.RollForward, p.RollPrincipal = "roll", principal*own/1200,
+		p.Reinvested, p.RollConstant, p.RollForward, p.RollPrincipal = RungRoll, principal*own/1200,
 			principal*forward/1200, principal
 		pj.accrue(p, start, &end, RuleRoll)
 	}
 }
 
 // indicated adds a stock's or a fund's dividends from the one after the
-// last paid on: a ledger record's (declared), else the last payment per
-// share at its frequency (indicated), else the filings' dividends per
-// share (indicated). Only their months are known. false where none is.
+// last paid on: its instrument's indicated dividend (indicatedDividend) on
+// the holding's own quantity, at the instrument's frequency, each payment
+// in turn. Only their months are known. false where none is.
 func (pj *projector) indicated(h Holding, typ IncomeType) bool {
 	d := indicatedDividend(pj.in, h)
 	if d == nil || h.Quantity == nil {
@@ -631,83 +677,274 @@ func (pj *projector) indicated(h Holding, typ IncomeType) bool {
 	if d.tag == TagDeclared {
 		p.Basis = BasisDeclared
 	}
-	p.Fixed = d.perPayment * *h.Quantity
 	step := 12 / d.frequency
 	for i := 1; ; i++ {
 		day := d.last.AddDate(0, step*i, 0)
 		if !day.Before(pj.out.End()) {
 			return true
 		}
+		p.Fixed = d.payments[(i-1)%len(d.payments)] * *h.Quantity
 		pj.pay(p, day, true)
 	}
 }
 
-// dividend is a holding's indicated dividend: per share of one payment,
-// the payments a year, the day of the last one, and what it rests on.
+// dividend is a holding's indicated dividend: per share of its next
+// payments in turn, from the one after the last, the payments a year, the
+// day of the last one, and what it rests on. units says a payment it
+// rests on is in its day's units (Payment).
 type dividend struct {
-	perPayment float64
-	frequency  int
-	annual     float64 // per share
-	last       time.Time
-	tag        Tag
+	payments  []float64
+	frequency int
+	annual    float64 // per share
+	last      time.Time
+	tag       Tag
+	units     bool
 }
 
-// indicatedDividend is a holding's indicated dividend per share. The
-// lines paid on one day are one payment: a fund's distribution often
-// comes as several, income and capital gains apart.
+// indicatedDividend is a holding's indicated dividend per share, in its
+// own currency: its instrument's, which every holding of it shares. A
+// ledger record's comes first. Else its pay days (payDays) give it, by
+// month:
+//
+//   - A month's rate is the sum of its pay days' rates, specials aside:
+//     two lines of a month on different days are one payment.
+//   - The rate is the last month's that has one, where it lies within
+//     400 days, at the frequency the pay months of the twelve months to
+//     the instant show (1, 2, 4 or 12). A payer twice a year pays its
+//     interim and its final, which often differ, each in its own half:
+//     the last month's rate, and the rate of the newest month before it
+//     within 400 days in the other half of the year, where one has one.
+//   - A special counts in no rate, but its month counts in the
+//     frequency. A month whose only pay days are specials counts where
+//     the same month a year earlier paid: the special fell on the
+//     payer's own schedule, as a trimmed holding's payment does. An
+//     extra payment off it, such as a yearly payer's return of capital,
+//     does not count.
+//
+// Else the filings' dividends per share serve, quarterly. A ledger record
+// in a currency no rate converts counts nothing. The payments go on from
+// the last pay day that is no special.
 func indicatedDividend(in *Inputs, h Holding) *dividend {
-	type payDay struct {
-		day time.Time
-		per float64 // per share where a quantity is known, else the amount
-	}
-	var pays []payDay
-	for _, p := range in.Payments[h.HoldingKey] {
-		if p.Type != TypeDividends && p.Type != TypeDistributions {
-			continue
-		}
-		per := p.Amount
-		if p.Quantity != nil && *p.Quantity > 0 {
-			per = p.Amount / *p.Quantity
-		} else if h.Quantity != nil && *h.Quantity > 0 {
-			per = p.Amount / *h.Quantity
-		}
-		day := p.Day.Truncate(24 * time.Hour)
-		if n := len(pays); n > 0 && pays[n-1].day.Equal(day) {
-			pays[n-1].per += per
-		} else {
-			pays = append(pays, payDay{day, per})
-		}
+	days := payDays(in, h)
+	paid := map[int]bool{}
+	for _, d := range days {
+		paid[monthOf(d.day)] = true
 	}
 	last := in.Day
-	if len(pays) > 0 {
-		last = pays[len(pays)-1].day
+	months := map[int]bool{}
+	type monthly struct {
+		month int
+		day   time.Time
+		rate  float64
+		units bool
 	}
-	if d, ok := in.Dividends[InstrumentKey{h.Source, h.Instrument}]; ok && d.Frequency > 0 {
-		return &dividend{perPayment: d.Amount, frequency: d.Frequency, annual: d.Amount * float64(d.Frequency),
-			last: last, tag: TagDeclared}
-	}
-	if len(pays) > 0 && in.Day.Sub(last) < 400*24*time.Hour {
-		n := 0
-		for _, p := range pays {
-			if in.Day.Sub(p.day) <= 365*24*time.Hour {
-				n++
+	var rated []monthly
+	for i := 0; i < len(days); {
+		m := monthOf(days[i].day)
+		var regular []payDay
+		for ; i < len(days) && monthOf(days[i].day) == m; i++ {
+			if !days[i].special {
+				regular, last = append(regular, days[i]), days[i].day
 			}
 		}
-		f, per := nearestFrequency(n), pays[len(pays)-1].per
-		return &dividend{perPayment: per, frequency: f, annual: per * float64(f), last: last, tag: TagIndicated}
+		if in.withinYear(days[i-1].day) && (len(regular) > 0 || paid[m-12]) {
+			months[m] = true
+		}
+		if r, u := monthRate(regular); r != nil {
+			rated = append(rated, monthly{m, regular[len(regular)-1].day, *r, u})
+		}
+	}
+	if d, ok := in.Dividends[InstrumentKey{h.Source, h.Instrument}]; ok && d.Frequency > 0 {
+		if per, ok := in.inOwn(h, d.Amount, d.Currency); ok {
+			return &dividend{payments: []float64{per}, frequency: d.Frequency, annual: per * float64(d.Frequency),
+				last: last, tag: TagDeclared}
+		}
+	}
+	recent := func(r monthly) bool { return in.Day.Sub(r.day) < 400*24*time.Hour }
+	if n := len(rated); n > 0 && recent(rated[n-1]) {
+		r, f := rated[n-1], nearestFrequency(len(months))
+		d := &dividend{payments: []float64{r.rate}, frequency: f, annual: r.rate * float64(f), last: last,
+			tag: TagIndicated, units: r.units}
+		for j := n - 2; f == 2 && j >= 0 && recent(rated[j]); j-- {
+			if o := rated[j]; (r.month-o.month)%12 != 0 {
+				d.payments, d.annual, d.units = []float64{o.rate, r.rate}, o.rate+r.rate, r.units || o.units
+				break
+			}
+		}
+		return d
 	}
 	if f := in.Securities[h.SecurityID]; f.DPS != nil && *f.DPS > 0 && (f.Currency == "" || f.Currency == h.Currency) {
-		return &dividend{perPayment: *f.DPS / 4, frequency: 4, annual: *f.DPS, last: in.Day.AddDate(0, -2, 0),
-			tag: TagIndicated}
+		return &dividend{payments: []float64{*f.DPS / 4}, frequency: 4, annual: *f.DPS,
+			last: in.Day.AddDate(0, -2, 0), tag: TagIndicated}
 	}
 	return nil
 }
 
-// nearestFrequency is the coupon frequency nearest to n payments a year:
-// 1, 2, 4 or 12.
+// monthOf numbers a day's month: twelve a year.
+func monthOf(d time.Time) int { return d.Year()*12 + int(d.Month()) - 1 }
+
+// monthRate is the rate per share of a month's regular pay days: each
+// account's rates summed, the median of the accounts'. An account with a
+// pay day of unknown rate among them has none. nil where no account has
+// one; units where a rate it rests on does.
+func monthRate(days []payDay) (*float64, bool) {
+	sums, unknown := map[string]float64{}, map[string]bool{}
+	units := false
+	for _, d := range days {
+		for _, a := range d.accounts {
+			if a.per == nil {
+				unknown[a.account] = true
+				continue
+			}
+			sums[a.account] += *a.per
+			units = units || a.units
+		}
+	}
+	var rates []float64
+	for a, r := range sums {
+		if !unknown[a] {
+			rates = append(rates, r)
+		}
+	}
+	if len(rates) == 0 {
+		return nil, false
+	}
+	return ptr(median(rates)), units
+}
+
+// payDay is one day an instrument paid a dividend or a distribution, as
+// payDays reads it: each account's payment, and the day's rate.
+type payDay struct {
+	day      time.Time
+	accounts []accountPay
+	// per is the day's rate per share, in today's units, the median of
+	// the accounts'; nil where no account paid knew its quantity.
+	per     *float64
+	special bool
+}
+
+// accountPay is one account's payment of a pay day: its rate per share,
+// nil where unknown, and whether that rate is in its day's units
+// (Payment).
+type accountPay struct {
+	account string
+	per     *float64
+	units   bool
+}
+
+// payDays are the days the instrument of a holding paid a dividend or a
+// distribution, in any account, oldest first, each payment in the
+// holding's own currency. A payment no rate converts counts nothing.
+//
+//   - An account's lines of one day are one payment: a fund's
+//     distribution often comes as several, income and capital gains
+//     apart. Their sum over the quantity the account held that day is
+//     its rate per share. A payment whose quantity is unknown has none.
+//   - So has a payment on under two thirds, or over one and a half
+//     times, what its account held RecordLagDays before: a holding
+//     trimmed or topped up between the record day and the pay day was
+//     paid on another quantity than it held that day.
+//   - The accounts paid on one day pay one rate: the day's is the median
+//     of their rates.
+//   - A day whose rate is above twice the median of the rates of the
+//     twelve months to the instant is a special: a special dividend or a
+//     return of capital. With fewer than three rates in them, the median
+//     is that of every pay day, the 24 months of the payments. With fewer
+//     than four there, a special is above four times their median, the
+//     smaller one's with two: a payer twice a year whose final is two or
+//     three times its interim has no special among a few payments.
+func payDays(in *Inputs, h Holding) []payDay {
+	type paid struct {
+		day     time.Time
+		account string
+	}
+	type sum struct {
+		amount      float64
+		qty, before *float64
+		units       bool
+	}
+	sums := map[paid]*sum{}
+	var order []paid
+	for _, p := range in.instrumentPayments(h) {
+		if p.Type != TypeDividends && p.Type != TypeDistributions {
+			continue
+		}
+		amount, ok := in.inOwn(h, p.Amount, p.Currency)
+		if !ok {
+			continue
+		}
+		k := paid{p.Day.Truncate(24 * time.Hour), p.Account}
+		s := sums[k]
+		if s == nil {
+			s = &sum{}
+			sums[k], order = s, append(order, k)
+		}
+		s.amount += amount
+		if p.Quantity != nil && *p.Quantity > 0 {
+			s.qty, s.before, s.units = p.Quantity, p.Before, s.units || p.Units
+		}
+	}
+	slices.SortStableFunc(order, func(a, b paid) int {
+		return cmp.Or(a.day.Compare(b.day), cmp.Compare(a.account, b.account))
+	})
+	for _, s := range sums {
+		if s.qty != nil && s.before != nil && (*s.qty < *s.before/1.5 || *s.qty > *s.before*1.5) {
+			s.qty = nil
+		}
+	}
+	var out []payDay
+	var all, year []float64
+	for i := 0; i < len(order); {
+		d := payDay{day: order[i].day}
+		var rates []float64
+		for ; i < len(order) && order[i].day.Equal(d.day); i++ {
+			s, a := sums[order[i]], accountPay{account: order[i].account}
+			if s.qty != nil {
+				a.per, a.units = ptr(s.amount / *s.qty), s.units
+				rates = append(rates, *a.per)
+			}
+			d.accounts = append(d.accounts, a)
+		}
+		if len(rates) > 0 {
+			d.per = ptr(median(rates))
+			all = append(all, *d.per)
+			if in.withinYear(d.day) {
+				year = append(year, *d.per)
+			}
+		}
+		out = append(out, d)
+	}
+	if len(all) >= 2 {
+		m, bar := slices.Min(all), 4.0
+		switch {
+		case len(year) >= 3:
+			m, bar = median(year), 2
+		case len(all) >= 4:
+			m, bar = median(all), 2
+		case len(all) == 3:
+			m = median(all)
+		}
+		for i := range out {
+			out[i].special = out[i].per != nil && *out[i].per > bar*m
+		}
+	}
+	return out
+}
+
+// median is the middle of vs, the mean of the two middle ones where
+// their count is even. It sorts vs.
+func median(vs []float64) float64 {
+	slices.Sort(vs)
+	n := len(vs)
+	return (vs[(n-1)/2] + vs[n/2]) / 2
+}
+
+// nearestFrequency is the coupon frequency of a bond nearest to n
+// payments a year (canonical.BondFrequencies).
 func nearestFrequency(n int) int {
-	best := 1
-	for _, f := range []int{1, 2, 4, 12} {
+	fs := canonical.BondFrequencies()
+	best := fs[0]
+	for _, f := range fs {
 		if math.Abs(float64(n-f)) < math.Abs(float64(n-best)) {
 			best = f
 		}
@@ -715,15 +952,16 @@ func nearestFrequency(n int) int {
 	return best
 }
 
-// paidWithinYear says the holding received a payment in the twelve
-// months to the instant.
-func paidWithinYear(in *Inputs, h Holding) bool {
-	for _, p := range in.Payments[h.HoldingKey] {
-		if in.Day.Sub(p.Day) <= 365*24*time.Hour {
-			return true
-		}
-	}
-	return false
+// withinYear says day lies in the year to the instant: after the same
+// day a year before, as gold's received income counts it.
+func (in *Inputs) withinYear(day time.Time) bool {
+	return day.After(in.Day.AddDate(-1, 0, 0))
+}
+
+// paidWithinYear says one of ps falls in the twelve months to the
+// instant.
+func (in *Inputs) paidWithinYear(ps []Payment) bool {
+	return slices.ContainsFunc(ps, func(p Payment) bool { return in.withinYear(p.Day) })
 }
 
 // repeat adds a payment of the twelve months to the instant again on its
@@ -739,17 +977,25 @@ func (pj *projector) repeat(p Part, day time.Time) {
 }
 
 // realizedPattern repeats a holding's payments of the twelve months to
-// the instant every year: what it paid last year, where nothing else is
-// known. false where it was paid nothing.
+// the instant every year, each in the holding's own currency: what it
+// paid last year, where nothing else is known. false where it was paid
+// nothing a rate converts.
 func (pj *projector) realizedPattern(h Holding) bool {
+	found := false
 	for _, pay := range pj.in.Payments[h.HoldingKey] {
-		if pj.in.Day.Sub(pay.Day) <= 365*24*time.Hour {
-			p := part(h, pay.Type, BasisRealized)
-			p.Fixed = pay.Amount
-			pj.repeat(p, pay.Day)
+		if !pj.in.withinYear(pay.Day) {
+			continue
 		}
+		amount, ok := pj.in.inOwn(h, pay.Amount, pay.Currency)
+		if !ok {
+			continue
+		}
+		found = true
+		p := part(h, pay.Type, BasisRealized)
+		p.Fixed = amount
+		pj.repeat(p, pay.Day)
 	}
-	return paidWithinYear(pj.in, h)
+	return found
 }
 
 // repeatInterest repeats the interest a cash balance's account received
@@ -760,7 +1006,7 @@ func (pj *projector) repeatInterest(h Holding) bool {
 	found := false
 	for _, r := range pj.in.AccountPayments {
 		if r.Type != TypeInterest || r.Source != h.Source || r.Account != h.Account || r.Currency != h.Currency ||
-			pj.in.Day.Sub(r.Day) > 365*24*time.Hour {
+			!pj.in.withinYear(r.Day) {
 			continue
 		}
 		found = true

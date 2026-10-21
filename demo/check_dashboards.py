@@ -17,21 +17,26 @@ filter values a user ran a dashboard with and shows them to that user
 next time.
 
 Each card runs at its dashboard's defaults, once per time window with no
-source picked, and once per source over the full history. Thirteen more
-pickers are varied one at a time around their defaults: currency,
-investing grain, section, start year, as-of day, the reading of a
-missing cost basis, the asset class, the tax wrapper, the projection's
-rate path, maturing rule, shift and horizon, and the Income dashboard's
-projected window. The account, category, income type, vehicle and
-position pickers stay at their defaults.
+source picked, and once per source over the full history. The other
+pickers are varied one at a time around their defaults:
+
+- a picker with a fixed list of values, such as the currency, the
+  investing grain, the reading of a missing cost basis, the projection's
+  rate path, maturing rule and horizon, and the Income window, over each
+  value it offers but its default;
+- a currency picker without such a list over each currency it offers;
+- the section, start year, as-of day, asset class and tax wrapper over a
+  few values each, and the shift at -100 basis points.
+
+The account, category, income type, vehicle and position pickers stay at
+their defaults.
 
 A run fails when Metabase reports an error. A response cut off with no
 error and no result is asked once more first. A card that returns no rows
 at its dashboard's defaults fails too, but for the calendar of expected
-payments. Empty runs under any other picker
-value are listed, not failed: many card and source pairs are empty by
-nature (card balances for a source with no card). Exits 1 on any
-failure. Stdlib only.
+payments. Empty runs under any other picker value are listed, not
+failed: many card and source pairs are empty by nature (card balances for
+a source with no card). Exits 1 on any failure. Stdlib only.
 """
 
 import argparse
@@ -44,15 +49,17 @@ import sys
 import urllib.error
 import urllib.request
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+sys.path.insert(1, str(HERE.parent / "web"))
 
+import provision  # noqa: E402
 from demohouse import config, spec  # noqa: E402
 
-COLLECTION = "wealthdb (pre-defined)"
 WINDOWS = ["past7days~", "past30days~", "past3months~", "past12months~"]
 # Cards that may be empty at their defaults: on 31 December the
 # projection starts tomorrow, so this year expects no payment.
-EMPTY_AT_DEFAULTS_OK = {"Expected payments", "Expected payments (privacy)"}
+EMPTY_AT_DEFAULTS_OK = {"Expected payments", provision.privacy_name("Expected payments")}
 
 
 def call(base, path, method="GET", body=None, headers=None):
@@ -88,8 +95,9 @@ def mint_key(base, email, password):
 def combos(params, sources, currencies, first_year, today):
     """(label, parameter values) for one dashboard: the defaults, each
     window with no source, full history with each source, then each other
-    picker varied alone around the defaults. `currencies` is what the
-    dashboard's own Currency picker offers."""
+    picker varied alone around the defaults. A picker with a fixed list
+    runs over its values but its default; `currencies` is what a Currency
+    picker without one offers."""
     by_slug = {p["slug"]: p for p in params}
     base = {}
     for p in params:
@@ -101,7 +109,7 @@ def combos(params, sources, currencies, first_year, today):
     out = [("defaults", dict(base))]
     if time:
         for w in WINDOWS + [full]:
-            out.append((f"window {w}", {**base, time["id"]: w}))
+            out.append((f"time_range {w}", {**base, time["id"]: w}))
     if source:
         for s in sources:
             v = {**base, source["id"]: [s]}
@@ -110,24 +118,20 @@ def combos(params, sources, currencies, first_year, today):
             out.append((f"source {s}", v))
     variations = {
         "currency": [[c] for c in currencies],
-        "investing": [["whole"], ["class"]],
         "section": [["operating_in"], ["operating_out"], ["investing"], ["financing"], ["vehicles"]],
         "start_year": [[y] for y in range(first_year, today.year + 1)],
         "as_of_day": [f"{first_year + 1}-12-31", today.isoformat()],
-        "missing_basis": [["ignore"], ["zero"]],
         "asset_class": [["public_equity"]],
         "tax_wrapper": [["taxable_personal"]],
-        "rates": [["forward"]],
-        "maturing": [["idle"], ["roll"]],
         "shift": [[-100]],
-        "horizon": [["36"]],
-        "window": [["last year"], ["next months"]],
     }
-    for slug, values in variations.items():
-        p = by_slug.get(slug)
-        if p:
-            for v in values:
-                out.append((f"{slug} {v}", {**base, p["id"]: v}))
+    for p in params:
+        if p.get("values_source_type") == "static-list":
+            values = [[v] for v in p["values_source_config"]["values"] if [v] != p.get("default")]
+        else:
+            values = variations.get(p["slug"], [])
+        for v in values:
+            out.append((f"{p['slug']} {v}", {**base, p["id"]: v}))
     return out
 
 
@@ -179,7 +183,7 @@ def main(argv=None):
     today = dt.datetime.now(dt.timezone.utc).date()
     try:
         _, cols = call(a.base, "/api/collection", headers=auth)
-        coll = next(c for c in cols if c.get("name") == COLLECTION and not c.get("archived"))
+        coll = next(c for c in cols if c.get("name") == provision.COLLECTION_NAME and not c.get("archived"))
         _, items = call(a.base, f"/api/collection/{coll['id']}/items?models=dashboard", headers=auth)
         dashboards = sorted(items["data"], key=lambda d: d["name"])
         failures, empties, runs, freshness = [], set(), 0, None

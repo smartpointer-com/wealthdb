@@ -28,8 +28,31 @@ var forwardViews = []string{"projection", "calendar", "sources", "portfolios", "
 
 func isForwardView(view string) bool { return slices.Contains(forwardViews, view) }
 
-// projectionPeriods are the periods the forward views take.
-var projectionPeriods = []string{"monthly", "quarterly", "annual"}
+// incomeBasisTags are the bases an expected amount rests on and what
+// each means (docs/INCOME.md §12), in the order of yield.Bases: the CLI
+// usage and the MCP help both render them.
+var incomeBasisTags = []tagNote{
+	{string(yield.BasisDeclared), "a rate a ledger record states, a coupon by contract, a bill's discount"},
+	{string(yield.BasisIndicated), "the last payment at its frequency, or the filings' dividends"},
+	{string(yield.BasisStated), "a rate a source states, held"},
+	{string(yield.BasisForward), "a stated or declared floating rate, moved along its currency's forward curve"},
+	{string(yield.BasisReinvested), "what a principal earns after a maturity"},
+	{string(yield.BasisRealized), "last year's payments, where nothing else is known"},
+	{string(yield.BasisUnknown), "nothing; the amount is zero"},
+}
+
+// incomeRungTags are the ways a principal earns after a maturity, which
+// the forward views' quality column shares out (docs/INCOME.md §12), in
+// the order of yield.Rungs.
+var incomeRungTags = []tagNote{
+	{string(yield.RungCash), "the cash rule: the rate of the account's cash"},
+	{string(yield.RungRoll), "the roll rule: the forward rate of the holding's term plus its own spread"},
+	{string(yield.RungRollConstant), "a roll at the holding's own implied yield, held constant, where its currency " +
+		"has no curve"},
+	{string(yield.RungRollOwn), "a roll at its current yield, else its stated rate, held constant, where it implies " +
+		"none"},
+	{string(yield.RungRollCash), "a roll into cash, where the holding has no yield at all"},
+}
 
 // forwardGrains maps the entity views to their grain.
 var forwardGrains = map[string]yield.Grain{"sources": yield.GrainSources, "portfolios": yield.GrainPortfolios,
@@ -42,47 +65,56 @@ type forwardFlags struct {
 }
 
 // pathNames and ruleNames are the choices of --rates and --maturing.
-func pathNames() []string {
-	var out []string
-	for _, p := range yield.Paths {
-		out = append(out, string(p))
-	}
-	return out
-}
+func pathNames() []string { return stringsOf(yield.Paths) }
 
-func ruleNames() []string {
-	var out []string
-	for _, r := range yield.Rules {
-		out = append(out, string(r))
-	}
-	return out
-}
+func ruleNames() []string { return stringsOf(yield.Rules) }
 
 func registerForwardFlags(fs *flag.FlagSet) *forwardFlags {
 	return &forwardFlags{
-		rates: fs.String("rates", string(yield.PathConstant),
+		rates: fs.String("rates", string(yield.DefaultAssumptions.Path),
 			strings.Join(pathNames(), " | ")+" — how floating rates move (forward views)"),
-		maturing: fs.String("maturing", string(yield.RuleCash),
+		maturing: fs.String("maturing", string(yield.DefaultAssumptions.Rule),
 			strings.Join(ruleNames(), " | ")+" — what a maturing principal earns (forward views)"),
 		shift: fs.Int("shift", 0, "a parallel shift of the floating rates, in basis points (forward views)"),
 	}
 }
 
-// check refuses the forward flags on the views that read only what was
-// received, --level on the forward views, and a value outside each
-// flag's choices.
-func (f *forwardFlags) check(fs *flag.FlagSet, forward bool) error {
-	if !forward && isSet(fs, "rates", "maturing", "shift") {
-		return errs.Newf(errs.ExitUsage, "income: --rates, --maturing and --shift belong to the %s views",
-			strings.Join(forwardViews, ", "))
-	}
-	if forward && isSet(fs, "level") {
-		return errs.Newf(errs.ExitUsage, "income: --level belongs to the types view")
+// check refuses what checkForwardOptions refuses, and a value outside
+// each flag's choices.
+func (f *forwardFlags) check(fs *flag.FlagSet, view, period string) error {
+	if err := checkForwardOptions(view, period, func(name string) bool { return isSet(fs, name) },
+		func(name string) string { return "--" + name }); err != nil {
+		return err
 	}
 	if err := checkChoice("income", "rates", *f.rates, pathNames()...); err != nil {
 		return err
 	}
 	return checkChoice("income", "maturing", *f.maturing, ruleNames()...)
+}
+
+// checkForwardOptions refuses the options a view does not take, the CLI
+// and the MCP server alike: the assumptions off the forward views; on
+// them the type level, a period off projection, and a period that is
+// none of seriesPeriods. has says an option is given; flag spells an
+// option's name as the front-end does.
+func checkForwardOptions(view, period string, has func(string) bool, flag func(string) string) error {
+	if !isForwardView(view) {
+		if has("rates") || has("maturing") || has("shift") {
+			return errs.Newf(errs.ExitUsage, "income: %s, %s and %s belong to the %s views", flag("rates"),
+				flag("maturing"), flag("shift"), andList(forwardViews))
+		}
+		return nil
+	}
+	switch {
+	case has("level"):
+		return errs.Newf(errs.ExitUsage, "income: %s belongs to the types view", flag("level"))
+	case view != "projection" && has("period"):
+		return errs.Newf(errs.ExitUsage, "income: of the forward views, %s belongs to projection", flag("period"))
+	case !slices.Contains(seriesPeriods, period):
+		return errs.Newf(errs.ExitUsage, "income: the forward views take %s %s", flag("period"),
+			strings.Join(seriesPeriods, " | "))
+	}
+	return nil
 }
 
 func (f *forwardFlags) assumptions() yield.Assumptions {
@@ -153,7 +185,7 @@ func incomeForwardReport(req request) *report {
 	ccy := req.currency
 	switch req.view {
 	case "projection":
-		months := map[string]int{"monthly": 1, "quarterly": 3, "annual": 12}[req.period]
+		months := seriesPeriodMonths(req.period)
 		return newReport(buildProjectionColumns(ccy, req.period), defaultProjectionColumns,
 			func(ctx context.Context, db *sql.DB) ([]yield.ProjectionRow, error) {
 				fi, err := loadForwardIncome(ctx, db, req)
@@ -189,8 +221,22 @@ func incomeForwardReport(req request) *report {
 
 // ---- column registries ---------------------------------------------------
 
-func money[T any](name, outCcy string, get func(T) float64) columnSpec[T] {
-	return floatMoneyCol(name, outCcy, func(r T) *float64 { v := get(r); return &v })
+// calendarPos and incomePos read a field of a row's position, blank
+// where the row names none (an account's income, a holding no longer
+// held).
+func calendarPos(get func(*yield.Position) string) func(yield.CalendarRow) string {
+	return func(r yield.CalendarRow) string { return positionField(r.Position, get) }
+}
+
+func incomePos(get func(*yield.Position) string) func(yield.IncomeRow) string {
+	return func(r yield.IncomeRow) string { return positionField(r.Position, get) }
+}
+
+func positionField(p *yield.Position, get func(*yield.Position) string) string {
+	if p == nil {
+		return ""
+	}
+	return get(p)
 }
 
 func buildProjectionColumns(outCcy, period string) []columnSpec[yield.ProjectionRow] {
@@ -206,24 +252,24 @@ func buildProjectionColumns(outCcy, period string) []columnSpec[yield.Projection
 			at := r.Period.Unix()
 			return periodLabel(&at, period)
 		}},
-		money("received", outCcy, func(r row) float64 { return r.Received }),
-		money("expected", outCcy, func(r row) float64 { return r.Expected }),
-		money("total", outCcy, func(r row) float64 { return r.Received + r.Expected }),
+		floatValCol("received", outCcy, func(r row) float64 { return r.Received }),
+		floatValCol("expected", outCcy, func(r row) float64 { return r.Expected }),
+		floatValCol("total", outCcy, func(r row) float64 { return r.Received + r.Expected }),
 	}
 	for _, t := range yield.IncomeTypes {
-		cols = append(cols, money(string(t), outCcy, func(r row) float64 { v := r.ByType[t]; return v[0] + v[1] }))
+		cols = append(cols, floatValCol(string(t), outCcy, func(r row) float64 { v := r.ByType[t]; return v[0] + v[1] }))
 	}
 	for _, t := range yield.IncomeTypes {
 		cols = append(cols,
-			money(string(t)+"_received", outCcy, func(r row) float64 { return r.ByType[t][0] }),
-			money(string(t)+"_expected", outCcy, func(r row) float64 { return r.ByType[t][1] }))
+			floatValCol(string(t)+"_received", outCcy, func(r row) float64 { return r.ByType[t][0] }),
+			floatValCol(string(t)+"_expected", outCcy, func(r row) float64 { return r.ByType[t][1] }))
 	}
 	return append(cols,
 		floatMoneyCol("withheld", outCcy, func(r row) *float64 { return r.Withheld }),
-		money("principal", outCcy, func(r row) float64 { return r.Principal }),
-		columnSpec[row]{Name: "status", Align: output.AlignLeft, Extract: func(r row) string { return r.Status }},
-		columnSpec[row]{Name: "basis", Align: output.AlignLeft, Extract: func(r row) string { return r.Basis }},
-		columnSpec[row]{Name: "quality", Align: output.AlignLeft, Extract: func(r row) string { return r.Quality }},
+		floatValCol("principal", outCcy, func(r row) float64 { return r.Principal }),
+		strCol("status", func(r row) string { return r.Status }),
+		strCol("basis", func(r row) string { return r.Basis }),
+		qualityCol(func(r row) string { return r.Quality }),
 	)
 }
 
@@ -232,48 +278,37 @@ var defaultProjectionColumns = []string{"period", "received", "expected", "inter
 
 func buildCalendarColumns(outCcy string) []columnSpec[yield.CalendarRow] {
 	type row = yield.CalendarRow
-	text := func(name string, get func(row) string) columnSpec[row] {
-		return columnSpec[row]{Name: name, Align: output.AlignLeft, Extract: get}
-	}
-	pos := func(get func(*yield.Position) string) func(row) string {
-		return func(r row) string {
-			if r.Position == nil {
-				return ""
-			}
-			return get(r.Position)
-		}
-	}
 	return []columnSpec[row]{
-		text("date", func(r row) string {
+		strCol("date", func(r row) string {
 			if r.Day != nil {
 				return r.Day.Format(time.DateOnly)
 			}
 			return r.Month.Format("2006-01")
 		}),
-		text("silver_source", func(r row) string { return r.Holding.Source }),
+		strCol("silver_source", func(r row) string { return r.Holding.Source }),
 		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID, Extract: func(r row) string {
 			name := r.Account.Name
 			return accountLabel(&name, r.Holding.Account)
 		}},
 		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r row) string { return r.Holding.Account }},
-		text("position_key", func(r row) string { return r.Holding.PositionKey }),
-		text("symbol", pos(func(p *yield.Position) string { return p.Symbol })),
-		text("name", pos(func(p *yield.Position) string { return p.Name })),
-		text("type", func(r row) string { return string(r.Type) }),
-		text("kind", func(r row) string {
+		strCol("position_key", func(r row) string { return r.Holding.PositionKey }),
+		strCol("symbol", calendarPos(func(p *yield.Position) string { return p.Symbol })),
+		strCol("name", calendarPos(func(p *yield.Position) string { return p.Name })),
+		strCol("type", func(r row) string { return string(r.Type) }),
+		strCol("kind", func(r row) string {
 			if r.Principal {
 				return "principal"
 			}
 			return "income"
 		}),
-		text("currency", func(r row) string { return r.Currency }),
+		strCol("currency", func(r row) string { return r.Currency }),
 		{Name: "amount", Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r row) string { return fmt.Sprintf("%.2f", r.Own) }},
-		money("value", outCcy, func(r row) float64 { return r.Value }),
+		floatValCol("value", outCcy, func(r row) float64 { return r.Value }),
 		floatMoneyCol("withheld", outCcy, func(r row) *float64 { return r.Withheld }),
-		text("basis", func(r row) string { return string(r.Basis) }),
-		text("quality", func(r row) string { return r.Quality }),
+		strCol("basis", func(r row) string { return string(r.Basis) }),
+		qualityCol(func(r row) string { return r.Quality }),
 	}
 }
 
@@ -283,18 +318,7 @@ var defaultCalendarColumns = []string{"date", "silver_source", "account", "symbo
 func buildIncomeEntityColumns(outCcy string, grain yield.Grain, kindOf func(string) string) []columnSpec[yield.IncomeRow] {
 	type row = yield.IncomeRow
 	type col = columnSpec[row]
-	text := func(name string, get func(row) string) col {
-		return col{Name: name, Align: output.AlignLeft, Extract: get}
-	}
-	pos := func(get func(*yield.Position) string) func(row) string {
-		return func(r row) string {
-			if r.Position == nil {
-				return ""
-			}
-			return get(r.Position)
-		}
-	}
-	cols := []col{text("silver_source", func(r row) string { return r.Source })}
+	cols := []col{strCol("silver_source", func(r row) string { return r.Source })}
 	switch grain {
 	case yield.GrainPortfolios:
 		cols = append(cols,
@@ -320,25 +344,29 @@ func buildIncomeEntityColumns(outCcy string, grain yield.Grain, kindOf func(stri
 			}},
 			col{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 				Extract: func(r row) string { return r.AccountID }},
-			text("tax_wrapper", func(r row) string { return r.Account.TaxWrapper }))
+			strCol("tax_wrapper", func(r row) string { return r.Account.TaxWrapper }))
 	}
 	if grain == yield.GrainPositions {
 		cols = append(cols,
 			// position_key stays legible as `holdings positions` keeps it.
-			text("position_key", func(r row) string { return r.Holding.PositionKey }),
-			text("symbol", pos(func(p *yield.Position) string { return p.Symbol })),
-			text("name", pos(func(p *yield.Position) string { return p.Name })),
-			text("vehicle", pos(func(p *yield.Position) string { return p.Vehicle })),
-			text("currency", pos(func(p *yield.Position) string { return p.Currency })),
+			strCol("position_key", func(r row) string { return r.Holding.PositionKey }),
+			strCol("symbol", incomePos(func(p *yield.Position) string { return p.Symbol })),
+			strCol("name", incomePos(func(p *yield.Position) string { return p.Name })),
+			strCol("vehicle", incomePos(func(p *yield.Position) string { return p.Vehicle })),
+			strCol("currency", incomePos(func(p *yield.Position) string { return p.Currency })),
 			col{Name: "quantity", Align: output.AlignRight, Privacy: PrivacyQuantity,
-				Extract: pos(func(p *yield.Position) string {
+				Extract: incomePos(func(p *yield.Position) string {
 					if p.Quantity == nil {
 						return ""
 					}
 					return strconv.FormatFloat(*p.Quantity, 'f', -1, 64)
 				})},
-			col{Name: "price", Align: output.AlignRight, Privacy: PrivacyMoney,
-				Extract: pos(func(p *yield.Position) string { return fixed4(p.Price) })},
+			priceCol(func(r row) *float64 {
+				if r.Position == nil {
+					return nil
+				}
+				return r.Position.Price
+			}),
 			floatMoneyCol("value", outCcy, func(r row) *float64 {
 				if r.Position == nil {
 					return nil
@@ -348,14 +376,14 @@ func buildIncomeEntityColumns(outCcy string, grain yield.Grain, kindOf func(stri
 			}))
 	}
 	return append(cols,
-		money("received", outCcy, func(r row) float64 { return r.Received }),
-		money("expected", outCcy, func(r row) float64 { return r.Expected }),
-		money("total", outCcy, func(r row) float64 { return r.Total() }),
+		floatValCol("received", outCcy, func(r row) float64 { return r.Received }),
+		floatValCol("expected", outCcy, func(r row) float64 { return r.Expected }),
+		floatValCol("total", outCcy, func(r row) float64 { return r.Total() }),
 		floatMoneyCol("last_year", outCcy, func(r row) *float64 { return r.LastYear }),
-		money("next_12m", outCcy, func(r row) float64 { return r.Next12 }),
+		floatValCol("next_12m", outCcy, func(r row) float64 { return r.Next12 }),
 		floatMoneyCol("withheld", outCcy, func(r row) *float64 { return r.Withheld }),
-		text("basis", func(r row) string { return r.Basis }),
-		text("quality", func(r row) string { return r.Quality }),
+		strCol("basis", func(r row) string { return r.Basis }),
+		qualityCol(func(r row) string { return r.Quality }),
 	)
 }
 

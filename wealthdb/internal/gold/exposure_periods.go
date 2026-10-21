@@ -22,3 +22,10 @@ func PeriodEnds(from, to int64, months int) []int64 {
 	}
 	return out
 }
+
+// monthEndsTo is the last second of each of the n months before at's,
+// then at.
+func monthEndsTo(at int64, n int) []int64 {
+	d := time.Unix(at, 0).UTC()
+	return PeriodEnds(time.Date(d.Year(), d.Month()-time.Month(n), 1, 0, 0, 0, 0, time.UTC).Unix(), at, 1)
+}

@@ -199,6 +199,10 @@ func (c *apiReader) Transactions(ctx context.Context, w canonical.Window) (silve
 	if err != nil {
 		return nil, err
 	}
+	bonds, err := c.readHeldBonds(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	const q = `
 SELECT activity_id, timestamp, account_external_id, kind, payload
@@ -232,6 +236,14 @@ SELECT activity_id, timestamp, account_external_id, kind, payload
 			if key, ok := descToInstrument[normalizeSchwabDescription(*tx.Description)]; ok {
 				k := key
 				tx.InstrumentExternalID = &k
+			}
+		}
+		// A Treasury's coupon reaches the API as the account's interest,
+		// cash-only: the description names the bond by its coupon and
+		// maturity.
+		if tx.InstrumentExternalID == nil && tx.Kind == canonical.TxKindInterest && tx.Description != nil {
+			if key, ok := bondPaying(bonds[extID], *tx.Description); ok {
+				tx.InstrumentExternalID = &key
 			}
 		}
 		if kind == "RECEIVE_AND_DELIVER" {

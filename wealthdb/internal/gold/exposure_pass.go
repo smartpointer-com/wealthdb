@@ -26,10 +26,7 @@ func RebuildExposure(ctx context.Context, db *sql.DB) (ExposureCounts, error) {
 		return n, fmt.Errorf("exposure pass: begin: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck — no-op after Commit
-	steps := []struct {
-		name string
-		run  func() error
-	}{
+	if err := runSteps("exposure pass", []step{
 		{"vocabularies", func() error { return syncVocabularies(ctx, tx) }},
 		{"line labels", func() error { return execAll(ctx, tx, lineLabelsSQL) }},
 		{"instrument keys", func() error { return writeInstrumentKeys(ctx, tx) }},
@@ -39,11 +36,8 @@ func RebuildExposure(ctx context.Context, db *sql.DB) (ExposureCounts, error) {
 		{"bonds", func() error { return writeBondReadings(ctx, tx) }},
 		{"sizes", func() error { return writeSizes(ctx, tx) }},
 		{"situs", func() error { return writeSitus(ctx, tx) }},
-	}
-	for _, s := range steps {
-		if err := s.run(); err != nil {
-			return n, fmt.Errorf("exposure pass: %s: %w", s.name, err)
-		}
+	}); err != nil {
+		return n, err
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT
         (SELECT COUNT(*) FROM securities),

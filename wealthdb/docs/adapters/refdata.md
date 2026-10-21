@@ -90,8 +90,10 @@ an issuer's file states them:
 - `accrual_date`, the day interest accrues from.
 
 A `fund_risk` row states how much the fund's value moves for a move in
-rates at one tenor. An interest-rate row names the curve's currency. A
-credit-spread row has the currency `XXX`. A `characteristics` row is
+rates at one tenor, signed as filed. An interest-rate row names the
+curve's currency. A credit-spread row has the currency `XXX`. Filers
+follow no one sign convention: gold reads each filing in one sign
+(`fund_risk_signed`, YIELD.md §6). A `characteristics` row is
 one figure a provider states for the fund as a whole. Its `label` is
 empty, or names one part of a breakdown such as a credit quality. A
 `period_facts` row is a figure a company reported for one period.

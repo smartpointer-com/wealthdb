@@ -10,20 +10,9 @@ import (
 // yield on ACT/360: the discount from face as a yearly share of the
 // face. Each function counts the actual days from settle to maturity.
 
-// BillPrice is the price per 100 face of discount paper at a discount
-// yield in percent: 100 × (1 − d/100 × days/360). Paper on or after
-// maturity pays nothing more: its price is 0.
-func BillPrice(settle, maturity time.Time, discount float64) float64 {
-	n := days(settle, maturity)
-	if n <= 0 {
-		return 0
-	}
-	return 100 * (1 - discount/100*float64(n)/360)
-}
-
 // BillDiscount is the discount yield in percent of paper priced at price
-// per 100 face. It undoes BillPrice. It is NaN for a price that is not
-// positive and for a settlement on or after maturity.
+// per 100 face: (100 − price) × 360 / days. It is NaN for a price that
+// is not positive and for a settlement on or after maturity.
 func BillDiscount(settle, maturity time.Time, price float64) float64 {
 	n := days(settle, maturity)
 	if n <= 0 || !(price > 0) {
@@ -80,7 +69,7 @@ func BillRisk(settle, maturity time.Time, price float64) Risk {
 	if n <= 0 {
 		return Risk{}
 	}
-	r := onePayment(float64(n)/365, BillEffectiveAnnual(settle, maturity, price), 1)
-	r.DV01 = price * r.Modified * bp
+	r := OnePayment(float64(n)/365, BillEffectiveAnnual(settle, maturity, price), 1)
+	r.DV01 = price * r.Modified * BasisPoint
 	return r
 }

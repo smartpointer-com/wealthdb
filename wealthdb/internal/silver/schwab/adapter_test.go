@@ -588,3 +588,143 @@ func TestDescriptionResolverKeepsAmbiguityAcrossTables(t *testing.T) {
 		t.Errorf("instruments-only description = %q, want EXMPL0004", key)
 	}
 }
+
+// A Treasury's coupon the API books as the account's interest, with no
+// instrument, links to the one bond of the account its description names
+// by coupon and maturity: the bond's description, its maturityDate,
+// which wins over the description's date, and its variableRate. Cash
+// interest, a bond the account does not hold and a coupon two bonds
+// could pay stay unlinked. Keys, descriptions and terms are invented.
+func TestACouponLinksToItsBond(t *testing.T) {
+	_, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO positions(snapshot_at, account_external_id, instrument_key, payload) VALUES
+            (1000, 'ACC', '000000001', '{"instrument":{"assetType":"FIXED_INCOME","cusip":"000000001","description":"US TREASURY NOTE 9.875% 09/09/99"}}'),
+            (1000, 'ACC', '000000002', '{"instrument":{"assetType":"FIXED_INCOME","cusip":"000000002","description":"US TREASURY BOND 08/01/98","maturityDate":"2098-08-08T05:00:00.000+00:00","variableRate":9.75}}'),
+            (1000, 'ACC', '000000003', '{"instrument":{"assetType":"FIXED_INCOME","cusip":"000000003","description":"US TREASURY NOTE 1.125% 07/07/97"}}'),
+            (1000, 'ACC', '000000004', '{"instrument":{"assetType":"FIXED_INCOME","cusip":"000000004","description":"US TREASURY NOTE 1.125% 07/07/97"}}'),
+            (1000, 'OTH', '000000005', '{"instrument":{"assetType":"FIXED_INCOME","cusip":"000000005","description":"US TREASURY NOTE 1.375% 03/03/97"}}');
+        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, payload) VALUES
+            ('C1', 2000, 'ACC', 'DIVIDEND_OR_INTEREST', '{"netAmount":98.75,"description":"US TREASU NT 9.875%09/99UST NOTE DUE 09/09/99"}'),
+            ('C2', 2000, 'ACC', 'DIVIDEND_OR_INTEREST', '{"netAmount":97.50,"description":"US TREASURY 9.75%08/98UST BOND DUE 08/08/98"}'),
+            ('C3', 2000, 'ACC', 'DIVIDEND_OR_INTEREST', '{"netAmount":11.25,"description":"US TREASU NT 1.125%07/97UST NOTE DUE 07/07/97"}'),
+            ('C4', 2000, 'ACC', 'DIVIDEND_OR_INTEREST', '{"netAmount":13.75,"description":"US TREASU NT 1.375%03/97UST NOTE DUE 03/03/97"}'),
+            ('C5', 2000, 'ACC', 'DIVIDEND_OR_INTEREST', '{"netAmount":3.10,"description":"SCHWAB1 INT 01/01-02/01"}'),
+            ('C6', 2000, 'ACC', 'DIVIDEND_OR_INTEREST', '{"netAmount":2.40,"description":"BANK INT 010100-020100 SCHWAB BANK"}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := (&apiReader{db: seed}).Transactions(context.Background(),
+		canonical.Window{HasChanges: true, Start: 0, End: 9999})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	batch, _, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, tx := range batch.Transactions {
+		if tx.Kind != canonical.TxKindInterest {
+			t.Errorf("%s: kind %s", tx.TransactionExternalID, tx.Kind)
+		}
+		got[tx.TransactionExternalID] = ""
+		if tx.InstrumentExternalID != nil {
+			got[tx.TransactionExternalID] = *tx.InstrumentExternalID
+		}
+	}
+	want := map[string]string{"C1": "000000001", "C2": "000000002", "C3": "", "C4": "", "C5": "", "C6": ""}
+	for id, key := range want {
+		if got[id] != key {
+			t.Errorf("%s links %q, want %q", id, got[id], key)
+		}
+	}
+}
+
+// A bond's instrument states the maturity and the coupon the API gives
+// it under the payload keys the yield pass reads terms by; a bond the API
+// gives neither, and any other instrument, state none. The terms are
+// invented.
+func TestABondsInstrumentStatesItsTerms(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, payload) VALUES (1000, 'ACC', '{"hashValue":"ACC"}');
+        INSERT INTO positions(snapshot_at, account_external_id, instrument_key, payload) VALUES
+            (1000, 'ACC', '000000002', '{"longQuantity":1000,"shortQuantity":0,"marketValue":990.00,
+               "instrument":{"assetType":"FIXED_INCOME","cusip":"000000002","description":"US TREASURY BOND",
+               "maturityDate":"2098-08-08T05:00:00.000+00:00","variableRate":9.75}}'),
+            (1000, 'ACC', '000000003', '{"longQuantity":1000,"shortQuantity":0,"marketValue":990.00,
+               "instrument":{"assetType":"FIXED_INCOME","cusip":"000000003","description":"US TREASURY NOTE 1.125% 07/07/97"}}'),
+            (1000, 'ACC', '000000009', '{"longQuantity":10,"shortQuantity":0,"marketValue":100.00,
+               "instrument":{"assetType":"EQUITY","cusip":"000000009","symbol":"EXMP","description":"EXAMPLE CO"}}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, err := conn.ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	batch, _, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, i := range batch.Instruments {
+		got[i.InstrumentExternalID] = string(i.Payload)
+	}
+	want := map[string]string{"000000002": `{"interest_rate":"9.75","maturity_date":"2098-08-08"}`, "000000003": "",
+		"000000009": ""}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s payload %s, want %s", k, got[k], v)
+		}
+	}
+}
+
+// A bond the instruments table describes reaches gold as an instrument
+// with its name and its terms, though no position holds it: a statement
+// names it by the same CUSIP and leaves both empty. Another instrument
+// the table describes adds nothing. The rows are invented.
+func TestABondNoPositionHoldsStatesItsTerms(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
+        INSERT INTO instruments(snapshot_at, symbol, payload) VALUES
+            (1000, '000000007', '{"symbol":"000000007","cusip":"000000007","assetType":"FIXED_INCOME",
+               "description":"US Treasury 9.75% 08/08/2098","maturityDate":"2098-08-08T05:00:00.000+00:00","variableRate":9.75}'),
+            (1000, 'EXMP', '{"symbol":"EXMP","cusip":"000000009","assetType":"EQUITY","description":"EXAMPLE CO"}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, err := conn.ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	batch, _, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Instruments) != 1 {
+		t.Fatalf("instruments %+v", batch.Instruments)
+	}
+	i := batch.Instruments[0]
+	if i.InstrumentExternalID != "000000007" || i.Vehicle != canonical.VehicleBond || i.Name == nil ||
+		*i.Name != "US Treasury 9.75% 08/08/2098" ||
+		string(i.Payload) != `{"interest_rate":"9.75","maturity_date":"2098-08-08"}` {
+		t.Errorf("the bond %+v %s", i, i.Payload)
+	}
+}

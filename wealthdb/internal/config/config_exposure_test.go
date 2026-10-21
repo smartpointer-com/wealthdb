@@ -304,6 +304,7 @@ func TestDeclarationRejects(t *testing.T) {
 		rec(`"situs":"KY"`):                                                        "situs: want a JSON object",
 		`{"silver_source_id":"nope","instrument":"x","country":{"CH":100}}` + "\n": `silver_source_id "nope"`,
 		`{"silver_source_id":"manual","country":{"CH":100}}` + "\n":                "silver_source_id and instrument are required",
+		`{"instrument":"x","country":{"CH":100}}` + "\n":                           "silver_source_id is required",
 		rec(`"country":{"CH":100}`) + rec(`"currency":{"CHF":100}`):                "line 2: manual x is declared without a date on line 1 already",
 		rec(`"as_of":"2024-06-30","country":{"CH":100}`) + rec(`"as_of":"2024-06-30","country":{"DE":100}`): "line 2: manual x is declared as of 2024-06-30 on line 1",
 	} {

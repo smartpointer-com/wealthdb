@@ -11,7 +11,7 @@ signatures, cheque numbers, fund references and fund lines, security
 keys and names, rate series ids, the funds that state figures or rate
 risk of their own, the keys of companies' reported figures, the notes
 of the declarations ledger's records, (date, amount) pairs of
-transactions, and (coupon, maturity) pairs of bonds' terms. A table one
+transactions, and (maturity, coupon) pairs of bonds' terms. A table one
 gold lacks is reported and skipped.
 Text compares case- and space-insensitively. Prints each field's count
 and its shared values, and nothing else; --show N prints at most N
@@ -109,7 +109,7 @@ PAIRS = [
     ("(date, amount)", "transactions", ("occurred_at", "net_amount"), pair_query(
         "transactions", "CAST(to_timestamp(occurred_at) AS DATE)", "CAST(net_amount AS DECIMAL(28,2))",
         "net_amount IS NOT NULL AND net_amount <> 0")),
-    ("(coupon, maturity)", "instrument_terms", ("maturity", "coupon_pct"), pair_query(
+    ("(maturity, coupon)", "instrument_terms", ("maturity", "coupon_pct"), pair_query(
         "instrument_terms", "maturity", "CAST(coupon_pct AS DECIMAL(9,3))", "coupon_pct IS NOT NULL AND maturity IS NOT NULL")),
 ]
 
@@ -166,7 +166,7 @@ def main(argv=None):
         print(f"{label:20} {len(pairs):6} shared")
         show(pairs, a.show, lambda r: f"{r['d']}  {r['a']}")
         counts.append(f"{len(pairs)} shared {label} pairs")
-    print(f"\n{shared_total} shared identifying values, " + ", ".join(counts))
+    print("\n" + ", ".join([f"{shared_total} shared identifying values", *counts]))
     return 0
 
 

@@ -1,6 +1,8 @@
 package yield
 
 import (
+	"cmp"
+	"maps"
 	"math"
 	"slices"
 	"time"
@@ -23,6 +25,7 @@ const (
 	KindNote        Kind = "note"
 	KindBondFund    Kind = "bond_fund"
 	KindEquityFund  Kind = "equity_fund"
+	KindMultiAsset  Kind = "multi_asset"
 	KindStock       Kind = "stock"
 	KindLiability   Kind = "liability"
 	KindOther       Kind = "other"
@@ -41,13 +44,16 @@ const (
 	TagStalePrice Tag = "stale_price"
 	TagFloating   Tag = "floating"
 	TagDefault    Tag = "default"
+	TagThin       Tag = "thin"
+	TagPartial    Tag = "partial"
+	TagUnits      Tag = "units"
 	TagUnknown    Tag = "unknown"
 	TagMixed      Tag = "mixed"
 )
 
 // Tags are the tags in the order a quality column lists them.
 var Tags = []Tag{TagImplied, TagStated, TagIndicated, TagRealized, TagDeclared, TagAged, TagStalePrice, TagFloating,
-	TagDefault, TagUnknown}
+	TagDefault, TagThin, TagPartial, TagUnits, TagUnknown}
 
 // Measures are one holding's figures. A nil figure is one the holding
 // does not have, or no source states.
@@ -57,14 +63,16 @@ type Measures struct {
 	// CurrentYield the stated rate over the price.
 	Stated, CurrentYield *float64
 	// Implied is the yield the price implies, to worst where a call is
-	// known, in the market's convention (compounded Frequency times a
-	// year); ImpliedAnnual the same as an effective annual rate.
+	// known: a bond's compounded at its coupon frequency (its terms',
+	// else its market's), a fund's at its market's, a bill's its
+	// discount yield; ImpliedAnnual the same as an effective annual rate.
 	Implied, ImpliedAnnual *float64
-	Frequency              int
-	// Realized is the twelve months' income received over the average
-	// value.
+	// Realized is the twelve months' income received over the mean daily
+	// value: a holding of an instrument the instrument's, over its mean
+	// amount on the days any account held it (realized).
 	Realized *float64
-	// EarningsYield and DividendYield are a stock's or an equity fund's.
+	// EarningsYield and DividendYield are a stock's or an equity fund's;
+	// a multi-asset fund has a DividendYield too.
 	EarningsYield, DividendYield *float64
 	// Benchmark is the currency's benchmark rate; Gap the stated or
 	// implied yield less it.
@@ -103,6 +111,13 @@ type Measures struct {
 	bondEquivalent *float64
 	// rateDeclared says the rate the holding earns is a ledger record's.
 	rateDeclared bool
+	// statedDividend says the dividend yield is the one a fund's page
+	// states, which the projection pays.
+	statedDividend bool
+	// received is the income of the twelve months to the instant, in the
+	// output currency; daily the holding's amount on each of their days.
+	received float64
+	daily    Daily
 }
 
 func ptr(v float64) *float64 { return &v }
@@ -134,19 +149,54 @@ func classify(in *Inputs, h Holding) Kind {
 		}
 		return KindBond
 	case h.Vehicle == "etf" || h.Vehicle == "fund":
-		f := in.Funds[h.SecurityID]
-		switch {
-		case h.AssetClass == "cash" || (f != nil && f.SevenDayYield != nil):
-			return KindMoneyMarket
-		case h.AssetClass == "fixed_income" || h.AssetClass == "multi_asset":
-			return KindBondFund
-		case h.AssetClass == "public_equity" || h.AssetClass == "real_estate":
-			return KindEquityFund
-		}
+		return fundKind(h, in.Funds[h.SecurityID])
 	case h.Vehicle == "stock" && h.AssetClass == "public_equity":
 		return KindStock
 	}
 	return KindOther
+}
+
+// fundKind says what a fund is. A money-market fund is one of class cash
+// or with a seven-day yield, and a multi-asset fund one of that class.
+// Any other reads what it looks through to, whatever class a source gives
+// the wrapper (keepsClass aside): a bond fund where it files its rate
+// sensitivity or its lines are mostly debt, an equity fund where they are
+// mostly equity. Else it reads its class.
+func fundKind(h Holding, f *Fund) Kind {
+	var lines *LineSummary
+	if f != nil {
+		lines = f.Lines
+	}
+	switch {
+	case h.AssetClass == "cash" || (f != nil && f.SevenDayYield != nil):
+		return KindMoneyMarket
+	case h.AssetClass == "multi_asset":
+		return KindMultiAsset
+	case keepsClass(h.AssetClass, lines):
+	case f != nil && len(f.Risk) > 0, lines != nil && lines.DebtPct > 50:
+		return KindBondFund
+	case lines != nil && lines.EquityPct > 50:
+		return KindEquityFund
+	}
+	switch h.AssetClass {
+	case "fixed_income":
+		return KindBondFund
+	case "public_equity", "real_estate":
+		return KindEquityFund
+	}
+	return KindOther
+}
+
+// keepsClass says a fund keeps its class whatever its lines hold: a fund
+// of class metal, crypto or other (where a commodity fund is), and one
+// whose debt all matures within a year beside derivative lines, the
+// bills a futures or swap fund holds as collateral.
+func keepsClass(class string, l *LineSummary) bool {
+	switch class {
+	case "metal", "crypto", "other":
+		return true
+	}
+	return l != nil && l.Derivatives && l.DebtPct > 0 && l.DebtPct-l.ShortDebtPct < 1e-9
 }
 
 // tiersOf are the tiers of a cash line's rate on day: its account's
@@ -202,17 +252,19 @@ func earned(tiers []Rate, balance float64) float64 {
 }
 
 // frequencyOf is a bond's coupon payments a year: its terms', else its
-// currency's convention, else two for a dollar bond and one for any
-// other.
+// currency's convention (ConventionFrequency).
 func frequencyOf(in *Inputs, h Holding, t Terms) int {
 	if t.Frequency != nil && *t.Frequency > 0 {
 		return *t.Frequency
 	}
-	if c, ok := in.Conventions[h.Currency]; ok && c.Frequency > 0 {
+	return in.ConventionFrequency(h.Currency)
+}
+
+// ConventionFrequency is the coupon payments a year of a bond in ccy by
+// its currency's convention, else one.
+func (in *Inputs) ConventionFrequency(ccy string) int {
+	if c, ok := in.Conventions[ccy]; ok && c.Frequency > 0 {
 		return c.Frequency
-	}
-	if h.Currency == "USD" {
-		return 2
 	}
 	return 1
 }
@@ -239,6 +291,8 @@ func measure(in *Inputs, h Holding) Measures {
 		measureBond(in, h, terms, &m)
 	case KindMoneyMarket, KindBondFund:
 		measureFund(in, h, terms, &m)
+	case KindMultiAsset:
+		measureMultiAsset(in, h, terms, &m)
 	case KindEquityFund:
 		measureEquityFund(in, h, &m)
 	case KindStock:
@@ -247,18 +301,17 @@ func measure(in *Inputs, h Holding) Measures {
 		measureLiability(in, h, terms, &m)
 	case KindOther:
 		// What it pays repeats last year's; paid nothing, it is unknown.
-		if !paidWithinYear(in, h) {
+		if !in.paidWithinYear(in.Payments[h.HoldingKey]) {
 			m.Tags[TagUnknown] = true
 		}
 	}
 	if c := in.Curves[h.Currency]; c != nil {
 		m.Benchmark = ptr(c.Benchmark)
-		if y := firstOf(m.bondEquivalent, m.Implied, m.Stated); y != nil && m.Kind != KindStock &&
-			m.Kind != KindEquityFund {
+		if y := gapYield(&m); y != nil {
 			m.Gap = ptr(*y - c.Benchmark)
 		}
 	}
-	m.Realized = realized(in, h)
+	realized(in, h, &m)
 	if m.DV01 != nil && m.Buckets == nil {
 		years := 0.0
 		if m.Maturity != nil {
@@ -272,13 +325,35 @@ func measure(in *Inputs, h Holding) Measures {
 	return m
 }
 
-func firstOf(vs ...*float64) *float64 {
+// gapYield is the yield a holding's gap compares with its benchmark: a
+// bill's bond-equivalent yield, else the implied yield, else the stated
+// rate. A stock and an equity fund have none: their yields are no rate. A
+// multi-asset fund's stated rate is a dividend yield, so only its implied
+// yield compares.
+func gapYield(m *Measures) *float64 {
+	switch m.Kind {
+	case KindStock, KindEquityFund:
+		return nil
+	case KindMultiAsset:
+		return m.Implied
+	}
+	return first(m.bondEquivalent, m.Implied, m.Stated)
+}
+
+// first is the first of vs that is not nil, nil where none is.
+func first[T any](vs ...*T) *T {
 	for _, v := range vs {
 		if v != nil {
 			return v
 		}
 	}
 	return nil
+}
+
+// dv01 is what a rise of one basis point takes from a value of a
+// modified duration.
+func dv01(value, modified float64) *float64 {
+	return ptr(value * modified * fixedincome.BasisPoint)
 }
 
 // measureDeposit: a deposit yields its stated rate and lasts no time; a
@@ -294,9 +369,10 @@ func measureDeposit(in *Inputs, h Holding, m *Measures) {
 	m.Tags[readingTag(r.Declared)] = true
 	m.rateDeclared = r.Declared
 	if m.Kind == KindTermDeposit {
+		// One payment at the term's end, at simple interest.
 		t := yearsBetween(in.Day, *r.TermEnd)
-		mod := t / (1 + r.Pct/100*t)
-		m.Duration, m.Maturity, m.DV01 = ptr(mod), ptr(t), ptr(h.Value*mod*1e-4)
+		mod := fixedincome.OnePayment(t, r.Pct, 0).Modified
+		m.Duration, m.Maturity, m.DV01 = ptr(mod), ptr(t), dv01(h.Value, mod)
 		m.MaturityDate = r.TermEnd
 	}
 }
@@ -359,7 +435,6 @@ func measureBond(in *Inputs, h Holding, t Terms, m *Measures) {
 		return
 	}
 	f := frequencyOf(in, h, t)
-	m.Frequency = f
 	switch m.Kind {
 	case KindBill:
 		m.Implied = ptr(fixedincome.BillDiscount(in.Day, *t.Maturity, clean))
@@ -367,7 +442,6 @@ func measureBond(in *Inputs, h Holding, t Terms, m *Measures) {
 		m.bondEquivalent = ptr(fixedincome.BillBondEquivalent(in.Day, *t.Maturity, clean))
 		r := fixedincome.BillRisk(in.Day, *t.Maturity, clean)
 		setRisk(m, h, r)
-		m.Frequency = 0
 		m.Tags[TagImplied] = true
 		return
 	case KindFloating:
@@ -435,7 +509,7 @@ func setRisk(m *Measures, h Holding, r fixedincome.Risk) {
 		return
 	}
 	m.Duration, m.Convexity = ptr(r.Modified), ptr(r.Convexity)
-	m.DV01 = ptr(h.Value * r.Modified * 1e-4)
+	m.DV01 = dv01(h.Value, r.Modified)
 }
 
 // scaleBuckets scales a bond's buckets per 100 face by k: the holding's
@@ -448,37 +522,19 @@ func scaleBuckets(b map[string]float64, k float64) map[string]float64 {
 	return out
 }
 
-// measureFund: a fund yields what its lines imply, else what its page or
-// filing states; its duration likewise. A money-market fund yields its
-// seven-day yield and lasts its weighted average maturity. A ledger
-// record's factsheet figures win over all of them.
+// measureFund: a fund yields a ledger record's figure, else what its
+// lines imply, else what its page or filing states; it moves with rates
+// as fundRisk says. A money-market fund yields its seven-day yield and
+// lasts its weighted average maturity.
 func measureFund(in *Inputs, h Holding, t Terms, m *Measures) {
-	f := &Fund{}
-	if known := in.Funds[h.SecurityID]; known != nil {
-		f = known
-	}
-	var day time.Time
-	if t.TermsAsOf != nil {
-		day = *t.TermsAsOf
-	}
-	read := func(d Dated, declared bool, from string) *float64 {
-		m.Tags[readingTag(declared)] = true
-		if !d.Day.IsZero() {
-			m.FiguresAsOf = &d.Day
-		}
-		m.FiguresFrom = from
-		return ptr(d.Value)
-	}
-	if t.Duration != nil {
-		m.Tags[TagDeclared] = true
-	}
+	f := fundOf(in, h)
 	if m.Kind == KindMoneyMarket {
 		switch {
 		case t.Yield != nil:
-			m.Implied = read(Dated{*t.Yield, day}, true, "ledger")
+			m.Implied = figure(m, Dated{*t.Yield, termsDay(t)}, true, "ledger")
 			m.rateDeclared = true
 		case f.SevenDayYield != nil:
-			m.Implied = read(*f.SevenDayYield, false, "filing")
+			m.Implied = figure(m, *f.SevenDayYield, false, "filing")
 		default:
 			m.Tags[TagUnknown] = true
 		}
@@ -488,13 +544,14 @@ func measureFund(in *Inputs, h Holding, t Terms, m *Measures) {
 		}
 		if t.Duration != nil {
 			m.Duration = t.Duration
+			m.Tags[TagDeclared] = true
 		}
 		if m.Duration != nil {
-			m.DV01 = ptr(h.Value * *m.Duration * 1e-4)
+			m.DV01 = dv01(h.Value, *m.Duration)
 		}
 		return
 	}
-	if d := firstDated(f.DistributionYield, f.SECYield); d != nil {
+	if d := first(f.DistributionYield, f.SECYield); d != nil {
 		m.Stated, m.CurrentYield = ptr(d.Value), ptr(d.Value)
 	}
 	if d := f.TrailingYield; d != nil {
@@ -502,7 +559,7 @@ func measureFund(in *Inputs, h Holding, t Terms, m *Measures) {
 	}
 	switch l := f.Lines; {
 	case t.Yield != nil:
-		m.Implied = read(Dated{*t.Yield, day}, true, "ledger")
+		m.Implied = figure(m, Dated{*t.Yield, termsDay(t)}, true, "ledger")
 		m.rateDeclared = true
 	case l != nil && l.Yield != nil && l.CoveredPct >= 50:
 		m.Implied = l.Yield
@@ -513,10 +570,75 @@ func measureFund(in *Inputs, h Holding, t Terms, m *Measures) {
 		day := l.AsOf
 		m.FiguresAsOf, m.FiguresFrom = &day, "lines"
 	case f.YieldToMaturity != nil || f.YieldToWorst != nil:
-		m.Implied = read(*firstDated(f.YieldToWorst, f.YieldToMaturity), false, "page")
+		m.Implied = figure(m, *first(f.YieldToWorst, f.YieldToMaturity), false, "page")
 	default:
 		m.Tags[TagUnknown] = true
 	}
+	if m.Implied != nil {
+		m.ImpliedAnnual = ptr(fixedincome.EffectiveAnnual(*m.Implied, frequencyOf(in, h, Terms{})))
+	}
+	fundRisk(h, f, t, m)
+}
+
+// measureMultiAsset: a multi-asset fund moves with rates as a bond fund
+// does (fundRisk), and earns what an equity fund does (equityIncome). Its
+// implied yield is a ledger record's, else the yield its page or filing
+// states. Its lines imply none: their yield is its debt's alone.
+func measureMultiAsset(in *Inputs, h Holding, t Terms, m *Measures) {
+	f := fundOf(in, h)
+	switch {
+	case t.Yield != nil:
+		m.Implied = figure(m, Dated{*t.Yield, termsDay(t)}, true, "ledger")
+	case f.YieldToMaturity != nil || f.YieldToWorst != nil:
+		m.Implied = figure(m, *first(f.YieldToWorst, f.YieldToMaturity), false, "page")
+	}
+	if m.Implied != nil {
+		m.ImpliedAnnual = ptr(fixedincome.EffectiveAnnual(*m.Implied, frequencyOf(in, h, Terms{})))
+	}
+	fundRisk(h, f, t, m)
+	equityIncome(in, h, f, m)
+}
+
+// fundOf is what is known of a holding's fund: nothing where no source
+// states anything.
+func fundOf(in *Inputs, h Holding) *Fund {
+	if f := in.Funds[h.SecurityID]; f != nil {
+		return f
+	}
+	return &Fund{}
+}
+
+// termsDay is the day a ledger terms record's fund figures describe, zero
+// where it states none.
+func termsDay(t Terms) time.Time {
+	if t.TermsAsOf == nil {
+		return time.Time{}
+	}
+	return *t.TermsAsOf
+}
+
+// figure reads a fund's figure: it tags the reading, and names the day
+// and the source the fund's figures come from.
+func figure(m *Measures, d Dated, declared bool, from string) *float64 {
+	m.Tags[readingTag(declared)] = true
+	if !d.Day.IsZero() {
+		m.FiguresAsOf = &d.Day
+	}
+	m.FiguresFrom = from
+	return ptr(d.Value)
+}
+
+// fundRisk gives a bond or multi-asset fund its duration, maturity and
+// DV01. The duration is a ledger record's, else its page's or filing's,
+// else its lines'. A multi-asset fund's lines count over the whole fund,
+// a line without one as zero, and its DV01 sits at its debt's own
+// duration on the curve. The filed DV01 per currency and tenor, scaled
+// to the holding, wins where no record states a duration. It reads as a
+// long fund's, losing value as rates rise, unless the page states a
+// negative duration: an inverse or rate-hedged fund's filing reads in
+// that sign. The lines tag a fund floating where they float for half of
+// it or more, and in default where any line is.
+func fundRisk(h Holding, f *Fund, t Terms, m *Measures) {
 	if l := f.Lines; l != nil {
 		if l.FloatingPct >= 50 {
 			m.Tags[TagFloating] = true
@@ -525,17 +647,17 @@ func measureFund(in *Inputs, h Holding, t Terms, m *Measures) {
 			m.Tags[TagDefault] = true
 		}
 	}
-	if m.Implied != nil {
-		m.Frequency = frequencyOf(in, h, Terms{})
-		m.ImpliedAnnual = ptr(fixedincome.EffectiveAnnual(*m.Implied, m.Frequency))
-	}
 	switch {
 	case t.Duration != nil:
 		m.Duration = t.Duration
+		m.Tags[TagDeclared] = true
 	case f.Duration != nil:
 		m.Duration = ptr(f.Duration.Value)
 	case f.Lines != nil && f.Lines.Duration != nil:
 		m.Duration = f.Lines.Duration
+		if m.Kind == KindMultiAsset {
+			m.Duration = ptr(*f.Lines.Duration * f.Lines.DurationPct / 100)
+		}
 	}
 	switch {
 	case f.MaturityYears != nil:
@@ -544,27 +666,25 @@ func measureFund(in *Inputs, h Holding, t Terms, m *Measures) {
 		m.Maturity = f.Lines.MaturityYears
 	}
 	if m.Duration != nil {
-		m.DV01 = ptr(h.Value * *m.Duration * 1e-4)
+		m.DV01 = dv01(h.Value, *m.Duration)
+		if m.Kind == KindMultiAsset && t.Duration == nil && f.Duration == nil {
+			m.Buckets = map[string]map[string]float64{h.Currency: fixedincome.BucketAt(*f.Lines.Duration, *m.DV01)}
+		}
 	}
 	if b := fundBuckets(f, h); b != nil && t.Duration == nil {
-		m.Buckets = b
+		short := f.Duration != nil && f.Duration.Value < 0
 		total := 0.0
-		for _, t := range b {
-			for _, v := range t {
+		for _, tenors := range b {
+			for tenor, v := range tenors {
+				if short {
+					v = -v
+					tenors[tenor] = v
+				}
 				total += v
 			}
 		}
-		m.DV01 = ptr(total)
+		m.Buckets, m.DV01 = b, ptr(total)
 	}
-}
-
-func firstDated(ds ...*Dated) *Dated {
-	for _, d := range ds {
-		if d != nil {
-			return d
-		}
-	}
-	return nil
 }
 
 // fundBuckets is a fund's filed DV01 per currency and tenor, scaled to
@@ -590,20 +710,25 @@ func fundBuckets(f *Fund, h Holding) map[string]map[string]float64 {
 }
 
 // measureEquityFund: an equity fund's earnings yield is the inverse of
-// the P/E ratio its page states; its dividend yield its own
-// distributions' (dividendReading), else the trailing yield its page
-// states.
+// the P/E ratio its page states; its dividend yield is equityIncome's.
 func measureEquityFund(in *Inputs, h Holding, m *Measures) {
 	f := in.Funds[h.SecurityID]
 	if f != nil && f.PriceEarnings != nil && f.PriceEarnings.Value > 0 {
 		m.EarningsYield = ptr(100 / f.PriceEarnings.Value)
 	}
+	equityIncome(in, h, f, m)
+}
+
+// equityIncome gives a fund its dividend yield: its own distributions'
+// (dividendReading), else the trailing yield, else the distribution
+// yield, its page states; else it paid nothing (paidNothing).
+func equityIncome(in *Inputs, h Holding, f *Fund, m *Measures) {
 	if dividendReading(in, h, m) {
 		return
 	}
 	if f != nil {
-		if d := firstDated(f.TrailingYield, f.DistributionYield); d != nil {
-			m.DividendYield, m.Stated = ptr(d.Value), ptr(d.Value)
+		if d := first(f.TrailingYield, f.DistributionYield); d != nil {
+			m.DividendYield, m.Stated, m.statedDividend = ptr(d.Value), ptr(d.Value), true
 			m.Tags[TagStated] = true
 			return
 		}
@@ -621,15 +746,20 @@ func dividendReading(in *Inputs, h Holding, m *Measures) bool {
 	m.DividendYield = ptr(d.annual / *m.Price * 100)
 	m.Stated = m.DividendYield
 	m.Tags[d.tag] = true
+	if d.units {
+		m.Tags[TagUnits] = true
+	}
 	return true
 }
 
-// paidNothing reads a holding no dividend is known for: one held a year
-// or more paid nothing in the 24 months the transactions cover, and
-// yields zero on that record (realized); one bought within the year is
-// unknown.
+// paidNothing reads a holding no dividend is known for. One bought
+// within the year is unknown, and so is one whose instrument was paid
+// within it, whose payment indicates nothing (no rate converts it, no
+// quantity is known for it, or no price compares with it). Any other
+// paid nothing the dividends tell, and yields zero on that record
+// (realized).
 func paidNothing(in *Inputs, h Holding, m *Measures) {
-	if h.Acquired != nil && in.Day.Sub(*h.Acquired) < 365*24*time.Hour {
+	if (h.Acquired != nil && in.withinYear(*h.Acquired)) || in.paidWithinYear(in.instrumentPayments(h)) {
 		m.Tags[TagUnknown] = true
 		return
 	}
@@ -698,20 +828,147 @@ func measureLiability(in *Inputs, h Holding, t Terms, m *Measures) {
 	if t.Coupon != nil {
 		rate = *t.Coupon
 	}
-	mod := fixed / (1 + rate/100)
-	m.Duration, m.DV01 = ptr(mod), ptr(h.Value*mod*1e-4)
+	// One payment at the fixed period's end, compounded yearly.
+	mod := fixedincome.OnePayment(fixed, rate, 1).Modified
+	m.Duration, m.DV01 = ptr(mod), dv01(h.Value, mod)
 }
 
-// realized is the twelve months' income received over the average
-// value, both in the output currency; nil where neither is known.
-func realized(in *Inputs, h Holding) *float64 {
-	received := in.Income[h.HoldingKey].Total()
+// realized gives a holding the twelve months' income it received and its
+// daily amounts, which a row's realized yield pools (summarize), and its
+// own realized yield. A holding of an instrument yields its instrument's
+// (instrumentPool), over its mean amount on the days any account held it,
+// and carries partial where that is not every day; a cash balance its own
+// income over its mean daily value. A thin holding has none, and carries
+// thin.
+func realized(in *Inputs, h Holding, m *Measures) {
+	m.received = in.Income[h.HoldingKey].Total()
 	if h.IsCash {
-		received += in.AccountIncome[AccountCurrency{AccountKey{h.Source, h.Account}, h.Currency}][TypeInterest]
+		m.received += in.AccountIncome[AccountCurrency{AccountKey{h.Source, h.Account}, h.Currency}][TypeInterest]
 	}
-	avg, ok := in.AverageAmount[h.HoldingKey]
-	if !ok || avg == 0 || h.FX() == 0 {
-		return nil
+	m.daily = in.Daily[h.HoldingKey]
+	var p pool
+	held := !h.IsCash && poolKey(h) != ""
+	if held {
+		p = instrumentPool(in, h)
+	} else {
+		p.add(h.FX(), m.received, m.daily)
 	}
-	return ptr(received / (avg * h.FX()) * 100)
+	var thin bool
+	m.Realized, thin = p.realized(held)
+	if thin {
+		m.Tags[TagThin] = true
+	}
+	if days, n := p.heldDays(); held && m.Realized != nil && days < n {
+		m.Tags[TagPartial] = true
+	}
+}
+
+// instrumentPool pools what every holding of h's instrument received
+// and held (instrumentOf), what its sold positions received (Sold), and
+// what the positions of it that are no holding held (FormerDaily): its
+// income and its amounts across every account, an account that sold it
+// included.
+func instrumentPool(in *Inputs, h Holding) pool {
+	var p pool
+	holdings, sold := in.instrumentOf(h)
+	fx := map[InstrumentKey]float64{}
+	for _, o := range holdings {
+		p.add(o.FX(), in.Income[o.HoldingKey].Total(), in.Daily[o.HoldingKey])
+		if ik := (InstrumentKey{o.Source, o.Instrument}); fx[ik] == 0 {
+			fx[ik] = o.FX()
+		}
+	}
+	for _, ik := range slices.SortedFunc(maps.Keys(fx), compareInstruments) {
+		p.add(fx[ik], 0, in.FormerDaily[ik])
+	}
+	for _, k := range sold {
+		p.received += in.Income[k].Total()
+	}
+	return p
+}
+
+func compareInstruments(a, b InstrumentKey) int {
+	return cmp.Or(cmp.Compare(a.Source, b.Source), cmp.Compare(a.Instrument, b.Instrument))
+}
+
+// pool is what a set of holdings received over the twelve months to the
+// instant, and what they held, in the output currency: their income,
+// their summed mean daily amount, and their amount on each day as
+// differences (day i's amount is the sum of diff[0..i]); and how many
+// spans of an amount cover each day, as differences too.
+type pool struct {
+	received, mean float64
+	diff           []float64
+	holding        []int
+}
+
+// add adds a holding's income and its daily amounts, converted at fx. A
+// holding no rate converts, or one with no daily amounts, adds nothing.
+func (p *pool) add(fx, received float64, d Daily) {
+	if fx == 0 || d.Days == 0 {
+		return
+	}
+	if p.diff == nil {
+		p.diff, p.holding = make([]float64, d.Days+1), make([]int, d.Days+1)
+	}
+	p.received += received
+	p.mean += d.Mean() * fx
+	for _, s := range d.Spans {
+		if s.From >= 0 && s.To <= d.Days && s.From < s.To && s.To < len(p.diff) && s.Amount != 0 {
+			p.diff[s.From] += s.Amount * fx
+			p.diff[s.To] -= s.Amount * fx
+			p.holding[s.From]++
+			p.holding[s.To]--
+		}
+	}
+}
+
+// heldDays are the days of the pool's n on which a span of an amount
+// covers it.
+func (p *pool) heldDays() (days, n int) {
+	n = len(p.diff) - 1
+	holding := 0
+	for _, h := range p.holding[:max(n, 0)] {
+		if holding += h; holding > 0 {
+			days++
+		}
+	}
+	return days, n
+}
+
+// realized is the pool's income over its mean daily amount, in percent;
+// nothing received over a debt is zero, not a negative zero. With held,
+// the mean is that of the days the pool held anything: a pool held part
+// of the year yields what it received in that part. It is nil where the
+// mean is zero, or where the pool is thin: under a tenth of its mean, in
+// size, on more than half the days, a day not held among them. So a pool
+// held under half the days is thin.
+func (p *pool) realized(held bool) (pct *float64, thin bool) {
+	n := len(p.diff) - 1
+	if n <= 0 || p.mean == 0 {
+		return nil, false
+	}
+	mean := p.mean
+	if held {
+		days, _ := p.heldDays()
+		if days == 0 {
+			return nil, false
+		}
+		mean *= float64(n) / float64(days)
+	}
+	days, day := 0, 0.0
+	for _, d := range p.diff[:n] {
+		day += d
+		if math.Abs(day) < math.Abs(mean)/10 {
+			days++
+		}
+	}
+	if 2*days > n {
+		return nil, true
+	}
+	r := p.received / mean * 100
+	if r == 0 {
+		r = 0 // a negative zero, from a debt's mean, reads as zero
+	}
+	return ptr(r), false
 }

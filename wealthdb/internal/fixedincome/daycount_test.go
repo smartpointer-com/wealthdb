@@ -13,8 +13,9 @@ func ymd(y int, m time.Month, d int) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
-// The textbook cases of the two 30/360 rules. They part on a 31st after
-// a day below the 30th, and on the last day of February.
+// The textbook cases of the two 30/360 rules, the US one for a bond on
+// the end-of-month rule. They part on a 31st after a day below the 30th,
+// and on the last day of February.
 func TestDays360(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -37,10 +38,10 @@ func TestDays360(t *testing.T) {
 		{"a half year", ymd(2024, 3, 15), ymd(2024, 9, 15), 180, 180},
 		{"backwards", ymd(2024, 9, 15), ymd(2024, 3, 15), -180, -180},
 	} {
-		if got := Days30360(c.a, c.b); got != c.us {
+		if got := days30360(c.a, c.b, true); got != c.us {
 			t.Errorf("%s: 30/360 = %d, want %d", c.name, got, c.us)
 		}
-		if got := Days30E360(c.a, c.b); got != c.eu {
+		if got := days30E360(c.a, c.b); got != c.eu {
 			t.Errorf("%s: 30E/360 = %d, want %d", c.name, got, c.eu)
 		}
 	}
@@ -73,10 +74,10 @@ func TestYearFraction(t *testing.T) {
 		{canonical.DayCountActAct, half, half, 0, 184.0 / 365, "ACT/ACT no frequency"},
 		{canonical.DayCountActAct, half, from, 2, 184.0 / 365, "ACT/ACT no period"},
 	} {
-		got := YearFraction(c.dc, from, c.to, from, c.end, c.freq)
+		got := yearFraction(c.dc, from, c.to, from, c.end, c.freq, true)
 		near(t, c.describe, got, c.want, 1e-15)
 	}
-	if got := YearFraction("ACT/999", from, half, from, half, 2); !math.IsNaN(got) {
+	if got := yearFraction("ACT/999", from, half, from, half, 2, true); !math.IsNaN(got) {
 		t.Errorf("an unknown day count = %v, want NaN", got)
 	}
 }

@@ -348,18 +348,30 @@ func (f *lotFeed) add(ev lots.Event, aux lotAux) {
 	f.aux = append(f.aux, aux)
 }
 
-func (f *lotFeed) readTransactions(ctx context.Context, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx, `
-SELECT silver_source_id, transaction_external_id, occurred_at, account_external_id,
-       instrument_external_id, instrument_hint, kind, currency,
-       CAST(quantity AS DOUBLE), CAST(net_amount AS DOUBLE), COALESCE(description, ''),
+// lotTxnColumns are the columns of a transaction a policy's Classify
+// reads beside its kind and quantity (lots.Txn), as lotTxnFields scans
+// them.
+const lotTxnColumns = `COALESCE(description, ''),
        COALESCE(json_extract_string(payload, '$.type'), ''),
        COALESCE(json_extract_string(payload, '$.comment'), ''),
        COALESCE(json_extract_string(payload, '$.Action'), json_extract_string(payload, '$.action'), ''),
        COALESCE(json_extract_string(payload, '$.buy_currency'), ''),
        COALESCE(json_extract_string(payload, '$.sell_currency'), ''),
        COALESCE(TRY_CAST(json_extract_string(payload, '$.fee_amount') AS DOUBLE), 0),
-       COALESCE(json_extract_string(payload, '$.fee_currency'), ''),
+       COALESCE(json_extract_string(payload, '$.fee_currency'), '')`
+
+// lotTxnFields are the fields of t that lotTxnColumns fill, in their
+// order.
+func lotTxnFields(t *lots.Txn) []any {
+	return []any{&t.Description, &t.Type, &t.Comment, &t.Action, &t.BuyCurrency, &t.SellCurrency, &t.FeeAmount,
+		&t.FeeCurrency}
+}
+
+func (f *lotFeed) readTransactions(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `
+SELECT silver_source_id, transaction_external_id, occurred_at, account_external_id,
+       instrument_external_id, instrument_hint, kind, currency,
+       CAST(quantity AS DOUBLE), CAST(net_amount AS DOUBLE), `+lotTxnColumns+`,
        CASE WHEN json_extract_string(payload, '$.equity_transfer_ledger') = 'true'
             THEN COALESCE(TRY_CAST(json_extract_string(payload, '$.cost_basis') AS DOUBLE), 0) ELSE 0 END
   FROM transactions
@@ -379,9 +391,8 @@ SELECT silver_source_id, transaction_external_id, occurred_at, account_external_
 			t                         lots.Txn
 			ledgerCost                float64
 		)
-		if err := rows.Scan(&src, &txn, &at, &acct, &inst, &hint, &kind, &ccy, &qty, &amt,
-			&t.Description, &t.Type, &t.Comment, &t.Action, &t.BuyCurrency, &t.SellCurrency,
-			&t.FeeAmount, &t.FeeCurrency, &ledgerCost); err != nil {
+		dest := append([]any{&src, &txn, &at, &acct, &inst, &hint, &kind, &ccy, &qty, &amt}, lotTxnFields(&t)...)
+		if err := rows.Scan(append(dest, &ledgerCost)...); err != nil {
 			return fmt.Errorf("lots: read transactions: %w", err)
 		}
 		s := f.sources[src]

@@ -652,12 +652,12 @@ verdicts, and often does: a deposit the matcher paired is
 shows a row from both sides at once.
 
 **Metabase.** An **Income** dashboard and its privacy twin, in the
-Spending dashboards' shape. Above the cards of what was received, a
-projected section reads the forward views' figures (§12): received and
-expected income over last year, this year or the next months, by type,
-month, account and position, the withholding, and a position's
-expected payments. Its window, horizon, rate path, maturing rule and
-shift pickers are the forward views' assumptions.
+Spending dashboards' shape. A projected section sits above the cards of
+what was received. It reads the forward views (§12). It shows received
+and expected income by type, month, account and position, the
+withholding, and a position's expected payments. Its window covers last
+year, this year or the next months. Its horizon, rate path, maturing
+rule and shift pickers are the forward views' assumptions.
 [web/DESIGN.md](../../web/DESIGN.md) §6 has the detail.
 
 ---
@@ -736,9 +736,7 @@ which is the default, one number answers for both.
 17. **A liability earns nothing** in the projection.
 18. **A convertible note pays nothing.** A loan held accrues its coupon
     month by month.
-19. **A fund line's coupon paid in kind counts in no yield the lines
-    imply.**
-20. **The roll term never starts from an issue date**, because no source
+19. **The roll term never starts from an issue date**, because no source
     states one.
 
 ---
@@ -828,9 +826,7 @@ The MCP `income` tool follows the same rules:
 - it takes `period` on `projection` alone;
 - it refuses `-` in `from` or `to`;
 - a lone `from` is its own span, and a lone `to` starts the window on
-  the first day of next month;
-- the CLI and the MCP server both read the horizon from the config, so
-  the tool's header names the window it reports.
+  the first day of next month.
 
 ### Received and expected
 
@@ -838,10 +834,11 @@ The received half is the window's income lines up to the end of today.
 A line booked today counts as received, at any hour. It counts the six
 types the projection knows: interest, coupons, dividends,
 distributions, rent and pension. Interest a bond pays reads `coupons`,
-but a bill's or a zero's discount reads `interest`. A dividend a fund
-pays reads `distributions`. Wages, gifts and the other types stay in
-the other three views. A line counts under the holding it belongs to,
-else under its account.
+but a bill's or a zero's discount reads `interest`. The bond's terms in
+force at the end of the received half tell the two apart, a ledger
+record's among them. A dividend a fund pays reads `distributions`.
+Wages, gifts and the other types stay in the other three views. A line
+counts under the holding it belongs to, else under its account.
 
 The expected half starts the day after today.
 
@@ -866,14 +863,12 @@ The expected half starts the day after today.
 | `bond` | its coupons on their dates (`declared`); its face at maturity |
 | `bill`, or a zero | its face less its price, on its maturity day |
 | `note` | a loan held: its coupon on its amount, month by month, then its principal at maturity; a convertible note: nothing |
-| `bond_fund` | its implied yield as a floating rate, where most of the fund floats; else its indicated distributions; else its distribution or SEC yield, month by month; else `unknown` |
-| `equity_fund` | its indicated distributions; else the trailing yield, or the distribution yield, its page states, month by month |
-| `stock` | its indicated dividend ([YIELD.md](YIELD.md) §4): a ledger record's (`declared`), else its last payment per share at the frequency of its payments, else its filings' dividends per share, quarterly (`indicated`) |
+| `bond_fund` | its implied yield as a floating rate, where floating lines are half the fund or more; else its indicated distributions; else its distribution or SEC yield, month by month; else `unknown` |
+| `equity_fund`, `multi_asset` | its indicated distributions; else the trailing yield, or the distribution yield, its page states, month by month |
+| `stock` | its instrument's indicated dividend ([YIELD.md](YIELD.md) §4) on its own quantity: a ledger record's (`declared`), else the last month's payment per share, specials aside, at the frequency of its pay months, else its filings' dividends per share, quarterly (`indicated`) |
 | `liability` | nothing |
 | `other` | its payments of the last twelve months, repeated (`realized`); paid nothing, `unknown` |
 
-- A term's rate ends with its term. A term deposit earns it to its end
-  day, never after.
 - A balance whose rate no source states repeats the interest its
   account received in the last twelve months (`realized`). With none
   received it reads `unknown`.
@@ -883,14 +878,18 @@ The expected half starts the day after today.
 - An account's income that names no holding, such as rent or a pension,
   repeats too (`realized`). It reads as the holding
   `income:<type>:<CCY>`, one per currency.
+- Interest that names no holding but whose description names a bond is
+  a coupon ([YIELD.md](YIELD.md) §4): the coupon of the bond of its
+  account that it names. Where the account holds none, one that names a
+  bond issue is the account's `income:coupons:<CCY>`, received but not
+  repeated.
 - A repeated payment falls on its day of every later year the
   projection reaches, not only the next. This holds for rent, pensions,
   a rate-less balance's interest and an `other` holding's payments.
 
-A fund line whose coupon is paid in kind counts in no yield the fund's
-lines imply. So a bond fund projected from its lines' yield earns
-nothing on that coupon. A fund projected from its distribution yield is
-unaffected. No source states a directly held bond paid in kind.
+A bond fund projected from its lines' yield earns nothing on a line
+paid in kind ([YIELD.md](YIELD.md) §3). One projected from its
+distribution yield is unaffected.
 
 ### When a holding matures
 
@@ -904,15 +903,18 @@ that day on:
 - `cash`, the default: what the cash of the holding's own account, in
   its currency, earns on it from that day. That is the account's
   marginal rate on the balance with the principal, its tiers applied,
-  along the rate path. A term's expired rate never counts. Where the
-  account states no other rate, the income reads `unknown`.
+  along the rate path. A term's expired rate never counts.
 - `idle`: nothing.
 - `roll`: the same holding again, for its original term. It buys at the
   forward rate of that term plus its own spread over the curve today,
   and buys again at each maturity.
 
-Cash that states no rate leaves the reinvested income `unknown`. The
-holding itself keeps its own reading, so it does not turn `unknown`.
+The account's rate counts though the account holds no cash in that
+currency today, where the rate names the currency. A rate that names
+none is the rate of the cash the account holds. Cash whose account
+states no rate leaves the reinvested income `unknown`. The holding itself keeps its own reading,
+so it does not turn `unknown`. `yield coverage` lists it under `no
+receiving rate` ([YIELD.md](YIELD.md) §10).
 
 The term is the maturity less the day the term began: a term deposit's
 rate's first day, else the day the holding was bought. Without either,
@@ -924,8 +926,8 @@ A roll falls back where it lacks a figure, in this order:
 1. a holding with no yield at all goes to cash (`roll_cash`);
 2. a holding with no implied yield rolls at its current yield, else its
    stated rate, held constant (`roll_own`);
-3. in a currency with no curve, or one whose curve does not bootstrap,
-   it rolls at its own yield, held constant (`roll_constant`);
+3. in a currency with no curve, or one whose curve cannot be built, it
+   rolls at its own yield, held constant (`roll_constant`);
 4. any other holding rolls along the curve (`roll`).
 
 A roll keeps the holding's income type. A term deposit or a bill earns
@@ -939,7 +941,7 @@ interest.
 - `--rates forward` moves the benchmark along the currency's forward
   curve ([YIELD.md](YIELD.md) §8). Each floating holding keeps its
   spread to it, and a fixed coupon does not move. A currency with no
-  curve, or one whose curve does not bootstrap, keeps today's rate.
+  curve, or one whose curve cannot be built, keeps today's rate.
 - `--shift BP` moves every floating rate in parallel, by whole basis
   points. It moves a balance, a money-market fund, a floating note, a
   floating bond fund, cash after a maturity and a rolled holding.
@@ -953,7 +955,7 @@ interest.
 | `declared` | a rate a ledger record states, a coupon by contract, a bill's discount |
 | `indicated` | the last payment at its frequency, or the filings' dividends |
 | `stated` | a rate a source states, held |
-| `forward` | a stated or declared floating rate, moved along a curve that bootstraps |
+| `forward` | a stated or declared floating rate, moved along its currency's forward curve |
 | `reinvested` | what a principal earns after a maturity |
 | `realized` | last year's payments, where nothing else is known |
 | `unknown` | nothing; the amount is zero |
@@ -969,10 +971,10 @@ and `calendar` each row's own.
 
 `quality` gives the share of the reinvested income each way of
 reinvesting earns: `cash`, `roll`, `roll_constant`, `roll_own`,
-`roll_cash`. One that earns all of it prints alone. One that earns
-nothing beside another prints a share of zero: `roll=100% roll_cash=0%`.
-Where income rests on a floating rate and a shift is given,
-`shift=-50bp` follows.
+`roll_cash`. A way that is the only one prints without a share. One
+that earns nothing beside another prints a share of zero:
+`roll=100% roll_cash=0%`. Where income rests on a floating rate and a
+shift is given, `shift=-50bp` follows.
 
 `withheld` is what the `yield.withholding` table withholds at each
 holding's situs and account wrapper ([YIELD.md](YIELD.md) §8). A
@@ -984,23 +986,26 @@ booked tax is `income summary -C +withheld` (§5).
 ### The calendar and the entity views
 
 `calendar` lists every expected amount in date order. A dated amount
-prints its day. An accrual, and a payment whose day is an estimate,
-prints its month and follows the holding's dated amounts of that month.
-Each principal is a row too. No row is a payment of zero.
+prints its day. An accrual prints its month. So does a payment whose
+day is an estimate. Both follow the holding's dated amounts of that
+month. Each principal is a row too. No row is a payment of zero.
 
 The entity views give, per entity:
 
 - `received`, `expected` and `total` over the window;
-- `last_year`: what the same window a year earlier received. It is
-  blank until that window is over, and zero where it is over and
-  nothing came;
+- `last_year` (behind `-C`): what the same window a year earlier
+  received. It is blank until that window is over, and zero where it is
+  over and nothing came;
 - `next_12m`: what the twelve months after the current one are expected
   to pay;
-- `withheld`, `basis` and `quality`.
+- `withheld` (behind `-C`), `basis` and `quality`.
 
 `positions` lists every holding, the ones that pay nothing included. It
-also lists any holding that received income in the window and is no
-longer held. Its rows sort by account, then by `total` plus `next_12m`,
+also lists any holding no longer held that received income in the
+window, or in the same window a year earlier. Such a holding's income
+is withheld at its security's situs and its own account's wrapper. On
+the dashboard it carries no symbol, no name and asset class `unknown`.
+Its rows sort by source and account, then by `total` plus `next_12m`,
 the largest first. The other entity views sort by that sum alone.
 
 Every month's expected income equals the sum of its calendar rows of

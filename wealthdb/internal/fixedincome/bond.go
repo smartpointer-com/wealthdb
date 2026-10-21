@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -69,8 +71,8 @@ const (
 	maxIterations = 100
 )
 
-// bp is one basis point, as a decimal.
-const bp = 0.0001
+// BasisPoint is one basis point, as a decimal.
+const BasisPoint = 0.0001
 
 // Period is the coupon period settle falls in: the coupon date on or
 // before it, and the one after. A settlement on a coupon date starts that
@@ -95,9 +97,9 @@ func (b Bond) Flows(settle time.Time) []Flow {
 }
 
 // Accrued is the coupon accrued from the last coupon date to settle, per
-// 100 face: Coupon times YearFraction over that span, which ACT/ACT
-// reads against the whole period. It is 0 on a coupon date and on or
-// after maturity.
+// 100 face: Coupon times the day count's year fraction over that span
+// (ACT/ACT reads it against the whole period). It is 0 on a coupon date
+// and on or after maturity.
 func (b Bond) Accrued(settle time.Time) float64 {
 	if b.check() != nil {
 		return math.NaN()
@@ -202,22 +204,12 @@ func EffectiveAnnual(y float64, f int) float64 {
 	return (math.Pow(1+y/100/n, n) - 1) * 100
 }
 
-// FromEffectiveAnnual is the yield compounded f times a year that has
-// the effective annual rate r, both in percent. It undoes
-// EffectiveAnnual.
-func FromEffectiveAnnual(r float64, f int) float64 {
-	if f <= 0 {
-		return r
-	}
-	n := float64(f)
-	return n * (math.Pow(1+r/100, 1/n) - 1) * 100
-}
-
 // check refuses terms the arithmetic does not take.
 func (b Bond) check() error {
 	switch {
-	case b.Frequency <= 0 || !canonical.ValidCouponFrequency(b.Frequency):
-		return fmt.Errorf("fixedincome: coupon frequency %d: want 1, 2, 4 or 12", b.Frequency)
+	case !slices.Contains(canonical.BondFrequencies(), b.Frequency):
+		return fmt.Errorf("fixedincome: coupon frequency %d: want %s", b.Frequency,
+			orList(canonical.BondFrequencies()))
 	case !b.DayCount.Valid():
 		names := make([]string, 0, len(canonical.DayCounts()))
 		for _, dc := range canonical.DayCounts() {
@@ -230,6 +222,18 @@ func (b Bond) check() error {
 		return fmt.Errorf("fixedincome: redemption %v: want a finite amount per 100 face, zero or more", b.Redemption)
 	}
 	return nil
+}
+
+// orList lists ns as "1, 2, 4 or 12".
+func orList(ns []int) string {
+	out := make([]string, len(ns))
+	for i, n := range ns {
+		out[i] = strconv.Itoa(n)
+	}
+	if len(out) < 2 {
+		return strings.Join(out, "")
+	}
+	return strings.Join(out[:len(out)-1], ", ") + " or " + out[len(out)-1]
 }
 
 // period is the bond's schedule and the index k of the period settle
@@ -369,16 +373,16 @@ func (v valuation) risk() Risk {
 		Macaulay:  v.pvTime / v.pv,
 		Modified:  v.d1 / v.pv,
 		Convexity: v.d2 / v.pv,
-		DV01:      v.d1 * bp,
+		DV01:      v.d1 * BasisPoint,
 	}
 }
 
-// onePayment is the Risk of a single payment in t years, at a yield in
-// percent compounded f times a year. Its DV01 is per 100 of value: the
-// holding is taken at par.
-func onePayment(t, yield float64, f int) Risk {
+// OnePayment is the Risk of a single payment in t years, at a yield in
+// percent compounded f times a year; a frequency of 0 is simple
+// interest. Its DV01 is per 100 of value: the holding is taken at par.
+func OnePayment(t, yield float64, f int) Risk {
 	r := value([]payment{{1, t}}, yield, f).risk()
-	r.DV01 = 100 * r.Modified * bp
+	r.DV01 = 100 * r.Modified * BasisPoint
 	return r
 }
 

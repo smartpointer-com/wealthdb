@@ -26,11 +26,11 @@ EDGAR.
 - Risk metrics: a fund with a quarter or more of its net assets in debt
   states its rate and credit-spread sensitivities (fund_risk). dv01 and
   dv100 are what its value moves by for a move in rates of one and of
-  one hundred basis points, per currency and tenor, signed as filed:
-  positive when the fund loses value as rates rise. The credit-spread
-  figures, for a one basis point move of investment-grade and of
-  non-investment-grade spreads, are the fund's as a whole, under
-  currency XXX.
+  one hundred basis points, per currency and tenor, signed as filed.
+  Filers follow no one sign convention: gold reads each filing in one
+  sign (fund_risk_signed). The credit-spread figures, for a one basis
+  point move of investment-grade and of non-investment-grade spreads,
+  are the fund's as a whole, under currency XXX.
 
 N-PORT carries no sector. Public filings are quarterly and two to five
 months old, and quarter ends differ by fund.

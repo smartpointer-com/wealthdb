@@ -17,7 +17,7 @@ registry, its default columns, and how to fetch its rows. The CLI picks
 columns with `-C` and writes a format; the server reads every column to
 filter and sort, then renders a page. Both take their cells from
 `rowsToTable`, so the same rows print the same strings.
-`TestMCPMatchesCLI` holds that for every view of the eight report tools
+`TestMCPMatchesCLI` holds that for every view of the nine report tools
 and for the two dumps, with and without privacy. `status` and
 `snapshots` are tables on the server and prose in the CLI, so they have
 no CLI twin to compare with.
@@ -138,7 +138,7 @@ the environment.
 
 ## 6. The tool API
 
-Thirteen tools: eight report families, `status`, `snapshots`, the two
+Fourteen tools: nine report families, `status`, `snapshots`, the two
 enrichment dumps, and `describe`. The design rules:
 
 1. One tool per CLI family; `view` is an enum whose default is the
@@ -195,7 +195,7 @@ same parameter specs and column registries the tools use.
 
 ## 7. Testing
 
-- `TestMCPMatchesCLI`: every view of the eight report tools and the two
+- `TestMCPMatchesCLI`: every view of the nine report tools and the two
   dumps, CLI csv equals MCP csv, with and without privacy, over seeded
   gold.
 - Protocol tests over the SDK's in-memory transport: initialize, the

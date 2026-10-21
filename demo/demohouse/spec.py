@@ -82,21 +82,35 @@ def load(spec_path=SPEC_PATH, catalogue_dir=CATALOGUE_DIR):
                   hashlib.sha256(spec_raw).hexdigest(), digest.hexdigest(), code_hash())
 
 
+def isin_check_digit(body):
+    """The check digit of an ISIN's first eleven characters (ISO 6166):
+    each letter read as its two digits (A is 10), then the Luhn sum."""
+    digits = "".join(str(int(c, 36)) for c in body)
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        d = int(ch) * (2 if i % 2 == 0 else 1)
+        total += d // 10 + d % 10
+    return (10 - total % 10) % 10
+
+
 def ladder_issues(ladder):
     """The discount notes of a ladder, as catalogue instruments: one per
     issue, each maturing the day the next one is issued, numbered in the
-    order they are issued. A note's name puts its maturity between its
-    issuer and the kind of paper, as a broker's description does, so the
-    issuer's name ends at the date."""
+    order they are issued. A note's ISIN is the ladder's prefix, the
+    issue's number in two digits, and a last digit one past the check
+    digit, so it can be no real security's. A note's name puts its
+    maturity between its issuer and the kind of paper, as a broker's
+    description does, so the issuer's name ends at the date."""
     out = []
     terms = bonds.issue_dates(ladder["first_maturity"], ladder["weeks"], ladder["issues"])
     ids = [f'{ladder["id"]}{maturity:%y%m%d}' for _, maturity in terms]
     for n, ((issued, maturity), iid) in enumerate(zip(terms, ids, strict=True), start=1):
+        body = f'{ladder["isin_prefix"]}{n:02d}'
         out.append({
-            "id": iid, "symbol": None, "isin": f'{ladder["isin_prefix"]}{n:03d}',
-            "name": f'{ladder["issuer"]} {maturity:%m/%d/%Y} {ladder["paper"]}', "asset_class": "fixed_income",
-            "vehicle": "bond",
-            "currency": ladder["currency"], "issued": issued.isoformat(), "maturity": maturity.isoformat(),
+            "id": iid, "symbol": None, "isin": body + str((isin_check_digit(body) + 1) % 10),
+            "name": f'{ladder["issuer"]} {maturity:%m/%d/%Y} {ladder["paper"]}',
+            "asset_class": "fixed_income", "vehicle": "bond", "currency": ladder["currency"],
+            "issued": issued.isoformat(), "maturity": maturity.isoformat(),
             "model": {"type": "discount", "spread": ladder["spread"]}, "ladder": ladder["id"],
             "next": ids[n] if n < len(ids) else None})
     return out

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -61,7 +62,7 @@ func cmdExposure(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	fs := flag.NewFlagSet("wealthdb exposure "+view, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asOf := registerAsOf(fs)
-	period := fs.String("period", "", strings.Join(exposurePeriods, " | ")+" — a series over a window")
+	period := fs.String("period", "", strings.Join(seriesPeriods, " | ")+" — a series over a window")
 	country := fs.String("country", exposureCountryBases[0],
 		strings.Join(exposureCountryBases, " | ")+" — which country a security counts in")
 	rf := registerReportFlags(fs, true)
@@ -71,7 +72,7 @@ func cmdExposure(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	}
 	skeletons := *rf.format == skeletonFormat
 	if skeletons {
-		if err := checkSkeletonFlags(fs, view, *period, *rf.privacy); err != nil {
+		if err := checkSkeletonFlags("exposure", fs, view, *period, *rf.privacy); err != nil {
 			return err
 		}
 		// The shared parser knows the table formats only; the skeletons
@@ -79,31 +80,9 @@ func cmdExposure(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 		*rf.format = string(output.FormatTable)
 	}
 	now := time.Now()
-	var series []seriesPoint
-	if *period == "" {
-		if err := noPositionals(fs, "exposure"); err != nil {
-			return err
-		}
-	} else {
-		if err := checkChoice("exposure", "period", *period, exposurePeriods...); err != nil {
-			return err
-		}
-		if !slices.Contains(exposureSeriesViews, view) {
-			return errs.Newf(errs.ExitUsage, "exposure: --period belongs to the %s views", strings.Join(exposureSeriesViews, ", "))
-		}
-		if isSet(fs, "d", "as-of") {
-			return errs.Newf(errs.ExitUsage, "exposure: -d names one day; a series takes a window instead (FROM [TO])")
-		}
-		from, to, err := parseTrailingYearWindow(fs.Args(), now)
-		if err != nil {
-			fs.Usage()
-			return errs.Newf(errs.ExitUsage, "exposure: %s", err.Error())
-		}
-		// Nothing is held after today, so the window stops there.
-		series = seriesPoints(from, min(to, anchorToDay(now.UTC(), true).Unix()), *period)
-		if len(series) == 0 {
-			return errs.Newf(errs.ExitUsage, "exposure: the window starts after today")
-		}
+	series, err := parseSeries("exposure", fs, view, *period, exposureSeriesViews, now)
+	if err != nil {
+		return err
 	}
 	if !slices.Contains(exposureCountryViews, view) && isSet(fs, "country") {
 		return errCountryView("--country")
@@ -131,20 +110,45 @@ func cmdExposure(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 // skeletons.
 const skeletonFormat = "ndjson"
 
-// checkSkeletonFlags refuses what -f ndjson cannot honour: another view,
-// a series, a column set, and -p, since a record names its instrument.
-func checkSkeletonFlags(fs *flag.FlagSet, view, period string, privacy bool) error {
+// checkSkeletonFlags refuses what cmd's -f ndjson cannot honour:
+// another view, a series, a column set, and -p, since a record names its
+// instrument.
+func checkSkeletonFlags(cmd string, fs *flag.FlagSet, view, period string, privacy bool) error {
 	switch {
 	case view != "coverage":
-		return errs.Newf(errs.ExitUsage, "exposure: -f ndjson belongs to the coverage view")
+		return errs.Newf(errs.ExitUsage, "%s: -f ndjson belongs to the coverage view", cmd)
 	case period != "":
-		return errs.Newf(errs.ExitUsage, "exposure: -f ndjson prints the records still to write on one day; it takes no --period")
+		return errs.Newf(errs.ExitUsage, "%s: -f ndjson prints the records still to write on one day; it takes no --period", cmd)
 	case isSet(fs, "C", "columns"):
-		return errs.Newf(errs.ExitUsage, "exposure: -f ndjson prints whole records; it takes no -C")
+		return errs.Newf(errs.ExitUsage, "%s: -f ndjson prints whole records; it takes no -C", cmd)
 	case privacy:
-		return errs.Newf(errs.ExitUsage, "exposure: -f ndjson names each holding's instrument, which -p hides")
+		return errs.Newf(errs.ExitUsage, "%s: -f ndjson names each holding's instrument, which -p hides", cmd)
 	}
 	return nil
+}
+
+// ndjsonWriter writes records one JSON line each, as typed by hand:
+// <, > and & as they are. A record written already is not written again.
+type ndjsonWriter struct {
+	w    io.Writer
+	seen map[string]bool
+}
+
+func newNDJSONWriter(w io.Writer) *ndjsonWriter { return &ndjsonWriter{w: w, seen: map[string]bool{}} }
+
+func (n *ndjsonWriter) write(rec any) error {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(rec); err != nil {
+		return err
+	}
+	if n.seen[b.String()] {
+		return nil
+	}
+	n.seen[b.String()] = true
+	_, err := n.w.Write(b.Bytes())
+	return err
 }
 
 // declarationSkeleton is a record of the declarations ledger with its
@@ -178,8 +182,7 @@ func writeDeclarationSkeletons(ctx context.Context, open func() (*sql.DB, error)
 	if err != nil {
 		return err
 	}
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
+	out := newNDJSONWriter(w)
 	empty := json.RawMessage(`{}`)
 	type written struct{ section, src, iid string }
 	seen := map[written]bool{}
@@ -199,7 +202,7 @@ func writeDeclarationSkeletons(ctx context.Context, open func() (*sql.DB, error)
 		} else {
 			s.Situs = empty
 		}
-		if err := enc.Encode(s); err != nil {
+		if err := out.write(s); err != nil {
 			return err
 		}
 	}
@@ -213,152 +216,62 @@ func exposureReport(req request) *report {
 	ccy, country := req.currency, req.country
 	switch req.view {
 	case "classes":
-		return exposureView(req, buildExposureClassColumns(ccy), defaultExposureClassColumns,
+		return seriesView(req, buildExposureClassColumns(ccy), defaultExposureClassColumns,
 			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureClassRow, error) {
 				return gold.ExposureClasses(ctx, db, at, ccy)
 			})
 	case "sectors":
-		return exposureView(req, buildExposureSectorColumns(ccy), defaultExposureSectorColumns,
+		return seriesView(req, buildExposureSectorColumns(ccy), defaultExposureSectorColumns,
 			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureSectorRow, error) {
 				return gold.ExposureSectors(ctx, db, at, ccy)
 			})
 	case "sizes":
-		return exposureView(req, buildExposureSizeColumns(ccy), defaultExposureSizeColumns,
+		return seriesView(req, buildExposureSizeColumns(ccy), defaultExposureSizeColumns,
 			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureSizeRow, error) {
 				return gold.ExposureSizes(ctx, db, at, ccy)
 			})
 	case "countries":
-		return exposureView(req, buildExposureCountryColumns(ccy), defaultExposureCountryColumns,
+		return seriesView(req, buildExposureCountryColumns(ccy), defaultExposureCountryColumns,
 			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureCountryRow, error) {
 				return gold.ExposureCountries(ctx, db, at, ccy, country)
 			})
 	case "currencies":
-		return exposureView(req, buildExposureCurrencyColumns(ccy), defaultExposureCurrencyColumns,
+		return seriesView(req, buildExposureCurrencyColumns(ccy), defaultExposureCurrencyColumns,
 			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureCurrencyRow, error) {
 				return gold.ExposureCurrencies(ctx, db, at, ccy)
 			})
 	case "credit", "maturities", "coupons", "cycles":
 		v := exposureBucketViews[req.view]
-		return exposureView(req, buildExposureBucketColumns(ccy, req.view), v.defaults,
+		return seriesView(req, buildExposureBucketColumns(ccy, req.view), v.defaults,
 			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureBucketRow, error) {
 				return v.read(ctx, db, at, ccy)
 			})
 	case "issuers":
-		return exposureView(req, buildExposureIssuerColumns(ccy), defaultExposureIssuerColumns,
+		return seriesView(req, buildExposureIssuerColumns(ccy), defaultExposureIssuerColumns,
 			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureIssuerRow, error) {
 				return gold.ExposureIssuers(ctx, db, at, ccy)
 			})
 	case "situs":
-		return exposureView(req, buildExposureSitusColumns(ccy), defaultExposureSitusColumns,
+		return seriesView(req, buildExposureSitusColumns(ccy), defaultExposureSitusColumns,
 			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureSitusRow, error) {
 				return gold.ExposureSitus(ctx, db, at, ccy)
 			})
 	case "securities":
-		return exposureView(req, buildExposureSecurityColumns(ccy), defaultExposureSecurityColumns,
+		return seriesView(req, buildExposureSecurityColumns(ccy), defaultExposureSecurityColumns,
 			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureSecurityRow, error) {
 				return gold.ExposureSecurities(ctx, db, at, ccy, country)
 			})
 	case "funds":
-		return exposureView(req, buildExposureFundColumns(ccy), defaultExposureFundColumns,
+		return seriesView(req, buildExposureFundColumns(ccy), defaultExposureFundColumns,
 			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureFundRow, error) {
 				return gold.ExposureFunds(ctx, db, at, ccy)
 			})
 	default: // coverage
-		return exposureView(req, buildExposureCoverageColumns(ccy), defaultExposureCoverageColumns,
+		return seriesView(req, buildExposureCoverageColumns(ccy), defaultExposureCoverageColumns,
 			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureCoverageRow, error) {
 				return gold.ExposureCoverage(ctx, db, at, ccy)
 			})
 	}
-}
-
-// exposureView is a view at req.asOf, or its series over req.series
-// when that holds a point.
-func exposureView[T any](req request, registry []columnSpec[T], defaults []string,
-	fetch func(context.Context, *sql.DB, int64) ([]T, error)) *report {
-	if len(req.series) == 0 {
-		return newReport(registry, defaults, func(ctx context.Context, db *sql.DB) ([]T, error) {
-			return fetch(ctx, db, req.asOf)
-		})
-	}
-	return seriesReport(registry, defaults, req.series, fetch)
-}
-
-// seriesPoint is one period of a series: its label and the instant its
-// figures are taken at, the period's last second or the window's end.
-type seriesPoint struct {
-	label string
-	at    int64
-}
-
-// seriesRow is a row of a view, tagged with its period.
-type seriesRow[T any] struct {
-	period string
-	row    T
-}
-
-// seriesReport repeats a view at every point of a series, a period
-// column ahead of the view's own. A point before the first holding gold
-// holds is skipped: nothing was held then.
-func seriesReport[T any](registry []columnSpec[T], defaults []string, points []seriesPoint,
-	fetch func(context.Context, *sql.DB, int64) ([]T, error)) *report {
-	reg := []columnSpec[seriesRow[T]]{{Name: "period", Align: output.AlignLeft,
-		Extract: func(r seriesRow[T]) string { return r.period }}}
-	for _, c := range registry {
-		col := columnSpec[seriesRow[T]]{Name: c.Name, Header: c.Header, Align: c.Align, Privacy: c.Privacy,
-			Extract: func(r seriesRow[T]) string { return c.Extract(r.row) }}
-		if c.PrivacyFunc != nil {
-			col.PrivacyFunc = func(r seriesRow[T]) PrivacyClass { return c.PrivacyFunc(r.row) }
-		}
-		reg = append(reg, col)
-	}
-	return newReport(reg, append([]string{"period"}, defaults...), func(ctx context.Context, db *sql.DB) ([]seriesRow[T], error) {
-		first, ok, err := gold.FirstHoldingsAt(ctx, db)
-		if err != nil || !ok {
-			return nil, err
-		}
-		var out []seriesRow[T]
-		for _, p := range points {
-			if p.at < first {
-				continue
-			}
-			rows, err := fetch(ctx, db, p.at)
-			if err != nil {
-				return nil, err
-			}
-			for _, r := range rows {
-				out = append(out, seriesRow[T]{period: p.label, row: r})
-			}
-		}
-		return out, nil
-	})
-}
-
-// exposurePeriodLengths are the periods a series takes, in display
-// order, each with its length in months; a finer one would repeat the
-// look-through more often than compositions change.
-var exposurePeriodLengths = []struct {
-	name   string
-	months int
-}{{"monthly", 1}, {"quarterly", 3}, {"annual", 12}}
-
-// exposurePeriods are the periods' names, in display order.
-var exposurePeriods = func() []string {
-	names := make([]string, len(exposurePeriodLengths))
-	for i, p := range exposurePeriodLengths {
-		names[i] = p.name
-	}
-	return names
-}()
-
-// exposurePeriodMonths is the length in months of the period named
-// name, one of exposurePeriods.
-func exposurePeriodMonths(name string) int {
-	for _, p := range exposurePeriodLengths {
-		if p.name == name {
-			return p.months
-		}
-	}
-	return 0
 }
 
 // exposureSeriesViews are the views a series takes: the aggregates and
@@ -366,17 +279,6 @@ func exposurePeriodMonths(name string) int {
 // of rows a period.
 var exposureSeriesViews = []string{"classes", "sectors", "sizes", "countries", "currencies", "credit", "maturities",
 	"coupons", "cycles", "situs", "coverage"}
-
-// seriesPoints are the periods of `period` that meet the window [from,
-// to], each taken at its end (gold.PeriodEnds) and labelled by it. None
-// when from is after to.
-func seriesPoints(from, to int64, period string) []seriesPoint {
-	var out []seriesPoint
-	for _, at := range gold.PeriodEnds(from, to, exposurePeriodMonths(period)) {
-		out = append(out, seriesPoint{label: periodLabel(&at, period), at: at})
-	}
-	return out
-}
 
 // ---- column registries ---------------------------------------------------
 //
@@ -391,10 +293,6 @@ func shareCols[T any](get func(T) gold.ExposureShares) []columnSpec[T] {
 		pctCol("direct", func(r T) *float64 { return get(r).DirectPct }),
 		pctCol("via_funds", func(r T) *float64 { return get(r).ViaFundsPct }),
 	}
-}
-
-func qualityCol[T any](get func(T) string) columnSpec[T] {
-	return columnSpec[T]{Name: "quality", Align: output.AlignLeft, Extract: get}
 }
 
 // holdingKeyCol is a key column. A security key is a public identifier
@@ -627,7 +525,7 @@ var defaultExposureCoverageColumns = []string{"section", "reason", "items", "val
 
 // exposureQualityTags are the tags of the exposure quality column and
 // what each means: the CLI usage and the MCP help both render them.
-var exposureQualityTags = []struct{ tag, meaning string }{
+var exposureQualityTags = []tagNote{
 	{"proxy", "another fund's composition stands in"},
 	{"declared", "a declaration states it"},
 	{"aged", fmt.Sprintf("the composition is older than %d days", canonical.DefaultAgedDays)},
@@ -648,7 +546,7 @@ var exposureQualityTags = []struct{ tag, meaning string }{
 // rule's order (docs/EXPOSURE.md §13): the situs view's quality column
 // gives each one's share. The CLI usage and the MCP help both render
 // them.
-var exposureSitusBases = []struct{ tag, meaning string }{
+var exposureSitusBases = []tagNote{
 	{"declared", "a declaration states it"},
 	{"underlying", "a depositary receipt reads as the share it stands for"},
 	{"isin", "the country of the holding's ISIN prefix"},
@@ -657,24 +555,6 @@ var exposureSitusBases = []struct{ tag, meaning string }{
 	{"custody", "cash or metal sits in its custodian's country (exposure.custody)"},
 	{"country", "the one country a declaration states for a private holding"},
 	{"unknown", "none of these: a coin, cash at a custodian with no country, or a holding to declare"},
-}
-
-// exposureNotes are tags as an aligned list, each meaning wrapped beside
-// its tag.
-func exposureNotes(tags []struct{ tag, meaning string }) string {
-	width := 0
-	for _, q := range tags {
-		width = max(width, len(q.tag))
-	}
-	var b strings.Builder
-	for _, q := range tags {
-		tag := q.tag
-		for _, line := range wrapWords(q.meaning, 72-4-width-2) {
-			fmt.Fprintf(&b, "\n    %-*s  %s", width, tag, line)
-			tag = ""
-		}
-	}
-	return b.String()
 }
 
 // wrapWords breaks s at spaces into lines of at most width bytes; a
@@ -729,7 +609,7 @@ func exposureUsage() string {
 	}
 	return `usage: wealthdb exposure <view> [-d DATE] [--country risk|domicile]
                         [-f FORMAT] [-C COLS] [-x CCY] [-p]
-       wealthdb exposure <view> --period monthly|quarterly|annual [FROM [TO]]
+       wealthdb exposure <view> --period ` + strings.Join(seriesPeriods, "|") + ` [FROM [TO]]
 
 What is really owned. Every fund is looked through to what it holds, a
 fund of funds down to three levels, and the result is added to what is
@@ -774,7 +654,7 @@ Views
 
 Flags
   -d, --as-of DATE   the day (default today UTC)
-  --period P         ` + flagDescription(strings.Join(exposurePeriods, " | ")+": the view at the end of every period "+
+  --period P         ` + flagDescription(strings.Join(seriesPeriods, " | ")+": the view at the end of every period "+
 		"of the window FROM..TO (default the last twelve months; never past today), a period column first; on "+
 		andList(exposureSeriesViews)) + `
   --country C        ` + flagDescription(exposureCountryBases[0]+" (default) | "+strings.Join(exposureCountryBases[1:], " | ")+
@@ -796,11 +676,11 @@ Notes
   funds. A share prints with a _pct suffix: share_pct.
 
   quality names what a figure rests on, each tag with the share of the
-  row it covers (proxy=12%):` + exposureNotes(exposureQualityTags) + `
+  row it covers (proxy=12%):` + tagNotes(exposureQualityTags) + `
 
   situs is where a holding legally sits, not what it is exposed to: a
   fund counts whole at its own situs. Its quality column gives the share
-  of the row each basis covers (isin=80%):` + exposureNotes(exposureSitusBases) + `
+  of the row each basis covers (isin=80%):` + tagNotes(exposureSitusBases) + `
   funds is the share of the row held in funds.
 
   ` + strings.Join(wrapWords("A stock's size comes from its market cap (large from "+capBn(canonical.LargeCapUSD)+

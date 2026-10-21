@@ -15,7 +15,7 @@ import (
 // config sets.
 func SyncYield(ctx context.Context, db *sql.DB, rows canonical.YieldRows) (int, error) {
 	return replaceConfigTables(ctx, db, "SyncYield", []string{"yield_curves", "yield_withholding", "yield_rating_funds",
-		"yield_conventions", "yield_cycles", "yield_settings"},
+		"yield_conventions", "yield_cycles"},
 		func(_ *sql.Tx, insert func(q string, args ...any) error) (int, error) {
 			n := len(rows.Curves) + len(rows.Withholding) + len(rows.RatingFunds)
 			for _, p := range rows.Curves {
@@ -53,9 +53,6 @@ VALUES (?, ?, ?, ?, ?)`, p.Currency, p.Tenor, p.TenorMonths, p.SilverSourceID, p
 				if c.Origin == canonical.OriginConfig {
 					n++
 				}
-			}
-			if err := insert(`INSERT INTO yield_settings (horizon_months) VALUES (?)`, rows.Settings.HorizonMonths); err != nil {
-				return 0, err
 			}
 			return n, nil
 		})

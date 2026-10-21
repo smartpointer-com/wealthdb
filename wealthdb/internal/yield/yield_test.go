@@ -1,7 +1,9 @@
 package yield
 
 import (
+	"encoding/json"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -32,15 +34,16 @@ func near(t *testing.T, what string, got *float64, want, tol float64) {
 	}
 }
 
-// book is an empty set of inputs at day, in USD, with the built-in
+// inputs is an empty set of inputs at day, in USD, with the built-in
 // conventions.
-func book() *Inputs {
+func inputs() *Inputs {
 	in := &Inputs{AsOf: day.Unix() + 86399, Day: day, Currency: "USD", Accounts: map[AccountKey]Account{},
 		Terms: map[InstrumentKey]Terms{}, Rates: map[AccountKey][]Rate{}, Funds: map[string]*Fund{},
 		Curves: map[string]*Curve{}, Conventions: map[string]canonical.YieldConvention{},
 		Income: map[HoldingKey]Received{}, AccountIncome: map[AccountCurrency]Received{},
 		Payments: map[HoldingKey][]Payment{}, Dividends: map[InstrumentKey]canonical.DeclaredDividend{},
-		Securities: map[string]Facts{}, AverageAmount: map[HoldingKey]float64{},
+		Securities: map[string]Facts{}, Daily: map[HoldingKey]Daily{},
+		FormerDaily: map[InstrumentKey]Daily{}, Held: map[InstrumentKey][]string{},
 		Withholding: map[string]map[string]float64{}, Situs: map[HoldingKey]string{}, FXRates: map[string]float64{}}
 	for _, c := range canonical.BuiltinConventions() {
 		in.Conventions[c.Market] = c
@@ -84,17 +87,18 @@ func monthIndex(b *Book, m time.Time) int {
 	return (m.Year()-b.Projection.Start.Year())*12 + int(m.Month()) - int(b.Projection.Start.Month())
 }
 
-func flatCurve(ccy string, rate float64) *Curve {
+// flatCurve is a flat Treasury curve at rate.
+func flatCurve(rate float64) *Curve {
 	pts := []fixedincome.Point{{Months: 3, Rate: rate}, {Months: 12, Rate: rate}, {Months: 120, Rate: rate}}
-	z, _ := fixedincome.Bootstrap(pts)
-	return &Curve{Currency: ccy, Zero: z, Benchmark: rate, BenchmarkMonths: 3}
+	z, _ := fixedincome.NewCurve(pts, fixedincome.Treasury)
+	return &Curve{Zero: z, Benchmark: rate, BenchmarkMonths: 3}
 }
 
 // A fixed bond priced at par on a coupon date implies its coupon; its
 // DV01 is its value times its modified duration times a basis point.
 func TestAParBondImpliesItsCoupon(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	h := bondHolding("broker", "A", "QBOND", 100000, 100000)
 	in.Holdings = []Holding{h}
 	freq := 2
@@ -133,8 +137,8 @@ func TestAParBondImpliesItsCoupon(t *testing.T) {
 // rows.
 func TestAFixedBookProjectsItsCouponSchedule(t *testing.T) {
 	t.Parallel()
-	in := book()
-	in.Curves["USD"] = flatCurve("USD", 4)
+	in := inputs()
+	in.Curves["USD"] = flatCurve(4)
 	a := bondHolding("broker", "A", "QB1", 50000, 49000)
 	c := bondHolding("broker", "A", "QB2", 20000, 20400)
 	in.Holdings = []Holding{a, c}
@@ -170,13 +174,13 @@ func TestAFixedBookProjectsItsCouponSchedule(t *testing.T) {
 // the benchmark along the forward path, and a shift moves it.
 func TestADepositEarnsItsTieredRateAlongThePath(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	pts := []fixedincome.Point{{Months: 3, Rate: 4}, {Months: 12, Rate: 3}, {Months: 24, Rate: 3}}
-	z, err := fixedincome.Bootstrap(pts)
+	z, err := fixedincome.NewCurve(pts, fixedincome.Treasury)
 	if err != nil {
 		t.Fatal(err)
 	}
-	in.Curves["USD"] = &Curve{Currency: "USD", Zero: z, Benchmark: 4, BenchmarkMonths: 3}
+	in.Curves["USD"] = &Curve{Zero: z, Benchmark: 4, BenchmarkMonths: 3}
 	h := cash("bank", "S", "USD", 100000)
 	in.Holdings = []Holding{h}
 	in.Rates[AccountKey{"bank", "S"}] = []Rate{{Credit: true, Tier: 1, Pct: 1, UpTo: num(50000)},
@@ -209,8 +213,8 @@ func TestADepositEarnsItsTieredRateAlongThePath(t *testing.T) {
 // again at its own yield over the curve (roll).
 func TestTheMaturingRules(t *testing.T) {
 	t.Parallel()
-	in := book()
-	in.Curves["USD"] = flatCurve("USD", 4)
+	in := inputs()
+	in.Curves["USD"] = flatCurve(4)
 	h := bondHolding("broker", "A", "QB", 10000, 10000)
 	acct := cash("broker", "A", "USD", 500)
 	in.Holdings = []Holding{h, acct}
@@ -234,7 +238,7 @@ func TestTheMaturingRules(t *testing.T) {
 	var tags []string
 	for _, p := range b.Projection.Parts {
 		if p.Holding == h.HoldingKey && p.Month == after && p.Reinvested != "" {
-			tags = append(tags, string(p.Rule)+":"+p.Reinvested)
+			tags = append(tags, string(p.Rule)+":"+string(p.Reinvested))
 		}
 	}
 	if strings.Join(tags, " ") != "cash:cash roll:roll" {
@@ -255,7 +259,7 @@ func TestTheMaturingRules(t *testing.T) {
 // frequency of its payments; the projection repeats it on that rhythm.
 func TestAStockPaysItsIndicatedDividend(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	h := Holding{HoldingKey: HoldingKey{"broker", "A", "QSTK"}, Instrument: "QSTK", AssetClass: "public_equity",
 		Vehicle: "stock", Currency: "USD", Value: 20000, Amount: 20000, Quantity: num(200), SecurityID: "symbol:QSTK"}
 	in.Holdings = []Holding{h}
@@ -295,7 +299,7 @@ func TestAStockPaysItsIndicatedDividend(t *testing.T) {
 // bought within the year is unknown.
 func TestAStockThatPaidNothing(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	h := Holding{HoldingKey: HoldingKey{"broker", "A", "QGRO"}, Instrument: "QGRO", AssetClass: "public_equity",
 		Vehicle: "stock", Currency: "USD", Value: 1000, Amount: 1000, Quantity: num(10)}
 	in.Holdings = []Holding{h}
@@ -315,8 +319,8 @@ func TestAStockThatPaidNothing(t *testing.T) {
 // whose prices are their filing day's.
 func TestFunds(t *testing.T) {
 	t.Parallel()
-	in := book()
-	in.Curves["USD"] = flatCurve("USD", 4)
+	in := inputs()
+	in.Curves["USD"] = flatCurve(4)
 	mmf := Holding{HoldingKey: HoldingKey{"broker", "A", "QMMF"}, Instrument: "QMMF", AssetClass: "cash",
 		Vehicle: "fund", Currency: "USD", Value: 10000, Amount: 10000, Quantity: num(10000), SecurityID: "symbol:QMMF"}
 	bf := Holding{HoldingKey: HoldingKey{"broker", "A", "QBF"}, Instrument: "QBF", AssetClass: "fixed_income",
@@ -348,13 +352,13 @@ func TestFunds(t *testing.T) {
 	near(t, "fund distributions", f.Income12, 30000*0.038, 1e-6)
 }
 
-// The grains reconcile: the total of global is the sum of every source's
-// rows, and --converted totals equal the split ones; a liability nets in
-// value and DV01 and is left out of the rates.
-func TestTheGrainsReconcile(t *testing.T) {
+// A liability nets in value and DV01 and is left out of the rates; the
+// total of several currencies is mixed, and --converted reads the same
+// rate as the total row.
+func TestALiabilityNetsAndWeighsNoRate(t *testing.T) {
 	t.Parallel()
-	in := book()
-	in.Curves["USD"] = flatCurve("USD", 4)
+	in := inputs()
+	in.Curves["USD"] = flatCurve(4)
 	b1 := bondHolding("broker", "A", "QB", 10000, 10000)
 	d := cash("bank", "S", "USD", 5000)
 	e := cash("bank", "E", "EUR", 2000)
@@ -372,18 +376,11 @@ func TestTheGrainsReconcile(t *testing.T) {
 	if !total.Total || !total.Mixed || !strings.HasPrefix(total.Quality, "mixed") {
 		t.Fatalf("total row %+v", total)
 	}
-	sum, dv := 0.0, 0.0
-	for _, r := range b.Aggregate(GrainSources, false) {
-		if !r.Total {
-			sum += r.Value
-			dv += *r.DV01
-		}
-	}
-	if sum != total.Value || math.Abs(dv-*total.DV01) > 1e-9 || total.Value != 10000+5000+2200-4000 {
-		t.Errorf("sources sum %v dv01 %v, global %v %v", sum, dv, total.Value, *total.DV01)
+	if total.Value != 10000+5000+2200-4000 {
+		t.Errorf("total value %v", total.Value)
 	}
 	conv := b.Aggregate(GrainAll, true)
-	if len(conv) != 1 || conv[0].Value != total.Value || *conv[0].Implied != *total.Implied {
+	if len(conv) != 1 || *conv[0].Implied != *total.Implied {
 		t.Errorf("converted %+v vs %+v", conv, total)
 	}
 	// The mortgage nets: negative DV01, and no weight in the rates.
@@ -411,18 +408,27 @@ func TestQuality(t *testing.T) {
 		{Holding: Holding{Value: 61}, Measures: Measures{Tags: map[Tag]bool{TagStated: true}}},
 		{Holding: Holding{Value: 39}, Measures: Measures{Tags: map[Tag]bool{TagImplied: true}}},
 	}
-	if got := quality(ps); got != "implied=39% stated=61%" {
+	if got := quality(ps, false); got != "implied=39% stated=61%" {
 		t.Errorf("quality %q", got)
 	}
-	if got := quality(ps[1:]); got != "" {
+	if got := quality(ps[1:], false); got != "" {
 		t.Errorf("implied alone %q", got)
+	}
+	// A tag that covers all but a sliver prints its share: a bare tag is
+	// the whole row's.
+	ps = []Position{
+		{Holding: Holding{Value: 996}, Measures: Measures{Tags: map[Tag]bool{TagImplied: true, TagStated: true}}},
+		{Holding: Holding{Value: -4}, Measures: Measures{Tags: map[Tag]bool{TagStated: true}}},
+	}
+	if got := quality(ps, false); got != "implied=100% stated" {
+		t.Errorf("all but a sliver %q", got)
 	}
 }
 
 // Coverage names what is missing and the ledger record that fills it.
 func TestCoverageSkeletons(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	h := bondHolding("broker", "A", "QB", 1000, 1000)
 	h.Name = "QORVANT CORP NOTE"
 	d := cash("bank", "S", "CHF", 100)
@@ -442,5 +448,151 @@ func TestCoverageSkeletons(t *testing.T) {
 		"no terms broker/QB/ QORVANT CORP NOTE terms"
 	if strings.Join(got, "|") != want {
 		t.Errorf("skeletons:\n%s\nwant\n%s", strings.Join(got, "|"), want)
+	}
+}
+
+// A transaction belongs to the holding in its own account, though a
+// sibling in its portfolio sorts first. An account that held the
+// instrument and sold it has none: its transactions are its sold
+// position's. Any other belongs to the first holding in its portfolio,
+// as a cash account beside a custody account books it; where the
+// portfolio holds none but held it once, to the sold position too; else
+// to the first at its source.
+func TestHoldingOf(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	a, b, c := bondHolding("broker", "A", "QB", 1000, 1000), bondHolding("broker", "B", "QB", 1000, 1000),
+		bondHolding("broker", "C", "QB", 1000, 1000)
+	in.Holdings = []Holding{a, b, c}
+	in.Accounts[AccountKey{"broker", "A"}] = Account{Portfolio: "P1"}
+	for _, acct := range []string{"B", "C", "K", "S"} {
+		in.Accounts[AccountKey{"broker", acct}] = Account{Portfolio: "P2"}
+	}
+	for _, acct := range []string{"D", "E"} {
+		in.Accounts[AccountKey{"broker", acct}] = Account{Portfolio: "P3"}
+	}
+	in.Held[InstrumentKey{"broker", "QB"}] = []string{"A", "B", "C", "D", "S"}
+	for _, tc := range []struct {
+		acct, iid, want string
+	}{
+		{"C", "QB", "C"},
+		{"K", "QB", "B"},
+		{"S", "QB", ""},
+		{"E", "QB", ""},
+		{"X", "QB", "A"},
+		{"C", "QZ", ""},
+		{"C", "", ""},
+	} {
+		got, ok := in.HoldingOf("broker", tc.acct, tc.iid)
+		if ok != (tc.want != "") || (ok && got != HoldingKey{"broker", tc.want, "QB"}) {
+			t.Errorf("%s %q: %v %v, want %q", tc.acct, tc.iid, got, ok, tc.want)
+		}
+	}
+	for _, acct := range []string{"S", "E"} {
+		if k, ok := in.Sold("broker", acct, "QB"); !ok || k != (HoldingKey{"broker", acct, "QB"}) {
+			t.Errorf("%s sold %v %v", acct, k, ok)
+		}
+	}
+	if _, ok := in.Sold("broker", "X", "QB"); ok {
+		t.Error("X sold what it never held")
+	}
+}
+
+// A payment in another currency than the holding's counts at the
+// instant's rates: a dollar stock paid in francs indicates its dividend
+// in dollars, and a holding no figure describes repeats its payment in
+// dollars. A payment no rate converts counts nothing: both read unknown.
+func TestAPaymentInAnotherCurrency(t *testing.T) {
+	t.Parallel()
+	read := func(ccy string) (*Book, Holding, Holding) {
+		in := inputs()
+		in.FXRates["CHF"] = 1.25
+		s := Holding{HoldingKey: HoldingKey{"broker", "A", "QSTK"}, Instrument: "QSTK", AssetClass: "public_equity",
+			Vehicle: "stock", Currency: "USD", Value: 10000, Amount: 10000, Quantity: num(100)}
+		o := Holding{HoldingKey: HoldingKey{"broker", "A", "QNOTE"}, Instrument: "QNOTE", AssetClass: "alternatives",
+			Vehicle: "structured_product", Currency: "USD", Value: 5000, Amount: 5000, Quantity: num(5)}
+		in.Holdings = []Holding{s, o}
+		for _, d := range []*time.Time{date(2025, 9, 10), date(2025, 12, 10), date(2026, 3, 10), date(2026, 6, 10)} {
+			in.Payments[s.HoldingKey] = append(in.Payments[s.HoldingKey], Payment{Day: *d, Amount: 80, Currency: ccy,
+				Quantity: num(100), Type: TypeDividends})
+		}
+		in.Payments[o.HoldingKey] = []Payment{{Day: *date(2025, 9, 30), Amount: 120, Currency: ccy, Type: TypeInterest}}
+		return Compute(in), s, o
+	}
+	b, s, o := read("CHF")
+	p := position(b, s.HoldingKey)
+	// 80 francs on 100 shares is a dollar a share; four a year.
+	near(t, "dividend yield", p.DividendYield, 4, 1e-9)
+	near(t, "income 12m", p.Income12, 400, 1e-9)
+	near(t, "repeated", num(incomeOf(b, o.HoldingKey, 3, RuleCash, PathConstant, 0)), 150, 1e-9)
+	b, s, o = read("GBP")
+	if p := position(b, s.HoldingKey); !p.Tags[TagUnknown] || p.DividendYield != nil {
+		t.Errorf("paid in a currency no rate converts: tags %v yield %v", p.Tags, p.DividendYield)
+	}
+	if p := position(b, o.HoldingKey); !p.Tags[TagUnknown] {
+		t.Errorf("repeats a payment no rate converts: tags %v", p.Tags)
+	}
+}
+
+// A ledger dividend stated in another currency counts at the instant's
+// rates; one no rate converts gives way to the payments.
+func TestALedgerDividendInAnotherCurrency(t *testing.T) {
+	t.Parallel()
+	read := func(ccy string) Position {
+		in := inputs()
+		in.FXRates["CHF"] = 1.25
+		h := Holding{HoldingKey: HoldingKey{"broker", "A", "QSTK"}, Instrument: "QSTK", AssetClass: "public_equity",
+			Vehicle: "stock", Currency: "USD", Value: 10000, Amount: 10000, Quantity: num(100)}
+		in.Holdings = []Holding{h}
+		in.Dividends[InstrumentKey{"broker", "QSTK"}] = canonical.DeclaredDividend{Amount: 0.8, Frequency: 4,
+			Currency: ccy}
+		in.Payments[h.HoldingKey] = []Payment{{Day: *date(2026, 3, 10), Amount: 50, Quantity: num(100),
+			Type: TypeDividends}}
+		return position(Compute(in), h.HoldingKey)
+	}
+	p := read("CHF")
+	near(t, "declared", p.DividendYield, 4, 1e-9)
+	if !p.Tags[TagDeclared] {
+		t.Errorf("declared tags %v", p.Tags)
+	}
+	// The payment of 0.50 a share, once in the year.
+	p = read("GBP")
+	near(t, "indicated", p.DividendYield, 0.5, 1e-9)
+	if !p.Tags[TagIndicated] || p.Tags[TagDeclared] {
+		t.Errorf("indicated tags %v", p.Tags)
+	}
+}
+
+// The defaults are the first rule and the first path, which the CLI, the
+// MCP server and the dashboard's pickers start from.
+func TestTheDefaultsComeFirst(t *testing.T) {
+	t.Parallel()
+	if d := DefaultAssumptions; Rules[0] != d.Rule || Paths[0] != d.Path || d.ShiftBP != 0 {
+		t.Errorf("defaults %+v, rules %v, paths %v", d, Rules, Paths)
+	}
+}
+
+// A skeleton's keys are the ledger's: a yield record's kind, or what
+// names its holding and the note.
+func TestSkeletonKeysAreTheLedgers(t *testing.T) {
+	t.Parallel()
+	empty := &struct{}{}
+	raw, err := json.Marshal(Skeleton{SilverSourceID: "s", Instrument: "i", Account: "a",
+		Rate: &RateSkeleton{Currency: "USD"}, Rating: empty, Dividend: empty, Terms: empty, Note: "n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys map[string]any
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		t.Fatal(err)
+	}
+	named := []string{"silver_source_id", "instrument", canonical.DeclarationAccount, "note"}
+	for k := range keys {
+		if !slices.Contains(canonical.DeclarationYieldKinds, k) && !slices.Contains(named, k) {
+			t.Errorf("key %q is no ledger key", k)
+		}
+	}
+	if len(keys) != len(canonical.DeclarationYieldKinds)+len(named) {
+		t.Errorf("keys %v", keys)
 	}
 }

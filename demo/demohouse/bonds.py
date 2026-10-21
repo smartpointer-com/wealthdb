@@ -79,10 +79,8 @@ def yield_at(value, coupon, life, frequency):
 
 
 def life(day, until):
-    """The years from `day` to `until` (a date or an ISO date), at least
-    MIN_LIFE."""
-    end = dates.parse(until) if isinstance(until, str) else until
-    return max(dates.years(day, end), MIN_LIFE)
+    """The years from `day` to the ISO date `until`, at least MIN_LIFE."""
+    return max(dates.years(day, dates.parse(until)), MIN_LIFE)
 
 
 def curve_yield(curve_on_day, years, spread):
@@ -148,8 +146,6 @@ def discount_price(inst, day, curve_on_day):
     """A discount note's price per 100 on `day`: its face less the
     discount at the curve at its life plus its spread, on ACT/360."""
     days = (dates.parse(inst["maturity"]) - day).days
-    if days <= 0:
-        return Decimal(100)
     with localcontext(PRECISE):
         rate = curve_yield(curve_on_day, D(days) / YEAR_DAYS, D(inst["model"]["spread"]))
         return 100 * (1 - rate / 100 * days / DISCOUNT_DAYS)

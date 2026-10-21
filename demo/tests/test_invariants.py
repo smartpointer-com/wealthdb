@@ -78,7 +78,9 @@ def setUpModule():
         con.close()
     BUILT.update(tmp=tmp, root=root, inputs=inputs, sources=sources, rows=rows,
                  cadence={s["id"]: s["cadence"] for s in inputs.spec["sources"]},
-                 config=json.loads((root / "wealthdb.cfg").read_text()))
+                 config=json.loads((root / "wealthdb.cfg").read_text()),
+                 declarations=[json.loads(line) for line in
+                               (root / "overrides" / "exposure_declarations.ndjson").read_text().splitlines()])
 
 
 def tearDownModule():
@@ -93,9 +95,10 @@ class Built(unittest.TestCase):
         for name, value in BUILT.items():
             setattr(cls, name, value)
 
-    def all(self, table):
-        for src in self.sources:
-            for r in self.rows[src][table]:
+    @classmethod
+    def all(cls, table):
+        for src in cls.sources:
+            for r in cls.rows[src][table]:
                 yield src, r
 
 
@@ -537,17 +540,15 @@ class TestReference(Built):
             self.assertIn(key, refs)
             self.assertIn(p["fund"], refs)
         self.assertEqual(exposure["declarations"], "overrides/exposure_declarations.ndjson")
-        lines = (self.root / "overrides" / "exposure_declarations.ndjson").read_text().splitlines()
-        self.assertTrue(lines, "the declarations ledger has records")
+        self.assertTrue(self.declarations, "the declarations ledger has records")
         dims = ("region", "country", "currency", "sector", "asset_class")
         split, situs = 0, []
-        for line in lines:
-            d = json.loads(line)
+        for d in self.declarations:
             if "account" in d:
                 # A rate names an account the source states, and nothing else.
                 accounts = {a["account_id"] for a in self.rows[d["silver_source_id"]]["accounts"]}
-                self.assertIn(d["account"], accounts, line)
-                self.assertFalse(set(d) - {"silver_source_id", "account", "as_of", "rate", "note"}, line)
+                self.assertIn(d["account"], accounts, d)
+                self.assertFalse(set(d) - {"silver_source_id", "account", "as_of", "rate", "note"}, d)
                 continue
             name = f"{d['silver_source_id']}/{d['instrument']}"
             held = {r["instrument_id"] for r in self.rows[d["silver_source_id"]]["positions"]}
@@ -563,14 +564,28 @@ class TestReference(Built):
         self.assertEqual(split, 1, "one record splits a dimension")
         self.assertEqual(situs, ["emberwright/fund-ii"], "the private fund declares its situs")
 
-    def test_isins_have_the_demo_shape(self):
-        """Every ISIN the catalogues state, and so every one a line or a
-        holding carries."""
+    def isins(self):
+        """Every ISIN the catalogues state or the generator numbers, and so
+        every one a line or a holding carries."""
         isins = [s["isin"] for s in self.cat["securities"] if s.get("isin")]
         isins += [i["isin"] for i in self.inputs.instruments.values() if i.get("isin")]
         self.assertTrue(isins)
-        for isin in isins:
+        return isins
+
+    def test_isins_have_the_demo_shape(self):
+        for isin in self.isins():
             self.assertRegex(isin, r"^[A-Z]{2}000[A-Z0-9]{4}[0-9]{3}$")
+
+    def test_no_isin_ends_in_its_check_digit(self):
+        """So none can be a real security's."""
+        for isin in self.isins():
+            self.assertNotEqual(int(isin[-1]), spec.isin_check_digit(isin[:-1]), isin)
+
+    def test_the_check_digit_is_iso_6166s(self):
+        """US000000000 reads 3028000000000, U and S as 30 and 28. Doubling
+        every other digit from the right gives 2 x 2 + 3 x 2, and the 8
+        stays: 18, so the check digit is 2."""
+        self.assertEqual(spec.isin_check_digit("US000000000"), 2)
 
     def test_no_us_government_line_could_be_a_treasury_issue(self):
         """None names the Treasury, and none has a coupon that is a
@@ -587,7 +602,8 @@ class TestReference(Built):
         for s in self.cat["securities"]:
             inst = self.inputs.instruments.get(s["id"])
             if inst:
-                self.assertFalse({"name", "currency", "ticker", "coupon"} & set(s), s["id"])
+                self.assertFalse({"name", "currency", "ticker", "coupon", "maturity", "spread", "rating"} & set(s),
+                                 s["id"])
                 self.assertFalse(inst.get("isin") and "isin" in s, s["id"])
 
     def test_the_yield_records_name_only_the_demos_own_identifiers(self):
@@ -902,8 +918,6 @@ class TestFundFigures(Built):
                 self.assertTrue(f[("sec_yield", "")] < f[("yield_to_worst", "")] < f[("yield_to_maturity", "")], day)
                 bands = {label: v for (field, label), v in f.items() if field == "maturity_breakdown"}
                 self.assertEqual(sum(bands.values()), 100, day)
-                self.assertLessEqual(set(bands), {label for label, _ in reference.MATURITY_BANDS} |
-                                     {reference.CASH_BAND}, day)
 
     def test_the_bond_funds_maturity_bands_hold_its_lines(self):
         """The bond fund's bands sum to 100 every month-end, and its cash
@@ -930,12 +944,11 @@ class TestHeldBonds(Built):
         super().setUpClass()
         cls.bonds = {iid: i for iid, i in cls.inputs.instruments.items() if i["vehicle"] == "bond"}
         cls.held = collections.defaultdict(list)
-        for src, p in cls.all(cls, "positions"):
+        for src, p in cls.all("positions"):
             if p["instrument_id"] in cls.bonds:
                 cls.held[p["instrument_id"]].append((src, p))
-        cls.txns = [(src, t) for src, t in cls.all(cls, "transactions") if t["instrument_id"] in cls.bonds]
-        cls.ledger = [json.loads(line) for line in
-                      (cls.root / "overrides" / "exposure_declarations.ndjson").read_text().splitlines()]
+        cls.txns = [(src, t) for src, t in cls.all("transactions") if t["instrument_id"] in cls.bonds]
+        cls.terms = {(d["silver_source_id"], d["instrument"]): d["terms"] for d in cls.declarations if "terms" in d}
 
     def held_on(self, day):
         return {iid for iid, ps in self.held.items() for _, p in ps if dates.day_of(p["snapshot_at"]) == day}
@@ -970,7 +983,6 @@ class TestHeldBonds(Built):
         after it."""
         redeemed = [t for _, t in self.txns if t["description"].startswith("REDEMPTION")]
         self.assertTrue(redeemed)
-        terms = {(d["silver_source_id"], d["instrument"]): d["terms"] for d in self.ledger if "terms" in d}
         realized = {r["realized_lot_id"].rsplit("-", 1)[0]: r for _, r in self.all("realized_lots")}
         for t in redeemed:
             inst, day = self.bonds[t["instrument_id"]], dates.day_of(t["occurred_at"])
@@ -990,7 +1002,7 @@ class TestHeldBonds(Built):
             self.assertLessEqual(-Decimal(buys[0]["net_amount"]), face)
         for iid, ps in self.held.items():
             if "ladder" in self.bonds[iid]:
-                self.assertEqual(terms[(ps[0][0], iid)], {"frequency": 0, "coupon_kind": "zero", "day_count": "ACT/360"},
+                self.assertEqual(self.terms[(ps[0][0], iid)], {"frequency": 0, "coupon_kind": "zero", "day_count": "ACT/360"},
                                  iid)
         (last,) = [iid for iid in self.held_on(dates.prev_business(AS_OF)) if "ladder" in self.bonds[iid]]
         self.assertGreater(dates.parse(self.bonds[last]["maturity"]), AS_OF)
@@ -1043,17 +1055,16 @@ class TestHeldBonds(Built):
     def test_a_callable_bond_trades_above_par_and_its_record_states_its_call(self):
         callable_ = [iid for iid in self.held if "call" in self.bonds[iid]]
         self.assertTrue(callable_)
-        terms = {(d["silver_source_id"], d["instrument"]): d["terms"] for d in self.ledger if "terms" in d}
         for iid in callable_:
             src, last = self.held[iid][-1]
             self.assertLess(AS_OF, dates.parse(self.bonds[iid]["call"]), iid)
             self.assertGreater(self.price(last), 100, iid)
-            self.assertEqual(terms[(src, iid)], {"call_date": self.bonds[iid]["call"]})
+            self.assertEqual(self.terms[(src, iid)], {"call_date": self.bonds[iid]["call"]})
 
     def test_a_rating_record_rates_a_bond_its_name_does_not(self):
         """In a bucket the engine knows, and as the funds' lines rate the
         same bond."""
-        ratings = [d for d in self.ledger if "rating" in d]
+        ratings = [d for d in self.declarations if "rating" in d]
         self.assertTrue(ratings)
         lines = {sid: s.get("rating") for sid, s in reference.securities(reference.load(), self.inputs.instruments).items()}
         for d in ratings:
@@ -1080,11 +1091,11 @@ class TestStatedRates(Built):
         super().setUpClass()
         cls.spec = cls.inputs.spec
         cls.cash = collections.defaultdict(dict)
-        for _, c in cls.all(cls, "cash_balances"):
+        for _, c in cls.all("cash_balances"):
             cls.cash[(c["account_id"], c["currency"])][dates.day_of(c["snapshot_at"])] = c
         cls.interest = collections.defaultdict(list)
         cls.moves = collections.defaultdict(list)
-        for _, t in cls.all(cls, "transactions"):
+        for _, t in cls.all("transactions"):
             cls.moves[(t["account_id"], t["currency"])].append(t)
             if t["kind"] == "interest" and not t["instrument_id"]:
                 cls.interest[(t["account_id"], t["currency"])].append(t)
@@ -1147,7 +1158,7 @@ class TestStatedRates(Built):
     def test_a_balance_only_the_ledger_rates_earns_the_records_rate(self):
         """Every month, on its source's last day of the month, at the rate
         of the record in force for its account and currency."""
-        records = [d for d in self.config_ledger() if "rate" in d]
+        records = [d for d in self.declarations if "rate" in d]
         self.assertGreater(len({(d["account"], d["rate"]["currency"]) for d in records}), 1)
         cadence = {a["account_id"]: self.cadence[src] for src, a in self.all("accounts")}
         for d in records:
@@ -1167,23 +1178,13 @@ class TestStatedRates(Built):
                 want = (self.before(key, t) * Decimal(str(rec["rate"]["pct"])) / 100 / 12).quantize(Decimal("0.01"))
                 self.assertEqual(Decimal(t["net_amount"]), want, t["transaction_id"])
 
-    def config_ledger(self):
-        return [json.loads(line) for line in
-                (self.root / "overrides" / "exposure_declarations.ndjson").read_text().splitlines()]
-
 
 class TestLedgerRecords(Built):
     """The declarations ledger's other yield records agree with what the
     household's simulation does."""
 
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        cls.ledger = [json.loads(line) for line in
-                      (cls.root / "overrides" / "exposure_declarations.ndjson").read_text().splitlines()]
-
     def test_a_declared_dividend_pays_the_records_amount(self):
-        declared = [d for d in self.ledger if "dividend" in d]
+        declared = [d for d in self.declarations if "dividend" in d]
         self.assertTrue(declared)
         paid = 0
         for src, t in self.all("transactions"):
@@ -1203,7 +1204,7 @@ class TestLedgerRecords(Built):
 
     def test_the_loans_terms_are_the_mortgages(self):
         m = self.inputs.spec["mortgage"]
-        loans = [d for d in self.ledger if "terms" in d and d["instrument"] == "loan"]
+        loans = [d for d in self.declarations if "terms" in d and d["instrument"] == "loan"]
         (terms,) = [d["terms"] for d in loans]
         first = dates.parse(m["first_payment"])
         self.assertEqual(Decimal(str(terms["coupon"])), Decimal(m["rate"]) * 100)

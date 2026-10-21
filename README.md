@@ -9,6 +9,7 @@ one CLI and an optional set of dashboards answer:
 
 - what was held, anywhere, as of any date;
 - what is really owned, every fund looked through to what it holds;
+- what the holdings yield, and how they move with interest rates;
 - what each account, each portfolio and the whole returned;
 - what came in and what went out, typed and categorised;
 - where the cash went, as a cash flow statement with the household's
@@ -101,15 +102,22 @@ out by default. Every rebuilt figure says so.
 
 **Exposure.** What is really owned: every fund looked through to the
 stocks and bonds it holds, added to what is held directly, by asset
-class, sector, size, country and currency, and where each holding
-legally sits. The fund data comes from public sources the `refdata`
-collector reads. Where nothing describes a fund, a proxy the config
-names stands in, and every gap is listed.
+class, sector, size, country, currency, credit, maturity and issuer,
+and where each holding legally sits. The fund data comes from public
+sources the `refdata` collector reads. Where nothing describes a fund,
+a proxy the config names stands in, and every gap is listed.
+
+**Yield.** What the holdings earn, and how their value moves with
+interest rates. Each holding gets its yields. Each bond, fund and
+deposit also gets its duration and its rate sensitivity. Cash is set
+against its currency's benchmark rate. The public yield curves come
+from the `fred` and `curves` collectors.
 
 **Income and spending.** What arrived — wages, interest, dividends,
 rent — and what left, grouped by category, across all cards and
-accounts. The household's own transfers are taken out, so a move from
-checking to savings never looks like spending.
+accounts, and what the holdings are expected to pay. The household's
+own transfers are taken out, so a move from checking to savings never
+looks like spending.
 
 **Cash flow.** A cash flow statement for the household: what came in,
 what went out, what was invested or sold, what went into or came out of
@@ -123,6 +131,7 @@ wealthdb holdings global -d 2024-12-31 -x CHF        # net worth at the end of 2
 wealthdb returns portfolios 2025                     # how each portfolio did in 2025
 wealthdb gains realized 2025                         # every lot sold in 2025, with its gain
 wealthdb exposure countries                          # where the money is, every fund looked through
+wealthdb yield global -x CHF                         # what the holdings yield, by currency
 wealthdb spending categories 2025 --period annual    # last year's spending by category
 wealthdb income summary 2025-01 2025-03 -C +withheld # Q1 income, with the tax withheld beside it
 wealthdb cashflow sankey 2025                        # the year's cash flow as a diagram
@@ -132,7 +141,7 @@ Every report is available in three places:
 
 - the command line, as a table, CSV or JSON;
 - a set of local dashboards (`wealthdb web`) for net worth, allocation,
-  returns, gains, spending, income, cash flow and exposure;
+  returns, gains, spending, income, cash flow, exposure and yield;
 - AI agents, over MCP (`wealthdb mcp`).
 
 A privacy mode hides amounts, for a screen others may see. The CLI's
@@ -207,8 +216,9 @@ There is one collector per provider.
   archives (load-only); [`manual`](collectors/manual/) for holdings
   with no portal, such as property, private loans and escrow claims;
   [FRED](collectors/fred/) for historic FX rates and the Treasury curve;
-  [`refdata`](collectors/refdata/) for what each fund holds and states
-  about itself, and what each company reports.
+  [`curves`](collectors/curves/) for the euro and franc government
+  yield curves; [`refdata`](collectors/refdata/) for what each fund
+  holds and states about itself, and what each company reports.
 
 ## Adding a data source
 
@@ -252,7 +262,7 @@ Four parts, and a demo, in one repository:
 collectors/<source>/         wealthdb/
   download  → bronze            load  ─┐
   load      → silver  ────────────────┼─→ gold (DuckDB)  →  wealthdb holdings | returns | gains | exposure
-  (one SQLite per source)             │                     wealthdb spending | income | cashflow
+  (one SQLite per source)             │                     wealthdb yield | spending | income | cashflow
                                       │                     wealthdb transactions
                                       │                     wealthdb web  (Metabase, over a snapshot)
                                       │                     wealthdb mcp  (AI agents, read-only)
@@ -328,7 +338,9 @@ describes the household and how to query it from the command line.
   **[CASHFLOW.md](wealthdb/docs/CASHFLOW.md)** — the three readings of
   the enrichment engine; **[GAINS.md](wealthdb/docs/GAINS.md)** —
   realized and unrealized gains; **[EXPOSURE.md](wealthdb/docs/EXPOSURE.md)**
-  — the look-through and its views; **[LOTS.md](wealthdb/docs/LOTS.md)** —
+  — the look-through and its views; **[YIELD.md](wealthdb/docs/YIELD.md)**
+  — what the holdings yield and their rate risk;
+  **[LOTS.md](wealthdb/docs/LOTS.md)** —
   the lot engine that rebuilds a cost basis no provider states;
   **[TAXONOMY.md](wealthdb/docs/TAXONOMY.md)** —
   the `asset_class` × `vehicle` classification.

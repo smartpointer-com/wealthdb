@@ -119,7 +119,7 @@ func TestReadYieldCurvesBasis(t *testing.T) {
 	if usd == nil || usd.Zero == nil || usd.Benchmark != 4 || usd.BenchmarkMonths != 3 {
 		t.Fatalf("USD curve %+v", usd)
 	}
-	for m := 0; m <= want.Months(); m++ {
+	for m := 0; m <= 120; m++ { // to the longest tenor
 		if usd.Zero.Zero(m) != want.Zero(m) {
 			t.Fatalf("USD zero %dM = %v, want %v", m, usd.Zero.Zero(m), want.Zero(m))
 		}

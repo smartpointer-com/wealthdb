@@ -9,7 +9,7 @@ import (
 
 // Every verb that loads stamps the config's yield block into gold and
 // says how many entries it stamped; a load without the block leaves the
-// built-in conventions and cycles and the default horizon alone.
+// built-in conventions and cycles alone.
 func TestLoadStampsTheYieldBlock(t *testing.T) {
 	t.Parallel()
 	for _, args := range [][]string{{"load", "schwab-test"}, {"reload", "schwab-test"}, {"reload", "-a"}} {
@@ -35,7 +35,7 @@ func TestLoadStampsTheYieldBlock(t *testing.T) {
 			if want := args[0] + ": 6 yield entr(ies) stamped"; !strings.Contains(so, want) {
 				t.Errorf("stdout lacks %q:\n%s", want, so)
 			}
-			if got := yieldState(t, goldPathFromCfg(cfgPath)); got != "2 curves, 1 rates, 1 funds, 1+1 config, horizon 24" {
+			if got := yieldState(t, goldPathFromCfg(cfgPath)); got != "2 curves, 1 rates, 1 funds, 1+1 config" {
 				t.Errorf("gold after %s: %s", args[0], got)
 			}
 
@@ -44,7 +44,7 @@ func TestLoadStampsTheYieldBlock(t *testing.T) {
 			if code != 0 || strings.Contains(so, "yield entr(ies)") {
 				t.Fatalf("exit %d, stdout:\n%s\nstderr:\n%s", code, so, se)
 			}
-			if got := yieldState(t, goldPathFromCfg(cfgPath)); got != "0 curves, 0 rates, 0 funds, 0+0 config, horizon 12" {
+			if got := yieldState(t, goldPathFromCfg(cfgPath)); got != "0 curves, 0 rates, 0 funds, 0+0 config" {
 				t.Errorf("gold after a load without the block: %s", got)
 			}
 		})
@@ -52,8 +52,8 @@ func TestLoadStampsTheYieldBlock(t *testing.T) {
 }
 
 // yieldState is what the yield tables hold, in counts: curve points,
-// withholding rates, rating funds, conventions and cycles the config
-// sets, and the horizon.
+// withholding rates, rating funds, and the conventions and cycles the
+// config sets.
 func yieldState(t *testing.T, goldPath string) string {
 	t.Helper()
 	db, err := sql.Open("duckdb", goldPath+"?access_mode=read_only")
@@ -61,16 +61,15 @@ func yieldState(t *testing.T, goldPath string) string {
 		t.Fatalf("open gold read-only: %v", err)
 	}
 	defer db.Close()
-	var curves, rates, funds, conventions, cycles, builtin, horizon int
+	var curves, rates, funds, conventions, cycles, builtin int
 	if err := db.QueryRow(`SELECT
         (SELECT COUNT(*) FROM yield_curves), (SELECT COUNT(*) FROM yield_withholding),
         (SELECT COUNT(*) FROM yield_rating_funds),
         (SELECT COUNT(*) FROM yield_conventions WHERE origin = 'config'),
         (SELECT COUNT(*) FROM yield_cycles WHERE origin = 'config'),
         (SELECT COUNT(*) FROM yield_conventions WHERE origin = 'builtin') +
-            (SELECT COUNT(*) FROM yield_cycles WHERE origin = 'builtin'),
-        (SELECT horizon_months FROM yield_settings)`).
-		Scan(&curves, &rates, &funds, &conventions, &cycles, &builtin, &horizon); err != nil {
+            (SELECT COUNT(*) FROM yield_cycles WHERE origin = 'builtin')`).
+		Scan(&curves, &rates, &funds, &conventions, &cycles, &builtin); err != nil {
 		t.Fatalf("read the yield tables: %v", err)
 	}
 	// The built-in maps fill every row the config does not set: five
@@ -78,6 +77,5 @@ func yieldState(t *testing.T, goldPath string) string {
 	if conventions+cycles+builtin != 5+11 {
 		t.Errorf("%d conventions and cycles in all, want 16", conventions+cycles+builtin)
 	}
-	return fmt.Sprintf("%d curves, %d rates, %d funds, %d+%d config, horizon %d", curves, rates, funds, conventions,
-		cycles, horizon)
+	return fmt.Sprintf("%d curves, %d rates, %d funds, %d+%d config", curves, rates, funds, conventions, cycles)
 }

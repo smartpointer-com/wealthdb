@@ -41,10 +41,10 @@ ALTER TABLE lines ADD COLUMN accrual_date      TEXT;     -- YYYY-MM-DD, the day 
 -- whole: currency XXX (ISO 4217's "no currency"), with credit_ig_dv01
 -- and credit_hy_dv01 what it moves by for a one basis point move of
 -- investment-grade and of non-investment-grade spreads. Every figure is
--- signed as filed: positive when the fund loses value as rates or
--- spreads rise. A request that states a fund's sensitivities for a day
--- replaces the rows of that fund and day; one that states only a
--- composition leaves them.
+-- signed as filed. Filers follow no one sign convention: gold reads each
+-- filing in one sign (fund_risk_signed). A request that states a fund's
+-- sensitivities for a day replaces the rows of that fund and day; one
+-- that states only a composition leaves them.
 CREATE TABLE fund_risk (
     fund_ref        TEXT    NOT NULL,
     as_of           INTEGER NOT NULL,

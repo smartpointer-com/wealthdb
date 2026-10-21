@@ -305,17 +305,17 @@ class Simulation:
         self._mortgage_rate = rate
         self._mortgage_payment = cents(principal * rate / (ONE - (ONE + rate) ** -n))
         balance = principal
-        d = dates.parse(m["first_payment"])
+        first = dates.parse(m["first_payment"])
+        d = first
         while d <= day:
             interest = cents(balance * rate)
             balance -= self._mortgage_payment - interest
             d = dates.add_months(d, 1)
         self._loan_balance = balance
         self.book.set_mark(m["loan"], "loan", -balance, day, book=-principal,
-                           acquired=dates.add_months(dates.parse(m["first_payment"]), -1))
+                           acquired=dates.add_months(first, -1))
         # The loan's note: its rate, monthly payments to its last, and the
         # end of its fixed period. No source states them.
-        first = dates.parse(m["first_payment"])
         self._record(self.book.account(m["loan"]).source, "loan", "terms", {
             "coupon": _number(D(m["rate"]) * 100), "frequency": 12,
             "maturity": dates.add_months(first, n - 1).isoformat(),
@@ -452,13 +452,13 @@ class Simulation:
     def _term_deposit(self, day):
         """At its end a term deposit earns its interest, simple on ACT/365,
         and rolls for another term at the curve's rate for the term less
-        the bank's margin."""
+        the bank's margin, at least its floor, in two decimals."""
         td = self.spec["term_deposit"]
         t = self._term
         if day != t["end"]:
             return
         acct = self.book.account(td["account"])
-        interest = cents(acct.balance() * t["rate"] / 100 * (t["end"] - t["start"]).days / 365)
+        interest = cents(acct.balance() * t["rate"] / 100 * (t["end"] - t["start"]).days / bonds.YEAR_DAYS)
         self._txn(acct.id, day, "interest", interest, desc="TERM DEPOSIT INTEREST")
         offered = self.market.curve_on(day)[td["tenor"]] - D(td["margin"])
         self._term = {"start": day, "end": dates.add_months(day, td["months"]),

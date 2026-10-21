@@ -31,10 +31,11 @@ Pick the tool by the question:
 - what is held, where, and what it is worth (today or on a date); net worth; one account or one institution -> holdings
 - how investments performed, as a return % -> returns
 - what was gained or lost (P&L), realized or unrealized; a year's realized gains; a holding's cost basis -> gains
-- what is really owned once every fund is looked through: allocation by asset class, sector, country, region or currency; how much of one company is held through funds -> exposure
+- what is really owned once every fund is looked through: allocation by asset class, sector, country, region or currency; debt by credit, maturity or coupon; the largest issuers; how much of one company is held through funds -> exposure
+- what the holdings yield or earn; interest rates, duration, DV01; cash against its benchmark -> yield
 - the individual booked lines (a trade, a deposit, a transfer, the largest transactions) -> transactions; totals of dividends, interest, salary or spending are income and spending
 - what was spent, on what -> spending
-- what was received, from whom -> income
+- what was received, from whom; what the holdings will pay and when -> income (view=projection or calendar)
 - where the household's cash came from and went; mortgage and loan payments; money into retirement, education or health plans -> cashflow (view=flows for one class)
 - is the data current -> status; which dates have data -> snapshots
 - help on a tool, its columns, or a term -> describe
@@ -45,7 +46,7 @@ Conventions:
 - One call usually answers the question: a result is one row per entity, category or type for the whole window unless you ask for monthly, quarterly or annual buckets.
 - Each result starts with a header line that states the resolved window or as-of date, the currency and the row count; check it matches the question. Results are capped; the last line says how to get more or narrow.
 - Money columns are plain decimals in the currency named in the header (value_CHF). A blank cell means no value, not zero. In line views money leaving is negative; sort "-value" puts the largest amounts first whatever their sign.
-- In returns, gains and exposure, read the quality column: it names the reason for every n/a or gap. Returns are not additive across views; gains are.
+- In returns, gains, exposure and yield, read the quality column: it names the reason for every n/a or gap. Returns are not additive across views; gains are.
 - A holding before a source's first snapshot is missing history, not zero; snapshots shows where data begins.`
 
 const privacyNotice = "This endpoint redacts amounts, quantities, account numbers and the names taken off statements (merchants, payers, narratives); account names, holdings, categories and shares stay visible."
@@ -223,8 +224,10 @@ Example: {view: "sectors", as_of: "2025-12-31", currency: "CHF"}.`,
 Example: {from: "last month", to: "last month", kind: "dividend"}.`,
 	"spending": `spend and refunds are positive; net_spend = spend - refunds. The category rows of a period sum to its summary row. (uncategorized) is what no rule or model has placed yet. The transactions view keeps the ledger sign: a purchase is negative there.
 Example: {view: "transactions", from: "2025-03", to: "2025-03", sort: "-value", limit: 10}.`,
-	"income": `income and reversals are positive; net_income = income - reversals. The type rows of a period sum to its summary row.
+	"income": `income and reversals are positive; net_income = income - reversals. The type rows of a period sum to its summary row. projection, calendar and the entity views put what was received beside what the holdings are expected to pay; their window may lie in the future, and basis says what the expected part rests on.
 Example: {view: "transactions", from: "2025", to: "2025", type: "dividend", sort: "-value"}.`,
+	"yield": `A rate belongs to a currency: an aggregate row is one entity in one currency, and the total row weighs the currencies by value (quality mixed); converted gives one row per entity. dv01 is the value lost for a rise of one basis point; a liability's is negative and nets. The quality column says what each figure rests on (describe topic=quality); view=coverage lists what is missing.
+Example: {view: "curve", currency: "CHF"}.`,
 	"cashflow": `The four sections sum to net_cash_flow. vehicles is every plan together; for one plan read view=flows at level=class. The mortgage is under financing. A node is a net: inflow and outflow beside it are the gross lines under it.
 Example: {view: "flows", from: "2025", to: "2025", class: "Retirement"}.`,
 	"status":          `new_data=yes means a load would bring newer data in. state "not loaded" means gold holds nothing from the source yet.`,
@@ -234,13 +237,14 @@ Example: {view: "flows", from: "2025", to: "2025", class: "Retirement"}.`,
 }
 
 const datesHelp = `Dates: "2025" is that year, "2025-06" that month, "2025-06-15" that day; "today", "yesterday", "last month", "last year" and "3 months ago" also work (English, UTC).
-from snaps to the start of its unit, to and as_of to the end: from="2025", to="2025" is the calendar year; from="2025-06" alone runs to today; to alone runs from the start of the data.
-Defaults: holdings and exposure as of today; transactions the past 30 days; spending, income, cashflow and gains the last twelve months; returns since the first snapshot.
+from snaps to the start of its unit, to and as_of to the end: from="2025", to="2025" is the calendar year; from="2025-06" alone runs to today; to alone runs from the start of the data. Income's forward views differ: a lone from is its own span, and a lone to runs from the first day of next month.
+Defaults: holdings, exposure and yield as of today; transactions the past 30 days; spending, cashflow, gains and income's received views the last twelve months; income's forward views the horizon after the current month; returns since the first snapshot.
 Every result header states the dates it used, as ISO dates.`
 
-// qualityHelp is describe topic=quality: the tags of the returns, gains
-// and exposure quality columns.
-var qualityHelp = returnsGainsQualityHelp + "\n\n" + exposureQualityHelp()
+// qualityHelp is describe topic=quality: the tags of the returns, gains,
+// exposure and yield quality columns.
+var qualityHelp = returnsGainsQualityHelp + "\n\n" + exposureQualityHelp() + "\n\n" + yieldQualityHelp() + "\n\n" +
+	incomeForwardQualityHelp()
 
 const returnsGainsQualityHelp = `The returns quality column gives the reason for every n/a and tags every approximation. Common tags:
 - since_data_inception: the return runs from the entity's first snapshot, not from when the account opened.
@@ -290,14 +294,25 @@ The gains quality column names each way a figure can be incomplete:
 func exposureQualityHelp() string {
 	var b strings.Builder
 	b.WriteString("The exposure quality column names what a figure rests on, each tag with the share of the row it covers (proxy=12%):")
-	for _, q := range exposureQualityTags {
-		b.WriteString("\n- " + q.tag + ": " + q.meaning + ".")
-	}
+	b.WriteString(tagList(exposureQualityTags))
 	b.WriteString("\n\nIn view=situs, quality gives the share of the row each basis of the situs covers (isin=80%):")
-	for _, q := range exposureSitusBases {
-		b.WriteString("\n- " + q.tag + ": " + q.meaning + ".")
-	}
+	b.WriteString(tagList(exposureSitusBases))
 	return b.String()
+}
+
+// yieldQualityHelp lists the yield quality tags (yieldQualityTags).
+func yieldQualityHelp() string {
+	return "The yield quality column names what a figure rests on, each tag with the share of the row's gross value it covers (stated=61%); a bare tag covers the whole row:" +
+		tagList(yieldQualityTags)
+}
+
+// incomeForwardQualityHelp lists the basis and quality words of income's
+// forward views (incomeBasisTags, incomeRungTags).
+func incomeForwardQualityHelp() string {
+	return "On income's forward views, basis says what an expected amount rests on (on projection each basis's share, declared=76% stated=24%):" +
+		tagList(incomeBasisTags) +
+		"\n\nTheir quality column gives the share of the reinvested income each way of reinvesting earns (roll=100% roll_cash=0%), then shift=±Nbp where a shift moves the income:" +
+		tagList(incomeRungTags)
 }
 
 func (s *mcpServer) privacyHelp() string {

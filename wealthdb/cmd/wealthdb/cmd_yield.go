@@ -43,6 +43,19 @@ var yieldGrains = map[string]yield.Grain{"global": yield.GrainAll, "sources": yi
 // yieldSeriesViews are the views --period takes.
 var yieldSeriesViews = []string{"global", "sources", "portfolios", "accounts", "curve"}
 
+// yieldAggregateViews are the aggregate views, in yieldViews' order:
+// --converted's.
+var yieldAggregateViews = slices.DeleteFunc(slices.Clone(yieldViews), func(v string) bool {
+	_, ok := yieldGrains[v]
+	return !ok
+})
+
+// errConverted refuses converted, by the name its front-end gives it,
+// off the aggregate views.
+func errConverted(name string) error {
+	return errs.Newf(errs.ExitUsage, "yield: %s belongs to the %s views", name, andList(yieldAggregateViews))
+}
+
 func cmdYield(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
 	view, rest, err := routeView("yield", subargs, yieldViews, yieldUsage, stderr)
 	if err != nil {
@@ -51,7 +64,7 @@ func cmdYield(ctx context.Context, g globalFlags, subargs []string, _ io.Reader,
 	fs := flag.NewFlagSet("wealthdb yield "+view, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asOf := registerAsOf(fs)
-	period := fs.String("period", "", strings.Join(exposurePeriods, " | ")+" — a series over a window")
+	period := fs.String("period", "", strings.Join(seriesPeriods, " | ")+" — a series over a window")
 	converted := fs.Bool("converted", false, "one row per entity in the output currency, rates across currencies")
 	rf := registerReportFlags(fs, true)
 	fs.Usage = func() { fmt.Fprintln(stderr, yieldUsage()) }
@@ -60,39 +73,18 @@ func cmdYield(ctx context.Context, g globalFlags, subargs []string, _ io.Reader,
 	}
 	skeletons := *rf.format == skeletonFormat
 	if skeletons {
-		if err := checkYieldSkeletonFlags(fs, view, *period, *rf.privacy); err != nil {
+		if err := checkSkeletonFlags("yield", fs, view, *period, *rf.privacy); err != nil {
 			return err
 		}
 		*rf.format = string(output.FormatTable)
 	}
 	if _, ok := yieldGrains[view]; !ok && *converted {
-		return errs.Newf(errs.ExitUsage, "yield: --converted belongs to the global, sources, portfolios and accounts views")
+		return errConverted("--converted")
 	}
 	now := time.Now()
-	var series []seriesPoint
-	if *period == "" {
-		if err := noPositionals(fs, "yield"); err != nil {
-			return err
-		}
-	} else {
-		if err := checkChoice("yield", "period", *period, exposurePeriods...); err != nil {
-			return err
-		}
-		if !slices.Contains(yieldSeriesViews, view) {
-			return errs.Newf(errs.ExitUsage, "yield: --period belongs to the %s views", strings.Join(yieldSeriesViews, ", "))
-		}
-		if isSet(fs, "d", "as-of") {
-			return errs.Newf(errs.ExitUsage, "yield: -d names one day; a series takes a window instead (FROM [TO])")
-		}
-		from, to, err := parseTrailingYearWindow(fs.Args(), now)
-		if err != nil {
-			fs.Usage()
-			return errs.Newf(errs.ExitUsage, "yield: %s", err.Error())
-		}
-		series = seriesPoints(from, min(to, anchorToDay(now.UTC(), true).Unix()), *period)
-		if len(series) == 0 {
-			return errs.Newf(errs.ExitUsage, "yield: the window starts after today")
-		}
+	series, err := parseSeries("yield", fs, view, *period, yieldSeriesViews, now)
+	if err != nil {
+		return err
 	}
 	asOfEpoch, err := parseAsOf(*asOf, now)
 	if err != nil {
@@ -110,22 +102,6 @@ func cmdYield(ctx context.Context, g globalFlags, subargs []string, _ io.Reader,
 	return writeReport(ctx, rep, *rf.cols, "yield", open, *rf.privacy, fmtChoice, stdout)
 }
 
-// checkYieldSkeletonFlags refuses what -f ndjson cannot honour, as
-// exposure's does.
-func checkYieldSkeletonFlags(fs *flag.FlagSet, view, period string, privacy bool) error {
-	switch {
-	case view != "coverage":
-		return errs.Newf(errs.ExitUsage, "yield: -f ndjson belongs to the coverage view")
-	case period != "":
-		return errs.Newf(errs.ExitUsage, "yield: -f ndjson prints the records still to write on one day; it takes no --period")
-	case isSet(fs, "C", "columns"):
-		return errs.Newf(errs.ExitUsage, "yield: -f ndjson prints whole records; it takes no -C")
-	case privacy:
-		return errs.Newf(errs.ExitUsage, "yield: -f ndjson names each holding's instrument, which -p hides")
-	}
-	return nil
-}
-
 // yieldBook computes the book of one instant.
 func yieldBook(ctx context.Context, db *sql.DB, at int64, ccy string) (*yield.Book, error) {
 	in, err := gold.YieldInputs(ctx, db, at, ccy)
@@ -141,7 +117,7 @@ func yieldReport(req request) *report {
 	ccy := req.currency
 	if grain, ok := yieldGrains[req.view]; ok {
 		kindOf, loadKinds := sourceKinds()
-		return exposureView(req, buildYieldRowColumns(ccy, grain, kindOf), yieldRowDefaults[grain],
+		return seriesView(req, buildYieldRowColumns(ccy, grain, kindOf), yieldRowDefaults[grain],
 			func(ctx context.Context, db *sql.DB, at int64) ([]yield.Row, error) {
 				if err := loadKinds(ctx, db); err != nil {
 					return nil, err
@@ -155,14 +131,8 @@ func yieldReport(req request) *report {
 	}
 	switch req.view {
 	case "positions":
-		return newReport(buildYieldPositionColumns(ccy), defaultYieldPositionColumns,
-			func(ctx context.Context, db *sql.DB) ([]yield.Position, error) {
-				b, err := yieldBook(ctx, db, req.asOf, ccy)
-				if err != nil {
-					return nil, err
-				}
-				return b.Positions, nil
-			})
+		return bookView(req, buildYieldPositionColumns(ccy), defaultYieldPositionColumns,
+			func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.Position, error) { return b.Positions, nil })
 	}
 	return yieldDetailReport(req)
 }
@@ -173,30 +143,6 @@ func yieldReport(req request) *report {
 // value, dv01, every income amount, a price and a key that is a
 // holding's own; rates, durations, shares, labels and public keys stay
 // (docs/YIELD.md §2).
-
-// floatMoneyCol is a money figure in the output currency, two decimals,
-// redacted as money.
-func floatMoneyCol[T any](name, outCcy string, get func(T) *float64) columnSpec[T] {
-	return columnSpec[T]{Name: name, Header: name + "_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-		Extract: func(r T) string {
-			v := get(r)
-			if v == nil {
-				return ""
-			}
-			return fmt.Sprintf("%.2f", *v)
-		}}
-}
-
-// yearsCol is a figure in years, two decimals.
-func yearsCol[T any](name string, get func(T) *float64) columnSpec[T] {
-	return columnSpec[T]{Name: name, Align: output.AlignRight, Extract: func(r T) string {
-		v := get(r)
-		if v == nil {
-			return ""
-		}
-		return fmt.Sprintf("%.2f", *v)
-	}}
-}
 
 // yieldRateCols are the figures the aggregate and position rows share,
 // in the order of docs/YIELD.md §2.
@@ -215,12 +161,12 @@ func yieldRateCols[T any](outCcy string, get func(T) yieldFigures) []columnSpec[
 		pctCol("dividend_yield", f(func(y yieldFigures) *float64 { return y.dividend })),
 		pctCol("benchmark", f(func(y yieldFigures) *float64 { return y.benchmark })),
 		pctCol("gap", f(func(y yieldFigures) *float64 { return y.gap })),
-		yearsCol("duration", f(func(y yieldFigures) *float64 { return y.duration })),
-		yearsCol("convexity", f(func(y yieldFigures) *float64 { return y.convexity })),
+		decimalCol("duration", f(func(y yieldFigures) *float64 { return y.duration })),
+		decimalCol("convexity", f(func(y yieldFigures) *float64 { return y.convexity })),
 		floatMoneyCol("dv01", outCcy, f(func(y yieldFigures) *float64 { return y.dv01 })),
 		floatMoneyCol("income_12m", outCcy, f(func(y yieldFigures) *float64 { return y.income12 })),
 		floatMoneyCol("income_100bp", outCcy, f(func(y yieldFigures) *float64 { return y.income100bp })),
-		yearsCol("maturity", f(func(y yieldFigures) *float64 { return y.maturity })),
+		decimalCol("maturity", f(func(y yieldFigures) *float64 { return y.maturity })),
 	}
 }
 
@@ -237,12 +183,7 @@ func rowFigures(r yield.Row) yieldFigures {
 }
 
 func positionFigures(p yield.Position) yieldFigures {
-	var iy *float64
-	if p.Income12 != nil && p.Value != 0 {
-		v := *p.Income12 / p.Value * 100
-		iy = &v
-	}
-	return yieldFigures{iy, p.Stated, p.CurrentYield, p.Implied, p.ImpliedAnnual, p.Realized, p.EarningsYield,
+	return yieldFigures{p.IncomeYield(), p.Stated, p.CurrentYield, p.Implied, p.ImpliedAnnual, p.Realized, p.EarningsYield,
 		p.DividendYield, p.Benchmark, p.Gap, p.Duration, p.Convexity, p.DV01, p.Income12, p.Income100bp, p.Maturity}
 }
 
@@ -306,9 +247,9 @@ func buildYieldRowColumns(outCcy string, grain yield.Grain, kindOf func(string) 
 			}
 			return r.Currency
 		}},
-		floatMoneyCol("value", outCcy, func(r row) *float64 { v := r.Value; return &v }))
+		floatValCol("value", outCcy, func(r row) float64 { return r.Value }))
 	ids = append(ids, yieldRateCols(outCcy, rowFigures)...)
-	return append(ids, col{Name: "quality", Align: output.AlignLeft, Extract: func(r row) string { return r.Quality }})
+	return append(ids, qualityCol(func(r row) string { return r.Quality }))
 }
 
 // yieldFigureDefaults are the aggregate views' default figures
@@ -336,31 +277,26 @@ func buildYieldPositionColumns(outCcy string) []columnSpec[yield.Position] {
 		}},
 		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r row) string { return r.HoldingKey.Account }},
-		{Name: "tax_wrapper", Align: output.AlignLeft, Extract: func(r row) string { return r.Account.TaxWrapper }},
+		strCol("tax_wrapper", func(r row) string { return r.Account.TaxWrapper }),
 		// position_key stays legible as `holdings positions` keeps it.
-		{Name: "position_key", Align: output.AlignLeft, Extract: func(r row) string { return r.PositionKey }},
-		{Name: "symbol", Align: output.AlignLeft, Extract: func(r row) string { return r.Symbol }},
-		{Name: "name", Align: output.AlignLeft, Extract: func(r row) string { return r.Name }},
-		{Name: "asset_class", Align: output.AlignLeft, Extract: func(r row) string { return r.AssetClass }},
-		{Name: "vehicle", Align: output.AlignLeft, Extract: func(r row) string { return r.Vehicle }},
-		{Name: "kind", Align: output.AlignLeft, Extract: func(r row) string { return string(r.Kind) }},
-		{Name: "currency", Align: output.AlignLeft, Extract: func(r row) string { return r.Currency }},
-		floatMoneyCol("value", outCcy, func(r row) *float64 { v := r.Value; return &v }),
+		strCol("position_key", func(r row) string { return r.PositionKey }),
+		strCol("symbol", func(r row) string { return r.Symbol }),
+		strCol("name", func(r row) string { return r.Name }),
+		strCol("asset_class", func(r row) string { return r.AssetClass }),
+		strCol("vehicle", func(r row) string { return r.Vehicle }),
+		strCol("kind", func(r row) string { return string(r.Kind) }),
+		strCol("currency", func(r row) string { return r.Currency }),
+		floatValCol("value", outCcy, func(r row) float64 { return r.Value }),
 	}
 	ids = append(ids, yieldRateCols(outCcy, positionFigures)...)
 	return append(ids,
 		pctCol("coupon", func(r row) *float64 { return r.Coupon }),
-		col{Name: "maturity_date", Align: output.AlignLeft, Extract: func(r row) string { return dateOrBlank(r.MaturityDate) }},
-		col{Name: "price", Align: output.AlignRight, Privacy: PrivacyMoney, Extract: func(r row) string {
-			if r.Price == nil {
-				return ""
-			}
-			return fmt.Sprintf("%.4f", *r.Price)
-		}},
-		col{Name: "coupon_kind", Align: output.AlignLeft, Extract: func(r row) string { return string(r.CouponKind) }},
-		col{Name: "rating", Align: output.AlignLeft, Extract: func(r row) string { return r.Rating }},
+		strCol("maturity_date", func(r row) string { return dateOrBlank(r.MaturityDate) }),
+		priceCol(func(r row) *float64 { return r.Price }),
+		strCol("coupon_kind", func(r row) string { return string(r.CouponKind) }),
+		strCol("rating", func(r row) string { return r.Rating }),
 		pctCol("spread", func(r row) *float64 { return r.Spread }),
-		col{Name: "quality", Align: output.AlignLeft, Extract: func(r row) string { return positionQuality(r) }},
+		qualityCol(positionQuality),
 	)
 }
 
@@ -385,9 +321,53 @@ func dateOrBlank(t *time.Time) string {
 	return t.Format(time.DateOnly)
 }
 
+// yieldQualityTags are the tags of the yield quality column and what
+// each means (docs/YIELD.md §7): the CLI usage and the MCP help both
+// render them.
+var yieldQualityTags = []tagNote{
+	{string(yield.TagImplied), "the yield is computed from the price"},
+	{string(yield.TagStated), "a source states the rate"},
+	{string(yield.TagIndicated), "a dividend is the last payment at its frequency, or the filings'"},
+	{string(yield.TagRealized), "the figure comes from the transactions, where nothing else is known"},
+	{string(yield.TagDeclared), "a ledger record states it"},
+	{string(yield.TagAged), "a fund's composition is older than exposure allows"},
+	{string(yield.TagStalePrice), "a fund's lines are priced on their filing's day, not the day"},
+	{string(yield.TagFloating), "a floating note, which implies no yield, or a fund whose floating lines are " +
+		"half of it or more"},
+	{string(yield.TagDefault), "a bond is graded in default, or a fund holds lines in default or arrears; they " +
+		"imply nothing"},
+	{string(yield.TagThin), "the amount was under a tenth of its mean on more than half the year's days, so " +
+		"it has no realized yield"},
+	{string(yield.TagPartial), "a position's realized yield covers the days it was held, fewer than the year's"},
+	{string(yield.TagUnits), "a dividend per share may be in the units of its day: no whole factor explains " +
+		"how they changed since, or no account held it through a span since"},
+	{string(yield.TagUnknown), "no source and no record gives a figure"},
+	{string(yield.TagMixed), "a total across currencies"},
+}
+
 func yieldUsage() string {
+	cols := map[string]string{
+		"positions":  joinColumnNames(buildYieldPositionColumns("CCY")),
+		"securities": joinColumnNames(buildYieldSecurityColumns("CCY")),
+		"funds":      joinColumnNames(buildYieldFundColumns("CCY")),
+		"cash":       joinColumnNames(buildYieldCashColumns("CCY")),
+		"curve":      joinColumnNames(buildYieldCurveColumns("CCY")),
+		"coverage":   joinColumnNames(buildYieldCoverageColumns("CCY")),
+	}
+	defaults := map[string][]string{"positions": defaultYieldPositionColumns,
+		"securities": defaultYieldSecurityColumns, "funds": defaultYieldFundColumns, "cash": defaultYieldCashColumns,
+		"curve": defaultYieldCurveColumns, "coverage": defaultYieldCoverageColumns}
+	for view, grain := range yieldGrains {
+		cols[view] = joinColumnNames(buildYieldRowColumns("CCY", grain, nil))
+		defaults[view] = yieldRowDefaults[grain]
+	}
+	var available, defaultSets strings.Builder
+	for _, v := range yieldViews {
+		fmt.Fprintf(&available, "\n  %-12s %s", v, cols[v])
+		fmt.Fprintf(&defaultSets, "\n  %-12s %s", v, strings.Join(defaults[v], ", "))
+	}
 	return `usage: wealthdb yield <view> [-d DATE] [--converted] [-f FORMAT] [-C COLS] [-x CCY] [-p]
-       wealthdb yield <view> --period monthly|quarterly|annual [FROM [TO]]
+       wealthdb yield <view> --period ` + strings.Join(seriesPeriods, "|") + ` [FROM [TO]]
 
 What the holdings earn now, and how they move with interest rates, as of
 a day (-d, default today). A rate belongs to a currency: an aggregate row
@@ -407,10 +387,32 @@ Views
   coverage     what the figures rest on, and what is missing
 
 Flags
-  -d DATE        the day (default today)
-  --period P     a series: the aggregate views and curve at the end of each
-                 monthly, quarterly or annual period of FROM [TO]
-  --converted    one row per entity in the output currency
-  -f ndjson      coverage only: the ledger's records still to write
-  -p             hide values, dv01, income amounts, prices and account ids`
+  -d, --as-of DATE   the day (default today UTC)
+  --period P         ` + flagDescription(strings.Join(seriesPeriods, " | ")+": the view at the end of every period "+
+		"of the window FROM..TO (default the last twelve months; never past today), a period column first; on "+
+		andList(yieldSeriesViews)) + `
+  --converted        ` + flagDescription("one row per entity in the output currency, every rate across "+
+		"currencies; on "+andList(yieldAggregateViews)) + `
+  -f FORMAT          table | csv | csv_plain | json; on coverage also
+                     ndjson: the ledger's records still to write
+  -C COLS            comma-separated names, 'default', 'all', or a
+                     +ADD,-REMOVE delta on the default set
+  -x CCY             output currency (default: config.default_currency)
+  -p                 hide values, dv01, income amounts, prices and
+                     account ids; rates, durations, shares, labels and
+                     public keys stay
+
+Notes
+  A rate prints with a _pct suffix (income_yield_pct), a value as
+  value_<CCY>. dv01 is the value lost for a rise of one basis point; a
+  liability's is negative and nets against the assets'.
+
+  quality names what a figure rests on, each tag with the share of the
+  row's gross value it covers (stated=61%); a bare tag covers the whole
+  row, and implied does not print where it covers the whole row. A
+  positions or cash row lists its holding's tags:` + tagNotes(yieldQualityTags) + `
+
+Available columns (per view):` + available.String() + `
+
+Default column sets:` + defaultSets.String()
 }

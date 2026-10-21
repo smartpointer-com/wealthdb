@@ -24,6 +24,8 @@ flags.
    always sits between `wealthdb` and the command.
 2. **One number for a whole window: add `--period total`.** The default is
    one row per month (per quarter for `returns`). Never add rows up yourself.
+   Income's forward views are the exception: they refuse it, and
+   `projection`'s `total` row already sums the window.
 3. **There are no row-filter flags** (`--source`, `--account`, `--category`,
    `--symbol` do not exist). Run the view, then `| grep -i text` the table
    (one row per line) for a name, wrapper, category or source.
@@ -90,15 +92,15 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
   first; `gap_pct` is the rate less the currency's benchmark; money-market
   funds and term deposits sit in the same table)
 - **Is the extra yield paid for in rate risk** — `wealthdb -r yield funds`
-  (`implied_yield` beside `duration`, per fund); one bond or company:
+  (`implied_yield` beside `duration` and `dv01`, per fund); one bond or company:
   `wealthdb -r yield securities -C +currency,duration | grep -i <name>`
-- **Dividend safety, earnings and the cycle** —
+- **Dividend safety and earnings** —
   `wealthdb -r yield securities -C +payout,dividend_growth,earnings_growth,coverage | grep -i <company>`
   (`coverage`: operating income over interest expense, in times)
 - **Credit quality of a bond** —
   `wealthdb -r yield securities -C +rating | grep -i <issuer>` (`rating`
-  is a bucket, AAA to B; blank where nothing rates it; `quality` says what
-  the figures rest on)
+  is a bucket, AAA to B, or `unrated`; blank where nothing rates it;
+  `quality` says what the figures rest on)
 - **Yield and duration over time** —
   `wealthdb -r yield global --period quarterly 2026`
 - **What a rate rise does** — `wealthdb -r yield curve` (`dv01` per
@@ -137,9 +139,9 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
 - **Income / by type** — `wealthdb -r income summary 2025 --period total` /
   `wealthdb -r income types 2025 --period total | grep -i dividend`
 - **This year's income, received and still expected** —
-  `wealthdb -r income projection 2026` (one row per month, then `total`;
-  `status` reads `received`, `expected` or `mixed`; `basis` says what the
-  expected part rests on)
+  `wealthdb -r income projection 2026` (one row per month, then `total`
+  and `monthly_average`; `status` reads `received`, `expected` or
+  `mixed`; `basis` says what the expected part rests on)
 - **This year's income beside last year's** —
   `wealthdb -r income projection 2025` beside
   `wealthdb -r income projection 2026` (the same types; 2025 is all
@@ -210,13 +212,14 @@ refuse an open bound, so the `2026-01-01 -`, `- 2026-06-30` and
 · `-x CCY` output currency · `-C COLS` columns (names, `all`, or
 `+add,-drop`) · `-p` redact · `--period` on `returns`, `spending`,
 `income`, `cashflow`, `gains`; on `exposure` a series only
-(`monthly|quarterly|annual`, not on `securities` or `funds`), and on
-`yield` for `global`, `sources`, `portfolios`, `accounts` and `curve` ·
-`--level` on `spending`, `income`, `cashflow` · `--converted` on `yield` ·
+(`monthly|quarterly|annual`, not on `securities`, `issuers` or `funds`),
+and on `yield` for `global`, `sources`, `portfolios`, `accounts` and
+`curve` · `--level` on `spending`, `income`, `cashflow` · `--converted`
+on `yield`'s `global`, `sources`, `portfolios` and `accounts` ·
 `--rates`, `--maturing`, `--shift` on `income`'s forward views. The
-forward views refuse `--level` and an open bound (`-`). Of them only
-`projection` takes `--period`, as `monthly|quarterly|annual` (not
-`total`: its `total` row sums the window).
+forward views refuse `--level`. Of them only `projection` takes
+`--period`, as `monthly|quarterly|annual` (not `total`: its `total` row
+sums the window).
 
 `-C` takes column **names**, not headers: ask for `value`, `share`,
 `net_flow`, `twr`; they print as `value_USD`, `share_pct`, `net_flow_CHF`,
@@ -273,7 +276,8 @@ row's asset class.
   `unmapped`, `undeclared`, `unmatched` (part of the value is not fully
   classified), `by_name` (a sector found by matching a name), `opaque` (a
   private fund nothing looks through), `no_composition` (in `funds`:
-  nothing describes the fund on the day).
+  nothing describes the fund on the day), `unknown` (in `credit`: debt
+  nothing rates, on the `unrated` row).
 - In an aggregate row each flag reads `flag=NN%`: the share of the row's
   gross value that carries the flag (`proxy=12%`, `aged=<1%`).
 - A declared split is marginal: a fund declared 40% Europe and 80% private
@@ -288,7 +292,9 @@ row's asset class.
   region `other`. Both are declared (quality `declared`), not gaps.
 - `unknown` is real money nothing describes, not zero. `(none)` means the
   dimension does not apply: a metal's or a coin's country, the size of
-  anything but public equity.
+  anything but public equity, anything but debt or cash in `credit` and
+  `maturities`, anything but debt in `coupons`, anything but public
+  equity in `cycles`, and in `issuers` the leaves no issuer fits.
 - Sizes are `large` (from 10bn USD market cap), `mid` (from 2bn), `small`;
   `unknown` where nothing sizes a stock.
 - `--country risk|domicile` (on `countries`, `securities`): where the
@@ -313,17 +319,28 @@ interest rates, as of a day.
   `--converted` gives one row per entity instead.
 - `income_yield_pct` is the headline: the next twelve months' expected
   income at today's rates, over value. `implied_yield_pct` is what prices
-  imply; `realized_yield_pct` what the past twelve months paid.
+  imply; `realized_yield_pct` what the past twelve months paid over the
+  mean daily value. A position shows its security's, pooled over every
+  account and source, over its mean value on the days any of them held
+  it. A position held part of the year reads what that part paid, below
+  its yearly rate, and carries `partial`; an entity row reads a yearly
+  rate. A holding whose amount rounds to no cent has no row.
 - `duration` is in years; `dv01` is the value lost for a rise of one basis
   point. A mortgage nets: its `dv01` is negative, and the rates leave it out.
 - A stock has no implied yield or duration: read `earnings_yield` and
   `dividend_yield`.
 - **Read `quality` first.** `implied` (from a price; not shown when it
   covers the whole row), `stated` (a source states the rate), `indicated`
-  (a dividend's last payment at its frequency), `realized`, `declared`
-  (the ledger), `aged` and `stale_price` (a fund's lines are old),
-  `floating`, `default`, `unknown` (nothing states it: blank, not zero),
-  `mixed`.
+  (a dividend's last payment at its frequency; interim plus final for a
+  payer twice a year), `realized`, `declared` (the ledger), `aged` and
+  `stale_price` (a fund's lines are old), `floating`, `default`, `thin`
+  (near zero most of the year: no realized yield), `partial` (a
+  position's realized yield covers fewer days than the year's), `units`
+  (a dividend per share whose units a split or a ratio change may have
+  left unclear), `unknown` (nothing states it: blank, not zero), `mixed`.
+- In an aggregate row the tags are separated by spaces, each as
+  `tag=NN%` or `tag<1%` (`stated=61% aged<1%`), unlike exposure's
+  comma-separated flags. A bare tag covers the whole row.
 
 ## Spending, income, cash flow
 

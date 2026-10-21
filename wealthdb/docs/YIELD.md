@@ -6,11 +6,16 @@ duration and its rate sensitivity, and sums them by currency at every
 grain `holdings` has. This file defines every figure the report shows
 and the rules behind them.
 
-Related design: DESIGN.md §4.18 (the `yield` command), §7.6 (the
-reference, config and derived tables), §10.15 (the code);
-[EXPOSURE.md §9](EXPOSURE.md#yield-records) (the ledger's yield
-records); [INCOME.md §12](INCOME.md) (the income projection); migrations
-0134 to 0136.
+Related design:
+
+- DESIGN.md §4.18: the `yield` command;
+- DESIGN.md §7.6: the reference, config and derived tables;
+- DESIGN.md §10.15: the code;
+- [EXPOSURE.md §9](EXPOSURE.md#yield-records): the ledger's yield
+  records;
+- [INCOME.md §12](INCOME.md#12-the-forward-views): the income
+  projection;
+- migrations 0134 to 0136, and 0138 for the dashboard's tables.
 
 Every figure belongs to one holding first. A grain sums or weighs the
 figures of its holdings, so the grains reconcile by construction. A
@@ -30,6 +35,12 @@ holding is valued exactly as `holdings global` values it.
   lost, in the output currency, for a rise in rates of one basis point.
 - **Gross value** is the sum of the holdings' values with a liability
   counted whole. Quality and coverage shares are shares of it.
+- **The twelve months to the day** start the day after the same day a
+  year earlier, and end with the day.
+- **A holding** is a position or a cash balance with an amount on the
+  day. One whose amount rounds to no cent of its currency is no holding
+  and has no row. Like a position sold, its income counts for its
+  security, and the income views list it as a holding no longer held.
 
 ## 2. The views
 
@@ -89,7 +100,7 @@ suffix. Years, prices, `pe` and `coverage` print as they are.
 | `stated`, `current_yield` | aggregates, `positions` | the coupon, dividend or deposit rate as stated; the stated rate over the price |
 | `implied_yield` | aggregates, `positions`, `securities`, `funds` | the yield the price implies, to worst where a call is known, in its market's own compounding |
 | `implied_yield_annual` | aggregates, `positions` | the same yield as an effective annual rate, so markets compare |
-| `realized_yield` | aggregates, `positions`, `cash` | the income of the twelve months to the day over the average value (§4) |
+| `realized_yield` | aggregates, `positions`, `cash` | the income of the twelve months to the day over the mean daily value; a holding of an instrument shows the instrument's (§4) |
 | `earnings_yield`, `dividend_yield` | aggregates, `positions`, `securities` | trailing earnings over price; the indicated dividend over price |
 | `benchmark`, `gap` | aggregates, `positions`, `cash` | the currency's benchmark; the implied yield, else the stated rate, less it (§4) |
 | `duration` | aggregates, `positions`, `securities` | modified duration in years |
@@ -103,28 +114,30 @@ suffix. Years, prices, `pe` and `coverage` print as they are.
 | `price` | `positions`, `securities` | clean, per 100 of face, for every bond, in default or not; blank where the quantity is no face value (§3); per unit otherwise |
 | `spread` | `positions` | a floating holding's rate over its benchmark, which the projection keeps along the rate path; blank for any other |
 | `pe`, `payout`, `dividend_growth`, `earnings_growth`, `coverage` | `securities` | a stock's dividend safety (§3) |
-| `direct_value`, `via_funds_value`, `funds`, `share` | `securities` | as `exposure securities` gives them |
+| `direct_value`, `via_funds_value`, `funds` | `securities` | as `exposure securities` gives them |
+| `share` | `securities`, `coverage` | the share of net worth, as `exposure securities` gives it; in `coverage`, of the gross value (§10) |
 | `lines_yield`, `lines_duration`, `lines_maturity`, `lines_as_of`, `lines_covered` | `funds` | what the fund's lines imply, the day of its composition, and the share of the fund they cover |
 | `floating`, `in_default`, `paid_in_kind` | `funds` | the shares of the fund in floating lines, in lines in default or arrears, and in lines paid in kind |
-| `duration`, `maturity` | `funds` | the figures the report reads, as its `implied_yield` is (§3): a ledger record's duration, else the page's or filing's figure, else the lines' |
+| `duration`, `maturity` | `funds` | the figures the report reads: a ledger record's duration, else the page's or filing's figure, else the lines' |
 | `yield_to_maturity`, `distribution_yield`, `sec_yield`, `seven_day_yield`, `trailing_yield` | `funds` | what the fund's page or filing states; the yield to worst where one is stated |
 | `as_of`, `source`, `risk_as_of` | `funds` | the day the figures describe; where they come from (`lines`, `page`, `filing`, `ledger`); the day of the filed DV01 |
-| `rate`, `tiers`, `tier_up_to`, `valid_from`, `term_end` | `cash` | the rate the balance earns, tiers blended; the number of tiers; the first tier's limit; the day the rate holds from; a term deposit's end. An overdraft lists its debit tiers |
-| `dv100`, `funds`, `bonds`, `cash`, `liabilities` | `curve` | DV01 times 100, and DV01 by what holds it (§6) |
+| `rate`, `tiers`, `tier_up_to`, `valid_from`, `term_end` | `cash` | the rate the balance earns, tiers blended; the number of tiers; the first tier's limit, in the balance's own currency; the day the rate holds from; a term deposit's end. An overdraft lists its debit tiers |
+| `tenor`, `dv100`, `funds`, `bonds`, `cash`, `liabilities` | `curve` | the tenor (§6); DV01 times 100, and DV01 by what holds it (§6) |
 | `section`, `reason`, `holdings`, `instrument` | `coverage` | §10 |
 
 The keys are the ones `holdings` and `exposure` name: `silver_source`,
 `portfolio`, `portfolio_id`, `account`, `account_id`, `account_kind`,
 `tax_wrapper`, `account_nickname`, `position_key`, `symbol`, `name`,
 `asset_class`, `vehicle`, `currency`, `security`, `ticker`, `sector` and
-`fund`. `-C all` prints every column. The defaults:
+`fund`. `-C all` prints every column. `wealthdb help yield` lists each
+view's columns and defaults, and the quality tags. The defaults:
 
 | View | Default columns |
 | --- | --- |
 | aggregates | the grain's keys (`silver_source`, `portfolio`, or `account` and `tax_wrapper`), `currency`, `value`, `income_yield`, `implied_yield`, `realized_yield`, `duration`, `dv01`, `quality` |
 | `positions` | `silver_source`, `account`, `symbol`, `kind`, `currency`, then the aggregates' |
 | `securities` | `security`, `name`, `asset_class`, `value`, `share`, `coupon`, `maturity_date`, `implied_yield`, `earnings_yield`, `dividend_yield`, `quality` |
-| `funds` | `fund`, `name`, `kind`, `currency`, `value`, `implied_yield`, `duration`, `distribution_yield`, `sec_yield`, `as_of`, `source`, `quality` |
+| `funds` | `fund`, `name`, `kind`, `currency`, `value`, `implied_yield`, `duration`, `dv01`, `distribution_yield`, `sec_yield`, `as_of`, `source`, `quality` |
 | `cash` | `silver_source`, `account`, `kind`, `currency`, `value`, `rate`, `valid_from`, `term_end`, `realized_yield`, `benchmark`, `gap`, `quality` |
 | `curve`, `coverage` | every column; `coverage` leaves out `account` |
 
@@ -164,14 +177,16 @@ gives stays blank, and the holding carries `unknown`.
 | `bill` | a bond whose terms state no coupon payments (frequency 0) | its discount yield on ACT/360 | its one payment's |
 | `floating_note` | a bond whose coupon kind is floating | none implied; it carries `floating` | to its next reset |
 | `note` | a loan held, or a convertible note | its coupon | none |
-| `bond_fund` | a fund of asset class fixed income or multi asset | a ledger record's yield, else what its lines imply, else what its page states (below) | a ledger record's, else its page's, else its lines' |
-| `equity_fund` | a fund of asset class public equity or real estate | its earnings and dividend yields (below) | none |
+| `bond_fund` | a fund mostly of debt, or one that files its rate risk (below) | a ledger record's yield, else what its lines imply, else what its page states (below) | a ledger record's, else its page's, else its lines' |
+| `equity_fund` | a fund mostly of equity (below) | its earnings and dividend yields (below) | none |
+| `multi_asset` | a fund of asset class multi asset | a ledger record's yield, else its page's; its dividend yield as an equity fund's (below) | a bond fund's, its lines' over the whole fund |
 | `stock` | a stock of asset class public equity | its earnings and dividend yields (below) | none |
 | `liability` | a mortgage, or a loan owed | its rate, from its terms | to the end of its fixed period (below) |
 | `other` | anything else: a property, a private fund, metal, a coin | its realized yield; its expected income repeats what it was paid last year (`realized`); paid nothing, it reads `unknown` | none |
 
 Every kind has a `realized_yield` and a `benchmark` (§4). A stock and an
-equity fund have no `gap`. A liability's value and DV01 are negative,
+equity fund have no `gap`. A multi-asset fund's `gap` is its implied
+yield's alone. A liability's value and DV01 are negative,
 so it nets against the assets' rate risk. It has no `income_12m`, and
 it earns nothing in the projection.
 
@@ -186,28 +201,34 @@ balance up to its limit. The rates are `account_rates` (DESIGN.md
 §7.6). A rate a snapshot states holds as the newest snapshot on or
 before the day states it. A rate a source states once holds from its
 `valid_from` on. A ledger `rate` record holds from its day on and reads
-`declared`. It replaces whatever a source states for its account and
-currency.
+`declared`. It replaces the credit rates a source states for its account
+and currency.
 
-A balance whose rate no source states repeats the interest its account
-received in the twelve months to the day, a year later. It reads
-`realized`, not `unknown`. With no interest received it reads
-`unknown`. `coverage` lists it under `no rate` either way (§10).
+A balance whose rate no source states reads `realized` where its
+account received interest in the twelve months to the day. Its expected
+income repeats that interest
+([INCOME.md §12](INCOME.md#12-the-forward-views)). With no interest
+received it reads `unknown`. `coverage` lists it under `no rate` either
+way (§10).
 
 **Bonds.** Each field of a bond's terms comes from the first of these
 that states it: the ledger's `terms` record in force on the day, the
 source's own record, the broker's description, OpenFIGI's ticker. The
 frequency and the day count fall back to the market's convention (§8).
-A coupon with no stated kind is fixed, or a zero where it is zero.
+A floating bond takes only the day count from it, also where only a
+ledger record calls it floating. A bond whose market has no convention
+pays once a year, on ACT/ACT. A coupon with no stated kind is fixed, or
+a zero where it is zero.
 
 The rating is the ledger's `rating` record's. Else it is the worst grade
 the source's own record states, else the lower of the grades the
 description states. An agency's word that it rates nothing (`NR`, `WR`)
 counts only where neither states a grade, and makes the bond unrated.
 The grades that give the rating say whether the bond is in default (`D`,
-`SD`, `RD`). A bond graded in default carries `default`, and has no
-implied yield and no duration. Its projection reads `unknown`: no coupon
-and no principal (INCOME.md §12).
+`SD`, `RD`), so a ledger `rating` record clears a default. A bond graded
+in default carries `default`, and has no implied yield and no duration.
+Its projection reads `unknown`: no coupon and no principal (INCOME.md
+§12).
 
 The source's own record is a payload, under the keys below. The coupon
 is in percent. Every other value is as the source prints it. A key the
@@ -228,17 +249,11 @@ A value the table does not read states nothing. A call date the record
 states clears a make-whole call the description names, as a ledger
 record's does.
 
-The sources fill them from these:
+fidelity-web's and svb's statements fill them from the lines below a
+bond's row ([fidelity-web](../../collectors/fidelity-web/DESIGN.md)
+§4.5, [svb](../../collectors/svb/DESIGN.md#modelling-decisions)). Two
+other sources add to them:
 
-- fidelity-web's supplied statements: the metadata line below a bond's
-  row (`FIXED COUPON MOODYS Aa2 S&P AA- SEMIANNUALLY CUSIP: …`) gives the
-  kind, the grades and the frequency. The row's coupon column gives the
-  coupon.
-- svb's brokerage statements: the lines below a bond's row give the
-  coupon and the maturity, the grades (`MOODY'S Aaa /S&P AAA`), the
-  frequency (`CPN PMT SEMI-ANNUAL`) and the call (`CALLABLE ON … @ …`,
-  `CONTINUOUSLY CALLABLE FROM …`). A bond `CONTINUOUSLY CALLABLE` with no
-  date states none, so its call date is the description's.
 - UBS: the `Rating` column of the positions export is one more grade,
   read off the newest position that carries it. Text that is no grade
   (`No rating av.`) gives no rating.
@@ -257,9 +272,36 @@ quantity is no face value. The price is then blank, and the bond reads
   that yield is the lower.
 - `implied_yield_annual` is that yield as an effective annual rate. A
   bill's is the rate its price earns to maturity, compounded yearly.
-- `current_yield` is the coupon over the price. A floating note's next
-  reset is the one its terms state, else its next coupon date. Terms
-  that state no frequency make it reset quarterly.
+- `current_yield` is the coupon over the price.
+- A floating note lasts to its next reset: the one its terms state,
+  else its next coupon date. Terms that state no frequency reset it
+  quarterly, in every currency.
+
+**A fund's kind.** After two rules of its class, a fund's kind follows
+what it holds, not the class a source gives the wrapper. The first of
+these that holds gives it:
+
+1. `money_market`: a fund of asset class cash, or one with a seven-day
+   yield;
+2. `multi_asset`: a fund of asset class multi asset;
+3. `bond_fund`: a fund that files its rate sensitivity, or whose lines
+   are more than half debt;
+4. `equity_fund`: a fund whose lines are more than half equity;
+5. its asset class: fixed income reads `bond_fund`, public equity and
+   real estate `equity_fund`, any other `other`.
+
+A fund of class metal, crypto or other, where a commodity fund is,
+skips rules 3 and 4. So does a fund whose debt all matures within a
+year beside derivative lines: the bills a futures or swap fund holds
+as collateral.
+
+The lines are the composition exposure reads on the day (EXPOSURE.md
+§4), by weight, as shares of the whole fund: what a composition leaves
+out counts as neither. A line is debt where its asset type maps to
+fixed income. It is debt too where its type maps to nothing and the
+line states a coupon or a yield, floats, or is in default or paid in
+kind. It is equity where its type maps to public equity or real
+estate, and a derivative where it maps to other or foreign exchange.
 
 **Funds.** A fund's figures are the newest on or before the day,
 within the exposure's `max_gap_days` (EXPOSURE.md §4). A ledger `terms`
@@ -267,10 +309,6 @@ record's `yield` and `duration` win over the page, the filing and the
 lines ([EXPOSURE.md §9](EXPOSURE.md#yield-records)). They read
 `declared`, as of the record's day. `source` reads `ledger` where the
 yield is the record's.
-
-A money-market fund yields the record's yield, else the seven-day yield
-its filing states. It lasts the record's duration, else its weighted
-average maturity.
 
 A bond fund reads these:
 
@@ -290,8 +328,23 @@ A bond fund reads these:
 - It carries `floating` where floating lines are half the fund or more,
   and `default` where any line is in default or arrears.
 
+A multi-asset fund reads these:
+
+- A record's or a page's yield and duration are the fund's, as they
+  state them. Its lines' figures are its debt's.
+- Its duration and DV01 are a bond fund's. Its lines' duration counts
+  over the whole fund: a line without one counts as zero. Its DV01
+  then sits on the curve at its debt's own duration.
+- `implied_yield` is the record's yield, else the yield to worst its
+  page or filing states, else the yield to maturity. Its lines give
+  none: their yield is its debt's alone.
+- Its dividend yield and its expected income are an equity fund's
+  (below).
+- It carries `floating` and `default` as a bond fund does.
+
 A line states its own yield and duration, or its price implies them
-from its coupon, maturity and face, on ACT/ACT. A line's yield to worst
+from its coupon, maturity and face, on ACT/ACT. It pays at its
+currency's convention, else once a year. A line's yield to worst
 wins over its yield to maturity. A security held only through funds
 reads the line of the most value held: its weight times the value of
 the fund holding it.
@@ -305,9 +358,9 @@ the fund holding it.
 twelve months' diluted earnings per share over its price (§4). An
 equity fund's is the inverse of the P/E its page states.
 `dividend_yield` is the indicated dividend over the price (§4). An
-equity fund without one reads the trailing yield, else the distribution
-yield, its page states. Earnings or dividends a filing reports in
-another currency than the price give no yield.
+equity fund or a multi-asset fund without one reads the trailing yield,
+else the distribution yield, its page states. Earnings or dividends a
+filing reports in another currency than the price give no yield.
 
 `securities` adds a stock's dividend safety, from its trailing figures:
 
@@ -321,9 +374,12 @@ another currency than the price give no yield.
 **The benchmark.** A currency's curve is the series the config names
 per tenor (§8). Each tenor takes its newest observation of the 31 days
 to the day. A tenor with none drops out. The benchmark is the curve's
-3M tenor where it has one, else its shortest tenor. `gap` is a
-holding's implied yield, else its stated rate, less the benchmark. A
-currency with no curve on the day has no benchmark and no gap.
+3M tenor where it has one, else its shortest tenor. On the Treasury's
+basis it is that tenor's rate as published. On any other basis it is
+the curve's zero rate at that tenor, compounded twice a year (§8).
+`gap` is a holding's implied yield, else its stated rate, less the
+benchmark. A currency with no curve on the day has no benchmark and no
+gap.
 
 A bill's `gap` is its bond-equivalent yield less the benchmark, the
 convention a bill curve is quoted in. Its `implied_yield` stays the
@@ -332,22 +388,17 @@ discount yield. To compare yields across kinds, read
 
 **Income.** `income_12m` is a holding's expected income in the twelve
 months after the day's month. The income projection computes it under
-its default assumptions ([INCOME.md §12](INCOME.md)):
+its default assumptions
+([INCOME.md §12](INCOME.md#12-the-forward-views)):
 
 - today's rates hold for the whole window;
 - principal that matures lands in the cash of its own account, and
-  earns that cash's rate.
+  earns its account's rate in that currency.
 
-A coupon counts on its date, in full. In the projection, a payment
-later in the current month counts whole in that month. A dividend
-counts at its frequency. A deposit, a money-market fund and a floating
-note accrue their rate on their balance or face, day by day.
-`income_yield` is `income_12m` over value. INCOME.md §12 defines the
-maturing rules and the roll.
-
-Cash that states no rate leaves a maturing principal's income
-`unknown`. The holding keeps its own tags: a fully described bond does
-not turn `unknown` for it.
+`income_yield` is `income_12m` over value. INCOME.md §12 defines when
+each payment counts, the maturing rules and the roll. The holding keeps
+its own tags: a fully described bond does not turn `unknown` where its
+account states no rate for the cash its principal lands in.
 
 `income_12m` leaves out income no holding earns, such as rent or a
 pension an account receives. So the total `income_12m` of `yield
@@ -363,25 +414,151 @@ is positive for cash and floating holdings. A fixed coupon adds nothing
 until it matures.
 
 **Realized yield.** `realized_yield` is the income received in the
-twelve months to the day over the average value.
+twelve months to the day over the mean daily value.
 
 - The income is each `income` line that names the holding, at its own
   day's rate. A deposit adds the interest its account received with no
   holding named.
-- The average value is the holding's amount at each of the twelve
-  month ends and at the day, at the day's rate. A month the holding was
-  not held counts as zero.
+- A line of an account that held the instrument once and sold it stays
+  with that sold position, as `income` lists it. A coupon does too. A
+  line of an account that never held it belongs to a holding of it in
+  its portfolio: a bank books a dividend to the cash account beside the
+  custody account. Where no account of the portfolio holds it but one
+  held it once, the line stays with its own sold position. Else it
+  belongs to a holding of it at its source.
+- A broker may book a bond's coupon as the account's interest, naming
+  no holding. Its description then names the bond by its coupon and
+  maturity (`US TREASU NT 9.875%09/99UST NOTE DUE 09/09/99`). Such a
+  line is the coupon of the one bond of its account that it names.
+- Where the account holds no such bond, or two, a line that names a
+  bond issue (a Treasury, a note, a bond) is the account's coupons
+  (`income:coupons:<CCY>`): no deposit's interest, and no holding's. So
+  is a coupon whose line names a bond no account of its held. Any other
+  line stays interest, such as a deposit's that states its rate and
+  its end.
+- A day's amount is the one `holdings` reads at the day's end: its
+  source's newest snapshot on or before it.
+- A holding of an instrument, such as a stock, a fund or a bond, yields
+  its instrument's realized yield. The instrument is the security,
+  at every source; one with no security key is the instrument at its
+  source. The income is that of every account that held it, an account
+  that sold it included. It is over the instrument's mean amount on the
+  days any account held it, summed over every account. A day no account
+  held it does not count. A holding held half the year so reads half
+  its yearly rate, and carries `partial`. Every holding of the
+  instrument shows that figure.
+- A cash balance's mean daily value is its amount on each day of the
+  twelve months, at the day's rate, over the days. A day it was not
+  held counts as zero.
+- A row's realized yield is its holdings' own income over the sum of
+  their mean daily values. Each mean counts every day, a day not held
+  as zero, so a row reads a yearly rate. It is no mean of their yields.
+  The holdings are the ones its other rates weigh (§5).
+- A day is thin where the amount is under a tenth of the mean daily
+  amount, in size. A day not held is thin. A holding or a row thin on
+  more than half the days has no realized yield. It carries `thin`. So
+  a holding of an instrument held under half the year has none.
 
 **The indicated dividend** of a stock or a fund is the first of these:
 
 1. a ledger `dividend` record: its amount per payment at its
    frequency. It reads `declared`.
-2. the last payment per share, at the frequency the year's payments
-   show (1, 2, 4 or 12). The last payment lies within 400 days of the
-   day. The lines paid on one day are one payment: a fund's
-   distribution often comes as several. It reads `indicated`.
+2. the last month's payment per share, specials aside (below), at the
+   frequency of the year's pay months. The payment lies within 400 days
+   of the day. It reads `indicated`. A payer twice a year pays its
+   interim and its final, which often differ, each in its own half: the
+   last month's payment, and the newest payment within 400 days in the
+   other half of the year.
 3. the filings' dividends per share over four quarters. It reads
    `indicated`.
+
+The indicated dividend is the instrument's: the security's, at every
+source, as for the realized yield. Every holding of it shows the same
+one, and the projection pays it on each holding's own quantity. The
+payments of every account count, an account that sold the instrument
+included.
+
+- An account's lines of one day are one payment: a fund's distribution
+  often comes as several, income and capital gains apart.
+- A payment per share is the payment over the quantity the account held
+  as its pay day began. That quantity comes from the account's newest
+  snapshot by then. The account's trades since that snapshot move it.
+  The pay day's own trades earn none of the payment.
+- A trade stamped at a snapshot's instant counts in it, as the lot
+  engine reads a snapshot. Some statements leave out their last day's
+  trades: where the snapshot shows the previous one's quantity without
+  the trade, the trade counts after it.
+- A snapshot of only some accounts, such as a statement's, says nothing
+  of the others. After the last snapshot that names an account, by a
+  position or a cash balance, the account holds nothing.
+- The quantity counts the instrument under every id its source gives
+  it, as exposure keys a holding (a symbol and a CUSIP, say).
+- A payment booked to a cash account that never held the instrument
+  reads the quantity its portfolio's accounts held: a bank books a
+  dividend to the cash account beside the custody account. Where no
+  account of the portfolio held it, and one account of the source alone
+  did, it reads that account's: a bank may book it in another
+  portfolio.
+- A payment whose quantity is unknown counts in no rate, such as one
+  before its source's first snapshot. So does one to an account that
+  held none of it that day: one that sold between the record day and
+  the pay day. Today's quantity never stands in.
+- So does a payment on under two thirds, or over one and a half times,
+  what its account held 100 days before. The holding may have changed
+  between its record day and its pay day. A depositary receipt of a
+  Japanese share pays about three months after its record day.
+- The accounts paid on one day pay one rate: the median of theirs.
+- A payment per share above twice the median of the year's payments per
+  share is a special: a special dividend, or a return of capital. With
+  fewer than three payments in the year, the median is that of the 24
+  months to the day. With fewer than four there, a special is a payment
+  above four times their median, the smaller one's with two. So a final
+  two or three times the interim is no special among a few payments. A
+  special counts in no rate, but it counts as income received.
+- A month's payment per share is the sum of its days' that are not a
+  special: two lines of one month on different days are one payment.
+  Each account's days sum, and the month pays the median of the
+  accounts'.
+- The frequency is the number of months of the twelve months to the
+  day with a payment, read as the nearest of 1, 2, 4 or 12. A month
+  whose only payments are specials counts where the same month a year
+  earlier had a payment: the special fell on the payer's own schedule,
+  as a trimmed holding's payment does. Else it does not count, such as
+  a yearly payer's one-off return of capital.
+
+**Units.** A payment per share counts in the units the instrument has
+on the day. A split, a reverse split or a change of a depositary
+receipt's ratio changes them. Between two snapshots, a change of
+quantity that the account's trades do not explain is a change of units:
+
+- where a `corporate_action` transaction of the instrument names it.
+  The legs count once each, as the lot engine dedupes them (LOTS.md
+  §3.5). They must state the change: their sum is the units delivered
+  or taken back, or one leg states the new total. A single leg that
+  takes units back is a reverse split here.
+- where the price per unit moved by the inverse of the change, nearer
+  to it than to staying put.
+
+Any other such change is a trade no transaction records. So is a
+change under three for two either way, such as a scrip dividend. A
+change of units is a whole number n of new units for each old one, or
+one new unit for n old ones. It reads from the quantities, the trades
+between the snapshots before the change or after it. The new quantity
+is exact, or short of a fraction paid in cash. Every payment per share
+before the change divides by its factor.
+
+The holding carries `units`, and the payments stay as they are, where:
+
+- no whole number explains a change, or more than one does, as on a
+  small position after a reverse split;
+- the legs state another change than the quantities show;
+- two accounts show a change at one snapshot differently;
+- some span of snapshots since the payment had no account holding the
+  instrument with its quantity stated at both ends, so a change in it
+  would not show.
+
+A payment or a record in another currency than the holding's converts
+at the day's rate. One that no rate converts counts for nothing.
 
 With none of these, the holding pays no dividend the records show.
 Held a year or more, it yields zero and reads `realized`. Bought within
@@ -402,11 +579,17 @@ filing restated reads restated, on any day.
 A rate belongs to a currency. So an aggregate row is one entity in one
 currency.
 
-- Value, DV01, `income_12m` and `income_100bp` sum every holding. A
-  liability nets.
+- Value, `income_12m` and `income_100bp` sum every holding of the
+  row's currency. A liability nets.
+- DV01 belongs to the currency of the rates that move it. A fund whose
+  filing or lines state its DV01 per currency puts each currency's part
+  on that currency's row; its value stays on its own currency's row.
+  The parts are in the shares of its DV01 per tenor (§6). The total row
+  and `--converted` sum every holding's DV01 whole.
 - Every rate is weighted by value over the holdings that state it. A
   bond with no implied yield is left out of `implied_yield`, not
-  counted as zero.
+  counted as zero. `realized_yield` is the exception: the holdings'
+  income over their summed mean daily values (§4).
 - Liabilities and every line of no positive value, such as an
   overdraft, are left out of the rates, unless the row holds nothing
   else. They are left out of the value `income_yield` divides by too. A
@@ -425,7 +608,7 @@ currency.
 30Y. Its `dv100` is DV01 times 100, the value lost for a rise of one
 percent. Each row splits its DV01 by what holds it:
 
-- `funds`: bond funds and money-market funds;
+- `funds`: bond funds, multi-asset funds and money-market funds;
 - `bonds`: bonds, bills and floating notes;
 - `cash`: term deposits; a deposit counts zero;
 - `liabilities`: mortgages and loans owed, negative.
@@ -437,13 +620,24 @@ floating note at its reset. A time between two tenors splits linearly
 between them. A time before 3M counts at 3M, one past 30Y at 30Y. The
 rows of every currency sum to the holdings' DV01, within rounding.
 
+**The sign.** A DV01 is positive where the holding loses value as rates
+rise, as a bond does. Fund filings follow no one sign convention, so
+the report reads each filing as a long fund's: one whose DV01 sums
+below zero is flipped whole. Its rows keep their signs relative to each
+other. A fund whose ledger record or page states a negative duration,
+an inverse or rate-hedged fund, reads its filing in that sign instead.
+An inverse fund that states no duration reads as long. Silver keeps
+what was filed; gold's `fund_risk_signed` reads it signed.
+
 ## 7. Quality
 
-Each row says what its figures rest on. A tag carries the share of the
-row's gross value it covers: `stated=61%`, `aged<1%`. A tag that covers
-the whole row prints alone. `implied` that covers the whole row does
-not print: a computed yield is the norm. A `positions` or `cash` row
-lists its holding's tags without shares.
+Each row says what its figures rest on, as tags separated by spaces. A
+tag carries the share of the row's gross value it covers, as `tag=NN%`:
+`stated=61%`. A share that rounds to less than one percent reads
+`tag<1%`: `aged<1%`. A bare tag covers the whole row. One that covers
+all but a sliver reads `tag=100%`. `implied` that covers the whole row
+does not print: a computed yield is the norm. A `positions` or `cash`
+row lists its holding's tags without shares.
 
 | Tag | Meaning |
 | --- | --- |
@@ -454,8 +648,11 @@ lists its holding's tags without shares.
 | `declared` | a ledger record states it |
 | `aged` | a fund's composition is older than exposure allows (EXPOSURE.md §8) |
 | `stale_price` | a fund's lines are priced on their filing's day, not the day |
-| `floating` | a floating holding, with no implied yield |
+| `floating` | a floating note, which implies no yield, or a fund whose floating lines are half of it or more |
 | `default` | a bond is graded in default, or a fund holds lines in default or arrears; they imply nothing |
+| `thin` | the amount was under a tenth of its mean on more than half the year's days: no realized yield (§4) |
+| `partial` | a position's realized yield covers the days it was held, fewer than the year's (§4) |
+| `units` | a dividend per share may be in the units of its day: no whole factor explains how they changed since, or no account held it through a span since (§4) |
 | `unknown` | no source and no record gives a figure |
 | `mixed` | a total across currencies |
 
@@ -466,7 +663,11 @@ The `yield` block of `wealthdb.cfg` holds what no source states
 
 ```json
 "yield": {
-  "curves": { "USD": { "3M": "fred:DGS3MO", "1Y": "fred:DGS1", "10Y": "fred:DGS10" } },
+  "curves": {
+    "USD": { "3M": "fred:DGS3MO", "1Y": "fred:DGS1", "10Y": "fred:DGS10" },
+    "EUR": { "3M": "curves:YC.B.U2.EUR.4F.G_N_A.SV_C_YM.SR_3M", "1Y": "curves:YC.B.U2.EUR.4F.G_N_A.SV_C_YM.SR_1Y", "10Y": "curves:YC.B.U2.EUR.4F.G_N_A.SV_C_YM.SR_10Y" },
+    "CHF": { "1Y": "curves:SNB1A.SNB.NSS.KZS.EID.J01M0", "2Y": "curves:SNB1A.SNB.NSS.KZS.EID.J02M0", "10Y": "curves:SNB1A.SNB.NSS.KZS.EID.J10M0" }
+  },
   "withholding": { "US": { "default": 30, "taxable_personal": 15 }, "CH": { "default": 35 } },
   "rating_funds": { "isin:XX0000000004": "BBB", "isin:XX0000000005": "AAA-A" },
   "conventions": { "EUR": { "frequency": 1, "day_count": "ACT/ACT" } },
@@ -477,13 +678,27 @@ The `yield` block of `wealthdb.cfg` holds what no source states
 
 - `curves` maps a currency to its public curve: each tenor (`3M`,
   `1Y`, `30Y`) to a rate series, as `<silver_source_id>:<series_id>`.
-  The source must be configured. The curve gives the benchmark (§4) and
-  the forward rates of the income projection.
+  The source must be configured. `fred` serves the US dollar's curve,
+  and `curves` the euro's and the franc's. The curve gives the
+  benchmark (§4) and the forward rates of the income projection.
+
+  Each series' payload states its basis. Spot rates read as zero rates
+  at their stated compounding. Par yields bootstrap with their stated
+  coupons. A series that states no basis, or a Treasury one (`fred`'s
+  `constant_maturity` and `discount`), reads on the Treasury's basis:
+  semiannual par yields.
+  [collectors/curves/README.md](../../collectors/curves/README.md#basis)
+  gives the basis of each `curves` series.
+
+  A curve whose tenors state two bases gives no curve, and so no
+  benchmark. So does a basis the engine cannot read, and a curve on
+  another basis than the Treasury's that cannot be built. A curve on
+  the Treasury's basis that does not bootstrap keeps its benchmark, but
+  gives no forward rates.
 - `withholding` maps a situs country to the tax it withholds at source,
   in percent, per tax wrapper. The situs is the holding's legal situs
   (EXPOSURE.md §13), the wrapper its account's. A country's `default`
-  stands for every wrapper it names no rate for. Where the block names
-  no rate, the income projection's `withheld` is empty, never zero.
+  stands for every wrapper it names no rate for.
 - `rating_funds` maps a fund sliced by credit rating to the bucket its
   lines carry (`BBB`), or a range of buckets, best first (`AAA-A`). It
   is keyed like `exposure.size_funds`, and feeds the credit view of
@@ -493,10 +708,10 @@ The `yield` block of `wealthdb.cfg` holds what no source states
   market is a currency, or a currency and a bond sector or `bill`
   (`USD:government`, `USD:bill`). An entry replaces the built-in one of
   its market. It fills a bond's frequency and day count where its terms
-  state none.
+  state none. A floating bond takes only its day count.
 - `horizon_months` is the income projection's default window: the
-  months after the current one, 1 to 36, default 12 (INCOME.md §12).
-  The CLI and the MCP server read it from the config.
+  months after the current one, 1 to 36, default 12
+  ([INCOME.md §12](INCOME.md#12-the-forward-views)).
 - `cycles` overrides the built-in cycle of one of the eleven sectors:
   `cyclical`, `defensive` or `sensitive`. It feeds the cycle view of
   `exposure`.
@@ -515,10 +730,11 @@ load stores it.
 
 ## 9. The ledger
 
-The declarations ledger states the yield figures no source states: an
-account's `rate`, a holding's `rating`, a stock's `dividend`, and the
-`terms` of a bond, a note, a mortgage or a fund that files nowhere.
-[EXPOSURE.md §9](EXPOSURE.md#yield-records) defines the four records.
+The declarations ledger states the yield figures no source states. It
+holds an account's `rate`, a holding's `rating` and a stock's
+`dividend`. It also holds the `terms` of a bond, a note, a mortgage, or
+a fund that files nowhere. [EXPOSURE.md §9](EXPOSURE.md#yield-records)
+defines the four records.
 A field a record states wins over the same field from any source, and
 the figure reads `declared`.
 
@@ -535,10 +751,11 @@ sections:
 
 | Reason | Holdings | The record that fills it |
 | --- | --- | --- |
-| `no terms` | a bond, bill, floating note, note or liability that reads `unknown` | `terms` |
-| `no rate` | cash with a positive balance and no rate | `rate`, naming the account |
+| `no terms` | a bond, bill, floating note, note or liability that reads `unknown`, unless it is in default | `terms` |
+| `no rate` | cash with a positive balance and no rate | `rate`, naming the account and the currency |
+| `no receiving rate` | a bond, bill, floating note, note or term deposit whose principal matures within the projection's 36 months, under the cash rule, into cash whose account states no rate | `rate`, naming the account and the currency |
 | `no figures` | a bond fund or money-market fund that reads `unknown` | `terms` |
-| `no dividend` | a stock or equity fund that reads `unknown` | `dividend` |
+| `no dividend` | a stock, equity fund or multi-asset fund that reads `unknown` | `dividend` |
 | `no rating` | a bond, bill or floating note without a rating | `rating` |
 
 `wealthdb yield coverage -f ndjson` prints a skeleton of that record
@@ -546,43 +763,39 @@ for each holding the section lists:
 
 ```json
 {"silver_source_id":"broker-1","instrument":"bond-1","rating":{},"note":"QORVANT CORP NOTE 4.00000% 06/30/2031"}
-{"silver_source_id":"bank-2","account":"current-1","rate":{},"note":"Current"}
+{"silver_source_id":"bank-2","account":"current-1","rate":{"currency":"CHF"},"note":"Current"}
 ```
 
 Its note is the holding's name, or the account's. A record filled in
-from the skeleton goes into the ledger, and the next load takes it. An
-empty object is refused at load, so a skeleton loads only once it is
-filled in. A holding its source names by no instrument takes no
-skeleton, but cash names its account.
+from the skeleton goes into the ledger, and the next load takes it. A
+skeleton loads only once it is filled in: the load refuses an empty
+object, and a rate without its `pct`. A holding its source names by no
+instrument takes no skeleton, but a rate names its account. An account
+takes one rate per currency, so the first line that lacks it carries its
+skeleton.
+
+`no receiving rate` reads the income projection under its default
+assumptions (§4): the holding keeps its own readings, but what its
+principal earns after the maturity is unknown. The holding's line names
+it, and its skeleton names the account its principal lands in.
 
 ## 11. The projection, the dashboard and MCP
 
 The income projection is the forward half of `wealthdb income`: the
 expected income month by month, per holding and per payment.
-`income_12m` is one reading of it. [INCOME.md §12](INCOME.md) defines
-it, and the withholding it shows.
+`income_12m` is one reading of it.
+[INCOME.md §12](INCOME.md#12-the-forward-views) defines it, and the
+withholding it shows.
 
-The Metabase Yield dashboard (`wealthdb web`) charts the same figures
-as of a day of the last twelve months:
-
-- the income, implied and realized yields, and the projected income;
-- yield by currency, cash against its benchmark, yield against
-  duration, and dividend yield against payout;
-- DV01 along the curve, and the income's change for rates one percent
-  higher;
-- the yields and the duration over time, and what the yields rest on.
-
-Its currency, source, tax wrapper and asset class pickers narrow every
-card. The cards of expected income read today's projection under four
-more pickers: the rate path, the maturing rule, a shift in basis
-points, and a horizon of 12, 24 or 36 months (12 by default, whatever
-`horizon_months` says). Its privacy twin shows the rates as they are,
-DV01 as a share of net worth per basis point, and expected income as a
-yield ([web/DESIGN.md](../../web/DESIGN.md) §6 and §8).
+The Metabase Yield dashboard (`wealthdb web`) charts these figures as
+of a day of the last twelve months, beside the income today's holdings
+are expected to pay. [web/DESIGN.md](../../web/DESIGN.md) §6 lists its
+cards, its pickers and its privacy twin, and §8 the tables it reads.
 
 The MCP server has a `yield` tool with the same views, an `as_of` day,
 `converted`, and a `period` series between `from` and `to`. Its rows
-equal the command's, cell for cell.
+equal the command's, cell for cell. A series' header names its window:
+its first and last period ends.
 
 ## 12. What yield is not
 
@@ -590,8 +803,9 @@ equal the command's, cell for cell.
   duration.
 - Not a forecast. The indicated dividend stands in for analyst
   estimates, and the public curves for futures-implied rates.
-- Not a credit rating. A bucket comes from the ledger, a broker's
-  description or the config, never from an agency's own data.
+- Not a credit rating. A bucket comes from the ledger, the agency
+  grades a source's record or a broker's description prints, or the
+  config. It never comes from an agency's own data.
 - Not a total return. Price changes are in `gains` and `returns`.
-- Not a fixed income report. Every view covers every holding; `kind`
-  picks out the bonds.
+- Not a fixed income report. The aggregate views and `positions` cover
+  every holding; `kind` picks out the bonds.

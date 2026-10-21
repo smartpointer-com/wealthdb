@@ -52,7 +52,7 @@ api silver maps those to an account (§7.1).
 | `user_preference` | — | Schwab-internal UI and streamer preferences. Not projected. |
 | `account_balances` | `cash_balances` | The `cashBalance` of each `balance_kind` (`initial`, `current`, `projected`, `aggregated`), in USD. A row without one, or of another kind, emits nothing. |
 | `positions` | `positions`; `CASH_EQUIVALENT` and `CURRENCY` rows → `cash_balances` | §4; book value in §8. |
-| `instruments` | `instruments.name` | The latest description per symbol, where a position states none (§4). |
+| `instruments` | `instruments.name`, and a bond's instrument | The latest description per symbol, where a position states none (§4). A bond it describes is an instrument with its name, `maturity_date` and `interest_rate`, whether or not a position holds it. |
 | `open_orders` | — | Operational state, not portfolio state. Not projected. |
 | `transactions` | `transactions` | §5 maps the kinds. |
 
@@ -141,6 +141,27 @@ reads them as a group:
 adapter keeps that sign on every kind. A row signed against its kind is
 a correction, such as a dividend clawed back, and nets against the
 booking it corrects.
+
+**Instruments.** A `DIVIDEND_OR_INTEREST` row's legs are often cash
+alone, so the row names its security by its description. The adapter
+links it in this order:
+
+- to the position or instrument whose description matches it, after
+  both are normalised;
+- for an `interest` row, to the bond the account holds or held whose
+  coupon and maturity the description names, as a Treasury's coupon
+  reads (`US TREASU NT 9.875%09/99UST NOTE DUE 09/09/99`). A bond's
+  coupon is its `variableRate`, else its description's; its maturity
+  its `maturityDate`, else its description's. A row two bonds could
+  pay, or none, stays unlinked;
+- else to nothing. A cash balance's interest (`SCHWAB1 INT 01/01-02/01`,
+  `BANK INT 010100-020100 SCHWAB BANK`) names no bond.
+
+A bond's instrument states that `maturityDate` and `variableRate` as
+`maturity_date` and `interest_rate`, the keys the yield pass reads a
+payload's terms by. Gold matches an unlinked row only to a bond the
+account holds on the report's day, and reads one it cannot match as
+the account's coupons (YIELD.md §4).
 
 ### 5.1 Web transactions
 

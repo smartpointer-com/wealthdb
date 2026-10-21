@@ -16,7 +16,7 @@ func near(t *testing.T, what string, got, want, tol float64) {
 
 func mustCurve(t *testing.T, pts ...Point) *Curve {
 	t.Helper()
-	c, err := Bootstrap(pts)
+	c, err := NewCurve(pts, Treasury)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestBootstrappedZerosPriceParBondsAtPar(t *testing.T) {
 	long := []Point{{24, 3}, {120, 4}}
 	for _, pts := range [][]Point{full, long} {
 		c := mustCurve(t, pts...)
-		for n := 18; n <= c.Months(); n += 6 {
+		for n := 18; n <= len(c.zero)-1; n += 6 {
 			cpn := interpolate(pts, n) / 100
 			pv := 0.0
 			for i := 6; i <= n; i += 6 {
@@ -114,24 +114,6 @@ func TestForwardFromDiscountFactors(t *testing.T) {
 	}
 }
 
-// The rate path of a three-month holding starts at today's three-month
-// rate and follows the curve.
-func TestPath(t *testing.T) {
-	t.Parallel()
-	c := mustCurve(t, Point{3, 4}, Point{12, 3}, Point{24, 3})
-	p := c.Path(36, 3)
-	if len(p) != 36 {
-		t.Fatalf("path of %d months, want 36", len(p))
-	}
-	near(t, "month 0", p[0], 4, 1e-9)
-	for m, r := range p {
-		near(t, "path", r, c.Forward(m, 3), 0)
-	}
-	if len(c.Path(0, 3)) != 0 {
-		t.Error("a path of no months has rates")
-	}
-}
-
 // Rates may be negative: the discount factor then exceeds one, and the
 // arithmetic holds as above.
 func TestNegativeRates(t *testing.T) {
@@ -149,8 +131,8 @@ func TestNegativeRates(t *testing.T) {
 func TestFlatOutside(t *testing.T) {
 	t.Parallel()
 	c := mustCurve(t, Point{3, 1.5}, Point{6, 2})
-	if c.Months() != 6 {
-		t.Errorf("months = %d, want 6", c.Months())
+	if n := len(c.zero) - 1; n != 6 {
+		t.Errorf("months = %d, want 6", n)
 	}
 	near(t, "zero 1M", c.Zero(1), 1.5, 0)
 	near(t, "zero 0", c.Zero(0), 1.5, 0)
@@ -199,7 +181,7 @@ func TestUnsortedAndSingleTenor(t *testing.T) {
 
 func TestBootstrapRefuses(t *testing.T) {
 	t.Parallel()
-	if _, err := Bootstrap(nil); !errors.Is(err, ErrNoPoints) {
+	if _, err := NewCurve(nil, Treasury); !errors.Is(err, ErrNoPoints) {
 		t.Errorf("no points: %v", err)
 	}
 	for name, c := range map[string]struct {
@@ -217,7 +199,7 @@ func TestBootstrapRefuses(t *testing.T) {
 		// No positive discount factor prices this par bond.
 		"no price": {[]Point{{3, 0}, {12, 0}, {360, 60}}, "no positive discount factor"},
 	} {
-		if _, err := Bootstrap(c.pts); err == nil || !strings.Contains(err.Error(), c.want) {
+		if _, err := NewCurve(c.pts, Treasury); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: err %v, want %q", name, err, c.want)
 		}
 	}
@@ -303,7 +285,7 @@ func TestParAnnualPricesParBondsAtPar(t *testing.T) {
 	annual := mustBasis(t, "par", "annual")
 	pts := []Point{{3, 3.2}, {12, 3}, {24, 2.8}, {60, 3.1}, {120, 3.4}, {360, 3.6}}
 	c := mustCurveOn(t, annual, pts...)
-	for n := 24; n <= c.Months(); n += 12 {
+	for n := 24; n <= len(c.zero)-1; n += 12 {
 		cpn := interpolate(pts, n) / 100
 		pv := 0.0
 		for i := 12; i <= n; i += 12 {
@@ -321,9 +303,8 @@ func TestParAnnualPricesParBondsAtPar(t *testing.T) {
 }
 
 // A series that states no basis, or a Treasury one, maps to the Treasury
-// basis, which Bootstrap builds on. The hand-worked tests above pin what
-// that basis gives.
-func TestTreasuryBasisIsBootstrap(t *testing.T) {
+// basis. The hand-worked tests above pin what that basis gives.
+func TestTreasuryBasis(t *testing.T) {
 	t.Parallel()
 	pts := []Point{{1, 4.10}, {3, 4.05}, {6, 3.95}, {12, 3.70}, {24, 3.45}, {60, 3.55}, {120, 3.95}, {360, 4.55}}
 	want := mustCurve(t, pts...)
@@ -333,7 +314,7 @@ func TestTreasuryBasisIsBootstrap(t *testing.T) {
 			t.Errorf("basis %q = %+v, want Treasury", kind, b)
 		}
 		got := mustCurveOn(t, b, pts...)
-		for m := 0; m <= want.Months(); m++ {
+		for m := 0; m <= len(want.zero)-1; m++ {
 			if got.Zero(m) != want.Zero(m) {
 				t.Fatalf("basis %q: zero %dM = %v, want %v", kind, m, got.Zero(m), want.Zero(m))
 			}

@@ -1,12 +1,15 @@
 package gold
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"fmt"
 	"log"
+	"maps"
 	"math"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -22,20 +25,44 @@ import (
 // funds' figures and lines, the curves, the income of the twelve months
 // before, and the reported figures of the securities held.
 func YieldInputs(ctx context.Context, db *sql.DB, asOf int64, ccy string) (*yield.Inputs, error) {
+	base, err := readYieldBase(ctx, db, asOf)
+	if err != nil {
+		return nil, err
+	}
+	return base.inputs(ctx, db, ccy)
+}
+
+// yieldBase is what the inputs of one instant read whatever the output
+// currency: the accounts, terms, rates, conventions and curves, the
+// ledger's dividends, the withholding table, each holding's amount on
+// each day of the twelve months to the instant, the reported figures of
+// the stocks a currency's inputs have already read, and the units of the
+// instruments paid. Every currency's inputs share its maps, and none
+// changes them except Securities: each currency's inputs add the stocks
+// no earlier one read (asked).
+type yieldBase struct {
+	in *yield.Inputs
+	// amounts is each position's amount day by day (readAmounts), and
+	// instrument the instrument of each.
+	amounts    map[yield.HoldingKey]*yield.Daily
+	instrument map[yield.HoldingKey]string
+	// asked are the securities whose reported figures were read.
+	asked map[string]bool
+	// units are the units of the instruments the income lines pay, which
+	// the first currency's inputs read (readIncome).
+	units *yieldUnits
+}
+
+// readYieldBase reads the instant asOf's yieldBase.
+func readYieldBase(ctx context.Context, db *sql.DB, asOf int64) (*yieldBase, error) {
 	day := time.Unix(asOf, 0).UTC()
 	in := &yield.Inputs{AsOf: asOf, Day: time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC),
-		Currency: ccy, Accounts: map[yield.AccountKey]yield.Account{}, Terms: map[yield.InstrumentKey]yield.Terms{},
-		Rates: map[yield.AccountKey][]yield.Rate{}, Funds: map[string]*yield.Fund{}, Curves: map[string]*yield.Curve{},
-		Income: map[yield.HoldingKey]yield.Received{}, AccountIncome: map[yield.AccountCurrency]yield.Received{},
-		Payments: map[yield.HoldingKey][]yield.Payment{}, Dividends: map[yield.InstrumentKey]canonical.DeclaredDividend{},
-		Securities: map[string]yield.Facts{}, AverageAmount: map[yield.HoldingKey]float64{},
-		Withholding: map[string]map[string]float64{}, Situs: map[yield.HoldingKey]string{},
-		FXRates: map[string]float64{}}
-	steps := []struct {
-		name string
-		run  func() error
-	}{
-		{"holdings", func() error { return readYieldHoldings(ctx, db, in) }},
+		Accounts: map[yield.AccountKey]yield.Account{}, Terms: map[yield.InstrumentKey]yield.Terms{},
+		Rates: map[yield.AccountKey][]yield.Rate{}, Curves: map[string]*yield.Curve{},
+		Dividends: map[yield.InstrumentKey]canonical.DeclaredDividend{}, Securities: map[string]yield.Facts{},
+		Withholding: map[string]map[string]float64{}, Held: map[yield.InstrumentKey][]string{}}
+	b := &yieldBase{in: in, asked: map[string]bool{}}
+	if err := runSteps("YieldInputs", []step{
 		{"accounts", func() error { return readYieldAccounts(ctx, db, in) }},
 		{"terms", func() error { return readYieldTerms(ctx, db, in) }},
 		{"rates", func() error { return readYieldRates(ctx, db, in) }},
@@ -45,20 +72,42 @@ func YieldInputs(ctx context.Context, db *sql.DB, asOf int64, ccy string) (*yiel
 			return err
 		}},
 		{"curves", func() error { return readYieldCurves(ctx, db, in) }},
-		{"funds", func() error { return readYieldFunds(ctx, db, in) }},
-		{"income", func() error { return readYieldIncome(ctx, db, in) }},
 		{"dividends", func() error { return readDeclaredDividends(ctx, db, in) }},
-		{"securities", func() error { return readSecurityFacts(ctx, db, in) }},
-		{"average", func() error { return readAverageAmounts(ctx, db, in) }},
+		{"daily", func() error { return b.readAmounts(ctx, db) }},
+		{"held", func() error { return readYieldHeld(ctx, db, in) }},
 		{"withholding", func() error { return readWithholding(ctx, db, in) }},
-		{"fx", func() error { return readYieldFX(ctx, db, in) }},
+	}); err != nil {
+		return nil, err
 	}
-	for _, s := range steps {
-		if err := s.run(); err != nil {
-			return nil, fmt.Errorf("YieldInputs: %s: %w", s.name, err)
-		}
+	return b, nil
+}
+
+// inputs are the base's instant valued in ccy: the base's figures, the
+// holdings as `holdings global` values them, the funds held, the income
+// of the twelve months before, the reported figures of the stocks held,
+// each holding's daily amounts and the exchange rates.
+func (b *yieldBase) inputs(ctx context.Context, db *sql.DB, ccy string) (*yield.Inputs, error) {
+	in := *b.in
+	in.Currency = ccy
+	in.Funds, in.Income, in.AccountIncome = map[string]*yield.Fund{}, map[yield.HoldingKey]yield.Received{},
+		map[yield.AccountCurrency]yield.Received{}
+	in.Payments, in.Daily = map[yield.HoldingKey][]yield.Payment{}, map[yield.HoldingKey]yield.Daily{}
+	in.FormerDaily = map[yield.InstrumentKey]yield.Daily{}
+	in.Situs, in.FXRates = map[yield.HoldingKey]string{}, map[string]float64{}
+	if err := runSteps("YieldInputs", []step{
+		{"holdings", func() error { return readYieldHoldings(ctx, db, &in) }},
+		{"funds", func() error { return readYieldFunds(ctx, db, &in) }},
+		{"income", func() error { return b.readIncome(ctx, db, &in) }},
+		{"securities", func() error { return b.readSecurities(ctx, db, &in) }},
+		{"daily", func() error {
+			b.daily(&in)
+			return nil
+		}},
+		{"fx", func() error { return readYieldFX(ctx, db, &in) }},
+	}); err != nil {
+		return nil, err
 	}
-	return in, nil
+	return &in, nil
 }
 
 func readYieldHoldings(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
@@ -70,7 +119,7 @@ SELECT h.src, h.acct, h.position_key, COALESCE(h.iid, ''), COALESCE(h.asset_clas
   FROM yield_holdings(?, ?) h
   LEFT JOIN exposure_situs_at(?) st ON st.silver_source_id = h.src AND st.account_external_id = h.acct
        AND st.position_key = h.position_key
- WHERE h.value IS NOT NULL
+ WHERE h.value IS NOT NULL AND ABS(COALESCE(h.amount, 0)) >= 0.005
  ORDER BY 1, 2, 3`, func(rows *sql.Rows) error {
 		var h yield.Holding
 		var qty, accrued sql.NullFloat64
@@ -145,13 +194,14 @@ SELECT silver_source_id, instrument_external_id, coupon_pct, coupon_origin = 'de
 	}, in.AsOf)
 }
 
-// readYieldRates reads the account rates in force at the instant: a
-// rate read from a snapshot, the latest snapshot's on or before it; a
-// rate a source states once, if it holds from on or before the day; of
-// either, the newest schedule that holds, every tier of it; a ledger
-// record's, the latest
-// dated on or before the day, else the one without a date, which
-// replaces whatever a source states for that account and currency.
+// readYieldRates reads the account rates in force at the instant:
+//
+//   - a rate read from a snapshot: the latest snapshot's on or before it;
+//   - a rate a source states once: if it holds from on or before the day;
+//   - of either, the newest schedule that holds, every tier of it;
+//   - a ledger record's: the latest dated on or before the day, else the
+//     undated one. It replaces the credit rates a source states for that
+//     account and currency; their debit rates stay.
 func readYieldRates(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
 	return scanAll(ctx, db, `
 WITH observed AS (
@@ -176,7 +226,7 @@ SELECT silver_source_id, account_external_id, COALESCE(currency, ''), side, tier
   FROM (SELECT * FROM declared
         UNION ALL
         SELECT s.* FROM stated s ANTI JOIN declared d ON d.silver_source_id = s.silver_source_id
-               AND d.account_external_id = s.account_external_id
+               AND d.account_external_id = s.account_external_id AND d.side = s.side
                AND COALESCE(d.currency, '') IN (COALESCE(s.currency, ''), ''))
  ORDER BY 1, 2, 3, 4, 5`, func(rows *sql.Rows) error {
 		var k yield.AccountKey
@@ -264,7 +314,7 @@ QUALIFY row_number() OVER (PARTITION BY c.currency, c.tenor ORDER BY o.as_of DES
 		if i < 0 {
 			i = 0
 		}
-		c := &yield.Curve{Currency: ccy, Benchmark: t.points[i].Rate, BenchmarkMonths: t.points[i].Months}
+		c := &yield.Curve{Benchmark: t.points[i].Rate, BenchmarkMonths: t.points[i].Months}
 		zero, err := fixedincome.NewCurve(t.points, t.basis)
 		switch {
 		case err != nil && t.basis == fixedincome.Treasury:
@@ -320,41 +370,21 @@ var fundFields = map[string]func(f *yield.Fund) **yield.Dated{
 
 // readYieldFunds reads, for each fund held directly, its newest figure
 // of each field on or before the instant (within the exposure's
-// max_gap_days), its newest filed rate sensitivity with the net assets of
-// that filing, and what the lines of its composition at the instant say.
+// max_gap_days), its newest filed rate sensitivity in the report's sign
+// (fund_risk_signed) with the net assets of that filing, and what the
+// lines of its composition at the instant say.
 func readYieldFunds(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
-	held := map[string]bool{}
 	for _, h := range in.Holdings {
 		if (h.Vehicle == "etf" || h.Vehicle == "fund") && h.SecurityID != "" {
-			held[h.SecurityID] = true
 			in.Funds[h.SecurityID] = &yield.Fund{}
 		}
 	}
-	if len(held) == 0 {
+	keys := slices.Sorted(maps.Keys(in.Funds))
+	if len(keys) == 0 {
 		return nil
 	}
-	keys := slices.Sorted(func(yield func(string) bool) {
-		for k := range held {
-			if !yield(k) {
-				return
-			}
-		}
-	})
-	list := "[" + strings.Repeat("?, ", len(keys)-1) + "?]"
-	args := func(more ...any) []any {
-		out := make([]any, 0, len(keys)+len(more))
-		for _, k := range keys {
-			out = append(out, k)
-		}
-		return append(out, more...)
-	}
-	fields := slices.Sorted(func(yield func(string) bool) {
-		for f := range fundFields {
-			if !yield(f) {
-				return
-			}
-		}
-	})
+	list, args := sqlList(keys, "")
+	fields := slices.Sorted(maps.Keys(fundFields))
 	if err := scanAll(ctx, db, `
 SELECT exposure_key(fund_ref) AS key, field, value::DOUBLE, as_of
   FROM fund_characteristics, exposure_settings_row() s
@@ -381,7 +411,7 @@ QUALIFY row_number() OVER (PARTITION BY key, field ORDER BY as_of DESC, provider
 	if err := scanAll(ctx, db, `
 WITH r AS (
     SELECT exposure_key(r.fund_ref) AS key, r.silver_source_id, r.fund_ref, r.as_of, r.currency, r.tenor, r.dv01::DOUBLE AS dv01
-      FROM fund_risk r, exposure_settings_row() s
+      FROM fund_risk_signed r, exposure_settings_row() s
      WHERE list_contains(`+list+`, exposure_key(r.fund_ref)) AND r.as_of <= ?
        AND (? // 86400) - (r.as_of // 86400) <= s.max_gap_days AND r.dv01 IS NOT NULL
    QUALIFY r.as_of = MAX(r.as_of) OVER (PARTITION BY exposure_key(r.fund_ref)))
@@ -414,15 +444,30 @@ SELECT r.key, r.as_of, r.currency, r.tenor, r.dv01, MAX(c.net_assets)::DOUBLE
 	return readFundLines(ctx, db, in, list, args)
 }
 
-// fundLine is one line of a fund's composition, as far as its yield and
-// duration go.
+// sqlList is a DuckDB list of one `?` per value, each cast by cast (""
+// for none, "::BIGINT"), and the arguments that fill it, more after
+// them.
+func sqlList[T any](vs []T, cast string) (string, func(more ...any) []any) {
+	list := "[" + strings.Repeat("?"+cast+", ", len(vs)-1) + "?" + cast + "]"
+	return list, func(more ...any) []any {
+		out := make([]any, 0, len(vs)+len(more))
+		for _, v := range vs {
+			out = append(out, v)
+		}
+		return append(out, more...)
+	}
+}
+
+// fundLine is one line of a fund's composition, as far as its kind, its
+// yield and its duration go. class is the asset class its asset type
+// maps to, "" where none does.
 type fundLine struct {
 	key                                        string
 	weight, value, quantity                    float64
 	ccy                                        string
 	maturity                                   *time.Time
 	coupon, rate, ytm, ytw, duration, modified *float64
-	kind                                       string
+	kind, class                                string
 	defaulted, inKind                          bool
 }
 
@@ -432,7 +477,9 @@ type fundLine struct {
 // its price implies them, from its coupon, maturity and face (its
 // balance), its value read in its own currency at the exchange rate it
 // was valued at. A floating line, a line in default and one whose
-// coupon is paid in kind imply nothing; their shares are counted.
+// coupon is paid in kind imply nothing; their shares are counted. So
+// are the shares of debt and of equity, by the class each line's asset
+// type maps to, as exposure reads it.
 func readFundLines(ctx context.Context, db *sql.DB, in *yield.Inputs, list string, args func(...any) []any) error {
 	type comp struct {
 		asOf  int64
@@ -446,18 +493,21 @@ SELECT fa.fund_ref, fa.as_of, fa.aged, COALESCE(exposure_key(l.security_key), ''
        COALESCE(l.quantity, 0)::DOUBLE, COALESCE(l.currency, ''), l.maturity, l.coupon::DOUBLE,
        l.exchange_rate::DOUBLE, l.yield_to_maturity::DOUBLE, l.yield_to_worst::DOUBLE, l.duration::DOUBLE,
        l.modified_duration::DOUBLE,
-       COALESCE(l.coupon_kind, ''), COALESCE(l.is_default OR l.in_arrears, FALSE), COALESCE(l.paid_in_kind, FALSE)
+       COALESCE(l.coupon_kind, ''), COALESCE(l.is_default OR l.in_arrears, FALSE), COALESCE(l.paid_in_kind, FALSE),
+       COALESCE(lt.value, '')
   FROM exposure_funds_at(?) fa
   JOIN fund_lines l ON l.silver_source_id = fa.silver_source_id AND l.fund_ref = fa.stored_ref
        AND l.as_of = fa.as_of AND l.basis = fa.basis
- WHERE list_contains(`+list+`, fa.fund_ref)`, func(rows *sql.Rows) error {
+  LEFT JOIN fund_line_labels lt ON lt.provider = fa.provider AND lt.field = 'asset_type' AND lt.raw = l.asset_type
+ WHERE list_contains(`+list+`, fa.fund_ref)
+ ORDER BY fa.fund_ref, l.line_no`, func(rows *sql.Rows) error {
 		var key string
 		var c comp
 		var l fundLine
 		var maturity sql.NullTime
 		var coupon, rate, ytm, ytw, dur, mod sql.NullFloat64
 		if err := rows.Scan(&key, &c.asOf, &c.aged, &l.key, &l.weight, &l.value, &l.quantity, &l.ccy, &maturity, &coupon,
-			&rate, &ytm, &ytw, &dur, &mod, &l.kind, &l.defaulted, &l.inKind); err != nil {
+			&rate, &ytm, &ytw, &dur, &mod, &l.kind, &l.defaulted, &l.inKind, &l.class); err != nil {
 			return err
 		}
 		l.maturity, l.coupon, l.rate = nullDate(maturity), nullFloatToPtr(coupon), nullFloatToPtr(rate)
@@ -472,19 +522,25 @@ SELECT fa.fund_ref, fa.as_of, fa.aged, COALESCE(exposure_key(l.security_key), ''
 		return err
 	}
 	// A security's line is the one of the most value held: its weight
-	// times the value of the fund that holds it.
+	// times the value of the fund that holds it; of equal ones, the first
+	// fund's, by its key, and the first line of it.
 	held := map[string]float64{}
 	for _, h := range in.Holdings {
 		held[h.SecurityID] += math.Abs(h.Value)
 	}
 	in.Lines = map[string]yield.LineInfo{}
 	most := map[string]float64{}
-	for key, c := range comps {
+	for _, key := range slices.Sorted(maps.Keys(comps)) {
+		c := comps[key]
 		day := time.Unix(c.asOf, 0).UTC()
 		infos := make([]yield.LineInfo, len(c.lines))
 		for i, l := range c.lines {
 			infos[i] = readLine(in, l, day)
-			if v := math.Abs(l.weight) * held[key]; l.key != "" && v >= most[l.key] {
+			if l.key == "" {
+				continue
+			}
+			v := math.Abs(l.weight) * held[key]
+			if _, seen := in.Lines[l.key]; !seen || v > most[l.key] {
 				in.Lines[l.key], most[l.key] = infos[i], v
 			}
 		}
@@ -501,9 +557,9 @@ SELECT fa.fund_ref, fa.as_of, fa.aged, COALESCE(exposure_key(l.security_key), ''
 // default or arrears, or paid in kind, implies no yield.
 func readLine(in *yield.Inputs, l fundLine, day time.Time) yield.LineInfo {
 	info := yield.LineInfo{Coupon: l.coupon, Maturity: l.maturity, CouponKind: l.kind, Currency: l.ccy,
-		Duration: firstFloat(l.modified, l.duration), Default: l.defaulted}
+		Duration: coalesce(l.modified, l.duration), Default: l.defaulted}
 	if !l.defaulted && !l.inKind {
-		info.Yield = firstFloat(l.ytw, l.ytm)
+		info.Yield = coalesce(l.ytw, l.ytm)
 	}
 	if l.quantity <= 0 || l.value <= 0 {
 		return info
@@ -519,14 +575,11 @@ func readLine(in *yield.Inputs, l fundLine, day time.Time) yield.LineInfo {
 	}
 	info.Price = &price
 	if !debt || !l.maturity.After(day) || info.Yield != nil || !(price > 1 && price < 1000) ||
-		l.kind == "Floating" || l.kind == "Variable" || l.defaulted || l.inKind {
+		floatingLine(l.kind) || l.defaulted || l.inKind {
 		return info
 	}
-	f := 2
-	if c, ok := in.Conventions[l.ccy]; ok && c.Frequency > 0 {
-		f = c.Frequency
-	}
-	b := fixedincome.Bond{Coupon: *l.coupon, Frequency: f, Maturity: *l.maturity, DayCount: canonical.DayCountActAct}
+	b := fixedincome.Bond{Coupon: *l.coupon, Frequency: in.ConventionFrequency(l.ccy), Maturity: *l.maturity,
+		DayCount: canonical.DayCountActAct}
 	if v, err := b.Yield(day, price+b.Accrued(day)); err == nil {
 		info.Yield = &v
 		if info.Duration == nil {
@@ -537,16 +590,48 @@ func readLine(in *yield.Inputs, l fundLine, day time.Time) yield.LineInfo {
 	return info
 }
 
+// floatingLineKinds are the coupon kinds of a fund's line whose rate
+// floats, as N-PORT types them; exposure_yield_leaves reads the same
+// ones as floating.
+var floatingLineKinds = []string{"Floating", "Variable"}
+
+// floatingLine says a line of coupon kind kind floats.
+func floatingLine(kind string) bool { return slices.Contains(floatingLineKinds, kind) }
+
 // summarizeLines is yield.LineSummary of a fund's lines on day, given
-// what each says of its security (readLine).
+// what each says of its security (readLine). A line is debt where its
+// asset type maps to fixed income, or maps to nothing and the line is a
+// bond: it states a coupon or a yield, floats, or is in default or paid
+// in kind. It is equity where its type maps to public equity or real
+// estate, and a derivative where it maps to other or foreign exchange.
+// The debt and equity shares are of the whole fund, as exposure reads a
+// partial composition: what the lines leave out of 100% is neither.
 func summarizeLines(lines []fundLine, infos []yield.LineInfo, day time.Time, aged bool) *yield.LineSummary {
 	s := &yield.LineSummary{AsOf: day, Aged: aged}
 	var total, wy, sy, wd, sd, wm, sm float64
+	yearOut := day.AddDate(1, 0, 0)
 	for i, l := range lines {
 		w := math.Abs(l.weight)
 		total += w
+		debt := false
+		switch l.class {
+		case string(canonical.AssetClassFixedIncome):
+			debt = true
+		case string(canonical.AssetClassPublicEquity), string(canonical.AssetClassRealEstate):
+			s.EquityPct += w
+		case string(canonical.AssetClassOther), string(canonical.AssetClassForeignExchange):
+			s.Derivatives = true
+		case "":
+			debt = l.coupon != nil || l.ytm != nil || l.ytw != nil || floatingLine(l.kind) || l.defaulted || l.inKind
+		}
+		if debt {
+			s.DebtPct += w
+			if l.maturity != nil && l.maturity.Before(yearOut) {
+				s.ShortDebtPct += w
+			}
+		}
 		switch {
-		case l.kind == "Floating" || l.kind == "Variable":
+		case floatingLine(l.kind):
 			s.FloatingPct += w
 			continue
 		case l.defaulted:
@@ -584,47 +669,72 @@ func summarizeLines(lines []fundLine, infos []yield.LineInfo, day time.Time, age
 		s.MaturityYears = f64(wm / sm)
 	}
 	scale := 100 / total
-	s.CoveredPct = sy * scale
+	s.CoveredPct, s.DurationPct = sy*scale, sd*scale
+	whole := 100 / max(total, 100)
+	s.DebtPct, s.ShortDebtPct, s.EquityPct = s.DebtPct*whole, s.ShortDebtPct*whole, s.EquityPct*whole
 	s.FloatingPct *= scale
 	s.DefaultPct *= scale
 	s.PaidInKindPct *= scale
 	return s
 }
 
-func firstFloat(vs ...*float64) *float64 {
-	for _, v := range vs {
-		if v != nil {
-			return v
-		}
-	}
-	return nil
-}
-
 // incomeTypeSQL maps an income line to the projection's types, by its
-// detailed type and the instrument it names (i, its terms tm): interest
-// a bond pays is a coupon, but a bill's or a zero's discount is
-// interest; a dividend a fund pays is a distribution.
-const incomeTypeSQL = `CASE
+// detailed type and the instrument it names (i, and tm, its terms in
+// force at the window's end): interest a bond pays is a coupon, but a
+// bill's or a zero's discount is interest; a dividend a fund pays is a
+// distribution.
+var incomeTypeSQL = fmt.Sprintf(`CASE
     WHEN l.income_detailed = 'INCOME_INTEREST_EARNED' AND i.vehicle = 'bond'
-         AND NOT COALESCE(tm.coupon_kind = 'zero' OR tm.coupon_pct = 0, FALSE) THEN 'coupons'
-    WHEN l.income_detailed = 'INCOME_INTEREST_EARNED' THEN 'interest'
-    WHEN l.income_detailed = 'INCOME_DIVIDENDS' AND i.vehicle IN ('etf', 'fund') THEN 'distributions'
-    WHEN l.income_detailed = 'INCOME_DIVIDENDS' THEN 'dividends'
-    WHEN l.income_detailed = 'INCOME_DISTRIBUTIONS' THEN 'distributions'
-    WHEN l.income_detailed = 'INCOME_RENTAL' THEN 'rent'
-    WHEN l.income_detailed = 'INCOME_RETIREMENT_PENSION' THEN 'pension' END`
+         AND NOT COALESCE(tm.coupon_kind = '%[7]s' OR tm.coupon_pct = 0, FALSE) THEN '%[1]s'
+    WHEN l.income_detailed = 'INCOME_INTEREST_EARNED' THEN '%[2]s'
+    WHEN l.income_detailed = 'INCOME_DIVIDENDS' AND i.vehicle IN ('etf', 'fund') THEN '%[3]s'
+    WHEN l.income_detailed = 'INCOME_DIVIDENDS' THEN '%[4]s'
+    WHEN l.income_detailed = 'INCOME_DISTRIBUTIONS' THEN '%[3]s'
+    WHEN l.income_detailed = 'INCOME_RENTAL' THEN '%[5]s'
+    WHEN l.income_detailed = 'INCOME_RETIREMENT_PENSION' THEN '%[6]s' END`, yield.TypeCoupons, yield.TypeInterest,
+	yield.TypeDistributions, yield.TypeDividends, yield.TypeRent, yield.TypePension, canonical.CouponZero)
 
-// readYieldIncome reads the income of the twelve months to the instant,
-// in the output currency, per holding (yield.Inputs.HoldingOf), and per
-// account where a line names no instrument; and the payments of the 24
-// months to it per holding, in the line's currency, each with the
-// quantity held on its day.
-func readYieldIncome(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+// readIncome reads the income of the twelve months to the instant, in
+// the output currency, per holding (yield.Inputs.HoldingOf) or sold
+// position (yield.Inputs.Sold), and per account where a line names no
+// instrument; and the payments of the 24 months to it the same way, in
+// the line's currency, a dividend or a distribution with the quantity
+// its account held on its day (yieldUnits.quantity). Interest that names
+// a bond is its coupon (couponOf), and a coupon no held bond's is the
+// account's (heldCoupon).
+func (b *yieldBase) readIncome(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+	from := in.Day.AddDate(-2, 0, 0).Unix()
+	var lines []incomeLine
+	if err := incomeLines(ctx, db, from, in.AsOf, in.Currency, func(l incomeLine) {
+		lines = append(lines, l)
+	}); err != nil {
+		return err
+	}
+	if b.units == nil {
+		paid := map[yield.InstrumentKey]bool{}
+		for _, l := range lines {
+			if l.Instrument != "" && paysPerShare(l.Type) {
+				paid[yield.InstrumentKey{Source: l.Source, Instrument: l.Instrument}] = true
+			}
+		}
+		u, err := readYieldUnits(ctx, db, paid, from, in.AsOf)
+		if err != nil {
+			return err
+		}
+		b.units = u
+	}
 	yearAgo := in.Day.AddDate(-1, 0, 0)
-	return incomeLines(ctx, db, in.Day.AddDate(-2, 0, 0).Unix(), in.AsOf, in.Currency, func(l IncomeLine) {
+	for _, l := range lines {
+		couponOf(in, &l)
+		if !heldCoupon(in, l) {
+			l.Instrument = ""
+		}
 		day := time.Unix(l.At, 0).UTC()
 		key, held := in.HoldingOf(l.Source, l.Account, l.Instrument)
 		recent := day.After(yearAgo)
+		if !held {
+			key, held = in.Sold(l.Source, l.Account, l.Instrument)
+		}
 		switch {
 		case held:
 			if recent && l.Value != nil {
@@ -633,8 +743,14 @@ func readYieldIncome(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
 				}
 				in.Income[key][l.Type] += *l.Value
 			}
-			in.Payments[key] = append(in.Payments[key], yield.Payment{Day: day, Amount: l.Amount,
-				Quantity: l.Quantity, Type: l.Type})
+			p := yield.Payment{Day: day, Amount: l.Amount, Currency: l.Currency, Account: l.Account, Type: l.Type}
+			if paysPerShare(l.Type) {
+				start := day.Truncate(24 * time.Hour).Unix()
+				p.Quantity, p.Units = b.units.quantity(in, l.Source, l.Account, l.Instrument, start)
+				p.Before, _ = b.units.quantity(in, l.Source, l.Account, l.Instrument,
+					start-yield.RecordLagDays*86400)
+			}
+			in.Payments[key] = append(in.Payments[key], p)
 		case l.Instrument == "" && recent:
 			ac := yield.AccountCurrency{AccountKey: yield.AccountKey{Source: l.Source, Account: l.Account},
 				Currency: l.Currency}
@@ -649,69 +765,124 @@ func readYieldIncome(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
 					Amount: l.Amount, Type: l.Type})
 			}
 		}
-	})
+	}
+	return nil
 }
 
-// IncomeLine is one income transaction of a type the projection counts:
+// paysPerShare says a payment of type t is paid per share of what its
+// holding holds: a dividend or a distribution.
+func paysPerShare(t yield.IncomeType) bool {
+	return t == yield.TypeDividends || t == yield.TypeDistributions
+}
+
+// incomeLine is one income transaction of a type the projection counts:
 // its amount in its currency, its value in the output currency (nil
-// where no rate converts it), and the quantity of the instrument it
-// names held on its day.
-type IncomeLine struct {
-	Source, Account, Instrument, Currency string
-	At                                    int64
-	Type                                  yield.IncomeType
-	Amount                                float64
-	Value, Quantity                       *float64
+// where no rate converts it), and its description.
+type incomeLine struct {
+	Source, Account, Instrument, Currency, Description string
+	At                                                 int64
+	Type                                               yield.IncomeType
+	Amount                                             float64
+	Value                                              *float64
+}
+
+// couponOf reads an account's interest line that names no instrument but
+// whose description names a bond (canonical.ReadCouponLine), as a broker
+// books a Treasury's coupon: it is the coupon of the one bond of its
+// account in the book that the line pays. Where no held bond, or more
+// than one, pays it, a line that names a bond issue is the account's
+// coupons (heldCoupon); any other, such as a deposit's that states its
+// rate and its end, stays interest.
+func couponOf(in *yield.Inputs, l *incomeLine) {
+	if l.Instrument != "" || l.Type != yield.TypeInterest {
+		return
+	}
+	line, ok := canonical.ReadCouponLine(l.Description)
+	if !ok {
+		return
+	}
+	var bonds []yield.Holding
+	for _, h := range in.Holdings {
+		if h.Source == l.Source && h.Account == l.Account && h.Vehicle == string(canonical.VehicleBond) {
+			bonds = append(bonds, h)
+		}
+	}
+	paid, ok := line.OnePaying(len(bonds), func(i int) (string, *float64, *time.Time) {
+		t := in.Terms[yield.InstrumentKey{Source: bonds[i].Source, Instrument: bonds[i].Instrument}]
+		return bonds[i].Instrument, t.Coupon, t.Maturity
+	})
+	if ok || line.Issue {
+		l.Type, l.Instrument = yield.TypeCoupons, paid
+	}
+}
+
+// heldCoupon says a line is no coupon, or a held bond's, or one its
+// account sold (yield.Inputs.Sold): the bond's realized yield pools the
+// sold position's coupons with its amounts. A coupon of no bond the book
+// held, whose line names none or one no account of its holds or held,
+// reads as the account's coupons (`income:coupons:<CCY>`): received, but
+// neither the cash's realized yield nor the projection reads it. So a
+// coupon reads the same whether its line names its bond or only its
+// description does.
+func heldCoupon(in *yield.Inputs, l incomeLine) bool {
+	if l.Type != yield.TypeCoupons {
+		return true
+	}
+	_, held := in.HoldingOf(l.Source, l.Account, l.Instrument)
+	_, sold := in.Sold(l.Source, l.Account, l.Instrument)
+	return held || sold
 }
 
 // incomeLines calls fn with each income line of [from, to], oldest
 // first: an income transaction of a type the projection counts, in ccy
 // at its day's rate.
-func incomeLines(ctx context.Context, db *sql.DB, from, to int64, ccy string, fn func(IncomeLine)) error {
+func incomeLines(ctx context.Context, db *sql.DB, from, to int64, ccy string, fn func(incomeLine)) error {
 	return scanAll(ctx, db, `
 WITH l AS (
     SELECT l.silver_source_id, l.account_external_id, t.instrument_external_id, l.transaction_external_id,
-           l.occurred_at, l.currency, l.net_amount::DOUBLE AS amount, `+incomeTypeSQL+` AS type
+           l.occurred_at, l.currency, l.net_amount::DOUBLE AS amount, `+incomeTypeSQL+` AS type,
+           COALESCE(t.description, '') AS description
       FROM income_lines_base(?, ?) l
       JOIN transactions t ON t.silver_source_id = l.silver_source_id
            AND t.transaction_external_id = l.transaction_external_id
       LEFT JOIN instruments i ON i.silver_source_id = t.silver_source_id
            AND i.instrument_external_id = t.instrument_external_id
-      LEFT JOIN instrument_terms tm ON tm.silver_source_id = t.silver_source_id
+      LEFT JOIN instrument_terms_at(?) tm ON tm.silver_source_id = t.silver_source_id
            AND tm.instrument_external_id = t.instrument_external_id),
 fx AS (SELECT * FROM fx_rates_to(?))
 SELECT l.silver_source_id, l.account_external_id, COALESCE(l.instrument_external_id, ''), l.occurred_at,
-       l.currency, l.amount, l.type,
-       CASE WHEN l.currency = ? THEN l.amount ELSE l.amount * fx.rate END AS value,
-       p.quantity::DOUBLE
+       l.currency, l.amount, l.type, l.description,
+       CASE WHEN l.currency = ? THEN l.amount ELSE l.amount * fx.rate END AS value
   FROM l
   ASOF LEFT JOIN fx ON fx.from_ccy = l.currency AND fx.day <= l.occurred_at // 86400
-  ASOF LEFT JOIN positions p ON p.silver_source_id = l.silver_source_id
-       AND p.account_external_id = l.account_external_id
-       AND p.instrument_external_id = l.instrument_external_id AND p.snapshot_at <= l.occurred_at
  WHERE l.type IS NOT NULL
  ORDER BY l.occurred_at, l.silver_source_id, l.account_external_id, l.transaction_external_id`, func(rows *sql.Rows) error {
-		var l IncomeLine
+		var l incomeLine
 		var typ string
-		var value, qty sql.NullFloat64
-		if err := rows.Scan(&l.Source, &l.Account, &l.Instrument, &l.At, &l.Currency, &l.Amount, &typ, &value,
-			&qty); err != nil {
+		var value sql.NullFloat64
+		if err := rows.Scan(&l.Source, &l.Account, &l.Instrument, &l.At, &l.Currency, &l.Amount, &typ, &l.Description,
+			&value); err != nil {
 			return err
 		}
-		l.Type, l.Value, l.Quantity = yield.IncomeType(typ), nullFloatToPtr(value), nullFloatToPtr(qty)
+		l.Type, l.Value = yield.IncomeType(typ), nullFloatToPtr(value)
 		fn(l)
 		return nil
-	}, from, to, ccy, ccy)
+	}, from, to, to, ccy, ccy)
 }
 
 // IncomeReceived is every income line of [from, to] that the income
 // projection counts as received, each named by the holding of the book
 // it belongs to (yield.Inputs.HoldingOf), else by its account: a
 // payment of interest by the account's cash in its currency, any other
-// by the account and its type.
+// by the account and its type. Interest that names a bond is its coupon
+// (couponOf), and a coupon no held bond's is the account's (heldCoupon).
 func IncomeReceived(ctx context.Context, db *sql.DB, in *yield.Inputs, from, to int64) ([]yield.ReceivedLine, error) {
 	var out []yield.ReceivedLine
-	err := incomeLines(ctx, db, from, to, in.Currency, func(l IncomeLine) {
+	err := incomeLines(ctx, db, from, to, in.Currency, func(l incomeLine) {
+		couponOf(in, &l)
+		if !heldCoupon(in, l) {
+			l.Instrument = ""
+		}
 		r := yield.ReceivedLine{Day: time.Unix(l.At, 0).UTC(), Type: l.Type}
 		if l.Value != nil {
 			r.Value = *l.Value
@@ -754,25 +925,55 @@ QUALIFY row_number() OVER (PARTITION BY silver_source_id, instrument_external_id
 	}, in.AsOf)
 }
 
+// YieldSecurities is exposure's securities at the book's instant and in
+// its currency, each with what the book knows of it
+// (yield.Book.Securities), the reported figures of every equity among
+// them read for it. A value no row states is 0.
+func YieldSecurities(ctx context.Context, db *sql.DB, b *yield.Book) ([]yield.SecurityRow, error) {
+	sec, err := ExposureSecurities(ctx, db, b.In.AsOf, b.In.Currency, "risk")
+	if err != nil {
+		return nil, err
+	}
+	keys := map[string]bool{}
+	rows := make([]yield.SecurityRow, len(sec))
+	for i, s := range sec {
+		r := yield.SecurityRow{Key: s.Security, Name: strText(s.Name), Ticker: strText(s.Ticker),
+			AssetClass: strText(s.AssetClass), Sector: strText(s.Sector), Currency: strText(s.Ccy), Funds: s.Funds,
+			SharePct: s.SharePct}
+		r.Value, _ = parseFloatPtr(s.Value)
+		r.Direct, _ = parseFloatPtr(s.DirectValue)
+		r.ViaFunds, _ = parseFloatPtr(s.ViaFundsValue)
+		if r.AssetClass == "public_equity" {
+			keys[s.Security] = true
+		}
+		rows[i] = r
+	}
+	if err := YieldSecurityFacts(ctx, db, b.In, keys); err != nil {
+		return nil, fmt.Errorf("YieldSecurities: %w", err)
+	}
+	return b.Securities(rows), nil
+}
+
 // periodFact is one reported figure for a period.
 type periodFact struct {
 	start, end time.Time
 	value      float64
 }
 
-// readSecurityFacts reads the reported figures of each stock held
-// directly and gives it the trailing twelve months of each: the last
-// four quarters, a quarter a year-to-date figure implies taken as the
+// readSecurities reads the reported figures of each stock held directly
+// and gives it the trailing twelve months of each: the last four
+// quarters, a quarter a year-to-date figure implies taken as the
 // difference from the one before it, the fourth as the fiscal year less
-// the nine months; a year earlier too, for growth.
-func readSecurityFacts(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
-	held := map[string]bool{}
+// the nine months; a year earlier too, for growth. A stock an earlier
+// currency's inputs read is not read again.
+func (b *yieldBase) readSecurities(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+	keys := map[string]bool{}
 	for _, h := range in.Holdings {
-		if h.Vehicle == "stock" && h.SecurityID != "" {
-			held[h.SecurityID] = true
+		if h.Vehicle == "stock" && h.SecurityID != "" && !b.asked[h.SecurityID] {
+			keys[h.SecurityID], b.asked[h.SecurityID] = true, true
 		}
 	}
-	return YieldSecurityFacts(ctx, db, in, held)
+	return YieldSecurityFacts(ctx, db, in, keys)
 }
 
 // YieldSecurityFacts gives each security of keys its trailing twelve
@@ -785,10 +986,15 @@ func YieldSecurityFacts(ctx context.Context, db *sql.DB, in *yield.Inputs, keys 
 	}
 	facts := map[string]map[string][]periodFact{}
 	units := map[string]string{}
+	// The key column is named by its table: exposure_key's subquery
+	// would read a bare security_key in a WHERE condition as
+	// security_aliases' own.
+	list, args := sqlList(slices.Sorted(maps.Keys(keys)), "")
 	if err := scanAll(ctx, db, `
-SELECT exposure_key(security_key) AS key, field, period_start, as_of, value::DOUBLE, COALESCE(unit, '')
-  FROM security_period_facts
- WHERE as_of <= ? AND field IN ('eps_diluted', 'dividends_per_share', 'operating_income', 'interest_expense')
+SELECT exposure_key(f.security_key) AS key, f.field, f.period_start, f.as_of, f.value::DOUBLE, COALESCE(f.unit, '')
+  FROM security_period_facts f
+ WHERE list_contains(`+list+`, exposure_key(f.security_key)) AND f.as_of <= ?
+   AND f.field IN ('eps_diluted', 'dividends_per_share', 'operating_income', 'interest_expense')
  ORDER BY 1, 2, 4, 3`, func(rows *sql.Rows) error {
 		var key, field, unit string
 		var start time.Time
@@ -796,9 +1002,6 @@ SELECT exposure_key(security_key) AS key, field, period_start, as_of, value::DOU
 		var v float64
 		if err := rows.Scan(&key, &field, &start, &end, &v, &unit); err != nil {
 			return err
-		}
-		if !keys[key] {
-			return nil
 		}
 		if facts[key] == nil {
 			facts[key] = map[string][]periodFact{}
@@ -808,7 +1011,7 @@ SELECT exposure_key(security_key) AS key, field, period_start, as_of, value::DOU
 			units[key] = unit
 		}
 		return nil
-	}, in.AsOf); err != nil {
+	}, args(in.AsOf)...); err != nil {
 		return err
 	}
 	for key, byField := range facts {
@@ -850,9 +1053,8 @@ const staleDays = 135
 // where neither is known.
 func trailing(periods []periodFact, day time.Time, years int) (float64, bool) {
 	at := day.AddDate(-years, 0, 0)
-	months := func(p periodFact) int {
-		return int(math.Round(p.end.Sub(p.start).Hours() / 24 / 30.44))
-	}
+	monthsBetween := func(a, b time.Time) int { return int(math.Round(b.Sub(a).Hours() / 24 / 30.44)) }
+	months := func(p periodFact) int { return monthsBetween(p.start, p.end) }
 	quarters := map[time.Time]float64{} // by end
 	byStart := map[time.Time][]periodFact{}
 	for _, p := range periods {
@@ -870,15 +1072,18 @@ func trailing(periods []periodFact, day time.Time, years int) (float64, bool) {
 	for _, ps := range byStart {
 		slices.SortFunc(ps, func(a, b periodFact) int { return a.end.Compare(b.end) })
 		for i := range ps {
-			prevEnd, prevValue := ps[i].start, 0.0
-			if i > 0 {
+			var prevEnd time.Time
+			var prevValue float64
+			q, hasQ := quarters[ps[i].start.AddDate(0, 3, -1)]
+			switch {
+			case i > 0:
 				prevEnd, prevValue = ps[i-1].end, ps[i-1].value
-			} else if q, ok := quarters[ps[i].start.AddDate(0, 3, -1)]; ok && months(ps[i]) == 6 {
+			case hasQ && months(ps[i]) == 6:
 				prevEnd, prevValue = ps[i].start.AddDate(0, 3, -1), q
-			} else {
+			default:
 				continue
 			}
-			if m := int(math.Round(ps[i].end.Sub(prevEnd).Hours() / 24 / 30.44)); m == 3 {
+			if monthsBetween(prevEnd, ps[i].end) == 3 {
 				if _, ok := quarters[ps[i].end]; !ok {
 					quarters[ps[i].end] = ps[i].value - prevValue
 				}
@@ -894,7 +1099,7 @@ func trailing(periods []periodFact, day time.Time, years int) (float64, bool) {
 		sum := 0.0
 		ok := true
 		for i := 0; i < 4; i++ {
-			if i > 0 && math.Round(ends[i-1].Sub(ends[i]).Hours()/24/30.44) != 3 {
+			if i > 0 && monthsBetween(ends[i], ends[i-1]) != 3 {
 				ok = false
 				break
 			}
@@ -919,55 +1124,195 @@ func trailing(periods []periodFact, day time.Time, years int) (float64, bool) {
 	return 0, false
 }
 
-// readAverageAmounts reads each holding's average amount, in its own
-// currency, at the last second of each of the twelve months to the
-// instant and at the instant itself: a position as positions_at reads it,
-// a cash balance as cash_chosen does. A month the holding was not held
-// counts as zero.
-func readAverageAmounts(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
-	instants := make([]any, 0, 13)
-	for m := 0; m < 12; m++ {
-		end := time.Date(in.Day.Year(), in.Day.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -m, 0).Unix() - 1
-		instants = append(instants, end)
-	}
-	instants = append(instants, in.AsOf)
-	list := "[" + strings.Repeat("?::BIGINT, ", len(instants)-1) + "?::BIGINT]"
-	sums := map[yield.HoldingKey]float64{}
-	if err := scanAll(ctx, db, `
-SELECT silver_source_id, account_external_id, position_key, SUM(market_value)::DOUBLE
-  FROM positions_at(`+list+`)
- GROUP BY ALL`, func(rows *sql.Rows) error {
-		var k yield.HoldingKey
-		var v sql.NullFloat64
-		if err := rows.Scan(&k.Source, &k.Account, &k.PositionKey, &v); err != nil {
-			return err
-		}
-		sums[k] = v.Float64
-		return nil
-	}, instants...); err != nil {
+// readAmounts reads each position's amount, in its own currency, on each
+// day of the twelve months to the instant (yield.Daily), and the
+// instrument it names: a position as positions_at reads it on the day, a
+// cash balance as cash_chosen does, a day it was not held as zero. Both
+// read a day at its last second, the instant's own day at the instant,
+// and take each source's newest snapshot at or before it. So a
+// snapshot's amounts hold from the first day it is the newest to the
+// first its successor is, and one read of the snapshots that hold on some
+// day of the window gives every day.
+func (b *yieldBase) readAmounts(ctx context.Context, db *sql.DB) error {
+	w := newDayWindow(b.in)
+	b.amounts, b.instrument = map[yield.HoldingKey]*yield.Daily{}, map[yield.HoldingKey]string{}
+	if err := w.readSpans(ctx, db, `
+WITH snaps AS (
+    SELECT silver_source_id, snapshot_at,
+           lead(snapshot_at) OVER (PARTITION BY silver_source_id ORDER BY snapshot_at) AS next_at
+      FROM (SELECT DISTINCT silver_source_id, snapshot_at FROM positions WHERE snapshot_at <= $1))
+SELECT p.silver_source_id, p.snapshot_at, p.account_external_id, p.position_key,
+       MAX(COALESCE(p.instrument_external_id, '')), SUM(p.market_value)::DOUBLE
+  FROM positions p
+  JOIN snaps s ON s.silver_source_id = p.silver_source_id AND s.snapshot_at = p.snapshot_at
+ WHERE s.next_at IS NULL OR s.next_at > $2
+ GROUP BY ALL
+ ORDER BY 1, 2`, b.amounts, b.instrument); err != nil {
 		return err
 	}
-	for _, at := range instants {
-		if err := scanAll(ctx, db, `
-SELECT silver_source_id, account_external_id, 'cash:' || currency, amount::DOUBLE FROM cash_chosen(?)`,
-			func(rows *sql.Rows) error {
-				var k yield.HoldingKey
-				var v float64
-				if err := rows.Scan(&k.Source, &k.Account, &k.PositionKey, &v); err != nil {
-					return err
+	return w.readSpans(ctx, db, `
+WITH snaps AS (
+    SELECT silver_source_id, snapshot_at,
+           lead(snapshot_at) OVER (PARTITION BY silver_source_id ORDER BY snapshot_at) AS next_at
+      FROM (SELECT DISTINCT silver_source_id, snapshot_at FROM cash_balances WHERE snapshot_at <= $1))
+SELECT cb.silver_source_id, cb.snapshot_at, cb.account_external_id, 'cash:' || cb.currency, '', cb.amount::DOUBLE
+  FROM cash_balances cb
+  JOIN snaps s ON s.silver_source_id = cb.silver_source_id AND s.snapshot_at = cb.snapshot_at
+ WHERE s.next_at IS NULL OR s.next_at > $2
+QUALIFY row_number() OVER (PARTITION BY cb.silver_source_id, cb.snapshot_at, cb.account_external_id, cb.currency
+                           ORDER BY `+cashKindRank+`, cb.balance_kind) = 1
+ ORDER BY 1, 2`, b.amounts, b.instrument)
+}
+
+// cashKindRank orders a snapshot's balances of one account and currency
+// as cash_chosen does: the current balance first, then the closing one,
+// and so on.
+const cashKindRank = `CASE cb.balance_kind WHEN 'current' THEN 1 WHEN 'closing' THEN 2 WHEN 'available' THEN 3
+                   WHEN 'aggregated' THEN 4 WHEN 'opening' THEN 5 WHEN 'initial' THEN 6 WHEN 'projected' THEN 7
+                   ELSE 99 END`
+
+// dayWindow is the days of the twelve months to an instant, each read at
+// its last second, the instant's own day at the instant.
+type dayWindow struct {
+	// first is the first day's last second.
+	first, asOf int64
+	days        int
+}
+
+func newDayWindow(in *yield.Inputs) dayWindow {
+	start := in.Day.AddDate(-1, 0, 0).AddDate(0, 0, 1)
+	return dayWindow{first: start.Unix() + 86399, asOf: in.AsOf, days: int(in.Day.Sub(start).Hours()/24) + 1}
+}
+
+// instant is the instant day i of the window is read at.
+func (w dayWindow) instant(i int) int64 {
+	if i == w.days-1 {
+		return w.asOf
+	}
+	return w.first + int64(i)*86400
+}
+
+// from is the first day of the window a snapshot taken at at holds on:
+// the first day read at or after it.
+func (w dayWindow) from(at int64) int {
+	return sort.Search(w.days, func(i int) bool { return w.instant(i) >= at })
+}
+
+// readSpans adds to out the amounts q reads: every holding's amount in
+// each snapshot that holds on some day of the window, ordered by source
+// and snapshot, beside the instrument it names ("" for none), which
+// instrument records. q takes the instant and the first day's instant.
+func (w dayWindow) readSpans(ctx context.Context, db *sql.DB, q string, out map[yield.HoldingKey]*yield.Daily,
+	instrument map[yield.HoldingKey]string) error {
+	type amount struct {
+		key yield.HoldingKey
+		v   float64
+	}
+	var src string
+	var snaps []int64
+	var amounts [][]amount
+	flush := func() {
+		for i, at := range snaps {
+			from, to := w.from(at), w.days
+			if i+1 < len(snaps) {
+				to = w.from(snaps[i+1])
+			}
+			if from >= to {
+				continue
+			}
+			for _, a := range amounts[i] {
+				if a.v != 0 {
+					out[a.key] = addSpan(out[a.key], w.days, yield.Span{From: from, To: to, Amount: a.v})
 				}
-				sums[k] += v
-				return nil
-			}, at); err != nil {
+			}
+		}
+		snaps, amounts = nil, nil
+	}
+	if err := scanAll(ctx, db, q, func(rows *sql.Rows) error {
+		var k yield.HoldingKey
+		var at int64
+		var iid string
+		var v sql.NullFloat64
+		if err := rows.Scan(&k.Source, &at, &k.Account, &k.PositionKey, &iid, &v); err != nil {
 			return err
 		}
+		if iid != "" {
+			instrument[k] = iid
+		}
+		if k.Source != src {
+			flush()
+			src = k.Source
+		}
+		if n := len(snaps); n == 0 || snaps[n-1] != at {
+			snaps, amounts = append(snaps, at), append(amounts, nil)
+		}
+		amounts[len(amounts)-1] = append(amounts[len(amounts)-1], amount{k, v.Float64})
+		return nil
+	}, w.asOf, w.first); err != nil {
+		return err
 	}
+	flush()
+	return nil
+}
+
+// addSpan adds a span to a holding's daily amounts; one that goes on from
+// the last at its amount extends it.
+func addSpan(d *yield.Daily, days int, s yield.Span) *yield.Daily {
+	if d == nil {
+		d = &yield.Daily{Days: days}
+	}
+	if n := len(d.Spans); n > 0 && d.Spans[n-1].To == s.From && d.Spans[n-1].Amount == s.Amount {
+		d.Spans[n-1].To = s.To
+		return d
+	}
+	d.Spans = append(d.Spans, s)
+	return d
+}
+
+// daily gives each holding of in its daily amounts, and each instrument
+// held the amounts of the positions of it that are no holding of in.
+func (b *yieldBase) daily(in *yield.Inputs) {
+	holding, held := map[yield.HoldingKey]bool{}, map[yield.InstrumentKey]bool{}
 	for _, h := range in.Holdings {
-		if s, ok := sums[h.HoldingKey]; ok {
-			in.AverageAmount[h.HoldingKey] = s / float64(len(instants))
+		holding[h.HoldingKey] = true
+		if h.Instrument != "" {
+			held[yield.InstrumentKey{Source: h.Source, Instrument: h.Instrument}] = true
+		}
+		if d := b.amounts[h.HoldingKey]; d != nil {
+			in.Daily[h.HoldingKey] = *d
 		}
 	}
-	return nil
+	keys := slices.SortedFunc(maps.Keys(b.amounts), func(x, y yield.HoldingKey) int {
+		return cmp.Or(cmp.Compare(x.Source, y.Source), cmp.Compare(x.Account, y.Account),
+			cmp.Compare(x.PositionKey, y.PositionKey))
+	})
+	for _, k := range keys {
+		ik := yield.InstrumentKey{Source: k.Source, Instrument: b.instrument[k]}
+		if holding[k] || !held[ik] {
+			continue
+		}
+		d := in.FormerDaily[ik]
+		d.Days, d.Spans = b.amounts[k].Days, append(d.Spans, b.amounts[k].Spans...)
+		in.FormerDaily[ik] = d
+	}
+}
+
+// readYieldHeld reads the accounts whose positions held each instrument
+// at some snapshot to the instant.
+func readYieldHeld(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+	return scanAll(ctx, db, `
+SELECT DISTINCT silver_source_id, instrument_external_id, account_external_id
+  FROM positions
+ WHERE snapshot_at <= ? AND instrument_external_id IS NOT NULL
+ ORDER BY 1, 2, 3`, func(rows *sql.Rows) error {
+		var k yield.InstrumentKey
+		var acct string
+		if err := rows.Scan(&k.Source, &k.Instrument, &acct); err != nil {
+			return err
+		}
+		in.Held[k] = append(in.Held[k], acct)
+		return nil
+	}, in.AsOf)
 }
 
 func readWithholding(ctx context.Context, db *sql.DB, in *yield.Inputs) error {

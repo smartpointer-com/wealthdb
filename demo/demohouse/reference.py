@@ -77,7 +77,6 @@ MATURITY_BANDS = (("0-1 Years", 1), ("1-3 Years", 3), ("3-5 Years", 5), ("5-7 Ye
 CASH_BAND = "Cash and/or Derivatives"
 
 
-
 def load():
     return json.loads(FUNDS_PATH.read_text())
 
@@ -86,8 +85,8 @@ def securities(cat, instruments):
     """The catalogue's securities by id. One that is also a demo
     instrument takes its name, currency and ticker from it, its ISIN when
     it has one, and a bond's coupon, maturity, spread and rating when it
-    has them, so the two catalogues cannot disagree; the entry in funds.json
-    adds what a fund's line states beside them."""
+    has them, so the two catalogues cannot disagree; the entry in
+    funds.json adds what a fund's line states beside them."""
     out = {}
     for s in cat["securities"]:
         inst = instruments.get(s["id"])
@@ -346,10 +345,10 @@ def _page(seed, fund, inst, curve, as_of, provider):
     """The figures every month-end of a bond fund that publishes its page
     but not its holdings: its duration, its average life and the maturity
     bands of its targets, jittered; its yield to maturity, the curve at
-    its average life plus its spread; its yield to worst, less what its calls cost;
-    the SEC yield, that less its expenses; and its distribution yield,
-    near its payout. Its credit is the config's, as a fund sliced by
-    rating (yield.rating_funds)."""
+    its average life plus its spread; its yield to worst, less what its
+    calls cost; the SEC yield, that less its expenses; and its
+    distribution yield, near its payout. Its credit is the config's, as a
+    fund sliced by rating (yield.rating_funds)."""
     ref = fund_ref(inst)
     payout = D(inst["income"]["yield"]) * 100
     out = []

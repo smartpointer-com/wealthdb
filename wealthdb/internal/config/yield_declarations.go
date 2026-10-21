@@ -252,11 +252,13 @@ func (r *yieldReader) frequency(required, zero bool) *int {
 // frequencyNames lists the frequencies a record takes, 0 (a discount
 // instrument) among them where zero is.
 func frequencyNames(zero bool) string {
-	var out []string
-	for _, f := range canonical.CouponFrequencies() {
-		if f != 0 || zero {
-			out = append(out, fmt.Sprint(f))
-		}
+	fs := canonical.BondFrequencies()
+	if zero {
+		fs = canonical.CouponFrequencies()
+	}
+	out := make([]string, len(fs))
+	for i, f := range fs {
+		out[i] = fmt.Sprint(f)
 	}
 	return strings.Join(out, ", ")
 }

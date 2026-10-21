@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 	"unicode"
 
@@ -15,8 +14,9 @@ import (
 // YieldConfig is the `yield` block of wealthdb.cfg: what the yield
 // report needs that no source states. Absent block ⇒ no curves, no
 // withholding rates, no rating funds, the built-in conventions and
-// cycles, and the default horizon. The load writes it into gold's yield
-// tables (gold.SyncYield).
+// cycles, and the default horizon. The load writes all of it but the
+// horizon into gold's yield tables (gold.SyncYield); the reports read
+// the horizon from the config (YieldHorizon).
 type YieldConfig struct {
 	// Curves maps a currency to its public curve: each tenor (3M, 1Y) to
 	// the rate series that gives it, as <silver_source_id>:<series_id>.
@@ -143,12 +143,8 @@ func (c *Config) validateYield(seenIDs map[string]bool) error {
 			return fmt.Errorf("config: yield.conventions[%q]: frequency is required", market)
 		}
 		if !canonical.ValidCouponFrequency(*cv.Frequency) {
-			var freqs []string
-			for _, f := range canonical.CouponFrequencies() {
-				freqs = append(freqs, strconv.Itoa(f))
-			}
 			return fmt.Errorf("config: yield.conventions[%q].frequency %d: want one of %s (0 for a discount instrument)",
-				market, *cv.Frequency, strings.Join(freqs, ", "))
+				market, *cv.Frequency, frequencyNames(true))
 		}
 		if cv.DayCount == "" {
 			return fmt.Errorf("config: yield.conventions[%q]: day_count is required", market)
@@ -202,20 +198,16 @@ func checkMarket(market string) error {
 // YieldRows is the yield block as gold stores it, in a stable order:
 // every fund reference in the form gold builds, the conventions and
 // cycles the built-in maps with the block's entries over them. Call
-// after Validate. An absent block yields the built-in maps and the
-// default settings alone.
+// after Validate. An absent block yields the built-in maps alone. The
+// horizon stays in the config (YieldHorizon).
 func (c *Config) YieldRows() canonical.YieldRows {
 	out := canonical.YieldRows{
 		Conventions: canonical.BuiltinConventions(),
 		Cycles:      canonical.BuiltinCycles(),
-		Settings:    canonical.YieldSettings{HorizonMonths: canonical.DefaultHorizonMonths},
 	}
 	y := c.Yield
 	if y == nil {
 		return out
-	}
-	if y.HorizonMonths > 0 {
-		out.Settings.HorizonMonths = y.HorizonMonths
 	}
 	for ccy, curve := range y.Curves {
 		for tenor, series := range curve {

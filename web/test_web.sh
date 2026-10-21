@@ -4,8 +4,9 @@
 # required. Run via `make test-web` or directly. Sources web/web (which
 # only runs web_main when executed, not sourced) and exercises the
 # arg-building and snapshot logic, then hands off to
-# web/test_provision.py for provision.py's definition helpers. bash 3.2
-# compatible (macOS).
+# web/test_provision.py for provision.py's definition helpers, under
+# WEALTHDB_WEB_PYTHON, else python3: it needs the duckdb module, which
+# `make test-web` provides in web/.venv. bash 3.2 compatible (macOS).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -214,8 +215,9 @@ check "help mentions serving"  "materialize serving tables" "$hout"
 # python script prints the same ok/FAIL lines and exits non-zero on
 # failure; its own summary line is dropped in favour of this file's.
 echo
-if command -v python3 >/dev/null 2>&1; then
-    prov_out="$(python3 "$HERE/test_provision.py" 2>&1)"
+prov_python="${WEALTHDB_WEB_PYTHON:-python3}"
+if command -v "$prov_python" >/dev/null 2>&1; then
+    prov_out="$("$prov_python" "$HERE/test_provision.py" 2>&1)"
     prov_rc=$?
     printf '%s\n' "$prov_out" | grep -v '^provision tests: '
     if [ "$prov_rc" -ne 0 ]; then
@@ -224,7 +226,7 @@ if command -v python3 >/dev/null 2>&1; then
         fails=$((fails + n))
     fi
 else
-    fail "python3 present (web/test_provision.py needs it, as does web/web)"
+    fail "$prov_python present (web/test_provision.py needs it)"
 fi
 
 echo

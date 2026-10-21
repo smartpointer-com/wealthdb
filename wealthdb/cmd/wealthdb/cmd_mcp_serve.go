@@ -215,7 +215,7 @@ func (h *hostList) Set(v string) error {
 }
 
 // newServer builds the MCP server: the instructions dated today, the
-// thirteen tools, and the guide resources. Each tool is registered with
+// fourteen tools, and the guide resources. Each tool is registered with
 // its own schema and parses its own arguments, so a small model's
 // near-miss gets an answer that names the fix instead of a schema
 // validator's message.

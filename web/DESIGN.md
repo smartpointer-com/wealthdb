@@ -124,15 +124,18 @@ ten dashboards. Their pickers:
   *Investing* grain picker and a *Section* picker. The required
   *Investing* picker nets the section whole or by asset class. The
   *Section* picker is narrower than the rest: the by-month charts and
-  the line list take it, and the headline figures and the Sankey do not. There is no account picker,
-  because the household boundary defines the pool.
+  the line list take it, and the headline figures and the Sankey do not.
+  There is no account picker, because the household boundary defines
+  the pool.
 - **Exposure**: a required currency, a time range, a source, a *Tax
   wrapper* picker, and an *Asset class* picker. A breakdown reads the
   latest day in the range, and a chart over time each month end in it.
 - **Yield**: the five Exposure carries, and the projection's four: a
   *Rate path* (constant or forward), a *Maturing* rule (cash, idle or
   roll), a *Shift* in basis points and a *Horizon* (12, 24 or 36
-  months). All four are required, with the CLI's defaults.
+  months). All four are required. They default to the CLI's built-in
+  assumptions: constant rates, cash, no shift and 12 months, whatever
+  the config's `horizon_months` says.
 - **Data Freshness**: no pickers.
 
 All of them are definitions only (MBQL or SQL), with no data baked in.
@@ -292,23 +295,40 @@ It reads in this order:
 - each bond and fund's implied yield against its duration, beside the
   DV01 per curve currency and tenor, stacked by what holds it;
 - each stock's dividend yield against its payout, beside the share of
-  value each quality tag covers;
+  value each quality tag covers, `thin` among them;
 - the yields over time, beside the duration over time. They are two
   charts, a yield and a duration differing in unit.
 
 A figure as of a day reads the latest day in the range from `web_yield`
 (migration 0138), a row set per currency and instant. It covers today
 and the twelve month ends before, so a window that ends earlier shows
-nothing on those cards. A rate weighs the
-holdings that state it as `yield.summarize` does: over the assets, or
-over every holding where a group holds no asset. So a figure is
-`wealthdb yield global`'s over the same selection. The income yield,
-the projected income and the sensitivity read today's projection
-(`web_yield_parts`) for today's selected holdings, whatever the range,
-under the projection's pickers. Their income is the holdings' alone, as
-`income_12m` is: rent or a pension has no holding. The sensitivity is
-the floating principal at one percent. No rate path or shift changes
-it, so it takes the maturing rule and the horizon alone.
+nothing on those cards. A rate weighs the holdings that state it as
+`yield.summarize` does: over the assets, or over every holding where a
+group holds no asset. So a figure is `wealthdb yield global`'s over
+the same selection.
+
+The realized yield pools as the engine pools a row. It is the
+holdings' income of the twelve months over the sum of their mean daily
+values: `received_12m` over `mean_value`, which the gold macro
+`yield_realized_pct` sums. A position's own `realized_pct` is its
+security's, pooled across accounts and sources
+(`wealthdb/docs/YIELD.md` §4), while its `received_12m` and
+`mean_value` are its own. The CLI's thin rule is per entity: it reads a
+row's pooled days and leaves a thin row blank. The table holds no days,
+so a card cannot apply that rule to a picker's selection. It shows the
+pooled figure, blank only where the selection's mean value is zero.
+The quality card shows the share tagged `thin`: a thin holding was near
+zero on most days of the year. A Go test holds the card's figure to the
+CLI's row for each grain and currency, and to the pooled figure where
+the CLI's row is thin.
+
+The income yield, the projected income and the
+sensitivity read today's projection (`web_yield_parts`) for today's
+selected holdings, whatever the range, under the projection's pickers.
+Their income is the holdings' alone, as `income_12m` is: rent or a
+pension has no holding. The sensitivity is the floating principal at
+one percent. No rate path or shift changes it, so it takes the
+maturing rule and the horizon alone.
 
 The Yield twin shows shares and rates as they are. DV01 becomes a share
 of net worth per basis point: 100 times DV01 over the selection's net
@@ -343,12 +363,13 @@ forward views do ([wealthdb/docs/INCOME.md](../wealthdb/docs/INCOME.md)
 
 The *Window* is last year, this year or the horizon's months from the
 first day of next month. What the window received depends on no
-assumption, so those three tiles take no projection picker. Received income comes from
-`web_yield_received`, expected income from `web_yield_parts`. The
-calendar lists the position the *Position* picker names, by symbol,
-name or position key, and every position while it is empty. A click on
-a position's symbol or name in the positions table sets that picker
-(Metabase's crossfilter click behaviour).
+assumption, so those three tiles take no projection picker. Received
+income comes from `web_yield_received`, expected income from
+`web_yield_parts`. The calendar lists the position the *Position*
+picker names, by symbol, name or position key, and every position
+while it is empty. A click on a position's symbol or name in the
+positions table sets that picker (Metabase's crossfilter click
+behaviour) to the value the cell shows.
 
 A projected card reads two views, and a picker reaches one template
 tag of a card. So its Source and Account field filters are bound to the
@@ -362,8 +383,10 @@ of what the window received. The window's income, and each position's,
 becomes a yield on the value it is earned on. The withholding becomes
 the share it takes. A position with no name reads `(unnamed)`, unless
 its key is a cash balance's or an account income's: any other key is a
-holding's own, as on the issuers twin. No account label, amount,
-quantity or price reaches it.
+holding's own, as on the issuers twin. The twin's calendar also
+matches the name the twin shows, so a click on `(unnamed)` lists every
+unnamed position's payments. No account label, amount, quantity or
+price reaches it.
 
 **Data Freshness** counts a source's age from its last read, not from
 its latest snapshot: gold's `source_observed` (migration 0122) says
@@ -413,23 +436,24 @@ model fence the merchant store, not this column, so a fold that is only a
 bank's tag ranks under that tag.
 The transaction lists keep such lines, since a line is a line, and the twin's
 shares stay relative to the window's whole net spend.
-The Spending twin also carries **no account picker**, where the money view does: a picker
-renders as a dropdown of the values its column takes, and every column that
-identifies an account is a label (a card's display name falls back to its
-masked last four digits), so the filter is dropped rather than rebound onto
-a column that would mean something else.
+The Spending twin also carries **no account picker**, where the money
+view does: a picker renders as a dropdown of the values its column
+takes, and every column that identifies an account is a label (a card's
+display name falls back to its masked last four digits), so the filter
+is dropped rather than rebound onto a column that would mean something
+else.
 A stale snapshot is caught before any of this is written. Provisioning
 probes the driver for the snapshot's schema version and for the serving
 views **by name**. It aborts with a "run `wealthdb web refresh`" message
 rather than converging the cards to a degraded shape. The version check
-catches a snapshot older than 0138. Its views exist by name, but they
-do not read as the cards expect:
+catches a snapshot older than 0138. Such a snapshot lacks the yield
+views and the exposure of the debt, which the by-name probe finds too.
+An older one also reads wrong in ways no probe by name sees:
 
 - before 0132, it lacks the serving tables the models read and the tax
   wrapper and asset class columns the tiles filter on;
 - before 0133, its gains and exposure views leave a missing tax wrapper
-  blank, where the holdings views read `taxable_personal`;
-- before 0138, it lacks the yield views and the exposure of the debt.
+  blank, where the holdings views read `taxable_personal`.
 
 On such a snapshot `provision.py` exits 3, where any other failure exits
 1. `web start`, `web restart` and `web refresh` then exit 3 as well.
@@ -490,7 +514,7 @@ what the queries need small:
 - A tile then scans only the rows it keeps. Its memory grows with the
   rows it reads, not with the length of the history.
 
-## 8. Materialized returns, gains, exposure and serving tables
+## 8. Materialized returns, gains, exposure, yield and serving tables
 
 The Returns dashboards can't be views or macros: MWR is XIRR (iterative
 root-finding), and the returns engine leans on things that only exist
@@ -500,8 +524,8 @@ synthetic onboarding. A SQL re-implementation would be a second returns
 engine that drifts. So the existing engine computes and the result is
 **materialized** into `report_returns` (migration 0026). It,
 `report_gains`, the `report_exposure` tables, the `report_yield`
-tables and the serving tables (below) are gold's *derived* tables; everything else is loader-written source of
-truth or computed on read.
+tables and the serving tables (below) are gold's *derived* tables;
+everything else is loader-written source of truth or computed on read.
 
 The contract keeps it honest: each `(grain, granularity, currency)`
 partition is the **verbatim output of one `RunReturns` call with the
@@ -626,11 +650,11 @@ The `web_exposure` view does three things:
 
 The debt and equity buckets of the credit, maturity, coupon and cycle
 views and the largest issuers are materialized beside it, into
-`report_exposure_debt` and `report_exposure_issuers` (migration 0138).
-Their look-through costs several times the plain one, so they hold
-today and the last second of each of the twelve months before only.
-`web_exposure_debt` keeps the source and the tax wrapper the pickers
-narrow; `web_exposure_issuers` holds the whole book.
+`report_exposure_debt` and `report_exposure_issuer_ranks` (migration
+0138). Their look-through costs several times the plain one, so they
+hold today and the last second of each of the twelve months before
+only. `web_exposure_debt` keeps the source and the tax wrapper the
+pickers narrow; `web_exposure_issuers` holds the whole book.
 
 **Yield** is materialized too. The yield report and the income
 projection are computed in Go (`internal/yield`), so `web-materialize`
@@ -650,9 +674,9 @@ The pickers multiply: two rate paths, three maturing rules, any shift,
 three horizons. So no combination is stored. A card sums each part's
 income (`yield.Part.Income`) at query time, which costs a join and a
 sum. A Go test holds the sum of the parts under the default
-assumptions to the sum of the holdings' `income_12m`. The `web_yield*` views label the rows and
-render each instant as a day. The yield tables take about 40 seconds
-of the refresh on a large book: 13 instants in 4 currencies.
+assumptions to the sum of the holdings' `income_12m`. The `web_yield*`
+views label the rows and render each instant as a day. The refresh
+computes the yield tables for 13 instants in 4 currencies.
 
 The **serving tables** (`serving_*`, migration 0132) hold report macros'
 rows verbatim, for the reason §7 gives. They are:
@@ -705,19 +729,24 @@ without the browser hint. It then runs
 `provision.py` builds *before* it talks to the API — the definitions are
 pure functions of module constants, so the filter registry, the model
 SQL, the card and dashboard defs, the parameter ids and the picker →
-template-tag wiring all check statically. Three behaviours worth naming:
-the privacy twin is asserted to render no merchant or account label in
-any card it defines, the Yield and Income projected twins to carry no
-column but a share, a rate, a year or a label, and a snapshot missing a
-serving view or older
-than the schema the cards read is asserted to abort the run (against a
-stubbed API) instead of half-provisioning, the older one with exit
-status 3. Whether Metabase *accepts* a
-payload needs a live instance: `demo/check_dashboards.py` runs every
-card of a running demo Metabase through its API (demo/README.md).
-The Go side (`web` config block,
+template-tag wiring all check statically. Three behaviours are worth
+naming:
+
+- the privacy twins render no merchant or account label;
+- the Yield and Income projected twins carry no column but a share, a
+  rate, a year or a label;
+- a snapshot missing a serving view, or older than the cards' schema,
+  aborts the run (exit 3 for the older one).
+
+The projection cards' SQL also runs on an invented book under DuckDB,
+so the tests need the `duckdb` Python module, and fail without it.
+`make test-web` runs them in a venv of its own, `web/.venv`, that holds
+it (`web/requirements-test.txt`). Whether Metabase *accepts* a payload
+needs a live instance: `demo/check_dashboards.py` runs every card of a
+running demo Metabase through its API (demo/README.md). The Go side (`web` config block,
 validation, the `web-config` emitter, `MaterializeReturns`,
-`MaterializeGains`, `MaterializeExposure`, `MaterializeYield`, `MaterializeServingTables`
-and the `web-materialize` command) is covered by `go test ./...`
-(`make test-wealthdb`). End-to-end (build → start → provision → query
-through the driver) is the manual smoke test in §3.
+`MaterializeGains`, `MaterializeExposure`, `MaterializeYield`,
+`MaterializeServingTables` and the `web-materialize` command) is
+covered by `go test ./...` (`make test-wealthdb`). End-to-end (build →
+start → provision → query through the driver) is the manual smoke test
+in §3.

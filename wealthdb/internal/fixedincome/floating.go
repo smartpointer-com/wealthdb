@@ -7,13 +7,6 @@ import "time"
 // market again, so the note sits near par. Its price risk runs only to
 // its next reset: the risk of one payment of par on that date.
 
-// FloaterCoupon is a floating note's coupon in percent: the reference
-// rate plus the quoted spread. Either may be negative, and so may the
-// sum: a floor is not modelled.
-func FloaterCoupon(reference, spread float64) float64 {
-	return reference + spread
-}
-
 // FloaterRisk is the Risk of a floating note whose rate resets on
 // nextReset, at its current coupon rate in percent, paid frequency times
 // a year:
@@ -30,5 +23,5 @@ func FloaterRisk(settle, nextReset time.Time, rate float64, frequency int) Risk 
 	if n <= 0 {
 		return Risk{}
 	}
-	return onePayment(float64(n)/365, rate, frequency)
+	return OnePayment(float64(n)/365, rate, frequency)
 }

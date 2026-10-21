@@ -93,9 +93,9 @@ def csv_text(columns, rows):
     return out.getvalue()
 
 
-def declarations_text(spec, bought=()):
+def declarations_text(spec, taken_on):
     """The household's declarations ledger: one JSON record per line, in
-    the order the spec lists them, then the records of what the
-    simulation bought, in the order it bought them."""
-    records = [*spec["config"]["exposure"].get("declarations", []), *bought]
+    the order the spec lists them, then the records the simulation writes
+    as the household takes each holding on, in that order."""
+    records = [*spec["config"]["exposure"].get("declarations", []), *taken_on]
     return "".join(json.dumps(d, ensure_ascii=False, separators=(",", ":")) + "\n" for d in records)

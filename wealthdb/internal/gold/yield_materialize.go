@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"slices"
+	"strings"
 	"time"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
@@ -18,13 +21,7 @@ const YieldHistoryMonths = 12
 // second of each of the YieldHistoryMonths months before toEpoch's, then
 // toEpoch.
 func yieldInstants(toEpoch int64) []int64 {
-	d := time.Unix(toEpoch, 0).UTC()
-	first := time.Date(d.Year(), d.Month(), 1, 0, 0, 0, 0, time.UTC)
-	out := make([]int64, 0, YieldHistoryMonths+1)
-	for m := YieldHistoryMonths; m >= 1; m-- {
-		out = append(out, first.AddDate(0, -m+1, 0).Unix()-1)
-	}
-	return append(out, toEpoch)
+	return monthEndsTo(toEpoch, YieldHistoryMonths)
 }
 
 // MaterializeYield rewrites the Yield dashboard's tables (migration
@@ -50,8 +47,13 @@ func MaterializeYield(ctx context.Context, db *sql.DB, toEpoch, computedAt int64
 	m := yieldMaterializer{ctx: ctx, db: db, tx: tx, computedAt: computedAt}
 	today := map[string]*yield.Book{}
 	for _, at := range yieldInstants(toEpoch) {
+		// What does not depend on the currency is read once an instant.
+		base, err := readYieldBase(ctx, db, at)
+		if err != nil {
+			return 0, fmt.Errorf("MaterializeYield: %w", err)
+		}
 		for _, ccy := range materializeCurrencies {
-			in, err := YieldInputs(ctx, db, at, ccy)
+			in, err := base.inputs(ctx, db, ccy)
 			if err != nil {
 				return 0, fmt.Errorf("MaterializeYield: %w", err)
 			}
@@ -96,32 +98,14 @@ func (m *yieldMaterializer) insert(table, cols string, n int, row func(i int, ar
 	return nil
 }
 
-// placeholders is a row of `?` for the comma-separated columns cols.
-func placeholders(cols string) string {
-	n := 1
-	for _, c := range cols {
-		if c == ',' {
-			n++
-		}
-	}
-	out := "("
-	for i := range n {
-		if i > 0 {
-			out += ", "
-		}
-		out += "?"
-	}
-	return out + ")"
-}
-
 const yieldPositionCols = `computed_at, as_of, currency, silver_source_id, account_external_id, position_key,
     tax_wrapper, symbol, name, asset_class, vehicle, kind, holding_currency,
     quantity, value, price, coupon_pct, maturity_date, rating, stated_pct, current_yield_pct, implied_pct,
-    implied_annual_pct, realized_pct, earnings_yield_pct, dividend_yield_pct, payout_pct, benchmark_pct, gap_pct,
-    duration, convexity, maturity_years, dv01, income_12m, income_100bp, weighs, tags`
+    implied_annual_pct, realized_pct, received_12m, mean_value, earnings_yield_pct, dividend_yield_pct, payout_pct,
+    benchmark_pct, gap_pct, duration, convexity, maturity_years, dv01, income_12m, income_100bp, weighs, tags`
 
 const yieldBucketCols = `computed_at, as_of, currency, silver_source_id, account_external_id, position_key,
-    curve_currency, tenor, kind, dv01`
+    curve_currency, tenor, tenor_order, held_in, dv01`
 
 // positions writes a book's holdings and their DV01 per tenor.
 func (m *yieldMaterializer) positions(b *yield.Book, at int64, ccy string) error {
@@ -139,21 +123,23 @@ func (m *yieldMaterializer) positions(b *yield.Book, at int64, ccy string) error
 			maturity = p.MaturityDate.Format(time.DateOnly)
 		}
 		args = append(args, m.computedAt, at, ccy, p.Source, p.HoldingKey.Account, p.PositionKey,
-			emptyNull(p.Account.TaxWrapper), emptyNull(p.Symbol), emptyNull(p.Name), emptyNull(p.AssetClass),
-			emptyNull(p.Vehicle), string(p.Kind), emptyNull(p.Currency), p.Quantity, p.Value, number(p.Price),
-			p.Coupon, maturity, emptyNull(p.Rating))
-		for _, v := range []*float64{p.Stated, p.CurrentYield, p.Implied, p.ImpliedAnnual, p.Realized,
-			p.EarningsYield, p.DividendYield, p.Payout, p.Benchmark, p.Gap, p.Duration, p.Convexity, p.Maturity,
-			p.DV01, p.Income12, p.Income100bp} {
+			nullableEnumValue(p.Account.TaxWrapper), nullableEnumValue(p.Symbol), nullableEnumValue(p.Name),
+			nullableEnumValue(p.AssetClass), nullableEnumValue(p.Vehicle), string(p.Kind), nullableEnumValue(p.Currency),
+			p.Quantity, p.Value, number(p.Price), p.Coupon, maturity, nullableEnumValue(p.Rating))
+		received, mean := p.RealizedParts()
+		for _, v := range []*float64{p.Stated, p.CurrentYield, p.Implied, p.ImpliedAnnual, p.Realized, &received,
+			&mean, p.EarningsYield, p.DividendYield, p.Payout, p.Benchmark, p.Gap, p.Duration, p.Convexity,
+			p.Maturity, p.DV01, p.Income12, p.Income100bp} {
 			args = append(args, number(v))
 		}
-		return append(args, p.Kind != yield.KindLiability && p.Value > 0, tags)
+		return append(args, p.Weighs(), tags)
 	}); err != nil {
 		return err
 	}
 	type bucket struct {
 		p          yield.Position
 		ccy, tenor string
+		order      int
 		v          float64
 	}
 	var bs []bucket
@@ -161,7 +147,7 @@ func (m *yieldMaterializer) positions(b *yield.Book, at int64, ccy string) error
 		for c, tenors := range p.Buckets {
 			for t, v := range tenors {
 				if v != 0 {
-					bs = append(bs, bucket{p, c, t, v})
+					bs = append(bs, bucket{p, c, t, slices.Index(canonical.RiskTenors, t) + 1, v})
 				}
 			}
 		}
@@ -169,7 +155,7 @@ func (m *yieldMaterializer) positions(b *yield.Book, at int64, ccy string) error
 	return m.insert("report_yield_buckets", yieldBucketCols, len(bs), func(i int, args []any) []any {
 		x := bs[i]
 		return append(args, m.computedAt, at, ccy, x.p.Source, x.p.HoldingKey.Account, x.p.PositionKey, x.ccy, x.tenor,
-			string(x.p.Kind), x.v)
+			x.order, yield.HeldIn(x.p.Kind), x.v)
 	})
 }
 
@@ -189,12 +175,22 @@ func fxColumns(today map[string]*yield.Book, k yield.HoldingKey) []any {
 	return out
 }
 
-const yieldPartCols = `computed_at, silver_source_id, account_external_id, position_key, holding_currency, rule,
-    month, month_start, day, month_only, type, basis, reinvested, fixed, principal, spread, roll_constant,
-    roll_forward, roll_principal, withholding_pct, fx_USD, fx_CHF, fx_EUR, fx_GBP`
+// fxColumnNames are fxColumns' columns: fx_<CCY> for each reporting
+// currency.
+var fxColumnNames = func() string {
+	cols := make([]string, len(materializeCurrencies))
+	for i, ccy := range materializeCurrencies {
+		cols[i] = "fx_" + ccy
+	}
+	return strings.Join(cols, ", ")
+}()
 
-const yieldEventCols = `computed_at, silver_source_id, account_external_id, position_key, holding_currency, rule,
-    month, day, type, amount, fx_USD, fx_CHF, fx_EUR, fx_GBP`
+var yieldPartCols = `computed_at, silver_source_id, account_external_id, position_key, holding_currency, rule,
+    month, month_start, day, month_only, type, basis, reinvested, fixed, principal, spread, roll_constant,
+    roll_forward, roll_principal, withholding_pct, ` + fxColumnNames
+
+var yieldEventCols = `computed_at, silver_source_id, account_external_id, position_key, holding_currency, rule,
+    month, day, type, amount, ` + fxColumnNames
 
 // projection writes today's parts, rates and principal events. A
 // holding's parts are in its own currency, the same in every book that
@@ -259,7 +255,7 @@ func (m *yieldMaterializer) projection(today map[string]*yield.Book) error {
 		}
 		args = append(args, m.computedAt, x.Holding.Source, x.Holding.Account, x.Holding.PositionKey, x.Currency,
 			string(x.Rule), x.Month, p.MonthStart(x.Month).Format(time.DateOnly), day, x.MonthOnly, string(x.Type),
-			string(x.Basis), emptyNull(x.Reinvested), x.Fixed, x.Principal, x.Spread, x.RollConstant, x.RollForward,
+			string(x.Basis), nullableEnumValue(x.Reinvested), x.Fixed, x.Principal, x.Spread, x.RollConstant, x.RollForward,
 			x.RollPrincipal, withholding)
 		return append(args, fxColumns(today, x.Holding)...)
 	}); err != nil {
@@ -317,14 +313,6 @@ func (m *yieldMaterializer) received(today map[string]*yield.Book, toEpoch int64
 			return append(args, m.computedAt, x.ccy, x.r.Holding.Source, x.r.Holding.Account, x.r.Holding.PositionKey,
 				x.r.Day.Format(time.DateOnly), string(x.r.Type), x.r.Value, x.w)
 		})
-}
-
-// emptyNull is s, NULL where it is empty.
-func emptyNull(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
 }
 
 // number is v, NULL where it is nil or not a number.

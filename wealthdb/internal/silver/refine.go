@@ -15,7 +15,7 @@ var (
 	etfCryptoRe = regexp.MustCompile(`(?i)BITCOIN|ETHEREUM|\bETHER\b|SOLANA|CRYPTO|\bXRP\b`)
 	etfMetalRe  = regexp.MustCompile(`(?i)\bGOLD\b|\bSILVER\b|PLATINUM|PALLADIUM|PRECIOUS METALS?\b`)
 	etfMinersRe = regexp.MustCompile(`(?i)\bMINERS?\b|\bMINING\b`)
-	etfBondRe   = regexp.MustCompile(`(?i)\bBONDS?\b|TREASURY|FIXED INCOME|MUNICIPAL|\bMUNI\b|\bTIPS\b`)
+	etfBondRe   = regexp.MustCompile(`(?i)\bBONDS?\b|TREASURY|FIXED INCOME|\b(?:FIXED|FXD) INC(?:OME)?\b|MUNICIPAL|\bMUNI\b|\bTIPS\b`)
 )
 
 // NamesPhysicalMetal reports whether a security name reads as a

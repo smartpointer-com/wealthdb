@@ -78,7 +78,7 @@ func TestMCPInitialize(t *testing.T) {
 	}
 }
 
-// TestMCPToolList: thirteen tools, every one read-only, idempotent and
+// TestMCPToolList: fourteen tools, every one read-only, idempotent and
 // closed-world, none with a required parameter, each view enum the
 // family's own.
 func TestMCPToolList(t *testing.T) {
@@ -91,6 +91,9 @@ func TestMCPToolList(t *testing.T) {
 	var names []string
 	for _, tool := range res.Tools {
 		names = append(names, tool.Name)
+		if tool.Name != "describe" && toolNotes[tool.Name] == "" {
+			t.Errorf("%s has no note for describe", tool.Name)
+		}
 		a := tool.Annotations
 		if a == nil || !a.ReadOnlyHint || !a.IdempotentHint || a.OpenWorldHint == nil || *a.OpenWorldHint ||
 			a.DestructiveHint == nil || *a.DestructiveHint {
@@ -130,7 +133,7 @@ func TestMCPCoversEveryCLIView(t *testing.T) {
 	cli := map[string][]string{
 		"holdings": sorted(holdingsViews), "returns": sorted(returnsViews), "spending": sorted(spendingViews),
 		"income": sorted(incomeViews), "cashflow": sorted(cashflowViews), "gains": sorted(gainsViews),
-		"exposure": sorted(exposureViews),
+		"exposure": sorted(exposureViews), "yield": sorted(yieldViews),
 	}
 	s := newTestMCP("", false)
 	seen := map[string]bool{}
@@ -235,6 +238,91 @@ func TestMCPExposureRefusals(t *testing.T) {
 	}
 	if header, _, _ := strings.Cut(resultText(res), "\n"); !strings.Contains(header, "country by domicile") {
 		t.Errorf("by domicile: header %q", header)
+	}
+}
+
+// refusals calls tool with each case's arguments and wants a tool error
+// that says the case's text.
+func refusals(t *testing.T, cs *mcp.ClientSession, tool string, cases []struct {
+	args map[string]any
+	want string
+}) {
+	t.Helper()
+	for _, c := range cases {
+		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: c.args})
+		if err != nil {
+			t.Fatalf("%v: a refused call is a protocol error: %v", c.args, err)
+		}
+		if !res.IsError || !strings.Contains(resultText(res), c.want) {
+			t.Errorf("%s %v: isError %v, %s", tool, c.args, res.IsError, resultText(res))
+		}
+	}
+}
+
+// callHeader is the first line of a call's result, which must be no error.
+func callHeader(t *testing.T, cs *mcp.ClientSession, tool string, args map[string]any) string {
+	t.Helper()
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: args})
+	if err != nil || res.IsError {
+		t.Fatalf("%s %v: %v %s", tool, args, err, resultText(res))
+	}
+	h, _, _ := strings.Cut(resultText(res), "\n")
+	return h
+}
+
+// TestMCPYieldRefusals: converted belongs to the aggregate views; a
+// series takes a period, a view that has one and a window, not an as_of
+// day or a window after today. A converted or a series call says so in
+// its header, the series with its first and last period end.
+func TestMCPYieldRefusals(t *testing.T) {
+	t.Parallel()
+	cs := connect(t, newTestMCP(setupYieldGold(t), false), time.Now())
+	next := time.Now().UTC().AddDate(1, 0, 0).Format("2006")
+	refusals(t, cs, "yield", []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{"view": "cash", "converted": true},
+			"converted belongs to the global, sources, portfolios and accounts views"},
+		{map[string]any{"from": "2026-01-01"}, "yield: from and to belong to a series: give a period too"},
+		{map[string]any{"view": "positions", "period": "quarterly"},
+			"yield: period belongs to the global, sources, portfolios, accounts and curve views"},
+		{map[string]any{"period": "quarterly", "as_of": "2026-06-30"}, "yield: as_of names one day"},
+		{map[string]any{"period": "quarterly", "from": next, "to": next}, "yield: the window starts after today"},
+		{map[string]any{"period": "weekly"}, "is not one of its values"},
+	})
+	if h := callHeader(t, cs, "yield", map[string]any{"converted": true, "as_of": "2026-06-30"}); !strings.Contains(h,
+		"· converted ·") {
+		t.Errorf("converted: header %q", h)
+	}
+	if h := callHeader(t, cs, "yield", map[string]any{"view": "curve", "period": "quarterly", "from": "2026-01-01",
+		"to": "2026-06-30"}); !strings.Contains(h, "window 2026-03-31 → 2026-06-30") || !strings.Contains(h, "series quarterly") ||
+		strings.Contains(h, "as of") {
+		t.Errorf("series: header %q", h)
+	}
+}
+
+// TestMCPIncomeForwardRefusals: the assumptions belong to the forward
+// views, level to types, and of the forward views period to projection,
+// monthly, quarterly or annual. A forward call's header names its
+// assumptions.
+func TestMCPIncomeForwardRefusals(t *testing.T) {
+	t.Parallel()
+	cs := connect(t, newTestMCP(setupYieldGold(t), false), time.Now())
+	refusals(t, cs, "income", []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{"view": "summary", "rates": "forward"}, "rates, maturing and shift belong to the projection"},
+		{map[string]any{"view": "summary", "shift": 25}, "rates, maturing and shift belong to the projection"},
+		{map[string]any{"view": "projection", "level": "primary"}, "level belongs to the types view"},
+		{map[string]any{"view": "calendar", "period": "monthly"}, "of the forward views, period belongs to projection"},
+		{map[string]any{"view": "projection", "period": "total"}, "the forward views take period monthly | quarterly | annual"},
+	})
+	h := callHeader(t, cs, "income", map[string]any{"view": "projection", "rates": "forward", "maturing": "roll",
+		"shift": -50})
+	if !strings.Contains(h, "period=monthly · rates=forward · maturing=roll · shift=-50bp") {
+		t.Errorf("projection: header %q", h)
 	}
 }
 

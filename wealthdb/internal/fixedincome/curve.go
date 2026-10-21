@@ -3,12 +3,12 @@
 //
 //   - day counts, and the coupon schedule, price, yield and risk of a
 //     fixed-coupon bond;
-//   - the price, yield and risk of a bill, and the coupon and risk of a
-//     floating-rate note;
+//   - the yield and risk of a bill, and the risk of a floating-rate
+//     note;
 //   - rate sensitivity split over the five risk tenors;
 //   - a currency's zero curve and its forward rates, built from the
 //     published tenors of its government curve (par yields or zero
-//     rates), and the rate paths a holding earns.
+//     rates).
 //
 // Every function here is pure: it reads its arguments and nothing else.
 package fixedincome
@@ -54,6 +54,16 @@ var Treasury = Basis{Frequency: 2}
 // a rate series states; 0 is continuous.
 var compoundings = map[string]int{"continuous": 0, "annual": 1, "semiannual": 2, "quarterly": 4, "monthly": 12}
 
+// The kinds of rate a series states with a compounding (ParseBasis).
+const (
+	kindSpot = "spot"
+	kindPar  = "par"
+)
+
+// treasuryKinds are the kinds of the Treasury's series, no kind among
+// them: each reads on Treasury and states no compounding.
+var treasuryKinds = []string{"", "constant_maturity", "discount"}
+
 // ParseBasis reads the basis a rate series states: its kind and its
 // compounding, as a collector's payload names them.
 //
@@ -65,15 +75,15 @@ var compoundings = map[string]int{"continuous": 0, "annual": 1, "semiannual": 2,
 //
 // Any other kind or compounding is refused.
 func ParseBasis(kind, compounding string) (Basis, error) {
-	switch kind {
-	case "", "constant_maturity", "discount":
+	switch {
+	case slices.Contains(treasuryKinds, kind):
 		if compounding != "" {
 			return Basis{}, fmt.Errorf("fixedincome: basis %q: states no compounding, not %q", kind, compounding)
 		}
 		return Treasury, nil
-	case "spot", "par":
+	case kind == kindSpot || kind == kindPar:
 		f, ok := compoundings[compounding]
-		b := Basis{Spot: kind == "spot", Frequency: f}
+		b := Basis{Spot: kind == kindSpot, Frequency: f}
 		if !ok || b.check() != nil {
 			want := "continuous, annual, semiannual, quarterly or monthly"
 			if !b.Spot {
@@ -92,9 +102,9 @@ func (b Basis) String() string {
 	if b == Treasury {
 		return "Treasury"
 	}
-	kind := "par"
+	kind := kindPar
 	if b.Spot {
-		kind = "spot"
+		kind = kindSpot
 	}
 	for name, f := range compoundings {
 		if f == b.Frequency {
@@ -145,11 +155,6 @@ type Curve struct {
 
 // ErrNoPoints is returned for a curve built from no points.
 var ErrNoPoints = errors.New("fixedincome: a curve needs at least one tenor")
-
-// Bootstrap is the Treasury shorthand: NewCurve(points, Treasury).
-func Bootstrap(points []Point) (*Curve, error) {
-	return NewCurve(points, Treasury)
-}
 
 // NewCurve builds the zero curve of the points of a curve published on
 // basis b:
@@ -261,9 +266,6 @@ func bootstrap(pts []Point, freq int) ([]Point, error) {
 	return nodes, nil
 }
 
-// Months is the curve's longest tenor in months.
-func (c *Curve) Months() int { return len(c.zero) - 1 }
-
 // Zero is the zero rate of month m in percent, semiannually compounded:
 // flat before the first month and past the longest tenor.
 func (c *Curve) Zero(m int) float64 {
@@ -287,17 +289,6 @@ func (c *Curve) Forward(from, term int) float64 {
 	from, term = max(0, from), max(1, term)
 	ratio := c.Discount(from) / c.Discount(from+term)
 	return 200 * (math.Pow(ratio, compoundMonths/float64(term)) - 1)
-}
-
-// Path is the forward rate of a term-month loan starting at each month
-// 0 … months-1: the rate path a holding that resets to that tenor earns
-// under the forward curve. Its first month is today's rate for the term.
-func (c *Curve) Path(months, term int) []float64 {
-	out := make([]float64, max(0, months))
-	for m := range out {
-		out[m] = c.Forward(m, term)
-	}
-	return out
 }
 
 // interpolate is the rate at m months over points sorted by length:

@@ -120,10 +120,10 @@ func bucketsOf(t *testing.T, rows []ExposureBucketRow) []string {
 	return out
 }
 
-// Each of the five views sums to net worth. A bond's rating comes from
-// its description, a fund line's from its rating fund (the range's worse
-// end), else from its fund's page, split by the breakdown's shares of its
-// rated debt; a line with none reads unrated, unknown in quality.
+// Each of the four bucket views sums to net worth. A bond's rating comes
+// from its description, a fund line's from its rating fund (the range's
+// worse end), else from its fund's page, split by the breakdown's shares
+// of its rated debt; a line with none reads unrated, unknown in quality.
 func TestExposureYieldViews(t *testing.T) {
 	t.Parallel()
 	db, ctx, at := seedYieldExposure(t)
@@ -182,9 +182,10 @@ func TestExposureYieldViews(t *testing.T) {
 	}
 }
 
-// The labels a page or a description writes map to buckets, a band to
-// its lower bound's bucket, a maturity exactly N years on to the longer
-// bucket, and a name to the text the issuers view groups it by.
+// The labels a page or a description writes map to buckets, an agency's
+// grade to the one canonical.RatingOfGrade gives it, a band to its lower
+// bound's bucket, a maturity exactly N years on to the longer bucket, and
+// a name to the text the issuers view groups it by.
 func TestExposureYieldLabels(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -206,6 +207,18 @@ func TestExposureYieldLabels(t *testing.T) {
 		"Government": "", "aA": "AA", "bBB-": "BBB", "notRated": "unrated", "belowB": "B",
 		"cashand/orDerivatives": "cash", "cCCandbelow": "B", "bBandbelow": "B", "aA1": "AA", "aAA Rated": "AAA",
 		"AA1": "AA", "BAA2": "BBB", "A": "A", "BB": "BB"})
+	// Every agency's grade, its provisional and starred forms, the grades
+	// that rate nothing, and grades of no bucket: the short-term ones.
+	grades := map[string]string{}
+	for _, g := range []string{"Aaa", "Aa1", "Aa2", "Aa3", "Aa", "A1", "A2", "A3", "Baa1", "Baa2", "Baa3", "Baa",
+		"Ba1", "Ba2", "Ba3", "Ba", "B1", "B2", "B3", "Caa1", "Caa2", "Caa3", "Caa", "Ca", "C", "AAA", "AA+", "AA",
+		"AA-", "A+", "A", "A-", "BBB+", "BBB", "BBB-", "BB+", "BB", "BB-", "B+", "B", "B-", "CCC+", "CCC", "CCC-",
+		"CC", "D", "SD", "RD", "DDD", "DD", "NR", "WR", "WD", "N/R", "Aa1*", "(P)Aa2", "(P)Baa3", "BBB+*", "P-1",
+		"A-1+", "SP-1", "F1", "", "GOOD"} {
+		b, ok := canonical.RatingOfGrade(g)
+		grades[g] = map[bool]string{true: string(b)}[ok]
+	}
+	check(`SELECT exposure_rating_label(?)`, grades)
 	check(`SELECT exposure_maturity_label(?)`, map[string]string{"0 - 1 Years": "under 1y", "1 - 2 Years": "1-3y",
 		"2-3 Years": "1-3y", "3 - 5 Years": "3-5y", "7 - 10 Years": "5-10y", "15 - 20 Years": "10-20y",
 		"20+ Years": "over 20y", "10+ Years": "", "6-12 Months": "under 1y", "Cash": "cash", "Other": "",
@@ -433,7 +446,8 @@ func TestMaterializeExposureDebtMatchesTheViews(t *testing.T) {
 	}
 	for _, ccy := range materializeCurrencies {
 		for dim, read := range map[string]func(context.Context, *sql.DB, int64, string) ([]ExposureBucketRow, error){
-			"credit": ExposureCredit, "maturity": ExposureMaturities, "coupon": ExposureCoupons, "cycle": ExposureCycles} {
+			debtDimensionCredit: ExposureCredit, debtDimensionMaturity: ExposureMaturities,
+			debtDimensionCoupon: ExposureCoupons, debtDimensionCycle: ExposureCycles} {
 			rows, err := read(ctx, db, at, ccy)
 			if err != nil {
 				t.Fatal(err)
@@ -456,7 +470,7 @@ func TestMaterializeExposureDebtMatchesTheViews(t *testing.T) {
 		}
 		got := scanStrings(t, db, `SELECT issuer || '=' || printf('%.4f', value) || '/' || printf('%.2f', share_pct) || '/'
 		    || COALESCE(printf('%.2f', cumulative_share_pct), '-') || '/' || printf('%.1f', debt_pct)
-		    FROM report_exposure_issuers WHERE as_of = ? AND currency = ? ORDER BY rank`, at, ccy)
+		    FROM report_exposure_issuer_ranks WHERE as_of = ? AND currency = ? ORDER BY rank`, at, ccy)
 		var want []string
 		for _, r := range iss {
 			v, _ := strconv.ParseFloat(*r.Value, 64)
@@ -470,5 +484,57 @@ func TestMaterializeExposureDebtMatchesTheViews(t *testing.T) {
 		if strings.Join(got, " ") != strings.Join(want, " ") {
 			t.Errorf("%s issuers %v, want %v", ccy, got, want)
 		}
+	}
+}
+
+// A fund line of a kind the yield report reads as floating
+// (floatingLineKinds) is floating in the coupons view too, and one it
+// does not is not. The fund is invented.
+func TestFloatingLineKindsAgree(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	snap := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
+	kinds := append(slices.Clone(floatingLineKinds), "Fixed")
+	q := []string{
+		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
+		    first_seen_at, last_seen_at) VALUES ('test-src', 'A', 'brokerage', 'Brokerage', 'USD', 0, 0)`,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, name,
+		    currency, first_seen_at, last_seen_at)
+		    VALUES ('test-src', 'QFL', 'fixed_income', 'etf', 'QFL', 'Example Note Fund', 'USD', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		    asset_class, vehicle, currency, quantity, market_value)
+		    VALUES ('test-src', ` + itoa(snap) + `, 'A', 'QFL', 'QFL', 'fixed_income', 'etf', 'USD', 1, 3000)`,
+		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency)
+		    VALUES ('test-src', 'symbol:QFL', ` + itoa(snap) + `, 'holdings', 'testprov', ` + strconv.Itoa(len(kinds)) +
+			`, 'USD')`,
+	}
+	for i, k := range kinds {
+		q = append(q, `INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, name,
+		    asset_type, weight, currency, maturity, coupon, coupon_kind) VALUES ('test-src', 'symbol:QFL', `+itoa(snap)+
+			`, 'holdings', `+strconv.Itoa(i+1)+`, 'cusip:0000000`+strconv.Itoa(i)+`Z', 'EXAMPLE NOTE', 'Fixed Income', `+
+			strconv.FormatFloat(100/float64(len(kinds)), 'f', -1, 64)+`, 'USD', DATE '2030-01-15', 4, '`+k+`')`)
+	}
+	execEach(t, db, q...)
+	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
+		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: 35, PartialPct: 3},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	got := scanStrings(t, db, `SELECT line_coupon_kind || ' ' || coupon_bucket FROM exposure_yield_leaves(?, 'USD')
+	    WHERE depth > 0 AND line_coupon_kind IS NOT NULL ORDER BY 1`, snap+86399)
+	var want []string
+	for _, k := range kinds {
+		bucket := "fixed"
+		if floatingLine(k) {
+			bucket = "floating"
+		}
+		want = append(want, k+" "+bucket)
+	}
+	slices.Sort(want)
+	if strings.Join(got, ", ") != strings.Join(want, ", ") || floatingLine("Fixed") {
+		t.Errorf("line kinds %v, want %v", got, want)
 	}
 }

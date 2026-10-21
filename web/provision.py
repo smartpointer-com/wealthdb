@@ -172,6 +172,11 @@ def _ccy_lower():
     return tuple(c.lower() for c in REPORTING_CURRENCIES)
 
 
+def _sql_list(values):
+    """`values` as a list of SQL string literals."""
+    return ", ".join(f"'{v}'" for v in values)
+
+
 def _ccy_values():
     """The reporting currencies as an inline table, one row each."""
     return "(VALUES " + ", ".join(f"('{c}')" for c in REPORTING_CURRENCIES) + ") AS c(currency)"
@@ -621,7 +626,7 @@ def report_models():
 # than by omission.
 INVESTMENT_INCOME_TYPES = ["INCOME_DIVIDENDS", "INCOME_INTEREST_EARNED",
                            "INCOME_STAKING", "INCOME_DISTRIBUTIONS"]
-WO_INCOME_TYPE_LIST = ", ".join(f"'{t}'" for t in INVESTMENT_INCOME_TYPES)
+WO_INCOME_TYPE_LIST = _sql_list(INVESTMENT_INCOME_TYPES)
 COST_KINDS = ["fee", "tax"]
 
 # Account kinds fenced out of the FEES & TAXES flow charts. A credit card
@@ -2417,7 +2422,8 @@ YIELD_DASHBOARDS = {"Yield", "Yield" + PRIVACY_SUFFIX}
 # Tiles whose cells set a dashboard picker when clicked, Metabase's
 # crossfilter click behaviour: card -> (its columns, the picker's id).
 # A position's row in the projected income table picks the position the
-# calendar below it lists.
+# calendar below it lists, by the value its cell shows; the twin's
+# calendar also matches the name the twin shows (TWIN_POSITION_NAME).
 CROSSFILTER_TILES = {name: (("symbol", "name"), POSITION_PARAM_ID)
                      for name in ("Received and expected by position",
                                   "Received and expected by position" + PRIVACY_SUFFIX)}
@@ -2552,7 +2558,7 @@ def base_dashboards():
             # and expected, in columns of total, interest and dividends,
             # and the withholding; then the window by month, by account
             # and by position, and the calendar a position's row picks.
-            ("Expected income", 0, 0, 6, 3, None),
+            ("Income in the window", 0, 0, 6, 3, None),
             ("Received income", 0, 6, 6, 3, None),
             ("Received interest", 0, 12, 6, 3, None),
             ("Received dividends", 0, 18, 6, 3, None),
@@ -2738,6 +2744,37 @@ def base_dashboards():
     }
 
 
+def _card_maker(out, db_id, privacy, pickers, tags, tail):
+    """The `card` function of one family of native cards. It stores a
+    tile's card in `out` as name -> (display, description, dataset_query,
+    viz): its description ends in `tail`, it takes the template tags
+    `tags` unless the tile names its own, and it registers the family's
+    `pickers` (register_native_targets). With `privacy` it builds the
+    twin's card under its privacy name, and none for a privacy-exempt
+    tile."""
+    def card(name, display, desc, sql, viz, card_tags=tags, tail=tail):
+        if privacy and name in PRIVACY_EXEMPT_CARDS:
+            return
+        name = privacy_name(name) if privacy else name
+        register_native_targets(name, card_tags, pickers)
+        out[name] = (display, desc + tail, _native(db_id, sql, card_tags), viz)
+    return card
+
+
+def _window_end(view, tags, share=False, where=""):
+    """The CTEs of a card that reads serving view `view` at the latest
+    day in the window: `w`, the window's rows in the picked currency that
+    `tags` and the predicate `where` keep, each with its share of its
+    day's total as `share_pct` with `share`; and `e`, w's rows of its
+    latest day. Returns (`w` alone, `w` and `e`), neither ending in a
+    newline."""
+    cols = (", 100 * value / NULLIF(sum(value) OVER (PARTITION BY as_of_day), 0) AS share_pct\n  FROM "
+            if share else "\n    FROM ")
+    w = ("WITH w AS (\n  SELECT *" + cols + view + _native_where(tags)
+         + "\n     AND currency = {{currency}}" + where + ")")
+    return w, w + ",\ne AS (SELECT * FROM w WHERE as_of_day = (SELECT max(as_of_day) FROM w))"
+
+
 def exposure_cards(db_id, privacy):
     """The Exposure dashboard's cards, or with `privacy` their privacy
     variants: name -> (display, description, dataset_query, viz). Native
@@ -2764,29 +2801,23 @@ def exposure_cards(db_id, privacy):
     desc_end = (" Built for the Exposure dashboard; opened standalone it runs in "
                 f"{DEFAULT_CURRENCY}, the currency variable's default, over every month end."
                 + (PRIVACY_DESC if privacy else ""))
-    rows = "  FROM web_exposure" + _native_where(tags) + "\n     AND currency = {{currency}}"
-    # w: the selection, each row's share of its day's selected total.
-    end = ("WITH w AS (\n  SELECT *, 100 * value / NULLIF(sum(value) OVER (PARTITION BY as_of_day), 0) AS share_pct\n"
-           + rows + "),\n"
-           "e AS (SELECT * FROM w WHERE as_of_day = (SELECT max(as_of_day) FROM w))\n")
+    # The selection, each row's share of its day's selected total, and
+    # its rows at the window's end.
+    last = _window_end("web_exposure", tags, share=True)[1]
+    end = last + "\n"
     money = "" if privacy else ",\n       sum(value) AS value"
     out = {}
+    card = _card_maker(out, db_id, privacy, EXPOSURE_PICKERS, tags, desc_end)
 
-    def card(name, display, desc, sql, viz, card_tags=tags):
-        """One tile's card; an exempt tile has no privacy variant."""
-        if privacy and name in PRIVACY_EXEMPT_CARDS:
-            return
-        name = privacy_name(name) if privacy else name
-        register_native_targets(name, card_tags, EXPOSURE_PICKERS)
-        out[name] = (display, desc + desc_end, _native(db_id, sql, card_tags), viz)
-
-    def bars(label, metric):
+    def bars(label, metric, tooltip=()):
         """The viz of a breakdown's bars: the share, its figure on each
-        bar, and on a base card the value in the tooltip."""
+        bar, and in the tooltip the value on a base card, then the
+        `tooltip` columns."""
         viz = {"graph.dimensions": [label], "graph.metrics": [metric],
                "graph.show_values": True, **_share_viz(metric)}
-        if not privacy:
-            viz["graph.tooltip_columns"] = ["value"]
+        cols = ([] if privacy else ["value"]) + list(tooltip)
+        if cols:
+            viz["graph.tooltip_columns"] = cols
         return viz
 
     def ring(label):
@@ -2820,7 +2851,7 @@ def exposure_cards(db_id, privacy):
         rank = "CASE WHEN r.latest >= 1 THEN r.latest ELSE -1 END" if fold else "COALESCE(r.latest, -1)"
         band = f"CASE WHEN r.latest >= 1 THEN w.{dim} ELSE 'other' END" if fold else f"w.{dim}"
         card(name, "area", desc,
-             end.rstrip("\n") + f",\nr AS (SELECT {dim} AS k, sum(share_pct) AS latest FROM e GROUP BY 1)\n"
+             last + f",\nr AS (SELECT {dim} AS k, sum(share_pct) AS latest FROM e GROUP BY 1)\n"
              f"SELECT w.as_of_day, {band} AS {label},\n       sum(w.share_pct) AS share_pct\n"
              f"  FROM w\n  LEFT JOIN r ON r.k = w.{dim}\n GROUP BY 1, 2\n"
              f" ORDER BY max({rank}), 1",
@@ -2928,28 +2959,22 @@ def exposure_cards(db_id, privacy):
     def debt_end(dimension):
         """The window-end rows of one dimension, each with its share of
         the day's selected total."""
-        return ("WITH w AS (\n  SELECT *, 100 * value / NULLIF(sum(value) OVER (PARTITION BY as_of_day), 0)"
-                " AS share_pct\n  FROM web_exposure_debt" + _native_where(dtags) +
-                "\n     AND currency = {{currency}}\n"
-                f"     AND dimension = '{dimension}'),\n"
-                "e AS (SELECT * FROM w WHERE as_of_day = (SELECT max(as_of_day) FROM w))\n")
+        return _window_end("web_exposure_debt", dtags, share=True,
+                           where=f"\n     AND dimension = '{dimension}'")[1] + "\n"
 
     def in_order(buckets):
         """A bucket's place in the view's own order."""
-        return "list_position([" + ", ".join(f"'{b}'" for b in buckets) + "], bucket)"
+        return f"list_position([{_sql_list(buckets)}], bucket)"
 
     def debt_bars(name, desc, dimension, label, buckets, extra=(), tooltip=()):
         """A dimension's bars at the window's end, in bucket order, with
-        the `extra` columns beside each and in its tooltip."""
-        viz = bars(label, "share_pct")
-        viz["graph.tooltip_columns"] = [*viz.get("graph.tooltip_columns", []), *tooltip]
-        if not viz["graph.tooltip_columns"]:
-            del viz["graph.tooltip_columns"]
+        the `extra` columns beside each and the `tooltip` ones in its
+        tooltip."""
         cols = "".join(f",\n       {c}" for c in extra)
         card(name, "bar", desc + recent,
              debt_end(dimension) + f"SELECT bucket AS {label}{cols}{money},\n       sum(share_pct) AS share_pct\n"
              "  FROM e\n WHERE bucket <> '(none)'\n GROUP BY bucket\n ORDER BY " + in_order(buckets),
-             viz, dtags)
+             bars(label, "share_pct", tooltip), dtags)
 
     grade = (f"CASE WHEN bucket IN ({_sql_list(INVESTMENT_GRADE)}) THEN 'IG'"
              f" WHEN bucket IN ({_sql_list(HIGH_YIELD)}) THEN 'HY' END AS grade")
@@ -2988,7 +3013,8 @@ def exposure_cards(db_id, privacy):
     # security no source names reads its key, which the privacy card hides
     # where it is a holding's own.
     itags = native_tags("web_exposure_issuers", EXPOSURE_ISSUER_FILTERS)
-    issuer = "CASE WHEN issuer LIKE 'holding:%' THEN '(unnamed)' ELSE issuer END" if privacy else "issuer"
+    issuer = (f"CASE WHEN issuer LIKE '{HOLDING_KEY_PREFIX}%' THEN '(unnamed)' ELSE issuer END"
+              if privacy else "issuer")
     value = "" if privacy else ",\n       value"
     card("Largest issuers", "table",
          "The twenty issuers the most value is owed by or invested in, at the latest day in the "
@@ -2998,15 +3024,17 @@ def exposure_cards(db_id, privacy):
          "such as a fund nothing looks through, real estate or metal, is left out. It covers "
          "the whole book: the Source, Tax wrapper and Asset class pickers do not reach it."
          + recent,
-         "WITH w AS (\n  SELECT *\n    FROM web_exposure_issuers" + _native_where(itags) +
-         "\n     AND currency = {{currency}}),\n"
-         "e AS (SELECT * FROM w WHERE as_of_day = (SELECT max(as_of_day) FROM w))\n"
+         _window_end("web_exposure_issuers", itags)[1] + "\n"
          f"SELECT rank,\n       {issuer} AS issuer,\n       lei{value},\n"
          "       share_pct, cumulative_share_pct, equity_pct, debt_pct, cash_pct\n"
          "  FROM e\n WHERE issuer <> '(none)'\n ORDER BY rank\n LIMIT 20",
          _share_viz("share_pct", "cumulative_share_pct", "equity_pct", "debt_pct", "cash_pct"), itags)
     return out
 
+
+# The key gold gives a holding no security key names
+# (gold.HoldingKeyPrefix): it can carry an account's id.
+HOLDING_KEY_PREFIX = "holding:"
 
 # The exposure views' buckets in their order (gold migration 0137), each
 # card's bars drawn in it, and the grades of the credit buckets.
@@ -3016,11 +3044,6 @@ HIGH_YIELD = ("BB", "B")
 MATURITY_BUCKETS = ("under 1y", "1-3y", "3-5y", "5-10y", "10-20y", "over 20y", "perpetual", "unknown")
 COUPON_BUCKETS = ("fixed", "floating", "inflation_linked", "zero", "unknown")
 CYCLE_BUCKETS = ("cyclical", "defensive", "sensitive", "unknown")
-
-
-def _sql_list(values):
-    """`values` as a list of SQL string literals."""
-    return ", ".join(f"'{v}'" for v in values)
 
 
 # ---- yield: the Yield cards and the Income projected section ----------
@@ -3035,6 +3058,13 @@ def _rate(x):
                 f" / NULLIF(sum(value) FILTER (WHERE {cond}{x} IS NOT NULL), 0)")
     return f"CASE WHEN bool_or(weighs) THEN {avg('weighs AND ')}\n            ELSE {avg('')} END"
 
+
+# A group's realized yield, pooled as yield.summarize pools a row's: its
+# holdings' income of the twelve months over the sum of their mean daily
+# values, over the assets, else over every row (gold macro
+# yield_realized_pct, migration 0138). The days are not in the table, so
+# the engine's thin rule for a row does not apply to a selection.
+REALIZED_YIELD = "yield_realized_pct(received_12m, mean_value, weighs)"
 
 # The value a group's income yield divides by, weighed as its rates are.
 EARNING_VALUE = "CASE WHEN bool_or(weighs) THEN sum(value) FILTER (WHERE weighs) ELSE sum(value) END"
@@ -3062,11 +3092,13 @@ HORIZON_MONTHS = "CAST({{horizon}} AS INTEGER)"
 HELD_JOIN = ("    JOIN h ON h.silver_source_id = p.silver_source_id"
              " AND h.account_external_id = p.account_external_id\n"
              "         AND h.position_key = p.position_key")
-# The kinds the cash card lists, and the debt the duration scatter plots:
-# funds and bonds (docs/YIELD.md §3).
+# The kinds the cash card lists, and what the duration scatter reads:
+# bonds and the funds that move with rates (docs/YIELD.md §3). A floating
+# note implies no yield, so it never plots.
 CASH_KINDS = ("deposit", "term_deposit", "money_market")
-DURATION_KINDS = ("bond", "bill", "floating_note", "bond_fund", "money_market")
-# web_yield_curve's holders, the stack of the DV01 bars (docs/YIELD.md §6).
+DURATION_KINDS = ("bond", "bill", "floating_note", "bond_fund", "multi_asset", "money_market")
+# web_yield_curve's holders (yield.HeldIn), the stack of the DV01 bars
+# (docs/YIELD.md §6).
 CURVE_HOLDERS = ("bonds", "funds", "cash", "liabilities")
 
 
@@ -3106,26 +3138,16 @@ def yield_cards(db_id, privacy):
     if privacy:
         note, proj_note = note + PRIVACY_DESC, proj_note + PRIVACY_DESC
     out = {}
-
-    def card(name, display, desc, sql, viz, card_tags=tags, tail=note):
-        """One tile's card; an exempt tile has no privacy variant."""
-        if privacy and name in PRIVACY_EXEMPT_CARDS:
-            return
-        name = privacy_name(name) if privacy else name
-        register_native_targets(name, card_tags, YIELD_PICKERS)
-        out[name] = (display, desc + tail, _native(db_id, sql, card_tags), viz)
-
-    w = ("WITH w AS (\n  SELECT *\n    FROM web_yield" + _native_where(tags) +
-         "\n     AND currency = {{currency}})")
-    end = w + ",\ne AS (SELECT * FROM w WHERE as_of_day = (SELECT max(as_of_day) FROM w))"
+    card = _card_maker(out, db_id, privacy, YIELD_PICKERS, tags, note)
+    w, end = _window_end("web_yield", tags)
     money = "" if privacy else ",\n       sum(value) AS value"
     # A group's share of the value that earns, so a liability's group
     # does not turn the assets' shares past 100.
     share = f",\n       100 * {EARNING_VALUE} / NULLIF(sum({EARNING_VALUE}) OVER (), 0) AS share_pct"
 
-    def scalar(name, col, alias, desc):
-        """Rate `col` of the selection at the window's end, as `alias`."""
-        card(name, "scalar", desc, end + f"\nSELECT {_rate(col)} AS {alias}\n  FROM e", _share_viz(alias))
+    def scalar(name, rate, alias, desc):
+        """The selection's `rate` at the window's end, as `alias`."""
+        card(name, "scalar", desc, end + f"\nSELECT {rate} AS {alias}\n  FROM e", _share_viz(alias))
 
     # ---- the projection: today's holdings and their parts
     proj_tags = {**held_tags, **PROJECTION_TAGS}
@@ -3153,10 +3175,9 @@ def yield_cards(db_id, privacy):
              "What today's holdings are expected to pay per month over the horizon after this "
              "month, as a share of its biggest month: 100 for income that comes evenly, less "
              "where coupons and dividends bunch.",
-             horizon + "SELECT 100 * (SELECT sum(income) FROM x) / " + HORIZON_MONTHS +
-             "\n       / (SELECT CASE WHEN max(t) > 0 THEN max(t) END\n"
-             "            FROM (SELECT sum(income) FILTER (WHERE income > 0) AS t FROM x GROUP BY month))"
-             " AS monthly_average_pct",
+             horizon.rstrip("\n") + ",\n" + _peak_cte("x", "income") +
+             "SELECT 100 * (SELECT sum(income) FROM x) / " + HORIZON_MONTHS
+             + f"\n       / {PEAK} AS monthly_average_pct",
              _share_viz("monthly_average_pct"), proj_tags, proj_note)
     else:
         card("Projected income", "scalar",
@@ -3165,12 +3186,14 @@ def yield_cards(db_id, privacy):
              "at their rate. An account's rent or pension is not a holding's and is on the "
              "Income dashboard.",
              horizon + "SELECT sum(income) AS projected_income\n  FROM x", {}, proj_tags, proj_note)
-    scalar("Implied yield", "implied_pct", "implied_yield_pct",
+    scalar("Implied yield", _rate("implied_pct"), "implied_yield_pct",
            "The yield the prices imply at the latest day in the window, weighted by value over "
            "the holdings that have one, in each market's own compounding.")
-    scalar("Realized yield", "realized_pct", "realized_yield_pct",
-           "The income of the twelve months to the latest day in the window over the average "
-           "value, weighted by value over the holdings.")
+    scalar("Realized yield", REALIZED_YIELD, "realized_yield_pct",
+           "The income the holdings received in the twelve months to the latest day in the "
+           "window, over their mean daily value in those months. A day not held counts as "
+           "zero. The share of thin holdings, near zero on most of those days, is on the "
+           "quality card.")
 
     card("Yield by currency", "bar",
          "Per currency the holdings are in, at the latest day in the window: the income yield "
@@ -3214,8 +3237,8 @@ def yield_cards(db_id, privacy):
 
     size = "share_pct" if privacy else "value"
     card("Yield against duration", "scatter",
-         "Each bond, bill, bond fund and money-market holding at the latest day in the window: "
-         "its duration in years across, the yield its price implies up, a colour per currency. "
+         "Each bond, bill, bond fund, multi-asset fund and money-market holding at the latest day in the window: "
+         "its duration in years across, its implied yield up, a colour per currency. "
          + ("Each point is sized by its share of the value plotted." if privacy
             else "Each point is sized by its value.") +
          " A floating note implies no yield and is not plotted.",
@@ -3265,10 +3288,7 @@ def yield_cards(db_id, privacy):
              "value, at the latest day in the window: per curve currency, stacked by what holds "
              "it. A bond's DV01 lands where its cash flows fall, a fund's at its filed tenors or "
              "its duration. A liability's is negative, netting the assets' risk.",
-             "WITH w AS (\n  SELECT *\n    FROM web_yield_curve" + _native_where(ctags) +
-             "\n     AND currency = {{currency}}),\n"
-             "e AS (SELECT * FROM w WHERE as_of_day = (SELECT max(as_of_day) FROM w))\n"
-             f"SELECT {point},\n" +
+             _window_end("web_yield_curve", ctags)[1] + f"\nSELECT {point},\n" +
              ",\n".join(f"       sum(dv01) FILTER (WHERE held_in = '{x}') AS {x}" for x in CURVE_HOLDERS) +
              ",\n       sum(dv01) AS dv01\n"
              "  FROM e\n GROUP BY curve_currency, tenor, tenor_order\n ORDER BY curve_currency, tenor_order",
@@ -3326,7 +3346,7 @@ def yield_cards(db_id, privacy):
          "implied yield and the realized yield.",
          w + f"\nSELECT as_of_day,\n       {_income_yield()} AS income_yield_pct,\n"
          f"       {_rate('implied_pct')} AS implied_yield_pct,\n"
-         f"       {_rate('realized_pct')} AS realized_yield_pct\n"
+         f"       {REALIZED_YIELD} AS realized_yield_pct\n"
          "  FROM w\n GROUP BY 1\n ORDER BY 1",
          {"graph.dimensions": ["as_of_day"], "graph.metrics": list(yields), **LINES_VIZ,
           **_share_viz(*yields)})
@@ -3343,7 +3363,9 @@ def yield_cards(db_id, privacy):
          "The share of the holdings' gross value each tag covers at the latest day in the "
          "window: implied from a price, stated by a source, indicated by a dividend, realized "
          "from the transactions, declared in the ledger, and what is aged, stale, floating, in "
-         "default or unknown. A holding carries every tag that applies, so the shares overlap.",
+         "default, thin or unknown. A thin holding was near zero on most days of the year, so "
+         "it has no realized yield. A holding carries every tag that applies, so the shares "
+         "overlap.",
          end + ",\nt AS (SELECT unnest(tags) AS tag, abs(value) AS v FROM e)\n"
          "SELECT tag" + ("" if privacy else ",\n       sum(v) AS value") +
          ",\n       100 * sum(v) / NULLIF((SELECT sum(abs(value)) FROM e), 0) AS share_pct" +
@@ -3360,20 +3382,22 @@ def yield_cards(db_id, privacy):
 # neighbours.
 INCOME_TYPE_COLORS = {"interest": "#2a78d6", "coupons": "#eb6834", "dividends": "#1baf7a",
                       "distributions": "#eda100", "rent": "#e87ba4", "pension": "#008300"}
-# The headline figures' interest and dividends, as `wealthdb income
-# projection` reads them.
+# The headline figures' interest, its coupons included, and dividends, a
+# fund's distributions included.
 INTEREST_TYPES = ("interest", "coupons")
 DIVIDEND_TYPES = ("dividends", "distributions")
 
 
+# The keys the engine gives a cash balance (`cash:<ccy>`) and an
+# account's income (`income:<type>:<ccy>`), which name no holding.
+SHOWN_KEY_PREFIXES = ("cash:", "income:")
 # A position's name on a privacy card: its own, else its key where that
-# is a cash balance's or an account income's (`cash:<ccy>`,
-# `income:<type>...`). Any other key is a holding's own, which can carry
-# a contract's or an account's id, so it reads (unnamed), as the
-# issuers twin hides one.
-TWIN_POSITION_NAME = ("CASE WHEN name IS NOT NULL THEN name"
-                      " WHEN position_key LIKE 'cash:%' OR position_key LIKE 'income:%' THEN position_key"
-                      " ELSE '(unnamed)' END")
+# starts with one of SHOWN_KEY_PREFIXES. Any other key is a holding's
+# own, which can carry a contract's or an account's id, so it reads
+# (unnamed), as the issuers twin hides one.
+TWIN_POSITION_NAME = ("CASE WHEN name IS NOT NULL THEN name WHEN "
+                      + " OR ".join(f"position_key LIKE '{k}%'" for k in SHOWN_KEY_PREFIXES)
+                      + " THEN position_key ELSE '(unnamed)' END")
 
 
 def _tint(color, share=0.55):
@@ -3427,26 +3451,30 @@ def income_projected_cards(db_id, privacy):
     if privacy:
         note, year_note = note + PRIVACY_DESC, year_note + PRIVACY_DESC
     out = {}
-
-    def card(name, display, desc, sql, viz, card_tags=window_tags, tail=note):
-        name = privacy_name(name) if privacy else name
-        register_native_targets(name, card_tags, INCOME_PROJECTED_PICKERS)
-        out[name] = (display, desc + tail, _native(db_id, sql, card_tags), viz)
+    card = _card_maker(out, db_id, privacy, INCOME_PROJECTED_PICKERS, window_tags, note)
 
     last, this, _next = INCOME_WINDOWS
     today = "d AS (SELECT COALESCE(max(as_of_day), current_date) AS cur FROM web_yield)"
-    # The window's first and last day, and the months it counts.
-    win = ("win AS (\n"
-           "  SELECT CASE {{window}} WHEN '" + last + "' THEN make_date(year(cur) - 1, 1, 1)\n"
-           "                         WHEN '" + this + "' THEN make_date(year(cur), 1, 1)\n"
-           "                         ELSE CAST(date_trunc('month', cur) + INTERVAL 1 MONTH AS DATE) END AS lo,\n"
-           "         CASE {{window}} WHEN '" + last + "' THEN make_date(year(cur) - 1, 12, 31)\n"
-           "                         WHEN '" + this + "' THEN make_date(year(cur), 12, 31)\n"
-           "                         ELSE CAST(date_trunc('month', cur) + to_months(1 + " + HORIZON_MONTHS +
-           ") AS DATE) - 1 END AS hi,\n"
-           "         CASE WHEN {{window}} IN ('" + last + "', '" + this + "') THEN 12 ELSE " + HORIZON_MONTHS +
-           " END AS months\n"
-           "    FROM d)")
+
+    def win_cte(ahead):
+        """CTE `win`: the window's first and last day, and with `ahead`
+        the months it counts. Without `ahead`, a window of months to come
+        has blank bounds."""
+        def bound(last_day, this_day, next_day):
+            arms = ("CASE {{window}} WHEN '" + last + "' THEN " + last_day + "\n"
+                    "                         WHEN '" + this + "' THEN " + this_day)
+            return arms + ("\n                         ELSE " + next_day + " END" if ahead else " END")
+        months = (",\n         CASE WHEN {{window}} IN ('" + last + "', '" + this + "') THEN 12 ELSE "
+                  + HORIZON_MONTHS + " END AS months" if ahead else "")
+        return ("win AS (\n"
+                "  SELECT " + bound("make_date(year(cur) - 1, 1, 1)", "make_date(year(cur), 1, 1)",
+                                    "CAST(date_trunc('month', cur) + INTERVAL 1 MONTH AS DATE)") + " AS lo,\n"
+                "         " + bound("make_date(year(cur) - 1, 12, 31)", "make_date(year(cur), 12, 31)",
+                                    "CAST(date_trunc('month', cur) + to_months(1 + " + HORIZON_MONTHS
+                                    + ") AS DATE) - 1") + " AS hi" + months + "\n"
+                "    FROM d)")
+    win = win_cte(True)
+
     # Each part's income in its holding's currency and its rate to the
     # picked one; a payment of an estimated day reads its month.
     expected = ("ex AS (\n"
@@ -3479,52 +3507,37 @@ def income_projected_cards(db_id, privacy):
 
     # ---- the headline figures over the window
     window_rows = "\n  FROM a\n WHERE in_window"
-
-    def tile(name, col, cond, desc):
-        """The window's income of the rows `cond` selects; on the privacy
-        card, its share of the window's income."""
-        pick = f" FILTER (WHERE {cond})" if cond else ""
-        if privacy:
-            card(name, "scalar", desc + " As a share of the window's income.",
-                 amounts(True) + f"\nSELECT 100 * coalesce(sum(value){pick}, 0) / NULLIF(sum(value), 0)"
-                 f" AS {col}_pct" + window_rows, _share_viz(f"{col}_pct"))
-        else:
-            card(name, "scalar", desc,
-                 amounts(True) + f"\nSELECT coalesce(sum(value){pick}, 0) AS {col}" + window_rows, {})
-
-    interest, dividends = (f"type IN ({_sql_list(t)})" for t in (INTEREST_TYPES, DIVIDEND_TYPES))
-    expect = "status = 'expected'"
-
     # What the window received reads the income received alone, so the
     # projection's pickers do not reach it. A window of months to come
     # has received nothing: its bounds are blank here.
     received_tags = {"currency": currency_tag(), "window": WINDOW_TAG, **sel_tags}
-    received_rows = ("WITH " + today + ",\n"
-                     "win AS (\n"
-                     "  SELECT CASE {{window}} WHEN '" + last + "' THEN make_date(year(cur) - 1, 1, 1)\n"
-                     "                         WHEN '" + this + "' THEN make_date(year(cur), 1, 1) END AS lo,\n"
-                     "         CASE {{window}} WHEN '" + last + "' THEN make_date(year(cur) - 1, 12, 31)\n"
-                     "                         WHEN '" + this + "' THEN make_date(year(cur), 12, 31) END AS hi\n"
-                     "    FROM d)\n")
+    received_rows = "WITH " + today + ",\n" + win_cte(False) + "\n"
     received_where = ("\n  FROM web_yield_received\n WHERE currency = {{currency}}\n"
                       "   AND day BETWEEN (SELECT lo FROM win) AND (SELECT hi FROM win)" + kept())
 
-    def received_tile(name, col, cond, desc):
-        """The window's income received of the rows `cond` selects; on
-        the privacy card, its share of what the window received."""
+    def tile(name, col, cond, desc, received=False):
+        """The window's income of the rows `cond` selects, or with
+        `received` what the window received of them; on the privacy card,
+        its share of that whole."""
+        head, rows, tags, of = ((received_rows, received_where, received_tags,
+                                 "what the window received: 100 for the total") if received else
+                                (amounts(True) + "\n", window_rows, window_tags, "the window's income"))
         pick = f" FILTER (WHERE {cond})" if cond else ""
         if privacy:
-            card(name, "scalar", desc + " As a share of what the window received: 100 for the total.",
-                 received_rows + f"SELECT 100 * coalesce(sum(value){pick}, 0) / NULLIF(sum(value), 0)"
-                 f" AS {col}_pct" + received_where, _share_viz(f"{col}_pct"), received_tags)
+            card(name, "scalar", desc + f" As a share of {of}.",
+                 head + f"SELECT 100 * coalesce(sum(value){pick}, 0) / NULLIF(sum(value), 0) AS {col}_pct"
+                 + rows, _share_viz(f"{col}_pct"), tags)
         else:
-            card(name, "scalar", desc,
-                 received_rows + f"SELECT coalesce(sum(value){pick}, 0) AS {col}" + received_where, {},
-                 received_tags)
+            card(name, "scalar", desc, head + f"SELECT coalesce(sum(value){pick}, 0) AS {col}" + rows, {}, tags)
+
+    interest, dividends = (f"type IN ({_sql_list(t)})" for t in (INTEREST_TYPES, DIVIDEND_TYPES))
+    expect = "status = 'expected'"
+    # The window's biggest month, for the twins (PEAK).
+    peak_month = ",\n" + _peak_cte("a WHERE in_window", "value", "month_start")
     if privacy:
         h = ("h AS (SELECT value, weighs FROM web_yield\n"
              "        WHERE today\n          AND currency = {{currency}}" + kept() + ")")
-        card("Expected income", "scalar",
+        card("Income in the window", "scalar",
              "The window's income, received and expected, as a yield: per year, over the value "
              "today's holdings earn it on.",
              amounts(True) + ",\n" + h + "\nSELECT 100 * (SELECT sum(value) FROM a WHERE in_window) * 12"
@@ -3533,24 +3546,23 @@ def income_projected_cards(db_id, privacy):
              _share_viz("income_yield_pct"))
         card("Monthly average income", "scalar",
              "The window's income per month, as a share of its biggest month.",
-             amounts(True) + ",\nmo AS (SELECT month_start, sum(value) FILTER (WHERE value > 0) AS t\n"
-             "         FROM a WHERE in_window GROUP BY 1)\n"
+             amounts(True) + peak_month +
              "SELECT 100 * (SELECT sum(value) FROM a WHERE in_window) / (SELECT months FROM win)\n"
-             "       / (SELECT CASE WHEN max(t) > 0 THEN max(t) END FROM mo) AS monthly_average_pct",
+             f"       / {PEAK} AS monthly_average_pct",
              _share_viz("monthly_average_pct"))
     else:
-        tile("Expected income", "income", "",
+        tile("Income in the window", "income", "",
              "The window's income: what was received up to today and what is expected after it.")
         card("Monthly average income", "scalar",
              "The window's income over its months: twelve for a year, the horizon's for the "
              "next months.",
              amounts(True) + "\nSELECT coalesce(sum(value), 0) / (SELECT months FROM win) AS monthly_average"
              + window_rows, {})
-    received_tile("Received income", "received", "", "The income the window received up to today.")
-    received_tile("Received interest", "received_interest", interest,
-                  "The interest and coupons the window received up to today.")
-    received_tile("Received dividends", "received_dividends", dividends,
-                  "The dividends and fund distributions the window received up to today.")
+    tile("Received income", "received", "", "The income the window received up to today.", received=True)
+    tile("Received interest", "received_interest", interest,
+         "The interest and coupons the window received up to today.", received=True)
+    tile("Received dividends", "received_dividends", dividends,
+         "The dividends and fund distributions the window received up to today.", received=True)
     tile("Expected remaining", "expected", expect,
          "What the holdings, and an account's rent or pension, are expected to pay in the window "
          "after today.")
@@ -3587,11 +3599,9 @@ def income_projected_cards(db_id, privacy):
     month_desc = ("The window's income per month, stacked by type, what was received in full colour "
                   "and what is expected in a lighter one. The current month holds both.")
     if privacy:
-        sql = (amounts(True) + ",\nmo AS (SELECT month_start, sum(value) FILTER (WHERE value > 0) AS t\n"
-               "         FROM a WHERE in_window GROUP BY 1)\n"
+        sql = (amounts(True) + peak_month +
                f"SELECT CAST(month_start AS TIMESTAMP) AS month, {series},\n"
-               "       100 * sum(value) / (SELECT CASE WHEN max(t) > 0 THEN max(t) END FROM mo) AS income_pct"
-               + window_rows + "\n GROUP BY 1, 2")
+               f"       100 * sum(value) / {PEAK} AS income_pct" + window_rows + "\n GROUP BY 1, 2")
         metric, month_desc = "income_pct", month_desc + " As a share of the window's biggest month."
     else:
         sql = (amounts(True) + f"\nSELECT CAST(month_start AS TIMESTAMP) AS month, {series},\n"
@@ -3656,7 +3666,9 @@ def income_projected_cards(db_id, privacy):
     position_desc = ("Each position, grouped by vehicle: last calendar year's income, this year's "
                      "received to date and expected for the rest of it, the year's total, and the "
                      "twelve months after this one, whatever the window. A position with no name "
-                     "reads its key. Click its symbol or name to list its payments in the calendar.")
+                     + ("reads its key where that is a cash balance's or an account income's, else "
+                        "(unnamed)." if privacy else "reads its key.") +
+                     " Click its symbol or name to list its payments in the calendar.")
     # A position's income over the value it is earned on: none for a
     # position no longer held, or of no positive value.
     on_value = "NULLIF(GREATEST(value, 0), 0)"
@@ -3681,7 +3693,11 @@ def income_projected_cards(db_id, privacy):
     # Each expected payment of the window, a dated one on its day, an
     # accrual or an estimated day in its month after the month's dated
     # ones, and each principal a maturity returns.
-    position = "\n     [[AND {{position}} IN (symbol, name, position_key)]]"
+    # The Position picker takes a symbol, a name or a key; on the twin
+    # also the name the twin shows, so a click on (unnamed) lists every
+    # unnamed position's payments.
+    shown = f", {TWIN_POSITION_NAME}" if privacy else ""
+    position = f"\n     [[AND {{{{position}}}} IN (symbol, name, position_key{shown})]]"
     cal = (amounts(True) + ",\ncal AS (\n"
            "  SELECT month_start, day, account_label, symbol, name, type, 'income' AS kind, basis, reinvested,\n"
            "         holding_currency, silver_source_id, account_external_id, position_key,\n"
@@ -3700,7 +3716,8 @@ def income_projected_cards(db_id, privacy):
                 "of an estimated day in its month, and each principal a maturity returns, in date "
                 "order, a holding's own income apart from what its matured principal earns. The "
                 "Position picker lists one position's, by its symbol, its name or its position key; "
-                "a click on a position's symbol or name in the table above picks it.")
+                "a click on a position's symbol or name in the table above picks it."
+                + (" A click on (unnamed) lists every unnamed position's." if privacy else ""))
     if privacy:
         card("Expected payments", "table",
              cal_desc + " Each amount is a percentage of its position's value today.",
@@ -3958,7 +3975,7 @@ PROJECTION_PICKERS = [(RATES_PARAM_ID, "rates"), (MATURING_PARAM_ID, "maturing")
 
 # The Yield dashboards' filters over web_yield and web_yield_curve: the
 # Exposure set, the window's last day being the day a card reads.
-YIELD_FILTERS = {**range_filters("as_of_day"), **SELECTION_FILTERS}
+YIELD_FILTERS = EXPOSURE_FILTERS
 YIELD_PICKERS = [(YIELD_CURRENCY_PARAM_ID, "currency"), (TIME_PARAM_ID, "time_range"),
                  (SOURCE_PARAM_ID, "source"), (YIELD_TAX_WRAPPER_PARAM_ID, "tax_wrapper"),
                  (YIELD_ASSET_CLASS_PARAM_ID, "asset_class"), *PROJECTION_PICKERS]
@@ -3968,8 +3985,8 @@ YIELD_PICKERS = [(YIELD_CURRENCY_PARAM_ID, "currency"), (TIME_PARAM_ID, "time_ra
 # of a card. So each of its field filters is bound to the view whose
 # values its picker's dropdown lists, and every view the card reads keeps
 # the rows whose source or account that view's selected rows carry
-# (_kept). A source with no income line is still a source, so the
-# source's view is the sources', not the income's.
+# (`kept` in income_projected_cards). A source with no income line is
+# still a source, so the source's view is the sources', not the income's.
 INCOME_PROJECTED_SELECTION = {"source": ("web_sources_latest", "silver_source_id"),
                               "account": ("web_income", "account_label")}
 INCOME_PROJECTED_PICKERS = [(INCOME_CURRENCY_PARAM_ID, "currency"),
@@ -3983,10 +4000,9 @@ def _flow_fence(kinds):
     charted, fenced to non-card accounts (FLOW_CHART_EXCLUDED_ACCOUNT_KINDS).
     The explicit IS NULL branch keeps the rows whose account is absent
     from `accounts`, which a bare NOT IN would drop."""
-    ks = ", ".join(f"'{k}'" for k in kinds)
-    aks = ", ".join(f"'{k}'" for k in FLOW_CHART_EXCLUDED_ACCOUNT_KINDS)
-    return (f"\n     AND kind IN ({ks})"
-            f"\n     AND (account_kind IS NULL OR account_kind NOT IN ({aks}))")
+    fenced = _sql_list(FLOW_CHART_EXCLUDED_ACCOUNT_KINDS)
+    return (f"\n     AND kind IN ({_sql_list(kinds)})"
+            f"\n     AND (account_kind IS NULL OR account_kind NOT IN ({fenced}))")
 
 
 def native_tags(table, spec):
@@ -4242,13 +4258,21 @@ def register_native_targets(card, tags, pairs):
         for pid, t in pairs if t in tags]
 
 
-# The peak-month denominator of the twins' flow charts, over a CTE `m`
-# of (month, ..., v) rows: the biggest month's POSITIVE sum, so a
-# mixed-sign month's stacked bar cannot exceed 100, and blank when no
-# month is positive at all.
-PEAK_CTE = ("p AS (SELECT max(t) AS peak FROM"
-            " (SELECT sum(v) FILTER (WHERE v > 0) AS t FROM m GROUP BY month))\n")
-PEAK_DIV = "v / (SELECT CASE WHEN peak > 0 THEN peak END FROM p) * 100"
+# The peak-month denominator of the twins' charts over months: the
+# biggest month's POSITIVE sum, so a mixed-sign month's stacked bar
+# cannot exceed 100, and blank when no month is positive at all. A card
+# names CTE `p` (_peak_cte) and divides by PEAK; PEAK_CTE and PEAK_DIV
+# are the two over a CTE `m` of (month, ..., v) rows.
+def _peak_cte(rows="m", value="v", month="month"):
+    """CTE `p`: the biggest positive sum of `value` over `rows` grouped by
+    `month`."""
+    return (f"p AS (SELECT max(t) AS peak FROM"
+            f" (SELECT sum({value}) FILTER (WHERE {value} > 0) AS t FROM {rows} GROUP BY {month}))\n")
+
+
+PEAK = "(SELECT CASE WHEN peak > 0 THEN peak END FROM p)"
+PEAK_CTE = _peak_cte()
+PEAK_DIV = f"v / {PEAK} * 100"
 
 
 def _month_cte(view, where, value, extra=""):
@@ -5421,7 +5445,7 @@ def missing_web_views(base, sid, db_id):
     provisioning — the conservative reading, since the alternative is
     converging every card to a degraded shape."""
     want = web_views_wanted()
-    names = ", ".join(f"'{t}'" for t in want)
+    names = _sql_list(want)
     st, res = req(base, "/api/dataset", "POST",
                   {"type": "native", "database": db_id,
                    "native": {"query":

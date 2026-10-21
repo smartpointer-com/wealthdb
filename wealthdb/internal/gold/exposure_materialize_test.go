@@ -233,14 +233,16 @@ func TestFirstHoldingsAtCountsCash(t *testing.T) {
 }
 
 // 0127, 0130, 0131 and 0133 each replay safely. 0133 re-creates
-// web_exposure last, so it is replayed after an earlier one, as Migrate
-// would.
+// web_exposure last, and 0137 the look-through 0131 re-creates, so they
+// are replayed after an earlier one, as Migrate would.
 func TestMigrations0127To0133DDLAreRerunnable(t *testing.T) {
 	t.Parallel()
 	for _, replay := range [][]string{
-		{"0127_exposure_dashboard.sql", "0131_exposure_unknown.sql", "0133_deterministic_labels.sql"},
-		{"0130_exposure_filters.sql", "0131_exposure_unknown.sql", "0133_deterministic_labels.sql"},
-		{"0131_exposure_unknown.sql", "0133_deterministic_labels.sql"},
+		{"0127_exposure_dashboard.sql", "0131_exposure_unknown.sql", "0133_deterministic_labels.sql",
+			"0137_exposure_yield_views.sql"},
+		{"0130_exposure_filters.sql", "0131_exposure_unknown.sql", "0133_deterministic_labels.sql",
+			"0137_exposure_yield_views.sql"},
+		{"0131_exposure_unknown.sql", "0133_deterministic_labels.sql", "0137_exposure_yield_views.sql"},
 		{"0133_deterministic_labels.sql"},
 	} {
 		t.Run(replay[0], func(t *testing.T) {

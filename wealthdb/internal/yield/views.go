@@ -19,10 +19,11 @@ type FundRow struct {
 	LinesYield, LinesDuration, LinesMaturity           *float64
 	CoveredPct, FloatingPct, DefaultPct, PaidInKindPct *float64
 	LinesAsOf                                          *time.Time
-	// What its page or filing states.
+	// What its page or filing states. YieldToMaturity is the yield to
+	// worst where one is stated.
 	YieldToMaturity, DistributionYield, SECYield, SevenDayYield, TrailingYield *float64
-	// The figures the report reads (a ledger record's, the page's or
-	// filing's, else the lines'), and where they come from.
+	// The figures the report reads (§3 of docs/YIELD.md gives each one's
+	// sources), and where they come from.
 	Implied, Duration, Maturity, DV01 *float64
 	FiguresAsOf                       *time.Time
 	FiguresFrom                       string
@@ -36,7 +37,7 @@ func (b *Book) Funds() []FundRow {
 	var order []string
 	var ps = map[string][]Position{}
 	for _, p := range b.Positions {
-		if p.Kind != KindBondFund && p.Kind != KindMoneyMarket && p.Kind != KindEquityFund {
+		if p.Kind != KindBondFund && p.Kind != KindMoneyMarket && p.Kind != KindEquityFund && p.Kind != KindMultiAsset {
 			continue
 		}
 		key := p.Key
@@ -71,7 +72,7 @@ func fillFund(r *FundRow, f *Fund) {
 		}
 		return ptr(d.Value)
 	}
-	r.YieldToMaturity, r.DistributionYield = v(firstDated(f.YieldToWorst, f.YieldToMaturity)), v(f.DistributionYield)
+	r.YieldToMaturity, r.DistributionYield = v(first(f.YieldToWorst, f.YieldToMaturity)), v(f.DistributionYield)
 	r.SECYield, r.SevenDayYield, r.TrailingYield = v(f.SECYield), v(f.SevenDayYield), v(f.TrailingYield)
 	r.RiskAsOf = f.RiskAsOf
 	if l := f.Lines; l != nil {
@@ -147,6 +148,28 @@ type CurveRow struct {
 	DV01, DV100                     float64
 }
 
+// HeldIn is what holds a holding of kind k in the curve view: funds,
+// liabilities, cash or bonds.
+func HeldIn(k Kind) string {
+	switch k {
+	case KindBondFund, KindMoneyMarket, KindMultiAsset:
+		return HeldInFunds
+	case KindLiability:
+		return HeldInLiabilities
+	case KindDeposit, KindTermDeposit:
+		return HeldInCash
+	}
+	return HeldInBonds
+}
+
+// What holds a holding in the curve view (HeldIn).
+const (
+	HeldInFunds       = "funds"
+	HeldInBonds       = "bonds"
+	HeldInCash        = "cash"
+	HeldInLiabilities = "liabilities"
+)
+
 // Curve is one row per currency and tenor of canonical.RiskTenors.
 func (b *Book) Curve() []CurveRow {
 	rows := map[string]map[string]*CurveRow{}
@@ -165,12 +188,12 @@ func (b *Book) Curve() []CurveRow {
 				if r == nil {
 					continue
 				}
-				switch p.Kind {
-				case KindBondFund, KindMoneyMarket:
+				switch HeldIn(p.Kind) {
+				case HeldInFunds:
 					r.Funds += v
-				case KindLiability:
+				case HeldInLiabilities:
 					r.Liabilities += v
-				case KindDeposit, KindTermDeposit:
+				case HeldInCash:
 					r.Cash += v
 				default:
 					r.Bonds += v
@@ -211,8 +234,8 @@ type SecurityRow struct {
 // Securities fills each security row: a security held directly reads
 // its holdings' figures, weighted by value; one held only through funds
 // what its largest line says (its coupon, maturity, price and the yield
-// its price implies) and its reported figures (its earnings yield over
-// the line's price).
+// its price implies) and its reported figures (its earnings and
+// dividend yields over the line's price, and the ratios).
 func (b *Book) Securities(rows []SecurityRow) []SecurityRow {
 	direct := map[string][]Position{}
 	for _, p := range b.Positions {
@@ -277,28 +300,40 @@ type CoverageRow struct {
 // Skeleton is a ledger record with its holding (or account) named and
 // what is missing left empty; it loads once filled in.
 type Skeleton struct {
-	SilverSourceID string    `json:"silver_source_id"`
-	Instrument     string    `json:"instrument,omitempty"`
-	Account        string    `json:"account,omitempty"`
-	Rate           *struct{} `json:"rate,omitempty"`
-	Rating         *struct{} `json:"rating,omitempty"`
-	Dividend       *struct{} `json:"dividend,omitempty"`
-	Terms          *struct{} `json:"terms,omitempty"`
-	Note           string    `json:"note,omitempty"`
+	SilverSourceID string        `json:"silver_source_id"`
+	Instrument     string        `json:"instrument,omitempty"`
+	Account        string        `json:"account,omitempty"`
+	Rate           *RateSkeleton `json:"rate,omitempty"`
+	Rating         *struct{}     `json:"rating,omitempty"`
+	Dividend       *struct{}     `json:"dividend,omitempty"`
+	Terms          *struct{}     `json:"terms,omitempty"`
+	Note           string        `json:"note,omitempty"`
 }
 
-// The missing figures the coverage view names, and the kinds of holding
-// each applies to.
+// RateSkeleton is a rate record with its currency named and its rate
+// left empty.
+type RateSkeleton struct {
+	Currency string `json:"currency,omitempty"`
+}
+
+// The missing figures the coverage view names (missingOf says which
+// kinds each applies to).
 const (
-	missingTerms    = "no terms"
-	missingRate     = "no rate"
-	missingFigures  = "no figures"
-	missingDividend = "no dividend"
-	missingRating   = "no rating"
+	missingTerms     = "no terms"
+	missingRate      = "no rate"
+	missingReceiving = "no receiving rate"
+	missingFigures   = "no figures"
+	missingDividend  = "no dividend"
+	missingRating    = "no rating"
 )
 
+// missingReasons are the missing figures in the order the coverage view
+// lists them.
+var missingReasons = []string{missingTerms, missingRate, missingReceiving, missingFigures, missingDividend,
+	missingRating}
+
 // Coverage is the coverage view: what the figures rest on (`rests_on`,
-// one line per tag, each the share of net worth its holdings make up),
+// one line per tag, each its holdings' share of the gross value),
 // then each kind of figure missing (`missing`), then every holding a
 // figure is missing on, with the ledger record that fills it.
 func (b *Book) Coverage() []CoverageRow {
@@ -332,8 +367,13 @@ func (b *Book) Coverage() []CoverageRow {
 	}
 	missing := map[string]*CoverageRow{}
 	var holdings []CoverageRow
+	receiving := b.unknownReceiving()
 	for _, p := range b.Positions {
-		for _, reason := range missingOf(p) {
+		reasons := missingOf(p)
+		if receiving[p.HoldingKey] {
+			reasons = append(reasons, missingReceiving)
+		}
+		for _, reason := range reasons {
 			r := missing[reason]
 			if r == nil {
 				r = &CoverageRow{Section: "missing", Reason: reason}
@@ -347,7 +387,7 @@ func (b *Book) Coverage() []CoverageRow {
 				Account: p.HoldingKey.Account, Name: p.Name, Skeleton: skeletonOf(p, reason)})
 		}
 	}
-	for _, reason := range []string{missingTerms, missingRate, missingFigures, missingDividend, missingRating} {
+	for _, reason := range missingReasons {
 		if r := missing[reason]; r != nil {
 			r.SharePct = share(r.gross)
 			out = append(out, *r)
@@ -359,17 +399,43 @@ func (b *Book) Coverage() []CoverageRow {
 		}
 		return cmp.Compare(math.Abs(b.Value), math.Abs(a.Value))
 	})
+	// An account takes one rate per currency: the first line that lacks
+	// it carries its skeleton.
+	rated := map[AccountCurrency]bool{}
+	for i := range holdings {
+		if s := holdings[i].Skeleton; s != nil && s.Rate != nil {
+			k := AccountCurrency{AccountKey{s.SilverSourceID, s.Account}, s.Rate.Currency}
+			if rated[k] {
+				holdings[i].Skeleton = nil
+			}
+			rated[k] = true
+		}
+	}
 	return append(out, holdings...)
 }
 
+// unknownReceiving are the holdings whose principal matures, under the
+// default maturing rule, into cash whose account states no rate: their
+// projection earns an unknown rate after the maturity.
+func (b *Book) unknownReceiving() map[HoldingKey]bool {
+	out := map[HoldingKey]bool{}
+	for _, p := range b.Projection.Parts {
+		if p.Rule == DefaultAssumptions.Rule && p.Reinvested == RungCash && p.Basis == BasisUnknown {
+			out[p.Holding] = true
+		}
+	}
+	return out
+}
+
 // missingOf names what a holding lacks that a ledger record could
-// state.
+// state. A bond in default reads unknown, but no terms record clears a
+// default: it lacks no terms.
 func missingOf(p Position) []string {
 	var out []string
 	unknown := p.Tags[TagUnknown]
 	switch p.Kind {
 	case KindBond, KindBill, KindFloating, KindNote, KindLiability:
-		if unknown {
+		if unknown && !p.Tags[TagDefault] {
 			out = append(out, missingTerms)
 		}
 		if p.Kind != KindLiability && p.Kind != KindNote && p.Rating == "" {
@@ -383,7 +449,7 @@ func missingOf(p Position) []string {
 		if unknown {
 			out = append(out, missingFigures)
 		}
-	case KindStock, KindEquityFund:
+	case KindStock, KindEquityFund, KindMultiAsset:
 		if unknown {
 			out = append(out, missingDividend)
 		}
@@ -391,16 +457,17 @@ func missingOf(p Position) []string {
 	return out
 }
 
-// skeletonOf is the record that fills a holding's gap: its terms, its
-// account's rate, its rating, its dividend, a fund's factsheet figures.
-// A holding its source names by no instrument takes none, but a cash
-// balance names its account.
+// skeletonOf is the record that fills a holding's gap: its terms, the
+// rate of its account in its currency (the cash's own, or the cash a
+// maturity lands in), its rating, its dividend, a fund's factsheet
+// figures. A holding its source names by no instrument takes none, but a
+// rate names its account.
 func skeletonOf(p Position, reason string) *Skeleton {
 	s := &Skeleton{SilverSourceID: p.Source, Instrument: p.Instrument, Note: p.Name}
 	empty := &struct{}{}
 	switch reason {
-	case missingRate:
-		s.Instrument, s.Account, s.Rate = "", p.HoldingKey.Account, empty
+	case missingRate, missingReceiving:
+		s.Instrument, s.Account, s.Rate = "", p.HoldingKey.Account, &RateSkeleton{Currency: p.Currency}
 		s.Note = p.Account.Name
 		return s
 	case missingTerms, missingFigures:

@@ -217,8 +217,9 @@ var RiskTenors = []string{"3M", "1Y", "5Y", "10Y", "30Y"}
 // DV100, the move for one and for one hundred basis points. A
 // credit-spread row has Currency NoCurrency and carries the move for one
 // basis point of investment-grade and of non-investment-grade spreads.
-// Amounts are in the composition's currency, signed as filed: positive
-// when the fund loses value as rates rise.
+// Amounts are in the composition's currency, signed as filed. Filers
+// follow no one sign convention: gold's fund_risk_signed reads each
+// filing positive where the fund loses value as rates rise.
 type FundRiskChange struct {
 	SilverSourceID string
 	FundRef        string

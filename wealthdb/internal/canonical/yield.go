@@ -17,7 +17,6 @@ type YieldRows struct {
 	RatingFunds []YieldRatingFund
 	Conventions []YieldConvention
 	Cycles      []YieldCycle
-	Settings    YieldSettings
 }
 
 // YieldCurvePoint is one tenor of a currency's public curve and the rate
@@ -72,12 +71,6 @@ type YieldCycle struct {
 	Sector Sector
 	Cycle  Cycle
 	Origin YieldOrigin
-}
-
-// YieldSettings are the scalars of the yield block.
-type YieldSettings struct {
-	// HorizonMonths is the projection's window when none is given.
-	HorizonMonths int
 }
 
 // The projection's window in months: its default, and the longest the
@@ -267,6 +260,12 @@ var couponFrequencies = []int{0, 1, 2, 4, 12}
 // 0 is a discount instrument, which pays none.
 func CouponFrequencies() []int {
 	return slices.Clone(couponFrequencies)
+}
+
+// BondFrequencies are the coupon payments a year of a bond that pays
+// coupons: CouponFrequencies without 0.
+func BondFrequencies() []int {
+	return slices.DeleteFunc(CouponFrequencies(), func(n int) bool { return n == 0 })
 }
 
 // ValidCouponFrequency reports whether n is one of CouponFrequencies.

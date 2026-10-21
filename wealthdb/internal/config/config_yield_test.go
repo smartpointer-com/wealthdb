@@ -21,7 +21,8 @@ func yieldConfig(t *testing.T, block string) (*Config, error) {
 
 // The block expands into gold's rows in a stable order: a curve by
 // tenor length, each fund reference in gold's form, and the conventions
-// and cycles the built-in maps with the block's entries over them.
+// and cycles the built-in maps with the block's entries over them. The
+// horizon stays in the config.
 func TestYieldRows(t *testing.T) {
 	t.Parallel()
 	c, err := yieldConfig(t, `{
@@ -35,6 +36,9 @@ func TestYieldRows(t *testing.T) {
     }`)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+	}
+	if h := c.YieldHorizon(); h != 24 {
+		t.Errorf("horizon = %d, want 24", h)
 	}
 	rows := c.YieldRows()
 	wantCurves := []canonical.YieldCurvePoint{
@@ -94,9 +98,6 @@ func TestYieldRows(t *testing.T) {
 			t.Errorf("cycle %+v, want %+v", cy, want)
 		}
 	}
-	if rows.Settings.HorizonMonths != 24 {
-		t.Errorf("settings = %+v", rows.Settings)
-	}
 	// The built-in map is the block's to override, not to change.
 	if cy, _ := canonical.BuiltinCycle(canonical.SectorUtilities); cy != canonical.CycleDefensive {
 		t.Error("the config's entry changed the built-in cycle of utilities")
@@ -104,7 +105,8 @@ func TestYieldRows(t *testing.T) {
 }
 
 // Without the block, or with an empty one, gold gets the built-in
-// conventions and cycles and the default horizon, and nothing else.
+// conventions and cycles, and nothing else; a horizon of 0 reads the
+// default.
 func TestYieldRowsDefaults(t *testing.T) {
 	t.Parallel()
 	empty, err := yieldConfig(t, `{}`)
@@ -115,12 +117,14 @@ func TestYieldRowsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if h := zero.YieldHorizon(); h != canonical.DefaultHorizonMonths {
+		t.Errorf("a horizon of 0 = %d, want %d", h, canonical.DefaultHorizonMonths)
+	}
 	for _, c := range []*Config{{}, empty, zero} {
 		rows := c.YieldRows()
 		if len(rows.Curves)+len(rows.Withholding)+len(rows.RatingFunds) != 0 ||
 			!slices.Equal(rows.Conventions, canonical.BuiltinConventions()) ||
-			!slices.Equal(rows.Cycles, canonical.BuiltinCycles()) ||
-			rows.Settings.HorizonMonths != canonical.DefaultHorizonMonths {
+			!slices.Equal(rows.Cycles, canonical.BuiltinCycles()) {
 			t.Errorf("rows = %+v", rows)
 		}
 	}

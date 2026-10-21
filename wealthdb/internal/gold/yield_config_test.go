@@ -13,8 +13,8 @@ import (
 
 // yieldTables is the yield config tables as text, one field per table,
 // rows in key order.
-func yieldTables(t *testing.T, ctx context.Context, db *sql.DB) (curves, withholding, rating, conventions, cycles,
-	settings string) {
+func yieldTables(t *testing.T, ctx context.Context, db *sql.DB) (curves, withholding, rating, conventions,
+	cycles string) {
 	t.Helper()
 	if err := db.QueryRowContext(ctx, `SELECT
         (SELECT COALESCE(string_agg(currency || ' ' || tenor || ' ' || tenor_months || ' ' || silver_source_id || ':' ||
@@ -26,12 +26,11 @@ func yieldTables(t *testing.T, ctx context.Context, db *sql.DB) (curves, withhol
         (SELECT COALESCE(string_agg(market || ' ' || frequency || ' ' || day_count || ' ' || origin, '; '
                 ORDER BY market), '') FROM yield_conventions),
         (SELECT COALESCE(string_agg(sector || ' ' || cycle || ' ' || origin, '; ' ORDER BY sector), '')
-           FROM yield_cycles),
-        (SELECT COALESCE(string_agg(CAST(horizon_months AS VARCHAR), ','), '') FROM yield_settings)`).
-		Scan(&curves, &withholding, &rating, &conventions, &cycles, &settings); err != nil {
+           FROM yield_cycles)`).
+		Scan(&curves, &withholding, &rating, &conventions, &cycles); err != nil {
 		t.Fatal(err)
 	}
-	return curves, withholding, rating, conventions, cycles, settings
+	return curves, withholding, rating, conventions, cycles
 }
 
 // conventionsText and cyclesText are rows as yieldTables reads them back.
@@ -54,7 +53,7 @@ func cyclesText(cs []canonical.YieldCycle) string {
 }
 
 // The yield tables hold exactly the rows of the last sync: an entry
-// taken out leaves, and the settings row is always there, once.
+// taken out leaves.
 func TestSyncYield(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -73,8 +72,7 @@ func TestSyncYield(t *testing.T) {
 		Conventions: append(canonical.BuiltinConventions(),
 			canonical.YieldConvention{Market: "JPY", Frequency: 2, DayCount: canonical.DayCountAct365,
 				Origin: canonical.OriginConfig}),
-		Cycles:   canonical.BuiltinCycles(),
-		Settings: canonical.YieldSettings{HorizonMonths: 24},
+		Cycles: canonical.BuiltinCycles(),
 	}
 	rows.Cycles[0] = canonical.YieldCycle{Sector: canonical.SectorEnergy, Cycle: canonical.CycleCyclical,
 		Origin: canonical.OriginConfig}
@@ -83,7 +81,7 @@ func TestSyncYield(t *testing.T) {
 	if n, err := SyncYield(ctx, db, rows); err != nil || n != 7 {
 		t.Fatalf("sync: %d %v", n, err)
 	}
-	curves, withholding, rating, conventions, cycles, settings := yieldTables(t, ctx, db)
+	curves, withholding, rating, conventions, cycles := yieldTables(t, ctx, db)
 	if curves != "USD 3M 3 rates:DGS3MO; USD 10Y 120 rates:DGS10" {
 		t.Errorf("curves = %q", curves)
 	}
@@ -99,9 +97,6 @@ func TestSyncYield(t *testing.T) {
 	if want := cyclesText(rows.Cycles); cycles != want || !strings.Contains(cycles, "energy cyclical config") {
 		t.Errorf("cycles = %q, want %q", cycles, want)
 	}
-	if settings != "24" {
-		t.Errorf("settings = %q", settings)
-	}
 
 	// The config takes its curve's long end, a rate, its rating fund and
 	// its overrides out: they leave, and only the built-in maps remain.
@@ -110,13 +105,12 @@ func TestSyncYield(t *testing.T) {
 	rows.RatingFunds = nil
 	rows.Conventions = canonical.BuiltinConventions()
 	rows.Cycles = canonical.BuiltinCycles()
-	rows.Settings.HorizonMonths = canonical.DefaultHorizonMonths
 	if n, err := SyncYield(ctx, db, rows); err != nil || n != 2 {
 		t.Fatalf("resync: %d %v", n, err)
 	}
-	curves, withholding, rating, conventions, cycles, settings = yieldTables(t, ctx, db)
-	if curves != "USD 3M 3 rates:DGS3MO" || withholding != "CH default 35.0" || rating != "" || settings != "12" {
-		t.Errorf("after resync: curves %q withholding %q rating %q settings %q", curves, withholding, rating, settings)
+	curves, withholding, rating, conventions, cycles = yieldTables(t, ctx, db)
+	if curves != "USD 3M 3 rates:DGS3MO" || withholding != "CH default 35.0" || rating != "" {
+		t.Errorf("after resync: curves %q withholding %q rating %q", curves, withholding, rating)
 	}
 	if want := conventionsText(canonical.BuiltinConventions()); conventions != want || strings.Contains(conventions, "config") {
 		t.Errorf("conventions after resync = %q, want %q", conventions, want)
@@ -127,7 +121,7 @@ func TestSyncYield(t *testing.T) {
 
 	// The rows of an absent block stamp nothing the count shows.
 	if n, err := SyncYield(ctx, db, canonical.YieldRows{Conventions: canonical.BuiltinConventions(),
-		Cycles: canonical.BuiltinCycles(), Settings: canonical.YieldSettings{HorizonMonths: 12}}); err != nil || n != 0 {
+		Cycles: canonical.BuiltinCycles()}); err != nil || n != 0 {
 		t.Errorf("sync of the built-in maps: %d %v", n, err)
 	}
 }
@@ -140,7 +134,6 @@ func TestSyncYieldIsAtomic(t *testing.T) {
 	rows := canonical.YieldRows{
 		Curves: []canonical.YieldCurvePoint{{Currency: "USD", Tenor: "3M", TenorMonths: 3, SilverSourceID: "rates",
 			SeriesID: "DGS3MO"}},
-		Settings: canonical.YieldSettings{HorizonMonths: 12},
 	}
 	if _, err := SyncYield(ctx, db, rows); err != nil {
 		t.Fatal(err)
@@ -151,13 +144,12 @@ func TestSyncYieldIsAtomic(t *testing.T) {
 		{Currency: "CHF", Tenor: "1Y", TenorMonths: 12, SilverSourceID: "rates", SeriesID: "A"},
 		{Currency: "CHF", Tenor: "1Y", TenorMonths: 12, SilverSourceID: "rates", SeriesID: "B"},
 	}
-	bad.Settings.HorizonMonths = 6
 	if _, err := SyncYield(ctx, db, bad); err == nil {
 		t.Fatal("a sync breaking the primary key succeeded")
 	}
-	curves, _, _, _, _, settings := yieldTables(t, ctx, db)
-	if curves != "USD 3M 3 rates:DGS3MO" || settings != "12" {
-		t.Errorf("after the failed sync: curves %q settings %q", curves, settings)
+	curves, _, _, _, _ := yieldTables(t, ctx, db)
+	if curves != "USD 3M 3 rates:DGS3MO" {
+		t.Errorf("after the failed sync: curves %q", curves)
 	}
 }
 
@@ -177,7 +169,7 @@ func TestMigration0134DDLIsRerunnable(t *testing.T) {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	if _, err := SyncYield(ctx, db, canonical.YieldRows{Settings: canonical.YieldSettings{HorizonMonths: 24}}); err != nil {
+	if _, err := SyncYield(ctx, db, canonical.YieldRows{Conventions: canonical.BuiltinConventions()}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -191,7 +183,8 @@ func TestMigration0134DDLIsRerunnable(t *testing.T) {
 	if kind != "Fixed" || dur != 5.25 {
 		t.Errorf("fund line reads %q, %v after a replay", kind, dur)
 	}
-	for table, want := range map[string]int{"fund_risk": 1, "rate_observations": 1, "yield_settings": 1,
+	for table, want := range map[string]int{"fund_risk": 1, "rate_observations": 1,
+		"yield_conventions":    len(canonical.BuiltinConventions()),
 		"fund_characteristics": 0, "security_period_facts": 0} {
 		if got := countRows(t, db, ctx, table); got != want {
 			t.Errorf("%s holds %d rows after a replay, want %d", table, got, want)

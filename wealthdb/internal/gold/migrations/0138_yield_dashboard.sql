@@ -9,9 +9,11 @@
 --
 --   * report_yield_positions: each holding's figures in every reporting
 --     currency, today and at the last second of each of the 12 months
---     before;
+--     before, with its own income and mean daily value (received_12m,
+--     mean_value), which yield_realized_pct pools over a card's rows;
 --   * report_yield_buckets: each holding's DV01 per curve currency and
---     tenor, at the same instants;
+--     tenor, at the same instants, with the tenor's place among the risk
+--     tenors and what holds the holding in the curve view (yield.HeldIn);
 --   * report_yield_parts: today's projection, one row per part (a
 --     holding's income in a month under a maturing rule), in the
 --     holding's own currency, with its rate to each reporting currency
@@ -25,11 +27,12 @@
 --   * report_yield_received: the income lines the projection counts as
 --     received, of this year and the last, per reporting currency.
 --
--- report_exposure_debt holds the buckets of credit, maturities, coupons
--- and cycles (exposure_credit_leaves, exposure_maturity_leaves,
--- exposure_yield_leaves) at today and the 12 month ends before, by the
--- source and tax wrapper the pickers narrow to; report_exposure_issuers
--- the largest issuers at the same instants (gold.MaterializeExposure).
+-- report_exposure_debt holds the buckets of the dimensions credit,
+-- maturity, coupon and cycle (exposure_credit_leaves,
+-- exposure_maturity_leaves, exposure_yield_leaves) at today and the 12
+-- month ends before, by the source and tax wrapper the pickers narrow
+-- to; report_exposure_issuer_ranks the largest issuers at the same
+-- instants (gold.MaterializeExposure).
 --
 -- IF NOT EXISTS and OR REPLACE keep this replayable (see gold.Migrate's
 -- REPLAY note).
@@ -60,6 +63,11 @@ CREATE TABLE IF NOT EXISTS report_yield_positions (
     implied_pct           DOUBLE,
     implied_annual_pct    DOUBLE,
     realized_pct          DOUBLE,
+    -- The income of the twelve months to the instant and the mean daily
+    -- value over them: a row's realized yield is the sum of the one over
+    -- the sum of the other (yield.Position.RealizedParts).
+    received_12m          DOUBLE,
+    mean_value            DOUBLE,
     earnings_yield_pct    DOUBLE,
     dividend_yield_pct    DOUBLE,
     payout_pct            DOUBLE,
@@ -86,7 +94,8 @@ CREATE TABLE IF NOT EXISTS report_yield_buckets (
     position_key          TEXT     NOT NULL,
     curve_currency        TEXT     NOT NULL,
     tenor                 TEXT     NOT NULL,
-    kind                  TEXT     NOT NULL,
+    tenor_order           INTEGER  NOT NULL,
+    held_in               TEXT     NOT NULL,
     dv01                  DOUBLE   NOT NULL
 );
 
@@ -160,14 +169,13 @@ CREATE TABLE IF NOT EXISTS report_exposure_debt (
     as_of                 BIGINT   NOT NULL,
     silver_source_id      TEXT,
     tax_wrapper           TEXT,
-    via_funds             BOOLEAN  NOT NULL,
     dimension             TEXT     NOT NULL,
     bucket                TEXT     NOT NULL,
     unknown               BOOLEAN  NOT NULL,
     value                 DOUBLE   NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS report_exposure_issuers (
+CREATE TABLE IF NOT EXISTS report_exposure_issuer_ranks (
     computed_at           BIGINT   NOT NULL,
     currency              TEXT     NOT NULL,
     as_of                 BIGINT   NOT NULL,
@@ -182,6 +190,19 @@ CREATE TABLE IF NOT EXISTS report_exposure_issuers (
     cash_pct              DOUBLE
 );
 
+-- yield_realized_pct: the realized yield of a group of report_yield_positions
+-- rows, pooled as yield.summarize pools a row's: their income over the sum
+-- of their mean daily values, over the rows that weigh, else over every
+-- row (docs/YIELD.md §4); none where that sum is zero. Nothing received
+-- over a debt reads 0, not -0. The daily amounts are not here, so a
+-- group's thin rule, which reads its pooled days, does not apply: the
+-- figure stands where the engine's row is thin, and the quality card shows
+-- the share tagged thin.
+CREATE OR REPLACE MACRO yield_realized_pct(received, mean, weighs) AS
+    CASE WHEN bool_or(weighs)
+         THEN 100 * sum(received) FILTER (WHERE weighs) / NULLIF(sum(mean) FILTER (WHERE weighs), 0)
+         ELSE 100 * sum(received) / NULLIF(sum(mean), 0) END + 0.0;
+
 -- The dashboards' views. A holding's labels are its row's in the
 -- positions of today; an account's income no holding names (rent, a
 -- pension: `income:<type>:<CCY>`) reads its account's. A day is a DATE; a rate
@@ -195,19 +216,18 @@ SELECT CAST(epoch_ms(p.as_of * 1000) AS DATE) AS as_of_day, p.as_of = (SELECT ma
        COALESCE(p.tax_wrapper, 'taxable_personal') AS tax_wrapper,
        COALESCE(p.asset_class, 'unknown') AS asset_class, p.vehicle, p.kind, p.symbol, p.name, p.holding_currency,
        p.quantity, p.price, p.value, p.coupon_pct, p.maturity_date, p.rating, p.stated_pct, p.current_yield_pct,
-       p.implied_pct, p.implied_annual_pct, p.realized_pct, p.earnings_yield_pct, p.dividend_yield_pct, p.payout_pct,
-       p.benchmark_pct, p.gap_pct, p.duration, p.convexity, p.maturity_years, p.dv01, p.income_12m, p.income_100bp,
-       p.weighs, p.tags
+       p.implied_pct, p.implied_annual_pct, p.realized_pct, p.received_12m, p.mean_value, p.earnings_yield_pct,
+       p.dividend_yield_pct, p.payout_pct, p.benchmark_pct, p.gap_pct, p.duration, p.convexity, p.maturity_years,
+       p.dv01, p.income_12m, p.income_100bp, p.weighs, p.tags
   FROM report_yield_positions p
   LEFT JOIN accounts a ON a.silver_source_id = p.silver_source_id AND a.account_external_id = p.account_external_id;
 
 CREATE OR REPLACE VIEW web_yield_curve AS
 SELECT CAST(epoch_ms(b.as_of * 1000) AS DATE) AS as_of_day, b.currency, b.silver_source_id,
        COALESCE(p.tax_wrapper, 'taxable_personal') AS tax_wrapper, COALESCE(p.asset_class, 'unknown') AS asset_class,
-       b.curve_currency, b.tenor, list_position(['3M', '1Y', '5Y', '10Y', '30Y'], b.tenor) AS tenor_order,
-       CASE WHEN b.kind IN ('bond_fund', 'money_market') THEN 'funds' WHEN b.kind = 'liability' THEN 'liabilities'
-            WHEN b.kind IN ('deposit', 'term_deposit') THEN 'cash' ELSE 'bonds' END AS held_in,
-       b.dv01
+       b.curve_currency, b.tenor, b.tenor_order,
+       -- 'funds', 'bonds', 'cash' or 'liabilities'
+       b.held_in, b.dv01
   FROM report_yield_buckets b
   LEFT JOIN report_yield_positions p ON p.as_of = b.as_of AND p.currency = b.currency
        AND p.silver_source_id = b.silver_source_id AND p.account_external_id = b.account_external_id
@@ -261,14 +281,13 @@ SELECT x.currency, x.silver_source_id, x.account_external_id, x.position_key, x.
 
 CREATE OR REPLACE VIEW web_exposure_debt AS
 SELECT CAST(epoch_ms(as_of * 1000) AS DATE) AS as_of_day, currency, silver_source_id,
-       COALESCE(tax_wrapper, 'taxable_personal') AS tax_wrapper,
-       CASE WHEN via_funds THEN 'via funds' ELSE 'direct' END AS held, dimension, bucket, unknown, value
+       COALESCE(tax_wrapper, 'taxable_personal') AS tax_wrapper, dimension, bucket, unknown, value
   FROM report_exposure_debt;
 
 CREATE OR REPLACE VIEW web_exposure_issuers AS
 SELECT CAST(epoch_ms(as_of * 1000) AS DATE) AS as_of_day, currency, rank, issuer, lei, value, share_pct,
        cumulative_share_pct, equity_pct, debt_pct, cash_pct
-  FROM report_exposure_issuers;
+  FROM report_exposure_issuer_ranks;
 
 INSERT INTO schema_meta (gold_schema_version, applied_at)
     VALUES (138, CAST(epoch(now()) AS BIGINT));

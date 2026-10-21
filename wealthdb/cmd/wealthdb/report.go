@@ -55,8 +55,8 @@ type request struct {
 	view     string
 	currency string
 	// from and to bound a window, inclusive, in epoch seconds; from 0
-	// is an open start. asOf is the as-of instant of holdings and
-	// exposure.
+	// is an open start. asOf is the as-of instant of holdings, exposure
+	// and yield, and today on income's forward views.
 	from, to int64
 	asOf     int64
 
@@ -71,7 +71,7 @@ type request struct {
 	country      string            // exposure: risk | domicile
 	converted    bool              // yield: one row per entity in the output currency
 	assumptions  yield.Assumptions // income's forward views: rate path, maturing rule, shift
-	series       []seriesPoint     // exposure --period: the instants of a series
+	series       []seriesPoint     // exposure and yield --period: the instants of a series
 	newestFirst  bool              // transactions, gains realized
 	allDocuments bool              // gains realized: every copy of a sale, not the primary set
 	missing      lots.MissingBasis // gains, holdings positions: how a missing cost basis counts

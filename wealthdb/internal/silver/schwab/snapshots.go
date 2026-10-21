@@ -52,8 +52,70 @@ func (c *apiReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 	if err := c.appendPositions(ctx, w, byTime, instrumentNames); err != nil {
 		return nil, err
 	}
+	if err := c.appendInstrumentBonds(ctx, w, byTime); err != nil {
+		return nil, err
+	}
 
 	return byTime.Stream(), nil
+}
+
+// appendInstrumentBonds adds an InstrumentChange for each bond the
+// `instruments` table describes in the window: its name and its terms
+// (bondTermsPayload), whether or not a position holds it. The table is
+// what the --with-instruments mode reads of the bonds a transaction or a
+// statement names, which the positions may no longer hold; its key is
+// the bond's CUSIP, as a position's and a statement's are. Gold's upsert
+// fills the name and the payload a statement's row of the same bond
+// leaves empty.
+func (c *apiReader) appendInstrumentBonds(ctx context.Context, w canonical.Window, byTime silver.Batches) error {
+	exists, err := silver.HasTables(ctx, c.db, "instruments")
+	if err != nil || !exists {
+		return err
+	}
+	rows, err := c.db.QueryContext(ctx, `
+SELECT snapshot_at, symbol, payload FROM instruments
+ WHERE snapshot_at BETWEEN ? AND ?
+ ORDER BY snapshot_at, symbol`, w.Start, w.End)
+	if err != nil {
+		return fmt.Errorf("appendInstrumentBonds: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var snap int64
+		var symbol, payload string
+		if err := rows.Scan(&snap, &symbol, &payload); err != nil {
+			return fmt.Errorf("appendInstrumentBonds scan: %w", err)
+		}
+		batch, ok := byTime[snap]
+		if !ok {
+			continue
+		}
+		var i schwabInstrument
+		if json.Unmarshal([]byte(payload), &i) != nil {
+			continue
+		}
+		acNew, vehicle := taxonomyFor(i.AssetType, i.Type, i.Description)
+		if vehicle != canonical.VehicleBond {
+			continue
+		}
+		key := preferredInstrumentKey(i)
+		if key == "" {
+			key = symbol
+		}
+		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
+			InstrumentExternalID: key,
+			AssetClass:           acNew,
+			Vehicle:              vehicle,
+			CUSIP:                silver.StrPtrIfNonEmpty(i.CUSIP),
+			Symbol:               silver.StrPtrIfNonEmpty(symbol),
+			Name:                 silver.StrPtrIfNonEmpty(i.Description),
+			Currency:             silver.StrPtrIfNonEmpty("USD"),
+			FirstSeenAt:          snap,
+			LastSeenAt:           snap,
+			Payload:              bondTermsPayload(vehicle, i),
+		})
+	}
+	return rows.Err()
 }
 
 // dumpTimesInWindow returns the distinct dump_runs.snapshot_at values
@@ -230,6 +292,11 @@ type schwabInstrument struct {
 	CUSIP       string `json:"cusip"`
 	Symbol      string `json:"symbol"`
 	Description string `json:"description"`
+	// MaturityDate is a bond's, as the API stamps it:
+	// 2099-09-09T05:00:00.000+00:00. VariableRate is its coupon, in
+	// percent: the schwab-api collector reads it so.
+	MaturityDate string   `json:"maturityDate"`
+	VariableRate *float64 `json:"variableRate"`
 }
 
 // schwabPositionPayload covers the fields we extract from each
@@ -329,6 +396,7 @@ SELECT snapshot_at, account_external_id, instrument_key, payload, %s
 			Currency:             silver.StrPtrIfNonEmpty("USD"),
 			FirstSeenAt:          snap,
 			LastSeenAt:           snap,
+			Payload:              bondTermsPayload(vehicle, pp.Instrument),
 		})
 
 		quantity := pp.LongQuantity.Sub(pp.ShortQuantity)

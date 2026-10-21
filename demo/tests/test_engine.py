@@ -45,9 +45,16 @@ FIRST, SECOND = dt.date(2023, 9, 30), dt.date(2023, 11, 15)
 TODAY = dt.datetime.now(dt.timezone.utc).date()
 SEED = "harlow-19"
 # The kinds of holding the yield report tells apart (wealthdb/docs/YIELD.md
-# §3), every one the household holds: all but a loan held.
+# §3): every one but `note`, a loan held, which the household does not
+# hold. Its target-date and age-based funds are of class multi_asset.
 YIELD_KINDS = {"deposit", "term_deposit", "money_market", "bond", "bill", "floating_note", "bond_fund", "equity_fund",
-               "stock", "liability", "other"}
+               "multi_asset", "stock", "liability", "other"}
+# The kinds that need no figure of their own: no income line names an
+# `other` holding. In the first months the multi-asset funds have paid
+# nothing yet: the 529 portfolio distributes in December, and the
+# target-date funds never.
+FIGURELESS_KINDS = {"other"}
+FIRST_FIGURELESS_KINDS = FIGURELESS_KINDS | {"multi_asset"}
 # The views of exposure that group the debt, the stocks and the issuers.
 DEBT_VIEWS = ("credit", "maturities", "coupons", "cycles", "issuers")
 
@@ -111,12 +118,18 @@ def held_kinds(day):
     return {kind for kind in YIELD_KINDS if alive.get(kind, True)}
 
 
-def check_yield_kinds(test, root, day):
+def readings(row):
+    """What a holding's figures rest on: its quality tags but `thin`. In
+    the first months of history every holding was held under half the
+    year, so it has no realized yield and carries `thin` beside them."""
+    return set(row["quality"].split()) - {"thin"}
+
+
+def check_yield_kinds(test, root, day, figureless=FIGURELESS_KINDS):
     """Every kind the household holds shows in `yield positions`, each
-    with a non-zero figure of its own: a yield, a stated rate or a
-    dividend. An `other` holding needs none: no income line names one.
-    The holdings' figures rest on every reading a source or the ledger
-    gives."""
+    but `figureless` with a non-zero figure of its own: a yield, a stated
+    rate or a dividend. The holdings' figures rest on every reading a
+    source or the ledger gives."""
     kinds = held_kinds(day)
     rows = report(root, "yield", "positions", "-d", day.isoformat(), "-C", "all")
     by_kind = collections.defaultdict(list)
@@ -124,7 +137,7 @@ def check_yield_kinds(test, root, day):
         by_kind[r["kind"]].append(r)
     test.assertEqual(set(by_kind), kinds)
     for kind, rs in by_kind.items():
-        if kind != "other":
+        if kind not in figureless:
             test.assertTrue(any(amount(r, f) != 0 for r in rs
                                 for f in ("implied_yield_pct", "stated_pct", "dividend_yield_pct")), kind)
     tags = {t for r in rows for t in r["quality"].split()}
@@ -135,12 +148,14 @@ def check_yield_kinds(test, root, day):
 
 def check_views_reconcile(test, root, day, views=DEBT_VIEWS):
     """Each exposure view sums to the global total, within a cent of
-    rounding per row."""
+    rounding per row. Returns the total and each view's rows."""
     total = Decimal(report(root, "holdings", "global", "-d", day.isoformat())[0]["total_value_USD"])
+    out = {}
     for view in views:
-        rows = report(root, "exposure", view, "-d", day.isoformat())
+        rows = out[view] = report(root, "exposure", view, "-d", day.isoformat())
         got = sum(amount(r, "value_USD") for r in rows)
         test.assertLessEqual(abs(got - total), Decimal("0.01") * len(rows), view)
+    return total, out
 
 
 @unittest.skipUnless(PARENT, "WEALTHDB_DEMO_TEST_ROOT is not set (make test-demo sets it)")
@@ -194,14 +209,10 @@ class TestThroughTheEngine(unittest.TestCase):
         every proxied fund proxied. The money-market fund and the fund
         that publishes only its page have no holdings to look through:
         coverage lists them as `unmatched`."""
-        day = ["-d", FIRST.isoformat()]
-        total = Decimal(report(self.root, "holdings", "global", *day)[0]["total_value_USD"])
-        views = {view: report(self.root, "exposure", view, *day)
-                 for view in ("classes", "sectors", "countries", "currencies", "securities", "funds")}
-        for view, rows in views.items():
-            got = sum(Decimal(r["value_USD"] or 0) for r in rows)
-            self.assertLessEqual(abs(got - total), Decimal("0.01") * len(rows), view)
-        how = [r for r in report(self.root, "exposure", "coverage", *day) if r["section"] == "how"]
+        total, views = check_views_reconcile(self, self.root, FIRST, (
+            "classes", "sectors", "sizes", "countries", "currencies", "situs", "securities", "funds"))
+        coverage = report(self.root, "exposure", "coverage", "-d", FIRST.isoformat())
+        how = [r for r in coverage if r["section"] == "how"]
         got = sum(Decimal(r["value_USD"]) for r in how)
         self.assertLessEqual(abs(got - total), Decimal("0.01") * len(how), "coverage")
         inputs = spec.load()
@@ -217,14 +228,17 @@ class TestThroughTheEngine(unittest.TestCase):
             self.assertEqual(funds.get(ref), "proxy", ref)
         cat = reference.load()
         leaves = {reference.fund_ref(inputs.instruments[f["instrument"]]) for f in cat["money_market"] + cat["pages"]}
-        unmatched = {r["reason"] for r in report(self.root, "exposure", "coverage", *day) if r["section"] == "unmatched"}
+        unmatched = {r["reason"] for r in coverage if r["section"] == "unmatched"}
         self.assertTrue(leaves)
         self.assertLessEqual(leaves, unmatched)
 
     def test_every_kind_of_holding_has_its_yield_figures(self):
-        by_kind = check_yield_kinds(self, self.root, FIRST)
+        """The mortgage, held three months of the year, is thin: it has no
+        realized yield."""
+        by_kind = check_yield_kinds(self, self.root, FIRST, FIRST_FIGURELESS_KINDS)
         (loan,) = by_kind["liability"]
-        self.assertEqual(loan["quality"], "declared")
+        self.assertEqual(loan["quality"].split(), ["declared", "thin"])
+        self.assertEqual(loan["realized_yield_pct"], "")
         self.assertLess(Decimal(loan["dv01_USD"]), 0)
 
     def test_a_bond_priced_off_the_curve_implies_its_curve_yield(self):
@@ -244,7 +258,8 @@ class TestThroughTheEngine(unittest.TestCase):
                 continue
             spread = Decimal(inst["model"]["spread"])
             if kind == "discount":
-                want = bonds.curve_yield(points, Decimal((dates.parse(inst["maturity"]) - day).days) / 365, spread)
+                days = Decimal((dates.parse(inst["maturity"]) - day).days)
+                want = bonds.curve_yield(points, days / bonds.YEAR_DAYS, spread)
             else:
                 ends = [inst["maturity"]] + ([inst["call"]] if "call" in inst else [])
                 rate = Decimal(inst["coupon"]["rate"]) * 100 if "coupon" in inst else Decimal(0)
@@ -274,7 +289,7 @@ class TestThroughTheEngine(unittest.TestCase):
                                          (inst["id"],)).fetchall(), inst["id"])
             row = rows[inst["symbol"]]
             self.assertGreater(amount(row, "dividend_yield_pct"), 0, inst["id"])
-            self.assertEqual(row["quality"], "indicated", inst["id"])
+            self.assertEqual(readings(row), {"indicated"}, inst["id"])
 
     def test_each_kind_of_cash_states_its_rate(self):
         """A tiered savings rate and a term deposit, both stated, and a
@@ -282,19 +297,18 @@ class TestThroughTheEngine(unittest.TestCase):
         rows = report(self.root, "yield", "cash", "-d", FIRST.isoformat(), "-C", "all")
         (term,) = [r for r in rows if r["kind"] == "term_deposit"]
         self.assertGreater(dates.parse(term["term_end"]), FIRST)
-        self.assertEqual(term["quality"], "stated")
-        self.assertTrue([r for r in rows if r["kind"] == "deposit" and r["tiers"] == "2" and r["quality"] == "stated"])
-        self.assertTrue([r for r in rows if r["currency"] == "EUR" and r["quality"] == "declared" and r["rate_pct"]])
+        self.assertEqual(readings(term), {"stated"})
+        self.assertTrue([r for r in rows if r["kind"] == "deposit" and r["tiers"] == "2" and readings(r) == {"stated"}])
+        self.assertTrue([r for r in rows if r["currency"] == "EUR" and readings(r) == {"declared"} and r["rate_pct"]])
         self.assertTrue([r for r in rows if r["kind"] == "money_market" and r["rate_pct"]])
 
     def test_the_debt_and_issuer_views_reconcile(self):
         """Each sums to net worth, the credit view in every bucket from AAA
         to B, the coupons in every kind."""
-        check_views_reconcile(self, self.root, FIRST)
-        day = ["-d", FIRST.isoformat()]
-        buckets = {r["bucket"] for r in report(self.root, "exposure", "credit", *day)}
+        _total, views = check_views_reconcile(self, self.root, FIRST)
+        buckets = {r["bucket"] for r in views["credit"]}
         self.assertLessEqual({"AAA", "AA", "A", "BBB", "BB", "B", "unrated", "cash", "(none)"}, buckets)
-        kinds = {r["coupon_kind"] for r in report(self.root, "exposure", "coupons", *day)}
+        kinds = {r["coupon_kind"] for r in views["coupons"]}
         self.assertLessEqual({"fixed", "floating", "inflation_linked", "zero"}, kinds)
 
     def test_nothing_unpaired(self):
@@ -374,6 +388,21 @@ class TestToToday(unittest.TestCase):
 
     def test_every_kind_of_holding_has_its_yield_figures(self):
         check_yield_kinds(self, self.root, TODAY)
+
+    def test_a_holding_held_most_of_the_year_has_its_realized_yield(self):
+        """A holding held for more than half the year has a realized
+        yield; one thin, near zero on most of its days, has none and was
+        bought within half a year."""
+        rows = report(self.root, "yield", "positions", "-d", TODAY.isoformat(), "-C", "all")
+        bought = {(r["account_id"], r["position_key"]): r["acquisition_date"]
+                  for r in report(self.root, "holdings", "positions", "-d", TODAY.isoformat(), "-C", "all")}
+        thin = [r for r in rows if "thin" in r["quality"].split()]
+        self.assertTrue([r for r in rows if r["realized_yield_pct"]])
+        for r in rows:
+            self.assertEqual(r["realized_yield_pct"] == "", r in thin, r["position_key"])
+        for r in thin:
+            day = bought.get((r["account_id"], r["position_key"]))
+            self.assertTrue(day and (TODAY - dates.parse(day)).days < 183, (r["position_key"], day))
 
     def test_the_projection_holds_each_kind_of_income_and_a_principal(self):
         """Over the projection's horizon: the coupons, interest, dividends

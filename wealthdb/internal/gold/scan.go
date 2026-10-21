@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 )
 
 // scanRows runs a report query and scans each row into a T through the
@@ -140,4 +141,30 @@ func nullInt64ToPtr(n sql.NullInt64) *int64 {
 	}
 	v := n.Int64
 	return &v
+}
+
+// step is one named step of a pass or a read.
+type step struct {
+	name string
+	run  func() error
+}
+
+// runSteps runs steps in order, stopping at the first that fails, its
+// error named by what runs them and the step.
+func runSteps(what string, steps []step) error {
+	for _, s := range steps {
+		if err := s.run(); err != nil {
+			return fmt.Errorf("%s: %s: %w", what, s.name, err)
+		}
+	}
+	return nil
+}
+
+// nullDate is a DATE column's day at UTC midnight, nil for NULL.
+func nullDate(v sql.NullTime) *time.Time {
+	if !v.Valid {
+		return nil
+	}
+	t := v.Time.UTC()
+	return &t
 }

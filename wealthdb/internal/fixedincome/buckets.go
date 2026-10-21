@@ -16,9 +16,9 @@ import (
 // the last payment: whole periods, plus parts of a period in actual
 // days. Price reads the same time for a bond on a coupon date, and for
 // an ACT/ACT, ACT/360 or ACT/365 bond on any date. So the buckets of a
-// bond's Flows sum to its Risk DV01. A 30/360 bond between coupon dates
-// counts the part of its period in 30-day months instead, and its sum
-// differs by that gap's discounting.
+// bond's Flows sum to its Risk DV01. A 30/360 or 30E/360 bond between
+// coupon dates counts the part of its period in 30-day months instead,
+// and its sum differs by that gap's discounting.
 //
 // A frequency of 0 is simple interest, with the time in actual days over
 // 365. Payments on or before settle count nothing. A frequency outside
@@ -48,7 +48,7 @@ func Buckets(flows []Flow, settle time.Time, yield float64, frequency int) map[s
 			t = s.periods(settle, f.Date) / float64(frequency)
 		}
 		_, d1, _ := discounted(f.Coupon+f.Principal, t, yield, frequency)
-		split(out, tenors, t, d1*bp)
+		split(out, tenors, t, d1*BasisPoint)
 	}
 	return out
 }

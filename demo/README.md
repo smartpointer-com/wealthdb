@@ -9,7 +9,8 @@ and income verdicts, transfer pairing, the cash-flow boundary, returns.
 
 Nothing in it comes from real data. Every person, institution,
 merchant, company, fund and ticker is invented. No name belongs to a
-real business, as far as web searches and public registries show. The
+real business, as far as web searches and public registries show. No
+ISIN ends in its check digit, so none can be a real security's. The
 two coins keep their real tickers, because they name an asset class
 rather than a holding.
 
@@ -178,11 +179,10 @@ source knows:
   source states.
 - A German company's dividend, as its annual meeting resolves it each
   year.
-- The generator writes the records whose figures the spec and the
-  catalogue hold, as the household takes each holding on: the loan's
-  terms (3.25%, fixed for ten years), the ratings of two bonds, the
-  floating note's coupon kind, the callable bond's call date, and each
-  discount note's terms (it pays no coupon and counts ACT/360).
+- The terms and ratings the spec and the catalogue hold, which the
+  generator writes as the household takes each holding on: the loan's
+  terms, two bonds' ratings, the floating note's coupon kind, the
+  callable bond's call date, and each discount note's terms.
 
 ## How it is built
 
@@ -257,9 +257,9 @@ A findings build is a one-off picture: it cannot be appended to.
 ## Checks
 
 - `make test-demo` runs the generator's tests: determinism, the
-  append contract, the ledger and calendar invariants, and every value
-  checked against the engine's own vocabularies (read from its Go
-  source). It then loads the household's first months through the
+  append contract, the ledger and calendar invariants, the bond
+  arithmetic, and every value checked against the engine's own
+  vocabularies (read from its Go source). It then loads the household's first months through the
   engine image in a scratch root under the cache dir. It also builds
   and loads the whole history to today, because the income projection
   starts from today's holdings. That case takes the longest. What it
@@ -268,18 +268,15 @@ A findings build is a one-off picture: it cannot be appended to.
   running demo Metabase through its API. It covers each time window,
   each source, every currency the Currency picker offers, and the
   investing grain, section, start year, as-of, missing cost basis, asset
-  class and tax wrapper pickers. It also runs the projection's pickers
-  one at a time: the forward rate path, the idle and roll maturing
-  rules, a shift of -100 basis points, a 36-month horizon, and the
-  Income window's last year and next months. It uses a temporary API
-  key, so no filter values stay behind on the admin account. Its
-  defaults are the demo's port and the demo root `make demo` uses.
-  Another root needs `--password-file`.
+  class and tax wrapper pickers. It also varies each of the projection's
+  pickers on its own; the script's docstring lists them. It uses a
+  temporary API key, so no filter values stay behind on the admin
+  account. Its defaults are the demo's port and the demo root
+  `make demo` uses. Another root needs `--password-file`.
 - `demo/disjoint.py --demo <gold> --live <gold>` lists every
   identifying value a demo gold shares with another gold: ids, names,
   symbols, keys, descriptions, the ledger's notes, (date, amount) pairs
-  and bonds' (coupon, maturity) pairs. The script's docstring lists
+  and bonds' (maturity, coupon) pairs. The script's docstring lists
   every field it compares. A table one gold lacks is reported and
   skipped. It prints counts and values only, at most N values per field
-  with `--show N`. It needs the `duckdb` command-line
-  tool on PATH.
+  with `--show N`. It needs the `duckdb` command-line tool on PATH.

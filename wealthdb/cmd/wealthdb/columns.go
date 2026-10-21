@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -171,7 +172,80 @@ func quantityCol[T any](name string, get func(T) *string) columnSpec[T] {
 
 // textCol is a legible text column, blank for nil.
 func textCol[T any](name string, get func(T) *string) columnSpec[T] {
-	return columnSpec[T]{Name: name, Align: output.AlignLeft, Extract: func(r T) string { return strOrEmpty(get(r)) }}
+	return strCol(name, func(r T) string { return strOrEmpty(get(r)) })
+}
+
+// strCol is a legible text column.
+func strCol[T any](name string, get func(T) string) columnSpec[T] {
+	return columnSpec[T]{Name: name, Align: output.AlignLeft, Extract: get}
+}
+
+// qualityCol is a report's quality column.
+func qualityCol[T any](get func(T) string) columnSpec[T] { return strCol("quality", get) }
+
+// floatMoneyCol is a money figure in the output currency, named name and
+// printed name_<CCY>, two decimals, blank for nil, redacted as money.
+func floatMoneyCol[T any](name, outCcy string, get func(T) *float64) columnSpec[T] {
+	return columnSpec[T]{Name: name, Header: name + "_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
+		Extract: func(r T) string { return fixedOrBlank(get(r), 2) }}
+}
+
+// floatValCol is floatMoneyCol of a figure every row has.
+func floatValCol[T any](name, outCcy string, get func(T) float64) columnSpec[T] {
+	return floatMoneyCol(name, outCcy, func(r T) *float64 { v := get(r); return &v })
+}
+
+// priceCol is a price per unit, or per 100 of a bond's face, four
+// decimals, redacted as money.
+func priceCol[T any](get func(T) *float64) columnSpec[T] {
+	return columnSpec[T]{Name: "price", Align: output.AlignRight, Privacy: PrivacyMoney,
+		Extract: func(r T) string { return fixedOrBlank(get(r), 4) }}
+}
+
+// decimalCol is a legible figure with two decimals, blank for nil: years,
+// a ratio such as P/E.
+func decimalCol[T any](name string, get func(T) *float64) columnSpec[T] {
+	return columnSpec[T]{Name: name, Align: output.AlignRight, Extract: func(r T) string { return fixedOrBlank(get(r), 2) }}
+}
+
+// tagNote is a tag a column prints and what it means: a quality tag, a
+// basis.
+type tagNote struct{ tag, meaning string }
+
+// tagNotes are tags as the usage texts list them: aligned, each meaning
+// wrapped beside its tag.
+func tagNotes(tags []tagNote) string {
+	width := 0
+	for _, q := range tags {
+		width = max(width, len(q.tag))
+	}
+	var b strings.Builder
+	for _, q := range tags {
+		tag := q.tag
+		for _, line := range wrapWords(q.meaning, 72-4-width-2) {
+			fmt.Fprintf(&b, "\n    %-*s  %s", width, tag, line)
+			tag = ""
+		}
+	}
+	return b.String()
+}
+
+// tagList are tags as the MCP help lists them: one "- tag: meaning."
+// line each.
+func tagList(tags []tagNote) string {
+	var b strings.Builder
+	for _, q := range tags {
+		b.WriteString("\n- " + q.tag + ": " + q.meaning + ".")
+	}
+	return b.String()
+}
+
+// fixedOrBlank is a figure with prec decimals, blank for nil.
+func fixedOrBlank(p *float64, prec int) string {
+	if p == nil {
+		return ""
+	}
+	return strconv.FormatFloat(*p, 'f', prec, 64)
 }
 
 // strOrEmpty is a nullable text, blank for nil.
@@ -225,12 +299,7 @@ func ratioCol[T any](name string, get func(T) *float64) columnSpec[T] {
 
 // formatPercent is a figure already in percent with two decimals, blank
 // for nil.
-func formatPercent(p *float64) string {
-	if p == nil {
-		return ""
-	}
-	return fmt.Sprintf("%.2f", *p)
-}
+func formatPercent(p *float64) string { return fixedOrBlank(p, 2) }
 
 // countCol is a legible count.
 func countCol[T any](name string, get func(T) int64) columnSpec[T] {

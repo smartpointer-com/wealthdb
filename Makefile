@@ -366,13 +366,14 @@ demo-mcp-stop:
 	$(DEMO_ROOT_MARKED)
 	@$(DEMO_MCP) stop
 
-# The generator's own suite (stdlib unittest), then a short demo loaded
-# through the engine image in scratch roots under the cache dir — a
-# directory Docker can see, holding nothing but the demo's test roots.
+# The generator's own suite (stdlib unittest), then the demo loaded
+# through the engine image, its first months and its whole history to
+# today, in scratch roots under the cache dir — a directory Docker can
+# see, holding nothing but the demo's test roots.
 DEMO_TEST_ROOT := $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb/demo-test
 
 test-demo: build-wealthdb
-	@echo "==> test demo (generator, then a short household through the engine)"
+	@echo "==> test demo (generator, then the household through the engine: its first months and to today)"
 	@WEALTHDB_DEMO_TEST_ROOT="$(DEMO_TEST_ROOT)" WEALTHDB_BIN="$(abspath $(WEALTHDB))" \
 		$(PYTHON) -m unittest discover -s demo/tests -t demo
 
@@ -389,17 +390,29 @@ build-web:
 	@echo "==> build web (metabase image)"
 	web/web build
 
-# Pure-bash unit tests for the lifecycle script; no Docker needed.
+# Pure-bash unit tests for the lifecycle script, then provision.py's
+# definitions; no Docker needed. provision.py's tests run the projection
+# cards' SQL on DuckDB, so they run in a venv of their own that holds the
+# duckdb module, pinned in web/requirements-test.txt and refreshed by
+# update-venvs. pip runs only when the requirements are newer than the
+# venv's .stamp.
+WEB_VENV := web/.venv
+
 test-web:
 	@echo "==> test web (web/test_web.sh)"
-	@web/test_web.sh
+	@$(call ENSURE_VENV,$(WEB_VENV),the web tests,test-web)
+	@if [ ! $(WEB_VENV)/.stamp -nt web/requirements-test.txt ]; then \
+		$(WEB_VENV)/bin/pip install -q -r web/requirements-test.txt && touch $(WEB_VENV)/.stamp || exit 1; \
+	fi
+	@WEALTHDB_WEB_PYTHON="$(abspath $(WEB_VENV))/bin/python" web/test_web.sh
 
 clean-web:
 	@echo "==> clean web (nothing to clean)"
 
 cleanall-web: clean-web
-	@echo "==> cleanall web (image)"
+	@echo "==> cleanall web (image, test venv)"
 	@docker image rm -f wealthdb/metabase:$(TAG) >/dev/null 2>&1 || true
+	@rm -rf $(WEB_VENV)
 
 # ---- per-collector rules (generated for each discovered collector) ----
 
@@ -496,9 +509,10 @@ $(foreach c,$(COLLECTORS),$(eval $(call COLLECTOR_RULES,$(c))))
 # Host venvs are auto-discovered as any collectors/<name>/.venv that
 # already exists — the venv has to have been created by `make build-<name>`
 # at least once. Docker collectors have no .venv on the host; their pip
-# is inside the image and refreshes when the image rebuilds. The one venv
-# outside collectors/ is collectorkit's own test venv (created by
-# `make test-collectorkit`), updated alongside them.
+# is inside the image and refreshes when the image rebuilds. The venvs
+# outside collectors/ are collectorkit's test venv
+# (`make test-collectorkit`), the web tests' (`make test-web`) and
+# ruff's (`make lint`), each updated alongside them once it exists.
 HOST_VENV_COLLECTORS := $(patsubst collectors/%/.venv,%,$(wildcard collectors/*/.venv))
 
 update: update-venvs update-wealthdb update-bases
@@ -527,6 +541,11 @@ update-venvs:
 		echo "==> update $(LINT_VENV)"; \
 		$(LINT_VENV)/bin/python -m pip install --upgrade pip; \
 		$(LINT_VENV)/bin/python -m pip install --upgrade -r $(LINT_DIR)/requirements.txt; \
+	fi
+	@if [ -x $(WEB_VENV)/bin/python ]; then \
+		echo "==> update $(WEB_VENV)"; \
+		$(WEB_VENV)/bin/python -m pip install --upgrade pip; \
+		$(WEB_VENV)/bin/python -m pip install --upgrade -r web/requirements-test.txt; \
 	fi
 
 # The module graph is refreshed by the IMAGE's Go toolchain, never the
@@ -558,7 +577,7 @@ help:
 	@echo "  make build-wealthdb     build the Go gold-engine image"
 	@echo "  make test-wealthdb      run go test ./... in the wealthdb container"
 	@echo "  make build-web          build the optional Metabase BI image"
-	@echo "  make test-web           run the web lifecycle unit tests"
+	@echo "  make test-web           run the web unit tests (lifecycle script, provision.py)"
 	@echo "  make test-mcp           run the MCP server lifecycle unit tests"
 	@echo "  make build-collectors   build every collector"
 	@echo "  make test-collectors    test every collector"
@@ -584,7 +603,7 @@ help:
 	@echo "  make demo-roll          append the days since the last demo build and load them"
 	@echo "  make demo-web / demo-web-stop   the demo's dashboards, own container and port"
 	@echo "  make demo-mcp / demo-mcp-stop   the demo over MCP, own container and port"
-	@echo "  make test-demo          test the demo generator and a short demo load"
+	@echo "  make test-demo          test the demo generator, a short demo load and a build to today"
 	@echo ""
 	@echo "  WEALTHDB_IMAGE_TAG=…    the tag of every image built and run (default:"
 	@echo "                          .image-tag's first line, else latest)"

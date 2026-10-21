@@ -6,13 +6,6 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-func TestFloaterCoupon(t *testing.T) {
-	t.Parallel()
-	near(t, "coupon", FloaterCoupon(4.1, 0.25), 4.35, 1e-12)
-	// No floor: a negative reference rate can take the coupon below 0.
-	near(t, "negative", FloaterCoupon(-0.75, 0.2), -0.55, 1e-12)
-}
-
 // A note resetting in three months has a duration of about a quarter of
 // a year, and a DV01 near 100 × 0.25 × 0.0001.
 func TestFloaterRisk(t *testing.T) {
@@ -42,7 +35,7 @@ func TestFloaterRisk(t *testing.T) {
 func TestFloaterNearPar(t *testing.T) {
 	t.Parallel()
 	settle, reset := ymd(2026, 2, 20), ymd(2026, 4, 15)
-	coupon := FloaterCoupon(3.6, 0.4)
+	coupon := 4.0
 	note := Bond{Coupon: coupon, Frequency: 4, Maturity: reset, DayCount: canonical.DayCountAct360}
 	_, clean := note.Price(settle, coupon)
 	near(t, "clean price", clean, 100, 0.01)

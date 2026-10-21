@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -53,7 +54,8 @@ const termsText = `SELECT concat_ws(' ', instrument_external_id,
 // government bond's and a bill's their own. On a day, the ledger's
 // record in force (the latest dated on or before it, else the undated
 // one) lays its fields over them; it names a fund's factsheet figures
-// too. A stock no record names has none.
+// too. A rating record clears the description's default, and its day is
+// no terms record's. A stock no record names has none.
 func TestYieldPassReadsInstrumentTerms(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -73,6 +75,8 @@ func TestYieldPassReadsInstrumentTerms(t *testing.T) {
 		  '{"principal": 1000, "interest_rate": 6, "maturity_date": "2027-03-31"}', 0, 0),
 		 ('test-src', 'QDECL', 'fixed_income', 'bond', NULL, NULL, 'QORVANT CORP 4.5% 01/15/2030 MOODYS A2', 'USD',
 		  NULL, 0, 0),
+		 ('test-src', 'QRCV', 'fixed_income', 'bond', NULL, NULL, 'QORVANT CORP 7% 05/01/2032 S&P D', 'USD', NULL, 0, 0),
+		 ('test-src', 'QLFT', 'fixed_income', 'bond', NULL, NULL, 'QORVANT CORP 4.2% 03/15/2031', 'USD', NULL, 0, 0),
 		 ('test-src', 'QFUND', 'fixed_income', 'fund', NULL, NULL, 'Example Stable Value Sleeve', 'USD', NULL, 0, 0),
 		 ('test-src', 'QSTK', 'public_equity', 'stock', NULL, NULL, 'QORVANT CORP', 'USD', NULL, 0, 0)`,
 		`INSERT INTO instrument_keys (silver_source_id, instrument_external_id, security_key)
@@ -87,13 +91,15 @@ func TestYieldPassReadsInstrumentTerms(t *testing.T) {
 		 (3, 'test-src', 'QDECL', 1750000000, 4.5, 4, DATE '2029-01-15', DATE '2028-12-31', 'floating')`,
 		`INSERT INTO yield_declared_terms (line_no, silver_source_id, instrument_external_id, as_of, duration, yield_pct)
 		 VALUES (4, 'test-src', 'QFUND', 1750000000, 6.1, 4.4)`,
-		`INSERT INTO yield_declared_ratings (line_no, silver_source_id, instrument_external_id, rating)
-		 VALUES (5, 'test-src', 'QDECL', 'BBB')`)
+		`INSERT INTO yield_declared_terms (line_no, silver_source_id, instrument_external_id, coupon_kind)
+		 VALUES (7, 'test-src', 'QLFT', 'floating')`,
+		`INSERT INTO yield_declared_ratings (line_no, silver_source_id, instrument_external_id, as_of, rating)
+		 VALUES (5, 'test-src', 'QDECL', NULL, 'BBB'), (6, 'test-src', 'QRCV', 1700000000, 'BB')`)
 	n, err := RebuildYield(ctx, db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n.Instruments != 8 || n.WithMaturity != 6 {
+	if n.Instruments != 10 || n.WithMaturity != 8 {
 		t.Errorf("counts %+v", n)
 	}
 	later := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
@@ -108,11 +114,16 @@ func TestYieldPassReadsInstrumentTerms(t *testing.T) {
 		"QFUND - - - - - - - - - - 6.1 4.4 1750000000",
 		// The description reads a sovereign's bond as government.
 		"QGOV 3.875@description 2034-02-15@description 2@convention fixed@convention ACT/ACT@convention - - - - - - - -",
+		// A record that makes a bond floating drops its market's
+		// frequency: it resets quarterly.
+		"QLFT 4.2@description 2031-03-15@description - floating@declared 30/360@convention - - - - - - - -",
 		"QMUNI 4.25@openfigi 2031-06-15@description 2@description fixed@description 30/360@convention " +
 			"2027-06-15@description - AA@description - - - - -",
 		"QMW 5.0@description 2033-03-01@description 2@convention fixed@convention 30/360@convention - make_whole " +
 			"B@description in_default - - - -",
 		"QNOTE 6.0@payload 2027-03-31@payload - - - - - - - - - - -",
+		"QRCV 7.0@description 2032-05-01@description 2@convention fixed@convention 30/360@convention - - " +
+			"BB@declared - - - - -",
 		"QSOV 1.915@description 2034-05-10@description 1@convention fixed@convention 30/360@convention - - - - - - - -",
 	}
 	if !slices.Equal(got, want) {
@@ -215,7 +226,9 @@ func TestYieldPassReadsPayloadTerms(t *testing.T) {
 		"QNR 4.0@description 2031-01-15@description 2@convention fixed@convention 30/360@convention - - " +
 			"B@description in_default - - - -",
 		// The instrument's own payload wins key by key over its position's.
-		"QOWN - - 2@convention floating@payload 30/360@convention - - A@payload - - - - -",
+		// A floating note takes no frequency by convention: it resets
+		// quarterly where nothing states one.
+		"QOWN - - - floating@payload 30/360@convention - - A@payload - - - - -",
 		// The statement's terms, not the live feed's newer payload or an
 		// older statement's, and over the description's grades and frequency.
 		"QSTMT 4.0@payload 2031-06-15@description 2@payload fixed@payload 30/360@convention - - AA@payload - - - - -",
@@ -233,6 +246,13 @@ func TestYieldPassReadsPayloadTerms(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("terms:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	// The derived table states no frequency for the floater either, and
+	// no kind where only the convention gives one.
+	if got := scanStrings(t, db, `SELECT concat_ws(' ', instrument_external_id, COALESCE(frequency::VARCHAR, '-'),
+	    COALESCE(coupon_kind, '-')) FROM instrument_terms WHERE instrument_external_id IN ('QOWN', 'QWORD')
+	    ORDER BY 1`); strings.Join(got, ", ") != "QOWN - floating, QWORD 2 -" {
+		t.Errorf("instrument_terms: %v", got)
 	}
 }
 
@@ -343,12 +363,12 @@ func TestSyncExposureWritesYieldRecords(t *testing.T) {
 // Migration 0135 replays over a gold that holds its tables filled: the
 // derived rows and the ledger's stay, and its seeds add nothing to a
 // convention table a load has stamped. A fresh gold reads the built-in
-// conventions, cycles and horizon before any load.
+// conventions and cycles before any load.
 func TestMigration0135DDLIsRerunnable(t *testing.T) {
 	db, ctx := openMigrated(t)
 	var conv []string
 	for _, c := range canonical.BuiltinConventions() {
-		conv = append(conv, strings.Join([]string{c.Market, string(rune('0' + c.Frequency)), string(c.DayCount),
+		conv = append(conv, strings.Join([]string{c.Market, strconv.Itoa(c.Frequency), string(c.DayCount),
 			string(c.Origin)}, " "))
 	}
 	var cyc []string
@@ -358,7 +378,6 @@ func TestMigration0135DDLIsRerunnable(t *testing.T) {
 	for q, want := range map[string][]string{
 		`SELECT concat_ws(' ', market, frequency, day_count, origin) FROM yield_conventions ORDER BY market`: conv,
 		`SELECT concat_ws(' ', sector, cycle, origin) FROM yield_cycles`:                                     cyc,
-		`SELECT horizon_months::VARCHAR FROM yield_settings`:                                                 {"12"},
 	} {
 		got := scanStrings(t, db, q)
 		slices.Sort(got)
@@ -369,8 +388,7 @@ func TestMigration0135DDLIsRerunnable(t *testing.T) {
 	}
 	if _, err := SyncYield(ctx, db, canonical.YieldRows{
 		Conventions: []canonical.YieldConvention{{Market: "GBP", Frequency: 2, DayCount: canonical.DayCountActAct,
-			Origin: canonical.OriginConfig}},
-		Settings: canonical.YieldSettings{HorizonMonths: 24}}); err != nil {
+			Origin: canonical.OriginConfig}}}); err != nil {
 		t.Fatal(err)
 	}
 	execEach(t, db,
@@ -383,12 +401,30 @@ func TestMigration0135DDLIsRerunnable(t *testing.T) {
 	rerunMigrationDDL(t, db, ctx, "0135_yield_terms.sql")
 
 	for table, want := range map[string]int{"instrument_terms": 1, "account_rates": 1, "yield_declared_ratings": 1,
-		"yield_conventions": 1, "yield_settings": 1} {
+		"yield_conventions": 1} {
 		if got := countRows(t, db, ctx, table); got != want {
 			t.Errorf("%s holds %d rows after a replay, want %d", table, got, want)
 		}
 	}
 	if got := scanStrings(t, db, `SELECT rating FROM instrument_terms_at(0)`); !slices.Equal(got, []string{"AA"}) {
 		t.Errorf("terms after a replay: %v", got)
+	}
+}
+
+// A bond whose instrument states its terms in its payload, with no name,
+// reads them with origin payload. The bond is invented.
+func TestABondsPayloadTermsAloneGiveItsTerms(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	execEach(t, db, `INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, cusip,
+	    currency, payload, first_seen_at, last_seen_at) VALUES ('schwab', '000000007', 'fixed_income', 'bond',
+	    '000000007', 'USD', '{"interest_rate":"9.75","maturity_date":"2098-08-08"}', 0, 0)`)
+	if _, err := RebuildYield(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(scanStrings(t, db, `SELECT concat_ws(' ', coupon_pct, coupon_origin, maturity, maturity_origin)
+	    FROM instrument_terms_at(?)`, 1), "|")
+	if got != "9.75 payload 2098-08-08 payload" {
+		t.Errorf("terms %q", got)
 	}
 }

@@ -1,5 +1,5 @@
 {
-  "comment": "Every instrument here is invented. No name is a real fund or company and no ticker is a listed symbol, as far as web searches, public business registries and the exchanges' symbol lists show. The two coins keep their real tickers because they name an asset class, not a holding. model drives the price engine (demohouse/market.py): beta is the loading on the named factor and idio the annual volatility of the instrument's own noise; a stable price never moves; a bond of type curve, discount or floating prices off the dollar curve at its spread, in percent, until its maturity, a callable one to the worse of its maturity and its call. yield is an annual cash payout as a share of price; a stock with no yield pays the dividend the declarations ledger declares; withholding is the share of a payout withheld at source. A coupon states its rate, or that it floats at a curve tenor plus a spread in percent. A bond that states_terms has a source record stating its coupon and maturity, as the yield pass reads them; any other bond's name states what it states. A money-market fund earns the curve at its tenor less its expenses, in percent. A ladder is a series of discount notes, each issued as the one before matures, which the generator names (issuer, maturity, paper) and numbers (the ISIN prefix and the issue's number). A bond's rating is the one the household records in the declarations ledger; no source states it.",
+  "comment": "Every instrument here is invented. No name is a real fund or company and no ticker is a listed symbol, as far as web searches, public business registries and the exchanges' symbol lists show, and no ISIN ends in its check digit, so none can be a real security's. The two coins keep their real tickers because they name an asset class, not a holding. model drives the price engine (demohouse/market.py): beta is the loading on the named factor and idio the annual volatility of the instrument's own noise; a stable price never moves; a bond of type curve, discount or floating prices off the dollar curve at its spread, in percent, until its maturity, a callable one to the worse of its maturity and its call. yield is an annual cash payout as a share of price; a stock with no yield pays the dividend the declarations ledger declares; withholding is the share of a payout withheld at source. A coupon states its rate, or that it floats at a curve tenor plus a spread in percent. A bond that states_terms has a source record stating its coupon and maturity, as the yield pass reads them; any other bond states its coupon and maturity in its name, where the yield pass parses them. A money-market fund earns the curve at its tenor less its expenses, in percent. A ladder is a series of discount notes, each issued as the one before matures, which the generator names (issuer, maturity, paper) and numbers (the ISIN prefix, the issue's number and a last digit that is not the check digit). A bond's rating is the one the household records in the declarations ledger; no source states it.",
   "instruments": [
     {
       "id": "ortm",
@@ -145,7 +145,7 @@
     },
     {
       "id": "tdf2055",
-      "isin": "US000HTRF550",
+      "isin": "US000HTRF551",
       "symbol": null,
       "name": "Hollinmere Target Retirement 2055 Fund",
       "asset_class": "multi_asset",
@@ -163,6 +163,7 @@
       "vehicle": "fund",
       "currency": "USD",
       "price": "19.85",
+      "income": {"yield": "0.0180", "months": [12]},
       "model": {"type": "blend", "weights": {"market": "0.6", "bond": "0.4"}, "idio": "0.004"}
     },
     {
@@ -255,7 +256,7 @@
     {
       "id": "wywa36",
       "symbol": null,
-      "isin": "US000WYWA360",
+      "isin": "US000WYWA361",
       "name": "Wyndlecombe Water Authority 0% 12/01/2036",
       "asset_class": "fixed_income",
       "vehicle": "bond",

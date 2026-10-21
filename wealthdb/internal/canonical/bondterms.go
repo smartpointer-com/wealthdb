@@ -116,7 +116,7 @@ func ReadBondTerms(desc string) BondTerms {
 	words := descriptionWords(desc)
 	used := make([]bool, len(words))
 	callAt := -1
-	var grades []RatingBucket
+	var grades []string
 	var phrased CouponKind
 	next := func(i int) string {
 		if i+1 < len(words) {
@@ -138,10 +138,7 @@ func ReadBondTerms(desc string) BondTerms {
 				used[i+1] = true
 			}
 		case agencyWords[w]:
-			if b, ok := RatingOfGrade(next(i)); ok {
-				grades = append(grades, b)
-				t.Default = t.Default || GradeInDefault(next(i))
-			}
+			grades = append(grades, next(i))
 		case w == "SEMI" && (next(i) == "ANNUALLY" || next(i) == "ANNUAL"):
 			t.Frequency = 2
 			used[i+1] = true
@@ -187,7 +184,7 @@ func ReadBondTerms(desc string) BondTerms {
 		zero := 0.0
 		t.Coupon = &zero
 	}
-	t.Rating = lowestRating(grades)
+	t.Rating, t.Default = ratingOfGrades(grades...)
 	return t
 }
 

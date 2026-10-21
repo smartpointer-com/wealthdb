@@ -22,17 +22,11 @@ func RebuildYield(ctx context.Context, db *sql.DB) (YieldCounts, error) {
 		return n, fmt.Errorf("yield pass: begin: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck — no-op after Commit
-	steps := []struct {
-		name string
-		run  func() error
-	}{
+	if err := runSteps("yield pass", []step{
 		{"terms", func() error { return writeInstrumentTerms(ctx, tx) }},
 		{"rates", func() error { return writeAccountRates(ctx, tx) }},
-	}
-	for _, s := range steps {
-		if err := s.run(); err != nil {
-			return n, fmt.Errorf("yield pass: %s: %w", s.name, err)
-		}
+	}); err != nil {
+		return n, err
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM instrument_terms),
         (SELECT COUNT(*) FROM instrument_terms WHERE maturity IS NOT NULL),
@@ -117,15 +111,15 @@ SELECT i.silver_source_id, i.instrument_external_id, COALESCE(i.name, ''), COALE
  ORDER BY 1, 2`
 }()
 
-// field is one instrument_terms field and where it comes from.
-type field[T any] struct {
+// termsField is one instrument_terms field and where it comes from.
+type termsField[T any] struct {
 	v      *T
 	origin string
 }
 
 // offer sets the field from origin where it holds nothing yet: the
 // origins are offered best first.
-func (f *field[T]) offer(v *T, origin string) {
+func (f *termsField[T]) offer(v *T, origin string) {
 	if f.v == nil && v != nil {
 		f.v, f.origin = v, origin
 	}
@@ -133,21 +127,16 @@ func (f *field[T]) offer(v *T, origin string) {
 
 // offerStated offers v where it is not its type's zero: an empty text or
 // a frequency of 0 states nothing.
-func offerStated[T comparable](f *field[T], v T, origin string) {
+func offerStated[T comparable](f *termsField[T], v T, origin string) {
 	var zero T
 	if v != zero {
 		f.offer(&v, origin)
 	}
 }
 
-func (f field[T]) value() any {
-	if f.v == nil {
-		return nil
-	}
-	return *f.v
-}
+func (f termsField[T]) value() any { return nullable(f.v) }
 
-func (f field[T]) from() any {
+func (f termsField[T]) from() any {
 	if f.v == nil {
 		return nil
 	}
@@ -156,10 +145,10 @@ func (f field[T]) from() any {
 
 type termsRow struct {
 	src, iid, vehicle      string
-	coupon                 field[float64]
-	frequency              field[int]
-	maturity, call         field[time.Time]
-	kind, dayCount, rating field[string]
+	coupon                 termsField[float64]
+	frequency              termsField[int]
+	maturity, call         termsField[time.Time]
+	kind, dayCount, rating termsField[string]
 	makeWhole, inDefault   bool
 }
 
@@ -191,12 +180,12 @@ var figiSectors = map[string]canonical.Sector{"Govt": canonical.SectorGovernment
 
 // writeInstrumentTerms rewrites instrument_terms: per field, the source's
 // own figure, else the description's, else OpenFIGI's ticker's; a bond's
-// frequency and day count else its market's convention. A bond with a
-// coupon and no stated kind is fixed, one with a coupon of zero a zero,
-// both by convention. A bond is in default where the grades that give
-// its rating say so. A call date of the source's own clears the
-// description's make-whole call, as a ledger record's does. The ledger's
-// records are laid over at report time (instrument_terms_at).
+// frequency and day count else its market's convention. A bond is in
+// default where the grades that give its rating say so. A call date of
+// the source's own clears the description's make-whole call, as a ledger
+// record's does. The ledger's records are laid over at report time;
+// instrument_terms_at gives a bond with a coupon and no stated kind its
+// kind by convention.
 func writeInstrumentTerms(ctx context.Context, tx *sql.Tx) error {
 	conventions, err := readConventions(ctx, tx)
 	if err != nil {
@@ -257,11 +246,8 @@ func writeInstrumentTerms(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM instrument_terms`); err != nil {
 		return err
 	}
-	return InsertChunked(ctx, tx, "instrument_terms", `INSERT INTO instrument_terms (silver_source_id,
-instrument_external_id, vehicle, coupon_pct, coupon_origin, maturity, maturity_origin, frequency, frequency_origin,
-coupon_kind, coupon_kind_origin, day_count, day_count_origin, call_date, call_origin, make_whole, rating,
-rating_origin, in_default) VALUES `,
-		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(rows),
+	return InsertChunked(ctx, tx, "instrument_terms", `INSERT INTO instrument_terms (`+instrumentTermsCols+`) VALUES `,
+		placeholders(instrumentTermsCols), len(rows),
 		func(i int, args []any) []any {
 			r := rows[i]
 			return append(args, r.src, r.iid, r.vehicle, r.coupon.value(), r.coupon.from(), r.maturity.value(),
@@ -271,11 +257,18 @@ rating_origin, in_default) VALUES `,
 		})
 }
 
+// instrumentTermsCols are the columns writeInstrumentTerms fills, in its
+// order.
+const instrumentTermsCols = `silver_source_id, instrument_external_id, vehicle, coupon_pct, coupon_origin, maturity,
+    maturity_origin, frequency, frequency_origin, coupon_kind, coupon_kind_origin, day_count, day_count_origin,
+    call_date, call_origin, make_whole, rating, rating_origin, in_default`
+
 // applyConvention fills a bond's frequency and day count from its
 // market's convention (yield_conventions): a bill's is its currency's
 // bills' (USD:bill), else no coupon on ACT/360; any other bond's its
-// currency and sector's (USD:government), else its currency's. A coupon
-// with no kind stated is fixed, or a zero's where it is zero.
+// currency and sector's (USD:government), else its currency's. A
+// floating note takes the day count alone: the frequency is its reset's,
+// quarterly where its terms state none.
 func (r *termsRow) applyConvention(conventions map[string]canonical.YieldConvention, ccy, sector string, bill bool) {
 	var c canonical.YieldConvention
 	var ok bool
@@ -287,20 +280,15 @@ func (r *termsRow) applyConvention(conventions map[string]canonical.YieldConvent
 	} else if c, ok = conventions[ccy+":"+sector]; !ok {
 		c, ok = conventions[ccy]
 	}
-	if ok {
-		f, dc := c.Frequency, string(c.DayCount)
-		if bill || f > 0 {
-			r.frequency.offer(&f, originConvention)
-		}
-		r.dayCount.offer(&dc, originConvention)
+	if !ok {
+		return
 	}
-	if r.coupon.v != nil {
-		k := string(canonical.CouponFixed)
-		if *r.coupon.v == 0 {
-			k = string(canonical.CouponZero)
-		}
-		r.kind.offer(&k, originConvention)
+	f, dc := c.Frequency, string(c.DayCount)
+	floating := r.kind.v != nil && *r.kind.v == string(canonical.CouponFloating)
+	if (bill || f > 0) && !floating {
+		r.frequency.offer(&f, originConvention)
 	}
+	r.dayCount.offer(&dc, originConvention)
 }
 
 // readConventions is yield_conventions by market.
@@ -374,9 +362,7 @@ WITH ubs_balances AS MATERIALIZED (
       FROM cash_balances cb
      WHERE json_extract_string(cb.payload, 'CdtIntrstRate1') IS NOT NULL
      ORDER BY cb.silver_source_id, cb.account_external_id, cb.currency, cb.snapshot_at,
-              CASE cb.balance_kind WHEN 'current' THEN 1 WHEN 'closing' THEN 2 WHEN 'available' THEN 3
-                   WHEN 'aggregated' THEN 4 WHEN 'opening' THEN 5 WHEN 'initial' THEN 6 WHEN 'projected' THEN 7
-                   ELSE 99 END, cb.balance_kind),
+              ` + cashKindRank + `, cb.balance_kind),
 tiers AS (` + strings.Join(ubs, "\nUNION ALL") + `)
 SELECT silver_source_id, account_external_id, currency, side, tier, rate_pct, up_to, valid_from, term_end,
        day_count, 'stated', field, observed_at
@@ -418,12 +404,4 @@ func dayCountSQL(expr string) string {
 
 func writeAccountRates(ctx context.Context, tx *sql.Tx) error {
 	return execAll(ctx, tx, accountRatesSQL...)
-}
-
-func nullDate(v sql.NullTime) *time.Time {
-	if !v.Valid {
-		return nil
-	}
-	t := v.Time.UTC()
-	return &t
 }

@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
@@ -109,7 +111,7 @@ var (
 	accountParam = stringParam("account", "Keep only rows whose account name, id or nickname contains this text (case-insensitive).")
 )
 
-// tools are the server's thirteen tools, in the order describe lists them.
+// tools are the server's fourteen tools, in the order describe lists them.
 func (s *mcpServer) tools() []toolSpec {
 	return []toolSpec{
 		{
@@ -192,20 +194,20 @@ func (s *mcpServer) tools() []toolSpec {
 		{
 			name: "yield", title: "Yield",
 			description: "What the holdings earn now, and how they move with interest rates, as of a date (default today). A rate belongs to a currency: an aggregate row is one entity in one currency, plus a value-weighted total (quality mixed). " +
-				"view=global: one row per currency and a total. view=sources, portfolios, accounts: the same per entity. view=positions: per holding, with its coupon, maturity, price and kind. " +
+				"view=global: one row per currency and a total. view=sources, portfolios, accounts: the same per entity. view=positions: per holding, with its kind and figures; its coupon, maturity_date and price on request (columns=+coupon,maturity_date,price). " +
 				"view=securities: each security held directly and through funds: a bond's coupon, maturity, price and implied yield; a stock's earnings yield, P/E, dividend yield, payout and growth. " +
 				"view=funds: each fund held directly: what its lines imply, its page's yields and duration, as of which day. view=cash: each cash balance, term deposit and money-market fund with its rate, the benchmark and the gap, worst paid first. " +
-				"view=curve: DV01 per currency and tenor (3M, 1Y, 5Y, 10Y, 30Y), funds, bonds, cash and liabilities. view=coverage: what the figures rest on and what is missing. " +
+				"view=curve: DV01 per currency and tenor (" + strings.Join(canonical.RiskTenors, ", ") + "), funds, bonds, cash and liabilities. view=coverage: what the figures rest on and what is missing. " +
 				"income_yield is the next twelve months' projected income over value; implied_yield the yield the price implies in the market's convention, implied_yield_annual the same as an effective annual rate; dv01 the value's fall for a basis point. Read the quality column. " +
 				`Example: {view: "cash"}.`,
 			params: s.rowParams(false,
 				stringParam("view", "Which rows to return (default global).", yieldFamily.views...),
 				stringParam("as_of", "As-of date: "+dateDoc+" Default: today."),
-				stringParam("period", "global, sources, portfolios, accounts and curve: a series at the end of every monthly, quarterly or annual period of from/to (default: the last twelve months).",
-					exposurePeriods...),
+				stringParam("period", andList(yieldSeriesViews)+": a series at the end of every "+orList(seriesPeriods)+
+					" period of from/to (default: the last twelve months).", seriesPeriods...),
 				stringParam("from", "With period: the series' start: "+dateDoc),
 				stringParam("to", "With period: the series' end: "+dateDoc+" Default: today."),
-				param{name: "converted", kind: paramBoolean, doc: "global, sources, portfolios and accounts: one row per entity in the output currency, rates across currencies (default false)."},
+				param{name: "converted", kind: paramBoolean, doc: andList(yieldAggregateViews) + ": one row per entity in the output currency, rates across currencies (default false)."},
 			),
 			family: yieldFamily,
 		},
@@ -254,8 +256,8 @@ func (s *mcpServer) tools() []toolSpec {
 				stringParam("view", "Which rows to return (default summary).", incomeFamily.views...),
 				stringParam("period", "Bucket size (default total: the whole window as one row per type; monthly for the forward views). monthly, quarterly or annual give a series.", reportPeriodNames...),
 				stringParam("level", "Type vocabulary of the types view: detailed (default) or primary.", "primary", "detailed"),
-				stringParam("rates", "Forward views: constant (default; today's rates for the whole window) or forward (floating rates along the currency's forward curve).", pathNames()...),
-				stringParam("maturing", "Forward views: what a maturing holding's principal earns: cash (default; its account's cash rate), idle (nothing) or roll (the same holding again).", ruleNames()...),
+				stringParam("rates", "Forward views: constant (today's rates for the whole window) or forward (floating rates along the currency's forward curve). Default "+string(yield.DefaultAssumptions.Path)+".", pathNames()...),
+				stringParam("maturing", "Forward views: what a maturing holding's principal earns: cash (its account's cash rate), idle (nothing) or roll (the same holding again). Default "+string(yield.DefaultAssumptions.Rule)+".", ruleNames()...),
 				param{name: "shift", kind: paramInteger, doc: "Forward views: a parallel shift of the floating rates, in basis points (default 0)."},
 				sourceParam, accountParam,
 				stringParam("type", `Keep only income types whose label or id contains this text (e.g. "dividend", "salary", "interest").`),
@@ -386,12 +388,12 @@ var holdingsFamily = &family{
 func missingBasisParam(scope, note string) param {
 	return stringParam("missing_basis", scope+"a missing cost basis counts: ignore (the default; a figure that needs one is blank) "+
 		"or zero (it counts as 0)."+note+" The config's lots.missing_basis sets the default.",
-		lotNames(lots.MissingBasisReadings)...)
+		stringsOf(lots.MissingBasisReadings)...)
 }
 
-// lotNames spells a lots vocabulary as the strings a param's enum
-// lists.
-func lotNames[T ~string](vs []T) []string {
+// stringsOf spells a vocabulary as strings: a flag's choices, a param's
+// enum.
+func stringsOf[T ~string](vs []T) []string {
 	out := make([]string, len(vs))
 	for i, v := range vs {
 		out[i] = string(v)
@@ -607,25 +609,20 @@ var incomeFamily = &family{
 	prepare: func(a *toolArgs, req *request, _ *[]string) error {
 		req.period = orDefault(a.str("period"), "total")
 		req.level = orDefault(a.str("level"), "detailed")
-		if !isForwardView(req.view) {
-			if a.has("rates") || a.has("maturing") || a.has("shift") {
-				return fmt.Errorf("rates, maturing and shift belong to the %s views", strings.Join(forwardViews, ", "))
-			}
+		forward := isForwardView(req.view)
+		if forward {
+			req.period = orDefault(a.str("period"), "monthly")
+		}
+		if err := checkForwardOptions(req.view, req.period, a.has, func(name string) string { return name }); err != nil {
+			return err
+		}
+		if !forward {
 			return nil
 		}
-		if a.has("level") {
-			return fmt.Errorf("level belongs to the types view")
-		}
-		if req.view != "projection" && a.has("period") {
-			return fmt.Errorf("of the forward views, period belongs to projection")
-		}
-		req.period = orDefault(a.str("period"), "monthly")
-		if !slices.Contains(projectionPeriods, req.period) {
-			return fmt.Errorf("the forward views take period %s", strings.Join(projectionPeriods, ", "))
-		}
 		shift, _ := a.integer("shift")
-		req.assumptions = yield.Assumptions{Path: yield.Path(orDefault(a.str("rates"), string(yield.PathConstant))),
-			Rule: yield.Rule(orDefault(a.str("maturing"), string(yield.RuleCash))), ShiftBP: float64(shift)}
+		def := yield.DefaultAssumptions
+		req.assumptions = yield.Assumptions{Path: yield.Path(orDefault(a.str("rates"), string(def.Path))),
+			Rule: yield.Rule(orDefault(a.str("maturing"), string(def.Rule))), ShiftBP: float64(shift)}
 		return nil
 	},
 	build: func(_ *config.Config, req request, _ *toolArgs) *report { return incomeReport(req) },
@@ -659,37 +656,25 @@ var yieldFamily = &family{
 	prepare: func(a *toolArgs, req *request, notes *[]string) error {
 		req.converted = a.flag("converted", false)
 		if _, ok := yieldGrains[req.view]; !ok && req.converted {
-			return fmt.Errorf("converted belongs to the global, sources, portfolios and accounts views")
+			return errConverted("converted")
 		}
 		if !a.has("period") {
 			if a.has("from") || a.has("to") {
-				return fmt.Errorf("from and to belong to a series: give a period too")
+				return fmt.Errorf("yield: from and to belong to a series: give a period too")
 			}
 			return nil
 		}
-		if !slices.Contains(yieldSeriesViews, req.view) {
-			return fmt.Errorf("period belongs to the %s views", strings.Join(yieldSeriesViews, ", "))
+		if err := checkSeriesOptions("yield", req.view, yieldSeriesViews, a.has,
+			func(name string) string { return name }); err != nil {
+			return err
 		}
-		if a.has("as_of") {
-			return fmt.Errorf("as_of names one day; a series takes from and to instead")
-		}
-		var args []string
-		switch from, to := a.str("from"), a.str("to"); {
-		case from != "" && to != "":
-			args = []string{from, to}
-		case from != "":
-			args = []string{from, "-"}
-		case to != "":
-			args = []string{"-", to}
-		}
-		now := time.Unix(req.asOf, 0)
-		from, to, err := parseTrailingYearWindow(args, now)
-		if err != nil {
-			return fmt.Errorf("%v; dates are %s", err, dateDoc)
-		}
-		req.series = seriesPoints(from, min(to, anchorToDay(now.UTC(), true).Unix()), a.str("period"))
-		if len(req.series) == 0 {
-			return fmt.Errorf("the window starts after today")
+		var err error
+		req.series, err = seriesWindow(windowArgs(a.str("from"), a.str("to")), a.str("period"), time.Unix(req.asOf, 0))
+		switch {
+		case errors.Is(err, errSeriesAfterToday):
+			return fmt.Errorf("yield: %w", err)
+		case err != nil:
+			return fmt.Errorf("yield: %v; dates are %s", err, dateDoc)
 		}
 		*notes = append(*notes, "series "+a.str("period"))
 		return nil
@@ -977,8 +962,14 @@ func (s *mcpServer) header(tool string, fam *family, rep *report, req request, r
 	}
 	switch fam.window {
 	case asOfDate:
-		meta.asOf = formatDate(req.asOf)
-		head.add("as of %s", meta.asOf)
+		if n := len(req.series); n > 0 {
+			// A series states its first and last period end, not one day.
+			meta.from, meta.to = formatDate(req.series[0].at), formatDate(req.series[n-1].at)
+			head.add("window %s → %s", meta.from, meta.to)
+		} else {
+			meta.asOf = formatDate(req.asOf)
+			head.add("as of %s", meta.asOf)
+		}
 	case trailingYear, sinceInception, pastMonth:
 		meta.from, meta.to = windowStart(req.from), formatDate(req.to)
 		head.add("window %s → %s", meta.from, meta.to)
@@ -1014,20 +1005,26 @@ func (s *mcpServer) header(tool string, fam *family, rep *report, req request, r
 	return head, meta
 }
 
+// windowArgs are the CLI's positional window for from and to: FROM TO,
+// an open bound ("-") for the one not given, none for neither.
+func windowArgs(from, to string) []string {
+	switch {
+	case from != "" && to != "":
+		return []string{from, to}
+	case from != "":
+		return []string{from, "-"}
+	case to != "":
+		return []string{"-", to}
+	}
+	return nil
+}
+
 // resolveDates reads from/to or as_of under the family's rule, with
 // the CLI's defaults and the CLI's date grammar: from snaps to the
 // start of its unit, to and as_of to the end.
 func resolveDates(rule windowRule, a *toolArgs, now time.Time, horizon int, req *request) error {
-	var args []string
 	from, to := a.str("from"), a.str("to")
-	switch {
-	case from != "" && to != "":
-		args = []string{from, to}
-	case from != "":
-		args = []string{from, "-"}
-	case to != "":
-		args = []string{"-", to}
-	}
+	args := windowArgs(from, to)
 	var err error
 	switch rule {
 	case asOfDate:

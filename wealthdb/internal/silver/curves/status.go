@@ -2,8 +2,6 @@ package curves
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -18,32 +16,11 @@ import (
 // extrema is the observation-date range of the rates.
 const extrema = `SELECT MIN(as_of), MAX(as_of) FROM ` + silver.RatesTable
 
-// latestRun is the latest fetch run.
-const latestRun = `SELECT MAX(snapshot_at) FROM dump_runs`
-
 // Status reports the observation-date range of the rates and pins
 // LatestChangeNumber and both observed watermarks to the latest loaded
-// fetch run. curves records no transactions, so the transaction range is
-// the "no observable state" sentinel.
+// fetch run (silver.FetchRunStatus).
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.UnknownStatus()
-	var oldS, newS sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, extrema).Scan(&oldS, &newS); err != nil {
-		return s, fmt.Errorf("curves Status snapshot: %w", err)
-	}
-	if oldS.Valid {
-		s.OldestSnapshotAt = oldS.Int64
-	}
-	if newS.Valid {
-		s.LatestSnapshotAt = newS.Int64
-	}
-	latest, err := silver.LatestRun(ctx, c.db, kindName, latestRun)
-	if err != nil {
-		return s, err
-	}
-	s.LatestChangeNumber = latest
-	s.ObservedSnapshotsThrough, s.ObservedTransactionsThrough = latest, latest
-	return s, nil
+	return silver.FetchRunStatus(ctx, c.db, kindName, extrema)
 }
 
 // ChangeWindow triggers on a new fetch run (any dump_runs row past

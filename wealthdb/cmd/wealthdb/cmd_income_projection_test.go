@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
 func runIncome(t *testing.T, cfg string, args ...string) (string, string, int) {
@@ -53,23 +56,28 @@ func TestIncomeForwardWindows(t *testing.T) {
 	}
 }
 
-// The bond of the fixture pays its coupon on its dates, month ends as
-// its maturity is; the calendar lists each with its day.
+// A bond pays its coupon on its dates, month ends as its maturity is;
+// the calendar lists each with its day. The bond matures three years
+// after next year, whatever the year.
 func TestIncomeCalendar(t *testing.T) {
 	t.Parallel()
 	cfg := setupYieldGold(t)
 	y := time.Now().UTC().Year() + 1
-	if y >= 2031 {
-		t.Skip("the fixture's bond matures in 2031")
-	}
 	year := strconv.Itoa(y)
-	out, errb, code := runIncome(t, cfg, "calendar", year, "-f", "csv", "-C", "date,symbol,type,kind,amount")
+	changeYieldGold(t, cfg,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, name, currency,
+		 first_seen_at, last_seen_at) VALUES ('brk', 'QCAL', 'fixed_income', 'bond',
+		 'EXAMPLE CORP NOTE 4.00000% 06/30/`+strconv.Itoa(y+3)+`', 'USD', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, quantity, market_value) VALUES
+		 ('brk', ?, 'ACCT7781', 'QCAL', 'QCAL', 'fixed_income', 'bond', 'USD', 10000, 10000)`)
+	out, errb, code := runIncome(t, cfg, "calendar", year, "-f", "csv", "-C", "date,position_key,type,kind,amount")
 	if code != 0 {
 		t.Fatalf("%d %s", code, errb)
 	}
 	var coupons []string
 	for _, r := range csvRows(t, out) {
-		if r["type"] == "coupons" {
+		if r["type"] == "coupons" && r["position_key"] == "QCAL" {
 			coupons = append(coupons, r["date"]+"="+r["amount"])
 		}
 		if r["amount"] == "0.00" {
@@ -89,26 +97,63 @@ func TestIncomeForwardRefusalsAndPrivacy(t *testing.T) {
 	t.Parallel()
 	cfg := setupYieldGold(t)
 	far := strconv.Itoa(time.Now().UTC().Year() + 5)
-	for _, args := range [][]string{
-		{"summary", "--rates", "forward"},
-		{"types", "--shift", "50"},
-		{"projection", "--period", "total"},
-		{"projection", "--level", "primary"},
-		{"projection", "--rates", "sideways"},
-		{"projection", far},
-		{"projection", "2026", "2027", "2028"},
-		{"projection", "2027", "-"},
-		{"projection", "-", "2027"},
-		{"calendar", "--period", "quarterly"},
-		{"positions", "--period", "annual"},
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"summary", "--rates", "forward"}, "--rates, --maturing and --shift belong to the projection"},
+		{[]string{"types", "--shift", "50"}, "--rates, --maturing and --shift belong to the projection"},
+		{[]string{"projection", "--period", "total"}, "the forward views take --period monthly | quarterly | annual"},
+		{[]string{"projection", "--level", "primary"}, "--level belongs to the types view"},
+		{[]string{"projection", "--rates", "sideways"}, "sideways"},
+		{[]string{"projection", far}, "the projection ends on"},
+		{[]string{"projection", "2026", "2027", "2028"}, "a window is FROM [TO]"},
+		{[]string{"projection", "2027", "-"}, "takes no open bound"},
+		{[]string{"projection", "-", "2027"}, "takes no open bound"},
+		{[]string{"calendar", "--period", "quarterly"}, "of the forward views, --period belongs to projection"},
+		{[]string{"positions", "--period", "annual"}, "of the forward views, --period belongs to projection"},
 	} {
-		if _, _, code := runIncome(t, cfg, args...); code == 0 {
-			t.Errorf("%v: accepted", args)
+		if _, errb, code := runIncome(t, cfg, c.args...); code != 2 || !strings.Contains(errb, c.want) {
+			t.Errorf("%v: exit %d, want 2 and %q:\n%s", c.args, code, c.want, errb)
 		}
 	}
 	out, errb, code := runIncome(t, cfg, "positions", "-p", "-f", "csv", "-C", "+position_key")
 	if code != 0 || strings.Contains(out, "ACCT7781") || strings.Contains(out, "10000.00") ||
 		strings.Contains(out, "5000.00") || !strings.Contains(out, "QBND") {
 		t.Errorf("privacy %d %s\n%s", code, errb, out)
+	}
+}
+
+// Every basis and every way of reinvesting the forward views print
+// reaches the CLI usage, wrapped to its width, and the MCP quality help,
+// in the order of yield.Bases and yield.Rungs.
+func TestForwardBasesReachBothFrontEnds(t *testing.T) {
+	t.Parallel()
+	usage := incomeUsage()
+	for _, c := range []struct {
+		tags []tagNote
+		want []string
+	}{
+		{incomeBasisTags, stringsOf(yield.Bases)},
+		{incomeRungTags, stringsOf(yield.Rungs)},
+	} {
+		var listed []string
+		for _, q := range c.tags {
+			listed = append(listed, q.tag)
+			if !strings.Contains(usage, "\n    "+q.tag+" ") {
+				t.Errorf("usage does not list %s", q.tag)
+			}
+			if !strings.Contains(qualityHelp, "\n- "+q.tag+": "+q.meaning+".") {
+				t.Errorf("describe topic=quality does not list %s", q.tag)
+			}
+		}
+		if !slices.Equal(listed, c.want) {
+			t.Errorf("tags %v, want %v", listed, c.want)
+		}
+		for _, line := range strings.Split(tagNotes(c.tags), "\n") {
+			if len(line) > 72 {
+				t.Errorf("line is %d columns wide: %q", len(line), line)
+			}
+		}
 	}
 }

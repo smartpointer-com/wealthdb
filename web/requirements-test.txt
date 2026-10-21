@@ -1,0 +1,5 @@
+# The web tests' one dependency: web/test_provision.py runs the
+# projection cards' SQL on an invented book under DuckDB. `make test-web`
+# installs it into web/.venv; `make update-venvs` refreshes it. The range
+# stays on the DuckDB line gold is written in (AGENTS.md §4).
+duckdb>=1.5,<1.6

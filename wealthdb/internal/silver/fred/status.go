@@ -2,8 +2,6 @@ package fred
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -25,9 +23,6 @@ SELECT MIN(t), MAX(t) FROM (
     UNION ALL SELECT as_of FROM ` + silver.RatesTable + `)`
 )
 
-// latestRun is the latest fetch run.
-const latestRun = `SELECT MAX(snapshot_at) FROM dump_runs`
-
 // extrema is the observation-date range query of this file's fact tables.
 func (c *Connection) extrema() string {
 	if c.rates {
@@ -38,27 +33,9 @@ func (c *Connection) extrema() string {
 
 // Status reports the observation-date range of the FX and interest rates
 // and pins LatestChangeNumber and both observed watermarks to the latest
-// loaded fetch run. fred records no transactions, so the transaction
-// range is the "no observable state" sentinel.
+// loaded fetch run (silver.FetchRunStatus).
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.UnknownStatus()
-	var oldS, newS sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, c.extrema()).Scan(&oldS, &newS); err != nil {
-		return s, fmt.Errorf("fred Status snapshot: %w", err)
-	}
-	if oldS.Valid {
-		s.OldestSnapshotAt = oldS.Int64
-	}
-	if newS.Valid {
-		s.LatestSnapshotAt = newS.Int64
-	}
-	latest, err := silver.LatestRun(ctx, c.db, kindName, latestRun)
-	if err != nil {
-		return s, err
-	}
-	s.LatestChangeNumber = latest
-	s.ObservedSnapshotsThrough, s.ObservedTransactionsThrough = latest, latest
-	return s, nil
+	return silver.FetchRunStatus(ctx, c.db, kindName, c.extrema())
 }
 
 // ChangeWindow triggers on a new fetch run (any dump_runs row past `since`).

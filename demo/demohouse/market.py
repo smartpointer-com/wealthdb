@@ -45,10 +45,11 @@ _COUPON_PLACES = Decimal("0.001")
 class Market:
     """Price and FX series, advanced one day at a time."""
 
-    def __init__(self, seed, instruments, fx_start, fx_levels, curve=None):
+    def __init__(self, seed, instruments, fx_start, fx_levels, curve):
         self.seed = seed
         # {day: {tenor: percent}}, every business day (demohouse/rates.py).
-        self.curve = curve or {}
+        self.curve = curve
+        self._first = min(curve)
         self.instruments = {i["id"]: i for i in instruments}
         self.day = None
         self.factor_ret = {}
@@ -105,7 +106,7 @@ class Market:
         """The curve in force on `day`; before the first day it is
         published, that day's, as a floating note's coupon set before the
         history starts reads it."""
-        return rates.on(self.curve, max(day, self.fx_start))
+        return rates.on(self.curve, max(day, self._first))
 
     def coupon_rate(self, instrument, day):
         """The coupon rate, a fraction a year, of the period that holds

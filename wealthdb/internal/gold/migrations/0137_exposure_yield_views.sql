@@ -444,8 +444,8 @@ CREATE OR REPLACE MACRO exposure_maturity_split(p_bucket, p_page) AS
 --
 --   * debt: a leaf of fixed income or private debt; deposit: a holding of
 --     cash at its custodian (a balance, a demand or a time deposit);
---   * maturity: a holding's from its terms, else a term's end its
---     account's rates state; a line's as its fund states it.
+--   * maturity: a holding's from its terms, a deposit's else the end of a
+--     term its account's rates state; a line's as its fund states it.
 --     maturity_bucket reads it on the day (exposure_maturity_bucket); cash
 --     without a term counts under a year, a debt leaf without one that
 --     says PERP is perpetual, any other unknown;
@@ -462,12 +462,11 @@ CREATE OR REPLACE MACRO exposure_maturity_split(p_bucket, p_page) AS
 --   * issuer_key and issuer_name: a deposit's custodian, else its source;
 --     a security's issuer by the LEI its line or GLEIF states, else by
 --     the name exposure_issuer_name gives, which a GLEIF legal name of the
---     same text ties to its LEI; else by its key, else its LEI, else
---     `unknown`; NULL where no issuer applies (a fund nothing looks
---     through, the parts a declaration splits a private holding into,
---     real estate, a metal, a fund's cash). name_rank orders the names an
---     issuer may print by: GLEIF's, a stock's, any other (its normalized
---     name).
+--     same text ties to its LEI; else by its key, else `unknown`; NULL
+--     where no issuer applies (a fund nothing looks through, the parts a
+--     declaration splits a private holding into, real estate, a metal, a
+--     fund's cash). name_rank orders the names an issuer may print by:
+--     GLEIF's, a stock's, any other (its normalized name).
 CREATE OR REPLACE MACRO exposure_yield_leaves(p_asof, p_ccy) AS TABLE (
     WITH l AS MATERIALIZED (SELECT * FROM exposure_leaves(p_asof, p_ccy)),
     t AS (SELECT * FROM instrument_terms_at(p_asof)),

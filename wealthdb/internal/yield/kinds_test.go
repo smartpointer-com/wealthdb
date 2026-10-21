@@ -3,6 +3,7 @@ package yield
 import (
 	"math"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,7 +37,7 @@ func TestAccruedInterestIsInTheAmount(t *testing.T) {
 	t.Parallel()
 	terms := Terms{Coupon: num(5), Maturity: date(2031, 3, 15), DayCount: canonical.DayCount30360}
 	read := func(amount float64, accrued *float64) Position {
-		in := book()
+		in := inputs()
 		h := bondHolding("broker", "A", "QB", 10000, amount)
 		h.Accrued = accrued
 		in.Holdings = []Holding{h}
@@ -55,7 +56,7 @@ func TestAccruedInterestIsInTheAmount(t *testing.T) {
 // a record's yield wins over the page and the lines.
 func TestALedgerRecordStatesAFundsFigures(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	mmf := fund("QMMF", "cash", 10000)
 	bf := fund("QBF", "fixed_income", 20000)
 	in.Holdings = []Holding{mmf, bf}
@@ -91,7 +92,7 @@ func TestALedgerRecordStatesAFundsFigures(t *testing.T) {
 func TestALiabilitysFixedPeriod(t *testing.T) {
 	t.Parallel()
 	read := func(kind canonical.CouponKind, fixed *time.Time) Position {
-		in := book()
+		in := inputs()
 		h := Holding{HoldingKey: HoldingKey{"bank", "M", "QMORT"}, Instrument: "QMORT", AssetClass: "real_estate",
 			Vehicle: "mortgage", Currency: "USD", Value: -100000, Amount: -100000}
 		in.Holdings = []Holding{h}
@@ -113,8 +114,8 @@ func TestALiabilitysFixedPeriod(t *testing.T) {
 // discount is paid on its maturity day, with its face.
 func TestABill(t *testing.T) {
 	t.Parallel()
-	in := book()
-	in.Curves["USD"] = flatCurve("USD", 4)
+	in := inputs()
+	in.Curves["USD"] = flatCurve(4)
 	h := bondHolding("broker", "A", "QBILL", 10000, 9750)
 	in.Holdings = []Holding{h}
 	zero := 0
@@ -141,7 +142,7 @@ func TestABill(t *testing.T) {
 // interest too; paid nothing, it is unknown.
 func TestAnOtherHolding(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	h := Holding{HoldingKey: HoldingKey{"broker", "A", "QNOTE"}, Instrument: "QNOTE", AssetClass: "alternatives",
 		Vehicle: "structured_product", Currency: "USD", Value: 5000, Amount: 5000, Quantity: num(5)}
 	in.Holdings = []Holding{h}
@@ -162,7 +163,7 @@ func TestAnOtherHolding(t *testing.T) {
 // was paid: realized, no longer unknown, and still missing its rate.
 func TestADepositRepeatsItsInterest(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	h := cash("bank", "S", "USD", 8000)
 	in.Holdings = []Holding{h}
 	in.AccountPayments = []AccountPayment{{AccountCurrency: AccountCurrency{AccountKey{"bank", "S"}, "USD"},
@@ -182,7 +183,7 @@ func TestADepositRepeatsItsInterest(t *testing.T) {
 // what the assets earn. The cash view lists it after the credit balances.
 func TestAnOverdraft(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	d, o := cash("bank", "S", "USD", 10000), cash("bank", "O", "USD", -5000)
 	in.Holdings = []Holding{o, d}
 	in.Rates[AccountKey{"bank", "S"}] = []Rate{{Credit: true, Tier: 1, Pct: 2}}
@@ -203,7 +204,7 @@ func TestAnOverdraft(t *testing.T) {
 // past.
 func TestACouponLaterThisMonth(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	late, past := bondHolding("broker", "A", "QL", 10000, 10000), bondHolding("broker", "A", "QP", 10000, 10000)
 	in.Holdings = []Holding{late, past}
 	in.Terms[InstrumentKey{"broker", "QL"}] = Terms{Coupon: num(4), Maturity: date(2030, 6, 25)}
@@ -217,7 +218,7 @@ func TestACouponLaterThisMonth(t *testing.T) {
 // no coupon, no principal.
 func TestABondInDefault(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	h := bondHolding("broker", "A", "QD", 10000, 3000)
 	in.Holdings = []Holding{h}
 	in.Terms[InstrumentKey{"broker", "QD"}] = Terms{Coupon: num(8), Maturity: date(2027, 6, 15), InDefault: true}
@@ -234,14 +235,14 @@ func TestABondInDefault(t *testing.T) {
 	near(t, "income 12m", p.Income12, 0, 0)
 }
 
-// A floating note resets quarterly where its terms state no reset, lasts
-// to its next reset, and earns the benchmark plus its spread on its face.
-// Rolled, it buys again at its own current yield (roll_own); a note
+// A floating note resets quarterly where its terms state no frequency,
+// lasts to its next reset, and earns the benchmark plus its spread on its
+// face. Rolled, it buys again at its own current yield (roll_own); a note
 // with no coupon at all rolls into cash (roll_cash).
 func TestAFloatingNote(t *testing.T) {
 	t.Parallel()
-	in := book()
-	in.Curves["USD"] = flatCurve("USD", 4)
+	in := inputs()
+	in.Curves["USD"] = flatCurve(4)
 	h := bondHolding("broker", "A", "QFRN", 10000, 10000)
 	o := bondHolding("broker", "A", "QFRX", 10000, 10000)
 	in.Holdings = []Holding{h, o}
@@ -259,8 +260,8 @@ func TestAFloatingNote(t *testing.T) {
 	}
 	near(t, "dv01", p.DV01, 10000**p.Duration*1e-4, 1e-12)
 	near(t, "a month", num(incomeOf(b, h.HoldingKey, 5, RuleCash, PathConstant, 0)), 10000*5.0/1200, 1e-9)
-	rung := func(k HoldingKey) []string {
-		var out []string
+	rung := func(k HoldingKey) []Rung {
+		var out []Rung
 		for _, part := range partsOf(b, k, RuleRoll) {
 			if part.Reinvested != "" && !slices.Contains(out, part.Reinvested) {
 				out = append(out, part.Reinvested)
@@ -268,11 +269,11 @@ func TestAFloatingNote(t *testing.T) {
 		}
 		return out
 	}
-	if got := rung(h.HoldingKey); !slices.Equal(got, []string{"roll_own"}) {
+	if got := rung(h.HoldingKey); !slices.Equal(got, []Rung{RungRollOwn}) {
 		t.Errorf("rolled %v", got)
 	}
 	near(t, "rolled", num(incomeOf(b, h.HoldingKey, 14, RuleRoll, PathForward, 0)), 10000*5.0/1200, 1e-9)
-	if got := rung(o.HoldingKey); !slices.Equal(got, []string{"roll_cash"}) {
+	if got := rung(o.HoldingKey); !slices.Equal(got, []Rung{RungRollCash}) {
 		t.Errorf("no coupon, rolled %v", got)
 	}
 }
@@ -282,8 +283,8 @@ func TestAFloatingNote(t *testing.T) {
 // buys its original term again, and earns interest.
 func TestATermDepositsMaturityMonth(t *testing.T) {
 	t.Parallel()
-	in := book()
-	in.Curves["USD"] = flatCurve("USD", 4)
+	in := inputs()
+	in.Curves["USD"] = flatCurve(4)
 	h := cash("bank", "T", "USD", 10000)
 	in.Holdings = []Holding{h}
 	in.Rates[AccountKey{"bank", "T"}] = []Rate{{Credit: true, Tier: 1, Pct: 3, ValidFrom: date(2026, 3, 15),
@@ -301,7 +302,7 @@ func TestATermDepositsMaturityMonth(t *testing.T) {
 	// term.
 	var starts []string
 	for _, part := range partsOf(b, h.HoldingKey, RuleRoll) {
-		if part.Reinvested != "roll" {
+		if part.Reinvested != RungRoll {
 			continue
 		}
 		if part.Type != TypeInterest {
@@ -320,7 +321,7 @@ func TestATermDepositsMaturityMonth(t *testing.T) {
 // bought, else the term left today.
 func TestTheRollTerm(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	h := bondHolding("broker", "A", "QB", 10000, 10000)
 	pj := &projector{in: in}
 	m := &Measures{Kind: KindBond}
@@ -337,7 +338,7 @@ func TestTheRollTerm(t *testing.T) {
 // maturity.
 func TestALoanHeldReturnsItsPrincipal(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	h := Holding{HoldingKey: HoldingKey{"broker", "A", "QLOAN"}, Instrument: "QLOAN", AssetClass: "fixed_income",
 		Vehicle: "loan", Currency: "USD", Value: 5000, Amount: 5000}
 	in.Holdings = []Holding{h}
@@ -353,7 +354,7 @@ func TestALoanHeldReturnsItsPrincipal(t *testing.T) {
 // A dividend expected later this month counts in it whole.
 func TestADividendLaterThisMonth(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	h := Holding{HoldingKey: HoldingKey{"broker", "A", "QSTK"}, Instrument: "QSTK", AssetClass: "public_equity",
 		Vehicle: "stock", Currency: "USD", Value: 10000, Amount: 10000, Quantity: num(100)}
 	in.Holdings = []Holding{h}
@@ -373,9 +374,9 @@ func TestADividendLaterThisMonth(t *testing.T) {
 func TestADistributionInSeveralLines(t *testing.T) {
 	t.Parallel()
 	for _, amounts := range [][]float64{{300, 20, 80}, {80, 300, 20}} {
-		in := book()
+		in := inputs()
 		h := fund("QBF", "public_equity", 10000)
-		h.Vehicle, h.Quantity = "fund", num(100)
+		h.Quantity = num(100)
 		in.Holdings = []Holding{h}
 		for i, amt := range amounts {
 			in.Payments[h.HoldingKey] = append(in.Payments[h.HoldingKey], Payment{
@@ -392,7 +393,7 @@ func TestADistributionInSeveralLines(t *testing.T) {
 // its page states, and distributes that yield month by month.
 func TestAnEquityFund(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	h := fund("QEQ", "public_equity", 12000)
 	h.Vehicle = "etf"
 	in.Holdings = []Holding{h}
@@ -409,7 +410,7 @@ func TestAnEquityFund(t *testing.T) {
 func TestCallableAndZeroBonds(t *testing.T) {
 	t.Parallel()
 	read := func(terms Terms, amount float64) Position {
-		in := book()
+		in := inputs()
 		h := bondHolding("broker", "A", "QB", 10000, amount)
 		in.Holdings = []Holding{h}
 		in.Terms[InstrumentKey{"broker", "QB"}] = terms
@@ -435,8 +436,8 @@ func TestCallableAndZeroBonds(t *testing.T) {
 // account among them.
 func TestEveryGrainReconciles(t *testing.T) {
 	t.Parallel()
-	in := book()
-	in.Curves["USD"] = flatCurve("USD", 4)
+	in := inputs()
+	in.Curves["USD"] = flatCurve(4)
 	b1 := bondHolding("broker", "A", "QB", 10000, 10000)
 	usd, eur := cash("bank", "S", "USD", 5000), cash("bank", "S", "EUR", 2000)
 	eur.Value = 2200
@@ -467,12 +468,12 @@ func TestEveryGrainReconciles(t *testing.T) {
 			for _, r := range split {
 				if !r.Total {
 					sum += get(r)
-					bySplit[entity{r.Source, r.Portfolio, r.AccountID}] += get(r)
+					bySplit[entity{source: r.Source, portfolio: r.Portfolio, account: r.AccountID}] += get(r)
 				}
 			}
 			for _, r := range converted {
 				csum += get(r)
-				if e := (entity{r.Source, r.Portfolio, r.AccountID}); math.Abs(bySplit[e]-get(r)) > 1e-9 {
+				if e := (entity{source: r.Source, portfolio: r.Portfolio, account: r.AccountID}); math.Abs(bySplit[e]-get(r)) > 1e-9 {
 					t.Errorf("%s %s %v: converted %v, split %v", g, name, e, get(r), bySplit[e])
 				}
 			}
@@ -489,7 +490,7 @@ func TestEveryGrainReconciles(t *testing.T) {
 // default row; a situs the table does not name withholds nothing.
 func TestWithholdingByWrapper(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	a, b := bondHolding("broker", "A", "QA", 1000, 1000), bondHolding("broker", "R", "QR", 1000, 1000)
 	c := bondHolding("broker", "A", "QC", 1000, 1000)
 	in.Holdings = []Holding{a, b, c}
@@ -512,13 +513,13 @@ func TestWithholdingByWrapper(t *testing.T) {
 // under constant rates, at its own yield.
 func TestARollAlongTheCurve(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	pts := []fixedincome.Point{{Months: 3, Rate: 3}, {Months: 12, Rate: 4}, {Months: 60, Rate: 5}}
-	z, err := fixedincome.Bootstrap(pts)
+	z, err := fixedincome.NewCurve(pts, fixedincome.Treasury)
 	if err != nil {
 		t.Fatal(err)
 	}
-	in.Curves["USD"] = &Curve{Currency: "USD", Zero: z, Benchmark: 3, BenchmarkMonths: 3}
+	in.Curves["USD"] = &Curve{Zero: z, Benchmark: 3, BenchmarkMonths: 3}
 	h := bondHolding("broker", "A", "QB", 10000, 10000)
 	h.Acquired = date(2025, 12, 15)
 	in.Holdings = []Holding{h}
@@ -527,7 +528,7 @@ func TestARollAlongTheCurve(t *testing.T) {
 	own := *position(b, h.HoldingKey).Implied
 	spread := own - z.Zero(12)
 	for _, p := range partsOf(b, h.HoldingKey, RuleRoll) {
-		if p.Reinvested != "roll" || p.From.Day() != 1 || p.Month != 8 {
+		if p.Reinvested != RungRoll || p.From.Day() != 1 || p.Month != 8 {
 			continue
 		}
 		// The first rung starts in month 6, December: its rate is the
@@ -546,7 +547,7 @@ func TestARollAlongTheCurve(t *testing.T) {
 // principal finds no rate in its account after that, and reads unknown.
 func TestATermRateEndsWithItsTerm(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	h := cash("bank", "T", "USD", 12000)
 	in.Holdings = []Holding{h}
 	in.Rates[AccountKey{"bank", "T"}] = []Rate{{Credit: true, Tier: 1, Pct: 3, TermEnd: date(2026, 9, 15)}}
@@ -563,7 +564,7 @@ func TestATermRateEndsWithItsTerm(t *testing.T) {
 // principal the next day.
 func TestABondPastItsMaturity(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	h := bondHolding("broker", "A", "QB", 10000, 10000)
 	in.Holdings = []Holding{h}
 	in.Terms[InstrumentKey{"broker", "QB"}] = Terms{Coupon: num(4), Maturity: date(2026, 6, 15)}
@@ -577,7 +578,7 @@ func TestABondPastItsMaturity(t *testing.T) {
 // readings: what its principal earns after is no figure of the bond's.
 func TestABondMaturingIntoUnknownCash(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	h := bondHolding("broker", "A", "QB", 10000, 10000)
 	in.Holdings = []Holding{h}
 	in.Terms[InstrumentKey{"broker", "QB"}] = Terms{Coupon: num(4), Maturity: date(2026, 12, 15), Rating: "AA"}
@@ -592,7 +593,7 @@ func TestABondMaturingIntoUnknownCash(t *testing.T) {
 // rate no curve moves stays stated under the forward path.
 func TestTheBasisLabels(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	mmf := fund("QMMF", "cash", 10000)
 	chf := cash("bank", "C", "CHF", 5000)
 	chf.Value = 5500
@@ -613,11 +614,10 @@ func TestTheBasisLabels(t *testing.T) {
 // line weighs nothing.
 func TestALiabilityBesideAZeroLine(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	m := Holding{HoldingKey: HoldingKey{"bank", "M", "QMORT"}, Instrument: "QMORT", AssetClass: "real_estate",
 		Vehicle: "mortgage", Currency: "USD", Value: -100000, Amount: -100000}
 	in.Holdings = []Holding{m, cash("bank", "M", "USD", 0)}
-	in.Terms[InstrumentKey{"bank", "M"}] = Terms{}
 	in.Terms[InstrumentKey{"bank", "QMORT"}] = Terms{Coupon: num(2), Maturity: date(2036, 6, 15)}
 	near(t, "stated", Compute(in).Aggregate(GrainAll, false)[0].Stated, 2, 0)
 }
@@ -626,7 +626,7 @@ func TestALiabilityBesideAZeroLine(t *testing.T) {
 // over the page's; the cash view shows an overdraft's own debit tiers.
 func TestTheFundsAndCashViews(t *testing.T) {
 	t.Parallel()
-	in := book()
+	in := inputs()
 	bf := fund("QBF", "fixed_income", 20000)
 	o := cash("bank", "O", "USD", -500)
 	in.Holdings = []Holding{bf, o}
@@ -641,4 +641,529 @@ func TestTheFundsAndCashViews(t *testing.T) {
 	if c := b.Cash(); len(c) != 1 || c[0].Tiers != 1 || *c[0].Stated != 9 {
 		t.Errorf("cash %+v", c)
 	}
+}
+
+// A security held directly reads its holdings' figures. One held only
+// through funds reads its largest line: its price, the yield the price
+// implies (implied stale_price), and the earnings and dividend yields
+// over that price where its figures' currency is the line's. A line in
+// default reads default.
+func TestTheSecuritiesView(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	s := Holding{HoldingKey: HoldingKey{"broker", "A", "QSTK"}, Instrument: "QSTK", AssetClass: "public_equity",
+		Vehicle: "stock", Currency: "USD", Value: 10000, Amount: 10000, Quantity: num(100), SecurityID: "symbol:QSTK",
+		Key: "symbol:QSTK"}
+	in.Holdings = []Holding{s}
+	in.Securities["symbol:QSTK"] = Facts{EPS: num(5), DPS: num(2), Currency: "USD"}
+	in.Securities["isin:QA"] = Facts{EPS: num(2.5), EPSYearAgo: num(2), DPS: num(1), Currency: "USD"}
+	in.Securities["isin:QE"] = Facts{EPS: num(4), Currency: "USD"}
+	in.Lines = map[string]LineInfo{
+		"isin:QA": {Price: num(50), Yield: num(4.2), Duration: num(3), Coupon: num(4), Maturity: date(2030, 1, 15),
+			Currency: "USD"},
+		"isin:QD": {Default: true, Price: num(30), Currency: "USD"},
+		"isin:QE": {Price: num(80), Currency: "EUR"},
+	}
+	rows := Compute(in).Securities([]SecurityRow{{Key: "symbol:QSTK"}, {Key: "isin:QA"}, {Key: "isin:QD"},
+		{Key: "isin:QE"}, {Key: "isin:QX"}})
+	stk, qa, qd, qe, qx := rows[0], rows[1], rows[2], rows[3], rows[4]
+	near(t, "direct earnings yield", stk.EarningsYield, 5, 1e-9)
+	near(t, "direct price", stk.Price, 100, 0)
+	near(t, "direct P/E", stk.PriceEarnings, 20, 1e-9)
+	near(t, "line price", qa.Price, 50, 0)
+	near(t, "line yield", qa.Implied, 4.2, 0)
+	near(t, "line earnings yield", qa.EarningsYield, 5, 1e-9)
+	near(t, "line dividend yield", qa.DividendYield, 2, 1e-9)
+	near(t, "line P/E", qa.PriceEarnings, 20, 1e-9)
+	near(t, "line payout", qa.Payout, 40, 1e-9)
+	near(t, "line earnings growth", qa.EarningsGrowth, 25, 1e-9)
+	if qa.Quality != "implied stale_price" || qd.Quality != "default" || qe.Quality != "" || qx.Quality != "" {
+		t.Errorf("qualities %q %q %q %q", qa.Quality, qd.Quality, qe.Quality, qx.Quality)
+	}
+	if qe.EarningsYield != nil || qe.Price == nil || qx.Price != nil {
+		t.Errorf("another currency: %+v; no line: %+v", qe, qx)
+	}
+}
+
+// The curve view splits each currency's DV01 by what holds it, a
+// liability's netted, and its rows sum to the holdings' DV01.
+func TestTheCurveView(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	b1 := bondHolding("broker", "A", "QB", 10000, 10000)
+	bf := fund("QBF", "fixed_income", 30000)
+	td := cash("bank", "T", "USD", 20000)
+	mort := Holding{HoldingKey: HoldingKey{"bank", "M", "QMORT"}, Instrument: "QMORT", AssetClass: "real_estate",
+		Vehicle: "mortgage", Currency: "USD", Value: -50000, Amount: -50000}
+	in.Holdings = []Holding{b1, bf, td, mort}
+	in.Terms[InstrumentKey{"broker", "QB"}] = Terms{Coupon: num(4), Maturity: date(2031, 6, 15)}
+	in.Terms[InstrumentKey{"bank", "QMORT"}] = Terms{Coupon: num(2), Maturity: date(2036, 6, 15)}
+	in.Funds["symbol:QBF"] = &Fund{Risk: map[string]map[string]float64{"USD": {"5Y": 1000, "10Y": 2000}},
+		NetAssets: num(1e6)}
+	in.Rates[AccountKey{"bank", "T"}] = []Rate{{Credit: true, Tier: 1, Pct: 3, TermEnd: date(2027, 6, 15)}}
+	b := Compute(in)
+	byHolder, holdings := map[string]float64{}, 0.0
+	for _, p := range b.Positions {
+		holdings += *p.DV01
+		for _, v := range p.Buckets["USD"] {
+			byHolder[HeldIn(p.Kind)] += v
+		}
+	}
+	var rows, funds, bonds, cash, liabilities float64
+	for _, r := range b.Curve() {
+		if r.Currency != "USD" || math.Abs(r.Funds+r.Bonds+r.Cash+r.Liabilities-r.DV01) > 1e-9 ||
+			r.DV100 != r.DV01*100 {
+			t.Errorf("row %+v", r)
+		}
+		rows += r.DV01
+		funds, bonds, cash, liabilities = funds+r.Funds, bonds+r.Bonds, cash+r.Cash, liabilities+r.Liabilities
+	}
+	near(t, "rows", &rows, holdings, 1e-9)
+	near(t, "funds", &funds, 90, 1e-9)
+	near(t, "bonds", &bonds, byHolder[HeldInBonds], 1e-9)
+	near(t, "cash", &cash, byHolder[HeldInCash], 1e-9)
+	near(t, "liabilities", &liabilities, byHolder[HeldInLiabilities], 1e-9)
+	if bonds <= 0 || cash <= 0 || liabilities >= 0 {
+		t.Errorf("bonds %v cash %v liabilities %v", bonds, cash, liabilities)
+	}
+}
+
+// A stock the transactions show paid nothing indicates its filings'
+// dividends per share, a quarter of them every quarter from two months
+// back. A figure in another currency than the price indicates nothing.
+func TestTheFilingsDividend(t *testing.T) {
+	t.Parallel()
+	read := func(ccy string) (*Book, Holding) {
+		in := inputs()
+		h := Holding{HoldingKey: HoldingKey{"broker", "A", "QSTK"}, Instrument: "QSTK", AssetClass: "public_equity",
+			Vehicle: "stock", Currency: "USD", Value: 10000, Amount: 10000, Quantity: num(100), SecurityID: "symbol:QSTK"}
+		in.Holdings = []Holding{h}
+		in.Securities["symbol:QSTK"] = Facts{DPS: num(4), Currency: ccy}
+		return Compute(in), h
+	}
+	b, h := read("USD")
+	p := position(b, h.HoldingKey)
+	near(t, "dividend yield", p.DividendYield, 4, 1e-9)
+	near(t, "income 12m", p.Income12, 400, 1e-9)
+	if !p.Tags[TagIndicated] {
+		t.Errorf("tags %v", p.Tags)
+	}
+	// Two months back is April 15: July, October, January and April.
+	for _, m := range []int{1, 4, 7, 10} {
+		near(t, "a quarter", num(incomeOf(b, h.HoldingKey, m, RuleCash, PathConstant, 0)), 100, 1e-9)
+	}
+	b, h = read("EUR")
+	if p := position(b, h.HoldingKey); p.Tags[TagIndicated] || *p.DividendYield != 0 {
+		t.Errorf("another currency: tags %v yield %v", p.Tags, *p.DividendYield)
+	}
+}
+
+// A principal that lands on a cash balance earns the account's marginal
+// rate: the tiers' rate on the balance with it, less on the balance
+// without it.
+func TestAPrincipalEarnsTheMarginalTier(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	h := bondHolding("broker", "A", "QB", 10000, 10000)
+	acct := cash("broker", "A", "USD", 40000)
+	in.Holdings = []Holding{h, acct}
+	in.Terms[InstrumentKey{"broker", "QB"}] = Terms{Coupon: num(4), Maturity: date(2026, 12, 15)}
+	in.Rates[AccountKey{"broker", "A"}] = []Rate{{Credit: true, Tier: 1, Pct: 2, UpTo: num(45000)},
+		{Credit: true, Tier: 2, Pct: 1}}
+	b := Compute(in)
+	// 5,000 of the principal at 2% and 5,000 at 1%: 1.5% on 10,000.
+	near(t, "February", num(incomeOf(b, h.HoldingKey, 8, RuleCash, PathConstant, 0)), 10000*1.5/1200, 1e-9)
+}
+
+// A fund's filed DV01 leaves out the rows of no currency: a credit
+// spread's move is no move of a curve.
+func TestAFundsRiskOfNoCurrency(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	bf := fund("QBF", "fixed_income", 30000)
+	in.Holdings = []Holding{bf}
+	in.Funds["symbol:QBF"] = &Fund{Risk: map[string]map[string]float64{"USD": {"5Y": 1000},
+		canonical.NoCurrency: {"5Y": 500}}, NetAssets: num(1e6)}
+	p := position(Compute(in), bf.HoldingKey)
+	if _, ok := p.Buckets[canonical.NoCurrency]; ok || len(p.Buckets) != 1 {
+		t.Errorf("buckets %v", p.Buckets)
+	}
+	near(t, "dv01", p.DV01, 30, 1e-9)
+}
+
+// A bond in default lacks no terms: no terms record clears a default.
+func TestABondInDefaultLacksNoTerms(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	h := bondHolding("broker", "A", "QD", 10000, 3000)
+	in.Holdings = []Holding{h}
+	in.Terms[InstrumentKey{"broker", "QD"}] = Terms{Coupon: num(8), Maturity: date(2027, 6, 15), InDefault: true,
+		Rating: "D"}
+	b := Compute(in)
+	if p := position(b, h.HoldingKey); !p.Tags[TagUnknown] || len(missingOf(p)) != 0 {
+		t.Errorf("tags %v missing %v", p.Tags, missingOf(p))
+	}
+	for _, r := range b.Coverage() {
+		if r.Section != "rests_on" || r.Skeleton != nil {
+			t.Errorf("coverage %+v", r)
+		}
+	}
+}
+
+// A bond's coupons a year are its terms', else its currency's
+// convention, else one.
+func TestTheConventionFrequency(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	four := 4
+	for _, c := range []struct {
+		ccy   string
+		terms Terms
+		want  int
+	}{
+		{"USD", Terms{}, 2},
+		{"CHF", Terms{}, 1},
+		{"GBP", Terms{}, 1},
+		{"GBP", Terms{Frequency: &four}, 4},
+	} {
+		if got := frequencyOf(in, Holding{Currency: c.ccy}, c.terms); got != c.want {
+			t.Errorf("%s %v: %d, want %d", c.ccy, c.terms.Frequency, got, c.want)
+		}
+	}
+	in.Conventions["USD"] = canonical.YieldConvention{Market: "USD", Frequency: 0}
+	if got := in.ConventionFrequency("USD"); got != 1 {
+		t.Errorf("a convention of no coupons: %d", got)
+	}
+}
+
+// The year to the instant leaves out the same day a year before: a yearly
+// payer paid on the day and on the day a year back pays once a year, and
+// a holding no figure describes repeats one payment, not two.
+func TestTheYearToTheInstant(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	s := Holding{HoldingKey: HoldingKey{"broker", "A", "QSTK"}, Instrument: "QSTK", AssetClass: "public_equity",
+		Vehicle: "stock", Currency: "USD", Value: 10000, Amount: 10000, Quantity: num(100)}
+	o := Holding{HoldingKey: HoldingKey{"broker", "A", "QNOTE"}, Instrument: "QNOTE", AssetClass: "alternatives",
+		Vehicle: "structured_product", Currency: "USD", Value: 5000, Amount: 5000, Quantity: num(5)}
+	in.Holdings = []Holding{s, o}
+	for _, d := range []time.Time{day.AddDate(-1, 0, 0), day} {
+		in.Payments[s.HoldingKey] = append(in.Payments[s.HoldingKey], Payment{Day: d, Amount: 300, Quantity: num(100),
+			Type: TypeDividends})
+		in.Payments[o.HoldingKey] = append(in.Payments[o.HoldingKey], Payment{Day: d, Amount: 120, Type: TypeInterest})
+	}
+	b := Compute(in)
+	p := position(b, s.HoldingKey)
+	near(t, "dividend yield", p.DividendYield, 3, 1e-9)
+	near(t, "income 12m", p.Income12, 300, 1e-9)
+	near(t, "repeated", position(b, o.HoldingKey).Income12, 120, 1e-9)
+}
+
+// A holding's income yield is its next twelve months' income over its
+// value; none where it has no income figure (a liability) or its value
+// is zero.
+func TestAPositionsIncomeYield(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	b1 := bondHolding("broker", "A", "QB", 10000, 10000)
+	mort := Holding{HoldingKey: HoldingKey{"bank", "M", "QMORT"}, Instrument: "QMORT", AssetClass: "real_estate",
+		Vehicle: "mortgage", Currency: "USD", Value: -50000, Amount: -50000}
+	zero := cash("bank", "S", "USD", 0)
+	in.Holdings = []Holding{b1, mort, zero}
+	in.Terms[InstrumentKey{"broker", "QB"}] = Terms{Coupon: num(4), Maturity: date(2031, 6, 15)}
+	in.Terms[InstrumentKey{"bank", "QMORT"}] = Terms{Coupon: num(2), Maturity: date(2036, 6, 15)}
+	in.Rates[AccountKey{"bank", "S"}] = []Rate{{Credit: true, Tier: 1, Pct: 1}}
+	b := Compute(in)
+	p := position(b, b1.HoldingKey)
+	near(t, "income yield", p.IncomeYield(), *p.Income12/p.Value*100, 1e-12)
+	near(t, "the coupon", p.IncomeYield(), 4, 1e-9)
+	if y := position(b, mort.HoldingKey).IncomeYield(); y != nil {
+		t.Errorf("a liability: %v", *y)
+	}
+	if y := position(b, zero.HoldingKey).IncomeYield(); y != nil {
+		t.Errorf("a value of zero: %v", *y)
+	}
+}
+
+// A fund reads what it looks through to, whatever class a source gives
+// the wrapper. One that files its rate sensitivity, or whose lines are
+// mostly debt, is a bond fund: one classed as equity carries its filed
+// DV01 per currency. One whose lines are mostly equity
+// is an equity fund. Lines of neither, and no look-through at all, leave
+// the fund its class.
+func TestAFundsKindIsItsLookThrough(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	filed, debt := fund("QBF1", "public_equity", 30000), fund("QDBT", "public_equity", 20000)
+	equity, mixed := fund("QEQL", "fixed_income", 10000), fund("QMIX", "fixed_income", 8000)
+	bonds, stocks := fund("QBND", "fixed_income", 5000), fund("QSTX", "public_equity", 5000)
+	in.Holdings = []Holding{filed, debt, equity, mixed, bonds, stocks}
+	in.Funds["symbol:QBF1"] = &Fund{Risk: map[string]map[string]float64{"EUR": {"5Y": 400}, "USD": {"10Y": 600}},
+		NetAssets: num(1e6)}
+	in.Funds["symbol:QDBT"] = &Fund{Lines: &LineSummary{AsOf: day, Duration: num(4), DurationPct: 80, DebtPct: 80,
+		EquityPct: 10}}
+	in.Funds["symbol:QEQL"] = &Fund{Lines: &LineSummary{AsOf: day, DebtPct: 5, EquityPct: 90},
+		TrailingYield: &Dated{Value: 2}}
+	in.Funds["symbol:QMIX"] = &Fund{Lines: &LineSummary{AsOf: day, DebtPct: 45, EquityPct: 45}}
+	b := Compute(in)
+	want := map[string]Kind{"QBF1": KindBondFund, "QDBT": KindBondFund, "QEQL": KindEquityFund, "QMIX": KindBondFund,
+		"QBND": KindBondFund, "QSTX": KindEquityFund}
+	for _, p := range b.Positions {
+		if p.Kind != want[p.Instrument] {
+			t.Errorf("%s: kind %s, want %s", p.Instrument, p.Kind, want[p.Instrument])
+		}
+	}
+	// 3% of the fund: its filed DV01 in each currency.
+	p := position(b, filed.HoldingKey)
+	near(t, "EUR 5Y", num(p.Buckets["EUR"]["5Y"]), 12, 1e-9)
+	near(t, "USD 10Y", num(p.Buckets["USD"]["10Y"]), 18, 1e-9)
+	near(t, "dv01", p.DV01, 30, 1e-9)
+	near(t, "lines' duration", position(b, debt.HoldingKey).Duration, 4, 0)
+	near(t, "equity fund's dividend", position(b, equity.HoldingKey).DividendYield, 2, 0)
+}
+
+// A multi-asset fund moves with rates as a bond fund does, and earns what
+// an equity fund does. One files its DV01, which the holding scales to
+// its share; it pays distributions, which indicate its dividend; its
+// lines imply no yield of the fund's. Another's lines give its duration
+// over the whole fund, a line without one counting zero; its page gives
+// its implied yield, which alone it compares with the benchmark, and the
+// trailing yield it pays.
+func TestAMultiAssetFund(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	in.Curves["USD"] = flatCurve(4)
+	filed, page := fund("QMA1", "multi_asset", 30000), fund("QMA2", "multi_asset", 20000)
+	in.Holdings = []Holding{filed, page}
+	in.Funds["symbol:QMA1"] = &Fund{Risk: map[string]map[string]float64{"USD": {"5Y": 1000, "10Y": 2000}},
+		NetAssets: num(1e6), Lines: &LineSummary{AsOf: day, Yield: num(4.4), CoveredPct: 40, Duration: num(6),
+			DurationPct: 40, DebtPct: 40, EquityPct: 60}}
+	for _, d := range []*time.Time{date(2025, 9, 10), date(2025, 12, 10), date(2026, 3, 10), date(2026, 6, 10)} {
+		in.Payments[filed.HoldingKey] = append(in.Payments[filed.HoldingKey], Payment{Day: *d, Amount: 150,
+			Quantity: num(3000), Type: TypeDistributions})
+	}
+	in.Funds["symbol:QMA2"] = &Fund{Lines: &LineSummary{AsOf: day, Duration: num(6), DurationPct: 40, DebtPct: 40,
+		EquityPct: 55}, YieldToMaturity: &Dated{Value: 3.9, Day: day}, TrailingYield: &Dated{Value: 2.5}}
+	b := Compute(in)
+	p := position(b, filed.HoldingKey)
+	if p.Kind != KindMultiAsset || p.Implied != nil || p.Gap != nil || !p.Tags[TagIndicated] || p.Tags[TagImplied] {
+		t.Errorf("filed: %s implied %v gap %v tags %v", p.Kind, p.Implied, p.Gap, p.Tags)
+	}
+	near(t, "filed dv01", p.DV01, 90, 1e-9)
+	near(t, "filed 10Y", num(p.Buckets["USD"]["10Y"]), 60, 1e-9)
+	// 0.05 a share four times a year, on a price of 10.
+	near(t, "dividend yield", p.DividendYield, 2, 1e-9)
+	near(t, "distributions", p.Income12, 600, 1e-9)
+	q := position(b, page.HoldingKey)
+	near(t, "whole-fund duration", q.Duration, 2.4, 1e-12)
+	near(t, "lines' dv01", q.DV01, 20000*2.4e-4, 1e-9)
+	// Its DV01 sits on the curve where its debt's does, at six years.
+	for tenor, v := range fixedincome.BucketAt(6, 20000*2.4e-4) {
+		near(t, "lines' "+tenor, num(q.Buckets["USD"][tenor]), v, 1e-12)
+	}
+	if len(q.Buckets["USD"]) != len(fixedincome.BucketAt(6, 1)) {
+		t.Errorf("lines' buckets %v", q.Buckets)
+	}
+	near(t, "page yield", q.Implied, 3.9, 0)
+	near(t, "gap", q.Gap, -0.1, 1e-12)
+	near(t, "trailing yield", q.DividendYield, 2.5, 0)
+	near(t, "stated distributions", q.Income12, 500, 1e-9)
+	if q.FiguresFrom != "page" || !q.Tags[TagStated] {
+		t.Errorf("page: %s %v", q.FiguresFrom, q.Tags)
+	}
+	if f := b.Funds(); len(f) != 2 || f[0].Kind != KindMultiAsset {
+		t.Errorf("funds %+v", f)
+	}
+	if HeldIn(KindMultiAsset) != HeldInFunds {
+		t.Errorf("held in %s", HeldIn(KindMultiAsset))
+	}
+	funds := 0.0
+	for _, r := range b.Curve() {
+		funds += r.Funds
+	}
+	near(t, "the curve's funds", &funds, 90+20000*2.4e-4, 1e-9)
+}
+
+// A holding whose principal matures, under the cash rule, into cash
+// whose account states no rate lacks a receiving rate: bonds and a term
+// deposit. Its skeleton is a rate record for that account and currency,
+// one per account and currency: the cash beside two bonds lacks its rate
+// too, and its line carries the one skeleton. A bond whose account
+// states a rate in its currency earns it, though the account holds no
+// cash today. A rate that names no currency is the cash's own, so it pays
+// no principal where the account holds no cash.
+func TestAMaturityIntoCashOfNoRate(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	terms := Terms{Coupon: num(4), Maturity: date(2026, 12, 15), Rating: "AA"}
+	a1, a2 := bondHolding("broker", "A", "QB", 10000, 10000), bondHolding("broker", "A", "QB2", 9000, 9000)
+	rated, bare := bondHolding("broker", "R", "QR", 10000, 10000), bondHolding("broker", "X", "QX", 8000, 8000)
+	term, idle := cash("bank", "T", "USD", 20000), cash("broker", "A", "USD", 500)
+	in.Holdings = []Holding{a1, a2, rated, bare, term, idle}
+	for _, h := range []Holding{a1, a2, rated, bare} {
+		in.Terms[InstrumentKey{h.Source, h.Instrument}] = terms
+	}
+	in.Rates[AccountKey{"broker", "R"}] = []Rate{{Currency: "USD", Credit: true, Tier: 1, Pct: 1}}
+	in.Rates[AccountKey{"broker", "X"}] = []Rate{{Credit: true, Tier: 1, Pct: 1}}
+	in.Rates[AccountKey{"bank", "T"}] = []Rate{{Credit: true, Tier: 1, Pct: 3, TermEnd: date(2027, 3, 15)}}
+	in.Accounts[AccountKey{"broker", "A"}] = Account{Name: "Brokerage"}
+	in.Accounts[AccountKey{"broker", "X"}] = Account{Name: "Other brokerage"}
+	in.Accounts[AccountKey{"bank", "T"}] = Account{Name: "Term"}
+	b := Compute(in)
+	var got []string
+	for _, r := range b.Coverage() {
+		switch {
+		case r.Section == "missing" && r.Reason == missingReceiving:
+			if r.Holdings != 4 || r.Value != 47000 {
+				t.Errorf("missing %+v", r)
+			}
+		case r.Section == "holdings" && (r.Reason == missingReceiving || r.Reason == missingRate):
+			line := r.Reason + " " + r.Source + "/" + r.Instrument
+			if s := r.Skeleton; s != nil {
+				line += " " + s.SilverSourceID + "/" + s.Instrument + "/" + s.Account + " " + s.Rate.Currency + " " + s.Note
+			}
+			got = append(got, line)
+		}
+	}
+	want := "no rate broker/ broker//A USD Brokerage|no receiving rate bank/ bank//T USD Term|" +
+		"no receiving rate broker/QB|no receiving rate broker/QB2|no receiving rate broker/QX broker//X USD Other brokerage"
+	if strings.Join(got, "|") != want {
+		t.Errorf("holdings\n%s\nwant\n%s", strings.Join(got, "|"), want)
+	}
+	// Its principal earns the account's 1%, no curve under it.
+	reinvested := 0
+	for _, p := range partsOf(b, rated.HoldingKey, RuleCash) {
+		if p.Reinvested == RungCash {
+			reinvested++
+			if p.Basis != BasisReinvested || p.Spread != 1 || p.Principal <= 0 {
+				t.Errorf("the rated account's principal: %+v", p)
+			}
+		}
+	}
+	if reinvested == 0 {
+		t.Error("the rated account's principal earns nothing")
+	}
+}
+
+// A deposit at a stated 0% has a figure: its row's implied yield is
+// zero. A row whose holdings state no yield has none: a deposit whose
+// account states no rate, beside a stock, which implies none.
+func TestAStatedZeroRateIsAFigure(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	in.FXRates["CHF"], in.FXRates["GBP"] = 1.1, 1.3
+	zero, none := cash("bank", "Z", "CHF", 1000), cash("bank", "N", "GBP", 1000)
+	zero.Value, none.Value = 1100, 1300
+	stock := func(iid, ccy string, fx float64) Holding {
+		return Holding{HoldingKey: HoldingKey{"broker", "A", iid}, Instrument: iid, AssetClass: "public_equity",
+			Vehicle: "stock", Currency: ccy, Value: 10000 * fx, Amount: 10000, Quantity: num(100)}
+	}
+	in.Holdings = []Holding{zero, stock("QCHF", "CHF", 1.1), none, stock("QGBP", "GBP", 1.3)}
+	in.Rates[AccountKey{"bank", "Z"}] = []Rate{{Credit: true, Tier: 1, Pct: 0}}
+	for _, r := range Compute(in).Aggregate(GrainAll, false) {
+		switch r.Currency {
+		case "CHF":
+			near(t, "a stated 0%", r.Implied, 0, 0)
+			near(t, "a stated 0%, stated", r.Stated, 0, 0)
+		case "GBP":
+			if r.Implied != nil || r.Stated != nil {
+				t.Errorf("no figure: implied %v stated %v", r.Implied, r.Stated)
+			}
+		}
+	}
+}
+
+// A fund keeps its class whatever its lines hold where it is of class
+// metal, crypto or other, and where its debt all matures within a year
+// beside derivative lines: the bills a futures fund holds as collateral,
+// though it files its rate sensitivity. A fund of bills alone, classed as
+// equity, is still a bond fund.
+func TestAFundThatKeepsItsClass(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	futures, metal := fund("QFUT", "public_equity", 10000), fund("QGLD", "metal", 10000)
+	commodity, bills := fund("QCOM", "other", 10000), fund("QBIL", "public_equity", 10000)
+	in.Holdings = []Holding{futures, metal, commodity, bills}
+	collateral := &LineSummary{AsOf: day, DebtPct: 90, ShortDebtPct: 90, Derivatives: true}
+	in.Funds["symbol:QFUT"] = &Fund{Lines: collateral, Risk: map[string]map[string]float64{"USD": {"3M": 20}},
+		NetAssets: num(1e6)}
+	in.Funds["symbol:QGLD"] = &Fund{Lines: &LineSummary{AsOf: day, DebtPct: 80}}
+	in.Funds["symbol:QCOM"] = &Fund{Lines: collateral, Risk: map[string]map[string]float64{"USD": {"3M": 20}},
+		NetAssets: num(1e6)}
+	in.Funds["symbol:QBIL"] = &Fund{Lines: &LineSummary{AsOf: day, DebtPct: 95, ShortDebtPct: 95}}
+	want := map[string]Kind{"QFUT": KindEquityFund, "QGLD": KindOther, "QCOM": KindOther, "QBIL": KindBondFund}
+	for _, p := range Compute(in).Positions {
+		if p.Kind != want[p.Instrument] {
+			t.Errorf("%s: kind %s, want %s", p.Instrument, p.Kind, want[p.Instrument])
+		}
+	}
+}
+
+// DV01 belongs to the currency of the rates that move it: a fund held in
+// dollars that files its DV01 in euros and yen adds each part to that
+// currency's row of every grain, its value staying on the dollar row.
+// The rows' DV01 sums to the total's, which with --converted sums every
+// holding's whole.
+func TestDV01SitsOnItsRatesCurrency(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	bf := fund("QGLB", "fixed_income", 30000)
+	bond := bondHolding("broker", "A", "QB", 10000, 10000)
+	in.Holdings = []Holding{bf, bond}
+	in.Terms[InstrumentKey{"broker", "QB"}] = Terms{Coupon: num(4), Maturity: date(2031, 6, 15)}
+	in.Funds["symbol:QGLB"] = &Fund{Risk: map[string]map[string]float64{"EUR": {"5Y": 1000}, "JPY": {"10Y": 500},
+		"USD": {"1Y": 100}}, NetAssets: num(1e6)}
+	b := Compute(in)
+	bondDV01 := *position(b, bond.HoldingKey).DV01
+	for _, g := range []Grain{GrainAll, GrainAccounts} {
+		rows := b.Aggregate(g, false)
+		by := map[string]Row{}
+		sum := 0.0
+		for _, r := range rows {
+			if !r.Total {
+				by[r.Currency] = r
+				sum += *r.DV01
+			}
+		}
+		total := rows[len(rows)-1]
+		near(t, string(g)+" EUR", by["EUR"].DV01, 30, 1e-9)
+		near(t, string(g)+" JPY", by["JPY"].DV01, 15, 1e-9)
+		near(t, string(g)+" USD", by["USD"].DV01, 3+bondDV01, 1e-9)
+		near(t, string(g)+" rows", &sum, *total.DV01, 1e-9)
+		if by["EUR"].Value != 0 || by["USD"].Value != 40000 || len(by) != 3 {
+			t.Errorf("%s values %+v", g, by)
+		}
+		// The rows of equal value come in currency order, every time.
+		for i := 0; i < 20; i++ {
+			got := b.Aggregate(g, false)
+			if got[1].Currency != "EUR" || got[2].Currency != "JPY" {
+				t.Fatalf("%s order %s %s", g, got[1].Currency, got[2].Currency)
+			}
+		}
+	}
+	converted := b.Aggregate(GrainAll, true)
+	near(t, "converted", converted[0].DV01, 48+bondDV01, 1e-9)
+}
+
+// A fund's filed DV01 reads as a long fund's, losing value as rates rise,
+// unless its page states a negative duration: an inverse fund's filing
+// then reads in that sign, along the curve too. One whose ledger record
+// states a negative duration reads it from the record.
+func TestAnInverseFundsFiling(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	long, inverse, declared := fund("QLNG", "fixed_income", 30000), fund("QINV", "fixed_income", 30000),
+		fund("QDEC", "fixed_income", 30000)
+	in.Holdings = []Holding{long, inverse, declared}
+	risk := func() map[string]map[string]float64 { return map[string]map[string]float64{"USD": {"10Y": 3000}} }
+	in.Funds["symbol:QLNG"] = &Fund{Risk: risk(), NetAssets: num(1e6)}
+	in.Funds["symbol:QINV"] = &Fund{Risk: risk(), NetAssets: num(1e6), Duration: &Dated{Value: -16}}
+	in.Funds["symbol:QDEC"] = &Fund{Risk: risk(), NetAssets: num(1e6)}
+	in.Terms[InstrumentKey{"broker", "QDEC"}] = Terms{Duration: num(-16)}
+	b := Compute(in)
+	near(t, "long", position(b, long.HoldingKey).DV01, 90, 1e-9)
+	p := position(b, inverse.HoldingKey)
+	near(t, "inverse", p.DV01, -90, 1e-9)
+	near(t, "inverse 10Y", num(p.Buckets["USD"]["10Y"]), -90, 1e-9)
+	near(t, "declared", position(b, declared.HoldingKey).DV01, -30000*16e-4, 1e-9)
 }
