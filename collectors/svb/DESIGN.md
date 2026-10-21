@@ -11,7 +11,7 @@ PDFs, not scraped on a schedule.
 |---|---|
 | `svb` | Host wrapper. `load` rebuilds the silver; `login`, `download` and `prune` are no-ops (no live source, nothing to reclaim). |
 | `pdf_parsers_svbdep.py` | Parser for the **SVB Private Bank deposit and mortgage** statement families. These carry no text layer at all, so they are rastered and OCRed (`collectorkit.pdf.extract_text_ocr` — Apple's Vision framework on macOS, RapidOCR everywhere else) before parsing. Every section is gated on the statement's own arithmetic: the balance summary must close to the cent, each ledger row's running balance must chain from the beginning balance to the stated ending one, and the rows must sort into the same four buckets the summary states — deposits, withdrawals, interest and charges — each to the cent. |
-| `pdf_parsers_svbwa.py` | Parser for the **SVB Wealth Advisory / NFS** statement family (a different statement layout from the supplied statements, whose parser is `fidelity-web/pdf_parsers_supplied.py` in the fidelity-web collector). Equity/ETP/fund, fixed-income (inline CUSIP), and **options** rows — with parens→negative for short legs — plus the no-positions/$0 closing form, the stated beginning value, and the Activity region, where an option leg's contract line rebuilds its OCC code. |
+| `pdf_parsers_svbwa.py` | Parser for the **SVB Wealth Advisory / NFS** statement family (a different statement layout from the supplied statements, whose parser is `fidelity-web/pdf_parsers_supplied.py` in the fidelity-web collector). Equity/ETP/fund, fixed-income (inline CUSIP, with the terms its sub-lines state), and **options** rows — with parens→negative for short legs — plus the no-positions/$0 closing form, the stated beginning value, and the Activity region, where an option leg's contract line rebuilds its OCC code. |
 | `statement_tokens.py` | How this bank writes a number and a date, shared by both parsers: parentheses mean negative, a two-digit year pivots the conventional way, and a separator may come through as a colon or a dot where OCR read a hyphen. The parsers each keep the SHAPE their own layout accepts; this is only what a token MEANS once one is found. |
 | `derived_marks.py` | Reads the advisor's performance workbook, which carries a month-end value per BROKERAGE account for the months no statement covers — its sheets are keyed by the `SV[MRT]-NNNNNN` serial, and only the brokerage silver DB is passed to it, so the deposit and mortgage families are out of its reach. Used only to fill an INTERIOR gap, never to extend a series, and every row it produces is marked at row level so a statement that later joins the archive takes its month back. |
 | `instrument_links.py` | Links each activity row that moves a position to the holding the statements' arithmetic proves it moved, and each dividend-like row, which names a security without moving it, to the one holding the account's statements leave its name to (see *Modelling decisions*). Pure functions, imported by neither parser, so it is outside the parse cache's fingerprint. |
@@ -200,6 +200,22 @@ they default cleanly and the overrides set the precise values.
   NOT win over the rest, which are structural labels: a label tokenises like a
   data row often enough that admitting one would invent a holding out of a
   total, which is the failure the list exists to prevent.
+- **A bond's sub-lines are its terms.** The lines below a bond's row are no
+  rows. They state its terms, and the holding keeps them in `payload`:
+  - the coupon and maturity line, as `interest_rate` (a number of percent) and
+    `maturity_date`;
+  - the grades (`MOODY'S Aaa /S&P AAA`), as `rating_moodys`, `rating_sp` and
+    `rating_fitch`;
+  - the frequency (`CPN PMT SEMI-ANNUAL`), as `coupon_frequency`;
+  - the coupon days (`ON JUN 30, DEC 30`), as `coupon_dates`;
+  - the call, as `call`, and as `call_date` where it prints a date.
+
+  All but the coupon are kept as printed. A rating line wrapped over two lines
+  reads as two. Only a CUSIP row takes sub-lines. A line shaped like a holdings
+  row is never a sub-line, and it ends the bond above it, as a section's total,
+  banner or group header does. A banner that ends in `continued` carries the
+  section over a page break and ends nothing. Gold's yield pass reads the keys
+  (wealthdb docs/YIELD.md §3).
 - **An identifier is not a figure.** A CUSIP of all digits reads as numeric and
   joins the row's trailing run, taking it past the width the layout allows —
   further still when the description itself ends in a numeral. The run is cut

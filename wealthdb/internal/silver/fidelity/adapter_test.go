@@ -804,6 +804,48 @@ func TestStatementConstructsHaveNoSymbol(t *testing.T) {
 	}
 }
 
+// TestStatementBondTermsReachThePosition pins the path the yield pass
+// reads a statement bond's terms by: the holding's payload, which keeps
+// the grades, frequency and coupon kind its parser read, reaches the
+// position whole, on an instrument of vehicle bond (YIELD.md §3).
+func TestStatementBondTermsReachThePosition(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	terms := `{"description":"EXAMPLE CNTY GO BDS 06/15/31","instrument_key":"000000AA0","coupon_kind":"FIXED",` +
+		`"rating_moodys":"Aa2","rating_sp":"AA-","coupon_frequency":"SEMIANNUALLY"}`
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 4, 'supplied');
+        INSERT INTO historical_position_snapshots(as_of_date, account_external_id, description, instrument_key, quantity, price, market_value, currency, payload) VALUES
+            (1000, '100000001', 'EXAMPLE CNTY GO BDS 06/15/31', '000000AA0', 1000, 99.5, 995.00, 'USD', ?);
+    `, terms); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Snapshots(context.Background(), w)
+	defer stream.Close()
+	var pos []canonical.PositionChange
+	var vehicles []canonical.Vehicle
+	for {
+		batch, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		pos = append(pos, batch.Positions...)
+		for _, in := range batch.Instruments {
+			vehicles = append(vehicles, in.Vehicle)
+		}
+		if !more {
+			break
+		}
+	}
+	if len(pos) != 1 || string(pos[0].Payload) != terms {
+		t.Fatalf("positions = %+v, want one carrying the statement's payload", pos)
+	}
+	if len(vehicles) != 1 || vehicles[0] != canonical.VehicleBond {
+		t.Errorf("instrument vehicles = %v, want bond", vehicles)
+	}
+}
+
 // TestCorporateActionKinds: a rename, a share-class conversion and a
 // consolidation book as corporate actions, source-signed like a merger.
 func TestCorporateActionKinds(t *testing.T) {

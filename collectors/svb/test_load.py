@@ -3,6 +3,7 @@ transactions pass, and its real-zero (never inferred, never terminal) policy.
 The PDF parser is mocked, so no real statements are needed and all data is
 synthetic."""
 import calendar
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -369,6 +370,29 @@ def test_duplicate_option_descriptions_all_survive(tmp_path, monkeypatch):
         "WHERE account_external_id='SVM-000099' ORDER BY market_value").fetchall()
     assert len(rows) == 3, "all three legs must survive (no PK collapse)"
     assert sum(r[0] for r in rows) == 1000.0 - 50.0 - 60.0 == 890.0
+
+
+def test_a_bond_keeps_its_terms_in_payload(tmp_path, monkeypatch):
+    # The terms a bond's sub-lines state ride in the holding's payload, where
+    # gold's yield pass reads them. Every value is invented.
+    terms = {"interest_rate": 3.0, "maturity_date": "06/30/2027",
+             "rating_moodys": "Aaa", "rating_sp": "AAA",
+             "coupon_frequency": "SEMI-ANNUAL", "call": "CONTINUOUSLY CALLABLE"}
+    canned = {"SVR-000000/s": {
+        "family": P.FAMILY_BROKERAGE, "period_end": "2021-03-31",
+        "stated_total": 95000.0, "accounts": [
+            {"account_external_id": "SVR-000000", "holdings": [
+                {"description": "EXAMPLE CORP NOTE", "instrument_key": "11111AAA1",
+                 "quantity": 100000.0, "price": 95.0, "market_value": 95000.0,
+                 **terms}]}]}}
+    bronze = _write_bronze(tmp_path, canned)
+    _patch_parsers(monkeypatch, bronze, canned)
+    db = tmp_path / "svb.db"
+    B.build(db, bronze, signatures=(), migrations_dir=MIGRATIONS,
+            cache_dir=None, max_workers=1)
+    payload = json.loads(sqlite3.connect(str(db)).execute(
+        "SELECT payload FROM historical_position_snapshots").fetchone()[0])
+    assert {k: payload[k] for k in terms} == terms
 
 
 # ============================================================

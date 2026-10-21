@@ -1170,6 +1170,24 @@ def test_supplied_holdings_carry_cost_basis_and_unrealized_gain(migrated):
     ]
 
 
+def test_a_supplied_bond_keeps_its_terms_in_payload(migrated):
+    # The terms the metadata line states ride in the holding's payload,
+    # where gold's yield pass reads them. Every value is invented.
+    terms = {"coupon_kind": "FIXED", "rating_moodys": "Aa2", "rating_sp": "AA-",
+             "coupon_frequency": "SEMIANNUALLY", "interest_rate": 4.0}
+    parsed = {"period_end": "2026-01-31", "accounts": [{
+        "account_external_id": "100000001", "activity": [],
+        "holdings": [{"description": "EXAMPLE CNTY GO BDS 06/15/31",
+                      "instrument_key": "000000AA0", "quantity": 1000.0,
+                      "price": 99.5, "market_value": 995.0, "cost_basis": 980.0,
+                      "unrealized_gain": 15.0, **terms}],
+    }]}
+    load._insert_supplied_historical_rows(migrated, Path("p.PDF"), parsed, "sha0")
+    payload = json.loads(migrated.execute(
+        "SELECT payload FROM historical_position_snapshots").fetchone()[0])
+    assert {k: payload[k] for k in terms} == terms
+
+
 def test_cost_basis_backfills_rows_loaded_before_migration_0009(conn, tmp_path):
     # Silver at schema 8, holding the rows a loader of that schema wrote:
     # a supplied holding with its basis only in payload, a loss, whose sign

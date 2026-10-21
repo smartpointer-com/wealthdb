@@ -28,7 +28,9 @@ layout differs from the retail 529 statements parsed in
       key is the **CUSIP**, exposed on a metadata line below
       the data row (``FIXED COUPON MOODYS Aa2 … CUSIP:
       NNNNNNNNN``). The parser looks ahead a few lines for the
-      ``CUSIP:`` marker.
+      ``CUSIP:`` marker. The same line's coupon kind, agency
+      grades and frequency, kept as printed, and the row's
+      coupon rate, a number of percent, are the holding's terms.
     - The Core Account row substitutes ``not applicable`` for
       the cost / unrealized columns since money-market sweeps
       have no cost basis.
@@ -180,6 +182,21 @@ _TICKER_RE = re.compile(r"\(([A-Z0-9]{1,8})\)\s*$")
 # ``FIXED COUPON MOODYS Aa2 S&P AA- SEMIANNUALLY CUSIP: 123456AA7``.
 _CUSIP_RE = re.compile(r"\bCUSIP:\s*([A-Z0-9]{9})\b")
 
+# The terms the metadata line states besides the CUSIP: the word before
+# COUPON names the coupon's kind, each agency word is followed by its
+# grade, and a frequency word says how often the coupon pays. Each is
+# kept as printed, under the payload key gold reads it by
+# (wealthdb canonical.PayloadTermsKeys).
+_AGENCY_KEYS = {"MOODYS": "rating_moodys", "MOODY'S": "rating_moodys",
+                "S&P": "rating_sp", "FITCH": "rating_fitch"}
+_FREQUENCY_WORDS = {"SEMIANNUALLY", "SEMI-ANNUALLY", "SEMIANNUAL",
+                    "SEMI-ANNUAL", "QUARTERLY", "MONTHLY", "ANNUALLY",
+                    "ANNUAL"}
+
+# A line that opens the metadata. A description that wraps above it
+# names no terms, so the read starts here.
+_METADATA_RE = re.compile(r"(?:^|\s)(?:\S+ COUPON|MOODY'?S|S&P|FITCH|CUSIP:)(?:\s|$)")
+
 # Trailing numeric token: optional ``$``/``-``, digits with
 # commas, optional decimal, optional ``%``. Also matches a bare
 # ``-`` or ``--`` — Fidelity prints those for unknown / N/A
@@ -229,6 +246,10 @@ class SuppliedHoldingRow:
     from the parenthesised tail of the description) or the CUSIP
     for bonds (extracted from the metadata line below the data
     row). ``None`` when neither is available.
+
+    ``terms`` is what a bond's row and metadata line state of its
+    terms (``_bond_terms``), keyed as gold reads them; empty for
+    any other row.
     """
     description: str                  # fund / security name verbatim
     instrument_key: str | None        # ticker or CUSIP
@@ -237,6 +258,7 @@ class SuppliedHoldingRow:
     market_value: float | None        # USD
     cost_basis: float | None          # USD (None for core / cash)
     unrealized_gain: float | None     # USD
+    terms: dict = field(default_factory=dict)
 
 
 # ============================================================
@@ -660,7 +682,9 @@ def parse_holdings_block(account_text, *, expected_signature=None):
        until a ticker appears.
     4. If still no ticker, look ahead a few lines for a
        ``CUSIP:`` marker — bonds carry it on the metadata line
-       a row or two below the data row.
+       a row or two below the data row. That line states the
+       bond's terms (``_bond_terms``), and the row's last figure
+       its coupon rate.
     """
     m_start = _HOLDINGS_START_RE.search(account_text)
     if not m_start:
@@ -705,6 +729,7 @@ def parse_holdings_block(account_text, *, expected_signature=None):
         desc = " ".join(desc_tokens).strip()
         ticker = _extract_ticker(desc)
         consumed_extra = 0
+        glued = []
         # Glue up to 4 continuation lines onto the description
         # while looking for the ticker. Continuations may carry a
         # short numeric fragment of the description itself (e.g.
@@ -725,18 +750,28 @@ def parse_holdings_block(account_text, *, expected_signature=None):
             if _trailing_numeric_count(nxt.split()) >= 5:
                 break
             desc = (desc + " " + nxt).strip()
+            glued.append(nxt)
             consumed_extra += 1
             ticker = _extract_ticker(desc)
         # Bond fallback: no ticker, but the metadata line directly
         # below the data row (often already glued onto desc by the
         # loop above) carries the CUSIP. Scan both the glued
-        # description and the next few unparsed lines.
+        # description and the next few unparsed lines. The line
+        # that carries it states the bond's terms, and the row's
+        # last figure is its coupon rate.
+        terms = {}
         if ticker is None:
-            cusip = _extract_cusip(desc) or _lookahead_cusip(
-                raw_lines, i + 1 + consumed_extra,
-            )
+            cusip, meta = _extract_cusip(desc), glued
+            if cusip is None:
+                cusip, meta = _lookahead_cusip(
+                    raw_lines, i + 1 + consumed_extra,
+                )
             if cusip is not None:
                 ticker = cusip
+                terms = _bond_terms(meta)
+                coupon = _parse_number(numeric_tokens[6])
+                if coupon is not None:
+                    terms["interest_rate"] = coupon
         clean_desc = _TICKER_RE.sub("", desc).strip() or desc
         row = SuppliedHoldingRow(
             description=clean_desc,
@@ -746,6 +781,7 @@ def parse_holdings_block(account_text, *, expected_signature=None):
             market_value=_parse_number(numeric_tokens[2]),
             cost_basis=_parse_number(numeric_tokens[3]),
             unrealized_gain=_parse_number(numeric_tokens[4]),
+            terms=terms,
         )
         if (row.quantity is None and row.price is None
                 and row.market_value is None):
@@ -814,12 +850,60 @@ def _parse_core_account_row(line, all_lines, idx, signature=None):
 
 def _lookahead_cusip(lines, start, max_lines=4):
     """Scan up to ``max_lines`` lines for a ``CUSIP: NNNNNNNNN``
-    marker. Returns the 9-character CUSIP or ``None``."""
+    marker, stopping at another holding's row, whose CUSIP is its
+    own. Returns ``(cusip, scanned)``, the lines scanned through the
+    one that carries it, or ``(None, [])``."""
     for j in range(start, min(start + max_lines, len(lines))):
+        if _trailing_numeric_count(lines[j].split()) >= 5:
+            break
         m = _CUSIP_RE.search(lines[j])
         if m:
-            return m.group(1)
-    return None
+            return m.group(1), lines[start:j + 1]
+    return None, []
+
+
+def _bond_terms(lines):
+    """What a bond's metadata line states of its terms, as printed:
+    ``coupon_kind`` (the word before COUPON), ``rating_moodys``,
+    ``rating_sp`` and ``rating_fitch`` (the grade after each agency
+    word) and ``coupon_frequency`` (SEMIANNUALLY, AT MATURITY).
+
+    ``lines`` are the lines below the row that may hold its
+    metadata. The read starts at the first that opens it
+    (``_METADATA_RE``), so a line wrapped over two is read whole,
+    and stops at the CUSIP. A term printed twice takes the later
+    one, so the metadata line wins over an agency word in a wrapped
+    description above it. A term the line does not print is absent.
+    """
+    start = next((k for k, ln in enumerate(lines) if _METADATA_RE.search(ln)),
+                 None)
+    if start is None:
+        return {}
+    words = " ".join(lines[start:]).split()
+    terms = {}
+    for k, w in enumerate(words):
+        up = w.upper()
+        if up.startswith("CUSIP:"):
+            break
+        nxt = words[k + 1] if k + 1 < len(words) else ""
+        if up == "COUPON" and k > 0 and words[k - 1].isalpha():
+            terms["coupon_kind"] = words[k - 1]
+        elif up in _AGENCY_KEYS and nxt and not _is_metadata_word(nxt):
+            terms[_AGENCY_KEYS[up]] = nxt
+        elif up in _FREQUENCY_WORDS:
+            terms["coupon_frequency"] = w
+        elif up == "AT" and nxt.upper() == "MATURITY":
+            terms["coupon_frequency"] = f"{w} {nxt}"
+    return terms
+
+
+def _is_metadata_word(word):
+    """True for a word of the metadata line that is no grade: an
+    agency, a frequency, the AT of AT MATURITY, or the CUSIP
+    marker. It stands where a grade was left blank."""
+    up = word.upper()
+    return (up in _AGENCY_KEYS or up in _FREQUENCY_WORDS or up == "AT"
+            or up.startswith("CUSIP:"))
 
 
 def _extract_cusip(text):
@@ -949,6 +1033,7 @@ def parse_supplied_statement_pdf(path, *, expected_signature=None):
                     "market_value": r.market_value,
                     "cost_basis": r.cost_basis,
                     "unrealized_gain": r.unrealized_gain,
+                    **r.terms,
                 }
                 for r in rows
             ],

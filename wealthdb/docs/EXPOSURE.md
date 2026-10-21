@@ -392,7 +392,9 @@ row.
 
 - `credit` has a row for each bucket from `AAA` to `B` (B and below),
   then `unrated`, `cash` and `(none)`. `grade` is `IG` from AAA to BBB
-  and `HY` below. A fund that `yield.rating_funds` slices by rating, and
+  and `HY` below. A holding's own rating comes from its terms: a ledger
+  record, else the grades its source states, else its description's
+  (YIELD.md §3). A fund that `yield.rating_funds` slices by rating, and
   its lines, read the range's worse end (YIELD.md §8). Any other debt
   leaf with no rating of its own splits by its fund's credit-quality
   breakdown, the fund's cash left out. A label the breakdown's map does

@@ -131,6 +131,111 @@ func TestYieldPassReadsInstrumentTerms(t *testing.T) {
 	}
 }
 
+// A source's own figures (canonical.PayloadTermsKeys) come from the
+// instrument's payload, else from the newest position whose payload
+// states one: a statement's holding outlives a live feed that describes
+// the instrument later without them. They outrank the description field
+// by field. The grades give the worst bucket and say whether the bond is
+// in default. An unrated grade counts only where no origin grades the
+// bond. A UBS position's Rating is a grade too, read off its newest
+// position. A stated call date clears the description's make-whole call.
+// The figures are invented, in the shapes the statements print.
+func TestYieldPassReadsPayloadTerms(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	execEach(t, db,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, name, currency,
+		 payload, first_seen_at, last_seen_at) VALUES
+		 ('test-src', 'QSTMT', 'fixed_income', 'bond', 'QLAND CNTY GO BDS 06/15/31 FIXED COUPON MOODYS A2 S&P A '
+		  || 'QUARTERLY CUSIP: 00000000E', 'USD', '{"securityDescription": "QLAND CNTY GO BDS"}', 0, 0),
+		 ('test-src', 'QSVB', 'fixed_income', 'bond', 'EXAMPLE CORP NOTE CALL MAKE WHOLE', 'USD', NULL, 0, 0),
+		 ('test-src', 'QCONT', 'fixed_income', 'bond', 'QORVANT CORP 5% 03/01/2033 CALL 03/01/2028', 'USD', NULL, 0, 0),
+		 ('test-src', 'QDFLT', 'fixed_income', 'bond', 'QORVANT CORP 6% 01/15/2029 S&P AA', 'USD', NULL, 0, 0),
+		 ('test-src', 'QCURED', 'fixed_income', 'bond', 'QORVANT CORP 4% 01/15/2031 S&P D', 'USD', NULL, 0, 0),
+		 ('test-src', 'QZERO', 'fixed_income', 'bond', 'QLAND CNTY SCHOOL BDS', 'USD', NULL, 0, 0),
+		 ('test-src', 'QWORD', 'fixed_income', 'bond', 'QORVANT CORP NOTE', 'USD', NULL, 0, 0),
+		 ('test-src', 'QOWN', 'fixed_income', 'bond', 'QORVANT CORP NOTE', 'USD', '{"rating_sp": "A"}', 0, 0),
+		 ('test-src', 'QNR', 'fixed_income', 'bond', 'QORVANT CORP 4% 01/15/2031 S&P D', 'USD', NULL, 0, 0),
+		 ('test-ubs', 'XX0000000061', 'fixed_income', 'bond', 'Example Ltd Notes', 'CHF', NULL, 0, 0),
+		 ('test-ubs', 'XX0000000062', 'fixed_income', 'bond', 'Example Ltd Notes', 'CHF', NULL, 0, 0),
+		 ('test-ubs', 'XX0000000063', 'fixed_income', 'bond', 'Example Ltd Notes', 'CHF', NULL, 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, quantity, market_value, payload) VALUES
+		 ('test-src', 100, 'ACC1', 'QSTMT', 'QSTMT', 'fixed_income', 'bond', 'USD', 1000, 1000,
+		  '{"rating_moodys": "Baa1", "coupon_frequency": "ANNUALLY"}'),
+		 ('test-src', 200, 'ACC1', 'QSTMT', 'QSTMT', 'fixed_income', 'bond', 'USD', 1000, 1000,
+		  '{"coupon_kind": "FIXED", "rating_moodys": "Aa2", "rating_sp": "AA-", "coupon_frequency": "SEMIANNUALLY",
+		    "interest_rate": 4.0}'),
+		 ('test-src', 300, 'ACC1', 'QSTMT', 'QSTMT', 'fixed_income', 'bond', 'USD', 1000, 1000,
+		  '{"securityDescription": "QLAND CNTY GO BDS"}'),
+		 ('test-src', 100, 'ACC1', 'QSVB', 'QSVB', 'fixed_income', 'bond', 'USD', 1000, 1000,
+		  '{"interest_rate": 3.0, "maturity_date": "06/30/2027", "rating_moodys": "Aaa", "rating_sp": "NR",
+		    "coupon_frequency": "SEMI-ANNUAL", "coupon_dates": "JUN 30, DEC 30", "call": "CALLABLE ON 06/30/2025",
+		    "call_date": "06/30/2025"}'),
+		 ('test-src', 100, 'ACC1', 'QCONT', 'QCONT', 'fixed_income', 'bond', 'USD', 1000, 1000,
+		  '{"interest_rate": 5, "rating_sp": "NR", "call": "CONTINUOUSLY CALLABLE"}'),
+		 ('test-src', 100, 'ACC1', 'QDFLT', 'QDFLT', 'fixed_income', 'bond', 'USD', 1000, 1000,
+		  '{"rating_moodys": "Ca", "rating_sp": "D"}'),
+		 ('test-src', 100, 'ACC1', 'QCURED', 'QCURED', 'fixed_income', 'bond', 'USD', 1000, 1000,
+		  '{"rating_sp": "BBB"}'),
+		 ('test-src', 100, 'ACC1', 'QZERO', 'QZERO', 'fixed_income', 'bond', 'USD', 1000, 1000,
+		  '{"coupon_kind": "ZERO", "coupon_frequency": "AT MATURITY", "maturity_date": "2030-12-01"}'),
+		 ('test-src', 100, 'ACC1', 'QWORD', 'QWORD', 'fixed_income', 'bond', 'USD', 1000, 1000,
+		  '{"interest_rate": "4.5%", "coupon_frequency": "WEEKLY"}'),
+		 ('test-src', 100, 'ACC1', 'QOWN', 'QOWN', 'fixed_income', 'bond', 'USD', 1000, 1000,
+		  '{"rating_sp": "BB", "coupon_kind": "FLOATING"}'),
+		 ('test-src', 100, 'ACC1', 'QNR', 'QNR', 'fixed_income', 'bond', 'USD', 1000, 1000,
+		  '{"rating_moodys": "WR", "rating_sp": "NR"}'),
+		 ('test-ubs', 100, 'SAFE1', 'XX0000000061', 'XX0000000061', 'fixed_income', 'bond', 'CHF', 1000, 1000,
+		  '{"web": {"Rating": "A+"}}'),
+		 ('test-ubs', 200, 'SAFE1', 'XX0000000061', 'XX0000000061', 'fixed_income', 'bond', 'CHF', 1000, 1000,
+		  '{"web": {"Rating": "AA-"}}'),
+		 ('test-ubs', 100, 'SAFE1', 'XX0000000062', 'XX0000000062', 'fixed_income', 'bond', 'CHF', 1000, 1000,
+		  '{"web": {"Rating": "No rating av."}}'),
+		 ('test-ubs', 100, 'SAFE1', 'XX0000000063', 'XX0000000063', 'fixed_income', 'bond', 'CHF', 1000, 1000,
+		  '{"web": {"Rating": "BBB"}}'),
+		 ('test-ubs', 200, 'SAFE1', 'XX0000000063', 'XX0000000063', 'fixed_income', 'bond', 'CHF', 1000, 1000,
+		  '{"web": {"Rating": "No rating av."}}')`)
+	if _, err := RebuildYield(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	got := scanStrings(t, db, termsText, time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix())
+	want := []string{
+		// Continuously callable with no date: the call is the description's.
+		"QCONT 5.0@payload 2033-03-01@description 2@convention fixed@convention 30/360@convention " +
+			"2028-03-01@description - unrated@payload - - - - -",
+		// Not in default, though the description grades it D: the source's
+		// own grade wins.
+		"QCURED 4.0@description 2031-01-15@description 2@convention fixed@convention 30/360@convention - - " +
+			"BBB@payload - - - - -",
+		"QDFLT 6.0@description 2029-01-15@description 2@convention fixed@convention 30/360@convention - - " +
+			"B@payload in_default - - - -",
+		// An agency's word that it rates nothing yields to the
+		// description's grade, which says whether the bond is in default.
+		"QNR 4.0@description 2031-01-15@description 2@convention fixed@convention 30/360@convention - - " +
+			"B@description in_default - - - -",
+		// The instrument's own payload wins key by key over its position's.
+		"QOWN - - 2@convention floating@payload 30/360@convention - - A@payload - - - - -",
+		// The statement's terms, not the live feed's newer payload or an
+		// older statement's, and over the description's grades and frequency.
+		"QSTMT 4.0@payload 2031-06-15@description 2@payload fixed@payload 30/360@convention - - AA@payload - - - - -",
+		"QSVB 3.0@payload 2027-06-30@payload 2@payload fixed@convention 30/360@convention 2025-06-30@payload - " +
+			"AAA@payload - - - - -",
+		// An unknown frequency word states none.
+		"QWORD 4.5@payload - 2@convention fixed@convention 30/360@convention - - - - - - - -",
+		// AT MATURITY states no frequency: a zero is a bond, not a bill.
+		"QZERO 0.0@payload 2030-12-01@payload 2@convention zero@payload 30/360@convention - - - - - - - -",
+		"XX0000000061 - - 1@convention - 30/360@convention - - AA@payload - - - - -",
+		// Text that is no grade is no rating, also where an older position
+		// stated one.
+		"XX0000000062 - - 1@convention - 30/360@convention - - - - - - - -",
+		"XX0000000063 - - 1@convention - 30/360@convention - - - - - - - -",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("terms:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 // An account's stated rates come from the shape each source writes: a
 // cash balance's tiers with their limits, per snapshot; an account's
 // details (a comma or a dot decimal) or its strategy; and the ledger's

@@ -198,11 +198,51 @@ received in the twelve months to the day, a year later. It reads
 that states it: the ledger's `terms` record in force on the day, the
 source's own record, the broker's description, OpenFIGI's ticker. The
 frequency and the day count fall back to the market's convention (§8).
-A coupon with no stated kind is fixed, or a zero where it is zero. The
-rating is the ledger's `rating` record's, else the lower of the
-agencies' grades the description states. A bond graded in default
-carries `default`, and has no implied yield and no duration. Its
-projection reads `unknown`: no coupon and no principal (INCOME.md §12).
+A coupon with no stated kind is fixed, or a zero where it is zero.
+
+The rating is the ledger's `rating` record's. Else it is the worst grade
+the source's own record states, else the lower of the grades the
+description states. An agency's word that it rates nothing (`NR`, `WR`)
+counts only where neither states a grade, and makes the bond unrated.
+The grades that give the rating say whether the bond is in default (`D`,
+`SD`, `RD`). A bond graded in default carries `default`, and has no
+implied yield and no duration. Its projection reads `unknown`: no coupon
+and no principal (INCOME.md §12).
+
+The source's own record is a payload, under the keys below. The coupon
+is in percent. Every other value is as the source prints it. A key the
+instrument's payload states wins. The other keys come from the newest
+position whose payload states any of them. So a bond keeps the terms a
+statement printed after a live feed describes it without them.
+
+| Key | States | Read as |
+| --- | --- | --- |
+| `interest_rate` | the coupon | percent a year: `4.25` or `4.25%` |
+| `maturity_date` | the maturity | `2031-06-15`, `06/15/2031`, `06/15/31` or `15.06.2031` |
+| `coupon_kind` | the coupon's kind | the coupon words a description uses: `FIXED` or `STEP` fixed; `FLOATING`, `VARIABLE` or `FRN` floating; `TIPS` inflation-linked; `ZERO` or `STRIP` zero, with a coupon of 0 |
+| `coupon_frequency` | the payments a year | `SEMIANNUALLY` or `SEMI-ANNUAL` 2, `QUARTERLY` 4, `MONTHLY` 12, `ANNUALLY` or `ANNUAL` 1; `AT MATURITY` states none, since a zero is no bill |
+| `call_date` | the first call | a date, as `maturity_date` |
+| `rating_moodys`, `rating_sp`, `rating_fitch` | each agency's grade | its bucket: `Aa2` and `AA-` are AA, `NR` and `WR` unrated |
+
+A value the table does not read states nothing. A call date the record
+states clears a make-whole call the description names, as a ledger
+record's does.
+
+The sources fill them from these:
+
+- fidelity-web's supplied statements: the metadata line below a bond's
+  row (`FIXED COUPON MOODYS Aa2 S&P AA- SEMIANNUALLY CUSIP: …`) gives the
+  kind, the grades and the frequency. The row's coupon column gives the
+  coupon.
+- svb's brokerage statements: the lines below a bond's row give the
+  coupon and the maturity, the grades (`MOODY'S Aaa /S&P AAA`), the
+  frequency (`CPN PMT SEMI-ANNUAL`) and the call (`CALLABLE ON … @ …`,
+  `CONTINUOUSLY CALLABLE FROM …`). A bond `CONTINUOUSLY CALLABLE` with no
+  date states none, so its call date is the description's.
+- UBS: the `Rating` column of the positions export is one more grade,
+  read off the newest position that carries it. Text that is no grade
+  (`No rating av.`) gives no rating.
+- manual: a note's record gives `interest_rate` and `maturity_date`.
 
 Every bond's price is clean, per 100 of face, in default or not. It is
 the holding's amount less the interest accrued, where the source states

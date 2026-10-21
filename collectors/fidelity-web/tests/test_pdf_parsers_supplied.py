@@ -13,6 +13,7 @@ collide with widely-held real funds.
 
 from __future__ import annotations
 
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -180,6 +181,166 @@ def test_parse_holdings_bond_uses_cusip_fallback():
     assert bonds[0].quantity == 100000.0
     assert bonds[0].price == 99.5
     assert bonds[0].market_value == 99500.0
+
+
+# ============================================================
+# parse_holdings_block — a bond's terms
+# ============================================================
+
+# Six bonds and a fund. The first bond's metadata line names two
+# agencies; the second's names an agency that does not rate it and one
+# that leaves its grade blank. The third's description wraps onto a line
+# of its own, and its metadata line wraps over two. The fourth prints a
+# boilerplate line between its row and its metadata line, so the CUSIP
+# is found by the lookahead; the fifth does too, with its metadata line
+# wrapped. The sixth's description wraps onto a line that names an
+# agency. Every value is invented.
+_BOND_TERMS_TEXT = """\
+INVESTMENT REPORT
+November 1, 2025 - November 30, 2025
+
+Account # 200-000002
+PLACEHOLDER HOLDER - INDIVIDUAL
+
+Holdings
+Bonds
+Municipal Bonds
+PLACEHOLDER CNTY GO BDS 06/15/31 100,000.000 $99.5000 $99,500.00 $98,000.00 $1,500.00 $4,000.00 4.000%
+FIXED COUPON MOODYS Aa2 S&P AA- SEMIANNUALLY CUSIP: 000000AA0
+PLACEHOLDER UTIL REV BDS 07/01/30 50,000.000 $101.0000 $50,500.00 $50,000.00 $500.00 $2,500.00 5.000%
+FIXED COUPON MOODYS NR FITCH S&P A+ ANNUALLY CUSIP: 000000AB0
+PLACEHOLDER ST GO BDS 08/01/32 25,000.000 $98.0000 $24,500.00 $25,000.00 -$500.00 $750.00 3.000%
+SER 2020 ANNUAL APPROP
+FLOATING COUPON MOODYS A1 S&P
+A QUARTERLY CUSIP: 000000AC0
+PLACEHOLDER SCH DIST BDS 12/01/30 10,000.000 $90.0000 $9,000.00 $8,500.00 $500.00 - -
+Accrued Interest (AI) $0.00
+ZERO COUPON MOODYS Aaa AT MATURITY CUSIP: 000000AD0
+PLACEHOLDER SCH DIST BDS 12/01/31 10,000.000 $88.0000 $8,800.00 $8,300.00 $500.00 - -
+Accrued Interest (AI) $0.00
+ZERO COUPON MOODYS Aa1
+AT MATURITY CUSIP: 000000AE0
+PLACEHOLDER INDEX LINKED NOTE 09/01/29 10,000.000 $100.0000 $10,000.00 $10,000.00 $0.00 $250.00 2.500%
+S&P 500 INDEX LINKED
+FIXED COUPON MOODYS A1 S&P AA SEMIANNUALLY CUSIP: 000000AF0
+Stock Funds
+PLACEHOLDER STOCK FUND CLASS A (ABCFX) 100.000 $50.0000 $5,000.00 $4,000.00 $1,000.00 $100.00 2.000%
+
+Activity
+"""
+
+
+def _bond_terms_rows():
+    block = ppt.parse_account_blocks(_BOND_TERMS_TEXT)[0]
+    return {r.instrument_key: r for r in ppt.parse_holdings_block(block.text)}
+
+
+def test_a_bond_keeps_its_grades_frequency_kind_and_coupon():
+    rows = _bond_terms_rows()
+    assert rows["000000AA0"].terms == {
+        "coupon_kind": "FIXED", "rating_moodys": "Aa2", "rating_sp": "AA-",
+        "coupon_frequency": "SEMIANNUALLY", "interest_rate": 4.0}
+    # The description keeps the metadata line glued onto it.
+    assert rows["000000AA0"].description.startswith("PLACEHOLDER CNTY GO BDS 06/15/31 FIXED")
+
+
+def test_an_unrated_and_a_blank_grade_are_printed_as_they_stand():
+    # NR is a grade as printed, for gold to read as unrated; an agency
+    # with no grade after it keeps none.
+    assert _bond_terms_rows()["000000AB0"].terms == {
+        "coupon_kind": "FIXED", "rating_moodys": "NR", "rating_sp": "A+",
+        "coupon_frequency": "ANNUALLY", "interest_rate": 5.0}
+
+
+def test_a_wrapped_metadata_line_is_read_whole():
+    # The wrapped description above it names no terms: its ANNUAL is an
+    # appropriation, not a frequency.
+    assert _bond_terms_rows()["000000AC0"].terms == {
+        "coupon_kind": "FLOATING", "rating_moodys": "A1", "rating_sp": "A",
+        "coupon_frequency": "QUARTERLY", "interest_rate": 3.0}
+
+
+def test_a_metadata_line_found_by_the_lookahead_states_the_terms():
+    # A zero prints no coupon rate.
+    assert _bond_terms_rows()["000000AD0"].terms == {
+        "coupon_kind": "ZERO", "rating_moodys": "Aaa",
+        "coupon_frequency": "AT MATURITY"}
+
+
+def test_a_wrapped_metadata_line_found_by_the_lookahead_reads_whole():
+    assert _bond_terms_rows()["000000AE0"].terms == {
+        "coupon_kind": "ZERO", "rating_moodys": "Aa1",
+        "coupon_frequency": "AT MATURITY"}
+
+
+def test_the_metadata_line_wins_over_an_agency_word_in_a_wrap():
+    # The wrap's "S&P 500" is read first, and the metadata line's own
+    # grade replaces it.
+    assert _bond_terms_rows()["000000AF0"].terms == {
+        "coupon_kind": "FIXED", "rating_moodys": "A1", "rating_sp": "AA",
+        "coupon_frequency": "SEMIANNUALLY", "interest_rate": 2.5}
+
+
+# A row with no ticker and no CUSIP of its own, right above a bond. Every
+# value is invented.
+_KEYLESS_ABOVE_A_BOND_TEXT = """\
+INVESTMENT REPORT
+November 1, 2025 - November 30, 2025
+
+Account # 200-000002
+PLACEHOLDER HOLDER - INDIVIDUAL
+
+Holdings
+Bonds
+PLACEHOLDER INCOME SLEEVE 1,000.000 $10.0000 $10,000.00 $9,000.00 $1,000.00 $300.00 3.000%
+PLACEHOLDER CNTY GO BDS 06/15/31 100,000.000 $99.5000 $99,500.00 $98,000.00 $1,500.00 $4,000.00 4.000%
+FIXED COUPON MOODYS Aa2 S&P AA- SEMIANNUALLY CUSIP: 000000AG0
+
+Activity
+"""
+
+
+def test_a_row_without_a_key_never_takes_the_next_holdings_cusip():
+    block = ppt.parse_account_blocks(_KEYLESS_ABOVE_A_BOND_TEXT)[0]
+    keyless, bond = ppt.parse_holdings_block(block.text)
+    # The search for the first row's CUSIP stops at the bond's row, so only
+    # the bond takes the CUSIP and the terms.
+    assert (keyless.instrument_key, keyless.terms) == (None, {})
+    assert bond.instrument_key == "000000AG0"
+    assert bond.terms["rating_sp"] == "AA-" and bond.terms["interest_rate"] == 4.0
+
+
+# The keys gold reads a bond's terms by (canonical.payloadTermsKeys), read
+# from the engine's Go source so a rename there fails here.
+_PAYLOAD_TERMS_GO = (Path(__file__).resolve().parents[3] / "wealthdb" / "internal"
+                     / "canonical" / "payloadterms.go")
+
+
+def _payload_terms_keys():
+    text = _PAYLOAD_TERMS_GO.read_text()
+    consts = dict(re.findall(r'(Payload\w+)\s*=\s*"([^"]+)"', text))
+    body = re.search(r"var payloadTermsKeys = \[\]string\{(.*?)\}", text, re.S).group(1)
+    return {consts[name] for name in re.findall(r"\w+", body)}
+
+
+def test_every_term_key_is_one_gold_reads():
+    emitted = set(ppt._AGENCY_KEYS.values()).union(
+        *(r.terms for r in _bond_terms_rows().values()))
+    assert emitted <= _payload_terms_keys()
+    assert {"coupon_kind", "coupon_frequency", "interest_rate"} <= emitted
+
+
+def test_a_fund_row_states_no_terms(monkeypatch):
+    assert _bond_terms_rows()["ABCFX"].terms == {}
+    monkeypatch.setattr(ppt, "_extract_pdf_text", lambda path: _BOND_TERMS_TEXT)
+    holdings = ppt.parse_supplied_statement_pdf("/fake/path.pdf")["accounts"][0]["holdings"]
+    by_key = {h["instrument_key"]: h for h in holdings}
+    # The entry point lays the terms beside the row's figures; a fund's row
+    # holds no term key.
+    assert by_key["000000AA0"]["rating_sp"] == "AA-"
+    assert set(by_key["ABCFX"]) == {
+        "description", "instrument_key", "quantity", "price", "market_value",
+        "cost_basis", "unrealized_gain"}
 
 
 # ============================================================

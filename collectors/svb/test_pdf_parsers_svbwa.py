@@ -17,6 +17,7 @@ balances, names, or account ids appear.
 
 from __future__ import annotations
 
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -670,6 +671,206 @@ def test_bond_glued_cusip_recovery():
     assert bond[0].market_value == 95000.0
     # The spilled-over "WHOLE" word is restored to the description.
     assert bond[0].description.endswith("WHOLE")
+
+
+# ============================================================
+# parse_holdings_block — a bond's terms from its sub-lines
+# ============================================================
+
+# Three bonds, then equities whose own sub-lines look like a bond's. The
+# first bond is callable on a date at a price; the second has an agency
+# that does not rate it, is continuously callable with no date, and prints
+# its coupon days on its frequency line; the third's rating line wraps over
+# two, and it is continuously callable from a date. Every value is
+# invented.
+_BOND_TERMS_TEXT = """\
+SVB WEALTH ADVISORY, INC.
+STATEMENT FOR THE PERIOD JANUARY 1, 2021 TO MARCH 31, 2021
+EXAMPLE HOLDER - Example Property
+Account Number: SVR-000000
+Holdings
+HOLDINGS > FIXED INCOME - 90.00% of Total Account Value
+Symbol/Cusip Price on Current Estimated
+Description Account Type Quantity 03/31/21 Market Value Annual Income
+Corporate Bonds
+EXAMPLE CORP NOTE CALL MAKE WHOLE 11111AAA1 100,000 $95.000 $95,000.00 $3,000.00
+3.00000% 06/30/2027 CASH
+MOODY'S Aaa /S&P AAA
+CPN PMT SEMI-ANNUAL
+ON JUN 30, DEC 30
+CALLABLE ON 06/30/2025 @ 100.000
+Next Interest Payable: 06/30/21
+Accrued Interest $250.00
+Municipal Bonds
+EXAMPLE CNTY GO BDS 000000AA0 50,000 $101.000 $50,500.00 $2,000.00
+4.00000% 12/01/2030 CASH
+MOODY'S NR /S&P AA+
+CPN PMT SEMI-ANNUAL ON JUN 01, DEC 01
+CONTINUOUSLY CALLABLE
+EXAMPLE UTIL REV BDS 000000AB0 25,000 $99.000 $24,750.00 $1,000.00
+4.00000% 07/01/2032 CASH
+MOODY'S WR /
+S&P A
+CPN PMT QUARTERLY
+ON JAN 01, APR 01, JUL 01, OCT 01
+CONTINUOUSLY CALLABLE FROM 12/01/2025
+Total Fixed Income $170,250.00
+HOLDINGS > EQUITIES - 10.00% of Total Account Value
+Equity
+EXAMPLE COMPANY CL A AAAA 10 $100.00 $1,000.00
+S&P A
+ON EXAMPLE DEVICES CORP COM BBBB 200 $50.00 $10,000.00 $30.00
+ON JAN 01, JUL 01
+Total Securities $181,250.00
+"""
+
+
+def _bond_terms_rows():
+    block = ps.parse_account_blocks(_BOND_TERMS_TEXT)[0]
+    return {r.instrument_key: r for r in ps.parse_holdings_block(block.text)}
+
+
+def test_a_bond_callable_on_a_date_keeps_every_sub_line():
+    assert _bond_terms_rows()["11111AAA1"].terms == {
+        "interest_rate": 3.0, "maturity_date": "06/30/2027",
+        "rating_moodys": "Aaa", "rating_sp": "AAA",
+        "coupon_frequency": "SEMI-ANNUAL", "coupon_dates": "JUN 30, DEC 30",
+        "call": "CALLABLE ON 06/30/2025 @ 100.000", "call_date": "06/30/2025"}
+
+
+def test_a_continuously_callable_bond_states_no_call_date():
+    # NR is kept as printed; the frequency line's coupon days split off.
+    assert _bond_terms_rows()["000000AA0"].terms == {
+        "interest_rate": 4.0, "maturity_date": "12/01/2030",
+        "rating_moodys": "NR", "rating_sp": "AA+",
+        "coupon_frequency": "SEMI-ANNUAL", "coupon_dates": "JUN 01, DEC 01",
+        "call": "CONTINUOUSLY CALLABLE"}
+
+
+def test_a_rating_line_wrapped_over_two_reads_whole():
+    # Continuously callable from a date: that date is the first call.
+    assert _bond_terms_rows()["000000AB0"].terms == {
+        "interest_rate": 4.0, "maturity_date": "07/01/2032",
+        "rating_moodys": "WR", "rating_sp": "A",
+        "coupon_frequency": "QUARTERLY",
+        "coupon_dates": "JAN 01, APR 01, JUL 01, OCT 01",
+        "call": "CONTINUOUSLY CALLABLE FROM 12/01/2025",
+        "call_date": "12/01/2025"}
+
+
+def test_only_a_bond_takes_sub_lines(monkeypatch):
+    # The lines under an equity row are skipped, and a holding named like
+    # one is still a holding.
+    rows = _bond_terms_rows()
+    assert set(rows) == {"11111AAA1", "000000AA0", "000000AB0", "AAAA", "BBBB"}
+    assert rows["AAAA"].terms == {} and rows["BBBB"].terms == {}
+    monkeypatch.setattr(ps, "_extract_pdf_text", lambda path: _BOND_TERMS_TEXT)
+    holdings = ps.parse_svbwa_statement_pdf("/fake/path.pdf")["accounts"][0]["holdings"]
+    by_key = {h["instrument_key"]: h for h in holdings}
+    # The entry point lays the terms beside the row's figures.
+    assert by_key["11111AAA1"]["call_date"] == "06/30/2025"
+    assert set(by_key["AAAA"]) == {
+        "description", "instrument_key", "quantity", "price", "market_value",
+        "cost_basis", "unrealized_gain"}
+
+
+# Bonds whose sub-lines meet the lines that end them. The first bond's
+# grades are written N/R, and a holding named like a rating line follows
+# its sub-lines. The second's rating line wraps with the slash on the
+# second half, its frequency line ends in ON, and a holding named like a
+# coupon-days line follows. A row the parser cannot read follows the
+# third, with a call line under it. The fourth's grades print after a
+# page break. Sub-line shapes after a group header and after the total
+# belong to no bond. Every value is invented.
+_SUB_LINE_BOUNDS_TEXT = """\
+SVB WEALTH ADVISORY, INC.
+STATEMENT FOR THE PERIOD JANUARY 1, 2021 TO MARCH 31, 2021
+EXAMPLE HOLDER - Example Property
+Account Number: SVR-000000
+Holdings
+HOLDINGS > FIXED INCOME - 100.00% of Total Account Value
+Corporate Bonds
+EXAMPLE CORP NOTE 11111AAA1 100,000 $95.000 $95,000.00 $3,000.00
+3.00000% 06/30/2027 CASH
+MOODY'S N/R /S&P N/R
+S&P EXAMPLE INDEX CO COM AAAA 10 $100.00 $1,000.00 $20.00
+EXAMPLE CORP NOTE TWO 22222BBB2 50,000 $99.000 $49,500.00 $1,500.00
+MOODY'S A1
+/S&P A
+CPN PMT SEMI-ANNUAL ON
+JUN 01, DEC 01
+ON EXAMPLE CORP NOTE 33333CCC3 50,000 $98.000 $49,000.00 $1,000.00
+4.00000% 03/01/2031 CASH
+EXAMPLE CORP NOTE (UNLISTED) 10,000 $97.000 $9,700.00
+CALLABLE ON 06/30/2026 @ 100.000
+EXAMPLE CORP NOTE FOUR 44444DDD4 10,000 $96.000 $9,600.00 $400.00
+2.00000% 01/15/2029 CASH
+Account Number: SVR-000000
+HOLDINGS > FIXED INCOME continued
+Symbol/Cusip Price on Current Estimated
+Description Account Type Quantity 03/31/21 Market Value Annual Income
+MOODY'S Baa1 /S&P BBB+
+Municipal Bonds
+FITCH BBB
+Total Fixed Income $212,800.00
+CPN PMT MONTHLY
+Total Securities $212,800.00
+"""
+
+
+def _bound_rows():
+    block = ps.parse_account_blocks(_SUB_LINE_BOUNDS_TEXT)[0]
+    return {r.instrument_key: r for r in ps.parse_holdings_block(block.text)}
+
+
+# The keys gold reads a bond's terms by (canonical.payloadTermsKeys), read
+# from the engine's Go source so a rename there fails here.
+_PAYLOAD_TERMS_GO = (Path(__file__).resolve().parents[2] / "wealthdb" / "internal"
+                     / "canonical" / "payloadterms.go")
+
+# The sub-line terms the parser keeps beside gold's keys, which gold does
+# not read.
+_MIRROR_ONLY_KEYS = {"coupon_dates", "call"}
+
+
+def _payload_terms_keys():
+    text = _PAYLOAD_TERMS_GO.read_text()
+    consts = dict(re.findall(r'(Payload\w+)\s*=\s*"([^"]+)"', text))
+    body = re.search(r"var payloadTermsKeys = \[\]string\{(.*?)\}", text, re.S).group(1)
+    return {consts[name] for name in re.findall(r"\w+", body)}
+
+
+def test_every_term_key_is_one_gold_reads():
+    emitted = set(ps._AGENCY_KEYS.values()).union(
+        *(r.terms for r in _bond_terms_rows().values()))
+    assert emitted - _MIRROR_ONLY_KEYS <= _payload_terms_keys()
+    assert {"interest_rate", "maturity_date", "coupon_frequency", "call_date"} <= emitted
+
+
+def test_a_holding_named_like_a_sub_line_stays_a_holding():
+    rows = _bound_rows()
+    assert set(rows) == {"11111AAA1", "AAAA", "22222BBB2", "33333CCC3", "44444DDD4"}
+    assert rows["AAAA"].market_value == 1000.0 and rows["AAAA"].terms == {}
+    assert rows["33333CCC3"].market_value == 49000.0
+    # Neither holding's line became the bond above it's grade or days.
+    assert rows["11111AAA1"].terms == {
+        "interest_rate": 3.0, "maturity_date": "06/30/2027",
+        "rating_moodys": "N/R", "rating_sp": "N/R"}
+    assert rows["22222BBB2"].terms == {
+        "rating_moodys": "A1", "rating_sp": "A", "coupon_frequency": "SEMI-ANNUAL"}
+
+
+def test_an_unreadable_row_ends_the_bond_above_it():
+    assert _bound_rows()["33333CCC3"].terms == {
+        "interest_rate": 4.0, "maturity_date": "03/01/2031"}
+
+
+def test_a_page_break_keeps_the_bond_and_a_section_end_drops_it():
+    # The grades after the continued banner are the fourth bond's; those
+    # after the group header and the total are no bond's.
+    assert _bound_rows()["44444DDD4"].terms == {
+        "interest_rate": 2.0, "maturity_date": "01/15/2029",
+        "rating_moodys": "Baa1", "rating_sp": "BBB+"}
 
 
 # ============================================================

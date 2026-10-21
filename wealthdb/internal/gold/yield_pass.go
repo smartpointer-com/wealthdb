@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -66,29 +65,57 @@ const (
 // (instrument_terms_at).
 var bondVehicles = []string{"bond", "mortgage", "loan", "convertible_note"}
 
+// ubsRatingPath is where a UBS position's payload keeps the Rating
+// column of the positions export: the export's row sits under `web`.
+const ubsRatingPath = "$.web.Rating"
+
 // termsCandidatesSQL lists each bond-like instrument with what may state
-// its terms: its name, its own figures (the interest_rate and
-// maturity_date a manual source's record states), OpenFIGI's ticker and
-// market sector for its security, its security's sector, and whether its
-// key is a US ISIN (canonical.ReadBondDescription's usID).
-var termsCandidatesSQL = `
+// its terms: its name; its own figures, each canonical.PayloadTermsKeys
+// key from its payload, else from its newest position's payload that
+// states one (a statement parser's holding, whose instrument a live feed
+// may describe later without them), and that position's UBS Rating;
+// OpenFIGI's ticker and market sector for its security, its security's
+// sector, and whether its key is a US ISIN (canonical.ReadBondDescription's
+// usID).
+var termsCandidatesSQL = func() string {
+	var stated, picked []string
+	for _, k := range append(canonical.PayloadTermsKeys(), ubsRatingPath) {
+		stated = append(stated, fmt.Sprintf("json_extract_string(p.payload, '%s')", k))
+	}
+	for _, k := range canonical.PayloadTermsKeys() {
+		picked = append(picked, fmt.Sprintf("COALESCE(json_extract_string(i.payload, '%[1]s'), "+
+			"json_extract_string(h.payload, '%[1]s'))", k))
+	}
+	vehicles := "('" + strings.Join(bondVehicles, "', '") + "')"
+	return `
 WITH figi AS (
     SELECT exposure_key(security_key) AS key, MIN(json_extract_string(payload, 'local_ticker')) AS ticker,
            MIN(json_extract_string(payload, 'market_sector')) AS market_sector
       FROM security_identities
      WHERE provider = 'openfigi' AND json_extract_string(payload, 'local_ticker') IS NOT NULL
-     GROUP BY 1)
+     GROUP BY 1),
+held AS (
+    SELECT DISTINCT ON (p.silver_source_id, p.instrument_external_id)
+           p.silver_source_id, p.instrument_external_id, p.payload
+      FROM positions p
+      SEMI JOIN instruments b ON b.silver_source_id = p.silver_source_id
+           AND b.instrument_external_id = p.instrument_external_id AND b.vehicle IN ` + vehicles + `
+     WHERE COALESCE(` + strings.Join(stated, ", ") + `) IS NOT NULL
+     ORDER BY p.silver_source_id, p.instrument_external_id, p.snapshot_at DESC, p.account_external_id,
+              p.position_key)
 SELECT i.silver_source_id, i.instrument_external_id, COALESCE(i.name, ''), COALESCE(i.currency, ''),
-       COALESCE(i.vehicle, ''), json_extract_string(i.payload, 'interest_rate'),
-       json_extract_string(i.payload, 'maturity_date'), f.ticker, COALESCE(s.sector, ''),
+       COALESCE(i.vehicle, ''), ` + strings.Join(picked, ", ") + `,
+       json_extract_string(h.payload, '` + ubsRatingPath + `'), f.ticker, COALESCE(s.sector, ''),
        COALESCE(f.market_sector, ''), COALESCE(exposure_key(ik.security_key) LIKE 'isin:US%', FALSE)
   FROM instruments i
+  LEFT JOIN held h ON h.silver_source_id = i.silver_source_id AND h.instrument_external_id = i.instrument_external_id
   LEFT JOIN instrument_keys ik ON ik.silver_source_id = i.silver_source_id
        AND ik.instrument_external_id = i.instrument_external_id
   LEFT JOIN securities s ON s.security_key = exposure_key(ik.security_key)
   LEFT JOIN figi f ON f.key = exposure_key(ik.security_key)
- WHERE i.vehicle IN ('` + strings.Join(bondVehicles, "', '") + `')
+ WHERE i.vehicle IN ` + vehicles + `
  ORDER BY 1, 2`
+}()
 
 // field is one instrument_terms field and where it comes from.
 type field[T any] struct {
@@ -101,6 +128,15 @@ type field[T any] struct {
 func (f *field[T]) offer(v *T, origin string) {
 	if f.v == nil && v != nil {
 		f.v, f.origin = v, origin
+	}
+}
+
+// offerStated offers v where it is not its type's zero: an empty text or
+// a frequency of 0 states nothing.
+func offerStated[T comparable](f *field[T], v T, origin string) {
+	var zero T
+	if v != zero {
+		f.offer(&v, origin)
 	}
 }
 
@@ -127,6 +163,28 @@ type termsRow struct {
 	makeWhole, inDefault   bool
 }
 
+// rate sets the rating and the default flag. A grade outranks an
+// agency's word that it rates nothing, as lowestRating weighs one
+// source's grades, so the source's own grade comes first, then the
+// description's, then either's unrated. The bond is in default where the
+// grades that give the rating say so.
+func (r *termsRow) rate(own canonical.PayloadTerms, desc canonical.BondTerms) {
+	for _, unrated := range []bool{false, true} {
+		for _, g := range []struct {
+			bucket canonical.RatingBucket
+			origin string
+		}{{own.Rating, originPayload}, {desc.Rating, originDescription}} {
+			if (g.bucket == canonical.RatingUnrated) == unrated {
+				offerStated(&r.rating, string(g.bucket), g.origin)
+			}
+		}
+	}
+	r.inDefault = desc.Default
+	if r.rating.origin == originPayload {
+		r.inDefault = own.Default
+	}
+}
+
 // figiSectors maps OpenFIGI's market sector to a bond sector.
 var figiSectors = map[string]canonical.Sector{"Govt": canonical.SectorGovernment, "Muni": canonical.SectorMunicipal,
 	"Corp": canonical.SectorCorporate, "Mtge": canonical.SectorSecuritised}
@@ -135,52 +193,52 @@ var figiSectors = map[string]canonical.Sector{"Govt": canonical.SectorGovernment
 // own figure, else the description's, else OpenFIGI's ticker's; a bond's
 // frequency and day count else its market's convention. A bond with a
 // coupon and no stated kind is fixed, one with a coupon of zero a zero,
-// both by convention. The ledger's records are laid over at report time
-// (instrument_terms_at).
+// both by convention. A bond is in default where the grades that give
+// its rating say so. A call date of the source's own clears the
+// description's make-whole call, as a ledger record's does. The ledger's
+// records are laid over at report time (instrument_terms_at).
 func writeInstrumentTerms(ctx context.Context, tx *sql.Tx) error {
 	conventions, err := readConventions(ctx, tx)
 	if err != nil {
 		return err
 	}
+	keys := canonical.PayloadTermsKeys()
 	var rows []termsRow
 	if err := scanAll(ctx, tx, termsCandidatesSQL, func(sc *sql.Rows) error {
 		var r termsRow
 		var name, ccy, sector, figiSector string
-		var rate, maturity, ticker sql.NullString
+		var ubsRating, ticker sql.NullString
 		var usID bool
-		if err := sc.Scan(&r.src, &r.iid, &name, &ccy, &r.vehicle, &rate, &maturity, &ticker, &sector, &figiSector,
-			&usID); err != nil {
+		values := make([]sql.NullString, len(keys))
+		dst := []any{&r.src, &r.iid, &name, &ccy, &r.vehicle}
+		for i := range values {
+			dst = append(dst, &values[i])
+		}
+		if err := sc.Scan(append(dst, &ubsRating, &ticker, &sector, &figiSector, &usID)...); err != nil {
 			return err
 		}
-		if v, err := strconv.ParseFloat(rate.String, 64); err == nil && rate.Valid {
-			r.coupon.offer(&v, originPayload)
+		stated := map[string]string{}
+		for i, k := range keys {
+			stated[k] = values[i].String
 		}
-		if t, err := time.Parse(time.DateOnly, maturity.String); err == nil && maturity.Valid {
-			r.maturity.offer(&t, originPayload)
-		}
+		own := canonical.ReadPayloadTerms(stated, ubsRating.String)
+		r.coupon.offer(own.Coupon, originPayload)
+		r.maturity.offer(own.Maturity, originPayload)
+		offerStated(&r.frequency, own.Frequency, originPayload)
+		r.call.offer(own.CallDate, originPayload)
+		offerStated(&r.kind, string(own.CouponKind), originPayload)
 		desc := canonical.ReadBondTerms(name)
 		r.coupon.offer(desc.Coupon, originDescription)
 		r.maturity.offer(desc.Maturity, originDescription)
 		r.call.offer(desc.CallDate, originDescription)
-		r.makeWhole, r.inDefault = desc.MakeWhole, desc.Default
-		if desc.Frequency != 0 {
-			r.frequency.offer(&desc.Frequency, originDescription)
-		}
-		if desc.CouponKind != "" {
-			k := string(desc.CouponKind)
-			r.kind.offer(&k, originDescription)
-		}
-		if desc.Rating != "" {
-			b := string(desc.Rating)
-			r.rating.offer(&b, originDescription)
-		}
+		r.makeWhole = desc.MakeWhole && own.CallDate == nil
+		offerStated(&r.frequency, desc.Frequency, originDescription)
+		offerStated(&r.kind, string(desc.CouponKind), originDescription)
+		r.rate(own, desc)
 		figi := canonical.ReadFigiTicker(ticker.String)
 		r.coupon.offer(figi.Coupon, originOpenFIGI)
 		r.maturity.offer(figi.Maturity, originOpenFIGI)
-		if figi.CouponKind != "" {
-			k := string(figi.CouponKind)
-			r.kind.offer(&k, originOpenFIGI)
-		}
+		offerStated(&r.kind, string(figi.CouponKind), originOpenFIGI)
 		if r.vehicle == "bond" {
 			if sector == "" {
 				if b, ok := canonical.ReadBondDescription(name, usID); ok {

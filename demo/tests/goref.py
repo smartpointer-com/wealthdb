@@ -180,7 +180,23 @@ def page_breakdowns():
     return set(re.findall(r"exposure_page_breakdown\(\w+, '(\w+)'\)", text))
 
 
-def yield_pass():
-    """The yield pass's source: the keys it reads from an instrument's
-    record and a cash balance's."""
-    return (INTERNAL / "gold" / "yield_pass.go").read_text()
+def payload_term_keys():
+    """The keys the yield pass reads a bond's terms by, from an
+    instrument's record or a holding's (canonical.PayloadTermsKeys)."""
+    t = _read("payloadterms.go")
+    return set(_list(t, "payloadTermsKeys", dict(re.findall(r'(Payload\w+)\s*=\s*"([^"]+)"', t))))
+
+
+def balance_rate_keys():
+    """The keys the yield pass reads a cash balance's stated rate by:
+    the ones it names whole, and each side's keys (CdtIntrstRate1 …)
+    expanded from the templates its SQL builds them by, a side's prefix
+    first and a tier's number last."""
+    t = (INTERNAL / "gold" / "yield_pass.go").read_text()
+    prefixes = [prefix for _, prefix in re.findall(r'\{"(credit|debit)", "(\w+)"\}', t)]
+    tiers = range(1, int(re.search(r"tier <= (\d+)", t).group(1)) + 1)
+    keys = set(re.findall(r"payload, '([A-Z]\w*)'\)", t))
+    for name, tiered in re.findall(r"'%(?:\[2\])?s([A-Za-z]+)(%(?:\[3\])?d)?'", t):
+        for prefix in prefixes:
+            keys |= {f"{prefix}{name}{n}" for n in tiers} if tiered else {prefix + name}
+    return keys

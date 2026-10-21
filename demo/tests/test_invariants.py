@@ -1027,8 +1027,7 @@ class TestHeldBonds(Built):
 
     def test_a_bond_that_states_its_terms_states_the_catalogues(self):
         """In the keys the yield pass reads from an instrument's record."""
-        for key in ("interest_rate", "maturity_date"):
-            self.assertTrue(f"'{key}'" in goref.yield_pass(), key)
+        self.assertLessEqual({"interest_rate", "maturity_date"}, goref.payload_term_keys())
         stating = [iid for iid in self.held if self.bonds[iid].get("states_terms")]
         self.assertGreater(len(stating), 1)
         for _, r in self.all("instruments"):
@@ -1093,10 +1092,7 @@ class TestStatedRates(Built):
     def test_the_rate_keys_are_the_ones_the_yield_pass_reads(self):
         """It names a credit tier's keys by their side's prefix (Cdt) and
         the tier's number."""
-        text = goref.yield_pass()
-        self.assertTrue('{"credit", "Cdt"}' in text)
-        for key in self.UBS_KEYS:
-            self.assertTrue(key.removeprefix("Cdt").rstrip("12") in text, key)
+        self.assertLessEqual(set(self.UBS_KEYS), goref.balance_rate_keys())
 
     def before(self, key, t):
         """A balance just before a transaction: its last snapshot before the

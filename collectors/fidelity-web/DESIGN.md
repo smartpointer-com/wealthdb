@@ -530,7 +530,8 @@ directory rather than the scraped dump tree.
 
 They carry three things. **Holdings** rebuild the position
 archive (`historical_position_snapshots`), with each holding's cost
-basis and unrealized gain or loss as printed. **Account-level activity**
+basis and unrealized gain or loss as printed. A bond's holding also
+keeps its terms in `payload`. **Account-level activity**
 goes to `transactions`: the statement's `Withdrawals`, `Deposits` and
 `Fees and Charges` sections — wires, cheques, tax payments and
 account fees. The scraped activity feed omits these rows, and for
@@ -556,6 +557,17 @@ sale whose lots span both terms prints one gain line per term; its
 `realized_gain_loss` is their sum and its `term` NULL, with the lines in
 `payload`. A sale and the `Cancelled Sell` that reverses it on the
 same statement are both left out.
+
+A bond's terms come from the metadata line below its row
+(`FIXED COUPON MOODYS Aa2 S&P AA- SEMIANNUALLY CUSIP: …`). It gives
+`coupon_kind` (the word before COUPON), `rating_moodys`, `rating_sp`
+and `rating_fitch` (the grade after each agency) and `coupon_frequency`,
+each as printed. The row's coupon column gives `interest_rate`, a
+number of percent. A metadata line wrapped over two lines reads whole,
+also where a boilerplate line stands between it and the row. The search
+for a row's CUSIP stops at the next holding's row, so a row with no key
+of its own never takes its neighbour's CUSIP or terms. Gold's yield pass
+reads these keys (wealthdb docs/YIELD.md §3).
 
 Everything else the statement prints under Activity is deliberately
 left alone, because the feed does carry it: dividends and interest,

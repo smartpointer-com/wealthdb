@@ -54,9 +54,12 @@ those keys are always ``None`` in the output):
   $mv  [$eai]`` — the 9-char CUSIP sits *inline at the end of the
   description* (same mid-line position as an equity symbol, just
   9 alphanumerics). ``instrument_key`` is that CUSIP. Continuation
-  sub-lines (coupon%+maturity, ``MOODY'S … /S&P …``, ``CPN PMT …``,
-  ``Next Interest Payable:``, call schedule, ``Accrued Interest``,
-  and a ``… CUSIP continued`` echo line) are skipped.
+  sub-lines are no rows. The coupon%+maturity line, ``MOODY'S …
+  /S&P …``, ``CPN PMT …``, the ``ON …`` coupon days and the call
+  (``CALLABLE ON …``, ``CONTINUOUSLY CALLABLE``) are the bond's
+  terms: the coupon a number of percent, the rest as printed.
+  ``Next Interest Payable:``, ``Accrued Interest`` and a ``… CUSIP
+  continued`` echo line are skipped.
 * **Options** (long and short legs): each option spans **three**
   physical lines —
   ::
@@ -114,7 +117,7 @@ returns the same dict shape as the supplied-statement parser's
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from collectorkit import statement_period
 from collectorkit.pdf import extract_text_pdfplumber as _extract_pdf_text
@@ -413,6 +416,33 @@ _GROUP_HEADERS = {
     "Treasuries", "Bonds", "Stocks",
 }
 
+# A bond's sub-lines below its row state its terms:
+#
+#   3.00000% 06/30/2027 CASH      the coupon and the maturity
+#   MOODY'S Aaa /S&P AAA          each agency's grade
+#   CPN PMT SEMI-ANNUAL           how often the coupon pays
+#   ON JUN 30, DEC 30             the days it pays on
+#   CALLABLE ON 06/30/2025 @ 100  the call; CONTINUOUSLY CALLABLE FROM
+#                                 06/30/2025, or with no date at all
+#
+# Each is kept under the payload key gold reads it by (wealthdb
+# canonical.PayloadTermsKeys): the coupon as a number of percent, the rest
+# as printed. The coupon days and the call's own text sit beside them, as
+# ``coupon_dates`` and ``call``. The agencies are parted by a slash after
+# a space, so a grade written N/R stays whole.
+_COUPON_LINE_RE = re.compile(
+    r"(?:^|\s)(?P<rate>\d{1,2}(?:\.\d+)?)%\s+"
+    r"(?P<maturity>\d{1,2}/\d{1,2}/(?:\d{4}|\d{2}))(?:\s|$)")
+_RATING_RE = re.compile(r"^(?P<agency>MOODY'?S|S&P|FITCH)\s+(?P<grade>\S+)")
+_AGENCY_SPLIT_RE = re.compile(r"(?:^|\s)/")
+_AGENCY_KEYS = {"MOODY'S": "rating_moodys", "MOODYS": "rating_moodys",
+                "S&P": "rating_sp", "FITCH": "rating_fitch"}
+_CALL_RE = re.compile(r"^(?:CONTINUOUSLY CALLABLE|CALLABLE ON)\b")
+_CALL_DATE_RE = re.compile(r"(?:^|\s)(\d{1,2}/\d{1,2}/(?:\d{4}|\d{2}))(?:\s|$)")
+_FREQUENCY_PREFIX = "CPN PMT"
+_FREQUENCY_DAYS_RE = re.compile(r"\s+ON(?:\s+|$)")
+_COUPON_DATES_PREFIX = "ON "
+
 
 @dataclass
 class SvbwaHoldingRow:
@@ -421,7 +451,8 @@ class SvbwaHoldingRow:
     ``instrument_key`` is the equity/fund symbol, the bond CUSIP, or
     the OCC option symbol; ``None`` for a bare cash position. SVB-WA
     statements never print cost-basis / unrealized columns, so those
-    two fields are always ``None``.
+    two fields are always ``None``. ``terms`` is what a bond's
+    sub-lines state (``_read_bond_line``); empty for any other row.
     """
     description: str
     instrument_key: str | None
@@ -430,6 +461,7 @@ class SvbwaHoldingRow:
     market_value: float | None
     cost_basis: float | None      # always None (column absent)
     unrealized_gain: float | None  # always None (column absent)
+    terms: dict = field(default_factory=dict)
 
 
 def parse_holdings_block(account_text):
@@ -444,6 +476,7 @@ def parse_holdings_block(account_text):
     * any other line ending in 3-4 numerics → equity/ETP/fund/bond,
       with the symbol/CUSIP as the token just before the numeric
       tail.
+    * a bond's sub-lines below its row → that row's ``terms``.
     """
     m_start = _HOLDINGS_START_RE.search(account_text)
     if not m_start:
@@ -457,6 +490,9 @@ def parse_holdings_block(account_text):
 
     lines = [ln.rstrip() for ln in block.splitlines()]
     rows = []
+    # The bond row the sub-lines below belong to; None once a row of
+    # another kind or a section boundary intervenes.
+    bond = None
     i = 0
     n = len(lines)
     while i < n:
@@ -467,6 +503,7 @@ def parse_holdings_block(account_text):
 
         # Bare cash position: market value only.
         if _NET_CASH_RE.match(stripped):
+            bond = None
             mv = _last_number(stripped)
             if mv is not None:
                 rows.append(SvbwaHoldingRow(
@@ -483,12 +520,19 @@ def parse_holdings_block(account_text):
         if _OPTION_OPEN_RE.match(stripped):
             row, consumed = _parse_option_block(lines, i)
             if row is not None:
+                bond = None
                 rows.append(row)
                 i += consumed
                 continue
             # Fall through if it didn't look like a real option row.
 
+        if bond is not None and _read_bond_line(stripped, bond.terms):
+            i += 1
+            continue
+
         if _is_boilerplate(stripped) and not _shadows_a_holding(stripped):
+            if _closes_a_section(stripped):
+                bond = None
             i += 1
             continue
 
@@ -497,6 +541,10 @@ def parse_holdings_block(account_text):
         row = _parse_security_row(stripped)
         if row is not None:
             rows.append(row)
+            bond = row if _CUSIP_RE.match(row.instrument_key) else None
+        elif _looks_like_a_row(stripped):
+            # A row the parser cannot read still ends the bond above it.
+            bond = None
         i += 1
     return rows
 
@@ -662,6 +710,62 @@ def _shadows_a_holding(line):
     holdings row — see :data:`_AMBIGUOUS_LINE_PREFIXES`."""
     return (line.startswith(_AMBIGUOUS_LINE_PREFIXES)
             and _parse_security_row(line) is not None)
+
+
+def _read_bond_line(line, terms):
+    """Keep in ``terms`` what one of a bond's sub-lines states (see
+    :data:`_COUPON_LINE_RE`); a term already kept stays. A rating line
+    wrapped over two reads as two, whichever half keeps the slash.
+    Returns False for a line that is no such sub-line, and for one shaped
+    like a holdings row, which a sub-line never is."""
+    if _looks_like_a_row(line):
+        return False
+    rating = line.lstrip("/ ")
+    if _RATING_RE.match(rating):
+        for part in _AGENCY_SPLIT_RE.split(rating):
+            m = _RATING_RE.match(part.strip())
+            if m:
+                terms.setdefault(_AGENCY_KEYS[m["agency"]], m["grade"])
+        return True
+    if line.startswith(_FREQUENCY_PREFIX):
+        word, *days = _FREQUENCY_DAYS_RE.split(line[len(_FREQUENCY_PREFIX):], maxsplit=1)
+        if word.strip():
+            terms.setdefault("coupon_frequency", word.strip())
+        if days and days[0].strip():
+            terms.setdefault("coupon_dates", days[0].strip())
+        return True
+    if line.startswith(_COUPON_DATES_PREFIX):
+        terms.setdefault("coupon_dates", line[len(_COUPON_DATES_PREFIX):].strip())
+        return True
+    if _CALL_RE.match(line):
+        terms.setdefault("call", line)
+        m = _CALL_DATE_RE.search(line)
+        if m:
+            terms.setdefault("call_date", m[1])
+        return True
+    m = _COUPON_LINE_RE.search(line)
+    if m:
+        terms.setdefault("interest_rate", float(m["rate"]))
+        terms.setdefault("maturity_date", m["maturity"])
+        return True
+    return False
+
+
+def _closes_a_section(line):
+    """True for a boilerplate line that ends the rows above it: a
+    section banner, a group sub-header or a total. A banner that ends in
+    ``continued`` carries its section over a page break, so it closes
+    nothing."""
+    if line.endswith("continued"):
+        return False
+    return (line in _GROUP_HEADERS or line.startswith("Total ")
+            or line.upper().startswith(_BANNER_PREFIXES))
+
+
+def _looks_like_a_row(line):
+    """True for a line with a holdings row's numeric tail (quantity,
+    price, value), whether or not it parses as one."""
+    return _trailing_numeric_count(line.split()) >= 3
 
 
 def _is_boilerplate(line):
@@ -1267,6 +1371,7 @@ def parse_svbwa_statement_pdf(path, *, expected_signatures=()):
                     "market_value": r.market_value,
                     "cost_basis": r.cost_basis,
                     "unrealized_gain": r.unrealized_gain,
+                    **r.terms,
                 }
                 for r in rows
             ],
