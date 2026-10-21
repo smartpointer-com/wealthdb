@@ -185,7 +185,7 @@ def test_invesco_fetch_skips_a_missing_index_and_swaps(tmp_path):
     inv = Invesco()
     ctx = Context(client=api)
     claim = inv.claim(Fund(ref="isin:XX0000000940", isin="XX0000000940", name="Invesco Example UCITS ETF"), ctx)
-    assert claim == {"ref": "isin:XX0000000940", "site": "ucits", "id": "XX0000000940"}
+    assert claim == {"ref": "isin:XX0000000940", "site": "ucits", "id": "XX0000000940", "characteristics": False}
     assert inv.fetch(claim, None, tmp_path, ctx) == date(2026, 10, 12)
     got = inv.parse(tmp_path)
     assert [c["basis"] for c in got.compositions] == ["holdings"]

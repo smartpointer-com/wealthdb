@@ -203,10 +203,18 @@ func TestExposureYieldLabels(t *testing.T) {
 	check(`SELECT exposure_rating_label(?)`, map[string]string{"AAA": "AAA", "AA+": "AA", "Aa2": "AA", "Baa1": "BBB",
 		"(P)A2": "A", "AA Rated": "AA", "BB-": "BB", "Below B": "B", "B and below": "B", "BB and below": "B",
 		"CCC+": "B", "RD": "B", "Not Rated": "unrated", "N/A": "unrated", "Cash and/or Derivatives": "cash",
-		"Government": ""})
+		"Government": "", "aA": "AA", "bBB-": "BBB", "notRated": "unrated", "belowB": "B",
+		"cashand/orDerivatives": "cash", "cCCandbelow": "B", "bBandbelow": "B", "aA1": "AA", "aAA Rated": "AAA",
+		"AA1": "AA", "BAA2": "BBB", "A": "A", "BB": "BB"})
 	check(`SELECT exposure_maturity_label(?)`, map[string]string{"0 - 1 Years": "under 1y", "1 - 2 Years": "1-3y",
 		"2-3 Years": "1-3y", "3 - 5 Years": "3-5y", "7 - 10 Years": "5-10y", "15 - 20 Years": "10-20y",
-		"20+ Years": "over 20y", "10+ Years": "", "6-12 Months": "under 1y", "Cash": "cash", "Other": ""})
+		"20+ Years": "over 20y", "10+ Years": "", "6-12 Months": "under 1y", "Cash": "cash", "Other": "",
+		"> 30 Years": "over 20y", "> 10 Years": "", "Under 1 Year": "under 1y", "< 3 Years": "",
+		"5to10Years": "5-10y", "over20Years": "over 20y", "cashand/orDerivatives": "cash", "0 - 1 Year": "under 1y",
+		"0-1 Year": "under 1y", "5-10 Years": "5-10y", "1 - 5 Years": "", "10 - 30 Years": "", "1 to 3 Years": "1-3y",
+		"10 Years+": "", "20 Years+": "over 20y", "10PlusYears": "", "10 Years and over": "",
+		"20 Years and over": "over 20y", "lessthan1Year": "under 1y", "upto1Year": "under 1y",
+		"morethan20Years": "over 20y", "greaterthan20Years": "over 20y"})
 	for _, day := range []string{"2026-06-30", "2027-03-01"} {
 		cases := map[string]string{}
 		for _, b := range []struct {

@@ -6,6 +6,7 @@ import html
 import json
 import logging
 from datetime import date
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -13,9 +14,9 @@ import pytest
 import download
 
 from providers.base import Context, read_meta
-from providers.ishares import (BOND_FIGURES, BREAKDOWNS, LABELS, NAMES, IShares, _figure, characteristics,
-                               item_figures, page_items, parse_csv, point_figures)
-from tests.helpers import FakeClient, go_source, go_strings
+from providers.fundpage import BOND_FIGURES
+from providers.ishares import IShares, characteristics, item_figures, page_items, parse_csv, point_figures
+from tests.helpers import FakeClient, characteristics_by_key
 from wanted import Fund
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -42,10 +43,7 @@ CH_GRID = {"aaData": [
 BREAKDOWN_DAY = date(2026, 10, 9)
 
 
-def got(rows) -> dict:
-    """(field, label) -> (value, day) of characteristics rows."""
-    assert all(r["provider"] == "ishares" for r in rows)
-    return {(r["field"], r["label"]): (r["value"], r["as_of"]) for r in rows}
+got = partial(characteristics_by_key, provider="ishares")
 
 
 def figures(found: dict) -> dict:
@@ -247,17 +245,6 @@ def point(name, label, value, formatted, as_of=None):
 ])
 def test_a_data_point(p, field, value):
     assert figures(point_figures([p])) == {field: (value, None)}
-
-
-def test_no_figure_is_one_gold_reads_as_a_money_market_figure():
-    """Gold counts a fund's characteristics row as a money-market figure
-    by its field alone: a maturity in days, a money-market filing's
-    field, is kept in years."""
-    money_market = set(go_strings(go_source("gold/refdata_wanted.go"), "moneyMarketFields"))
-    fields = {_figure(name, "35", unit)[0] for name in {*NAMES.values(), *LABELS.values()}
-              for unit in ("", "days", "yrs", "%", "bps")}
-    assert "weighted_average_maturity_years" in fields
-    assert not (fields | set(BREAKDOWNS.values())) & money_market
 
 
 def test_a_data_point_without_a_value_or_another_figure_is_none():

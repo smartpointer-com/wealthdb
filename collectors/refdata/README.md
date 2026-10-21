@@ -82,6 +82,14 @@ before the holding began, from a provider that states the fact for past
 days, such as a filing. A date that gold holds the fact for, or that an
 earlier run fetched, is skipped.
 
+An issuer's fund page answers a fund's characteristics. A page that does
+not come leaves them due for the next run, and a warning names it. So
+does a page that comes in no layout its provider knows. A fund page that
+states no figure, such as an accumulating equity fund's, still answers
+them for `max_age_days`. iShares checks no layout: its page answers them
+only where it states a figure. Each provider section says what its fund
+page is.
+
 The durations of a fund's lines come only with a composition that
 states them, such as an iShares bond fund's holdings file. No request
 asks for them alone. A run asks for them when it asks such a provider
@@ -301,7 +309,7 @@ figures are at most about five weeks old.
 ### spdr
 
 State Street's SPDR ETFs, US and UCITS, from the daily holdings file
-each fund page links.
+each fund page links and the figures the page states.
 
 - The fund is found by its ISIN or CUSIP in State Street's fund finder,
   or by its ticker among the US funds.
@@ -311,14 +319,32 @@ each fund page links.
   the fund's remainder.
 - The file is today's holdings; there is no history.
 
+The fund page states figures for the fund as a whole:
+
+- a bond fund's duration, its yields to maturity and to worst, its
+  average coupon, its average maturity in years, its option-adjusted
+  spread and its convexity;
+- the 30-day SEC yield (US funds) and the distribution yield;
+- a bond fund's credit-quality breakdown and maturity ladder.
+
+An equity fund's page states its P/E only as a forecast for the next
+fiscal year, so the P/E is not read. The figures of the fund's index are
+not read either. A UCITS page writes decimal commas. The page names its
+own number format, and its figures are read through it.
+
+For a fund that wants characteristics, a fetch makes one more request,
+for this page. Each figure carries the day its table states, else the
+day of the holdings file. A page without a table of the fund's figures
+is no fund page.
+
 **Terms.** State Street's site terms allow "producing print-outs for
 your own personal use", and forbid publishing or redistributing the
 content "for other than use for or on behalf of yourself". Its
-robots.txt leaves the fund finder and the holdings files open. Each
-file's footer adds: "The whole or any part of this work may not be
-reproduced, copied or transmitted or any of its contents disclosed to
-third parties without State Street Investment Management's express
-written consent." Off until `providers` names it.
+robots.txt leaves the fund finder, the fund pages and the holdings
+files open. Each file's footer adds: "The whole or any part of this
+work may not be reproduced, copied or transmitted or any of its
+contents disclosed to third parties without State Street Investment
+Management's express written consent." Off until `providers` names it.
 
 ### sprott
 
@@ -429,9 +455,7 @@ For a fund that wants characteristics, a US fetch makes one more
 request, for this page. It keeps the fund's entry in the product list,
 which fills a figure the page lacks. A Swiss fetch keeps the page it
 already reads. Each figure carries the day the page or the entry states
-for it, else the day of the site's newest holdings. Where the page does
-not come, or no figure is found, the characteristics stay due for the
-next run.
+for it, else the day of the site's newest holdings.
 
 **Terms.** BlackRock's terms forbid using "any robot, spider,
 intelligent agent, other automatic device, or manual process to search,
@@ -441,7 +465,8 @@ use". Off until `providers` names it.
 
 ### xtrackers
 
-DWS's Xtrackers ETFs, from the constituent export each fund page links.
+DWS's Xtrackers ETFs, from the constituent export each fund page links
+and the figures the page states.
 
 - A fund is claimed by its ISIN when its name names the issuer, as
   brokers write it.
@@ -452,12 +477,22 @@ DWS's Xtrackers ETFs, from the constituent export each fund page links.
   swap-replicated fund exports its substitute basket, not the index:
   name a proxy with `always` for such a fund.
 
+The fund page states a bond fund's effective duration, yield to worst
+and average coupon. It states no figure of an equity fund's own: the
+P/E and the dividend yield it shows are its index's. It shows no
+credit-quality or maturity breakdown.
+
+The page is a script app. For a fund that wants characteristics, a
+fetch makes one more request, for the data the page reads. Each figure
+carries the day the page states, else the day of the fetch. Data
+without the fund's key facts is no fund page's.
+
 **Terms.** DWS's robots.txt disallows `/etfdata/*` and `/export/*`, the
-export's path. DWS's legal notice states no rule on automated access.
-The export's first row reads: "Although information in this document
-has been obtained from sources believed to be reliable, DWS does not
-guarantee its accuracy, completeness or fairness". Off until
-`providers` names it.
+export's path. It leaves the page data (`/api/`) open. DWS's legal
+notice states no rule on automated access. The export's first row
+reads: "Although information in this document has been obtained from
+sources believed to be reliable, DWS does not guarantee its accuracy,
+completeness or fairness". Off until `providers` names it.
 
 ### invesco
 
@@ -471,6 +506,27 @@ Invesco's ETFs, from the data API its fund pages read.
   index lines, and each counterparty is a row of role `swap`.
 - US: the holdings with ticker, CUSIP, units and security type.
 - The API serves the current holdings only.
+
+A fund page reads its figures from the same API:
+
+- a bond fund's effective duration, yield to maturity, average coupon
+  and maturity in years; a US bond fund's yield to worst too;
+- a US equity fund's P/E;
+- the distribution yield; a US fund's 30-day SEC yield and 12-month
+  distribution rate, read as its trailing yield;
+- a bond fund's credit-quality and maturity breakdowns.
+
+The forward P/E is a forecast, so it is not read. A UCITS fund's
+answers name a breakdown's parts by a key, such as `aA` or
+`5to10Years`. They are kept as named.
+
+For a fund that wants characteristics, a fetch makes two more requests:
+the fund's characteristics and its yields. For a bond fund it makes two
+more, for the breakdowns. A view of the fund page makes more requests
+than these. Each figure carries the day its answer states, else the day
+of the holdings. Answers of which none is an object are no fund page's.
+The answers name no asset class: a fund whose characteristics state a
+bond figure reads no P/E.
 
 **Terms.** Invesco's terms grant "a limited, non-exclusive and
 revocable license to access and make personal use of the Website", and

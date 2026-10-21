@@ -306,25 +306,36 @@ CREATE OR REPLACE MACRO exposure_leaves(p_asof, p_ccy, p_country := 'risk') AS T
      WHERE c.value IS NOT NULL
 );
 
+-- exposure_label_words: a camel-cased key as words: its first letter in
+-- upper case, then a space at each step from lower to upper case and
+-- after a figure (aA as AA, notRated as Not Rated, 5to10Years as 5 to10
+-- Years). A label in words stays as it is.
+CREATE OR REPLACE MACRO exposure_label_words(p_label) AS
+    regexp_replace(regexp_replace(upper(left(p_label, 1)) || substr(p_label, 2), '([a-z])([A-Z])', '\1 \2', 'g'),
+                   '([0-9])([A-Za-z])', '\1 \2', 'g');
+
 -- exposure_rating_label: the bucket of a label a fund's credit-quality
 -- breakdown or a description states (AAA, AA+, Baa1, (P)A2, AA Rated,
--- Below B, B and below, Not Rated, Cash and/or Derivatives): AAA to B (B
--- and below; a grade of default among them), unrated, cash, else NULL.
+-- Below B, B and below, Not Rated, Cash and/or Derivatives, or the same
+-- as one camel-cased key: aA, notRated, cCCandbelow): AAA to B (B and
+-- below; a grade of default among them), unrated, cash, else NULL.
 -- exposure_rating_grade reads a label once it is upper case and bare.
 CREATE OR REPLACE MACRO exposure_rating_grade(g) AS
     CASE WHEN g LIKE 'CASH%' OR g LIKE '%DERIVATIVE%' THEN 'cash'
-         WHEN g IN ('NR', 'N/R', 'NOT RATED', 'UNRATED', 'NON RATED', 'NON-RATED', 'NO RATING', 'N/A', 'NA', 'WR',
-                    'WD') THEN 'unrated'
+         WHEN g IN ('NR', 'N/R', 'NOT RATED', 'NOTRATED', 'UNRATED', 'NON RATED', 'NON-RATED', 'NONRATED',
+                    'NO RATING', 'NORATING', 'N/A', 'NA', 'WR', 'WD') THEN 'unrated'
          WHEN regexp_matches(g, '^AAA[+-]?( RATED)?$') THEN 'AAA'
          WHEN regexp_matches(g, '^(AA[+-]?|AA[1-3])( RATED)?$') THEN 'AA'
          WHEN regexp_matches(g, '^(A[+-]?|A[1-3])( RATED)?$') THEN 'A'
          WHEN regexp_matches(g, '^(BBB[+-]?|BAA[1-3]?)( RATED)?$') THEN 'BBB'
          WHEN regexp_matches(g, '^(BB[+-]?|BA[1-3]?)( RATED)?$') THEN 'BB'
-         WHEN regexp_matches(g, '^(B[+-]?|B[1-3]|CCC.*|CC|C|D|DD|DDD|RD|SD|CAA.*|CA|BELOW [BC].*|BB? AND BELOW)( RATED)?$')
+         WHEN regexp_matches(g,
+                  '^(B[+-]?|B[1-3]|CCC.*|CC|C|D|DD|DDD|RD|SD|CAA.*|CA|BELOW ?[BC].*|BB? ?AND ?BELOW)( RATED)?$')
               THEN 'B' END;
 
 CREATE OR REPLACE MACRO exposure_rating_label(p_label) AS
-    exposure_rating_grade(regexp_replace(trim(regexp_replace(regexp_replace(upper(trim(COALESCE(p_label, ''))),
+    exposure_rating_grade(regexp_replace(trim(regexp_replace(regexp_replace(upper(
+        exposure_label_words(trim(COALESCE(p_label, '')))),
         '^\(P\)\s*', ''), '[*()]', '', 'g')), '\s+', ' ', 'g'));
 
 -- exposure_maturity_band: the bucket of a time to maturity in years.
@@ -332,21 +343,40 @@ CREATE OR REPLACE MACRO exposure_maturity_band(p_years) AS
     CASE WHEN p_years < 1 THEN 'under 1y' WHEN p_years < 3 THEN '1-3y' WHEN p_years < 5 THEN '3-5y'
          WHEN p_years < 10 THEN '5-10y' WHEN p_years < 20 THEN '10-20y' ELSE 'over 20y' END;
 
--- exposure_maturity_years: the lower bound of a band a fund's maturity
+-- exposure_maturity_years: the first figure of a band a fund's maturity
 -- breakdown states, in years (a band in months over twelve).
+-- exposure_maturity_upper: its second, after a dash or TO; NULL for one
+-- figure.
 CREATE OR REPLACE MACRO exposure_maturity_years(p_label) AS
-    CAST(regexp_extract(p_label, '^\s*([0-9]+(\.[0-9]+)?)', 1) AS DOUBLE)
+    TRY_CAST(regexp_extract(p_label, '([0-9]+(\.[0-9]+)?)', 1) AS DOUBLE)
+        / CASE WHEN upper(p_label) LIKE '%MONTH%' THEN 12 ELSE 1 END;
+
+CREATE OR REPLACE MACRO exposure_maturity_upper(p_label) AS
+    TRY_CAST(regexp_extract(upper(p_label), '[0-9.]+\s*(-|–|TO)\s*([0-9]+(\.[0-9]+)?)', 2) AS DOUBLE)
         / CASE WHEN upper(p_label) LIKE '%MONTH%' THEN 12 ELSE 1 END;
 
 -- exposure_maturity_label: the bucket of a band a fund's maturity
--- breakdown states (0 - 1 Years, 6-12 Months, 20+ Years): by its lower
--- bound; an open band below 20 years spans buckets and reads NULL; cash;
--- else NULL.
+-- breakdown states (0 - 1 Years, 6-12 Months, 20+ Years, > 30 Years,
+-- Under 1 Year, 10 Years and over, or one camel-cased key: 5to10Years).
+-- A band that lies in one bucket reads that bucket. One that spans
+-- buckets reads NULL: a closed band across a bucket's edge, an open band
+-- from under 20 years up, one up to more than a year. Cash; else NULL.
+-- exposure_maturity_words reads a band once it is upper case and spaced.
+CREATE OR REPLACE MACRO exposure_maturity_words(u) AS
+    CASE WHEN u LIKE 'CASH%' OR u LIKE '%DERIVATIVE%' THEN 'cash'
+         WHEN regexp_matches(u, '^(>|OVER|MORE ?THAN|GREATER ?THAN|ABOVE)\s*[0-9]')
+              OR regexp_matches(u, '^[0-9.]+\s*(\+|PLUS\b)')
+              OR regexp_matches(u, '^[0-9].*(\+| AND (OVER|ABOVE|LONGER)| OR (MORE|LONGER))$') THEN
+              CASE WHEN exposure_maturity_years(u) >= 20 THEN 'over 20y' END
+         WHEN regexp_matches(u, '^(<|UNDER|LESS ?THAN|UP ?TO|BELOW)\s*[0-9]') THEN
+              CASE WHEN exposure_maturity_years(u) <= 1 THEN 'under 1y' END
+         WHEN NOT regexp_matches(u, '^[0-9]') THEN NULL
+         WHEN exposure_maturity_upper(u) IS NOT NULL AND exposure_maturity_band(exposure_maturity_years(u))
+              <> exposure_maturity_band(exposure_maturity_upper(u) - 1e-6) THEN NULL
+         ELSE exposure_maturity_band(exposure_maturity_years(u)) END;
+
 CREATE OR REPLACE MACRO exposure_maturity_label(p_label) AS
-    CASE WHEN upper(p_label) LIKE 'CASH%' OR upper(p_label) LIKE '%DERIVATIVE%' THEN 'cash'
-         WHEN NOT regexp_matches(COALESCE(p_label, ''), '^\s*[0-9]') THEN NULL
-         WHEN regexp_matches(p_label, '^\s*[0-9.]+\s*\+') AND exposure_maturity_years(p_label) < 20 THEN NULL
-         ELSE exposure_maturity_band(exposure_maturity_years(p_label)) END;
+    exposure_maturity_words(upper(trim(exposure_label_words(trim(COALESCE(p_label, ''))))));
 
 -- exposure_maturity_bucket: the bucket of a maturity on a day: under a
 -- year to over 20 years, perpetual from a century on. A maturity exactly

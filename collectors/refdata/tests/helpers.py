@@ -252,6 +252,13 @@ def pdf(pages) -> bytes:
     return bytes(out)
 
 
+def characteristics_by_key(rows, provider: str) -> dict:
+    """(field, label) -> (value, day) of characteristics rows, each of
+    `provider`."""
+    assert all(r["provider"] == provider for r in rows)
+    return {(r["field"], r["label"]): (r["value"], r["as_of"]) for r in rows}
+
+
 def go_source(path) -> str:
     """A Go file of the engine (wealthdb/internal/<path>): a vocabulary
     the collector repeats is read from it, so a value renamed on one side

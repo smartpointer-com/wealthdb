@@ -1,0 +1,330 @@
+{
+ "pdpResult": {
+  "pageFrame": {
+   "productHeader": {
+    "texts": {
+     "title": "Example Bond Fund D"
+    },
+    "identifier": [
+     {
+      "key": "ISIN",
+      "value": "XX0000000960"
+     },
+     {
+      "key": "Ticker",
+      "value": "XMPBDD LN"
+     }
+    ]
+   }
+  },
+  "pagePopups": {
+   "hideEntryGate": false
+  },
+  "pageSections": {
+   "keyFacts": {
+    "tables": [],
+    "accordionItems": [
+     {
+      "id": "fundinformation-basicinformation",
+      "type": "Bundle",
+      "headlineText": "Fund key facts",
+      "expanded": true,
+      "listBundle": [
+       {
+        "items": [
+         {
+          "value": "XX0000000960",
+          "key": "ISIN",
+          "type": "STRING",
+          "isHighlighted": false
+         },
+         {
+          "value": "XMPBDD LN",
+          "key": "Ticker",
+          "type": "STRING",
+          "isHighlighted": false
+         },
+         {
+          "value": "15/03/2019",
+          "key": "Share class launch date",
+          "type": "STRING",
+          "isHighlighted": false
+         },
+         {
+          "value": true,
+          "key": "UCITS compliant",
+          "type": "BOOL",
+          "isHighlighted": false
+         },
+         {
+          "value": "EUR",
+          "key": "Share class currency",
+          "type": "STRING",
+          "isHighlighted": false
+         },
+         {
+          "value": "Capitalizing",
+          "key": "Income treatment",
+          "type": "STRING",
+          "isHighlighted": false
+         },
+         {
+          "value": true,
+          "key": "Securities lending<PageFootnoteReference component-id='fundinformation-basicinformation' title=\"See the section on securities lending.\"></PageFootnoteReference>",
+          "type": "BOOL",
+          "isHighlighted": false
+         }
+        ],
+        "id": "fundinformation-basicinformation",
+        "headlineText": "",
+        "disclaimers": [],
+        "scope": "fundinformation-basicinformation",
+        "expanded": true
+       }
+      ],
+      "disclaimers": []
+     },
+     {
+      "id": "fundinformation-feesandexpenses",
+      "type": "List",
+      "headlineText": "Fund fees and expenses p.a.",
+      "subHeadlineText": "Fund (ETF)",
+      "expanded": true,
+      "list": {
+       "items": [
+        {
+         "value": "0.02%",
+         "key": "Fund management company fee",
+         "type": "STRING",
+         "isHighlighted": false
+        },
+        {
+         "value": "+ 0.08%",
+         "key": "Fund fixed fee",
+         "type": "STRING",
+         "isHighlighted": false
+        },
+        {
+         "value": "= 0.10%",
+         "key": "Fund all-in fee (TER)",
+         "type": "STRING",
+         "isHighlighted": false
+        }
+       ],
+       "id": "fundinformation-feesandexpenses",
+       "headlineText": "Fund fees and expenses p.a.",
+       "disclaimers": [
+        {
+         "text": "<p>The all-in fee comprises the fixed fee and the management company fee.</p>",
+         "disableDefaultWrapping": true
+        }
+       ],
+       "scope": "fundinformation-feesandexpenses",
+       "expanded": true
+      },
+      "disclaimers": []
+     },
+     {
+      "id": "fundinformation-currentdata",
+      "type": "Bundle",
+      "headlineText": "Current data",
+      "expanded": true,
+      "listBundle": [
+       {
+        "items": [
+         {
+          "value": "104.20 EUR",
+          "key": "NAV",
+          "type": "STRING",
+          "isHighlighted": false
+         },
+         {
+          "value": "12/10/2026",
+          "key": "NAV date",
+          "type": "STRING",
+          "isHighlighted": false
+         },
+         {
+          "value": "2,450,000",
+          "key": "Outstanding shares",
+          "type": "STRING",
+          "isHighlighted": false
+         },
+         {
+          "value": "255.29 M EUR",
+          "key": "Total AUM of fund",
+          "type": "STRING",
+          "isHighlighted": false
+         }
+        ],
+        "id": "fundinformation-currentdata",
+        "headlineText": "",
+        "disclaimers": [],
+        "scope": "fundinformation-currentdata",
+        "expanded": true
+       }
+      ],
+      "disclaimers": []
+     },
+     {
+      "id": "fundinformation-portfoliocharacteristics",
+      "type": "Bundle",
+      "headlineText": "Portfolio characteristics",
+      "expanded": true,
+      "listBundle": [
+       {
+        "items": [
+         {
+          "value": "512",
+          "key": "Number of holdings",
+          "type": "STRING",
+          "isHighlighted": false
+         },
+         {
+          "value": "6.45",
+          "key": "Effective duration",
+          "type": "STRING",
+          "isHighlighted": false
+         },
+         {
+          "value": "6.38",
+          "key": "Modified duration",
+          "type": "STRING",
+          "isHighlighted": false
+         },
+         {
+          "value": "3.21%",
+          "key": "Yield to worst",
+          "type": "STRING",
+          "isHighlighted": false
+         },
+         {
+          "value": "2.48%",
+          "key": "Coupon",
+          "type": "STRING",
+          "isHighlighted": false
+         }
+        ],
+        "id": "fundinformation-portfoliocharacteristics",
+        "headlineText": "",
+        "disclaimers": [],
+        "scope": "fundinformation-portfoliocharacteristics",
+        "expanded": true
+       }
+      ],
+      "disclaimers": [
+       {
+        "text": "As of 09/10/2026",
+        "disableDefaultWrapping": true
+       }
+      ]
+     }
+    ],
+    "disclaimers": []
+   },
+   "portfolio": {
+    "charts": {
+     "cards": [
+      {
+       "title": "Security type",
+       "asOfDate": "",
+       "data": [
+        {
+         "id": "0",
+         "allocationName": "Government Bond",
+         "weighting": 0.985,
+         "weightingText": "0.99%"
+        },
+        {
+         "id": "1",
+         "allocationName": "Cash",
+         "weighting": 0.015,
+         "weightingText": "0.02%"
+        }
+       ]
+      }
+     ],
+     "downloadLinks": []
+    },
+    "tables": [],
+    "accordionItems": [],
+    "id": "etf-portfolio",
+    "headlineText": "Fund portfolio",
+    "asOfDate": "09/10/2026"
+   },
+   "indexKeyFacts": {
+    "tables": [],
+    "accordionItems": [
+     {
+      "id": "indexinformation-keyfacts",
+      "type": "List",
+      "headlineText": "Index key facts",
+      "expanded": false,
+      "list": {
+       "items": [
+        {
+         "value": "Example Bond Index D",
+         "key": "Index name",
+         "type": "STRING",
+         "isHighlighted": false
+        },
+        {
+         "value": "3.40%",
+         "key": "Maturity yield",
+         "type": "STRING",
+         "isHighlighted": false
+        },
+        {
+         "value": "6.60",
+         "key": "Duration",
+         "type": "STRING",
+         "isHighlighted": false
+        },
+        {
+         "value": "498",
+         "key": "Constituents count",
+         "type": "STRING",
+         "isHighlighted": false
+        }
+       ],
+       "id": "indexinformation-keyfacts",
+       "headlineText": "Index key facts",
+       "disclaimers": [
+        {
+         "text": "<p>Source: DWS 30/09/2026</p>",
+         "disableDefaultWrapping": true
+        }
+       ],
+       "scope": "indexinformation-keyfacts",
+       "expanded": false
+      },
+      "disclaimers": []
+     }
+    ]
+   }
+  }
+ },
+ "tealium": {
+  "attributes": {
+   "product_id": "XX0000000960",
+   "product_ticker": "XX0000000960",
+   "product_name": "Example Bond Fund D",
+   "product_type": "ETF",
+   "product_category": [
+    "Fixed Income"
+   ],
+   "product_subcategory": [
+    "Developed Markets",
+    "Eurozone",
+    "Capitalizing",
+    "Government Bonds"
+   ],
+   "product_brand": "XTrackers"
+  }
+ },
+ "metaTags": {
+  "title": "Example Bond Fund D | XX0000000960 | XMPBDD LN",
+  "culture": "en-gb",
+  "language": "en"
+ }
+}

@@ -56,15 +56,12 @@ import json
 import logging
 import re
 from datetime import date
-from decimal import Decimal
-from html.parser import HTMLParser
 from pathlib import Path
 
-import fetcher
 from collectorkit import bronze
 
-from . import table
-from .base import Parsed, Provider, ProviderError, Unavailable, dec, listed, read_json, read_meta, row, write_meta
+from . import fundpage, table
+from .base import Parsed, Provider, ProviderError, Unavailable, dec, listed, read_json, read_meta, write_meta
 
 HOST = "https://www.ishares.com"
 SCREENERS = {
@@ -97,8 +94,8 @@ NAMES = {
     "convexity": "convexity",
     "priceEarnings": "price_earnings",
 }
-# The same figures by the label a page shows, as _label() writes it, for
-# a figure under a name NAMES does not hold.
+# The same figures by the label a page shows, as fundpage.label() writes
+# it, for a figure under a name NAMES does not hold.
 LABELS = {
     "effective duration": "effective_duration",
     "average yield to maturity": "yield_to_maturity",
@@ -115,17 +112,6 @@ LABELS = {
 }
 # The breakdowns of a US page's exposure component, by container.
 BREAKDOWNS = {"rating": "credit_quality", "maturity": "maturity_breakdown"}
-# The figures of a bond portfolio and those of a stock portfolio, and
-# the fields that do not apply to a fund by the asset class its page or
-# product-list entry states, as _label() writes it.
-BOND_FIGURES = frozenset({"effective_duration", "yield_to_maturity", "yield_to_worst", "weighted_average_coupon",
-                          "weighted_average_maturity_years", "option_adjusted_spread_bp", "convexity",
-                          *BREAKDOWNS.values()})
-EQUITY_FIGURES = frozenset({"price_earnings"})
-NOT_APPLICABLE = {"equity": BOND_FIGURES, "real estate": BOND_FIGURES, "commodity": BOND_FIGURES | EQUITY_FIGURES,
-                  "fixed income": EQUITY_FIGURES, "money market": EQUITY_FIGURES}
-# A figure as a page writes it: 5.84 yrs, 4.25%, 35 bps.
-FIGURE = re.compile(r"(?P<number>[-+]?[\d.,]*\d)\s*(?P<unit>%|bps?|yrs?|years?|days?)?", re.I)
 # A product-list entry's key words per figure, as _key() writes keys
 # (lower case letters and digits): a key that holds one of a figure's
 # words and none of NOT_FIGURE_KEYS states that figure.
@@ -143,9 +129,6 @@ PRODUCT_KEYS = (
     ("price_earnings", ("priceearnings",)),
 )
 NOT_FIGURE_KEYS = ("asof", "date", "unsub", "benchmark", "index", "real", "monthend", "quarterend")
-# The days in a year, to turn a weighted average maturity in days into
-# years.
-DAYS_A_YEAR = Decimal("365.25")
 
 log = logging.getLogger("refdata.ishares")
 
@@ -226,15 +209,11 @@ class IShares(Provider):
             if claim["characteristics"]:
                 product = claim["product"]
                 bronze.atomic_write_json(outdir / PRODUCT_DOC, product)
-                try:
-                    page = ctx.client.get(HOST + claim["page"]).body
-                except fetcher.FetchError as e:
-                    log.warning("%s: its fund page did not come: %s", claim["ref"], e)
-                    missing = _missing([])
-                else:
-                    bronze.atomic_write_bytes(outdir / PAGE_DOC, page)
-                    missing = _missing(characteristics(page.decode("utf-8", "replace"), product, claim["ref"], day,
-                                                       provider=self.name))
+                got = fundpage.fetch(ctx, HOST + claim["page"], claim["ref"], log=log)
+                if got is not None:
+                    bronze.atomic_write_bytes(outdir / PAGE_DOC, got[0])
+                missing = fundpage.missing(got is not None and characteristics(got[1], product, claim["ref"], day,
+                                                                               provider=self.name))
             write_meta(outdir, provider=self.name, ref=claim["ref"], site="us", as_of=day.isoformat(), **missing)
             return day
         page = self._page(claim, ctx)
@@ -254,8 +233,8 @@ class IShares(Provider):
         # The page states today's characteristics whichever day's holdings
         # it serves: a figure it states no day for is the newest day's.
         page_as_of = max(page["dates"])
-        missing = _missing(characteristics(html_page.decode("utf-8", "replace"), {}, claim["ref"], page_as_of,
-                                           provider=self.name)) if claim["characteristics"] else {}
+        missing = fundpage.missing(characteristics(html_page.decode("utf-8", "replace"), {}, claim["ref"],
+                                                   page_as_of, provider=self.name)) if claim["characteristics"] else {}
         write_meta(outdir, provider=self.name, ref=claim["ref"], site="ch", as_of=day.isoformat(),
                    columns=page["columns"], name=claim.get("name"), page_as_of=page_as_of.isoformat(), **missing)
         return day
@@ -279,12 +258,6 @@ class IShares(Provider):
 
     def probe(self, ctx) -> str:
         return f"iShares product lists: {len(self._index(ctx))} identifiers"
-
-
-def _missing(rows: list) -> dict:
-    """meta.json's facts_missing for a fund that wants characteristics:
-    none where its files state some; else the planner keeps them due."""
-    return {} if rows else {"facts_missing": ["characteristics"]}
 
 
 def _csv_day(rows: list) -> date | None:
@@ -340,81 +313,39 @@ def holdings_page(page: str) -> dict:
     return {"columns": columns, "dates": sorted(days)}
 
 
-class _Items(HTMLParser):
+class _Items(fundpage.TagStack):
     """The data items of a Swiss-site fund page: per `product-data-item`
     div, the name its `col-<name>` class gives and the text of its
     caption, its as-of-date and its data. A button's text (a tooltip's
     icon) is no caption."""
-    VOID = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track",
-                      "wbr"})
     PARTS = ("caption", "as-of-date", "data")
 
     def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.items, self._open, self._item = [], [], None
+        super().__init__()
+        self.items, self._item = [], None
 
-    def handle_starttag(self, tag, attrs):
-        if tag in self.VOID:
-            return
-        classes = (dict(attrs).get("class") or "").split()
-        part = None
+    def start(self, tag, classes, attrs):
         if tag == "div" and "product-data-item" in classes:
             self._item = {"name": next((c[4:] for c in classes if c.startswith("col-")), ""),
                           **{k: [] for k in self.PARTS}}
             self.items.append(self._item)
-            part = "item"
-        elif tag in ("button", "script", "style"):
-            part = "skip"
-        elif self._item is not None:
-            part = next((k for k in self.PARTS if k in classes), None)
-        self._open.append((tag, part))
+            return "item"
+        if tag in ("button", "script", "style"):
+            return "skip"
+        if self._item is not None:
+            return next((k for k in self.PARTS if k in classes), None)
+        return None
 
-    def handle_endtag(self, tag):
-        for i in range(len(self._open) - 1, -1, -1):
-            if self._open[i][0] == tag:
-                if any(part == "item" for _, part in self._open[i:]):
-                    self._item = None
-                del self._open[i:]
-                return
+    def closed(self, parts):
+        if "item" in parts:
+            self._item = None
 
     def handle_data(self, data):
-        parts = [part for _, part in self._open if part]
+        parts = self.parts()
         if self._item is not None and "skip" not in parts:
             part = next((k for k in reversed(parts) if k in self.PARTS), None)
             if part:
                 self._item[part].append(data)
-
-
-def _label(text) -> str:
-    """A label as LABELS holds it: lower case, without a trailing "as of"
-    (a US page names a figure's second appearance so)."""
-    s = " ".join(str(text or "").lower().split())
-    return re.sub(r"\s*\bas of$", "", s).rstrip(": ")
-
-
-def _number(text):
-    """(number, unit) of a figure as a page writes it (6.12 yrs, 4.01%,
-    35 bps, 1’234), or (None, "") where the text is no figure."""
-    m = FIGURE.fullmatch(str(text).replace("’", "").replace("'", "").strip()) if text is not None else None
-    return (m["number"], (m["unit"] or "").lower()) if m else (None, "")
-
-
-def _figure(name: str, number, unit: str):
-    """(field, value) of figure `name`, or None where `number` is no
-    decimal or is zero. A weighted average maturity is kept in years, one
-    stated in days converted to four decimals: gold reads
-    weighted_average_maturity, in days, as a money-market figure. A spread
-    in percent is turned into basis points."""
-    value = dec(number)
-    if value is None or Decimal(value) == 0:
-        return None
-    if name == "weighted_average_maturity":
-        if unit.startswith("day"):
-            value = dec((Decimal(value) / DAYS_A_YEAR).quantize(Decimal("0.0001")))
-        return "weighted_average_maturity_years", value
-    if name == "option_adjusted_spread":
-        return "option_adjusted_spread_bp", dec(Decimal(value) * 100) if unit == "%" else value
-    return name, value
 
 
 def _keep(out: dict, name: str, got) -> None:
@@ -475,13 +406,13 @@ def point_figures(points: list) -> dict:
     named, labelled = {}, {}
     for p in points:
         name = NAMES.get(str(p.get("name")))
-        out, name = (named, name) if name else (labelled, LABELS.get(_label(p.get("label"))))
+        out, name = (named, name) if name else (labelled, LABELS.get(fundpage.label(p.get("label"))))
         if name is None:
             continue
-        number, unit = _number(p.get("formattedValue"))
+        number, unit = fundpage.number(p.get("formattedValue"))
         if dec(p.get("value")) is not None:
             number = p["value"]
-        got = _figure(name, number, unit)
+        got = fundpage.figure(name, number, unit)
         if got is not None:
             day = table.parse_day(p.get("asOfDate")) or table.parse_day(p.get("formattedAsOfDate"))
             _keep(out, name, (*got, day, {"source": "page", "name": p.get("name")}))
@@ -507,8 +438,8 @@ def item_figures(items: list) -> dict:
     for item in items:
         caption, when, data = (item[k] for k in _Items.PARTS)
         name = NAMES.get(item["name"])
-        out, name = (named, name) if name else (labelled, LABELS.get(_label(caption)))
-        got = _figure(name, *_number(data)) if name else None
+        out, name = (named, name) if name else (labelled, LABELS.get(fundpage.label(caption)))
+        got = fundpage.figure(name, *fundpage.number(data)) if name else None
         if got is not None:
             _keep(out, name, (*got, table.parse_day(when), {"source": "page", "name": item["name"] or caption}))
     return {**labelled, **named}
@@ -537,7 +468,7 @@ def product_figures(product: dict) -> dict:
         if any(w in k for w in NOT_FIGURE_KEYS):
             continue
         name = next((n for n, words in PRODUCT_KEYS if any(w in k for w in words)), None)
-        got = _figure(name, *_number(_display(value))) if name and name not in out else None
+        got = fundpage.figure(name, *fundpage.number(_display(value))) if name and name not in out else None
         if got is not None:
             when = _display(keys.get(k + "asof") or keys.get(k + "asofdate"))
             out[name] = (*got, table.parse_day(when), {"source": "product", "name": key})
@@ -549,8 +480,8 @@ def property_figures(properties: list) -> dict:
     JSON-LD states as a PropertyValue, by its name. It states no day."""
     out = {}
     for p in properties:
-        name = LABELS.get(_label(p.get("name")))
-        got = _figure(name, *_number(p.get("value"))) if name else None
+        name = LABELS.get(fundpage.label(p.get("name")))
+        got = fundpage.figure(name, *fundpage.number(p.get("value"))) if name else None
         if got is not None:
             _keep(out, name, (*got, None, {"source": "json-ld", "name": p.get("name")}))
     return out
@@ -558,11 +489,11 @@ def property_figures(properties: list) -> dict:
 
 def asset_class(state: dict, items: list, product: dict) -> str:
     """The asset class a fund's page (a US data point, a Swiss data item)
-    or product-list entry states, as _label() writes it, else ""."""
+    or product-list entry states, as fundpage.label() writes it, else ""."""
     stated = [p.get("value") or p.get("formattedValue") for p in state["points"] if p.get("name") == "assetClass"]
     stated += [i["data"] for i in items if i["name"] == "assetClass"]
     stated.append(_display(product.get("aladdinAssetClass")))
-    return next((_label(s) for s in stated if isinstance(s, str) and _label(s) not in ("", "-")), "")
+    return next((fundpage.label(s) for s in stated if isinstance(s, str) and fundpage.label(s) not in ("", "-")), "")
 
 
 def _point(points: dict, name: str):
@@ -570,27 +501,19 @@ def _point(points: dict, name: str):
     return (points.get(name) or {}).get("value")
 
 
-def breakdowns(exposure: dict, ref: str, day: date, *, provider: str) -> list:
-    """The characteristics rows of a US page's exposure component: per
-    container BREAKDOWNS names, one row per part, its label the
+def breakdowns(exposure: dict) -> list:
+    """The breakdown parts (fundpage.parts()) of a US page's exposure
+    component: per container BREAKDOWNS names, a part's label is the
     container's `type` and its value the `fund` share, dated by the
-    container's asOf. A part of no share is no row."""
+    container's asOf."""
     maps = next((d["containersByNameMap"] for d in _dicts(exposure)
                  if isinstance(d.get("containersByNameMap"), dict)), {})
     out = []
     for container, field in BREAKDOWNS.items():
         points = (maps.get(container) or {}).get("dataPointsByNameMap") or {}
         labels, shares = _point(points, "type"), _point(points, "fund")
-        if not isinstance(labels, list) or not isinstance(shares, list):
-            continue
-        when = table.parse_day(_point(points, "asOf")) or day
-        seen = set()
-        for label, share in zip(labels, shares, strict=False):
-            label, value = " ".join(str(label or "").split()), dec(share)
-            if label and value is not None and Decimal(value) != 0 and label not in seen:
-                seen.add(label)
-                out.append(row("characteristics", fund_ref=ref, as_of=when, provider=provider, field=field,
-                               label=label, value=value))
+        if isinstance(labels, list) and isinstance(shares, list):
+            out += fundpage.parts(field, zip(labels, shares, strict=False), table.parse_day(_point(points, "asOf")))
     return out
 
 
@@ -600,16 +523,13 @@ def characteristics(page: str, product: dict, ref: str, day: date, *, provider: 
     product-list entry, else the page's JSON-LD; the breakdowns from a US
     page's exposure component. A figure is dated by the day stated for
     it, else `day`; a figure none states, or one the fund's asset class
-    has no use for (NOT_APPLICABLE), is no row."""
+    has no use for (fundpage.NOT_APPLICABLE), is no row."""
     state, items = page_state(page), page_items(page)
     figures = point_figures(state["points"])
     for more in (item_figures(items), product_figures(product), property_figures(state["properties"])):
         for name, got in more.items():
             figures.setdefault(name, got)
-    out = [row("characteristics", fund_ref=ref, as_of=when or day, provider=provider, field=field, value=value,
-               payload=payload)
-           for field, value, when, payload in figures.values()]
-    if state["exposure"] is not None:
-        out += breakdowns(state["exposure"], ref, day, provider=provider)
-    skip = NOT_APPLICABLE.get(asset_class(state, items, product), frozenset())
-    return [r for r in out if r["field"] not in skip]
+    parts = breakdowns(state["exposure"]) if state["exposure"] is not None else []
+    return fundpage.rows({field: (value, when, payload) for field, value, when, payload in figures.values()}, parts,
+                         ref, day, provider=provider,
+                         skip=fundpage.not_applicable(asset_class(state, items, product)))
