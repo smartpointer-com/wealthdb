@@ -22,7 +22,7 @@ export WEALTHDB_SECRETS_DIR="$TMP/secrets"
 mkdir -p "$WEALTHDB_SECRETS_DIR"
 
 echo "host-venv wrappers, unknown verb:"
-for name in fred manual plaid schwab-api svb ubs-psn; do
+for name in curves fred manual plaid refdata schwab-api svb ubs-psn; do
     prefix="$(printf '%s' "$name" | tr 'a-z-' 'A-Z_')"
     printf ': > "%s"\n' "$TMP/sourced-$name" > "$WEALTHDB_SECRETS_DIR/$name.env"
     out="$(env -u "${prefix}_SECRETS_DIR" -u "${prefix}_DATA_DIR" -u "${prefix}_ENV_FILE" \

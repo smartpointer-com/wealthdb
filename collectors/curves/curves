@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# curves — host wrapper for the wealthdb "curves" collector.
+#
+# Host-venv collector (no Docker): runs the collector's own .py under its
+# .venv. Pulls the public government yield curves of the euro (the ECB
+# Data Portal) and the franc (the SNB data portal). No login anywhere,
+# no key. Subcommands:
+#   login               No-op: there is no session. `login --check` asks
+#                       each portal for its cheapest answer (the ECB its
+#                       newest ten-year rate, the SNB its latest update)
+#                       and writes nothing.
+#   download [args...]  Fetch every series into bronze. Bound the window
+#                       with --lookback (default ~90 days; an early date
+#                       such as `--lookback 1950-01-01` for each series'
+#                       whole history); --series narrows it.
+#   load [args...]      Parse bronze into the silver SQLite DB.
+#   prune [args...]     Delete non-complete (crashed / in-flight) bronze run
+#                       dirs and the --debug trace in complete ones; their
+#                       load inputs are kept. --dry-run to preview.
+#
+# Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+# > default):
+#   --data-dir    DIR   bronze dumps root          (default $XDG_DATA_HOME/wealthdb/curves)
+#   --silver-db   PATH  silver DB path, load only  (default <data-dir>/curves.db)
+# --secrets-dir is accepted and unused: no portal needs a credential, so no
+# env file is read.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NAME=curves
+ENV_PREFIX=CURVES
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/host-lib.sh"
+
+cmd="${1:-help}"
+[[ $# -gt 0 ]] && shift || true
+
+case "$cmd" in
+    -h|--help|help)
+        awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"
+        exit 0
+        ;;
+    login|download|load|prune)
+        ;;
+    *)
+        echo "curves: unknown command '$cmd' (expected: login|download|load|prune)" >&2
+        exit 2
+        ;;
+esac
+
+host_resolve_dirs "$cmd" "$@"
+py="$(host_python)"
+
+case "$cmd" in
+    login)
+        # No portal mints a session. `--check` asks each one for its
+        # cheapest answer instead.
+        case " ${FORWARD_ARGS[*]-} " in
+            *" --check "*)
+                exec "$py" "$HERE/download.py" \
+                    ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+                ;;
+        esac
+        echo "curves: no-op. The portals are public; there is no session to mint." >&2
+        echo "To ask each portal for its cheapest answer, run \`./curves login --check\`." >&2
+        exit 0
+        ;;
+    download)
+        exec "$py" "$HERE/download.py" --bronze-dir "$DATA_DIR" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+    load)
+        exec "$py" "$HERE/load.py" --silver-db "$SILVER_DB" \
+            --bronze-dir "$DATA_DIR" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+    prune)
+        exec "$py" "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+esac

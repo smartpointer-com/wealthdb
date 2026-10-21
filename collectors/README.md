@@ -368,7 +368,7 @@ Where a static credential is the session (fred's API key, ubs-psn's RSA
 key), that call is the cheapest authenticated read. schwab-api reports
 its token file's age. It then refreshes the access token from that file
 the way `download` does and calls `/accounts/accountNumbers`. It opens
-no browser and fires no MFA. Two collectors differ:
+no browser and fires no MFA. Four collectors differ:
 
 - **fidelity-web** has no session to probe. Its session lasts as long as
   the browser, so its `login` is a no-op that keeps an orchestrator's
@@ -380,6 +380,9 @@ no browser and fires no MFA. Two collectors differ:
   registered*, not *the credential is alive*. It cannot see a rotated
   password or a trust revocation made server-side; only a `download`
   sign-in can.
+- **curves** and **refdata** hold no credential. Their `--check` asks
+  each public source for its cheapest answer and maps it onto the exit
+  code.
 
 The full authentication policy is in root [AGENTS.md](../AGENTS.md) §3.
 
@@ -705,6 +708,7 @@ restated here.
 | [`svb`](svb/) | SVB brokerage, deposit and mortgage statements (historical sideload) | none — load-only | host venv |
 | [`manual`](manual/) | Private holdings with no portal (CSV) | none — manual entry | host venv |
 | [`fred`](fred/) | FRED / US Fed H.10 and H.15 (historic FX rates, Treasury yields) | API key | host venv |
+| [`curves`](curves/) | ECB and SNB data portals (the euro and franc government yield curves) | none — public reads | host venv |
 | [`refdata`](refdata/) | Public reference data: what each fund holds and states about itself (issuers' holdings files and fund pages, SEC N-PORT and N-MFP filings, fund reports, a local inbox), and what each security is, with each company's reported figures (SEC EDGAR, GLEIF, OpenFIGI) | none — public reads | host venv |
 | [`plaid`](plaid/) | Banks, brokers and card issuers through the Plaid aggregator | Plaid app keys + one access token per linked institution (sign-in on Plaid's hosted page) | host venv |
 

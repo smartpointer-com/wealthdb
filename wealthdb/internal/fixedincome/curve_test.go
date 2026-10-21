@@ -222,3 +222,168 @@ func TestBootstrapRefuses(t *testing.T) {
 		}
 	}
 }
+
+func mustBasis(t *testing.T, kind, compounding string) Basis {
+	t.Helper()
+	b, err := ParseBasis(kind, compounding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func mustCurveOn(t *testing.T, b Basis, pts ...Point) *Curve {
+	t.Helper()
+	c, err := NewCurve(pts, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// A spot curve's points are zero rates. Continuously compounded, a rate
+// r at t years discounts by exp(-r·t), and the semiannual rate with that
+// discount factor is 200·(exp(r/200) - 1). Between tenors the published
+// rate is linear in months.
+func TestSpotContinuousCurve(t *testing.T) {
+	t.Parallel()
+	c := mustCurveOn(t, mustBasis(t, "spot", "continuous"), Point{12, 2}, Point{36, 4})
+	near(t, "zero 1Y", c.Zero(12), 200*(math.Exp(0.01)-1), 1e-12)
+	near(t, "zero 2Y", c.Zero(24), 200*(math.Exp(0.015)-1), 1e-12)
+	near(t, "zero 6M, flat before the first tenor", c.Zero(6), c.Zero(12), 0)
+	near(t, "discount 3Y", c.Discount(36), math.Exp(-0.12), 1e-12)
+	// Lent for two years in a year: continuously (0.12 - 0.02)/2 = 5%.
+	near(t, "forward 2Y in 1Y", c.Forward(12, 24), 200*(math.Exp(0.025)-1), 1e-12)
+	near(t, "forward from today", c.Forward(0, 12), c.Zero(12), 1e-9)
+}
+
+// An annually compounded spot rate r at t years discounts by
+// (1 + r/100)^-t.
+func TestSpotAnnualCurve(t *testing.T) {
+	t.Parallel()
+	c := mustCurveOn(t, mustBasis(t, "spot", "annual"), Point{6, 1}, Point{24, 3})
+	near(t, "discount 6M", c.Discount(6), math.Pow(1.01, -0.5), 1e-12)
+	near(t, "discount 2Y", c.Discount(24), math.Pow(1.03, -2), 1e-12)
+	near(t, "zero 2Y", c.Zero(24), 200*(math.Sqrt(1.03)-1), 1e-12)
+	growth := math.Pow(1.03, 2) / math.Pow(1.01, 0.5)
+	near(t, "forward 18M in 6M", c.Forward(6, 18), 200*(math.Pow(growth, 6.0/18)-1), 1e-12)
+}
+
+// A par curve with annual coupons, worked by hand. The 1Y par yield is
+// the 1Y zero rate, annually compounded. The 2Y par bond pays 3% at one
+// and two years: 0.03·DF(1) + 1.03·DF(2) = 1. The 3Y bond pays 3.5%:
+// 0.035·(DF(1) + DF(2)) + 1.035·DF(3) = 1.
+func TestParAnnualByHand(t *testing.T) {
+	t.Parallel()
+	c := mustCurveOn(t, mustBasis(t, "par", "annual"), Point{12, 2}, Point{24, 3}, Point{36, 3.5})
+	d1 := 1 / 1.02
+	d2 := (1 - 0.03*d1) / 1.03
+	d3 := (1 - 0.035*(d1+d2)) / 1.035
+	near(t, "discount 1Y", c.Discount(12), d1, 1e-12)
+	near(t, "discount 2Y", c.Discount(24), d2, 1e-12)
+	near(t, "discount 3Y", c.Discount(36), d3, 1e-12)
+	near(t, "zero 1Y", c.Zero(12), 200*(math.Sqrt(1.02)-1), 1e-12)
+	// Between nodes the semiannual zero rate is linear in months.
+	near(t, "zero 18M", c.Zero(18), (c.Zero(12)+c.Zero(24))/2, 1e-12)
+	near(t, "forward 1Y in 1Y", c.Forward(12, 12), 200*(math.Sqrt(d1/d2)-1), 1e-12)
+	near(t, "forward 1Y in 2Y", c.Forward(24, 12), 200*(math.Sqrt(d2/d3)-1), 1e-12)
+
+	// The same yields as semiannual par bonds are another curve.
+	if s := mustCurve(t, Point{12, 2}, Point{24, 3}, Point{36, 3.5}); math.Abs(s.Zero(36)-c.Zero(36)) < 1e-6 {
+		t.Errorf("zero 3Y = %v on both bases", c.Zero(36))
+	}
+}
+
+// Each bootstrapped zero rate of an annual par curve prices its par bond
+// at par, one coupon a year: Σ c·DF(tᵢ) + DF(tₙ) = 1. A tenor that is no
+// whole number of years ends on a short period, which pays its part of
+// the coupon.
+func TestParAnnualPricesParBondsAtPar(t *testing.T) {
+	t.Parallel()
+	annual := mustBasis(t, "par", "annual")
+	pts := []Point{{3, 3.2}, {12, 3}, {24, 2.8}, {60, 3.1}, {120, 3.4}, {360, 3.6}}
+	c := mustCurveOn(t, annual, pts...)
+	for n := 24; n <= c.Months(); n += 12 {
+		cpn := interpolate(pts, n) / 100
+		pv := 0.0
+		for i := 12; i <= n; i += 12 {
+			pv += cpn * c.Discount(i)
+		}
+		near(t, "par bond price", pv+c.Discount(n), 1, 1e-12)
+	}
+	// A 3M par yield of an annual curve is a zero rate, annually
+	// compounded.
+	near(t, "discount 3M", c.Discount(3), math.Pow(1.032, -0.25), 1e-12)
+
+	odd := mustCurveOn(t, annual, Point{12, 2}, Point{30, 3})
+	pv := 0.03*(odd.Discount(12)+odd.Discount(24)) + (1+0.03/2)*odd.Discount(30)
+	near(t, "par bond of 30 months", pv, 1, 1e-12)
+}
+
+// A series that states no basis, or a Treasury one, maps to the Treasury
+// basis, which Bootstrap builds on. The hand-worked tests above pin what
+// that basis gives.
+func TestTreasuryBasisIsBootstrap(t *testing.T) {
+	t.Parallel()
+	pts := []Point{{1, 4.10}, {3, 4.05}, {6, 3.95}, {12, 3.70}, {24, 3.45}, {60, 3.55}, {120, 3.95}, {360, 4.55}}
+	want := mustCurve(t, pts...)
+	for _, kind := range []string{"", "constant_maturity", "discount"} {
+		b := mustBasis(t, kind, "")
+		if b != Treasury {
+			t.Errorf("basis %q = %+v, want Treasury", kind, b)
+		}
+		got := mustCurveOn(t, b, pts...)
+		for m := 0; m <= want.Months(); m++ {
+			if got.Zero(m) != want.Zero(m) {
+				t.Fatalf("basis %q: zero %dM = %v, want %v", kind, m, got.Zero(m), want.Zero(m))
+			}
+		}
+	}
+	if b := mustBasis(t, "par", "semiannual"); b != Treasury {
+		t.Errorf("semiannual par = %+v, want Treasury", b)
+	}
+}
+
+func TestParseBasis(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		kind, compounding string
+		want              Basis
+	}{
+		{"spot", "continuous", Basis{Spot: true}},
+		{"spot", "annual", Basis{Spot: true, Frequency: 1}},
+		{"spot", "monthly", Basis{Spot: true, Frequency: 12}},
+		{"par", "annual", Basis{Frequency: 1}},
+	} {
+		if got := mustBasis(t, c.kind, c.compounding); got != c.want {
+			t.Errorf("%s %s = %+v, want %+v", c.kind, c.compounding, got, c.want)
+		}
+	}
+	for _, c := range [][3]string{
+		{"par", "continuous", "want annual or semiannual"},
+		{"par", "quarterly", "want annual or semiannual"},
+		{"spot", "", "want continuous, annual"},
+		{"spot", "daily", "want continuous, annual"},
+		{"forward", "annual", "want spot or par"},
+		{"constant_maturity", "annual", "states no compounding"},
+	} {
+		if b, err := ParseBasis(c[0], c[1]); err == nil || !strings.Contains(err.Error(), c[2]) {
+			t.Errorf("%s %s = %+v, %v; want refused: %s", c[0], c[1], b, err, c[2])
+		}
+	}
+	for b, want := range map[Basis]string{Treasury: "Treasury", {Spot: true}: "spot continuous",
+		{Frequency: 1}: "par annual"} {
+		if got := b.String(); got != want {
+			t.Errorf("%+v names %q, want %q", b, got, want)
+		}
+	}
+}
+
+func TestNewCurveRefusesABasis(t *testing.T) {
+	t.Parallel()
+	for _, b := range []Basis{{Frequency: 0}, {Frequency: 4}, {Spot: true, Frequency: 3}, {Spot: true, Frequency: -1}} {
+		if _, err := NewCurve([]Point{{12, 2}}, b); err == nil {
+			t.Errorf("basis %+v built a curve", b)
+		}
+	}
+}

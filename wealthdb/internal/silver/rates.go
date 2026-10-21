@@ -9,9 +9,10 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-// The rates table: the published interest-rate series of the fred
-// collector's silver (collectors/fred/migrations/0002_rates.sql), which
-// the synthetic kind repeats column for column. One row per observation
+// The rates table: the published interest-rate series of the fred and
+// curves collectors' silver (collectors/fred/migrations/0002_rates.sql,
+// collectors/curves/migrations/0001_initial.sql), which the synthetic
+// kind repeats column for column. One row per observation
 // day and series: as_of is the day's UTC midnight, value a decimal string
 // in percent. NewRateStream reads it into RateObservationChange records.
 

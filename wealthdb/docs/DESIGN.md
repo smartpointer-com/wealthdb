@@ -83,7 +83,7 @@ gains, exposure, spending, income, cash flow) read.
   dates, ratings and volatility are out of scope. Gold reads what each
   silver carries. Reference data on funds and securities arrives
   through the `refdata` source, and public rate series through `fred`
-  (§7.6).
+  and `curves` (§7.6).
 - **Performance attribution.** No command computes it. Gold carries
   the cost basis, open lots and realized lots each source states
   (§7.4), the lot engine fills what a source leaves out (§7.5), and
@@ -1541,7 +1541,8 @@ CREATE TABLE silver_sources (
         'schwab', 'ubs', 'swissquote', 'fidelity',
         'relevate', 'viac', 'cointracking', 'carta', 'angellist',
         'equityzen', 'manual', 'fred', 'chase', 'firstcitizens',
-        'raiffeisen_at', 'amex', 'synthetic', 'plaid', 'refdata'
+        'raiffeisen_at', 'amex', 'synthetic', 'plaid', 'refdata',
+        'curves'
     )),
     silver_path         TEXT    NOT NULL,            -- as observed at last load
     high_watermark      BIGINT  NOT NULL,            -- plugin's logical change number after the last load
@@ -2020,8 +2021,12 @@ public rates, not about accounts. Each reference table is keyed by
 `silver_source_id` and windowed by `as_of`, the day a row describes, as
 a snapshot table is windowed by `snapshot_at`. Every composition ever
 loaded is kept. The `refdata` kind writes the fund and security tables
-([adapters/refdata.md](adapters/refdata.md)), the `fred` kind the rates,
-and the `synthetic` kind can write all of them.
+([adapters/refdata.md](adapters/refdata.md)), the `fred` and `curves`
+kinds the rates, and the `synthetic` kind can write all of them. A
+rate's payload states its series' basis. `curves` names a spot rate and
+its compounding. A series that names no basis, or a Treasury one
+(`constant_maturity`, `discount`), is read as a Treasury par yield. A
+curve whose tenors disagree, or whose basis is unknown, gives no curve.
 
 Migration 0125 adds `fund_compositions`, `fund_lines`,
 `fund_attributes`, `fund_counterparties`, `security_identities` and
@@ -3204,8 +3209,8 @@ wealthdb/
 ├── internal/
 │   ├── canonical/                  — change types + enums (asset_class, vehicle, …); zero deps
 │   ├── silver/                     — adapter interface + registry, one package per source:
-│   │   │                             amex angellist carta chase cointracking equityzen
-│   │   │                             fidelity firstcitizens fred manual plaid
+│   │   │                             amex angellist carta chase cointracking curves
+│   │   │                             equityzen fidelity firstcitizens fred manual plaid
 │   │   │                             raiffeisen_at refdata relevate schwab swissquote
 │   │   │                             synthetic ubs viac
 │   │   └── <source>/               — impl (snapshots/transactions/classmap) + co-located policy.go, and lotpolicy.go where the lot engine replays the source

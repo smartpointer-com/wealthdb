@@ -15,6 +15,7 @@ import (
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/carta"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/chase"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/cointracking"
+	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/curves"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/equityzen"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/fidelity"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/firstcitizens"

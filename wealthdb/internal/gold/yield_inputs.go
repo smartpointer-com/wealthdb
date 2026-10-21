@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"math"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -200,40 +202,105 @@ const benchmarkMonths = 3
 // stand for the instant.
 const curveAgeDays = 31
 
+// readYieldCurves reads each currency's curve at the instant: the newest
+// observation of each tenor's series within curveAgeDays, the basis its
+// payload states (fixedincome.ParseBasis: none is the Treasury's), and
+// the zero curve built on that basis. The benchmark is the zero curve's
+// rate at the benchmark tenor, in the curve's semiannual convention; on
+// the Treasury basis that is the tenor as published.
+//
+// A curve whose tenors state two bases, a basis ParseBasis refuses, or a
+// curve on another basis that NewCurve refuses gives no curve at all: its
+// rates are of no known convention. A Treasury curve that does not
+// bootstrap still gives its benchmark as published. Each refusal logs one
+// line naming the currency (warnCurve).
 func readYieldCurves(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
-	points := map[string][]fixedincome.Point{}
+	type tenors struct {
+		points []fixedincome.Point
+		basis  fixedincome.Basis
+		// refused is why the tenors give no curve: a basis ParseBasis
+		// refuses, or a tenor that states another basis than the first.
+		refused error
+	}
+	curves := map[string]*tenors{}
 	if err := scanAll(ctx, db, `
-SELECT c.currency, c.tenor_months, o.value::DOUBLE
+SELECT c.currency, c.tenor_months, o.value::DOUBLE,
+       coalesce(json_extract_string(o.payload, '$.basis'), ''),
+       coalesce(json_extract_string(o.payload, '$.compounding'), '')
   FROM yield_curves c
   JOIN rate_observations o ON o.silver_source_id = c.silver_source_id AND o.series_id = c.series_id
  WHERE o.as_of <= $1 AND o.as_of > $1 - $2 * 86400
 QUALIFY row_number() OVER (PARTITION BY c.currency, c.tenor ORDER BY o.as_of DESC) = 1
  ORDER BY 1, 2`, func(rows *sql.Rows) error {
-		var ccy string
+		var ccy, kind, compounding string
 		var p fixedincome.Point
-		if err := rows.Scan(&ccy, &p.Months, &p.Rate); err != nil {
+		if err := rows.Scan(&ccy, &p.Months, &p.Rate, &kind, &compounding); err != nil {
 			return err
 		}
-		points[ccy] = append(points[ccy], p)
+		b, err := fixedincome.ParseBasis(kind, compounding)
+		t := curves[ccy]
+		if t == nil {
+			t = &tenors{basis: b}
+			curves[ccy] = t
+		}
+		t.points = append(t.points, p)
+		switch {
+		case t.refused != nil:
+		case err != nil:
+			t.refused = err
+		case b != t.basis:
+			t.refused = fmt.Errorf("its tenors state two bases, %v and %v", t.basis, b)
+		}
 		return nil
 	}, in.AsOf, curveAgeDays); err != nil {
 		return err
 	}
-	for ccy, pts := range points {
-		zero, err := fixedincome.Bootstrap(pts)
-		if err != nil {
-			// A curve that does not bootstrap still gives its benchmark.
-			zero = nil
+	for ccy, t := range curves {
+		if t.refused != nil {
+			warnCurve("yield: no %s curve: %v", ccy, t.refused)
+			continue
 		}
-		c := &yield.Curve{Currency: ccy, Zero: zero}
-		i := slices.IndexFunc(pts, func(p fixedincome.Point) bool { return p.Months == benchmarkMonths })
+		i := slices.IndexFunc(t.points, func(p fixedincome.Point) bool { return p.Months == benchmarkMonths })
 		if i < 0 {
 			i = 0
 		}
-		c.Benchmark, c.BenchmarkMonths = pts[i].Rate, pts[i].Months
+		c := &yield.Curve{Currency: ccy, Benchmark: t.points[i].Rate, BenchmarkMonths: t.points[i].Months}
+		zero, err := fixedincome.NewCurve(t.points, t.basis)
+		switch {
+		case err != nil && t.basis == fixedincome.Treasury:
+			warnCurve("yield: the %s curve does not bootstrap; it gives its benchmark alone: %v", ccy, err)
+		case err != nil:
+			warnCurve("yield: no %s curve: %v", ccy, err)
+			continue
+		case t.basis != fixedincome.Treasury:
+			c.Zero, c.Benchmark = zero, zero.Zero(c.BenchmarkMonths)
+		default:
+			c.Zero = zero
+		}
 		in.Curves[ccy] = c
 	}
 	return nil
+}
+
+// curveWarned holds the curve refusals already logged: one instant's
+// refusal is every instant's, and a refresh reads many.
+var curveWarned = struct {
+	sync.Mutex
+	seen map[string]bool
+}{seen: map[string]bool{}}
+
+// logCurve is where warnCurve writes; a test swaps it.
+var logCurve = log.Printf
+
+// warnCurve logs a refused curve's line once per process.
+func warnCurve(format string, args ...any) {
+	line := fmt.Sprintf(format, args...)
+	curveWarned.Lock()
+	defer curveWarned.Unlock()
+	if !curveWarned.seen[line] {
+		curveWarned.seen[line] = true
+		logCurve("%s", line)
+	}
 }
 
 // fundFields maps the fund_characteristics fields the report reads to

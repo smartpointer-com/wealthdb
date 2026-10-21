@@ -21,6 +21,7 @@ import (
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/carta"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/chase"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/cointracking"
+	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/curves"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/equityzen"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/fidelity"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/firstcitizens"
@@ -248,7 +249,7 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 
 	// The reference sources are blank-imported but register NO policy —
 	// they must fall to the Known=false default.
-	for _, k := range []string{"fred", "refdata"} {
+	for _, k := range []string{"curves", "fred", "refdata"} {
 		if rp, _ := returns.ReturnsPolicyFor(k); rp.Flow.Known {
 			t.Errorf("%s: registers no policy, must fall to Known=false default", k)
 		}
