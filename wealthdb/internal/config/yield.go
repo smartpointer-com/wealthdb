@@ -44,6 +44,15 @@ type YieldConfig struct {
 	Cycles map[string]string `json:"cycles,omitempty"`
 }
 
+// YieldHorizon is the income projection's window when none is given:
+// yield.horizon_months, else canonical.DefaultHorizonMonths.
+func (c *Config) YieldHorizon() int {
+	if c.Yield != nil && c.Yield.HorizonMonths > 0 {
+		return c.Yield.HorizonMonths
+	}
+	return canonical.DefaultHorizonMonths
+}
+
 // YieldConvention is one `yield.conventions` entry: the coupon payments
 // a year (0 for a discount instrument) and the day count. Both are
 // required.

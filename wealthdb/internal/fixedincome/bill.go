@@ -43,6 +43,26 @@ func BillEffectiveAnnual(settle, maturity time.Time, price float64) float64 {
 	return (math.Pow(100/price, 365/float64(n)) - 1) * 100
 }
 
+// BillBondEquivalent is the bond-equivalent yield in percent of paper
+// priced at price: the coupon-equivalent rate a government bill's
+// constant-maturity yield is quoted in, so a bill compares with a
+// curve. To a half year it is simple interest on ACT/365, (100 − price)
+// / price × 365/days; past it, the rate that grows the price to 100 with
+// one half year's compounding and simple interest on the rest. It is NaN
+// where BillDiscount is.
+func BillBondEquivalent(settle, maturity time.Time, price float64) float64 {
+	n := days(settle, maturity)
+	if n <= 0 || !(price > 0) {
+		return math.NaN()
+	}
+	t := float64(n) / 365
+	if n <= 182 {
+		return (100 - price) / price / t * 100
+	}
+	a := 2*t - 1
+	return (-2*t + 2*math.Sqrt(t*t-a*(1-100/price))) / a * 100
+}
+
 // BillRisk is the Risk of paper priced at price:
 //
 //   - Macaulay is the time of its one payment: days/365.

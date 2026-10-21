@@ -8,6 +8,7 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
 // report is one runnable view of a report family: its full column
@@ -68,6 +69,8 @@ type request struct {
 
 	withCash     bool              // holdings positions
 	country      string            // exposure: risk | domicile
+	converted    bool              // yield: one row per entity in the output currency
+	assumptions  yield.Assumptions // income's forward views: rate path, maturing rule, shift
 	series       []seriesPoint     // exposure --period: the instants of a series
 	newestFirst  bool              // transactions, gains realized
 	allDocuments bool              // gains realized: every copy of a sale, not the primary set

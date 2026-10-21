@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -83,7 +84,8 @@ func TestMCPMatchesCLI(t *testing.T) {
 		cases []goldenCase
 	}{
 		{setupSpendingGold(t), familyCases("spending", spendingFamily.views, "2026-05-01", "2026-06-30")},
-		{setupIncomeGold(t), familyCases("income", incomeFamily.views, "2026-05-01", "2026-06-30")},
+		{setupIncomeGold(t), familyCases("income", []string{"summary", "types", "transactions"}, "2026-05-01",
+			"2026-06-30")},
 		{withResolutions(t, setupCashflowGold(t)), append(cashflowCases(),
 			goldenCase{"categorizations", []string{"categorizations"}, "categorizations", map[string]any{}},
 			goldenCase{"resolutions", []string{"resolutions"}, "resolutions", map[string]any{}},
@@ -95,6 +97,7 @@ func TestMCPMatchesCLI(t *testing.T) {
 		{setupReturnsGold(t), append(returnsCases(), holdingsCases()...)},
 		{setupGainsGold(t), gainsCases()},
 		{setupExposureGold(t), exposureCases()},
+		{setupYieldGold(t), append(yieldCases(), forwardIncomeCases()...)},
 	}
 	for _, fx := range fixtures {
 		for _, privacy := range []bool{false, true} {
@@ -247,4 +250,44 @@ func holdingsCases() []goldenCase {
 	return append(out,
 		goldenCase{"holdings positions with cash in CHF", []string{"holdings", "positions", "--with-cash", "-x", "CHF"}, "holdings",
 			map[string]any{"view": "positions", "with_cash": true, "currency": "CHF"}})
+}
+
+// yieldCases covers each view of the yield tool, the converted rows and a
+// series.
+func yieldCases() []goldenCase {
+	var out []goldenCase
+	for _, v := range yieldViews {
+		out = append(out, goldenCase{"yield " + v, []string{"yield", v, "-d", "2026-06-30"}, "yield",
+			map[string]any{"view": v, "as_of": "2026-06-30"}})
+	}
+	return append(out,
+		goldenCase{"yield accounts converted", []string{"yield", "accounts", "-d", "2026-06-30", "--converted"}, "yield",
+			map[string]any{"view": "accounts", "as_of": "2026-06-30", "converted": true}},
+		goldenCase{"yield global quarterly", []string{"yield", "global", "--period", "quarterly", "2026-04-01", "2026-06-30"},
+			"yield", map[string]any{"view": "global", "period": "quarterly", "from": "2026-04-01", "to": "2026-06-30"}})
+}
+
+// forwardIncomeCases covers each forward view of the income tool over a
+// window from this month to two years on, under assumptions other than
+// the defaults; then the default window and each lone bound (a lone to
+// starts next month).
+func forwardIncomeCases() []goldenCase {
+	now := time.Now().UTC()
+	from := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).Format(time.DateOnly)
+	to := time.Date(now.Year()+2, now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, -1).Format(time.DateOnly)
+	next := strconv.Itoa(now.Year() + 1)
+	nextMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0).Format(time.DateOnly)
+	var out []goldenCase
+	for _, v := range forwardViews {
+		out = append(out, goldenCase{"income " + v, []string{"income", v, from, to, "--rates", "forward",
+			"--maturing", "roll", "--shift", "-50"}, "income",
+			map[string]any{"view": v, "from": from, "to": to, "rates": "forward", "maturing": "roll", "shift": -50}})
+	}
+	return append(out,
+		goldenCase{"income projection default", []string{"income", "projection"}, "income",
+			map[string]any{"view": "projection"}},
+		goldenCase{"income projection from", []string{"income", "projection", next}, "income",
+			map[string]any{"view": "projection", "from": next}},
+		goldenCase{"income projection to", []string{"income", "projection", nextMonth, next}, "income",
+			map[string]any{"view": "projection", "to": next}})
 }

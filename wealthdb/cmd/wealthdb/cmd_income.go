@@ -6,12 +6,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
 // `wealthdb income <view>` — the read surface for what the tracked
@@ -36,9 +38,11 @@ func init() {
 	register("income", cmdIncome)
 }
 
-// incomeViews are the grains `wealthdb income <view>` supports,
-// coarsest first.
-var incomeViews = []string{"summary", "types", "transactions"}
+// incomeViews are the grains `wealthdb income <view>` supports: what was
+// received, coarsest first, then the forward views, which take a window
+// that may reach into the future (cmd_income_projection.go).
+var incomeViews = []string{"summary", "types", "transactions", "projection", "calendar", "sources", "portfolios",
+	"accounts", "positions"}
 
 // cmdIncome routes `wealthdb income <view> ...` to the view's run.
 func cmdIncome(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
@@ -54,6 +58,7 @@ func runIncomeView(ctx context.Context, g globalFlags, view string, args []strin
 	fs.SetOutput(stderr)
 	period := fs.String("period", "monthly", strings.Join(reportPeriodNames, " | "))
 	level := fs.String("level", "detailed", "primary | detailed — the type vocabulary (types view)")
+	ff := registerForwardFlags(fs)
 	rf := registerReportFlags(fs, true)
 	fs.Usage = func() { fmt.Fprintln(stderr, incomeUsage()) }
 	if err := parseFlags(fs, args, "income"); err != nil {
@@ -65,19 +70,38 @@ func runIncomeView(ctx context.Context, g globalFlags, view string, args []strin
 	if err := checkChoice("income", "level", *level, "primary", "detailed"); err != nil {
 		return err
 	}
-
-	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), time.Now())
-	if err != nil {
-		fs.Usage()
-		return errs.Newf(errs.ExitUsage, "income: %s", err.Error())
+	forward := isForwardView(view)
+	if err := ff.check(fs, forward); err != nil {
+		return err
+	}
+	if forward && view != "projection" && isSet(fs, "period") {
+		return errs.Newf(errs.ExitUsage, "income: of the forward views, --period belongs to projection")
+	}
+	if forward && !slices.Contains(projectionPeriods, *period) {
+		return errs.Newf(errs.ExitUsage, "income: the forward views take --period %s", strings.Join(projectionPeriods, " | "))
 	}
 
 	fmtChoice, cfg, outCcy, err := rf.resolve(g, "income")
 	if err != nil {
 		return err
 	}
+	now := time.Now()
+	var fromEpoch, toEpoch int64
+	switch {
+	case !forward:
+		fromEpoch, toEpoch, err = parseTrailingYearWindow(fs.Args(), now)
+	case fs.NArg() > 2:
+		err = fmt.Errorf("a window is FROM [TO]")
+	default:
+		fromEpoch, toEpoch, err = parseForwardWindow(fs.Arg(0), fs.Arg(1), now, cfg.YieldHorizon())
+	}
+	if err != nil {
+		fs.Usage()
+		return errs.Newf(errs.ExitUsage, "income: %s", err.Error())
+	}
 
-	rep := incomeReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch, period: *period, level: *level})
+	rep := incomeReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch, period: *period, level: *level,
+		asOf: anchorToDay(now.UTC(), true).Unix(), assumptions: ff.assumptions()})
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
 	return writeReport(ctx, rep, *rf.cols, "income", open, *rf.privacy, fmtChoice, stdout)
 }
@@ -86,6 +110,9 @@ func runIncomeView(ctx context.Context, g globalFlags, view string, args []strin
 // and the MCP server share.
 func incomeReport(req request) *report {
 	part := reportPeriods[req.period]
+	if isForwardView(req.view) {
+		return incomeForwardReport(req)
+	}
 	switch req.view {
 	case "summary":
 		return newReport(buildIncomeSummaryColumnRegistry(req.currency, req.period), defaultIncomeSummaryColumns,
@@ -218,21 +245,36 @@ var defaultIncomeTransactionColumns = []string{
 
 func incomeUsage() string {
 	return "usage: wealthdb income <view> [FROM [TO]] [--period P] [--level L]\n" +
+		"                          [--rates R] [--maturing M] [--shift BP]\n" +
 		"                          [-f FORMAT] [-C COLS] [-x CCY] [-p]\n" +
 		`
 What the tracked accounts received: wages, interest, dividends, staking
 rewards, rent, gifts — consolidated across every source, typed and
-attributed to a payer.
+attributed to a payer. The forward views add what the holdings are
+expected to pay (docs/INCOME.md §12).
 
 Views
   summary       one row per period bucket
   types         one row per (bucket, income type), with its share
   transactions  the income lines themselves, oldest first
+  projection    one row per month, quarter or year: received to today,
+                expected after it, per type
+  calendar      each expected payment and each principal a maturity
+                returns, in date order
+  sources, portfolios, accounts, positions
+                received, expected, last year's and the next twelve
+                months' per entity; positions lists every holding
 
 Window
   FROM and TO are ISO dates, a year, or the usual shorthands; a bare
   invocation reports the trailing twelve months. Income is often read
   per calendar year: wealthdb income types 2025 --period annual
+  A forward view's window may reach into the future: a lone FROM is its
+  own span, and a bare invocation the projection's horizon after the
+  current month (yield.horizon_months, default 12, at most 36). It
+  takes no open bound (-), and of the forward views only projection
+  takes --period:
+  wealthdb income projection 2027 --period quarterly
 
 Flags
   --period P    ` + strings.Join(reportPeriodNames, " | ") + ` (default monthly)
@@ -241,6 +283,12 @@ Flags
                 taxonomy has one vendored primary, so the primary level
                 folds every earned and yielded type into INCOME beside
                 the deltas.
+  --rates R     ` + strings.Join(pathNames(), " | ") + ` (default constant) — how
+                floating rates move, on the forward views
+  --maturing M  ` + strings.Join(ruleNames(), " | ") + ` (default cash) — what a
+                maturing principal earns, on the forward views
+  --shift BP    a parallel shift of the floating rates in basis points,
+                on the forward views
   -f FORMAT     table | csv | csv_plain | json
   -C COLS       comma-separated names, 'default', 'all', or a
                 +ADD,-REMOVE delta on the default set
@@ -255,6 +303,10 @@ Notes
   row of the window on these accounts, negated to read positive — what a
   brokerage books withholding as, and what UBS also books a transaction
   tax as.
+
+  On the forward views, withheld is what the yield.withholding table
+  withholds at each holding's situs, received and expected alike; it is
+  blank where the table names no rate.
 
   A summary bucket can show txn_count 0 and blank money columns: that
   is a period in which tax was withheld and no income arrived. -C
@@ -272,6 +324,12 @@ Available columns (per view):
   summary       ` + joinColumnNames(buildIncomeSummaryColumnRegistry("CCY", "monthly")) + `
   types         ` + joinColumnNames(buildIncomeTypeColumnRegistry("CCY", "monthly")) + `
   transactions  ` + joinColumnNames(buildIncomeTransactionColumnRegistry("CCY")) + `
+  projection    ` + joinColumnNames(buildProjectionColumns("CCY", "monthly")) + `
+  calendar      ` + joinColumnNames(buildCalendarColumns("CCY")) + `
+  sources       ` + joinColumnNames(buildIncomeEntityColumns("CCY", yield.GrainSources, nil)) + `
+  portfolios    ` + joinColumnNames(buildIncomeEntityColumns("CCY", yield.GrainPortfolios, nil)) + `
+  accounts      ` + joinColumnNames(buildIncomeEntityColumns("CCY", yield.GrainAccounts, nil)) + `
+  positions     ` + joinColumnNames(buildIncomeEntityColumns("CCY", yield.GrainPositions, nil)) + `
 
   (The money columns render as income_<CCY> / net_income_<CCY> /
    value_<CCY>, reflecting your -x/--currency choice.)
@@ -279,5 +337,11 @@ Available columns (per view):
 Default column sets:
   summary       ` + strings.Join(defaultIncomeSummaryColumns, ", ") + `
   types         ` + strings.Join(defaultIncomeTypeColumns, ", ") + `
-  transactions  ` + strings.Join(defaultIncomeTransactionColumns, ", ")
+  transactions  ` + strings.Join(defaultIncomeTransactionColumns, ", ") + `
+  projection    ` + strings.Join(defaultProjectionColumns, ", ") + `
+  calendar      ` + strings.Join(defaultCalendarColumns, ", ") + `
+  sources       ` + strings.Join(incomeEntityDefaults[yield.GrainSources], ", ") + `
+  portfolios    ` + strings.Join(incomeEntityDefaults[yield.GrainPortfolios], ", ") + `
+  accounts      ` + strings.Join(incomeEntityDefaults[yield.GrainAccounts], ", ") + `
+  positions     ` + strings.Join(incomeEntityDefaults[yield.GrainPositions], ", ")
 }

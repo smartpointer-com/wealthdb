@@ -115,7 +115,7 @@ func TestMCPToolList(t *testing.T) {
 		}
 	}
 	sort.Strings(names)
-	want := "cashflow,categorizations,describe,exposure,gains,holdings,income,resolutions,returns,snapshots,spending,status,transactions"
+	want := "cashflow,categorizations,describe,exposure,gains,holdings,income,resolutions,returns,snapshots,spending,status,transactions,yield"
 	if got := strings.Join(names, ","); got != want {
 		t.Errorf("tools = %s, want %s", got, want)
 	}

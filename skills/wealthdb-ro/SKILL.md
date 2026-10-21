@@ -1,6 +1,6 @@
 ---
 name: wealthdb-ro
-description: Query the user's consolidated cross-institution investment portfolio through the read-only `wealthdb` CLI — holdings, account and portfolio balances, net worth, asset allocation, transaction history, investment returns (TWR and MWR/XIRR), look-through exposure by asset class, sector, size, country and currency, each holding's legal situs, realized and unrealized gains with their cost basis and tax lots, categorised spending, categorised income, and the household cash flow statement with its Sankey. Use whenever a question is about current holdings, what an account or portfolio is worth, allocation, money in or out, what is really owned once every fund is looked through, how something performed over a period, what was gained or lost (realized or unrealized, or a holding's cost basis), what was spent and on what, what was received and from whom, or where the household's cash came from and where it went.
+description: Query the user's consolidated cross-institution investment portfolio through the read-only `wealthdb` CLI — holdings, account and portfolio balances, net worth, asset allocation, transaction history, investment returns (TWR and MWR/XIRR), look-through exposure by asset class, sector, size, country and currency, each holding's legal situs, realized and unrealized gains with their cost basis and tax lots, yields and interest-rate sensitivity (income yield, implied and realized yield, cash against its benchmark, duration and DV01), categorised spending, categorised income and the income the holdings are expected to pay, and the household cash flow statement with its Sankey. Use whenever a question is about current holdings, what an account or portfolio is worth, allocation, money in or out, what is really owned once every fund is looked through, how something performed over a period, what was gained or lost (realized or unrealized, or a holding's cost basis), what the holdings yield or how they move with interest rates, what was spent and on what, what was received and from whom, what the holdings will pay and when, or where the household's cash came from and where it went.
 ---
 
 # wealthdb — portfolio queries (read-only)
@@ -13,10 +13,10 @@ flags.
 
 ## Hard rules
 
-1. **Run only these commands:** `holdings`, `exposure`, `transactions`,
-   `returns`, `gains`, `spending`, `income`, `cashflow`, `status`,
-   `snapshots`, `help`, `version`. Every other command writes or serves
-   other clients and is forbidden. Never write; just query. Put `-r`
+1. **Run only these commands:** `holdings`, `exposure`, `yield`,
+   `transactions`, `returns`, `gains`, `spending`, `income`, `cashflow`,
+   `status`, `snapshots`, `help`, `version`. Every other command writes or
+   serves other clients and is forbidden. Never write; just query. Put `-r`
    before the command on every call (`wealthdb -r holdings global`):
    without it a report may open the database read-write. A `-r` after
    `transactions` or `gains realized` is a different flag. It lists the
@@ -76,6 +76,31 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
 - **Records still to write** — `wealthdb -r exposure coverage -f ndjson`: a
   skeleton per undeclared holding, and a situs-only one per holding of
   unknown situs, for the user to fill into the declarations ledger
+- **What the holdings yield, by currency** — `wealthdb -r yield global`
+  (`income_yield_pct`: the next twelve months' expected income over value;
+  the `total` row weighs the currencies); per account:
+  `wealthdb -r yield accounts`
+- **Cash that earns too little** — `wealthdb -r yield cash` (worst-paid
+  first; `gap_pct` is the rate less the currency's benchmark; money-market
+  funds and term deposits sit in the same table)
+- **Is the extra yield paid for in rate risk** — `wealthdb -r yield funds`
+  (`implied_yield` beside `duration`, per fund); one bond or company:
+  `wealthdb -r yield securities -C +currency,duration | grep -i <name>`
+- **Dividend safety, earnings and the cycle** —
+  `wealthdb -r yield securities -C +payout,dividend_growth,earnings_growth,coverage | grep -i <company>`
+  (`coverage`: operating income over interest expense, in times)
+- **Credit quality of a bond** —
+  `wealthdb -r yield securities -C +rating | grep -i <issuer>` (`rating`
+  is a bucket, AAA to B; blank where nothing rates it; `quality` says what
+  the figures rest on)
+- **Yield and duration over time** —
+  `wealthdb -r yield global --period quarterly 2026`
+- **What a rate rise does** — `wealthdb -r yield curve` (`dv01` per
+  currency and tenor: the value lost for a rise of 0.01%, mortgages
+  netted); to the income: `wealthdb -r yield global -C +income_100bp`
+  (the next twelve months' income change for a rise of 1%)
+- **How far to trust the yields** — `wealthdb -r yield coverage`; the
+  ledger records still to write: `wealthdb -r yield coverage -f ndjson`
 - **Return of the portfolio / each account** —
   `wealthdb -r returns global 2025 --period total` / `wealthdb -r returns accounts 2025 --period total`
   (the account column is `entity`; one account: `| grep -i 'brokerage'`)
@@ -105,6 +130,27 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
   `wealthdb -r spending transactions 2026-03 -x USD -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber) | .[0:5]'`
 - **Income / by type** — `wealthdb -r income summary 2025 --period total` /
   `wealthdb -r income types 2025 --period total | grep -i dividend`
+- **This year's income, received and still expected** —
+  `wealthdb -r income projection 2026` (one row per month, then `total`;
+  `status` reads `received`, `expected` or `mixed`; `basis` says what the
+  expected part rests on)
+- **This year's income beside last year's** —
+  `wealthdb -r income projection 2025` beside
+  `wealthdb -r income projection 2026` (the same types; 2025 is all
+  received)
+- **What the holdings will pay next** — `wealthdb -r income projection`
+  (the months after this one, twelve unless the config says otherwise)
+- **Per holding** — `wealthdb -r income positions 2026` (every holding,
+  the ones that pay nothing too; `next_12m` is the next twelve months)
+- **Expected payments and maturities by date** —
+  `wealthdb -r income calendar` (kind `principal` is a maturity, outside
+  the income totals)
+- **Per account** — `wealthdb -r income accounts`
+- **What the expected income assumes** — on any forward view,
+  `--rates forward` (floating rates along the forward curve; default
+  today's), `--maturing roll` (a maturing holding bought again; default
+  `cash`, `idle` for nothing), `--shift -50` (floating rates 50 basis
+  points lower)
 - **Net cash flow / by class** — `wealthdb -r cashflow summary 2025 --period total` /
   `wealthdb -r cashflow flows 2025 --period total --level class`
 - **Mortgage, retirement or education payments** —
@@ -119,11 +165,12 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
 |---|---|---|
 | Net worth, balances, holdings (as of a day) | `holdings` | `global`, `sources`, `portfolios`, `accounts`, `positions` |
 | What is **really owned** once funds are looked through (as of a day); where holdings legally sit | `exposure` | `classes`, `sectors`, `sizes`, `countries`, `currencies`, `situs`, `securities`, `funds`, `coverage` |
+| What the holdings **yield**; interest rates, duration, rate risk; cash against its benchmark (as of a day) | `yield` | `global`, `sources`, `portfolios`, `accounts`, `positions`, `securities`, `funds`, `cash`, `curve`, `coverage` |
 | Trades, dividends, fees, cash in and out | `transactions` | — |
 | How something **performed** (return %) | `returns` | `global`, `sources`, `portfolios`, `accounts` |
 | **Gained or lost**; cost basis; tax lots | `gains` | `summary`, `sources`, `portfolios`, `accounts`, `positions`, `realized`, `lots`, `coverage`, `check` |
 | **Spent**, on what | `spending` | `summary`, `categories`, `transactions` |
-| **Received**, from whom | `income` | `summary`, `types`, `transactions` |
+| **Received**, from whom; what the holdings are **expected to pay** | `income` | `summary`, `types`, `transactions`; forward: `projection`, `calendar`, `sources`, `portfolios`, `accounts`, `positions` |
 | Where the household's cash came from and went; mortgage, retirement, education payments | `cashflow` | `summary`, `flows`, `sankey`, `transactions`, `coverage` |
 
 Holdings totals reconcile: `global` ≈ sum of `sources`, `portfolios`,
@@ -131,9 +178,10 @@ Holdings totals reconcile: `global` ≈ sum of `sources`, `portfolios`,
 
 ## Dates
 
-`holdings` and `exposure`: `-d YYYY-MM-DD` is the day (default today); each
-source gives its latest snapshot on or before it. `exposure --period
-monthly|quarterly|annual` takes a window instead, as below.
+`holdings`, `exposure` and `yield`: `-d YYYY-MM-DD` is the day (default
+today); each source gives its latest snapshot on or before it. `exposure`
+and `yield` take `--period monthly|quarterly|annual` with a window instead,
+as below.
 
 Every other command takes the window as positional arguments, never `-d`:
 `2026` (a year), `2026-06` (a month), `2026-06-15` (a day),
@@ -143,13 +191,26 @@ Every other command takes the window as positional arguments, never `-d`:
 rest the trailing twelve months. Resolve "last year" and "this year" from
 today's date and pass them (`2025`, `2026-01-01 today`).
 
+`income`'s forward views (`projection`, `calendar`, `sources`,
+`portfolios`, `accounts`, `positions`) take a window that may lie in the
+future, and a lone FROM is its own span: `2027` is all of 2027. Their
+default is the months after this one, not the trailing twelve. They
+refuse an open bound, so the `2026-01-01 -`, `- 2026-06-30` and
+`- today` idioms are not for them: give FROM, FROM TO, or neither.
+
 ## Flags and columns
 
-`-f table|json|csv` (`ndjson` on `exposure coverage`) · `-x CCY` output
-currency · `-C COLS` columns (names, `all`, or `+add,-drop`) · `-p`
-redact · `--period` on `returns`, `spending`, `income`, `cashflow`,
-`gains`; on `exposure` a series only (`monthly|quarterly|annual`, not on
-`securities` or `funds`) · `--level` on `spending`, `income`, `cashflow`.
+`-f table|json|csv` (`ndjson` on `exposure coverage` and `yield coverage`)
+· `-x CCY` output currency · `-C COLS` columns (names, `all`, or
+`+add,-drop`) · `-p` redact · `--period` on `returns`, `spending`,
+`income`, `cashflow`, `gains`; on `exposure` a series only
+(`monthly|quarterly|annual`, not on `securities` or `funds`), and on
+`yield` for `global`, `sources`, `portfolios`, `accounts` and `curve` ·
+`--level` on `spending`, `income`, `cashflow` · `--converted` on `yield` ·
+`--rates`, `--maturing`, `--shift` on `income`'s forward views. The
+forward views refuse `--level` and an open bound (`-`). Of them only
+`projection` takes `--period`, as `monthly|quarterly|annual` (not
+`total`: its `total` row sums the window).
 
 `-C` takes column **names**, not headers: ask for `value`, `share`,
 `net_flow`, `twr`; they print as `value_USD`, `share_pct`, `net_flow_CHF`,
@@ -235,6 +296,28 @@ row's asset class.
   source whose `exposure.custody` names no country, or any holding
   nothing else places; a declaration can place it. A declared situs
   changes no other view.
+
+## Yield
+
+`yield` gives what each holding earns, and how its value moves with
+interest rates, as of a day.
+
+- **A rate belongs to a currency.** An aggregate row is one entity in one
+  currency; the `total` row weighs the currencies by value (`mixed`).
+  `--converted` gives one row per entity instead.
+- `income_yield_pct` is the headline: the next twelve months' expected
+  income at today's rates, over value. `implied_yield_pct` is what prices
+  imply; `realized_yield_pct` what the past twelve months paid.
+- `duration` is in years; `dv01` is the value lost for a rise of one basis
+  point. A mortgage nets: its `dv01` is negative, and the rates leave it out.
+- A stock has no implied yield or duration: read `earnings_yield` and
+  `dividend_yield`.
+- **Read `quality` first.** `implied` (from a price; not shown when it
+  covers the whole row), `stated` (a source states the rate), `indicated`
+  (a dividend's last payment at its frequency), `realized`, `declared`
+  (the ledger), `aged` and `stale_price` (a fund's lines are old),
+  `floating`, `default`, `unknown` (nothing states it: blank, not zero),
+  `mixed`.
 
 ## Spending, income, cash flow
 

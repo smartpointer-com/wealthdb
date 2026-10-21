@@ -2,7 +2,8 @@
 
 What the tracked accounts received: wages, interest, dividends, staking
 rewards, rent, gifts. Income is consolidated across every source, typed,
-and attributed to a payer.
+and attributed to a payer. The forward views add what the holdings are
+expected to pay (§12).
 
 This document is a **delta against [SPENDING.md](SPENDING.md)**. Income
 and spending are one engine read in two directions. They share one
@@ -511,6 +512,9 @@ bucket prints with `txn_count 0` and empty money columns, and
 `-C +withheld` shows why it is there. Tax paid in a month that received
 nothing is worth seeing.
 
+On the forward views `withheld` is a model, not these booked rows
+(§12).
+
 ---
 
 ## 6. What leaves the machine
@@ -604,11 +608,13 @@ behaviour:
 
 ```
 wealthdb income <view> [FROM [TO]] [--period P] [--level L]
+                       [--rates R] [--maturing M] [--shift BP]
                        [-f FORMAT] [-C COLS] [-x CCY] [-p]
 ```
 
 The flags and their defaults are in [DESIGN.md](DESIGN.md) §4.13 and
-`wealthdb income -h`.
+`wealthdb income -h`. The table below covers the views of what was
+received; §12 covers the forward views and their flags.
 
 | view | a row is | default columns |
 |---|---|---|
@@ -677,8 +683,9 @@ which is the default, one number answers for both.
 
 ## 10. Decisions of record
 
-1. **Three CLI views**: `summary`, `types`, `transactions`. No `payers`
-   view: payers rank on the dashboard only, as merchants do.
+1. **Three views of what was received**: `summary`, `types`,
+   `transactions`, beside the six forward views (§12). No `payers` view:
+   payers rank on the dashboard only, as merchants do.
 2. **Plaid's `INCOME` vendored verbatim**, version 2, plus eight
    extensions and fourteen deltas. The vocabulary names what a
    household commonly receives, not what one deployment does, because
@@ -699,7 +706,8 @@ which is the default, one number answers for both.
 9. The Wealth Overview's investment-income card reads the income base.
 10. **Reimbursements are excluded** via the delta. Spending does not
     net them (§11).
-11. Window default: **trailing twelve months**.
+11. Window default: **trailing twelve months**; on the forward views,
+    the projection's horizon after the current month (§12).
 12. **Reversals net inside their type.** `interest` enters positive
     only, because the sign is the only thing that separates two
     opposite events. `deposit` takes both signs like every other income
@@ -712,6 +720,21 @@ which is the default, one number answers for both.
     every admitted kind but `deposit`. So two independent guards apply:
     the kind floor is read over the payer store (migration 0073, §3),
     and candidacy is restricted to `deposit` in every backlog mode (§7).
+14. **The projection reads today's holdings.** A past month shows what
+    was received, never what the holdings of then were expected to pay.
+15. **Expected income starts the day after today and accrues by day.**
+    A payment counts on its day, in full. A receipt booked today is
+    received.
+16. **`withheld` on the forward views is the withholding table's
+    model**, received and expected alike. The booked tax is `summary`'s
+    memo (§5).
+17. **A liability earns nothing** in the projection.
+18. **A convertible note pays nothing.** A loan held accrues its coupon
+    month by month.
+19. **A fund line's coupon paid in kind counts in no yield the lines
+    imply.**
+20. **The roll term never starts from an issue date**, because no source
+    states one.
 
 ---
 
@@ -748,3 +771,269 @@ which is the default, one number answers for both.
   reader. An unread macro is a shape to keep true for nothing. A
   Metabase card that needs either in every reporting currency would add
   it.
+
+---
+
+## 12. The forward views
+
+The forward views put what was received beside what the holdings are
+expected to pay. They read today's holdings and the yield report's
+figures for them ([YIELD.md](YIELD.md)). Their window may reach into the
+future. A day up to today shows what was received, and a day after it
+what is expected. The current month holds both halves.
+
+| view | a row is |
+|---|---|
+| `projection` | a calendar month, quarter or year of the window, then `total` and `monthly_average` |
+| `calendar` | an expected payment, or a principal a maturity returns, in date order |
+| `sources`, `portfolios`, `accounts`, `positions` | one entity's income over the window |
+
+`wealthdb income -h` lists every view's columns and its default set.
+Behind `-C`, `projection` adds `total` (received and expected), `rent`,
+`pension` and `principal`. It also splits each type into
+`<type>_received` and `<type>_expected`.
+
+### The window and the period
+
+- FROM and TO take the dates the other views take (§8).
+- A lone FROM is its own span: `income projection 2027` is all of 2027.
+- An open bound (`-`) is refused. Ahead of today it has no meaning.
+- With no bound, the window is the projection's horizon after the
+  current month. That is `yield.horizon_months` of the config: 12 by
+  default, at most 36 ([YIELD.md](YIELD.md) §8).
+- The projection covers the current month and the 36 after it. A
+  window that ends later is refused, and the message names the
+  projection's last day.
+
+Of the forward views, only `projection` takes `--period`. `calendar`
+and the entity views refuse it. `projection` takes `monthly`,
+`quarterly` or `annual`, and refuses the rest, `total` among them. The
+periods are calendar periods, so the window cuts the first and the
+last. The rows end with `total`, the window's sum, and
+`monthly_average`, that sum over the window's months. A month the
+window cuts counts its share of days.
+
+`--rates`, `--maturing` and `--shift` belong to the forward views.
+`summary`, `types` and `transactions` refuse them, and the forward views
+refuse `--level`.
+
+The MCP `income` tool follows the same rules:
+
+- it takes the three flags as `rates`, `maturing` and `shift`;
+- it takes `period` on `projection` alone;
+- it refuses `-` in `from` or `to`;
+- a lone `from` is its own span, and a lone `to` starts the window on
+  the first day of next month;
+- the CLI and the MCP server both read the horizon from the config, so
+  the tool's header names the window it reports.
+
+### Received and expected
+
+The received half is the window's income lines up to the end of today.
+A line booked today counts as received, at any hour. It counts the six
+types the projection knows: interest, coupons, dividends,
+distributions, rent and pension. Interest a bond pays reads `coupons`,
+but a bill's or a zero's discount reads `interest`. A dividend a fund
+pays reads `distributions`. Wages, gifts and the other types stay in
+the other three views. A line counts under the holding it belongs to,
+else under its account.
+
+The expected half starts the day after today.
+
+- Income that accrues covers its days exactly. A month that the window,
+  today or a maturity cuts takes its share of days. A balance, a
+  fund's yield, a floating coupon and a loan's interest accrue.
+- A payment counts on its day, in full: a fixed coupon, a bill's
+  discount, a dividend.
+- The day of a dividend or of a repeated payment is an estimate. The
+  calendar shows its month only.
+
+### What each holding is expected to pay
+
+[YIELD.md](YIELD.md) §3 names the kinds.
+
+| kind | expected income |
+|---|---|
+| `deposit` | its stated rate on its balance, as a floating rate that keeps its spread to the benchmark |
+| `term_deposit` | its rate to its end day; then the maturing rule |
+| `money_market` | its yield, as a floating rate |
+| `floating_note` | the benchmark plus its spread, on its face, to maturity |
+| `bond` | its coupons on their dates (`declared`); its face at maturity |
+| `bill`, or a zero | its face less its price, on its maturity day |
+| `note` | a loan held: its coupon on its amount, month by month, then its principal at maturity; a convertible note: nothing |
+| `bond_fund` | its implied yield as a floating rate, where most of the fund floats; else its indicated distributions; else its distribution or SEC yield, month by month; else `unknown` |
+| `equity_fund` | its indicated distributions; else the trailing yield, or the distribution yield, its page states, month by month |
+| `stock` | its indicated dividend ([YIELD.md](YIELD.md) §4): a ledger record's (`declared`), else its last payment per share at the frequency of its payments, else its filings' dividends per share, quarterly (`indicated`) |
+| `liability` | nothing |
+| `other` | its payments of the last twelve months, repeated (`realized`); paid nothing, `unknown` |
+
+- A term's rate ends with its term. A term deposit earns it to its end
+  day, never after.
+- A balance whose rate no source states repeats the interest its
+  account received in the last twelve months (`realized`). With none
+  received it reads `unknown`.
+- A negative balance earns nothing.
+- A bond, bill, floating note or note in default reads `unknown`. It
+  pays no coupon and returns no principal.
+- An account's income that names no holding, such as rent or a pension,
+  repeats too (`realized`). It reads as the holding
+  `income:<type>:<CCY>`, one per currency.
+- A repeated payment falls on its day of every later year the
+  projection reaches, not only the next. This holds for rent, pensions,
+  a rate-less balance's interest and an `other` holding's payments.
+
+A fund line whose coupon is paid in kind counts in no yield the fund's
+lines imply. So a bond fund projected from its lines' yield earns
+nothing on that coupon. A fund projected from its distribution yield is
+unaffected. No source states a directly held bond paid in kind.
+
+### When a holding matures
+
+A holding that matures in the window returns its principal on its
+maturity day. A holding a source still lists on or after its maturity
+returns its principal tomorrow. `calendar` lists the principal as kind
+`principal`, outside the income totals, and `projection -C +principal`
+sums it per period. `--maturing` says what the principal earns from
+that day on:
+
+- `cash`, the default: what the cash of the holding's own account, in
+  its currency, earns on it from that day. That is the account's
+  marginal rate on the balance with the principal, its tiers applied,
+  along the rate path. A term's expired rate never counts. Where the
+  account states no other rate, the income reads `unknown`.
+- `idle`: nothing.
+- `roll`: the same holding again, for its original term. It buys at the
+  forward rate of that term plus its own spread over the curve today,
+  and buys again at each maturity.
+
+Cash that states no rate leaves the reinvested income `unknown`. The
+holding itself keeps its own reading, so it does not turn `unknown`.
+
+The term is the maturity less the day the term began: a term deposit's
+rate's first day, else the day the holding was bought. Without either,
+it is the term left today. It is at least a month. No source states an
+issue date, so the term never starts from one.
+
+A roll falls back where it lacks a figure, in this order:
+
+1. a holding with no yield at all goes to cash (`roll_cash`);
+2. a holding with no implied yield rolls at its current yield, else its
+   stated rate, held constant (`roll_own`);
+3. in a currency with no curve, or one whose curve does not bootstrap,
+   it rolls at its own yield, held constant (`roll_constant`);
+4. any other holding rolls along the curve (`roll`).
+
+A roll keeps the holding's income type. A term deposit or a bill earns
+interest, and a bond earns coupons. Cash after a maturity earns
+interest.
+
+### The rate path and the shift
+
+- `--rates constant`, the default, holds today's benchmark for the
+  whole window. A roll then earns the holding's own yield.
+- `--rates forward` moves the benchmark along the currency's forward
+  curve ([YIELD.md](YIELD.md) §8). Each floating holding keeps its
+  spread to it, and a fixed coupon does not move. A currency with no
+  curve, or one whose curve does not bootstrap, keeps today's rate.
+- `--shift BP` moves every floating rate in parallel, by whole basis
+  points. It moves a balance, a money-market fund, a floating note, a
+  floating bond fund, cash after a maturity and a rolled holding.
+
+### What an amount rests on
+
+`basis` says what each expected amount rests on:
+
+| basis | the amount rests on |
+|---|---|
+| `declared` | a rate a ledger record states, a coupon by contract, a bill's discount |
+| `indicated` | the last payment at its frequency, or the filings' dividends |
+| `stated` | a rate a source states, held |
+| `forward` | a stated or declared floating rate, moved along a curve that bootstraps |
+| `reinvested` | what a principal earns after a maturity |
+| `realized` | last year's payments, where nothing else is known |
+| `unknown` | nothing; the amount is zero |
+
+`declared` needs a ledger record of the rate itself. A record that
+states only a fund's duration leaves its filed yield `stated`. A
+floating rate that no curve moves stays `stated` under
+`--rates forward`.
+
+On `projection`, `basis` gives each basis's share of the expected
+income (`declared=76% stated=24%`). An entity view gives the largest,
+and `calendar` each row's own.
+
+`quality` gives the share of the reinvested income each way of
+reinvesting earns: `cash`, `roll`, `roll_constant`, `roll_own`,
+`roll_cash`. One that earns all of it prints alone. One that earns
+nothing beside another prints a share of zero: `roll=100% roll_cash=0%`.
+Where income rests on a floating rate and a shift is given,
+`shift=-50bp` follows.
+
+`withheld` is what the `yield.withholding` table withholds at each
+holding's situs and account wrapper ([YIELD.md](YIELD.md) §8). A
+country's `default` row stands for any other wrapper. It reads the same
+for received and expected income. It is a model, not the tax rows a
+source booked, and it is blank where the table names no rate. The
+booked tax is `income summary -C +withheld` (§5).
+
+### The calendar and the entity views
+
+`calendar` lists every expected amount in date order. A dated amount
+prints its day. An accrual, and a payment whose day is an estimate,
+prints its month and follows the holding's dated amounts of that month.
+Each principal is a row too. No row is a payment of zero.
+
+The entity views give, per entity:
+
+- `received`, `expected` and `total` over the window;
+- `last_year`: what the same window a year earlier received. It is
+  blank until that window is over, and zero where it is over and
+  nothing came;
+- `next_12m`: what the twelve months after the current one are expected
+  to pay;
+- `withheld`, `basis` and `quality`.
+
+`positions` lists every holding, the ones that pay nothing included. It
+also lists any holding that received income in the window and is no
+longer held. Its rows sort by account, then by `total` plus `next_12m`,
+the largest first. The other entity views sort by that sum alone.
+
+Every month's expected income equals the sum of its calendar rows of
+kind `income`, and every entity view sums to the projection. All of
+them read the same amounts, so they reconcile by construction.
+
+**Privacy.** `-p` stars amounts, quantities, prices and account ids.
+`position_key` stays legible, as `holdings positions` keeps it. Shares,
+rates, bases and labels stay legible too.
+
+An invented household, on 2026-11-15, in Swiss francs:
+
+```
+$ wealthdb income projection 2026 --period quarterly -x CHF
+ period          | received_CHF | expected_CHF | interest_CHF | coupons_CHF | dividends_CHF | distributions_CHF | withheld_CHF | status   | basis                                               | quality
+-----------------+--------------+--------------+--------------+-------------+---------------+-------------------+--------------+----------+-----------------------------------------------------+---------
+ 2026-Q1         |       620.00 |         0.00 |       120.00 |        0.00 |        200.00 |            300.00 |        30.00 | received |                                                     |
+ 2026-Q2         |      1620.00 |         0.00 |       120.00 |     1000.00 |        200.00 |            300.00 |        30.00 | received |                                                     |
+ 2026-Q3         |       620.00 |         0.00 |       120.00 |        0.00 |        200.00 |            300.00 |        30.00 | received |                                                     |
+ 2026-Q4         |       100.00 |      1487.00 |       137.00 |     1000.00 |        200.00 |            250.00 |        30.00 | mixed    | declared=71% indicated=13% stated=14% reinvested=1% | cash
+ total           |      2960.00 |      1487.00 |       497.00 |     2000.00 |        800.00 |           1150.00 |       120.00 | mixed    | declared=71% indicated=13% stated=14% reinvested=1% | cash
+ monthly_average |       246.67 |       123.92 |        41.42 |      166.67 |         66.67 |             95.83 |        10.00 |          |                                                     |
+(6 rows)
+
+$ wealthdb income calendar -x CHF | head -8
+ date       | silver_source | account   | symbol | type      | kind      | currency |    amount | value_CHF | basis      | quality
+------------+---------------+-----------+--------+-----------+-----------+----------+-----------+-----------+------------+---------
+ 2026-12-15 | broker-1      | Brokerage | QB     | coupons   | income    | USD      |   1250.00 |   1000.00 | declared   |
+ 2026-12-16 | bank-1        | Term      |        | interest  | principal | CHF      | 100000.00 | 100000.00 | declared   |
+ 2026-12    | bank-1        | Savings   |        | interest  | income    | CHF      |     40.00 |     40.00 | stated     |
+ 2026-12    | bank-1        | Term      |        | interest  | income    | CHF      |     30.00 |     30.00 | declared   |
+ 2026-12    | bank-1        | Term      |        | interest  | income    | CHF      |     16.00 |     16.00 | reinvested | cash
+ 2026-12    | broker-1      | Brokerage | QSTK   | dividends | income    | USD      |    250.00 |    200.00 | indicated  |
+```
+
+The term deposit returns its principal on 2026-12-16. It earns its own
+rate to that day. Its term's rate then ends. Under the default
+`--maturing cash`, the principal earns the account's credit rate from
+that day, which the account states beside the term. The calendar starts
+in December: with no window it covers the horizon after the current
+month.

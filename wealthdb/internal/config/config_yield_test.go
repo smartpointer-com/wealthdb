@@ -225,3 +225,21 @@ func TestYieldRejectsFirstInOrder(t *testing.T) {
 		}
 	}
 }
+
+// The projection's default window is the block's horizon, else the
+// built-in one.
+func TestYieldHorizon(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		cfg  Config
+		want int
+	}{
+		{Config{}, canonical.DefaultHorizonMonths},
+		{Config{Yield: &YieldConfig{}}, canonical.DefaultHorizonMonths},
+		{Config{Yield: &YieldConfig{HorizonMonths: 24}}, 24},
+	} {
+		if got := c.cfg.YieldHorizon(); got != c.want {
+			t.Errorf("%+v: %d, want %d", c.cfg.Yield, got, c.want)
+		}
+	}
+}

@@ -121,9 +121,10 @@ wealthdb holdings <view> [flags]      (RO)    Point-in-time views: positions, ac
 wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, portfolios, sources, global.
 wealthdb gains   <view> [flags]       (RO)    Realized and unrealized gains: summary, sources, portfolios, accounts, positions, realized, lots, coverage, check.
 wealthdb exposure <view> [flags]      (RO)    What is really owned, every fund looked through: classes, sectors, sizes, countries, currencies, situs, securities, funds, coverage.
+wealthdb yield   <view> [flags]       (RO)    What the holdings earn and how they move with rates: global, sources, portfolios, accounts, positions, securities, funds, cash, curve, coverage.
 wealthdb transactions [FROM [TO]] [flags] (RO) Print transactions over a date range.
 wealthdb spending <view> [flags]      (RO)    Spending reports: summary, categories, transactions.
-wealthdb income   <view> [flags]      (RO)    Income reports: summary, types, transactions.
+wealthdb income   <view> [flags]      (RO)    Income received and expected: summary, types, transactions, projection, calendar, sources, portfolios, accounts, positions.
 wealthdb cashflow <view> [flags]      (RO)    Cash flow statement: summary, flows, sankey, transactions, coverage.
 wealthdb status  [<id>]               (RO)    Report gold state vs each silver source.
 wealthdb snapshots <id> | -a [--latest] (RO)  List snapshots gold has loaded (one silver, or all).
@@ -587,18 +588,32 @@ access.
 ### 4.13 `wealthdb income <view>`
 
 The read surface over the income population (docs/INCOME.md, and §10.11
-for the macros underneath) — §4.12 read in the other direction. Same
-positional grain, same flags, same window default; three differences,
-each a decision recorded in docs/INCOME.md §10.
+for the macros underneath) — §4.12 read in the other direction. The
+views of what was received take §4.12's grain, flags and window
+default, with three differences, each a decision recorded in
+docs/INCOME.md §10. The forward views add what the holdings are
+expected to pay over a window that may reach into the future
+(docs/INCOME.md §12, and §10.15 for the code).
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `<view>` | required | `summary` \| `types` \| `transactions`. No `payers` view: payers rank on the dashboard only, as merchants do. |
-| `[FROM [TO]]` | trailing twelve months | As §4.12. A positional year is the idiom for the calendar-year report: `wealthdb income types 2025 --period annual`. |
-| `--period` | `monthly` | As §4.12. |
-| `--level` | **`detailed`** | The one default that differs from spending's. The income taxonomy has ONE vendored primary, so the primary level folds every vendored type and extension into `INCOME` beside the deltas. |
-| `-C/--columns` | `default` | `withheld` is available on `summary` and off by default: tax deducted at source, shown beside the income it was taken from and never subtracted from `net_income`. |
-| `-f`, `-x`, `-p` | as §4.12 | `-p` masks `payer`, `payer_signature`, `counterparty` and `description` whole; types, provenance and `share` stay legible. |
+| `<view>` | required | `summary` \| `types` \| `transactions`, what was received; `projection` \| `calendar` \| `sources` \| `portfolios` \| `accounts` \| `positions`, the forward views. No `payers` view: payers rank on the dashboard only, as merchants do. |
+| `[FROM [TO]]` | trailing twelve months; on the forward views, the horizon after the current month | As §4.12. A positional year is the idiom for the calendar-year report: `wealthdb income types 2025 --period annual`. On a forward view the window may lie in the future. A lone FROM is its own span, and an open bound (`-`) is refused. The default is `yield.horizon_months` of the config after the current month (12, at most 36). A window that ends after the projection's last day is refused. |
+| `--period` | `monthly` | As §4.12. Of the forward views only `projection` takes it, as `monthly` \| `quarterly` \| `annual`, calendar periods; it refuses the rest, `total` among them. `calendar` and the entity views refuse `--period`. |
+| `--level` | **`detailed`** | The one default that differs from spending's. The income taxonomy has ONE vendored primary, so the primary level folds every vendored type and extension into `INCOME` beside the deltas. Refused on the forward views. |
+| `--rates` | `constant` | `constant` \| `forward`: how the floating rates move. Forward views only. |
+| `--maturing` | `cash` | `cash` \| `idle` \| `roll`: what a maturing principal earns. Forward views only. |
+| `--shift` | `0` | A parallel shift of the floating rates, in whole basis points. Forward views only. |
+| `-C/--columns` | `default` | `withheld` is available on `summary` and off by default: tax deducted at source, shown beside the income it was taken from and never subtracted from `net_income`. On the forward views `withheld` is the withholding table's model. |
+| `-f`, `-x`, `-p` | as §4.12 | `-p` masks `payer`, `payer_signature`, `counterparty` and `description` whole; types, provenance and `share` stay legible. On the forward views it stars amounts, quantities, prices and account ids. |
+
+The views of what was received refuse `--rates`, `--maturing` and
+`--shift`. The MCP `income` tool takes the same parameters, as `rates`,
+`maturing` and `shift`, and makes the same refusals: `period` off
+`projection`, `level` on the forward views, and `-` in `from` or `to`.
+Its lone `from` is its own span, and its lone `to` starts the window on
+the first day of next month. The CLI and the MCP server read the
+horizon from the config, so the tool's header names the window.
 
 `income` and `reversals` are positive magnitudes and `net_income` is
 the difference, mirroring `spend` / `refunds` / `net_spend`; the
@@ -690,6 +705,26 @@ positional view, `-d` for the day, and the shared `-f`, `-C`, `-x`,
 
 Every view sums to `holdings global`, and every row carries a
 `quality` column naming what its figure rests on.
+
+### 4.18 `wealthdb yield <view>`
+
+What the holdings earn, and how their value moves with interest rates,
+as of a day (docs/YIELD.md for the figures, §10.15 for the code). The
+exposure idiom: a positional view, `-d` for the day, `--period` for a
+series, and the shared `-f`, `-C`, `-x`, `-p`.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `<view>` | required | `global` \| `sources` \| `portfolios` \| `accounts` (the aggregate views, which reconcile), `positions`, `securities`, `funds`, `cash`, `curve`, `coverage`. |
+| `-d`, `--as-of` | today | The day. |
+| `--converted` | off | The aggregate views at one row per entity, every currency together (YIELD.md §5). Refused on the other views. |
+| `--period` | none | `monthly` \| `quarterly` \| `annual`: the aggregate views and `curve` at the end of every period of the window `[FROM [TO]]`, a `period` column first. Refused on the other views, and with `-d`. |
+| `-f`, `-C`, `-x`, `-p` | as §4.12 | `-C` names a rate column without its `_pct` suffix. `-p` hides every amount, a price, every account id, and a security or fund key that is a holding's own (YIELD.md §2). On `coverage`, `-f ndjson` prints the ledger's yield records still to fill in (YIELD.md §10); it takes no `-C`, `-p` or `--period`. |
+
+An aggregate row is one entity in one currency, and the total row
+weighs the currencies by value. Every row but `curve`'s and
+`coverage`'s carries a `quality` column naming what its figures rest
+on.
 
 ## 5. Configuration
 
@@ -3045,6 +3080,63 @@ and at the end of today:
 
 `web_exposure` is the dashboard's reading of it
 ([web/DESIGN.md](../../web/DESIGN.md) §8).
+
+### 10.15 Yield reports
+
+The yield report computes in Go, over what gold reads at one instant.
+[YIELD.md](YIELD.md) defines every figure it returns.
+
+Migration 0135 defines `instrument_terms`, `account_rates` and the
+ledger's yield tables (§7.6). Migration 0136 defines the holdings
+macro. The yield pass (`gold.RebuildYield`) runs after the exposure
+pass at the end of every load and reload. It reads the exposure pass's
+instrument keys and securities, and rewrites two tables in one
+transaction:
+
+- `instrument_terms`: each bond-like instrument's terms as its sources
+  state them, each field with where it comes from;
+- `account_rates`: each rate a source's records or a ledger record
+  states, per account, currency, side and tier.
+
+The pieces:
+
+- `yield_holdings(asof, ccy)`: `exposure_holdings`, each line with its
+  own amount, quantity, accrued interest and acquisition day;
+- `instrument_terms_at(asof)`: the terms with the ledger's records in
+  force on the day laid over, field by field;
+- `gold.YieldInputs(asof, ccy)`: everything the report reads at one
+  instant, as `yield.Inputs`: the holdings, their accounts, terms and
+  rates, the curves, each fund's figures and lines, the income and
+  dividends received, and the stocks' reported figures;
+- `internal/fixedincome`: the bond and rate arithmetic, as pure
+  functions;
+- `internal/yield`: `yield.Compute` measures every holding and projects
+  its income into a `Book`. The views are the book's methods:
+  `Aggregate`, `Funds`, `Cash`, `Curve`, `Securities` and `Coverage`.
+  Every grain sums the same measures per holding, so the grains
+  reconcile by construction;
+- `cmd_yield.go` and `cmd_yield_views.go`: the views' columns and the
+  usage text. `securities` joins `gold.ExposureSecurities` to the book.
+
+`wealthdb yield --period` computes one book per period of the window,
+at the instants of `gold.PeriodEnds`, as exposure's series do.
+
+The forward views of `wealthdb income` (INCOME.md §12) read today's
+book:
+
+- `yield.Project`, which `yield.Compute` runs: the projection as parts
+  per holding, month and maturing rule. An accrual covers its days, and
+  a payment counts on its day;
+- `Book.Amounts`: a window's received and expected amounts under the
+  assumptions (the rate path, the maturing rule, the shift);
+  `ProjectionRows`, `IncomeRows` and `Calendar` turn them into the
+  views' rows, so the views reconcile by construction;
+- `gold.IncomeReceived`: the received half, each income line named by
+  the holding it belongs to;
+- `config.YieldHorizon`: the default window, `yield.horizon_months`,
+  which the CLI and the MCP server read from the config;
+- `cmd/wealthdb/cmd_income_projection.go`: the forward views' window,
+  flags and columns, shared by the CLI and the MCP `income` tool.
 
 ## 11. Repository layout
 

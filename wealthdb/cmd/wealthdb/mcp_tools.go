@@ -11,6 +11,7 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
 // toolSpec is one MCP tool: what the model reads about it, its
@@ -76,7 +77,7 @@ func (s *mcpServer) rowParams(window bool, extra ...param) []param {
 	if window {
 		ps = append(ps,
 			stringParam("from", "Window start: "+dateDoc+" Snaps to the start of the unit."),
-			stringParam("to", "Window end: "+dateDoc+" Snaps to the end of the unit. Default: today."))
+			stringParam("to", "Window end: "+dateDoc+" Snaps to the end of the unit. Default: today, unless the tool's description says otherwise."))
 	}
 	ps = append(ps, extra...)
 	ps = append(ps, stringParam("currency", "3-letter output currency, e.g. USD or CHF. Default: the configured currency."))
@@ -188,6 +189,26 @@ func (s *mcpServer) tools() []toolSpec {
 			family: exposureFamily,
 		},
 		{
+			name: "yield", title: "Yield",
+			description: "What the holdings earn now, and how they move with interest rates, as of a date (default today). A rate belongs to a currency: an aggregate row is one entity in one currency, plus a value-weighted total (quality mixed). " +
+				"view=global: one row per currency and a total. view=sources, portfolios, accounts: the same per entity. view=positions: per holding, with its coupon, maturity, price and kind. " +
+				"view=securities: each security held directly and through funds: a bond's coupon, maturity, price and implied yield; a stock's earnings yield, P/E, dividend yield, payout and growth. " +
+				"view=funds: each fund held directly: what its lines imply, its page's yields and duration, as of which day. view=cash: each cash balance, term deposit and money-market fund with its rate, the benchmark and the gap, worst paid first. " +
+				"view=curve: DV01 per currency and tenor (3M, 1Y, 5Y, 10Y, 30Y), funds, bonds, cash and liabilities. view=coverage: what the figures rest on and what is missing. " +
+				"income_yield is the next twelve months' projected income over value; implied_yield the yield the price implies in the market's convention, implied_yield_annual the same as an effective annual rate; dv01 the value's fall for a basis point. Read the quality column. " +
+				`Example: {view: "cash"}.`,
+			params: s.rowParams(false,
+				stringParam("view", "Which rows to return (default global).", yieldFamily.views...),
+				stringParam("as_of", "As-of date: "+dateDoc+" Default: today."),
+				stringParam("period", "global, sources, portfolios, accounts and curve: a series at the end of every monthly, quarterly or annual period of from/to (default: the last twelve months).",
+					exposurePeriods...),
+				stringParam("from", "With period: the series' start: "+dateDoc),
+				stringParam("to", "With period: the series' end: "+dateDoc+" Default: today."),
+				param{name: "converted", kind: paramBoolean, doc: "global, sources, portfolios and accounts: one row per entity in the output currency, rates across currencies (default false)."},
+			),
+			family: yieldFamily,
+		},
+		{
 			name: "transactions", title: "Transactions",
 			description: "Every booked transaction over a window (default: the past 30 days): trades, dividends, interest, fees, deposits, withdrawals, transfers. " +
 				"One row per line with date, account, kind, symbol, amount and its value in the output currency. Oldest first unless newest_first. " +
@@ -219,17 +240,26 @@ func (s *mcpServer) tools() []toolSpec {
 		},
 		{
 			name: "income", title: "Income",
-			description: "What the tracked accounts received over a window (default: the last twelve months): salary, dividends, interest, rent, refunds, rewards. " +
+			description: "What the tracked accounts received over a window (default: the last twelve months): salary, dividends, interest, rent, refunds, rewards; and what the holdings are expected to pay. " +
 				"view=summary: one row per period. view=types: one row per period and income type, with its share. " +
 				"view=transactions: the income lines with payer and type. Amounts are gross as booked; income and reversals are positive, net_income = income - reversals. " +
-				`Example: {view: "types", from: "2025", to: "2025", period: "total"}.`,
+				"The forward views take a window that may reach into the future (default: the projection's horizon after the current month, twelve months unless the config says otherwise; a lone from is its own span, a lone to starts next month): a day up to today shows what was received, a day after it what is expected. " +
+				"view=projection: one row per month (period monthly, quarterly or annual) with received, expected and each type (interest, coupons, dividends, distributions, rent, pension), withheld, and basis, what the expected part rests on. " +
+				"view=calendar: each expected payment, dated where its date is known, and each principal a maturity returns. " +
+				"view=sources, portfolios, accounts, positions: received, expected, total, last_year (the same window a year before) and next_12m per entity; positions lists every holding, the ones that pay nothing too. " +
+				"rates, maturing and shift say what the expected income assumes. " +
+				`Example: {view: "projection", from: "2026", to: "2026"}.`,
 			params: s.rowParams(true,
 				stringParam("view", "Which rows to return (default summary).", incomeFamily.views...),
-				stringParam("period", "Bucket size (default total: the whole window as one row per type). monthly, quarterly or annual give a series.", reportPeriodNames...),
+				stringParam("period", "Bucket size (default total: the whole window as one row per type; monthly for the forward views). monthly, quarterly or annual give a series.", reportPeriodNames...),
 				stringParam("level", "Type vocabulary of the types view: detailed (default) or primary.", "primary", "detailed"),
+				stringParam("rates", "Forward views: constant (default; today's rates for the whole window) or forward (floating rates along the currency's forward curve).", pathNames()...),
+				stringParam("maturing", "Forward views: what a maturing holding's principal earns: cash (default; its account's cash rate), idle (nothing) or roll (the same holding again).", ruleNames()...),
+				param{name: "shift", kind: paramInteger, doc: "Forward views: a parallel shift of the floating rates, in basis points (default 0)."},
 				sourceParam, accountParam,
 				stringParam("type", `Keep only income types whose label or id contains this text (e.g. "dividend", "salary", "interest").`),
 				stringParam("payer", "transactions only: keep only rows whose payer contains this text."),
+				stringParam("symbol", "calendar and positions: keep only rows whose symbol contains this text."),
 			),
 			family: incomeFamily,
 		},
@@ -561,18 +591,115 @@ var incomeFamily = &family{
 	carries: map[string][]string{
 		"types":        {"type"},
 		"transactions": {"source", "account", "type", "payer"},
+		"calendar":     {"source", "account", "symbol", "type"},
+		"sources":      {"source"},
+		"portfolios":   {"source"},
+		"accounts":     {"source", "account"},
+		"positions":    {"source", "account", "symbol"},
 	},
-	principal: byView(map[string]string{"summary": "net_income", "types": "net_income", "transactions": "value"}),
-	window:    trailingYear,
-	currency:  true,
-	narrow:    "from/to or a filter",
+	principal: byView(map[string]string{"summary": "net_income", "types": "net_income", "transactions": "value",
+		"projection": "total", "calendar": "value", "sources": "total", "portfolios": "total", "accounts": "total",
+		"positions": "total"}),
+	window:   trailingYear,
+	currency: true,
+	narrow:   "from/to or a filter",
 	prepare: func(a *toolArgs, req *request, _ *[]string) error {
 		req.period = orDefault(a.str("period"), "total")
 		req.level = orDefault(a.str("level"), "detailed")
+		if !isForwardView(req.view) {
+			if a.has("rates") || a.has("maturing") || a.has("shift") {
+				return fmt.Errorf("rates, maturing and shift belong to the %s views", strings.Join(forwardViews, ", "))
+			}
+			return nil
+		}
+		if a.has("level") {
+			return fmt.Errorf("level belongs to the types view")
+		}
+		if req.view != "projection" && a.has("period") {
+			return fmt.Errorf("of the forward views, period belongs to projection")
+		}
+		req.period = orDefault(a.str("period"), "monthly")
+		if !slices.Contains(projectionPeriods, req.period) {
+			return fmt.Errorf("the forward views take period %s", strings.Join(projectionPeriods, ", "))
+		}
+		shift, _ := a.integer("shift")
+		req.assumptions = yield.Assumptions{Path: yield.Path(orDefault(a.str("rates"), string(yield.PathConstant))),
+			Rule: yield.Rule(orDefault(a.str("maturing"), string(yield.RuleCash))), ShiftBP: float64(shift)}
 		return nil
 	},
-	build:  func(_ *config.Config, req request, _ *toolArgs) *report { return incomeReport(req) },
-	header: bucketHeader,
+	build: func(_ *config.Config, req request, _ *toolArgs) *report { return incomeReport(req) },
+	header: func(req request) []string {
+		if !isForwardView(req.view) {
+			return bucketHeader(req)
+		}
+		var h []string
+		if req.view == "projection" {
+			h = append(h, "period="+req.period)
+		}
+		h = append(h, "rates="+string(req.assumptions.Path), "maturing="+string(req.assumptions.Rule))
+		if req.assumptions.ShiftBP != 0 {
+			h = append(h, fmt.Sprintf("shift=%+.0fbp", req.assumptions.ShiftBP))
+		}
+		return h
+	},
+}
+
+var yieldFamily = &family{
+	views: yieldViews,
+	principal: func(req request) string {
+		if req.view == "curve" {
+			return "dv01"
+		}
+		return "value"
+	},
+	window:   asOfDate,
+	currency: true,
+	narrow:   "a coarser view",
+	prepare: func(a *toolArgs, req *request, notes *[]string) error {
+		req.converted = a.flag("converted", false)
+		if _, ok := yieldGrains[req.view]; !ok && req.converted {
+			return fmt.Errorf("converted belongs to the global, sources, portfolios and accounts views")
+		}
+		if !a.has("period") {
+			if a.has("from") || a.has("to") {
+				return fmt.Errorf("from and to belong to a series: give a period too")
+			}
+			return nil
+		}
+		if !slices.Contains(yieldSeriesViews, req.view) {
+			return fmt.Errorf("period belongs to the %s views", strings.Join(yieldSeriesViews, ", "))
+		}
+		if a.has("as_of") {
+			return fmt.Errorf("as_of names one day; a series takes from and to instead")
+		}
+		var args []string
+		switch from, to := a.str("from"), a.str("to"); {
+		case from != "" && to != "":
+			args = []string{from, to}
+		case from != "":
+			args = []string{from, "-"}
+		case to != "":
+			args = []string{"-", to}
+		}
+		now := time.Unix(req.asOf, 0)
+		from, to, err := parseTrailingYearWindow(args, now)
+		if err != nil {
+			return fmt.Errorf("%v; dates are %s", err, dateDoc)
+		}
+		req.series = seriesPoints(from, min(to, anchorToDay(now.UTC(), true).Unix()), a.str("period"))
+		if len(req.series) == 0 {
+			return fmt.Errorf("the window starts after today")
+		}
+		*notes = append(*notes, "series "+a.str("period"))
+		return nil
+	},
+	build: func(_ *config.Config, req request, _ *toolArgs) *report { return yieldReport(req) },
+	header: func(req request) []string {
+		if req.converted {
+			return []string{"converted"}
+		}
+		return nil
+	},
 }
 
 var cashflowFamily = &family{
@@ -784,7 +911,7 @@ func (s *mcpServer) settle(tool string, fam *family, cfg *config.Config, a *tool
 			return request{}, nil, fmt.Errorf("%s: currency %q is not a 3-letter code such as USD or CHF", tool, a.str("currency"))
 		}
 	}
-	if err := resolveDates(fam.window, a, s.now(), &req); err != nil {
+	if err := resolveDates(fam.window, a, s.now(), cfg.YieldHorizon(), &req); err != nil {
 		return request{}, nil, fmt.Errorf("%s: %v", tool, err)
 	}
 	if err := fam.prepare(a, &req, &notes); err != nil {
@@ -889,7 +1016,7 @@ func (s *mcpServer) header(tool string, fam *family, rep *report, req request, r
 // resolveDates reads from/to or as_of under the family's rule, with
 // the CLI's defaults and the CLI's date grammar: from snaps to the
 // start of its unit, to and as_of to the end.
-func resolveDates(rule windowRule, a *toolArgs, now time.Time, req *request) error {
+func resolveDates(rule windowRule, a *toolArgs, now time.Time, horizon int, req *request) error {
 	var args []string
 	from, to := a.str("from"), a.str("to")
 	switch {
@@ -909,7 +1036,14 @@ func resolveDates(rule windowRule, a *toolArgs, now time.Time, req *request) err
 		}
 		return nil
 	case trailingYear:
-		req.from, req.to, err = parseTrailingYearWindow(args, now)
+		// The forward views compute today's holdings, over a window that
+		// may reach into the future.
+		req.asOf = anchorToDay(now.UTC(), true).Unix()
+		if isForwardView(req.view) {
+			req.from, req.to, err = parseForwardWindow(from, to, now, horizon)
+		} else {
+			req.from, req.to, err = parseTrailingYearWindow(args, now)
+		}
 	case sinceInception:
 		req.from, req.to, err = parseReturnsWindow(args, now)
 	case pastMonth:

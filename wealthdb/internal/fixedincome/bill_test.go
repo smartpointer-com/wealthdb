@@ -20,6 +20,22 @@ func TestBillTextbook(t *testing.T) {
 	near(t, "effective annual exact", ear, (math.Pow(100/97.5, 365.0/182)-1)*100, 1e-12)
 }
 
+// A bill's bond-equivalent yield is simple interest on ACT/365 to a
+// half year, and past it grows the price to 100 with one half year
+// compounded: a 182-day bill at 97.50 yields 5.1423%, a 364-day bill at
+// 95 5.2099%.
+func TestBillBondEquivalent(t *testing.T) {
+	t.Parallel()
+	settle := ymd(2026, 1, 5)
+	near(t, "half year", BillBondEquivalent(settle, settle.AddDate(0, 0, 182), 97.5), 2.5/97.5*365/182*100, 1e-12)
+	y := BillBondEquivalent(settle, settle.AddDate(0, 0, 364), 95)
+	near(t, "a year", y, 5.2099, 5e-5)
+	near(t, "grows to 100", 95*(1+y/200)*(1+y/100*(364.0/365-0.5)), 100, 1e-9)
+	if y := BillBondEquivalent(settle, settle, 99); !math.IsNaN(y) {
+		t.Errorf("bond-equivalent at maturity = %v, want NaN", y)
+	}
+}
+
 // A price round-trips through its discount yield, at a premium too: a
 // negative discount yield prices above par.
 func TestBillRoundTrip(t *testing.T) {
