@@ -1,6 +1,15 @@
 // Package fixedincome holds the bond and rate arithmetic the yield report
-// and the income projection rest on: a currency's zero curve and its
-// forward rates, built from the published tenors of its government curve.
+// and the income projection rest on:
+//
+//   - day counts, and the coupon schedule, price, yield and risk of a
+//     fixed-coupon bond;
+//   - the price, yield and risk of a bill, and the coupon and risk of a
+//     floating-rate note;
+//   - rate sensitivity split over the five risk tenors;
+//   - a currency's zero curve and its forward rates, built from the
+//     published tenors of its government curve, and the rate paths a
+//     holding earns.
+//
 // Every function here is pure: it reads its arguments and nothing else.
 package fixedincome
 
