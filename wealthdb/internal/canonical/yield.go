@@ -161,6 +161,83 @@ func ParseRating(s string) (high, low RatingBucket, err error) {
 	return ratingBuckets[hi], ratingBuckets[lo], nil
 }
 
+// RatingUnrated is the bucket of a bond an agency states it does not
+// rate (NR, WR), and of one a ledger record says no agency rates.
+const RatingUnrated RatingBucket = "unrated"
+
+// RatingBuckets are the buckets, best first, then RatingUnrated: the
+// values a record of the ledger states a rating as.
+func RatingBuckets() []RatingBucket {
+	return append(slices.Clone(ratingBuckets), RatingUnrated)
+}
+
+// moodysGrades are Moody's long-term grades of each bucket above B.
+var moodysGrades = map[string]RatingBucket{"AAA": RatingAAA, "AA1": RatingAA, "AA2": RatingAA, "AA3": RatingAA,
+	"AA": RatingAA, "A1": RatingA, "A2": RatingA, "A3": RatingA, "BAA1": RatingBBB, "BAA2": RatingBBB,
+	"BAA3": RatingBBB, "BAA": RatingBBB, "BA1": RatingBB, "BA2": RatingBB, "BA3": RatingBB, "BA": RatingBB}
+
+// RatingOfGrade is the bucket of an agency's long-term grade: Moody's
+// (Aa2, Baa1, a provisional (P)Aa2), or S&P's and Fitch's (AA-, BBB+).
+// Every grade below BB is B; NR, WR and WD are RatingUnrated. A
+// short-term grade (P-1, A-1+) and any other text are no grade.
+func RatingOfGrade(grade string) (RatingBucket, bool) {
+	g := plainGrade(grade)
+	switch {
+	case g == "NR" || g == "WR" || g == "WD" || g == "N/R":
+		return RatingUnrated, true
+	case moodysGrades[g] != "":
+		return moodysGrades[g], true
+	}
+	base := strings.TrimRight(g, "+-")
+	switch base {
+	case "AAA", "AA", "A", "BBB", "BB":
+		return RatingBucket(base), true
+	case "B", "CCC", "CC", "C", "D", "SD", "RD", "DDD", "DD", "B1", "B2", "B3", "CAA1", "CAA2", "CAA3", "CAA", "CA":
+		return RatingB, true
+	}
+	return "", false
+}
+
+// GradeInDefault reports whether an agency's grade says the issuer is in
+// default: D, SD and RD, and Fitch's former DDD and DD.
+func GradeInDefault(grade string) bool {
+	switch plainGrade(grade) {
+	case "D", "SD", "RD", "DDD", "DD":
+		return true
+	}
+	return false
+}
+
+// plainGrade is a grade upper-cased, without a provisional (P) before it
+// or a * after it.
+func plainGrade(grade string) string {
+	g := strings.ToUpper(strings.TrimSpace(grade))
+	return strings.TrimSuffix(strings.TrimPrefix(g, "(P)"), "*")
+}
+
+// CouponKind is how a bond's coupon is set.
+type CouponKind string
+
+const (
+	CouponFixed           CouponKind = "fixed"
+	CouponFloating        CouponKind = "floating"
+	CouponInflationLinked CouponKind = "inflation_linked"
+	// CouponZero is a bond that pays no coupon: a zero, a strip, a bill.
+	CouponZero CouponKind = "zero"
+)
+
+var couponKinds = []CouponKind{CouponFixed, CouponFloating, CouponInflationLinked, CouponZero}
+
+// CouponKinds are the coupon kinds.
+func CouponKinds() []CouponKind {
+	return slices.Clone(couponKinds)
+}
+
+// Valid reports whether k is one of CouponKinds.
+func (k CouponKind) Valid() bool {
+	return slices.Contains(couponKinds, k)
+}
+
 // DayCount is how a bond counts the days of a coupon period.
 type DayCount string
 

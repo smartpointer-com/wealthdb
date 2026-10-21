@@ -2040,6 +2040,29 @@ load replaces them whole the same way (`gold.SyncYield`):
   config's overrides;
 - `yield_settings`: one row of settings.
 
+Migration 0135 seeds the last three with the built-in defaults, so a
+gold that has not loaded since the upgrade reads them. It adds the
+declarations ledger's yield records, replaced whole with the ledger
+(`gold.SyncExposure`): `yield_declared_rates`, `_ratings`, `_dividends`
+and `_terms` ([EXPOSURE.md](EXPOSURE.md) §9). It also adds two tables the
+yield pass rewrites at the end of every load (§8.1):
+
+- `instrument_terms`: what the sources state of each bond-like
+  instrument (a bond, a mortgage, a loan, a convertible note): its
+  coupon, maturity, frequency, coupon kind, day count, call (or a
+  make-whole one), rating and a grade of default, each field with where
+  it comes from: the source's own record, the description, OpenFIGI's
+  ticker, or the market's convention;
+- `account_rates`: each interest rate an account earns or pays, per
+  currency, side and tier, with the day it holds from, a term deposit's
+  end, and where it comes from: a source's record, read per snapshot
+  where the source states it per snapshot, or a ledger record.
+
+The macro `instrument_terms_at(day)` lays the ledger's terms and rating
+records in force on a day over `instrument_terms`, field by field. It
+also gives an instrument that only a record describes, such as a fund's
+factsheet figures (its duration and yield).
+
 ## 8. Load semantics
 
 `wealthdb load` is structurally an **incremental view maintenance**
@@ -2130,7 +2153,7 @@ and don't need transactional scope.
 in its own transaction. A failure in one source does not roll
 back already-completed sources.
 
-Five whole-file steps then run **after** the per-source loop, outside
+Six whole-file steps then run **after** the per-source loop, outside
 its transactions, because none is a per-source fact:
 
 1. The config-driven FX source precedence is stamped into
@@ -2148,16 +2171,19 @@ its transactions, because none is a per-source fact:
 5. The exposure pass rebuilds the exposure report's derived tables
    (§10.14). An alias ties a line one source loaded to an instrument
    another one did.
+6. The yield pass rebuilds `instrument_terms` and `account_rates`
+   (§7.6). It reads the exposure pass's instrument keys.
 
 A failed FX stamp is a warning: it degrades a conversion. The other
-four fail as errors. A failed pass does not stop the next one; the
+five fail as errors. A failed pass does not stop the next one; the
 load reports each. A failed declaration stamp or enrichment pass
 leaves own-account moves counted as spending, which is a wrong answer
 rather than a degraded one. A failed lot pass leaves the positions the
 load rewrote without a rebuilt basis, and nothing would say why. A
 failed exposure pass leaves the exposure report reading the derived
-tables of an earlier load. `reload` runs all five the same way, on
-both its in-place and fresh-file paths.
+tables of an earlier load, and a failed yield pass the yield report.
+`reload` runs all six the same way, on both its in-place and fresh-file
+paths.
 
 ### 8.2 Why a windowed delete (not a full-replace)
 

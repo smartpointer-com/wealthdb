@@ -49,8 +49,8 @@ func (l *Loader) Reset(ctx context.Context, sourceID string) error {
 	// configuration stamped into gold (the fx_priority precedent), not
 	// source data. The exposure and yield config tables survive too:
 	// every load re-stamps them from the config (gold.SyncExposure,
-	// gold.SyncYield), and the next exposure pass rebuilds the tables it
-	// derives.
+	// gold.SyncYield), and the next exposure and yield passes rebuild the
+	// tables they derive (instrument_terms and account_rates among them).
 	stmts := []string{
 		`DELETE FROM symbol_resolutions   WHERE silver_source_id = ?`,
 		`DELETE FROM spend_txn_enrichment  WHERE silver_source_id = ?`,

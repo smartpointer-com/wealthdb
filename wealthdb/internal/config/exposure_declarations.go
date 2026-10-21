@@ -22,12 +22,15 @@ import (
 //
 //	{"silver_source_id":"manual","instrument":"house-1","country":{"CH":100},"currency":{"CHF":100}}
 //
-// docs/EXPOSURE.md §9 defines the record and its rules; this file reads
-// and checks it, and crosses its dimensions into the parts gold stores.
+// docs/EXPOSURE.md §9 defines the record and its rules, its yield
+// records among them (an account's rate, a holding's rating, dividend
+// and terms); this file reads and checks it, and crosses its dimensions
+// into the parts gold stores.
 
-// declarationKeys are the keys a record may carry besides its dimensions;
-// all but source take a string.
-var declarationKeys = []string{"silver_source_id", "instrument", "as_of", "source", "note"}
+// declarationKeys are the keys a record may carry besides its dimensions,
+// its situs and its yield records; all but source take a string.
+var declarationKeys = []string{"silver_source_id", "instrument", canonical.DeclarationAccount, "as_of", "source",
+	"note"}
 
 // hundred is 100 percent.
 var hundred = big.NewRat(100, 1)
@@ -80,11 +83,12 @@ func readDeclarations(r io.Reader, sources map[string]bool) ([]canonical.Exposur
 	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	var out []canonical.ExposureDeclaration
 	// A holding has one record per date for its exposure, and one per date
-	// that states its situs: the two have precedences of their own
-	// (docs/EXPOSURE.md §9). A record that states both counts in both.
+	// for its situs and each yield record: each has a precedence of its own
+	// (docs/EXPOSURE.md §9). A record that states several counts in each.
+	// An account has one rate per date and currency.
 	type holdingDate struct {
-		src, iid, date string // date "" for a record without one
-		situs          bool
+		src, holder, date string // date "" for a record without one
+		kind              string
 	}
 	seen := map[holdingDate]int{}
 	for line := 1; sc.Scan(); line++ {
@@ -101,7 +105,10 @@ func readDeclarations(r io.Reader, sources map[string]bool) ([]canonical.Exposur
 			return nil, fmt.Errorf("line %d: %w", line, err)
 		}
 		d.Line = line
-		k := holdingDate{src: d.SilverSourceID, iid: d.InstrumentExternalID}
+		k := holdingDate{src: d.SilverSourceID, holder: d.InstrumentExternalID}
+		if d.AccountExternalID != "" {
+			k.holder = "account " + d.AccountExternalID
+		}
 		if d.AsOf != nil {
 			k.date = time.Unix(*d.AsOf, 0).UTC().Format(time.DateOnly)
 		}
@@ -110,16 +117,23 @@ func readDeclarations(r io.Reader, sources map[string]bool) ([]canonical.Exposur
 			when = "as of " + k.date
 		}
 		for _, kind := range []struct {
-			situs  bool
+			name   string
 			states bool
 			what   string
-		}{{false, len(d.Dimensions) > 0, "declared"}, {true, d.Situs != "", "given a situs"}} {
+		}{
+			{"exposure", len(d.Dimensions) > 0, "declared"},
+			{canonical.DeclarationSitus, d.Situs != "", "given a situs"},
+			{rateKind(d), d.Rate != nil, "given a rate" + rateCurrency(d)},
+			{canonical.DeclarationRating, d.Rating != nil, "given a rating"},
+			{canonical.DeclarationDividend, d.Dividend != nil, "given a dividend"},
+			{canonical.DeclarationTerms, d.Terms != nil, "given terms"},
+		} {
 			if !kind.states {
 				continue
 			}
-			k.situs = kind.situs
+			k.kind = kind.name
 			if first, dup := seen[k]; dup {
-				return nil, fmt.Errorf("line %d: %s %s is %s %s on line %d already", line, k.src, k.iid, kind.what,
+				return nil, fmt.Errorf("line %d: %s %s is %s %s on line %d already", line, k.src, k.holder, kind.what,
 					when, first)
 			}
 			seen[k] = line
@@ -130,6 +144,22 @@ func readDeclarations(r io.Reader, sources map[string]bool) ([]canonical.Exposur
 		return nil, err
 	}
 	return out, nil
+}
+
+// rateKind is the kind a rate record counts under for the one-a-date
+// rule: one per currency it names.
+func rateKind(d canonical.ExposureDeclaration) string {
+	if d.Rate == nil {
+		return canonical.DeclarationRate
+	}
+	return canonical.DeclarationRate + " " + d.Rate.Currency
+}
+
+func rateCurrency(d canonical.ExposureDeclaration) string {
+	if d.Rate == nil || d.Rate.Currency == "" {
+		return ""
+	}
+	return " in " + d.Rate.Currency
 }
 
 // parseDeclaration reads one record: its keys checked, each dimension's
@@ -152,6 +182,10 @@ func parseDeclaration(text []byte, sources map[string]bool) (canonical.ExposureD
 			if d.Situs, err = parseSitus(f.value); err != nil {
 				return d, err
 			}
+		case slices.Contains(canonical.DeclarationYieldKinds, f.key):
+			if err := parseYieldRecord(&d, f.key, f.value); err != nil {
+				return d, fmt.Errorf("%s: %w", f.key, err)
+			}
 		case f.key == "source":
 			var compact bytes.Buffer
 			if err := json.Compact(&compact, f.value); err != nil {
@@ -168,6 +202,8 @@ func parseDeclaration(text []byte, sources map[string]bool) (canonical.ExposureD
 				d.SilverSourceID = strings.TrimSpace(s)
 			case "instrument":
 				d.InstrumentExternalID = strings.TrimSpace(s)
+			case canonical.DeclarationAccount:
+				d.AccountExternalID = strings.TrimSpace(s)
 			case "note":
 				d.Note = s
 			default:
@@ -179,19 +215,29 @@ func parseDeclaration(text []byte, sources map[string]bool) (canonical.ExposureD
 				d.AsOf = &at
 			}
 		default:
-			return d, fmt.Errorf("unknown key %q; a record takes %s, the dimensions %s, and %s", f.key,
-				strings.Join(declarationKeys, ", "), strings.Join(canonical.DeclarationDimensions, ", "),
-				canonical.DeclarationSitus)
+			return d, fmt.Errorf("unknown key %q; a record takes %s, the dimensions %s, %s, and the yield records %s",
+				f.key, strings.Join(declarationKeys, ", "), strings.Join(canonical.DeclarationDimensions, ", "),
+				canonical.DeclarationSitus, strings.Join(canonical.DeclarationYieldKinds, ", "))
 		}
 	}
+	holdingRecords := len(dims) > 0 || d.Situs != "" || d.Rating != nil || d.Dividend != nil || d.Terms != nil
 	switch {
-	case d.SilverSourceID == "" || d.InstrumentExternalID == "":
-		return d, fmt.Errorf("silver_source_id and instrument are required")
+	case d.SilverSourceID == "":
+		return d, fmt.Errorf("silver_source_id is required")
 	case !sources[d.SilverSourceID]:
 		return d, fmt.Errorf("silver_source_id %q: no silver_sources[].id matches", d.SilverSourceID)
-	case len(dims) == 0 && d.Situs == "":
-		return d, fmt.Errorf("a record declares at least one of %s or %s",
-			strings.Join(canonical.DeclarationDimensions, ", "), canonical.DeclarationSitus)
+	case d.Rate != nil && (d.AccountExternalID == "" || d.InstrumentExternalID != "" || holdingRecords):
+		return d, fmt.Errorf("a %s names an %s and states nothing else: an account's rate, not a holding's",
+			canonical.DeclarationRate, canonical.DeclarationAccount)
+	case d.AccountExternalID != "" && d.Rate == nil:
+		return d, fmt.Errorf("%s belongs to a record that states a %s", canonical.DeclarationAccount,
+			canonical.DeclarationRate)
+	case d.Rate == nil && d.InstrumentExternalID == "":
+		return d, fmt.Errorf("silver_source_id and instrument are required")
+	case d.Rate == nil && !holdingRecords:
+		return d, fmt.Errorf("a record declares at least one of %s, %s, or a yield record (%s)",
+			strings.Join(canonical.DeclarationDimensions, ", "), canonical.DeclarationSitus,
+			strings.Join(canonical.DeclarationYieldKinds, ", "))
 	case dims[canonical.DimensionRegion] != nil && dims[canonical.DimensionCountry] != nil:
 		return d, fmt.Errorf("region and country are one dimension: a country implies its region, so declare one of them")
 	}

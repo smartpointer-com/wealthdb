@@ -31,8 +31,9 @@ type ExposureConfig struct {
 	SizeFunds map[string]float64 `json:"size_funds,omitempty"`
 	// Declarations is the path to the declarations ledger, NDJSON of
 	// what no public source can know: where a private holding's value
-	// is, as a split per dimension (exposure_declarations.go). Expanded
-	// like equity_transfers; a missing file holds no declarations.
+	// is, as a split per dimension, its legal situs, and the yield
+	// figures no source states (exposure_declarations.go). Expanded like
+	// equity_transfers; a missing file holds no declarations.
 	Declarations DeclarationsPath `json:"declarations,omitempty"`
 	// Custody names who keeps each source's assets, keyed by
 	// silver_source_id.

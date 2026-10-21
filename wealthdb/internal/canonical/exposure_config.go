@@ -1,5 +1,7 @@
 package canonical
 
+import "time"
+
 // ExposureRows is the config `exposure` block as gold stores it: the
 // tables gold.SyncExposure replaces whole at every load.
 type ExposureRows struct {
@@ -31,13 +33,15 @@ type ExposureSizeFund struct {
 
 // ExposureDeclaration is one record of the declarations ledger: what the
 // household states about a holding no public source describes, split
-// into the leaves the look-through gives it, and the holding's legal
-// situs.
+// into the leaves the look-through gives it, the holding's legal situs,
+// and the yield figures no source states (docs/EXPOSURE.md §9). A rate
+// names an account instead of a holding.
 type ExposureDeclaration struct {
 	// Line is the record's line in the ledger, and its id in gold.
 	Line                 int
 	SilverSourceID       string
 	InstrumentExternalID string
+	AccountExternalID    string
 	// AsOf is the UTC midnight of the record's date, nil for a record
 	// that is simply true.
 	AsOf *int64
@@ -53,6 +57,74 @@ type ExposureDeclaration struct {
 	// Leaves are the cross product of the declared dimensions. Their
 	// shares sum to exactly one; a record that declares none has none.
 	Leaves []ExposureDeclaredLeaf
+	// The yield records, nil where the line states none.
+	Rate     *DeclaredRate
+	Rating   *DeclaredRating
+	Dividend *DeclaredDividend
+	Terms    *DeclaredTerms
+}
+
+// StatesExposure reports whether the record declares a dimension or a
+// situs: a record of yield figures alone describes no exposure.
+func (d ExposureDeclaration) StatesExposure() bool {
+	return len(d.Dimensions) > 0 || d.Situs != ""
+}
+
+// The ledger's keys of the yield records, and of the account a rate
+// names.
+const (
+	DeclarationRate     = "rate"
+	DeclarationRating   = "rating"
+	DeclarationDividend = "dividend"
+	DeclarationTerms    = "terms"
+	DeclarationAccount  = "account"
+)
+
+// DeclarationYieldKinds are the yield records a line may carry.
+var DeclarationYieldKinds = []string{DeclarationRate, DeclarationRating, DeclarationDividend, DeclarationTerms}
+
+// DeclaredRate is the interest rate an account pays on its balance, in
+// percent a year, from the record's day on: in Currency where the
+// account holds several, to Until where it is a term deposit.
+type DeclaredRate struct {
+	Pct      float64
+	Currency string
+	Until    *time.Time
+}
+
+// DeclaredRating is a holding's credit bucket, and the agency that
+// grades it where one does.
+type DeclaredRating struct {
+	Bucket RatingBucket
+	Agency string
+}
+
+// DeclaredDividend is a stock's indicated dividend: the amount per share
+// of one payment, in Currency ("" the holding's own), and the payments a
+// year.
+type DeclaredDividend struct {
+	Amount    float64
+	Frequency int
+	Currency  string
+}
+
+// DeclaredTerms are the terms of a bond, a note or a mortgage that no
+// source states, and the figures a fund's factsheet states for a fund
+// no filing describes. A nil pointer or an empty string states nothing;
+// a Frequency of 0 states a discount instrument, a Coupon of 0 a zero.
+type DeclaredTerms struct {
+	Coupon     *float64
+	Frequency  *int
+	Maturity   *time.Time
+	CallDate   *time.Time
+	FixedUntil *time.Time
+	ResetDate  *time.Time
+	CouponKind CouponKind
+	DayCount   DayCount
+	// Duration is a fund's effective duration in years, Yield its yield
+	// to maturity in percent.
+	Duration *float64
+	Yield    *float64
 }
 
 // ExposureDeclaredLeaf is one part of a declared holding. A field is ""

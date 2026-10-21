@@ -112,8 +112,8 @@ func TestBadDeclarationFailsBeforeGoldIsOpened(t *testing.T) {
 func TestLoadWarnsOfADeclarationNamingNoHolding(t *testing.T) {
 	t.Parallel()
 	for records, lines := range map[int]string{
-		1:  "1 declaration(s) name a holding no source states (exposure.declarations line 1)",
-		12: "12 declaration(s) name a holding no source states (exposure.declarations line 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, …)",
+		1:  "1 declaration(s) name a holding or an account no source states (exposure.declarations line 1)",
+		12: "12 declaration(s) name a holding or an account no source states (exposure.declarations line 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, …)",
 	} {
 		t.Run(strconv.Itoa(records), func(t *testing.T) {
 			t.Parallel()

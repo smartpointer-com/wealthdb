@@ -146,10 +146,10 @@ func stampConfig(ctx context.Context, db *sql.DB, cfg *config.Config, in loadInp
 	return nil
 }
 
-// warnUnmatchedDeclarations names the declarations whose holding no
-// source states. Such a record declares nothing, and the holding it was
-// meant for stays undeclared, so the warning is what shows a misspelt
-// instrument.
+// warnUnmatchedDeclarations names the declarations whose holding, or
+// whose account for a rate, no source states. Such a record declares
+// nothing, and the holding it was meant for stays undeclared, so the
+// warning is what shows a misspelt instrument or account.
 func warnUnmatchedDeclarations(ctx context.Context, db *sql.DB, verb string, stderr io.Writer) {
 	lines, err := gold.DeclarationsNamingNoHolding(ctx, db)
 	if err != nil {
@@ -167,7 +167,7 @@ func warnUnmatchedDeclarations(ctx context.Context, db *sql.DB, verb string, std
 	if len(lines) > shown {
 		names = append(names, "…")
 	}
-	fmt.Fprintf(stderr, "%s: warning: %d declaration(s) name a holding no source states (exposure.declarations line %s)\n",
+	fmt.Fprintf(stderr, "%s: warning: %d declaration(s) name a holding or an account no source states (exposure.declarations line %s)\n",
 		verb, len(lines), strings.Join(names, ", "))
 }
 
@@ -263,15 +263,17 @@ func parseEnrichmentLedgers(cfg *config.Config) (enrichmentLedgers, error) {
 }
 
 // runGoldPasses runs the passes a load or reload ends with, over all of
-// gold: the enrichment pass, the lot pass, then the exposure pass. A pass
-// that fails is reported under verb and does not stop the next; the
-// failures come back joined.
+// gold: the enrichment pass, the lot pass, the exposure pass, then the
+// yield pass, which reads the exposure pass's keys. A pass that fails is
+// reported under verb and does not stop the next; the failures come back
+// joined.
 func runGoldPasses(ctx context.Context, db *sql.DB, cfg *config.Config, enrichment enrichmentLedgers, verb string, stdout, stderr io.Writer) error {
 	var failed error
 	for _, pass := range []func() error{
 		func() error { return runEnrichmentPass(ctx, db, cfg, enrichment, stdout) },
 		func() error { return runLotPass(ctx, db, cfg, false, stdout) },
 		func() error { return runExposurePass(ctx, db, stdout) },
+		func() error { return runYieldPass(ctx, db, stdout) },
 	} {
 		if err := pass(); err != nil {
 			fmt.Fprintf(stderr, "%s: %s\n", verb, err.Error())
@@ -601,6 +603,21 @@ func runExposurePass(ctx context.Context, db *sql.DB, stdout io.Writer) error {
 	if n.Securities > 0 {
 		fmt.Fprintf(stdout, "exposure: %d securities, %d aliases, %d unmapped label(s)\n",
 			n.Securities, n.Aliases, n.UnmappedLabels)
+	}
+	return nil
+}
+
+// runYieldPass rebuilds the yield report's derived tables
+// (gold.RebuildYield) and says what it built, once there is something to
+// say.
+func runYieldPass(ctx context.Context, db *sql.DB, stdout io.Writer) error {
+	n, err := gold.RebuildYield(ctx, db)
+	if err != nil {
+		return err
+	}
+	if n.Instruments+n.RatedAccounts > 0 {
+		fmt.Fprintf(stdout, "yield: %d instrument(s) with terms, %d with a maturity; %d account(s) with a stated rate\n",
+			n.Instruments, n.WithMaturity, n.RatedAccounts)
 	}
 	return nil
 }

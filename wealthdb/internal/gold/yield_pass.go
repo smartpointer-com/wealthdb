@@ -1,0 +1,371 @@
+package gold
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+)
+
+// RebuildYield rewrites the yield report's derived tables from what gold
+// holds: each bond-like instrument's terms (instrument_terms) and each
+// account's stated interest rates (account_rates). It runs after the
+// exposure pass, whose instrument keys and securities it reads. One
+// transaction; the tables are replaced whole.
+func RebuildYield(ctx context.Context, db *sql.DB) (YieldCounts, error) {
+	var n YieldCounts
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return n, fmt.Errorf("yield pass: begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck — no-op after Commit
+	steps := []struct {
+		name string
+		run  func() error
+	}{
+		{"terms", func() error { return writeInstrumentTerms(ctx, tx) }},
+		{"rates", func() error { return writeAccountRates(ctx, tx) }},
+	}
+	for _, s := range steps {
+		if err := s.run(); err != nil {
+			return n, fmt.Errorf("yield pass: %s: %w", s.name, err)
+		}
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM instrument_terms),
+        (SELECT COUNT(*) FROM instrument_terms WHERE maturity IS NOT NULL),
+        (SELECT COUNT(DISTINCT (silver_source_id, account_external_id)) FROM account_rates)`).
+		Scan(&n.Instruments, &n.WithMaturity, &n.RatedAccounts); err != nil {
+		return n, fmt.Errorf("yield pass: counts: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return n, fmt.Errorf("yield pass: commit: %w", err)
+	}
+	return n, nil
+}
+
+// YieldCounts is what the yield pass rebuilt: the instruments with terms,
+// those of them with a maturity, and the accounts with a stated rate.
+type YieldCounts struct {
+	Instruments, WithMaturity, RatedAccounts int64
+}
+
+// The origins of an instrument_terms field, best first.
+const (
+	originPayload     = "payload"
+	originDescription = "description"
+	originOpenFIGI    = "openfigi"
+	originConvention  = "convention"
+)
+
+// bondVehicles are the vehicles whose terms the yield pass reads from
+// their sources; a ledger record states any other instrument's
+// (instrument_terms_at).
+var bondVehicles = []string{"bond", "mortgage", "loan", "convertible_note"}
+
+// termsCandidatesSQL lists each bond-like instrument with what may state
+// its terms: its name, its own figures (the interest_rate and
+// maturity_date a manual source's record states), OpenFIGI's ticker and
+// market sector for its security, its security's sector, and whether its
+// key is a US ISIN (canonical.ReadBondDescription's usID).
+var termsCandidatesSQL = `
+WITH figi AS (
+    SELECT exposure_key(security_key) AS key, MIN(json_extract_string(payload, 'local_ticker')) AS ticker,
+           MIN(json_extract_string(payload, 'market_sector')) AS market_sector
+      FROM security_identities
+     WHERE provider = 'openfigi' AND json_extract_string(payload, 'local_ticker') IS NOT NULL
+     GROUP BY 1)
+SELECT i.silver_source_id, i.instrument_external_id, COALESCE(i.name, ''), COALESCE(i.currency, ''),
+       COALESCE(i.vehicle, ''), json_extract_string(i.payload, 'interest_rate'),
+       json_extract_string(i.payload, 'maturity_date'), f.ticker, COALESCE(s.sector, ''),
+       COALESCE(f.market_sector, ''), COALESCE(exposure_key(ik.security_key) LIKE 'isin:US%', FALSE)
+  FROM instruments i
+  LEFT JOIN instrument_keys ik ON ik.silver_source_id = i.silver_source_id
+       AND ik.instrument_external_id = i.instrument_external_id
+  LEFT JOIN securities s ON s.security_key = exposure_key(ik.security_key)
+  LEFT JOIN figi f ON f.key = exposure_key(ik.security_key)
+ WHERE i.vehicle IN ('` + strings.Join(bondVehicles, "', '") + `')
+ ORDER BY 1, 2`
+
+// field is one instrument_terms field and where it comes from.
+type field[T any] struct {
+	v      *T
+	origin string
+}
+
+// offer sets the field from origin where it holds nothing yet: the
+// origins are offered best first.
+func (f *field[T]) offer(v *T, origin string) {
+	if f.v == nil && v != nil {
+		f.v, f.origin = v, origin
+	}
+}
+
+func (f field[T]) value() any {
+	if f.v == nil {
+		return nil
+	}
+	return *f.v
+}
+
+func (f field[T]) from() any {
+	if f.v == nil {
+		return nil
+	}
+	return f.origin
+}
+
+type termsRow struct {
+	src, iid, vehicle      string
+	coupon                 field[float64]
+	frequency              field[int]
+	maturity, call         field[time.Time]
+	kind, dayCount, rating field[string]
+	makeWhole, inDefault   bool
+}
+
+// figiSectors maps OpenFIGI's market sector to a bond sector.
+var figiSectors = map[string]canonical.Sector{"Govt": canonical.SectorGovernment, "Muni": canonical.SectorMunicipal,
+	"Corp": canonical.SectorCorporate, "Mtge": canonical.SectorSecuritised}
+
+// writeInstrumentTerms rewrites instrument_terms: per field, the source's
+// own figure, else the description's, else OpenFIGI's ticker's; a bond's
+// frequency and day count else its market's convention. A bond with a
+// coupon and no stated kind is fixed, one with a coupon of zero a zero,
+// both by convention. The ledger's records are laid over at report time
+// (instrument_terms_at).
+func writeInstrumentTerms(ctx context.Context, tx *sql.Tx) error {
+	conventions, err := readConventions(ctx, tx)
+	if err != nil {
+		return err
+	}
+	var rows []termsRow
+	if err := scanAll(ctx, tx, termsCandidatesSQL, func(sc *sql.Rows) error {
+		var r termsRow
+		var name, ccy, sector, figiSector string
+		var rate, maturity, ticker sql.NullString
+		var usID bool
+		if err := sc.Scan(&r.src, &r.iid, &name, &ccy, &r.vehicle, &rate, &maturity, &ticker, &sector, &figiSector,
+			&usID); err != nil {
+			return err
+		}
+		if v, err := strconv.ParseFloat(rate.String, 64); err == nil && rate.Valid {
+			r.coupon.offer(&v, originPayload)
+		}
+		if t, err := time.Parse(time.DateOnly, maturity.String); err == nil && maturity.Valid {
+			r.maturity.offer(&t, originPayload)
+		}
+		desc := canonical.ReadBondTerms(name)
+		r.coupon.offer(desc.Coupon, originDescription)
+		r.maturity.offer(desc.Maturity, originDescription)
+		r.call.offer(desc.CallDate, originDescription)
+		r.makeWhole, r.inDefault = desc.MakeWhole, desc.Default
+		if desc.Frequency != 0 {
+			r.frequency.offer(&desc.Frequency, originDescription)
+		}
+		if desc.CouponKind != "" {
+			k := string(desc.CouponKind)
+			r.kind.offer(&k, originDescription)
+		}
+		if desc.Rating != "" {
+			b := string(desc.Rating)
+			r.rating.offer(&b, originDescription)
+		}
+		figi := canonical.ReadFigiTicker(ticker.String)
+		r.coupon.offer(figi.Coupon, originOpenFIGI)
+		r.maturity.offer(figi.Maturity, originOpenFIGI)
+		if figi.CouponKind != "" {
+			k := string(figi.CouponKind)
+			r.kind.offer(&k, originOpenFIGI)
+		}
+		if r.vehicle == "bond" {
+			if sector == "" {
+				if b, ok := canonical.ReadBondDescription(name, usID); ok {
+					sector = string(b.Sector)
+				} else {
+					sector = string(figiSectors[figiSector])
+				}
+			}
+			r.applyConvention(conventions, ccy, sector, desc.Bill || figi.Bill)
+		}
+		rows = append(rows, r)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("candidates: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM instrument_terms`); err != nil {
+		return err
+	}
+	return InsertChunked(ctx, tx, "instrument_terms", `INSERT INTO instrument_terms (silver_source_id,
+instrument_external_id, vehicle, coupon_pct, coupon_origin, maturity, maturity_origin, frequency, frequency_origin,
+coupon_kind, coupon_kind_origin, day_count, day_count_origin, call_date, call_origin, make_whole, rating,
+rating_origin, in_default) VALUES `,
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(rows),
+		func(i int, args []any) []any {
+			r := rows[i]
+			return append(args, r.src, r.iid, r.vehicle, r.coupon.value(), r.coupon.from(), r.maturity.value(),
+				r.maturity.from(), r.frequency.value(), r.frequency.from(), r.kind.value(), r.kind.from(),
+				r.dayCount.value(), r.dayCount.from(), r.call.value(), r.call.from(), r.makeWhole,
+				r.rating.value(), r.rating.from(), r.inDefault)
+		})
+}
+
+// applyConvention fills a bond's frequency and day count from its
+// market's convention (yield_conventions): a bill's is its currency's
+// bills' (USD:bill), else no coupon on ACT/360; any other bond's its
+// currency and sector's (USD:government), else its currency's. A coupon
+// with no kind stated is fixed, or a zero's where it is zero.
+func (r *termsRow) applyConvention(conventions map[string]canonical.YieldConvention, ccy, sector string, bill bool) {
+	var c canonical.YieldConvention
+	var ok bool
+	if bill {
+		c, ok = conventions[ccy+":"+canonical.MarketBill]
+		if !ok {
+			c, ok = canonical.YieldConvention{Frequency: 0, DayCount: canonical.DayCountAct360}, true
+		}
+	} else if c, ok = conventions[ccy+":"+sector]; !ok {
+		c, ok = conventions[ccy]
+	}
+	if ok {
+		f, dc := c.Frequency, string(c.DayCount)
+		if bill || f > 0 {
+			r.frequency.offer(&f, originConvention)
+		}
+		r.dayCount.offer(&dc, originConvention)
+	}
+	if r.coupon.v != nil {
+		k := string(canonical.CouponFixed)
+		if *r.coupon.v == 0 {
+			k = string(canonical.CouponZero)
+		}
+		r.kind.offer(&k, originConvention)
+	}
+}
+
+// readConventions is yield_conventions by market.
+func readConventions(ctx context.Context, q querier) (map[string]canonical.YieldConvention, error) {
+	out := map[string]canonical.YieldConvention{}
+	err := scanAll(ctx, q, `SELECT market, frequency, day_count, origin FROM yield_conventions`,
+		func(rows *sql.Rows) error {
+			var c canonical.YieldConvention
+			var dc, origin string
+			if err := rows.Scan(&c.Market, &c.Frequency, &dc, &origin); err != nil {
+				return err
+			}
+			c.DayCount, c.Origin = canonical.DayCount(dc), canonical.YieldOrigin(origin)
+			out[c.Market] = c
+			return nil
+		})
+	if err != nil {
+		return nil, fmt.Errorf("conventions: %w", err)
+	}
+	return out, nil
+}
+
+// accountRatesSQL rewrites account_rates from the rates the sources'
+// records state, read by the shape each source writes, and the ledger's
+// rate records:
+//
+//   - a cash balance that states UBS's tiers: its credit and debit tiers
+//     (CdtIntrstRate1 to 4, each up to its CdtLmtAmt; a tier past the
+//     first only after a tier with a limit), the day each holds from,
+//     the day count, and an end before the open one (9999) as a term
+//     deposit's. Each snapshot gives its rows, from the balance
+//     cash_chosen prefers, so a day reads the snapshot of its own;
+//   - an account whose details state Raiffeisen's credit and debit rate
+//     ("0,111% ab 01.01.2024": the rate, its decimal a comma or a dot,
+//     and the day it holds from);
+//   - an account whose strategy states VIAC's rate on its cash;
+//   - the ledger: each rate record of an account a source states, from
+//     its day on.
+//
+// A day count the source names is stored as canonical.DayCount names it
+// (act/360 reads ACT/360), else NULL.
+var accountRatesSQL = func() []string {
+	var ubs []string
+	for _, side := range []struct{ name, prefix string }{{"credit", "Cdt"}, {"debit", "Dbt"}} {
+		for tier := 1; tier <= 4; tier++ {
+			prev := "TRUE"
+			if tier > 1 {
+				prev = fmt.Sprintf(`TRY_CAST(json_extract_string(payload, '%sLmtAmt%d') AS DOUBLE) BETWEEN 0.005 AND 1e14`,
+					side.prefix, tier-1)
+			}
+			ubs = append(ubs, fmt.Sprintf(`
+SELECT silver_source_id, account_external_id, currency, '%[1]s' AS side, %[3]d AS tier,
+       TRY_CAST(json_extract_string(payload, '%[2]sIntrstRate%[3]d') AS DOUBLE) AS rate_pct,
+       CASE WHEN TRY_CAST(json_extract_string(payload, '%[2]sLmtAmt%[3]d') AS DOUBLE) BETWEEN 0.005 AND 1e14
+            THEN TRY_CAST(json_extract_string(payload, '%[2]sLmtAmt%[3]d') AS DOUBLE) END AS up_to,
+       TRY_CAST(json_extract_string(payload, '%[2]sIntrstVldFrmDt') AS DATE) AS valid_from,
+       CASE WHEN year(TRY_CAST(json_extract_string(payload, 'EndOfDurtn') AS DATE)) < 9000
+            THEN TRY_CAST(json_extract_string(payload, 'EndOfDurtn') AS DATE) END AS term_end,
+       `+dayCountSQL("json_extract_string(payload, 'CalIntrstBasisDesc')")+` AS day_count,
+       '%[2]sIntrstRate%[3]d' AS field, snapshot_at AS observed_at
+  FROM ubs_balances
+ WHERE %[4]s`, side.name, side.prefix, tier, prev))
+		}
+	}
+	return []string{`DELETE FROM account_rates`, `
+INSERT INTO account_rates (silver_source_id, account_external_id, currency, side, tier, rate_pct, up_to, valid_from,
+                           term_end, day_count, origin, field, observed_at)
+WITH ubs_balances AS MATERIALIZED (
+    SELECT DISTINCT ON (cb.silver_source_id, cb.account_external_id, cb.currency, cb.snapshot_at)
+           cb.silver_source_id, cb.account_external_id, cb.currency, cb.snapshot_at, cb.payload
+      FROM cash_balances cb
+     WHERE json_extract_string(cb.payload, 'CdtIntrstRate1') IS NOT NULL
+     ORDER BY cb.silver_source_id, cb.account_external_id, cb.currency, cb.snapshot_at,
+              CASE cb.balance_kind WHEN 'current' THEN 1 WHEN 'closing' THEN 2 WHEN 'available' THEN 3
+                   WHEN 'aggregated' THEN 4 WHEN 'opening' THEN 5 WHEN 'initial' THEN 6 WHEN 'projected' THEN 7
+                   ELSE 99 END, cb.balance_kind),
+tiers AS (` + strings.Join(ubs, "\nUNION ALL") + `)
+SELECT silver_source_id, account_external_id, currency, side, tier, rate_pct, up_to, valid_from, term_end,
+       day_count, 'stated', field, observed_at
+  FROM tiers WHERE rate_pct IS NOT NULL`, `
+INSERT INTO account_rates (silver_source_id, account_external_id, currency, side, tier, rate_pct, valid_from,
+                           origin, field)
+SELECT a.silver_source_id, a.account_external_id, a.base_currency, s.side, 1,
+       TRY_CAST(replace(regexp_extract(json_extract_string(a.payload, '$.details.' || s.key),
+                                       '(-?[0-9]+([.,][0-9]+)?)\s*%', 1), ',', '.') AS DOUBLE),
+       TRY_STRPTIME(regexp_extract(json_extract_string(a.payload, '$.details.' || s.key),
+                                   '([0-9]{2}\.[0-9]{2}\.[0-9]{4})', 1), '%d.%m.%Y')::DATE,
+       'stated', 'details.' || s.key
+  FROM accounts a
+ CROSS JOIN (VALUES ('credit', 'interest_credit'), ('debit', 'interest_debit')) s(side, key)
+ WHERE regexp_matches(COALESCE(json_extract_string(a.payload, '$.details.' || s.key), ''), '[0-9]\s*%')`, `
+INSERT INTO account_rates (silver_source_id, account_external_id, currency, side, tier, rate_pct, origin, field)
+SELECT a.silver_source_id, a.account_external_id, a.base_currency, 'credit', 1,
+       TRY_CAST(json_extract_string(a.payload, '$.strategy.interestRate') AS DOUBLE), 'stated', 'strategy.interestRate'
+  FROM accounts a
+ WHERE TRY_CAST(json_extract_string(a.payload, '$.strategy.interestRate') AS DOUBLE) IS NOT NULL`, `
+INSERT INTO account_rates (silver_source_id, account_external_id, currency, side, tier, rate_pct, valid_from,
+                           term_end, origin, line_no)
+SELECT r.silver_source_id, r.account_external_id, r.currency, 'credit', 1, r.rate_pct,
+       DATE '1970-01-01' + CAST(r.as_of // 86400 AS INTEGER), r.until, 'declared', r.line_no
+  FROM yield_declared_rates r
+  SEMI JOIN accounts a ON a.silver_source_id = r.silver_source_id AND a.account_external_id = r.account_external_id`}
+}()
+
+// dayCountSQL maps a source's day-count text to canonical.DayCount's
+// names: case and spaces aside, ACT/360, ACT/365, ACT/ACT, 30/360 and
+// 30E/360; anything else is NULL.
+func dayCountSQL(expr string) string {
+	var cases []string
+	for _, dc := range canonical.DayCounts() {
+		cases = append(cases, fmt.Sprintf("WHEN '%s' THEN '%s'", strings.ToUpper(string(dc)), dc))
+	}
+	return "CASE upper(replace(" + expr + ", ' ', '')) " + strings.Join(cases, " ") + " END"
+}
+
+func writeAccountRates(ctx context.Context, tx *sql.Tx) error {
+	return execAll(ctx, tx, accountRatesSQL...)
+}
+
+func nullDate(v sql.NullTime) *time.Time {
+	if !v.Valid {
+		return nil
+	}
+	t := v.Time.UTC()
+	return &t
+}

@@ -464,9 +464,10 @@ load stores it.
 ### The declarations ledger
 
 The declarations ledger states what no public source can know: where a
-private holding's value is (§5), and where any holding legally sits
-(§13). It is newline-delimited JSON, one record per line, for one
-holding and date:
+private holding's value is (§5), where any holding legally sits (§13),
+and the yield figures no source states (below). It is newline-delimited
+JSON, one record per line, for one holding, or one account for a rate,
+and date:
 
 ```json
 {"silver_source_id":"manual","instrument":"house-1","country":{"CH":100},"currency":{"CHF":100},"note":"the house"}
@@ -480,8 +481,9 @@ holding and date:
 - `as_of` is the date of the document the record comes from,
   `YYYY-MM-DD`. A record without one holds before the holding's first
   dated record (below).
-- A record declares at least one dimension, or a `situs`. Each
-  dimension is an object of values and their shares:
+- A record declares at least one dimension, a `situs`, or one of the
+  yield records below. Each dimension is an object of values and their
+  shares:
   - `region`: a region (§3), or `rest` for the rest of the world, which
     reads as the region `other`;
   - `country`: an ISO 3166 code. A country implies its region, so a
@@ -548,9 +550,50 @@ taken out. A holding its source names by no instrument has an empty
 `instrument` and cannot take a record. A holding with no value, in the
 `(no value)` line, takes no skeleton.
 
-A load warns of a record whose holding no source states, with its line:
-such a record declares nothing, and a misspelt instrument would
-otherwise show only as a holding still undeclared.
+A load warns of a record whose holding, or whose account for a rate, no
+source states, with its line: such a record declares nothing, and a
+misspelt instrument would otherwise show only as a holding still
+undeclared.
+
+### Yield records
+
+The same ledger states the yield figures no source states. A record
+carries one or more of four objects, beside its dimensions or alone:
+
+```json
+{"silver_source_id":"bank-1","account":"savings-1","as_of":"2026-01-01","rate":{"pct":0.75}}
+{"silver_source_id":"broker-1","instrument":"bond-1","rating":{"bucket":"AA","agency":"Example Ratings"}}
+{"silver_source_id":"broker-1","instrument":"QSTK","dividend":{"amount":0.42,"frequency":4}}
+{"silver_source_id":"broker-1","instrument":"bond-1","terms":{"frequency":2,"call_date":"2028-06-15"}}
+{"silver_source_id":"plan-1","instrument":"sleeve-1","as_of":"2026-09-30","terms":{"duration":6.1,"yield":4.4}}
+```
+
+- `rate` is an account's interest rate, from the record's day on. It
+  names an `account` instead of an `instrument`, and states nothing
+  else. It takes `pct` (percent a year), and optionally `currency` (for
+  an account in several, one record per currency and date) and `until`
+  (a term deposit's end).
+- `rating` is a holding's credit bucket: `bucket` is one of AAA, AA, A,
+  BBB, BB, B (B and below) or `unrated`. `agency` is optional.
+- `dividend` is a stock's indicated dividend: `amount` per share of one
+  payment and `frequency`, the payments a year (1, 2, 4 or 12), and
+  optionally `currency`.
+- `terms` is what a bond's, a note's or a mortgage's terms state: any of
+  `coupon` (percent a year), `frequency` (0 for a discount instrument),
+  `maturity`, `call_date`, `fixed_until`, `reset_date`, `coupon_kind`
+  (fixed, floating, inflation_linked, zero) and `day_count` (30/360,
+  30E/360, ACT/ACT, ACT/360, ACT/365). A fund that files nowhere public
+  states its factsheet's `duration` (years) and `yield` (percent) here.
+
+A date is `YYYY-MM-DD`. Any other key is refused, and so are terms that
+contradict one another: a coupon with a frequency of 0 or the kind
+zero, a call date or a fixed period after the maturity. A holding or an
+account has one record of each kind per date. On a day, the record that
+holds is the latest one dated on or before it, else the one without a
+date; a newer record replaces an older one whole. A record of these
+alone is no exposure record: the holding reads its other records, or
+none, for its dimensions. A field the record in force states wins over
+the same field from any source.
 
 ## 10. Coverage
 
