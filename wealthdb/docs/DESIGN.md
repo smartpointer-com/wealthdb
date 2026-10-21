@@ -3045,13 +3045,27 @@ The macros:
   leaf, with its class, sector, country, currency, a stock's size, flags,
   `how`, and its holding's situs and basis. It expands only the funds a
   holding reaches within three levels, and splits a declared holding
-  into its parts;
+  into its parts. A fund's line carries what it states of its debt and
+  its issuer, the LEI from `fund_lines.lei`, which the load reads off
+  the line's payload (migration 0137);
+- `exposure_yield_leaves(asof, ccy)`: the leaves with each one's
+  maturity and its bucket, coupon kind, rating, cycle and issuer, a
+  holding's from its terms on the day; `exposure_credit_leaves` and
+  `exposure_maturity_leaves` split a leaf no rating or maturity
+  describes by its fund's page (`exposure_page_breakdown`). Their
+  helpers read a label, a band, a maturity and a name, and give a
+  leaf's bucket: `exposure_rating_label` and `_grade`,
+  `exposure_maturity_label`, `_band`, `_years` and `_bucket`,
+  `exposure_issuer_text` and `_name`, `exposure_credit_bucket`,
+  `exposure_credit_unknown` and `exposure_maturity_split` (migration
+  0137);
 - `exposure_quality(flags, value)` and `exposure_situs_quality(basis,
   value)`: the aggregates behind the `quality` columns;
 - `exposure_divergence(asof)`: how far each fund read from a report lies
   from its proxy, by sector and by country;
 - `report_exposure_classes`, `_sectors`, `_sizes`, `_countries`,
-  `_currencies`, `_situs`, `_securities`, `_funds` and `_coverage`: the
+  `_currencies`, `_credit`, `_maturities`, `_coupons`, `_cycles`,
+  `_issuers`, `_situs`, `_securities`, `_funds` and `_coverage`: the
   views.
 
 Values leave the leaves as DOUBLE: the look-through splits a line by

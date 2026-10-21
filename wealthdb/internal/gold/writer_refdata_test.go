@@ -46,7 +46,7 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 			ExchangeRate: d("1.0855"),
 			Duration:     d("6.25"), ModifiedDuration: d("6.1"), YieldToMaturity: d("4.35"), YieldToWorst: d("4.2"),
 			YieldToCall: d("4.1"), RealDuration: d("5.5"), RealYield: d("1.85"), AccrualDate: &accrual,
-			Payload: []byte(`{"l":1}`)}},
+			Payload: []byte(`{"l":1,"lei":"QQQQ00000000000000L1"}`)}},
 		FundAttributes: []canonical.FundAttributesChange{{SilverSourceID: "test-src", FundRef: "isin:XX0000000001",
 			AsOf: 86400, Domicile: s("QA"), LegalForm: s("SICAV"), UCITS: &yes, Replication: s("physical"),
 			Distribution: s("dis"), TER: d("0.12"), HedgedCurrency: s("QLH"), Lending: &no, IndexName: s("Qland Index"),
@@ -98,11 +98,12 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 		    exchange, name, asset_type, weight, quantity, market_value, currency, country, risk_country, sector, industry,
 		    maturity, coupon, long_currency, long_amount, short_currency, short_amount, coupon_kind, is_default,
 		    in_arrears, paid_in_kind, exchange_rate, duration, modified_duration, yield_to_maturity, yield_to_worst, yield_to_call,
-		    real_duration, real_yield, accrual_date, payload`,
+		    real_duration, real_yield, accrual_date, lei, payload`,
 			"test-src|isin:XX0000000001|86400|holdings|3|isin:XX0000000002|XX0000000002|Q0000AB01|BBG00000Q001|QRV|" +
 				"Qland Exchange|Qorvant Corp|Equity|12.50000000|40.00000000|125.2500|QLE|Qland|Rland|Mining|Metals|" +
 				"2041-03-15|3.33000000|QLF|11.0000|QLG|12.0000|Fixed|false|true|false|1.085500000000|6.25000000|6.10000000|" +
-				"4.35000000|4.20000000|4.10000000|5.50000000|1.85000000|2040-09-15|{\"l\":1}"},
+				"4.35000000|4.20000000|4.10000000|5.50000000|1.85000000|2040-09-15|QQQQ00000000000000L1|" +
+				"{\"l\":1,\"lei\":\"QQQQ00000000000000L1\"}"},
 		{"fund_attributes", `silver_source_id, fund_ref, as_of, domicile, legal_form, ucits, replication, distribution,
 		    ter, hedged_currency, lending, index_name, depositary, payload`,
 			"test-src|isin:XX0000000001|86400|QA|SICAV|true|physical|dis|0.12000000|QLH|false|Qland Index|Example Bank|{\"a\":1}"},
@@ -183,4 +184,22 @@ func filledTables(t *testing.T, db *sql.DB, ctx context.Context) []string {
 		}
 	}
 	return out
+}
+
+// A line's LEI is the text its payload states under `lei` exactly; an
+// empty one, a number, an object or another key is none.
+func TestPayloadLEI(t *testing.T) {
+	t.Parallel()
+	for payload, want := range map[string]string{
+		`{"lei":"QQQQ00000000000000L1"}`: "QQQQ00000000000000L1", `{"lei":""}`: "", `{"lei":12}`: "",
+		`{"lei":{"a":1}}`: "", `{"LEI":"QQQQ00000000000000L2"}`: "", `{"l":1}`: "", `not json`: "", ``: "",
+	} {
+		got := ""
+		if p := payloadLEI([]byte(payload)); p != nil {
+			got = *p
+		}
+		if got != want {
+			t.Errorf("%q: %q, want %q", payload, got, want)
+		}
+	}
 }

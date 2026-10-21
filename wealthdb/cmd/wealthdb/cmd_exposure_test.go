@@ -115,7 +115,7 @@ func TestExposureUsageNamesTheFlagsViews(t *testing.T) {
 	flat := strings.Join(strings.Fields(usage), " ")
 	for _, want := range []string{
 		"--period P " + strings.Join(exposurePeriods, " | ") + ":",
-		"a period column first; on classes, sectors, sizes, countries, currencies, situs and coverage",
+		"a period column first; on " + andList(exposureSeriesViews),
 		"--country C risk (default) | domicile:",
 		"counts in, on countries and securities",
 	} {
@@ -394,5 +394,36 @@ func TestSeriesPointsEndEveryPeriod(t *testing.T) {
 	}
 	if got := seriesPoints(day(2026, 8, 20), to, "monthly"); got != nil {
 		t.Errorf("a window that starts after its end = %v", got)
+	}
+}
+
+// The bucket views and issuers print their own first columns and the
+// shares; -p hides the values and keeps the names; --period runs on a
+// bucket view and is refused on issuers.
+func TestExposureYieldViewsOnTheCLI(t *testing.T) {
+	t.Parallel()
+	cfg := setupExposureGold(t)
+	for view, header := range map[string]string{
+		"credit":     "bucket,grade,value_USD,share_pct,direct_pct,via_funds_pct,quality",
+		"maturities": "bucket,value_USD,share_pct,direct_pct,via_funds_pct,quality",
+		"coupons":    "coupon_kind,value_USD,share_pct,direct_pct,via_funds_pct,quality",
+		"cycles":     "cycle,value_USD,share_pct,direct_pct,via_funds_pct,quality",
+		"issuers":    "issuer,value_USD,share_pct,cumulative_share_pct,equity_pct,debt_pct,cash_pct,quality",
+	} {
+		out, errb, code := runExposure(t, cfg, view, "-d", "2026-06-30", "-f", "csv")
+		if code != 0 || !strings.HasPrefix(out, header+"\n") {
+			t.Errorf("%s: %d %s\n%s", view, code, errb, out)
+		}
+		out, _, code = runExposure(t, cfg, view, "-d", "2026-06-30", "-f", "csv", "-p")
+		if code != 0 || strings.Contains(out, "1000.00") || strings.Contains(out, "250.00") {
+			t.Errorf("%s -p: %d\n%s", view, code, out)
+		}
+	}
+	out, _, code := runExposure(t, cfg, "cycles", "--period", "quarterly", "2026-04-01", "2026-06-30", "-f", "csv")
+	if code != 0 || !strings.HasPrefix(out, "period,cycle,") || !strings.Contains(out, "2026-Q2") {
+		t.Errorf("a series of cycles: %d\n%s", code, out)
+	}
+	if _, _, code := runExposure(t, cfg, "issuers", "--period", "quarterly", "2026"); code == 0 {
+		t.Error("a series of issuers: accepted")
 	}
 }

@@ -344,8 +344,13 @@ The `currencies` view marks each row's kind: `fiat`, `metal` or
 | `sizes` | asset class and size | large, mid and small caps (§3), and each one's share within its class |
 | `countries` | country | where the value is, with each country's region |
 | `currencies` | currency | what the value moves with |
+| `credit` | credit bucket | how good the debt's credit is, investment grade or high yield |
+| `maturities` | time to maturity | when the debt falls due |
+| `coupons` | coupon kind | what the debt's coupons follow |
+| `cycles` | cycle | how the stocks move with the economy |
 | `situs` | legal situs | where each holding legally sits, each fund whole (§13) |
 | `securities` | security | each security held directly and through every fund |
+| `issuers` | issuer | who the value is owed by or invested in, the largest first |
 | `funds` | fund held directly | what describes it on the day, and how old that is |
 | `coverage` | reason | what the figures rest on (§10) |
 
@@ -358,10 +363,12 @@ Columns every aggregate view shares, by the names `-C` takes:
 - `quality`: the flags of §8.
 
 `sectors` and `sizes` add `class_share`, the share within the asset
-class. A value prints as `value_<CCY>`. A share prints with a `_pct`
-suffix, in a table's header and as a JSON key: `share_pct`,
-`class_share_pct`, and `weight_sum_pct` in `funds`. `wealthdb help
-exposure` lists every view's columns.
+class. `credit` adds `grade`. `issuers` has no `direct` and
+`via_funds`; it adds `lei`, `cumulative_share`, `equity`, `debt`,
+`cash` and `securities`. A value prints as `value_<CCY>`. A share
+prints with a `_pct` suffix, in a table's header and as a JSON key:
+`share_pct`, `class_share_pct`, and `weight_sum_pct` in `funds`.
+`wealthdb help exposure` lists every view's columns.
 
 A row with no value for its dimension reads `unknown`. In
 `countries`, a metal or a coin reads `(none)`: it has no country. A
@@ -376,6 +383,79 @@ instrument, a fund's remainder. The parts of a declared holding are one
 row, the holding's, with the class, sector, country and currency of its
 largest part. The split itself shows in `classes`, `sectors`,
 `countries` and `currencies`.
+
+`credit`, `maturities` and `coupons` describe the debt: the leaves of
+the fixed income and private debt classes. A holding reads its terms on
+the day, a ledger record over a source (§9, yield records). A fund's
+line reads what its fund states of it. A bucket no leaf falls in has no
+row.
+
+- `credit` has a row for each bucket from `AAA` to `B` (B and below),
+  then `unrated`, `cash` and `(none)`. `grade` is `IG` from AAA to BBB
+  and `HY` below. A fund that `yield.rating_funds` slices by rating, and
+  its lines, read the range's worse end (YIELD.md §8). Any other debt
+  leaf with no rating of its own splits by its fund's credit-quality
+  breakdown, the fund's cash left out. A label the breakdown's map does
+  not know (Government, Other) reads `unrated`. So does a debt leaf with
+  neither, and both are flagged `unknown`.
+- `maturities` buckets the time to maturity on the day: `under 1y`,
+  `1-3y`, `3-5y`, `5-10y`, `10-20y`, `over 20y`. A maturity exactly N
+  years on counts in the longer bucket; one past, under a year. A
+  maturity a century on, or none on a name that says PERP, reads
+  `perpetual`; a fund's own name says nothing of its lines. A cash
+  balance or a time deposit matures with its term, where its terms or
+  its account's rates state one, else counts under a year. A debt leaf
+  with no maturity splits by its fund's maturity breakdown, each band by
+  its lower bound, a band in months as its part of a year. An open band
+  below 20 years (10+ Years) spans buckets and reads `unknown`. Else the
+  leaf reads `unknown`.
+- `coupons` reads `fixed`, `floating`, `inflation_linked` or `zero`. A
+  line that states a real yield, or whose name says TIPS or inflation,
+  is inflation-linked. Any other line reads its fund's type, else its
+  name (FRN), else its coupon (zero, else fixed). Nothing stated reads
+  `unknown`.
+
+Cash has a row of its own in `credit`, and any leaf of no debt reads
+`(none)` in all three. In `maturities`, `coupons` and `cycles`,
+`unknown` is a row; in `credit` it is a flag on `unrated`.
+
+`cycles` groups the public equity by its sector's cycle: `cyclical`,
+`defensive` or `sensitive`, as `yield.cycles` overrides the built-in map
+(YIELD.md §8). A stock or a fund nothing looks through takes its
+sector's cycle, a declared one too. Without a sector it reads
+`unknown`. Anything else reads `(none)`.
+
+`issuers` puts a company's stock, bonds and deposits in one row. A leaf
+belongs to an issuer by the first of these that it has:
+
+- the LEI its fund line or GLEIF states;
+- its name, read by a rule below, where a GLEIF legal name of the
+  book's securities reads the same: that name's LEI;
+- its name, read by that rule;
+- for a cash balance or a time deposit, its custodian (§9), else its
+  source;
+- its security key, else its LEI, else `unknown`.
+
+The rule reads a name as follows:
+
+- accents, ß and Ø read as plain letters, the rest upper case;
+- the words end before the first figure after the first word (a
+  coupon, a date);
+- N/B and A/S are one word, and U.S., UNITED STATES and TREAS read as US
+  and TREASURY;
+- punctuation and a leading THE drop;
+- after the first word, a class letter (CLASS A), and the words of a
+  legal form, a share class or a bond's kind (INC, CORP, PLC, AG, ADR,
+  NOTE, MTN, SR UNSECURED) drop.
+
+An issuer prints GLEIF's name, else its stock's, else its name as the
+rule reads it. `cumulative_share` is the running share of net worth down
+to the row. `equity`, `debt` and `cash` split the row's own value. The
+leaves no issuer fits are one `(none)` row at the end:
+
+- a fund nothing looks through, and a fund's cash and remainder;
+- the parts a declaration splits a private holding into;
+- real estate, a metal, a private holding of no debt.
 
 `funds` lists each fund held directly, then one row for all other
 holdings together. `securities` and `funds` therefore sum to net worth,
@@ -392,10 +472,10 @@ column first. The last period ends at the window's end, so a window to
 today ends with today's figures. The window defaults to the last twelve
 months. It starts no earlier than the first holding and ends no later
 than today. It works on `classes`, `sectors`, `sizes`, `countries`,
-`currencies`, `situs` and `coverage`. Each period is a separate
-look-through: its holdings and compositions are the ones of its own day
-(§4). A security's attributes, its market cap and size among them, are
-today's.
+`currencies`, `credit`, `maturities`, `coupons`, `cycles`, `situs` and
+`coverage`. Each period is a separate look-through: its holdings and
+compositions are the ones of its own day (§4). A security's attributes,
+its market cap and size among them, are today's.
 
 ## 8. Quality
 
@@ -418,6 +498,7 @@ instead (§13).
 | `undeclared` | a private holding (§5) has no declaration on the day. A record that leaves a dimension out still declares the holding; one that states only a situs does not |
 | `unmatched` | a listed security or fund no source describes |
 | `no_composition` | in `funds` only: no composition and no declaration describes the fund on the day |
+| `unknown` | in `credit` only: debt that no rating, rating fund or known label of its fund's page describes |
 
 ## 9. Config
 

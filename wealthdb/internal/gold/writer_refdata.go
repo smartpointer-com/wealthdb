@@ -2,6 +2,7 @@ package gold
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -87,11 +88,11 @@ INSERT INTO fund_lines (
     long_currency, long_amount, short_currency, short_amount,
     coupon_kind, is_default, in_arrears, paid_in_kind, exchange_rate,
     duration, modified_duration, yield_to_maturity, yield_to_worst, yield_to_call,
-    real_duration, real_yield, accrual_date, payload
+    real_duration, real_yield, accrual_date, lei, payload
 ) VALUES `
 	return InsertChunked(ctx, w.tx, "fund_lines", head,
 		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+
-			`?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+			`?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
 		func(i int, args []any) []any {
 			r := &batch[i]
 			return append(args,
@@ -111,7 +112,7 @@ INSERT INTO fund_lines (
 				nullable(r.Duration), nullable(r.ModifiedDuration),
 				nullable(r.YieldToMaturity), nullable(r.YieldToWorst), nullable(r.YieldToCall),
 				nullable(r.RealDuration), nullable(r.RealYield), nullable(r.AccrualDate),
-				nullableJSON(r.Payload))
+				nullable(payloadLEI(r.Payload)), nullableJSON(r.Payload))
 		})
 }
 
@@ -268,4 +269,16 @@ INSERT INTO rate_observations (
 			return append(args,
 				r.SilverSourceID, r.SeriesID, r.AsOf, r.Value, nullableJSON(r.Payload))
 		})
+}
+
+// payloadLEI is the LEI a fund line's payload states under its `lei`
+// key (N-PORT's issuer LEI), nil where it states no text there; the
+// look-through reads it as a column, as migration 0137's backfill does.
+func payloadLEI(p json.RawMessage) *string {
+	var m map[string]json.RawMessage
+	var lei string
+	if len(p) == 0 || json.Unmarshal(p, &m) != nil || json.Unmarshal(m["lei"], &lei) != nil || lei == "" {
+		return nil
+	}
+	return &lei
 }

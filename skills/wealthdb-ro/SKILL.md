@@ -1,6 +1,6 @@
 ---
 name: wealthdb-ro
-description: Query the user's consolidated cross-institution investment portfolio through the read-only `wealthdb` CLI — holdings, account and portfolio balances, net worth, asset allocation, transaction history, investment returns (TWR and MWR/XIRR), look-through exposure by asset class, sector, size, country and currency, each holding's legal situs, realized and unrealized gains with their cost basis and tax lots, yields and interest-rate sensitivity (income yield, implied and realized yield, cash against its benchmark, duration and DV01), categorised spending, categorised income and the income the holdings are expected to pay, and the household cash flow statement with its Sankey. Use whenever a question is about current holdings, what an account or portfolio is worth, allocation, money in or out, what is really owned once every fund is looked through, how something performed over a period, what was gained or lost (realized or unrealized, or a holding's cost basis), what the holdings yield or how they move with interest rates, what was spent and on what, what was received and from whom, what the holdings will pay and when, or where the household's cash came from and where it went.
+description: Query the user's consolidated cross-institution investment portfolio through the read-only `wealthdb` CLI — holdings, account and portfolio balances, net worth, asset allocation, transaction history, investment returns (TWR and MWR/XIRR), look-through exposure by asset class, sector, size, country, currency, credit rating, maturity and issuer, each holding's legal situs, realized and unrealized gains with their cost basis and tax lots, yields and interest-rate sensitivity (income yield, implied and realized yield, cash against its benchmark, duration and DV01), categorised spending, categorised income and the income the holdings are expected to pay, and the household cash flow statement with its Sankey. Use whenever a question is about current holdings, what an account or portfolio is worth, allocation, money in or out, what is really owned once every fund is looked through, how something performed over a period, what was gained or lost (realized or unrealized, or a holding's cost basis), what the holdings yield or how they move with interest rates, what was spent and on what, what was received and from whom, what the holdings will pay and when, or where the household's cash came from and where it went.
 ---
 
 # wealthdb — portfolio queries (read-only)
@@ -58,6 +58,12 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
   `sizes`, `countries`, `currencies` (`-d 2025-12-31` for a past day)
 - **One company, directly and through funds** —
   `wealthdb -r exposure securities | grep -i <company>` (`value` is the total)
+- **The largest issuers, stock, bonds and deposits together** —
+  `wealthdb -r exposure issuers | head -12` (`cumulative_share_pct` answers
+  "how much sits with the top ten")
+- **The debt by credit, maturity and coupon kind** — `wealthdb -r exposure
+  credit` (`grade` IG or HY), `maturities`, `coupons`; the stocks by
+  cycle: `wealthdb -r exposure cycles`
 - **Exposure over time** — `wealthdb -r exposure countries --period quarterly 2025`
 - **How far to trust exposure** — `wealthdb -r exposure coverage`; how old each
   fund's data is, and which fund's holdings stand in for it (`proxy`, a key):
@@ -164,7 +170,7 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
 | The question | Command | Views |
 |---|---|---|
 | Net worth, balances, holdings (as of a day) | `holdings` | `global`, `sources`, `portfolios`, `accounts`, `positions` |
-| What is **really owned** once funds are looked through (as of a day); where holdings legally sit | `exposure` | `classes`, `sectors`, `sizes`, `countries`, `currencies`, `situs`, `securities`, `funds`, `coverage` |
+| What is **really owned** once funds are looked through (as of a day); where holdings legally sit | `exposure` | `classes`, `sectors`, `sizes`, `countries`, `currencies`, `credit`, `maturities`, `coupons`, `cycles`, `situs`, `securities`, `issuers`, `funds`, `coverage` |
 | What the holdings **yield**; interest rates, duration, rate risk; cash against its benchmark (as of a day) | `yield` | `global`, `sources`, `portfolios`, `accounts`, `positions`, `securities`, `funds`, `cash`, `curve`, `coverage` |
 | Trades, dividends, fees, cash in and out | `transactions` | — |
 | How something **performed** (return %) | `returns` | `global`, `sources`, `portfolios`, `accounts` |

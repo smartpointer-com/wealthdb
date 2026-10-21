@@ -447,7 +447,8 @@ The `yield` block of `wealthdb.cfg` holds what no source states
 - `rating_funds` maps a fund sliced by credit rating to the bucket its
   lines carry (`BBB`), or a range of buckets, best first (`AAA-A`). It
   is keyed like `exposure.size_funds`, and feeds the credit view of
-  `exposure`.
+  `exposure`, which reads a range at its worse end. The yield report's
+  `rating` is a holding's own: its terms' or a ledger record's.
 - `conventions` maps a market to its coupon frequency and day count. A
   market is a currency, or a currency and a bond sector or `bill`
   (`USD:government`, `USD:bill`). An entry replaces the built-in one of

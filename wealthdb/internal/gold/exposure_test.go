@@ -341,6 +341,14 @@ func TestExposureViewsSumToHoldingsGlobal(t *testing.T) {
 		sum("currencies", err, len(currencies), func(i int) *string { return currencies[i].Value })
 		situs, err := ExposureSitus(ctx, db, exAsOf, ccy)
 		sum("situs", err, len(situs), func(i int) *string { return situs[i].Value })
+		for name, read := range map[string]func(context.Context, *sql.DB, int64, string) ([]ExposureBucketRow, error){
+			"credit": ExposureCredit, "maturities": ExposureMaturities, "coupons": ExposureCoupons,
+			"cycles": ExposureCycles} {
+			rows, err := read(ctx, db, exAsOf, ccy)
+			sum(name, err, len(rows), func(i int) *string { return rows[i].Value })
+		}
+		issuers, err := ExposureIssuers(ctx, db, exAsOf, ccy)
+		sum("issuers", err, len(issuers), func(i int) *string { return issuers[i].Value })
 		securities, err := ExposureSecurities(ctx, db, exAsOf, ccy, "risk")
 		sum("securities", err, len(securities), func(i int) *string { return securities[i].Value })
 		funds, err := ExposureFunds(ctx, db, exAsOf, ccy)

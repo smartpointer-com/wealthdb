@@ -176,9 +176,10 @@ func (s *mcpServer) tools() []toolSpec {
 			name: "exposure", title: "Exposure",
 			description: "What is really owned: every fund looked through to what it holds, down to the single security, added to what is held directly, as of a date (default today). " +
 				"view=classes: by asset class. view=sectors: by asset class and sector. view=sizes: public equity by large, mid and small caps. view=countries: by country with its region. view=currencies: by the currency a value moves with (a fiat currency, a metal such as XAU, a coin such as BTC). " +
+				"view=credit: debt by rating bucket with its grade, IG or HY. view=maturities: debt and term cash by time to maturity. view=coupons: debt by coupon kind (fixed, floating, inflation_linked, zero). view=cycles: public equity by cyclical, sensitive and defensive sectors. " +
 				"view=situs: by legal situs, the country whose law each holding is an interest under; it looks through no fund, so a fund counts whole at its own situs, and it is no exposure. " +
-				"view=securities: each security, held directly and through every fund. view=funds: each fund held directly, what describes it and how old that is. view=coverage: what the figures rest on, the labels no map knows, the holdings no source describes, the private holdings no declaration describes, how far each fund read from a report lies from its proxy, and what each situs rests on. " +
-				"Every view sums to net worth; share_pct is a share of it, direct_pct and via_funds_pct split it. Read the quality column and view=coverage before trusting a figure. " +
+				"view=securities: each security, held directly and through every fund. view=issuers: each issuer, its stock, bonds and deposits together, largest first, with the running share. view=funds: each fund held directly, what describes it and how old that is. view=coverage: what the figures rest on, the labels no map knows, the holdings no source describes, the private holdings no declaration describes, how far each fund read from a report lies from its proxy, and what each situs rests on. " +
+				"Every view sums to net worth; share_pct is a share of it, direct_pct and via_funds_pct split it where present. Read the quality column and view=coverage before trusting a figure. " +
 				`Example: {view: "countries", as_of: "2025-12-31"}.`,
 			params: s.rowParams(false,
 				stringParam("view", "Which breakdown (default classes).", exposureFamily.views...),

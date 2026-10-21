@@ -37,8 +37,8 @@ func init() {
 
 // exposureViews are the views: the breakdowns coarse to fine, the legal
 // situs, then the lists and the diagnostics.
-var exposureViews = []string{"classes", "sectors", "sizes", "countries", "currencies", "situs", "securities", "funds",
-	"coverage"}
+var exposureViews = []string{"classes", "sectors", "sizes", "countries", "currencies", "credit", "maturities",
+	"coupons", "cycles", "situs", "securities", "issuers", "funds", "coverage"}
 
 // exposureCountryViews are the views --country applies to.
 var exposureCountryViews = []string{"countries", "securities"}
@@ -237,6 +237,17 @@ func exposureReport(req request) *report {
 			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureCurrencyRow, error) {
 				return gold.ExposureCurrencies(ctx, db, at, ccy)
 			})
+	case "credit", "maturities", "coupons", "cycles":
+		v := exposureBucketViews[req.view]
+		return exposureView(req, buildExposureBucketColumns(ccy, req.view), v.defaults,
+			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureBucketRow, error) {
+				return v.read(ctx, db, at, ccy)
+			})
+	case "issuers":
+		return exposureView(req, buildExposureIssuerColumns(ccy), defaultExposureIssuerColumns,
+			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureIssuerRow, error) {
+				return gold.ExposureIssuers(ctx, db, at, ccy)
+			})
 	case "situs":
 		return exposureView(req, buildExposureSitusColumns(ccy), defaultExposureSitusColumns,
 			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureSitusRow, error) {
@@ -351,9 +362,10 @@ func exposurePeriodMonths(name string) int {
 }
 
 // exposureSeriesViews are the views a series takes: the aggregates and
-// coverage. A series of securities or funds would be thousands of rows a
-// period.
-var exposureSeriesViews = []string{"classes", "sectors", "sizes", "countries", "currencies", "situs", "coverage"}
+// coverage. A series of securities, issuers or funds would be thousands
+// of rows a period.
+var exposureSeriesViews = []string{"classes", "sectors", "sizes", "countries", "currencies", "credit", "maturities",
+	"coupons", "cycles", "situs", "coverage"}
 
 // seriesPoints are the periods of `period` that meet the window [from,
 // to], each taken at its end (gold.PeriodEnds) and labelled by it. None
@@ -439,6 +451,52 @@ func buildExposureSizeColumns(ccy string) []columnSpec[gold.ExposureSizeRow] {
 }
 
 var defaultExposureSizeColumns = []string{"asset_class", "size", "value", "share", "class_share", "quality"}
+
+// exposureBucketViews are the bucket views: the name of each one's
+// first column, its reader and its default columns.
+var exposureBucketViews = map[string]struct {
+	column   string
+	read     func(context.Context, *sql.DB, int64, string) ([]gold.ExposureBucketRow, error)
+	defaults []string
+}{
+	"credit":     {"bucket", gold.ExposureCredit, []string{"bucket", "grade", "value", "share", "direct", "via_funds", "quality"}},
+	"maturities": {"bucket", gold.ExposureMaturities, []string{"bucket", "value", "share", "direct", "via_funds", "quality"}},
+	"coupons":    {"coupon_kind", gold.ExposureCoupons, []string{"coupon_kind", "value", "share", "direct", "via_funds", "quality"}},
+	"cycles":     {"cycle", gold.ExposureCycles, []string{"cycle", "value", "share", "direct", "via_funds", "quality"}},
+}
+
+// buildExposureBucketColumns is a bucket view's registry: the bucket,
+// credit's grade, the value, the shares and the quality.
+func buildExposureBucketColumns(ccy, view string) []columnSpec[gold.ExposureBucketRow] {
+	type row = gold.ExposureBucketRow
+	cols := []columnSpec[row]{{Name: exposureBucketViews[view].column, Align: output.AlignLeft,
+		Extract: func(r row) string { return r.Bucket }}}
+	if view == "credit" {
+		cols = append(cols, textCol("grade", func(r row) *string { return r.Grade }))
+	}
+	cols = append(cols, outCcyCol("value", ccy, func(r row) *string { return r.Value }))
+	cols = append(cols, shareCols(func(r row) gold.ExposureShares { return r.ExposureShares })...)
+	return append(cols, qualityCol(func(r row) string { return r.Quality }))
+}
+
+func buildExposureIssuerColumns(ccy string) []columnSpec[gold.ExposureIssuerRow] {
+	type row = gold.ExposureIssuerRow
+	return []columnSpec[row]{
+		{Name: "issuer", Align: output.AlignLeft, Extract: func(r row) string { return r.Issuer }},
+		textCol("lei", func(r row) *string { return r.LEI }),
+		outCcyCol("value", ccy, func(r row) *string { return r.Value }),
+		pctCol("share", func(r row) *float64 { return r.SharePct }),
+		pctCol("cumulative_share", func(r row) *float64 { return r.CumulativeSharePct }),
+		pctCol("equity", func(r row) *float64 { return r.EquityPct }),
+		pctCol("debt", func(r row) *float64 { return r.DebtPct }),
+		pctCol("cash", func(r row) *float64 { return r.CashPct }),
+		countCol("securities", func(r row) int64 { return r.Securities }),
+		qualityCol(func(r row) string { return r.Quality }),
+	}
+}
+
+var defaultExposureIssuerColumns = []string{"issuer", "value", "share", "cumulative_share", "equity", "debt", "cash",
+	"quality"}
 
 func buildExposureCountryColumns(ccy string) []columnSpec[gold.ExposureCountryRow] {
 	type row = gold.ExposureCountryRow
@@ -583,6 +641,7 @@ var exposureQualityTags = []struct{ tag, meaning string }{
 	{"undeclared", "a private holding has no declaration of its exposure"},
 	{"unmatched", "a listed security or fund no source describes"},
 	{"no_composition", "a fund no composition and no declaration describes on the day, in the funds view"},
+	{"unknown", "in the credit view: debt no rating, rating fund or known label of its fund's page describes"},
 }
 
 // exposureSitusBases are what a holding's legal situs rests on, in the
@@ -658,6 +717,11 @@ func exposureUsage() string {
 		"sizes":      joinColumnNames(buildExposureSizeColumns("CCY")),
 		"countries":  joinColumnNames(buildExposureCountryColumns("CCY")),
 		"currencies": joinColumnNames(buildExposureCurrencyColumns("CCY")),
+		"credit":     joinColumnNames(buildExposureBucketColumns("CCY", "credit")),
+		"maturities": joinColumnNames(buildExposureBucketColumns("CCY", "maturities")),
+		"coupons":    joinColumnNames(buildExposureBucketColumns("CCY", "coupons")),
+		"cycles":     joinColumnNames(buildExposureBucketColumns("CCY", "cycles")),
+		"issuers":    joinColumnNames(buildExposureIssuerColumns("CCY")),
 		"situs":      joinColumnNames(buildExposureSitusColumns("CCY")),
 		"securities": joinColumnNames(buildExposureSecurityColumns("CCY")),
 		"funds":      joinColumnNames(buildExposureFundColumns("CCY")),
@@ -685,9 +749,19 @@ Views
   countries    one row per country, with its region
   currencies   one row per currency a value moves with: a fiat currency,
                a metal (XAU) or a coin (BTC)
+  credit       one row per credit bucket (AAA to B and below, unrated,
+               cash), with its grade, IG or HY
+  maturities   one row per time to maturity of the debt and term cash
+               (under 1y to over 20y, perpetual)
+  coupons      one row per coupon kind of the debt: fixed, floating,
+               inflation_linked, zero
+  cycles       one row per cycle of the public equity: cyclical,
+               defensive, sensitive
   situs        one row per legal situs: the country whose law a holding
                is an interest under; no fund is looked through
   securities   one row per security, held directly and through every fund
+  issuers      one row per issuer, its stock, bonds and deposits
+               together, the largest first, with the running share
   funds        one row per fund held directly: what describes it on the
                day, and how old it is; then one row for all other
                holdings
@@ -739,8 +813,13 @@ Available columns (per view):
   sizes        ` + cols["sizes"] + `
   countries    ` + cols["countries"] + `
   currencies   ` + cols["currencies"] + `
+  credit       ` + cols["credit"] + `
+  maturities   ` + cols["maturities"] + `
+  coupons      ` + cols["coupons"] + `
+  cycles       ` + cols["cycles"] + `
   situs        ` + cols["situs"] + `
   securities   ` + cols["securities"] + `
+  issuers      ` + cols["issuers"] + `
   funds        ` + cols["funds"] + `
   coverage     ` + cols["coverage"] + `
 
@@ -750,8 +829,13 @@ Default column sets:
   sizes        ` + strings.Join(defaultExposureSizeColumns, ", ") + `
   countries    ` + strings.Join(defaultExposureCountryColumns, ", ") + `
   currencies   ` + strings.Join(defaultExposureCurrencyColumns, ", ") + `
+  credit       ` + strings.Join(exposureBucketViews["credit"].defaults, ", ") + `
+  maturities   ` + strings.Join(exposureBucketViews["maturities"].defaults, ", ") + `
+  coupons      ` + strings.Join(exposureBucketViews["coupons"].defaults, ", ") + `
+  cycles       ` + strings.Join(exposureBucketViews["cycles"].defaults, ", ") + `
   situs        ` + strings.Join(defaultExposureSitusColumns, ", ") + `
   securities   ` + strings.Join(defaultExposureSecurityColumns, ", ") + `
+  issuers      ` + strings.Join(defaultExposureIssuerColumns, ", ") + `
   funds        ` + strings.Join(defaultExposureFundColumns, ", ") + `
   coverage     ` + strings.Join(defaultExposureCoverageColumns, ", ")
 }
