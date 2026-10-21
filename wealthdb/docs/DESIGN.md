@@ -3092,8 +3092,20 @@ and at the end of today:
   holding's value in that currency, over the holding's dollar value. A
   holding no rate converts to US dollars is left out in every currency.
 
-`web_exposure` is the dashboard's reading of it
-([web/DESIGN.md](../../web/DESIGN.md) §8).
+The walk with each leaf's debt and issuer dimensions
+(`exposure_yield_leaves`) costs several times the plain one, so two more
+tables hold it at today and the last second of each of the 12 months
+before, the yield tables' instants (migration 0138). Each statement
+walks the instant for itself, so its memory is freed before the next:
+
+- `report_exposure_debt`: the buckets of `credit`, `maturities`,
+  `coupons` and `cycles`, by source, tax wrapper and held directly or
+  through funds, a leaf split by its fund's page as the views split it;
+- `report_exposure_issuers`: the 100 largest issuers per currency and
+  the `(none)` row, the running share over every issuer.
+
+`web_exposure`, `web_exposure_debt` and `web_exposure_issuers` are the
+dashboard's reading of them ([web/DESIGN.md](../../web/DESIGN.md) §8).
 
 ### 10.15 Yield reports
 
@@ -3151,6 +3163,28 @@ book:
   which the CLI and the MCP server read from the config;
 - `cmd/wealthdb/cmd_income_projection.go`: the forward views' window,
   flags and columns, shared by the CLI and the MCP `income` tool.
+
+The Metabase Yield dashboard and the Income dashboard's projected
+section read tables `web-materialize` writes (`gold.MaterializeYield`,
+migration 0138), each from the books `yield.Compute` gives:
+
+- `report_yield_positions` and `report_yield_buckets`: every holding's
+  figures and its DV01 per tenor, in every reporting currency, today
+  and at the last second of each of the 12 months before;
+- `report_yield_parts`, `report_yield_rates` and `report_yield_events`:
+  today's projection as its parts, in each holding's currency with its
+  rate to each reporting currency, the rate table, and the principals
+  maturities return. A holding's parts come from the first reporting
+  currency's book that holds it, so a holding no rate converts to US
+  dollars keeps its projection in the other currencies. A card sums a part's income (`yield.Part.Income`)
+  at query time, so a rate path, a maturing rule, a shift and a horizon
+  cost no storage;
+- `report_yield_received`: the income received this year and the last,
+  per reporting currency.
+
+The `web_yield*` views are the dashboards' reading of them
+([web/DESIGN.md](../../web/DESIGN.md) §8). A refresh computes 52 books
+(13 instants in 4 currencies), about 40 seconds on a large book.
 
 ## 11. Repository layout
 

@@ -737,9 +737,13 @@ net worth. With nothing picked, it is a share of net worth, as here.
 The command has no such filter. Every refresh recomputes the whole
 history, so a new composition or declaration shows in past months too.
 A security's attributes, its size among them, are today's at every
-month end, as in a `--period` series (§7).
+month end, as in a `--period` series (§7). Five cards chart `credit`,
+`maturities`, `coupons`, `cycles` and the largest issuers, as of a day
+of the last twelve months: the refresh walks those views for today and
+the 12 month ends before. The issuers card follows no source or tax
+wrapper picker.
 
-The MCP server has an `exposure` tool with the same nine views, an
+The MCP server has an `exposure` tool with the same fourteen views, an
 `as_of` day and the `country` choice, but no `--period` series. Its
 rows equal the command's, cell for cell.
 

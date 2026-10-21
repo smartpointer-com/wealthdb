@@ -413,3 +413,54 @@ func TestMigration0137DDLIsRerunnable(t *testing.T) {
 		t.Errorf("lei %v", got)
 	}
 }
+
+// The dashboard's debt and issuer tables are the views': in every
+// reporting currency, each dimension's buckets at an instant are the CLI
+// view's, and the issuers its rows, in rank order with their shares.
+func TestMaterializeExposureDebtMatchesTheViews(t *testing.T) {
+	t.Parallel()
+	db, ctx, at := seedYieldBookFX(t)
+	if _, err := MaterializeExposure(ctx, db, at, 42); err != nil {
+		t.Fatal(err)
+	}
+	for _, ccy := range materializeCurrencies {
+		for dim, read := range map[string]func(context.Context, *sql.DB, int64, string) ([]ExposureBucketRow, error){
+			"credit": ExposureCredit, "maturity": ExposureMaturities, "coupon": ExposureCoupons, "cycle": ExposureCycles} {
+			rows, err := read(ctx, db, at, ccy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want []string
+			for _, r := range rows {
+				v, _ := strconv.ParseFloat(*r.Value, 64)
+				want = append(want, r.Bucket+"="+strconv.FormatFloat(v, 'f', 4, 64))
+			}
+			slices.Sort(want)
+			got := scanStrings(t, db, `SELECT bucket || '=' || printf('%.4f', SUM(value)) FROM report_exposure_debt
+			    WHERE as_of = ? AND currency = ? AND dimension = ? GROUP BY bucket ORDER BY 1`, at, ccy, dim)
+			if strings.Join(got, " ") != strings.Join(want, " ") {
+				t.Errorf("%s %s: %v, want %v", ccy, dim, got, want)
+			}
+		}
+		iss, err := ExposureIssuers(ctx, db, at, ccy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := scanStrings(t, db, `SELECT issuer || '=' || printf('%.4f', value) || '/' || printf('%.2f', share_pct) || '/'
+		    || COALESCE(printf('%.2f', cumulative_share_pct), '-') || '/' || printf('%.1f', debt_pct)
+		    FROM report_exposure_issuers WHERE as_of = ? AND currency = ? ORDER BY rank`, at, ccy)
+		var want []string
+		for _, r := range iss {
+			v, _ := strconv.ParseFloat(*r.Value, 64)
+			cum := "-"
+			if r.CumulativeSharePct != nil {
+				cum = strconv.FormatFloat(*r.CumulativeSharePct, 'f', 2, 64)
+			}
+			want = append(want, r.Issuer+"="+strconv.FormatFloat(v, 'f', 4, 64)+"/"+
+				strconv.FormatFloat(*r.SharePct, 'f', 2, 64)+"/"+cum+"/"+strconv.FormatFloat(*r.DebtPct, 'f', 1, 64))
+		}
+		if strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Errorf("%s issuers %v, want %v", ccy, got, want)
+		}
+	}
+}

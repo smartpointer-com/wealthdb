@@ -17,15 +17,18 @@ filter values a user ran a dashboard with and shows them to that user
 next time.
 
 Each card runs at its dashboard's defaults, once per time window with no
-source picked, and once per source over the full history. Eight more
+source picked, and once per source over the full history. Thirteen more
 pickers are varied one at a time around their defaults: currency,
 investing grain, section, start year, as-of day, the reading of a
-missing cost basis, the asset class and the tax wrapper. The account,
-category, income type and vehicle pickers stay at their defaults.
+missing cost basis, the asset class, the tax wrapper, the projection's
+rate path, maturing rule, shift and horizon, and the Income dashboard's
+projected window. The account, category, income type, vehicle and
+position pickers stay at their defaults.
 
 A run fails when Metabase reports an error. A response cut off with no
 error and no result is asked once more first. A card that returns no rows
-at its dashboard's defaults fails too. Empty runs under any other picker
+at its dashboard's defaults fails too, but for the calendar of expected
+payments. Empty runs under any other picker
 value are listed, not failed: many card and source pairs are empty by
 nature (card balances for a source with no card). Exits 1 on any
 failure. Stdlib only.
@@ -47,6 +50,9 @@ from demohouse import config, spec  # noqa: E402
 
 COLLECTION = "wealthdb (pre-defined)"
 WINDOWS = ["past7days~", "past30days~", "past3months~", "past12months~"]
+# Cards that may be empty at their defaults: on 31 December the
+# projection starts tomorrow, so this year expects no payment.
+EMPTY_AT_DEFAULTS_OK = {"Expected payments", "Expected payments (privacy)"}
 
 
 def call(base, path, method="GET", body=None, headers=None):
@@ -111,6 +117,11 @@ def combos(params, sources, currencies, first_year, today):
         "missing_basis": [["ignore"], ["zero"]],
         "asset_class": [["public_equity"]],
         "tax_wrapper": [["taxable_personal"]],
+        "rates": [["forward"]],
+        "maturing": [["idle"], ["roll"]],
+        "shift": [[-100]],
+        "horizon": [["36"]],
+        "window": [["last year"], ["next months"]],
     }
     for slug, values in variations.items():
         p = by_slug.get(slug)
@@ -118,6 +129,13 @@ def combos(params, sources, currencies, first_year, today):
             for v in values:
                 out.append((f"{slug} {v}", {**base, p["id"]: v}))
     return out
+
+
+def empty_at_defaults(empties):
+    """The (dashboard, card) pairs of `empties`, (label, dashboard, card)
+    runs that returned no rows, that are empty at their dashboard's
+    defaults and may not be."""
+    return sorted((d, c) for label, d, c in empties if label == "defaults" and c not in EMPTY_AT_DEFAULTS_OK)
 
 
 def run_card(base, auth, dash, dc, ptypes, values):
@@ -202,7 +220,7 @@ def main(argv=None):
         print(f"\n{runs} card runs over {len(dashboards)} dashboards, {len(failures)} failed")
         for f in failures[:40]:
             print("FAIL", f[0], "|", f[1], "|", json.dumps(f[2])[:200], "|", str(f[3])[:300])
-        at_defaults = sorted((d, c) for label, d, c in empties if label == "defaults")
+        at_defaults = empty_at_defaults(empties)
         print(f"cards empty at their dashboard's defaults: {len(at_defaults)}")
         for d, c in at_defaults:
             print("  EMPTY", d, "|", c)

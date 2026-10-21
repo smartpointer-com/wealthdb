@@ -226,10 +226,13 @@ A findings build is a one-off picture: it cannot be appended to.
   running demo Metabase through its API. It covers each time window,
   each source, every currency the Currency picker offers, and the
   investing grain, section, start year, as-of, missing cost basis, asset
-  class and tax wrapper pickers. It uses a temporary API key, so no
-  filter values stay behind on the admin account. Its defaults are the
-  demo's port and the demo root `make demo` uses. Another root needs
-  `--password-file`.
+  class and tax wrapper pickers. It also runs the projection's pickers
+  one at a time: the forward rate path, the idle and roll maturing
+  rules, a shift of -100 basis points, a 36-month horizon, and the
+  Income window's last year and next months. It uses a temporary API
+  key, so no filter values stay behind on the admin account. Its
+  defaults are the demo's port and the demo root `make demo` uses.
+  Another root needs `--password-file`.
 - `demo/disjoint.py --demo <gold> --live <gold>` lists every
   identifying value a demo gold shares with another gold: ids, names,
   symbols, keys, descriptions and (date, amount) pairs. The script's

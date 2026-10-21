@@ -2,6 +2,7 @@ package yield
 
 import (
 	"math"
+	"slices"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -217,6 +218,18 @@ func (p *Projection) rateTable(curves map[string]*Curve) {
 			}
 		}
 	}
+}
+
+// Currencies are the currencies the rate table holds, sorted.
+func (p *Projection) Currencies() []string {
+	var out []string
+	for k := range p.rates {
+		if k.month == 0 && k.path == PathConstant {
+			out = append(out, k.ccy)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // Rate is the benchmark rate of ccy in month m on path, as the rate

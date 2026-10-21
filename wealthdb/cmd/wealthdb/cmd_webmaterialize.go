@@ -29,7 +29,10 @@ func init() {
 // rows `wealthdb gains <grain> --period monthly -x <CCY>` sums.
 // report_exposure holds the look-through at every month end and today
 // per reporting currency; an instant's class totals are those of
-// `wealthdb exposure classes -d <day> -x <CCY>`. The host-side
+// `wealthdb exposure classes -d <day> -x <CCY>`. The yield tables hold
+// every holding's yield figures at today and the month ends before, and
+// today's income projection, those of `wealthdb yield positions` and
+// `wealthdb income` (gold.MaterializeYield). The host-side
 // `wealthdb web` wrapper runs it right before snapshotting so the
 // Metabase dashboards are as fresh as the holdings. Hidden from
 // `wealthdb help`; it's plumbing for `wealthdb web`, not a user-facing
@@ -86,5 +89,11 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 		return err
 	}
 	fmt.Fprintf(stderr, "exposure: materialized %d rows (month ends x %d currencies)\n", n, len(gold.MaterializedCurrencies()))
+	n, err = gold.MaterializeYield(ctx, db, toEpoch, now.Unix())
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stderr, "yield: materialized %d rows (holdings at today and %d month ends x %d currencies, today's projection)\n",
+		n, gold.YieldHistoryMonths, len(gold.MaterializedCurrencies()))
 	return nil
 }

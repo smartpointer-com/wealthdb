@@ -515,12 +515,30 @@ empty object is refused at load, so a skeleton loads only once it is
 filled in. A holding its source names by no instrument takes no
 skeleton, but cash names its account.
 
-## 11. The projection and MCP
+## 11. The projection, the dashboard and MCP
 
 The income projection is the forward half of `wealthdb income`: the
 expected income month by month, per holding and per payment.
 `income_12m` is one reading of it. [INCOME.md §12](INCOME.md) defines
 it, and the withholding it shows.
+
+The Metabase Yield dashboard (`wealthdb web`) charts the same figures
+as of a day of the last twelve months:
+
+- the income, implied and realized yields, and the projected income;
+- yield by currency, cash against its benchmark, yield against
+  duration, and dividend yield against payout;
+- DV01 along the curve, and the income's change for rates one percent
+  higher;
+- the yields and the duration over time, and what the yields rest on.
+
+Its currency, source, tax wrapper and asset class pickers narrow every
+card. The cards of expected income read today's projection under four
+more pickers: the rate path, the maturing rule, a shift in basis
+points, and a horizon of 12, 24 or 36 months (12 by default, whatever
+`horizon_months` says). Its privacy twin shows the rates as they are,
+DV01 as a share of net worth per basis point, and expected income as a
+yield ([web/DESIGN.md](../../web/DESIGN.md) §6 and §8).
 
 The MCP server has a `yield` tool with the same views, an `as_of` day,
 `converted`, and a `period` series between `from` and `to`. Its rows

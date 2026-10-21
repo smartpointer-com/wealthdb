@@ -652,8 +652,13 @@ verdicts, and often does: a deposit the matcher paired is
 shows a row from both sides at once.
 
 **Metabase.** An **Income** dashboard and its privacy twin, in the
-Spending dashboards' shape. [web/DESIGN.md](../../web/DESIGN.md) §6 has
-the detail.
+Spending dashboards' shape. Above the cards of what was received, a
+projected section reads the forward views' figures (§12): received and
+expected income over last year, this year or the next months, by type,
+month, account and position, the withholding, and a position's
+expected payments. Its window, horizon, rate path, maturing rule and
+shift pickers are the forward views' assumptions.
+[web/DESIGN.md](../../web/DESIGN.md) §6 has the detail.
 
 ---
 
