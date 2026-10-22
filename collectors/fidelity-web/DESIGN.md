@@ -520,7 +520,13 @@ The cross-walk from the human-readable fund description to an
 `instrument_key` queries the live `positions` table per (account,
 description); when the fund hasn't appeared in any live snapshot
 yet the row lands with `instrument_key` NULL and the description
-preserved for downstream resolution.
+preserved for downstream resolution. The engine's adapter links such
+a row to the key the rest of the silver uses. It reads the ticker the
+statement prints, else the name a live position, a trade or a keyed
+statement row carries. From a corporate action's day, it takes the key
+the action moved the shares to. A row it cannot settle to one security
+keeps a synthetic key
+([histlink.go](../../wealthdb/internal/silver/fidelity/histlink.go)).
 
 **(b) Supplied statements — sourced out-of-band.** An account group
 the web document center serves no statements for can still have
@@ -606,9 +612,10 @@ An account that appears in historical statements but in no live
 download gets a placeholder `accounts` (+ `portfolios`) master row.
 The loader synthesises it at the account's last historical
 `as_of_date`, so gold's historical-account projection has something
-to join against. Gold's per-source latest-snapshot semantics then
-zero the account out automatically for every date after its final
-statement (no zombie balances).
+to join against. Gold then ends the account at the first later
+snapshot that reports again the accounts it was last reported with,
+else once the source has run for a year past it
+([wealthdb/docs/DESIGN.md](../../wealthdb/docs/DESIGN.md) §10.7).
 
 #### 4.5.1 A re-parse replaces its rows
 
@@ -1416,8 +1423,8 @@ with the period-END pool rows, gated on the fleet reconciliation rule:
 the pool values must sum to the statement's own stated total and
 ending value, or the statement is skipped and logged. Pool names
 cross-walk to the live poolId via `positions.description`; a retired
-pool's rows keep the description with a NULL key (gold synthesises
-identity, as for sold 529 funds). The gold adapter classifies
+pool's rows keep the description with a NULL key, and gold
+synthesises their identity. The gold adapter classifies
 DAF-account historical rows as (multi_asset, fund) — pool names carry
 none of the shape signals the 529 heuristics key on — and the
 back-projected account master carries the §12.3 taxonomy, so the

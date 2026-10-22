@@ -21,9 +21,10 @@ import (
 // description). `instrument_key` is in the same identity space as
 // the live `positions` table — a ticker, CUSIP or OCC code — so no
 // bridge map is needed (unlike schwab-web, where the api hashValue
-// has to translate to the web suffix). A row without one gets a
-// stable identity synthesised from its description so gold still
-// has an instrument to hang it on.
+// has to translate to the web suffix). A row without one takes the
+// key the rest of the silver names its security by (histlink.go),
+// else a stable identity synthesised from its description so gold
+// still has an instrument to hang it on.
 
 // hasHistoricalTable reports whether the fidelity-web silver
 // carries the migration-0004 historical_position_snapshots
@@ -227,7 +228,9 @@ SELECT DISTINCT a.account_external_id, a.portfolio_external_id,
 // path still overwrites the instrument dimension whenever the same
 // instrument_key reappears with a source-classified value.
 //
-// A row with no `instrument_key` is keyed by
+// A row with no `instrument_key` takes the key the rest of the silver
+// names its security by (historicalLinks), with its description cleaned
+// of the statement's page artifacts as its name; else it is keyed by
 // syntheticHistoricalInstrumentKey. A row's key is also its symbol,
 // except a statement construct's (isStatementConstruct); its CUSIP is
 // the one the lots state (instrumentCUSIPs). The book value
@@ -257,7 +260,12 @@ SELECT as_of_date, account_external_id,
        %s,
        payload
   FROM historical_position_snapshots
- WHERE as_of_date BETWEEN ? AND ?`, costCol)
+ WHERE as_of_date BETWEEN ? AND ?
+ ORDER BY as_of_date, account_external_id, description`, costCol)
+	links, err := c.historicalLinks(ctx)
+	if err != nil {
+		return err
+	}
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendHistoricalPositions: %w", err)
@@ -280,13 +288,22 @@ SELECT as_of_date, account_external_id,
 			continue
 		}
 		// Classified from the raw instrKey/desc (before the synthetic
-		// key substitution below). Rows on a Donor-Advised Fund
+		// key substitution below); a linked row from its key and
+		// cleaned name (linkedClass). Rows on a Donor-Advised Fund
 		// account are pool holdings by construction — the shape
 		// heuristics don't apply to pool names ("Growth"), so they
 		// get the same (multi_asset, fund) pair the live daf_pool
 		// class maps to.
 		assetClassNew, vehicle := classifyHistoricalPair(instrKey, desc)
-		if _, isDAF := dafAccounts[acct]; isDAF {
+		_, isDAF := dafAccounts[acct]
+		name := desc
+		if instrKey == "" && !isDAF && vehicle != canonical.VehicleOption && !isStatementConstruct(desc) {
+			if key := links.link(snap, acct, desc); key != "" {
+				instrKey, name = key, historicalDescription(desc)
+				assetClassNew, vehicle = linkedClass(instrKey, name)
+			}
+		}
+		if isDAF {
 			assetClassNew, vehicle = canonical.AssetClassMultiAsset, canonical.VehicleFund
 		}
 		keyless := instrKey == ""
@@ -298,7 +315,6 @@ SELECT as_of_date, account_external_id,
 			s := instrKey
 			symbol = &s
 		}
-		name := desc
 		ccy := currency
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: instrKey,
@@ -333,9 +349,10 @@ SELECT as_of_date, account_external_id,
 
 // syntheticHistoricalInstrumentKey deterministically derives a
 // gold-side instrument identity from the description of a row that
-// has no key — a fund the silver cross-walk missed, or a statement
-// construct. "fidelity-hist:" + a sha prefix, stable across re-loads
-// so the same statement → same gold rows.
+// has no key — a security neither the silver cross-walk nor the link
+// (histlink.go) keys, or a statement construct. "fidelity-hist:" + a
+// sha prefix, stable across re-loads so the same statement → same gold
+// rows.
 func syntheticHistoricalInstrumentKey(description string) string {
 	sum := sha256.Sum256([]byte(description))
 	return "fidelity-hist:" + hex.EncodeToString(sum[:8])
