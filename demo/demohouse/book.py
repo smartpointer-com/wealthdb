@@ -9,7 +9,8 @@ flows that moved it.
 
 A snapshot is complete for its source: on a snapshot day every open
 account of the source is written, unless the findings switch silences
-it, because gold reads a source's latest snapshot as its whole state. A
+it, because gold ends an account at the first later snapshot that
+leaves it out but reports the accounts it was reported with. A
 balance's snapshot states the rate its account pays, where the bank
 states one there.
 

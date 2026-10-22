@@ -1129,36 +1129,32 @@ func trailing(periods []periodFact, day time.Time, years int) (float64, bool) {
 // instrument it names: a position as positions_at reads it on the day, a
 // cash balance as cash_chosen does, a day it was not held as zero. Both
 // read a day at its last second, the instant's own day at the instant,
-// and take each source's newest snapshot at or before it. So a
-// snapshot's amounts hold from the first day it is the newest to the
-// first its successor is, and one read of the snapshots that hold on some
-// day of the window gives every day.
+// and take each account's active snapshot at it (migration 0140). So an
+// observation's amounts hold over its span (pos_key_spans,
+// cash_key_spans), from the first day read at or after it to the first
+// day read at or after its end, and one read of the observations whose
+// span meets the window gives every day.
 func (b *yieldBase) readAmounts(ctx context.Context, db *sql.DB) error {
 	w := newDayWindow(b.in)
 	b.amounts, b.instrument = map[yield.HoldingKey]*yield.Daily{}, map[yield.HoldingKey]string{}
 	if err := w.readSpans(ctx, db, `
-WITH snaps AS (
-    SELECT silver_source_id, snapshot_at,
-           lead(snapshot_at) OVER (PARTITION BY silver_source_id ORDER BY snapshot_at) AS next_at
-      FROM (SELECT DISTINCT silver_source_id, snapshot_at FROM positions WHERE snapshot_at <= $1))
-SELECT p.silver_source_id, p.snapshot_at, p.account_external_id, p.position_key,
+SELECT p.silver_source_id, p.snapshot_at, s.until, p.account_external_id, p.position_key,
        MAX(COALESCE(p.instrument_external_id, '')), SUM(p.market_value)::DOUBLE
   FROM positions p
-  JOIN snaps s ON s.silver_source_id = p.silver_source_id AND s.snapshot_at = p.snapshot_at
- WHERE s.next_at IS NULL OR s.next_at > $2
+  JOIN pos_key_spans() s ON s.src = p.silver_source_id AND s.acct = p.account_external_id
+   AND s.snap = p.snapshot_at
+ WHERE p.snapshot_at <= $1 AND (s.until IS NULL OR s.until > $2)
  GROUP BY ALL
  ORDER BY 1, 2`, b.amounts, b.instrument); err != nil {
 		return err
 	}
 	return w.readSpans(ctx, db, `
-WITH snaps AS (
-    SELECT silver_source_id, snapshot_at,
-           lead(snapshot_at) OVER (PARTITION BY silver_source_id ORDER BY snapshot_at) AS next_at
-      FROM (SELECT DISTINCT silver_source_id, snapshot_at FROM cash_balances WHERE snapshot_at <= $1))
-SELECT cb.silver_source_id, cb.snapshot_at, cb.account_external_id, 'cash:' || cb.currency, '', cb.amount::DOUBLE
+SELECT cb.silver_source_id, cb.snapshot_at, s.until, cb.account_external_id, 'cash:' || cb.currency, '',
+       cb.amount::DOUBLE
   FROM cash_balances cb
-  JOIN snaps s ON s.silver_source_id = cb.silver_source_id AND s.snapshot_at = cb.snapshot_at
- WHERE s.next_at IS NULL OR s.next_at > $2
+  JOIN cash_key_spans() s ON s.src = cb.silver_source_id AND s.acct = cb.account_external_id
+   AND s.ccy = cb.currency AND s.snap = cb.snapshot_at
+ WHERE cb.snapshot_at <= $1 AND (s.until IS NULL OR s.until > $2)
 QUALIFY row_number() OVER (PARTITION BY cb.silver_source_id, cb.snapshot_at, cb.account_external_id, cb.currency
                            ORDER BY `+cashKindRank+`, cb.balance_kind) = 1
  ORDER BY 1, 2`, b.amounts, b.instrument)
@@ -1192,67 +1188,40 @@ func (w dayWindow) instant(i int) int64 {
 	return w.first + int64(i)*86400
 }
 
-// from is the first day of the window a snapshot taken at at holds on:
-// the first day read at or after it.
+// from is the first day of the window an observation taken at at holds
+// on: the first day read at or after it.
 func (w dayWindow) from(at int64) int {
 	return sort.Search(w.days, func(i int) bool { return w.instant(i) >= at })
 }
 
 // readSpans adds to out the amounts q reads: every holding's amount in
-// each snapshot that holds on some day of the window, ordered by source
-// and snapshot, beside the instrument it names ("" for none), which
-// instrument records. q takes the instant and the first day's instant.
+// each observation whose span meets the window, the span's end NULL while
+// it holds on, ordered by source and observation, beside the instrument
+// it names ("" for none), which instrument records. q takes the instant
+// and the first day's instant.
 func (w dayWindow) readSpans(ctx context.Context, db *sql.DB, q string, out map[yield.HoldingKey]*yield.Daily,
 	instrument map[yield.HoldingKey]string) error {
-	type amount struct {
-		key yield.HoldingKey
-		v   float64
-	}
-	var src string
-	var snaps []int64
-	var amounts [][]amount
-	flush := func() {
-		for i, at := range snaps {
-			from, to := w.from(at), w.days
-			if i+1 < len(snaps) {
-				to = w.from(snaps[i+1])
-			}
-			if from >= to {
-				continue
-			}
-			for _, a := range amounts[i] {
-				if a.v != 0 {
-					out[a.key] = addSpan(out[a.key], w.days, yield.Span{From: from, To: to, Amount: a.v})
-				}
-			}
-		}
-		snaps, amounts = nil, nil
-	}
-	if err := scanAll(ctx, db, q, func(rows *sql.Rows) error {
+	return scanAll(ctx, db, q, func(rows *sql.Rows) error {
 		var k yield.HoldingKey
 		var at int64
+		var until sql.NullInt64
 		var iid string
 		var v sql.NullFloat64
-		if err := rows.Scan(&k.Source, &at, &k.Account, &k.PositionKey, &iid, &v); err != nil {
+		if err := rows.Scan(&k.Source, &at, &until, &k.Account, &k.PositionKey, &iid, &v); err != nil {
 			return err
 		}
 		if iid != "" {
 			instrument[k] = iid
 		}
-		if k.Source != src {
-			flush()
-			src = k.Source
+		from, to := w.from(at), w.days
+		if until.Valid {
+			to = w.from(until.Int64)
 		}
-		if n := len(snaps); n == 0 || snaps[n-1] != at {
-			snaps, amounts = append(snaps, at), append(amounts, nil)
+		if from < to && v.Float64 != 0 {
+			out[k] = addSpan(out[k], w.days, yield.Span{From: from, To: to, Amount: v.Float64})
 		}
-		amounts[len(amounts)-1] = append(amounts[len(amounts)-1], amount{k, v.Float64})
 		return nil
-	}, w.asOf, w.first); err != nil {
-		return err
-	}
-	flush()
-	return nil
+	}, w.asOf, w.first)
 }
 
 // addSpan adds a span to a holding's daily amounts; one that goes on from

@@ -125,10 +125,10 @@ func histSourceTotalOn(t *testing.T, db *sql.DB, ctx context.Context, src string
 }
 
 // latestTotals maps account -> total for what the POINT-IN-TIME report
-// (the per-source rule migration 0021 keeps) says about a source today. It
-// carries a row for every account in the dimension, 0 when the source's
-// latest snapshot gave it no lines — so the history, which emits rows only
-// for account-days that have lines, agrees with it on VALUES, not on rows.
+// says about a source today. It carries a row for every account in the
+// dimension, 0 when no active snapshot gives it lines — so the history,
+// which emits rows only for account-days that have lines, agrees with it
+// on VALUES, not on rows.
 func latestTotals(t *testing.T, db *sql.DB, ctx context.Context, src string) map[string]float64 {
 	t.Helper()
 	rows, err := db.QueryContext(ctx, `
@@ -284,8 +284,7 @@ func TestHistoryZeroLineNeedsNoFxRate(t *testing.T) {
 // endings. A run that re-covers everything an account was last seen with,
 // without the account itself, was in a position to report it and did not:
 // the account is closed, not merely uncovered, and leaves the series on
-// that day — as it did under the per-source rule, and as the point-in-time
-// report still says.
+// that day, as the point-in-time report does.
 func TestHistoryFullDumpSupersedesADroppedAccount(t *testing.T) {
 	db, ctx := openMigrated(t)
 	const src = "dump-src"
@@ -413,8 +412,7 @@ func TestHistoryFullDumpSupersedesSeveralDroppedKeys(t *testing.T) {
 // than hist_carry_days() days after its last observation: the source
 // demonstrably kept running and never mentioned it again. The evidence is
 // the source's own clock, never the calendar — a source that stops running
-// supersedes nothing, so its accounts keep their last values (unchanged
-// from the per-source carry this replaced).
+// supersedes nothing, so its accounts keep their last values.
 func TestHistoryCarryIsBoundedBySourceClock(t *testing.T) {
 	db, ctx := openMigrated(t)
 	const src = "bound-src"
@@ -644,13 +642,10 @@ func dumpMacro(t *testing.T, db *sql.DB, ctx context.Context, macro, src string,
 	return strings.Join(lines, "\n")
 }
 
-// TestHistoryFullDumpSourceIsUnchanged holds the common case still: a
-// source that writes every account in one run has one snapshot per day
-// either way, so per-account resolution must reproduce the per-source
-// answer byte for byte. The goldens were captured from the per-source
-// macros before the rule changed. (The one place a full dump does move
-// is an account observed at ZERO, which the per-source line bases
-// dropped and these keep — TestHistoryZeroBalanceEmitsItsOwnRow.)
+// TestHistoryFullDumpSourceIsUnchanged holds the common case: a source
+// that writes every account in one run has one snapshot per day, and the
+// history answers the goldens byte for byte. An account observed at ZERO
+// keeps its row (TestHistoryZeroBalanceEmitsItsOwnRow).
 func TestHistoryFullDumpSourceIsUnchanged(t *testing.T) {
 	db, ctx := openMigrated(t)
 	const src = "full-src"
@@ -682,11 +677,9 @@ func TestHistoryFullDumpSourceIsUnchanged(t *testing.T) {
 	}
 }
 
-// TestHistoryZeroBalanceEmitsItsOwnRow is the one row-set difference a
-// full dump does see. An account whose only line on a day is a zero
-// balance produced NO history row while the line bases filtered
-// `amount <> 0`; it now emits an explicit 0, which is what the
-// point-in-time report has always said about it.
+// TestHistoryZeroBalanceEmitsItsOwnRow: an account whose only line on a
+// day is a zero balance emits an explicit 0 row for it, as the
+// point-in-time report reads it.
 func TestHistoryZeroBalanceEmitsItsOwnRow(t *testing.T) {
 	db, ctx := openMigrated(t)
 	const src = "fullzero-src"
@@ -718,10 +711,10 @@ func TestHistoryZeroBalanceEmitsItsOwnRow(t *testing.T) {
 }
 
 // The goldens below are the macros' verbatim answer to the full-dump
-// fixture. Every value through the USD columns is the per-source macros'
-// answer, captured before the active-snapshot rule changed; the fixture
-// quotes no rate to another reporting currency. Column order is the macro's own; the leading field(s) are day offsets
-// from today (as_of_day, then snapshot_at for the positions series).
+// fixture, a source of one snapshot per day, valued in USD; the fixture
+// quotes no rate to another reporting currency. Column order is the
+// macro's own; the leading field(s) are day offsets from today
+// (as_of_day, then snapshot_at for the positions series).
 const goldenAccountsHistory = `-1|full-src|F-0000|brokerage|Brokerage EXAMPLE|USD|<null>|<null>|<null>|<null>|<null>|<null>|1100.0000|0.0000|1100.0000|1100.0000|0.0000|1100.0000
 -1|full-src|F-0001|cash|Deposit EXAMPLE|USD|<null>|<null>|<null>|<null>|<null>|<null>|0.0000|260.0000|260.0000|0.0000|260.0000|260.0000
 -2|full-src|F-0000|brokerage|Brokerage EXAMPLE|USD|<null>|<null>|<null>|<null>|<null>|<null>|1000.0000|0.0000|1000.0000|1000.0000|0.0000|1000.0000

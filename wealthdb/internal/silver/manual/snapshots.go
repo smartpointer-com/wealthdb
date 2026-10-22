@@ -19,7 +19,7 @@ const defaultAccountKey = "manual"
 // Snapshots reconstructs the per-date portfolio from the silver's positions +
 // valuations. The silver stores a position once (with acquired_at / closed_at)
 // and a valuation per (position, as_of_date); gold's as-of query, by contrast,
-// takes the latest snapshot_at per source and reads ALL its positions. So for
+// takes each account's latest snapshot and reads ALL its positions. So for
 // every event date — any date a position is acquired, re-valued, or closed —
 // we emit a COMPLETE forward-filled snapshot: every position live at that date
 // (acquired_at ≤ date < closed_at), each marked at its latest valuation

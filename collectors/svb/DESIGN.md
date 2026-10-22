@@ -20,12 +20,13 @@ PDFs, not scraped on a schedule.
 
 ## Why three gold sources, not one
 
-Gold ends an account's series at the first later snapshot of its **source**
-that re-covers every account seen alongside it. The three statement families
-here run on three calendars that collide — a month-end brokerage statement and
-a month-end deposit statement share a snapshot date — so under one source id
-each family's next statement repeatedly reads as the others' closure, and the
-values flicker in and out at every statement date. The build therefore writes
+Gold ends an account's last snapshot at the first later snapshot of its
+**source** that re-covers every account seen alongside it
+([wealthdb/docs/DESIGN.md](../../wealthdb/docs/DESIGN.md) §10.7). The three
+statement families here run on three calendars that collide: a month-end
+brokerage statement and a month-end deposit statement share a snapshot date.
+Under one source id, an account's last statement would end at another family's
+next statement, whether or not the account closed. The loader therefore writes
 one silver DB per family and the config registers each under its own id
 (the entries are in [README.md](README.md#gold-registration)).
 
@@ -43,16 +44,13 @@ never goes missing.
 
 ## Why a separate gold source from `fidelity-web`, not a fold-in
 
-The point-in-time gold reports (`report_accounts` / `report_positions`) carry
-positions forward **per silver source**: a source contributes only the accounts
-present at its single latest snapshot ≤ the as-of day. The daily history
-macros resolve their active snapshot per *account*. Even there, a later run
-that re-covers the accounts a statement was loaded alongside still ends them,
-so a feed whose statements straddle another's runs needs its own id there too.
-Folding these staggered-date statements into `fidelity-web` would let an
-unrelated fidelity snapshot (a later statement or scrape) supersede and drop
-them. So the build keeps them out of `fidelity-web` entirely, under the three
-ids registered above.
+Gold reads each account at its own latest snapshot ≤ the as-of day, in the
+point-in-time reports and the daily history alike. By the rule above, an
+account's last snapshot ends at its source's next run that reports again the
+accounts it was loaded beside. Folded into `fidelity-web`, these staggered-date
+statements would end at the next fidelity statement or scrape that reports
+those accounts. So the loader keeps them out of `fidelity-web` entirely, under
+the three ids registered above.
 
 `kind: "fidelity"` reuses the fidelity gold adapter — it `COALESCE`s
 the empty live tables and projects `historical_position_snapshots`, and the
@@ -323,11 +321,13 @@ they default cleanly and the overrides set the precise values.
   `financing · Mortgage` and splits a payment against the loan's balance
   (wealthdb `docs/CASHFLOW.md` §4).
 - **A gap the archive leaves open is filled from a sourced mark, or not at
-  all.** Carry-forward alone is not enough here: gold ends an account's series
-  at the first later snapshot of its source that re-covers every account seen
-  alongside it, so a month the archive misses for one account but covers for its
-  peers reads as that account's CLOSURE and its value drops to zero. The advisor
-  workbook's month-end value for exactly that month fills it. That fill reaches
+  all.** Across a month the archive misses for one account, gold carries the
+  account's statement before the gap to its next one: an ending applies to an
+  account's last snapshot only
+  ([wealthdb/docs/DESIGN.md](../../wealthdb/docs/DESIGN.md) §10.7). That
+  repeats the earlier month's value, which is honest only while nothing moves.
+  The advisor workbook's month-end value for exactly that month fills the gap
+  instead. That fill reaches
   the brokerage family only — the workbook is keyed by brokerage serial, and
   only the brokerage silver DB is passed to it — so a deposit or mortgage gap
   falls to the next bullet. This does not contradict the real-zero rule — that

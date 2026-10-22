@@ -76,8 +76,9 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 // snapshotTimestamps returns the sorted list of distinct
 // positions_daily.as_of_date values, converted to Unix epoch
 // seconds at UTC midnight. Each value becomes one snapshot in
-// gold; for asOf queries that land between change-days, gold's
-// "latest snapshot ≤ asOf" picks the right one automatically.
+// gold. For an asOf between change-days, gold reads each
+// account's latest snapshot at or before it, which is the right
+// one.
 func (c *Connection) snapshotTimestamps(ctx context.Context) ([]int64, error) {
 	const q = `
 SELECT DISTINCT CAST(EXTRACT(epoch FROM CAST(as_of_date AS TIMESTAMP)) AS BIGINT) AS snap_at

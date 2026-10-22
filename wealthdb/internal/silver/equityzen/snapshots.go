@@ -21,8 +21,8 @@ const accountKey = "equityzen"
 // timeline and computes its mark (silver migrations 0001/0002); this adapter
 // does no valuation logic — for every event date it emits a COMPLETE snapshot
 // (each deal's latest event on/before that date, keeping only the is_open
-// ones), which is what gold's as-of query reads (the latest snapshot_at per
-// source, all its positions). An exited deal drops out exactly at its exit
+// ones), which is what gold's as-of query reads (each account's latest
+// snapshot, all its positions). An exited deal drops out exactly at its exit
 // date; a deal the portal stopped listing drops out at the first dump that
 // omitted it (removals), a snapshot time where the roster is emitted
 // without it and every other deal keeps its own mark date (ValuedAt). When

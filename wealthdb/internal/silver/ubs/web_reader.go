@@ -2410,12 +2410,12 @@ SELECT snapshot_at, account_external_id, banking_relationship_id,
 		// Dimensions only: the balance and terms stay inside payload, and
 		// mortgage Positions are injected by the psn-web fold stream, NOT
 		// emitted here. Emitting a Position at the web dump's snapshot_at
-		// would create a "mortgage-only" gold snapshot at that time — and
-		// gold's "latest snapshot per silver source" query (MAX over
-		// positions.snapshot_at) would then land on it and hide every other
-		// UBS position from the "today" view. The fold stream injects
-		// mortgages only into PSN batches that already carry Positions,
-		// keeping snapshot times aligned.
+		// would create a mortgage-only gold snapshot at that time. It would
+		// report the mortgage alone, the one account still reporting there,
+		// so gold's per-account reading would end every other UBS account
+		// last observed beside the mortgage (DESIGN.md §10.7). The fold
+		// stream injects mortgages only into PSN batches that already carry
+		// Positions, keeping snapshot times aligned.
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 			AccountExternalID:   extID,
 			AccountKind:         canonical.AccountKindMortgage,
@@ -2445,10 +2445,10 @@ SELECT snapshot_at, account_external_id, banking_relationship_id,
 // account in web silver, populated from the row with the largest
 // snapshot_at ≤ asOf for that account. Used by the fold stream to
 // carry web-only mortgage data forward into each PSN snapshot:
-// web dumps fire on login, PSN snapshots fire
-// nightly, so without carry-forward the gold "latest snapshot per
-// source" query falls onto a PSN-only time where the mortgage
-// isn't refreshed and disappears from the position table.
+// web dumps fire on login, PSN snapshots fire nightly. A PSN
+// snapshot without the mortgage would report every account the
+// mortgage was last observed beside, so gold's per-account reading
+// would end the mortgage there (DESIGN.md §10.7).
 //
 // The returned templates have SnapshotAt = 0; the caller stamps
 // the right time per batch.

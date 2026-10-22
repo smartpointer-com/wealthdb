@@ -77,15 +77,16 @@ func (h holding) owned() (quantity, value, cost, unvested *canonical.Decimal) {
 //     per currency for the cash among its holdings. Plaid's balance of
 //     such an account is its total value, so it is never read as cash.
 //
-// Gold reads a source's current state from its latest instant, so every
-// run restates every account. Where Plaid states no balance for an account
-// in one run, the last figure it stated is carried into the run, marked
-// "carried": unknown is not zero.
+// Gold ends a balance a run leaves out once that run restates the
+// balances it was seen with (DESIGN.md §10.7), so every run restates
+// every account. Where Plaid states no balance for an account in one run,
+// the last figure it stated is carried into the run, marked "carried":
+// unknown is not zero.
 //
 // A run whose holdings were not read in full (failed, not ready) adds
-// nothing: its balances alone at a later instant than the last holdings
-// would hide every position and zero nothing. Its balances still count as
-// the last figures stated. When an account holds no position after a run
+// nothing at its own instant. It cannot tell a holding sold from one it
+// did not read, so it closes nothing. Its balances still count as the
+// last figures stated. When an account holds no position after a run
 // in which it did, the run replays its last positions at zero
 // (silver.ClosureMarkerBatch), so gold does not carry them forward. Cash
 // closes the same way, key by key: an account Plaid no longer lists, and
@@ -554,10 +555,11 @@ func instrumentChange(s security, key string, first, last int64) canonical.Instr
 // figure for a statement stands.
 //
 // Only a statement issued before the newest run that carries snapshots
-// counts. A later one, read by a run whose holdings failed, would be the
-// source's latest instant on its own and hide every other balance. It
-// counts once a later run carries snapshots. A card whose newest listing
-// names no currency closes in the currency of its last stated balance.
+// counts. A later one, read by a run whose holdings failed, would report
+// the card alone past that run, and so end every account last observed
+// beside it (DESIGN.md §10.7). It counts once a later run carries
+// snapshots. A card whose newest listing names no currency closes in the
+// currency of its last stated balance.
 func (c *Connection) appendStatementCloses(ctx context.Context, w canonical.Window, newest int64,
 	latest map[string]account, stated map[string]statedBalance,
 	at func(int64) *canonical.SnapshotBatch) error {

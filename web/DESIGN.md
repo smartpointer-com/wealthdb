@@ -155,9 +155,10 @@ Every Currency picker, and every card opened on its own, defaults to
 and to USD otherwise. `web/web` passes it to
 `provision.py` from `wealthdb web-config`. The
 Wealth Overview's three headline figures read `web_sources_latest`
-(migration 0113), each source's latest snapshot, so they print what
-`wealthdb holdings sources` prints. A native tile has no "see these
-records" drill-through. That is the price of the picker.
+(migrations 0113 and 0132), each account at its latest active
+snapshot, so they print what `wealthdb holdings sources` prints. A
+native tile has no "see these records" drill-through. That is the
+price of the picker.
 Metabase takes a chart's series in the order their rows first appear.
 So two kinds of chart order their rows by the series' size. One is
 every stacked area or bar with a band per series. The other is every
@@ -181,8 +182,8 @@ holdings divide by the *selected* sources' total at the selected window's
 end (the net-worth envelope ends at 100, and a subset still totals 100),
 the income/fee flows by their own peak month within the selected window
 (the tallest bar always reads 100). The Wealth Overview twin's scalars are
-ratios of sums over the selected sources' latest snapshots (`web_sources_latest`,
-migration 0113) — net worth reads a constant 100, positions + cash split it.
+ratios of sums over the selected sources' latest holdings (`web_sources_latest`,
+migrations 0113 and 0132) — net worth reads a constant 100, positions + cash split it.
 The **Spending** twin adds redaction to normalization, the way the Returns
 twin redacts money columns: its shares are of the window's own net spend
 (the breakdowns, merchant and account lists) or of its biggest month (the

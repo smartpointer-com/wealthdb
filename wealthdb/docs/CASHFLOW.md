@@ -584,7 +584,14 @@ A snapshot is the balance **before** that day's instalment posts. An
 interval runs from one observation up to, but not including, the next.
 A tranche that closes stops being snapshotted. Its last interval
 retires whatever was left, read from the account's disappearance from
-its source's latest snapshot.
+its source's latest positions snapshot.
+
+The cash flow reads a mortgage as repaid once a later positions
+snapshot of its source omits it. A run that writes only cash balances
+moves no clock here. Holdings keep the mortgage until the ending of
+[DESIGN.md](DESIGN.md) §10.7. So a mortgage reported in its own run,
+beside a custody feed that runs nightly, reads as repaid here while
+holdings still show its balance.
 
 A mortgage the product does not hold has no balance to read. Its
 instalments keep their whole amount and draw as interest. That is the

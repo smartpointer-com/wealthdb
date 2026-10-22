@@ -115,10 +115,10 @@ func TestCashAsOfBalanceKindPrecedence(t *testing.T) {
 	}
 }
 
-// TestCashAsOfPicksLatestSnapshotPerSource confirms cash queries
-// follow the same latest-per-source semantics as PositionsAsOf —
-// older snapshots aren't summed in.
-func TestCashAsOfPicksLatestSnapshotPerSource(t *testing.T) {
+// TestCashAsOfPicksTheAccountsLatestSnapshot confirms cash queries
+// read each (account, currency) at its latest snapshot, as
+// PositionsAsOf reads each account — older snapshots aren't summed in.
+func TestCashAsOfPicksTheAccountsLatestSnapshot(t *testing.T) {
 	db, ctx := openMigrated(t)
 
 	inTx(t, db, ctx, func(w *Writer) error {

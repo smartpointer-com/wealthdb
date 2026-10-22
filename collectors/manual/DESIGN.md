@@ -226,8 +226,9 @@ exactly one account.
 **Instruments + positions.** One instrument per position (private assets have
 no ISIN/CUSIP/symbol → adapter-scoped). One position per asset, emitted as a
 COMPLETE forward-filled snapshot at **every event date** (any date a position
-is acquired, re-valued, or closed) so gold's as-of query — which reads the
-latest `snapshot_at ≤` the query date per source, then all its positions — is
+is acquired, re-valued, or closed). Gold's as-of query reads each account's
+latest `snapshot_at ≤` the query date, then all its positions
+([wealthdb/docs/DESIGN.md](../../wealthdb/docs/DESIGN.md) §10.7). So it is
 correct at any historical date:
 - `market_value` = latest `valuations.value` with `as_of_date ≤` the snapshot
   date (forward-filled); the position drops out after `closed_at`.

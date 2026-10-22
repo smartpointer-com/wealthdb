@@ -922,8 +922,10 @@ A Maturity Notice states a mortgage's balance "as at" a date. The
 adapter emits it on the portfolio snapshot of that date, as the same
 account, instrument and position triple as a live mortgage. It only
 joins a snapshot that already exists. UBS issues the next quarter's
-notice ahead of time, and a mortgage-only snapshot at that future date
-would become the source's latest snapshot, hiding every other position.
+notice ahead of time. A mortgage-only snapshot at that future date
+would report the mortgage alone. Gold reads each account at its own
+active snapshot, and such a snapshot ends every account last observed
+beside the mortgage ([../DESIGN.md](../DESIGN.md) §10.7).
 
 ### Window semantics
 

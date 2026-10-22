@@ -32,13 +32,13 @@ CREATE TABLE historical_mortgages (
 	return &webReader{db: db}
 }
 
-// TestHistoricalMortgageAnchoring locks in the fix for the
-// "mortgage-only snapshot hijacks the today/portfolio view" bug:
-// a historical mortgage row is projected as a Position ONLY when a
-// real portfolio snapshot already exists at its as_of_date. A
-// future-dated Maturity Notice (UBS issues next quarter's notice
-// early) has no securities/cash behind it and must NOT spawn a
-// position at that date.
+// TestHistoricalMortgageAnchoring: a historical mortgage row is
+// projected as a Position ONLY when a real portfolio snapshot already
+// exists at its as_of_date. A future-dated Maturity Notice (UBS issues
+// next quarter's notice early) has no securities/cash behind it and
+// must NOT spawn a position at that date: a mortgage-only snapshot
+// would end every account last observed beside the mortgage
+// (DESIGN.md §10.7).
 func TestHistoricalMortgageAnchoring(t *testing.T) {
 	r := newWebFixture(t)
 	ctx := context.Background()

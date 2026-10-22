@@ -134,9 +134,10 @@ Names:
 Each run is one snapshot instant: the run's start. A run carries
 snapshots only when it read the accounts and settled the holdings
 (read in full, or nothing to read). A run whose holdings failed adds
-nothing at its own instant. Its balances alone, newer than the last
-positions, would hide every position from the current view and zero
-nothing.
+nothing at its own instant. It cannot tell a holding sold from one it
+did not read, so it closes nothing (*Closure*, below). Its balances
+still count as the last figures stated (*A balance Plaid leaves
+empty*, below).
 
 | Account kind | Fact at the run's instant |
 | --- | --- |
@@ -196,9 +197,10 @@ say what such an account holds.
   or 1. It is then a position, and its type says nothing about its
   class (§6). Any other row's price is a placeholder, and does not
   count.
-- **A balance Plaid leaves empty.** Gold reads a source's current state
-  from its latest instant, so every run restates every account. A run
-  may list a cash, card or mortgage account with no balance, or with no
+- **A balance Plaid leaves empty.** Gold ends a balance a run leaves
+  out once that run states again the balances it was seen with
+  (DESIGN.md §10.7). So every run restates every account. A run may
+  list a cash, card or mortgage account with no balance, or with no
   currency. The last figure the account stated is then carried into the
   run, in its own currency. That figure may come from a run whose
   holdings failed. The payload says `"basis": "carried"` and the run it
@@ -215,10 +217,11 @@ say what such an account holds.
   balance at its issue date, negated. Every run restates the last
   statement, and the newest run that states a figure stands. Only a
   statement issued before the newest run that carries snapshots counts.
-  A later one would be the source's latest instant on its own, and hide
-  every other balance. It counts once a later run carries snapshots. A
-  card whose newest listing names no currency closes in the currency of
-  its last stated balance.
+  A later one, read by a run whose holdings failed, would report the
+  card alone past that run, and so end every account last observed
+  beside it ([../DESIGN.md](../DESIGN.md) §10.7). It counts once a later
+  run carries snapshots. A card whose newest listing names no currency
+  closes in the currency of its last stated balance.
 
 ## 6. Instruments
 

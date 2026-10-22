@@ -164,9 +164,16 @@ views (coarsest → finest):
 Holdings cover every collected account: bank, card, brokerage, pension
 and crypto accounts, and the property, loans and private holdings
 recorded by hand. A loan or a card balance is a negative value. Each
-source contributes its latest snapshot on or before the as-of date
-(-d, default today). Totals reconcile: global == Σ sources ==
-Σ portfolios == Σ accounts == positions --with-cash.
+account contributes its own latest snapshot on or before the as-of
+date (-d, default today). An account's last snapshot ends at the
+first later run of its source that reports again the accounts it was
+reported with; accounts that stopped reporting too do not count. It
+also ends once its source has run for a year past it. So an account
+reported only in some of a source's runs drops out at the next run
+that reports its companions. An account a run leaves out but a later
+run reports again keeps its older snapshot across the gap. Totals
+reconcile: global == Σ sources == Σ portfolios == Σ accounts ==
+positions --with-cash.
 
 There are no row filters: pick the view, then filter the output (grep
 on the table, or -f json and jq). Run 'wealthdb holdings <view> -h'

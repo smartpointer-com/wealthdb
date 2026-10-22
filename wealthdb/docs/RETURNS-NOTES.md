@@ -62,11 +62,8 @@ no registered policy would leak straight into the aggregates. The rule is
 engine-level and keys on the account kind itself.
 
 **Contract of record:** with cards loaded, the returns global **does not
-equal `report_global`**. The gap is the card balances. For a source whose
-runs are partial, it also holds every account the per-account value spine
-carries that the per-source `report_global` leaves out of its latest
-snapshot ([DESIGN.md §10.7](DESIGN.md)). Same
-precedent as mortgages and other liabilities, which the rollups already
+equal `report_global`**. The gap is the card balances. Same precedent
+as mortgages and other liabilities, which the rollups already
 drop; unlike a mortgage, a card is not even reported on the liability
 line, because it produces no row at all. The holdings surfaces
 (`report_global`, `wealthdb holdings`) still carry cards: net worth

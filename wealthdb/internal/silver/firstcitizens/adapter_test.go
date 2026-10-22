@@ -266,9 +266,10 @@ func TestTransactionsCarryTheBanksFiling(t *testing.T) {
 
 // TestQuietAccountCurrentAtSourceLatest pins the CURRENT balance of an
 // account whose roster row did not change at the latest load to that load.
-// Silver content-dedups an unchanged roster row, and gold's cash_chosen keeps
-// only rows at the source's latest snapshot, so a stamp at the account's own
-// older row would drop it from the latest net-worth view.
+// Silver content-dedups an unchanged roster row, and gold ends an account at
+// the first later snapshot that re-covers the accounts it was observed with
+// (DESIGN.md §10.7), so a stamp at the account's own older row would drop it
+// from the net-worth views.
 func TestQuietAccountCurrentAtSourceLatest(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)

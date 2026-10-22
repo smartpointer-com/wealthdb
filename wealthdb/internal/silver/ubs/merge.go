@@ -185,12 +185,16 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		// before the first MT535 snapshot, and after a nightly run they
 		// can arrive before that day's holdings land. On such a day PSN
 		// emits a holdings-less positions snapshot (forwards / mortgage
-		// only) that would otherwise win gold's "latest snapshot per
-		// source" and blank out securities: a one-day dip to ~0 at the
+		// only). Gold reads each account at its own active snapshot, and
+		// a later snapshot that reports every account still reporting
+		// beside an account ends it (DESIGN.md §10.7). Such a snapshot
+		// reports the overlay and mortgage accounts, the only ones still
+		// reporting at its instant, so it would end every securities
+		// account observed beside them: a one-day dip to ~0 at the
 		// leading edge, or a collapse to forwards-only at the trailing
 		// edge (a same-day nightly captured before that day's holdings).
-		// Cash/dimensions still flow, so the nearest complete securities
-		// snapshot stays authoritative. The leading bound only bites
+		// Cash/dimensions still flow, so each securities account keeps
+		// its nearest complete snapshot. The leading bound only bites
 		// when web carries securities across the gap; the trailing bound
 		// guards every configuration.
 		first, last, ok, err := c.psn.holdingsSnapshotRange(ctx)
@@ -410,9 +414,10 @@ func (s *psnStatementCarryStream) Close() error { return s.inner.Close() }
 // The stream also carries forward web-only positions that PSN
 // doesn't surface — currently just mortgages. For each PSN batch
 // in the window, it injects one PositionChange per known mortgage
-// at the batch's snapshot_at, so the gold-side
-// "latest snapshot per silver source" query still surfaces them
-// when PSN snapshots have progressed past the last web dump.
+// at the batch's snapshot_at, so a mortgage reports in every PSN
+// snapshot. A PSN snapshot without it would report every account
+// the mortgage was last observed beside, and gold's per-account
+// reading would end the mortgage there (DESIGN.md §10.7).
 type psnWebFoldStream struct {
 	inner     silver.SnapshotStream
 	webPos    map[webPosKey]string
@@ -440,12 +445,12 @@ func (s *psnWebFoldStream) Next(ctx context.Context) (canonical.SnapshotBatch, b
 		}
 	}
 	// Only inject mortgages into batches that already carry
-	// Positions. Otherwise gold's "latest snapshot per silver
-	// source" query (which is MAX over positions.snapshot_at)
-	// would land on a snapshot whose only row is the injected
-	// mortgage — every other position would disappear from the
-	// "today" view. Cash-only / fx-only PSN batches are skipped
-	// for the same reason.
+	// Positions. A mortgage-only snapshot would report the
+	// mortgage alone, the one account still reporting at its
+	// instant, so gold's per-account reading would end every
+	// account last observed beside the mortgage (DESIGN.md
+	// §10.7). Cash-only / fx-only PSN batches are skipped for the
+	// same reason.
 	if len(s.mortgages) > 0 && len(batch.Positions) > 0 {
 		snap := batch.Positions[0].SnapshotAt
 		for _, m := range s.mortgages {
@@ -486,17 +491,18 @@ func foldWebPayloadAsWebKey(base json.RawMessage, web string) json.RawMessage {
 // holdings: they go live a day or two before the first batch, and after
 // a nightly run they can arrive before that day's holdings land. On
 // those bracket days PSN emits a positions snapshot (forwards only, no
-// securities) that would win gold's "latest snapshot per source" and
-// replace the real portfolio with a near-empty view — a one-day dip to
-// ~0 before holdings begin, or a collapse to forwards/mortgage-only
-// when a same-day nightly is captured before that day's holdings. Both
-// edges are suppressed here so the nearest complete securities snapshot
-// stays authoritative. Cash balances and dimensions in the same batches
-// pass through untouched, so PSN cash still flows. Running BEFORE
-// psnWebFoldStream means an emptied bracket-day batch carries no
-// positions, so the fold won't anchor a mortgage onto it either
-// (matching the rule that a position-less snapshot must not hijack the
-// today view). lastHoldingsAt == 0 means no upper bound.
+// securities). It reports the overlay accounts, the only ones still
+// reporting at its instant, so gold's per-account reading would end
+// every securities account observed beside them (DESIGN.md §10.7) — a
+// one-day dip to ~0 before holdings begin, or a collapse to
+// forwards/mortgage-only when a same-day nightly is captured before
+// that day's holdings. Both edges are suppressed here, so each
+// securities account keeps its nearest complete snapshot. Cash
+// balances and dimensions in the same batches pass through untouched,
+// so PSN cash still flows. Running BEFORE psnWebFoldStream means an
+// emptied bracket-day batch carries no positions, so the fold won't
+// anchor a mortgage onto it either (matching the rule that no snapshot
+// holds a mortgage alone). lastHoldingsAt == 0 means no upper bound.
 type psnHoldingsGapFilter struct {
 	inner           silver.SnapshotStream
 	firstHoldingsAt int64

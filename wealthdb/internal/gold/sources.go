@@ -27,11 +27,12 @@ type SourceRow struct {
 	TaxWrapper      *string
 	ManagementStyle *string
 
-	// SnapshotAt is the source's latest snapshot ≤ the as-of date;
-	// 0 when the source has no data as of that date.
+	// SnapshotAt is the newest of the source's accounts' active
+	// snapshots at the as-of date; 0 when the source has no data as of
+	// that date.
 	SnapshotAt int64
 
-	// ValuedAt is the latest mark that snapshot rides on: the snapshot
+	// ValuedAt is the latest mark those snapshots ride on: the snapshot
 	// itself, unless the source dates a snapshot at a read later than
 	// its marks (positions.valued_at). 0 with SnapshotAt.
 	ValuedAt int64

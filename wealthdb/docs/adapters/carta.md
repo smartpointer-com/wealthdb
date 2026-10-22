@@ -103,8 +103,9 @@ holds many securities. All values are adapter defaults. Config
 
 The silver holds per-**lot** **change deltas** — a row for a security lot only
 when its state changes (acquisition, exercise, exercise-price change,
-disposition, quarterly NAV). gold's as-of query reads the latest snapshot per
-source, so for every event date the adapter emits a **complete forward-filled**
+disposition, quarterly NAV). Gold reads an account's latest snapshot as the
+whole account: a holding it leaves out is gone (DESIGN.md §10.7). So for
+every event date the adapter emits a **complete forward-filled**
 snapshot: each lot's latest delta on/before that date, **dropping** those whose
 latest `position_status` is `exited`, then **aggregating the surviving lots
 into one position per company**. An exited holding disappears exactly at its

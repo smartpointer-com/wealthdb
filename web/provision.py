@@ -249,7 +249,7 @@ def report_models():
     themselves. The macros already emit DECIMAL
     money/quantity columns and one value column set per reporting currency
     (REPORTING_CURRENCIES), so no value casting is needed here. The `_latest` reports
-    are as of each source's latest snapshot; the `_history` reports carry value
+    are as of each account's latest snapshot; the `_history` reports carry value
     forward per day; the two `_pct` models are the privacy variants the privacy
     twins' MBQL cards run over (values as % of the latest global net worth,
     absolute-value columns dropped) — every other privacy chart is native SQL
@@ -426,7 +426,7 @@ def report_models():
           for c in _ccy_lower()]
     BASE3 = ("positions_value_base", "cash_balance_base", "total_value_base")
 
-    # Each source's latest snapshot, the latest mark it rides on
+    # Each source's newest snapshot, the latest mark it rides on
     # (valued_at, gold migration 0123) and the instant a run last read it
     # (gold source_observed, migration 0122): a quiet source is observed
     # through its latest download although its latest mark is older.
@@ -1361,7 +1361,7 @@ def question_defs(db_id, mid):
 
     def latest_scalar(name, col, desc):
         """A headline figure: one value column summed over the selected
-        sources' latest snapshots."""
+        sources' latest holdings."""
         return overview_native(name, lat_tags, "scalar", desc,
             f"SELECT sum({_ccy_case(col)})::DOUBLE AS {col}\n"
             "  FROM web_sources_latest" + _native_where(lat_tags), {})
@@ -1384,9 +1384,9 @@ def question_defs(db_id, mid):
     twr = _f("twr", "type/Float")
     return {
         # Net worth = positions + cash by construction, so the three
-        # headline figures reconcile exactly. They read each source's
-        # latest snapshot, like `wealthdb holdings sources`; the charts
-        # below read the carried-forward history.
+        # headline figures reconcile exactly. They read the latest
+        # holdings, like `wealthdb holdings sources`; the charts below read
+        # the daily history, which agrees with them on each day.
         "Net worth": latest_scalar("Net worth", "total_value",
             "Total net worth in the chosen currency as of the latest "
             "snapshot (cash + positions across the selected sources)."),

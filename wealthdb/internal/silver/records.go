@@ -160,12 +160,12 @@ func (r BankRosterRow) Account(kind canonical.AccountKind, display, currency str
 //
 // The stamp is the source's, not the account's. Silver content-dedups an
 // unchanged roster row, so a quiet account's latest snapshot falls behind
-// the source's, and gold's cash_chosen keeps only the rows carrying the
-// source's single MAX(snapshot_at). An account stamped at its own would drop
-// out of the latest net-worth view once it stopped changing, and a card
-// would take its debt with it. The figure is still the account's latest
-// known balance; the stamp says "as of this load", which is what an
-// unchanged roster row asserts.
+// the source's, and gold ends an account at the first later snapshot that
+// re-covers the accounts it was observed with (DESIGN.md §10.7). An
+// account stamped at its own would drop out of the net-worth views once it
+// stopped changing, and a card would take its debt with it. The figure is
+// still the account's latest known balance; the stamp says "as of this
+// load", which is what an unchanged roster row asserts.
 func (r BankRosterRow) CurrentBalance(w canonical.Window, currency string,
 	amount canonical.Decimal) (canonical.CashBalanceChange, bool) {
 	if !r.Balance.Valid || r.SourceLatest < w.Start || r.SourceLatest > w.End {

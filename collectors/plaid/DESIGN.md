@@ -369,11 +369,13 @@ the others, and the exit status is then 1.
 
 **One instant per run.** Every snapshot a run stores carries the run's
 start, `dump_runs.snapshot_at`. That covers the accounts with their
-balances, the holdings and the liabilities. Gold reads a source's
-current state from its single latest snapshot time. So every fact of
-the newest run must carry that time. Each run restates every account,
-and each run that read the holdings restates every holding, quiet or
-not. Plaid's own update times are kept beside it, in `item_states`.
+balances, the holdings and the liabilities. Gold reads each account
+at its own latest snapshot. That snapshot ends at the first later run
+that reports again the accounts it was reported with
+([wealthdb/docs/DESIGN.md](../../wealthdb/docs/DESIGN.md) §10.7). So
+each run restates every account, and each run that read the holdings
+restates every holding, quiet or not. Plaid's own update times are
+kept beside it, in `item_states`.
 
 **Which products.** A product is loaded as far as its run read it:
 

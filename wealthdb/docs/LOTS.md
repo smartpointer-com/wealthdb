@@ -406,9 +406,10 @@ sources state, per account, in the output currency:
 - **realized**, per account and tax year: the sales both the engine
   and a stated primary lot cover, on the instruments both name, where
   the two cover the same quantity and the engine knows every cost.
-- **positions**: at each source's last snapshot in the window, the
-  positions that state a cost basis where the engine's open lots hold
-  the same quantity, each with a cost. A shadow source is checked here.
+- **positions**: at each account's active snapshot at the window's
+  end, where that falls in the window, the positions that state a cost
+  basis where the engine's open lots hold the same quantity, each with
+  a cost. A shadow source is checked here.
 - **anchors**: the anchors the engine adopted, with the quantity its
   lots matched and both costs.
 - **handover**: lots that moved in from another source, with the cost

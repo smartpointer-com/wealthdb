@@ -323,9 +323,10 @@ has a US ISIN or is priced in US dollars. Otherwise it states the US
 symbol a lookup found, if any. A bank abroad states the local ticker,
 which in New York may be another company's.
 
-A fund or security counts as still held while the latest snapshot of
-its source lists it and the source was observed within 90 days. A source
-that stopped reporting ends its holdings at its last snapshot.
+A fund or security counts as still held while its account's latest
+active snapshot lists it (DESIGN.md §10.7) and the source was observed
+within 90 days. A source that stopped reporting ends its holdings at
+its last snapshot.
 
 The fact fields a provider writes, and the wanted field each answers.
 The security facts come first, then the period facts:

@@ -13,13 +13,13 @@ import (
 
 // A holding's daily amounts are what positions_at and cash_chosen read on
 // each day of the year, at the day's last second and on the instant's day
-// at the instant: the newest snapshot of its source at or before it, a
-// day not held as zero. The book is invented: snapshots at random
-// instants over two years, two on one day, one at a day's first second
-// and one at its last, one after the instant; positions in and out of
-// them, one of no value; cash in two balance kinds and in zero; a stale
-// source of one old snapshot; and a balance held from the 5th to the
-// 25th of every month, which every month end reads as zero.
+// at the instant: its account's active snapshot at it, a day not held as
+// zero. The book is invented: snapshots at random instants over two
+// years, two on one day, one at a day's first second and one at its
+// last, one after the instant; positions in and out of them, one of no
+// value; cash in two balance kinds and in zero; a stale source of one
+// old snapshot; and a balance held from the 5th to the 25th of every
+// month, which every month end reads as zero.
 func TestDailyAmountsAreEachDaysHoldings(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)

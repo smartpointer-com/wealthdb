@@ -130,11 +130,12 @@ and unrealized change, which statements reconcile to.
 
 - **Boundaries.** A bucket's start is the holdings as of the second
   before it opens; its end is the holdings as of its last second. Each
-  source contributes its latest snapshot at or before the instant, the
-  rule of `wealthdb holdings`, so a boundary reconciles with `holdings`
-  at that date. An account that has lines at one boundary but is
-  missing from its source's snapshot at the other is flagged
-  `accounts_unobserved`.
+  account contributes its active snapshot at the instant (DESIGN.md
+  §10.7), the rule of `wealthdb holdings`, so a boundary reconciles
+  with `holdings` at that date. An account that has lines at one
+  boundary only, while its source has lines at the other, is flagged
+  `accounts_unobserved`: a run of its source ended it without a
+  closing row.
 - **A realized lot's date** is its disposal date (the trade date, which
   is what a 1099-B files under), else its settlement date, else the last
   day of its tax year. The last case is counted as `undated_lots`, and

@@ -66,8 +66,8 @@ type PositionRow struct {
 
 // PositionsAsOf returns the consolidated portfolio as of the given
 // Unix-seconds timestamp, with market_value converted to outCcy and a
-// missing cost basis read as missing says. For each silver source, the
-// rows of the latest snapshot_at ≤ asOf are returned, sorted by
+// missing cost basis read as missing says. For each account, the rows
+// of its active snapshot at asOf (migration 0140) are returned, sorted by
 // (silver_source_id, account_external_id, position_key). FX (and
 // everything else) is computed in SQL by the report_positions table
 // macro (migration 0123); this is just the scan. See docs/DESIGN.md

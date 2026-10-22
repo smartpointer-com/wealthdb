@@ -760,7 +760,8 @@ func TestACashAccountWithNoCurrentBalanceUsesTheAvailableOne(t *testing.T) {
 
 func TestEveryRunRestatesEveryAccountAtItsStart(t *testing.T) {
 	// A quiet account must carry a mark at the source's latest snapshot,
-	// or gold's current view would drop it, debt and all.
+	// or gold would end it at the next run that reports its companions,
+	// debt and all.
 	path, db := newFixture(t)
 	seedItem(t, db, runAt(10))
 	seedItem(t, db, runAt(11))

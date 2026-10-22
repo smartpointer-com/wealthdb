@@ -303,17 +303,27 @@ func fillFromKey(key string, isin, cusip, symbol **string) {
 // quantity, the span of the snapshots it appears in, and whether it is
 // still held. A position's key goes through holdingAliasJoins first, as
 // the gains reports read it, so a holding a source keys two ways is one
-// instrument. It is still held when its source's latest snapshot lists
-// it and that source was observed within stillHeldDays of now; a source
-// that stopped reporting ends it at its last snapshot.
+// instrument. It is still held when its account's latest active snapshot
+// (pos_active_at at the open end, migration 0140) lists it and its source
+// was observed within stillHeldDays of now; a source that stopped
+// reporting ends it at its last snapshot. A gold before migration 0140
+// reads its source's newest snapshot as every account's.
 func heldInstruments(ctx context.Context, db *sql.DB, now time.Time) ([]heldInstrument, error) {
+	active := `SELECT src, acct, snap FROM pos_active_at([` + latestArg + `])`
+	if perAccount, err := hasFunction(ctx, db, "pos_active_at"); err != nil {
+		return nil, fmt.Errorf("wanted: held instruments: %w", err)
+	} else if !perAccount {
+		active = `SELECT DISTINCT silver_source_id, account_external_id, snapshot_at FROM positions
+   QUALIFY snapshot_at = MAX(snapshot_at) OVER (PARTITION BY silver_source_id)`
+	}
 	var out []heldInstrument
 	err := scanAll(ctx, db, `
-WITH last_snap AS (
-    SELECT p.silver_source_id, MAX(p.snapshot_at) AS s,
+WITH observed AS (
+    SELECT p.silver_source_id,
            GREATEST(MAX(p.snapshot_at), COALESCE(MAX(ss.observed_snapshots_through), -1)) AS seen
       FROM positions p LEFT JOIN silver_sources ss ON ss.silver_source_id = p.silver_source_id
      GROUP BY 1),
+active (src, acct, snap) AS (`+active+`),
 pos AS (
     SELECT p.*, COALESCE(ha.to_key, hd.to_key, ia.k, p.instrument_external_id) AS iid
       FROM positions p`+holdingAliasJoins("p.silver_source_id", "p.account_external_id", "p.instrument_external_id",
@@ -323,11 +333,13 @@ pos AS (
 held AS (
     SELECT p.silver_source_id AS src, p.iid,
            MIN(p.snapshot_at) AS first_at, MAX(p.snapshot_at) AS last_at,
-           BOOL_OR(p.snapshot_at = l.s AND l.seen >= ?) AS open,
+           BOOL_OR(a.snap IS NOT NULL AND l.seen >= ?) AS open,
            arg_max(p.asset_class, p.snapshot_at) AS asset_class,
            arg_max(p.vehicle, p.snapshot_at) AS vehicle,
            arg_max(p.currency, p.snapshot_at) AS ccy
-      FROM pos p JOIN last_snap l ON l.silver_source_id = p.silver_source_id
+      FROM pos p JOIN observed l ON l.silver_source_id = p.silver_source_id
+      LEFT JOIN active a ON a.src = p.silver_source_id AND a.acct = p.account_external_id
+           AND a.snap = p.snapshot_at
      GROUP BY 1, 2)
 SELECT h.src, h.iid, h.asset_class, COALESCE(h.vehicle, ''), i.isin, i.cusip, il.symbol, i.name, h.ccy,
        h.first_at, h.last_at, h.open
@@ -358,7 +370,7 @@ func usQuoted(h heldInstrument) bool {
 }
 
 // stillHeldDays is how recently a source must have been observed for
-// what its latest snapshot lists to count as still held.
+// what its accounts' active snapshots list to count as still held.
 const stillHeldDays = 90
 
 // fillIDs keeps the first non-blank value of each identifier.
@@ -943,5 +955,13 @@ SELECT security_key,
 func hasTable(ctx context.Context, db *sql.DB, name string) (bool, error) {
 	var n int
 	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?`, name).Scan(&n)
+	return n > 0, err
+}
+
+// hasFunction reports whether gold holds a function or macro of that
+// name.
+func hasFunction(ctx context.Context, db *sql.DB, name string) (bool, error) {
+	var n int
+	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = ?`, name).Scan(&n)
 	return n > 0, err
 }

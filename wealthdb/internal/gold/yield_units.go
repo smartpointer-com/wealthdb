@@ -63,8 +63,9 @@ type accountKey struct{ src, acct string }
 // instrument a pair), each with every instrument of its source that is
 // one with it as exposure keys a holding (instrument_aliases, migration
 // 0120), as paid and iid; and the snapshots of their sources that hold on
-// some day from $3 to $4: the newest at or before $3, else the first, and
-// every later one to $4.
+// some day from $3 to $4: from the oldest of the accounts' active
+// snapshots at $3 (pos_active_at, migration 0140), else the first, every
+// one to $4.
 const unitWindowCTE = `
 WITH paid AS (SELECT unnest($1::VARCHAR[]) AS src, unnest($2::VARCHAR[]) AS iid),
 folded AS (
@@ -80,17 +81,19 @@ n AS (
 snaps AS (
     SELECT DISTINCT silver_source_id, snapshot_at FROM positions
      WHERE snapshot_at <= $4 AND silver_source_id IN (SELECT src FROM n)),
+active AS (SELECT src, MIN(snap) AS snap FROM pos_active_at([$3::BIGINT]) GROUP BY ALL),
 first AS (
-    SELECT silver_source_id,
-           COALESCE(MAX(snapshot_at) FILTER (WHERE snapshot_at <= $3), MIN(snapshot_at)) AS first_at
-      FROM snaps GROUP BY ALL),
+    SELECT s.silver_source_id, COALESCE(MIN(a.snap), MIN(s.snapshot_at)) AS first_at
+      FROM snaps s LEFT JOIN active a ON a.src = s.silver_source_id
+     GROUP BY ALL),
 window_snaps AS (
     SELECT s.* FROM snaps s JOIN first f ON f.silver_source_id = s.silver_source_id
      WHERE s.snapshot_at >= f.first_at)`
 
 // unitAccountsCTE are the snapshots that speak for each account of the
 // sources (account_grid): those that name it, by a position or a cash
-// balance, and every one after the last that does, where it holds
+// balance, and every one from the end of its positions' last
+// observation on (pos_key_spans, migration 0140), where it holds
 // nothing. A snapshot of only some accounts, such as a statement's, says
 // nothing of the others.
 const unitAccountsCTE = `,
@@ -100,14 +103,18 @@ account_snaps AS (
             UNION ALL
             SELECT silver_source_id, account_external_id, snapshot_at FROM cash_balances) x
       JOIN window_snaps s ON s.silver_source_id = x.silver_source_id AND s.snapshot_at = x.snapshot_at),
+account_ends AS (
+    SELECT src, acct, until AS ended_at FROM pos_key_spans()
+     WHERE src IN (SELECT src FROM n)
+   QUALIFY snap = MAX(snap) OVER (PARTITION BY src, acct)),
 account_grid AS (
     SELECT l.silver_source_id, l.account_external_id, s.snapshot_at
-      FROM (SELECT silver_source_id, account_external_id, MAX(snapshot_at) AS last_at FROM account_snaps
-             GROUP BY ALL) l
+      FROM (SELECT DISTINCT silver_source_id, account_external_id FROM account_snaps) l
       JOIN window_snaps s ON s.silver_source_id = l.silver_source_id
       LEFT JOIN account_snaps a ON a.silver_source_id = l.silver_source_id
            AND a.account_external_id = l.account_external_id AND a.snapshot_at = s.snapshot_at
-     WHERE a.snapshot_at IS NOT NULL OR s.snapshot_at > l.last_at)`
+      LEFT JOIN account_ends e ON e.src = l.silver_source_id AND e.acct = l.account_external_id
+     WHERE a.snapshot_at IS NOT NULL OR s.snapshot_at >= e.ended_at)`
 
 // readYieldUnits reads the units of the instruments paid from from to
 // asOf. Each account's quantity of each is the sum of its rows of it, and

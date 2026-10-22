@@ -2,13 +2,10 @@
 Month-end account values from the advisor's performance workbook.
 
 The statement archive has interior gaps — months where an account held
-value but no statement covering it survives. Carry-forward is honest
-across such a gap only while nothing else moves; here it is not enough,
-because gold ends an account's series at the first later snapshot of its
-source that re-covers every account seen alongside it. A month the
-archive misses for one account but covers for its peers therefore reads
-as that account's CLOSURE, and its value drops to zero until the next
-statement brings it back.
+value but no statement covering it survives. Gold carries the account's
+earlier month across such a gap, which is honest only while nothing
+moves: an account's market value moves every month, so the carried
+figure is stale for the whole gap.
 
 The advisor's workbook carries a month-end market value per account for
 exactly those months, on a basis verified against the custodial

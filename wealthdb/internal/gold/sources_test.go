@@ -324,7 +324,7 @@ func TestMigration0122DDLIsRerunnable(t *testing.T) {
 }
 
 // TestSourcesAsOfCarriesTheValuedDate pins the sources report's
-// valued_at: the latest mark the source's latest snapshot rides on,
+// valued_at: the latest mark its accounts' active snapshots ride on,
 // which is the snapshot itself where no position states an older one.
 func TestSourcesAsOfCarriesTheValuedDate(t *testing.T) {
 	db, ctx := openMigrated(t)

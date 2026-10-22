@@ -269,7 +269,8 @@ func TestAQuantityBetweenSnapshots(t *testing.T) {
 //     whose last snapshot lists it at no cent, no holding: SOLD's
 //     dividends stay its sold position's, its June one paid on nothing it
 //     held, and B2's holding shows one row a pay day. Its realized yield
-//     pools both accounts.
+//     pools both accounts. The early June snapshot leaves SOLD out, and
+//     is not its last, so SOLD's May amounts hold to its last snapshot.
 //   - QBNK is held in DEPOT, its dividends booked to CASH beside it.
 //   - QLATE's source took its first snapshot after its first dividend.
 //   - QALS is held throughout, but the snapshots of 31 May and 5 June name
@@ -475,9 +476,9 @@ func TestADividendIsPaidOnWhatItsAccountHeld(t *testing.T) {
 	if len(late) != 2 || late[0].Quantity != nil || late[1].Quantity == nil || *late[1].Quantity != 100 {
 		t.Errorf("before the first snapshot: %+v", late)
 	}
-	// SOLD's amounts to the June snapshot, and its last day's, pool with
+	// SOLD's amounts to its last snapshot, and its last day's, pool with
 	// B2's.
-	sold := ymd(2026, 6, 5).Sub(ymd(2025, 7, 1)).Hours() / 24
+	sold := ymd(2026, 6, 30).Sub(ymd(2025, 7, 1)).Hours() / 24
 	former := in.FormerDaily[yield.InstrumentKey{Source: "src", Instrument: "QSTK"}]
 	if former.Days != 365 || math.Abs(former.Mean()-(15000*sold+0.001)/365) > 1e-9 {
 		t.Errorf("former %+v", former)

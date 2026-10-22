@@ -437,7 +437,7 @@ twelve months to the day over the mean daily value.
   line stays interest, such as a deposit's that states its rate and
   its end.
 - A day's amount is the one `holdings` reads at the day's end: its
-  source's newest snapshot on or before it.
+  account's active snapshot then (DESIGN.md §10.7).
 - A holding of an instrument, such as a stock, a fund or a bond, yields
   its instrument's realized yield. The instrument is the security,
   at every source; one with no security key is the instrument at its
@@ -489,8 +489,8 @@ included.
   trades: where the snapshot shows the previous one's quantity without
   the trade, the trade counts after it.
 - A snapshot of only some accounts, such as a statement's, says nothing
-  of the others. After the last snapshot that names an account, by a
-  position or a cash balance, the account holds nothing.
+  of the others. From the snapshot that ends an account's last
+  observation (DESIGN.md §10.7), the account holds nothing.
 - The quantity counts the instrument under every id its source gives
   it, as exposure keys a holding (a symbol and a CUSIP, say).
 - A payment booked to a cash account that never held the instrument

@@ -38,7 +38,7 @@ type PortfolioRow struct {
 	TotalValueOutCcy     *string
 
 	// SnapshotAt is the latest snapshot_at across the portfolio's
-	// lines; falls back to the silver source's latest snapshot when
+	// lines; falls back to the newest active snapshot of its source when
 	// the portfolio has no lines.
 	SnapshotAt int64
 }

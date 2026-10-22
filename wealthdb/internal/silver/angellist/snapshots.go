@@ -18,8 +18,8 @@ import (
 // position's timeline and computes its mark (silver migration 0005); this
 // adapter does no valuation logic — for every event date it emits a COMPLETE
 // snapshot (each position's latest snapshot on/before that date, keeping only
-// the is_open ones), which is what gold's as-of query reads (the latest
-// snapshot_at per source, all its positions). An exited position drops out
+// the is_open ones), which is what gold's as-of query reads (each account's
+// latest snapshot, all its positions). An exited position drops out
 // exactly at its exit date. A position the portal stopped listing drops out
 // at the first dump that omitted it (removals): that dump time is a snapshot
 // time too, where the roster is emitted without it and every other position

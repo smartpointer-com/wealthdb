@@ -205,8 +205,9 @@ func TestGainsLotsOnlyAndFxMissingCountOnce(t *testing.T) {
 	}
 }
 
-// report_positions' first 17 columns equal the 0031 body's, with a
-// bridged FX path whose legs change on different days.
+// report_positions' first 17 columns equal the 0031 body's, each account
+// at its own active snapshot (migration 0140), with a bridged FX path
+// whose legs change on different days.
 func TestReportPositionsKeepsItsEarlierColumns(t *testing.T) {
 	db, ctx := openMigrated(t)
 	edgeExec(t, db, ctx, edgeBase+`
@@ -220,9 +221,7 @@ func TestReportPositionsKeepsItsEarlierColumns(t *testing.T) {
 		edgePos(86400*6+5, "A2", "E", "E", "EUR", 3, 333.3333, "100")+
 		edgePos(86400*10+5, "A1", "E", "E", "EUR", 7, 999.9999, "100"))
 	old := `
-    WITH latest AS (
-        SELECT silver_source_id, MAX(snapshot_at) AS snap
-          FROM positions WHERE snapshot_at <= $1 GROUP BY 1),
+    WITH latest AS (SELECT src, acct, snap FROM pos_active_at([$1::BIGINT])),
     base AS (
         SELECT p.silver_source_id, p.snapshot_at, p.account_external_id,
                a.display_name, a.relationship_id, a.nickname, a.account_category,
@@ -230,7 +229,7 @@ func TestReportPositionsKeepsItsEarlierColumns(t *testing.T) {
                COALESCE(i.symbol, sri.symbol) AS symbol, i.name,
                p.asset_class, p.vehicle, p.currency, p.quantity, p.market_value
           FROM positions p
-          JOIN latest l ON p.silver_source_id = l.silver_source_id AND p.snapshot_at = l.snap
+          JOIN latest l ON p.silver_source_id = l.src AND p.account_external_id = l.acct AND p.snapshot_at = l.snap
           LEFT JOIN accounts a ON p.silver_source_id = a.silver_source_id AND p.account_external_id = a.account_external_id
           LEFT JOIN instruments i ON p.silver_source_id = i.silver_source_id AND p.instrument_external_id = i.instrument_external_id
           LEFT JOIN symbol_resolutions sri ON sri.silver_source_id = p.silver_source_id

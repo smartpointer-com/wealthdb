@@ -2312,13 +2312,13 @@ for _d in _WEALTH_DASHES:
             check(f"'{_c}' carries no currency marker in its name",
                   not re.search(r"\((?:" + "|".join(p.REPORTING_CURRENCIES) + r")\)", _c))
 
-# The headline figures stay on the latest snapshot, the figure
+# The headline figures stay on the latest holdings, the figure
 # `wealthdb holdings sources` prints, with the time filter on it.
 for _c in ("Net worth", "Positions value", "Cash balance",
            "Net worth (privacy)", "Positions value (privacy)",
            "Cash balance (privacy)"):
     _q = CARDS[_c][2]
-    check(f"'{_c}' reads each source's latest snapshot",
+    check(f"'{_c}' reads the latest holdings",
           "FROM web_sources_latest" in (sql_of(_q) or "")
           and _q["native"]["template-tags"]["time_range"]["dimension"][1]
           == p.FIELD_IDS[("web_sources_latest", "snapshot_at")])

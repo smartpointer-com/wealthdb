@@ -54,11 +54,11 @@ creates or loses any. Every view therefore sums to `holdings global`.
 For a day:
 
 1. Start from the positions and the cash balances on that day, by the
-   rule every report uses: each source contributes its latest snapshot
-   on or before the day. Each line is valued in the output currency
-   exactly as `holdings global` values it. An account `holdings global`
-   leaves out, because no rate converts any of its positions or any of
-   its cash, is left out here too.
+   rule every report uses: each account contributes its active
+   snapshot at the day (DESIGN.md §10.7). Each line is valued in the
+   output currency exactly as `holdings global` values it. An account
+   `holdings global` leaves out, because no rate converts any of its
+   positions or any of its cash, is left out here too.
 2. Read each holding's key through `holding_aliases` and
    `instrument_aliases()`, as the gains reports do, then through the
    security aliases (§1).

@@ -14,7 +14,7 @@ func TestGlobalAsOfRollup(t *testing.T) {
 	usd := "USD"
 
 	// Two accounts in DIFFERENT sources captured at different
-	// snapshots: each source contributes its own latest snapshot ≤
+	// snapshots: each account contributes its own latest snapshot ≤
 	// the as-of date, so both survive (and span the date range).
 	inTx(t, db, ctx, func(w *Writer) error {
 		return w.UpsertAccounts(ctx, []canonical.AccountChange{

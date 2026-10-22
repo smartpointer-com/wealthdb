@@ -113,8 +113,8 @@ var defaultColumns = []string{
 }
 
 func positionsUsage() string {
-	// We don't know the chosen output currency at usage-print
-	// time; show a placeholder for the dynamic column.
+	// The output currency is not chosen at usage-print time, so the
+	// dynamic column shows a placeholder.
 	registry := buildColumnRegistry("CCY")
 	return `usage: wealthdb holdings positions [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [-p]
                                   [--with-cash] [--missing-basis M]
@@ -122,8 +122,9 @@ func positionsUsage() string {
 Print every individual holding as of a date: securities, funds and
 crypto, and the property, loans and private holdings recorded by
 hand (a house is a position of asset_class real_estate; a loan is a
-negative position). For each source, the latest snapshot ≤ the
-as-of date is used. Default: today UTC, table format, default
+negative position). For each account, its own latest snapshot ≤
+the as-of date is used, until that snapshot ends
+('wealthdb holdings -h'). Default: today UTC, table format, default
 column set, output currency from config.default_currency, historic
 FX (nearest rate at-or-before the snapshot).
 

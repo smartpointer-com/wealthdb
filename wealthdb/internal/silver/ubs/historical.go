@@ -453,11 +453,12 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 // UBS issues the next interest-roll quarter's Maturity Notice
 // ahead of time, so there's a future-dated mortgage row with no
 // portfolio snapshot behind it — must NOT spawn a mortgage-only
-// snapshot, or gold's MAX(snapshot_at)-per-source "today" query
-// lands on that future date and every other position vanishes
-// from the view. Peeking (and skipping unanchored dates) prevents
-// that. Mortgages must therefore run AFTER securities + cash in
-// snapshotsHistorical so the batches they anchor to already exist.
+// snapshot. From that future date it would report the mortgage
+// alone, so gold's per-account reading would end every other
+// account last observed beside the mortgage (DESIGN.md §10.7).
+// Peeking (and skipping unanchored dates) prevents that. Mortgages
+// must therefore run AFTER securities + cash in snapshotsHistorical
+// so the batches they anchor to already exist.
 func (r *webReader) appendHistoricalMortgages(
 	ctx context.Context,
 	w canonical.Window,

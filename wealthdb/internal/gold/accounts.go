@@ -37,9 +37,10 @@ type AccountRow struct {
 	// 'self_directed' for default-aware display.
 	TaxWrapper      *string
 	ManagementStyle *string
-	// SnapshotAt is the latest snapshot_at across all contributing
-	// lines; falls back to the silver source's latest snapshot for
-	// accounts with no lines; 0 only when the source has no data.
+	// SnapshotAt is the account's own active snapshot: the latest
+	// snapshot_at across its lines; falls back to the newest active
+	// snapshot of its source for accounts with no lines; 0 only when the
+	// source has no data.
 	SnapshotAt int64
 
 	// Aggregates in the account's own base_currency (nil when

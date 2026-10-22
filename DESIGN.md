@@ -54,12 +54,12 @@ versioned with its own migrations.
 - **Gold is provenance-preserving.** Every gold row carries its
   `silver_source_id` and a payload pointer back to the silver
   row(s) it derived from. Nothing is irreversibly transformed.
-- **Snapshot-time semantics.** Position queries are as-of a date;
-  each source independently contributes its latest snapshot ≤ that
-  date (the daily history series resolves that per account instead,
-  so a partial collector run carries the accounts it did not touch).
-  FX is converted at query time (nearest historic rate), never baked
-  in.
+- **Snapshot-time semantics.** Position queries are as-of a date.
+  Each account contributes its own active snapshot at that instant:
+  its latest snapshot ≤ that date, until that snapshot ends. The
+  point-in-time reports and the daily history resolve it alike
+  ([wealthdb/docs/DESIGN.md](wealthdb/docs/DESIGN.md) §10.7). FX is
+  converted at query time (nearest historic rate), never baked in.
 
 ## Canonical model (gold)
 

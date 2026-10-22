@@ -54,10 +54,14 @@ gains, exposure, spending, income, cash flow) read.
   `silver_source_id` and a payload pointer back to the silver row(s)
   it derives from. Nothing is irreversibly transformed.
 - **Snapshot-time semantics.** Positions queries are as-of a date.
-  Each silver source contributes its latest snapshot ≤ that date,
-  independently. The daily history macros go one grain finer, resolving
-  the active snapshot per (source, account) so a run that covered part of
-  a source carries the rest (§10.7).
+  Each account contributes its own active snapshot at that instant:
+  its latest snapshot ≤ that date, until that snapshot ends. An
+  account's last snapshot ends at the first later run of its source
+  that reports again the accounts it was reported with (those still
+  reporting), or once the source has run for a year past it. So an
+  account reported only in some of a source's runs drops out at the
+  next run that reports its companions. The point-in-time reports and
+  the daily history resolve it alike, per (source, account) (§10.7).
 - **Multi-currency output at query time.** Position and net-worth
   reports can be rendered in any ISO currency; the choice is made
   per-invocation, not baked into the database. FX conversion uses
@@ -246,10 +250,10 @@ The cost basis columns are opt-in through `-C`: `cost_basis`,
 `unrealized_gain_outccy` (headers `cost_basis_<CCY>` and
 `unrealized_gain_<CCY>`). docs/GAINS.md defines them.
 
-Internally: for each silver source, find the latest `snapshot_at` ≤
-`--as-of` by querying `MAX(snapshot_at)` on `positions` /
-`cash_balances` filtered to that silver, then union those rows. FX
-conversion is a join against `fx_rates` per §10.6.
+Internally: for each account, take its active snapshot at `--as-of`
+(§10.1): `pos_active_at` on `positions`, `cash_active_at` on
+`cash_balances`, then union those rows. FX conversion is a join
+against `fx_rates` per §10.6.
 
 ### 4.7 `wealthdb status [<id>]`
 
@@ -2421,21 +2425,25 @@ re-running `wealthdb init` is the manual fallback.
 The canonical "what do I hold on date X" query:
 
 ```sql
-WITH latest_per_source AS (
-    SELECT silver_source_id, MAX(snapshot_at) AS snapshot_at
-      FROM positions
-     WHERE snapshot_at <= :as_of_epoch
-     GROUP BY silver_source_id
-)
 SELECT p.*
   FROM positions p
-  JOIN latest_per_source l
-    ON p.silver_source_id = l.silver_source_id
-   AND p.snapshot_at      = l.snapshot_at;
+  JOIN pos_active_at([:as_of_epoch]) a
+    ON p.silver_source_id    = a.src
+   AND p.account_external_id = a.acct
+   AND p.snapshot_at         = a.snap;
 ```
 
-The compound PK `(silver_source_id, snapshot_at, account_external_id,
-position_key)` makes both the `MAX` and the join cheap.
+`pos_active_at` gives each account its active snapshot at the instant
+(migration 0140, §10.7). An account's older snapshot holds until its
+next one, whatever the runs between them report. Its last snapshot
+ends at the first later run that reports again the accounts it was
+reported with (those still reporting), or once its source has run for
+a year past it. So an account reported only in some of a source's
+runs drops out at the next run that reports its companions.
+`positions_at` is this query with the account and instrument labels, and
+`cash_active_at` is its twin for cash. Every point-in-time report
+reads one of them. The compound PK `(silver_source_id, snapshot_at,
+account_external_id, position_key)` makes the join cheap.
 
 ### 10.2 Positions including cash
 
@@ -2460,11 +2468,13 @@ either dimension. Fixed-income exposure held as direct bonds or bond
 funds (excluding, say, bond ETFs):
 
 ```sql
-SELECT * FROM positions
- WHERE silver_source_id = ?
-   AND snapshot_at = (SELECT MAX(snapshot_at) FROM positions WHERE silver_source_id = ?)
-   AND asset_class = 'fixed_income'
-   AND vehicle IN ('bond', 'fund');
+SELECT p.*
+  FROM positions p
+  JOIN pos_active_at([:as_of_epoch]) a
+    ON p.silver_source_id = a.src AND p.account_external_id = a.acct
+   AND p.snapshot_at = a.snap
+ WHERE p.asset_class = 'fixed_income'
+   AND p.vehicle IN ('bond', 'fund');
 ```
 
 ### 10.4 Holding-period filter (future, sketch)
@@ -2485,11 +2495,11 @@ Elsewhere it is NULL, so this filter sees those positions only
 ### 10.5 Net worth by bank
 
 This is implemented as the `report_accounts` table macro (migration
-0021), which rolls each account's latest-snapshot positions and cash up
-to a single converted value per account, grouped under its silver
-source. The conversion to `:output_currency` is the §10.6 `fx_daily`
-lookup applied per line; the macro takes `:output_currency` and an
-as-of as parameters and is invoked from the CLI
+0021), which rolls each account's positions and cash at its active
+snapshot (§10.1) up to a single converted value per account, grouped
+under its silver source. The conversion to `:output_currency` is the
+§10.6 `fx_daily` lookup applied per line; the macro takes
+`:output_currency` and an as-of as parameters and is invoked from the CLI
 (`SELECT * FROM report_accounts(?, ?)`). `web-materialize` reads its
 multi-currency twin, `report_accounts_multi` (§10.8).
 
@@ -2555,7 +2565,8 @@ direction without a separate fallback.
 **Which day's rate.** A line converts at the rate of its own
 snapshot's day. The as-of passed to a macro picks the snapshot, not
 the rate: the CLI passes the `-d` date (default today), and
-`web-materialize` passes `MAX(BIGINT)`, so each source's latest snapshot.
+`web-materialize` passes `MAX(BIGINT)`, so each account's latest active
+snapshot.
 There is no linear interpolation between rates.
 
 **Cross-silver precedence** is data, not runtime state: a stamped
@@ -2631,24 +2642,50 @@ the others carried. Four rules complete the picture:
   faster sibling is ended by that sibling's next run, which covers the whole
   peer set, which is indistinguishable from closure at this grain.
 
+The point-in-time reports take each key's active snapshot by the same rule, at
+any instant (migration `0140`):
+
+- a key's candidate is its newest observation at or before the instant;
+- a candidate that is not the key's last observation stands;
+- the key's last observation stands while the instant is before its ending
+  snapshot, and while the source's clock at the instant is at most
+  `hist_carry_days()` days past the observation's day.
+
+Each observation so holds over a span (`pos_key_spans()` /
+`cash_key_spans()`): from its own instant to the key's next observation. The
+last one holds to the earlier of its two endings, or for ever.
+`pos_active_at(instants)` / `cash_active_at(instants)` give the observation each
+key holds at each instant. The re-cover ending has one definition
+(`pos_key_ends()` / `cash_key_ends()`), which `hist_active_pos()` /
+`hist_active_cash()` read too. At a day's last second the rule is the history's
+day rule.
+
 What follows for readers of these macros:
 
-- **`history@today` reconciles with `report_*(MAX)` on totals**, not on rows,
-  for a source that writes every account in one run. The point-in-time reports
-  (§10.1, migration 0021) carry a row for every account in the dimension — 0
-  when the source's latest snapshot gave it no lines — while the history emits
-  rows only for entity-days that have lines.
-- **Where runs are partial the two differ by design**: the history carries every
-  account, while the point-in-time reports read one latest snapshot per source
-  and so value only the accounts of the source's last run. `wealthdb holdings global` and
-  `wealthdb holdings positions` read the point-in-time macros, so for such a source the
-  CLI headline sits below a chart built on the history. Moving the CLI onto the
-  same per-account resolution is open; nothing in gold depends on the two
-  disagreeing.
-- **`report_positions_history_multi.snapshot_at`** is the account's own active
-  snapshot, so it varies per account within a source-day.
+- **A point-in-time read at a day's last second equals the history's day**, in
+  value, for every source whose lines all have a rate to the currency. A zero
+  line no rate converts reads 0 in the history; the point-in-time line bases
+  leave it NULL, or drop it for cash. They reconcile on values, not on rows: the
+  point-in-time reports (§10.1) carry a row for every account in the dimension,
+  0 when its active snapshot gave it no lines, while the history emits rows only
+  for entity-days that have lines.
+- **The newest read.** An account reported only in some of a source's runs drops
+  out at the next run that reports its companions. A quarterly account of a
+  monthly statement so reads as holding nothing from the month-end after its
+  last quarter end until the next quarter end. A past instant carries it,
+  because its next observation exists. Gold cannot tell this shape from a
+  closure without a sign from the source of which accounts a run could report.
+- **`snapshot_at` is the account's own active snapshot**, in
+  `report_positions_history_multi` and in every point-in-time row, so it varies
+  per account within a source. A source's `snapshot_at` is the newest of its
+  accounts'.
+- **Zero balances.** A zero cash row is an observation in both: it supersedes
+  the balance before it. `cash_chosen` leaves zero balances out of its output
+  after the pick.
 - **Cost:** the day spine is crossed with keys rather than with sources, so its
-  cardinality grows by the accounts-per-source factor.
+  cardinality grows by the accounts-per-source factor. A point-in-time read
+  crosses its instants with the keys, and each read recomputes every key's
+  span and ending over the whole of `positions` or `cash_balances`.
 
 ### 10.8 Multi-currency reports (Metabase)
 
@@ -2670,7 +2707,7 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   source of truth for the portfolio rollup, shared by every portfolio macro.
   `source_buckets()` (migration 0025) is the per-silver-source analogue of
   `portfolio_buckets()` — the rolled-up taxonomy + base currency, shared by
-  every source macro; `source_lines_base(p_asof)` is the latest-snapshot line
+  every source macro; `source_lines_base(p_asof)` is the point-in-time line
   base behind `report_sources` / `report_sources_multi` (the history variants
   build their own all-snapshot lines, like the portfolio history macros).
 - **Single-currency macros on the same bases.** `report_accounts`,
@@ -2933,7 +2970,9 @@ SQL ([CASHFLOW.md](CASHFLOW.md) is the spec):
 - `cashflow_txn_nodes(f, t)` maps every transaction to a
   `section.class.group` node and a disposition that says whether it is a
   line at all. `cashflow_lines_base(f, t)` is that, restricted to the pool
-  and to the lines.
+  and to the lines. It reads a mortgage its source outlives as repaid at
+  the source's next snapshot, while holdings keep the mortgage until the
+  shared ending of §10.7 ([CASHFLOW.md §5](CASHFLOW.md)).
 - `report_cashflow_summary`, `_flows`, `_sankey` and `_transactions` sit
   over it, with the FX pair `cashflow_lines_outccy` /
   `cashflow_nodes_outccy`; `web_cashflow` serves the dashboard.
@@ -3135,9 +3174,9 @@ The pieces:
   instant, as `yield.Inputs`: the holdings, their accounts, terms and
   rates, the curves, each fund's figures and lines, the income and
   dividends received, the stocks' reported figures, and each holding's
-  amount on every day of the year before. A snapshot's amounts hold
-  until its source's next snapshot, so one read of the year's
-  snapshots gives every day;
+  amount on every day of the year before. An observation's amounts
+  hold over its span (§10.7), so one read of the year's observations
+  gives every day;
 - `internal/fixedincome`: the bond and rate arithmetic, as pure
   functions;
 - `internal/yield`: `yield.Compute` measures every holding and projects
