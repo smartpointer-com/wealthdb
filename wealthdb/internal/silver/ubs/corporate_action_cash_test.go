@@ -3,6 +3,7 @@ package ubs
 import (
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -56,8 +57,9 @@ func newCorporateActionSilver(t *testing.T, payload string) *sql.DB {
 
 // TestADividendPaidIntoAnUncoveredAccountIsBookedFromItsConfirmation: the
 // feed never speaks for the JPY account, so the confirmation's cash
-// movement is the record of the dividend — the posted figure, on the
-// payment day, with the gross and the tax beside it.
+// movement is the record of the dividend — on the payment day, at the
+// gross, with the tax withheld as its own row and the posted figure in
+// the payload.
 func TestADividendPaidIntoAnUncoveredAccountIsBookedFromItsConfirmation(t *testing.T) {
 	got := psnRowsWith(t, newCorporateActionSilver(t, caFields("DVCA", "CASH", "CRED", mirrorJPYAcctID, "JPY1234560,")), psnHints{})
 	if _, ok := got[caEvent]; !ok {
@@ -71,8 +73,8 @@ func TestADividendPaidIntoAnUncoveredAccountIsBookedFromItsConfirmation(t *testi
 		t.Errorf("cash leg account = %q, want the cash account's IBAN", leg.AccountExternalID)
 	}
 	if leg.Kind != canonical.TxKindDividend || leg.Currency != "JPY" ||
-		leg.NetAmount == nil || leg.NetAmount.String() != "1234560" {
-		t.Errorf("cash leg = %s %s %v, want dividend JPY 1234560", leg.Kind, leg.Currency, leg.NetAmount)
+		leg.NetAmount == nil || leg.NetAmount.String() != "1300000" {
+		t.Errorf("cash leg = %s %s %v, want dividend JPY 1300000, the gross", leg.Kind, leg.Currency, leg.NetAmount)
 	}
 	if leg.GrossAmount == nil || leg.GrossAmount.String() != "1300000" {
 		t.Errorf("gross = %v, want 1300000", leg.GrossAmount)
@@ -87,12 +89,42 @@ func TestADividendPaidIntoAnUncoveredAccountIsBookedFromItsConfirmation(t *testi
 		t.Errorf("description = %v, want the security's name", leg.Description)
 	}
 	for key, want := range map[string]string{
-		"corporate_action": caEvent, "caev": "DVCA",
+		"corporate_action": caEvent, "caev": "DVCA", "posted_amount": "1234560", "posted_currency": "JPY",
 		"gross_amount": "1300000", "gross_currency": "JPY", "tax_amount": "65440", "tax_currency": "JPY",
 	} {
 		if got := payloadField(t, leg, key); got != want {
 			t.Errorf("cash leg payload %s = %q, want %q", key, got, want)
 		}
+	}
+	tax, ok := got[caEvent+":cash"+withholdingIDSuffix]
+	if !ok {
+		t.Fatal("no withholding row was booked beside the cash leg")
+	}
+	wantWithholding(t, leg, tax, "-65440")
+	if tax.Description == nil || *tax.Description != "Withholding tax; SOME ETF JPY D" {
+		t.Errorf("withholding description = %v, want it to name the withholding and the security", tax.Description)
+	}
+	if sum := leg.NetAmount.Add(*tax.NetAmount); sum.String() != "1234560" {
+		t.Errorf("dividend + withholding = %s, want the 1234560 posted", sum)
+	}
+}
+
+// TestAConfirmationWithNoTaxBooksNoWithholding: a cash leg whose
+// confirmation states the tax as zero reads the posted amount, which is
+// the gross, and books no tax row.
+func TestAConfirmationWithNoTaxBooksNoWithholding(t *testing.T) {
+	payload := strings.ReplaceAll(caFields("DVCA", "CASH", "CRED", mirrorJPYAcctID, "JPY1300000,"),
+		":TAXR//JPY65440,", ":TAXR//JPY0,")
+	got := psnRowsWith(t, newCorporateActionSilver(t, payload), psnHints{})
+	leg, ok := got[caEvent+":cash"]
+	if !ok {
+		t.Fatal("no cash leg was booked")
+	}
+	if leg.NetAmount.String() != "1300000" || leg.GrossAmount == nil || leg.GrossAmount.String() != "1300000" {
+		t.Errorf("cash leg = %v gross %v, want 1300000 both", leg.NetAmount, leg.GrossAmount)
+	}
+	if _, ok := got[caEvent+":cash"+withholdingIDSuffix]; ok {
+		t.Error("a withholding row was booked for a confirmation that withheld nothing")
 	}
 }
 
@@ -131,6 +163,9 @@ func TestInterestPaidIntoAnUncoveredAccountIsInterest(t *testing.T) {
 		t.Fatal("no cash leg was booked")
 	}
 	if leg.Kind != canonical.TxKindInterest || leg.NetAmount.String() != "1000.5" {
-		t.Errorf("cash leg = %s %v, want interest 1000.5", leg.Kind, leg.NetAmount)
+		t.Errorf("cash leg = %s %v, want interest 1000.5, the posted amount", leg.Kind, leg.NetAmount)
+	}
+	if _, ok := got[caEvent+":cash"+withholdingIDSuffix]; ok {
+		t.Error("interest booked a withholding row; it keeps the posted amount")
 	}
 }

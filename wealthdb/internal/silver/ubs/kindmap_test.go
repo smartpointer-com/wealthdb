@@ -108,18 +108,31 @@ func TestTheNarrativeStillOutranksTheTypeCode(t *testing.T) {
 	}
 }
 
-// TestAReversalIsReadByDirectionAlone: MT940 marks a reversal in the
-// credit/debit field (`RC`, `RD`), and the caller pre-negates only a
-// plain `D` — so a reversal arrives with a positive amount and a
-// direction that means the opposite of what it spells. Reading a type
-// code off that states a kind confidently against an unflipped sign,
-// which turned a dividend clawback into interest income.
-func TestAReversalIsReadByDirectionAlone(t *testing.T) {
-	for _, txnType := range []string{"NRTI", "NSEC", "NDIV", "NFEX", "NCHG"} {
-		if got := cashMovementKind("W09?", "RC", txnType); got != canonical.TxKindWithdrawal {
-			t.Errorf("a reversed credit marked %q = %q, want withdrawal — the direction is the only safe reading",
-				txnType, got)
+// TestAReversalIsReadByItsDirection: MT940 marks a reversal in the
+// credit/debit field (`RC`, `RD`), and its type code names the booking it
+// reverses. Read as that kind, a reversed trade or conversion would count
+// as a second one, so the direction is the reading. A reversed dividend
+// credit is the one exception (TestAReversedDividendCreditIsADividend).
+func TestAReversalIsReadByItsDirection(t *testing.T) {
+	for _, mark := range []string{"RC", "RD"} {
+		for _, txnType := range []string{"NRTI", "NSEC", "NDIV", "NFEX", "NCHG"} {
+			if mark == "RC" && txnType == "NDIV" {
+				continue
+			}
+			if got := cashMovementKind("W09?", mark, txnType); got != canonical.TxKindWithdrawal {
+				t.Errorf("a reversal %s marked %q = %q, want withdrawal — the direction is the only safe reading",
+					mark, txnType, got)
+			}
 		}
+	}
+}
+
+// TestAReversedDividendCreditIsADividend: the reversal of a credit whose
+// type code is NDIV (`RC`, NDIV) is the bank taking back a dividend, a
+// dividend reversal.
+func TestAReversedDividendCreditIsADividend(t *testing.T) {
+	if got := cashMovementKind("W09?", "RC", "NDIV"); got != canonical.TxKindDividend {
+		t.Errorf("a reversed dividend credit = %q, want dividend, the reversal of one", got)
 	}
 }
 

@@ -74,18 +74,22 @@ func kindFor(silverKind, narrative string, creditDebit, txnType string) canonica
 //
 // The codes are SWIFT's, not UBS's, and only the ones the feed
 // actually carries are mapped; anything else falls through to the
-// direction. NRTI is a
-// RETURNED ITEM, not interest — the resemblance to NINT is a trap the
-// SWIFT names set, and a returned item is a reversal whose kind the
-// direction already gets right.
+// direction. NRTI is a RETURNED ITEM, not interest — the resemblance to
+// NINT is a trap the SWIFT names set, and a returned item is a reversal
+// whose kind the direction already gets right.
 //
-// A reversal is exactly where this floor must not look. MT940 marks
-// one in the credit/debit field itself (`RC`, `RD`), and the caller
-// pre-negates only a plain `D`, so a reversal reaches here with a
-// positive amount and a direction that means the opposite of what it
-// spells. Reading a type code off it would state a kind confidently
-// against an unflipped sign — a clawback booked as income. The
-// direction-only fallback is right for these.
+// A reversal is where this floor does not look, with one exception.
+// MT940 marks a reversal in the credit/debit field itself (`RC`, `RD`),
+// and its type code names the booking it reverses, not the reversal.
+// Read as that kind, a reversed trade (NSEC) would be a second trade to
+// every pass that reads trades, and a reversed conversion (NFEX) a
+// second conversion. The direction-only fallback keeps a reversal a
+// plain movement, and buildTransaction signs it by its mark.
+//
+// The exception is NDIV on the reversal of a credit: the bank taking
+// back a dividend it paid. That is the dividend's reversal, a negative
+// dividend that income nets, as an `RC` whose narrative says dividend
+// already reads.
 //
 // NSEC is the important one. The cash leg of a trade settles on the
 // cash account, and the account-statement feed books that leg as a
@@ -97,6 +101,9 @@ func kindFor(silverKind, narrative string, creditDebit, txnType string) canonica
 // netted. Neither is true of a trade settling inside the portfolio.
 func txnTypeKind(txnType, creditDebit string) (canonical.TxKind, bool) {
 	if isReversalMark(creditDebit) {
+		if isCreditReversal(creditDebit) && strings.ToUpper(strings.TrimSpace(txnType)) == "NDIV" {
+			return canonical.TxKindDividend, true
+		}
 		return "", false
 	}
 	switch strings.ToUpper(strings.TrimSpace(txnType)) {
@@ -119,6 +126,13 @@ func txnTypeKind(txnType, creditDebit string) (canonical.TxKind, bool) {
 		return canonical.TxKindTax, true
 	}
 	return "", false
+}
+
+// isCreditReversal reports whether an MT940 credit/debit field marks the
+// reversal of a credit (`RC`): a debit, whatever kind the line reads as.
+// Its twin, the reversal of a debit (`RD`), is a credit.
+func isCreditReversal(creditDebit string) bool {
+	return strings.ToUpper(strings.TrimSpace(creditDebit)) == "RC"
 }
 
 // isReversalMark reports whether an MT940 credit/debit field marks a
@@ -154,7 +168,9 @@ func isOwnChargeCode(txnType, creditDebit string) bool {
 // The :61: TYPE CODE is the floor beneath it (txnTypeKind), for the
 // entries the bank wrote no narrative for at all.
 //
-// The DIRECTION is the last word, and the only one for a reversal.
+// The DIRECTION is the last word. Beneath a reversal's narrative it is
+// the only one, except on the reversal of a dividend credit
+// (txnTypeKind).
 func cashMovementKind(narrative, creditDebit, txnType string) canonical.TxKind {
 	upper := strings.ToUpper(narrative)
 

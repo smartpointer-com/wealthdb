@@ -1,0 +1,787 @@
+package ubs
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"sort"
+	"strings"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+)
+
+// UBS books a dividend to the cash account it credits, beside the
+// custody account that holds the security. The line names the security
+// in the bank's own words, and gold keys the security by its ISIN. So a
+// dividend line is linked to its security here, by the first of three
+// roads that answers:
+//
+//  1. The confirmation it pairs with (MT940 lines). The custody
+//     account's MT566 states the ISIN and the cash it posted: the cash
+//     account, the payment day, the amount and its currency. A credit
+//     line equal on all four is that confirmation's cash leg — where
+//     one line and one confirmation's statement answer the four facts,
+//     and the line states no valor of another security.
+//  2. The valor the line states, `VN <valor>`: in the MT940 line's
+//     customer reference, or in a statement's narrative. It resolves
+//     through the valor index (buildValorIndex) and its collision rule.
+//  3. The ticker that closes the line's narrative, `(<TKR>)`, against
+//     the ticker that closes the description of each custody position
+//     the same portfolio's statements of assets print. Only where
+//     exactly one ISIN answers, and never a token that is a currency or
+//     shorter than three characters: a share-class or domicile marker
+//     looks like a ticker.
+//
+// Each road reads the line's own silver fields, not the text the row
+// attaches, so a row's instrument never depends on its text columns.
+//
+// A line no road answers keeps no instrument. A valor it stated goes on
+// instrument_hint, as a statement-era trade's does, for a config link to
+// close.
+//
+// The bank corrects a dividend by reversing its credit: an MT940 line
+// marked `RC`, signed negative whatever its kind (buildTransaction).
+// Where road 2 or 3 names its security, and the line or a credit on or
+// before its day says the credit was a dividend, it is that security's
+// dividend reversal (creditReversal). It takes back what the credit was
+// booked at: the gross and its tax, where gold booked a gross
+// (reversedGross). Any other reversal keeps the kind map's reading. An
+// export row's reversal states its own gross (webStatedGross).
+// docs/adapters/ubs.md §7 has the whole rule.
+//
+// UBS credits a dividend net of the tax withheld at source. The
+// confirmation states the gross beside it, and so does an export row,
+// where it states it in the row's currency (webStatedGross). Where
+// either does, the dividend is booked as a brokerage books one: the
+// dividend at the gross, and the withholding as its own `tax` row on the
+// same account, day, currency and instrument (bookAtGross). Income then
+// reads the gross, its `withheld` memo the tax row, and spending places
+// the tax row as withholding tax (docs/INCOME.md §5).
+
+// withholdingLabel opens a booked withholding row's description; the
+// security's name follows it.
+const withholdingLabel = "Withholding tax"
+
+// withholdingIDSuffix closes a booked withholding row's id, after the id
+// of the dividend it was withheld from.
+const withholdingIDSuffix = ":tax"
+
+// withholdingPayload is what a booked withholding row's payload states:
+// the dividend it was withheld from and the confirmation stating it, if
+// one does.
+type withholdingPayload struct {
+	WithheldFrom    string `json:"withheld_from"`
+	CorporateAction string `json:"corporate_action,omitempty"`
+}
+
+// corporateActionKey is the payload key naming the confirmation a
+// dividend line was paired with.
+const corporateActionKey = `"corporate_action":`
+
+// grossOf is the gross the movement states for a dividend that credited
+// `credited` (a magnitude) in `currency`: the gross entitlement (GRSS)
+// where it is stated in that currency, else the credited amount plus the
+// tax (TAXR) where that is. ok is false where neither is stated. It is
+// false too where the difference cannot be withholding: a tax stated as
+// zero beside a gross that differs, or a gross below the credited amount.
+// The line then keeps what it credited.
+func (m caCashMove) grossOf(credited canonical.Decimal, currency string) (gross canonical.Decimal, ok bool) {
+	currency = bookingCurrency(currency)
+	switch {
+	case m.grossCcy != "" && bookingCurrency(m.grossCcy) == currency && !m.gross.IsZero():
+		gross = m.gross
+	case m.taxCcy != "" && bookingCurrency(m.taxCcy) == currency:
+		gross = credited.Add(m.tax)
+	default:
+		return canonical.Decimal{}, false
+	}
+	nothingWithheld := m.taxCcy != "" && m.tax.IsZero()
+	if gross.LessThan(credited) || nothingWithheld && !gross.Equal(credited) {
+		return canonical.Decimal{}, false
+	}
+	return gross, true
+}
+
+// bookGross books a dividend at the gross its confirmation states
+// (bookAtGross). withheld is false where the confirmation states no
+// gross in the row's currency, so the row keeps what it credited, and
+// where nothing was withheld.
+func bookGross(tx *canonical.TransactionChange, c cashConfirmation) (tax canonical.TransactionChange, withheld bool, err error) {
+	if tx.NetAmount == nil {
+		return canonical.TransactionChange{}, false, nil
+	}
+	gross, ok := c.move.grossOf(tx.NetAmount.Abs(), tx.Currency)
+	if !ok {
+		return canonical.TransactionChange{}, false, nil
+	}
+	return bookAtGross(tx, gross, c.eventID, c.name)
+}
+
+// webGrossRe is the gross an export dividend row states in its
+// Description3, before the tax withheld at source: `Number/Amt.
+// <gross> <currency>`, in either sign, its thousands grouped by `'` or
+// not.
+var webGrossRe = regexp.MustCompile(`\bNumber/Amt\.\s+(-?\d[\d']*(?:\.\d+)?)\s+([A-Z]{3})\b`)
+
+// webStatedGross is the gross an export dividend row states, a
+// magnitude: where it states one in the row's own currency, no smaller
+// than what moved. A foreign security's row states its gross in the
+// security's currency, beside the rate the bank converted at; it keeps
+// what it credited.
+func webStatedGross(p webTxPayload, currency string, moved canonical.Decimal) (canonical.Decimal, bool) {
+	m := webGrossRe.FindStringSubmatch(p.Description3)
+	if m == nil || bookingCurrency(m[2]) != bookingCurrency(currency) {
+		return canonical.Decimal{}, false
+	}
+	gross, err := canonical.NewDecimalFromString(strings.ReplaceAll(m[1], "'", ""))
+	if err != nil || moved.IsZero() || gross.Abs().LessThan(moved.Abs()) {
+		return canonical.Decimal{}, false
+	}
+	return gross.Abs(), true
+}
+
+// bookAtGross books a dividend at gross, a magnitude, in the sign of what
+// moved: a reversal of a dividend reverses its gross. The row's net and
+// gross amounts read it, and the tax withheld is returned as the row to
+// book beside it, on the same account, day, currency and instrument. The
+// tax row is the amount that moved less the gross, so the two rows sum to
+// the cash that moved, exactly; a rounding or fee difference in the
+// bank's figures moves no cash. A reversal's tax row is positive: the
+// tax taken back with the dividend. withheld is false where nothing was
+// withheld: the row reads the gross, which is what moved. confirmation
+// names the confirmation stating the gross, "" where none does (an export
+// row, a reversal); name is the security's, else the row's description
+// serves.
+func bookAtGross(tx *canonical.TransactionChange, gross canonical.Decimal, confirmation, name string) (tax canonical.TransactionChange, withheld bool, err error) {
+	moved := *tx.NetAmount
+	signed := gross
+	if moved.IsNegative() {
+		signed = gross.Neg()
+	}
+	net, total := signed, signed
+	tx.NetAmount, tx.GrossAmount = &net, &total
+	if signed.Equal(moved) {
+		return canonical.TransactionChange{}, false, nil
+	}
+	encoded, err := json.Marshal(withholdingPayload{
+		WithheldFrom:    tx.TransactionExternalID,
+		CorporateAction: confirmation,
+	})
+	if err != nil {
+		return canonical.TransactionChange{}, false, fmt.Errorf("ubs withholding payload: %w", err)
+	}
+	if name == "" {
+		name = derefText(tx.Description)
+	}
+	amount := moved.Sub(signed)
+	var instrument *string
+	if tx.InstrumentExternalID != nil {
+		id := *tx.InstrumentExternalID
+		instrument = &id
+	}
+	return canonical.TransactionChange{
+		TransactionExternalID: tx.TransactionExternalID + withholdingIDSuffix,
+		OccurredAt:            tx.OccurredAt,
+		AccountExternalID:     tx.AccountExternalID,
+		InstrumentExternalID:  instrument,
+		InstrumentHint:        tx.InstrumentHint,
+		Kind:                  canonical.TxKindTax,
+		Currency:              tx.Currency,
+		NetAmount:             &amount,
+		Description:           textPtr(silver.JoinText(withholdingLabel, name)),
+		Payload:               json.RawMessage(encoded),
+	}, true, nil
+}
+
+// statedValorRe is the valor a dividend line states, `VN <valor>`; the
+// bank spaces it variously.
+var statedValorRe = regexp.MustCompile(`\bVN\s*(\d+)\b`)
+
+// statedValor is the valor `VN <valor>` in s names, or "".
+func statedValor(s string) string {
+	if m := statedValorRe.FindStringSubmatch(s); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// closingTicker is the ticker in parentheses that closes a narrative
+// (tickerFromDescription), or "".
+func closingTicker(narrative string) string {
+	return derefText(tickerFromDescription(strings.TrimSpace(narrative)))
+}
+
+// webDividendNarrative is the narrative a web dividend row names its
+// security in, as silver states it: a statement's own continuation
+// lines, or the export's Description1.
+func webDividendNarrative(p webTxPayload, pdfBackfill bool) string {
+	if !pdfBackfill {
+		return p.Description1
+	}
+	own, _ := bookingLines(p.Continuation)
+	return strings.Join(own, "\n")
+}
+
+// minTickerLen is the shortest token road 3 reads as a ticker. A one- or
+// two-letter token in parentheses is as often a share class or a
+// domicile, `(A)` or `(IE)`, and nothing tells the two apart.
+const minTickerLen = 3
+
+// dividendSecurities is what roads 2 and 3 resolve a dividend line
+// against.
+type dividendSecurities struct {
+	// valors is the valor index (buildValorIndex).
+	valors map[string]string
+	// tickers maps a portfolio onto the ISIN its custody positions print
+	// each ticker for: "" where two ISINs print one ticker.
+	tickers map[string]map[string]string
+	// currencies are the currencies the statements of assets print. A
+	// token that is one names a share class, not a security.
+	currencies map[string]bool
+	// portfolios maps a cash account onto the portfolios the account
+	// master data and the printed statements place it in.
+	portfolios map[string][]string
+	// credits are the days of each dividend credit any rail states: the
+	// evidence a reversal of a credit reverses a dividend, and which credit
+	// it reverses (newestCredit).
+	credits map[creditKey][]int64
+	// booked are the dividend credits gold books at a gross, each the
+	// gross it reads: the export rows the web pass emits
+	// (recordExportGrosses), the MT940 lines that pair with a confirmation
+	// stating one, and the cash legs a confirmation books itself
+	// (addFeedGrosses). A reversal of one takes back that gross
+	// (reversedGross).
+	booked map[creditKey][]bookedGross
+}
+
+// resolve finds the security a dividend line on account names: by the
+// valor it states, else by the ticker closing its narrative. A stated
+// valor neither road resolves comes back as the hint.
+func (d *dividendSecurities) resolve(account, valor, narrative string) (id *string, hint string) {
+	if id, hint = resolveValor(d.valors, valor); id != nil {
+		return id, ""
+	}
+	if isin, ok := d.byTicker(account, closingTicker(narrative)); ok {
+		return &isin, ""
+	}
+	return nil, hint
+}
+
+// byTicker is the one ISIN the custody positions of the account's
+// portfolios print the ticker for. false for no ticker, a token too short
+// or a currency, no portfolio, or two ISINs.
+func (d *dividendSecurities) byTicker(account, ticker string) (string, bool) {
+	if len(ticker) < minTickerLen || d.currencies[ticker] {
+		return "", false
+	}
+	var isin string
+	for _, portfolio := range d.portfolios[account] {
+		id, ok := d.tickers[portfolio][ticker]
+		if !ok {
+			continue
+		}
+		if id == "" || isin != "" && id != isin {
+			return "", false
+		}
+		isin = id
+	}
+	return isin, isin != ""
+}
+
+// buildDividendSecurities reads what roads 2 and 3 need: the valor index
+// the caller holds, the tickers the printed statements' custody positions
+// print, and the portfolios each cash account belongs to. Then it reads
+// every dividend credit both silvers state, which a reversal of a credit
+// is checked against. A nil or absent side contributes nothing.
+func buildDividendSecurities(ctx context.Context, psn *psnReader, web *webReader, valors map[string]string) (*dividendSecurities, error) {
+	d := &dividendSecurities{
+		valors:     valors,
+		tickers:    map[string]map[string]string{},
+		currencies: map[string]bool{},
+		portfolios: map[string][]string{},
+		credits:    map[creditKey][]int64{},
+		booked:     map[creditKey][]bookedGross{},
+	}
+	if err := web.addCustodyTickers(ctx, d); err != nil {
+		return nil, err
+	}
+	portfolioOf, err := psn.portfolioOfCashAccount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for account, portfolio := range portfolioOf {
+		d.addPortfolio(account, portfolio)
+	}
+	// The credits resolve their security by the roads above, so they
+	// are read last.
+	if err := d.addFeedCredits(ctx, psn); err != nil {
+		return nil, err
+	}
+	if err := d.addWebCredits(ctx, web); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+// addTicker records that a custody position of the portfolio prints the
+// ticker for the ISIN. A second ISIN for the ticker leaves it naming
+// none.
+func (d *dividendSecurities) addTicker(portfolio, ticker, isin string) {
+	byTicker := d.tickers[portfolio]
+	if byTicker == nil {
+		byTicker = map[string]string{}
+		d.tickers[portfolio] = byTicker
+	}
+	if held, ok := byTicker[ticker]; ok && held != isin {
+		isin = ""
+	}
+	byTicker[ticker] = isin
+}
+
+// addPortfolio places a cash account in a portfolio, once.
+func (d *dividendSecurities) addPortfolio(account, portfolio string) {
+	if account == "" || portfolio == "" {
+		return
+	}
+	for _, p := range d.portfolios[account] {
+		if p == portfolio {
+			return
+		}
+	}
+	d.portfolios[account] = append(d.portfolios[account], portfolio)
+}
+
+// addCustodyTickers reads the printed statements of assets: the ticker
+// closing each custody position's description, under its portfolio; each
+// cash position's account under the same portfolio; and every currency
+// they print. One table names all three, so they agree on how a
+// portfolio is spelled.
+func (r *webReader) addCustodyTickers(ctx context.Context, d *dividendSecurities) error {
+	if r == nil || r.db == nil {
+		return nil
+	}
+	ok, err := r.hasTable(ctx, "historical_position_snapshots")
+	if err != nil || !ok {
+		return err
+	}
+	rows, err := r.db.QueryContext(ctx, `
+SELECT DISTINCT portfolio_external_id, account_external_id, instrument_isin,
+       description, currency_iso, market_value_currency
+  FROM historical_position_snapshots`)
+	if err != nil {
+		return fmt.Errorf("ubs-web addCustodyTickers: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var portfolio, account, isin, description, ccy, valuedIn sql.NullString
+		if err := rows.Scan(&portfolio, &account, &isin, &description, &ccy, &valuedIn); err != nil {
+			return fmt.Errorf("ubs-web addCustodyTickers scan: %w", err)
+		}
+		for _, c := range []string{ccy.String, valuedIn.String} {
+			if c = strings.ToUpper(strings.TrimSpace(c)); c != "" {
+				d.currencies[c] = true
+			}
+		}
+		if !isin.Valid {
+			d.addPortfolio(account.String, portfolio.String)
+			continue
+		}
+		if ticker := closingTicker(description.String); ticker != "" && looksLikeISIN(isin.String) {
+			d.addTicker(portfolio.String, ticker, isin.String)
+		}
+	}
+	return rows.Err()
+}
+
+// dividendConfirmations maps an MT940 dividend line's event id onto the
+// confirmation whose cash leg it is (road 1).
+type dividendConfirmations map[string]cashConfirmation
+
+// buildDividendConfirmations pairs the feed's dividend lines with the
+// confirmations of the cash they credited, on the four facts both state:
+// the cash account, the payment day, the amount and its currency.
+//
+// Only a credit pairs: a confirmation states a credit, and a reversal's
+// mark would read the wrong way round. A pair holds where one line and
+// one confirmation's statement answer the key. Two confirmations that
+// state the same security and figures are one statement, such as a
+// confirmation the bank sent again; any other second answer on either
+// side leaves the key unpaired, and its lines take the other roads.
+//
+// The whole silver, unwindowed, for the settlement fold's reason: which
+// line pairs with which confirmation depends on silver's contents, never
+// on the slice of time a load covers.
+func (r *psnReader) buildDividendConfirmations(ctx context.Context, ibans map[string]string) (dividendConfirmations, error) {
+	confirmations := map[bookingKey][]cashConfirmation{}
+	err := r.eachCashConfirmation(ctx, "ubs buildDividendConfirmations", "", nil, func(c cashConfirmation) error {
+		posted := c.move.posted
+		if k, ok := newBookingKey(cashIBAN(ibans, c.move.cashAccount), c.move.paymentDay, &posted, c.move.postedCcy); ok {
+			confirmations[k] = append(confirmations[k], c)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := dividendConfirmations{}
+	if len(confirmations) == 0 {
+		return out, nil
+	}
+	lines := map[bookingKey][]string{}
+	err = r.eachCashMovement(ctx, "ubs buildDividendConfirmations", func(row psnCashRow) error {
+		// The cash the line credits, as the stream projects it
+		// (psnCashRow.project).
+		tx, _, ok := row.dividendCredit()
+		if !ok {
+			return nil
+		}
+		if k, ok := txBookingKey(tx); ok {
+			lines[k] = append(lines[k], row.eventID)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	for k, ids := range lines {
+		c, ok := oneStatement(confirmations[k])
+		if ok && len(ids) == 1 {
+			out[ids[0]] = c
+		}
+	}
+	return out, nil
+}
+
+// oneStatement is the confirmation that answers a key: the one there is,
+// or the first by id of several that state the same security and
+// figures. false for none, or for two that differ.
+func oneStatement(cs []cashConfirmation) (cashConfirmation, bool) {
+	if len(cs) == 0 {
+		return cashConfirmation{}, false
+	}
+	sort.Slice(cs, func(i, j int) bool { return cs[i].eventID < cs[j].eventID })
+	first := cs[0]
+	for _, c := range cs[1:] {
+		if c.isin != first.isin ||
+			c.move.grossCcy != first.move.grossCcy || !c.move.gross.Equal(first.move.gross) ||
+			c.move.taxCcy != first.move.taxCcy || !c.move.tax.Equal(first.move.tax) {
+			return cashConfirmation{}, false
+		}
+	}
+	return first, true
+}
+
+// creditReversal is the security an MT940 reversal of a credit names by
+// road 2 or 3, where the credit it reverses was a dividend. The line must
+// say so itself (a `DIV…` narrative, or the `NDIV` type code), or a
+// dividend credit of that security, on its account, in its currency and
+// for its amount, must stand on or before its day (newestCredit). A
+// reversed redemption, coupon or capital repayment carries neither, and
+// stays as the kind map reads it.
+//
+// false for any other line: one not marked `RC`; one whose narrative
+// places it as another kind than a dividend, or, where the narrative
+// places none, whose type code does (an interest, a fee, a tax, a trade's
+// `NSEC`); one that names no security either road resolves; and one with
+// no evidence of the dividend it reverses. The narrative outranks the
+// type code, as in the kind map. tx is the line as buildTransaction
+// projects it.
+func (d *dividendSecurities) creditReversal(tx canonical.TransactionChange, p cashMovementPayload) (*string, bool) {
+	if !isCreditReversal(p.CreditDebit) || tx.NetAmount == nil {
+		return nil, false
+	}
+	if tx.Kind != canonical.TxKindWithdrawal && tx.Kind != canonical.TxKindDividend {
+		return nil, false
+	}
+	code, coded := txnTypeKind(p.TxnType, "C")
+	if coded && code != canonical.TxKindDividend && tx.Kind != canonical.TxKindDividend {
+		return nil, false
+	}
+	id, _ := d.resolve(tx.AccountExternalID, statedValor(p.CustomerRef), p.Narrative)
+	if id == nil {
+		return nil, false
+	}
+	if saysDividend := tx.Kind == canonical.TxKindDividend || coded; !saysDividend {
+		if _, _, credited := d.newestCredit(*id, tx); !credited {
+			return nil, false
+		}
+	}
+	return id, true
+}
+
+// creditKey is one dividend credit, as a reversal's evidence: the
+// security, the account, the currency and the amount credited.
+type creditKey struct{ isin, account, currency, amount string }
+
+// newCreditKey is the key of a credit of amount, a magnitude; false where
+// it names no security or the amount has no cents.
+func newCreditKey(isin, account, currency string, amount canonical.Decimal) (creditKey, bool) {
+	amount = amount.Abs()
+	cents, ok := bookingCents(&amount)
+	if isin == "" || !ok {
+		return creditKey{}, false
+	}
+	return creditKey{isin: isin, account: account, currency: bookingCurrency(currency), amount: cents}, true
+}
+
+// bookedGross is a dividend credit gold books at a gross: its day and the
+// gross, a magnitude.
+type bookedGross struct {
+	day   int64
+	gross canonical.Decimal
+}
+
+// addCredit records a dividend credit of the security on the day.
+func (d *dividendSecurities) addCredit(isin, account, currency string, amount canonical.Decimal, at int64) {
+	if k, ok := newCreditKey(isin, account, currency, amount); ok {
+		d.credits[k] = append(d.credits[k], utcDay(at))
+	}
+}
+
+// addBooked records that gold books the dividend credit of amount on the
+// day at gross.
+func (d *dividendSecurities) addBooked(isin, account, currency string, amount canonical.Decimal, at int64, gross canonical.Decimal) {
+	if k, ok := newCreditKey(isin, account, currency, amount); ok {
+		d.booked[k] = append(d.booked[k], bookedGross{day: utcDay(at), gross: gross})
+	}
+}
+
+// newestCredit is the key and the day of the newest dividend credit of
+// the security on the reversal's account, in its currency and for the
+// amount it takes back, on or before its day. false where none stands.
+func (d *dividendSecurities) newestCredit(isin string, tx canonical.TransactionChange) (creditKey, int64, bool) {
+	k, ok := newCreditKey(isin, tx.AccountExternalID, tx.Currency, *tx.NetAmount)
+	if !ok {
+		return creditKey{}, 0, false
+	}
+	day := utcDay(tx.OccurredAt)
+	var newest int64
+	found := false
+	for _, at := range d.credits[k] {
+		if at <= day && (!found || at > newest) {
+			newest, found = at, true
+		}
+	}
+	return k, newest, found
+}
+
+// reversedGross is the gross the credit a reversal of the security takes
+// back was booked at: the newest such credit's (newestCredit), where gold
+// books it at one. nil where it keeps the amount credited, and where two
+// credits of that day read two grosses: which one is reversed is not
+// known.
+func (d *dividendSecurities) reversedGross(isin string, tx canonical.TransactionChange) *canonical.Decimal {
+	k, day, ok := d.newestCredit(isin, tx)
+	if !ok {
+		return nil
+	}
+	var gross *canonical.Decimal
+	for _, c := range d.booked[k] {
+		switch {
+		case c.day != day:
+		case gross == nil:
+			g := c.gross
+			gross = &g
+		case !gross.Equal(c.gross):
+			return nil
+		}
+	}
+	return gross
+}
+
+// addFeedCredits records the dividend credits the feed states: each
+// dividend confirmation's posted cash, and each MT940 dividend credit a
+// road names the security of. The amount is the one credited, which is
+// what a reversal line moves.
+func (d *dividendSecurities) addFeedCredits(ctx context.Context, r *psnReader) error {
+	if r == nil || r.db == nil {
+		return nil
+	}
+	ibans, err := r.cashAccountIBANs(ctx)
+	if err != nil {
+		return err
+	}
+	err = r.eachCashConfirmation(ctx, "ubs addFeedCredits", "", nil, func(c cashConfirmation) error {
+		if kind, ok := corporateActionCashKind(c.caev); ok && kind == canonical.TxKindDividend {
+			d.addCredit(c.isin, cashIBAN(ibans, c.move.cashAccount), c.move.postedCcy, c.move.posted, c.move.paymentDay)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return r.eachCashMovement(ctx, "ubs addFeedCredits", func(row psnCashRow) error {
+		tx, p, ok := row.dividendCredit()
+		if !ok {
+			return nil
+		}
+		if id, _ := d.resolve(tx.AccountExternalID, statedValor(p.CustomerRef), p.Narrative); id != nil {
+			d.addCredit(*id, tx.AccountExternalID, tx.Currency, *tx.NetAmount, tx.OccurredAt)
+		}
+		return nil
+	})
+}
+
+// addWebCredits records the dividend credits the web silver states: each
+// export or statement dividend that credits, under the security it names
+// (webDividendSecurity).
+func (d *dividendSecurities) addWebCredits(ctx context.Context, r *webReader) error {
+	if r == nil || r.db == nil {
+		return nil
+	}
+	return r.eachWebTx(ctx, "ubs-web addWebCredits", "", nil, func(row webTxRow) error {
+		net, ok := row.dividendCredit()
+		if !ok {
+			return nil
+		}
+		pl, pdfBackfill := decodeWebTxEra(row.payload)
+		if id, _ := d.webDividendSecurity(row.account, pl, pdfBackfill); id != nil {
+			d.addCredit(*id, row.account, row.currency, *net, row.valueDate)
+		}
+		return nil
+	})
+}
+
+// webDividendSecurity is the security a web dividend row names: the ISIN
+// its Description1 states, else roads 2 and 3 over its narrative
+// (webDividendNarrative), else the valor the statement parser promoted.
+// The hint is a stated valor no road resolves.
+func (d *dividendSecurities) webDividendSecurity(account string, pl webTxPayload, pdfBackfill bool) (*string, string) {
+	if id, _ := extractInstrumentFromDescription1(pl); id != nil {
+		return id, ""
+	}
+	narrative := webDividendNarrative(pl, pdfBackfill)
+	if id, hint := d.resolve(account, statedValor(narrative), narrative); id != nil || hint != "" {
+		return id, hint
+	}
+	return resolveValor(d.valors, pl.SecurityValor)
+}
+
+// psnDividends is what the feed's transaction stream links a dividend
+// line by and books its gross from.
+type psnDividends struct {
+	confirmations dividendConfirmations
+	securities    *dividendSecurities
+}
+
+// settle links an MT940 dividend line to its security and, where its
+// confirmation states the gross, books it gross. It returns the
+// withholding row to book beside it, where one was withheld.
+//
+// The line's payload is left as the feed wrote it, so the amount the
+// bank credited stays readable there; a paired line also names its
+// confirmation. p is the payload decoded.
+func (d psnDividends) settle(tx *canonical.TransactionChange, p cashMovementPayload) (tax canonical.TransactionChange, withheld bool, err error) {
+	c, paired := d.link(tx, p)
+	if !paired {
+		return canonical.TransactionChange{}, false, nil
+	}
+	tx.Payload = spliceStringField(string(tx.Payload), corporateActionKey, c.eventID)
+	return bookGross(tx, c)
+}
+
+// link names the security of an MT940 dividend line: its confirmation's,
+// where the line pairs with one, else roads 2 and 3. A pair is four facts
+// that agree, which two securities paying the same amount on one day can
+// also do. A valor the line states that names another security than the
+// confirmation says the pair is not this line's. A confirmation that names
+// no security contradicts nothing.
+func (d psnDividends) link(tx *canonical.TransactionChange, p cashMovementPayload) (cashConfirmation, bool) {
+	valor := statedValor(p.CustomerRef)
+	c, paired := d.confirmations[tx.TransactionExternalID]
+	if stated, _ := resolveValor(d.securities.valors, valor); paired && stated != nil && c.isin != "" && *stated != c.isin {
+		paired = false
+	}
+	if paired && c.isin != "" {
+		isin := c.isin
+		tx.InstrumentExternalID = &isin
+	} else {
+		tx.InstrumentExternalID, tx.InstrumentHint = d.securities.resolve(tx.AccountExternalID, valor, p.Narrative)
+	}
+	return c, paired
+}
+
+// addFeedGrosses records, over the whole feed, every dividend credit the
+// stream books at a gross: an MT940 line at its confirmation's (settle),
+// and a confirmation's own cash leg (cashLeg). Each is decided by the
+// stream's own path, run on a copy, so the record and the stream agree on
+// every credit. Neither path gives a dividend a gross amount but where it
+// books the gross (bookAtGross). A reversal in any window takes that
+// gross back (reversedGross).
+func (d psnDividends) addFeedGrosses(ctx context.Context, r *psnReader, coverage psnCashCoverage, ibans map[string]string) error {
+	err := r.eachCashConfirmation(ctx, "ubs addFeedGrosses", "", nil, func(c cashConfirmation) error {
+		tx, _, _, ok, err := c.cashLeg(coverage, ibans)
+		if err != nil || !ok || tx.Kind != canonical.TxKindDividend || tx.GrossAmount == nil || tx.InstrumentExternalID == nil {
+			return err
+		}
+		d.securities.addBooked(*tx.InstrumentExternalID, tx.AccountExternalID, tx.Currency, c.move.posted, tx.OccurredAt, *tx.GrossAmount)
+		return nil
+	})
+	if err != nil || len(d.confirmations) == 0 {
+		return err
+	}
+	return r.eachCashMovement(ctx, "ubs addFeedGrosses", func(row psnCashRow) error {
+		if _, ok := d.confirmations[row.eventID]; !ok {
+			return nil
+		}
+		tx, p, ok := row.dividendCredit()
+		if !ok {
+			return nil
+		}
+		credited := *tx.NetAmount
+		if _, _, err := d.settle(&tx, p); err != nil || tx.GrossAmount == nil || tx.InstrumentExternalID == nil {
+			return err
+		}
+		d.securities.addBooked(*tx.InstrumentExternalID, tx.AccountExternalID, tx.Currency, credited, tx.OccurredAt, *tx.GrossAmount)
+		return nil
+	})
+}
+
+// reverse reads an MT940 reversal of a dividend credit as that security's
+// dividend reversal (creditReversal): kind dividend, the instrument
+// linked. Its amount is already negative (buildTransaction). Where the
+// credit it reverses was booked at a gross, it takes back the gross, and
+// returns the tax taken back with it as the row to book beside it
+// (bookAtGross). reversed false leaves the line as the kind map read it.
+// p is the payload decoded.
+func (d psnDividends) reverse(tx *canonical.TransactionChange, p cashMovementPayload) (tax canonical.TransactionChange, withheld, reversed bool, err error) {
+	id, ok := d.securities.creditReversal(*tx, p)
+	if !ok {
+		return canonical.TransactionChange{}, false, false, nil
+	}
+	tx.Kind = canonical.TxKindDividend
+	tx.InstrumentExternalID, tx.InstrumentHint = id, ""
+	gross := d.securities.reversedGross(*id, *tx)
+	if gross == nil {
+		return canonical.TransactionChange{}, false, true, nil
+	}
+	tax, withheld, err = bookAtGross(tx, *gross, "", "")
+	return tax, withheld, true, err
+}
+
+// dividends is what the feed's stream links and books a dividend line
+// by. Without the web pass's securities (psnHints), the feed's own valor
+// index answers roads 2 and 3, and no ticker does.
+func (r *psnReader) dividends(ctx context.Context, ibans map[string]string, coverage psnCashCoverage, securities *dividendSecurities) (psnDividends, error) {
+	confirmations, err := r.buildDividendConfirmations(ctx, ibans)
+	if err != nil {
+		return psnDividends{}, err
+	}
+	if securities == nil {
+		valors, err := buildValorIndex(ctx, r, nil)
+		if err != nil {
+			return psnDividends{}, err
+		}
+		if securities, err = buildDividendSecurities(ctx, r, nil, valors); err != nil {
+			return psnDividends{}, err
+		}
+	}
+	d := psnDividends{confirmations: confirmations, securities: securities}
+	if err := d.addFeedGrosses(ctx, r, coverage, ibans); err != nil {
+		return psnDividends{}, err
+	}
+	return d, nil
+}

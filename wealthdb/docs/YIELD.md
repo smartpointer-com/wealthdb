@@ -419,6 +419,10 @@ twelve months to the day over the mean daily value.
 - The income is each `income` line that names the holding, at its own
   day's rate. A deposit adds the interest its account received with no
   holding named.
+- A UBS dividend reads gross where its confirmation or its export row
+  states the gross, and net where no record states it in the currency
+  credited
+  ([adapters/ubs.md](adapters/ubs.md) §7).
 - A line of an account that held the instrument once and sold it stays
   with that sold position, as `income` lists it. A coupon does too. A
   line of an account that never held it belongs to a holding of it in

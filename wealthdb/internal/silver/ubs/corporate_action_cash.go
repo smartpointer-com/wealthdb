@@ -29,11 +29,13 @@ import (
 //
 // So for such an account the adapter books the cash leg from the
 // confirmation, beside the marker: one `dividend` (or `interest`) row
-// on the cash account, for the posted amount, on the payment day, with
-// the gross and the tax in its payload. Only where the feed does not
-// speak for the account on that day (psnCashCoverage) — where it does,
-// the statement line is the row, and a second one would double the
-// income.
+// on the cash account, on the payment day, with the confirmation's
+// figures in its payload. Interest reads the posted amount. A dividend
+// reads its gross, with the tax withheld as a `tax` row beside it, as
+// an MT940 line paired with its confirmation does (dividends.go).
+// Only where the feed does not speak for the account on that day
+// (psnCashCoverage) — where it does, the statement line is the row,
+// and a second one would double the income.
 //
 // Only the events that pay cash are read (CAOP CASH, a credit), and
 // only the two whose kind is settled by the event indicator: DVCA is a
@@ -166,94 +168,168 @@ func corporateActionCashKind(caev string) (canonical.TxKind, bool) {
 }
 
 // caCashPayload is what the booked leg's payload states: the
-// confirmation it was read from and the figures around the posted one.
+// confirmation it was read from and its figures. The posted amount is
+// the cash the account received, which the row reads unless a
+// dividend's confirmation states a gross it can book (bookGross).
 type caCashPayload struct {
 	CorporateAction string `json:"corporate_action"`
 	CAEV            string `json:"caev"`
+	PostedAmount    string `json:"posted_amount"`
+	PostedCurrency  string `json:"posted_currency"`
 	GrossAmount     string `json:"gross_amount,omitempty"`
 	GrossCurrency   string `json:"gross_currency,omitempty"`
 	TaxAmount       string `json:"tax_amount,omitempty"`
 	TaxCurrency     string `json:"tax_currency,omitempty"`
 }
 
-// corporateActionCashLegs books, for the confirmations in the window, the
-// cash each paid into an account the feed does not speak for.
-func (r *psnReader) corporateActionCashLegs(ctx context.Context, w canonical.Window, coverage psnCashCoverage, ibans map[string]string) ([]canonical.TransactionChange, error) {
+// cashConfirmation is one MT566 confirmation that credited cash: the
+// event, the security it names and what its cash movement states.
+type cashConfirmation struct {
+	eventID string
+	caev    string // upper-cased
+	isin    string
+	name    string
+	move    caCashMove
+}
+
+// eachCashConfirmation calls fn on each confirmation `where` (a clause
+// over the events table, ANDed to the kind, or "") selects that credited
+// cash (parseCorporateActionCash). A movement that states no payment
+// day takes the event's own day.
+func (r *psnReader) eachCashConfirmation(ctx context.Context, what, where string, args []any, fn func(cashConfirmation) error) error {
 	if r == nil || r.db == nil {
-		return nil, nil
+		return nil
 	}
 	rows, err := r.db.QueryContext(ctx, `
 SELECT event_external_id, timestamp, payload
   FROM events
- WHERE kind = 'corporate_action_confirmation'
-   AND timestamp BETWEEN ? AND ?`, w.Start, w.End)
+ WHERE kind = 'corporate_action_confirmation' `+where, args...)
 	if err != nil {
-		return nil, fmt.Errorf("ubs corporateActionCashLegs: %w", err)
+		return fmt.Errorf("%s: %w", what, err)
 	}
 	defer rows.Close()
-	var out []canonical.TransactionChange
 	for rows.Next() {
 		var (
 			eventID, payload string
 			at               int64
 		)
 		if err := rows.Scan(&eventID, &at, &payload); err != nil {
-			return nil, fmt.Errorf("ubs corporateActionCashLegs scan: %w", err)
+			return fmt.Errorf("%s scan: %w", what, err)
 		}
 		var f corporateActionFields
 		if err := json.Unmarshal([]byte(payload), &f); err != nil {
-			continue
-		}
-		kind, ok := corporateActionCashKind(f.CAEV)
-		if !ok {
 			continue
 		}
 		move, name, ok := parseCorporateActionCash(f)
 		if !ok {
 			continue
 		}
-		account := cashIBAN(ibans, move.cashAccount)
 		if move.paymentDay == 0 {
 			move.paymentDay = at
 		}
-		if coverage.speaksFor(account, move.paymentDay) {
-			continue
+		c := cashConfirmation{
+			eventID: eventID,
+			caev:    strings.ToUpper(strings.TrimSpace(f.CAEV)),
+			isin:    strings.TrimSpace(f.ISIN),
+			name:    name,
+			move:    move,
 		}
-		p := caCashPayload{CorporateAction: eventID, CAEV: strings.ToUpper(strings.TrimSpace(f.CAEV))}
-		if move.grossCcy != "" {
-			p.GrossAmount, p.GrossCurrency = move.gross.String(), move.grossCcy
+		if err := fn(c); err != nil {
+			return err
 		}
-		if move.taxCcy != "" {
-			p.TaxAmount, p.TaxCurrency = move.tax.String(), move.taxCcy
-		}
-		encoded, err := json.Marshal(p)
-		if err != nil {
-			return nil, fmt.Errorf("ubs corporateActionCashLegs payload: %w", err)
-		}
-		posted := move.posted
-		tx := canonical.TransactionChange{
-			TransactionExternalID: eventID + ":cash",
-			OccurredAt:            move.paymentDay,
-			AccountExternalID:     account,
-			Kind:                  kind,
-			Currency:              move.postedCcy,
-			NetAmount:             canonical.ApplyCanonicalSign(kind, &posted),
-			Description:           textPtr(name),
-			ProviderCategory:      textPtr(f.CAEV),
-			Payload:               json.RawMessage(encoded),
-		}
+	}
+	return rows.Err()
+}
+
+// cashLegAccount is the account a confirmation books its own cash leg on
+// (corporateActionCashLegs): the cash account it paid into, where the feed
+// does not speak for that account on the payment day. false where the
+// feed's own line carries the payment.
+func (c cashConfirmation) cashLegAccount(coverage psnCashCoverage, ibans map[string]string) (string, bool) {
+	account := cashIBAN(ibans, c.move.cashAccount)
+	return account, !coverage.speaksFor(account, c.move.paymentDay)
+}
+
+// corporateActionCashLegs books, for the confirmations in the window, the
+// cash each paid into an account the feed does not speak for (cashLeg).
+func (r *psnReader) corporateActionCashLegs(ctx context.Context, w canonical.Window, coverage psnCashCoverage, ibans map[string]string) ([]canonical.TransactionChange, error) {
+	var out []canonical.TransactionChange
+	err := r.eachCashConfirmation(ctx, "ubs corporateActionCashLegs",
+		"AND timestamp BETWEEN ? AND ?", []any{w.Start, w.End}, func(c cashConfirmation) error {
+			tx, tax, withheld, ok, err := c.cashLeg(coverage, ibans)
+			if err != nil || !ok {
+				return err
+			}
+			out = append(out, tx)
+			if withheld {
+				out = append(out, tax)
+			}
+			return nil
+		})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// cashLeg is the row a confirmation books for the cash it paid, where the
+// feed does not speak for the account on the payment day
+// (cashLegAccount): the kind its event indicator settles, on the payment
+// day, with the confirmation's figures in its payload. A dividend whose
+// confirmation states its gross is booked at the gross, with the tax
+// withheld beside it as its own row (bookGross). ok is false for an
+// indicator the leg is not booked for, and where the feed's own line
+// carries the payment.
+func (c cashConfirmation) cashLeg(coverage psnCashCoverage, ibans map[string]string) (tx, tax canonical.TransactionChange, withheld, ok bool, err error) {
+	kind, booked := corporateActionCashKind(c.caev)
+	if !booked {
+		return tx, tax, false, false, nil
+	}
+	account, booked := c.cashLegAccount(coverage, ibans)
+	if !booked {
+		return tx, tax, false, false, nil
+	}
+	move := c.move
+	p := caCashPayload{
+		CorporateAction: c.eventID,
+		CAEV:            c.caev,
+		PostedAmount:    move.posted.String(),
+		PostedCurrency:  move.postedCcy,
+	}
+	if move.grossCcy != "" {
+		p.GrossAmount, p.GrossCurrency = move.gross.String(), move.grossCcy
+	}
+	if move.taxCcy != "" {
+		p.TaxAmount, p.TaxCurrency = move.tax.String(), move.taxCcy
+	}
+	encoded, err := json.Marshal(p)
+	if err != nil {
+		return tx, tax, false, false, fmt.Errorf("ubs cash leg payload: %w", err)
+	}
+	posted := move.posted
+	tx = canonical.TransactionChange{
+		TransactionExternalID: c.eventID + ":cash",
+		OccurredAt:            move.paymentDay,
+		AccountExternalID:     account,
+		Kind:                  kind,
+		Currency:              move.postedCcy,
+		NetAmount:             canonical.ApplyCanonicalSign(kind, &posted),
+		Description:           textPtr(c.name),
+		ProviderCategory:      textPtr(c.caev),
+		Payload:               json.RawMessage(encoded),
+	}
+	if c.isin != "" {
+		isin := c.isin
+		tx.InstrumentExternalID = &isin
+	}
+	if kind != canonical.TxKindDividend {
+		// Interest keeps the posted amount, its gross beside it.
 		if move.grossCcy == move.postedCcy && !move.gross.IsZero() {
 			gross := move.gross
 			tx.GrossAmount = canonical.ApplyCanonicalSign(kind, &gross)
 		}
-		if f.ISIN != "" {
-			isin := f.ISIN
-			tx.InstrumentExternalID = &isin
-		}
-		out = append(out, tx)
+		return tx, tax, false, true, nil
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
+	tax, withheld, err = bookGross(&tx, c)
+	return tx, tax, withheld, err == nil, err
 }

@@ -350,20 +350,24 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 	settled := map[settledDayKey]int{}
 	summaries, folded := 0, 0
 	err = r.eachWebTx(ctx, "ubs-web Transactions", "WHERE value_date BETWEEN ? AND ?", []any{w.Start, w.End}, func(row webTxRow) error {
+		e, skip, err := pass.emit(row)
 		switch {
-		case pass.cut.excludes(row.account, row.valueDate):
-			return nil
-		case pass.foldedAway(row):
+		case err != nil:
+			return err
+		case skip == webFolded:
 			folded++
 			return nil
-		}
-		tx, ok := pass.project(row)
-		if !ok {
+		case skip == webSummary:
 			summaries++
 			return nil
+		case skip != webEmitted:
+			return nil
 		}
-		out.Transactions = append(out.Transactions, tx)
-		if tx.Kind == canonical.TxKindBuy || tx.Kind == canonical.TxKindSell {
+		out.Transactions = append(out.Transactions, e.tx)
+		if e.withheld {
+			out.Transactions = append(out.Transactions, e.tax)
+		}
+		if e.tx.Kind == canonical.TxKindBuy || e.tx.Kind == canonical.TxKindSell {
 			settled[newSettledDayKey(row.account, row.currency, row.valueDate)]++
 		}
 		return nil
@@ -378,7 +382,8 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 		log.Printf("ubs adapter: folded %d web row(s) into another feed's record of the same booking — one booking, one row", folded)
 	}
 	return silver.NewTransactionStream(out), webTxOutcome{
-		hints:   psnHints{veto: pass.psnVeto, carry: pass.fold.psn, withheld: pass.withheld},
+		hints: psnHints{veto: pass.psnVeto, carry: pass.fold.psn, withheld: pass.withheld,
+			securities: pass.dividends},
 		settled: settled,
 	}, nil
 }
@@ -391,7 +396,10 @@ type webTxPass struct {
 	ownIBANs map[string]bool
 	// valorToISIN turns the valor beside a statement-era trade's free
 	// text into the instrument gold holds; such a trade carries no id.
-	valorToISIN      map[string]string
+	valorToISIN map[string]string
+	// dividends links a dividend line that states no ISIN to its
+	// security, by its valor or its ticker (dividends.go).
+	dividends        *dividendSecurities
 	mt940Start       int64
 	mortgageAccounts map[string]string
 	fold             *eraFold
@@ -423,6 +431,9 @@ func (r *webReader) newWebTxPass(ctx context.Context, psn *psnReader, rels []sil
 	if p.valorToISIN, err = r.valorIndex(ctx, psn); err != nil {
 		return nil, err
 	}
+	if p.dividends, err = buildDividendSecurities(ctx, psn, r, p.valorToISIN); err != nil {
+		return nil, err
+	}
 	if p.mt940Start, err = r.mt940FeedStart(ctx); err != nil {
 		return nil, err
 	}
@@ -443,14 +454,10 @@ func (r *webReader) newWebTxPass(ctx context.Context, psn *psnReader, rels []sil
 	if p.seam, err = r.buildSeamBankRefs(ctx, psn); err != nil {
 		return nil, err
 	}
-	suppressed := make(map[string]bool, len(p.fold.drop)+len(p.seam))
-	for k := range p.fold.drop {
-		suppressed[k] = true
+	if err := r.recordExportGrosses(ctx, &p); err != nil {
+		return nil, err
 	}
-	for k := range p.seam {
-		suppressed[k.txnNo+"@"+k.account] = true
-	}
-	if p.offsetVeto, p.psnVeto, p.withheld, err = r.buildSameDayOffsetVeto(ctx, psn, p.cut, suppressed); err != nil {
+	if p.offsetVeto, p.psnVeto, p.withheld, err = r.buildSameDayOffsetVeto(ctx, psn, &p); err != nil {
 		return nil, err
 	}
 	return &p, nil
@@ -467,9 +474,10 @@ func (p *webTxPass) foldedAway(row webTxRow) bool {
 		p.seam[webTxTextKey{account: row.account, txnNo: webTxNumber(row.txID)}]
 }
 
-// project turns one web row into the transaction gold holds, or reports
-// false for a statement's period summary, which is not a booking.
-func (p *webTxPass) project(row webTxRow) (canonical.TransactionChange, bool) {
+// project turns one web row, its payload decoded (decodeWebTxEra), into
+// the transaction gold holds before any gross (emit), or reports false
+// for a statement's period summary, which is not a booking.
+func (p *webTxPass) project(row webTxRow, pl webTxPayload, pdfBackfill bool) (canonical.TransactionChange, bool) {
 	hint := webKindHint(row.descKind, row.counterparty)
 	kind, net, netAmount := webProjectedNet(hint, isStatementEraID(row.txID), row.debit, row.credit)
 	netPtr := net
@@ -488,7 +496,6 @@ func (p *webTxPass) project(row webTxRow) (canonical.TransactionChange, bool) {
 	// which routes the row through pdfCashIsExternal (INTERNAL on the
 	// zero value) rather than letting it skip the gate and keep its
 	// deposit/withdrawal kind.
-	pl, pdfBackfill := decodeWebTxEra(row.payload)
 	if net.IsZero() && (pdfBackfill && isStatementSummary(pl) || !pdfBackfill && isServicePriceClose(hint)) {
 		return canonical.TransactionChange{}, false
 	}
@@ -527,7 +534,15 @@ func (p *webTxPass) project(row webTxRow) (canonical.TransactionChange, bool) {
 		vehicle    canonical.Vehicle
 		instrHint  string
 	)
-	if instrumentID == nil {
+	switch {
+	case instrumentID != nil:
+		// The export stated it in Description1.
+	case kind == canonical.TxKindDividend:
+		// A dividend states its security's valor as `VN <valor>`, which
+		// the statement parser does not promote; else the ticker closing
+		// the narrative names it, else the valor the parser promoted.
+		instrumentID, instrHint = p.dividends.webDividendSecurity(row.account, pl, pdfBackfill)
+	default:
 		instrumentID, instrHint = resolveValor(p.valorToISIN, pl.SecurityValor)
 		// An unidentified security is not an unknown ASSET CLASS: what
 		// a trade says it traded, where the booking type says it, draws
@@ -572,6 +587,92 @@ func (p *webTxPass) project(row webTxRow) (canonical.TransactionChange, bool) {
 		ProviderCategory: category,
 		Payload:          rowPayload,
 	}, true
+}
+
+// webSkip is why the web pass emits nothing for a row (emit), or
+// webEmitted where it emits one.
+type webSkip int
+
+const (
+	webEmitted webSkip = iota
+	// webCut: the row falls on the feed's side of the cut (psnCut).
+	webCut
+	// webFolded: another feed's record of the booking is the one gold
+	// keeps (foldedAway).
+	webFolded
+	// webSummary: a statement's period summary, no booking (project).
+	webSummary
+)
+
+// webEmission is what the web pass emits for one row: the transaction,
+// and the withholding row beside it where it books a dividend at the
+// gross its export row states (grossed, withheld).
+type webEmission struct {
+	tx, tax  canonical.TransactionChange
+	grossed  bool
+	withheld bool
+}
+
+// skip is why the pass emits nothing for a row whatever it projects to:
+// the cut, else a fold. webEmitted where neither drops it. emit and the
+// offset veto's web half (webOffsetLegs) both read it, so the veto counts
+// no row the stream drops.
+func (p *webTxPass) skip(row webTxRow) webSkip {
+	switch {
+	case p.cut.excludes(row.account, row.valueDate):
+		return webCut
+	case p.foldedAway(row):
+		return webFolded
+	}
+	return webEmitted
+}
+
+// emit is what the pass emits for a web row: the cut and the folds
+// (skip), the projection, and an export dividend's gross. The stream and
+// the record of grosses (recordExportGrosses) both read it, so they agree
+// on every row.
+func (p *webTxPass) emit(row webTxRow) (webEmission, webSkip, error) {
+	if skip := p.skip(row); skip != webEmitted {
+		return webEmission{}, skip, nil
+	}
+	pl, pdfBackfill := decodeWebTxEra(row.payload)
+	tx, ok := p.project(row, pl, pdfBackfill)
+	if !ok {
+		return webEmission{}, webSummary, nil
+	}
+	e := webEmission{tx: tx}
+	if tx.Kind != canonical.TxKindDividend || tx.NetAmount == nil || pdfBackfill {
+		return e, webEmitted, nil
+	}
+	gross, ok := webStatedGross(pl, tx.Currency, *tx.NetAmount)
+	if !ok {
+		return e, webEmitted, nil
+	}
+	var err error
+	e.grossed = true
+	e.tax, e.withheld, err = bookAtGross(&e.tx, gross, "", "")
+	return e, webEmitted, err
+}
+
+// recordExportGrosses records every export dividend credit the pass
+// emits at a gross (emit), over every window. A reversal of the credit on
+// the feed takes that gross back (reversedGross). Only a row the
+// projection's own kind reads as a dividend credit can be one, so the
+// rest are not projected. It needs the cut and the folds, not the offset
+// veto: the veto changes only deposits and withdrawals.
+func (r *webReader) recordExportGrosses(ctx context.Context, p *webTxPass) error {
+	return r.eachWebTx(ctx, "ubs-web recordExportGrosses", "", nil, func(row webTxRow) error {
+		net, ok := row.dividendCredit()
+		if !ok {
+			return nil
+		}
+		e, skip, err := p.emit(row)
+		if err != nil || skip != webEmitted || !e.grossed || e.tx.InstrumentExternalID == nil {
+			return err
+		}
+		p.dividends.addBooked(*e.tx.InstrumentExternalID, row.account, row.currency, *net, row.valueDate, *e.tx.GrossAmount)
+		return nil
+	})
 }
 
 // resolveCounterAccount fills the row's counter account from whichever
@@ -644,6 +745,18 @@ type webTxRow struct {
 // account is folded in. The bank's "Transaction no." stays in the
 // payload for queries that reassemble a trade.
 func (row webTxRow) emittedID() string { return row.txID + "@" + row.account }
+
+// dividendCredit is the cash a web row credits where its projection
+// (webProjectedNet) reads it as a dividend that credits; false for any
+// other row.
+func (row webTxRow) dividendCredit() (*canonical.Decimal, bool) {
+	hint := webKindHint(row.descKind, row.counterparty)
+	kind, _, net := webProjectedNet(hint, isStatementEraID(row.txID), row.debit, row.credit)
+	if kind != canonical.TxKindDividend || net == nil || !net.IsPositive() {
+		return nil, false
+	}
+	return net, true
+}
 
 // eachWebTx calls fn on each row of the web transactions table that
 // `where` (a WHERE clause over it, or "") selects.
@@ -1260,29 +1373,26 @@ func (l offsetLeg) booking() offsetBooking {
 // account books the mirror leg on the same value day. That mirror's membership
 // in the own-account universe is the IBAN-free form of the same-relationship
 // test, and it works across the feed seams (PDF ↔ MT940 ↔ PSN) where the ID
-// schemes differ. The probe covers the EMITTED universe: web rows below their
-// relationship's PSN cutover (a suppressed web row is represented by its PSN
-// duplicate and must not consume a match) plus PSN cash movements, over the
-// FULL silver rather than the load window — a row's classification depends
-// only on silver contents, never on load slicing; a mirror leg that lands in
-// a later dump is picked up on the next `reload`. `suppressed` names the web
-// rows removed from that universe by either fold — the era fold
-// (buildEraFold) and the seam (buildSeamBankRefs) — for the same reason the
-// cut removes rows: their booking is already represented by the row that kept
-// it. Every fold that drops a web row belongs in this set; one that is left
-// out silently consumes matches on behalf of a row nothing emits.
+// schemes differ. The probe covers the EMITTED universe: web rows the pass
+// neither cuts nor folds away (a dropped web row is represented by the row
+// that kept its booking and must not consume a match) plus PSN cash
+// movements, over the FULL silver rather than the load window — a row's
+// classification depends only on silver contents, never on load slicing; a
+// mirror leg that lands in a later dump is picked up on the next `reload`.
+// The web half reads the pass's own verdict on each row (skip), so a fold
+// that drops a web row from the stream drops it here too.
 //
 // Matching is 1:1 and deterministic: first the currency conversions
 // (vetoConversions), then, per value day and currency, every bank-linked
 // twin (a shared Transaction no. — UBS stamps both sides of an
 // inter-account transfer with one number) and the loose offsets among the
 // legs left (pairSameDayOffsets).
-func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, cut psnCut, suppressed map[string]bool) (webVeto, psnVeto, withheld map[string]bool, err error) {
-	legs, err := r.webOffsetLegs(ctx, cut, suppressed)
+func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, p *webTxPass) (webVeto, psnVeto, withheld map[string]bool, err error) {
+	legs, err := r.webOffsetLegs(ctx, p)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	psnLegs, err := psn.offsetLegs(ctx)
+	psnLegs, err := psn.offsetLegs(ctx, p.dividends)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1320,24 +1430,13 @@ func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, 
 
 // webOffsetLegs reads the web half of the offset veto's universe: every
 // deposit/withdrawal row the transaction pass emits.
-func (r *webReader) webOffsetLegs(ctx context.Context, cut psnCut, suppressed map[string]bool) ([]offsetLeg, error) {
+func (r *webReader) webOffsetLegs(ctx context.Context, p *webTxPass) ([]offsetLeg, error) {
 	var legs []offsetLeg
 	err := r.eachWebTx(ctx, "buildSameDayOffsetVeto (web)", "", nil, func(row webTxRow) error {
-		if cut.excludes(row.account, row.valueDate) {
-			return nil
-		}
-		// A web row either fold suppressed is likewise not in the ledger:
-		// its booking is represented by the row that kept it, and letting
-		// the suppressed copy stand here would let one booking consume two
-		// mirrors.
-		//
-		// Both spellings, because the two folds key differently: the PSN
-		// fold keys on the BANK's number, which is what a collector
-		// suffix hangs off (webTxNumber strips it), while fold.drop keys
-		// on the emitted id whole. A dump that leaves every member of a
-		// transaction-number group suffixed would otherwise suppress a
-		// row in the emit loop and leave it standing here.
-		if suppressed[row.emittedID()] || suppressed[webTxNumber(row.txID)+"@"+row.account] {
+		// A row the cut or a fold drops is not in the ledger: its booking
+		// is represented by the row that kept it, and letting the dropped
+		// copy stand here would let one booking consume two mirrors.
+		if p.skip(row) != webEmitted {
 			return nil
 		}
 		// The amount the row will REACH GOLD with, not the raw column
@@ -1366,29 +1465,22 @@ func (r *webReader) webOffsetLegs(ctx context.Context, cut psnCut, suppressed ma
 }
 
 // offsetLegs reads the PSN half of the offset veto's universe: every
-// deposit/withdrawal cash movement.
-func (r *psnReader) offsetLegs(ctx context.Context) ([]offsetLeg, error) {
+// deposit/withdrawal cash movement, as the stream emits it. A reversal of
+// a dividend credit is a dividend reversal in the stream
+// (creditReversal), so it is not one.
+func (r *psnReader) offsetLegs(ctx context.Context, dividends *dividendSecurities) ([]offsetLeg, error) {
 	var legs []offsetLeg
 	err := r.eachCashMovement(ctx, "buildSameDayOffsetVeto (psn)", func(row psnCashRow) error {
-		var p cashMovementPayload
-		if err := json.Unmarshal([]byte(row.payload), &p); err != nil || p.Amount == nil {
+		// The cash the line moves, as the stream projects it
+		// (psnCashRow.project), a reversal's included.
+		tx, p, ok := row.project()
+		if !ok || tx.Kind != canonical.TxKindDeposit && tx.Kind != canonical.TxKindWithdrawal {
 			return nil
 		}
-		kind := cashMovementKind(p.Narrative, p.CreditDebit, p.TxnType)
-		if kind != canonical.TxKindDeposit && kind != canonical.TxKindWithdrawal {
+		if _, reversal := dividends.creditReversal(tx, p); reversal {
 			return nil
 		}
-		amt, _ := p.Amount.Float64()
-		if p.CreditDebit == "D" && amt > 0 {
-			amt = -amt
-		}
-		acct, ccy := row.account, row.currency.String
-		if p.Account != "" {
-			acct = p.Account
-		}
-		if p.Funds != "" {
-			ccy = p.Funds
-		}
+		amt, _ := tx.NetAmount.Float64()
 		// The other leg a converted movement states (`/OCMT/`), for the
 		// conversion phase — the fact the statement era writes as
 		// `CCY amount Rate`, in the feed's own spelling of it.
@@ -1401,8 +1493,8 @@ func (r *psnReader) offsetLegs(ctx context.Context) ([]offsetLeg, error) {
 			}
 		}
 		legs = append(legs, offsetLeg{
-			vetoKey: row.eventID, psnLeg: true, txID: row.eventID, acct: acct,
-			amt: amt, day: utcDay(row.at), ccy: ccy,
+			vetoKey: row.eventID, psnLeg: true, txID: row.eventID, acct: tx.AccountExternalID,
+			amt: amt, day: utcDay(tx.OccurredAt), ccy: tx.Currency,
 			statedCcy: statedCcy, statedAmt: statedAmt,
 		})
 		return nil
@@ -2330,9 +2422,8 @@ func isStatementSummary(p webTxPayload) bool {
 //
 //   - The string has no trailing `(...)`.
 //   - The bracketed content isn't 1-10 chars of upper-case
-//     ASCII letters / digits / hyphens (filters out things
-//     like "(IE)" / "(Lux)" — those appear mid-string in ETF
-//     issuer suffixes, never at the very end).
+//     ASCII letters / digits / hyphens / dots (filters out things
+//     like "(Lux)", and keeps a class suffix such as "(EXMP.B)").
 //
 // Strict enough to avoid false positives on long parenthetical
 // phrases that happen to come last (e.g. "(Repr. 5 shs)").
@@ -2351,7 +2442,7 @@ func tickerFromDescription(desc string) *string {
 	}
 	for i := 0; i < len(t); i++ {
 		c := t[i]
-		if !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') && c != '-' {
+		if !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') && c != '-' && c != '.' {
 			return nil
 		}
 	}

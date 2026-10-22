@@ -2,6 +2,7 @@ package ubs
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -76,14 +77,18 @@ func (r *webReader) valorIndex(ctx context.Context, psn *psnReader) (map[string]
 //     `CH0012345678` IS valor 1234567. This reaches the instruments
 //     the first road cannot.
 //
-// And one from the portfolio transaction list, which prints the valor
-// and the ISIN of the same security in adjacent columns of the same
-// row. That road reaches what neither of the others can: a security a
-// managed portfolio traded but the feed's instrument dimension never
-// described, whose non-Swiss ISIN no arithmetic recovers. Those are
-// exactly the securities the printed statements name by valor, so
-// without it a statement-era trade in one of them reaches gold
-// identified by nothing.
+// And two from the web silver, each printing the valor and the ISIN of
+// one security together:
+//
+//   - The portfolio transaction list, in adjacent columns of the same
+//     row. It reaches a security a managed portfolio traded but the
+//     feed's instrument dimension never described, whose non-Swiss ISIN
+//     no arithmetic recovers. Those are exactly the securities the
+//     printed statements name by valor, so without it a statement-era
+//     trade in one of them reaches gold identified by nothing.
+//   - The statements of assets, on each position's `Valor … - ISIN …`
+//     line. It reaches a security held but never traded through the
+//     list, such as one whose dividends name it by valor alone.
 //
 // A nil or absent side contributes nothing rather than failing: an
 // index that resolves less is the right answer for a silver that says
@@ -94,6 +99,9 @@ func buildValorIndex(ctx context.Context, psn *psnReader, web *webReader) (map[s
 		return nil, err
 	}
 	if err := web.addPortfolioValors(ctx, x); err != nil {
+		return nil, err
+	}
+	if err := web.addStatementValors(ctx, x); err != nil {
 		return nil, err
 	}
 	return x.byValor, nil
@@ -149,6 +157,37 @@ SELECT valor, isin FROM portfolio_transactions
 			return fmt.Errorf("ubs-web addPortfolioValors scan: %w", err)
 		}
 		x.add(normalizeValor(valor), strings.TrimSpace(isin))
+	}
+	return rows.Err()
+}
+
+// addStatementValors reads the statements of assets, which print each
+// position's valor beside its ISIN.
+func (r *webReader) addStatementValors(ctx context.Context, x *valorIndex) error {
+	if r == nil || r.db == nil {
+		return nil
+	}
+	ok, err := r.hasTable(ctx, "historical_position_snapshots")
+	if err != nil || !ok {
+		return err
+	}
+	rows, err := r.db.QueryContext(ctx, `
+SELECT DISTINCT json_extract(payload, '$.valor'), instrument_isin
+  FROM historical_position_snapshots
+ WHERE instrument_isin IS NOT NULL`)
+	if err != nil {
+		return fmt.Errorf("ubs-web addStatementValors: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var valor sql.NullString
+		var isin string
+		if err := rows.Scan(&valor, &isin); err != nil {
+			return fmt.Errorf("ubs-web addStatementValors scan: %w", err)
+		}
+		if isin = strings.TrimSpace(isin); looksLikeISIN(isin) {
+			x.add(normalizeValor(valor.String), isin)
+		}
 	}
 	return rows.Err()
 }

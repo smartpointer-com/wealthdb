@@ -217,12 +217,30 @@ func isStatementEraID(txID string) bool { return strings.HasPrefix(txID, stateme
 // rather than re-read from the silver columns, because the eras write
 // those columns to different conventions and only the projection resolves
 // them (webProjectedNet for the two web eras, buildTransaction for the
-// feed). What the key compares is therefore what gold would hold.
+// feed). What the key compares is therefore the cash each row moves: a
+// dividend gold books at its gross keys on the amount credited, which its
+// two rows move together (bookAtGross).
 type bookingKey struct {
 	account  string
 	day      int64
 	amount   string
 	currency string
+}
+
+// newBookingKey is the key of amount moved on account on the day of at,
+// in ccy. false where the amount is no booking (bookingCents).
+func newBookingKey(account string, at int64, amount *canonical.Decimal, ccy string) (bookingKey, bool) {
+	cents, ok := bookingCents(amount)
+	if !ok {
+		return bookingKey{}, false
+	}
+	return bookingKey{account: account, day: utcDay(at), amount: cents, currency: bookingCurrency(ccy)}, true
+}
+
+// txBookingKey is the key of a projected row: its account, day, signed
+// net amount and currency.
+func txBookingKey(tx canonical.TransactionChange) (bookingKey, bool) {
+	return newBookingKey(tx.AccountExternalID, tx.OccurredAt, tx.NetAmount, tx.Currency)
 }
 
 // bookingCents renders a projected amount as the exact-match half of a
@@ -282,6 +300,12 @@ type psnHints struct {
 	// withheld names the conversion mirrors the export already records
 	// (buildSameDayOffsetVeto): the PSN stream leaves them out.
 	withheld map[string]bool
+	// securities is what a dividend line is linked by past its
+	// confirmation, and which reversal of a credit is a dividend
+	// reversal (dividends.go), read over both silvers. The web pass's
+	// offset veto reads the same value, so the veto and the stream
+	// agree on which reversal is no deposit or withdrawal.
+	securities *dividendSecurities
 }
 
 // webTxOutcome is what the web cash pass decided that a later pass
@@ -350,18 +374,13 @@ func (r *webReader) buildEraFold(ctx context.Context, psn *psnReader, cut psnCut
 			return nil
 		}
 		// Classified by the same hint the transaction pass uses, so the
-		// key carries the amount the row is emitted with.
+		// key carries the cash the row is emitted with: a dividend's
+		// amount credited, before any gross.
 		hint := webKindHint(row.descKind, row.counterparty)
 		_, _, net := webProjectedNet(hint, isStatementEraID(row.txID), row.debit, row.credit)
-		amount, ok := bookingCents(net)
+		k, ok := newBookingKey(row.account, row.valueDate, net, row.currency)
 		if !ok {
 			return nil
-		}
-		k := bookingKey{
-			account:  row.account,
-			day:      utcDay(row.valueDate),
-			amount:   amount,
-			currency: bookingCurrency(row.currency),
 		}
 		if !isStatementEraID(row.txID) {
 			exports[k] = append(exports[k], row.emittedID())
@@ -381,31 +400,15 @@ func (r *webReader) buildEraFold(ctx context.Context, psn *psnReader, cut psnCut
 
 	feed := map[bookingKey][]string{}
 	err = psn.eachCashMovement(ctx, "ubs-psn buildEraFold", func(row psnCashRow) error {
-		// The feed row is projected by the very builder the PSN
-		// transaction stream emits from, so the account, currency and
-		// signed amount the key carries are the ones gold would hold —
-		// MT940's positive-figure-plus-direction convention resolved
-		// exactly once, in the one place that owns it.
-		var ccy *string
-		if row.currency.Valid {
-			c := row.currency.String
-			ccy = &c
-		}
-		tx, err := buildTransaction(row.eventID, row.at, row.account, "cash_movement", ccy, row.payload, nil)
-		if err != nil {
-			return nil
-		}
-		amount, ok := bookingCents(tx.NetAmount)
+		// The cash the line moves, as the stream projects it
+		// (psnCashRow.project).
+		tx, _, ok := row.project()
 		if !ok {
 			return nil
 		}
-		k := bookingKey{
-			account:  tx.AccountExternalID,
-			day:      utcDay(tx.OccurredAt),
-			amount:   amount,
-			currency: bookingCurrency(tx.Currency),
+		if k, ok := txBookingKey(tx); ok {
+			feed[k] = append(feed[k], row.eventID)
 		}
-		feed[k] = append(feed[k], row.eventID)
 		return nil
 	})
 	if err != nil {
@@ -419,17 +422,9 @@ func (r *webReader) buildEraFold(ctx context.Context, psn *psnReader, cut psnCut
 		return nil, err
 	}
 	for id, m := range mirrors.byID {
-		amount, ok := bookingCents(m.tx.NetAmount)
-		if !ok {
-			continue
+		if k, ok := txBookingKey(m.tx); ok {
+			feed[k] = append(feed[k], id)
 		}
-		k := bookingKey{
-			account:  m.tx.AccountExternalID,
-			day:      utcDay(m.tx.OccurredAt),
-			amount:   amount,
-			currency: bookingCurrency(m.tx.Currency),
-		}
-		feed[k] = append(feed[k], id)
 	}
 
 	for k, ss := range statements {

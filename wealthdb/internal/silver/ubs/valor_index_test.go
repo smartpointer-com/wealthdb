@@ -52,6 +52,42 @@ func TestValorIndexDropsACrossFeedCollision(t *testing.T) {
 	}
 }
 
+// The statements of assets print each position's valor beside its ISIN.
+// That reaches a security held but never traded through the list, and it
+// meets the other roads under the one collision rule.
+func TestValorIndexReadsTheStatementsOfAssets(t *testing.T) {
+	r := newWebFixture(t)
+	if _, err := r.db.Exec(`
+        INSERT INTO historical_position_snapshots
+            (as_of_date, portfolio_external_id, account_external_id, instrument_isin,
+             currency_iso, source_doc_token, payload) VALUES
+            (1000, 'P1', '', 'XX0000000021', 'CHF', 'tok', json_object('valor', '2345678', 'isin', 'XX0000000021')),
+            (1000, 'P1', '', 'XX0000000022', 'CHF', 'tok', json_object('valor', '3456789', 'isin', 'XX0000000022')),
+            (1000, 'P1', '', 'PM-P1', 'CHF', 'tok', json_object('valor', '4567890')),
+            (1000, 'P1', 'CH0000000000000000AAA', NULL, 'CHF', 'tok', '{}')`); err != nil {
+		t.Fatal(err)
+	}
+	psnDB := newPortfolioPSN(t)
+	if _, err := psnDB.Exec(`
+        INSERT INTO instruments (snapshot_at, relationship_id, isin, payload)
+        VALUES (1, 'R1', 'XX0000000023', json_object('InstrIdtfr', json_object('Valor', '3456789')))`); err != nil {
+		t.Fatal(err)
+	}
+	index, err := buildValorIndex(context.Background(), &psnReader{db: psnDB}, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := index["2345678"]; got != "XX0000000021" {
+		t.Errorf("index[valor] = %q, want the ISIN the statement prints beside it", got)
+	}
+	if got, ok := index["3456789"]; ok {
+		t.Errorf("index[valor] = %q, want the collision with the feed left unresolved", got)
+	}
+	if got, ok := index["4567890"]; ok {
+		t.Errorf("index[valor] = %q, want nothing for a line that names no ISIN", got)
+	}
+}
+
 // A silver that predates the list, or has no feed beside it, resolves
 // less rather than failing.
 func TestValorIndexToleratesAMissingSide(t *testing.T) {

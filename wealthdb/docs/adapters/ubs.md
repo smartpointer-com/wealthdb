@@ -37,7 +37,7 @@ orchestrator (`merge.go`) splices them:
 | `relationship_id` | UBS server id (`SFTPCHxx`, `SFTPCHyy`, ...) | One per banking relationship under the SFTP login. Stored on the gold `accounts` row. The config's `relationships` pairs it with the web feed's `banking_relationship_id` ([../DESIGN.md](../DESIGN.md) §5.1). |
 | `account_external_id` | IBAN for a cash account; PSN's safekeeping id for a safekeeping account | A portfolio's overlay account is `<portfolio>:overlay` (§3, §9). |
 | `instrument_external_id` | ISIN | SDFI states one for every instrument. |
-| `transaction_external_id` | the silver row's id | PSN: `mt515:<SEME>` for a trade confirmation, `mt940:<account>:…` for a statement line. Web: `<Transaction no.>@<account>` for an export row, `stmt:<hash>` for a statement reconstruction, `ptx:<ref>` for the portfolio transaction list. Rows the adapter derives: `mirror:<event id>` and `<event id>:cash` (§7). |
+| `transaction_external_id` | the silver row's id | PSN: `mt515:<SEME>` for a trade confirmation, `mt940:<account>:…` for a statement line. Web: `<Transaction no.>@<account>` for an export row, `stmt:<hash>` for a statement reconstruction, `ptx:<ref>` for the portfolio transaction list. Rows the adapter derives: `mirror:<event id>`, `<event id>:cash`, `<id>:tax` beside a dividend booked at its gross, and `<event id>:cash:tax` beside a cash leg (§7). |
 
 ## 3. Coverage matrix
 
@@ -56,7 +56,7 @@ PSN silver:
 | `cash_balances` | `cash_balances` | One to one; UBS `balance_kind` carries over. From the MT940 statement feed. |
 | `fx_rates` | `fx_rates` | Base and quote currency as silver states them. The mid rate is the first period's `MiddleRate`. |
 | `forward_contracts` | `positions` `(foreign_exchange, forward)` | On the portfolio's overlay account. `contract_external_id` is the `position_key`. |
-| `events` | `transactions` | §5 maps the kinds. §7 adds two derived rows. |
+| `events` | `transactions` | §5 maps the kinds. §7 adds the derived rows. |
 | `option_contracts`, `money_market_contracts`, `otc_contracts` | — | Not projected. |
 | `pending_securities` | — | Mostly "no activity" markers (`ACTI//N`). Not projected. |
 | `portfolio_performance` | — | Monthly TDPOPF analytics. Not projected. |
@@ -69,7 +69,7 @@ Web silver:
 | `accounts`, `portfolios`, `positions` | `accounts`, `portfolios`, `instruments` | Accounts and portfolios before PSN starts. The web feed's instrument descriptions read better than PSN's names; the latest snapshot's wins. Live positions reach gold as `payload.web` on PSN's rows. |
 | `transactions` | `transactions` | §5, §7. |
 | `mortgages`, `historical_mortgages` | `accounts` (kind `mortgage`) + a negative `mortgage` position | No PSN cut: PSN carries no mortgages. |
-| `historical_position_snapshots`, `historical_cash_balances` | `positions`, `cash_balances` | §9. |
+| `historical_position_snapshots`, `historical_cash_balances` | `positions`, `cash_balances` | §9. The positions also feed the valor index and road 3 of a dividend's security (§7). |
 | `card_accounts`, `card_invoices`, `card_transactions` | `accounts`, `cash_balances`, `transactions` | §10. |
 | `portfolio_transactions` | `transactions`; `realized_lots` | A managed portfolio's securities settlements, booked on the cash account that paid (§11). Its sales with a realized P/L are also realized lots (§12). |
 | `statement_trades` | `realized_lots` | The trade list a Statement of Assets prints (ubs-web DESIGN.md §3.10). Each sale is a realized lot with the cost it drew on (§12). |
@@ -157,14 +157,14 @@ UBS's `silver.events.kind` maps to gold's `kind`:
 
 | UBS | Gold | Adapter notes |
 | --- | --- | --- |
-| `cash_movement` | `deposit` / `withdrawal` / `fee` / `interest` / `tax` / `dividend` / `buy` / `sell` / `fx` | From the MT940 `:86:` narrative, with the `:61:` type code as a floor (§6). A deposit or withdrawal whose same-day mirror books on another own account carries the conduit verdict in its payload (same-day offset veto, `buildSameDayOffsetVeto`). A converted movement (`/OCMT/`) whose other account the feed does not speak for gets a counter-leg, `mirror:<event id>` (§7). |
+| `cash_movement` | `deposit` / `withdrawal` / `fee` / `interest` / `tax` / `dividend` / `buy` / `sell` / `fx` | From the MT940 `:86:` narrative, with the `:61:` type code as a floor (§6). A deposit or withdrawal whose same-day mirror books on another own account carries the conduit verdict in its payload (same-day offset veto, `buildSameDayOffsetVeto`). A converted movement (`/OCMT/`) whose other account the feed does not speak for gets a counter-leg, `mirror:<event id>` (§7). A dividend line whose confirmation states its gross reads the gross, with the tax withheld beside it as `<event id>:tax`. A reversal of a dividend credit is a dividend reversal (§7, *Dividends: the security and the gross*). |
 | `securities_movement` | `transfer_in` / `transfer_out` | By the credit/debit mark. |
 | `trade_confirmation` | `buy` or `sell` | MT515 payload `side`, which the collector reads off the order's business function (`:22H::BUSE//`). A market trade names the holder's role (`BUYI` / `SELL`, folded to `BUY` / `SELL` at load). A fund order names the operation (`SUBS` subscribes, `REDM` redeems, kept verbatim). Dated to the trade day, not the settlement day. Booked against the settlement's cash account, resolved to its IBAN (`cashAccountIBANs`). The MT940 line for the same settlement folds away (§7, *The settlement fold*). |
 | `fx_confirmation` | `fx` | MT300. |
 | `fx_option_confirmation` | `fx` | MT305. No dedicated option kind: the settlement is an FX cash effect. |
 | `loan_deposit_confirmation` | `other` | MT320/MT330/MT350. |
 | `corporate_action_notification` | `corporate_action` | MT564. |
-| `corporate_action_confirmation` | `corporate_action` | MT566. A cash dividend (`DVCA`) or interest (`INTR`) paid into a cash account the MT940 feed does not speak for is also booked on that account as `<event id>:cash` (§7). |
+| `corporate_action_confirmation` | `corporate_action` | MT566. A cash dividend (`DVCA`) or interest (`INTR`) paid into a cash account the MT940 feed does not speak for is also booked on that account as `<event id>:cash` (§7). A dividend's confirmation also names the security and the gross of the MT940 line it pairs with (§7, *Dividends: the security and the gross*). |
 | `corporate_action_narrative` | `corporate_action` | MT568. |
 | `securities_settlement_advice` | `transfer_in` / `transfer_out` | MT544–548. |
 | `precious_metal_trade` | `buy` or `sell` | MT600/MT601. A credit is a sale, anything else a purchase. |
@@ -264,8 +264,18 @@ in order:
 
 - `NRTI` is a returned item, not interest, and is not mapped.
 - A reversal, marked `RC` or `RD` in the credit/debit field, skips the
-  floor. Its sign is not yet flipped there, so a kind read off it would
-  state the wrong direction.
+  floor. Its type code names the booking it reverses, not the reversal.
+  Read as that kind, a reversed trade (`NSEC`) or conversion (`NFEX`)
+  would count as a second one to every pass that reads trades or
+  conversions. So the narrative decides, else the direction.
+- The one exception is `NDIV` on an `RC`: the bank taking back a
+  dividend. It reads as a dividend reversal (§7, *Dividends: the
+  security and the gross*).
+- The mark gives a reversal's sign, whatever kind it reads as.
+  `buildTransaction` signs an `RC` negative: it takes back a credit. It
+  signs an `RD` positive: it returns a debit, such as a payment that
+  came back. So the stream, the era fold and the offset veto read one
+  sign.
 - An `NSEC` line whose trade the MT515 rail also confirms never reaches
   the floor. The settlement fold (§7) drops it in favour of the
   confirmation, which names the security.
@@ -672,8 +682,10 @@ only record. Its `CASHMOVE` block states:
 - the payment day (`:98A::PAYD//`).
 
 The adapter books that leg as `<event id>:cash`: a `dividend` for
-`DVCA`, `interest` for `INTR`, with the gross and the tax in its
-payload.
+`DVCA`, `interest` for `INTR`, with the confirmation's figures in its
+payload. Interest reads the posted amount. A dividend reads its gross,
+with the tax withheld as its own row (*Dividends: the security and the
+gross*).
 
 - It books only a cash option credited (`CAOP CASH`, `CRDB CRED`).
 - A capital call confirmed as `OTHR`, a dividend taken in shares, an
@@ -764,7 +776,7 @@ The statement era names the security in free text, which closes with
 the Swiss valor. A valor identifies one security line, so the match is
 an identity, not a name guess. The collector's PDF parser promotes it
 beside `counter_account` (`security_valor`). The adapter resolves it
-against the valor index (`buildValorIndex`), built from three roads:
+against the valor index (`buildValorIndex`), built from four roads:
 
 - `payload.InstrIdtfr.Valor`, where PSN's instrument carries the
   identifier object;
@@ -773,6 +785,9 @@ against the valor index (`buildValorIndex`), built from three roads:
 - the portfolio transaction list, which prints the valor and the ISIN
   of a security on the same row. This reaches securities PSN never
   described.
+- the statements of assets, which print each position's
+  `Valor … - ISIN …` line. This reaches securities held but never
+  traded through the list.
 
 A valor naming two instruments is dropped, not resolved. A stated
 identifier outranks a looked-up one, so the export era never consults
@@ -788,6 +803,139 @@ Where the lookup finds nothing, two weaker claims follow, in order:
   movement whose narrative happens to carry such a token traded no
   security. Nothing is stamped beside a resolved instrument; the
   instrument's own row answers.
+
+A dividend names its security in other ways (below).
+
+### Dividends: the security and the gross
+
+UBS books a dividend to the cash account it credits, beside the custody
+account that holds the security. Each rail credits the net and names
+the security in its own way:
+
+- **MT940** (`:61:` type `NDIV`): the narrative is the security's name
+  and ticker, `Reg.shs <Name> (<TKR>)`. The `:61:` customer reference
+  states the valor, `VN <valor>`.
+- **Statement**: `DIVIDEND; VN <valor> <portfolio>; <NAME>`. A reversal
+  reads `REVERSAL DIVIDEND`.
+- **Export**: `Description1` states the ISIN, which is the instrument.
+
+A line that states no ISIN takes the first of three roads that answers
+(`dividends.go`). A reversal takes roads 2 and 3.
+
+1. **The confirmation**, for an MT940 line. The custody account's MT566
+   states the ISIN and the cash it posted: the cash account, the
+   payment day, the amount and its currency. A credit line equal on all
+   four is its cash leg. The pair holds only where one line and one
+   confirmation answer. Two confirmations of the same security and
+   figures count as one.
+2. **The valor** the line states, through the valor index (above). Its
+   collision rule stands.
+3. **The ticker** that closes the line's narrative. It is matched to
+   the ticker that closes the description of each custody position the
+   account's portfolio prints on its statements of assets. It holds
+   only where one ISIN answers. A token that is a currency the
+   statements print, or shorter than three characters, is no ticker: a
+   share-class or domicile marker such as `(CHF)` or `(IE)` looks like
+   one.
+
+A line no road answers keeps no instrument. A valor it states goes on
+`instrument_hint`. Each road reads the line's own silver fields, never
+the text the row attaches (*Transaction text columns*). A confirmation
+pair also yields to the line's own valor. Where that valor names
+another security, the four facts agree by chance. The line then takes
+roads 2 and 3 and keeps the amount credited.
+
+**A correction.** The bank corrects a dividend by reversing its credit
+and booking the corrected amount. The reversal is an MT940 line marked
+`RC` (a reversal of a credit) whose narrative names the same security.
+The kind map reads it by its narrative, else as a dividend where its
+type code is `NDIV`, else by its direction, as a withdrawal (§6). Its
+amount is negative whatever the kind. It is that security's dividend
+reversal where both of these hold:
+
+- road 2 or 3 names its security;
+- something says the credit it reverses was a dividend: its own
+  narrative (`DIV…`) or type code (`NDIV`), or a dividend credit of
+  that security on its account, in its currency and for its amount, on
+  or before its day. That credit may stand on any rail: a
+  confirmation, an MT940 line, an export or a statement row. A type
+  code that names another kind (such as `NINT` or `NSEC`) leaves the
+  credit no say, unless the narrative says dividend.
+
+A dividend reversal reads kind `dividend` on the linked instrument, at
+the gross of the credit it reverses where that credit was booked at one
+(below). So income nets the reversed credit, and spending does not
+count it. Any other `RC` stays as the kind map reads it, negative:
+
+- One no road answers is a dividend on no instrument where its
+  narrative or `NDIV` says dividend, which income nets, else a
+  withdrawal.
+- One whose narrative places another kind keeps it, such as an
+  interest or a fee. Of the type codes, only `NDIV` places a kind: a
+  reversed trade's `NSEC` reads by its narrative, else as a withdrawal
+  (§6).
+- A reversed redemption, coupon or capital repayment, which nothing
+  calls a dividend, stays a withdrawal.
+
+A reversal takes back what the credit it reverses was booked at:
+
+- The credit it reverses is the newest such credit (above).
+- Where gold booked that credit at a gross, the reversal reads the gross
+  negative. That is an MT940 line paired with its confirmation, a
+  confirmation's own cash leg, or an export row (below). A tax row beside
+  it holds the tax taken back, positive.
+- Else it takes back the amount credited. It does so too where two
+  credits of that day were booked at two grosses, since which one it
+  reverses is not known. A credit with no booked row of its own gives no
+  gross either. Examples are a confirmation whose feed line stays
+  unpaired, and an export copy the cut gives to the feed.
+
+So income nets to the corrected dividend's gross, and spending to its
+tax.
+
+**The gross.** The confirmation states the gross (`:19B::GRSS//`) and
+the tax withheld (`:19B::TAXR//`) beside the posted amount. Where it
+does, the dividend is booked as a brokerage books one
+([../INCOME.md](../INCOME.md) §5):
+
+- The dividend row reads the gross, in its net and its gross amount.
+- A `tax` row beside it holds the withholding: `<id>:tax`, on the same
+  account, day, currency and instrument. Its description names the
+  withholding and the security.
+- The tax row is the credited amount less the gross. So the two rows
+  sum to the cash that moved, exactly. A rounding or fee difference in
+  the bank's figures moves no cash.
+- The line's payload keeps the amount credited and names the
+  confirmation (`corporate_action`).
+
+The gross is the GRSS where its currency is the line's. Else it is the
+credited amount plus the TAXR, where that is in the line's currency.
+Else the line keeps the net and books no tax row. So does a line whose
+figures cannot be withholding: a tax of zero beside a different gross,
+or a gross below the credit. A tax of zero books no tax row.
+
+An export row states its gross in `Description3`, as `Number/Amt.
+<gross> <currency>`. Where that currency is the row's, the row is
+booked the same way, and neither of its rows names a confirmation:
+
+- A reversal (`Dividend;Reversal`) reads the gross negative. Its tax row
+  is positive: the tax taken back with the dividend.
+- A foreign security's row states its gross in the security's currency,
+  beside the rate the bank converted at. It keeps the net.
+
+The folds and the veto leave the pair whole:
+
+- The era fold keys the MT940 line and the export row on the amount
+  they credited, as `buildTransaction` and `webProjectedNet` project
+  them; a reversal on the amount it took back. A statement copy prints
+  that amount, so it still folds onto the row booked gross. A tax row
+  has no statement copy and is not in the fold.
+- The settlement fold reads `NSEC` lines and the offset veto deposits
+  and withdrawals. Neither reads a dividend, a dividend reversal or a
+  tax row.
+- The tax row's payload carries no bank reference. So the era text fold
+  leaves its text alone, and the reference road of the transfer matcher
+  sees no third row under the line's number.
 
 ## 8. Change number
 
@@ -923,9 +1071,8 @@ adapter emits it on the portfolio snapshot of that date, as the same
 account, instrument and position triple as a live mortgage. It only
 joins a snapshot that already exists. UBS issues the next quarter's
 notice ahead of time. A mortgage-only snapshot at that future date
-would report the mortgage alone. Gold reads each account at its own
-active snapshot, and such a snapshot ends every account last observed
-beside the mortgage ([../DESIGN.md](../DESIGN.md) §10.7).
+would end every account last observed beside the mortgage
+([../DESIGN.md](../DESIGN.md) §10.7).
 
 ### Window semantics
 
