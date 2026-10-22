@@ -34,17 +34,18 @@ func YieldInputs(ctx context.Context, db *sql.DB, asOf int64, ccy string) (*yiel
 
 // yieldBase is what the inputs of one instant read whatever the output
 // currency: the accounts, terms, rates, conventions and curves, the
-// ledger's dividends, the withholding table, each holding's amount on
-// each day of the twelve months to the instant, the reported figures of
-// the stocks a currency's inputs have already read, and the units of the
-// instruments paid. Every currency's inputs share its maps, and none
-// changes them except Securities: each currency's inputs add the stocks
-// no earlier one read (asked).
+// ledger's dividends, the withholding table, the aliases and the
+// instruments held, each holding's amount on each day of the twelve
+// months to the instant, the reported figures of the stocks a currency's
+// inputs have already read, and the units of the instruments paid. Every
+// currency's inputs share its maps, and none changes them except
+// Securities: each currency's inputs add the stocks no earlier one read
+// (asked).
 type yieldBase struct {
 	in *yield.Inputs
-	// amounts is each position's amount day by day (readAmounts), and
-	// instrument the instrument of each.
-	amounts    map[yield.HoldingKey]*yield.Daily
+	// amounts is each position's amount day by day, in each currency it
+	// is valued in (readAmounts), and instrument the instrument of each.
+	amounts    map[amountKey]*yield.Daily
 	instrument map[yield.HoldingKey]string
 	// asked are the securities whose reported figures were read.
 	asked map[string]bool
@@ -60,7 +61,8 @@ func readYieldBase(ctx context.Context, db *sql.DB, asOf int64) (*yieldBase, err
 		Accounts: map[yield.AccountKey]yield.Account{}, Terms: map[yield.InstrumentKey]yield.Terms{},
 		Rates: map[yield.AccountKey][]yield.Rate{}, Curves: map[string]*yield.Curve{},
 		Dividends: map[yield.InstrumentKey]canonical.DeclaredDividend{}, Securities: map[string]yield.Facts{},
-		Withholding: map[string]map[string]float64{}, Held: map[yield.InstrumentKey][]string{}}
+		Withholding: map[string]map[string]float64{}, Held: map[yield.InstrumentKey][]string{},
+		HeldSecurity: map[yield.InstrumentKey]string{}, Aliases: map[yield.AliasKey]string{}}
 	b := &yieldBase{in: in, asked: map[string]bool{}}
 	if err := runSteps("YieldInputs", []step{
 		{"accounts", func() error { return readYieldAccounts(ctx, db, in) }},
@@ -74,6 +76,7 @@ func readYieldBase(ctx context.Context, db *sql.DB, asOf int64) (*yieldBase, err
 		{"curves", func() error { return readYieldCurves(ctx, db, in) }},
 		{"dividends", func() error { return readDeclaredDividends(ctx, db, in) }},
 		{"daily", func() error { return b.readAmounts(ctx, db) }},
+		{"aliases", func() error { return readYieldAliases(ctx, db, in) }},
 		{"held", func() error { return readYieldHeld(ctx, db, in) }},
 		{"withholding", func() error { return readWithholding(ctx, db, in) }},
 	}); err != nil {
@@ -92,18 +95,18 @@ func (b *yieldBase) inputs(ctx context.Context, db *sql.DB, ccy string) (*yield.
 	in.Funds, in.Income, in.AccountIncome = map[string]*yield.Fund{}, map[yield.HoldingKey]yield.Received{},
 		map[yield.AccountCurrency]yield.Received{}
 	in.Payments, in.Daily = map[yield.HoldingKey][]yield.Payment{}, map[yield.HoldingKey]yield.Daily{}
-	in.FormerDaily = map[yield.InstrumentKey]yield.Daily{}
+	in.FormerDaily = map[yield.InstrumentKey][]yield.Daily{}
 	in.Situs, in.FXRates = map[yield.HoldingKey]string{}, map[string]float64{}
 	if err := runSteps("YieldInputs", []step{
 		{"holdings", func() error { return readYieldHoldings(ctx, db, &in) }},
 		{"funds", func() error { return readYieldFunds(ctx, db, &in) }},
 		{"income", func() error { return b.readIncome(ctx, db, &in) }},
 		{"securities", func() error { return b.readSecurities(ctx, db, &in) }},
+		{"fx", func() error { return readYieldFX(ctx, db, &in) }},
 		{"daily", func() error {
 			b.daily(&in)
 			return nil
 		}},
-		{"fx", func() error { return readYieldFX(ctx, db, &in) }},
 	}); err != nil {
 		return nil, err
 	}
@@ -711,18 +714,13 @@ func (b *yieldBase) readIncome(ctx context.Context, db *sql.DB, in *yield.Inputs
 		return err
 	}
 	if b.units == nil {
-		paid := map[yield.InstrumentKey]bool{}
-		for _, l := range lines {
-			if l.Instrument != "" && paysPerShare(l.Type) {
-				paid[yield.InstrumentKey{Source: l.Source, Instrument: l.Instrument}] = true
-			}
-		}
-		u, err := readYieldUnits(ctx, db, paid, from, in.AsOf)
+		u, err := readYieldUnits(ctx, db, unitIDs(in, lines), from, in.AsOf)
 		if err != nil {
 			return err
 		}
 		b.units = u
 	}
+	in.Index()
 	yearAgo := in.Day.AddDate(-1, 0, 0)
 	for _, l := range lines {
 		couponOf(in, &l)
@@ -767,6 +765,32 @@ func (b *yieldBase) readIncome(ctx context.Context, db *sql.DB, in *yield.Inputs
 		}
 	}
 	return nil
+}
+
+// unitIDs are the instruments the units of the dividends and
+// distributions of lines read (yieldUnits.quantity): each line's id
+// folded under its account and under each account of its portfolio
+// (yield.Inputs.Fold).
+func unitIDs(in *yield.Inputs, lines []incomeLine) map[yield.InstrumentKey]bool {
+	type portfolio struct{ src, id string }
+	members := map[portfolio][]string{}
+	for a, x := range in.Accounts {
+		if x.Portfolio != "" {
+			members[portfolio{a.Source, x.Portfolio}] = append(members[portfolio{a.Source, x.Portfolio}], a.Account)
+		}
+	}
+	paid := map[yield.InstrumentKey]bool{}
+	for _, l := range lines {
+		if l.Instrument == "" || !paysPerShare(l.Type) {
+			continue
+		}
+		paid[yield.InstrumentKey{Source: l.Source, Instrument: in.Fold(l.Source, l.Account, l.Instrument)}] = true
+		p := portfolio{l.Source, in.Accounts[yield.AccountKey{Source: l.Source, Account: l.Account}].Portfolio}
+		for _, a := range members[p] {
+			paid[yield.InstrumentKey{Source: l.Source, Instrument: in.Fold(l.Source, a, l.Instrument)}] = true
+		}
+	}
+	return paid
 }
 
 // paysPerShare says a payment of type t is paid per share of what its
@@ -816,11 +840,12 @@ func couponOf(in *yield.Inputs, l *incomeLine) {
 	}
 }
 
-// heldCoupon says a line is no coupon, or a held bond's, or one its
-// account sold (yield.Inputs.Sold): the bond's realized yield pools the
-// sold position's coupons with its amounts. A coupon of no bond the book
-// held, whose line names none or one no account of its holds or held,
-// reads as the account's coupons (`income:coupons:<CCY>`): received, but
+// heldCoupon says a line is no coupon, or a held bond's, or a sold
+// position's (yield.Inputs.Sold): the bond's realized yield pools the
+// sold position's coupons with its amounts. A coupon whose line names no
+// bond, or one that neither its account, its portfolio, nor one account
+// of its source alone held, reads as the account's coupons
+// (`income:coupons:<CCY>`): received, but
 // neither the cash's realized yield nor the projection reads it. So a
 // coupon reads the same whether its line names its bond or only its
 // description does.
@@ -872,9 +897,12 @@ SELECT l.silver_source_id, l.account_external_id, COALESCE(l.instrument_external
 
 // IncomeReceived is every income line of [from, to] that the income
 // projection counts as received, each named by the holding of the book
-// it belongs to (yield.Inputs.HoldingOf), else by its account: a
-// payment of interest by the account's cash in its currency, any other
-// by the account and its type. Interest that names a bond is its coupon
+// it belongs to (yield.Inputs.HoldingOf), else by the sold position that
+// holds it (yield.Inputs.Sold), else by its account: a payment of
+// interest by the account's cash in its currency, a line that names an
+// instrument by its account and that instrument, by the id the matching
+// folds it into, as Sold names a sold position, and any other by the
+// account and its type. Interest that names a bond is its coupon
 // (couponOf), and a coupon no held bond's is the account's (heldCoupon).
 func IncomeReceived(ctx context.Context, db *sql.DB, in *yield.Inputs, from, to int64) ([]yield.ReceivedLine, error) {
 	var out []yield.ReceivedLine
@@ -888,6 +916,9 @@ func IncomeReceived(ctx context.Context, db *sql.DB, in *yield.Inputs, from, to 
 			r.Value = *l.Value
 		}
 		key, held := in.HoldingOf(l.Source, l.Account, l.Instrument)
+		if !held {
+			key, held = in.Sold(l.Source, l.Account, l.Instrument)
+		}
 		switch {
 		case held:
 			r.Holding = key
@@ -897,7 +928,7 @@ func IncomeReceived(ctx context.Context, db *sql.DB, in *yield.Inputs, from, to 
 			r.Holding = yield.AccountIncomeKey(yield.AccountCurrency{
 				AccountKey: yield.AccountKey{Source: l.Source, Account: l.Account}, Currency: l.Currency}, l.Type)
 			if l.Instrument != "" {
-				r.Holding.PositionKey = l.Instrument
+				r.Holding.PositionKey = in.Fold(l.Source, l.Account, l.Instrument)
 			}
 		}
 		out = append(out, r)
@@ -1124,22 +1155,22 @@ func trailing(periods []periodFact, day time.Time, years int) (float64, bool) {
 	return 0, false
 }
 
-// readAmounts reads each position's amount, in its own currency, on each
-// day of the twelve months to the instant (yield.Daily), and the
-// instrument it names: a position as positions_at reads it on the day, a
-// cash balance as cash_chosen does, a day it was not held as zero. Both
-// read a day at its last second, the instant's own day at the instant,
-// and take each account's active snapshot at it (migration 0140). So an
-// observation's amounts hold over its span (pos_key_spans,
-// cash_key_spans), from the first day read at or after it to the first
-// day read at or after its end, and one read of the observations whose
-// span meets the window gives every day.
+// readAmounts reads each position's amount on each day of the twelve
+// months to the instant, one yield.Daily per currency it is valued in,
+// and the instrument it names: a position as positions_at
+// reads it on the day, a cash balance as cash_chosen does, a day it was
+// not held as zero. Both read a day at its last second, the instant's own
+// day at the instant, and take each account's active snapshot at it
+// (migration 0140). So an observation's amounts hold over its span
+// (pos_key_spans, cash_key_spans), from the first day read at or after it
+// to the first day read at or after its end, and one read of the
+// observations whose span meets the window gives every day.
 func (b *yieldBase) readAmounts(ctx context.Context, db *sql.DB) error {
 	w := newDayWindow(b.in)
-	b.amounts, b.instrument = map[yield.HoldingKey]*yield.Daily{}, map[yield.HoldingKey]string{}
+	b.amounts, b.instrument = map[amountKey]*yield.Daily{}, map[yield.HoldingKey]string{}
 	if err := w.readSpans(ctx, db, `
 SELECT p.silver_source_id, p.snapshot_at, s.until, p.account_external_id, p.position_key,
-       MAX(COALESCE(p.instrument_external_id, '')), SUM(p.market_value)::DOUBLE
+       MAX(COALESCE(p.instrument_external_id, '')), MAX(COALESCE(p.currency, '')), SUM(p.market_value)::DOUBLE
   FROM positions p
   JOIN pos_key_spans() s ON s.src = p.silver_source_id AND s.acct = p.account_external_id
    AND s.snap = p.snapshot_at
@@ -1150,7 +1181,7 @@ SELECT p.silver_source_id, p.snapshot_at, s.until, p.account_external_id, p.posi
 	}
 	return w.readSpans(ctx, db, `
 SELECT cb.silver_source_id, cb.snapshot_at, s.until, cb.account_external_id, 'cash:' || cb.currency, '',
-       cb.amount::DOUBLE
+       cb.currency, cb.amount::DOUBLE
   FROM cash_balances cb
   JOIN cash_key_spans() s ON s.src = cb.silver_source_id AND s.acct = cb.account_external_id
    AND s.ccy = cb.currency AND s.snap = cb.snapshot_at
@@ -1194,20 +1225,26 @@ func (w dayWindow) from(at int64) int {
 	return sort.Search(w.days, func(i int) bool { return w.instant(i) >= at })
 }
 
+// amountKey names a position's amounts in one currency.
+type amountKey struct {
+	yield.HoldingKey
+	ccy string
+}
+
 // readSpans adds to out the amounts q reads: every holding's amount in
 // each observation whose span meets the window, the span's end NULL while
 // it holds on, ordered by source and observation, beside the instrument
-// it names ("" for none), which instrument records. q takes the instant
-// and the first day's instant.
-func (w dayWindow) readSpans(ctx context.Context, db *sql.DB, q string, out map[yield.HoldingKey]*yield.Daily,
+// it names ("" for none), which instrument records, and its currency. q
+// takes the instant and the first day's instant.
+func (w dayWindow) readSpans(ctx context.Context, db *sql.DB, q string, out map[amountKey]*yield.Daily,
 	instrument map[yield.HoldingKey]string) error {
 	return scanAll(ctx, db, q, func(rows *sql.Rows) error {
 		var k yield.HoldingKey
 		var at int64
 		var until sql.NullInt64
-		var iid string
+		var iid, ccy string
 		var v sql.NullFloat64
-		if err := rows.Scan(&k.Source, &at, &until, &k.Account, &k.PositionKey, &iid, &v); err != nil {
+		if err := rows.Scan(&k.Source, &at, &until, &k.Account, &k.PositionKey, &iid, &ccy, &v); err != nil {
 			return err
 		}
 		if iid != "" {
@@ -1217,18 +1254,18 @@ func (w dayWindow) readSpans(ctx context.Context, db *sql.DB, q string, out map[
 		if until.Valid {
 			to = w.from(until.Int64)
 		}
-		if from < to && v.Float64 != 0 {
-			out[k] = addSpan(out[k], w.days, yield.Span{From: from, To: to, Amount: v.Float64})
+		if a := (amountKey{k, ccy}); from < to && v.Float64 != 0 {
+			out[a] = addSpan(out[a], w.days, ccy, yield.Span{From: from, To: to, Amount: v.Float64})
 		}
 		return nil
 	}, w.asOf, w.first)
 }
 
-// addSpan adds a span to a holding's daily amounts; one that goes on from
-// the last at its amount extends it.
-func addSpan(d *yield.Daily, days int, s yield.Span) *yield.Daily {
+// addSpan adds a span to a holding's daily amounts in ccy; one that goes
+// on from the last at its amount extends it.
+func addSpan(d *yield.Daily, days int, ccy string, s yield.Span) *yield.Daily {
 	if d == nil {
-		d = &yield.Daily{Days: days}
+		d = &yield.Daily{Days: days, Currency: ccy}
 	}
 	if n := len(d.Spans); n > 0 && d.Spans[n-1].To == s.From && d.Spans[n-1].Amount == s.Amount {
 		d.Spans[n-1].To = s.To
@@ -1238,50 +1275,133 @@ func addSpan(d *yield.Daily, days int, s yield.Span) *yield.Daily {
 	return d
 }
 
-// daily gives each holding of in its daily amounts, and each instrument
-// held the amounts of the positions of it that are no holding of in.
+// daily gives each holding of in its daily amounts, in its own currency,
+// and each instrument a holding pools (yield.Inputs.FormerDaily) the
+// amounts of its positions that are no holding of in, one Daily per
+// currency: an instrument held, by the id the matching folds it into, or
+// one of a security held, at any source. A holding's amounts in another
+// currency than its own, as a statement and a feed may value one
+// position, convert at the instant's rates; where none converts them they
+// count nothing.
 func (b *yieldBase) daily(in *yield.Inputs) {
-	holding, held := map[yield.HoldingKey]bool{}, map[yield.InstrumentKey]bool{}
+	own, held, securities := map[yield.HoldingKey]string{}, map[yield.InstrumentKey]bool{}, map[string]bool{}
 	for _, h := range in.Holdings {
-		holding[h.HoldingKey] = true
+		own[h.HoldingKey] = h.Currency
 		if h.Instrument != "" {
-			held[yield.InstrumentKey{Source: h.Source, Instrument: h.Instrument}] = true
+			held[yield.InstrumentKey{Source: h.Source, Instrument: in.Fold(h.Source, h.Account, h.Instrument)}] = true
 		}
-		if d := b.amounts[h.HoldingKey]; d != nil {
-			in.Daily[h.HoldingKey] = *d
+		if h.SecurityID != "" {
+			securities[h.SecurityID] = true
 		}
 	}
-	keys := slices.SortedFunc(maps.Keys(b.amounts), func(x, y yield.HoldingKey) int {
+	keys := slices.SortedFunc(maps.Keys(b.amounts), func(x, y amountKey) int {
 		return cmp.Or(cmp.Compare(x.Source, y.Source), cmp.Compare(x.Account, y.Account),
-			cmp.Compare(x.PositionKey, y.PositionKey))
+			cmp.Compare(x.PositionKey, y.PositionKey), cmp.Compare(x.ccy, y.ccy))
 	})
 	for _, k := range keys {
-		ik := yield.InstrumentKey{Source: k.Source, Instrument: b.instrument[k]}
-		if holding[k] || !held[ik] {
+		a := b.amounts[k]
+		if ccy, ok := own[k.HoldingKey]; ok {
+			rate := 1.0
+			if k.ccy != ccy && k.ccy != "" && ccy != "" {
+				if rate = rateTo(in, k.ccy) / rateTo(in, ccy); math.IsNaN(rate) || math.IsInf(rate, 0) || rate == 0 {
+					continue
+				}
+			}
+			d := in.Daily[k.HoldingKey]
+			d.Days, d.Currency = a.Days, ccy
+			for _, s := range a.Spans {
+				d.Spans = append(d.Spans, yield.Span{From: s.From, To: s.To, Amount: s.Amount * rate})
+			}
+			in.Daily[k.HoldingKey] = d
 			continue
 		}
-		d := in.FormerDaily[ik]
-		d.Days, d.Spans = b.amounts[k].Days, append(d.Spans, b.amounts[k].Spans...)
-		in.FormerDaily[ik] = d
+		iid := b.instrument[k.HoldingKey]
+		if iid == "" {
+			continue
+		}
+		ik := yield.InstrumentKey{Source: k.Source, Instrument: in.Fold(k.Source, k.Account, iid)}
+		if !held[ik] && !securities[in.HeldSecurity[ik]] {
+			continue
+		}
+		ds := in.FormerDaily[ik]
+		i := slices.IndexFunc(ds, func(d yield.Daily) bool { return d.Currency == a.Currency })
+		if i < 0 {
+			i, ds = len(ds), append(ds, yield.Daily{Days: a.Days, Currency: a.Currency})
+		}
+		ds[i].Spans = append(ds[i].Spans, a.Spans...)
+		in.FormerDaily[ik] = ds
 	}
 }
 
-// readYieldHeld reads the accounts whose positions held each instrument
-// at some snapshot to the instant.
-func readYieldHeld(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+// rateTo is the rate from ccy to in's output currency at the instant, 0
+// where none is known (readYieldFX).
+func rateTo(in *yield.Inputs, ccy string) float64 {
+	if ccy == in.Currency {
+		return 1
+	}
+	return in.FXRates[ccy]
+}
+
+// readYieldAliases reads the ids the matching folds into others
+// (yield.Inputs.Aliases), as holdingAliasJoins reads a holding's key: a
+// holding alias for one account, else for every account of its source,
+// else, for the CUSIP id of an instrument its source also keys by its
+// ticker, the ticker (instrument_aliases, migration 0120).
+func readYieldAliases(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
 	return scanAll(ctx, db, `
-SELECT DISTINCT silver_source_id, instrument_external_id, account_external_id
-  FROM positions
- WHERE snapshot_at <= ? AND instrument_external_id IS NOT NULL
- ORDER BY 1, 2, 3`, func(rows *sql.Rows) error {
-		var k yield.InstrumentKey
-		var acct string
-		if err := rows.Scan(&k.Source, &k.Instrument, &acct); err != nil {
+SELECT silver_source_id, account_external_id, from_key, to_key FROM holding_aliases
+UNION ALL
+SELECT ia.src, '', ia.alias, ia.k
+  FROM instrument_aliases() ia
+  ANTI JOIN holding_aliases hd ON hd.silver_source_id = ia.src AND hd.account_external_id = ''
+       AND hd.from_key = ia.alias`, func(rows *sql.Rows) error {
+		var k yield.AliasKey
+		var to string
+		if err := rows.Scan(&k.Source, &k.Account, &k.ID, &to); err != nil {
 			return err
 		}
-		in.Held[k] = append(in.Held[k], acct)
+		in.Aliases[k] = to
 		return nil
-	}, in.AsOf)
+	})
+}
+
+// readYieldHeld reads, for each instrument a position held at some
+// snapshot to the instant, by the id the matching folds it into
+// (yield.Inputs.Fold): the accounts that held it (Held), and its
+// security, as exposure_holdings keys a holding (HeldSecurity).
+func readYieldHeld(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+	if err := scanAll(ctx, db, `
+WITH p AS (
+    SELECT DISTINCT silver_source_id AS src, account_external_id AS acct, position_key,
+           instrument_external_id AS iid
+      FROM positions
+     WHERE snapshot_at <= $1 AND instrument_external_id IS NOT NULL),
+k AS (
+    SELECT p.*, COALESCE(ha.to_key, hd.to_key, ia.k) AS akey
+      FROM p`+holdingAliasJoins("p.src", "p.acct", "p.iid", "p.position_key")+`)
+SELECT k.src, k.acct, k.iid, COALESCE(exposure_key(COALESCE(ik1.security_key, ik2.security_key)), '')
+  FROM k
+  LEFT JOIN instrument_keys ik1 ON ik1.silver_source_id = k.src AND ik1.instrument_external_id = k.akey
+  LEFT JOIN instrument_keys ik2 ON ik2.silver_source_id = k.src AND ik2.instrument_external_id = k.iid
+ ORDER BY 1, 3, 2, k.position_key`, func(rows *sql.Rows) error {
+		var src, acct, iid, security string
+		if err := rows.Scan(&src, &acct, &iid, &security); err != nil {
+			return err
+		}
+		k := yield.InstrumentKey{Source: src, Instrument: in.Fold(src, acct, iid)}
+		in.Held[k] = append(in.Held[k], acct)
+		if security != "" && in.HeldSecurity[k] == "" {
+			in.HeldSecurity[k] = security
+		}
+		return nil
+	}, in.AsOf); err != nil {
+		return err
+	}
+	for k, accts := range in.Held {
+		slices.Sort(accts)
+		in.Held[k] = slices.Compact(accts)
+	}
+	return nil
 }
 
 func readWithholding(ctx context.Context, db *sql.DB, in *yield.Inputs) error {

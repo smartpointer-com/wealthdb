@@ -69,7 +69,7 @@ func TestRealizedYieldPoolsTheInstrument(t *testing.T) {
 	in.Daily[late.HoldingKey] = held(Span{From: year - 120, To: year, Amount: 5000})
 	// An account that held 20,000 dollars of it to 200 days ago, whose
 	// income its sold position keeps.
-	in.FormerDaily[InstrumentKey{"broker", "QSTK"}] = held(Span{From: 0, To: year - 200, Amount: 20000})
+	in.FormerDaily[InstrumentKey{"broker", "QSTK"}] = []Daily{held(Span{From: 0, To: year - 200, Amount: 20000})}
 	in.Held[InstrumentKey{"broker", "QSTK"}] = []string{"A", "B", "C"}
 	in.Income[long.HoldingKey] = Received{TypeDividends: 200}
 	in.Income[HoldingKey{"broker", "C", "QSTK"}] = Received{TypeDividends: 300}
@@ -96,7 +96,7 @@ func TestRealizedYieldPoolsTheInstrument(t *testing.T) {
 	// Held by no account on 100 of its days, its mean is that of the 265
 	// it was held, and it is partial.
 	in.Holdings, in.Held = []Holding{late}, map[InstrumentKey][]string{}
-	in.FormerDaily[InstrumentKey{"broker", "QSTK"}] = held(Span{From: 0, To: year - 220, Amount: 5000})
+	in.FormerDaily[InstrumentKey{"broker", "QSTK"}] = []Daily{held(Span{From: 0, To: year - 220, Amount: 5000})}
 	gap := position(Compute(in), late.HoldingKey)
 	near(t, "a gap", gap.Realized, 25.0/5000*100, 1e-9)
 	if !gap.Tags[TagPartial] {

@@ -356,6 +356,54 @@ func TestASecurityAtTwoSources(t *testing.T) {
 	dividendOf(t, book, b, 2, 600)
 }
 
+// A security moved from one source to another pools what the first paid
+// and held, under its own instrument there (HeldSecurity): its pay months
+// count in the frequency, and its income and its amounts, in their own
+// currency, in the realized yield. A broker's account that sold it a
+// month ago was paid three quarters, the bank's holding the last; some
+// source held it every day.
+func TestASecurityMovedBetweenSources(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	in.FXRates["CHF"] = 1.25
+	h := stock("B", "QBNK", 100)
+	h.Source, h.SecurityID = "bank", "isin:XX0000000001"
+	in.Holdings = []Holding{h}
+	old := InstrumentKey{"broker", "QOLD"}
+	in.Held[old] = []string{"A"}
+	in.HeldSecurity[old], in.HeldSecurity[InstrumentKey{"bank", "QBNK"}] = h.SecurityID, h.SecurityID
+	sold := HoldingKey{"broker", "A", "QOLD"}
+	for _, d := range quarterly[:3] {
+		pay(in, sold, "A", d, 50, num(100))
+	}
+	pay(in, h.HoldingKey, "B", quarterly[3], 50, num(100))
+	in.Income[sold], in.Income[h.HoldingKey] = Received{TypeDividends: 150}, Received{TypeDividends: 50}
+	in.Daily[h.HoldingKey] = Daily{Days: 365, Spans: []Span{{From: 335, To: 365, Amount: 10000}}}
+	in.FormerDaily[old] = []Daily{{Days: 365, Currency: "CHF", Spans: []Span{{From: 0, To: 335, Amount: 8000}}}}
+	p := dividendOf(t, Compute(in), h, 2, 200)
+	near(t, "realized", p.Realized, 200.0/10000*100, 1e-9)
+	if p.Tags[TagPartial] || p.Tags[TagThin] {
+		t.Errorf("tags %v", p.Tags)
+	}
+}
+
+// An account is one of a source: two sources' accounts of one id, paid
+// on one day, pay the median of their rates, not one rate of their sum.
+func TestTwoSourcesAccountsOfOneID(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	a, b := stock("A", "QSTK", 100), stock("A", "QSTK", 300)
+	a.SecurityID, b.Source, b.SecurityID = "symbol:QSTK", "bank", "symbol:QSTK"
+	in.Holdings = []Holding{a, b}
+	for _, d := range quarterly {
+		pay(in, a.HoldingKey, "A", d, 50, num(100))
+		pay(in, b.HoldingKey, "A", d, 150, num(300))
+	}
+	book := Compute(in)
+	dividendOf(t, book, a, 2, 200)
+	dividendOf(t, book, b, 2, 600)
+}
+
 // A sold position's received income is withheld as its instrument's
 // holding's is, at its own account's wrapper.
 func TestASoldPositionsWithholding(t *testing.T) {

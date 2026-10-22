@@ -329,7 +329,7 @@ func (pj *projector) soldWithholding() {
 		if situs == "" {
 			continue
 		}
-		_, sold := pj.in.instrumentOf(h)
+		_, _, sold := pj.in.instrumentOf(h)
 		for _, k := range sold {
 			if _, ok := pj.out.Withholding[k]; ok {
 				continue
@@ -788,7 +788,7 @@ func monthOf(d time.Time) int { return d.Year()*12 + int(d.Month()) - 1 }
 // pay day of unknown rate among them has none. nil where no account has
 // one; units where a rate it rests on does.
 func monthRate(days []payDay) (*float64, bool) {
-	sums, unknown := map[string]float64{}, map[string]bool{}
+	sums, unknown := map[AccountKey]float64{}, map[AccountKey]bool{}
 	units := false
 	for _, d := range days {
 		for _, a := range d.accounts {
@@ -827,7 +827,7 @@ type payDay struct {
 // nil where unknown, and whether that rate is in its day's units
 // (Payment).
 type accountPay struct {
-	account string
+	account AccountKey
 	per     *float64
 	units   bool
 }
@@ -838,8 +838,10 @@ type accountPay struct {
 //
 //   - An account's lines of one day are one payment: a fund's
 //     distribution often comes as several, income and capital gains
-//     apart. Their sum over the quantity the account held that day is
-//     its rate per share. A payment whose quantity is unknown has none.
+//     apart. Their sum over the quantity the account held that day is its
+//     rate per share. A payment whose quantity is unknown has none. An
+//     account is one of a source: two sources' accounts of one id are
+//     two.
 //   - So has a payment on under two thirds, or over one and a half
 //     times, what its account held RecordLagDays before: a holding
 //     trimmed or topped up between the record day and the pay day was
@@ -856,7 +858,7 @@ type accountPay struct {
 func payDays(in *Inputs, h Holding) []payDay {
 	type paid struct {
 		day     time.Time
-		account string
+		account AccountKey
 	}
 	type sum struct {
 		amount      float64
@@ -865,27 +867,30 @@ func payDays(in *Inputs, h Holding) []payDay {
 	}
 	sums := map[paid]*sum{}
 	var order []paid
-	for _, p := range in.instrumentPayments(h) {
-		if p.Type != TypeDividends && p.Type != TypeDistributions {
-			continue
-		}
-		amount, ok := in.inOwn(h, p.Amount, p.Currency)
-		if !ok {
-			continue
-		}
-		k := paid{p.Day.Truncate(24 * time.Hour), p.Account}
-		s := sums[k]
-		if s == nil {
-			s = &sum{}
-			sums[k], order = s, append(order, k)
-		}
-		s.amount += amount
-		if p.Quantity != nil && *p.Quantity > 0 {
-			s.qty, s.before, s.units = p.Quantity, p.Before, s.units || p.Units
+	for _, key := range in.paymentKeys(h) {
+		for _, p := range in.Payments[key] {
+			if p.Type != TypeDividends && p.Type != TypeDistributions {
+				continue
+			}
+			amount, ok := in.inOwn(h, p.Amount, p.Currency)
+			if !ok {
+				continue
+			}
+			k := paid{p.Day.Truncate(24 * time.Hour), AccountKey{key.Source, p.Account}}
+			s := sums[k]
+			if s == nil {
+				s = &sum{}
+				sums[k], order = s, append(order, k)
+			}
+			s.amount += amount
+			if p.Quantity != nil && *p.Quantity > 0 {
+				s.qty, s.before, s.units = p.Quantity, p.Before, s.units || p.Units
+			}
 		}
 	}
 	slices.SortStableFunc(order, func(a, b paid) int {
-		return cmp.Or(a.day.Compare(b.day), cmp.Compare(a.account, b.account))
+		return cmp.Or(a.day.Compare(b.day), cmp.Compare(a.account.Source, b.account.Source),
+			cmp.Compare(a.account.Account, b.account.Account))
 	})
 	for _, s := range sums {
 		if s.qty != nil && s.before != nil && (*s.qty < *s.before/1.5 || *s.qty > *s.before*1.5) {

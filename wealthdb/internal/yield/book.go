@@ -28,7 +28,7 @@ type Book struct {
 // holding its next twelve months' income and that income's sensitivity
 // to rates, under DefaultAssumptions.
 func Compute(in *Inputs) *Book {
-	in.index()
+	in.Index()
 	measures := make(map[HoldingKey]*Measures, len(in.Holdings))
 	for _, h := range in.Holdings {
 		m := measure(in, h)

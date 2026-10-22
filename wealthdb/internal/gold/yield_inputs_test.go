@@ -1,6 +1,10 @@
 package gold
 
 import (
+	"cmp"
+	"context"
+	"database/sql"
+	"maps"
 	"math"
 	"regexp"
 	"slices"
@@ -724,5 +728,385 @@ func TestACouponBookedAsInterestIsTheBonds(t *testing.T) {
 		"B/000000001=coupons D/income:coupons:USD=coupons B/000000001=coupons B/cash:USD=interest "+
 		"B/income:coupons:USD=coupons E/income:coupons:USD=coupons B/cash:USD=interest"; got != want {
 		t.Errorf("received\n%s\nwant\n%s", got, want)
+	}
+}
+
+// bookInstrument is an instrument of an invented book: a stock, by the
+// ids a source gives it ("" for none).
+type bookInstrument struct{ src, iid, isin, cusip, symbol string }
+
+// bookLine is a position of an invented book, keyed by its instrument:
+// from each segment's day on, its quantity and value at every month end
+// (none at zero), in dollars.
+type bookLine struct {
+	src, acct, iid string
+	segs           []bookSeg
+}
+
+type bookSeg struct {
+	from       time.Time
+	qty, value float64
+}
+
+// bookTxn is a transaction of an invented book: a dividend, a buy or a
+// sell.
+type bookTxn struct {
+	src, acct, iid string
+	day            time.Time
+	kind           string
+	amount, qty    float64
+}
+
+// dividendBook is an invented book for the dividend tests: its
+// instruments, positions and transactions; the portfolio of each account
+// that has one, by account; and statements run after the passes, on what
+// the inputs read as it stands.
+type dividendBook struct {
+	instruments []bookInstrument
+	lines       []bookLine
+	txns        []bookTxn
+	portfolios  map[string]string
+	after       []string
+}
+
+// inputs writes the book into a migrated gold: each line's positions at
+// the month ends from 30 June 2025 to 30 June 2026, at noon; the
+// transactions, a dividend's as one; the instruments; and a brokerage
+// account for each account named. It runs the exposure and yield passes,
+// then after, and reads the inputs at the last second of 30 June 2026.
+func (bk dividendBook) inputs(t *testing.T) (*yield.Inputs, *sql.DB, context.Context) {
+	t.Helper()
+	db, ctx := openMigrated(t)
+	str := func(s string) string {
+		if s == "" {
+			return "NULL"
+		}
+		return "'" + s + "'"
+	}
+	var insts, positions, rows, kinds []string
+	accounts := map[[2]string]bool{}
+	for _, i := range bk.instruments {
+		insts = append(insts, "('"+i.src+"', '"+i.iid+"', 'public_equity', 'stock', "+str(i.isin)+", "+str(i.cusip)+
+			", "+str(i.symbol)+", 'Example "+i.iid+"', 'USD', 0, 0)")
+	}
+	for _, l := range bk.lines {
+		accounts[[2]string{l.src, l.acct}] = true
+		for m := 0; m <= 12; m++ {
+			d := ymd(2025, 7+m, 1).AddDate(0, 0, -1)
+			var s bookSeg
+			for _, x := range l.segs {
+				if !x.from.After(d) {
+					s = x
+				}
+			}
+			if s.qty != 0 {
+				positions = append(positions, "('"+l.src+"', "+itoa(d.Unix()+43200)+", '"+l.acct+"', '"+l.iid+"', '"+
+					l.iid+"', 'public_equity', 'stock', 'USD', "+ftoa(s.qty)+", "+ftoa(s.value)+")")
+			}
+		}
+	}
+	for i, x := range bk.txns {
+		accounts[[2]string{x.src, x.acct}] = true
+		id := "T" + strconv.Itoa(i)
+		rows = append(rows, "('"+x.src+"', '"+id+"', "+itoa(x.day.Unix()+36000)+", '"+x.acct+"', '"+x.kind+
+			"', 'USD', "+ftoa(x.amount)+", '"+x.iid+"', "+ftoa(x.qty)+")")
+		if x.kind == "dividend" {
+			kinds = append(kinds, "('"+x.src+"', '"+id+"', 'sig-"+x.iid+"', 1, 'INCOME_DIVIDENDS', 'rule', 100)")
+		}
+	}
+	var accts []string
+	for _, k := range slices.SortedFunc(maps.Keys(accounts), func(a, b [2]string) int {
+		return cmp.Or(cmp.Compare(a[0], b[0]), cmp.Compare(a[1], b[1]))
+	}) {
+		accts = append(accts, "('"+k[0]+"', '"+k[1]+"', 'brokerage', '"+k[1]+"', 'USD', 0, 0, "+
+			str(bk.portfolios[k[1]])+")")
+	}
+	execEach(t, db,
+		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
+		    first_seen_at, last_seen_at, portfolio_external_id) VALUES `+strings.Join(accts, ", "),
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, cusip, symbol,
+		    name, currency, first_seen_at, last_seen_at) VALUES `+strings.Join(insts, ", "),
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		    asset_class, vehicle, currency, quantity, market_value) VALUES `+strings.Join(positions, ", "),
+		`INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id, kind,
+		    currency, net_amount, instrument_external_id, quantity) VALUES `+strings.Join(rows, ", "),
+		`INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id, payer_signature,
+		    signature_version, income_detailed, provenance, assigned_at) VALUES `+strings.Join(kinds, ", "))
+	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
+		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: 35, PartialPct: 3},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RebuildYield(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	execEach(t, db, bk.after...)
+	in, err := YieldInputs(ctx, db, ymd(2026, 6, 30).Unix()+86399, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return in, db, ctx
+}
+
+// A source may key one stock by its CUSIP and by its ticker
+// (instrument_aliases): the lines and the holdings meet under either.
+// Each stock pays 0.5 a share every quarter and is priced at 50. The book
+// is invented:
+//
+//   - B1 holds QCSP under its CUSIP id, and is paid under its ticker;
+//   - B1 holds QTKR under its ticker, and is paid under its CUSIP id;
+//   - H holds QSLD under its ticker, and S held 300 under its CUSIP id
+//     until it sold them on 1 June, paid under that id: S's lines are its
+//     sold position's, under the ticker, which pools with H's holding.
+func TestALineMeetsItsHoldingUnderEitherID(t *testing.T) {
+	t.Parallel()
+	early := ymd(2025, 1, 1)
+	held := []bookSeg{{early, 100, 5000}}
+	var txns []bookTxn
+	for i, d := range []time.Time{ymd(2025, 9, 10), ymd(2025, 12, 10), ymd(2026, 3, 10), ymd(2026, 6, 10)} {
+		txns = append(txns, bookTxn{"src", "B1", "QCSP", d, "dividend", 50, 0},
+			bookTxn{"src", "B1", "000000AC2", d, "dividend", 50, 0}, bookTxn{"src", "H", "QSLD", d, "dividend", 50, 0})
+		if i < 3 {
+			txns = append(txns, bookTxn{"src", "S", "000000AD3", d, "dividend", 150, 0})
+		}
+	}
+	txns = append(txns, bookTxn{"src", "S", "000000AD3", ymd(2026, 6, 1), "sell", 15000, -300})
+	in, db, ctx := dividendBook{instruments: []bookInstrument{
+		{"src", "000000AB1", "", "000000AB1", "QCSP"}, {"src", "QCSP", "", "", "QCSP"},
+		{"src", "QTKR", "", "", "QTKR"}, {"src", "000000AC2", "", "000000AC2", "QTKR"},
+		{"src", "QSLD", "", "", "QSLD"}, {"src", "000000AD3", "", "000000AD3", "QSLD"},
+	}, lines: []bookLine{
+		{"src", "B1", "000000AB1", held}, {"src", "B1", "QTKR", held}, {"src", "H", "QSLD", held},
+		{"src", "S", "000000AD3", []bookSeg{{early, 300, 15000}, {ymd(2026, 6, 30), 0, 0}}},
+	}, txns: txns}.inputs(t)
+	b := yield.Compute(in)
+	key := func(acct, id string) yield.HoldingKey {
+		return yield.HoldingKey{Source: "src", Account: acct, PositionKey: id}
+	}
+	for _, k := range []yield.HoldingKey{key("B1", "000000AB1"), key("B1", "QTKR")} {
+		ps := in.Payments[k]
+		if len(ps) != 4 || ps[3].Quantity == nil || *ps[3].Quantity != 100 || in.Income[k].Total() != 200 {
+			t.Errorf("%s: payments %+v, income %v", k.PositionKey, ps, in.Income[k])
+		}
+		p := position(b, k)
+		if p.DividendYield == nil || math.Abs(*p.DividendYield-4) > 1e-9 || p.Realized == nil ||
+			math.Abs(*p.Realized-4) > 1e-9 {
+			t.Errorf("%s: dividend yield %s, realized %s", k.PositionKey, fmtFloatPtr(p.DividendYield),
+				fmtFloatPtr(p.Realized))
+		}
+	}
+	if got := in.Held[yield.InstrumentKey{Source: "src", Instrument: "QSLD"}]; !slices.Equal(got, []string{"H", "S"}) {
+		t.Errorf("QSLD held by %v", got)
+	}
+	sold := key("S", "QSLD")
+	if len(in.Payments[sold]) != 3 || in.Income[sold].Total() != 450 {
+		t.Errorf("S's sold position: payments %+v, income %v", in.Payments[sold], in.Income[sold])
+	}
+	// S held 15,000 dollars of it to the snapshot of 30 June, which ends
+	// its observation.
+	mean := (5000*365 + 15000*364.0) / 365
+	p := position(b, key("H", "QSLD"))
+	if p.DividendYield == nil || math.Abs(*p.DividendYield-4) > 1e-9 || p.Realized == nil ||
+		math.Abs(*p.Realized-650/mean*100) > 1e-9 {
+		t.Errorf("QSLD: dividend yield %s, realized %s, want %v", fmtFloatPtr(p.DividendYield),
+			fmtFloatPtr(p.Realized), 650/mean*100)
+	}
+	got, err := IncomeReceived(ctx, db, in, ymd(2025, 7, 1).Unix(), ymd(2026, 6, 30).Unix()+86399)
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := map[yield.HoldingKey]int{}
+	for _, l := range got {
+		named[l.Holding]++
+	}
+	if named[sold] != 3 || named[key("B1", "000000AB1")] != 4 || named[key("B1", "QTKR")] != 4 {
+		t.Errorf("received lines %v", named)
+	}
+}
+
+// A security moved from one source to another pools what the first paid
+// and held: its sold positions there, under their own instrument. The
+// book is invented: A at source old held 100 of an ISIN until it sold
+// them on 20 May, paid 0.5 a share each quarter to 15 May; N at source
+// new holds 100 of the same ISIN from 31 May, priced at 50, and has been
+// paid nothing yet. N's holding pays 0.5 a share four times a year, and
+// its realized yield is what A received over the amounts A and N held:
+// some source held it every day.
+func TestASecurityMovedBetweenSources(t *testing.T) {
+	t.Parallel()
+	early := ymd(2025, 1, 1)
+	var txns []bookTxn
+	for _, d := range []time.Time{ymd(2025, 8, 15), ymd(2025, 11, 15), ymd(2026, 2, 15), ymd(2026, 5, 15)} {
+		txns = append(txns, bookTxn{"old", "A", "XMOV", d, "dividend", 50, 0})
+	}
+	txns = append(txns, bookTxn{"old", "A", "XMOV", ymd(2026, 5, 20), "sell", 5000, -100})
+	in, _, _ := dividendBook{instruments: []bookInstrument{
+		{"old", "XMOV", "XX0000000001", "", "XMOV"}, {"old", "QPEER", "", "", "QPEER"},
+		{"new", "YMOV", "XX0000000001", "", "YMOV"},
+	}, lines: []bookLine{
+		{"old", "A", "XMOV", []bookSeg{{early, 100, 5000}, {ymd(2026, 5, 31), 0, 0}}},
+		{"old", "A2", "QPEER", []bookSeg{{early, 10, 100}}},
+		{"new", "N", "YMOV", []bookSeg{{ymd(2026, 5, 31), 100, 5000}}},
+	}, txns: txns}.inputs(t)
+	moved := yield.InstrumentKey{Source: "old", Instrument: "XMOV"}
+	if s := in.HeldSecurity[moved]; s != "isin:XX0000000001" {
+		t.Errorf("XMOV's security %q", s)
+	}
+	if d := in.FormerDaily[moved]; len(d) != 1 || d[0].Currency != "USD" || len(d[0].Spans) != 1 ||
+		d[0].Spans[0].From != 0 {
+		t.Errorf("XMOV's amounts %+v", d)
+	}
+	p := position(yield.Compute(in), yield.HoldingKey{Source: "new", Account: "N", PositionKey: "YMOV"})
+	if p.DividendYield == nil || math.Abs(*p.DividendYield-0.5*4/50*100) > 1e-9 || !p.Tags[yield.TagIndicated] {
+		t.Errorf("dividend yield %s, tags %v", fmtFloatPtr(p.DividendYield), p.Tags)
+	}
+	if p.Realized == nil || math.Abs(*p.Realized-200.0/5000*100) > 1e-9 || p.Tags[yield.TagPartial] {
+		t.Errorf("realized %s, tags %v", fmtFloatPtr(p.Realized), p.Tags)
+	}
+}
+
+// The config's holding aliases fold too, as the gains reports read them
+// (holdingAliasJoins): an account's own alias, else its source's, before
+// the instrument aliases. Each stock pays 0.5 a share every quarter and is
+// priced at 50, its quantity read under the alias too. The book is
+// invented:
+//
+//   - B1 holds QHAL and is paid under the CUSIP id 000000AE4, which its
+//     source also keys by its ticker QSHD: the source's holding alias to
+//     QHAL wins over the ticker.
+//   - DEPOT keyed its holding by an overview key, XOVR, until January,
+//     and by QDEP since. Its alias reads XOVR as QDEP for DEPOT alone,
+//     over the source's alias of XOVR to QOTH. CASH, beside it in
+//     portfolio BANK, is paid under XOVR: the lines are DEPOT's holding's,
+//     on what DEPOT held under both keys, and its realized yield pools
+//     the amounts under both.
+//   - H's statement valued its holding in francs under XSTM until
+//     January; its feed values it in dollars under QFED since. The
+//     statement's amounts convert at the franc's rate, not the holding's.
+//     M's one position key, QMIX, reads the same way in both currencies.
+func TestAHoldingAliasFolds(t *testing.T) {
+	t.Parallel()
+	early, feb := ymd(2025, 1, 1), ymd(2026, 1, 31)
+	var txns []bookTxn
+	for _, d := range []time.Time{ymd(2025, 9, 10), ymd(2025, 12, 10), ymd(2026, 3, 10), ymd(2026, 6, 10)} {
+		txns = append(txns, bookTxn{"src", "B1", "000000AE4", d, "dividend", 50, 0},
+			bookTxn{"src", "CASH", "XOVR", d, "dividend", 50, 0}, bookTxn{"src", "H", "QFED", d, "dividend", 50, 0},
+			bookTxn{"src", "M", "QMIX", d, "dividend", 50, 0})
+	}
+	in, _, _ := dividendBook{instruments: []bookInstrument{
+		{"src", "000000AE4", "", "000000AE4", "QSHD"}, {"src", "QSHD", "", "", "QSHD"}, {"src", "QHAL", "", "", "QHAL"},
+		{"src", "XOVR", "", "", ""}, {"src", "QDEP", "", "", "QDEP"}, {"src", "XSTM", "", "", ""},
+		{"src", "QFED", "", "", "QFED"}, {"src", "QMIX", "", "", "QMIX"},
+	}, lines: []bookLine{
+		{"src", "B1", "QHAL", []bookSeg{{early, 100, 5000}}},
+		{"src", "DEPOT", "XOVR", []bookSeg{{early, 100, 5000}, {feb, 0, 0}}},
+		{"src", "DEPOT", "QDEP", []bookSeg{{feb, 100, 5000}}},
+		{"src", "H", "XSTM", []bookSeg{{early, 100, 4000}, {feb, 0, 0}}},
+		{"src", "H", "QFED", []bookSeg{{feb, 100, 5000}}},
+		{"src", "M", "QMIX", []bookSeg{{early, 100, 4000}, {feb, 100, 5000}}},
+	}, txns: txns, portfolios: map[string]string{"DEPOT": "BANK", "CASH": "BANK"}, after: []string{
+		`INSERT INTO holding_aliases (silver_source_id, account_external_id, from_key, to_key) VALUES
+		    ('src', '', '000000AE4', 'QHAL'), ('src', 'DEPOT', 'XOVR', 'QDEP'), ('src', '', 'XOVR', 'QOTH'),
+		    ('src', '', 'XSTM', 'QFED')`,
+		`UPDATE positions SET currency = 'CHF' WHERE position_key = 'XSTM'
+		    OR (position_key = 'QMIX' AND snapshot_at < ` + itoa(feb.Unix()) + `)`,
+		`INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate)
+		    VALUES ('fx', 0, 'USD', 'CHF', 1.25)`,
+	}}.inputs(t)
+	for k, want := range map[yield.AliasKey]string{
+		{Source: "src", ID: "000000AE4"}: "QHAL", {Source: "src", Account: "DEPOT", ID: "XOVR"}: "QDEP",
+		{Source: "src", ID: "XOVR"}: "QOTH", {Source: "src", ID: "XSTM"}: "QFED",
+	} {
+		if got := in.Aliases[k]; got != want {
+			t.Errorf("%v reads as %q, want %q", k, got, want)
+		}
+	}
+	if f := in.FormerDaily[yield.InstrumentKey{Source: "src", Instrument: "QFED"}]; len(f) != 1 ||
+		f[0].Currency != "CHF" || in.FXRates["CHF"] != 1.25 {
+		t.Errorf("QFED's former amounts %+v, the franc at %v", f, in.FXRates["CHF"])
+	}
+	b := yield.Compute(in)
+	for _, k := range []yield.HoldingKey{{Source: "src", Account: "B1", PositionKey: "QHAL"},
+		{Source: "src", Account: "DEPOT", PositionKey: "QDEP"}, {Source: "src", Account: "H", PositionKey: "QFED"},
+		{Source: "src", Account: "M", PositionKey: "QMIX"}} {
+		ps := in.Payments[k]
+		if len(ps) != 4 || in.Income[k].Total() != 200 {
+			t.Errorf("%s: payments %+v, income %v", k.PositionKey, ps, in.Income[k])
+			continue
+		}
+		// The first pay day's 100 days before come before the first
+		// snapshot.
+		for i, x := range ps {
+			if x.Quantity == nil || *x.Quantity != 100 || (x.Before != nil) != (i > 0) || (i > 0 && *x.Before != 100) {
+				t.Errorf("%s on %s: quantity %s, before %s", k.PositionKey, x.Day.Format(time.DateOnly),
+					fmtFloatPtr(x.Quantity), fmtFloatPtr(x.Before))
+			}
+		}
+		p := position(b, k)
+		if p.DividendYield == nil || math.Abs(*p.DividendYield-4) > 1e-9 || p.Realized == nil ||
+			math.Abs(*p.Realized-4) > 1e-9 || p.Tags[yield.TagPartial] {
+			t.Errorf("%s: dividend yield %s, realized %s, tags %v", k.PositionKey, fmtFloatPtr(p.DividendYield),
+				fmtFloatPtr(p.Realized), p.Tags)
+		}
+	}
+}
+
+// A bank may book a dividend in another portfolio than the custody
+// account's. A line of an account whose portfolio never held the
+// instrument, where one account of its source alone did, is that
+// account's sold position, and pools with the security's holdings. The
+// book is invented: CUST, in portfolio P1 at the bank, held 100 of an
+// ISIN until it sold them on 15 March; its dividends went to CSH, in P2.
+// BRK at the broker holds 100 of the same ISIN, priced at 50. Each pays
+// 0.5 a share a quarter: BRK's realized yield is what both received over
+// the amounts both held.
+func TestALineBookedInAnotherPortfolio(t *testing.T) {
+	t.Parallel()
+	early := ymd(2025, 1, 1)
+	var txns []bookTxn
+	for i, d := range []time.Time{ymd(2025, 9, 10), ymd(2025, 12, 10), ymd(2026, 3, 10), ymd(2026, 6, 10)} {
+		txns = append(txns, bookTxn{"broker", "BRK", "YBRK", d, "dividend", 50, 0})
+		if i < 3 {
+			txns = append(txns, bookTxn{"bank", "CSH", "XBNK", d, "dividend", 50, 0})
+		}
+	}
+	txns = append(txns, bookTxn{"bank", "CUST", "XBNK", ymd(2026, 3, 15), "sell", 5000, -100})
+	in, db, ctx := dividendBook{instruments: []bookInstrument{
+		{"bank", "XBNK", "XX0000000002", "", "XBNK"}, {"bank", "QPEER", "", "", "QPEER"},
+		{"broker", "YBRK", "XX0000000002", "", "YBRK"},
+	}, lines: []bookLine{
+		{"bank", "CUST", "XBNK", []bookSeg{{early, 100, 5000}, {ymd(2026, 3, 31), 0, 0}}},
+		{"bank", "PEER", "QPEER", []bookSeg{{early, 10, 100}}},
+		{"broker", "BRK", "YBRK", []bookSeg{{early, 100, 5000}}},
+	}, txns: txns, portfolios: map[string]string{"CUST": "P1", "PEER": "P1", "CSH": "P2"}}.inputs(t)
+	sold := yield.HoldingKey{Source: "bank", Account: "CUST", PositionKey: "XBNK"}
+	if k, ok := in.Sold("bank", "CSH", "XBNK"); !ok || k != sold {
+		t.Errorf("CSH's line: %v %v", k, ok)
+	}
+	if ps := in.Payments[sold]; len(ps) != 3 || ps[0].Quantity == nil || *ps[0].Quantity != 100 ||
+		in.Income[sold].Total() != 150 {
+		t.Errorf("CUST's sold position: payments %+v, income %v", ps, in.Income[sold])
+	}
+	custody := ymd(2026, 3, 31).Sub(ymd(2025, 7, 1)).Hours() / 24
+	mean := (5000*365 + 5000*custody) / 365
+	p := position(yield.Compute(in), yield.HoldingKey{Source: "broker", Account: "BRK", PositionKey: "YBRK"})
+	if p.Realized == nil || math.Abs(*p.Realized-350/mean*100) > 1e-9 {
+		t.Errorf("realized %s, want %v", fmtFloatPtr(p.Realized), 350/mean*100)
+	}
+	got, err := IncomeReceived(ctx, db, in, ymd(2025, 7, 1).Unix(), ymd(2026, 6, 30).Unix()+86399)
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := 0
+	for _, l := range got {
+		if l.Holding == sold {
+			named++
+		}
+	}
+	if named != 3 {
+		t.Errorf("%d received lines name CUST's sold position: %+v", named, got)
 	}
 }

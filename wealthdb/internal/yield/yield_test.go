@@ -43,7 +43,8 @@ func inputs() *Inputs {
 		Income: map[HoldingKey]Received{}, AccountIncome: map[AccountCurrency]Received{},
 		Payments: map[HoldingKey][]Payment{}, Dividends: map[InstrumentKey]canonical.DeclaredDividend{},
 		Securities: map[string]Facts{}, Daily: map[HoldingKey]Daily{},
-		FormerDaily: map[InstrumentKey]Daily{}, Held: map[InstrumentKey][]string{},
+		FormerDaily: map[InstrumentKey][]Daily{}, Held: map[InstrumentKey][]string{},
+		HeldSecurity: map[InstrumentKey]string{}, Aliases: map[AliasKey]string{},
 		Withholding: map[string]map[string]float64{}, Situs: map[HoldingKey]string{}, FXRates: map[string]float64{}}
 	for _, c := range canonical.BuiltinConventions() {
 		in.Conventions[c.Market] = c
@@ -496,6 +497,84 @@ func TestHoldingOf(t *testing.T) {
 	if _, ok := in.Sold("broker", "X", "QB"); ok {
 		t.Error("X sold what it never held")
 	}
+}
+
+// The ids a source keys one instrument by fold into one where the lines
+// meet the holdings (Fold): an account's own alias first, then its
+// source's. A line under the ticker belongs to the holding under the
+// CUSIP id, and the reverse. An account's own alias covers the lines its
+// portfolio's other accounts book for it too, and no other's: a cash
+// account's line under a custody account's key belongs to the custody
+// account's holding, or to the cash account's sold position under the
+// custody account's id; another portfolio's line under that key belongs
+// to a holding of it as it stands. A line of an account whose portfolio
+// never held the instrument, where one account of the source alone did,
+// is that account's sold position; where two did, none's. A
+// line of an account that held it under the other id is its sold
+// position's, under the id it folds into, and the holding pools it: its
+// income, and its amounts (FormerDaily).
+func TestTheAliasFold(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	for k, v := range map[AliasKey]string{
+		{"broker", "", "000000AA0"}: "QALS", {"broker", "", "000000BB0"}: "QTKR",
+		{"broker", "K", "QOVR"}: "QALS", {"broker", "", "QOVR"}: "QOTH",
+		{"broker", "A", "XOVA"}: "QALS", {"broker", "D", "XOVD"}: "QDD", {"broker", "AA", "XK"}: "QY",
+	} {
+		in.Aliases[k] = v
+	}
+	for acct, p := range map[string]string{"A": "P", "C": "P", "D": "Q", "E": "Q", "G": "R", "AA": "PA", "BB": "PB",
+		"CC": "PC"} {
+		in.Accounts[AccountKey{"broker", acct}] = Account{Portfolio: p}
+	}
+	cusip, ticker := bondHolding("broker", "A", "000000AA0", 1000, 1000), bondHolding("broker", "B", "QTKR", 1000, 1000)
+	aliased, direct := bondHolding("broker", "AA", "QY", 1000, 1000), bondHolding("broker", "BB", "XK", 1000, 1000)
+	in.Holdings = []Holding{cusip, ticker, aliased, direct}
+	in.Held[InstrumentKey{"broker", "QALS"}] = []string{"A", "S"}
+	in.Held[InstrumentKey{"broker", "QTKR"}] = []string{"B"}
+	in.Held[InstrumentKey{"broker", "QDD"}] = []string{"D"}
+	in.Held[InstrumentKey{"broker", "QTWO"}] = []string{"D", "S"}
+	for _, tc := range []struct {
+		acct, iid string
+		want      HoldingKey
+	}{
+		{"A", "QALS", cusip.HoldingKey},
+		{"A", "000000AA0", cusip.HoldingKey},
+		{"B", "000000BB0", ticker.HoldingKey},
+		{"K", "QOVR", cusip.HoldingKey},
+		{"X", "QOVR", HoldingKey{}},
+		{"S", "000000AA0", HoldingKey{}},
+		{"C", "XOVA", cusip.HoldingKey},
+		{"G", "XOVA", HoldingKey{}},
+		{"E", "XOVD", HoldingKey{}},
+		{"CC", "XK", direct.HoldingKey},
+	} {
+		if got, ok := in.HoldingOf("broker", tc.acct, tc.iid); got != tc.want || ok != (tc.want != HoldingKey{}) {
+			t.Errorf("%s %s: %v %v, want %v", tc.acct, tc.iid, got, ok, tc.want)
+		}
+	}
+	sold := HoldingKey{"broker", "S", "QALS"}
+	for _, tc := range []struct {
+		acct, iid string
+		want      HoldingKey
+	}{
+		{"S", "000000AA0", sold},
+		{"E", "XOVD", HoldingKey{"broker", "E", "QDD"}},
+		{"G", "QDD", HoldingKey{"broker", "D", "QDD"}},
+	} {
+		if k, ok := in.Sold("broker", tc.acct, tc.iid); !ok || k != tc.want {
+			t.Errorf("%s %s sold %v %v, want %v", tc.acct, tc.iid, k, ok, tc.want)
+		}
+	}
+	if k, ok := in.Sold("broker", "G", "QTWO"); ok {
+		t.Errorf("G sold %v, which two accounts held", k)
+	}
+	in.Daily[cusip.HoldingKey] = held(Span{From: 0, To: year, Amount: 1000})
+	in.FormerDaily[InstrumentKey{"broker", "QALS"}] = []Daily{held(Span{From: 0, To: year - 165, Amount: 3000})}
+	in.Income[cusip.HoldingKey] = Received{TypeCoupons: 50}
+	in.Income[sold] = Received{TypeCoupons: 60}
+	mean := (1000*year + 3000*(year-165.0)) / year
+	near(t, "pooled", position(Compute(in), cusip.HoldingKey).Realized, 110/mean*100, 1e-9)
 }
 
 // A payment in another currency than the holding's counts at the

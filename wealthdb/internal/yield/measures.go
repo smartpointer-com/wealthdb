@@ -2,7 +2,6 @@ package yield
 
 import (
 	"cmp"
-	"maps"
 	"math"
 	"slices"
 	"time"
@@ -847,7 +846,7 @@ func realized(in *Inputs, h Holding, m *Measures) {
 	}
 	m.daily = in.Daily[h.HoldingKey]
 	var p pool
-	held := !h.IsCash && poolKey(h) != ""
+	held := !h.IsCash && in.poolKey(h) != ""
 	if held {
 		p = instrumentPool(in, h)
 	} else {
@@ -865,21 +864,36 @@ func realized(in *Inputs, h Holding, m *Measures) {
 
 // instrumentPool pools what every holding of h's instrument received
 // and held (instrumentOf), what its sold positions received (Sold), and
-// what the positions of it that are no holding held (FormerDaily): its
-// income and its amounts across every account, an account that sold it
-// included.
+// what the positions of its instruments that are no holding held
+// (FormerDaily): its income and its amounts across every account and
+// source, an account that sold it included. Those positions' amounts
+// convert as a holding of their instrument in their currency does, else
+// at the instant's rate.
 func instrumentPool(in *Inputs, h Holding) pool {
 	var p pool
-	holdings, sold := in.instrumentOf(h)
-	fx := map[InstrumentKey]float64{}
+	holdings, instruments, sold := in.instrumentOf(h)
+	// fx is each instrument's rate by currency: a holding's of it in that
+	// currency, the first holding's for amounts that state none.
+	fx := map[InstrumentKey]map[string]float64{}
 	for _, o := range holdings {
 		p.add(o.FX(), in.Income[o.HoldingKey].Total(), in.Daily[o.HoldingKey])
-		if ik := (InstrumentKey{o.Source, o.Instrument}); fx[ik] == 0 {
-			fx[ik] = o.FX()
+		ik := in.instrumentKey(o)
+		if fx[ik] == nil {
+			fx[ik] = map[string]float64{"": o.FX()}
+		}
+		if fx[ik][o.Currency] == 0 {
+			fx[ik][o.Currency] = o.FX()
 		}
 	}
-	for _, ik := range slices.SortedFunc(maps.Keys(fx), compareInstruments) {
-		p.add(fx[ik], 0, in.FormerDaily[ik])
+	slices.SortFunc(instruments, compareInstruments)
+	for _, ik := range instruments {
+		for _, d := range in.FormerDaily[ik] {
+			rate := fx[ik][d.Currency]
+			if rate == 0 {
+				rate = in.fxOf(d.Currency)
+			}
+			p.add(rate, 0, d)
+		}
 	}
 	for _, k := range sold {
 		p.received += in.Income[k].Total()

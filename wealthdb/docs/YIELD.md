@@ -429,7 +429,18 @@ twelve months to the day over the mean daily value.
   its portfolio: a bank books a dividend to the cash account beside the
   custody account. Where no account of the portfolio holds it but one
   held it once, the line stays with its own sold position. Else it
-  belongs to a holding of it at its source.
+  belongs to a holding of it at its source. Where the source holds none,
+  and one account of the source alone held it, the line is that
+  account's sold position: a bank may book a dividend in another
+  portfolio.
+- A line meets its holding under any id its source gives the
+  instrument. A source may key one security by its CUSIP and by its
+  ticker. The config may give one holding two keys (`holding_aliases`,
+  DESIGN.md §5.1). So a line under one id belongs to the holding under
+  the other. An alias for one account covers that account's lines, and
+  the lines its portfolio's other accounts book for it. A sold position
+  is named by the ticker, or by the id the config's alias gives. The
+  holding keeps its own key.
 - A broker may book a bond's coupon as the account's interest, naming
   no holding. Its description then names the bond by its coupon and
   maturity (`US TREASU NT 9.875%09/99UST NOTE DUE 09/09/99`). Such a
@@ -437,7 +448,8 @@ twelve months to the day over the mean daily value.
 - Where the account holds no such bond, or two, a line that names a
   bond issue (a Treasury, a note, a bond) is the account's coupons
   (`income:coupons:<CCY>`): no deposit's interest, and no holding's. So
-  is a coupon whose line names a bond no account of its held. Any other
+  is a coupon whose line names a bond that neither its account, its
+  portfolio, nor one account of its source alone held. Any other
   line stays interest, such as a deposit's that states its rate and
   its end.
 - A day's amount is the one `holdings` reads at the day's end: its
@@ -445,12 +457,15 @@ twelve months to the day over the mean daily value.
 - A holding of an instrument, such as a stock, a fund or a bond, yields
   its instrument's realized yield. The instrument is the security,
   at every source; one with no security key is the instrument at its
-  source. The income is that of every account that held it, an account
-  that sold it included. It is over the instrument's mean amount on the
-  days any account held it, summed over every account. A day no account
-  held it does not count. A holding held half the year so reads half
-  its yearly rate, and carries `partial`. Every holding of the
-  instrument shows that figure.
+  source. The income is that of every account that held it, at any
+  source, an account that sold it included. So a security moved from one
+  source to another keeps what the first paid and held. The amounts of a
+  position that is no holding convert as a holding of its instrument in
+  its currency does, else at the day's rate. It is over the
+  instrument's mean amount on the days any account held it, summed over
+  every account. A day no account held it does not count. A holding
+  held half the year so reads half its yearly rate, and carries
+  `partial`. Every holding of the instrument shows that figure.
 - A cash balance's mean daily value is its amount on each day of the
   twelve months, at the day's rate, over the days. A day it was not
   held counts as zero.
@@ -479,11 +494,12 @@ twelve months to the day over the mean daily value.
 The indicated dividend is the instrument's: the security's, at every
 source, as for the realized yield. Every holding of it shows the same
 one, and the projection pays it on each holding's own quantity. The
-payments of every account count, an account that sold the instrument
-included.
+payments of every account count, at any source, an account that sold
+the instrument included.
 
 - An account's lines of one day are one payment: a fund's distribution
-  often comes as several, income and capital gains apart.
+  often comes as several, income and capital gains apart. Two sources'
+  accounts of one id are two accounts.
 - A payment per share is the payment over the quantity the account held
   as its pay day began. That quantity comes from the account's newest
   snapshot by then. The account's trades since that snapshot move it.
@@ -496,7 +512,8 @@ included.
   of the others. From the snapshot that ends an account's last
   observation (DESIGN.md §10.7), the account holds nothing.
 - The quantity counts the instrument under every id its source gives
-  it, as exposure keys a holding (a symbol and a CUSIP, say).
+  it, as a line meets its holding: a symbol and a CUSIP, say, or a
+  holding alias.
 - A payment booked to a cash account that never held the instrument
   reads the quantity its portfolio's accounts held: a bank books a
   dividend to the cash account beside the custody account. Where no

@@ -105,7 +105,12 @@ SELECT silver_source_id, account_external_id, 'cash:' || currency, amount::DOUBL
 			t.Fatal(err)
 		}
 	}
+	// Each holding of this book is valued in one currency.
+	amounts := map[yield.HoldingKey]*yield.Daily{}
 	for k, d := range b.amounts {
+		amounts[k.HoldingKey] = d
+	}
+	for k, d := range amounts {
 		if want[k] == nil {
 			want[k] = make([]float64, days)
 		}
@@ -118,7 +123,7 @@ SELECT silver_source_id, account_external_id, 'cash:' || currency, amount::DOUBL
 	}
 	for k, w := range want {
 		got := make([]float64, days)
-		d := b.amounts[k]
+		d := amounts[k]
 		if d != nil {
 			for _, s := range d.Spans {
 				for i := s.From; i < s.To; i++ {
@@ -139,7 +144,7 @@ SELECT silver_source_id, account_external_id, 'cash:' || currency, amount::DOUBL
 		}
 	}
 	// Zero at every month end, held two thirds of the year.
-	m := b.amounts[yield.HoldingKey{Source: "m", Account: "M", PositionKey: "cash:USD"}]
+	m := amounts[yield.HoldingKey{Source: "m", Account: "M", PositionKey: "cash:USD"}]
 	if m == nil || m.Mean() < 5000*0.6 || m.Mean() > 5000*0.7 {
 		t.Errorf("between the month ends: %+v", m)
 	}
@@ -150,7 +155,7 @@ SELECT silver_source_id, account_external_id, 'cash:' || currency, amount::DOUBL
 			t.Errorf("held at the month end %d: %d %v", at, n, err)
 		}
 	}
-	if old := b.amounts[yield.HoldingKey{Source: "b", Account: "B1", PositionKey: "QOLD"}]; old == nil ||
+	if old := amounts[yield.HoldingKey{Source: "b", Account: "B1", PositionKey: "QOLD"}]; old == nil ||
 		old.Mean() != 777 || len(old.Spans) != 1 {
 		t.Errorf("a stale source %+v", old)
 	}

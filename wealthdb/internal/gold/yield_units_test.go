@@ -480,7 +480,7 @@ func TestADividendIsPaidOnWhatItsAccountHeld(t *testing.T) {
 	// B2's.
 	sold := ymd(2026, 6, 30).Sub(ymd(2025, 7, 1)).Hours() / 24
 	former := in.FormerDaily[yield.InstrumentKey{Source: "src", Instrument: "QSTK"}]
-	if former.Days != 365 || math.Abs(former.Mean()-(15000*sold+0.001)/365) > 1e-9 {
+	if len(former) != 1 || former[0].Days != 365 || math.Abs(former[0].Mean()-(15000*sold+0.001)/365) > 1e-9 {
 		t.Errorf("former %+v", former)
 	}
 	b2, gone := key("src", "B2", "QSTK"), key("src", "SOLD", "QSTK")

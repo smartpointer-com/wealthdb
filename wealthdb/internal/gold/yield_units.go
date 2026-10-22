@@ -15,9 +15,12 @@ import (
 // The quantity a dividend was paid on (docs/YIELD.md §4): what its
 // account held of its instrument before its day, in the newest snapshot
 // that speaks for the account (unitAccountsCTE), moved by the account's
-// trades since, in the instrument's units at the instant.
+// trades since, in the instrument's units at the instant. An instrument
+// goes by the id the matching folds it into (yield.Inputs.Fold), under
+// the account that holds or trades it.
 
-// unitKey names an instrument held in one account of a source.
+// unitKey names an instrument held in one account of a source, by the id
+// the account's aliases fold it into.
 type unitKey struct{ src, acct, iid string }
 
 // unitPoint is a key's quantity from a snapshot that speaks for its
@@ -60,27 +63,15 @@ type yieldUnits struct {
 type accountKey struct{ src, acct string }
 
 // unitWindowCTE are the instruments $1 and $2 name (one source and one
-// instrument a pair), each with every instrument of its source that is
-// one with it as exposure keys a holding (instrument_aliases, migration
-// 0120), as paid and iid; and the snapshots of their sources that hold on
-// some day from $3 to $4: from the oldest of the accounts' active
-// snapshots at $3 (pos_active_at, migration 0140), else the first, every
-// one to $4.
+// id a pair), by the id the matching folds an instrument into (paid); and
+// the snapshots of their sources that hold on some day from $3 to $4: from
+// the oldest of the accounts' active snapshots at $3 (pos_active_at,
+// migration 0140), else the first, every one to $4.
 const unitWindowCTE = `
-WITH paid AS (SELECT unnest($1::VARCHAR[]) AS src, unnest($2::VARCHAR[]) AS iid),
-folded AS (
-    SELECT i.silver_source_id AS src, i.instrument_external_id AS iid, COALESCE(a.k, i.instrument_external_id) AS k
-      FROM instruments i
-      LEFT JOIN instrument_aliases() a ON a.src = i.silver_source_id AND a.alias = i.instrument_external_id
-     WHERE i.silver_source_id IN (SELECT src FROM paid)),
-n AS (
-    SELECT DISTINCT p.src, p.iid AS paid, COALESCE(o.iid, p.iid) AS iid
-      FROM paid p
-      LEFT JOIN folded f ON f.src = p.src AND f.iid = p.iid
-      LEFT JOIN folded o ON o.src = p.src AND o.k = COALESCE(f.k, p.iid)),
+WITH paid AS (SELECT DISTINCT unnest($1::VARCHAR[]) AS src, unnest($2::VARCHAR[]) AS k),
 snaps AS (
     SELECT DISTINCT silver_source_id, snapshot_at FROM positions
-     WHERE snapshot_at <= $4 AND silver_source_id IN (SELECT src FROM n)),
+     WHERE snapshot_at <= $4 AND silver_source_id IN (SELECT src FROM paid)),
 active AS (SELECT src, MIN(snap) AS snap FROM pos_active_at([$3::BIGINT]) GROUP BY ALL),
 first AS (
     SELECT s.silver_source_id, COALESCE(MIN(a.snap), MIN(s.snapshot_at)) AS first_at
@@ -105,7 +96,7 @@ account_snaps AS (
       JOIN window_snaps s ON s.silver_source_id = x.silver_source_id AND s.snapshot_at = x.snapshot_at),
 account_ends AS (
     SELECT src, acct, until AS ended_at FROM pos_key_spans()
-     WHERE src IN (SELECT src FROM n)
+     WHERE src IN (SELECT src FROM paid)
    QUALIFY snap = MAX(snap) OVER (PARTITION BY src, acct)),
 account_grid AS (
     SELECT l.silver_source_id, l.account_external_id, s.snapshot_at
@@ -116,15 +107,16 @@ account_grid AS (
       LEFT JOIN account_ends e ON e.src = l.silver_source_id AND e.acct = l.account_external_id
      WHERE a.snapshot_at IS NOT NULL OR s.snapshot_at >= e.ended_at)`
 
-// readYieldUnits reads the units of the instruments paid from from to
-// asOf. Each account's quantity of each is the sum of its rows of it, and
-// of the instruments one with it (unitWindowCTE), in each snapshot that
-// speaks for the account (unitAccountsCTE), the account holding none
-// where they are absent: the points it changes at (unitPoint). Between
-// two such snapshots, the account's trades, read as the source kind's lot
-// policy reads them (lots.PolicyFor), and its quantity and value tell a
-// change of units (unitStep.change). Every account's changes are the
-// instrument's (addChange).
+// readYieldUnits reads the units of the instruments paid, by the ids the
+// matching folds them into, from from to asOf. Each account's quantity of
+// each is the sum of its rows whose instrument its aliases fold into it,
+// as holdingAliasJoins reads a holding's key (a CUSIP id and its ticker,
+// say), in each snapshot that speaks for the account (unitAccountsCTE),
+// the account holding none where they are absent: the points it changes
+// at (unitPoint). Between two such snapshots, the account's trades, read
+// as the source kind's lot policy reads them (lots.PolicyFor), and its
+// quantity and value tell a change of units (unitStep.change). Every
+// account's changes are the instrument's (addChange).
 func readYieldUnits(ctx context.Context, db *sql.DB, paid map[yield.InstrumentKey]bool, from, asOf int64) (*yieldUnits,
 	error) {
 	u := &yieldUnits{points: map[unitKey][]unitPoint{}, snaps: map[accountKey][]int64{},
@@ -145,12 +137,19 @@ func readYieldUnits(ctx context.Context, db *sql.DB, paid map[yield.InstrumentKe
 	}
 	var steps []stepAt
 	if err := scanAll(ctx, db, unitWindowCTE+unitAccountsCTE+`,
+folded AS (
+    SELECT p.silver_source_id, p.account_external_id, p.snapshot_at, p.quantity, p.market_value,
+           COALESCE(ha.to_key, hd.to_key, ia.k, p.instrument_external_id) AS k
+      FROM positions p`+holdingAliasJoins("p.silver_source_id", "p.account_external_id", "p.instrument_external_id",
+		"p.position_key")+`
+     WHERE p.instrument_external_id IS NOT NULL AND p.snapshot_at <= $4
+       AND p.silver_source_id IN (SELECT src FROM paid)),
 held AS (
-    SELECT p.silver_source_id, p.account_external_id, n.paid AS instrument_external_id, p.snapshot_at,
+    SELECT p.silver_source_id, p.account_external_id, p.k AS instrument_external_id, p.snapshot_at,
            CASE WHEN bool_or(p.quantity IS NULL) THEN NULL ELSE SUM(p.quantity) END::DOUBLE AS qty,
            SUM(p.market_value)::DOUBLE AS value
-      FROM positions p
-      JOIN n ON n.src = p.silver_source_id AND n.iid = p.instrument_external_id
+      FROM folded p
+      JOIN paid ON paid.src = p.silver_source_id AND paid.k = p.k
       JOIN window_snaps s ON s.silver_source_id = p.silver_source_id AND s.snapshot_at = p.snapshot_at
      GROUP BY ALL),
 keys AS (SELECT DISTINCT silver_source_id, account_external_id, instrument_external_id FROM held),
@@ -276,9 +275,10 @@ func (u *yieldUnits) covered(ik yield.InstrumentKey, end int64) bool {
 }
 
 // readUnitTrades reads each key's transactions that move its quantity
-// over the snapshots readYieldUnits reads, oldest first (unitMove). One
-// stamped at a snapshot's instant counts in it or after it, as the
-// snapshot shows (after).
+// over the snapshots readYieldUnits reads, oldest first (unitMove), each
+// by the id its account's aliases fold its instrument into. One stamped at
+// a snapshot's instant counts in it or after it, as the snapshot shows
+// (after).
 func readUnitTrades(ctx context.Context, db *sql.DB, srcs, iids []string, from, asOf int64) (map[unitKey][]unitTrade,
 	error) {
 	kinds := map[string]string{}
@@ -293,13 +293,19 @@ func readUnitTrades(ctx context.Context, db *sql.DB, srcs, iids []string, from, 
 		return nil, err
 	}
 	out := map[unitKey][]unitTrade{}
-	err := scanAll(ctx, db, unitWindowCTE+`
-SELECT t.silver_source_id, t.account_external_id, n.paid, t.occurred_at, t.transaction_external_id,
+	err := scanAll(ctx, db, unitWindowCTE+`,
+folded AS (
+    SELECT t.*, COALESCE(ha.to_key, hd.to_key, ia.k, t.instrument_external_id) AS k
+      FROM transactions t`+holdingAliasJoins("t.silver_source_id", "t.account_external_id", "t.instrument_external_id",
+		"NULL")+`
+     WHERE t.instrument_external_id IS NOT NULL AND t.quantity <> 0 AND t.occurred_at <= $4
+       AND t.silver_source_id IN (SELECT src FROM paid))
+SELECT t.silver_source_id, t.account_external_id, t.k, t.occurred_at, t.transaction_external_id,
        t.kind, CAST(t.quantity AS DOUBLE), `+lotTxnColumns+`
-  FROM transactions t
-  JOIN n ON n.src = t.silver_source_id AND n.iid = t.instrument_external_id
+  FROM folded t
+  JOIN paid ON paid.src = t.silver_source_id AND paid.k = t.k
   JOIN first f ON f.silver_source_id = t.silver_source_id
- WHERE t.occurred_at >= f.first_at AND t.occurred_at <= $4 AND t.quantity <> 0
+ WHERE t.occurred_at >= f.first_at
  ORDER BY t.occurred_at, t.silver_source_id, t.transaction_external_id`, func(rows *sql.Rows) error {
 		var k unitKey
 		var at int64
@@ -361,8 +367,9 @@ func (u *yieldUnits) addChange(ik yield.InstrumentKey, c unitChange) {
 	u.changes[ik] = append(cs, c)
 }
 
-// quantity is what account acct held of instrument iid as end began, in
-// the instrument's units at the instant (heldOn). Where the account never
+// quantity is what account acct held of the instrument iid names as end
+// began, in the instrument's units at the instant (heldOn), iid folded
+// under each account read (yield.Inputs.Fold). Where the account never
 // held the instrument, it is the sum its portfolio's accounts held, else,
 // where one account of its source alone held it, that account's: a bank
 // books a dividend to a cash account beside the custody account, or in
@@ -372,38 +379,38 @@ func (u *yieldUnits) addChange(ik yield.InstrumentKey, c unitChange) {
 // explains, or a span since end over which no account held the
 // instrument with its units read (covered).
 func (u *yieldUnits) quantity(in *yield.Inputs, src, acct, iid string, end int64) (qty *float64, units bool) {
-	ik := yield.InstrumentKey{Source: src, Instrument: iid}
-	accounts := []string{acct}
-	if _, ok := u.points[unitKey{src, acct, iid}]; !ok {
-		accounts = nil
+	keys := []unitKey{{src, acct, in.Fold(src, acct, iid)}}
+	if _, ok := u.points[keys[0]]; !ok {
+		own := keys[0].iid
+		keys = nil
 		if portfolio := in.Accounts[yield.AccountKey{Source: src, Account: acct}].Portfolio; portfolio != "" {
-			for _, a := range u.accounts[ik] {
-				if in.Accounts[yield.AccountKey{Source: src, Account: a}].Portfolio == portfolio {
-					accounts = append(accounts, a)
+			for a, x := range in.Accounts {
+				k := unitKey{src, a.Account, in.Fold(src, a.Account, iid)}
+				if _, ok := u.points[k]; ok && a.Source == src && x.Portfolio == portfolio {
+					keys = append(keys, k)
 				}
 			}
+			slices.SortFunc(keys, func(a, b unitKey) int { return cmp.Compare(a.acct, b.acct) })
 		}
-		if len(accounts) == 0 && len(u.accounts[ik]) == 1 {
-			accounts = u.accounts[ik]
+		if accts := u.accounts[yield.InstrumentKey{Source: src, Instrument: own}]; len(keys) == 0 && len(accts) == 1 {
+			keys = []unitKey{{src, accts[0], own}}
 		}
 	}
 	held, known := 0.0, false
-	for _, a := range accounts {
-		if snaps := u.snaps[accountKey{src, a}]; len(accounts) > 1 && (len(snaps) == 0 || snaps[0] > end) {
+	for _, k := range keys {
+		if snaps := u.snaps[accountKey{src, k.acct}]; len(keys) > 1 && (len(snaps) == 0 || snaps[0] > end) {
 			continue
 		}
-		q := u.heldOn(unitKey{src, a, iid}, end)
+		q := u.heldOn(k, end)
 		if q == nil {
 			return nil, false
 		}
 		held, known = held+*q, true
 	}
-	if !known {
+	if !known || held <= 0 {
 		return nil, false
 	}
-	if held <= 0 {
-		return nil, false
-	}
+	ik := yield.InstrumentKey{Source: src, Instrument: keys[0].iid}
 	k, ok := 1.0, true
 	for _, c := range u.changes[ik] {
 		if c.at > end {
