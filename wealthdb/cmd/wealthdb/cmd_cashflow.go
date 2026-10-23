@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
@@ -102,7 +101,7 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 		return err
 	}
 
-	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), time.Now())
+	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), g.clock())
 	if err != nil {
 		fs.Usage()
 		return errs.Newf(errs.ExitUsage, "cashflow: %s", err.Error())
@@ -114,7 +113,7 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 	}
 
 	rep := cashflowReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
-		period: *period, level: *level, investing: *investing})
+		period: *period, level: *level, investing: *investing, categories: overrideCategories(cfg)})
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
 	return writeReport(ctx, rep, *rf.cols, "cashflow", open, *rf.privacy, fmtChoice, stdout)
 }
@@ -141,15 +140,20 @@ func cashflowReport(req request) *report {
 				return gold.CashflowSankey(ctx, db, req.from, req.to, req.currency, req.level, req.investing)
 			})
 	case "coverage":
-		return newReport(buildCashflowCoverageColumnRegistry(req.period), defaultCashflowCoverageColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.CashflowCoverageRow, error) {
-				return gold.CashflowCoverage(ctx, db, req.from, req.to, part)
-			})
+		kindOf, loadKinds := sourceKinds()
+		nicknames := accountNicknames{}
+		return newReport(buildCashflowCoverageColumnRegistry(req.period, kindOf, nicknames), defaultCashflowCoverageColumns,
+			loadFirst(loadKinds, loadFirst(nicknames.load,
+				func(ctx context.Context, db *sql.DB) ([]gold.CashflowCoverageRow, error) {
+					return gold.CashflowCoverage(ctx, db, req.from, req.to, part)
+				})))
 	default:
-		return newReport(buildCashflowTransactionColumnRegistry(req.currency), defaultCashflowTransactionColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.CashflowTransactionRow, error) {
+		kindOf, loadKinds := sourceKinds()
+		return newReport(buildCashflowTransactionColumnRegistry(req.currency, kindOf, req.categories),
+			defaultCashflowTransactionColumns,
+			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.CashflowTransactionRow, error) {
 				return gold.CashflowTransactions(ctx, db, req.from, req.to, req.currency)
-			})
+			}))
 	}
 }
 
@@ -279,7 +283,14 @@ var defaultCashflowCoverageColumns = []string{
 // The coverage registry carries no output currency: every amount is in
 // the account's own. A column header naming a currency the row is not in
 // would be worse than no header at all.
-func buildCashflowCoverageColumnRegistry(period string) []columnSpec[gold.CashflowCoverageRow] {
+//
+// A coverage row names its account by one label: the nickname, else
+// the display name, else the id. Under -p a label that is one of its
+// source's nicknames, or that may be typed (typedAccountLabel,
+// typedAccountID), prints as a pseudonym: the row has no id to show in
+// its place.
+func buildCashflowCoverageColumnRegistry(period string, kindOf func(string) string,
+	nicknames accountNicknames) []columnSpec[gold.CashflowCoverageRow] {
 	return []columnSpec[gold.CashflowCoverageRow]{
 		{Name: "period", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowCoverageRow) string { return periodLabel(r.PeriodStart, period) }},
@@ -288,6 +299,19 @@ func buildCashflowCoverageColumnRegistry(period string) []columnSpec[gold.Cashfl
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowCoverageRow) string { return r.SourceID }},
 		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
+			PrivacyFunc: func(r gold.CashflowCoverageRow) PrivacyClass {
+				if typedAccountLabel(kindOf, r.SourceID) || typedAccountID(kindOf, r.SourceID) ||
+					nicknames.has(r.SourceID, r.Account) {
+					return PrivacyPseudonym
+				}
+				return PrivacyAccountID
+			},
+			Pseudonym: func(r gold.CashflowCoverageRow) (string, string) {
+				if nicknames.has(r.SourceID, r.Account) {
+					return "nickname", ""
+				}
+				return typedPseudonym(kindOf, r.SourceID)
+			},
 			Extract: func(r gold.CashflowCoverageRow) string { return r.Account }},
 		{Name: "account_kind", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowCoverageRow) string { return r.AccountKind }},
@@ -307,7 +331,11 @@ func buildCashflowCoverageColumnRegistry(period string) []columnSpec[gold.Cashfl
 	}
 }
 
-func buildCashflowTransactionColumnRegistry(outCcy string) []columnSpec[gold.CashflowTransactionRow] {
+func buildCashflowTransactionColumnRegistry(outCcy string, kindOf func(string) string,
+	categories typedCategories) []columnSpec[gold.CashflowTransactionRow] {
+	ref := func(r gold.CashflowTransactionRow) accountRef {
+		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+	}
 	return []columnSpec[gold.CashflowTransactionRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowTransactionRow) string { return r.SilverSourceID }},
@@ -315,13 +343,11 @@ func buildCashflowTransactionColumnRegistry(outCcy string) []columnSpec[gold.Cas
 			Extract: func(r gold.CashflowTransactionRow) string { return formatDate(r.OccurredAt) }},
 		{Name: "datetime", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowTransactionRow) string { return formatDateTime(r.OccurredAt) }},
-		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.CashflowTransactionRow) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
-		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.CashflowTransactionRow) string { return r.AccountExternalID }},
+		accountCol(kindOf, ref),
+		accountIDCol("account_id", kindOf, ref),
 		textCol("account_kind", func(r gold.CashflowTransactionRow) *string { return r.AccountKind }),
-		textCol("account_nickname", func(r gold.CashflowTransactionRow) *string { return r.Nickname }),
-		textCol("account_category", func(r gold.CashflowTransactionRow) *string { return r.AccountCategory }),
+		nicknameCol("account_nickname", func(r gold.CashflowTransactionRow) *string { return r.Nickname }),
+		accountCategoryCol(categories, func(r gold.CashflowTransactionRow) *string { return r.AccountCategory }),
 		{Name: "kind", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowTransactionRow) string { return r.Kind }},
 		{Name: "section", Align: output.AlignLeft,
@@ -340,9 +366,11 @@ func buildCashflowTransactionColumnRegistry(outCcy string) []columnSpec[gold.Cas
 		// an operating one. It takes the FREE-TEXT class for the reason
 		// the families' payer column does: a column takes the class of
 		// the worst thing it can hold, and on an inbound wire that is a
-		// person.
-		{Name: "name", Align: output.AlignLeft, Privacy: PrivacyFreeText,
-			Extract: func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.Name) }},
+		// person. A typed holding's line names what its holder typed,
+		// which prints as a pseudonym.
+		typedHoldingCol(columnSpec[gold.CashflowTransactionRow]{Name: "name", Align: output.AlignLeft,
+			Privacy: PrivacyFreeText, Extract: func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.Name) }},
+			kindOf, func(r gold.CashflowTransactionRow) (string, string) { return r.SilverSourceID, strOrEmpty(r.Name) }),
 		// The family's own value behind the node, and the two overlays
 		// it could have come from.
 		textCol("detailed", func(r gold.CashflowTransactionRow) *string { return r.Verdict }),
@@ -357,8 +385,9 @@ func buildCashflowTransactionColumnRegistry(outCcy string) []columnSpec[gold.Cas
 			Extract: func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.Counterparty) }},
 		{Name: "description", Align: output.AlignLeft, Privacy: PrivacyFreeText,
 			Extract: func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.Description) }},
-		{Name: "tx_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.CashflowTransactionRow) string { return r.TransactionExternalID }},
+		typedIDCol("tx_id", kindOf, func(r gold.CashflowTransactionRow) (string, string) {
+			return r.SilverSourceID, r.TransactionExternalID
+		}),
 	}
 }
 
@@ -416,8 +445,10 @@ Flags beyond the ones every report shares:
                 +ADD,-REMOVE delta on the default set
   -x CCY        output currency (default: config.default_currency);
                 coverage refuses it - every account is reported in its own
-  -p            redact account ids, names and amounts; sections, classes,
-                groups and shares stay legible
+  -p            redact account ids, statement names and amounts;
+                every name a person typed prints as a pseudonym,
+                such as manual-1, or as a redacted id; sections,
+                classes, groups and shares stay legible
 
 Notes
   vehicles is every plan together — retirement, education and health;
@@ -457,8 +488,8 @@ Available columns (per view):
   summary       ` + joinColumnNames(buildCashflowSummaryColumnRegistry("CCY", "monthly")) + `
   flows         ` + joinColumnNames(buildCashflowFlowColumnRegistry("CCY", "monthly")) + `
   sankey        ` + joinColumnNames(buildCashflowSankeyColumnRegistry("CCY")) + `
-  transactions  ` + joinColumnNames(buildCashflowTransactionColumnRegistry("CCY")) + `
-  coverage      ` + joinColumnNames(buildCashflowCoverageColumnRegistry("monthly")) + `
+  transactions  ` + joinColumnNames(buildCashflowTransactionColumnRegistry("CCY", nil, nil)) + `
+  coverage      ` + joinColumnNames(buildCashflowCoverageColumnRegistry("monthly", nil, nil)) + `
 
   (The money columns render as operating_in_<CCY> / net_<CCY> /
    value_<CCY>, reflecting your -x/--currency choice. Coverage's do

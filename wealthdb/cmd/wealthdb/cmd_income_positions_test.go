@@ -94,7 +94,7 @@ func TestIncomePositionsAndTheCalendarAgree(t *testing.T) {
 		}
 		var out bytes.Buffer
 		if err := writeFormatted(&out, output.FormatCSV, rows.table(nil, rep.allColumns(), false,
-			output.FormatCSV)); err != nil {
+			output.FormatCSV, nil)); err != nil {
 			t.Fatal(err)
 		}
 		return csvRows(t, out.String())

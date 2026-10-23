@@ -42,8 +42,8 @@ type reportColumn struct {
 type reportRows struct {
 	// table renders the rows at idx (every row, in order, when idx
 	// is nil) through the columns at cols, in the given privacy mode
-	// and format.
-	table func(idx, cols []int, privacy bool, format output.Format) output.Table
+	// and format, naming typed values from names (rowsToTable).
+	table func(idx, cols []int, privacy bool, format output.Format, names *pseudonyms) output.Table
 }
 
 // request is what a report runner needs: the view, the window or
@@ -75,6 +75,7 @@ type request struct {
 	newestFirst  bool              // transactions, gains realized
 	allDocuments bool              // gains realized: every copy of a sale, not the primary set
 	missing      lots.MissingBasis // gains, holdings positions: how a missing cost basis counts
+	categories   typedCategories   // the account_category values -p prints as pseudonyms
 }
 
 // newReport wraps a typed registry and fetch function as a report.
@@ -104,7 +105,7 @@ func newReport[T any](registry []columnSpec[T], defaults []string, fetch func(co
 			if err != nil {
 				return reportRows{}, err
 			}
-			return reportRows{table: func(idx, colIdx []int, privacy bool, format output.Format) output.Table {
+			return reportRows{table: func(idx, colIdx []int, privacy bool, format output.Format, names *pseudonyms) output.Table {
 				sel := rows
 				if idx != nil {
 					sel = make([]T, len(idx))
@@ -116,7 +117,7 @@ func newReport[T any](registry []columnSpec[T], defaults []string, fetch func(co
 				for i, c := range colIdx {
 					specs[i] = registry[c]
 				}
-				return rowsToTable(sel, specs, privacy, format)
+				return rowsToTable(sel, specs, privacy, format, names)
 			}}, nil
 		},
 	}
@@ -150,5 +151,5 @@ func writeReport(ctx context.Context, rep *report, colsExpr, prefix string, open
 	if err != nil {
 		return err
 	}
-	return writeFormatted(w, format, rows.table(nil, cols, privacy, format))
+	return writeFormatted(w, format, rows.table(nil, cols, privacy, format, nil))
 }

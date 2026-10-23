@@ -254,15 +254,15 @@ _gen_password() {
 }
 
 # _materialize refreshes the serving tables and the report_returns,
-# report_gains and report_exposure tables in LIVE gold via the engine's
-# hidden web-materialize subcommand, so the snapshot taken next carries
-# them as fresh as the holdings. An engine-owned write,
-# mutually exclusive with `wealthdb load` under the engine's write mutex
-# (a concurrent load makes it fail, not wait); it
-# runs BEFORE _snapshot, so a failure aborts under web_main's `set -e`
-# and the previous snapshot keeps serving.
+# report_gains, report_exposure* and report_yield_* tables in LIVE gold
+# via the engine's hidden web-materialize subcommand, so the snapshot
+# taken next carries them as fresh as the holdings. An engine-owned
+# write, mutually exclusive with `wealthdb load` under the engine's write
+# mutex (a concurrent load makes it fail, not wait); it runs BEFORE
+# _snapshot, so a failure aborts under web_main's `set -e` and the
+# previous snapshot keeps serving.
 _materialize() {
-    echo "web: materializing serving tables, returns, gains and exposure into gold …" >&2
+    echo "web: materializing serving tables, returns, gains, exposure and yield into gold …" >&2
     local rc=0
     if [ -n "${WEALTHDB_CONFIG:-}" ]; then
         "$WEALTHDB" -c "$WEALTHDB_CONFIG" web-materialize || rc=$?
@@ -337,9 +337,10 @@ web: $CONTAINER is up → Metabase on http://127.0.0.1:$PORT/
   report models mirroring the global / portfolios / accounts /
   positions / transactions / returns commands, plus pre-defined
   questions and the Wealth Overview / Allocation / Returns / Spending
-  / Income / Cash Flow / Gains / Exposure / Data Freshness dashboards,
-  most with a privacy twin that hides absolute values (all in the 'wealthdb
-  (pre-defined)' collection; duplicate before customizing).
+  / Income / Cash Flow / Gains / Exposure / Yield / Data Freshness
+  dashboards, most with a privacy twin that hides absolute values (all
+  in the 'wealthdb (pre-defined)' collection; duplicate before
+  customizing).
   Run 'wealthdb web refresh' after each 'wealthdb load' to update.
 EOF
 }
@@ -356,9 +357,9 @@ subcommands:
   stop       stop + remove the container (keeps dashboards/users in H2)
   status     running state, published port, snapshot freshness
   restart    stop then start
-  refresh    re-materialize serving tables, returns, gains and exposure,
-             re-copy gold → read-only snapshot, then restart Metabase
-             (run after 'wealthdb load' to update the data)
+  refresh    re-materialize serving tables, returns, gains, exposure and
+             yield, re-copy gold → read-only snapshot, then restart
+             Metabase (run after 'wealthdb load' to update the data)
   logs       follow the container logs
   build      build the wealthdb/metabase image
   help       this message

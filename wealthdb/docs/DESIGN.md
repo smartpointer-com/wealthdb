@@ -209,15 +209,59 @@ Prints the consolidated portfolio as of a date.
 | `-p`, `--privacy` | off | Redact identifying and monetary columns (see below). |
 
 **Privacy classes.** `-p` is per-column, and every read-only view
-that offers the flag draws from the same four classes (everything
+that offers the flag draws from the same five classes (everything
 else is left alone):
 
 | Class | Renders as | Carries |
 | --- | --- | --- |
 | account-id | `****1234` — length preserved, a short tail and an IBAN country code left legible so rows stay distinguishable | account / portfolio / relationship / transaction ids. Applied only to identifier-shaped values: alphanumeric with a digit. A purely-alphabetic label (a bank-assigned `Education` / `Authorized`) and any value with a space or a paren are taxonomy or display text and pass through. |
-| free-text | `***` — the whole cell, in every format | values that can carry a person's name and never look like an identifier: statement narratives and their folds (`counterparty`, `description`, `merchant_signature` and the `merchant` built from it in §4.12), and customer-chosen labels such as a cointracking portfolio name. Shape-blind by design — the narratives worth hiding are multi-word, so a shape test would pass exactly them. The `(no portfolio)` sentinel is a structural marker, not a name, and stays legible. |
+| free-text | `***` — the whole cell, in every format | values that can carry a person's name, never look like an identifier, and were not typed by the household: statement narratives and their folds (`counterparty`, `description`, `merchant_signature` and the `merchant` built from it in §4.12). Also the instrument id of a holding no public key names, unless a person typed it. Shape-blind by design — the narratives worth hiding are multi-word, so a shape test would pass exactly them. |
+| pseudonym | `manual-1` — the same value reads the same in every row and column of a run, in every format | the names a person typed (below). Shape-blind like free-text. |
 | quantity | `***` (table) / empty (csv) / key dropped (json) | share counts. |
 | money | `*****.**` (table) / empty (csv) / key dropped (json) | every monetary amount. |
+
+**Typed names.** Every name a person typed is hidden. It prints as a
+pseudonym, or as a redacted id where an account column shows the
+account's identifier-shaped id in its place (below). A pseudonym is a
+prefix and a number. The prefix is the kind of the
+source the value comes from, such as `manual` or `cointracking`, and
+`declared` for a declared account (§5.1). A category prints as
+`category-1` and a nickname as `nickname-1`. The numbers count values
+in the order they first appear in one CLI run or one MCP call, and
+each run counts afresh. So a source's value reads the same in every row
+and column of a run, and rows stay apart. The same text of two sources
+reads as two pseudonyms; a category or a nickname reads as one. Public
+names stay as they are: a bank's product label, a security's name. A
+merchant or payer taken off a statement keeps `***`. A source's id
+names a config entry and stays.
+
+These names are typed:
+- an account's name, when its source is a `cointracking` or a `manual`
+  silver, when the account is a declared one, when its bank names an
+  account by its roster's nickname (`chase`, `firstcitizens`,
+  `raiffeisen_at`), or when the name equals the account's nickname;
+- the name and id of a `cointracking`, `manual` or declared portfolio;
+- an `angellist` account's id, its holder's portal slug, whatever its shape;
+- a nickname;
+- a manual holding's name, position key and instrument id, and an
+  issuer that takes the holding's name;
+- a transaction or lot id of a `cointracking`, `manual` or declared
+  source, such as a manual exit's `exit:<position key>`;
+- an account category that `account_overrides` sets in the config.
+
+An account column shows a typed account's id instead of its name. An
+identifier-shaped id redacts as an account id. Any other id of a typed
+source can hold typed words, such as a tracker's `<user>:<wallet>`, so
+it prints as a pseudonym. A typed name with no id beside it (cashflow
+coverage) prints as a pseudonym too. A holding's name prints as the
+pseudonym of its key, so the holding reads as one pseudonym. A cash
+flow line carries no key, so its name prints as a pseudonym of its own
+text. Exposure and yield key a holding with no public key
+`holding:<source>:<id>`. A manual holding's key prints as that
+pseudonym, and any other's masks whole. The `(no portfolio)` sentinel
+is a marker, not a name, and stays. A name another provider builds from
+the holder's words reads as the bank's: a Plaid account with no
+official name shows one.
 
 Ratios and dates stay legible throughout — a return or a spending
 share is not an amount. Independently of the per-column pass, every
@@ -575,8 +619,10 @@ The window defaults to the trailing twelve months rather than inception,
 and there are no row-filter flags; docs/SPENDING.md §7 argues both.
 
 **Privacy classes** (§4.6): `merchant`, `counterparty`, `description`
-and `merchant_signature` take the free-text class; the account's id and
-display name take the account-id class; amounts take the money class.
+and `merchant_signature` take the free-text class. The account's id and
+display name take the account-id class. A typed name, such as the
+account nickname, prints as a pseudonym (§4.6). Amounts take the money
+class.
 Category, provenance and `share_pct` stay legible.
 [SPENDING.md §7](SPENDING.md), *What `-p` redacts*, gives the reasons.
 
@@ -3214,10 +3260,24 @@ The pieces:
   dividends received, the stocks' reported figures, and each holding's
   amount on every day of the year before. An observation's amounts
   hold over its span (§10.7), so one read of the year's observations
-  gives every day. A payment meets its holding under every id the
-  source or the config gives the instrument. A security's holdings
-  pool at every source. A dividend's rate reads what its account held
-  on its record day, a lag per market before its pay day (YIELD.md §4);
+  gives every day. A security's holdings pool at every source;
+- the alias fold, `yield.Inputs.Fold`. An instrument id reads as the
+  first of these that applies:
+  1. the account's holding alias;
+  2. the source-wide holding alias;
+  3. for a CUSIP id the source also keys by ticker, the ticker
+     (`instrument_aliases()`).
+
+  SQL folds the same way (`holdingAliasJoins`). A payment, a holding, a
+  position and a trade meet under the folded id;
+- the record day, `readYieldUnits`: what each account held of each
+  instrument paid, at its snapshots, moved by its trades since. A cash
+  account's trade moves its own holding when it holds the instrument.
+  Else it moves the one other account of its portfolio that holds it.
+  With none or several, it moves nothing. Any other account's trade
+  moves its own holding. `yield.RecordLag` gives each market's lag
+  before the pay day, its record window and its settlement calendar. A
+  dividend's rate reads what its account held then (YIELD.md §4);
 - `internal/fixedincome`: the bond and rate arithmetic, as pure
   functions;
 - `internal/yield`: `yield.Compute` measures every holding and projects

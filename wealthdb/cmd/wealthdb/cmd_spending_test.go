@@ -135,7 +135,7 @@ func TestSpendingColumnHeaders(t *testing.T) {
 		t.Errorf("category headers = %v, want %v", got, wantCats)
 	}
 
-	txns, err := resolveColumns("default", defaultSpendTransactionColumns, buildSpendTransactionColumnRegistry("USD"))
+	txns, err := resolveColumns("default", defaultSpendTransactionColumns, buildSpendTransactionColumnRegistry("USD", noKinds, nil))
 	if err != nil {
 		t.Fatalf("transaction columns: %v", err)
 	}
@@ -169,7 +169,7 @@ func headersOf[T any](cols []columnSpec[T]) []string {
 // tier that decided are legible under -p.
 func TestSpendingTransactionPrivacyClasses(t *testing.T) {
 	t.Parallel()
-	cols, err := resolveColumns("all", defaultSpendTransactionColumns, buildSpendTransactionColumnRegistry("USD"))
+	cols, err := resolveColumns("all", defaultSpendTransactionColumns, buildSpendTransactionColumnRegistry("USD", noKinds, nil))
 	if err != nil {
 		t.Fatalf("resolve columns: %v", err)
 	}
@@ -187,6 +187,7 @@ func TestSpendingTransactionPrivacyClasses(t *testing.T) {
 		"description":        PrivacyFreeText,
 		"account":            PrivacyAccountID,
 		"account_id":         PrivacyAccountID,
+		"account_nickname":   PrivacyPseudonym,
 		"tx_id":              PrivacyAccountID,
 		"net_amount":         PrivacyMoney,
 		"value":              PrivacyMoney,
@@ -221,12 +222,12 @@ const spendTestCounterparty = "SAMPLE PAYEE ZZ"
 //     They must mask too — an identifier-shaped rule would print
 //     them in full, which is precisely what the free-text class
 //     exists to stop.
-//   - the category, the provenance and the account nickname are what
-//     stays legible, so a redacted listing still reads.
+//   - the category and the provenance are what stays legible, so a
+//     redacted listing still reads.
 func TestSpendingPrivacyRedacts(t *testing.T) {
 	t.Parallel()
 	cols, err := resolveColumns("account_id,merchant,merchant_signature,counterparty,description,value",
-		defaultSpendTransactionColumns, buildSpendTransactionColumnRegistry("USD"))
+		defaultSpendTransactionColumns, buildSpendTransactionColumnRegistry("USD", noKinds, nil))
 	if err != nil {
 		t.Fatalf("resolve columns: %v", err)
 	}
@@ -243,14 +244,14 @@ func TestSpendingPrivacyRedacts(t *testing.T) {
 		ValueOutCcy:       &value,
 	}
 
-	off := rowsToTable([]gold.SpendTransactionRow{row}, cols, false, output.FormatTable)
+	off := rowsToTable([]gold.SpendTransactionRow{row}, cols, false, output.FormatTable, nil)
 	for i, want := range []string{"CARD0001234", merchant, signature, counterparty, description, "42.50"} {
 		if off.Rows[0][i] != want {
 			t.Errorf("privacy off, cell %d = %q, want %q", i, off.Rows[0][i], want)
 		}
 	}
 
-	on := rowsToTable([]gold.SpendTransactionRow{row}, cols, true, output.FormatTable)
+	on := rowsToTable([]gold.SpendTransactionRow{row}, cols, true, output.FormatTable, nil)
 	if on.Rows[0][0] == "CARD0001234" {
 		t.Errorf("account_id survived -p: %q", on.Rows[0][0])
 	}

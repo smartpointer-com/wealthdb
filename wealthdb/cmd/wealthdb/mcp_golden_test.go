@@ -75,8 +75,9 @@ func (c goldenCase) cliPrivacy() bool { return c.tool != "resolutions" }
 // TestMCPMatchesCLI is the server's contract made executable: for
 // every view of the nine report tools and for the two dumps, the
 // server's csv result equals `wealthdb … -f csv -C all` cell for cell,
-// over seeded gold, with and without privacy. The two front-ends share the report runner and rowsToTable,
-// so this holds by construction; the test keeps it holding.
+// over seeded gold, with and without privacy, both on fixtureToday. The
+// two front-ends share the report runner and rowsToTable, so this holds
+// by construction; the test keeps it holding.
 func TestMCPMatchesCLI(t *testing.T) {
 	t.Parallel()
 	fixtures := []struct {
@@ -101,7 +102,7 @@ func TestMCPMatchesCLI(t *testing.T) {
 	}
 	for _, fx := range fixtures {
 		for _, privacy := range []bool{false, true} {
-			s := newTestMCP(fx.cfg, privacy)
+			s := onFixtureToday(newTestMCP(fx.cfg, privacy))
 			for _, c := range fx.cases {
 				if privacy && !c.cliPrivacy() {
 					continue
@@ -114,7 +115,7 @@ func TestMCPMatchesCLI(t *testing.T) {
 				if privacy {
 					cli = append(cli, "-p")
 				}
-				want, se, code := run(t, cli...)
+				want, se, code := runToday(t, cli...)
 				if code != 0 {
 					t.Fatalf("%s: CLI exit %d: %s", c.name, code, se)
 				}
@@ -268,11 +269,11 @@ func yieldCases() []goldenCase {
 }
 
 // forwardIncomeCases covers each forward view of the income tool over a
-// window from this month to two years on, under assumptions other than
-// the defaults; then the default window and each lone bound (a lone to
-// starts next month).
+// window from fixtureToday's month to two years on, under assumptions
+// other than the defaults; then the default window and each lone bound (a
+// lone to starts next month).
 func forwardIncomeCases() []goldenCase {
-	now := time.Now().UTC()
+	now := fixtureToday
 	from := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).Format(time.DateOnly)
 	to := time.Date(now.Year()+2, now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, -1).Format(time.DateOnly)
 	next := strconv.Itoa(now.Year() + 1)

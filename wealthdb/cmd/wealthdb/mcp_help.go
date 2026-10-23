@@ -49,7 +49,7 @@ Conventions:
 - In returns, gains, exposure and yield, read the quality column: it names the reason for every n/a or gap. Returns are not additive across views; gains are.
 - A holding before a source's first snapshot is missing history, not zero; snapshots shows where data begins.`
 
-const privacyNotice = "This endpoint redacts amounts, quantities, account numbers and the names taken off statements (merchants, payers, narratives); account names, holdings, categories and shares stay visible."
+const privacyNotice = "This endpoint redacts amounts, quantities, account numbers and the names taken off statements (merchants, payers, narratives), and shows a name a person typed as a pseudonym such as manual-1, or as its account number, redacted; source ids, other account names, holdings, categories and shares stay visible."
 
 // instructions open with today's date: without it a small model reads
 // "last year" as two years ago. Every result header also states its
@@ -317,10 +317,10 @@ func incomeForwardQualityHelp() string {
 
 func (s *mcpServer) privacyHelp() string {
 	if s.privacy {
-		return privacyNotice + ` Amounts and quantities print as *****.** and ***, account numbers keep only their last digits, and merchant, payer and narrative text prints as ***. Account names and nicknames, holdings and their symbols, dates, categories, types, classes and shares stay legible.
-Filters and sorts read what is shown: a money column cannot order the rows here, and a merchant filter matches nothing.`
+		return privacyNotice + ` Amounts and quantities print as *****.** and ***, account numbers keep only their last digits, and merchant, payer and narrative text prints as ***. A name a person typed prints as a pseudonym: a nickname, a manual holding's name, key and instrument id (and an issuer it names), an account category the config sets, and the names and ids of crypto, manual and declared accounts and portfolios and their line ids. The name of an account its bank names by its nickname is typed too. An account whose name is typed shows its account number instead, redacted, where that number is letters and digits with at least one digit; so does such an id. A pseudonym is a prefix and a number: the source's kind (manual-1, cointracking-2), or category-1 and nickname-1. Within one result a value always reads the same pseudonym, and two values read apart. Each call numbers afresh: manual-1 in two different calls need not be one value, so join results on other columns. A call numbers over all its rows before filters and paging, so the same call with a filter added names a row as before. A source id names a config entry and stays legible, as does a name another provider builds from the holder's words. Other account names, holdings and their symbols, dates, categories, types, classes and shares stay legible.
+Filters and sorts read what is shown: a money column cannot order the rows here, a merchant filter matches nothing, and a filter or search matches a typed name by its pseudonym, the whole cell (manual-1 never matches manual-10).`
 	}
-	return `This endpoint serves full data. The server's /mcp/privacy endpoint (or a stdio server started with --privacy) serves the same tools with amounts, quantities, account numbers and the names taken off statements redacted; account names, holdings, categories, types, dates and shares stay legible.
+	return `This endpoint serves full data. The server's /mcp/privacy endpoint (or a stdio server started with --privacy) serves the same tools with amounts, quantities, account numbers and the names taken off statements redacted, and every name a person typed shown as a pseudonym; other account names, holdings, categories, types, dates and shares stay legible.
 Which endpoint a client is given is the operator's choice; no parameter changes it.`
 }
 

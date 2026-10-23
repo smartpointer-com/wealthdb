@@ -57,6 +57,25 @@ def test_ishares_us_csv_keeps_us_tickers_only():
     assert (cash["asset_type"], p.compositions[0]["weight_sum"]) == ("Cash", "100")
 
 
+def test_ishares_us_csv_reads_a_market_weight():
+    # A fund that holds futures beside its shares states a market and a
+    # notional weight in place of Weight (%); the notional one sums past 100.
+    csv = """Example Small Cap ETF
+Fund Holdings as of,"Oct 12, 2026"
+
+Ticker,Name,Sector,Asset Class,Market Value,Market Weight,Notional Value,Notional Weight,Quantity,Price,Location,Exchange,Currency,FX Rate,Market Currency
+"QAAA","ALPHA INC","Information Technology","Equity","6,000.00","60.00","6,000.00","60.00","100.00","60.00","United States","NASDAQ","USD","1.00","USD"
+"QBBB","BETA SPA","Industrials","Equity","3,900.00","39.00","3,900.00","39.00","300.00","13.00","Italy","Borsa Italiana","USD","0.90","EUR"
+"QFUT","EXAMPLE INDEX FUT DEC26","Cash and/or Derivatives","Futures","0.00","0.00","2,000.00","20.00","1.00","2,000.00","United States","-","USD","1.00","USD"
+"USD","USD CASH","Cash and/or Derivatives","Cash","100.00","1.00","100.00","1.00","100.00","100.00","United States","-","USD","1.00","USD"
+
+"The content is for information only."
+"""
+    p = parse_csv(csv, "symbol:QSML", date(2026, 10, 12), provider="ishares")
+    assert [line["weight"] for line in p.lines] == ["60", "39", "0", "1"]
+    assert p.compositions[0]["weight_sum"] == "100"
+
+
 def test_ishares_page_names_the_grid_columns_and_the_dates():
     page = holdings_page(PAGE)
     assert page["dates"] == [date(2025, 12, 31), date(2026, 9, 30), date(2026, 10, 12)]

@@ -32,7 +32,16 @@ func writeFormatted(w io.Writer, f output.Format, t output.Table) error {
 // the given output currency. The dynamic `value` column embeds the
 // currency in its header (`value_USD`, ...) and reads the converted
 // amount the report_positions / report_cash macro computed in SQL.
-func buildColumnRegistry(outCcy string) []columnSpec[gold.PositionRow] {
+func buildColumnRegistry(outCcy string, kindOf func(string) string, categories typedCategories) []columnSpec[gold.PositionRow] {
+	ref := func(r gold.PositionRow) accountRef {
+		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+	}
+	// position_key is the gold-side instrument identifier (CUSIP /
+	// ISIN / ticker); a public one stays legible under -p / --privacy,
+	// but a manual holding's key and name are typed (holdingCols). See
+	// columns.go for the per-class contract.
+	key, name := holdingCols(kindOf, func(r gold.PositionRow) string { return r.SilverSourceID },
+		func(r gold.PositionRow) string { return r.PositionKey }, func(r gold.PositionRow) string { return strOrEmpty(r.Name) })
 	return []columnSpec[gold.PositionRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(r gold.PositionRow) string { return r.SilverSourceID }},
@@ -42,17 +51,11 @@ func buildColumnRegistry(outCcy string) []columnSpec[gold.PositionRow] {
 		// dated the snapshot after the marks it found unchanged.
 		{Name: "valued_date", Align: output.AlignLeft,
 			Extract: func(r gold.PositionRow) string { return formatDate(r.ValuedAt) }},
-		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.PositionRow) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
-		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.PositionRow) string { return r.AccountExternalID }},
-		// position_key is the gold-side instrument identifier (CUSIP /
-		// ISIN / ticker); instrument identifiers stay legible under
-		// -p / --privacy. See columns.go for the per-class contract.
-		{Name: "position_key", Align: output.AlignLeft,
-			Extract: func(r gold.PositionRow) string { return r.PositionKey }},
+		accountCol(kindOf, ref),
+		accountIDCol("account_id", kindOf, ref),
+		key,
 		textCol("symbol", func(r gold.PositionRow) *string { return r.Symbol }),
-		textCol("name", func(r gold.PositionRow) *string { return r.Name }),
+		name,
 		// asset_class is the 2-D exposure; vehicle the wrapper.
 		{Name: "asset_class", Align: output.AlignLeft,
 			Extract: func(r gold.PositionRow) string { return r.AssetClass }},
@@ -83,8 +86,8 @@ func buildColumnRegistry(outCcy string) []columnSpec[gold.PositionRow] {
 		moneyCol("clean_value", "", func(r gold.PositionRow) *string { return r.CleanValue }),
 		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.PositionRow) string { return strOrEmpty(r.RelationshipID) }},
-		textCol("account_nickname", func(r gold.PositionRow) *string { return r.Nickname }),
-		textCol("account_category", func(r gold.PositionRow) *string { return r.AccountCategory }),
+		nicknameCol("account_nickname", func(r gold.PositionRow) *string { return r.Nickname }),
+		accountCategoryCol(categories, func(r gold.PositionRow) *string { return r.AccountCategory }),
 	}
 }
 
@@ -115,7 +118,7 @@ var defaultColumns = []string{
 func positionsUsage() string {
 	// The output currency is not chosen at usage-print time, so the
 	// dynamic column shows a placeholder.
-	registry := buildColumnRegistry("CCY")
+	registry := buildColumnRegistry("CCY", nil, nil)
 	return `usage: wealthdb holdings positions [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [-p]
                                   [--with-cash] [--missing-basis M]
 
@@ -135,7 +138,9 @@ Flags:
                            a +ADD,...-REMOVE,... delta against the default set
                            (e.g. -C+account_id-market_value)
   -x, --currency CCY       output currency for the value column (default: config.default_currency)
-  -p, --privacy            redact account IDs, share quantities, and monetary amounts
+  -p, --privacy            redact account IDs, share quantities, and monetary amounts;
+                           every name a person typed prints as a pseudonym, such as
+                           manual-1, or as a redacted ID
                            (table: visible placeholders; csv: empty cells; json: keys omitted)
       --with-cash          also emit one row per account+currency with non-zero cash
       --missing-basis M    ignore (default) | zero: how a missing cost basis counts;

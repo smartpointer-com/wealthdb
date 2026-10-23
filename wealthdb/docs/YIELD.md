@@ -80,10 +80,15 @@ largest fund first.
 - `-p` stars the amounts: value, DV01, the income amounts and
   `tier_up_to`. It stars the price in `positions` and `securities`
   alike, and every account id.
+- Under `-p` every name a person typed prints as a pseudonym, such
+  as `manual-1`, or as a redacted id, as DESIGN.md §4.6 says. That covers a nickname, a
+  typed account or portfolio name, and a manual holding's name and
+  key.
 - Under `-p` a `security` or `fund` key that is a holding's own
   (`holding:<source>:<id>`, no public key) is hidden whole, as
-  `exposure securities` hides it. `coverage`'s `instrument` is hidden
-  whole too. `position_key` stays legible, as `holdings positions`
+  `exposure securities` hides it. So is `coverage`'s `instrument`. A
+  manual holding's key or instrument prints as its pseudonym instead.
+  Any other `position_key` stays legible, as `holdings positions`
   keeps it. Rates, durations, shares, labels and public security keys
   stay.
 

@@ -184,6 +184,7 @@ func loadForwardIncome(ctx context.Context, db *sql.DB, req request) (*forwardIn
 // incomeForwardReport is one forward view.
 func incomeForwardReport(req request) *report {
 	ccy := req.currency
+	kindOf, loadKinds := sourceKinds()
 	switch req.view {
 	case "projection":
 		months := seriesPeriodMonths(req.period)
@@ -196,28 +197,24 @@ func incomeForwardReport(req request) *report {
 				return fi.book.ProjectionRows(fi.amounts, fi.window, months), nil
 			})
 	case "calendar":
-		return newReport(buildCalendarColumns(ccy), defaultCalendarColumns,
-			func(ctx context.Context, db *sql.DB) ([]yield.CalendarRow, error) {
+		return newReport(buildCalendarColumns(ccy, kindOf), defaultCalendarColumns,
+			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]yield.CalendarRow, error) {
 				fi, err := loadForwardIncome(ctx, db, req)
 				if err != nil {
 					return nil, err
 				}
 				return fi.book.Calendar(fi.amounts), nil
-			})
+			}))
 	}
 	grain := forwardGrains[req.view]
-	kindOf, loadKinds := sourceKinds()
 	return newReport(buildIncomeEntityColumns(ccy, grain, kindOf), incomeEntityDefaults[grain],
-		func(ctx context.Context, db *sql.DB) ([]yield.IncomeRow, error) {
-			if err := loadKinds(ctx, db); err != nil {
-				return nil, err
-			}
+		loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]yield.IncomeRow, error) {
 			fi, err := loadForwardIncome(ctx, db, req)
 			if err != nil {
 				return nil, err
 			}
 			return fi.book.IncomeRows(grain, fi.amounts, fi.lastYear, fi.next12), nil
-		})
+		}))
 }
 
 // ---- column registries ---------------------------------------------------
@@ -277,8 +274,13 @@ func buildProjectionColumns(outCcy, period string) []columnSpec[yield.Projection
 var defaultProjectionColumns = []string{"period", "received", "expected", "interest", "coupons", "dividends",
 	"distributions", "withheld", "status", "basis", "quality"}
 
-func buildCalendarColumns(outCcy string) []columnSpec[yield.CalendarRow] {
+func buildCalendarColumns(outCcy string, kindOf func(string) string) []columnSpec[yield.CalendarRow] {
 	type row = yield.CalendarRow
+	ref := func(r row) accountRef {
+		return accountRef{r.Holding.Source, &r.Account.Name, &r.Account.Nickname, r.Holding.Account}
+	}
+	key, name := holdingCols(kindOf, func(r row) string { return r.Holding.Source },
+		func(r row) string { return r.Holding.PositionKey }, calendarPos(func(p *yield.Position) string { return p.Name }))
 	return []columnSpec[row]{
 		strCol("date", func(r row) string {
 			if r.Day != nil {
@@ -287,15 +289,11 @@ func buildCalendarColumns(outCcy string) []columnSpec[yield.CalendarRow] {
 			return r.Month.Format("2006-01")
 		}),
 		strCol("silver_source", func(r row) string { return r.Holding.Source }),
-		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID, Extract: func(r row) string {
-			name := r.Account.Name
-			return accountLabel(&name, r.Holding.Account)
-		}},
-		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r row) string { return r.Holding.Account }},
-		strCol("position_key", func(r row) string { return r.Holding.PositionKey }),
+		accountCol(kindOf, ref),
+		accountIDCol("account_id", kindOf, ref),
+		key,
 		strCol("symbol", calendarPos(func(p *yield.Position) string { return p.Symbol })),
-		strCol("name", calendarPos(func(p *yield.Position) string { return p.Name })),
+		name,
 		strCol("type", func(r row) string { return string(r.Type) }),
 		strCol("kind", func(r row) string {
 			if r.Principal {
@@ -323,36 +321,28 @@ func buildIncomeEntityColumns(outCcy string, grain yield.Grain, kindOf func(stri
 	switch grain {
 	case yield.GrainPortfolios:
 		cols = append(cols,
-			col{Name: "portfolio", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-				PrivacyFunc: func(r row) PrivacyClass {
-					return portfolioNamePrivacy(kindOf)(gold.PortfolioRow{SilverSourceID: r.Source,
-						PortfolioExternalID: r.Portfolio})
-				},
-				Extract: func(r row) string {
-					if r.Portfolio == "" {
-						return "(no portfolio)"
-					}
-					name := r.PortfolioName
-					return accountLabel(&name, r.Portfolio)
-				}},
-			col{Name: "portfolio_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-				Extract: func(r row) string { return r.Portfolio }})
+			portfolioCol("portfolio", kindOf, func(r row) (string, string, *string) {
+				return r.Source, r.Portfolio, &r.PortfolioName
+			}),
+			typedIDCol("portfolio_id", kindOf, func(r row) (string, string) { return r.Source, r.Portfolio }))
 	case yield.GrainAccounts, yield.GrainPositions:
+		ref := func(r row) accountRef {
+			return accountRef{r.Source, &r.Account.Name, &r.Account.Nickname, r.AccountID}
+		}
 		cols = append(cols,
-			col{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID, Extract: func(r row) string {
-				name := r.Account.Name
-				return accountLabel(&name, r.AccountID)
-			}},
-			col{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-				Extract: func(r row) string { return r.AccountID }},
+			accountCol(kindOf, ref),
+			accountIDCol("account_id", kindOf, ref),
 			strCol("tax_wrapper", func(r row) string { return r.Account.TaxWrapper }))
 	}
 	if grain == yield.GrainPositions {
+		// A public position_key stays legible, as `holdings positions`
+		// keeps it.
+		key, name := holdingCols(kindOf, func(r row) string { return r.Source },
+			func(r row) string { return r.Holding.PositionKey }, incomePos(func(p *yield.Position) string { return p.Name }))
 		cols = append(cols,
-			// position_key stays legible as `holdings positions` keeps it.
-			strCol("position_key", func(r row) string { return r.Holding.PositionKey }),
+			key,
 			strCol("symbol", incomePos(func(p *yield.Position) string { return p.Symbol })),
-			strCol("name", incomePos(func(p *yield.Position) string { return p.Name })),
+			name,
 			strCol("vehicle", incomePos(func(p *yield.Position) string { return p.Vehicle })),
 			strCol("currency", incomePos(func(p *yield.Position) string { return p.Currency })),
 			col{Name: "quantity", Align: output.AlignRight, Privacy: PrivacyQuantity,

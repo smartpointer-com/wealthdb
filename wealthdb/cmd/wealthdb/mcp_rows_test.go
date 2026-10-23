@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -103,7 +104,7 @@ func testSpendLines(t *testing.T, privacy bool) *resultSet {
 		{SilverSourceID: "bank", MerchantName: strp("Paper | Ink"), SpendLabel: strp("Office supplies"),
 			SpendDetailed: strp("GENERAL_MERCHANDISE_OFFICE_SUPPLIES"), DisplayName: strp("Everyday")},
 	}
-	rep := newReport(buildSpendTransactionColumnRegistry("USD"), defaultSpendTransactionColumns,
+	rep := newReport(buildSpendTransactionColumnRegistry("USD", noKinds, nil), defaultSpendTransactionColumns,
 		func(context.Context, *sql.DB) ([]gold.SpendTransactionRow, error) { return rows, nil })
 	fetched, err := rep.fetch(context.Background(), nil)
 	if err != nil {
@@ -147,6 +148,47 @@ func TestFilterReadsLabelAndIDSpellings(t *testing.T) {
 	}
 	if got := len(rs.filter(nil, "heron")); got != 1 {
 		t.Errorf("search kept %d rows, want 1", got)
+	}
+}
+
+// TestPseudonymFiltersMatchWholeCells: on the privacy endpoint a filter
+// or a search for a pseudonym keeps the cell that reads it and none that
+// merely starts with it, so nickname-1 is not nickname-10, while any
+// other needle still matches a part of a cell. On full data a
+// pseudonym-shaped needle is text like any other.
+func TestPseudonymFiltersMatchWholeCells(t *testing.T) {
+	t.Parallel()
+	var rows []gold.SpendTransactionRow
+	for i := range 12 {
+		rows = append(rows, gold.SpendTransactionRow{SilverSourceID: "bank", Nickname: strp(fmt.Sprintf("Sleeve %d", i)),
+			Description: strp(fmt.Sprintf("nickname-%d", i+1))})
+	}
+	rep := newReport(buildSpendTransactionColumnRegistry("USD", noKinds, nil), defaultSpendTransactionColumns,
+		func(context.Context, *sql.DB) ([]gold.SpendTransactionRow, error) { return rows, nil })
+	fetched, err := rep.fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		privacy        bool
+		account, query string
+		want           int
+	}{
+		{true, "nickname-1", "", 1},
+		{true, "nickname-1,nickname-12", "", 2},
+		{true, "nickname", "", 12},
+		{true, "", "nickname-1", 1},
+		{false, "", "nickname-1", 4},
+		{false, "sleeve 1", "", 3},
+	} {
+		rs := newResultSet(rep, fetched, c.privacy)
+		var filters []rowFilter
+		if c.account != "" {
+			filters = append(filters, newRowFilter(rep, "account", c.account))
+		}
+		if got := len(rs.filter(filters, c.query)); got != c.want {
+			t.Errorf("privacy %v, account=%q, search=%q kept %d rows, want %d", c.privacy, c.account, c.query, got, c.want)
+		}
 	}
 }
 

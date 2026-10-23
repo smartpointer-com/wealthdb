@@ -301,7 +301,7 @@ func TestIncomeColumnHeaders(t *testing.T) {
 		t.Errorf("type headers = %v, want %v", got, want)
 	}
 
-	txns, err := resolveColumns("default", defaultIncomeTransactionColumns, buildIncomeTransactionColumnRegistry("USD"))
+	txns, err := resolveColumns("default", defaultIncomeTransactionColumns, buildIncomeTransactionColumnRegistry("USD", noKinds, nil))
 	if err != nil {
 		t.Fatalf("transaction columns: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestIncomeColumnHeaders(t *testing.T) {
 // must be.
 func TestIncomeTransactionPrivacyClasses(t *testing.T) {
 	t.Parallel()
-	all, err := resolveColumns("all", defaultIncomeTransactionColumns, buildIncomeTransactionColumnRegistry("USD"))
+	all, err := resolveColumns("all", defaultIncomeTransactionColumns, buildIncomeTransactionColumnRegistry("USD", noKinds, nil))
 	if err != nil {
 		t.Fatalf("columns: %v", err)
 	}
@@ -348,11 +348,9 @@ func TestIncomeTransactionPrivacyClasses(t *testing.T) {
 		// goes green.
 		//
 		// `account_nickname` is the holder's own label for an account,
-		// from `account_overrides`, and legible under -p on all three
-		// transaction surfaces. Stated rather than assumed: if it is
-		// ever reclassified it must be reclassified on spending and
-		// `wealthdb transactions` in the same change.
-		"account_nickname":        PrivacyNone,
+		// from `account_overrides`: typed text, a pseudonym under -p on
+		// every surface (nicknameCol).
+		"account_nickname":        PrivacyPseudonym,
 		"silver_source":           PrivacyNone,
 		"date":                    PrivacyNone,
 		"datetime":                PrivacyNone,

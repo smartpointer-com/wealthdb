@@ -16,13 +16,21 @@ func yieldDetailReport(req request) *report {
 	ccy := req.currency
 	switch req.view {
 	case "securities":
-		return bookView(req, buildYieldSecurityColumns(ccy), defaultYieldSecurityColumns, gold.YieldSecurities)
+		kindOf, loadKinds := sourceKinds()
+		return bookView(req, buildYieldSecurityColumns(ccy, kindOf), defaultYieldSecurityColumns,
+			loadFirstAt(loadKinds, gold.YieldSecurities))
 	case "funds":
-		return bookView(req, buildYieldFundColumns(ccy), defaultYieldFundColumns,
-			func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.FundRow, error) { return b.Funds(), nil })
+		kindOf, loadKinds := sourceKinds()
+		return bookView(req, buildYieldFundColumns(ccy, kindOf), defaultYieldFundColumns,
+			loadFirstAt(loadKinds, func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.FundRow, error) {
+				return b.Funds(), nil
+			}))
 	case "cash":
-		return bookView(req, buildYieldCashColumns(ccy), defaultYieldCashColumns,
-			func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.CashRow, error) { return b.Cash(), nil })
+		kindOf, loadKinds := sourceKinds()
+		return bookView(req, buildYieldCashColumns(ccy, kindOf), defaultYieldCashColumns,
+			loadFirstAt(loadKinds, func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.CashRow, error) {
+				return b.Cash(), nil
+			}))
 	case "curve":
 		return seriesView(req, buildYieldCurveColumns(ccy), defaultYieldCurveColumns,
 			func(ctx context.Context, db *sql.DB, at int64) ([]yield.CurveRow, error) {
@@ -33,10 +41,11 @@ func yieldDetailReport(req request) *report {
 				return b.Curve(), nil
 			})
 	default: // coverage
-		return bookView(req, buildYieldCoverageColumns(ccy), defaultYieldCoverageColumns,
-			func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.CoverageRow, error) {
+		kindOf, loadKinds := sourceKinds()
+		return bookView(req, buildYieldCoverageColumns(ccy, kindOf), defaultYieldCoverageColumns,
+			loadFirstAt(loadKinds, func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.CoverageRow, error) {
 				return b.Coverage(), nil
-			})
+			}))
 	}
 }
 
@@ -53,11 +62,12 @@ func bookView[T any](req request, registry []columnSpec[T], defaults []string,
 	})
 }
 
-func buildYieldSecurityColumns(outCcy string) []columnSpec[yield.SecurityRow] {
+func buildYieldSecurityColumns(outCcy string, kindOf func(string) string) []columnSpec[yield.SecurityRow] {
 	type row = yield.SecurityRow
+	key := func(r row) string { return r.Key }
 	return []columnSpec[row]{
-		holdingKeyCol("security", func(r row) string { return r.Key }),
-		strCol("name", func(r row) string { return r.Name }),
+		holdingKeyCol("security", kindOf, key),
+		holdingKeyName(kindOf, key, func(r row) string { return r.Name }),
 		strCol("ticker", func(r row) string { return r.Ticker }),
 		strCol("asset_class", func(r row) string { return r.AssetClass }),
 		strCol("sector", func(r row) string { return r.Sector }),
@@ -88,11 +98,12 @@ func buildYieldSecurityColumns(outCcy string) []columnSpec[yield.SecurityRow] {
 var defaultYieldSecurityColumns = []string{"security", "name", "asset_class", "value", "share", "coupon",
 	"maturity_date", "implied_yield", "earnings_yield", "dividend_yield", "quality"}
 
-func buildYieldFundColumns(outCcy string) []columnSpec[yield.FundRow] {
+func buildYieldFundColumns(outCcy string, kindOf func(string) string) []columnSpec[yield.FundRow] {
 	type row = yield.FundRow
+	key := func(r row) string { return r.Key }
 	return []columnSpec[row]{
-		holdingKeyCol("fund", func(r row) string { return r.Key }),
-		strCol("name", func(r row) string { return r.Name }),
+		holdingKeyCol("fund", kindOf, key),
+		holdingKeyName(kindOf, key, func(r row) string { return r.Name }),
 		strCol("symbol", func(r row) string { return r.Symbol }),
 		strCol("kind", func(r row) string { return string(r.Kind) }),
 		strCol("currency", func(r row) string { return r.Currency }),
@@ -124,16 +135,15 @@ func buildYieldFundColumns(outCcy string) []columnSpec[yield.FundRow] {
 var defaultYieldFundColumns = []string{"fund", "name", "kind", "currency", "value", "implied_yield", "duration",
 	"dv01", "distribution_yield", "sec_yield", "as_of", "source", "quality"}
 
-func buildYieldCashColumns(outCcy string) []columnSpec[yield.CashRow] {
+func buildYieldCashColumns(outCcy string, kindOf func(string) string) []columnSpec[yield.CashRow] {
 	type row = yield.CashRow
+	ref := func(r row) accountRef {
+		return accountRef{r.Source, &r.Account.Name, &r.Account.Nickname, r.HoldingKey.Account}
+	}
 	return []columnSpec[row]{
 		strCol("silver_source", func(r row) string { return r.Source }),
-		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID, Extract: func(r row) string {
-			name := r.Account.Name
-			return accountLabel(&name, r.HoldingKey.Account)
-		}},
-		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r row) string { return r.HoldingKey.Account }},
+		accountCol(kindOf, ref),
+		accountIDCol("account_id", kindOf, ref),
 		strCol("tax_wrapper", func(r row) string { return r.Account.TaxWrapper }),
 		strCol("kind", func(r row) string { return string(r.Kind) }),
 		strCol("symbol", func(r row) string { return r.Symbol }),
@@ -173,8 +183,9 @@ func buildYieldCurveColumns(outCcy string) []columnSpec[yield.CurveRow] {
 
 var defaultYieldCurveColumns = []string{"currency", "tenor", "dv01", "dv100", "funds", "bonds", "cash", "liabilities"}
 
-func buildYieldCoverageColumns(outCcy string) []columnSpec[yield.CoverageRow] {
+func buildYieldCoverageColumns(outCcy string, kindOf func(string) string) []columnSpec[yield.CoverageRow] {
 	type row = yield.CoverageRow
+	holding := func(r row) (string, string) { return r.Source, r.Instrument }
 	return []columnSpec[row]{
 		strCol("section", func(r row) string { return r.Section }),
 		strCol("reason", func(r row) string { return r.Reason }),
@@ -182,11 +193,11 @@ func buildYieldCoverageColumns(outCcy string) []columnSpec[yield.CoverageRow] {
 		pctCol("share", func(r row) *float64 { return r.SharePct }),
 		countCol("holdings", func(r row) int64 { return int64(r.Holdings) }),
 		strCol("silver_source", func(r row) string { return r.Source }),
-		{Name: "instrument", Align: output.AlignLeft, Privacy: PrivacyFreeText,
-			Extract: func(r row) string { return r.Instrument }},
-		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r row) string { return r.Account }},
-		strCol("name", func(r row) string { return r.Name }),
+		typedHoldingCol(columnSpec[row]{Name: "instrument", Align: output.AlignLeft, Privacy: PrivacyFreeText,
+			Extract: func(r row) string { return r.Instrument }}, kindOf, holding),
+		// A holding's line names its account by id alone.
+		accountIDCol("account", kindOf, func(r row) accountRef { return accountRef{source: r.Source, id: r.Account} }),
+		typedHoldingCol(strCol("name", func(r row) string { return r.Name }), kindOf, holding),
 	}
 }
 

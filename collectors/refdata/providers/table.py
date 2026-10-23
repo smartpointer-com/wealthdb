@@ -23,6 +23,8 @@ import re
 from datetime import date, datetime
 from decimal import Decimal
 
+from collectorkit.parse import iso_date
+
 from .base import Parsed, ProviderError, blank_to_none, dec, percent, row
 
 # Header words per line field, lower case. The first header that names a
@@ -33,8 +35,11 @@ COLUMNS = {
     "identifier": ("identifier", "security identifier"),
     "ticker": ("ticker", "issuer ticker", "local ticker", "ticker symbol"),
     "name": ("security name", "name", "holding", "holding name", "description", "issuer name"),
+    # `market weight`: a fund that holds futures beside its shares states
+    # a market and a notional weight; the market one is its share of the
+    # fund.
     "weight": ("percent of fund", "weight", "weight (%)", "% of net assets", "weighting", "% weight",
-               "percentage of fund", "% of fund"),
+               "percentage of fund", "% of fund", "market weight"),
     "quantity": ("number of shares", "shares held", "shares", "quantity", "quantity/shares", "nominal",
                  "par value"),
     "market_value": ("base market value", "market value", "market value (base)", "market_value"),
@@ -165,6 +170,31 @@ def parse_day(s) -> date | None:
         except ValueError:
             continue
     return None
+
+
+# A day written with slashes, day first or month first: 20/10/2026.
+SLASH_DAY = re.compile(r"(\d{1,2})/(\d{1,2})/(\d{4})")
+
+
+def slash_day(text: str, *, day_first: bool) -> date | None:
+    """The day a text written with slashes states (SLASH_DAY): dd/mm/yyyy
+    with day_first, else mm/dd/yyyy. None where the text is no such day,
+    or names a day no calendar has."""
+    m = SLASH_DAY.fullmatch(text)
+    if not m:
+        return None
+    first, second, year = map(int, m.groups())
+    day, month = (first, second) if day_first else (second, first)
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def event_day(value) -> date | None:
+    """A day as a distribution states it: 2026-09-21, with or without a
+    time, or as parse_day() reads it."""
+    return iso_date(value) or parse_day(value)
 
 
 def _ident(value):

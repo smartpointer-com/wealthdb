@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
@@ -79,7 +78,7 @@ func runIncomeView(ctx context.Context, g globalFlags, view string, args []strin
 	if err != nil {
 		return err
 	}
-	now := time.Now()
+	now := g.clock()
 	var fromEpoch, toEpoch int64
 	switch {
 	case !forward:
@@ -95,7 +94,7 @@ func runIncomeView(ctx context.Context, g globalFlags, view string, args []strin
 	}
 
 	rep := incomeReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch, period: *period, level: *level,
-		asOf: anchorToDay(now.UTC(), true).Unix(), assumptions: ff.assumptions()})
+		asOf: anchorToDay(now.UTC(), true).Unix(), assumptions: ff.assumptions(), categories: overrideCategories(cfg)})
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
 	return writeReport(ctx, rep, *rf.cols, "income", open, *rf.privacy, fmtChoice, stdout)
 }
@@ -119,10 +118,12 @@ func incomeReport(req request) *report {
 				return gold.IncomeTypes(ctx, db, req.from, req.to, req.currency, part, req.level)
 			})
 	default:
-		return newReport(buildIncomeTransactionColumnRegistry(req.currency), defaultIncomeTransactionColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.IncomeTransactionRow, error) {
+		kindOf, loadKinds := sourceKinds()
+		return newReport(buildIncomeTransactionColumnRegistry(req.currency, kindOf, req.categories),
+			defaultIncomeTransactionColumns,
+			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.IncomeTransactionRow, error) {
 				return gold.IncomeTransactions(ctx, db, req.from, req.to, req.currency)
-			})
+			}))
 	}
 }
 
@@ -175,7 +176,11 @@ var defaultIncomeTypeColumns = []string{
 	"period", "type", "txn_count", "income", "reversals", "net_income", "share",
 }
 
-func buildIncomeTransactionColumnRegistry(outCcy string) []columnSpec[gold.IncomeTransactionRow] {
+func buildIncomeTransactionColumnRegistry(outCcy string, kindOf func(string) string,
+	categories typedCategories) []columnSpec[gold.IncomeTransactionRow] {
+	ref := func(r gold.IncomeTransactionRow) accountRef {
+		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+	}
 	return []columnSpec[gold.IncomeTransactionRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(r gold.IncomeTransactionRow) string { return r.SilverSourceID }},
@@ -183,13 +188,11 @@ func buildIncomeTransactionColumnRegistry(outCcy string) []columnSpec[gold.Incom
 			Extract: func(r gold.IncomeTransactionRow) string { return formatDate(r.OccurredAt) }},
 		{Name: "datetime", Align: output.AlignLeft,
 			Extract: func(r gold.IncomeTransactionRow) string { return formatDateTime(r.OccurredAt) }},
-		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.IncomeTransactionRow) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
-		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.IncomeTransactionRow) string { return r.AccountExternalID }},
+		accountCol(kindOf, ref),
+		accountIDCol("account_id", kindOf, ref),
 		textCol("account_kind", func(r gold.IncomeTransactionRow) *string { return r.AccountKind }),
-		textCol("account_nickname", func(r gold.IncomeTransactionRow) *string { return r.Nickname }),
-		textCol("account_category", func(r gold.IncomeTransactionRow) *string { return r.AccountCategory }),
+		nicknameCol("account_nickname", func(r gold.IncomeTransactionRow) *string { return r.Nickname }),
+		accountCategoryCol(categories, func(r gold.IncomeTransactionRow) *string { return r.AccountCategory }),
 		{Name: "kind", Align: output.AlignLeft,
 			Extract: func(r gold.IncomeTransactionRow) string { return r.Kind }},
 		// The payer takes the FREE-TEXT class, and that most of the
@@ -227,8 +230,9 @@ func buildIncomeTransactionColumnRegistry(outCcy string) []columnSpec[gold.Incom
 		// and without this there is no key to join the two listings on.
 		// Spending's transactions view and `wealthdb transactions` both
 		// offer it.
-		{Name: "tx_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.IncomeTransactionRow) string { return r.TransactionExternalID }},
+		typedIDCol("tx_id", kindOf, func(r gold.IncomeTransactionRow) (string, string) {
+			return r.SilverSourceID, r.TransactionExternalID
+		}),
 	}
 }
 
@@ -290,8 +294,10 @@ Flags
   -C COLS       comma-separated names, 'default', 'all', or a
                 +ADD,-REMOVE delta on the default set
   -x CCY        output currency (default: config.default_currency)
-  -p            redact account ids, payers and amounts; types, shares
-                and provenance stay legible
+  -p            redact account ids, payers and amounts; every name a
+                person typed prints as a pseudonym, such as manual-1,
+                or as a redacted id; types, shares and provenance stay
+                legible
 
 Notes
   Income is GROSS as booked. Tax withheld at source is the spending
@@ -328,9 +334,9 @@ Notes
 Available columns (per view):
   summary       ` + joinColumnNames(buildIncomeSummaryColumnRegistry("CCY", "monthly")) + `
   types         ` + joinColumnNames(buildIncomeTypeColumnRegistry("CCY", "monthly")) + `
-  transactions  ` + joinColumnNames(buildIncomeTransactionColumnRegistry("CCY")) + `
+  transactions  ` + joinColumnNames(buildIncomeTransactionColumnRegistry("CCY", nil, nil)) + `
   projection    ` + joinColumnNames(buildProjectionColumns("CCY", "monthly")) + `
-  calendar      ` + joinColumnNames(buildCalendarColumns("CCY")) + `
+  calendar      ` + joinColumnNames(buildCalendarColumns("CCY", nil)) + `
   sources       ` + joinColumnNames(buildIncomeEntityColumns("CCY", yield.GrainSources, nil)) + `
   portfolios    ` + joinColumnNames(buildIncomeEntityColumns("CCY", yield.GrainPortfolios, nil)) + `
   accounts      ` + joinColumnNames(buildIncomeEntityColumns("CCY", yield.GrainAccounts, nil)) + `

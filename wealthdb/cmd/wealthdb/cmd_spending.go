@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
@@ -63,7 +62,7 @@ func runSpendingView(ctx context.Context, g globalFlags, view string, args []str
 		return err
 	}
 
-	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), time.Now())
+	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), g.clock())
 	if err != nil {
 		fs.Usage()
 		return errs.Newf(errs.ExitUsage, "spending: %s", err.Error())
@@ -74,7 +73,8 @@ func runSpendingView(ctx context.Context, g globalFlags, view string, args []str
 		return err
 	}
 
-	rep := spendingReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch, period: *period, level: *level})
+	rep := spendingReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch, period: *period, level: *level,
+		categories: overrideCategories(cfg)})
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
 	return writeReport(ctx, rep, *rf.cols, "spending", open, *rf.privacy, fmtChoice, stdout)
 }
@@ -95,10 +95,12 @@ func spendingReport(req request) *report {
 				return gold.SpendingCategories(ctx, db, req.from, req.to, req.currency, part, req.level)
 			})
 	default:
-		return newReport(buildSpendTransactionColumnRegistry(req.currency), defaultSpendTransactionColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.SpendTransactionRow, error) {
+		kindOf, loadKinds := sourceKinds()
+		return newReport(buildSpendTransactionColumnRegistry(req.currency, kindOf, req.categories),
+			defaultSpendTransactionColumns,
+			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.SpendTransactionRow, error) {
 				return gold.SpendingTransactions(ctx, db, req.from, req.to, req.currency)
-			})
+			}))
 	}
 }
 
@@ -162,7 +164,11 @@ var defaultSpendCategoryColumns = []string{
 	"period", "category", "txn_count", "spend", "refunds", "net_spend", "share",
 }
 
-func buildSpendTransactionColumnRegistry(outCcy string) []columnSpec[gold.SpendTransactionRow] {
+func buildSpendTransactionColumnRegistry(outCcy string, kindOf func(string) string,
+	categories typedCategories) []columnSpec[gold.SpendTransactionRow] {
+	ref := func(r gold.SpendTransactionRow) accountRef {
+		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+	}
 	return []columnSpec[gold.SpendTransactionRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(r gold.SpendTransactionRow) string { return r.SilverSourceID }},
@@ -174,13 +180,11 @@ func buildSpendTransactionColumnRegistry(outCcy string) []columnSpec[gold.SpendT
 		// issuers, so the account columns carry an account number and
 		// redact as one — the same class the account label takes
 		// everywhere else in the CLI.
-		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.SpendTransactionRow) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
-		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.SpendTransactionRow) string { return r.AccountExternalID }},
+		accountCol(kindOf, ref),
+		accountIDCol("account_id", kindOf, ref),
 		textCol("account_kind", func(r gold.SpendTransactionRow) *string { return r.AccountKind }),
-		textCol("account_nickname", func(r gold.SpendTransactionRow) *string { return r.Nickname }),
-		textCol("account_category", func(r gold.SpendTransactionRow) *string { return r.AccountCategory }),
+		nicknameCol("account_nickname", func(r gold.SpendTransactionRow) *string { return r.Nickname }),
+		accountCategoryCol(categories, func(r gold.SpendTransactionRow) *string { return r.AccountCategory }),
 		{Name: "kind", Align: output.AlignLeft,
 			Extract: func(r gold.SpendTransactionRow) string { return r.Kind }},
 		// merchant_name redacts as free text, like the narrative it
@@ -249,8 +253,9 @@ func buildSpendTransactionColumnRegistry(outCcy string) []columnSpec[gold.SpendT
 			Extract: func(r gold.SpendTransactionRow) string { return r.Currency }},
 		moneyCol("net_amount", "", func(r gold.SpendTransactionRow) *string { return r.NetAmount }),
 		outCcyCol("value", outCcy, func(r gold.SpendTransactionRow) *string { return r.ValueOutCcy }),
-		{Name: "tx_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.SpendTransactionRow) string { return r.TransactionExternalID }},
+		typedIDCol("tx_id", kindOf, func(r gold.SpendTransactionRow) (string, string) {
+			return r.SilverSourceID, r.TransactionExternalID
+		}),
 	}
 }
 
@@ -296,8 +301,10 @@ Flags:
   -C, --columns     comma-separated names, 'default', 'all', or a +ADD,-REMOVE delta
   -x, --currency    output currency (default: config.default_currency)
   -p, --privacy     redact account IDs, amounts, and every name taken off
-                    a statement line — merchant, signature, counterparty
-                    (categories, provenance and shares stay visible)
+                    a statement line — merchant, signature, counterparty;
+                    every name a person typed prints as a pseudonym, such
+                    as manual-1, or as a redacted ID (categories,
+                    provenance and shares stay visible)
 
 There are no row-filter flags. To slice by merchant, category or
 account, grep the table or take -f json and filter in jq.
@@ -311,7 +318,7 @@ provider or model could place. 'wealthdb categorize' works it down.
 Available columns (per view):
   summary       ` + joinColumnNames(buildSpendSummaryColumnRegistry("CCY", "monthly")) + `
   categories    ` + joinColumnNames(buildSpendCategoryColumnRegistry("CCY", "monthly")) + `
-  transactions  ` + joinColumnNames(buildSpendTransactionColumnRegistry("CCY")) + `
+  transactions  ` + joinColumnNames(buildSpendTransactionColumnRegistry("CCY", nil, nil)) + `
 
   (The money columns render as spend_<CCY> / net_spend_<CCY> /
    value_<CCY>, reflecting your -x/--currency choice.)

@@ -14,12 +14,14 @@ import (
 //   - the sentinel row for a source's orphan accounts renders the
 //     literal "(no portfolio)". It is a structural marker with no
 //     row content behind it, so it stays legible for every source.
-//   - the cointracking adapter emits the free-form CT account name
-//     as display_name. These are user-chosen and can be anything —
-//     one word or several — so they take the free-text class and
-//     mask whole. The name is the row label, so the redacted rows
-//     of one source look alike; `-C +portfolio_id` puts a
-//     distinguishable (account-id-redacted) key back on the row.
+//   - a source whose names may be typed (typedAccountLabel) shows
+//     the customer's words: the cointracking adapter emits the
+//     free-form CT account name as display_name, and a manual or
+//     declared portfolio is named, or keyed, by hand. These can be
+//     anything — one word or several — so they print as a pseudonym
+//     whatever their shape, the id fallback too (portfolioCol). A
+//     tracker's `cu_<user>` id names its user and prints as one too
+//     (typedIDCol).
 //   - UBS / other Swiss-source adapters emit bank-assigned
 //     portfolio category labels (Savings / Brokerage / …).
 //     These pass through under the PrivacyAccountID heuristic
@@ -34,8 +36,8 @@ func portfolioNamePrivacy(kindOf func(string) string) func(gold.PortfolioRow) Pr
 		if r.PortfolioExternalID == "" {
 			return PrivacyNone
 		}
-		if kindOf(r.SilverSourceID) == "cointracking" {
-			return PrivacyFreeText
+		if typedAccountLabel(kindOf, r.SilverSourceID) {
+			return PrivacyPseudonym
 		}
 		return PrivacyAccountID
 	}
@@ -51,24 +53,18 @@ func buildPortfolioColumnRegistry(outCcy string, kindOf func(string) string) []c
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(r gold.PortfolioRow) string { return r.SilverSourceID }},
 		dateCol("snapshot_date", func(r gold.PortfolioRow) int64 { return r.SnapshotAt }),
-		{Name: "portfolio", Align: output.AlignLeft,
-			Privacy:     PrivacyAccountID,
-			PrivacyFunc: portfolioNamePrivacy(kindOf),
-			Extract: func(r gold.PortfolioRow) string {
-				// Sentinel rows render as "(no portfolio)" so they
-				// stand out at a glance; real portfolios show their
-				// display_name if present, else their external_id.
-				if r.PortfolioExternalID == "" {
-					return "(no portfolio)"
-				}
-				return accountLabel(r.DisplayName, r.PortfolioExternalID)
-			}},
-		{Name: "portfolio_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.PortfolioRow) string { return r.PortfolioExternalID }},
+		// Sentinel rows render as "(no portfolio)" so they stand out
+		// at a glance.
+		portfolioCol("portfolio", kindOf, func(r gold.PortfolioRow) (string, string, *string) {
+			return r.SilverSourceID, r.PortfolioExternalID, r.DisplayName
+		}),
+		typedIDCol("portfolio_id", kindOf, func(r gold.PortfolioRow) (string, string) {
+			return r.SilverSourceID, r.PortfolioExternalID
+		}),
 		textCol("base_currency", func(r gold.PortfolioRow) *string { return r.BaseCurrency }),
 		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.PortfolioRow) string { return strOrEmpty(r.RelationshipID) }},
-		textCol("portfolio_nickname", func(r gold.PortfolioRow) *string { return r.Nickname }),
+		nicknameCol("portfolio_nickname", func(r gold.PortfolioRow) *string { return r.Nickname }),
 		// Portfolio-level taxonomy rollups. Strict semantics in
 		// the gold layer: tax_wrapper non-nil only when every
 		// component account agrees AND none is unclassified;
@@ -115,7 +111,9 @@ Flags:
                            a +ADD,...-REMOVE,... delta against the default set
                            (e.g. -C+relationship_id-cash_balance)
   -x, --currency CCY       output currency for the _<CCY> aggregate columns (default: config.default_currency)
-  -p, --privacy            redact portfolio / account IDs and monetary amounts
+  -p, --privacy            redact portfolio / account IDs and monetary amounts; every
+                           name a person typed prints as a pseudonym, such as manual-1,
+                           or as a redacted ID
                            (table: visible placeholders; csv: empty cells; json: keys omitted)
 
 Available columns:

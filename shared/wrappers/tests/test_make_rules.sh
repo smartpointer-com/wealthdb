@@ -6,8 +6,11 @@
 #     its wrapper: no secrets or data mount and no fixed container name,
 #     with the checkout mounted at /app;
 #   - a host-venv or hybrid collector's tests run on its venv;
-#   - clean-wealthdb clears the Go cache wealthdb-go uses.
+#   - clean-wealthdb clears the Go cache wealthdb-go uses;
+#   - test-demo's scratch roots are the image tag's own, and clean-demo
+#     removes that root only when it holds the tests' marker.
 # Nothing is built or run: make only prints, and a stub docker prints.
+# clean-demo alone runs for real, on roots under the temp dir.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -65,6 +68,23 @@ chmod +x "$TMP/bin/docker"
 gocache="$(env PATH="$TMP/bin:$PATH" WEALTHDB_IMAGE_TAG=t XDG_CACHE_HOME="$TMP/cache" \
     "$TREE/wealthdb/wealthdb-go" version | sed -n 's/^GOCACHE=//p')"
 has "clean-wealthdb clears wealthdb-go's build cache" "rm -rf $gocache" "$(dry clean-wealthdb)"
+
+demo="$TMP/cache/wealthdb/demo-test-t"
+has "test-demo's scratch roots are the tag's own" \
+    "WEALTHDB_DEMO_TEST_ROOT=\"$demo\"" "$(dry test-demo)"
+has "clean-demo removes the same root" "rm -rf \"$demo\"" "$(dry clean-demo)"
+has "clean runs clean-demo" "rm -rf \"$demo\"" "$(dry clean)"
+# clean-demo for real: the tag's marked root goes; an unmarked dir at
+# that path and another tag's marked root stay.
+clean_demo() { (cd "$TREE" && env WEALTHDB_IMAGE_TAG=t XDG_CACHE_HOME="$TMP/cache" make clean-demo >/dev/null 2>&1); }
+mkdir -p "$demo/a" "$TMP/cache/wealthdb/demo-test-u/a"
+touch "$demo/.wealthdb-demo-tests" "$TMP/cache/wealthdb/demo-test-u/.wealthdb-demo-tests"
+clean_demo
+if [ ! -e "$demo" ]; then ok "clean-demo removes the tag's marked root"; else bad "clean-demo left $demo"; fi
+if [ -d "$TMP/cache/wealthdb/demo-test-u/a" ]; then ok "clean-demo leaves another tag's root"; else bad "clean-demo removed another tag's root"; fi
+mkdir -p "$demo/a"
+clean_demo
+if [ -d "$demo/a" ]; then ok "clean-demo leaves a dir without the marker"; else bad "clean-demo removed an unmarked $demo"; fi
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

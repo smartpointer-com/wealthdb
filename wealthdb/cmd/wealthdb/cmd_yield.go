@@ -81,7 +81,7 @@ func cmdYield(ctx context.Context, g globalFlags, subargs []string, _ io.Reader,
 	if _, ok := yieldGrains[view]; !ok && *converted {
 		return errConverted("--converted")
 	}
-	now := time.Now()
+	now := g.clock()
 	series, err := parseSeries("yield", fs, view, *period, yieldSeriesViews, now)
 	if err != nil {
 		return err
@@ -118,21 +118,20 @@ func yieldReport(req request) *report {
 	if grain, ok := yieldGrains[req.view]; ok {
 		kindOf, loadKinds := sourceKinds()
 		return seriesView(req, buildYieldRowColumns(ccy, grain, kindOf), yieldRowDefaults[grain],
-			func(ctx context.Context, db *sql.DB, at int64) ([]yield.Row, error) {
-				if err := loadKinds(ctx, db); err != nil {
-					return nil, err
-				}
+			loadFirstAt(loadKinds, func(ctx context.Context, db *sql.DB, at int64) ([]yield.Row, error) {
 				b, err := yieldBook(ctx, db, at, ccy)
 				if err != nil {
 					return nil, err
 				}
 				return b.Aggregate(grain, req.converted), nil
-			})
+			}))
 	}
-	switch req.view {
-	case "positions":
-		return bookView(req, buildYieldPositionColumns(ccy), defaultYieldPositionColumns,
-			func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.Position, error) { return b.Positions, nil })
+	if req.view == "positions" {
+		kindOf, loadKinds := sourceKinds()
+		return bookView(req, buildYieldPositionColumns(ccy, kindOf), defaultYieldPositionColumns,
+			loadFirstAt(loadKinds, func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.Position, error) {
+				return b.Positions, nil
+			}))
 	}
 	return yieldDetailReport(req)
 }
@@ -140,8 +139,9 @@ func yieldReport(req request) *report {
 // ---- column registries ---------------------------------------------------
 //
 // A rate prints with a _pct suffix, a value as value_<CCY>. -p hides the
-// value, dv01, every income amount, a price and a key that is a
-// holding's own; rates, durations, shares, labels and public keys stay
+// value, dv01, every income amount, a price and a key that is a holding's
+// own, and prints a name a person typed as a pseudonym (docs/DESIGN.md
+// §4.6); rates, durations, shares, labels and public keys stay
 // (docs/YIELD.md §2).
 
 // yieldRateCols are the figures the aggregate and position rows share,
@@ -203,39 +203,34 @@ func buildYieldRowColumns(outCcy string, grain yield.Grain, kindOf func(string) 
 	}
 	switch grain {
 	case yield.GrainPortfolios:
-		ids = append(ids,
-			col{Name: "portfolio", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-				PrivacyFunc: func(r row) PrivacyClass {
-					return portfolioNamePrivacy(kindOf)(gold.PortfolioRow{SilverSourceID: r.Source,
-						PortfolioExternalID: r.Portfolio})
-				},
-				Extract: func(r row) string {
-					switch {
-					case r.Total:
-						return ""
-					case r.Portfolio == "":
-						return "(no portfolio)"
-					}
-					name := r.PortfolioName
-					return accountLabel(&name, r.Portfolio)
-				}},
-			col{Name: "portfolio_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-				Extract: func(r row) string { return r.Portfolio }})
-	case yield.GrainAccounts:
-		ids = append(ids,
-			col{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID, Extract: func(r row) string {
+		portfolio := portfolioCol("portfolio", kindOf, func(r row) (string, string, *string) {
+			return r.Source, r.Portfolio, &r.PortfolioName
+		})
+		// The total row names no portfolio, not the no-portfolio bucket.
+		blankTotal := func(label func(row) string) func(row) string {
+			return func(r row) string {
 				if r.Total {
 					return ""
 				}
-				name := r.Account.Name
-				return accountLabel(&name, r.AccountID)
-			}},
-			col{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-				Extract: func(r row) string { return r.AccountID }},
+				return label(r)
+			}
+		}
+		portfolio.Extract, portfolio.PrivacyExtract = blankTotal(portfolio.Extract), blankTotal(portfolio.PrivacyExtract)
+		ids = append(ids, portfolio,
+			typedIDCol("portfolio_id", kindOf, func(r row) (string, string) { return r.Source, r.Portfolio }))
+	case yield.GrainAccounts:
+		ref := func(r row) accountRef {
+			if r.Total {
+				return accountRef{}
+			}
+			return accountRef{r.Source, &r.Account.Name, &r.Account.Nickname, r.AccountID}
+		}
+		ids = append(ids,
+			accountCol(kindOf, ref),
+			accountIDCol("account_id", kindOf, ref),
 			col{Name: "account_kind", Align: output.AlignLeft, Extract: func(r row) string { return r.Account.Kind }},
 			col{Name: "tax_wrapper", Align: output.AlignLeft, Extract: func(r row) string { return r.Account.TaxWrapper }},
-			col{Name: "account_nickname", Align: output.AlignLeft,
-				Extract: func(r row) string { return r.Account.Nickname }})
+			nicknameCol("account_nickname", func(r row) *string { return &r.Account.Nickname }))
 	}
 	ids = append(ids,
 		col{Name: "currency", Align: output.AlignLeft, Extract: func(r row) string {
@@ -266,22 +261,24 @@ var yieldRowDefaults = map[yield.Grain][]string{
 
 // buildYieldPositionColumns is the positions view: the keys of `holdings
 // positions`, then the figures, then the holding's own terms.
-func buildYieldPositionColumns(outCcy string) []columnSpec[yield.Position] {
+func buildYieldPositionColumns(outCcy string, kindOf func(string) string) []columnSpec[yield.Position] {
 	type row = yield.Position
 	type col = columnSpec[row]
+	ref := func(r row) accountRef {
+		return accountRef{r.Source, &r.Account.Name, &r.Account.Nickname, r.HoldingKey.Account}
+	}
+	// A public position_key stays legible, as `holdings positions` keeps
+	// it.
+	key, name := holdingCols(kindOf, func(r row) string { return r.Source },
+		func(r row) string { return r.PositionKey }, func(r row) string { return r.Name })
 	ids := []col{
 		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r row) string { return r.Source }},
-		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID, Extract: func(r row) string {
-			name := r.Account.Name
-			return accountLabel(&name, r.HoldingKey.Account)
-		}},
-		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r row) string { return r.HoldingKey.Account }},
+		accountCol(kindOf, ref),
+		accountIDCol("account_id", kindOf, ref),
 		strCol("tax_wrapper", func(r row) string { return r.Account.TaxWrapper }),
-		// position_key stays legible as `holdings positions` keeps it.
-		strCol("position_key", func(r row) string { return r.PositionKey }),
+		key,
 		strCol("symbol", func(r row) string { return r.Symbol }),
-		strCol("name", func(r row) string { return r.Name }),
+		name,
 		strCol("asset_class", func(r row) string { return r.AssetClass }),
 		strCol("vehicle", func(r row) string { return r.Vehicle }),
 		strCol("kind", func(r row) string { return string(r.Kind) }),
@@ -349,12 +346,12 @@ var yieldQualityTags = []tagNote{
 
 func yieldUsage() string {
 	cols := map[string]string{
-		"positions":  joinColumnNames(buildYieldPositionColumns("CCY")),
-		"securities": joinColumnNames(buildYieldSecurityColumns("CCY")),
-		"funds":      joinColumnNames(buildYieldFundColumns("CCY")),
-		"cash":       joinColumnNames(buildYieldCashColumns("CCY")),
+		"positions":  joinColumnNames(buildYieldPositionColumns("CCY", nil)),
+		"securities": joinColumnNames(buildYieldSecurityColumns("CCY", nil)),
+		"funds":      joinColumnNames(buildYieldFundColumns("CCY", nil)),
+		"cash":       joinColumnNames(buildYieldCashColumns("CCY", nil)),
 		"curve":      joinColumnNames(buildYieldCurveColumns("CCY")),
-		"coverage":   joinColumnNames(buildYieldCoverageColumns("CCY")),
+		"coverage":   joinColumnNames(buildYieldCoverageColumns("CCY", nil)),
 	}
 	defaults := map[string][]string{"positions": defaultYieldPositionColumns,
 		"securities": defaultYieldSecurityColumns, "funds": defaultYieldFundColumns, "cash": defaultYieldCashColumns,
@@ -401,8 +398,10 @@ Flags
                      +ADD,-REMOVE delta on the default set
   -x CCY             output currency (default: config.default_currency)
   -p                 hide values, dv01, income amounts, prices and
-                     account ids; rates, durations, shares, labels and
-                     public keys stay
+                     account ids; every name a person typed prints as a
+                     pseudonym, such as manual-1, or as a redacted id;
+                     rates, durations, shares, labels and public keys
+                     stay
 
 Notes
   A rate prints with a _pct suffix (income_yield_pct), a value as

@@ -21,7 +21,7 @@ func TestPositionCostBasisColumns(t *testing.T) {
 			t.Errorf("%q is in the default column set; the cost basis columns are opt-in", n)
 		}
 	}
-	registry := buildColumnRegistry("CHF")
+	registry := buildColumnRegistry("CHF", noKinds, nil)
 	byName := map[string]columnSpec[gold.PositionRow]{}
 	for _, c := range registry {
 		byName[c.Name] = c
@@ -73,7 +73,7 @@ func TestReturnsGainColumn(t *testing.T) {
 		t.Error("gain is not in the default returns columns")
 	}
 	var gain columnSpec[gold.ReturnRow]
-	for _, c := range buildReturnColumnRegistry("USD") {
+	for _, c := range buildReturnColumnRegistry("USD", "accounts", noKinds, nil) {
 		if c.Name == "gain" {
 			gain = c
 		}

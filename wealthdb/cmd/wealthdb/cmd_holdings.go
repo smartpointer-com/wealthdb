@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
@@ -62,7 +61,7 @@ func runHoldingsView(ctx context.Context, g globalFlags, view string, args []str
 		return err
 	}
 
-	asOfEpoch, err := parseAsOf(*asOf, time.Now())
+	asOfEpoch, err := parseAsOf(*asOf, g.clock())
 	if err != nil {
 		return errs.Newf(errs.ExitUsage, "%s: %s", view, err.Error())
 	}
@@ -70,7 +69,7 @@ func runHoldingsView(ctx context.Context, g globalFlags, view string, args []str
 	if err != nil {
 		return err
 	}
-	req := request{view: view, currency: outCcy, asOf: asOfEpoch}
+	req := request{view: view, currency: outCcy, asOf: asOfEpoch, categories: overrideCategories(cfg)}
 	if view == "positions" {
 		req.withCash = *withCash
 		if req.missing, err = resolveMissingBasis(*missing, cfg, view); err != nil {
@@ -87,6 +86,7 @@ func runHoldingsView(ctx context.Context, g globalFlags, view string, args []str
 // row, so its default column set is its whole registry.
 func holdingsReport(req request) *report {
 	ccy, asOf := req.currency, req.asOf
+	kindOf, loadKinds := sourceKinds()
 	switch req.view {
 	case "global":
 		registry := buildGlobalColumnRegistry(ccy)
@@ -103,23 +103,19 @@ func holdingsReport(req request) *report {
 				return gold.SourcesAsOf(ctx, db, asOf, ccy)
 			})
 	case "portfolios":
-		kindOf, loadKinds := sourceKinds()
 		return newReport(buildPortfolioColumnRegistry(ccy, kindOf), defaultPortfolioColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.PortfolioRow, error) {
-				if err := loadKinds(ctx, db); err != nil {
-					return nil, err
-				}
+			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.PortfolioRow, error) {
 				return gold.PortfoliosAsOf(ctx, db, asOf, ccy)
-			})
+			}))
 	case "accounts":
-		return newReport(buildAccountColumnRegistry(ccy), defaultAccountColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.AccountRow, error) {
+		return newReport(buildAccountColumnRegistry(ccy, kindOf, req.categories), defaultAccountColumns,
+			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.AccountRow, error) {
 				return gold.AccountsAsOf(ctx, db, asOf, ccy)
-			})
+			}))
 	default:
 		withCash := req.withCash
-		return newReport(buildColumnRegistry(ccy), defaultColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.PositionRow, error) {
+		return newReport(buildColumnRegistry(ccy, kindOf, req.categories), defaultColumns,
+			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.PositionRow, error) {
 				rows, err := gold.PositionsAsOf(ctx, db, asOf, ccy, req.missing)
 				if err != nil || !withCash {
 					return rows, err
@@ -129,14 +125,14 @@ func holdingsReport(req request) *report {
 					return nil, err
 				}
 				return mergeSorted(rows, cash), nil
-			})
+			}))
 	}
 }
 
 // sourceKinds is how a registry reads a source's kind, which only gold
-// knows: the portfolio column's redaction class depends on it.
+// knows: what -p shows of a portfolio or an account label depends on it.
 // kindOf answers from what load reads, and the report's fetch calls
-// load before any row is rendered.
+// load before any row is rendered (loadFirst).
 func sourceKinds() (kindOf func(string) string, load func(context.Context, *sql.DB) error) {
 	kinds := map[string]string{}
 	return func(id string) string { return kinds[id] },
@@ -147,6 +143,76 @@ func sourceKinds() (kindOf func(string) string, load func(context.Context, *sql.
 			}
 			return err
 		}
+}
+
+// accountNicknames are the accounts' nicknames, by source and account
+// id, which only gold knows: what -p shows of an account label that may
+// be one depends on them. The report's fetch calls load before any row
+// is rendered (loadFirst).
+type accountNicknames map[string]map[string]string
+
+// load reads every nickname gold holds.
+func (n accountNicknames) load(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx,
+		`SELECT silver_source_id, account_external_id, nickname FROM accounts WHERE nickname <> ''`)
+	if err != nil {
+		return fmt.Errorf("account nicknames: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var source, id, nickname string
+		if err := rows.Scan(&source, &id, &nickname); err != nil {
+			return fmt.Errorf("account nicknames: %w", err)
+		}
+		if n[source] == nil {
+			n[source] = map[string]string{}
+		}
+		n[source][id] = nickname
+	}
+	return rows.Err()
+}
+
+// of is an account's nickname, nil where it has none.
+func (n accountNicknames) of(source, id string) *string {
+	if nickname, ok := n[source][id]; ok {
+		return &nickname
+	}
+	return nil
+}
+
+// has reports whether label is the nickname of one of the source's
+// accounts.
+func (n accountNicknames) has(source, label string) bool {
+	for _, nickname := range n[source] {
+		if nickname == label {
+			return true
+		}
+	}
+	return false
+}
+
+// loadFirst is fetch after load (sourceKinds', accountNicknames'), so
+// that what the registry reads of gold answers before any row renders.
+func loadFirst[T any](load func(context.Context, *sql.DB) error,
+	fetch func(context.Context, *sql.DB) ([]T, error)) func(context.Context, *sql.DB) ([]T, error) {
+	return func(ctx context.Context, db *sql.DB) ([]T, error) {
+		if err := load(ctx, db); err != nil {
+			return nil, err
+		}
+		return fetch(ctx, db)
+	}
+}
+
+// loadFirstAt is loadFirst for a fetch that takes one more argument:
+// a series point's instant, a yield book.
+func loadFirstAt[A, T any](load func(context.Context, *sql.DB) error,
+	fetch func(context.Context, *sql.DB, A) ([]T, error)) func(context.Context, *sql.DB, A) ([]T, error) {
+	return func(ctx context.Context, db *sql.DB, a A) ([]T, error) {
+		if err := load(ctx, db); err != nil {
+			return nil, err
+		}
+		return fetch(ctx, db, a)
+	}
 }
 
 const holdingsUsage = `wealthdb holdings — what is held, where, and what it is worth, as of a date

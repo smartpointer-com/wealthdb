@@ -55,6 +55,12 @@ func seriesReport[T any](registry []columnSpec[T], defaults []string, points []s
 		if c.PrivacyFunc != nil {
 			col.PrivacyFunc = func(r seriesRow[T]) PrivacyClass { return c.PrivacyFunc(r.row) }
 		}
+		if c.PrivacyExtract != nil {
+			col.PrivacyExtract = func(r seriesRow[T]) string { return c.PrivacyExtract(r.row) }
+		}
+		if c.Pseudonym != nil {
+			col.Pseudonym = func(r seriesRow[T]) (string, string) { return c.Pseudonym(r.row) }
+		}
 		reg = append(reg, col)
 	}
 	return newReport(reg, append([]string{"period"}, defaults...), func(ctx context.Context, db *sql.DB) ([]seriesRow[T], error) {

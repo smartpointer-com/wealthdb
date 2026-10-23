@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
 	_ "modernc.org/sqlite"
@@ -104,6 +105,26 @@ func run(t *testing.T, args ...string) (stdout, stderr string, exit int) {
 	var so, se bytes.Buffer
 	exit = Run(args, nil, &so, &se)
 	return so.String(), se.String(), exit
+}
+
+// fixtureToday is a day soon after the fixtures' last snapshot
+// (2026-06-30). A test whose report reads today's holdings runs on it:
+// a holding carries a year past its last observation, so on the wall
+// clock such a test would find nothing held once that year is out.
+var fixtureToday = time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
+
+// runToday is run with the reports reading today as fixtureToday.
+func runToday(t *testing.T, args ...string) (stdout, stderr string, exit int) {
+	t.Helper()
+	var so, se bytes.Buffer
+	exit = runAt(func() time.Time { return fixtureToday }, args, nil, &so, &se)
+	return so.String(), se.String(), exit
+}
+
+// onFixtureToday pins an MCP server's today to fixtureToday.
+func onFixtureToday(s *mcpServer) *mcpServer {
+	s.now = func() time.Time { return fixtureToday }
+	return s
 }
 
 func TestUnknownSubcommand(t *testing.T) {

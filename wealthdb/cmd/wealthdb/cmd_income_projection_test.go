@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"slices"
 	"strconv"
 	"strings"
@@ -13,18 +12,17 @@ import (
 
 func runIncome(t *testing.T, cfg string, args ...string) (string, string, int) {
 	t.Helper()
-	var out, errb bytes.Buffer
-	code := Run(append([]string{"-c", cfg, "income"}, args...), nil, &out, &errb)
-	return out.String(), errb.String(), code
+	return runToday(t, append([]string{"-c", cfg, "income"}, args...)...)
 }
 
 // The forward views read today's holdings of the yield fixture: by
 // default over the projection's horizon after the current month, else
-// over a window FROM [TO]; a quarterly period is the calendar's.
+// over a window FROM [TO]; a quarterly period is the calendar's. Today
+// is fixtureToday.
 func TestIncomeForwardWindows(t *testing.T) {
 	t.Parallel()
 	cfg := setupYieldGold(t)
-	now := time.Now().UTC()
+	now := fixtureToday
 	next := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
 	out, errb, code := runIncome(t, cfg, "projection", "-f", "csv")
 	rows := csvRows(t, out)
@@ -49,7 +47,7 @@ func TestIncomeForwardWindows(t *testing.T) {
 		t.Errorf("FROM TO %d\n%s", code, out)
 	}
 	// The MCP tool reads the same default window, and its header says so.
-	text, err := callTool(t, newTestMCP(cfg, false), "income", map[string]any{"view": "projection"})
+	text, err := callTool(t, onFixtureToday(newTestMCP(cfg, false)), "income", map[string]any{"view": "projection"})
 	last := next.AddDate(0, 12, -1).Format(time.DateOnly)
 	if err != nil || !strings.HasPrefix(text, "income projection · window "+next.Format(time.DateOnly)+" → "+last) {
 		t.Errorf("MCP default window %v\n%.200s", err, text)
@@ -62,7 +60,7 @@ func TestIncomeForwardWindows(t *testing.T) {
 func TestIncomeCalendar(t *testing.T) {
 	t.Parallel()
 	cfg := setupYieldGold(t)
-	y := time.Now().UTC().Year() + 1
+	y := fixtureToday.Year() + 1
 	year := strconv.Itoa(y)
 	changeYieldGold(t, cfg,
 		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, name, currency,
@@ -96,7 +94,7 @@ func TestIncomeCalendar(t *testing.T) {
 func TestIncomeForwardRefusalsAndPrivacy(t *testing.T) {
 	t.Parallel()
 	cfg := setupYieldGold(t)
-	far := strconv.Itoa(time.Now().UTC().Year() + 5)
+	far := strconv.Itoa(fixtureToday.Year() + 5)
 	for _, c := range []struct {
 		args []string
 		want string

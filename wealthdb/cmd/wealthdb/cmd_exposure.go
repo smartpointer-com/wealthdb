@@ -10,7 +10,6 @@ import (
 	"io"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
@@ -79,7 +78,7 @@ func cmdExposure(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 		// are written below.
 		*rf.format = string(output.FormatTable)
 	}
-	now := time.Now()
+	now := g.clock()
 	series, err := parseSeries("exposure", fs, view, *period, exposureSeriesViews, now)
 	if err != nil {
 		return err
@@ -247,30 +246,36 @@ func exposureReport(req request) *report {
 				return v.read(ctx, db, at, ccy)
 			})
 	case "issuers":
-		return seriesView(req, buildExposureIssuerColumns(ccy), defaultExposureIssuerColumns,
-			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureIssuerRow, error) {
-				return gold.ExposureIssuers(ctx, db, at, ccy)
-			})
+		kindOf, loadKinds := sourceKinds()
+		issuers := typedIssuers{}
+		return seriesView(req, buildExposureIssuerColumns(ccy, kindOf, issuers), defaultExposureIssuerColumns,
+			loadFirstAt(loadKinds, loadFirstAt(issuers.load(kindOf),
+				func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureIssuerRow, error) {
+					return gold.ExposureIssuers(ctx, db, at, ccy)
+				})))
 	case "situs":
 		return seriesView(req, buildExposureSitusColumns(ccy), defaultExposureSitusColumns,
 			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureSitusRow, error) {
 				return gold.ExposureSitus(ctx, db, at, ccy)
 			})
 	case "securities":
-		return seriesView(req, buildExposureSecurityColumns(ccy), defaultExposureSecurityColumns,
-			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureSecurityRow, error) {
+		kindOf, loadKinds := sourceKinds()
+		return seriesView(req, buildExposureSecurityColumns(ccy, kindOf), defaultExposureSecurityColumns,
+			loadFirstAt(loadKinds, func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureSecurityRow, error) {
 				return gold.ExposureSecurities(ctx, db, at, ccy, country)
-			})
+			}))
 	case "funds":
-		return seriesView(req, buildExposureFundColumns(ccy), defaultExposureFundColumns,
-			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureFundRow, error) {
+		kindOf, loadKinds := sourceKinds()
+		return seriesView(req, buildExposureFundColumns(ccy, kindOf), defaultExposureFundColumns,
+			loadFirstAt(loadKinds, func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureFundRow, error) {
 				return gold.ExposureFunds(ctx, db, at, ccy)
-			})
+			}))
 	default: // coverage
-		return seriesView(req, buildExposureCoverageColumns(ccy), defaultExposureCoverageColumns,
-			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureCoverageRow, error) {
+		kindOf, loadKinds := sourceKinds()
+		return seriesView(req, buildExposureCoverageColumns(ccy, kindOf), defaultExposureCoverageColumns,
+			loadFirstAt(loadKinds, func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureCoverageRow, error) {
 				return gold.ExposureCoverage(ctx, db, at, ccy)
-			})
+			}))
 	}
 }
 
@@ -293,19 +298,6 @@ func shareCols[T any](get func(T) gold.ExposureShares) []columnSpec[T] {
 		pctCol("direct", func(r T) *float64 { return get(r).DirectPct }),
 		pctCol("via_funds", func(r T) *float64 { return get(r).ViaFundsPct }),
 	}
-}
-
-// holdingKeyCol is a key column. A security key is a public identifier
-// and stays legible under -p, as position_key does; a holding no key
-// names reads as its source and instrument id, which -p hides whole.
-func holdingKeyCol[T any](name string, get func(T) string) columnSpec[T] {
-	return columnSpec[T]{Name: name, Align: output.AlignLeft, Extract: get,
-		PrivacyFunc: func(r T) PrivacyClass {
-			if strings.HasPrefix(get(r), gold.HoldingKeyPrefix) {
-				return PrivacyFreeText
-			}
-			return PrivacyNone
-		}}
 }
 
 func buildExposureClassColumns(ccy string) []columnSpec[gold.ExposureClassRow] {
@@ -377,10 +369,72 @@ func buildExposureBucketColumns(ccy, view string) []columnSpec[gold.ExposureBuck
 	return append(cols, qualityCol(func(r row) string { return r.Quality }))
 }
 
-func buildExposureIssuerColumns(ccy string) []columnSpec[gold.ExposureIssuerRow] {
+// typedIssuers are the issuer names a typed holding's (typedHolding) own
+// name gives, upper case, each with the holding's source and instrument
+// id. An issuer neither GLEIF nor a stock names takes its largest leaf's
+// own name, as typed or as exposure_issuer_name folds it
+// (report_exposure_issuers), so such a name is the holder's words. Only
+// gold knows them: the report's fetch calls load before any row renders.
+type typedIssuers map[string][2]string
+
+// load reads the names of the typed sources' instruments, once kindOf
+// answers.
+func (t typedIssuers) load(kindOf func(string) string) func(context.Context, *sql.DB) error {
+	return func(ctx context.Context, db *sql.DB) error {
+		rows, err := db.QueryContext(ctx, `SELECT silver_source_id, instrument_external_id, name,
+		       COALESCE(exposure_issuer_name(name), '') FROM instruments WHERE name IS NOT NULL`)
+		if err != nil {
+			return fmt.Errorf("typed issuers: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var source, id, name, folded string
+			if err := rows.Scan(&source, &id, &name, &folded); err != nil {
+				return fmt.Errorf("typed issuers: %w", err)
+			}
+			if !typedHolding(kindOf, source) {
+				continue
+			}
+			for _, n := range []string{name, folded} {
+				if n != "" {
+					t[strings.ToUpper(n)] = [2]string{source, id}
+				}
+			}
+		}
+		return rows.Err()
+	}
+}
+
+// of is the typed holding an issuer's name is the words of, ok false for
+// any other.
+func (t typedIssuers) of(issuer string) (source, id string, ok bool) {
+	h, ok := t[strings.ToUpper(issuer)]
+	return h[0], h[1], ok
+}
+
+func buildExposureIssuerColumns(ccy string, kindOf func(string) string,
+	issuers typedIssuers) []columnSpec[gold.ExposureIssuerRow] {
 	type row = gold.ExposureIssuerRow
 	return []columnSpec[row]{
-		{Name: "issuer", Align: output.AlignLeft, Extract: func(r row) string { return r.Issuer }},
+		// An issuer a typed holding names prints as that holding's
+		// pseudonym, as its key does in the other views.
+		{Name: "issuer", Align: output.AlignLeft, Extract: func(r row) string { return r.Issuer },
+			PrivacyFunc: func(r row) PrivacyClass {
+				if _, _, ok := issuers.of(r.Issuer); ok {
+					return PrivacyPseudonym
+				}
+				return PrivacyNone
+			},
+			PrivacyExtract: func(r row) string {
+				if _, id, ok := issuers.of(r.Issuer); ok {
+					return id
+				}
+				return r.Issuer
+			},
+			Pseudonym: func(r row) (string, string) {
+				source, _, _ := issuers.of(r.Issuer)
+				return typedPseudonym(kindOf, source)
+			}},
 		textCol("lei", func(r row) *string { return r.LEI }),
 		outCcyCol("value", ccy, func(r row) *string { return r.Value }),
 		pctCol("share", func(r row) *float64 { return r.SharePct }),
@@ -441,11 +495,12 @@ func buildExposureSitusColumns(ccy string) []columnSpec[gold.ExposureSitusRow] {
 
 var defaultExposureSitusColumns = []string{"situs", "country_name", "region", "value", "share", "funds", "quality"}
 
-func buildExposureSecurityColumns(ccy string) []columnSpec[gold.ExposureSecurityRow] {
+func buildExposureSecurityColumns(ccy string, kindOf func(string) string) []columnSpec[gold.ExposureSecurityRow] {
 	type row = gold.ExposureSecurityRow
+	key := func(r row) string { return r.Security }
 	return []columnSpec[row]{
-		holdingKeyCol("security", func(r row) string { return r.Security }),
-		textCol("name", func(r row) *string { return r.Name }),
+		holdingKeyCol("security", kindOf, key),
+		holdingKeyName(kindOf, key, func(r row) string { return strOrEmpty(r.Name) }),
 		textCol("ticker", func(r row) *string { return r.Ticker }),
 		textCol("asset_class", func(r row) *string { return r.AssetClass }),
 		textCol("sector", func(r row) *string { return r.Sector }),
@@ -467,11 +522,12 @@ func buildExposureSecurityColumns(ccy string) []columnSpec[gold.ExposureSecurity
 var defaultExposureSecurityColumns = []string{"security", "name", "asset_class", "sector", "country", "currency",
 	"value", "direct_value", "via_funds_value", "share", "quality"}
 
-func buildExposureFundColumns(ccy string) []columnSpec[gold.ExposureFundRow] {
+func buildExposureFundColumns(ccy string, kindOf func(string) string) []columnSpec[gold.ExposureFundRow] {
 	type row = gold.ExposureFundRow
+	key := func(r row) string { return r.Fund }
 	return []columnSpec[row]{
-		holdingKeyCol("fund", func(r row) string { return r.Fund }),
-		textCol("name", func(r row) *string { return r.Name }),
+		holdingKeyCol("fund", kindOf, key),
+		holdingKeyName(kindOf, key, func(r row) string { return strOrEmpty(r.Name) }),
 		outCcyCol("value", ccy, func(r row) *string { return r.Value }),
 		pctCol("share", func(r row) *float64 { return r.SharePct }),
 		textCol("via", func(r row) *string { return r.Via }),
@@ -503,20 +559,24 @@ func buildExposureFundColumns(ccy string) []columnSpec[gold.ExposureFundRow] {
 var defaultExposureFundColumns = []string{"fund", "name", "value", "share", "via", "proxy", "provider",
 	"composition_date", "gap_days", "lines", "weight_sum", "declaration_date", "declared", "quality"}
 
-func buildExposureCoverageColumns(ccy string) []columnSpec[gold.ExposureCoverageRow] {
+func buildExposureCoverageColumns(ccy string, kindOf func(string) string) []columnSpec[gold.ExposureCoverageRow] {
 	type row = gold.ExposureCoverageRow
+	holding := func(r row) (string, string) { return strOrEmpty(r.SilverSourceID), strOrEmpty(r.Instrument) }
 	return []columnSpec[row]{
 		{Name: "section", Align: output.AlignLeft, Extract: func(r row) string { return r.Section }},
 		// An unmatched holding no key names reads as its instrument id.
-		holdingKeyCol("reason", func(r row) string { return r.Reason }),
+		holdingKeyCol("reason", kindOf, func(r row) string { return r.Reason }),
 		countCol("items", func(r row) int64 { return r.Items }),
 		outCcyCol("value", ccy, func(r row) *string { return r.Value }),
 		pctCol("share", func(r row) *float64 { return r.SharePct }),
-		textCol("detail", func(r row) *string { return r.Detail }),
-		// What a declaration names; -p hides the instrument id whole.
+		// A holding's line names the holding here, which -p prints as
+		// its key's pseudonym where a person typed it.
+		typedHoldingCol(textCol("detail", func(r row) *string { return r.Detail }), kindOf, holding),
+		// What a declaration names; -p hides the instrument id whole, and
+		// prints a typed holding's as its pseudonym.
 		textCol("silver_source_id", func(r row) *string { return r.SilverSourceID }),
-		{Name: "instrument", Align: output.AlignLeft, Privacy: PrivacyFreeText,
-			Extract: func(r row) string { return strOrEmpty(r.Instrument) }},
+		typedHoldingCol(columnSpec[row]{Name: "instrument", Align: output.AlignLeft, Privacy: PrivacyFreeText,
+			Extract: func(r row) string { return strOrEmpty(r.Instrument) }}, kindOf, holding),
 	}
 }
 
@@ -601,11 +661,11 @@ func exposureUsage() string {
 		"maturities": joinColumnNames(buildExposureBucketColumns("CCY", "maturities")),
 		"coupons":    joinColumnNames(buildExposureBucketColumns("CCY", "coupons")),
 		"cycles":     joinColumnNames(buildExposureBucketColumns("CCY", "cycles")),
-		"issuers":    joinColumnNames(buildExposureIssuerColumns("CCY")),
+		"issuers":    joinColumnNames(buildExposureIssuerColumns("CCY", nil, nil)),
 		"situs":      joinColumnNames(buildExposureSitusColumns("CCY")),
-		"securities": joinColumnNames(buildExposureSecurityColumns("CCY")),
-		"funds":      joinColumnNames(buildExposureFundColumns("CCY")),
-		"coverage":   joinColumnNames(buildExposureCoverageColumns("CCY")),
+		"securities": joinColumnNames(buildExposureSecurityColumns("CCY", nil)),
+		"funds":      joinColumnNames(buildExposureFundColumns("CCY", nil)),
+		"coverage":   joinColumnNames(buildExposureCoverageColumns("CCY", nil)),
 	}
 	return `usage: wealthdb exposure <view> [-d DATE] [--country risk|domicile]
                         [-f FORMAT] [-C COLS] [-x CCY] [-p]
@@ -667,8 +727,10 @@ Flags
                      +ADD,-REMOVE delta on the default set
   -x CCY             output currency (default: config.default_currency)
   -p                 hide every amount and every instrument id a
-                     holding is named by; shares, names, labels and
-                     public keys stay
+                     holding is named by; a manual holding's key and
+                     name, and an issuer named after it, print as a
+                     pseudonym, such as manual-1; shares, other names,
+                     labels and public keys stay
 
 Notes
   share is a share of net worth, so a loan is a negative row; direct

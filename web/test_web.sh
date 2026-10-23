@@ -209,13 +209,20 @@ hout="$(web_help)"
 check "help mentions snapshot" "read-only SNAPSHOT" "$hout"
 check "help lists refresh"     "refresh"            "$hout"
 check "help mentions serving"  "materialize serving tables" "$hout"
+check "help names the yield tables" "exposure and yield," "$(echo "$hout" | tr -s ' \n' ' ')"
+# The banner names the dashboards by hand, so one added to or renamed in
+# provision.py must be named here too.
+prov_python="${WEALTHDB_WEB_PYTHON:-python3}"
+want="$("$prov_python" -c 'import sys; sys.path.insert(0, sys.argv[1]); import provision as p; print(" / ".join(p.base_dashboards()))' "$HERE" 2>&1)"
+bout="$(CONTAINER=c PORT=1 _start_banner 2>&1 | tr -s ' \n' ' ')"
+check_eq "the start banner names every base dashboard, in provision.py's order" "$want" \
+    "$(printf '%s' "$bout" | sed -n 's/.*questions and the \(.*\) dashboards, most .*/\1/p')"
 
 # provision.py's definitions (models, cards, filters, dashboards) are
 # pure functions of module constants, so they assert statically. The
 # python script prints the same ok/FAIL lines and exits non-zero on
 # failure; its own summary line is dropped in favour of this file's.
 echo
-prov_python="${WEALTHDB_WEB_PYTHON:-python3}"
 if command -v "$prov_python" >/dev/null 2>&1; then
     prov_out="$("$prov_python" "$HERE/test_provision.py" 2>&1)"
     prov_rc=$?

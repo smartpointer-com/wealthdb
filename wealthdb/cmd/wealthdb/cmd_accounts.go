@@ -12,17 +12,18 @@ import (
 // buildAccountColumnRegistry is the accounts view: one row per account
 // with its taxonomy and its positions, cash and total value, each in
 // the account's own base_currency and in the output currency.
-func buildAccountColumnRegistry(outCcy string) []columnSpec[gold.AccountRow] {
+func buildAccountColumnRegistry(outCcy string, kindOf func(string) string, categories typedCategories) []columnSpec[gold.AccountRow] {
+	ref := func(a gold.AccountRow) accountRef {
+		return accountRef{a.SilverSourceID, a.DisplayName, a.Nickname, a.AccountExternalID}
+	}
 	return []columnSpec[gold.AccountRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(a gold.AccountRow) string { return a.SilverSourceID }},
 		// SnapshotAt is 0 only when the silver source has produced no
 		// observations at all, which shows as a blank.
 		dateCol("snapshot_date", func(a gold.AccountRow) int64 { return a.SnapshotAt }),
-		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(a gold.AccountRow) string { return accountLabel(a.DisplayName, a.AccountExternalID) }},
-		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(a gold.AccountRow) string { return a.AccountExternalID }},
+		accountCol(kindOf, ref),
+		accountIDCol("account_id", kindOf, ref),
 		{Name: "account_kind", Align: output.AlignLeft,
 			Extract: func(a gold.AccountRow) string { return a.AccountKind }},
 		// Defaults applied at render time, so the cell is never blank
@@ -46,10 +47,11 @@ func buildAccountColumnRegistry(outCcy string) []columnSpec[gold.AccountRow] {
 		textCol("base_currency", func(a gold.AccountRow) *string { return a.BaseCurrency }),
 		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.RelationshipID) }},
-		textCol("account_nickname", func(a gold.AccountRow) *string { return a.Nickname }),
-		textCol("account_category", func(a gold.AccountRow) *string { return a.AccountCategory }),
-		{Name: "portfolio_external_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.PortfolioExternalID) }},
+		nicknameCol("account_nickname", func(a gold.AccountRow) *string { return a.Nickname }),
+		accountCategoryCol(categories, func(a gold.AccountRow) *string { return a.AccountCategory }),
+		typedIDCol("portfolio_external_id", kindOf, func(a gold.AccountRow) (string, string) {
+			return a.SilverSourceID, strOrEmpty(a.PortfolioExternalID)
+		}),
 
 		// Base-currency aggregates. The header has no _<CCY> suffix
 		// because each row's value is in its OWN base_currency: there
@@ -75,7 +77,7 @@ var defaultAccountColumns = []string{
 }
 
 func accountsUsage() string {
-	registry := buildAccountColumnRegistry("CCY")
+	registry := buildAccountColumnRegistry("CCY", nil, nil)
 	return `usage: wealthdb holdings accounts [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [-p]
 
 Print one row per account: its source, its kind (brokerage, cash,
@@ -96,7 +98,9 @@ Flags:
                            a +ADD,...-REMOVE,... delta against the default set
                            (e.g. -C+account_id-cash_balance)
   -x, --currency CCY       output currency for the _<CCY> aggregate columns (default: config.default_currency)
-  -p, --privacy            redact account IDs and monetary amounts
+  -p, --privacy            redact account IDs and monetary amounts; every name a person
+                           typed prints as a pseudonym, such as manual-1, or as a
+                           redacted ID
                            (table: visible placeholders; csv: empty cells; json: keys omitted)
 
 Available columns:

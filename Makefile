@@ -80,7 +80,8 @@ endef
         clean-collectors cleanall-collectors base-images cleanall-bases \
         update update-venvs update-wealthdb update-bases \
         lint lint-go lint-python cleanall-lint \
-        demo demo-roll demo-web demo-web-stop demo-mcp demo-mcp-stop test-demo
+        demo demo-roll demo-web demo-web-stop demo-mcp demo-mcp-stop test-demo \
+        clean-demo
 
 # ---- aggregates --------------------------------------------------------
 
@@ -164,11 +165,12 @@ endef
 base-images:
 	$(call BUILD_BASES,quiet,)
 
-# clean    = build artefacts (pycache, pytest cache, Go build cache)
+# clean    = build artefacts (pycache, pytest cache, Go build cache,
+#            test-demo's scratch roots)
 # cleanall = clean + the heavy outputs (docker images, venvs)
-clean:    clean-wealthdb clean-web clean-collectors clean-collectorkit
+clean:    clean-wealthdb clean-web clean-collectors clean-collectorkit clean-demo
 cleanall: cleanall-wealthdb cleanall-web cleanall-collectors cleanall-bases \
-          cleanall-collectorkit cleanall-lint
+          cleanall-collectorkit cleanall-lint clean-demo
 
 clean-collectors:    $(addprefix clean-,$(COLLECTORS))
 cleanall-collectors: $(addprefix cleanall-,$(COLLECTORS))
@@ -343,9 +345,9 @@ demo-roll: build-wealthdb
 	@$(PYTHON) demo/generate.py $(DEMO_GEN_ARGS) --append
 	@$(DEMO_ENGINE) load -a
 
-# `web refresh` re-materializes the serving tables, returns, gains and exposure and
-# re-snapshots gold (restarting the container when it runs); `web start` then
-# brings it up if it does not.
+# `web refresh` re-materializes the serving tables, returns, gains, exposure
+# and yield and re-snapshots gold (restarting the container when it runs);
+# `web start` then brings it up if it does not.
 demo-web: build-web
 	$(DEMO_ROOT_MARKED)
 	@$(DEMO_WEB) refresh
@@ -369,13 +371,21 @@ demo-mcp-stop:
 # The generator's own suite (stdlib unittest), then the demo loaded
 # through the engine image, its first months and its whole history to
 # today, in scratch roots under the cache dir — a directory Docker can
-# see, holding nothing but the demo's test roots.
-DEMO_TEST_ROOT := $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb/demo-test
+# see, holding nothing but the demo's test roots. One per image tag, as
+# the images are, so checkouts on tags of their own never share a root.
+DEMO_TEST_ROOT := $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb/demo-test-$(TAG)
 
 test-demo: build-wealthdb
 	@echo "==> test demo (generator, then the household through the engine: its first months and to today)"
 	@WEALTHDB_DEMO_TEST_ROOT="$(DEMO_TEST_ROOT)" WEALTHDB_BIN="$(abspath $(WEALTHDB))" \
 		$(PYTHON) -m unittest discover -s demo/tests -t demo
+
+# This tag's root only, and only when it holds the marker the tests
+# write into it (demo/tests/test_engine.py), so a dir of another kind
+# at that path is left alone.
+clean-demo:
+	@echo "==> clean demo (test-demo's scratch roots of tag $(TAG))"
+	@if [ -f "$(DEMO_TEST_ROOT)/.wealthdb-demo-tests" ]; then rm -rf "$(DEMO_TEST_ROOT)"; fi
 
 # ---- mcp (optional MCP server) ----------------------------------------
 # The server is the engine image, so there is nothing to build; the
@@ -593,9 +603,10 @@ help:
 	@echo "  make hooks              run make lint before every commit (install runs it too)"
 	@echo "  make uninstall          remove those symlinks and the hooks"
 	@echo ""
-	@echo "  make clean              remove build artefacts (pycache, caches)"
+	@echo "  make clean              remove build artefacts (pycache, caches, demo test roots)"
 	@echo "  make cleanall           also remove docker images + venvs"
-	@echo "  make clean-<name> / cleanall-<name>   (incl. -wealthdb, -collectors; cleanall-bases)"
+	@echo "  make clean-<name> / cleanall-<name>   (incl. -wealthdb, -web, -collectorkit,"
+	@echo "                          -collectors; clean-demo, cleanall-bases, cleanall-lint)"
 	@echo ""
 	@echo "  make demo               build the synthetic demo household (WEALTHDB_DEMO_ROOT,"
 	@echo "                          default .demo-root's first line, else ~/wealthdb-demo;"

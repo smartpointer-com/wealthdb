@@ -90,7 +90,7 @@ resolved.
 | --- | --- |
 | Gold schema, CLI, plugin contract, load semantics, package layout | [wealthdb/docs/DESIGN.md](wealthdb/docs/DESIGN.md) |
 | Returns method (TWR / MWR) and its rationale | [wealthdb/docs/RETURNS-NOTES.md](wealthdb/docs/RETURNS-NOTES.md) |
-| The reports: gains, exposure, lots, spending, income, cash flow, taxonomy | [wealthdb/docs/](wealthdb/docs/) ([README.md § Documentation](README.md#documentation) lists each) |
+| The reports: gains, exposure, yield, lots, spending, income, cash flow, taxonomy | [wealthdb/docs/](wealthdb/docs/) ([README.md § Documentation](README.md#documentation) lists each) |
 | Per-source adapter design (gold side) | [wealthdb/docs/adapters/](wealthdb/docs/adapters/) |
 | A given source's bronze/silver internals | `collectors/<source>/DESIGN.md` |
 | Agent ground rules (shared) | [AGENTS.md](AGENTS.md) |

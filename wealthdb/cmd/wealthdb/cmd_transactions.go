@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
@@ -29,7 +28,7 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 		return err
 	}
 
-	fromEpoch, toEpoch, err := parseDateRange(fs.Args(), time.Now())
+	fromEpoch, toEpoch, err := parseDateRange(fs.Args(), g.clock())
 	if err != nil {
 		fs.Usage()
 		return errs.Newf(errs.ExitUsage, "transactions: %s", err.Error())
@@ -40,7 +39,8 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 		return err
 	}
 
-	rep := transactionsReport(request{currency: outCcy, from: fromEpoch, to: toEpoch, newestFirst: *reverse})
+	rep := transactionsReport(request{currency: outCcy, from: fromEpoch, to: toEpoch, newestFirst: *reverse,
+		categories: overrideCategories(cfg)})
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
 	return writeReport(ctx, rep, *rf.cols, "transactions", open, *rf.privacy, fmtChoice, stdout)
 }
@@ -52,15 +52,23 @@ func transactionsReport(req request) *report {
 	if req.newestFirst {
 		order = gold.SortDescending
 	}
-	return newReport(buildTransactionColumnRegistry(req.currency), defaultTransactionColumns,
-		func(ctx context.Context, db *sql.DB) ([]gold.TransactionRow, error) {
+	kindOf, loadKinds := sourceKinds()
+	return newReport(buildTransactionColumnRegistry(req.currency, kindOf, req.categories), defaultTransactionColumns,
+		loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.TransactionRow, error) {
 			return gold.TransactionsBetween(ctx, db, req.from, req.to, req.currency, order)
-		})
+		}))
 }
 
 // ---- column registry -----------------------------------------------------
 
-func buildTransactionColumnRegistry(outCcy string) []columnSpec[gold.TransactionRow] {
+func buildTransactionColumnRegistry(outCcy string, kindOf func(string) string,
+	categories typedCategories) []columnSpec[gold.TransactionRow] {
+	ref := func(r gold.TransactionRow) accountRef {
+		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+	}
+	holding := func(r gold.TransactionRow) (string, string) {
+		return r.SilverSourceID, strOrEmpty(r.InstrumentExternalID)
+	}
 	return []columnSpec[gold.TransactionRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(r gold.TransactionRow) string { return r.SilverSourceID }},
@@ -68,14 +76,12 @@ func buildTransactionColumnRegistry(outCcy string) []columnSpec[gold.Transaction
 			Extract: func(r gold.TransactionRow) string { return formatDate(r.OccurredAt) }},
 		{Name: "datetime", Align: output.AlignLeft,
 			Extract: func(r gold.TransactionRow) string { return formatDateTime(r.OccurredAt) }},
-		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.TransactionRow) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
-		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.TransactionRow) string { return r.AccountExternalID }},
+		accountCol(kindOf, ref),
+		accountIDCol("account_id", kindOf, ref),
 		{Name: "kind", Align: output.AlignLeft,
 			Extract: func(r gold.TransactionRow) string { return r.Kind }},
 		textCol("symbol", func(r gold.TransactionRow) *string { return r.Symbol }),
-		{Name: "name", Align: output.AlignLeft,
+		typedHoldingCol(columnSpec[gold.TransactionRow]{Name: "name", Align: output.AlignLeft,
 			Extract: func(r gold.TransactionRow) string {
 				// Prefer the joined instruments.name; fall back to the
 				// adapter-supplied transactions.description (Schwab
@@ -88,21 +94,23 @@ func buildTransactionColumnRegistry(outCcy string) []columnSpec[gold.Transaction
 			},
 			// The class follows which of the two the cell holds. A
 			// joined instrument name is a public security name and
-			// stays legible; the description fallback is a statement
-			// narrative and takes the free-text class, exactly as the
-			// `description` column below does.
+			// stays legible, unless a person typed it; the description
+			// fallback is a statement narrative and takes the free-text
+			// class, exactly as the `description` column below does.
 			PrivacyFunc: func(r gold.TransactionRow) PrivacyClass {
 				if r.Name != nil && *r.Name != "" {
 					return PrivacyNone
 				}
 				return PrivacyFreeText
-			}},
-		textCol("instrument_id", func(r gold.TransactionRow) *string { return r.InstrumentExternalID }),
+			}}, kindOf, holding),
+		typedHoldingCol(textCol("instrument_id", func(r gold.TransactionRow) *string { return r.InstrumentExternalID }),
+			kindOf, holding),
 		// What the row's instrument was looked up BY, where that lookup
 		// found nothing. `instrument_id` empty beside a value here is
 		// exactly a row a `transaction_instruments` entry can close,
 		// and this is the value such an entry is keyed by.
-		textCol("instrument_hint", func(r gold.TransactionRow) *string { return r.InstrumentHint }),
+		typedHoldingCol(textCol("instrument_hint", func(r gold.TransactionRow) *string { return r.InstrumentHint }),
+			kindOf, func(r gold.TransactionRow) (string, string) { return r.SilverSourceID, strOrEmpty(r.InstrumentHint) }),
 		// The statement narrative, verbatim: a bank line carries a
 		// counterparty's name, address and reference text, and gold
 		// appends the payer's memo behind the separator. Free-text
@@ -168,12 +176,13 @@ func buildTransactionColumnRegistry(outCcy string) []columnSpec[gold.Transaction
 		{Name: "price", Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.Price) }},
 		outCcyCol("value", outCcy, func(r gold.TransactionRow) *string { return r.ValueOutCcy }),
-		{Name: "tx_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.TransactionRow) string { return r.TransactionExternalID }},
+		typedIDCol("tx_id", kindOf, func(r gold.TransactionRow) (string, string) {
+			return r.SilverSourceID, r.TransactionExternalID
+		}),
 		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.RelationshipID) }},
-		textCol("account_nickname", func(r gold.TransactionRow) *string { return r.Nickname }),
-		textCol("account_category", func(r gold.TransactionRow) *string { return r.AccountCategory }),
+		nicknameCol("account_nickname", func(r gold.TransactionRow) *string { return r.Nickname }),
+		accountCategoryCol(categories, func(r gold.TransactionRow) *string { return r.AccountCategory }),
 		textCol("account_kind", func(r gold.TransactionRow) *string { return r.AccountKind }),
 	}
 }
@@ -184,7 +193,7 @@ var defaultTransactionColumns = []string{
 }
 
 func transactionsUsage() string {
-	registry := buildTransactionColumnRegistry("CCY")
+	registry := buildTransactionColumnRegistry("CCY", nil, nil)
 	return `usage: wealthdb transactions [FROM [TO]] [-r] [-f FORMAT] [-C COLS] [-x CCY] [-p]
 
 Print transactions over a date range: trades, dividends, interest,
@@ -215,9 +224,11 @@ Flags:
                            (e.g. -C+description-account)
   -x, --currency CCY       output currency for the value column (default: config.default_currency)
   -p, --privacy            redact account / tx IDs, quantities, prices, and monetary amounts;
-                           statement narratives (description, and merchant / payer — the
-                           store's name or the line's own signature — and the name column
-                           where it falls back to one) redact as free text — the cell masks whole
+                           every name a person typed prints as a pseudonym, such as manual-1,
+                           or as a redacted ID; statement narratives (description, and
+                           merchant / payer — the store's name or the line's own signature —
+                           and the name column where it falls back to one) redact as free
+                           text — the cell masks whole
                            (table: visible placeholders; csv: empty cells; json: keys omitted)
 
 Available columns:

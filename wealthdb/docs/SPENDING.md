@@ -2003,8 +2003,12 @@ through.
 
 The account's external id and display name redact as account ids — a
 card's display name is typically its masked number — and amounts
-redact as money. Categories, provenance and `share_pct` stay legible,
-like the returns percentages.
+redact as money. A display name that may be typed shows the account's
+id instead. That id redacts where it is shaped as one, and prints as a
+pseudonym otherwise. A typed name, such as the nickname or a category
+from the config, prints as a pseudonym such as `nickname-1`
+([DESIGN.md §4.6](DESIGN.md), *Typed names*). Spending categories,
+provenance and `share_pct` stay legible, like the returns percentages.
 
 ## 8. Storage and lifecycle
 

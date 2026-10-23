@@ -143,7 +143,7 @@ type resultMeta struct {
 func render(rs *resultSet, p page, cols []int, format string, head resultHeader, meta resultMeta) toolOutput {
 	switch format {
 	case formatJSON:
-		t := rs.rows.table(p.idx, cols, rs.privacy, output.FormatJSON)
+		t := rs.rows.table(p.idx, cols, rs.privacy, output.FormatJSON, rs.names)
 		res := jsonResult{
 			Tool: meta.tool, View: meta.view, From: meta.from, To: meta.to, AsOf: meta.asOf,
 			Currency: meta.currency, Header: head.String(), Columns: t.Columns,
@@ -173,14 +173,14 @@ func render(rs *resultSet, p page, cols []int, format string, head resultHeader,
 	case formatCSV:
 		var b bytes.Buffer
 		b.WriteString(head.String() + "\n")
-		_ = output.WriteCSV(&b, rs.rows.table(p.idx, cols, rs.privacy, output.FormatCSV))
+		_ = output.WriteCSV(&b, rs.rows.table(p.idx, cols, rs.privacy, output.FormatCSV, rs.names))
 		b.WriteString(p.trailer())
 		return toolOutput{text: strings.TrimRight(b.String(), "\n")}
 	default:
 		var b strings.Builder
 		b.WriteString(head.String() + "\n")
 		if len(p.idx) > 0 {
-			writeMarkdownTable(&b, rs.rows.table(p.idx, cols, rs.privacy, output.FormatTable))
+			writeMarkdownTable(&b, rs.rows.table(p.idx, cols, rs.privacy, output.FormatTable, rs.names))
 		}
 		b.WriteString(p.trailer())
 		return toolOutput{text: strings.TrimRight(b.String(), "\n")}

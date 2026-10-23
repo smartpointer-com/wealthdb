@@ -56,22 +56,28 @@ var genericMoneyWords = map[string]bool{
 // resultSet is a fetched report ready to filter, sort and page. cells
 // are every registry column as the table format prints them, privacy
 // applied: the privacy endpoint filters and sorts over what it shows,
-// so no filter can probe a value it hides.
+// so no filter can probe a value it hides. names are the call's
+// pseudonyms, numbered over cells, so the page a call returns names a
+// typed value as its filters read it, whatever the page's rows and
+// columns.
 type resultSet struct {
 	rep     *report
 	rows    reportRows
 	cells   [][]string
 	privacy bool
+	names   *pseudonyms
 }
 
 func newResultSet(rep *report, rows reportRows, privacy bool) *resultSet {
-	t := rows.table(nil, rep.allColumns(), privacy, output.FormatTable)
-	return &resultSet{rep: rep, rows: rows, cells: t.Rows, privacy: privacy}
+	names := newPseudonyms()
+	t := rows.table(nil, rep.allColumns(), privacy, output.FormatTable, names)
+	return &resultSet{rep: rep, rows: rows, cells: t.Rows, privacy: privacy, names: names}
 }
 
 // rowFilter is one named filter of a call: its needles (a comma list
 // keeps a row matching any) and the registry columns it reads. source
-// matches whole cells; every other filter matches substrings.
+// matches whole cells; every other filter matches substrings, but for a
+// pseudonym on the privacy endpoint (cellMatches).
 type rowFilter struct {
 	name    string
 	needles []string
@@ -103,11 +109,26 @@ func normalizeCell(s string) string {
 	return strings.TrimSpace(strings.ReplaceAll(strings.ToLower(s), "_", " "))
 }
 
-func (f rowFilter) matches(row []string) bool {
+// pseudonymNeedle is a pseudonym as normalizeCell reads it: a prefix, a
+// dash and a number.
+var pseudonymNeedle = regexp.MustCompile(`^[a-z][a-z0-9 ]*-[0-9]+$`)
+
+// cellMatches reports whether a normalized needle matches a normalized
+// cell: the whole cell where exact says so, or where the needle is a
+// pseudonym on the privacy endpoint, since manual-1 is not part of
+// manual-10; a substring otherwise.
+func cellMatches(cell, needle string, exact, privacy bool) bool {
+	if exact || privacy && pseudonymNeedle.MatchString(needle) {
+		return cell == needle
+	}
+	return strings.Contains(cell, needle)
+}
+
+func (f rowFilter) matches(row []string, privacy bool) bool {
 	for _, c := range f.cols {
 		cell := normalizeCell(row[c])
 		for _, n := range f.needles {
-			if (f.exact && cell == n) || (!f.exact && strings.Contains(cell, n)) {
+			if cellMatches(cell, n, f.exact, privacy) {
 				return true
 			}
 		}
@@ -123,14 +144,14 @@ func (rs *resultSet) filter(filters []rowFilter, search string) []int {
 rows:
 	for i, row := range rs.cells {
 		for _, f := range filters {
-			if !f.matches(row) {
+			if !f.matches(row, rs.privacy) {
 				continue rows
 			}
 		}
 		if search != "" {
 			found := false
 			for _, cell := range row {
-				if strings.Contains(normalizeCell(cell), search) {
+				if cellMatches(normalizeCell(cell), search, false, rs.privacy) {
 					found = true
 					break
 				}

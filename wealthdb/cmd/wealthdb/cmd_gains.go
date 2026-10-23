@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
@@ -76,7 +75,7 @@ func runGainsView(ctx context.Context, g globalFlags, view string, args []string
 	if err := checkChoice("gains", "documents", *documents, "primary", "all"); err != nil {
 		return err
 	}
-	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), time.Now())
+	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), g.clock())
 	if err != nil {
 		fs.Usage()
 		return errs.Newf(errs.ExitUsage, "gains: %s", err.Error())
@@ -91,7 +90,8 @@ func runGainsView(ctx context.Context, g globalFlags, view string, args []string
 	}
 
 	rep := gainsReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
-		period: *period, allDocuments: *documents == "all", newestFirst: *reverse, missing: missingBasis})
+		period: *period, allDocuments: *documents == "all", newestFirst: *reverse, missing: missingBasis,
+		categories: overrideCategories(cfg)})
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
 	return writeReport(ctx, rep, *rf.cols, "gains", open, *rf.privacy, fmtChoice, stdout)
 }
@@ -100,48 +100,44 @@ func runGainsView(ctx context.Context, g globalFlags, view string, args []string
 // the MCP server share.
 func gainsReport(req request) *report {
 	ccy := req.currency
+	kindOf, loadKinds := sourceKinds()
 	if grain, ok := gainsGrains[req.view]; ok {
-		kindOf, loadKinds := sourceKinds()
-		return newReport(buildGainsBucketColumnRegistry(ccy, req.period, grain, kindOf), gainsBucketDefaults[grain],
-			func(ctx context.Context, db *sql.DB) ([]gold.GainsBucketRow, error) {
-				if grain == gold.GainsPortfolios {
-					if err := loadKinds(ctx, db); err != nil {
-						return nil, err
-					}
-				}
+		return newReport(buildGainsBucketColumnRegistry(ccy, req.period, grain, kindOf, req.categories),
+			gainsBucketDefaults[grain],
+			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.GainsBucketRow, error) {
 				return gold.GainsBuckets(ctx, db, req.from, req.to, ccy, reportPeriods[req.period], grain, req.missing)
-			})
+			}))
 	}
 	switch req.view {
 	case "positions":
-		return newReport(buildGainsPositionColumnRegistry(ccy), defaultGainsPositionColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.GainsPositionRow, error) {
+		return newReport(buildGainsPositionColumnRegistry(ccy, kindOf), defaultGainsPositionColumns,
+			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.GainsPositionRow, error) {
 				return gold.GainsPositions(ctx, db, req.from, req.to, ccy, req.missing)
-			})
+			}))
 	case "realized":
 		order := gold.SortAscending
 		if req.newestFirst {
 			order = gold.SortDescending
 		}
-		return newReport(buildRealizedLotColumnRegistry(ccy), defaultRealizedLotColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.RealizedLotRow, error) {
+		return newReport(buildRealizedLotColumnRegistry(ccy, kindOf), defaultRealizedLotColumns,
+			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.RealizedLotRow, error) {
 				return gold.RealizedLotsBetween(ctx, db, req.from, req.to, ccy, req.allDocuments, order, req.missing)
-			})
+			}))
 	case "lots":
-		return newReport(buildOpenLotColumnRegistry(ccy), defaultOpenLotColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.OpenLotRow, error) {
+		return newReport(buildOpenLotColumnRegistry(ccy, kindOf), defaultOpenLotColumns,
+			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.OpenLotRow, error) {
 				return gold.OpenLotsAsOf(ctx, db, req.to, ccy, req.missing)
-			})
+			}))
 	case "check":
-		return newReport(buildGainsCheckColumnRegistry(ccy), defaultGainsCheckColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.GainsCheckRow, error) {
+		return newReport(buildGainsCheckColumnRegistry(ccy, kindOf), defaultGainsCheckColumns,
+			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.GainsCheckRow, error) {
 				return gold.GainsCheck(ctx, db, req.from, req.to, ccy)
-			})
+			}))
 	default: // coverage
-		return newReport(buildGainsCoverageColumnRegistry(ccy), defaultGainsCoverageColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.GainsCoverageRow, error) {
+		return newReport(buildGainsCoverageColumnRegistry(ccy, kindOf), defaultGainsCoverageColumns,
+			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.GainsCoverageRow, error) {
 				return gold.GainsCoverage(ctx, db, req.from, req.to, ccy)
-			})
+			}))
 	}
 }
 
@@ -185,7 +181,8 @@ func gainsReadsBasis(view string) bool { return view != "coverage" && view != "c
 
 // buildGainsBucketColumnRegistry is the registry of the four aggregate
 // views: the grain's identifying columns, then the figures they share.
-func buildGainsBucketColumnRegistry(outCcy, period string, grain gold.GainsGrain, kindOf func(string) string) []columnSpec[gold.GainsBucketRow] {
+func buildGainsBucketColumnRegistry(outCcy, period string, grain gold.GainsGrain, kindOf func(string) string,
+	categories typedCategories) []columnSpec[gold.GainsBucketRow] {
 	type row = gold.GainsBucketRow
 	type col = columnSpec[row]
 	var ids []col
@@ -196,29 +193,23 @@ func buildGainsBucketColumnRegistry(outCcy, period string, grain gold.GainsGrain
 	switch grain {
 	case gold.GainsPortfolios:
 		ids = append(ids,
-			col{Name: "portfolio", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-				PrivacyFunc: func(r row) PrivacyClass {
-					return portfolioNamePrivacy(kindOf)(gold.PortfolioRow{
-						SilverSourceID: strOrEmpty(r.SilverSourceID), PortfolioExternalID: strOrEmpty(r.PortfolioExternalID)})
-				},
-				Extract: func(r row) string {
-					if strOrEmpty(r.PortfolioExternalID) == "" {
-						return "(no portfolio)"
-					}
-					return accountLabel(r.PortfolioDisplayName, *r.PortfolioExternalID)
-				}},
-			col{Name: "portfolio_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-				Extract: func(r row) string { return strOrEmpty(r.PortfolioExternalID) }})
+			portfolioCol("portfolio", kindOf, func(r row) (string, string, *string) {
+				return strOrEmpty(r.SilverSourceID), strOrEmpty(r.PortfolioExternalID), r.PortfolioDisplayName
+			}),
+			typedIDCol("portfolio_id", kindOf, func(r row) (string, string) {
+				return strOrEmpty(r.SilverSourceID), strOrEmpty(r.PortfolioExternalID)
+			}))
 	case gold.GainsAccounts:
+		ref := func(r row) accountRef {
+			return accountRef{strOrEmpty(r.SilverSourceID), r.DisplayName, r.Nickname, strOrEmpty(r.AccountExternalID)}
+		}
 		ids = append(ids,
-			col{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-				Extract: func(r row) string { return accountLabel(r.DisplayName, strOrEmpty(r.AccountExternalID)) }},
-			col{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-				Extract: func(r row) string { return strOrEmpty(r.AccountExternalID) }},
+			accountCol(kindOf, ref),
+			accountIDCol("account_id", kindOf, ref),
 			textCol("account_kind", func(r row) *string { return r.AccountKind }),
 			textCol("tax_wrapper", func(r row) *string { return r.TaxWrapper }),
-			textCol("account_nickname", func(r row) *string { return r.Nickname }),
-			textCol("account_category", func(r row) *string { return r.AccountCategory }),
+			nicknameCol("account_nickname", func(r row) *string { return r.Nickname }),
+			accountCategoryCol(categories, func(r row) *string { return r.AccountCategory }),
 			col{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 				Extract: func(r row) string { return strOrEmpty(r.RelationshipID) }})
 	}
@@ -260,27 +251,30 @@ var gainsBucketDefaults = map[gold.GainsGrain][]string{
 		"unrealized_end", "unrealized_change", "gain", "basis_coverage", "quality"},
 }
 
-func buildGainsPositionColumnRegistry(outCcy string) []columnSpec[gold.GainsPositionRow] {
+func buildGainsPositionColumnRegistry(outCcy string, kindOf func(string) string) []columnSpec[gold.GainsPositionRow] {
 	type row = gold.GainsPositionRow
 	type col = columnSpec[row]
+	ref := func(r row) accountRef {
+		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+	}
+	// A row the realized lots or events alone make carries their own
+	// key, since no position line names its instrument.
+	key := func(r row) string {
+		if r.PositionKey != nil {
+			return *r.PositionKey
+		}
+		return strOrEmpty(r.LotKey)
+	}
+	keyCol, nameCol := holdingCols(kindOf, func(r row) string { return r.SilverSourceID }, key,
+		func(r row) string { return strOrEmpty(r.Name) })
 	return []col{
 		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r row) string { return r.SilverSourceID }},
-		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r row) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
-		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r row) string { return r.AccountExternalID }},
-		textCol("account_nickname", func(r row) *string { return r.Nickname }),
+		accountCol(kindOf, ref),
+		accountIDCol("account_id", kindOf, ref),
+		nicknameCol("account_nickname", func(r row) *string { return r.Nickname }),
 		textCol("symbol", func(r row) *string { return r.Symbol }),
-		textCol("name", func(r row) *string { return r.Name }),
-		// A row the realized lots or events alone make carries their own
-		// key, since no position line names its instrument.
-		{Name: "position_key", Align: output.AlignLeft,
-			Extract: func(r row) string {
-				if r.PositionKey != nil {
-					return *r.PositionKey
-				}
-				return strOrEmpty(r.LotKey)
-			}},
+		nameCol,
+		keyCol,
 		textCol("asset_class", func(r row) *string { return r.AssetClass }),
 		textCol("vehicle", func(r row) *string { return r.Vehicle }),
 		textCol("currency", func(r row) *string { return r.Currency }),
@@ -309,25 +303,27 @@ var defaultGainsPositionColumns = []string{
 	"cost_basis_outccy", "value", "unrealized_end", "realized", "gain", "basis_stamp",
 }
 
-func buildRealizedLotColumnRegistry(outCcy string) []columnSpec[gold.RealizedLotRow] {
+func buildRealizedLotColumnRegistry(outCcy string, kindOf func(string) string) []columnSpec[gold.RealizedLotRow] {
 	type row = gold.RealizedLotRow
 	type col = columnSpec[row]
+	ref := func(r row) accountRef {
+		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+	}
+	holding := func(r row) (string, string) { return r.SilverSourceID, strOrEmpty(r.InstrumentExternalID) }
 	return []col{
 		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r row) string { return r.SilverSourceID }},
 		{Name: "date", Align: output.AlignLeft, Extract: func(r row) string { return r.EffectiveDate }},
 		// The date is the tax year's last day when the document states
 		// no disposal or settlement date.
 		yesNoCol("undated", func(r row) *bool { return &r.Undated }),
-		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r row) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
-		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r row) string { return r.AccountExternalID }},
-		textCol("account_nickname", func(r row) *string { return r.Nickname }),
+		accountCol(kindOf, ref),
+		accountIDCol("account_id", kindOf, ref),
+		nicknameCol("account_nickname", func(r row) *string { return r.Nickname }),
 		textCol("symbol", func(r row) *string { return r.Symbol }),
 		// The document's own name for the security: a public name,
 		// legible like the holdings' name column.
-		textCol("description", func(r row) *string { return r.Description }),
-		textCol("instrument_id", func(r row) *string { return r.InstrumentExternalID }),
+		typedHoldingCol(textCol("description", func(r row) *string { return r.Description }), kindOf, holding),
+		typedHoldingCol(textCol("instrument_id", func(r row) *string { return r.InstrumentExternalID }), kindOf, holding),
 		quantityCol("quantity", func(r row) *string { return r.Quantity }),
 		{Name: "acquired", Align: output.AlignLeft,
 			Extract: func(r row) string {
@@ -357,8 +353,8 @@ func buildRealizedLotColumnRegistry(outCcy string) []columnSpec[gold.RealizedLot
 		{Name: "tax_year", Align: output.AlignLeft, Extract: func(r row) string { return fmt.Sprintf("%d", r.TaxYear) }},
 		yesNoCol("primary", func(r row) *bool { return &r.IsPrimary }),
 		textCol("basis_stamp", func(r row) *string { return r.BasisStamp }),
-		{Name: "lot_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r row) string { return r.RealizedLotExternalID }},
+		// The lot engine names a lot it realizes by the line that sold it.
+		typedIDCol("lot_id", kindOf, func(r row) (string, string) { return r.SilverSourceID, r.RealizedLotExternalID }),
 		{Name: "source_document", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r row) string { return strOrEmpty(r.SourceDocument) }},
 	}
@@ -369,21 +365,24 @@ var defaultRealizedLotColumns = []string{
 	"currency", "proceeds", "cost_basis", "gain", "gain_outccy",
 }
 
-func buildOpenLotColumnRegistry(outCcy string) []columnSpec[gold.OpenLotRow] {
+func buildOpenLotColumnRegistry(outCcy string, kindOf func(string) string) []columnSpec[gold.OpenLotRow] {
 	type row = gold.OpenLotRow
 	type col = columnSpec[row]
+	ref := func(r row) accountRef {
+		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+	}
+	key, name := holdingCols(kindOf, func(r row) string { return r.SilverSourceID },
+		func(r row) string { return r.PositionKey }, func(r row) string { return strOrEmpty(r.Name) })
 	return []col{
 		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r row) string { return r.SilverSourceID }},
 		{Name: "snapshot_date", Align: output.AlignLeft, Extract: func(r row) string { return formatDate(r.SnapshotAt) }},
-		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r row) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
-		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r row) string { return r.AccountExternalID }},
-		textCol("account_nickname", func(r row) *string { return r.Nickname }),
+		accountCol(kindOf, ref),
+		accountIDCol("account_id", kindOf, ref),
+		nicknameCol("account_nickname", func(r row) *string { return r.Nickname }),
 		textCol("symbol", func(r row) *string { return r.Symbol }),
-		textCol("name", func(r row) *string { return r.Name }),
-		{Name: "position_key", Align: output.AlignLeft, Extract: func(r row) string { return r.PositionKey }},
-		{Name: "lot_id", Align: output.AlignLeft, Privacy: PrivacyAccountID, Extract: func(r row) string { return r.LotKey }},
+		name,
+		key,
+		typedIDCol("lot_id", kindOf, func(r row) (string, string) { return r.SilverSourceID, r.LotKey }),
 		textCol("acquisition_date", func(r row) *string { return r.AcquisitionDate }),
 		intPtrCol("held_days", func(r row) *int64 { return r.HeldDays }),
 		textCol("term", func(r row) *string { return r.Term }),
@@ -410,16 +409,17 @@ var defaultOpenLotColumns = []string{
 	"quantity", "cost_basis", "market_value", "unrealized_gain", "currency",
 }
 
-func buildGainsCoverageColumnRegistry(outCcy string) []columnSpec[gold.GainsCoverageRow] {
+func buildGainsCoverageColumnRegistry(outCcy string, kindOf func(string) string) []columnSpec[gold.GainsCoverageRow] {
 	type row = gold.GainsCoverageRow
 	type col = columnSpec[row]
+	ref := func(r row) accountRef {
+		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+	}
 	return []col{
 		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r row) string { return r.SilverSourceID }},
-		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r row) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
-		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r row) string { return r.AccountExternalID }},
-		textCol("account_nickname", func(r row) *string { return r.Nickname }),
+		accountCol(kindOf, ref),
+		accountIDCol("account_id", kindOf, ref),
+		nicknameCol("account_nickname", func(r row) *string { return r.Nickname }),
 		textCol("tax_wrapper", func(r row) *string { return r.TaxWrapper }),
 		outCcyCol("value", outCcy, func(r row) *string { return r.Value }),
 		outCcyCol("value_with_basis", outCcy, func(r row) *string { return r.ValueWithBasis }),
@@ -444,17 +444,18 @@ var defaultGainsCoverageColumns = []string{
 	"basis_stamps", "open_lots", "sells", "sells_rebuilt", "realized_lots", "documents", "verdict",
 }
 
-func buildGainsCheckColumnRegistry(outCcy string) []columnSpec[gold.GainsCheckRow] {
+func buildGainsCheckColumnRegistry(outCcy string, kindOf func(string) string) []columnSpec[gold.GainsCheckRow] {
 	type row = gold.GainsCheckRow
 	type col = columnSpec[row]
+	ref := func(r row) accountRef {
+		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+	}
 	return []col{
 		{Name: "check", Align: output.AlignLeft, Extract: func(r row) string { return r.Check }},
 		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r row) string { return r.SilverSourceID }},
-		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r row) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
-		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r row) string { return r.AccountExternalID }},
-		textCol("account_nickname", func(r row) *string { return r.Nickname }),
+		accountCol(kindOf, ref),
+		accountIDCol("account_id", kindOf, ref),
+		nicknameCol("account_nickname", func(r row) *string { return r.Nickname }),
 		textCol("tax_year", func(r row) *string { return r.Period }),
 		countCol("items", func(r row) int64 { return r.Items }),
 		quantityCol("quantity", func(r row) *string { return r.Quantity }),
@@ -473,7 +474,7 @@ var defaultGainsCheckColumns = []string{
 
 func gainsUsage() string {
 	cols := func(grain gold.GainsGrain) string {
-		return joinColumnNames(buildGainsBucketColumnRegistry("CCY", "monthly", grain, nil))
+		return joinColumnNames(buildGainsBucketColumnRegistry("CCY", "monthly", grain, nil, nil))
 	}
 	return "usage: wealthdb gains <view> [FROM [TO]] [--period P] [--documents D] [-r]\n" +
 		"                         [--missing-basis M] [-f FORMAT] [-C COLS] [-x CCY] [-p]\n" +
@@ -527,8 +528,10 @@ Flags
   -C COLS         comma-separated names, 'default', 'all', or a
                   +ADD,-REMOVE delta on the default set
   -x CCY          output currency (default: config.default_currency)
-  -p              redact account ids, quantities and amounts; percentages,
-                  stamps, dates and security names stay legible
+  -p              redact account ids, quantities and amounts; every name
+                  a person typed prints as a pseudonym, such as manual-1,
+                  or as a redacted id; percentages, stamps, dates and
+                  security names stay legible
 
 Notes
   gain = realized + unrealized_change. A sale moves gain from unrealized
@@ -554,11 +557,11 @@ Available columns (per view):
   sources       silver_source, then summary's
   portfolios    silver_source, portfolio, portfolio_id, then summary's
   accounts      ` + cols(gold.GainsAccounts) + `
-  positions     ` + joinColumnNames(buildGainsPositionColumnRegistry("CCY")) + `
-  realized      ` + joinColumnNames(buildRealizedLotColumnRegistry("CCY")) + `
-  lots          ` + joinColumnNames(buildOpenLotColumnRegistry("CCY")) + `
-  coverage      ` + joinColumnNames(buildGainsCoverageColumnRegistry("CCY")) + `
-  check         ` + joinColumnNames(buildGainsCheckColumnRegistry("CCY")) + `
+  positions     ` + joinColumnNames(buildGainsPositionColumnRegistry("CCY", nil)) + `
+  realized      ` + joinColumnNames(buildRealizedLotColumnRegistry("CCY", nil)) + `
+  lots          ` + joinColumnNames(buildOpenLotColumnRegistry("CCY", nil)) + `
+  coverage      ` + joinColumnNames(buildGainsCoverageColumnRegistry("CCY", nil)) + `
+  check         ` + joinColumnNames(buildGainsCheckColumnRegistry("CCY", nil)) + `
 
   A money column in the holding's own currency has a twin in the output
   currency, <name>_outccy, which prints as <name>_<CCY> (value is

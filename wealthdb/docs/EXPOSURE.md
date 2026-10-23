@@ -495,7 +495,10 @@ like the other views. A fund a declaration describes reads `via`
 `declared`.
 
 `-p` hides every amount and every instrument id a holding is named by.
-Shares, names, labels and public identifiers stay.
+A manual holding's key and name print as a pseudonym, such as
+`manual-1`, and so does an issuer that takes its name (DESIGN.md
+§4.6). Shares, other names, labels and public
+identifiers stay.
 
 `--period` shows how a view changes over a window. It runs the view at
 the last second of every period in the window and puts a `period`

@@ -1056,8 +1056,10 @@ them read the same amounts, so they reconcile by construction.
 account and its position key.
 
 **Privacy.** `-p` stars amounts, quantities, prices and account ids.
-`position_key` stays legible, as `holdings positions` keeps it. Shares,
-rates, bases and labels stay legible too.
+Every name a person typed prints as a pseudonym, such as `manual-1`, or
+as a redacted id, as DESIGN.md §4.6 says. That covers a nickname and a manual holding's name
+and key. Any other `position_key` stays legible, as `holdings
+positions` keeps it. Shares, rates, bases and labels stay legible too.
 
 An invented household, on 2026-11-15, in Swiss francs:
 

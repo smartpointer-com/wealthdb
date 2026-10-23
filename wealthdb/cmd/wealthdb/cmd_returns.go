@@ -60,7 +60,7 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 			return err
 		}
 	}
-	fromEpoch, toEpoch, err := parseReturnsWindow(fs.Args(), time.Now())
+	fromEpoch, toEpoch, err := parseReturnsWindow(fs.Args(), g.clock())
 	if err != nil {
 		fs.Usage()
 		return errs.Newf(errs.ExitUsage, "returns: %s", err.Error())
@@ -81,17 +81,24 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 // and the MCP server share: RunReturns with the config's overrides, so
 // the two front-ends apply exactly the same settings.
 func returnsReport(req request, cfg *config.Config) *report {
-	return newReport(buildReturnColumnRegistry(req.currency), defaultReturnColumnsFor(req.method),
-		func(ctx context.Context, db *sql.DB) ([]gold.ReturnRow, error) {
-			inceptionOv, exclude, hide, policyOv, matching := returnsCfgSettings(cfg)
-			return gold.RunReturns(ctx, db, gold.ReturnParams{
-				Level: req.view, FromEpoch: req.from, ToEpoch: req.to, OutCcy: req.currency,
-				Method: req.method, Period: req.period, Annualize: req.annualize,
-				Netting: req.netting, Inception: req.inception,
-				InceptionOverrides: inceptionOv, ReturnsExclude: exclude,
-				ReturnsHide: hide, PolicyOverrides: policyOv, TransferMatching: matching,
-			})
+	kindOf, loadKinds := sourceKinds()
+	nicknames := accountNicknames{}
+	fetch := func(ctx context.Context, db *sql.DB) ([]gold.ReturnRow, error) {
+		inceptionOv, exclude, hide, policyOv, matching := returnsCfgSettings(cfg)
+		return gold.RunReturns(ctx, db, gold.ReturnParams{
+			Level: req.view, FromEpoch: req.from, ToEpoch: req.to, OutCcy: req.currency,
+			Method: req.method, Period: req.period, Annualize: req.annualize,
+			Netting: req.netting, Inception: req.inception,
+			InceptionOverrides: inceptionOv, ReturnsExclude: exclude,
+			ReturnsHide: hide, PolicyOverrides: policyOv, TransferMatching: matching,
 		})
+	}
+	// Only an account's entity reads its nickname.
+	if req.view == "accounts" {
+		fetch = loadFirst(nicknames.load, fetch)
+	}
+	return newReport(buildReturnColumnRegistry(req.currency, req.view, kindOf, nicknames), defaultReturnColumnsFor(req.method),
+		loadFirst(loadKinds, fetch))
 }
 
 // returnsCfgSettings builds the engine-side inception-override, exclusion,
@@ -156,14 +163,38 @@ func parseReturnsWindow(args []string, now time.Time) (int64, int64, error) {
 
 // ---- column registry -----------------------------------------------------
 
-func buildReturnColumnRegistry(outCcy string) []columnSpec[gold.ReturnRow] {
+// buildReturnColumnRegistry is the registry of the view at level. Its
+// entity is an account at the accounts level, which -p shows as accountCol
+// does, and a portfolio at the portfolios level, whose name -p redacts as
+// portfolioNamePrivacy says and whose id as typedIDCol does.
+// Elsewhere it is a source, or the whole.
+func buildReturnColumnRegistry(outCcy, level string, kindOf func(string) string,
+	nicknames accountNicknames) []columnSpec[gold.ReturnRow] {
+	entity := columnSpec[gold.ReturnRow]{Name: "entity", Align: output.AlignLeft, Privacy: PrivacyAccountID,
+		Extract: func(r gold.ReturnRow) string { return r.EntityLabel }}
+	entityID := columnSpec[gold.ReturnRow]{Name: "entity_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
+		Extract: func(r gold.ReturnRow) string { return r.EntityID }}
+	switch level {
+	case "accounts":
+		ref := func(r gold.ReturnRow) accountRef {
+			return accountRef{r.SilverSourceID, &r.EntityLabel, nicknames.of(r.SilverSourceID, r.EntityID), r.EntityID}
+		}
+		entity = accountCol(kindOf, ref)
+		entity.Name = "entity"
+		entityID = accountIDCol("entity_id", kindOf, ref)
+	case "portfolios":
+		entity = portfolioCol("entity", kindOf, func(r gold.ReturnRow) (string, string, *string) {
+			return r.SilverSourceID, r.EntityID, &r.EntityLabel
+		})
+		entityID = typedIDCol("entity_id", kindOf, func(r gold.ReturnRow) (string, string) {
+			return r.SilverSourceID, r.EntityID
+		})
+	}
 	return []columnSpec[gold.ReturnRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(r gold.ReturnRow) string { return r.SilverSourceID }},
-		{Name: "entity", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.ReturnRow) string { return r.EntityLabel }},
-		{Name: "entity_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.ReturnRow) string { return r.EntityID }},
+		entity,
+		entityID,
 		{Name: "period", Align: output.AlignLeft,
 			Extract: func(r gold.ReturnRow) string { return r.Period }},
 		{Name: "start_date", Align: output.AlignLeft,
@@ -224,7 +255,7 @@ func formatPctOrBlank(p *float64) string {
 }
 
 func returnsUsage() string {
-	registry := buildReturnColumnRegistry("CCY")
+	registry := buildReturnColumnRegistry("CCY", "", nil, nil)
 	return `usage: wealthdb returns <view> [FROM [TO]] [--method M] [--period P] [--annualize MODE]
                         [--netting on|off] [--inception full|strict] [-f FORMAT] [-C COLS] [-x CCY] [-p]
 
@@ -263,7 +294,10 @@ Flags:
   -f, --format      table | csv | csv_plain | json
   -C, --columns     comma-separated names, 'default', 'all', or a +ADD,-REMOVE delta
   -x, --currency    output currency (default: config.default_currency)
-  -p, --privacy     redact entity IDs and amounts (returns % stay visible)
+  -p, --privacy     redact entity IDs and amounts; every name a person
+                    typed prints as a pseudonym, such as manual-1, or as
+                    a redacted ID
+                    (returns % stay visible)
 
 The quality column is load-bearing: n/a returns always carry a reason
 (nonpositive_base, mwr_no_flows, dietz_degenerate, empty_bucket, nav_only,

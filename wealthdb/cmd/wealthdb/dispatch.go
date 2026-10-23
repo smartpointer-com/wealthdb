@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 )
@@ -19,6 +20,12 @@ import (
 // table).
 // stderr is for log lines, error messages, and usage text.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return runAt(nil, args, stdin, stdout, stderr)
+}
+
+// runAt is Run with the reports reading today from now (globalFlags.now):
+// a test pins it near its fixture.
+func runAt(now func() time.Time, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	g, rest, err := parseGlobal(args, stderr)
 	if err != nil {
 		// `--help` is a request that was answered, not a misuse:
@@ -51,6 +58,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return errs.ExitUsage
 	}
 
+	g.now = now
 	ctx := context.Background()
 	err = handler(ctx, g, subargs, stdin, stdout, stderr)
 	// A subcommand answers -h by printing its usage and returning
