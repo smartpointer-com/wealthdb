@@ -3328,7 +3328,7 @@ migration 0138), each from the books `yield.Compute` gives:
   dollars keeps its projection in the other currencies. A card sums a
   part's income (`yield.Part.Income`) at query time, so a rate path, a
   maturing rule, a shift and a horizon cost no storage;
-- `report_yield_received`: the income received this year and the last,
+- `report_yield_received`: every income line received to the instant,
   per reporting currency.
 
 The `web_yield*` views are the dashboards' reading of them

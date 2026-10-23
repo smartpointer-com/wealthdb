@@ -3,7 +3,9 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"math"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -179,6 +181,91 @@ func TestExposureYieldViews(t *testing.T) {
 	}
 	if !slices.Contains(names, "Example Bank AG") || len(iss) != 6 {
 		t.Errorf("issuers %v", names)
+	}
+}
+
+// classShareBook is testdata/class_share_book.json: seedYieldExposure's
+// book in each bucket view, each bucket with its value and its class
+// share as `wealthdb exposure <view>` prints its class_share column. The
+// 5,200 of debt and cash in credit and maturities, the 4,200 of debt in
+// coupons and the 800 of public equity in cycles are each 100, and the
+// (none) row has none. web/test_provision.py runs the dashboard's four
+// debt cards over the same file and holds their bars to these shares.
+const classShareBook = "testdata/class_share_book.json"
+
+// classShareRow is one bucket of classShareBook.
+type classShareRow struct {
+	Bucket     string  `json:"bucket"`
+	Value      float64 `json:"value"`
+	ClassShare *string `json:"class_share"`
+}
+
+// A bucket's class share is its value over every row's but (none), so
+// the buckets a dimension describes sum to 100.
+func TestExposureBucketClassShares(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile(classShareBook)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var book map[string][]classShareRow
+	if err := json.Unmarshal(raw, &book); err != nil {
+		t.Fatal(err)
+	}
+	db, ctx, at := seedYieldExposure(t)
+	reads := map[string]func(context.Context, *sql.DB, int64, string) ([]ExposureBucketRow, error){
+		"credit": ExposureCredit, "maturities": ExposureMaturities, "coupons": ExposureCoupons, "cycles": ExposureCycles,
+	}
+	if len(book) != len(reads) {
+		t.Fatalf("%s holds %d views, want %d", classShareBook, len(book), len(reads))
+	}
+	for view, read := range reads {
+		rows, err := read(ctx, db, at, "USD")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []classShareRow
+		sum := 0.0
+		for _, r := range rows {
+			v, _ := strconv.ParseFloat(*r.Value, 64)
+			row := classShareRow{Bucket: r.Bucket, Value: v}
+			if r.ClassSharePct != nil {
+				share := strconv.FormatFloat(*r.ClassSharePct, 'f', 2, 64)
+				row.ClassShare = &share
+				sum += *r.ClassSharePct
+			}
+			got = append(got, row)
+		}
+		want, _ := json.Marshal(book[view])
+		gotJSON, _ := json.Marshal(got)
+		if string(gotJSON) != string(want) || math.Abs(sum-100) > 1e-9 {
+			t.Errorf("%s: %s sum to %v, want %s", view, gotJSON, sum, want)
+		}
+	}
+}
+
+// A dimension that describes nothing of the book, or whose rows sum to
+// zero or less, leaves every class share blank, and a value that is no
+// number fails the read.
+func TestSetClassShares(t *testing.T) {
+	t.Parallel()
+	val := func(s string) *string { return &s }
+	for name, rows := range map[string][]ExposureBucketRow{
+		"a book of no debt": {{Bucket: "fixed", Value: val("0")}, {Bucket: "(none)", Value: val("6000")}},
+		"an overdraft beyond the debt": {{Bucket: "AAA", Value: val("10000")}, {Bucket: "cash", Value: val("-11000")},
+			{Bucket: "(none)", Value: val("6000")}},
+	} {
+		if err := setClassShares(rows); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for _, r := range rows {
+			if r.ClassSharePct != nil {
+				t.Errorf("%s: %s has a class share of %v", name, r.Bucket, *r.ClassSharePct)
+			}
+		}
+	}
+	if err := setClassShares([]ExposureBucketRow{{Bucket: "fixed", Value: val("n/a")}}); err == nil {
+		t.Error("a value that is no number read")
 	}
 }
 

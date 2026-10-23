@@ -27,8 +27,8 @@ func yieldInstants(toEpoch int64) []int64 {
 // MaterializeYield rewrites the Yield dashboard's tables (migration
 // 0138): every holding's figures and DV01 per tenor in every reporting
 // currency at yieldInstants, and at toEpoch the projection's parts, the
-// rate table, the principals maturities return and the income received
-// this year and the last. Each figure is the yield report's (yield.Compute
+// rate table, the principals maturities return and every income line
+// received. Each figure is the yield report's (yield.Compute
 // over YieldInputs), so the dashboard and the CLI agree. It returns the
 // number of rows written. One transaction, so a reader sees the old
 // tables or the new ones.
@@ -280,12 +280,11 @@ func (m *yieldMaterializer) projection(today map[string]*yield.Book) error {
 	})
 }
 
-// received writes the income received from the first day of last year
-// to toEpoch, per reporting currency, with what the withholding table
-// withholds from it.
+// received writes the income received from the first income line to
+// toEpoch, per reporting currency, with what the withholding table
+// withholds from it. The whole history, so the Income dashboard's Time
+// range reaches as far back as its income lines do.
 func (m *yieldMaterializer) received(today map[string]*yield.Book, toEpoch int64) error {
-	d := time.Unix(toEpoch, 0).UTC()
-	from := time.Date(d.Year()-1, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
 	type line struct {
 		ccy string
 		r   yield.ReceivedLine
@@ -297,7 +296,7 @@ func (m *yieldMaterializer) received(today map[string]*yield.Book, toEpoch int64
 		if b == nil {
 			continue
 		}
-		got, err := IncomeReceived(m.ctx, m.tx, b.In, from, toEpoch)
+		got, err := IncomeReceived(m.ctx, m.tx, b.In, math.MinInt64, toEpoch)
 		if err != nil {
 			return fmt.Errorf("MaterializeYield: %w", err)
 		}

@@ -1,0 +1,28 @@
+{
+  "credit": [
+    {"bucket": "AAA", "value": 600, "class_share": "11.54"},
+    {"bucket": "A", "value": 1000, "class_share": "19.23"},
+    {"bucket": "BBB", "value": 2000, "class_share": "38.46"},
+    {"bucket": "BB", "value": 400, "class_share": "7.69"},
+    {"bucket": "unrated", "value": 200, "class_share": "3.85"},
+    {"bucket": "cash", "value": 1000, "class_share": "19.23"},
+    {"bucket": "(none)", "value": 800, "class_share": null}
+  ],
+  "maturities": [
+    {"bucket": "under 1y", "value": 2000, "class_share": "38.46"},
+    {"bucket": "1-3y", "value": 200, "class_share": "3.85"},
+    {"bucket": "3-5y", "value": 2000, "class_share": "38.46"},
+    {"bucket": "10-20y", "value": 1000, "class_share": "19.23"},
+    {"bucket": "(none)", "value": 800, "class_share": null}
+  ],
+  "coupons": [
+    {"bucket": "fixed", "value": 4000, "class_share": "95.24"},
+    {"bucket": "floating", "value": 200, "class_share": "4.76"},
+    {"bucket": "(none)", "value": 1800, "class_share": null}
+  ],
+  "cycles": [
+    {"bucket": "defensive", "value": 300, "class_share": "37.50"},
+    {"bucket": "sensitive", "value": 500, "class_share": "62.50"},
+    {"bucket": "(none)", "value": 5200, "class_share": null}
+  ]
+}

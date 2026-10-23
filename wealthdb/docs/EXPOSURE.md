@@ -368,11 +368,23 @@ Columns every aggregate view shares, by the names `-C` takes:
 - `quality`: the flags of §8.
 
 `sectors` and `sizes` add `class_share`, the share within the asset
-class. `credit` adds `grade`. `issuers` has no `direct` and
-`via_funds`; it adds `lei`, `cumulative_share`, `equity`, `debt`,
-`cash` and `securities`. A value prints as `value_<CCY>`. A share
-prints with a `_pct` suffix, in a table's header and as a JSON key:
-`share_pct`, `class_share_pct`, and `weight_sum_pct` in `funds`.
+class. `credit`, `maturities`, `coupons` and `cycles` add `class_share`
+too. There it is a row's share of every row but `(none)`, so the
+buckets the dimension describes sum to 100. Those rows are:
+
+- in `credit` and `maturities`, the debt and the cash;
+- in `coupons`, the debt;
+- in `cycles`, the public equity.
+
+Those rows can sum to zero or less, where a loan or an overdraft
+outweighs the rest. Then no row has a `class_share`. `share` stays a
+share of net worth, so a view still sums to it.
+
+`credit` adds `grade`. `issuers` has no `direct` and `via_funds`; it
+adds `lei`, `cumulative_share`, `equity`, `debt`, `cash` and
+`securities`. A value prints as `value_<CCY>`. A share prints with a
+`_pct` suffix, in a table's header and as a JSON key: `share_pct`,
+`class_share_pct`, and `weight_sum_pct` in `funds`.
 `wealthdb help exposure` lists every view's columns.
 
 A row with no value for its dimension reads `unknown`. In
@@ -496,9 +508,8 @@ like the other views. A fund a declaration describes reads `via`
 
 `-p` hides every amount and every instrument id a holding is named by.
 A manual holding's key and name print as a pseudonym, such as
-`manual-1`, and so does an issuer that takes its name (DESIGN.md
-§4.6). Shares, other names, labels and public
-identifiers stay.
+`manual-1`, and so does an issuer that takes its name (DESIGN.md §4.6).
+Shares, other names, labels and public identifiers stay.
 
 `--period` shows how a view changes over a window. It runs the view at
 the last second of every period in the window and puts a `period`
@@ -776,7 +787,8 @@ worth, as here. The command has no such filter. Every refresh
 recomputes the whole history, so a new composition or declaration shows
 in past months too. A security's attributes, its size among them, are
 today's at every month end, as in a `--period` series (§7). The debt
-and issuer cards cover today and the 12 month ends before.
+and issuer cards cover today and the 12 month ends before. The credit,
+maturity, coupon and cycle cards plot `class_share`.
 [web/DESIGN.md](../../web/DESIGN.md) §6 lists the cards, the pickers
 each one takes and the privacy twin, and §8 the tables they read.
 
@@ -842,8 +854,8 @@ leaves it standing. What a situs-only record does to the other
 dimensions is in §9.
 
 A depositary receipt is a holding that a lookup or GLEIF calls one
-(§3), or whose name says so (ADR, GDR). A fund is never one, and nor is
-a holding whose ISIN is of a country other than the US.
+(§3), or whose name says so (ADR, GDR) under a US ISIN or none. A fund
+is never one.
 
 A coin held in a wallet has no issuer. Only a declaration places it.
 

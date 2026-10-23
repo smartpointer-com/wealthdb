@@ -65,7 +65,8 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
   "how much sits with the top ten")
 - **The debt by credit, maturity and coupon kind** — `wealthdb -r exposure
   credit` (`grade` IG or HY), `maturities`, `coupons`; the stocks by
-  cycle: `wealthdb -r exposure cycles`
+  cycle: `wealthdb -r exposure cycles` (`class_share_pct` is the share
+  within what the view describes, `share_pct` the share of net worth)
 - **Exposure over time** — `wealthdb -r exposure countries --period quarterly 2025`
 - **How far to trust exposure** — `wealthdb -r exposure coverage`; how old each
   fund's data is, and which fund's holdings stand in for it (`proxy`, a key):
@@ -225,10 +226,13 @@ sums the window).
 `-C` takes column **names**, not headers: ask for `value`, `share`,
 `net_flow`, `twr`; they print as `value_USD`, `share_pct`, `net_flow_CHF`,
 `twr_pct`. `wealthdb -r help <command>` lists each view's column names and
-defaults; `-C all` prints every column.
+defaults (for `holdings`, `wealthdb -r help <view>`, e.g. `help positions`);
+`-C all` prints every column.
 
 `-p` prints amounts as `*****.**` (and drops them from JSON) and narrative
-text as `***`; categories, classes and shares stay legible.
+text as `***`. A name a person typed (a nickname, a manual holding or
+account) prints as a pseudonym such as `manual-1`, numbered afresh each
+run. Categories, classes and shares stay legible.
 
 Account attributes, for `grep` or `-C`: `silver_source` (the institution:
 `schwab`, `ubs`, …), `account_kind`, `tax_wrapper` (`roth_ira`, `529`,
@@ -267,18 +271,21 @@ money still counts in `global`. A card is in no return at all.
 
 `exposure` looks through every fund to the stocks, bonds and cash it holds
 and adds what is held directly. Every view sums to net worth: `share_pct` is
-a share of net worth (a loan is negative), `class_share_pct` a share of the
-row's asset class.
+a share of net worth (a loan is negative). `class_share_pct` is a share of
+what the row's dimension describes: of the row's asset class in `sectors`
+and `sizes`; of every row but `(none)` in `credit` and `maturities` (the
+debt and the cash), `coupons` (the debt) and `cycles` (the public
+equity), so those rows sum to 100.
 
 - **Read `quality` first.** `proxy` (another fund's composition stands in),
   `declared` (the household's own statement: a target split from a fund's
   documents, or a property's country), `aged` (a composition over 35
   days older than the day), `forward` (one dated after it), `partial`,
   `unmapped`, `undeclared`, `unmatched` (part of the value is not fully
-  classified), `by_name` (a sector found by matching a name), `opaque` (a
-  private fund nothing looks through), `no_composition` (in `funds`:
-  nothing describes the fund on the day), `unknown` (in `credit`: debt
-  nothing rates, on the `unrated` row).
+  classified), `by_name` (a sector or country found by matching a name),
+  `opaque` (a private fund nothing looks through), `no_composition` (in
+  `funds`: nothing describes the fund on the day), `unknown` (in
+  `credit`: debt nothing rates, on the `unrated` row).
 - In an aggregate row each flag reads `flag=NN%`: the share of the row's
   gross value that carries the flag (`proxy=12%`, `aged=<1%`).
 - A declared split is marginal: a fund declared 40% Europe and 80% private

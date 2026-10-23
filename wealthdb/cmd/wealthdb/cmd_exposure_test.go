@@ -398,16 +398,17 @@ func TestSeriesPointsEndEveryPeriod(t *testing.T) {
 }
 
 // The bucket views and issuers print their own first columns and the
-// shares; -p hides the values and keeps the names; --period runs on a
-// bucket view and is refused on issuers.
+// shares, a bucket view's class share among them; -p hides the values
+// and keeps the names and the shares; --period runs on a bucket view
+// and is refused on issuers.
 func TestExposureBucketAndIssuerViews(t *testing.T) {
 	t.Parallel()
 	cfg := setupExposureGold(t)
 	for view, header := range map[string]string{
-		"credit":     "bucket,grade,value_USD,share_pct,direct_pct,via_funds_pct,quality",
-		"maturities": "bucket,value_USD,share_pct,direct_pct,via_funds_pct,quality",
-		"coupons":    "coupon_kind,value_USD,share_pct,direct_pct,via_funds_pct,quality",
-		"cycles":     "cycle,value_USD,share_pct,direct_pct,via_funds_pct,quality",
+		"credit":     "bucket,grade,value_USD,share_pct,class_share_pct,direct_pct,via_funds_pct,quality",
+		"maturities": "bucket,value_USD,share_pct,class_share_pct,direct_pct,via_funds_pct,quality",
+		"coupons":    "coupon_kind,value_USD,share_pct,class_share_pct,direct_pct,via_funds_pct,quality",
+		"cycles":     "cycle,value_USD,share_pct,class_share_pct,direct_pct,via_funds_pct,quality",
 		"issuers":    "issuer,value_USD,share_pct,cumulative_share_pct,equity_pct,debt_pct,cash_pct,quality",
 	} {
 		out, errb, code := runExposure(t, cfg, view, "-d", "2026-06-30", "-f", "csv")
@@ -417,6 +418,19 @@ func TestExposureBucketAndIssuerViews(t *testing.T) {
 		out, _, code = runExposure(t, cfg, view, "-d", "2026-06-30", "-f", "csv", "-p")
 		if code != 0 || strings.Contains(out, "1000.00") || strings.Contains(out, "250.00") {
 			t.Errorf("%s -p: %d\n%s", view, code, out)
+		}
+	}
+	// The cash is the whole of what credit describes, the fund's stocks
+	// the whole of the public equity: a class share of 100, (none) none.
+	// -p keeps both shares.
+	for view, want := range map[string]string{
+		"credit": "bucket,share_pct,class_share_pct\ncash,20.00,100.00\n(none),80.00,\n",
+		"cycles": "cycle,share_pct,class_share_pct\nsensitive,80.00,100.00\n(none),20.00,\n",
+	} {
+		col := exposureBucketViews[view].column
+		out, errb, code := runExposure(t, cfg, view, "-d", "2026-06-30", "-f", "csv", "-p", "-C", col+",share,class_share")
+		if code != 0 || out != want {
+			t.Errorf("%s -C %s,share,class_share: %d %s\n%s", view, col, code, errb, out)
 		}
 	}
 	out, _, code := runExposure(t, cfg, "cycles", "--period", "quarterly", "2026-04-01", "2026-06-30", "-f", "csv")

@@ -908,8 +908,10 @@ The `yield` block of `wealthdb.cfg` holds what no source states
 - `rating_funds` maps a fund sliced by credit rating to the bucket its
   lines carry (`BBB`), or a range of buckets, best first (`AAA-A`). It
   is keyed like `exposure.size_funds`, and feeds the credit view of
-  `exposure`, which reads a range at its worse end. The yield report's
-  `rating` is a holding's own: its terms' or a ledger record's.
+  `exposure`, which reads a range at its worse end. That view's
+  `class_share` is a bucket's share of the debt and the cash
+  (EXPOSURE.md §7). The yield report's `rating` is a holding's own: its
+  terms' or a ledger record's.
 - `conventions` maps a market to its coupon frequency and day count. A
   market is a currency, or a currency and a bond sector or `bill`
   (`USD:government`, `USD:bill`). An entry replaces the built-in one of
@@ -920,7 +922,8 @@ The `yield` block of `wealthdb.cfg` holds what no source states
   ([INCOME.md §12](INCOME.md#12-the-forward-views)).
 - `cycles` overrides the built-in cycle of one of the eleven sectors:
   `cyclical`, `defensive` or `sensitive`. It feeds the cycle view of
-  `exposure`.
+  `exposure`, whose `class_share` is a cycle's share of the public
+  equity.
 
 In the built-in conventions, a `CHF` or `EUR` bond pays once a year on
 30/360. A `USD` bond pays twice on 30/360, a `USD:government` bond

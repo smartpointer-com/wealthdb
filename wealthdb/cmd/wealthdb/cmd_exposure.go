@@ -349,14 +349,19 @@ var exposureBucketViews = map[string]struct {
 	read     func(context.Context, *sql.DB, int64, string) ([]gold.ExposureBucketRow, error)
 	defaults []string
 }{
-	"credit":     {"bucket", gold.ExposureCredit, []string{"bucket", "grade", "value", "share", "direct", "via_funds", "quality"}},
-	"maturities": {"bucket", gold.ExposureMaturities, []string{"bucket", "value", "share", "direct", "via_funds", "quality"}},
-	"coupons":    {"coupon_kind", gold.ExposureCoupons, []string{"coupon_kind", "value", "share", "direct", "via_funds", "quality"}},
-	"cycles":     {"cycle", gold.ExposureCycles, []string{"cycle", "value", "share", "direct", "via_funds", "quality"}},
+	"credit": {"bucket", gold.ExposureCredit,
+		[]string{"bucket", "grade", "value", "share", "class_share", "direct", "via_funds", "quality"}},
+	"maturities": {"bucket", gold.ExposureMaturities,
+		[]string{"bucket", "value", "share", "class_share", "direct", "via_funds", "quality"}},
+	"coupons": {"coupon_kind", gold.ExposureCoupons,
+		[]string{"coupon_kind", "value", "share", "class_share", "direct", "via_funds", "quality"}},
+	"cycles": {"cycle", gold.ExposureCycles,
+		[]string{"cycle", "value", "share", "class_share", "direct", "via_funds", "quality"}},
 }
 
 // buildExposureBucketColumns is a bucket view's registry: the bucket,
-// credit's grade, the value, the shares and the quality.
+// credit's grade, the value, the shares, the share of what the
+// dimension describes, and the quality.
 func buildExposureBucketColumns(ccy, view string) []columnSpec[gold.ExposureBucketRow] {
 	type row = gold.ExposureBucketRow
 	cols := []columnSpec[row]{{Name: exposureBucketViews[view].column, Align: output.AlignLeft,
@@ -366,7 +371,9 @@ func buildExposureBucketColumns(ccy, view string) []columnSpec[gold.ExposureBuck
 	}
 	cols = append(cols, outCcyCol("value", ccy, func(r row) *string { return r.Value }))
 	cols = append(cols, shareCols(func(r row) gold.ExposureShares { return r.ExposureShares })...)
-	return append(cols, qualityCol(func(r row) string { return r.Quality }))
+	return append(cols,
+		pctCol("class_share", func(r row) *float64 { return r.ClassSharePct }),
+		qualityCol(func(r row) string { return r.Quality }))
 }
 
 // typedIssuers are the issuer names a typed holding's (typedHolding) own
@@ -690,13 +697,15 @@ Views
   currencies   one row per currency a value moves with: a fiat currency,
                a metal (XAU) or a coin (BTC)
   credit       one row per credit bucket (AAA to B and below, unrated,
-               cash), with its grade, IG or HY
-  maturities   one row per time to maturity of the debt and term cash
-               (under 1y to over 20y, perpetual)
+               cash), with its grade, IG or HY, and the share within
+               the debt and cash
+  maturities   one row per time to maturity of the debt and cash
+               (under 1y to over 20y, perpetual), with the share
+               within them
   coupons      one row per coupon kind of the debt: fixed, floating,
-               inflation_linked, zero
+               inflation_linked, zero, with the share within the debt
   cycles       one row per cycle of the public equity: cyclical,
-               defensive, sensitive
+               defensive, sensitive, with the share within it
   situs        one row per legal situs: the country whose law a holding
                is an interest under; no fund is looked through
   securities   one row per security, held directly and through every fund
@@ -735,7 +744,11 @@ Flags
 Notes
   share is a share of net worth, so a loan is a negative row; direct
   and via_funds split it into what is held directly and what through
-  funds. A share prints with a _pct suffix: share_pct.
+  funds. class_share is a share of what the row's dimension describes:
+  its asset class in sectors and sizes, every row but (none) in credit,
+  maturities, coupons and cycles, so those rows sum to 100; it is blank
+  where they sum to zero or less. A share prints with a _pct suffix:
+  share_pct.
 
   quality names what a figure rests on, each tag with the share of the
   row it covers (proxy=12%):` + tagNotes(exposureQualityTags) + `

@@ -52,7 +52,7 @@ class Combos(unittest.TestCase):
     def test_a_listed_picker_runs_over_each_value_but_its_default(self):
         combos = self.combos()
         listed = [p for p in self.params("Income") if p.get("values_source_type") == "static-list"]
-        self.assertEqual({p["slug"] for p in listed}, {"currency", "window", "rates", "maturing", "horizon"})
+        self.assertEqual({p["slug"] for p in listed}, {"currency", "rates", "maturing", "horizon"})
         for p in listed:
             (default,) = p["default"]
             self.assertNotIn(f"{p['slug']} {[default]}", combos)
@@ -61,7 +61,7 @@ class Combos(unittest.TestCase):
                     label = f"{p['slug']} {[v]}"
                     self.assertEqual(combos[label], {**combos["defaults"], p["id"]: [v]}, label)
         for label in ("rates ['forward']", "maturing ['idle']", "maturing ['roll']", "horizon ['24']",
-                      "horizon ['36']", "window ['last year']", "window ['next months']", "currency ['CHF']"):
+                      "horizon ['36']", "currency ['CHF']"):
             self.assertIn(label, combos)
 
     def test_the_shift_runs_100_basis_points_lower(self):
@@ -73,13 +73,14 @@ class Combos(unittest.TestCase):
         combos = self.combos()
         self.assertIn("source src-1", combos)
         self.assertIn("time_range past7days~", combos)
+        self.assertIn("time_range past3years~", combos)
         self.assertIn("time_range 2024-01-01~2026-10-21", combos)
 
     def test_a_picker_the_dashboard_lacks_is_not_varied(self):
         combos = self.combos("Exposure")
         self.assertIn("currency ['CHF']", combos)
         self.assertFalse([label for label in combos
-                          if label.startswith(("rates", "maturing", "shift", "horizon", "window"))])
+                          if label.startswith(("rates", "maturing", "shift", "horizon"))])
 
 
 class EmptyAtDefaults(unittest.TestCase):
@@ -88,6 +89,15 @@ class EmptyAtDefaults(unittest.TestCase):
                    ("defaults", "Income (privacy)", "Expected payments (privacy)"),
                    ("time_range past7days~", "Income", "Net income")}
         self.assertEqual(check_dashboards.empty_at_defaults(empties), [("Income", "Income in the window")])
+
+
+class NullAtDefaults(unittest.TestCase):
+    def test_an_income_figure_null_at_the_defaults_fails(self):
+        figures = [("defaults", "Income", "Withholding", [[None]]),
+                   ("defaults", "Income (privacy)", "Withholding (privacy)", [[0]]),
+                   ("source src-1", "Income", "Received income", [[None]]),
+                   ("defaults", "Returns", "Return (TWR)", [[None]])]
+        self.assertEqual(check_dashboards.null_at_defaults(figures), [("Income", "Withholding")])
 
 
 if __name__ == "__main__":

@@ -117,9 +117,12 @@ ten dashboards. Their pickers:
   ignore).
 - **Spending**: the time range and source, a required currency, an
   account, and a category multi-select.
-- **Income**: the same five, with a *type* picker in place of the
-  category one. Its projected section takes six more: a *Window*, the
-  projection's four below, and a *Position*.
+- **Income**: a required currency, the time range, a required
+  *Horizon*, the source, an account and a *type* picker, then a
+  *Position* and the projection's other three below. The time range
+  sets every figure of what was received, the horizon every figure of
+  what is expected. The type picker reaches the income lines' cards
+  alone.
 - **Cash Flow**: the time range and source, a required currency, an
   *Investing* grain picker and a *Section* picker. The required
   *Investing* picker nets the section whole or by asset class. The
@@ -191,13 +194,12 @@ trend and the monthly bands), and no card renders a merchant or account
 label — the merchant list ranks unnamed rows, the account breakdown regroups
 onto source × account kind, and `report_spending_pct` drops the merchant
 column so a scalar's drill-through cannot surface a counterparty either.
-The **Income** dashboard is Spending read in the other direction, over
-the `web_income` serving view (migration 0072): the same five pickers,
-the same reading order — three headline figures, the shape of the
-window, the breakdown, who it came from and where it landed, then the
-lines — and the same native-over-the-view construction, for the same
-reason (the view carries a row per reporting currency, and a required
-`{{currency}}` variable picks the column rather than filtering rows).
+The **Income** dashboard's cards of the income lines are Spending read
+in the other direction, over the `web_income` serving view (migration
+0072): the same pickers and the same native-over-the-view
+construction, for the same reason (the view carries a row per
+reporting currency, and a required `{{currency}}` variable picks the
+column rather than filtering rows).
 Two tiles have no counterpart, by design: there is no second ring, the
 income taxonomy having one vendored primary and so no subcategory level
 worth one, and no balance-history chart, nothing on this side being a
@@ -206,14 +208,14 @@ primary one for the same reason the second ring is absent — a
 primary-level dropdown would offer a handful of values and hide every
 distinction a reader opens the dashboard for. The **Income** twin
 redacts the way the Spending twin does: shares of the window's own net
-income or of its biggest month, the payer list ranked unnamed, the
-account breakdown ranked, and no card projecting a payer or an account
-in any projection it renders. The uncategorised share is a proportion of
-ROWS, so its FIGURE needs no twin — but it is built twice anyway, once
-per dashboard. A native card carries its own field-filter template tags
-wherever it is opened, and the base card's include an `account` filter,
-which Metabase renders as a dropdown of account labels; the twin's copy
-is built over `PRIVACY_INCOME_FILTERS` like every other card there.
+income or of its biggest month, the payer list ranked unnamed, and no
+card projecting a payer or an account in any projection it renders.
+The uncategorised share is a proportion of ROWS, so its FIGURE needs
+no twin — but it is built twice anyway, once per dashboard. A native
+card carries its own field-filter template tags wherever it is opened,
+and the base card's include an `account` filter, which Metabase renders
+as a dropdown of account labels; the twin's copy is built over
+`PRIVACY_INCOME_FILTERS` like every other card there.
 Neither declares a currency variable, a share of rows being the same in
 every currency.
 
@@ -247,13 +249,12 @@ pair Gains carries: `report_exposure` holds the look-through per source
 and account wrapper (migration 0130). The asset class picker keeps the
 leaves of the classes picked, so a reader can leave out real estate and
 its mortgages, or read public equity alone. Each tile computes its
-share over the rows it reads. So every figure is a share of the selection's
-net worth, or of its public equity, and of net worth itself with
-nothing picked; either way scale-free. So the Exposure twin needs no
-normalisation. Each breakdown
-plots the shares: a bar carries its percentage, a ring lists them in
-its legend. The base card shows the value on hover, and its privacy
-card drops the value column.
+share over the rows it reads. So every figure is a share of the
+selection's net worth, or of the class a chart counts, and of net worth
+itself with nothing picked; either way scale-free. So the Exposure twin
+needs no normalisation. Each breakdown plots the shares: a bar carries
+its percentage, a ring lists them in its legend. The base card shows
+the value on hover, and its privacy card drops the value column.
 The charts over time show shares alone. They are privacy-exempt, so the
 twin shows the same cards. Country, region, situs and currency labels
 stay, since none names an account. Its tiles read `web_exposure`
@@ -266,12 +267,23 @@ earlier shows nothing on them. Each card reads the latest of those
 instants in the window:
 
 - credit, maturity and coupon show the debt, in the views' own bucket
-  order, as shares of net worth. The credit bars carry the grade (IG
-  from AAA to BBB, HY below). The unrated bar also carries the share of
-  it nothing describes, as `wealthdb exposure credit` gives it.
-- the cycles show public equity, as shares of it, as the sizes do.
+  order. Credit and maturity count the cash too. The credit bars carry
+  the grade (IG from AAA to BBB, HY below). The unrated bar also carries
+  the share of it nothing describes, as `wealthdb exposure credit` gives
+  it.
+- the cycles show the public equity.
 - each dimension's buckets add up to net worth, `(none)` holding what
-  it does not describe. The cards leave that row out.
+  it does not describe. A card leaves that row out and plots each
+  bucket's share of the rest, the CLI's `class_share`. So its bars sum
+  to 100. A card's title names the class it counts. The maturity card's
+  names the debt alone, but it counts the debt and the cash, each by its
+  term. Where the rest sums to zero or less, a loan outweighing it, no
+  bucket has a share. The size of the debt is on the asset class ring
+  and on Allocation.
+- a bucket under 0.01% of its class is left out of the bars, and a
+  label shows two decimals. The CLI's table keeps every bucket.
+- each card's description says what it counts. Metabase shows it
+  behind the card's info icon.
 - the issuers card lists the twenty largest issuers of the whole book,
   with their running share and their equity, debt and cash split.
 
@@ -343,53 +355,80 @@ names no account, and gives each its share of the credit balances. The
 cards of rates, years and securities alone are exempt: the yields, the
 dividend scatter and the two charts over time.
 
-The **Income** dashboard's projected section sits above its other
-cards. It puts what was received beside what the holdings, and an
-account's rent or pension, are expected to pay, as `wealthdb income`'s
-forward views do ([wealthdb/docs/INCOME.md](../wealthdb/docs/INCOME.md)
-§12):
+The **Income** dashboard also puts what was received beside what the
+holdings, and an account's rent or pension, are expected to pay, as
+`wealthdb income`'s forward views do
+([wealthdb/docs/INCOME.md](../wealthdb/docs/INCOME.md) §12). It reads
+in this order:
 
-- eight headline figures: the window's income, its monthly average,
-  what it received, of which interest and dividends, and what it
-  expects for the rest, of which interest and dividends;
-- what the withholding table withholds, and the income net of it,
-  blank where the table names no rate;
-- the window by month, a band per type and status, the expected one in
-  a lighter shade;
-- the window by account, with the next twelve months beside it;
-- each position by vehicle, by calendar year whatever the window: last
-  year's income, this year's received and expected, and the next twelve
-  months;
-- a calendar of the window's payments and principals, a holding's own
+- six small figures: the income received and expected, what was
+  received, what is expected, the income lines' net income, the monthly
+  average and the share of income lines nothing placed;
+- the income lines' monthly trend, the withholding, and the income
+  after it;
+- received and expected by month, a band per type and status, the
+  expected one in a lighter shade;
+- the interest and the dividends received, and those expected;
+- the income lines by type, beside the top payers;
+- received and expected by account, then by position, grouped by
+  vehicle;
+- a calendar of the payments and principals expected, a holding's own
   income apart from what its matured principal earns, with the basis
-  each rests on.
+  each rests on;
+- the largest receipts.
 
-The *Window* is last year, this year or the horizon's months from the
-first day of next month. What the window received depends on no
-assumption, so those three tiles take no projection picker. Received
-income comes from `web_yield_received`, expected income from
-`web_yield_parts`. The calendar lists the position the *Position*
-picker names, by symbol, name or position key, and every position
-while it is empty. A click on a position's symbol or name in the
-positions table sets that picker (Metabase's crossfilter click
-behaviour) to the value the cell shows.
+The Time range sets every figure of what was received, and the Horizon
+every figure of what is expected: the rest of the current month and
+the horizon's months after it. Received income comes from
+`web_yield_received`, which holds every income line received. Expected
+income comes from `web_yield_parts`. A figure of what was received
+depends on no assumption, so it takes no projection picker. On the
+base dashboard a figure of what is expected takes no Time range. On
+the twin it is a share of both halves, so it takes the Time range too.
 
-A projected card reads two views, and a picker reaches one template
-tag of a card. So its Source and Account field filters are bound to the
-views their dropdowns list, `web_sources_latest` and `web_income`, and
-each view the card reads keeps the rows whose source or account those
-select.
+A card reads several views, and a picker reaches one template tag of a
+card. So the Time range is bound to `web_income_days` (migration 0146),
+one row per day to today from the first day income was received or tax
+withheld, or from 1 January of last year where that is earlier. A card
+keeps the received rows and the withheld tax of the days it selects. It
+also counts its months by them: each day counts its share of its month.
+The Horizon counts its months and the rest of the current one. The
+monthly average divides by both. The Source and Account field filters
+are bound to the views their dropdowns list, `web_sources_latest` and
+`web_income`, and each view the card reads keeps the rows whose source
+or account those select.
 
-The projected twin shows a figure over the window as a share of the
-window's income, or of its biggest month; what was received is a share
-of what the window received. The window's income, and each position's,
-becomes a yield on the value it is earned on. The withholding becomes
-the share it takes. A position with no name reads `(unnamed)`, unless
-its key is a cash balance's or an account income's: any other key is a
-holding's own, as on the issuers twin. The twin's calendar also
-matches the name the twin shows, so a click on `(unnamed)` lists every
-unnamed position's payments. No account label, amount, quantity or
-price reaches it.
+The Withholding tile reads two things:
+
+- over the Time range, the tax booked on the income's accounts
+  (`web_income_withheld`, migration 0146): every negative tax row
+  there, the rows `wealthdb income summary -C +withheld` counts. A row
+  counts whatever income it was withheld from, holdings' or not.
+- over the Horizon, what the config's withholding table withholds at
+  each holding's situs and account wrapper. This is a model.
+
+Provisioning probes the snapshot's withholding table
+(`yield_withholding`). Where it holds no rate, the two tiles' titles
+say they read the tax booked alone: "Received withholding — no
+withholding table" and "Income after received withholding". Neither
+tile reads null: with nothing withheld, the withholding reads 0.
+
+The calendar lists the position the *Position* picker names, by
+symbol, name or position key, and every position while it is empty. A
+click on a position's symbol or name in the positions table sets that
+picker (Metabase's crossfilter click behaviour) to the value the cell
+shows.
+
+The twin shows a figure as a share of the income it covers, or of its
+biggest month; what was received is a share of what was received. The
+income, and each position's, becomes a yield: per year, over the value
+it is earned on. The withholding becomes the share it takes. A share
+or a yield of nothing reads 0. A position with no name reads
+`(unnamed)`, unless its key is a cash balance's or an account income's:
+any other key is a holding's own, as on the issuers twin. The twin's
+calendar also matches the name the twin shows, so a click on
+`(unnamed)` lists every unnamed position's payments. No account label,
+amount, quantity or price reaches it.
 
 **Data Freshness** counts a source's age from its last read, not from
 its latest snapshot: gold's `source_observed` (migration 0122) says
@@ -405,12 +444,8 @@ the privacy twin's table reads them too.
 
 The **Wealth Overview**'s "Investment income by month" card reads
 the same income base (migration 0072), so it and the Income dashboard
-agree to the cent. The first word is load-bearing twice: it says what
-the card charts — the four investment types, not the whole base — and it
-keeps the name distinct from the Income dashboard's own "Income by
-month". Provisioning matches cards by name, so two dashboards' cards
-of one name would become one card, and whichever was defined last
-would silently replace the other.
+agree to the cent. The first word says what the card charts: the four
+investment types, not the whole base.
 It selects the four investment income *types* rather than transaction
 kinds, and it needs no credit-card fence: a card's finance charge is an
 outflow and is not in the income base at all. A private fund's
@@ -449,9 +484,11 @@ A stale snapshot is caught before any of this is written. Provisioning
 probes the driver for the snapshot's schema version and for the serving
 views **by name**. It aborts with a "run `wealthdb web refresh`" message
 rather than converging the cards to a degraded shape. The version check
-catches a snapshot older than 0138. Such a snapshot lacks the yield
-views and the exposure of the debt, which the by-name probe finds too.
-An older one also reads wrong in ways no probe by name sees:
+catches a snapshot older than 0146. Such a snapshot lacks the days the
+Income cards' received figures cover and the tax withheld on them. One
+older than 0138 lacks the yield views and the exposure of the debt too.
+The by-name probe finds both. An older one also reads wrong in ways no
+probe by name sees:
 
 - before 0132, it lacks the serving tables the models read and the tax
   wrapper and asset class columns the tiles filter on;
@@ -671,7 +708,11 @@ wealthdb/docs/DESIGN.md §10.15 has the engine side):
   rule, in the holding's currency with its rate to each reporting
   currency; each currency's rate per month and path; and the principals
   maturities return;
-- the income received from 1 January of last year to today.
+- every income line received, to today.
+
+Two views beside them, `web_income_days` and `web_income_withheld`
+(migration 0146), list each day the received figures cover and the tax
+booked on the income's accounts.
 
 The pickers multiply: two rate paths, three maturing rules, any shift,
 three horizons. So no combination is stored. A card sums each part's
@@ -736,20 +777,21 @@ template-tag wiring all check statically. Three behaviours are worth
 naming:
 
 - the privacy twins render no merchant or account label;
-- the Yield and Income projected twins carry no column but a share, a
-  rate, a year or a label;
+- the Yield twin and the Income twin's cards of the holdings' income
+  carry no column but a share, a rate, a year or a label;
 - a snapshot missing a serving view, or older than the cards' schema,
   aborts the run (exit 3 for the older one).
 
-The projection cards' SQL also runs on an invented book under DuckDB,
-so the tests need the `duckdb` Python module, and fail without it.
-`make test-web` runs them in a venv of its own, `web/.venv`, that holds
-it (`web/requirements-test.txt`). Whether Metabase *accepts* a payload
+The SQL of the projection cards and of the Exposure debt and cycle
+cards also runs on an invented book under DuckDB, so the tests need the
+`duckdb` Python module, and fail without it. `make test-web` runs them
+in a venv of its own, `web/.venv`, that holds it
+(`web/requirements-test.txt`). Whether Metabase *accepts* a payload
 needs a live instance: `demo/check_dashboards.py` runs every card of a
-running demo Metabase through its API (demo/README.md). The Go side (`web` config block,
-validation, the `web-config` emitter, `MaterializeReturns`,
-`MaterializeGains`, `MaterializeExposure`, `MaterializeYield`,
-`MaterializeServingTables` and the `web-materialize` command) is
-covered by `go test ./...` (`make test-wealthdb`). End-to-end (build →
-start → provision → query through the driver) is the manual smoke test
-in §3.
+running demo Metabase through its API (demo/README.md). The Go side
+(`web` config block, validation, the `web-config` emitter,
+`MaterializeReturns`, `MaterializeGains`, `MaterializeExposure`,
+`MaterializeYield`, `MaterializeServingTables` and the
+`web-materialize` command) is covered by `go test ./...` (`make
+test-wealthdb`). End-to-end (build → start → provision → query through
+the driver) is the manual smoke test in §3.

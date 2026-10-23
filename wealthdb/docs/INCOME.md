@@ -486,11 +486,11 @@ the two questions have two answers.
 - Where a source credits a dividend net but states its gross, the
   adapter books it the same way: the gross, and the withholding as its
   own `tax` row. The two rows sum to the cash credited. UBS states the
-  gross in the dividend's confirmation, by its amounts or its rates,
-  and in its export row, in the currency credited or beside the rate it
-  converted at
+  gross in two places
   ([adapters/ubs.md](adapters/ubs.md#dividends-the-security-and-the-gross)
-  §7, *Dividends: the security and the gross*). A reversal of such a
+  §7, *Dividends: the security and the gross*). Its confirmation states
+  it by amounts or by rates. Its export row states it in the currency
+  credited, or beside the rate it converted at. A reversal of such a
   dividend takes back the gross. Its tax row is positive, so the
   `withheld` memo (below) leaves it out. Where no record states a gross
   or a rate it follows from, the net is the income.
@@ -654,7 +654,11 @@ which can carry a person's name. The fence gates the store, not the
 column. Step 2 fills the column with an instrument name for most rows,
 but a column takes the class of the worst thing it can hold.
 `payer_signature`, `counterparty` and `description` redact with it.
-Type, provenance and `share` stay legible.
+A typed name, such as the account nickname or a category from the
+config, prints as a pseudonym ([DESIGN.md §4.6](DESIGN.md), *Typed
+names*). An account name that may be typed shows the account's id
+instead. That id redacts where it is shaped as one, and prints as a
+pseudonym otherwise. Type, provenance and `share` stay legible.
 
 `wealthdb transactions` carries `payer`, `income_primary` and
 `income_detailed` behind `-C`. A transaction can carry both families'
@@ -662,13 +666,13 @@ verdicts, and often does: a deposit the matcher paired is
 `internal_transfer` in each overlay. That view is the one surface that
 shows a row from both sides at once.
 
-**Metabase.** An **Income** dashboard and its privacy twin, in the
-Spending dashboards' shape. A projected section sits above the cards of
-what was received. It reads the forward views (§12). It shows received
-and expected income by type, month, account and position, the
-withholding, and a position's expected payments. Its window covers last
-year, this year or the next months. Its horizon, rate path, maturing
-rule and shift pickers are the forward views' assumptions.
+**Metabase.** An **Income** dashboard and its privacy twin. Its cards
+of the income lines take the Spending dashboards' shape. Beside them it
+reads the forward views (§12). It shows received and expected income by
+type, month, account and position, the withholding, and a position's
+expected payments. Its Time range sets what was received and its
+Horizon what is expected. Its Rate path, Maturing and Shift (bp)
+pickers are the forward views' assumptions.
 [web/DESIGN.md](../../web/DESIGN.md) §6 has the detail.
 
 ---
@@ -743,7 +747,8 @@ which is the default, one number answers for both.
     received.
 16. **`withheld` on the forward views is the withholding table's
     model**, received and expected alike. The booked tax is `summary`'s
-    memo (§5).
+    memo (§5). The dashboard's Withholding tile reads that memo for what
+    was received and the model for what is expected.
 17. **A liability earns nothing** in the projection.
 18. **A convertible note pays nothing.** A loan held accrues its coupon
     month by month.
@@ -856,8 +861,8 @@ The expected half starts the day after today.
 - Income that accrues covers its days exactly. A month that the window,
   today or a maturity cuts takes its share of days. A balance, a
   fund's yield, a floating coupon and a loan's interest accrue. A
-  floating fund that pays less often than monthly pays its accrual on
-  its pay days instead (below).
+  floating fund whose distributions cover the year, and pay less often
+  than monthly, pays its accrual on its pay days instead (below).
 - A payment counts on its day, in full: a fixed coupon, a bill's
   discount, a dividend.
 - The day of a dividend or of a repeated payment is an estimate. The
@@ -882,10 +887,9 @@ The expected half starts the day after today.
 | `liability` | nothing |
 | `other` | its payments of the last twelve months, repeated (`realized`); paid nothing, `unknown` |
 
-A fund's indicated distributions that rest on one month of the
-calendar, held under eleven of the twelve months, give way to the yield
-its page states, where it states one ([YIELD.md](YIELD.md) §4). Held
-longer, the one month is a yearly payer's, and its distributions stand.
+Where a fund held under eleven of the twelve months shows one calendar
+month of distributions, the yield its page states wins, if it states
+one ([YIELD.md](YIELD.md) §4).
 
 - A floating bond fund earns a floating rate, the first of these:
   - its implied yield;
@@ -894,17 +898,18 @@ longer, the one month is a yearly payer's, and its distributions stand.
   - its distribution or SEC yield;
   - its trailing yield.
 
-  Two readings of its distributions do not cover the year. One is one
-  half of a payer twice a year whose other half has no rate. The other
-  is one calendar month in a fund held under eleven months. A fund
-  whose distributions cover the year, at a frequency below monthly, pays
-  that rate on its own pay days. Each payment is what its value accrued
-  since the pay day before. It earns the rate of its pay month, which
-  moves with the curve and the shift. So on a rising forward curve a
-  quarterly payer earns a little more than a monthly one. Any other
-  floating fund accrues its rate month by month. With none of the rates,
-  it pays its indicated distributions as they come. Else it reads
-  `unknown`.
+  Two readings of its distributions do not cover the year:
+  - one half of a payer twice a year whose other half has no rate;
+  - one calendar month of a fund held under eleven months.
+
+  A fund whose distributions cover the year and pay less often than
+  monthly pays its floating rate on its own pay days. Each payment is
+  what its value accrued since the pay day before, at the rate of the
+  payment's month. That rate moves with the curve and the shift. So on
+  a rising forward curve a quarterly payer earns a little more than a
+  monthly one. Any other floating fund accrues its rate month by month.
+  With none of the rates, it pays its indicated distributions as they
+  come. Else it reads `unknown`.
 - A balance whose rate no source states repeats the interest its
   account received in the last twelve months (`realized`). With none
   received it reads `unknown`.
@@ -1057,9 +1062,10 @@ account and its position key.
 
 **Privacy.** `-p` stars amounts, quantities, prices and account ids.
 Every name a person typed prints as a pseudonym, such as `manual-1`, or
-as a redacted id, as DESIGN.md §4.6 says. That covers a nickname and a manual holding's name
-and key. Any other `position_key` stays legible, as `holdings
-positions` keeps it. Shares, rates, bases and labels stay legible too.
+as its account's redacted id (DESIGN.md §4.6). That covers a typed
+account or portfolio name, and a manual holding's name and key. Any
+other `position_key` stays legible, as `holdings positions` keeps it.
+Shares, rates, bases and labels stay legible too.
 
 An invented household, on 2026-11-15, in Swiss francs:
 

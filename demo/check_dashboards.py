@@ -21,9 +21,9 @@ source picked, and once per source over the full history. The other
 pickers are varied one at a time around their defaults:
 
 - a picker with a fixed list of values, such as the currency, the
-  investing grain, the reading of a missing cost basis, the projection's
-  rate path, maturing rule and horizon, and the Income window, over each
-  value it offers but its default;
+  investing grain, the reading of a missing cost basis, and the
+  projection's rate path, maturing rule and horizon, over each value it
+  offers but its default;
 - a currency picker without such a list over each currency it offers;
 - the section, start year, as-of day, asset class and tax wrapper over a
   few values each, and the shift at -100 basis points.
@@ -34,9 +34,10 @@ their defaults.
 A run fails when Metabase reports an error. A response cut off with no
 error and no result is asked once more first. A card that returns no rows
 at its dashboard's defaults fails too, but for the calendar of expected
-payments. Empty runs under any other picker value are listed, not
-failed: many card and source pairs are empty by nature (card balances for
-a source with no card). Exits 1 on any failure. Stdlib only.
+payments, and so does a figure of the Income dashboards that reads null
+there. Empty runs under any other picker value are listed, not failed:
+many card and source pairs are empty by nature (card balances for a
+source with no card). Exits 1 on any failure. Stdlib only.
 """
 
 import argparse
@@ -56,10 +57,15 @@ sys.path.insert(1, str(HERE.parent / "web"))
 import provision  # noqa: E402
 from demohouse import config, spec  # noqa: E402
 
-WINDOWS = ["past7days~", "past30days~", "past3months~", "past12months~"]
-# Cards that may be empty at their defaults: on 31 December the
-# projection starts tomorrow, so this year expects no payment.
+# The time windows each card runs over, before the full history.
+# past3years~ reaches before last year: the received figures must count
+# days that far back.
+WINDOWS = ["past7days~", "past30days~", "past3months~", "past12months~", "past3years~"]
+# Cards that may be empty at their defaults: a book whose holdings pay
+# nothing over the horizon expects no payment.
 EMPTY_AT_DEFAULTS_OK = {"Expected payments", provision.privacy_name("Expected payments")}
+# The dashboards whose figures read 0 where nothing counts, never null.
+NO_NULL_DASHBOARDS = provision.INCOME_DASHBOARDS
 
 
 def call(base, path, method="GET", body=None, headers=None):
@@ -142,6 +148,14 @@ def empty_at_defaults(empties):
     return sorted((d, c) for label, d, c in empties if label == "defaults" and c not in EMPTY_AT_DEFAULTS_OK)
 
 
+def null_at_defaults(figures):
+    """The (dashboard, card) pairs of `figures`, (label, dashboard, card,
+    rows) runs of a scalar card, that read null at their dashboard's
+    defaults on one of NO_NULL_DASHBOARDS."""
+    return sorted((d, c) for label, d, c, rows in figures
+                  if label == "defaults" and d in NO_NULL_DASHBOARDS and rows and rows[0] and rows[0][0] is None)
+
+
 def run_card(base, auth, dash, dc, ptypes, values):
     mapped = {m["parameter_id"]: m for m in dc.get("parameter_mappings", [])}
     body = {"parameters": [{"id": pid, "type": ptypes[pid], "value": v, "target": mapped[pid]["target"]}
@@ -186,7 +200,7 @@ def main(argv=None):
         coll = next(c for c in cols if c.get("name") == provision.COLLECTION_NAME and not c.get("archived"))
         _, items = call(a.base, f"/api/collection/{coll['id']}/items?models=dashboard", headers=auth)
         dashboards = sorted(items["data"], key=lambda d: d["name"])
-        failures, empties, runs, freshness = [], set(), 0, None
+        failures, empties, figures, runs, freshness = [], set(), [], 0, None
         for d in dashboards:
             _, dash = call(a.base, f"/api/dashboard/{d['id']}", headers=auth)
             ptypes = {p["id"]: p["type"] for p in dash.get("parameters", [])}
@@ -217,6 +231,8 @@ def main(argv=None):
                     failures.append((d["name"], name, params, err))
                 elif not rows:
                     empties.add((label, d["name"], name))
+                elif dc["card"].get("display") == "scalar":
+                    figures.append((label, d["name"], name, rows))
                 if name == "Stalest source (days)" and ok and rows:
                     freshness = rows[0][0]
             print(f"{d['name']}: {len(jobs)} runs, "
@@ -228,6 +244,10 @@ def main(argv=None):
         print(f"cards empty at their dashboard's defaults: {len(at_defaults)}")
         for d, c in at_defaults:
             print("  EMPTY", d, "|", c)
+        nulls = null_at_defaults(figures)
+        print(f"figures null at their dashboard's defaults: {len(nulls)}")
+        for d, c in nulls:
+            print("  NULL", d, "|", c)
         by_label = {}
         for label, _d, _c in empties:
             by_label[label] = by_label.get(label, 0) + 1
@@ -235,7 +255,7 @@ def main(argv=None):
         for label, n in sorted(by_label.items()):
             print(f"  {n:4}  {label}")
         print(f"Stalest source (days): {freshness}")
-        return 1 if failures or at_defaults else 0
+        return 1 if failures or at_defaults or nulls else 0
     finally:
         call(a.base, f"/api/api-key/{key_id}", "DELETE", headers=admin_auth)
 

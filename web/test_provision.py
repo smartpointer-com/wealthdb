@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Unit tests for web/provision.py's pure definition helpers — no
 Metabase and no Docker required. Run via `make test-web` (web/test_web.sh
-invokes this), or directly. The projection cards' SQL also runs on an
-invented book under DuckDB, which needs the duckdb Python module:
-`make test-web` runs this in web/.venv, which holds it, and without it
-that section fails.
+invokes this), or directly. The SQL of the projection cards and of the
+Exposure debt and cycle cards also runs on an invented book under
+DuckDB, which needs the duckdb Python module: `make test-web` runs this
+in web/.venv, which holds it, and without it those sections fail.
 
 Everything provision.py builds before it talks to the API is a pure
 function of module constants, so the card, filter and dashboard
@@ -891,6 +891,52 @@ finally:
     p.req = real_req
 
 layouts = [d for _path, d in api.puts if d.get("dashcards")]
+
+# Where the snapshot holds no withholding table, the Withholding tiles
+# read the tax booked alone, and their titles say so; a probe that does
+# not answer keeps the cards' names.
+
+
+class FakeProbeAPI:
+    def __init__(self, status, rows=None):
+        self.status, self.rows, self.queries = status, rows, []
+
+    def __call__(self, base, path, method="GET", data=None, session=None, timeout=30):
+        self.queries.append(data["native"]["query"])
+        return self.status, {"data": {"rows": self.rows}}
+
+
+real_req = p.req
+try:
+    _probed = {}
+    for _label, _status, _rows in (("a rate", 202, [[True]]), ("no rate", 202, [[False]]),
+                                   ("no answer", 500, None)):
+        api = p.req = FakeProbeAPI(_status, _rows)
+        _probed[_label] = p.withholding_table("b", "s", 1)
+    check("the withholding probe reads whether the withholding table holds any rate",
+          _probed == {"a rate": True, "no rate": False, "no answer": None}
+          and api.queries == ["SELECT count(*) > 0 FROM yield_withholding"], _probed)
+    _titles = p.tile_titles(False)
+    check("...and without a table the Withholding tiles' titles say they read what was received",
+          _titles == {"Withholding": "Received withholding — no withholding table",
+                      "Income after withholding": "Income after received withholding",
+                      "Withholding (privacy)": "Received withholding — no withholding table (privacy)",
+                      "Income after withholding (privacy)": "Income after received withholding (privacy)"}
+          and p.tile_titles(True) == {} and p.tile_titles(None) == {}, _titles)
+    api = p.req = FakeDashboardAPI()
+    with quiet():
+        p.ensure_dashboards("b", "s", 7, card_ids, MID, _titles)
+    _titled = {dc["card_id"]: dc["visualization_settings"].get("card.title")
+               for _path, d in api.puts if d.get("name") in ("Income", "Income (privacy)")
+               for dc in d.get("dashcards", []) if dc["visualization_settings"].get("card.title")}
+    check("...which the tiles show in place of the cards' names, and no other tile changes",
+          _titled == {card_ids[c]: t for c, t in _titles.items()}
+          and [d for _path, d in api.puts if d.get("dashcards")] != layouts
+          and all(d == layouts[k] or d.get("name") in ("Income", "Income (privacy)")
+                  for k, d in enumerate(x for _path, x in api.puts if x.get("dashcards"))), _titled)
+finally:
+    p.req = real_req
+
 spending = [d for d in layouts if d.get("name") == "Spending"]
 check("the Spending dashboard was laid out", len(spending) == 1)
 if spending:
@@ -954,8 +1000,8 @@ _FLOWS = {card_ids[c + s] for c in ("Investment income by month", "Fees & taxes 
 _SELECTION = {p.WEALTH_TAX_WRAPPER_PARAM_ID, p.ASSET_PARAM_ID}
 # The debt view carries no asset class, the issuers view neither a source
 # nor a tax wrapper: those tiles take what their views can narrow by.
-_DEBT = {card_ids[c + s] for c in ("Exposure by credit rating", "Exposure by maturity",
-                                   "Exposure by coupon", "Public equity by cycle")
+_DEBT = {card_ids[c + s] for c in ("Debt by credit rating, share of debt and cash", "Debt by maturity",
+                                   "Debt by coupon kind", "Public equity by cycle")
          for s in ("", p.PRIVACY_SUFFIX)}
 _ISSUERS = {card_ids["Largest issuers" + s] for s in ("", p.PRIVACY_SUFFIX)}
 for _d, _want in (("Wealth Overview", {p.WEALTH_CURRENCY_PARAM_ID,
@@ -1034,9 +1080,8 @@ check("...and one a migration creates",
 section("Income dashboards")
 
 INCOME_CARD_NAMES = ["Income — monthly trend", "Net income",
-                     "Uncategorized income share", "Income by month",
-                     "Income by type", "Top 50 payers", "Income by account",
-                     "Largest receipts"]
+                     "Uncategorized income share", "Income by type",
+                     "Top 50 payers", "Largest receipts"]
 
 check("every Income tile is defined",
       all(n in CARDS for n in INCOME_CARD_NAMES),
@@ -1309,9 +1354,12 @@ check("the Income twin has a card for every base tile",
 check("the Income dashboard and its twin are laid out",
       "Income" in DEFS and "Income (privacy)" in DEFS)
 _income_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Income")]
-check("the Income dashboard carries its five pickers, then the projected section's six",
-      _income_pickers == ["currency", "time_range", "source", "account", "type",
-                          "window", "rates", "maturing", "shift", "horizon", "position"],
+# One past control and one future control: the Time range sets every
+# received figure, the Horizon every expected one.
+check("the Income dashboard carries the currency, the time range and the horizon, then its "
+      "selection and the projection's assumptions",
+      _income_pickers == ["currency", "time_range", "horizon", "source", "account", "type",
+                          "position", "rates", "maturing", "shift"],
       _income_pickers)
 _twin_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Income (privacy)")]
 check("the Income twin carries no account picker",
@@ -1983,8 +2031,8 @@ _LABELS = {"as_of_day", "holding_currency", "currency", "kind", "symbol", "name"
 
 section("the Exposure dashboard's debt and issuer cards")
 
-_ex_debt = {"Exposure by credit rating": "credit", "Exposure by maturity": "maturity",
-            "Exposure by coupon": "coupon", "Public equity by cycle": "cycle"}
+_ex_debt = {"Debt by credit rating, share of debt and cash": "credit", "Debt by maturity": "maturity",
+            "Debt by coupon kind": "coupon", "Public equity by cycle": "cycle"}
 _ex_debt_tiles = [*_ex_debt, "Largest issuers"]
 check("the five are on the Exposure dashboard and its twin, above the coverage chart",
       all(n in _ex_tiles and p.privacy_name(n) in _ex_twin for n in _ex_debt_tiles)
@@ -2019,11 +2067,37 @@ check("the issuers twin hides an issuer named by a holding's own key, gold's, an
       and f"LIKE '{p.HOLDING_KEY_PREFIX}%'" in _ex_debt_sql["Largest issuers (privacy)"]
       and "value" not in _output_columns(_ex_debt_sql["Largest issuers (privacy)"]),
       _holding_prefix and _holding_prefix.group(1))
+_credit = "Debt by credit rating, share of debt and cash"
 check("the credit bars carry the grade and the unknown share in the tooltip",
-      VIZ["Exposure by credit rating"]["graph.tooltip_columns"] == ["value", "grade", "unknown_pct"]
-      and VIZ["Exposure by credit rating (privacy)"]["graph.tooltip_columns"] == ["grade", "unknown_pct"])
-check("the cycles are shares of public equity, as the sizes are",
-      VIZ["Public equity by cycle"]["graph.metrics"] == ["class_share_pct"])
+      VIZ[_credit]["graph.tooltip_columns"] == ["value", "grade", "unknown_pct"]
+      and VIZ[p.privacy_name(_credit)]["graph.tooltip_columns"] == ["grade", "unknown_pct"])
+# Each bucket is a share of its class, every bucket but (none), as the
+# CLI's class_share is: the bars sum to 100.
+for _n in _ex_debt:
+    for _name in (_n, p.privacy_name(_n)):
+        _q = _ex_debt_sql[_name]
+        check(f"'{_name}' plots each bucket's share of every bucket but (none)",
+              VIZ[_name]["graph.metrics"] == ["class_share_pct"]
+              and "c AS (SELECT sum(value) AS total FROM e WHERE bucket <> '(none)')" in _q
+              and "100 * sum(value) / (SELECT CASE WHEN total > 0 THEN total END FROM c) AS class_share_pct" in _q
+              and "share_pct AS share_pct" not in _q and "OVER" not in _q, _q[-500:])
+        check(f"...its label held to two decimals, a bucket under {p.SMALLEST_BAR_PCT}% left out of the bars",
+              VIZ[_name]["column_settings"]['["name","class_share_pct"]'] == {"suffix": "%", "decimals": 2}
+              and ("HAVING coalesce(abs(100 * sum(value) / (SELECT CASE WHEN total > 0 THEN total END FROM c))"
+                   f" >= {p.SMALLEST_BAR_PCT}, TRUE)") in _q
+              and f"under {p.SMALLEST_BAR_PCT}% of it is left out" in CARDS[_name][1])
+# Each description starts by saying what its card counts, which
+# Metabase shows behind the info icon. The maturity card's title names
+# the debt alone, so its description names the cash it counts too.
+check("each debt card's description says what it counts",
+      all(CARDS[n][1].startswith("Counts ") for n in _ex_debt)
+      and "Equities are never rated here" in CARDS[_credit][1]
+      and "and cash, by their remaining term" in CARDS["Debt by maturity"][1]
+      and "not its next reset" in CARDS["Debt by maturity"][1])
+check("...and the names they replace are retired",
+      all(n + s in p.RETIRED_CARD_NAMES and n + s not in CARDS
+          for n in ("Exposure by credit rating", "Exposure by maturity", "Exposure by coupon")
+          for s in ("", p.PRIVACY_SUFFIX)))
 check("every picker these tiles map lands on a tag they declare and read",
       not _picker_targets_resolve(list(_ex_debt_sql)), _picker_targets_resolve(list(_ex_debt_sql)))
 # The bars follow the views' own bucket orders (the CLI's), so a bucket
@@ -2088,7 +2162,7 @@ check("...and every read of web_yield or web_yield_curve is held to the picked c
 check("every picker a Yield tile maps lands on a tag it declares and reads",
       not _picker_targets_resolve(_y_all), _picker_targets_resolve(_y_all))
 # The cards with an expected figure read today's projection whatever
-# the window, so the window picker does not reach them, and the four
+# the window, so the Time range does not reach them, and the four
 # assumptions do: a floating rate floors at zero, so the path and the
 # shift move the sensitivity too.
 _proj = {"Income yield": {"rates", "maturing", "shift", "horizon"},
@@ -2163,84 +2237,154 @@ check("the Yield and the projection's pickers are the engine's rate paths, matur
       and int(p.HORIZONS[0]) == _horizons.get("Default") and int(p.HORIZONS[-1]) == _horizons.get("Max"),
       (p.RATE_PATHS, p.MATURING_RULES, p.HORIZONS, _horizons))
 
-section("the Income dashboard's projected section")
+section("the Income dashboard's cards of the holdings' income")
 
 _in_spec = p.base_dashboards()["Income"][2]
-_IN_PROJECTED = ["Income in the window", "Received income", "Received interest", "Received dividends",
-                 "Monthly average income", "Expected remaining", "Expected interest remaining",
-                 "Expected dividends remaining", "Withholding", "Income after withholding",
-                 "Received and expected by month", "Received and expected by account",
-                 "Received and expected by position", "Expected payments"]
-_in_rows = {t[0]: (t[1], t[1] + t[4]) for t in _in_spec}
-check("the projected section's tiles sit above the cards of today",
-      [t[0] for t in _in_spec][:len(_IN_PROJECTED)] == _IN_PROJECTED
-      and max(_in_rows[n][1] for n in _IN_PROJECTED) <= min(_in_rows[n][0] for n in INCOME_CARD_NAMES))
-check("...each with a privacy twin on the Income twin",
-      all(p.privacy_name(n) in CARDS for n in _IN_PROJECTED)
-      and [t[0] for t in DEFS["Income (privacy)"][3]][:len(_IN_PROJECTED)]
-      == [p.privacy_name(n) for n in _IN_PROJECTED])
+# The small tiles first, the charts after, the tables last, each with its
+# width.
+_IN_ORDER = [[("Income in the window", 4), ("Received income", 4), ("Expected remaining", 4),
+              ("Net income", 4), ("Monthly average income", 4), ("Uncategorized income share", 4)],
+             [("Income — monthly trend", 8), ("Withholding", 8), ("Income after withholding", 8)],
+             [("Received and expected by month", 24)],
+             [("Received interest", 6), ("Received dividends", 6), ("Expected interest remaining", 6),
+              ("Expected dividends remaining", 6)],
+             [("Income by type", 12), ("Top 50 payers", 12)],
+             [("Received and expected by account", 24)],
+             [("Received and expected by position", 24)],
+             [("Expected payments", 24)],
+             [("Largest receipts", 24)]]
+_in_at = {t[0]: t for t in _in_spec}
+check("the Income tiles read small tiles first, then the charts, then the tables",
+      [(t[0], t[3]) for t in _in_spec] == [x for row in _IN_ORDER for x in row]
+      and all(len({_in_at[n][1] for n, _w in row}) == 1 for row in _IN_ORDER)
+      and all(_in_at[_IN_ORDER[k - 1][0][0]][1] + _in_at[_IN_ORDER[k - 1][0][0]][4] == _in_at[_IN_ORDER[k][0][0]][1]
+              for k in range(1, len(_IN_ORDER))),
+      [(t[0], t[1], t[3]) for t in _in_spec])
+check("...and the twin mirrors the order",
+      [(t[0], t[1], t[2], t[3], t[4]) for t in DEFS["Income (privacy)"][3]]
+      == [(n if n in p.PRIVACY_EXEMPT_CARDS else p.privacy_name(n), r, c, w, h) for n, r, c, w, h, _t in _in_spec])
+_IN_PROJECTED = [t[0] for t in _in_spec if t[0] not in INCOME_CARD_NAMES]
+check("...each card of the holdings' income with a privacy twin",
+      len(_IN_PROJECTED) == 14 and all(p.privacy_name(n) in CARDS for n in _IN_PROJECTED), _IN_PROJECTED)
+# The income lines' cards by month and by account would repeat the
+# received and expected ones, so none is defined, and their names are
+# retired.
+_SUPERSEDED = ["Income by month", "Income by account"]
+check("the income lines' cards by month and by account are not defined, and their names are retired",
+      all(n + s not in CARDS and n + s in p.RETIRED_CARD_NAMES
+          for n in _SUPERSEDED for s in ("", p.PRIVACY_SUFFIX))
+      and not [t for d in DEFS.values() for t in d[3] if t[0].removesuffix(p.PRIVACY_SUFFIX) in _SUPERSEDED])
 _in_all = [n + s for n in _IN_PROJECTED for s in ("", p.PRIVACY_SUFFIX)]
 _in_sql = {n: sql_of(CARDS[n][2]) or "" for n in _in_all}
-# What the window received depends on no assumption, so those tiles read
-# the income received alone and take no projection picker.
+# What was received depends on no assumption, so those tiles read the
+# income received alone and take no projection picker; what is expected
+# reads the parts alone, but on the twin, whose share is of both.
 _RECEIVED_ONLY = {n + s for n in ("Received income", "Received interest", "Received dividends")
                   for s in ("", p.PRIVACY_SUFFIX)}
-check("every projected card reads the income received in the picked currency, and today's parts "
-      "where it shows an expected figure",
-      all("FROM web_yield_received" in q and "WHERE currency = {{currency}}" in q
+_EXPECTED_ONLY = {"Expected remaining", "Expected interest remaining", "Expected dividends remaining",
+                  "Expected payments", "Expected payments (privacy)"}
+# The income received holds a row set per currency, a part its rate to
+# each: the one is held to the picked currency, the other picks its rate.
+check("every card reads the income received where it shows a received figure, and today's parts "
+      "where it shows an expected one, each in the picked currency",
+      all(("FROM web_yield_received\n   WHERE currency = {{currency}}" in q) == (n not in _EXPECTED_ONLY)
+          and ("FROM web_yield_received" in q) == (n not in _EXPECTED_ONLY)
           and ("FROM web_yield_parts" in q) == (n not in _RECEIVED_ONLY)
           and ("p.rule = {{maturing}}" in q) == (n not in _RECEIVED_ONLY)
+          and ("CASE {{currency}} WHEN 'USD' THEN p.fx_usd" in q) == (n not in _RECEIVED_ONLY)
           for n, q in _in_sql.items()),
-      [n for n, q in _in_sql.items() if ("FROM web_yield_parts" in q) == (n in _RECEIVED_ONLY)])
-check("every picker a projected card maps lands on a tag it declares and reads",
+      [n for n, q in _in_sql.items() if ("FROM web_yield_parts" in q) == (n in _RECEIVED_ONLY)
+       or ("FROM web_yield_received" in q) == (n in _EXPECTED_ONLY)])
+_KEPT_DAYS = "day IN (SELECT day FROM web_income_days [[WHERE {{time_range}}]])"
+check("...the received rows those of the days the Time range selects, the parts those of the horizon",
+      all((_KEPT_DAYS in q) == (n not in _EXPECTED_ONLY)
+          and ("AND p.month <= CAST({{horizon}} AS INTEGER)" in q) == (n not in _RECEIVED_ONLY)
+          for n, q in _in_sql.items()),
+      [n for n, q in _in_sql.items() if (_KEPT_DAYS in q) == (n in _EXPECTED_ONLY)])
+_tr = [CARDS[n][2]["native"]["template-tags"].get("time_range") for n in _in_all if n not in _EXPECTED_ONLY]
+check("...through a Time range field filter on the days the income received covers",
+      bool(_tr) and all(t and t["dimension"][1] == p.FIELD_IDS[("web_income_days", "day")]
+                        and t["widget-type"] == "date/all-options" for t in _tr))
+check("every picker a card maps lands on a tag it declares and reads",
       not _picker_targets_resolve(_in_all), _picker_targets_resolve(_in_all))
 # One picker reaches one tag of a card, and a card reads two views, so
 # the source and account filters are bound to the views their dropdowns
 # list and keep each view's rows through them.
 _src = [CARDS[n][2]["native"]["template-tags"].get("source") for n in _in_all]
 _acc = [CARDS[n][2]["native"]["template-tags"].get("account") for n in _IN_PROJECTED]
-check("the Source and Account pickers reach every projected card through the views they list",
+check("the Source and Account pickers reach every card through the views they list",
       all(t and t["dimension"][1] == p.FIELD_IDS[("web_sources_latest", "silver_source_id")] for t in _src)
       and all(t and t["dimension"][1] == p.FIELD_IDS[("web_income", "account_label")] for t in _acc)
-      and all("[[AND silver_source_id IN (SELECT silver_source_id FROM web_sources_latest WHERE {{source}})]]"
-              in q for q in _in_sql.values()))
+      and all(re.search(r"\[\[AND (p\.)?silver_source_id IN \(SELECT silver_source_id FROM web_sources_latest "
+                        r"WHERE \{\{source\}\}\)\]\]", q) for q in _in_sql.values()))
 check("...and the twin carries no account tag",
       not [n for n in _in_all if n.endswith(p.PRIVACY_SUFFIX) and "account" in CARDS[n][2]["native"]["template-tags"]])
-_window_less = {"Received and expected by position", "Received and expected by position (privacy)"}
 for _n in _in_all:
     _tags = set(CARDS[_n][2]["native"]["template-tags"]) - {"currency", "source", "account", "position"}
     if _n in _RECEIVED_ONLY:
-        _want = {"window"}
-    elif _n in _window_less:
-        _want = {"rates", "maturing", "shift"}
+        _want = {"time_range"}
+    elif _n in _EXPECTED_ONLY:
+        _want = {"horizon", "rates", "maturing", "shift"}
     else:
-        _want = {"window", "horizon", "rates", "maturing", "shift"}
-    check(f"'{_n}' takes the window, the horizon and the assumptions only where they move it",
+        _want = {"time_range", "horizon", "rates", "maturing", "shift"}
+    check(f"'{_n}' takes the Time range where it shows a received figure, the Horizon and the "
+          "assumptions where it shows an expected one",
           _tags == _want, sorted(_tags))
+# Opened on its own, a card runs over its variables' defaults, and its
+# description ends by naming them: the days for a received figure, the
+# horizon and the assumptions for an expected one.
+_STANDALONE = (" Built for the Income dashboard; opened standalone it runs in "
+               f"{p.DEFAULT_CURRENCY} over the variables' defaults: ")
+_DEFAULTS = {"time_range": "every day to today from the first income received, the first tax withheld "
+                           "or 1 January of last year, whichever is earliest",
+             "horizon": f"the rest of this month and the {p.PROJECTION_TAGS['horizon']['default']} months "
+                        f"after it, under {p.PROJECTION_TAGS['rates']['default']} rates, maturing principal "
+                        f"to {p.PROJECTION_TAGS['maturing']['default']} and no shift"}
+for _n in _in_all:
+    _tags = CARDS[_n][2]["native"]["template-tags"]
+    _want = (_STANDALONE + "; ".join(v for k, v in _DEFAULTS.items() if k in _tags) + "."
+             + (p.PRIVACY_DESC if _n.endswith(p.PRIVACY_SUFFIX) else ""))
+    check(f"'{_n}' ends its description with the defaults it runs over opened on its own",
+          CARDS[_n][1].endswith(_want), CARDS[_n][1][-300:])
+check("...where no shift is the Shift variable's default",
+      p.PROJECTION_TAGS["shift"]["default"] == "0", p.PROJECTION_TAGS["shift"])
 check("only the calendar takes the Position picker, and it is optional",
       [n for n in _in_all if "position" in CARDS[n][2]["native"]["template-tags"]]
       == ["Expected payments", "Expected payments (privacy)"]
       and p.POSITION_TAG["required"] is False)
 _in_params = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Income (privacy)")]
-check("the Income twin carries the projected section's pickers too",
-      _in_params == ["currency", "time_range", "source", "type", "window", "rates", "maturing",
-                     "shift", "horizon", "position"], _in_params)
-_win = [q for q in p.dashboard_parameters(MID, "range", "Income") if q["slug"] == "window"][0]
-check("the window picker offers last year, this year and the next months, this year by default",
-      _win["default"] == ["this year"] and _win["required"]
-      and _win["values_source_config"]["values"] == ["last year", "this year", "next months"], _win)
-check("the window's months count the horizon from the first day of next month",
-      all(w in _in_sql["Income in the window"] for w in ("'last year'", "'this year'"))
-      and "date_trunc('month', cur) + INTERVAL 1 MONTH" in _in_sql["Income in the window"]
-      and "to_months(1 + CAST({{horizon}} AS INTEGER))" in _in_sql["Income in the window"])
+check("the Income twin carries the same pickers, but the account",
+      _in_params == ["currency", "time_range", "horizon", "source", "type", "position", "rates",
+                     "maturing", "shift"], _in_params)
+check("no card declares a window variable: on Income the Time range and the Horizon set every figure",
+      not [n for n in CARDS if "window" in ((CARDS[n][2].get("native") or {}).get("template-tags") or {})])
+# A day received counts its share of its month, and the horizon its
+# months and the rest of the current one.
+check("the monthly average divides by the months the received days and the horizon cover",
+      "SELECT (SELECT coalesce(sum(1 / day(last_day(day))), 0) FROM web_income_days [[WHERE {{time_range}}]])"
+      " AS received" in _in_sql["Monthly average income"]
+      and "CAST({{horizon}} AS INTEGER) + coalesce((SELECT (day(last_day(max(day))) - day(max(day)))"
+      in _in_sql["Monthly average income"]
+      and "/ (SELECT received + expected FROM mo)" in _in_sql["Monthly average income"])
+# The withholding of the income received is the tax a source booked, of
+# the income expected the table's model; with neither a tile reads 0.
+for _n in ("Withholding", "Income after withholding"):
+    for _name in (_n, p.privacy_name(_n)):
+        check(f"'{_name}' reads the tax a source withheld over the Time range and the table's over the "
+              "Horizon, 0 where neither withholds",
+              "FROM web_income_withheld" in _in_sql[_name] and _KEPT_DAYS in _in_sql[_name]
+              and "coalesce((SELECT withheld FROM tx), 0) + coalesce(sum(withheld), 0)" in _in_sql[_name]
+              and "amount * fx * withholding_pct / 100 AS withheld" in _in_sql[_name])
+check("...and the received rows carry none of the table's",
+      "NULL AS withheld" in _in_sql["Withholding"])
 _in_priv = [n for n in _in_all if n.endswith(p.PRIVACY_SUFFIX)]
 _in_money = {n: [c for c in _output_columns(_in_sql[n]) if not c.endswith("_pct") and c not in _LABELS]
              for n in _in_priv}
 check("no projected privacy card carries an amount: shares, yields and labels alone",
       not any(_in_money.values()), {n: c for n, c in _in_money.items() if c})
-check("the twin's window income is a yield on the value it is earned on",
+check("the twin's income is a yield on the value it is earned on",
       "FROM web_yield\n" in _in_sql["Income in the window (privacy)"]
-      and "* 12 / (SELECT months FROM win)" in _in_sql["Income in the window (privacy)"])
+      and "* 12 / (SELECT received + expected FROM mo)" in _in_sql["Income in the window (privacy)"])
 _month_viz = VIZ["Received and expected by month"]
 check("the by-month chart stacks a series per type and status, the expected one lighter",
       _month_viz["graph.dimensions"] == ["month", "series"]
@@ -2358,14 +2502,15 @@ def _latest_definition(name):
 # The long views carry a row set per currency, written by their
 # materializers from the same materializeCurrencies list. The projection's
 # parts and principals are in each holding's currency, with its rate to
-# every reporting currency beside it, and its rates table holds no money.
+# every reporting currency beside it; its rates table and the days the
+# income received covers hold no money.
 _LONG_VIEWS = {"web_gains", "web_exposure", "web_exposure_debt", "web_exposure_issuers",
                "web_yield", "web_yield_curve", "web_yield_received"}
 _FX_TABLES = {"web_yield_parts": "report_yield_parts", "web_yield_events": "report_yield_events"}
 _missing = {v: [c for c in p.REPORTING_CURRENCIES
                 if not re.search(rf"_{c.lower()}\b", _latest_definition(v))]
             for v in p.web_views_wanted()
-            if v not in _LONG_VIEWS | set(_FX_TABLES) | {"web_yield_rates"}}
+            if v not in _LONG_VIEWS | set(_FX_TABLES) | {"web_yield_rates", "web_income_days"}}
 check("every wide serving view carries a value column per reporting currency",
       not any(_missing.values()), {v: m for v, m in _missing.items() if m})
 _ym = open(os.path.join(_REPO, "wealthdb", "internal", "gold", "yield_materialize.go"),
@@ -2605,8 +2750,9 @@ _FIELD = {v: k for k, v in p.FIELD_IDS.items()}
 def _render(query, values):
     """Card `query`'s SQL with its tags filled as Metabase fills them: a
     variable takes its value, else its default; a field filter given
-    values becomes a predicate on its column; an optional clause whose
-    tag has no value drops out."""
+    values becomes a predicate on its column, a date one given its first
+    and last day a range; an optional clause whose tag has no value drops
+    out."""
     sql, tags = query["native"]["query"], query["native"]["template-tags"]
 
     def value(name):
@@ -2616,6 +2762,8 @@ def _render(query, values):
         tag, v = tags[name], value(name)
         if tag["type"] == "dimension":
             table, col = _FIELD[tag["dimension"][1]]
+            if tag["widget-type"].startswith("date"):
+                return f'"main"."{table}"."{col}" BETWEEN DATE \'{v[0]}\' AND DATE \'{v[1]}\''
             return f'"main"."{table}"."{col}" IN (' + ", ".join(f"'{x}'" for x in v) + ")"
         return str(v) if tag["type"] == "number" else f"'{v}'"
 
@@ -2629,8 +2777,8 @@ def _render(query, values):
 
 
 def _book():
-    """A DuckDB holding migration 0138's tables and views, the few gold
-    objects its views read, and the invented book:
+    """A DuckDB holding migrations 0138's and 0146's tables and views, the
+    few gold objects their views read, and the invented book:
 
     - src-1/acct-1 (USD): cash of 12,000 at the USD benchmark less 1.00,
       and a bond of 8,000 paying 400 in months 2, 8, 14, 20, 26 and 32,
@@ -2644,20 +2792,31 @@ def _book():
     - the USD benchmark 3.00 constant, 3.00 + 0.10 x month forward; the
       CHF one 1.50 on both paths;
     - under the idle rule the CHF cash earns only in months 0 to 5;
-    - received: 2025 interest 50 and a sold holding's dividend 300;
-      2026 a coupon 400, rent 125 and the sold holding's dividend 200, 30
-      withheld.
+    - received: the sold holding's dividend 80 on 15 March 2024; 2025
+      interest 50 and the sold holding's dividend 300; 2026 a coupon 400,
+      rent 125 and the sold holding's dividend 200, which the withholding
+      table would withhold 30 from;
+    - the tax src-1 booked as withheld: 12 in 2024, 45 in 2025 and 25 in
+      2026, beside a refund of 5, which is no withholding, and a fee of 7,
+      which is no tax.
 
     Today is 2026-10-21, so month 0 is October 2026."""
     import datetime as dt
     db = duckdb.connect()
     db.execute("CREATE TABLE schema_meta (gold_schema_version INTEGER, applied_at BIGINT);"
                "CREATE TABLE accounts (silver_source_id TEXT, account_external_id TEXT, display_name TEXT,"
-               " account_kind TEXT, tax_wrapper TEXT);"
-               + _latest_definition("account_display_name") + _latest_definition("account_label") +
+               " account_kind TEXT, tax_wrapper TEXT, nickname TEXT, account_category TEXT,"
+               " portfolio_external_id TEXT);"
+               "CREATE TABLE income_account_scope (silver_source_id TEXT, account_external_id TEXT, mode TEXT);"
+               "CREATE TABLE serving_transactions (silver_source_id TEXT, account_external_id TEXT,"
+               " occurred_at BIGINT, kind TEXT, net_amount DECIMAL(28,4), value_usd DECIMAL(28,4),"
+               " value_chf DECIMAL(28,4), value_eur DECIMAL(28,4), value_gbp DECIMAL(28,4));"
+               + _latest_definition("account_display_name") + _latest_definition("account_label")
+               + _latest_definition("income_scoped_accounts") +
                "CREATE TABLE web_sources_latest (silver_source_id TEXT);"
                "CREATE TABLE web_income (account_label TEXT);")
     db.execute(_MIG_TEXT[138])
+    db.execute(_MIG_TEXT[146])
 
     def insert(table, rows):
         for r in rows:
@@ -2721,12 +2880,22 @@ def _book():
                 ("src-1", "acct-1", "isin:SOLD", dt.date(2025, 6, 15), "dividends", 300.0, None),
                 ("src-1", "acct-1", "isin:XX01", dt.date(2026, 2, 15), "coupons", 400.0, None),
                 ("src-2", "acct-2", "income:rent", dt.date(2026, 5, 1), "rent", 125.0, None),
-                ("src-1", "acct-1", "isin:SOLD", dt.date(2026, 7, 15), "dividends", 200.0, 30.0)]
+                ("src-1", "acct-1", "isin:SOLD", dt.date(2026, 7, 15), "dividends", 200.0, 30.0),
+                ("src-1", "acct-1", "isin:SOLD", dt.date(2024, 3, 15), "dividends", 80.0, None)]
     insert("report_yield_received", [
         {"computed_at": 0, "currency": ccy, "silver_source_id": src, "account_external_id": acct,
          "position_key": key, "day": day, "type": typ, "value": v * k,
          "withheld": None if w is None else w * k}
         for src, acct, key, day, typ, v, w in received for ccy, k in per_usd.items()])
+
+    def at(day):
+        return int(dt.datetime(day.year, day.month, day.day, 9, tzinfo=dt.timezone.utc).timestamp())
+    insert("serving_transactions", [
+        {"silver_source_id": "src-1", "account_external_id": "acct-1", "occurred_at": at(day), "kind": kind,
+         "net_amount": v, **{f"value_{c.lower()}": v * per_usd.get(c, 1.0) for c in p.REPORTING_CURRENCIES}}
+        for day, kind, v in ((dt.date(2024, 3, 15), "tax", -12.0), (dt.date(2025, 6, 15), "tax", -45.0),
+                             (dt.date(2026, 7, 15), "tax", -25.0),
+                             (dt.date(2026, 8, 1), "tax", 5.0), (dt.date(2026, 8, 1), "fee", -7.0))])
     return db
 
 
@@ -2816,44 +2985,119 @@ if duckdb is not None:
               _near(_got, _want) and math.copysign(1, _got) > 0, (_got, _want))
     check("...as the yields over time read it",
           [r[3] for r in _run("Yields over time")] == [_one("Realized yield")], _run("Yields over time"))
-    # The windows. This year received 400 + 125 + 200 and expects, for
-    # October to December, 3 x 20, the December coupon 400, 3 x 12.50 and
-    # two months of rent at 125. Last year received 50 + 300. The next
-    # twelve months: 240 + 800 + 150 + 12 x 125; the next 24 twice that.
-    for _args, _want in (({}, 725 + 747.5), ({"window": "last year"}, 350.0),
-                         ({"window": "next months"}, 2690.0), ({"window": "next months", "horizon": "24"}, 5380.0)):
+    # What was received over the Time range, every day received without
+    # one: 80 in 2024, 50 + 300 in 2025, 400 + 125 + 200 in 2026. What is
+    # expected over the Horizon, the rest of October and the twelve
+    # months after it: 13 x 20 on the dollar cash, the coupons of December
+    # and June, 13 x 12.50 on the franc cash and twelve months of rent at
+    # 125; over 24 months 25 x 20, four coupons, 25 x 12.50 and 24 x 125.
+    _y24, _y25, _y26, _y27 = (("2024-01-01", "2024-12-31"), ("2025-01-01", "2025-12-31"),
+                              ("2026-01-01", "2026-12-31"), ("2027-01-01", "2027-12-31"))
+    _received = 80 + 350 + 725.0
+    _exp12, _exp24 = 260 + 800 + 162.5 + 1500, 500 + 1600 + 312.5 + 3000
+    for _args, _want in (({}, _received + _exp12), ({"time_range": _y24}, 80 + _exp12),
+                         ({"time_range": _y25}, 350 + _exp12), ({"time_range": _y26}, 725 + _exp12),
+                         ({"time_range": _y27}, _exp12), ({"time_range": _y26, "horizon": "24"}, 725 + _exp24)):
         _got = _one("Income in the window", **_args)
-        check(f"the window's income under {_args or 'this year'} is the book's", _near(_got, _want), (_got, _want))
-    check("the received tiles count what each window received",
-          _near(_one("Received income"), 725.0) and _near(_one("Received dividends"), 200.0)
-          and _near(_one("Received interest", window="last year"), 50.0)
-          and _near(_one("Received income", window="next months"), 0.0))
-    check("the monthly average divides by the window's months",
-          _near(_one("Monthly average income"), 1472.5 / 12)
-          and _near(_one("Monthly average income", window="next months", horizon="24"), 5380.0 / 24))
-    # Withheld: 30 received, and 15% of the December coupon expected.
-    check("the withholding counts what was withheld and what the table withholds",
-          _near(_one("Withholding"), 90.0), _one("Withholding"))
-    # The second source's: its rent received, its cash's 37.50 and two
-    # months of rent expected.
+        check(f"the income under {_args or 'the defaults'} is what the Time range received and the Horizon "
+              "expects", _near(_got, _want), (_got, _want))
+    check("the received tiles count what the Time range received, before last year too",
+          _near(_one("Received income"), _received) and _near(_one("Received income", time_range=_y26), 725.0)
+          and _near(_one("Received dividends", time_range=_y26), 200.0)
+          and _near(_one("Received interest", time_range=_y25), 50.0)
+          and _near(_one("Received dividends", time_range=_y24), 80.0)
+          and _near(_one("Received income", time_range=_y27), 0.0))
+    check("the expected tiles count what the Horizon expects",
+          _near(_one("Expected remaining"), _exp12) and _near(_one("Expected remaining", horizon="24"), _exp24)
+          and _near(_one("Expected interest remaining"), 260 + 800 + 162.5)
+          and _near(_one("Expected dividends remaining"), 0.0))
+    # The days received run from the first, 15 March 2024, to 21 October
+    # 2026: 17/31 of March, 30 months, and 21/31 of October. The horizon
+    # adds 12 and the 10/31 of October left: 43 and 17/31 months. Over
+    # 2026 the days received count 9 and 21/31: 22 months.
+    _all_months = 43 + 17 / 31
+    check("the monthly average divides by the months the days received and the horizon cover",
+          _near(_one("Monthly average income"), (_received + _exp12) / _all_months)
+          and _near(_one("Monthly average income", time_range=_y26), (725 + _exp12) / 22)
+          and _near(_one("Monthly average income", time_range=_y26, horizon="24"), (725 + _exp24) / 34))
+    # Withheld: the tax src-1 booked, 12, 45 and 25, not the 30 the table
+    # would withhold from the dividend received; and 15% of the two
+    # coupons expected. The second source withholds nothing at all.
+    check("the withholding counts the tax booked over the Time range and the table's over the Horizon",
+          _near(_one("Withholding"), 82 + 120.0) and _near(_one("Withholding", time_range=_y26), 25 + 120.0)
+          and _near(_one("Withholding", time_range=_y24), 12 + 120.0)
+          and _near(_one("Withholding", time_range=_y27, horizon="24"), 240.0), _one("Withholding"))
+    check("...the Account picker keeping an account's tax, the Currency picker its value",
+          _near(_one("Withholding", account=["Brokerage (src-1 brokerage)"]), 202.0)
+          and _one("Withholding", account=["Savings (src-2 deposit)"]) == 0
+          and _near(_one("Withholding", currency="CHF"), 0.8 * 202.0),
+          (_one("Withholding", account=["Savings (src-2 deposit)"]), _one("Withholding", currency="CHF")))
+    check("...and the income after it the rest",
+          _near(_one("Income after withholding"), _received + _exp12 - 202.0), _one("Income after withholding"))
+    check("where nothing is withheld, the withholding tiles read 0, not null",
+          _one("Withholding", source=["src-2"]) == 0 and _one("Withholding (privacy)", source=["src-2"]) == 0
+          and _near(_one("Income after withholding", source=["src-2"]), 125 + 162.5 + 1500.0)
+          and _near(_one("Income after withholding (privacy)", source=["src-2"]), 100.0))
+    # A twin's share of nothing reads 0, as the base figure does.
+    _scalars = [n for n in _in_all if CARDS[n][0] == "scalar"]
+    _nulls = [(n, a) for n in _scalars for a in ({}, {"source": ["src-2"]}, {"time_range": _y27})
+              if _one(n, **a) is None]
+    check("no headline figure reads null, at the defaults, for one source, or over days not yet come",
+          len(_scalars) == 20 and not _nulls, _nulls)
+    check("...the twin's received figures reading 0 where nothing was received",
+          all(_one(n + p.PRIVACY_SUFFIX, time_range=_y27) == 0
+              for n in ("Received income", "Received interest", "Received dividends")))
+    # With no yield report there is no day received: the received figures
+    # read 0 and the monthly average divides by the horizon alone.
+    _db.execute("BEGIN")
+    _db.execute("DELETE FROM report_yield_positions")
+    _empty = {n: _one(n) for n in _scalars}
+    _db.execute("ROLLBACK")
+    check("with no yield report no figure reads null, and the average is the horizon's",
+          not [n for n, v in _empty.items() if v is None] and _empty["Received income"] == 0
+          and _near(_empty["Income in the window"], _exp12)
+          and _near(_empty["Monthly average income"], _exp12 / 12), _empty)
+    # The second source's: its rent received, its cash's 162.50 and
+    # twelve months of rent expected.
     check("the Source picker keeps a source's received and expected rows",
-          _near(_one("Income in the window", source=["src-2"]), 125 + 37.5 + 250.0),
+          _near(_one("Income in the window", source=["src-2"]), 125 + 162.5 + 1500.0),
           _one("Income in the window", source=["src-2"]))
+    _accounts = _run("Received and expected by account")
+    check("the accounts table splits each account's received and expected income",
+          [(r[0], round(r[1], 6), round(r[2], 6), round(r[3], 6)) for r in _accounts]
+          == [("Brokerage (src-1 brokerage)", 1030.0, 1060.0, 2090.0),
+              ("Savings (src-2 deposit)", 125.0, 1662.5, 1787.5)], _accounts)
     _months = {(m.date().isoformat(), s): v for m, s, v in _run("Received and expected by month")}
-    check("the by-month chart's bands are the window's, received and expected",
-          _near(sum(_months.values()), 1472.5) and _near(_months.get(("2026-12-01", "coupons (expected)")), 400.0)
+    check("the by-month chart's bands are the Time range's received and the Horizon's expected",
+          _near(sum(_months.values()), _received + _exp12)
+          and _near(_months.get(("2026-12-01", "coupons (expected)")), 400.0)
           and _near(_months.get(("2026-02-01", "coupons (received)")), 400.0)
-          and _near(_months.get(("2026-10-01", "interest (expected)")), 32.5), _months)
+          and _near(_months.get(("2024-03-01", "dividends (received)")), 80.0)
+          and _near(_months.get(("2026-10-01", "interest (expected)")), 32.5)
+          and ("2027-11-01", "interest (expected)") not in _months, _months)
+    _months26 = {(m.date().isoformat(), s) for m, s, _v in _run("Received and expected by month", time_range=_y26)}
+    check("...the received ones moving with the Time range",
+          ("2025-06-01", "dividends (received)") not in _months26
+          and ("2026-02-01", "coupons (received)") in _months26)
     # The twins divide by the biggest month. Each of the horizon's months
     # pays 32.50, 20 on the dollar cash and 12.50 on the franc cash, and
-    # months 2 and 8 the coupon of 400 too. This year's December holds
-    # most: 32.50, the coupon and the rent of 125.
+    # months 2 and 8 the coupon of 400 too, each month but October the
+    # rent of 125: December and June hold most, 557.50.
     check("the twins divide by the biggest month",
           _near(_one("Projected income (privacy)"), 100 * 1190 / 12 / 432.5)
-          and _near(_one("Monthly average income (privacy)"), 100 * 1472.5 / 12 / 557.5)
+          and _near(_one("Monthly average income (privacy)"), 100 * (_received + _exp12) / _all_months / 557.5)
           and all(_near(v, 100 * _months[(m.date().isoformat(), s)] / 557.5)
                   for m, s, v in _run("Received and expected by month (privacy)")),
           (_one("Projected income (privacy)"), _one("Monthly average income (privacy)")))
+    # The bond of 8,000 received 400 over the 31 months and 7/31 of days
+    # received and expects 800 over the horizon's 12 and 10/31: each a
+    # yield per year on its value.
+    _bond = [r for r in _run("Received and expected by position (privacy)") if r[1] is None and r[2] == "(unnamed)"
+             and r[3] is not None and _near(r[3], 100 * 8000 / 30000)]
+    check("the positions twin gives each position's income as a yield on its value",
+          len(_bond) == 1 and _near(_bond[0][4], 100 * 400 * 12 / (_all_months - 12 - 10 / 31) / 8000)
+          and _near(_bond[0][5], 100 * 800 * 12 / (12 + 10 / 31) / 8000)
+          and _near(_bond[0][6], 100 * 1200 * 12 / _all_months / 8000), _bond)
     _names = {r[2] for r in _run("Received and expected by position (privacy)")}
     check("the positions twin keeps a cash or income key and hides a holding's own",
           {"cash:USD", "cash:CHF", "income:rent", "(unnamed)"} <= _names and "isin:SOLD" not in _names, _names)
@@ -2867,6 +3111,58 @@ if duckdb is not None:
           _picked == {"cash:USD": {"cash:USD"}, "(unnamed)": {"(unnamed)"}}, _picked)
     check("...where the money card's calendar knows no (unnamed)",
           not _run("Expected payments", position="(unnamed)") and _run("Expected payments", position="isin:XX01"))
+
+    section("the Exposure bucket cards' SQL, run on an invented book")
+
+    # The credit rating card on a book of 4,000 debt and cash beside 800
+    # of stocks, today, in each of two sources: AAA 600, BBB 2,000,
+    # unrated 199.9999 and cash 1,000 in the one, a B line of 0.0001 in
+    # the other. Each bucket is a share of the 3,800 of debt and cash, so
+    # the bars sum to 100; the B line, under a hundredth of a percent of
+    # it, is left out of them.
+    _db.execute("DELETE FROM report_exposure_debt")
+    _today = _db.execute("SELECT max(as_of) FROM report_yield_positions").fetchone()[0]
+    for _src, _bucket, _v in (("src-1", "AAA", 600.0), ("src-1", "BBB", 2000.0), ("src-1", "unrated", 199.9999),
+                              ("src-1", "cash", 1000.0), ("src-2", "B", 0.0001), ("src-1", "(none)", 800.0)):
+        _db.execute("INSERT INTO report_exposure_debt VALUES (0, 'USD', ?, ?, NULL, 'credit', ?, FALSE, ?)",
+                    [_today, _src, _bucket, _v])
+    _credit_rows = _run(_credit)
+    _shares = {r[0]: r[-1] for r in _credit_rows}
+    check("the credit bars are each bucket's share of the debt and cash, summing to 100",
+          list(_shares) == ["AAA", "BBB", "unrated", "cash"]
+          and _near(_shares["BBB"], 100 * 2000 / 3800) and abs(sum(_shares.values()) - 100) < p.SMALLEST_BAR_PCT
+          and [r[-1] for r in _run(p.privacy_name(_credit))] == list(_shares.values()), _credit_rows)
+    check("...and a source's own, whose one bucket is the whole of its class",
+          [(r[0], r[-1]) for r in _run(_credit, source=["src-2"])] == [("B", 100.0)],
+          _run(_credit, source=["src-2"]))
+    # An overdraft that outweighs the debt leaves no share of the class,
+    # as the CLI's class_share has none: the buckets stay, blank.
+    for _bucket, _v in (("AAA", 1000.0), ("cash", -2000.0)):
+        _db.execute("INSERT INTO report_exposure_debt VALUES (0, 'USD', ?, 'src-3', NULL, 'credit', ?, FALSE, ?)",
+                    [_today, _bucket, _v])
+    _over = [(r[0], r[-1]) for r in _run(_credit, source=["src-3"])]
+    check("a class that sums to less than nothing gives no bucket a share",
+          _over == [("AAA", None), ("cash", None)], _over)
+    # The four cards over the book the gold test holds `wealthdb exposure
+    # <view>` to (testdata/class_share_book.json): each bar is the class
+    # share the command prints, and the bars sum to 100.
+    with open(os.path.join(_REPO, "wealthdb", "internal", "gold", "testdata", "class_share_book.json"),
+              encoding="utf-8") as _f:
+        _book = json.load(_f)
+    _cards = {"credit": (_credit, "credit"), "maturities": ("Debt by maturity", "maturity"),
+              "coupons": ("Debt by coupon kind", "coupon"), "cycles": ("Public equity by cycle", "cycle")}
+    check("the class share book holds the four bucket views", set(_book) == set(_cards), sorted(_book))
+    for _view, _rows in _book.items():
+        for _row in _rows:
+            _db.execute("INSERT INTO report_exposure_debt VALUES (0, 'USD', ?, 'src-9', NULL, ?, ?, FALSE, ?)",
+                        [_today, _cards[_view][1], _row["bucket"], float(_row["value"])])
+    for _view, (_name, _dim) in _cards.items():
+        _want = [(r["bucket"], r["class_share"]) for r in _book.get(_view, []) if r["bucket"] != "(none)"]
+        for _n in (_name, p.privacy_name(_name)):
+            _bars = _run(_n, source=["src-9"])
+            _got = [(r[0], f"{float(r[-1]):.2f}") for r in _bars]
+            check(f"'{_n}' draws the class shares `wealthdb exposure {_view}` prints, summing to 100",
+                  bool(_want) and _got == _want and abs(sum(r[-1] for r in _bars) - 100) < 1e-9, (_got, _want))
 
 if FAILS:
     print(f"provision tests: {FAILS} failed")
