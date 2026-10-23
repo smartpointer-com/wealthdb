@@ -332,8 +332,8 @@ var yieldQualityTags = []tagNote{
 	{string(yield.TagDeclared), "a ledger record states it"},
 	{string(yield.TagAged), "a fund's composition is older than exposure allows"},
 	{string(yield.TagStalePrice), "a fund's lines are priced on their filing's day, not the day"},
-	{string(yield.TagFloating), "a floating note, which implies no yield, or a fund whose floating lines are " +
-		"half of it or more"},
+	{string(yield.TagFloating), "a floating note, which implies no yield, or a fund whose income resets with " +
+		"the rates: its lines or its filing's float for half of it or more, or its name says it floats"},
 	{string(yield.TagDefault), "a bond is graded in default, or a fund holds lines in default or arrears; they " +
 		"imply nothing"},
 	{string(yield.TagThin), "the amount was under a tenth of its mean on more than half the year's days, so " +

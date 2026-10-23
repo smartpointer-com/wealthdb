@@ -837,17 +837,7 @@ func (bk dividendBook) inputs(t *testing.T) (*yield.Inputs, *sql.DB, context.Con
 		    currency, net_amount, instrument_external_id, quantity) VALUES `+strings.Join(rows, ", "),
 		`INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id, payer_signature,
 		    signature_version, income_detailed, provenance, assigned_at) VALUES `+strings.Join(kinds, ", "))
-	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
-		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: 35, PartialPct: 3},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := RebuildYield(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	rebuildForYield(t, db)
 	execEach(t, db, bk.after...)
 	in, err := YieldInputs(ctx, db, ymd(2026, 6, 30).Unix()+86399, "USD")
 	if err != nil {
@@ -1062,6 +1052,29 @@ func TestAHoldingAliasFolds(t *testing.T) {
 			t.Errorf("%s: dividend yield %s, realized %s, tags %v", k.PositionKey, fmtFloatPtr(p.DividendYield),
 				fmtFloatPtr(p.Realized), p.Tags)
 		}
+	}
+}
+
+// A holding's daily amounts in another currency than its own convert at
+// the instant's rates, its own as they are; where no rate converts them
+// they count nothing. The holding and its amounts are invented: valued in
+// francs for its first hundred days, in kronor, which no rate converts,
+// for the next hundred, and in dollars since.
+func TestADailyAmountNoRateConverts(t *testing.T) {
+	t.Parallel()
+	k := yield.HoldingKey{Source: "src", Account: "A", PositionKey: "QSTK"}
+	in := &yield.Inputs{Currency: "USD", FXRates: map[string]float64{"CHF": 1.25},
+		Holdings: []yield.Holding{{HoldingKey: k, Currency: "USD"}}, Daily: map[yield.HoldingKey]yield.Daily{},
+		FormerDaily: map[yield.InstrumentKey][]yield.Daily{}}
+	b := &yieldBase{amounts: map[amountKey]*yield.Daily{
+		{k, "CHF"}: {Days: 365, Currency: "CHF", Spans: []yield.Span{{From: 0, To: 100, Amount: 4000}}},
+		{k, "SEK"}: {Days: 365, Currency: "SEK", Spans: []yield.Span{{From: 100, To: 200, Amount: 50000}}},
+		{k, "USD"}: {Days: 365, Currency: "USD", Spans: []yield.Span{{From: 200, To: 365, Amount: 5000}}},
+	}}
+	b.daily(in)
+	want := []yield.Span{{From: 0, To: 100, Amount: 5000}, {From: 200, To: 365, Amount: 5000}}
+	if d := in.Daily[k]; d.Days != 365 || d.Currency != "USD" || !slices.Equal(d.Spans, want) {
+		t.Errorf("daily %+v, want spans %+v", d, want)
 	}
 }
 

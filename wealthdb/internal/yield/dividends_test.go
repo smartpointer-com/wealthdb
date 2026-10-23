@@ -516,9 +516,9 @@ func TestARecordDaysQuantity(t *testing.T) {
 // twelve times the interim, where the final a year earlier was twice it,
 // is no half's payment: the final a year earlier stands for it, and the
 // year pays 0.3. Where that one has no rate either, the year pays the
-// interim once, and is partial. In November, after an interim of no rate
-// in the final's half a year after the last rated interim, the final
-// still comes in May.
+// interim once, and is partial. On 25 November, after an interim of no
+// rate a year after the last rated one, the final still comes next, in
+// May, and the interim in November.
 func TestAnUnevenFinalIsNoSpecial(t *testing.T) {
 	t.Parallel()
 	// read books the payments; a prior final below 0 has no rate.
@@ -632,6 +632,39 @@ func TestALostHalfTakesItsMonthAYearEarlier(t *testing.T) {
 	}
 }
 
+// The other half of a payer twice a year lies 1 to 10 months from its
+// last rated month, before it or after: a special 11 months after it is
+// that month's own payment a year on. A payer of 0.1 whose last rated
+// month is May 2025, April 2025 paying too, has paid two specials since,
+// each in a month that paid a year earlier: 0.4 in November and 0.8 in
+// April 2026. November's stands as the other half's rate, under six
+// times May's, and the year pays 0.4 and 0.1, each in its own month.
+func TestTheOtherHalfIsNoPaymentAYearOn(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	h := stock("A", "QADR", 100)
+	in.Holdings = []Holding{h}
+	for _, p := range []struct {
+		d    *time.Time
+		rate float64
+	}{{date(2024, 11, 20), 0.1}, {date(2025, 4, 20), 0.1}, {date(2025, 5, 20), 0.1}, {date(2025, 11, 20), 0.4},
+		{date(2026, 4, 20), 0.8}} {
+		pay(in, h.HoldingKey, "A", p.d, p.rate*100, num(100))
+	}
+	b := Compute(in)
+	if p := dividendOf(t, b, h, 0.4+0.1, 50); p.Tags[TagPartial] {
+		t.Errorf("tags %v", p.Tags)
+	}
+	for _, m := range []struct {
+		what   string
+		d      *time.Time
+		income float64
+	}{{"November", date(2026, 11, 1), 40}, {"May", date(2027, 5, 1), 10}} {
+		near(t, m.what, num(incomeOf(b, h.HoldingKey, monthIndex(b, *m.d), RuleCash, PathConstant, 0)), m.income,
+			1e-9)
+	}
+}
+
 // Two specials of one size between regular pay days stay specials: each
 // holds no level of the newest pay days, as a regular one follows it. A
 // quarterly payer of 0.25 pays 1.00 more on 20 December and on 20 March:
@@ -728,26 +761,27 @@ func TestADriftedPayDayIsOneHalf(t *testing.T) {
 	}
 }
 
-// The one-half rule reads a payer twice a year: a year of three pay
-// months, one of them rated, keeps its rate at twice a year.
+// A year of three calendar months of payments, four months apart and
+// one of them rated, reads twice a year (payFrequency). The one-half
+// rule needs exactly two calendar months, so the rate stays at twice a
+// year.
 func TestThreePayMonthsAreNoHalf(t *testing.T) {
 	t.Parallel()
 	in := inputs()
 	h := stock("A", "QSTK", 100)
 	in.Holdings = []Holding{h}
-	pay(in, h.HoldingKey, "A", quarterly[1], 50, nil)
-	pay(in, h.HoldingKey, "A", quarterly[2], 50, nil)
-	pay(in, h.HoldingKey, "A", quarterly[3], 50, num(100))
+	pay(in, h.HoldingKey, "A", date(2025, 10, 10), 50, nil)
+	pay(in, h.HoldingKey, "A", date(2026, 2, 10), 50, nil)
+	pay(in, h.HoldingKey, "A", date(2026, 6, 10), 50, num(100))
 	if p := dividendOf(t, Compute(in), h, 0.5*2, 100); p.Tags[TagPartial] {
 		t.Errorf("tags %v", p.Tags)
 	}
 }
 
 // A payer twice a year whose one half's rate is lost, its quantity
-// unknown or guarded, pays the other half's once a year, in its own
-// month, and its dividend covers part of the year: partial. With both
-// known, it pays both, each in its own half: the interim in December, the
-// final in June.
+// unknown, pays the other half's once a year, in its own month, and its
+// dividend covers part of the year: partial. With both known, it pays
+// both, each in its own half: the interim in December, the final in June.
 func TestASemiannualPayerWithAHalfLost(t *testing.T) {
 	t.Parallel()
 	for _, lost := range []bool{true, false} {

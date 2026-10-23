@@ -3049,10 +3049,10 @@ exposes `missing_basis` for the dashboard's picker.
 The exposure macros look every holding through to what it holds.
 [EXPOSURE.md](EXPOSURE.md) defines every figure they return.
 
-Migrations 0126, 0128, 0129, 0131 and 0137 define the derived tables
-and the macros. A macro's last definition is the one in force. The
-exposure pass (`gold.RebuildExposure`) runs after the lot pass at the
-end of every load and reload, and rewrites the derived tables:
+Migrations 0126, 0128, 0129, 0131, 0137 and 0141 define the derived
+tables and the macros. A macro's last definition is the one in force.
+The exposure pass (`gold.RebuildExposure`) runs after the lot pass at
+the end of every load and reload, and rewrites the derived tables:
 
 - `exposure_labels`, `exposure_countries`, `exposure_sic`: the label
   maps and vocabularies of `internal/canonical`;
@@ -3080,6 +3080,9 @@ The macros:
 - `exposure_comps()`, `exposure_attributes_at(asof)` and
   `exposure_funds_at(asof)`: the composition that describes each fund at
   the instant (the temporal join, proxies, leverage);
+- `fund_filings_at(asof)` and `fund_filing_kinds(asof)`: each fund's
+  filing at the instant, and the coupon kind, default flag and arrears
+  flag it states of each line's security (migration 0141);
 - `exposure_declarations_at(asof)`: the declaration that describes each
   holding's exposure at the instant (migration 0128), a record that
   states only a situs aside (migration 0129);
@@ -3091,7 +3094,8 @@ The macros:
   holding reaches within three levels, and splits a declared holding
   into its parts. A fund's line carries what it states of its debt and
   its issuer, the LEI from `fund_lines.lei`, which the load reads off
-  the line's payload (migration 0137);
+  the line's payload (migration 0137). A line that states no coupon
+  kind takes its fund's filing's (migration 0141);
 - `exposure_yield_leaves(asof, ccy)`: the leaves with each one's
   maturity and its bucket, coupon kind, rating, cycle and issuer, a
   holding's from its terms on the day; `exposure_credit_leaves` and

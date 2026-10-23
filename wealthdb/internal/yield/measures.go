@@ -3,6 +3,7 @@ package yield
 import (
 	"cmp"
 	"math"
+	"regexp"
 	"slices"
 	"time"
 
@@ -117,6 +118,10 @@ type Measures struct {
 	// output currency; daily the holding's amount on each of their days.
 	received float64
 	daily    Daily
+	// dividend is the holding's indicated dividend, once dividendRead
+	// says it was read (Measures.indicatedDividend).
+	dividend     *dividend
+	dividendRead bool
 }
 
 func ptr(v float64) *float64 { return &v }
@@ -635,16 +640,14 @@ func figure(m *Measures, d Dated, declared bool, from string) *float64 {
 // to the holding, wins where no record states a duration. It reads as a
 // long fund's, losing value as rates rise, unless the page states a
 // negative duration: an inverse or rate-hedged fund's filing reads in
-// that sign. The lines tag a fund floating where they float for half of
-// it or more, and in default where any line is.
+// that sign. A fund is floating where floatingFund says so, and in
+// default where any line is.
 func fundRisk(h Holding, f *Fund, t Terms, m *Measures) {
-	if l := f.Lines; l != nil {
-		if l.FloatingPct >= 50 {
-			m.Tags[TagFloating] = true
-		}
-		if l.DefaultPct > 0 {
-			m.Tags[TagDefault] = true
-		}
+	if floatingFund(h, f) {
+		m.Tags[TagFloating] = true
+	}
+	if l := f.Lines; l != nil && l.DefaultPct > 0 {
+		m.Tags[TagDefault] = true
 	}
 	switch {
 	case t.Duration != nil:
@@ -685,6 +688,23 @@ func fundRisk(h Holding, f *Fund, t Terms, m *Measures) {
 		m.Buckets, m.DV01 = b, ptr(total)
 	}
 }
+
+// floatingFund says a fund's income resets with the rates: its lines
+// float for half of it or more, so do the lines of its filing at the
+// instant, or its name says it is a floating rate fund (floatingName),
+// the holding's or the one its filing gives it.
+func floatingFund(h Holding, f *Fund) bool {
+	return (f.Lines != nil && f.Lines.FloatingPct >= 50) || (f.FilingFloatingPct != nil && *f.FilingFloatingPct >= 50) ||
+		floatingName(h.Name) || floatingName(f.FilingName)
+}
+
+// floatingNameRE matches the words a fund's name says it floats by. A
+// bare FLOAT does not: an index fund's name may say FLOAT ADJUSTED.
+var floatingNameRE = regexp.MustCompile(`(?i)\b(floating|floaters?|fltg|frn|float[ -]rate)\b`)
+
+// floatingName says a fund's name names a floating rate fund: FLOATING,
+// FLOATER, FLTG, FRN or FLOAT RATE.
+func floatingName(name string) bool { return floatingNameRE.MatchString(name) }
 
 // fundBuckets is a fund's filed DV01 per currency and tenor, scaled to
 // the holding: the filed figures and the net assets are in one currency,
@@ -738,7 +758,7 @@ func equityIncome(in *Inputs, h Holding, f *Fund, m *Measures) {
 // dividendReading sets a holding's dividend yield from its indicated
 // dividend over its price; false where none is known.
 func dividendReading(in *Inputs, h Holding, m *Measures) bool {
-	d := indicatedDividend(in, h)
+	d := m.indicatedDividend(in, h)
 	if d == nil || m.Price == nil || *m.Price <= 0 {
 		return false
 	}
@@ -871,8 +891,16 @@ func realized(in *Inputs, h Holding, m *Measures) {
 // (FormerDaily): its income and its amounts across every account and
 // source, an account that sold it included. Those positions' amounts
 // convert as a holding of their instrument in their currency does, else
-// at the instant's rate.
+// at the instant's rate. An instrument's pool is read once, for every
+// holding of it (Index).
 func instrumentPool(in *Inputs, h Holding) pool {
+	k := in.poolKey(h)
+	if k != "" {
+		in.index()
+		if p, ok := in.instrumentPools[k]; ok {
+			return p
+		}
+	}
 	var p pool
 	holdings, instruments, sold := in.instrumentOf(h)
 	// fx is each instrument's rate by currency: a holding's of it in that
@@ -893,15 +921,32 @@ func instrumentPool(in *Inputs, h Holding) pool {
 		for _, d := range in.FormerDaily[ik] {
 			rate := fx[ik][d.Currency]
 			if rate == 0 {
-				rate = in.fxOf(d.Currency)
+				rate = in.FXOf(d.Currency)
 			}
 			p.add(rate, 0, d)
 		}
 	}
-	for _, k := range sold {
-		p.received += in.Income[k].Total()
+	for _, s := range sold {
+		p.received += in.Income[s].Total()
+	}
+	if k != "" {
+		in.instrumentPools[k] = p
 	}
 	return p
+}
+
+// heldShare is the share of the twelve months to the instant on which
+// h's instrument was held, as its realized yield counts the days
+// (instrumentPool): by a holding of it, or by a position of it that is no
+// holding, under any id the matching folds into its own and at any
+// source. It is one where no daily amount is known.
+func (in *Inputs) heldShare(h Holding) float64 {
+	p := instrumentPool(in, h)
+	days, n := p.heldDays()
+	if days == 0 || n <= 0 {
+		return 1
+	}
+	return float64(days) / float64(n)
 }
 
 func compareInstruments(a, b InstrumentKey) int {

@@ -85,10 +85,12 @@ type Inputs struct {
 	// pools are the holdings of each instrument (poolKey), bySecurity the
 	// instruments of each security Held names, sorted, and folds each
 	// holding's instrument as the matching reads it, by its place in
-	// Holdings: what Index fills.
-	pools      map[string][]Holding
-	bySecurity map[string][]InstrumentKey
-	folds      []string
+	// Holdings: what Index fills. instrumentPools are what each
+	// instrument's holdings and positions pool (instrumentPool), once read.
+	pools           map[string][]Holding
+	bySecurity      map[string][]InstrumentKey
+	folds           []string
+	instrumentPools map[string]pool
 	// Withholding is yield_withholding: percent by situs country and
 	// tax wrapper (canonical.WithholdingDefault for every other).
 	Withholding map[string]map[string]float64
@@ -215,6 +217,11 @@ type Fund struct {
 	NetAssets *float64
 	// Lines summarises the fund's composition at the instant.
 	Lines *LineSummary
+	// FilingFloatingPct is the share of the lines of its filing at the
+	// instant that float, in percent, where it has one; FilingName the
+	// name the filing gives the fund.
+	FilingFloatingPct *float64
+	FilingName        string
 }
 
 // Dated is a figure and the day it describes.
@@ -334,16 +341,6 @@ func (in *Inputs) instrumentKey(h Holding) InstrumentKey {
 	return InstrumentKey{h.Source, in.Fold(h.Source, h.Account, h.Instrument)}
 }
 
-// holdingFold is holding i's instrument as the matching reads it
-// (instrumentKey): Index's, else folded as it is read.
-func (in *Inputs) holdingFold(i int) string {
-	if i < len(in.folds) {
-		return in.folds[i]
-	}
-	h := &in.Holdings[i]
-	return in.Fold(h.Source, h.Account, h.Instrument)
-}
-
 // HoldingOf is the holding a transaction belongs to: the holding of the
 // instrument it names in its account. The two meet where the line's id
 // folds into the holding's (Fold), under the line's account, or, for a
@@ -361,6 +358,7 @@ func (in *Inputs) HoldingOf(src, acct, iid string) (HoldingKey, bool) {
 	if iid == "" {
 		return HoldingKey{}, false
 	}
+	in.index()
 	id, wide := in.Fold(src, acct, iid), in.Fold(src, "", iid)
 	var sibling, first *HoldingKey
 	portfolio := in.Accounts[AccountKey{src, acct}].Portfolio
@@ -370,7 +368,7 @@ func (in *Inputs) HoldingOf(src, acct, iid string) (HoldingKey, bool) {
 			continue
 		}
 		sib := portfolio != "" && in.Accounts[AccountKey{h.Source, h.Account}].Portfolio == portfolio
-		if f := in.holdingFold(i); f != id && !(sib && f == in.foldUnder(src, h.Account, iid, wide)) {
+		if f := in.folds[i]; f != id && !(sib && f == in.foldUnder(src, h.Account, iid, wide)) {
 			continue
 		}
 		if h.Account == acct {
@@ -473,12 +471,13 @@ func (in *Inputs) poolKey(h Holding) string {
 	return ""
 }
 
-// Index folds each holding's instrument (holdingFold), pools the holdings
-// by their instruments (poolKey), and lists the instruments of each
-// security Held names (HeldSecurity), for HoldingOf and instrumentOf.
-// Compute calls it first; a reader that matches many lines calls it once
-// it has read the holdings. After a change of Holdings, the matching
-// reads the folds of the last Index until the next one.
+// Index folds each holding's instrument (Fold), pools the holdings by
+// their instruments (poolKey), and lists the instruments of each security
+// Held names (HeldSecurity), for HoldingOf and instrumentOf; each indexes
+// the inputs where no Index has (index). Compute calls it first; a reader
+// that matches many lines calls it once it has read the holdings. After a
+// change of Holdings or Aliases, the matching reads the last Index's until
+// the next one.
 func (in *Inputs) Index() {
 	in.folds = make([]string, len(in.Holdings))
 	for i, h := range in.Holdings {
@@ -495,25 +494,15 @@ func (in *Inputs) Index() {
 		s := in.HeldSecurity[ik]
 		in.bySecurity[s] = append(in.bySecurity[s], ik)
 	}
+	in.instrumentPools = map[string]pool{}
 }
 
-// pooled are the holdings of pool key k and the instruments Held names of
-// security s (bySecurity), sorted: Index's, else read from the inputs.
-func (in *Inputs) pooled(k, s string) (holdings []Holding, security []InstrumentKey) {
-	if in.pools != nil {
-		return in.pools[k], in.bySecurity[s]
+// index indexes the inputs (Index) where no Index has read their
+// holdings.
+func (in *Inputs) index() {
+	if in.pools == nil || len(in.folds) != len(in.Holdings) {
+		in.Index()
 	}
-	for _, h := range in.Holdings {
-		if in.poolKey(h) == k {
-			holdings = append(holdings, h)
-		}
-	}
-	for _, ik := range slices.SortedFunc(maps.Keys(in.HeldSecurity), compareInstruments) {
-		if s != "" && in.HeldSecurity[ik] == s {
-			security = append(security, ik)
-		}
-	}
-	return holdings, security
 }
 
 // instrumentOf is what a holding's instrument pools (poolKey). Its
@@ -529,7 +518,8 @@ func (in *Inputs) instrumentOf(h Holding) (holdings []Holding, instruments []Ins
 	if k == "" {
 		return []Holding{h}, nil, nil
 	}
-	holdings, security := in.pooled(k, h.SecurityID)
+	in.index()
+	holdings, security := in.pools[k], in.bySecurity[h.SecurityID]
 	holds := map[InstrumentKey]map[string]bool{}
 	for _, o := range holdings {
 		ik := in.instrumentKey(o)
@@ -567,9 +557,9 @@ func (in *Inputs) instrumentOf(h Holding) (holdings []Holding, instruments []Ins
 	return holdings, instruments, sold
 }
 
-// fxOf is the rate from ccy to the output currency, 0 where none is
-// known.
-func (in *Inputs) fxOf(ccy string) float64 {
+// FXOf is the rate from ccy to the output currency at the instant
+// (FXRates), 0 where none is known.
+func (in *Inputs) FXOf(ccy string) float64 {
 	if ccy == in.Currency {
 		return 1
 	}
@@ -590,16 +580,16 @@ type Payment struct {
 	// where it fixes none. Record is then the quantity held as its record
 	// day began, in the same units, where it is known and above zero and
 	// the account was seen by its record window's start: what the payment
-	// was paid on. Before is the quantity that guards a rate
-	// on Quantity (payDays): where LagDays is above zero, the first the
-	// account shows held after its record day; else what it held
-	// RecordLagDays before its day. Least and Most are the least and the
-	// most the account held across the record window (Lag.Window), on the
-	// days it held some, where Record is known: Least is 0 where some of
-	// the window is unknown. Units says the quantity its rate reads may be
-	// in its day's units: no whole factor explains a change since, or no
-	// account held the instrument through some span since with its units
-	// read.
+	// was paid on, and what its rate rests on wherever it is set
+	// (payDays). Before is the quantity that guards a rate on Quantity:
+	// where LagDays is above zero, the first the account shows held after
+	// its record day; else what it held RecordLagDays before its day.
+	// Least and Most are the least and the most the account held across
+	// the record window (Lag.Window), on the days it held some, where
+	// Record is known: Least is 0 where some of the window is unknown.
+	// Units says the quantity its rate reads may be in its day's units: no
+	// whole factor explains a change since, or no account held the
+	// instrument through some span since with its units read.
 	Quantity, Record, Before *float64
 	Least, Most              *float64
 	LagDays                  int
@@ -657,21 +647,7 @@ func (l Lag) back(pay time.Time, n int) time.Time {
 }
 
 // The lags of a dividend's record day in the markets that fix them, and
-// their record windows (RecordLag): a payment is per what its account
-// held as its record day began, where its most over its least across the
-// window is at most recordSpread (Payment.steady).
-//
-//	market                                    lag               window before pay
-//	share quoted in dollars                   30 days           3 to 35 days
-//	share of the United Kingdom or Hong Kong  30 days           14 to 63 days
-//	share of a euro-area market, Switzerland
-//	  or Denmark                              2 business days   2 to 4 business days
-//	share of Sweden                           4 business days   4 to 6 business days
-//	receipt of a Japanese share               90 days           70 to 105 days
-//	receipt of a share of a business-day
-//	  market above                            14 days           7 to 42 days
-//	receipt of a share of the United Kingdom  30 days           21 to 63 days
-//	any other receipt                         30 days           7 to 63 days
+// their record windows (RecordLag; docs/YIELD.md §4 has the table).
 var (
 	// RecordLagUSShare is the lag of a share quoted in dollars, as one of
 	// the United States: it pays one to five weeks after its record day.
@@ -737,15 +713,12 @@ var (
 const RecordLagDays = 100
 
 // RecordLag is the lag of a dividend's record day in the market of the
-// security paid, the zero Lag where none is known. situs is the country
-// of the security, or of the share a depositary receipt (receipt) stands
-// for, "" where it is unknown; currency the one it is quoted in; share
-// says it is a share. A receipt reads the market of its share. A share
-// reads the market of the currency it is quoted in, whatever its
-// issuer's country: one in dollars pays as a share of the United States
-// does, one in Hong Kong dollars as one of Hong Kong. One in euros reads
-// its issuer's market, where that is of the euro area. Any other knows
-// none.
+// security paid, the zero Lag where none is known (docs/YIELD.md §4).
+// situs is the country of the security, or of the share a depositary
+// receipt (receipt) stands for, "" where it is unknown; currency the one
+// it is quoted in; share says it is a share. A receipt reads its share's
+// market, a share the market of its currency, one in euros its issuer's
+// euro-area market.
 func RecordLag(situs, currency string, receipt, share bool) Lag {
 	switch {
 	case receipt && situs == "":
@@ -795,7 +768,7 @@ func (in *Inputs) inOwn(h Holding, amount float64, ccy string) (float64, bool) {
 	if ccy == "" || ccy == h.Currency {
 		return amount, true
 	}
-	from, own := in.fxOf(ccy), h.FX()
+	from, own := in.FXOf(ccy), h.FX()
 	if from == 0 || own == 0 {
 		return 0, false
 	}

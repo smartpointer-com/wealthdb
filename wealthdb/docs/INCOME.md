@@ -487,9 +487,10 @@ the two questions have two answers.
   adapter books it the same way: the gross, and the withholding as its
   own `tax` row. The two rows sum to the cash credited. UBS states the
   gross in the dividend's confirmation and in its export row
-  ([adapters/ubs.md](adapters/ubs.md) §7). A reversal of such a dividend
-  takes back the gross, and its tax row is positive. The `withheld` memo
-  counts only tax withheld, so it keeps the reversed tax. Where no record
+  ([adapters/ubs.md](adapters/ubs.md#dividends-the-security-and-the-gross)
+  §7, *Dividends: the security and the gross*). A reversal of such a
+  dividend takes back the gross. Its tax row is positive, so the
+  `withheld` memo (below) leaves it out. Where no record
   states the gross in the currency credited, the net is the income.
 - Where a bank books a net salary, the net is the income. The gross is
   on a payslip the product does not hold, and the product does not
@@ -871,12 +872,22 @@ The expected half starts the day after today.
 | `bond` | its coupons on their dates (`declared`); its face at maturity |
 | `bill`, or a zero | its face less its price, on its maturity day |
 | `note` | a loan held: its coupon on its amount, month by month, then its principal at maturity; a convertible note: nothing |
-| `bond_fund` | its implied yield as a floating rate, where floating lines are half the fund or more; else its indicated distributions; else its distribution or SEC yield, month by month; else `unknown` |
+| `bond_fund` | a floating fund ([YIELD.md](YIELD.md) §3): a floating rate (below); any other: its indicated distributions, else its distribution or SEC yield, month by month, else `unknown` |
 | `equity_fund`, `multi_asset` | its indicated distributions; else the trailing yield, or the distribution yield, its page states, month by month |
-| `stock` | its instrument's indicated dividend ([YIELD.md](YIELD.md) §4) on its own quantity: a ledger record's (`declared`), else the last month's payment per share, specials aside, at the frequency of its pay months, else its filings' dividends per share, quarterly (`indicated`) |
+| `stock` | its instrument's indicated dividend ([YIELD.md](YIELD.md) §4) on its own quantity: a ledger record's (`declared`), else the last month's payment per share, specials aside, at the frequency of its pay months per month held, else its filings' dividends per share, quarterly (`indicated`) |
 | `liability` | nothing |
 | `other` | its payments of the last twelve months, repeated (`realized`); paid nothing, `unknown` |
 
+- A floating bond fund earns a floating rate, the first of these:
+  - its implied yield;
+  - the yield its indicated distributions pay, where they rest on more
+    than one month of the calendar and cover the year
+    ([YIELD.md](YIELD.md) §4);
+  - its distribution or SEC yield;
+  - its trailing yield.
+
+  With none of them, it pays its indicated distributions as they come.
+  Else it reads `unknown`.
 - A balance whose rate no source states repeats the interest its
   account received in the last twelve months (`realized`). With none
   received it reads `unknown`.
@@ -952,7 +963,8 @@ interest.
   curve, or one whose curve cannot be built, keeps today's rate.
 - `--shift BP` moves every floating rate in parallel, by whole basis
   points. It moves a balance, a money-market fund, a floating note, a
-  floating bond fund, cash after a maturity and a rolled holding.
+  floating bond fund that earns a floating rate (the `bond_fund` row
+  above), cash after a maturity and a rolled holding.
 
 ### What an amount rests on
 
@@ -963,14 +975,14 @@ interest.
 | `declared` | a rate a ledger record states, a coupon by contract, a bill's discount |
 | `indicated` | the last payment at its frequency, or the filings' dividends |
 | `stated` | a rate a source states, held |
-| `forward` | a stated or declared floating rate, moved along its currency's forward curve |
+| `forward` | a stated, declared or indicated floating rate, moved along its currency's forward curve |
 | `reinvested` | what a principal earns after a maturity |
 | `realized` | last year's payments, where nothing else is known |
 | `unknown` | nothing; the amount is zero |
 
 `declared` needs a ledger record of the rate itself. A record that
 states only a fund's duration leaves its filed yield `stated`. A
-floating rate that no curve moves stays `stated` under
+floating rate that no curve moves keeps its basis under
 `--rates forward`.
 
 On `projection`, `basis` gives each basis's share of the expected
@@ -1019,6 +1031,8 @@ the largest first. The other entity views sort by that sum alone.
 Every month's expected income equals the sum of its calendar rows of
 kind `income`, and every entity view sums to the projection. All of
 them read the same amounts, so they reconcile by construction.
+`positions` and `calendar` name a holding by one key: its source, its
+account and its position key.
 
 **Privacy.** `-p` stars amounts, quantities, prices and account ids.
 `position_key` stays legible, as `holdings positions` keeps it. Shares,

@@ -15,7 +15,8 @@ Related design:
   records;
 - [INCOME.md §12](INCOME.md#12-the-forward-views): the income
   projection;
-- migrations 0134 to 0136, and 0138 for the dashboard's tables.
+- migrations 0134 to 0136; 0138 for the dashboard's tables; 0141 for
+  what a fund's filing states of its lines.
 
 Every figure belongs to one holding first. A grain sums or weighs the
 figures of its holdings, so the grains reconcile by construction. A
@@ -325,8 +326,14 @@ A bond fund reads these:
   filing states one and no record states a duration. It is scaled to
   the holding: the filed DV01 over the fund's net assets, times the
   holding's value. Else it is its value times its duration.
-- It carries `floating` where floating lines are half the fund or more,
-  and `default` where any line is in default or arrears.
+- It carries `floating` where its income resets with the rates. That
+  is so where its lines float for half of it or more, or the lines of
+  its filing at the day do. It is so too where its name says it is a
+  floating rate fund: FLOATING, FLOATER, FLTG, FRN or FLOAT RATE. The
+  holding's name counts, and so does the name its filing gives it. A
+  bare FLOAT does not count: an index fund's name may say FLOAT
+  ADJUSTED.
+- It carries `default` where any line is in default or arrears.
 
 A multi-asset fund reads these:
 
@@ -348,6 +355,11 @@ currency's convention, else once a year. A line's yield to worst
 wins over its yield to maturity. A security held only through funds
 reads the line of the most value held: its weight times the value of
 the fund holding it.
+
+A line that states no coupon kind, no default flag or no arrears flag
+takes what its fund's filing states of the same security, as
+`exposure coupons` reads the kind (EXPOSURE.md §7). A value the line
+states stays.
 
 - A floating line counts in no yield of the fund's lines.
 - A line in default or arrears, or paid in kind, has no yield, stated
@@ -409,9 +421,9 @@ months by that account income.
 higher from today. It is the average floating principal of those
 twelve months times one percent. The floating principal earns a
 floating rate: a balance, a money-market holding, a floating note's
-face, a floating bond fund, and principal that matures into cash. So it
-is positive for cash and floating holdings. A fixed coupon adds nothing
-until it matures.
+face, a floating bond fund that earns a floating rate (INCOME.md §12),
+and principal that matures into cash. So it is positive for cash and
+floating holdings. A fixed coupon adds nothing until it matures.
 
 **Realized yield.** `realized_yield` is the income received in the
 twelve months to the day over the mean daily value.
@@ -419,10 +431,8 @@ twelve months to the day over the mean daily value.
 - The income is each `income` line that names the holding, at its own
   day's rate. A deposit adds the interest its account received with no
   holding named.
-- A UBS dividend reads gross where its confirmation or its export row
-  states the gross, and net where no record states it in the currency
-  credited
-  ([adapters/ubs.md](adapters/ubs.md) §7).
+- A dividend counts at its gross where its source states one, else at
+  its net (INCOME.md §5).
 - A line of an account that held the instrument once and sold it stays
   with that sold position, as `income` lists it. A coupon does too. A
   line of an account that never held it belongs to a holding of it in
@@ -487,20 +497,23 @@ twelve months to the day over the mean daily value.
    of the day. It reads `indicated`. A payer twice a year pays its
    interim and its final, which often differ, each in its own half: the
    last month's payment, and the newest payment within 400 days in the
-   other half of the year.
+   other half of the year. That half's payment lies 1 to 10 months
+   from the last, before or after it: one 11 or 12 months away is the
+   last's own payment a year apart, as the frequency counts it (below).
    - Where that half has no rate but a special, in a month the year
-     counts (below), the special stands as its payment up to six times
-     the last month's: an uneven final is no special.
-   - A special above six times stands too where the same month a year
-     earlier paid within a third of it: a large final that recurs is the
-     payer's schedule.
-   - Where that half's newest month has no rate, or only a special the
-     two rules above refuse, its month a year earlier stands for it,
-     where that one has a rate.
-   - Where the year's pay days fall in exactly two months of the calendar
-     and the other half has no rate still, the one rate pays once a
-     year, in its own month. It covers part of the year, and reads
-     `partial`.
+     counts (below), the special stands as its payment in two cases. It
+     stands where it is up to six times the last month's, as an uneven
+     final is no special. It also stands where the same month a year
+     earlier paid within a third of it, as a large final that recurs is
+     the payer's schedule.
+   - Where that half's newest month still has no rate, the same month
+     of the calendar exactly a year earlier stands for it, if that month
+     has a rate. A month off does not stand in, unlike a drifted pay day
+     in the frequency's count (below).
+   - Where the other half has no rate even then, and the year's pay days
+     fall in exactly two months of the calendar, the one rate pays once
+     a year, in its own month. A pay day a year on counts once here
+     (below). It covers part of the year and reads `partial`.
 3. the filings' dividends per share over four quarters. It reads
    `indicated`.
 
@@ -548,11 +561,13 @@ the instrument included.
   - francs, Danish kroner, Swedish kronor: Switzerland, Denmark, Sweden;
   - euros: the issuer's market, where that is of the euro area above.
 
-  Any other share has no record day.
+  Any other share has no record day. Neither has a fund, or any
+  position that is neither a share nor a receipt: its payment reads the
+  quantity of its pay day (below).
 - The currency is the one the instrument is listed in, where gold states
   one. Else it is the one the position's newest snapshot values it in,
   newest across every id the instrument folds under. Two positions seen
-  at that instant that give different markets give none. A statement may
+  at that instant that give different lags give none. A statement may
   value a position in its portfolio's currency: the position then reads
   that currency's market.
 - A receipt's market is that of the share it stands for: its situs
@@ -613,24 +628,42 @@ the instrument included.
   above four times their median, the smaller one's with two. So a final
   two or three times the interim is no special among a few payments.
 - A payment above that bar is no special where it holds the level of the
-  newest pay days. That is where it and every pay day after it, two or
-  more, have a rate, lie within a third of one another, and one of them
-  falls in another month of the year than its own. A payer that raised
-  its dividend steeply pays its new rate on every pay day since. Two
-  specials of one size between regular pay days stay specials, also
-  where a regular one between them has no rate.
+  newest pay days. That is where it lies in the run of pay days that
+  ends at the newest: two or more, each with a rate, all within a third
+  of one another, one of them in another month of the year than its
+  own. A payer that raised its dividend steeply pays its new rate on
+  every pay day since. Two specials of one size between regular pay days
+  stay specials, also where a regular one between them has no rate.
 - A special counts in no rate, except as a half's payment of a payer
   twice a year (above), but it counts as income received.
 - A month's payment per share is the sum of its days' that are not a
   special: two lines of one month on different days are one payment.
   Each account's days sum, and the month pays the median of the
   accounts'.
-- The frequency is the number of months of the twelve months to the
-  day with a payment, read as the nearest of 1, 2, 4 or 12. A month
-  whose only payments are specials counts where the same month a year
-  earlier had a payment: the special fell on the payer's own schedule,
-  as a trimmed holding's payment does. Else it does not count, such as
-  a yearly payer's one-off return of capital.
+- The frequency is the number of pay months in the twelve months to
+  the day, scaled to a year by the months held in them. A holding held
+  five months that paid in each of them pays monthly. The months held
+  are the days any account held the instrument, as for the realized
+  yield.
+- Each month of the calendar counts once. A pay month and one 11 or 12
+  months after it are one payment, the same one a year on: a pay day
+  drifts by days each year, into its own month or a neighbouring one.
+- The count goes no faster than the two closest of those months allow,
+  round the year: October and July are three months apart. Nor does it
+  go faster than the two closest pay months in time allow: a monthly
+  fund held in two stretches a year apart keeps its gap of one month.
+  Two payments six months apart are twice a year's, whatever the
+  months held.
+- The count reads as the nearest of 1, 2, 4 or 12. Halfway between two,
+  it reads the higher, where the two closest pay months are that close.
+  So a quarterly payer that missed one payment of the year reads 4, not
+  2. A payer twice a year whose pay day drifts across a month end still
+  reads 2.
+- One calendar month alone shows no rhythm: it reads once a year.
+- A month whose only payments are specials counts where the same month
+  a year earlier had a payment: the special fell on the payer's own
+  schedule, as a trimmed holding's payment does. Else it does not
+  count, such as a yearly payer's one-off return of capital.
 
 **Units.** A payment per share counts in the units the instrument has
 on the day. A split, a reverse split or a change of a depositary
@@ -754,7 +787,7 @@ row lists its holding's tags without shares.
 | `declared` | a ledger record states it |
 | `aged` | a fund's composition is older than exposure allows (EXPOSURE.md §8) |
 | `stale_price` | a fund's lines are priced on their filing's day, not the day |
-| `floating` | a floating note, which implies no yield, or a fund whose floating lines are half of it or more |
+| `floating` | a floating note, which implies no yield, or a fund whose income resets with the rates: its lines or its filing's float for half of it or more, or its name says it floats (§3) |
 | `default` | a bond is graded in default, or a fund holds lines in default or arrears; they imply nothing |
 | `thin` | the amount was under a tenth of its mean on more than half the year's days: no realized yield (§4) |
 | `partial` | a figure covers part of the year: a position's realized yield covers the days it was held, fewer than the year's; or a payer twice a year shows one half's dividend, as the other half's rate is lost (§4) |

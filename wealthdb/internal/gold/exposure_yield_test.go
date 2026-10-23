@@ -487,6 +487,80 @@ func TestMaterializeExposureDebtMatchesTheViews(t *testing.T) {
 	}
 }
 
+// A line's coupon bucket reads a stated floating kind, or a floating
+// name where it states no kind, before a real yield it states: a
+// provider states a real yield for a floating note too. An inflation name
+// or a real yield alone still reads inflation-linked. A stated kind wins
+// over a name: a line stated Fixed whose name says FLOATING is fixed, as
+// the yield report reads it, and one stated Variable is floating whatever
+// its name. The fund is invented.
+func TestAFloatingLineWithARealYieldIsFloating(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	snap := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
+	lines := []struct {
+		name, kind string
+		real       bool
+		want       string
+	}{
+		{"EXAMPLE NOTE", "Floating", true, "floating"},
+		{"EXAMPLE FLOATING RATE NOTE", "", true, "floating"},
+		{"EXAMPLE INFLATION INDEXED NOTE", "", true, "inflation_linked"},
+		{"EXAMPLE NOTE", "", true, "inflation_linked"},
+		{"EXAMPLE NOTE", "Fixed", true, "inflation_linked"},
+		{"EXAMPLE FLOATING RATE NOTE", "Fixed", false, "fixed"},
+		{"EXAMPLE NOTE", "Variable", true, "floating"},
+		{"EXAMPLE INFLATION INDEXED NOTE", "Variable", true, "floating"},
+		{"EXAMPLE NOTE", "None", false, "zero"},
+	}
+	q := []string{
+		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
+		    first_seen_at, last_seen_at) VALUES ('test-src', 'A', 'brokerage', 'Brokerage', 'USD', 0, 0)`,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, name,
+		    currency, first_seen_at, last_seen_at)
+		    VALUES ('test-src', 'QFR', 'fixed_income', 'etf', 'QFR', 'Example Note Fund', 'USD', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		    asset_class, vehicle, currency, quantity, market_value)
+		    VALUES ('test-src', ` + itoa(snap) + `, 'A', 'QFR', 'QFR', 'fixed_income', 'etf', 'USD', 1, 5000)`,
+		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency)
+		    VALUES ('test-src', 'symbol:QFR', ` + itoa(snap) + `, 'holdings', 'testprov', ` + strconv.Itoa(len(lines)) +
+			`, 'USD')`,
+	}
+	for i, l := range lines {
+		kind, real := "NULL", "NULL"
+		if l.kind != "" {
+			kind = "'" + l.kind + "'"
+		}
+		if l.real {
+			real = "1.5"
+		}
+		q = append(q, `INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, name,
+		    asset_type, weight, currency, maturity, coupon, coupon_kind, real_yield) VALUES ('test-src', 'symbol:QFR', `+
+			itoa(snap)+`, 'holdings', `+strconv.Itoa(i+1)+`, 'cusip:0000001`+strconv.Itoa(i)+`Z', '`+l.name+
+			`', 'Fixed Income', 10, 'USD', DATE '2030-01-15', 4, `+kind+`, `+real+`)`)
+	}
+	execEach(t, db, q...)
+	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
+		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: 35, PartialPct: 3},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	// The look-through reads each CUSIP key as its ISIN, which sorts as
+	// the lines do.
+	got := scanStrings(t, db, `SELECT coupon_bucket FROM exposure_yield_leaves(?, 'USD')
+	    WHERE depth > 0 AND kind = 'line' ORDER BY key`, snap+86399)
+	var want []string
+	for _, l := range lines {
+		want = append(want, l.want)
+	}
+	if strings.Join(got, ", ") != strings.Join(want, ", ") {
+		t.Errorf("coupon buckets %v, want %v", got, want)
+	}
+}
+
 // A fund line of a kind the yield report reads as floating
 // (floatingLineKinds) is floating in the coupons view too, and one it
 // does not is not. The fund is invented.

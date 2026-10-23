@@ -170,13 +170,13 @@ func TestAPaymentsUnits(t *testing.T) {
 		{"GONE", 35, 0, false},
 		{"DEPOT", 5, 0, false},
 	} {
-		got, units := u.quantity(in, "src", c.acct, "QSTK", c.end)
+		got, units := u.quantity(u.keysOf(in, "src", c.acct, "QSTK"), c.end)
 		if (got == nil) != (c.want == 0) || (got != nil && *got != c.want) || units != c.units {
 			t.Errorf("%s at %d: %v %v, want %v %v", c.acct, c.end, fmtFloatPtr(got), units, c.want, c.units)
 		}
 	}
 	u.addChange(ik, unitChange{at: 50, k: 5, ok: true})
-	if _, units := u.quantity(in, "src", "DEPOT", "QSTK", 35); !units {
+	if _, units := u.quantity(u.keysOf(in, "src", "DEPOT", "QSTK"), 35); !units {
 		t.Error("two accounts that disagree at one snapshot")
 	}
 	// DEPOT states no quantity at 40: from 20 to 50 no account held it
@@ -186,10 +186,10 @@ func TestAPaymentsUnits(t *testing.T) {
 		{at: 50, prev: 40, qty: q(1000)}}
 	u.read = map[yield.InstrumentKey][][2]int64{}
 	u.cover()
-	if _, units := u.quantity(in, "src", "DEPOT", "QSTK", 15); !units {
+	if _, units := u.quantity(u.keysOf(in, "src", "DEPOT", "QSTK"), 15); !units {
 		t.Error("a span no account held through")
 	}
-	if _, units := u.quantity(in, "src", "DEPOT", "QSTK", 55); units {
+	if _, units := u.quantity(u.keysOf(in, "src", "DEPOT", "QSTK"), 55); units {
 		t.Error("a payment after the span")
 	}
 	// A cash account of another portfolio reads the one account of its
@@ -197,10 +197,10 @@ func TestAPaymentsUnits(t *testing.T) {
 	in.Accounts[yield.AccountKey{Source: "src", Account: "OTHER"}] = yield.Account{Portfolio: "Q"}
 	u.points[unitKey{"src", "DEPOT", "QONE"}] = []unitPoint{{at: 10, qty: q(40)}}
 	u.accounts[yield.InstrumentKey{Source: "src", Instrument: "QONE"}] = []string{"DEPOT"}
-	if got, _ := u.quantity(in, "src", "OTHER", "QONE", 15); got == nil || *got != 40 {
+	if got, _ := u.quantity(u.keysOf(in, "src", "OTHER", "QONE"), 15); got == nil || *got != 40 {
 		t.Errorf("the one account: %v", fmtFloatPtr(got))
 	}
-	if got, _ := u.quantity(in, "src", "OTHER", "QSTK", 15); got != nil {
+	if got, _ := u.quantity(u.keysOf(in, "src", "OTHER", "QSTK"), 15); got != nil {
 		t.Errorf("two accounts: %v", fmtFloatPtr(got))
 	}
 }

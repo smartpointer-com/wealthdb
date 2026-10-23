@@ -14,8 +14,8 @@ Related design:
 - DESIGN.md §10.14: the derived tables and macros;
 - [adapters/refdata.md](adapters/refdata.md): how reference data loads,
   the keys and aliases, and the wanted list;
-- migrations 0125 to 0131, 0137 and 0138; 0135 for the ledger's yield
-  records.
+- migrations 0125 to 0131, 0133, 0137, 0138 and 0140 to 0142; 0135 for
+  the ledger's yield records.
 
 Every figure is a share of a holding's market value, the value
 `holdings` reports. The look-through moves value between rows; it never
@@ -419,10 +419,27 @@ row.
   one from under 20 years (10+ Years), or one up to more than a year
   (Under 3 Years). Else the leaf reads `unknown`.
 - `coupons` reads `fixed`, `floating`, `inflation_linked` or `zero`. A
-  line that states a real yield, or whose name says TIPS or inflation,
-  is inflation-linked. Any other line reads its fund's type, else its
-  name (FRN), else its coupon (zero, else fixed). Nothing stated reads
-  `unknown`.
+  line reads, in this order:
+  - `floating` where its fund types it floating or variable;
+  - `inflation_linked` where its name says TIPS, INFLATION, INFL,
+    LINKER, LINKERS, I/L, INDEX LINKED or CPI;
+  - `floating` where its name says FRN, FLOAT, FLOATING or FLTG, and its
+    fund states no type;
+  - `inflation_linked` where it states a real yield (a provider states
+    one for a floating note too, so a stated or named floating kind
+    comes first);
+  - `fixed` where its fund types it fixed, `zero` where its fund types
+    it none;
+  - else its coupon: `zero` where that is zero, `fixed` where it is
+    above.
+
+  Nothing stated reads `unknown`.
+- A line of the composition in use that states no type takes the one
+  its fund's filing states of the same security, read through the
+  aliases. An issuer's daily file states no type; the fund's N-PORT
+  filing does. The filing is the latest on or before the day, else the
+  earliest after, within `max_gap_days` (§4). A proxy's lines read the
+  proxy's filing. A line the filing does not hold keeps none.
 
 A label of either breakdown may be a camel-cased key (notRated,
 5to10Years), which reads as its words. Cash reads `cash` in `credit`,

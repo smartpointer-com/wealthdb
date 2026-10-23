@@ -35,7 +35,8 @@ var incomeBasisTags = []tagNote{
 	{string(yield.BasisDeclared), "a rate a ledger record states, a coupon by contract, a bill's discount"},
 	{string(yield.BasisIndicated), "the last payment at its frequency, or the filings' dividends"},
 	{string(yield.BasisStated), "a rate a source states, held"},
-	{string(yield.BasisForward), "a stated or declared floating rate, moved along its currency's forward curve"},
+	{string(yield.BasisForward), "a stated, declared or indicated floating rate, moved along its currency's " +
+		"forward curve"},
 	{string(yield.BasisReinvested), "what a principal earns after a maturity"},
 	{string(yield.BasisRealized), "last year's payments, where nothing else is known"},
 	{string(yield.BasisUnknown), "nothing; the amount is zero"},

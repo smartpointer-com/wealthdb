@@ -119,7 +119,7 @@ func (b *Book) Amounts(received []ReceivedLine, w Window, a Assumptions) []Amoun
 		}
 		basis := part.Basis
 		if c := b.In.Curves[part.Currency]; a.Path == PathForward && c != nil && c.Zero != nil &&
-			part.Principal != 0 && (basis == BasisStated || basis == BasisDeclared) {
+			part.Principal != 0 && (basis == BasisStated || basis == BasisDeclared || basis == BasisIndicated) {
 			basis = BasisForward
 		}
 		var day time.Time
