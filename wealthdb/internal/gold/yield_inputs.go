@@ -24,8 +24,8 @@ import (
 // as `holdings global` values them, their accounts, terms and rates, the
 // funds' figures and lines, the curves, the income of the twelve months
 // before, and the reported figures of the securities held.
-func YieldInputs(ctx context.Context, db *sql.DB, asOf int64, ccy string) (*yield.Inputs, error) {
-	base, err := readYieldBase(ctx, db, asOf)
+func YieldInputs(ctx context.Context, db querier, asOf int64, ccy string) (*yield.Inputs, error) {
+	base, err := readYieldBase(ctx, db, asOf, &yieldShared{})
 	if err != nil {
 		return nil, err
 	}
@@ -57,8 +57,16 @@ type yieldBase struct {
 	units *yieldUnits
 }
 
-// readYieldBase reads the instant asOf's yieldBase.
-func readYieldBase(ctx context.Context, db *sql.DB, asOf int64) (*yieldBase, error) {
+// yieldShared is what the bases of several instants read once: the
+// positions the situs rule reads as receipts, which no instant changes.
+type yieldShared struct {
+	receipts map[[3]string]bool
+}
+
+// readYieldBase reads the instant asOf's yieldBase. The positions read
+// as receipts come from shared, read on the first instant that needs
+// them.
+func readYieldBase(ctx context.Context, db querier, asOf int64, shared *yieldShared) (*yieldBase, error) {
 	day := time.Unix(asOf, 0).UTC()
 	in := &yield.Inputs{AsOf: asOf, Day: time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC),
 		Accounts: map[yield.AccountKey]yield.Account{}, Terms: map[yield.InstrumentKey]yield.Terms{},
@@ -80,7 +88,7 @@ func readYieldBase(ctx context.Context, db *sql.DB, asOf int64) (*yieldBase, err
 		{"dividends", func() error { return readDeclaredDividends(ctx, db, in) }},
 		{"daily", func() error { return b.readAmounts(ctx, db) }},
 		{"aliases", func() error { return readYieldAliases(ctx, db, in) }},
-		{"held", func() error { return readYieldHeld(ctx, db, in, b.lag) }},
+		{"held", func() error { return readYieldHeld(ctx, db, in, b.lag, shared) }},
 		{"withholding", func() error { return readWithholding(ctx, db, in) }},
 	}); err != nil {
 		return nil, err
@@ -92,7 +100,7 @@ func readYieldBase(ctx context.Context, db *sql.DB, asOf int64) (*yieldBase, err
 // holdings as `holdings global` values them, the funds held, the income
 // of the twelve months before, the reported figures of the stocks held,
 // each holding's daily amounts and the exchange rates.
-func (b *yieldBase) inputs(ctx context.Context, db *sql.DB, ccy string) (*yield.Inputs, error) {
+func (b *yieldBase) inputs(ctx context.Context, db querier, ccy string) (*yield.Inputs, error) {
 	in := *b.in
 	in.Currency = ccy
 	in.Funds, in.Income, in.AccountIncome = map[string]*yield.Fund{}, map[yield.HoldingKey]yield.Received{},
@@ -116,7 +124,7 @@ func (b *yieldBase) inputs(ctx context.Context, db *sql.DB, ccy string) (*yield.
 	return &in, nil
 }
 
-func readYieldHoldings(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+func readYieldHoldings(ctx context.Context, db querier, in *yield.Inputs) error {
 	return scanAll(ctx, db, `
 SELECT h.src, h.acct, h.position_key, COALESCE(h.iid, ''), COALESCE(h.asset_class, ''), COALESCE(h.vehicle, ''),
        COALESCE(h.ccy, ''), h.is_cash, h.value, COALESCE(h.amount, 0), h.quantity, h.accrued, h.acquisition_date,
@@ -145,7 +153,7 @@ SELECT h.src, h.acct, h.position_key, COALESCE(h.iid, ''), COALESCE(h.asset_clas
 	}, in.AsOf, in.Currency, in.AsOf)
 }
 
-func readYieldAccounts(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+func readYieldAccounts(ctx context.Context, db querier, in *yield.Inputs) error {
 	return scanAll(ctx, db, `
 SELECT a.silver_source_id, a.account_external_id, COALESCE(a.display_name, ''), COALESCE(a.account_kind, ''),
        COALESCE(a.tax_wrapper, ''), COALESCE(a.nickname, ''), COALESCE(a.portfolio_external_id, ''),
@@ -164,7 +172,7 @@ SELECT a.silver_source_id, a.account_external_id, COALESCE(a.display_name, ''), 
 	})
 }
 
-func readYieldTerms(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+func readYieldTerms(ctx context.Context, db querier, in *yield.Inputs) error {
 	return scanAll(ctx, db, `
 SELECT silver_source_id, instrument_external_id, coupon_pct, coupon_origin = 'declared', maturity,
        maturity_origin = 'declared', frequency, coupon_kind, day_count, call_date, make_whole, rating, in_default,
@@ -208,7 +216,7 @@ SELECT silver_source_id, instrument_external_id, coupon_pct, coupon_origin = 'de
 //   - a ledger record's: the latest dated on or before the day, else the
 //     undated one. It replaces the credit rates a source states for that
 //     account and currency; their debit rates stay.
-func readYieldRates(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+func readYieldRates(ctx context.Context, db querier, in *yield.Inputs) error {
 	return scanAll(ctx, db, `
 WITH observed AS (
     SELECT * FROM account_rates
@@ -270,7 +278,7 @@ const curveAgeDays = 31
 // rates are of no known convention. A Treasury curve that does not
 // bootstrap still gives its benchmark as published. Each refusal logs one
 // line naming the currency (warnCurve).
-func readYieldCurves(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+func readYieldCurves(ctx context.Context, db querier, in *yield.Inputs) error {
 	type tenors struct {
 		points []fixedincome.Point
 		basis  fixedincome.Basis
@@ -380,7 +388,7 @@ var fundFields = map[string]func(f *yield.Fund) **yield.Dated{
 // (fund_risk_signed) with the net assets of that filing, what the lines
 // of its composition at the instant say, and the share of its filing's
 // lines that float, with the name the filing gives it.
-func readYieldFunds(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+func readYieldFunds(ctx context.Context, db querier, in *yield.Inputs) error {
 	for _, h := range in.Holdings {
 		if (h.Vehicle == "etf" || h.Vehicle == "fund") && h.SecurityID != "" {
 			in.Funds[h.SecurityID] = &yield.Fund{}
@@ -457,7 +465,7 @@ SELECT r.key, r.as_of, r.currency, r.tenor, r.dv01, MAX(c.net_assets)::DOUBLE
 // readFundFilings reads, for each fund of list held directly, the share
 // of its filing's lines at the instant (fund_filings_at, migration 0141)
 // that float, by weight, and the name the filing gives it.
-func readFundFilings(ctx context.Context, db *sql.DB, in *yield.Inputs, list string, args func(...any) []any) error {
+func readFundFilings(ctx context.Context, db querier, in *yield.Inputs, list string, args func(...any) []any) error {
 	return scanAll(ctx, db, `
 SELECT f.fund_ref, COALESCE(f.fund_name, ''),
        100 * COALESCE(SUM(abs(l.weight)) FILTER (WHERE l.coupon_kind IN ('`+strings.Join(floatingLineKinds, "', '")+`')),
@@ -517,7 +525,7 @@ type fundLine struct {
 // default flag or arrears flag takes what the filing of the fund whose
 // lines they are states of its security (fund_filing_kinds, migration
 // 0141), as exposure_leaves reads its coupon kind.
-func readFundLines(ctx context.Context, db *sql.DB, in *yield.Inputs, list string, args func(...any) []any) error {
+func readFundLines(ctx context.Context, db querier, in *yield.Inputs, list string, args func(...any) []any) error {
 	type comp struct {
 		asOf  int64
 		aged  bool
@@ -746,7 +754,7 @@ var incomeTypeSQL = fmt.Sprintf(`CASE
 // distribution comes with the quantities yield.Payment documents, read
 // under its account's keys (yieldUnits.keysOf, quantity, span,
 // firstHeld), its record day by the market of its instrument (lagOf).
-func (b *yieldBase) readIncome(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+func (b *yieldBase) readIncome(ctx context.Context, db querier, in *yield.Inputs) error {
 	from := in.Day.AddDate(-2, 0, 0).Unix()
 	var lines []incomeLine
 	if err := incomeLines(ctx, db, from, in.AsOf, in.Currency, func(l incomeLine) {
@@ -921,7 +929,7 @@ func lineHolding(in *yield.Inputs, l *incomeLine) (yield.HoldingKey, bool) {
 // incomeLines calls fn with each income line of [from, to], oldest
 // first: an income transaction of a type the projection counts, in ccy
 // at its day's rate.
-func incomeLines(ctx context.Context, db *sql.DB, from, to int64, ccy string, fn func(incomeLine)) error {
+func incomeLines(ctx context.Context, db querier, from, to int64, ccy string, fn func(incomeLine)) error {
 	return scanAll(ctx, db, `
 WITH l AS (
     SELECT l.silver_source_id, l.account_external_id, t.instrument_external_id, l.transaction_external_id,
@@ -962,7 +970,7 @@ SELECT l.silver_source_id, l.account_external_id, COALESCE(l.instrument_external
 // currency, a line that names an instrument by its account and that
 // instrument, by the id the matching folds it into, as Sold names a sold
 // position, and any other by the account and its type.
-func IncomeReceived(ctx context.Context, db *sql.DB, in *yield.Inputs, from, to int64) ([]yield.ReceivedLine, error) {
+func IncomeReceived(ctx context.Context, db querier, in *yield.Inputs, from, to int64) ([]yield.ReceivedLine, error) {
 	var out []yield.ReceivedLine
 	err := incomeLines(ctx, db, from, to, in.Currency, func(l incomeLine) {
 		key, held := lineHolding(in, &l)
@@ -990,7 +998,7 @@ func IncomeReceived(ctx context.Context, db *sql.DB, in *yield.Inputs, from, to 
 	return out, nil
 }
 
-func readDeclaredDividends(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+func readDeclaredDividends(ctx context.Context, db querier, in *yield.Inputs) error {
 	return scanAll(ctx, db, `
 SELECT silver_source_id, instrument_external_id, amount, frequency, COALESCE(currency, '')
   FROM yield_declared_dividends
@@ -1048,7 +1056,7 @@ type periodFact struct {
 // difference from the one before it, the fourth as the fiscal year less
 // the nine months; a year earlier too, for growth. A stock an earlier
 // currency's inputs read is not read again.
-func (b *yieldBase) readSecurities(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+func (b *yieldBase) readSecurities(ctx context.Context, db querier, in *yield.Inputs) error {
 	keys := map[string]bool{}
 	for _, h := range in.Holdings {
 		if h.Vehicle == "stock" && h.SecurityID != "" && !b.asked[h.SecurityID] {
@@ -1062,7 +1070,7 @@ func (b *yieldBase) readSecurities(ctx context.Context, db *sql.DB, in *yield.In
 // months of each reported figure (yield.Facts), into in.Securities. A
 // figure counts by its period's end: one a later filing restated reads
 // restated, on any day.
-func YieldSecurityFacts(ctx context.Context, db *sql.DB, in *yield.Inputs, keys map[string]bool) error {
+func YieldSecurityFacts(ctx context.Context, db querier, in *yield.Inputs, keys map[string]bool) error {
 	if len(keys) == 0 {
 		return nil
 	}
@@ -1216,7 +1224,7 @@ func trailing(periods []periodFact, day time.Time, years int) (float64, bool) {
 // (pos_key_spans, cash_key_spans), from the first day read at or after it
 // to the first day read at or after its end, and one read of the
 // observations whose span meets the window gives every day.
-func (b *yieldBase) readAmounts(ctx context.Context, db *sql.DB) error {
+func (b *yieldBase) readAmounts(ctx context.Context, db querier) error {
 	w := newDayWindow(b.in)
 	b.amounts, b.instrument = map[amountKey]*yield.Daily{}, map[yield.HoldingKey]string{}
 	if err := w.readSpans(ctx, db, `
@@ -1287,7 +1295,7 @@ type amountKey struct {
 // it holds on, ordered by source and observation, beside the instrument
 // it names ("" for none), which instrument records, and its currency. q
 // takes the instant and the first day's instant.
-func (w dayWindow) readSpans(ctx context.Context, db *sql.DB, q string, out map[amountKey]*yield.Daily,
+func (w dayWindow) readSpans(ctx context.Context, db querier, q string, out map[amountKey]*yield.Daily,
 	instrument map[yield.HoldingKey]string) error {
 	return scanAll(ctx, db, q, func(rows *sql.Rows) error {
 		var k yield.HoldingKey
@@ -1389,7 +1397,7 @@ func (b *yieldBase) daily(in *yield.Inputs) {
 // holding alias for one account, else for every account of its source,
 // else, for the CUSIP id of an instrument its source also keys by its
 // ticker, the ticker (instrument_aliases, migration 0120).
-func readYieldAliases(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+func readYieldAliases(ctx context.Context, db querier, in *yield.Inputs) error {
 	return scanAll(ctx, db, `
 SELECT silver_source_id, account_external_id, from_key, to_key FROM holding_aliases
 UNION ALL
@@ -1422,7 +1430,8 @@ SELECT ia.src, '', ia.alias, ia.k
 // values it in. Of the positions folded into one instrument, the one
 // seen newest gives the lag; two seen at that instant that disagree give
 // none.
-func readYieldHeld(ctx context.Context, db *sql.DB, in *yield.Inputs, lags map[yield.InstrumentKey]yield.Lag) error {
+func readYieldHeld(ctx context.Context, db querier, in *yield.Inputs, lags map[yield.InstrumentKey]yield.Lag,
+	shared *yieldShared) error {
 	type reading struct {
 		k                      yield.InstrumentKey
 		position               [3]string
@@ -1473,13 +1482,13 @@ SELECT k.src, k.acct, k.position_key, k.iid,
 		slices.Sort(accts)
 		in.Held[k] = slices.Compact(accts)
 	}
-	receipts := map[[3]string]bool{}
-	if maybe {
+	if maybe && shared.receipts == nil {
 		var err error
-		if receipts, err = receiptPositions(ctx, db); err != nil {
+		if shared.receipts, err = receiptPositions(ctx, db); err != nil {
 			return err
 		}
 	}
+	receipts := shared.receipts
 	type newest struct {
 		seen  int64
 		lag   yield.Lag
@@ -1509,7 +1518,7 @@ SELECT k.src, k.acct, k.position_key, k.iid,
 // declared situs comes first in the rule, and a receipt whose share is
 // unknown has basis unknown: underlying says a position is one, declared
 // and unknown say nothing, and any other basis says it is none.
-func receiptPositions(ctx context.Context, db *sql.DB) (map[[3]string]bool, error) {
+func receiptPositions(ctx context.Context, db querier) (map[[3]string]bool, error) {
 	out := map[[3]string]bool{}
 	return out, scanAll(ctx, db, `
 SELECT f.src, f.acct, f.position_key
@@ -1525,7 +1534,7 @@ SELECT f.src, f.acct, f.position_key
 	}, receiptWording.String())
 }
 
-func readWithholding(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+func readWithholding(ctx context.Context, db querier, in *yield.Inputs) error {
 	return scanAll(ctx, db, `SELECT country, wrapper, rate_pct FROM yield_withholding`, func(rows *sql.Rows) error {
 		var country, wrapper string
 		var pct float64
@@ -1542,7 +1551,7 @@ func readWithholding(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
 
 // readYieldFX reads the rate from each currency gold holds figures in to
 // the output currency, on the instant's day.
-func readYieldFX(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+func readYieldFX(ctx context.Context, db querier, in *yield.Inputs) error {
 	return scanAll(ctx, db, `
 SELECT from_ccy, rate FROM fx_rates_to(?) WHERE day <= ? // 86400 AND rate IS NOT NULL
 QUALIFY row_number() OVER (PARTITION BY from_ccy ORDER BY day DESC) = 1`, func(rows *sql.Rows) error {

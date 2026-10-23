@@ -128,7 +128,7 @@ account_grid AS (
 // by tradeKey (the booking account's key where in is nil), and its
 // quantity and value tell a change of units (unitStep.change). Every
 // account's changes are the instrument's (addChange).
-func readYieldUnits(ctx context.Context, db *sql.DB, in *yield.Inputs, paid map[yield.InstrumentKey]bool,
+func readYieldUnits(ctx context.Context, db querier, in *yield.Inputs, paid map[yield.InstrumentKey]bool,
 	from, asOf int64) (*yieldUnits, error) {
 	u := &yieldUnits{points: map[unitKey][]unitPoint{}, snaps: map[accountKey][]int64{},
 		late: map[unitKey]map[int64]bool{}, accounts: map[yield.InstrumentKey][]string{},
@@ -352,7 +352,7 @@ func (u *yieldUnits) holdsAt(k unitKey, t unitTrade) bool {
 // booking account's key, by the id that account's aliases fold its
 // instrument into. One stamped at a snapshot's instant counts in it or
 // after it, as the snapshot shows (after).
-func readUnitTrades(ctx context.Context, db *sql.DB, srcs, iids []string, from, asOf int64) ([]bookedTrade,
+func readUnitTrades(ctx context.Context, db querier, srcs, iids []string, from, asOf int64) ([]bookedTrade,
 	error) {
 	kinds := map[string]string{}
 	if err := scanAll(ctx, db, `SELECT silver_source_id, silver_kind FROM silver_sources`, func(rows *sql.Rows) error {

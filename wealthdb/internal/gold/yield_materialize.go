@@ -33,27 +33,31 @@ func yieldInstants(toEpoch int64) []int64 {
 // number of rows written. One transaction, so a reader sees the old
 // tables or the new ones.
 func MaterializeYield(ctx context.Context, db *sql.DB, toEpoch, computedAt int64) (int, error) {
-	tx, err := db.BeginTx(ctx, nil)
+	// Every instant reads the same endings and spans, through the
+	// transaction.
+	tx, commit, err := beginPinned(ctx, db)
 	if err != nil {
-		return 0, fmt.Errorf("MaterializeYield begin: %w", err)
+		return 0, fmt.Errorf("MaterializeYield: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck — no-op after Commit
+	defer tx.Rollback() //nolint:errcheck — no-op after commit
 	for _, t := range []string{"report_yield_positions", "report_yield_buckets", "report_yield_parts",
 		"report_yield_rates", "report_yield_events", "report_yield_received"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t); err != nil {
 			return 0, fmt.Errorf("MaterializeYield %s: delete: %w", t, err)
 		}
 	}
-	m := yieldMaterializer{ctx: ctx, db: db, tx: tx, computedAt: computedAt}
+	m := yieldMaterializer{ctx: ctx, tx: tx, computedAt: computedAt}
 	today := map[string]*yield.Book{}
+	// What depends on neither the currency nor the instant is read once.
+	shared := &yieldShared{}
 	for _, at := range yieldInstants(toEpoch) {
 		// What does not depend on the currency is read once an instant.
-		base, err := readYieldBase(ctx, db, at)
+		base, err := readYieldBase(ctx, tx, at, shared)
 		if err != nil {
 			return 0, fmt.Errorf("MaterializeYield: %w", err)
 		}
 		for _, ccy := range materializeCurrencies {
-			in, err := base.inputs(ctx, db, ccy)
+			in, err := base.inputs(ctx, tx, ccy)
 			if err != nil {
 				return 0, fmt.Errorf("MaterializeYield: %w", err)
 			}
@@ -72,15 +76,14 @@ func MaterializeYield(ctx context.Context, db *sql.DB, toEpoch, computedAt int64
 	if err := m.received(today, toEpoch); err != nil {
 		return 0, err
 	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("MaterializeYield commit: %w", err)
+	if err := commit(); err != nil {
+		return 0, fmt.Errorf("MaterializeYield: %w", err)
 	}
 	return m.rows, nil
 }
 
 type yieldMaterializer struct {
 	ctx        context.Context
-	db         *sql.DB
 	tx         *sql.Tx
 	computedAt int64
 	rows       int
@@ -294,7 +297,7 @@ func (m *yieldMaterializer) received(today map[string]*yield.Book, toEpoch int64
 		if b == nil {
 			continue
 		}
-		got, err := IncomeReceived(m.ctx, m.db, b.In, from, toEpoch)
+		got, err := IncomeReceived(m.ctx, m.tx, b.In, from, toEpoch)
 		if err != nil {
 			return fmt.Errorf("MaterializeYield: %w", err)
 		}

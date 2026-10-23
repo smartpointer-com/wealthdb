@@ -38,11 +38,11 @@ var servingTables = []struct{ table, source string }{
 // output from a table instead. It returns the number of rows written.
 // One transaction, so a reader sees the old tables or the new ones.
 func MaterializeServingTables(ctx context.Context, db *sql.DB) (int, error) {
-	tx, err := db.BeginTx(ctx, nil)
+	tx, commit, err := beginPinned(ctx, db)
 	if err != nil {
-		return 0, fmt.Errorf("MaterializeServingTables begin: %w", err)
+		return 0, fmt.Errorf("MaterializeServingTables: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck — no-op after Commit
+	defer tx.Rollback() //nolint:errcheck — no-op after commit
 	total := 0
 	for _, s := range servingTables {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+s.table); err != nil {
@@ -58,8 +58,8 @@ func MaterializeServingTables(ctx context.Context, db *sql.DB) (int, error) {
 		}
 		total += int(n)
 	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("MaterializeServingTables commit: %w", err)
+	if err := commit(); err != nil {
+		return 0, fmt.Errorf("MaterializeServingTables: %w", err)
 	}
 	return total, nil
 }

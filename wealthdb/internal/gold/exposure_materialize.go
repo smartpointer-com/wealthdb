@@ -56,11 +56,12 @@ const exposureHoldingsSQL = `SELECT '%s' AS out_ccy, src, acct, position_key, va
 // written. One transaction, so a reader sees the old tables or the new
 // ones.
 func MaterializeExposure(ctx context.Context, db *sql.DB, toEpoch, computedAt int64) (int, error) {
-	tx, err := db.BeginTx(ctx, nil)
+	// Every month end reads the same endings and spans.
+	tx, commit, err := beginPinned(ctx, db)
 	if err != nil {
-		return 0, fmt.Errorf("MaterializeExposure begin: %w", err)
+		return 0, fmt.Errorf("MaterializeExposure: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck — no-op after Commit
+	defer tx.Rollback() //nolint:errcheck — no-op after commit
 	for _, t := range []string{"report_exposure", "report_exposure_debt", "report_exposure_issuer_ranks"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t); err != nil {
 			return 0, fmt.Errorf("MaterializeExposure delete %s: %w", t, err)
@@ -71,7 +72,7 @@ func MaterializeExposure(ctx context.Context, db *sql.DB, toEpoch, computedAt in
 		return 0, fmt.Errorf("MaterializeExposure: %w", err)
 	}
 	if !ok {
-		return 0, tx.Commit()
+		return 0, commit()
 	}
 	parts := make([]string, len(materializeCurrencies))
 	for i, c := range materializeCurrencies {
@@ -95,8 +96,8 @@ func MaterializeExposure(ctx context.Context, db *sql.DB, toEpoch, computedAt in
 		return 0, err
 	}
 	n += k
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("MaterializeExposure commit: %w", err)
+	if err := commit(); err != nil {
+		return 0, fmt.Errorf("MaterializeExposure: %w", err)
 	}
 	return n, nil
 }

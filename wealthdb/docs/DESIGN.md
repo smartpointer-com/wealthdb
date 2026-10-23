@@ -2710,8 +2710,14 @@ What follows for readers of these macros:
   accounts'.
 - **Cost:** the day spine is crossed with keys rather than with sources, so its
   cardinality grows by the accounts-per-source factor. A point-in-time read
-  crosses its instants with the keys, and each read recomputes every key's
-  span and ending over the whole of `positions` or `cash_balances`.
+  crosses its instants with the keys. Each read computes every key's span and
+  ending over the whole of `positions` or `cash_balances`. One macro defines
+  each key's observations (`pos_key_obs()` / `cash_key_obs()`, migration
+  `0145`). A materializer of the web refresh reads many instants of one gold,
+  so it computes the endings and the spans once. It pins them in its
+  transaction, where temporary macros of the same names read them
+  (`gold.beginPinned`). Every other read computes them, so no table of spans
+  has to follow a load.
 
 ### 10.8 Multi-currency reports (Metabase)
 

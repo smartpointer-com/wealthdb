@@ -41,11 +41,11 @@ SELECT NOT EXISTS (SELECT 1 FROM positions WHERE basis_missing(asset_class, vehi
 // the number of rows written. One transaction, so a reader sees the old
 // table or the new one.
 func MaterializeGains(ctx context.Context, db *sql.DB, toEpoch, computedAt int64) (int, error) {
-	tx, err := db.BeginTx(ctx, nil)
+	tx, commit, err := beginPinned(ctx, db)
 	if err != nil {
-		return 0, fmt.Errorf("MaterializeGains begin: %w", err)
+		return 0, fmt.Errorf("MaterializeGains: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck — no-op after Commit
+	defer tx.Rollback() //nolint:errcheck — no-op after commit
 	if _, err := tx.ExecContext(ctx, `DELETE FROM report_gains`); err != nil {
 		return 0, fmt.Errorf("MaterializeGains delete: %w", err)
 	}
@@ -81,8 +81,8 @@ func MaterializeGains(ctx context.Context, db *sql.DB, toEpoch, computedAt int64
 		}
 		n += int(k)
 	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("MaterializeGains commit: %w", err)
+	if err := commit(); err != nil {
+		return 0, fmt.Errorf("MaterializeGains: %w", err)
 	}
 	return n, nil
 }
