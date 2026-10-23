@@ -288,7 +288,8 @@ func TestTxKind(t *testing.T) {
 // TestQuietAccountCurrentAtSourceLatest pins the CURRENT balance of an
 // account whose roster row did not change at the latest load to that load.
 // Silver content-dedups an unchanged roster row, and gold ends an account at
-// the first later snapshot that re-covers the accounts it was observed with
+// the first later snapshot that re-covers the accounts it was observed with,
+// once the source has run one and a half of the account's cadences past it
 // (DESIGN.md §10.7), so a stamp at the account's own older row would drop it
 // from the net-worth views.
 func TestQuietAccountCurrentAtSourceLatest(t *testing.T) {

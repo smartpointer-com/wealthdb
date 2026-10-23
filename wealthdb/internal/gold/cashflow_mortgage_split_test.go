@@ -444,25 +444,22 @@ func TestOnlyAMortgageLineSpendsThePrincipal(t *testing.T) {
 
 // TestAClosedMortgageRetiresWhatWasLeft covers the arm that decides
 // whether a mortgage's LAST interval retired the rest of the loan. The
-// question is whether the SOURCE went on observing anything after this
-// mortgage stopped — not whether a newer MORTGAGE snapshot exists,
-// which is the same date as the mortgage's own last observation
-// wherever a source tracks a single one, leaving the arm unable to
-// fire and the final repayment drawn as interest.
+// question is whether the mortgage's last observation ENDS, by the
+// ending every reader takes — not whether a newer MORTGAGE snapshot
+// exists, which is the same date as the mortgage's own last observation
+// wherever a source tracks a single one, leaving the arm unable to fire
+// and the final repayment drawn as interest.
 func TestAClosedMortgageRetiresWhatWasLeft(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
-	// The only mortgage, observed every 100 days and last seen at day
-	// 200 owing 40,000...
+	// The only mortgage, observed every 100 days with a custody account
+	// and last seen at day 200 owing 40,000...
 	seedMortgageBalances(t, db, ctx, map[int]float64{100: -50000, 200: -40000})
-	// ...while the source goes on observing something else, two of the
-	// mortgage's cadences on: longer than its own pace explains.
-	if _, err := db.ExecContext(ctx, `
-        INSERT INTO positions (silver_source_id, snapshot_at, account_external_id,
-                               position_key, asset_class, currency, market_value)
-             VALUES ('cf', ?, 'BROK', 'BROK', 'equity', 'USD', 1000)`,
-		int64(400)*mortDay); err != nil {
-		t.Fatalf("seed a later observation: %v", err)
+	// ...while the source goes on reporting the custody account alone,
+	// two of the mortgage's cadences on: its run re-covers the mortgage's
+	// company, longer after it than the mortgage's own pace explains.
+	for _, day := range []int{100, 200, 400} {
+		seedSourceDays(t, db, ctx, day, day, 0)
 	}
 	seedMortgagePayment(t, db, ctx, "C-CLOSE", 250, -41000, "MORT")
 
@@ -482,25 +479,26 @@ func TestAClosedMortgageRetiresWhatWasLeft(t *testing.T) {
 var monthlyMortgage = map[int]float64{100: -90000, 130: -89000, 160: -88000, 190: -87000}
 
 // TestAMortgageEndsAfterOneAndAHalfCadences is a mortgage beside a
-// faster feed. Its lender reports it monthly, and a custody feed in the
-// same source runs nightly. Each night the source looks again without
-// it, which is the mortgage's pace and not its closing: it stands until
-// the source runs more than one and a half of its cadences past its
-// last observation. Standing, its last interval retires nothing, and
-// the instalment there is all interest. Ended, the interval retires
-// what was left.
+// faster feed. Its lender reports it monthly, in the run of a custody
+// feed that runs nightly in the same source. Each night the source
+// re-covers the mortgage's company without it, which is the mortgage's
+// pace and not its closing: it stands until the source runs more than
+// one and a half of its cadences past its last observation. Standing,
+// its last interval retires nothing, and the instalment there is all
+// interest. Ended, the interval retires what was left.
 func TestAMortgageEndsAfterOneAndAHalfCadences(t *testing.T) {
 	// Gaps of 20, 40 and 60 days: the median is 40, the shortest 20,
 	// the last 60. It stands to day 280, where the shortest would end it
 	// after day 250 and the last only after day 310.
 	uneven := map[int]float64{100: -90000, 120: -89000, 160: -88000, 220: -86000}
 	for _, tc := range []struct {
-		name         string
-		obs          map[int]float64
-		pay          int // the instalment's day, in the last interval
-		last         int // the day of the source's newest nightly snapshot
-		obsAt, srcAt int64
-		repaid       bool
+		name   string
+		obs    map[int]float64
+		pay    int   // the instalment's day, in the last interval
+		last   int   // the day of the source's newest nightly snapshot
+		at     int64 // the nightly run's time of day, the mortgage's too
+		late   int64 // a later run on the newest day, 0 for none
+		repaid bool
 	}{
 		{"a month on, before its next observation loads", monthlyMortgage, 195, 221, 0, 0, false},
 		{"one and a half cadences on", monthlyMortgage, 195, 235, 0, 0, false},
@@ -514,14 +512,17 @@ func TestAMortgageEndsAfterOneAndAHalfCadences(t *testing.T) {
 		// Instants, not days: observed at 02:00, the mortgage stands at a
 		// snapshot exactly one and a half cadences later, and ends at one
 		// an hour after that.
-		{"at the boundary to the hour", monthlyMortgage, 195, 235, 2 * 3600, 2 * 3600, false},
+		{"at the boundary to the hour", monthlyMortgage, 195, 235, 2 * 3600, 0, false},
 		{"an hour past the boundary", monthlyMortgage, 195, 235, 2 * 3600, 3 * 3600, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db, ctx := openMigrated(t)
 			seedResolutionFixture(t, db, ctx)
-			seedMortgageBalancesAt(t, db, ctx, tc.obsAt, tc.obs)
-			seedSourceDays(t, db, ctx, 100, tc.last, tc.srcAt)
+			seedMortgageBalancesAt(t, db, ctx, tc.at, tc.obs)
+			seedSourceDays(t, db, ctx, 100, tc.last, tc.at)
+			if tc.late != 0 {
+				seedSourceDays(t, db, ctx, tc.last, tc.last, tc.late)
+			}
 			seedMortgagePayment(t, db, ctx, "K-OPEN", tc.pay, -1500, "MORT")
 
 			want := map[string]float64{"mortgage_interest": -1500}
@@ -539,13 +540,13 @@ func TestAMortgageEndsAfterOneAndAHalfCadences(t *testing.T) {
 // TestTwoReadingsOfOneDayAreNoCadence: a mortgage read twice on one day
 // has no gap between days to read. Half a day is no cadence, so the
 // mortgage takes a month, as one observed once does, and stands beside
-// a nightly feed.
+// a nightly feed that re-covers its company from the next night.
 func TestTwoReadingsOfOneDayAreNoCadence(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedMortgageBalancesAt(t, db, ctx, 8*3600, map[int]float64{100: -40000})
 	seedMortgageBalancesAt(t, db, ctx, 20*3600, map[int]float64{100: -40000})
-	seedSourceDays(t, db, ctx, 100, 102, 2*3600)
+	seedSourceDays(t, db, ctx, 100, 102, 20*3600)
 	seedMortgagePayment(t, db, ctx, "S-OPEN", 101, -1500, "MORT")
 	want := map[string]float64{"mortgage_interest": -1500}
 	if got := mortgageShares(t, db, ctx)["S-OPEN"]; !maps.Equal(got, want) {
@@ -573,6 +574,7 @@ func TestAMortgageObservedOnceTakesAMonthAsItsCadence(t *testing.T) {
 			db, ctx := openMigrated(t)
 			seedResolutionFixture(t, db, ctx)
 			seedMortgageBalances(t, db, ctx, map[int]float64{100: -40000})
+			seedSourceDays(t, db, ctx, 100, 100, 0)
 			seedSourceDays(t, db, ctx, tc.srcDay, tc.srcDay, 0)
 			seedMortgagePayment(t, db, ctx, "O-CLOSE", 100, -41000, "MORT")
 			if got := mortgageShares(t, db, ctx)["O-CLOSE"]; !maps.Equal(got, tc.want) {
@@ -612,19 +614,22 @@ func TestAMortgageInTheSourcesNewestSnapshotStands(t *testing.T) {
 	}
 }
 
-// TestMigration0143DDLIsRerunnable holds the migration to the replay
-// bar. Replaying 0093 or 0096 puts an older end rule back, so the rerun
-// replays 0143 after it, as Migrate would; the monthly mortgage a
-// month on stands after each.
+// TestMigration0143DDLIsRerunnable holds the mortgage's end to the
+// replay bar. Replaying 0093, 0096 or 0143 puts an older end rule back,
+// so the rerun replays every later re-issue after it, as Migrate would.
+// The monthly mortgage, reported at 02:00 in a run of its own, has no
+// company, while the feed at 03:00 runs two cadences past it: 0143's rule
+// reads it as repaid, the shared ending as standing, after each replay.
 func TestMigration0143DDLIsRerunnable(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
-	seedMortgageBalances(t, db, ctx, monthlyMortgage)
-	seedSourceDays(t, db, ctx, 100, 221, 0)
+	seedMortgageBalancesAt(t, db, ctx, 2*3600, monthlyMortgage)
+	seedSourceDays(t, db, ctx, 100, 250, 3*3600)
 	seedMortgagePayment(t, db, ctx, "Q-OPEN", 195, -1500, "MORT")
 
 	want := map[string]float64{"mortgage_interest": -1500}
 	for _, file := range []string{
+		"0144_account_end_cadence.sql",
 		"0143_mortgage_end_cadence.sql",
 		"0096_cashflow_mortgage_drawdown_leaf.sql",
 		"0093_cashflow_mortgage_split_fixes.sql",
@@ -633,6 +638,33 @@ func TestMigration0143DDLIsRerunnable(t *testing.T) {
 		if got := mortgageShares(t, db, ctx)["Q-OPEN"]; !maps.Equal(got, want) {
 			t.Errorf("after replaying %s the open instalment splits as %v, want %v", file, got, want)
 		}
+	}
+}
+
+// TestAMortgageInARunOfItsOwnWaitsForTheHorizon: a mortgage its lender
+// reports in a run of its own, at 02:00 beside a custody feed at 03:00,
+// has no company for a later run to re-cover. Only the horizon ends it:
+// it stands past one and a half cadences and at 300 days, and reads as
+// repaid once its source runs more than hist_carry_days() past it.
+func TestAMortgageInARunOfItsOwnWaitsForTheHorizon(t *testing.T) {
+	for _, c := range []struct {
+		last   int // the day of the source's newest nightly snapshot
+		repaid bool
+	}{{236, false}, {490, false}, {555, false}, {556, true}} {
+		t.Run(fmt.Sprint(c.last), func(t *testing.T) {
+			db, ctx := openMigrated(t)
+			seedResolutionFixture(t, db, ctx)
+			seedMortgageBalancesAt(t, db, ctx, 2*3600, monthlyMortgage)
+			seedSourceDays(t, db, ctx, 100, c.last, 3*3600)
+			seedMortgagePayment(t, db, ctx, "H-OPEN", 195, -1500, "MORT")
+			want := map[string]float64{"mortgage_interest": -1500}
+			if c.repaid {
+				want = map[string]float64{"mortgage_amortization": -1500}
+			}
+			if got := mortgageShares(t, db, ctx)["H-OPEN"]; !maps.Equal(got, want) {
+				t.Errorf("the source runs to day %d: the instalment splits as %v, want %v", c.last, got, want)
+			}
+		})
 	}
 }
 

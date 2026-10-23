@@ -52,7 +52,8 @@ func pitCash(t *testing.T, db *sql.DB, ctx context.Context, src, acct, ccy strin
 //     Q-0000 at quarter ends only; C-0000 sits in the first three
 //     quarter ends and is left out of the fourth, which names the rest:
 //     it is closed. Q-0000's last quarter end it shares with M-0000,
-//     whose next month ends it (0051's slow-sibling shape).
+//     whose next month re-covers it, but the source's newest statement
+//     lies inside one and a half of Q-0000's cadences: it stands.
 //   - bank-src's feed writes the custody account CUST-0000 and the cash
 //     of DEP-0000 (two legs, the EUR one drained to zero and still
 //     reported at zero) and DEP-0001 weekly, at 20:00; DEP-0001 is
@@ -326,12 +327,12 @@ func TestKeySpansEndEveryShape(t *testing.T) {
 	seedPartialRuns(t, db, ctx)
 	// The book has every ending, each at its instant: C-0000 and DEP-0001
 	// at the full run after their last, E-0000 and E-0001 together at the
-	// run after theirs, Z-0000 after its $0 row, Q-0000 at its sibling's
-	// next month, H-0000, L-0000 and X-0366 at the clock. X-0365 sits
-	// exactly on the horizon and ends never, as CARD-0000 and the rest.
+	// run after theirs, Z-0000 after its $0 row, H-0000, L-0000 and X-0366
+	// at the clock. Q-0000 stands inside its cadence, X-0365 sits exactly
+	// on the horizon, and neither ends, as CARD-0000 and the rest.
 	// G-0000's first observation holds to its second, 390 days on.
 	want := map[string]int64{
-		"C-0000": pitAt(-150, 18), "Q-0000": pitAt(-30, 18), "DEP-0001": pitAt(-126, 20),
+		"C-0000": pitAt(-150, 18), "DEP-0001": pitAt(-126, 20),
 		"E-0000": pitAt(-190, 14), "E-0001": pitAt(-190, 14), "Z-0000": pitAt(-140, 14),
 		"H-0000": pitAt(-30, 10), "L-0000": pitAt(-40, 9), "X-0366": pitAt(-34, 10),
 		"G-0000@" + fmt.Sprint(pitAt(-415, 10)): pitAt(-25, 10),
@@ -445,8 +446,8 @@ func TestAnInstantBetweenRunsKeepsEveryAccount(t *testing.T) {
 }
 
 // TestYieldUnitsTakeTheHistorysEnding reads yield's account grid on the
-// same rule. X-0000's last observation shares a run with Y-0000: a run
-// of Z-0000 alone says nothing of it, Y-0000's next run ends it.
+// same rule. X-0000's last observation shares a daily run with Y-0000: a
+// run of Z-0000 alone says nothing of it, Y-0000's next run ends it.
 // Q-0000 is observed alone before the window: its source's newest
 // snapshot at the window's start leaves it out, yet it holds there.
 func TestYieldUnitsTakeTheHistorysEnding(t *testing.T) {
@@ -454,8 +455,10 @@ func TestYieldUnitsTakeTheHistorysEnding(t *testing.T) {
 	const src = "units-src"
 	day := func(d int64) int64 { return d*86400 + 43200 }
 	pitPosition(t, db, ctx, src, "Q-0000", "QQ", day(10), 100)
-	pitPosition(t, db, ctx, src, "X-0000", "QX", day(20), 100)
-	pitPosition(t, db, ctx, src, "Y-0000", "QY", day(20), 100)
+	for _, d := range []int64{18, 19, 20} {
+		pitPosition(t, db, ctx, src, "X-0000", "QX", day(d), 100)
+		pitPosition(t, db, ctx, src, "Y-0000", "QY", day(d), 100)
+	}
 	pitPosition(t, db, ctx, src, "Z-0000", "QZ", day(30), 100)
 	pitPosition(t, db, ctx, src, "Y-0000", "QY", day(40), 100)
 	paid := map[yield.InstrumentKey]bool{{Source: src, Instrument: "QX"}: true, {Source: src, Instrument: "QQ"}: true}
@@ -464,7 +467,8 @@ func TestYieldUnitsTakeTheHistorysEnding(t *testing.T) {
 		t.Fatal(err)
 	}
 	for acct, want := range map[string][]int64{
-		"X-0000": {day(20), day(40)}, "Q-0000": {day(10)}, "Y-0000": {day(20), day(40)}, "Z-0000": {day(30)},
+		"X-0000": {day(18), day(19), day(20), day(40)}, "Q-0000": {day(10)},
+		"Y-0000": {day(18), day(19), day(20), day(40)}, "Z-0000": {day(30)},
 	} {
 		if got := u.snaps[accountKey{src, acct}]; fmt.Sprint(got) != fmt.Sprint(want) {
 			t.Errorf("%s speaks at %v, want %v", acct, got, want)

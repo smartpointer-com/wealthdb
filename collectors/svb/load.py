@@ -1047,7 +1047,8 @@ def discover_statements(bronze_dir: Path) -> list[Path]:
 # One silver DB per statement calendar, each registered in gold under its own
 # source id. That separation is load-bearing, not tidiness: gold ends an
 # account's series at the first later snapshot of its SOURCE that re-covers
-# every account seen alongside it. A month-end brokerage statement and a
+# every account seen alongside it, once the source runs one and a half of the
+# account's cadences past it. A month-end brokerage statement and a
 # month-end deposit statement share a snapshot date, so in one source each
 # family's next statement repeatedly reads as the others' closure and their
 # values flicker in and out. Separate ids give each family its own clock.

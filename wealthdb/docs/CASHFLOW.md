@@ -585,31 +585,22 @@ interval runs from one observation up to, but not including, the next.
 A tranche that closes stops being snapshotted. Its last interval
 retires whatever was left.
 
-A mortgage's end follows its own cadence:
-
-- The cadence is the median gap between the mortgage's consecutive
-  observations on different days. A second reading of one day does not
-  shrink it, and one long gap among three or more does not stretch it.
-- The mortgage stands until its source's newest positions snapshot lies
-  more than one and a half cadences past its last observation.
-- After that, it reads as repaid.
-- A mortgage observed on one day only takes a month as its cadence, a
-  statement's.
-  So a new mortgage stands through its first month, and one a single
-  statement shows reads as repaid about six weeks on.
+A mortgage's end is the ending every reader takes ([DESIGN.md](DESIGN.md)
+§10.7), so the cash flow and holdings agree on it. Where its last
+observation ends, the mortgage reads as repaid, and it retires from the
+run that left it out. A mortgage observed on one day only takes a month
+as its cadence. So a new mortgage stands through its first month. One a
+single statement shows reads as repaid once its source runs more than
+45 days past that statement. A mortgage reported in a run of its own
+has no company, so it ends only once its source runs a year past it.
 
 While a mortgage stands, its last interval retires nothing. Its
 instalments there draw as interest until its next observation loads.
 So a mortgage reported monthly, beside a custody feed that runs
 nightly, stands between its own observations. The rule compares
 instants, not days. A mortgage observed in its source's newest
-snapshot stands, whatever the hour of that snapshot.
-
-A run that writes only cash balances moves no clock here. Holdings keep
-the mortgage until the ending of [DESIGN.md](DESIGN.md) §10.7. That is a
-different rule, so the two readings can disagree for a while. A
-mortgage that stops being reported can read as repaid here while
-holdings still show its balance.
+snapshot stands, whatever the hour of that snapshot. A run that
+writes only cash balances moves no clock here.
 
 A mortgage the product does not hold has no balance to read. Its
 instalments keep their whole amount and draw as interest. That is the
@@ -846,11 +837,13 @@ Behind `-C`:
 - on `summary`: the memo columns `yield`, `taxes`, `fees` and `giving`,
   plus `savings_rate`, plus the reconciliation memo below.
 
-`-p` redacts exactly as the families do: account ids, amounts, and
-every name taken off a statement line. Sections, classes, groups and
-shares stay legible. So the diagram's privacy twin needs
-**normalisation alone**: no node is ever a merchant, a payer, an
-account or an instrument.
+`-p` redacts as the families do: account ids, amounts, and every name
+taken off a statement line. Every name a person typed prints as a
+pseudonym, such as `manual-1`, or as a redacted id
+([DESIGN.md](DESIGN.md) §4.6). Sections, classes, groups and shares
+stay legible. So the diagram's privacy twin needs **normalisation
+alone**: no node is ever a merchant, a payer, an account or an
+instrument.
 
 `wealthdb transactions` carries `cashflow_section`, `cashflow_class`
 and `cashflow_group` behind `-C`, beside the spending and income trios.

@@ -854,7 +854,7 @@ func (bk dividendBook) inputs(t *testing.T) (*yield.Inputs, *sql.DB, context.Con
 //   - B1 holds QCSP under its CUSIP id, and is paid under its ticker;
 //   - B1 holds QTKR under its ticker, and is paid under its CUSIP id;
 //   - H holds QSLD under its ticker, and S held 300 under its CUSIP id
-//     until it sold them on 1 June, paid under that id: S's lines are its
+//     until it sold them on 1 April, paid under that id: S's lines are its
 //     sold position's, under the ticker, which pools with H's holding.
 func TestALineMeetsItsHoldingUnderEitherID(t *testing.T) {
 	t.Parallel()
@@ -868,14 +868,14 @@ func TestALineMeetsItsHoldingUnderEitherID(t *testing.T) {
 			txns = append(txns, bookTxn{"src", "S", "000000AD3", d, "dividend", 150, 0})
 		}
 	}
-	txns = append(txns, bookTxn{"src", "S", "000000AD3", ymd(2026, 6, 1), "sell", 15000, -300})
+	txns = append(txns, bookTxn{"src", "S", "000000AD3", ymd(2026, 4, 1), "sell", 15000, -300})
 	in, db, ctx := dividendBook{instruments: []bookInstrument{
 		{"src", "000000AB1", "", "000000AB1", "QCSP"}, {"src", "QCSP", "", "", "QCSP"},
 		{"src", "QTKR", "", "", "QTKR"}, {"src", "000000AC2", "", "000000AC2", "QTKR"},
 		{"src", "QSLD", "", "", "QSLD"}, {"src", "000000AD3", "", "000000AD3", "QSLD"},
 	}, lines: []bookLine{
 		{"src", "B1", "000000AB1", held}, {"src", "B1", "QTKR", held}, {"src", "H", "QSLD", held},
-		{"src", "S", "000000AD3", []bookSeg{{early, 300, 15000}, {ymd(2026, 6, 30), 0, 0}}},
+		{"src", "S", "000000AD3", []bookSeg{{early, 300, 15000}, {ymd(2026, 4, 30), 0, 0}}},
 	}, txns: txns}.inputs(t)
 	b := yield.Compute(in)
 	key := func(acct, id string) yield.HoldingKey {
@@ -900,9 +900,9 @@ func TestALineMeetsItsHoldingUnderEitherID(t *testing.T) {
 	if len(in.Payments[sold]) != 3 || in.Income[sold].Total() != 450 {
 		t.Errorf("S's sold position: payments %+v, income %v", in.Payments[sold], in.Income[sold])
 	}
-	// S held 15,000 dollars of it to the snapshot of 30 June, which ends
+	// S held 15,000 dollars of it to the snapshot of 30 April, which ends
 	// its observation.
-	mean := (5000*365 + 15000*364.0) / 365
+	mean := (5000*365 + 15000*303.0) / 365
 	p := position(b, key("H", "QSLD"))
 	if p.DividendYield == nil || math.Abs(*p.DividendYield-4) > 1e-9 || p.Realized == nil ||
 		math.Abs(*p.Realized-650/mean*100) > 1e-9 {

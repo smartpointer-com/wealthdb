@@ -147,13 +147,13 @@ macro of its own:
     carry their own `snapshot_at`, so this case is common. An account that
     vanishes for a snapshot or two and then reappears is carried across the
     gap too, so the macro and the Go carry agree there.
-  - A **dropped** account — one a later run of its source re-covered
-    everything it was last seen with without mentioning it, or one its source
-    kept snapshotting past for longer than the carry horizon — ends its series
-    there, and reads **0 after its last emitted row**, not its last carried
-    value: post-disappearance absence ≠ pre-inception NULL. `valueAt` reads
-    0 past the last row, and an account that ended while still holding value
-    raises `dropped_while_nonzero`. So `global == Σ accounts` reconciles past
+  - A **dropped** account's series ends where gold ends its last
+    observation, by the re-cover or the carry horizon
+    ([DESIGN.md](DESIGN.md) §10.7). It reads **0 after its last emitted
+    row**, not its last carried value: post-disappearance absence ≠
+    pre-inception NULL. `valueAt` reads 0 past the last row, and an
+    account that ended while still holding value raises
+    `dropped_while_nonzero`. So `global == Σ accounts` reconciles past
     the ending.
   - A **closure** is an explicit zeroing row (`silver.ClosureMarkerBatch`),
     which the spine carries as a zero immediately — the supported way to end

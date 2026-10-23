@@ -182,10 +182,15 @@ func TestCointrackingFeedDropContributesZeroNoFabricatedOutflow(t *testing.T) {
 	seedAcct(t, db, ctx, "ctdrop", "LIVE", canonical.AccountKindBrokerage, nil,
 		[]snap{{wStart, 10000}, {mid, 12000}, {end, 13000}},
 		[]txn{{mid, canonical.TxKindDeposit, 2000}})
-	// DROPPED: still worth 3000 at its last emitted snapshot (mid), then feed-dropped
-	// — its series ends before globalMax while nonzero (no zeroing row).
+	// DROPPED: reported monthly, still worth 3000 at its last emitted snapshot
+	// (mid), then feed-dropped — its series ends before globalMax while nonzero
+	// (no zeroing row), more than its own pace past mid.
+	var dropped []snap
+	for m := time.January; m <= time.June; m++ {
+		dropped = append(dropped, snap{dy(2023, m, 2), 3000})
+	}
 	seedAcct(t, db, ctx, "ctdrop", "DROPPED", canonical.AccountKindBrokerage, nil,
-		[]snap{{wStart, 3000}, {mid, 3000}}, nil)
+		append(dropped, snap{mid, 3000}), nil)
 
 	rows, err := RunReturns(ctx, db, params("sources", 0, eod(2023, time.December, 29)))
 	if err != nil {

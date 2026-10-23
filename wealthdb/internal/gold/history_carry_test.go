@@ -284,22 +284,26 @@ func TestHistoryZeroLineNeedsNoFxRate(t *testing.T) {
 // endings. A run that re-covers everything an account was last seen with,
 // without the account itself, was in a position to report it and did not:
 // the account is closed, not merely uncovered, and leaves the series on
-// that day, as the point-in-time report does.
+// that day, as the point-in-time report does, once the source has run
+// past the account's own pace.
 func TestHistoryFullDumpSupersedesADroppedAccount(t *testing.T) {
 	db, ctx := openMigrated(t)
 	const src = "dump-src"
 	seedHistAccount(t, db, ctx, src, "A-0000", "cash", "Closed EXAMPLE")
 	seedHistAccount(t, db, ctx, src, "B-0000", "cash", "Live EXAMPLE")
 
-	seedHistCash(t, db, ctx, src, "A-0000", -4, "500") // one run covers both
-	seedHistCash(t, db, ctx, src, "B-0000", -4, "100")
-	seedHistCash(t, db, ctx, src, "B-0000", -2, "100") // the next covers B alone
+	for _, off := range []int64{-6, -5, -4} { // nightly runs cover both
+		seedHistCash(t, db, ctx, src, "A-0000", off, "500")
+		seedHistCash(t, db, ctx, src, "B-0000", off, "100")
+	}
+	seedHistCash(t, db, ctx, src, "B-0000", -3, "100") // the next covers B alone
+	seedHistCash(t, db, ctx, src, "B-0000", -2, "100")
 
-	wantAccounts(t, histAccountsOn(t, db, ctx, src, -3), -3, map[string]histValues{
+	wantAccounts(t, histAccountsOn(t, db, ctx, src, -4), -4, map[string]histValues{
 		"A-0000": {cash: 500, total: 500},
 		"B-0000": {cash: 100, total: 100},
 	})
-	for _, off := range []int64{-2, 0} {
+	for _, off := range []int64{-3, 0} {
 		wantAccounts(t, histAccountsOn(t, db, ctx, src, off), off, map[string]histValues{
 			"B-0000": {cash: 100, total: 100},
 		})
@@ -323,7 +327,9 @@ func TestHistoryFullDumpSupersedesADroppedAccount(t *testing.T) {
 // ever end — the horizon alone would carry them, and the source's daily
 // total would stay inflated for a year. Only peers still reported at the
 // candidate snapshot are required, so the next dump ends them all and
-// the history reconciles with the point-in-time report again.
+// the history reconciles with the point-in-time report again. Each
+// source runs nightly, so the dumps after the closing run past the
+// keys' own pace.
 func TestHistoryFullDumpSupersedesSeveralDroppedKeys(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedFX(t, db, snapAt(-30), "USD", "EUR", "1.2") // 1 EUR = 1.2 USD
@@ -333,16 +339,19 @@ func TestHistoryFullDumpSupersedesSeveralDroppedKeys(t *testing.T) {
 	const multi = "multidrop-src"
 	seedHistAccount(t, db, ctx, multi, "M-0000", "cash", "Closed EXAMPLE")
 	seedHistAccount(t, db, ctx, multi, "M-0001", "cash", "Live EXAMPLE")
-	seedHistCashIn(t, db, ctx, multi, "M-0000", "USD", -4, "300") // one run covers all legs
-	seedHistCashIn(t, db, ctx, multi, "M-0000", "EUR", -4, "200")
-	seedHistCashIn(t, db, ctx, multi, "M-0001", "USD", -4, "100")
-	seedHistCashIn(t, db, ctx, multi, "M-0001", "USD", -2, "100") // the next covers M-0001 alone
+	for _, off := range []int64{-6, -5, -4} { // each run covers all legs
+		seedHistCashIn(t, db, ctx, multi, "M-0000", "USD", off, "300")
+		seedHistCashIn(t, db, ctx, multi, "M-0000", "EUR", off, "200")
+		seedHistCashIn(t, db, ctx, multi, "M-0001", "USD", off, "100")
+	}
+	seedHistCashIn(t, db, ctx, multi, "M-0001", "USD", -3, "100") // the next covers M-0001 alone
+	seedHistCashIn(t, db, ctx, multi, "M-0001", "USD", -2, "100")
 
-	wantAccounts(t, histAccountsOn(t, db, ctx, multi, -3), -3, map[string]histValues{
+	wantAccounts(t, histAccountsOn(t, db, ctx, multi, -4), -4, map[string]histValues{
 		"M-0000": {cash: 540, total: 540}, // 300 USD + 200 EUR
 		"M-0001": {cash: 100, total: 100},
 	})
-	for _, off := range []int64{-2, 0} {
+	for _, off := range []int64{-3, 0} {
 		wantAccounts(t, histAccountsOn(t, db, ctx, multi, off), off, map[string]histValues{
 			"M-0001": {cash: 100, total: 100},
 		})
@@ -353,17 +362,20 @@ func TestHistoryFullDumpSupersedesSeveralDroppedKeys(t *testing.T) {
 	seedHistAccount(t, db, ctx, pair, "C-0000", "cash", "Closed EXAMPLE")
 	seedHistAccount(t, db, ctx, pair, "C-0001", "card", "Closed EXAMPLE")
 	seedHistAccount(t, db, ctx, pair, "C-0002", "cash", "Live EXAMPLE")
-	seedHistCash(t, db, ctx, pair, "C-0000", -4, "500")
-	seedHistCash(t, db, ctx, pair, "C-0001", -4, "250")
-	seedHistCash(t, db, ctx, pair, "C-0002", -4, "100")
+	for _, off := range []int64{-6, -5, -4} {
+		seedHistCash(t, db, ctx, pair, "C-0000", off, "500")
+		seedHistCash(t, db, ctx, pair, "C-0001", off, "250")
+		seedHistCash(t, db, ctx, pair, "C-0002", off, "100")
+	}
+	seedHistCash(t, db, ctx, pair, "C-0002", -3, "100")
 	seedHistCash(t, db, ctx, pair, "C-0002", -2, "100")
 
-	wantAccounts(t, histAccountsOn(t, db, ctx, pair, -3), -3, map[string]histValues{
+	wantAccounts(t, histAccountsOn(t, db, ctx, pair, -4), -4, map[string]histValues{
 		"C-0000": {cash: 500, total: 500},
 		"C-0001": {cash: 250, total: 250},
 		"C-0002": {cash: 100, total: 100},
 	})
-	for _, off := range []int64{-2, 0} {
+	for _, off := range []int64{-3, 0} {
 		wantAccounts(t, histAccountsOn(t, db, ctx, pair, off), off, map[string]histValues{
 			"C-0002": {cash: 100, total: 100},
 		})
@@ -374,17 +386,20 @@ func TestHistoryFullDumpSupersedesSeveralDroppedKeys(t *testing.T) {
 	seedHistAccount(t, db, ctx, pos, "D-0000", "brokerage", "Closed EXAMPLE")
 	seedHistAccount(t, db, ctx, pos, "D-0001", "brokerage", "Closed EXAMPLE")
 	seedHistAccount(t, db, ctx, pos, "D-0002", "brokerage", "Live EXAMPLE")
-	seedHistPosition(t, db, ctx, pos, "D-0000", "X", -4, "1000")
-	seedHistPosition(t, db, ctx, pos, "D-0001", "Y", -4, "400")
-	seedHistPosition(t, db, ctx, pos, "D-0002", "Z", -4, "100")
+	for _, off := range []int64{-6, -5, -4} {
+		seedHistPosition(t, db, ctx, pos, "D-0000", "X", off, "1000")
+		seedHistPosition(t, db, ctx, pos, "D-0001", "Y", off, "400")
+		seedHistPosition(t, db, ctx, pos, "D-0002", "Z", off, "100")
+	}
+	seedHistPosition(t, db, ctx, pos, "D-0002", "Z", -3, "100")
 	seedHistPosition(t, db, ctx, pos, "D-0002", "Z", -2, "100")
 
-	wantAccounts(t, histAccountsOn(t, db, ctx, pos, -3), -3, map[string]histValues{
+	wantAccounts(t, histAccountsOn(t, db, ctx, pos, -4), -4, map[string]histValues{
 		"D-0000": {pos: 1000, total: 1000},
 		"D-0001": {pos: 400, total: 400},
 		"D-0002": {pos: 100, total: 100},
 	})
-	for _, off := range []int64{-2, 0} {
+	for _, off := range []int64{-3, 0} {
 		wantAccounts(t, histAccountsOn(t, db, ctx, pos, off), off, map[string]histValues{
 			"D-0002": {pos: 100, total: 100},
 		})
@@ -515,12 +530,14 @@ func TestHistoryCashCarriesEachCurrencyLeg(t *testing.T) {
 		})
 	}
 
-	// Both legs in one run, then a run that reports only the USD leg: the
-	// EUR leg was re-coverable and was left out, so it ends there.
+	// Both legs in nightly runs, then a run that reports only the USD leg:
+	// the EUR leg was re-coverable and was left out, so it ends there.
 	const drop = "legdrop-src"
 	seedHistAccount(t, db, ctx, drop, "L-0001", "cash", "Legs EXAMPLE")
-	seedHistCashIn(t, db, ctx, drop, "L-0001", "USD", -6, "100")
-	seedHistCashIn(t, db, ctx, drop, "L-0001", "EUR", -6, "200")
+	for _, off := range []int64{-8, -7, -6} {
+		seedHistCashIn(t, db, ctx, drop, "L-0001", "USD", off, "100")
+		seedHistCashIn(t, db, ctx, drop, "L-0001", "EUR", off, "200")
+	}
 	seedHistCashIn(t, db, ctx, drop, "L-0001", "USD", -3, "150")
 	for _, c := range []struct {
 		off  int64

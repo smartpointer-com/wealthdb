@@ -121,14 +121,15 @@ Silver content-dedups an unchanged roster row, so a quiet
 account's own `MAX(snapshot_at)` falls behind the source's. Gold
 ends an account's last balance at the first later snapshot that
 reports again the accounts it was seen with, of those still
-reporting ([../DESIGN.md](../DESIGN.md) §10.7). A quiet sibling is
-not still reporting. So an account stamped at its own snapshot would
-drop out of the latest net-worth view at the next load in which one
-sibling changed. Nothing would flag it, and a card would take its
-debt with it. The
-figure is still that account's latest **known** balance; the stamp
-says "as of this load", which is exactly what an unchanged roster
-row asserts.
+reporting, once the source has run more than one and a half of the
+account's cadences past it ([../DESIGN.md](../DESIGN.md) §10.7). A
+quiet sibling is not still reporting. So an account stamped at its own
+snapshot would drop out of the latest net-worth view once a sibling
+changed and the account itself stayed unchanged for more than one and a
+half of its own cadences. Nothing would flag it, and a card would take
+its debt with it. The figure is still that account's latest **known**
+balance; the stamp says "as of this load", which is exactly what an
+unchanged roster row asserts.
 
 ### The running balance is the historic series
 

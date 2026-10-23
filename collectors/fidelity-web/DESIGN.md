@@ -614,7 +614,8 @@ The loader synthesises it at the account's last historical
 `as_of_date`, so gold's historical-account projection has something
 to join against. Gold then ends the account at the first later
 snapshot that reports again the accounts it was last reported with,
-else once the source has run for a year past it
+once the source has run one and a half of the account's cadences past
+it, else once the source has run for a year past it
 ([wealthdb/docs/DESIGN.md](../../wealthdb/docs/DESIGN.md) §10.7).
 
 #### 4.5.1 A re-parse replaces its rows

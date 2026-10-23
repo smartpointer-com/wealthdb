@@ -280,9 +280,10 @@ func loadReturnsDataset(ctx context.Context, db *sql.DB, outCcy string, fx fxBou
 func (ds *returnsDataset) finalize() {
 	// The spine's latest emitted day across all accounts (≈ today). An account
 	// whose own series ends before this was ended there by the spine: a later
-	// run of its source re-covered its company without it, or the source kept
-	// snapshotting past it beyond the carry horizon (closed / feed-dropped; a
-	// run that merely did not cover it carries it forward instead). Its value
+	// run of its source re-covered its company without it, once the source ran
+	// one and a half of its cadences past it, or the source kept snapshotting
+	// past it beyond the carry horizon (closed / feed-dropped; a run that
+	// merely did not cover it carries it forward instead). Its value
 	// is 0 thereafter (matching the macro), and we flag it if it dropped while
 	// still holding value.
 	var globalMax int64
@@ -507,8 +508,9 @@ func (a *accountData) lastVal() float64 {
 // Before its first emitted row it is NULL ("not yet alive"); AFTER its
 // last emitted row it is gone — the macro stops emitting the account once a
 // later run of its source re-covered everything it was last seen with without
-// it, or once its source has snapshotted past it for longer than the carry
-// horizon, so carrying forward past the last row would diverge from
+// it and the source ran one and a half of its cadences past it, or once its
+// source has snapshotted past it for longer than the carry horizon, so
+// carrying forward past the last row would diverge from
 // report_*_history and break global == Σ accounts. Within [first,last] the
 // daily spine has a row for every day.
 func (a *accountData) valueAt(day int64) (float64, bool) {

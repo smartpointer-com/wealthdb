@@ -13,7 +13,7 @@ PDFs, not scraped on a schedule.
 | `pdf_parsers_svbdep.py` | Parser for the **SVB Private Bank deposit and mortgage** statement families. These carry no text layer at all, so they are rastered and OCRed (`collectorkit.pdf.extract_text_ocr` — Apple's Vision framework on macOS, RapidOCR everywhere else) before parsing. Every section is gated on the statement's own arithmetic: the balance summary must close to the cent, each ledger row's running balance must chain from the beginning balance to the stated ending one, and the rows must sort into the same four buckets the summary states — deposits, withdrawals, interest and charges — each to the cent. |
 | `pdf_parsers_svbwa.py` | Parser for the **SVB Wealth Advisory / NFS** statement family (a different statement layout from the supplied statements, whose parser is `fidelity-web/pdf_parsers_supplied.py` in the fidelity-web collector). Equity/ETP/fund, fixed-income (inline CUSIP, with the terms its sub-lines state), and **options** rows — with parens→negative for short legs — plus the no-positions/$0 closing form, the stated beginning value, and the Activity region, where an option leg's contract line rebuilds its OCC code. |
 | `statement_tokens.py` | How this bank writes a number and a date, shared by both parsers: parentheses mean negative, a two-digit year pivots the conventional way, and a separator may come through as a colon or a dot where OCR read a hyphen. The parsers each keep the SHAPE their own layout accepts; this is only what a token MEANS once one is found. |
-| `derived_marks.py` | Reads the advisor's performance workbook, which carries a month-end value per BROKERAGE account for the months no statement covers — its sheets are keyed by the `SV[MRT]-NNNNNN` serial, and only the brokerage silver DB is passed to it, so the deposit and mortgage families are out of its reach. Used only to fill an INTERIOR gap, never to extend a series, and every row it produces is marked at row level so a statement that later joins the archive takes its month back. |
+| `derived_marks.py` | Reads a performance workbook, which carries a month-end value per BROKERAGE account for the months no statement covers — its sheets are keyed by the `SV[MRT]-NNNNNN` serial, and only the brokerage silver DB is passed to it, so the deposit and mortgage families are out of its reach. Used only to fill an INTERIOR gap, never to extend a series, and every row it produces is marked at row level so a statement that later joins the archive takes its month back. |
 | `instrument_links.py` | Links each activity row that moves a position to the holding the statements' arithmetic proves it moved, and each dividend-like row, which names a security without moving it, to the one holding the account's statements leave its name to (see *Modelling decisions*). Pure functions, imported by neither parser, so it is outside the parse cache's fingerprint. |
 | `load.py` | Standalone host builder: discovers the bronze PDFs recursively, routes each to a parser by the document family its own text declares, and writes one silver DB per family (`svb.db`, `svb-deposit.db`, `svb-mortgage.db`) in the **fidelity-web silver schema** — holdings plus the statements' Activity rows as `transactions`, linked to their instruments — synthesising account/portfolio masters. Host venv, no docker: stdlib `sqlite3`, `collectorkit` (`cli`/`silver`/`srcfp`, and `pdf` for the OCR pass), and the two extraction stacks pinned in `requirements.txt`. |
 | `migrations/*.sql` | Copies of the fidelity-web silver schema migrations. svb copies 0001–0004 and 0009–0012, and deliberately skips 0005–0008, 0013 and 0014: 0005 (activity-id rehash) and 0006 (529 `management_style`) are data-only UPDATEs against rows svb does not have, 0007 only WIDENS the `portfolios.kind` CHECK to admit a value this build never writes (it writes the neutral `other`), and 0008 creates `parser_generations`, which only `collectorkit.silver`'s generation stamp writes — this loader never stamps one — and which the Fidelity gold adapter never reads; 0013 only clears a stamp in that table; 0014 only deletes export rows and the dump ledger so a fidelity-web load re-ingests them, and svb rebuilds every load anyway. 0009 adds the cost-basis columns to `historical_position_snapshots`, 0010 the `closed_lots` table (0012 renames its columns), and 0011 the `open_lots` table; svb statements print no basis and this build reads no 1099 and no lot table, so the columns stay NULL and the tables empty here. These DBs are read by that adapter (`kind: "fidelity"`), so any fidelity-web migration that changes a shape svb WRITES or the adapter READS must be copied here — keep those in lockstep with `collectors/fidelity-web/migrations/`. |
@@ -21,7 +21,8 @@ PDFs, not scraped on a schedule.
 ## Why three gold sources, not one
 
 Gold ends an account's last snapshot at the first later snapshot of its
-**source** that re-covers every account seen alongside it
+**source** that re-covers every account seen alongside it, once the source has
+run one and a half of the account's cadences past it
 ([wealthdb/docs/DESIGN.md](../../wealthdb/docs/DESIGN.md) §10.7). The three
 statement families here run on three calendars that collide: a month-end
 brokerage statement and a month-end deposit statement share a snapshot date.
@@ -227,7 +228,7 @@ they default cleanly and the overrides set the precise values.
 
 ## Data caveats
 
-- Where intermediate statements are missing and the advisor workbook does not
+- Where intermediate statements are missing and the workbook does not
   cover them either, the gaps are carried (not real marks), so a period bounded
   only by its endpoints shows the change as one step.
 - An account's series ends at its last statement. Nothing extends it.
@@ -326,7 +327,7 @@ they default cleanly and the overrides set the precise values.
   account's last snapshot only
   ([wealthdb/docs/DESIGN.md](../../wealthdb/docs/DESIGN.md) §10.7). That
   repeats the earlier month's value, which is honest only while nothing moves.
-  The advisor workbook's month-end value for exactly that month fills the gap
+  The workbook's month-end value for exactly that month fills the gap
   instead. That fill reaches
   the brokerage family only — the workbook is keyed by brokerage serial, and
   only the brokerage silver DB is passed to it — so a deposit or mortgage gap

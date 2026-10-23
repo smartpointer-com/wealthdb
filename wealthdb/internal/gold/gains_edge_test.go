@@ -129,14 +129,16 @@ func TestGainsGrainsCarryAnUnlistedAccount(t *testing.T) {
 	}
 }
 
-// An account a later snapshot leaves out is flagged: the snapshot may
-// be partial, or the account closed without a closing row.
+// An account later snapshots leave out, past its own pace, is flagged:
+// the snapshots may be partial, or the account closed without a closing
+// row.
 func TestGainsUnobservedAccountIsFlagged(t *testing.T) {
 	db, ctx := openMigrated(t)
 	edgeExec(t, db, ctx, edgeBase+
 		edgePos(1000, "A1", "X", "X", "USD", 10, 1000, "600")+
 		edgePos(1000, "A2", "Y", "Y", "USD", 10, 1000, "900")+
-		edgePos(200000, "A2", "Y", "Y", "USD", 10, 1000, "900"))
+		edgePos(200000, "A2", "Y", "Y", "USD", 10, 1000, "900")+
+		edgePos(10000000, "A2", "Y", "Y", "USD", 10, 1000, "900"))
 	r := edgeTotal(t, db, ctx, "USD", GainsAll)[0]
 	if r.Quality != "accounts_unobserved=1" {
 		t.Errorf("quality = %q, want accounts_unobserved=1", r.Quality)
@@ -360,7 +362,8 @@ func TestGainsSoldOutAccountIsNotUnobserved(t *testing.T) {
 	edgeExec(t, db, ctx, edgeBase+
 		edgePos(1000, "A1", "X", "X", "USD", 10, 1000, "600")+
 		edgePos(1000, "A2", "Y", "Y", "USD", 10, 1000, "900")+
-		edgePos(200000, "A2", "Y", "Y", "USD", 10, 1000, "900")+`
+		edgePos(200000, "A2", "Y", "Y", "USD", 10, 1000, "900")+
+		edgePos(10000000, "A2", "Y", "Y", "USD", 10, 1000, "900")+`
         INSERT INTO realized_lots (silver_source_id, realized_lot_external_id, account_external_id,
             instrument_external_id, document_kind, tax_year, acquired_various, disposal_date,
             currency, quantity, proceeds, book_value, is_primary) VALUES

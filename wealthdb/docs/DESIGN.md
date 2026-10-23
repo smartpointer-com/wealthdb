@@ -2598,7 +2598,7 @@ cash, where every balance row is its own observation. One active snapshot per
 *source* would be right only for a source that writes every account in one run.
 Where a deposit run, a card run and a statement backfill each land under their
 own `snapshot_at`, it would report whichever run was last and drop every account
-the others carried. Four rules complete the picture:
+the others carried. Five rules complete the picture:
 
 - **Zero is an observation.** The cash line bases keep `amount = 0` rows, so an account paid down to zero carries the
   zero, not the balance before it, and a zero line converts to 0 in every
@@ -2623,7 +2623,26 @@ the others carried. Four rules complete the picture:
   one account closed or several; a card-only or
   deposit-only run covers none of another run's keys and ends nothing. A key
   observed alone has no company to re-cover.
-- **The source's clock bounds the rest.** A key nothing ever re-covers stops
+- **The key's own cadence holds a recent observation open** (migration `0144`):
+  - The re-cover ends a key's last observation only once its source's newest
+    snapshot in that table lies more than one and a half cadences past it.
+  - A key's cadence is the median gap between its own observation days. A key
+    observed on one day only takes a month.
+  - So a quarterly account of a monthly statement stands through the month ends
+    after its last quarter end.
+  - A closed account reads as closed from the run that left it out, once its
+    source has run past the grace.
+  - A positions key needs no grace where its re-cover run states the account's
+    cash. That run reported the account, and its holdings were gone, as after
+    a sale of every one.
+  - The clock is the key's own table. A run that writes only cash moves no grace
+    of a positions key.
+
+  The cadence alone ends nothing. Some sources report a few accounts only in
+  bursts, beside a nightly run of others. A cadence rule alone would drop them
+  between bursts. The re-cover keeps them while each burst is a run of its own:
+  no nightly run covers their company.
+- **The source's clock bounds the rest.** A key no re-cover has ended stops
   contributing once its source has produced a snapshot more than
   `hist_carry_days()` (365) days after that key's last observation. The evidence
   is always the source's own activity, never the calendar — a source that stops
@@ -2637,7 +2656,8 @@ the others carried. Four rules complete the picture:
   one source without expiring each other for as long as their runs carry their
   own `snapshot_at`. A slow key whose last observation *did* share a run with a
   faster sibling is ended by that sibling's next run, which covers the whole
-  peer set, which is indistinguishable from closure at this grain.
+  peer set. That ending waits until the source has run one and a half of the
+  slow key's cadences past it.
 
 The point-in-time reports take each key's active snapshot by the same rule, at
 any instant (migration `0140`):
@@ -2646,16 +2666,17 @@ any instant (migration `0140`):
 - a candidate that is not the key's last observation stands;
 - the key's last observation stands while the instant is before its ending
   snapshot, and while the source's clock at the instant is at most
-  `hist_carry_days()` days past the observation's day.
+  `hist_carry_days()` days past the observation's day. The ending snapshot is the
+  re-cover, where the cadence lets it end.
 
 Each observation so holds over a span (`pos_key_spans()` /
 `cash_key_spans()`): from its own instant to the key's next observation. The
 last one holds to the earlier of its two endings, or for ever.
 `pos_active_at(instants)` / `cash_active_at(instants)` give the observation each
-key holds at each instant. The re-cover ending has one definition
-(`pos_key_ends()` / `cash_key_ends()`), which `hist_active_pos()` /
-`hist_active_cash()` read too. At a day's last second the rule is the history's
-day rule.
+key holds at each instant. The re-cover ending, with its cadence, has one
+definition (`pos_key_ends()` / `cash_key_ends()`), which `hist_active_pos()` /
+`hist_active_cash()` and the cash flow's mortgage split read too. At a day's last
+second the rule is the history's day rule.
 
 What follows for readers of these macros:
 
@@ -2666,12 +2687,23 @@ What follows for readers of these macros:
   point-in-time reports (§10.1) carry a row for every account in the dimension,
   0 when its active snapshot gave it no lines, while the history emits rows only
   for entity-days that have lines.
-- **The newest read.** An account reported only in some of a source's runs drops
-  out at the next run that reports its companions. A quarterly account of a
-  monthly statement so reads as holding nothing from the month-end after its
-  last quarter end until the next quarter end. A past instant carries it,
-  because its next observation exists. Gold cannot tell this shape from a
-  closure without a sign from the source of which accounts a run could report.
+- **The newest read.** An account reported only in some of a source's runs
+  stands at the runs that report its companions for one and a half of its own
+  cadences:
+  - A quarterly account of a monthly statement so holds its last quarter end
+    until its next one.
+  - A new quarterly account, seen at one quarter end only, takes a month as its
+    cadence. It drops out from its second month end until its second quarter
+    end.
+  - An account that closed without a zeroing row holds as long, then reads as
+    closed from the run that left it out.
+  - So does an account that sold every holding, where its runs state no cash
+    of it.
+
+  Gold cannot tell these shapes apart sooner without a sign from the source of
+  which accounts a run could report.
+- **A past read can change.** A read of a past instant changes when a later run
+  passes a key's grace: the key then reads as closed from its re-cover run on.
 - **`snapshot_at` is the account's own active snapshot**, in
   `report_positions_history_multi` and in every point-in-time row, so it varies
   per account within a source. A source's `snapshot_at` is the newest of its
@@ -2964,12 +2996,9 @@ SQL ([CASHFLOW.md](CASHFLOW.md) is the spec):
 - `cashflow_txn_nodes(f, t)` maps every transaction to a
   `section.class.group` node and a disposition that says whether it is a
   line at all. `cashflow_lines_base(f, t)` is that, restricted to the pool
-  and to the lines. It reads a mortgage as repaid once its source's
-  newest positions snapshot lies more than one and a half cadences past
-  the mortgage's last observation. The cadence is the median gap between
-  the mortgage's own observations on different days, a month for one
-  observed on one day only. Holdings keep the mortgage until the shared
-  ending of §10.7 ([CASHFLOW.md §5](CASHFLOW.md)).
+  and to the lines. It reads a mortgage as repaid where its last
+  observation ends, by the shared ending of §10.7, which holdings read
+  too ([CASHFLOW.md §5](CASHFLOW.md)).
 - `report_cashflow_summary`, `_flows`, `_sankey` and `_transactions` sit
   over it, with the FX pair `cashflow_lines_outccy` /
   `cashflow_nodes_outccy`; `web_cashflow` serves the dashboard.

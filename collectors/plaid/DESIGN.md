@@ -371,7 +371,8 @@ the others, and the exit status is then 1.
 start, `dump_runs.snapshot_at`. That covers the accounts with their
 balances, the holdings and the liabilities. Gold reads each account
 at its own latest snapshot. That snapshot ends at the first later run
-that reports again the accounts it was reported with
+that reports again the accounts it was reported with, once the source
+has run one and a half of the account's cadences past it
 ([wealthdb/docs/DESIGN.md](../../wealthdb/docs/DESIGN.md) §10.7). So
 each run restates every account, and each run that read the holdings
 restates every holding, quiet or not. Plaid's own update times are
