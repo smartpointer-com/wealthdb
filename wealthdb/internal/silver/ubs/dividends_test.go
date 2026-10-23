@@ -40,16 +40,34 @@ func swiftDate(day int64) string { return time.Unix(day, 0).UTC().Format("200601
 
 // dividendConfirmation is an MT566 cash dividend in the shape the
 // collector stores. Each figure is SWIFT's `CCYfigure,` spelling; an
-// empty gross or tax leaves that qualifier out.
-func dividendConfirmation(seme, cashAcct, posted, gross, tax string, day int64) string {
+// empty gross or tax leaves that qualifier out. Each further field given
+// joins the block MT566 places it in: a balance (93B) the underlying
+// securities' account, a rate the cash option's confirmation block,
+// before its cash movement.
+func dividendConfirmation(seme, cashAcct, posted, gross, tax string, day int64, further ...[2]string) string {
+	var balances, rates [][2]string
+	for _, f := range further {
+		if f[0] == "93B" {
+			balances = append(balances, f)
+		} else {
+			rates = append(rates, f)
+		}
+	}
 	fields := [][2]string{
 		{"16R", "GENL"}, {"20C", ":SEME//" + seme}, {"22F", ":CAEV//DVCA"}, {"16S", "GENL"},
-		{"16R", "USECU"}, {"97A", ":SAFE//" + divSafe},
-		{"35B", "ISIN " + divISIN + "\nEXAMPLE AG REG"}, {"16S", "USECU"},
+		{"16R", "USECU"}, {"35B", "ISIN " + divISIN + "\nEXAMPLE AG REG"},
+		{"16R", "ACCTINFO"}, {"97A", ":SAFE//" + divSafe},
+	}
+	fields = append(fields, balances...)
+	fields = append(fields, [][2]string{
+		{"16S", "ACCTINFO"}, {"16S", "USECU"},
 		{"16R", "CACONF"}, {"22H", ":CAOP//CASH"},
+	}...)
+	fields = append(fields, rates...)
+	fields = append(fields, [][2]string{
 		{"16R", "CASHMOVE"}, {"22H", ":CRDB//CRED"}, {"97A", ":CASH//" + cashAcct},
 		{"19B", ":PSTA//" + posted},
-	}
+	}...)
 	if gross != "" {
 		fields = append(fields, [2]string{"19B", ":GRSS//" + gross})
 	}
@@ -184,7 +202,8 @@ func countOnAccountDay(got map[string]canonical.TransactionChange, account strin
 // TestTheGrossFromWhatAConfirmationStates covers the other figures a
 // confirmation can state: a tax and no gross reads the credited amount
 // plus the tax; neither reads the net; a gross and a tax in another
-// currency than the line's read the net too. A tax of zero books no tax
+// currency than the line's, with no rate to convert them, read the net
+// too. A tax of zero books no tax
 // row, and figures that cannot be withholding keep the net. Each line
 // still names the security.
 func TestTheGrossFromWhatAConfirmationStates(t *testing.T) {
@@ -595,8 +614,8 @@ func TestAStatementCopyOfAGrossedLineStillFolds(t *testing.T) {
 // TestAnExportDividendReadsTheGrossItStates: an export row states its
 // gross in Description3. In the row's own currency, the dividend reads
 // it and the tax withheld is its own row, the two summing to what
-// moved; a reversal reverses both. A gross in another currency, one equal
-// to what moved, or one below it books no tax row.
+// moved; a reversal reverses both. A gross equal to what moved, or one
+// below it, books no tax row.
 func TestAnExportDividendReadsTheGrossItStates(t *testing.T) {
 	r := newWebTxFixture(t)
 	seedWebAccount(t, r, divIBAN)
@@ -613,8 +632,6 @@ func TestAnExportDividendReadsTheGrossItStates(t *testing.T) {
 		divIBAN, divDay+86400, exportPayload(d1, "Dividend;Reversal", gross("1000.00 CHF"))); err != nil {
 		t.Fatal(err)
 	}
-	seedWebTxRaw(t, r, "AW00000KE0000003", divIBAN, divDay+2*86400, "CHF", 85, "Dividend",
-		exportPayload(d1, "Dividend", "Number/Amt. 15000.00 JPY; Exchange rate: 0.005667; Transaction no. AW00000KE0000000"))
 	seedWebTxRaw(t, r, "AW00000KE0000004", divIBAN, divDay+3*86400, "CHF", 100, "Dividend",
 		exportPayload(d1, "Dividend", gross("100.00 CHF")))
 	seedWebTxRaw(t, r, "AW00000KE0000005", divIBAN, divDay+4*86400, "CHF", 100, "Dividend",
@@ -645,7 +662,6 @@ func TestAnExportDividendReadsTheGrossItStates(t *testing.T) {
 	}{
 		{"AW00000KE0000001", "1000", "-350"},
 		{"AW00000KE0000002", "-1000", "350"},
-		{"AW00000KE0000003", "85", ""},
 		{"AW00000KE0000004", "100", ""},
 		{"AW00000KE0000005", "100", ""},
 		{"AW00000KE0000006", "1200", "-420"},
@@ -1281,6 +1297,361 @@ func TestADividendReversalIsNoOffsetLeg(t *testing.T) {
 			seedWebTx(t, r, "D0000001", vetoAcctB, divDay, "CHF", 500, false)
 			if got := emittedInternal(t, r, &psnReader{db: db})["D0000001@"+vetoAcctB]; got != tc.internal {
 				t.Errorf("deposit internal = %v, want %v", got, tc.internal)
+			}
+		})
+	}
+}
+
+// TestAWithdrawnConfirmationNamesTheSecurityAndNothingElse: a line paired
+// with a confirmation a cancellation withdraws still takes its security,
+// which is not money, and keeps the amount it credited: no gross, no tax
+// row, and its payload names no confirmation. A corrected confirmation of
+// the same posting is the one the line pairs with.
+func TestAWithdrawnConfirmationNamesTheSecurityAndNothingElse(t *testing.T) {
+	const corrected = "mt566:0000KE0000013"
+	paid := dividendConfirmation("0000KE0000011", divAcctID, "CHF850,", "CHF1000,", "CHF150,", divDay)
+	cancelled := confirmationAs(t, paid, "0000KE0000012", "", "CANC", "0000KE0000011")
+	// A cancellation need not repeat every figure of what it withdraws.
+	bare := confirmationAs(t, dividendConfirmation("0000KE0000011", divAcctID, "CHF850,", "", "", divDay),
+		"0000KE0000012", "", "CANC", "0000KE0000011")
+	for _, tc := range []struct {
+		name, cancellation string
+		corrected          bool
+	}{
+		{"withdrawn", cancelled, false},
+		{"withdrawn by a cancellation stating no gross", bare, false},
+		{"withdrawn and corrected", cancelled, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newDividendSilver(t)
+			seedDividendLine(t, db, divLine, "850", "CHF", divNarrative, "", divDay)
+			seedCorporateAction(t, db, divConf, paid, divDay)
+			seedCorporateAction(t, db, divConf+"2", tc.cancellation, divDay)
+			if tc.corrected {
+				seedCorporateAction(t, db, corrected, confirmationAs(t, paid, "0000KE0000013", "", "NEWM", ""), divDay)
+			}
+			got := psnRowsWith(t, db, psnHints{})
+			div := got[divLine]
+			if derefText(div.InstrumentExternalID) != divISIN {
+				t.Errorf("instrument = %q, want the confirmation's %s", derefText(div.InstrumentExternalID), divISIN)
+			}
+			_, taxed := got[divLine+withholdingIDSuffix]
+			if !tc.corrected {
+				if derefDecimal(div.NetAmount) != "850" || div.GrossAmount != nil || taxed {
+					t.Errorf("line = %s gross %s, tax row %v; want the 850 credited, no gross, no tax row",
+						derefDecimal(div.NetAmount), derefDecimal(div.GrossAmount), taxed)
+				}
+				if got := payloadField(t, div, "corporate_action"); got != "" {
+					t.Errorf("line payload names %q, want no confirmation", got)
+				}
+				return
+			}
+			if derefDecimal(div.NetAmount) != "1000" || !taxed {
+				t.Errorf("line = %s, tax row %v; want the corrected gross 1000 and a tax row", derefDecimal(div.NetAmount), taxed)
+			}
+			if got := payloadField(t, div, "corporate_action"); got != corrected {
+				t.Errorf("line payload names %q, want the corrected %q", got, corrected)
+			}
+		})
+	}
+}
+
+// TestWithdrawnConfirmationsOfTwoSecuritiesNameNone: a line whose only
+// confirmations are withdrawn ones that name two securities pairs with
+// none, for which security paid is not known. It takes the other roads:
+// the valor it states, else no instrument.
+func TestWithdrawnConfirmationsOfTwoSecuritiesNameNone(t *testing.T) {
+	other := strings.ReplaceAll(dividendConfirmation("0000KE0000011", divAcctID, "CHF850,", "CHF1000,", "CHF150,",
+		divDay), divISIN, divISIN2)
+	paid := dividendConfirmation("0000KE0000013", divAcctID, "CHF850,", "CHF1000,", "CHF150,", divDay)
+	for _, tc := range []struct{ name, customerRef, want string }{
+		{"a valor stated", "VN" + divValor, divISIN},
+		{"no valor", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newDividendSilver(t)
+			seedValor(t, db, divISIN, divValor)
+			seedDividendLine(t, db, divLine, "850", "CHF", "K00?", tc.customerRef, divDay)
+			seedCorporateAction(t, db, divConf, other, divDay)
+			seedCorporateAction(t, db, divConf+"2", confirmationAs(t, other, "0000KE0000012", "", "CANC", "0000KE0000011"),
+				divDay)
+			seedCorporateAction(t, db, "mt566:0000KE0000013", paid, divDay)
+			seedCorporateAction(t, db, "mt566:0000KE0000014", confirmationAs(t, paid, "0000KE0000014", "", "CANC",
+				"0000KE0000013"), divDay)
+			if got := derefText(psnRowsWith(t, db, psnHints{})[divLine].InstrumentExternalID); got != tc.want {
+				t.Errorf("instrument = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTheGrossFromAConfirmationsRates: a confirmation that states no gross
+// or tax amount in the line's currency states its gross through a rate.
+// Its gross amount at its exchange rate comes first, either way round;
+// then the gross rate per share times the confirmed balance; then the
+// amount credited over one less the withholding rate. Each holds only
+// where it is at least what moved and no more than twice it. A stated
+// amount in the line's currency outranks a rate, and with no rate that
+// holds, the line keeps the net.
+func TestTheGrossFromAConfirmationsRates(t *testing.T) {
+	balance := [2]string{"93B", ":CONB//UNIT/100,"}
+	for _, tc := range []struct {
+		name, gross, tax string
+		rates            [][2]string
+		want, taxed      string
+	}{
+		{"a foreign gross at the exchange rate", "USD1250,", "USD187,5", [][2]string{
+			{"92B", ":EXCH//USD/CHF/0,8"}, {"92A", ":TAXR//20,"}}, "1000", "-150"},
+		{"an exchange rate quoted the other way round", "USD1250,", "USD187,5", [][2]string{
+			{"92B", ":EXCH//CHF/USD/1,25"}}, "1000", "-150"},
+		{"a foreign gross and the withholding rate", "USD1250,", "USD187,5", [][2]string{
+			{"92A", ":TAXR//15,"}}, "1000", "-150"},
+		{"the gross rate times the balance", "", "", [][2]string{{"92F", ":GRSS//CHF10,"}, balance}, "1000", "-150"},
+		{"a foreign gross rate at the exchange rate", "", "", [][2]string{
+			{"92F", ":GRSS//USD12,5"}, {"92B", ":EXCH//USD/CHF/0,8"}, balance}, "1000", "-150"},
+		{"the withholding rate", "", "", [][2]string{{"92A", ":TAXR//15,"}}, "1000", "-150"},
+		{"a gross rate in another currency", "", "", [][2]string{
+			{"92F", ":GRSS//USD11,"}, balance, {"92A", ":TAXR//15,"}}, "1000", "-150"},
+		{"a product more than twice the credit", "", "", [][2]string{
+			{"92F", ":GRSS//CHF100,"}, balance, {"92A", ":TAXR//15,"}}, "1000", "-150"},
+		{"a gross rate and no balance", "", "", [][2]string{{"92F", ":GRSS//CHF10,"}}, "850", ""},
+		{"a face amount", "", "", [][2]string{{"92F", ":GRSS//CHF10,"}, {"93B", ":CONB//FAMT/100,"}}, "850", ""},
+		{"a withholding rate above half", "", "", [][2]string{{"92A", ":TAXR//60,"}}, "850", ""},
+		{"a withholding rate of zero", "", "", [][2]string{{"92A", ":TAXR//0,"}}, "850", ""},
+		{"a stated gross outranks a rate", "CHF1000,", "", [][2]string{{"92A", ":TAXR//20,"}}, "1000", "-150"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newDividendSilver(t)
+			seedDividendLine(t, db, divLine, "850", "CHF", divNarrative, "", divDay)
+			seedCorporateAction(t, db, divConf, dividendConfirmation("0000KE0000011", divAcctID,
+				"CHF850,", tc.gross, tc.tax, divDay, tc.rates...), divDay)
+			got := psnRowsWith(t, db, psnHints{})
+			div := got[divLine]
+			if derefDecimal(div.NetAmount) != tc.want {
+				t.Errorf("dividend = %s, want %s", derefDecimal(div.NetAmount), tc.want)
+			}
+			tax, ok := got[divLine+withholdingIDSuffix]
+			if ok != (tc.taxed != "") {
+				t.Fatalf("withholding row booked = %v, want %v", ok, tc.taxed != "")
+			}
+			if ok {
+				wantWithholding(t, div, tax, tc.taxed)
+			}
+		})
+	}
+}
+
+// TestTheCashOptionStatesTheRates: a confirmation of a choice of dividend
+// states each option in its own block. The cash option's block states the
+// movement and the rates; the shares option's says nothing about the
+// cash, and its posting quantity is no balance. The balance the event paid
+// on is the confirmed one the underlying securities state.
+func TestTheCashOptionStatesTheRates(t *testing.T) {
+	m := parseCorporateAction(corporateActionFields{Fields: [][2]string{
+		{"16R", "USECU"}, {"16R", "ACCTINFO"}, {"93B", ":CONB//UNIT/100,"}, {"16S", "ACCTINFO"}, {"16S", "USECU"},
+		{"16R", "CACONF"}, {"22H", ":CAOP//SECU"}, {"92F", ":GRSS//CHF99,"}, {"92A", ":TAXR//35,"},
+		{"16R", "SECMOVE"}, {"36B", ":PSTA//UNIT/5,"}, {"16S", "SECMOVE"}, {"16S", "CACONF"},
+		{"16R", "CACONF"}, {"22H", ":CAOP//CASH"}, {"92F", ":GRSS//CHF10,"},
+		{"16R", "CASHMOVE"}, {"22H", ":CRDB//CRED"}, {"97A", ":CASH//" + divAcctID},
+		{"19B", ":PSTA//CHF850,"}, {"92A", ":TAXR//15,"}, {"92B", ":EXCH//USD/CHF/0,8"},
+		{"16S", "CASHMOVE"}, {"16S", "CACONF"},
+	}})
+	if !m.creditsCash() || derefDecimal(&m.move.posted) != "850" {
+		t.Fatalf("cash option = %v, posted %s; want the cash option's 850", m.creditsCash(), derefDecimal(&m.move.posted))
+	}
+	for name, tc := range map[string]struct {
+		got  *canonical.Decimal
+		want string
+	}{
+		"gross rate":       {m.move.grossRate, "10"},
+		"withholding rate": {m.move.taxRate, "15"},
+		"balance":          {m.move.quantity, "100"},
+	} {
+		if derefDecimal(tc.got) != tc.want {
+			t.Errorf("%s = %s, want %s", name, derefDecimal(tc.got), tc.want)
+		}
+	}
+	if x := m.move.exchange; x == nil || x.from != "USD" || x.to != "CHF" || x.rate.String() != "0.8" {
+		t.Errorf("exchange rate = %+v, want USD/CHF 0.8", x)
+	}
+}
+
+// TestAForeignExportDividendReadsItsConvertedGross: an export row of a
+// security quoted in another currency states its gross in that currency,
+// beside the rate the bank converted at. The row pins the rate's
+// quotation, per unit or per 100 units: the one under which the converted
+// gross is at least what moved and no more than twice it. Within the
+// rate's rounding of what moved, nothing was withheld: the row books what
+// moved, with no tax row. A reversal takes back the converted gross. Where
+// no quotation answers, or the row states no rate, it keeps the net.
+func TestAForeignExportDividendReadsItsConvertedGross(t *testing.T) {
+	r := newWebTxFixture(t)
+	seedWebAccount(t, r, divIBAN)
+	d1 := "Reg.shs Example Inc (EXI); " + divISIN
+	stated := func(gross, rate string) string {
+		d3 := "Number/Amt. " + gross
+		if rate != "" {
+			d3 += "; Exchange rate: " + rate
+		}
+		return d3 + "; Transaction no. AW00000KE0000000"
+	}
+	// 15000 JPY at 0.005667 per unit converts to 85.005. The rate's
+	// rounding, half a unit of its last digit on 15000, is 0.0075, and
+	// half a cent more puts the band at 85.005 plus or minus 0.0125.
+	rows := []struct {
+		id          string
+		credited    float64
+		gross, rate string
+		net, tax    string
+	}{
+		{"AW00000KE0000021", 72.25, "100.00 USD", "0.85", "85", "-12.75"},
+		{"AW00000KE0000022", 71.4, "15000.00 JPY", "0.5600", "84", "-12.6"},
+		{"AW00000KE0000023", 85, "15000.00 JPY", "0.004", "85", ""},
+		{"AW00000KE0000024", 72.25, "100.00 USD", "", "72.25", ""},
+		{"AW00000KE0000026", 85, "15000.00 JPY", "0.005667", "85", ""},
+		{"AW00000KE0000027", 85.01, "15000.00 JPY", "0.005667", "85.01", ""},
+		{"AW00000KE0000028", 84.99, "15000.00 JPY", "0.005667", "85.01", "-0.02"},
+		{"AW00000KE0000029", 85.02, "15000.00 JPY", "0.005667", "85.02", ""},
+	}
+	for i, row := range rows {
+		seedWebTxRaw(t, r, row.id, divIBAN, divDay+int64(i)*86400, "CHF", row.credited, "Dividend",
+			exportPayload(d1, "Dividend", stated(row.gross, row.rate)))
+	}
+	if _, err := r.db.Exec(`
+        INSERT INTO transactions (transaction_external_id, account_external_id,
+            snapshot_at, value_date, currency_iso, amount_credit, description_kind, payload)
+        VALUES ('AW00000KE0000025', ?, 1000, ?, 'CHF', -72.25, 'Dividend;Reversal', ?)`,
+		divIBAN, divDay+20*86400, exportPayload(d1, "Dividend;Reversal", stated("-100.00 USD", "0.85"))); err != nil {
+		t.Fatal(err)
+	}
+	stream, _, err := r.transactionsBeforePSNStart(context.Background(),
+		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, &psnReader{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	got := drainTx(t, stream)
+	want := []struct{ id, net, tax string }{{"AW00000KE0000025", "-85", "12.75"}}
+	for _, row := range rows {
+		want = append(want, struct{ id, net, tax string }{row.id, row.net, row.tax})
+	}
+	for _, tc := range want {
+		id := tc.id + "@" + divIBAN
+		tx := got[id]
+		if tx.Kind != canonical.TxKindDividend || derefDecimal(tx.NetAmount) != tc.net {
+			t.Errorf("%s: %s %s, want a dividend of %s", tc.id, tx.Kind, derefDecimal(tx.NetAmount), tc.net)
+		}
+		tax, ok := got[id+withholdingIDSuffix]
+		switch {
+		case tc.tax == "" && ok:
+			t.Errorf("%s: a withholding row of %s, want none", tc.id, derefDecimal(tax.NetAmount))
+		case tc.tax != "" && derefDecimal(tax.NetAmount) != tc.tax:
+			t.Errorf("%s: withholding %s, want %s", tc.id, derefDecimal(tax.NetAmount), tc.tax)
+		}
+	}
+}
+
+// TestEachReversalTakesBackItsOwnCredit: reversals take back credits one
+// to one, in time order, each the newest credit of its amount, security
+// and account on or before its day that no earlier reversal took back. A
+// second reversal of one credit finds none left: it is a dividend reversal
+// of the amount it moves only where its line says dividend. A credit two
+// rails record is one credit, and so is a confirmation sent twice; two
+// credits one rail records are two. A reversed confirmation's credit is
+// still there to take back.
+func TestEachReversalTakesBackItsOwnCredit(t *testing.T) {
+	// grossed is a credit of 500 gold books at its confirmation's gross of
+	// 600 on the day: the line, and the confirmation stating the gross.
+	grossed := func(t *testing.T, db *sql.DB, line, seme string, day int64) {
+		seedCreditLine(t, db, line, divIBAN, "CHF", "500", "NDIV", divNarrative, "VN "+divValor, day)
+		seedCorporateAction(t, db, "mt566:"+seme, dividendConfirmation(seme, divAcctID,
+			"CHF500,", "CHF600,", "CHF100,", day), day)
+	}
+	const second = divRev + "#2"
+	for _, tc := range []struct {
+		name string
+		seed func(*testing.T, *sql.DB)
+		// kind, amount and tax are each row's kind, amount and tax row,
+		// "" for none.
+		want map[string][3]string
+	}{
+		{"two reversals of one credit", func(t *testing.T, db *sql.DB) {
+			grossed(t, db, divLine, "0000KE0000011", divDay-2*86400)
+			seedReversalLine(t, db, divRev, "500", "NDIV", divNarrative, "VN "+divValor, divDay-86400)
+			seedReversalLine(t, db, second, "500", "NDIV", divNarrative, "VN "+divValor, divDay)
+		}, map[string][3]string{
+			divRev: {"dividend", "-600", "100"},
+			second: {"dividend", "-500", ""},
+		}},
+		{"an older credit reversed after a newer one", func(t *testing.T, db *sql.DB) {
+			grossed(t, db, divLine, "0000KE0000011", divDay-10*86400)
+			seedCreditLine(t, db, divLine+"#1", divIBAN, "CHF", "500", "NDIV", divNarrative, "VN "+divValor, divDay-5*86400)
+			seedReversalLine(t, db, divRev, "500", "NDIV", divNarrative, "VN "+divValor, divDay-3*86400)
+			seedReversalLine(t, db, second, "500", "NDIV", divNarrative, "VN "+divValor, divDay)
+		}, map[string][3]string{
+			divRev: {"dividend", "-500", ""},
+			second: {"dividend", "-600", "100"},
+		}},
+		{"a credit two rails record", func(t *testing.T, db *sql.DB) {
+			grossed(t, db, divLine, "0000KE0000011", divDay-2*86400)
+			seedReversalLine(t, db, divRev, "500", "NRTI", "K00?", "VN "+divValor, divDay-86400)
+			seedReversalLine(t, db, second, "500", "NRTI", "K00?", "VN "+divValor, divDay)
+		}, map[string][3]string{
+			divRev: {"dividend", "-600", "100"},
+			second: {"withdrawal", "-500", ""},
+		}},
+		{"two credits one rail records on one day", func(t *testing.T, db *sql.DB) {
+			seedCreditLine(t, db, divLine, divIBAN, "CHF", "500", "NDIV", divNarrative, "VN "+divValor, divDay-2*86400)
+			seedCreditLine(t, db, divLine+"#1", divIBAN, "CHF", "500", "NDIV", divNarrative, "VN "+divValor, divDay-2*86400)
+			seedReversalLine(t, db, divRev, "500", "NRTI", "K00?", "VN "+divValor, divDay-86400)
+			seedReversalLine(t, db, second, "500", "NRTI", "K00?", "VN "+divValor, divDay)
+		}, map[string][3]string{
+			divRev: {"dividend", "-500", ""},
+			second: {"dividend", "-500", ""},
+		}},
+		{"a confirmation the bank sent twice", func(t *testing.T, db *sql.DB) {
+			grossed(t, db, divLine, "0000KE0000011", divDay-2*86400)
+			seedCorporateAction(t, db, "mt566:0000KE0000012", dividendConfirmation("0000KE0000012", divAcctID,
+				"CHF500,", "CHF600,", "CHF100,", divDay-2*86400), divDay-2*86400)
+			seedReversalLine(t, db, divRev, "500", "NRTI", "K00?", "VN "+divValor, divDay-86400)
+			seedReversalLine(t, db, second, "500", "NRTI", "K00?", "VN "+divValor, divDay)
+		}, map[string][3]string{
+			divLine: {"dividend", "600", "-100"},
+			divRev:  {"dividend", "-600", "100"},
+			second:  {"withdrawal", "-500", ""},
+		}},
+		// The bank reverses the payment a confirmation states, and the
+		// line the confirmation alone names takes it back: the credit
+		// stands on the confirmation's rail though the reversal withdraws
+		// the confirmation.
+		{"a reversed confirmation's credit", func(t *testing.T, db *sql.DB) {
+			paid := dividendConfirmation("0000KE0000011", divAcctID, "CHF500,", "CHF600,", "CHF100,", divDay-2*86400)
+			seedCreditLine(t, db, divLine, divIBAN, "CHF", "500", "NDIV", divNarrative, "", divDay-2*86400)
+			seedCorporateAction(t, db, divConf, paid, divDay-2*86400)
+			seedCorporateAction(t, db, divConf+"2", confirmationAs(t, paid, "0000KE0000012", "", "REVR", "0000KE0000011"), divDay-2*86400)
+			seedReversalLine(t, db, divRev, "500", "NRTI", "K00?", "VN "+divValor, divDay-86400)
+		}, map[string][3]string{
+			divLine: {"dividend", "500", ""},
+			divRev:  {"dividend", "-500", ""},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newDividendSilver(t)
+			seedValor(t, db, divISIN, divValor)
+			tc.seed(t, db)
+			got := psnRowsWith(t, db, psnHints{})
+			for id, want := range tc.want {
+				rev := got[id]
+				if string(rev.Kind) != want[0] || derefDecimal(rev.NetAmount) != want[1] {
+					t.Errorf("%s = %s %s, want %s %s", id, rev.Kind, derefDecimal(rev.NetAmount), want[0], want[1])
+				}
+				tax, ok := got[id+withholdingIDSuffix]
+				switch {
+				case want[2] == "" && ok:
+					t.Errorf("%s: a tax row of %s, want none", id, derefDecimal(tax.NetAmount))
+				case want[2] != "" && derefDecimal(tax.NetAmount) != want[2]:
+					t.Errorf("%s: tax taken back %s, want %s", id, derefDecimal(tax.NetAmount), want[2])
+				}
 			}
 		})
 	}

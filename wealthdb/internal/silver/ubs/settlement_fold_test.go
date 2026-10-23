@@ -74,30 +74,6 @@ func seedSettlementLeg(t *testing.T, db *sql.DB, eventID, amount, creditDebit st
 	}
 }
 
-// psnRows drains the PSN transaction stream, keyed by transaction id.
-func psnRows(t *testing.T, db *sql.DB) map[string]canonical.TransactionChange {
-	t.Helper()
-	stream, err := (&psnReader{db: db}).Transactions(context.Background(),
-		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, psnHints{})
-	if err != nil {
-		t.Fatalf("Transactions: %v", err)
-	}
-	out := map[string]canonical.TransactionChange{}
-	for {
-		batch, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatalf("stream: %v", err)
-		}
-		for _, tx := range batch.Transactions {
-			out[tx.TransactionExternalID] = tx
-		}
-		if !more {
-			break
-		}
-	}
-	return out
-}
-
 // TestOneTradeIsOneRowWhicheverRailPrintedIt: the confirmation and the
 // cash line it settles are one booking. The confirmation survives — it
 // names the instrument, the quantity and the price where the cash line
@@ -108,7 +84,7 @@ func TestOneTradeIsOneRowWhicheverRailPrintedIt(t *testing.T) {
 	seedTradeConfirmation(t, db, "mt515:T1", "BUY", "1000.00", foldSettleDay)
 	seedSettlementLeg(t, db, "mt940:C1", "1000.00", "D", foldSettleDay)
 
-	got := psnRows(t, db)
+	got := psnRowsWith(t, db, psnHints{})
 	if len(got) != 1 {
 		t.Fatalf("emitted %d row(s), want 1: %v", len(got), got)
 	}
@@ -131,7 +107,7 @@ func TestTheSurvivingTradeNamesAnAccountTheRegistryKnows(t *testing.T) {
 	seedFoldCashAccount(t, db)
 	seedTradeConfirmation(t, db, "mt515:T1", "BUY", "1000.00", foldSettleDay)
 
-	tx := psnRows(t, db)["mt515:T1"]
+	tx := psnRowsWith(t, db, psnHints{})["mt515:T1"]
 	if tx.AccountExternalID != foldCashIBAN {
 		t.Errorf("account = %q, want the IBAN %q", tx.AccountExternalID, foldCashIBAN)
 	}
@@ -148,7 +124,7 @@ func TestATradeTheCashFeedNeverCarriedKeepsItsConfirmation(t *testing.T) {
 	// this trade.
 	seedSettlementLeg(t, db, "mt940:C9", "4321.00", "D", foldSettleDay)
 
-	got := psnRows(t, db)
+	got := psnRowsWith(t, db, psnHints{})
 	if len(got) != 2 {
 		t.Fatalf("emitted %d row(s), want both: %v", len(got), got)
 	}
@@ -173,7 +149,7 @@ func TestAFundRedemptionIsASale(t *testing.T) {
 			_, db := newFixtureSilver(t)
 			seedFoldCashAccount(t, db)
 			seedTradeConfirmation(t, db, "mt515:T1", tc.side, "1000.00", foldSettleDay)
-			if got := psnRows(t, db)["mt515:T1"].Kind; got != tc.want {
+			if got := psnRowsWith(t, db, psnHints{})["mt515:T1"].Kind; got != tc.want {
 				t.Errorf("side %q = %q, want %q", tc.side, got, tc.want)
 			}
 		})
@@ -198,7 +174,7 @@ func TestOnlyASecuritiesSettlementFolds(t *testing.T) {
 		t.Fatalf("seed payment: %v", err)
 	}
 
-	got := psnRows(t, db)
+	got := psnRowsWith(t, db, psnHints{})
 	if len(got) != 2 {
 		t.Fatalf("emitted %d row(s), want both: %v", len(got), got)
 	}
@@ -269,7 +245,7 @@ func TestOneConfirmationFoldsOneCashLeg(t *testing.T) {
 	seedSettlementLeg(t, db, "mt940:C1", "1000.00", "D", foldSettleDay)
 	seedSettlementLeg(t, db, "mt940:C2", "1000.00", "D", foldSettleDay)
 
-	got := psnRows(t, db)
+	got := psnRowsWith(t, db, psnHints{})
 	if len(got) != 2 {
 		t.Fatalf("emitted %d row(s), want the confirmation and the unpaired leg: %v", len(got), got)
 	}

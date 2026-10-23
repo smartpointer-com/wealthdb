@@ -50,7 +50,8 @@ import (
 //       both recorded: a statement reconstruction whose account,
 //       value day, signed amount and currency match an export or
 //       MT940 row is dropped, and its narrative is carried onto the
-//       row that kept the booking. One booking, one row.
+//       row that kept the booking. So is an export row a
+//       confirmation's cash leg records. One booking, one row.
 //     - Inside PSN, a settlement fold (buildSettlementFold) does the
 //       same for the two rails that record one trade: the MT515
 //       confirmation keeps it, the MT940 cash leg settling it drops.
@@ -346,13 +347,9 @@ func (s *psnWebTextFoldStream) Next(ctx context.Context) (canonical.TransactionB
 		if err := json.Unmarshal(t.Payload, &p); err != nil || p.BankRef == "" {
 			continue
 		}
-		web, ok := s.texts[webTxTextKey{account: t.AccountExternalID, txnNo: p.BankRef}]
-		if !ok {
-			continue
+		if web, ok := s.texts[webTxTextKey{account: t.AccountExternalID, txnNo: p.BankRef}]; ok {
+			web.fill(t)
 		}
-		t.Counterparty = richerText(t.Counterparty, web.counterparty)
-		t.Description = richerText(t.Description, web.description)
-		t.ProviderCategory = richerText(t.ProviderCategory, web.providerCategory)
 	}
 	return batch, more, nil
 }
@@ -361,7 +358,8 @@ func (s *psnWebTextFoldStream) Close() error { return s.inner.Close() }
 
 // psnStatementCarryStream is the PSN half of the era fold: it carries the
 // narrative of a statement reconstruction the web side dropped onto the
-// MT940 row that kept the booking.
+// MT940 row that kept the booking, and that of an export row onto the
+// confirmation's cash leg that kept it.
 //
 // The three eras of the cash ledger overlap in time and share no id, so an
 // entry printed on a statement and also carried by the feed reaches gold
@@ -372,10 +370,10 @@ func (s *psnWebTextFoldStream) Close() error { return s.inner.Close() }
 // the export-side fold above: a column that is empty or a bare code takes
 // the statement's value, a column that already says something keeps it.
 //
-// Keyed on the surviving row's event id, decided on the web side where
-// both eras are in hand, so nothing is re-matched here. No row is added or
-// dropped by this stream, and the amount, the value date, the kind and the
-// id are the MT940 row's, byte for byte.
+// Keyed on the surviving row's id, decided on the web side where both eras
+// are in hand, so nothing is re-matched here. No row is added or dropped
+// by this stream, and the amount, the value date, the kind and the id are
+// the surviving row's, byte for byte.
 type psnStatementCarryStream struct {
 	inner silver.TransactionStream
 	texts map[string]webTxText
@@ -388,13 +386,9 @@ func (s *psnStatementCarryStream) Next(ctx context.Context) (canonical.Transacti
 	}
 	for i := range batch.Transactions {
 		t := &batch.Transactions[i]
-		alt, ok := s.texts[t.TransactionExternalID]
-		if !ok {
-			continue
+		if alt, ok := s.texts[t.TransactionExternalID]; ok {
+			alt.fill(t)
 		}
-		t.Counterparty = richerText(t.Counterparty, alt.counterparty)
-		t.Description = richerText(t.Description, alt.description)
-		t.ProviderCategory = richerText(t.ProviderCategory, alt.providerCategory)
 	}
 	return batch, more, nil
 }

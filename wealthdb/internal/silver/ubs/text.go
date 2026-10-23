@@ -6,6 +6,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
@@ -280,4 +281,25 @@ func richerText(have *string, alt string) *string {
 		return have
 	}
 	return silver.StrPtrIfNonEmpty(alt)
+}
+
+// fill fills each text column of t that it left empty or as a bare code
+// from alt (richerText).
+func (alt webTxText) fill(t *canonical.TransactionChange) {
+	t.Counterparty = richerText(t.Counterparty, alt.counterparty)
+	t.Description = richerText(t.Description, alt.description)
+	t.ProviderCategory = richerText(t.ProviderCategory, alt.providerCategory)
+}
+
+// or is t with each column it left empty or as a bare code filled from
+// alt, as fill fills a transaction's.
+func (t webTxText) or(alt webTxText) webTxText {
+	pick := func(have, alt string) string {
+		return derefText(richerText(silver.StrPtrIfNonEmpty(have), alt))
+	}
+	return webTxText{
+		counterparty:     pick(t.counterparty, alt.counterparty),
+		description:      pick(t.description, alt.description),
+		providerCategory: pick(t.providerCategory, alt.providerCategory),
+	}
 }

@@ -275,30 +275,48 @@ func bookingCurrency(ccy string) string {
 	return c
 }
 
-// eraFold is the cross-era cash dedup: which statement rows describe a
-// booking another era also records, and what text each one leaves behind
-// for the row that keeps it.
+// eraFold is the cross-era cash dedup: which web rows describe a booking
+// another era also records, and what text each one leaves behind for the
+// row that keeps it. The rows dropped are statement rows, and the export
+// copies of a confirmation's cash leg.
 type eraFold struct {
-	// drop holds the emitted web keys (`<txn no>@<account>`) of statement
+	// drop holds the emitted web keys (`<txn no>@<account>`) of the web
 	// rows folded away.
 	drop map[string]bool
 	// web maps the emitted web key of a surviving export row to the text
 	// of the statement row folded into it.
 	web map[string]webTxText
-	// psn maps a surviving MT940 event id to the same.
+	// psn maps the id of a surviving feed row (an MT940 line, a conversion
+	// mirror, a confirmation's cash leg) to the text of the rows folded
+	// into it.
 	psn map[string]webTxText
+	// withheld names the cash legs whose export copy is the record
+	// instead: the leg reads no gross and the copy states one.
+	withheld map[string]bool
+}
+
+// carry records text for the feed row to take. A second copy folded into
+// the row fills only what the first left empty or as a bare code.
+func (f *eraFold) carry(id string, text webTxText) {
+	if have, ok := f.psn[id]; ok {
+		text = have.or(text)
+	}
+	f.psn[id] = text
 }
 
 // psnHints is what the web-side transaction pass decided about rows the
 // PSN stream will emit: ids to demote to a non-flow kind (the offset
-// veto's PSN half) and text to carry onto a row whose statement duplicate
-// the era fold dropped. Both are computed on the web side because both
-// are decisions about a PAIR of rows that straddles the two silvers.
+// veto's PSN half) and text to carry onto a row whose statement or export
+// duplicate the era fold dropped. Both are computed on the web side
+// because both are decisions about a PAIR of rows that straddles the two
+// silvers.
 type psnHints struct {
 	veto  map[string]bool
 	carry map[string]webTxText
-	// withheld names the conversion mirrors the export already records
-	// (buildSameDayOffsetVeto): the PSN stream leaves them out.
+	// withheld names the rows the PSN stream books beside the feed that
+	// an export row records instead: conversion mirrors
+	// (buildSameDayOffsetVeto) and cash legs (buildEraFold). The stream
+	// leaves them out.
 	withheld map[string]bool
 	// securities is what a dividend line is linked by past its
 	// confirmation, and which reversal of a credit is a dividend
@@ -324,7 +342,8 @@ type webTxOutcome struct {
 }
 
 // buildEraFold pairs each statement reconstruction with the export or feed
-// record of the same booking, so one booking reaches gold as one row.
+// record of the same booking, and each export copy of a confirmation's
+// cash leg with the leg, so one booking reaches gold as one row.
 //
 // The statement archive, the account-statement export and the MT940 feed
 // cover overlapping periods and share no id, so an entry printed on a
@@ -334,11 +353,12 @@ type webTxOutcome struct {
 // express: same account, same value day, same signed amount, same
 // currency.
 //
-// The statement copy is the one dropped, always. The export and the feed
-// are the bank's own machine-readable record of the entry; the statement
-// row is reconstructed from a printed document, one parse further from the
-// bank. Which of the two survives is therefore not a per-row judgement —
-// the era decides it.
+// The statement copy is the one dropped. The export and the feed are the
+// bank's own machine-readable record of the entry; the statement row is
+// reconstructed from a printed document, one parse further from the bank.
+// Which of the two survives is therefore not a per-row judgement — the era
+// decides it. The one export row dropped is the copy of a cash leg
+// (below).
 //
 // Two rows of the SAME era are never folded. Two identical payments on one
 // day are an ordinary thing for a ledger to hold, and within one era they
@@ -348,6 +368,16 @@ type webTxOutcome struct {
 // two statement rows and one export row folds exactly one of them and
 // leaves the other standing.
 //
+// A confirmation's cash leg (cashLegKeys) is the feed's record of a
+// payment on an account the feed does not speak for, where the cut gives
+// the export every day. It is keyed on the amount it posted, which is what
+// the export row moved. The export copy folds into it, 1:1, before any
+// statement row is paired: the leg carries the confirmation's security,
+// gross and tax. A statement copy then folds onto it as onto any feed row.
+// Where the leg reads no gross and its export copy states one
+// (webStatedGross), the copy is the record instead: it stays, at its
+// gross, and the leg is withheld.
+//
 // The whole silver, unwindowed, for the reason buildSameDayOffsetVeto reads
 // it whole: whether an entry is recorded twice depends only on silver's
 // contents, never on which slice of time a load happens to cover. The
@@ -355,21 +385,30 @@ type webTxOutcome struct {
 // not in the ledger and must not consume a match.
 func (r *webReader) buildEraFold(ctx context.Context, psn *psnReader, cut psnCut) (*eraFold, error) {
 	out := &eraFold{
-		drop: map[string]bool{},
-		web:  map[string]webTxText{},
-		psn:  map[string]webTxText{},
+		drop:     map[string]bool{},
+		web:      map[string]webTxText{},
+		psn:      map[string]webTxText{},
+		withheld: map[string]bool{},
 	}
 	if r == nil {
 		return out, nil
 	}
 
-	type statementRow struct {
-		key  string
-		text webTxText
+	legs, err := psn.cashLegKeys(ctx, cut.coverage)
+	if err != nil {
+		return nil, err
 	}
-	statements := map[bookingKey][]statementRow{}
-	exports := map[bookingKey][]string{}
-	err := r.eachWebTx(ctx, "ubs-web buildEraFold", "", nil, func(row webTxRow) error {
+
+	// foldRow is a web row the fold may drop, the text it leaves, and for
+	// an export copy of a cash leg whether it states a gross.
+	type foldRow struct {
+		key     string
+		text    webTxText
+		grossed bool
+	}
+	statements := map[bookingKey][]foldRow{}
+	exports := map[bookingKey][]foldRow{}
+	err = r.eachWebTx(ctx, "ubs-web buildEraFold", "", nil, func(row webTxRow) error {
 		if cut.excludes(row.account, row.valueDate) {
 			return nil
 		}
@@ -377,22 +416,48 @@ func (r *webReader) buildEraFold(ctx context.Context, psn *psnReader, cut psnCut
 		// key carries the cash the row is emitted with: a dividend's
 		// amount credited, before any gross.
 		hint := webKindHint(row.descKind, row.counterparty)
-		_, _, net := webProjectedNet(hint, isStatementEraID(row.txID), row.debit, row.credit)
+		kind, _, net := webProjectedNet(hint, isStatementEraID(row.txID), row.debit, row.credit)
 		k, ok := newBookingKey(row.account, row.valueDate, net, row.currency)
 		if !ok {
 			return nil
 		}
-		if !isStatementEraID(row.txID) {
-			exports[k] = append(exports[k], row.emittedID())
+		f := foldRow{key: row.emittedID()}
+		exported := !isStatementEraID(row.txID)
+		if exported && len(legs[k]) == 0 {
+			exports[k] = append(exports[k], f)
 			return nil
 		}
+		// A statement row and an export copy of a cash leg leave their text.
 		p, pdfBackfill := decodeWebTxEra(row.payload)
-		text, _, _ := projectWebTxText(row.counterparty.String, row.descKind.String, p, pdfBackfill)
-		statements[k] = append(statements[k], statementRow{key: row.emittedID(), text: text})
+		f.text, _, _ = projectWebTxText(row.counterparty.String, row.descKind.String, p, pdfBackfill)
+		if !exported {
+			statements[k] = append(statements[k], f)
+			return nil
+		}
+		// The gross the export pass books the copy at (exportGross).
+		_, f.grossed = exportGross(kind, p, pdfBackfill, row.currency, net)
+		exports[k] = append(exports[k], f)
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	for k, ls := range legs {
+		exp := exports[k]
+		sort.Slice(ls, func(i, j int) bool { return ls[i].id < ls[j].id })
+		sort.Slice(exp, func(i, j int) bool { return exp[i].key < exp[j].key })
+		n := min(len(ls), len(exp))
+		var kept []foldRow
+		for i := range n {
+			if !ls[i].grossed && exp[i].grossed {
+				out.withheld[ls[i].id] = true
+				kept = append(kept, exp[i])
+				continue
+			}
+			out.drop[exp[i].key] = true
+			out.carry(ls[i].id, exp[i].text)
+		}
+		exports[k] = append(kept, exp[n:]...)
 	}
 	if len(statements) == 0 {
 		return out, nil
@@ -426,6 +491,13 @@ func (r *webReader) buildEraFold(ctx context.Context, psn *psnReader, cut psnCut
 			feed[k] = append(feed[k], id)
 		}
 	}
+	for k, ls := range legs {
+		for _, l := range ls {
+			if !out.withheld[l.id] {
+				feed[k] = append(feed[k], l.id)
+			}
+		}
+	}
 
 	for k, ss := range statements {
 		exp, fd := exports[k], feed[k]
@@ -433,16 +505,16 @@ func (r *webReader) buildEraFold(ctx context.Context, psn *psnReader, cut psnCut
 			continue
 		}
 		sort.Slice(ss, func(i, j int) bool { return ss[i].key < ss[j].key })
-		sort.Strings(exp)
+		sort.Slice(exp, func(i, j int) bool { return exp[i].key < exp[j].key })
 		sort.Strings(fd)
 		for i, s := range ss {
 			switch {
 			case i < len(exp):
 				out.drop[s.key] = true
-				out.web[exp[i]] = s.text
+				out.web[exp[i].key] = s.text
 			case i-len(exp) < len(fd):
 				out.drop[s.key] = true
-				out.psn[fd[i-len(exp)]] = s.text
+				out.carry(fd[i-len(exp)], s.text)
 			}
 		}
 	}

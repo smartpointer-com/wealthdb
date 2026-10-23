@@ -486,12 +486,14 @@ the two questions have two answers.
 - Where a source credits a dividend net but states its gross, the
   adapter books it the same way: the gross, and the withholding as its
   own `tax` row. The two rows sum to the cash credited. UBS states the
-  gross in the dividend's confirmation and in its export row
+  gross in the dividend's confirmation, by its amounts or its rates,
+  and in its export row, in the currency credited or beside the rate it
+  converted at
   ([adapters/ubs.md](adapters/ubs.md#dividends-the-security-and-the-gross)
   §7, *Dividends: the security and the gross*). A reversal of such a
   dividend takes back the gross. Its tax row is positive, so the
-  `withheld` memo (below) leaves it out. Where no record
-  states the gross in the currency credited, the net is the income.
+  `withheld` memo (below) leaves it out. Where no record states a gross
+  or a rate it follows from, the net is the income.
 - Where a bank books a net salary, the net is the income. The gross is
   on a payslip the product does not hold, and the product does not
   print a figure it cannot see.

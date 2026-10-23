@@ -325,7 +325,8 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 // eras against the machine-readable records: a statement reconstruction
 // whose account, value day, signed amount and currency match an export
 // or MT940 row is not emitted, because the row that matched it already
-// carries the booking; it never folds two rows of one era. The seam
+// carries the booking, and so is an export row a confirmation's cash leg
+// records; it never folds two rows of one era. The seam
 // (buildSeamBankRefs) covers the days the first PSN dump's statements
 // reach back over, where the cut excludes neither copy, and matches on
 // the bank's own number for the entry. Both verdicts reach the offset
@@ -406,8 +407,9 @@ type webTxPass struct {
 	seam             map[webTxTextKey]bool
 	offsetVeto       map[string]bool
 	psnVeto          map[string]bool
-	// withheld names the conversion mirrors the export already records
-	// (buildSameDayOffsetVeto); the PSN stream does not emit them.
+	// withheld names the conversion mirrors (buildSameDayOffsetVeto) and
+	// the cash legs (buildEraFold) an export row records instead; the PSN
+	// stream does not emit them.
 	withheld map[string]bool
 }
 
@@ -460,15 +462,19 @@ func (r *webReader) newWebTxPass(ctx context.Context, psn *psnReader, rels []sil
 	if p.offsetVeto, p.psnVeto, p.withheld, err = r.buildSameDayOffsetVeto(ctx, psn, &p); err != nil {
 		return nil, err
 	}
+	for id := range p.fold.withheld {
+		p.withheld[id] = true
+	}
 	return &p, nil
 }
 
 // foldedAway reports whether another feed's record of the row's booking
 // is the one gold keeps. The era fold (buildEraFold) drops a statement
-// reconstruction of a booking the export or the MT940 feed also records;
-// the seam (buildSeamBankRefs) drops a web row the MT940 feed's first
-// statements reach back over, where the cut excludes neither copy. Both
-// are counted so the drop is visible on the load summary.
+// reconstruction of a booking the export or the MT940 feed also records,
+// and an export copy of a confirmation's cash leg; the seam
+// (buildSeamBankRefs) drops a web row the MT940 feed's first statements
+// reach back over, where the cut excludes neither copy. Both are counted
+// so the drop is visible on the load summary.
 func (p *webTxPass) foldedAway(row webTxRow) bool {
 	return p.fold.drop[row.emittedID()] ||
 		p.seam[webTxTextKey{account: row.account, txnNo: webTxNumber(row.txID)}]
@@ -554,18 +560,16 @@ func (p *webTxPass) project(row webTxRow, pl webTxPayload, pdfBackfill bool) (ca
 				pl.BookingType, strings.Join(pl.Continuation, " ")+" "+text.description)
 		}
 	}
-	description := silver.StrPtrIfNonEmpty(text.description)
-	payee := silver.StrPtrIfNonEmpty(text.counterparty)
-	category := silver.StrPtrIfNonEmpty(text.providerCategory)
 	// This export row kept a booking whose statement copy the era fold
 	// dropped. Per column and only downward (richerText), the statement's
 	// reading fills what this row left empty or as a bare code; the
 	// amount, the value date, the kind and the id stay this row's.
 	if alt, ok := p.fold.web[row.emittedID()]; ok {
-		description = richerText(description, alt.description)
-		payee = richerText(payee, alt.counterparty)
-		category = richerText(category, alt.providerCategory)
+		text = text.or(alt)
 	}
+	description := silver.StrPtrIfNonEmpty(text.description)
+	payee := silver.StrPtrIfNonEmpty(text.counterparty)
+	category := silver.StrPtrIfNonEmpty(text.providerCategory)
 	return canonical.TransactionChange{
 		TransactionExternalID: row.emittedID(),
 		OccurredAt:            row.valueDate,
@@ -641,10 +645,7 @@ func (p *webTxPass) emit(row webTxRow) (webEmission, webSkip, error) {
 		return webEmission{}, webSummary, nil
 	}
 	e := webEmission{tx: tx}
-	if tx.Kind != canonical.TxKindDividend || tx.NetAmount == nil || pdfBackfill {
-		return e, webEmitted, nil
-	}
-	gross, ok := webStatedGross(pl, tx.Currency, *tx.NetAmount)
+	gross, ok := exportGross(tx.Kind, pl, pdfBackfill, tx.Currency, tx.NetAmount)
 	if !ok {
 		return e, webEmitted, nil
 	}
@@ -1477,7 +1478,7 @@ func (r *psnReader) offsetLegs(ctx context.Context, dividends *dividendSecuritie
 		if !ok || tx.Kind != canonical.TxKindDeposit && tx.Kind != canonical.TxKindWithdrawal {
 			return nil
 		}
-		if _, reversal := dividends.creditReversal(tx, p); reversal {
+		if _, reversal := dividends.creditReversal(row.eventID); reversal {
 			return nil
 		}
 		amt, _ := tx.NetAmount.Float64()

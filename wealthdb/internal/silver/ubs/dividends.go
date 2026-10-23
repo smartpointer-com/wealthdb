@@ -24,7 +24,9 @@ import (
 //     account, the payment day, the amount and its currency. A credit
 //     line equal on all four is that confirmation's cash leg — where
 //     one line and one confirmation's statement answer the four facts,
-//     and the line states no valor of another security.
+//     and the line states no valor of another security. A confirmation
+//     a cancellation or a reversal withdraws names the security and
+//     nothing else (pairOf).
 //  2. The valor the line states, `VN <valor>`: in the MT940 line's
 //     customer reference, or in a statement's narrative. It resolves
 //     through the valor index (buildValorIndex) and its collision rule.
@@ -46,15 +48,17 @@ import (
 // marked `RC`, signed negative whatever its kind (buildTransaction).
 // Where road 2 or 3 names its security, and the line or a credit on or
 // before its day says the credit was a dividend, it is that security's
-// dividend reversal (creditReversal). It takes back what the credit was
-// booked at: the gross and its tax, where gold booked a gross
-// (reversedGross). Any other reversal keeps the kind map's reading. An
-// export row's reversal states its own gross (webStatedGross).
+// dividend reversal (creditReversal). Each reversal takes back its own
+// credit (matchReversals), at what that credit was booked at: the gross
+// and its tax, where gold booked a gross (reversedGross). Any other
+// reversal keeps the kind map's reading. An export row's reversal states
+// its own gross (webStatedGross).
 // docs/adapters/ubs.md §7 has the whole rule.
 //
 // UBS credits a dividend net of the tax withheld at source. The
-// confirmation states the gross beside it, and so does an export row,
-// where it states it in the row's currency (webStatedGross). Where
+// confirmation states the gross beside it, by its amounts or its rates
+// (grossOf), and so does an export row, in the row's currency or in the
+// security's beside the rate it converted at (webStatedGross). Where
 // either does, the dividend is booked as a brokerage books one: the
 // dividend at the gross, and the withholding as its own `tax` row on the
 // same account, day, currency and instrument (bookAtGross). Income then
@@ -82,12 +86,13 @@ type withholdingPayload struct {
 const corporateActionKey = `"corporate_action":`
 
 // grossOf is the gross the movement states for a dividend that credited
-// `credited` (a magnitude) in `currency`: the gross entitlement (GRSS)
-// where it is stated in that currency, else the credited amount plus the
-// tax (TAXR) where that is. ok is false where neither is stated. It is
-// false too where the difference cannot be withholding: a tax stated as
-// zero beside a gross that differs, or a gross below the credited amount.
-// The line then keeps what it credited.
+// `credited` (a magnitude) in `currency`. Its amounts state it first: the
+// gross entitlement (GRSS) where it is stated in that currency, else the
+// credited amount plus the tax (TAXR) where that is. Where neither is, a
+// rate may (rateGross). ok is false where nothing states one. It is false
+// too where the difference cannot be withholding: a tax stated as zero
+// beside a gross that differs, or a gross below the credited amount. The
+// line then keeps what it credited.
 func (m caCashMove) grossOf(credited canonical.Decimal, currency string) (gross canonical.Decimal, ok bool) {
 	currency = bookingCurrency(currency)
 	switch {
@@ -96,13 +101,77 @@ func (m caCashMove) grossOf(credited canonical.Decimal, currency string) (gross 
 	case m.taxCcy != "" && bookingCurrency(m.taxCcy) == currency:
 		gross = credited.Add(m.tax)
 	default:
-		return canonical.Decimal{}, false
+		if gross, ok = m.rateGross(credited, currency); !ok {
+			return canonical.Decimal{}, false
+		}
 	}
 	nothingWithheld := m.taxCcy != "" && m.tax.IsZero()
 	if gross.LessThan(credited) || nothingWithheld && !gross.Equal(credited) {
 		return canonical.Decimal{}, false
 	}
 	return gross, true
+}
+
+// rateGross is the gross the confirmation states through a rate, where no
+// amount states it in the currency credited. In order:
+//
+//  1. the gross amount at the confirmation's exchange rate, which is the
+//     conversion the bank made;
+//  2. the gross rate per share times the confirmed balance, in the
+//     currency credited or at the exchange rate;
+//  3. the credited amount over one less the withholding rate.
+//
+// Each is rounded to two decimals, and holds only where it fits what moved
+// (fitsCredit). false where none does.
+func (m caCashMove) rateGross(credited canonical.Decimal, currency string) (canonical.Decimal, bool) {
+	var grosses []canonical.Decimal
+	if m.grossCcy != "" && !m.gross.IsZero() {
+		if gross, ok := m.inCurrency(m.gross, m.grossCcy, currency); ok {
+			grosses = append(grosses, gross)
+		}
+	}
+	if m.grossRate != nil && m.quantity != nil {
+		if gross, ok := m.inCurrency(m.grossRate.Mul(*m.quantity), m.grossRateCcy, currency); ok {
+			grosses = append(grosses, gross)
+		}
+	}
+	hundred := canonical.NewDecimalFromInt(100)
+	if m.taxRate != nil && !m.taxRate.IsNegative() && m.taxRate.LessThan(hundred) {
+		grosses = append(grosses, credited.Div(hundred.Sub(*m.taxRate).Div(hundred)))
+	}
+	for _, gross := range grosses {
+		if gross = gross.Round(2); fitsCredit(gross, credited) {
+			return gross, true
+		}
+	}
+	return canonical.Decimal{}, false
+}
+
+// inCurrency is amount, stated in from, in the currency credited: as it
+// is where from is that currency, else at the confirmation's exchange
+// rate where that rate links the two, either way round. false where
+// nothing does.
+func (m caCashMove) inCurrency(amount canonical.Decimal, from, currency string) (canonical.Decimal, bool) {
+	from = bookingCurrency(from)
+	x := m.exchange
+	switch {
+	case from == currency:
+		return amount, true
+	case x == nil:
+	case bookingCurrency(x.from) == from && bookingCurrency(x.to) == currency:
+		return amount.Mul(x.rate), true
+	case bookingCurrency(x.from) == currency && bookingCurrency(x.to) == from:
+		return amount.Div(x.rate), true
+	}
+	return canonical.Decimal{}, false
+}
+
+// fitsCredit reports whether a gross read through a rate fits the amount
+// credited, a magnitude: at least it, and no more than twice it. A rate
+// read the wrong way, such as per unit where it is quoted per 100 units,
+// lands far outside.
+func fitsCredit(gross, credited canonical.Decimal) bool {
+	return !gross.LessThan(credited) && !gross.GreaterThan(credited.Add(credited))
 }
 
 // bookGross books a dividend at the gross its confirmation states
@@ -126,21 +195,95 @@ func bookGross(tx *canonical.TransactionChange, c cashConfirmation) (tax canonic
 // not.
 var webGrossRe = regexp.MustCompile(`\bNumber/Amt\.\s+(-?\d[\d']*(?:\.\d+)?)\s+([A-Z]{3})\b`)
 
+// webRateRe is the rate a foreign security's export dividend row states in
+// its Description3, beside its gross: `Exchange rate: <rate>`, the rate
+// the bank converted the dividend at.
+var webRateRe = regexp.MustCompile(`\bExchange rate:?\s*(\d[\d']*(?:\.\d+)?)`)
+
+// rateQuotations are the amounts of a currency a rate can be quoted
+// for: one unit, or a hundred.
+var rateQuotations = []int64{1, 100}
+
+// halfCent is how far a figure rounded to two decimals can lie from the
+// one it stands for.
+var halfCent = canonical.NewDecimalFromInt(5).Shift(-3)
+
+// parseGroupedDecimal reads a figure the export prints, its thousands
+// grouped by `'` or not.
+func parseGroupedDecimal(s string) (canonical.Decimal, error) {
+	return canonical.NewDecimalFromString(strings.ReplaceAll(s, "'", ""))
+}
+
 // webStatedGross is the gross an export dividend row states, a
-// magnitude: where it states one in the row's own currency, no smaller
-// than what moved. A foreign security's row states its gross in the
-// security's currency, beside the rate the bank converted at; it keeps
-// what it credited.
+// magnitude. In the row's own currency, it is the gross where it is no
+// smaller than what moved. A foreign security's row states its gross in
+// the security's currency, beside the rate the bank converted at
+// (convertedGross).
 func webStatedGross(p webTxPayload, currency string, moved canonical.Decimal) (canonical.Decimal, bool) {
 	m := webGrossRe.FindStringSubmatch(p.Description3)
-	if m == nil || bookingCurrency(m[2]) != bookingCurrency(currency) {
+	if m == nil || moved.IsZero() {
 		return canonical.Decimal{}, false
 	}
-	gross, err := canonical.NewDecimalFromString(strings.ReplaceAll(m[1], "'", ""))
-	if err != nil || moved.IsZero() || gross.Abs().LessThan(moved.Abs()) {
+	gross, err := parseGroupedDecimal(m[1])
+	if err != nil {
 		return canonical.Decimal{}, false
 	}
-	return gross.Abs(), true
+	gross, moved = gross.Abs(), moved.Abs()
+	if bookingCurrency(m[2]) != bookingCurrency(currency) {
+		return convertedGross(p.Description3, gross, moved)
+	}
+	return gross, !gross.LessThan(moved)
+}
+
+// exportGross is the gross the export pass books a web row at
+// (webTxPass.emit): the gross a dividend credit's row states
+// (webStatedGross), unless the row is a PDF backfill. false for any other
+// row. The era fold reads it too (buildEraFold), so it withholds a cash
+// leg only where the leg's export copy books a gross.
+func exportGross(kind canonical.TxKind, p webTxPayload, pdfBackfill bool, currency string,
+	net *canonical.Decimal) (canonical.Decimal, bool) {
+	if kind != canonical.TxKindDividend || net == nil || pdfBackfill {
+		return canonical.Decimal{}, false
+	}
+	return webStatedGross(p, currency, *net)
+}
+
+// convertedGross is a foreign gross, a magnitude, converted at the rate
+// the row states. The row does not say whether the rate is quoted per unit
+// or per 100 units, so what moved pins it: the first quotation under which
+// the conversion answers. At most one can, for the two lie a hundredfold
+// apart.
+//
+//   - Within the rate's rounding of what moved, nothing was withheld, and
+//     the gross is what moved. The rate is printed to a few digits, so the
+//     conversion can lie the gross times half a unit of its last digit
+//     from the bank's, and half a cent more for the rounding.
+//   - Else the conversion, rounded to two decimals, is the gross where it
+//     fits the amount credited (fitsCredit).
+//
+// false where the row states no rate or no quotation answers; the row then
+// keeps what it credited.
+func convertedGross(description3 string, gross, moved canonical.Decimal) (canonical.Decimal, bool) {
+	m := webRateRe.FindStringSubmatch(description3)
+	if m == nil {
+		return canonical.Decimal{}, false
+	}
+	rate, err := parseGroupedDecimal(m[1])
+	if err != nil || !rate.IsPositive() {
+		return canonical.Decimal{}, false
+	}
+	halfDigit := canonical.NewDecimalFromInt(5).Shift(rate.Exponent() - 1)
+	for _, per := range rateQuotations {
+		units := canonical.NewDecimalFromInt(per)
+		converted := gross.Mul(rate).Div(units)
+		if band := gross.Mul(halfDigit).Div(units).Add(halfCent); converted.Sub(moved).Abs().LessThanOrEqual(band) {
+			return moved, true
+		}
+		if converted = converted.Round(2); fitsCredit(converted, moved) {
+			return converted, true
+		}
+	}
+	return canonical.Decimal{}, false
 }
 
 // bookAtGross books a dividend at gross, a magnitude, in the sign of what
@@ -244,10 +387,13 @@ type dividendSecurities struct {
 	// portfolios maps a cash account onto the portfolios the account
 	// master data and the printed statements place it in.
 	portfolios map[string][]string
-	// credits are the days of each dividend credit any rail states: the
-	// evidence a reversal of a credit reverses a dividend, and which credit
-	// it reverses (newestCredit).
-	credits map[creditKey][]int64
+	// credits are the dividend credits any rail states, each day's per
+	// rail (addCredit): the evidence a reversal of a credit reverses a
+	// dividend, and the credits a reversal takes back (matchReversals).
+	credits map[creditKey]map[int64]railCounts
+	// reversals maps each MT940 reversal of a dividend credit onto the
+	// credit it takes back (matchReversals).
+	reversals map[string]takenCredit
 	// booked are the dividend credits gold books at a gross, each the
 	// gross it reads: the export rows the web pass emits
 	// (recordExportGrosses), the MT940 lines that pair with a confirmation
@@ -294,15 +440,17 @@ func (d *dividendSecurities) byTicker(account, ticker string) (string, bool) {
 // buildDividendSecurities reads what roads 2 and 3 need: the valor index
 // the caller holds, the tickers the printed statements' custody positions
 // print, and the portfolios each cash account belongs to. Then it reads
-// every dividend credit both silvers state, which a reversal of a credit
-// is checked against. A nil or absent side contributes nothing.
+// every dividend credit both silvers state, and pairs each reversal of a
+// credit with the credit it takes back. A nil or absent side contributes
+// nothing.
 func buildDividendSecurities(ctx context.Context, psn *psnReader, web *webReader, valors map[string]string) (*dividendSecurities, error) {
 	d := &dividendSecurities{
 		valors:     valors,
 		tickers:    map[string]map[string]string{},
 		currencies: map[string]bool{},
 		portfolios: map[string][]string{},
-		credits:    map[creditKey][]int64{},
+		credits:    map[creditKey]map[int64]railCounts{},
+		reversals:  map[string]takenCredit{},
 		booked:     map[creditKey][]bookedGross{},
 	}
 	if err := web.addCustodyTickers(ctx, d); err != nil {
@@ -321,6 +469,9 @@ func buildDividendSecurities(ctx context.Context, psn *psnReader, web *webReader
 		return nil, err
 	}
 	if err := d.addWebCredits(ctx, web); err != nil {
+		return nil, err
+	}
+	if err := d.matchReversals(ctx, psn); err != nil {
 		return nil, err
 	}
 	return d, nil
@@ -406,25 +557,26 @@ type dividendConfirmations map[string]cashConfirmation
 //
 // Only a credit pairs: a confirmation states a credit, and a reversal's
 // mark would read the wrong way round. A pair holds where one line and
-// one confirmation's statement answer the key. Two confirmations that
-// state the same security and figures are one statement, such as a
-// confirmation the bank sent again; any other second answer on either
-// side leaves the key unpaired, and its lines take the other roads.
+// one confirmation's statement answer the key (pairOf). Two
+// confirmations that state the same security and figures are one
+// statement, such as a confirmation the bank sent again; any other second
+// answer on either side leaves the key unpaired, and its lines take the
+// other roads.
 //
 // The whole silver, unwindowed, for the settlement fold's reason: which
 // line pairs with which confirmation depends on silver's contents, never
 // on the slice of time a load covers.
 func (r *psnReader) buildDividendConfirmations(ctx context.Context, ibans map[string]string) (dividendConfirmations, error) {
+	all, err := r.cashConfirmations(ctx)
+	if err != nil {
+		return nil, err
+	}
 	confirmations := map[bookingKey][]cashConfirmation{}
-	err := r.eachCashConfirmation(ctx, "ubs buildDividendConfirmations", "", nil, func(c cashConfirmation) error {
+	for _, c := range all {
 		posted := c.move.posted
 		if k, ok := newBookingKey(cashIBAN(ibans, c.move.cashAccount), c.move.paymentDay, &posted, c.move.postedCcy); ok {
 			confirmations[k] = append(confirmations[k], c)
 		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
 	out := dividendConfirmations{}
 	if len(confirmations) == 0 {
@@ -447,7 +599,7 @@ func (r *psnReader) buildDividendConfirmations(ctx context.Context, ibans map[st
 		return nil, err
 	}
 	for k, ids := range lines {
-		c, ok := oneStatement(confirmations[k])
+		c, ok := pairOf(confirmations[k])
 		if ok && len(ids) == 1 {
 			out[ids[0]] = c
 		}
@@ -455,61 +607,98 @@ func (r *psnReader) buildDividendConfirmations(ctx context.Context, ibans map[st
 	return out, nil
 }
 
+// pairOf is the confirmation a line answering the key pairs with: the one
+// statement of those that stand (oneStatement). Where none stands, it is
+// the first by id of those withdrawn, where they name one security
+// (oneSecurity): it names the line's security and nothing else
+// (psnDividends.settle).
+func pairOf(cs []cashConfirmation) (cashConfirmation, bool) {
+	var standing, withdrawn []cashConfirmation
+	for _, c := range cs {
+		if c.stands {
+			standing = append(standing, c)
+		} else {
+			withdrawn = append(withdrawn, c)
+		}
+	}
+	if len(standing) > 0 {
+		return oneStatement(standing)
+	}
+	return oneSecurity(withdrawn)
+}
+
 // oneStatement is the confirmation that answers a key: the one there is,
-// or the first by id of several that state the same security and
-// figures. false for none, or for two that differ.
+// or the first by id of several that state the same security and the
+// same gross for the cash the key holds (statedGross). false for none, or
+// for two that differ.
 func oneStatement(cs []cashConfirmation) (cashConfirmation, bool) {
+	return firstAgreeing(cs, func(c, first cashConfirmation) bool {
+		return c.isin == first.isin && c.statedGross() == first.statedGross()
+	})
+}
+
+// oneSecurity is the first by id of the confirmations, where all name one
+// security. false for none, or for two securities.
+func oneSecurity(cs []cashConfirmation) (cashConfirmation, bool) {
+	return firstAgreeing(cs, func(c, first cashConfirmation) bool { return c.isin == first.isin })
+}
+
+// firstAgreeing is the first by id of cs, where every other agrees with
+// it. false for none, or for one that does not.
+func firstAgreeing(cs []cashConfirmation, agrees func(c, first cashConfirmation) bool) (cashConfirmation, bool) {
 	if len(cs) == 0 {
 		return cashConfirmation{}, false
 	}
 	sort.Slice(cs, func(i, j int) bool { return cs[i].eventID < cs[j].eventID })
-	first := cs[0]
 	for _, c := range cs[1:] {
-		if c.isin != first.isin ||
-			c.move.grossCcy != first.move.grossCcy || !c.move.gross.Equal(first.move.gross) ||
-			c.move.taxCcy != first.move.taxCcy || !c.move.tax.Equal(first.move.tax) {
+		if !agrees(c, cs[0]) {
 			return cashConfirmation{}, false
 		}
 	}
-	return first, true
+	return cs[0], true
 }
 
-// creditReversal is the security an MT940 reversal of a credit names by
-// road 2 or 3, where the credit it reverses was a dividend. The line must
-// say so itself (a `DIV…` narrative, or the `NDIV` type code), or a
-// dividend credit of that security, on its account, in its currency and
-// for its amount, must stand on or before its day (newestCredit). A
-// reversed redemption, coupon or capital repayment carries neither, and
-// stays as the kind map reads it.
+// reversalOf is the security an MT940 reversal of a credit names by road 2
+// or 3, where it may reverse a dividend credit, and whether the line says
+// so itself: a `DIV…` narrative, or the `NDIV` type code. A line that does
+// not needs a dividend credit to take back (matchReversals).
 //
 // false for any other line: one not marked `RC`; one whose narrative
 // places it as another kind than a dividend, or, where the narrative
 // places none, whose type code does (an interest, a fee, a tax, a trade's
-// `NSEC`); one that names no security either road resolves; and one with
-// no evidence of the dividend it reverses. The narrative outranks the
-// type code, as in the kind map. tx is the line as buildTransaction
-// projects it.
-func (d *dividendSecurities) creditReversal(tx canonical.TransactionChange, p cashMovementPayload) (*string, bool) {
+// `NSEC`); and one that names no security either road resolves. The
+// narrative outranks the type code, as in the kind map. tx is the line as
+// buildTransaction projects it.
+func (d *dividendSecurities) reversalOf(tx canonical.TransactionChange, p cashMovementPayload) (isin string, saysDividend, ok bool) {
 	if !isCreditReversal(p.CreditDebit) || tx.NetAmount == nil {
-		return nil, false
+		return "", false, false
 	}
 	if tx.Kind != canonical.TxKindWithdrawal && tx.Kind != canonical.TxKindDividend {
-		return nil, false
+		return "", false, false
 	}
 	code, coded := txnTypeKind(p.TxnType, "C")
 	if coded && code != canonical.TxKindDividend && tx.Kind != canonical.TxKindDividend {
-		return nil, false
+		return "", false, false
 	}
 	id, _ := d.resolve(tx.AccountExternalID, statedValor(p.CustomerRef), p.Narrative)
 	if id == nil {
+		return "", false, false
+	}
+	return *id, tx.Kind == canonical.TxKindDividend || coded, true
+}
+
+// creditReversal is the security whose dividend the MT940 reversal of a
+// credit with the event id takes back (matchReversals). A reversed
+// redemption, coupon or capital repayment neither says it is a dividend
+// nor finds a dividend credit to take back, and stays as the kind map
+// reads it.
+func (d *dividendSecurities) creditReversal(eventID string) (*string, bool) {
+	t, ok := d.reversals[eventID]
+	if !ok {
 		return nil, false
 	}
-	if saysDividend := tx.Kind == canonical.TxKindDividend || coded; !saysDividend {
-		if _, _, credited := d.newestCredit(*id, tx); !credited {
-			return nil, false
-		}
-	}
-	return id, true
+	isin := t.isin
+	return &isin, true
 }
 
 // creditKey is one dividend credit, as a reversal's evidence: the
@@ -527,6 +716,32 @@ func newCreditKey(isin, account, currency string, amount canonical.Decimal) (cre
 	return creditKey{isin: isin, account: account, currency: bookingCurrency(currency), amount: cents}, true
 }
 
+// creditRail is a rail a dividend credit is recorded on. One credit can
+// stand on several: its confirmation, its MT940 line, its export row and
+// its statement copy.
+type creditRail int
+
+const (
+	railConfirmation creditRail = iota
+	railFeed
+	railExport
+	railStatement
+	creditRails
+)
+
+// railCounts is how many credits of one key each rail records on one day.
+type railCounts [creditRails]int
+
+// standing is how many credits stand: as many as the rail recording the
+// most. A credit recorded on two rails is one credit.
+func (n railCounts) standing() int {
+	most := 0
+	for _, c := range n {
+		most = max(most, c)
+	}
+	return most
+}
+
 // bookedGross is a dividend credit gold books at a gross: its day and the
 // gross, a magnitude.
 type bookedGross struct {
@@ -534,11 +749,21 @@ type bookedGross struct {
 	gross canonical.Decimal
 }
 
-// addCredit records a dividend credit of the security on the day.
-func (d *dividendSecurities) addCredit(isin, account, currency string, amount canonical.Decimal, at int64) {
-	if k, ok := newCreditKey(isin, account, currency, amount); ok {
-		d.credits[k] = append(d.credits[k], utcDay(at))
+// addCredit records a dividend credit of the security on the day, on the
+// rail.
+func (d *dividendSecurities) addCredit(rail creditRail, isin, account, currency string, amount canonical.Decimal, at int64) {
+	k, ok := newCreditKey(isin, account, currency, amount)
+	if !ok {
+		return
 	}
+	days := d.credits[k]
+	if days == nil {
+		days = map[int64]railCounts{}
+		d.credits[k] = days
+	}
+	n := days[utcDay(at)]
+	n[rail]++
+	days[utcDay(at)] = n
 }
 
 // addBooked records that gold books the dividend credit of amount on the
@@ -549,39 +774,107 @@ func (d *dividendSecurities) addBooked(isin, account, currency string, amount ca
 	}
 }
 
-// newestCredit is the key and the day of the newest dividend credit of
-// the security on the reversal's account, in its currency and for the
-// amount it takes back, on or before its day. false where none stands.
-func (d *dividendSecurities) newestCredit(isin string, tx canonical.TransactionChange) (creditKey, int64, bool) {
-	k, ok := newCreditKey(isin, tx.AccountExternalID, tx.Currency, *tx.NetAmount)
-	if !ok {
-		return creditKey{}, 0, false
-	}
-	day := utcDay(tx.OccurredAt)
-	var newest int64
-	found := false
-	for _, at := range d.credits[k] {
-		if at <= day && (!found || at > newest) {
-			newest, found = at, true
-		}
-	}
-	return k, newest, found
+// takenCredit is the dividend credit a reversal takes back: its key and
+// its day. found is false for a reversal that says it reverses a dividend
+// where no credit stands to take back; it takes back the amount it moves.
+type takenCredit struct {
+	isin  string
+	key   creditKey
+	day   int64
+	found bool
 }
 
-// reversedGross is the gross the credit a reversal of the security takes
-// back was booked at: the newest such credit's (newestCredit), where gold
-// books it at one. nil where it keeps the amount credited, and where two
-// credits of that day read two grosses: which one is reversed is not
-// known.
-func (d *dividendSecurities) reversedGross(isin string, tx canonical.TransactionChange) *canonical.Decimal {
-	k, day, ok := d.newestCredit(isin, tx)
-	if !ok {
+// matchReversals pairs each MT940 reversal of a dividend credit
+// (reversalOf) with the credit it takes back, one to one and in time
+// order: the newest credit of its security, account, currency and amount
+// on or before its day that no earlier reversal took back. Two reversals
+// on one day go in id order. A reversal that finds no credit is a dividend
+// reversal only where its line says so.
+//
+// The whole silver, unwindowed, for the settlement fold's reason: which
+// credit a reversal takes back depends on silver's contents, never on the
+// slice of time a load covers.
+func (d *dividendSecurities) matchReversals(ctx context.Context, r *psnReader) error {
+	type reversal struct {
+		id, isin    string
+		day         int64
+		key         creditKey
+		keyed, says bool
+	}
+	var reversals []reversal
+	err := r.eachCashMovement(ctx, "ubs matchReversals", func(row psnCashRow) error {
+		tx, p, ok := row.project()
+		if !ok {
+			return nil
+		}
+		isin, says, ok := d.reversalOf(tx, p)
+		if !ok {
+			return nil
+		}
+		k, keyed := newCreditKey(isin, tx.AccountExternalID, tx.Currency, *tx.NetAmount)
+		reversals = append(reversals, reversal{
+			id: row.eventID, isin: isin, day: utcDay(tx.OccurredAt), key: k, keyed: keyed, says: says,
+		})
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	sort.Slice(reversals, func(i, j int) bool {
+		if reversals[i].day != reversals[j].day {
+			return reversals[i].day < reversals[j].day
+		}
+		return reversals[i].id < reversals[j].id
+	})
+	taken := map[creditKey]map[int64]int{}
+	for _, rev := range reversals {
+		t := takenCredit{isin: rev.isin, key: rev.key}
+		if rev.keyed {
+			t.day, t.found = d.takeCredit(rev.key, rev.day, taken)
+		}
+		if t.found || rev.says {
+			d.reversals[rev.id] = t
+		}
+	}
+	return nil
+}
+
+// takeCredit takes back the newest credit of the key on or before the day
+// that taken does not hold yet, and records it there. false where none is
+// left.
+func (d *dividendSecurities) takeCredit(k creditKey, day int64, taken map[creditKey]map[int64]int) (int64, bool) {
+	var days []int64
+	for at := range d.credits[k] {
+		if at <= day {
+			days = append(days, at)
+		}
+	}
+	sort.Slice(days, func(i, j int) bool { return days[i] > days[j] })
+	for _, at := range days {
+		if taken[k][at] < d.credits[k][at].standing() {
+			if taken[k] == nil {
+				taken[k] = map[int64]int{}
+			}
+			taken[k][at]++
+			return at, true
+		}
+	}
+	return 0, false
+}
+
+// reversedGross is the gross the credit a reversal takes back
+// (matchReversals) was booked at, where gold books it at one. nil where it
+// keeps the amount credited, and where two credits of that day read two
+// grosses: which one is reversed is not known.
+func (d *dividendSecurities) reversedGross(reversalID string) *canonical.Decimal {
+	t, ok := d.reversals[reversalID]
+	if !ok || !t.found {
 		return nil
 	}
 	var gross *canonical.Decimal
-	for _, c := range d.booked[k] {
+	for _, c := range d.booked[t.key] {
 		switch {
-		case c.day != day:
+		case c.day != t.day:
 		case gross == nil:
 			g := c.gross
 			gross = &g
@@ -592,10 +885,12 @@ func (d *dividendSecurities) reversedGross(isin string, tx canonical.Transaction
 	return gross
 }
 
-// addFeedCredits records the dividend credits the feed states: each
-// dividend confirmation's posted cash, and each MT940 dividend credit a
-// road names the security of. The amount is the one credited, which is
-// what a reversal line moves.
+// addFeedCredits records the dividend credits the feed states: the
+// posted cash of each dividend confirmation that stands, once however
+// often the bank sent it (repeats), and of each one a reversal withdraws,
+// for the bank paid it before it took it back; and each MT940 dividend
+// credit a road names the security of. The amount is the one credited,
+// which is what a reversal line moves.
 func (d *dividendSecurities) addFeedCredits(ctx context.Context, r *psnReader) error {
 	if r == nil || r.db == nil {
 		return nil
@@ -604,14 +899,15 @@ func (d *dividendSecurities) addFeedCredits(ctx context.Context, r *psnReader) e
 	if err != nil {
 		return err
 	}
-	err = r.eachCashConfirmation(ctx, "ubs addFeedCredits", "", nil, func(c cashConfirmation) error {
-		if kind, ok := corporateActionCashKind(c.caev); ok && kind == canonical.TxKindDividend {
-			d.addCredit(c.isin, cashIBAN(ibans, c.move.cashAccount), c.move.postedCcy, c.move.posted, c.move.paymentDay)
-		}
-		return nil
-	})
+	confirmations, err := r.cashConfirmations(ctx)
 	if err != nil {
 		return err
+	}
+	for _, c := range confirmations {
+		kind, ok := corporateActionCashKind(c.caev)
+		if ok && kind == canonical.TxKindDividend && (c.stands && !c.repeats || c.reversed) {
+			d.addCredit(railConfirmation, c.isin, cashIBAN(ibans, c.move.cashAccount), c.move.postedCcy, c.move.posted, c.move.paymentDay)
+		}
 	}
 	return r.eachCashMovement(ctx, "ubs addFeedCredits", func(row psnCashRow) error {
 		tx, p, ok := row.dividendCredit()
@@ -619,7 +915,7 @@ func (d *dividendSecurities) addFeedCredits(ctx context.Context, r *psnReader) e
 			return nil
 		}
 		if id, _ := d.resolve(tx.AccountExternalID, statedValor(p.CustomerRef), p.Narrative); id != nil {
-			d.addCredit(*id, tx.AccountExternalID, tx.Currency, *tx.NetAmount, tx.OccurredAt)
+			d.addCredit(railFeed, *id, tx.AccountExternalID, tx.Currency, *tx.NetAmount, tx.OccurredAt)
 		}
 		return nil
 	})
@@ -637,9 +933,13 @@ func (d *dividendSecurities) addWebCredits(ctx context.Context, r *webReader) er
 		if !ok {
 			return nil
 		}
+		rail := railExport
+		if isStatementEraID(row.txID) {
+			rail = railStatement
+		}
 		pl, pdfBackfill := decodeWebTxEra(row.payload)
 		if id, _ := d.webDividendSecurity(row.account, pl, pdfBackfill); id != nil {
-			d.addCredit(*id, row.account, row.currency, *net, row.valueDate)
+			d.addCredit(rail, *id, row.account, row.currency, *net, row.valueDate)
 		}
 		return nil
 	})
@@ -672,11 +972,12 @@ type psnDividends struct {
 // withholding row to book beside it, where one was withheld.
 //
 // The line's payload is left as the feed wrote it, so the amount the
-// bank credited stays readable there; a paired line also names its
-// confirmation. p is the payload decoded.
+// bank credited stays readable there; a line paired with a confirmation
+// that stands also names it. One withdrawn names the line's security and
+// nothing else. p is the payload decoded.
 func (d psnDividends) settle(tx *canonical.TransactionChange, p cashMovementPayload) (tax canonical.TransactionChange, withheld bool, err error) {
 	c, paired := d.link(tx, p)
-	if !paired {
+	if !paired || !c.stands {
 		return canonical.TransactionChange{}, false, nil
 	}
 	tx.Payload = spliceStringField(string(tx.Payload), corporateActionKey, c.eventID)
@@ -712,19 +1013,24 @@ func (d psnDividends) link(tx *canonical.TransactionChange, p cashMovementPayloa
 // books the gross (bookAtGross). A reversal in any window takes that
 // gross back (reversedGross).
 func (d psnDividends) addFeedGrosses(ctx context.Context, r *psnReader, coverage psnCashCoverage, ibans map[string]string) error {
-	err := r.eachCashConfirmation(ctx, "ubs addFeedGrosses", "", nil, func(c cashConfirmation) error {
-		tx, _, _, ok, err := c.cashLeg(coverage, ibans)
-		if err != nil || !ok || tx.Kind != canonical.TxKindDividend || tx.GrossAmount == nil || tx.InstrumentExternalID == nil {
-			return err
-		}
-		d.securities.addBooked(*tx.InstrumentExternalID, tx.AccountExternalID, tx.Currency, c.move.posted, tx.OccurredAt, *tx.GrossAmount)
-		return nil
-	})
-	if err != nil || len(d.confirmations) == 0 {
+	confirmations, err := r.cashConfirmations(ctx)
+	if err != nil {
 		return err
 	}
+	for _, c := range confirmations {
+		tx, _, _, ok, err := c.cashLeg(coverage, ibans)
+		if err != nil {
+			return err
+		}
+		if ok && tx.Kind == canonical.TxKindDividend && tx.GrossAmount != nil && tx.InstrumentExternalID != nil {
+			d.securities.addBooked(*tx.InstrumentExternalID, tx.AccountExternalID, tx.Currency, c.move.posted, tx.OccurredAt, *tx.GrossAmount)
+		}
+	}
+	if len(d.confirmations) == 0 {
+		return nil
+	}
 	return r.eachCashMovement(ctx, "ubs addFeedGrosses", func(row psnCashRow) error {
-		if _, ok := d.confirmations[row.eventID]; !ok {
+		if c, ok := d.confirmations[row.eventID]; !ok || !c.stands {
 			return nil
 		}
 		tx, p, ok := row.dividendCredit()
@@ -743,18 +1049,17 @@ func (d psnDividends) addFeedGrosses(ctx context.Context, r *psnReader, coverage
 // reverse reads an MT940 reversal of a dividend credit as that security's
 // dividend reversal (creditReversal): kind dividend, the instrument
 // linked. Its amount is already negative (buildTransaction). Where the
-// credit it reverses was booked at a gross, it takes back the gross, and
-// returns the tax taken back with it as the row to book beside it
+// credit it takes back was booked at a gross, it takes back the gross,
+// and returns the tax taken back with it as the row to book beside it
 // (bookAtGross). reversed false leaves the line as the kind map read it.
-// p is the payload decoded.
-func (d psnDividends) reverse(tx *canonical.TransactionChange, p cashMovementPayload) (tax canonical.TransactionChange, withheld, reversed bool, err error) {
-	id, ok := d.securities.creditReversal(*tx, p)
+func (d psnDividends) reverse(tx *canonical.TransactionChange) (tax canonical.TransactionChange, withheld, reversed bool, err error) {
+	id, ok := d.securities.creditReversal(tx.TransactionExternalID)
 	if !ok {
 		return canonical.TransactionChange{}, false, false, nil
 	}
 	tx.Kind = canonical.TxKindDividend
 	tx.InstrumentExternalID, tx.InstrumentHint = id, ""
-	gross := d.securities.reversedGross(*id, *tx)
+	gross := d.securities.reversedGross(tx.TransactionExternalID)
 	if gross == nil {
 		return canonical.TransactionChange{}, false, true, nil
 	}

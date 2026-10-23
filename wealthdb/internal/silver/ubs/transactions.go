@@ -16,8 +16,9 @@ import (
 // buildSameDayOffsetVeto); those are demoted to a non-flow kind here, exactly
 // as the web loop demotes its half — a pair must drop on both sides or the
 // survivor books a one-sided phantom external flow. hints.withheld names the
-// conversion mirrors the export already records, which are not emitted. Both
-// are empty when the merged connection has no web subsource.
+// conversion mirrors and the cash legs an export row records instead, which
+// are not emitted. Both are empty when the merged connection has no web
+// subsource.
 // hints.securities links a dividend line past its confirmation and names
 // the reversals that are dividend reversals (psnHints). Without a web
 // subsource the stream builds the feed's own.
@@ -50,7 +51,7 @@ func (r *psnReader) Transactions(ctx context.Context, w canonical.Window, hints 
 	if err != nil {
 		return nil, err
 	}
-	cashLegs, err := r.corporateActionCashLegs(ctx, w, coverage, ibans)
+	cashLegs, err := r.corporateActionCashLegs(ctx, w, coverage, ibans, hints.withheld)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +106,7 @@ SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, pa
 				return nil, fmt.Errorf("ubs Transactions (event_id=%s): %w", eventID, err)
 			}
 			var reversed bool
-			if tax, taxed, reversed, err = dividends.reverse(&tx, p); err != nil {
+			if tax, taxed, reversed, err = dividends.reverse(&tx); err != nil {
 				return nil, fmt.Errorf("ubs Transactions (event_id=%s): %w", eventID, err)
 			}
 			if !reversed && tx.Kind == canonical.TxKindDividend {

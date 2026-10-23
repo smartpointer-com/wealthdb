@@ -16,13 +16,14 @@ import (
 type psnReader struct {
 	db *sql.DB
 
-	// coverage and mirrors keep what cashCoverage and conversionMirrors
-	// read. Each scans every cash movement of the silver, unwindowed,
-	// and a connection serves one load over a silver that does not
-	// change under it, so each is read once per connection however many
-	// passes ask for it.
-	coverage psnCashCoverage
-	mirrors  *conversionMirrors
+	// coverage, mirrors and confirmations keep what cashCoverage,
+	// conversionMirrors and cashConfirmations read. Each scans the whole
+	// silver, unwindowed, and a connection serves one load over a silver
+	// that does not change under it, so each is read once per connection
+	// however many passes ask for it.
+	coverage      psnCashCoverage
+	mirrors       *conversionMirrors
+	confirmations []cashConfirmation
 }
 
 func (r *psnReader) Close() error { return silver.CloseDB(&r.db) }

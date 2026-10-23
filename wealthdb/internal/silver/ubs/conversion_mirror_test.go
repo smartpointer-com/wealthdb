@@ -70,10 +70,17 @@ func newMirrorSilver(t *testing.T) *sql.DB {
 	return db
 }
 
+// psnRowsWith drains the feed's transaction stream over every day, keyed
+// by transaction id.
 func psnRowsWith(t *testing.T, db *sql.DB, hints psnHints) map[string]canonical.TransactionChange {
 	t.Helper()
-	stream, err := (&psnReader{db: db}).Transactions(context.Background(),
-		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, hints)
+	return psnRowsIn(t, db, canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, hints)
+}
+
+// psnRowsIn drains the feed's transaction stream over the window.
+func psnRowsIn(t *testing.T, db *sql.DB, w canonical.Window, hints psnHints) map[string]canonical.TransactionChange {
+	t.Helper()
+	stream, err := (&psnReader{db: db}).Transactions(context.Background(), w, hints)
 	if err != nil {
 		t.Fatalf("Transactions: %v", err)
 	}

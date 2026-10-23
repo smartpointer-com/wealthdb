@@ -164,7 +164,7 @@ UBS's `silver.events.kind` maps to gold's `kind`:
 | `fx_option_confirmation` | `fx` | MT305. No dedicated option kind: the settlement is an FX cash effect. |
 | `loan_deposit_confirmation` | `other` | MT320/MT330/MT350. |
 | `corporate_action_notification` | `corporate_action` | MT564. |
-| `corporate_action_confirmation` | `corporate_action` | MT566. A cash dividend (`DVCA`) or interest (`INTR`) paid into a cash account the MT940 feed does not speak for is also booked on that account as `<event id>:cash` (§7). A dividend's confirmation also names the security and the gross of the MT940 line it pairs with (§7, *Dividends: the security and the gross*). |
+| `corporate_action_confirmation` | `corporate_action` | MT566. A cash dividend (`DVCA`) or interest (`INTR`) paid into a cash account the MT940 feed does not speak for is also booked on that account as `<event id>:cash` (§7). A dividend's confirmation also names the security and the gross of the MT940 line it pairs with (§7, *Dividends: the security and the gross*). A cancellation or a reversal books no money and withdraws the confirmation it names (§7, *The message function*). Every confirmation keeps its marker row. |
 | `corporate_action_narrative` | `corporate_action` | MT568. |
 | `securities_settlement_advice` | `transfer_in` / `transfer_out` | MT544–548. |
 | `precious_metal_trade` | `buy` or `sell` | MT600/MT601. A credit is a sale, anything else a purchase. |
@@ -298,7 +298,7 @@ emits each booking once:
 - **The seam** drops the web copy of a booking the first PSN dump
   reaches back over.
 - **The era fold** drops a statement copy that the export or the feed
-  also holds.
+  also holds, and an export copy of a confirmation's cash leg.
 - **The settlement fold** drops the MT940 cash leg of a trade an MT515
   confirmation states.
 
@@ -539,21 +539,35 @@ eras land on one signed number.
 
 **The rules:**
 
-- **The statement copy is always the one dropped.** The export and the
-  feed are the bank's machine-readable record. A statement row comes
-  from a layout parser, one step further from the bank. The rule is per
-  era, not per row. The survivor's id, account, amount, value date and
-  kind stay as they are.
+- **The statement copy is the one dropped.** The export and the feed
+  are the bank's machine-readable record. A statement row comes from a
+  layout parser, one step further from the bank. The rule is per era,
+  not per row. The only export row the fold drops is a copy of a
+  confirmation's cash leg (below). The survivor's id, account, amount,
+  value date and kind stay as they are.
 - **Two rows of one era never fold.** Two identical payments on one day
   are ordinary, and within one era they carry distinct ids. Pairing is
   1:1 and deterministic: ids sorted, export rows offered before feed
   rows. A day with two statement copies and one export row folds exactly
   one of them.
+- **An export copy of a confirmation's cash leg folds into the leg.** On
+  an account the feed does not speak for, the export is the record of
+  every day, and a confirmation books its own cash leg (*The accounts
+  the feed does not speak for*). The fold keys the leg on the amount it
+  posted (`:19B::PSTA//`), which is what the export row moved. The
+  export copy folds into the leg first, 1:1, and only on the leg's own
+  day. A statement copy then folds onto the leg as onto any feed row.
+  The leg keeps its security, its gross and its tax row.
+- **Where the leg reads no gross and its export copy states one**, the
+  copy is the record instead. The export row stays, at the gross it
+  states, and the leg is withheld (`psnHints.withheld`, as for a
+  conversion mirror). A statement copy then folds onto the export row.
 - **The dropped copy's text carries over**, by the same `richerText`
   rule as the era text fold. An export survivor takes it as it is
-  emitted. An MT940 survivor takes it in `psnStatementCarryStream`,
+  emitted. A feed survivor takes it in `psnStatementCarryStream`,
   applied outside `psnWebTextFoldStream`, so the export's text fills a
-  bare column first.
+  bare column first. A cash leg takes its export copy's text first and
+  its statement copy's after.
 
 **What follows:**
 
@@ -564,8 +578,8 @@ eras land on one signed number.
   count that flow once. The fold adds no flow and changes no amount.
 - Survivors that gain a payee are re-keyed (`SignatureVersion` 8,
   [../SPENDING.md](../SPENDING.md) §4).
-- The adapter logs how many statement rows it folded on each load,
-  beside the dropped period summaries.
+- The adapter logs how many web rows the era fold and the seam dropped
+  on each load, beside the dropped period summaries.
 
 ### The settlement fold
 
@@ -688,6 +702,13 @@ with the tax withheld as its own row (*Dividends: the security and the
 gross*).
 
 - It books only a cash option credited (`CAOP CASH`, `CRDB CRED`).
+- It books only a confirmation that stands (*The message function*,
+  below). A confirmation the bank sent again, with the same posting,
+  security and gross, books no second leg.
+- It books on the payment day, and loads with the window that holds
+  that day.
+- An export or statement copy of the payment folds into the leg (*The
+  era fold*).
 - A capital call confirmed as `OTHR`, a dividend taken in shares, an
   exchange or any other event is left to the rails that carry it.
 - Without this leg, a mandate's foreign-currency income would show only
@@ -826,8 +847,10 @@ A line that states no ISIN takes the first of three roads that answers
    states the ISIN and the cash it posted: the cash account, the
    payment day, the amount and its currency. A credit line equal on all
    four is its cash leg. The pair holds only where one line and one
-   confirmation answer. Two confirmations of the same security and
-   figures count as one.
+   confirmation answer. Two confirmations that name the same security
+   and read the same gross (below) count as one, whatever else they
+   print. A confirmation that stands outranks one withdrawn, and one
+   withdrawn names the security alone (*The message function*).
 2. **The valor** the line states, through the valor index (above). Its
    collision rule stands.
 3. **The ticker** that closes the line's narrative. It is matched to
@@ -845,6 +868,45 @@ pair also yields to the line's own valor. Where that valor names
 another security, the four facts agree by chance. The line then takes
 roads 2 and 3 and keeps the amount credited.
 
+**The message function.** Each MT566 states its function in `:23G:`.
+`NEWM` is a new confirmation. `CANC` cancels one the bank sent before.
+`REVR` reverses one whose payment the bank took back. A subfunction
+does not change it: `NEWM/DUPL` is a new confirmation. Only a
+confirmation that stands books a cash leg or states a gross. That is a
+new one, or one with no `:23G:`, that nothing withdraws. A cancellation
+or a reversal books no money itself. One that repeats its original's
+figures would otherwise book that cash a second time.
+
+- A cancellation or a reversal withdraws the confirmation it names. It
+  names it by that confirmation's own reference, `:20C::PREV//<SEME>`
+  in its linkage block. A reference silver does not hold withdraws
+  nothing.
+- One that names none withdraws one new confirmation of the same event
+  reference (`:20C::CORP//`), custody account, ISIN and amount posted,
+  that nothing withdrew yet. That is the newest one dated at or before
+  the withdrawal, else the first by id. Such withdrawals go in time
+  order.
+- A cancellation or a reversal that names another cancellation or
+  reversal withdraws nothing and restores nothing.
+- A withdrawn confirmation books no cash leg and states no gross.
+- A cancelled confirmation is no credit a reversal can take back. A
+  reversed one still is: the bank paid it, then took the payment back,
+  and its MT940 `RC` line is that take-back.
+
+Two things stay, because they are not money:
+
+- **The marker rows.** Every confirmation keeps its `corporate_action`
+  row, the cancellation included. It has no amount, and it records what
+  the bank sent.
+- **The security.** A line that pairs only with withdrawn
+  confirmations still takes their ISIN, where they name one. The line
+  did credit that cash, and a withdrawal takes back money, not which
+  security paid. A cancellation need not repeat every figure, so only
+  the ISIN is compared. The line keeps the amount credited and books no
+  tax row. Its payload names no confirmation. Where a corrected
+  confirmation states the same posting, the line pairs with that one,
+  at its gross.
+
 **A correction.** The bank corrects a dividend by reversing its credit
 and booking the corrected amount. The reversal is an MT940 line marked
 `RC` (a reversal of a credit) whose narrative names the same security.
@@ -857,10 +919,11 @@ reversal where both of these hold:
 - something says the credit it reverses was a dividend: its own
   narrative (`DIV…`) or type code (`NDIV`), or a dividend credit of
   that security on its account, in its currency and for its amount, on
-  or before its day. That credit may stand on any rail: a
-  confirmation, an MT940 line, an export or a statement row. A type
-  code that names another kind (such as `NINT` or `NSEC`) leaves the
-  credit no say, unless the narrative says dividend.
+  or before its day, that no earlier reversal took back. That credit
+  may stand on any rail: a confirmation, an MT940 line, an export or a
+  statement row. A type code that names another kind (such as `NINT`
+  or `NSEC`) leaves the credit no say, unless the narrative says
+  dividend.
 
 A dividend reversal reads kind `dividend` on the linked instrument, at
 the gross of the credit it reverses where that credit was booked at one
@@ -879,7 +942,18 @@ count it. Any other `RC` stays as the kind map reads it, negative:
 
 A reversal takes back what the credit it reverses was booked at:
 
-- The credit it reverses is the newest such credit (above).
+- Each reversal takes back its own credit (`matchReversals`). The
+  reversals go in time order, and on one day in id order. Each takes
+  the newest credit of its amount, security and account on or before
+  its day that no earlier reversal took back. So two reversals never
+  take back one credit. Once the newest credit is taken back, the next
+  reversal takes the one before it.
+- A credit that several rails record is one credit. On each day, as
+  many credits stand as the rail that records the most of them. A
+  confirmation the bank sent again is one credit on its rail.
+- A second reversal of one credit finds none left. It is a dividend
+  reversal only where its own line says dividend, and then it takes
+  back the amount it moves.
 - Where gold booked that credit at a gross, the reversal reads the gross
   negative. That is an MT940 line paired with its confirmation, a
   confirmation's own cash leg, or an export row (below). A tax row beside
@@ -910,26 +984,69 @@ does, the dividend is booked as a brokerage books one
 
 The gross is the GRSS where its currency is the line's. Else it is the
 credited amount plus the TAXR, where that is in the line's currency.
-Else the line keeps the net and books no tax row. So does a line whose
-figures cannot be withholding: a tax of zero beside a different gross,
-or a gross below the credit. A tax of zero books no tax row.
+Where neither amount states it in the line's currency, a rate can. The
+cash option's own block (`CACONF`) states the rates. Another option's
+block, such as the shares of a dividend choice, says nothing about the
+cash. In order:
+
+1. The GRSS at the confirmation's exchange rate
+   (`:92B::EXCH//<from>/<to>/<rate>`, either way round). That is the
+   conversion the bank made. It reaches a foreign dividend credited in
+   the account's currency, whose confirmation states the gross and the
+   tax in the security's currency.
+2. The gross rate per share (`:92F::GRSS//`) times the confirmed
+   balance (`:93B::CONB//UNIT/`), in the line's currency or at the
+   exchange rate. A posting quantity (`:36B::PSTA//`) is the shares a
+   securities movement delivered, not the balance the event paid on.
+3. The credited amount over one less the withholding rate
+   (`:92A::TAXR//`, a percentage).
+
+A rate read the wrong way, such as per unit where it is quoted per 100
+units, lands far outside what moved. So each holds only where it fits:
+at least the credited amount, and no more than twice it. The result is
+rounded to two decimals.
+
+These roads read every confirmation in silver, whatever window a load
+covers.
+
+Where no rail states a gross or a rate, the line keeps the net and
+books no tax row. So does a line whose figures cannot be withholding: a
+tax of zero beside a different gross, or a gross below the credit. A
+tax of zero books no tax row.
 
 An export row states its gross in `Description3`, as `Number/Amt.
-<gross> <currency>`. Where that currency is the row's, the row is
-booked the same way, and neither of its rows names a confirmation:
+<gross> <currency>`. It is booked the same way, and neither of its rows
+names a confirmation. The gross is read in one of two ways:
 
-- A reversal (`Dividend;Reversal`) reads the gross negative. Its tax row
-  is positive: the tax taken back with the dividend.
-- A foreign security's row states its gross in the security's currency,
-  beside the rate the bank converted at. It keeps the net.
+- **In the row's currency**, it is the gross as stated, where it is no
+  less than what moved.
+- **In the security's currency**, the row states it beside the rate the
+  bank converted at (`Exchange rate: <rate>`). The row does not say
+  whether the rate is per unit or per 100 units. What moved decides:
+  the first quotation, per unit then per 100, under which the
+  conversion answers. At most one can, for the two lie a hundredfold
+  apart.
+  - Within the rate's rounding of what moved, nothing was withheld. The
+    rate is printed to a few digits. So the conversion may miss the
+    bank's by the gross converted at half a unit of the rate's last
+    digit, plus half a cent. The row then books what moved, with no
+    tax row.
+  - Else the conversion, rounded to two decimals, is the gross where it
+    is at least what moved and no more than twice it.
+  - Where no quotation answers, or the row states no rate, the row keeps
+    the net.
+
+A reversal (`Dividend;Reversal`) reads the gross negative. Its tax row
+is positive: the tax taken back with the dividend.
 
 The folds and the veto leave the pair whole:
 
 - The era fold keys the MT940 line and the export row on the amount
   they credited, as `buildTransaction` and `webProjectedNet` project
-  them; a reversal on the amount it took back. A statement copy prints
-  that amount, so it still folds onto the row booked gross. A tax row
-  has no statement copy and is not in the fold.
+  them; a reversal on the amount it took back; a confirmation's cash leg
+  on the amount it posted. A statement copy prints that amount, so it
+  still folds onto the row booked gross. A tax row has no statement
+  copy and is not in the fold.
 - The settlement fold reads `NSEC` lines and the offset veto deposits
   and withdrawals. Neither reads a dividend, a dividend reversal or a
   tax row.
@@ -968,6 +1085,12 @@ reading as up to date.
   (`psnBusinessDayLookback`). Rows in that stretch that gold already
   holds are re-emitted unchanged. A report older than seven days, such
   as an archive backfill after a long outage, needs `wealthdb reload`.
+- A corporate-action message that reaches silver more than seven days
+  after the day it states also needs `wealthdb reload ubs`. Such a
+  message is a cancellation, a reversal, or a confirmation whose export
+  copy gold already holds. Silver dates it by the day it states, not
+  the day it arrived. So the rows it changes lie outside a later load's
+  window.
 - Web: a dump or a transaction value date past the watermark triggers a
   load. The new change number is the latest of them. The window then
   widens to every historical, card and portfolio-transaction date.
@@ -1282,9 +1405,10 @@ account; the pair (portfolio, currency) determines it, resolved
 through PSN's account master data because the web collector's own
 account rows carry the banking relationship rather than the numbered
 portfolio. A pair naming more than one account — a dormant account
-beside a live one — is refused rather than guessed at. The dividend
-quantities read them as trades of the custody account that holds the
-security ([YIELD.md](../YIELD.md) §4).
+beside a live one — is refused rather than guessed at. Yield's
+dividend quantities read these rows as trades of the one other account
+of the portfolio that holds the security, its custody account
+([YIELD.md](../YIELD.md) §4).
 
 **The kind is read off the figure, not the booking type.** The export
 signs its own values (positive leaves the portfolio, which on the cash
