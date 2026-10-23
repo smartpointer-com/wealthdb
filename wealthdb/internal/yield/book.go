@@ -46,8 +46,10 @@ func Compute(in *Inputs) *Book {
 			continue
 		}
 		fx := p.FX[part.Holding]
-		income[part.Holding] += part.Income(path, p.Rate(part.Currency, part.Month, path), 0) * fx
-		d100[part.Holding] += (part.Principal + part.RollPrincipal) / 1200 * fx
+		rate := p.Rate(part.Currency, part.Month, path)
+		at := part.Income(path, rate, 0)
+		income[part.Holding] += at * fx
+		d100[part.Holding] += (part.Income(path, rate, 100) - at) * fx
 		// What a principal earns after its maturity is no figure of the
 		// holding's own.
 		if part.Basis == BasisUnknown && part.Reinvested == "" {

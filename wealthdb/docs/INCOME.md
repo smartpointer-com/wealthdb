@@ -965,6 +965,10 @@ interest.
   points. It moves a balance, a money-market fund, a floating note, a
   floating bond fund that earns a floating rate (the `bond_fund` row
   above), cash after a maturity and a rolled holding.
+- A floating rate never earns below zero. A floating holding's rate,
+  the benchmark on the path plus its spread and the shift, floors at
+  zero, and so does a roll's rate with the shift. So a balance whose bank
+  charges for it reads nothing, not a charge.
 
 ### What an amount rests on
 

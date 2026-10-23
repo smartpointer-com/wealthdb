@@ -418,12 +418,14 @@ global` falls short of the projection's total for the same twelve
 months by that account income.
 
 `income_100bp` is the change in `income_12m` for rates one percent
-higher from today. It is the average floating principal of those
-twelve months times one percent. The floating principal earns a
-floating rate: a balance, a money-market holding, a floating note's
-face, a floating bond fund that earns a floating rate (INCOME.md §12),
-and principal that matures into cash. So it is positive for cash and
-floating holdings. A fixed coupon adds nothing until it matures.
+higher from today. The floating principal earns a floating rate: a
+balance, a money-market holding, a floating note's face, a floating
+bond fund that earns a floating rate (INCOME.md §12), and principal that
+matures into cash. A floating rate never earns below zero (INCOME.md
+§12). So `income_100bp` is the floating principal times one percent
+where its rate stands at or above zero, less where it stands below
+zero, and nothing where it stands a point or more below. A fixed coupon
+adds nothing until it matures.
 
 **Realized yield.** `realized_yield` is the income received in the
 twelve months to the day over the mean daily value.

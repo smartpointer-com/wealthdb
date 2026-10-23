@@ -90,14 +90,16 @@ const Months = canonical.MaxHorizonMonths
 // Part is part of one holding's expected income in one month under one
 // maturing rule, in the holding's own currency:
 //
-//	Fixed + Roll[path] + Principal × (rate + Spread + shift) / 1200
-//	      + RollPrincipal × shift / 1200
+//	Fixed + Principal × max(0, rate + Spread + shift) / 1200
+//	      + RollPrincipal × max(0, roll rate[path] + shift) / 1200
 //
-// where rate is the month's benchmark rate of Currency on the path, and
-// shift is in percent. Fixed is a coupon, a declared or indicated
-// dividend, a term deposit's rate. Principal earns the floating rate: a
-// balance, a money-market holding, a floating note. A rolled holding
-// earns the rate of its term on the day it rolls, which differs by path.
+// where rate is the month's benchmark rate of Currency on the path,
+// shift is in percent, and a roll rate is Roll[path] over RollPrincipal.
+// A floating rate never earns below zero. Fixed is a coupon, a declared
+// or indicated dividend, a term deposit's rate. Principal earns the
+// floating rate: a balance, a money-market holding, a floating note. A
+// rolled holding earns the rate of its term on the day it rolls, which
+// differs by path.
 //
 // A part either accrues over From..To, the days of its month it covers
 // (To exclusive), its amounts that span's share of a month's, or is a
@@ -126,14 +128,19 @@ type Part struct {
 }
 
 // Income is the part's income under a path and a parallel shift in
-// basis points, given the month's benchmark rate.
+// basis points, given the month's benchmark rate. Each floating rate,
+// shift included, floors at zero.
 func (p Part) Income(path Path, rate, shiftBP float64) float64 {
 	roll := p.RollConstant
 	if path == PathForward {
 		roll = p.RollForward
 	}
 	shift := shiftBP / 100
-	return p.Fixed + roll + p.Principal*(rate+p.Spread+shift)/1200 + p.RollPrincipal*shift/1200
+	income := p.Fixed + p.Principal*max(0, rate+p.Spread+shift)/1200
+	if p.RollPrincipal == 0 {
+		return income + roll
+	}
+	return income + p.RollPrincipal*max(0, roll*1200/p.RollPrincipal+shift)/1200
 }
 
 // Floating says the part's income moves with the rates.

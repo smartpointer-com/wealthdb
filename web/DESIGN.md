@@ -327,9 +327,11 @@ The income yield, the projected income and the
 sensitivity read today's projection (`web_yield_parts`) for today's
 selected holdings, whatever the range, under the projection's pickers.
 Their income is the holdings' alone, as `income_12m` is: rent or a
-pension has no holding. The sensitivity is the floating principal at
-one percent. No rate path or shift changes it, so it takes the
-maturing rule and the horizon alone.
+pension has no holding. The sensitivity is each part's income for
+rates one percent higher, less its income under the pickers, as
+`income_100bp` reads it. A floating rate floors at zero, so where the
+rate path and the shift take a rate below zero they change it, and it
+takes all four pickers.
 
 The Yield twin shows shares and rates as they are. DV01 becomes a share
 of net worth per basis point: 100 times DV01 over the selection's net

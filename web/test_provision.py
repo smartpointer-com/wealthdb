@@ -2089,11 +2089,11 @@ check("every picker a Yield tile maps lands on a tag it declares and reads",
       not _picker_targets_resolve(_y_all), _picker_targets_resolve(_y_all))
 # The cards with an expected figure read today's projection whatever
 # the window, so the window picker does not reach them, and the four
-# assumptions do; the sensitivity is linear in the rate, so the path and
-# the shift leave it unchanged.
+# assumptions do: a floating rate floors at zero, so the path and the
+# shift move the sensitivity too.
 _proj = {"Income yield": {"rates", "maturing", "shift", "horizon"},
          "Projected income": {"rates", "maturing", "shift", "horizon"},
-         "Income sensitivity to rates": {"maturing", "horizon"}}
+         "Income sensitivity to rates": {"rates", "maturing", "shift", "horizon"}}
 for _n in _y_all:
     _tags = set(CARDS[_n][2]["native"]["template-tags"])
     _want = _proj.get(_n.removesuffix(p.PRIVACY_SUFFIX))
@@ -2105,10 +2105,12 @@ for _n in _y_all:
     else:
         check(f"'{_n}' reads the window's last day and takes no projection picker",
               "time_range" in _tags and not _tags & {"rates", "maturing", "shift", "horizon"}, sorted(_tags))
-check("a part's income is yield.Part.Income's",
+check("a part's income is yield.Part.Income's, each floating rate floored at zero",
       all(s in p.PART_INCOME for s in ("p.fixed", "p.roll_forward", "p.roll_constant",
-                                       "p.principal * (COALESCE(rt.rate_pct, 0) + p.spread + ({{shift}}) / 100.0) / 1200",
-                                       "p.roll_principal * ({{shift}}) / 100.0 / 1200"))
+                                       "p.principal * GREATEST(0, COALESCE(rt.rate_pct, 0) + p.spread"
+                                       " + ({{shift}}) / 100.0) / 1200",
+                                       "WHEN p.roll_principal = 0 THEN",
+                                       "ELSE p.roll_principal * GREATEST(0, ("))
       and "rt.path = {{rates}}" in p.PARTS_FROM, p.PART_INCOME)
 check("a rate weighs the assets, else every row, as yield.summarize does",
       "CASE WHEN bool_or(weighs) THEN sum(value * x) FILTER (WHERE weighs AND x IS NOT NULL)" in p._rate("x")
@@ -2768,6 +2770,37 @@ if duckdb is not None:
     _sens = dict(_run("Income sensitivity to rates", horizon="24"))
     check("the sensitivity over 24 months is each currency's floating principal at one percent",
           _near(_sens.get("USD"), 240.0) and _near(_sens.get("CHF"), 200.0), _sens)
+    # 200bp lower, the franc cash's 1.50 would earn -0.50: it floors at
+    # zero. The dollar cash earns 3.00 - 1.00 - 2.00 = 0. So the twelve
+    # months pay the two coupons alone, and a point more lifts the franc
+    # cash only half a point above the floor: 8,000 x 0.50 / 1200 x 12 x
+    # 1.25, the dollar cash a full point: 12,000 / 1200 x 12.
+    _got = _one("Projected income", shift=-200)
+    check("200bp lower, the franc cash earns zero, not a charge", _near(_got, 800.0), (_got, 800.0))
+    _sens = dict(_run("Income sensitivity to rates", shift=-200))
+    check("...and a point more lifts it half a point above the floor",
+          _near(_sens.get("USD"), 120.0) and _near(_sens.get("CHF"), 50.0), _sens)
+    # A part's income on its own, as yield.Part.Income's test reads it: a
+    # roll at a quarter point (half a point forward), a loan at half a
+    # point, a fixed coupon; the month's benchmark is 0.50.
+    def _part(rates, shift, **fields):
+        cols = {"fixed": 0, "principal": 0, "spread": 0, "roll_constant": 0, "roll_forward": 0,
+                "roll_principal": 0, **fields}
+        sql = p.PART_INCOME.replace("{{rates}}", f"'{rates}'").replace("{{shift}}", str(shift))
+        return _db.execute("SELECT " + sql + " FROM (SELECT " +
+                           ", ".join(f"{v}::DOUBLE AS {k}" for k, v in cols.items()) +
+                           ") p, (SELECT 0.5::DOUBLE AS rate_pct) rt").fetchone()[0]
+    _roll = {"roll_constant": 100000 * 0.25 / 1200, "roll_forward": 100000 * 0.5 / 1200, "roll_principal": 100000}
+    for _what, _args, _fields, _want in (
+            ("a roll at its rate", ("constant", 0), _roll, 100000 * 0.25 / 1200),
+            ("a roll 100bp higher", ("constant", 100), _roll, 100000 * 1.25 / 1200),
+            ("a roll 100bp lower", ("constant", -100), _roll, 0.0),
+            ("a roll on the forward path 40bp lower", ("forward", -40), _roll, 100000 * 0.1 / 1200),
+            ("a loan 100bp lower", ("constant", -100), {"principal": -100000}, 0.0),
+            ("a loan at its rate", ("constant", 0), {"principal": -100000}, -100000 * 0.5 / 1200),
+            ("a fixed coupon 500bp lower", ("constant", -500), {"fixed": 50}, 50.0)):
+        _got = _part(*_args, **_fields)
+        check(f"{_what} earns as yield.Part.Income gives it", _near(_got, _want), (_got, _want))
     # The implied yield weighs the assets: the bond's 5.00, not the
     # mortgage's 2.00.
     check("the implied yield weighs the assets alone", _near(_one("Implied yield"), 5.0), _one("Implied yield"))

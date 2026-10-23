@@ -16,9 +16,13 @@ import (
 )
 
 // partIncomeSQL is a part's income in ccy under the constant path and no
-// shift, as yield.Part.Income gives it.
+// shift, as yield.Part.Income gives it: each floating rate floored at
+// zero, a roll's at its rate over its principal.
 func partIncomeSQL(ccy string) string {
-	return `(p.fixed + p.roll_constant + p.principal * (r.rate_pct + p.spread) / 1200) * p.fx_` + ccy
+	return `(p.fixed + p.principal * GREATEST(0, r.rate_pct + p.spread) / 1200
+	        + CASE WHEN p.roll_principal = 0 THEN p.roll_constant
+	               ELSE p.roll_principal * GREATEST(0, p.roll_constant * 1200 / p.roll_principal) / 1200 END)
+	        * p.fx_` + ccy
 }
 
 // The materialized yield tables are the report's: each instant's

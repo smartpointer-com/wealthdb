@@ -583,14 +583,32 @@ this estimates the split, not the debt.
 A snapshot is the balance **before** that day's instalment posts. An
 interval runs from one observation up to, but not including, the next.
 A tranche that closes stops being snapshotted. Its last interval
-retires whatever was left, read from the account's disappearance from
-its source's latest positions snapshot.
+retires whatever was left.
 
-The cash flow reads a mortgage as repaid once a later positions
-snapshot of its source omits it. A run that writes only cash balances
-moves no clock here. Holdings keep the mortgage until the ending of
-[DESIGN.md](DESIGN.md) §10.7. So a mortgage reported in its own run,
-beside a custody feed that runs nightly, reads as repaid here while
+A mortgage's end follows its own cadence:
+
+- The cadence is the median gap between the mortgage's consecutive
+  observations on different days. A second reading of one day does not
+  shrink it, and one long gap among three or more does not stretch it.
+- The mortgage stands until its source's newest positions snapshot lies
+  more than one and a half cadences past its last observation.
+- After that, it reads as repaid.
+- A mortgage observed on one day only takes a month as its cadence, a
+  statement's.
+  So a new mortgage stands through its first month, and one a single
+  statement shows reads as repaid about six weeks on.
+
+While a mortgage stands, its last interval retires nothing. Its
+instalments there draw as interest until its next observation loads.
+So a mortgage reported monthly, beside a custody feed that runs
+nightly, stands between its own observations. The rule compares
+instants, not days. A mortgage observed in its source's newest
+snapshot stands, whatever the hour of that snapshot.
+
+A run that writes only cash balances moves no clock here. Holdings keep
+the mortgage until the ending of [DESIGN.md](DESIGN.md) §10.7. That is a
+different rule, so the two readings can disagree for a while. A
+mortgage that stops being reported can read as repaid here while
 holdings still show its balance.
 
 A mortgage the product does not hold has no balance to read. Its

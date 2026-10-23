@@ -2964,9 +2964,12 @@ SQL ([CASHFLOW.md](CASHFLOW.md) is the spec):
 - `cashflow_txn_nodes(f, t)` maps every transaction to a
   `section.class.group` node and a disposition that says whether it is a
   line at all. `cashflow_lines_base(f, t)` is that, restricted to the pool
-  and to the lines. It reads a mortgage its source outlives as repaid at
-  the source's next positions snapshot, while holdings keep the mortgage
-  until the shared ending of §10.7 ([CASHFLOW.md §5](CASHFLOW.md)).
+  and to the lines. It reads a mortgage as repaid once its source's
+  newest positions snapshot lies more than one and a half cadences past
+  the mortgage's last observation. The cadence is the median gap between
+  the mortgage's own observations on different days, a month for one
+  observed on one day only. Holdings keep the mortgage until the shared
+  ending of §10.7 ([CASHFLOW.md §5](CASHFLOW.md)).
 - `report_cashflow_summary`, `_flows`, `_sankey` and `_transactions` sit
   over it, with the FX pair `cashflow_lines_outccy` /
   `cashflow_nodes_outccy`; `web_cashflow` serves the dashboard.

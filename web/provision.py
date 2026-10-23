@@ -3076,14 +3076,16 @@ def _income_yield(income="income_12m"):
 
 
 # A projection part's income under the picked rate path and shift, in its
-# holding's currency (yield.Part.Income): the fixed part, a rolled
-# holding's income on the path, and the floating principal at the month's
-# benchmark plus its spread and the shift. PARTS_FROM joins each part to
-# its rate as `rt`; a currency the rates lack reads zero, as the engine's
-# does.
-PART_INCOME = ("p.fixed + CASE WHEN {{rates}} = 'forward' THEN p.roll_forward ELSE p.roll_constant END\n"
-               "             + p.principal * (COALESCE(rt.rate_pct, 0) + p.spread + ({{shift}}) / 100.0) / 1200\n"
-               "             + p.roll_principal * ({{shift}}) / 100.0 / 1200")
+# holding's currency (yield.Part.Income): the fixed part, the floating
+# principal at the month's benchmark plus its spread and the shift, and a
+# rolled holding's income at its rate on the path plus the shift. Each
+# floating rate floors at zero. PARTS_FROM joins each part to its rate as
+# `rt`; a currency the rates lack reads zero, as the engine's does.
+_ROLL = "CASE WHEN {{rates}} = 'forward' THEN p.roll_forward ELSE p.roll_constant END"
+PART_INCOME = ("p.fixed + p.principal * GREATEST(0, COALESCE(rt.rate_pct, 0) + p.spread + ({{shift}}) / 100.0) / 1200\n"
+               "             + CASE WHEN p.roll_principal = 0 THEN " + _ROLL + "\n"
+               "                    ELSE p.roll_principal * GREATEST(0, (" + _ROLL + ") * 1200 / p.roll_principal\n"
+               "                                                     + ({{shift}}) / 100.0) / 1200 END")
 PARTS_FROM = ("    FROM web_yield_parts p\n"
               "    LEFT JOIN web_yield_rates rt ON rt.currency = p.holding_currency AND rt.month = p.month\n"
               "         AND rt.path = {{rates}}")
@@ -3295,20 +3297,21 @@ def yield_cards(db_id, privacy):
              {"graph.dimensions": ["point"], "graph.metrics": list(CURVE_HOLDERS),
               "graph.tooltip_columns": ["dv01"], **STACKED_VIZ}, ctags)
 
-    # The change in the horizon's income for rates one percent higher:
-    # the floating principal of its months at one percent, which no path
-    # and no shift changes, the income being linear in the rate.
-    sens_tags = {**held_tags, "maturing": PROJECTION_TAGS["maturing"], "horizon": PROJECTION_TAGS["horizon"]}
+    # The change in the horizon's income for rates one percent higher than
+    # the picked path and shift: each part's income there less its income
+    # here, as the engine's income per 100bp reads it. A floating rate
+    # floors at zero, so below zero a point more earns less than a point.
+    up = PART_INCOME.replace("({{shift}})", "({{shift}} + 100)")
     sens = (held + ",\ns AS (\n"
-            f"  SELECT p.holding_currency, (p.principal + p.roll_principal) / 1200 * {_ccy_case('p.fx')} AS v\n"
-            "    FROM web_yield_parts p\n" + HELD_JOIN +
+            f"  SELECT p.holding_currency, (({up}) - ({PART_INCOME})) * {_ccy_case('p.fx')} AS v\n" + PARTS_FROM +
+            "\n" + HELD_JOIN +
             "\n   WHERE p.rule = {{maturing}}\n     AND p.month BETWEEN 1 AND " + HORIZON_MONTHS + ")")
     sens_desc = ("How much more today's holdings would pay over the horizon after this month were "
                  "rates one percent higher, per currency the holdings are in: the floating "
                  "principal — balances, money-market and floating holdings, and the principal "
                  "maturities return to cash or roll — at one percent. A fixed coupon adds nothing "
-                 "until it matures. The rate path and the shift move every floating rate in step, "
-                 "so they leave it unchanged.")
+                 "until it matures. A floating rate never earns below zero, so where the path and "
+                 "the shift take one below zero, a point more earns less than a point.")
     if privacy:
         card("Income sensitivity to rates", "bar",
              sens_desc + " As a yield: the change per year over the value that earns it in that "
@@ -3319,13 +3322,13 @@ def yield_cards(db_id, privacy):
              "  FROM s\n  LEFT JOIN v ON v.holding_currency = s.holding_currency\n"
              " GROUP BY 1\n ORDER BY 2 DESC NULLS LAST, 1",
              {"graph.dimensions": ["holding_currency"], "graph.metrics": ["yield_change_pct"],
-              "graph.show_values": True, **_share_viz("yield_change_pct")}, sens_tags, proj_note)
+              "graph.show_values": True, **_share_viz("yield_change_pct")}, proj_tags, proj_note)
     else:
         card("Income sensitivity to rates", "bar", sens_desc,
              sens + "\nSELECT holding_currency, sum(v) AS income_change\n"
              "  FROM s\n GROUP BY 1\n ORDER BY 2 DESC NULLS LAST, 1",
              {"graph.dimensions": ["holding_currency"], "graph.metrics": ["income_change"],
-              "graph.show_values": True}, sens_tags, proj_note)
+              "graph.show_values": True}, proj_tags, proj_note)
 
     card("Dividend yield against payout", "scatter",
          "Each stock at the latest day in the window: the share of its earnings it pays out "

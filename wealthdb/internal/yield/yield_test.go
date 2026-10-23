@@ -184,21 +184,21 @@ func TestADepositEarnsItsTieredRateAlongThePath(t *testing.T) {
 	in.Curves["USD"] = &Curve{Zero: z, Benchmark: 4, BenchmarkMonths: 3}
 	h := cash("bank", "S", "USD", 100000)
 	in.Holdings = []Holding{h}
-	in.Rates[AccountKey{"bank", "S"}] = []Rate{{Credit: true, Tier: 1, Pct: 1, UpTo: num(50000)},
-		{Credit: true, Tier: 2, Pct: 0.5}, {Credit: false, Tier: 1, Pct: 9}}
+	in.Rates[AccountKey{"bank", "S"}] = []Rate{{Credit: true, Tier: 1, Pct: 3.5, UpTo: num(50000)},
+		{Credit: true, Tier: 2, Pct: 3}, {Credit: false, Tier: 1, Pct: 9}}
 	b := Compute(in)
 	p := position(b, h.HoldingKey)
-	near(t, "stated", p.Stated, 0.75, 1e-12)
-	near(t, "gap", p.Gap, 0.75-4, 1e-12)
-	near(t, "spread", p.Spread, 0.75-4, 1e-12)
+	near(t, "stated", p.Stated, 3.25, 1e-12)
+	near(t, "gap", p.Gap, 3.25-4, 1e-12)
+	near(t, "spread", p.Spread, 3.25-4, 1e-12)
 	near(t, "duration", p.Duration, 0, 0)
 	m := 5
 	constant := incomeOf(b, h.HoldingKey, m, RuleCash, PathConstant, 0)
-	if math.Abs(constant-100000*0.75/1200) > 1e-9 {
+	if math.Abs(constant-100000*3.25/1200) > 1e-9 {
 		t.Errorf("constant income %v", constant)
 	}
 	forward := incomeOf(b, h.HoldingKey, m, RuleCash, PathForward, 0)
-	want := 100000 * (z.Forward(m, 3) + 0.75 - 4) / 1200
+	want := 100000 * (z.Forward(m, 3) + 3.25 - 4) / 1200
 	if math.Abs(forward-want) > 1e-9 || forward >= constant {
 		t.Errorf("forward income %v, want %v below %v", forward, want, constant)
 	}
@@ -207,6 +207,77 @@ func TestADepositEarnsItsTieredRateAlongThePath(t *testing.T) {
 		t.Errorf("a shift of -100bp: %v", shifted)
 	}
 	near(t, "income 100bp", p.Income100bp, 100000*0.01, 1e-6)
+}
+
+// A part's floating rates floor at zero, its roll's too, each with the
+// shift: a roll at a quarter point earns nothing 100bp lower, and a loan
+// at half a point costs nothing, rather than paying, 100bp lower.
+func TestAPartsRatesFloorAtZero(t *testing.T) {
+	t.Parallel()
+	roll := Part{RollConstant: 100000 * 0.25 / 1200, RollForward: 100000 * 0.5 / 1200, RollPrincipal: 100000}
+	for _, c := range []struct {
+		what  string
+		part  Part
+		path  Path
+		shift float64
+		want  float64
+	}{
+		{"a roll at its rate", roll, PathConstant, 0, 100000 * 0.25 / 1200},
+		{"a roll 100bp higher", roll, PathConstant, 100, 100000 * 1.25 / 1200},
+		{"a roll 100bp lower", roll, PathConstant, -100, 0},
+		{"a roll on the forward path 40bp lower", roll, PathForward, -40, 100000 * 0.1 / 1200},
+		{"a loan 100bp lower", Part{Principal: -100000}, PathConstant, -100, 0},
+		{"a loan at its rate", Part{Principal: -100000}, PathConstant, 0, -100000 * 0.5 / 1200},
+		{"a fixed coupon", Part{Fixed: 50}, PathConstant, -500, 50},
+	} {
+		if got := c.part.Income(c.path, 0.5, c.shift); math.Abs(got-c.want) > 1e-9 {
+			t.Errorf("%s: %v, want %v", c.what, got, c.want)
+		}
+	}
+}
+
+// A floating rate never earns below zero. A franc deposit the bank
+// charges half a percent earns nothing, not a charge: on the constant
+// path, along a forward path that falls below zero, and at -100bp. Its
+// change for rates one percent higher is what the floor leaves of the
+// point: half of it.
+func TestANegativeFrancPathFloorsADepositAtZero(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	pts := []fixedincome.Point{{Months: 3, Rate: 0.25}, {Months: 12, Rate: -0.5}, {Months: 24, Rate: -0.75}}
+	z, err := fixedincome.NewCurve(pts, fixedincome.Treasury)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Curves["CHF"] = &Curve{Zero: z, Benchmark: 0.25, BenchmarkMonths: 3}
+	h := cash("bank", "C", "CHF", 100000)
+	in.Holdings = []Holding{h}
+	in.Rates[AccountKey{"bank", "C"}] = []Rate{{Credit: true, Tier: 1, Pct: -0.5}}
+	b := Compute(in)
+	if constant := incomeOf(b, h.HoldingKey, 5, RuleCash, PathConstant, 0); constant != 0 {
+		t.Errorf("constant income %v, want 0 for a rate of -0.5%%", constant)
+	}
+	floored := 0
+	for m := 1; m <= 12; m++ {
+		forward := incomeOf(b, h.HoldingKey, m, RuleCash, PathForward, 0)
+		if forward < 0 {
+			t.Errorf("month %d: forward income %v below zero", m, forward)
+		}
+		if z.Forward(m, 3)-0.75 < 0 {
+			floored++
+			if forward != 0 {
+				t.Errorf("month %d: forward income %v, want 0 where the path is negative", m, forward)
+			}
+		}
+	}
+	if floored == 0 {
+		t.Fatal("the path never goes below zero: the case pins nothing")
+	}
+	if shifted := incomeOf(b, h.HoldingKey, 5, RuleCash, PathConstant, -100); shifted != 0 {
+		t.Errorf("a shift of -100bp: %v, want 0", shifted)
+	}
+	p := position(b, h.HoldingKey)
+	near(t, "income 100bp", p.Income100bp, 100000*0.005, 1e-6)
 }
 
 // A bond maturing inside the window returns its principal, which then
