@@ -1282,7 +1282,9 @@ account; the pair (portfolio, currency) determines it, resolved
 through PSN's account master data because the web collector's own
 account rows carry the banking relationship rather than the numbered
 portfolio. A pair naming more than one account — a dormant account
-beside a live one — is refused rather than guessed at.
+beside a live one — is refused rather than guessed at. The dividend
+quantities read them as trades of the custody account that holds the
+security ([YIELD.md](../YIELD.md) §4).
 
 **The kind is read off the figure, not the booking type.** The export
 signs its own values (positive leaves the portfolio, which on the cash

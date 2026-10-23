@@ -593,6 +593,14 @@ the instrument included.
 - That quantity comes from the account's newest snapshot by then. The
   account's trades since that snapshot move it. The day's own trades
   earn none of the payment.
+- A trade booked on a cash account that shows none of its instrument
+  as the trade happens moves the holding of the one other account of
+  its portfolio that holds it then. A bank books a trade on the cash
+  account beside the custody account. Where several accounts of the
+  portfolio hold it then, or none, the trade moves no holding: which
+  one it went to is not known. A payment that reads them all reads
+  their snapshots unmoved. A trade of any other kind of account moves
+  only its own holding.
 - A trade stamped at a snapshot's instant counts in it, as the lot
   engine reads a snapshot. Some statements leave out their last day's
   trades: where the snapshot shows the previous one's quantity without

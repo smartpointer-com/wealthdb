@@ -823,3 +823,99 @@ func TestADividendIsPaidOnItsRecordDaysQuantity(t *testing.T) {
 		t.Errorf("QIT: payments %+v, dividend yield %s, tags %v", ps, fmtFloatPtr(p.DividendYield), p.Tags)
 	}
 }
+
+// TestATradeOnTheCashAccountMovesItsPortfoliosHolding: a bank books a
+// trade, and its dividend, on a cash account beside the custody account
+// that holds the share. The book is invented, at a bank whose portfolio
+// P1 has the custody accounts SAFE and SAFE2, the cash account CASH and
+// the brokerage account BRK, each shown at month ends:
+//   - QCHS, a Swiss share: SAFE held 50 to February; CASH booked a sale of
+//     10 on 12 March and the dividend of 31 March, 0.5 a share. The record
+//     day, two business days before, reads February's 50 less the sale.
+//   - QOWN: CASH holds some of it itself, so its sale of 10 moves its own
+//     holding, and SAFE's own sale of 5 moves SAFE's.
+//   - QTWO: SAFE and SAFE2 both hold it as CASH sells: the sale moves
+//     neither, and the payment reads both unmoved.
+//   - QSEQ: SAFE held it to January, SAFE2 from February: CASH's sale in
+//     March moves SAFE2's, the one that held it then.
+//   - QHLD: CASH names it QCSH, an id only CASH's own alias folds into
+//     QHLD; its sale still moves SAFE's QHLD.
+//   - QALS: CASH names it QALT, an id only SAFE's alias folds into QALS;
+//     its sale moves SAFE's QALS.
+//   - QBRK: BRK, a brokerage account, sells it without holding it: the
+//     sale moves no other account's holding.
+//   - QOTH: CASH2, of portfolio P2, sells it: SAFE keeps February's 50.
+//   - QFND, a fund with no record day: CASH's buy of 50 on 2 March moves
+//     SAFE's 100, read as the pay day begins.
+func TestATradeOnTheCashAccountMovesItsPortfoliosHolding(t *testing.T) {
+	t.Parallel()
+	early, pay := ymd(2026-1, 1, 1), ymd(2026, 3, 31)
+	sold := func(n float64) []bookSeg { return []bookSeg{{early, 50, 2500}, {pay, 50 - n, 2500 - 50*n}} }
+	shares := []string{"QCHS", "QOWN", "QTWO", "QSEQ", "QHLD", "QALS", "QBRK", "QOTH"}
+	var after []string
+	for _, iid := range shares {
+		for _, acct := range []string{"SAFE", "SAFE2", "CASH"} {
+			after = append(after, `INSERT INTO exposure_situs (silver_source_id, account_external_id, position_key, as_of,
+			    situs, basis) VALUES ('bank', '`+acct+`', '`+iid+`', NULL, 'CH', '`+situsCountry+`')`)
+		}
+	}
+	after = append(after,
+		`INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate)
+		    VALUES ('fx', 0, 'USD', 'CHF', 0.9)`,
+		`UPDATE accounts SET account_kind = 'cash' WHERE account_external_id IN ('CASH', 'CASH2')`,
+		`INSERT INTO holding_aliases (silver_source_id, account_external_id, from_key, to_key)
+		    VALUES ('bank', 'CASH', 'QCSH', 'QHLD'), ('bank', 'SAFE', 'QALT', 'QALS')`,
+		`UPDATE positions SET vehicle = 'etf' WHERE position_key = 'QFND'`,
+		`UPDATE instruments SET vehicle = 'etf' WHERE instrument_external_id = 'QFND'`)
+	ccys := map[string]string{"QCSH": "CHF", "QALT": "CHF"}
+	insts := []bookInstrument{{"bank", "QCSH", "", "", ""}, {"bank", "QALT", "", "", ""},
+		{"bank", "QFND", "US0000000011", "", "QFND"}}
+	for i, iid := range shares {
+		ccys[iid] = "CHF"
+		insts = append(insts, bookInstrument{"bank", iid, "CH000000000" + strconv.Itoa(i+1), "", iid})
+	}
+	var txns []bookTxn
+	for _, iid := range shares {
+		txns = append(txns, bookTxn{"bank", "CASH", iid, pay, "dividend", 20, 0})
+	}
+	march := ymd(2026, 3, 12)
+	txns = append(txns,
+		bookTxn{"bank", "CASH", "QCHS", march, "sell", 500, -10},
+		bookTxn{"bank", "SAFE", "QOWN", march, "sell", 250, -5},
+		bookTxn{"bank", "CASH", "QOWN", march, "sell", 500, -10},
+		bookTxn{"bank", "CASH", "QTWO", march, "sell", 500, -10},
+		bookTxn{"bank", "CASH", "QSEQ", march, "sell", 500, -10},
+		bookTxn{"bank", "CASH", "QCSH", march, "sell", 500, -10},
+		bookTxn{"bank", "CASH", "QALT", march, "sell", 500, -10},
+		bookTxn{"bank", "BRK", "QBRK", march, "sell", 500, -10},
+		bookTxn{"bank", "CASH2", "QOTH", march, "sell", 500, -10},
+		bookTxn{"bank", "CASH", "QFND", ymd(2026, 3, 2), "buy", -5000, 50},
+		bookTxn{"bank", "CASH", "QFND", pay, "dividend", 30, 0})
+	jan := ymd(2026, 1, 31)
+	in, _, _ := dividendBook{instruments: insts, lines: []bookLine{
+		{"bank", "SAFE", "QCHS", sold(10)}, {"bank", "SAFE", "QOWN", sold(5)}, {"bank", "CASH", "QOWN", sold(10)},
+		{"bank", "SAFE", "QTWO", sold(0)}, {"bank", "SAFE2", "QTWO", sold(0)},
+		{"bank", "SAFE", "QSEQ", []bookSeg{{early, 50, 2500}, {jan, 0, 0}}},
+		{"bank", "SAFE2", "QSEQ", []bookSeg{{jan, 50, 2500}, {pay, 40, 2000}}},
+		{"bank", "SAFE", "QHLD", sold(10)}, {"bank", "SAFE", "QALS", sold(10)},
+		{"bank", "SAFE", "QBRK", sold(0)}, {"bank", "SAFE", "QOTH", sold(0)},
+		{"bank", "SAFE", "QFND", []bookSeg{{early, 100, 5000}, {pay, 150, 7500}}},
+	}, txns: txns, currencies: ccys, after: after,
+		portfolios: map[string]string{"SAFE": "P1", "SAFE2": "P1", "CASH": "P1", "BRK": "P1", "CASH2": "P2"}}.inputs(t)
+	for _, c := range []struct {
+		acct, iid string
+		want      float64
+	}{
+		{"SAFE", "QCHS", 40}, {"CASH", "QOWN", 40}, {"SAFE", "QTWO", 100}, {"SAFE2", "QSEQ", 40},
+		{"SAFE", "QHLD", 40}, {"SAFE", "QALS", 40}, {"SAFE", "QBRK", 50}, {"SAFE", "QOTH", 50},
+	} {
+		ps := in.Payments[yield.HoldingKey{Source: "bank", Account: c.acct, PositionKey: c.iid}]
+		if len(ps) != 1 || ps[0].Record == nil || *ps[0].Record != c.want {
+			t.Errorf("%s/%s: payments %+v, want one read on %v held on its record day", c.acct, c.iid, ps, c.want)
+		}
+	}
+	ps := in.Payments[yield.HoldingKey{Source: "bank", Account: "SAFE", PositionKey: "QFND"}]
+	if len(ps) != 1 || ps[0].Record != nil || ps[0].Quantity == nil || *ps[0].Quantity != 150 {
+		t.Errorf("QFND: payments %+v, want one read on the 150 held as its pay day began", ps)
+	}
+}

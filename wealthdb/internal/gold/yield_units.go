@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
@@ -16,9 +17,12 @@ import (
 // account held of its instrument before its record day, where its market
 // fixes one and the account held some then, else before its pay day, in
 // the newest snapshot that speaks for the account (unitAccountsCTE),
-// moved by the account's trades since, in the instrument's units at the
+// moved by the trades of its key since, in the instrument's units at the
 // instant. An instrument goes by the id the matching folds it into
-// (yield.Inputs.Fold), under the account that holds or trades it.
+// (yield.Inputs.Fold), under the account that holds or trades it. A
+// trade booked on a cash account that holds none of its instrument moves
+// the holding of the one account of its portfolio that does (tradeKey): a
+// bank books a trade there, beside the custody account.
 
 // unitKey names an instrument held in one account of a source, by the id
 // the account's aliases fold it into.
@@ -43,8 +47,8 @@ type unitChange struct {
 }
 
 // yieldUnits are the quantities of the instruments paid, in each account
-// that held them, at the points they change, and the account's trades of
-// each (unitMove); the snapshots that speak for each account; the
+// that held them, at the points they change, and the trades that move
+// each (unitMove, tradeKey); the snapshots that speak for each account; the
 // accounts that held each instrument; the changes of each instrument's
 // units; the spans of snapshots over which some account held each with
 // its units read (cover); and the last snapshot of each source. late
@@ -61,6 +65,8 @@ type yieldUnits struct {
 	// instants are the snapshots of each source that speak for some
 	// account, sorted.
 	instants map[string][]int64
+	// siblings memoises portfolioKeys for tradeKey.
+	siblings map[unitKey][]unitKey
 }
 
 // accountKey names an account of a source.
@@ -117,16 +123,17 @@ account_grid AS (
 // as holdingAliasJoins reads a holding's key (a CUSIP id and its ticker,
 // say), in each snapshot that speaks for the account (unitAccountsCTE),
 // the account holding none where they are absent: the points it changes
-// at (unitPoint). Between two such snapshots, the account's trades, read
-// as the source kind's lot policy reads them (lots.PolicyFor), and its
+// at (unitPoint). Between two such snapshots, the key's trades, read
+// as the source kind's lot policy reads them (lots.PolicyFor) and keyed
+// by tradeKey (the booking account's key where in is nil), and its
 // quantity and value tell a change of units (unitStep.change). Every
 // account's changes are the instrument's (addChange).
-func readYieldUnits(ctx context.Context, db *sql.DB, paid map[yield.InstrumentKey]bool, from, asOf int64) (*yieldUnits,
-	error) {
+func readYieldUnits(ctx context.Context, db *sql.DB, in *yield.Inputs, paid map[yield.InstrumentKey]bool,
+	from, asOf int64) (*yieldUnits, error) {
 	u := &yieldUnits{points: map[unitKey][]unitPoint{}, snaps: map[accountKey][]int64{},
 		late: map[unitKey]map[int64]bool{}, accounts: map[yield.InstrumentKey][]string{},
 		changes: map[yield.InstrumentKey][]unitChange{}, read: map[yield.InstrumentKey][][2]int64{},
-		last: map[string]int64{}, instants: map[string][]int64{}}
+		last: map[string]int64{}, instants: map[string][]int64{}, siblings: map[unitKey][]unitKey{}}
 	if len(paid) == 0 {
 		return u, nil
 	}
@@ -215,9 +222,14 @@ SELECT silver_source_id, account_external_id, snapshot_at FROM account_grid ORDE
 		slices.Sort(at)
 		u.instants[src] = slices.Compact(at)
 	}
-	trades, err := readUnitTrades(ctx, db, srcs, iids, from, asOf)
+	booked, err := readUnitTrades(ctx, db, srcs, iids, from, asOf)
 	if err != nil {
 		return nil, err
+	}
+	trades := map[unitKey][]unitTrade{}
+	for _, b := range booked {
+		k := u.tradeKey(in, b)
+		trades[k] = append(trades[k], b.trade)
 	}
 	u.trades = trades
 	for _, s := range steps {
@@ -283,12 +295,64 @@ func (u *yieldUnits) covered(ik yield.InstrumentKey, end int64) bool {
 	return slices.ContainsFunc(u.read[ik], func(s [2]int64) bool { return s[0] <= end && s[1] >= u.last[ik.Source] })
 }
 
-// readUnitTrades reads each key's transactions that move its quantity
-// over the snapshots readYieldUnits reads, oldest first (unitMove), each
-// by the id its account's aliases fold its instrument into. One stamped at
-// a snapshot's instant counts in it or after it, as the snapshot shows
-// (after).
-func readUnitTrades(ctx context.Context, db *sql.DB, srcs, iids []string, from, asOf int64) (map[unitKey][]unitTrade,
+// bookedTrade is a trade (unitMove) under the key of the account it is
+// booked on, and the id it names its instrument by.
+type bookedTrade struct {
+	key   unitKey
+	iid   string
+	trade unitTrade
+}
+
+// tradeKey is the key a trade moves the quantity of: its booking
+// account's, where that account holds its instrument as the trade
+// happens (holdsAt). Else, for a trade booked on a cash account, the one
+// other account of its portfolio that holds it then, its instrument
+// folded under that account or under the booking account
+// (portfolioKeys, b.key). Where none does, or several do, the booking
+// key: which account the trade went to is not known, and it moves no
+// holding. A trade of any other account moves only its own.
+func (u *yieldUnits) tradeKey(in *yield.Inputs, b bookedTrade) unitKey {
+	if in == nil || u.holdsAt(b.key, b.trade) ||
+		in.Accounts[yield.AccountKey{Source: b.key.src, Account: b.key.acct}].Kind != string(canonical.AccountKindCash) {
+		return b.key
+	}
+	own := unitKey{b.key.src, b.key.acct, b.iid}
+	siblings, ok := u.siblings[own]
+	if !ok {
+		siblings = portfolioKeys(in, b.key.src, b.key.acct, b.iid)[1:]
+		u.siblings[own] = siblings
+	}
+	var holder []unitKey
+	for _, k := range siblings {
+		for _, c := range []unitKey{k, {k.src, k.acct, b.key.iid}} {
+			if u.holdsAt(c, b.trade) {
+				holder = append(holder, c)
+				break
+			}
+		}
+	}
+	if len(holder) != 1 {
+		return b.key
+	}
+	return holder[0]
+}
+
+// holdsAt says key k holds its instrument as trade t happens: its newest
+// point at or before the trade holds some, or, for a buy, the first after
+// it does.
+func (u *yieldUnits) holdsAt(k unitKey, t unitTrade) bool {
+	ps := u.points[k]
+	i := sort.Search(len(ps), func(i int) bool { return ps[i].at > t.at })
+	holds := func(p unitPoint) bool { return p.qty != nil && *p.qty > lots.Tolerance(*p.qty) }
+	return (i > 0 && holds(ps[i-1])) || (t.qty > 0 && i < len(ps) && holds(ps[i]))
+}
+
+// readUnitTrades reads the transactions that move a quantity over the
+// snapshots readYieldUnits reads, oldest first (unitMove), each under its
+// booking account's key, by the id that account's aliases fold its
+// instrument into. One stamped at a snapshot's instant counts in it or
+// after it, as the snapshot shows (after).
+func readUnitTrades(ctx context.Context, db *sql.DB, srcs, iids []string, from, asOf int64) ([]bookedTrade,
 	error) {
 	kinds := map[string]string{}
 	if err := scanAll(ctx, db, `SELECT silver_source_id, silver_kind FROM silver_sources`, func(rows *sql.Rows) error {
@@ -301,25 +365,35 @@ func readUnitTrades(ctx context.Context, db *sql.DB, srcs, iids []string, from, 
 	}); err != nil {
 		return nil, err
 	}
-	out := map[unitKey][]unitTrade{}
+	var out []bookedTrade
 	err := scanAll(ctx, db, unitWindowCTE+`,
 folded AS (
     SELECT t.*, COALESCE(ha.to_key, hd.to_key, ia.k, t.instrument_external_id) AS k
       FROM transactions t`+holdingAliasJoins("t.silver_source_id", "t.account_external_id", "t.instrument_external_id",
 		"NULL")+`
      WHERE t.instrument_external_id IS NOT NULL AND t.quantity <> 0 AND t.occurred_at <= $4
-       AND t.silver_source_id IN (SELECT src FROM paid))
-SELECT t.silver_source_id, t.account_external_id, t.k, t.occurred_at, t.transaction_external_id,
-       t.kind, CAST(t.quantity AS DOUBLE), `+lotTxnColumns+`
+       AND t.silver_source_id IN (SELECT src FROM paid)),
+-- A trade under a paid id, or under an id an alias of any account folds
+-- into one: the account that holds it may fold it (tradeKey).
+named AS (
+    SELECT src, k AS id FROM paid
+    UNION SELECT h.silver_source_id, h.from_key FROM holding_aliases h
+            JOIN paid ON paid.src = h.silver_source_id AND paid.k = h.to_key
+    UNION SELECT ia.src, ia.alias FROM instrument_aliases() ia
+            JOIN paid ON paid.src = ia.src AND paid.k = ia.k)
+SELECT t.silver_source_id, t.account_external_id, t.k, t.instrument_external_id, t.occurred_at,
+       t.transaction_external_id, t.kind, CAST(t.quantity AS DOUBLE), `+lotTxnColumns+`
   FROM folded t
-  JOIN paid ON paid.src = t.silver_source_id AND paid.k = t.k
   JOIN first f ON f.silver_source_id = t.silver_source_id
  WHERE t.occurred_at >= f.first_at
+   AND EXISTS (SELECT 1 FROM named n WHERE n.src = t.silver_source_id
+                  AND (n.id = t.k OR n.id = t.instrument_external_id))
  ORDER BY t.occurred_at, t.silver_source_id, t.transaction_external_id`, func(rows *sql.Rows) error {
 		var k unitKey
+		var iid string
 		var at int64
 		var t lots.Txn
-		if err := rows.Scan(append([]any{&k.src, &k.acct, &k.iid, &at, &t.ID, &t.Kind, &t.Quantity},
+		if err := rows.Scan(append([]any{&k.src, &k.acct, &k.iid, &iid, &at, &t.ID, &t.Kind, &t.Quantity},
 			lotTxnFields(&t)...)...); err != nil {
 			return err
 		}
@@ -329,7 +403,7 @@ SELECT t.silver_source_id, t.account_external_id, t.k, t.occurred_at, t.transact
 			classify = lots.DefaultClassify
 		}
 		if move, corp := unitMove(classify(t), t.Quantity); move != 0 {
-			out[k] = append(out[k], unitTrade{at: at, qty: move, corp: corp})
+			out = append(out, bookedTrade{key: k, iid: iid, trade: unitTrade{at: at, qty: move, corp: corp}})
 		}
 		return nil
 	}, srcs, iids, from, asOf)
@@ -524,7 +598,7 @@ func (u *yieldUnits) firstHeld(keys []unitKey, from, end int64) *float64 {
 
 // heldOn is a key's quantity as instant at begins: what the newest
 // snapshot that speaks for its account at or before at states, moved by
-// the account's trades of it since, before at; a trade stamped at the
+// the trades of the key since (tradeKey), before at; a trade stamped at the
 // snapshot's instant among them where it counts after it (after). The
 // day's own trades so earn none of its payment. Trades move only a
 // quantity the snapshot holds: one that holds none may hold the

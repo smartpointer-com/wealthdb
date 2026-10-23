@@ -462,7 +462,7 @@ func TestYieldUnitsTakeTheHistorysEnding(t *testing.T) {
 	pitPosition(t, db, ctx, src, "Z-0000", "QZ", day(30), 100)
 	pitPosition(t, db, ctx, src, "Y-0000", "QY", day(40), 100)
 	paid := map[yield.InstrumentKey]bool{{Source: src, Instrument: "QX"}: true, {Source: src, Instrument: "QQ"}: true}
-	u, err := readYieldUnits(ctx, db, paid, day(25), day(50))
+	u, err := readYieldUnits(ctx, db, nil, paid, day(25), day(50))
 	if err != nil {
 		t.Fatal(err)
 	}

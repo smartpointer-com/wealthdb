@@ -757,7 +757,7 @@ func (b *yieldBase) readIncome(ctx context.Context, db *sql.DB, in *yield.Inputs
 	if b.units == nil {
 		// A payment of the window's first days reads what was held up to
 		// RecordLagDays before it, or across its record window.
-		u, err := readYieldUnits(ctx, db, unitIDs(in, lines),
+		u, err := readYieldUnits(ctx, db, in, unitIDs(in, lines),
 			from-max(yield.RecordLagDays, yield.RecordWindowDays)*86400, in.AsOf)
 		if err != nil {
 			return err
