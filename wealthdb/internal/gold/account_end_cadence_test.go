@@ -276,26 +276,3 @@ func TestACashRunMovesNoPositionsGrace(t *testing.T) {
 		t.Errorf("A ends at day %+d, want it standing: no positions run passed its grace", end/86400-histToday())
 	}
 }
-
-// TestMigration0144DDLIsRerunnable holds the migration to the replay bar:
-// a second application changes no answer.
-func TestMigration0144DDLIsRerunnable(t *testing.T) {
-	db, ctx := openMigrated(t)
-	seedPartialRuns(t, db, ctx)
-	snapshot := func() string {
-		t.Helper()
-		var s string
-		if err := db.QueryRowContext(ctx, `
-            SELECT string_agg(CAST(x AS VARCHAR), ';' ORDER BY CAST(x AS VARCHAR)) FROM (
-                SELECT src, acct, NULL AS ccy, end_snap FROM pos_key_ends()
-                UNION ALL SELECT src, acct, ccy, end_snap FROM cash_key_ends()) x`).Scan(&s); err != nil {
-			t.Fatal(err)
-		}
-		return s
-	}
-	before := snapshot()
-	rerunMigrationDDL(t, db, ctx, "0144_account_end_cadence.sql")
-	if after := snapshot(); after != before || before == "" {
-		t.Errorf("the replay changed the endings: %q, then %q", before, after)
-	}
-}

@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"io"
+	"maps"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
@@ -121,6 +124,84 @@ func newReport[T any](registry []columnSpec[T], defaults []string, fetch func(co
 			}}, nil
 		},
 	}
+}
+
+// withLoads is rep with loads run, in order, before its rows are
+// fetched: what the registry reads of gold (sourceKinds,
+// accountNicknames) answers before any row renders. They run once per
+// fetch, however many points a series takes.
+func withLoads(rep *report, loads ...func(context.Context, *sql.DB) error) *report {
+	fetch := rep.fetch
+	rep.fetch = func(ctx context.Context, db *sql.DB) (reportRows, error) {
+		for _, load := range loads {
+			if err := load(ctx, db); err != nil {
+				return reportRows{}, err
+			}
+		}
+		return fetch(ctx, db)
+	}
+	return rep
+}
+
+// sourceKinds is how a registry reads a source's kind, which only gold
+// knows: what -p shows of a name a person may have typed depends on it
+// (typedAccountLabel, typedAccountID, typedHolding). kindOf answers from
+// what load reads, which the report runs before any row renders
+// (withLoads).
+func sourceKinds() (kindOf func(string) string, load func(context.Context, *sql.DB) error) {
+	kinds := map[string]string{}
+	return func(id string) string { return kinds[id] },
+		func(ctx context.Context, db *sql.DB) error {
+			sk, err := gold.SourceKinds(ctx, db)
+			maps.Copy(kinds, sk)
+			return err
+		}
+}
+
+// accountNicknames are the accounts' nicknames, by source and account
+// id, which only gold knows: what -p shows of an account label that may
+// be one depends on them. The report runs load before any row renders
+// (withLoads).
+type accountNicknames map[string]map[string]string
+
+// load reads every nickname gold holds.
+func (n accountNicknames) load(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx,
+		`SELECT silver_source_id, account_external_id, nickname FROM accounts WHERE nickname <> ''`)
+	if err != nil {
+		return fmt.Errorf("account nicknames: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var source, id, nickname string
+		if err := rows.Scan(&source, &id, &nickname); err != nil {
+			return fmt.Errorf("account nicknames: %w", err)
+		}
+		if n[source] == nil {
+			n[source] = map[string]string{}
+		}
+		n[source][id] = nickname
+	}
+	return rows.Err()
+}
+
+// of is an account's nickname, nil where it has none.
+func (n accountNicknames) of(source, id string) *string {
+	if nickname, ok := n[source][id]; ok {
+		return &nickname
+	}
+	return nil
+}
+
+// has reports whether label is the nickname of one of the source's
+// accounts.
+func (n accountNicknames) has(source, label string) bool {
+	for _, nickname := range n[source] {
+		if nickname == label {
+			return true
+		}
+	}
+	return false
 }
 
 // allColumns is every index of a report's registry, in order.

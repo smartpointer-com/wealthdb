@@ -162,10 +162,13 @@ def test_files_that_state_no_characteristics_leave_them_due(tmp_path):
     assert parsed.characteristics == []
 
 
-def ch_site(page=CH_PAGE):
+def ch_site(page=CH_PAGE, distributions=None):
+    """The Swiss site: its product list, the fund's page and holdings
+    grid, and its distributions answer where one is given."""
     def products(url, params):
         return {} if "/us/" in url else {"2": CH_PRODUCT}
-    return FakeClient({".jsn": products, ".ajax": CH_GRID, "/products/": page})
+    answers = {} if distributions is None else {"tab=distributions": distributions}
+    return FakeClient({".jsn": products, **answers, ".ajax": CH_GRID, "/products/": page})
 
 
 def test_a_swiss_fetch_keeps_the_page_it_reads_the_columns_from(tmp_path):

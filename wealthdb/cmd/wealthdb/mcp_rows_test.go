@@ -192,6 +192,34 @@ func TestPseudonymFiltersMatchWholeCells(t *testing.T) {
 	}
 }
 
+// TestPrivacyMatchesLegibleTextInPart: on the privacy endpoint a needle
+// that is none of the call's pseudonyms matches a part of a cell,
+// whatever its shape, so a legible name with a dash and a number in it
+// is found there as on full data.
+func TestPrivacyMatchesLegibleTextInPart(t *testing.T) {
+	t.Parallel()
+	rows := []gold.PositionRow{
+		{SilverSourceID: "broker", AccountExternalID: "ACCT-0001", PositionKey: "XS0000000001",
+			Name: strp("Example COVID-19 Bond"), Nickname: strp("Sleeve")},
+		{SilverSourceID: "broker", AccountExternalID: "ACCT-0001", PositionKey: "VTI", Name: strp("Example Index Fund")},
+	}
+	rep := newReport(buildColumnRegistry("USD", noKinds, nil), defaultColumns,
+		func(context.Context, *sql.DB) ([]gold.PositionRow, error) { return rows, nil })
+	fetched, err := rep.fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, privacy := range []bool{false, true} {
+		rs := newResultSet(rep, fetched, privacy)
+		if got := len(rs.filter(nil, "covid-19")); got != 1 {
+			t.Errorf("privacy %v: search=covid-19 kept %d rows, want 1", privacy, got)
+		}
+		if got := len(rs.filter([]rowFilter{newRowFilter(rep, "symbol", "covid-19")}, "")); got != 1 {
+			t.Errorf("privacy %v: symbol=covid-19 kept %d rows, want 1", privacy, got)
+		}
+	}
+}
+
 // TestPrivacyFiltersReadWhatIsShown: on the privacy endpoint a merchant
 // filter cannot probe a name it hides.
 func TestPrivacyFiltersReadWhatIsShown(t *testing.T) {

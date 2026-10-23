@@ -16,15 +16,18 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
-// testdata/silver_schema.sql is collectors/refdata/migrations/0001_initial.sql
-// and 0002_yield_facts.sql, one after the other; the collector's tests
-// check that it is the migrated schema.
+// testdata/silver_schema.sql is collectors/refdata/migrations/0001_initial.sql,
+// 0002_yield_facts.sql and 0003_dividend_calendar.sql, one after the
+// other; the collector's tests check that it is the migrated schema.
 //
 //go:embed testdata/silver_schema.sql
 var silverSchemaSQL string
 
-// v2Header opens 0002's part of the schema.
-const v2Header = "-- refdata silver schema v2"
+// v2Header and v3Header open 0002's and 0003's parts of the schema.
+const (
+	v2Header = "-- refdata silver schema v2"
+	v3Header = "-- refdata silver schema v3"
+)
 
 const (
 	run1  = int64(1_790_000_000) // fetch runs
@@ -51,6 +54,17 @@ func newV1Silver(t *testing.T) (string, *sql.DB) {
 		t.Fatalf("testdata/silver_schema.sql has no %q", v2Header)
 	}
 	return silvertest.NewDB(t, v1)
+}
+
+// newV2Silver is a silver its collector last loaded before migration
+// 0003: the schema's part before v3Header.
+func newV2Silver(t *testing.T) (string, *sql.DB) {
+	t.Helper()
+	v2, _, found := strings.Cut(silverSchemaSQL, v3Header)
+	if !found {
+		t.Fatalf("testdata/silver_schema.sql has no %q", v3Header)
+	}
+	return silvertest.NewDB(t, v2)
 }
 
 func openAdapter(t *testing.T, path string) silver.Connection {
@@ -602,6 +616,9 @@ func TestChangeWindowSpansAYieldOnlyRun(t *testing.T) {
 		{"period_facts", `INSERT INTO period_facts (security_key, field, as_of, period_start, provider, value, run_at)
 		    VALUES ('symbol:EXMP', 'cash', ?, '2026-03-01', 'sec-edgar', '100', ?)`,
 			func(b canonical.SnapshotBatch) int { return len(b.SecurityPeriodFacts) }},
+		{"dividend_events", `INSERT INTO dividend_events (ref, provider, event_id, as_of, kind, ex_date, run_at)
+		    VALUES ('symbol:EXMP', 'six', 'e1', ?, 'dividend', '2026-02-20', ?)`,
+			func(b canonical.SnapshotBatch) int { return len(b.DividendEvents) }},
 	} {
 		t.Run(c.table, func(t *testing.T) {
 			t.Parallel()
@@ -647,6 +664,12 @@ func TestSnapshotsRefuseABadYieldFigure(t *testing.T) {
 		{"period fact start", `INSERT INTO period_facts (security_key, field, as_of, period_start, provider, value, run_at)
 		    VALUES ('symbol:EXMP', 'revenue', ?, 'Q4', 'sec-edgar', '12', ?)`,
 			[]string{"symbol:EXMP", "revenue", "period_start", "Q4"}},
+		{"dividend event day", `INSERT INTO dividend_events (ref, provider, event_id, as_of, kind, record_date, run_at)
+		    VALUES ('symbol:EXMP', 'six', 'e9', ?, 'dividend', '31.03.2026', ?)`,
+			[]string{"symbol:EXMP", "six", "e9", "record_date", "31.03.2026"}},
+		{"dividend event amount", `INSERT INTO dividend_events (ref, provider, event_id, as_of, kind, amount, run_at)
+		    VALUES ('symbol:EXMP', 'six', 'e9', ?, 'dividend', 'CHF 1.20', ?)`,
+			[]string{"symbol:EXMP", "six", "e9", "amount", "CHF 1.20"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
@@ -674,5 +697,67 @@ func TestSnapshotsRefuseABadYieldFigure(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Every column of a distribution maps into its canonical field: its days
+// as dates, its amount as a decimal, an empty day or amount as none. The
+// rows of the window come by ref, provider and event, a page at a time.
+func TestSnapshotsMapDividendEvents(t *testing.T) {
+	lowerBudgets(t, 20, 2)
+	path, db := newFixtureSilver(t)
+	seed(t, db)
+	silvertest.Exec(t, db, `INSERT INTO dividend_events (ref, provider, event_id, as_of, kind, ex_date, record_date,
+	        pay_date, declared_date, amount, currency, status, run_at, payload) VALUES
+	    ('isin:XX0000000001', 'ishares', 'e2', ?, 'capital_gain', '2026-02-20', '2026-02-23', '2026-02-27',
+	     '2026-02-10', '0.125', 'USD', 'final', ?, '{"x":1}'),
+	    ('isin:XX0000000001', 'ishares', 'e1', ?, 'dividend', '2026-02-20', '', NULL, NULL, '', NULL, NULL, ?, '{}'),
+	    ('jpx:9999', 'jpx', 'dividend|2026-03-30|2026-03-31|', ?, 'dividend', '2026-03-30', '2026-03-31', NULL, NULL,
+	     NULL, NULL, 'estimated', ?, '{}'),
+	    ('symbol:EXMP', 'six', 'e3', ?, 'dividend', '2026-01-02', NULL, NULL, NULL, '1.2', 'CHF', NULL, ?, '{}')`,
+		d3, run2, d3, run2, d3, run2, d2, run2)
+	got := silvertest.Merged(t, openAdapter(t, path), canonical.Window{Start: d3, End: d3, HasChanges: true})
+	var lines []string
+	for _, e := range got.DividendEvents {
+		var status *string
+		if e.Status != nil {
+			st := string(*e.Status)
+			status = &st
+		}
+		lines = append(lines, strings.Join(fields(e.Ref, e.Provider, e.EventID, e.AsOf, string(e.Kind), e.ExDay,
+			e.RecordDay, e.PayDay, e.DeclaredDay, e.Amount, e.Currency, status), " "))
+	}
+	want := []string{
+		"isin:XX0000000001 ishares e1 " + fmt.Sprint(d3) + " dividend 2026-02-20 <nil> <nil> <nil> <nil> <nil> <nil>",
+		"isin:XX0000000001 ishares e2 " + fmt.Sprint(d3) + " capital_gain 2026-02-20 2026-02-23 2026-02-27 " +
+			"2026-02-10 0.125 USD final",
+		"jpx:9999 jpx dividend|2026-03-30|2026-03-31| " + fmt.Sprint(d3) + " dividend 2026-03-30 2026-03-31 <nil> <nil> " +
+			"<nil> <nil> estimated",
+	}
+	checkFields(t, "dividend events", lines, want)
+}
+
+// A silver still at schema v2 has no dividend_events: it loads as
+// before, stating no distribution.
+func TestSnapshotsReadAV2Silver(t *testing.T) {
+	t.Parallel()
+	path, db := newV2Silver(t)
+	if ok, err := silver.HasTables(context.Background(), db, silver.ReferenceCalendarTable); err != nil || ok {
+		t.Fatalf("the v2 fixture holds dividend_events (%v)", err)
+	}
+	seed(t, db)
+	seedYield(t, db)
+	conn := openAdapter(t, path)
+	w, err := conn.ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Changes(canonical.RefDividendEvents) {
+		t.Errorf("window = %+v, want no span of dividend events", w)
+	}
+	got := silvertest.Merged(t, conn, w)
+	if len(got.FundCompositions) != 4 || len(got.FundRisk) != 2 || len(got.DividendEvents) != 0 {
+		t.Errorf("v2 records = %d compositions, %d risk rows, %d events", len(got.FundCompositions), len(got.FundRisk),
+			len(got.DividendEvents))
 	}
 }

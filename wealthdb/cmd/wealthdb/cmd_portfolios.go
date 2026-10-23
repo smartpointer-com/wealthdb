@@ -7,42 +7,6 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
-// portfolioNamePrivacy picks the right redaction class for the
-// portfolio column's display value, which mixes different
-// conventions across sources:
-//
-//   - the sentinel row for a source's orphan accounts renders the
-//     literal "(no portfolio)". It is a structural marker with no
-//     row content behind it, so it stays legible for every source.
-//   - a source whose names may be typed (typedAccountLabel) shows
-//     the customer's words: the cointracking adapter emits the
-//     free-form CT account name as display_name, and a manual or
-//     declared portfolio is named, or keyed, by hand. These can be
-//     anything — one word or several — so they print as a pseudonym
-//     whatever their shape, the id fallback too (portfolioCol). A
-//     tracker's `cu_<user>` id names its user and prints as one too
-//     (typedIDCol).
-//   - UBS / other Swiss-source adapters emit bank-assigned
-//     portfolio category labels (Savings / Brokerage / …).
-//     These pass through under the PrivacyAccountID heuristic
-//     because their info content is taxonomy, not identifier.
-//
-// kindOf resolves a silver_source_id to its silver_kind — the
-// config-side id is free-form, so matching the id string instead
-// would silently lose redaction for a source named anything but
-// the literal adapter name.
-func portfolioNamePrivacy(kindOf func(string) string) func(gold.PortfolioRow) PrivacyClass {
-	return func(r gold.PortfolioRow) PrivacyClass {
-		if r.PortfolioExternalID == "" {
-			return PrivacyNone
-		}
-		if typedAccountLabel(kindOf, r.SilverSourceID) {
-			return PrivacyPseudonym
-		}
-		return PrivacyAccountID
-	}
-}
-
 // ---- column registry -----------------------------------------------------
 
 // buildPortfolioColumnRegistry is the portfolios view: one row per

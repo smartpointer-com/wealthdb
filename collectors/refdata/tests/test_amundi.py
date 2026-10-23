@@ -1,16 +1,18 @@
 """amundi: a fund's holdings from the product API, a swap fund's basket
-read as collateral. Every fund, holding and figure is invented."""
+read as collateral, and its dividend history. Every fund, holding,
+figure, day and amount is invented."""
 
 import json
-from datetime import date
+import logging
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
 
 import fetcher
-from providers.amundi import API, Amundi, parse_product
-from providers.base import Context, ProviderError, write_meta
-from tests.helpers import FakeClient
+from providers.amundi import API, Amundi, _ex_day, parse_product
+from providers.base import Context, ProviderError, read_meta, write_meta
+from tests.helpers import FakeClient, events_by_id
 from wanted import Fund
 
 ISIN = "XX0000000301"
@@ -69,7 +71,7 @@ def test_amundi_claims_an_etf_of_its_own_without_a_request():
     ctx = Context(client=client)
     a = Amundi()
     assert a.claim(Fund(ref="isin:" + ISIN, isin=ISIN, name="AMUNDI QLAND UCITS ETF"), ctx) == \
-        {"ref": "isin:" + ISIN, "isin": ISIN}
+        {"ref": "isin:" + ISIN, "isin": ISIN, "calendar": False}
     assert a.claim(Fund(ref="isin:XX0000000306", isin="XX0000000306", name="Lyxor Qland ETF"), ctx) is not None
     # Another issuer's fund, or an Amundi fund that is no ETF, is not claimed.
     assert a.claim(Fund(ref="isin:XX0000000304", isin="XX0000000304", name="Qumbra Qland UCITS ETF"), ctx) is None
@@ -121,3 +123,80 @@ def test_a_stored_answer_without_the_fund_or_its_dated_holdings_does_not_parse(t
     write_meta(tmp_path, provider="amundi", ref="isin:" + ISIN, isin=ISIN, as_of="2026-10-12")
     with pytest.raises(ProviderError, match=error):
         Amundi().parse(tmp_path)
+
+
+def ms(*when) -> int:
+    """An epoch millisecond of a UTC time."""
+    return int(datetime(*when, tzinfo=timezone.utc).timestamp() * 1000)
+
+
+# The API's dividend history: one series per indicator, each point an
+# epoch millisecond and a value. 2025-12-09 is written as midnight in
+# Paris, the evening before in UTC; 2025-06-10 as midnight UTC.
+HISTORICS = [
+    {"indicator": "dividendAmount", "historicalData": [
+        {"date": ms(2025, 12, 8, 23), "data": 0.6}, {"date": ms(2025, 6, 10), "data": 0.55},
+        {"date": ms(2012, 12, 4, 23), "data": 0.31}, {"date": ms(2013, 6, 11), "data": 0}, {"date": None, "data": 1}]},
+    {"indicator": "dividendCurrency", "historicalData": [
+        {"date": ms(2025, 12, 8, 23), "data": "EUR"}, {"date": ms(2025, 6, 10), "data": "EUR"}]}]
+
+
+def paying(historics=HISTORICS):
+    doc = product("Direct (Physical)", LINES)
+    if historics is not None:
+        doc["historics"] = historics
+    return doc
+
+
+def fetch_calendar(tmp_path, client, wants=("dividend_calendar",)):
+    ctx = Context(client=client)
+    a = Amundi()
+    claim = a.claim(Fund(ref="isin:" + ISIN, isin=ISIN, name="Amundi Qland UCITS ETF Dist", wants=wants), ctx)
+    assert a.fetch(claim, None, tmp_path, ctx) == date(2026, 10, 12)
+    return a.parse(tmp_path)
+
+
+def test_a_fund_that_wants_its_calendar_asks_the_same_post_for_its_dividends(tmp_path):
+    client = api(paying())
+    parsed = fetch_calendar(tmp_path, client)
+    ((method, _, body),) = client.asked
+    assert method == "POST" and body["historics"] == [{"indicator": "dividendAmount"},
+                                                      {"indicator": "dividendCurrency"}]
+    assert "facts_missing" not in read_meta(tmp_path)
+    # One dividend per amount, by its ex day, the nearest UTC midnight; a
+    # zero or an undated point is none. A day of no stated currency has
+    # none.
+    assert events_by_id(parsed.dividend_events) == {
+        "dividend|2025-12-09||": ("dividend", date(2025, 12, 9), None, None, "0.6", "EUR"),
+        "dividend|2025-06-10||": ("dividend", date(2025, 6, 10), None, None, "0.55", "EUR"),
+        "dividend|2012-12-05||": ("dividend", date(2012, 12, 5), None, None, "0.31", None)}
+    assert {(r["ref"], r["provider"], r["as_of"]) for r in parsed.dividend_events} == {
+        ("isin:" + ISIN, "amundi", date(2026, 10, 12))}
+    assert len(parsed.lines) == 3 and parsed.events_complete
+
+
+def test_an_accumulating_funds_empty_history_answers_the_calendar(tmp_path):
+    parsed = fetch_calendar(tmp_path, api(paying([{"indicator": "dividendAmount", "historicalData": []}])))
+    assert "facts_missing" not in read_meta(tmp_path) and parsed.dividend_events == []
+
+
+def test_an_answer_without_a_history_leaves_the_calendar_due(tmp_path, caplog):
+    with caplog.at_level(logging.WARNING, logger="refdata.amundi"):
+        parsed = fetch_calendar(tmp_path, api(paying(None)))
+    assert "its answer states no dividend history" in caplog.text
+    assert read_meta(tmp_path)["facts_missing"] == ["dividend_calendar"]
+    assert parsed.dividend_events == [] and len(parsed.lines) == 3 and not parsed.events_complete
+
+
+def test_a_fund_that_wants_no_calendar_asks_for_no_history(tmp_path):
+    client = api(paying(None))
+    fetch_calendar(tmp_path, client, wants=())
+    ((_, _, body),) = client.asked
+    assert "historics" not in body and "facts_missing" not in read_meta(tmp_path)
+
+
+@pytest.mark.parametrize("ms,day", [
+    (1765238400000, date(2025, 12, 9)), (1765238400000 - 3_600_000, date(2025, 12, 9)),
+    (1765238400000.0, date(2025, 12, 9)), (True, None), ("1765238400000", None), (None, None), (10**20, None)])
+def test_an_ex_day_is_the_nearest_utc_midnight_of_its_epoch_millisecond(ms, day):
+    assert _ex_day(ms) == day

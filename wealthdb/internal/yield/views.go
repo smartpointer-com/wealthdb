@@ -284,13 +284,13 @@ func (b *Book) Securities(rows []SecurityRow) []SecurityRow {
 // CoverageRow is one line of the coverage view: a section, a reason, the
 // value it covers (a liability's netted), its share of the holdings'
 // gross value (a liability's counted whole), and how many holdings; a
-// holding's line names it.
+// record_day line counts the payments too; a holding's line names it.
 type CoverageRow struct {
 	Section, Reason                   string
 	Value                             float64
 	gross                             float64
 	SharePct                          *float64
-	Holdings                          int
+	Holdings, Payments                int
 	Source, Instrument, Account, Name string
 	// Skeleton is the ledger record that fills the gap, for a holding's
 	// line.
@@ -332,10 +332,27 @@ const (
 var missingReasons = []string{missingTerms, missingRate, missingReceiving, missingFigures, missingDividend,
 	missingRating}
 
+// The record_day lines of the coverage view: one per RecordSource, and
+// the payments the record window drops.
+const (
+	sectionRecordDay = "record_day"
+	recordDropped    = "dropped"
+)
+
+// recordReason is the record_day line of a record day's source.
+func recordReason(s RecordSource) string {
+	if s == RecordNone {
+		return "none"
+	}
+	return string(s)
+}
+
 // Coverage is the coverage view: what the figures rest on (`rests_on`,
 // one line per tag, each its holdings' share of the gross value),
-// then each kind of figure missing (`missing`), then every holding a
-// figure is missing on, with the ledger record that fills it.
+// then each kind of figure missing (`missing`), then where the
+// dividends' record days come from (`record_day`, recordDays), then
+// every holding a figure is missing on, with the ledger record that
+// fills it.
 func (b *Book) Coverage() []CoverageRow {
 	total := 0.0
 	tagged := map[Tag]*CoverageRow{}
@@ -393,6 +410,7 @@ func (b *Book) Coverage() []CoverageRow {
 			out = append(out, *r)
 		}
 	}
+	out = append(out, b.recordDays(share)...)
 	slices.SortStableFunc(holdings, func(a, b CoverageRow) int {
 		if c := cmp.Compare(a.Reason, b.Reason); c != 0 {
 			return c
@@ -412,6 +430,66 @@ func (b *Book) Coverage() []CoverageRow {
 		}
 	}
 	return append(out, holdings...)
+}
+
+// recordDays are the coverage view's record_day lines, over the dividends
+// and distributions the holdings' readings rate (paymentKeys): how many
+// read their record day stated by a calendar, derived from an ex day,
+// from the market's lag, or from none (RecordSources), and how many the
+// record window drops (not steady). A line counts each payment once, and
+// the holdings whose readings rate one of them with their value. A
+// source no payment reads prints no line.
+func (b *Book) recordDays(share func(gross float64) *float64) []CoverageRow {
+	type paid struct {
+		key HoldingKey
+		i   int
+	}
+	counted := map[paid]bool{}
+	rows := map[string]*CoverageRow{}
+	holders := map[string]map[HoldingKey]bool{}
+	for _, p := range b.Positions {
+		for _, k := range b.In.paymentKeys(p.Holding) {
+			for i, pm := range b.In.Payments[k] {
+				if pm.Type != TypeDividends && pm.Type != TypeDistributions {
+					continue
+				}
+				reasons := []string{recordReason(pm.RecordSource)}
+				if pm.Record != nil && !pm.steady() {
+					reasons = append(reasons, recordDropped)
+				}
+				first := !counted[paid{k, i}]
+				counted[paid{k, i}] = true
+				for _, reason := range reasons {
+					r := rows[reason]
+					if r == nil {
+						r = &CoverageRow{Section: sectionRecordDay, Reason: reason}
+						rows[reason], holders[reason] = r, map[HoldingKey]bool{}
+					}
+					if first {
+						r.Payments++
+					}
+					if !holders[reason][p.HoldingKey] {
+						holders[reason][p.HoldingKey] = true
+						r.Value += p.Value
+						r.gross += math.Abs(p.Value)
+						r.Holdings++
+					}
+				}
+			}
+		}
+	}
+	order := []string{}
+	for _, s := range RecordSources {
+		order = append(order, recordReason(s))
+	}
+	var out []CoverageRow
+	for _, reason := range append(order, recordDropped) {
+		if r := rows[reason]; r != nil {
+			r.SharePct = share(r.gross)
+			out = append(out, *r)
+		}
+	}
+	return out
 }
 
 // unknownReceiving are the holdings whose principal matures, under the

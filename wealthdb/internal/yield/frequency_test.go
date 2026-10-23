@@ -206,7 +206,10 @@ func TestTwoUnlikePayMonths(t *testing.T) {
 		in.Daily[h.HoldingKey] = held(Span{From: from, To: year, Amount: 100 * price})
 		for _, p := range c.paid {
 			pay(in, h.HoldingKey, "A", p.d, p.rate*100, num(100))
-			in.Payments[h.HoldingKey][len(in.Payments[h.HoldingKey])-1].LagDays = p.lag
+			if p.lag > 0 {
+				last := &in.Payments[h.HoldingKey][len(in.Payments[h.HoldingKey])-1]
+				last.LagDays, last.RecordSource = p.lag, RecordLagged
+			}
 		}
 		b := Compute(in)
 		p := position(b, h.HoldingKey)
@@ -216,6 +219,36 @@ func TestTwoUnlikePayMonths(t *testing.T) {
 			near(t, c.what+" "+d.Format("January 2006"), num(incomeOf(b, h.HoldingKey, monthIndex(b, *d), RuleCash,
 				PathConstant, 0)), c.incomes[i], 1e-9)
 		}
+	}
+}
+
+// A payment whose days the calendar gives reaches back to the day its
+// quantity reads, and at least 35 days: the payer of 0.1 in April and 0.3
+// in June held from 20 October, each payment's quantity read 30 days
+// before it, covered a quiet December and January. It pays both a year,
+// as with no lag. A lag of 30 days would reach 63 days back, past the day
+// it was bought.
+func TestACalendarDayReachesTheDayRead(t *testing.T) {
+	t.Parallel()
+	for _, source := range []RecordSource{RecordStated, RecordDerived, RecordLagged} {
+		in := inputs()
+		h := stock("A", "QSTK", 100)
+		in.Holdings = []Holding{h}
+		from := int(date(2025, 10, 20).Sub(in.Day.AddDate(-1, 0, 1)).Hours() / 24)
+		in.Daily[h.HoldingKey] = held(Span{From: from, To: year, Amount: 100 * 100})
+		for _, p := range []struct {
+			d    *time.Time
+			rate float64
+		}{{date(2026, 4, 10), 0.1}, {date(2026, 6, 10), 0.3}} {
+			pay(in, h.HoldingKey, "A", p.d, p.rate*100, num(100))
+			last := &in.Payments[h.HoldingKey][len(in.Payments[h.HoldingKey])-1]
+			last.LagDays, last.RecordSource = 30, source
+		}
+		want := 0.4
+		if source == RecordLagged {
+			want = 1.2
+		}
+		near(t, string(source)+" dividend yield", position(Compute(in), h.HoldingKey).DividendYield, want, 1e-9)
 	}
 }
 

@@ -365,10 +365,10 @@ A file without the table states no realized lots.
 
 ## 12. Reference records
 
-Nine tables carry reference records. They describe what a fund holds,
-what a fund is and what a security is. They repeat the refdata
-collector's silver shape column for column, so one reader serves both
-kinds (`silver.NewReferenceStream`; [refdata.md](refdata.md) §2 maps
+Ten tables carry reference records. They describe what a fund holds,
+what a fund is, what a security is and what each pays. They repeat the
+refdata collector's silver shape column for column, so one reader
+serves both kinds (`silver.NewReferenceStream`; [refdata.md](refdata.md) §2 maps
 each table to its gold table).
 
 - `compositions`, `lines`, `attributes`, `counterparties`, `fund_risk`
@@ -378,6 +378,9 @@ each table to its gold table).
   found it on a day.
 - `period_facts` holds a company's reported figures. `as_of` is the UTC
   midnight of the last day of the figure's period.
+- `dividend_events` holds the distributions of a fund or a security,
+  with their ex, record and pay days. `as_of` is the UTC midnight of the
+  day the source stated one.
 - `run_at` is the instant the row was fetched. A generator states any
   instant at or after `as_of`.
 
@@ -398,4 +401,5 @@ A file can predate some of these tables:
 - A file without `fund_risk`, `characteristics` and `period_facts`
   states none of their records. Its lines may also lack the columns from
   `coupon_kind` on; those fields are then absent.
+- A file without `dividend_events` states no distributions.
 - A file without `rates` states no rate observations.

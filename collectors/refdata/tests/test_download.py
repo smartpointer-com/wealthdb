@@ -447,4 +447,7 @@ def test_earlier_runs_count_their_lookups_and_compositions(tmp_path):
     earlier = download.fetched_before(tmp_path)
     assert earlier.lookups == {("gleif", "isin:XX0000000095"): date(2026, 7, 14)}
     assert earlier.funds == {("fake", "symbol:FUNDA", date(2026, 1, 31)): date(2026, 7, 14)}
-    assert earlier == download.Fetched.of(funds=earlier.funds, lookups=earlier.lookups)
+    # A request sent counts as asked whether or not it served.
+    assert earlier.asked == {("gleif", "isin:XX0000000095"): date(2026, 7, 14),
+                             ("gleif", "isin:XX0000000096"): date(2026, 7, 14)}
+    assert earlier == download.Fetched.of(funds=earlier.funds, lookups=earlier.lookups, asked=earlier.asked)

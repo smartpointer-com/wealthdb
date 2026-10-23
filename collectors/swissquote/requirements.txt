@@ -8,10 +8,9 @@
 playwright==1.62.0
 
 # Swissquote's positions export is a CDFV2 Microsoft Excel file (the
-# legacy binary .xls format, not modern .xlsx). The `xlrd` 2.x line
-# dropped .xls support; pin to the last 1.x release. openpyxl does
-# not read .xls. If Swissquote ever switches to .xlsx, drop xlrd and
-# switch the loader to openpyxl.
+# legacy binary .xls format, not modern .xlsx). xlrd reads .xls;
+# openpyxl does not. If Swissquote ever switches to .xlsx, drop xlrd
+# and switch the loader to openpyxl.
 xlrd==1.2.0
 
 # pypdf is used by load.py to extract position snapshots from

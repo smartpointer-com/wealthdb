@@ -77,7 +77,7 @@ func newResultSet(rep *report, rows reportRows, privacy bool) *resultSet {
 // rowFilter is one named filter of a call: its needles (a comma list
 // keeps a row matching any) and the registry columns it reads. source
 // matches whole cells; every other filter matches substrings, but for a
-// pseudonym on the privacy endpoint (cellMatches).
+// pseudonym on the privacy endpoint (resultSet.needle).
 type rowFilter struct {
 	name    string
 	needles []string
@@ -109,26 +109,28 @@ func normalizeCell(s string) string {
 	return strings.TrimSpace(strings.ReplaceAll(strings.ToLower(s), "_", " "))
 }
 
-// pseudonymNeedle is a pseudonym as normalizeCell reads it: a prefix, a
-// dash and a number.
-var pseudonymNeedle = regexp.MustCompile(`^[a-z][a-z0-9 ]*-[0-9]+$`)
-
-// cellMatches reports whether a normalized needle matches a normalized
-// cell: the whole cell where exact says so, or where the needle is a
-// pseudonym on the privacy endpoint, since manual-1 is not part of
-// manual-10; a substring otherwise.
-func cellMatches(cell, needle string, exact, privacy bool) bool {
-	if exact || privacy && pseudonymNeedle.MatchString(needle) {
-		return cell == needle
-	}
-	return strings.Contains(cell, needle)
+// needle is a normalized text a filter or a search looks for: a whole
+// cell, or a part of one.
+type needle struct {
+	text  string
+	whole bool
 }
 
-func (f rowFilter) matches(row []string, privacy bool) bool {
-	for _, c := range f.cols {
+// needle is how the call reads s: as a whole cell where exact says so,
+// or where s is one of the call's own pseudonyms on the privacy
+// endpoint, since manual-1 is not part of manual-10. Any other text,
+// such as a name with covid-19 in it, matches a part of a cell.
+func (rs *resultSet) needle(s string, exact bool) needle {
+	return needle{text: s, whole: exact || rs.privacy && rs.names.named(s)}
+}
+
+// matches reports whether any cell of row at cols, normalized, matches
+// one of needles.
+func matches(row []string, cols []int, needles []needle) bool {
+	for _, c := range cols {
 		cell := normalizeCell(row[c])
-		for _, n := range f.needles {
-			if cellMatches(cell, n, f.exact, privacy) {
+		for _, n := range needles {
+			if n.whole && cell == n.text || !n.whole && strings.Contains(cell, n.text) {
 				return true
 			}
 		}
@@ -139,26 +141,27 @@ func (f rowFilter) matches(row []string, privacy bool) bool {
 // filter returns the indices of the rows every filter keeps and, when
 // search is set, that carry it in some cell.
 func (rs *resultSet) filter(filters []rowFilter, search string) []int {
-	search = normalizeCell(search)
+	needles := make([][]needle, len(filters))
+	for i, f := range filters {
+		for _, n := range f.needles {
+			needles[i] = append(needles[i], rs.needle(n, f.exact))
+		}
+	}
+	var sought []needle
+	if search = normalizeCell(search); search != "" {
+		sought = []needle{rs.needle(search, false)}
+	}
+	every := rs.rep.allColumns()
 	out := make([]int, 0, len(rs.cells))
 rows:
 	for i, row := range rs.cells {
-		for _, f := range filters {
-			if !f.matches(row, rs.privacy) {
+		for j, f := range filters {
+			if !matches(row, f.cols, needles[j]) {
 				continue rows
 			}
 		}
-		if search != "" {
-			found := false
-			for _, cell := range row {
-				if cellMatches(normalizeCell(cell), search, false, rs.privacy) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				continue
-			}
+		if sought != nil && !matches(row, every, sought) {
+			continue
 		}
 		out = append(out, i)
 	}

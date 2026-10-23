@@ -12,12 +12,21 @@ file and a filing for the same day stand side by side. A security
 answer replaces the same provider's answer for the same day, and a
 company's figure for a period the same provider's figure for that
 period, unless the one held was filed later or states its filing day
-where the new one does not. A request the planner asked for a fund's
-facts alone (its manifest entry's `facts_only`) loads those facts,
-never the composition its document also states. The run is recorded in
-dump_runs with loaded_at, the instant of this load, which gold's change
-window reads: a run fetched earlier but loaded later still reaches
-gold.
+where the new one does not. A dividend event replaces the same
+provider's row of the same event, unless that one came from a later
+run. An answer that lists every distribution of a ref (a fund's
+history) also drops the provider's rows of the ref it no longer states,
+from the oldest day it lists on: a day the source corrected leaves no
+stale event beside the new one in silver. That holds for runs loaded in
+the order they ran: an earlier run loaded after a later one can bring
+back a row the later answer dropped, as nothing records the drop. A
+source that states only some (the latest distribution, a list of days)
+adds to what silver holds. A
+request the planner asked for a fund's facts alone (its manifest
+entry's `facts_only`) loads those facts, never the composition its
+document also states. The run is recorded in dump_runs with loaded_at,
+the instant of this load, which gold's change window reads: a run
+fetched earlier but loaded later still reaches gold.
 
 A request whose folder does not parse or load is logged and skipped,
 its rows undone; the rest of the run loads. Runs load in the order they
@@ -63,6 +72,17 @@ PERIOD_FACTS_UPSERT = (
                 if c not in ("security_key", "field", "as_of", "period_start", "provider"))
     + " WHERE period_facts.filed IS NULL OR excluded.filed >= period_facts.filed")
 
+# A dividend event: a row replaces the one silver holds for its key
+# unless that one came from a later run. A run fetched earlier but loaded
+# later leaves it.
+EVENTS_KEY = ("ref", "provider", "event_id")
+EVENTS_UPSERT = (
+    f"INSERT INTO dividend_events ({', '.join(COLUMNS['dividend_events'])}) "
+    f"VALUES ({', '.join('?' for _ in COLUMNS['dividend_events'])}) "
+    f"ON CONFLICT ({', '.join(EVENTS_KEY)}) DO UPDATE SET "
+    + ", ".join(f"{c} = excluded.{c}" for c in COLUMNS["dividend_events"] if c not in EVENTS_KEY)
+    + " WHERE excluded.run_at >= dividend_events.run_at")
+
 
 def epoch(d) -> int:
     """A date as silver stores it: Unix seconds at its UTC midnight."""
@@ -89,6 +109,37 @@ def _row(table, r, run_at):
     return tuple(out)
 
 
+def _first_day(days) -> str | None:
+    """The earliest of an event's ex, record and pay days, as YYYY-MM-DD;
+    None where it states none."""
+    return min((d.isoformat() if isinstance(d, date) else d for d in days if d), default=None)
+
+
+def _drop_unstated_events(conn, events: list, run_at: int) -> None:
+    """For each ref and provider of a complete answer's events
+    (Parsed.events_complete), delete the rows silver holds that the
+    answer does not state: those whose first day (_first_day) is on or
+    after the oldest the answer states, from a run not later than this
+    one. A row older than what the source lists stays, and so does what a
+    later run stated, when an earlier run loads after it."""
+    stated = {}
+    for r in events:
+        stated.setdefault((r["ref"], r["provider"]), []).append(r)
+    for (ref, provider), rows in sorted(stated.items()):
+        since = min(filter(None, (_first_day((r["ex_date"], r["record_date"], r["pay_date"])) for r in rows)),
+                    default=None)
+        if since is None:
+            continue
+        ids = {r["event_id"] for r in rows}
+        held = conn.execute("SELECT event_id, ex_date, record_date, pay_date FROM dividend_events "
+                            "WHERE ref = ? AND provider = ? AND run_at <= ?", (ref, provider, run_at)).fetchall()
+        for eid, *days in held:
+            first = _first_day(days)
+            if eid not in ids and first is not None and first >= since:
+                conn.execute("DELETE FROM dividend_events WHERE ref = ? AND provider = ? AND event_id = ?",
+                             (ref, provider, eid))
+
+
 def write(conn, parsed: Parsed, run_at: int) -> int:
     """Write one request's rows. A fund-day the rows' compositions or
     attributes name is cleared first, on every basis and table, so a
@@ -97,7 +148,10 @@ def write(conn, parsed: Parsed, run_at: int) -> int:
     a fund-day only by that provider's rows of the same figure, every
     part of a breakdown with it: an issuer's file for a day leaves a
     filing's figures standing, and a page that dates one figure later
-    leaves the others' days as they were."""
+    leaves the others' days as they were. A dividend event replaces the
+    same provider's same event (EVENTS_UPSERT); a complete answer's
+    events also drop the rows it no longer states
+    (_drop_unstated_events)."""
     days = {(c["fund_ref"], epoch(c["as_of"])) for c in parsed.compositions}
     days |= {(a["fund_ref"], epoch(a["as_of"])) for a in parsed.attributes}
     for ref, at in sorted(days):
@@ -113,7 +167,11 @@ def write(conn, parsed: Parsed, run_at: int) -> int:
             for table in TABLES)
     facts = [_row("period_facts", r, run_at) for r in parsed.period_facts]
     conn.executemany(PERIOD_FACTS_UPSERT, facts)
-    return n + len(facts)
+    if parsed.events_complete:
+        _drop_unstated_events(conn, parsed.dividend_events, run_at)
+    events = [_row("dividend_events", r, run_at) for r in parsed.dividend_events]
+    conn.executemany(EVENTS_UPSERT, events)
+    return n + len(facts) + len(events)
 
 
 def next_loaded_at(conn) -> int:

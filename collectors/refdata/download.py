@@ -13,17 +13,19 @@ refdata downloader: the wanted list in, raw provider files out.
    refdata.cfg's order: the first that claims it serves it, and the next
    one claims it only should a fetch fail.
 3. For every fact a held fund wants beyond its compositions (risk
-   metrics, characteristics, money-market figures) whose newest day had
-   is older than max_age_days, ask the providers that answer it in the
-   same order, whichever serves the compositions; with --backfill, for
-   the past dates too. A fact a provider states only with a composition
-   (line durations) comes with a composition request to it, never with
-   a request of its own.
+   metrics, characteristics, money-market figures, its dividend
+   calendar) whose newest day had is older than max_age_days, ask the
+   providers that answer it in the same order, whichever serves the
+   compositions; with --backfill, for the past dates too. A fact a
+   provider states only with a composition (line durations) comes with a
+   composition request to it, never with a request of its own.
 4. For every wanted security held directly, ask every enabled security
-   provider whose last answer is older than max_age_days; with
-   `constituents`, then ask for the securities held through funds whose
-   share of net worth reaches `constituent_floor_pct`, the biggest first,
-   each only of a provider that can fill a field it lacks.
+   provider whose last answer is older than max_age_days, and every one
+   that answers a fact the security wants (its dividend calendar) whose
+   newest day had is older than that; with `constituents`, then ask for
+   the securities held through funds whose share of net worth reaches
+   `constituent_floor_pct`, the biggest first, each only of a provider
+   that can fill a field it lacks.
 5. Let every bulk provider plan the requests that answer many of those
    securities at once, such as a table of every company's figure for one
    period.
@@ -40,13 +42,17 @@ refdata downloader: the wanted list in, raw provider files out.
    max_age_days, and why each other one stays missing. A dry run prints
    it after the requests; a run logs one line per fact.
 
-Reads public pages only: no login, a User-Agent that names the tool, a
-pace per host (fetcher.py).
+Reads public data only, signed in to no account, with a User-Agent that
+names the tool and a pace per host (fetcher.py). FINRA's API takes the
+client credential its terms require, traded for a token
+(providers/finra.py): the id from --client-id or FINRA_CLIENT_ID, the
+secret from FINRA_CLIENT_SECRET alone.
 
 Usage:
     download.py --bronze-dir DIR [--wanted FILE] [--backfill] [--provider NAME]
-                [--ref REF] [--limit N] [--no-securities] [--dry-run] [--debug]
-    download.py --check [--provider NAME]
+                [--ref REF] [--limit N] [--no-securities] [--client-id ID]
+                [--dry-run] [--debug]
+    download.py --check [--provider NAME] [--client-id ID]
 """
 
 from __future__ import annotations
@@ -65,7 +71,7 @@ import fetcher
 import wanted as wantedmod
 from collectorkit import bronze, cli, debugcap
 from providers import REGISTRY
-from providers.base import Context, ProviderError, Unavailable, folder_name, read_meta, today_utc
+from providers.base import Context, ProviderError, Unavailable, complete_runs, folder_name, read_meta, today_utc
 
 log = logging.getLogger("refdata.download")
 
@@ -82,9 +88,13 @@ CURRENT_ROLES = frozenset({"proxy", "reference", "underlying"})
 # fund provider's `facts` answer, or its compositions (`composition_facts`),
 # then the families of figures a security lacks, which a security or bulk
 # provider's `answers` answer.
-FUND_FACTS = ("risk_metrics", "characteristics", "money_market", "line_durations")
+FUND_FACTS = ("risk_metrics", "characteristics", "money_market", "line_durations", "dividend_calendar")
 SECURITY_FACTS = ("earnings", "dividends", "financials")
 FACTS = FUND_FACTS + SECURITY_FACTS
+# The facts a security wants (its `wants`), which a security or bulk
+# provider's `answers` answer, each with the wanted list's field that
+# holds the newest day gold has it for.
+SECURITY_WANTS = {"dividend_calendar": "calendar"}
 DEFERRED = "deferred by --limit"
 
 # What a provider's answer can raise without failing the run: its own
@@ -106,8 +116,9 @@ class Request:
     # `fund` carries the identifiers this one's claim adds (described).
     fallbacks: tuple = ()
     fund: object = None
-    # The facts a fund request asks for beyond the composition; the
-    # provider's fetch states them with it.
+    # The facts a fund request asks for beyond the composition, which the
+    # provider's fetch states with it; a security or bulk request's, the
+    # facts of the securities' `wants` its claim names.
     facts: tuple = ()
     # Whether the request is for the fund's composition. One asked for
     # facts alone is marked `facts_only` in the manifest, and load keeps
@@ -134,8 +145,11 @@ class Fetched(NamedTuple):
     facts: dict      # (provider, fund ref, fact) -> day
     fact_days: dict  # (provider, fund ref, fact) -> the days a request for facts alone fetched it for
     bulk: dict       # (provider, bulk ref) -> day
-    answered: dict   # (provider, security key) -> day, of a bulk answer that states a figure for it
+    answered: dict   # (provider, security key) -> day, of a bulk answer whose `answered` names it
     families: dict   # (provider, security key) -> day, of a security request that asked for figures
+    wants: dict      # (provider, security key, fact) -> day, of a security request that asked for a
+                     # fact the security wants, or a bulk answer that asked for it and states it
+    asked: dict      # (provider, security key) -> day, of a security request sent, one that failed too
 
     @classmethod
     def of(cls, **maps) -> Fetched:
@@ -157,6 +171,9 @@ def parse_args(argv):
     p.add_argument("--limit", type=int, default=None,
                    help="Make at most N fetch attempts this run; the lookups that find a fund are not counted.")
     p.add_argument("--no-securities", action="store_true", help="Skip the security lookups and the bulk requests.")
+    p.add_argument("--client-id", default=None, metavar="ID",
+                   help=f"FINRA's API client id, for the finra provider (default: ${config.FINRA_CLIENT_ID}). "
+                        f"Its secret comes from ${config.FINRA_CLIENT_SECRET} alone.")
     p.add_argument("--check", action="store_true",
                    help="Ask every enabled provider for its cheapest answer and exit; writes nothing.")
     p.add_argument("--dry-run", action="store_true",
@@ -213,21 +230,22 @@ def fetched_before(bronze_dir: Path | None) -> Fetched:
     fact and bulk request, each with the day of the latest run that
     fetched it. Apart: the days a request for a fund's facts alone
     fetched each fact for, which are no compositions; the securities a
-    bulk answer states a figure for, by its meta.json's `answered`; and
-    the security answers whose request asked for families of figures."""
+    bulk answer names in its meta.json's `answered`; the security
+    answers whose request asked for families of figures; and the
+    facts a security wants that a security request asked for, or a bulk
+    request asked for and its answer names the security in. Apart too:
+    every security request sent, one that failed included, for a provider
+    that waits min_age_days between two (base.py)."""
     out = Fetched.of()
-    if bronze_dir is None or not bronze_dir.is_dir():
-        return out
 
     def seen(into, key, day):
         into[key] = max(into.get(key, day), day)
 
-    for run in bronze.iter_run_dirs(bronze_dir):
-        manifest = bronze.read_manifest(run / "run.json")
-        if manifest is None or manifest.get("status") != "complete":
-            continue
+    for run, manifest in complete_runs(bronze_dir):
         day = datetime.fromtimestamp(bronze.parse_run_ts(run.name), timezone.utc).date()
         for e in manifest.get("requests") or []:
+            if e.get("kind") == "security" and e.get("status") in ("ok", "error", "unavailable"):
+                seen(out.asked, (e["provider"], e["ref"]), day)
             if e.get("status") != "ok":
                 continue
             if e.get("kind") == "fund":
@@ -242,16 +260,20 @@ def fetched_before(bronze_dir: Path | None) -> Fetched:
                 seen(out.lookups, (e["provider"], e["ref"]), day)
                 if e.get("families"):
                     seen(out.families, (e["provider"], e["ref"]), day)
+                for fact in e.get("facts") or ():
+                    seen(out.wants, (e["provider"], e["ref"], fact), day)
             elif e.get("kind") == "bulk":
                 seen(out.bulk, (e["provider"], e["ref"]), day)
                 for key in _answered(run / e["dir"]) if e.get("dir") else ():
                     seen(out.answered, (e["provider"], key), day)
+                    for fact in e.get("facts") or ():
+                        seen(out.wants, (e["provider"], key, fact), day)
     return out
 
 
 def _answered(folder: Path) -> set:
-    """The security keys a bulk answer states a figure for: its
-    meta.json's `answered` (base.py); none where it names none."""
+    """The security keys a bulk answer names in its meta.json's
+    `answered` (base.py); none where it names none."""
     try:
         return flat_keys(read_meta(folder).get("answered"))
     except (ProviderError, OSError, ValueError, AttributeError):
@@ -303,11 +325,14 @@ def described(fund: wantedmod.Fund, claim: dict) -> wantedmod.Fund:
     return replace(fund, **ids) if ids else fund
 
 
-def _answers_fact(p, fact) -> bool:
-    """Whether a provider answers a fact a fund or a security wants: a
-    fund provider by its `facts`, a security or bulk provider by its
-    `answers`."""
-    return (p.serves_funds and fact in p.facts) or ((p.serves_securities or p.serves_bulk) and fact in p.answers)
+def _answers_fact(p, fact, kind="fund") -> bool:
+    """Whether a provider answers a fact of a fund (`kind` fund) or of a
+    security: a fund's by its `facts`, as a fund provider; a security's (a
+    family of figures, a fact the security wants) by its `answers`, as a
+    security or bulk provider."""
+    if kind == "fund":
+        return p.serves_funds and fact in p.facts
+    return (p.serves_securities or p.serves_bulk) and fact in p.answers
 
 
 def _fresh(day, today, max_age) -> bool:
@@ -337,11 +362,13 @@ def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_ag
                                      refs=refs, earlier=earlier, cover=cover)
     if securities:
         secs = security_order(want.securities, constituents, floor_pct)
-        own = _security_requests(secs, providers, ctx, today=today, max_age=max_age, refs=refs, earlier=earlier)
+        asks = _asks(providers, ctx)
+        own = _security_requests(secs, providers, ctx, today=today, max_age=max_age, refs=refs, earlier=earlier,
+                                 asks=asks)
         bulk = _bulk_requests(secs, providers, ctx, today=today, max_age=max_age, refs=refs, earlier=earlier)
         reqs += own + bulk
         _cover_securities(secs, providers, own + bulk, today=today, max_age=max_age, refs=refs, earlier=earlier,
-                          cover=cover)
+                          cover=cover, asks=asks)
     return reqs, unclaimed, cover
 
 
@@ -522,17 +549,18 @@ def _facts_missing(folder: Path) -> set:
         return set()
 
 
-def _unanswered(fact, providers) -> str:
-    """Why no provider of the run is asked for a fact: it comes only with
-    a composition from the registered providers whose
-    `composition_facts` name it; the registered providers that answer it
-    are off, as refdata.cfg does not enable them or --provider leaves
-    them out; or none answers it."""
-    stating = [name for name, p in REGISTRY.items() if fact in p.composition_facts]
-    if stating:
-        return f"comes only with a composition from: {', '.join(stating)}"
+def _unanswered(fact, providers, kind="fund") -> str:
+    """Why no provider of the run is asked for a fact of a fund (`kind`
+    fund) or of a security: a fund's comes only with a composition from
+    the registered providers whose `composition_facts` name it; the
+    registered providers that answer it are off, as refdata.cfg does not
+    enable them or --provider leaves them out; or none answers it."""
+    if kind == "fund":
+        stating = [name for name, p in REGISTRY.items() if fact in p.composition_facts]
+        if stating:
+            return f"comes only with a composition from: {', '.join(stating)}"
     on = {p.name for p in providers}
-    off = [name for name, p in REGISTRY.items() if name not in on and _answers_fact(p, fact)]
+    off = [name for name, p in REGISTRY.items() if name not in on and _answers_fact(p, fact, kind)]
     return f"provider off: {', '.join(off)}" if off else "no enabled provider answers it"
 
 
@@ -542,22 +570,59 @@ def _last_answer(sec, p, lookups):
     return max(filter(None, (sec.lookups.get(p.name), lookups.get((p.name, sec.key)))), default=None)
 
 
+def _wanted_day(sec, fact, fetched):
+    """The newest day a fact the security wants was had: gold's day for
+    it (SECURITY_WANTS), or the day an earlier run fetched it."""
+    return max(filter(None, (getattr(sec, SECURITY_WANTS[fact]), fetched)), default=None)
+
+
 def _families(claim):
     """The families of figures a security or bulk request's claim asks
     for (its `families`), or None where the claim does not say."""
     return claim.get("families") if isinstance(claim, dict) else None
 
 
+def _claim_facts(claim) -> tuple:
+    """The facts of a security's `wants` a security or bulk request's
+    claim asks for (its `facts`); none where it does not say."""
+    facts = claim.get("facts") if isinstance(claim, dict) else None
+    return tuple(f for f in facts or () if f in SECURITY_WANTS)
+
+
 def _asks_for(r, fact) -> bool:
-    """Whether a security or bulk request asks for a family of figures:
-    its claim's `families` names it. A security request whose claim does
-    not say asks for whatever its provider answers; a bulk claim names
-    its families (base.py)."""
+    """Whether a security or bulk request asks for a fact a security wants
+    (the request's `facts` name it, from its claim) or a family of
+    figures it lacks (its claim's `families` names it). A security
+    request whose claim does not name families asks for whatever its
+    provider answers; a bulk claim names its families (base.py)."""
+    if fact in SECURITY_WANTS:
+        return fact in r.facts
     families = _families(r.claim)
     return fact in families if families is not None else r.kind == "security"
 
 
-def _security_requests(secs, providers, ctx, *, today, max_age, refs, earlier):
+def _asks(providers, ctx) -> dict:
+    """provider -> security key -> the day of its last request, as each
+    provider that waits min_age_days keeps it (Provider.asked); None
+    where its record does not read, a warning: it is asked nothing."""
+    return {p.name: _ask("plan", p.name, "read the days of its requests", p.asked, ctx)
+            for p in providers if p.min_age_days}
+
+
+def _waits(p, sec, earlier, today, asks) -> bool:
+    """Whether p waits before it is asked about the security again: it
+    waits min_age_days between two requests, and an earlier run sent one
+    within them, by its manifest (Fetched.asked) or by the provider's own
+    record (_asks), which counts a run that died too. A provider whose
+    record does not read waits."""
+    if not p.min_age_days:
+        return False
+    days = asks.get(p.name)
+    return days is None or any(_fresh(d, today, p.min_age_days)
+                               for d in (earlier.asked.get((p.name, sec.key)), days.get(sec.key)))
+
+
+def _security_requests(secs, providers, ctx, *, today, max_age, refs, earlier, asks):
     """The security requests a run makes, in security_order: each
     security of every security provider that wants it, can claim it, and
     has not answered for it within max_age, here or in an earlier run.
@@ -566,7 +631,21 @@ def _security_requests(secs, providers, ctx, *, today, max_age, refs, earlier):
     provider answers, only an earlier run's request that asked for
     families counts: an answer without them does not, nor the day of a
     lookup that gold holds. Once asked, a company that files no figures
-    waits max_age like any lookup."""
+    waits max_age like any lookup.
+
+    A fact the security wants (SECURITY_WANTS) that the provider answers
+    is due once the newest of gold's day for it and the day an earlier
+    run's request to the provider asked for it is older than max_age.
+    The provider claims the security with only its due facts in `wants`,
+    and the request asks for those its claim names in `facts`. A claim
+    that names none makes a request only where the lookup is due. A
+    provider that answers nothing but such facts is asked only where one
+    is due.
+
+    A provider that waits min_age_days between two requests for one
+    security reads max_age as at least that, and is not asked where an
+    earlier run sent it a request within those days, one that failed
+    too (_waits)."""
     reqs = []
     for sec in secs:
         if refs and sec.key not in refs:
@@ -574,13 +653,21 @@ def _security_requests(secs, providers, ctx, *, today, max_age, refs, earlier):
         for p in providers:
             if not p.serves_securities or (sec.scope == "constituent" and not p.wants_constituent(sec)):
                 continue
+            if _waits(p, sec, earlier, today, asks):
+                continue
+            age = max(max_age, p.min_age_days)
+            due = tuple(f for f in sec.wants if f in SECURITY_WANTS and f in p.answers and not _fresh(
+                _wanted_day(sec, f, earlier.wants.get((p.name, sec.key, f))), today, age))
             figures = sec.scope == "direct" and bool(p.answers.intersection(sec.missing, SECURITY_FACTS))
             last = earlier.families.get((p.name, sec.key)) if figures else _last_answer(sec, p, earlier.lookups)
-            if _fresh(last, today, max_age):
+            wants_only = bool(p.answers) and p.answers.issubset(SECURITY_WANTS)
+            lookup = not wants_only and not _fresh(last, today, age)
+            if not (lookup or due):
                 continue
-            claim = _ask(sec.key, p.name, "claim it", p.claim_security, sec, ctx)
-            if claim is not None:
-                reqs.append(Request("security", p.name, sec.key, None, claim))
+            claim = _ask(sec.key, p.name, "claim it", p.claim_security, replace(sec, wants=due), ctx)
+            facts = tuple(f for f in due if f in _claim_facts(claim))
+            if claim is not None and (lookup or facts):
+                reqs.append(Request("security", p.name, sec.key, None, claim, facts=facts))
     return reqs
 
 
@@ -600,26 +687,32 @@ def bulk_keys(claim) -> set:
 def _bulk_requests(secs, providers, ctx, *, today, max_age, refs, earlier):
     """The bulk requests a run makes: each bulk provider plans them for the
     securities a run asks for, in security_order, given the refs earlier
-    runs fetched from it, the day of each, and max_age. --ref keeps only
-    the bulk refs it names."""
+    runs fetched from it, the day of each, and max_age. A request asks
+    for the facts of the securities' `wants` its claim names in `facts`
+    and the provider answers. --ref keeps only the bulk refs it names."""
     reqs = []
     for p in providers:
         if not p.serves_bulk:
             continue
         before = {ref: day for (q, ref), day in earlier.bulk.items() if q == p.name}
         planned = _ask("bulk", p.name, "plan its requests", p.plan_bulk, secs, ctx, today, before, max_age) or []
-        reqs += [Request("bulk", p.name, ref, None, claim) for ref, claim in planned if not refs or ref in refs]
+        reqs += [Request("bulk", p.name, ref, None, claim, facts=tuple(f for f in _claim_facts(claim) if f in p.answers))
+                 for ref, claim in planned if not refs or ref in refs]
     return reqs
 
 
-def _cover_securities(secs, providers, reqs, *, today, max_age, refs, earlier, cover):
+def _cover_securities(secs, providers, reqs, *, today, max_age, refs, earlier, cover, asks):
     """Record in cover what becomes of each family of figures a security
-    lacks (SECURITY_FACTS): the requests of a provider that answers it
-    which name the security and ask for the family (_asks_for); an earlier
-    run's answer within max_age, from a security request to that provider
-    that asked for families (a plain lookup does not count) or a bulk
-    answer that states a figure for the security; or why none is
-    asked."""
+    lacks (SECURITY_FACTS) and each fact it wants (SECURITY_WANTS): the
+    requests of a provider that answers it which name the security and
+    ask for it (_asks_for); a fact wanted that gold holds within max_age;
+    an earlier run's answer within max_age, for a family from a security
+    request to that provider that asked for families (a plain lookup does
+    not count) or a bulk answer whose `answered` names the security,
+    for a fact wanted from a request that asked for it, within the
+    provider's min_age_days where they are more; or why none is asked,
+    a provider that waits min_age_days after a request that failed
+    too."""
     naming = {}
     for r in reqs:
         for key in ({r.ref} if r.kind == "security" else bulk_keys(r.claim)):
@@ -628,21 +721,29 @@ def _cover_securities(secs, providers, reqs, *, today, max_age, refs, earlier, c
     for sec in secs:
         if refs and sec.key not in refs:
             continue
-        for fact in sec.missing:
-            if fact not in SECURITY_FACTS:
+        for fact in (*(f for f in sec.missing if f in SECURITY_FACTS), *(f for f in sec.wants if f in SECURITY_WANTS)):
+            wanted = fact in SECURITY_WANTS
+            cover.setdefault(fact, {})[sec.key] = c = Cover(
+                had=wanted and _fresh(getattr(sec, SECURITY_WANTS[fact]), today, max_age))
+            if c.had:
                 continue
-            cover.setdefault(fact, {})[sec.key] = c = Cover()
-            answering = [p for p in providers if _answers_fact(p, fact)]
+            answering = [p for p in providers if _answers_fact(p, fact, "security")]
             if not answering:
-                c.reason = _unanswered(fact, providers)
+                c.reason = _unanswered(fact, providers, "security")
                 continue
             c.requests = [r for r in naming.get(sec.key, ()) if fact in by_name[r.provider].answers
                           and _asks_for(r, fact)]
-            c.had = any((p.serves_securities and _fresh(earlier.families.get((p.name, sec.key)), today, max_age))
-                        or (p.serves_bulk and _fresh(earlier.answered.get((p.name, sec.key)), today, max_age))
-                        for p in answering)
+            if wanted:
+                c.had = any(_fresh(earlier.wants.get((p.name, sec.key, fact)), today, max(max_age, p.min_age_days))
+                            for p in answering)
+            else:
+                c.had = any((p.serves_securities and _fresh(earlier.families.get((p.name, sec.key)), today, max_age))
+                            or (p.serves_bulk and _fresh(earlier.answered.get((p.name, sec.key)), today, max_age))
+                            for p in answering)
             if not (c.requests or c.had):
-                c.reason = "no provider claims it"
+                c.reason = next((f"{p.name} waits {p.min_age_days} days after a request" for p in answering
+                                 if p.serves_securities and _waits(p, sec, earlier, today, asks)),
+                                "no provider claims it")
 
 
 def tally(cover, deferred=frozenset()) -> list:
@@ -693,10 +794,10 @@ def execute(reqs, run: Path, ctx: Context, limit=None):
     """Fetch every request into its bronze folder; one entry per request.
     A provider standing by claims the fund only once the ones before it
     failed. `limit` caps the fetch attempts, a standby's included; a
-    request it leaves no attempt for is deferred. A fund request's entry
-    names the facts it asks for, those its provider answers once one
-    serves it; a security request's the families of figures its claim
-    asks for."""
+    request it leaves no attempt for is deferred. A request's entry names
+    the facts it asks for, once one serves it those its provider answers
+    and its meta.json does not name missing; a security request's the
+    families of figures its claim asks for too."""
     results, attempts = [], 0
     for r in reqs:
         entry = {"kind": r.kind, "provider": r.provider, "ref": r.ref,
@@ -722,7 +823,7 @@ def execute(reqs, run: Path, ctx: Context, limit=None):
                 entry["provider"] = name
                 if r.facts:
                     missing = _facts_missing(run / entry["dir"])
-                    entry["facts"] = [f for f in r.facts if f in REGISTRY[name].facts and f not in missing]
+                    entry["facts"] = [f for f in r.facts if _answers_fact(REGISTRY[name], f, r.kind) and f not in missing]
                 break
             tried.append({"provider": name, "status": status, "error": error})
         if tried and entry.get("status") != "ok":
@@ -783,7 +884,7 @@ def main(argv=None) -> int:
     cli.resolve_standard(args, verb="download", full_history=True, log=log,
                          what="what the wanted list asks for")
     try:
-        cfg = config.load(REGISTRY)
+        cfg = config.with_finra_credential(config.load(REGISTRY), args.client_id)
     except config.ConfigError as e:
         log.error("%s", e)
         return 2

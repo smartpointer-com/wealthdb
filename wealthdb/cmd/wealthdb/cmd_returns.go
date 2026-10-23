@@ -93,12 +93,13 @@ func returnsReport(req request, cfg *config.Config) *report {
 			ReturnsHide: hide, PolicyOverrides: policyOv, TransferMatching: matching,
 		})
 	}
+	loads := []func(context.Context, *sql.DB) error{loadKinds}
 	// Only an account's entity reads its nickname.
 	if req.view == "accounts" {
-		fetch = loadFirst(nicknames.load, fetch)
+		loads = append(loads, nicknames.load)
 	}
-	return newReport(buildReturnColumnRegistry(req.currency, req.view, kindOf, nicknames), defaultReturnColumnsFor(req.method),
-		loadFirst(loadKinds, fetch))
+	return withLoads(newReport(buildReturnColumnRegistry(req.currency, req.view, kindOf, nicknames),
+		defaultReturnColumnsFor(req.method), fetch), loads...)
 }
 
 // returnsCfgSettings builds the engine-side inception-override, exclusion,
@@ -177,7 +178,8 @@ func buildReturnColumnRegistry(outCcy, level string, kindOf func(string) string,
 	switch level {
 	case "accounts":
 		ref := func(r gold.ReturnRow) accountRef {
-			return accountRef{r.SilverSourceID, &r.EntityLabel, nicknames.of(r.SilverSourceID, r.EntityID), r.EntityID}
+			return accountRef{source: r.SilverSourceID, name: &r.EntityLabel,
+				nickname: nicknames.of(r.SilverSourceID, r.EntityID), id: r.EntityID}
 		}
 		entity = accountCol(kindOf, ref)
 		entity.Name = "entity"

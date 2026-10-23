@@ -33,29 +33,27 @@ func noKinds(string) string { return "" }
 func TestPortfolioNamePrivacyMatchesKind(t *testing.T) {
 	t.Parallel()
 	kinds := map[string]string{"ct": "cointracking", "hand": "manual", "cointracking": "ubs"}
-	f := portfolioNamePrivacy(func(id string) string { return kinds[id] })
-
-	row := func(source, extID string) gold.PortfolioRow {
-		return gold.PortfolioRow{SilverSourceID: source, PortfolioExternalID: extID}
+	f := func(source, id string) PrivacyClass {
+		return portfolioNamePrivacy(func(id string) string { return kinds[id] }, source, id)
 	}
-	if got := f(row("ct", "cu_000001")); got != PrivacyPseudonym {
+	if got := f("ct", "cu_000001"); got != PrivacyPseudonym {
 		t.Errorf("kind=cointracking: privacy = %v, want PrivacyPseudonym", got)
 	}
-	if got := f(row("hand", "example-house")); got != PrivacyPseudonym {
+	if got := f("hand", "example-house"); got != PrivacyPseudonym {
 		t.Errorf("kind=manual: privacy = %v, want PrivacyPseudonym", got)
 	}
-	if got := f(row(canonical.DeclaredSourceID, "house")); got != PrivacyPseudonym {
+	if got := f(canonical.DeclaredSourceID, "house"); got != PrivacyPseudonym {
 		t.Errorf("declared source: privacy = %v, want PrivacyPseudonym", got)
 	}
-	if got := f(row("cointracking", "0000001")); got != PrivacyAccountID {
+	if got := f("cointracking", "0000001"); got != PrivacyAccountID {
 		t.Errorf("id-only match: privacy = %v, want PrivacyAccountID", got)
 	}
-	if got := f(row("unknown", "0000001")); got != PrivacyAccountID {
+	if got := f("unknown", "0000001"); got != PrivacyAccountID {
 		t.Errorf("unknown source: privacy = %v, want PrivacyAccountID", got)
 	}
 	// Sentinel row ("(no portfolio)"): legible everywhere,
 	// including under the cointracking rule.
-	if got := f(row("ct", "")); got != PrivacyNone {
+	if got := f("ct", ""); got != PrivacyNone {
 		t.Errorf("sentinel row: privacy = %v, want PrivacyNone", got)
 	}
 }
@@ -122,7 +120,9 @@ func TestRedactAccountID(t *testing.T) {
 // waves multi-word values through. This class asks no shape
 // question, so single tokens and whole sentences mask alike — in
 // every output format, since a narrative is not row identity that
-// a csv/json consumer needs back.
+// a csv/json consumer needs back. A PrivacyPseudonym cell that reaches
+// applyPrivacy, with no pseudonyms to name it, masks alike: it fails
+// closed.
 func TestFreeTextRedactsEveryShape(t *testing.T) {
 	t.Parallel()
 	// Synthetic narratives in the shapes a statement actually
@@ -142,16 +142,20 @@ func TestFreeTextRedactsEveryShape(t *testing.T) {
 		output.FormatTable, output.FormatCSV,
 		output.FormatCSVPlain, output.FormatJSON,
 	}
-	for _, v := range values {
-		for _, f := range formats {
-			if got := applyPrivacy(v, PrivacyFreeText, f); got != "***" {
-				t.Errorf("applyPrivacy(%q, PrivacyFreeText, %v) = %q, want %q", v, f, got, "***")
+	for _, class := range []PrivacyClass{PrivacyFreeText, PrivacyPseudonym} {
+		for _, v := range values {
+			for _, f := range formats {
+				if got := applyPrivacy(v, class, f); got != "***" {
+					t.Errorf("applyPrivacy(%q, class %d, %v) = %q, want %q", v, class, f, got, "***")
+				}
 			}
 		}
-	}
-	// Empty cells stay empty rather than growing a placeholder.
-	if got := applyPrivacy("", PrivacyFreeText, output.FormatTable); got != "" {
-		t.Errorf("applyPrivacy(\"\", PrivacyFreeText) = %q, want empty", got)
+		// Empty cells stay empty rather than growing a placeholder.
+		for _, f := range formats {
+			if got := applyPrivacy("", class, f); got != "" {
+				t.Errorf("applyPrivacy(\"\", class %d, %v) = %q, want empty", class, f, got)
+			}
+		}
 	}
 	// The same values under the account-id class keep their
 	// existing behaviour: multi-word passes through, an
@@ -521,11 +525,10 @@ func TestYieldAccountsSeriesPrivacyTypedLabel(t *testing.T) {
 // its name is its issuer's, and a declared rate gives it a calendar; the
 // mortgage states no terms, so the yield coverage lists it. The plot
 // leaves the book through an exit line keyed `exit:<key>`, as the manual
-// adapter keys it. The gold holds
-// what each report reads of them: snapshots at two dates, a coin, a
-// stock and a bond with their lots, trades, a dividend, interest, a
-// salary and a purchase with their categories. Every name, id and figure
-// is invented.
+// adapter keys it. The gold holds what each report reads of them:
+// snapshots at two dates, a coin, a stock and a bond with their lots,
+// trades, a dividend, interest, a salary and a purchase with their
+// categories. Every name, id and figure is invented.
 func setupTypedLabelGold(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

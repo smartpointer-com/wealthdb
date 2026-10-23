@@ -9,8 +9,9 @@ fund states about itself, and what each security is. The engine's
 exposure report ([EXPOSURE.md](../../wealthdb/docs/EXPOSURE.md)) reads
 it to look through every fund to the securities underneath. It also
 keeps a bond fund's duration, yields and rate sensitivities, a
-money-market fund's yields, and each company's earnings, dividends and
-other reported figures by period.
+money-market fund's yields, each company's earnings, dividends and
+other reported figures by period, and the dividend calendar of each
+fund and share held.
 
 `refdata` reads only what gold asks for. The engine prints a **wanted
 list**: the funds held, the funds the config names (proxies, reference
@@ -19,7 +20,9 @@ directly or through funds, each with the facts gold still lacks for it.
 `refdata` fetches what is missing or old from public sources and loads
 it into its silver. `wealthdb load` brings it into gold.
 
-There is no login anywhere. Every provider reads public pages. A
+No provider signs in to an account. Every provider reads public data.
+One provider, `finra`, trades its API credential for a token: FINRA's
+API client id and secret, from the environment ([finra](#finra)). A
 request names the fund or security it asks about by its ISIN, CUSIP or
 ticker. Some sources take their own page or number for it instead. So
 each source sees which funds and securities are asked about. No amount,
@@ -56,7 +59,7 @@ run can be narrowed:
 `login` is a no-op, since there is no session. `login --check` asks each
 enabled provider for its cheapest answer (a product list, one lookup)
 and reports what it answered. A provider with nothing cheap to ask (the
-inbox, xtrackers, invesco) says so.
+inbox, xtrackers, invesco, vanguard) says so.
 
 A fund counts as current while its newest composition is younger than
 `max_age_days`. Past that age, a provider that can name its newest date
@@ -68,8 +71,9 @@ a run within `max_age_days` asked for them. So a second `download` on
 the same day fetches nothing.
 
 A held fund also wants facts beyond its composition: its risk metrics,
-its characteristics, its money-market figures and the durations of its
-lines ([adapters/refdata.md §5](../../wealthdb/docs/adapters/refdata.md#5-the-wanted-list)).
+its characteristics, its money-market figures, the durations of its
+lines and its dividend calendar
+([adapters/refdata.md §5](../../wealthdb/docs/adapters/refdata.md#5-the-wanted-list)).
 The providers that answer a fact are offered it in `providers` order,
 even where another provider serves the composition. The first that
 knows the fund is asked; the next ones stand by. A provider asked for
@@ -95,6 +99,40 @@ states them, such as an iShares bond fund's holdings file. No request
 asks for them alone. A run asks for them when it asks such a provider
 for the fund's composition. A composition an earlier run fetched from
 it counts for `max_age_days` after that run.
+
+The dividend calendar lists each distribution: its ex, record and pay
+days, its amount and its currency. Gold reads a payment's record day
+from it.
+
+- Every held fund wants it. The fund providers that answer it are asked
+  as for any fact.
+- Each share held directly wants it too: a stock, a depositary receipt
+  or a REIT. Every security provider that answers it and knows the
+  share is asked. A bulk provider may answer many shares with one
+  request.
+- A calendar counts as current while gold's newest day for it is
+  younger than `max_age_days`, or while an earlier run fetched it within
+  that age.
+- A source that lists no distribution, such as an accumulating share
+  class, still counts as fetched.
+- A provider keeps every distribution its source lists, the oldest too.
+- Rows a source lists under one id are one distribution, such as a
+  regular and a special payout on the same days. Their amounts are
+  summed.
+- Some sources list every distribution of a fund or share: iShares,
+  SPDR, Xtrackers, Invesco's US funds, Amundi and SIX's share list.
+  Vanguard lists every distribution of about the last 18 months, and
+  counts as such a source.
+- Loading such an answer drops the rows silver holds from that provider
+  that the answer no longer lists, from the oldest day it lists on. So a
+  day the source corrects leaves no stale distribution in silver. An
+  answer that lists none drops nothing.
+- This holds while runs load in the order they ran, as `load` loads
+  them. An earlier run loaded after a later one, such as a run copied
+  from another machine, can bring back a row the later answer dropped.
+  `load --force` rebuilds silver in order.
+- The other sources add to what silver holds: FINRA, Invesco's UCITS
+  funds, SIX's notices, JPX and `sec-edgar`.
 
 A bulk provider answers many securities with one request, such as a
 table of every company's figure for one quarter. It plans its requests
@@ -128,6 +166,9 @@ The reason for one left is one of these:
   answer it.
 - `no provider claims it`: the providers that answer it do not know the
   fund or security.
+- `NAME waits N days after a request`: the provider is asked about a
+  security once in N days at most. An earlier run sent it a request
+  within them, a failed one too.
 - `deferred by --limit`: its request waits for the next run.
 
 A download logs the same counts, one line per fact.
@@ -194,9 +235,11 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
 With no file, the providers of public data run: `inbox`, `sec-nport`,
 `sec-nmfp`, `sec-edgar`, `gleif` and `openfigi`. The three SEC providers
 wait for a `contact`. An issuer's provider (`ishares`, `xtrackers`, `invesco`,
-`amundi`, `spdr`, `sprott`) and a report provider (`swisscanto`,
-`swissfunddata`, `fidelity-529`) run only once `providers` names them.
-Enabling one accepts its source's terms, quoted below. An issuer's
+`amundi`, `spdr`, `sprott`, `vanguard`), a report provider (`swisscanto`,
+`swissfunddata`, `fidelity-529`) and an exchange's or a regulator's
+dividend calendar (`six`, `jpx`, `finra`) run only once `providers`
+names them. Enabling one accepts its source's terms, quoted below.
+`finra` also needs its credential (see its section). An issuer's
 daily file is fresher than a report or a quarterly N-PORT filing, so
 list the issuers first, then the report providers, then `sec-nport`
 and `sec-nmfp`.
@@ -343,6 +386,26 @@ for this page. Each figure carries the day its table states, else the
 day of the holdings file. A page without a table of the fund's figures
 is no fund page.
 
+The dividend calendar comes from one workbook per region. Each lists
+every distribution of the region's funds:
+
+- The US workbook states each distribution's ex, record and payable
+  days. It names the dividend and the short- and long-term capital
+  gains it pays, in US dollars. The dividend is one event; the two gains
+  together are one capital gain. Its days are written month first.
+- The EMEA workbook lists open and closed funds. It states each
+  distribution's announcement, ex, record and payment days and its
+  amount with its currency. Each row is a dividend. Its days are
+  written day first.
+
+A run asks for each workbook once, whatever number of funds want their
+calendar. So the calendar costs one request per region a run. Where
+only the calendar is due, the fetch asks for the holdings file too. A
+fund's rows are found by its CUSIP or ticker (US) or by its ISIN
+(EMEA). A fund without a row has paid nothing, and its calendar counts
+as fetched. Each distribution is dated by the day of the holdings
+file.
+
 **Terms.** State Street's site terms allow "producing print-outs for
 your own personal use", and forbid publishing or redistributing the
 content "for other than use for or on behalf of yourself". Its
@@ -350,7 +413,9 @@ robots.txt leaves the fund finder, the fund pages and the holdings
 files open. Each file's footer adds: "The whole or any part of this
 work may not be reproduced, copied or transmitted or any of its
 contents disclosed to third parties without State Street Investment
-Management's express written consent." Off until `providers` names it.
+Management's express written consent." The distributions workbooks come
+from the same host, and no such clause shows in their footers. Off
+until `providers` names it.
 
 ### sprott
 
@@ -463,6 +528,24 @@ which fills a figure the page lacks. A Swiss fetch keeps the page it
 already reads. Each figure carries the day the page or the entry states
 for it, else the day of the site's newest holdings.
 
+The dividend calendar lists each distribution with its record, ex and
+payable days:
+
+- A US page states it with the figures. It names the income, the short-
+  and long-term capital gains and the return of capital each
+  distribution pays, in US dollars. Each part with an amount is one
+  event. Income is a dividend; the two gains together are one capital
+  gain. A distribution that names no part is one event of kind `other`.
+- The Swiss site serves it apart, in an answer the fund page names. It
+  states the amount with its currency, and each row is a dividend. An
+  accumulating class answers with no distribution.
+
+On a US page the calendar costs no request more than the
+characteristics: it comes with the same page. Where only the calendar
+is due, the fetch asks for the holdings file and the page. On the Swiss
+site it costs one request per fund, made with the current holdings.
+Each distribution is dated by the day of the site's newest holdings.
+
 **Terms.** BlackRock's terms forbid using "any robot, spider,
 intelligent agent, other automatic device, or manual process to search,
 monitor or copy this Website ... without BlackRock's permission", and
@@ -492,6 +575,20 @@ The page is a script app. For a fund that wants characteristics, a
 fetch makes one more request, for the data the page reads. Each figure
 carries the day the page states, else the day of the fetch. Data
 without the fund's key facts is no fund page's.
+
+The dividend calendar comes from the same data. Its dividends table
+lists each distribution with its record, ex and pay days and its
+dividend per share:
+
+- The amount is in the share class currency that the key facts state.
+- A row whose record day comes before its ex day is kept as written.
+- An accumulating class has no table. Its calendar counts as fetched.
+- A distributing class whose data has no table leaves the calendar due,
+  and a warning names it.
+
+Where the characteristics are due too, the calendar costs no request
+more. Where only the calendar is due, the fetch asks for the export and
+the page data. Each distribution carries the day of the fetch.
 
 **Terms.** DWS's robots.txt disallows `/etfdata/*` and `/export/*`, the
 export's path. It leaves the page data (`/api/`) open. DWS's legal
@@ -534,6 +631,23 @@ of the holdings. Answers of which none is an object are no fund page's.
 The answers name no asset class: a fund whose characteristics state a
 bond figure reads no P/E.
 
+For a fund that wants its dividend calendar, a fetch makes one more
+request, for the fund's distributions:
+
+- A US fund's answer lists every distribution with its ex, record and
+  pay days and its amount. It names the ordinary income, the short-
+  and long-term capital gains, the return of capital and any
+  liquidation each pays. Each part with an amount is one event; the two
+  gains together are one capital gain.
+- A UCITS fund's answer states only the latest distribution: its
+  announcement, ex, record and payment days, its amount per share and
+  its currency. Silver keeps every distribution a run reads, so the
+  history grows from run to run. A fund that pays twice within
+  `max_age_days` can miss a distribution between two runs.
+
+Where only the calendar is due, the fetch asks for the holdings too.
+Each distribution is dated by the day of the holdings.
+
 **Terms.** Invesco's terms grant "a limited, non-exclusive and
 revocable license to access and make personal use of the Website", and
 forbid "devices (including software) that are designed to provide
@@ -556,11 +670,60 @@ Swiss site.
   index's top ten, so no index lines are read: name a proxy for such a
   fund in `exposure.proxies`.
 
+For a fund that wants its dividend calendar, the same POST asks for
+the fund's dividend history too. So the calendar costs no request more.
+
+- The history states each dividend's amount and currency by one date,
+  the ex day. It states no record or pay day. Gold derives the record
+  day from the ex day by the market's settlement cycle.
+- The API writes the day as an epoch millisecond. It reads as the day
+  of the nearest UTC midnight, so a day written as midnight in a
+  European time zone keeps its date.
+- An answer without a history leaves the calendar due, and a warning
+  names it.
+
+Each dividend is dated by the day of the holdings.
+
 **Terms.** Amundi's legal notice for its Swiss site lets a visitor
 download pages or parts of the site "ausschließlich für Ihren
 persönlichen Gebrauch" (for personal use only). It forbids reproducing
 the site or using it for public or commercial purposes without
 Amundi's written consent. Off until `providers` names it.
+
+### vanguard
+
+The distributions of Vanguard's US ETFs, from each fund's profile page
+on Vanguard's US investor site. It answers the dividend calendar alone:
+no holdings and no figures.
+
+- A fund is claimed when it has a US ticker and its name names Vanguard
+  and an ETF, as brokers write it. Vanguard's mutual funds are not read.
+- The page lists each distribution of about the last 18 months: its
+  type, amount per share, record day, reinvest day and payable day. For
+  an ETF the reinvest day is the ex day. Amounts are in US dollars.
+- A dividend, a capital gain and a return of capital are each an event
+  of their own kind. The short- and long-term gains of one day are one
+  capital gain.
+- The calendar costs one request per fund. Each distribution carries
+  the day of the fetch.
+- A page without the list of distributions is refused, and the
+  calendar stays due. A fund whose list is empty has paid nothing, and
+  its calendar counts as fetched.
+
+Vanguard's UCITS ETFs are not read. The UK professional site's fund
+pages state their distributions, but no known source names the page of
+an ISIN.
+
+**Terms.** Vanguard's US terms grant "a limited, revocable,
+nonexclusive, nontransferable license to view, store, bookmark,
+download, and print the pages within this Site solely for your
+personal, informational, and noncommercial use or as expressly
+authorized by Vanguard in writing". They forbid overburdening the site
+by "using devices or software that provide repeated automated access to
+this Site, other than those made generally available by Vanguard". The
+UK professional site's terms have the same clause. Vanguard's
+robots.txt disallows only `/images/`, `/static/` and `/404`. These terms
+are of the same class as Invesco's. Off until `providers` names it.
 
 ### sec-edgar
 
@@ -574,7 +737,9 @@ SEC's company ticker file:
 - its reported figures, each for the period it covers: diluted earnings
   and dividends per share, net income, revenue, operating income,
   interest expense, long-term debt, cash, operating cash flow and
-  capital expenditure.
+  capital expenditure;
+- for a share held directly, the dividends its filings tag: its
+  dividend calendar.
 
 The figures come from the SEC's XBRL API in two ways:
 
@@ -601,6 +766,33 @@ The figures come from the SEC's XBRL API in two ways:
 
 A figure by concept counts only from 10-K, 10-Q, 20-F, 40-F and 6-K
 filings and their amendments. A frame states no form.
+
+The dividend calendar comes from the company's 10-Q and 10-K filings,
+not from the XBRL API, which serves no dates:
+
+- A filing's inline XBRL can tag each dividend's record day, pay day,
+  declared day and amount per share. About one dividend payer in ten
+  tags them. US GAAP has no ex day, so the ex day stays empty.
+- The first request reads the filings of the last fifteen months: the
+  last 10-K and the 10-Qs since, about five. Each comes as its XBRL
+  archive (0.2 to 3 MB), or as its main document where there is no
+  archive.
+- A later request reads only the filings that no earlier run read. The
+  company's submissions file names them, and the lookup reads it
+  anyway. So a company that tags costs about one filing a quarter.
+- A company whose filings of the last year tag no dividend day is
+  asked again a year after its last check. Until then a dry run lists
+  its calendar as `no provider claims it`.
+- A depositary receipt is not asked: its registrant files no 10-Q.
+
+The tagged facts form one dividend per member of the filing's dividend
+axis, else one per context period. The amount is often tagged for the
+quarter, apart from the days. It joins the one dividend of that
+quarter. A dividend of preferred stock is left out. A partnership's
+distributions to its limited partners count as dividends. A dividend
+that several filings state takes each value from the latest filing
+that states it, and is dated by that filing's day. Every dividend is
+final.
 
 A ticker abroad may be another company's in New York. So a security
 quoted abroad is asked for only where its name and the SEC's agree on
@@ -640,6 +832,183 @@ domain", including "redistribution of the FIGI Identifiers to your
 customers for their use" (OpenFIGI's terms of service, §1). The API
 takes 25 requests a minute without a key.
 
+### finra
+
+The dividend calendar of the depositary receipts traded over the
+counter, from FINRA's OTC Daily List API. For each distribution it
+states the ex, record, pay and declaration days and the gross rate per
+receipt in US dollars.
+
+What it asks for:
+
+- the receipts held directly that want their calendar and have a
+  ticker, by ticker, 100 tickers to a request;
+- for a receipt new to it, the history since 2015-01-01;
+- for the others, the days from the last one an earlier answer covered.
+  That day is asked again, since its list may have grown after that
+  run. Where gold's newest calendar day for the receipt is later, the
+  days from that one.
+
+A page holds up to 2,500 rows, and a full page asks for the next one.
+So a run costs one token and a few requests. Each is a POST: the
+token's, and the daily list's, whose filter has no GET form. A receipt
+listed on an exchange is not on the OTC list and gets no event. Its
+answer still counts as fetched for `max_age_days`.
+
+Each distribution is one event, by FINRA's id (`dividendMasterID`):
+
+- FINRA states an estimate first and revises it to the final rate under
+  the same id. The latest entry wins. Its status is `estimated` or
+  `final`. The pay day comes with the final entry.
+- FINRA's comment gives the status in several forms. `FNL`, `(Final)`
+  and `FINAL` read as final. `APX` and `(Approximate)` read as an
+  estimate.
+- The amount is the gross rate (`ADRGrossRate`) in US dollars. The net
+  rate, the depositary's fee and the tax relief go to the payload.
+- The kind comes from FINRA's dividend type code. `CD` is a cash
+  dividend. `CSD` is the cash paid beside a stock dividend. Both are of
+  kind `dividend`.
+- Any other code is kept as kind `other`, with the code in the payload:
+  a stock dividend, a split or a spin-off. The engine does not read
+  kind `other` as a distribution.
+- FINRA writes 9999-09-09 for a day it does not know. It reads as no
+  day.
+- An event is dated by the day of the list that states it.
+
+**Credential.** The API takes a free FINRA "Public" credential:
+
+- `finra.env` in the secrets dir (`~/.secrets` by default) holds
+  `FINRA_CLIENT_ID` and `FINRA_CLIENT_SECRET`, mode 0600.
+  `FINRA_ENV_FILE` names another path. The wrapper sources it for
+  `download` and `login` only, the verbs that ask FINRA.
+- `--client-id VALUE` gives the id directly. The secret comes from
+  `FINRA_CLIENT_SECRET` only: on the command line it would leak into
+  `ps` and the shell history.
+- Without both values the provider asks FINRA nothing, and says which
+  one is not set.
+- With them it takes an OAuth token from FINRA's token endpoint. Every
+  request to `api.finra.org` carries the token. A token serves 30
+  minutes, then a new one is taken.
+- The provider keeps the secret and the token in memory only. They
+  never reach bronze, silver, a log or the `--debug` trace.
+
+**Budget.** A Public credential may receive 10 GB a month:
+
+- A request asks only for the fields the provider reads, the tickers
+  held and the days not yet fetched.
+- `finra-usage.json` in the data dir keeps the bytes FINRA's answers
+  brought in each calendar month (UTC), a failed answer's too.
+- Each data dir keeps its own tally. A second data dir, such as a
+  rehearsal copy, spends against the same 10 GB without seeing the
+  first one's tally.
+- Before it is sent, each request counts as 3 MB, the most one answer
+  may bring. A request that could pass 8 GB is not sent: the fetch
+  stops with a message, and the calendar stays due.
+
+**Check.** `login --check` takes a token and asks for no data. It
+prints the month's tally against the 8 GB.
+
+**Terms.**
+
+- "The Equity Data may only be accessed and used by Developers with
+  valid Access Credentials for the Query API of the following types:
+  Public, Firm or Organization." (FINRA's Equity Data terms, §1.2)
+- "Developer and its Authorized Users may access and use the Equity
+  Data only for Developer's non-commercial personal or professional
+  use." (§2.2)
+- FINRA's API Terms of Service require access "solely using access
+  credentials provided to Developer by FINRA" (§3.4).
+
+FINRA takes 1,200 requests a minute; the client sends one a second.
+Off until `providers` names it.
+
+### six
+
+The dividend calendar of Swiss and Liechtenstein shares, from SIX
+Swiss Exchange's share pages and its ex-dividend notices.
+
+- A share held directly whose ISIN starts with CH or LI is claimed. A
+  depositary receipt is not.
+- The share page lists each dividend with its ex day, amount and
+  currency, back to the oldest SIX has. It costs one request per share.
+  The request names the share's ISIN and its currency, CHF where the
+  share names none.
+- The list is asked for again once the calendar is older than
+  `max_age_days`. The collector asks for a share's list once a month at
+  most, whatever `max_age_days` says. A request that failed also waits
+  the month.
+- `six-asked.json` in the data dir keeps the day of each share's last
+  request, mode 0600. It is written as each request ends, so a run that
+  stops early still counts what it asked. A file that does not read
+  stops every request for a share's list.
+- A share SIX does not list counts as answered, with no dividend.
+- SIX's ex-dividend notices state the pay day. A run makes one search
+  for them, over the days since the last one it finished. The first
+  search reaches back a year. A second run on the same day searches
+  nothing.
+- The search answers SIX's notices of every type, 1,000 a page, and
+  states how many it holds in all. The collector asks for each page
+  until it has them all. Pages that stop short of that count fail the
+  search.
+- A search goes through its days in spans of 31 days, the oldest first,
+  and asks for at most 40 pages a run. A daily search takes one page;
+  the first one takes a few dozen.
+- A span that fails or reaches the cap ends the search. The answer's
+  `meta.json` keeps the last day of the last span that finished
+  (`through`), and the next run goes on from that day. Where no span
+  finished, the search fails and the next run asks for the same days.
+- Only the ex-dividend notices count. A notice names its share's ISIN,
+  or several, or none.
+- Each notice of a claimed share costs one more request, for its
+  details. A notice that names no ISIN costs it only where its title's
+  ex day is one a claimed share's list states; its details then name
+  the share. A notice joins the dividend of its share and ex day. The
+  share's next list keeps the pay days of earlier notices.
+- A notice counts only for the shares held when a search finds it. So
+  a share held later has no pay days from before.
+- A notice names the issuer's contact, and its details the contact
+  person and phone number. Only the ex day, pay day, gross amount,
+  currency and ISIN are read and kept. Nothing else of a notice is
+  stored or logged.
+- SIX states no record day. Gold derives it from the ex day.
+
+**Terms.** SIX's terms of use state that its information is "provided
+by SIX exclusively for personal use as well as information purposes",
+and that content "may not be reproduced or reused in any way or used
+for commercial purposes". Its market data disclaimer forbids public or
+commercial use without consent and adds: "Further distribution and use
+by third parties prohibited." Its robots.txt leaves `/sheldon`, the
+path of the share pages and the notices, open. Off until `providers`
+names it.
+
+### jpx
+
+The ex-dividend days of the shares listed in Tokyo, from the Japan
+Exchange Group's daily ex-rights list.
+
+- JPX is asked only while a Japanese share (ISIN JP) is held directly.
+- The list's index page links one `.xls` workbook per business day, for
+  the last five days. A run reads the page, then each file that no
+  earlier run fetched. So a run makes one request for the page and at
+  most five for files. A dry run reads the page too.
+- A file lists every TSE stock, ETF and REIT whose record day falls in
+  the next two weeks. Each row whose remarks name a dividend or a
+  distribution is kept, held or not, under `jpx:<code>`. It states the
+  record day and the ex day.
+- The list states no pay day and no amount.
+- A file leaves the page after five business days, and the list covers
+  coming days only. A run at least once a week misses no file.
+- Gold joins a row to a share by the share's TSE code.
+- The client asks JPX at most once every five seconds.
+
+**Terms.** JPX's terms of use state: "The collection of data or
+secondary use of information from this website for commercial purposes
+is strictly prohibited", and "Please refrain from automatic information
+retrieval and other operations which may lead to high-load and/or high
+frequency access." Its robots.txt leaves the list open. The collector
+reads one page and at most five files a run. Off until `providers`
+names it.
+
 ## Pace
 
 Every request goes through one small client:
@@ -647,7 +1016,8 @@ Every request goes through one small client:
 - https only;
 - one request a second per host; under a source's stated limit, with a
   margin: eight a second for the SEC (limit ten), 24 a minute for
-  OpenFIGI (25), 50 a minute for GLEIF (60);
+  OpenFIGI (25), 50 a minute for GLEIF (60), one every five seconds for
+  JPX;
 - a User-Agent that names the tool, with the `contact` for the SEC's
   hosts only;
 - a redirect counts as a request to the host it leads to, with that
@@ -655,6 +1025,10 @@ Every request goes through one small client:
 - GET; a read-only POST for OpenFIGI's mapping and Amundi's product
   API, which have no GET form; and the POST that states swissfunddata's
   investor category;
+- for `finra`, a POST of the client credential to FINRA's token
+  endpoint, which answers a token for the run;
+- for `finra`, a read-only POST of the daily list's filter, which has
+  no GET form, with that token;
 - no cookies, except swissfunddata's session;
 - a source that refuses a request for its rate is not asked again in
   the run.
@@ -686,11 +1060,16 @@ The silver DB is `refdata.db`, beside the run dirs. It keeps what the
 providers state, labels in their own words: each fund's compositions
 and their lines, its attributes, counterparties and rate sensitivities,
 the figures it states for itself, each security's identifiers and
-facts, and each company's figures by period. A fund and day served
-again replaces what silver held for them; a provider's figure for a
-fund and day replaces that provider's same figure.
+facts, each company's figures by period, and the distributions of each
+fund and security (`dividend_events`). A fund and day served again
+replaces what silver held for them; a provider's figure for a fund and
+day replaces that provider's same figure. Distributions replace and drop
+rows as the dividend calendar's notes under [Use](#use) say.
 [adapters/refdata.md](../../wealthdb/docs/adapters/refdata.md)
 describes the tables and how gold reads them.
+
+The data dir also keeps `finra-usage.json` and `six-asked.json`: the
+state that finra and six keep across runs.
 
 Gold reads the silver as a source of kind `refdata` in `wealthdb.cfg`:
 
@@ -707,4 +1086,4 @@ Gold reads the silver as a source of kind `refdata` in `wealthdb.cfg`:
 
 `prune` removes run dirs that are not complete and the `--debug`
 traces. A complete run's raw files are `load` inputs and stay, as do
-the inbox and the silver DB.
+the inbox, those two state files and the silver DB.

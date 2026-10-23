@@ -1,6 +1,6 @@
 {
   "contract": "refdata-wanted",
-  "version": 2,
+  "version": 3,
   "generated_at": "2026-10-13T09:30:00Z",
   "as_of": "2026-10-13",
   "settings": {
@@ -21,7 +21,8 @@
       "held_to": "2026-03-31",
       "compositions": [],
       "wants": [
-        "characteristics"
+        "characteristics",
+        "dividend_calendar"
       ],
       "facts": {}
     },
@@ -60,7 +61,8 @@
       "wants": [
         "risk_metrics",
         "characteristics",
-        "line_durations"
+        "line_durations",
+        "dividend_calendar"
       ],
       "facts": {
         "characteristics": [
@@ -90,7 +92,8 @@
         "2026-03-31"
       ],
       "wants": [
-        "characteristics"
+        "characteristics",
+        "dividend_calendar"
       ],
       "facts": {}
     },
@@ -110,7 +113,8 @@
       "wants": [
         "risk_metrics",
         "characteristics",
-        "line_durations"
+        "line_durations",
+        "dividend_calendar"
       ],
       "facts": {}
     },
@@ -165,11 +169,16 @@
       "compositions": [],
       "wants": [
         "characteristics",
-        "money_market"
+        "money_market",
+        "dividend_calendar"
       ],
       "facts": {
         "characteristics": [
           "2026-09-30"
+        ],
+        "dividend_calendar": [
+          "2026-09-02",
+          "2026-10-02"
         ],
         "money_market": [
           "2026-10-09"
@@ -178,6 +187,32 @@
     }
   ],
   "securities": [
+    {
+      "key": "isin:US0000000027",
+      "isin": "US0000000027",
+      "cusip": null,
+      "symbol": "ADR1",
+      "name": "Qorvant Sponsored ADR",
+      "currency": "USD",
+      "scope": "direct",
+      "share_pct": null,
+      "asset_class": "public_equity",
+      "missing": [
+        "sector",
+        "country",
+        "market_cap",
+        "earnings",
+        "dividends",
+        "financials"
+      ],
+      "lookups": {},
+      "periods": {},
+      "receipt": true,
+      "wants": [
+        "dividend_calendar"
+      ],
+      "calendar": null
+    },
     {
       "key": "isin:XX0000000009",
       "isin": "XX0000000009",
@@ -199,7 +234,12 @@
       "periods": {
         "dividends": "2025-12-31",
         "earnings": "2026-06-30"
-      }
+      },
+      "receipt": false,
+      "wants": [
+        "dividend_calendar"
+      ],
+      "calendar": "2026-09-02"
     },
     {
       "key": "isin:XX0000000019",
@@ -218,7 +258,10 @@
       "periods": {
         "dividends": "2026-06-30",
         "financials": "2026-06-30"
-      }
+      },
+      "receipt": false,
+      "wants": [],
+      "calendar": null
     }
   ]
 }

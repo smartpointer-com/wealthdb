@@ -16,8 +16,9 @@ import (
 // part of a source cannot drop what it did not touch. These tests pin that
 // rule, the zero-is-an-observation rule that keeps carry-forward honest,
 // and the two endings that bound the carry: a later run of the same source
-// that re-covers the key's company, and the source-clock horizon behind it.
-// All fixtures are synthetic.
+// that re-covers the key's company, once the source has run past the key's
+// own cadence, and the source-clock horizon behind it. All fixtures are
+// synthetic.
 
 // histDay0 is the UTC day the fixtures anchor on, read ONCE per test binary
 // so that seeding and asserting cannot straddle midnight and resolve against

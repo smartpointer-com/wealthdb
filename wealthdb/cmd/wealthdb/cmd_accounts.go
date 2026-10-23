@@ -14,7 +14,7 @@ import (
 // the account's own base_currency and in the output currency.
 func buildAccountColumnRegistry(outCcy string, kindOf func(string) string, categories typedCategories) []columnSpec[gold.AccountRow] {
 	ref := func(a gold.AccountRow) accountRef {
-		return accountRef{a.SilverSourceID, a.DisplayName, a.Nickname, a.AccountExternalID}
+		return accountRef{source: a.SilverSourceID, name: a.DisplayName, nickname: a.Nickname, id: a.AccountExternalID}
 	}
 	return []columnSpec[gold.AccountRow]{
 		{Name: "silver_source", Align: output.AlignLeft,

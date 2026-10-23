@@ -3,20 +3,24 @@ package canonical
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // YieldRows is the config `yield` block as gold stores it: the tables
-// gold.SyncYield replaces whole at every load. Conventions and Cycles
-// are the built-in maps with the block's entries over them.
+// gold.SyncYield replaces whole at every load. Conventions, Cycles and
+// SettlementCycles are the built-in maps with the block's entries over
+// them.
 type YieldRows struct {
-	Curves      []YieldCurvePoint
-	Withholding []YieldWithholding
-	RatingFunds []YieldRatingFund
-	Conventions []YieldConvention
-	Cycles      []YieldCycle
+	Curves           []YieldCurvePoint
+	Withholding      []YieldWithholding
+	RatingFunds      []YieldRatingFund
+	Conventions      []YieldConvention
+	Cycles           []YieldCycle
+	SettlementCycles []SettlementCycle
 }
 
 // YieldCurvePoint is one tenor of a currency's public curve and the rate
@@ -301,6 +305,64 @@ var builtinConventions = []YieldConvention{
 // BuiltinConventions are the built-in conventions, by market.
 func BuiltinConventions() []YieldConvention {
 	return slices.Clone(builtinConventions)
+}
+
+// A SettlementCycle is a market's settlement cycle from a day on: a trade
+// settles Days business days after it. Market is a country (ISO 3166
+// alpha-2). From is nil for a market's first cycle where it holds from
+// the first day on. The yield report derives a dividend's record day from
+// its ex day by the cycle in force on the ex day (docs/YIELD.md §4).
+type SettlementCycle struct {
+	Market string
+	From   *time.Time
+	Days   int
+	Origin YieldOrigin
+}
+
+// EuroAreaMarkets are the members of the euro area, whose markets settle
+// on TARGET2's days.
+var EuroAreaMarkets = []string{"AT", "BE", "BG", "CY", "DE", "EE", "ES", "FI", "FR", "GR", "HR", "IE", "IT", "LT",
+	"LU", "LV", "MT", "NL", "PT", "SI", "SK"}
+
+// BuiltinSettlementCycles are the settlement cycles of the markets that
+// have one where the config names none, by market and day, oldest first:
+//
+//   - the United States: 3 days; 2 from 2017-09-05; 1 from 2024-05-28;
+//   - Canada: 3 days; 2 from 2017-09-05; 1 from 2024-05-27;
+//   - the euro area, Switzerland, the United Kingdom, Sweden, Denmark and
+//     Norway: 2 from 2014-10-06; 1 from 2027-10-11;
+//   - Japan: 3 days; 2 from 2019-07-16.
+//
+// Hong Kong has none: a share's record day there follows the closure of
+// its register, which no cycle gives.
+func BuiltinSettlementCycles() []SettlementCycle {
+	day := func(y int, m time.Month, d int) *time.Time {
+		t := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+		return &t
+	}
+	type step struct {
+		from *time.Time
+		days int
+	}
+	us := []step{{nil, 3}, {day(2017, time.September, 5), 2}, {day(2024, time.May, 28), 1}}
+	canada := []step{{nil, 3}, {day(2017, time.September, 5), 2}, {day(2024, time.May, 27), 1}}
+	europe := []step{{day(2014, time.October, 6), 2}, {day(2027, time.October, 11), 1}}
+	japan := []step{{nil, 3}, {day(2019, time.July, 16), 2}}
+	markets := map[string][]step{"US": us, "CA": canada, "JP": japan}
+	for _, m := range slices.Concat(EuroAreaMarkets, []string{"CH", "GB", "SE", "DK", "NO"}) {
+		markets[m] = europe
+	}
+	var out []SettlementCycle
+	for _, m := range slices.Sorted(maps.Keys(markets)) {
+		for _, s := range markets[m] {
+			c := SettlementCycle{Market: m, Days: s.days, Origin: OriginBuiltin}
+			if s.from != nil {
+				c.From = day(s.from.Year(), s.from.Month(), s.from.Day())
+			}
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // Cycle is the part of the economic cycle a sector moves with.

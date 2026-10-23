@@ -96,11 +96,11 @@ func spendingReport(req request) *report {
 			})
 	default:
 		kindOf, loadKinds := sourceKinds()
-		return newReport(buildSpendTransactionColumnRegistry(req.currency, kindOf, req.categories),
+		return withLoads(newReport(buildSpendTransactionColumnRegistry(req.currency, kindOf, req.categories),
 			defaultSpendTransactionColumns,
-			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.SpendTransactionRow, error) {
+			func(ctx context.Context, db *sql.DB) ([]gold.SpendTransactionRow, error) {
 				return gold.SpendingTransactions(ctx, db, req.from, req.to, req.currency)
-			}))
+			}), loadKinds)
 	}
 }
 
@@ -167,7 +167,7 @@ var defaultSpendCategoryColumns = []string{
 func buildSpendTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 	categories typedCategories) []columnSpec[gold.SpendTransactionRow] {
 	ref := func(r gold.SpendTransactionRow) accountRef {
-		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
 	}
 	return []columnSpec[gold.SpendTransactionRow]{
 		{Name: "silver_source", Align: output.AlignLeft,

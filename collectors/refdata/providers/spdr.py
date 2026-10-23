@@ -10,7 +10,9 @@ file each fund page links and the figures the page states.
 - Fetch: the holdings workbook, as the page's download link serves it.
   A workbook with no holdings header or no day is refused. For a fund
   that wants characteristics, one more request: the fund page, at the
-  address the finder states, kept as page.html.
+  address the finder states, kept as page.html. For a fund that wants
+  its dividend calendar, the region's distributions workbook, asked for
+  once a run whichever number of funds want it.
 - Parse: every holding with its ISIN (UCITS) or CUSIP (US), name,
   weight, shares, currency and sector; a UCITS file adds the trading
   country and the industry. A cash line states no weight and falls into
@@ -33,6 +35,24 @@ file each fund page links and the figures the page states.
   the fund's own figures is no fund page: where it, or no page, came,
   meta.json names the characteristics in facts_missing
   (fundpage.due()).
+- Dividend calendar: State Street lists every distribution of a
+  region's funds in one workbook. The US one (sheet "dividend") states
+  per distribution its ex, record and payable days (mm/dd/yyyy) and the
+  dividend and the short- and long-term capital gains it pays, in US
+  dollars: the dividend is one event, the two gains together one
+  capital gain, and a row that pays neither is one event of kind other.
+  The EMEA one (sheets "Open Fund" and "Closed Fund") states the
+  announcement, ex, record and payment days (dd/mm/yyyy) and the
+  distribution with its currency: one dividend per row. A day stored as
+  a date cell reads from its serial. A fund's rows are those of its
+  CUSIP, else of its ticker (US), or of its ISIN (EMEA); the fetch keeps
+  them with their sheet's header as distributions.json. A fund without
+  a row has paid none, and its calendar is answered. The rows list the
+  fund's whole history, so its events are complete
+  (Parsed.events_complete); the rows of one id are one event
+  (base.merge_events). Where the workbook did not come or is in no known
+  layout, meta.json names the calendar in facts_missing. The events are
+  dated by the holdings file's day.
 
 Terms: README.md, spdr.
 """
@@ -42,13 +62,15 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
+import fetcher
 from collectorkit import bronze
 
 from . import fundpage, table, xlsx
-from .base import Parsed, Provider, ProviderError, listed, read_meta, write_meta
+from .base import (Parsed, Provider, ProviderError, amount, blank_to_none, event_row, facts_missing, ident, kinds_paid,
+                   listed, merge_events, present, read_json, read_meta, write_meta)
 
 FINDER = "https://www.ssga.com/bin/v1/ssmp/fund/fundfinder"
 FINDERS = {
@@ -63,6 +85,30 @@ FILES = {
 HOST = "https://www.ssga.com"
 DOC = "holdings.xlsx"
 PAGE_DOC = "page.html"
+# The workbook of every distribution of a region's funds, and the sheets
+# it lists them on.
+DISTRIBUTIONS = {
+    "us": ("https://www.ssga.com/library-content/products/fund-data/etfs/us/spdr-etf-historical-distributions.xlsx",
+           ("dividend",)),
+    "emea": ("https://www.ssga.com/library-content/products/fund-data/etfs/emea/"
+             "spdr-etf-historical-distributions-emea-en.xlsx", ("Open Fund", "Closed Fund")),
+}
+DISTRIBUTIONS_DOC = "distributions.json"
+# A distributions sheet's days, by the headers a column shows, as
+# _header() writes them.
+EVENT_DAYS = (("ex_date", ("ex date",)), ("record_date", ("record date",)),
+              ("pay_date", ("payable date", "payment date")), ("declared_date", ("announcement date",)))
+# A US sheet's amounts, by the kind of event each pays: the two gains
+# together are one capital gain.
+US_PARTS = (("dividend", "dividend"), ("short term capital gain", "capital_gain"),
+            ("long term capital gain", "capital_gain"))
+# The amount an EMEA sheet's row pays, and its currency.
+EMEA_AMOUNT, EMEA_CURRENCY = "distribution", "currency"
+# The columns an event reads; the payload keeps the others.
+READ_COLUMNS = frozenset({*(w for _, words in EVENT_DAYS for w in words), *(n for n, _ in US_PARTS), EMEA_AMOUNT,
+                          EMEA_CURRENCY})
+# A date cell's serial counts the days since this one.
+SERIAL_EPOCH = date(1899, 12, 30)
 
 # The tables of a page that state the fund's own figures, by heading, as
 # fundpage.label() writes it.
@@ -110,10 +156,20 @@ def _file_ticker(region: str, uri: str) -> str | None:
     return "-".join(parts[-n:]).lower() if len(parts) > n else None
 
 
+def _ids(fund, entry: dict) -> dict:
+    """The fund's ISIN and CUSIP: its own, else those the keywords of its
+    finder entry name; a US ISIN names its CUSIP."""
+    words = [w.strip().upper() for w in (entry.get("keywords") or "").split(",")]
+    isin = ident(fund, "isin") or next((w for w in words if table.ISIN_RE.match(w)), "")
+    cusip = ident(fund, "cusip") or (isin[2:11] if isin.startswith("US") else "") or next(
+        (w for w in words if table.CUSIP_RE.match(w) and any(ch.isdigit() for ch in w)), "")
+    return {"isin": isin, "cusip": cusip}
+
+
 class Spdr(Provider):
     name = "spdr"
     serves_funds = True
-    facts = frozenset({"characteristics"})
+    facts = frozenset({"characteristics", "dividend_calendar"})
 
     def _index(self, ctx) -> dict:
         """identifier or ticker -> (region, fund entry), from both finders."""
@@ -132,11 +188,52 @@ class Spdr(Provider):
         for region, d in listed(self._index(ctx), fund, "us"):
             ticker = _file_ticker(region, d.get("fundUri"))
             if ticker:
-                # A fund wanted as a proxy or an underlying wants no
-                # characteristics, and its fetch asks for no page.
+                # A fund wanted as a proxy or an underlying wants neither,
+                # and its fetch asks for no page or distributions.
                 return {"ref": fund.ref, "region": region, "ticker": ticker, "name": d.get("fundName"),
-                        "page": d["fundUri"], "characteristics": "characteristics" in fund.wants}
+                        "page": d["fundUri"], **_ids(fund, d), "characteristics": "characteristics" in fund.wants,
+                        "calendar": "dividend_calendar" in fund.wants}
         return None
+
+    def _distributions(self, region: str, ctx) -> dict:
+        """A region's distributions workbook, asked for once a run: its URL
+        and, per sheet of DISTRIBUTIONS it holds, the sheet's name, header
+        row and the rows below it. A workbook that holds none of them is
+        an error."""
+        def load():
+            url, names = DISTRIBUTIONS[region]
+            resp = ctx.client.get(url)
+            if not resp.body.startswith(b"PK"):
+                raise ProviderError(f"{resp.url} is not a workbook")
+            sheets, errors = [], []
+            for name in names:
+                try:
+                    rows = xlsx.rows(resp.body, sheet=name)
+                except xlsx.XlsxError as e:
+                    errors.append(e)
+                    continue
+                start = distributions_header(rows)
+                if start is None:
+                    raise ProviderError(f"{resp.url}: its sheet {name!r} has no distributions header")
+                sheets.append({"sheet": name, "header": rows[start], "rows": rows[start + 1:]})
+            if not sheets:
+                raise ProviderError(f"{resp.url}: {errors[0]}")
+            return {"url": resp.url, "sheets": sheets}
+        return ctx.once(("spdr_distributions", region), load)
+
+    def _keep_distributions(self, claim, outdir: Path, ctx) -> bool:
+        """Keeps the claimed fund's rows of its region's distributions
+        workbook in outdir; whether the workbook came in a layout this
+        provider reads."""
+        try:
+            book = self._distributions(claim["region"], ctx)
+        except (fetcher.FetchError, ProviderError) as e:
+            log.warning("%s: its distributions workbook did not come: %s", claim["ref"], e)
+            return False
+        bronze.atomic_write_json(outdir / DISTRIBUTIONS_DOC, {
+            "url": book["url"],
+            "sheets": [{**sheet, "rows": fund_rows(sheet, claim)} for sheet in book["sheets"]]})
+        return True
 
     def fetch(self, claim, as_of, outdir: Path, ctx):
         resp = ctx.client.get(FILES[claim["region"]].format(ticker=claim["ticker"]))
@@ -148,19 +245,26 @@ class Spdr(Provider):
         if day is None:
             raise ProviderError(f"{resp.url} states no holdings date")
         bronze.atomic_write_bytes(outdir / DOC, resp.body)
-        missing = {}
+        missing = []
         if claim.get("characteristics"):
-            missing = fundpage.keep(ctx, HOST + claim["page"], outdir, PAGE_DOC, claim["ref"], fund_page, log=log)
+            missing += fundpage.keep(ctx, HOST + claim["page"], outdir, PAGE_DOC, claim["ref"], fund_page, log=log)
+        if claim.get("calendar") and not self._keep_distributions(claim, outdir, ctx):
+            missing.append("dividend_calendar")
         write_meta(outdir, provider=self.name, ref=claim["ref"], region=claim["region"], ticker=claim["ticker"],
-                   as_of=day.isoformat(), **missing)
+                   as_of=day.isoformat(), **facts_missing(missing))
         return day
 
     def parse(self, indir: Path) -> Parsed:
         meta = read_meta(indir)
+        day = date.fromisoformat(meta["as_of"])
         out = parse_holdings((indir / DOC).read_bytes(), meta["ref"], provider=self.name)
         if (indir / PAGE_DOC).is_file():
             out.characteristics = characteristics((indir / PAGE_DOC).read_bytes().decode("utf-8", "replace"),
-                                                  meta["ref"], date.fromisoformat(meta["as_of"]), provider=self.name)
+                                                  meta["ref"], day, provider=self.name)
+        if (indir / DISTRIBUTIONS_DOC).is_file():
+            out.dividend_events = distribution_events(read_json(indir, DISTRIBUTIONS_DOC), meta["ref"], day,
+                                                      emea=meta["region"] == "emea", provider=self.name)
+            out.events_complete = True
         return out
 
     def probe(self, ctx) -> str:
@@ -332,3 +436,106 @@ def characteristics(page: str, ref: str, day: date, *, provider: str) -> list:
     point, mark = inputs.get("decimal-point"), inputs.get("thousands-sep")
     return fundpage.rows(table_figures(tables, point, mark), breakdowns(inputs, point, mark), ref, day,
                          provider=provider, skip=fundpage.not_applicable(asset_class(inputs)))
+
+
+def _header(cell) -> str:
+    """A distributions sheet's header as EVENT_DAYS and US_PARTS name it:
+    lower case words, without marks or a unit (EX-DATE is ex date,
+    DIVIDEND ($) dividend)."""
+    return " ".join(re.sub(r"[^a-z]+", " ", str(cell or "").lower()).split())
+
+
+def _columns(header: list) -> dict:
+    """A sheet's column per header (_header()), the first of a name
+    winning."""
+    out = {}
+    for i, h in enumerate(header):
+        out.setdefault(_header(h), i)
+    return out
+
+
+def distributions_header(rows: list) -> int | None:
+    """The index of a distributions sheet's header row: the first that
+    names an ex day and a record day."""
+    return next((i for i, r in enumerate(rows) if {"ex date", "record date"} <= {_header(c) for c in r}), None)
+
+
+def _cell(r: list, col: dict, name: str) -> str:
+    i = col.get(name)
+    return str(r[i]).strip() if i is not None and i < len(r) else ""
+
+
+def fund_rows(sheet: dict, claim: dict) -> list:
+    """A distributions sheet's rows of the claimed fund: on an EMEA sheet
+    those of its ISIN; on the US sheet those of its CUSIP, or, where the
+    fund's or the row's CUSIP is unknown, those of its ticker."""
+    col = _columns(sheet["header"])
+    out = []
+    for r in sheet["rows"]:
+        if claim["region"] == "emea":
+            mine = bool(claim.get("isin")) and _cell(r, col, "isin").upper() == claim["isin"]
+        elif claim.get("cusip") and _cell(r, col, "cusip"):
+            mine = _cell(r, col, "cusip").upper() == claim["cusip"]
+        else:
+            mine = _cell(r, col, "ticker").upper() == claim["ticker"].upper()
+        if mine:
+            out.append(r)
+    return out
+
+
+def _day(text: str, *, day_first: bool) -> date | None:
+    """A day as a distributions sheet writes it: mm/dd/yyyy on the US
+    sheet, dd/mm/yyyy on the EMEA ones, or a date cell's serial."""
+    if re.fullmatch(r"\d{5}(?:\.0+)?", text):
+        return SERIAL_EPOCH + timedelta(days=int(float(text)))
+    if table.SLASH_DAY.fullmatch(text):
+        return table.slash_day(text, day_first=day_first)
+    return table.parse_day(text)
+
+
+def _us_paid(r: list, col: dict) -> dict:
+    """kind -> (amount, currency, payload) of a US row: one per kind it
+    pays an amount of (US_PARTS), in US dollars, the two gains summed into
+    one capital gain (base.kinds_paid); one of kind other, of no amount,
+    where it pays none."""
+    parts = {name: amount(_cell(r, col, name))[0] for name, _ in US_PARTS}
+    gains = {"short_term": parts["short term capital gain"], "long_term": parts["long term capital gain"]}
+    return {kind: (paid, "USD", gains if kind == "capital_gain" else {})
+            for kind, paid in kinds_paid(parts, US_PARTS).items()} or {"other": (None, None, {})}
+
+
+def _emea_paid(r: list, col: dict) -> dict:
+    """kind -> (amount, currency, payload) of an EMEA row: one dividend, in
+    the currency its row names, else the one its amount names."""
+    paid, code = amount(_cell(r, col, EMEA_AMOUNT))
+    currency = (blank_to_none(_cell(r, col, EMEA_CURRENCY)) or code) if paid else None
+    return {"dividend": (paid, currency, {})}
+
+
+def distribution_events(doc: dict, ref: str, day: date, *, emea: bool, provider: str) -> list:
+    """The dividend_events rows of a fund's rows of a distributions
+    workbook (distributions.json), dated `day`: per US row an event per
+    kind it pays (_us_paid), per EMEA row a dividend (_emea_paid). A row
+    that states no ex, record or pay day is none, and so is one whose
+    cells an earlier row repeats, on its sheet or another: a
+    distribution the workbook lists twice. The rows of one id are one
+    event (base.merge_events). The payload keeps the row's other cells
+    and its sheet."""
+    out, seen = [], set()
+    for sheet in doc.get("sheets") or []:
+        col = _columns(sheet["header"])
+        for r in sheet["rows"]:
+            cells = tuple(sorted((h, _cell(r, col, h)) for h in col if h))
+            if cells in seen:
+                continue
+            seen.add(cells)
+            days = {f: next(filter(None, (_day(_cell(r, col, w), day_first=emea) for w in words)), None)
+                    for f, words in EVENT_DAYS}
+            if not (days["ex_date"] or days["record_date"] or days["pay_date"]):
+                continue
+            payload = {"sheet": sheet["sheet"],
+                       **{h.replace(" ", "_"): _cell(r, col, h) for h in col if h and h not in READ_COLUMNS}}
+            for kind, (paid, currency, extra) in (_emea_paid if emea else _us_paid)(r, col).items():
+                out.append(event_row(ref, provider, day, kind, days, amount=paid, currency=currency,
+                                     payload=present({**payload, **extra})))
+    return merge_events(out)

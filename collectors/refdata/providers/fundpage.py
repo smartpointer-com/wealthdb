@@ -15,13 +15,13 @@ it found into `characteristics` rows:
 - A breakdown is one row per part, its label as the page writes it and
   its value the part's share in percent. A part of no share is no row.
 - A page that does not come is a warning, never a failed fetch. Its
-  characteristics stay due: meta.json names them in facts_missing. So
-  do those of a page that came in no layout the provider knows, which
-  is a warning too, so that a change of layout shows. A page in a known
-  layout answers the characteristics, whatever figures it states: a
-  figure it does not state is one the fund's page has none of. iShares
-  checks no layout: its pages answer the characteristics only where a
-  figure is found (missing()).
+  characteristics stay due: the provider names them in meta.json's
+  facts_missing (due()). So do those of a page that came in no layout
+  the provider knows, which is a warning too, so that a change of
+  layout shows. A page in a known layout answers the characteristics,
+  whatever figures it states: a figure it does not state is one the
+  fund's page has none of. iShares checks no layout: its pages answer
+  the characteristics only where a figure is found.
 """
 
 from __future__ import annotations
@@ -160,20 +160,14 @@ def rows(figures: dict, breakdowns: list, ref: str, day, *, provider: str, skip=
     return out
 
 
-def missing(answered) -> dict:
-    """meta.json's facts_missing for a fund that wants characteristics:
-    none where its pages answered them; else the planner keeps them due."""
-    return {} if answered else {"facts_missing": ["characteristics"]}
-
-
-def due(came: bool, known: bool, ref: str, *, log, what="its fund page") -> dict:
-    """meta.json's facts_missing after a fund's page was asked for: the
+def due(came: bool, known: bool, ref: str, *, log, what="its fund page") -> list:
+    """The facts a fund's page leaves missing once it was asked for: the
     characteristics stay due where the page did not come, or came in no
     layout the provider knows (a warning). A page in a known layout
     answers them."""
     if came and not known:
         log.warning("%s: %s matched no known layout", ref, what)
-    return missing(came and known)
+    return [] if came and known else ["characteristics"]
 
 
 def fetch(ctx, url: str, ref: str, *, log, what="its fund page", params=None, headers=None, json=False):
@@ -190,9 +184,9 @@ def fetch(ctx, url: str, ref: str, *, log, what="its fund page", params=None, he
     return resp.body, content
 
 
-def keep(ctx, url: str, outdir, name: str, ref: str, known, *, log, headers=None, json=False) -> dict:
+def keep(ctx, url: str, outdir, name: str, ref: str, known, *, log, headers=None, json=False) -> list:
     """Asks for a fund's page, keeps it in outdir as `name` where it came,
-    and returns meta.json's facts_missing (due()). `known(content)` says
+    and returns the facts it leaves missing (due()). `known(content)` says
     whether the page (fetch()'s content) is in a layout the provider
     knows."""
     got = fetch(ctx, url, ref, log=log, headers=headers, json=json)

@@ -1,6 +1,8 @@
-"""load.write for the facts of schema v2: a fund's rate sensitivities go
-with its fund-day, its characteristics are replaced per provider, and a
-company's figure for a period replaces the same provider's."""
+"""load.write for the facts of schema v2 and v3: a fund's rate
+sensitivities go with its fund-day, its characteristics are replaced per
+provider, a company's figure for a period replaces the same provider's,
+and a dividend event the same provider's same event; a complete answer
+also drops the events it no longer states."""
 
 from datetime import date
 
@@ -131,3 +133,93 @@ def test_a_figure_filed_earlier_does_not_replace_a_later_one(tmp_path):
     load.write(conn, Parsed(period_facts=[fact("119", None)]), run_at=4)
     load.write(conn, Parsed(period_facts=[fact("118", None)]), run_at=5)
     assert fetch(conn, "SELECT value, filed FROM period_facts") == [("118", None)]
+
+
+def event(amount, as_of=DAY, provider="ishares", kind="dividend"):
+    ex, pay = date(2026, 6, 15), date(2026, 6, 19)
+    return row("dividend_events", ref=REF, provider=provider, event_id=f"{kind}|{ex}|{ex}|{pay}", as_of=as_of,
+               kind=kind, ex_date=ex, record_date=ex, pay_date=pay, amount=amount, currency="USD",
+               payload={"total": amount})
+
+
+def test_a_later_runs_event_replaces_the_same_providers_same_event(tmp_path):
+    conn = silver_db(tmp_path)
+    load.write(conn, Parsed(dividend_events=[event("0.25"), event("0.25", provider="spdr")]), run_at=1)
+    load.write(conn, Parsed(dividend_events=[event("0.2512", as_of=date(2026, 7, 31)),
+                                             event("0.05", kind="capital_gain")]), run_at=2)
+    got = fetch(conn, "SELECT provider, event_id, date(as_of, 'unixepoch'), kind, ex_date, pay_date, amount, "
+                      "payload, run_at FROM dividend_events ORDER BY 1, 2")
+    assert got == [
+        ("ishares", "capital_gain|2026-06-15|2026-06-15|2026-06-19", "2026-06-30", "capital_gain", "2026-06-15",
+         "2026-06-19", "0.05", '{"total":"0.05"}', 2),
+        ("ishares", "dividend|2026-06-15|2026-06-15|2026-06-19", "2026-07-31", "dividend", "2026-06-15",
+         "2026-06-19", "0.2512", '{"total":"0.2512"}', 2),
+        ("spdr", "dividend|2026-06-15|2026-06-15|2026-06-19", "2026-06-30", "dividend", "2026-06-15",
+         "2026-06-19", "0.25", '{"total":"0.25"}', 1)]
+
+
+def test_an_event_from_an_earlier_run_loaded_later_leaves_the_later_one(tmp_path):
+    conn = silver_db(tmp_path)
+    load.write(conn, Parsed(dividend_events=[event("0.2512")]), run_at=2)
+    load.write(conn, Parsed(dividend_events=[event("0.25")]), run_at=1)
+    assert fetch(conn, "SELECT amount, run_at FROM dividend_events") == [("0.2512", 2)]
+    # The same run's row loaded again replaces itself.
+    load.write(conn, Parsed(dividend_events=[event("0.2513")]), run_at=2)
+    assert fetch(conn, "SELECT amount, run_at FROM dividend_events") == [("0.2513", 2)]
+
+
+
+def dated(ex, pay, *, provider="ishares", ref=REF, amount="0.25"):
+    """A dividend of `ref` with its ex day as its record day, its id
+    built from its days, as a source that gives none."""
+    ex, pay = date.fromisoformat(ex), date.fromisoformat(pay)
+    return row("dividend_events", ref=ref, provider=provider, event_id=f"dividend|{ex}|{ex}|{pay}", as_of=DAY,
+               kind="dividend", ex_date=ex, record_date=ex, pay_date=pay, amount=amount, currency="USD")
+
+
+def ids(conn):
+    return fetch(conn, "SELECT ref, provider, ex_date, pay_date FROM dividend_events ORDER BY 1, 2, 3, 4")
+
+
+def test_a_complete_answer_drops_the_providers_rows_it_no_longer_states(tmp_path):
+    conn = silver_db(tmp_path)
+    load.write(conn, Parsed(dividend_events=[
+        dated("2025-06-13", "2025-06-18"), dated("2025-12-12", "2025-12-17"), dated("2026-06-15", "2026-06-19"),
+        dated("2026-06-15", "2026-06-19", provider="spdr"),
+        dated("2026-06-15", "2026-06-19", ref="isin:XX0000000002")]), run_at=1)
+    # The source corrects the newest pay day and no longer lists the
+    # oldest distribution.
+    load.write(conn, Parsed(dividend_events=[dated("2025-12-12", "2025-12-17"), dated("2026-06-15", "2026-06-22")],
+                            events_complete=True), run_at=2)
+    assert ids(conn) == [
+        # Older than what the source lists: kept.
+        (REF, "ishares", "2025-06-13", "2025-06-18"),
+        (REF, "ishares", "2025-12-12", "2025-12-17"),
+        # The corrected day leaves no stale row beside it.
+        (REF, "ishares", "2026-06-15", "2026-06-22"),
+        # Another provider's row, and another ref's, stand.
+        (REF, "spdr", "2026-06-15", "2026-06-19"),
+        ("isin:XX0000000002", "ishares", "2026-06-15", "2026-06-19")]
+
+
+def test_an_answer_of_some_events_or_of_none_drops_nothing(tmp_path):
+    conn = silver_db(tmp_path)
+    load.write(conn, Parsed(dividend_events=[dated("2026-06-15", "2026-06-19")]), run_at=1)
+    # A source that states only some (the latest, a list of days) adds.
+    load.write(conn, Parsed(dividend_events=[dated("2026-06-15", "2026-06-22")]), run_at=2)
+    # A complete answer that states no event leaves the history standing,
+    # and so does one whose events state no day.
+    load.write(conn, Parsed(events_complete=True), run_at=3)
+    undated = row("dividend_events", ref=REF, provider="ishares", event_id="other|||", as_of=DAY, kind="other")
+    load.write(conn, Parsed(dividend_events=[undated], events_complete=True), run_at=4)
+    assert ids(conn) == [(REF, "ishares", None, None), (REF, "ishares", "2026-06-15", "2026-06-19"),
+                         (REF, "ishares", "2026-06-15", "2026-06-22")]
+
+
+def test_a_complete_answer_of_an_earlier_run_loaded_later_drops_no_later_row(tmp_path):
+    conn = silver_db(tmp_path)
+    load.write(conn, Parsed(dividend_events=[dated("2026-06-15", "2026-06-22")], events_complete=True), run_at=2)
+    load.write(conn, Parsed(dividend_events=[dated("2026-06-15", "2026-06-19")], events_complete=True), run_at=1)
+    # The earlier answer's row comes back beside the later one: nothing
+    # records what the later answer dropped (load.py). Runs load in order.
+    assert ids(conn) == [(REF, "ishares", "2026-06-15", "2026-06-19"), (REF, "ishares", "2026-06-15", "2026-06-22")]

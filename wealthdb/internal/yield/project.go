@@ -934,10 +934,10 @@ func indicatedDividend(in *Inputs, h Holding) *dividend {
 		}
 		// A payment shows in a month held from as far before it as the
 		// furthest record window of the instrument's payments may reach
-		// (recordReach).
+		// (Payment.reach).
 		lead := 0
 		for _, p := range in.instrumentPayments(h) {
-			lead = max(lead, recordReach(p.LagDays))
+			lead = max(lead, p.reach())
 		}
 		// Two pay months of unlike rates are a payer's two halves where the
 		// holding covered a quarter before the first, or after the second,
@@ -1093,11 +1093,11 @@ type accountPay struct {
 // holding's own currency; a payment no rate converts counts nothing
 // (docs/YIELD.md §4). An account's lines of one day are one payment: a
 // fund's distribution often comes as several. An account is one of a
-// source. A payment's rate per share is over what its account held on
-// its record day (Payment.Record), where that held steady across the
-// record window (Payment.steady), else over what it held on its pay day,
-// within two thirds to one and a half times the quantity that guards it
-// (Payment.Before). A payment whose quantity is unknown, or fails these
+// source. A payment's rate per share is over what its account held as
+// the day that gives the entitlement began (Payment.Record), where that
+// held steady across the record window (Payment.steady), else over what
+// it held on its pay day, within two thirds to one and a half times the
+// quantity that guards it (Payment.Before). A payment whose quantity is unknown, or fails these
 // tests, has no rate, though its day still pays. A day's rate is the
 // median of its accounts'. A rate above the bar (below) is a special, a
 // special dividend or a return of capital, unless it holds the level of

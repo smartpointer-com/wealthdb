@@ -2,6 +2,8 @@
 the tool, and redirects that keep the client's rules."""
 
 import email.message
+import http.client
+import io
 import json
 import logging
 import urllib.request
@@ -48,13 +50,15 @@ def test_the_sec_hosts_share_one_pace():
     assert sleeps == [0.125, 0.125]
 
 
-def test_openfigi_and_gleif_keep_under_their_stated_limits():
+def test_openfigi_and_gleif_keep_under_their_stated_limits_and_jpx_gets_five_seconds():
     c, sleeps, _ = make_client()
     for _ in range(2):
         c.post_json("https://api.openfigi.com/v3/mapping", [])
     for _ in range(2):
         c.get("https://api.gleif.org/api/v1/lei-records")
-    assert sleeps == [2.5, 1.2]
+    c.get("https://www.jpx.co.jp/english/listing/others/ex-rights/index.html")
+    c.get("https://www.jpx.co.jp/english/listing/others/ex-rights/20261023EN.xls")
+    assert sleeps == [2.5, 1.2, 5.0]
 
 
 def test_a_source_that_refuses_is_not_asked_again():
@@ -86,6 +90,27 @@ def test_http_error_becomes_a_fetch_error():
     with pytest.raises(fetcher.FetchError, match="404") as e:
         c.get("https://example.org/missing")
     assert e.value.status == 404
+
+
+class _CutShort(io.BytesIO):
+    """An answer's body that ends before its length."""
+
+    def read(self, *_):
+        raise http.client.IncompleteRead(b"par", 10)
+
+
+def test_an_error_whose_body_is_cut_short_is_a_fetch_error_of_its_status():
+    c, _, _ = make_client({"https://example.org/busy": (503, _CutShort(), {})})
+    with pytest.raises(fetcher.FetchError, match="503") as e:
+        c.get("https://example.org/busy")
+    assert e.value.status == 503 and c.received("example.org") == 0
+
+
+def test_an_answer_whose_body_is_cut_short_is_a_fetch_error_without_a_status():
+    c, _, _ = make_client({"https://example.org/part": (200, _CutShort(), {})})
+    with pytest.raises(fetcher.FetchError) as e:
+        c.get("https://example.org/part")
+    assert e.value.status is None
 
 
 def test_no_answer_becomes_a_fetch_error_without_a_status():
@@ -242,3 +267,35 @@ def test_a_transport_error_is_masked(tmp_path):
     assert "SECRET0000" not in str(e.value) and "q=1" in str(e.value)
     text = (tmp_path / debugcap.SCREENSHOTS_DIR / "http-trace.jsonl").read_text()
     assert "SECRET0000" not in text and "cannot reach" in text
+
+
+TOKEN = "Bearer EXAMPLE-TOKEN-0000"
+
+
+def test_an_authorization_header_goes_to_its_host_only_and_never_to_the_trace(tmp_path, caplog):
+    trace = debugcap.HttpTrace(tmp_path, log=logging.getLogger("test"), enabled=True)
+    first, same, other = "https://api.example.org/a", "https://api.example.org/b", "https://files.example.org/c"
+    c, _, seen = make_client({first: (302, b"", {"Location": same}), same: (302, b"", {"Location": other}),
+                              other: OK, "https://api.example.org/busy": (429, b"slow down", {})}, trace=trace)
+    with caplog.at_level(logging.DEBUG):
+        c.get(first, headers={"Authorization": TOKEN})
+        with pytest.raises(fetcher.FetchError) as e:
+            c.get("https://api.example.org/busy", headers={"Authorization": TOKEN})
+    # A redirect on the host keeps the header; one to another host drops it.
+    assert [r.get_header("Authorization") for r in seen] == [TOKEN, TOKEN, None, TOKEN]
+    text = (tmp_path / debugcap.SCREENSHOTS_DIR / "http-trace.jsonl").read_text()
+    assert len(text.splitlines()) == 4
+    assert "EXAMPLE-TOKEN" not in text + caplog.text + str(e.value)
+
+
+def test_the_bytes_of_every_answer_are_counted_per_host():
+    c, _, _ = make_client({"https://api.example.org/a": (200, b"12345", {}),
+                           "https://api.example.org/gone": (404, b"gone", {}),
+                           "https://www.example.org/old": (301, b"", {"Location": "https://api.example.org/a"})})
+    c.get("https://api.example.org/a")
+    with pytest.raises(fetcher.FetchError):
+        c.get("https://api.example.org/gone")
+    # A redirect's answer counts at the host that answers it.
+    c.get("https://www.example.org/old")
+    assert (c.received("api.example.org"), c.received("API.Example.org"), c.received("www.example.org"),
+            c.received("other.example.org")) == (14, 14, 0, 0)

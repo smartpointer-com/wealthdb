@@ -84,7 +84,7 @@ func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.W
 	w.NewChangeNumber = latest
 	// Each kind on a span of its own (canonical.Window.Spans), over the
 	// tables whose rows carry run_at; lines follow their compositions.
-	rows, err := c.db.QueryContext(ctx, windowExtrema(silver.ReferenceRunTables(c.yield)), since)
+	rows, err := c.db.QueryContext(ctx, windowExtrema(silver.ReferenceRunTables(c.schema)), since)
 	if err != nil {
 		return w, fmt.Errorf("refdata ChangeWindow: %w", err)
 	}

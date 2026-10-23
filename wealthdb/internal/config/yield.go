@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -13,10 +14,10 @@ import (
 
 // YieldConfig is the `yield` block of wealthdb.cfg: what the yield
 // report needs that no source states. Absent block ⇒ no curves, no
-// withholding rates, no rating funds, the built-in conventions and
-// cycles, and the default horizon. The load writes all of it but the
-// horizon into gold's yield tables (gold.SyncYield); the reports read
-// the horizon from the config (YieldHorizon).
+// withholding rates, no rating funds, the built-in conventions, cycles
+// and settlement cycles, and the default horizon. The load writes all of
+// it but the horizon into gold's yield tables (gold.SyncYield); the
+// reports read the horizon from the config (YieldHorizon).
 type YieldConfig struct {
 	// Curves maps a currency to its public curve: each tenor (3M, 1Y) to
 	// the rate series that gives it, as <silver_source_id>:<series_id>.
@@ -42,6 +43,20 @@ type YieldConfig struct {
 	// Cycles maps a broad sector to its cycle (cyclical, defensive,
 	// sensitive), over the built-in map (canonical.BuiltinCycles).
 	Cycles map[string]string `json:"cycles,omitempty"`
+	// SettlementCycles maps a market, a country, to its settlement
+	// cycles, oldest first. An entry replaces the built-in cycles of its
+	// market (canonical.BuiltinSettlementCycles); an empty list leaves the
+	// market none.
+	SettlementCycles map[string][]SettlementCycleEntry `json:"settlement_cycles,omitempty"`
+}
+
+// SettlementCycleEntry is one cycle of a `yield.settlement_cycles`
+// market: the business days a trade settles after (1 or more), from its
+// day on, YYYY-MM-DD. Only a market's first entry may leave the day out:
+// it then holds from the first day on.
+type SettlementCycleEntry struct {
+	From string `json:"from,omitempty"`
+	Days int    `json:"days"`
 }
 
 // YieldHorizon is the income projection's window when none is given:
@@ -62,9 +77,10 @@ type YieldConvention struct {
 }
 
 // validateYield checks the yield block: every currency, tenor, country,
-// wrapper, fund, rating, market and sector is of its vocabulary, and
-// every curve's series names a configured source. The keys are checked
-// in order, so the first error is the same at every run.
+// wrapper, fund, rating, market and sector is of its vocabulary, every
+// curve's series names a configured source, and each market's settlement
+// cycles ascend by day, each of a day or more. The keys are checked in
+// order, so the first error is the same at every run.
 func (c *Config) validateYield(seenIDs map[string]bool) error {
 	y := c.Yield
 	if y == nil {
@@ -170,6 +186,34 @@ func (c *Config) validateYield(seenIDs map[string]bool) error {
 			return fmt.Errorf("config: yield.cycles[%q] %q: want one of %s", sector, cy, joinNames(canonical.Cycles()))
 		}
 	}
+	for _, market := range slices.Sorted(maps.Keys(y.SettlementCycles)) {
+		if !isCountryCode(market) || market == canonical.EuropeanUnion {
+			return fmt.Errorf("config: yield.settlement_cycles[%q]: not a market: want an ISO 3166 alpha-2 code", market)
+		}
+		var prev time.Time
+		for i, c := range y.SettlementCycles[market] {
+			if c.Days < 1 {
+				return fmt.Errorf("config: yield.settlement_cycles[%q][%d].days %d: want 1 or more business days",
+					market, i, c.Days)
+			}
+			if c.From == "" {
+				if i > 0 {
+					return fmt.Errorf("config: yield.settlement_cycles[%q][%d]: from is required past the first cycle",
+						market, i)
+				}
+				continue
+			}
+			from, err := time.Parse(time.DateOnly, c.From)
+			if err != nil {
+				return fmt.Errorf("config: yield.settlement_cycles[%q][%d].from %q: want YYYY-MM-DD", market, i, c.From)
+			}
+			if i > 0 && !from.After(prev) {
+				return fmt.Errorf("config: yield.settlement_cycles[%q][%d].from %s: the cycles ascend by day, "+
+					"each after the one before", market, i, c.From)
+			}
+			prev = from
+		}
+	}
 	return nil
 }
 
@@ -196,14 +240,15 @@ func checkMarket(market string) error {
 }
 
 // YieldRows is the yield block as gold stores it, in a stable order:
-// every fund reference in the form gold builds, the conventions and
-// cycles the built-in maps with the block's entries over them. Call
-// after Validate. An absent block yields the built-in maps alone. The
-// horizon stays in the config (YieldHorizon).
+// every fund reference in the form gold builds, the conventions, cycles
+// and settlement cycles the built-in maps with the block's entries over
+// them. Call after Validate. An absent block yields the built-in maps
+// alone. The horizon stays in the config (YieldHorizon).
 func (c *Config) YieldRows() canonical.YieldRows {
 	out := canonical.YieldRows{
-		Conventions: canonical.BuiltinConventions(),
-		Cycles:      canonical.BuiltinCycles(),
+		Conventions:      canonical.BuiltinConventions(),
+		Cycles:           canonical.BuiltinCycles(),
+		SettlementCycles: canonical.BuiltinSettlementCycles(),
 	}
 	y := c.Yield
 	if y == nil {
@@ -249,5 +294,23 @@ func (c *Config) YieldRows() canonical.YieldRows {
 			out.Cycles[i] = canonical.YieldCycle{Sector: bc.Sector, Cycle: canonical.Cycle(cy), Origin: canonical.OriginConfig}
 		}
 	}
+	out.SettlementCycles = slices.DeleteFunc(out.SettlementCycles, func(sc canonical.SettlementCycle) bool {
+		_, named := y.SettlementCycles[sc.Market]
+		return named
+	})
+	for market, cycles := range y.SettlementCycles {
+		for _, entry := range cycles {
+			sc := canonical.SettlementCycle{Market: market, Days: entry.Days, Origin: canonical.OriginConfig}
+			if from, err := time.Parse(time.DateOnly, entry.From); err == nil {
+				sc.From = &from
+			}
+			out.SettlementCycles = append(out.SettlementCycles, sc)
+		}
+	}
+	// A market's cycles keep their order, oldest first, whichever map
+	// gave them.
+	slices.SortStableFunc(out.SettlementCycles, func(a, b canonical.SettlementCycle) int {
+		return strings.Compare(a.Market, b.Market)
+	})
 	return out
 }

@@ -434,8 +434,7 @@ func TestRecordLag(t *testing.T) {
 			t.Errorf("%q in %s, receipt %v, share %v: %+v, want %+v", c.situs, c.ccy, c.receipt, c.share, got, c.want)
 		}
 	}
-	for _, l := range []Lag{RecordLagUSShare, RecordLagUKHongKongShare, RecordLagEuropeanShare, RecordLagSwedishShare,
-		RecordLagJapaneseReceipt, RecordLagEuropeanReceipt, RecordLagUKReceipt, RecordLagReceipt} {
+	for _, l := range recordLags {
 		if l.Days < l.Near || l.Days > l.Far || l.Far > RecordWindowDays {
 			t.Errorf("%+v: its day lies outside its window, or reaches past %d days", l, RecordWindowDays)
 		}
@@ -563,8 +562,12 @@ func TestARecordDaysQuantity(t *testing.T) {
 		for _, d := range quarterly[:3] {
 			pay(in, h.HoldingKey, "A", d, 50, num(100))
 		}
-		in.Payments[h.HoldingKey] = append(in.Payments[h.HoldingKey], Payment{Day: *quarterly[3], Amount: c.amount,
-			Account: "A", Quantity: num(c.qty), Record: c.record, Before: c.before, LagDays: c.lag, Type: TypeDividends})
+		p := Payment{Day: *quarterly[3], Amount: c.amount, Account: "A", Quantity: num(c.qty), Record: c.record,
+			Before: c.before, LagDays: c.lag, Type: TypeDividends}
+		if c.lag > 0 {
+			p.RecordSource = RecordLagged
+		}
+		in.Payments[h.HoldingKey] = append(in.Payments[h.HoldingKey], p)
 		dividendOf(t, Compute(in), h, c.rate*4, c.rate*4*50)
 	}
 }
@@ -856,7 +859,8 @@ func TestARecordWindowGuardsTheRecordDay(t *testing.T) {
 		}
 		record := func(acct string, amount, least, most float64) Payment {
 			return Payment{Day: *quarterly[3], Amount: amount, Account: acct, Quantity: num(least),
-				Record: num(least), Least: num(least), Most: num(most), LagDays: RecordLagUSShare.Days, Type: TypeDividends}
+				Record: num(least), Least: num(least), Most: num(most), LagDays: RecordLagUSShare.Days,
+				RecordSource: RecordLagged, Type: TypeDividends}
 		}
 		ps := append(in.Payments[h.HoldingKey], record("A", 40, 50, 100))
 		if c.most > 0 {

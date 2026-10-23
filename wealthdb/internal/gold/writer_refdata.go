@@ -10,7 +10,9 @@ import (
 
 // The reference records' inserts (canonical/refdata.go). Each table is
 // windowed by as_of, which the load's windowed delete has cleared first,
-// so every one is a plain insert.
+// so every one is a plain insert but the dividend calendar's: a later
+// statement of a distribution moves its as_of past the window of the
+// load that wrote the earlier one, and replaces that row.
 
 // ReferenceTables are the tables the reference records load into, every
 // one keyed by silver_source_id and windowed by as_of: a load's windowed
@@ -19,7 +21,7 @@ var ReferenceTables = []string{
 	"fund_compositions", "fund_lines", "fund_attributes",
 	"fund_counterparties", "security_identities", "security_facts",
 	"fund_risk", "fund_characteristics", "security_period_facts",
-	"rate_observations",
+	"rate_observations", "dividend_calendar",
 }
 
 // ReferenceTableKinds are the kind of record each reference table holds
@@ -31,7 +33,7 @@ var ReferenceTableKinds = map[string]string{
 	"fund_attributes": canonical.RefFundDays, "fund_counterparties": canonical.RefFundDays,
 	"fund_risk": canonical.RefFundDays, "fund_characteristics": canonical.RefFundDays,
 	"security_identities": canonical.RefSecurities, "security_facts": canonical.RefSecurityFacts,
-	"security_period_facts": canonical.RefPeriodFacts,
+	"security_period_facts": canonical.RefPeriodFacts, "dividend_calendar": canonical.RefDividendEvents,
 }
 
 // InsertReference writes every reference record of a batch.
@@ -47,6 +49,7 @@ func (w *Writer) InsertReference(ctx context.Context, b *canonical.SnapshotBatch
 		func() error { return w.insertFundCharacteristics(ctx, b.FundCharacteristics) },
 		func() error { return w.insertSecurityPeriodFacts(ctx, b.SecurityPeriodFacts) },
 		func() error { return w.insertRateObservations(ctx, b.RateObservations) },
+		func() error { return w.insertDividendEvents(ctx, b.DividendEvents) },
 	} {
 		if err := insert(); err != nil {
 			return err
@@ -280,6 +283,57 @@ INSERT INTO rate_observations (
 			r := &batch[i]
 			return append(args,
 				r.SilverSourceID, r.SeriesID, r.AsOf, r.Value, nullableJSON(r.Payload))
+		})
+}
+
+// insertDividendEvents writes a batch's distributions, each replacing the
+// row of the same distribution an earlier statement wrote. The first
+// batch to name a source's ref and provider clears that pair's rows
+// first: the reference stream reads each pair whole
+// (silver.NewReferenceStream), so gold drops what silver no longer
+// holds, such as a distribution whose days the source corrected. A kind
+// or a status outside the vocabulary is refused.
+func (w *Writer) insertDividendEvents(ctx context.Context, batch []canonical.DividendEventChange) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	for i, r := range batch {
+		if !r.Kind.Valid() {
+			return fmt.Errorf("dividend_calendar row %d (%s, %s, %s): invalid kind %q", i, r.Ref, r.Provider, r.EventID,
+				r.Kind)
+		}
+		if r.Status != nil && !r.Status.Valid() {
+			return fmt.Errorf("dividend_calendar row %d (%s, %s, %s): invalid status %q", i, r.Ref, r.Provider,
+				r.EventID, *r.Status)
+		}
+	}
+	if w.replaced == nil {
+		w.replaced = map[[3]string]bool{}
+	}
+	for _, r := range batch {
+		pair := [3]string{r.SilverSourceID, r.Ref, r.Provider}
+		if w.replaced[pair] {
+			continue
+		}
+		if _, err := w.tx.ExecContext(ctx, `DELETE FROM dividend_calendar
+ WHERE silver_source_id = ? AND ref = ? AND provider = ?`, pair[0], pair[1], pair[2]); err != nil {
+			return fmt.Errorf("dividend_calendar: clear (%s, %s): %w", r.Ref, r.Provider, err)
+		}
+		w.replaced[pair] = true
+	}
+	const head = `
+INSERT OR REPLACE INTO dividend_calendar (
+    silver_source_id, ref, provider, event_id, as_of, kind, ex_day, record_day, pay_day, declared_day,
+    amount, currency, status
+) VALUES `
+	return InsertChunked(ctx, w.tx, "dividend_calendar", head,
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		func(i int, args []any) []any {
+			r := &batch[i]
+			return append(args,
+				r.SilverSourceID, r.Ref, r.Provider, r.EventID, r.AsOf, string(r.Kind),
+				nullable(r.ExDay), nullable(r.RecordDay), nullable(r.PayDay), nullable(r.DeclaredDay),
+				nullable(r.Amount), nullable(r.Currency), nullableEnumString(r.Status))
 		})
 }
 

@@ -34,7 +34,7 @@ func writeFormatted(w io.Writer, f output.Format, t output.Table) error {
 // amount the report_positions / report_cash macro computed in SQL.
 func buildColumnRegistry(outCcy string, kindOf func(string) string, categories typedCategories) []columnSpec[gold.PositionRow] {
 	ref := func(r gold.PositionRow) accountRef {
-		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
 	}
 	// position_key is the gold-side instrument identifier (CUSIP /
 	// ISIN / ticker); a public one stays legible under -p / --privacy,

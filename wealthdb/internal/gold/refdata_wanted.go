@@ -24,7 +24,7 @@ import (
 // version: a field removed or renamed, a field's meaning changed, a
 // value a field did not hold before, or a field that asks for work the
 // older collector would skip. A field it may ignore does not.
-const WantedContractVersion = 2
+const WantedContractVersion = 3
 
 // Wanted is the wanted list.
 type Wanted struct {
@@ -106,6 +106,18 @@ type WantedSecurity struct {
 	// period facts, so a collector asks only for later periods. A family
 	// gold holds nothing of is absent.
 	Periods map[string]string `json:"periods"`
+	// Receipt says gold reads the security as a depositary receipt: a
+	// lookup or GLEIF calls it one, or a name a lookup, a broker or a fund
+	// line gives it says so under a US ISIN or none (receiptKeysSQL).
+	// A gold before the exposure tables reads the name held alone.
+	Receipt bool `json:"receipt"`
+	// Wants are the facts the security is wanted for beyond its fields:
+	// the dividend calendar of a security held directly that pays
+	// dividends (paysDividends); empty for any other.
+	Wants []string `json:"wants"`
+	// Calendar is the newest day gold holds dividend calendar rows of
+	// under the security's key, read through its aliases; nil where none.
+	Calendar *string `json:"calendar"`
 }
 
 // lookThroughVehicles hold a basket a composition can describe: a fund,
@@ -129,10 +141,11 @@ type heldInstrument struct {
 
 // RefdataWanted builds the wanted list as of now. A gold opened
 // read-only before the exposure migrations reached it has no reference
-// or exposure tables yet, and one before migration 0134 no fact tables;
-// it is read as holding none, so the first fetch can run before the
-// first load. One before migration 0140 reads each source's newest
-// snapshot as every account's (heldInstruments).
+// or exposure tables yet, one before migration 0134 no fact tables, and
+// one before migration 0147 no dividend calendar; it is read as holding
+// none, so the first fetch can run before the first load. One before
+// migration 0140 reads each source's newest snapshot as every account's
+// (heldInstruments).
 func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, error) {
 	held, err := heldInstruments(ctx, db, now)
 	if err != nil {
@@ -145,6 +158,10 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 	// The tables of a fund's and a company's facts come with a later
 	// migration than the exposure tables.
 	withFacts, err := hasTable(ctx, db, "fund_risk")
+	if err != nil {
+		return nil, err
+	}
+	withCalendar, err := hasTable(ctx, db, "dividend_calendar")
 	if err != nil {
 		return nil, err
 	}
@@ -202,6 +219,10 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 				h.symbol = sql.NullString{}
 			}
 			fillIDs(&s.ISIN, &s.CUSIP, &s.Symbol, &s.Name, &s.Currency, h)
+			// A gold before the exposure tables reads a receipt by the name
+			// held alone; one after them by the exposure pass's rule
+			// (addReceipts), which reads that name too.
+			s.Receipt = s.Receipt || !migrated && receiptWording.MatchString(strings.ToUpper(h.name.String))
 		}
 	}
 	stated := map[[2]string]bool{}
@@ -227,7 +248,7 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 			return nil, err
 		}
 		if withFacts {
-			if err := addFundFacts(ctx, db, funds, keys); err != nil {
+			if err := addFundFacts(ctx, db, funds, keys, withCalendar); err != nil {
 				return nil, err
 			}
 		}
@@ -237,6 +258,14 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		addUSSymbols(securities, ids)
 		if stated, err = addSecurityState(ctx, db, securities, keys); err != nil {
 			return nil, err
+		}
+		if err := addReceipts(ctx, db, securities); err != nil {
+			return nil, err
+		}
+		if withCalendar {
+			if err := addCalendarDays(ctx, db, securities, keys); err != nil {
+				return nil, err
+			}
 		}
 	}
 	for ref, f := range funds {
@@ -251,8 +280,12 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		if s.Periods == nil {
 			s.Periods = map[string]string{}
 		}
+		s.Wants = []string{}
 		if s.Scope == "constituent" {
 			continue // its Missing come from the look-through
+		}
+		if paysDividends(key, s, stocks[key]) {
+			s.Wants = append(s.Wants, wantDividendCalendar)
 		}
 		s.Missing = []string{}
 		for _, wf := range wantedFields {
@@ -281,6 +314,21 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		w.Securities = append(w.Securities, *s)
 	}
 	return w, nil
+}
+
+// paysDividends says a security held directly pays dividends, so its
+// dividend calendar is wanted: a stock whose asset class is public equity
+// (a share, a receipt), or a listed REIT, of class real estate with an
+// ISIN or a CUSIP.
+func paysDividends(key string, s *WantedSecurity, stock bool) bool {
+	switch *s.AssetClass {
+	case "public_equity":
+		return stock
+	case "real_estate":
+		return s.ISIN != nil || s.CUSIP != nil || strings.HasPrefix(key, canonical.KeyISIN) ||
+			strings.HasPrefix(key, canonical.KeyCUSIP)
+	}
+	return false
 }
 
 // fillFromKey states the identifier a key is made of where nothing else
@@ -581,12 +629,15 @@ func addCompositionDates(ctx context.Context, db *sql.DB, funds map[string]*Want
 //   - money_market: a money-market fund's 7-day yields and weighted
 //     average maturity and life (fund_characteristics, moneyMarketFields);
 //   - line_durations: a bond fund's durations line by line, while its
-//     newest composition states none (fund_lines).
+//     newest composition states none (fund_lines);
+//   - dividend_calendar: its distributions, their ex, record and pay days
+//     (dividend_calendar). A stock held directly wants it too.
 const (
-	wantRiskMetrics     = "risk_metrics"
-	wantCharacteristics = "characteristics"
-	wantMoneyMarket     = "money_market"
-	wantLineDurations   = "line_durations"
+	wantRiskMetrics      = "risk_metrics"
+	wantCharacteristics  = "characteristics"
+	wantMoneyMarket      = "money_market"
+	wantLineDurations    = "line_durations"
+	wantDividendCalendar = "dividend_calendar"
 )
 
 // moneyMarketFields are the fund_characteristics fields of a
@@ -599,7 +650,7 @@ var moneyMarketFields = []string{"seven_day_yield", "seven_day_gross_yield", "we
 // only as a proxy, a reference or size fund, or a held fund's underlying
 // wants none, and so does a structured product: no filing or issuer page
 // states them for a note. A bond fund with no composition yet wants its
-// lines' durations too.
+// lines' durations too. Every fund held wants its dividend calendar.
 func fundWants(f *WantedFund, classes []string, fund bool) []string {
 	wants := []string{}
 	if !slices.Contains(f.Roles, "held") || !fund {
@@ -619,7 +670,7 @@ func fundWants(f *WantedFund, classes []string, fund bool) []string {
 		lastDay(f.Facts[wantLineDurations]) < lastDay(f.Compositions)) {
 		wants = append(wants, wantLineDurations)
 	}
-	return wants
+	return append(wants, wantDividendCalendar)
 }
 
 // lastDay is the last of ascending days, "" where there is none.
@@ -633,8 +684,16 @@ func lastDay(days []string) string {
 // addFundFacts lists the days gold holds each fact for, per wanted fund,
 // the fund read through its aliases as its compositions are. A
 // composition's day counts for line_durations where one of its lines
-// states a duration or a modified duration.
-func addFundFacts(ctx context.Context, db *sql.DB, funds map[string]*WantedFund, keys keyReader) error {
+// states a duration or a modified duration. A dividend calendar's days
+// are those its rows were stated on, where gold holds the table
+// (calendar).
+func addFundFacts(ctx context.Context, db *sql.DB, funds map[string]*WantedFund, keys keyReader, calendar bool) error {
+	calendarDays := ""
+	if calendar {
+		calendarDays = `
+    UNION
+    SELECT ref, '` + wantDividendCalendar + `', as_of FROM dividend_calendar`
+	}
 	err := scanAll(ctx, db, `
 WITH f AS (
     SELECT fund_ref, '`+wantRiskMetrics+`' AS fact, as_of FROM fund_risk
@@ -644,7 +703,7 @@ WITH f AS (
       FROM fund_characteristics
     UNION
     SELECT fund_ref, '`+wantLineDurations+`', as_of FROM fund_lines
-     WHERE duration IS NOT NULL OR modified_duration IS NOT NULL)
+     WHERE duration IS NOT NULL OR modified_duration IS NOT NULL`+calendarDays+`)
 SELECT DISTINCT `+keys.sql("fund_ref")+` AS k, fact, as_of FROM f ORDER BY 1, 2, 3`, func(rows *sql.Rows) error {
 		var ref, fact string
 		var asOf int64
@@ -892,6 +951,50 @@ SELECT k, provider, MAX(as_of) FROM (
 		}
 	}
 	return stated, nil
+}
+
+// addReceipts marks each security gold reads as a depositary receipt, by
+// the rule the yield's lag reads through the situs rule (receiptKeysSQL).
+func addReceipts(ctx context.Context, db *sql.DB, securities map[string]*WantedSecurity) error {
+	err := scanAll(ctx, db, `
+WITH `+securityNamesSQL+`, `+statedISINsSQL+`, `+receiptKeysSQL+`
+SELECT key FROM receipt_keys`, func(rows *sql.Rows) error {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return err
+		}
+		if s := securities[key]; s != nil {
+			s.Receipt = true
+		}
+		return nil
+	}, receiptWording.String())
+	if err != nil {
+		return fmt.Errorf("wanted: receipts: %w", err)
+	}
+	return nil
+}
+
+// addCalendarDays gives each security the newest day gold holds dividend
+// calendar rows of under its key, read through its aliases. A JPX row,
+// under jpx:<code>, is no security's.
+func addCalendarDays(ctx context.Context, db *sql.DB, securities map[string]*WantedSecurity, keys keyReader) error {
+	err := scanAll(ctx, db, `SELECT `+keys.sql("ref")+` AS k, MAX(as_of) FROM dividend_calendar GROUP BY 1`,
+		func(rows *sql.Rows) error {
+			var key string
+			var asOf int64
+			if err := rows.Scan(&key, &asOf); err != nil {
+				return err
+			}
+			if s := securities[key]; s != nil {
+				day := isoDay(asOf)
+				s.Calendar = &day
+			}
+			return nil
+		})
+	if err != nil {
+		return fmt.Errorf("wanted: dividend calendar: %w", err)
+	}
+	return nil
 }
 
 // keyReader reads a key as the security key it names through

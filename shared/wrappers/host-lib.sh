@@ -130,16 +130,25 @@ host_silver_verbs_str() {
     fi
 }
 
-# host_source_env_file — best-effort: source $SECRETS_DIR/<name>.env (override
-# the path via ${ENV_PREFIX}_ENV_FILE) so the collector's credential env vars
-# are populated before the .py runs, removing the "source the env file
-# yourself" friction. Syntax-checked with `bash -n` first, then sourced.
-# Absent file is fine. The file wins over the current environment;
-# that's idempotent when an orchestrator already sourced
-# the same credentials.
+# host_source_env_file [FILE] — source $SECRETS_DIR/<FILE>.env, so the
+# credential env vars are set before the .py runs. FILE defaults to the
+# collector's NAME. A collector that reads another source's credential
+# names that source's file (refdata: finra). ${PREFIX}_ENV_FILE names
+# another path. PREFIX is ENV_PREFIX for the collector's own file, else
+# FILE in upper snake case (FINRA_ENV_FILE). The file is checked with
+# `bash -n`, then sourced with every assignment exported. A missing file
+# is fine. One that does not parse is skipped with a warning, and its
+# error output is dropped, since it may quote a secret. The file wins
+# over the environment, which changes nothing when an orchestrator
+# already sourced the same file.
 host_source_env_file() {
-    local f
-    f="$(_host_envvar ENV_FILE "$SECRETS_DIR/$NAME.env")"
+    local name="$NAME" prefix="$ENV_PREFIX" var f
+    if [[ -n "${1:-}" ]]; then
+        name="$1"
+        prefix="$(printf '%s' "$name" | tr 'a-z-' 'A-Z_')"
+    fi
+    var="${prefix}_ENV_FILE"
+    f="${!var:-$SECRETS_DIR/$name.env}"
     [[ -f "$f" ]] || return 0
     if ! bash -n "$f" 2>/dev/null; then
         echo "${NAME}: env file $f has a bash syntax error; not sourcing it" >&2

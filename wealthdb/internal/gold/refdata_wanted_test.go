@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"maps"
 	"os"
 	"slices"
@@ -39,7 +40,11 @@ var updateGolden = flag.Bool("update-wanted", false, "rewrite testdata/refdata_w
 //   - FUNDA's composition reaches Constituent One, whose line states its
 //     sector and country and which lacks only a recent period of
 //     earnings.
-//   - NOTE1, a note on a basket, is wanted like a fund.
+//   - NOTE1, a note on a basket, is wanted like a fund, but for no fact.
+//   - Every fund held wants its dividend calendar; MMF1's was stated on
+//     two days. STK1's calendar row under its ticker counts for its ISIN,
+//     and a JPX row counts for no security.
+//   - ADR1, a stock held directly, is a receipt by its name.
 //   - A private fund and a coin are not wanted.
 func TestRefdataWantedPinned(t *testing.T) {
 	t.Parallel()
@@ -65,7 +70,8 @@ func TestRefdataWantedPinned(t *testing.T) {
 	    ('test-src',   'BTC',   'crypto',        'physical', NULL, NULL,     'BTC',   'Bitcoin',    'USD', 0, 0),
 	    ('test-src',   'NOTE1', 'public_equity', 'structured_product', 'XX0000000017', NULL, NULL, 'Basket Note', 'USD', 0, 0),
 	    ('test-src',   'BNDF',  'fixed_income',  'etf',   NULL, NULL,        'BNDF',  'Bond Fund F', 'USD', 0, 0),
-	    ('test-src',   'MMF1',  'cash',          'fund',  NULL, NULL,        'MMF1',  'Money Fund One', 'USD', 0, 0)`)
+	    ('test-src',   'MMF1',  'cash',          'fund',  NULL, NULL,        'MMF1',  'Money Fund One', 'USD', 0, 0),
+	    ('test-src',   'ADR1',  'public_equity', 'stock', 'US0000000027', NULL, 'ADR1', 'Qorvant Sponsored ADR', 'USD', 0, 0)`)
 	pos := func(src string, at int64, key string, ac, veh string, mv int) {
 		mustExec(`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
 		    asset_class, vehicle, currency, quantity, market_value) VALUES (?, ?, 'A1', ?, ?, ?, ?, 'USD', 1, ?)`,
@@ -80,6 +86,7 @@ func TestRefdataWantedPinned(t *testing.T) {
 	pos("test-src", day(6, 30), "NOTE1", "public_equity", "structured_product", 40)
 	pos("test-src", day(6, 30), "BNDF", "fixed_income", "etf", 80)
 	pos("test-src", day(6, 30), "MMF1", "cash", "fund", 30)
+	pos("test-src", day(6, 30), "ADR1", "public_equity", "stock", 0)
 	pos("second-src", day(3, 31), "C1", "public_equity", "etf", 70)
 	mustExec(`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count) VALUES
 	    ('test-src', 'symbol:FUNDA', ?1, 'holdings', 'inbox', 2), ('test-src', 'symbol:FUNDA', ?1, 'index', 'inbox', 1),
@@ -114,6 +121,13 @@ func TestRefdataWantedPinned(t *testing.T) {
 	    ('refdata', 'isin:XX0000000019', 'dividends_per_share', ?2, '2026-04-01', 'sec-edgar', 0.30),
 	    ('refdata', 'isin:XX0000000019', 'revenue', ?2, '2026-04-01', 'sec-edgar', 5000000)`,
 		time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC).Unix(), day(6, 30))
+	mustExec(`INSERT INTO dividend_calendar (silver_source_id, ref, provider, event_id, as_of, kind, ex_day, record_day,
+	    pay_day, amount, currency) VALUES
+	    ('refdata', 'symbol:MMF1', 'issuer', 'e1', ?1, 'dividend', NULL, '2026-08-31', '2026-09-01', 0.01, 'USD'),
+	    ('refdata', 'symbol:MMF1', 'issuer', 'e2', ?2, 'dividend', NULL, '2026-09-30', '2026-10-01', 0.01, 'USD'),
+	    ('refdata', 'symbol:STK1', 'sec-edgar', 'e3', ?1, 'dividend', NULL, '2026-08-14', '2026-09-10', 0.40, 'EUR'),
+	    ('refdata', 'jpx:1Q01', 'jpx', 'e4', ?2, 'dividend', '2026-09-29', '2026-09-30', NULL, NULL, NULL)`,
+		day(9, 2), day(10, 2))
 	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
 		Proxies:        []canonical.ExposureProxy{{FundRef: "symbol:FUNDB", ProxyRef: "symbol:IDX1", Leverage: 1}},
 		ReferenceFunds: []string{"symbol:IDX9"},
@@ -380,7 +394,8 @@ func TestRefdataWantedNamesConstituents(t *testing.T) {
 }
 
 // A receipt that took its sector and country from a share matched by name
-// is still wanted, so a lookup can tie it to its share.
+// is still wanted, so a lookup can tie it to its share. Its name says it
+// is a receipt, and a constituent wants no calendar.
 func TestRefdataWantedKeepsAskingAboutANameMatch(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -421,6 +436,9 @@ func TestRefdataWantedKeepsAskingAboutANameMatch(t *testing.T) {
 		if s.Key == "isin:US0000000771" {
 			if !slices.Contains(s.Missing, "sector") || !slices.Contains(s.Missing, "country") {
 				t.Errorf("missing = %v, want sector and country", s.Missing)
+			}
+			if !s.Receipt || len(s.Wants) != 0 {
+				t.Errorf("receipt = %v, wants = %v; want a receipt that wants nothing", s.Receipt, s.Wants)
 			}
 			return
 		}
@@ -687,9 +705,10 @@ func TestRefdataWantedFundsStateTheirAliases(t *testing.T) {
 
 // A fund held is wanted for the facts its asset class has: a bond or
 // multi-asset fund for its rate sensitivities, every fund for its
-// figures, a bond fund for its lines' durations while its newest
-// composition states none. Its facts list every day gold holds, read
-// through the aliases as its compositions are, whatever its role.
+// figures and its dividend calendar, a bond fund for its lines' durations
+// while its newest composition states none. Its facts list every day gold
+// holds, read through the aliases as its compositions are, whatever its
+// role.
 func TestRefdataWantedNamesTheFactsAFundLacks(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -726,6 +745,12 @@ func TestRefdataWantedNamesTheFactsAFundLacks(t *testing.T) {
 		`INSERT INTO fund_characteristics (silver_source_id, fund_ref, as_of, provider, field, label, value) VALUES
 		 ('refdata', 'symbol:QEQF', ?, 'issuer', 'distribution_yield', '', 1.5),
 		 ('refdata', 'symbol:QEQF', ?, 'issuer', 'seven_day_yield', '', 0.1)`,
+		// The equity fund's calendar, stated on two days, the older one
+		// twice.
+		`INSERT INTO dividend_calendar (silver_source_id, ref, provider, event_id, as_of, kind, record_day) VALUES
+		 ('refdata', 'symbol:QEQF', 'issuer', 'a', ? - 86400 * 30, 'dividend', '2026-03-20'),
+		 ('refdata', 'symbol:QEQF', 'issuer', 'b', ? - 86400 * 30, 'capital_gain', '2026-03-20'),
+		 ('refdata', 'symbol:QEQF', 'issuer', 'c', ?, 'dividend', '2026-06-19')`,
 	} {
 		if _, err := db.ExecContext(ctx, q, slices.Repeat([]any{day}, strings.Count(q, "?"))...); err != nil {
 			t.Fatalf("%s: %v", q, err)
@@ -746,14 +771,15 @@ func TestRefdataWantedNamesTheFactsAFundLacks(t *testing.T) {
 		wants []string
 		facts map[string][]string
 	}{
-		"symbol:QBND": {[]string{"risk_metrics", "characteristics"},
+		"symbol:QBND": {[]string{"risk_metrics", "characteristics", "dividend_calendar"},
 			map[string][]string{"line_durations": {"2026-05-31", "2026-06-30"}}},
-		"isin:XX0000000501": {[]string{"risk_metrics", "characteristics"},
+		"isin:XX0000000501": {[]string{"risk_metrics", "characteristics", "dividend_calendar"},
 			map[string][]string{"risk_metrics": {"2026-04-01", "2026-06-30"}}},
 		// A seven-day yield counts for a money-market fund's facts, which
 		// an equity fund does not want.
-		"symbol:QEQF": {[]string{"characteristics"},
-			map[string][]string{"characteristics": {"2026-06-30"}, "money_market": {"2026-06-30"}}},
+		"symbol:QEQF": {[]string{"characteristics", "dividend_calendar"},
+			map[string][]string{"characteristics": {"2026-06-30"}, "money_market": {"2026-06-30"},
+				"dividend_calendar": {"2026-05-31", "2026-06-30"}}},
 		// A structured product is looked through, but no filing or issuer
 		// page states its facts.
 		"symbol:QNOT": {[]string{}, map[string][]string{}},
@@ -766,7 +792,8 @@ func TestRefdataWantedNamesTheFactsAFundLacks(t *testing.T) {
 }
 
 // A gold the fact tables have not reached yet (a read-only open of an
-// older file) lists the facts its funds and stocks want with no day.
+// older file) lists the facts its funds and stocks want with no day, the
+// dividend calendar among them.
 func TestRefdataWantedBeforeTheFactTables(t *testing.T) {
 	t.Parallel()
 	db, ctx := openAtVersion(t, 133)
@@ -783,13 +810,77 @@ func TestRefdataWantedBeforeTheFactTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(w.Funds) != 1 || strings.Join(w.Funds[0].Wants, ",") != "risk_metrics,characteristics,line_durations" ||
-		len(w.Funds[0].Facts) != 0 {
+	if len(w.Funds) != 1 || strings.Join(w.Funds[0].Wants, ",") !=
+		"risk_metrics,characteristics,line_durations,dividend_calendar" || len(w.Funds[0].Facts) != 0 {
 		t.Errorf("funds = %+v", w.Funds)
 	}
 	if len(w.Securities) != 1 || strings.Join(w.Securities[0].Missing, ",") !=
-		"sector,country,market_cap,earnings,dividends,financials" || len(w.Securities[0].Periods) != 0 {
+		"sector,country,market_cap,earnings,dividends,financials" || len(w.Securities[0].Periods) != 0 ||
+		strings.Join(w.Securities[0].Wants, ",") != "dividend_calendar" || w.Securities[0].Calendar != nil {
 		t.Errorf("securities = %+v", w.Securities)
+	}
+}
+
+// A gold before the dividend calendar (migration 0147) wants every held
+// fund's and stock's calendar, and holds no day of any. A stock is a
+// depositary receipt as the yield's lag reads one: a lookup that types it
+// so, or GLEIF tying it to its issuer's other ISINs, makes it one; a name
+// that says so under an ISIN of a country other than the US does not.
+// A listed REIT, of
+// class real estate with an ISIN, wants its calendar too; one a broker
+// names by a symbol alone, and a bond, want none.
+func TestRefdataWantedBeforeTheCalendar(t *testing.T) {
+	t.Parallel()
+	db, ctx := openAtVersion(t, 146)
+	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
+	for _, q := range []string{
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, symbol, name,
+		 currency, first_seen_at, last_seen_at) VALUES
+		 ('test-src', 'QETF', 'public_equity', 'etf', NULL, 'QETF', NULL, 'USD', 0, 0),
+		 ('test-src', 'QREC', 'public_equity', 'stock', 'US0000000281', 'QREC', NULL, 'USD', 0, 0),
+		 ('test-src', 'QBON', 'fixed_income', 'bond', 'US0000000282', NULL, NULL, 'USD', 0, 0),
+		 ('test-src', 'QRET', 'real_estate', 'stock', 'US0000000283', 'QRET', NULL, 'USD', 0, 0),
+		 ('test-src', 'QRES', 'real_estate', 'stock', NULL, 'QRES', NULL, 'USD', 0, 0),
+		 ('test-src', 'QGLE', 'public_equity', 'stock', 'US0000000284', 'QGLE', 'Qorvant Holdings', 'USD', 0, 0),
+		 ('test-src', 'QDEW', 'public_equity', 'stock', 'DE0000000285', NULL, 'Qorvant AG ADR', 'EUR', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, market_value) VALUES
+		 ('test-src', ?, 'A', 'QETF', 'QETF', 'public_equity', 'etf', 'USD', 1),
+		 ('test-src', ?, 'A', 'QREC', 'QREC', 'public_equity', 'stock', 'USD', 1),
+		 ('test-src', ?, 'A', 'QBON', 'QBON', 'fixed_income', 'bond', 'USD', 1),
+		 ('test-src', ?, 'A', 'QRET', 'QRET', 'real_estate', 'stock', 'USD', 1),
+		 ('test-src', ?, 'A', 'QRES', 'QRES', 'real_estate', 'stock', 'USD', 1),
+		 ('test-src', ?, 'A', 'QGLE', 'QGLE', 'public_equity', 'stock', 'USD', 1),
+		 ('test-src', ?, 'A', 'QDEW', 'QDEW', 'public_equity', 'stock', 'EUR', 1)`,
+		`INSERT INTO security_identities (silver_source_id, security_key, as_of, provider, isin, security_type)
+		 VALUES ('refdata', 'isin:US0000000281', ?, 'openfigi', 'US0000000281', 'Depositary Receipt')`,
+		`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
+		 VALUES ('refdata', 'isin:US0000000284', 'issuer_isins', ?, 'gleif', 'NL0000000286')`,
+	} {
+		if _, err := db.ExecContext(ctx, q, slices.Repeat([]any{day}, strings.Count(q, "?"))...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	w, err := RefdataWanted(ctx, db, time.Unix(day+86400, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(w.Funds) != 1 || !slices.Contains(w.Funds[0].Wants, "dividend_calendar") || len(w.Funds[0].Facts) != 0 {
+		t.Errorf("funds = %+v", w.Funds)
+	}
+	got := map[string]string{}
+	for _, s := range w.Securities {
+		got[s.Key] = fmt.Sprint(s.Receipt, s.Wants, s.Calendar)
+	}
+	want := map[string]string{"isin:US0000000281": "true [dividend_calendar] <nil>",
+		"isin:US0000000282": "false [] <nil>", "isin:US0000000283": "false [dividend_calendar] <nil>",
+		"symbol:QRES": "false [] <nil>", "isin:US0000000284": "true [dividend_calendar] <nil>",
+		"isin:DE0000000285": "false [dividend_calendar] <nil>"}
+	if !maps.Equal(got, want) {
+		t.Errorf("securities = %v, want %v", got, want)
 	}
 }
 

@@ -27,8 +27,9 @@ type ExposureBucketRow struct {
 // exposureNone is the bucket of what a dimension does not describe.
 const exposureNone = "(none)"
 
-// exposureBuckets runs one of the bucket views; grade is the column that
-// holds a credit bucket's grade, NULL for the views that have none.
+// exposureBuckets runs one of the bucket views and gives each row its
+// class share (setClassShares); grade is the column that holds a credit
+// bucket's grade, NULL for the views that have none.
 func exposureBuckets(ctx context.Context, db *sql.DB, op, macro, bucket, grade string, asOf int64,
 	ccy string) ([]ExposureBucketRow, error) {
 	rows, err := scanRows(ctx, db, op, `

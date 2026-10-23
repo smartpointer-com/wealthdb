@@ -27,8 +27,9 @@ with three exceptions:
   ([SPENDING.md §5](wealthdb/docs/SPENDING.md#5-what-leaves-the-machine)).
 - The [`refdata`](collectors/refdata/) collector. It asks public
   sources about each fund and security held, by its identifier. They
-  see which securities are asked about. No amount, account or bank is
-  sent.
+  see which securities are asked about. Each source also sees who asks,
+  FINRA by the API client its requests carry. No amount, account or
+  bank is sent.
 
 ## ⚠️ Security & liability disclaimer
 
@@ -218,7 +219,8 @@ There is one collector per provider.
   [FRED](collectors/fred/) for historic FX rates and the Treasury curve;
   [`curves`](collectors/curves/) for the euro and franc government
   yield curves; [`refdata`](collectors/refdata/) for what each fund
-  holds and states about itself, and what each company reports.
+  holds and states about itself, what each company reports, and the
+  distributions each fund and share pays.
 
 ## Adding a data source
 

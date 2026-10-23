@@ -8,3 +8,5 @@ zstandard>=0.22,<1
 # A fund report is a PDF: pypdfium2 (PDFium) reads its text, fast enough
 # for a report of a thousand pages.
 pypdfium2>=4.30,<6
+# JPX's ex-rights lists are legacy Excel workbooks (.xls): xlrd reads them.
+xlrd>=2,<3

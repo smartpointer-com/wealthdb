@@ -38,13 +38,33 @@ characteristics each fund page serves. Two sites:
   breakdowns. A Swiss page shows one data item per figure. Each figure
   is dated by the day the page states for it, else by the day of the
   site's newest holdings.
-- Fetch: for a fund that wants characteristics, a US fetch makes one
-  more request, for the page. It also keeps the fund's product-list
-  entry, which fills a figure the page lacks; the page's JSON-LD fills
-  one neither states. A Swiss fetch keeps the page it reads the holdings
-  columns from. Where a fund wants characteristics and the page did not
-  come or the files state none, meta.json names them in facts_missing,
-  so they stay due.
+- Dividend calendar: a US page's state holds the fund's distributions
+  table as one column object per field, its full name
+  `performance.distributions.table.<field>`: its `value`, a list of
+  days (yyyymmdd) or of amounts (decimal strings), and its
+  `formattedValue`, the same list as the page shows it. Row i across
+  the columns is one distribution: its ex, record and payable days, its
+  total, and the income, short- and long-term capital gains and return
+  of capital it pays, in US dollars.
+  Each part with an amount is one event: income a dividend, the two
+  gains together a capital gain, return of capital its own kind; a
+  distribution that states no part is one event of kind other. The
+  Swiss site serves a fund's distributions apart, as a grid of record,
+  ex and payable days and the amount with its currency, each row a
+  dividend; an accumulating class's answer is null, which states none.
+  Either lists the fund's whole history, so its events are complete
+  (Parsed.events_complete); the rows of one id are one event
+  (base.merge_events). The events are dated as the characteristics
+  are.
+- Fetch: for a fund that wants characteristics or its calendar, a US
+  fetch makes one more request, for the page. For characteristics it
+  also keeps the fund's product-list entry, which fills a figure the
+  page lacks; the page's JSON-LD fills one neither states. A Swiss fetch
+  keeps the page it reads the holdings columns from, and for a fund that
+  wants its calendar the current fetch makes one more request, for the
+  distributions the page names. Where a fund wants a fact and the page
+  or the distributions did not come, or the files state none, meta.json
+  names it in facts_missing, so it stays due.
 
 Terms: README.md, ishares.
 """
@@ -52,16 +72,19 @@ Terms: README.md, ishares.
 from __future__ import annotations
 
 import html
+import itertools
 import json
 import logging
 import re
+import urllib.parse
 from datetime import date
 from pathlib import Path
 
 from collectorkit import bronze
 
 from . import fundpage, table
-from .base import Parsed, Provider, ProviderError, Unavailable, dec, listed, read_json, read_meta, write_meta
+from .base import (Parsed, Provider, ProviderError, Unavailable, amount, dec, event_row, facts_missing, kinds_paid,
+                   listed, merge_events, present, read_json, read_meta, write_meta)
 
 HOST = "https://www.ishares.com"
 SCREENERS = {
@@ -71,12 +94,15 @@ SCREENERS = {
            "/templatedata/config/product-screener-v3/data/en/ch/product-screener/"
            "ishares-product-screener-backend-config"),
 }
-# The holdings component of a Swiss-site fund page.
+# The holdings component of a Swiss-site fund page, and the
+# distributions one, whose answer the page names in a `data-ajaxuri`.
 CH_HOLDINGS = "1495092304805"
+CH_DISTRIBUTIONS = "1495092304799"
 CSV_DOC = "holdings.csv"
 JSON_DOC = "holdings.json"
 PAGE_DOC = "page.html"
 PRODUCT_DOC = "product.json"
+DISTRIBUTIONS_DOC = "distributions.json"
 
 # The figures a fund page states, by the name both sites give them: a US
 # data point's `name`, a Swiss data item's `col-<name>` class.
@@ -129,6 +155,13 @@ PRODUCT_KEYS = (
     ("price_earnings", ("priceearnings",)),
 )
 NOT_FIGURE_KEYS = ("asof", "date", "unsub", "benchmark", "index", "real", "monthend", "quarterend")
+# The full name of a US page's distributions column, before its field.
+DISTRIBUTION_COLUMN = "performance.distributions.table."
+# A US page's distribution columns: the days, as the event's columns, and
+# the parts it pays, by the kind of event each is.
+US_DAYS = (("exDate", "ex_date"), ("recordDate", "record_date"), ("payableDate", "pay_date"))
+US_PARTS = (("incomeAmount", "dividend"), ("shortTermCapitalGain", "capital_gain"),
+            ("longTermCapitalGain", "capital_gain"), ("returnOnCapital", "return_of_capital"))
 
 log = logging.getLogger("refdata.ishares")
 
@@ -136,7 +169,7 @@ log = logging.getLogger("refdata.ishares")
 class IShares(Provider):
     name = "ishares"
     serves_funds = True
-    facts = frozenset({"characteristics"})
+    facts = frozenset({"characteristics", "dividend_calendar"})
     composition_facts = frozenset({"line_durations"})
 
     def _index(self, ctx) -> dict:
@@ -165,9 +198,10 @@ class IShares(Provider):
         site, product = hit
         ids = {"isin": product.get("isin")}
         out = {"ref": fund.ref, "site": site, "page": product["productPageUrl"], "name": product.get("fundName"),
-               # A fund wanted as a proxy or an underlying wants none, and a
-               # US fetch then asks for no page.
-               "characteristics": "characteristics" in fund.wants}
+               # A fund wanted as a proxy or an underlying wants neither,
+               # and a fetch then asks for no page or distributions.
+               "characteristics": "characteristics" in fund.wants,
+               "calendar": "dividend_calendar" in fund.wants}
         if site == "us":
             ids.update(cusip=product.get("cusip"), symbol=product.get("localExchangeTicker"))
             out["product"] = product
@@ -205,16 +239,9 @@ class IShares(Provider):
             if day is None or table.header_index(rows) is None:
                 raise ProviderError(f"{resp.url} is not a holdings file")
             bronze.atomic_write_bytes(outdir / CSV_DOC, resp.body)
-            missing = {}
-            if claim["characteristics"]:
-                product = claim["product"]
-                bronze.atomic_write_json(outdir / PRODUCT_DOC, product)
-                got = fundpage.fetch(ctx, HOST + claim["page"], claim["ref"], log=log)
-                if got is not None:
-                    bronze.atomic_write_bytes(outdir / PAGE_DOC, got[0])
-                missing = fundpage.missing(got is not None and characteristics(got[1], product, claim["ref"], day,
-                                                                               provider=self.name))
-            write_meta(outdir, provider=self.name, ref=claim["ref"], site="us", as_of=day.isoformat(), **missing)
+            missing = self._us_page(claim, day, outdir, ctx) if claim["characteristics"] or claim["calendar"] else []
+            write_meta(outdir, provider=self.name, ref=claim["ref"], site="us", as_of=day.isoformat(),
+                       **facts_missing(missing))
             return day
         page = self._page(claim, ctx)
         if not page["columns"] or not page["dates"]:
@@ -233,11 +260,53 @@ class IShares(Provider):
         # The page states today's characteristics whichever day's holdings
         # it serves: a figure it states no day for is the newest day's.
         page_as_of = max(page["dates"])
-        missing = fundpage.missing(characteristics(html_page.decode("utf-8", "replace"), {}, claim["ref"],
-                                                   page_as_of, provider=self.name)) if claim["characteristics"] else {}
+        text = html_page.decode("utf-8", "replace")
+        missing = []
+        if claim["characteristics"] and not characteristics(text, {}, claim["ref"], page_as_of, provider=self.name):
+            missing.append("characteristics")
+        # The distributions are today's too: the current fetch asks for them.
+        if claim["calendar"] and as_of is None and not self._ch_distributions(claim, text, outdir, ctx):
+            missing.append("dividend_calendar")
         write_meta(outdir, provider=self.name, ref=claim["ref"], site="ch", as_of=day.isoformat(),
-                   columns=page["columns"], name=claim.get("name"), page_as_of=page_as_of.isoformat(), **missing)
+                   columns=page["columns"], name=claim.get("name"), page_as_of=page_as_of.isoformat(),
+                   **facts_missing(missing))
         return day
+
+    def _us_page(self, claim, day, outdir: Path, ctx) -> list:
+        """Asks for a US fund page and keeps it, and the fund's product-list
+        entry where it wants characteristics. Returns the facts the fund
+        wants that they leave missing: characteristics where neither
+        states a figure, the calendar where the page states no
+        distributions table, either where the page did not come."""
+        if claim["characteristics"]:
+            bronze.atomic_write_json(outdir / PRODUCT_DOC, claim["product"])
+        got = fundpage.fetch(ctx, HOST + claim["page"], claim["ref"], log=log)
+        state = None
+        if got is not None:
+            bronze.atomic_write_bytes(outdir / PAGE_DOC, got[0])
+            state = page_state(got[1])
+        missing = []
+        if claim["characteristics"] and not (state is not None and characteristics(
+                got[1], claim["product"], claim["ref"], day, provider=self.name, state=state)):
+            missing.append("characteristics")
+        if claim["calendar"] and (state is None or distribution_rows(state["distributions"]) is None):
+            if state is not None:
+                log.warning("%s: its fund page states no distributions table", claim["ref"])
+            missing.append("dividend_calendar")
+        return missing
+
+    def _ch_distributions(self, claim, page: str, outdir: Path, ctx) -> bool:
+        """Asks for a Swiss-site fund's distributions and keeps the answer;
+        whether it came in a layout this provider reads."""
+        got = fundpage.fetch(ctx, distributions_url(page, claim["page"]), claim["ref"], log=log,
+                             what="its distributions", json=True)
+        if got is None:
+            return False
+        bronze.atomic_write_bytes(outdir / DISTRIBUTIONS_DOC, got[0])
+        if ch_grid(got[1]) is None:
+            log.warning("%s: its distributions matched no known layout", claim["ref"])
+            return False
+        return True
 
     def parse(self, indir: Path) -> Parsed:
         meta = read_meta(indir)
@@ -253,7 +322,15 @@ class IShares(Provider):
         page = (indir / PAGE_DOC).read_bytes().decode("utf-8", "replace") if (indir / PAGE_DOC).is_file() else ""
         product = read_json(indir, PRODUCT_DOC) if (indir / PRODUCT_DOC).is_file() else {}
         day = date.fromisoformat(meta.get("page_as_of") or meta["as_of"])
-        out.characteristics = characteristics(page, product, meta["ref"], day, provider=self.name)
+        state = page_state(page)
+        out.characteristics = characteristics(page, product, meta["ref"], day, provider=self.name, state=state)
+        if meta["site"] == "us":
+            rows = distribution_rows(state["distributions"])
+            out.dividend_events = us_events(rows or [], meta["ref"], day, provider=self.name)
+        else:
+            rows = ch_grid(read_json(indir, DISTRIBUTIONS_DOC)) if (indir / DISTRIBUTIONS_DOC).is_file() else None
+            out.dividend_events = ch_events(rows or [], meta["ref"], day, provider=self.name)
+        out.events_complete = rows is not None
         return out
 
     def probe(self, ctx) -> str:
@@ -381,19 +458,40 @@ def _dicts(value):
             todo.extend(reversed(v))
 
 
+def _column_cells(column: dict) -> list:
+    """A distributions column's cells, one per distribution, each its raw
+    value and its text: the column's `value` and `formattedValue` lists
+    side by side."""
+    raw, text = (v if isinstance(v, list) else [] for v in (column.get("value"), column.get("formattedValue")))
+    return [{"raw": r, "formatted": t} for r, t in itertools.zip_longest(raw, text)]
+
+
 def page_state(page: str) -> dict:
     """What a page's script state holds (a US page's, HTML-escaped in the
     page): its data points (dicts with a name and a formattedValue), its
-    exposure component, and the PropertyValues of its JSON-LD."""
-    out = {"points": [], "exposure": None, "properties": []}
+    exposure component, its distributions table and the PropertyValues of
+    its JSON-LD. The table is the columns of DISTRIBUTION_COLUMN, by
+    field, wherever the state holds them, each a list of cells
+    (_column_cells), else a distributions component's table."""
+    out = {"points": [], "exposure": None, "distributions": None, "properties": []}
+    columns = {}
     for obj in _json_objects(html.unescape(page)):
         for d in _dicts(obj):
-            if "formattedValue" in d and "name" in d:
+            full = d.get("fullName")
+            field = full[len(DISTRIBUTION_COLUMN):] if isinstance(full, str) and full.startswith(DISTRIBUTION_COLUMN) \
+                else ""
+            if field:
+                columns.setdefault(field, _column_cells(d))
+            elif "formattedValue" in d and "name" in d:
                 out["points"].append(d)
             elif d.get("componentId") == "exposureBreakdowns":
                 out["exposure"] = out["exposure"] or d
             elif d.get("@type") == "PropertyValue":
                 out["properties"].append(d)
+            elif out["distributions"] is None and d.get("componentId") == "distributions":
+                out["distributions"] = d.get("tableData", d.get("table"))
+    if columns:
+        out["distributions"] = columns
     return out
 
 
@@ -517,14 +615,15 @@ def breakdowns(exposure: dict) -> list:
     return out
 
 
-def characteristics(page: str, product: dict, ref: str, day: date, *, provider: str) -> list:
+def characteristics(page: str, product: dict, ref: str, day: date, *, provider: str, state=None) -> list:
     """The characteristics rows of fund `ref`. A figure comes from the
     page (a US page's data points, a Swiss page's data items), else the
     product-list entry, else the page's JSON-LD; the breakdowns from a US
     page's exposure component. A figure is dated by the day stated for
     it, else `day`; a figure none states, or one the fund's asset class
-    has no use for (fundpage.NOT_APPLICABLE), is no row."""
-    state, items = page_state(page), page_items(page)
+    has no use for (fundpage.NOT_APPLICABLE), is no row. `state` is the
+    page's page_state(), where the caller has it."""
+    state, items = page_state(page) if state is None else state, page_items(page)
     figures = point_figures(state["points"])
     for more in (item_figures(items), product_figures(product), property_figures(state["properties"])):
         for name, got in more.items():
@@ -533,3 +632,117 @@ def characteristics(page: str, product: dict, ref: str, day: date, *, provider: 
     return fundpage.rows({field: (value, when, payload) for field, value, when, payload in figures.values()}, parts,
                          ref, day, provider=provider,
                          skip=fundpage.not_applicable(asset_class(state, items, product)))
+
+
+def _cell(cell) -> tuple:
+    """(raw, text) of a distributions table's cell: a dict's raw value and
+    its formatted text, or a plain value as both."""
+    if not isinstance(cell, dict):
+        return cell, cell
+    raw = next((cell[k] for k in ("raw", "r", "value") if cell.get(k) not in (None, "")), None)
+    text = next((cell[k] for k in ("formatted", "formattedValue", "display", "d") if cell.get(k) not in (None, "")),
+                None)
+    return raw, text
+
+
+def _day(cell) -> date | None:
+    """The day a cell states: its raw yyyymmdd, else its text (18 Sept
+    2026, Sep 18, 2026)."""
+    raw, text = _cell(cell)
+    return table.parse_day(raw) or table.parse_day(text)
+
+
+def _amount(cell) -> tuple:
+    """(amount, currency) of a cell (base.amount): its raw value, else the
+    number its text writes; and the currency it names (USD 0.1234, $0.25
+    in US dollars)."""
+    return amount(*_cell(cell))
+
+
+def _rows(columns: dict) -> list:
+    """A table given one list per column as rows: column name -> cell."""
+    n = max((len(v) for v in columns.values()), default=0)
+    return [{k: v[i] for k, v in columns.items() if i < len(v)} for i in range(n)]
+
+
+def distribution_rows(tbl) -> list | None:
+    """The rows of a US page's distributions table, each column name ->
+    cell. The table is an object of one list per column, or a list of
+    lists of named cells (data points): one list per column where each
+    names one column of its own, else one per row. None where the page
+    states no table, or one in neither layout."""
+    if isinstance(tbl, dict):
+        columns = {k: v for k, v in tbl.items() if isinstance(v, list)}
+        return _rows(columns) if columns or not tbl else None
+    if not (isinstance(tbl, list) and all(isinstance(r, list) and all(isinstance(c, dict) for c in r) for r in tbl)):
+        return None
+    names = [{c.get("name") for c in r} for r in tbl]
+    if all(len(n) == 1 for n in names) and len(set().union(*names)) == len(tbl):
+        return _rows({next(iter(n)): r for n, r in zip(names, tbl, strict=True)})
+    return [{c.get("name"): c for c in r} for r in tbl]
+
+
+def us_events(rows: list, ref: str, day: date, *, provider: str) -> list:
+    """The dividend_events rows of a US page's distribution rows, dated
+    `day`: one event per kind a row pays an amount of (US_PARTS), its
+    short- and long-term gains summed into one capital gain
+    (base.kinds_paid); a row that pays none of the parts is one event of
+    kind other, of its total. A row that states no day is none, and the
+    rows of one id are one event (base.merge_events). An amount is in US
+    dollars."""
+    out = []
+    for r in rows:
+        days = {col: _day(r.get(name)) for name, col in US_DAYS}
+        if not any(days.values()):
+            continue
+        total = _amount(r.get("totalDistribution"))[0]
+        parts = {name: _amount(r.get(name))[0] for name, _ in US_PARTS}
+        for kind, paid in (kinds_paid(parts, US_PARTS) or {"other": total}).items():
+            payload = {"total": total}
+            if kind == "capital_gain":
+                payload.update(short_term=parts["shortTermCapitalGain"], long_term=parts["longTermCapitalGain"])
+            out.append(event_row(ref, provider, day, kind, days, amount=paid,
+                                 currency="USD" if paid is not None else None, payload=present(payload)))
+    return merge_events(out)
+
+
+def distributions_url(page: str, path: str) -> str:
+    """The URL of a Swiss-site fund's distributions: the one its page
+    names in a `data-ajaxuri`, on the site's own host, else the
+    distributions component's under the fund's page."""
+    for uri in re.findall(r'data-ajaxuri="([^"]*)"', page):
+        url = urllib.parse.urljoin(f"{HOST}{path}/", html.unescape(uri))
+        if "tab=distributions" in url and urllib.parse.urlsplit(url).netloc == urllib.parse.urlsplit(HOST).netloc:
+            return url
+    return f"{HOST}{path}/{CH_DISTRIBUTIONS}.ajax?tab=distributions&fileType=json&subtab=table"
+
+
+def ch_grid(doc) -> list | None:
+    """The rows of a Swiss-site distributions answer, its table's aaData;
+    none for an accumulating class's answer, null. None where the answer
+    is in no such layout."""
+    if doc is None:
+        return []
+    tbl = doc.get("table") if isinstance(doc, dict) else None
+    grid = tbl.get("aaData") if isinstance(tbl, dict) else None
+    return grid if isinstance(grid, list) else None
+
+
+def ch_events(grid: list, ref: str, day: date, *, provider: str) -> list:
+    """The dividend_events rows of a Swiss-site distributions grid, dated
+    `day`: one dividend per row, whose cells are its record, ex and
+    payable days and its amount with its currency (USD 0.1234). A row
+    that states no day is none, and the rows of one id are one event
+    (base.merge_events)."""
+    out = []
+    for r in grid:
+        if not isinstance(r, list):
+            continue
+        cells = [*r, None, None, None, None][:4]
+        record, ex, pay = (_day(c) for c in cells[:3])
+        paid, currency = _amount(cells[3])
+        if not (record or ex or pay):
+            continue
+        out.append(event_row(ref, provider, day, "dividend", {"ex_date": ex, "record_date": record, "pay_date": pay},
+                             amount=paid, currency=currency))
+    return merge_events(out)

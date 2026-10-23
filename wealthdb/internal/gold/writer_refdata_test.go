@@ -31,6 +31,9 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 	periodStart := time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
 	filed := time.Date(1970, 2, 10, 0, 0, 0, 0, time.UTC)
 	year := int64(1970)
+	exDay, recordDay := time.Date(1970, 1, 2, 0, 0, 0, 0, time.UTC), time.Date(1970, 1, 3, 0, 0, 0, 0, time.UTC)
+	payDay, declaredDay := time.Date(1970, 1, 9, 0, 0, 0, 0, time.UTC), time.Date(1969, 12, 20, 0, 0, 0, 0, time.UTC)
+	final := canonical.DividendFinal
 	b := &canonical.SnapshotBatch{
 		FundCompositions: []canonical.FundCompositionChange{{SilverSourceID: "test-src", FundRef: "isin:XX0000000001",
 			AsOf: 86400, Basis: canonical.CompositionHoldings, Provider: "p1", SourceKind: "report", FundName: s("Qumbra Fund"),
@@ -72,6 +75,10 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 			FiscalPeriod: s("Q1"), Form: s("10-Q"), Filed: &filed, Payload: []byte(`{"e":1}`)}},
 		RateObservations: []canonical.RateObservationChange{{SilverSourceID: "test-src", SeriesID: "QLRATE10",
 			AsOf: 86400, Value: *d("4.06"), Payload: []byte(`{"o":1}`)}},
+		DividendEvents: []canonical.DividendEventChange{{SilverSourceID: "test-src", Ref: "isin:XX0000000001",
+			Provider: "p6", EventID: "ev1", AsOf: 345600, Kind: canonical.DividendKindCapitalGain,
+			ExDay: &exDay, RecordDay: &recordDay, PayDay: &payDay, DeclaredDay: &declaredDay, Amount: d("0.1234"),
+			Currency: s("QLM"), Status: &final}},
 	}
 	before := filledTables(t, db, ctx)
 	inTx(t, db, ctx, func(w *Writer) error { return w.InsertReference(ctx, b) })
@@ -126,6 +133,10 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 				"QLK/shares|1970|Q1|10-Q|1970-02-10|{\"e\":1}"},
 		{"rate_observations", `silver_source_id, series_id, as_of, value, payload`,
 			"test-src|QLRATE10|86400|4.06000000|{\"o\":1}"},
+		{"dividend_calendar", `silver_source_id, ref, provider, event_id, as_of, kind, ex_day, record_day, pay_day,
+		    declared_day, amount, currency, status`,
+			"test-src|isin:XX0000000001|p6|ev1|345600|capital_gain|1970-01-02|1970-01-03|1970-01-09|1969-12-20|" +
+				"0.12340000|QLM|final"},
 	} {
 		tables = append(tables, c.table)
 		var got string
@@ -141,6 +152,60 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 	slices.Sort(tables)
 	if !slices.Equal(tables, want) {
 		t.Errorf("round trips of %v, want ReferenceTables %v", tables, want)
+	}
+
+	// A later statement of the distribution replaces its row, though the
+	// day it was stated on lies past the window that cleared the first.
+	restated := b.DividendEvents[0]
+	restated.AsOf, restated.Amount = 777600, d("0.2")
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.InsertReference(ctx, &canonical.SnapshotBatch{DividendEvents: []canonical.DividendEventChange{restated}})
+	})
+	var restatedRow string
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) || ' ' || MAX(as_of) || ' ' || MAX(amount) FROM dividend_calendar`).
+		Scan(&restatedRow); err != nil || restatedRow != "1 777600 0.20000000" {
+		t.Errorf("restated distribution = %q (%v), want its one row as of the later day", restatedRow, err)
+	}
+
+	// A writer's first batch of a ref and provider clears that pair's
+	// rows, so one the batch does not state leaves; a second batch of the
+	// pair adds to the first, and another provider's rows of the ref stay.
+	event := func(provider, id string) canonical.DividendEventChange {
+		return canonical.DividendEventChange{SilverSourceID: "test-src", Ref: "isin:XX0000000001", Provider: provider,
+			EventID: id, AsOf: 864000, Kind: canonical.DividendKindDividend}
+	}
+	batch := func(es ...canonical.DividendEventChange) *canonical.SnapshotBatch {
+		return &canonical.SnapshotBatch{DividendEvents: es}
+	}
+	inTx(t, db, ctx, func(w *Writer) error { return w.InsertReference(ctx, batch(event("p7", "evA"))) })
+	inTx(t, db, ctx, func(w *Writer) error {
+		if err := w.InsertReference(ctx, batch(event("p6", "ev2"))); err != nil {
+			return err
+		}
+		return w.InsertReference(ctx, batch(event("p6", "ev3")))
+	})
+	var events string
+	if err := db.QueryRowContext(ctx, `SELECT string_agg(provider || ':' || event_id, ' ' ORDER BY provider, event_id)
+	    FROM dividend_calendar`).Scan(&events); err != nil || events != "p6:ev2 p6:ev3 p7:evA" {
+		t.Errorf("distributions after a replacement = %q (%v), want p6's two new ones and p7's", events, err)
+	}
+
+	// A kind or a status outside the vocabulary is refused.
+	other := canonical.DividendEventStatus("paid")
+	for _, e := range []canonical.DividendEventChange{
+		{SilverSourceID: "test-src", Ref: "isin:XX0000000004", Provider: "p6", EventID: "x", Kind: "interest"},
+		{SilverSourceID: "test-src", Ref: "isin:XX0000000004", Provider: "p6", EventID: "y",
+			Kind: canonical.DividendKindDividend, Status: &other},
+	} {
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = NewWriter(tx).InsertReference(ctx, &canonical.SnapshotBatch{DividendEvents: []canonical.DividendEventChange{e}})
+		if err == nil || !strings.Contains(err.Error(), "invalid") || !strings.Contains(err.Error(), "isin:XX0000000004") {
+			t.Errorf("%+v: %v", e, err)
+		}
+		_ = tx.Rollback()
 	}
 
 	// A basis outside the vocabulary is refused, on a composition and on

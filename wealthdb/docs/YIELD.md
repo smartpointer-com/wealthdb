@@ -80,17 +80,15 @@ largest fund first.
 - `-p` stars the amounts: value, DV01, the income amounts and
   `tier_up_to`. It stars the price in `positions` and `securities`
   alike, and every account id.
-- Under `-p` every name a person typed prints as a pseudonym, such
-  as `manual-1`, or as a redacted id, as DESIGN.md §4.6 says. That covers a nickname, a
-  typed account or portfolio name, and a manual holding's name and
-  key.
-- Under `-p` a `security` or `fund` key that is a holding's own
+- Under `-p` every name a person typed prints as a pseudonym, such as
+  `manual-1`, or as its account's redacted id (DESIGN.md §4.6). That
+  covers a nickname, a typed account or portfolio name, and a manual
+  holding's name, key and instrument.
+- Under `-p` any other `security` or `fund` key that is a holding's own
   (`holding:<source>:<id>`, no public key) is hidden whole, as
-  `exposure securities` hides it. So is `coverage`'s `instrument`. A
-  manual holding's key or instrument prints as its pseudonym instead.
-  Any other `position_key` stays legible, as `holdings positions`
-  keeps it. Rates, durations, shares, labels and public security keys
-  stay.
+  `exposure securities` hides it. So is `coverage`'s `instrument`. Any
+  other `position_key` stays legible, as `holdings positions` keeps it.
+  Rates, durations, shares, labels and public security keys stay.
 
 ### Columns
 
@@ -129,7 +127,7 @@ suffix. Years, prices, `pe` and `coverage` print as they are.
 | `as_of`, `source`, `risk_as_of` | `funds` | the day the figures describe; where they come from (`lines`, `page`, `filing`, `ledger`); the day of the filed DV01 |
 | `rate`, `tiers`, `tier_up_to`, `valid_from`, `term_end` | `cash` | the rate the balance earns, tiers blended; the number of tiers; the first tier's limit, in the balance's own currency; the day the rate holds from; a term deposit's end. An overdraft lists its debit tiers |
 | `tenor`, `dv100`, `funds`, `bonds`, `cash`, `liabilities` | `curve` | the tenor (§6); DV01 times 100, and DV01 by what holds it (§6) |
-| `section`, `reason`, `holdings`, `instrument` | `coverage` | §10 |
+| `section`, `reason`, `holdings`, `payments`, `instrument` | `coverage` | §10 |
 
 The keys are the ones `holdings` and `exposure` name: `silver_source`,
 `portfolio`, `portfolio_id`, `account`, `account_id`, `account_kind`,
@@ -343,8 +341,8 @@ A bond fund reads these:
     or CLO.
 
   A bare FLOAT does not count: an index fund's name may say FLOAT
-  ADJUSTED. Nor does FIXED-TO-FLOATING or FIXED TO FLOAT: that coupon is
-  fixed until it floats.
+  ADJUSTED. Nor does FIXED-TO-FLOATING, FIXED TO FLOAT or VARIABLE RATE
+  PREFERRED: those coupons are fixed until they float.
 - It carries `default` where any line is in default or arrears.
 
 A multi-asset fund reads these:
@@ -382,11 +380,16 @@ states stays.
 twelve months' diluted earnings per share over its price (§4). An
 equity fund's is the inverse of the P/E its page states.
 `dividend_yield` is the indicated dividend over the price (§4). An
-equity fund or a multi-asset fund without one reads the trailing yield,
-else the distribution yield, its page states. So does one whose
-indicated dividend rests on one calendar month, held under eleven of
-the twelve months (§4). Earnings or dividends a filing reports in
-another currency than the price give no yield.
+equity fund or a multi-asset fund reads the trailing yield, else the
+distribution yield, its page states, in two cases:
+
+- it has no indicated dividend;
+- it was held under eleven of the twelve months, and its indicated
+  dividend rests on one calendar month (§4).
+
+Where its page states neither, the one-month dividend stands. Earnings
+or dividends a filing reports in another currency than the price give
+no yield.
 
 `securities` adds a stock's dividend safety, from its trailing figures:
 
@@ -544,24 +547,52 @@ the instrument included.
 - An account's lines of one day are one payment: a fund's distribution
   often comes as several, income and capital gains apart. Two sources'
   accounts of one id are two accounts.
-- A payment per share is the payment over the quantity the account held
-  as its record day began. The record day lies a fixed number of days
-  before the pay day, by the market of the security paid. Each market
-  also has a record window: the days before the pay day in which its
-  record day falls.
+- A payment per share is the payment over the quantity the account was
+  entitled to: what it held as its record day began, or as its ex day
+  began where the calendar gives the days (below). The record day comes
+  from the first of these that gives one. The coverage view counts each
+  source (§10):
+  1. `stated`: the dividend calendar's record day
+     ([adapters/refdata.md](adapters/refdata.md) §2). The payment's
+     distribution is the one whose pay day lies nearest the payment's
+     day. That pay day lies from ten days before it to three after.
+     Where the calendar states no pay day, the distribution is the one
+     whose record day, else ex day, lies latest in the record window
+     (below). Where the market fixes no lag, that window is the 105 days
+     to the payment for a share or a receipt, as a Japanese share pays
+     some three months after its record day. For a fund the window is
+     the 63 days to the payment. A distribution whose record day or ex
+     day lies after the payment is not its. A distribution its source
+     estimates loses to one it does not, however near.
+  2. `derived`: that distribution states an ex day and no record day.
+     The record day is the ex day plus the market's settlement cycle on
+     the ex day, less one, in business days (below). Under a cycle of
+     two it is the next business day. Under a cycle of one it is the ex
+     day. The trade the day before the ex day is the last that earns the
+     payment. It settles on the record day. A stated ex day alone counts
+     only where a cycle derives its record day, no later than the
+     payment's day. So a share of Hong Kong, which has no cycle, reads
+     the lag.
+  3. `lag`: no distribution is the payment's, or it gives no record day,
+     and the market fixes a lag. The record day lies a fixed number of
+     days before the pay day, by the market of the security paid. Each
+     market also has a record window: the days before the pay day in
+     which its record day falls.
+
+  A market with no lag then leaves the record day unknown (`none`).
 
   | Market | Lag | Window before pay |
   |---|---|---|
   | a share quoted in dollars | 30 days | 3 to 35 days |
   | a share of the United Kingdom or Hong Kong | 30 days | 14 to 63 days |
-  | a share of Switzerland, Denmark or a euro-area market below | 2 business days | 2 to 4 business days |
+  | a share of Switzerland, Denmark or a euro market below | 2 business days | 2 to 4 business days |
   | a share of Sweden | 4 business days | 4 to 6 business days |
   | a receipt of a Japanese share | 90 days | 70 to 105 days |
   | a receipt of a share of a market with a lag in business days | 14 days | 7 to 42 days |
   | a receipt of a share of the United Kingdom | 30 days | 21 to 63 days |
   | any other receipt | 30 days | 7 to 63 days |
 
-- The euro-area markets are Germany, France, Italy, Spain, Austria and
+- The euro markets are Germany, France, Italy, Spain, Austria and
   Belgium. In these markets, in Switzerland and in Denmark, the ex-day,
   the record day and the pay day fall on consecutive business days, and
   a trade on the ex-day earns nothing. So the lag reaches back to the
@@ -582,20 +613,60 @@ the instrument included.
   | Sweden | Euroclear Sweden | TARGET2's days; 6 January, Ascension, 6 June, Midsummer Eve (the Friday from 19 to 25 June), 24 and 31 December |
   | Denmark | Euronext Securities Copenhagen | 1 January, Maundy Thursday, Good Friday, Easter Monday, Ascension and the day after, Whit Monday, 5 June, 24, 25, 26 and 31 December |
 
-  So 2 business days before Monday 5 January 2026 is Wednesday 31
-  December 2025 in the euro area, and Monday 29 December 2025 in
-  Switzerland.
+  The euro area is its 21 members. So 2 business days before Monday 5
+  January 2026 is Wednesday 31 December 2025 in the euro area, and
+  Monday 29 December 2025 in Switzerland.
 - A share's market is that of the currency it is quoted in, whatever its
   issuer's country:
   - dollars: the United States;
   - pounds or pence: the United Kingdom;
   - Hong Kong dollars: Hong Kong;
   - francs, Danish kroner, Swedish kronor: Switzerland, Denmark, Sweden;
-  - euros: the issuer's market, where that is of the euro area above.
+  - euros: the issuer's market, where that is one of the euro markets
+    above.
 
-  Any other share has no record day. Neither has a fund, or any
-  position that is neither a share nor a receipt: its payment reads the
-  quantity of its pay day (below).
+  Any other share has no lag. Neither has a fund, or any position that
+  is neither a share nor a receipt: without a record day from the
+  calendar, its payment reads the quantity of its pay day (below).
+- A US common stock reads the lag unless its filings tag the dates: no
+  free source states most US companies' record days. `sec-edgar` reads
+  them from a 10-Q's or 10-K's tags where a company states them.
+- Where the calendar states or derives the record day, the quantity is
+  the one held as the ex day began. Holdings count by trade date, and a
+  trade on the ex day earns nothing. The ex day is the one the
+  distribution states. Else the ex day lies the cycle less one, in
+  business days, before the record day, by the market's cycle on the
+  record day. Where the market has no cycle then, the record day stands
+  for it. Under a cycle of one day, the two days are one.
+- That day is the payment's record window alone, so a trade near it
+  leaves the quantity known. A fund's payment, which no lag dates, rates
+  on that day once the calendar gives it.
+- A market's settlement cycle is the business days a trade settles
+  after. It changes on a day, from that day on:
+
+  | Market | Settlement cycle |
+  |---|---|
+  | the United States | 3 days; 2 from 2017-09-05; 1 from 2024-05-28 |
+  | Canada | 3 days; 2 from 2017-09-05; 1 from 2024-05-27 |
+  | the euro area, Switzerland, the United Kingdom, Sweden, Denmark, Norway | 2 days from 2014-10-06; 1 from 2027-10-11 |
+  | Japan | 3 days; 2 from 2019-07-16 |
+
+  A market of no cycle derives neither day from the other, nor does a
+  day before a market's first cycle. Hong Kong has none: a share's
+  record day there follows the closure of its register. The config
+  replaces a market's cycles (§8).
+- A distribution's market sets its settlement cycle and its business
+  days. A share's is its market as for the lag (above). A share in euros
+  reads its issuer's market wherever that is of the euro area, not only
+  in the six euro markets above. Yen, Canadian dollars and Norwegian
+  kroner name Japan, Canada and Norway. A receipt's market is that of
+  the currency it is quoted in, not its share's. So a dollar receipt of
+  a Japanese share settles in the United States. A fund's market is its
+  country, else its currency's.
+- A distribution's business days are those of the calendar of
+  settlement days above. A market the calendar does not list reads
+  TARGET2's. So a day derived in Japan or the United States steps over
+  TARGET2's closing days, not its own, and may miss by a day.
 - The currency is the one the instrument is listed in, where gold states
   one. Else it is the one the position's newest snapshot values it in,
   newest across every id the instrument folds under. Two positions seen
@@ -606,8 +677,8 @@ the instrument included.
   (EXPOSURE.md §13). Any position the situs rule reads as a receipt is
   one, whatever its basis. A receipt whose situs is declared reads the
   declared country as its share's. A receipt whose share is unknown has
-  no record day. A receipt gold does not know as one reads as a share of
-  its currency's market.
+  no lag. A receipt gold does not know as one reads as a share of its
+  currency's market.
 - A payment rated on its record day's quantity counts in no rate where
   the account's most over its least across the record window is above
   1.1, or where some of the window is unknown. A trade near the true
@@ -615,22 +686,22 @@ the instrument included.
   held none count nothing: the account was paid, so none of them was its
   record day. The other accounts paid that day, or the last month with a
   rate, give the rate, and the day still counts in the frequency.
-- Where the market fixes no record day, the quantity is the one held as
-  the pay day began. So it is where the account held none on the record
-  day, or no snapshot says what it held, or its first snapshot falls
-  inside the record window. An account paid that held none on the record
-  day the fixed lag gives held some on the true one.
+- Where no record day is known, the quantity is the one held as the pay
+  day began. So it is where the account held none on the day its
+  quantity reads, or no snapshot says what it held, or its first
+  snapshot falls inside the record window. An account paid that held
+  none on the record day the fixed lag gives held some on the true one.
 - That quantity comes from the account's newest snapshot by then. The
   account's trades since that snapshot move it. The day's own trades
   earn none of the payment.
-- A trade booked on a cash account that shows none of its instrument
-  as the trade happens moves the holding of the one other account of
-  its portfolio that holds it then. A bank books a trade on the cash
-  account beside the custody account. Where several accounts of the
-  portfolio hold it then, or none, the trade moves no holding: which
-  one it went to is not known. A payment that reads them all reads
-  their snapshots unmoved. A trade of any other kind of account moves
-  only its own holding.
+- A trade booked on a cash account that holds none of its instrument as
+  the trade happens moves another account's holding. That is the one
+  other account of its portfolio that holds it then. A bank books a
+  trade on the cash account beside the custody account. Where several
+  accounts hold it then, or none, the trade moves no holding, since its
+  account is not known. A payment that reads all the portfolio's
+  accounts then reads their snapshots without that trade. A trade of any
+  other kind of account moves only its own holding.
 - A trade stamped at a snapshot's instant counts in it, as the lot
   engine reads a snapshot. Some statements leave out their last day's
   trades: where the snapshot shows the previous one's quantity without
@@ -654,12 +725,12 @@ the instrument included.
 - A payment that reads its pay day's quantity counts in no rate where
   that is under two thirds, or over one and a half times, the quantity
   that guards it. The holding may have changed between its record day
-  and its pay day. Where the market fixes no record day, the guard is
-  what the account held 100 days before. Where it fixes one, it is the
-  first quantity the account shows held after the record day. A buy
-  just before the record day may show only then: a snapshot that holds
-  none of an instrument moves by no trade, as it may hold it by another
-  id.
+  and its pay day. Where no record day is known, the guard is what the
+  account held 100 days before. Where one is, it is the first quantity
+  the account shows held after the day its quantity reads: the record
+  day, or the ex day. A buy just before that day may show only then: a
+  snapshot that holds none of an instrument moves by no trade, as it
+  may hold it by another id.
 - The accounts paid on one day pay one rate: the median of theirs.
 - A payment per share above twice the median of the year's payments per
   share is a special: a special dividend, or a return of capital. With
@@ -708,13 +779,19 @@ the instrument included.
 
   The quarter is the month three months off and its neighbour beyond
   it, as a pay day may drift into a neighbouring month. The holding
-  covers them from as far before as a record window may reach: at least
-  35 days, the window of a share of the United States, and 63 days for a
-  lag of 30 days, which may be a share of the United Kingdom's. So a
-  payment due in them would show. They then read 2, however short the
-  holding. Else they read as above. A quarterly payer that raised its
-  dividend, or pays more in one season, pays in that quarter. Two months
-  next to each other are a monthly payer's.
+  must cover that quarter, from as far before it as a record window may
+  reach:
+  - at least 35 days, the window of a share of the United States;
+  - 63 days for a lag of 30 days, which may be a share of the United
+    Kingdom's;
+  - for a payment the calendar dates, back to the day its quantity
+    reads.
+
+  So a payment due in that quarter would show. The two months then read
+  2, however short the holding. Else they read as above. A quarterly
+  payer that raised its dividend, or pays more in one season, pays in
+  that quarter. Two months next to each other are never halves: they
+  may be a monthly payer's.
 - One calendar month alone shows no rhythm: it reads once a year. Held
   eleven of the twelve months or more, it is a yearly payer's: a
   quarterly payer pays three times in them, and a transfer's gap of a
@@ -878,7 +955,8 @@ The `yield` block of `wealthdb.cfg` holds what no source states
   "rating_funds": { "isin:XX0000000004": "BBB", "isin:XX0000000005": "AAA-A" },
   "conventions": { "EUR": { "frequency": 1, "day_count": "ACT/ACT" } },
   "horizon_months": 12,
-  "cycles": { "utilities": "sensitive" }
+  "cycles": { "utilities": "sensitive" },
+  "settlement_cycles": { "US": [{ "days": 3 }, { "from": "2017-09-05", "days": 2 }, { "from": "2024-05-28", "days": 1 }] }
 }
 ```
 
@@ -908,10 +986,9 @@ The `yield` block of `wealthdb.cfg` holds what no source states
 - `rating_funds` maps a fund sliced by credit rating to the bucket its
   lines carry (`BBB`), or a range of buckets, best first (`AAA-A`). It
   is keyed like `exposure.size_funds`, and feeds the credit view of
-  `exposure`, which reads a range at its worse end. That view's
-  `class_share` is a bucket's share of the debt and the cash
-  (EXPOSURE.md §7). The yield report's `rating` is a holding's own: its
-  terms' or a ledger record's.
+  `exposure` (EXPOSURE.md §7), which reads a range at its worse end.
+  The yield report's `rating` is a holding's own: its terms' or a
+  ledger record's.
 - `conventions` maps a market to its coupon frequency and day count. A
   market is a currency, or a currency and a bond sector or `bill`
   (`USD:government`, `USD:bill`). An entry replaces the built-in one of
@@ -922,8 +999,14 @@ The `yield` block of `wealthdb.cfg` holds what no source states
   ([INCOME.md §12](INCOME.md#12-the-forward-views)).
 - `cycles` overrides the built-in cycle of one of the eleven sectors:
   `cyclical`, `defensive` or `sensitive`. It feeds the cycle view of
-  `exposure`, whose `class_share` is a cycle's share of the public
-  equity.
+  `exposure` (EXPOSURE.md §7).
+- `settlement_cycles` maps a market, an ISO 3166 country code, to its
+  settlement cycles, oldest first. Each is a number of business days,
+  1 or more, from its day on (`from`, `YYYY-MM-DD`). Only the first may
+  leave its day out: it then holds from the first day on. The days
+  ascend. A market the block names replaces its built-in cycles, and an
+  empty list leaves it none. The cycle derives a dividend's record day
+  from its ex day, and its ex day from its record day (§4).
 
 In the built-in conventions, a `CHF` or `EUR` bond pays once a year on
 30/360. A `USD` bond pays twice on 30/360, a `USD:government` bond
@@ -933,6 +1016,8 @@ In the built-in cycles, materials, consumer_cyclical, financials and
 real_estate are cyclical. Consumer_staples, health_care and utilities
 are defensive. Communication, energy, industrials and technology are
 sensitive.
+
+The built-in settlement cycles are those of §4's table.
 
 The block is checked when the config loads. DESIGN.md §7.6 says how a
 load stores it.
@@ -949,14 +1034,17 @@ the figure reads `declared`.
 
 ## 10. Coverage
 
-`wealthdb yield coverage` says what the figures rest on, in three
+`wealthdb yield coverage` says what the figures rest on, in four
 sections:
 
 - `rests_on`: one line per tag (§7), with the value, the share of the
   gross value and the count of the holdings that carry it;
 - `missing`: one line per reason below, with the same figures;
+- `record_day`: where the dividends' record days come from (below);
 - `holdings`: each holding a figure is missing on, by `silver_source`
   and `instrument`, the largest first within each reason.
+
+The `missing` reasons, and the ledger record that fills each:
 
 | Reason | Holdings | The record that fills it |
 | --- | --- | --- |
@@ -968,7 +1056,7 @@ sections:
 | `no rating` | a bond, bill or floating note without a rating | `rating` |
 
 `wealthdb yield coverage -f ndjson` prints a skeleton of that record
-for each holding the section lists:
+for each holding the `holdings` section lists:
 
 ```json
 {"silver_source_id":"broker-1","instrument":"bond-1","rating":{},"note":"QORVANT CORP NOTE 4.00000% 06/30/2031"}
@@ -987,6 +1075,24 @@ skeleton.
 assumptions (§4): the holding keeps its own readings, but what its
 principal earns after the maturity is unknown. The holding's line names
 it, and its skeleton names the account its principal lands in.
+
+**Record days.** `record_day` counts the dividends and distributions
+that the holdings' readings rate (§4): those of the 24 months to the
+day. Its `payments` column counts each payment once. `holdings`,
+`value` and `share` are those of the holdings whose readings rate them.
+One line per reason, where a payment has it:
+
+| Reason | Payments |
+| --- | --- |
+| `stated` | the dividend calendar states the record day |
+| `derived` | the record day derives from the calendar's ex day by the market's settlement cycle |
+| `lag` | the market's lag gives the record day: no distribution of the calendar is the payment's, or it gives no record day |
+| `none` | no record day is known: the pay day's quantity rates |
+| `dropped` | the record window drops the reading: the account's most over its least across it is above 1.1, or some of it is unknown |
+
+So `stated` and `derived` rise, and `lag` and `dropped` fall, as the
+calendar covers more of the holdings. A dropped payment also counts on
+the line of its record day's source.
 
 ## 11. The projection, the dashboard and MCP
 

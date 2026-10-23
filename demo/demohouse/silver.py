@@ -24,7 +24,7 @@ import sqlite3
 from . import dates, rates, reference
 from .spec import SCHEMA_PATH
 
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"
 
 # The source that carries the reference records.
 REFERENCE_SOURCE = "refdata"

@@ -30,9 +30,9 @@ type columnSpec[T any] struct {
 	// decisions. Used where the right class depends on row
 	// context — typically silver_source: e.g. UBS portfolio
 	// labels ("Savings") are bank-assigned categories and stay
-	// legible, while cointracking portfolio names are free-form,
-	// customer-identifying account names and must be redacted
-	// whatever shape the value happens to take.
+	// legible, while a cointracking portfolio's name is its
+	// holder's words and prints as a pseudonym whatever its shape
+	// (portfolioCol).
 	PrivacyFunc func(T) PrivacyClass
 	// PrivacyExtract, when non-nil, replaces Extract in privacy mode:
 	// the value the row shows there, which Privacy or PrivacyFunc then
@@ -258,7 +258,6 @@ func accountIDCol[T any](name string, kindOf func(string) string, get func(T) ac
 // not id-shaped.
 func portfolioCol[T any](name string, kindOf func(string) string,
 	get func(T) (source, id string, display *string)) columnSpec[T] {
-	class := portfolioNamePrivacy(kindOf)
 	label := func(r T) string {
 		_, id, display := get(r)
 		if id == "" {
@@ -270,7 +269,7 @@ func portfolioCol[T any](name string, kindOf func(string) string,
 		Extract: label,
 		PrivacyFunc: func(r T) PrivacyClass {
 			source, id, _ := get(r)
-			return class(gold.PortfolioRow{SilverSourceID: source, PortfolioExternalID: id})
+			return portfolioNamePrivacy(kindOf, source, id)
 		},
 		PrivacyExtract: func(r T) string {
 			if source, id, _ := get(r); id != "" && typedAccountLabel(kindOf, source) {
@@ -282,6 +281,40 @@ func portfolioCol[T any](name string, kindOf func(string) string,
 			source, _, _ := get(r)
 			return typedPseudonym(kindOf, source)
 		}}
+}
+
+// portfolioNamePrivacy is the redaction class of a portfolio column's
+// value (portfolioCol), from the portfolio's source and id. The value
+// mixes different conventions across sources:
+//
+//   - the sentinel row for a source's orphan accounts renders the
+//     literal "(no portfolio)". It is a structural marker with no
+//     row content behind it, so it stays legible for every source.
+//   - a source whose names may be typed (typedAccountLabel) shows
+//     the customer's words: the cointracking adapter emits the
+//     free-form CT account name as display_name, and a manual or
+//     declared portfolio is named, or keyed, by hand. These can be
+//     anything — one word or several — so they print as a pseudonym
+//     whatever their shape, the id fallback too (portfolioCol). A
+//     tracker's `cu_<user>` id names its user and prints as one too
+//     (typedIDCol).
+//   - UBS / other Swiss-source adapters emit bank-assigned
+//     portfolio category labels (Savings / Brokerage / …).
+//     These pass through under the PrivacyAccountID heuristic
+//     because their info content is taxonomy, not identifier.
+//
+// kindOf resolves a silver_source_id to its silver_kind — the
+// config-side id is free-form, so matching the id string instead
+// would silently lose redaction for a source named anything but
+// the literal adapter name.
+func portfolioNamePrivacy(kindOf func(string) string, source, id string) PrivacyClass {
+	if id == "" {
+		return PrivacyNone
+	}
+	if typedAccountLabel(kindOf, source) {
+		return PrivacyPseudonym
+	}
+	return PrivacyAccountID
 }
 
 // typedIDCol is a report's column, named name, of an id a source gives
@@ -380,19 +413,24 @@ func holdingKeyCol[T any](name string, kindOf func(string) string, get func(T) s
 			}
 			return PrivacyNone
 		}}
-	return typedHoldingCol(col, kindOf, func(r T) (string, string) {
-		source, id, _ := holdingKeyParts(get(r))
-		return source, id
-	})
+	return typedHoldingCol(col, kindOf, keyHolding(get))
 }
 
-// holdingKeyName is the name column beside a holding key (holdingKeyCol):
-// a typed holding's name prints as its key's pseudonym under -p.
-func holdingKeyName[T any](kindOf func(string) string, key, name func(T) string) columnSpec[T] {
-	return typedHoldingCol(strCol("name", name), kindOf, func(r T) (string, string) {
+// holdingKeyCols are a holding key's column, named name (holdingKeyCol),
+// and the name column beside it, which label reads: under -p a typed
+// holding's name prints as its key's pseudonym, as in holdingCols.
+func holdingKeyCols[T any](name string, kindOf func(string) string,
+	key, label func(T) string) (keyCol, nameCol columnSpec[T]) {
+	return holdingKeyCol(name, kindOf, key), typedHoldingCol(strCol("name", label), kindOf, keyHolding(key))
+}
+
+// keyHolding reads the holding a row's key names (holdingKeyParts): its
+// source and id, both blank for a security key.
+func keyHolding[T any](key func(T) string) func(T) (source, id string) {
+	return func(r T) (string, string) {
 		source, id, _ := holdingKeyParts(key(r))
 		return source, id
-	})
+	}
 }
 
 // holdingKeyParts splits the key gold gives a holding no security key
@@ -821,10 +859,11 @@ const freeTextPlaceholder = "***"
 type pseudonyms struct {
 	names map[[3]string]string
 	count map[string]int
+	given map[string]bool // the names given out, in normalizeCell's form
 }
 
 func newPseudonyms() *pseudonyms {
-	return &pseudonyms{names: map[[3]string]string{}, count: map[string]int{}}
+	return &pseudonyms{names: map[[3]string]string{}, count: map[string]int{}, given: map[string]bool{}}
 }
 
 // of is the pseudonym under prefix of value, the words of source (blank
@@ -841,8 +880,13 @@ func (p *pseudonyms) of(prefix, source, value string) string {
 	p.count[prefix]++
 	name := prefix + "-" + strconv.Itoa(p.count[prefix])
 	p.names[key] = name
+	p.given[normalizeCell(name)] = true
 	return name
 }
+
+// named reports whether s, in normalizeCell's form, is a name the set
+// has given out (of).
+func (p *pseudonyms) named(s string) bool { return p.given[s] }
 
 // redactAccountID masks the middle of an identifier-shaped
 // string, exposing only a length-appropriate trailing slice

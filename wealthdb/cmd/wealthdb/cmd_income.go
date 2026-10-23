@@ -119,11 +119,11 @@ func incomeReport(req request) *report {
 			})
 	default:
 		kindOf, loadKinds := sourceKinds()
-		return newReport(buildIncomeTransactionColumnRegistry(req.currency, kindOf, req.categories),
+		return withLoads(newReport(buildIncomeTransactionColumnRegistry(req.currency, kindOf, req.categories),
 			defaultIncomeTransactionColumns,
-			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.IncomeTransactionRow, error) {
+			func(ctx context.Context, db *sql.DB) ([]gold.IncomeTransactionRow, error) {
 				return gold.IncomeTransactions(ctx, db, req.from, req.to, req.currency)
-			}))
+			}), loadKinds)
 	}
 }
 
@@ -179,7 +179,7 @@ var defaultIncomeTypeColumns = []string{
 func buildIncomeTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 	categories typedCategories) []columnSpec[gold.IncomeTransactionRow] {
 	ref := func(r gold.IncomeTransactionRow) accountRef {
-		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
 	}
 	return []columnSpec[gold.IncomeTransactionRow]{
 		{Name: "silver_source", Align: output.AlignLeft,

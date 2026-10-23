@@ -8,6 +8,7 @@ import http
 import io
 import json
 import re
+import sqlite3
 import urllib.request
 import urllib.response
 import zipfile
@@ -21,9 +22,11 @@ import load
 import wanted as wantedmod
 from collectorkit import bronze, silver
 from providers import openfigi
-from providers.base import Context, Parsed, Provider, Unavailable, read_meta, write_meta
+from providers.base import Context, Parsed, Provider, Unavailable, folder_name, read_meta, write_meta
 
 TODAY = date(2026, 7, 15)
+# The folder of a run a security or a bulk request writes its answer under.
+KIND_DIRS = {"security": "securities", "bulk": "bulk"}
 ENGINE = Path(__file__).resolve().parents[3] / "wealthdb" / "internal"
 
 
@@ -52,19 +55,55 @@ def plan(want, providers, **kw):
                          **{"today": TODAY, "max_age": 30, "backfill": False, **kw})
 
 
-def make_run(data, slug, reqs):
-    """A complete run in data/slug: the requests fetched into it and its
-    manifest, as download writes them."""
+def held(ref="symbol:FUNDA", symbol="FUNDA", wants=(), facts=None, **kw):
+    """A held fund of a version 3 wanted list: fund() with the facts it
+    `wants` and gold's days of each (`facts`)."""
+    return {**fund(ref, symbol, **kw), "wants": list(wants), "facts": facts or {}}
+
+
+def make_run(data, slug, reqs, ctx=None):
+    """A complete run in data/slug: the requests fetched into it, in `ctx`
+    or a context without a client, and its manifest, as download writes
+    them."""
     run = data / slug
     run.mkdir(parents=True)
-    entries = download.execute(reqs, run, Context(client=None))
+    entries = download.execute(reqs, run, ctx or Context(client=None))
     bronze.atomic_write_json(run / "run.json", {"status": "complete", "requests": entries})
     return run
+
+
+def kept_run(data, slug, kind, provider, ref, *, status="complete") -> Path:
+    """A run in data/slug, of `status`, whose manifest names one request
+    `provider` served: of `kind` (security or bulk) and `ref`, its folder
+    where download puts it. The folder, made, for the answer."""
+    rel = f"{KIND_DIRS[kind]}/{provider}/{folder_name(ref)}"
+    (data / slug / rel).mkdir(parents=True)
+    bronze.atomic_write_json(data / slug / "run.json", {"status": status, "requests": [
+        {"kind": kind, "provider": provider, "ref": ref, "status": "ok", "dir": rel}]})
+    return data / slug / rel
 
 
 def run_entries(run):
     """The manifest entries of a run, one per request."""
     return json.loads((run / "run.json").read_text())["requests"]
+
+
+def rows(db, query, *params) -> list:
+    """The rows a query of the silver DB at `db` answers."""
+    con = sqlite3.connect(db)
+    try:
+        return con.execute(query, params).fetchall()
+    finally:
+        con.close()
+
+
+def events_by_id(rows, declared=False) -> dict:
+    """event_id -> (kind, ex, record, pay, amount, currency) of
+    dividend_events rows; with `declared`, the declared day after the
+    pay day."""
+    cols = ("kind", "ex_date", "record_date", "pay_date", *(("declared_date",) if declared else ()), "amount",
+            "currency")
+    return {r["event_id"]: tuple(r[c] for c in cols) for r in rows}
 
 
 def silver_db(tmp_path):
@@ -135,25 +174,31 @@ class FakeClient:
     JSON, an int (an HTTP error of that status), or a callable of the
     request's (url, data) that returns one. A URL no route matches is a
     404. `asked` records every request as (method, url, data): the
-    params, the JSON payload or the form fields."""
+    params, the JSON payload or the form fields; `headers` the headers
+    each one passed. received(host) counts the bytes of the bodies it
+    answered, as the client does."""
 
     def __init__(self, routes=None):
-        self.routes, self.asked = dict(routes or {}), []
+        self.routes, self.asked, self.headers, self._received = dict(routes or {}), [], [], {}
 
     def get(self, url, params=None, headers=None):
-        return self._answer("GET", url, params)
+        return self._answer("GET", url, params, headers)
 
     def post_json(self, url, payload, headers=None):
-        return self._answer("POST", url, payload)
+        return self._answer("POST", url, payload, headers)
 
     def post_form(self, url, fields, headers=None):
-        return self._answer("POST", url, fields)
+        return self._answer("POST", url, fields, headers)
 
     def urls(self, method=None) -> list:
         return [u for m, u, _ in self.asked if method in (None, m)]
 
-    def _answer(self, method, url, data):
+    def received(self, host) -> int:
+        return self._received.get(host.lower(), 0)
+
+    def _answer(self, method, url, data, headers):
         self.asked.append((method, url, data))
+        self.headers.append(dict(headers or {}))
         answer = next((a for key, a in self.routes.items() if key in url), 404)
         if callable(answer):
             answer = answer(url, data)
@@ -161,6 +206,8 @@ class FakeClient:
             raise fetcher.FetchError(url, answer, http.HTTPStatus(answer).phrase)
         body = answer if isinstance(answer, bytes) else answer.encode() if isinstance(answer, str) \
             else json.dumps(answer).encode()
+        host = fetcher.host_of(url)
+        self._received[host] = self._received.get(host, 0) + len(body)
         return fetcher.Response(url, 200, body)
 
 
@@ -187,8 +234,9 @@ def figi(client, answers):
 class FakeHttps(urllib.request.BaseHandler):
     """Stands in for the network beneath a real fetcher.Client. Each route
     maps a URL to (status, body, headers), or to an exception it raises;
-    any other URL answers `default`. `seen` records every request the
-    client's opener sends."""
+    any other URL answers `default`. A body is bytes, or a file the
+    answer reads. `seen` records every request the client's opener
+    sends."""
 
     def __init__(self, routes=None, default=(404, b"", {})):
         self.routes, self.default, self.seen = dict(routes or {}), default, []
@@ -202,16 +250,19 @@ class FakeHttps(urllib.request.BaseHandler):
         msg = email.message.Message()
         for k, v in headers.items():
             msg[k] = v
-        resp = urllib.response.addinfourl(io.BytesIO(body), msg, req.full_url, status)
+        resp = urllib.response.addinfourl(body if hasattr(body, "read") else io.BytesIO(body), msg, req.full_url,
+                                          status)
         resp.msg = http.HTTPStatus(status).phrase
         return resp
 
 
-def make_xlsx(rows=(), *, sheet=None, shared=None, target="worksheets/sheet1.xml") -> bytes:
-    """An invented one-sheet workbook. By default every cell of `rows` is
-    an inline string, as simple as a spreadsheet gets; `sheet` gives the
-    sheet's rows as XML instead, `shared` its shared strings, and
-    `target` where the workbook says the sheet lies."""
+def make_xlsx(rows=(), *, sheets=None, sheet=None, shared=None, target="worksheets/sheet1.xml") -> bytes:
+    """An invented workbook: one sheet of `rows`, or with `sheets` one
+    sheet per name, each of its rows. A str cell is an inline string and
+    a number a number cell, as a date cell stores its serial: as simple
+    as a spreadsheet gets. `sheet` gives the one sheet's rows as XML
+    instead, `shared` its shared strings, and `target` where the workbook
+    says it lies."""
     def col(i):
         s = ""
         i += 1
@@ -220,29 +271,39 @@ def make_xlsx(rows=(), *, sheet=None, shared=None, target="worksheets/sheet1.xml
             s = chr(65 + r) + s
         return s
 
-    if sheet is None:
-        sheet = "".join(
-            f'<row r="{r + 1}">' + "".join(
-                f'<c r="{col(c)}{r + 1}" t="inlineStr"><is><t>{escape(str(v))}</t></is></c>'
-                for c, v in enumerate(cells) if v != "") + "</row>"
-            for r, cells in enumerate(rows))
+    def cell(r, c, v):
+        ref = f"{col(c)}{r + 1}"
+        if isinstance(v, int | float) and not isinstance(v, bool):
+            return f'<c r="{ref}"><v>{v}</v></c>'
+        return f'<c r="{ref}" t="inlineStr"><is><t>{escape(str(v))}</t></is></c>'
+
+    def data(rows):
+        return "".join(f'<row r="{r + 1}">' + "".join(cell(r, c, v) for c, v in enumerate(cells) if v != "")
+                       + "</row>" for r, cells in enumerate(rows))
+
+    if sheets is None:
+        books = [("Holdings", target, sheet if sheet is not None else data(rows))]
+    else:
+        books = [(name, f"worksheets/sheet{i + 1}.xml", data(rows)) for i, (name, rows) in enumerate(sheets.items())]
     ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
     rel = 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
-        z.writestr("xl/workbook.xml", f'<workbook {ns} {rel}><sheets><sheet name="Holdings" sheetId="1" '
-                                      f'r:id="rId1"/></sheets></workbook>')
+        z.writestr("xl/workbook.xml", f"<workbook {ns} {rel}><sheets>" + "".join(
+            f'<sheet name="{escape(name)}" sheetId="{i + 1}" r:id="rId{i + 1}"/>'
+            for i, (name, _, _) in enumerate(books)) + "</sheets></workbook>")
         z.writestr("xl/_rels/workbook.xml.rels",
-                   '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                   f'<Relationship Id="rId1" Target="{target}" '
-                   'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"/>'
-                   '</Relationships>')
+                   '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + "".join(
+                       f'<Relationship Id="rId{i + 1}" Target="{path}" Type="http://schemas.openxmlformats.org/'
+                       'officeDocument/2006/relationships/worksheet"/>' for i, (_, path, _) in enumerate(books))
+                   + "</Relationships>")
         if shared is not None:
             z.writestr("xl/sharedStrings.xml", f"<sst {ns}>" + "".join(f"<si><t>{escape(s)}</t></si>" for s in shared)
                        + "</sst>")
-        path = target.lstrip("/")
-        z.writestr(path if path.startswith("xl/") else f"xl/{path}",
-                   f"<worksheet {ns}><sheetData>{sheet}</sheetData></worksheet>")
+        for _, path, xml in books:
+            path = path.lstrip("/")
+            z.writestr(path if path.startswith("xl/") else f"xl/{path}",
+                       f"<worksheet {ns}><sheetData>{xml}</sheetData></worksheet>")
     return buf.getvalue()
 
 

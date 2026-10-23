@@ -1,0 +1,18 @@
+{
+  "status": "OK",
+  "totalCount": 6,
+  "itemList": [
+    {"noticeId": 900101, "date": 20260302, "publishTime": 1772442000000, "noticeType": "EX",
+     "contact": "Jane Example, +41 00 000 00 00", "title": "Ex 10.03.2026", "isin": "CH0000000001"},
+    {"noticeId": 900102, "date": 20260302, "publishTime": 1772445600000, "noticeType": "EX",
+     "contact": "Contact Desk, +41 00 000 00 01", "title": "Ex 11.03.2026", "isin": "CH0000000099"},
+    {"noticeId": 900103, "date": 20260303, "publishTime": 1772528400000, "noticeType": "EX",
+     "contact": "John Example, +423 000 00 00", "title": "Ex 17.03.2026", "isin": "CH0000000098 / LI0000000002"},
+    {"noticeId": 900104, "date": 20260303, "publishTime": 1772532000000, "noticeType": "DL",
+     "contact": "Jane Example, +41 00 000 00 00", "title": "Delisting", "isin": "CH0000000001"},
+    {"noticeId": 900105, "date": 20250304, "publishTime": 1741078800000, "noticeType": "EX",
+     "contact": "Jane Example, +41 00 000 00 00", "title": "Ex 11.03.2025", "isin": null},
+    {"noticeId": 900106, "date": 20260304, "publishTime": 1772614800000, "noticeType": "EX",
+     "contact": "Contact Desk, +41 00 000 00 01", "title": "Ex 20.03.2026", "isin": "NONE"}
+  ]
+}

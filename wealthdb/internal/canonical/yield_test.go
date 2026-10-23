@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTenorMonths(t *testing.T) {
@@ -115,5 +116,54 @@ func TestBuiltinConventions(t *testing.T) {
 	}
 	if DayCount("30/365").Valid() || DayCount("act/act").Valid() {
 		t.Error("a day count outside DayCounts is valid")
+	}
+}
+
+// The built-in settlement cycles name each market once, by market, its
+// cycles ascending by day and only its first without one, each of a
+// business day or more. Hong Kong has none. Each call hands out its own
+// table.
+func TestBuiltinSettlementCycles(t *testing.T) {
+	t.Parallel()
+	got := BuiltinSettlementCycles()
+	byMarket := map[string][]SettlementCycle{}
+	var markets []string
+	for _, c := range got {
+		if len(byMarket[c.Market]) == 0 {
+			markets = append(markets, c.Market)
+		}
+		byMarket[c.Market] = append(byMarket[c.Market], c)
+		if c.Days < 1 || c.Origin != OriginBuiltin {
+			t.Errorf("cycle %+v", c)
+		}
+	}
+	if !slices.IsSorted(markets) || len(markets) != len(byMarket) {
+		t.Errorf("markets %v, want each once, sorted", markets)
+	}
+	want := slices.Concat(EuroAreaMarkets, []string{"CA", "CH", "DK", "GB", "JP", "NO", "SE", "US"})
+	slices.Sort(want)
+	if !slices.Equal(markets, want) {
+		t.Errorf("markets %v, want %v", markets, want)
+	}
+	for m, cs := range byMarket {
+		for i, c := range cs {
+			fromStart := i == 0 && slices.Contains([]string{"CA", "JP", "US"}, m)
+			if (c.From == nil) != fromStart ||
+				(i > 0 && cs[i-1].From != nil && !c.From.After(*cs[i-1].From)) || (i > 0 && c.Days >= cs[i-1].Days) {
+				t.Errorf("%s cycles %+v", m, cs)
+			}
+		}
+	}
+	// T+1 began a day earlier in Canada than in the United States.
+	for m, day := range map[string]int{"US": 28, "CA": 27} {
+		cs := byMarket[m]
+		if len(cs) != 3 || cs[0].Days != 3 || !cs[2].From.Equal(time.Date(2024, 5, day, 0, 0, 0, 0, time.UTC)) ||
+			cs[2].Days != 1 {
+			t.Errorf("%s cycles %+v", m, cs)
+		}
+	}
+	*got[0].From = time.Time{}
+	if BuiltinSettlementCycles()[0].From.IsZero() {
+		t.Error("BuiltinSettlementCycles hands out its own days")
 	}
 }

@@ -77,8 +77,11 @@ def _finder(url, params):
     return {"data": {"funds": {"etfs": {"datas": datas[params["country"]]}}}}
 
 
-def ssga(workbook=None):
-    return FakeClient({FINDER: _finder, ".xlsx": make_xlsx(EMEA) if workbook is None else workbook})
+def ssga(workbook=None, **routes):
+    """State Street: its fund finder, the answers `routes` gives by a part
+    of their URL, and `workbook`, else the EMEA fund's holdings, for any
+    other workbook."""
+    return FakeClient({FINDER: _finder, **routes, ".xlsx": make_xlsx(EMEA) if workbook is None else workbook})
 
 
 def test_claims_by_isin_and_fetches_the_ucits_file(tmp_path):

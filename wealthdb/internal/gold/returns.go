@@ -279,13 +279,10 @@ func loadReturnsDataset(ctx context.Context, db *sql.DB, outCcy string, fx fxBou
 // loaded series, not on grain/period, so they are computed once per dataset.
 func (ds *returnsDataset) finalize() {
 	// The spine's latest emitted day across all accounts (≈ today). An account
-	// whose own series ends before this was ended there by the spine: a later
-	// run of its source re-covered its company without it, once the source ran
-	// one and a half of its cadences past it, or the source kept snapshotting
-	// past it beyond the carry horizon (closed / feed-dropped; a run that
-	// merely did not cover it carries it forward instead). Its value
-	// is 0 thereafter (matching the macro), and we flag it if it dropped while
-	// still holding value.
+	// whose own series ends before this was ended there by the history's
+	// ending (DESIGN.md §10.7). A run that merely did not cover it carries it
+	// forward instead. Its value is 0 thereafter, matching the macro, and an
+	// account that dropped while still holding value is flagged.
 	var globalMax int64
 	for _, a := range ds.accts {
 		if d := a.lastDay(); d > globalMax {
@@ -506,13 +503,10 @@ func (a *accountData) lastVal() float64 {
 
 // valueAt returns the value on `day` and whether the account was present then.
 // Before its first emitted row it is NULL ("not yet alive"); AFTER its
-// last emitted row it is gone — the macro stops emitting the account once a
-// later run of its source re-covered everything it was last seen with without
-// it and the source ran one and a half of its cadences past it, or once its
-// source has snapshotted past it for longer than the carry horizon, so
-// carrying forward past the last row would diverge from
-// report_*_history and break global == Σ accounts. Within [first,last] the
-// daily spine has a row for every day.
+// last emitted row it is gone: the macro stops emitting the account where
+// its last observation ends (DESIGN.md §10.7), so carrying forward past the
+// last row would diverge from report_*_history and break global == Σ
+// accounts. Within [first,last] the daily spine has a row for every day.
 func (a *accountData) valueAt(day int64) (float64, bool) {
 	if len(a.series) == 0 || day < a.series[0].day || day > a.series[len(a.series)-1].day {
 		return 0, false

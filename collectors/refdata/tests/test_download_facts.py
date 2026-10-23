@@ -13,7 +13,7 @@ import download
 import load
 from download import Fetched
 from providers.base import Context, Parsed, Provider, ProviderError, read_meta, row, write_meta
-from tests.helpers import (TODAY, FakeLookup, FakeProvider, fund, make_run, plan, run_entries, wanted_doc,
+from tests.helpers import (TODAY, FakeLookup, FakeProvider, fund, held, make_run, plan, run_entries, wanted_doc,
                            write_wanted)
 
 REF = "symbol:FUNDA"
@@ -98,10 +98,6 @@ def registry(monkeypatch):
         reg.update((p.name, p) for p in providers)
         return providers
     return add
-
-
-def held(ref=REF, symbol="FUNDA", wants=(), facts=None, **kw):
-    return {**fund(ref, symbol, **kw), "wants": list(wants), "facts": facts or {}}
 
 
 def security(key, missing, scope="direct", lookups=None):

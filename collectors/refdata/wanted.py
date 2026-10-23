@@ -7,19 +7,23 @@ for a run on another machine. It is a versioned JSON contract
 (wealthdb/docs/adapters/refdata.md §5): this module refuses a contract
 or a version it does not know rather than guess at its fields. A
 version 1 list names no facts: it reads with `wants`, `facts` and
-`periods` empty.
+`periods` empty. A list of version 1 or 2 names no security's receipt,
+wants or calendar: they read false, empty and None.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+import config
+
 CONTRACT = "refdata-wanted"
-VERSIONS = (1, 2)
+VERSIONS = (1, 2, 3)
 
 
 class WantedError(Exception):
@@ -38,7 +42,8 @@ class Fund:
     held_from: date | None = None
     held_to: date | None = None          # None: still held
     compositions: tuple = ()             # dates gold has, ascending
-    wants: tuple = ()                    # risk_metrics, characteristics, money_market, line_durations
+    wants: tuple = ()                    # risk_metrics, characteristics, money_market, line_durations,
+                                         # dividend_calendar
     facts: dict = field(default_factory=dict)     # fact -> tuple of the dates gold has, ascending
 
 
@@ -56,6 +61,9 @@ class Security:
     missing: tuple = ()
     lookups: dict = field(default_factory=dict)   # provider -> date of its last answer
     periods: dict = field(default_factory=dict)   # family -> the newest period end gold has
+    receipt: bool = False                 # gold reads it as a depositary receipt
+    wants: tuple = ()                     # dividend_calendar, for a share held directly
+    calendar: date | None = None          # the newest day gold holds calendar rows for it
 
 
 @dataclass(frozen=True)
@@ -68,6 +76,13 @@ class Wanted:
 
 def _date(v):
     return date.fromisoformat(v) if v else None
+
+
+def _flag(v) -> bool:
+    """A true-or-false field, false where it is absent or null."""
+    if v is None or isinstance(v, bool):
+        return bool(v)
+    raise TypeError(f"{v!r} is not true or false")
 
 
 def parse(doc) -> Wanted:
@@ -92,7 +107,8 @@ def parse(doc) -> Wanted:
             asset_class=s.get("asset_class"),
             missing=tuple(s.get("missing") or ()),
             lookups={k: date.fromisoformat(v) for k, v in (s.get("lookups") or {}).items()},
-            periods={k: date.fromisoformat(v) for k, v in (s.get("periods") or {}).items()})
+            periods={k: date.fromisoformat(v) for k, v in (s.get("periods") or {}).items()},
+            receipt=_flag(s.get("receipt")), wants=tuple(s.get("wants") or ()), calendar=_date(s.get("calendar")))
             for s in doc.get("securities") or ())
         return Wanted(as_of=date.fromisoformat(doc["as_of"]),
                       max_gap_days=int(doc.get("settings", {}).get("max_gap_days", 400)),
@@ -112,11 +128,13 @@ def from_file(path: Path) -> Wanted:
 
 def from_engine(engine: str, timeout: float = 600) -> Wanted:
     """Ask the engine: `<engine> -r refdata-wanted`. The engine finds its
-    config and data root the way it always does, from the environment.
-    An engine that cannot run, or runs past `timeout` seconds, is a
+    config and data root the way it always does, from the environment,
+    which it gets without FINRA's credential: it has no use for it. An
+    engine that cannot run, or runs past `timeout` seconds, is a
     WantedError like any other."""
+    env = {k: v for k, v in os.environ.items() if k not in (config.FINRA_CLIENT_ID, config.FINRA_CLIENT_SECRET)}
     try:
-        out = subprocess.run([engine, "-r", "refdata-wanted"], capture_output=True, text=True,
+        out = subprocess.run([engine, "-r", "refdata-wanted"], capture_output=True, text=True, env=env,
                              timeout=timeout, check=False)
     except FileNotFoundError as e:
         raise WantedError(f"engine {engine!r} not found; set REFDATA_WEALTHDB or `engine` in "

@@ -4,17 +4,23 @@ The collector's own settings: $XDG_CONFIG_HOME/refdata.cfg, by default
 each setting. This module reads the file as data, so nothing in it runs,
 and refuses a file that does not parse, or that names a setting or a
 provider this collector does not know: a typo must not pass for a
-setting that is off.
+setting that is off. A Config also carries FINRA's API credential, which
+comes from --client-id and the environment, never from the file
+(with_finra_credential).
 """
 
 from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 FILE_NAME = "refdata.cfg"
+# The environment variables of FINRA's API credential (providers/finra.py),
+# which the wrapper sources from <secrets-dir>/finra.env.
+FINRA_CLIENT_ID = "FINRA_CLIENT_ID"
+FINRA_CLIENT_SECRET = "FINRA_CLIENT_SECRET"
 DEFAULT_PROVIDERS = ("inbox", "sec-nport", "sec-nmfp", "sec-edgar", "gleif", "openfigi")
 DEFAULT_MAX_AGE_DAYS = 30
 DEFAULT_CONSTITUENT_FLOOR_PCT = 0.0001
@@ -37,6 +43,10 @@ class Config:
     # Each 529 plan as (the broker's name prefix, the report's URL).
     fidelity_529_plans: tuple = ()
     path: Path | None = field(default=None, compare=False)
+    # FINRA's API credential (with_finra_credential), out of the repr, so
+    # no log or traceback shows it.
+    finra_client_id: str = field(default="", repr=False)
+    finra_client_secret: str = field(default="", repr=False)
 
 
 def path() -> Path:
@@ -101,6 +111,17 @@ def load(known_providers, where: Path | None = None) -> Config:
     return Config(providers=tuple(providers), contact=contact.strip(), max_age_days=max_age,
                   engine=engine.strip(), constituents=constituents, constituent_floor_pct=float(floor),
                   fidelity_529_plans=tuple((k.strip(), v) for k, v in sorted(plans.items())), path=where)
+
+
+def with_finra_credential(cfg: Config, client_id: str | None = None, environ=None) -> Config:
+    """cfg with FINRA's API credential: the client id given (--client-id),
+    else FINRA_CLIENT_ID; the secret from FINRA_CLIENT_SECRET alone, since
+    a secret on the command line leaks into `ps` and the shell's history.
+    A value not set stays empty, and the finra provider then refuses to
+    run."""
+    env = os.environ if environ is None else environ
+    return replace(cfg, finra_client_id=(client_id or env.get(FINRA_CLIENT_ID, "")).strip(),
+                   finra_client_secret=env.get(FINRA_CLIENT_SECRET, "").strip())
 
 
 # The engine wrapper of the checkout this collector lives in: it runs

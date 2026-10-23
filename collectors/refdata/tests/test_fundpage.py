@@ -37,9 +37,9 @@ def test_a_breakdowns_parts():
 
 
 @pytest.mark.parametrize("came,known,missing,warned", [
-    (True, True, {}, False),
-    (True, False, {"facts_missing": ["characteristics"]}, True),
-    (False, False, {"facts_missing": ["characteristics"]}, False),
+    (True, True, [], False),
+    (True, False, ["characteristics"], True),
+    (False, False, ["characteristics"], False),
 ])
 def test_a_page_answers_the_characteristics_in_a_known_layout_only(caplog, came, known, missing, warned):
     with caplog.at_level(logging.WARNING, logger="refdata.test"):

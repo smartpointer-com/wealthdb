@@ -485,45 +485,24 @@ var monthlyMortgage = map[int]float64{100: -90000, 130: -89000, 160: -88000, 190
 // pace and not its closing: it stands until the source runs more than
 // one and a half of its cadences past its last observation. Standing,
 // its last interval retires nothing, and the instalment there is all
-// interest. Ended, the interval retires what was left.
+// interest. Ended, the interval retires what was left. How the shared
+// ending reads a cadence is TestTheCadenceIsTheMedianOfTheKeysDays's.
 func TestAMortgageEndsAfterOneAndAHalfCadences(t *testing.T) {
-	// Gaps of 20, 40 and 60 days: the median is 40, the shortest 20,
-	// the last 60. It stands to day 280, where the shortest would end it
-	// after day 250 and the last only after day 310.
-	uneven := map[int]float64{100: -90000, 120: -89000, 160: -88000, 220: -86000}
 	for _, tc := range []struct {
 		name   string
-		obs    map[int]float64
-		pay    int   // the instalment's day, in the last interval
-		last   int   // the day of the source's newest nightly snapshot
-		at     int64 // the nightly run's time of day, the mortgage's too
-		late   int64 // a later run on the newest day, 0 for none
+		last   int // the day of the source's newest nightly snapshot
 		repaid bool
 	}{
-		{"a month on, before its next observation loads", monthlyMortgage, 195, 221, 0, 0, false},
-		{"one and a half cadences on", monthlyMortgage, 195, 235, 0, 0, false},
-		{"past one and a half cadences", monthlyMortgage, 195, 236, 0, 0, true},
-		// Gaps of 30, 30, 90 and 30 days: the median is 30, where the
-		// mean of 45 would hold the mortgage open to day 347.
-		{"a missed month does not stretch the cadence",
-			map[int]float64{100: -90000, 130: -89000, 160: -88000, 250: -85000, 280: -84000}, 285, 330, 0, 0, true},
-		{"the median, not the shortest gap", uneven, 225, 270, 0, 0, false},
-		{"the median, not the last gap", uneven, 225, 281, 0, 0, true},
-		// Instants, not days: observed at 02:00, the mortgage stands at a
-		// snapshot exactly one and a half cadences later, and ends at one
-		// an hour after that.
-		{"at the boundary to the hour", monthlyMortgage, 195, 235, 2 * 3600, 0, false},
-		{"an hour past the boundary", monthlyMortgage, 195, 235, 2 * 3600, 3 * 3600, true},
+		{"a month on, before its next observation loads", 221, false},
+		{"one and a half cadences on", 235, false},
+		{"past one and a half cadences", 236, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db, ctx := openMigrated(t)
 			seedResolutionFixture(t, db, ctx)
-			seedMortgageBalancesAt(t, db, ctx, tc.at, tc.obs)
-			seedSourceDays(t, db, ctx, 100, tc.last, tc.at)
-			if tc.late != 0 {
-				seedSourceDays(t, db, ctx, tc.last, tc.last, tc.late)
-			}
-			seedMortgagePayment(t, db, ctx, "K-OPEN", tc.pay, -1500, "MORT")
+			seedMortgageBalances(t, db, ctx, monthlyMortgage)
+			seedSourceDays(t, db, ctx, 100, tc.last, 0)
+			seedMortgagePayment(t, db, ctx, "K-OPEN", 195, -1500, "MORT")
 
 			want := map[string]float64{"mortgage_interest": -1500}
 			if tc.repaid {
@@ -534,23 +513,6 @@ func TestAMortgageEndsAfterOneAndAHalfCadences(t *testing.T) {
 					got, want, tc.repaid)
 			}
 		})
-	}
-}
-
-// TestTwoReadingsOfOneDayAreNoCadence: a mortgage read twice on one day
-// has no gap between days to read. Half a day is no cadence, so the
-// mortgage takes a month, as one observed once does, and stands beside
-// a nightly feed that re-covers its company from the next night.
-func TestTwoReadingsOfOneDayAreNoCadence(t *testing.T) {
-	db, ctx := openMigrated(t)
-	seedResolutionFixture(t, db, ctx)
-	seedMortgageBalancesAt(t, db, ctx, 8*3600, map[int]float64{100: -40000})
-	seedMortgageBalancesAt(t, db, ctx, 20*3600, map[int]float64{100: -40000})
-	seedSourceDays(t, db, ctx, 100, 102, 20*3600)
-	seedMortgagePayment(t, db, ctx, "S-OPEN", 101, -1500, "MORT")
-	want := map[string]float64{"mortgage_interest": -1500}
-	if got := mortgageShares(t, db, ctx)["S-OPEN"]; !maps.Equal(got, want) {
-		t.Errorf("the instalment splits as %v, want %v: two readings of one day leave it standing", got, want)
 	}
 }
 
@@ -617,6 +579,8 @@ func TestAMortgageInTheSourcesNewestSnapshotStands(t *testing.T) {
 // TestMigration0143DDLIsRerunnable holds the mortgage's end to the
 // replay bar. Replaying 0093, 0096 or 0143 puts an older end rule back,
 // so the rerun replays every later re-issue after it, as Migrate would.
+// 0144 re-issues cashflow_lines_base on the shared ending; its replay is
+// held here, on a mortgage book.
 // The monthly mortgage, reported at 02:00 in a run of its own, has no
 // company, while the feed at 03:00 runs two cadences past it: 0143's rule
 // reads it as repaid, the shared ending as standing, after each replay.

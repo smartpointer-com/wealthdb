@@ -2,6 +2,7 @@ package canonical
 
 import (
 	"encoding/json"
+	"slices"
 	"time"
 )
 
@@ -10,8 +11,9 @@ import (
 // fred collector, or a generator writing the synthetic kind), never from
 // an account. Every one is a dated fact: a composition or a rate is dated
 // by the day it describes, a company's figure by the last day of its
-// period, a security fact by the day it was looked up. docs/DESIGN.md
-// §7.6 and docs/adapters/refdata.md say how they load.
+// period, a security fact by the day it was looked up, a distribution by
+// the day its source stated it. docs/DESIGN.md §7.6 and
+// docs/adapters/refdata.md say how they load.
 
 // CompositionBasis says what a composition's lines describe.
 type CompositionBasis string
@@ -275,6 +277,61 @@ type SecurityPeriodFactChange struct {
 	Filed          *time.Time
 	Payload        json.RawMessage
 }
+
+// DividendEventChange is one insert into gold's `dividend_calendar`: one
+// distribution of a fund or a security as a provider states it. Ref is
+// the fund reference or security key the wanted list names it by, or
+// jpx:<code> for a row of the JPX list, by the share's Tokyo Stock
+// Exchange code. EventID is the source's id of the distribution, else its
+// kind and days joined. AsOf is the UTC midnight of the day the source
+// stated it: a later statement of the same distribution replaces an
+// earlier one. Each day is nil where the source states none. Amount is
+// gross per share or unit, in Currency.
+type DividendEventChange struct {
+	SilverSourceID string
+	Ref            string
+	Provider       string
+	EventID        string
+	AsOf           int64
+	Kind           DividendEventKind
+	ExDay          *time.Time
+	RecordDay      *time.Time
+	PayDay         *time.Time
+	DeclaredDay    *time.Time
+	Amount         *Decimal
+	Currency       *string
+	Status         *DividendEventStatus
+}
+
+// DividendEventKind says what a distribution pays.
+type DividendEventKind string
+
+const (
+	DividendKindDividend        DividendEventKind = "dividend"
+	DividendKindCapitalGain     DividendEventKind = "capital_gain"
+	DividendKindReturnOfCapital DividendEventKind = "return_of_capital"
+	DividendKindSpecial         DividendEventKind = "special"
+	DividendKindOther           DividendEventKind = "other"
+)
+
+// DividendEventKinds are the kinds a distribution may be.
+var DividendEventKinds = []DividendEventKind{DividendKindDividend, DividendKindCapitalGain,
+	DividendKindReturnOfCapital, DividendKindSpecial, DividendKindOther}
+
+// Valid reports whether k is one of DividendEventKinds.
+func (k DividendEventKind) Valid() bool { return slices.Contains(DividendEventKinds, k) }
+
+// DividendEventStatus says whether a source states a distribution as
+// final, or as estimated: its amount may still change.
+type DividendEventStatus string
+
+const (
+	DividendFinal     DividendEventStatus = "final"
+	DividendEstimated DividendEventStatus = "estimated"
+)
+
+// Valid reports whether s is final or estimated.
+func (s DividendEventStatus) Valid() bool { return s == DividendFinal || s == DividendEstimated }
 
 // RateObservationChange is one insert into gold's `rate_observations`:
 // one day's value of a published interest-rate series, in percent, as

@@ -40,6 +40,24 @@ holdings, and the figures a page shows.
   day, else the holdings' day. Where no answer, or none of the API's
   layout (an object), came, meta.json names the characteristics in
   facts_missing (fundpage.due()).
+- Dividend calendar: for a fund that wants it, one more request, for
+  its distributions, kept as distributions.json. A US fund's answer
+  lists every distribution with its ex, record and pay days, its amount
+  per share and the ordinary income, short- and long-term capital
+  gains, return of capital and liquidation it pays, in the answer's
+  currency. Each part with an amount is one event: income a dividend,
+  the two gains together a capital gain, return of capital its own kind,
+  a liquidation of kind other; a distribution that states no part is one
+  event of kind other, of its amount. A UCITS fund's answer states its
+  latest distribution only: its announcement, ex, record and payment
+  days, its amount per share (`distributionYield`) and currency, one
+  dividend. Silver keeps each one a run reads, so the history grows run
+  by run; a US answer lists the fund's whole history, so its events are
+  complete (Parsed.events_complete). The rows of one id are one event
+  (base.merge_events). An answer without a distribution states none.
+  Where the answer did not come, or came in no layout this provider
+  reads, meta.json names the calendar in facts_missing. The events are
+  dated by the holdings' day.
 
 The counterparty entries are read by their field names (a name, and a
 weight or exposure in percent); only invented fixtures test that layout.
@@ -59,7 +77,8 @@ from collectorkit import bronze
 from collectorkit.parse import iso_date
 
 from . import fundpage, table
-from .base import Parsed, Provider, ProviderError, blank_to_none, dec, ident, read_json, read_meta, row, write_meta
+from .base import (Parsed, Provider, ProviderError, amount, blank_to_none, dec, event_row, facts_missing, ident,
+                   kinds_paid, merge_events, present, read_json, read_meta, row, write_meta)
 
 API = "https://dng-api.invesco.com/cache/v1/accounts/{locale}/shareclasses/{id}/"
 ISSUER = re.compile(r"invesco|powershares", re.I)
@@ -92,6 +111,19 @@ NAMES = {
 }
 # The breakdowns a page shows, by the `breakdown` its answer is asked by.
 BREAKDOWNS = {"credit_quality": "creditRating", "maturity_breakdown": "effectiveMaturity"}
+DISTRIBUTIONS_DOC = "distributions.json"
+# A distribution's days, by the key each site's answer states it under,
+# as the event's columns.
+US_DAYS = (("exDate", "ex_date"), ("recordDate", "record_date"), ("payDate", "pay_date"))
+UCITS_DAYS = (("exDate", "ex_date"), ("recordDate", "record_date"), ("paymentDate", "pay_date"),
+              ("announcementDate", "declared_date"))
+# The fields of a UCITS distributions answer this provider reads.
+UCITS_FIELDS = frozenset({*(key for key, _ in UCITS_DAYS), "distributionYield", "currency"})
+# The parts a US distribution pays, by the kind of event each is: the two
+# gains together are one capital gain.
+US_PARTS = (("ordinaryIncomeDistribution", "dividend"), ("shortTermCapitalGainsDistribution", "capital_gain"),
+            ("longTermCapitalGainsDistribution", "capital_gain"),
+            ("returnOfCapitalDistribution", "return_of_capital"), ("liquidationDistribution", "other"))
 
 log = logging.getLogger("refdata.invesco")
 
@@ -107,13 +139,13 @@ class Invesco(Provider):
         isin, cusip = ident(fund, "isin"), ident(fund, "cusip")
         if not cusip and isin.startswith("US") and len(isin) == 12:
             cusip = isin[2:11]
-        # A fund wanted as a proxy or an underlying wants no
-        # characteristics, and its fetch asks for no page answer.
-        wants = "characteristics" in fund.wants
+        # A fund wanted as a proxy or an underlying wants neither, and its
+        # fetch asks for no page answer or distributions.
+        wants = {"characteristics": "characteristics" in fund.wants, "calendar": "dividend_calendar" in fund.wants}
         if cusip:
-            return {"ref": fund.ref, "site": "us", "id": cusip, "characteristics": wants}
+            return {"ref": fund.ref, "site": "us", "id": cusip, **wants}
         if isin:
-            return {"ref": fund.ref, "site": "ucits", "id": isin, "characteristics": wants}
+            return {"ref": fund.ref, "site": "ucits", "id": isin, **wants}
         return None
 
     def fetch(self, claim, as_of, outdir: Path, ctx):
@@ -140,14 +172,30 @@ class Invesco(Provider):
             raise ProviderError(f"{claim['id']}: the holdings answer states no holdings or no date")
         for kind, (body, _) in got.items():
             bronze.atomic_write_bytes(outdir / DOCS[kind], body)
-        pages, missing = {}, {}
+        pages, missing = {}, []
         if claim.get("characteristics"):
             pages = self._pages(claim, outdir, ctx)
-            missing = fundpage.due(bool(pages), any(isinstance(d, dict) for d in pages.values()), claim["ref"],
-                                   log=log, what="its page's answers")
+            missing += fundpage.due(bool(pages), any(isinstance(d, dict) for d in pages.values()), claim["ref"],
+                                    log=log, what="its page's answers")
+        if claim.get("calendar") and not self._distributions(claim, outdir, ctx):
+            missing.append("dividend_calendar")
         write_meta(outdir, provider=self.name, ref=claim["ref"], site=claim["site"], as_of=day.isoformat(),
-                   files=sorted(got), pages=sorted(pages), **missing)
+                   files=sorted(got), pages=sorted(pages), **facts_missing(missing))
         return day
+
+    def _distributions(self, claim, outdir: Path, ctx) -> bool:
+        """Asks for a fund's distributions and keeps the answer; whether it
+        came in a layout of the API's."""
+        url, params = distributions_ask(claim)
+        got = fundpage.fetch(ctx, url, claim["ref"], log=log, what="its distributions", params=params, headers=JSON,
+                             json=True)
+        if got is None:
+            return False
+        bronze.atomic_write_bytes(outdir / DISTRIBUTIONS_DOC, got[0])
+        if distribution_rows(got[1], claim["site"]) is None:
+            log.warning("%s: its distributions matched no known layout", claim["ref"])
+            return False
+        return True
 
     def _pages(self, claim, outdir: Path, ctx) -> dict:
         """The page answers that came, by name, each kept in outdir: those
@@ -173,8 +221,12 @@ class Invesco(Provider):
         meta = read_meta(indir)
         out = parse_docs({k: read_json(indir, DOCS[k]) for k in meta["files"]}, meta["ref"], provider=self.name)
         pages = {k: read_json(indir, PAGE_DOCS[k]) for k in meta.get("pages", ())}
-        out.characteristics = characteristics(pages, meta["ref"], date.fromisoformat(meta["as_of"]),
-                                              provider=self.name)
+        day = date.fromisoformat(meta["as_of"])
+        out.characteristics = characteristics(pages, meta["ref"], day, provider=self.name)
+        if (indir / DISTRIBUTIONS_DOC).is_file():
+            doc = read_json(indir, DISTRIBUTIONS_DOC)
+            out.dividend_events = distribution_events(doc, meta["site"], meta["ref"], day, provider=self.name)
+            out.events_complete = meta["site"] == "us" and distribution_rows(doc, "us") is not None
         return out
 
 
@@ -183,7 +235,7 @@ def _day(doc: dict) -> date | None:
 
 
 def _iso(value) -> str | None:
-    day = table.parse_day(value) if blank_to_none(value) else None
+    day = table.parse_day(value)
     return day.isoformat() if day else None
 
 
@@ -308,3 +360,76 @@ def characteristics(docs: dict, ref: str, day: date, *, provider: str) -> list:
     figures = page_figures(docs)
     return fundpage.rows(figures, page_breakdowns(docs), ref, day, provider=provider,
                          skip=fundpage.EQUITY_FIGURES if _bond(figures) else frozenset())
+
+
+def distributions_ask(claim: dict) -> tuple:
+    """(url, params) of a fund's distributions: a US fund's by CUSIP, an
+    ETF's; a UCITS fund's by ISIN, with no product type, which the API
+    refuses there."""
+    if claim["site"] == "us":
+        return (API.format(locale="en_US", id=claim["id"]) + "distribution",
+                {"idType": "cusip", "productType": "ETF"})
+    return API.format(locale="en_GB", id=claim["id"]) + "distribution", {"idType": "isin"}
+
+
+def distribution_rows(doc, site: str) -> list | None:
+    """The distributions an answer lists: a US answer's `distributions`;
+    the one a UCITS answer states, which is none where it states no day.
+    None where the answer is in no such layout, a UCITS answer that holds
+    none of its fields (UCITS_FIELDS) and is not empty too."""
+    if not isinstance(doc, dict):
+        return None
+    if site != "us":
+        if doc and not UCITS_FIELDS & doc.keys():
+            return None
+        return [doc] if any(table.event_day(doc.get(key)) for key, _ in UCITS_DAYS[:3]) else []
+    if "distributions" not in doc:
+        return None
+    rows = doc["distributions"] or []
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else None
+
+
+def _days(r: dict, keys) -> dict:
+    """The event's days a distribution states under `keys`."""
+    return {col: table.event_day(r.get(key)) for key, col in keys}
+
+
+def distribution_events(doc, site: str, ref: str, day: date, *, provider: str) -> list:
+    """The dividend_events rows of a distributions answer, dated `day`. A
+    US distribution is one event per kind it pays an amount of
+    (US_PARTS), the two gains summed into one capital gain, in the
+    answer's currency; one that pays none of the parts is one event of
+    kind other, of its amount. A UCITS distribution is one dividend. A
+    distribution that states no ex, record or pay day is none, and the
+    rows of one id are one event (base.merge_events). The payload keeps
+    its other fields."""
+    out = []
+    for r in distribution_rows(doc, site) or ():
+        days = _days(r, US_DAYS if site == "us" else UCITS_DAYS)
+        if not (days["ex_date"] or days["record_date"] or days["pay_date"]):
+            continue
+        if site == "us":
+            paid, currency = _us_paid(r), blank_to_none(doc.get("currencyCode")) or "USD"
+            read = {k for k, _ in US_DAYS} | {k for k, _ in US_PARTS} | {"distributionAmountPerUnit"}
+        else:
+            paid, currency = {"dividend": (amount(r.get("distributionYield"))[0], {})}, blank_to_none(r.get("currency"))
+            read = UCITS_FIELDS
+        rest = {k: v for k, v in r.items() if k not in read}
+        for kind, (paid_amount, extra) in paid.items():
+            out.append(event_row(ref, provider, day, kind, days, amount=paid_amount,
+                                 currency=currency if paid_amount is not None else None,
+                                 payload=present({**rest, **extra}, keep_falsy=True)))
+    return merge_events(out)
+
+
+def _us_paid(r: dict) -> dict:
+    """kind -> (amount, payload) of a US distribution: one per kind it pays
+    an amount of, the two gains summed with each kept in the payload
+    (base.kinds_paid); one of kind other, of its amount per unit, where it
+    pays none."""
+    parts = {key: amount(r.get(key))[0] for key, _ in US_PARTS}
+    total = amount(r.get("distributionAmountPerUnit"))[0]
+    gains = {"total": total, "short_term": parts["shortTermCapitalGainsDistribution"],
+             "long_term": parts["longTermCapitalGainsDistribution"]}
+    return {kind: (paid, gains if kind == "capital_gain" else {"total": total})
+            for kind, paid in kinds_paid(parts, US_PARTS).items()} or {"other": (total, {})}

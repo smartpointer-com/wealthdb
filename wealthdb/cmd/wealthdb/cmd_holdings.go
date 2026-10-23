@@ -103,19 +103,19 @@ func holdingsReport(req request) *report {
 				return gold.SourcesAsOf(ctx, db, asOf, ccy)
 			})
 	case "portfolios":
-		return newReport(buildPortfolioColumnRegistry(ccy, kindOf), defaultPortfolioColumns,
-			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.PortfolioRow, error) {
+		return withLoads(newReport(buildPortfolioColumnRegistry(ccy, kindOf), defaultPortfolioColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.PortfolioRow, error) {
 				return gold.PortfoliosAsOf(ctx, db, asOf, ccy)
-			}))
+			}), loadKinds)
 	case "accounts":
-		return newReport(buildAccountColumnRegistry(ccy, kindOf, req.categories), defaultAccountColumns,
-			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.AccountRow, error) {
+		return withLoads(newReport(buildAccountColumnRegistry(ccy, kindOf, req.categories), defaultAccountColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.AccountRow, error) {
 				return gold.AccountsAsOf(ctx, db, asOf, ccy)
-			}))
+			}), loadKinds)
 	default:
 		withCash := req.withCash
-		return newReport(buildColumnRegistry(ccy, kindOf, req.categories), defaultColumns,
-			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.PositionRow, error) {
+		return withLoads(newReport(buildColumnRegistry(ccy, kindOf, req.categories), defaultColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.PositionRow, error) {
 				rows, err := gold.PositionsAsOf(ctx, db, asOf, ccy, req.missing)
 				if err != nil || !withCash {
 					return rows, err
@@ -125,93 +125,7 @@ func holdingsReport(req request) *report {
 					return nil, err
 				}
 				return mergeSorted(rows, cash), nil
-			}))
-	}
-}
-
-// sourceKinds is how a registry reads a source's kind, which only gold
-// knows: what -p shows of a portfolio or an account label depends on it.
-// kindOf answers from what load reads, and the report's fetch calls
-// load before any row is rendered (loadFirst).
-func sourceKinds() (kindOf func(string) string, load func(context.Context, *sql.DB) error) {
-	kinds := map[string]string{}
-	return func(id string) string { return kinds[id] },
-		func(ctx context.Context, db *sql.DB) error {
-			sk, err := gold.SourceKinds(ctx, db)
-			for k, v := range sk {
-				kinds[k] = v
-			}
-			return err
-		}
-}
-
-// accountNicknames are the accounts' nicknames, by source and account
-// id, which only gold knows: what -p shows of an account label that may
-// be one depends on them. The report's fetch calls load before any row
-// is rendered (loadFirst).
-type accountNicknames map[string]map[string]string
-
-// load reads every nickname gold holds.
-func (n accountNicknames) load(ctx context.Context, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx,
-		`SELECT silver_source_id, account_external_id, nickname FROM accounts WHERE nickname <> ''`)
-	if err != nil {
-		return fmt.Errorf("account nicknames: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var source, id, nickname string
-		if err := rows.Scan(&source, &id, &nickname); err != nil {
-			return fmt.Errorf("account nicknames: %w", err)
-		}
-		if n[source] == nil {
-			n[source] = map[string]string{}
-		}
-		n[source][id] = nickname
-	}
-	return rows.Err()
-}
-
-// of is an account's nickname, nil where it has none.
-func (n accountNicknames) of(source, id string) *string {
-	if nickname, ok := n[source][id]; ok {
-		return &nickname
-	}
-	return nil
-}
-
-// has reports whether label is the nickname of one of the source's
-// accounts.
-func (n accountNicknames) has(source, label string) bool {
-	for _, nickname := range n[source] {
-		if nickname == label {
-			return true
-		}
-	}
-	return false
-}
-
-// loadFirst is fetch after load (sourceKinds', accountNicknames'), so
-// that what the registry reads of gold answers before any row renders.
-func loadFirst[T any](load func(context.Context, *sql.DB) error,
-	fetch func(context.Context, *sql.DB) ([]T, error)) func(context.Context, *sql.DB) ([]T, error) {
-	return func(ctx context.Context, db *sql.DB) ([]T, error) {
-		if err := load(ctx, db); err != nil {
-			return nil, err
-		}
-		return fetch(ctx, db)
-	}
-}
-
-// loadFirstAt is loadFirst for a fetch that takes one more argument:
-// a series point's instant, a yield book.
-func loadFirstAt[A, T any](load func(context.Context, *sql.DB) error,
-	fetch func(context.Context, *sql.DB, A) ([]T, error)) func(context.Context, *sql.DB, A) ([]T, error) {
-	return func(ctx context.Context, db *sql.DB, a A) ([]T, error) {
-		if err := load(ctx, db); err != nil {
-			return nil, err
-		}
-		return fetch(ctx, db, a)
+			}), loadKinds)
 	}
 }
 

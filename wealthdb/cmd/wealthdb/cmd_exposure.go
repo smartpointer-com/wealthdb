@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 
@@ -248,11 +249,10 @@ func exposureReport(req request) *report {
 	case "issuers":
 		kindOf, loadKinds := sourceKinds()
 		issuers := typedIssuers{}
-		return seriesView(req, buildExposureIssuerColumns(ccy, kindOf, issuers), defaultExposureIssuerColumns,
-			loadFirstAt(loadKinds, loadFirstAt(issuers.load(kindOf),
-				func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureIssuerRow, error) {
-					return gold.ExposureIssuers(ctx, db, at, ccy)
-				})))
+		return withLoads(seriesView(req, buildExposureIssuerColumns(ccy, kindOf, issuers), defaultExposureIssuerColumns,
+			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureIssuerRow, error) {
+				return gold.ExposureIssuers(ctx, db, at, ccy)
+			}), loadKinds, issuers.load)
 	case "situs":
 		return seriesView(req, buildExposureSitusColumns(ccy), defaultExposureSitusColumns,
 			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureSitusRow, error) {
@@ -260,22 +260,22 @@ func exposureReport(req request) *report {
 			})
 	case "securities":
 		kindOf, loadKinds := sourceKinds()
-		return seriesView(req, buildExposureSecurityColumns(ccy, kindOf), defaultExposureSecurityColumns,
-			loadFirstAt(loadKinds, func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureSecurityRow, error) {
+		return withLoads(seriesView(req, buildExposureSecurityColumns(ccy, kindOf), defaultExposureSecurityColumns,
+			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureSecurityRow, error) {
 				return gold.ExposureSecurities(ctx, db, at, ccy, country)
-			}))
+			}), loadKinds)
 	case "funds":
 		kindOf, loadKinds := sourceKinds()
-		return seriesView(req, buildExposureFundColumns(ccy, kindOf), defaultExposureFundColumns,
-			loadFirstAt(loadKinds, func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureFundRow, error) {
+		return withLoads(seriesView(req, buildExposureFundColumns(ccy, kindOf), defaultExposureFundColumns,
+			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureFundRow, error) {
 				return gold.ExposureFunds(ctx, db, at, ccy)
-			}))
+			}), loadKinds)
 	default: // coverage
 		kindOf, loadKinds := sourceKinds()
-		return seriesView(req, buildExposureCoverageColumns(ccy, kindOf), defaultExposureCoverageColumns,
-			loadFirstAt(loadKinds, func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureCoverageRow, error) {
+		return withLoads(seriesView(req, buildExposureCoverageColumns(ccy, kindOf), defaultExposureCoverageColumns,
+			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureCoverageRow, error) {
 				return gold.ExposureCoverage(ctx, db, at, ccy)
-			}))
+			}), loadKinds)
 	}
 }
 
@@ -289,7 +289,9 @@ var exposureSeriesViews = []string{"classes", "sectors", "sizes", "countries", "
 //
 // value prints as value_<CCY>; a share of net worth is named share and
 // prints as share_pct. -p hides every amount and every instrument id a
-// holding is named by, and keeps the shares and the public keys.
+// holding is named by, prints a manual holding's key and name, and an
+// issuer named after it, as a pseudonym, and keeps the shares and the
+// public keys.
 
 // shareCols are the share columns of the aggregate views.
 func shareCols[T any](get func(T) gold.ExposureShares) []columnSpec[T] {
@@ -381,35 +383,38 @@ func buildExposureBucketColumns(ccy, view string) []columnSpec[gold.ExposureBuck
 // id. An issuer neither GLEIF nor a stock names takes its largest leaf's
 // own name, as typed or as exposure_issuer_name folds it
 // (report_exposure_issuers), so such a name is the holder's words. Only
-// gold knows them: the report's fetch calls load before any row renders.
+// gold knows them: the report runs load before any row renders
+// (withLoads).
 type typedIssuers map[string][2]string
 
-// load reads the names of the typed sources' instruments, once kindOf
-// answers.
-func (t typedIssuers) load(kindOf func(string) string) func(context.Context, *sql.DB) error {
-	return func(ctx context.Context, db *sql.DB) error {
-		rows, err := db.QueryContext(ctx, `SELECT silver_source_id, instrument_external_id, name,
-		       COALESCE(exposure_issuer_name(name), '') FROM instruments WHERE name IS NOT NULL`)
-		if err != nil {
+// load reads the names of the instruments of the sources whose kind is
+// one of typedHoldingKinds.
+func (t typedIssuers) load(ctx context.Context, db *sql.DB) error {
+	kinds := slices.Sorted(maps.Keys(typedHoldingKinds))
+	args := make([]any, len(kinds))
+	for i, k := range kinds {
+		args[i] = k
+	}
+	rows, err := db.QueryContext(ctx, `SELECT i.silver_source_id, i.instrument_external_id, i.name,
+	       COALESCE(exposure_issuer_name(i.name), '')
+	  FROM instruments i JOIN silver_sources s ON s.silver_source_id = i.silver_source_id
+	 WHERE i.name IS NOT NULL AND s.silver_kind IN (`+strings.Repeat("?, ", len(kinds)-1)+`?)`, args...)
+	if err != nil {
+		return fmt.Errorf("typed issuers: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var source, id, name, folded string
+		if err := rows.Scan(&source, &id, &name, &folded); err != nil {
 			return fmt.Errorf("typed issuers: %w", err)
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var source, id, name, folded string
-			if err := rows.Scan(&source, &id, &name, &folded); err != nil {
-				return fmt.Errorf("typed issuers: %w", err)
-			}
-			if !typedHolding(kindOf, source) {
-				continue
-			}
-			for _, n := range []string{name, folded} {
-				if n != "" {
-					t[strings.ToUpper(n)] = [2]string{source, id}
-				}
+		for _, n := range []string{name, folded} {
+			if n != "" {
+				t[strings.ToUpper(n)] = [2]string{source, id}
 			}
 		}
-		return rows.Err()
 	}
+	return rows.Err()
 }
 
 // of is the typed holding an issuer's name is the words of, ok false for
@@ -504,10 +509,11 @@ var defaultExposureSitusColumns = []string{"situs", "country_name", "region", "v
 
 func buildExposureSecurityColumns(ccy string, kindOf func(string) string) []columnSpec[gold.ExposureSecurityRow] {
 	type row = gold.ExposureSecurityRow
-	key := func(r row) string { return r.Security }
+	keyCol, nameCol := holdingKeyCols("security", kindOf, func(r row) string { return r.Security },
+		func(r row) string { return strOrEmpty(r.Name) })
 	return []columnSpec[row]{
-		holdingKeyCol("security", kindOf, key),
-		holdingKeyName(kindOf, key, func(r row) string { return strOrEmpty(r.Name) }),
+		keyCol,
+		nameCol,
 		textCol("ticker", func(r row) *string { return r.Ticker }),
 		textCol("asset_class", func(r row) *string { return r.AssetClass }),
 		textCol("sector", func(r row) *string { return r.Sector }),
@@ -531,10 +537,11 @@ var defaultExposureSecurityColumns = []string{"security", "name", "asset_class",
 
 func buildExposureFundColumns(ccy string, kindOf func(string) string) []columnSpec[gold.ExposureFundRow] {
 	type row = gold.ExposureFundRow
-	key := func(r row) string { return r.Fund }
+	keyCol, nameCol := holdingKeyCols("fund", kindOf, func(r row) string { return r.Fund },
+		func(r row) string { return strOrEmpty(r.Name) })
 	return []columnSpec[row]{
-		holdingKeyCol("fund", kindOf, key),
-		holdingKeyName(kindOf, key, func(r row) string { return strOrEmpty(r.Name) }),
+		keyCol,
+		nameCol,
 		outCcyCol("value", ccy, func(r row) *string { return r.Value }),
 		pctCol("share", func(r row) *float64 { return r.SharePct }),
 		textCol("via", func(r row) *string { return r.Via }),

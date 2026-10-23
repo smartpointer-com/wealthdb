@@ -161,7 +161,8 @@ func (r BankRosterRow) Account(kind canonical.AccountKind, display, currency str
 // The stamp is the source's, not the account's. Silver content-dedups an
 // unchanged roster row, so a quiet account's latest snapshot falls behind
 // the source's, and gold ends an account at the first later snapshot that
-// re-covers the accounts it was observed with (DESIGN.md §10.7). An
+// re-covers the accounts it was observed with, once the source has run one
+// and a half of the account's cadences past it (DESIGN.md §10.7). An
 // account stamped at its own would drop out of the net-worth views once it
 // stopped changing, and a card would take its debt with it. The figure is
 // still the account's latest known balance; the stamp says "as of this

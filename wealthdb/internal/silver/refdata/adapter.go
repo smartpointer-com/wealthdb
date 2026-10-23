@@ -1,7 +1,8 @@
 // Package refdata projects the refdata collector's silver — fund
 // compositions, attributes, counterparties, rate sensitivities and
-// characteristics, and security identities, facts and reported figures,
-// as the providers served them — into canonical reference records
+// characteristics, security identities, facts and reported figures, and
+// the distributions of funds and securities, as the providers served
+// them — into canonical reference records
 // (canonical/refdata.go). See collectors/refdata/ for the silver schema
 // and docs/adapters/refdata.md for the mapping.
 //
@@ -9,7 +10,7 @@
 // positions or transactions, so nothing of it reaches the returns engine.
 // Its records are dated facts: a composition by the day it describes, a
 // company's figure by the last day of its period, a security fact by the
-// day it was looked up.
+// day it was looked up, a distribution by the day its source stated it.
 //
 // The change clock is the silver load of a run (status.go), and the
 // window is not the whole history: it spans the as-of days the runs
@@ -42,20 +43,20 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 	if err != nil {
 		return nil, err
 	}
-	yield, err := silver.HasTables(ctx, db, silver.ReferenceYieldTables...)
+	schema, err := silver.ProbeReferenceSchema(ctx, db)
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("refdata silver: %w", err)
 	}
-	return &Connection{db: db, yield: yield}, nil
+	return &Connection{db: db, schema: schema}, nil
 }
 
-// Connection reads one refdata silver. yield says whether it holds the
-// tables of silver migration 0002 (silver.ReferenceYieldTables): a silver
-// last loaded before that migration lacks them and reads as stating none.
+// Connection reads one refdata silver. schema says which tables of silver
+// migrations 0002 and 0003 it holds: a silver last loaded before a
+// migration lacks its tables and reads as stating none of their records.
 type Connection struct {
-	db    *sql.DB
-	yield bool
+	db     *sql.DB
+	schema silver.ReferenceSchema
 }
 
 func (c *Connection) Close() error { return silver.CloseDB(&c.db) }

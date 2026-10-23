@@ -142,18 +142,18 @@ func cashflowReport(req request) *report {
 	case "coverage":
 		kindOf, loadKinds := sourceKinds()
 		nicknames := accountNicknames{}
-		return newReport(buildCashflowCoverageColumnRegistry(req.period, kindOf, nicknames), defaultCashflowCoverageColumns,
-			loadFirst(loadKinds, loadFirst(nicknames.load,
-				func(ctx context.Context, db *sql.DB) ([]gold.CashflowCoverageRow, error) {
-					return gold.CashflowCoverage(ctx, db, req.from, req.to, part)
-				})))
+		return withLoads(newReport(buildCashflowCoverageColumnRegistry(req.period, kindOf, nicknames),
+			defaultCashflowCoverageColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.CashflowCoverageRow, error) {
+				return gold.CashflowCoverage(ctx, db, req.from, req.to, part)
+			}), loadKinds, nicknames.load)
 	default:
 		kindOf, loadKinds := sourceKinds()
-		return newReport(buildCashflowTransactionColumnRegistry(req.currency, kindOf, req.categories),
+		return withLoads(newReport(buildCashflowTransactionColumnRegistry(req.currency, kindOf, req.categories),
 			defaultCashflowTransactionColumns,
-			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.CashflowTransactionRow, error) {
+			func(ctx context.Context, db *sql.DB) ([]gold.CashflowTransactionRow, error) {
 				return gold.CashflowTransactions(ctx, db, req.from, req.to, req.currency)
-			}))
+			}), loadKinds)
 	}
 }
 
@@ -334,7 +334,7 @@ func buildCashflowCoverageColumnRegistry(period string, kindOf func(string) stri
 func buildCashflowTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 	categories typedCategories) []columnSpec[gold.CashflowTransactionRow] {
 	ref := func(r gold.CashflowTransactionRow) accountRef {
-		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
 	}
 	return []columnSpec[gold.CashflowTransactionRow]{
 		{Name: "silver_source", Align: output.AlignLeft,

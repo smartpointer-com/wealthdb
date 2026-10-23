@@ -102,42 +102,42 @@ func gainsReport(req request) *report {
 	ccy := req.currency
 	kindOf, loadKinds := sourceKinds()
 	if grain, ok := gainsGrains[req.view]; ok {
-		return newReport(buildGainsBucketColumnRegistry(ccy, req.period, grain, kindOf, req.categories),
+		return withLoads(newReport(buildGainsBucketColumnRegistry(ccy, req.period, grain, kindOf, req.categories),
 			gainsBucketDefaults[grain],
-			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.GainsBucketRow, error) {
+			func(ctx context.Context, db *sql.DB) ([]gold.GainsBucketRow, error) {
 				return gold.GainsBuckets(ctx, db, req.from, req.to, ccy, reportPeriods[req.period], grain, req.missing)
-			}))
+			}), loadKinds)
 	}
 	switch req.view {
 	case "positions":
-		return newReport(buildGainsPositionColumnRegistry(ccy, kindOf), defaultGainsPositionColumns,
-			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.GainsPositionRow, error) {
+		return withLoads(newReport(buildGainsPositionColumnRegistry(ccy, kindOf), defaultGainsPositionColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.GainsPositionRow, error) {
 				return gold.GainsPositions(ctx, db, req.from, req.to, ccy, req.missing)
-			}))
+			}), loadKinds)
 	case "realized":
 		order := gold.SortAscending
 		if req.newestFirst {
 			order = gold.SortDescending
 		}
-		return newReport(buildRealizedLotColumnRegistry(ccy, kindOf), defaultRealizedLotColumns,
-			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.RealizedLotRow, error) {
+		return withLoads(newReport(buildRealizedLotColumnRegistry(ccy, kindOf), defaultRealizedLotColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.RealizedLotRow, error) {
 				return gold.RealizedLotsBetween(ctx, db, req.from, req.to, ccy, req.allDocuments, order, req.missing)
-			}))
+			}), loadKinds)
 	case "lots":
-		return newReport(buildOpenLotColumnRegistry(ccy, kindOf), defaultOpenLotColumns,
-			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.OpenLotRow, error) {
+		return withLoads(newReport(buildOpenLotColumnRegistry(ccy, kindOf), defaultOpenLotColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.OpenLotRow, error) {
 				return gold.OpenLotsAsOf(ctx, db, req.to, ccy, req.missing)
-			}))
+			}), loadKinds)
 	case "check":
-		return newReport(buildGainsCheckColumnRegistry(ccy, kindOf), defaultGainsCheckColumns,
-			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.GainsCheckRow, error) {
+		return withLoads(newReport(buildGainsCheckColumnRegistry(ccy, kindOf), defaultGainsCheckColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.GainsCheckRow, error) {
 				return gold.GainsCheck(ctx, db, req.from, req.to, ccy)
-			}))
+			}), loadKinds)
 	default: // coverage
-		return newReport(buildGainsCoverageColumnRegistry(ccy, kindOf), defaultGainsCoverageColumns,
-			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.GainsCoverageRow, error) {
+		return withLoads(newReport(buildGainsCoverageColumnRegistry(ccy, kindOf), defaultGainsCoverageColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.GainsCoverageRow, error) {
 				return gold.GainsCoverage(ctx, db, req.from, req.to, ccy)
-			}))
+			}), loadKinds)
 	}
 }
 
@@ -201,7 +201,8 @@ func buildGainsBucketColumnRegistry(outCcy, period string, grain gold.GainsGrain
 			}))
 	case gold.GainsAccounts:
 		ref := func(r row) accountRef {
-			return accountRef{strOrEmpty(r.SilverSourceID), r.DisplayName, r.Nickname, strOrEmpty(r.AccountExternalID)}
+			return accountRef{source: strOrEmpty(r.SilverSourceID), name: r.DisplayName,
+				nickname: r.Nickname, id: strOrEmpty(r.AccountExternalID)}
 		}
 		ids = append(ids,
 			accountCol(kindOf, ref),
@@ -255,7 +256,7 @@ func buildGainsPositionColumnRegistry(outCcy string, kindOf func(string) string)
 	type row = gold.GainsPositionRow
 	type col = columnSpec[row]
 	ref := func(r row) accountRef {
-		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
 	}
 	// A row the realized lots or events alone make carries their own
 	// key, since no position line names its instrument.
@@ -307,7 +308,7 @@ func buildRealizedLotColumnRegistry(outCcy string, kindOf func(string) string) [
 	type row = gold.RealizedLotRow
 	type col = columnSpec[row]
 	ref := func(r row) accountRef {
-		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
 	}
 	holding := func(r row) (string, string) { return r.SilverSourceID, strOrEmpty(r.InstrumentExternalID) }
 	return []col{
@@ -369,7 +370,7 @@ func buildOpenLotColumnRegistry(outCcy string, kindOf func(string) string) []col
 	type row = gold.OpenLotRow
 	type col = columnSpec[row]
 	ref := func(r row) accountRef {
-		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
 	}
 	key, name := holdingCols(kindOf, func(r row) string { return r.SilverSourceID },
 		func(r row) string { return r.PositionKey }, func(r row) string { return strOrEmpty(r.Name) })
@@ -413,7 +414,7 @@ func buildGainsCoverageColumnRegistry(outCcy string, kindOf func(string) string)
 	type row = gold.GainsCoverageRow
 	type col = columnSpec[row]
 	ref := func(r row) accountRef {
-		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
 	}
 	return []col{
 		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r row) string { return r.SilverSourceID }},
@@ -448,7 +449,7 @@ func buildGainsCheckColumnRegistry(outCcy string, kindOf func(string) string) []
 	type row = gold.GainsCheckRow
 	type col = columnSpec[row]
 	ref := func(r row) accountRef {
-		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
 	}
 	return []col{
 		{Name: "check", Align: output.AlignLeft, Extract: func(r row) string { return r.Check }},

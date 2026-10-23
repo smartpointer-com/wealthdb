@@ -1313,3 +1313,51 @@ func TestSnapshotsWithoutYieldTables(t *testing.T) {
 		t.Errorf("lines = %+v", lines)
 	}
 }
+
+// A generator's distributions ride the stream as the refdata silver's
+// do: every one of each ref and provider that a row stated inside the
+// window names, whatever day it was stated on. Another ref's row stated
+// before the window stays out. A file written before the table existed
+// states none.
+func TestSnapshotsCarryDividendEvents(t *testing.T) {
+	for _, withTable := range []bool{true, false} {
+		path, db := newFixture(t)
+		silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-02'), (2, ?, ?, '2031-01-04')`,
+			day(1), day(2), day(3), day(4))
+		silvertest.Exec(t, db, `INSERT INTO compositions (fund_ref, as_of, basis, provider, source_kind, line_count, run_at)
+		    VALUES ('symbol:EQF1', ?, 'holdings', 'demo', 'daily_file', 0, 2)`, day(4))
+		if withTable {
+			for _, e := range []struct {
+				ref string
+				d   int
+			}{{"symbol:EQF1", 2}, {"symbol:EQF1", 4}, {"symbol:EQF2", 2}} {
+				silvertest.Exec(t, db, `INSERT INTO dividend_events (ref, provider, event_id, as_of, kind, ex_date,
+				    record_date, pay_date, amount, currency, run_at)
+				    VALUES (?, 'demo', ?, ?, 'dividend', '2030-12-20', '2030-12-21', '2030-12-28', '0.3',
+				    'USD', ?)`, e.ref, fmt.Sprintf("e%d", e.d), day(e.d), e.d/2)
+			}
+		} else {
+			silvertest.Exec(t, db, `DROP TABLE `+silver.ReferenceCalendarTable)
+		}
+		conn := openConn(t, path)
+		w, err := conn.ChangeWindow(context.Background(), 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all := silvertest.Merged(t, conn, w)
+		var got []string
+		for _, e := range all.DividendEvents {
+			if e.RecordDay != nil {
+				got = append(got, e.Ref+" "+e.EventID)
+			}
+		}
+		want := ""
+		if withTable {
+			want = "symbol:EQF1 e2|symbol:EQF1 e4"
+		}
+		if strings.Join(got, "|") != want || len(got) != len(all.DividendEvents) || len(all.FundCompositions) != 1 {
+			t.Errorf("with the table %v: events %+v, compositions %d", withTable, all.DividendEvents,
+				len(all.FundCompositions))
+		}
+	}
+}

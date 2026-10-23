@@ -4,7 +4,11 @@
 # Host-venv collector (no Docker): reads public reference data, what each
 # fund holds and states about itself and what each security is and
 # reports, for the funds and securities the engine names in its wanted
-# list. No login anywhere. Subcommands:
+# list. No provider signs in to an account. One provider takes a
+# credential. finra reads FINRA_CLIENT_ID and FINRA_CLIENT_SECRET.
+# download and login, the verbs that ask FINRA, source both from
+# <secrets-dir>/finra.env; $FINRA_ENV_FILE names another path.
+# `--client-id ID` gives the id directly. Subcommands:
 #   login               No-op: there is no session. `login --check` asks
 #                       every enabled provider for its cheapest answer.
 #   download [args...]  Ask the engine for the wanted list (or read
@@ -48,6 +52,11 @@ esac
 
 host_resolve_dirs "$cmd" "$@"
 host_source_env_file
+# FINRA's credential reaches only the verbs that ask FINRA. download
+# keeps it from the engine it asks for the wanted list (wanted.py).
+case "$cmd" in
+    login|download) host_source_env_file finra ;;
+esac
 py="$(host_python)"
 
 case "$cmd" in
@@ -60,7 +69,7 @@ case "$cmd" in
                     ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
                 ;;
         esac
-        echo "refdata: no-op. The providers are public; there is no session to mint." >&2
+        echo "refdata: no-op. No provider has a session to mint." >&2
         echo "To probe each enabled provider, run \`./refdata login --check\`." >&2
         exit 0
         ;;

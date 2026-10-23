@@ -53,10 +53,11 @@ func transactionsReport(req request) *report {
 		order = gold.SortDescending
 	}
 	kindOf, loadKinds := sourceKinds()
-	return newReport(buildTransactionColumnRegistry(req.currency, kindOf, req.categories), defaultTransactionColumns,
-		loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]gold.TransactionRow, error) {
+	return withLoads(newReport(buildTransactionColumnRegistry(req.currency, kindOf, req.categories),
+		defaultTransactionColumns,
+		func(ctx context.Context, db *sql.DB) ([]gold.TransactionRow, error) {
 			return gold.TransactionsBetween(ctx, db, req.from, req.to, req.currency, order)
-		}))
+		}), loadKinds)
 }
 
 // ---- column registry -----------------------------------------------------
@@ -64,7 +65,7 @@ func transactionsReport(req request) *report {
 func buildTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 	categories typedCategories) []columnSpec[gold.TransactionRow] {
 	ref := func(r gold.TransactionRow) accountRef {
-		return accountRef{r.SilverSourceID, r.DisplayName, r.Nickname, r.AccountExternalID}
+		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
 	}
 	holding := func(r gold.TransactionRow) (string, string) {
 		return r.SilverSourceID, strOrEmpty(r.InstrumentExternalID)

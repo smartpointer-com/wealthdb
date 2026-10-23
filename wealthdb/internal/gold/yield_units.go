@@ -14,11 +14,13 @@ import (
 )
 
 // The quantity a dividend was paid on (docs/YIELD.md §4): what its
-// account held of its instrument before its record day, where its market
-// fixes one and the account held some then, else before its pay day, in
-// the newest snapshot that speaks for the account (unitAccountsCTE),
-// moved by the trades of its key since, in the instrument's units at the
-// instant. An instrument goes by the id the matching folds it into
+// account held of its instrument as the day its record day reads began
+// (yield.RecordOf: the ex day where the dividend calendar gives the days,
+// else the record day of its market's lag), where one is known and the
+// account held some then, else as its pay day began, in the newest
+// snapshot that speaks for the account (unitAccountsCTE), moved by the
+// trades of its key since, in the instrument's units at the instant. An
+// instrument goes by the id the matching folds it into
 // (yield.Inputs.Fold), under the account that holds or trades it. A
 // trade booked on a cash account that holds none of its instrument moves
 // the holding of the one account of its portfolio that does (tradeKey): a
@@ -125,9 +127,9 @@ account_grid AS (
 // the account holding none where they are absent: the points it changes
 // at (unitPoint). Between two such snapshots, the key's trades, read
 // as the source kind's lot policy reads them (lots.PolicyFor) and keyed
-// by tradeKey (the booking account's key where in is nil), and its
-// quantity and value tell a change of units (unitStep.change). Every
-// account's changes are the instrument's (addChange).
+// by tradeKey, and its quantity and value tell a change of units
+// (unitStep.change). Every account's changes are the instrument's
+// (addChange).
 func readYieldUnits(ctx context.Context, db querier, in *yield.Inputs, paid map[yield.InstrumentKey]bool,
 	from, asOf int64) (*yieldUnits, error) {
 	u := &yieldUnits{points: map[unitKey][]unitPoint{}, snaps: map[accountKey][]int64{},
@@ -312,7 +314,7 @@ type bookedTrade struct {
 // key: which account the trade went to is not known, and it moves no
 // holding. A trade of any other account moves only its own.
 func (u *yieldUnits) tradeKey(in *yield.Inputs, b bookedTrade) unitKey {
-	if in == nil || u.holdsAt(b.key, b.trade) ||
+	if u.holdsAt(b.key, b.trade) ||
 		in.Accounts[yield.AccountKey{Source: b.key.src, Account: b.key.acct}].Kind != string(canonical.AccountKindCash) {
 		return b.key
 	}
@@ -537,9 +539,9 @@ func (u *yieldUnits) keysOf(in *yield.Inputs, src, acct, iid string) []unitKey {
 // span is the least and the most the accounts of keys held of their
 // instrument as each instant from from to to began (holding), where they
 // held some: at from and at to, and after each of their snapshots and
-// trades between. To is the record instant of a lag that reaches back to
-// its window's nearest day, so a snapshot stamped at it counts, as in
-// Record. A day they held none is no record day of a payment received.
+// trades between. To is the instant Record reads, where the window is
+// that day alone or a lag's window ends on its record day, so a snapshot
+// stamped at it counts, as in Record. A day they held none is no record day of a payment received.
 // The least is 0 where some of the span is unknown.
 func (u *yieldUnits) span(keys []unitKey, from, to int64) (least, most *float64) {
 	at := []int64{from, to}

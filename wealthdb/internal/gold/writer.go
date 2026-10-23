@@ -23,9 +23,13 @@ import (
 //
 // Caller owns the transaction lifecycle: BeginTx, call writer
 // methods, Commit or Rollback. A Writer is not goroutine-safe;
-// use one per active transaction.
+// use one per active transaction, as it remembers the distributions
+// it replaced (insertDividendEvents).
 type Writer struct {
 	tx *sql.Tx
+	// replaced are the source, ref and provider whose distributions
+	// the writer has replaced.
+	replaced map[[3]string]bool
 }
 
 // InsertChunkRows is the row count per multi-row VALUES statement.

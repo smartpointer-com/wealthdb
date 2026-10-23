@@ -10,11 +10,14 @@ from public sources:
 - what a security is;
 - a fund's rate sensitivities, and the figures stated for the fund as a
   whole;
-- a company's reported figures, by period.
+- a company's reported figures, by period;
+- the distributions of a fund or a security: their ex, record and pay
+  days.
 
 Its silver keeps that data as the providers served it. This adapter
 turns it into dated reference records. The exposure report reads the
-records of the first two kinds ([EXPOSURE.md](../EXPOSURE.md)).
+records of the first two kinds ([EXPOSURE.md](../EXPOSURE.md)). The
+yield report reads the rest ([YIELD.md](../YIELD.md)).
 
 refdata is a reference source, like `fred`. It emits no accounts, no
 positions and no transactions. Nothing of it reaches the returns engine,
@@ -30,18 +33,20 @@ is `collectors/refdata/migrations/`:
 - `0002_yield_facts.sql` adds what 0001 lacks: the debt and duration
   columns of a line, and the tables `fund_risk`, `characteristics` and
   `period_facts`.
+- `0003_dividend_calendar.sql` adds the table `dividend_events`.
 
-The adapter's test fixture, `testdata/silver_schema.sql`, is the two
+The adapter's test fixture, `testdata/silver_schema.sql`, is the three
 files in order. The collector's tests check that the copy matches the
-migrations. A file at schema 1 loads too: the adapter reads the tables
-and columns of 0002 only where the file has them.
+migrations. A file at schema 1 or 2 loads too: the adapter reads the
+tables and columns of a later migration only where the file has them.
 
 Conventions:
 
 - `as_of` is the UTC midnight of the day a row describes. For a
   composition it is the day the composition is as of, never the day it
   was fetched or filed. For a security it is the day of the lookup. For
-  a company's figure it is the last day of the period it covers.
+  a company's figure it is the last day of the period it covers. For a
+  distribution it is the day the source stated it.
 - `run_at` is the bronze run that wrote the row. A line has none; it
   belongs to its composition's run.
 - `dump_runs.loaded_at` is when the silver load wrote a run. It rises
@@ -66,6 +71,7 @@ Conventions:
 | `fund_risk` | `fund_risk` | fund, day, currency and tenor |
 | `characteristics` | `fund_characteristics` | fund, day, provider, field and label |
 | `period_facts` | `security_period_facts` | security, field, period and provider |
+| `dividend_events` | `dividend_calendar` | fund or security, provider and distribution |
 
 Gold's `securities` is a different table. The exposure pass builds it
 from every source that describes a security (DESIGN.md §10.14).
@@ -97,6 +103,32 @@ follow no one sign convention: gold reads each filing in one sign
 one figure a provider states for the fund as a whole. Its `label` is
 empty, or names one part of a breakdown such as a credit quality. A
 `period_facts` row is a figure a company reported for one period.
+
+A `dividend_events` row is one distribution of a fund or a security, as
+a provider states it:
+
+- `ref` is the fund reference or the security key the wanted list names
+  it by (§5), or `jpx:<code>` for a row of the JPX list, by the share's
+  Tokyo Stock Exchange code;
+- `event_id` is the source's id of the distribution, else its kind and
+  its ex, record and pay days, joined by `|`;
+- `kind` is `dividend`, `capital_gain`, `return_of_capital`, `special`
+  or `other`;
+- the ex, record, pay and declared days are `YYYY-MM-DD`, each NULL
+  where the source states none. Gold holds them as dates;
+- `amount` is gross per share or unit, in `currency`;
+- `status` is `final`, `estimated` or NULL.
+
+A later run's row of the same distribution replaces the earlier one.
+An answer that lists every distribution of a ref also drops the
+earlier rows it leaves out, so a corrected day leaves no stale row
+([collectors/refdata/README.md](../../../collectors/refdata/README.md)).
+Gold mirrors silver per ref and provider (§4).
+
+An empty day or amount reads as none. An amount that is no decimal, a
+day that is no date, or a kind or status outside these words fails the
+load, naming the row. The yield report reads a payment's record day and
+ex day from these rows (YIELD.md §4).
 
 A composition's `basis` is one of three values:
 
@@ -168,8 +200,8 @@ key it reads as.
 the as-of days that the rows of the runs loaded since describe. It reads
 every reference table that has a run: `compositions`, `attributes`,
 `counterparties`, `fund_risk`, `characteristics`, `securities`,
-`security_facts` and `period_facts`. A line belongs to its
-composition's run. The clock is the load, not the fetch, so a run
+`security_facts`, `period_facts` and `dividend_events`. A line belongs
+to its composition's run. The clock is the load, not the fetch, so a run
 fetched earlier but loaded later still reaches gold: an import from
 another machine, or a re-parse of kept bronze. A composition for an old
 day that arrives late loads like any other. A run that wrote nothing
@@ -181,7 +213,8 @@ Each kind of record has a span of its own within the window:
   sensitivities and characteristics of one day;
 - the security identities;
 - the security facts;
-- the period facts.
+- the period facts;
+- the dividend events.
 
 A filing's period facts reach back years. Only they are re-emitted from
 that far back, not every composition since. A kind the runs did not
@@ -189,12 +222,19 @@ write has no span. `Snapshots` re-emits every row of a kind inside its
 span, whichever run wrote it, so gold's windowed delete over that span
 leaves it as silver holds it.
 
+The dividend events go further. A row the collector dropped leaves
+nothing in the span, and its gold copy may lie outside it. So
+`Snapshots` re-emits every row of each ref and provider that a row of
+the span names, whatever its day. Gold clears its rows of each such
+ref and provider before it writes them (`gold.Writer`). Gold then holds
+what silver holds for them.
+
 `Snapshots` streams the window (`silver.NewReferenceStream`). A batch
 holds whole fund-days, up to about twenty thousand records. A fund-day
 carries its rate sensitivities and its characteristics. Then come the
-security identities, the security facts and the period facts, five
-thousand to a batch. A backfill of years holds one batch in memory at a
-time.
+security identities, the security facts, the period facts and the
+dividend events, five thousand to a batch. A backfill of years holds
+one batch in memory at a time.
 
 ## 5. The wanted list
 
@@ -209,7 +249,7 @@ It prints one JSON document, the wanted list (`internal/gold/refdata_wanted.go`)
 It is the one way the collector reads gold, and its JSON is a versioned
 contract:
 
-- `contract` is `refdata-wanted`, `version` is `2`.
+- `contract` is `refdata-wanted`, `version` is `3`.
 - A change takes a new version when a collector of the version before
   would misread the list. Such a change removes or renames a field,
   changes what a field means, gives a field a value it did not hold
@@ -218,9 +258,11 @@ contract:
 - A field added alone, that an older collector may ignore, takes no new
   version.
 - A collector refuses a version it does not know. The refdata collector
-  reads versions 1 and 2.
+  reads versions 1, 2 and 3.
 - Version 1 has no `wants`, `facts` or `periods`. Its `missing` names no
   family of period facts.
+- Version 2 wants no `dividend_calendar`. Its securities have no
+  `receipt`, `wants` or `calendar`.
 
 Top-level fields:
 
@@ -273,6 +315,7 @@ A fund held (role `held`) wants these facts, in this order:
 | `characteristics` | every fund held but a structured product | the figures its issuer's page states: duration, yields, credit quality |
 | `money_market` | a fund of class cash, a money-market fund | its 7-day yields and its weighted average maturity and life |
 | `line_durations` | a fund of class fixed income whose newest composition has no line with a duration or a modified duration | the durations of its lines, which come only with a composition that states them, such as an issuer's holdings file |
+| `dividend_calendar` | every fund held but a structured product | its distributions: their ex, record and pay days and amounts (`dividend_events`) |
 
 The class is the one a holding states. A bond fund with no composition
 yet wants `line_durations` too. A fund that only the roles `proxy`,
@@ -292,13 +335,14 @@ fact has its days from these rows:
 - `characteristics`: its other `fund_characteristics` rows.
 - `line_durations`: its compositions that have a line with a duration
   or a modified duration.
+- `dividend_calendar`: the `as_of` days of its `dividend_calendar` rows.
 
 A fund states the identifiers gold knows for it, so a provider can
 claim it by the one it reads. Where several state one field, the
-holding's or the fund line's wins. Next come the CUSIP and the US symbol
-its aliases state (§3). Last comes the one its reference is made of. A size fund named by
-its ISIN thus states its ticker once a lookup or a fund line ties the
-two.
+holding's or the fund line's wins. Next come the CUSIP and the US
+symbol its aliases state (§3). Last comes the one its reference is made
+of. A size fund named by its ISIN thus states its ticker once a lookup
+or a fund line ties the two.
 
 A security:
 
@@ -312,6 +356,9 @@ A security:
 | `missing` | the fields no source states yet: `sector`, `country` and, for a stock held directly, `market_cap` (the fact fields below). Then, for public equity, `earnings`, `dividends` and `financials` (below). A bond's type from a lookup states its sector. A municipal bond's type states its country too. For a constituent, a country only an ISIN's prefix implies counts as missing, and so does a sector or a country a depositary receipt took from a share matched by name (EXPOSURE.md §3). |
 | `lookups` | the day each provider last answered for the security, so a collector refreshes what is older than its `max_age_days`. An answer under another key that found nothing does not count, so the security's own identifier is asked. |
 | `periods` | per family of period facts, the newest period end gold holds, `YYYY-MM-DD`, the security read through its aliases; a family gold holds nothing of is absent; `{}` where nothing. A collector asks only for later periods. |
+| `receipt` | `true` where gold reads the security as a depositary receipt (EXPOSURE.md §13): a lookup or GLEIF calls it one, or a name a lookup, a broker or a fund line gives it says so under a US ISIN or none |
+| `wants` | the facts the security is wanted for beyond its fields: `["dividend_calendar"]` for a security held directly that pays dividends, else `[]`. A stock of class public equity pays them (a share or a receipt). So does a security of class real estate with an ISIN or a CUSIP, such as a listed REIT. |
+| `calendar` | the newest `as_of` of the `dividend_calendar` rows gold holds under the security's key, read through its aliases, `YYYY-MM-DD`; `null` where none. A JPX row, stored under `jpx:<code>`, counts for no security. |
 
 A period fact is a figure a company reported for one period
 (`security_period_facts`). Its fields fall into three families:
@@ -365,7 +412,7 @@ stocks miss every family.
 
 ## 6. The synthetic kind
 
-The `synthetic` kind repeats the nine reference tables column for column
+The `synthetic` kind repeats the ten reference tables column for column
 ([synthetic.md](synthetic.md) §12), and reads them through the same
 stream. A generator such as the demo household can write any of these
 records beside its accounts.

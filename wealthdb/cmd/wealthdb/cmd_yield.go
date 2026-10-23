@@ -117,21 +117,21 @@ func yieldReport(req request) *report {
 	ccy := req.currency
 	if grain, ok := yieldGrains[req.view]; ok {
 		kindOf, loadKinds := sourceKinds()
-		return seriesView(req, buildYieldRowColumns(ccy, grain, kindOf), yieldRowDefaults[grain],
-			loadFirstAt(loadKinds, func(ctx context.Context, db *sql.DB, at int64) ([]yield.Row, error) {
+		return withLoads(seriesView(req, buildYieldRowColumns(ccy, grain, kindOf), yieldRowDefaults[grain],
+			func(ctx context.Context, db *sql.DB, at int64) ([]yield.Row, error) {
 				b, err := yieldBook(ctx, db, at, ccy)
 				if err != nil {
 					return nil, err
 				}
 				return b.Aggregate(grain, req.converted), nil
-			}))
+			}), loadKinds)
 	}
 	if req.view == "positions" {
 		kindOf, loadKinds := sourceKinds()
-		return bookView(req, buildYieldPositionColumns(ccy, kindOf), defaultYieldPositionColumns,
-			loadFirstAt(loadKinds, func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.Position, error) {
+		return withLoads(bookView(req, buildYieldPositionColumns(ccy, kindOf), defaultYieldPositionColumns,
+			func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.Position, error) {
 				return b.Positions, nil
-			}))
+			}), loadKinds)
 	}
 	return yieldDetailReport(req)
 }
@@ -223,7 +223,7 @@ func buildYieldRowColumns(outCcy string, grain yield.Grain, kindOf func(string) 
 			if r.Total {
 				return accountRef{}
 			}
-			return accountRef{r.Source, &r.Account.Name, &r.Account.Nickname, r.AccountID}
+			return accountRef{source: r.Source, name: &r.Account.Name, nickname: &r.Account.Nickname, id: r.AccountID}
 		}
 		ids = append(ids,
 			accountCol(kindOf, ref),
@@ -265,7 +265,8 @@ func buildYieldPositionColumns(outCcy string, kindOf func(string) string) []colu
 	type row = yield.Position
 	type col = columnSpec[row]
 	ref := func(r row) accountRef {
-		return accountRef{r.Source, &r.Account.Name, &r.Account.Nickname, r.HoldingKey.Account}
+		return accountRef{source: r.Source, name: &r.Account.Name,
+			nickname: &r.Account.Nickname, id: r.HoldingKey.Account}
 	}
 	// A public position_key stays legible, as `holdings positions` keeps
 	// it.
@@ -383,7 +384,8 @@ Views
   funds        one row per fund held directly: what its lines and pages say
   cash         one row per cash balance, term deposit and money-market fund
   curve        rate sensitivity (DV01) per currency and tenor
-  coverage     what the figures rest on, and what is missing
+  coverage     what the figures rest on, what is missing, and where each
+               dividend's record day comes from
 
 Flags
   -d, --as-of DATE   the day (default today UTC)
@@ -412,6 +414,13 @@ Notes
   row's gross value it covers (stated=61%); a bare tag covers the whole
   row, and implied does not print where it covers the whole row. A
   positions or cash row lists its holding's tags:` + tagNotes(yieldQualityTags) + `
+
+  coverage's record_day lines count the dividends and distributions the
+  readings rate, by where each one's record day comes from: stated by
+  the dividend calendar, derived from its ex day by the market's
+  settlement cycle (yield.settlement_cycles), the market's lag, or none;
+  dropped counts those the record window drops. A US common stock reads
+  the lag unless its filings tag the dates.
 
 Available columns (per view):` + available.String() + `
 

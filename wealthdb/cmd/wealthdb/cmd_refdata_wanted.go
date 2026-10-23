@@ -33,8 +33,12 @@ version `+fmt.Sprint(gold.WantedContractVersion)+`). It names:
   - every fund gold wants: a held, proxy, reference or size fund, or
     one a held fund holds. Each lists the days it is wanted for, the
     days gold has a composition for and the days gold has each fact
-    for. A held fund also lists the facts it is wanted for.
-  - every directly held security, with the attributes still missing.
+    for. A held fund also lists the facts it is wanted for, its
+    dividend calendar among them.
+  - every directly held security, with the attributes still missing,
+    whether gold reads it as a depositary receipt, and the newest day of
+    its dividend calendar, which a stock or a listed REIT is wanted
+    for.
   - the securities the funds held today reach that lack a sector or a
     country, or, for a stock, recent earnings, dividends or financials.`)
 	}

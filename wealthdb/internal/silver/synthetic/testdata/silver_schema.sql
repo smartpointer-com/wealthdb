@@ -1,4 +1,4 @@
--- Silver schema of the synthetic kind, version 4.
+-- Silver schema of the synthetic kind, version 5.
 --
 -- The one generic silver: one table per canonical record type, so a row
 -- here is the canonical change record it becomes, column for column. No
@@ -181,14 +181,15 @@ CREATE TABLE realized_lots (
     payload            TEXT    NOT NULL DEFAULT '{}'
 );
 
--- The reference records: what each fund holds and states of itself, and
--- what each security is and reports (canonical/refdata.go). The nine
--- tables repeat the refdata collector's silver shape column for column
--- (collectors/refdata/migrations), so one reader serves both kinds
--- (silver.NewReferenceStream). as_of is the UTC midnight of the day a row
--- describes (for a period fact, its period's last day) and must lie
--- inside the window of the run that adds it; run_at is the instant the
--- row was fetched, at or after as_of. Weights are in percent of the
+-- The reference records: what each fund holds and states of itself,
+-- what each security is and reports, and what each pays
+-- (canonical/refdata.go). The ten tables repeat the refdata collector's
+-- silver shape column for column (collectors/refdata/migrations), so one
+-- reader serves both kinds (silver.NewReferenceStream). as_of is the UTC
+-- midnight of the day a row describes (for a period fact, its period's
+-- last day; for a distribution, the day its source stated it) and must
+-- lie inside the window of the run that adds it; run_at is the instant
+-- the row was fetched, at or after as_of. Weights are in percent of the
 -- fund's net assets.
 
 CREATE TABLE compositions (
@@ -353,6 +354,24 @@ CREATE TABLE period_facts (
     run_at         INTEGER NOT NULL,
     payload        TEXT    NOT NULL DEFAULT '{}',
     PRIMARY KEY (security_key, field, as_of, period_start, provider)
+);
+
+CREATE TABLE dividend_events (
+    ref            TEXT    NOT NULL,
+    provider       TEXT    NOT NULL,
+    event_id       TEXT    NOT NULL,
+    as_of          INTEGER NOT NULL,
+    kind           TEXT    NOT NULL,
+    ex_date        TEXT,                         -- YYYY-MM-DD
+    record_date    TEXT,                         -- YYYY-MM-DD
+    pay_date       TEXT,                         -- YYYY-MM-DD
+    declared_date  TEXT,                         -- YYYY-MM-DD
+    amount         TEXT,
+    currency       TEXT,
+    status         TEXT,
+    run_at         INTEGER NOT NULL,
+    payload        TEXT    NOT NULL DEFAULT '{}',
+    PRIMARY KEY (ref, provider, event_id)
 );
 
 -- The published rate series (canonical.RateObservationChange): the fred

@@ -138,19 +138,28 @@ func sameDay(a, b *int64) bool {
 	return (a == nil && b == nil) || (a != nil && b != nil && *a == *b)
 }
 
+// statedISINsSQL is the CTEs countries, the codes a situs may be (every
+// country exposure_countries knows but the European Union), and isins,
+// each ISIN a source states under a country's prefix, with that country.
+// An ISIN only the US CUSIP rule gives is a guess and is not among them.
+const statedISINsSQL = `countries AS (SELECT code FROM exposure_countries WHERE code <> '` + canonical.EuropeanUnion + `'),
+stated AS (
+    SELECT 'isin:' || upper(trim(isin)) AS key FROM instruments WHERE isin IS NOT NULL
+    UNION SELECT 'isin:' || upper(trim(isin)) FROM security_identities WHERE isin IS NOT NULL
+    UNION SELECT 'isin:' || upper(trim(isin)) FROM fund_lines WHERE isin IS NOT NULL
+    UNION SELECT fund_ref FROM fund_compositions WHERE fund_ref LIKE 'isin:%'
+    UNION SELECT fund_ref FROM fund_attributes WHERE fund_ref LIKE 'isin:%'),
+isins AS (
+    SELECT key, substr(key, 6, 2) AS country FROM stated WHERE substr(key, 6, 2) IN (SELECT code FROM countries))`
+
 // situsHoldingsSQL lists every holding gold has held, keyed as a leaf
 // names its holding, with the facts situsOf reads. A position reads as
 // its latest snapshot; a cash balance is the holding cash:<currency>.
 // Its key is read as exposure_holdings reads it (0126): through
 // holdingAliasJoins, then instrument_keys and security_aliases. The
-// parameter is receiptWording.
-//
-//   - countries: the codes a situs may be, every country
-//     exposure_countries knows but the European Union;
-//   - isins: each ISIN a source states under a country's prefix. An ISIN
-//     only the US CUSIP rule gives is a guess and is not among them;
-//   - domiciles: a security's own country of domicile, never one its
-//     ISIN's prefix implies.
+// parameter is receiptWording (receiptKeysSQL). Beside countries and
+// isins (statedISINsSQL), domiciles are a security's own country of
+// domicile, never one its ISIN's prefix implies.
 var situsHoldingsSQL = `
 WITH ` + securityNamesSQL + `,
 held AS (
@@ -168,22 +177,11 @@ keyed AS (
               FROM held h` + holdingAliasJoins("h.src", "h.acct", "h.iid", "h.position_key") + `) h
       LEFT JOIN instrument_keys ik1 ON ik1.silver_source_id = h.src AND ik1.instrument_external_id = h.akey
       LEFT JOIN instrument_keys ik2 ON ik2.silver_source_id = h.src AND ik2.instrument_external_id = h.iid),
-countries AS (SELECT code FROM exposure_countries WHERE code <> '` + canonical.EuropeanUnion + `'),
-stated AS (
-    SELECT 'isin:' || upper(trim(isin)) AS key FROM instruments WHERE isin IS NOT NULL
-    UNION SELECT 'isin:' || upper(trim(isin)) FROM security_identities WHERE isin IS NOT NULL
-    UNION SELECT 'isin:' || upper(trim(isin)) FROM fund_lines WHERE isin IS NOT NULL
-    UNION SELECT fund_ref FROM fund_compositions WHERE fund_ref LIKE 'isin:%'
-    UNION SELECT fund_ref FROM fund_attributes WHERE fund_ref LIKE 'isin:%'),
-isins AS (
-    SELECT key, substr(key, 6, 2) AS country FROM stated WHERE substr(key, 6, 2) IN (SELECT code FROM countries)),
+` + statedISINsSQL + `,
 domiciles AS (
     SELECT security_key AS key, domicile FROM securities
      WHERE domicile_origin <> 'isin_prefix' AND domicile IN (SELECT code FROM countries)),
-typed AS (
-    SELECT k AS key FROM names WHERE receipt
-    UNION SELECT exposure_key(security_key) FROM security_facts WHERE field = 'issuer_isins'),
-worded AS (SELECT DISTINCT k AS key FROM names WHERE regexp_matches(upper(name), ?)),
+` + receiptKeysSQL + `,
 shares AS (
     SELECT u.security_key AS key, COALESCE(i.country, d.domicile) AS situs
       FROM security_underlyings u
@@ -201,8 +199,7 @@ nport AS (
 comps AS (SELECT DISTINCT fund_ref AS key FROM exposure_comps())
 SELECT k.src, k.acct, k.position_key, COALESCE(k.iid, ''),
        COALESCE(k.asset_class = 'crypto' AND k.vehicle = 'physical', FALSE),
-       COALESCE(k.vehicle NOT IN ('etf', 'fund')
-                AND (ty.key IS NOT NULL OR (wo.key IS NOT NULL AND COALESCE(i.country, 'US') = 'US')), FALSE),
+       COALESCE(k.vehicle NOT IN ('etf', 'fund') AND rk.key IS NOT NULL, FALSE),
        COALESCE(sh.situs, ''), COALESCE(i.country, ''),
        COALESCE(fd.domicile, CASE WHEN np.key IS NOT NULL THEN 'US' END, d.domicile, ''),
        COALESCE((k.asset_class = 'cash' AND k.vehicle IN ('demand_deposit', 'time_deposit'))
@@ -212,8 +209,7 @@ SELECT k.src, k.acct, k.position_key, COALESCE(k.iid, ''),
                 AND c.key IS NULL, FALSE)
   FROM keyed k
   LEFT JOIN isins i ON i.key = k.key
-  LEFT JOIN typed ty ON ty.key = k.key
-  LEFT JOIN worded wo ON wo.key = k.key
+  LEFT JOIN receipt_keys rk ON rk.key = k.key
   LEFT JOIN shares sh ON sh.key = k.key
   LEFT JOIN fund_domiciles fd ON fd.key = k.key
   LEFT JOIN nport np ON np.key = k.key

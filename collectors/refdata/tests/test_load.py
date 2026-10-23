@@ -1,26 +1,17 @@
 """load: bronze runs into silver, idempotent, a later run winning."""
 
 import logging
-import sqlite3
 from datetime import date
 
 import download
 import load
 from collectorkit import bronze
 from providers.base import Context
-from tests.helpers import make_run
+from tests.helpers import make_run, rows
 
 
 def request(symbol, day=date(2026, 5, 28)):
     return download.Request("fund", "fake", f"symbol:{symbol}", day, {"ref": f"symbol:{symbol}"})
-
-
-def rows(db, q):
-    con = sqlite3.connect(db)
-    try:
-        return con.execute(q).fetchall()
-    finally:
-        con.close()
 
 
 def run_load(data, db, *extra):

@@ -39,6 +39,20 @@ const securityNamesSQL = `names AS (
     UNION ALL
     SELECT DISTINCT exposure_key(security_key), name, FALSE FROM fund_lines WHERE security_key IS NOT NULL)`
 
+// receiptKeysSQL is a CTE, receipt_keys: each security (key) gold reads
+// as a depositary receipt, docs/EXPOSURE.md §13. A lookup's type says
+// so, GLEIF ties it to its issuer's other ISINs, or a name a lookup, a
+// broker or a fund line gives it reads as one (the parameter is
+// receiptWording) under a US ISIN or none. It reads the CTEs names
+// (securityNamesSQL) and isins (statedISINsSQL). The situs rule reads a
+// holding of one as a receipt where the holding is no fund
+// (situsHoldingsSQL); the wanted list so marks it (addReceipts).
+const receiptKeysSQL = `receipt_keys AS (
+    SELECT k AS key FROM names WHERE receipt
+    UNION SELECT exposure_key(security_key) FROM security_facts WHERE field = 'issuer_isins'
+    UNION SELECT n.k FROM names n LEFT JOIN isins i ON i.key = n.k
+     WHERE regexp_matches(upper(n.name), ?) AND COALESCE(i.country, 'US') = 'US')`
+
 // receiptSQL lists every security that lacks a sector or a risk country,
 // and every one a lookup or a name calls a depositary receipt (the
 // parameter is receiptWording), with each name a lookup, a broker or a

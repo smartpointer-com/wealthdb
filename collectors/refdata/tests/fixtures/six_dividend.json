@@ -1,0 +1,10 @@
+{
+  "valorId": "CH0000000001CHF4",
+  "dividends": [
+    {"exDividendDate": 20260310, "value": 2.5, "adjustedValue": 2.5, "currency": "CHF", "capitalRepayment": null},
+    {"exDividendDate": 20250311, "value": 2.4, "adjustedValue": 2.4, "currency": "CHF", "capitalRepayment": null},
+    {"exDividendDate": 20240312, "value": 1.15, "adjustedValue": 1.15, "currency": "CHF", "capitalRepayment": 1.15},
+    {"exDividendDate": 20240312, "value": 1.15, "adjustedValue": 1.15, "currency": "CHF", "capitalRepayment": null},
+    {"exDividendDate": 20090415, "value": 4.8, "adjustedValue": 0.48, "currency": "CHF", "capitalRepayment": null}
+  ]
+}

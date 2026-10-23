@@ -296,3 +296,132 @@ func TestLoadRefdataBoundsEachKindToItsSpan(t *testing.T) {
 
 // itoa formats an instant for a query.
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// A refdata silver's distributions load into dividend_calendar. A later
+// run that states one again, on a later day, replaces its row: the load's
+// window spans the later day alone, and the row moves to it. A reset
+// clears them.
+func TestLoadRefdataDividendCalendar(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	silverPath, s := newSilver(t, "../silver/refdata/testdata/silver_schema.sql")
+	const (
+		run1, run2 = 1_790_000_000, 1_790_100_000
+		d1, d2     = 1_767_139_200, 1_769_817_600 // 2025-12-31, 2026-01-31
+	)
+	silvertest.Exec(t, s, `INSERT INTO dump_runs VALUES (?, 3, '/x/1', ?)`, run1, run1+5)
+	silvertest.Exec(t, s, `INSERT INTO dividend_events (ref, provider, event_id, as_of, kind, ex_date, record_date,
+	        pay_date, amount, currency, status, run_at) VALUES
+	    ('isin:XX0000000001', 'ishares', 'e1', ?1, 'dividend', '2025-12-15', '2025-12-15', '2025-12-19', '0.40', 'USD',
+	     'final', ?2),
+	    ('isin:XX0000000001', 'ishares', 'e2', ?1, 'dividend', '2026-03-16', '2026-03-16', '2026-03-20', '0.41', 'USD',
+	     'estimated', ?2)`, d1, run1)
+	g, err := gold.OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	ld := loader.New(g)
+	spec := loader.SourceSpec{ID: "ref", Kind: "refdata", Path: silverPath}
+	res, err := ld.Load(ctx, spec)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if res.SnapshotsLoaded != 2 {
+		t.Errorf("loaded %d reference rows, want the two distributions", res.SnapshotsLoaded)
+	}
+	if n := goldCount(t, g, `SELECT COUNT(*) FROM dividend_calendar WHERE silver_source_id = 'ref'
+	    AND ref = 'isin:XX0000000001' AND provider = 'ishares' AND event_id = 'e1' AND as_of = 1767139200
+	    AND kind = 'dividend' AND ex_day = DATE '2025-12-15' AND record_day = DATE '2025-12-15'
+	    AND pay_day = DATE '2025-12-19' AND declared_day IS NULL AND amount = 0.40 AND currency = 'USD'
+	    AND status = 'final'`); n != 1 {
+		t.Errorf("the first distribution's row = %d, want 1", n)
+	}
+
+	// Run 2 states the estimated distribution again, final, and a new one.
+	silvertest.Exec(t, s, `INSERT INTO dump_runs VALUES (?, 3, '/x/2', ?)`, run2, run2+5)
+	silvertest.Exec(t, s, `UPDATE dividend_events SET as_of = ?, amount = '0.42', status = 'final', run_at = ?
+	    WHERE event_id = 'e2'`, d2, run2)
+	silvertest.Exec(t, s, `INSERT INTO dividend_events (ref, provider, event_id, as_of, kind, ex_date, run_at)
+	    VALUES ('symbol:EXMP', 'six', 'e3', ?, 'dividend', '2026-01-20', ?)`, d2, run2)
+	res, err = ld.Load(ctx, spec)
+	if err != nil {
+		t.Fatalf("second Load: %v", err)
+	}
+	if span, ok := res.Window.SpanOf(canonical.RefDividendEvents); !ok || span != (canonical.Span{Start: d2, End: d2}) {
+		t.Errorf("dividend events span = %+v (%v), want d2 alone", span, ok)
+	}
+	for q, want := range map[string]int{
+		`SELECT COUNT(*) FROM dividend_calendar`:                                              3,
+		`SELECT COUNT(*) FROM dividend_calendar WHERE event_id = 'e1' AND as_of = 1767139200`: 1,
+		`SELECT COUNT(*) FROM dividend_calendar WHERE event_id = 'e2' AND as_of = 1769817600 AND amount = 0.42
+		    AND status = 'final'`: 1,
+		`SELECT COUNT(*) FROM dividend_calendar WHERE event_id = 'e3' AND record_day IS NULL`: 1,
+	} {
+		if n := goldCount(t, g, q); n != want {
+			t.Errorf("after the restatement, %s = %d, want %d", q, n, want)
+		}
+	}
+
+	if err := ld.Reset(ctx, "ref"); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	if n := goldCount(t, g, `SELECT COUNT(*) FROM dividend_calendar`); n != 0 {
+		t.Errorf("dividend_calendar keeps %d rows after reset", n)
+	}
+}
+
+// A provider that states a ref's whole history drops from silver the row
+// of a distribution whose days it corrected. Gold mirrors the drop: the
+// load reads every row of the ref and provider its window names and
+// replaces gold's, so the stale row leaves though it was stated on a day
+// outside the window. Another ref keeps its rows.
+func TestLoadRefdataDividendDrop(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	silverPath, s := newSilver(t, "../silver/refdata/testdata/silver_schema.sql")
+	const (
+		run1, run2 = 1_790_000_000, 1_790_100_000
+		d1, d2     = 1_780_272_000, 1_780_876_800 // 2026-06-01, 2026-06-08
+	)
+	stale, corrected := "dividend|2026-06-15|2026-06-15|2026-06-19", "dividend|2026-06-15|2026-06-15|2026-06-22"
+	silvertest.Exec(t, s, `INSERT INTO dump_runs VALUES (?, 3, '/x/1', ?)`, run1, run1+5)
+	silvertest.Exec(t, s, `INSERT INTO dividend_events (ref, provider, event_id, as_of, kind, ex_date, record_date,
+	        pay_date, run_at) VALUES
+	    ('isin:XX0000000001', 'ishares', ?1, ?2, 'dividend', '2026-06-15', '2026-06-15', '2026-06-19', ?3),
+	    ('isin:XX0000000002', 'ishares', ?1, ?2, 'dividend', '2026-06-15', '2026-06-15', '2026-06-19', ?3)`,
+		stale, d1, run1)
+	g, err := gold.OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	ld := loader.New(g)
+	spec := loader.SourceSpec{ID: "ref", Kind: "refdata", Path: silverPath}
+	if _, err := ld.Load(ctx, spec); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	silvertest.Exec(t, s, `INSERT INTO dump_runs VALUES (?, 3, '/x/2', ?)`, run2, run2+5)
+	silvertest.Exec(t, s, `DELETE FROM dividend_events WHERE ref = 'isin:XX0000000001'`)
+	silvertest.Exec(t, s, `INSERT INTO dividend_events (ref, provider, event_id, as_of, kind, ex_date, record_date,
+	        pay_date, run_at) VALUES ('isin:XX0000000001', 'ishares', ?, ?, 'dividend', '2026-06-15', '2026-06-15',
+	        '2026-06-22', ?)`, corrected, d2, run2)
+	res, err := ld.Load(ctx, spec)
+	if err != nil {
+		t.Fatalf("second Load: %v", err)
+	}
+	if span, ok := res.Window.SpanOf(canonical.RefDividendEvents); !ok || span != (canonical.Span{Start: d2, End: d2}) {
+		t.Errorf("dividend events span = %+v (%v), want d2 alone", span, ok)
+	}
+	for q, want := range map[string]int{
+		`SELECT COUNT(*) FROM dividend_calendar WHERE ref = 'isin:XX0000000001'`: 1,
+		`SELECT COUNT(*) FROM dividend_calendar WHERE ref = 'isin:XX0000000001' AND event_id = '` + corrected +
+			`' AND pay_day = DATE '2026-06-22' AND as_of = ` + itoa(d2): 1,
+		`SELECT COUNT(*) FROM dividend_calendar WHERE ref = 'isin:XX0000000002' AND event_id = '` + stale + `'`: 1,
+	} {
+		if n := goldCount(t, g, q); n != want {
+			t.Errorf("after the correction, %s = %d, want %d", q, n, want)
+		}
+	}
+}

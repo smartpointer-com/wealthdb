@@ -152,7 +152,7 @@ Each run walks a fixed sequence of pages with the stored session:
    entries, the window, and per-document metadata.
 
 Both XLS files use the legacy binary `.xls` format. `load` reads them
-with `xlrd==1.2.0`, the last `xlrd` line that supports it.
+with `xlrd`, since openpyxl does not read `.xls`.
 `account_overview.pdf` stays in bronze; nothing parses it.
 
 ## Output

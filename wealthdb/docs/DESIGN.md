@@ -223,24 +223,24 @@ else is left alone):
 **Typed names.** Every name a person typed is hidden. It prints as a
 pseudonym, or as a redacted id where an account column shows the
 account's identifier-shaped id in its place (below). A pseudonym is a
-prefix and a number. The prefix is the kind of the
-source the value comes from, such as `manual` or `cointracking`, and
-`declared` for a declared account (§5.1). A category prints as
-`category-1` and a nickname as `nickname-1`. The numbers count values
-in the order they first appear in one CLI run or one MCP call, and
-each run counts afresh. So a source's value reads the same in every row
-and column of a run, and rows stay apart. The same text of two sources
-reads as two pseudonyms; a category or a nickname reads as one. Public
-names stay as they are: a bank's product label, a security's name. A
-merchant or payer taken off a statement keeps `***`. A source's id
-names a config entry and stays.
+prefix and a number. The prefix is the kind of the source the value
+comes from, such as `manual` or `cointracking`, and `declared` for a
+declared account (§5.1). A category prints as `category-1` and a
+nickname as `nickname-1`. The numbers count values in the order they
+first appear in one CLI run or one MCP call, and each run counts
+afresh. So a source's value reads the same in every row and column of a
+run, and rows stay apart. The same text of two sources reads as two
+pseudonyms; a category or a nickname reads as one. Public names stay as
+they are: a bank's product label, a security's name. A merchant or
+payer taken off a statement keeps `***`. The `silver_source` id names a
+config entry and stays legible.
 
 These names are typed:
 - an account's name, when its source is a `cointracking` or a `manual`
   silver, when the account is a declared one, when its bank names an
   account by its roster's nickname (`chase`, `firstcitizens`,
   `raiffeisen_at`), or when the name equals the account's nickname;
-- the name and id of a `cointracking`, `manual` or declared portfolio;
+- the name and id of a `cointracking` or `manual` portfolio;
 - an `angellist` account's id, its holder's portal slug, whatever its shape;
 - a nickname;
 - a manual holding's name, position key and instrument id, and an
@@ -249,19 +249,23 @@ These names are typed:
   source, such as a manual exit's `exit:<position key>`;
 - an account category that `account_overrides` sets in the config.
 
-An account column shows a typed account's id instead of its name. An
-identifier-shaped id redacts as an account id. Any other id of a typed
-source can hold typed words, such as a tracker's `<user>:<wallet>`, so
-it prints as a pseudonym. A typed name with no id beside it (cashflow
-coverage) prints as a pseudonym too. A holding's name prints as the
-pseudonym of its key, so the holding reads as one pseudonym. A cash
-flow line carries no key, so its name prints as a pseudonym of its own
-text. Exposure and yield key a holding with no public key
-`holding:<source>:<id>`. A manual holding's key prints as that
-pseudonym, and any other's masks whole. The `(no portfolio)` sentinel
-is a marker, not a name, and stays. A name another provider builds from
-the holder's words reads as the bank's: a Plaid account with no
-official name shows one.
+How they print:
+- An account column shows a typed account's id instead of its name. An
+  identifier-shaped id redacts as an account id. Any other id of a
+  typed source can hold typed words, such as a tracker's
+  `<user>:<wallet>`, so it prints as a pseudonym.
+- A typed name with no id beside it (cashflow coverage) prints as a
+  pseudonym.
+- A manual holding's name prints as the pseudonym of its key, so the
+  holding reads as one pseudonym. A cash flow line carries no key, so
+  its name is a pseudonym of its own text.
+- Exposure and yield key a holding with no public key
+  `holding:<source>:<id>`. Such a key of a manual holding prints as the
+  holding's pseudonym. Any other masks whole.
+- The `(no portfolio)` sentinel is a marker, not a name, and stays.
+- A display name that a provider builds from the holder's words, with
+  no nickname beside it, stays legible as the bank's. So a Plaid account
+  with no official name shows the name its holder gave it.
 
 Ratios and dates stay legible throughout — a return or a spending
 share is not an amount. Independently of the per-column pass, every
@@ -621,9 +625,8 @@ and there are no row-filter flags; docs/SPENDING.md §7 argues both.
 **Privacy classes** (§4.6): `merchant`, `counterparty`, `description`
 and `merchant_signature` take the free-text class. The account's id and
 display name take the account-id class. A typed name, such as the
-account nickname, prints as a pseudonym (§4.6). Amounts take the money
-class.
-Category, provenance and `share_pct` stay legible.
+account nickname, prints as a pseudonym. Amounts take the money class.
+Spending category, provenance and `share_pct` stay legible.
 [SPENDING.md §7](SPENDING.md), *What `-p` redacts*, gives the reasons.
 
 Exit codes follow §4.10's table: `2` for a usage error (unknown view,
@@ -651,7 +654,7 @@ expected to pay over a window that may reach into the future
 | `--maturing` | `cash` | `cash` \| `idle` \| `roll`: what a maturing principal earns. Forward views only. |
 | `--shift` | `0` | A parallel shift of the floating rates, in whole basis points. Forward views only. |
 | `-C/--columns` | `default` | `withheld` is available on `summary` and off by default: tax deducted at source, shown beside the income it was taken from and never subtracted from `net_income`. On the forward views `withheld` is the withholding table's model, a default column of `projection`. |
-| `-f`, `-x`, `-p` | as §4.12 | `-p` masks `payer`, `payer_signature`, `counterparty` and `description` whole; types, provenance and `share` stay legible. On the forward views it stars amounts, quantities, prices and account ids. |
+| `-f`, `-x`, `-p` | as §4.12 | `-p` masks `payer`, `payer_signature`, `counterparty` and `description` whole; types, provenance and `share` stay legible. On the forward views it stars amounts, quantities, prices and account ids. A name a person typed prints as a pseudonym (§4.6). |
 
 The views of what was received refuse `--rates`, `--maturing` and
 `--shift`. The MCP `income` tool takes the same window and flags
@@ -684,7 +687,7 @@ each account being reported in its own currency.
 | `--level` | `group` | `section` \| `class` \| `group` — the grain a node is netted at. `section` is **refused** on `sankey`, which would then have no inner column. |
 | `--investing` | `whole` | `whole` \| `class` — net the investing section as one `Investments` node, or per asset class. Honoured by `flows` and `sankey`; the summary is always whole. |
 | `-C/--columns` | `default` | `summary` carries `yield`, `taxes`, `fees`, `giving`, `savings_rate` and the reconciliation memo (`cash_measured`, `fx_effect`, `cash_flow_measured`, `unexplained`) off by default; `flows` and `sankey` carry the dotted node keys. |
-| `-f`, `-x`, `-p` | as §4.12 | `-p` masks account ids, amounts and the `name` column; sections, classes, groups and shares stay legible, which is what makes the diagram's privacy twin normalisation alone. |
+| `-f`, `-x`, `-p` | as §4.12 | `-p` masks account ids, amounts and the `name` column; sections, classes, groups and shares stay legible, which is what makes the diagram's privacy twin normalisation alone. A name a person typed prints as a pseudonym (§4.6). |
 
 Positive is cash arriving in the pool and negative is cash leaving it.
 The four sections sum to `net_cash_flow`, and a bucket's `flows` rows —
@@ -709,7 +712,7 @@ views, and the shared `-f`, `-C`, `-x`, `-p`.
 | `--documents` | `primary` | `primary` \| `all`, on `realized` only: `all` lists every document's copy of a sale. Refused on the other views. |
 | `-r`, `--reverse` | off | `realized` only: newest first. Refused on the other views. |
 | `--missing-basis` | `lots.missing_basis`, else `ignore` | `ignore` \| `zero`: how a missing cost basis counts ([GAINS.md §8](GAINS.md)). Refused on `coverage` and `check`, which count a missing cost rather than read it. |
-| `-f`, `-C`, `-x`, `-p` | as §4.12 | `-p` masks account ids, quantities and amounts; percentages, basis stamps, dates and security names stay legible. |
+| `-f`, `-C`, `-x`, `-p` | as §4.12 | `-p` masks account ids, quantities and amounts; percentages, basis stamps, dates and public security names stay legible. A name a person typed prints as a pseudonym (§4.6). |
 
 Every aggregate and positions row carries a `quality` column naming
 each way its figures can be incomplete, and `coverage` gives a verdict
@@ -743,7 +746,7 @@ positional view, `-d` for the day, and the shared `-f`, `-C`, `-x`,
 | `-d`, `--as-of` | today | The day. |
 | `--country` | `risk` | `risk` \| `domicile`: the country a security counts in, on `countries` and `securities`. Refused on the other views. |
 | `--period` | none | `monthly` \| `quarterly` \| `annual`: the view at the end of every period of the window `[FROM [TO]]`, a `period` column first (EXPOSURE.md §7). Refused on `securities`, `issuers` and `funds`, and with `-d`. |
-| `-f`, `-C`, `-x`, `-p` | as §4.12 | `-C` names a share column without its `_pct` suffix. `-p` hides every amount and every instrument id (EXPOSURE.md §7). On `coverage`, `-f ndjson` prints the declarations ledger's skeleton records still to fill in (EXPOSURE.md §9); it takes no `-C`, `-p` or `--period`. |
+| `-f`, `-C`, `-x`, `-p` | as §4.12 | `-C` names a share column without its `_pct` suffix. `-p` hides every amount and every instrument id (EXPOSURE.md §7). A name a person typed prints as a pseudonym (§4.6). On `coverage`, `-f ndjson` prints the declarations ledger's skeleton records still to fill in (EXPOSURE.md §9); it takes no `-C`, `-p` or `--period`. |
 
 Every view sums to `holdings global`, and every row carries a
 `quality` column naming what its figure rests on.
@@ -761,7 +764,7 @@ series, and the shared `-f`, `-C`, `-x`, `-p`.
 | `-d`, `--as-of` | today | The day. |
 | `--converted` | off | The aggregate views at one row per entity, every currency together (YIELD.md §5). Refused on the other views. |
 | `--period` | none | `monthly` \| `quarterly` \| `annual`: the aggregate views and `curve` at the end of every period of the window `[FROM [TO]]`, a `period` column first. Refused on the other views, and with `-d`. |
-| `-f`, `-C`, `-x`, `-p` | as §4.12 | `-C` names a rate column without its `_pct` suffix. `-p` hides every amount, a price, every account id, and a security or fund key that is a holding's own (YIELD.md §2). On `coverage`, `-f ndjson` prints the ledger's yield records still to fill in (YIELD.md §10); it takes no `-C`, `-p` or `--period`. |
+| `-f`, `-C`, `-x`, `-p` | as §4.12 | `-C` names a rate column without its `_pct` suffix. `-p` hides every amount, a price, every account id, and a security or fund key that is a holding's own (YIELD.md §2). A name a person typed prints as a pseudonym (§4.6). On `coverage`, `-f ndjson` prints the ledger's yield records still to fill in (YIELD.md §10); it takes no `-C`, `-p` or `--period`. |
 
 An aggregate row is one entity in one currency, and the total row
 weighs the currencies by value. Every row but `curve`'s and
@@ -883,7 +886,7 @@ Example config file:
 | `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname`, `category`, `tax_wrapper`, and/or `management_style` strings, or `exclude: true` to drop the account and every fact keyed to it (a sweep over gold after the load's streams drain, §13.8). All inner fields are optional but at least one must be set per entry, and `exclude` may not be combined with a column override. `tax_wrapper` and `management_style` values are validated against the canonical enums (`internal/canonical/enums.go`) at config-load time. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
 | `declared_accounts` | object | Optional. Map keyed by an id the holder chooses (`[A-Za-z0-9_-]+`) of accounts the household OWNS at institutions the product does not collect: `account_kind` and `tax_wrapper` required and validated against the canonical enums, `nickname` and `currency` optional. The load writes each one as an account row under the reserved source `declared` (no `silver_sources[].id` may take that name), after the per-source loads and before the enrichment pass, and prints how many it stamped; a declaration removed from the config leaves on the next load. A declared account carries no balance and no facts: it exists so a rule's `far` can name it as the other side of an own-account move, which the cash flow statement then places by the declared wrapper exactly as it places a collected far account — a household wrapper makes the move pool-internal, a vehicle wrapper draws it as that vehicle's crossing (docs/CASHFLOW.md §4). Nothing the product measures can falsify a declaration, which is why the wrapper is required and the load prints how many declarations sit inside the pool. Deployment-specific: lives in the user's config. |
 | `exposure` | object | Optional. What the exposure report needs that no source knows: `proxies` (a fund whose composition stands in for another, with `always` and `leverage`), `reference_funds`, `size_funds`, `declarations` (the path to the declarations ledger, NDJSON; expanded as above), `custody` and `max_gap_days` (default 400). Validated at config-load time. docs/EXPOSURE.md §9 defines each key, its bounds and the ledger's records; §7.6 says how a load stores them. Deployment-specific: lives in the user's config. |
-| `yield` | object | Optional. The yield inputs that no source knows: `curves` (a currency's public yield curve, one series of a configured source per tenor, `"3M": "fred:DGS3MO"`), `withholding` (percent withheld at source by situs country and tax wrapper, `default` for any wrapper), `rating_funds` (a rating-sliced fund's bucket or range, `BBB` or `AAA-A`), `conventions` (coupon frequency and day count per market: a currency, or a currency and a bond sector or `bill`; built-in defaults), `horizon_months` (1 to 36, default 12) and `cycles` (overrides of the built-in map from the eleven sectors to cyclical, defensive and sensitive). Validated at config-load time; §7.6 says how a load stores it. Deployment-specific: lives in the user's config. |
+| `yield` | object | Optional. The yield inputs that no source knows: `curves` (a currency's public yield curve, one series of a configured source per tenor, `"3M": "fred:DGS3MO"`), `withholding` (percent withheld at source by situs country and tax wrapper, `default` for any wrapper), `rating_funds` (a rating-sliced fund's bucket or range, `BBB` or `AAA-A`), `conventions` (coupon frequency and day count per market: a currency, or a currency and a bond sector or `bill`; built-in defaults), `horizon_months` (1 to 36, default 12), `cycles` (overrides of the built-in map from the eleven sectors to cyclical, defensive and sensitive) and `settlement_cycles` (a market's settlement cycles, each in business days from a day on; a market named replaces its built-in cycles). Validated at config-load time; §7.6 says how a load stores it. Deployment-specific: lives in the user's config. |
 | `holding_aliases` | array | Optional. Entries `{ "source", "account"?, "key", "as", "note"? }` naming a holding a source keys two ways, so the gains, exposure and yield reports read both keys as one: a statement's overview line (`key`) until a daily feed lists the same holding by ISIN (`as`), say. `account` scopes the alias to one account; absent, it covers every account of the source. The load writes the block into gold's `holding_aliases` table whole, and `gains_windows` maps every position, lot and event key through it before a bucket's start meets its end (docs/GAINS.md §5). Validated for a configured source, two different keys, one alias per key, and no alias of an alias. Deployment-specific: lives in the user's config. |
 | `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole crypto portfolio inside an IRA / trust / Stiftung wrapper. Accepts `tax_wrapper` (unlike `account_overrides`, which also takes nickname / category / management_style) or `exclude: true`, which drops the portfolio and every account inside it with their facts; one of the two must be set and they may not be combined. A per-account `tax_wrapper` override still wins over a portfolio one. See §13.8. |
 | `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. See §13.8. |
@@ -1547,6 +1550,8 @@ is documented where it is used:
 - The reference tables `fund_risk`, `fund_characteristics`,
   `security_period_facts` and `rate_observations`, and the `yield_*`
   config tables (migration `0134`) — §7.6.
+- The reference table `dividend_calendar` and the config table
+  `yield_settlement_cycles` (migration `0147`) — §7.6.
 - The serving tables `serving_*` (migration `0132`) — web/DESIGN.md §8.
 - The spending overlay: `spend_categories` (migration `0040`;
   docs/SPENDING.md §2), and `spend_txn_enrichment`,
@@ -2090,6 +2095,13 @@ as a debt line's durations and yields. It also adds four tables:
 - `rate_observations`: one day's value of a public rate series, in
   percent.
 
+Migration 0147 adds `dividend_calendar`: one distribution of a fund or
+a security as a provider states it, with its ex, record and pay days.
+Its `as_of` is the day the source stated it. A load replaces gold's
+rows of each ref and provider whose rows changed, whole, so gold holds
+what silver holds (adapters/refdata.md §4). The yield report reads a
+dividend's record day from it (YIELD.md §4).
+
 The refdata collector learns what to fetch from the hidden read-only
 subcommand `refdata-wanted`, whose JSON contract adapters/refdata.md §5
 defines.
@@ -2124,7 +2136,10 @@ load replaces them whole the same way (`gold.SyncYield`):
 - `yield_conventions`: coupon frequency and day count per market, the
   built-in defaults with the config's entries;
 - `yield_cycles`: each sector's cycle, the built-in map with the
-  config's overrides.
+  config's overrides;
+- `yield_settlement_cycles`: each market's settlement cycles, the
+  built-in defaults with the config's markets (migration 0147, which
+  seeds the defaults).
 
 `horizon_months` has no table: the forward views read it from the
 config (§10.15).
@@ -2674,10 +2689,6 @@ the others carried. Five rules complete the picture:
     snapshot in that table lies more than one and a half cadences past it.
   - A key's cadence is the median gap between its own observation days. A key
     observed on one day only takes a month.
-  - So a quarterly account of a monthly statement stands through the month ends
-    after its last quarter end.
-  - A closed account reads as closed from the run that left it out, once its
-    source has run past the grace.
   - A positions key needs no grace where its re-cover run states the account's
     cash. That run reported the account, and its holdings were gone, as after
     a sale of every one.
@@ -2702,8 +2713,7 @@ the others carried. Five rules complete the picture:
   one source without expiring each other for as long as their runs carry their
   own `snapshot_at`. A slow key whose last observation *did* share a run with a
   faster sibling is ended by that sibling's next run, which covers the whole
-  peer set. That ending waits until the source has run one and a half of the
-  slow key's cadences past it.
+  peer set. That ending waits for the slow key's grace (above).
 
 The point-in-time reports take each key's active snapshot by the same rule, at
 any instant (migration `0140`):
@@ -2713,7 +2723,7 @@ any instant (migration `0140`):
 - the key's last observation stands while the instant is before its ending
   snapshot, and while the source's clock at the instant is at most
   `hist_carry_days()` days past the observation's day. The ending snapshot is the
-  re-cover, where the cadence lets it end.
+  re-cover, once the grace or the account's own cash lets it end.
 
 Each observation so holds over a span (`pos_key_spans()` /
 `cash_key_spans()`): from its own instant to the key's next observation. The
@@ -2750,6 +2760,7 @@ What follows for readers of these macros:
   which accounts a run could report.
 - **A past read can change.** A read of a past instant changes when a later run
   passes a key's grace: the key then reads as closed from its re-cover run on.
+  It changes back once the key is observed again.
 - **`snapshot_at` is the account's own active snapshot**, in
   `report_positions_history_multi` and in every point-in-time row, so it varies
   per account within a source. A source's `snapshot_at` is the newest of its
@@ -3271,13 +3282,17 @@ The pieces:
   SQL folds the same way (`holdingAliasJoins`). A payment, a holding, a
   position and a trade meet under the folded id;
 - the record day, `readYieldUnits`: what each account held of each
-  instrument paid, at its snapshots, moved by its trades since. A cash
-  account's trade moves its own holding when it holds the instrument.
-  Else it moves the one other account of its portfolio that holds it.
-  With none or several, it moves nothing. Any other account's trade
-  moves its own holding. `yield.RecordLag` gives each market's lag
-  before the pay day, its record window and its settlement calendar. A
-  dividend's rate reads what its account held then (YIELD.md §4);
+  instrument paid, at its snapshots, moved by its trades since
+  (YIELD.md §4 says which account a cash account's trade moves).
+  `yield.RecordOf` gives a payment's record day: the one the dividend
+  calendar states (`dividend_calendar`, read by `readCalendar`), else
+  the one its ex day derives by the market's settlement cycle
+  (`yield_settlement_cycles`), else the market's lag.
+  It also gives the day the quantity paid on reads: the ex day where the
+  calendar gives the days, else the lag's record day. `yield.RecordLag`
+  gives each market's lag before the pay day, its record window and its
+  settlement calendar. A dividend's rate reads what its account held as
+  that day began (YIELD.md §4);
 - `internal/fixedincome`: the bond and rate arithmetic, as pure
   functions;
 - `internal/yield`: `yield.Compute` measures every holding and projects
@@ -3308,9 +3323,10 @@ book:
 - `cmd/wealthdb/cmd_income_projection.go`: the forward views' window,
   flags and columns, shared by the CLI and the MCP `income` tool.
 
-The Metabase Yield dashboard and the Income dashboard's projected
-section read tables `web-materialize` writes (`gold.MaterializeYield`,
-migration 0138), each from the books `yield.Compute` gives:
+The Metabase Yield dashboard and the Income dashboard's cards of the
+holdings' income read tables `web-materialize` writes
+(`gold.MaterializeYield`, migration 0138), each from the books
+`yield.Compute` gives:
 
 - `report_yield_positions` and `report_yield_buckets`: every holding's
   figures and its DV01 per tenor, in every reporting currency, today
@@ -3318,8 +3334,9 @@ migration 0138), each from the books `yield.Compute` gives:
   carries what its realized yield divides, its income received and its
   mean daily value, so a card pools a selection's income over its mean
   value as a row does (`yield_realized_pct`). The table holds no days,
-  so the CLI's thin rule for a row does not apply to a card. A bucket carries its tenor's order and what
-  holds it (`yield.HeldIn`), as the `curve` view splits it;
+  so the CLI's thin rule for a row does not apply to a card. A bucket
+  carries its tenor's order and what holds it (`yield.HeldIn`), as the
+  `curve` view splits it;
 - `report_yield_parts`, `report_yield_rates` and `report_yield_events`:
   today's projection as its parts, in each holding's currency with its
   rate to each reporting currency, the rate table, and the principals

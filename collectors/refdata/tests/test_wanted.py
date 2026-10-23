@@ -44,6 +44,26 @@ def test_parse_reads_the_facts_of_version_2():
     assert s.periods == {"dividends": date(2026, 6, 30), "financials": date(2026, 3, 31)}
 
 
+def test_parse_reads_the_calendar_of_version_3():
+    doc = wanted_doc([{**fund("symbol:SPY", "SPY", compositions=["2026-06-30"]),
+                       "wants": ["characteristics", "dividend_calendar"],
+                       "facts": {"dividend_calendar": ["2026-06-15", "2026-07-01"]}}],
+                     [{"key": "symbol:QRCP", "scope": "direct", "missing": [], "lookups": {}, "periods": {},
+                       "receipt": True, "wants": ["dividend_calendar"], "calendar": "2026-07-01"},
+                      {"key": "symbol:QSHR", "scope": "direct", "missing": [], "lookups": {}, "periods": {},
+                       "receipt": False, "wants": ["dividend_calendar"], "calendar": None}], version=3)
+    w = wanted.parse(doc)
+    (f,) = w.funds
+    assert f.wants == ("characteristics", "dividend_calendar")
+    assert f.facts == {"dividend_calendar": (date(2026, 6, 15), date(2026, 7, 1))}
+    receipt, share = w.securities
+    assert (receipt.receipt, receipt.wants, receipt.calendar) == (True, ("dividend_calendar",), date(2026, 7, 1))
+    assert (share.receipt, share.calendar) == (False, None)
+    # A version 2 list states none of them.
+    (s,) = wanted.parse(wanted_doc(securities=[{"key": "symbol:QSHR", "scope": "direct"}], version=2)).securities
+    assert (s.receipt, s.wants, s.calendar) == (False, (), None)
+
+
 @pytest.mark.parametrize("doc,msg", [
     ({"contract": "other", "version": 1}, "not a refdata-wanted"),
     ({"contract": "refdata-wanted", "version": 9}, "version 9"),
@@ -52,6 +72,10 @@ def test_parse_reads_the_facts_of_version_2():
       "funds": [{"ref": "symbol:EXBF", "facts": {"risk_metrics": ["x"]}}]}, "malformed"),
     ({"contract": "refdata-wanted", "version": 2, "as_of": "2026-07-15",
       "securities": [{"key": "isin:XX0000000302", "periods": {"earnings": "x"}}]}, "malformed"),
+    ({"contract": "refdata-wanted", "version": 3, "as_of": "2026-07-15",
+      "securities": [{"key": "isin:XX0000000302", "receipt": "false"}]}, "malformed"),
+    ({"contract": "refdata-wanted", "version": 3, "as_of": "2026-07-15",
+      "securities": [{"key": "isin:XX0000000302", "calendar": "x"}]}, "malformed"),
 ])
 def test_parse_refuses(doc, msg):
     with pytest.raises(wanted.WantedError, match=msg):
@@ -65,10 +89,16 @@ def _engine(tmp_path, body):
     return str(script)
 
 
-def test_from_engine_runs_the_read_only_subcommand(tmp_path):
+def test_from_engine_runs_the_read_only_subcommand(tmp_path, monkeypatch):
     doc = wanted_doc([fund("symbol:FUNDA", "FUNDA")])
     (tmp_path / "doc.json").write_text(json.dumps(doc))
-    engine = _engine(tmp_path, f'[ "$1 $2" = "-r refdata-wanted" ] || exit 9\ncat {tmp_path / "doc.json"}\n')
+    # The engine gets the environment without FINRA's credential.
+    monkeypatch.setenv("FINRA_CLIENT_ID", "example-id")
+    monkeypatch.setenv("FINRA_CLIENT_SECRET", "example-secret")
+    monkeypatch.setenv("REFDATA_EXAMPLE", "kept")
+    engine = _engine(tmp_path, f'[ "$1 $2" = "-r refdata-wanted" ] || exit 9\n'
+                               f'[ -z "${{FINRA_CLIENT_ID+x}}${{FINRA_CLIENT_SECRET+x}}" ] || exit 8\n'
+                               f'[ "$REFDATA_EXAMPLE" = kept ] || exit 7\ncat {tmp_path / "doc.json"}\n')
     assert wanted.from_engine(engine).funds[0].ref == "symbol:FUNDA"
 
 
@@ -152,3 +182,5 @@ def test_parse_reads_the_engine_golden():
     assert [{k: v.isoformat() for k, v in s.periods.items()} for s in w.securities] == \
         [s["periods"] for s in raw["securities"]]
     assert any(s.periods for s in w.securities)
+    assert [(s.receipt, list(s.wants), s.calendar and s.calendar.isoformat()) for s in w.securities] == \
+        [(bool(s.get("receipt")), s.get("wants") or [], s.get("calendar")) for s in raw["securities"]]

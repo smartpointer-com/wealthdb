@@ -51,6 +51,19 @@ func rerunMigrationDDL(t *testing.T, db *sql.DB, ctx context.Context, file strin
 	}
 }
 
+// rowsDigest is every row sqlText reads, each cast to text, in text
+// order, joined: two reads of one answer compare as one string. "" for
+// none.
+func rowsDigest(t *testing.T, ctx context.Context, q querier, sqlText string) string {
+	t.Helper()
+	var s sql.NullString
+	if err := q.QueryRowContext(ctx, `SELECT string_agg(CAST(x AS VARCHAR), ';' ORDER BY CAST(x AS VARCHAR))
+	    FROM (`+sqlText+`) x`).Scan(&s); err != nil {
+		t.Fatalf("%s: %v", sqlText, err)
+	}
+	return s.String
+}
+
 // reissueRE matches a macro or a view a migration's DDL creates or
 // replaces, and sqlCommentRE a comment, which names none.
 var (

@@ -575,24 +575,29 @@ type Payment struct {
 	Account  string
 	// Quantity is the quantity of the instrument held as the payment's
 	// day began, in the units of the instrument at the instant; nil where
-	// none is known. LagDays is the days from its record day to its day
-	// where the market of the security paid fixes them (RecordLag), 0
-	// where it fixes none. Record is then the quantity held as its record
-	// day began, in the same units, where it is known and above zero and
-	// the account was seen by its record window's start: what the payment
-	// was paid on, and what its rate rests on wherever it is set
-	// (payDays). Before is the quantity that guards a rate on Quantity:
-	// where LagDays is above zero, the first the account shows held after
-	// its record day; else what it held RecordLagDays before its day.
-	// Least and Most are the least and the most the account held across
-	// the record window (Lag.Window), on the days it held some, where
-	// Record is known: Least is 0 where some of the window is unknown.
+	// none is known. RecordSource says where its record day comes from
+	// (RecordOf). Record is the quantity, in the same units, held as the
+	// day that gives the entitlement began: the ex day where a calendar
+	// gives the payment's days, else the lag's record day. It is set where
+	// that quantity is known and above zero and the account was seen by
+	// its record window's start: what the payment was paid on, and what
+	// its rate rests on wherever it is set (payDays). LagDays is the days
+	// from that day to the payment's day, 0 where no record day is known.
+	// Before is the quantity that guards a rate on Quantity: where a
+	// record day is known, the first the account shows held after the day
+	// Record reads; else what it held RecordLagDays before its day. Least
+	// and Most are the least and the most the account held across the
+	// record window, on the days it held some, where Record is known:
+	// Least is 0 where some of the window is unknown. The window is the
+	// market's lag's (Lag.Window), and the day Record reads alone where a
+	// calendar gives it.
 	// Units says the quantity its rate reads may be in its day's units: no
 	// whole factor explains a change since, or no account held the
 	// instrument through some span since with its units read.
 	Quantity, Record, Before *float64
 	Least, Most              *float64
 	LagDays                  int
+	RecordSource             RecordSource
 	Units                    bool
 	Type                     IncomeType
 }
@@ -603,6 +608,262 @@ type Payment struct {
 // unknown. A day the account held none is no record day, as it was paid.
 func (p Payment) steady() bool {
 	return p.Least == nil || (*p.Least > 0 && *p.Most <= recordSpread**p.Least)
+}
+
+// reach is how far before its day, in calendar days, the record window of
+// a payment may reach: back to the day its quantity reads where a
+// calendar gives its days, else the furthest of its market's lag
+// (recordReach); no less than a share of the United States's window
+// either way.
+func (p Payment) reach() int {
+	if p.RecordSource == RecordStated || p.RecordSource == RecordDerived {
+		return max(RecordLagUSShare.Far, p.LagDays)
+	}
+	return recordReach(p.LagDays)
+}
+
+// A RecordSource says where a payment's record day comes from.
+type RecordSource string
+
+const (
+	// RecordStated is a day a dividend calendar's event of the payment
+	// states.
+	RecordStated RecordSource = "stated"
+	// RecordDerived is a day derived from the ex day an event states, by
+	// the settlement cycle of its market (SettlementCycles.RecordDay).
+	RecordDerived RecordSource = "derived"
+	// RecordLagged is the day the market's lag gives (RecordLag).
+	RecordLagged RecordSource = "lag"
+	// RecordNone says no record day is known.
+	RecordNone RecordSource = ""
+)
+
+// RecordSources are the sources of a record day, in the order the
+// coverage view counts them.
+var RecordSources = []RecordSource{RecordStated, RecordDerived, RecordLagged, RecordNone}
+
+// A CalendarEvent is one distribution of a security as a dividend
+// calendar states it: its ex day, record day and pay day, each nil where
+// the calendar states none. Estimated says the calendar states it as an
+// estimate.
+type CalendarEvent struct {
+	Ex, Record, Pay *time.Time
+	Estimated       bool
+}
+
+// The days around a payment's day that the pay day of its event may fall
+// on: the payment booked up to eventPayLate days after it, or up to
+// eventPayEarly days before.
+const (
+	eventPayLate  = 10
+	eventPayEarly = 3
+)
+
+// fundWindowDays is the record window of a fund's payment, or of any
+// other that is no share's, where its market fixes no lag: the 63 days to
+// the payment's day, in which the record day or ex day of its event falls
+// where the calendar states no pay day. A share's window is the furthest
+// any record window reaches, RecordWindowDays: a Japanese share pays some
+// three months after its record day.
+const fundWindowDays = 63
+
+// RecordOf is, for a payment whose day begins at pay, the day whose start
+// gives the quantity it was paid on, and where its record day comes from
+// (docs/YIELD.md §4). events are the distributions a calendar states of
+// the security paid, lag its market's lag (RecordLag), share says the
+// security is a share (or a receipt), whose window with no lag reaches
+// back RecordWindowDays, where a fund's reaches back fundWindowDays, and
+// market is the market whose settlement cycle derives one day from the
+// other (SettlementMarket). The record day, in order:
+//
+//  1. stated: the payment's event (matchEvent) states its record day;
+//  2. derived: it states an ex day and no record day: the ex day plus the
+//     business days its market's cycle gives (SettlementCycles.RecordDay),
+//     where that day is no later than pay;
+//  3. lag: no event is the payment's, or its event gives no record day,
+//     and the market fixes a lag: pay less the lag.
+//
+// A market with no lag then leaves both days unknown (RecordNone). An
+// event's quantity is the one held as its ex day began, by trade date,
+// as a trade on the ex day earns nothing: the ex day it states, else the
+// one its record day gives (SettlementCycles.ExDay), else the record day
+// itself where the market has no cycle then. The lag's is the one held
+// as its record day began, a day that reaches back to the ex day where
+// the lag is in business days.
+func RecordOf(events []CalendarEvent, pay time.Time, lag Lag, share bool, market string,
+	cycles SettlementCycles) (read time.Time, source RecordSource) {
+	from, to := pay.AddDate(0, 0, -fundWindowDays), pay
+	if share {
+		from = pay.AddDate(0, 0, -RecordWindowDays)
+	}
+	if lag.Days > 0 {
+		from, to = lag.Window(pay)
+	}
+	if e, ok := matchEvent(events, pay, from, to); ok {
+		switch {
+		case e.Record != nil:
+			read = *e.Record
+			if e.Ex != nil {
+				read = *e.Ex
+			} else if d, ok := cycles.ExDay(market, *e.Record); ok {
+				read = d
+			}
+			return read, RecordStated
+		case e.Ex != nil:
+			if d, ok := cycles.RecordDay(market, *e.Ex); ok && !d.After(pay) {
+				return *e.Ex, RecordDerived
+			}
+		}
+	}
+	if lag.Days > 0 {
+		return lag.RecordDay(pay), RecordLagged
+	}
+	return time.Time{}, RecordNone
+}
+
+// matchEvent is the event of events a payment whose day begins at pay was
+// paid for: of those whose pay day lies from eventPayLate days before
+// pay to eventPayEarly days after, the nearest; else, of the events that
+// state no pay day, the one whose record day, else ex day, lies latest in
+// the record window [from, to], which ends no later than pay. An event
+// whose record day or ex day lies after pay is no payment's that day. An
+// event the calendar estimates loses to any it does not, however near: a
+// source that moves an estimate's days may keep the stale row beside the
+// final one. Of two events as near, the one that states more of a record
+// day and an ex day wins, a record day first, then the first: the
+// calendar states one distribution once per provider, and a fund's
+// income and gains apart, all on the same days.
+func matchEvent(events []CalendarEvent, pay, from, to time.Time) (CalendarEvent, bool) {
+	var best CalendarEvent
+	found := false
+	rank := func(e CalendarEvent) int {
+		r := 0
+		if e.Record != nil {
+			r += 2
+		}
+		if e.Ex != nil {
+			r++
+		}
+		return r
+	}
+	// wins says e wins over the best so far, given that it lies nearer
+	// the payment or as near.
+	wins := func(e CalendarEvent, nearer, asNear bool) bool {
+		switch {
+		case !found:
+			return true
+		case e.Estimated != best.Estimated:
+			return best.Estimated
+		}
+		return nearer || asNear && rank(e) > rank(best)
+	}
+	late := func(e CalendarEvent) bool {
+		return e.Record != nil && e.Record.After(pay) || e.Ex != nil && e.Ex.After(pay)
+	}
+	var bestDist time.Duration
+	for _, e := range events {
+		if e.Pay == nil || late(e) {
+			continue
+		}
+		d := e.Pay.Sub(pay)
+		if d < -eventPayLate*24*time.Hour || d > eventPayEarly*24*time.Hour {
+			continue
+		}
+		d = max(d, -d)
+		if wins(e, d < bestDist, d == bestDist) {
+			best, bestDist, found = e, d, true
+		}
+	}
+	if found {
+		return best, true
+	}
+	var bestDay time.Time
+	for _, e := range events {
+		if e.Pay != nil || late(e) {
+			continue
+		}
+		var day *time.Time
+		for _, d := range []*time.Time{e.Record, e.Ex} {
+			if d != nil && !d.Before(from) && !d.After(to) {
+				day = d
+				break
+			}
+		}
+		if day != nil && wins(e, day.After(bestDay), day.Equal(bestDay)) {
+			best, bestDay, found = e, *day, true
+		}
+	}
+	return best, found
+}
+
+// SettlementCycles are each market's settlement cycles, oldest first, by
+// market (yield_settlement_cycles).
+type SettlementCycles map[string][]canonical.SettlementCycle
+
+// On is the settlement cycle of market on day d, in business days: that
+// of its newest cycle from on or before d. 0 where none holds then.
+func (c SettlementCycles) On(market string, d time.Time) int {
+	days := 0
+	for _, sc := range c[market] {
+		if sc.From != nil && sc.From.After(d) {
+			break
+		}
+		days = sc.Days
+	}
+	return days
+}
+
+// RecordDay is the record day of a distribution whose ex day is ex, in
+// market: the ex day plus one business day less than the market's cycle
+// on the ex day. A trade the day before the ex day, the last that earns
+// the distribution, settles on it. Business days are the market's
+// settlement days (closed). false where the market has no cycle then.
+func (c SettlementCycles) RecordDay(market string, ex time.Time) (time.Time, bool) {
+	days := c.On(market, ex)
+	if days == 0 {
+		return time.Time{}, false
+	}
+	return businessDays(market, ex, days-1), true
+}
+
+// ExDay is the ex day of a distribution whose record day is record, in
+// market, as RecordDay derives the one from the other: the record day
+// less one business day less than the market's cycle on the record day.
+// Under a cycle of one day the two are one. false where the market has
+// no cycle then.
+func (c SettlementCycles) ExDay(market string, record time.Time) (time.Time, bool) {
+	days := c.On(market, record)
+	if days == 0 {
+		return time.Time{}, false
+	}
+	return businessDays(market, record, 1-days), true
+}
+
+// SettlementMarket is the market whose settlement cycle derives a
+// security's ex day and record day from each other: for a share or a
+// receipt, the market of the currency it is quoted in, as RecordLag reads
+// a share's, but a share in euros its issuer's market wherever that is
+// of the euro area (canonical.EuroAreaMarkets); for any other security, a
+// fund, its country (situs), else its currency's market. "" where none
+// is known.
+func SettlementMarket(situs, currency string, receipt, share bool) string {
+	switch {
+	case !receipt && !share && situs != "":
+		return situs
+	case !receipt:
+		return shareMarket(situs, currency)
+	}
+	return currencyMarkets[currency]
+}
+
+// shareMarket is the market of a share of country situs quoted in
+// currency: its currency's, but its issuer's for a share in euros of the
+// euro area (canonical.EuroAreaMarkets). "" where none is known.
+func shareMarket(situs, currency string) string {
+	if currency == "EUR" && slices.Contains(canonical.EuroAreaMarkets, situs) {
+		return situs
+	}
+	return currencyMarkets[currency]
 }
 
 // recordSpread bounds what an account held across a record window, its
@@ -640,15 +901,24 @@ func (l Lag) Window(pay time.Time) (from, to time.Time) {
 }
 
 // back is the day n of the lag's days before pay: calendar days, or
-// business days, stepping over Saturdays, Sundays and the days its
-// market's settlement system is closed (closed).
+// business days of its market (businessDays).
 func (l Lag) back(pay time.Time, n int) time.Time {
 	if !l.Business {
 		return pay.AddDate(0, 0, -n)
 	}
-	d := pay
+	return businessDays(l.Market, pay, -n)
+}
+
+// businessDays is the day n business days of market after d, before it
+// where n is negative: stepping over Saturdays, Sundays and the days the
+// market's settlement system is closed (closed).
+func businessDays(market string, d time.Time, n int) time.Time {
+	step := 1
+	if n < 0 {
+		step, n = -1, -n
+	}
 	for i := 0; i < n; {
-		if d = d.AddDate(0, 0, -1); d.Weekday() != time.Saturday && d.Weekday() != time.Sunday && !closed(l.Market, d) {
+		if d = d.AddDate(0, 0, step); d.Weekday() != time.Saturday && d.Weekday() != time.Sunday && !closed(market, d) {
 			i++
 		}
 	}
@@ -665,14 +935,17 @@ const (
 	whitMonday        = 50
 )
 
-// closed says the settlement system of market, a country of a
-// business-day lag (markets), is closed on day d, by a calendar that
-// follows from the year (docs/YIELD.md §4): a record day is a settlement
-// day. All of them close on 1 January, Good Friday, Easter Monday, 25 and
-// 26 December. A euro-area market, and market "", settles in TARGET2,
-// closed on 1 May too. Switzerland and Sweden close on 1 May, 24 and 31
-// December, and on days of their own; Denmark, which settles on 1 May, on
-// 24 and 31 December and on its own.
+// closed says the settlement system of market, a country, is closed on
+// day d, by a calendar that follows from the year (docs/YIELD.md §4): a
+// record day is a settlement day. All of them close on 1 January, Good
+// Friday, Easter Monday, 25 and 26 December. A euro-area market, and
+// market "", settles in TARGET2, closed on 1 May too. Switzerland and
+// Sweden close on 1 May, 24 and 31 December, and on days of their own;
+// Denmark, which settles on 1 May, on 24 and 31 December and on its own.
+// Any other market reads TARGET2's days: the calendars are those of the
+// markets with a business-day lag (markets). So a day derived in another
+// market, Japan or the United States say, steps over TARGET2's closing
+// days and not its own, and may miss by a day.
 func closed(market string, d time.Time) bool {
 	m, day := d.Month(), d.Day()
 	e := d.YearDay() - easter(d.Year()).YearDay()
@@ -755,10 +1028,10 @@ var (
 // pay day, in calendar days: the furthest of the lags' Far.
 const RecordWindowDays = 105
 
-// calendarLags are the lags in calendar days, by which recordReach tells
-// how far a payment's record window may reach.
-var calendarLags = []Lag{RecordLagUSShare, RecordLagUKHongKongShare, RecordLagJapaneseReceipt,
-	RecordLagEuropeanReceipt, RecordLagUKReceipt, RecordLagReceipt}
+// recordLags are every market's lags (RecordLag), by which recordReach
+// tells how far a payment's record window may reach.
+var recordLags = []Lag{RecordLagUSShare, RecordLagUKHongKongShare, RecordLagEuropeanShare, RecordLagSwedishShare,
+	RecordLagJapaneseReceipt, RecordLagEuropeanReceipt, RecordLagUKReceipt, RecordLagReceipt}
 
 // recordReach is how far before its pay day, in calendar days, the record
 // window of a payment may reach whose market fixes its record day lagDays
@@ -769,8 +1042,8 @@ var calendarLags = []Lag{RecordLagUSShare, RecordLagUKHongKongShare, RecordLagJa
 // fund's ex-day may fall in the month before its pay day.
 func recordReach(lagDays int) int {
 	reach := RecordLagUSShare.Far
-	for _, l := range calendarLags {
-		if l.Days == lagDays {
+	for _, l := range recordLags {
+		if !l.Business && l.Days == lagDays {
 			reach = max(reach, l.Far)
 		}
 	}
@@ -780,8 +1053,7 @@ func recordReach(lagDays int) int {
 // markets are the lags of the markets whose shares fix their record day,
 // by country, a business-day lag in its own market's business days;
 // currencyMarkets the market of a share quoted in each currency, where
-// one currency names one market. A share quoted in euros reads its
-// issuer's market where that is one of the euro area's here.
+// one currency names one market (shareMarket).
 var (
 	markets = map[string]Lag{
 		"US": RecordLagUSShare, "GB": RecordLagUKHongKongShare, "HK": RecordLagUKHongKongShare,
@@ -792,13 +1064,13 @@ var (
 	}
 	currencyMarkets = map[string]string{
 		"USD": "US", "GBP": "GB", "GBX": "GB", "GBp": "GB", "HKD": "HK", "CHF": "CH", "DKK": "DK", "SEK": "SE",
+		"NOK": "NO", "CAD": "CA", "JPY": "JP",
 	}
-	euroMarkets = []string{"AT", "BE", "DE", "ES", "FR", "IT"}
 )
 
 // RecordLagDays is how long before its pay day the guard reads what an
-// account held, for a payment whose market fixes no record day (payDays):
-// longer than most record days lie before their pay day.
+// account held, for a payment of no known record day (RecordNone;
+// payDays): longer than most record days lie before their pay day.
 const RecordLagDays = 100
 
 // RecordLag is the lag of a dividend's record day in the market of the
@@ -822,10 +1094,8 @@ func RecordLag(situs, currency string, receipt, share bool) Lag {
 		return RecordLagReceipt
 	case !share:
 		return Lag{}
-	case currency == "EUR" && slices.Contains(euroMarkets, situs):
-		return markets[situs]
 	}
-	return markets[currencyMarkets[currency]]
+	return markets[shareMarket(situs, currency)]
 }
 
 // paymentKeys are the holdings of h's instrument and its sold positions

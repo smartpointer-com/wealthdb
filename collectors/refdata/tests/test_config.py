@@ -58,6 +58,9 @@ def test_settings_read(tmp_path):
     ({"fidelity_529_plans": ["https://example.org/x.pdf"]}, "fidelity_529_plans"),
     ({"fidelity_529_plans": {"X Y": "https://example.org/x.pdf"}}, "fidelity_529_plans"),
     ({"fidelity_529_plans": {"XX": "http://example.org/x.pdf"}}, "fidelity_529_plans"),
+    # FINRA's credential comes from the environment alone.
+    ({"finra_client_id": "x"}, "does not know: finra_client_id"),
+    ({"finra_client_secret": "x"}, "does not know: finra_client_secret"),
 ])
 def test_refuses(tmp_path, doc, msg):
     path = write(tmp_path, doc)
@@ -67,6 +70,17 @@ def test_refuses(tmp_path, doc, msg):
     # collector does not know is its own error, which lists them all.
     rest = str(e.value).replace(str(path), "")
     assert msg in rest and ("does not know" in rest) == ("does not know" in msg)
+
+
+def test_the_credential_comes_from_the_flag_else_the_environment_the_secret_from_it_alone():
+    env = {"FINRA_CLIENT_ID": " env-id ", "FINRA_CLIENT_SECRET": "env-secret"}
+    cfg = config.with_finra_credential(config.Config(), None, env)
+    assert (cfg.finra_client_id, cfg.finra_client_secret) == ("env-id", "env-secret")
+    cfg = config.with_finra_credential(config.Config(), "flag-id", env)
+    assert (cfg.finra_client_id, cfg.finra_client_secret) == ("flag-id", "env-secret")
+    cfg = config.with_finra_credential(config.Config(), None, {})
+    assert (cfg.finra_client_id, cfg.finra_client_secret) == ("", "")
+    assert "env-secret" not in repr(config.with_finra_credential(config.Config(), None, env))
 
 
 def test_engine_precedence(monkeypatch, tmp_path):

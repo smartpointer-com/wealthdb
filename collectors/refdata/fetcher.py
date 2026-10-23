@@ -8,17 +8,31 @@ the client keeps under it:
 - the SEC's hosts count as one source, which allows ten a second; the
   client sends eight;
 - OpenFIGI allows 25 a minute without a key; the client sends 24;
-- GLEIF allows 60 a minute; the client sends 50.
+- GLEIF allows 60 a minute; the client sends 50;
+- JPX asks for no high-frequency access; the client sends one request
+  every five seconds.
 
 The client sends GET, and a POST only for a lookup whose API has no GET
 form (OpenFIGI's mapping, Amundi's product API), a read either way, or
 for a disclaimer a source shows before its pages (swissfunddata's
 investor category). It keeps cookies only for a source that holds that
-statement in a session, and never signs in anywhere.
+statement in a session, and signs in to no account. For finra it sends
+a POST of the client credential to FINRA's token endpoint, which answers
+a bearer token for the run. It also sends finra's read-only POST of the
+OTC Daily List filter, which has no GET form, with that token.
 
 A redirect is a request of its own: it keeps the pace and the refusals
 of the host it leads to, and that host's User-Agent, so the SEC contact
 never follows a redirect to another host.
+
+A provider may send its own Authorization header with a request, a
+credential its source asks for. The header goes to the host the request
+names, and to a redirect on that host; a redirect to another host drops
+it. The client never logs or traces a request's headers.
+
+The client counts the bytes of every answer's body per host, a failed
+answer's too, a redirect's not: received(host) tells a provider what its
+source has sent this run.
 
 A source that refuses a request for its rate (HTTP 429, or the SEC's
 403) is not asked again in the same run: every later request to it
@@ -26,11 +40,12 @@ fails at once, and the run records each one.
 
 Every exchange is traced when the run asks for it (`--debug`):
 collectorkit.debugcap.HttpTrace writes one line per request, its URL,
-status, timing and size, never a body.
+status, timing and size, never a body or a request header.
 """
 
 from __future__ import annotations
 
+import http.client
 import http.cookiejar
 import json
 import logging
@@ -51,8 +66,9 @@ DEFAULT_INTERVAL = 1.0
 HOST_GROUPS = {"www.sec.gov": "sec", "data.sec.gov": "sec"}
 
 # Seconds between two requests to one host or group, where it differs
-# from one a second.
-INTERVALS = {"sec": 0.125, "api.openfigi.com": 60 / 24, "api.gleif.org": 1.2}
+# from one a second. JPX's terms ask for no high-frequency access and
+# state no rate, so its few requests a run go slowly.
+INTERVALS = {"sec": 0.125, "api.openfigi.com": 60 / 24, "api.gleif.org": 1.2, "www.jpx.co.jp": 5.0}
 
 # Sources whose 403 means "too fast or undeclared", not "no such page".
 REFUSES_WITH_403 = {"sec"}
@@ -93,16 +109,22 @@ class Response:
         return self.body.decode(encoding, "replace")
 
 
+def host_of(url: str) -> str:
+    """The host a URL names, in lower case; "" where it names none."""
+    return urllib.parse.urlsplit(url).hostname or ""
+
+
 def source_of(url: str) -> str:
     """The source a URL goes to: its host, or the group the host is in."""
-    host = urllib.parse.urlsplit(url).hostname or ""
+    host = host_of(url)
     return HOST_GROUPS.get(host, host)
 
 
 class _Redirects(urllib.request.HTTPRedirectHandler):
     """Follows a redirect as a request of the client's own: traced, and
     sent only where the client's rules allow it, with the User-Agent of
-    the host it leads to."""
+    the host it leads to, and the provider's Authorization header only
+    while it stays on the host the provider sent it to."""
 
     def __init__(self, client: Client):
         self.client = client
@@ -116,6 +138,8 @@ class _Redirects(urllib.request.HTTPRedirectHandler):
             fp.close()
             raise
         new.add_header("User-Agent", self.client.user_agent(source))
+        if host_of(new.full_url) != host_of(req.full_url):
+            new.remove_header("Authorization")
         return new
 
 
@@ -138,10 +162,20 @@ class Client:
         self.trace = trace or debugcap.HttpTrace(None, log=log, enabled=False)
         self._sleep, self._clock = sleep, clock
         self._last: dict[str, float] = {}
+        self._received: dict[str, int] = {}
         self.refused: dict[str, str] = {}
         self.cookies = http.cookiejar.CookieJar(http.cookiejar.DefaultCookiePolicy(allowed_domains=SESSION_DOMAINS))
         self._open = build_opener(self, https).open
         self.timeout = timeout
+
+    def received(self, host: str) -> int:
+        """The bytes the bodies of this run's answers from `host` brought,
+        a failed answer's too, a redirect's not."""
+        return self._received.get(host.lower(), 0)
+
+    def _count(self, url: str, size: int) -> None:
+        host = host_of(url)
+        self._received[host] = self._received.get(host, 0) + size
 
     def user_agent(self, source: str = "") -> str:
         ua = f"wealthdb-refdata/{VERSION}"
@@ -178,8 +212,9 @@ class Client:
         return self._send("POST", url, body, {"Content-Type": "application/json", **(headers or {})})
 
     def post_form(self, url: str, fields: dict, *, headers=None) -> Response:
-        """A form POST that reads nothing and changes nothing at the source:
-        the statement a disclaimer asks for before it shows its pages."""
+        """A form POST that changes nothing at the source: the statement a
+        disclaimer asks for before it shows its pages, or finra's exchange
+        of its API credential for a token."""
         body = urllib.parse.urlencode(fields).encode("utf-8")
         return self._send("POST", url, body, {"Content-Type": "application/x-www-form-urlencoded", **(headers or {})})
 
@@ -191,12 +226,14 @@ class Client:
         try:
             with self._open(req, timeout=self.timeout) as resp:
                 data = resp.read()
+                self._count(resp.geturl(), len(data))
                 self.trace.record(method, resp.geturl(), status=resp.status,
                                   elapsed_ms=(time.monotonic() - t0) * 1000, bytes_=len(data), headers=resp.headers)
                 return Response(url=resp.geturl(), status=resp.status, body=data)
         except urllib.error.HTTPError as e:
             # A redirect may have led elsewhere: the source that refused
             # is the one that answered.
+            self._count(e.filename or url, _error_size(e))
             self.trace.record(method, e.filename or url, status=e.code, elapsed_ms=(time.monotonic() - t0) * 1000,
                               error=str(e.reason), headers=e.headers)
             refusing = source_of(e.filename or url)
@@ -204,7 +241,18 @@ class Client:
                 self.refused[refusing] = f"{e.code} {e.reason}"
                 log.warning("%s refused a request (%s %s); not asking it again this run", refusing, e.code, e.reason)
             raise FetchError(e.filename or url, e.code, str(e.reason)) from e
-        except OSError as e:
+        except (OSError, http.client.HTTPException) as e:
+            # No answer, or one whose body ends before its length.
             reason = debugcap.safe_error(e)
             self.trace.record(method, url, elapsed_ms=(time.monotonic() - t0) * 1000, error=reason)
             raise FetchError(url, None, reason) from e
+
+
+def _error_size(e: urllib.error.HTTPError) -> int:
+    """The bytes of an error answer's body, read to count them; none
+    where it cannot be read, a body cut short too: the error raised is
+    the answer's status."""
+    try:
+        return len(e.read() or b"")
+    except (OSError, ValueError, http.client.HTTPException):
+        return 0

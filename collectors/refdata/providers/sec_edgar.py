@@ -14,6 +14,11 @@ sec-edgar: what the SEC knows of a US-listed company, from EDGAR.
   concepts is asked for their ifrs-full twins, as a 20-F filer reports.
   A concept a company does not report is no error. Only 10-K, 10-Q,
   20-F, 40-F and 6-K filings and their amendments count.
+- Calendar: a share held directly that wants its dividend calendar, and
+  is no depositary receipt, is asked for the dividends its company's
+  10-Q and 10-K filings tag in inline XBRL (sec_calendar): their
+  record, pay and declared days and their amount per share. A company
+  whose filings tag none is asked again a year later.
 - Bulk: the securities held through funds take their figures from XBRL
   frames (sec_frames). One request per concept and calendar period
   answers for every company at once: a broad fund holds thousands.
@@ -21,8 +26,9 @@ sec-edgar: what the SEC knows of a US-listed company, from EDGAR.
   its SIC code, its state or country of incorporation and of its
   business address (EDGAR codes, which gold reads through EDGAR's own
   code map) and its shares outstanding as facts; each figure, period by
-  period, as a period fact. A frame gives a period fact to every
-  security whose company it lists; it states no form.
+  period, as a period fact; each dividend its filings tag as a dividend
+  event. A frame gives a period fact to every security whose company it
+  lists; it states no form.
 
 Terms: README.md, sec-edgar.
 """
@@ -36,8 +42,9 @@ from pathlib import Path
 
 from collectorkit import bronze
 
-from . import sec_frames as frames
-from .base import Parsed, Provider, dec, ident, present, read_json, read_meta, row, today_utc, write_meta
+from . import sec_calendar, sec_frames as frames
+from .base import (Parsed, Provider, dec, facts_missing, ident, present, read_json, read_meta, row, today_utc,
+                   write_meta)
 from .sec_nport import SUBMISSIONS, company_tickers
 
 CONCEPT = "https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/{taxonomy}/{concept}.json"
@@ -142,7 +149,7 @@ class SecEdgar(Provider):
     serves_securities = True
     serves_bulk = True
     needs_contact = True
-    answers = LOOKUP_ANSWERS | frozenset(FAMILIES)
+    answers = LOOKUP_ANSWERS | frozenset(FAMILIES) | {sec_calendar.CALENDAR}
 
     def _tickers(self, ctx) -> tuple:
         """ticker -> CIK as the SEC writes it, share-class tickers (XYZ-B)
@@ -170,7 +177,10 @@ class SecEdgar(Provider):
     def claim_security(self, security, ctx):
         """The security's company, and the families of figures its fetch
         asks for: those the `missing` of a security held directly names,
-        none for a security held through funds."""
+        none for a security held through funds. A share that wants its
+        dividend calendar, and is no depositary receipt, has it in the
+        claim's `facts` where its company is due (sec_calendar.due), with
+        the filings earlier runs read in `read`."""
         symbol = ident(security, "symbol")
         exact, classes, titles = self._tickers(ctx)
         # The ticker as written first; a share class's compact form only
@@ -183,12 +193,17 @@ class SecEdgar(Provider):
         if abroad and security.name and not names_agree(security.name, titles.get(cik)):
             return None
         families = [f for f in FAMILIES if f in security.missing] if security.scope == "direct" else []
-        return {"key": security.key, "symbol": symbol, "cik": cik, "families": families}
+        claim = {"key": security.key, "symbol": symbol, "cik": cik, "families": families}
+        if sec_calendar.CALENDAR in security.wants and not security.receipt:
+            seen = sec_calendar.seen(ctx, self.name).get(cik)
+            if sec_calendar.due(seen, today_utc()):
+                claim.update(facts=[sec_calendar.CALENDAR], read=sorted(seen.read) if seen else [])
+        return claim
 
     def fetch_security(self, claim, outdir: Path, ctx):
-        cik = claim["cik"]
+        cik, today = claim["cik"], today_utc()
         sub = ctx.client.get(SUBMISSIONS.format(cik=cik))
-        sub.json()  # an answer that is not JSON fails the fetch
+        doc = sub.json()  # an answer that is not JSON fails the fetch
         bronze.atomic_write_bytes(outdir / SUB_DOC, sub.body)
         shares = frames.xbrl(ctx, CONCEPT.format(cik=cik, taxonomy="dei", concept=SHARES_CONCEPT))
         if shares is not None:
@@ -198,8 +213,12 @@ class SecEdgar(Provider):
         # for only where it states none of the us-gaap concepts.
         if figures and not fetch_concepts(ctx, cik, outdir, GAAP, [c for f in figures for c in f.gaap]):
             fetch_concepts(ctx, cik, outdir, IFRS, [c for f in figures for c in f.ifrs])
+        dividends = {}
+        if sec_calendar.CALENDAR in claim.get("facts", ()):
+            got, missing = sec_calendar.fetch(ctx, cik, outdir, doc, today, set(claim.get("read", ())))
+            dividends = {"calendar": got, **facts_missing([sec_calendar.CALENDAR] if missing else [])}
         write_meta(outdir, provider=self.name, key=claim["key"], cik=cik, families=claim.get("families", []),
-                   as_of=today_utc().isoformat())
+                   as_of=today.isoformat(), **dividends)
 
     def plan_bulk(self, securities, ctx, today, fetched, max_age) -> list:
         """The frames the securities held through funds want. Each such
@@ -255,6 +274,7 @@ class SecEdgar(Provider):
         answers = {(t, c): read_json(indir, frames.answer_file(t, c)) for fig in FIGURES for t, c in fig.concepts()
                    if (indir / frames.answer_file(t, c)).is_file()}
         out.period_facts = [r for fig in FIGURES for r in figure_rows(fig, answers, meta["key"], provider=self.name)]
+        out.dividend_events = sec_calendar.parse(indir, meta, provider=self.name)
         return out
 
     def probe(self, ctx) -> str:

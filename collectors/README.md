@@ -201,9 +201,11 @@ runs as `--user $(id -u):$(id -g)`.
 A **host-venv** wrapper (for tools that need no browser) sources
 [`shared/wrappers/host-lib.sh`](../shared/wrappers/host-lib.sh) and calls
 `host_resolve_dirs "$@"` (which populates `SECRETS_DIR` / `DATA_DIR` /
-`SILVER_DB` / `FORWARD_ARGS`), `host_source_env_file` (which sources
-`<secrets>/<name>.env`), and `host_python` (the collector's `.venv`),
-then execs the right `.py` with the resolved paths and `FORWARD_ARGS`.
+`SILVER_DB` / `FORWARD_ARGS`), `host_source_env_file [FILE]` (which
+sources `<secrets>/<name>.env`, or, given FILE, another source's
+`<secrets>/<FILE>.env`, overridden by `<FILE>_ENV_FILE` in upper snake
+case), and `host_python` (the collector's `.venv`), then execs the
+right `.py` with the resolved paths and `FORWARD_ARGS`.
 
 ### Collector CLI conventions
 
@@ -219,7 +221,7 @@ are the escape, not opt-ins. The canonical spelling per concept:
 | bronze root (every verb that touches it) | `--bronze-dir` | resolved data dir |
 | documents / heavy detail | fetched by default; opt out with `--no-documents` (and the same `--no-<detail>` pattern for other heavy passes) | **on** |
 | force reload (on `load`) | `--force` — delete the silver DB, then rebuild from all bronze | off |
-| session probe | `login --check`: exit `0` = credential or session alive, nonzero = not. See [login.py — the session](#loginpy--the-session) for what it reads and for the two collectors that differ. | — |
+| session probe | `login --check`: exit `0` = credential or session alive, nonzero = not. See [login.py — the session](#loginpy--the-session) for what it reads and for the four collectors that differ. | — |
 | human-MFA wait | `--mfa-timeout SECONDS` | per source; see the list below |
 | MFA-page-appear wait | `--mfa-page-timeout SECONDS` | per source |
 | login-diagnostics dir | `--screenshot-dir` (login); `--debug-dir` on an `explore` harness, and on `prune`, which reclaims that dir | None |
@@ -309,6 +311,11 @@ structurally cannot narrow a fetch, the collector says so at runtime
   `BINANCE_API_KEY`. Renaming them would break existing env files.
 - **ubs-web** reads the bank-level `ubs.env` (the contract number)
   when its own `ubs-web.env` does not exist.
+- **refdata** reads FINRA's API client from `finra.env`, beside
+  `refdata.env`. Its variables are `FINRA_CLIENT_ID` and
+  `FINRA_CLIENT_SECRET`, and `FINRA_ENV_FILE` overrides the path. Only
+  `login` and `download` source it. The download keeps it from the
+  engine it asks for the wanted list.
 - **viac** `--no-transaction-documents` opts out of only the per-event
   receipt PDFs — a narrower concept than `--no-documents`; viac's document
   centre always downloads on its date window.
@@ -380,9 +387,11 @@ no browser and fires no MFA. Four collectors differ:
   registered*, not *the credential is alive*. It cannot see a rotated
   password or a trust revocation made server-side; only a `download`
   sign-in can.
-- **curves** and **refdata** hold no credential. Their `--check` asks
-  each public source for its cheapest answer and maps it onto the exit
-  code.
+- **curves** holds no credential. **refdata** holds one: FINRA's API
+  client, for its `finra` provider. Its wrapper sources it from
+  `<secrets>/finra.env`. Their `--check` asks each source for its
+  cheapest answer and maps it onto the exit code. For `finra` that
+  answer is a token, and no data is asked.
 
 The full authentication policy is in root [AGENTS.md](../AGENTS.md) §3.
 
@@ -709,7 +718,7 @@ restated here.
 | [`manual`](manual/) | Private holdings with no portal (CSV) | none — manual entry | host venv |
 | [`fred`](fred/) | FRED / US Fed H.10 and H.15 (historic FX rates, Treasury yields) | API key | host venv |
 | [`curves`](curves/) | ECB and SNB data portals (the euro and franc government yield curves) | none — public reads | host venv |
-| [`refdata`](refdata/) | Public reference data: what each fund holds and states about itself (issuers' holdings files and fund pages, SEC N-PORT and N-MFP filings, fund reports, a local inbox), and what each security is, with each company's reported figures (SEC EDGAR, GLEIF, OpenFIGI) | none — public reads | host venv |
+| [`refdata`](refdata/) | Public reference data: what each fund holds and states about itself (issuers' holdings files and fund pages, SEC N-PORT and N-MFP filings, fund reports, a local inbox), and what each security is, with each company's reported figures (SEC EDGAR, GLEIF, OpenFIGI), and the distributions of each fund and share (issuers' fund pages, SEC EDGAR, SIX, JPX, FINRA) | FINRA API client id + secret (`finra.env`) for its `finra` provider, off by default; the rest are public reads | host venv |
 | [`plaid`](plaid/) | Banks, brokers and card issuers through the Plaid aggregator | Plaid app keys + one access token per linked institution (sign-in on Plaid's hosted page) | host venv |
 
 One silver kind has no collector. `synthetic` is written by a generator,

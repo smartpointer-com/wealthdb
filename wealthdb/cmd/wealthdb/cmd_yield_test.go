@@ -217,6 +217,42 @@ func TestYieldCashCurveAndCoverage(t *testing.T) {
 	}
 }
 
+// The coverage view's record_day lines count the dividends the readings
+// rate by where their record day comes from: QSTK's, from the dividend
+// calendar, is stated. Its count stays legible under -p.
+func TestYieldCoverageCountsTheRecordDays(t *testing.T) {
+	t.Parallel()
+	cfg := setupYieldGold(t)
+	changeYieldGold(t, cfg,
+		`INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id, kind,
+		 currency, net_amount, instrument_external_id, quantity) VALUES ('brk', 'D1', ? - 86400 * 10, 'ACCT7781',
+		 'dividend', 'USD', 5, 'QSTK', 0)`,
+		`INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id, payer_signature,
+		 signature_version, income_detailed, provenance, assigned_at)
+		 VALUES ('brk', 'D1', 'sig-QSTK', 1, 'INCOME_DIVIDENDS', 'rule', 100)`,
+		`INSERT INTO dividend_calendar (silver_source_id, ref, provider, event_id, as_of, kind, record_day, pay_day)
+		 VALUES ('ref', 'symbol:QSTK', 'sec-edgar', 'e1', ?, 'dividend', '2026-06-05', '2026-06-20')`)
+	for _, privacy := range []bool{false, true} {
+		args := []string{"coverage", "-d", "2026-06-30", "-f", "csv"}
+		if privacy {
+			args = append(args, "-p")
+		}
+		out, errb, code := runYield(t, cfg, args...)
+		if code != 0 {
+			t.Fatalf("exit %d: %s", code, errb)
+		}
+		var got []string
+		for _, r := range csvRows(t, out) {
+			if r["section"] == "record_day" {
+				got = append(got, r["reason"]+" "+r["payments"]+" "+r["holdings"])
+			}
+		}
+		if strings.Join(got, "|") != "stated 1 1" {
+			t.Errorf("-p %v: record_day lines %q\n%s", privacy, got, out)
+		}
+	}
+}
+
 func TestYieldPrivacyAndFlags(t *testing.T) {
 	t.Parallel()
 	cfg := setupYieldGold(t)

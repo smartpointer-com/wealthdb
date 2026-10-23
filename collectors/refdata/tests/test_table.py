@@ -37,6 +37,22 @@ def test_issuer_days():
         assert table.parse_day(nothing) is None, nothing
 
 
+@pytest.mark.parametrize("text,day_first,day", [
+    ("20/10/2026", True, date(2026, 10, 20)), ("1/2/2026", True, date(2026, 2, 1)),
+    ("1/2/2026", False, date(2026, 1, 2)), ("31/02/2026", True, None), ("20/10/2026", False, None),
+    ("2026-10-20", True, None), ("20/10/26", True, None), ("", True, None)])
+def test_a_day_written_with_slashes_reads_day_first_or_month_first(text, day_first, day):
+    assert table.slash_day(text, day_first=day_first) == day
+
+
+@pytest.mark.parametrize("value,day", [
+    ("2026-09-21", date(2026, 9, 21)), ("2026-09-21T00:00:00", date(2026, 9, 21)),
+    ("09/21/2026", date(2026, 9, 21)), ("21-Sep-2026", date(2026, 9, 21)), (20260921, date(2026, 9, 21)),
+    ("", None), (None, None), ("TBA", None)])
+def test_a_distributions_day_is_iso_or_as_issuers_write_it(value, day):
+    assert table.event_day(value) == day
+
+
 def test_xlsx_shared_strings_numbers_sparse_cells_and_an_absolute_target():
     sheet = ('<row r="1"><c r="A1" t="s"><v>0</v></c><c r="C1" t="s"><v>1</v></c></row>'
              '<row r="3"><c t="s"><v>2</v></c><c><v>12.5</v></c></row>')

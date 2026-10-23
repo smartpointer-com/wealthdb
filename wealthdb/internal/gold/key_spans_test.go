@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -103,25 +104,16 @@ func TestPinnedKeysReadAsTheLiveOnes(t *testing.T) {
 		    SELECT snapshot_at AS snap FROM positions UNION SELECT snapshot_at FROM cash_balances),
 		    (VALUES (0), (86400), (40 * 86400), (400 * 86400)) v(d)))`)
 	}
-	read := func(q querier, sqlText string) string {
-		t.Helper()
-		var s sql.NullString
-		if err := q.QueryRowContext(ctx, `SELECT string_agg(CAST(x AS VARCHAR), ';' ORDER BY CAST(x AS VARCHAR))
-		    FROM (`+sqlText+`) x`).Scan(&s); err != nil {
-			t.Fatalf("%s: %v", sqlText, err)
-		}
-		return s.String
-	}
 	live := make([]string, len(reads))
 	for i, r := range reads {
-		live[i] = read(db, r)
+		live[i] = rowsDigest(t, ctx, db, r)
 	}
 	tx, commit, err := beginPinned(ctx, db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i, r := range reads {
-		if got := read(tx, r); got != live[i] || got == "" {
+		if got := rowsDigest(t, ctx, tx, r); got != live[i] || got == "" {
 			t.Errorf("%s reads otherwise pinned (%d bytes against %d)", r, len(got), len(live[i]))
 		}
 	}
@@ -165,34 +157,55 @@ func TestAMaterializerLeavesNoPin(t *testing.T) {
 
 // TestMigration0145DDLIsRerunnable holds the migration to the replay bar:
 // a second application changes no ending, span or day of the history.
+// It holds 0144's endings too, which 0145 re-issues.
 func TestMigration0145DDLIsRerunnable(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedPartialRuns(t, db, ctx)
-	snapshot := func() string {
-		t.Helper()
-		var s string
-		if err := db.QueryRowContext(ctx, `
-            SELECT string_agg(CAST(x AS VARCHAR), ';' ORDER BY CAST(x AS VARCHAR)) FROM (
-                SELECT 'span' AS k, src, acct, NULL AS ccy, snap, until FROM pos_key_spans()
-                UNION ALL SELECT 'span', src, acct, ccy, snap, until FROM cash_key_spans()
-                UNION ALL SELECT 'day', src, acct, NULL, snap, day FROM hist_active_pos()
-                UNION ALL SELECT 'day', src, acct, ccy, snap, day FROM hist_active_cash()) x`).Scan(&s); err != nil {
-			t.Fatal(err)
-		}
-		return s
-	}
-	before := snapshot()
+	const answers = `
+        SELECT 'end' AS k, src, acct, NULL AS ccy, end_snap AS snap, NULL AS until FROM pos_key_ends()
+        UNION ALL SELECT 'end', src, acct, ccy, end_snap, NULL FROM cash_key_ends()
+        UNION ALL SELECT 'span', src, acct, NULL, snap, until FROM pos_key_spans()
+        UNION ALL SELECT 'span', src, acct, ccy, snap, until FROM cash_key_spans()
+        UNION ALL SELECT 'day', src, acct, NULL, snap, day FROM hist_active_pos()
+        UNION ALL SELECT 'day', src, acct, ccy, snap, day FROM hist_active_cash()`
+	before := rowsDigest(t, ctx, db, answers)
 	rerunMigrationDDL(t, db, ctx, "0145_key_observations.sql")
-	if after := snapshot(); after != before || before == "" {
+	if after := rowsDigest(t, ctx, db, answers); after != before || before == "" {
 		t.Error("the replay changed an answer")
 	}
+}
+
+// planBlockwiseJoins counts the joins in a macro's query plan that test
+// their condition on every pair of rows, for want of an equality between
+// both inputs to hash on.
+func planBlockwiseJoins(t *testing.T, db *sql.DB, ctx context.Context, from string) int {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `EXPLAIN (FORMAT json) SELECT * FROM `+from)
+	if err != nil {
+		t.Fatalf("explain %s: %v", from, err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var kind, plan string
+		if err := rows.Scan(&kind, &plan); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		n += strings.Count(plan, `"BLOCKWISE_NL_JOIN"`)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("explain %s: %v", from, err)
+	}
+	return n
 }
 
 // TestYieldHoldingsReadsEachKindsOwnRow holds yield_holdings, whose joins
 // key on the holding's kind (migration 0145), to 0136's answers: a cash
 // holding reads its balance and no position, though a position at the
 // same snapshot bears its key, a position reads its own row, and a
-// position with no value reads no balance.
+// position with no value reads no balance. The kind in the keys is what
+// lets DuckDB hash both joins: a condition on the holding alone would
+// test every holding against every position.
 func TestYieldHoldingsReadsEachKindsOwnRow(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedHistAccount(t, db, ctx, "bank", "A1", "brokerage", "Brokerage")
@@ -232,5 +245,8 @@ func TestYieldHoldingsReadsEachKindsOwnRow(t *testing.T) {
 	want := []string{"QAAA cash=false 50 true", "cash:USD cash=false NULL true", "cash:USD cash=true 100 false"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("yield_holdings = %q, want %q", got, want)
+	}
+	if n := planBlockwiseJoins(t, db, ctx, fmt.Sprintf("yield_holdings(%d, 'USD')", snapAt(0))); n != 0 {
+		t.Errorf("yield_holdings plans %d blockwise join(s), want each join on an equality", n)
 	}
 }

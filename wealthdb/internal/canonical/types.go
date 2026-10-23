@@ -332,16 +332,18 @@ type Span struct{ Start, End int64 }
 // The kinds of reference record a window bounds on spans of their own:
 // the fund-days (a fund's compositions and their lines, attributes,
 // counterparties, risk rows and characteristics of one day), the security
-// identities, the security facts and the period facts.
+// identities, the security facts, the period facts and the dividend
+// events.
 const (
-	RefFundDays      = "fund_days"
-	RefSecurities    = "securities"
-	RefSecurityFacts = "security_facts"
-	RefPeriodFacts   = "period_facts"
+	RefFundDays       = "fund_days"
+	RefSecurities     = "securities"
+	RefSecurityFacts  = "security_facts"
+	RefPeriodFacts    = "period_facts"
+	RefDividendEvents = "dividend_events"
 )
 
-// RefKinds are the four kinds of reference record.
-var RefKinds = []string{RefFundDays, RefSecurities, RefSecurityFacts, RefPeriodFacts}
+// RefKinds are the five kinds of reference record.
+var RefKinds = []string{RefFundDays, RefSecurities, RefSecurityFacts, RefPeriodFacts, RefDividendEvents}
 
 // SpanOf is the span kind's records change over in w, false where they
 // do not change.
@@ -390,6 +392,8 @@ type SnapshotBatch struct {
 	FundCharacteristics []FundCharacteristicChange
 	SecurityPeriodFacts []SecurityPeriodFactChange
 	RateObservations    []RateObservationChange
+
+	DividendEvents []DividendEventChange
 }
 
 // ReferenceRows is the number of reference records in b.
@@ -397,7 +401,7 @@ func (b *SnapshotBatch) ReferenceRows() int {
 	return len(b.FundCompositions) + len(b.FundLines) + len(b.FundAttributes) +
 		len(b.FundCounterparties) + len(b.Securities) + len(b.SecurityFacts) +
 		len(b.FundRisk) + len(b.FundCharacteristics) + len(b.SecurityPeriodFacts) +
-		len(b.RateObservations)
+		len(b.RateObservations) + len(b.DividendEvents)
 }
 
 // TransactionBatch is one batch yielded by a TransactionStream.Next call.

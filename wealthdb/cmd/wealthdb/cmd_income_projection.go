@@ -197,24 +197,24 @@ func incomeForwardReport(req request) *report {
 				return fi.book.ProjectionRows(fi.amounts, fi.window, months), nil
 			})
 	case "calendar":
-		return newReport(buildCalendarColumns(ccy, kindOf), defaultCalendarColumns,
-			loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]yield.CalendarRow, error) {
+		return withLoads(newReport(buildCalendarColumns(ccy, kindOf), defaultCalendarColumns,
+			func(ctx context.Context, db *sql.DB) ([]yield.CalendarRow, error) {
 				fi, err := loadForwardIncome(ctx, db, req)
 				if err != nil {
 					return nil, err
 				}
 				return fi.book.Calendar(fi.amounts), nil
-			}))
+			}), loadKinds)
 	}
 	grain := forwardGrains[req.view]
-	return newReport(buildIncomeEntityColumns(ccy, grain, kindOf), incomeEntityDefaults[grain],
-		loadFirst(loadKinds, func(ctx context.Context, db *sql.DB) ([]yield.IncomeRow, error) {
+	return withLoads(newReport(buildIncomeEntityColumns(ccy, grain, kindOf), incomeEntityDefaults[grain],
+		func(ctx context.Context, db *sql.DB) ([]yield.IncomeRow, error) {
 			fi, err := loadForwardIncome(ctx, db, req)
 			if err != nil {
 				return nil, err
 			}
 			return fi.book.IncomeRows(grain, fi.amounts, fi.lastYear, fi.next12), nil
-		}))
+		}), loadKinds)
 }
 
 // ---- column registries ---------------------------------------------------
@@ -277,7 +277,8 @@ var defaultProjectionColumns = []string{"period", "received", "expected", "inter
 func buildCalendarColumns(outCcy string, kindOf func(string) string) []columnSpec[yield.CalendarRow] {
 	type row = yield.CalendarRow
 	ref := func(r row) accountRef {
-		return accountRef{r.Holding.Source, &r.Account.Name, &r.Account.Nickname, r.Holding.Account}
+		return accountRef{source: r.Holding.Source, name: &r.Account.Name,
+			nickname: &r.Account.Nickname, id: r.Holding.Account}
 	}
 	key, name := holdingCols(kindOf, func(r row) string { return r.Holding.Source },
 		func(r row) string { return r.Holding.PositionKey }, calendarPos(func(p *yield.Position) string { return p.Name }))
@@ -327,7 +328,7 @@ func buildIncomeEntityColumns(outCcy string, grain yield.Grain, kindOf func(stri
 			typedIDCol("portfolio_id", kindOf, func(r row) (string, string) { return r.Source, r.Portfolio }))
 	case yield.GrainAccounts, yield.GrainPositions:
 		ref := func(r row) accountRef {
-			return accountRef{r.Source, &r.Account.Name, &r.Account.Nickname, r.AccountID}
+			return accountRef{source: r.Source, name: &r.Account.Name, nickname: &r.Account.Nickname, id: r.AccountID}
 		}
 		cols = append(cols,
 			accountCol(kindOf, ref),

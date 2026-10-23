@@ -462,7 +462,7 @@ func TestYieldUnitsTakeTheHistorysEnding(t *testing.T) {
 	pitPosition(t, db, ctx, src, "Z-0000", "QZ", day(30), 100)
 	pitPosition(t, db, ctx, src, "Y-0000", "QY", day(40), 100)
 	paid := map[yield.InstrumentKey]bool{{Source: src, Instrument: "QX"}: true, {Source: src, Instrument: "QQ"}: true}
-	u, err := readYieldUnits(ctx, db, nil, paid, day(25), day(50))
+	u, err := readYieldUnits(ctx, db, &yield.Inputs{}, paid, day(25), day(50))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -580,18 +580,9 @@ func TestMigration0140DDLIsRerunnable(t *testing.T) {
 	seedPartialRuns(t, db, ctx)
 	const accounts = `SELECT * FROM report_accounts_multi(9223372036854775807)`
 	const history = `SELECT * FROM hist_active_pos() UNION ALL BY NAME SELECT * FROM hist_active_cash()`
-	snapshot := func(q string) string {
-		t.Helper()
-		var s string
-		if err := db.QueryRowContext(ctx, `SELECT string_agg(CAST(x AS VARCHAR), ';' ORDER BY CAST(x AS VARCHAR))
-		    FROM (`+q+`) x`).Scan(&s); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-		return s
-	}
-	before, beforeHistory := snapshot(accounts), snapshot(history)
+	before, beforeHistory := rowsDigest(t, ctx, db, accounts), rowsDigest(t, ctx, db, history)
 	rerunMigrationDDL(t, db, ctx, "0140_snapshots_per_account.sql")
-	if snapshot(accounts) != before || snapshot(history) != beforeHistory || before == "" {
+	if rowsDigest(t, ctx, db, accounts) != before || rowsDigest(t, ctx, db, history) != beforeHistory || before == "" {
 		t.Error("the replay changed an answer")
 	}
 }
