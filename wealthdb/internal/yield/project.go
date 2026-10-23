@@ -97,9 +97,11 @@ const Months = canonical.MaxHorizonMonths
 // shift is in percent, and a roll rate is Roll[path] over RollPrincipal.
 // A floating rate never earns below zero. Fixed is a coupon, a declared
 // or indicated dividend, a term deposit's rate. Principal earns the
-// floating rate: a balance, a money-market holding, a floating note. A
-// rolled holding earns the rate of its term on the day it rolls, which
-// differs by path.
+// floating rate: a balance, a money-market holding, a floating note, a
+// floating fund. A floating fund that pays less often than monthly pays
+// each period's months of Principal at its pay month's rate. A rolled
+// holding earns the rate of its term on the day it rolls, which differs
+// by path.
 //
 // A part either accrues over From..To, the days of its month it covers
 // (To exclusive), its amounts that span's share of a month's, or is a
@@ -407,23 +409,31 @@ func (pj *projector) unknown(h Holding, typ IncomeType) {
 	pj.accrue(part(h, typ, BasisUnknown), pj.out.From, nil)
 }
 
-// floating adds the income of a principal that earns a floating rate,
-// the benchmark plus the holding's spread to it, to until (nil for the
-// projection's end); unknown where no rate is known.
+// floating adds the income of a principal that earns a floating rate
+// (floatingPart), accrued to until (nil for the projection's end);
+// unknown where no rate is known.
 func (pj *projector) floating(h Holding, m *Measures, rate *float64, typ IncomeType, basis Basis, principal float64,
 	until *time.Time) {
 	if rate == nil {
 		pj.unknown(h, typ)
 		return
 	}
+	pj.accrue(pj.floatingPart(h, m, *rate, typ, basis, principal), pj.out.From, until)
+}
+
+// floatingPart is a month's income of a principal that earns a floating
+// rate: the benchmark plus the holding's spread to it, which the holding
+// keeps (Measures.Spread).
+func (pj *projector) floatingPart(h Holding, m *Measures, rate float64, typ IncomeType, basis Basis,
+	principal float64) Part {
 	bench := 0.0
 	if c := pj.in.Curves[h.Currency]; c != nil {
 		bench = c.Benchmark
 	}
 	p := part(h, typ, basis)
-	p.Principal, p.Spread = principal, *rate-bench
+	p.Principal, p.Spread = principal, rate-bench
 	m.Spread = ptr(p.Spread)
-	pj.accrue(p, pj.out.From, until)
+	return p
 }
 
 // fixed adds a fixed rate's income on a principal, to until.
@@ -491,6 +501,8 @@ func (pj *projector) holding(h Holding, m *Measures) {
 		case pj.indicated(h, m, TypeDistributions):
 		case m.Stated != nil:
 			pj.fixed(h, TypeDistributions, basisOf(m), h.Amount, *m.Stated, nil)
+		case m.DividendYield != nil:
+			pj.fixed(h, TypeDistributions, BasisStated, h.Amount, *m.DividendYield, nil)
 		default:
 			pj.unknown(h, TypeDistributions)
 		}
@@ -513,32 +525,62 @@ func (pj *projector) holding(h Holding, m *Measures) {
 //
 //   - its implied yield;
 //   - the yield its indicated distributions pay over its price
-//     (indicatedDividend), where more than one month of the calendar
-//     shows it (payMonths) and it covers the year: one such month, or
-//     one half of a payer twice a year, reads a fraction of the year's;
+//     (indicatedDividend), where they cover the year (wholeYear): one
+//     month of the calendar held under eleven months, or one half of a
+//     payer twice a year, reads a fraction of the year's;
 //   - its distribution or SEC yield;
 //   - its trailing yield.
 //
-// With none of them, its indicated distributions pay as they come
-// (payDividend), at no floating rate: a fraction of the year's,
-// floating, would sit far below the benchmark and could fall below zero.
-// Else it is unknown.
+// A fund whose distributions cover the year at a frequency below monthly
+// pays that rate on its own pay days (payAccrued); any other accrues it
+// month by month. With none of the rates, its indicated distributions pay
+// as they come (payDividend), at no floating rate: a fraction of the
+// year's, floating, would sit far below the benchmark and could fall
+// below zero. Else it is unknown.
 func (pj *projector) floatingFundIncome(h Holding, m *Measures) {
-	if m.Implied != nil {
-		pj.floating(h, m, m.Implied, TypeDistributions, basisOf(m), h.Amount, nil)
-		return
-	}
 	d := m.indicatedDividend(pj.in, h)
+	whole := d != nil && d.wholeYear()
+	var rate *float64
+	basis := basisOf(m)
 	switch {
-	case d != nil && !d.oneMonth && !d.partial && m.Price != nil && *m.Price > 0:
-		pj.floating(h, m, ptr(d.annual / *m.Price * 100), TypeDistributions, d.basis(), h.Amount, nil)
+	case m.Implied != nil:
+		rate = m.Implied
+	case whole && m.Price != nil && *m.Price > 0:
+		rate, basis = ptr(d.annual / *m.Price * 100), d.basis()
 	case m.Stated != nil:
-		pj.floating(h, m, m.Stated, TypeDistributions, basisOf(m), h.Amount, nil)
+		rate = m.Stated
 	case m.DividendYield != nil:
-		pj.floating(h, m, m.DividendYield, TypeDistributions, BasisStated, h.Amount, nil)
+		rate, basis = m.DividendYield, BasisStated
 	case pj.payDividend(h, d, TypeDistributions):
+		return
 	default:
 		pj.unknown(h, TypeDistributions)
+		return
+	}
+	p := pj.floatingPart(h, m, *rate, TypeDistributions, basis, h.Amount)
+	if whole && d.frequency < 12 {
+		pj.payAccrued(p, d)
+		return
+	}
+	pj.accrue(p, pj.out.From, nil)
+}
+
+// payAccrued adds p, a month's income of a floating principal, as a
+// payment on each of d's next pay days (dividend.schedule): each pays
+// what accrues over its period since the pay day before, from d's last,
+// a month it cuts counting its share of days (windowMonths), at its own
+// month's rate. A pay day before the first day expected pays nothing.
+// Only a payment's month is known.
+func (pj *projector) payAccrued(p Part, d *dividend) {
+	from := d.last
+	for _, x := range d.schedule(pj.out.End()) {
+		if !x.day.After(from) {
+			continue
+		}
+		q := p
+		q.Principal *= windowMonths(Window{From: from, To: x.day.Add(-time.Second)})
+		pj.pay(q, x.day, true)
+		from = x.day
 	}
 }
 
@@ -709,47 +751,77 @@ func (pj *projector) rollCurve(h Holding, c *Curve, first time.Time, term int, p
 
 // indicated adds a stock's or a fund's dividends from the one after the
 // last paid on: its instrument's indicated dividend (indicatedDividend) on
-// the holding's own quantity, at the instrument's frequency, each payment
-// in turn (payDividend). Only their months are known. false where none is.
+// the holding's own quantity, on its next pay days (payDividend). Only
+// their months are known. false where none is.
 func (pj *projector) indicated(h Holding, m *Measures, typ IncomeType) bool {
 	return pj.payDividend(h, m.indicatedDividend(pj.in, h), typ)
 }
 
-// payDividend adds the payments of a holding's indicated dividend d, as
-// indicated does; false where d is nil or the holding states no
-// quantity.
+// payDividend adds the payments of a holding's indicated dividend d on
+// its next pay days (dividend.schedule), as indicated does; false where d
+// is nil or the holding states no quantity.
 func (pj *projector) payDividend(h Holding, d *dividend, typ IncomeType) bool {
 	if d == nil || h.Quantity == nil {
 		return false
 	}
 	p := part(h, typ, d.basis())
-	step := 12 / d.frequency
-	for i := 1; ; i++ {
-		day := d.last.AddDate(0, step*i, 0)
-		if !day.Before(pj.out.End()) {
-			return true
-		}
-		p.Fixed = d.payments[(i-1)%len(d.payments)] * *h.Quantity
-		pj.pay(p, day, true)
+	for _, x := range d.schedule(pj.out.End()) {
+		p.Fixed = x.per * *h.Quantity
+		pj.pay(p, x.day, true)
 	}
+	return true
 }
 
-// dividend is a holding's indicated dividend: per share of its next
-// payments in turn, from the one after the last, the payments a year, the
-// day of the last one, and what it rests on. units says a payment it
-// rests on is in its day's units (Payment); partial that it covers part
-// of the year: one half of a payer twice a year, the other's rate lost;
-// oneMonth that one month of the calendar alone gives its frequency
-// (payMonths).
+// dividend is a holding's indicated dividend: its rate per share of each
+// payment (payments), the payments a year, the day of the last one, and
+// what it rests on. A payer twice a year has the rates of its two halves,
+// and halves are their newest pay days, by the same index; any other has
+// one rate. units says a payment it rests on is in its day's units
+// (Payment); partial that it covers part of the year: one half of a payer
+// twice a year, the other's rate lost; oneMonth that one month of the
+// calendar alone gives its frequency (payMonths), in an instrument held
+// under yearlyShare of the year (heldShare), so the month cannot tell how
+// often it pays. Held longer, its one month is a yearly payer's.
 type dividend struct {
 	payments  []float64
 	frequency int
 	annual    float64 // per share
 	last      time.Time
+	halves    []time.Time
 	tag       Tag
 	units     bool
 	partial   bool
 	oneMonth  bool
+}
+
+// nextPay is one of a dividend's next payments: its day and its rate per
+// share.
+type nextPay struct {
+	day time.Time
+	per float64
+}
+
+// schedule is a dividend's next payments before end, in time order. A
+// payer twice a year pays each half on its own day a year after its
+// newest (halves), so a half keeps its month; any other dividend pays its
+// rate every 12/frequency months from the last pay day. A day before the
+// first day expected is among them.
+func (d *dividend) schedule(end time.Time) []nextPay {
+	var out []nextPay
+	if len(d.halves) > 0 {
+		for i, newest := range d.halves {
+			for y := 1; newest.AddDate(y, 0, 0).Before(end); y++ {
+				out = append(out, nextPay{newest.AddDate(y, 0, 0), d.payments[i]})
+			}
+		}
+		slices.SortFunc(out, func(a, b nextPay) int { return a.day.Compare(b.day) })
+		return out
+	}
+	step := 12 / d.frequency
+	for i := 1; d.last.AddDate(0, step*i, 0).Before(end); i++ {
+		out = append(out, nextPay{d.last.AddDate(0, step*i, 0), d.payments[0]})
+	}
+	return out
 }
 
 // basis is the basis of the income a dividend pays: declared where a
@@ -761,11 +833,29 @@ func (d *dividend) basis() Basis {
 	return BasisIndicated
 }
 
+// yearlyShare is the share of the twelve months to the instant, eleven
+// of them, from which an instrument held with one month of the calendar
+// paid reads as a yearly payer: a quarterly payer pays three times in
+// them, and a transfer's gap of a few days does not count.
+const yearlyShare = 11.0 / 12
+
+// wholeYear says a dividend covers the year: it rests on no one month of
+// the calendar that cannot tell its frequency (oneMonth), and on both
+// halves of a payer twice a year.
+func (d *dividend) wholeYear() bool { return !d.oneMonth && !d.partial }
+
 // indicatedDividend is the holding's indicated dividend
-// (indicatedDividend), read once for its measures and its projection.
+// (indicatedDividend), read once for its measures and its projection. A
+// fund's that rests on one month of the calendar, held under eleven of
+// the twelve months (oneMonth), pays its one payment once a year, though
+// the fund may pay more often: where its page states a yield (statedYield), that
+// wins, and the fund has no indicated dividend. A stock keeps its own.
 func (m *Measures) indicatedDividend(in *Inputs, h Holding) *dividend {
 	if !m.dividendRead {
 		m.dividend, m.dividendRead = indicatedDividend(in, h), true
+		if d := m.dividend; d != nil && d.oneMonth && statedYield(m, in.Funds[h.SecurityID]) != nil {
+			m.dividend = nil
+		}
 	}
 	return m.dividend
 }
@@ -776,12 +866,12 @@ func (m *Measures) indicatedDividend(in *Inputs, h Holding) *dividend {
 // rate converts counts nothing. Else the last month's rate of its pay
 // days (payDays, monthRate), specials aside, where it lies within 400
 // days, at the frequency of the year's pay months (payFrequency). A payer
-// twice a year pays that rate and its other half's in turn, each in its
-// own half. With the other half's rate lost and two months of the
-// calendar paid, the one rate pays once a year (partial). Else the
-// filings' dividends per share serve, quarterly. The payments go on from
-// the last pay day that is no special; the one rate of a payer twice a
-// year, from its own.
+// twice a year pays that rate and its other half's, each in its own month
+// a year after its half's newest pay day. With the other half's rate lost
+// and two months of the calendar paid, the one rate pays once a year
+// (partial). Else the filings' dividends per share serve, quarterly. The
+// payments go on from the last pay day that is no special; the one rate
+// of a payer twice a year, from its own.
 func indicatedDividend(in *Inputs, h Holding) *dividend {
 	days := payDays(in, h)
 	paid := map[int]bool{}
@@ -838,19 +928,39 @@ func indicatedDividend(in *Inputs, h Holding) *dividend {
 	}
 	recent := func(r monthly) bool { return in.Day.Sub(r.day) < 400*24*time.Hour }
 	if n := len(rated); n > 0 && recent(rated[n-1]) {
-		f, calendar := payFrequency(months, in.heldShare(h))
+		rates := map[int]float64{}
+		for _, x := range rated {
+			rates[x.month] = x.rate
+		}
+		// A payment shows in a month held from as far before it as the
+		// furthest record window of the instrument's payments may reach
+		// (recordReach).
+		lead := 0
+		for _, p := range in.instrumentPayments(h) {
+			lead = max(lead, recordReach(p.LagDays))
+		}
+		// Two pay months of unlike rates are a payer's two halves where the
+		// holding covered a quarter before the first, or after the second,
+		// that paid nothing (quietQuarter): a quarterly payer that raised
+		// its dividend, or pays more in one season, pays in it.
+		halves := func(first, second int) bool {
+			a, aok := rates[first]
+			b, bok := rates[second]
+			return aok && bok && !oneLevel(a, b) && in.quietQuarter(h, first, second, paid, lead)
+		}
+		share := in.heldShare(h)
+		f, calendar := payFrequency(months, halves, share)
 		r := rated[n-1]
 		d := &dividend{payments: []float64{r.rate}, frequency: f, annual: r.rate * float64(f), last: last,
-			tag: TagIndicated, units: r.units, oneMonth: len(calendar) < 2}
+			tag: TagIndicated, units: r.units, oneMonth: len(calendar) < 2 && share < yearlyShare}
 		if f != 2 {
 			return d
 		}
-		// The other half is a month 1 to 10 months from r, before it or
-		// after: one 11 or more apart is r's own payment a year earlier or a
-		// year on (payMonths).
+		// The other half is a month not of r's half (oneHalf), before r or
+		// after it.
 		other := func(ms []monthly) *monthly {
 			for j := len(ms) - 1; j >= 0 && recent(ms[j]); j-- {
-				if back := r.month - ms[j].month; back != 0 && -11 < back && back < 11 {
+				if !oneHalf(r.month, ms[j].month) {
 					return &ms[j]
 				}
 			}
@@ -876,7 +986,7 @@ func indicatedDividend(in *Inputs, h Holding) *dividend {
 			// earlier, where that one has a rate.
 			lost := 0
 			for m := range months {
-				if (m-r.month)%12 != 0 && m > lost {
+				if !oneHalf(m, r.month) && m > lost {
 					lost = m
 				}
 			}
@@ -889,11 +999,20 @@ func indicatedDividend(in *Inputs, h Holding) *dividend {
 		switch {
 		case o != nil:
 			d.payments, d.annual, d.units = []float64{o.rate, r.rate}, o.rate+r.rate, r.units || o.units
-			if (monthOf(last)-r.month)%12 != 0 {
-				// The last pay day, of no rate, was o's half's: r's comes
-				// next.
-				d.payments = []float64{r.rate, o.rate}
+			// Each half's newest pay day, of a rate or of none: a special
+			// counts only where it stands as o.
+			d.halves = []time.Time{o.day, r.day}
+			for _, x := range days {
+				if x.special && !x.day.Equal(o.day) {
+					continue
+				}
+				i := 1
+				if !oneHalf(monthOf(x.day), r.month) {
+					i = 0
+				}
+				d.halves[i] = later(d.halves[i], x.day)
 			}
+			d.last = later(d.halves[0], d.halves[1])
 		case len(calendar) == 2:
 			// Two months of the calendar paid, the other's rate lost: r's
 			// pays once a year, from its own month.
@@ -910,6 +1029,15 @@ func indicatedDividend(in *Inputs, h Holding) *dividend {
 
 // monthOf numbers a day's month: twelve a year.
 func monthOf(d time.Time) int { return d.Year()*12 + int(d.Month()) - 1 }
+
+// oneHalf says two months (monthOf) are of one half of a payer twice a
+// year: they are one month, or 11 months or more apart, one payment a
+// year on, as payMonths folds a pay day that drifts. Any two months 1 to
+// 10 months apart are its two halves.
+func oneHalf(a, b int) bool {
+	d := max(a-b, b-a)
+	return d == 0 || d >= 11
+}
 
 // monthRate is the rate per share of a month's regular pay days: each
 // account's rates summed, the median of the accounts'. An account with a
@@ -1071,8 +1199,8 @@ const maxHalfRatio = 6
 
 // newestLevel says a pay day of days holds the level of the newest ones:
 // it lies in the run of pay days that ends at the newest, two or more,
-// each with a rate, whose rates all lie within a third of one another,
-// and another day of the run falls in another month of the year than its
+// each with a rate, whose rates all hold one level (oneLevel), and
+// another day of the run falls in another month of the year than its
 // own. A pay day of no rate ends the run.
 func newestLevel(days []payDay) func(i int) bool {
 	var run []int
@@ -1082,7 +1210,7 @@ func newestLevel(days []payDay) func(i int) bool {
 			break
 		}
 		l, h := min(lo, *days[i].per), max(hi, *days[i].per)
-		if h-l > l/3 {
+		if !oneLevel(l, h) {
 			break
 		}
 		run, lo, hi = append(run, i), l, h
@@ -1094,6 +1222,13 @@ func newestLevel(days []payDay) func(i int) bool {
 	}
 }
 
+// oneLevel says two rates hold one level: the higher exceeds the lower by
+// a third of it at most.
+func oneLevel(a, b float64) bool {
+	lo, hi := min(a, b), max(a, b)
+	return hi-lo <= lo/3
+}
+
 // median is the middle of vs, the mean of the two middle ones where
 // their count is even. It sorts vs.
 func median(vs []float64) float64 {
@@ -1102,24 +1237,24 @@ func median(vs []float64) float64 {
 	return (vs[(n-1)/2] + vs[n/2]) / 2
 }
 
-// payMonths are the months of the calendar (0 to 11) in which months
-// (monthOf), the pay months of the twelve months to the instant, show a
-// payment, sorted. A pay month and one 11 or 12 months after it, the
-// most the twelve months hold, are one payment, the same one a year on:
-// a pay day drifts by days each year, into its own month or a
-// neighbouring one. The older of the two drops.
-func payMonths(months map[int]bool) []int {
-	var kept []int
+// payMonths reads months (monthOf), the pay months of the twelve months
+// to the instant. kept are the pay months left, oldest first, once a pay
+// month and one 11 or 12 months after it, the most the twelve months
+// hold, fold into the newer; calendar are their months of the calendar (0
+// to 11), sorted. Such a pair is one payment, the same one a year on: a
+// pay day drifts by days each year, into its own month or a neighbouring
+// one.
+func payMonths(months map[int]bool) (kept, calendar []int) {
 	for _, m := range slices.Sorted(maps.Keys(months)) {
 		kept = slices.DeleteFunc(kept, func(k int) bool { return m-k >= 11 })
 		kept = append(kept, m)
 	}
-	calendar := make([]int, len(kept))
+	calendar = make([]int, len(kept))
 	for i, m := range kept {
 		calendar[i] = m % 12
 	}
 	slices.Sort(calendar)
-	return calendar
+	return kept, calendar
 }
 
 // payFrequency is the payments a year of an instrument that paid in
@@ -1130,8 +1265,12 @@ func payMonths(months map[int]bool) []int {
 // nearest of 1, 2, 4 or 12 (nearestFrequency; docs/YIELD.md §4). So a
 // monthly fund held in two stretches a year apart keeps its gap of a
 // month. One calendar month alone shows no rhythm: it reads once a year.
-func payFrequency(months map[int]bool, share float64) (f int, calendar []int) {
-	calendar = payMonths(months)
+// Two months of the calendar more than a month apart that halves, where
+// it is set, says are a payer's two halves read twice a year, however
+// short the holding.
+func payFrequency(months map[int]bool, halves func(first, second int) bool, share float64) (f int,
+	calendar []int) {
+	kept, calendar := payMonths(months)
 	n := len(calendar)
 	if n < 2 {
 		return 1, calendar
@@ -1143,6 +1282,9 @@ func payFrequency(months map[int]bool, share float64) (f int, calendar []int) {
 	inTime := slices.Sorted(maps.Keys(months))
 	for i := 1; i < len(inTime); i++ {
 		gap = min(gap, inTime[i]-inTime[i-1])
+	}
+	if n == 2 && gap > 1 && halves != nil && halves(kept[0], kept[1]) {
+		return 2, calendar
 	}
 	most := 12 / float64(gap)
 	return nearestFrequency(min(float64(n)/share, most), most), calendar

@@ -610,14 +610,23 @@ func (p Payment) steady() bool {
 const recordSpread = 1.1
 
 // A Lag is how long before its pay day a dividend's record day falls:
-// Days calendar days, or Days business days where Business; the payment
-// reads what its account held then. Near and Far bound its record window,
-// the days before the pay day in which the record day falls, nearest to
-// furthest, in the same days. The zero Lag knows none.
+// Days calendar days, or Days business days of Market where Business; the
+// payment reads what its account held then. Near and Far bound its record
+// window, the days before the pay day in which the record day falls,
+// nearest to furthest, in the same days. The zero Lag knows none.
 type Lag struct {
 	Days      int
 	Business  bool
 	Near, Far int
+	// Market is the country whose settlement system's closing days a
+	// business day steps over (closed); "" steps over TARGET2's.
+	Market string
+}
+
+// of is the lag in the business days of market.
+func (l Lag) of(market string) Lag {
+	l.Market = market
+	return l
 }
 
 // RecordDay is the start of the record day of a payment whose day begins
@@ -631,19 +640,74 @@ func (l Lag) Window(pay time.Time) (from, to time.Time) {
 }
 
 // back is the day n of the lag's days before pay: calendar days, or
-// business days stepping over Saturdays and Sundays. A holiday counts as
-// a business day.
+// business days, stepping over Saturdays, Sundays and the days its
+// market's settlement system is closed (closed).
 func (l Lag) back(pay time.Time, n int) time.Time {
 	if !l.Business {
 		return pay.AddDate(0, 0, -n)
 	}
 	d := pay
 	for i := 0; i < n; {
-		if d = d.AddDate(0, 0, -1); d.Weekday() != time.Saturday && d.Weekday() != time.Sunday {
+		if d = d.AddDate(0, 0, -1); d.Weekday() != time.Saturday && d.Weekday() != time.Sunday && !closed(l.Market, d) {
 			i++
 		}
 	}
 	return d
+}
+
+// The closing days Easter fixes, in days from Easter Sunday.
+const (
+	maundyThursday    = -3
+	goodFriday        = -2
+	easterMonday      = 1
+	ascension         = 39
+	dayAfterAscension = 40
+	whitMonday        = 50
+)
+
+// closed says the settlement system of market, a country of a
+// business-day lag (markets), is closed on day d, by a calendar that
+// follows from the year (docs/YIELD.md §4): a record day is a settlement
+// day. All of them close on 1 January, Good Friday, Easter Monday, 25 and
+// 26 December. A euro-area market, and market "", settles in TARGET2,
+// closed on 1 May too. Switzerland and Sweden close on 1 May, 24 and 31
+// December, and on days of their own; Denmark, which settles on 1 May, on
+// 24 and 31 December and on its own.
+func closed(market string, d time.Time) bool {
+	m, day := d.Month(), d.Day()
+	e := d.YearDay() - easter(d.Year()).YearDay()
+	if m == time.January && day == 1 || e == goodFriday || e == easterMonday ||
+		m == time.December && (day == 25 || day == 26) {
+		return true
+	}
+	mayDay := m == time.May && day == 1
+	yearEnd := m == time.December && (day == 24 || day == 31)
+	switch market {
+	case "CH":
+		return mayDay || yearEnd || m == time.January && day == 2 || e == ascension || e == whitMonday ||
+			m == time.August && day == 1
+	case "SE":
+		midsummerEve := m == time.June && day >= 19 && day <= 25 && d.Weekday() == time.Friday
+		return mayDay || yearEnd || m == time.January && day == 6 || e == ascension || m == time.June && day == 6 ||
+			midsummerEve
+	case "DK":
+		return yearEnd || e == maundyThursday || e == ascension || e == dayAfterAscension || e == whitMonday ||
+			m == time.June && day == 5
+	}
+	return mayDay
+}
+
+// easter is Easter Sunday of year y, by the Gregorian computus (the
+// anonymous algorithm, as Meeus gives it).
+func easter(y int) time.Time {
+	a, b, c := y%19, y/100, y%100
+	f := (b + 8) / 25
+	g := (b - f + 1) / 3
+	h := (19*a + b - b/4 - g + 15) % 30
+	l := (32 + 2*(b%4) + 2*(c/4) - h - c%4) % 7
+	m := (a + 11*h + 22*l) / 451
+	n := h + l - 7*m + 114
+	return time.Date(y, time.Month(n/31), n%31+1, 0, 0, 0, 0, time.UTC)
 }
 
 // The lags of a dividend's record day in the markets that fix them, and
@@ -661,12 +725,13 @@ var (
 	// its ex-day, its record day and its pay day fall on consecutive
 	// business days, and a trade on the ex-day earns nothing. So the lag
 	// reaches back to the ex-day, and its window two days further: a
-	// holiday, or a payment booked a day late, falls inside it.
+	// payment booked late, or a closing the calendar does not know
+	// (closed), falls inside it. RecordLag gives it its market.
 	RecordLagEuropeanShare = Lag{Days: 2, Business: true, Near: 2, Far: 4}
 	// RecordLagSwedishShare is the lag of a share of Sweden: it pays three
 	// business days after its record day, which follows its ex-day by
 	// one. Its window reaches two days further, as the euro area's does.
-	RecordLagSwedishShare = Lag{Days: 4, Business: true, Near: 4, Far: 6}
+	RecordLagSwedishShare = Lag{Days: 4, Business: true, Near: 4, Far: 6, Market: "SE"}
 	// RecordLagJapaneseReceipt is the lag of a depositary receipt of a
 	// Japanese share: the issuer pays about three months after its record
 	// day, once its shareholders approve the dividend, and the depositary
@@ -690,16 +755,40 @@ var (
 // pay day, in calendar days: the furthest of the lags' Far.
 const RecordWindowDays = 105
 
+// calendarLags are the lags in calendar days, by which recordReach tells
+// how far a payment's record window may reach.
+var calendarLags = []Lag{RecordLagUSShare, RecordLagUKHongKongShare, RecordLagJapaneseReceipt,
+	RecordLagEuropeanReceipt, RecordLagUKReceipt, RecordLagReceipt}
+
+// recordReach is how far before its pay day, in calendar days, the record
+// window of a payment may reach whose market fixes its record day lagDays
+// before it (Payment.LagDays): the furthest window of a calendar lag of as
+// many days, as one count of days may be several markets' (a share of the
+// United States or of the United Kingdom). It is no less than a share of
+// the United States's window, also for a lag in business days or none: a
+// fund's ex-day may fall in the month before its pay day.
+func recordReach(lagDays int) int {
+	reach := RecordLagUSShare.Far
+	for _, l := range calendarLags {
+		if l.Days == lagDays {
+			reach = max(reach, l.Far)
+		}
+	}
+	return reach
+}
+
 // markets are the lags of the markets whose shares fix their record day,
-// by country; currencyMarkets the market of a share quoted in each
-// currency, where one currency names one market. A share quoted in euros
-// reads its issuer's market where that is one of the euro area's here.
+// by country, a business-day lag in its own market's business days;
+// currencyMarkets the market of a share quoted in each currency, where
+// one currency names one market. A share quoted in euros reads its
+// issuer's market where that is one of the euro area's here.
 var (
 	markets = map[string]Lag{
 		"US": RecordLagUSShare, "GB": RecordLagUKHongKongShare, "HK": RecordLagUKHongKongShare,
-		"AT": RecordLagEuropeanShare, "BE": RecordLagEuropeanShare, "CH": RecordLagEuropeanShare,
-		"DE": RecordLagEuropeanShare, "DK": RecordLagEuropeanShare, "ES": RecordLagEuropeanShare,
-		"FR": RecordLagEuropeanShare, "IT": RecordLagEuropeanShare, "SE": RecordLagSwedishShare,
+		"AT": RecordLagEuropeanShare.of("AT"), "BE": RecordLagEuropeanShare.of("BE"),
+		"CH": RecordLagEuropeanShare.of("CH"), "DE": RecordLagEuropeanShare.of("DE"),
+		"DK": RecordLagEuropeanShare.of("DK"), "ES": RecordLagEuropeanShare.of("ES"),
+		"FR": RecordLagEuropeanShare.of("FR"), "IT": RecordLagEuropeanShare.of("IT"), "SE": RecordLagSwedishShare,
 	}
 	currencyMarkets = map[string]string{
 		"USD": "US", "GBP": "GB", "GBX": "GB", "GBp": "GB", "HKD": "HK", "CHF": "CH", "DKK": "DK", "SEK": "SE",

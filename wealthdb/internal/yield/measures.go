@@ -698,13 +698,26 @@ func floatingFund(h Holding, f *Fund) bool {
 		floatingName(h.Name) || floatingName(f.FilingName)
 }
 
-// floatingNameRE matches the words a fund's name says it floats by. A
-// bare FLOAT does not: an index fund's name may say FLOAT ADJUSTED.
-var floatingNameRE = regexp.MustCompile(`(?i)\b(floating|floaters?|fltg|frn|float[ -]rate)\b`)
+// floatingNameRE matches the words a fund's name says it floats by: a
+// floating rate in full or in a broker's short form, or a fund of loans or
+// of CLOs, whose coupons float. A bare FLOAT does not: an index fund's name
+// may say FLOAT ADJUSTED. notFloatingRE matches what names no floating
+// fund: a coupon fixed until it floats, in full or short, and a fund of
+// variable-rate preferreds, which are mostly fixed until they float.
+var (
+	floatingNameRE = regexp.MustCompile(`(?i)\b(floating|floaters?|fltg|frns?|(flt|float|var|variable)[ -](rate|rt)|` +
+		`(senior|bank|leveraged)[ -]loans?|clos?)\b`)
+	notFloatingRE = regexp.MustCompile(`(?i)\b((fixed|fxd)[ -]to[ -](float(ing|ers?)?|fltg|flt)|` +
+		`var(iable)?[ -]r(ate|t)[ -](preferred|pfd))\b`)
+)
 
 // floatingName says a fund's name names a floating rate fund: FLOATING,
-// FLOATER, FLTG, FRN or FLOAT RATE.
-func floatingName(name string) bool { return floatingNameRE.MatchString(name) }
+// FLOATER, FLTG, FRN, FRNS, FLOAT RATE, FLT RT, FLOAT RT, VARIABLE RATE or
+// VAR RATE; a SENIOR, BANK or LEVERAGED LOAN fund; or a CLO fund. A
+// FIXED-TO-FLOATING coupon, and a VARIABLE RATE PREFERRED fund, name none.
+func floatingName(name string) bool {
+	return floatingNameRE.MatchString(notFloatingRE.ReplaceAllString(name, ""))
+}
 
 // fundBuckets is a fund's filed DV01 per currency and tenor, scaled to
 // the holding: the filed figures and the net assets are in one currency,
@@ -739,20 +752,39 @@ func measureEquityFund(in *Inputs, h Holding, m *Measures) {
 }
 
 // equityIncome gives a fund its dividend yield: its own distributions'
-// (dividendReading), else the trailing yield, else the distribution
-// yield, its page states; else it paid nothing (paidNothing).
+// (dividendReading), else the yield its page states (statedYield); else
+// it paid nothing (paidNothing).
 func equityIncome(in *Inputs, h Holding, f *Fund, m *Measures) {
 	if dividendReading(in, h, m) {
 		return
 	}
-	if f != nil {
-		if d := first(f.TrailingYield, f.DistributionYield); d != nil {
-			m.DividendYield, m.Stated, m.statedDividend = ptr(d.Value), ptr(d.Value), true
-			m.Tags[TagStated] = true
-			return
-		}
+	if y := statedYield(m, f); y != nil {
+		m.DividendYield, m.Stated, m.statedDividend = ptr(*y), ptr(*y), true
+		m.Tags[TagStated] = true
+		return
 	}
 	paidNothing(in, h, m)
+}
+
+// statedYield is the yield a fund's page or filing states that its income
+// reads where its distributions indicate none: an equity or multi-asset
+// fund's trailing yield, else its distribution yield, from f; a bond
+// fund's Stated, its distribution or SEC yield, else its DividendYield,
+// its trailing yield, as measureFund sets them and the projection reads
+// them. nil for any other holding, and where none is stated.
+func statedYield(m *Measures, f *Fund) *float64 {
+	switch m.Kind {
+	case KindEquityFund, KindMultiAsset:
+		if f == nil {
+			return nil
+		}
+		if d := first(f.TrailingYield, f.DistributionYield); d != nil {
+			return &d.Value
+		}
+	case KindBondFund:
+		return first(m.Stated, m.DividendYield)
+	}
+	return nil
 }
 
 // dividendReading sets a holding's dividend yield from its indicated
@@ -983,6 +1015,47 @@ func (p *pool) add(fx, received float64, d Daily) {
 			p.holding[s.To]--
 		}
 	}
+}
+
+// heldOver says a span of an amount covers every day of [from, to), days
+// of the pool's window; false where one lies outside it.
+func (p *pool) heldOver(from, to int) bool {
+	if from < 0 || from >= to || to > len(p.diff)-1 {
+		return false
+	}
+	holding := 0
+	for i, h := range p.holding[:to] {
+		if holding += h; i >= from && holding <= 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// quietQuarter says h's instrument was held over a quarter before first,
+// or a quarter after second (months, monthOf), and nothing was paid there
+// (quietMonth): over the month three months off and its neighbour beyond
+// it, as a pay day drifts into a neighbouring month.
+func (in *Inputs) quietQuarter(h Holding, first, second int, paid map[int]bool, lead int) bool {
+	quiet := func(m int) bool { return in.quietMonth(h, m, paid, lead) }
+	return quiet(first-3) && quiet(first-4) || quiet(second+3) && quiet(second+4)
+}
+
+// quietMonth says month m (monthOf) paid nothing (paid) though h's
+// instrument was held on each of its days and on the lead days before it,
+// as its realized yield counts the days held (instrumentPool): a payment
+// whose record window reaches up to lead days before its pay day would
+// have shown in it. false where those days are not all within the twelve
+// months to the instant.
+func (in *Inputs) quietMonth(h Holding, m int, paid map[int]bool, lead int) bool {
+	if paid[m] {
+		return false
+	}
+	day0 := in.Day.AddDate(-1, 0, 1)
+	start := time.Date(m/12, time.Month(m%12+1), 1, 0, 0, 0, 0, time.UTC)
+	index := func(d time.Time) int { return int(d.Sub(day0).Hours() / 24) }
+	p := instrumentPool(in, h)
+	return p.heldOver(index(start.AddDate(0, 0, -lead)), index(start.AddDate(0, 1, 0)))
 }
 
 // heldDays are the days of the pool's n on which a span of an amount

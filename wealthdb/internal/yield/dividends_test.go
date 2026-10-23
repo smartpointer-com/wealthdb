@@ -402,8 +402,9 @@ func TestASecurityMovedBetweenSources(t *testing.T) {
 // the currency it is quoted in, whatever its issuer's country: the United
 // States, the United Kingdom, Hong Kong, Switzerland, Denmark or Sweden.
 // One in euros reads its issuer's market, where that is of the euro area.
-// Any other knows none. Each lag's day lies in its record window, and no
-// window reaches further than RecordWindowDays.
+// A business-day lag counts its market's business days. Any other knows
+// none. Each lag's day lies in its record window, and no window reaches
+// further than RecordWindowDays.
 func TestRecordLag(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -416,8 +417,12 @@ func TestRecordLag(t *testing.T) {
 		{"GB", "USD", true, false, RecordLagUKReceipt}, {"", "USD", true, false, Lag{}},
 		{"US", "USD", false, true, RecordLagUSShare}, {"CH", "USD", false, true, RecordLagUSShare},
 		{"", "USD", false, true, RecordLagUSShare},
-		{"CH", "CHF", false, true, RecordLagEuropeanShare}, {"IT", "EUR", false, true, RecordLagEuropeanShare},
-		{"DK", "DKK", false, true, RecordLagEuropeanShare}, {"IT", "CHF", false, true, RecordLagEuropeanShare},
+		{"CH", "CHF", false, true, RecordLagEuropeanShare.of("CH")},
+		{"IT", "EUR", false, true, RecordLagEuropeanShare.of("IT")},
+		{"DK", "DKK", false, true, RecordLagEuropeanShare.of("DK")},
+		{"IT", "CHF", false, true, RecordLagEuropeanShare.of("CH")},
+		{"AT", "EUR", false, true, RecordLagEuropeanShare.of("AT")},
+		{"DE", "EUR", false, true, RecordLagEuropeanShare.of("DE")},
 		{"SE", "SEK", false, true, RecordLagSwedishShare}, {"FI", "EUR", false, true, Lag{}},
 		{"NL", "EUR", false, true, Lag{}}, {"NO", "NOK", false, true, Lag{}}, {"PT", "EUR", false, true, Lag{}},
 		{"GB", "GBP", false, true, RecordLagUKHongKongShare}, {"GB", "GBX", false, true, RecordLagUKHongKongShare},
@@ -437,15 +442,24 @@ func TestRecordLag(t *testing.T) {
 	}
 }
 
-// A business day's lag steps over the weekend: two business days before
-// a Monday or a Tuesday pay day fall on the Thursday or the Friday, before
-// a Wednesday on the Monday; four before a Monday on the Tuesday. A
-// calendar lag counts every day. The windows count the lag's own days:
-// two to four business days before a Monday reach from the Tuesday to
-// the Thursday, four to six from the Friday before to the Tuesday; 3 to
-// 35 calendar days from 6 April to 8 May.
+// A business day's lag steps over the weekend and the closing days of its
+// market's settlement system. Two business days before a Monday or a
+// Tuesday pay day fall on the Thursday or the Friday, before a Wednesday
+// on the Monday; four before a Monday on the Tuesday. A calendar lag
+// counts every day. TARGET2 settles on 2 January and on 31 December: two
+// business days before Monday 5 January 2026, a French or German share's
+// ex-day is Wednesday 31 December. Switzerland closes on 2 January and on
+// 31 December too: a Swiss share's steps over them to Monday 29 December.
+// Easter, Ascension, Whit Monday, 1 May and each market's own days step
+// over the same way, where its market closes: Denmark settles on 1 May.
+// The windows count the lag's own days: two to four business days before
+// a Monday reach from the Tuesday to the Thursday; four to six from the
+// Thursday before, 1 May closed, to the Tuesday; two to four before 5
+// January 2026 from 29 to 31 December in the euro area, from 22 to 29
+// December in Switzerland; 3 to 35 calendar days from 6 April to 8 May.
 func TestARecordDay(t *testing.T) {
 	t.Parallel()
+	share := func(situs, ccy string) Lag { return RecordLag(situs, ccy, false, true) }
 	for _, c := range []struct {
 		lag       Lag
 		pay, want *time.Time
@@ -455,6 +469,39 @@ func TestARecordDay(t *testing.T) {
 		{RecordLagEuropeanShare, date(2026, 5, 13), date(2026, 5, 11)},
 		{RecordLagSwedishShare, date(2026, 5, 11), date(2026, 5, 5)},
 		{RecordLagUSShare, date(2026, 5, 11), date(2026, 4, 11)},
+		{share("CH", "CHF"), date(2026, 1, 5), date(2025, 12, 29)},
+		{share("DE", "EUR"), date(2026, 1, 5), date(2025, 12, 31)},
+		{share("FR", "EUR"), date(2026, 1, 5), date(2025, 12, 31)},
+		// 24 December in Switzerland, not in TARGET2.
+		{share("CH", "CHF"), date(2025, 12, 29), date(2025, 12, 22)},
+		{share("DE", "EUR"), date(2025, 12, 29), date(2025, 12, 23)},
+		// TARGET2 closes on 1 January: a French share paid on Friday 2
+		// January reads Tuesday 30 December.
+		{share("FR", "EUR"), date(2026, 1, 2), date(2025, 12, 30)},
+		// Maundy Thursday, Good Friday and Easter Monday in Denmark; Good
+		// Friday and Easter Monday in Germany.
+		{share("DK", "DKK"), date(2026, 4, 8), date(2026, 4, 1)},
+		{share("DE", "EUR"), date(2026, 4, 8), date(2026, 4, 2)},
+		// Ascension and Whit Monday close Switzerland, not TARGET2: Austria,
+		// Germany and France settle on them.
+		{share("CH", "CHF"), date(2026, 5, 15), date(2026, 5, 12)},
+		{share("DE", "EUR"), date(2026, 5, 15), date(2026, 5, 13)},
+		{share("CH", "CHF"), date(2026, 5, 26), date(2026, 5, 21)},
+		{share("AT", "EUR"), date(2026, 5, 26), date(2026, 5, 22)},
+		{share("FR", "EUR"), date(2026, 5, 26), date(2026, 5, 22)},
+		// 1 August in Switzerland; TARGET2 settles on 15 August, Italy's too.
+		{share("CH", "CHF"), date(2025, 8, 5), date(2025, 7, 31)},
+		{share("IT", "EUR"), date(2025, 8, 18), date(2025, 8, 14)},
+		// Denmark settles on 1 May, and closes on Ascension and the day
+		// after.
+		{share("DK", "DKK"), date(2026, 5, 4), date(2026, 4, 30)},
+		{share("DE", "EUR"), date(2026, 5, 4), date(2026, 4, 29)},
+		{share("DK", "DKK"), date(2026, 5, 18), date(2026, 5, 12)},
+		// 6 January, 6 June and Midsummer Eve in Sweden, 5 June in Denmark.
+		{share("SE", "SEK"), date(2026, 1, 8), date(2025, 12, 30)},
+		{share("SE", "SEK"), date(2025, 6, 11), date(2025, 6, 4)},
+		{share("SE", "SEK"), date(2026, 6, 24), date(2026, 6, 17)},
+		{share("DK", "DKK"), date(2026, 6, 9), date(2026, 6, 4)},
 	} {
 		if got := c.lag.RecordDay(*c.pay); !got.Equal(*c.want) {
 			t.Errorf("%+v before %s: %s, want %s", c.lag, c.pay.Format(time.DateOnly), got.Format(time.DateOnly),
@@ -462,16 +509,31 @@ func TestARecordDay(t *testing.T) {
 		}
 	}
 	for _, c := range []struct {
-		lag      Lag
-		from, to *time.Time
+		lag           Lag
+		pay, from, to *time.Time
 	}{
-		{RecordLagEuropeanShare, date(2026, 5, 5), date(2026, 5, 7)},
-		{RecordLagSwedishShare, date(2026, 5, 1), date(2026, 5, 5)},
-		{RecordLagUSShare, date(2026, 4, 6), date(2026, 5, 8)},
+		{RecordLagEuropeanShare, date(2026, 5, 11), date(2026, 5, 5), date(2026, 5, 7)},
+		{RecordLagSwedishShare, date(2026, 5, 11), date(2026, 4, 30), date(2026, 5, 5)},
+		{share("FR", "EUR"), date(2026, 1, 5), date(2025, 12, 29), date(2025, 12, 31)},
+		{share("CH", "CHF"), date(2026, 1, 5), date(2025, 12, 22), date(2025, 12, 29)},
+		{RecordLagUSShare, date(2026, 5, 11), date(2026, 4, 6), date(2026, 5, 8)},
 	} {
-		if from, to := c.lag.Window(*date(2026, 5, 11)); !from.Equal(*c.from) || !to.Equal(*c.to) {
-			t.Errorf("%+v: window %s to %s, want %s to %s", c.lag, from.Format(time.DateOnly), to.Format(time.DateOnly),
-				c.from.Format(time.DateOnly), c.to.Format(time.DateOnly))
+		if from, to := c.lag.Window(*c.pay); !from.Equal(*c.from) || !to.Equal(*c.to) {
+			t.Errorf("%+v before %s: window %s to %s, want %s to %s", c.lag, c.pay.Format(time.DateOnly),
+				from.Format(time.DateOnly), to.Format(time.DateOnly), c.from.Format(time.DateOnly),
+				c.to.Format(time.DateOnly))
+		}
+	}
+}
+
+// Easter Sunday follows from the year by the Gregorian computus, from 22
+// March to 25 April.
+func TestEaster(t *testing.T) {
+	t.Parallel()
+	for _, want := range []*time.Time{date(2000, 4, 23), date(2008, 3, 23), date(2011, 4, 24), date(2019, 4, 21),
+		date(2024, 3, 31), date(2025, 4, 20), date(2026, 4, 5), date(2038, 4, 25), date(2285, 3, 22)} {
+		if got := easter(want.Year()); !got.Equal(*want) {
+			t.Errorf("%d: %s, want %s", want.Year(), got.Format(time.DateOnly), want.Format(time.DateOnly))
 		}
 	}
 }
@@ -660,6 +722,66 @@ func TestTheOtherHalfIsNoPaymentAYearOn(t *testing.T) {
 		d      *time.Time
 		income float64
 	}{{"November", date(2026, 11, 1), 40}, {"May", date(2027, 5, 1), 10}} {
+		near(t, m.what, num(incomeOf(b, h.HoldingKey, monthIndex(b, *m.d), RuleCash, PathConstant, 0)), m.income,
+			1e-9)
+	}
+}
+
+// A month 11 months from the last rated one is that month's own payment
+// a year on, never the other half. A payer twice a year rated its interim
+// of 0.4 in December 2024 and its final of 0.6 on 1 July 2025; its interim
+// of December 2025 and its final of 12 June 2026 have no rate. The other
+// half's newest month is December 2025, not June: its month a year earlier
+// stands for it, and the year pays both halves. The last pay day, in June,
+// was the final's half, so the interim pays next, in December.
+func TestTheLostHalfIsNoPaymentAYearOn(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	h := stock("A", "QSTK", 100)
+	in.Holdings = []Holding{h}
+	pay(in, h.HoldingKey, "A", date(2024, 12, 10), 40, num(100))
+	pay(in, h.HoldingKey, "A", date(2025, 7, 1), 60, num(100))
+	pay(in, h.HoldingKey, "A", date(2025, 12, 10), 40, nil)
+	pay(in, h.HoldingKey, "A", date(2026, 6, 12), 60, nil)
+	b := Compute(in)
+	if p := dividendOf(t, b, h, 0.4+0.6, 100); p.Tags[TagPartial] {
+		t.Errorf("tags %v", p.Tags)
+	}
+	for _, m := range []struct {
+		what   string
+		d      *time.Time
+		income float64
+	}{{"December", date(2026, 12, 1), 40}, {"June", date(2027, 6, 1), 60}} {
+		near(t, m.what, num(incomeOf(b, h.HoldingKey, monthIndex(b, *m.d), RuleCash, PathConstant, 0)), m.income,
+			1e-9)
+	}
+}
+
+// A month 13 months after the last rated one is that month's own payment a
+// year on too, drifted. A payer twice a year rated its interim of 0.4 in
+// November 2024 and its final of 0.6 on 20 May 2025; its interim of
+// November 2025 and its final of 10 June 2026 have no rate. The other
+// half's newest month is November 2025, not June: its month a year
+// earlier stands for it, and each half pays a year after its newest pay
+// day, the interim in November, the final in June.
+func TestAPaymentThirteenMonthsOnIsItsOwnHalf(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	h := stock("A", "QSTK", 100)
+	in.Holdings = []Holding{h}
+	pay(in, h.HoldingKey, "A", date(2024, 11, 20), 40, num(100))
+	pay(in, h.HoldingKey, "A", date(2025, 5, 20), 60, num(100))
+	pay(in, h.HoldingKey, "A", date(2025, 11, 20), 40, nil)
+	pay(in, h.HoldingKey, "A", date(2026, 6, 10), 60, nil)
+	b := Compute(in)
+	if p := dividendOf(t, b, h, 0.4+0.6, 100); p.Tags[TagPartial] {
+		t.Errorf("tags %v", p.Tags)
+	}
+	for _, m := range []struct {
+		what   string
+		d      *time.Time
+		income float64
+	}{{"November", date(2026, 11, 1), 40}, {"June", date(2027, 6, 1), 60}} {
 		near(t, m.what, num(incomeOf(b, h.HoldingKey, monthIndex(b, *m.d), RuleCash, PathConstant, 0)), m.income,
 			1e-9)
 	}

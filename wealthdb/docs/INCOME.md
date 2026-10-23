@@ -853,7 +853,9 @@ The expected half starts the day after today.
 
 - Income that accrues covers its days exactly. A month that the window,
   today or a maturity cuts takes its share of days. A balance, a
-  fund's yield, a floating coupon and a loan's interest accrue.
+  fund's yield, a floating coupon and a loan's interest accrue. A
+  floating fund that pays less often than monthly pays its accrual on
+  its pay days instead (below).
 - A payment counts on its day, in full: a fixed coupon, a bill's
   discount, a dividend.
 - The day of a dividend or of a repeated payment is an estimate. The
@@ -872,22 +874,35 @@ The expected half starts the day after today.
 | `bond` | its coupons on their dates (`declared`); its face at maturity |
 | `bill`, or a zero | its face less its price, on its maturity day |
 | `note` | a loan held: its coupon on its amount, month by month, then its principal at maturity; a convertible note: nothing |
-| `bond_fund` | a floating fund ([YIELD.md](YIELD.md) §3): a floating rate (below); any other: its indicated distributions, else its distribution or SEC yield, month by month, else `unknown` |
+| `bond_fund` | a floating fund ([YIELD.md](YIELD.md) §3): a floating rate (below); any other: its indicated distributions, else its distribution or SEC yield, else its trailing yield, month by month, else `unknown` |
 | `equity_fund`, `multi_asset` | its indicated distributions; else the trailing yield, or the distribution yield, its page states, month by month |
 | `stock` | its instrument's indicated dividend ([YIELD.md](YIELD.md) §4) on its own quantity: a ledger record's (`declared`), else the last month's payment per share, specials aside, at the frequency of its pay months per month held, else its filings' dividends per share, quarterly (`indicated`) |
 | `liability` | nothing |
 | `other` | its payments of the last twelve months, repeated (`realized`); paid nothing, `unknown` |
 
+A fund's indicated distributions that rest on one month of the
+calendar, held under eleven of the twelve months, give way to the yield
+its page states, where it states one ([YIELD.md](YIELD.md) §4). Held
+longer, the one month is a yearly payer's, and its distributions stand.
+
 - A floating bond fund earns a floating rate, the first of these:
   - its implied yield;
-  - the yield its indicated distributions pay, where they rest on more
-    than one month of the calendar and cover the year
-    ([YIELD.md](YIELD.md) §4);
+  - the yield its indicated distributions pay, where they cover the
+    year ([YIELD.md](YIELD.md) §4);
   - its distribution or SEC yield;
   - its trailing yield.
 
-  With none of them, it pays its indicated distributions as they come.
-  Else it reads `unknown`.
+  Two readings of its distributions do not cover the year. One is one
+  half of a payer twice a year whose other half has no rate. The other
+  is one calendar month in a fund held under eleven months. A fund
+  whose distributions cover the year, at a frequency below monthly, pays
+  that rate on its own pay days. Each payment is what its value accrued
+  since the pay day before. It earns the rate of its pay month, which
+  moves with the curve and the shift. So on a rising forward curve a
+  quarterly payer earns a little more than a monthly one. Any other
+  floating fund accrues its rate month by month. With none of the rates,
+  it pays its indicated distributions as they come. Else it reads
+  `unknown`.
 - A balance whose rate no source states repeats the interest its
   account received in the last twelve months (`realized`). With none
   received it reads `unknown`.

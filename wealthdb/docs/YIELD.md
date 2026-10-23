@@ -328,11 +328,18 @@ A bond fund reads these:
   holding's value. Else it is its value times its duration.
 - It carries `floating` where its income resets with the rates. That
   is so where its lines float for half of it or more, or the lines of
-  its filing at the day do. It is so too where its name says it is a
-  floating rate fund: FLOATING, FLOATER, FLTG, FRN or FLOAT RATE. The
-  holding's name counts, and so does the name its filing gives it. A
-  bare FLOAT does not count: an index fund's name may say FLOAT
-  ADJUSTED.
+  its filing at the day do. It is so too where its name says it floats.
+  The holding's name counts, and so does the name its filing gives it.
+  These words say so:
+  - FLOATING, FLOATER, FLTG, FRN, FRNS or FLOAT RATE;
+  - a broker's short forms FLT RT and FLOAT RT;
+  - VARIABLE RATE or VAR RATE;
+  - a fund of loans or of CLOs: SENIOR LOAN, BANK LOAN, LEVERAGED LOAN
+    or CLO.
+
+  A bare FLOAT does not count: an index fund's name may say FLOAT
+  ADJUSTED. Nor does FIXED-TO-FLOATING or FIXED TO FLOAT: that coupon is
+  fixed until it floats.
 - It carries `default` where any line is in default or arrears.
 
 A multi-asset fund reads these:
@@ -371,8 +378,10 @@ twelve months' diluted earnings per share over its price (§4). An
 equity fund's is the inverse of the P/E its page states.
 `dividend_yield` is the indicated dividend over the price (§4). An
 equity fund or a multi-asset fund without one reads the trailing yield,
-else the distribution yield, its page states. Earnings or dividends a
-filing reports in another currency than the price give no yield.
+else the distribution yield, its page states. So does one whose
+indicated dividend rests on one calendar month, held under eleven of
+the twelve months (§4). Earnings or dividends a filing reports in
+another currency than the price give no yield.
 
 `securities` adds a stock's dividend safety, from its trailing figures:
 
@@ -499,9 +508,11 @@ twelve months to the day over the mean daily value.
    of the day. It reads `indicated`. A payer twice a year pays its
    interim and its final, which often differ, each in its own half: the
    last month's payment, and the newest payment within 400 days in the
-   other half of the year. That half's payment lies 1 to 10 months
-   from the last, before or after it: one 11 or 12 months away is the
-   last's own payment a year apart, as the frequency counts it (below).
+   other half of the year. The other half's months lie 1 to 10 months
+   from the last month, before or after it. A month 11 months or more
+   away is the last's own payment a year apart, as the frequency counts
+   it (below). Each half pays again in its own month, a year after its
+   newest pay day.
    - Where that half has no rate but a special, in a month the year
      counts (below), the special stands as its payment in two cases. It
      stands where it is up to six times the last month's, as an uneven
@@ -551,10 +562,24 @@ the instrument included.
   a trade on the ex-day earns nothing. So the lag reaches back to the
   ex-day. A Swedish share pays three business days after its record day,
   which follows its ex-day by one, so its lag reaches back to the ex-day
-  too. The window reaches two business days further: a holiday, or a
-  payment booked a day late, then falls inside it.
-- A business day is a weekday, a holiday among them: a Monday's lag of 2
-  business days reaches back to the Thursday.
+  too. The window reaches two business days further: a payment booked
+  late, or a closing day the calendar below does not know, then falls
+  inside it.
+- A business day is a weekday on which the market's settlement system
+  is open: a record day is a settlement day. A Monday's lag of 2
+  business days reaches back to the Thursday. The closing days follow
+  from the year, Easter by the Gregorian computus:
+
+  | Market | Settlement system | Closed on |
+  |---|---|---|
+  | the euro area | TARGET2 | 1 January, Good Friday, Easter Monday, 1 May, 25 and 26 December |
+  | Switzerland | SIX SIS | TARGET2's days; 2 January, Ascension, Whit Monday, 1 August, 24 and 31 December |
+  | Sweden | Euroclear Sweden | TARGET2's days; 6 January, Ascension, 6 June, Midsummer Eve (the Friday from 19 to 25 June), 24 and 31 December |
+  | Denmark | Euronext Securities Copenhagen | 1 January, Maundy Thursday, Good Friday, Easter Monday, Ascension and the day after, Whit Monday, 5 June, 24, 25, 26 and 31 December |
+
+  So 2 business days before Monday 5 January 2026 is Wednesday 31
+  December 2025 in the euro area, and Monday 29 December 2025 in
+  Switzerland.
 - A share's market is that of the currency it is quoted in, whatever its
   issuer's country:
   - dollars: the United States;
@@ -669,7 +694,34 @@ the instrument included.
   So a quarterly payer that missed one payment of the year reads 4, not
   2. A payer twice a year whose pay day drifts across a month end still
   reads 2.
-- One calendar month alone shows no rhythm: it reads once a year.
+- Two months of the calendar, more than a month apart, may be the two
+  halves of a payer twice a year. They are where both of these hold:
+  - their payments per share differ by more than a third of the
+    smaller;
+  - the holding covered a quarter before the older month, or a quarter
+    after the newer, and nothing was paid in it.
+
+  The quarter is the month three months off and its neighbour beyond
+  it, as a pay day may drift into a neighbouring month. The holding
+  covers them from as far before as a record window may reach: at least
+  35 days, the window of a share of the United States, and 63 days for a
+  lag of 30 days, which may be a share of the United Kingdom's. So a
+  payment due in them would show. They then read 2, however short the
+  holding. Else they read as above. A quarterly payer that raised its
+  dividend, or pays more in one season, pays in that quarter. Two months
+  next to each other are a monthly payer's.
+- One calendar month alone shows no rhythm: it reads once a year. Held
+  eleven of the twelve months or more, it is a yearly payer's: a
+  quarterly payer pays three times in them, and a transfer's gap of a
+  few days does not count. Held less, it may be any payer's: a fund held
+  a month would read a twelfth of what it earns. So where a fund held
+  under eleven months shows one calendar month, the yield its page
+  states wins, where it states one:
+  - a bond fund's distribution or SEC yield, else its trailing yield;
+  - an equity or multi-asset fund's trailing yield, else its
+    distribution yield.
+
+  A stock keeps its reading.
 - A month whose only payments are specials counts where the same month
   a year earlier had a payment: the special fell on the payer's own
   schedule, as a trimmed holding's payment does. Else it does not

@@ -675,9 +675,9 @@ func TestARecordWindowReadsWhatTheAccountHeld(t *testing.T) {
 //     340 on the ex-day still earns the May payment: it rates on 340, and
 //     the year pays both halves. QIT2 pays on a Wednesday, its ex-day the
 //     Monday, when it sells a third: it rates on what it held before.
-//     QIT3 pays on Monday 4 May, after the holiday of 1 May, so its true
-//     ex-day is the Wednesday before. It sells 120 that day, inside its
-//     record window of two to four business days: it rates nothing.
+//     QIT3 pays on Monday 4 May, after the holiday of 1 May, so its lag
+//     steps over the holiday to its true ex-day, the Wednesday before. A
+//     sale of 120 on that day still earns the payment: it rates on 340.
 //   - QADU, a receipt by its name whose share is unknown, quoted in
 //     dollars, has no record day: trimmed to half 60 days before its pay
 //     day and paid on all, it rates nothing under the guard.
@@ -781,7 +781,7 @@ func TestADividendIsPaidOnItsRecordDaysQuantity(t *testing.T) {
 		{"QSPL", yield.RecordLagUSShare.Days, 200, 200, 0.6}, {"QBUY", yield.RecordLagUSShare.Days, 200, 0, 0},
 		{"QFRESH", yield.RecordLagUSShare.Days, 200, 0, 0},
 		{"QDER", yield.RecordLagEuropeanReceipt.Days, 300, 300, 0},
-		{"QIT2", 2, 200, 300, 1.0}, {"QIT3", 4, 220, 220, 0}, {"QADU", 0, 200, 0, 0},
+		{"QIT2", 2, 200, 300, 1.0}, {"QIT3", 5, 220, 340, 1.0}, {"QADU", 0, 200, 0, 0},
 	} {
 		k := yield.HoldingKey{Source: "src", Account: "B1", PositionKey: c.iid}
 		if c.iid == "QFRESH" {
