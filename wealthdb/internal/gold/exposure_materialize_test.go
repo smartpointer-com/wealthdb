@@ -232,28 +232,19 @@ func TestFirstHoldingsAtCountsCash(t *testing.T) {
 	}
 }
 
-// 0127, 0130, 0131 and 0133 each replay safely. 0133 re-creates
-// web_exposure last, and 0137 the look-through 0131 re-creates, so they
-// are replayed after an earlier one, as Migrate would.
+// 0127, 0130, 0131 and 0133 each replay safely, and forward to the head
+// web_exposure.
 func TestMigrations0127To0133DDLAreRerunnable(t *testing.T) {
 	t.Parallel()
-	for _, replay := range [][]string{
-		{"0127_exposure_dashboard.sql", "0131_exposure_unknown.sql", "0133_deterministic_labels.sql",
-			"0137_exposure_yield_views.sql"},
-		{"0130_exposure_filters.sql", "0131_exposure_unknown.sql", "0133_deterministic_labels.sql",
-			"0137_exposure_yield_views.sql"},
-		{"0131_exposure_unknown.sql", "0133_deterministic_labels.sql", "0137_exposure_yield_views.sql"},
-		{"0133_deterministic_labels.sql"},
-	} {
-		t.Run(replay[0], func(t *testing.T) {
+	for _, file := range []string{"0127_exposure_dashboard.sql", "0130_exposure_filters.sql",
+		"0131_exposure_unknown.sql", "0133_deterministic_labels.sql"} {
+		t.Run(file, func(t *testing.T) {
 			t.Parallel()
 			db, ctx := openExposureFixture(t)
 			if _, err := MaterializeExposure(ctx, db, exAsOf, 1); err != nil {
 				t.Fatal(err)
 			}
-			for _, file := range replay {
-				rerunMigrationDDL(t, db, ctx, file)
-			}
+			rerunMigrationDDL(t, db, ctx, file)
 			var n int
 			if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure WHERE size = 'unknown'`).Scan(&n); err != nil ||
 				n == 0 {

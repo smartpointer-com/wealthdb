@@ -38,9 +38,7 @@
       "held_from": "2026-06-30",
       "held_to": null,
       "compositions": [],
-      "wants": [
-        "characteristics"
-      ],
+      "wants": [],
       "facts": {}
     },
     {

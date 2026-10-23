@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/loader"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
@@ -213,3 +215,84 @@ func TestLoadRefdataYieldFacts(t *testing.T) {
 		}
 	}
 }
+
+// A refdata run that writes an old period and a later day reaches only
+// those: the window bounds each kind on its own span, so the load neither
+// deletes nor re-emits the compositions and other facts dated between
+// the old period and the newest day. A kind the run does not write has
+// no span, and the load leaves its tables alone: run 1's security and
+// its fact stay as they are.
+func TestLoadRefdataBoundsEachKindToItsSpan(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	silverPath, s := newSilver(t, "../silver/refdata/testdata/silver_schema.sql")
+	const (
+		run1, run2   = 1_790_000_000, 1_790_100_000
+		dOld, d1, d2 = 1_261_526_400, 1_767_139_200, 1_769_817_600 // 2009-12-23, 2025-12-31, 2026-01-31
+	)
+	silvertest.Exec(t, s, `INSERT INTO dump_runs VALUES (?, 2, '/x/1', ?)`, run1, run1+5)
+	silvertest.Exec(t, s, `INSERT INTO compositions (fund_ref, as_of, basis, provider, source_kind, line_count, run_at)
+	    VALUES ('isin:XX0000000001', ?, 'holdings', 'ishares', 'daily_file', 1, ?)`, d1, run1)
+	silvertest.Exec(t, s, `INSERT INTO lines (fund_ref, as_of, basis, line_no, cusip, name, weight)
+	    VALUES ('isin:XX0000000001', ?, 'holdings', 1, '000000001', 'Example Note 2036', '100')`, d1)
+	silvertest.Exec(t, s, `INSERT INTO period_facts (security_key, field, as_of, period_start, provider, value, run_at)
+	    VALUES ('symbol:EXMP', 'cash', ?, '2025-10-01', 'sec-edgar', '100', ?)`, d1, run1)
+	silvertest.Exec(t, s, `INSERT INTO securities (security_key, as_of, provider, isin, ticker, name, run_at)
+	    VALUES ('symbol:EXMP', ?, 'openfigi', 'XX0000000002', 'EXMP', 'Example Corp', ?)`, d1, run1)
+	silvertest.Exec(t, s, `INSERT INTO security_facts (security_key, field, as_of, provider, value, scheme, run_at)
+	    VALUES ('symbol:EXMP', 'sic', ?, 'sec-edgar', '3571', 'sic', ?)`, d1, run1)
+
+	g, err := gold.OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	ld := loader.New(g)
+	spec := loader.SourceSpec{ID: "ref", Kind: "refdata", Path: silverPath}
+	if _, err := ld.Load(ctx, spec); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Run 2 writes an old period fact and a later day's composition: one
+	// window over both would delete and re-emit run 1's d1 composition and
+	// its line and its d1 period fact too.
+	silvertest.Exec(t, s, `INSERT INTO dump_runs VALUES (?, 2, '/x/2', ?)`, run2, run2+5)
+	silvertest.Exec(t, s, `INSERT INTO period_facts (security_key, field, as_of, period_start, provider, value, run_at)
+	    VALUES ('symbol:EXMP', 'cash', ?, '2009-09-24', 'sec-edgar', '90', ?)`, dOld, run2)
+	silvertest.Exec(t, s, `INSERT INTO compositions (fund_ref, as_of, basis, provider, source_kind, line_count, run_at)
+	    VALUES ('isin:XX0000000001', ?, 'holdings', 'ishares', 'daily_file', 0, ?)`, d2, run2)
+	res, err := ld.Load(ctx, spec)
+	if err != nil {
+		t.Fatalf("second Load: %v", err)
+	}
+	if res.SnapshotsLoaded != 2 {
+		t.Errorf("second load wrote %d reference rows, want the old period fact and the d2 composition", res.SnapshotsLoaded)
+	}
+	if span, ok := res.Window.SpanOf(canonical.RefFundDays); !ok || span != (canonical.Span{Start: d2, End: d2}) {
+		t.Errorf("fund-days span = %+v (%v), want d2 alone", span, ok)
+	}
+	if span, ok := res.Window.SpanOf(canonical.RefPeriodFacts); !ok || span != (canonical.Span{Start: dOld, End: dOld}) {
+		t.Errorf("period facts span = %+v (%v), want the old period alone", span, ok)
+	}
+	for _, kind := range []string{canonical.RefSecurities, canonical.RefSecurityFacts} {
+		if res.Window.Changes(kind) {
+			t.Errorf("%s changes in the second load", kind)
+		}
+	}
+	for q, want := range map[string]int{
+		`SELECT COUNT(*) FROM fund_compositions`:                               2,
+		`SELECT COUNT(*) FROM fund_compositions WHERE as_of = ` + itoa(d1):     1,
+		`SELECT COUNT(*) FROM fund_lines WHERE as_of = ` + itoa(d1):            1,
+		`SELECT COUNT(*) FROM security_period_facts`:                           2,
+		`SELECT COUNT(*) FROM security_period_facts WHERE as_of = ` + itoa(d1): 1,
+		`SELECT COUNT(*) FROM security_identities`:                             1,
+		`SELECT COUNT(*) FROM security_facts`:                                  1,
+	} {
+		if n := goldCount(t, g, q); n != want {
+			t.Errorf("%s = %d, want %d", q, n, want)
+		}
+	}
+}
+
+// itoa formats an instant for a query.
+func itoa(n int64) string { return strconv.FormatInt(n, 10) }

@@ -13,13 +13,16 @@ fine; bronze is private and already full of it.
 from __future__ import annotations
 
 import html
+import io
 import json
 import logging
 import re
 import sys
 import unittest
 from unittest import mock
+import urllib.error
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -552,6 +555,99 @@ class HttpTraceTest(unittest.TestCase):
                 t.record("GET", "https://x.invalid/b", status=200)
         finally:
             path.parent.chmod(0o700)
+
+
+class _UrlopenResp:
+    """What urlopen hands back: a context manager with a status, headers
+    and a body."""
+
+    def __init__(self, body: bytes, headers=None):
+        self.status, self.headers, self._body = 200, headers or {}, body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class TracedGetTest(unittest.TestCase):
+    """The urllib GET a REST collector makes: every exchange traced, every
+    error re-raised. urlopen is stubbed; nothing leaves the machine."""
+
+    URL = "https://x.invalid/series?id=EXMP&api_key=SECRET123"
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.run = Path(self._tmp.name)
+        self.trace = debugcap.HttpTrace(self.run, log=log)
+        self.asked = []
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _lines(self):
+        p = self.run / debugcap.SCREENSHOTS_DIR / debugcap.HttpTrace.FILENAME
+        return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
+
+    def _get(self, answer):
+        def urlopen(req, timeout=None):
+            self.asked.append((req, timeout))
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        with mock.patch.object(urllib.request, "urlopen", urlopen):
+            return debugcap.traced_get(self.URL, user_agent="wealthdb-test/1",
+                                       timeout=7, trace=self.trace)
+
+    def test_a_200_returns_its_body_and_is_traced(self):
+        body = self._get(_UrlopenResp(b'{"ok": 1}', headers={
+            "Content-Type": "application/json"}))
+        self.assertEqual(body, b'{"ok": 1}')
+        ((req, timeout),) = self.asked
+        self.assertEqual((req.full_url, req.get_header("User-agent"), timeout),
+                         (self.URL, "wealthdb-test/1", 7))
+        (e,) = self._lines()
+        self.assertEqual((e["method"], e["status"], e["bytes"]), ("GET", 200, 9))
+        self.assertIn("elapsed_ms", e)
+        self.assertEqual(e["headers"], {"content-type": "application/json"})
+        self.assertIn("id=EXMP", e["url"])
+
+    def test_an_http_error_is_traced_with_its_status_and_reraised_unread(self):
+        err = urllib.error.HTTPError(self.URL, 429, "Too Many Requests",
+                                     hdrs={"Retry-After": "30"},
+                                     fp=io.BytesIO(b"slow down"))
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self._get(err)
+        self.assertIs(caught.exception, err)
+        # The body is the caller's to log.
+        self.assertEqual(err.read(), b"slow down")
+        (e,) = self._lines()
+        self.assertEqual((e["status"], e["error"]), (429, "Too Many Requests"))
+        self.assertEqual(e["headers"], {"retry-after": "30"})
+        self.assertNotIn("bytes", e)
+
+    def test_a_transport_fault_is_traced_without_a_status_and_reraised(self):
+        with self.assertRaises(urllib.error.URLError):
+            self._get(urllib.error.URLError("no route to host"))
+        with self.assertRaises(urllib.error.URLError):
+            self._get(urllib.error.URLError(f"cannot reach {self.URL}"))
+        first, quoting = self._lines()
+        self.assertNotIn("status", first)
+        self.assertEqual(first["error"], "URLError: <urlopen error no route to host>")
+        self.assertIn("elapsed_ms", first)
+        # A URL the message quotes is masked as the URL field is.
+        self.assertIn("cannot reach https://x.invalid/series?id=EXMP", quoting["error"])
+        self.assertNotIn("SECRET", json.dumps(quoting))
+
+    def test_a_disabled_trace_still_gets(self):
+        self.trace = debugcap.HttpTrace(None, log=log)
+        self.assertEqual(self._get(_UrlopenResp(b"x")), b"x")
+        self.assertEqual(self._lines(), [])
 
 
 class CapturePageTest(unittest.TestCase):

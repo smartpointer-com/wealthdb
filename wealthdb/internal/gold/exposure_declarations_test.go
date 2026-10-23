@@ -216,13 +216,7 @@ func TestExposureDeclarationLeavesTheRest(t *testing.T) {
 func TestMigration0128DDLIsRerunnable(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
-	// 0129, 0131, 0133 and 0137 re-create the look-through and its
-	// views, so they are replayed after 0128, as Migrate would.
 	rerunMigrationDDL(t, db, ctx, "0128_exposure_declarations.sql")
-	rerunMigrationDDL(t, db, ctx, "0129_exposure_situs.sql")
-	rerunMigrationDDL(t, db, ctx, "0131_exposure_unknown.sql")
-	rerunMigrationDDL(t, db, ctx, "0133_deterministic_labels.sql")
-	rerunMigrationDDL(t, db, ctx, "0137_exposure_yield_views.sql")
 	if _, err := SyncExposure(ctx, db, exposureFixtureRows()); err != nil {
 		t.Fatal(err)
 	}

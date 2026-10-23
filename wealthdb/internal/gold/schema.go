@@ -37,7 +37,9 @@ var migrationsFS embed.FS
 // earlier seed inserts (0111 deletes five that 0069 seeds), and
 // replaying the seed brings the row back. A rerun test of such a seed
 // therefore replays the later migration after it, as Migrate would,
-// before it asserts anything about the current schema.
+// before it asserts anything about the current schema. A replayed macro
+// or view a later migration re-issues is back at its older body too:
+// the tests' rerun replays every such later migration after it.
 //
 // The CHECK-widening rename-swap migrations (0007-0011, 0013-0018,
 // 0033-0037, 0053, 0107, 0109, 0125) are exempt and deliberately carry no rerun

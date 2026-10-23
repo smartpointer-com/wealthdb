@@ -476,19 +476,10 @@ func TestTransactionsCarriesTheCashflowTrio(t *testing.T) {
 func TestMigration0082DDLIsRerunnable(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)
-	rerunMigrationDDL(t, db, ctx, "0082_report_cashflow.sql")
-	// Replaying a SUPERSEDED migration is a downgrade, not a no-op:
 	// 0082 puts report_cashflow_summary back at its own 14-column shape,
-	// and CashflowSummary below scans the CURRENT one positionally.
-	// Replay forward, exactly as Migrate would — and extend this list
-	// when another migration re-issues the macro.
-	for _, later := range []string{
-		"0083_cashflow_reconciliation.sql",             // the memo
-		"0086_cashflow_operating_columns.sql",          // the operating halves, the memo's flow term
-		"0099_report_transactions_instrument_hint.sql", // report_transactions
-	} {
-		rerunMigrationDDL(t, db, ctx, later)
-	}
+	// and CashflowSummary below scans the current one positionally: the
+	// rerun replays forward to it, as Migrate would.
+	rerunMigrationDDL(t, db, ctx, "0082_report_cashflow.sql")
 	rows, err := CashflowSummary(ctx, db, 0, 3500000, "USD", "total")
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("the replayed summary returned %d rows: %v", len(rows), err)
@@ -761,11 +752,10 @@ func TestMigration0083DDLIsRerunnable(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedBalanceSpine(t, db, ctx, 10000, 12150)
 	seedReportFixture(t, db, ctx)
+	// 0083 puts both macros back at their pre-0086 shape, and
+	// CashflowSummary scans the current one positionally: the rerun
+	// replays forward to it, as Migrate would.
 	rerunMigrationDDL(t, db, ctx, "0083_cashflow_reconciliation.sql")
-	// A downgrade, not a no-op: 0083 puts both macros back at their
-	// pre-0086 shape and CashflowSummary scans the CURRENT one
-	// positionally. Replay forward, exactly as Migrate would.
-	rerunMigrationDDL(t, db, ctx, "0086_cashflow_operating_columns.sql")
 	if rows, err := CashflowSummary(ctx, db, 172800, 3500000, "USD", "total"); err != nil || len(rows) != 1 {
 		t.Fatalf("the replayed summary returned %d rows: %v", len(rows), err)
 	}
@@ -860,11 +850,15 @@ func TestWebCashflowIsLineGrainAndReadyToDraw(t *testing.T) {
 }
 
 // TestMigration0084DDLIsRerunnable holds the serving view to the replay
-// bar: one OR REPLACE VIEW.
+// bar: one OR REPLACE VIEW. Replayed forward, it reads the serving table
+// that migration 0132 adds and the materialize pass fills.
 func TestMigration0084DDLIsRerunnable(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)
 	rerunMigrationDDL(t, db, ctx, "0084_web_cashflow.sql")
+	if _, err := MaterializeServingTables(ctx, db); err != nil {
+		t.Fatal(err)
+	}
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_cashflow`).Scan(&n); err != nil {
 		t.Fatalf("web_cashflow after replay: %v", err)

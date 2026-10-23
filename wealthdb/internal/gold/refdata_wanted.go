@@ -131,7 +131,8 @@ type heldInstrument struct {
 // read-only before the exposure migrations reached it has no reference
 // or exposure tables yet, and one before migration 0134 no fact tables;
 // it is read as holding none, so the first fetch can run before the
-// first load.
+// first load. One before migration 0140 reads each source's newest
+// snapshot as every account's (heldInstruments).
 func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, error) {
 	held, err := heldInstruments(ctx, db, now)
 	if err != nil {
@@ -172,7 +173,9 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 
 	funds := map[string]*WantedFund{}
 	spans := map[string]*span{}
-	classes := map[string][]string{}
+	// classes are the asset classes each held fund's holdings state, and
+	// fund says one of them is a fund, not a structured product.
+	classes, fund := map[string][]string{}, map[string]bool{}
 	securities := map[string]*WantedSecurity{}
 	stocks := map[string]bool{}
 	for _, h := range held {
@@ -186,6 +189,7 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 			fillIDs(&f.ISIN, &f.CUSIP, &f.Symbol, &f.Name, &f.Currency, h)
 			spans[ref].add(span{from: h.firstAt, to: h.lastAt, open: h.open, set: true})
 			classes[ref] = append(classes[ref], h.assetClass)
+			fund[ref] = fund[ref] || h.vehicle != "structured_product"
 		case h.vehicle == "stock" || h.vehicle == "bond":
 			s := securities[ref]
 			if s == nil {
@@ -240,7 +244,7 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		if f.Compositions == nil {
 			f.Compositions = []string{}
 		}
-		f.Wants = fundWants(f, classes[ref])
+		f.Wants = fundWants(f, classes[ref], fund[ref])
 	}
 	for key, s := range securities {
 		s.Periods = periods[key]
@@ -306,8 +310,8 @@ func fillFromKey(key string, isin, cusip, symbol **string) {
 // instrument. It is still held when its account's latest active snapshot
 // (pos_active_at at the open end, migration 0140) lists it and its source
 // was observed within stillHeldDays of now; a source that stopped
-// reporting ends it at its last snapshot. A gold before migration 0140
-// reads its source's newest snapshot as every account's.
+// reporting ends it at its last snapshot. Before migration 0140, a
+// source's newest snapshot is every account's.
 func heldInstruments(ctx context.Context, db *sql.DB, now time.Time) ([]heldInstrument, error) {
 	active := `SELECT src, acct, snap FROM pos_active_at([` + latestArg + `])`
 	if perAccount, err := hasFunction(ctx, db, "pos_active_at"); err != nil {
@@ -591,12 +595,14 @@ var moneyMarketFields = []string{"seven_day_yield", "seven_day_gross_yield", "we
 	"weighted_average_life"}
 
 // fundWants are the facts a fund is wanted for, by the asset classes its
-// holdings state. A fund wanted only as a proxy, a reference or size
-// fund, or a held fund's underlying wants none. A bond fund with no
-// composition yet wants its lines' durations too.
-func fundWants(f *WantedFund, classes []string) []string {
+// holdings state; fund says one of them holds it as a fund. A fund wanted
+// only as a proxy, a reference or size fund, or a held fund's underlying
+// wants none, and so does a structured product: no filing or issuer page
+// states them for a note. A bond fund with no composition yet wants its
+// lines' durations too.
+func fundWants(f *WantedFund, classes []string, fund bool) []string {
 	wants := []string{}
-	if !slices.Contains(f.Roles, "held") {
+	if !slices.Contains(f.Roles, "held") || !fund {
 		return wants
 	}
 	of := func(cs ...string) bool {

@@ -412,14 +412,6 @@ func TestPositionsCarryTheCostBasis(t *testing.T) {
 func TestMigration0116DDLIsRerunnable(t *testing.T) {
 	db, ctx := openGainsFixture(t)
 	rerunMigrationDDL(t, db, ctx, "0116_gains_reports.sql")
-	// 0117 to 0121 and 0133 re-issue its macros, as Migrate would
-	// apply them.
-	rerunMigrationDDL(t, db, ctx, "0117_gains_dashboard.sql")
-	rerunMigrationDDL(t, db, ctx, "0118_lot_engine.sql")
-	rerunMigrationDDL(t, db, ctx, "0119_gains_one_pass.sql")
-	rerunMigrationDDL(t, db, ctx, "0120_gains_held_sold.sql")
-	rerunMigrationDDL(t, db, ctx, "0121_private_exits.sql")
-	rerunMigrationDDL(t, db, ctx, "0133_deterministic_labels.sql")
 	rows, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", GainsAll, lots.MissingIgnore)
 	if err != nil || len(rows) != 1 || !near(num(t, rows[0].Gain), 365) {
 		t.Errorf("after replay: rows %v err %v", rows, err)

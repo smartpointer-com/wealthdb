@@ -10,6 +10,7 @@ to its exit code.
 from __future__ import annotations
 
 import urllib.parse
+import urllib.request
 
 import pytest
 
@@ -31,7 +32,7 @@ def test_check_asks_the_ecb_for_one_observation_and_the_snb_its_update(
         monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     portals = FakePortals()
-    monkeypatch.setattr(download.urllib.request, "urlopen", portals)
+    monkeypatch.setattr(urllib.request, "urlopen", portals)
     assert download.check() == 0
     ecb, snb = map(urllib.parse.urlsplit, portals.urls)
     assert ecb.path.endswith(".SV_C_YM.SR_10Y")
@@ -43,7 +44,7 @@ def test_check_asks_the_ecb_for_one_observation_and_the_snb_its_update(
 def test_a_failing_portal_fails_the_check(monkeypatch):
     for failing in ("ecb", "snb"):
         portals = FakePortals(failing={failing})
-        monkeypatch.setattr(download.urllib.request, "urlopen", portals)
+        monkeypatch.setattr(urllib.request, "urlopen", portals)
         assert download.check() == 1
         assert len(portals.urls) == 2   # the other portal is still asked
 
@@ -54,19 +55,19 @@ def test_a_failing_portal_fails_the_check(monkeypatch):
 ])
 def test_an_ecb_answer_without_an_observation_fails_the_check(monkeypatch,
                                                                bodies):
-    monkeypatch.setattr(download.urllib.request, "urlopen",
+    monkeypatch.setattr(urllib.request, "urlopen",
                         FakePortals(bodies=bodies))
     assert download.check() == 1
 
 
 def test_an_snb_update_without_its_date_fails_the_check(monkeypatch):
-    monkeypatch.setattr(download.urllib.request, "urlopen",
+    monkeypatch.setattr(urllib.request, "urlopen",
                         FakePortals(published=""))
     assert download.check() == 1
 
 
 def test_main_check_writes_nothing(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(download.urllib.request, "urlopen", FakePortals())
+    monkeypatch.setattr(urllib.request, "urlopen", FakePortals())
     assert download.main(["--check"]) == 0
     assert not list(tmp_path.iterdir())

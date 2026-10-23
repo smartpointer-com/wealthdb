@@ -203,3 +203,26 @@ func TestPayloadLEI(t *testing.T) {
 		}
 	}
 }
+
+// TestEveryReferenceTableHasAKind pins that a load's windowed delete clears
+// each reference table over the span the stream re-emits it over: every
+// table names its kind of record but rate_observations, which the rate
+// streams write and the window takes whole.
+func TestEveryReferenceTableHasAKind(t *testing.T) {
+	kinds := map[string]bool{}
+	for _, k := range canonical.RefKinds {
+		kinds[k] = true
+	}
+	for _, table := range ReferenceTables {
+		kind, ok := ReferenceTableKinds[table]
+		switch {
+		case table == "rate_observations" && ok:
+			t.Errorf("rate_observations names kind %q, want none", kind)
+		case table != "rate_observations" && !kinds[kind]:
+			t.Errorf("%s names kind %q, want one of the reference kinds", table, kind)
+		}
+	}
+	if len(ReferenceTableKinds) != len(ReferenceTables)-1 {
+		t.Errorf("ReferenceTableKinds has %d tables, ReferenceTables %d", len(ReferenceTableKinds), len(ReferenceTables))
+	}
+}

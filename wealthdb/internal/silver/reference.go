@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -38,6 +39,29 @@ var ReferenceTables = []string{"compositions", "lines", "attributes", "counterpa
 // ReferenceYieldTables are the tables schema v2 adds: the last three of
 // the list above.
 var ReferenceYieldTables = []string{"fund_risk", "characteristics", "period_facts"}
+
+// ReferenceTableKinds names the kind of record each reference table's
+// rows are (canonical.Window.Spans). A fund's tables, lines among them,
+// are its fund-days; each security table is a kind of its own.
+var ReferenceTableKinds = map[string]string{
+	"compositions": canonical.RefFundDays, "lines": canonical.RefFundDays,
+	"attributes": canonical.RefFundDays, "counterparties": canonical.RefFundDays,
+	"fund_risk": canonical.RefFundDays, "characteristics": canonical.RefFundDays,
+	"securities": canonical.RefSecurities, "security_facts": canonical.RefSecurityFacts,
+	"period_facts": canonical.RefPeriodFacts,
+}
+
+// ReferenceRunTables are the reference tables whose rows carry run_at,
+// in the order of the list above: every one but lines, whose rows belong
+// to their composition's fund-day and run. The tables of schema v2 join
+// where yield says the file holds them.
+func ReferenceRunTables(yield bool) []string {
+	tables := ReferenceTables
+	if yield {
+		tables = slices.Concat(ReferenceTables, ReferenceYieldTables)
+	}
+	return slices.DeleteFunc(slices.Clone(tables), func(t string) bool { return t == "lines" })
+}
 
 // ReferenceLineYieldColumns are the lines columns schema v2 adds, in the
 // order readLines scans them.
@@ -82,8 +106,9 @@ type referenceStream struct {
 	secs, facts, periods keyset
 }
 
-// NewReferenceStream streams the reference rows whose as_of lies in w.
-// Nothing is read for a window without changes.
+// NewReferenceStream streams the reference rows whose as_of lies in w,
+// each kind of record over its own span of w (canonical.Window.SpanOf).
+// Nothing is read for a window without changes, nor for a kind without.
 func NewReferenceStream(ctx context.Context, db *sql.DB, w canonical.Window) (SnapshotStream, error) {
 	if !w.HasChanges {
 		return NewSnapshotStream(nil), nil
@@ -98,23 +123,27 @@ func NewReferenceStream(ctx context.Context, db *sql.DB, w canonical.Window) (Sn
 	}
 	s := &referenceStream{db: db, w: w, yield: yield,
 		lineYieldSelect: strings.Repeat(", NULL", len(ReferenceLineYieldColumns)),
-		secs:            keyset{after: []any{"", int64(-1), ""}},
-		facts:           keyset{after: []any{"", "", int64(-1), ""}},
-		periods:         keyset{after: []any{"", "", int64(-1), "", ""}, done: !yield}}
+		secs:            keyset{after: []any{"", int64(-1), ""}, done: !w.Changes(canonical.RefSecurities)},
+		facts:           keyset{after: []any{"", "", int64(-1), ""}, done: !w.Changes(canonical.RefSecurityFacts)},
+		periods: keyset{after: []any{"", "", int64(-1), "", ""},
+			done: !yield || !w.Changes(canonical.RefPeriodFacts)}}
 	if hasLineYield {
 		s.lineYieldSelect = ", " + strings.Join(ReferenceLineYieldColumns, ", ")
 	}
-	q := `
-SELECT fund_ref, as_of FROM compositions   WHERE as_of BETWEEN ?1 AND ?2
-UNION SELECT fund_ref, as_of FROM attributes     WHERE as_of BETWEEN ?1 AND ?2
-UNION SELECT fund_ref, as_of FROM counterparties WHERE as_of BETWEEN ?1 AND ?2`
-	if yield {
-		q += `
-UNION SELECT fund_ref, as_of FROM fund_risk       WHERE as_of BETWEEN ?1 AND ?2
-UNION SELECT fund_ref, as_of FROM characteristics WHERE as_of BETWEEN ?1 AND ?2`
+	days, ok := w.SpanOf(canonical.RefFundDays)
+	if !ok {
+		return s, nil
 	}
-	rows, err := db.QueryContext(ctx, q+`
-ORDER BY 2, 1`, w.Start, w.End)
+	// The fund-days are those a fund-day table's rows name; a line's is
+	// its composition's.
+	var parts []string
+	for _, t := range ReferenceRunTables(yield) {
+		if ReferenceTableKinds[t] == canonical.RefFundDays {
+			parts = append(parts, "SELECT fund_ref, as_of FROM "+t+" WHERE as_of BETWEEN ?1 AND ?2")
+		}
+	}
+	rows, err := db.QueryContext(ctx, strings.Join(parts, "\nUNION ")+`
+ORDER BY 2, 1`, days.Start, days.End)
 	if err != nil {
 		return nil, fmt.Errorf("reference fund-days: %w", err)
 	}
@@ -130,6 +159,13 @@ ORDER BY 2, 1`, w.Start, w.End)
 }
 
 func (s *referenceStream) Close() error { return nil }
+
+// span is the span the window's records of kind change over; a kind
+// without changes has its keyset done before any read.
+func (s *referenceStream) span(kind string) canonical.Span {
+	span, _ := s.w.SpanOf(kind)
+	return span
+}
 
 func (s *referenceStream) Next(ctx context.Context) (canonical.SnapshotBatch, bool, error) {
 	var b canonical.SnapshotBatch
@@ -368,7 +404,7 @@ SELECT provider, field, label, value, payload
 // readSecurities reads the next page of the window's security
 // identities. The keys are gold's own, so they pass through as written.
 func (s *referenceStream) readSecurities(ctx context.Context) ([]canonical.SecurityChange, error) {
-	return readPage(ctx, s.db, s.w, ReferenceTailBudget, "reference securities", `
+	return readPage(ctx, s.db, s.span(canonical.RefSecurities), ReferenceTailBudget, "reference securities", `
 SELECT security_key, as_of, provider, isin, cusip, figi, lei, ticker, exchange, name,
        security_type, listing_currency, payload
   FROM securities
@@ -397,7 +433,7 @@ SELECT security_key, as_of, provider, isin, cusip, figi, lei, ticker, exchange, 
 
 // readFacts reads the next page of the window's security facts.
 func (s *referenceStream) readFacts(ctx context.Context) ([]canonical.SecurityFactChange, error) {
-	return readPage(ctx, s.db, s.w, ReferenceTailBudget, "reference security facts", `
+	return readPage(ctx, s.db, s.span(canonical.RefSecurityFacts), ReferenceTailBudget, "reference security facts", `
 SELECT security_key, field, as_of, provider, value, scheme, payload
   FROM security_facts
  WHERE as_of BETWEEN ? AND ? AND (security_key, field, as_of, provider) > (?, ?, ?, ?)
@@ -422,7 +458,7 @@ SELECT security_key, field, as_of, provider, value, scheme, payload
 // value that is no decimal, or a period start that is no date, fails the
 // load: gold holds neither without one.
 func (s *referenceStream) readPeriodFacts(ctx context.Context) ([]canonical.SecurityPeriodFactChange, error) {
-	return readPage(ctx, s.db, s.w, ReferenceTailBudget, "reference period facts", `
+	return readPage(ctx, s.db, s.span(canonical.RefPeriodFacts), ReferenceTailBudget, "reference period facts", `
 SELECT security_key, field, as_of, period_start, provider, value, scheme, unit,
        fiscal_year, fiscal_period, form, filed, payload
   FROM period_facts

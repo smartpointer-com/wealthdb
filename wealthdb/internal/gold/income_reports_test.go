@@ -443,19 +443,10 @@ func TestMigration0071DDLIsRerunnable(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedIncomeReportFixture(t, db, ctx)
 
+	// 0071 puts report_transactions back at its own 27-column shape, and
+	// TransactionsBetween below scans the current one positionally: the
+	// rerun replays forward to it, as Migrate would.
 	rerunMigrationDDL(t, db, ctx, "0071_report_income.sql")
-	// Replaying a SUPERSEDED migration is a downgrade, not a no-op:
-	// 0071 puts report_transactions back at its own 27-column shape,
-	// and TransactionsBetween below scans the CURRENT one positionally.
-	// Replay forward, exactly as Migrate would — and extend this list
-	// when another migration re-issues the macro.
-	for _, later := range []string{
-		"0075_transactions_check_number.sql",           // the check_number column
-		"0082_report_cashflow.sql",                     // the cashflow trio
-		"0099_report_transactions_instrument_hint.sql", // the instrument hint
-	} {
-		rerunMigrationDDL(t, db, ctx, later)
-	}
 
 	for _, macro := range []string{
 		"report_income_summary(0, 5000, 'USD', 'total')",

@@ -1192,19 +1192,6 @@ func TestMigration0042DDLIsRerunnable(t *testing.T) {
 	if n != 1 {
 		t.Errorf("web_transactions.account_kind columns = %d, want 1", n)
 	}
-	// Replaying a SUPERSEDED migration is a downgrade, not a no-op: it
-	// puts every object it defines back at its own version, and a view
-	// a later migration built on a later version stops binding until
-	// the chain is replayed forward. So replay the migrations that
-	// redefine these macros, which is what Migrate itself would do —
-	// and extend this list when another one does.
-	for _, later := range []string{
-		"0045_spend_investment.sql",        // spending_lines_base
-		"0059_spend_labels_in_reports.sql", // the label + issuer columns
-	} {
-		rerunMigrationDDL(t, db, ctx, later)
-	}
-
 	// The macros still answer, including the one the re-run replaced
 	// underneath a view that reads it.
 	from, to := spendWindow()

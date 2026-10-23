@@ -295,6 +295,20 @@ def test_debug_traces_the_requests_the_plan_makes(tmp_path, monkeypatch):
     assert [json.loads(ln)["url"] for ln in trace.read_text().splitlines()] == ["https://www.example.com/products.json"]
 
 
+def test_a_run_narrowed_to_one_provider_asks_no_other_source(tmp_path, monkeypatch):
+    # sec-nport finds a fund named by a US ISIN alone through OpenFIGI,
+    # but only in a run that asks openfigi too.
+    configured(monkeypatch, providers=("sec-nport", "openfigi"), contact="a@example.org")
+    https, client = FakeHttps(), fetcher.Client
+    monkeypatch.setattr(download.fetcher, "Client", lambda contact: client(contact, https=https, sleep=lambda s: None))
+    w = write_wanted(tmp_path / "wanted.json", wanted_doc([fund("isin:US0000000001")]))
+    args = ["--bronze-dir", str(tmp_path / "data"), "--wanted", str(w), "--dry-run"]
+    assert download.main([*args, "--provider", "sec-nport"]) == 0
+    assert https.seen == []
+    assert download.main(args) == 0
+    assert "https://api.openfigi.com/v3/mapping" in [r.full_url for r in https.seen]
+
+
 def test_main_exit_codes(tmp_path, monkeypatch):
     def broken(known):
         raise config.ConfigError("refdata.cfg is not valid JSON")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -212,7 +213,7 @@ func TestLoadClock(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if w != (canonical.Window{NewChangeNumber: -1}) {
+		if !reflect.DeepEqual(w, canonical.Window{NewChangeNumber: -1}) {
 			t.Errorf("ChangeWindow(-1) = %+v, want no changes", w)
 		}
 	})
@@ -259,7 +260,7 @@ INSERT INTO transactions VALUES (100), (300);`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if w != c.want {
+		if !reflect.DeepEqual(w, c.want) {
 			t.Errorf("ChangeWindow(%d) = %+v, want %+v", c.since, w, c.want)
 		}
 	}

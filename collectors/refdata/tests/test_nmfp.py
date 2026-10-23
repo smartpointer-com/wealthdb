@@ -7,11 +7,12 @@ from pathlib import Path
 import pytest
 
 import load
+from providers import openfigi
 from providers import sec_nport as nport
 from providers.base import Context, ProviderError, Unavailable
 from providers.sec_nmfp import SecNmfp, parse_nmfp
 from providers.sec_nport import SecNport
-from tests.helpers import FakeClient, go_source, go_strings, silver_db
+from tests.helpers import FakeClient, figi, go_source, go_strings, run_ctx, silver_db
 from wanted import Fund
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -233,3 +234,17 @@ def test_both_sec_fund_providers_read_one_ticker_file():
 
 def test_the_probe_reads_the_fund_ticker_file():
     assert SecNmfp().probe(Context(client=edgar())) == "SEC fund ticker file: 4 tickers"
+
+
+def test_a_fund_named_by_a_us_isin_alone_is_found_through_openfigi_once_for_both_providers():
+    sec = figi(edgar(), {"US0000000001": [
+        {"figi": "BBG000000201", "ticker": "EXMYY", "exchCode": "US", "name": "EXAMPLE MONEY FUND"}]})
+    ctx = run_ctx(sec)
+    fund = Fund(ref="isin:US0000000001", isin="US0000000001", wants=("money_market",))
+    claim = SecNmfp().claim(fund, ctx)
+    assert (claim["ref"], claim["symbol"], claim["class"]) == ("isin:US0000000001", "EXMYY", "C000000002")
+    assert SecNport().claim(fund, ctx)["series"] == "S000000001"
+    assert sec.urls().count(openfigi.API) == 1
+    # A fund that wants no money-market figures is not looked up for them.
+    assert SecNmfp().claim(Fund(ref="isin:US0000000002", isin="US0000000002"), ctx) is None
+    assert sec.urls().count(openfigi.API) == 1

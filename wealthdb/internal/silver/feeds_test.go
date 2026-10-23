@@ -1,6 +1,7 @@
 package silver
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -56,7 +57,7 @@ func TestMergeWindowsSpansTheChangedFeeds(t *testing.T) {
 		"behind":     {[]canonical.Window{{NewChangeNumber: 5}}, canonical.Window{NewChangeNumber: 10}},
 		"late first": {[]canonical.Window{late, early}, canonical.Window{HasChanges: true, Start: 100, End: 500, NewChangeNumber: 900}},
 	} {
-		if got := MergeWindows(10, c.windows); got != c.want {
+		if got := MergeWindows(10, c.windows); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: %+v, want %+v", name, got, c.want)
 		}
 	}

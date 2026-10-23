@@ -80,6 +80,9 @@ func TestMigration0072DDLIsRerunnable(t *testing.T) {
 	seedIncomeReportFixture(t, db, ctx)
 
 	rerunMigrationDDL(t, db, ctx, "0072_web_income.sql")
+	if _, err := MaterializeServingTables(ctx, db); err != nil {
+		t.Fatal(err)
+	}
 
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_income`).Scan(&n); err != nil {
@@ -88,11 +91,11 @@ func TestMigration0072DDLIsRerunnable(t *testing.T) {
 	if n == 0 {
 		t.Error("web_income is empty after a re-run")
 	}
-	// The re-run re-issues 0072's own column set, valued in USD, CHF
-	// and EUR; migration 0114 adds GBP.
+	// Replayed forward, the view is the head's: 0114 adds GBP, and
+	// 0132 the tax wrapper and the serving table it reads.
 	assertMacroProjects(t, db, ctx, "web_income",
 		"occurred_at", "silver_source_id", "account_external_id", "display_name",
-		"account_label", "account_kind", "payer_name", "income_primary",
+		"account_label", "account_kind", "tax_wrapper", "payer_name", "income_primary",
 		"income_detailed", "income_primary_label", "income_label",
-		"provider_income_label", "value_usd", "value_chf", "value_eur")
+		"provider_income_label", "value_usd", "value_chf", "value_eur", "value_gbp")
 }

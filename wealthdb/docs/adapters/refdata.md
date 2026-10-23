@@ -172,10 +172,22 @@ every reference table that has a run: `compositions`, `attributes`,
 composition's run. The clock is the load, not the fetch, so a run
 fetched earlier but loaded later still reaches gold: an import from
 another machine, or a re-parse of kept bronze. A composition for an old
-day that arrives late loads like any other. `Snapshots` re-emits every
-row inside the window, whichever run wrote it, so gold's windowed
-delete leaves the window as silver holds it. A run that wrote nothing
+day that arrives late loads like any other. A run that wrote nothing
 advances the watermark without a window.
+
+Each kind of record has a span of its own within the window:
+
+- the fund-days: a fund's compositions, attributes, counterparties, rate
+  sensitivities and characteristics of one day;
+- the security identities;
+- the security facts;
+- the period facts.
+
+A filing's period facts reach back years. Only they are re-emitted from
+that far back, not every composition since. A kind the runs did not
+write has no span. `Snapshots` re-emits every row of a kind inside its
+span, whichever run wrote it, so gold's windowed delete over that span
+leaves it as silver holds it.
 
 `Snapshots` streams the window (`silver.NewReferenceStream`). A batch
 holds whole fund-days, up to about twenty thousand records. A fund-day
@@ -258,13 +270,15 @@ A fund held (role `held`) wants these facts, in this order:
 | Fact | Wanted by | What it is |
 | --- | --- | --- |
 | `risk_metrics` | a fund of class fixed income or multi asset | its N-PORT filing's rate sensitivities (`fund_risk`) |
-| `characteristics` | every fund held | the figures its issuer's page states: duration, yields, credit quality |
+| `characteristics` | every fund held but a structured product | the figures its issuer's page states: duration, yields, credit quality |
 | `money_market` | a fund of class cash, a money-market fund | its 7-day yields and its weighted average maturity and life |
 | `line_durations` | a fund of class fixed income whose newest composition has no line with a duration or a modified duration | the durations of its lines, which come only with a composition that states them, such as an issuer's holdings file |
 
 The class is the one a holding states. A bond fund with no composition
 yet wants `line_durations` too. A fund that only the roles `proxy`,
-`reference` or `underlying` name wants none of these.
+`reference` or `underlying` name wants none of these, and neither does a
+structured product: no filing or issuer page states them for a note. A
+structured product's composition is still wanted.
 
 `facts` lists the days gold holds for every fund, whatever its role. The
 fund is read through its aliases, as for `compositions`. A collector

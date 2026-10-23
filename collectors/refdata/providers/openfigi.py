@@ -14,6 +14,10 @@ OpenFIGI's mapping API.
   different US symbol. OpenFIGI states no sector and no country. A
   bond's type names its market, and gold reads the bond's sector from
   it. An identifier it does not know is still a lookup.
+- US ticker (us_ticker): the ticker of the US listing an ISIN maps to,
+  so the SEC's providers find a US fund named by its ISIN alone. One job
+  to a request, asked once a run for each ISIN, and only by a run that
+  asks openfigi.
 
 Terms: README.md, openfigi.
 """
@@ -44,6 +48,24 @@ def job(security) -> dict | None:
     if symbol := ident(security, "symbol"):
         return {"idType": "TICKER", "idValue": symbol, "exchCode": "US"}
     return None
+
+
+def mapping(jobs: list, ctx) -> list:
+    """OpenFIGI's results for up to BATCH mapping jobs, one request, in
+    the jobs' order. An answer that is no list of one result per job is
+    an error."""
+    results = ctx.client.post_json(API, jobs).json()
+    if not isinstance(results, list) or len(results) != len(jobs):
+        raise ProviderError(f"{API} answered {len(jobs)} jobs with something else")
+    return results
+
+
+def listing(result: dict) -> tuple[dict, bool]:
+    """The listing a mapping result is read by, and whether it is a US
+    one: its first US listing, else its first; {} where it names none."""
+    data = result.get("data") or []
+    us = next((d for d in data if d.get("exchCode") == "US"), None)
+    return (us, True) if us is not None else (data[0] if data else {}, False)
 
 
 class OpenFigi(Provider):
@@ -86,9 +108,7 @@ class OpenFigi(Provider):
                       if c["key"] not in answers and c["key"] != claim["key"])
             batch = [claim, *itertools.islice(others, BATCH - 1)]
             try:
-                results = ctx.client.post_json(API, [c["job"] for c in batch]).json()
-                if not isinstance(results, list) or len(results) != len(batch):
-                    raise ProviderError(f"{API} answered {len(batch)} jobs with something else")
+                results = mapping([c["job"] for c in batch], ctx)
             except (ProviderError, fetcher.FetchError) as e:
                 for c in batch:
                     answers[c["key"]] = e
@@ -114,12 +134,28 @@ class OpenFigi(Provider):
         return f"OpenFIGI mapping answered {resp.status}"
 
 
+def us_ticker(isin: str, ctx) -> str:
+    """The ticker of the US listing OpenFIGI maps an ISIN to, for a
+    provider that finds a US fund by its ticker. "" where it maps it to
+    no US listing: a local ticker elsewhere could read as a different US
+    symbol. "" too where the run does not ask openfigi (Context.asks).
+    One job in one request, asked once a run for each ISIN; a failed
+    request fails again without a second one (Context.once)."""
+    if not ctx.asks(OpenFigi.name):
+        return ""
+
+    def load():
+        (result,) = mapping([{"idType": "ID_ISIN", "idValue": isin}], ctx)
+        first, us = listing(result or {})
+        return str(first.get("ticker") or "").strip().upper() if us else ""
+    return ctx.once(("openfigi_us_ticker", isin), load)
+
+
 def parse_mapping(doc: dict, key: str, as_of: date, *, provider: str) -> Parsed:
     """One mapping job and its result as an identity row for `key`."""
     j, result = doc.get("job") or {}, doc.get("result") or {}
     data = result.get("data") or []
-    first = next((d for d in data if d.get("exchCode") == "US"), data[0] if data else {})
-    us = first.get("exchCode") == "US"
+    first, us = listing(result)
     return Parsed(securities=[row(
         "securities", security_key=key, as_of=as_of, provider=provider,
         isin=j.get("idValue") if j.get("idType") == "ID_ISIN" else None,

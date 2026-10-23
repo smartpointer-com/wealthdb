@@ -1,11 +1,11 @@
 """
 sec-nmfp: US money-market funds, from their N-MFP filings on SEC EDGAR.
 
-- Claim: a fund that wants money-market figures (`money_market`), by its
-  US ticker (none for another country's ISIN), looked up in the SEC's
-  ticker file for funds (company_tickers_mf.json: CIK, series and class
-  per ticker), as sec-nport finds a fund. A series that files no N-MFP
-  is no money-market fund and is not claimed.
+- Claim: a fund that wants money-market figures (`money_market`), found
+  as sec-nport finds it: by its US ticker in the SEC's ticker file for
+  funds (company_tickers_mf.json: CIK, series and class per ticker), or
+  by the ticker OpenFIGI names for a US ISIN alone. A series that files
+  no N-MFP is no money-market fund and is not claimed.
 - Dates: the report date of every N-MFP2 and N-MFP3 filing of the
   series, an amendment winning over the filing it amends. The series'
   filing lists (EDGAR's browse feed, one per form) name the filings; the

@@ -6,7 +6,9 @@ EDGAR.
   up in the SEC's ticker file for funds (company_tickers_mf.json: CIK,
   series and class per ticker). A ticker missing there (a UIT ETF has no
   series) is looked up in the company ticker file instead, which gives
-  the registrant's CIK alone.
+  the registrant's CIK alone. A fund named by a US ISIN alone takes the
+  ticker of the US listing OpenFIGI maps it to, where the run asks
+  openfigi too (openfigi.us_ticker).
 - Dates: the period of every NPORT-P filing of the series. The series'
   filing list (EDGAR's browse feed) names the filings; the registrant's
   submissions file gives each filing's report date, its older pages read
@@ -49,9 +51,9 @@ from pathlib import Path
 from collectorkit import bronze, compress
 from collectorkit.parse import iso_date
 
-from . import table
-from .base import (Parsed, Provider, ProviderError, Unavailable, blank_to_none, dec, present, read_bytes, read_meta,
-                   row, us_symbol, write_meta)
+from . import openfigi, table
+from .base import (Parsed, Provider, ProviderError, Unavailable, blank_to_none, dec, ident, present, read_bytes,
+                   read_meta, row, us_symbol, write_meta)
 
 FUND_TICKERS = "https://www.sec.gov/files/company_tickers_mf.json"
 COMPANY_TICKERS = "https://www.sec.gov/files/company_tickers.json"
@@ -120,8 +122,12 @@ class SecNport(Provider):
         """The fund's US ticker and its entry in the SEC's ticker file for
         funds ({cik, series, class}): "" and None for a fund with no US
         ticker, as EDGAR's fund filings cover US funds only
-        (base.us_symbol); the entry None for a ticker the file lacks."""
-        symbol = us_symbol(fund)
+        (base.us_symbol); the entry None for a ticker the file lacks. A
+        fund with no ticker and a US ISIN takes the one OpenFIGI names
+        for that ISIN, where the run asks openfigi too."""
+        symbol, isin = us_symbol(fund), ident(fund, "isin")
+        if not symbol and isin.startswith("US"):
+            symbol = openfigi.us_ticker(isin, ctx)
         return symbol, (self._fund_tickers(ctx).get(symbol) if symbol else None)
 
     def claim(self, fund, ctx):

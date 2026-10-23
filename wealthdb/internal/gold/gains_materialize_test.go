@@ -106,13 +106,6 @@ func TestMigration0117DDLIsRerunnable(t *testing.T) {
 		t.Fatal(err)
 	}
 	rerunMigrationDDL(t, db, ctx, "0117_gains_dashboard.sql")
-	// 0118 to 0121 and 0133 re-issue its view and macros, as Migrate
-	// would apply them.
-	rerunMigrationDDL(t, db, ctx, "0118_lot_engine.sql")
-	rerunMigrationDDL(t, db, ctx, "0119_gains_one_pass.sql")
-	rerunMigrationDDL(t, db, ctx, "0120_gains_held_sold.sql")
-	rerunMigrationDDL(t, db, ctx, "0121_private_exits.sql")
-	rerunMigrationDDL(t, db, ctx, "0133_deterministic_labels.sql")
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_gains`).Scan(&n); err != nil || n == 0 {
 		t.Errorf("after replay: %d rows, err %v", n, err)

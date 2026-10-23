@@ -1,7 +1,7 @@
 """Shared test helpers: an invented wanted list and the plan of it, fake
-providers, fake sources, a run and a silver DB as the collector writes
-them, invented workbooks and PDFs, and the engine's vocabularies read
-from its Go source."""
+providers, fake sources and a run's context on them, a run and a silver
+DB as the collector writes them, invented workbooks and PDFs, and the
+engine's vocabularies read from its Go source."""
 
 import email.message
 import http
@@ -20,6 +20,7 @@ import fetcher
 import load
 import wanted as wantedmod
 from collectorkit import bronze, silver
+from providers import openfigi
 from providers.base import Context, Parsed, Provider, Unavailable, read_meta, write_meta
 
 TODAY = date(2026, 7, 15)
@@ -161,6 +162,26 @@ class FakeClient:
         body = answer if isinstance(answer, bytes) else answer.encode() if isinstance(answer, str) \
             else json.dumps(answer).encode()
         return fetcher.Response(url, 200, body)
+
+
+# The providers of a run that finds a fund named by a US ISIN alone, by
+# the ticker OpenFIGI names.
+FIGI_ON = ("sec-nport", "sec-nmfp", "openfigi")
+
+
+def run_ctx(client, asks=FIGI_ON):
+    """A run's context on a FakeClient: the providers the run asks, by
+    default FIGI_ON."""
+    return Context(client=client, providers=frozenset(asks))
+
+
+def figi(client, answers):
+    """A FakeClient with OpenFIGI's mapping in front of it: each ISIN maps
+    to its listings in answers, any other to none."""
+    client.routes[openfigi.API] = lambda url, jobs: [
+        {"data": answers[j["idValue"]]} if answers.get(j["idValue"]) else {"warning": "No identifier found."}
+        for j in jobs]
+    return client
 
 
 class FakeHttps(urllib.request.BaseHandler):

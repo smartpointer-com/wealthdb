@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import urllib.error
+import urllib.request
 
 import pytest
 
@@ -117,7 +118,7 @@ def test_check_refuses_a_malformed_base_url_without_showing_the_key(
     # included. The probe refuses it at argument parsing, before any
     # request is built.
     requests = []
-    monkeypatch.setattr(download.urllib.request, "urlopen",
+    monkeypatch.setattr(urllib.request, "urlopen",
                         lambda req, timeout=None: requests.append(req))
     with caplog.at_level(logging.DEBUG), pytest.raises(SystemExit) as caught:
         download.main(["--check", "--api-key", "SYNTHETIC_KEY",

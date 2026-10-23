@@ -60,7 +60,8 @@ type Connection struct {
 
 func (c *Connection) Close() error { return silver.CloseDB(&c.db) }
 
-// Snapshots emits the reference records whose as_of lies in the window.
+// Snapshots emits the reference records whose as_of lies in the window,
+// each kind over its own span (ChangeWindow).
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	return silver.NewReferenceStream(ctx, c.db, w)
 }

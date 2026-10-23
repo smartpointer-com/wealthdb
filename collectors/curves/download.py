@@ -45,10 +45,8 @@ import argparse
 import json
 import logging
 import sys
-import time
 import urllib.error
 import urllib.parse
-import urllib.request
 from datetime import date
 from pathlib import Path
 
@@ -160,29 +158,10 @@ _NO_TRACE = debugcap.HttpTrace(None, log=log, enabled=False)
 
 def fetch(url: str, timeout: int = 90, *,
           trace: debugcap.HttpTrace = _NO_TRACE) -> bytes:
-    """GET one URL and return its body. Raises on transport and HTTP
-    errors. The single request choke point, so every exchange is traced
-    here: the 200, the HTTP error and the transport fault that never
-    reached the portal. An HTTPError's body is left unread for the caller
-    to log."""
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    t0 = time.monotonic()
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read()
-            trace.record("GET", url, status=resp.status,
-                         elapsed_ms=(time.monotonic() - t0) * 1000,
-                         bytes_=len(body), headers=resp.headers)
-    except urllib.error.HTTPError as e:
-        trace.record("GET", url, status=e.code,
-                     elapsed_ms=(time.monotonic() - t0) * 1000,
-                     error=str(e.reason), headers=e.headers)
-        raise
-    except OSError as e:
-        trace.record("GET", url, elapsed_ms=(time.monotonic() - t0) * 1000,
-                     error=f"{type(e).__name__}: {e}")
-        raise
-    return body
+    """GET one URL of either portal, the ECB's or the SNB's, and return
+    its body, through debugcap.traced_get."""
+    return debugcap.traced_get(url, user_agent=USER_AGENT, timeout=timeout,
+                               trace=trace)
 
 
 def _item(sid: str) -> str:

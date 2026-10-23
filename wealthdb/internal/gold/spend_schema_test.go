@@ -251,9 +251,9 @@ func TestMigration0048DDLIsRerunnable(t *testing.T) {
 		"T-GIFT":        {"", "gift"},
 		"T-XFER-MERCH":  {"", "internal_transfer"},
 		"T-BY-MERCHANT": {"Corner Market", "FOOD_AND_DRINK_GROCERIES"},
-		// Under 0048's own issue every delta line is blank, the card
-		// bill included: its label is what migration 0052 publishes.
-		"T-CARD-BILL": {"", "card_spend"},
+		// Replayed forward, the card bill shows the issuer its rule
+		// labels it with, as migration 0052 publishes.
+		"T-CARD-BILL": {"Example Card Issuer", "card_spend"},
 	}
 	for id, w := range want {
 		var merchant, detailed sql.NullString

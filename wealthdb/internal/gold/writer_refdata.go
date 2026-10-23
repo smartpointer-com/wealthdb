@@ -22,6 +22,18 @@ var ReferenceTables = []string{
 	"rate_observations",
 }
 
+// ReferenceTableKinds are the kind of record each reference table holds
+// (canonical.Window.Spans), so a load's windowed delete clears a table
+// over its kind's span. rate_observations, which no kind names, takes
+// the window whole.
+var ReferenceTableKinds = map[string]string{
+	"fund_compositions": canonical.RefFundDays, "fund_lines": canonical.RefFundDays,
+	"fund_attributes": canonical.RefFundDays, "fund_counterparties": canonical.RefFundDays,
+	"fund_risk": canonical.RefFundDays, "fund_characteristics": canonical.RefFundDays,
+	"security_identities": canonical.RefSecurities, "security_facts": canonical.RefSecurityFacts,
+	"security_period_facts": canonical.RefPeriodFacts,
+}
+
 // InsertReference writes every reference record of a batch.
 func (w *Writer) InsertReference(ctx context.Context, b *canonical.SnapshotBatch) error {
 	for _, insert := range []func() error{

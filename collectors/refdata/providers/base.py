@@ -133,12 +133,23 @@ class Unavailable(ProviderError):
 class Context:
     """What a provider gets from the run: the HTTP client, the data dir
     (the inbox lives there), the run's refdata.cfg (config.Config) for a
-    provider's own settings, and a cache dict for lookups it repeats
-    across funds (a ticker file)."""
+    provider's own settings, the names of the providers the run asks,
+    and a cache dict for lookups it repeats across funds (a ticker
+    file)."""
     client: object
     data_dir: Path | None = None
     config: object = None
+    providers: frozenset = frozenset()
     cache: dict = field(default_factory=dict)
+
+    def asks(self, name: str) -> bool:
+        """Whether the run asks the provider `name`: one of `providers`,
+        those refdata.cfg enables, narrowed by --provider where given
+        (download.enabled_providers). A provider looks a fund up at
+        another's source only then: enabling a provider accepts its
+        source's terms, and a run narrowed to one provider asks no other
+        source."""
+        return name in self.providers
 
     def once(self, key, load):
         """The result of `load()` for `key`, computed once per run. A load

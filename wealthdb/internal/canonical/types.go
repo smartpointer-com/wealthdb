@@ -317,6 +317,46 @@ type Window struct {
 	// caller skips Snapshots/Transactions and may still advance
 	// the watermark.
 	HasChanges bool
+	// Spans narrow the window for the reference records of a source
+	// whose kinds of record change over spans of their own (a filing's
+	// period facts reach back years where its compositions do not), by
+	// kind (RefFundDays and the others). Where Spans is set, a kind it
+	// does not name has no changes; where it is nil, every kind spans
+	// Start..End. SpanOf reads it.
+	Spans map[string]Span
+}
+
+// Span is an inclusive range of instants, Unix seconds UTC.
+type Span struct{ Start, End int64 }
+
+// The kinds of reference record a window bounds on spans of their own:
+// the fund-days (a fund's compositions and their lines, attributes,
+// counterparties, risk rows and characteristics of one day), the security
+// identities, the security facts and the period facts.
+const (
+	RefFundDays      = "fund_days"
+	RefSecurities    = "securities"
+	RefSecurityFacts = "security_facts"
+	RefPeriodFacts   = "period_facts"
+)
+
+// RefKinds are the four kinds of reference record.
+var RefKinds = []string{RefFundDays, RefSecurities, RefSecurityFacts, RefPeriodFacts}
+
+// SpanOf is the span kind's records change over in w, false where they
+// do not change.
+func (w Window) SpanOf(kind string) (Span, bool) {
+	if w.Spans == nil {
+		return Span{w.Start, w.End}, w.HasChanges
+	}
+	s, ok := w.Spans[kind]
+	return s, ok
+}
+
+// Changes says kind's records change in w (SpanOf).
+func (w Window) Changes(kind string) bool {
+	_, ok := w.SpanOf(kind)
+	return ok
 }
 
 // SnapshotBatch is one batch yielded by a SnapshotStream.Next call.

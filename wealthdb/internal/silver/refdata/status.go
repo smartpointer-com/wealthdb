@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -20,22 +19,20 @@ const (
 	latestFetch = `SELECT MAX(snapshot_at) FROM dump_runs`
 )
 
-// runTables are the tables of every silver version whose rows carry
-// run_at: the reference tables but lines, since a line belongs to its
-// composition's run.
-var runTables = []string{"compositions", "attributes", "counterparties", "securities", "security_facts"}
-
-// windowExtrema is the MIN/MAX as_of over the rows of tables that the
-// runs loaded after a change number wrote.
+// windowExtrema is the MIN/MAX as_of per kind of record
+// (silver.ReferenceTableKinds) over the rows of tables that the runs
+// loaded after a change number wrote.
 func windowExtrema(tables []string) string {
 	parts := make([]string, len(tables))
 	for i, t := range tables {
-		parts[i] = "SELECT as_of FROM " + t + " WHERE run_at IN (SELECT snapshot_at FROM runs)"
+		parts[i] = "SELECT '" + silver.ReferenceTableKinds[t] + "' AS kind, as_of FROM " + t +
+			" WHERE run_at IN (SELECT snapshot_at FROM runs)"
 	}
 	return `
 WITH runs AS (SELECT snapshot_at FROM dump_runs WHERE loaded_at > ?)
-SELECT MIN(as_of), MAX(as_of) FROM (
-    ` + strings.Join(parts, "\n    UNION ALL ") + `)`
+SELECT kind, MIN(as_of), MAX(as_of) FROM (
+    ` + strings.Join(parts, "\n    UNION ALL ") + `)
+ GROUP BY kind`
 }
 
 // Status reports the as-of range of the compositions as the snapshot
@@ -68,10 +65,13 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 }
 
 // ChangeWindow triggers on a load past `since` and spans the as-of days
-// the rows of the runs loaded since describe. Snapshots then re-emits
-// every row inside that span, whichever run wrote it, so gold's windowed
-// delete over the span leaves it as silver holds it. A load that wrote
-// nothing still advances the watermark.
+// the rows of the runs loaded since describe, each kind of record on a
+// span of its own: a filing's period facts reach back years where the
+// day's compositions do not, and one span would re-emit every
+// composition since. Snapshots then re-emits every row of a kind inside
+// its span, whichever run wrote it, so gold's windowed delete over that
+// span leaves it as silver holds it. A load that wrote nothing still
+// advances the watermark.
 func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
 	w := canonical.Window{NewChangeNumber: since}
 	latest, err := silver.LatestRun(ctx, c.db, kindName, latestLoad)
@@ -82,16 +82,26 @@ func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.W
 		return w, nil
 	}
 	w.NewChangeNumber = latest
-	tables := runTables
-	if c.yield {
-		tables = slices.Concat(runTables, silver.ReferenceYieldTables)
-	}
-	var start, end sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, windowExtrema(tables), since).Scan(&start, &end); err != nil {
+	// Each kind on a span of its own (canonical.Window.Spans), over the
+	// tables whose rows carry run_at; lines follow their compositions.
+	rows, err := c.db.QueryContext(ctx, windowExtrema(silver.ReferenceRunTables(c.yield)), since)
+	if err != nil {
 		return w, fmt.Errorf("refdata ChangeWindow: %w", err)
 	}
-	if start.Valid && end.Valid {
-		w.Start, w.End, w.HasChanges = start.Int64, end.Int64, true
+	defer rows.Close()
+	w.Spans = map[string]canonical.Span{}
+	for rows.Next() {
+		var kind string
+		var span canonical.Span
+		if err := rows.Scan(&kind, &span.Start, &span.End); err != nil {
+			return w, fmt.Errorf("refdata ChangeWindow scan: %w", err)
+		}
+		w.Spans[kind] = span
+		if !w.HasChanges {
+			w.Start, w.End = span.Start, span.End
+		}
+		w.Start, w.End = min(w.Start, span.Start), max(w.End, span.End)
+		w.HasChanges = true
 	}
-	return w, nil
+	return w, rows.Err()
 }

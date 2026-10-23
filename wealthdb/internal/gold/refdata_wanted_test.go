@@ -701,12 +701,14 @@ func TestRefdataWantedNamesTheFactsAFundLacks(t *testing.T) {
 		 first_seen_at, last_seen_at) VALUES
 		 ('test-src', 'QBND', 'fixed_income', 'etf', NULL, 'QBND', 'USD', 0, 0),
 		 ('test-src', 'QMIX', 'multi_asset', 'fund', 'XX0000000501', 'QMIX', 'USD', 0, 0),
-		 ('test-src', 'QEQF', 'public_equity', 'etf', NULL, 'QEQF', 'USD', 0, 0)`,
+		 ('test-src', 'QEQF', 'public_equity', 'etf', NULL, 'QEQF', 'USD', 0, 0),
+		 ('test-src', 'QNOT', 'public_equity', 'structured_product', NULL, 'QNOT', 'USD', 0, 0)`,
 		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
 		 asset_class, vehicle, currency, market_value) VALUES
 		 ('test-src', ?, 'A', 'QBND', 'QBND', 'fixed_income', 'etf', 'USD', 100),
 		 ('test-src', ?, 'A', 'QMIX', 'QMIX', 'multi_asset', 'fund', 'USD', 100),
-		 ('test-src', ?, 'A', 'QEQF', 'QEQF', 'public_equity', 'etf', 'USD', 100)`,
+		 ('test-src', ?, 'A', 'QEQF', 'QEQF', 'public_equity', 'etf', 'USD', 100),
+		 ('test-src', ?, 'A', 'QNOT', 'QNOT', 'public_equity', 'structured_product', 'USD', 100)`,
 		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count) VALUES
 		 ('test-src', 'symbol:QBND', ? - 86400 * 30, 'holdings', 'testprov', 1),
 		 ('test-src', 'symbol:QBND', ?, 'holdings', 'testprov', 2)`,
@@ -752,6 +754,9 @@ func TestRefdataWantedNamesTheFactsAFundLacks(t *testing.T) {
 		// an equity fund does not want.
 		"symbol:QEQF": {[]string{"characteristics"},
 			map[string][]string{"characteristics": {"2026-06-30"}, "money_market": {"2026-06-30"}}},
+		// A structured product is looked through, but no filing or issuer
+		// page states its facts.
+		"symbol:QNOT": {[]string{}, map[string][]string{}},
 	} {
 		f := got[ref]
 		if !slices.Equal(f.Wants, want.wants) || !maps.EqualFunc(f.Facts, want.facts, slices.Equal) {

@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"io/fs"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -15,20 +15,57 @@ import (
 // schema_meta stamp — that INSERT would collide on the version primary
 // key, and schema.go's Migrate contract puts it last. It pins that an
 // additive migration's DDL can be replayed against an already-migrated
-// database.
+// database. A replayed macro or view goes back to that migration's body,
+// so each later migration that re-issues one replays after it, in
+// version order, as Migrate applied them: a rerun test asserts against
+// the schema at head. The re-issues are read off the embedded
+// migrations, so a new one replays with no edit here. A later migration
+// that only undoes a seed (0111 deletes rows 0069 seeds) re-issues
+// nothing: the seed's rerun test replays it itself.
 func rerunMigrationDDL(t *testing.T, db *sql.DB, ctx context.Context, file string) {
 	t.Helper()
-	body, err := fs.ReadFile(migrationsFS, "migrations/"+file)
+	ms, err := listMigrations()
 	if err != nil {
-		t.Fatalf("read embedded migration %s: %v", file, err)
+		t.Fatalf("list migrations: %v", err)
 	}
-	ddl, _, found := strings.Cut(string(body), "INSERT INTO schema_meta")
-	if !found {
-		t.Fatalf("migration %s has no schema_meta stamp", file)
+	i := slices.IndexFunc(ms, func(m migration) bool { return m.name == file })
+	if i < 0 {
+		t.Fatalf("no embedded migration %s", file)
 	}
-	if _, err := db.ExecContext(ctx, ddl); err != nil {
-		t.Errorf("re-applying %s DDL: %v", file, err)
+	replayed := map[string]bool{}
+	for j, m := range ms[i:] {
+		ddl, _, found := strings.Cut(m.body, "INSERT INTO schema_meta")
+		if !found {
+			t.Fatalf("migration %s has no schema_meta stamp", m.name)
+		}
+		issued := reissuedNames(ddl)
+		if j > 0 && !slices.ContainsFunc(issued, func(n string) bool { return replayed[n] }) {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, ddl); err != nil {
+			t.Errorf("re-applying %s DDL: %v", m.name, err)
+		}
+		for _, n := range issued {
+			replayed[n] = true
+		}
 	}
+}
+
+// reissueRE matches a macro or a view a migration's DDL creates or
+// replaces, and sqlCommentRE a comment, which names none.
+var (
+	reissueRE    = regexp.MustCompile(`(?i)\bCREATE\s+OR\s+REPLACE\s+(?:MACRO|VIEW)\s+(\w+)`)
+	sqlCommentRE = regexp.MustCompile(`--[^\n]*`)
+)
+
+// reissuedNames are the macros and views ddl creates or replaces, lower
+// case.
+func reissuedNames(ddl string) []string {
+	var out []string
+	for _, m := range reissueRE.FindAllStringSubmatch(sqlCommentRE.ReplaceAllString(ddl, ""), -1) {
+		out = append(out, strings.ToLower(m[1]))
+	}
+	return out
 }
 
 // openAtVersion opens an in-memory gold database migrated through

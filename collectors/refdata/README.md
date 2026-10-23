@@ -250,6 +250,12 @@ No provider reads factsheets.
 US registered funds and ETFs, from their N-PORT filings on SEC EDGAR.
 
 - The fund is found by its ticker in the SEC's ticker file.
+- A fund named by a US ISIN alone is found by the ticker of its US
+  listing. OpenFIGI names that ticker, once a run for each ISIN. This
+  lookup runs only in a run that asks `openfigi`. So `providers` must
+  enable it, and `--provider`, where given, must name it.
+- A fund with an ISIN of another country files no N-PORT. It is not
+  claimed.
 - Each filing lists every holding: ISIN, CUSIP, ticker, value, weight,
   currency, asset category and the issuer's country. A currency forward
   states both legs; a derivative names its counterparty.
@@ -286,8 +292,8 @@ US money-market funds, from their N-MFP filings on SEC EDGAR.
 
 - A fund is asked for only when its wanted-list entry wants
   `money_market`.
-- The fund is found by its ticker in the SEC's ticker file, as for
-  `sec-nport`. A series that files no N-MFP is not claimed.
+- The fund is found as for `sec-nport`, by its ticker or its US ISIN.
+  A series that files no N-MFP is not claimed.
 - Each monthly filing states the series' weighted average maturity and
   weighted average life, in days, and its 7-day gross yield. It states
   each share class's 7-day net yield; the held class's is read. A class
@@ -625,6 +631,9 @@ mapping API, by ISIN, else CUSIP, else US ticker. It ties identifiers
 together. Five securities go into one request. A ticker is kept from a
 US listing only. A bond's type names its market, and gold reads the
 bond's sector from it.
+
+`sec-nport` and `sec-nmfp` also ask it for the US ticker of a fund
+named by a US ISIN alone, one ISIN to a request.
 
 **Terms.** Bloomberg "hereby dedicates FIGI Identifiers to the public
 domain", including "redistribution of the FIGI Identifiers to your

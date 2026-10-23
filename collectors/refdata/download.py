@@ -788,7 +788,8 @@ def main(argv=None) -> int:
         log.error("%s", e)
         return 2
     providers = enabled_providers(cfg, args.provider)
-    ctx = Context(client=fetcher.Client(cfg.contact), data_dir=args.bronze_dir, config=cfg)
+    ctx = Context(client=fetcher.Client(cfg.contact), data_dir=args.bronze_dir, config=cfg,
+                  providers=frozenset(p.name for p in providers))
     if args.check:
         return probe(providers, ctx)
     if args.bronze_dir is None:

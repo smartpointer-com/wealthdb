@@ -25,7 +25,7 @@ def _no_ambient_credential(monkeypatch):
 
 
 class FakeResponse:
-    """The slice of http.client.HTTPResponse fetch_observations touches."""
+    """The slice of http.client.HTTPResponse debugcap.traced_get touches."""
 
     def __init__(self, body: bytes, status: int = 200, headers=None):
         self._body = body

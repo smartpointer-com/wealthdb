@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -304,13 +305,13 @@ func TestChangeWindowIsIncremental(t *testing.T) {
 	conn := openConn(t, path)
 
 	all := window(t, conn, -1)
-	if want := (canonical.Window{Start: day(1), End: day(4), NewChangeNumber: 2, HasChanges: true}); all != want {
+	if want := (canonical.Window{Start: day(1), End: day(4), NewChangeNumber: 2, HasChanges: true}); !reflect.DeepEqual(all, want) {
 		t.Errorf("ChangeWindow(-1) = %+v, want %+v", all, want)
 	}
 	// Past the first run, only the second run's days: gold's windowed
 	// delete leaves days 1-2 as the first load wrote them.
 	appended := window(t, conn, 1)
-	if want := (canonical.Window{Start: day(3), End: day(4), NewChangeNumber: 2, HasChanges: true}); appended != want {
+	if want := (canonical.Window{Start: day(3), End: day(4), NewChangeNumber: 2, HasChanges: true}); !reflect.DeepEqual(appended, want) {
 		t.Errorf("ChangeWindow(1) = %+v, want %+v", appended, want)
 	}
 	idle := window(t, conn, 2)

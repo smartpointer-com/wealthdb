@@ -205,6 +205,6 @@ class Client:
                 log.warning("%s refused a request (%s %s); not asking it again this run", refusing, e.code, e.reason)
             raise FetchError(e.filename or url, e.code, str(e.reason)) from e
         except OSError as e:
-            self.trace.record(method, url, elapsed_ms=(time.monotonic() - t0) * 1000,
-                              error=f"{type(e).__name__}: {e}")
-            raise FetchError(url, None, f"{type(e).__name__}: {e}") from e
+            reason = debugcap.safe_error(e)
+            self.trace.record(method, url, elapsed_ms=(time.monotonic() - t0) * 1000, error=reason)
+            raise FetchError(url, None, reason) from e

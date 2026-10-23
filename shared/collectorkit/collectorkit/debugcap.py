@@ -7,7 +7,8 @@ one helper per kind rather than one shape for all:
   * :func:`capture_page`  — a browser page's DOM + screenshot (Playwright /
     Camoufox collectors).
   * :class:`HttpTrace`    — request metadata for a REST collector: what was
-    asked, what came back, how long it took.
+    asked, what came back, how long it took. :func:`traced_get` is the
+    urllib GET that records every exchange into one.
   * :class:`BodyCapture`  — the exception to the bronze-resident rule:
     buffered response bodies for one-off *login*-flow diagnosis, landing in
     a debug dir outside bronze (there is no bronze run to house them), under
@@ -64,7 +65,9 @@ import functools
 import os
 import re
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 from collectorkit.bronze import ts_slug
@@ -865,6 +868,41 @@ class HttpTrace:
             return {}
         return {k.lower(): v for k, v in items
                 if k.lower() in _SAFE_RESPONSE_HEADERS}
+
+
+def traced_get(url: str, *, user_agent: str, timeout: float,
+               trace: HttpTrace) -> bytes:
+    """GET one URL with urllib and return its body. Raises on transport
+    and HTTP errors.
+
+    The single request choke point of a collector that GETs with urllib,
+    so every exchange is traced here: the 200, the HTTP error and the
+    transport fault that never reached the source. An HTTPError's body is
+    left unread for the caller to log; only its status, reason and headers
+    are taken. The URL goes to the trace whole: masking a secret it
+    carries is HttpTrace's job, never the call site's. A transport
+    error's message is masked here (safe_error)."""
+    req = urllib.request.Request(url, headers={"User-Agent": user_agent})
+    t0 = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read()
+            trace.record("GET", url, status=resp.status,
+                         elapsed_ms=(time.monotonic() - t0) * 1000,
+                         bytes_=len(body), headers=resp.headers)
+    except urllib.error.HTTPError as e:
+        trace.record("GET", url, status=e.code,
+                     elapsed_ms=(time.monotonic() - t0) * 1000,
+                     error=str(e.reason), headers=e.headers)
+        raise
+    except OSError as e:
+        # URLError, TimeoutError and the socket/TLS errors all land here:
+        # no status, because nothing came back. The message can quote the
+        # URL, so it is masked as the URL field is.
+        trace.record("GET", url, elapsed_ms=(time.monotonic() - t0) * 1000,
+                     error=safe_error(e))
+        raise
+    return body
 
 
 class BodyCapture:

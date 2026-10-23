@@ -12,6 +12,7 @@ import json
 import re
 import sqlite3
 import urllib.parse
+import urllib.request
 from datetime import date
 from pathlib import Path
 
@@ -160,7 +161,7 @@ def test_a_downloaded_run_loads_with_each_series_meaning(portals, tmp_path):
 def test_a_failed_portal_is_left_out_and_the_run_completes(monkeypatch,
                                                            tmp_path):
     portals = FakePortals(failing={"ecb"})
-    monkeypatch.setattr(download.urllib.request, "urlopen", portals)
+    monkeypatch.setattr(urllib.request, "urlopen", portals)
     assert _download(tmp_path) == 0
     run = _runs(tmp_path)[0]
     manifest = _manifest(run)
@@ -171,7 +172,7 @@ def test_a_failed_portal_is_left_out_and_the_run_completes(monkeypatch,
 
 
 def test_a_run_with_no_answer_exits_nonzero(monkeypatch, tmp_path):
-    monkeypatch.setattr(download.urllib.request, "urlopen",
+    monkeypatch.setattr(urllib.request, "urlopen",
                         FakePortals(failing={"ecb", "snb"}))
     assert _download(tmp_path) == 5
     assert _manifest(_runs(tmp_path)[0])["series"] == {}
@@ -179,7 +180,7 @@ def test_a_run_with_no_answer_exits_nonzero(monkeypatch, tmp_path):
 
 def test_an_empty_ecb_window_has_no_rows(monkeypatch, tmp_path):
     # A window of no business day: the ECB answers 200 with no body.
-    monkeypatch.setattr(download.urllib.request, "urlopen",
+    monkeypatch.setattr(urllib.request, "urlopen",
                         FakePortals(bodies={"ecb": b""}))
     assert _download(tmp_path, "--series", "EUR") == 0
     series = _manifest(_runs(tmp_path)[0])["series"]
@@ -188,7 +189,7 @@ def test_an_empty_ecb_window_has_no_rows(monkeypatch, tmp_path):
 
 def test_a_not_found_ecb_window_has_no_rows(monkeypatch, tmp_path):
     # SDMX's answer to a window with no observation.
-    monkeypatch.setattr(download.urllib.request, "urlopen",
+    monkeypatch.setattr(urllib.request, "urlopen",
                         FakePortals(failing={"ecb"}, code=404))
     assert _download(tmp_path, "--series", "EUR") == 0
     run = _runs(tmp_path)[0]
@@ -215,7 +216,7 @@ def test_a_parse_error_fails_its_portal_alone(monkeypatch, tmp_path):
                          ("snb", snb_csv([("J10M0", "2026-01-05", "0.5")],
                                          cube="SNB1A@SNB.NSS.KZS.PFI").encode())):
         bronze = tmp_path / portal
-        monkeypatch.setattr(download.urllib.request, "urlopen",
+        monkeypatch.setattr(urllib.request, "urlopen",
                             FakePortals(bodies={portal: body}))
         assert _download(bronze) == 0
         manifest = _manifest(_runs(bronze)[0])
@@ -225,7 +226,7 @@ def test_a_parse_error_fails_its_portal_alone(monkeypatch, tmp_path):
 
 def test_a_value_that_is_no_number_is_left_out(monkeypatch, tmp_path):
     body = ecb_csv([(EUR_10Y, "2026-01-05", "NaN"), (EUR_10Y, "2026-01-06", "2.5")])
-    monkeypatch.setattr(download.urllib.request, "urlopen",
+    monkeypatch.setattr(urllib.request, "urlopen",
                         FakePortals(bodies={"ecb": body.encode()}))
     assert _download(tmp_path, "--series", EUR_10Y) == 0
     assert _manifest(_runs(tmp_path)[0])["series"][EUR_10Y]["rows"] == 1
@@ -302,7 +303,7 @@ def test_snb_held_reads_only_complete_runs_that_fetched(tmp_path):
 def test_a_latest_update_without_its_date_fails_the_snb_alone(monkeypatch,
                                                               tmp_path):
     portals = FakePortals(published="")
-    monkeypatch.setattr(download.urllib.request, "urlopen", portals)
+    monkeypatch.setattr(urllib.request, "urlopen", portals)
     assert _download(tmp_path) == 0
     manifest = _manifest(_runs(tmp_path)[0])
     assert set(manifest["portals"]) == {"ecb"}

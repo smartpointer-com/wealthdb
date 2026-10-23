@@ -7,6 +7,7 @@ captured without --debug.
 from __future__ import annotations
 
 import json
+import urllib.request
 
 import download
 from conftest import FakePortals
@@ -18,13 +19,13 @@ def _trace(tmp_path) -> list[dict]:
 
 
 def test_without_debug_nothing_is_captured(monkeypatch, tmp_path):
-    monkeypatch.setattr(download.urllib.request, "urlopen", FakePortals())
+    monkeypatch.setattr(urllib.request, "urlopen", FakePortals())
     assert download.main(["--bronze-dir", str(tmp_path)]) == 0
     assert _trace(tmp_path) == []
 
 
 def test_debug_traces_every_request_a_failed_one_too(monkeypatch, tmp_path):
-    monkeypatch.setattr(download.urllib.request, "urlopen",
+    monkeypatch.setattr(urllib.request, "urlopen",
                         FakePortals(failing={"ecb"}))
     assert download.main(["--bronze-dir", str(tmp_path), "--debug"]) == 0
     lines = _trace(tmp_path)

@@ -94,14 +94,14 @@ type keyset struct {
 }
 
 // readPage reads the next page of a table read a page at a time: the
-// rows of the window w past the cursor k, at most budget of them. q binds
-// the window, the cursor and the budget, in that order. scan reads one
+// rows of the span past the cursor k, at most budget of them. q binds
+// the span, the cursor and the budget, in that order. scan reads one
 // row into its record and its key; the last row's key is the next page's
 // cursor. A short page is the table's last, and sets k.done. what
 // prefixes the query's errors.
-func readPage[T any](ctx context.Context, db *sql.DB, w canonical.Window, budget int, what, q string, k *keyset,
+func readPage[T any](ctx context.Context, db *sql.DB, span canonical.Span, budget int, what, q string, k *keyset,
 	scan func(*sql.Rows) (T, []any, error)) ([]T, error) {
-	rows, err := db.QueryContext(ctx, q, slices.Concat([]any{w.Start, w.End}, k.after, []any{budget})...)
+	rows, err := db.QueryContext(ctx, q, slices.Concat([]any{span.Start, span.End}, k.after, []any{budget})...)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", what, err)
 	}

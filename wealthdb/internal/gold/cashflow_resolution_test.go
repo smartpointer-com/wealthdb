@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"io/fs"
 	"sort"
 	"strings"
 	"testing"
@@ -752,39 +751,13 @@ func TestMigration0081DDLIsRerunnable(t *testing.T) {
 	seedLines(t, db, ctx, []line{
 		{id: "R-WAGE", account: "CASH", kind: "deposit", amount: 100, income: "INCOME_SALARY"},
 	})
+	// 0081 puts the macros back at their first shape: the rerun replays
+	// forward, as Migrate would.
 	rerunMigrationDDL(t, db, ctx, "0081_cashflow_resolution.sql")
-	// A downgrade, not a no-op: 0081 puts the macros back at their first
-	// shape. Replay forward, exactly as Migrate would.
-	replayLaterCashflowReissues(t, db, ctx, "0081_cashflow_resolution.sql")
 	if _, ok := macroTxnIDs(t, db, ctx, "cashflow_lines_base", 0, 3500000)["R-WAGE"]; !ok {
 		t.Error("the replayed base lost a line")
 	}
 	assertAtHead(t, db, ctx, "R-WAGE")
-}
-
-// replayLaterCashflowReissues replays, in version order, every migration
-// after the named one that re-creates a cashflow macro: what Migrate
-// applied after it. Read off the embedded migrations rather than
-// listed, so a later re-issue is replayed without an edit here, and a
-// rerun test of an early body asserts against the schema at head.
-func replayLaterCashflowReissues(t *testing.T, db *sql.DB, ctx context.Context, after string) {
-	t.Helper()
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
-	if err != nil {
-		t.Fatalf("list embedded migrations: %v", err)
-	}
-	for _, e := range entries { // sorted by name, so by version
-		if e.Name() <= after {
-			continue
-		}
-		body, err := fs.ReadFile(migrationsFS, "migrations/"+e.Name())
-		if err != nil {
-			t.Fatalf("read embedded migration %s: %v", e.Name(), err)
-		}
-		if strings.Contains(string(body), "MACRO cashflow_") {
-			rerunMigrationDDL(t, db, ctx, e.Name())
-		}
-	}
 }
 
 // assertAtHead checks that a seeded salary line resolves as the head
@@ -890,7 +863,6 @@ func TestMigration0085DDLIsRerunnable(t *testing.T) {
 		{id: "R85-WAGE", account: "CASH", kind: "deposit", amount: 100, income: "INCOME_SALARY"},
 	})
 	rerunMigrationDDL(t, db, ctx, "0085_cashflow_resolution_fixes.sql")
-	replayLaterCashflowReissues(t, db, ctx, "0085_cashflow_resolution_fixes.sql")
 	if _, ok := macroTxnIDs(t, db, ctx, "cashflow_lines_base", 0, 3500000)["R85-WAGE"]; !ok {
 		t.Error("the replayed base lost a line")
 	}

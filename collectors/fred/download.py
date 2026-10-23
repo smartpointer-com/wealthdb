@@ -38,10 +38,8 @@ import argparse
 import json
 import logging
 import sys
-import time
 import urllib.error
 import urllib.parse
-import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -188,15 +186,10 @@ _NO_TRACE = debugcap.HttpTrace(None, log=log, enabled=False)
 def fetch_observations(base_url: str, series_id: str, api_key: str,
                        start, end, timeout: int = 90, *,
                        trace: debugcap.HttpTrace = _NO_TRACE) -> dict:
-    """GET the raw FRED observations document for one series + window.
-    Raises on transport/HTTP errors (the caller logs + skips the series).
-
-    The single request choke point, so every exchange is traced here:
-    the 200 that carried a series, the HTTP error that skipped one, and
-    the transport fault that never reached FRED at all. The URL goes to
-    the trace whole — masking the api_key it carries is debugcap's job,
-    never the call site's. An HTTPError's body is left unread for the
-    caller to log; only its status and headers are taken."""
+    """GET the raw FRED observations document for one series + window,
+    through debugcap.traced_get (the caller logs + skips a series that
+    raises). The api_key travels in the query string; the trace masks
+    it."""
     params = {
         "series_id": series_id,
         "api_key": api_key,
@@ -205,25 +198,8 @@ def fetch_observations(base_url: str, series_id: str, api_key: str,
         "observation_end": end.isoformat(),
     }
     url = f"{base_url}?{urllib.parse.urlencode(params)}"
-    req = urllib.request.Request(url, headers={"User-Agent": "wealthdb-fred/1"})
-    t0 = time.monotonic()
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read()
-            trace.record("GET", url, status=resp.status,
-                         elapsed_ms=(time.monotonic() - t0) * 1000,
-                         bytes_=len(body), headers=resp.headers)
-    except urllib.error.HTTPError as e:
-        trace.record("GET", url, status=e.code,
-                     elapsed_ms=(time.monotonic() - t0) * 1000,
-                     error=str(e.reason), headers=e.headers)
-        raise
-    except OSError as e:
-        # URLError, TimeoutError and the socket/TLS errors all land here:
-        # no status, because nothing came back.
-        trace.record("GET", url, elapsed_ms=(time.monotonic() - t0) * 1000,
-                     error=f"{type(e).__name__}: {e}")
-        raise
+    body = debugcap.traced_get(url, user_agent="wealthdb-fred/1",
+                               timeout=timeout, trace=trace)
     return json.loads(body.decode("utf-8"))
 
 

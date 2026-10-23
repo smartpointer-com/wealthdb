@@ -52,7 +52,7 @@ func (s *rateStream) Next(ctx context.Context) (canonical.SnapshotBatch, bool, e
 		return b, false, nil
 	}
 	var err error
-	b.RateObservations, err = readPage(ctx, s.db, s.w, RateBatchSize, "rates", `
+	b.RateObservations, err = readPage(ctx, s.db, canonical.Span{Start: s.w.Start, End: s.w.End}, RateBatchSize, "rates", `
 SELECT as_of, series_id, value, payload
   FROM `+RatesTable+`
  WHERE as_of BETWEEN ? AND ? AND (as_of, series_id) > (?, ?)

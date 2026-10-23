@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.request
 
 import download
 from conftest import FakeResponse
@@ -35,7 +36,7 @@ def _fake_urlopen(resp_or_exc):
 
 def _run(monkeypatch, tmp_path, *extra, resp=None):
     monkeypatch.setattr(
-        download.urllib.request, "urlopen",
+        urllib.request, "urlopen",
         _fake_urlopen(FakeResponse(_obs_doc()) if resp is None else resp))
     return download.main([
         "--bronze-dir", str(tmp_path), "--api-key", SECRET,
@@ -79,20 +80,6 @@ def test_debug_traces_a_request_and_redacts_the_api_key(monkeypatch, tmp_path):
     assert "series_id=DEXSZUS" in entry["url"]
 
 
-def test_debug_keeps_only_whitelisted_response_headers(monkeypatch, tmp_path):
-    # A throttled FRED answers with Retry-After; that header is the whole
-    # reason a trace beats the observations documents beside it.
-    resp = FakeResponse(_obs_doc(), headers={
-        "Content-Type": "application/json",
-        "Retry-After": "30",
-        "Set-Cookie": "session=SYNTHETIC_COOKIE",
-    })
-    assert _run(monkeypatch, tmp_path, "--debug", resp=resp) == 0
-    entry = _trace_lines(tmp_path)[0]
-    assert entry["headers"]["retry-after"] == "30"
-    assert "SYNTHETIC_COOKIE" not in json.dumps(entry)
-
-
 def test_debug_traces_an_http_error(monkeypatch, tmp_path):
     # The series is skipped, but the exchange that skipped it is exactly
     # what --debug exists to explain.
@@ -104,16 +91,6 @@ def test_debug_traces_an_http_error(monkeypatch, tmp_path):
     assert entry["status"] == 429
     assert "Too Many Requests" in entry["error"]
     assert SECRET not in json.dumps(entry)
-
-
-def test_debug_traces_a_transport_fault(monkeypatch, tmp_path):
-    # Nothing came back, so there is no status to record — only that the
-    # attempt was made and how it died.
-    assert _run(monkeypatch, tmp_path, "--debug",
-                resp=urllib.error.URLError("no route to host")) == 5
-    entry = _trace_lines(tmp_path)[0]
-    assert "status" not in entry
-    assert "no route to host" in entry["error"]
 
 
 # --- --dry-run --------------------------------------------------------------

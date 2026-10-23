@@ -241,11 +241,6 @@ func TestMigration0118DDLIsRerunnable(t *testing.T) {
 	db, ctx := lotFixture(t, tradesSeed)
 	rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
 	rerunMigrationDDL(t, db, ctx, "0118_lot_engine.sql")
-	// 0119 to 0121 and 0133 re-issue its macros, as Migrate would.
-	rerunMigrationDDL(t, db, ctx, "0119_gains_one_pass.sql")
-	rerunMigrationDDL(t, db, ctx, "0120_gains_held_sold.sql")
-	rerunMigrationDDL(t, db, ctx, "0121_private_exits.sql")
-	rerunMigrationDDL(t, db, ctx, "0133_deterministic_labels.sql")
 	if n := queryFloat(t, db, `SELECT count(*) FROM lots`); n != 2 {
 		t.Errorf("a replay must keep the ledger: %v lots", n)
 	}

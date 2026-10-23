@@ -335,27 +335,40 @@ func upsertSilverSource(ctx context.Context, tx *sql.Tx, spec SourceSpec, now in
 
 // deleteWindow removes any existing gold rows whose key time
 // (snapshot_at for snapshot tables, occurred_at for transactions,
-// as_of for the reference tables) falls inside the window. Required
-// before re-inserting the new change records.
+// as_of for the reference tables) falls inside the window: a reference
+// table's inside its kind's span (gold.ReferenceTableKinds), none for a
+// kind without changes. Required before re-inserting the new change
+// records.
 func deleteWindow(ctx context.Context, tx *sql.Tx, sourceID string, w canonical.Window) error {
-	tables := []struct {
+	type table struct {
 		name, timeCol string
-	}{
-		{"positions", "snapshot_at"},
-		{"position_lots", "snapshot_at"},
-		{"cash_balances", "snapshot_at"},
-		{"fx_rates", "snapshot_at"},
-		{"transactions", "occurred_at"},
+		span          canonical.Span
+	}
+	whole := canonical.Span{Start: w.Start, End: w.End}
+	tables := []table{
+		{"positions", "snapshot_at", whole},
+		{"position_lots", "snapshot_at", whole},
+		{"cash_balances", "snapshot_at", whole},
+		{"fx_rates", "snapshot_at", whole},
+		{"transactions", "occurred_at", whole},
 	}
 	for _, t := range gold.ReferenceTables {
-		tables = append(tables, struct{ name, timeCol string }{t, "as_of"})
+		span := whole
+		if kind := gold.ReferenceTableKinds[t]; kind != "" {
+			s, ok := w.SpanOf(kind)
+			if !ok {
+				continue
+			}
+			span = s
+		}
+		tables = append(tables, table{t, "as_of", span})
 	}
 	for _, t := range tables {
 		q := fmt.Sprintf(
 			`DELETE FROM %s WHERE silver_source_id = ? AND %s BETWEEN ? AND ?`,
 			t.name, t.timeCol,
 		)
-		if _, err := tx.ExecContext(ctx, q, sourceID, w.Start, w.End); err != nil {
+		if _, err := tx.ExecContext(ctx, q, sourceID, t.span.Start, t.span.End); err != nil {
 			return fmt.Errorf("delete from %s: %w", t.name, err)
 		}
 	}

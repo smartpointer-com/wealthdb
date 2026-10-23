@@ -55,13 +55,9 @@ gains, exposure, spending, income, cash flow) read.
   it derives from. Nothing is irreversibly transformed.
 - **Snapshot-time semantics.** Positions queries are as-of a date.
   Each account contributes its own active snapshot at that instant:
-  its latest snapshot ≤ that date, until that snapshot ends. An
-  account's last snapshot ends at the first later run of its source
-  that reports again the accounts it was reported with (those still
-  reporting), or once the source has run for a year past it. So an
-  account reported only in some of a source's runs drops out at the
-  next run that reports its companions. The point-in-time reports and
-  the daily history resolve it alike, per (source, account) (§10.7).
+  its latest snapshot ≤ that date, until that snapshot ends. The
+  point-in-time reports and the daily history resolve it alike, per
+  (source, account) (§10.7).
 - **Multi-currency output at query time.** Position and net-worth
   reports can be rendered in any ISO currency; the choice is made
   per-invocation, not baked into the database. FX conversion uses
@@ -842,7 +838,7 @@ Example config file:
 | `declared_accounts` | object | Optional. Map keyed by an id the holder chooses (`[A-Za-z0-9_-]+`) of accounts the household OWNS at institutions the product does not collect: `account_kind` and `tax_wrapper` required and validated against the canonical enums, `nickname` and `currency` optional. The load writes each one as an account row under the reserved source `declared` (no `silver_sources[].id` may take that name), after the per-source loads and before the enrichment pass, and prints how many it stamped; a declaration removed from the config leaves on the next load. A declared account carries no balance and no facts: it exists so a rule's `far` can name it as the other side of an own-account move, which the cash flow statement then places by the declared wrapper exactly as it places a collected far account — a household wrapper makes the move pool-internal, a vehicle wrapper draws it as that vehicle's crossing (docs/CASHFLOW.md §4). Nothing the product measures can falsify a declaration, which is why the wrapper is required and the load prints how many declarations sit inside the pool. Deployment-specific: lives in the user's config. |
 | `exposure` | object | Optional. What the exposure report needs that no source knows: `proxies` (a fund whose composition stands in for another, with `always` and `leverage`), `reference_funds`, `size_funds`, `declarations` (the path to the declarations ledger, NDJSON; expanded as above), `custody` and `max_gap_days` (default 400). Validated at config-load time. docs/EXPOSURE.md §9 defines each key, its bounds and the ledger's records; §7.6 says how a load stores them. Deployment-specific: lives in the user's config. |
 | `yield` | object | Optional. The yield inputs that no source knows: `curves` (a currency's public yield curve, one series of a configured source per tenor, `"3M": "fred:DGS3MO"`), `withholding` (percent withheld at source by situs country and tax wrapper, `default` for any wrapper), `rating_funds` (a rating-sliced fund's bucket or range, `BBB` or `AAA-A`), `conventions` (coupon frequency and day count per market: a currency, or a currency and a bond sector or `bill`; built-in defaults), `horizon_months` (1 to 36, default 12) and `cycles` (overrides of the built-in map from the eleven sectors to cyclical, defensive and sensitive). Validated at config-load time; §7.6 says how a load stores it. Deployment-specific: lives in the user's config. |
-| `holding_aliases` | array | Optional. Entries `{ "source", "account"?, "key", "as", "note"? }` naming a holding a source keys two ways, so the gains reports read both keys as one: a statement's overview line (`key`) until a daily feed lists the same holding by ISIN (`as`), say. `account` scopes the alias to one account; absent, it covers every account of the source. The load writes the block into gold's `holding_aliases` table whole, and `gains_windows` maps every position, lot and event key through it before a bucket's start meets its end (docs/GAINS.md §5). Validated for a configured source, two different keys, one alias per key, and no alias of an alias. Deployment-specific: lives in the user's config. |
+| `holding_aliases` | array | Optional. Entries `{ "source", "account"?, "key", "as", "note"? }` naming a holding a source keys two ways, so the gains, exposure and yield reports read both keys as one: a statement's overview line (`key`) until a daily feed lists the same holding by ISIN (`as`), say. `account` scopes the alias to one account; absent, it covers every account of the source. The load writes the block into gold's `holding_aliases` table whole, and `gains_windows` maps every position, lot and event key through it before a bucket's start meets its end (docs/GAINS.md §5). Validated for a configured source, two different keys, one alias per key, and no alias of an alias. Deployment-specific: lives in the user's config. |
 | `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole crypto portfolio inside an IRA / trust / Stiftung wrapper. Accepts `tax_wrapper` (unlike `account_overrides`, which also takes nickname / category / management_style) or `exclude: true`, which drops the portfolio and every account inside it with their facts; one of the two must be set and they may not be combined. A per-account `tax_wrapper` override still wins over a portfolio one. See §13.8. |
 | `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. See §13.8. |
 | `transaction_instruments` | object | Optional. Nested map keyed by `silver_source_id` (outer) and the **lookup token** an adapter failed on (inner), naming the `instrument_external_id` that token means. Closes a row (a securities trade, or an income or withholding row of a security) whose feed states its instrument in a way nothing else in the product can resolve — a Swiss valor for a line the instrument dimension has no valor for, a fund renamed since the trade, a ticker of neither shape, a statement name that fits two holdings. The token is whatever the row's `instrument_hint` holds (§10.8); read the open set with `wealthdb transactions -C +instrument_hint`. Validated for a declared source and non-empty halves at config-load time; the instrument id itself cannot be checked without gold, as with the override families above. It states the IDENTITY only — what the instrument IS stays `instrument_overrides`' question. See §13.8. |
@@ -1156,7 +1152,10 @@ type TransactionStream interface {
   once the load succeeds. With `HasChanges` false, the caller skips
   `Snapshots` and `Transactions`. The new number may still differ from
   the old one: silver advanced, but nothing observable changed inside
-  the window.
+  the window. A reference source may bound each kind of reference
+  record on a span of its own (`Window.Spans`). The stream and the
+  load's windowed delete then read each kind over its span, and leave a
+  kind without changes alone.
 - **`Snapshots`.** The dimension upserts and snapshot-grain facts whose
   `snapshot_at` falls inside the window. A `SnapshotBatch` multiplexes
   the dimensions (portfolios, accounts, instruments), the facts
@@ -2434,15 +2433,11 @@ SELECT p.*
 ```
 
 `pos_active_at` gives each account its active snapshot at the instant
-(migration 0140, §10.7). An account's older snapshot holds until its
-next one, whatever the runs between them report. Its last snapshot
-ends at the first later run that reports again the accounts it was
-reported with (those still reporting), or once its source has run for
-a year past it. So an account reported only in some of a source's
-runs drops out at the next run that reports its companions.
-`positions_at` is this query with the account and instrument labels, and
-`cash_active_at` is its twin for cash. Every point-in-time report
-reads one of them. The compound PK `(silver_source_id, snapshot_at,
+(migration 0140, §10.7). `positions_at` is this query with the account
+and instrument labels. `cash_active_at` is `pos_active_at`'s twin for
+cash, and `cash_chosen` picks one balance per account and currency
+from it. Every point-in-time report picks through `pos_active_at` or
+`cash_active_at`. The compound PK `(silver_source_id, snapshot_at,
 account_external_id, position_key)` makes the join cheap.
 
 ### 10.2 Positions including cash
@@ -2615,6 +2610,8 @@ the others carried. Four rules complete the picture:
   position row (`silver.ClosureMarkerBatch`) reads as zero. The per-position
   series (`report_positions_history_multi`) keeps the plain FX chain, as its
   point-in-time twin does — a display row has no sum for a NULL to poison.
+  The point-in-time reads take a zero cash row as an observation too.
+  `cash_chosen` leaves zero balances out of its output, after the pick.
 - **A later run that re-covers the key's company ends it.** Absence is evidence
   of closure exactly when the run that produced it was in a position to report
   the key: a key leaves the series at the first later snapshot of its source
@@ -2679,9 +2676,6 @@ What follows for readers of these macros:
   `report_positions_history_multi` and in every point-in-time row, so it varies
   per account within a source. A source's `snapshot_at` is the newest of its
   accounts'.
-- **Zero balances.** A zero cash row is an observation in both: it supersedes
-  the balance before it. `cash_chosen` leaves zero balances out of its output
-  after the pick.
 - **Cost:** the day spine is crossed with keys rather than with sources, so its
   cardinality grows by the accounts-per-source factor. A point-in-time read
   crosses its instants with the keys, and each read recomputes every key's
@@ -2971,8 +2965,8 @@ SQL ([CASHFLOW.md](CASHFLOW.md) is the spec):
   `section.class.group` node and a disposition that says whether it is a
   line at all. `cashflow_lines_base(f, t)` is that, restricted to the pool
   and to the lines. It reads a mortgage its source outlives as repaid at
-  the source's next snapshot, while holdings keep the mortgage until the
-  shared ending of §10.7 ([CASHFLOW.md §5](CASHFLOW.md)).
+  the source's next positions snapshot, while holdings keep the mortgage
+  until the shared ending of §10.7 ([CASHFLOW.md §5](CASHFLOW.md)).
 - `report_cashflow_summary`, `_flows`, `_sankey` and `_transactions` sit
   over it, with the FX pair `cashflow_lines_outccy` /
   `cashflow_nodes_outccy`; `web_cashflow` serves the dashboard.
@@ -3049,8 +3043,10 @@ exposes `missing_basis` for the dashboard's picker.
 The exposure macros look every holding through to what it holds.
 [EXPOSURE.md](EXPOSURE.md) defines every figure they return.
 
-Migrations 0126, 0128, 0129, 0131, 0137 and 0141 define the derived
-tables and the macros. A macro's last definition is the one in force.
+Migrations 0126, 0128, 0129, 0131, 0137 and 0140 to 0142 define the
+derived tables and the macros. Migrations 0127, 0130, 0133 and 0138
+define the dashboard's tables and views (below). A macro's last
+definition is the one in force.
 The exposure pass (`gold.RebuildExposure`) runs after the lot pass at
 the end of every load and reload, and rewrites the derived tables:
 
@@ -3074,9 +3070,9 @@ The macros:
   a key read through the aliases, every key known as a fund, and the
   config's proxies under their keys;
 - `exposure_holdings(asof, ccy)`: the positions and cash at an instant,
-  each line valued as `report_accounts` values it, an account it leaves
-  out of the total left out whole, with its key read through the
-  aliases;
+  each account at its active snapshot (§10.7), each line valued as
+  `report_accounts` values it, an account it leaves out of the total
+  left out whole, with its key read through the aliases;
 - `exposure_comps()`, `exposure_attributes_at(asof)` and
   `exposure_funds_at(asof)`: the composition that describes each fund at
   the instant (the temporal join, proxies, leverage);
@@ -3181,9 +3177,9 @@ The pieces:
   amount on every day of the year before. An observation's amounts
   hold over its span (§10.7), so one read of the year's observations
   gives every day. A payment meets its holding under every id the
-  source or the config gives the instrument, a security's holdings
-  pool at every source, and a dividend's rate reads the quantity of
-  its record day, a lag per market before its pay day (YIELD.md §4);
+  source or the config gives the instrument. A security's holdings
+  pool at every source. A dividend's rate reads what its account held
+  on its record day, a lag per market before its pay day (YIELD.md §4);
 - `internal/fixedincome`: the bond and rate arithmetic, as pure
   functions;
 - `internal/yield`: `yield.Compute` measures every holding and projects

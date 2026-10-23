@@ -14,6 +14,7 @@ import logging
 import sqlite3
 import urllib.error
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -58,7 +59,7 @@ class _FakeFred:
 @pytest.fixture
 def fred(monkeypatch) -> _FakeFred:
     fake = _FakeFred()
-    monkeypatch.setattr(download.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
     return fake
 
 
@@ -156,7 +157,7 @@ def test_a_failed_series_is_left_out_and_the_run_completes(monkeypatch,
     # One bad series must not abort the run. Every other series is
     # fetched, written and recorded, and the manifest is complete.
     fred = _FakeFred(failing={"DGS10"})
-    monkeypatch.setattr(download.urllib.request, "urlopen", fred)
+    monkeypatch.setattr(urllib.request, "urlopen", fred)
     assert _download(tmp_path) == 0
     everything = [*download.FX_SERIES, *download.RATE_SERIES]
     assert fred.requested == everything

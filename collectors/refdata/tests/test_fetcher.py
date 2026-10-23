@@ -228,3 +228,17 @@ def test_every_exchange_is_traced(tmp_path):
     assert [(e["url"], e.get("status")) for e in lines] == [
         ("https://example.org/old", 302), ("https://example.org/new", 200), ("https://example.org/down", None)]
     assert lines[1]["bytes"] == len(OK[1]) and "unreachable" in lines[2]["error"]
+
+
+def test_a_transport_error_is_masked(tmp_path):
+    """A transport error's text reaches the trace and the FetchError
+    through debugcap.safe_error, so a credential a URL in it carries is
+    masked in both."""
+    trace = debugcap.HttpTrace(tmp_path, log=logging.getLogger("test"), enabled=True)
+    leak = OSError("cannot reach https://example.org/x?api_key=SECRET0000&q=1")
+    c, _, _ = make_client({"https://example.org/down": leak}, trace=trace)
+    with pytest.raises(fetcher.FetchError) as e:
+        c.get("https://example.org/down")
+    assert "SECRET0000" not in str(e.value) and "q=1" in str(e.value)
+    text = (tmp_path / debugcap.SCREENSHOTS_DIR / "http-trace.jsonl").read_text()
+    assert "SECRET0000" not in text and "cannot reach" in text

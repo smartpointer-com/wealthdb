@@ -12,6 +12,7 @@ import json
 import sys
 import urllib.error
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -129,5 +130,5 @@ class FakePortals:
 @pytest.fixture
 def portals(monkeypatch) -> FakePortals:
     fake = FakePortals()
-    monkeypatch.setattr(download.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
     return fake

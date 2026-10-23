@@ -7,11 +7,12 @@ import pytest
 
 import fetcher
 import load
+from providers import openfigi
 from providers import sec_nport as m
 from providers.base import Context, ProviderError, Unavailable
 from providers.sec_edgar import SecEdgar
 from providers.sec_nport import SecNport, _atom_accessions, _submission_filings, parse_nport
-from tests.helpers import FakeClient, go_const, go_source, go_strings, silver_db
+from tests.helpers import FakeClient, figi, go_const, go_source, go_strings, run_ctx, silver_db
 from wanted import Fund, Security
 
 FIXTURE = Path(__file__).parent / "fixtures" / "nport_primary_doc.xml"
@@ -311,3 +312,66 @@ def test_both_sec_providers_read_one_company_ticker_file():
 
 def test_the_probe_reads_the_fund_ticker_file():
     assert SecNport().probe(Context(client=edgar())) == "SEC fund ticker file: 1 tickers"
+
+
+def listing(ticker, exch="US"):
+    """One listing of an invented OpenFIGI answer."""
+    return {"figi": "BBG000000101", "compositeFIGI": "BBG000000102", "name": "EXAMPLE FUND", "ticker": ticker,
+            "exchCode": exch, "securityType": "ETP", "marketSector": "Equity"}
+
+
+def by_isin(isin):
+    return Fund(ref=f"isin:{isin}", isin=isin)
+
+
+def figi_jobs(sec) -> list:
+    return [jobs for _, url, jobs in sec.asked if url == openfigi.API]
+
+
+def test_a_fund_named_by_a_us_isin_alone_is_found_by_its_us_listings_ticker():
+    sec = figi(edgar(), {"US0000000001": [listing("QLOC", "LN"), listing("qfnd ")],
+                         "US0000000002": [listing("QUIT")]})
+    p, ctx = SecNport(), run_ctx(sec)
+    claim = p.claim(by_isin("US0000000001"), ctx)
+    assert (claim["ref"], claim["symbol"], claim["series"]) == ("isin:US0000000001", "QFND", "S000000001")
+    assert figi_jobs(sec) == [[{"idType": "ID_ISIN", "idValue": "US0000000001"}]]
+    # The ticker is looked up as before: a UIT's in the company file.
+    assert p.claim(by_isin("US0000000002"), ctx)["cik"] == 2
+    # A run asks each ISIN once.
+    p.claim(by_isin("US0000000001"), ctx)
+    assert len(figi_jobs(sec)) == 2
+
+
+def test_no_lookup_unless_the_run_asks_openfigi():
+    sec = figi(edgar(), {"US0000000001": [listing("QFND")]})
+    # refdata.cfg or --provider leaves it out of the run; a context that
+    # names no run.
+    for ctx in (run_ctx(sec, asks=("sec-nport",)), Context(client=sec)):
+        assert SecNport().claim(by_isin("US0000000001"), ctx) is None
+    assert sec.asked == []
+
+
+def test_no_lookup_for_another_countrys_isin():
+    # A UCITS fund files no N-PORT, whatever its US listing.
+    sec = figi(edgar(), {"LU0000000001": [listing("QFND")]})
+    assert SecNport().claim(by_isin("LU0000000001"), run_ctx(sec)) is None
+    assert sec.asked == []
+
+
+def test_an_answer_with_no_us_listing_gives_no_claim():
+    sec = figi(edgar(), {"US0000000003": [listing("QFND", "LN")]})
+    ctx = run_ctx(sec)
+    assert SecNport().claim(by_isin("US0000000003"), ctx) is None
+    # An ISIN OpenFIGI does not know is no claim either.
+    assert SecNport().claim(by_isin("US0000000004"), ctx) is None
+    assert len(figi_jobs(sec)) == 2
+
+
+def test_a_refused_lookup_fails_the_claim_and_is_asked_for_once():
+    sec = edgar()
+    sec.routes[openfigi.API] = 429
+    ctx = run_ctx(sec)
+    for _ in range(2):
+        with pytest.raises(fetcher.FetchError):
+            SecNport().claim(by_isin("US0000000001"), ctx)
+    assert len(figi_jobs(sec)) == 1

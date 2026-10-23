@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -145,6 +146,11 @@ func TestChangeWindowSpansTheNewRunsDays(t *testing.T) {
 	}
 	if !w.HasChanges || w.Start != d0 || w.End != d3 {
 		t.Fatalf("window since load1 = %+v, want [d0, d3]", w)
+	}
+	// Each kind of record spans the days run2 wrote of it.
+	if want := map[string]canonical.Span{canonical.RefFundDays: {Start: d0, End: d3},
+		canonical.RefSecurities: {Start: d3, End: d3}, canonical.RefSecurityFacts: {Start: d3, End: d3}}; !maps.Equal(w.Spans, want) {
+		t.Errorf("spans since load1 = %+v, want %+v", w.Spans, want)
 	}
 	got := silvertest.Merged(t, conn, w)
 	// d0..d3 holds all four fund-days, d1 and d2 from run1 among them.
