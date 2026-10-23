@@ -691,7 +691,8 @@ func (pj *projector) indicated(h Holding, typ IncomeType) bool {
 // dividend is a holding's indicated dividend: per share of its next
 // payments in turn, from the one after the last, the payments a year, the
 // day of the last one, and what it rests on. units says a payment it
-// rests on is in its day's units (Payment).
+// rests on is in its day's units (Payment); partial that it covers part
+// of the year: one half of a payer twice a year, the other's rate lost.
 type dividend struct {
 	payments  []float64
 	frequency int
@@ -699,6 +700,7 @@ type dividend struct {
 	last      time.Time
 	tag       Tag
 	units     bool
+	partial   bool
 }
 
 // indicatedDividend is a holding's indicated dividend per share, in its
@@ -711,10 +713,23 @@ type dividend struct {
 //   - The rate is the last month's that has one, where it lies within
 //     400 days, at the frequency the pay months of the twelve months to
 //     the instant show (1, 2, 4 or 12). A payer twice a year pays its
-//     interim and its final, which often differ, each in its own half:
-//     the last month's rate, and the rate of the newest month before it
-//     within 400 days in the other half of the year, where one has one.
-//   - A special counts in no rate, but its month counts in the
+//     interim and its final, which often differ: the last month's rate,
+//     and the rate of the newest month before it within 400 days in the
+//     other half of the year, each in its own half: after a last pay day
+//     of no rate, in the other's half, the last month's rate comes next.
+//   - Where that half has no rate but a special, in a month whose only pay
+//     days are specials but which counts in the frequency, the special
+//     stands as its rate, up to six times the last month's: an uneven
+//     final is no special. A special above that is no half's payment,
+//     unless the same month a year earlier paid within a third of it: a
+//     large final that recurs is the payer's schedule.
+//   - Where that half's newest month of the year has no rate, or only a
+//     special the bound refuses, its month a year earlier stands for it,
+//     where that one has one.
+//   - Where the year shows exactly two calendar months of payments and
+//     the other half has no rate, its rate is lost: the one rate pays once
+//     a year, from its own month, and covers part of the year (partial).
+//   - Else a special counts in no rate, but its month counts in the
 //     frequency. A month whose only pay days are specials counts where
 //     the same month a year earlier paid: the special fell on the
 //     payer's own schedule, as a trimmed holding's payment does. An
@@ -723,7 +738,8 @@ type dividend struct {
 //
 // Else the filings' dividends per share serve, quarterly. A ledger record
 // in a currency no rate converts counts nothing. The payments go on from
-// the last pay day that is no special.
+// the last pay day that is no special; the one rate of a payer twice a
+// year, from its own.
 func indicatedDividend(in *Inputs, h Holding) *dividend {
 	days := payDays(in, h)
 	paid := map[int]bool{}
@@ -738,20 +754,37 @@ func indicatedDividend(in *Inputs, h Holding) *dividend {
 		rate  float64
 		units bool
 	}
-	var rated []monthly
+	// rated are the months with a regular rate; scheduled the months of
+	// the year whose only pay days are specials but which count in the
+	// frequency, with their specials' rate; unrated the months of the year
+	// with regular pay days but no rate, and those whose special the bound
+	// refuses (below); whole every month's rate, its specials in it.
+	var rated, scheduled []monthly
+	unrated, whole := map[int]bool{}, map[int]float64{}
 	for i := 0; i < len(days); {
-		m := monthOf(days[i].day)
+		m, from := monthOf(days[i].day), i
 		var regular []payDay
 		for ; i < len(days) && monthOf(days[i].day) == m; i++ {
 			if !days[i].special {
 				regular, last = append(regular, days[i]), days[i].day
 			}
 		}
+		all, u := monthRate(days[from:i])
+		if all != nil {
+			whole[m] = *all
+		}
+		r, ru := monthRate(regular)
 		if in.withinYear(days[i-1].day) && (len(regular) > 0 || paid[m-12]) {
 			months[m] = true
+			switch {
+			case len(regular) == 0 && all != nil:
+				scheduled = append(scheduled, monthly{m, days[i-1].day, *all, u})
+			case len(regular) > 0 && r == nil:
+				unrated[m] = true
+			}
 		}
-		if r, u := monthRate(regular); r != nil {
-			rated = append(rated, monthly{m, regular[len(regular)-1].day, *r, u})
+		if r != nil {
+			rated = append(rated, monthly{m, regular[len(regular)-1].day, *r, ru})
 		}
 	}
 	if d, ok := in.Dividends[InstrumentKey{h.Source, h.Instrument}]; ok && d.Frequency > 0 {
@@ -765,11 +798,60 @@ func indicatedDividend(in *Inputs, h Holding) *dividend {
 		r, f := rated[n-1], nearestFrequency(len(months))
 		d := &dividend{payments: []float64{r.rate}, frequency: f, annual: r.rate * float64(f), last: last,
 			tag: TagIndicated, units: r.units}
-		for j := n - 2; f == 2 && j >= 0 && recent(rated[j]); j-- {
-			if o := rated[j]; (r.month-o.month)%12 != 0 {
-				d.payments, d.annual, d.units = []float64{o.rate, r.rate}, o.rate+r.rate, r.units || o.units
-				break
+		if f != 2 {
+			return d
+		}
+		other := func(ms []monthly) *monthly {
+			for j := len(ms) - 1; j >= 0 && recent(ms[j]); j-- {
+				if o := &ms[j]; (r.month-o.month)%12 != 0 {
+					return o
+				}
 			}
+			return nil
+		}
+		o := other(rated[:n-1])
+		if o == nil {
+			if s := other(scheduled); s != nil {
+				// A large final that recurs: a year earlier, its month paid
+				// within a third of it.
+				y, ok := whole[s.month-12]
+				if s.rate <= maxHalfRatio*r.rate || (ok && math.Abs(y-s.rate) <= s.rate/3) {
+					o = s
+				} else {
+					// A special the bound refuses leaves its half no rate.
+					unrated[s.month] = true
+				}
+			}
+		}
+		if o == nil {
+			// The other half's newest month, of no rate: its month a year
+			// earlier, where that one has a rate.
+			lost := 0
+			for m := range months {
+				if (m-r.month)%12 != 0 && m > lost {
+					lost = m
+				}
+			}
+			if unrated[lost] {
+				if j := slices.IndexFunc(rated, func(x monthly) bool { return x.month == lost-12 }); j >= 0 {
+					o = &rated[j]
+				}
+			}
+		}
+		calendar := map[int]bool{}
+		for m := range months {
+			calendar[m%12] = true
+		}
+		switch {
+		case o != nil:
+			d.payments, d.annual, d.units = []float64{o.rate, r.rate}, o.rate+r.rate, r.units || o.units
+			if (monthOf(last)-r.month)%12 != 0 {
+				// The last pay day, of no rate, was o's half's: r's comes
+				// next.
+				d.payments = []float64{r.rate, o.rate}
+			}
+		case len(calendar) == 2:
+			d.frequency, d.annual, d.last, d.partial = 1, r.rate, r.day, true
 		}
 		return d
 	}
@@ -838,14 +920,24 @@ type accountPay struct {
 //
 //   - An account's lines of one day are one payment: a fund's
 //     distribution often comes as several, income and capital gains
-//     apart. Their sum over the quantity the account held that day is its
-//     rate per share. A payment whose quantity is unknown has none. An
+//     apart. Their sum over the quantity the account held on its record
+//     day, where the market of the security paid fixes it and the account
+//     held some then (Payment.Record), is its rate per share. Else it is
+//     their sum over what it held on its pay day: an account that held
+//     none on the record day the fixed lag gives, yet was paid, held some
+//     on the true one. A payment whose quantity is unknown has none. An
 //     account is one of a source: two sources' accounts of one id are
 //     two.
-//   - So has a payment on under two thirds, or over one and a half
-//     times, what its account held RecordLagDays before: a holding
-//     trimmed or topped up between the record day and the pay day was
-//     paid on another quantity than it held that day.
+//   - So has a payment rated on its record day's quantity where the
+//     account held more than a tenth apart across the record window, or
+//     some of the window is unknown (Payment.steady): a trade near the
+//     true record day leaves the quantity paid on unknown. Its day still
+//     pays.
+//   - So has a payment rated on its pay day's quantity that is under two
+//     thirds, or over one and a half times, the quantity that guards it
+//     (Payment.Before): a holding trimmed or topped up between the record
+//     day and the pay day was paid on another quantity than it held that
+//     day.
 //   - The accounts paid on one day pay one rate: the day's is the median
 //     of their rates.
 //   - A day whose rate is above twice the median of the rates of the
@@ -855,15 +947,22 @@ type accountPay struct {
 //     than four there, a special is above four times their median, the
 //     smaller one's with two: a payer twice a year whose final is two or
 //     three times its interim has no special among a few payments.
+//   - A rate above that is no special where it holds the level of the
+//     newest pay days (newestLevel): it and every pay day after it, two
+//     or more, have a rate, lie within a third of one another, and one of
+//     them falls in another month of the year than its own. A payer
+//     that raised its dividend steeply pays its new rate on every pay day
+//     since. Two specials of one size between regular pay days stay
+//     specials.
 func payDays(in *Inputs, h Holding) []payDay {
 	type paid struct {
 		day     time.Time
 		account AccountKey
 	}
 	type sum struct {
-		amount      float64
-		qty, before *float64
-		units       bool
+		amount        float64
+		qty, before   *float64
+		units, astray bool
 	}
 	sums := map[paid]*sum{}
 	var order []paid
@@ -883,8 +982,13 @@ func payDays(in *Inputs, h Holding) []payDay {
 				sums[k], order = s, append(order, k)
 			}
 			s.amount += amount
-			if p.Quantity != nil && *p.Quantity > 0 {
-				s.qty, s.before, s.units = p.Quantity, p.Before, s.units || p.Units
+			qty, before := p.Quantity, p.Before
+			if p.LagDays > 0 && p.Record != nil && *p.Record > 0 {
+				qty, before = p.Record, nil
+				s.astray = s.astray || !p.steady()
+			}
+			if qty != nil && *qty > 0 {
+				s.qty, s.before, s.units = qty, before, s.units || p.Units
 			}
 		}
 	}
@@ -893,7 +997,7 @@ func payDays(in *Inputs, h Holding) []payDay {
 			cmp.Compare(a.account.Account, b.account.Account))
 	})
 	for _, s := range sums {
-		if s.qty != nil && s.before != nil && (*s.qty < *s.before/1.5 || *s.qty > *s.before*1.5) {
+		if s.astray || (s.qty != nil && s.before != nil && (*s.qty < *s.before/1.5 || *s.qty > *s.before*1.5)) {
 			s.qty = nil
 		}
 	}
@@ -929,11 +1033,41 @@ func payDays(in *Inputs, h Holding) []payDay {
 		case len(all) == 3:
 			m = median(all)
 		}
+		level := newestLevel(out)
 		for i := range out {
-			out[i].special = out[i].per != nil && *out[i].per > bar*m
+			out[i].special = out[i].per != nil && *out[i].per > bar*m && !level(i)
 		}
 	}
 	return out
+}
+
+// maxHalfRatio bounds a special that stands as a half's rate of a payer
+// twice a year: up to that many times the other half's.
+const maxHalfRatio = 6
+
+// newestLevel says a pay day of days holds the level of the newest ones:
+// it lies in the run of pay days that ends at the newest, two or more,
+// each with a rate, whose rates all lie within a third of one another,
+// and another day of the run falls in another month of the year than its
+// own. A pay day of no rate ends the run.
+func newestLevel(days []payDay) func(i int) bool {
+	var run []int
+	lo, hi := math.Inf(1), 0.0
+	for i := len(days) - 1; i >= 0; i-- {
+		if days[i].per == nil {
+			break
+		}
+		l, h := min(lo, *days[i].per), max(hi, *days[i].per)
+		if h-l > l/3 {
+			break
+		}
+		run, lo, hi = append(run, i), l, h
+	}
+	return func(i int) bool {
+		return slices.Contains(run, i) && slices.ContainsFunc(run, func(j int) bool {
+			return (monthOf(days[j].day)-monthOf(days[i].day))%12 != 0
+		})
+	}
 }
 
 // median is the middle of vs, the mean of the two middle ones where

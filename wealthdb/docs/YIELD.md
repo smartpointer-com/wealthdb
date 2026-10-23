@@ -488,6 +488,19 @@ twelve months to the day over the mean daily value.
    interim and its final, which often differ, each in its own half: the
    last month's payment, and the newest payment within 400 days in the
    other half of the year.
+   - Where that half has no rate but a special, in a month the year
+     counts (below), the special stands as its payment up to six times
+     the last month's: an uneven final is no special.
+   - A special above six times stands too where the same month a year
+     earlier paid within a third of it: a large final that recurs is the
+     payer's schedule.
+   - Where that half's newest month has no rate, or only a special the
+     two rules above refuse, its month a year earlier stands for it,
+     where that one has a rate.
+   - Where the year's pay days fall in exactly two months of the calendar
+     and the other half has no rate still, the one rate pays once a
+     year, in its own month. It covers part of the year, and reads
+     `partial`.
 3. the filings' dividends per share over four quarters. It reads
    `indicated`.
 
@@ -501,9 +514,68 @@ the instrument included.
   often comes as several, income and capital gains apart. Two sources'
   accounts of one id are two accounts.
 - A payment per share is the payment over the quantity the account held
-  as its pay day began. That quantity comes from the account's newest
-  snapshot by then. The account's trades since that snapshot move it.
-  The pay day's own trades earn none of the payment.
+  as its record day began. The record day lies a fixed number of days
+  before the pay day, by the market of the security paid. Each market
+  also has a record window: the days before the pay day in which its
+  record day falls.
+
+  | Market | Lag | Window before pay |
+  |---|---|---|
+  | a share quoted in dollars | 30 days | 3 to 35 days |
+  | a share of the United Kingdom or Hong Kong | 30 days | 14 to 63 days |
+  | a share of Switzerland, Denmark or a euro-area market below | 2 business days | 2 to 4 business days |
+  | a share of Sweden | 4 business days | 4 to 6 business days |
+  | a receipt of a Japanese share | 90 days | 70 to 105 days |
+  | a receipt of a share of a market with a lag in business days | 14 days | 7 to 42 days |
+  | a receipt of a share of the United Kingdom | 30 days | 21 to 63 days |
+  | any other receipt | 30 days | 7 to 63 days |
+
+- The euro-area markets are Germany, France, Italy, Spain, Austria and
+  Belgium. In these markets, in Switzerland and in Denmark, the ex-day,
+  the record day and the pay day fall on consecutive business days, and
+  a trade on the ex-day earns nothing. So the lag reaches back to the
+  ex-day. A Swedish share pays three business days after its record day,
+  which follows its ex-day by one, so its lag reaches back to the ex-day
+  too. The window reaches two business days further: a holiday, or a
+  payment booked a day late, then falls inside it.
+- A business day is a weekday, a holiday among them: a Monday's lag of 2
+  business days reaches back to the Thursday.
+- A share's market is that of the currency it is quoted in, whatever its
+  issuer's country:
+  - dollars: the United States;
+  - pounds or pence: the United Kingdom;
+  - Hong Kong dollars: Hong Kong;
+  - francs, Danish kroner, Swedish kronor: Switzerland, Denmark, Sweden;
+  - euros: the issuer's market, where that is of the euro area above.
+
+  Any other share has no record day.
+- The currency is the one the instrument is listed in, where gold states
+  one. Else it is the one the position's newest snapshot values it in,
+  newest across every id the instrument folds under. Two positions seen
+  at that instant that give different markets give none. A statement may
+  value a position in its portfolio's currency: the position then reads
+  that currency's market.
+- A receipt's market is that of the share it stands for: its situs
+  (EXPOSURE.md §13). Any position the situs rule reads as a receipt is
+  one, whatever its basis. A receipt whose situs is declared reads the
+  declared country as its share's. A receipt whose share is unknown has
+  no record day. A receipt gold does not know as one reads as a share of
+  its currency's market.
+- A payment rated on its record day's quantity counts in no rate where
+  the account's most over its least across the record window is above
+  1.1, or where some of the window is unknown. A trade near the true
+  record day leaves the quantity paid on unknown. The days the account
+  held none count nothing: the account was paid, so none of them was its
+  record day. The other accounts paid that day, or the last month with a
+  rate, give the rate, and the day still counts in the frequency.
+- Where the market fixes no record day, the quantity is the one held as
+  the pay day began. So it is where the account held none on the record
+  day, or no snapshot says what it held, or its first snapshot falls
+  inside the record window. An account paid that held none on the record
+  day the fixed lag gives held some on the true one.
+- That quantity comes from the account's newest snapshot by then. The
+  account's trades since that snapshot move it. The day's own trades
+  earn none of the payment.
 - A trade stamped at a snapshot's instant counts in it, as the lot
   engine reads a snapshot. Some statements leave out their last day's
   trades: where the snapshot shows the previous one's quantity without
@@ -521,21 +593,34 @@ the instrument included.
   did, it reads that account's: a bank may book it in another
   portfolio.
 - A payment whose quantity is unknown counts in no rate, such as one
-  before its source's first snapshot. So does one to an account that
-  held none of it that day: one that sold between the record day and
-  the pay day. Today's quantity never stands in.
-- So does a payment on under two thirds, or over one and a half times,
-  what its account held 100 days before. The holding may have changed
-  between its record day and its pay day. A depositary receipt of a
-  Japanese share pays about three months after its record day.
+  whose pay day comes before its account's first snapshot. So does one
+  that reads its pay day's quantity where the account held none then:
+  one that sold before its pay day. Today's quantity never stands in.
+- A payment that reads its pay day's quantity counts in no rate where
+  that is under two thirds, or over one and a half times, the quantity
+  that guards it. The holding may have changed between its record day
+  and its pay day. Where the market fixes no record day, the guard is
+  what the account held 100 days before. Where it fixes one, it is the
+  first quantity the account shows held after the record day. A buy
+  just before the record day may show only then: a snapshot that holds
+  none of an instrument moves by no trade, as it may hold it by another
+  id.
 - The accounts paid on one day pay one rate: the median of theirs.
 - A payment per share above twice the median of the year's payments per
   share is a special: a special dividend, or a return of capital. With
   fewer than three payments in the year, the median is that of the 24
   months to the day. With fewer than four there, a special is a payment
   above four times their median, the smaller one's with two. So a final
-  two or three times the interim is no special among a few payments. A
-  special counts in no rate, but it counts as income received.
+  two or three times the interim is no special among a few payments.
+- A payment above that bar is no special where it holds the level of the
+  newest pay days. That is where it and every pay day after it, two or
+  more, have a rate, lie within a third of one another, and one of them
+  falls in another month of the year than its own. A payer that raised
+  its dividend steeply pays its new rate on every pay day since. Two
+  specials of one size between regular pay days stay specials, also
+  where a regular one between them has no rate.
+- A special counts in no rate, except as a half's payment of a payer
+  twice a year (above), but it counts as income received.
 - A month's payment per share is the sum of its days' that are not a
   special: two lines of one month on different days are one payment.
   Each account's days sum, and the month pays the median of the
@@ -672,7 +757,7 @@ row lists its holding's tags without shares.
 | `floating` | a floating note, which implies no yield, or a fund whose floating lines are half of it or more |
 | `default` | a bond is graded in default, or a fund holds lines in default or arrears; they imply nothing |
 | `thin` | the amount was under a tenth of its mean on more than half the year's days: no realized yield (§4) |
-| `partial` | a position's realized yield covers the days it was held, fewer than the year's (§4) |
+| `partial` | a figure covers part of the year: a position's realized yield covers the days it was held, fewer than the year's; or a payer twice a year shows one half's dividend, as the other half's rate is lost (§4) |
 | `units` | a dividend per share may be in the units of its day: no whole factor explains how they changed since, or no account held it through a span since (§4) |
 | `unknown` | no source and no record gives a figure |
 | `mixed` | a total across currencies |

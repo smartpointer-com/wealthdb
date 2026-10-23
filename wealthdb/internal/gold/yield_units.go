@@ -13,11 +13,12 @@ import (
 )
 
 // The quantity a dividend was paid on (docs/YIELD.md §4): what its
-// account held of its instrument before its day, in the newest snapshot
-// that speaks for the account (unitAccountsCTE), moved by the account's
-// trades since, in the instrument's units at the instant. An instrument
-// goes by the id the matching folds it into (yield.Inputs.Fold), under
-// the account that holds or trades it.
+// account held of its instrument before its record day, where its market
+// fixes one and the account held some then, else before its pay day, in
+// the newest snapshot that speaks for the account (unitAccountsCTE),
+// moved by the account's trades since, in the instrument's units at the
+// instant. An instrument goes by the id the matching folds it into
+// (yield.Inputs.Fold), under the account that holds or trades it.
 
 // unitKey names an instrument held in one account of a source, by the id
 // the account's aliases fold it into.
@@ -57,6 +58,9 @@ type yieldUnits struct {
 	changes  map[yield.InstrumentKey][]unitChange
 	read     map[yield.InstrumentKey][][2]int64
 	last     map[string]int64
+	// instants are the snapshots of each source that speak for some
+	// account, sorted.
+	instants map[string][]int64
 }
 
 // accountKey names an account of a source.
@@ -122,7 +126,7 @@ func readYieldUnits(ctx context.Context, db *sql.DB, paid map[yield.InstrumentKe
 	u := &yieldUnits{points: map[unitKey][]unitPoint{}, snaps: map[accountKey][]int64{},
 		late: map[unitKey]map[int64]bool{}, accounts: map[yield.InstrumentKey][]string{},
 		changes: map[yield.InstrumentKey][]unitChange{}, read: map[yield.InstrumentKey][][2]int64{},
-		last: map[string]int64{}}
+		last: map[string]int64{}, instants: map[string][]int64{}}
 	if len(paid) == 0 {
 		return u, nil
 	}
@@ -202,9 +206,14 @@ SELECT silver_source_id, account_external_id, snapshot_at FROM account_grid ORDE
 				return err
 			}
 			u.snaps[k] = append(u.snaps[k], at)
+			u.instants[k.src] = append(u.instants[k.src], at)
 			return nil
 		}, srcs, iids, from, asOf); err != nil {
 		return nil, err
+	}
+	for src, at := range u.instants {
+		slices.Sort(at)
+		u.instants[src] = slices.Compact(at)
 	}
 	trades, err := readUnitTrades(ctx, db, srcs, iids, from, asOf)
 	if err != nil {
@@ -379,36 +388,30 @@ func (u *yieldUnits) addChange(ik yield.InstrumentKey, c unitChange) {
 // explains, or a span since end over which no account held the
 // instrument with its units read (covered).
 func (u *yieldUnits) quantity(in *yield.Inputs, src, acct, iid string, end int64) (qty *float64, units bool) {
-	keys := []unitKey{{src, acct, in.Fold(src, acct, iid)}}
-	if _, ok := u.points[keys[0]]; !ok {
-		own := keys[0].iid
-		keys = nil
-		if portfolio := in.Accounts[yield.AccountKey{Source: src, Account: acct}].Portfolio; portfolio != "" {
-			for a, x := range in.Accounts {
-				k := unitKey{src, a.Account, in.Fold(src, a.Account, iid)}
-				if _, ok := u.points[k]; ok && a.Source == src && x.Portfolio == portfolio {
-					keys = append(keys, k)
-				}
-			}
-			slices.SortFunc(keys, func(a, b unitKey) int { return cmp.Compare(a.acct, b.acct) })
-		}
-		if accts := u.accounts[yield.InstrumentKey{Source: src, Instrument: own}]; len(keys) == 0 && len(accts) == 1 {
-			keys = []unitKey{{src, accts[0], own}}
-		}
+	held, known, units := u.holding(in, src, acct, iid, end)
+	if !known || held <= 0 {
+		return nil, false
 	}
-	held, known := 0.0, false
+	return f64(held), units
+}
+
+// holding is what quantity reads, 0 where the accounts held none; known
+// is false where none is known: before an account's first snapshot, or
+// where a snapshot states none.
+func (u *yieldUnits) holding(in *yield.Inputs, src, acct, iid string, end int64) (held float64, known, units bool) {
+	keys := u.keysOf(in, src, acct, iid)
 	for _, k := range keys {
 		if snaps := u.snaps[accountKey{src, k.acct}]; len(keys) > 1 && (len(snaps) == 0 || snaps[0] > end) {
 			continue
 		}
 		q := u.heldOn(k, end)
 		if q == nil {
-			return nil, false
+			return 0, false, false
 		}
 		held, known = held+*q, true
 	}
 	if !known || held <= 0 {
-		return nil, false
+		return 0, known, false
 	}
 	ik := yield.InstrumentKey{Source: src, Instrument: keys[0].iid}
 	k, ok := 1.0, true
@@ -418,13 +421,100 @@ func (u *yieldUnits) quantity(in *yield.Inputs, src, acct, iid string, end int64
 			ok = ok && c.ok
 		}
 	}
-	return f64(held * k), !ok || !u.covered(ik, end)
+	return held * k, true, !ok || !u.covered(ik, end)
+}
+
+// keysOf are the keys quantity reads for account acct's instrument iid:
+// its own where the account held it, else its portfolio's accounts', else
+// the one account of its source that held it.
+func (u *yieldUnits) keysOf(in *yield.Inputs, src, acct, iid string) []unitKey {
+	keys := []unitKey{{src, acct, in.Fold(src, acct, iid)}}
+	if _, ok := u.points[keys[0]]; ok {
+		return keys
+	}
+	own := keys[0].iid
+	keys = nil
+	if portfolio := in.Accounts[yield.AccountKey{Source: src, Account: acct}].Portfolio; portfolio != "" {
+		for a, x := range in.Accounts {
+			k := unitKey{src, a.Account, in.Fold(src, a.Account, iid)}
+			if _, ok := u.points[k]; ok && a.Source == src && x.Portfolio == portfolio {
+				keys = append(keys, k)
+			}
+		}
+		slices.SortFunc(keys, func(a, b unitKey) int { return cmp.Compare(a.acct, b.acct) })
+	}
+	if accts := u.accounts[yield.InstrumentKey{Source: src, Instrument: own}]; len(keys) == 0 && len(accts) == 1 {
+		keys = []unitKey{{src, accts[0], own}}
+	}
+	return keys
+}
+
+// span is the least and the most account acct, or the accounts quantity
+// reads for it, held of the instrument iid names as each instant from
+// from to to began (holding), where it held some: at from and at to, and
+// after each of the snapshots and trades of those accounts between. To
+// is the record instant of a lag that reaches back to its window's
+// nearest day, so a snapshot stamped at it counts, as in Record. A day it
+// held none is no record day of a payment it received. The least is 0
+// where some of the span is unknown.
+func (u *yieldUnits) span(in *yield.Inputs, src, acct, iid string, from, to int64) (least, most *float64) {
+	at := []int64{from, to}
+	for _, k := range u.keysOf(in, src, acct, iid) {
+		for _, s := range u.snaps[accountKey{k.src, k.acct}] {
+			if s >= from && s < to {
+				at = append(at, s+1)
+			}
+		}
+		for _, t := range u.trades[k] {
+			if t.at >= from && t.at < to {
+				at = append(at, t.at+1)
+			}
+		}
+	}
+	lo, hi := math.Inf(1), 0.0
+	for _, a := range at {
+		v, known, _ := u.holding(in, src, acct, iid, a)
+		switch {
+		case !known:
+			lo = 0
+		case v > 0:
+			lo, hi = min(lo, v), max(hi, v)
+		}
+	}
+	if math.IsInf(lo, 1) {
+		lo = 0
+	}
+	return f64(lo), f64(hi)
+}
+
+// seenBy says account acct, or an account quantity reads for it, shows a
+// snapshot at or before at.
+func (u *yieldUnits) seenBy(in *yield.Inputs, src, acct, iid string, at int64) bool {
+	return slices.ContainsFunc(u.keysOf(in, src, acct, iid), func(k unitKey) bool {
+		snaps := u.snaps[accountKey{k.src, k.acct}]
+		return len(snaps) > 0 && snaps[0] <= at
+	})
+}
+
+// firstHeld is the first quantity of the instrument iid names that
+// account acct, or the accounts quantity reads for it, shows held at a
+// snapshot of its source after from and no later than end, the pay day's
+// start: quantity as the second after that snapshot began. nil where none
+// shows any.
+func (u *yieldUnits) firstHeld(in *yield.Inputs, src, acct, iid string, from, end int64) *float64 {
+	at := u.instants[src]
+	for i := sort.Search(len(at), func(i int) bool { return at[i] > from }); i < len(at) && at[i] <= end; i++ {
+		if q, _ := u.quantity(in, src, acct, iid, at[i]+1); q != nil {
+			return q
+		}
+	}
+	return nil
 }
 
 // heldOn is a key's quantity as instant at begins: what the newest
 // snapshot that speaks for its account at or before at states, moved by
 // the account's trades of it since, before at; a trade stamped at the
-// snapshot's instant among them where it counts after it (after). A pay
+// snapshot's instant among them where it counts after it (after). The
 // day's own trades so earn none of its payment. Trades move only a
 // quantity the snapshot holds: one that holds none may hold the
 // instrument by another id, as a statement's history can. nil before the

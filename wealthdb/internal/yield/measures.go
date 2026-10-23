@@ -748,6 +748,9 @@ func dividendReading(in *Inputs, h Holding, m *Measures) bool {
 	if d.units {
 		m.Tags[TagUnits] = true
 	}
+	if d.partial {
+		m.Tags[TagPartial] = true
+	}
 	return true
 }
 

@@ -585,19 +585,186 @@ type Payment struct {
 	Account  string
 	// Quantity is the quantity of the instrument held as the payment's
 	// day began, in the units of the instrument at the instant; nil where
-	// none is known. Units says it may be in the day's units: no whole
-	// factor explains a change since, or no account held the instrument
-	// through some span since with its units read. Before is the quantity
-	// held RecordLagDays earlier, in the same units.
-	Quantity, Before *float64
-	Units            bool
-	Type             IncomeType
+	// none is known. LagDays is the days from its record day to its day
+	// where the market of the security paid fixes them (RecordLag), 0
+	// where it fixes none. Record is then the quantity held as its record
+	// day began, in the same units, where it is known and above zero and
+	// the account was seen by its record window's start: what the payment
+	// was paid on. Before is the quantity that guards a rate
+	// on Quantity (payDays): where LagDays is above zero, the first the
+	// account shows held after its record day; else what it held
+	// RecordLagDays before its day. Least and Most are the least and the
+	// most the account held across the record window (Lag.Window), on the
+	// days it held some, where Record is known: Least is 0 where some of
+	// the window is unknown. Units says the quantity its rate reads may be
+	// in its day's units: no whole factor explains a change since, or no
+	// account held the instrument through some span since with its units
+	// read.
+	Quantity, Record, Before *float64
+	Least, Most              *float64
+	LagDays                  int
+	Units                    bool
+	Type                     IncomeType
 }
 
-// RecordLagDays bound the days from a dividend's record day to its pay
-// day. A depositary receipt of a Japanese share pays about three months
-// after its record day.
+// steady says a payment's rate may rest on Record: its most over its
+// least across the record window is at most recordSpread, or no window
+// was read. A trade near the true record day leaves the quantity paid on
+// unknown. A day the account held none is no record day, as it was paid.
+func (p Payment) steady() bool {
+	return p.Least == nil || (*p.Least > 0 && *p.Most <= recordSpread**p.Least)
+}
+
+// recordSpread bounds what an account held across a record window, its
+// most over its least, for a rate on its record day's quantity.
+const recordSpread = 1.1
+
+// A Lag is how long before its pay day a dividend's record day falls:
+// Days calendar days, or Days business days where Business; the payment
+// reads what its account held then. Near and Far bound its record window,
+// the days before the pay day in which the record day falls, nearest to
+// furthest, in the same days. The zero Lag knows none.
+type Lag struct {
+	Days      int
+	Business  bool
+	Near, Far int
+}
+
+// RecordDay is the start of the record day of a payment whose day begins
+// at pay: pay less the lag.
+func (l Lag) RecordDay(pay time.Time) time.Time { return l.back(pay, l.Days) }
+
+// Window is the span of a payment's record window, whose day begins at
+// pay: from the start of its furthest day to the start of its nearest.
+func (l Lag) Window(pay time.Time) (from, to time.Time) {
+	return l.back(pay, l.Far), l.back(pay, l.Near)
+}
+
+// back is the day n of the lag's days before pay: calendar days, or
+// business days stepping over Saturdays and Sundays. A holiday counts as
+// a business day.
+func (l Lag) back(pay time.Time, n int) time.Time {
+	if !l.Business {
+		return pay.AddDate(0, 0, -n)
+	}
+	d := pay
+	for i := 0; i < n; {
+		if d = d.AddDate(0, 0, -1); d.Weekday() != time.Saturday && d.Weekday() != time.Sunday {
+			i++
+		}
+	}
+	return d
+}
+
+// The lags of a dividend's record day in the markets that fix them, and
+// their record windows (RecordLag): a payment is per what its account
+// held as its record day began, where its most over its least across the
+// window is at most recordSpread (Payment.steady).
+//
+//	market                                    lag               window before pay
+//	share quoted in dollars                   30 days           3 to 35 days
+//	share of the United Kingdom or Hong Kong  30 days           14 to 63 days
+//	share of a euro-area market, Switzerland
+//	  or Denmark                              2 business days   2 to 4 business days
+//	share of Sweden                           4 business days   4 to 6 business days
+//	receipt of a Japanese share               90 days           70 to 105 days
+//	receipt of a share of a business-day
+//	  market above                            14 days           7 to 42 days
+//	receipt of a share of the United Kingdom  30 days           21 to 63 days
+//	any other receipt                         30 days           7 to 63 days
+var (
+	// RecordLagUSShare is the lag of a share quoted in dollars, as one of
+	// the United States: it pays one to five weeks after its record day.
+	RecordLagUSShare = Lag{Days: 30, Near: 3, Far: 35}
+	// RecordLagUKHongKongShare is the lag of a share of the United
+	// Kingdom or of Hong Kong: it pays two to nine weeks after its record
+	// day.
+	RecordLagUKHongKongShare = Lag{Days: 30, Near: 14, Far: 63}
+	// RecordLagEuropeanShare is the lag of a share of Switzerland,
+	// Denmark or a market of the euro area that pays within days: there
+	// its ex-day, its record day and its pay day fall on consecutive
+	// business days, and a trade on the ex-day earns nothing. So the lag
+	// reaches back to the ex-day, and its window two days further: a
+	// holiday, or a payment booked a day late, falls inside it.
+	RecordLagEuropeanShare = Lag{Days: 2, Business: true, Near: 2, Far: 4}
+	// RecordLagSwedishShare is the lag of a share of Sweden: it pays three
+	// business days after its record day, which follows its ex-day by
+	// one. Its window reaches two days further, as the euro area's does.
+	RecordLagSwedishShare = Lag{Days: 4, Business: true, Near: 4, Far: 6}
+	// RecordLagJapaneseReceipt is the lag of a depositary receipt of a
+	// Japanese share: the issuer pays about three months after its record
+	// day, once its shareholders approve the dividend, and the depositary
+	// after it.
+	RecordLagJapaneseReceipt = Lag{Days: 90, Near: 70, Far: 105}
+	// RecordLagEuropeanReceipt is the lag of a depositary receipt of a
+	// share of a market with a business-day lag: its depositary sets its
+	// record day near the share's and pays one to six weeks after it.
+	RecordLagEuropeanReceipt = Lag{Days: 14, Near: 7, Far: 42}
+	// RecordLagUKReceipt is the lag of a depositary receipt of a share of
+	// the United Kingdom: its depositary pays three to nine weeks after
+	// the share's record day.
+	RecordLagUKReceipt = Lag{Days: 30, Near: 21, Far: 63}
+	// RecordLagReceipt is the lag of any other depositary receipt: its
+	// depositary pays one to nine weeks after the record day of the share
+	// it stands for.
+	RecordLagReceipt = Lag{Days: 30, Near: 7, Far: 63}
+)
+
+// RecordWindowDays is the furthest a record window reaches before its
+// pay day, in calendar days: the furthest of the lags' Far.
+const RecordWindowDays = 105
+
+// markets are the lags of the markets whose shares fix their record day,
+// by country; currencyMarkets the market of a share quoted in each
+// currency, where one currency names one market. A share quoted in euros
+// reads its issuer's market where that is one of the euro area's here.
+var (
+	markets = map[string]Lag{
+		"US": RecordLagUSShare, "GB": RecordLagUKHongKongShare, "HK": RecordLagUKHongKongShare,
+		"AT": RecordLagEuropeanShare, "BE": RecordLagEuropeanShare, "CH": RecordLagEuropeanShare,
+		"DE": RecordLagEuropeanShare, "DK": RecordLagEuropeanShare, "ES": RecordLagEuropeanShare,
+		"FR": RecordLagEuropeanShare, "IT": RecordLagEuropeanShare, "SE": RecordLagSwedishShare,
+	}
+	currencyMarkets = map[string]string{
+		"USD": "US", "GBP": "GB", "GBX": "GB", "GBp": "GB", "HKD": "HK", "CHF": "CH", "DKK": "DK", "SEK": "SE",
+	}
+	euroMarkets = []string{"AT", "BE", "DE", "ES", "FR", "IT"}
+)
+
+// RecordLagDays is how long before its pay day the guard reads what an
+// account held, for a payment whose market fixes no record day (payDays):
+// longer than most record days lie before their pay day.
 const RecordLagDays = 100
+
+// RecordLag is the lag of a dividend's record day in the market of the
+// security paid, the zero Lag where none is known. situs is the country
+// of the security, or of the share a depositary receipt (receipt) stands
+// for, "" where it is unknown; currency the one it is quoted in; share
+// says it is a share. A receipt reads the market of its share. A share
+// reads the market of the currency it is quoted in, whatever its
+// issuer's country: one in dollars pays as a share of the United States
+// does, one in Hong Kong dollars as one of Hong Kong. One in euros reads
+// its issuer's market, where that is of the euro area. Any other knows
+// none.
+func RecordLag(situs, currency string, receipt, share bool) Lag {
+	switch {
+	case receipt && situs == "":
+		return Lag{}
+	case receipt && situs == "JP":
+		return RecordLagJapaneseReceipt
+	case receipt && situs == "GB":
+		return RecordLagUKReceipt
+	case receipt && markets[situs].Business:
+		return RecordLagEuropeanReceipt
+	case receipt:
+		return RecordLagReceipt
+	case !share:
+		return Lag{}
+	case currency == "EUR" && slices.Contains(euroMarkets, situs):
+		return markets[situs]
+	}
+	return markets[currencyMarkets[currency]]
+}
 
 // paymentKeys are the holdings of h's instrument and its sold positions
 // (instrumentOf), whose payments are the instrument's: a payment is of

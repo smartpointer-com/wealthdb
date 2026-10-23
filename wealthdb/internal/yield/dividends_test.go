@@ -223,7 +223,8 @@ func TestASpecialAmongFewPayments(t *testing.T) {
 // quantity shows the trim, the median of the 24 months reads it as a
 // special, which the median of the year's two rates would not; its
 // month still counts, as the same month a year earlier paid. Either way
-// the year pays the interim and the final of a year earlier.
+// the year pays the interim in December and the final of a year earlier
+// in June.
 func TestASemiannualPayerTrimmedBeforeItsPayDay(t *testing.T) {
 	t.Parallel()
 	for _, before := range []float64{400, 100} {
@@ -238,7 +239,15 @@ func TestASemiannualPayerTrimmedBeforeItsPayDay(t *testing.T) {
 		}
 		pay(in, h.HoldingKey, "A", date(2026, 6, 10), 0.25*400, num(100))
 		trimmed(in, h.HoldingKey, before)
-		dividendOf(t, Compute(in), h, 0.1+0.25, (0.1+0.25)*100)
+		b := Compute(in)
+		dividendOf(t, b, h, 0.1+0.25, (0.1+0.25)*100)
+		for _, m := range []struct {
+			d    *time.Time
+			want float64
+		}{{date(2026, 12, 1), 10}, {date(2027, 6, 1), 25}} {
+			near(t, m.d.Format("January"), num(incomeOf(b, h.HoldingKey, monthIndex(b, *m.d), RuleCash, PathConstant,
+				0)), m.want, 1e-9)
+		}
 	}
 }
 
@@ -384,6 +393,389 @@ func TestASecurityMovedBetweenSources(t *testing.T) {
 	near(t, "realized", p.Realized, 200.0/10000*100, 1e-9)
 	if p.Tags[TagPartial] || p.Tags[TagThin] {
 		t.Errorf("tags %v", p.Tags)
+	}
+}
+
+// The record day's lag is known for a receipt of a Japanese share, of a
+// share of the United Kingdom, of a share of a market with a business-day
+// lag, and of any other share that is known. A share reads the market of
+// the currency it is quoted in, whatever its issuer's country: the United
+// States, the United Kingdom, Hong Kong, Switzerland, Denmark or Sweden.
+// One in euros reads its issuer's market, where that is of the euro area.
+// Any other knows none. Each lag's day lies in its record window, and no
+// window reaches further than RecordWindowDays.
+func TestRecordLag(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		situs, ccy     string
+		receipt, share bool
+		want           Lag
+	}{
+		{"JP", "USD", true, false, RecordLagJapaneseReceipt}, {"DE", "USD", true, false, RecordLagEuropeanReceipt},
+		{"SE", "USD", true, false, RecordLagEuropeanReceipt}, {"FI", "USD", true, false, RecordLagReceipt},
+		{"GB", "USD", true, false, RecordLagUKReceipt}, {"", "USD", true, false, Lag{}},
+		{"US", "USD", false, true, RecordLagUSShare}, {"CH", "USD", false, true, RecordLagUSShare},
+		{"", "USD", false, true, RecordLagUSShare},
+		{"CH", "CHF", false, true, RecordLagEuropeanShare}, {"IT", "EUR", false, true, RecordLagEuropeanShare},
+		{"DK", "DKK", false, true, RecordLagEuropeanShare}, {"IT", "CHF", false, true, RecordLagEuropeanShare},
+		{"SE", "SEK", false, true, RecordLagSwedishShare}, {"FI", "EUR", false, true, Lag{}},
+		{"NL", "EUR", false, true, Lag{}}, {"NO", "NOK", false, true, Lag{}}, {"PT", "EUR", false, true, Lag{}},
+		{"GB", "GBP", false, true, RecordLagUKHongKongShare}, {"GB", "GBX", false, true, RecordLagUKHongKongShare},
+		{"IE", "GBP", false, true, RecordLagUKHongKongShare},
+		{"HK", "HKD", false, true, RecordLagUKHongKongShare}, {"CN", "HKD", false, true, RecordLagUKHongKongShare},
+		{"JP", "JPY", false, true, Lag{}}, {"US", "USD", false, false, Lag{}},
+	} {
+		if got := RecordLag(c.situs, c.ccy, c.receipt, c.share); got != c.want {
+			t.Errorf("%q in %s, receipt %v, share %v: %+v, want %+v", c.situs, c.ccy, c.receipt, c.share, got, c.want)
+		}
+	}
+	for _, l := range []Lag{RecordLagUSShare, RecordLagUKHongKongShare, RecordLagEuropeanShare, RecordLagSwedishShare,
+		RecordLagJapaneseReceipt, RecordLagEuropeanReceipt, RecordLagUKReceipt, RecordLagReceipt} {
+		if l.Days < l.Near || l.Days > l.Far || l.Far > RecordWindowDays {
+			t.Errorf("%+v: its day lies outside its window, or reaches past %d days", l, RecordWindowDays)
+		}
+	}
+}
+
+// A business day's lag steps over the weekend: two business days before
+// a Monday or a Tuesday pay day fall on the Thursday or the Friday, before
+// a Wednesday on the Monday; four before a Monday on the Tuesday. A
+// calendar lag counts every day. The windows count the lag's own days:
+// two to four business days before a Monday reach from the Tuesday to
+// the Thursday, four to six from the Friday before to the Tuesday; 3 to
+// 35 calendar days from 6 April to 8 May.
+func TestARecordDay(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		lag       Lag
+		pay, want *time.Time
+	}{
+		{RecordLagEuropeanShare, date(2026, 5, 11), date(2026, 5, 7)},
+		{RecordLagEuropeanShare, date(2026, 5, 12), date(2026, 5, 8)},
+		{RecordLagEuropeanShare, date(2026, 5, 13), date(2026, 5, 11)},
+		{RecordLagSwedishShare, date(2026, 5, 11), date(2026, 5, 5)},
+		{RecordLagUSShare, date(2026, 5, 11), date(2026, 4, 11)},
+	} {
+		if got := c.lag.RecordDay(*c.pay); !got.Equal(*c.want) {
+			t.Errorf("%+v before %s: %s, want %s", c.lag, c.pay.Format(time.DateOnly), got.Format(time.DateOnly),
+				c.want.Format(time.DateOnly))
+		}
+	}
+	for _, c := range []struct {
+		lag      Lag
+		from, to *time.Time
+	}{
+		{RecordLagEuropeanShare, date(2026, 5, 5), date(2026, 5, 7)},
+		{RecordLagSwedishShare, date(2026, 5, 1), date(2026, 5, 5)},
+		{RecordLagUSShare, date(2026, 4, 6), date(2026, 5, 8)},
+	} {
+		if from, to := c.lag.Window(*date(2026, 5, 11)); !from.Equal(*c.from) || !to.Equal(*c.to) {
+			t.Errorf("%+v: window %s to %s, want %s to %s", c.lag, from.Format(time.DateOnly), to.Format(time.DateOnly),
+				c.from.Format(time.DateOnly), c.to.Format(time.DateOnly))
+		}
+	}
+}
+
+// A payment whose market fixes its record day, where its account held
+// some then, is paid on that quantity (Record), and no guard applies: a
+// holding halved between its record day and its pay day reads the raise
+// it was paid. Where the account held none on that day, or none is
+// known, it rates on its pay day's quantity under the guard, as where no
+// record day is known: paid on under two thirds of the quantity that
+// guards it, it rates nothing, and the rate before it holds; with no such
+// quantity, it reads its own.
+func TestARecordDaysQuantity(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		lag               int
+		record, before    *float64
+		amount, qty, rate float64
+	}{
+		{RecordLagUSShare.Days, num(100), num(300), 60, 50, 0.6},
+		{RecordLagUSShare.Days, nil, num(300), 40, 50, 0.5},
+		{RecordLagUSShare.Days, nil, nil, 60, 100, 0.6}, {0, nil, num(300), 40, 50, 0.5},
+	} {
+		in := inputs()
+		h := stock("A", "QSTK", 50)
+		in.Holdings = []Holding{h}
+		for _, d := range quarterly[:3] {
+			pay(in, h.HoldingKey, "A", d, 50, num(100))
+		}
+		in.Payments[h.HoldingKey] = append(in.Payments[h.HoldingKey], Payment{Day: *quarterly[3], Amount: c.amount,
+			Account: "A", Quantity: num(c.qty), Record: c.record, Before: c.before, LagDays: c.lag, Type: TypeDividends})
+		dividendOf(t, Compute(in), h, c.rate*4, c.rate*4*50)
+	}
+}
+
+// A final well above the interim, among few rates, reads as a special.
+// Where its month counts in the frequency, the same month a year earlier
+// having paid, and its half has no regular rate within 400 days (the
+// earlier final lies 410 days back), it stands as that half's rate, up to
+// six times the interim: the year pays the interim and the final, each
+// in its own month, and nothing is partial. A final paid with a special,
+// twelve times the interim, where the final a year earlier was twice it,
+// is no half's payment: the final a year earlier stands for it, and the
+// year pays 0.3. Where that one has no rate either, the year pays the
+// interim once, and is partial. In November, after an interim of no rate
+// in the final's half a year after the last rated interim, the final
+// still comes in May.
+func TestAnUnevenFinalIsNoSpecial(t *testing.T) {
+	t.Parallel()
+	// read books the payments; a prior final below 0 has no rate.
+	read := func(day *time.Time, prior, final float64, more ...*time.Time) (*Book, Holding) {
+		in := inputs()
+		in.Day, in.AsOf = *day, day.Unix()+86399
+		h := stock("A", "QADR", 100)
+		in.Holdings = []Holding{h}
+		for _, p := range []struct {
+			d    *time.Time
+			rate float64
+		}{{date(2024, 11, 10), 0.1}, {date(2025, 5, 1), prior}, {date(2025, 11, 10), 0.1}, {date(2026, 5, 10), final}} {
+			if p.rate < 0 {
+				pay(in, h.HoldingKey, "A", p.d, 20, nil)
+				continue
+			}
+			pay(in, h.HoldingKey, "A", p.d, p.rate*100, num(100))
+		}
+		for _, d := range more {
+			pay(in, h.HoldingKey, "A", d, 10, nil)
+		}
+		return Compute(in), h
+	}
+	month := func(b *Book, h Holding, d *time.Time) *float64 {
+		return num(incomeOf(b, h.HoldingKey, monthIndex(b, *d), RuleCash, PathConstant, 0))
+	}
+	b, h := read(date(2026, 6, 15), 0.12, 0.3)
+	if p := dividendOf(t, b, h, 0.1+0.3, 40); p.Tags[TagPartial] {
+		t.Errorf("tags %v", p.Tags)
+	}
+	near(t, "November", month(b, h, date(2026, 11, 1)), 10, 1e-9)
+	b, h = read(date(2026, 6, 15), 0.2, 1.2)
+	if p := dividendOf(t, b, h, 0.1+0.2, 30); p.Tags[TagPartial] {
+		t.Errorf("a final and a special of twelve times: tags %v", p.Tags)
+	}
+	b, h = read(date(2026, 6, 15), -1, 1.2)
+	if p := dividendOf(t, b, h, 0.1, 10); !p.Tags[TagPartial] {
+		t.Errorf("a final and a special of twelve times, no final a year earlier: tags %v", p.Tags)
+	}
+	b, h = read(date(2026, 11, 25), 0.12, 0.3, date(2026, 11, 10))
+	near(t, "May", month(b, h, date(2027, 5, 1)), 30, 1e-9)
+	near(t, "November", month(b, h, date(2027, 11, 1)), 10, 1e-9)
+}
+
+// A payer that raised its dividend steeply pays its new rate on every pay
+// day since: a rate that holds the level of the newest pay days, two or
+// more within a third of one another, in more than one month, is no
+// special. A quarterly payer whose dividend rose tenfold two payments ago,
+// its newest a little higher, pays the new rate four times a year, both
+// new days regular.
+func TestASteepRaiseIsNoSpecial(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	h := stock("A", "QSTK", 100)
+	in.Holdings = []Holding{h}
+	for i, rate := range []float64{0.1, 0.1, 1, 1.2} {
+		pay(in, h.HoldingKey, "A", quarterly[i], rate*100, num(100))
+	}
+	for _, d := range payDays(in, h) {
+		if d.special {
+			t.Errorf("%s reads as a special", d.day.Format(time.DateOnly))
+		}
+	}
+	dividendOf(t, Compute(in), h, 1.2*4, 1.2*4*100)
+}
+
+// A payer twice a year with a small interim and a large final that
+// recurs: the final, above six times the interim and a special by the bar,
+// stands as its half's rate where the final a year earlier paid within a
+// third of it. The year pays both halves, and nothing is partial.
+func TestARecurringLargeFinalStands(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	in.Day, in.AsOf = *date(2026, 10, 20), date(2026, 10, 20).Unix()+86399
+	h := stock("A", "QADR", 100)
+	in.Holdings = []Holding{h}
+	for _, p := range []struct {
+		d    *time.Time
+		rate float64
+	}{{date(2024, 12, 10), 0.1}, {date(2025, 7, 10), 0.5}, {date(2025, 12, 10), 0.1}, {date(2026, 7, 10), 0.65}} {
+		pay(in, h.HoldingKey, "A", p.d, p.rate*100, num(100))
+	}
+	if p := dividendOf(t, Compute(in), h, 0.1+0.65, 75); p.Tags[TagPartial] {
+		t.Errorf("tags %v", p.Tags)
+	}
+}
+
+// A payer twice a year whose newest final has no rate (its quantity is
+// unknown) takes the final a year earlier, though that lies more than 400
+// days back: the year pays both halves, and nothing is partial. Only the
+// same month of the year stands in: where the final a year earlier fell a
+// month off, in June, the interim pays once a year, partial.
+func TestALostHalfTakesItsMonthAYearEarlier(t *testing.T) {
+	t.Parallel()
+	for _, prior := range []*time.Time{date(2025, 7, 10), date(2025, 6, 10)} {
+		in := inputs()
+		in.Day, in.AsOf = *date(2026, 9, 20), date(2026, 9, 20).Unix()+86399
+		h := stock("A", "QSTK", 100)
+		in.Holdings = []Holding{h}
+		pay(in, h.HoldingKey, "A", date(2024, 10, 10), 20, num(100))
+		pay(in, h.HoldingKey, "A", prior, 25, num(100))
+		pay(in, h.HoldingKey, "A", date(2025, 10, 10), 20, num(100))
+		pay(in, h.HoldingKey, "A", date(2026, 7, 10), 25, nil)
+		yield, partial := 0.2+0.25, false
+		if prior.Month() != time.July {
+			yield, partial = 0.2, true
+		}
+		if p := dividendOf(t, Compute(in), h, yield, yield*100); p.Tags[TagPartial] != partial {
+			t.Errorf("a final a year earlier in %s: tags %v", prior.Month(), p.Tags)
+		}
+	}
+}
+
+// Two specials of one size between regular pay days stay specials: each
+// holds no level of the newest pay days, as a regular one follows it. A
+// quarterly payer of 0.25 pays 1.00 more on 20 December and on 20 March:
+// the year pays 0.25 four times. So it does where the regular pay day
+// between them, 10 March, has no rate: a pay day of no rate ends the run.
+func TestTwoSpecialsOfOneSizeStaySpecials(t *testing.T) {
+	t.Parallel()
+	for _, lost := range []bool{false, true} {
+		in := inputs()
+		in.Day, in.AsOf = *date(2026, 4, 15), date(2026, 4, 15).Unix()+86399
+		h := stock("A", "QSTK", 100)
+		in.Holdings = []Holding{h}
+		for _, d := range []*time.Time{date(2025, 6, 10), date(2025, 9, 10), date(2025, 12, 10), date(2026, 3, 10)} {
+			qty := num(100)
+			if lost && d.Month() == time.March {
+				qty = nil
+			}
+			pay(in, h.HoldingKey, "A", d, 25, qty)
+		}
+		pay(in, h.HoldingKey, "A", date(2025, 12, 20), 100, num(100))
+		pay(in, h.HoldingKey, "A", date(2026, 3, 20), 100, num(100))
+		dividendOf(t, Compute(in), h, 0.25*4, 100)
+	}
+}
+
+// A level held only in one month of the year makes no regular rate: the
+// newest pay day, repeated within a third by its own month a year
+// earlier, stays a special. A payer of two small dividends pays 1.0 in
+// June 2025 and 1.15 in June 2026: June 2026 is a special, and the year
+// pays the June 2025 rate once.
+func TestALevelInOneMonthIsNoRaise(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	h := stock("A", "QSTK", 100)
+	in.Holdings = []Holding{h}
+	for _, p := range []struct {
+		d    *time.Time
+		rate float64
+	}{{date(2025, 1, 10), 0.1}, {date(2025, 2, 10), 0.1}, {date(2025, 6, 10), 1}, {date(2026, 6, 10), 1.15}} {
+		pay(in, h.HoldingKey, "A", p.d, p.rate*100, num(100))
+	}
+	days := payDays(in, h)
+	if n := len(days); n != 4 || !days[3].special || days[2].special {
+		t.Errorf("specials %+v", days)
+	}
+	dividendOf(t, Compute(in), h, 1, 100)
+}
+
+// A rate on the record day's quantity stands where the account's most
+// over its least across the record window is at most 1.1: B, which held
+// 100 to 105 across it, or 64 to 70.4, exactly 1.1 times, rates its
+// raise. Above that, a trade near the true record day leaves the quantity
+// paid on unknown: A, which held 50 to 100, rates nothing, nor does B at
+// 100 to 112, and the day's rate is the other account's. Alone, A's day
+// still counts in the frequency, and the rate before it holds;
+// unguarded, A's 0.8 would pay.
+func TestARecordWindowGuardsTheRecordDay(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		least, most, rate float64
+	}{{0, 0, 0.5}, {100, 105, 0.6}, {64, 70.4, 0.6}, {100, 112, 0.5}} {
+		in := inputs()
+		h := stock("A", "QSTK", 100)
+		in.Holdings = []Holding{h}
+		for _, d := range quarterly[:3] {
+			pay(in, h.HoldingKey, "A", d, 50, num(100))
+		}
+		record := func(acct string, amount, least, most float64) Payment {
+			return Payment{Day: *quarterly[3], Amount: amount, Account: acct, Quantity: num(least),
+				Record: num(least), Least: num(least), Most: num(most), LagDays: RecordLagUSShare.Days, Type: TypeDividends}
+		}
+		ps := append(in.Payments[h.HoldingKey], record("A", 40, 50, 100))
+		if c.most > 0 {
+			ps = append(ps, record("B", 0.6*c.least, c.least, c.most))
+		}
+		in.Payments[h.HoldingKey] = ps
+		dividendOf(t, Compute(in), h, c.rate*4, c.rate*4*100)
+	}
+}
+
+// The one-half rule counts calendar months: a payer twice a year whose
+// pay day drifted earlier shows its June twice in the year, and with its
+// December's rate lost, it pays the June rate once a year, partial.
+func TestADriftedPayDayIsOneHalf(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	h := stock("A", "QSTK", 100)
+	in.Holdings = []Holding{h}
+	pay(in, h.HoldingKey, "A", date(2025, 6, 20), 20, num(100))
+	pay(in, h.HoldingKey, "A", date(2025, 12, 10), 20, nil)
+	pay(in, h.HoldingKey, "A", date(2026, 6, 10), 20, num(100))
+	if p := dividendOf(t, Compute(in), h, 0.2, 20); !p.Tags[TagPartial] {
+		t.Errorf("tags %v", p.Tags)
+	}
+}
+
+// The one-half rule reads a payer twice a year: a year of three pay
+// months, one of them rated, keeps its rate at twice a year.
+func TestThreePayMonthsAreNoHalf(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	h := stock("A", "QSTK", 100)
+	in.Holdings = []Holding{h}
+	pay(in, h.HoldingKey, "A", quarterly[1], 50, nil)
+	pay(in, h.HoldingKey, "A", quarterly[2], 50, nil)
+	pay(in, h.HoldingKey, "A", quarterly[3], 50, num(100))
+	if p := dividendOf(t, Compute(in), h, 0.5*2, 100); p.Tags[TagPartial] {
+		t.Errorf("tags %v", p.Tags)
+	}
+}
+
+// A payer twice a year whose one half's rate is lost, its quantity
+// unknown or guarded, pays the other half's once a year, in its own
+// month, and its dividend covers part of the year: partial. With both
+// known, it pays both, each in its own half: the interim in December, the
+// final in June.
+func TestASemiannualPayerWithAHalfLost(t *testing.T) {
+	t.Parallel()
+	for _, lost := range []bool{true, false} {
+		in := inputs()
+		h := stock("A", "QADR", 100)
+		in.Holdings = []Holding{h}
+		final := num(100)
+		if lost {
+			final = nil
+		}
+		pay(in, h.HoldingKey, "A", date(2025, 12, 10), 10, num(100))
+		pay(in, h.HoldingKey, "A", date(2026, 6, 10), 25, final)
+		b := Compute(in)
+		month := func(d *time.Time) *float64 {
+			return num(incomeOf(b, h.HoldingKey, monthIndex(b, *d), RuleCash, PathConstant, 0))
+		}
+		if !lost {
+			if p := dividendOf(t, b, h, 0.1+0.25, 35); p.Tags[TagPartial] {
+				t.Errorf("both halves: tags %v", p.Tags)
+			}
+			near(t, "December", month(date(2026, 12, 1)), 10, 1e-9)
+			near(t, "June", month(date(2027, 6, 1)), 25, 1e-9)
+			continue
+		}
+		if p := dividendOf(t, b, h, 0.1, 10); !p.Tags[TagPartial] || !p.Tags[TagIndicated] {
+			t.Errorf("a half lost: tags %v", p.Tags)
+		}
+		near(t, "December", month(date(2026, 12, 1)), 10, 1e-9)
 	}
 }
 

@@ -3176,7 +3176,10 @@ The pieces:
   dividends received, the stocks' reported figures, and each holding's
   amount on every day of the year before. An observation's amounts
   hold over its span (§10.7), so one read of the year's observations
-  gives every day;
+  gives every day. A payment meets its holding under every id the
+  source or the config gives the instrument, a security's holdings
+  pool at every source, and a dividend's rate reads the quantity of
+  its record day, a lag per market before its pay day (YIELD.md §4);
 - `internal/fixedincome`: the bond and rate arithmetic, as pure
   functions;
 - `internal/yield`: `yield.Compute` measures every holding and projects

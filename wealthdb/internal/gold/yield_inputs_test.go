@@ -759,21 +759,25 @@ type bookTxn struct {
 
 // dividendBook is an invented book for the dividend tests: its
 // instruments, positions and transactions; the portfolio of each account
-// that has one, by account; and statements run after the passes, on what
-// the inputs read as it stands.
+// that has one, by account; the currency of each instrument quoted in
+// another than the dollar, by instrument; and statements run after the
+// passes, on what the inputs read as it stands.
 type dividendBook struct {
 	instruments []bookInstrument
 	lines       []bookLine
 	txns        []bookTxn
 	portfolios  map[string]string
+	currencies  map[string]string
 	after       []string
 }
 
 // inputs writes the book into a migrated gold: each line's positions at
 // the month ends from 30 June 2025 to 30 June 2026, at noon; the
-// transactions, a dividend's as one; the instruments; and a brokerage
-// account for each account named. It runs the exposure and yield passes,
-// then after, and reads the inputs at the last second of 30 June 2026.
+// transactions, a dividend's as one; the instruments, listed in their
+// currency; and a brokerage account for each account named. Amounts are
+// in dollars, or in their instrument's currency. It runs the exposure
+// and yield passes, then after, and reads the inputs at the last second
+// of 30 June 2026.
 func (bk dividendBook) inputs(t *testing.T) (*yield.Inputs, *sql.DB, context.Context) {
 	t.Helper()
 	db, ctx := openMigrated(t)
@@ -783,11 +787,12 @@ func (bk dividendBook) inputs(t *testing.T) (*yield.Inputs, *sql.DB, context.Con
 		}
 		return "'" + s + "'"
 	}
+	ccy := func(iid string) string { return cmp.Or(bk.currencies[iid], "USD") }
 	var insts, positions, rows, kinds []string
 	accounts := map[[2]string]bool{}
 	for _, i := range bk.instruments {
 		insts = append(insts, "('"+i.src+"', '"+i.iid+"', 'public_equity', 'stock', "+str(i.isin)+", "+str(i.cusip)+
-			", "+str(i.symbol)+", 'Example "+i.iid+"', 'USD', 0, 0)")
+			", "+str(i.symbol)+", 'Example "+i.iid+"', '"+ccy(i.iid)+"', 0, 0)")
 	}
 	for _, l := range bk.lines {
 		accounts[[2]string{l.src, l.acct}] = true
@@ -801,7 +806,7 @@ func (bk dividendBook) inputs(t *testing.T) (*yield.Inputs, *sql.DB, context.Con
 			}
 			if s.qty != 0 {
 				positions = append(positions, "('"+l.src+"', "+itoa(d.Unix()+43200)+", '"+l.acct+"', '"+l.iid+"', '"+
-					l.iid+"', 'public_equity', 'stock', 'USD', "+ftoa(s.qty)+", "+ftoa(s.value)+")")
+					l.iid+"', 'public_equity', 'stock', '"+ccy(l.iid)+"', "+ftoa(s.qty)+", "+ftoa(s.value)+")")
 			}
 		}
 	}
@@ -809,7 +814,7 @@ func (bk dividendBook) inputs(t *testing.T) (*yield.Inputs, *sql.DB, context.Con
 		accounts[[2]string{x.src, x.acct}] = true
 		id := "T" + strconv.Itoa(i)
 		rows = append(rows, "('"+x.src+"', '"+id+"', "+itoa(x.day.Unix()+36000)+", '"+x.acct+"', '"+x.kind+
-			"', 'USD', "+ftoa(x.amount)+", '"+x.iid+"', "+ftoa(x.qty)+")")
+			"', '"+ccy(x.iid)+"', "+ftoa(x.amount)+", '"+x.iid+"', "+ftoa(x.qty)+")")
 		if x.kind == "dividend" {
 			kinds = append(kinds, "('"+x.src+"', '"+id+"', 'sig-"+x.iid+"', 1, 'INCOME_DIVIDENDS', 'rule', 100)")
 		}
@@ -978,15 +983,18 @@ func TestASecurityMovedBetweenSources(t *testing.T) {
 //     source also keys by its ticker QSHD: the source's holding alias to
 //     QHAL wins over the ticker.
 //   - DEPOT keyed its holding by an overview key, XOVR, until January,
-//     and by QDEP since. Its alias reads XOVR as QDEP for DEPOT alone,
-//     over the source's alias of XOVR to QOTH. CASH, beside it in
-//     portfolio BANK, is paid under XOVR: the lines are DEPOT's holding's,
-//     on what DEPOT held under both keys, and its realized yield pools
-//     the amounts under both.
-//   - H's statement valued its holding in francs under XSTM until
+//     and by QDEP, a share of the United States, since. Its alias reads
+//     XOVR as QDEP for DEPOT alone, over the source's alias of XOVR to
+//     QOTH. CASH, beside it in portfolio BANK, is paid under XOVR: the
+//     lines are DEPOT's holding's, on what DEPOT held under both keys on
+//     their record days, and its realized yield pools the amounts under
+//     both.
+//   - H's statement valued its holding in francs under ASTM until
 //     January; its feed values it in dollars under QFED since. The
 //     statement's amounts convert at the franc's rate, not the holding's.
 //     M's one position key, QMIX, reads the same way in both currencies.
+//     No instrument states a listing currency: each reads the dollars its
+//     newest snapshot values it in, though ASTM sorts before QFED.
 func TestAHoldingAliasFolds(t *testing.T) {
 	t.Parallel()
 	early, feb := ymd(2025, 1, 1), ymd(2026, 1, 31)
@@ -998,27 +1006,28 @@ func TestAHoldingAliasFolds(t *testing.T) {
 	}
 	in, _, _ := dividendBook{instruments: []bookInstrument{
 		{"src", "000000AE4", "", "000000AE4", "QSHD"}, {"src", "QSHD", "", "", "QSHD"}, {"src", "QHAL", "", "", "QHAL"},
-		{"src", "XOVR", "", "", ""}, {"src", "QDEP", "", "", "QDEP"}, {"src", "XSTM", "", "", ""},
+		{"src", "XOVR", "", "", ""}, {"src", "QDEP", "US0000000008", "", "QDEP"}, {"src", "ASTM", "", "", ""},
 		{"src", "QFED", "", "", "QFED"}, {"src", "QMIX", "", "", "QMIX"},
 	}, lines: []bookLine{
 		{"src", "B1", "QHAL", []bookSeg{{early, 100, 5000}}},
 		{"src", "DEPOT", "XOVR", []bookSeg{{early, 100, 5000}, {feb, 0, 0}}},
 		{"src", "DEPOT", "QDEP", []bookSeg{{feb, 100, 5000}}},
-		{"src", "H", "XSTM", []bookSeg{{early, 100, 4000}, {feb, 0, 0}}},
+		{"src", "H", "ASTM", []bookSeg{{early, 100, 4000}, {feb, 0, 0}}},
 		{"src", "H", "QFED", []bookSeg{{feb, 100, 5000}}},
 		{"src", "M", "QMIX", []bookSeg{{early, 100, 4000}, {feb, 100, 5000}}},
 	}, txns: txns, portfolios: map[string]string{"DEPOT": "BANK", "CASH": "BANK"}, after: []string{
 		`INSERT INTO holding_aliases (silver_source_id, account_external_id, from_key, to_key) VALUES
 		    ('src', '', '000000AE4', 'QHAL'), ('src', 'DEPOT', 'XOVR', 'QDEP'), ('src', '', 'XOVR', 'QOTH'),
-		    ('src', '', 'XSTM', 'QFED')`,
-		`UPDATE positions SET currency = 'CHF' WHERE position_key = 'XSTM'
+		    ('src', '', 'ASTM', 'QFED')`,
+		`UPDATE positions SET currency = 'CHF' WHERE position_key = 'ASTM'
 		    OR (position_key = 'QMIX' AND snapshot_at < ` + itoa(feb.Unix()) + `)`,
+		`UPDATE instruments SET currency = NULL WHERE instrument_external_id IN ('ASTM', 'QFED', 'QMIX')`,
 		`INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate)
 		    VALUES ('fx', 0, 'USD', 'CHF', 1.25)`,
 	}}.inputs(t)
 	for k, want := range map[yield.AliasKey]string{
 		{Source: "src", ID: "000000AE4"}: "QHAL", {Source: "src", Account: "DEPOT", ID: "XOVR"}: "QDEP",
-		{Source: "src", ID: "XOVR"}: "QOTH", {Source: "src", ID: "XSTM"}: "QFED",
+		{Source: "src", ID: "XOVR"}: "QOTH", {Source: "src", ID: "ASTM"}: "QFED",
 	} {
 		if got := in.Aliases[k]; got != want {
 			t.Errorf("%v reads as %q, want %q", k, got, want)
@@ -1037,12 +1046,14 @@ func TestAHoldingAliasFolds(t *testing.T) {
 			t.Errorf("%s: payments %+v, income %v", k.PositionKey, ps, in.Income[k])
 			continue
 		}
-		// The first pay day's 100 days before come before the first
-		// snapshot.
-		for i, x := range ps {
-			if x.Quantity == nil || *x.Quantity != 100 || (x.Before != nil) != (i > 0) || (i > 0 && *x.Before != 100) {
-				t.Errorf("%s on %s: quantity %s, before %s", k.PositionKey, x.Day.Format(time.DateOnly),
-					fmtFloatPtr(x.Quantity), fmtFloatPtr(x.Before))
+		// Each is a share quoted in dollars: its record days read what its
+		// account held under every key, QDEP's what DEPOT held.
+		for _, x := range ps {
+			if x.Quantity == nil || *x.Quantity != 100 || x.LagDays != yield.RecordLagUSShare.Days || x.Record == nil ||
+				*x.Record != 100 || x.Before != nil {
+				t.Errorf("%s on %s: quantity %s, record %s, before %s, lag %d", k.PositionKey,
+					x.Day.Format(time.DateOnly), fmtFloatPtr(x.Quantity), fmtFloatPtr(x.Record), fmtFloatPtr(x.Before),
+					x.LagDays)
 			}
 		}
 		p := position(b, k)

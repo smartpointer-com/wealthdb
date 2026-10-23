@@ -267,17 +267,20 @@ func TestAQuantityBetweenSnapshots(t *testing.T) {
 //   - QTRIM is trimmed between its last record day and its pay day.
 //   - QSTK is held in B2, and until June in SOLD of the same portfolio,
 //     whose last snapshot lists it at no cent, no holding: SOLD's
-//     dividends stay its sold position's, its June one paid on nothing it
-//     held, and B2's holding shows one row a pay day. Its realized yield
-//     pools both accounts. The early June snapshot leaves SOLD out, and
-//     is not its last, so SOLD's May amounts hold to its last snapshot.
+//     dividends stay its sold position's, and B2's holding shows one row
+//     a pay day. SOLD sells out on 1 June, after its record day: its June
+//     one rates on the 300 it held then, the days it held none in its
+//     record window no record day. Its realized yield pools both
+//     accounts. The early June snapshot leaves SOLD out, and is not its
+//     last, so SOLD's May amounts hold to its last snapshot.
 //   - QBNK is held in DEPOT, its dividends booked to CASH beside it.
 //   - QLATE's source took its first snapshot after its first dividend.
 //   - QALS is held throughout, but the snapshots of 31 May and 5 June name
 //     it by its CUSIP, an instrument its source folds into it
 //     (instrument_aliases): its June dividend is paid on what both held.
 //   - QSTMT is bought up at the instant of the March snapshot, which leaves
-//     the buy out: its April dividend is paid on what it held after it.
+//     the buy out: its May dividend, its record day after the buy, is paid
+//     on what it held after it.
 func TestADividendIsPaidOnWhatItsAccountHeld(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -388,7 +391,7 @@ func TestADividendIsPaidOnWhatItsAccountHeld(t *testing.T) {
 	for _, d := range quarters(9, 10) {
 		txn("src", "B1", "QALS", d, "dividend", 50, 0)
 	}
-	for i, d := range quarters(7, 15) {
+	for i, d := range []time.Time{ymd(2025, 7, 15), ymd(2025, 10, 15), ymd(2026, 1, 15), ymd(2026, 5, 15)} {
 		txn("src", "B1", "QSTMT", d, "dividend", []float64{100, 100, 100, 180}[i], 0)
 	}
 	txns = append(txns, "('src', 'TSTMT', "+itoa(ymd(2026, 3, 31).Unix()+43200)+
@@ -472,6 +475,13 @@ func TestADividendIsPaidOnWhatItsAccountHeld(t *testing.T) {
 			t.Errorf("%s: tags %v", c.iid, p.Tags)
 		}
 	}
+	if ps := in.Payments[key("src", "B1", "QSTMT")]; len(ps) != 4 || ps[3].Record == nil || *ps[3].Record != 180 {
+		t.Errorf("QSTMT: payments %+v", ps)
+	}
+	if ps := in.Payments[key("src", "SOLD", "QSTK")]; len(ps) != 4 || ps[3].Record == nil || *ps[3].Record != 300 ||
+		ps[3].Least == nil || *ps[3].Least != 300 || *ps[3].Most != 300 {
+		t.Errorf("SOLD: payments %+v", ps)
+	}
 	late := in.Payments[key("late", "L1", "QLATE")]
 	if len(late) != 2 || late[0].Quantity != nil || late[1].Quantity == nil || *late[1].Quantity != 100 {
 		t.Errorf("before the first snapshot: %+v", late)
@@ -519,3 +529,297 @@ func TestADividendIsPaidOnWhatItsAccountHeld(t *testing.T) {
 }
 
 func ftoa(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
+
+// The record window reads what the account held as each of its days
+// began, from its furthest to its nearest, on the days it held some. Each
+// share of the United States pays 0.6 a share on 11 June, its window 7 May
+// to 8 June, and is priced at 50. The book is invented:
+//
+//   - QFAR1 sells a quarter of its 400 on 7 May, the window's first day:
+//     it held 400 and 300 across it, and rates nothing. QFAR2 sells it on
+//     6 May, the day before: it rates on the 300 it held.
+//   - QDAY, in an account whose snapshots held none of it before, shows
+//     400 from 10 May, inside the window, before its record day: the days
+//     it held none are no record day, and it rates on 400.
+//   - QSEEN's account shows its first snapshot on 10 May, inside the
+//     window: it rates on its pay day's 400, guarded by the first quantity
+//     it shows after its record day, as QAFTER does, first seen on 13 May,
+//     after its record day.
+//   - QEND, a share of Italy quoted in euros, pays on Wednesday 3 June,
+//     its record instant Monday 1 June, the window's nearest day. A
+//     snapshot stamped at that instant counts a sale of 120 of its 340:
+//     the window reads it too, and QEND rates nothing.
+//   - QTWO is held in two accounts, one snapshot valuing it in dollars and
+//     one in francs at the same instant, and no listing currency: the two
+//     markets disagree, and it reads no lag.
+func TestARecordWindowReadsWhatTheAccountHeld(t *testing.T) {
+	t.Parallel()
+	pay, early := ymd(2026, 6, 11), ymd(2025, 1, 1)
+	row := func(acct, iid string, at time.Time, qty float64) string {
+		return "('day', " + itoa(at.Unix()+43200) + ", '" + acct + "', '" + iid + "', '" + iid +
+			"', 'public_equity', 'stock', 'USD', " + ftoa(qty) + ", " + ftoa(qty*50) + ")"
+	}
+	rows := []string{row("D1", "QPAD", ymd(2026, 5, 10), 100), row("D3", "QAFTER", ymd(2026, 5, 13), 400)}
+	for _, d := range []time.Time{ymd(2026, 5, 10), ymd(2026, 5, 31), ymd(2026, 6, 30)} {
+		rows = append(rows, row("D1", "QDAY", d, 400), row("D2", "QSEEN", d, 400))
+	}
+	for _, d := range []time.Time{ymd(2026, 5, 31), ymd(2026, 6, 30)} {
+		rows = append(rows, row("D3", "QAFTER", d, 400))
+	}
+	end := ymd(2026, 6, 1).Unix()
+	in, _, _ := dividendBook{instruments: []bookInstrument{
+		{"src", "QFAR1", "", "", "QFAR1"}, {"src", "QFAR2", "", "", "QFAR2"}, {"day", "QPAD", "", "", "QPAD"},
+		{"day", "QDAY", "", "", "QDAY"}, {"day", "QSEEN", "", "", "QSEEN"}, {"day", "QAFTER", "", "", "QAFTER"},
+		{"src", "QEND", "IT0000000008", "", "QEND"}, {"src", "QTWO", "", "", "QTWO"},
+	}, lines: []bookLine{
+		{"src", "B1", "QFAR1", []bookSeg{{early, 400, 20000}, {ymd(2026, 5, 31), 300, 15000}}},
+		{"src", "B1", "QFAR2", []bookSeg{{early, 400, 20000}, {ymd(2026, 5, 31), 300, 15000}}},
+		{"day", "D1", "QPAD", []bookSeg{{early, 100, 5000}}},
+		{"src", "B3", "QEND", []bookSeg{{early, 340, 17000}, {ymd(2026, 6, 30), 220, 11000}}},
+		{"src", "B1", "QTWO", []bookSeg{{early, 400, 20000}, {ymd(2026, 6, 30), 200, 10000}}},
+		{"src", "B4", "QTWO", []bookSeg{{early, 100, 5000}}},
+	}, txns: []bookTxn{
+		{"src", "B1", "QFAR1", ymd(2026, 5, 7), "sell", 5000, -100}, {"src", "B1", "QFAR1", pay, "dividend", 180, 0},
+		{"src", "B1", "QFAR2", ymd(2026, 5, 6), "sell", 5000, -100}, {"src", "B1", "QFAR2", pay, "dividend", 180, 0},
+		{"day", "D1", "QDAY", pay, "dividend", 240, 0}, {"day", "D2", "QSEEN", pay, "dividend", 240, 0},
+		{"day", "D3", "QAFTER", pay, "dividend", 240, 0}, {"src", "B3", "QEND", ymd(2026, 6, 3), "dividend", 170, 0},
+		{"src", "B1", "QTWO", ymd(2026, 6, 1), "sell", 10000, -200}, {"src", "B1", "QTWO", pay, "dividend", 240, 0},
+	}, currencies: map[string]string{"QEND": "EUR"}, after: []string{
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key,
+		    instrument_external_id, asset_class, vehicle, currency, quantity, market_value) VALUES ` +
+			strings.Join(rows, ", ") + `, ('src', ` + itoa(end) + `, 'B3', 'QEND', 'QEND', 'public_equity', 'stock',
+		    'EUR', 220, 11000)`,
+		`INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id, kind,
+		    currency, net_amount, instrument_external_id, quantity)
+		    VALUES ('src', 'TEND', ` + itoa(end) + `, 'B3', 'sell', 'EUR', 6000, 'QEND', -120)`,
+		`INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate)
+		    VALUES ('fx', 0, 'USD', 'EUR', 1.1)`,
+		`UPDATE positions SET currency = 'CHF' WHERE position_key = 'QTWO' AND account_external_id = 'B4'`,
+		`UPDATE instruments SET currency = NULL WHERE instrument_external_id = 'QTWO'`,
+	}}.inputs(t)
+	b := yield.Compute(in)
+	for _, c := range []struct {
+		src, acct, iid      string
+		lag                 int
+		record, least, most float64
+		pct                 float64
+	}{
+		{"src", "B1", "QFAR1", 30, 300, 300, 400, 0}, {"src", "B1", "QFAR2", 30, 300, 300, 300, 1.2},
+		{"day", "D1", "QDAY", 30, 400, 400, 400, 1.2}, {"day", "D2", "QSEEN", 30, 0, 0, 0, 1.2},
+		{"day", "D3", "QAFTER", 30, 0, 0, 0, 1.2}, {"src", "B3", "QEND", 2, 220, 220, 340, 0},
+	} {
+		k := yield.HoldingKey{Source: c.src, Account: c.acct, PositionKey: c.iid}
+		ps := in.Payments[k]
+		if len(ps) != 1 || ps[0].LagDays != c.lag || (ps[0].Record == nil) != (c.record == 0) ||
+			(c.record != 0 && (*ps[0].Record != c.record || ps[0].Least == nil || *ps[0].Least != c.least ||
+				*ps[0].Most != c.most)) || (c.record == 0 && (ps[0].Before == nil || *ps[0].Before != 400)) {
+			t.Errorf("%s: payments %+v", c.iid, ps)
+			continue
+		}
+		p := position(b, k)
+		if (p.DividendYield == nil) != (c.pct == 0) || (c.pct != 0 && math.Abs(*p.DividendYield-c.pct) > 1e-9) {
+			t.Errorf("%s: dividend yield %s, want %v", c.iid, fmtFloatPtr(p.DividendYield), c.pct)
+		}
+	}
+	if ps := in.Payments[yield.HoldingKey{Source: "src", Account: "B1", PositionKey: "QTWO"}]; len(ps) != 1 ||
+		ps[0].LagDays != 0 || ps[0].Record != nil {
+		t.Errorf("QTWO: payments %+v", ps)
+	}
+}
+
+// A dividend is paid on what its account held on its record day. Where
+// the market of the security paid fixes the record day, and the account
+// held some then, the payment is per that quantity, where the account held
+// within a tenth of it across the record window. Else it is per the
+// quantity on its pay day, and the guard stands: an account paid that held
+// none on the record day the fixed lag gives held some on the true one.
+// These stocks pay once, 0.6 a share of what they held on their record
+// day, and are priced at 50. The book is invented:
+//
+//   - QUS, a share of the United States, sells half of its 400 on 9 June,
+//     two days before it pays on 11 June, after its record window: its
+//     record day, a month before, read 400. QWIN sells half on 1 June,
+//     inside its window: the quantity it was paid on is unknown, and it
+//     rates nothing.
+//   - QJP, a depositary receipt of a Japanese share as the exposure pass
+//     reads one (the share's situs, basis underlying), sells half on 12
+//     April, 60 days before: its record day, three months before, read
+//     400, where a month before would read 200. QDJP, a receipt by its
+//     name whose situs is declared Japanese, reads the same.
+//   - QUNK, a share quoted in yen, of no market that fixes a record day,
+//     and QETF, a fund of the United States, sell half on 1 June: paid on
+//     under two thirds of what they held 100 days before, they rate
+//     nothing.
+//   - QNEW, a share of the United States bought on 20 May, after its
+//     record day, rates on its pay day's quantity, the first it shows
+//     held after its record day.
+//   - QBUY, a share of the United States bought on 5 May, before its
+//     record day, shows none on it: the snapshot before holds none, and
+//     its trades move no snapshot that holds none. It rates on its pay
+//     day's quantity, which a sale of half on 1 June leaves under two
+//     thirds of the 400 the 31 May snapshot shows: it rates nothing.
+//     QFRESH, at a source whose first snapshot falls between its record
+//     day and its pay day, reads the same. QEDGE, at a source whose first
+//     snapshot is stamped as its pay day begins, is guarded by that one.
+//   - QEU1 and QEU2, receipts of a German and a French share, first show
+//     in the snapshot nine days before their pay day, with no trade on
+//     record, after their record day two weeks before: they rate on that
+//     quantity. QDER, a German receipt, bought 100 more three weeks before
+//     its pay day, inside its record window: its record day read 300, but
+//     it rates nothing.
+//   - QSPL, a share of the United States, splits two for one on 20 May,
+//     between its record day and its pay day: its record day's 100 read
+//     as 200 of today's units, its pay day's 200 as they stand.
+//   - QIT, a share of Italy quoted in euros, pays on a Monday in November
+//     and in May, its ex-day the Thursday before. A sale of 120 of its
+//     340 on the ex-day still earns the May payment: it rates on 340, and
+//     the year pays both halves. QIT2 pays on a Wednesday, its ex-day the
+//     Monday, when it sells a third: it rates on what it held before.
+//     QIT3 pays on Monday 4 May, after the holiday of 1 May, so its true
+//     ex-day is the Wednesday before. It sells 120 that day, inside its
+//     record window of two to four business days: it rates nothing.
+//   - QADU, a receipt by its name whose share is unknown, quoted in
+//     dollars, has no record day: trimmed to half 60 days before its pay
+//     day and paid on all, it rates nothing under the guard.
+//   - QLST, listed in dollars, is valued in francs by its snapshots: it
+//     reads the lag of a share quoted in dollars.
+func TestADividendIsPaidOnItsRecordDaysQuantity(t *testing.T) {
+	t.Parallel()
+	early, pay := ymd(2025, 1, 1), ymd(2026, 6, 11)
+	half := []bookSeg{{early, 400, 20000}, {ymd(2026, 6, 30), 200, 10000}}
+	shown := []bookSeg{{ymd(2026, 5, 31), 100, 5000}}
+	situs := func(iid, country, basis string) []string {
+		return []string{`DELETE FROM exposure_situs WHERE position_key = '` + iid + `'`,
+			`INSERT INTO exposure_situs (silver_source_id, account_external_id, position_key, as_of, situs, basis)
+			    VALUES ('src', 'B1', '` + iid + `', NULL, '` + country + `', '` + basis + `')`}
+	}
+	after := []string{
+		`INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate)
+		    VALUES ('fx', 0, 'USD', 'EUR', 1.1), ('fx', 0, 'USD', 'JPY', 0.007)`,
+		`UPDATE positions SET vehicle = 'etf' WHERE position_key = 'QETF'`,
+		`UPDATE instruments SET vehicle = 'etf' WHERE instrument_external_id = 'QETF'`,
+		`UPDATE instruments SET name = 'Example Japan ADR' WHERE instrument_external_id = 'QDJP'`,
+	}
+	after = append(append(append(append(after, situs("QJP", "JP", situsUnderlying)...),
+		situs("QDJP", "JP", situsDeclared)...), situs("QEU1", "DE", situsUnderlying)...),
+		situs("QEU2", "FR", situsUnderlying)...)
+	after = append(after, situs("QDER", "DE", situsUnderlying)...)
+	after = append(after, `UPDATE instruments SET name = 'Example Unknown ADR' WHERE instrument_external_id = 'QADU'`,
+		`UPDATE positions SET currency = 'CHF' WHERE position_key = 'QLST'`)
+	after = append(after,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		    asset_class, vehicle, currency, quantity, market_value)
+		    VALUES ('edge', `+itoa(pay.Unix())+`, 'E1', 'QEDGE', 'QEDGE', 'public_equity', 'stock', 'USD', 400, 20000)`,
+		`INSERT INTO exposure_situs (silver_source_id, account_external_id, position_key, as_of, situs, basis)
+		    VALUES ('edge', 'E1', 'QEDGE', NULL, 'US', '`+situsCountry+`')`)
+	in, _, _ := dividendBook{instruments: []bookInstrument{
+		{"src", "QUS", "US0000000001", "", "QUS"}, {"src", "QWIN", "US0000000010", "", "QWIN"},
+		{"src", "QJP", "", "", "QJP"}, {"src", "QDJP", "", "", "QDJP"},
+		{"src", "QUNK", "", "", "QUNK"}, {"src", "QETF", "US0000000003", "", "QETF"},
+		{"src", "QNEW", "US0000000002", "", "QNEW"}, {"src", "QEU1", "", "", "QEU1"}, {"src", "QEU2", "", "", "QEU2"},
+		{"src", "QSPL", "US0000000004", "", "QSPL"}, {"src", "QBUY", "US0000000006", "", "QBUY"},
+		{"fresh", "QFRESH", "US0000000007", "", "QFRESH"}, {"src", "QIT", "IT0000000005", "", "QIT"},
+		{"src", "QIT2", "IT0000000006", "", "QIT2"}, {"src", "QDER", "", "", "QDER"},
+		{"src", "QIT3", "IT0000000007", "", "QIT3"}, {"src", "QADU", "", "", "QADU"},
+		{"src", "QLST", "", "", "QLST"},
+		{"edge", "QEDGE", "US0000000009", "", "QEDGE"},
+	}, lines: []bookLine{
+		{"src", "B1", "QUS", half}, {"src", "B1", "QWIN", half},
+		{"src", "B1", "QJP", []bookSeg{{early, 400, 20000}, {ymd(2026, 4, 30), 200, 10000}}},
+		{"src", "B1", "QDJP", []bookSeg{{early, 400, 20000}, {ymd(2026, 4, 30), 200, 10000}}},
+		{"src", "B1", "QUNK", half}, {"src", "B1", "QETF", half},
+		{"src", "B1", "QNEW", shown}, {"src", "B1", "QEU1", shown}, {"src", "B1", "QEU2", shown},
+		{"src", "B1", "QSPL", []bookSeg{{early, 100, 10000}, {ymd(2026, 5, 31), 200, 10000}}},
+		{"src", "B1", "QBUY", []bookSeg{{ymd(2026, 5, 31), 400, 20000}, {ymd(2026, 6, 30), 200, 10000}}},
+		{"fresh", "F1", "QFRESH", []bookSeg{{ymd(2026, 5, 31), 400, 20000}, {ymd(2026, 6, 30), 200, 10000}}},
+		{"src", "B1", "QIT", []bookSeg{{early, 340, 17000}, {ymd(2026, 5, 31), 220, 11000}}},
+		{"src", "B1", "QIT2", []bookSeg{{early, 300, 15000}, {ymd(2026, 5, 31), 200, 10000}}},
+		{"src", "B1", "QDER", []bookSeg{{early, 200, 10000}, {ymd(2026, 4, 30), 300, 15000}}},
+		{"src", "B1", "QIT3", []bookSeg{{early, 340, 17000}, {ymd(2026, 4, 30), 220, 11000}}},
+		{"src", "B1", "QADU", []bookSeg{{early, 400, 20000}, {ymd(2026, 4, 30), 200, 10000}}},
+		{"src", "B1", "QLST", half},
+	}, txns: []bookTxn{
+		{"src", "B1", "QUS", ymd(2026, 6, 9), "sell", 10000, -200}, {"src", "B1", "QUS", pay, "dividend", 0.6 * 400, 0},
+		{"src", "B1", "QWIN", ymd(2026, 6, 1), "sell", 10000, -200}, {"src", "B1", "QWIN", pay, "dividend", 240, 0},
+		{"src", "B1", "QJP", ymd(2026, 4, 12), "sell", 10000, -200}, {"src", "B1", "QJP", pay, "dividend", 0.6 * 400, 0},
+		{"src", "B1", "QDJP", ymd(2026, 4, 12), "sell", 10000, -200}, {"src", "B1", "QDJP", pay, "dividend", 240, 0},
+		{"src", "B1", "QUNK", ymd(2026, 6, 1), "sell", 10000, -200}, {"src", "B1", "QUNK", pay, "dividend", 240, 0},
+		{"src", "B1", "QETF", ymd(2026, 6, 1), "sell", 10000, -200}, {"src", "B1", "QETF", pay, "dividend", 240, 0},
+		{"src", "B1", "QNEW", ymd(2026, 5, 20), "buy", -5000, 100}, {"src", "B1", "QNEW", pay, "dividend", 60, 0},
+		{"src", "B1", "QEU1", ymd(2026, 6, 9), "dividend", 60, 0}, {"src", "B1", "QEU2", ymd(2026, 6, 9), "dividend", 60, 0},
+		{"src", "B1", "QSPL", ymd(2026, 5, 20), "corporate_action", 0, 100},
+		{"src", "B1", "QSPL", pay, "dividend", 0.6 * 100, 0},
+		{"src", "B1", "QBUY", ymd(2026, 5, 5), "buy", -20000, 400},
+		{"src", "B1", "QBUY", ymd(2026, 6, 1), "sell", 10000, -200}, {"src", "B1", "QBUY", pay, "dividend", 240, 0},
+		{"fresh", "F1", "QFRESH", ymd(2026, 6, 1), "sell", 10000, -200},
+		{"fresh", "F1", "QFRESH", pay, "dividend", 240, 0},
+		{"src", "B1", "QIT", ymd(2025, 11, 10), "dividend", 0.5 * 340, 0},
+		{"src", "B1", "QIT", ymd(2026, 5, 7), "sell", 6000, -120},
+		{"src", "B1", "QIT", ymd(2026, 5, 11), "dividend", 0.5 * 340, 0},
+		{"src", "B1", "QIT2", ymd(2026, 5, 11), "sell", 5000, -100},
+		{"src", "B1", "QIT2", ymd(2026, 5, 13), "dividend", 0.5 * 300, 0},
+		{"src", "B1", "QDER", ymd(2026, 4, 28), "buy", -5000, 100},
+		{"src", "B1", "QDER", ymd(2026, 5, 20), "dividend", 0.6 * 300, 0},
+		{"edge", "E1", "QEDGE", pay, "dividend", 240, 0},
+		{"src", "B1", "QIT3", ymd(2026, 4, 29), "sell", 6000, -120},
+		{"src", "B1", "QIT3", ymd(2026, 5, 4), "dividend", 0.5 * 340, 0},
+		{"src", "B1", "QADU", ymd(2026, 4, 12), "sell", 10000, -200}, {"src", "B1", "QADU", pay, "dividend", 240, 0},
+		{"src", "B1", "QLST", ymd(2026, 6, 9), "sell", 10000, -200}, {"src", "B1", "QLST", pay, "dividend", 240, 0},
+	}, currencies: map[string]string{"QIT": "EUR", "QIT2": "EUR", "QIT3": "EUR", "QUNK": "JPY"},
+		after: after}.inputs(t)
+	b := yield.Compute(in)
+	for _, c := range []struct {
+		iid           string
+		lag           int
+		qty, rec, pct float64
+	}{
+		{"QUS", yield.RecordLagUSShare.Days, 200, 400, 1.2}, {"QWIN", yield.RecordLagUSShare.Days, 200, 400, 0},
+		{"QJP", yield.RecordLagJapaneseReceipt.Days, 200, 400, 1.2},
+		{"QDJP", yield.RecordLagJapaneseReceipt.Days, 200, 400, 1.2}, {"QUNK", 0, 200, 0, 0}, {"QETF", 0, 200, 0, 0},
+		{"QNEW", yield.RecordLagUSShare.Days, 100, 0, 1.2}, {"QEU1", yield.RecordLagEuropeanReceipt.Days, 100, 0, 1.2},
+		{"QEU2", yield.RecordLagEuropeanReceipt.Days, 100, 0, 1.2},
+		{"QSPL", yield.RecordLagUSShare.Days, 200, 200, 0.6}, {"QBUY", yield.RecordLagUSShare.Days, 200, 0, 0},
+		{"QFRESH", yield.RecordLagUSShare.Days, 200, 0, 0},
+		{"QDER", yield.RecordLagEuropeanReceipt.Days, 300, 300, 0},
+		{"QIT2", 2, 200, 300, 1.0}, {"QIT3", 4, 220, 220, 0}, {"QADU", 0, 200, 0, 0},
+	} {
+		k := yield.HoldingKey{Source: "src", Account: "B1", PositionKey: c.iid}
+		if c.iid == "QFRESH" {
+			k.Source, k.Account = "fresh", "F1"
+		}
+		ps := in.Payments[k]
+		if len(ps) != 1 || ps[0].LagDays != c.lag || ps[0].Quantity == nil || *ps[0].Quantity != c.qty ||
+			(ps[0].Record == nil) != (c.rec == 0) || (c.rec != 0 && *ps[0].Record != c.rec) {
+			t.Errorf("%s: payments %+v", c.iid, ps)
+		}
+		p := position(b, k)
+		switch {
+		case c.pct == 0:
+			if p.DividendYield != nil || !p.Tags[yield.TagUnknown] {
+				t.Errorf("%s: dividend yield %s, tags %v", c.iid, fmtFloatPtr(p.DividendYield), p.Tags)
+			}
+		case p.DividendYield == nil || math.Abs(*p.DividendYield-c.pct) > 1e-9 || !p.Tags[yield.TagIndicated] ||
+			p.Tags[yield.TagUnits]:
+			t.Errorf("%s: dividend yield %s, want %v, tags %v", c.iid, fmtFloatPtr(p.DividendYield), c.pct, p.Tags)
+		}
+		if (c.iid == "QBUY" || c.iid == "QFRESH") && (ps[0].Before == nil || *ps[0].Before != 400) {
+			t.Errorf("%s: guarded by %s, want 400", c.iid, fmtFloatPtr(ps[0].Before))
+		}
+	}
+	if ps := in.Payments[yield.HoldingKey{Source: "src", Account: "B1", PositionKey: "QLST"}]; len(ps) != 1 ||
+		ps[0].LagDays != yield.RecordLagUSShare.Days || ps[0].Record == nil || *ps[0].Record != 400 {
+		t.Errorf("QLST: payments %+v", ps)
+	}
+	edge := in.Payments[yield.HoldingKey{Source: "edge", Account: "E1", PositionKey: "QEDGE"}]
+	if len(edge) != 1 || edge[0].LagDays != yield.RecordLagUSShare.Days || edge[0].Record != nil ||
+		edge[0].Quantity == nil || *edge[0].Quantity != 400 || edge[0].Before == nil || *edge[0].Before != 400 {
+		t.Errorf("QEDGE: payments %+v", edge)
+	}
+	// A Monday's ex-day is the Thursday before: four days.
+	it := yield.HoldingKey{Source: "src", Account: "B1", PositionKey: "QIT"}
+	ps, p := in.Payments[it], position(b, it)
+	if len(ps) != 2 || ps[1].LagDays != 4 || ps[1].Record == nil || *ps[1].Record != 340 ||
+		p.DividendYield == nil || math.Abs(*p.DividendYield-1.0/50*100) > 1e-9 || p.Tags[yield.TagPartial] {
+		t.Errorf("QIT: payments %+v, dividend yield %s, tags %v", ps, fmtFloatPtr(p.DividendYield), p.Tags)
+	}
+}

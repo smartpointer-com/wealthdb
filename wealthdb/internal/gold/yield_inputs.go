@@ -47,6 +47,9 @@ type yieldBase struct {
 	// is valued in (readAmounts), and instrument the instrument of each.
 	amounts    map[amountKey]*yield.Daily
 	instrument map[yield.HoldingKey]string
+	// lag is the lag of the record day of the dividends of each instrument
+	// held, where its market fixes one (readYieldHeld).
+	lag map[yield.InstrumentKey]yield.Lag
 	// asked are the securities whose reported figures were read.
 	asked map[string]bool
 	// units are the units of the instruments the income lines pay, which
@@ -63,7 +66,7 @@ func readYieldBase(ctx context.Context, db *sql.DB, asOf int64) (*yieldBase, err
 		Dividends: map[yield.InstrumentKey]canonical.DeclaredDividend{}, Securities: map[string]yield.Facts{},
 		Withholding: map[string]map[string]float64{}, Held: map[yield.InstrumentKey][]string{},
 		HeldSecurity: map[yield.InstrumentKey]string{}, Aliases: map[yield.AliasKey]string{}}
-	b := &yieldBase{in: in, asked: map[string]bool{}}
+	b := &yieldBase{in: in, asked: map[string]bool{}, lag: map[yield.InstrumentKey]yield.Lag{}}
 	if err := runSteps("YieldInputs", []step{
 		{"accounts", func() error { return readYieldAccounts(ctx, db, in) }},
 		{"terms", func() error { return readYieldTerms(ctx, db, in) }},
@@ -77,7 +80,7 @@ func readYieldBase(ctx context.Context, db *sql.DB, asOf int64) (*yieldBase, err
 		{"dividends", func() error { return readDeclaredDividends(ctx, db, in) }},
 		{"daily", func() error { return b.readAmounts(ctx, db) }},
 		{"aliases", func() error { return readYieldAliases(ctx, db, in) }},
-		{"held", func() error { return readYieldHeld(ctx, db, in) }},
+		{"held", func() error { return readYieldHeld(ctx, db, in, b.lag) }},
 		{"withholding", func() error { return readWithholding(ctx, db, in) }},
 	}); err != nil {
 		return nil, err
@@ -701,10 +704,16 @@ var incomeTypeSQL = fmt.Sprintf(`CASE
 // the output currency, per holding (yield.Inputs.HoldingOf) or sold
 // position (yield.Inputs.Sold), and per account where a line names no
 // instrument; and the payments of the 24 months to it the same way, in
-// the line's currency, a dividend or a distribution with the quantity
-// its account held on its day (yieldUnits.quantity). Interest that names
-// a bond is its coupon (couponOf), and a coupon no held bond's is the
-// account's (heldCoupon).
+// the line's currency. A dividend or a distribution comes with the
+// quantity its account held on its day (yieldUnits.quantity), and with
+// what it held on its record day, where the market of its instrument
+// fixes one (lag), the account held some then and was seen by its record
+// window's start, with the least and the most it held across the window
+// (yieldUnits.span). A rate on the pay day's quantity is guarded by what
+// the account held RecordLagDays before, or, where a record day is
+// known, by the first quantity it shows held after it
+// (yieldUnits.firstHeld). Interest that names a bond is its coupon
+// (couponOf), and a coupon no held bond's is the account's (heldCoupon).
 func (b *yieldBase) readIncome(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
 	from := in.Day.AddDate(-2, 0, 0).Unix()
 	var lines []incomeLine
@@ -714,7 +723,10 @@ func (b *yieldBase) readIncome(ctx context.Context, db *sql.DB, in *yield.Inputs
 		return err
 	}
 	if b.units == nil {
-		u, err := readYieldUnits(ctx, db, unitIDs(in, lines), from, in.AsOf)
+		// A payment of the window's first days reads what was held up to
+		// RecordLagDays before it, or across its record window.
+		u, err := readYieldUnits(ctx, db, unitIDs(in, lines),
+			from-max(yield.RecordLagDays, yield.RecordWindowDays)*86400, in.AsOf)
 		if err != nil {
 			return err
 		}
@@ -745,8 +757,25 @@ func (b *yieldBase) readIncome(ctx context.Context, db *sql.DB, in *yield.Inputs
 			if paysPerShare(l.Type) {
 				start := day.Truncate(24 * time.Hour).Unix()
 				p.Quantity, p.Units = b.units.quantity(in, l.Source, l.Account, l.Instrument, start)
-				p.Before, _ = b.units.quantity(in, l.Source, l.Account, l.Instrument,
-					start-yield.RecordLagDays*86400)
+				if lag := b.lagOf(in, l); lag.Days == 0 {
+					p.Before, _ = b.units.quantity(in, l.Source, l.Account, l.Instrument,
+						start-yield.RecordLagDays*86400)
+				} else {
+					record := lag.RecordDay(time.Unix(start, 0).UTC()).Unix()
+					p.LagDays = int((start - record) / 86400)
+					far, near := lag.Window(time.Unix(start, 0).UTC())
+					q, units := b.units.quantity(in, l.Source, l.Account, l.Instrument, record)
+					if q != nil && b.units.seenBy(in, l.Source, l.Account, l.Instrument, far.Unix()) {
+						p.Record, p.Units = q, units
+						p.Least, p.Most = b.units.span(in, l.Source, l.Account, l.Instrument, far.Unix(), near.Unix())
+					} else {
+						// None held on the record day, none known, or the
+						// account first seen inside the window: the pay day's
+						// quantity rates, against the first the account shows
+						// held after the record day (yield.Payment).
+						p.Before = b.units.firstHeld(in, l.Source, l.Account, l.Instrument, record, start)
+					}
+				}
 			}
 			in.Payments[key] = append(in.Payments[key], p)
 		case l.Instrument == "" && recent:
@@ -772,25 +801,49 @@ func (b *yieldBase) readIncome(ctx context.Context, db *sql.DB, in *yield.Inputs
 // folded under its account and under each account of its portfolio
 // (yield.Inputs.Fold).
 func unitIDs(in *yield.Inputs, lines []incomeLine) map[yield.InstrumentKey]bool {
-	type portfolio struct{ src, id string }
-	members := map[portfolio][]string{}
-	for a, x := range in.Accounts {
-		if x.Portfolio != "" {
-			members[portfolio{a.Source, x.Portfolio}] = append(members[portfolio{a.Source, x.Portfolio}], a.Account)
-		}
-	}
 	paid := map[yield.InstrumentKey]bool{}
 	for _, l := range lines {
-		if l.Instrument == "" || !paysPerShare(l.Type) {
-			continue
-		}
-		paid[yield.InstrumentKey{Source: l.Source, Instrument: in.Fold(l.Source, l.Account, l.Instrument)}] = true
-		p := portfolio{l.Source, in.Accounts[yield.AccountKey{Source: l.Source, Account: l.Account}].Portfolio}
-		for _, a := range members[p] {
-			paid[yield.InstrumentKey{Source: l.Source, Instrument: in.Fold(l.Source, a, l.Instrument)}] = true
+		if l.Instrument != "" && paysPerShare(l.Type) {
+			for _, id := range lineFolds(in, l.Source, l.Account, l.Instrument) {
+				paid[yield.InstrumentKey{Source: l.Source, Instrument: id}] = true
+			}
 		}
 	}
 	return paid
+}
+
+// lineFolds are the ids the instrument iid names reads under for a line
+// of account acct (yield.Inputs.Fold): under acct, then under each other
+// account of its portfolio, by account, as yieldUnits.quantity reads them.
+func lineFolds(in *yield.Inputs, src, acct, iid string) []string {
+	ids := []string{in.Fold(src, acct, iid)}
+	portfolio := in.Accounts[yield.AccountKey{Source: src, Account: acct}].Portfolio
+	if portfolio == "" {
+		return ids
+	}
+	var accts []string
+	for a, x := range in.Accounts {
+		if a.Source == src && a.Account != acct && x.Portfolio == portfolio {
+			accts = append(accts, a.Account)
+		}
+	}
+	slices.Sort(accts)
+	for _, a := range accts {
+		ids = append(ids, in.Fold(src, a, iid))
+	}
+	return ids
+}
+
+// lagOf is the lag of the record day of the dividend a line pays
+// (yieldBase.lag), under the first id its instrument reads under that has
+// one (lineFolds).
+func (b *yieldBase) lagOf(in *yield.Inputs, l incomeLine) yield.Lag {
+	for _, id := range lineFolds(in, l.Source, l.Account, l.Instrument) {
+		if lag := b.lag[yield.InstrumentKey{Source: l.Source, Instrument: id}]; lag.Days > 0 {
+			return lag
+		}
+	}
+	return yield.Lag{}
 }
 
 // paysPerShare says a payment of type t is paid per share of what its
@@ -1367,32 +1420,62 @@ SELECT ia.src, '', ia.alias, ia.k
 
 // readYieldHeld reads, for each instrument a position held at some
 // snapshot to the instant, by the id the matching folds it into
-// (yield.Inputs.Fold): the accounts that held it (Held), and its
-// security, as exposure_holdings keys a holding (HeldSecurity).
-func readYieldHeld(ctx context.Context, db *sql.DB, in *yield.Inputs) error {
+// (yield.Inputs.Fold): the accounts that held it (Held); its security, as
+// exposure_holdings keys a holding (HeldSecurity); and into lags the lag
+// of the record day of its dividends (yield.RecordLag). The lag reads
+// each position's situs at the instant and its basis (exposure_situs_at),
+// as the withholding table reads a holding's: the situs of a receipt of
+// basis underlying is that of the share it stands for. Any position the
+// situs rule reads as a receipt is one (receiptPositions): one whose
+// situs is declared reads the declared country as its share's, one whose
+// share is unknown has no lag. The currency is the one its instrument is
+// listed in, where gold states one, else the one its newest snapshot
+// values it in. Of the positions folded into one instrument, the one
+// seen newest gives the lag; two seen at that instant that disagree give
+// none.
+func readYieldHeld(ctx context.Context, db *sql.DB, in *yield.Inputs, lags map[yield.InstrumentKey]yield.Lag) error {
+	type reading struct {
+		k                      yield.InstrumentKey
+		position               [3]string
+		situs, basis, currency string
+		share                  bool
+		seen                   int64
+	}
+	var readings []reading
+	maybe := false
 	if err := scanAll(ctx, db, `
 WITH p AS (
-    SELECT DISTINCT silver_source_id AS src, account_external_id AS acct, position_key,
-           instrument_external_id AS iid
+    SELECT silver_source_id AS src, account_external_id AS acct, position_key, instrument_external_id AS iid,
+           COALESCE(arg_max(vehicle = 'stock' AND asset_class = 'public_equity', snapshot_at), FALSE) AS share,
+           COALESCE(arg_max(currency, snapshot_at), '') AS currency, MAX(snapshot_at) AS seen
       FROM positions
-     WHERE snapshot_at <= $1 AND instrument_external_id IS NOT NULL),
+     WHERE snapshot_at <= $1 AND instrument_external_id IS NOT NULL
+     GROUP BY ALL),
 k AS (
     SELECT p.*, COALESCE(ha.to_key, hd.to_key, ia.k) AS akey
       FROM p`+holdingAliasJoins("p.src", "p.acct", "p.iid", "p.position_key")+`)
-SELECT k.src, k.acct, k.iid, COALESCE(exposure_key(COALESCE(ik1.security_key, ik2.security_key)), '')
+SELECT k.src, k.acct, k.position_key, k.iid,
+       COALESCE(exposure_key(COALESCE(ik1.security_key, ik2.security_key)), ''), COALESCE(st.situs, ''),
+       COALESCE(st.basis, ''), k.share, COALESCE(NULLIF(i.currency, ''), k.currency), k.seen
   FROM k
   LEFT JOIN instrument_keys ik1 ON ik1.silver_source_id = k.src AND ik1.instrument_external_id = k.akey
   LEFT JOIN instrument_keys ik2 ON ik2.silver_source_id = k.src AND ik2.instrument_external_id = k.iid
- ORDER BY 1, 3, 2, k.position_key`, func(rows *sql.Rows) error {
-		var src, acct, iid, security string
-		if err := rows.Scan(&src, &acct, &iid, &security); err != nil {
+  LEFT JOIN instruments i ON i.silver_source_id = k.src AND i.instrument_external_id = k.iid
+  LEFT JOIN exposure_situs_at($1) st ON st.silver_source_id = k.src AND st.account_external_id = k.acct
+       AND st.position_key = k.position_key
+ ORDER BY 1, 4, 2, 3`, func(rows *sql.Rows) error {
+		var r reading
+		var iid, security string
+		if err := rows.Scan(&r.position[0], &r.position[1], &r.position[2], &iid, &security, &r.situs, &r.basis,
+			&r.share, &r.currency, &r.seen); err != nil {
 			return err
 		}
-		k := yield.InstrumentKey{Source: src, Instrument: in.Fold(src, acct, iid)}
-		in.Held[k] = append(in.Held[k], acct)
-		if security != "" && in.HeldSecurity[k] == "" {
-			in.HeldSecurity[k] = security
+		r.k = yield.InstrumentKey{Source: r.position[0], Instrument: in.Fold(r.position[0], r.position[1], iid)}
+		in.Held[r.k] = append(in.Held[r.k], r.position[1])
+		if security != "" && in.HeldSecurity[r.k] == "" {
+			in.HeldSecurity[r.k] = security
 		}
+		readings, maybe = append(readings, r), maybe || r.basis == situsDeclared || r.basis == situsUnknown || r.basis == ""
 		return nil
 	}, in.AsOf); err != nil {
 		return err
@@ -1401,7 +1484,56 @@ SELECT k.src, k.acct, k.iid, COALESCE(exposure_key(COALESCE(ik1.security_key, ik
 		slices.Sort(accts)
 		in.Held[k] = slices.Compact(accts)
 	}
+	receipts := map[[3]string]bool{}
+	if maybe {
+		var err error
+		if receipts, err = receiptPositions(ctx, db); err != nil {
+			return err
+		}
+	}
+	type newest struct {
+		seen  int64
+		lag   yield.Lag
+		mixed bool
+	}
+	picks := map[yield.InstrumentKey]*newest{}
+	for _, r := range readings {
+		receipt := r.basis == situsUnderlying || receipts[r.position]
+		lag := yield.RecordLag(r.situs, r.currency, receipt, r.share)
+		switch p := picks[r.k]; {
+		case p == nil || r.seen > p.seen:
+			picks[r.k] = &newest{seen: r.seen, lag: lag}
+		case r.seen == p.seen && lag != p.lag:
+			p.mixed = true
+		}
+	}
+	for k, p := range picks {
+		if !p.mixed && p.lag.Days > 0 {
+			lags[k] = p.lag
+		}
+	}
 	return nil
+}
+
+// receiptPositions are the positions the situs rule reads as depositary
+// receipts (situsFacts.receipt), by source, account and position key. A
+// declared situs comes first in the rule, and a receipt whose share is
+// unknown has basis unknown: underlying says a position is one, declared
+// and unknown say nothing, and any other basis says it is none.
+func receiptPositions(ctx context.Context, db *sql.DB) (map[[3]string]bool, error) {
+	out := map[[3]string]bool{}
+	return out, scanAll(ctx, db, `
+SELECT f.src, f.acct, f.position_key
+  FROM (`+situsHoldingsSQL+`) f(src, acct, position_key, iid, coin, receipt, share, isin, domicile, banked, custody,
+       private)
+ WHERE f.receipt`, func(rows *sql.Rows) error {
+		var k [3]string
+		if err := rows.Scan(&k[0], &k[1], &k[2]); err != nil {
+			return err
+		}
+		out[k] = true
+		return nil
+	}, receiptWording.String())
 }
 
 func readWithholding(ctx context.Context, db *sql.DB, in *yield.Inputs) error {

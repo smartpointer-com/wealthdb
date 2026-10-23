@@ -338,7 +338,9 @@ var yieldQualityTags = []tagNote{
 		"imply nothing"},
 	{string(yield.TagThin), "the amount was under a tenth of its mean on more than half the year's days, so " +
 		"it has no realized yield"},
-	{string(yield.TagPartial), "a position's realized yield covers the days it was held, fewer than the year's"},
+	{string(yield.TagPartial), "a figure covers part of the year: a position's realized yield covers the days it " +
+		"was held, fewer than the year's; or a payer twice a year shows one half's dividend, as the other half's " +
+		"rate is lost"},
 	{string(yield.TagUnits), "a dividend per share may be in the units of its day: no whole factor explains " +
 		"how they changed since, or no account held it through a span since"},
 	{string(yield.TagUnknown), "no source and no record gives a figure"},

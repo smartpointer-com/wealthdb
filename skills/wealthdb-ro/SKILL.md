@@ -187,7 +187,8 @@ Holdings totals reconcile: `global` ≈ sum of `sources`, `portfolios`,
 ## Dates
 
 `holdings`, `exposure` and `yield`: `-d YYYY-MM-DD` is the day (default
-today); each source gives its latest snapshot on or before it. `exposure`
+today); each account gives its own latest snapshot on or before it, until
+that snapshot ends (`wealthdb -r help holdings`). `exposure`
 and `yield` take `--period monthly|quarterly|annual` with a window instead,
 as below.
 
@@ -334,10 +335,12 @@ interest rates, as of a day.
   (a dividend's last payment at its frequency; interim plus final for a
   payer twice a year), `realized`, `declared` (the ledger), `aged` and
   `stale_price` (a fund's lines are old), `floating`, `default`, `thin`
-  (near zero most of the year: no realized yield), `partial` (a
-  position's realized yield covers fewer days than the year's), `units`
-  (a dividend per share whose units a split or a ratio change may have
-  left unclear), `unknown` (nothing states it: blank, not zero), `mixed`.
+  (near zero most of the year: no realized yield), `partial` (a figure
+  covers part of the year: a position's realized yield covers fewer days
+  than the year's, or a payer twice a year shows one half's dividend),
+  `units` (a dividend per share whose units a split or a ratio change may
+  have left unclear), `unknown` (nothing states it: blank, not zero),
+  `mixed`.
 - In an aggregate row the tags are separated by spaces, each as
   `tag=NN%` or `tag<1%` (`stated=61% aged<1%`), unlike exposure's
   comma-separated flags. A bare tag covers the whole row.
