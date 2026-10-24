@@ -8,8 +8,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from providers import REGISTRY  # noqa: E402
+from providers import REGISTRY, sec_calendar  # noqa: E402
 from tests.helpers import FakeProvider  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reads(monkeypatch):
+    """Each test counts the EDGAR filings it reads from zero: READS lives
+    as long as the process, and every load logs sec-edgar's note."""
+    monkeypatch.setattr(sec_calendar, "READS", sec_calendar.Reads())
 
 
 @pytest.fixture

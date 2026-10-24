@@ -9,10 +9,11 @@ from functools import partial
 
 import pytest
 
+from providers import REGISTRY
 from providers.base import read_meta
 from providers.invesco import API, distribution_events, distribution_rows
 from tests import test_invesco_characteristics as chars
-from tests.helpers import FakeClient, events_by_id
+from tests.helpers import FakeClient, events_by_id, held, plan, wanted_doc
 from tests.test_invesco_characteristics import DAY, HOLDINGS, UCITS_ID, US_ID
 
 CAL = "dividend_calendar"
@@ -48,6 +49,16 @@ def api(distributions):
 
 
 fetch = partial(chars.fetch, wants=(CAL,), ref="symbol:XMPQQQ")
+
+
+def test_a_fund_that_wants_its_calendar_alone_is_planned():
+    inv = REGISTRY["invesco"]
+    fund = {**held("symbol:XMPQQQ", "XMPQQQ", wants=[CAL], compositions=["2026-07-10"]),
+            "name": "Invesco Example ETF", "cusip": US_ID}
+    reqs, _, cover = plan(wanted_doc([fund], version=3), [inv])
+    assert [(r.provider, r.ref, r.facts, r.compositions) for r in reqs] == [
+        ("invesco", "symbol:XMPQQQ", (CAL,), False)]
+    assert cover[CAL]["symbol:XMPQQQ"].requests == reqs
 
 
 def test_a_us_fund_states_every_distribution_as_events_per_kind(tmp_path):

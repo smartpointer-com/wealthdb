@@ -238,7 +238,8 @@ def test_two_refs_never_share_a_folder(tmp_path):
     assert folder("symbol:XYZ/B").startswith("symbol_XYZ-B-") and folder("symbol:XYZ/B") != folder("symbol:XYZ B")
 
 
-def test_a_run_writes_bronze_and_a_manifest(tmp_path, fake, monkeypatch):
+def test_a_run_writes_bronze_and_a_manifest(tmp_path, fake, monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="refdata.download")
     configured(monkeypatch, providers=("fake",))
     w = write_wanted(tmp_path / "wanted.json", wanted_doc([
         fund("symbol:FUNDA", "FUNDA", held_from="2026-05-01", compositions=[]),
@@ -254,6 +255,8 @@ def test_a_run_writes_bronze_and_a_manifest(tmp_path, fake, monkeypatch):
     assert statuses == [("current", "ok"), ("2026-04-28", "ok"), ("2026-05-28", "deferred"),
                         ("2026-06-28", "deferred")]
     assert (run / manifest["requests"][0]["dir"] / "holdings.txt").is_file()
+    # The run ends with each provider's line on what it read.
+    assert caplog.records[-1].getMessage() == "fake: 2 fetched"
 
 
 def test_dry_run_writes_nothing(tmp_path, fake, monkeypatch, capsys):

@@ -777,6 +777,10 @@ not from the XBRL API, which serves no dates:
   last 10-K and the 10-Qs since, about five. Each comes as its XBRL
   archive (0.2 to 3 MB), or as its main document where there is no
   archive.
+- Of an archive, only the inline XBRL documents are read: the main
+  document, and any other that declares inline XBRL at its start. The
+  exhibits are plain HTML and are skipped. The run's log counts the
+  archives read, the documents parsed and the members skipped.
 - A later request reads only the filings that no earlier run read. The
   company's submissions file names them, and the lookup reads it
   anyway. So a company that tags costs about one filing a quarter.

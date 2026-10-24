@@ -54,12 +54,23 @@ def archive(accession):
 
 
 def xbrl_zip(doc: bytes) -> bytes:
-    """A filing's XBRL archive: its inline document and its schema."""
+    """A filing's XBRL archive: its inline document, an exhibit in plain
+    HTML and its schema."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("exmp-20260930.htm", doc)
+        z.writestr("exmp-ex311.htm", EXHIBIT)
         z.writestr("exmp-20260930.xsd", b"<schema/>")
     return buf.getvalue()
+
+
+EXHIBIT = b"<html><p>Certification<br></p></html>"  # a plain-HTML exhibit: no inline XBRL
+
+
+def late(doc: bytes) -> bytes:
+    """An inline document that declares its namespace past the bytes
+    sniffed: only its name as the primary document tells it."""
+    return b"<!--" + b" " * sec_calendar.SNIFF + b"-->" + doc.partition(b"?>")[2]
 
 
 # ---- an inline XBRL document, built ------------------------------------
@@ -250,9 +261,56 @@ def test_a_document_reads_named_characters_and_leaves_out_what_it_excludes(caplo
     (d,) = sec_calendar.dividends(doc)
     assert (d["record_date"], d["pay_date"]) == (date(2026, 10, 13), None)
     # A document that is no XML states none, and a warning names it.
-    assert sec_calendar.filing_dividends(b"<html><p>unclosed</html>", "x.htm") == []
-    assert sec_calendar.filing_dividends(b"not a zip", "x-xbrl.zip") == []
+    assert sec_calendar.filing_dividends(b"<html><p>unclosed</html>", "x.htm", None) == []
+    assert sec_calendar.filing_dividends(b"not a zip", "x-xbrl.zip", None) == []
     assert "x.htm: not XML" in caplog.text and "x-xbrl.zip" in caplog.text
+
+
+def test_an_archive_reads_its_inline_documents_and_skips_its_exhibits(caplog):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("exmp-20260930.htm", Q3)
+        # Two exhibits, plain HTML: neither is parsed, so neither warns.
+        z.writestr("exmp-ex311.htm", EXHIBIT)
+        z.writestr("exmp-ex32.htm", b"<html><p>Section 906 &mdash; certification</html>")
+        z.writestr("exmp-20260930.xsd", b"<schema/>")
+    assert sorted(by_record(sec_calendar.filing_dividends(buf.getvalue(), "a-xbrl.zip", None))) == [
+        "2026-07-14", "2026-10-13"]
+    assert "not XML" not in caplog.text
+    assert sec_calendar.READS.line() == "calendar: archives read 1, documents parsed 1, members skipped 2"
+
+
+def late_archive() -> bytes:
+    """An archive whose primary document, in a folder, declares its
+    namespace late, beside two inline documents that do not read: one
+    of inline XBRL 1.1, one of 1.0."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("filing/exmp-20260930.htm", late(Q3))
+        z.writestr("exmp-10q2.htm", b'<html xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"><p>cut')
+        z.writestr("exmp-10q3.htm", b'<html xmlns:ix="http://www.xbrl.org/2008/inlineXBRL"><p>cut')
+    return buf.getvalue()
+
+
+def test_an_archive_reads_its_primary_document_by_name(caplog):
+    # The primary is read whatever its start declares, its name matched
+    # without its folder; an inline document that does not read keeps
+    # its warning.
+    got = sec_calendar.filing_dividends(late_archive(), "b-xbrl.zip", "docs/exmp-20260930.htm")
+    assert sorted(by_record(got)) == ["2026-07-14", "2026-10-13"]
+    assert caplog.text.count("b-xbrl.zip: not XML") == 2
+    assert sec_calendar.READS.line() == "calendar: archives read 1, documents parsed 3, members skipped 0"
+
+
+def test_an_archive_without_the_primarys_name_misses_a_late_declaration():
+    assert sec_calendar.filing_dividends(late_archive(), "b-xbrl.zip", None) == []
+    assert sec_calendar.READS.line() == "calendar: archives read 1, documents parsed 2, members skipped 1"
+
+
+def test_a_primary_document_stored_on_its_own_is_read_whole():
+    assert sec_calendar.READS.line() is None  # nothing read yet
+    assert sorted(by_record(sec_calendar.filing_dividends(late(Q3), "c.htm", None))) == ["2026-07-14", "2026-10-13"]
+    assert sec_calendar.READS.line() == "calendar: archives read 0, documents parsed 1, members skipped 0"
 
 
 # ---- fetch and parse ---------------------------------------------------
@@ -466,16 +524,25 @@ def filings_read(client):
     return [u.rsplit("/", 1)[1] for u in client.urls() if "Archives" in u]
 
 
-def test_a_run_loads_the_events_and_the_next_asks_only_what_is_new(tmp_path, today):
+def test_a_run_loads_the_events_and_the_next_asks_only_what_is_new(tmp_path, today, caplog, monkeypatch):
     data = tmp_path / "data"
     data.mkdir()
-    docs = {"0000000007-26-000010": FIXTURE.read_bytes(), "0000000007-26-000011": Q3}
+    # The latest 10-Q declares its namespace late: its name as the
+    # primary document is what has it read, at the fetch and at the load.
+    docs = {"0000000007-26-000010": FIXTURE.read_bytes(), "0000000007-26-000011": late(Q3)}
     client = FakeClient(routes(**{archive(a): xbrl_zip(docs.get(a, UNTAGGED)) for a, *_ in FILINGS}))
     (entry,), cover = run(data, TODAY, client, today)
     assert (entry["status"], entry["facts"]) == ("ok", [CAL]) and cover[CAL][KEY].requests
     assert len(filings_read(client)) == 5
+    assert [f["tagged"] for f in read_meta(data / "20261102T010000Z" / entry["dir"])["calendar"]["filings"]] == [
+        False, False, False, True, True]
+    assert sec_calendar.READS.line() == "calendar: archives read 5, documents parsed 5, members skipped 5"
+    # The load counts afresh.
+    monkeypatch.setattr(sec_calendar, "READS", sec_calendar.Reads())
+    caplog.set_level("INFO", logger="refdata.load")
     db = tmp_path / "refdata.db"
     assert load.main(["--silver-db", str(db), "--bronze-dir", str(data)]) == 0
+    assert "sec-edgar: calendar: archives read 5, documents parsed 5, members skipped 5" in caplog.text
     events = rows(db, "SELECT ref, provider, event_id, ex_date, record_date, pay_date, declared_date, amount, "
                       "currency, status FROM dividend_events ORDER BY event_id")
     assert rows(db, "SELECT COUNT(*) FROM securities") == [(1,)]

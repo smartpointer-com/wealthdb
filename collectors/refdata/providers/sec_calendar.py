@@ -12,16 +12,19 @@ sec-edgar claims a share's calendar, and fetches and parses it here.
 - Fetch: each 10-Q and 10-K in inline XBRL that the company's
   submissions file lists among its recent filings, filed in the last
   FILINGS_MONTHS months, that no earlier run read: its XBRL archive
-  (<accession>-xbrl.zip, the inline document within), else its primary
+  (<accession>-xbrl.zip, its inline documents within), else its primary
   document (the inline document itself), compressed.
-- Parse: the facts US GAAP tags a dividend's record, pay and declared
-  days with and its amount per share (DAYS, AMOUNTS), a partnership's
-  distribution to its limited partners too, one dividend per member of
-  a dividend axis (else per context period). A day is read by its ixt
-  date transform; a fact nested in a text block counts as any other. A
-  dividend's amount may sit in a context of its own: the amount tagged
-  without dimensions for the dividend's period joins it. Preferred
-  stock's dividends are left out. US GAAP has no ex day: none is stated.
+- Parse: of an archive, the primary document and each other member
+  that declares inline XBRL's namespace at its start; an exhibit is
+  plain HTML and is not parsed. Then the facts US GAAP tags a
+  dividend's record, pay and declared days with and its amount per
+  share (DAYS, AMOUNTS), a partnership's distribution to its limited
+  partners too, one dividend per member of a dividend axis (else per
+  context period). A day is read by its ixt date transform; a fact
+  nested in a text block counts as any other. A dividend's amount may
+  sit in a context of its own: the amount tagged without dimensions
+  for the dividend's period joins it. Preferred stock's dividends are
+  left out. US GAAP has no ex day: none is stated.
 
 Terms: README.md, sec-edgar.
 """
@@ -60,6 +63,9 @@ QUIET_DAYS = 365
 # The largest document of an archive read: a filing's inline document is
 # a few megabytes.
 MAX_DOCUMENT = 256 << 20
+# The bytes at a member's start that tell an inline document: it declares
+# inline XBRL's namespace on its root element, in its first kilobyte or two.
+SNIFF = 16 << 10
 
 log = logging.getLogger("refdata.sec-edgar")
 
@@ -356,23 +362,64 @@ def _amount(values: dict):
     return None
 
 
-def documents(data: bytes, name: str) -> list:
-    """The inline XBRL documents of a filing's stored file: the .htm
-    files of its XBRL archive (zipfile.BadZipFile where it is none), or
-    the primary document itself."""
+@dataclass
+class Reads:
+    """What a run read of the filings: the archives opened, the documents
+    parsed and the HTML members of an archive left unparsed (its
+    exhibits)."""
+    archives: int = 0
+    documents: int = 0
+    skipped: int = 0
+
+    def line(self) -> str | None:
+        """The run's one line on it; None where it read no filing."""
+        if not (self.archives or self.documents):
+            return None
+        return (f"calendar: archives read {self.archives}, documents parsed {self.documents}, "
+                f"members skipped {self.skipped}")
+
+
+READS = Reads()
+
+
+def inline(head: bytes) -> bool:
+    """Whether an archive member is an inline XBRL document, by its first
+    SNIFF bytes: they declare inline XBRL's namespace."""
+    return any(uri.encode() in head for uri in IX)
+
+
+def documents(data: bytes, name: str, primary: str | None) -> list:
+    """The inline XBRL documents of a filing's stored file: of its XBRL
+    archive, the members that are inline documents (inline()) or the
+    filing's primary document; else the primary document itself. Any
+    other member, an exhibit, is not parsed. zipfile.BadZipFile where
+    the archive is none."""
     if not name.endswith(".zip"):
+        READS.documents += 1
         return [data]
+    out, primary = [], (primary or "").rpartition("/")[2] or None
     with zipfile.ZipFile(io.BytesIO(data)) as z:
-        return [z.read(i) for i in z.infolist()
-                if i.filename.lower().endswith((".htm", ".html", ".xhtml")) and i.file_size <= MAX_DOCUMENT]
+        READS.archives += 1
+        for i in z.infolist():
+            if not i.filename.lower().endswith((".htm", ".html", ".xhtml")) or i.file_size > MAX_DOCUMENT:
+                continue
+            with z.open(i) as member:
+                head = member.read(SNIFF)
+                if i.filename.rpartition("/")[2] == primary or inline(head):
+                    out.append(head + member.read())
+                else:
+                    READS.skipped += 1
+    READS.documents += len(out)
+    return out
 
 
-def filing_dividends(data: bytes, name: str) -> list:
-    """The dividends of a filing's stored file, of all its documents. A
+def filing_dividends(data: bytes, name: str, primary: str | None) -> list:
+    """The dividends of a filing's stored file, of all its inline
+    documents (documents(); `primary` the primary document's name, or None). A
     file or a document that does not read states none, and a warning
     names it."""
     try:
-        docs = documents(data, name)
+        docs = documents(data, name, primary)
     except zipfile.BadZipFile as e:
         log.warning("%s: %s", name, e)
         return []
@@ -478,7 +525,8 @@ def fetch(ctx, cik: int, outdir: Path, sub: dict, today: date, read) -> tuple:
             log.warning("CIK %s: filing %s: %s", cik, f["accession"], e)
             missing = True
             continue
-        got.append({**f, "file": name, "tagged": bool(filing_dividends(read_bytes(outdir, name), name))})
+        tagged = bool(filing_dividends(read_bytes(outdir, name), name, f["document"]))
+        got.append({**f, "file": name, "tagged": tagged})
     return {"filings": got}, missing
 
 
@@ -512,7 +560,7 @@ def parse(indir: Path, meta: dict, *, provider: str) -> list:
     final and has no ex day."""
     merged = {}
     for f in sorted((meta.get("calendar") or {}).get("filings") or [], key=lambda f: (f["filed"], f["accession"])):
-        for d in filing_dividends(read_bytes(indir, f["file"]), f["file"]):
+        for d in filing_dividends(read_bytes(indir, f["file"]), f["file"], f.get("document")):
             e = merged.setdefault(event_id("dividend", None, d["record_date"], d["pay_date"]), {})
             e.update({k: v for k, v in d.items() if v is not None and k not in ("member", "period")})
             e.update(member=d["member"], period=d["period"], filing=f)

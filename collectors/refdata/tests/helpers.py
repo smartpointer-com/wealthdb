@@ -135,6 +135,9 @@ class FakeProvider(Provider):
     def latest(self, claim, ctx):
         return self.latest_
 
+    def note(self):
+        return f"{len(self.fetched)} fetched"
+
     def fetch(self, claim, as_of, outdir, ctx):
         if as_of is not None and as_of not in self.dates_:
             raise Unavailable("no such date")

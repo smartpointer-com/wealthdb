@@ -280,6 +280,9 @@ class SecEdgar(Provider):
     def probe(self, ctx) -> str:
         return f"SEC company ticker file: {len(self._tickers(ctx)[0])} tickers"
 
+    def note(self) -> str | None:
+        return sec_calendar.READS.line()
+
 
 def fetch_concepts(ctx, cik: int, outdir: Path, taxonomy: str, concepts) -> int:
     """Each concept's answer for one company into outdir, a file each;

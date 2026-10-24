@@ -131,7 +131,7 @@ log = logging.getLogger("refdata.invesco")
 class Invesco(Provider):
     name = "invesco"
     serves_funds = True
-    facts = frozenset({"characteristics"})
+    facts = frozenset({"characteristics", "dividend_calendar"})
 
     def claim(self, fund, ctx):
         if not (ISSUER.search(fund.name or "") and ETF.search(fund.name or "")):

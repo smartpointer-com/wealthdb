@@ -71,7 +71,8 @@ import fetcher
 import wanted as wantedmod
 from collectorkit import bronze, cli, debugcap
 from providers import REGISTRY
-from providers.base import Context, ProviderError, Unavailable, complete_runs, folder_name, read_meta, today_utc
+from providers.base import (Context, ProviderError, Unavailable, complete_runs, folder_name, log_notes, read_meta,
+                            today_utc)
 
 log = logging.getLogger("refdata.download")
 
@@ -935,6 +936,7 @@ def main(argv=None) -> int:
     by = Counter(e["status"] for e in manifest["requests"])
     log.info("run %s: %s", slug, ", ".join(f"{n} {s}" for s, n in sorted(by.items())) or "nothing to fetch")
     log_coverage(cover, {id(r) for r, e in zip(reqs, manifest["requests"], strict=True) if e["status"] == "deferred"})
+    log_notes(providers, log)
     return 0
 
 

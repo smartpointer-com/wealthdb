@@ -48,7 +48,7 @@ from pathlib import Path
 
 from collectorkit import bronze, cli, silver
 from providers import REGISTRY
-from providers.base import COLUMNS, FLAGS, Parsed, ProviderError
+from providers.base import COLUMNS, FLAGS, Parsed, ProviderError, log_notes
 
 log = logging.getLogger("refdata.load")
 
@@ -253,6 +253,7 @@ def main(argv=None) -> int:
         n_skipped += skipped
         log.info("loaded run %s: %d rows%s", run_dir.name, rows, f", {skipped} skipped" if skipped else "")
     log.info("done: %d run(s), %d rows -> %s", n_runs, n_rows, args.silver_db)
+    log_notes(REGISTRY.values(), log)
     return 0
 
 

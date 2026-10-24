@@ -395,6 +395,19 @@ class Provider:
         description of what answered."""
         return "nothing to probe"
 
+    def note(self) -> str | None:
+        """A line on what this run read through the provider, logged once
+        at the run's end; None for nothing to say."""
+        return None
+
+
+def log_notes(providers, log) -> None:
+    """Each provider's line on what the run read through it
+    (Provider.note)."""
+    for p in providers:
+        if (note := p.note()) is not None:
+            log.info("%s: %s", p.name, note)
+
 
 def write_meta(outdir: Path, **meta) -> None:
     bronze.atomic_write_json(outdir / META, meta)
