@@ -162,6 +162,12 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
   points lower)
 - **Net cash flow / by class** — `wealthdb -r cashflow summary 2025 --period total` /
   `wealthdb -r cashflow flows 2025 --period total --level class`
+- **What will next year's cash flow look like** —
+  `wealthdb -r cashflow projection --period quarterly` (the projection's
+  income against the trailing year's outflows, mortgages to their
+  maturity; `vehicles_income` is the projected income on accounts
+  outside the pool, out of `net`; `quality` says which part rests on
+  what)
 - **Mortgage, retirement or education payments** —
   `wealthdb -r cashflow flows 2025 --period total --level class | grep -i -E 'mortgage|retirement|education'`
 - **Largest transactions** —
@@ -180,7 +186,7 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
 | **Gained or lost**; cost basis; tax lots | `gains` | `summary`, `sources`, `portfolios`, `accounts`, `positions`, `realized`, `lots`, `coverage`, `check` |
 | **Spent**, on what | `spending` | `summary`, `categories`, `transactions` |
 | **Received**, from whom; what the holdings are **expected to pay** | `income` | `summary`, `types`, `transactions`; forward: `projection`, `calendar`, `sources`, `portfolios`, `accounts`, `positions` |
-| Where the household's cash came from and went; mortgage, retirement, education payments | `cashflow` | `summary`, `flows`, `sankey`, `transactions`, `coverage` |
+| Where the household's cash came from and went; mortgage, retirement, education payments; the plan ahead | `cashflow` | `summary`, `flows`, `sankey`, `transactions`, `coverage`, `projection` |
 
 Holdings totals reconcile: `global` ≈ sum of `sources`, `portfolios`,
 `accounts`, and `positions --with-cash`.
@@ -208,6 +214,10 @@ default is the months after this one, not the trailing twelve. They
 refuse an open bound, so the `2026-01-01 -`, `- 2026-06-30` and
 `- today` idioms are not for them: give FROM, FROM TO, or neither.
 
+`cashflow projection` takes the same forward window, in whole months
+from next month on. Its default is the projection's horizon. It refuses
+`--level`, `--investing` and `--period total`.
+
 ## Flags and columns
 
 `-f table|json|csv` (`ndjson` on `exposure coverage` and `yield coverage`)
@@ -218,8 +228,8 @@ refuse an open bound, so the `2026-01-01 -`, `- 2026-06-30` and
 and on `yield` for `global`, `sources`, `portfolios`, `accounts` and
 `curve` · `--level` on `spending`, `income`, `cashflow` · `--converted`
 on `yield`'s `global`, `sources`, `portfolios` and `accounts` ·
-`--rates`, `--maturing`, `--shift` on `income`'s forward views. The
-forward views refuse `--level`. Of them only `projection` takes
+`--rates`, `--maturing`, `--shift` on `income`'s forward views and on
+`cashflow projection`. The forward views refuse `--level`. Of them only `projection` takes
 `--period`, as `monthly|quarterly|annual` (not `total`: its `total` row
 sums the window).
 

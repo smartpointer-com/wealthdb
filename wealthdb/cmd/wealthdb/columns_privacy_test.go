@@ -707,8 +707,11 @@ func typedLabelCalls(s *mcpServer, today time.Time) []typedLabelCall {
 				c.cli = append(c.cli, view)
 			}
 			window := [2]string{"2026-04-01", "2026-06-30"}
-			if spec.name == "income" && isForwardView(view) {
+			if fam.forward != nil && fam.forward(view) {
 				window = fwd
+			}
+			if spec.name == "cashflow" && view == "projection" {
+				window = [2]string{fwdFrom.AddDate(0, 1, 0).Format(time.DateOnly), fwd[1]}
 			}
 			switch fam.window {
 			case asOfDate:

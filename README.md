@@ -136,6 +136,7 @@ wealthdb yield global -x CHF                         # what the holdings yield, 
 wealthdb spending categories 2025 --period annual    # last year's spending by category
 wealthdb income summary 2025-01 2025-03 -C +withheld # Q1 income, with the tax withheld beside it
 wealthdb cashflow sankey 2025                        # the year's cash flow as a diagram
+wealthdb cashflow projection --period quarterly      # the next twelve months' cash flow planned, by quarter
 ```
 
 Every report is available in three places:

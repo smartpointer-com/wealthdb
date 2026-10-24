@@ -521,9 +521,10 @@ func (c *Config) validateIncome(seenIDs map[string]bool) error {
 // validateCashflow checks cashflow: the pool's exclusions get the
 // account-scope treatment the two families' do, and the wrapper overrides
 // are checked against the same two vocabularies gold's stamped table
-// restates as CHECK constraints. Both are rejected here rather than at the
-// stamp, because a boundary that fails mid-load leaves the table
-// half-written and the statement silently redrawn.
+// restates as CHECK constraints. The first two are rejected here rather
+// than at the stamp, because a boundary that fails mid-load leaves the
+// table half-written and the statement silently redrawn. The plan's
+// look-back is held to 0 (the default) or 1 to MaxCashflowLookbackMonths.
 func (c *Config) validateCashflow(seenIDs map[string]bool) error {
 	if cf := c.Cashflow; cf != nil {
 		if cf.Accounts != nil {
@@ -540,6 +541,10 @@ func (c *Config) validateCashflow(seenIDs map[string]bool) error {
 				return fmt.Errorf("config: cashflow.wrappers[%q]: %q is not a destination (want %s)",
 					wrapper, cf.Wrappers[wrapper], strings.Join(canonical.WrapperDestinations, " | "))
 			}
+		}
+		if p := cf.Projection; p != nil && (p.LookbackMonths < 0 || p.LookbackMonths > MaxCashflowLookbackMonths) {
+			return fmt.Errorf("config: cashflow.projection.lookback_months %d: want 1 to %d months, or 0 for the default",
+				p.LookbackMonths, MaxCashflowLookbackMonths)
 		}
 	}
 	return nil

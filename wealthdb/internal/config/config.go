@@ -208,9 +208,9 @@ type Config struct {
 	// knobs or a transfer-override ledger, because there is one
 	// matcher and both families read its verdicts.
 	Income *IncomeConfig `json:"income,omitempty"`
-	// Cashflow is the cash flow statement's two knobs: which accounts
-	// are in the household's cash pool, and where a crossing to a
-	// given tax wrapper lands. It inherits neither family's scope —
+	// Cashflow is the cash flow statement's knobs: which accounts are
+	// in the household's cash pool, where a crossing to a given tax
+	// wrapper lands, and the plan's look-back. It inherits neither family's scope —
 	// cashflow reads their verdicts rather than their bases, so an
 	// account one of them excludes is not thereby outside the pool.
 	// Absent block ⇒ every account is pooled and the engine's own
@@ -1415,7 +1415,7 @@ type IncomeRule struct {
 }
 
 // CashflowConfig is the `cashflow` block of wealthdb.cfg: one block,
-// two fields, both optional.
+// three fields, all optional.
 //
 // It is deliberately small. Cashflow adds no categorisation tier and
 // buys nothing from a model, so there is no endpoint to point at and
@@ -1449,6 +1449,32 @@ type CashflowConfig struct {
 	// override reaches the rows a load actually touches, so a reload is
 	// what applies one to history.
 	Wrappers map[string]string `json:"wrappers,omitempty"`
+	// Projection sets the cash-flow plan (`cashflow projection`).
+	Projection *CashflowProjection `json:"projection,omitempty"`
+}
+
+// CashflowProjection is the `cashflow.projection` block.
+type CashflowProjection struct {
+	// LookbackMonths is how many whole months before the current one
+	// the plan's averages read, 1 to MaxCashflowLookbackMonths; 0 for
+	// DefaultCashflowLookbackMonths.
+	LookbackMonths int `json:"lookback_months,omitempty"`
+}
+
+// The cash-flow plan's look-back: twelve months, so a seasonal expense
+// is spread over its year, and at most three years.
+const (
+	DefaultCashflowLookbackMonths = 12
+	MaxCashflowLookbackMonths     = 36
+)
+
+// CashflowLookback is the plan's look-back in months:
+// cashflow.projection.lookback_months, else the default.
+func (c *Config) CashflowLookback() int {
+	if c != nil && c.Cashflow != nil && c.Cashflow.Projection != nil && c.Cashflow.Projection.LookbackMonths > 0 {
+		return c.Cashflow.Projection.LookbackMonths
+	}
+	return DefaultCashflowLookbackMonths
 }
 
 // CashflowAccounts lists the accounts fenced out of the cash pool,

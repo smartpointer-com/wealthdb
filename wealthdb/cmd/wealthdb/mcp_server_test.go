@@ -270,6 +270,31 @@ func callHeader(t *testing.T, cs *mcp.ClientSession, tool string, args map[strin
 	return h
 }
 
+// TestMCPCashflowPlanRefusals: the plan plans whole months from next
+// month on, takes no level or investing grain and no total period, and
+// its assumptions belong to it alone.
+func TestMCPCashflowPlanRefusals(t *testing.T) {
+	t.Parallel()
+	cs := connect(t, newTestMCP(setupYieldGold(t), false), time.Now())
+	now := time.Now().UTC()
+	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	next := month.AddDate(0, 1, 0)
+	refusals(t, cs, "cashflow", []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{"view": "projection", "from": month.Format(time.DateOnly)}, "it starts in " +
+			next.Format("2006-01") + " or later"},
+		{map[string]any{"view": "projection", "from": next.AddDate(0, 0, 14).Format(time.DateOnly),
+			"to": next.AddDate(0, 3, -1).Format(time.DateOnly)}, "plans whole months"},
+		{map[string]any{"view": "projection", "from": next.Format(time.DateOnly),
+			"to": next.AddDate(0, 1, 14).Format(time.DateOnly)}, "plans whole months"},
+		{map[string]any{"view": "projection", "level": "class"}, "projection takes no level or investing"},
+		{map[string]any{"view": "projection", "period": "total"}, "projection takes period monthly"},
+		{map[string]any{"view": "summary", "rates": "forward"}, "rates, maturing and shift belong to the projection view"},
+	})
+}
+
 // TestMCPYieldRefusals: converted belongs to the aggregate views; a
 // series takes a period, a view that has one and a window, not an as_of
 // day or a window after today. A converted or a series call says so in
@@ -323,6 +348,44 @@ func TestMCPIncomeForwardRefusals(t *testing.T) {
 		"shift": -50})
 	if !strings.Contains(h, "period=monthly · rates=forward · maturing=roll · shift=-50bp") {
 		t.Errorf("projection: header %q", h)
+	}
+}
+
+// TestMCPForwardWindowsAreTheFamilys: a window looks forward only on the
+// views of its own family that do. gains shares the entity views' names
+// with income's forward views, yet reads the trailing year to today, as
+// `wealthdb gains` does; income's forward views and cashflow's
+// projection default to the horizon after the current month.
+func TestMCPForwardWindowsAreTheFamilys(t *testing.T) {
+	t.Parallel()
+	cs := connect(t, onFixtureToday(newTestMCP(setupYieldGold(t), false)), fixtureToday)
+	from, to, err := parseTrailingYearWindow(nil, fixtureToday)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trailing := "window " + formatDate(from) + " → " + formatDate(to)
+	fwdFrom, fwdTo, err := parseForwardWindow("", "", fixtureToday, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ahead := "window " + formatDate(fwdFrom) + " → " + formatDate(fwdTo)
+	for _, c := range []struct {
+		tool string
+		args map[string]any
+		want string
+	}{
+		{"gains", map[string]any{"view": "sources"}, trailing},
+		{"gains", map[string]any{"view": "positions"}, trailing},
+		{"gains", map[string]any{"view": "accounts", "from": "2026-01-01"}, "window 2026-01-01 → " + formatDate(to)},
+		{"gains", map[string]any{"view": "portfolios", "to": "2026-06-30"}, "window start of data → 2026-06-30"},
+		{"income", map[string]any{"view": "sources"}, ahead},
+		{"income", map[string]any{"view": "summary"}, trailing},
+		{"cashflow", map[string]any{"view": "projection"}, ahead},
+		{"cashflow", map[string]any{"view": "summary"}, trailing},
+	} {
+		if h := callHeader(t, cs, c.tool, c.args); !strings.Contains(h, c.want) {
+			t.Errorf("%s %v: header %q, want %q", c.tool, c.args, h, c.want)
+		}
 	}
 }
 

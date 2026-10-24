@@ -985,6 +985,12 @@ FILTER_FIELD_COLUMNS = {
     # cards' Time range lands on them, and a card keeps the received rows
     # and the withheld tax of the days it selects.
     "web_income_days": ("day",),
+    # The cash-flow plan's look-back parts (migration 0149), per currency
+    # and month of the projection, and the accounts of the cash pool the
+    # Plan cards split the projection by. No field filter binds them: the
+    # Plan cards take no picker but the currency and the projection's.
+    "web_cashflow_plan": (),
+    "web_cashflow_pool": (),
 }
 FIELD_IDS = {}          # (table, column) -> field id, filled by main()
 
@@ -2044,6 +2050,7 @@ def question_defs(db_id, mid):
         **exposure_cards(db_id, privacy=False),
         **yield_cards(db_id, privacy=False),
         **income_projected_cards(db_id, privacy=False),
+        **cashflow_plan_cards(db_id, privacy=False),
     }
 
 
@@ -2589,11 +2596,15 @@ def base_dashboards():
             "household is the accounts in its own tax wrappers; "
             "retirement plans, trusts and charitable vehicles are "
             "vehicles it pays into and draws on. Own-account moves are "
-            "invisible, and buying and selling is shown NET. " + note,
+            "invisible, and buying and selling is shown NET. The plan sets "
+            "the income the holdings are expected to pay against the "
+            "outflows of the look-back, month by month over the Horizon, "
+            "under the Rate path, Maturing and Shift pickers. " + note,
             "range", [
             # Five headline figures, then the diagram at the centre, then
-            # the shape of the window, then the two sides of operating,
-            # then the swing sections, then the lines.
+            # the shape of the window and the plan of the months ahead,
+            # then the two sides of operating, then the swing sections,
+            # then the lines.
             ("Operating in", 0, 0, 5, 3, "occurred_at"),
             ("Operating out", 0, 5, 5, 3, "occurred_at"),
             ("Net cash flow", 0, 10, 5, 3, "occurred_at"),
@@ -2602,11 +2613,13 @@ def base_dashboards():
             # Full width and tall: the diagram is the dashboard.
             ("Cash flow", 3, 0, 24, 12, "occurred_at"),
             ("Cash flow statement by month", 15, 0, 24, 8, "occurred_at"),
-            ("Inflows by class by month", 23, 0, 12, 7, "occurred_at"),
-            ("Outflows by class by month", 23, 12, 12, 7, "occurred_at"),
-            ("Investing by month", 30, 0, 12, 7, "occurred_at"),
-            ("Financing and vehicles by month", 30, 12, 12, 7, "occurred_at"),
-            ("Largest flows", 37, 0, 24, 8, "occurred_at"),
+            ("Cash flow plan by month", 23, 0, 24, 8, None),
+            ("Cash flow plan", 31, 0, 24, 9, None),
+            ("Inflows by class by month", 40, 0, 12, 7, "occurred_at"),
+            ("Outflows by class by month", 40, 12, 12, 7, "occurred_at"),
+            ("Investing by month", 47, 0, 12, 7, "occurred_at"),
+            ("Financing and vehicles by month", 47, 12, 12, 7, "occurred_at"),
+            ("Largest flows", 54, 0, 24, 8, "occurred_at"),
         ]),
         "Gains": (
             "Realized and unrealized gains and losses over a chosen window, "
@@ -3093,6 +3106,10 @@ PARTS_FROM = ("    FROM web_yield_parts p\n"
               "    LEFT JOIN web_yield_rates rt ON rt.currency = p.holding_currency AND rt.month = p.month\n"
               "         AND rt.path = {{rates}}")
 HORIZON_MONTHS = "CAST({{horizon}} AS INTEGER)"
+# The months of the horizon after the current one: month 0 never counts.
+AFTER_THIS_MONTH = " BETWEEN 1 AND " + HORIZON_MONTHS
+# The parts under the picked Maturing rule over those months.
+PARTS_AHEAD = "\n   WHERE p.rule = {{maturing}}\n     AND p.month" + AFTER_THIS_MONTH
 # A part of a holding web_yield's today rows select, as CTE `h`.
 HELD_JOIN = ("    JOIN h ON h.silver_source_id = p.silver_source_id"
              " AND h.account_external_id = p.account_external_id\n"
@@ -3137,9 +3154,8 @@ def yield_cards(db_id, privacy):
             "them shows nothing. Built for the Yield dashboard; opened standalone it runs in "
             f"{DEFAULT_CURRENCY}, the currency variable's default, at the latest day.")
     proj_note = (" It reads today's projection whatever the window. Built for the Yield "
-                 f"dashboard; opened standalone it runs in {DEFAULT_CURRENCY} under constant "
-                 "rates, maturing principal to cash, no shift and a twelve-month horizon, the "
-                 "variables' defaults.")
+                 f"dashboard; opened standalone it runs in {DEFAULT_CURRENCY} {PROJECTION_DEFAULTS}, "
+                 f"over a {HORIZONS[0]}-month horizon, the variables' defaults.")
     if privacy:
         note, proj_note = note + PRIVACY_DESC, proj_note + PRIVACY_DESC
     out = {}
@@ -3162,7 +3178,7 @@ def yield_cards(db_id, privacy):
             "\n     AND currency = {{currency}}\n     AND today)")
     horizon = (held + ",\nx AS (\n"
                f"  SELECT p.month, ({PART_INCOME}) * {_ccy_case('p.fx')} AS income\n" + PARTS_FROM + "\n" + HELD_JOIN +
-               "\n   WHERE p.rule = {{maturing}}\n     AND p.month BETWEEN 1 AND " + HORIZON_MONTHS + ")\n")
+               PARTS_AHEAD + ")\n")
     # The horizon's income per year over the value that earns it.
     horizon_yield = ("SELECT 100 * (SELECT sum(income) FROM x) * 12 / " + HORIZON_MONTHS +
                      f"\n       / NULLIF((SELECT {EARNING_VALUE} FROM h), 0) AS income_yield_pct")
@@ -3307,8 +3323,7 @@ def yield_cards(db_id, privacy):
     up = PART_INCOME.replace("({{shift}})", "({{shift}} + 100)")
     sens = (held + ",\ns AS (\n"
             f"  SELECT p.holding_currency, (({up}) - ({PART_INCOME})) * {_ccy_case('p.fx')} AS v\n" + PARTS_FROM +
-            "\n" + HELD_JOIN +
-            "\n   WHERE p.rule = {{maturing}}\n     AND p.month BETWEEN 1 AND " + HORIZON_MONTHS + ")")
+            "\n" + HELD_JOIN + PARTS_AHEAD + ")")
     sens_desc = ("How much more today's holdings would pay over the horizon after this month were "
                  "rates one percent higher, per currency the holdings are in: the floating "
                  "principal — balances, money-market and floating holdings, and the principal "
@@ -3466,8 +3481,7 @@ def income_projected_cards(db_id, privacy):
             over.append("every day to today from the first income received, the first tax withheld "
                         "or 1 January of last year, whichever is earliest")
         if "horizon" in tags:
-            over.append(f"the rest of this month and the {HORIZONS[0]} months after it, under constant "
-                        "rates, maturing principal to cash and no shift")
+            over.append(f"the rest of this month and the {HORIZONS[0]} months after it, {PROJECTION_DEFAULTS}")
         return (f" Built for the Income dashboard; opened standalone it runs in {DEFAULT_CURRENCY} over "
                 "the variables' defaults: " + "; ".join(over) + "." + (PRIVACY_DESC if privacy else ""))
 
@@ -3753,6 +3767,133 @@ def income_projected_cards(db_id, privacy):
     return out
 
 
+# The cash-flow plan's look-back parts (web_cashflow_plan) and the order
+# its chart stacks them: what comes in, then what goes out.
+PLAN_LOOKBACK_PARTS = ("other_income", "operating_out", "debt_service", "vehicles")
+PLAN_INCOME_PARTS = ("investment_income", "other_income", "principal_returned", "vehicles")
+PLAN_OUTFLOW_PARTS = ("operating_out", "debt_service")
+# Whether a projected part's account is in the cash pool: _pool_join
+# finds it in web_cashflow_pool, and _POOL selects the flag.
+_POOL = "pl.silver_source_id IS NOT NULL AS pool"
+
+
+def _pool_join(a):
+    return ("\n    LEFT JOIN web_cashflow_pool pl ON pl.silver_source_id = " + a + ".silver_source_id"
+            " AND pl.account_external_id = " + a + ".account_external_id")
+
+
+def cashflow_plan_cards(db_id, privacy):
+    """The Cash Flow dashboard's Plan cards, or with `privacy` their
+    privacy variants: name -> (display, description, dataset_query, viz).
+    `wealthdb cashflow projection` month by month over the Horizon
+    (docs/CASHFLOW.md §12): the income projection's investment income and
+    the principal its maturities return, read from today's projection
+    (web_yield_parts, web_yield_rates, web_yield_events, gold migration
+    0138) under the four projection pickers as the Income cards read
+    them, and split by the cash pool's accounts (web_cashflow_pool): the
+    rest is the vehicles' income. They are set against the look-back's
+    monthly averages a refresh stores (web_cashflow_plan, migration
+    0149). The plan starts with the month after this one, so month 0
+    never counts.
+
+    The cards take the Currency and the projection's pickers and none of
+    the dashboard's own: the look-back is fixed when a refresh writes
+    it, so a Time range, Source, Section or Investing picker would move
+    nothing.
+
+    A privacy card shows each part as a share of all the income the
+    projection expects over the Horizon, on every account; blank where it
+    expects none."""
+    tags = {"currency": currency_tag(), **PROJECTION_TAGS}
+    tail = (" The projected parts follow the projection's pickers. The other "
+            "parts are the averages of the look-back a refresh stores, so the Time range, Source, "
+            "Section and Investing pickers do not reach this card. Built for the Cash Flow dashboard; "
+            f"opened standalone it runs in {DEFAULT_CURRENCY} over the variables' defaults: the "
+            f"{HORIZONS[0]} months after this one, {PROJECTION_DEFAULTS}." + (PRIVACY_DESC if privacy else ""))
+    out = {}
+    card = _card_maker(out, db_id, privacy, CASHFLOW_PLAN_PICKERS, tags, tail)
+
+    # Each month of the horizon: the projection's income and principal,
+    # on the pool's accounts and on the others, and the look-back's
+    # parts, every month of which the view holds. The principal counts
+    # towards the net unless it rolls, buying its successor; the
+    # vehicles' income never does.
+    lookback = ",\n".join(f"         coalesce(sum(value) FILTER (WHERE part = '{x}'), 0) AS {x}"
+                          for x in PLAN_LOOKBACK_PARTS)
+    plan = ("WITH ex AS (\n"
+            f"  SELECT p.month AS m, {_POOL}, sum(({PART_INCOME}) * {_ccy_case('p.fx')}) AS v\n" + PARTS_FROM +
+            _pool_join("p") + PARTS_AHEAD + "\n   GROUP BY 1, 2),\n"
+            "pr AS (\n"
+            f"  SELECT e.month AS m, {_POOL}, sum(e.amount * {_ccy_case('e.fx')}) AS v\n"
+            "    FROM web_yield_events e" + _pool_join("e") + "\n"
+            "   WHERE e.rule = {{maturing}}\n     AND e.month" + AFTER_THIS_MONTH + "\n   GROUP BY 1, 2),\n"
+            "lb AS (\n  SELECT month AS m, any_value(month_start) AS month_start,\n" + lookback +
+            ",\n         any_value(quality) AS quality\n    FROM web_cashflow_plan\n"
+            "   WHERE currency = {{currency}}\n     AND month" + AFTER_THIS_MONTH + "\n   GROUP BY 1),\n"
+            "j AS (\n"
+            "  SELECT CAST(lb.month_start AS TIMESTAMP) AS month, coalesce(ex.v, 0) AS investment_income,\n"
+            "         coalesce(pr.v, 0) AS principal_returned,\n"
+            "         CASE WHEN {{maturing}} = 'roll' THEN 0 ELSE coalesce(pr.v, 0) END AS principal_counted,\n"
+            "         coalesce(xv.v, 0) + coalesce(rv.v, 0) AS vehicles_income,\n"
+            "         coalesce(ex.v, 0) + coalesce(xv.v, 0) AS expected,\n"
+            "         " + ", ".join(f"lb.{x}" for x in PLAN_LOOKBACK_PARTS) + ",\n"
+            "         trim('projected ' || lb.quality) AS quality\n"
+            "    FROM lb\n"
+            "    LEFT JOIN ex ON ex.m = lb.m AND ex.pool\n    LEFT JOIN pr ON pr.m = lb.m AND pr.pool\n"
+            "    LEFT JOIN ex xv ON xv.m = lb.m AND NOT xv.pool\n"
+            "    LEFT JOIN pr rv ON rv.m = lb.m AND NOT rv.pool),\n"
+            "plan AS (\n"
+            "  SELECT *, investment_income + principal_counted + other_income - operating_out - debt_service\n"
+            "            + vehicles AS net\n    FROM j)")
+    # The twin's denominator: all the income the projection expects over
+    # the horizon, on every account, where it expects some.
+    plan += (",\nd AS (SELECT CASE WHEN sum(expected) > 0 THEN sum(expected) END AS total\n"
+             "        FROM plan)\n" if privacy else "\n")
+
+    def name_of(c):
+        return f"{c}_pct" if privacy else c
+
+    def col(expr, name):
+        """`expr` as column `name`, on the twin its share of the total."""
+        return (f"100 * {expr} / (SELECT total FROM d)" if privacy else expr) + f" AS {name_of(name)}"
+
+    # The chart stacks what comes in above the axis and what goes out
+    # below it, the principal where it counts; the net and the vehicles'
+    # income, which stays outside the pool, are lines.
+    chart_expr = {**{x: x for x in PLAN_INCOME_PARTS}, "principal_returned": "principal_counted",
+                  **{x: f"-{x}" for x in PLAN_OUTFLOW_PARTS}, "net": "net", "vehicles_income": "vehicles_income"}
+    chart_cols = [*PLAN_INCOME_PARTS, *PLAN_OUTFLOW_PARTS, "net", "vehicles_income"]
+    share = (" Each figure is a share of all the income the projection expects over the Horizon, on "
+             "every account; blank where it expects none." if privacy else "")
+    card("Cash flow plan by month", "combo",
+         "The plan per month over the Horizon, as `wealthdb cashflow projection` reads it. Above the "
+         "axis what comes into the cash pool: the investment income the projection expects on the "
+         "pool's accounts, the other income, the principal maturities return there where it lands in "
+         "cash, and the vehicles where they pay out. Below it what goes out: the operating outflows "
+         "and the debt service. The net is a line: what the month adds to the cash pool. The vehicles' "
+         "income is the other line: the income and principal the projection expects on the accounts "
+         "outside the pool. It stays there." + share,
+         plan + "SELECT month,\n       " + ",\n       ".join(col(chart_expr[c], c) for c in chart_cols) +
+         "\n  FROM plan\n ORDER BY month",
+         {"graph.dimensions": ["month"], "graph.metrics": [name_of(c) for c in chart_cols], **STACKED_VIZ,
+          "series_settings": {name_of(c): {"display": "line" if c in ("net", "vehicles_income") else "bar"}
+                              for c in chart_cols},
+          **(_share_viz(*(name_of(c) for c in chart_cols)) if privacy else {})})
+    table_cols = ["investment_income", "principal_returned", "vehicles_income", *PLAN_LOOKBACK_PARTS, "net"]
+    card("Cash flow plan", "table",
+         "The plan as a table, one row per month of the Horizon: each part, the net and what the "
+         "figures rest on. The investment income and the principal returned are the pool's; the "
+         "vehicles' income is the projection's income and principal on the other accounts, which the "
+         "net leaves out. The operating outflows and the debt service are positive, the vehicles "
+         "signed. The net counts the principal returned unless the Maturing rule is roll, under which "
+         "it buys its successor. The quality lists projected, and trailing, terms or thin where they "
+         "apply." + share,
+         plan + "SELECT month,\n       " + ",\n       ".join(col(c, c) for c in table_cols) +
+         ",\n       quality\n  FROM plan\n ORDER BY month",
+         _share_viz(*(name_of(c) for c in table_cols)) if privacy else {})
+    return out
+
+
 def view_tags(table, spec):
     """Field-filter template tags for a native card over serving view
     `table`. spec maps tag name -> (column, widget-type). A tag whose
@@ -3975,12 +4116,18 @@ PROJECTION_TAGS = {"rates": _text_tag("rates", "Rate path", RATE_PATHS[0]),
                    "shift": {"id": "shift-tag", "name": "shift", "display-name": "Shift (bp)",
                              "type": "number", "default": "0", "required": True},
                    "horizon": _text_tag("horizon", "Horizon (months)", HORIZONS[0])}
+# The projection pickers' defaults in words: the first rate path, the
+# first Maturing rule and a zero shift.
+PROJECTION_DEFAULTS = f"under {RATE_PATHS[0]} rates, maturing principal to {MATURING_RULES[0]} and no shift"
 # Optional: the calendar lists every position's payments until one is
 # picked, by its symbol, its name or its position key.
 POSITION_TAG = {"id": "position-tag", "name": "position", "display-name": "Position",
                 "type": "text", "required": False}
 PROJECTION_PICKERS = [(RATES_PARAM_ID, "rates"), (MATURING_PARAM_ID, "maturing"),
                       (SHIFT_PARAM_ID, "shift"), (HORIZON_PARAM_ID, "horizon")]
+# The Cash Flow dashboard's Plan cards take its currency and the
+# projection's four, and none of its other pickers (cashflow_plan_cards).
+CASHFLOW_PLAN_PICKERS = [(CASHFLOW_CURRENCY_PARAM_ID, "currency"), *PROJECTION_PICKERS]
 
 # The Yield dashboards' filters over web_yield and web_yield_curve: the
 # Exposure set, the window's last day being the day a card reads.
@@ -4575,7 +4722,7 @@ def privacy_card_defs(db_id, model_ids):
     out.update(spending_privacy_defs(db_id, model_ids))
     out.update(income_privacy_defs(db_id))
     out.update(cashflow_privacy_defs(db_id))
-    for cards in (exposure_cards, yield_cards, income_projected_cards):
+    for cards in (exposure_cards, yield_cards, income_projected_cards, cashflow_plan_cards):
         out.update({name: ("question", *card) for name, card in cards(db_id, privacy=True).items()})
     return out
 
@@ -5110,7 +5257,8 @@ def dashboard_defs():
         "Cash Flow": (
         "Privacy view: values are shares (%) of the window's own hub — "
         "the total the diagram flows through, which moves with the "
-        "Investing picker — or of its biggest month. The diagram's nodes "
+        "Investing picker — or of its biggest month; the plan's are shares "
+        "of all the income the projection expects over the Horizon. The diagram's nodes "
         "are vocabulary and never a merchant, a payer, an account or an "
         "instrument, so the twin needs normalisation rather than "
         "redaction; the one card that named an account drops the column. ")}
@@ -5144,7 +5292,7 @@ def dashboard_parameters(model_ids, mode, name=""):
     their twin, which has no account picker; Cash Flow's twin carries
     the same set, having no account picker to drop. Yield is Exposure's
     set plus the projection's four pickers, which Income takes too,
-    beside a position of its own."""
+    beside a position of its own, and Cash Flow for its Plan cards."""
     if mode is None:
         return []
 
@@ -5294,7 +5442,7 @@ def dashboard_parameters(model_ids, mode, name=""):
         # because the two grains are the feature's, not the data's.
         investing = static_picker(CASHFLOW_INVESTING_PARAM_ID, "Investing", "investing",
                                   "whole", ("whole", "class"))
-        # BOTH dashboards carry the same five: unlike the spending and
+        # BOTH dashboards carry the same pickers: unlike the spending and
         # income pairs, the twin drops nothing, because none of these
         # pickers renders a dropdown of anything that identifies an
         # account. There is no account picker to drop — docs/CASHFLOW.md
@@ -5302,11 +5450,16 @@ def dashboard_parameters(model_ids, mode, name=""):
         # the sections the serving view carries. The Section picker is
         # declared here for both dashboards but BINDS only to the cards
         # that declare its tag; the headline figures and the diagram
-        # decline it, identically on the base and the twin.
+        # decline it, identically on the base and the twin. The
+        # projection's four follow, the Horizon first as on Income; they
+        # bind only to the Plan cards (CASHFLOW_PLAN_PICKERS), which take
+        # none of the others but the currency.
+        rates, maturing, shift, horizon = projection
         return [currency_picker(CASHFLOW_CURRENCY_PARAM_ID), investing,
                 time_range, source,
                 card_picker(CASHFLOW_SECTION_PARAM_ID, "Section", "section",
-                            "report_cashflow", "section")]
+                            "report_cashflow", "section"),
+                horizon, rates, maturing, shift]
     if name in INCOME_DASHBOARDS:
         # The income pickers, in the shape the spending ones take and
         # for the same reasons — including no account picker on the
@@ -5455,13 +5608,14 @@ def missing_web_views(base, sid, db_id):
 
 
 # The oldest gold schema the cards can read: the migration that adds the
-# days the Income cards' received figures cover and the tax withheld on
-# them (0146). A snapshot older than 0146 lacks those views, and one
-# older than 0138 the yield views and the exposure of the debt, which the
+# cash-flow plan's look-back parts the Plan cards read (0149). A snapshot
+# older than 0149 lacks that view, one older than 0146 the days the
+# Income cards' received figures cover and the tax withheld on them, and
+# one older than 0138 the yield views and the exposure of the debt, which the
 # by-name probe finds. One older than 0133 carries every view by name but
 # reads a missing tax wrapper blank, and one older than 0132 lacks the
 # serving tables' columns: only the version tells those apart.
-MIN_GOLD_SCHEMA = 146
+MIN_GOLD_SCHEMA = 149
 
 # main()'s exit status for a snapshot older than MIN_GOLD_SCHEMA; every
 # other failure exits 1. web/web tells the two apart, because only

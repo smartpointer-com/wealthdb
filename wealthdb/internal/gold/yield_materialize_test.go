@@ -31,7 +31,7 @@ func partIncomeSQL(ccy string) string {
 func TestMaterializeYieldMatchesTheReport(t *testing.T) {
 	t.Parallel()
 	db, ctx, at := seedYieldExposure(t)
-	n, err := MaterializeYield(ctx, db, at, 42)
+	n, err := MaterializeYield(ctx, db, at, 42, 12)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,8 +65,53 @@ func TestMaterializeYieldMatchesTheReport(t *testing.T) {
 		&currencies); err != nil || rates != currencies*len(yield.Paths)*(yield.Months+1) {
 		t.Errorf("%d rates over %d currencies (%v)", rates, currencies, err)
 	}
+	// The plan's look-back parts: every month of the projection after the
+	// current one, in each currency a book was made in, each part once
+	// and operating_out once per class.
+	var planRows, nMonths, planCurrencies int
+	if err := db.QueryRowContext(ctx, `SELECT count(*), count(DISTINCT month), count(DISTINCT currency)
+	    FROM web_cashflow_plan`).Scan(&planRows, &nMonths, &planCurrencies); err != nil || nMonths != yield.Months ||
+		planCurrencies == 0 || planRows != planCurrencies*yield.Months*(len(PlanParts)-1+len(PlanOutClasses)) {
+		t.Errorf("%d plan rows over %d months and %d currencies (%v)", planRows, nMonths, planCurrencies, err)
+	}
+	parts := scanStrings(t, db, `SELECT DISTINCT part FROM web_cashflow_plan`)
+	if !slices.Equal(slices.Sorted(slices.Values(parts)), slices.Sorted(slices.Values(PlanParts))) {
+		t.Errorf("plan parts %v, want %v", parts, PlanParts)
+	}
+	// Their values are the plan's own, month by month.
+	from, to := PlanWindow(time.Unix(at, 0), 12)
+	lb, err := CashflowPlanLookback(ctx, db, from, to, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The book is of the end of June 2026: its plan starts in July.
+	months := planMonths(b)
+	if !months[0].Start.Equal(ymd(2026, 7, 1)) {
+		t.Errorf("the plan's first month starts %s, want 2026-07-01", months[0].Start)
+	}
+	plan := CashflowPlan(lb, PlanStanding(b), months, 1, false)
+	stored, err := db.QueryContext(ctx, `SELECT month, part, SUM(value), any_value(month_start)::VARCHAR
+	    FROM web_cashflow_plan WHERE currency = 'USD' GROUP BY ALL`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for stored.Next() {
+		var month int
+		var part, start string
+		var v float64
+		if err := stored.Scan(&month, &part, &v, &start); err != nil {
+			t.Fatal(err)
+		}
+		r := plan[month-1]
+		want := map[string]float64{"other_income": r.OtherIncome, "operating_out": r.OperatingOut,
+			"debt_service": r.DebtService, "vehicles": r.Vehicles}[part]
+		if math.Abs(v-want) > 1e-6 || start[:10] != r.Period.Format(time.DateOnly) {
+			t.Errorf("month %d %s: %v from %s, want %v from %s", month, part, v, start, want, r.Period)
+		}
+	}
+	stored.Close()
 	// A rerun replaces the tables.
-	if n2, err := MaterializeYield(ctx, db, at, 43); err != nil || n2 != n {
+	if n2, err := MaterializeYield(ctx, db, at, 43, 12); err != nil || n2 != n {
 		t.Errorf("rerun: %d rows (%v), want %d", n2, err, n)
 	}
 }
@@ -114,7 +159,7 @@ func seedYieldBookFX(t *testing.T) (*sql.DB, context.Context, int64) {
 func TestMaterializeYieldMatchesEachBook(t *testing.T) {
 	t.Parallel()
 	db, ctx, at := seedYieldBookFX(t)
-	if _, err := MaterializeYield(ctx, db, at, 42); err != nil {
+	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
 		t.Fatal(err)
 	}
 	for _, ccy := range materializeCurrencies {
@@ -186,7 +231,7 @@ func TestMaterializeYieldCurveIsTheBooks(t *testing.T) {
 	if _, err := RebuildYield(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := MaterializeYield(ctx, db, at, 42); err != nil {
+	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
 		t.Fatal(err)
 	}
 	for _, ccy := range materializeCurrencies {
@@ -222,7 +267,7 @@ func TestMaterializeYieldCurveIsTheBooks(t *testing.T) {
 func TestMigration0138DDLIsRerunnable(t *testing.T) {
 	t.Parallel()
 	db, ctx, at := seedYieldBookFX(t)
-	if _, err := MaterializeYield(ctx, db, at, 42); err != nil {
+	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
 		t.Fatal(err)
 	}
 	count := func() string {
@@ -233,6 +278,30 @@ func TestMigration0138DDLIsRerunnable(t *testing.T) {
 	before := count()
 	for range 2 {
 		rerunMigrationDDL(t, db, ctx, "0138_yield_dashboard.sql")
+	}
+	if after := count(); after != before {
+		t.Errorf("rows %s, before %s", after, before)
+	}
+}
+
+// Migration 0149 replays over a materialized gold: its table keeps its
+// rows and its view its shape.
+func TestMigration0149DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
+	db, ctx, at := seedYieldBookFX(t)
+	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
+		t.Fatal(err)
+	}
+	count := func() string {
+		return strings.Join(scanStrings(t, db, `SELECT (SELECT count(*) FROM report_cashflow_plan)::VARCHAR || ' ' ||
+		    (SELECT count(*) FROM web_cashflow_plan)`), "")
+	}
+	before := count()
+	if before == "0 0" {
+		t.Fatal("no plan rows materialized")
+	}
+	for range 2 {
+		rerunMigrationDDL(t, db, ctx, "0149_cashflow_plan.sql")
 	}
 	if after := count(); after != before {
 		t.Errorf("rows %s, before %s", after, before)
@@ -358,7 +427,7 @@ func seedYieldYear(t *testing.T) (*sql.DB, context.Context, int64) {
 func TestMaterializedRealizedYieldIsTheBooks(t *testing.T) {
 	t.Parallel()
 	db, ctx, at := seedYieldYear(t)
-	if _, err := MaterializeYield(ctx, db, at, 42); err != nil {
+	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
 		t.Fatal(err)
 	}
 	figures, thin := 0, 0

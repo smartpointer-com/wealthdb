@@ -125,7 +125,7 @@ wealthdb yield   <view> [flags]       (RO)    What the holdings earn and how the
 wealthdb transactions [FROM [TO]] [flags] (RO) Print transactions over a date range.
 wealthdb spending <view> [flags]      (RO)    Spending reports: summary, categories, transactions.
 wealthdb income   <view> [flags]      (RO)    Income received and expected: summary, types, transactions, projection, calendar, sources, portfolios, accounts, positions.
-wealthdb cashflow <view> [flags]      (RO)    Cash flow statement: summary, flows, sankey, transactions, coverage.
+wealthdb cashflow <view> [flags]      (RO)    Cash flow statement: summary, flows, sankey, transactions, coverage; the plan: projection.
 wealthdb status  [<id>]               (RO)    Report gold state vs each silver source.
 wealthdb snapshots <id> | -a [--latest] (RO)  List snapshots gold has loaded (one silver, or all).
 wealthdb resolve-symbols              (RW)    Back-fill missing instrument ticker symbols via the configured LLM; skips hinted rows and cash-class instruments.
@@ -675,19 +675,27 @@ both sides at once.
 The household's cash flow statement over both populations plus the
 movements neither family books (docs/CASHFLOW.md for the design, and
 the `report_cashflow_*` macros for the surface underneath). Same window
-default, same flags, same privacy classes; five views instead of three,
-one flag of its own, and three refusals — the third being `coverage -x`,
-each account being reported in its own currency.
+default, same flags, same privacy classes; six views instead of
+three, one flag of its own, and three refusals on the statement's
+views — the third being `coverage -x`, each account being reported in
+its own currency. The sixth view, `projection`, is the plan of the
+months ahead (docs/CASHFLOW.md §12): it takes the income projection's
+window and assumptions instead.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `<view>` | required | `summary` \| `flows` \| `sankey` \| `transactions` \| `coverage`. |
-| `[FROM [TO]]` | trailing twelve months | As §4.12. A household reads this per year: `wealthdb cashflow sankey 2025`. |
-| `--period` | `monthly` | As §4.12, and **refused** on `sankey`: a period on an edge list would mean one list per bucket, which is a loop's job. `transactions` ignores it, as the families' do. |
-| `--level` | `group` | `section` \| `class` \| `group` — the grain a node is netted at. `section` is **refused** on `sankey`, which would then have no inner column. |
-| `--investing` | `whole` | `whole` \| `class` — net the investing section as one `Investments` node, or per asset class. Honoured by `flows` and `sankey`; the summary is always whole. |
-| `-C/--columns` | `default` | `summary` carries `yield`, `taxes`, `fees`, `giving`, `savings_rate` and the reconciliation memo (`cash_measured`, `fx_effect`, `cash_flow_measured`, `unexplained`) off by default; `flows` and `sankey` carry the dotted node keys. |
+| `<view>` | required | `summary` \| `flows` \| `sankey` \| `transactions` \| `coverage` \| `projection`. |
+| `[FROM [TO]]` | trailing twelve months | As §4.12. A household reads this per year: `wealthdb cashflow sankey 2025`. On `projection`: the horizon after the current month; whole months from next month on, anything else refused. |
+| `--period` | `monthly` | As §4.12, and **refused** on `sankey`: a period on an edge list would mean one list per bucket, which is a loop's job. `transactions` ignores it, as the families' do. On `projection`: `monthly` \| `quarterly` \| `annual`; `total` is **refused**. |
+| `--level` | `group` | `section` \| `class` \| `group` — the grain a node is netted at. `section` is **refused** on `sankey`, which would then have no inner column. **Refused** on `projection`. |
+| `--investing` | `whole` | `whole` \| `class` — net the investing section as one `Investments` node, or per asset class. Honoured by `flows` and `sankey`; the summary is always whole. **Refused** on `projection`. |
+| `--rates`, `--maturing`, `--shift` | `constant`, `cash`, 0 | `projection` only, as on `wealthdb income`'s forward views (§4.13); **refused** on the other views. |
+| `-C/--columns` | `default` | `summary` carries `yield`, `taxes`, `fees`, `giving`, `savings_rate` and the reconciliation memo (`cash_measured`, `fx_effect`, `cash_flow_measured`, `unexplained`) off by default; `flows` and `sankey` carry the dotted node keys; `projection` carries the operating-out classes `consumption`, `fees`, `taxes`, `giving` and `uncategorized`. |
 | `-f`, `-x`, `-p` | as §4.12 | `-p` masks account ids, amounts and the `name` column; sections, classes, groups and shares stay legible, which is what makes the diagram's privacy twin normalisation alone. A name a person typed prints as a pseudonym (§4.6). |
+
+The MCP `cashflow` tool takes the same views and flags. On
+`projection` its period defaults to `monthly` and refuses `total`. Its
+window there is the projection's (docs/CASHFLOW.md §12).
 
 Positive is cash arriving in the pool and negative is cash leaving it.
 The four sections sum to `net_cash_flow`, and a bucket's `flows` rows —
@@ -898,9 +906,10 @@ Example config file:
 | `returns_hide` | object | Optional. Suppresses accounts' or portfolios' OWN return rows at every grain while their values and flows keep contributing to every aggregate — the display mirror of `returns_exclude`. Same grain-keyed shape (`portfolios`, `accounts` per `silver_source_id`). See §5.7. |
 | `lots` | object | Optional. The lot engine (docs/LOTS.md §7): `method` (`fifo` default, `lifo`, `hifo`, `lofo`, `average`), the global method; `missing_basis` (`ignore` default, `zero`), the readers' default reading of a missing cost basis; `sources` keyed by `silver_source_id` with `method`, `mode` (`fill` \| `shadow` \| `stated` \| `off`) and `grain` (`account` \| `portfolio`) overriding the source kind's policy; `portfolios` and `accounts` keyed by `silver_source_id` to an external id to `{"method": …}`; `basis`, a list of `{ "source", "account"?, "instrument", "per_unit", "acquired"?, "note"? }`, the cost basis of an instrument's lots the engine opens without one (a seed, a receipt nothing pairs, a transfer in with no ledger cost), at quantity × `per_unit` with `acquired` as the acquisition date. The method in force for a key is its account's, else its portfolio's, else its source's, else the kind's own, else the global one. Every source id must name a configured source; a bad value fails the load. Absent ⇒ fifo and each kind's registered policy. |
 | `returns_transfer_matching` | object | Optional, off by default. Enables the cross-source transfer matcher: an external leg whose counterparty leg exists in ANOTHER source (opposite sign, same native currency, equal amount within `tolerance_pct`, within `window_days`) nets out of every return aggregate containing BOTH legs, while finer grains keep counting each leg. Fields: `enabled` (bool), `window_days` (0–30, default 5), `tolerance_pct` (0–5, default 0.5). See §5.8. |
-| `cashflow` | object | Optional. Groups the cash flow statement's two knobs. It is deliberately small: cashflow adds no tier and buys nothing from a model, so the rules, pins and transfer overrides that decide what a row IS are the two families' — a verdict written there is what cashflow reads. See docs/CASHFLOW.md §7. |
+| `cashflow` | object | Optional. Groups the cash flow statement's knobs: the pool's exclusions, the wrapper boundaries, and the plan's look-back. It is deliberately small: cashflow adds no tier and buys nothing from a model, so the rules, pins and transfer overrides that decide what a row IS are the two families' — a verdict written there is what cashflow reads. See docs/CASHFLOW.md §7. |
 | `cashflow.accounts` | object | Optional. The cash POOL, and the only account gate cashflow applies. **Exclusion only** — `{"exclude": {"<source>": ["<account-id>"]}}` — because every account is pooled by default, so an `include` could fence nothing and the loader refuses the unknown field rather than ignoring it. It inherits neither family's scope on purpose: an account a family drops is not thereby outside the household's cash. |
 | `cashflow.wrappers` | object | Optional. Moves a tax wrapper across the household boundary, `{"<wrapper>": "<destination>"}`, where the destination is `household` (no crossing at all), `retirement`, `education`, `health`, `trusts` or `giving`. Per WRAPPER, not per account — an account a source mis-labelled is fixed with the per-account `tax_wrapper` override, so every consumer agrees whose money it is. An unknown wrapper or destination fails the load naming the entry. Re-stamped by every enrichment pass. |
+| `cashflow.projection` | object | Optional. The plan's look-back: `lookback_months`, 1 to 36, default 12. See docs/CASHFLOW.md §7 and §12. |
 | `income` | object | Optional. Groups the income feature's per-deployment knobs — `accounts`, `rules[]`, `pins`, `categorization` — in `spending`'s shapes. Two blocks spending has are deliberately absent: there is one internal-transfer matcher and one transfer-override ledger, and both families read them (docs/INCOME.md §1). Absent ⇒ every account counts, no rules and no pins apply, and the model tier inherits `spending.categorization`. |
 | `income.accounts` | object | Optional. The income account scope, in `spending.accounts`' shape and stamped into gold's `income_account_scope`. Its own table on purpose: an account excluded from spending because its outflows double-count something is not thereby an account whose inflows are not income. |
 | `income.rules[]` | array | Optional, default empty. As `spending.rules[]`, with the value field named **`type`** and validated against the INCOME vocabulary — a spending value here fails the load naming `income.rules[i].type`. So does a spelling the vocabulary retired, and the error names the value to write instead (docs/INCOME.md §2). Its optional `asset_class` is admitted only where `type` is `capital_return`, and its optional `far` only where `type` is `internal_transfer`; the far account of an inbound leg is written onto the spending overlay, the one overlay with far columns (docs/CASHFLOW.md §4). |
@@ -1553,6 +1562,8 @@ is documented where it is used:
 - The reference table `dividend_calendar` and the config table
   `yield_settlement_cycles` (migration `0147`) — §7.6.
 - The derived table `dividend_gaps` (migration `0148`) — §7.6.
+- The serving table `report_cashflow_plan` (migration `0149`) —
+  §10.12.
 - The serving tables `serving_*` (migration `0132`) — web/DESIGN.md §8.
 - The spending overlay: `spend_categories` (migration `0040`;
   docs/SPENDING.md §2), and `spend_txn_enrichment`,
@@ -3056,8 +3067,8 @@ list move together in one change.
 
 ### 10.12 Cash flow statement
 
-The third reading of the same engine, and the only one that is mostly
-SQL ([CASHFLOW.md](CASHFLOW.md) is the spec):
+The third reading of the same engine. Its statement is mostly SQL
+([CASHFLOW.md](CASHFLOW.md) is the spec):
 
 - `cashflow_wrapper_sides` holds each tax wrapper's side of the household
   boundary, and `cashflow_account_scope` the pool's exclusions. Every
@@ -3080,6 +3091,17 @@ SQL ([CASHFLOW.md](CASHFLOW.md) is the spec):
   transactions and balances) with the flow over the dates those balances
   cover. The second does that per account and period, in the account's own
   currency, never converted.
+- The plan (`cashflow projection`, CASHFLOW.md §12) is Go.
+  `gold.CashflowPlanLookback` reads the look-back's parts over
+  `cashflow_lines_outccy`. `gold.PlanMonths` splits today's book's
+  `ProjectionRows` by the pool's accounts (`gold.CashflowPool`).
+  `gold.CashflowPlan` sets the look-back against them.
+  `gold.PlanStanding` gives the mortgages the book holds and their
+  maturities. `cashflowPlan` in
+  `cmd/wealthdb/cmd_cashflow.go` joins them for the CLI and the MCP
+  `cashflow` tool. A web refresh stores the look-back's parts in
+  `report_cashflow_plan` (migration 0149; `web_cashflow_plan` serves
+  it, and `web_cashflow_pool` the pool's accounts).
 
 The node assignment reads each family's resolution macro, never its
 `_lines_base`, because several verdicts it needs are exactly the ones a
@@ -3334,10 +3356,10 @@ book:
 - `cmd/wealthdb/cmd_income_projection.go`: the forward views' window,
   flags and columns, shared by the CLI and the MCP `income` tool.
 
-The Metabase Yield dashboard and the Income dashboard's cards of the
-holdings' income read tables `web-materialize` writes
-(`gold.MaterializeYield`, migration 0138), each from the books
-`yield.Compute` gives:
+The Metabase Yield dashboard, the Income dashboard's cards of the
+holdings' income and the Cash Flow dashboard's Plan read tables
+`web-materialize` writes (`gold.MaterializeYield`, migration 0138),
+each from the books `yield.Compute` gives:
 
 - `report_yield_positions` and `report_yield_buckets`: every holding's
   figures and its DV01 per tenor, in every reporting currency, today
@@ -3357,7 +3379,9 @@ holdings' income read tables `web-materialize` writes
   part's income (`yield.Part.Income`) at query time, so a rate path, a
   maturing rule, a shift and a horizon cost no storage;
 - `report_yield_received`: every income line received to the instant,
-  per reporting currency.
+  per reporting currency;
+- `report_cashflow_plan`: the cash-flow plan's look-back parts per
+  reporting currency and month ahead (§10.12).
 
 The `web_yield*` views are the dashboards' reading of them
 ([web/DESIGN.md](../../web/DESIGN.md) §8). A refresh computes 52 books

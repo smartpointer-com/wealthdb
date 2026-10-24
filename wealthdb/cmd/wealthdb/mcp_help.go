@@ -228,7 +228,7 @@ Example: {view: "transactions", from: "2025-03", to: "2025-03", sort: "-value", 
 Example: {view: "transactions", from: "2025", to: "2025", type: "dividend", sort: "-value"}.`,
 	"yield": `A rate belongs to a currency: an aggregate row is one entity in one currency, and the total row weighs the currencies by value (quality mixed); converted gives one row per entity. dv01 is the value lost for a rise of one basis point; a liability's is negative and nets. The quality column says what each figure rests on (describe topic=quality); view=coverage lists what is missing, and counts where the dividends' record days come from: the dividend calendar, an ex day, the issuer's learned gap, the market's lag, or none.
 Example: {view: "curve", currency: "CHF"}.`,
-	"cashflow": `The four sections sum to net_cash_flow. vehicles is every plan together; for one plan read view=flows at level=class. The mortgage is under financing. A node is a net: inflow and outflow beside it are the gross lines under it.
+	"cashflow": `The four sections sum to net_cash_flow. vehicles is every plan together; for one plan read view=flows at level=class. The mortgage is under financing. A node is a net: inflow and outflow beside it are the gross lines under it. view=projection is the plan: investment_income is income projection's expected income on the pool's accounts and vehicles_income its income and principal on every other account, which net leaves out; other_income, operating_out and vehicles are monthly averages of the trailing months, and quality says what each part rests on; net = investment_income + other_income - operating_out - debt_service + vehicles, plus principal_returned unless maturing=roll.
 Example: {view: "flows", from: "2025", to: "2025", class: "Retirement"}.`,
 	"status":          `new_data=yes means a load would bring newer data in. state "not loaded" means gold holds nothing from the source yet.`,
 	"snapshots":       `One row per day with data; snapshots counts the snapshots taken that day.`,
@@ -237,14 +237,15 @@ Example: {view: "flows", from: "2025", to: "2025", class: "Retirement"}.`,
 }
 
 const datesHelp = `Dates: "2025" is that year, "2025-06" that month, "2025-06-15" that day; "today", "yesterday", "last month", "last year" and "3 months ago" also work (English, UTC).
-from snaps to the start of its unit, to and as_of to the end: from="2025", to="2025" is the calendar year; from="2025-06" alone runs to today; to alone runs from the start of the data. Income's forward views differ: a lone from is its own span, and a lone to runs from the first day of next month.
-Defaults: holdings, exposure and yield as of today; transactions the past 30 days; spending, cashflow, gains and income's received views the last twelve months; income's forward views the horizon after the current month; returns since the first snapshot.
+from snaps to the start of its unit, to and as_of to the end: from="2025", to="2025" is the calendar year; from="2025-06" alone runs to today; to alone runs from the start of the data. Income's forward views and cashflow's projection differ: a lone from is its own span, and a lone to runs from the first day of next month. The projection takes whole months from next month on.
+Defaults: holdings, exposure and yield as of today; transactions the past 30 days; spending, cashflow and gains, and income's received views, the last twelve months; income's forward views and cashflow's projection the horizon after the current month; returns since the first snapshot.
 Every result header states the dates it used, as ISO dates.`
 
 // qualityHelp is describe topic=quality: the tags of the returns, gains,
-// exposure and yield quality columns.
+// exposure and yield quality columns, of income's forward views and of
+// the cash-flow plan.
 var qualityHelp = returnsGainsQualityHelp + "\n\n" + exposureQualityHelp() + "\n\n" + yieldQualityHelp() + "\n\n" +
-	incomeForwardQualityHelp()
+	incomeForwardQualityHelp() + "\n\n" + cashflowPlanQualityHelp()
 
 const returnsGainsQualityHelp = `The returns quality column gives the reason for every n/a and tags every approximation. Common tags:
 - since_data_inception: the return runs from the entity's first snapshot, not from when the account opened.
@@ -313,6 +314,12 @@ func incomeForwardQualityHelp() string {
 		tagList(incomeBasisTags) +
 		"\n\nTheir quality column gives the share of the reinvested income each way of reinvesting earns (roll=100% roll_cash=0%), then shift=±Nbp where a shift moves the income:" +
 		tagList(incomeRungTags)
+}
+
+// cashflowPlanQualityHelp lists the quality tags of cashflow's
+// projection (cashflowPlanTags).
+func cashflowPlanQualityHelp() string {
+	return "On cashflow's projection, quality lists what a row rests on:" + tagList(cashflowPlanTags)
 }
 
 func (s *mcpServer) privacyHelp() string {

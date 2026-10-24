@@ -85,7 +85,7 @@ var commandHelps = []commandHelp{
 	{name: "income", args: "<view>", group: "report",
 		short: "what was received (salary, dividends, interest, rent) and what is expected: " + strings.Join(incomeViews, ", ")},
 	{name: "cashflow", args: "<view>", group: "report",
-		short: "where the cash came from and went, mortgage and plan contributions included: " +
+		short: "where the cash came from and went, mortgage and plan contributions included, and the plan ahead: " +
 			strings.Join(cashflowViews, ", ")},
 	{name: "status", args: "[<id>] [-v]", group: "report",
 		short: "is the data current, and what each source holds"},

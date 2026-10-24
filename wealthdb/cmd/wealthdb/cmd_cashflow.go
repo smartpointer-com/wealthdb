@@ -6,18 +6,22 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
 // `wealthdb cashflow <view>` — where the household's cash came from and
 // where it went.
 //
-// cmd_income.go's shape with five views instead of three, and the two
-// families' idiom unchanged: the grain in a positional view, everything
+// cmd_income.go's shape, and the two families' idiom unchanged: the grain in a positional view, everything
 // else in a flag, the window positional with the trailing twelve months
 // as its default, `share_pct` rendered by the same percentage formatter.
 // What is its own is one flag — `--investing` — and three refusals.
@@ -42,9 +46,9 @@ func init() {
 	register("cashflow", cmdCashflow)
 }
 
-// cashflowViews are the grains `wealthdb cashflow <view>` supports,
-// coarsest first.
-var cashflowViews = []string{"summary", "flows", "sankey", "transactions", "coverage"}
+// cashflowViews are the grains `wealthdb cashflow <view>` supports: the
+// statement's, coarsest first, then the plan.
+var cashflowViews = []string{"summary", "flows", "sankey", "transactions", "coverage", "projection"}
 
 // cashflowInvestingGrains is the `--investing` vocabulary: net the
 // section as one movement, or per asset class.
@@ -65,6 +69,7 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 	period := fs.String("period", "monthly", strings.Join(reportPeriodNames, " | "))
 	level := fs.String("level", "group", "section | class | group — the grain a node is netted at (flows, sankey)")
 	investing := fs.String("investing", "whole", strings.Join(cashflowInvestingGrains, " | ")+" — net investing as one node or per asset class")
+	ff := registerForwardFlags(fs)
 	rf := registerReportFlags(fs, true)
 	fs.Usage = func() { fmt.Fprintln(stderr, cashflowUsage()) }
 	if err := parseFlags(fs, args, "cashflow"); err != nil {
@@ -91,6 +96,13 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 		}
 	}
 
+	if err := checkCashflowPlanOptions(view, *period, func(name string) bool { return isSet(fs, name) },
+		func(name string) string { return "--" + name }); err != nil {
+		return err
+	}
+	if err := ff.checkChoices("cashflow"); err != nil {
+		return err
+	}
 	if err := checkChoice("cashflow", "period", *period, reportPeriodNames...); err != nil {
 		return err
 	}
@@ -101,19 +113,23 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 		return err
 	}
 
-	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), g.clock())
-	if err != nil {
-		fs.Usage()
-		return errs.Newf(errs.ExitUsage, "cashflow: %s", err.Error())
-	}
-
 	fmtChoice, cfg, outCcy, err := rf.resolve(g, "cashflow")
+	if err != nil {
+		return err
+	}
+	now := g.clock()
+	var window windowParser
+	if view == "projection" {
+		window = parsePlanWindow
+	}
+	fromEpoch, toEpoch, err := reportWindow(fs, "cashflow", now, cfg.YieldHorizon(), window)
 	if err != nil {
 		return err
 	}
 
 	rep := cashflowReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
-		period: *period, level: *level, investing: *investing, categories: overrideCategories(cfg)})
+		period: *period, level: *level, investing: *investing, categories: overrideCategories(cfg),
+		asOf: anchorToDay(now.UTC(), true).Unix(), assumptions: ff.assumptions(), lookback: cfg.CashflowLookback()})
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
 	return writeReport(ctx, rep, *rf.cols, "cashflow", open, *rf.privacy, fmtChoice, stdout)
 }
@@ -124,6 +140,9 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 func cashflowReport(req request) *report {
 	part := reportPeriods[req.period]
 	switch req.view {
+	case "projection":
+		return newReport(buildCashflowPlanColumns(req.currency, req.period), defaultCashflowPlanColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.PlanRow, error) { return cashflowPlan(ctx, db, req) })
 	case "summary":
 		return newReport(buildCashflowSummaryColumnRegistry(req.currency, req.period), defaultCashflowSummaryColumns,
 			func(ctx context.Context, db *sql.DB) ([]gold.CashflowSummaryRow, error) {
@@ -157,7 +176,132 @@ func cashflowReport(req request) *report {
 	}
 }
 
+// checkCashflowPlanOptions refuses the options a view does not take, the
+// CLI and the MCP server alike: the projection's assumptions off it; on
+// it the level, the investing grain, and a period that is none of
+// seriesPeriods. has says an option is given; flag spells an option's
+// name as the front-end does.
+func checkCashflowPlanOptions(view, period string, has func(string) bool, flag func(string) string) error {
+	if view != "projection" {
+		return refuseAssumptions("cashflow", "the projection view", has, flag)
+	}
+	if has("level") || has("investing") {
+		return errs.Newf(errs.ExitUsage, "cashflow: projection takes no %s or %s", flag("level"), flag("investing"))
+	}
+	return checkSeriesPeriod("cashflow", "projection takes", period, flag)
+}
+
+// parsePlanWindow is the projection's window: the forward window of the
+// income projection (parseForwardWindow), held to checkPlanWindow.
+func parsePlanWindow(from, to string, now time.Time, horizon int) (int64, int64, error) {
+	f, t, err := parseForwardWindow(from, to, now, horizon)
+	if err != nil {
+		return 0, 0, err
+	}
+	return f, t, checkPlanWindow(f, t, now)
+}
+
+// checkPlanWindow refuses a plan's window [from, to] that starts before
+// next month or cuts a month, the CLI and the MCP server alike: the plan
+// sets whole months of the projection against the look-back's monthly
+// averages, so a part of a month would carry a whole month of outflows.
+func checkPlanWindow(from, to int64, now time.Time) error {
+	n := now.UTC()
+	next := time.Date(n.Year(), n.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
+	monthStart := func(at int64) bool { d := time.Unix(at, 0).UTC(); return d.Day() == 1 && d.Unix()%86400 == 0 }
+	switch {
+	case from < next.Unix():
+		return fmt.Errorf("projection plans the months after this one: it starts in %s or later",
+			next.Format("2006-01"))
+	case !monthStart(from) || !monthStart(to+1):
+		return fmt.Errorf("projection plans whole months: its window starts on a month's first day and ends on a " +
+			"month's last")
+	}
+	return nil
+}
+
+// cashflowPlan is the projection view's rows: today's income projection
+// for the window's months, split by the pool (gold.PlanMonths), set
+// against the look-back's averages (gold.CashflowPlanLookback), the
+// mortgages that today's book holds continued to their maturity.
+func cashflowPlan(ctx context.Context, db *sql.DB, req request) ([]gold.PlanRow, error) {
+	b, w, err := forwardBook(ctx, db, req, "cashflow")
+	if err != nil {
+		return nil, err
+	}
+	pool, err := gold.CashflowPool(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	months := gold.PlanMonths(b, b.Amounts(nil, w, req.assumptions), w, pool)
+	from, to := gold.PlanWindow(time.Unix(req.asOf, 0), req.lookback)
+	lb, err := gold.CashflowPlanLookback(ctx, db, from, to, req.currency)
+	if err != nil {
+		return nil, err
+	}
+	return gold.CashflowPlan(lb, gold.PlanStanding(b), months, seriesPeriodMonths(req.period),
+		req.assumptions.Rule == yield.RuleRoll), nil
+}
+
 // ---- column registries ---------------------------------------------------
+
+// buildCashflowPlanColumns are the projection view's columns: each part
+// in the output currency, the operating-out classes behind -C, and what
+// the parts rest on (docs/CASHFLOW.md §12).
+func buildCashflowPlanColumns(outCcy, period string) []columnSpec[gold.PlanRow] {
+	type row = gold.PlanRow
+	cols := []columnSpec[row]{
+		{Name: "period", Align: output.AlignLeft, Extract: func(r row) string {
+			switch {
+			case r.Total:
+				return "total"
+			case r.Average:
+				return "monthly_average"
+			}
+			at := r.Period.Unix()
+			return periodLabel(&at, period)
+		}},
+		floatValCol("investment_income", outCcy, func(r row) float64 { return r.InvestmentIncome }),
+		floatValCol("principal_returned", outCcy, func(r row) float64 { return r.PrincipalReturned }),
+		floatValCol("vehicles_income", outCcy, func(r row) float64 { return r.VehiclesIncome }),
+		floatValCol("other_income", outCcy, func(r row) float64 { return r.OtherIncome }),
+		floatValCol("operating_out", outCcy, func(r row) float64 { return r.OperatingOut }),
+		floatValCol("debt_service", outCcy, func(r row) float64 { return r.DebtService }),
+		floatValCol("vehicles", outCcy, func(r row) float64 { return r.Vehicles }),
+		floatValCol("net", outCcy, func(r row) float64 { return r.Net }),
+	}
+	for _, c := range gold.PlanOutClasses {
+		cols = append(cols, floatValCol(planClassColumn(c), outCcy, func(r row) float64 { return r.OutClasses[c] }))
+	}
+	return append(cols, qualityCol(func(r row) string { return r.Quality }))
+}
+
+// planClassColumn names an operating-out class's column: its id, the
+// unplaced class as uncategorized.
+func planClassColumn(class string) string { return strings.Trim(class, "()") }
+
+var defaultCashflowPlanColumns = []string{"period", "investment_income", "principal_returned", "vehicles_income",
+	"other_income", "operating_out", "debt_service", "vehicles", "net", "quality"}
+
+// cashflowPlanTags are the tags of the plan's quality column and what
+// each means (docs/CASHFLOW.md §12), in the order gold.CashflowPlan
+// lists them: the CLI usage and the MCP help both render them.
+var cashflowPlanTags = []tagNote{
+	{gold.PlanProjected, "investment_income, principal_returned and vehicles_income are the income projection's"},
+	{gold.PlanTrailing, "the other parts are monthly averages of the look-back"},
+	{gold.PlanTerms, "a mortgage's instalments end at its terms' maturity"},
+	{gold.PlanThin, "the look-back holds under " + strconv.Itoa(gold.PlanThinMonths) + " months"},
+}
+
+// planClassColumns are the -C delta that adds every operating-out class
+// column of the plan (gold.PlanOutClasses).
+func planClassColumns() string {
+	cols := make([]string, len(gold.PlanOutClasses))
+	for i, c := range gold.PlanOutClasses {
+		cols[i] = "+" + planClassColumn(c)
+	}
+	return strings.Join(cols, ",")
+}
 
 func buildCashflowSummaryColumnRegistry(outCcy, period string) []columnSpec[gold.CashflowSummaryRow] {
 	return []columnSpec[gold.CashflowSummaryRow]{
@@ -398,7 +542,7 @@ var defaultCashflowTransactionColumns = []string{
 
 func cashflowUsage() string {
 	return "usage: wealthdb cashflow <view> [FROM [TO]] [--period P] [--level L] [--investing G]\n" +
-		"                            [-f FORMAT] [-C COLS] [-x CCY] [-p]\n" +
+		"                            [--rates R] [--maturing M] [--shift BP] [-f FORMAT] [-C COLS] [-x CCY] [-p]\n" +
 		`
 What the household's cash did: where it came from and where it went,
 as a cash flow statement and as the edge list of a Sankey. The
@@ -408,7 +552,7 @@ on. Moves between the household's own accounts are invisible; buying
 and selling is shown NET per period, never as two gross bands.
 Positive is cash arriving, negative is cash leaving.
 
-Views (coarsest → finest):
+Views (the statement coarsest → finest, then the plan):
   summary       one row per period bucket: operating_in, operating_out,
                 operating, investing, financing, vehicles, net_cash_flow
   flows         one row per bucket and node at --level, netted at that level
@@ -427,11 +571,15 @@ Views (coarsest → finest):
                 began mid-period, 'ended' that it stopped before the
                 period, 'unmeasurable' means no balances at all. Sort by
                 gap where status is 'measured'.
+  projection    the plan, one row per month ahead; see Notes.
+                --period ` + strings.Join(seriesPeriods, " | ") + `
 
 Window (positional, optional; default: the trailing twelve months):
   YYYY / YYYY-MM / YYYY-MM-DD   that calendar period
   FROM TO                       explicit range; '-' is open-ended
   A household reads this per year: wealthdb cashflow sankey 2025
+  projection takes whole months from next month on. Its default is the
+  projection's horizon (yield.horizon_months, default ` + strconv.Itoa(canonical.DefaultHorizonMonths) + `).
 
 Flags beyond the ones every report shares:
   --level L     flows: section | class | group (default group)
@@ -440,6 +588,14 @@ Flags beyond the ones every report shares:
   --investing G whole (default) | class — net investing as one
                 Investments node, or per asset class with one node each
                 (flows and sankey; the summary is always whole)
+  --rates R     projection: ` + strings.Join(pathNames(), " | ") + ` (default ` + string(yield.DefaultAssumptions.Path) +
+		`) — how
+                floating rates move, as for 'wealthdb income projection'
+  --maturing M  projection: ` + strings.Join(ruleNames(), " | ") + ` (default ` + string(yield.DefaultAssumptions.Rule) +
+		`) — what
+                a maturing principal earns; under roll it buys its
+                successor
+  --shift BP    projection: a parallel shift of the floating rates
   -f FORMAT     table | csv | csv_plain | json
   -C COLS       comma-separated names, 'default', 'all', or a
                 +ADD,-REMOVE delta on the default set
@@ -484,12 +640,34 @@ Notes
   node at all, so the Taxes node is the tax the household paid from its
   own accounts.
 
+  projection is the plan. investment_income and principal_returned
+  are what 'wealthdb income projection' expects on the pool's
+  accounts. vehicles_income is its income and principal on every
+  account outside the pool: a vehicle's, a giving account's, or one
+  cashflow.accounts excludes. The three sum to the projection's
+  expected and principal. other_income, operating_out and vehicles
+  are monthly averages of the months before this one, as the summary
+  counts them.
+  cashflow.projection.lookback_months sets how many (default ` + strconv.Itoa(config.DefaultCashflowLookbackMonths) +
+		`, at
+  most ` + strconv.Itoa(config.MaxCashflowLookbackMonths) + `). debt_service runs each mortgage's average instalment to
+  its maturity. Other financing outflows stay at their average.
+
+  net is investment_income + other_income - operating_out -
+  debt_service + vehicles + principal_returned: the pool's, without
+  vehicles_income. Under --maturing roll, net leaves principal_returned
+  out. --level, --investing and --period total are refused on
+  projection.
+  -C ` + planClassColumns() + ` splits
+  operating_out by class. quality lists what a row rests on:` + tagNotes(cashflowPlanTags) + `
+
 Available columns (per view):
   summary       ` + joinColumnNames(buildCashflowSummaryColumnRegistry("CCY", "monthly")) + `
   flows         ` + joinColumnNames(buildCashflowFlowColumnRegistry("CCY", "monthly")) + `
   sankey        ` + joinColumnNames(buildCashflowSankeyColumnRegistry("CCY")) + `
   transactions  ` + joinColumnNames(buildCashflowTransactionColumnRegistry("CCY", nil, nil)) + `
   coverage      ` + joinColumnNames(buildCashflowCoverageColumnRegistry("monthly", nil, nil)) + `
+  projection    ` + joinColumnNames(buildCashflowPlanColumns("CCY", "monthly")) + `
 
   (The money columns render as operating_in_<CCY> / net_<CCY> /
    value_<CCY>, reflecting your -x/--currency choice. Coverage's do
@@ -500,5 +678,6 @@ Default column sets:
   flows         ` + strings.Join(defaultCashflowFlowColumns, ", ") + `
   sankey        ` + strings.Join(defaultCashflowSankeyColumns, ", ") + `
   transactions  ` + strings.Join(defaultCashflowTransactionColumns, ", ") + `
-  coverage      ` + strings.Join(defaultCashflowCoverageColumns, ", ")
+  coverage      ` + strings.Join(defaultCashflowCoverageColumns, ", ") + `
+  projection    ` + strings.Join(defaultCashflowPlanColumns, ", ")
 }

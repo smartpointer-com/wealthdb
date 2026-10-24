@@ -1,16 +1,18 @@
 package config
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
 
-// TestCashflowBlockParses pins the shape: one block, two fields, both
+// TestCashflowBlockParses pins the shape: one block, three fields, all
 // optional, and an accessor for each.
 func TestCashflowBlockParses(t *testing.T) {
 	c, err := loadWith(t, `"cashflow": {
         "accounts": {"exclude": {"bank": ["ACC1", "ACC2"]}},
-        "wrappers": {"529": "household", "trust_grantor": "trusts"}
+        "wrappers": {"529": "household", "trust_grantor": "trusts"},
+        "projection": {"lookback_months": 24}
     }`)
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -26,6 +28,9 @@ func TestCashflowBlockParses(t *testing.T) {
 		got["529"] != "household" || got["trust_grantor"] != "trusts" {
 		t.Errorf("wrapper overrides = %v", got)
 	}
+	if got := c.CashflowLookback(); got != 24 {
+		t.Errorf("lookback = %d, want 24", got)
+	}
 }
 
 // TestCashflowBlockIsOptional pins the absent-block default: every
@@ -40,6 +45,22 @@ func TestCashflowBlockIsOptional(t *testing.T) {
 	}
 	if got := c.CashflowWrappers(); got != nil {
 		t.Errorf("an absent block overrides a wrapper: %v", got)
+	}
+	if got := c.CashflowLookback(); got != DefaultCashflowLookbackMonths {
+		t.Errorf("an absent block's lookback = %d, want %d", got, DefaultCashflowLookbackMonths)
+	}
+}
+
+// The plan's look-back is 1 to 36 months, or 0 for the default.
+func TestCashflowLookbackValidation(t *testing.T) {
+	for _, n := range []int{-1, MaxCashflowLookbackMonths + 1} {
+		_, err := loadWith(t, `"cashflow": {"projection": {"lookback_months": `+strconv.Itoa(n)+`}}`)
+		if err == nil || !strings.Contains(err.Error(), "cashflow.projection.lookback_months") {
+			t.Errorf("lookback_months %d: %v", n, err)
+		}
+	}
+	if _, err := loadWith(t, `"cashflow": {"projection": {"lookback_months": 36}}`); err != nil {
+		t.Errorf("lookback_months 36: %v", err)
 	}
 }
 

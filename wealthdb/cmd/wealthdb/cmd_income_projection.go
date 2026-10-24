@@ -87,10 +87,15 @@ func (f *forwardFlags) check(fs *flag.FlagSet, view, period string) error {
 		func(name string) string { return "--" + name }); err != nil {
 		return err
 	}
-	if err := checkChoice("income", "rates", *f.rates, pathNames()...); err != nil {
+	return f.checkChoices("income")
+}
+
+// checkChoices refuses a --rates or --maturing outside its choices.
+func (f *forwardFlags) checkChoices(cmd string) error {
+	if err := checkChoice(cmd, "rates", *f.rates, pathNames()...); err != nil {
 		return err
 	}
-	return checkChoice("income", "maturing", *f.maturing, ruleNames()...)
+	return checkChoice(cmd, "maturing", *f.maturing, ruleNames()...)
 }
 
 // checkForwardOptions refuses the options a view does not take, the CLI
@@ -100,26 +105,83 @@ func (f *forwardFlags) check(fs *flag.FlagSet, view, period string) error {
 // option's name as the front-end does.
 func checkForwardOptions(view, period string, has func(string) bool, flag func(string) string) error {
 	if !isForwardView(view) {
-		if has("rates") || has("maturing") || has("shift") {
-			return errs.Newf(errs.ExitUsage, "income: %s, %s and %s belong to the %s views", flag("rates"),
-				flag("maturing"), flag("shift"), andList(forwardViews))
-		}
-		return nil
+		return refuseAssumptions("income", "the "+andList(forwardViews)+" views", has, flag)
 	}
 	switch {
 	case has("level"):
 		return errs.Newf(errs.ExitUsage, "income: %s belongs to the types view", flag("level"))
 	case view != "projection" && has("period"):
 		return errs.Newf(errs.ExitUsage, "income: of the forward views, %s belongs to projection", flag("period"))
-	case !slices.Contains(seriesPeriods, period):
-		return errs.Newf(errs.ExitUsage, "income: the forward views take %s %s", flag("period"),
-			strings.Join(seriesPeriods, " | "))
+	}
+	return checkSeriesPeriod("income", "the forward views take", period, flag)
+}
+
+// refuseAssumptions refuses the projection's assumptions on a view of cmd
+// that does not look forward; where names the views that take them.
+func refuseAssumptions(cmd, where string, has func(string) bool, flag func(string) string) error {
+	if has("rates") || has("maturing") || has("shift") {
+		return errs.Newf(errs.ExitUsage, "%s: %s, %s and %s belong to %s", cmd, flag("rates"), flag("maturing"),
+			flag("shift"), where)
 	}
 	return nil
 }
 
+// checkSeriesPeriod refuses a forward view's period that is none of
+// seriesPeriods; takes says who takes them ("projection takes").
+func checkSeriesPeriod(cmd, takes, period string, flag func(string) string) error {
+	if !slices.Contains(seriesPeriods, period) {
+		return errs.Newf(errs.ExitUsage, "%s: %s %s %s", cmd, takes, flag("period"), strings.Join(seriesPeriods, " | "))
+	}
+	return nil
+}
+
+// windowParser reads a forward view's FROM and TO ("" where absent) at
+// now, horizon months its default span: parseForwardWindow,
+// parsePlanWindow.
+type windowParser func(from, to string, now time.Time, horizon int) (int64, int64, error)
+
+// reportWindow is a report's positional window: the trailing year where
+// forward is nil, else forward's reading of FROM [TO]. A refusal prints
+// fs's usage and is cmd's usage error.
+func reportWindow(fs *flag.FlagSet, cmd string, now time.Time, horizon int, forward windowParser) (int64, int64, error) {
+	var from, to int64
+	var err error
+	switch {
+	case forward == nil:
+		from, to, err = parseTrailingYearWindow(fs.Args(), now)
+	case fs.NArg() > 2:
+		err = fmt.Errorf("a window is FROM [TO]")
+	default:
+		from, to, err = forward(fs.Arg(0), fs.Arg(1), now, horizon)
+	}
+	if err != nil {
+		fs.Usage()
+		return 0, 0, errs.Newf(errs.ExitUsage, "%s: %s", cmd, err.Error())
+	}
+	return from, to, nil
+}
+
 func (f *forwardFlags) assumptions() yield.Assumptions {
 	return yield.Assumptions{Path: yield.Path(*f.rates), Rule: yield.Rule(*f.maturing), ShiftBP: float64(*f.shift)}
+}
+
+// assumptionArgs are forwardFlags.assumptions for an MCP call: rates,
+// maturing and shift, each absent one yield.DefaultAssumptions'.
+func assumptionArgs(a *toolArgs) yield.Assumptions {
+	shift, _ := a.integer("shift")
+	def := yield.DefaultAssumptions
+	return yield.Assumptions{Path: yield.Path(orDefault(a.str("rates"), string(def.Path))),
+		Rule: yield.Rule(orDefault(a.str("maturing"), string(def.Rule))), ShiftBP: float64(shift)}
+}
+
+// assumptionsHeader names the assumptions in an MCP result's header, the
+// shift only where there is one.
+func assumptionsHeader(as yield.Assumptions) []string {
+	h := []string{"rates=" + string(as.Path), "maturing=" + string(as.Rule)}
+	if as.ShiftBP != 0 {
+		h = append(h, fmt.Sprintf("shift=%+.0fbp", as.ShiftBP))
+	}
+	return h
 }
 
 // parseForwardWindow is the window of a forward view: FROM and TO as the
@@ -152,15 +214,26 @@ type forwardIncome struct {
 	window                    yield.Window
 }
 
-func loadForwardIncome(ctx context.Context, db *sql.DB, req request) (*forwardIncome, error) {
+// forwardBook is the book of today and the request's window, refused
+// where the window ends after the projection does: what every forward
+// view of cmd (income, cashflow) projects over.
+func forwardBook(ctx context.Context, db *sql.DB, req request, cmd string) (*yield.Book, yield.Window, error) {
 	b, err := yieldBook(ctx, db, req.asOf, req.currency)
 	if err != nil {
-		return nil, err
+		return nil, yield.Window{}, err
 	}
 	w := yield.Window{From: time.Unix(req.from, 0).UTC(), To: time.Unix(req.to, 0).UTC()}
 	if w.To.After(b.Last()) {
-		return nil, errs.Newf(errs.ExitUsage, "income: the projection ends on %s; the window ends after it",
-			b.Last().Format(time.DateOnly))
+		return nil, yield.Window{}, errs.Newf(errs.ExitUsage, "%s: the projection ends on %s; the window ends after it",
+			cmd, b.Last().Format(time.DateOnly))
+	}
+	return b, w, nil
+}
+
+func loadForwardIncome(ctx context.Context, db *sql.DB, req request) (*forwardIncome, error) {
+	b, w, err := forwardBook(ctx, db, req, "income")
+	if err != nil {
+		return nil, err
 	}
 	received, err := gold.IncomeReceived(ctx, db, b.In, w.From.Unix(), min(w.To.Unix(), req.asOf))
 	if err != nil {

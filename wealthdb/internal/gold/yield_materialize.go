@@ -25,14 +25,15 @@ func yieldInstants(toEpoch int64) []int64 {
 }
 
 // MaterializeYield rewrites the Yield dashboard's tables (migration
-// 0138): every holding's figures and DV01 per tenor in every reporting
-// currency at yieldInstants, and at toEpoch the projection's parts, the
-// rate table, the principals maturities return and every income line
-// received. Each figure is the yield report's (yield.Compute
-// over YieldInputs), so the dashboard and the CLI agree. It returns the
-// number of rows written. One transaction, so a reader sees the old
-// tables or the new ones.
-func MaterializeYield(ctx context.Context, db *sql.DB, toEpoch, computedAt int64) (int, error) {
+// 0138) and the cash-flow plan's look-back parts (migration 0149): every
+// holding's figures and DV01 per tenor in every reporting currency at
+// yieldInstants, and at toEpoch the projection's parts, the rate table,
+// the principals maturities return, every income line received, and the
+// plan's parts over a look-back of lookback months (CashflowPlan). Each
+// figure is the yield report's (yield.Compute over YieldInputs), so the
+// dashboard and the CLI agree. It returns the number of rows written.
+// One transaction, so a reader sees the old tables or the new ones.
+func MaterializeYield(ctx context.Context, db *sql.DB, toEpoch, computedAt int64, lookback int) (int, error) {
 	// Every instant reads the same endings and spans, through the
 	// transaction.
 	tx, commit, err := beginPinned(ctx, db)
@@ -41,7 +42,7 @@ func MaterializeYield(ctx context.Context, db *sql.DB, toEpoch, computedAt int64
 	}
 	defer tx.Rollback() //nolint:errcheck — no-op after commit
 	for _, t := range []string{"report_yield_positions", "report_yield_buckets", "report_yield_parts",
-		"report_yield_rates", "report_yield_events", "report_yield_received"} {
+		"report_yield_rates", "report_yield_events", "report_yield_received", "report_cashflow_plan"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t); err != nil {
 			return 0, fmt.Errorf("MaterializeYield %s: delete: %w", t, err)
 		}
@@ -74,6 +75,9 @@ func MaterializeYield(ctx context.Context, db *sql.DB, toEpoch, computedAt int64
 		return 0, err
 	}
 	if err := m.received(today, toEpoch); err != nil {
+		return 0, err
+	}
+	if err := m.plan(today, toEpoch, lookback); err != nil {
 		return 0, err
 	}
 	if err := commit(); err != nil {
@@ -315,6 +319,66 @@ func (m *yieldMaterializer) received(today map[string]*yield.Book, toEpoch int64
 			return append(args, m.computedAt, x.ccy, x.r.Holding.Source, x.r.Holding.Account, x.r.Holding.PositionKey,
 				x.r.Day.Format(time.DateOnly), string(x.r.Type), x.r.Value, x.w)
 		})
+}
+
+// plan writes the cash-flow plan's look-back parts (report_cashflow_plan)
+// for each month of today's projection after the current one, per
+// reporting currency: what CashflowPlan sets against the projection,
+// over a look-back of lookback months.
+func (m *yieldMaterializer) plan(today map[string]*yield.Book, toEpoch int64, lookback int) error {
+	type part struct {
+		ccy, part, class string
+		month            int
+		start            time.Time
+		value            float64
+		quality          string
+	}
+	var parts []part
+	from, to := PlanWindow(time.Unix(toEpoch, 0), lookback)
+	// PlanParts, in its order.
+	other, out, debt, vehicles := PlanParts[0], PlanParts[1], PlanParts[2], PlanParts[3]
+	for _, ccy := range materializeCurrencies {
+		b := today[ccy]
+		if b == nil {
+			continue
+		}
+		lb, err := CashflowPlanLookback(m.ctx, m.tx, from, to, ccy)
+		if err != nil {
+			return fmt.Errorf("MaterializeYield: %w", err)
+		}
+		for i, r := range CashflowPlan(lb, PlanStanding(b), planMonths(b), 1, false) {
+			if r.Total || r.Average {
+				continue
+			}
+			quality := strings.TrimSpace(strings.TrimPrefix(r.Quality, PlanProjected))
+			add := func(name, class string, v float64) {
+				parts = append(parts, part{ccy, name, class, i + 1, r.Period, v, quality})
+			}
+			add(other, "", r.OtherIncome)
+			for _, c := range PlanOutClasses {
+				add(out, c, r.OutClasses[c])
+			}
+			add(debt, "", r.DebtService)
+			add(vehicles, "", r.Vehicles)
+		}
+	}
+	return m.insert("report_cashflow_plan", "computed_at, currency, month, month_start, part, class, value, quality",
+		len(parts), func(i int, args []any) []any {
+			x := parts[i]
+			return append(args, m.computedAt, x.ccy, x.month, x.start.Format(time.DateOnly), x.part, x.class, x.value,
+				x.quality)
+		})
+}
+
+// planMonths are the months of b's projection after the current one,
+// each by its first day, with no figure: the plan's look-back parts
+// depend on no picker.
+func planMonths(b *yield.Book) []PlanMonth {
+	months := make([]PlanMonth, yield.Months)
+	for i := range months {
+		months[i].Start = b.Projection.MonthStart(i + 1)
+	}
+	return months
 }
 
 // number is v, NULL where it is nil or not a number.

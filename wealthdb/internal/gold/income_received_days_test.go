@@ -106,7 +106,7 @@ func TestMaterializeYieldReceivesTheWholeHistory(t *testing.T) {
 	    ('test-src', 'OLD1', 'sig-tenant', 1, 'INCOME_RENTAL', 'rule', 100)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := MaterializeYield(ctx, db, at, 42); err != nil {
+	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
 		t.Fatal(err)
 	}
 	var first string

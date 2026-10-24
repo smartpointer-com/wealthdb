@@ -412,17 +412,26 @@ func TestTheLineOfASecurity(t *testing.T) {
 }
 
 // Every detailed type incomeTypeSQL reads an income line by is one of
-// the income taxonomy's.
+// the income taxonomy's, and the plan's other income leaves out exactly
+// those (projectedIncomeDetailed), so it counts none twice and drops
+// none.
 func TestIncomeTypesReadTheTaxonomy(t *testing.T) {
 	t.Parallel()
 	read := regexp.MustCompile(`income_detailed = '(\w+)'`).FindAllStringSubmatch(incomeTypeSQL, -1)
 	if len(read) == 0 {
 		t.Fatal("incomeTypeSQL reads no detailed type")
 	}
+	var values []string
 	for _, m := range read {
 		if !canonical.ValidIncomeDetailed(m[1]) {
 			t.Errorf("%s is no detailed income type", m[1])
 		}
+		values = append(values, m[1])
+	}
+	slices.Sort(values)
+	values = slices.Compact(values)
+	if want := slices.Sorted(slices.Values(projectedIncomeDetailed)); !slices.Equal(values, want) {
+		t.Errorf("incomeTypeSQL reads %v; projectedIncomeDetailed lists %v", values, want)
 	}
 }
 

@@ -271,7 +271,8 @@ func yieldCases() []goldenCase {
 // forwardIncomeCases covers each forward view of the income tool over a
 // window from fixtureToday's month to two years on, under assumptions
 // other than the defaults; then the default window and each lone bound (a
-// lone to starts next month).
+// lone to starts next month); and the cash-flow plan over the default
+// window and quarterly under the same assumptions.
 func forwardIncomeCases() []goldenCase {
 	now := fixtureToday
 	from := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).Format(time.DateOnly)
@@ -290,5 +291,13 @@ func forwardIncomeCases() []goldenCase {
 		goldenCase{"income projection from", []string{"income", "projection", next}, "income",
 			map[string]any{"view": "projection", "from": next}},
 		goldenCase{"income projection to", []string{"income", "projection", nextMonth, next}, "income",
-			map[string]any{"view": "projection", "to": next}})
+			map[string]any{"view": "projection", "to": next}},
+		// The cash-flow plan, the same projection set against the
+		// look-back.
+		goldenCase{"cashflow projection default", []string{"cashflow", "projection"}, "cashflow",
+			map[string]any{"view": "projection"}},
+		goldenCase{"cashflow projection quarterly", []string{"cashflow", "projection", nextMonth, to, "--period",
+			"quarterly", "--rates", "forward", "--maturing", "roll", "--shift", "-50"}, "cashflow",
+			map[string]any{"view": "projection", "from": nextMonth, "to": to, "period": "quarterly", "rates": "forward",
+				"maturing": "roll", "shift": -50}})
 }

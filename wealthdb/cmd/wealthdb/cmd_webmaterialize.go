@@ -32,9 +32,10 @@ func init() {
 // `wealthdb exposure classes -d <day> -x <CCY>`. The yield tables hold
 // every holding's yield figures at today and the month ends before, and
 // today's income projection, those of `wealthdb yield positions` and
-// `wealthdb income` (gold.MaterializeYield). The host-side
-// `wealthdb web` wrapper runs it right before snapshotting so the
-// Metabase dashboards are as fresh as the holdings. Hidden from
+// `wealthdb income`; report_cashflow_plan holds the look-back parts of
+// `wealthdb cashflow projection` (both gold.MaterializeYield). The
+// host-side `wealthdb web` wrapper runs it right before snapshotting so
+// the Metabase dashboards are as fresh as the holdings. Hidden from
 // `wealthdb help`; it's plumbing for `wealthdb web`, not a user-facing
 // command (diagnostic knobs stay on `wealthdb returns` and `wealthdb
 // gains`). A concurrent write command holds the gold write mutex, so
@@ -89,7 +90,7 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 		return err
 	}
 	fmt.Fprintf(stderr, "exposure: materialized %d rows (month ends x %d currencies)\n", n, len(gold.MaterializedCurrencies()))
-	n, err = gold.MaterializeYield(ctx, db, toEpoch, now.Unix())
+	n, err = gold.MaterializeYield(ctx, db, toEpoch, now.Unix(), cfg.CashflowLookback())
 	if err != nil {
 		return err
 	}

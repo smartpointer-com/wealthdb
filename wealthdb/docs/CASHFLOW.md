@@ -5,6 +5,9 @@ shows where cash came from and where it went over a window, across the
 household's accounts. Moves inside the household are removed. Buying
 and selling show as one net movement, not two gross ones.
 
+It also plans the months ahead: the income the holdings are expected
+to pay against the outflows of the months before (§12).
+
 This document is a **delta against [SPENDING.md](SPENDING.md) and
 [INCOME.md](INCOME.md)**. Cashflow is the third reading of one engine.
 It shares one enrichment pass, one precedence lattice, one
@@ -746,11 +749,12 @@ window for the diagram.
 ```json
 "cashflow": {
     "accounts": { "exclude": { "<source>": ["<account-id>"] } },
-    "wrappers": { "529": "household", "trust_grantor": "trusts" }
+    "wrappers": { "529": "household", "trust_grantor": "trusts" },
+    "projection": { "lookback_months": 12 }
 }
 ```
 
-One block, two fields, both optional.
+One block, three fields, all optional.
 
 `cashflow.accounts` is the pool, and the only account gate cashflow
 applies. **It inherits neither family's scope.** An account one family
@@ -782,6 +786,9 @@ knobs apply at different times:
 - an account override reaches only the rows a load touches, so a
   reload applies it to history.
 
+`cashflow.projection.lookback_months` is the plan's look-back (§12): 1
+to 36 whole months before the current one, 12 by default.
+
 Nothing else is configurable. Rules, pins and transfer overrides belong
 to the families. A verdict written there is what cashflow reads, and
 the seven values of §5 are placed through those surfaces.
@@ -802,11 +809,11 @@ config surfaces would let a deployment carry half of it.
 
 ```
 wealthdb cashflow <view> [FROM [TO]] [--period P] [--level L] [--investing G]
-                         [-f FORMAT] [-C COLS] [-x CCY] [-p]
+                         [--rates R] [--maturing M] [--shift BP] [-f FORMAT] [-C COLS] [-x CCY] [-p]
 ```
 
 The families' idiom, unchanged. The flags and their defaults are in
-[DESIGN.md](DESIGN.md) §4.14 and `wealthdb cashflow -h`. Five views:
+[DESIGN.md](DESIGN.md) §4.14 and `wealthdb cashflow -h`. Six views:
 
 | view | a row is | default columns |
 |---|---|---|
@@ -815,6 +822,7 @@ The families' idiom, unchanged. The flags and their defaults are in
 | `sankey` | an edge of the window's diagram | `stage, source, target, value, share` |
 | `transactions` | a cashflow line, oldest first | `silver_source, date, account, kind, section, class, group, name, currency, net_amount, value` |
 | `coverage` | an (account, currency, bucket): the ledger against the account's own balances | `period, silver_source, account, currency, ledger, measured, gap, status` |
+| `projection` | a month ahead: the plan (§12) | `period, investment_income, principal_returned, vehicles_income, other_income, operating_out, debt_service, vehicles, net, quality` |
 
 **Three refusals.** Each is a usage error, not a silent ignore.
 Ignoring any of them would return a plausible answer to a question
@@ -825,6 +833,11 @@ nobody asked.
 - `sankey --level section`: the diagram would have no inner column.
 - `coverage -x`: a rate error on top of the one number that view exists
   to make trustworthy.
+
+`projection` refuses what it does not take (§12): `--level`,
+`--investing`, `--period total`, and a window that starts before next
+month or cuts a month. The other views refuse its `--rates`,
+`--maturing` and `--shift`.
 
 `transactions` DOES ignore `--period`, as the families' transactions
 views do.
@@ -996,18 +1009,24 @@ and that bridge is the cheapest place to see it.
 ## 9. The dashboard
 
 **Cash Flow**, in the Spending and Income dashboards' shape, with a
-privacy twin linked from the top row. It has five pickers:
+privacy twin linked from the top row. It has nine pickers:
 
 - time range;
 - source;
 - a required currency;
 - a section;
 - **Investing**: as a whole (the default) or by asset class. It binds
-  to the diagram and the investing trend.
+  to the diagram and the investing trend;
+- the projection's four: Horizon, Rate path, Maturing and Shift. They
+  reach the Plan section alone (§12).
 
-**The Section picker is narrower than the other four.** It reaches the
-by-month charts and `Largest flows`. The headline figures and the
-diagram decline it:
+The Plan section takes the currency and the projection's four. It
+declines the other four: the plan reads the months ahead and the
+household's whole statement.
+
+**The Section picker is narrower than the statement's other four.**
+It reaches the by-month charts and `Largest flows`. The headline
+figures and the diagram decline it:
 
 - a statement narrowed to one section is not a statement;
 - a savings rate or a yield share narrowed to one section has lost a
@@ -1036,6 +1055,7 @@ household's own accounts is invisible only while both are in the pool.
 | the two sides | Inflows by class by month · Outflows by class by month |
 | the swing sections | Investing by month · Financing and vehicles by month |
 | the lines | Largest flows: the fifty largest lines of the window |
+| the plan | the months ahead (§12): income parts against outflow parts by month, the net and the vehicles' income as lines; the plan's table |
 
 Every tile is a **native query over `web_cashflow`**, the line-grain
 serving view. The Sankey card computes its nets, its sides and its hub
@@ -1055,7 +1075,7 @@ the twin ranks the lines and projects neither.
 ## 10. Storage and lifecycle
 
 Cashflow has no store of its own. It adds columns to the family
-overlays and two stamped tables:
+overlays, two stamped tables, and one serving table:
 
 | table / column | grain | survives `reset`? | carried by `reload -a`? |
 |---|---|---|---|
@@ -1063,6 +1083,7 @@ overlays and two stamped tables:
 | `spend_txn_enrichment.stated_asset_class`, `income_txn_enrichment.stated_asset_class` | per transaction | no | n/a, re-derived |
 | `cashflow_wrapper_sides` | one row per tax wrapper | yes | re-stamped from config |
 | `cashflow_account_scope` | config, stamped into gold | yes | re-stamped from config |
+| `report_cashflow_plan` (view `web_cashflow_plan`) | per reporting currency, month ahead, part and class | yes | n/a, rewritten by every web refresh |
 
 Nothing is stored for the memo. It reads `cash_balances` and the
 resolution at query time.
@@ -1165,3 +1186,103 @@ Each names a way the statement can be quietly wrong:
     movement whose source neither stamps one reference on both halves
     nor describes the counter leg, and a card bill whose two feeds
     share no id space.
+
+---
+
+## 12. The plan: `wealthdb cashflow projection`
+
+```
+wealthdb cashflow projection [FROM [TO]] [--period P] [--rates R] [--maturing M] [--shift BP]
+                             [-f FORMAT] [-C COLS] [-x CCY] [-p]
+```
+
+The plan sets the household's expected income against its expected
+outflows, month by month, over the months after the current one. Its
+window is the income projection's ([INCOME.md](INCOME.md) §12): by
+default the horizon, `yield.horizon_months`. It is whole months from
+next month on: FROM a month's first day, TO a month's last. `--period`
+is `monthly` (the default), `quarterly` or `annual`.
+`--rates`, `--maturing` and `--shift` are the projection's
+assumptions.
+
+Two sources feed it:
+
+- **the income projection**, for what the holdings are expected to
+  pay and the principal their maturities return;
+- **the look-back**, for the rest: the cash flow statement's lines of
+  the whole months before the current one,
+  `cashflow.projection.lookback_months` of them (§7). Each part is
+  their sum spread evenly over those months, in the output currency at
+  each line's own day's rate, as the summary converts it. So a seasonal
+  expense is spread, not timed. A year of the plan says what a year
+  looks like.
+
+The look-back's months run from the month of the statement's first
+line ever, counted whole, so a household with a shorter history
+spreads over the months it has.
+
+| column | reads |
+|---|---|
+| `investment_income` | the income projection's expected income in the month on the pool's accounts (§2), under the same assumptions. The plan never recomputes it |
+| `principal_returned` | the principal maturities return in the month on the pool's accounts, as the projection's `principal`. It counts in `net` unless `--maturing roll`: under roll it buys the holding's successor |
+| `vehicles_income` | the projection's expected income and principal in the month on every account outside the pool: a vehicle's, a giving account's (§3), or one `cashflow.accounts` fences out. It stays there, so `net` leaves it out |
+| `other_income` | the operating income the projection does not project: wages, benefits, receipts, and yield the projection does not read (staking, royalties). The monthly average of the look-back |
+| `operating_out` | the operating outflows: the summary's `operating_out` over the look-back, its monthly average, positive. Taxes booked as spending stay inside it |
+| `debt_service` | each mortgage's instalment, continued to its maturity, and the other financing outflows (below) |
+| `vehicles` | contributions to and draws from the vehicles, the monthly average of the look-back, signed as the statement signs it |
+| `net` | `investment_income + other_income - operating_out - debt_service + vehicles`, and `principal_returned` unless `--maturing roll` |
+| `quality` | the tags of the parts: `projected` (the projection's), `trailing` (the look-back's averages), `terms` (a mortgage's instalments run to its terms' maturity), `thin` (the look-back holds under six months) |
+
+`-C +consumption,+fees,+taxes,+giving,+uncategorized` splits
+`operating_out` by its classes (§5). The rows end with `total` and
+`monthly_average`.
+
+Debt service:
+
+- A mortgage's instalment is what the look-back paid into it per
+  month, interest and amortization together, from its first instalment
+  on.
+- It continues each month whose first day is on or before the
+  mortgage's maturity: the latest of its tranches' terms.
+- A mortgage with no maturity in its terms continues through the
+  window.
+- A mortgage today's holdings no longer hold was repaid and counts
+  nothing.
+- Any other financing outflow continues at its monthly average: a
+  loan's repayments, or a mortgage instalment with no far account.
+
+The two halves meet without overlap:
+
+- the projection reads interest, coupons, dividends, distributions,
+  rent and pensions, so `other_income` leaves out the lines the
+  statement classes as those types;
+- the projection earns nothing on a liability, so a mortgage's
+  interest is in `debt_service` alone;
+- the mortgage is under financing, never in `operating_out` (§5).
+
+The projection reads every holding, a vehicle's and an account
+`cashflow.accounts` fences out too. The plan splits it at the pool's
+boundary, as the statement does (§3):
+
+- a holding of a pool account pays into `investment_income` and
+  `principal_returned`;
+- any other holding pays into `vehicles_income`, which `net` leaves
+  out.
+
+So `investment_income + principal_returned + vehicles_income` is
+`wealthdb income projection`'s `expected` plus its `principal`, month
+by month, to the cent.
+
+The plan is a trailing model, not a schedule:
+
+- outflows and other income are averages, not a list of recurring
+  payments;
+- a mortgage's instalment is the one it was paid, continued; no
+  amortisation schedule is computed from its rate, and a one-off
+  repayment in the look-back is spread over its months like any
+  instalment;
+- no withholding is projected; the Income dashboard shows it.
+
+The Cash Flow dashboard's Plan section shows the plan (§9;
+[web/DESIGN.md](../../web/DESIGN.md) §6). A web refresh stores the
+look-back's parts (§10). The MCP `cashflow` tool serves the same view.

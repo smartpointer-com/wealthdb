@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
@@ -69,7 +68,6 @@ func runIncomeView(ctx context.Context, g globalFlags, view string, args []strin
 	if err := checkChoice("income", "level", *level, "primary", "detailed"); err != nil {
 		return err
 	}
-	forward := isForwardView(view)
 	if err := ff.check(fs, view, *period); err != nil {
 		return err
 	}
@@ -79,18 +77,13 @@ func runIncomeView(ctx context.Context, g globalFlags, view string, args []strin
 		return err
 	}
 	now := g.clock()
-	var fromEpoch, toEpoch int64
-	switch {
-	case !forward:
-		fromEpoch, toEpoch, err = parseTrailingYearWindow(fs.Args(), now)
-	case fs.NArg() > 2:
-		err = fmt.Errorf("a window is FROM [TO]")
-	default:
-		fromEpoch, toEpoch, err = parseForwardWindow(fs.Arg(0), fs.Arg(1), now, cfg.YieldHorizon())
+	var window windowParser
+	if isForwardView(view) {
+		window = parseForwardWindow
 	}
+	fromEpoch, toEpoch, err := reportWindow(fs, "income", now, cfg.YieldHorizon(), window)
 	if err != nil {
-		fs.Usage()
-		return errs.Newf(errs.ExitUsage, "income: %s", err.Error())
+		return err
 	}
 
 	rep := incomeReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch, period: *period, level: *level,

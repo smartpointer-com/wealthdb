@@ -812,6 +812,10 @@ Behind `-C`, `projection` adds `total` (received and expected), `rent`,
 `pension` and `principal`. It also splits each type into
 `<type>_received` and `<type>_expected`.
 
+`wealthdb cashflow projection` sets this projection against the
+household's outflows month by month: the cash-flow plan
+([CASHFLOW.md](CASHFLOW.md) §12).
+
 ### The window and the period
 
 - FROM and TO take the dates the other views take (§8).

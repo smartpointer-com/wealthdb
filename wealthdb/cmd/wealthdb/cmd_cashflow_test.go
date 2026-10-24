@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -312,6 +315,44 @@ func TestCashflowCLIEndToEnd(t *testing.T) {
 		}
 	})
 
+	t.Run("the projection plans the months ahead and refuses what it does not take", func(t *testing.T) {
+		plan := func(args ...string) (string, string, int) {
+			return run(t, append([]string{"-c", cfg, "cashflow"}, args...)...)
+		}
+		so, se, code := plan("projection", "-f", "csv", "-C", "+consumption,+taxes,+uncategorized")
+		if code != 0 {
+			t.Fatalf("exit=%d stderr=%s", code, se)
+		}
+		header, _, _ := strings.Cut(so, "\n")
+		for _, want := range []string{"investment_income_USD", "debt_service_USD", "net_USD", "taxes_USD",
+			"uncategorized_USD", "quality"} {
+			if !strings.Contains(header, want) {
+				t.Errorf("the header %q lacks %q", header, want)
+			}
+		}
+		if !strings.Contains(so, "monthly_average") || !strings.Contains(so, "projected trailing") {
+			t.Errorf("the plan lacks its average row or its tags:\n%s", so)
+		}
+		for _, args := range [][]string{
+			{"projection", "2026-05-01", "2026-06-30"},
+			{"projection", "--level", "class"},
+			{"projection", "--investing", "class"},
+			{"projection", "--period", "total"},
+			{"summary", "--rates", "forward"},
+			{"flows", "--shift", "50"},
+			{"projection", "--maturing", "never"},
+			{"projection", time.Now().UTC().AddDate(0, 1, 14).Format("2006-01-02")},
+		} {
+			if _, se, code := plan(args...); code != 2 {
+				t.Errorf("`cashflow %s` exited %d, want 2: %s", strings.Join(args, " "), code, se)
+			}
+		}
+		far := strconv.Itoa(time.Now().UTC().Year() + 5)
+		if _, se, code := plan("projection", far); code != 2 || !strings.Contains(se, "cashflow: the projection ends on") {
+			t.Errorf("`cashflow projection %s` exited %d, want 2 and the projection's end: %s", far, code, se)
+		}
+	})
+
 	// A refusal that only answers to one spelling of its flag is worse
 	// than no refusal: the caller who types the short form gets the
 	// plausible answer the refusal exists to withhold.
@@ -360,6 +401,7 @@ func TestCashflowUsageNamesEveryView(t *testing.T) {
 		"sankey":       defaultCashflowSankeyColumns,
 		"transactions": defaultCashflowTransactionColumns,
 		"coverage":     defaultCashflowCoverageColumns,
+		"projection":   defaultCashflowPlanColumns,
 	} {
 		if !strings.Contains(usage, strings.Join(cols, ", ")) {
 			t.Errorf("the usage text does not list the %q default columns", view)
@@ -404,5 +446,134 @@ func TestTransactionsCarriesTheCashflowColumns(t *testing.T) {
 		if !strings.Contains(so, want) {
 			t.Errorf("`transactions` is missing %q:\n%s", want, so)
 		}
+	}
+}
+
+// The plan's window starts next month or later, on a month's first day,
+// and ends on a month's last: a window cut at either end is refused.
+func TestCheckPlanWindow(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	day := func(y int, m time.Month, d int) int64 { return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix() }
+	for _, c := range []struct {
+		from, to int64
+		want     string
+	}{
+		{day(2026, 8, 1), day(2026, 9, 1) - 1, ""},
+		{day(2026, 8, 1), day(2027, 8, 1) - 1, ""},
+		{day(2027, 1, 1), day(2027, 4, 1) - 1, ""},
+		{day(2026, 7, 1), day(2026, 9, 1) - 1, "it starts in 2026-08 or later"},
+		{day(2026, 6, 1), day(2026, 7, 1) - 1, "it starts in 2026-08 or later"},
+		{day(2026, 8, 15), day(2026, 10, 1) - 1, "plans whole months"},
+		{day(2026, 8, 1), day(2026, 9, 15) - 1, "plans whole months"},
+		{day(2026, 8, 1), day(2026, 9, 1), "plans whole months"},
+		{day(2026, 8, 1) + 3600, day(2026, 9, 1) - 1, "plans whole months"},
+	} {
+		err := checkPlanWindow(c.from, c.to, now)
+		if got := fmt.Sprint(err); (c.want == "") != (err == nil) || (c.want != "" && !strings.Contains(got, c.want)) {
+			t.Errorf("checkPlanWindow(%s, %s) = %v, want %q", formatDateTime(c.from), formatDateTime(c.to), err,
+				c.want)
+		}
+	}
+}
+
+// Every tag the plan's quality column prints reaches the CLI usage and
+// the MCP quality help, in the order the plan lists them.
+func TestPlanTagsReachBothFrontEnds(t *testing.T) {
+	t.Parallel()
+	maturity := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	rows := gold.CashflowPlan(gold.PlanLookback{Months: 1, Mortgages: []gold.PlanMortgage{{Source: "s", Account: "a",
+		Instalment: 1}}}, map[[2]string]*time.Time{{"s", "a"}: &maturity},
+		[]gold.PlanMonth{{Start: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)}}, 1, false)
+	var listed []string
+	usage := cashflowUsage()
+	for _, q := range cashflowPlanTags {
+		listed = append(listed, q.tag)
+		if !strings.Contains(usage, "\n    "+q.tag+" ") {
+			t.Errorf("usage does not list %s", q.tag)
+		}
+		if !strings.Contains(qualityHelp, "\n- "+q.tag+": "+q.meaning+".") {
+			t.Errorf("describe topic=quality does not list %s", q.tag)
+		}
+	}
+	if want := strings.Fields(rows[0].Quality); !slices.Equal(listed, want) {
+		t.Errorf("tags %v, want the plan's %v", listed, want)
+	}
+}
+
+// A household whose vehicles pay: the projection's income on the pool's
+// accounts is the plan's investment_income, on a retirement plan's and
+// on an account cashflow.accounts excludes its vehicles_income, a
+// maturity's principal there too. The three projected parts sum to
+// income projection's expected and principal, month by month. net is
+// the pool's alone. Every account and figure is invented.
+func TestThePlanSplitsTheProjectionAtThePool(t *testing.T) {
+	t.Parallel()
+	cfg := setupYieldGold(t)
+	changeYieldGold(t, cfg,
+		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, tax_wrapper, display_name,
+		 base_currency, first_seen_at, last_seen_at) VALUES
+		 ('brk', 'IRA4242', 'brokerage', 'roth_ira', 'Plan', 'USD', 0, 0),
+		 ('brk', 'ACCT5151', 'brokerage', 'taxable_personal', 'Fenced', 'USD', 0, 0)`,
+		`INSERT INTO cashflow_wrapper_sides (tax_wrapper, side, class) VALUES ('roth_ira', 'vehicle', 'retirement')`,
+		`INSERT INTO cashflow_account_scope (silver_source_id, account_external_id, mode) VALUES
+		 ('brk', 'ACCT5151', 'exclude')`,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, cusip, name,
+		 currency, first_seen_at, last_seen_at) VALUES
+		 ('brk', 'QNOTE', 'fixed_income', 'bond', '000000AC9', 'QORVANT CORP NOTE 3.00000% 03/31/2027', 'USD', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, quantity, market_value) VALUES
+		 ('brk', ?, 'IRA4242', 'QBND', 'QBND', 'fixed_income', 'bond', 'USD', 5000, 5000),
+		 ('brk', ?, 'IRA4242', 'QNOTE', 'QNOTE', 'fixed_income', 'bond', 'USD', 2000, 2000),
+		 ('brk', ?, 'ACCT5151', 'QBND', 'QBND', 'fixed_income', 'bond', 'USD', 1000, 1000)`)
+	out, errb, code := runIncome(t, cfg, "projection", "-f", "csv", "-C", "period,expected,principal")
+	if code != 0 {
+		t.Fatalf("income projection: exit %d: %s", code, errb)
+	}
+	income := csvRows(t, out)
+	out, errb, code = runToday(t, "-c", cfg, "cashflow", "projection", "-f", "csv")
+	if code != 0 {
+		t.Fatalf("cashflow projection: exit %d: %s", code, errb)
+	}
+	plan := csvRows(t, out)
+	if len(plan) != len(income) {
+		t.Fatalf("%d plan rows, %d projection rows", len(plan), len(income))
+	}
+	num := func(r map[string]string, col string) float64 {
+		v, err := strconv.ParseFloat(r[col+"_USD"], 64)
+		if err != nil {
+			t.Fatalf("%s: %v in %v", col, err, r)
+		}
+		return v
+	}
+	paid := 0.0
+	for i, p := range plan {
+		in := income[i]
+		if p["period"] != in["period"] {
+			t.Fatalf("row %d: period %s, projection's %s", i, p["period"], in["period"])
+		}
+		// The projection's average row states no principal.
+		if p["period"] == "monthly_average" {
+			continue
+		}
+		sum := num(p, "investment_income") + num(p, "principal_returned") + num(p, "vehicles_income")
+		if math.Abs(sum-num(in, "expected")-num(in, "principal")) > 0.005 {
+			t.Errorf("%s: the parts sum to %.2f, the projection's to %.2f", p["period"], sum,
+				num(in, "expected")+num(in, "principal"))
+		}
+		net := num(p, "investment_income") + num(p, "principal_returned") + num(p, "other_income") -
+			num(p, "operating_out") - num(p, "debt_service") + num(p, "vehicles")
+		if math.Abs(net-num(p, "net")) > 0.015 {
+			t.Errorf("%s: net %s, the pool's parts %.2f", p["period"], p["net_USD"], net)
+		}
+		if p["period"] != "total" {
+			paid += num(p, "vehicles_income")
+		}
+	}
+	// Outside the pool, the 4% note pays its coupon twice over the
+	// horizon on 6,000, and the 3% note twice on 2,000 before it returns
+	// them.
+	if paid != 240+60+2000 {
+		t.Errorf("the vehicles' income over the horizon %.2f, want 2300:\n%s", paid, out)
 	}
 }

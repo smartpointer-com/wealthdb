@@ -138,7 +138,7 @@ func TestAMaterializerLeavesNoPin(t *testing.T) {
 				"serving":  func() error { _, err := MaterializeServingTables(ctx, db); return err },
 				"gains":    func() error { _, err := MaterializeGains(ctx, db, at, at); return err },
 				"exposure": func() error { _, err := MaterializeExposure(ctx, db, at, at); return err },
-				"yield":    func() error { _, err := MaterializeYield(ctx, db, at, at); return err },
+				"yield":    func() error { _, err := MaterializeYield(ctx, db, at, at, 12); return err },
 			} {
 				if err := run(); err != nil {
 					t.Fatalf("%s: %v", name, err)

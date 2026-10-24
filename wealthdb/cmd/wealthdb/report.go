@@ -66,6 +66,7 @@ type request struct {
 	period    string // spending, income, cashflow, returns
 	level     string // spending, income, cashflow
 	investing string // cashflow
+	lookback  int    // cashflow projection: the look-back's months
 
 	method, annualize, inception string // returns
 	netting                      bool   // returns

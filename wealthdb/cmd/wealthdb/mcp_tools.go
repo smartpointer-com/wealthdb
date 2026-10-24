@@ -53,6 +53,10 @@ type family struct {
 	// "value", "amount" and the family's own word mean in a sort.
 	principal func(req request) string
 	window    windowRule
+	// forward says a view of a trailingYear family looks forward: its
+	// window defaults to the horizon after the current month and may
+	// reach into the future (parseForwardWindow). nil where none does.
+	forward func(view string) bool
 	// currency says the tool takes a currency parameter.
 	currency bool
 	// narrow is the paging line's advice for cutting a long result.
@@ -274,14 +278,18 @@ func (s *mcpServer) tools() []toolSpec {
 				"view=summary: one row per period with operating_in, operating_out, investing, financing, vehicles (all retirement, education and health plans together) and net_cash_flow. " +
 				"view=flows: one row per period and node (section, class, group) with inflow, outflow and net. view=sankey: the diagram's edges for the whole window. " +
 				"view=transactions: the lines. view=coverage: per account and period, how far the statement can be trusted (read status first). " +
+				"view=projection: the plan, one row per month ahead (default: the projection's horizon after the current month; period monthly, quarterly or annual): investment_income and principal_returned as income projection expects them on the pool's accounts, vehicles_income its income and principal on every other account (the three sum to income projection's), other_income, operating_out and vehicles as monthly averages of the trailing months, debt_service each mortgage's instalment to its maturity, net, and quality (projected, trailing, terms, thin); rates, maturing and shift as for income projection. " +
 				"To split the vehicles into retirement, education and health, use view=flows with a class filter; mortgage and loan payments are the Mortgage class under financing. " +
-				"Positive is cash arriving, negative is cash leaving. " +
+				"Positive is cash arriving, negative is cash leaving; on projection, operating_out and debt_service are positive outflows. " +
 				`Example: {view: "flows", from: "2025", to: "2025", level: "class", period: "total"}.`,
 			params: s.rowParams(true,
 				stringParam("view", "Which rows to return (default summary).", cashflowFamily.views...),
-				stringParam("period", "Bucket size (default total: the whole window as one row per node). monthly, quarterly or annual give a series. Not for sankey.", reportPeriodNames...),
+				stringParam("period", "Bucket size (default total: the whole window as one row per node; monthly for projection, which takes no total). monthly, quarterly or annual give a series. Not for sankey.", reportPeriodNames...),
 				stringParam("level", "Node grain for flows and sankey: section, class or group (default group).", "section", "class", "group"),
 				stringParam("investing", "whole (default): investing as one node; class: one node per asset class.", cashflowInvestingGrains...),
+				stringParam("rates", "projection: constant (today's rates for the whole window) or forward (floating rates along the currency's forward curve). Default "+string(yield.DefaultAssumptions.Path)+".", pathNames()...),
+				stringParam("maturing", "projection: what a maturing holding's principal earns: cash (its account's cash rate), idle (nothing) or roll (the same holding again; net then leaves principal_returned out). Default "+string(yield.DefaultAssumptions.Rule)+".", ruleNames()...),
+				param{name: "shift", kind: paramInteger, doc: "projection: a parallel shift of the floating rates, in basis points (default 0)."},
 				sourceParam, accountParam,
 				stringParam("section", "Keep only this section: operating_in, operating_out, investing, financing, vehicles, cash."),
 				stringParam("class", `Keep only classes whose label contains this text (e.g. "Earnings", "Consumption", "Mortgage", "Retirement").`),
@@ -606,6 +614,7 @@ var incomeFamily = &family{
 		"projection": "total", "calendar": "value", "sources": "total", "portfolios": "total", "accounts": "total",
 		"positions": "total"}),
 	window:   trailingYear,
+	forward:  isForwardView,
 	currency: true,
 	narrow:   "from/to or a filter",
 	prepare: func(a *toolArgs, req *request, _ *[]string) error {
@@ -618,13 +627,9 @@ var incomeFamily = &family{
 		if err := checkForwardOptions(req.view, req.period, a.has, func(name string) string { return name }); err != nil {
 			return err
 		}
-		if !forward {
-			return nil
+		if forward {
+			req.assumptions = assumptionArgs(a)
 		}
-		shift, _ := a.integer("shift")
-		def := yield.DefaultAssumptions
-		req.assumptions = yield.Assumptions{Path: yield.Path(orDefault(a.str("rates"), string(def.Path))),
-			Rule: yield.Rule(orDefault(a.str("maturing"), string(def.Rule))), ShiftBP: float64(shift)}
 		return nil
 	},
 	build: func(_ *config.Config, req request, _ *toolArgs) *report { return incomeReport(req) },
@@ -636,11 +641,7 @@ var incomeFamily = &family{
 		if req.view == "projection" {
 			h = append(h, "period="+req.period)
 		}
-		h = append(h, "rates="+string(req.assumptions.Path), "maturing="+string(req.assumptions.Rule))
-		if req.assumptions.ShiftBP != 0 {
-			h = append(h, fmt.Sprintf("shift=%+.0fbp", req.assumptions.ShiftBP))
-		}
-		return h
+		return append(h, assumptionsHeader(req.assumptions)...)
 	},
 }
 
@@ -700,8 +701,10 @@ var cashflowFamily = &family{
 	},
 	principal: byView(map[string]string{
 		"summary": "net_cash_flow", "flows": "net", "sankey": "value", "transactions": "value", "coverage": "gap",
+		"projection": "net",
 	}),
 	window:   trailingYear,
+	forward:  func(view string) bool { return view == "projection" },
 	currency: true,
 	narrow:   "from/to or a filter",
 	prepare: func(a *toolArgs, req *request, _ *[]string) error {
@@ -723,9 +726,25 @@ var cashflowFamily = &family{
 		req.period = orDefault(a.str("period"), "total")
 		req.level = orDefault(a.str("level"), "group")
 		req.investing = orDefault(a.str("investing"), "whole")
+		if req.view == "projection" {
+			req.period = orDefault(a.str("period"), "monthly")
+		}
+		if err := checkCashflowPlanOptions(req.view, req.period, a.has, func(name string) string { return name }); err != nil {
+			return err
+		}
+		if req.view != "projection" {
+			return nil
+		}
+		if err := checkPlanWindow(req.from, req.to, time.Unix(req.asOf, 0)); err != nil {
+			return fmt.Errorf("cashflow: %w; dates are %s", err, dateDoc)
+		}
+		req.assumptions = assumptionArgs(a)
 		return nil
 	},
-	build: func(_ *config.Config, req request, _ *toolArgs) *report { return cashflowReport(req) },
+	build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+		req.lookback = cfg.CashflowLookback()
+		return cashflowReport(req)
+	},
 	header: func(req request) []string {
 		var h []string
 		switch req.view {
@@ -735,6 +754,8 @@ var cashflowFamily = &family{
 			h = append(h, "period="+req.period, "level="+req.level)
 		case "sankey":
 			h = append(h, "level="+req.level)
+		case "projection":
+			h = append(append(h, "period="+req.period), assumptionsHeader(req.assumptions)...)
 		}
 		if req.investing != "whole" && (req.view == "flows" || req.view == "sankey") {
 			h = append(h, "investing="+req.investing)
@@ -899,7 +920,7 @@ func (s *mcpServer) settle(tool string, fam *family, cfg *config.Config, a *tool
 			return request{}, nil, fmt.Errorf("%s: currency %q is not a 3-letter code such as USD or CHF", tool, a.str("currency"))
 		}
 	}
-	if err := resolveDates(fam.window, a, s.now(), cfg.YieldHorizon(), &req); err != nil {
+	if err := resolveDates(fam, a, s.now(), cfg.YieldHorizon(), &req); err != nil {
 		return request{}, nil, fmt.Errorf("%s: %v", tool, err)
 	}
 	if err := fam.prepare(a, &req, &notes); err != nil {
@@ -1021,14 +1042,14 @@ func windowArgs(from, to string) []string {
 	return nil
 }
 
-// resolveDates reads from/to or as_of under the family's rule, with
-// the CLI's defaults and the CLI's date grammar: from snaps to the
+// resolveDates reads from/to or as_of under the family's window rule,
+// with the CLI's defaults and the CLI's date grammar: from snaps to the
 // start of its unit, to and as_of to the end.
-func resolveDates(rule windowRule, a *toolArgs, now time.Time, horizon int, req *request) error {
+func resolveDates(fam *family, a *toolArgs, now time.Time, horizon int, req *request) error {
 	from, to := a.str("from"), a.str("to")
 	args := windowArgs(from, to)
 	var err error
-	switch rule {
+	switch fam.window {
 	case asOfDate:
 		req.asOf, err = parseAsOf(a.str("as_of"), now)
 		if err != nil {
@@ -1036,10 +1057,10 @@ func resolveDates(rule windowRule, a *toolArgs, now time.Time, horizon int, req 
 		}
 		return nil
 	case trailingYear:
-		// The forward views compute today's holdings, over a window that
-		// may reach into the future.
+		// The forward views (family.forward) compute today's holdings,
+		// over a window that may reach into the future.
 		req.asOf = anchorToDay(now.UTC(), true).Unix()
-		if isForwardView(req.view) {
+		if fam.forward != nil && fam.forward(req.view) {
 			req.from, req.to, err = parseForwardWindow(from, to, now, horizon)
 		} else {
 			req.from, req.to, err = parseTrailingYearWindow(args, now)
