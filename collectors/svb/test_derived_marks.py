@@ -1,6 +1,6 @@
 """
-Unit tests for derived_marks.py — the advisor workbook that fills the
-months the statement archive misses.
+Unit tests for derived_marks.py — the performance workbook of month-end
+account values that fills the months the statement archive misses.
 
 `read_workbook` is exercised against a workbook this module builds, so
 the fixture is synthetic end to end: all-zero account serials in the
@@ -24,7 +24,7 @@ import derived_marks as dm  # noqa: E402
 
 
 def _workbook(tmp_path, sheets):
-    """Write a workbook shaped like the advisor's: one sheet per account,
+    """Write a workbook in the real one's layout: one sheet per account,
     named by its serial, with the period's START date and its ending
     market value among the columns."""
     openpyxl = pytest.importorskip("openpyxl")

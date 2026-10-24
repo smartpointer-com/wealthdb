@@ -1,5 +1,5 @@
 """
-Month-end account values from the advisor's performance workbook.
+Reads a performance workbook of month-end account values.
 
 The statement archive has interior gaps — months where an account held
 value but no statement covering it survives. Gold carries the account's
@@ -7,7 +7,7 @@ earlier month across such a gap, which is honest only while nothing
 moves: an account's market value moves every month, so the carried
 figure is stale for the whole gap.
 
-The advisor's workbook carries a month-end market value per account for
+The workbook carries a month-end market value per account for
 exactly those months, on a basis verified against the custodial
 statements. This module reads it, so a gap can be filled with a SOURCED
 mark instead of an invented one.
@@ -58,12 +58,12 @@ _VALUE_HEADER = "EMV"
 
 # What a derived row carries where a real one carries its statement's
 # sha256. Not a hash, so it cannot collide with one, and greppable.
-DERIVED_SHA = "derived-advisor-mark"
+DERIVED_SHA = "derived-workbook-mark"
 
 # The row's description, and so part of its primary key. Distinct from
 # every statement-derived description, so a derived mark and a real row
 # can never be mistaken for one another — or silently replace one.
-DERIVED_DESC = "ACCOUNT VALUE (ADVISOR MARK)"
+DERIVED_DESC = "ACCOUNT VALUE (WORKBOOK MARK)"
 
 
 @dataclass

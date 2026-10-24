@@ -298,7 +298,7 @@ func TestClassifyHistoricalPair(t *testing.T) {
 		{"", "CASH BALANCE", canonical.AssetClassCash, canonical.VehicleDemandDeposit},
 		// A whole-account value for a month the archive misses: worth
 		// known, composition not, so no exposure to claim.
-		{"", "ACCOUNT VALUE (ADVISOR MARK)", canonical.AssetClassOther, canonical.VehicleOther},
+		{"", "ACCOUNT VALUE (WORKBOOK MARK)", canonical.AssetClassOther, canonical.VehicleOther},
 		{"", "MORTGAGE PRINCIPAL", canonical.AssetClassRealEstate, canonical.VehicleMortgage},
 		// Fall-through: plain stock / ADR rows → public_equity / stock.
 		{"AAPL", "APPLE INC", canonical.AssetClassPublicEquity, canonical.VehicleStock},
@@ -756,7 +756,7 @@ func TestStatementConstructsHaveNoSymbol(t *testing.T) {
             (1000, 'SVM-000000', 'NO POSITIONS', NULL, NULL, NULL, 0.00, 'USD', '{}'),
             (1000, '0000000000', 'CASH BALANCE', NULL, NULL, NULL, 200.00, 'USD', '{}'),
             (1000, '0000000001', 'MORTGAGE PRINCIPAL', NULL, NULL, NULL, -300.00, 'USD', '{}'),
-            (1000, 'SVM-000001', 'ACCOUNT VALUE (ADVISOR MARK)', NULL, NULL, NULL, 400.00, 'USD', '{}'),
+            (1000, 'SVM-000001', 'ACCOUNT VALUE (WORKBOOK MARK)', NULL, NULL, NULL, 400.00, 'USD', '{}'),
             (1000, 'SVM-000000', 'EXAMPLE COMPANY CL A', 'AAAA', 10, 5.0, 50.00, 'USD', '{}'),
             (1000, '9990001', 'Example Growth', NULL, 5, 10.0, 50.00, 'USD', '{}');
     `); err != nil {
@@ -780,7 +780,7 @@ func TestStatementConstructsHaveNoSymbol(t *testing.T) {
 		}
 	}
 	for _, name := range []string{"NET CASH POSITION", "NO POSITIONS", "CASH BALANCE",
-		"MORTGAGE PRINCIPAL", "ACCOUNT VALUE (ADVISOR MARK)"} {
+		"MORTGAGE PRINCIPAL", "ACCOUNT VALUE (WORKBOOK MARK)"} {
 		in, ok := byName[name]
 		if !ok {
 			t.Fatalf("%s: no instrument emitted", name)

@@ -316,8 +316,8 @@ def test_zero_is_not_a_closure(tmp_path, monkeypatch):
 
 def test_every_row_names_where_it_came_from(tmp_path, monkeypatch):
     """A row carries either its statement's sha256 or the marker of the one
-    other source allowed to supply a value — the advisor workbook. Nothing is
-    synthesised from thin air; telling the two apart at row level is covered
+    other source allowed to supply a value — the performance workbook. Nothing
+    is synthesised from thin air; telling the two apart at row level is covered
     by test_derived_marks_fill_the_archive_gaps."""
     conn = _build(tmp_path, monkeypatch)
     shas = {r[0] for r in conn.execute(
@@ -1213,7 +1213,7 @@ def test_unreadable_sections_are_named_for_the_build_to_report():
 
 def test_derived_marks_fill_the_archive_gaps(tmp_path, monkeypatch):
     """A month the archive misses for one account but covers for its peers
-    reads as that account's closure, so its value drops to zero. The advisor
+    reads as that account's closure, so its value drops to zero. The
     workbook's mark for that month is what fills it — marked at row level, so
     it is never mistaken for a statement's."""
     canned = {

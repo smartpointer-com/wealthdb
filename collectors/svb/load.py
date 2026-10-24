@@ -787,8 +787,8 @@ def reconcile_activity(parsed: dict) -> list[str]:
 
 
 def insert_derived_marks(conn: sqlite3.Connection, workbook: Path | None) -> int:
-    """Fill the archive's interior gaps with the advisor workbook's month-end
-    values, and return how many were written.
+    """Fill the archive's interior gaps with the values of a performance
+    workbook of month-end account values, and return how many were written.
 
     Runs after every statement is in, so "where the archive has nothing" means
     the finished archive, not whatever had been read so far. A statement that
@@ -1197,7 +1197,7 @@ def main(argv=None) -> int:
                         "of several registrations (else read the lines of "
                         "signature.txt)")
     p.add_argument("--derived-marks", type=Path, default=None,
-                   help="advisor workbook of month-end account values, used "
+                   help="performance workbook of month-end account values, used "
                         "to fill the brokerage months no statement covers "
                         "(default "
                         "<bronze>/derived-marks.xlsx). Absent means the "

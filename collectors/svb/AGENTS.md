@@ -56,10 +56,10 @@ counterparty names in the deposit ledger rows, and exact balances. The deposit
 account number is also re-stamped *inside* ledger rows as an `ID: NNNNNNNNNN`
 continuation line, so even a single pasted transaction row carries it
 mid-description. The `signature.txt` page-1 guard contains a real
-registration string. The advisor workbook is PII on the same footing, and is
-easy to overlook because it is a spreadsheet rather than a statement: one
-sheet per account, named by that account's own serial, every row a real
-month-end value. None of that may ever reach a tracked file — not source, not
+registration string. A performance workbook of month-end account values is
+PII on the same footing, and is easy to overlook because it is a spreadsheet
+rather than a statement: one sheet per account, named by that account's own
+serial, every row a real month-end value. None of that may ever reach a tracked file — not source, not
 comments, not commit messages, not test fixtures. All three inputs live
 **only** under `$XDG_DATA_HOME/wealthdb/svb/` (outside the repo); the PDFs, the
 workbook and the derived `*.db` files are git-ignored as a backstop, but the
@@ -83,7 +83,7 @@ single-family archive leaves none empty beside its own; one already built is
 still rebuilt after its family leaves the archive, so it empties rather than
 going stale. Every input sits under `--bronze-dir`: the statement
 PDFs, the `signature.txt` page-1 guard, and the optional `derived-marks.xlsx`
-advisor workbook. It writes those SQLite DBs and a parse-cache sidecar
+workbook. It writes those SQLite DBs and a parse-cache sidecar
 under `--parse-cache-dir`; there is no network call and no credential, and it
 never writes back into the input PDFs.
 

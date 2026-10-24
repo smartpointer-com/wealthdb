@@ -19,9 +19,10 @@ modelled.
 $XDG_DATA_HOME/wealthdb/svb/        # the data dir (override: --data-dir)
 ├── bronze/                         # the statement archive, searched recursively
 │   ├── <account>/<statement>.pdf   # the statement PDFs, in any folder layout (PII)
-│   ├── derived-marks.xlsx          # optional advisor workbook of month-end
-│   │                               # values, to fill the brokerage months no
-│   │                               # statement covers (PII; --derived-marks)
+│   ├── derived-marks.xlsx          # optional performance workbook of
+│   │                               # month-end account values, to fill the
+│   │                               # brokerage months no statement covers
+│   │                               # (PII; --derived-marks)
 │   └── signature.txt               # page-1 guard substrings, one per line (PII)
 ├── svb.db                          # built silver, brokerage (override: --silver-db)
 ├── svb-deposit.db                  # built silver, deposit accounts (if any)

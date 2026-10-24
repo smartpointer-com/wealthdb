@@ -58,8 +58,8 @@ func assetClassVehicleFor(silverClass, name string) (canonical.AssetClass, canon
 // money-market ticker / ETF / mutual-fund / ETF-issuer) live in
 // silver.Stmt*Re; only the shapes unique to fidelity's supplied
 // statements, the SVB statement families (Wealth Advisory / NFS
-// brokerage, deposit, mortgage) and the SVB advisor workbook's
-// month-end marks are declared here.
+// brokerage, deposit, mortgage) and the marks svb fills from a
+// workbook of month-end account values are declared here.
 var (
 	histPlanKeyRe = regexp.MustCompile(`^[A-Z]{3}[0-9]{6}$`)
 	// Keyless 529 plan sleeves: "STATE PLAN 2099 (FIDELITY BLEND)".
@@ -84,11 +84,12 @@ var (
 	// below — which for a liability is wrong twice over.
 	histCashRe     = regexp.MustCompile(`^CASH BALANCE$`)
 	histMortgageRe = regexp.MustCompile(`^MORTGAGE PRINCIPAL$`)
-	// A month the svb statement archive misses, valued from the
-	// advisor's workbook instead. It states the account's worth and
-	// nothing about its composition, so there is no exposure to read
-	// off it — unlike a statement row, which names a security.
-	histAdvisorMarkRe = regexp.MustCompile(`^ACCOUNT VALUE \(ADVISOR MARK\)$`)
+	// A month the svb statement archive misses, valued from a
+	// performance workbook of month-end account values instead. It
+	// states the account's worth and nothing about its composition, so
+	// there is no exposure to read off it — unlike a statement row,
+	// which names a security.
+	histWorkbookMarkRe = regexp.MustCompile(`^ACCOUNT VALUE \(WORKBOOK MARK\)$`)
 )
 
 // classifyHistoricalPair derives the (exposure, vehicle) pair of a
@@ -100,7 +101,7 @@ var (
 //
 //   - No-positions row → (other, other): a $0 row with no exposure to
 //     classify.
-//   - advisor month-end mark → (other, other): a whole-account value, with no
+//   - workbook month-end mark → (other, other): a whole-account value, with no
 //     composition stated to classify.
 //   - deposit-account balance → (cash, demand_deposit).
 //   - mortgage principal → (real_estate, mortgage): the liability against
@@ -116,7 +117,7 @@ func classifyHistoricalPair(instrumentKey, description string) (canonical.AssetC
 	switch {
 	case histNoPositionsRe.MatchString(description):
 		return canonical.AssetClassOther, canonical.VehicleOther
-	case histAdvisorMarkRe.MatchString(description):
+	case histWorkbookMarkRe.MatchString(description):
 		return canonical.AssetClassOther, canonical.VehicleOther
 	case histCashRe.MatchString(description):
 		return canonical.AssetClassCash, canonical.VehicleDemandDeposit
@@ -138,13 +139,13 @@ func classifyHistoricalPair(instrumentKey, description string) (canonical.AssetC
 
 // isStatementConstruct reports whether a keyless historical row is one
 // a statement builder materialises from a statement-level figure — the
-// net cash sleeve, a stated-$0 month, an advisor mark, a deposit
+// net cash sleeve, a stated-$0 month, a workbook mark, a deposit
 // balance, a loan's principal — rather than from a security line. It
 // has no symbol: its synthetic key is an identity the adapter made up,
 // and showing it as one would read as a ticker.
 func isStatementConstruct(description string) bool {
 	for _, re := range []*regexp.Regexp{histNetCashRe, histNoPositionsRe,
-		histAdvisorMarkRe, histCashRe, histMortgageRe} {
+		histWorkbookMarkRe, histCashRe, histMortgageRe} {
 		if re.MatchString(description) {
 			return true
 		}

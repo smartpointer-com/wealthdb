@@ -49,8 +49,9 @@ case "$cmd" in
         cat >&2 <<'EOF'
 svb: no-op. This collector has no live source — the SVB statements are a fixed
 historical archive (SVB wound down in 2023). Drop the in-scope statement PDFs
-(+ an optional signature.txt page-1 guard, and the derived-marks.xlsx advisor
-workbook where the archive has interior gaps) into <data-dir>/bronze/ (default
+(+ an optional signature.txt page-1 guard, and the derived-marks.xlsx
+performance workbook of month-end account values where the archive has
+interior gaps) into <data-dir>/bronze/ (default
 $XDG_DATA_HOME/wealthdb/svb/bronze/), in whatever folder layout suits — load
 searches it recursively — then run `./svb load` to rebuild the silver DBs from
 them.
@@ -66,7 +67,7 @@ EOF
         # can forward `prune` uniformly without erroring.
         cat >&2 <<'EOF'
 svb: prune is a no-op. The bronze holds the SVB statement PDFs (+ an optional
-signature.txt and the derived-marks.xlsx advisor workbook) — the load inputs
+signature.txt and the derived-marks.xlsx workbook) — the load inputs
 themselves, git-ignored and the only copy.
 There are no timestamped run dirs, no download stage, and no debug artefacts to
 reclaim, so there is nothing to prune. The statement PDFs are never deleted.

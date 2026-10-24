@@ -25,8 +25,8 @@ ocrmac>=1,<2 ; sys_platform == "darwin"
 rapidocr>=3,<4 ; sys_platform != "darwin"
 onnxruntime>=1.17 ; sys_platform != "darwin"
 
-# An advisor workbook supplies month-end marks for the months no brokerage
-# statement covers (DESIGN.md "Data caveats"; the rules are in
+# A performance workbook of month-end account values supplies the marks for
+# the months no brokerage statement covers (DESIGN.md "Data caveats"; the rules are in
 # derived_marks.py). openpyxl reads it; the pass is skipped when the file
 # is absent, so this is only needed to fill those gaps.
 openpyxl>=3.1,<4
