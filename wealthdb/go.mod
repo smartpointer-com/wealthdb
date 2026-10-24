@@ -3,23 +3,18 @@ module github.com/smartpointer-com/wealthdb/wealthdb
 go 1.26.0
 
 require (
-	github.com/duckdb/duckdb-go/v2 v2.10506.0
-	github.com/markusmobius/go-dateparser v1.4.7
+	github.com/duckdb/duckdb-go/v2 v2.20000.0
+	github.com/markusmobius/go-dateparser v1.4.8
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	github.com/shopspring/decimal v1.5.0
+	github.com/shopspring/decimal v1.6.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0
-	modernc.org/sqlite v1.60.1
+	modernc.org/sqlite v1.61.0
 )
 
 require (
 	github.com/apache/arrow-go/v18 v18.8.0 // indirect
-	github.com/duckdb/duckdb-go-bindings v0.10506.0 // indirect
-	github.com/duckdb/duckdb-go-bindings/lib/darwin-amd64 v0.10506.0 // indirect
-	github.com/duckdb/duckdb-go-bindings/lib/darwin-arm64 v0.10506.0 // indirect
-	github.com/duckdb/duckdb-go-bindings/lib/linux-amd64 v0.10506.0 // indirect
-	github.com/duckdb/duckdb-go-bindings/lib/linux-arm64 v0.10506.0 // indirect
-	github.com/duckdb/duckdb-go-bindings/lib/windows-amd64 v0.10506.0 // indirect
+	github.com/duckdb/duckdb-go-bindings v0.20000.0 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/goccy/go-json v0.11.2 // indirect
@@ -38,6 +33,11 @@ require (
 	github.com/wasilibs/go-re2 v1.13.0 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
+	go.duckdb.org/libduckdb/darwin-amd64 v0.20000.0 // indirect
+	go.duckdb.org/libduckdb/darwin-arm64 v0.20000.0 // indirect
+	go.duckdb.org/libduckdb/linux-amd64 v0.20000.0 // indirect
+	go.duckdb.org/libduckdb/linux-arm64 v0.20000.0 // indirect
+	go.duckdb.org/libduckdb/windows-amd64 v0.20000.0 // indirect
 	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
