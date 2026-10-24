@@ -1004,7 +1004,7 @@ _SELECTION = {p.WEALTH_TAX_WRAPPER_PARAM_ID, p.ASSET_PARAM_ID}
 _DEBT = {card_ids[c + s] for c in ("Debt by credit rating, share of debt and cash", "Debt by maturity",
                                    "Debt by coupon kind", "Public equity by cycle")
          for s in ("", p.PRIVACY_SUFFIX)}
-_ISSUERS = {card_ids["Largest issuers" + s] for s in ("", p.PRIVACY_SUFFIX)}
+_ISSUERS = {card_ids["Top 100 issuers" + s] for s in ("", p.PRIVACY_SUFFIX)}
 for _d, _want in (("Wealth Overview", {p.WEALTH_CURRENCY_PARAM_ID,
                                        p.TIME_PARAM_ID, p.SOURCE_PARAM_ID} | _SELECTION),
                   ("Allocation", {p.WEALTH_CURRENCY_PARAM_ID,
@@ -1023,7 +1023,7 @@ for _d, _want in (("Wealth Overview", {p.WEALTH_CURRENCY_PARAM_ID,
             if cid in _DEBT:
                 return want - {p.EXPOSURE_ASSET_CLASS_PARAM_ID}
             if cid in _ISSUERS:
-                return {p.EXPOSURE_CURRENCY_PARAM_ID, p.TIME_PARAM_ID}
+                return {p.WEALTH_CURRENCY_PARAM_ID, p.ASOF_PARAM_ID}
             return want
         _off = [dc["card_id"] for dc in _tiles
                 if {m["parameter_id"] for m in dc["parameter_mappings"]} != _expected(dc["card_id"])]
@@ -1040,7 +1040,9 @@ _WA = {n for d in ("Wealth Overview", "Allocation") for s in ("", p.PRIVACY_SUFF
        for n, *_ in DEFS[d + s][3]}
 _FLOW_NAMES = {c + s for c in ("Investment income by month", "Fees & taxes by month")
                for s in ("", p.PRIVACY_SUFFIX)}
-_wa_sql = {n: sql_of(CARDS[n][2]) or "" for n in _WA}
+# The issuers card covers the whole book: its view carries no source,
+# tax wrapper or asset class (above).
+_wa_sql = {n: sql_of(CARDS[n][2]) or "" for n in _WA if not n.startswith("Top 100 issuers")}
 check("every Wealth Overview and Allocation tile narrows to the tax wrapper",
       all("[[AND {{tax_wrapper}}]]" in q for q in _wa_sql.values()),
       [n for n, q in _wa_sql.items() if "{{tax_wrapper}}" not in q])
@@ -2031,12 +2033,12 @@ _LABELS = {"as_of_day", "holding_currency", "currency", "kind", "symbol", "name"
            "rating", "grade", "maturity", "coupon", "cycle", "rank", "issuer", "lei", "point",
            "month", "series", "date", "type", "basis", "duration"}
 
-section("the Exposure dashboard's debt and issuer cards")
+section("the Exposure dashboard's debt cards")
 
 _ex_debt = {"Debt by credit rating, share of debt and cash": "credit", "Debt by maturity": "maturity",
             "Debt by coupon kind": "coupon", "Public equity by cycle": "cycle"}
-_ex_debt_tiles = [*_ex_debt, "Largest issuers"]
-check("the five are on the Exposure dashboard and its twin, above the coverage chart",
+_ex_debt_tiles = list(_ex_debt)
+check("the four are on the Exposure dashboard and its twin, above the coverage chart",
       all(n in _ex_tiles and p.privacy_name(n) in _ex_twin for n in _ex_debt_tiles)
       and all(_ex_at[n][1] < _ex_at["How the figures are classified"][1] for n in _ex_debt_tiles))
 _ex_debt_sql = {n + s: sql_of(CARDS[n + s][2]) or "" for n in _ex_debt_tiles for s in ("", p.PRIVACY_SUFFIX)}
@@ -2050,12 +2052,6 @@ for _n, _dim in _ex_debt.items():
         check(f"'{_name}' takes the window, the source and the tax wrapper, but no asset class "
               "and no projection picker",
               {"currency", "time_range", "source", "tax_wrapper"} == set(_tags), sorted(_tags))
-for _name in ("Largest issuers", "Largest issuers (privacy)"):
-    _q = _ex_debt_sql[_name]
-    check(f"'{_name}' lists the top twenty issuers at the window's end, the currency's and the window's alone",
-          "FROM web_exposure_issuers" in _q and "AND currency = {{currency}}" in _q
-          and "WHERE issuer <> '(none)'" in _q and _q.rstrip().endswith("LIMIT 20")
-          and set(CARDS[_name][2]["native"]["template-tags"]) == {"currency", "time_range"}, _q[-200:])
 _gold_go = _go_package("gold")
 # The dimensions are the ones gold's materializer writes (its
 # debtDimension constants): one respelt there would leave its card with
@@ -2064,10 +2060,33 @@ _debt_dims = set(re.findall(r'[Dd]ebtDimension\w+\s*=\s*"(\w+)"', _gold_go))
 check("the debt cards' dimensions are the ones gold materializes",
       set(_ex_debt.values()) == _debt_dims, sorted(_debt_dims))
 _holding_prefix = re.search(r'const HoldingKeyPrefix = "([^"]+)"', _gold_go)
+
+section("the Allocation dashboard's issuers card")
+
+# It sits below the top positions, full width, on the base and the twin,
+# and no longer on Exposure. It reads the latest instant on or before the
+# as-of day, which reaches it through the daily history.
+_al_spec = {t[0]: t for t in DEFS["Allocation"][3]}
+_al_twin = {t[0] for t in DEFS["Allocation" + p.PRIVACY_SUFFIX][3]}
+check("the issuers card sits below the top positions on Allocation and its twin, full width",
+      "Top 100 issuers" in _al_spec and p.privacy_name("Top 100 issuers") in _al_twin
+      and _al_spec["Top 100 issuers"][1] == _al_spec["Top 100 positions"][1] + _al_spec["Top 100 positions"][4]
+      and _al_spec["Top 100 issuers"][3] == 24)
+check("...and is gone from Exposure and its twin",
+      "Top 100 issuers" not in _ex_tiles and p.privacy_name("Top 100 issuers") not in _ex_twin)
+_iss_sql = {n: sql_of(CARDS[n][2]) or "" for n in ("Top 100 issuers", p.privacy_name("Top 100 issuers"))}
+for _name, _q in _iss_sql.items():
+    check(f"'{_name}' lists the top hundred issuers at the latest instant on or before the as-of day",
+          "FROM web_exposure_issuers" in _q and "currency = {{currency}}" in _q
+          and "FROM web_sources_history" in _q and "[[AND {{as_of_day}}]]" in _q
+          and "as_of_day <= (SELECT day FROM d)" in _q
+          and "WHERE issuer <> '(none)'" in _q and _q.rstrip().endswith("LIMIT 100")
+          and "lei" not in _output_columns(_q)
+          and set(CARDS[_name][2]["native"]["template-tags"]) == {"currency", "as_of_day"}, _q[-300:])
 check("the issuers twin hides an issuer named by a holding's own key, gold's, and shows no value",
       _holding_prefix is not None and p.HOLDING_KEY_PREFIX == _holding_prefix.group(1)
-      and f"LIKE '{p.HOLDING_KEY_PREFIX}%'" in _ex_debt_sql["Largest issuers (privacy)"]
-      and "value" not in _output_columns(_ex_debt_sql["Largest issuers (privacy)"]),
+      and f"LIKE '{p.HOLDING_KEY_PREFIX}%'" in _iss_sql[p.privacy_name("Top 100 issuers")]
+      and "value" not in _output_columns(_iss_sql[p.privacy_name("Top 100 issuers")]),
       _holding_prefix and _holding_prefix.group(1))
 _credit = "Debt by credit rating, share of debt and cash"
 check("the credit bars carry the grade and the unknown share in the tooltip",
@@ -3275,6 +3294,41 @@ if duckdb is not None:
             _got = [(r[0], f"{float(r[-1]):.2f}") for r in _bars]
             check(f"'{_n}' draws the class shares `wealthdb exposure {_view}` prints, summing to 100",
                   bool(_want) and _got == _want and abs(sum(r[-1] for r in _bars) - 100) < 1e-9, (_got, _want))
+
+    section("the Allocation issuers card's SQL, run on an invented book")
+
+    # Issuer ranks at two month ends and at a refresh this month; the
+    # daily history holds every day from August on. The card reads the
+    # latest instant on or before the as-of day: the September month end
+    # for a day inside October before the refresh, the refresh from its
+    # day on, and nothing for a day before the first instant.
+    _db.execute("CREATE TABLE web_sources_history (as_of_day DATE, silver_source_id TEXT)")
+    _db.execute("INSERT INTO web_sources_history SELECT d::DATE, 'src-1'"
+                " FROM range(DATE '2026-08-01', DATE '2026-10-22', INTERVAL 1 DAY) t(d)")
+    _db.execute("DELETE FROM report_exposure_issuer_ranks")
+    for _at, _who, _v in (("2026-08-31 23:59:59", "Example Alpha", 500.0),
+                          ("2026-09-30 23:59:59", "Example Beta", 600.0),
+                          ("2026-10-21 12:00:00", "Example Gamma", 700.0)):
+        _epoch = int(dt.datetime.fromisoformat(_at).replace(tzinfo=dt.timezone.utc).timestamp())
+        for _rank, _name, _value in ((1, _who, _v), (2, "(none)", 100.0)):
+            _db.execute("INSERT INTO report_exposure_issuer_ranks VALUES"
+                        " (0, 'USD', ?, ?, ?, 'LEI0000000000000000X', ?, 50, 50, 100, 0, 0)",
+                        [_epoch, _rank, _name, _value])
+    _iss = "Top 100 issuers"
+
+    def _issuers(day, name=_iss):
+        return _run(name, as_of_day=(day, day) if day else None)
+
+    check("on a day inside this month before the refresh, the issuers card reads the last month end",
+          [r[:3] for r in _issuers("2026-10-15")] == [(1, "Example Beta", 600.0)], _issuers("2026-10-15"))
+    check("...on the refresh's day, the refresh",
+          [r[1] for r in _issuers("2026-10-21")] == ["Example Gamma"], _issuers("2026-10-21"))
+    check("...before the first instant, nothing", _issuers("2026-08-15") == [], _issuers("2026-08-15"))
+    check("...opened standalone, the latest day",
+          [r[1] for r in _issuers(None)] == ["Example Gamma"], _issuers(None))
+    check("...and its twin the same rows, with no value",
+          [r[:2] for r in _issuers("2026-10-15", p.privacy_name(_iss))] == [(1, "Example Beta")]
+          and len(_issuers("2026-10-15", p.privacy_name(_iss))[0]) == 7)
 
     section("the Cash Flow projection cards' SQL, run on an invented book")
 

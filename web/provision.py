@@ -742,7 +742,10 @@ RETIRED_CARD_NAMES = [
                       # The cash flow projection's cards are named for
                       # what they show: a projection, not a plan.
                       "Cash flow plan by month", "Cash flow plan by month (privacy)",
-                      "Cash flow plan", "Cash flow plan (privacy)"]
+                      "Cash flow plan", "Cash flow plan (privacy)",
+                      # The issuers card lists a hundred on Allocation, as
+                      # the positions card beside it does.
+                      "Largest issuers", "Largest issuers (privacy)"]
 
 # Dashboard names retired by renames ("Net Worth" undersold the income /
 # cost flow tiles); archived on provision so a re-run cleans them up.
@@ -966,10 +969,11 @@ FILTER_FIELD_COLUMNS = {
     # class.
     "web_exposure": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
     # The exposure of the debt and the largest issuers (migration 0138),
-    # at the same instants. The debt view carries no asset class, the
-    # issuers view neither a source nor a tax wrapper.
+    # at the same instants. The debt view carries no asset class. No field
+    # filter binds the issuers view: the Allocation card reaches its as-of
+    # day through web_sources_history.
     "web_exposure_debt": ("as_of_day", "silver_source_id", "tax_wrapper"),
-    "web_exposure_issuers": ("as_of_day",),
+    "web_exposure_issuers": (),
     # The yield report per holding and its DV01 per tenor (migration
     # 0138): today and the twelve month ends before, a row set per
     # currency, narrowed like web_exposure.
@@ -2052,6 +2056,7 @@ def question_defs(db_id, mid):
         "Source freshness": source_freshness_card(db_id, mid["report_sources_latest"]),
         **gains_question_defs(db_id),
         **exposure_cards(db_id, privacy=False),
+        **issuer_cards(db_id, privacy=False),
         **yield_cards(db_id, privacy=False),
         **income_projected_cards(db_id, privacy=False),
         **cashflow_plan_cards(db_id, privacy=False),
@@ -2493,8 +2498,9 @@ def base_dashboards():
         ]),
         "Allocation": (
             "Where the value sits — asset class, currency, tax wrapper, "
-            "management style and the largest positions — as of a chosen "
-            f"day (default: today), in a chosen currency (default {DEFAULT_CURRENCY}). "
+            "management style, the largest positions and the largest "
+            "issuers — as of a chosen day (default: today), in a chosen "
+            f"currency (default {DEFAULT_CURRENCY}). "
             + note, "asof", [
             # The two taxonomy dimensions side by side on the top row.
             ("Allocation by asset class", 0, 0, 12, 8, "as_of_day"),
@@ -2503,6 +2509,7 @@ def base_dashboards():
             ("Value by tax wrapper", 8, 12, 12, 8, "as_of_day"),
             ("Value by management style", 16, 0, 24, 6, "as_of_day"),
             ("Top 100 positions", 22, 0, 24, 8, "as_of_day"),
+            ("Top 100 issuers", 30, 0, 24, 9, "as_of_day"),
         ]),
         "Returns": (
             "How the portfolio performed — time-weighted (TWR) and "
@@ -2683,9 +2690,8 @@ def base_dashboards():
             "shares then read as shares of the selection. Credit and "
             "maturity show the debt and the cash, coupon the debt, the cycles "
             "the public equity, each bucket as a share of what its chart "
-            "counts; the largest issuers show who the value is owed by or "
-            "invested in, over the whole book. The last chart says how much "
-            "of net worth the figures rest on. " + note,
+            "counts. The last chart says how much of net worth the figures "
+            "rest on. " + note,
             "range", [
             # The allocation first, the ring beside the sectors and the
             # classes over time full width; then where it sits: the map
@@ -2712,8 +2718,7 @@ def base_dashboards():
             ("Debt by maturity", 68, 12, 12, 8, "as_of_day"),
             ("Debt by coupon kind", 76, 0, 12, 7, "as_of_day"),
             ("Public equity by cycle", 76, 12, 12, 7, "as_of_day"),
-            ("Largest issuers", 83, 0, 24, 9, "as_of_day"),
-            ("How the figures are classified", 92, 0, 24, 7, "as_of_day"),
+            ("How the figures are classified", 83, 0, 24, 7, "as_of_day"),
         ]),
         "Yield": (
             "What the holdings earn and how their value moves with rates, as "
@@ -2809,9 +2814,8 @@ def exposure_cards(db_id, privacy):
     end's shares on both, so it is privacy-exempt and has no privacy
     variant.
 
-    The debt cards read web_exposure_debt and the issuers card
-    web_exposure_issuers (migration 0138), at the same instants and
-    currencies. docs/EXPOSURE.md defines every figure."""
+    The debt cards read web_exposure_debt (migration 0138), at the same
+    instants and currencies. docs/EXPOSURE.md defines every figure."""
     tags = native_tags("web_exposure", EXPOSURE_FILTERS)
     desc_end = (" Built for the Exposure dashboard; opened standalone it runs in "
                 f"{DEFAULT_CURRENCY}, the currency variable's default, over every month end."
@@ -3027,27 +3031,49 @@ def exposure_cards(db_id, privacy):
                "built-in map. Unknown is equity with no sector. Debt and cash are not counted. Each "
                "bar is a cycle's share of the public equity at the latest day in the window.",
                "cycle", "cycle", CYCLE_BUCKETS)
+    return out
 
-    # Who the value is owed by or invested in, over the whole book. A
-    # security no source names reads its key, which the privacy card hides
-    # where it is a holding's own.
-    itags = native_tags("web_exposure_issuers", EXPOSURE_ISSUER_FILTERS)
+
+def issuer_cards(db_id, privacy):
+    """The Allocation dashboard's issuers card, or with `privacy` its
+    privacy variant: name -> (display, description, dataset_query, viz).
+    Native SQL over web_exposure_issuers (gold migration 0138): the
+    largest issuers of the whole book, per reporting currency, today and
+    at the twelve month ends before. The dashboard's as-of day reaches it
+    through web_sources_history, which holds every day, and the card
+    reads the latest instant on or before that day. The issuers view
+    carries no source, tax wrapper or asset class, so those pickers do
+    not reach it. A security no source names reads its key, which the
+    privacy card hides where it is a holding's own; the privacy card also
+    drops the value."""
+    tags = {"currency": currency_tag(),
+            **view_tags("web_sources_history", {"as_of_day": ("as_of_day", "date/single")})}
+    tail = (" Built for the Allocation dashboard, which supplies the as-of day; opened standalone it "
+            f"runs in {DEFAULT_CURRENCY}, the currency variable's default, at the latest day."
+            + (PRIVACY_DESC if privacy else ""))
+    out = {}
+    card = _card_maker(out, db_id, privacy, ALLOCATION_PICKERS, tags, tail)
     issuer = (f"CASE WHEN issuer LIKE '{HOLDING_KEY_PREFIX}%' THEN '(unnamed)' ELSE issuer END"
               if privacy else "issuer")
     value = "" if privacy else ",\n       value"
-    card("Largest issuers", "table",
-         "The twenty issuers the most value is owed by or invested in, at the latest day in the "
-         "window: a company's stock, bonds and deposits in one row, by its LEI, else by its "
-         "name, a deposit by its custodian. Each row gives its share of net worth, the running "
-         "share down to it, and how much of it is equity, debt and cash. What no issuer fits, "
-         "such as a fund nothing looks through, real estate or metal, is left out. It covers "
-         "the whole book: the Source, Tax wrapper and Asset class pickers do not reach it."
-         + recent,
-         _window_end("web_exposure_issuers", itags)[1] + "\n"
-         f"SELECT rank,\n       {issuer} AS issuer,\n       lei{value},\n"
+    card("Top 100 issuers", "table",
+         "The hundred issuers the most value is owed by or invested in, as of the day: a company's "
+         "stock, bonds and deposits in one row, by its LEI, else by its name, a deposit by its "
+         "custodian. Each row gives its share of net worth, the running share down to it, and how "
+         "much of it is equity, debt and cash. What no issuer fits, such as a fund nothing looks "
+         "through, real estate or metal, is left out. It reads the latest month end on or before "
+         "the day, or the latest refresh, over the last twelve months: an earlier day shows "
+         "nothing. It covers the whole book: the Source, Tax wrapper and Asset class pickers do "
+         "not reach it.",
+         "WITH d AS (\n  SELECT max(as_of_day) AS day\n    FROM web_sources_history"
+         + _native_where(tags) + "),\n"
+         "w AS (\n  SELECT *\n    FROM web_exposure_issuers\n   WHERE currency = {{currency}}\n"
+         "     AND as_of_day <= (SELECT day FROM d)),\n"
+         "e AS (SELECT * FROM w WHERE as_of_day = (SELECT max(as_of_day) FROM w))\n"
+         f"SELECT rank,\n       {issuer} AS issuer{value},\n"
          "       share_pct, cumulative_share_pct, equity_pct, debt_pct, cash_pct\n"
-         "  FROM e\n WHERE issuer <> '(none)'\n ORDER BY rank\n LIMIT 20",
-         _share_viz("share_pct", "cumulative_share_pct", "equity_pct", "debt_pct", "cash_pct"), itags)
+         "  FROM e\n WHERE issuer <> '(none)'\n ORDER BY rank\n LIMIT 100",
+         _share_viz("share_pct", "cumulative_share_pct", "equity_pct", "debt_pct", "cash_pct"))
     return out
 
 
@@ -4046,12 +4072,9 @@ EXPOSURE_FILTERS = {**range_filters("as_of_day"), "tax_wrapper": ("tax_wrapper",
 EXPOSURE_PICKERS = [(EXPOSURE_CURRENCY_PARAM_ID, "currency"), (TIME_PARAM_ID, "time_range"),
                     (SOURCE_PARAM_ID, "source"), (EXPOSURE_TAX_WRAPPER_PARAM_ID, "tax_wrapper"),
                     (EXPOSURE_ASSET_CLASS_PARAM_ID, "asset_class")]
-# Its debt and issuer cards (migration 0138). The debt view carries no
-# asset class, so the class picker does not reach those cards; the
-# issuers view neither a source nor a tax wrapper, so its card takes the
-# currency and the window alone.
+# Its debt cards (migration 0138). The debt view carries no asset class,
+# so the class picker does not reach those cards.
 EXPOSURE_DEBT_FILTERS = {k: v for k, v in EXPOSURE_FILTERS.items() if k != "asset_class"}
-EXPOSURE_ISSUER_FILTERS = {"time_range": EXPOSURE_FILTERS["time_range"]}
 
 SPEND_PICKERS = [(SPEND_CURRENCY_PARAM_ID, "currency"),
                  (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
@@ -4729,7 +4752,7 @@ def privacy_card_defs(db_id, model_ids):
     out.update(spending_privacy_defs(db_id, model_ids))
     out.update(income_privacy_defs(db_id))
     out.update(cashflow_privacy_defs(db_id))
-    for cards in (exposure_cards, yield_cards, income_projected_cards, cashflow_plan_cards):
+    for cards in (exposure_cards, issuer_cards, yield_cards, income_projected_cards, cashflow_plan_cards):
         out.update({name: ("question", *card) for name, card in cards(db_id, privacy=True).items()})
     return out
 

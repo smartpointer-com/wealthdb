@@ -787,8 +787,9 @@ worth, as here. The command has no such filter. Every refresh
 recomputes the whole history, so a new composition or declaration shows
 in past months too. A security's attributes, its size among them, are
 today's at every month end, as in a `--period` series (§7). The debt
-and issuer cards cover today and the 12 month ends before. The credit,
-maturity, coupon and cycle cards plot `class_share`.
+cards cover today and the 12 month ends before. The credit, maturity,
+coupon and cycle cards plot `class_share`. The largest issuers are on
+the Allocation dashboard, over the same instants.
 [web/DESIGN.md](../../web/DESIGN.md) §6 lists the cards, the pickers
 each one takes and the privacy twin, and §8 the tables they read.
 

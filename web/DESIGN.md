@@ -108,7 +108,12 @@ ten dashboards. Their pickers:
   names no instrument, so it has no asset class.
 - **Allocation**: a required currency, a required as-of day, a source,
   a *Tax wrapper* picker, and an *Asset class* picker. The Top 100
-  positions tile carries a *Vehicle* picker of its own.
+  positions tile carries a *Vehicle* picker of its own. The Top 100
+  issuers tile below it takes the currency and the as-of day alone: it
+  covers the whole book. It reads the latest of the instants its view
+  holds on or before the day: today and the twelve month ends before.
+  Its twin drops the value and hides an issuer named by a holding's own
+  key (`holding:<source>:<id>`).
 - **Returns**: a required currency (returns are stored one row set per
   currency), a required start year (0 is since inception) and a source.
 - **Gains**: the time range and source, a required currency, a *Tax
@@ -239,7 +244,7 @@ It reads in this order:
   equity, beside what is held directly against what is held through
   funds, over time;
 - the debt by credit rating beside its maturities, its coupons beside
-  the public equity's cycles, and the largest issuers;
+  the public equity's cycles;
 - how the figures are classified over time, so a growing unknown
   band shows where the other charts stop covering.
 
@@ -262,11 +267,10 @@ twin shows the same cards. Country, region, situs and currency labels
 stay, since none names an account. Its tiles read `web_exposure`
 (migration 0127), a view over a materialized table (§8).
 
-The five debt and issuer cards read `web_exposure_debt` and
-`web_exposure_issuers` (migration 0138). They hold today and the last
-second of each of the twelve months before, so a window that ends
-earlier shows nothing on them. Each card reads the latest of those
-instants in the window:
+The four debt cards read `web_exposure_debt` (migration 0138). It
+holds today and the last second of each of the twelve months before,
+so a window that ends earlier shows nothing on them. Each card reads
+the latest of those instants in the window:
 
 - credit, maturity and coupon show the debt, in the views' own bucket
   order. Credit and maturity count the cash too. The credit bars carry
@@ -286,15 +290,10 @@ instants in the window:
   label shows two decimals. The CLI's table keeps every bucket.
 - each card's description says what it counts. Metabase shows it
   behind the card's info icon.
-- the issuers card lists the twenty largest issuers of the whole book,
-  with their running share and their equity, debt and cash split.
 
 The debt view carries no asset class, so the class picker does not
-reach those four. The issuers view carries neither a source nor a tax
-wrapper, so that card takes the currency and the window alone. These
-are compositions as of a day, so no projection picker reaches them.
-Their twins drop the value. The issuers twin also hides an issuer named
-by a holding's own key (`holding:<source>:<id>`).
+reach those four. These are compositions as of a day, so no projection
+picker reaches them. Their twins drop the value.
 
 The **Yield** dashboard shows what the holdings earn and how their
 value moves with rates ([wealthdb/docs/YIELD.md](../wealthdb/docs/YIELD.md)).
