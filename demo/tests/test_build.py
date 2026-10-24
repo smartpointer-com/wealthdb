@@ -134,7 +134,8 @@ class TestAppend(TempRoot):
         generate.build(rolled, after, SEED, append=True)
         for db in sorted((full / "silver").glob("*.db")):
             self.assertEqual(silver.table_rows(db), silver.table_rows(rolled / "silver" / db.name), db.name)
-        for name, table in (("fx.db", "rates"), ("refdata.db", "characteristics"), ("refdata.db", "period_facts")):
+        for name, table in (("fx.db", "rates"), ("refdata.db", "characteristics"), ("refdata.db", "period_facts"),
+                            ("refdata.db", "dividend_events")):
             self.assertGreater(len(silver.table_rows(full / "silver" / name)[table]), len(early[name][table]), table)
         dated = {"positions": "snapshot_at", "position_lots": "snapshot_at", "cash_balances": "snapshot_at",
                  "fx_rates": "snapshot_at", "rates": "as_of", "transactions": "occurred_at",

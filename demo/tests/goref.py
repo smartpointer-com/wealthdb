@@ -3,15 +3,17 @@
 The generator stamps taxonomy values, account kinds, tax wrappers,
 transaction kinds, composition bases, risk tenors, the companies'
 period-fact fields, the funds' figures, the keys of the records that
-state a bond's terms and a balance's rate, and the yield config's and
-ledger's vocabularies, all of which the engine validates or reads by
-name. Reading them from the Go files rather than restating them here
-means a value renamed in the engine fails these tests instead of
+state a bond's terms and a balance's rate, the dividend calendar's kinds
+and statuses, and the yield config's and ledger's vocabularies, all of
+which the engine validates or reads by name. Reading them from the Go
+files rather than restating them here means a value renamed in the
+engine fails these tests instead of
 silently becoming an uncategorised row in gold, or a figure gold
 ignores. web/test_provision.py reads Go through go_consts and go_slice
 too.
 """
 
+import datetime as dt
 import pathlib
 import re
 
@@ -149,6 +151,31 @@ def withholding_default():
 
 def cycles():
     return set(go_consts(_read("yield.go"), "Cycle").values())
+
+
+def dividend_kinds():
+    """What a distribution of the dividend calendar may pay
+    (DividendEventKinds)."""
+    t = _read("refdata.go")
+    return set(go_slice(t, "DividendEventKinds", go_consts(t, "DividendEventKind")))
+
+
+def dividend_statuses():
+    """The statuses a distribution of the dividend calendar may carry
+    (DividendEventStatus)."""
+    return set(go_consts(_read("refdata.go"), "DividendEventStatus").values())
+
+
+def us_settlement_cycles():
+    """The US market's settlement cycles, oldest first, as (from, days):
+    from is None for the first (BuiltinSettlementCycles)."""
+    body = re.search(r"us := \[\]step\{(.*?)\}\n", _read("yield.go")).group(1)
+    months = {m: n for n, m in enumerate(("January", "February", "March", "April", "May", "June", "July", "August",
+                                          "September", "October", "November", "December"), start=1)}
+    out = []
+    for nil, y, m, d, days in re.findall(r"\{(?:(nil)|day\((\d+), time\.(\w+), (\d+)\)), (\d+)\}", body):
+        out.append((None if nil else dt.date(int(y), months[m], int(d)), int(days)))
+    return out
 
 
 def day_counts():

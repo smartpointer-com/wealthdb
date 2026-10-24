@@ -72,7 +72,9 @@ def scratch(name):
     return root
 
 
-def engine(root, *args, read_only=False):
+def engine(root, *args, read_only=False, quiet=False):
+    """The engine's stdout for args on root; `quiet` also requires that
+    it print nothing on stderr, no warning or note."""
     env = dict(os.environ, WEALTHDB_DATA_ROOT=str(root), XDG_CONFIG_HOME=str(root))
     wrapper = os.environ.get("WEALTHDB_BIN") or str(pathlib.Path(__file__).resolve().parents[2]
                                                      / "wealthdb" / "wealthdb")
@@ -80,6 +82,8 @@ def engine(root, *args, read_only=False):
     out = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=600)
     if out.returncode != 0:
         raise AssertionError(f"{' '.join(args)} failed ({out.returncode}): {out.stderr or out.stdout}")
+    if quiet and out.stderr:
+        raise AssertionError(f"{' '.join(args)} printed on stderr: {out.stderr}")
     return out.stdout
 
 
@@ -426,6 +430,47 @@ class TestToToday(unittest.TestCase):
 
     def test_the_debt_and_issuer_views_reconcile(self):
         check_views_reconcile(self, self.root, TODAY)
+
+    def test_the_dividend_calendar_states_and_teaches_record_days(self):
+        """One company's calendar states the record day of each payment.
+        Another's ends, and the gap its earlier events show gives the
+        record day of its later payments."""
+        rows = {r["reason"]: r for r in report(self.root, "yield", "coverage", "-d", TODAY.isoformat())
+                if r["section"] == "record_day"}
+        for reason in ("stated", "learned"):
+            self.assertIn(reason, rows)
+            self.assertGreater(int(rows[reason]["payments"] or 0), 0, reason)
+
+    def test_with_nothing_configured_every_yield_view_answers(self):
+        """A new installation's first day: the household with no `yield`
+        block in its config (no withholding table, no curves, the default
+        horizon), no declarations ledger and no dividend calendar loads,
+        and every yield view, the income projection and the cash-flow
+        plan answer, printing nothing on stderr and no null."""
+        root = scratch("bare")
+        for d in ("silver", "overrides"):
+            shutil.copytree(self.root / d, root / d)
+        (root / "overrides" / "exposure_declarations.ndjson").unlink()
+        with sqlite3.connect(root / "silver" / "refdata.db") as db:
+            db.execute("DELETE FROM dividend_events")
+        cfg = json.loads((self.root / "wealthdb.cfg").read_text())
+        del cfg["yield"], cfg["exposure"]["declarations"]
+        (root / "wealthdb.cfg").write_text(json.dumps(cfg))
+        engine(root, "init")
+        engine(root, "load", "-a", quiet=True)
+        for args in (("yield", "global"), ("yield", "sources"), ("yield", "portfolios"), ("yield", "accounts"),
+                     ("yield", "positions"), ("yield", "securities"), ("yield", "funds"), ("yield", "cash"),
+                     ("yield", "curve"), ("yield", "coverage"), ("income", "projection"), ("income", "calendar"),
+                     ("income", "positions"), ("cashflow", "projection")):
+            rows = list(csv.reader(io.StringIO(engine(root, *args, "-f", "csv", read_only=True, quiet=True))))
+            self.assertGreater(len(rows), 1, args)
+            self.assertFalse({c.lower() for r in rows for c in r} & {"null", "<nil>", "nan", "inf", "-inf"}, args)
+        # With no withholding table the forward views withhold nothing.
+        for r in report(root, "income", "projection", "-C", "+withheld"):
+            self.assertEqual(r["withheld_USD"], "", r["period"])
+        reasons = {r["reason"] for r in report(root, "yield", "coverage") if r["section"] == "record_day"}
+        self.assertNotIn("stated", reasons)
+        self.assertNotIn("learned", reasons)
 
 
 if __name__ == "__main__":

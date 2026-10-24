@@ -1013,7 +1013,18 @@ The `yield` block of `wealthdb.cfg` holds what no source states
 - `withholding` maps a situs country to the tax it withholds at source,
   in percent, per tax wrapper. The situs is the holding's legal situs
   (EXPOSURE.md §13), the wrapper its account's. A country's `default`
-  stands for every wrapper it names no rate for.
+  stands for every wrapper it names no rate for. With the block above:
+
+  | holding | account's wrapper | withheld from a dividend of 100 |
+  |---|---|---|
+  | a share of a US company | `taxable_personal` | 15 |
+  | a share of a US company | `traditional_ira` | 30, the US `default` |
+
+  A holding whose situs is Switzerland has 35 withheld in any account.
+  A country the block does not name withholds nothing in the model, and
+  so does a country with no `default` for a wrapper it does not name.
+  Without the block, the forward views' `withheld` is blank, and the
+  Income dashboard shows the tax the sources booked.
 - `rating_funds` maps a fund sliced by credit rating to the bucket its
   lines carry (`BBB`), or a range of buckets, best first (`AAA-A`). It
   is keyed like `exposure.size_funds`, and feeds the credit view of
@@ -1062,6 +1073,17 @@ a fund that files nowhere. [EXPOSURE.md §9](EXPOSURE.md#yield-records)
 defines the four records.
 A field a record states wins over the same field from any source, and
 the figure reads `declared`.
+
+The coverage view starts the ledger.
+`wealthdb yield coverage -f ndjson` prints a skeleton record for each
+holding a figure is missing on (§10):
+
+```sh
+wealthdb yield coverage -f ndjson > yield-skeletons.ndjson
+```
+
+Where the config names no ledger, `exposure.declarations` sets its
+path (EXPOSURE.md §9).
 
 ## 10. Coverage
 

@@ -783,8 +783,7 @@ class Simulation:
                     continue
                 name = name_on(inst, day).upper()
                 inc = inst.get("income")
-                pay_day = inc and day.month in inc["months"] and \
-                    day == dates.next_business(dt.date(day.year, day.month, 20))
+                pay_day = inc and day.month in inc["months"] and day == dates.dividend_day(day.year, day.month)
                 per_share = self._dividend(acct.source, iid, inc, day) if pay_day else ZERO
                 amount = cents(h.qty * per_share)
                 if amount > 0:

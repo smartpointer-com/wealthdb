@@ -247,6 +247,28 @@ and `sec-nmfp`.
 A setting or a provider name the collector does not know is an error,
 so a typo never passes for a switch that is off.
 
+**The dividend calendar.** The yield report reads a payment's record
+day from the dividend calendar where it states one
+([YIELD.md](../../wealthdb/docs/YIELD.md) §4). The `record_day` lines
+of `wealthdb yield coverage` show where each record day comes from.
+
+- `sec-edgar` reads the days a US company's filings tag. It is on by
+  default and waits for `contact`.
+- The issuers' providers state a fund's calendar. `sprott` states
+  none.
+- `finra`, `six` and `jpx` state the calendars of receipts and shares.
+
+Each runs once `providers` names it, for example:
+
+```json
+"providers": ["inbox", "ishares", "spdr", "vanguard", "sec-nport", "sec-nmfp", "sec-edgar", "finra", "six", "jpx", "gleif", "openfigi"]
+```
+
+`finra` also needs its credential ([finra](#finra)).
+`./refdata login --check` shows that it works. Then download and load
+as in [Use](#use). The first download reads what each source keeps of
+the past, so it takes longer than later runs.
+
 ## Providers
 
 ### inbox

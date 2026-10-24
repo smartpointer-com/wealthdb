@@ -88,7 +88,7 @@ History starts on 2023-07-01 and runs to the as-of date.
 | `driftwren` | a multi-currency account in EUR and GBP | spending abroad, a yearly USD wire paired across currencies, interest on the euro balance |
 | `homestead` | the family home | a NAV-only holding valued by yearly appraisals |
 | `fx` | none | daily USD rates for EUR, GBP and CHF, and a US dollar yield curve |
-| `refdata` | none | what the funds hold, every month-end, what the directly held stocks and bonds are, the bond funds' yields and rate risk, the money-market fund's filings, and the companies' reported figures |
+| `refdata` | none | what the funds hold, every month-end, what the directly held stocks and bonds are, the bond funds' yields and rate risk, the money-market fund's filings, the companies' reported figures and two companies' dividend calendars |
 
 One account is declared rather than collected: `kids-savings`, a
 children's savings account at a bank nothing collects. A monthly
@@ -163,6 +163,13 @@ The household holds what every view of `wealthdb yield` reads:
   benchmark.
 - A stock paid twice a year pays nothing in the first months of
   history, so its dividend there is the one its filings report.
+- Two companies' filings state a dividend calendar: each dividend's
+  record and pay days, as EDGAR's do. One calendar states every
+  payment. The engine derives each ex day from the record day, and
+  reads the quantity held as that day began. The other calendar ends.
+  Its later payments take the record day the issuer's earlier dividends
+  teach.
+  `wealthdb yield coverage` counts both in its `record_day` section.
 
 The 529 portfolio has no composition of its own. The config names a
 target-date fund as its proxy. The declarations ledger states what no
@@ -202,7 +209,7 @@ network. The code is in `demo/demohouse/`:
 | `bonds.py` | a bond's price, yield and duration off the curve, and its coupon dates |
 | `book.py` | the ledger: every balance is the running sum of its transactions, and every holding the sum of its lots |
 | `household.py` | the day-by-day simulation |
-| `reference.py` | the funds' month-end compositions, the bond funds' and the money-market fund's figures and the securities' facts, from `catalogue/funds.json` and the instruments |
+| `reference.py` | the funds' month-end compositions, the bond funds' and the money-market fund's figures, the securities' facts and the dividend calendars, from `catalogue/funds.json` and the instruments |
 | `filings.py` | the companies' reported figures, each written once it is filed |
 | `silver.py` | writes a full build, or appends the new days to an earlier one |
 | `config.py` | renders `wealthdb.cfg`, the ledger CSVs and the declarations ledger |
@@ -227,7 +234,8 @@ value.
 **Appending.** `--append` replays the whole history in memory and adds
 only the rows dated after the as-of the files already reached. A
 company's reported figure is added on the day it is filed, not the day
-its period ends. Each append records a run whose window is the new
+its period ends. A dividend is added on the day it is declared, before
+it is paid. Each append records a run whose window is the new
 days, and the `synthetic` adapter hands gold only the runs since its
 last load. A `refdata` run that adds a filed figure reaches back to the
 end of its period, and gold reads that source's rows of those days

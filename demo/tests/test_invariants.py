@@ -1310,6 +1310,115 @@ class TestPeriodFacts(Built):
                         "a company that loses money")
 
 
+class TestDividendCalendar(Built):
+    """The companies' dividend calendars: each event is a dividend the
+    household is paid, on its pay day, with record and ex days the yield
+    report reads the quantity paid on by. One calendar states every
+    payment; one ends, so the engine learns its issuer's gap for the
+    payments after it."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.events = cls.rows[silver.REFERENCE_SOURCE]["dividend_events"]
+        cat = reference.load()
+        listed = reference.securities(cat, cls.inputs.instruments)
+        cls.calendars = {}
+        for f in cat["facts"]:
+            if "dividends" in f:
+                inst = cls.inputs.instruments[f["instrument"]]
+                cls.calendars[reference.calendar_ref(inst, listed)] = (inst["id"], f["dividends"])
+        cls.paid = collections.defaultdict(set)
+        cls.trades = collections.defaultdict(set)
+        for _, t in cls.all("transactions"):
+            day = dates.day_of(t["occurred_at"])
+            if t["kind"] == "dividend":
+                cls.paid[t["instrument_id"]].add(day)
+            elif t["kind"] in ("buy", "sell"):
+                cls.trades[t["instrument_id"]].add(day)
+        cls.by_ref = collections.defaultdict(dict)
+        for e in cls.events:
+            cls.by_ref[e["ref"]][dates.parse(e["pay_date"])] = e
+        cls.cycles = goref.us_settlement_cycles()
+
+    def ex_day(self, record):
+        """The ex day the engine derives from `record` by the US
+        settlement cycle (canonical.BuiltinSettlementCycles)."""
+        days = [n for start, n in self.cycles if start is None or start <= record][-1]
+        return dates.business_before(record, days - 1)
+
+    def test_every_calendar_is_a_held_isin_keyed_company(self):
+        """A calendar names its company by the isin: key gold's wanted
+        list does."""
+        self.assertGreater(len(self.calendars), 1)
+        self.assertEqual(set(self.by_ref), set(self.calendars))
+        for ref, (iid, _) in self.calendars.items():
+            self.assertTrue(ref.startswith("isin:"), ref)
+            self.assertTrue(self.paid[iid], iid)
+
+    def test_each_events_pay_day_is_a_payment(self):
+        """Every event paid by the as-of is a dividend the household is
+        paid that day, and every payment up to a calendar's end has its
+        event."""
+        for ref, (iid, cal) in self.calendars.items():
+            until = dates.parse(cal["until"]) if "until" in cal else AS_OF
+            stated = {pay for pay in self.by_ref[ref] if pay <= AS_OF}
+            self.assertEqual(stated, {day for day in self.paid[iid] if day <= until}, ref)
+
+    def test_the_days_follow_the_calendar_and_the_us_cycle(self):
+        for e in self.events:
+            _, cal = self.calendars[e["ref"]]
+            record, pay, declared = (dates.parse(e[c]) for c in ("record_date", "pay_date", "declared_date"))
+            # A filing states no ex day: the engine derives it by the cycle.
+            self.assertIsNone(e.get("ex_date"))
+            self.assertEqual(record, dates.business_before(pay, cal["record"]), e)
+            ex = self.ex_day(record)
+            self.assertEqual(declared, dates.business_before(pay, cal["declared"]), e)
+            self.assertTrue(all(dates.is_business(d) for d in (ex, record, pay, declared)), e)
+            self.assertLess(declared, ex)
+            self.assertLessEqual(declared, AS_OF)
+            self.assertEqual(e["as_of"], dates.epoch(declared))
+            self.assertEqual(e["run_at"], e["as_of"])
+            self.assertEqual(e["event_id"], f"dividend||{record}|{pay}")
+            self.assertIn(e["kind"], goref.dividend_kinds())
+            self.assertIn(e["status"], goref.dividend_statuses())
+            self.assertEqual(e["provider"], cal["provider"])
+        self.assertEqual({dates.parse(e["record_date"]) >= self.cycles[-1][0] for e in self.events}, {False, True},
+                         "events on both sides of the cycle's change")
+
+    def test_no_trade_between_the_ex_day_and_the_pay_day(self):
+        """The quantity held as the ex day began is the one the household
+        is paid on. The generator does not enforce it: it guards the
+        household's trade schedule (spec.json's monthly buys and the
+        mandate's rebalancing), which keeps the calendars' companies'
+        trades off their ex days to pay days."""
+        for e in self.events:
+            iid, _ = self.calendars[e["ref"]]
+            record, pay = dates.parse(e["record_date"]), dates.parse(e["pay_date"])
+            ex = self.ex_day(record)
+            self.assertFalse({d for d in self.trades[iid] if ex <= d < pay}, e["event_id"])
+
+    def test_one_calendar_states_every_payment_and_one_ends(self):
+        """Over the 24 months the coverage view counts, one company's
+        payments are all stated. Another's calendar ends after two or more
+        of its payments: its later ones, inside those months, are not."""
+        since = dates.add_months(AS_OF, -24)
+        whole, ended = [], []
+        for ref, (iid, cal) in self.calendars.items():
+            recent = {d for d in self.paid[iid] if since < d <= AS_OF}
+            stated = set(self.by_ref[ref])
+            if "until" not in cal:
+                self.assertTrue(recent and recent <= stated, ref)
+                whole.append(ref)
+                continue
+            self.assertGreaterEqual(len(stated), 2, ref)
+            unstated = recent - stated
+            self.assertTrue(unstated, ref)
+            self.assertLess(max(stated), min(unstated), ref)
+            ended.append(ref)
+        self.assertTrue(whole and ended)
+
+
 class TestYieldConfig(Built):
     """The config's yield block, in the engine's vocabulary."""
 

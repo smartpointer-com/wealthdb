@@ -15,6 +15,9 @@ from .money import PRECISE
 
 DAY = 86400
 _NOON = 12 * 3600
+# A stock pays the dividend of a month it pays in on the first business
+# day from this day of the month.
+DIVIDEND_DAY = 20
 
 
 def parse(s):
@@ -54,6 +57,20 @@ def prev_business(day):
     while not is_business(day):
         day -= dt.timedelta(days=1)
     return day
+
+
+def business_before(day, n):
+    """The business day n business days before `day`."""
+    while n > 0:
+        day -= dt.timedelta(days=1)
+        if is_business(day):
+            n -= 1
+    return day
+
+
+def dividend_day(year, month):
+    """The day a stock pays the dividend of a month it pays in."""
+    return next_business(dt.date(year, month, DIVIDEND_DAY))
 
 
 def nth_business(year, month, n):

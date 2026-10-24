@@ -69,6 +69,8 @@ _TABLES = {
     "characteristics": ("fund_ref", "as_of", "provider", "field", "label", "value", "run_at", "payload"),
     "period_facts": ("security_key", "field", "as_of", "period_start", "provider", "value", "scheme", "unit",
                      "fiscal_year", "fiscal_period", "form", "filed", "run_at", "payload"),
+    "dividend_events": ("ref", "provider", "event_id", "as_of", "kind", "ex_date", "record_date", "pay_date",
+                        "declared_date", "amount", "currency", "status", "run_at", "payload"),
     "rates": ("as_of", "series_id", "value", "payload"),
 }
 

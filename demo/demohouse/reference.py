@@ -21,10 +21,17 @@ and the maturity of its holdings every month-end, as its N-MFP filing
 does. A fund that publishes its page but not its holdings states the
 page's figures every month-end, and no composition.
 
+A company the catalogue gives a dividend calendar states each dividend
+on the day it declares it: its record, pay and declared days, and no ex
+day, as a filing states none. Its pay day is the household's for that
+month (dates.dividend_day). A calendar that ends states no dividend paid
+after its end.
+
 Every row is dated by the day it describes, and fetched that day: the
 rows of a month-end are the same in a full build and in an append that
-reaches past it. The companies' reported figures (demohouse/filings.py)
-are the exception: each is fetched on the day it is filed.
+reaches past it. Two kinds of row are the exception. The companies'
+reported figures (demohouse/filings.py) are fetched on the day they are
+filed, and a dividend on the day it is declared.
 """
 
 import collections
@@ -44,7 +51,7 @@ JITTER = "0.05"
 
 # The silver tables the reference records fill.
 TABLES = ("compositions", "lines", "attributes", "counterparties", "securities", "security_facts",
-          "fund_risk", "characteristics", "period_facts")
+          "fund_risk", "characteristics", "period_facts", "dividend_events")
 
 # The tenors a filing states a fund's rate sensitivity at, in years
 # (canonical.RiskTenors), and the currency of its credit-spread rows.
@@ -371,6 +378,51 @@ def _page(seed, fund, inst, curve, as_of, provider):
     return out
 
 
+# ---- dividends ------------------------------------------------------------
+
+
+def calendar_ref(inst, listed):
+    """The key gold's wanted list names an instrument's dividend calendar
+    by: its ISIN where the catalogue `listed` gives one."""
+    return fund_ref(dict(inst, isin=listed.get(inst["id"], {}).get("isin")))
+
+
+def dividend_events(calendar, inst, key, first, as_of):
+    """A US company's dividends as its filings state them (sec-edgar's
+    shape): one for each month the instrument pays in, on the household's
+    pay day from `first` on. Its record day lies the calendar's `record`
+    business days before the pay day; like a filing, it states no ex day,
+    which the engine derives from the record day by the settlement cycle
+    (canonical.BuiltinSettlementCycles). It is declared `declared`
+    business days before the pay day and stated that day, once the day
+    has come by as_of. A calendar with `until` states none paid after
+    it. It states no amount: the household's dividend follows the price
+    on its pay day."""
+    until = dates.parse(calendar["until"]) if "until" in calendar else None
+    months = inst["income"]["months"]
+    out = []
+    month = dt.date(first.year, first.month, 1)
+    # A dividend is declared weeks before its pay day: one paid up to
+    # three months after as_of may be declared by then.
+    while month <= dates.add_months(as_of, 3):
+        if month.month in months:
+            pay = dates.dividend_day(month.year, month.month)
+            declared = dates.business_before(pay, calendar["declared"])
+            if declared > as_of or (until and pay > until):
+                break
+            record = dates.business_before(pay, calendar["record"])
+            at = dates.epoch(declared)
+            if pay >= first:
+                out.append({
+                    "ref": key, "provider": calendar["provider"],
+                    "event_id": "|".join(("dividend", "", record.isoformat(), pay.isoformat())),
+                    "as_of": at, "kind": "dividend", "record_date": record.isoformat(),
+                    "pay_date": pay.isoformat(), "declared_date": declared.isoformat(), "currency": inst["currency"],
+                    "status": "final", "run_at": at, "payload": "{}"})
+        month = dates.add_months(month, 1)
+    return out
+
+
 def rows(inputs, seed, as_of, curve):
     """Every reference row dated on or before as_of, per table, and every
     company figure filed by then, its bonds priced off `curve`, the dollar
@@ -451,4 +503,7 @@ def rows(inputs, seed, as_of, curve):
     for f, inst, key, _ in facts:
         if "filings" in f:
             out["period_facts"] += filings.rows(inputs, seed, as_of, f, inst, key, cat["provider"])
+        if "dividends" in f:
+            out["dividend_events"] += dividend_events(f["dividends"], inst, calendar_ref(inst, listed),
+                                                      inputs.history_start, as_of)
     return out

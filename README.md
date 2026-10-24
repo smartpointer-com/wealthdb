@@ -308,6 +308,18 @@ and test target. [collectors/README.md](collectors/README.md) has the
 flags all collectors share — data locations, the `--lookback` window —
 and [wealthdb/README.md](wealthdb/README.md) the engine's subcommands.
 
+The yield report and the income projection run with no setup of their
+own. A `yield` block in the config adds the benchmark curves and the
+withholding rates ([wealthdb/docs/YIELD.md](wealthdb/docs/YIELD.md)
+§8). The `quality` column says what each figure rests on, and the
+coverage view lists what is missing and what would fill it:
+
+```sh
+wealthdb yield global             # what the holdings yield, by currency, and what each yield rests on
+wealthdb income projection        # what the holdings are expected to pay, month by month
+wealthdb yield coverage           # what the figures rest on, and what is missing
+```
+
 ## Try it without a bank
 
 A demo household shows every report and dashboard before a single
