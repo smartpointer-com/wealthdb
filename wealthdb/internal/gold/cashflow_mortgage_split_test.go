@@ -244,11 +244,23 @@ func TestTheSharesSumToTheInstalment(t *testing.T) {
 	}
 }
 
-// planHashJoins counts the hash joins in a macro's query plan, which is
-// how many times the planner planted its inputs.
-func planHashJoins(t *testing.T, db *sql.DB, ctx context.Context, from string) int {
+// planScans counts the scans of `transactions` in a macro's query plan,
+// as the macros expand: one scan per copy of whatever reads the table.
+// DuckDB shares identical subplans between copies (the common_subplan
+// optimiser), which would hide a copy, so it is off for the count. The
+// option and the plan share one connection, because the setting belongs
+// to the connection.
+func planScans(t *testing.T, db *sql.DB, ctx context.Context, from string) int {
 	t.Helper()
-	rows, err := db.QueryContext(ctx, `EXPLAIN SELECT * FROM `+from)
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("connection: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `SET disabled_optimizers = 'common_subplan'`); err != nil {
+		t.Fatalf("disable common_subplan: %v", err)
+	}
+	rows, err := conn.QueryContext(ctx, `EXPLAIN (FORMAT json) SELECT * FROM `+from)
 	if err != nil {
 		t.Fatalf("explain %s: %v", from, err)
 	}
@@ -259,13 +271,16 @@ func planHashJoins(t *testing.T, db *sql.DB, ctx context.Context, from string) i
 		if err := rows.Scan(&kind, &plan); err != nil {
 			t.Fatalf("scan: %v", err)
 		}
-		n += strings.Count(plan, "HASH_JOIN")
+		n += strings.Count(plan, `.transactions"`)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("explain %s: %v", from, err)
 	}
 	return n
 }
 
-// TestTheSplitDoesNotPlantTheResolutionTwice is the regression for what
-// the split first cost rather than for what it computes.
+// TestTheSplitPlantsNoThirdResolution is the regression for what the
+// split must not cost rather than for what it computes.
 //
 // A table macro is INLINED wherever it is named, so `cashflow_txn_nodes`
 // — a dozen joins over every transaction gold holds — lands in the plan
@@ -278,30 +293,26 @@ func planHashJoins(t *testing.T, db *sql.DB, ctx context.Context, from string) i
 // every card.
 //
 // Nothing about the arithmetic can catch that, because the arithmetic
-// was right. The shape is what has to be pinned: the base may add a
-// modest amount of work of its own on top of the resolution, and must
-// not plant a second copy of it.
-func TestTheSplitDoesNotPlantTheResolutionTwice(t *testing.T) {
+// was right. The shape is what has to be pinned. The base names the
+// resolution twice, once for the window's lines and once for every
+// instalment there has ever been, and must plant no third copy. The
+// copies are counted by the scans of `transactions`, which the base
+// reads only through the resolution.
+func TestTheSplitPlantsNoThirdResolution(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedMortgageBalances(t, db, ctx, map[int]float64{100: -88000, 200: -80000, 300: -33000})
 	seedMortgagePayment(t, db, ctx, "P-1", 100, -9500, "MORT")
 	seedMortgagePayment(t, db, ctx, "P-2", 200, -44000, "MORT")
 
-	nodes := planHashJoins(t, db, ctx, "cashflow_txn_nodes(0, 100000000000)")
-	base := planHashJoins(t, db, ctx, "cashflow_lines_base(0, 100000000000)")
+	nodes := planScans(t, db, ctx, "cashflow_txn_nodes(0, 100000000000)")
+	base := planScans(t, db, ctx, "cashflow_lines_base(0, 100000000000)")
 	if nodes == 0 {
-		t.Fatal("the resolution plans no hash join at all; this guard reads nothing")
+		t.Fatal("the resolution plans no scan of transactions; this guard reads nothing")
 	}
-	// Twice the resolution is the failure, so the bar is just under it.
-	// That leaves room for the base's own joins — the pool, and the
-	// allocation's small tables — and none for a second copy. The
-	// version this guards against planted four and came in at nine
-	// times the resolution's count.
-	if limit := 2*nodes - 1; base > limit {
-		t.Errorf("cashflow_lines_base plans %d hash joins against the resolution's %d "+
-			"(limit %d): the resolution looks planted more than once",
-			base, nodes, limit)
+	if base > 2*nodes {
+		t.Errorf("cashflow_lines_base scans transactions %d times against the resolution's %d: "+
+			"the resolution is planted more than twice", base, nodes)
 	}
 }
 
