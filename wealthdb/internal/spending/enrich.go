@@ -253,6 +253,7 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	res.Cashflow.ReferencePairs = countPairsBy(pairs, gold.MatchedByReference)
 	res.Cashflow.StatedCounterPairs = countPairsBy(pairs, gold.MatchedByStatedCounter)
 	res.Cashflow.NamedPairs = countPairsBy(pairs, gold.MatchedByName)
+	res.Cashflow.ReversalPairs = countPairsBy(pairs, gold.MatchedByReversal)
 	res.Cashflow.AmbiguousReferences = ambiguousRefs
 
 	// Read once and shared, for the matcher's reason: where a movement
@@ -675,15 +676,11 @@ type statedCounterLeg struct {
 // UNLIKE the reference phase, THE CENSUS IS NOT HERE. The reference query
 // refuses a reference the source did not mint per movement, because a leg
 // carrying an over-used reference must reach the matcher looking like a leg
-// carrying none. A description is different: the matcher needs to know a leg
-// was described EVEN WHEN THE DESCRIPTION RESOLVES TO NOTHING, because the
-// fact that some narrative places this leg's other half on another account,
-// in another currency, is itself a reason to keep it away from the credit
-// sitting on its own account. Filtered here, that fact would be gone before
-// the matcher could use it, and an unresolvable description would silently
-// become a same-account round trip. So this reads the description as written
-// and matchStatedCounters does all the counting, over the legs it was
-// actually offered.
+// carrying none. A description is different: whether it resolves depends on
+// which legs answer to it, and that is a question about the pool the matcher
+// is offered, not about every row of the table. So this reads the
+// description as written and matchStatedCounters does all the counting, over
+// the legs it was actually offered.
 func loadStatedCounterLegs(ctx context.Context, tx querier) (map[txKey]statedCounterLeg, error) {
 	rows, err := tx.QueryContext(ctx, `
         SELECT silver_source_id, transaction_external_id,

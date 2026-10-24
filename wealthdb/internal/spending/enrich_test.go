@@ -761,57 +761,61 @@ func TestPassMatchesOntoAnAccountOutsideTheSpendingScope(t *testing.T) {
 	}
 }
 
-// TestPassExcludesASameAccountRoundTrip pins the knob the spending
-// caller turns on and the returns caller never does. A withdrawal and a
-// deposit of the same amount, on the same day, on the same scoped
-// account is a round trip that nets to zero — a transfer bounced back,
-// a reversal booked as its own line — and left unpaired its outgoing
-// half counts as spending. The second half of the test runs the shared
-// core over the very same pool with AllowSameOwner off, which is the
-// proof that the knob, and nothing else, is what pairs them.
-func TestPassExcludesASameAccountRoundTrip(t *testing.T) {
+// TestPassPairsASameAccountReversal pins the reversal phase through the
+// pass. A withdrawal and a deposit of one amount on one scoped account,
+// days apart inside the window, with no partner on another account and
+// the back worded as a reversal, pair as a booking and its reversal: both
+// legs read `internal_transfer` via the matcher, with their own account
+// as the far account, and leave the spending and income bases. A
+// withdrawal with a partner on another account keeps it, and its own
+// account's deposit stays income's. A payment and an unrelated credit of
+// one size stay two rows.
+func TestPassPairsASameAccountReversal(t *testing.T) {
 	db, ctx := openGold(t)
 	seedTxns(t, db, ctx,
-		txn{"bank", "T-RT-OUT", "CASH1", "withdrawal", day(60), -800, "", "Outgoing transfer", ""},
-		txn{"bank", "T-RT-BACK", "CASH1", "deposit", day(60), 800, "", "Returned transfer", ""},
-		// A real purchase beside it, so the base is "kept what it
-		// should" rather than empty.
-		txn{"bank", "T-SPEND", "CARD1", "purchase", day(60), -45, "Corner Market", "", ""},
+		txn{"bank", "T-WIRE-OUT", "CASH1", "withdrawal", day(70), -650, "", "Outgoing wire", ""},
+		txn{"bank", "T-WIRE-BACK", "CASH1", "deposit", day(73), 650, "", "Returned wire", ""},
+		txn{"bank", "T-MOVE-OUT", "CASH1", "withdrawal", day(80), -800, "", "EXAMPLE TRANSFER", ""},
+		txn{"bank", "T-MOVE-IN", "CARD1", "card_payment", day(80), 800, "", "EXAMPLE TRANSFER", ""},
+		txn{"bank", "T-PAY-IN", "CASH1", "deposit", day(81), 800, "Example Payer", "", ""},
+		txn{"bank", "T-RENT", "CASH1", "withdrawal", day(90), -1200, "", "Example Rent", ""},
+		txn{"bank", "T-SALARY", "CASH1", "deposit", day(91), 1200, "Example Employer", "", ""},
 	)
-
 	res := runPass(t, db, ctx, Options{})
-
-	base := spendingBaseIDs(t, db, ctx)
-	if _, ok := base["T-RT-OUT"]; ok {
-		t.Error("the outgoing half of a same-account round trip is still in the spending base")
+	if res.Cashflow.ReversalPairs != 1 {
+		t.Errorf("ReversalPairs = %d, want 1", res.Cashflow.ReversalPairs)
 	}
-	if _, ok := base["T-SPEND"]; !ok {
-		t.Error("the purchase fell out of the spending base")
-	}
-	if res.MatcherRows != 2 {
-		t.Errorf("MatcherRows = %d, want 2 (both halves of the round trip)", res.MatcherRows)
-	}
-	for _, id := range []string{"T-RT-OUT", "T-RT-BACK"} {
+	for _, id := range []string{"T-WIRE-OUT", "T-WIRE-BACK", "T-MOVE-OUT", "T-MOVE-IN"} {
 		if detailed, prov := verdictOf(t, db, ctx, "bank", id); detailed !=
 			canonical.SpendDetailedInternalTransfer || prov != ProvenanceMatcher {
 			t.Errorf("%s = (%q, %q), want internal_transfer via matcher", id, detailed, prov)
 		}
 	}
-
-	// Same pool, same knobs, AllowSameOwner off: no pair. This is the
-	// returns caller's setting, and it is why that engine is unchanged.
-	legs, _, _, err := loadMatcherPool(ctx, db, nil)
-	if err != nil {
-		t.Fatalf("loadMatcherPool: %v", err)
+	for id, want := range map[string]string{"T-WIRE-OUT": "CASH1", "T-WIRE-BACK": "CASH1", "T-MOVE-OUT": "CARD1"} {
+		var far string
+		if err := db.QueryRowContext(ctx, `
+            SELECT far_account_external_id FROM spend_txn_enrichment
+             WHERE silver_source_id = 'bank' AND transaction_external_id = ?`, id).Scan(&far); err != nil {
+			t.Fatalf("read %s far account: %v", id, err)
+		}
+		if far != want {
+			t.Errorf("%s far account = %q, want %q", id, far, want)
+		}
 	}
-	off := gold.TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}
-	if got := gold.MatchTransferLegs(legs, off); len(got) != 0 {
-		t.Errorf("with AllowSameOwner off the round trip paired anyway: %+v", got)
+	base := spendingBaseIDs(t, db, ctx)
+	for _, id := range []string{"T-WIRE-OUT", "T-MOVE-OUT"} {
+		if _, ok := base[id]; ok {
+			t.Errorf("%s is still in the spending base", id)
+		}
 	}
-	on := off
-	on.AllowSameOwner = true
-	if got := gold.MatchTransferLegs(legs, on); len(got) != 1 {
-		t.Errorf("with AllowSameOwner on the round trip must pair once, got %+v", got)
+	for _, id := range []string{"T-PAY-IN", "T-SALARY"} {
+		if detailed, provenance, found := incomeVerdictOf(t, db, ctx, "bank", id); !found ||
+			provenance == ProvenanceMatcher || detailed == canonical.SpendDetailedInternalTransfer {
+			t.Errorf("%s = (%q, %q, %v), want the payer's row, not the matcher's", id, detailed, provenance, found)
+		}
+	}
+	if _, ok := base["T-RENT"]; !ok {
+		t.Error("T-RENT fell out of the spending base")
 	}
 }
 

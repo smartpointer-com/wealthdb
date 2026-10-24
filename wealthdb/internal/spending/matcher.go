@@ -16,9 +16,9 @@ import (
 // argued in docs/SPENDING.md §3 ("The matcher"):
 //
 //   - same-source pairing is allowed (CrossGroupOnly=false);
-//   - same-account pairing is allowed for a round trip only
-//     (AllowSameOwner, with TransferLeg.Signature and Reversal from
-//     reversalRe);
+//   - a leg no cross-account phase paired pairs with its reversal on its
+//     own account (SameAccountReversals, with TransferLeg.Signature and
+//     Reversal from reversalRe);
 //   - the pool spans every account in gold, and its kind filter is the
 //     spend_matcher_pool macro's own (migration 0044);
 //   - amounts and currencies are native, never converted;
@@ -80,12 +80,12 @@ func legNames(names []CounterpartyName, group, owner, counterparty, description 
 // (which wants the pairs themselves) cannot drift on the options.
 func matchTransferPairs(legs []gold.TransferLeg, windowDays int, tolerancePct float64, overrides gold.TransferOverrides) []gold.TransferMatchPair {
 	return gold.MatchTransferLegs(legs, gold.TransferMatchOpts{
-		WindowDays:      windowDays,
-		TolerancePct:    tolerancePct,
-		ToleranceMaxAbs: gold.DefaultTransferFeeCap,
-		CrossGroupOnly:  false,
-		AllowSameOwner:  true,
-		Overrides:       overrides,
+		WindowDays:           windowDays,
+		TolerancePct:         tolerancePct,
+		ToleranceMaxAbs:      gold.DefaultTransferFeeCap,
+		CrossGroupOnly:       false,
+		Overrides:            overrides,
+		SameAccountReversals: true,
 	})
 }
 

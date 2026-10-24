@@ -52,24 +52,6 @@ func TestLegRail(t *testing.T) {
 	}
 }
 
-func TestReversalWording(t *testing.T) {
-	for _, s := range []string{
-		"Insufficient Funds Fee Refund", "CANCELLED ONLINE WIRE", "CANC.MORT.MAT.; 000000",
-		"STORNO VOM 01.01", "RETURNED ITEM", "Rückbuchung Lastschrift", "REVERSAL OF CHARGE",
-	} {
-		if !reversalRe.MatchString(s) {
-			t.Errorf("%q is a reversal", s)
-		}
-	}
-	for _, s := range []string{
-		"RETURN OF CAPITAL EXAMPLE FUND", "CANCER RESEARCH DONATION", "EXAMPLE TRANSFER",
-	} {
-		if reversalRe.MatchString(s) {
-			t.Errorf("%q is not a reversal", s)
-		}
-	}
-}
-
 // A narrative names the accounts a configured pattern points at, except the
 // leg's own source or its own account, which is its institution speaking and
 // names no other side. Another account of its own source stays named.
@@ -94,6 +76,27 @@ func TestLegNames(t *testing.T) {
 		got := legNames(names, c.group, c.owner, "", c.text)
 		if !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s/%s %q: names %v, want %v", c.group, c.owner, c.text, got, c.want)
+		}
+	}
+}
+
+// reversalRe reads the words a bank uses for undoing an entry, in the
+// languages the collected banks write in, and not the words that merely
+// look alike. The wording is invented.
+func TestReversalWording(t *testing.T) {
+	for _, s := range []string{
+		"Example Fee Refund", "CANCELLED EXAMPLE PAYMENT", "CANC. EXAMPLE BOOKING; 000000",
+		"STORNO VOM 01.01", "RETURNED ITEM", "Rückbuchung Lastschrift", "REVERSAL OF CHARGE",
+	} {
+		if !reversalRe.MatchString(s) {
+			t.Errorf("%q is a reversal", s)
+		}
+	}
+	for _, s := range []string{
+		"RETURN OF CAPITAL EXAMPLE FUND", "CANCER RESEARCH DONATION", "EXAMPLE TRANSFER",
+	} {
+		if reversalRe.MatchString(s) {
+			t.Errorf("%q is not a reversal", s)
 		}
 	}
 }

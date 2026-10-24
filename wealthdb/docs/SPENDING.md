@@ -559,12 +559,11 @@ recognisable as internal until both are in gold.
 `internal/spending/matcher.go` calls gold's shared transfer-matching
 core with spending's own settings: same-source pairing is **allowed**
 (the commonest own-account move is cash account to card inside one
-bank), same-**account** pairing is allowed too (`AllowSameOwner`),
-**every** account in gold participates whatever its kind and
+bank), **every** account in gold participates whatever its kind and
 whether or not spending is scoped to it, and amounts and currencies
 are **native**.
 
-The core pairs in **five phases**, each withdrawing the legs it claims
+The core pairs in **six phases**, each withdrawing the legs it claims
 before the next one looks, in the order of what the evidence is worth:
 
 1. **the override ledger** — the holder naming two rows as one movement;
@@ -576,30 +575,36 @@ before the next one looks, in the order of what the evidence is worth:
 4. **a named counterparty** — one leg's narrative naming the other's
    account (*Named counterparties*, below);
 5. **amounts** — the greedy banded pass, which is everything the data
-   says when nothing has said it outright.
+   says when nothing has said it outright;
+6. **a reversal on one account** — a leg still unpaired and its own
+   account's leg that reads as its reversal (below).
 
 The last two are banded. `window_days` and `tolerance_pct` bound a
 guess; the first three read what the holder or the source said, so
 there is no band to draw around them. A name decides only between
 candidates amount and day already admit.
 
-Same-account pairing is the one knob the returns caller leaves off. A
-withdrawal and a deposit of the same amount on the same account within
-the window is a round trip that nets to zero — a transfer bounced
-back, a reversal booked as its own line — and left unpaired its
-outgoing half counts as spending; the returns engine reads the same
-two rows as two boundary flows, not one movement, and pairing them
-would net capital that really did leave and return. The pair is made
-only when the two rows SAY they are one movement out and back: the
-same merchant signature on both, or a reversal's wording on either (a
-refunded fee, a cancelled wire, a `STORNO`). A payment out and a
-transfer in that merely share an account and a size are two movements,
-and paired they would delete each other. The kind set below excludes
-`purchase` and `refund`, so a card purchase and its refund never reach
-the matcher at all. When a withdrawal finds equally good partners on
-its own account and on another, the far side wins the tie; among
-other accounts, one at the withdrawal's own source wins over another
-source's, since moves inside one institution are the commoner kind.
+**Two legs of one account pair last, as a reversal.** A withdrawal
+and a deposit of one amount on one account may be two movements: a
+payment out and a transfer in. So every cross-account phase goes
+first, and a leg with a partner on another account keeps it. A leg
+still unpaired then pairs with an opposite leg on its own account,
+within the window and the tolerance, when the two read as one movement
+out and back: the same merchant signature on both, or a reversal's
+wording on either (a refunded fee, a cancelled or returned wire, a
+`STORNO`). A payment out and a credit that merely share an account and
+a size stay two rows. A reversal pair's legs read `internal_transfer`,
+with their own account as the far account, so they leave income and
+spending and the cash flow reads them as internal. The returns matcher
+does not run this phase: it reads such a pair as two boundary flows. A
+`match` line pairs what it names, and an `unmatch` line keeps a leg
+out.
+
+The kind set below excludes `purchase` and `refund`, so a card
+purchase and its refund never reach the matcher at all. When a
+withdrawal finds equally good partners on two other accounts, one at
+its own source wins over another source's. Moves inside one
+institution are the commoner kind.
 
 ### Named counterparties
 
@@ -777,15 +782,6 @@ shared reference at all — a statement reconstructed from a printed
 page carries none — while the two figures differ by the rate, so the
 amount pass is blind to it too. The sentence in the narrative is then
 the only link the two rows have.
-
-One consequence is load-bearing beyond the pairing: **a leg the source
-describes may not pair with its own account.** A description places
-this leg's other half elsewhere, so it is not half of a same-account
-round trip; without that, a description the phase could not resolve
-would fall through to the amount pass, which might hand the leg the
-credit sitting on its own account — a pair the source has already
-contradicted, and one that takes that credit from the transfer it
-belongs to.
 
 **What is still out of reach:** a movement whose source stamps no
 reference and describes no counter leg, or whose description more than
@@ -2148,11 +2144,11 @@ Each decision points to the section that argues it.
 - **The matcher's window defaults to 5 days**, the same as the returns
   matcher. One matching core and one banding keep a movement from being
   internal in one report and external in the other.
-- **The spending matcher pairs legs on the same account** for a round
-  trip only (`AllowSameOwner`, §3); the returns matcher does not. The
-  knob defaults off in the shared core, so returns matching is
-  unaffected. The round-trip test, the eligible-kind set and the
-  tie-break towards another account bound the false-pair surface.
+- **Two legs of one account pair only as a reversal, last** (§3). A
+  leg with a partner on another account keeps it; a leg still unpaired
+  pairs with its own account's leg that reads as its reversal (one
+  signature, or reversal wording). The returns matcher does not pair
+  legs of one account.
 - **The catch-all kinds (`other`, `journal`) are outside the
   population.** Neither carries a reliable sign. `wealthdb status -v`
   counts the in-scope rows of either kind, so the gap is visible.

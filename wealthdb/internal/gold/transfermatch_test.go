@@ -1,6 +1,7 @@
 package gold
 
 import (
+	"maps"
 	"reflect"
 	"testing"
 
@@ -50,8 +51,7 @@ func TestMatchCrossTransfersIndexesTransferLike(t *testing.T) {
 }
 
 // TestMatchTransferLegsWithinGroup pins the knob the returns path never sets:
-// with CrossGroupOnly off, two accounts of the SAME group pair — but a single
-// account still does not pair with itself until AllowSameOwner says so.
+// two accounts of the SAME group pair; CrossGroupOnly forbids it.
 func TestMatchTransferLegsWithinGroup(t *testing.T) {
 	legs := []TransferLeg{
 		leg("bank", "checking", "out", 100, -5000),
@@ -64,66 +64,162 @@ func TestMatchTransferLegsWithinGroup(t *testing.T) {
 	if got := MatchTransferLegs(legs, TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, CrossGroupOnly: true}); len(got) != 0 {
 		t.Errorf("CrossGroupOnly must reject the same-group pair, got %+v", got)
 	}
-
-	self := []TransferLeg{
-		leg("bank", "checking", "out", 100, -5000),
-		leg("bank", "checking", "in", 101, 5000),
-	}
-	if got := MatchTransferLegs(self, TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}); len(got) != 0 {
-		t.Errorf("an account must not pair with itself while AllowSameOwner is off, got %+v", got)
-	}
 }
 
-// TestMatchTransferLegsSameOwner pins AllowSameOwner, the knob the spending
-// caller sets and the returns caller never does: a same-account round trip
-// pairs only under it, CrossGroupOnly still forbids the whole group first,
-// and on an exact tie the partner on ANOTHER account beats the one on the
-// debit's own.
-func TestMatchTransferLegsSameOwner(t *testing.T) {
-	on := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, AllowSameOwner: true}
-	roundTrip := func() []TransferLeg {
-		return []TransferLeg{
-			leg("bank", "checking", "out", 100, -5000),
-			leg("bank", "checking", "back", 100, 5000),
-		}
+// TestSameAccountLegsNeverPair is the returns caller's matcher, without the
+// reversal phase: an out and a back of one size on one account, days apart
+// and inside the window, stay two legs. A credit on the debit's own account
+// is no candidate in any cross-account phase, so it neither wins a tie nor
+// beats a far partner by being exact.
+func TestSameAccountLegsNeverPair(t *testing.T) {
+	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}
+	roundTrip := []TransferLeg{
+		leg("bank", "checking", "out", 100, -5000),
+		leg("bank", "checking", "back", 103, 5000),
 	}
-	got := MatchTransferLegs(roundTrip(), on)
-	if len(got) != 1 || got[0].Debit.ID != "out" || got[0].Credit.ID != "back" {
-		t.Errorf("same-account round trip under AllowSameOwner = %+v, want out→back", got)
+	if got := MatchTransferLegs(roundTrip, opts); len(got) != 0 {
+		t.Errorf("an out and a back on one account paired: %+v", got)
 	}
-	off := on
-	off.AllowSameOwner = false
-	if got := MatchTransferLegs(roundTrip(), off); len(got) != 0 {
-		t.Errorf("with AllowSameOwner off the round trip must not pair, got %+v", got)
+	// A narrative naming the leg's own account changes nothing.
+	named := []TransferLeg{
+		namedLeg("bank", "checking", "out", 100, -5000, NamedAccount("bank", "checking")),
+		namedLeg("bank", "checking", "back", 103, 5000, NamedAccount("bank", "checking")),
 	}
-	crossOnly := on
-	crossOnly.CrossGroupOnly = true
-	if got := MatchTransferLegs(roundTrip(), crossOnly); len(got) != 0 {
-		t.Errorf("CrossGroupOnly must still refuse the same-group pair, got %+v", got)
+	if got := MatchTransferLegs(named, opts); len(got) != 0 {
+		t.Errorf("legs naming their own account paired: %+v", got)
 	}
 
-	// A withdrawal with two exact, same-day candidates: a credit on its own
-	// account and the real receiving leg elsewhere. The far side wins; the
-	// own-account credit is left for what it is.
-	tie := []TransferLeg{
-		leg("bank", "checking", "out", 100, -5000),
-		leg("bank", "checking", "payroll", 100, 5000),
-		leg("broker", "cash", "in", 100, 5000),
-	}
-	got = MatchTransferLegs(tie, on)
-	if len(got) != 1 || got[0].Credit.Group != "broker" || got[0].Credit.ID != "in" {
-		t.Errorf("tie between own-account and other-account partner = %+v, want out→broker/in", got)
-	}
-	// The preference is a tie-break only: a strictly better own-account
-	// partner (exact amount versus one inside the tolerance) still wins.
+	// The real receiving leg elsewhere is taken, though the credit on the
+	// debit's own account is exact, same-day and in the window.
 	closer := []TransferLeg{
 		leg("bank", "checking", "out", 100, -5000),
 		leg("bank", "checking", "back", 100, 5000),
 		leg("broker", "cash", "in", 100, 4990),
 	}
-	got = MatchTransferLegs(closer, on)
-	if len(got) != 1 || got[0].Credit.ID != "back" {
-		t.Errorf("exact own-account partner versus approximate far one = %+v, want out→back", got)
+	got := MatchTransferLegs(closer, opts)
+	if len(got) != 1 || got[0].Credit.ID != "in" {
+		t.Errorf("exact own-account credit versus approximate far one = %+v, want out→in", got)
+	}
+
+	// A debit on the credit's own account sorts first and takes nothing:
+	// the credit stays free for the debit elsewhere that funded it.
+	contest := []TransferLeg{
+		leg("bank", "checking", "early", 99, -5000),
+		leg("broker", "cash", "far", 100, -5000),
+		leg("bank", "checking", "back", 100, 5000),
+	}
+	got = MatchTransferLegs(contest, opts)
+	if len(got) != 1 || got[0].Debit.ID != "far" || got[0].Credit.ID != "back" {
+		t.Errorf("a credit contested by its own account's debit = %+v, want far→back", got)
+	}
+}
+
+// signedLeg is a matcher input with a narrative signature and a reversal
+// mark.
+func signedLeg(group, owner, id string, day int64, amt float64, sig string, reversal bool) TransferLeg {
+	l := leg(group, owner, id, day, amt)
+	l.Signature, l.Reversal = sig, reversal
+	return l
+}
+
+// TestASameAccountReversalPairsLast is the spending caller's reversal
+// phase. A leg no cross-account phase paired takes the opposite leg on its
+// own account that reads as its reversal (one signature, or reversal
+// wording on either), within the window and the tolerance, the nearest in
+// day. A leg with a partner on another account keeps it, and the holder's
+// `unmatch` keeps a leg out.
+func TestASameAccountReversalPairsLast(t *testing.T) {
+	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, SameAccountReversals: true}
+	pairs := func(legs []TransferLeg, opts TransferMatchOpts) map[string]string {
+		out := map[string]string{}
+		for _, p := range MatchTransferLegs(legs, opts) {
+			out[p.Debit.ID] = p.Credit.ID + "/" + string(p.By)
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name string
+		legs []TransferLeg
+		want map[string]string
+	}{
+		{"a wire out and its return", []TransferLeg{
+			leg("bank", "checking", "out", 100, -5000),
+			leg("bank", "checking", "back", 104, 5000),
+		}, map[string]string{"out": "back/reversal"}},
+		{"the nearest return in day", []TransferLeg{
+			leg("bank", "checking", "out", 100, -5000),
+			leg("bank", "checking", "late", 105, 5000),
+			leg("bank", "checking", "back", 101, 5000),
+		}, map[string]string{"out": "back/reversal"}},
+		{"a partner on another account first", []TransferLeg{
+			leg("bank", "checking", "out", 100, -5000),
+			leg("bank", "checking", "back", 100, 5000),
+			leg("broker", "cash", "in", 100, 4990),
+		}, map[string]string{"out": "in/amount"}},
+		{"outside the tolerance", []TransferLeg{
+			leg("bank", "checking", "out", 100, -5000),
+			leg("bank", "checking", "back", 102, 4900),
+		}, map[string]string{}},
+		{"a payment and an unrelated credit", []TransferLeg{
+			signedLeg("bank", "checking", "out", 100, -5000, "EXAMPLE RENT", false),
+			signedLeg("bank", "checking", "back", 101, 5000, "EXAMPLE PAYROLL", false),
+		}, map[string]string{}},
+		{"a credit worded as a reversal", []TransferLeg{
+			signedLeg("bank", "checking", "out", 100, -5000, "OUTGOING WIRE", false),
+			signedLeg("bank", "checking", "back", 103, 5000, "RETURNED WIRE", true),
+		}, map[string]string{"out": "back/reversal"}},
+		{"outside the window", []TransferLeg{
+			leg("bank", "checking", "out", 100, -5000),
+			leg("bank", "checking", "back", 106, 5000),
+		}, map[string]string{}},
+		{"another account's credit is no reversal", []TransferLeg{
+			leg("bank", "checking", "out", 100, -5000),
+			leg("bank", "savings", "back", 102, 5000),
+		}, map[string]string{"out": "back/amount"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pairs(tc.legs, opts); !maps.Equal(got, tc.want) {
+				t.Errorf("pairs = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	legs := func() []TransferLeg {
+		return []TransferLeg{leg("bank", "checking", "out", 100, -5000), leg("bank", "checking", "back", 103, 5000)}
+	}
+	if got := pairs(legs(), TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}); len(got) != 0 {
+		t.Errorf("without the phase, a reversal paired: %v", got)
+	}
+	isolated, err := newTransferOverrides([]LegRef{{"bank", "checking", "back"}}, nil, nil)
+	if err != nil {
+		t.Fatalf("newTransferOverrides: %v", err)
+	}
+	withUnmatch := opts
+	withUnmatch.Overrides = isolated
+	if got := pairs(legs(), withUnmatch); len(got) != 0 {
+		t.Errorf("an unmatched leg paired as a reversal: %v", got)
+	}
+}
+
+// A forced pair joins one account without the reversal phase: the holder
+// stating that an out and its back on one account are one movement. The
+// ledger is read ahead of every phase, so the rule that keeps the banded
+// passes off one account does not reach it.
+func TestAForcedPairCanJoinOneAccount(t *testing.T) {
+	forced, err := newTransferOverrides(nil, nil, []ForcedPair{{
+		Debit: LegRef{"bank", "checking", "out"}, Credit: LegRef{"bank", "checking", "back"},
+	}})
+	if err != nil {
+		t.Fatalf("newTransferOverrides: %v", err)
+	}
+	legs := []TransferLeg{
+		leg("bank", "checking", "out", 100, -5000),
+		leg("bank", "checking", "back", 103, 5000),
+	}
+	got := MatchTransferLegs(legs, TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, Overrides: forced})
+	if len(got) != 1 || got[0].By != MatchedByOverride ||
+		got[0].Debit.ID != "out" || got[0].Credit.ID != "back" {
+		t.Errorf("a forced same-account pair = %+v, want out→back asserted by the ledger", got)
 	}
 }
 
@@ -166,7 +262,7 @@ func TestMatchTransferLegsHonoursRequiredPartnerRail(t *testing.T) {
 				railLeg("savings", "silent", 10, 50, "", ""),
 			}
 			got := MatchTransferLegs(append(credits, tc.debit),
-				TransferMatchOpts{WindowDays: 5, AllowSameOwner: true})
+				TransferMatchOpts{WindowDays: 5})
 			if tc.want == "" {
 				if len(got) != 0 {
 					t.Fatalf("paired %q with %q; the rail it demands was not offered",
@@ -229,7 +325,7 @@ func TestSharedReferencePairsAcrossCurrencies(t *testing.T) {
 		refLeg("usd-account", "out", 100, "USD", -1000, "TXN-1"),
 		refLeg("chf-account", "in", 100, "CHF", 987.65, "TXN-1"),
 	}
-	got := MatchTransferLegs(legs, TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, AllowSameOwner: true})
+	got := MatchTransferLegs(legs, TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5})
 	if len(got) != 1 || got[0].Debit.ID != "out" || got[0].Credit.ID != "in" {
 		t.Fatalf("cross-currency reference pair = %+v, want out→in", got)
 	}
@@ -304,7 +400,7 @@ func TestEveryPairNamesThePhaseThatAssertedIt(t *testing.T) {
 // withdraws BOTH legs, so the spending line the debit stood for is not
 // mislabelled but deleted.
 func TestSharedReferenceRefusesWhatItCannotResolve(t *testing.T) {
-	opts := TransferMatchOpts{AllowSameOwner: true}
+	opts := TransferMatchOpts{}
 	cases := []struct {
 		name string
 		legs []TransferLeg
@@ -346,7 +442,7 @@ func TestSharedReferenceNeverCrossesSources(t *testing.T) {
 		refLeg("checking", "out", 100, "USD", -500, "TXN-7"),
 		{Group: "other-bank", Owner: "acct", ID: "in", Day: 100, Ccy: "CHF", Amt: 440, Ref: "TXN-7"},
 	}
-	if got := MatchTransferLegs(append([]TransferLeg(nil), legs...), TransferMatchOpts{AllowSameOwner: true}); len(got) != 0 {
+	if got := MatchTransferLegs(append([]TransferLeg(nil), legs...), TransferMatchOpts{}); len(got) != 0 {
 		t.Errorf("a bare reference must not pair across sources, got %+v", got)
 	}
 	sameSource := []TransferLeg{
@@ -452,7 +548,7 @@ func TestSharedReferenceLeavesUnreferencedLegsAlone(t *testing.T) {
 		leg("bank", "brokerage", "plain-out", 100, -75),
 		leg("bank", "wallet", "plain-in", 100, 75),
 	}
-	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, AllowSameOwner: true}
+	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}
 	want := pairIDs(MatchTransferLegs(append([]TransferLeg(nil), mixed...), opts))
 	for i := len(mixed) - 1; i >= 0; i-- {
 		shuffled := append([]TransferLeg(nil), mixed[i:]...)
@@ -488,7 +584,7 @@ func TestAStatedCounterPairsAConversion(t *testing.T) {
 		counterLeg("gbp-account", "pays", 100, "GBP", -1234.50, "", 0),
 		counterLeg("usd-account", "gets", 100, "USD", 1587.75, "GBP", 1234.50),
 	}
-	got := MatchTransferLegs(legs, TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, AllowSameOwner: true})
+	got := MatchTransferLegs(legs, TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5})
 	if len(got) != 1 || got[0].By != MatchedByStatedCounter ||
 		got[0].Debit.ID != "pays" || got[0].Credit.ID != "gets" {
 		t.Fatalf("stated-counter pair = %+v, want pays→gets", got)
@@ -499,7 +595,7 @@ func TestAStatedCounterPairsAConversion(t *testing.T) {
 // resolve pairs nothing. Unlike a reference it also keeps the day: a figure
 // repeating in another month is a coincidence, not a movement.
 func TestAStatedCounterRefusesWhatItCannotResolve(t *testing.T) {
-	opts := TransferMatchOpts{WindowDays: 30, TolerancePct: 0.5, AllowSameOwner: true}
+	opts := TransferMatchOpts{WindowDays: 30, TolerancePct: 0.5}
 	cases := []struct {
 		name string
 		legs []TransferLeg
@@ -529,57 +625,6 @@ func TestAStatedCounterRefusesWhatItCannotResolve(t *testing.T) {
 				t.Errorf("paired %+v", got)
 			}
 		})
-	}
-}
-
-// A leg the source places on ANOTHER account is not half of a same-account
-// round trip, and the amount pass is told so. Without that, a conversion leg
-// the description could not resolve falls through and takes the credit
-// sitting on its own account — which the source has already contradicted, and
-// which steals that credit from the transfer it really belongs to.
-func TestADescribedLegDoesNotPairWithItsOwnAccount(t *testing.T) {
-	// One relationship, one day: a transfer from `far` into `hub`, and then a
-	// conversion out of `hub` into `eur`. Three legs answer "USD 135790", so
-	// the description resolves none of them — and the hub's own two legs must
-	// still not fuse into a round trip.
-	legs := []TransferLeg{
-		counterLeg("far", "transfer-out", 100, "USD", -135790, "", 0),
-		counterLeg("hub", "transfer-in", 100, "USD", 135790, "", 0),
-		counterLeg("hub", "converts-out", 100, "USD", -135790, "", 0),
-		counterLeg("eur", "converts-in", 100, "EUR", 123456.78, "USD", 135790),
-	}
-	got := MatchTransferLegs(legs, TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, AllowSameOwner: true})
-	if len(got) != 1 {
-		t.Fatalf("matched %d pair(s), want 1: %+v", len(got), got)
-	}
-	if got[0].Debit.ID != "transfer-out" || got[0].Credit.ID != "transfer-in" {
-		t.Errorf("paired %s→%s, want transfer-out→transfer-in", got[0].Debit.ID, got[0].Credit.ID)
-	}
-	if got[0].Debit.Owner == got[0].Credit.Owner {
-		t.Error("the hub's own two legs were fused into a round trip")
-	}
-}
-
-// Two legs of one account pair only as a round trip: the same signature on
-// both, or a reversal on either. Two unrelated movements that merely share an
-// account and a size — a payment out, a transfer in — must not delete each
-// other.
-func TestSameAccountLegsPairOnlyAsARoundTrip(t *testing.T) {
-	on := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, AllowSameOwner: true}
-	pair := func(dSig, cSig string, rev bool) []TransferMatchPair {
-		d := leg("bank", "checking", "out", 100, -500)
-		c := leg("bank", "checking", "in", 101, 500)
-		d.Signature, c.Signature, c.Reversal = dSig, cSig, rev
-		return MatchTransferLegs([]TransferLeg{d, c}, on)
-	}
-	if got := pair("EXAMPLE PLAN CONTRIBUTION", "EXAMPLE BANK TRANSFER", false); len(got) != 0 {
-		t.Errorf("unrelated same-account legs paired: %+v", got)
-	}
-	if got := pair("EXAMPLE TRANSFER", "EXAMPLE TRANSFER", false); len(got) != 1 {
-		t.Errorf("a movement out and back under one signature did not pair: %+v", got)
-	}
-	if got := pair("EXAMPLE WIRE", "CANCELLED WIRE", true); len(got) != 1 {
-		t.Errorf("an entry and its reversal did not pair: %+v", got)
 	}
 }
 

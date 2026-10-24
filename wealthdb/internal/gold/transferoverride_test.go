@@ -10,11 +10,11 @@ func TestTransferOverridesSteerTheMatcher(t *testing.T) {
 	pool := func() []TransferLeg {
 		return []TransferLeg{
 			leg("bank", "checking", "out", 100, -500),
-			leg("bank", "checking", "coincidence", 100, 500),
+			leg("bank", "savings", "coincidence", 100, 500),
 			leg("broker", "acct", "real-partner", 103, 500),
 		}
 	}
-	opts := TransferMatchOpts{WindowDays: 5, AllowSameOwner: true}
+	opts := TransferMatchOpts{WindowDays: 5}
 
 	got := MatchTransferLegs(pool(), opts)
 	if len(got) != 1 || got[0].Credit.ID != "coincidence" {
@@ -23,7 +23,7 @@ func TestTransferOverridesSteerTheMatcher(t *testing.T) {
 
 	t.Run("forbidding one pairing frees the leg for the right one", func(t *testing.T) {
 		o, err := newTransferOverrides(nil, [][2]LegRef{{
-			{"bank", "checking", "out"}, {"bank", "checking", "coincidence"},
+			{"bank", "checking", "out"}, {"bank", "savings", "coincidence"},
 		}}, nil)
 		if err != nil {
 			t.Fatal(err)

@@ -94,6 +94,10 @@ type CashflowResult struct {
 	// named the other's account (spending.internal_transfer_matching.names)
 	// — still on amount and day, but ahead of every pair those alone make.
 	NamedPairs int
+	// ReversalPairs is how many legs no cross-account phase paired were
+	// paired with an opposite leg of the same amount on their own account:
+	// a booking and its reversal.
+	ReversalPairs int
 	// AmbiguousReferences is how many (source, reference) groups were
 	// REFUSED because the source had stamped the same reference on
 	// MORE than two rows — so it named something, and what it named

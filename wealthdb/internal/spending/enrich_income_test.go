@@ -332,24 +332,16 @@ func TestIncomePassIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestIncomeDepositReversalInsideTheMatcherWindow pins an interaction
-// worth knowing about rather than discovering: a deposit and its
-// same-amount reversal, days apart, are a transfer pair as far as the
-// matcher is concerned.
+// TestIncomeDepositReversalInsideTheMatcherWindow pins what a deposit
+// and its same-amount reversal on one account read as when they sit a
+// day apart, well inside the matcher's window.
 //
-// The matcher pool has never had a sign guard (migration 0044): it
-// admits `deposit` rows of either sign, and a negative one is the
-// outgoing shape it looks for. So the pair is matched, both legs read
-// `internal_transfer`, and both leave the income base — where decision
-// 12 would have had them net inside the payer's type instead.
-//
-// The NET is the same either way, which is why this is a note and not
-// a defect: a booking and its reversal contribute nothing to income
-// under either reading. What differs is the account of it — "money
-// moved between two tracked accounts" is not what happened — and the
-// possibility, shared with every matcher false positive, of pairing a
-// reversal with an unrelated movement of the same size. The remedy is
-// the one that already exists for that: the transfer-override ledger.
+// The matcher pool has no sign guard (migration 0044): it admits
+// `deposit` rows of either sign, and a negative one is the outgoing
+// shape it looks for. With no partner on another account, the reversal
+// phase pairs the two: both read `internal_transfer` and leave the
+// income base, rather than netting inside the payer's type (INCOME.md
+// §11). The net is the same either way.
 func TestIncomeDepositReversalInsideTheMatcherWindow(t *testing.T) {
 	db, ctx := openGold(t)
 	seedTxns(t, db, ctx,
