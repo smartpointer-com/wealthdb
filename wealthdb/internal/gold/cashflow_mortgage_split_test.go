@@ -587,6 +587,47 @@ func TestAMortgageInTheSourcesNewestSnapshotStands(t *testing.T) {
 	}
 }
 
+// TestAMortgageSeenIntradayStandsThroughALaterRunThatDay is the day
+// grain against a source that runs twice a day. The mortgage is last
+// seen at 02:00, and a run at 14:00 the same day re-covers its company
+// without it. Read from its day's midnight, any later snapshot that day
+// passes it, and the mortgage reads as repaid. Read from its snapshot's
+// instant, the later run ends it only once the source runs more than
+// one and a half cadences past that instant: it stands through the run
+// at 02:00 forty-five days on, and reads as repaid from the run at
+// 14:00 that day. Standing, an instalment after its last snapshot is
+// all interest.
+func TestAMortgageSeenIntradayStandsThroughALaterRunThatDay(t *testing.T) {
+	const run, later = 2 * 3600, 14 * 3600
+	for _, tc := range []struct {
+		name            string
+		last, lastLater int // the days of the source's newest 02:00 and 14:00 runs
+		repaid          bool
+	}{
+		{"the later run the same day", 190, 190, false},
+		{"one and a half cadences on, to the hour", 235, 234, false},
+		{"half a day past one and a half cadences", 235, 235, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, ctx := openMigrated(t)
+			seedResolutionFixture(t, db, ctx)
+			seedMortgageBalancesAt(t, db, ctx, run, monthlyMortgage)
+			seedSourceDays(t, db, ctx, 100, tc.last, run)
+			seedSourceDays(t, db, ctx, 190, tc.lastLater, later)
+			seedMortgagePayment(t, db, ctx, "I-OPEN", 192, -1500, "MORT")
+
+			want := map[string]float64{"mortgage_interest": -1500}
+			if tc.repaid {
+				want = map[string]float64{"mortgage_amortization": -1500}
+			}
+			if got := mortgageShares(t, db, ctx)["I-OPEN"]; !maps.Equal(got, want) {
+				t.Errorf("the instalment after the last snapshot splits as %v, want %v (repaid: %v)",
+					got, want, tc.repaid)
+			}
+		})
+	}
+}
+
 // TestMigration0143DDLIsRerunnable holds the mortgage's end to the
 // replay bar. Replaying 0093, 0096 or 0143 puts an older end rule back,
 // so the rerun replays every later re-issue after it, as Migrate would.
