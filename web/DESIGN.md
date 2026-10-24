@@ -129,9 +129,9 @@ ten dashboards. Their pickers:
   *Investing* picker nets the section whole or by asset class. The
   *Section* picker is narrower than the rest: the by-month charts and
   the line list take it, and the headline figures and the Sankey do not.
-  The projection's four reach the Plan cards alone, and those take no
-  other picker but the currency. There is no account picker, because
-  the household boundary defines the pool.
+  The projection's four reach the cash flow projection's cards alone,
+  and those take no other picker but the currency. There is no account
+  picker, because the household boundary defines the pool.
 - **Exposure**: a required currency, a time range, a source, a *Tax
   wrapper* picker, and an *Asset class* picker. A breakdown reads the
   latest day in the range, and a chart over time each month end in it.
@@ -432,22 +432,22 @@ calendar also matches the name the twin shows, so a click on
 `(unnamed)` lists every unnamed position's payments. No account label,
 amount, quantity or price reaches it.
 
-The **Cash Flow** dashboard has a Plan section below the statement. It
-shows `wealthdb cashflow projection`
+The **Cash Flow** dashboard has a projection section below the
+statement. It shows `wealthdb cashflow projection`
 ([wealthdb/docs/CASHFLOW.md](../wealthdb/docs/CASHFLOW.md) §12): the
 household's expected income against its expected outflows, month by
 month over the Horizon. It starts with the month after the current
 one. Two cards make it, both full width:
 
-- *Cash flow plan by month*: stacked bars by month. What comes in sits
-  above the axis: the investment income, the other income, the
+- *Cash flow projection by month*: stacked bars by month. What comes
+  in sits above the axis: the investment income, the other income, the
   principal returned and the vehicles where they pay out. What goes out
   sits below it: the operating outflows and the debt service. The net
   is a line over the bars. The vehicles' income is a second line: it
   stays outside the pool.
-- *Cash flow plan*: one row per month with every part, the net and the
-  quality (`projected`, then `trailing`, `terms` or `thin` where they
-  apply).
+- *Cash flow projection*: one row per month with every part, the net
+  and the quality (`projected`, then `trailing`, `terms` or `thin`
+  where they apply).
 
 The investment income is what the Income cards expect on the pool's
 accounts, read from `web_yield_parts` under the four projection
@@ -455,10 +455,11 @@ pickers. The principal returned comes from `web_yield_events` under the
 Maturing rule. It counts towards the net unless the rule is `roll`, as
 in the CLI. `web_cashflow_pool` (migration 0149) lists the pool's
 accounts. A projected part on any other account is the vehicles'
-income, and the net leaves it out. The other parts come from `web_cashflow_plan` (migration 0149): the
-look-back's monthly averages, which a refresh stores per currency. So
-the Plan cards take the Currency and the projection's four pickers, and
-no Time range, Source, Section or Investing picker. The other cards of
+income, and the net leaves it out. The other parts come from
+`web_cashflow_plan` (migration 0149): the look-back's monthly averages,
+which a refresh stores per currency. So the projection's cards take the
+Currency and the projection's four pickers, and no Time range, Source,
+Section or Investing picker. The other cards of
 the dashboard take none of the projection's four.
 
 The twin shows each part, and the net, as a share of all the income
@@ -519,8 +520,8 @@ A stale snapshot is caught before any of this is written. Provisioning
 probes the driver for the snapshot's schema version and for the serving
 views **by name**. It aborts with a "run `wealthdb web refresh`" message
 rather than converging the cards to a degraded shape. The version check
-catches a snapshot older than 0149. Such a snapshot lacks the cash-flow
-plan's look-back parts. One older than 0146 lacks the days the Income
+catches a snapshot older than 0149. Such a snapshot lacks the cash flow
+projection's look-back parts. One older than 0146 lacks the days the Income
 cards' received figures cover and the tax withheld on them. One older
 than 0138 lacks the yield views and the exposure of the debt too.
 The by-name probe finds each of these. An older one also reads wrong in ways no
@@ -745,15 +746,15 @@ wealthdb/docs/DESIGN.md §10.15 has the engine side):
   currency; each currency's rate per month and path; and the principals
   maturities return;
 - every income line received, to today;
-- the cash-flow plan's look-back parts per currency and month of the
-  projection (`report_cashflow_plan`, migration 0149).
+- the cash flow projection's look-back parts per currency and month of
+  the projection (`report_cashflow_plan`, migration 0149).
 
 Four views sit beside them. `web_income_days` and `web_income_withheld`
 (migration 0146) list each day the received figures cover and the tax
 booked on the income's accounts. `web_cashflow_plan` (migration 0149)
-serves the plan's look-back parts, which depend on no picker.
-`web_cashflow_pool` (migration 0149) lists the cash pool's accounts,
-which split the projection for the plan.
+serves the cash flow projection's look-back parts, which depend on no
+picker. `web_cashflow_pool` (migration 0149) lists the cash pool's
+accounts, which split the income projection for it.
 
 The pickers multiply: two rate paths, three maturing rules, any shift,
 three horizons. So no combination is stored. A card sums each part's
@@ -819,14 +820,15 @@ naming:
 
 - the privacy twins render no merchant or account label;
 - the Yield twin, the Income twin's cards of the holdings' income and
-  the Cash Flow twin's Plan cards carry no column but a share, a rate,
+  the Cash Flow twin's projection cards carry no column but a share, a rate,
   a year, a date or a label;
 - a snapshot missing a serving view, or older than the cards' schema,
   aborts the run (exit 3 for the older one).
 
-The SQL of the projection cards, the Plan cards and the Exposure debt
-and cycle cards also runs on an invented book under DuckDB, so the
-tests need the `duckdb` Python module, and fail without it. `make
+The SQL of the income projection cards, the cash flow projection
+cards and the Exposure debt and cycle cards also runs on an invented
+book under DuckDB, so the tests need the `duckdb` Python module, and
+fail without it. `make
 test-web` runs them in a venv of its own, `web/.venv`, that holds it
 (`web/requirements-test.txt`). Whether Metabase *accepts* a payload
 needs a live instance: `demo/check_dashboards.py` runs every card of a

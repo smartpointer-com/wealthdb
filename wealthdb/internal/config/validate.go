@@ -523,8 +523,9 @@ func (c *Config) validateIncome(seenIDs map[string]bool) error {
 // are checked against the same two vocabularies gold's stamped table
 // restates as CHECK constraints. The first two are rejected here rather
 // than at the stamp, because a boundary that fails mid-load leaves the
-// table half-written and the statement silently redrawn. The plan's
-// look-back is held to 0 (the default) or 1 to MaxCashflowLookbackMonths.
+// table half-written and the statement silently redrawn. The cash flow
+// projection's look-back is held to 0 (the default) or 1 to
+// MaxCashflowLookbackMonths.
 func (c *Config) validateCashflow(seenIDs map[string]bool) error {
 	if cf := c.Cashflow; cf != nil {
 		if cf.Accounts != nil {

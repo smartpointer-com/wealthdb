@@ -47,7 +47,7 @@ func init() {
 }
 
 // cashflowViews are the grains `wealthdb cashflow <view>` supports: the
-// statement's, coarsest first, then the plan.
+// statement's, coarsest first, then the cash flow projection.
 var cashflowViews = []string{"summary", "flows", "sankey", "transactions", "coverage", "projection"}
 
 // cashflowInvestingGrains is the `--investing` vocabulary: net the
@@ -201,20 +201,21 @@ func parsePlanWindow(from, to string, now time.Time, horizon int) (int64, int64,
 	return f, t, checkPlanWindow(f, t, now)
 }
 
-// checkPlanWindow refuses a plan's window [from, to] that starts before
-// next month or cuts a month, the CLI and the MCP server alike: the plan
-// sets whole months of the projection against the look-back's monthly
-// averages, so a part of a month would carry a whole month of outflows.
+// checkPlanWindow refuses a cash flow projection's window [from, to] that
+// starts before next month or cuts a month, the CLI and the MCP server
+// alike: it sets whole months of the income projection against the
+// look-back's monthly averages, so a part of a month would carry a whole
+// month of outflows.
 func checkPlanWindow(from, to int64, now time.Time) error {
 	n := now.UTC()
 	next := time.Date(n.Year(), n.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
 	monthStart := func(at int64) bool { d := time.Unix(at, 0).UTC(); return d.Day() == 1 && d.Unix()%86400 == 0 }
 	switch {
 	case from < next.Unix():
-		return fmt.Errorf("projection plans the months after this one: it starts in %s or later",
+		return fmt.Errorf("projection covers the months after this one: it starts in %s or later",
 			next.Format("2006-01"))
 	case !monthStart(from) || !monthStart(to+1):
-		return fmt.Errorf("projection plans whole months: its window starts on a month's first day and ends on a " +
+		return fmt.Errorf("projection covers whole months: its window starts on a month's first day and ends on a " +
 			"month's last")
 	}
 	return nil
@@ -283,9 +284,10 @@ func planClassColumn(class string) string { return strings.Trim(class, "()") }
 var defaultCashflowPlanColumns = []string{"period", "investment_income", "principal_returned", "vehicles_income",
 	"other_income", "operating_out", "debt_service", "vehicles", "net", "quality"}
 
-// cashflowPlanTags are the tags of the plan's quality column and what
-// each means (docs/CASHFLOW.md §12), in the order gold.CashflowPlan
-// lists them: the CLI usage and the MCP help both render them.
+// cashflowPlanTags are the tags of the cash flow projection's quality
+// column and what each means (docs/CASHFLOW.md §12), in the order
+// gold.CashflowPlan lists them: the CLI usage and the MCP help both
+// render them.
 var cashflowPlanTags = []tagNote{
 	{gold.PlanProjected, "investment_income, principal_returned and vehicles_income are the income projection's"},
 	{gold.PlanTrailing, "the other parts are monthly averages of the look-back"},
@@ -294,7 +296,7 @@ var cashflowPlanTags = []tagNote{
 }
 
 // planClassColumns are the -C delta that adds every operating-out class
-// column of the plan (gold.PlanOutClasses).
+// column of the cash flow projection (gold.PlanOutClasses).
 func planClassColumns() string {
 	cols := make([]string, len(gold.PlanOutClasses))
 	for i, c := range gold.PlanOutClasses {
@@ -552,7 +554,7 @@ on. Moves between the household's own accounts are invisible; buying
 and selling is shown NET per period, never as two gross bands.
 Positive is cash arriving, negative is cash leaving.
 
-Views (the statement coarsest → finest, then the plan):
+Views (the statement coarsest → finest, then the projection):
   summary       one row per period bucket: operating_in, operating_out,
                 operating, investing, financing, vehicles, net_cash_flow
   flows         one row per bucket and node at --level, netted at that level
@@ -571,7 +573,8 @@ Views (the statement coarsest → finest, then the plan):
                 began mid-period, 'ended' that it stopped before the
                 period, 'unmeasurable' means no balances at all. Sort by
                 gap where status is 'measured'.
-  projection    the plan, one row per month ahead; see Notes.
+  projection    the cash flow projection, one row per month ahead;
+                see Notes.
                 --period ` + strings.Join(seriesPeriods, " | ") + `
 
 Window (positional, optional; default: the trailing twelve months):
@@ -640,14 +643,15 @@ Notes
   node at all, so the Taxes node is the tax the household paid from its
   own accounts.
 
-  projection is the plan. investment_income and principal_returned
-  are what 'wealthdb income projection' expects on the pool's
-  accounts. vehicles_income is its income and principal on every
-  account outside the pool: a vehicle's, a giving account's, or one
-  cashflow.accounts excludes. The three sum to the projection's
-  expected and principal. other_income, operating_out and vehicles
-  are monthly averages of the months before this one, as the summary
-  counts them.
+  projection sets the income the holdings are expected to pay against
+  the averages of the past months. It is a projection, not a budget.
+  investment_income and principal_returned are what 'wealthdb income
+  projection' expects on the pool's accounts. vehicles_income is its
+  income and principal on every account outside the pool: a vehicle's,
+  a giving account's, or one cashflow.accounts excludes. The three sum
+  to the income projection's expected and principal. other_income,
+  operating_out and vehicles are monthly averages of the months before
+  this one, as the summary counts them.
   cashflow.projection.lookback_months sets how many (default ` + strconv.Itoa(config.DefaultCashflowLookbackMonths) +
 		`, at
   most ` + strconv.Itoa(config.MaxCashflowLookbackMonths) + `). debt_service runs each mortgage's average instalment to

@@ -25,13 +25,14 @@ func yieldInstants(toEpoch int64) []int64 {
 }
 
 // MaterializeYield rewrites the Yield dashboard's tables (migration
-// 0138) and the cash-flow plan's look-back parts (migration 0149): every
-// holding's figures and DV01 per tenor in every reporting currency at
-// yieldInstants, and at toEpoch the projection's parts, the rate table,
-// the principals maturities return, every income line received, and the
-// plan's parts over a look-back of lookback months (CashflowPlan). Each
-// figure is the yield report's (yield.Compute over YieldInputs), so the
-// dashboard and the CLI agree. It returns the number of rows written.
+// 0138) and the cash flow projection's look-back parts (migration
+// 0149): every holding's figures and DV01 per tenor in every reporting
+// currency at yieldInstants, and at toEpoch the projection's parts, the
+// rate table, the principals maturities return, every income line
+// received, and the cash flow projection's parts over a look-back of
+// lookback months (CashflowPlan). Each figure is the yield report's
+// (yield.Compute over YieldInputs), so the dashboard and the CLI agree.
+// It returns the number of rows written.
 // One transaction, so a reader sees the old tables or the new ones.
 func MaterializeYield(ctx context.Context, db *sql.DB, toEpoch, computedAt int64, lookback int) (int, error) {
 	// Every instant reads the same endings and spans, through the
@@ -321,10 +322,10 @@ func (m *yieldMaterializer) received(today map[string]*yield.Book, toEpoch int64
 		})
 }
 
-// plan writes the cash-flow plan's look-back parts (report_cashflow_plan)
-// for each month of today's projection after the current one, per
-// reporting currency: what CashflowPlan sets against the projection,
-// over a look-back of lookback months.
+// plan writes the cash flow projection's look-back parts
+// (report_cashflow_plan) for each month of today's income projection
+// after the current one, per reporting currency: what CashflowPlan sets
+// against the income projection, over a look-back of lookback months.
 func (m *yieldMaterializer) plan(today map[string]*yield.Book, toEpoch int64, lookback int) error {
 	type part struct {
 		ccy, part, class string
@@ -371,8 +372,8 @@ func (m *yieldMaterializer) plan(today map[string]*yield.Book, toEpoch int64, lo
 }
 
 // planMonths are the months of b's projection after the current one,
-// each by its first day, with no figure: the plan's look-back parts
-// depend on no picker.
+// each by its first day, with no figure: the cash flow projection's
+// look-back parts depend on no picker.
 func planMonths(b *yield.Book) []PlanMonth {
 	months := make([]PlanMonth, yield.Months)
 	for i := range months {

@@ -2434,17 +2434,17 @@ _key_go = _gold_go + _yield_go
 check("the keys the positions twin shows are the ones the engine builds",
       all(f'"{k}" +' in _key_go for k in p.SHOWN_KEY_PREFIXES), p.SHOWN_KEY_PREFIXES)
 
-section("the Cash Flow dashboard's Plan")
+section("the Cash Flow dashboard's projection")
 
-_PLAN = ["Cash flow plan by month", "Cash flow plan"]
+_PLAN = ["Cash flow projection by month", "Cash flow projection"]
 _plan_all = [n + s for n in _PLAN for s in ("", p.PRIVACY_SUFFIX)]
-check("the Plan cards and their twins are defined",
+check("the projection cards and their twins are defined",
       all(n in CARDS for n in _plan_all), [n for n in _plan_all if n not in CARDS])
-# The plan sits right below the statement, full width, on the base and
+# The projection sits right below the statement, full width, on the base and
 # the twin alike.
 _cf_spec = [t[0] for t in p.base_dashboards()["Cash Flow"][2]]
 _cf_at = _cf_spec.index("Cash flow statement by month")
-check("the Plan follows the statement on the Cash Flow dashboard, its twin's on the twin",
+check("the projection follows the statement on the Cash Flow dashboard, its twin's on the twin",
       _cf_spec[_cf_at + 1:_cf_at + 3] == _PLAN
       and [t[0] for t in DEFS["Cash Flow (privacy)"][3]][_cf_at + 1:_cf_at + 3]
       == [p.privacy_name(n) for n in _PLAN], _cf_spec)
@@ -2452,7 +2452,7 @@ _plan_sql = {n: sql_of(CARDS[n][2]) or "" for n in _plan_all}
 # The investment income is the Income cards' expected income, part by
 # part, over the months after this one; the principal is the events' of
 # the rule; the rest is the look-back's, in the picked currency.
-check("every Plan card sums the projection's parts under the pickers, months 1 to the Horizon",
+check("every projection card sums the income projection's parts under the pickers, months 1 to the Horizon",
       all(f"sum(({p.PART_INCOME}) * " + p._ccy_case("p.fx") + ")" in q and p.PARTS_FROM in q
           and "p.rule = {{maturing}}\n     AND p.month BETWEEN 1 AND CAST({{horizon}} AS INTEGER)" in q
           for q in _plan_sql.values()), [n for n, q in _plan_sql.items() if p.PARTS_FROM not in q])
@@ -2469,7 +2469,7 @@ check("...and the net is the pool's: it leaves the vehicles' income out",
 check("...and the look-back's parts, held to the picked currency",
       all("FROM web_cashflow_plan\n   WHERE currency = {{currency}}" in q
           and all(f"part = '{x}'" in q for x in p.PLAN_LOOKBACK_PARTS) for q in _plan_sql.values()))
-# The Plan cards take the currency and the projection's four, and none
+# The projection cards take the currency and the projection's four, and none
 # of the dashboard's own pickers: the look-back is fixed at the refresh.
 for _n in _plan_all:
     check(f"'{_n}' declares the currency and the projection's four tags alone",
@@ -2479,7 +2479,7 @@ for _n in _plan_all:
           "the Time range, Source, Section and Investing pickers do not reach this card" in CARDS[_n][1]
           and "Built for the Cash Flow dashboard; opened standalone it runs in" in CARDS[_n][1]
           and CARDS[_n][1].endswith(p.PRIVACY_DESC) == _n.endswith(p.PRIVACY_SUFFIX), CARDS[_n][1])
-check("every picker a Plan card maps lands on a tag it declares and reads",
+check("every picker a projection card maps lands on a tag it declares and reads",
       not _picker_targets_resolve(_plan_all), _picker_targets_resolve(_plan_all))
 _PROJ_IDS = {pid for pid, _t in p.PROJECTION_PICKERS}
 for _name in ("Cash Flow", "Cash Flow (privacy)"):
@@ -2487,7 +2487,7 @@ for _name in ("Cash Flow", "Cash Flow (privacy)"):
     _maps = {dc["card_id"]: {m["parameter_id"] for m in dc["parameter_mappings"]}
              for dc in _body["dashcards"] if dc["card_id"] is not None}
     _plan_ids = {card_ids[n] for n in _plan_all if n.endswith(p.PRIVACY_SUFFIX) == _name.endswith(p.PRIVACY_SUFFIX)}
-    check(f"on '{_name}', the Plan tiles answer the currency and the projection's four alone",
+    check(f"on '{_name}', the projection tiles answer the currency and the projection's four alone",
           len(_plan_ids) == 2 and all(_maps.get(c) == {p.CASHFLOW_CURRENCY_PARAM_ID} | _PROJ_IDS for c in _plan_ids),
           {c: _maps.get(c) for c in _plan_ids})
     check("...and no other tile answers a projection picker",
@@ -2522,7 +2522,7 @@ check("...the outflows below the axis, the principal where it counts",
 # horizon expects none, and shows no amount at all.
 _plan_money = {n: [c for c in _output_columns(_plan_sql[n]) if not c.endswith("_pct") and c not in
                    {"month", "quality"}] for n in _plan_all if n.endswith(p.PRIVACY_SUFFIX)}
-check("no Plan twin carries an amount: shares, the month and the quality alone",
+check("no projection twin carries an amount: shares, the month and the quality alone",
       not any(_plan_money.values()), _plan_money)
 check("...each a share of the horizon's expected income, blank where there is none",
       all("CASE WHEN sum(expected) > 0 THEN sum(expected) END AS total" in _plan_sql[n]
@@ -2597,8 +2597,8 @@ def _latest_definition(name):
 
 
 # The long views carry a row set per currency, written by their
-# materializers from the same materializeCurrencies list, the cash-flow
-# plan's look-back parts among them. The projection's
+# materializers from the same materializeCurrencies list, the cash flow
+# projection's look-back parts among them. The projection's
 # parts and principals are in each holding's currency, with its rate to
 # every reporting currency beside it; its rates table and the days the
 # income received covers hold no money.
@@ -2618,12 +2618,12 @@ _fx_missing = {v: [c for c in p.REPORTING_CURRENCIES if not re.search(
     for v, t in _FX_TABLES.items()}
 check("the projection's parts and principals carry a rate to every reporting currency",
       not any(_fx_missing.values()) and "range materializeCurrencies" in _ym, _fx_missing)
-# The Plan cards filter the look-back parts by name and re-add the tag
+# The projection cards filter the look-back parts by name and re-add the tag
 # the engine strips from their quality. A name respelt on either side
 # would read 0 with no error.
 _cfp = open(os.path.join(_REPO, "wealthdb", "internal", "gold", "cashflow_plan.go"), encoding="utf-8").read()
 _plan_parts = _go_list(_cfp, "PlanParts")
-check("the Plan cards read the look-back parts the engine writes, in its order",
+check("the projection cards read the look-back parts the engine writes, in its order",
       _plan_parts == list(p.PLAN_LOOKBACK_PARTS), _plan_parts)
 _projected = re.search(r'\bPlanProjected\s*=\s*"([^"]*)"', _cfp)
 check("...and re-add the tag it strips from the quality",
@@ -3276,7 +3276,7 @@ if duckdb is not None:
             check(f"'{_n}' draws the class shares `wealthdb exposure {_view}` prints, summing to 100",
                   bool(_want) and _got == _want and abs(sum(r[-1] for r in _bars) - 100) < 1e-9, (_got, _want))
 
-    section("the Cash Flow Plan cards' SQL, run on an invented book")
+    section("the Cash Flow projection cards' SQL, run on an invented book")
 
     # The book above, and migration 0149's look-back parts: each month in
     # dollars 50 of other income, 910 out (700 consumption, 10 fees, 200
@@ -3317,16 +3317,16 @@ if duckdb is not None:
                     "VALUES (0, 'src-1', 'acct-1', 'isin:XX01', 'USD', ?, 3, ?, 'maturity', 5000, 1.0, 0.8)",
                     [(r, _month_start(3) + dt.timedelta(days=14)) for r in ("cash", "idle", "roll")])
 
-    def _plan(name="Cash flow plan", **values):
-        """The plan table's rows on the book, by month index."""
+    def _plan(name="Cash flow projection", **values):
+        """The projection table's rows on the book, by month index."""
         return {k + 1: r for k, r in enumerate(_run(name, **values))}
 
     # Each month the pool expects 20 on the dollar cash, 12.50 on the
     # franc cash and 125 of rent, months 2 and 8 the coupon of 400 too:
-    # 2,690 over twelve months, and the plan's dividends 720 more. Month
+    # 2,690 over twelve months, and the projected dividends 720 more. Month
     # 3's net is 157.50 + 5,000 + 50 - 910 - 300 - 100.
     _t = _plan()
-    check("the plan lists the Horizon's months from the one after this",
+    check("the projection lists the Horizon's months from the one after this",
           len(_t) == 12 and _t[1][0].date() == _month_start(1) and _t[12][0].date() == _month_start(12), _t.get(1))
     check("...each part as `wealthdb cashflow projection` reads it, and the quality",
           all(_near(a, b) for a, b in zip(_t[3][1:9], (157.5, 5000, 60, 50, 910, 300, -100, 3897.5), strict=True))
@@ -3351,25 +3351,25 @@ if duckdb is not None:
           all(_near(a, 0.8 * b) for a, b in zip(_plan(currency="CHF")[3][1:9], _t[3][1:9], strict=True)))
     # The chart's bars sum to its net line, the outflows below the axis;
     # the vehicles' income is a line of its own.
-    _bars = _run("Cash flow plan by month")
+    _bars = _run("Cash flow projection by month")
     check("the chart's bars stack to the net, the outflows negative",
           len(_bars) == 12 and all(_near(sum(r[1:7]), r[7]) for r in _bars)
           and _near(_bars[2][5], -910) and _near(_bars[2][6], -300) and _near(_bars[2][3], 5000)
           and _near(_bars[4][8], 1060), (_bars[2], _bars[4]))
     check("...and under roll draw no principal",
-          all(r[3] == 0 and _near(sum(r[1:7]), r[7]) for r in _run("Cash flow plan by month", maturing="roll")))
-    # The twins divide by the 3,410 the twelve months expect, the plan's
+          all(r[3] == 0 and _near(sum(r[1:7]), r[7]) for r in _run("Cash flow projection by month", maturing="roll")))
+    # The twins divide by the 3,410 the twelve months expect, the projected
     # dividends included, and blank where nothing is expected.
-    _tw = _plan("Cash flow plan (privacy)")
+    _tw = _plan("Cash flow projection (privacy)")
     check("the twin's figures are shares of the horizon's expected income",
           _near(_tw[3][5], 100 * 910 / 3410) and _near(_tw[3][8], 100 * 3897.5 / 3410)
           and _near(sum(r[1] + r[3] for r in _tw.values()), 100 * (3410 + 1000) / 3410)
           and _tw[3][9] == "projected trailing terms", _tw[3])
     check("...the chart's alike",
-          all(_near(a, 100 * b / 3410) for ra, rb in zip(_run("Cash flow plan by month (privacy)"), _bars, strict=True)
+          all(_near(a, 100 * b / 3410) for ra, rb in zip(_run("Cash flow projection by month (privacy)"), _bars, strict=True)
               for a, b in zip(ra[1:], rb[1:], strict=True)))
     check("...and blank where the horizon expects no income",
-          all(v is None for r in _plan("Cash flow plan (privacy)", maturing="roll").values() for v in r[1:9]))
+          all(v is None for r in _plan("Cash flow projection (privacy)", maturing="roll").values() for v in r[1:9]))
 
 if FAILS:
     print(f"provision tests: {FAILS} failed")

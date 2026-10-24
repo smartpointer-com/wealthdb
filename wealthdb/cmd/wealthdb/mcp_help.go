@@ -243,7 +243,7 @@ Every result header states the dates it used, as ISO dates.`
 
 // qualityHelp is describe topic=quality: the tags of the returns, gains,
 // exposure and yield quality columns, of income's forward views and of
-// the cash-flow plan.
+// the cash flow projection.
 var qualityHelp = returnsGainsQualityHelp + "\n\n" + exposureQualityHelp() + "\n\n" + yieldQualityHelp() + "\n\n" +
 	incomeForwardQualityHelp() + "\n\n" + cashflowPlanQualityHelp()
 

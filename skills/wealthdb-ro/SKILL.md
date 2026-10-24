@@ -186,7 +186,7 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
 | **Gained or lost**; cost basis; tax lots | `gains` | `summary`, `sources`, `portfolios`, `accounts`, `positions`, `realized`, `lots`, `coverage`, `check` |
 | **Spent**, on what | `spending` | `summary`, `categories`, `transactions` |
 | **Received**, from whom; what the holdings are **expected to pay** | `income` | `summary`, `types`, `transactions`; forward: `projection`, `calendar`, `sources`, `portfolios`, `accounts`, `positions` |
-| Where the household's cash came from and went; mortgage, retirement, education payments; the plan ahead | `cashflow` | `summary`, `flows`, `sankey`, `transactions`, `coverage`, `projection` |
+| Where the household's cash came from and went; mortgage, retirement, education payments; the months ahead projected | `cashflow` | `summary`, `flows`, `sankey`, `transactions`, `coverage`, `projection` |
 
 Holdings totals reconcile: `global` ≈ sum of `sources`, `portfolios`,
 `accounts`, and `positions --with-cash`.

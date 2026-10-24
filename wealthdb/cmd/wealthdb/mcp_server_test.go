@@ -270,9 +270,9 @@ func callHeader(t *testing.T, cs *mcp.ClientSession, tool string, args map[strin
 	return h
 }
 
-// TestMCPCashflowPlanRefusals: the plan plans whole months from next
-// month on, takes no level or investing grain and no total period, and
-// its assumptions belong to it alone.
+// TestMCPCashflowPlanRefusals: the cash flow projection covers whole
+// months from next month on, takes no level or investing grain and no
+// total period, and its assumptions belong to it alone.
 func TestMCPCashflowPlanRefusals(t *testing.T) {
 	t.Parallel()
 	cs := connect(t, newTestMCP(setupYieldGold(t), false), time.Now())
@@ -286,9 +286,9 @@ func TestMCPCashflowPlanRefusals(t *testing.T) {
 		{map[string]any{"view": "projection", "from": month.Format(time.DateOnly)}, "it starts in " +
 			next.Format("2006-01") + " or later"},
 		{map[string]any{"view": "projection", "from": next.AddDate(0, 0, 14).Format(time.DateOnly),
-			"to": next.AddDate(0, 3, -1).Format(time.DateOnly)}, "plans whole months"},
+			"to": next.AddDate(0, 3, -1).Format(time.DateOnly)}, "covers whole months"},
 		{map[string]any{"view": "projection", "from": next.Format(time.DateOnly),
-			"to": next.AddDate(0, 1, 14).Format(time.DateOnly)}, "plans whole months"},
+			"to": next.AddDate(0, 1, 14).Format(time.DateOnly)}, "covers whole months"},
 		{map[string]any{"view": "projection", "level": "class"}, "projection takes no level or investing"},
 		{map[string]any{"view": "projection", "period": "total"}, "projection takes period monthly"},
 		{map[string]any{"view": "summary", "rates": "forward"}, "rates, maturing and shift belong to the projection view"},

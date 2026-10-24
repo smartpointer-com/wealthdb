@@ -96,13 +96,12 @@ func TestThePlansLookbackCarriesEachMortgage(t *testing.T) {
 	}
 }
 
-// The plan sets the projection's months against the look-back: each
-// month the averages, a standing mortgage's instalment to the month its
-// maturity falls in, none for one the book no longer holds; net leaves
-// the vehicles' income out, and the principal under the roll rule; a
-// quarter sums its months, a
-// window's first quarter perhaps short; the tags say what each part
-// rests on.
+// The cash flow projection sets the income projection's months against
+// the look-back: each month the averages, a standing mortgage's
+// instalment to the month its maturity falls in, none for one the book
+// no longer holds; net leaves the vehicles' income out, and the
+// principal under the roll rule; a quarter sums its months, a window's
+// first quarter perhaps short; the tags say what each part rests on.
 func TestCashflowPlan(t *testing.T) {
 	day := func(y int, m time.Month) time.Time { return time.Date(y, m, 1, 0, 0, 0, 0, time.UTC) }
 	maturity := time.Date(2027, 1, 15, 0, 0, 0, 0, time.UTC)

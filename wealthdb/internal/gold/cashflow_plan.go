@@ -12,22 +12,23 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
-// The cash-flow plan (docs/CASHFLOW.md §12): the income the projection
-// expects set against the outflows the household's look-back shows,
-// month by month. The projection gives investment income and principal,
-// split by the pool's boundary; the look-back gives the rest as monthly
-// averages over the cash flow statement's lines (cashflow_lines_outccy),
-// so a part of the plan is the statement's own figure for the trailing
-// months spread evenly.
+// The cash flow projection (docs/CASHFLOW.md §12): the income the income
+// projection expects set against the outflows the household's look-back
+// shows, month by month. The income projection gives investment income
+// and principal, split by the pool's boundary; the look-back gives the
+// rest as monthly averages over the cash flow statement's lines
+// (cashflow_lines_outccy), so a part of the cash flow projection is the
+// statement's own figure for the trailing months spread evenly.
 
-// projectedIncomeDetailed are the income values the projection projects
-// (incomeTypeSQL): their lines are its received half, so the plan's
-// other income leaves them out and counts none twice.
+// projectedIncomeDetailed are the income values the income projection
+// projects (incomeTypeSQL): their lines are its received half, so the
+// cash flow projection's other income leaves them out and counts none
+// twice.
 var projectedIncomeDetailed = []string{"INCOME_INTEREST_EARNED", "INCOME_DIVIDENDS", "INCOME_DISTRIBUTIONS",
 	"INCOME_RENTAL", "INCOME_RETIREMENT_PENSION"}
 
-// PlanOutClasses are the operating-out classes the plan breaks
-// operating_out into (`-C +<class>`), in the vocabulary's order, the
+// PlanOutClasses are the operating-out classes the cash flow projection
+// breaks operating_out into (`-C +<class>`), in the vocabulary's order, the
 // unresolved class last, as the statement names it.
 var PlanOutClasses = []string{string(canonical.ClassConsumption), string(canonical.ClassFees),
 	string(canonical.ClassTaxes), string(canonical.ClassGiving), "(uncategorized)"}
@@ -169,15 +170,15 @@ func CashflowPlanLookback(ctx context.Context, db querier, from, to int64, outCc
 	return out, nil
 }
 
-// PlanWindow is the look-back window of a plan made at now: the months
-// whole before the current one, lookback of them.
+// PlanWindow is the look-back window of a cash flow projection made at
+// now: the months whole before the current one, lookback of them.
 func PlanWindow(now time.Time, lookback int) (from, to int64) {
 	n := now.UTC()
 	start := time.Date(n.Year(), n.Month(), 1, 0, 0, 0, 0, time.UTC)
 	return start.AddDate(0, -lookback, 0).Unix(), start.Unix() - 1
 }
 
-// The quality tags of a plan row: what each part rests on.
+// The quality tags of a cash flow projection row: what each part rests on.
 const (
 	PlanProjected = "projected" // the income projection's
 	PlanTrailing  = "trailing"  // a monthly average of the look-back
@@ -237,11 +238,11 @@ func PlanMonths(b *yield.Book, amounts []yield.Amount, w yield.Window, pool map[
 	return months
 }
 
-// PlanRow is one row of the plan: a month, or a period of them, and
-// what each part brings in or takes out of it. Net is the pool's: it
-// leaves out VehiclesIncome, which stays inside the vehicles, and counts
-// principal only where it lands in cash: under the roll rule a
-// maturity's principal buys its successor.
+// PlanRow is one row of the cash flow projection: a month, or a period
+// of them, and what each part brings in or takes out of it. Net is the
+// pool's: it leaves out VehiclesIncome, which stays inside the vehicles,
+// and counts principal only where it lands in cash: under the roll rule
+// a maturity's principal buys its successor.
 type PlanRow struct {
 	Period                                              time.Time
 	Total, Average                                      bool

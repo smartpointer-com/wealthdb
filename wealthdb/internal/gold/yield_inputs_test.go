@@ -412,9 +412,9 @@ func TestTheLineOfASecurity(t *testing.T) {
 }
 
 // Every detailed type incomeTypeSQL reads an income line by is one of
-// the income taxonomy's, and the plan's other income leaves out exactly
-// those (projectedIncomeDetailed), so it counts none twice and drops
-// none.
+// the income taxonomy's, and the cash flow projection's other income
+// leaves out exactly those (projectedIncomeDetailed), so it counts none
+// twice and drops none.
 func TestIncomeTypesReadTheTaxonomy(t *testing.T) {
 	t.Parallel()
 	read := regexp.MustCompile(`income_detailed = '(\w+)'`).FindAllStringSubmatch(incomeTypeSQL, -1)

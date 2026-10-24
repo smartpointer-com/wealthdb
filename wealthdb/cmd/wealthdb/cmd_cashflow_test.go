@@ -315,7 +315,7 @@ func TestCashflowCLIEndToEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("the projection plans the months ahead and refuses what it does not take", func(t *testing.T) {
+	t.Run("the projection covers the months ahead and refuses what it does not take", func(t *testing.T) {
 		plan := func(args ...string) (string, string, int) {
 			return run(t, append([]string{"-c", cfg, "cashflow"}, args...)...)
 		}
@@ -331,7 +331,7 @@ func TestCashflowCLIEndToEnd(t *testing.T) {
 			}
 		}
 		if !strings.Contains(so, "monthly_average") || !strings.Contains(so, "projected trailing") {
-			t.Errorf("the plan lacks its average row or its tags:\n%s", so)
+			t.Errorf("the projection lacks its average row or its tags:\n%s", so)
 		}
 		for _, args := range [][]string{
 			{"projection", "2026-05-01", "2026-06-30"},
@@ -449,8 +449,9 @@ func TestTransactionsCarriesTheCashflowColumns(t *testing.T) {
 	}
 }
 
-// The plan's window starts next month or later, on a month's first day,
-// and ends on a month's last: a window cut at either end is refused.
+// The cash flow projection's window starts next month or later, on a
+// month's first day, and ends on a month's last: a window cut at either
+// end is refused.
 func TestCheckPlanWindow(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
@@ -464,10 +465,10 @@ func TestCheckPlanWindow(t *testing.T) {
 		{day(2027, 1, 1), day(2027, 4, 1) - 1, ""},
 		{day(2026, 7, 1), day(2026, 9, 1) - 1, "it starts in 2026-08 or later"},
 		{day(2026, 6, 1), day(2026, 7, 1) - 1, "it starts in 2026-08 or later"},
-		{day(2026, 8, 15), day(2026, 10, 1) - 1, "plans whole months"},
-		{day(2026, 8, 1), day(2026, 9, 15) - 1, "plans whole months"},
-		{day(2026, 8, 1), day(2026, 9, 1), "plans whole months"},
-		{day(2026, 8, 1) + 3600, day(2026, 9, 1) - 1, "plans whole months"},
+		{day(2026, 8, 15), day(2026, 10, 1) - 1, "covers whole months"},
+		{day(2026, 8, 1), day(2026, 9, 15) - 1, "covers whole months"},
+		{day(2026, 8, 1), day(2026, 9, 1), "covers whole months"},
+		{day(2026, 8, 1) + 3600, day(2026, 9, 1) - 1, "covers whole months"},
 	} {
 		err := checkPlanWindow(c.from, c.to, now)
 		if got := fmt.Sprint(err); (c.want == "") != (err == nil) || (c.want != "" && !strings.Contains(got, c.want)) {
@@ -477,8 +478,9 @@ func TestCheckPlanWindow(t *testing.T) {
 	}
 }
 
-// Every tag the plan's quality column prints reaches the CLI usage and
-// the MCP quality help, in the order the plan lists them.
+// Every tag the cash flow projection's quality column prints reaches the
+// CLI usage and the MCP quality help, in the order the projection lists
+// them.
 func TestPlanTagsReachBothFrontEnds(t *testing.T) {
 	t.Parallel()
 	maturity := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -497,7 +499,7 @@ func TestPlanTagsReachBothFrontEnds(t *testing.T) {
 		}
 	}
 	if want := strings.Fields(rows[0].Quality); !slices.Equal(listed, want) {
-		t.Errorf("tags %v, want the plan's %v", listed, want)
+		t.Errorf("tags %v, want the projection's %v", listed, want)
 	}
 }
 

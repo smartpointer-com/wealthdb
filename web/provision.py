@@ -738,7 +738,11 @@ RETIRED_CARD_NAMES = [
                       # cash, each by its term.
                       "Exposure by credit rating", "Exposure by credit rating (privacy)",
                       "Exposure by maturity", "Exposure by maturity (privacy)",
-                      "Exposure by coupon", "Exposure by coupon (privacy)"]
+                      "Exposure by coupon", "Exposure by coupon (privacy)",
+                      # The cash flow projection's cards are named for
+                      # what they show: a projection, not a plan.
+                      "Cash flow plan by month", "Cash flow plan by month (privacy)",
+                      "Cash flow plan", "Cash flow plan (privacy)"]
 
 # Dashboard names retired by renames ("Net Worth" undersold the income /
 # cost flow tiles); archived on provision so a re-run cleans them up.
@@ -985,10 +989,10 @@ FILTER_FIELD_COLUMNS = {
     # cards' Time range lands on them, and a card keeps the received rows
     # and the withheld tax of the days it selects.
     "web_income_days": ("day",),
-    # The cash-flow plan's look-back parts (migration 0149), per currency
-    # and month of the projection, and the accounts of the cash pool the
-    # Plan cards split the projection by. No field filter binds them: the
-    # Plan cards take no picker but the currency and the projection's.
+    # The cash flow projection's look-back parts (migration 0149), per
+    # currency and month ahead, and the accounts of the cash pool its cards
+    # split the income projection by. No field filter binds them: those
+    # cards take no picker but the currency and the projection's four.
     "web_cashflow_plan": (),
     "web_cashflow_pool": (),
 }
@@ -2596,13 +2600,14 @@ def base_dashboards():
             "household is the accounts in its own tax wrappers; "
             "retirement plans, trusts and charitable vehicles are "
             "vehicles it pays into and draws on. Own-account moves are "
-            "invisible, and buying and selling is shown NET. The plan sets "
-            "the income the holdings are expected to pay against the "
-            "outflows of the look-back, month by month over the Horizon, "
-            "under the Rate path, Maturing and Shift pickers. " + note,
+            "invisible, and buying and selling is shown NET. The cash flow "
+            "projection sets the income the holdings are expected to pay "
+            "against the average outflows of the past months, month by "
+            "month over the Horizon, under the Rate path, Maturing and Shift "
+            "pickers. " + note,
             "range", [
             # Five headline figures, then the diagram at the centre, then
-            # the shape of the window and the plan of the months ahead,
+            # the shape of the window and the projection of the months ahead,
             # then the two sides of operating, then the swing sections,
             # then the lines.
             ("Operating in", 0, 0, 5, 3, "occurred_at"),
@@ -2613,8 +2618,8 @@ def base_dashboards():
             # Full width and tall: the diagram is the dashboard.
             ("Cash flow", 3, 0, 24, 12, "occurred_at"),
             ("Cash flow statement by month", 15, 0, 24, 8, "occurred_at"),
-            ("Cash flow plan by month", 23, 0, 24, 8, None),
-            ("Cash flow plan", 31, 0, 24, 9, None),
+            ("Cash flow projection by month", 23, 0, 24, 8, None),
+            ("Cash flow projection", 31, 0, 24, 9, None),
             ("Inflows by class by month", 40, 0, 12, 7, "occurred_at"),
             ("Outflows by class by month", 40, 12, 12, 7, "occurred_at"),
             ("Investing by month", 47, 0, 12, 7, "occurred_at"),
@@ -3767,8 +3772,8 @@ def income_projected_cards(db_id, privacy):
     return out
 
 
-# The cash-flow plan's look-back parts (web_cashflow_plan) and the order
-# its chart stacks them: what comes in, then what goes out.
+# The cash flow projection's look-back parts (web_cashflow_plan) and the
+# order its chart stacks them: what comes in, then what goes out.
 PLAN_LOOKBACK_PARTS = ("other_income", "operating_out", "debt_service", "vehicles")
 PLAN_INCOME_PARTS = ("investment_income", "other_income", "principal_returned", "vehicles")
 PLAN_OUTFLOW_PARTS = ("operating_out", "debt_service")
@@ -3783,8 +3788,9 @@ def _pool_join(a):
 
 
 def cashflow_plan_cards(db_id, privacy):
-    """The Cash Flow dashboard's Plan cards, or with `privacy` their
-    privacy variants: name -> (display, description, dataset_query, viz).
+    """The Cash Flow dashboard's projection cards, or with `privacy`
+    their privacy variants: name -> (display, description, dataset_query,
+    viz).
     `wealthdb cashflow projection` month by month over the Horizon
     (docs/CASHFLOW.md §12): the income projection's investment income and
     the principal its maturities return, read from today's projection
@@ -3793,8 +3799,8 @@ def cashflow_plan_cards(db_id, privacy):
     them, and split by the cash pool's accounts (web_cashflow_pool): the
     rest is the vehicles' income. They are set against the look-back's
     monthly averages a refresh stores (web_cashflow_plan, migration
-    0149). The plan starts with the month after this one, so month 0
-    never counts.
+    0149). The cash flow projection starts with the month after this
+    one, so month 0 never counts.
 
     The cards take the Currency and the projection's pickers and none of
     the dashboard's own: the look-back is fixed when a refresh writes
@@ -3842,13 +3848,13 @@ def cashflow_plan_cards(db_id, privacy):
             "    LEFT JOIN ex ON ex.m = lb.m AND ex.pool\n    LEFT JOIN pr ON pr.m = lb.m AND pr.pool\n"
             "    LEFT JOIN ex xv ON xv.m = lb.m AND NOT xv.pool\n"
             "    LEFT JOIN pr rv ON rv.m = lb.m AND NOT rv.pool),\n"
-            "plan AS (\n"
+            "proj AS (\n"
             "  SELECT *, investment_income + principal_counted + other_income - operating_out - debt_service\n"
             "            + vehicles AS net\n    FROM j)")
     # The twin's denominator: all the income the projection expects over
     # the horizon, on every account, where it expects some.
     plan += (",\nd AS (SELECT CASE WHEN sum(expected) > 0 THEN sum(expected) END AS total\n"
-             "        FROM plan)\n" if privacy else "\n")
+             "        FROM proj)\n" if privacy else "\n")
 
     def name_of(c):
         return f"{c}_pct" if privacy else c
@@ -3863,33 +3869,34 @@ def cashflow_plan_cards(db_id, privacy):
     chart_expr = {**{x: x for x in PLAN_INCOME_PARTS}, "principal_returned": "principal_counted",
                   **{x: f"-{x}" for x in PLAN_OUTFLOW_PARTS}, "net": "net", "vehicles_income": "vehicles_income"}
     chart_cols = [*PLAN_INCOME_PARTS, *PLAN_OUTFLOW_PARTS, "net", "vehicles_income"]
-    share = (" Each figure is a share of all the income the projection expects over the Horizon, on "
-             "every account; blank where it expects none." if privacy else "")
-    card("Cash flow plan by month", "combo",
-         "The plan per month over the Horizon, as `wealthdb cashflow projection` reads it. Above the "
-         "axis what comes into the cash pool: the investment income the projection expects on the "
-         "pool's accounts, the other income, the principal maturities return there where it lands in "
-         "cash, and the vehicles where they pay out. Below it what goes out: the operating outflows "
-         "and the debt service. The net is a line: what the month adds to the cash pool. The vehicles' "
-         "income is the other line: the income and principal the projection expects on the accounts "
-         "outside the pool. It stays there." + share,
+    share = (" Each figure is a share of all the income the holdings are expected to pay over the "
+             "Horizon, on every account; blank where none is expected." if privacy else "")
+    card("Cash flow projection by month", "combo",
+         "The cash flow projection per month over the Horizon, as `wealthdb cashflow projection` reads "
+         "it: what the holdings are expected to pay, set against the average outflows of the past "
+         "months. Above the axis what comes into the cash pool: the investment income the income "
+         "projection expects on the pool's accounts, the other income, the principal maturities return "
+         "there where it lands in cash, and the vehicles where they pay out. Below it what goes out: "
+         "the operating outflows and the debt service. The net is a line: what the month adds to the "
+         "cash pool. The vehicles' income is the other line: the income and principal the income "
+         "projection expects on the accounts outside the pool. It stays there." + share,
          plan + "SELECT month,\n       " + ",\n       ".join(col(chart_expr[c], c) for c in chart_cols) +
-         "\n  FROM plan\n ORDER BY month",
+         "\n  FROM proj\n ORDER BY month",
          {"graph.dimensions": ["month"], "graph.metrics": [name_of(c) for c in chart_cols], **STACKED_VIZ,
           "series_settings": {name_of(c): {"display": "line" if c in ("net", "vehicles_income") else "bar"}
                               for c in chart_cols},
           **(_share_viz(*(name_of(c) for c in chart_cols)) if privacy else {})})
     table_cols = ["investment_income", "principal_returned", "vehicles_income", *PLAN_LOOKBACK_PARTS, "net"]
-    card("Cash flow plan", "table",
-         "The plan as a table, one row per month of the Horizon: each part, the net and what the "
-         "figures rest on. The investment income and the principal returned are the pool's; the "
-         "vehicles' income is the projection's income and principal on the other accounts, which the "
-         "net leaves out. The operating outflows and the debt service are positive, the vehicles "
-         "signed. The net counts the principal returned unless the Maturing rule is roll, under which "
-         "it buys its successor. The quality lists projected, and trailing, terms or thin where they "
-         "apply." + share,
+    card("Cash flow projection", "table",
+         "The cash flow projection as a table, one row per month of the Horizon: each part, the net "
+         "and what the figures rest on. The investment income and the principal returned are the "
+         "pool's; the vehicles' income is the income projection's income and principal on the other "
+         "accounts, which the net leaves out. The operating outflows and the debt service are "
+         "positive, the vehicles signed. The net counts the principal returned unless the Maturing "
+         "rule is roll, under which it buys its successor. The quality lists projected, and trailing, "
+         "terms or thin where they apply." + share,
          plan + "SELECT month,\n       " + ",\n       ".join(col(c, c) for c in table_cols) +
-         ",\n       quality\n  FROM plan\n ORDER BY month",
+         ",\n       quality\n  FROM proj\n ORDER BY month",
          _share_viz(*(name_of(c) for c in table_cols)) if privacy else {})
     return out
 
@@ -4125,7 +4132,7 @@ POSITION_TAG = {"id": "position-tag", "name": "position", "display-name": "Posit
                 "type": "text", "required": False}
 PROJECTION_PICKERS = [(RATES_PARAM_ID, "rates"), (MATURING_PARAM_ID, "maturing"),
                       (SHIFT_PARAM_ID, "shift"), (HORIZON_PARAM_ID, "horizon")]
-# The Cash Flow dashboard's Plan cards take its currency and the
+# The Cash Flow dashboard's projection cards take its currency and the
 # projection's four, and none of its other pickers (cashflow_plan_cards).
 CASHFLOW_PLAN_PICKERS = [(CASHFLOW_CURRENCY_PARAM_ID, "currency"), *PROJECTION_PICKERS]
 
@@ -5257,8 +5264,9 @@ def dashboard_defs():
         "Cash Flow": (
         "Privacy view: values are shares (%) of the window's own hub — "
         "the total the diagram flows through, which moves with the "
-        "Investing picker — or of its biggest month; the plan's are shares "
-        "of all the income the projection expects over the Horizon. The diagram's nodes "
+        "Investing picker — or of its biggest month; the cash flow "
+        "projection's figures are shares of all the income the holdings are "
+        "expected to pay over the Horizon. The diagram's nodes "
         "are vocabulary and never a merchant, a payer, an account or an "
         "instrument, so the twin needs normalisation rather than "
         "redaction; the one card that named an account drops the column. ")}
@@ -5292,7 +5300,7 @@ def dashboard_parameters(model_ids, mode, name=""):
     their twin, which has no account picker; Cash Flow's twin carries
     the same set, having no account picker to drop. Yield is Exposure's
     set plus the projection's four pickers, which Income takes too,
-    beside a position of its own, and Cash Flow for its Plan cards."""
+    beside a position of its own, and Cash Flow for its projection cards."""
     if mode is None:
         return []
 
@@ -5452,8 +5460,8 @@ def dashboard_parameters(model_ids, mode, name=""):
         # that declare its tag; the headline figures and the diagram
         # decline it, identically on the base and the twin. The
         # projection's four follow, the Horizon first as on Income; they
-        # bind only to the Plan cards (CASHFLOW_PLAN_PICKERS), which take
-        # none of the others but the currency.
+        # bind only to the projection cards (CASHFLOW_PLAN_PICKERS), which
+        # take none of the others but the currency.
         rates, maturing, shift, horizon = projection
         return [currency_picker(CASHFLOW_CURRENCY_PARAM_ID), investing,
                 time_range, source,
@@ -5608,7 +5616,7 @@ def missing_web_views(base, sid, db_id):
 
 
 # The oldest gold schema the cards can read: the migration that adds the
-# cash-flow plan's look-back parts the Plan cards read (0149). A snapshot
+# cash flow projection's look-back parts its cards read (0149). A snapshot
 # older than 0149 lacks that view, one older than 0146 the days the
 # Income cards' received figures cover and the tax withheld on them, and
 # one older than 0138 the yield views and the exposure of the debt, which the

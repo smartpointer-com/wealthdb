@@ -262,7 +262,7 @@ _gen_password() {
 # runs BEFORE _snapshot, so a failure aborts under web_main's `set -e`
 # and the previous snapshot keeps serving.
 _materialize() {
-    echo "web: materializing serving tables, returns, gains, exposure, yield and the cash-flow plan into gold …" >&2
+    echo "web: materializing serving tables, returns, gains, exposure, yield and the cash flow projection into gold …" >&2
     local rc=0
     if [ -n "${WEALTHDB_CONFIG:-}" ]; then
         "$WEALTHDB" -c "$WEALTHDB_CONFIG" web-materialize || rc=$?

@@ -65,9 +65,9 @@ func TestMaterializeYieldMatchesTheReport(t *testing.T) {
 		&currencies); err != nil || rates != currencies*len(yield.Paths)*(yield.Months+1) {
 		t.Errorf("%d rates over %d currencies (%v)", rates, currencies, err)
 	}
-	// The plan's look-back parts: every month of the projection after the
-	// current one, in each currency a book was made in, each part once
-	// and operating_out once per class.
+	// The cash flow projection's look-back parts: every month of the
+	// income projection after the current one, in each currency a book
+	// was made in, each part once and operating_out once per class.
 	var planRows, nMonths, planCurrencies int
 	if err := db.QueryRowContext(ctx, `SELECT count(*), count(DISTINCT month), count(DISTINCT currency)
 	    FROM web_cashflow_plan`).Scan(&planRows, &nMonths, &planCurrencies); err != nil || nMonths != yield.Months ||
@@ -78,7 +78,7 @@ func TestMaterializeYieldMatchesTheReport(t *testing.T) {
 	if !slices.Equal(slices.Sorted(slices.Values(parts)), slices.Sorted(slices.Values(PlanParts))) {
 		t.Errorf("plan parts %v, want %v", parts, PlanParts)
 	}
-	// Their values are the plan's own, month by month.
+	// Their values are the cash flow projection's own, month by month.
 	from, to := PlanWindow(time.Unix(at, 0), 12)
 	lb, err := CashflowPlanLookback(ctx, db, from, to, "USD")
 	if err != nil {
@@ -87,7 +87,7 @@ func TestMaterializeYieldMatchesTheReport(t *testing.T) {
 	// The book is of the end of June 2026: its plan starts in July.
 	months := planMonths(b)
 	if !months[0].Start.Equal(ymd(2026, 7, 1)) {
-		t.Errorf("the plan's first month starts %s, want 2026-07-01", months[0].Start)
+		t.Errorf("the projection's first month starts %s, want 2026-07-01", months[0].Start)
 	}
 	plan := CashflowPlan(lb, PlanStanding(b), months, 1, false)
 	stored, err := db.QueryContext(ctx, `SELECT month, part, SUM(value), any_value(month_start)::VARCHAR

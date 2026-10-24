@@ -271,7 +271,7 @@ func yieldCases() []goldenCase {
 // forwardIncomeCases covers each forward view of the income tool over a
 // window from fixtureToday's month to two years on, under assumptions
 // other than the defaults; then the default window and each lone bound (a
-// lone to starts next month); and the cash-flow plan over the default
+// lone to starts next month); and the cash flow projection over the default
 // window and quarterly under the same assumptions.
 func forwardIncomeCases() []goldenCase {
 	now := fixtureToday
@@ -292,8 +292,8 @@ func forwardIncomeCases() []goldenCase {
 			map[string]any{"view": "projection", "from": next}},
 		goldenCase{"income projection to", []string{"income", "projection", nextMonth, next}, "income",
 			map[string]any{"view": "projection", "to": next}},
-		// The cash-flow plan, the same projection set against the
-		// look-back.
+		// The cash flow projection: the income projection set against
+		// the look-back.
 		goldenCase{"cashflow projection default", []string{"cashflow", "projection"}, "cashflow",
 			map[string]any{"view": "projection"}},
 		goldenCase{"cashflow projection quarterly", []string{"cashflow", "projection", nextMonth, to, "--period",
