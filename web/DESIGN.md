@@ -307,7 +307,9 @@ It reads in this order:
 - each cash balance, term deposit and money-market holding against
   its benchmark, the worst paid first;
 - each bond and fund's implied yield against its duration, beside the
-  DV01 per curve currency and tenor, stacked by what holds it;
+  DV01 per curve currency and tenor: a group of bars per currency, the
+  most rate risk first, a bar per tenor. `wealthdb yield curve` splits
+  each by what holds it;
 - each stock's dividend yield against its payout, beside the share of
   value each quality tag covers, `thin` among them;
 - the yields over time, beside the duration over time. They are two

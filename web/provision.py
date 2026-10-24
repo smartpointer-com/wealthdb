@@ -3150,9 +3150,6 @@ HELD_JOIN = ("    JOIN h ON h.silver_source_id = p.silver_source_id"
 # note implies no yield, so it never plots.
 CASH_KINDS = ("deposit", "term_deposit", "money_market")
 DURATION_KINDS = ("bond", "bill", "floating_note", "bond_fund", "multi_asset", "money_market")
-# web_yield_curve's holders (yield.HeldIn), the stack of the DV01 bars
-# (docs/YIELD.md §6).
-CURVE_HOLDERS = ("bonds", "funds", "cash", "liabilities")
 
 
 def yield_cards(db_id, privacy):
@@ -3302,50 +3299,53 @@ def yield_cards(db_id, privacy):
           "scatter.bubble": size, "graph.tooltip_columns": ["symbol", "name", size],
           **_share_viz("implied_yield_pct", *(["share_pct"] if privacy else []))})
 
-    # DV01 per curve currency and tenor, stacked by what holds it, the
-    # holders as metrics in CURVE_HOLDERS' order.
-    point = "curve_currency || ' ' || tenor AS point"
+    # DV01 per curve currency and tenor: a group of bars per currency, the
+    # most rate risk first, a bar per tenor from the shortest. Every
+    # currency carries every tenor of the day's curves, an empty bar where
+    # it has none, so the groups line up. Rows come tenor by tenor, the
+    # currencies in their order within each: Metabase takes the series and
+    # the groups in the order they first appear.
+    grid = (",\nk AS (SELECT curve_currency, sum(abs(dv01)) AS risk FROM e GROUP BY 1),\n"
+            "t AS (SELECT DISTINCT tenor, tenor_order FROM e),\n"
+            "g AS (SELECT curve_currency, tenor, sum(dv01) AS dv01 FROM e GROUP BY 1, 2)\n"
+            "SELECT k.curve_currency AS curve, t.tenor, {dv01}\n"
+            "  FROM k CROSS JOIN t\n"
+            "  LEFT JOIN g ON g.curve_currency = k.curve_currency AND g.tenor = t.tenor\n"
+            " ORDER BY t.tenor_order, k.risk DESC, k.curve_currency")
+    grouped = {"graph.dimensions": ["curve", "tenor"], "graph.x_axis.scale": "ordinal"}
+    split = " `wealthdb yield curve` splits each bar by what holds it."
     if privacy:
         # A share of net worth per basis point: the selection's DV01 over
         # its net worth that day. The curve rows carry no holding, so they
         # are the ones whose source, wrapper and class the selected
         # holdings carry.
-        dv01 = "\n       / (SELECT CASE WHEN nw > 0 THEN nw END FROM nw)"
         card("DV01 along the curve", "bar",
              "What a rise in rates of one basis point at each tenor takes off net worth, as a "
-             "share of the selection's net worth, at the latest day in the window: per curve "
-             "currency, stacked by what holds it. A liability's is negative.",
+             "share of the selection's net worth, at the latest day in the window: a group of bars "
+             "per curve currency, the most rate risk first, a bar per tenor. A liability's is "
+             "negative." + split,
              w + ",\nd AS (SELECT max(as_of_day) AS day FROM w),\n"
              "nw AS (SELECT sum(value) AS nw FROM w WHERE as_of_day = (SELECT day FROM d)),\n"
              "sel AS (SELECT DISTINCT silver_source_id, tax_wrapper, asset_class FROM w\n"
              "         WHERE as_of_day = (SELECT day FROM d)),\n"
-             "e AS (SELECT c.curve_currency, c.tenor, c.tenor_order, c.held_in, c.dv01\n"
+             "e AS (SELECT c.curve_currency, c.tenor, c.tenor_order, c.dv01\n"
              "        FROM web_yield_curve c\n"
              "        JOIN sel ON sel.silver_source_id = c.silver_source_id AND sel.tax_wrapper = c.tax_wrapper\n"
              "             AND sel.asset_class = c.asset_class\n"
-             "       WHERE c.currency = {{currency}} AND c.as_of_day = (SELECT day FROM d))\n"
-             f"SELECT {point},\n" +
-             ",\n".join(f"       100 * sum(dv01) FILTER (WHERE held_in = '{x}'){dv01} AS {x}_pct"
-                        for x in CURVE_HOLDERS) +
-             f",\n       100 * sum(dv01){dv01} AS dv01_pct\n"
-             "  FROM e\n GROUP BY curve_currency, tenor, tenor_order\n ORDER BY curve_currency, tenor_order",
-             {"graph.dimensions": ["point"], "graph.metrics": [f"{x}_pct" for x in CURVE_HOLDERS],
-              "graph.tooltip_columns": ["dv01_pct"], **STACKED_VIZ,
-              "column_settings": {f'["name","{c}"]': {"suffix": "%", "decimals": 4}
-                                  for c in [f"{x}_pct" for x in CURVE_HOLDERS] + ["dv01_pct"]}})
+             "       WHERE c.currency = {{currency}} AND c.as_of_day = (SELECT day FROM d))"
+             + grid.format(dv01="100 * g.dv01 / (SELECT CASE WHEN nw > 0 THEN nw END FROM nw) AS dv01_pct"),
+             {**grouped, "graph.metrics": ["dv01_pct"],
+              "column_settings": {'["name","dv01_pct"]': {"suffix": "%", "decimals": 4}}})
     else:
         ctags = native_tags("web_yield_curve", YIELD_FILTERS)
         card("DV01 along the curve", "bar",
              "What a rise in rates of one basis point at each tenor takes off the holdings' "
-             "value, at the latest day in the window: per curve currency, stacked by what holds "
-             "it. A bond's DV01 lands where its cash flows fall, a fund's at its filed tenors or "
-             "its duration. A liability's is negative, netting the assets' risk.",
-             _window_end("web_yield_curve", ctags)[1] + f"\nSELECT {point},\n" +
-             ",\n".join(f"       sum(dv01) FILTER (WHERE held_in = '{x}') AS {x}" for x in CURVE_HOLDERS) +
-             ",\n       sum(dv01) AS dv01\n"
-             "  FROM e\n GROUP BY curve_currency, tenor, tenor_order\n ORDER BY curve_currency, tenor_order",
-             {"graph.dimensions": ["point"], "graph.metrics": list(CURVE_HOLDERS),
-              "graph.tooltip_columns": ["dv01"], **STACKED_VIZ}, ctags)
+             "value, at the latest day in the window: a group of bars per curve currency, the most "
+             "rate risk first, a bar per tenor. A bond's DV01 lands where its cash flows fall, a "
+             "fund's at its filed tenors or its duration. A liability's is negative, netting the "
+             "assets' risk." + split,
+             _window_end("web_yield_curve", ctags)[1] + grid.format(dv01="g.dv01 AS dv01"),
+             {**grouped, "graph.metrics": ["dv01"]}, ctags)
 
     # The change in the horizon's income for rates one percent higher than
     # the picked path and shift: each part's income there less its income

@@ -2030,7 +2030,7 @@ def _picker_targets_resolve(names):
 # A privacy card's columns are shares and rates, `_pct`, or labels and
 # years that name no account and carry no amount.
 _LABELS = {"as_of_day", "holding_currency", "currency", "kind", "symbol", "name", "vehicle", "tag",
-           "rating", "grade", "maturity", "coupon", "cycle", "rank", "issuer", "lei", "point",
+           "rating", "grade", "maturity", "coupon", "cycle", "rank", "issuer", "curve", "tenor",
            "month", "series", "date", "type", "basis", "duration"}
 
 section("the Exposure dashboard's debt cards")
@@ -2221,15 +2221,14 @@ check("the cash, duration and dividend cards select the yield report's kinds",
       and "WHERE kind = 'stock'" in _y_sql["Dividend yield against payout"], sorted(_kinds))
 check("the DV01 twin is a share of the day's net worth per basis point",
       "nw AS (SELECT sum(value) AS nw FROM w" in _y_sql["DV01 along the curve (privacy)"]
-      and VIZ["DV01 along the curve (privacy)"]["graph.metrics"] ==
-      [f"{x}_pct" for x in p.CURVE_HOLDERS])
-# The holders are the yield report's labels (yield.HeldIn), which the
-# materializer writes into held_in.
-_held_in = set(re.findall(r'HeldIn\w+\s*=\s*"(\w+)"', _yield_go))
-check("the curve's holders are the yield report's, and the DV01 cards split by each of them",
-      set(p.CURVE_HOLDERS) == _held_in
-      and all(f"held_in = '{x}'" in _y_sql[n] for x in p.CURVE_HOLDERS
-              for n in ("DV01 along the curve", "DV01 along the curve (privacy)")), sorted(_held_in))
+      and VIZ["DV01 along the curve (privacy)"]["graph.metrics"] == ["dv01_pct"])
+# A group of bars per curve currency, a bar per tenor: every currency
+# carries every tenor, rows tenor by tenor, the most rate risk first.
+check("the DV01 cards group by curve currency, a bar per tenor, in curve order and by risk",
+      all(VIZ[n]["graph.dimensions"] == ["curve", "tenor"] and "CROSS JOIN t" in _y_sql[n]
+          and "ORDER BY t.tenor_order, k.risk DESC" in _y_sql[n] and "held_in" not in _y_sql[n]
+          and not VIZ[n].get("stackable.stack_type")
+          for n in ("DV01 along the curve", "DV01 along the curve (privacy)")))
 check("the yields and the duration are two charts, each on one axis",
       VIZ["Yields over time"]["graph.metrics"] == ["income_yield_pct", "implied_yield_pct",
                                                    "realized_yield_pct"]
@@ -3329,6 +3328,25 @@ if duckdb is not None:
     check("...and its twin the same rows, with no value",
           [r[:2] for r in _issuers("2026-10-15", p.privacy_name(_iss))] == [(1, "Example Beta")]
           and len(_issuers("2026-10-15", p.privacy_name(_iss))[0]) == 7)
+
+    section("the DV01 card's SQL, run on an invented book")
+
+    # Two curves on one day: the USD curve at 3M and 5Y, the CHF curve at
+    # 5Y alone, a liability's negative DV01 netting into it. The rows come
+    # tenor by tenor, the USD curve first (the most rate risk), the CHF
+    # curve's 3M bar empty.
+    _db.execute("DELETE FROM report_yield_buckets")
+    _at = int(dt.datetime(2030, 1, 15, tzinfo=dt.timezone.utc).timestamp())
+    for _cc, _tenor, _order, _held, _v in (("USD", "3M", 1, "cash", 2.0), ("USD", "5Y", 3, "bonds", 30.0),
+                                           ("USD", "5Y", 3, "funds", 10.0), ("CHF", "5Y", 3, "bonds", 12.0),
+                                           ("CHF", "5Y", 3, "liabilities", -4.0)):
+        _db.execute("INSERT INTO report_yield_buckets VALUES (0, ?, 'USD', 'src-1', 'acct-1', 'k', ?, ?, ?, ?, ?)",
+                    [_at, _cc, _tenor, _order, _held, _v])
+    _dv01 = _run("DV01 along the curve")
+    check("the DV01 bars come tenor by tenor, the most rate risk first, an empty bar where a curve has no tenor",
+          [(r[0], r[1], r[2]) for r in _dv01] == [("USD", "3M", 2.0), ("CHF", "3M", None),
+                                                  ("USD", "5Y", 40.0), ("CHF", "5Y", 8.0)], _dv01)
+    _db.execute("DELETE FROM report_yield_buckets")
 
     section("the Cash Flow projection cards' SQL, run on an invented book")
 
