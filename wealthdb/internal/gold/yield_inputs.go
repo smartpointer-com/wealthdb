@@ -56,10 +56,12 @@ type yieldBase struct {
 	market map[yield.InstrumentKey]string
 	share  map[yield.InstrumentKey]bool
 	// calendar are the distributions the dividend calendar states, by the
-	// key of the security (readCalendar), and cycles each market's
-	// settlement cycles (readSettlementCycles), both shared.
+	// key of the security (readCalendar), cycles each market's settlement
+	// cycles (readSettlementCycles), and gaps the gaps its issuers'
+	// distributions teach (readDividendGaps), all shared.
 	calendar map[string][]yield.CalendarEvent
 	cycles   yield.SettlementCycles
+	gaps     dividendGaps
 	// asked are the securities whose reported figures were read.
 	asked map[string]bool
 	// units are the units of the instruments the income lines pay, which
@@ -69,15 +71,17 @@ type yieldBase struct {
 
 // yieldShared is what the bases of several instants read once, as no
 // instant changes it: the positions the situs rule reads as receipts, the
-// dividend calendar and the settlement cycles.
+// dividend calendar, the settlement cycles and the learned gaps.
 type yieldShared struct {
 	receipts map[[3]string]bool
 	calendar map[string][]yield.CalendarEvent
 	cycles   yield.SettlementCycles
+	gaps     dividendGaps
 }
 
-// readDividendCalendar reads the dividend calendar (readCalendar) and
-// the settlement cycles (readSettlementCycles) on its first call.
+// readDividendCalendar reads the dividend calendar (readCalendar), the
+// settlement cycles (readSettlementCycles) and the learned gaps
+// (readDividendGaps) on its first call.
 func (s *yieldShared) readDividendCalendar(ctx context.Context, db querier) error {
 	if s.calendar != nil {
 		return nil
@@ -89,7 +93,11 @@ func (s *yieldShared) readDividendCalendar(ctx context.Context, db querier) erro
 	if err := readSettlementCycles(ctx, db, cycles); err != nil {
 		return fmt.Errorf("settlement cycles: %w", err)
 	}
-	s.calendar, s.cycles = calendar, cycles
+	gaps, err := readDividendGaps(ctx, db)
+	if err != nil {
+		return fmt.Errorf("dividend gaps: %w", err)
+	}
+	s.calendar, s.cycles, s.gaps = calendar, cycles, gaps
 	return nil
 }
 
@@ -122,7 +130,7 @@ func readYieldBase(ctx context.Context, db querier, asOf int64, shared *yieldSha
 		{"held", func() error { return readYieldHeld(ctx, db, in, b, shared) }},
 		{"calendar", func() error {
 			err := shared.readDividendCalendar(ctx, db)
-			b.calendar, b.cycles = shared.calendar, shared.cycles
+			b.calendar, b.cycles, b.gaps = shared.calendar, shared.cycles, shared.gaps
 			return err
 		}},
 		{"withholding", func() error { return readWithholding(ctx, db, in) }},
@@ -790,9 +798,11 @@ var incomeTypeSQL = fmt.Sprintf(`CASE
 // distribution comes with the quantities yield.Payment documents, read
 // under its account's keys (yieldUnits.keysOf, quantity, span,
 // firstHeld), its record day the one the dividend calendar states or
-// derives, else the one its market's lag gives (yield.RecordOf,
-// calendarOf, lagOf). Where the calendar gives the days, the quantity
-// reads as the ex day began, and that day is its record window alone.
+// derives, else the one its issuer's learned gap gives, else the one its
+// market's lag gives (yield.RecordOf, calendarOf, gapOf, lagOf). Where the
+// calendar gives the days, the quantity reads as the ex day began, and
+// that day is its record window alone; where a learned gap gives them, it
+// reads the same way across the gap's window (yield.Lag.ExWindow).
 func (b *yieldBase) readIncome(ctx context.Context, db querier, in *yield.Inputs) error {
 	from := in.Day.AddDate(-2, 0, 0).Unix()
 	var lines []incomeLine
@@ -832,8 +842,9 @@ func (b *yieldBase) readIncome(ctx context.Context, db querier, in *yield.Inputs
 				keys := b.units.keysOf(in, l.Source, l.Account, l.Instrument)
 				p.Quantity, p.Units = b.units.quantity(keys, start)
 				lag := b.lagOf(in, l)
-				events, share, market := b.calendarOf(in, l)
-				readDay, source := yield.RecordOf(events, pay, lag, share, market, b.cycles)
+				events, share, market, security := b.calendarOf(in, l)
+				learned := b.gapOf(security, share, market)
+				readDay, source := yield.RecordOf(events, pay, lag, learned, share, market, b.cycles)
 				p.RecordSource = source
 				if source == yield.RecordNone {
 					p.Before, _ = b.units.quantity(keys, start-yield.RecordLagDays*86400)
@@ -841,8 +852,12 @@ func (b *yieldBase) readIncome(ctx context.Context, db querier, in *yield.Inputs
 					read := readDay.Unix()
 					p.LagDays = int((start - read) / 86400)
 					far, near := readDay, readDay
-					if source == yield.RecordLagged {
+					switch source {
+					case yield.RecordLagged:
 						far, near = lag.Window(pay)
+					case yield.RecordLearned:
+						far, near = learned.ExWindow(pay, market, b.cycles)
+						p.ReachDays = int((start - far.Unix()) / 86400)
 					}
 					q, units := b.units.quantity(keys, read)
 					if q != nil && b.units.seenBy(keys, far.Unix()) {
@@ -904,14 +919,14 @@ func (b *yieldBase) lagOf(in *yield.Inputs, l incomeLine) yield.Lag {
 }
 
 // calendarOf is what the dividend calendar states of the security a line
-// pays (yieldBase.calendar), whether it is a share (yieldBase.share), and
-// the market whose settlement cycle derives its record day
-// (yieldBase.market): each under the first id its instrument reads under
-// that has one (portfolioKeys), as lagOf reads its lag. The security is
-// the instrument's as a position names it (yield.Inputs.HeldSecurity).
+// pays (yieldBase.calendar), whether it is a share (yieldBase.share), the
+// market whose settlement cycle derives its record day
+// (yieldBase.market), and the security: each under the first id its
+// instrument reads under that has one (portfolioKeys), as lagOf reads its
+// lag. The security is the instrument's as a position names it
+// (yield.Inputs.HeldSecurity).
 func (b *yieldBase) calendarOf(in *yield.Inputs, l incomeLine) (events []yield.CalendarEvent, share bool,
-	market string) {
-	security := ""
+	market, security string) {
 	for _, k := range portfolioKeys(in, l.Source, l.Account, l.Instrument) {
 		ik := yield.InstrumentKey{Source: l.Source, Instrument: k.iid}
 		if security == "" {
@@ -922,7 +937,25 @@ func (b *yieldBase) calendarOf(in *yield.Inputs, l incomeLine) (events []yield.C
 		}
 		share = share || b.share[ik]
 	}
-	return b.calendar[security], share, market
+	return b.calendar[security], share, market, security
+}
+
+// gapOf is the gap learned of the issuer of a security (yieldBase.gaps):
+// its own, else, for a fund, its pool's (yield.FundPool) in the business
+// days of the fund's market; the zero Lag where none is learned. A share
+// takes no pool's: an exchange-traded fund pays days after its record
+// day, a company weeks.
+func (b *yieldBase) gapOf(security string, share bool, market string) yield.Lag {
+	if g, ok := b.gaps.security[security]; ok && security != "" {
+		return g
+	}
+	if pool := yield.FundPool(market); !share && pool != "" {
+		if g, ok := b.gaps.pool[pool]; ok {
+			g.Market = market
+			return g
+		}
+	}
+	return yield.Lag{}
 }
 
 // paysPerShare says a payment of type t is paid per share of what its
@@ -1620,24 +1653,8 @@ func tseCodeSQL(expr string) string {
 // on a Japanese exchange (OpenFIGI states the code as its local ticker),
 // and else stays unread.
 func readCalendar(ctx context.Context, db querier, calendar map[string][]yield.CalendarEvent) error {
-	exchanges, args := sqlList(japaneseExchanges, "")
-	return scanAll(ctx, db, `
-WITH tse AS (
-    SELECT DISTINCT 'jpx:' || code AS ref, exposure_key(security_key) AS key
-      FROM (SELECT security_key, upper(trim(exchange)) AS exchange,
-                   `+tseCodeSQL("COALESCE(ticker, json_extract_string(payload, '$.local_ticker'))")+` AS code
-              FROM security_identities)
-     WHERE code <> '' AND (list_contains(`+exchanges+`, exchange) OR exchange LIKE '%TOKYO%' OR exchange LIKE '%JAPAN%')),
-cal AS (
-    SELECT CASE WHEN starts_with(ref, 'jpx:') THEN 'jpx:' || `+tseCodeSQL("substr(ref, 5)")+` END AS jpx,
-           exposure_key(ref) AS key, provider, event_id, ex_day, record_day, pay_day,
-           COALESCE(status = '`+string(canonical.DividendEstimated)+`', FALSE) AS estimated
-      FROM dividend_calendar
-     WHERE kind <> '`+string(canonical.DividendKindOther)+`'),
-named AS (
-    SELECT CASE WHEN c.jpx IS NULL THEN c.key ELSE t.key END AS key, c.provider, c.event_id, c.ex_day, c.record_day,
-           c.pay_day, c.estimated
-      FROM cal c LEFT JOIN tse t ON t.ref = c.jpx)
+	ctes, args := calendarCTEs()
+	return scanAll(ctx, db, ctes+`
 SELECT key, ex_day, record_day, pay_day, estimated FROM named
  WHERE key IS NOT NULL
  ORDER BY key, provider, event_id`, func(rows *sql.Rows) error {
@@ -1650,7 +1667,33 @@ SELECT key, ex_day, record_day, pay_day, estimated FROM named
 		e.Ex, e.Record, e.Pay = nullDate(ex), nullDate(record), nullDate(pay)
 		calendar[key] = append(calendar[key], e)
 		return nil
-	}, args()...)
+	}, args...)
+}
+
+// calendarCTEs are the CTEs that name each distribution of the dividend
+// calendar by the key of its security, as readCalendar reads them
+// (`named`: key, provider, event_id, the days, estimated, currency), and
+// the arguments they take; `named` keys a JPX row no lookup lists as
+// NULL.
+func calendarCTEs() (string, []any) {
+	exchanges, args := sqlList(japaneseExchanges, "")
+	return `
+WITH tse AS (
+    SELECT DISTINCT 'jpx:' || code AS ref, exposure_key(security_key) AS key
+      FROM (SELECT security_key, upper(trim(exchange)) AS exchange,
+                   ` + tseCodeSQL("COALESCE(ticker, json_extract_string(payload, '$.local_ticker'))") + ` AS code
+              FROM security_identities)
+     WHERE code <> '' AND (list_contains(` + exchanges + `, exchange) OR exchange LIKE '%TOKYO%' OR exchange LIKE '%JAPAN%')),
+cal AS (
+    SELECT CASE WHEN starts_with(ref, 'jpx:') THEN 'jpx:' || ` + tseCodeSQL("substr(ref, 5)") + ` END AS jpx,
+           exposure_key(ref) AS key, provider, event_id, ex_day, record_day, pay_day,
+           COALESCE(status = '` + string(canonical.DividendEstimated) + `', FALSE) AS estimated, currency
+      FROM dividend_calendar
+     WHERE kind <> '` + string(canonical.DividendKindOther) + `'),
+named AS (
+    SELECT CASE WHEN c.jpx IS NULL THEN c.key ELSE t.key END AS key, c.provider, c.event_id, c.ex_day, c.record_day,
+           c.pay_day, c.estimated, c.currency
+      FROM cal c LEFT JOIN tse t ON t.ref = c.jpx)`, args()
 }
 
 // readSettlementCycles reads each market's settlement cycles, oldest

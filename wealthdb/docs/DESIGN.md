@@ -1552,6 +1552,7 @@ is documented where it is used:
   config tables (migration `0134`) — §7.6.
 - The reference table `dividend_calendar` and the config table
   `yield_settlement_cycles` (migration `0147`) — §7.6.
+- The derived table `dividend_gaps` (migration `0148`) — §7.6.
 - The serving tables `serving_*` (migration `0132`) — web/DESIGN.md §8.
 - The spending overlay: `spend_categories` (migration `0040`;
   docs/SPENDING.md §2), and `spend_txn_enrichment`,
@@ -2102,6 +2103,13 @@ rows of each ref and provider whose rows changed, whole, so gold holds
 what silver holds (adapters/refdata.md §4). The yield report reads a
 dividend's record day from it (YIELD.md §4).
 
+Migration 0148 adds `dividend_gaps`: the gap each issuer keeps from a
+distribution's record day to its pay day, learned from the calendar,
+and the gap of each pool of funds. The yield pass rebuilds it whole at
+every load (`writeDividendGaps`), and the yield report reads a record
+day from it where the calendar dates no distribution of a payment
+(YIELD.md §4).
+
 The refdata collector learns what to fetch from the hidden read-only
 subcommand `refdata-wanted`, whose JSON contract adapters/refdata.md §5
 defines.
@@ -2275,8 +2283,9 @@ its transactions, because none is a per-source fact:
 5. The exposure pass rebuilds the exposure report's derived tables
    (§10.14). An alias ties a line one source loaded to an instrument
    another one did.
-6. The yield pass rebuilds `instrument_terms` and `account_rates`
-   (§7.6). It reads the exposure pass's instrument keys.
+6. The yield pass rebuilds `instrument_terms`, `account_rates` and
+   `dividend_gaps` (§7.6). It reads the exposure pass's instrument
+   keys.
 
 A failed FX stamp is a warning: it degrades a conversion. The other
 five fail as errors. A failed pass does not stop the next one; the
@@ -3256,8 +3265,8 @@ Migration 0135 defines `instrument_terms`, `account_rates` and the
 ledger's yield tables (§7.6). Migration 0136 defines the holdings
 macro. The yield pass (`gold.RebuildYield`) runs after the exposure
 pass at the end of every load and reload. It reads the exposure pass's
-instrument keys and securities, and rewrites `instrument_terms` and
-`account_rates` (§7.6) in one transaction.
+instrument keys and securities, and rewrites `instrument_terms`,
+`account_rates` and `dividend_gaps` (§7.6) in one transaction.
 
 The pieces:
 
@@ -3287,12 +3296,14 @@ The pieces:
   `yield.RecordOf` gives a payment's record day: the one the dividend
   calendar states (`dividend_calendar`, read by `readCalendar`), else
   the one its ex day derives by the market's settlement cycle
-  (`yield_settlement_cycles`), else the market's lag.
-  It also gives the day the quantity paid on reads: the ex day where the
-  calendar gives the days, else the lag's record day. `yield.RecordLag`
-  gives each market's lag before the pay day, its record window and its
-  settlement calendar. A dividend's rate reads what its account held as
-  that day began (YIELD.md §4);
+  (`yield_settlement_cycles`), else the one its issuer's learned gap
+  gives (`dividend_gaps`, read by `readDividendGaps`; `yield.LearnGap`),
+  else the market's lag. It also gives the day the quantity paid on
+  reads: the ex day where the calendar or a learned gap gives the days,
+  else the lag's record day. `yield.RecordLag` gives each market's lag
+  before the pay day, its record window and its settlement calendar. A
+  dividend's rate reads what its account held as that day began
+  (YIELD.md §4);
 - `internal/fixedincome`: the bond and rate arithmetic, as pure
   functions;
 - `internal/yield`: `yield.Compute` measures every holding and projects

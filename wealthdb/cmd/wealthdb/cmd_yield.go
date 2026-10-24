@@ -418,7 +418,8 @@ Notes
   coverage's record_day lines count the dividends and distributions the
   readings rate, by where each one's record day comes from: stated by
   the dividend calendar, derived from its ex day by the market's
-  settlement cycle (yield.settlement_cycles), the market's lag, or none;
+  settlement cycle (yield.settlement_cycles), learned from the gap its
+  issuer's stated distributions show, the market's lag, or none;
   dropped counts those the record window drops. A US common stock reads
   the lag unless its filings tag the dates.
 

@@ -11,8 +11,9 @@ import (
 )
 
 // RebuildYield rewrites the yield report's derived tables from what gold
-// holds: each bond-like instrument's terms (instrument_terms) and each
-// account's stated interest rates (account_rates). It runs after the
+// holds: each bond-like instrument's terms (instrument_terms), each
+// account's stated interest rates (account_rates) and the gaps the
+// dividend calendar teaches (dividend_gaps). It runs after the
 // exposure pass, whose instrument keys and securities it reads. One
 // transaction; the tables are replaced whole.
 func RebuildYield(ctx context.Context, db *sql.DB) (YieldCounts, error) {
@@ -25,6 +26,7 @@ func RebuildYield(ctx context.Context, db *sql.DB) (YieldCounts, error) {
 	if err := runSteps("yield pass", []step{
 		{"terms", func() error { return writeInstrumentTerms(ctx, tx) }},
 		{"rates", func() error { return writeAccountRates(ctx, tx) }},
+		{"gaps", func() error { return writeDividendGaps(ctx, tx) }},
 	}); err != nil {
 		return n, err
 	}

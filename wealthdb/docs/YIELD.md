@@ -572,12 +572,14 @@ the instrument included.
      payment. It settles on the record day. A stated ex day alone counts
      only where a cycle derives its record day, no later than the
      payment's day. So a share of Hong Kong, which has no cycle, reads
-     the lag.
-  3. `lag`: no distribution is the payment's, or it gives no record day,
-     and the market fixes a lag. The record day lies a fixed number of
-     days before the pay day, by the market of the security paid. Each
-     market also has a record window: the days before the pay day in
-     which its record day falls.
+     its issuer's learned gap, else the lag.
+  3. `learned`: no distribution is the payment's, or it gives no record
+     day, and the issuer's own distributions teach a gap (below). The
+     record day is the pay day less the gap.
+  4. `lag`: no gap is learned either, and the market fixes a lag. The
+     record day lies a fixed number of days before the pay day, by the
+     market of the security paid. Each market also has a record window:
+     the days before the pay day in which its record day falls.
 
   A market with no lag then leaves the record day unknown (`none`).
 
@@ -627,10 +629,35 @@ the instrument included.
 
   Any other share has no lag. Neither has a fund, or any position that
   is neither a share nor a receipt: without a record day from the
-  calendar, its payment reads the quantity of its pay day (below).
+  calendar or a learned gap, its payment reads the quantity of its pay
+  day (below).
 - A US common stock reads the lag unless its filings tag the dates: no
   free source states most US companies' record days. `sec-edgar` reads
   them from a 10-Q's or 10-K's tags where a company states them.
+- An issuer's gap is learned from the distributions the calendar states
+  of it:
+  - Each distribution counts the business days from its record day to
+    its pay day. A distribution that states only an ex day counts from
+    the record day its market's cycle derives. Where the market has no
+    cycle, a distribution counts from its ex day, the day its quantity
+    reads by, where it states one.
+  - The gap is the median of these counts, the lower of the middle two.
+    It needs two distributions. One paid more than 90 days after its
+    record day, or before it, counts for nothing, and so does an
+    estimate. A distribution stated again, as for another share class,
+    counts once.
+  - A company's issuer is its EDGAR filer, so its share classes of one
+    market learn together. A receipt quoted in another market than its
+    share learns apart, as its depositary sets its own days. Any other
+    security is its own issuer: a fund by its share class.
+  - A gap counts the business days of the distribution's market
+    (below), else of its ISIN's country.
+  - A fund with no gap of its own takes the gap of its pool. The funds
+    of the United States pool together, the European funds together,
+    and the funds of any other market apart. A pool needs two funds
+    with a gap. A share takes no pool's gap: a fund pays days after its
+    record day, a company weeks.
+  - The gaps are rebuilt at every load (`dividend_gaps`).
 - Where the calendar states or derives the record day, the quantity is
   the one held as the ex day began. Holdings count by trade date, and a
   trade on the ex day earns nothing. The ex day is the one the
@@ -641,6 +668,10 @@ the instrument included.
 - That day is the payment's record window alone, so a trade near it
   leaves the quantity known. A fund's payment, which no lag dates, rates
   on that day once the calendar gives it.
+- Where a learned gap gives the record day, the quantity is the one held
+  as its ex day began, as for a stated record day. The record window
+  runs from two business days past the gap's longest to its shortest,
+  as a lag's does. Each end reads by its ex day, as above.
 - A market's settlement cycle is the business days a trade settles
   after. It changes on a day, from that day on:
 
@@ -1086,13 +1117,14 @@ One line per reason, where a payment has it:
 | --- | --- |
 | `stated` | the dividend calendar states the record day |
 | `derived` | the record day derives from the calendar's ex day by the market's settlement cycle |
-| `lag` | the market's lag gives the record day: no distribution of the calendar is the payment's, or it gives no record day |
+| `learned` | its issuer's learned gap gives the record day, or for a fund its pool's (§4): no distribution of the calendar is the payment's, or it gives no record day |
+| `lag` | the market's lag gives the record day: no gap is learned either |
 | `none` | no record day is known: the pay day's quantity rates |
 | `dropped` | the record window drops the reading: the account's most over its least across it is above 1.1, or some of it is unknown |
 
-So `stated` and `derived` rise, and `lag` and `dropped` fall, as the
-calendar covers more of the holdings. A dropped payment also counts on
-the line of its record day's source.
+So `stated`, `derived` and `learned` rise, and `lag`, `none` and
+`dropped` fall, as the calendar covers more of the holdings. A dropped
+payment also counts on the line of its record day's source.
 
 ## 11. The projection, the dashboard and MCP
 

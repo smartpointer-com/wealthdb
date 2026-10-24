@@ -125,7 +125,7 @@ func TestRecordOf(t *testing.T) {
 		{"no event, the lag", nil, date(2026, 6, 11), us, false, "US", date(2026, 5, 12), RecordLagged},
 		{"no event and no lag", nil, date(2026, 6, 11), Lag{}, false, "US", nil, RecordNone},
 	} {
-		read, source := RecordOf(c.events, *c.pay, c.lag, !c.fund, c.market, cycles)
+		read, source := RecordOf(c.events, *c.pay, c.lag, Lag{}, !c.fund, c.market, cycles)
 		if source != c.source || (c.read == nil) != read.IsZero() || c.read != nil && !read.Equal(*c.read) {
 			t.Errorf("%s: reads %s %q; want %v %q", c.name, read.Format(time.DateOnly), source, c.read, c.source)
 		}
@@ -268,6 +268,7 @@ func TestCoverageCountsTheRecordDays(t *testing.T) {
 	}
 	paid(a.HoldingKey, "A", quarterly[0], RecordStated, 100, 100)
 	paid(a.HoldingKey, "A", quarterly[1], RecordDerived, 100, 100)
+	paid(b.HoldingKey, "B", quarterly[1], RecordLearned, 100, 100)
 	paid(b.HoldingKey, "B", quarterly[2], RecordLagged, 100, 150)
 	paid(b.HoldingKey, "B", quarterly[3], RecordLagged, 100, 100)
 	paid(f.HoldingKey, "A", quarterly[3], RecordNone, 0, 0)
@@ -279,7 +280,7 @@ func TestCoverageCountsTheRecordDays(t *testing.T) {
 			got = append(got, r.Reason+" "+strconv.Itoa(r.Payments)+" "+strconv.Itoa(r.Holdings))
 		}
 	}
-	if want := "stated 1 2|derived 1 2|lag 2 2|none 1 1|dropped 1 2"; strings.Join(got, "|") != want {
+	if want := "stated 1 2|derived 1 2|learned 1 2|lag 2 2|none 1 1|dropped 1 2"; strings.Join(got, "|") != want {
 		t.Errorf("record_day lines %q, want %q", strings.Join(got, "|"), want)
 	}
 }

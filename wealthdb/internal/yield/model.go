@@ -589,17 +589,21 @@ type Payment struct {
 	// and Most are the least and the most the account held across the
 	// record window, on the days it held some, where Record is known:
 	// Least is 0 where some of the window is unknown. The window is the
-	// market's lag's (Lag.Window), and the day Record reads alone where a
-	// calendar gives it.
+	// market's lag's (Lag.Window), the learned gap's (Lag.ExWindow), and
+	// the day Record reads alone where a calendar gives it.
 	// Units says the quantity its rate reads may be in its day's units: no
 	// whole factor explains a change since, or no account held the
 	// instrument through some span since with its units read.
 	Quantity, Record, Before *float64
 	Least, Most              *float64
 	LagDays                  int
-	RecordSource             RecordSource
-	Units                    bool
-	Type                     IncomeType
+	// ReachDays is the calendar days from the furthest day of a learned
+	// gap's record window to the payment's day (RecordLearned), 0 for any
+	// other.
+	ReachDays    int
+	RecordSource RecordSource
+	Units        bool
+	Type         IncomeType
 }
 
 // steady says a payment's rate may rest on Record: its most over its
@@ -612,12 +616,16 @@ func (p Payment) steady() bool {
 
 // reach is how far before its day, in calendar days, the record window of
 // a payment may reach: back to the day its quantity reads where a
-// calendar gives its days, else the furthest of its market's lag
+// calendar gives its days, to its window's furthest day where its
+// issuer's gap does, else the furthest of its market's lag
 // (recordReach); no less than a share of the United States's window
 // either way.
 func (p Payment) reach() int {
-	if p.RecordSource == RecordStated || p.RecordSource == RecordDerived {
+	switch p.RecordSource {
+	case RecordStated, RecordDerived:
 		return max(RecordLagUSShare.Far, p.LagDays)
+	case RecordLearned:
+		return max(RecordLagUSShare.Far, p.ReachDays)
 	}
 	return recordReach(p.LagDays)
 }
@@ -632,6 +640,9 @@ const (
 	// RecordDerived is a day derived from the ex day an event states, by
 	// the settlement cycle of its market (SettlementCycles.RecordDay).
 	RecordDerived RecordSource = "derived"
+	// RecordLearned is the day the gap its issuer's stated distributions
+	// show gives (LearnGap).
+	RecordLearned RecordSource = "learned"
 	// RecordLagged is the day the market's lag gives (RecordLag).
 	RecordLagged RecordSource = "lag"
 	// RecordNone says no record day is known.
@@ -640,7 +651,7 @@ const (
 
 // RecordSources are the sources of a record day, in the order the
 // coverage view counts them.
-var RecordSources = []RecordSource{RecordStated, RecordDerived, RecordLagged, RecordNone}
+var RecordSources = []RecordSource{RecordStated, RecordDerived, RecordLearned, RecordLagged, RecordNone}
 
 // A CalendarEvent is one distribution of a security as a dividend
 // calendar states it: its ex day, record day and pay day, each nil where
@@ -670,27 +681,32 @@ const fundWindowDays = 63
 // RecordOf is, for a payment whose day begins at pay, the day whose start
 // gives the quantity it was paid on, and where its record day comes from
 // (docs/YIELD.md §4). events are the distributions a calendar states of
-// the security paid, lag its market's lag (RecordLag), share says the
-// security is a share (or a receipt), whose window with no lag reaches
-// back RecordWindowDays, where a fund's reaches back fundWindowDays, and
-// market is the market whose settlement cycle derives one day from the
-// other (SettlementMarket). The record day, in order:
+// the security paid, lag its market's lag (RecordLag), learned the gap
+// its issuer's distributions show (LearnGap, a business-day Lag; the zero
+// Lag where none is learned), share says the security is a share (or a
+// receipt), whose window with no lag reaches back RecordWindowDays, where
+// a fund's reaches back fundWindowDays, and market is the market whose
+// settlement cycle derives one day from the other (SettlementMarket). The
+// record day, in order:
 //
 //  1. stated: the payment's event (matchEvent) states its record day;
 //  2. derived: it states an ex day and no record day: the ex day plus the
 //     business days its market's cycle gives (SettlementCycles.RecordDay),
 //     where that day is no later than pay;
-//  3. lag: no event is the payment's, or its event gives no record day,
-//     and the market fixes a lag: pay less the lag.
+//  3. learned: no event is the payment's, or its event gives no record
+//     day, and a gap is learned: pay less the gap;
+//  4. lag: no gap is learned either, and the market fixes a lag: pay less
+//     the lag.
 //
 // A market with no lag then leaves both days unknown (RecordNone). An
 // event's quantity is the one held as its ex day began, by trade date,
 // as a trade on the ex day earns nothing: the ex day it states, else the
 // one its record day gives (SettlementCycles.ExDay), else the record day
-// itself where the market has no cycle then. The lag's is the one held
-// as its record day began, a day that reaches back to the ex day where
-// the lag is in business days.
-func RecordOf(events []CalendarEvent, pay time.Time, lag Lag, share bool, market string,
+// itself where the market has no cycle then. A learned record day's is
+// its ex day the same way. The lag's is the one held as its record day
+// began, a day that reaches back to the ex day where the lag is in
+// business days.
+func RecordOf(events []CalendarEvent, pay time.Time, lag, learned Lag, share bool, market string,
 	cycles SettlementCycles) (read time.Time, source RecordSource) {
 	from, to := pay.AddDate(0, 0, -fundWindowDays), pay
 	if share {
@@ -702,11 +718,9 @@ func RecordOf(events []CalendarEvent, pay time.Time, lag Lag, share bool, market
 	if e, ok := matchEvent(events, pay, from, to); ok {
 		switch {
 		case e.Record != nil:
-			read = *e.Record
+			read = exOf(*e.Record, market, cycles)
 			if e.Ex != nil {
 				read = *e.Ex
-			} else if d, ok := cycles.ExDay(market, *e.Record); ok {
-				read = d
 			}
 			return read, RecordStated
 		case e.Ex != nil:
@@ -714,6 +728,9 @@ func RecordOf(events []CalendarEvent, pay time.Time, lag Lag, share bool, market
 				return *e.Ex, RecordDerived
 			}
 		}
+	}
+	if learned.Business {
+		return exOf(learned.RecordDay(pay), market, cycles), RecordLearned
 	}
 	if lag.Days > 0 {
 		return lag.RecordDay(pay), RecordLagged
@@ -918,11 +935,17 @@ func businessDays(market string, d time.Time, n int) time.Time {
 		step, n = -1, -n
 	}
 	for i := 0; i < n; {
-		if d = d.AddDate(0, 0, step); d.Weekday() != time.Saturday && d.Weekday() != time.Sunday && !closed(market, d) {
+		if d = d.AddDate(0, 0, step); business(market, d) {
 			i++
 		}
 	}
 	return d
+}
+
+// business says d is a business day of market: a weekday its settlement
+// system is open on (closed).
+func business(market string, d time.Time) bool {
+	return d.Weekday() != time.Saturday && d.Weekday() != time.Sunday && !closed(market, d)
 }
 
 // The closing days Easter fixes, in days from Easter Sunday.

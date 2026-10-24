@@ -839,6 +839,9 @@ func (bk dividendBook) inputs(t *testing.T) (*yield.Inputs, *sql.DB, context.Con
 		    signature_version, income_detailed, provenance, assigned_at) VALUES `+strings.Join(kinds, ", "))
 	rebuildForYield(t, db)
 	execEach(t, db, bk.after...)
+	// The calendar rows an after statement adds teach their gaps, as the
+	// yield pass's last step does.
+	rebuildGaps(t, db)
 	in, err := YieldInputs(ctx, db, ymd(2026, 6, 30).Unix()+86399, "USD")
 	if err != nil {
 		t.Fatal(err)
