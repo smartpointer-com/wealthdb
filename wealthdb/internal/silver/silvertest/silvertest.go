@@ -104,6 +104,58 @@ func Merged(t testing.TB, conn silver.Connection, w canonical.Window) canonical.
 	return all
 }
 
+// CurrentsByInstant maps each account of batch to its CURRENT cash
+// balances, by instant, as "amount currency".
+func CurrentsByInstant(batch canonical.SnapshotBatch) map[string]map[int64]string {
+	out := map[string]map[int64]string{}
+	for _, cb := range batch.CashBalances {
+		if cb.BalanceKind != canonical.BalanceKindCurrent {
+			continue
+		}
+		if out[cb.AccountExternalID] == nil {
+			out[cb.AccountExternalID] = map[int64]string{}
+		}
+		out[cb.AccountExternalID][cb.SnapshotAt] = cb.Amount.String() + " " + cb.Currency
+	}
+	return out
+}
+
+// SeedRuns adds three runs around the run a test's seed made at load (r2),
+// into a deposit silver with run_accounts: two a week apart before it and
+// one a day after it that changes no roster row. The account seed made
+// (listed) is listed again at r3. The quiet account is listed by every run
+// but changed only at r0, so silver holds its r0 row alone. The left-out
+// account is listed at r0 and r1, its balance changed at r1, and left out
+// of r2 and r3.
+func SeedRuns(t testing.TB, db *sql.DB, load int64, listed, quiet, left string) (r0, r1, r2, r3 int64) {
+	t.Helper()
+	r0, r1, r2, r3 = load-14*86400, load-7*86400, load, load+86400
+	for _, r := range []int64{r0, r1, r3} {
+		Exec(t, db, `INSERT INTO dump_runs VALUES (?,2,'/run')`, r)
+	}
+	for _, row := range []struct {
+		at      int64
+		acct    string
+		balance float64
+	}{
+		{r0, quiet, 250}, {r0, left, 75}, {r1, left, 80},
+	} {
+		Exec(t, db, `INSERT INTO accounts VALUES (?,?,?,?,?,?,?,?)`,
+			row.at, row.acct, "Savings", "", "…0000", nil, row.balance, "{}")
+	}
+	for _, l := range []struct {
+		at   int64
+		acct string
+	}{
+		{r3, listed},
+		{r0, quiet}, {r1, quiet}, {r2, quiet}, {r3, quiet},
+		{r0, left}, {r1, left},
+	} {
+		Exec(t, db, `INSERT INTO run_accounts VALUES (?,?)`, l.at, l.acct)
+	}
+	return r0, r1, r2, r3
+}
+
 // Day is the unix time of UTC midnight on the given date.
 func Day(y int, m time.Month, d int) int64 {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix()

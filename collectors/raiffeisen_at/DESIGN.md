@@ -607,8 +607,7 @@ Bronze per run dir follows the firstcitizens layout:
 
 ### 4.2 `load`
 
-`load` parses bronze into SQLite silver (`migrations/0001_initial.sql`,
-`0002_supplied_listings.sql`). It is idempotent: a snapshot gate plus
+`load` parses bronze into SQLite silver (`migrations/`). It is idempotent: a snapshot gate plus
 `INSERT OR IGNORE` and content dedup. `account_external_id` is the
 **IBAN**, the ubs-web / ubs-psn convention, so an Austrian cash account
 joins across sources on it.
@@ -630,6 +629,9 @@ joins across sources on it.
 - **`documents`**: the statement PDFs, deduped by content sha256, and one
   row per supplied listing that binds to an account (§I).
 - **`run_windows`**: the days each loaded run certifies (§I).
+- **`run_accounts`**: the accounts each run's `accounts.json` listed. The
+  roster keeps a row only when an account changed, and `run_windows`
+  misses an account whose fetch failed, so this is the run's roster.
 
 ### 4.3 Deep backfill
 
@@ -646,9 +648,11 @@ plus `load.py`'s supplied pass. `pdftotext` comes from the image's
 - one cash account per deposit account (DisplayName = account type +
   mask, EUR, `taxable_personal` / `self_directed`, all overridable via
   `account_overrides`);
-- a closing cash balance per day from `daily_balances`;
-- a current balance from the roster, stamped at the source's latest
-  roster snapshot;
+- a closing cash balance per day from `daily_balances`, stamped at the
+  day's last second;
+- a current balance from the roster at each run that listed the account
+  (`run_accounts`). An account the bank stops listing has no balance
+  after its last listing run, so gold can end it;
 - every transaction, with `amount` already signed: interest and fee
   recognised from the category or description, else deposit or
   withdrawal by sign.

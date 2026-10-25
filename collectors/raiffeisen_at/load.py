@@ -3,9 +3,10 @@
 
 Parses each bronze run dir (see download.py for the layout) into the silver
 schema (migrations/): the account roster (enriched with the account-info
-detail), the transaction ledger, the daily closing-balance series, and the
-statement inventory. Idempotent — an already-loaded dump is skipped, and
-transactions INSERT OR IGNORE on their stable id, so re-running converges.
+detail), the accounts each run listed, the transaction ledger, the daily
+closing-balance series, and the statement inventory. Idempotent — an
+already-loaded dump is skipped, and transactions INSERT OR IGNORE on their
+stable id, so re-running converges.
 
 The `kontoumsaetze` history JSON (`history/<iban>.json`) is the authoritative
 ledger: every row carries a stable `id`, a signed `betrag.amount`, and both a
@@ -252,11 +253,21 @@ def _mask(iban: str) -> str | None:
     return None
 
 
+def _iban(acct: dict) -> str:
+    """The roster account's silver key: its IBAN. Empty when absent."""
+    return str(acct.get("iban") or "").strip()
+
+
+def _listed_ids(accounts: list[dict]) -> set[str]:
+    """The silver keys of the roster accounts a run listed."""
+    return {_iban(a) for a in accounts}
+
+
 def account_row(acct: dict, details: dict | None) -> dict | None:
     """Merge a roster account (`accounts.json`) with its curated detail
     attributes into the silver account projection. Returns None if the row
     carries no IBAN."""
-    iban = str(acct.get("iban") or "").strip()
+    iban = _iban(acct)
     if not iban:
         return None
     curated = parse_details(details or {})
@@ -353,8 +364,8 @@ def _read_json(path: Path, *, quiet: bool = False):
         return None
 
 
-def _read_accounts(run_dir: Path) -> list[dict]:
-    data = _read_json(run_dir / "accounts.json")
+def _read_accounts(run_dir: Path, *, quiet: bool = False) -> list[dict]:
+    data = _read_json(run_dir / "accounts.json", quiet=quiet)
     if isinstance(data, dict):
         data = data.get("accounts", [])
     return [a for a in data if isinstance(a, dict)] if isinstance(data, list) else []
@@ -381,13 +392,14 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
 
     accounts = _read_accounts(run_dir)
     for acct in accounts:
-        iban = str(acct.get("iban") or "").strip()
+        iban = _iban(acct)
         if not iban:
             continue
         details = _read_json(run_dir / "details" / f"{iban}.json")
         row = account_row(acct, details)
         if row is not None:
             _insert_account(conn, snapshot_at, row)
+    bronze.record_run_listing(conn, snapshot_at, _listed_ids(accounts))
 
     hist_dir = run_dir / "history"
     if hist_dir.is_dir():
@@ -940,6 +952,10 @@ def main(argv: list[str]) -> int:
     conn = silver.open_db(db_path)
     try:
         silver.apply_migrations(conn, MIGRATIONS_DIR)
+        with silver.transaction(conn):
+            bronze.backfill_run_listings(
+                conn, args.bronze_dir,
+                lambda d: _listed_ids(_read_accounts(d, quiet=True)))
         loaded = 0
         for run_dir in bronze.iter_run_dirs(args.bronze_dir):
             with silver.transaction(conn):          # one atomic load per run

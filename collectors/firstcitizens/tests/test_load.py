@@ -266,6 +266,46 @@ def test_account_content_dedup_across_runs(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1
 
 
+def _listings(conn) -> list[tuple[int, str]]:
+    return [tuple(r) for r in conn.execute(
+        "SELECT snapshot_at, account_external_id FROM run_accounts ORDER BY 1, 2")]
+
+
+def test_each_run_records_the_accounts_it_listed(tmp_path):
+    # The roster is content-deduped, so run_accounts is what shows that a
+    # run still listed an unchanged account, and that a later run left one
+    # out.
+    bronze_dir = tmp_path / "bronze"
+    _write_bronze_run(bronze_dir, "20260801T120000Z")
+    second = _write_bronze_run(bronze_dir, "20260802T120000Z")
+    third = _write_bronze_run(bronze_dir, "20260803T120000Z")
+    for run, ids in ((second, [ACCT_ID, "900002"]), (third, ["900002"])):
+        roster = json.loads((run / "accounts.json").read_text())
+        (run / "accounts.json").write_text(json.dumps(
+            [{**roster[0], "id": i} for i in ids] + [{"nickname": "no id"}]))
+    conn = _main(tmp_path, bronze_dir)
+    day = 86400
+    first = _epoch(2026, 8, 1) + 12 * 3600
+    assert _listings(conn) == [(first, ACCT_ID), (first + day, ACCT_ID),
+                               (first + day, "900002"), (first + 2 * day, "900002")]
+    assert conn.execute("SELECT COUNT(*) FROM accounts WHERE account_external_id = ?",
+                        (ACCT_ID,)).fetchone()[0] == 1
+
+
+def test_load_backfills_a_missing_listing_by_the_account_id(tmp_path):
+    # The next load reads a loaded run's missing listing from its bronze dir
+    # by the roster's `id`, and leaves a recorded run alone.
+    bronze_dir = tmp_path / "bronze"
+    _write_bronze_run(bronze_dir, "20260801T120000Z")
+    _write_bronze_run(bronze_dir, "20260802T120000Z")
+    conn = _main(tmp_path, bronze_dir)
+    before = _listings(conn)
+    conn.execute("DELETE FROM run_accounts WHERE snapshot_at = ?", (before[0][0],))
+    conn.close()
+    (bronze_dir / "20260802T120000Z" / "accounts.json").write_text("[]")
+    assert _listings(_main(tmp_path, bronze_dir)) == before
+
+
 def test_non_complete_run_skipped(tmp_path):
     bronze_dir = tmp_path / "bronze"
     run = _write_bronze_run(bronze_dir, "20260801T120000Z")

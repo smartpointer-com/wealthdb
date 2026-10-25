@@ -267,6 +267,50 @@ def test_account_content_dedup_across_runs(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1
 
 
+def _listings(conn) -> list[tuple[int, str]]:
+    return [tuple(r) for r in conn.execute(
+        "SELECT snapshot_at, account_external_id FROM run_accounts ORDER BY 1, 2")]
+
+
+def test_each_run_records_the_accounts_its_roster_listed(tmp_path):
+    # The roster is content-deduped, so run_accounts is what shows that a
+    # run still listed an unchanged account. It follows accounts.json, not
+    # the fetches: a listed account whose history and balances failed is
+    # still listed, and a later run can leave one out.
+    other = "ATkkBBBBBKKKKKKK5678"
+    bronze_dir = tmp_path / "bronze"
+    _write_bronze_run(bronze_dir, "20260815T120000Z")
+    second = _write_bronze_run(bronze_dir, "20260816T120000Z")
+    third = _write_bronze_run(bronze_dir, "20260817T120000Z")
+    roster = json.loads((second / "accounts.json").read_text())
+    (second / "accounts.json").write_text(json.dumps(
+        roster + [{**roster[0], "iban": other}, {"type": "KONTO"}]))
+    (third / "accounts.json").write_text(json.dumps([{**roster[0], "iban": other}]))
+    for sub in ("history", "balances"):
+        (second / sub / f"{IBAN}.json").unlink()
+    _main(bronze_dir)
+    first = _epoch(2026, 8, 15) + 12 * 3600
+    assert _listings(_db(bronze_dir)) == [
+        (first, IBAN), (first + 86400, IBAN), (first + 86400, other),
+        (first + 2 * 86400, other)]
+
+
+def test_load_backfills_a_missing_listing_by_the_iban(tmp_path):
+    # The next load reads a loaded run's missing listing from its bronze dir
+    # by the roster's `iban`, and leaves a recorded run alone.
+    bronze_dir = tmp_path / "bronze"
+    _write_bronze_run(bronze_dir, "20260815T120000Z")
+    _write_bronze_run(bronze_dir, "20260816T120000Z")
+    _main(bronze_dir)
+    conn = load.silver.open_db(bronze_dir / "raiffeisen_at.db")
+    before = _listings(conn)
+    conn.execute("DELETE FROM run_accounts WHERE snapshot_at = ?", (before[0][0],))
+    conn.close()
+    (bronze_dir / "20260816T120000Z" / "accounts.json").write_text("[]")
+    _main(bronze_dir)
+    assert _listings(_db(bronze_dir)) == before
+
+
 def test_non_complete_run_skipped(tmp_path):
     bronze_dir = tmp_path / "bronze"
     run = _write_bronze_run(bronze_dir, "20260815T120000Z")

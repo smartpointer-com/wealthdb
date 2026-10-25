@@ -113,9 +113,11 @@ fire real 2FA, so run them deliberately and never in quick succession.
 
 - Bronze runs land under `$XDG_DATA_HOME/wealthdb/firstcitizens/<UTC-ts>/`.
 - Silver is `$XDG_DATA_HOME/wealthdb/firstcitizens/firstcitizens.db`,
-  with three tables:
+  with four tables:
   - `accounts`: the deposit roster per snapshot (type, nickname, last-4
-    mask, currency, current balance);
+    mask, currency, current balance). A row lands only when an account
+    changed;
+  - `run_accounts`: the accounts each run listed;
   - `transactions`: the ledger, keyed by the source's `transactionId`
     (signed amount, description, check number, running balance);
   - `documents`: the statement PDFs, keyed by content hash.
@@ -124,6 +126,6 @@ fire real 2FA, so run them deliberately and never in quick succession.
 
 The gold adapter (`wealthdb/internal/silver/firstcitizens/`) maps the
 accounts to cash accounts. It builds a closing-balance series from the
-running balance and adds the current roster balance, stamped at the
-latest roster snapshot. The accounts are conduits, so their return rows
-are hidden.
+running balance. It adds the roster balance at each run that listed the
+account, so gold can end an account the bank stops listing. The accounts
+are conduits, so their return rows are hidden.

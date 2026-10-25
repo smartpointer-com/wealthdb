@@ -260,9 +260,8 @@ or statements, and stamps the manifest `dry-run`.
 
 ### 4.3 `load`
 
-`load` parses each bronze run into SQLite silver
-(`migrations/0001_initial.sql`). It reads the **JSON
-`history/<acct>.json` as the authoritative ledger**:
+`load` parses each bronze run into SQLite silver (`migrations/`). It
+reads the **JSON `history/<acct>.json` as the authoritative ledger**:
 
 - the stable `transactionId` as the row id;
 - the signed `amount` (magnitude × `isDebit`);
@@ -274,15 +273,21 @@ only, with no transaction backfill. The silver schema is
 column-compatible with chase's, so the two gold adapters run in
 parallel.
 
+The roster keeps a row only when an account changed. The
+`run_accounts` table records the accounts each run listed, so a run
+that still listed an unchanged account is visible.
+
 ### 4.4 Gold adapter
 
 `wealthdb/internal/silver/firstcitizens/` follows chase's model:
 
 - cash accounts (`AccountKind` cash, `taxable_personal` /
   `self_directed`);
-- a closing-balance series from the per-row running balance;
-- a current balance from the roster, stamped at the source's latest
-  roster snapshot;
+- a closing-balance series from the per-row running balance, each
+  stamped at its day's last second;
+- a current balance from the roster at each run that listed the account
+  (`run_accounts`). An account the bank stops listing has no balance
+  after its last listing run, so gold can end it;
 - every transaction: interest and fee recognised from the description,
   else deposit or withdrawal by sign.
 

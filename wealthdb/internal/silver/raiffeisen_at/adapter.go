@@ -19,8 +19,11 @@
 //     (the `kontostaende` series, in silver's daily_balances table — unlike the
 //     US siblings, the transaction history has no per-row running balance, so
 //     the cash time series comes from this dedicated series). Plus a CURRENT
-//     balance from the roster's live balance, so the latest net worth reflects
-//     the balance now.
+//     balance from the roster's live balance at each run whose roster listed
+//     the account (silver's run_accounts), so the latest net worth reflects
+//     the balance now. An account the latest runs leave out has no balance
+//     after its last listing run, so gold can end it. Each day's saldo is
+//     stamped at the day's last second, so the series gives the day's value.
 //
 //   - TRANSACTIONS: the whole deposit ledger. The collector signs amounts the
 //     canonical way (positive = balance increase), so the source sign is

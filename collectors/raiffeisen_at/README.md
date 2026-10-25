@@ -124,7 +124,8 @@ port and records the session under
 - Bronze runs land under `$XDG_DATA_HOME/wealthdb/raiffeisen_at/<UTC-ts>/`.
 - Silver is `$XDG_DATA_HOME/wealthdb/raiffeisen_at/raiffeisen_at.db`,
   with the tables `accounts`, `transactions`, `daily_balances`,
-  `documents` and `run_windows` ([DESIGN.md](DESIGN.md) §4.2).
+  `documents`, `run_windows` and `run_accounts` ([DESIGN.md](DESIGN.md)
+  §4.2).
 
 ## Supplied transaction listings
 

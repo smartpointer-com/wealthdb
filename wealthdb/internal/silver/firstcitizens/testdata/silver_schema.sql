@@ -1,6 +1,6 @@
 -- Minimal firstcitizens silver schema for adapter tests — mirrors the columns
--- the adapter reads in collectors/firstcitizens/migrations/0001_initial.sql
--- (column-compatible with chase's).
+-- the adapter reads in collectors/firstcitizens/migrations/ (0001_initial.sql
+-- is column-compatible with chase's; 0002_run_accounts.sql adds run_accounts).
 
 CREATE TABLE schema_meta (
     silver_schema_version INTEGER NOT NULL PRIMARY KEY,
@@ -48,4 +48,10 @@ CREATE TABLE documents (
     filename            TEXT    NOT NULL,
     size_bytes          INTEGER NOT NULL,
     payload             TEXT    NOT NULL
+);
+
+CREATE TABLE run_accounts (
+    snapshot_at         INTEGER NOT NULL,
+    account_external_id TEXT    NOT NULL,
+    PRIMARY KEY (snapshot_at, account_external_id)
 );

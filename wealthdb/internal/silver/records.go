@@ -23,6 +23,10 @@ func CashBalance(snap int64, accountID, currency string, kind canonical.BalanceK
 	}
 }
 
+// DayEndOffset is the seconds from a day's midnight to its last second,
+// where a closing balance that speaks for the whole day is stamped.
+const DayEndOffset = 86399
+
 // RunningBalanceQuery yields the (account, day, balance) rows of a bank
 // silver's ledger for AppendClosingBalances: one per account and posting day
 // in [?, ?] with a balance, valued at the day's fitid-highest row. posted_at
@@ -46,6 +50,16 @@ func AppendClosingBalances(ctx context.Context, db *sql.DB, label, q string, arg
 	payload string, ccy func(accountID string) string,
 	sign func(accountID string, v float64) canonical.Decimal,
 	batch *canonical.SnapshotBatch) error {
+	return appendBalances(ctx, db, label, q, args, canonical.BalanceKindClosing, payload, ccy, sign, batch)
+}
+
+// appendBalances runs q, which yields (account, time, balance) rows bound
+// by args, and appends one cash balance of kind per row to batch, as
+// AppendClosingBalances describes.
+func appendBalances(ctx context.Context, db *sql.DB, label, q string, args []any,
+	kind canonical.BalanceKind, payload string, ccy func(accountID string) string,
+	sign func(accountID string, v float64) canonical.Decimal,
+	batch *canonical.SnapshotBatch) error {
 	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return fmt.Errorf("%s: %w", label, err)
@@ -67,9 +81,48 @@ func AppendClosingBalances(ctx context.Context, db *sql.DB, label, q string, arg
 			amount = canonical.NewDecimalFromFloat(bal)
 		}
 		batch.CashBalances = append(batch.CashBalances, CashBalance(
-			at, id, ccy(id), canonical.BalanceKindClosing, amount, payload))
+			at, id, ccy(id), kind, amount, payload))
 	}
 	return rows.Err()
+}
+
+// AppendReportedBalances appends one CURRENT cash balance per account and
+// run that listed it inside w: the account's roster balance as of that run,
+// from its latest `accounts` row at or before it, in its currency (ccy) and
+// as stored. runsTable holds one (snapshot_at, account_external_id) row per
+// loaded run and account the run's roster listed; it is the adapter's own
+// constant. An account's own roster rows count as listings too. A roster
+// row with no balance emits none. kind names the collector in errors. A
+// silver without runsTable is an error that names the collector's load,
+// which adds it.
+//
+// Silver content-dedups an unchanged roster row, so the runs table is the
+// only record that a quiet account was still listed. An account the
+// latest runs leave out has no balance after the last run that listed it,
+// so gold can end it (wealthdb/docs/DESIGN.md §10.7).
+func AppendReportedBalances(ctx context.Context, db *sql.DB, kind, runsTable string,
+	w canonical.Window, ccy func(accountID string) string, batch *canonical.SnapshotBatch) error {
+	label := kind + " roster balances"
+	has, err := HasTables(ctx, db, runsTable)
+	if err != nil {
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	if !has {
+		return fmt.Errorf("%s silver has no %s; run `%s load` first", kind, runsTable, kind)
+	}
+	q := `
+SELECT id, at, balance FROM (
+    SELECT l.account_external_id AS id, l.snapshot_at AS at,
+           (SELECT a.balance FROM accounts a
+             WHERE a.account_external_id = l.account_external_id AND a.snapshot_at <= l.snapshot_at
+             ORDER BY a.snapshot_at DESC LIMIT 1) AS balance
+      FROM (SELECT account_external_id, snapshot_at FROM ` + runsTable + `
+            UNION SELECT account_external_id, snapshot_at FROM accounts) l
+     WHERE l.snapshot_at BETWEEN ? AND ?)
+ WHERE balance IS NOT NULL
+ ORDER BY id, at`
+	return appendBalances(ctx, db, label, q, []any{w.Start, w.End},
+		canonical.BalanceKindCurrent, `{"basis":"roster"}`, ccy, nil, batch)
 }
 
 // BankRosterRow is an account's latest row in a bank silver's `accounts`
@@ -162,7 +215,7 @@ func (r BankRosterRow) Account(kind canonical.AccountKind, display, currency str
 // unchanged roster row, so a quiet account's latest snapshot falls behind
 // the source's, and gold ends an account at the first later snapshot that
 // re-covers the accounts it was observed with, once the source has run one
-// and a half of the account's cadences past it (DESIGN.md §10.7). An
+// and a half of the account's cadences past it (wealthdb/docs/DESIGN.md §10.7). An
 // account stamped at its own would drop out of the net-worth views once it
 // stopped changing, and a card would take its debt with it. The figure is
 // still the account's latest known balance; the stamp says "as of this

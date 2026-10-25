@@ -158,6 +158,48 @@ func TestBankRosterRowRecords(t *testing.T) {
 	}
 }
 
+// TestAppendReportedBalances pins the per-run roster balances: one CURRENT
+// row per account and run that listed it inside the window, valued at its
+// latest roster row at or before the run, in the account's currency. A run
+// that listed an account twice states it once, a roster row counts as a
+// listing, and a row with no balance states none. A silver without the run
+// table fails, naming the collector's load.
+func TestAppendReportedBalances(t *testing.T) {
+	ctx := context.Background()
+	db := openScratch(t, `CREATE TABLE accounts (snapshot_at INTEGER, account_external_id TEXT, balance REAL);
+INSERT INTO accounts VALUES (1, 'a', 10), (4, 'a', 40), (1, 'b', NULL), (3, 'b', 30);
+CREATE TABLE runs (snapshot_at INTEGER, account_external_id TEXT, kind TEXT);
+INSERT INTO runs VALUES (2, 'a', 'x'), (2, 'a', 'y'), (5, 'a', 'x'), (9, 'a', 'x'), (2, 'b', 'x'), (5, 'b', 'x');`)
+	ccy := func(id string) string { return map[string]string{"a": "CHF"}[id] + "X" }
+	emit := func(table string) ([]string, error) {
+		var batch canonical.SnapshotBatch
+		err := AppendReportedBalances(ctx, db, "bank", table, canonical.Window{Start: 0, End: 8}, ccy, &batch)
+		var out []string
+		for _, cb := range batch.CashBalances {
+			if cb.BalanceKind != canonical.BalanceKindCurrent || string(cb.Payload) != `{"basis":"roster"}` {
+				t.Errorf("%+v, want a CURRENT roster balance", cb)
+			}
+			out = append(out, fmt.Sprintf("%s@%d=%s %s", cb.AccountExternalID, cb.SnapshotAt,
+				cb.Amount.String(), cb.Currency))
+		}
+		return out, err
+	}
+	got, err := emit("runs")
+	if want := []string{"a@1=10 CHFX", "a@2=10 CHFX", "a@4=40 CHFX", "a@5=40 CHFX",
+		"b@3=30 X", "b@5=30 X"}; err != nil || !slices.Equal(got, want) {
+		t.Errorf("AppendReportedBalances = %v, %v; want %v", got, err, want)
+	}
+	if _, err := emit("absent"); err == nil || err.Error() != "bank silver has no absent; run `bank load` first" {
+		t.Errorf("a silver without the run table = %v, want it to name the load", err)
+	}
+	if _, err := db.Exec(`DROP TABLE accounts`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := emit("runs"); err == nil || !strings.HasPrefix(err.Error(), "bank roster balances: ") {
+		t.Errorf("a failing query = %v, want it named", err)
+	}
+}
+
 // TestAppendClosingBalances pins the closing-balance loop: one CLOSING row
 // per query row, in the query's order, the currency and sign the caller
 // supplies, and the figure as stored when no sign is given.

@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,6 +20,8 @@ from .silver import loaded_snapshots
 # Single implementation lives in silver; re-exported here so
 # download-side callers get it without touching the silver module.
 from .silver import canonical_json  # noqa: F401
+
+log = logging.getLogger("collectorkit.bronze")
 
 # A bronze run directory is named with a UTC timestamp, e.g. 20260529T071530Z.
 RUN_DIR_RE = re.compile(r"^\d{8}T\d{6}Z$")
@@ -167,6 +171,48 @@ def pending_run_dirs(conn, bronze_dir: Path, *, log) -> list[Path]:
             continue
         pending.append(d)
     return pending
+
+
+def record_run_listing(conn, snapshot_at: int, ids: Iterable[str]) -> None:
+    """Record the account ids a run's roster listed in `run_accounts`.
+
+    A loader that content-dedups its `accounts` roster keeps no row for an
+    unchanged account, so this table is what shows that a run still listed
+    it. A repeated id lands once and an empty id is dropped. The caller owns
+    the transaction.
+    """
+    conn.executemany(
+        "INSERT OR IGNORE INTO run_accounts (snapshot_at, account_external_id) "
+        "VALUES (?,?)",
+        [(snapshot_at, ext) for ext in set(ids) if ext])
+
+
+def backfill_run_listings(conn, bronze_dir: Path,
+                          read_ids: Callable[[Path], Iterable[str]]) -> None:
+    """Record the listing of each loaded run that has none, from its bronze
+    run dir.
+
+    `read_ids(run_dir)` returns the account ids that run's roster listed. A
+    run with a recorded listing is left alone, and so is a run dir whose
+    slug names no real instant. A loaded run still without a listing
+    afterwards (its bronze is gone, or it listed no accounts) is counted in
+    one log line. The caller owns the transaction.
+    """
+    have = {r[0] for r in conn.execute("SELECT DISTINCT snapshot_at FROM run_accounts")}
+    missing = loaded_snapshots(conn) - have
+    if not missing:
+        return
+    for d in iter_run_dirs(bronze_dir):
+        try:
+            snapshot_at = parse_run_ts(d.name)
+        except ValueError:
+            continue
+        if snapshot_at in missing:
+            record_run_listing(conn, snapshot_at, read_ids(d))
+    left = missing - {r[0] for r in conn.execute("SELECT DISTINCT snapshot_at FROM run_accounts")}
+    if left:
+        log.info("%d loaded run(s) still have no listing (no accounts in their bronze)",
+                 len(left))
 
 
 def short_token(value: str, length: int = 16) -> str:

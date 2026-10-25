@@ -2,11 +2,11 @@
 """firstcitizens silver loader: bronze REST captures → source-shaped SQLite.
 
 Parses each bronze run dir (see download.py for the layout) into the silver
-schema (migrations/): the account roster, the transaction ledger, and the
-statement inventory. Idempotent — an already-loaded dump is skipped, and
-transactions INSERT OR IGNORE on their id — and a movement that comes back
-under a new id is recognised by the bank's host transaction number — so
-re-running converges.
+schema (migrations/): the account roster, the accounts each run listed, the
+transaction ledger, and the statement inventory. Idempotent — an
+already-loaded dump is skipped, and transactions INSERT OR IGNORE on their
+id — and a movement that comes back under a new id is recognised by the
+bank's host transaction number — so re-running converges.
 
 Unlike chase, there is **no export join and no statement-PDF backfill**. The
 `accountHistory` JSON (`history/<acct>.json`) is the authoritative ledger:
@@ -216,12 +216,16 @@ def _mask(acct: dict) -> str | None:
     return None
 
 
+def _account_id(acct: dict) -> str:
+    """The roster account's silver key: the opaque Q2 account id (`id`), the
+    same key the history and statement endpoints use. Empty when absent."""
+    return str(acct.get("id") or "").strip()
+
+
 def _insert_account(conn, snapshot_at: int, acct: dict) -> None:
     """Upsert one roster account, content-deduped: a new snapshot row lands
-    only when the canonical payload changed since the last one. The silver
-    key is the opaque Q2 account id (`id`), the same key the history and
-    statement endpoints use."""
-    ext = str(acct.get("id") or "").strip()
+    only when the canonical payload changed since the last one."""
+    ext = _account_id(acct)
     if not ext:
         return
     payload = silver.canonical_json(acct)
@@ -238,6 +242,11 @@ def _insert_account(conn, snapshot_at: int, acct: dict) -> None:
          acct.get("nickname") or None, _mask(acct),
          acct.get("currency") or "USD", _pick_balance(acct.get("balances")),
          payload))
+
+
+def _listed_ids(accounts: list[dict]) -> set[str]:
+    """The silver keys of the roster accounts a run listed."""
+    return {_account_id(a) for a in accounts}
 
 
 def _held_under_another_id(conn, account_external_id: str, tx: dict) -> bool:
@@ -311,14 +320,15 @@ def _statement_date_from_name(name: str) -> int | None:
 # Per-run loader
 # ============================================================
 
-def _read_accounts(run_dir: Path) -> list[dict]:
+def _read_accounts(run_dir: Path, *, quiet: bool = False) -> list[dict]:
     path = run_dir / "accounts.json"
     if not path.is_file():
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except ValueError:
-        log.warning("%s: accounts.json is not valid JSON; skipping", run_dir.name)
+        if not quiet:
+            log.warning("%s: accounts.json is not valid JSON; skipping", run_dir.name)
         return []
     if not isinstance(data, list):
         return []
@@ -356,6 +366,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> None:
     with silver.transaction(conn):
         for acct in accounts:
             _insert_account(conn, snapshot_at, acct)
+        bronze.record_run_listing(conn, snapshot_at, _listed_ids(accounts))
 
         hist_dir = run_dir / "history"
         if hist_dir.is_dir():
@@ -397,6 +408,10 @@ def main(argv: list[str]) -> int:
     conn = silver.open_db(db_path)
     try:
         silver.apply_migrations(conn, MIGRATIONS_DIR)
+        with silver.transaction(conn):
+            bronze.backfill_run_listings(
+                conn, args.bronze_dir,
+                lambda d: _listed_ids(_read_accounts(d, quiet=True)))
         loaded = 0
         for run_dir in bronze.pending_run_dirs(conn, args.bronze_dir, log=log):
             load_run(conn, run_dir)
