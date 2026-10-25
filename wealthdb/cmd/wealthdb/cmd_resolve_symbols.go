@@ -512,6 +512,9 @@ SELECT silver_source_id, instrument_external_id, name, currency
 	// more honest. NB: Schwab's adapter buckets cash-interest as
 	// 'dividend' (known gap), so 'dividend' here still includes some
 	// non-security rows, which the prompt leaves the model to skip.
+	// A transfer moves a security only when it moves a quantity: one
+	// with none is cash between accounts, its description a
+	// counterparty rather than a security.
 	const byNameQ = `
 SELECT silver_source_id, description, MIN(currency) AS currency
   FROM transactions
@@ -521,6 +524,7 @@ SELECT silver_source_id, description, MIN(currency) AS currency
    AND kind IN ('dividend', 'interest', 'coupon', 'capital_gain',
                 'buy', 'sell', 'corporate_action',
                 'transfer_in', 'transfer_out')
+   AND (kind NOT IN ('transfer_in', 'transfer_out') OR quantity <> 0)
  GROUP BY silver_source_id, description
  ORDER BY silver_source_id, description`
 	rows, err = db.QueryContext(ctx, byNameQ)

@@ -8,8 +8,9 @@ those shared rules.
 ## What makes this collector different
 
 `svb` is a **one-shot historical sideload**, not a recurring collector. It has
-**no source to fetch from**: SVB wound down in 2023 and its statements are a
-fixed archive of PDFs covering brokerage, deposit and mortgage accounts. There
+**no source to fetch from**: SVB wound down in 2023, so its statements are a
+fixed archive. The collector reads its brokerage, deposit and mortgage
+statement PDFs. There
 is **no `login`, no `download`, no auth, no MFA, no Docker, no browser** — only
 `load`, which parses the statement PDFs in the data dir into the silver
 SQLites. Most of root [AGENTS.md](../../AGENTS.md) §1–§3 (read-only sessions,
@@ -120,11 +121,15 @@ same name in the same account. A looser match silently drops a real trade from
 the cash flow.
 
 The signs deserve their own warning. Gold reads a wire's direction off the
-amount's sign alone, so an inverted parse reverses a large transfer instead of
-failing. Two verb families print against intuition — a withholding reversal is a
-credit, a dividend clawback a debit — and the corporate-actions section's
-transaction-value convention flips between the archive's two statement
-templates. Each is covered by a sign fixture; keep it that way.
+amount's sign alone. It reads a transfer's direction off the quantity's sign
+when shares moved, else off the amount's. A transfer row whose two signs
+disagree becomes a journal with no direction. An inverted parse therefore
+reverses a large transfer instead of failing. Two verb families print against
+intuition: a withholding reversal is a credit and a dividend clawback a debit.
+The corporate-actions section's transaction-value convention flips between the
+archive's two statement templates. A sign fixture covers each of these, the
+wires, and the `TRANSFERRED` / `RECEIVED FROM YOU` rows. The `INTER BROKER`
+rows have no collector-side sign fixture, so change them with care.
 
 ## Authentication & private data
 

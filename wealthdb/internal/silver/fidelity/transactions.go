@@ -49,11 +49,11 @@ SELECT activity_id, timestamp, account_external_id, kind,
 
 		qty := silver.DecimalPtrOrNil(qtyStr)
 		p := parseTxPayload(payload)
-		// The amount is resolved BEFORE the kind, because one kind
-		// depends on it: Fidelity's `WIRE` verb carries no direction,
-		// and the sign is the only thing that does.
+		// The amount is resolved BEFORE the kind, because some kinds
+		// depend on it: Fidelity's `WIRE` and `TRANSFER` verbs carry no
+		// direction, and their signs are the only thing that does.
 		netDec := silver.DecimalPtrOrNil(amtStr)
-		kind := kindFor(rawKind, qty, netDec, p.Action)
+		kind := kindFor(rawKind, qty, netDec, p.Action, acct)
 		// The narrative is all gold has to categorise a fidelity row
 		// by: no merchant, no counterparty, no description. It is what
 		// separates the two kinds of fee this source books — an ADR

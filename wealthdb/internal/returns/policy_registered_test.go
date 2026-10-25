@@ -113,10 +113,13 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 		t.Error("cointracking: AccountsGrain must be blanked (per-wallet rows are noise, but shown)")
 	}
 
-	// fidelity: bank set — journal is its only capital-movement kind.
+	// fidelity: bank set — a transfer moves capital in a direction, a
+	// journal in none, and both net at the coarse grains.
 	fid, _ := returns.ReturnsPolicyFor("fidelity")
-	if !fid.Flow.IsExternal(canonical.TxKindJournal) {
-		t.Error("fidelity: journal must be external (its only capital-movement kind)")
+	for _, k := range []canonical.TxKind{canonical.TxKindTransferIn, canonical.TxKindTransferOut, canonical.TxKindJournal} {
+		if !fid.Flow.IsExternal(k) || !fid.Flow.IsTransferLike(k) {
+			t.Errorf("fidelity: %s must be external and transfer-like", k)
+		}
 	}
 
 	// angellist: deposit/withdrawal external; contribution/distribution internal.

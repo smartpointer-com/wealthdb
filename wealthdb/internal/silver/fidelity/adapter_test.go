@@ -851,8 +851,95 @@ func TestStatementBondTermsReachThePosition(t *testing.T) {
 func TestCorporateActionKinds(t *testing.T) {
 	for _, raw := range []string{"MERGER", "NAME_CHANGE", "CONVERSION", "REVERSE_SPLIT",
 		"TENDER", "EXPIRATION", "CASH_IN_LIEU", "RETURN_OF_CAPITAL"} {
-		if got := kindFor(raw, nil, nil, ""); got != canonical.TxKindCorporateAction {
+		if got := kindFor(raw, nil, nil, "", ""); got != canonical.TxKindCorporateAction {
 			t.Errorf("kindFor(%q) = %q, want corporate_action", raw, got)
+		}
+	}
+}
+
+// TestATransferTakesItsDirectionFromItsSigns: TRANSFER states no
+// direction, so a cash row reads it off the amount and an in-kind row
+// off the shares. A directed transfer reaches the internal-transfer
+// matcher, which admits no journal. What stays a journal is a row with
+// no sign to read, an in-kind row whose shares and amount disagree, and
+// a move between the sub-accounts of the account it is booked on, which
+// is no wind-up in-leg either.
+func TestATransferTakesItsDirectionFromItsSigns(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 4, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, portfolio_external_id, nickname, management_style, payload) VALUES
+            (1000, '000000001', 'PORT1', NULL, NULL, '{}');
+        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, instrument_key, currency, quantity, price, amount, payload) VALUES
+            ('cashout',   900, 'ACC1', 'TRANSFER', NULL,  'USD', NULL, NULL, -2500.00,
+             '{"Action": "INTER BROKER DEBIT EXAMPLE BROKERAGE"}'),
+            ('cashin',    901, 'ACC1', 'TRANSFER', NULL,  'USD', NULL, NULL, 2500.00,
+             '{"Action": "INTER BROKER CREDIT EXAMPLE BROKERAGE"}'),
+            ('sharesout', 902, 'ACC1', 'TRANSFER', 'VTI', 'USD', -10, NULL, -2000.00,
+             '{"Action": "INTER BROKER DELIVER VANGUARD TOTAL STK MKT ETF"}'),
+            ('sharesin',  903, 'ACC1', 'TRANSFER', 'VTI', 'USD', 10, NULL, 0.00,
+             '{"Action": "INTER BROKER RECEIVE VANGUARD TOTAL STK MKT ETF"}'),
+            ('unvalued',  904, 'ACC1', 'TRANSFER', 'VTI', 'USD', -10, NULL, NULL,
+             '{"Action": "INTER BROKER DELIVER VANGUARD TOTAL STK MKT ETF"}'),
+            ('disagree',  905, 'ACC1', 'TRANSFER', 'VTI', 'USD', 10, NULL, -2000.00,
+             '{"Action": "RECEIVED FROM YOU VANGUARD TOTAL STK MKT ETF"}'),
+            ('nosign',    906, 'ACC1', 'TRANSFER', NULL,  'USD', 0, NULL, 0.00,
+             '{"Action": "TRANSFERRED FROM EXAMPLE ACCOUNT"}'),
+            ('sibling',   907, '000000001', 'TRANSFER', NULL, 'USD', NULL, NULL, -100.00,
+             '{"Action": "TRANSFERRED TO VS 000-000003-1 (Cash)"}'),
+            ('selfout',   910, '000000001', 'TRANSFER', NULL, 'USD', NULL, NULL, -100.00,
+             '{"Action": "TRANSFERRED TO VS 000-000001-2 (Margin)"}'),
+            ('selfin',    908, '000000001', 'TRANSFER', NULL, 'USD', NULL, NULL, 100.00,
+             '{"Action": "TRANSFERRED FROM VS 000-000001-1 (Cash)"}'),
+            ('journal',   909, 'ACC1', 'JOURNAL',  NULL,  'USD', NULL, NULL, -50.00,
+             '{"Action": "JOURNALED EXAMPLE"}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Transactions(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+
+	got := map[string]canonical.TransactionChange{}
+	for _, tx := range batch.Transactions {
+		got[tx.TransactionExternalID] = tx
+	}
+	if len(got) != 11 {
+		t.Errorf("transactions = %d, want the 11 rows and no wind-up counter-leg for the self-named one", len(got))
+	}
+	for id, want := range map[string]struct {
+		kind canonical.TxKind
+		net  string
+	}{
+		"cashout":   {canonical.TxKindTransferOut, "-2500"},
+		"cashin":    {canonical.TxKindTransferIn, "2500"},
+		"sharesout": {canonical.TxKindTransferOut, "-2000"},
+		"sharesin":  {canonical.TxKindTransferIn, "0"},
+		"unvalued":  {canonical.TxKindTransferOut, ""},
+		"disagree":  {canonical.TxKindJournal, "-2000"},
+		"nosign":    {canonical.TxKindJournal, "0"},
+		"sibling":   {canonical.TxKindTransferOut, "-100"},
+		"selfout":   {canonical.TxKindJournal, "-100"},
+		"selfin":    {canonical.TxKindJournal, "100"},
+		"journal":   {canonical.TxKindJournal, "-50"},
+	} {
+		tx, ok := got[id]
+		if !ok {
+			t.Errorf("%s missing", id)
+			continue
+		}
+		if tx.Kind != want.kind {
+			t.Errorf("%s kind = %q, want %q", id, tx.Kind, want.kind)
+		}
+		// The amount stays source-signed whatever the kind says.
+		net := ""
+		if tx.NetAmount != nil {
+			net = tx.NetAmount.String()
+		}
+		if net != want.net {
+			t.Errorf("%s net_amount = %q, want %q", id, net, want.net)
 		}
 	}
 }
@@ -900,8 +987,8 @@ func TestAWindUpInLegGetsItsCounterLeg(t *testing.T) {
 	}
 	l := legs[0]
 	if l.TransactionExternalID != "windup:in" || l.AccountExternalID != "000000002" ||
-		l.OccurredAt != 900 || l.Kind != canonical.TxKindJournal {
-		t.Errorf("counter-leg = %s on %s at %d as %s, want windup:in on 000000002 at 900 as journal",
+		l.OccurredAt != 900 || l.Kind != canonical.TxKindTransferOut {
+		t.Errorf("counter-leg = %s on %s at %d as %s, want windup:in on 000000002 at 900 as transfer_out",
 			l.TransactionExternalID, l.AccountExternalID, l.OccurredAt, l.Kind)
 	}
 	if l.NetAmount == nil || l.NetAmount.String() != "-500" || l.Quantity == nil || l.Quantity.String() != "-10" {
@@ -913,6 +1000,64 @@ func TestAWindUpInLegGetsItsCounterLeg(t *testing.T) {
 	if l.Description == nil || *l.Description != "TRANSFERRED TO VS 000000001 EXAMPLE CORP COM (XYZ) (Cash)" {
 		t.Errorf("counter-leg description = %v", l.Description)
 	}
+}
+
+// parseVSTransfer reads the direction, the account named and the text
+// after the account reference, which is empty when the Action ends at it.
+func TestParseVSTransfer(t *testing.T) {
+	for _, c := range []struct {
+		action string
+		want   vsTransfer
+		ok     bool
+	}{
+		{"TRANSFERRED FROM VS 000-000002-1 EXAMPLE CORP COM (XYZ) (Cash)",
+			vsTransfer{from: true, account: "000000002", rest: "EXAMPLE CORP COM (XYZ) (Cash)"}, true},
+		{"TRANSFERRED FROM VS 000-000002-1", vsTransfer{from: true, account: "000000002"}, true},
+		{"  TRANSFERRED FROM VS 000-000002-1  ", vsTransfer{from: true, account: "000000002"}, true},
+		{"TRANSFERRED TO VS 000-000003-12 EXAMPLE CORP", vsTransfer{account: "000000003", rest: "EXAMPLE CORP"}, true},
+		{"TRANSFERRED TO VS 000-000003-1", vsTransfer{account: "000000003"}, true},
+		{"TRANSFERRED FROM EXAMPLE ACCOUNT", vsTransfer{}, false},
+		{"TRANSFERRED FROM VS 000-000002 EXAMPLE", vsTransfer{}, false},
+	} {
+		got, ok := parseVSTransfer(c.action)
+		if ok != c.ok || got != c.want {
+			t.Errorf("parseVSTransfer(%q) = %+v, %v; want %+v, %v", c.action, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// A wind-up in-leg whose Action names no security still gets its counter-leg,
+// and the counter-leg's description ends at the account reference.
+func TestAWindUpInLegWithoutSecurityTextHasNoTrailingSpace(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 4, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, portfolio_external_id, nickname, management_style, payload) VALUES
+            (1000, '000000001', 'PORT1', NULL, NULL, '{}');
+        INSERT INTO historical_position_snapshots(as_of_date, account_external_id, description, instrument_key, quantity, price, market_value, currency, payload) VALUES
+            (800, '000000002', 'EXAMPLE CORP COM', 'XYZ', 10, 50, 500.00, 'USD', '{}');
+        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, instrument_key, currency, quantity, price, amount, payload) VALUES
+            ('bare', 900, '000000001', 'TRANSFER', NULL, 'USD', NULL, NULL, 500.00,
+             '{"Action": "TRANSFERRED FROM VS 000-000002-1"}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Transactions(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+
+	for _, tx := range batch.Transactions {
+		if tx.TransactionExternalID != "windup:bare" {
+			continue
+		}
+		if tx.Description == nil || *tx.Description != "TRANSFERRED TO VS 000000001" {
+			t.Errorf("counter-leg description = %v, want it to end at the account", tx.Description)
+		}
+		return
+	}
+	t.Error("no counter-leg for the in-leg without security text")
 }
 
 // TestSnapshotsPendingActivityIsCash: money in flight, under either

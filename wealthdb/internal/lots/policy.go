@@ -192,7 +192,8 @@ func ShadowPolicy() Policy {
 }
 
 // DefaultClassify reads a transaction by its canonical kind and the
-// sign of its quantity.
+// sign of its quantity. A transfer that moves no quantity moves no lot:
+// it is cash between accounts, or a leg with nothing to pair.
 func DefaultClassify(t Txn) Classified {
 	switch t.Kind {
 	case "buy":
@@ -200,9 +201,13 @@ func DefaultClassify(t Txn) Classified {
 	case "sell":
 		return Classified{Action: Sell, Disposal: DisposeSell}
 	case "transfer_in":
-		return Classified{Action: In}
+		if t.Quantity != 0 {
+			return Classified{Action: In}
+		}
 	case "transfer_out":
-		return Classified{Action: Out}
+		if t.Quantity != 0 {
+			return Classified{Action: Out}
+		}
 	case "journal", "other":
 		switch {
 		case t.Quantity > 0:

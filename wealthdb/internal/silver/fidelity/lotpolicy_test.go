@@ -34,7 +34,7 @@ func TestAnOptionLegOnTheStockMovesNoLot(t *testing.T) {
 	for desc, kind := range map[string]string{
 		"YOU BOUGHT PUT (XYZ) EXAMPLE CORP CL A":           "buy",
 		"YOU SOLD CALL (XYZ) EXAMPLE CORP CL A":            "sell",
-		"INTER BROKER DELIVER PUT (XYZ) EXAMPLE CORP CL A": "journal",
+		"INTER BROKER DELIVER PUT (XYZ) EXAMPLE CORP CL A": "transfer_out",
 		"EXPIRED CALL (XYZ) EXAMPLE CORP CL A":             "corporate_action",
 	} {
 		if c := classify(lots.Txn{Kind: kind, Description: desc, Quantity: -3}); c.Action != lots.Ignore {

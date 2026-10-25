@@ -88,7 +88,7 @@ func NewFlowPolicy(regime Regime, external, transferLike []canonical.TxKind) Flo
 }
 
 // BankExternal is the standard flow-complete external kind set. Including kinds
-// an adapter never emits (e.g. fidelity emits only journal) is harmless — no
+// an adapter never emits (e.g. a deposit bank emits no journal) is harmless — no
 // such transactions exist — and keeps the policy robust to adapter evolution.
 // Exported as BankFlowPolicy's building block and for the policy-shape tests.
 func BankExternal() []canonical.TxKind {
@@ -109,7 +109,7 @@ func BankTransferLike() []canonical.TxKind {
 // BankFlowPolicy is the flow policy shared by the flow-complete banks/pension
 // (ubs, schwab, swissquote, fidelity, relevate, viac). relevate (P2) and viac
 // (P3a) map pension contributions to `deposit`, not `contribution`, so the bank
-// set covers them; fidelity moves capital only via `journal`.
+// set covers them, as it does fidelity's wires, transfers and journals.
 func BankFlowPolicy() FlowPolicy {
 	return NewFlowPolicy(RegimeFlowComplete, BankExternal(), BankTransferLike())
 }

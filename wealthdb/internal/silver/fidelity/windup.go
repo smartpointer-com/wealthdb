@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -24,25 +23,27 @@ import (
 // certain — the same holding, quantity and value leaving that account the
 // same day. windUpCounterLegs emits it when the named account is one of
 // this source's own and holds no such leg already.
-var transferredFromVSRe = regexp.MustCompile(`^TRANSFERRED FROM VS (\d{3})-(\d{6})-\d+\s+(.*)$`)
 
-// windUpInLeg is a journal row naming the sibling account it came from.
+// windUpInLeg is one such in-leg: a transfer_in row naming the sibling
+// account it came from.
 type windUpInLeg struct {
 	tx   canonical.TransactionChange
 	from string // the sibling's account_external_id
 	rest string // the Action after the account reference
 }
 
-// asWindUpInLeg reports whether a projected row is a wind-up in-leg.
+// asWindUpInLeg reports whether a projected row is a wind-up in-leg. A
+// transfer naming the account it is booked on is a journal (transferKind),
+// so it never reaches here.
 func asWindUpInLeg(tx canonical.TransactionChange, action string) (windUpInLeg, bool) {
-	if tx.Kind != canonical.TxKindJournal || tx.NetAmount == nil || !tx.NetAmount.IsPositive() {
+	if tx.Kind != canonical.TxKindTransferIn || tx.NetAmount == nil || !tx.NetAmount.IsPositive() {
 		return windUpInLeg{}, false
 	}
-	m := transferredFromVSRe.FindStringSubmatch(strings.TrimSpace(action))
-	if m == nil || m[1]+m[2] == tx.AccountExternalID {
+	t, ok := parseVSTransfer(action)
+	if !ok || !t.from {
 		return windUpInLeg{}, false
 	}
-	return windUpInLeg{tx: tx, from: m[1] + m[2], rest: m[3]}, true
+	return windUpInLeg{tx: tx, from: t.account, rest: t.rest}, true
 }
 
 // windUpCounterLegs returns the out-leg of each in-leg whose named
@@ -84,7 +85,7 @@ func counterLeg(l windUpInLeg) canonical.TransactionChange {
 		n := d.Neg()
 		return &n
 	}
-	descr := "TRANSFERRED TO VS " + l.tx.AccountExternalID + " " + l.rest
+	descr := strings.TrimSpace("TRANSFERRED TO VS " + l.tx.AccountExternalID + " " + l.rest)
 	payload, _ := json.Marshal(map[string]string{
 		"Action":     descr,
 		"counter_of": l.tx.TransactionExternalID,
@@ -93,7 +94,7 @@ func counterLeg(l windUpInLeg) canonical.TransactionChange {
 		TransactionExternalID: "windup:" + l.tx.TransactionExternalID,
 		OccurredAt:            l.tx.OccurredAt,
 		AccountExternalID:     l.from,
-		Kind:                  canonical.TxKindJournal,
+		Kind:                  canonical.TxKindTransferOut,
 		Currency:              l.tx.Currency,
 		NetAmount:             neg(l.tx.NetAmount),
 		Quantity:              neg(l.tx.Quantity),

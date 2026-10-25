@@ -2,6 +2,7 @@ package fidelity
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -15,7 +16,8 @@ import (
 // WIRE and DIRECT_DEBIT / DIRECT_DEPOSIT read the sign of `amount`,
 // because their verbs do not state the direction from this account's
 // side — WIRE carries none at all, and the DIRECT_* pair names the
-// leg the originating bank saw. See the cases below.
+// leg the originating bank saw. TRANSFER reads the signs and the
+// `account` the row is booked on (transferKind). See the cases below.
 //
 // Fidelity's signed `amount` already follows the single-entry
 // convention from the account's perspective (positive = cash in,
@@ -32,7 +34,7 @@ import (
 //
 // Unrecognised values land as TxKindOther with the raw kind
 // preserved in payload.
-func kindFor(raw string, quantity, amount *canonical.Decimal, action string) canonical.TxKind {
+func kindFor(raw string, quantity, amount *canonical.Decimal, action, account string) canonical.TxKind {
 	switch raw {
 	case "BUY", "REINVESTMENT":
 		// REINVESTMENT is the share-purchase leg of a reinvested
@@ -119,9 +121,11 @@ func kindFor(raw string, quantity, amount *canonical.Decimal, action string) can
 			return canonical.TxKindDeposit
 		}
 		return canonical.TxKindWithdrawal
-	case "TRANSFER", "JOURNAL":
-		// Both can flow either direction; keep source sign so
-		// gold doesn't lose the in/out distinction.
+	case "TRANSFER":
+		return transferKind(quantity, amount, action, account)
+	case "JOURNAL":
+		// It can flow either direction; keep source sign so gold
+		// doesn't lose the in/out distinction.
 		return canonical.TxKindJournal
 	case "CASH_SWEEP_IN", "CASH_SWEEP_OUT":
 		// Cash ↔ money-market fund movements. Source-signed.
@@ -176,6 +180,85 @@ func adjustmentKind(action string) canonical.TxKind {
 		return canonical.TxKindDividend
 	}
 	return canonical.TxKindOther
+}
+
+// transferKind reads a TRANSFER's direction off its signs.
+//
+// TRANSFER is value moving between two accounts, as cash or as shares.
+// The export books it as `TRANSFERRED FROM` / `TRANSFERRED TO` between
+// two Fidelity accounts. The svb statements book it for a move between
+// their own accounts, for a whole-account move to or from another broker
+// (`INTER BROKER DELIVER` / `RECEIVE` for the shares, `DEBIT` / `CREDIT`
+// for the cash), and for shares deposited in kind
+// (collectors/svb/load.py). The verb states no direction, so the signs
+// must, as for WIRE. The direction is what lets the row reach the
+// internal-transfer matcher, which admits no journal: as a journal the
+// row could never pair with its far leg at the other account or broker.
+//
+// The quantity decides when shares moved. The shares are what moved, and
+// a lot leaves or arrives by its quantity's sign. A cash row moves no
+// shares, so its amount decides. A row with neither stays a journal. It
+// has no direction to read, and a guessed one could pair with a
+// stranger.
+//
+// An in-kind row can carry both, and then they must agree. On an svb row
+// the amount is the TRAN VALUE figure, whose sign the statement parser
+// normalises on the legacy template (pdf_parsers_svbwa
+// `_lookahead_tran_value`). A row whose two signs disagree had one of
+// them misread, so it stays a journal: a transfer kind whose amount runs
+// the other way would mislead the matcher, the cash flow and the
+// coverage ledger. The lot engine still reads a journal's direction off
+// its quantity.
+//
+// A transfer that names the account it is booked on ("TRANSFERRED FROM
+// VS <this account>-<n>") stays a journal too. It moves value between
+// that account's own sub-accounts, like a JOURNAL, and no other account
+// holds a far leg for it.
+func transferKind(quantity, amount *canonical.Decimal, action, account string) canonical.TxKind {
+	if t, ok := parseVSTransfer(action); ok && t.account == account {
+		return canonical.TxKindJournal
+	}
+	q, a := signOf(quantity), signOf(amount)
+	side := q
+	if side == 0 {
+		side = a
+	}
+	switch {
+	case q != 0 && a != 0 && q != a, side == 0:
+		return canonical.TxKindJournal
+	case side > 0:
+		return canonical.TxKindTransferIn
+	}
+	return canonical.TxKindTransferOut
+}
+
+// signOf is d's sign, 0 for a nil d.
+func signOf(d *canonical.Decimal) int {
+	if d == nil {
+		return 0
+	}
+	return d.Sign()
+}
+
+// vsTransferRe is the Action of a transfer between two Fidelity
+// accounts: "TRANSFERRED FROM VS <account>-<n> <security> …", or TO. The
+// account prints as two digit groups, which joined are its
+// account_external_id.
+var vsTransferRe = regexp.MustCompile(`^TRANSFERRED (FROM|TO) VS (\d{3})-(\d{6})-\d+(?:\s+(.*))?$`)
+
+// vsTransfer is a transfer Action that names a Fidelity account.
+type vsTransfer struct {
+	from    bool   // TRANSFERRED FROM: the row is the receiving leg
+	account string // the account named, as its account_external_id
+	rest    string // the Action after the account reference
+}
+
+func parseVSTransfer(action string) (vsTransfer, bool) {
+	m := vsTransferRe.FindStringSubmatch(strings.TrimSpace(action))
+	if m == nil {
+		return vsTransfer{}, false
+	}
+	return vsTransfer{from: m[1] == "FROM", account: m[2] + m[3], rest: m[4]}, true
 }
 
 // txPayload is what the adapter reads from a silver transaction's

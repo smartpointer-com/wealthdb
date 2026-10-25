@@ -539,8 +539,9 @@ func TestCollectAnchorsSkipsIdentifierSymbols(t *testing.T) {
 // TestCollectCandidatesSkipsHintedRowsAndCash: a transaction whose
 // adapter looked its instrument up and failed carries the token it
 // failed on, and is config's to close by that token, not a model's to
-// name; a cash-class instrument has no ticker worth guessing. Everything
-// else stays a candidate.
+// name; a cash-class instrument has no ticker worth guessing, and a
+// transfer that moves no quantity names a counterparty, not a security.
+// Everything else stays a candidate.
 func TestCollectCandidatesSkipsHintedRowsAndCash(t *testing.T) {
 	t.Parallel()
 	_, goldPath := resolveSymbolsFixture(t, "http://unused", 0, nil)
@@ -556,14 +557,17 @@ func TestCollectCandidatesSkipsHintedRowsAndCash(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for i, row := range []struct{ description, hint any }{
-		{"DIVIDEND RECEIVED EXAMPLE COMPANY", nil},
-		{"DIVIDEND RECEIVED OTHER EXAMPLE INC", "OTHEREXAMPLEINC"},
+	for i, row := range []struct{ kind, description, hint, quantity any }{
+		{"dividend", "DIVIDEND RECEIVED EXAMPLE COMPANY", nil, nil},
+		{"dividend", "DIVIDEND RECEIVED OTHER EXAMPLE INC", "OTHEREXAMPLEINC", nil},
+		{"transfer_out", "INTER BROKER DEBIT EXAMPLE BROKERAGE", nil, nil},
+		{"transfer_in", "INTER BROKER CREDIT EXAMPLE BROKERAGE", nil, 0},
+		{"transfer_in", "INTER BROKER RECEIVE EXAMPLE FUND", nil, 10},
 	} {
 		if _, err := db.Exec(`INSERT INTO transactions (silver_source_id, transaction_external_id,
-                occurred_at, account_external_id, kind, currency, net_amount, description, instrument_hint)
-            VALUES ('schwab-test', ?, 0, 'ACCT1', 'dividend', 'USD', 10, ?, ?)`,
-			fmt.Sprintf("T%d", i), row.description, row.hint); err != nil {
+                occurred_at, account_external_id, kind, currency, net_amount, quantity, description, instrument_hint)
+            VALUES ('schwab-test', ?, 0, 'ACCT1', ?, 'USD', 10, ?, ?, ?)`,
+			fmt.Sprintf("T%d", i), row.kind, row.quantity, row.description, row.hint); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -575,7 +579,8 @@ func TestCollectCandidatesSkipsHintedRowsAndCash(t *testing.T) {
 	for _, c := range cands {
 		got = append(got, c.LookupKind+":"+c.LookupValue)
 	}
-	want := []string{"instrument_external_id:EX00000001", "name:DIVIDEND RECEIVED EXAMPLE COMPANY"}
+	want := []string{"instrument_external_id:EX00000001", "name:DIVIDEND RECEIVED EXAMPLE COMPANY",
+		"name:INTER BROKER RECEIVE EXAMPLE FUND"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("candidates = %v, want %v", got, want)
 	}

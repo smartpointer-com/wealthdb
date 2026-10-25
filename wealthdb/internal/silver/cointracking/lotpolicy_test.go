@@ -33,7 +33,8 @@ func TestClassifyLotsReadsTheCTType(t *testing.T) {
 			FeeAmount: 1, FeeCurrency: "BNB"}, lots.Classified{Action: lots.Sell, Disposal: lots.DisposeSell}},
 		{"crypto trade, buy leg", lots.Txn{ID: "t:b", Type: "Trade", Kind: "buy", BuyCurrency: "ETH", SellCurrency: "BTC",
 			FeeAmount: 1, FeeCurrency: "BNB"}, lots.Classified{Action: lots.Buy, Fee: true}},
-		{"no type: the kind", lots.Txn{Kind: "transfer_in"}, lots.Classified{Action: lots.In}},
+		{"no type: the kind", lots.Txn{Kind: "transfer_in", Quantity: 1}, lots.Classified{Action: lots.In}},
+		{"no type, no quantity: nothing moves", lots.Txn{Kind: "transfer_in"}, lots.Classified{Action: lots.Ignore}},
 	}
 	for _, c := range cases {
 		if got := classifyLots(c.t); got != c.want {
