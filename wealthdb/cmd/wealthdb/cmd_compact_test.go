@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,6 +36,49 @@ func bloatGold(t *testing.T, goldPath string) {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("bloat step failed: %v", err)
 		}
+	}
+}
+
+// v15Header is the storage number a file in gold.StorageVersion's
+// format states in its header (v1.5's).
+const v15Header = 68
+
+// storageHeader is the storage number a DuckDB file's header states.
+func storageHeader(t *testing.T, path string) uint64 {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) < 20 || string(b[8:12]) != "DUCK" {
+		t.Fatalf("%s is no DuckDB file", path)
+	}
+	return binary.LittleEndian.Uint64(b[12:20])
+}
+
+// rewriteInNewestFormat copies the DuckDB file at path into a new file
+// in DuckDB's own default format and puts it in path's place.
+func rewriteInNewestFormat(t *testing.T, path string) {
+	t.Helper()
+	tmp := path + ".newest"
+	db, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, stmt := range []string{
+		"ATTACH '" + path + "' AS src (READ_ONLY)",
+		"ATTACH '" + tmp + "' AS dst",
+		"COPY FROM DATABASE src TO dst",
+		"DETACH src",
+		"DETACH dst",
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -92,6 +136,13 @@ func TestCompactShrinksAndPreservesRows(t *testing.T) {
 	goldPath := goldPathFromCfg(cfg)
 	bloatGold(t, goldPath)
 
+	// init writes the pinned format already; rewritten in DuckDB's own
+	// newest, the source shows compact writes the pinned one from a
+	// newer file.
+	rewriteInNewestFormat(t, goldPath)
+	if got := storageHeader(t, goldPath); got == v15Header {
+		t.Fatalf("the source's storage version = %d, want DuckDB's own newer one", got)
+	}
 	beforeCounts, beforeVer := goldStat(t, goldPath)
 	beforeSize := fileSizeT(t, goldPath)
 
@@ -106,6 +157,11 @@ func TestCompactShrinksAndPreservesRows(t *testing.T) {
 	afterSize := fileSizeT(t, goldPath)
 	if afterSize >= beforeSize {
 		t.Errorf("compact did not shrink file: before=%d after=%d", beforeSize, afterSize)
+	}
+	// The rewritten file is in the format the dashboards' driver reads
+	// (gold.StorageVersion).
+	if got := storageHeader(t, goldPath); got != v15Header {
+		t.Errorf("the compacted file's storage version = %d, want %d", got, v15Header)
 	}
 	afterCounts, afterVer := goldStat(t, goldPath)
 	if afterVer != beforeVer {

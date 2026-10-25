@@ -3,6 +3,8 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -133,5 +135,64 @@ func TestOpenStampsAndReopenDoesNot(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("ReopenReadWrite recorded; calls = %d, want 1 — a re-open is the same command continuing", calls)
+	}
+}
+
+// v15Header is the storage number a file in StorageVersion's format
+// states in its header (v1.5's); DuckDB 2.0's own format states 999.
+const v15Header = 68
+
+// storageHeader is the storage number a DuckDB file's header states.
+func storageHeader(t *testing.T, path string) uint64 {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) < 20 || string(b[8:12]) != "DUCK" {
+		t.Fatalf("%s is no DuckDB file", path)
+	}
+	return binary.LittleEndian.Uint64(b[12:20])
+}
+
+// A gold file is created in the storage format Metabase's DuckDB driver
+// reads (StorageVersion), not in DuckDB's own newest one.
+func TestANewGoldFileIsOneTheDashboardsRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gold.db")
+	db, err := Open(path, ModeReadWrite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if got := storageHeader(t, path); got != v15Header {
+		t.Errorf("a new gold file's storage version = %d, want v1.5's %d", got, v15Header)
+	}
+}
+
+// A file in a newer format still opens, read-write and read-only, and
+// keeps its format: the pin applies to files being created.
+func TestAGoldFileInANewerFormatStillOpens(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gold.db")
+	raw, err := sql.Open("duckdb", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE t AS SELECT 1 AS x; CHECKPOINT`); err != nil {
+		t.Fatal(err)
+	}
+	raw.Close()
+	before := storageHeader(t, path)
+	if before == v15Header {
+		t.Fatalf("DuckDB's own format is StorageVersion's (%d); the test needs a newer one", before)
+	}
+	for _, mode := range []Mode{ModeReadWrite, ModeReadOnly} {
+		db, err := Open(path, mode)
+		if err != nil {
+			t.Fatalf("Open(%d) of a newer-format file: %v", mode, err)
+		}
+		db.Close()
+	}
+	if got := storageHeader(t, path); got != before {
+		t.Errorf("the newer-format file's storage version = %d, want it kept at %d", got, before)
 	}
 }

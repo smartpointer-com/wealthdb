@@ -28,6 +28,14 @@ import (
 // current binary may misread its schema.
 var ErrStaleBinary = errors.New("binary is older than the database's last writer")
 
+// StorageVersion is the storage format of a gold file DuckDB creates:
+// the newest that Metabase's DuckDB driver reads (web/Dockerfile pins
+// the driver; a web test holds the two together). Left to itself, DuckDB writes its own newest format, which that
+// driver cannot open, so a fresh `init`, a full reload or a compaction
+// would take the dashboards down. A file keeps the format it was
+// created in.
+const StorageVersion = "v1.5.0"
+
 // Mode controls whether the gold DB is opened read-write or
 // read-only. The pathmode package chooses one based on
 // filesystem permissions and the -r flag.
@@ -86,11 +94,15 @@ func open(path string, mode Mode, audit bool, options map[string]string) (*sql.D
 	}
 
 	// DuckDB takes configuration as `?key=value` query parameters on
-	// the DSN. Only on-disk databases honour access_mode; in-memory
-	// always opens read-write (there's nothing to share).
+	// the DSN. Only on-disk databases take these: an in-memory one has
+	// no file format to pin and always opens read-write (there's
+	// nothing to share).
 	params := url.Values{}
-	if mode == ModeReadOnly && dsn != ":memory:" {
-		params.Set("access_mode", "read_only")
+	if dsn != ":memory:" {
+		params.Set("storage_compatibility_version", StorageVersion)
+		if mode == ModeReadOnly {
+			params.Set("access_mode", "read_only")
+		}
 	}
 	for k, v := range options {
 		params.Set(k, v)

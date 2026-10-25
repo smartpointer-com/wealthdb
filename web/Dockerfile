@@ -8,7 +8,9 @@
 # libstdc++.so.6 — lets the native load cleanly. See DESIGN.md.
 #
 # Pins: Metabase v0.59.15 + community metabase_duckdb_driver 1.5.3.0
-# (bundles DuckDB 1.5.3 → matches the gold DB's 1.5.x storage format).
+# (bundles DuckDB 1.5.3 → matches the gold DB's 1.5.x storage format,
+# which the engine sets with gold.StorageVersion; web/test_provision.py
+# holds the two together).
 FROM eclipse-temurin:21-jre-noble
 
 # Metabase needs fontconfig + a font for headless AWT rendering. glibc +

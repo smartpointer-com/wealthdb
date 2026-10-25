@@ -2858,6 +2858,19 @@ finally:
     p.urllib.request.urlopen = _real_urlopen
 check("a call that times out reads as no answer", _ans == (0, {}), _ans)
 
+section("the gold's storage format is one the driver reads")
+
+# The driver bundles the DuckDB of its own version (web/Dockerfile), and
+# the engine creates gold files in that version's format
+# (gold.StorageVersion): a driver bump must move both.
+_driver = re.search(r"metabase_duckdb_driver/releases/download/(\d+)\.(\d+)\.",
+                    open(os.path.join(_REPO, "web", "Dockerfile"), encoding="utf-8").read())
+_storage = re.search(r'StorageVersion = "v(\d+)\.(\d+)\.',
+                     open(os.path.join(_REPO, "wealthdb", "internal", "gold", "open.go"), encoding="utf-8").read())
+check("the engine writes the storage format of the DuckDB the driver bundles",
+      _driver and _storage and _driver.groups() == _storage.groups(),
+      f"{_driver and _driver.groups()} vs {_storage and _storage.groups()}")
+
 section("the projection cards' SQL, run on an invented book")
 
 # The cards' SQL, rendered the way Metabase fills its template tags and

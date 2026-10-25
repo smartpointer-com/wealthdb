@@ -79,8 +79,8 @@ port-forward; auth is Metabase's own login.
 DuckDB silently won't work unless ALL of these hold (each one is a real
 trap, see DESIGN.md §3):
 
-- (a) the driver's bundled DuckDB engine is **>= the gold storage
-  format** (1.5.x);
+- (a) the driver's bundled DuckDB engine **reads the storage format
+  the engine pins** (`gold.StorageVersion`, 1.5.x);
 - (b) the JAR is **world-readable** in `/plugins` (`ADD --chmod=0644` —
   root-only is silently skipped, no error);
 - (c) the base image is **glibc**, not Alpine/musl (the JDBC native is

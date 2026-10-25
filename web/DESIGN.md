@@ -38,10 +38,17 @@ mid-write / not checkpointed), so a torn copy is never captured.
 
 Three things must all be right or DuckDB silently won't work:
 
-- **Engine version.** The gold DB is DuckDB **1.5.x** storage format
-  (the engine's `duckdb-go/v2` version is in `wealthdb/go.mod`). The driver bundles its
-  own DuckDB; an older one can't open a 1.5 file. Pin driver **1.5.3.0**
-  (DuckDB 1.5.3, targets Metabase 59), sha256-verified.
+- **Storage format.** The driver bundles its own DuckDB, which reads
+  files up to its own storage format. Pin driver **1.5.3.0** (DuckDB
+  1.5.3, targets Metabase 59), sha256-verified. The engine's DuckDB is
+  newer (`duckdb-go/v2` in `wealthdb/go.mod`) and would create files in
+  a format the driver cannot open. So the engine creates every gold file
+  in the 1.5 format (`gold.StorageVersion`). This holds for `init`, a
+  full reload and `compact`. A file keeps the format it was created in.
+  A file in a newer format stays unreadable to the driver, and
+  `wealthdb compact` rewrites it in the pinned one. A driver bump moves
+  `gold.StorageVersion` with it, and a web test checks that the two
+  match.
 - **JAR must be readable.** `ADD`-from-URL writes the JAR root-only
   (0600); Metabase then *silently skips* `/plugins` and the driver never
   registers. `ADD --chmod=0644` fixes it.

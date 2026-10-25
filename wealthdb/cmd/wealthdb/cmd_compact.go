@@ -33,8 +33,9 @@ var compactParityTables = []string{
 // atomically swaps it into place. Repeated in-place DELETE+INSERT (the
 // load / reset path) leaves dead row-group versions that DuckDB never
 // truncates from the file; a clean rewrite reclaims that space without
-// re-merging silver. Concurrent readers keep the old file until they
-// close.
+// re-merging silver. The new file is in the storage format the
+// dashboards read (gold.StorageVersion), whatever the old one's was.
+// Concurrent readers keep the old file until they close.
 func cmdCompact(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("wealthdb compact", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -45,7 +46,9 @@ func cmdCompact(ctx context.Context, g globalFlags, subargs []string, _ io.Reade
 Rewrite the gold DB into a fresh file to reclaim dead space left by
 repeated in-place loads, then atomically swap it over the live path.
 Data is copied faithfully (all tables, views, indexes) — no silver
-re-merge. Concurrent readers keep the old file until they close.
+re-merge. The new file is in the storage format the dashboards read,
+whatever the old one's was. Concurrent readers keep the old file until
+they close.
 
 --dry-run builds the compacted file, reports the reclaimable bytes,
 then discards it without touching the live DB.`)
@@ -110,9 +113,10 @@ then discards it without touching the live DB.`)
 }
 
 // compactBuild returns a build function for BuildFreshAndSwap that
-// rewrites the whole gold DB at goldPath into tmpPath via DuckDB's
-// COPY FROM DATABASE — preserving every table, view and index — then
-// asserts row-count parity on the core tables before returning. A
+// rewrites the whole gold DB at goldPath into tmpPath, in
+// gold.StorageVersion's format, via DuckDB's COPY FROM DATABASE —
+// preserving every table, view and index — then asserts row-count
+// parity on the core tables before returning. A
 // parity mismatch fails the build, so BuildFreshAndSwap never swaps a
 // lossy rewrite over the live DB.
 func compactBuild(ctx context.Context, goldPath string) func(string) error {
@@ -133,7 +137,7 @@ func compactBuild(ctx context.Context, goldPath string) func(string) error {
 
 		for _, stmt := range []string{
 			"ATTACH " + sqlLiteral(goldPath) + " AS src (READ_ONLY)",
-			"ATTACH " + sqlLiteral(tmp) + " AS dst",
+			"ATTACH " + sqlLiteral(tmp) + " AS dst (STORAGE_VERSION " + sqlLiteral(gold.StorageVersion) + ")",
 			"COPY FROM DATABASE src TO dst",
 			// Flush dst to disk and truncate its WAL so the file is
 			// complete and clean before the pinned conn closes.
