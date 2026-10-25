@@ -341,7 +341,7 @@ through:
 2. **Default output currency** — default `USD`. ISO 4217 only;
    validated for ISO 4217 shape (three uppercase ASCII letters).
 3. **First silver source** — `id` (slug matching `^[A-Za-z0-9_-]+$`),
-   `kind` (any registered adapter kind, or `auto`), and `path` (no
+   `kind` (any registered adapter kind), and `path` (no
    default). The wizard opens the silver DB read-only and verifies it
    parses as SQLite and has a `dump_runs` table (a load-only silver's
    `load_runs` also passes). It does not check the kind against the
@@ -879,7 +879,7 @@ Example config file:
 | `mcp.insecure` | bool | Acknowledges `mcp.auth: none`. Validation refuses `none` without it. |
 | `silver_sources[]` | array | Registered silver databases. |
 | `silver_sources[].id` | string | User-defined unique identifier. Used in CLI args. Must match `^[A-Za-z0-9_-]+$`. |
-| `silver_sources[].kind` | string | Picks the adapter (e.g. `schwab`, `ubs`, `swissquote`, `fred`, …), or `auto` to auto-detect (§5.2). The full set is the `silver_kind` whitelist enforced in gold (`internal/gold/migrations`) and mirrors the registered adapters under `internal/silver/`. |
+| `silver_sources[].kind` | string | Picks the adapter (e.g. `schwab`, `ubs`, `swissquote`, `fred`, …). It must name a registered kind (§5.2). The full set is the `silver_kind` whitelist enforced in gold (`internal/gold/migrations`) and mirrors the registered adapters under `internal/silver/`. |
 | `silver_sources[].path` | string | Filesystem path to the silver database, expanded as above. Used by single-file adapters (Schwab, Swissquote, single-source UBS, fred). Mutually exclusive with `subsources`. |
 | `silver_sources[].fx_priority` | integer | Optional. FX-rate precedence when several sources publish the same `(base, quote)` pair: lower = higher priority, absent/null = lowest. Ties broken by the order sources appear in this array. Affects only FX resolution (§10.6 / §13.2) — no effect on positions or transactions. |
 | `silver_sources[].taxable_wrapper` | string | Optional. The taxable wrapper this source's taxable accounts actually sit in, validated against the canonical `tax_wrapper` enum at config-load time. A bank feed says what a product IS and never who holds it, so an adapter emits the generic `taxable_personal` for any taxable account; this states the deployment's answer once per source instead of once per account, so an account opened later is right on the load that first sees it. It rewrites `taxable_personal` and nothing else — a retirement, trust or custodial wrapper the adapter had positive evidence for is kept, and an account with no wrapper at all is left alone. A per-account `account_overrides.tax_wrapper` still wins. See §13.8. |
@@ -931,16 +931,12 @@ Example config file:
 | `symbol_resolution.model` | object | Optional. LLM endpoint used to back-fill missing instrument tickers (`baseUrl`, `api`, `apiKey`, `name`). Only the OpenAI-compatible Chat Completions API (`api: "openai-completions"`) is supported today. |
 | `symbol_resolution.overrides[]` | array | Optional. User-authored ticker-mapping overrides applied at the start of every run under `model_name='manual-override'`. Each entry keys on `silver_source_id` + `lookup_kind` (`instrument_external_id` or `name`) + `lookup_value`; set `symbol` to correct a ticker, or `delete: true` to suppress a row where no real ticker exists. |
 
-### 5.2 `kind: "auto"`
+### 5.2 Adapter kinds
 
-The loader opens the silver DB read-only, inspects `sqlite_master`
-for tables unique to each known kind (e.g., `safekeeping_accounts`
-implies UBS; `user_preference` implies Schwab; `currency_balances`
-implies Swissquote), and selects the adapter accordingly. Falls
-back to an explicit error if no adapter matches.
-
-Most config files should pin `kind` explicitly. `auto` is a
-convenience for scratch testing.
+A silver source's `kind` names the adapter that reads it. The loader
+never opens a silver to guess one. Validation refuses a kind no adapter
+registers, and its message lists the registered kinds. The setup wizard
+lists the same kinds in its prompt.
 
 ### 5.3 Config-file changes vs gold state
 
@@ -3788,12 +3784,12 @@ Silver also states a few cost facts gold does not project yet:
 - the purchase fees UBS and Swissquote leave out of their basis, as
   fee legs.
 
-### 13.5 Adapter for `auto` kind
+### 13.5 A silver's own kind
 
-The detection rules in §5.2 work but are fragile to silver-schema
-changes. Long-term: silver should publish its own `kind` in
-`schema_meta`. Open a coordinated change with the collectors
-before relying on `auto` in production configs.
+Nothing checks a source's configured kind against its silver, so a
+mismatch shows only as that adapter's read error. A silver that
+published its own kind in `schema_meta` would let the loader check the
+pairing up front. That needs a coordinated change with the collectors.
 
 ### 13.6 Concurrent loads
 

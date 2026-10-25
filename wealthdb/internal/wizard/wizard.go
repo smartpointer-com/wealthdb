@@ -120,7 +120,7 @@ func Run(stdin io.Reader, stdout io.Writer, configPath string, def Defaults) (*R
 }
 
 // promptSilverSource walks through one silver-source
-// entry: id (slug, not-already-used), kind (registered or auto),
+// entry: id (slug, not-already-used), kind (a registered adapter),
 // path (file exists and looks like a silver SQLite).
 func promptSilverSource(p *prompter, already []config.SilverSource, knownKinds []string) (*config.SilverSource, error) {
 	usedIDs := make(map[string]struct{}, len(already))
@@ -147,7 +147,7 @@ func promptSilverSource(p *prompter, already []config.SilverSource, knownKinds [
 
 	kindHint := ""
 	if len(knownKinds) > 0 {
-		kindHint = strings.Join(append(append([]string{}, knownKinds...), "auto"), " | ")
+		kindHint = strings.Join(knownKinds, " | ")
 	}
 	kind, err := p.askValidated(
 		fmt.Sprintf("  Kind (%s)", kindHint),
@@ -156,13 +156,10 @@ func promptSilverSource(p *prompter, already []config.SilverSource, knownKinds [
 			if len(knownKinds) == 0 {
 				return nil
 			}
-			if s == "auto" {
-				return nil
-			}
 			if slices.Contains(knownKinds, s) {
 				return nil
 			}
-			return fmt.Errorf("unknown kind; want one of %s or 'auto'", strings.Join(knownKinds, ", "))
+			return fmt.Errorf("unknown kind; want one of %s", strings.Join(knownKinds, ", "))
 		},
 	)
 	if err != nil {

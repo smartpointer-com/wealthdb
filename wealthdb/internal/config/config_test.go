@@ -1336,3 +1336,26 @@ func TestLoadSpendingMatchNames(t *testing.T) {
 		}
 	}
 }
+
+// TestAKindNoAdapterRegistersIsRefused: a silver source's kind names a
+// registered adapter, and nothing detects one. `auto` is refused like any
+// other unregistered kind, and the message names the kinds that are.
+func TestAKindNoAdapterRegistersIsRefused(t *testing.T) {
+	known := []string{"fidelity", "schwab"}
+	if err := registeredKind("schwab", known); err != nil {
+		t.Errorf("a registered kind is refused: %v", err)
+	}
+	for _, kind := range []string{"auto", "schwabb"} {
+		err := registeredKind(kind, known)
+		if err == nil {
+			t.Errorf("kind %q is admitted", kind)
+			continue
+		}
+		if !strings.Contains(err.Error(), "known: fidelity, schwab") {
+			t.Errorf("kind %q: the message names no known kinds: %v", kind, err)
+		}
+	}
+	if err := registeredKind("auto", nil); err != nil {
+		t.Errorf("an empty registry refuses a kind: %v", err)
+	}
+}

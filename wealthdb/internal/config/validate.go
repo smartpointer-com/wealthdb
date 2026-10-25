@@ -71,6 +71,16 @@ func (c *Config) Validate() error {
 	return c.validateMCP()
 }
 
+// registeredKind refuses a kind no adapter registers, naming the kinds
+// that are. An empty registry, in a test that imports no adapter, admits
+// any kind.
+func registeredKind(kind string, known []string) error {
+	if len(known) == 0 || slices.Contains(known, kind) {
+		return nil
+	}
+	return fmt.Errorf("%q not registered (known: %s)", kind, strings.Join(known, ", "))
+}
+
 // validateSources checks every silver_sources entry and returns the set of
 // declared source ids the later sections check references against.
 func (c *Config) validateSources() (map[string]bool, error) {
@@ -91,8 +101,8 @@ func (c *Config) validateSources() (map[string]bool, error) {
 		if s.Kind == "" {
 			return nil, fmt.Errorf("config: silver_sources[%d].kind is required", i)
 		}
-		if len(known) > 0 && !slices.Contains(known, s.Kind) && s.Kind != "auto" {
-			return nil, fmt.Errorf("config: silver_sources[%d].kind %q not registered (known: %v)", i, s.Kind, known)
+		if err := registeredKind(s.Kind, known); err != nil {
+			return nil, fmt.Errorf("config: silver_sources[%d].kind %w", i, err)
 		}
 
 		// A taxable wrapper the deployment states for the source. Any

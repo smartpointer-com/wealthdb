@@ -215,3 +215,25 @@ func TestRunRejectsDuplicateID(t *testing.T) {
 		t.Errorf("second source should be id-b, got %q", res.Config.SilverSources[1].ID)
 	}
 }
+
+// TestTheKindPromptListsTheRegisteredKinds: the hint lists the registered
+// kinds alone, and a kind outside them, `auto` included, is asked again.
+func TestTheKindPromptListsTheRegisteredKinds(t *testing.T) {
+	silverPath := newSilverFixture(t, "test.db")
+	var stdout bytes.Buffer
+	p := newPrompter(scriptedInput("my-source", "auto", "schwab", silverPath), &stdout)
+	src, err := promptSilverSource(p, nil, []string{"fidelity", "schwab"})
+	if err != nil {
+		t.Fatalf("promptSilverSource: %v\nstdout: %s", err, stdout.String())
+	}
+	if src.Kind != "schwab" {
+		t.Errorf("kind = %q, want schwab", src.Kind)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "Kind (fidelity | schwab)") {
+		t.Errorf("the hint does not list the registered kinds alone: %s", out)
+	}
+	if !strings.Contains(out, "unknown kind; want one of fidelity, schwab") {
+		t.Errorf("auto was not refused with the known kinds: %s", out)
+	}
+}
