@@ -832,12 +832,24 @@ its depositary's address, so its business address states nothing.
 ### gleif
 
 Who issued a security, from the Global LEI Foundation's API, by the
-security's ISIN: the issuer's LEI, legal name, legal country and
-headquarters country. A US share ISIN that GLEIF maps to a company
-abroad is a depositary receipt's. For it, the issuer's other ISINs come
-too, so gold can find the share the receipt stands for. A security held
-through funds is asked for when it lacks a country, or a sector under a
-US ISIN, which may be a receipt's.
+security's ISIN: the issuer's LEI, name, legal country and headquarters
+country. The name is the legal name where that is in Latin script.
+Else it is the first of the record's names in Latin script, in this
+order:
+
+- the legal name in English;
+- the preferred ASCII transliteration;
+- the automatic transliteration;
+- the legal name in another language.
+
+Else it is the legal name as it is. Where the name is not the legal
+name, the payload keeps the legal name as `legal_name`.
+
+A US share ISIN that GLEIF maps to a company abroad is a depositary
+receipt's. For it, the issuer's other ISINs come too, so gold can find
+the share the receipt stands for. A security held through funds is
+asked for when it lacks a country, or a sector under a US ISIN, which
+may be a receipt's.
 
 **Terms.** "The data available through the Access Service are provided
 under the CC0 licence" (GLEIF's terms of use for LEI data, §II.3).

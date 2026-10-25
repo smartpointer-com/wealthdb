@@ -8,12 +8,13 @@ API.
   maps to a company outside the US is a depositary receipt's: for it the
   ISINs of that company's LEI are fetched too (`lei-records/{lei}/isins`,
   up to ISIN_PAGES pages), so gold can find the share it stands for.
-- Parse: the issuer's LEI and legal name; its legal country (the
-  jurisdiction, else the legal address) and its headquarters country as
-  facts; its category (GENERAL, FUND, …) in the payload; the issuer's
-  other ISINs as one `issuer_isins` fact, space-separated. An ISIN the
-  API does not know is still a lookup, so it is not asked again before
-  max_age_days.
+- Parse: the issuer's LEI and its name in Latin script (_latin_name);
+  its legal country (the jurisdiction, else the legal address) and its
+  headquarters country as facts; its category (GENERAL, FUND, …) in the
+  payload, with the legal name where the name differs from it; the
+  issuer's other ISINs as one `issuer_isins` fact, space-separated. An
+  ISIN the API does not know is still a lookup, so it is not asked again
+  before max_age_days.
 - Constituents: asked for a missing country, and for a missing sector
   of a stock under a US ISIN, which may be a receipt.
 
@@ -24,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import unicodedata
 from datetime import date
 from pathlib import Path
 
@@ -38,6 +40,14 @@ ISINS_DOC = "isins.json"
 ISIN_PAGE_SIZE = 200
 ISIN_PAGES = 5
 HEADERS = {"Accept": "application/vnd.api+json"}
+# The names a record may give in Latin script for a legal name in
+# another, in the order they are preferred, as (type, English only):
+# the legal name in English (otherNames), the way brokers and fund
+# files print it; then GLEIF's ASCII transliterations
+# (transliteratedOtherNames), the one the registrant prefers first; then
+# the legal name in any other language (otherNames), or in none stated.
+LATIN_NAME_TYPES = (("ALTERNATIVE_LANGUAGE_LEGAL_NAME", True), ("PREFERRED_ASCII_TRANSLITERATED_LEGAL_NAME", False),
+                    ("AUTO_ASCII_TRANSLITERATED_LEGAL_NAME", False), ("ALTERNATIVE_LANGUAGE_LEGAL_NAME", False))
 
 log = logging.getLogger("refdata.gleif")
 
@@ -134,6 +144,40 @@ def _country(value) -> str | None:
     return v.split("-", 1)[0] if v else None
 
 
+def _latin(text: str) -> bool:
+    """Whether every letter of `text` is in Latin script: below the Greek
+    block (ª and º among them), or named LATIN. A full-width letter is
+    not: gold reads names in ASCII form, and a full-width one would read
+    as no name at all."""
+    return all(ch < "\u0370" or ("LATIN" in (n := unicodedata.name(ch, "")) and not n.startswith("FULLWIDTH"))
+               for ch in text if ch.isalpha())
+
+
+def _english(language) -> bool:
+    """Whether a language tag (en, en-US) names English."""
+    tag = (language or "").strip().lower()
+    return tag == "en" or tag.startswith("en-")
+
+
+def _latin_name(entity: dict):
+    """The issuer's name in Latin script, and its legal name where the
+    two differ: a legal name in another script reads as the first of the
+    record's other names in LATIN_NAME_TYPES order (English where the
+    rung asks for it) that has a letter and is in Latin script, else as
+    itself."""
+    legal = (entity.get("legalName") or {}).get("name")
+    if not legal or _latin(legal):
+        return legal, None
+    others = [*(entity.get("transliteratedOtherNames") or []), *(entity.get("otherNames") or [])]
+    for kind, english in LATIN_NAME_TYPES:
+        for other in others:
+            name = (other.get("name") or "").strip()
+            if (other.get("type") == kind and (not english or _english(other.get("language")))
+                    and any(ch.isalpha() for ch in name) and _latin(name)):
+                return name, legal
+    return legal, None
+
+
 def parse_records(doc: dict, key: str, isin: str, as_of: date, *, provider: str) -> Parsed:
     """The LEI records of one ISIN as silver rows for security `key`. The
     first record is the issuer; an empty answer is a lookup that found
@@ -144,15 +188,15 @@ def parse_records(doc: dict, key: str, isin: str, as_of: date, *, provider: str)
         out.securities.append(row("securities", security_key=key, as_of=as_of, provider=provider, isin=isin,
                                   payload={"found": False}))
         return out
-    lei, legal = _issuer(doc)
+    lei, legal_country = _issuer(doc)
     entity = (records[0].get("attributes") or {}).get("entity") or {}
     hq = _country((entity.get("headquartersAddress") or {}).get("country"))
+    name, legal_name = _latin_name(entity)
     out.securities.append(row(
-        "securities", security_key=key, as_of=as_of, provider=provider, isin=isin, lei=lei,
-        name=(entity.get("legalName") or {}).get("name"),
+        "securities", security_key=key, as_of=as_of, provider=provider, isin=isin, lei=lei, name=name,
         payload=present({"category": entity.get("category"), "jurisdiction": entity.get("jurisdiction"),
-                         "status": entity.get("status"), "records": len(records)})))
-    for field, value in (("legal_country", legal), ("hq_country", hq)):
+                         "status": entity.get("status"), "records": len(records), "legal_name": legal_name})))
+    for field, value in (("legal_country", legal_country), ("hq_country", hq)):
         if value:
             out.security_facts.append(row("security_facts", security_key=key, field=field, as_of=as_of,
                                           provider=provider, value=value, scheme="iso3166", payload={"lei": lei}))

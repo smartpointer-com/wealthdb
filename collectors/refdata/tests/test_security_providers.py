@@ -36,6 +36,70 @@ def test_gleif_reads_a_subdivision_as_its_country_and_records_a_miss():
     assert miss.securities[0]["payload"] == {"found": False} and not miss.security_facts
 
 
+def _named(legal, translit=(), others=()):
+    """A record of an invented issuer with legal name `legal` and the
+    other names GLEIF lists: transliterations as (type, name), other
+    names as (type, name, language)."""
+    entity = {"legalName": {"name": legal}, "jurisdiction": "JP",
+              "transliteratedOtherNames": [{"name": n, "type": t} for t, n in translit],
+              "otherNames": [{"name": n, "type": t, "language": lang} for t, n, lang in others]}
+    return {"data": [{"attributes": {"lei": "XXXXXXXXXXXXXXXXXX23", "entity": entity}}]}
+
+
+ALT = "ALTERNATIVE_LANGUAGE_LEGAL_NAME"
+PREFERRED = "PREFERRED_ASCII_TRANSLITERATED_LEGAL_NAME"
+AUTO = "AUTO_ASCII_TRANSLITERATED_LEGAL_NAME"
+
+
+@pytest.mark.parametrize("doc, name, legal", [
+    # The legal name in English first, then the preferred transliteration,
+    # then the automatic one, then the legal name in another language.
+    (_named("例示商事株式会社", translit=[(PREFERRED, "Reiji Shoji K.K.")],
+            others=[(ALT, "Exemple Commerce SA", "fr"), (ALT, "Example Trading Co., Ltd.", "en")]),
+     "Example Trading Co., Ltd.", "例示商事株式会社"),
+    (_named("例示商事株式会社", translit=[(PREFERRED, "Reiji Shoji K.K.")],
+            others=[(ALT, "Example Trading Co., Ltd.", "en-US")]),
+     "Example Trading Co., Ltd.", "例示商事株式会社"),
+    (_named("例示商事株式会社", translit=[(AUTO, "REIJI SHOJI KK"), (PREFERRED, "Reiji Shoji K.K.")],
+            others=[(ALT, "Exemple Commerce SA", "fr")]),
+     "Reiji Shoji K.K.", "例示商事株式会社"),
+    (_named("例示商事株式会社", translit=[(AUTO, "REIJI SHOJI KK")], others=[(ALT, "Exemple Commerce SA", "fr")]),
+     "REIJI SHOJI KK", "例示商事株式会社"),
+    (_named("例示商事株式会社", others=[(ALT, "Exemple Commerce SA", "fr")]), "Exemple Commerce SA", "例示商事株式会社"),
+    # A trading name is not a legal name.
+    (_named("例示商事株式会社", others=[("TRADING_OR_OPERATING_NAME", "Example Trading", "en"),
+                                       (ALT, "Example Trading Co., Ltd.", "en")]),
+     "Example Trading Co., Ltd.", "例示商事株式会社"),
+    # A legal name that states no language is not English: it comes last.
+    (_named("例示商事株式会社", translit=[(AUTO, "REIJI SHOJI KK")], others=[(ALT, "Example Trading Co., Ltd.", None)]),
+     "REIJI SHOJI KK", "例示商事株式会社"),
+    # Nothing in Latin script: the legal name as it is.
+    (_named("Пример АО", others=[("TRADING_OR_OPERATING_NAME", "Пример", "ru")]), "Пример АО", None),
+    # A Latin legal name stays, accents and ordinals and all.
+    (_named("Société Exemple SA", translit=[(AUTO, "Societe Exemple SA")]), "Société Exemple SA", None),
+    (_named("Exemplo 1ª SA", translit=[(AUTO, "Exemplo 1a SA")]), "Exemplo 1ª SA", None),
+    # A name in two scripts, or in full-width letters, is not Latin.
+    (_named("Example 株式会社", translit=[(PREFERRED, "Example Kabushiki Kaisha")]),
+     "Example Kabushiki Kaisha", "Example 株式会社"),
+    (_named("ＥＸＡＭＰＬＥ", translit=[(AUTO, "EXAMPLE")]), "EXAMPLE", "ＥＸＡＭＰＬＥ"),
+    # A candidate with no letter, or in another script, is passed over.
+    (_named("例示商事株式会社", translit=[(PREFERRED, "例示"), (AUTO, "  ")],
+            others=[(ALT, "-", "en"), (ALT, "Example Trading Co., Ltd.", "en")]),
+     "Example Trading Co., Ltd.", "例示商事株式会社"),
+])
+def test_gleif_names_an_issuer_in_latin_script(doc, name, legal):
+    (s,) = parse_records(doc, "isin:XX0000000605", "XX0000000605", DAY, provider="gleif").securities
+    assert (s["name"], s["payload"].get("legal_name")) == (name, legal)
+
+
+@pytest.mark.parametrize("language, english", [
+    ("en", True), ("en-US", True), ("en-GB", True), (" EN ", True),
+    ("eng", False), ("english", False), ("fr", False), ("", False), (None, False),
+])
+def test_gleif_reads_an_english_language_tag(language, english):
+    assert gleif_mod._english(language) is english
+
+
 def test_gleif_claims_a_security_with_an_isin():
     g = Gleif()
     assert g.claim_security(Security(key="isin:XX0000000604"), Context(client=None))["isin"] == "XX0000000604"

@@ -469,14 +469,14 @@ sector's cycle, a declared one too. Without a sector it reads
 
 `issuers` puts a company's stock, bonds and deposits in one row. A cash
 balance, a demand deposit or a time deposit belongs to its custodian
-(§9). That is the custodian's LEI where a GLEIF legal name of the
-book's securities reads the same, else the custodian's name, read by
+(§9). That is the custodian's LEI where a GLEIF name of the book's
+securities reads the same, else the custodian's name, read by
 the rule below. With no custodian it belongs to its source. Any other
 leaf belongs to an issuer by the first of these that it has:
 
 - the LEI its fund line or GLEIF states;
-- its name, read by the rule below, where a GLEIF legal name of the
-  book's securities reads the same: that name's LEI;
+- its name, read by the rule below, where a GLEIF name of the book's
+  securities reads the same: that name's LEI;
 - its name, read by that rule;
 - its security key, else `unknown`.
 
@@ -494,9 +494,11 @@ The rule reads a name as follows:
   NOTE, MTN, SR UNSECURED) drop.
 
 An issuer prints GLEIF's name, else its stock's, else its name as the
-rule reads it. `cumulative_share` is the running share of net worth down
-to the row. `equity`, `debt` and `cash` split the row's own value. The
-leaves no issuer fits are one `(none)` row at the end:
+rule reads it. GLEIF's name is in Latin script where the record has one
+([gleif](../../collectors/refdata/README.md#gleif)). `cumulative_share`
+is the running share of net worth down to the row. `equity`, `debt` and
+`cash` split the row's own value. The leaves no issuer fits are one
+`(none)` row at the end:
 
 - a fund nothing looks through, and a fund's cash and remainder;
 - the parts a declaration splits a private holding into;
