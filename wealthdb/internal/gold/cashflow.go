@@ -229,7 +229,10 @@ func CashflowTransactions(ctx context.Context, db *sql.DB, fromEpoch, toEpoch in
 type CashflowCoverageRow struct {
 	PeriodStart *int64
 	SourceID    string
+	// Account is the account's label: its nickname, else its display
+	// name, else its id. Nickname is the nickname, nil where it has none.
 	Account     string
+	Nickname    *string
 	AccountKind string
 	Currency    string
 	TxnCount    int64
@@ -256,7 +259,7 @@ func CashflowCoverage(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64,
 	return scanRows(ctx, db, "CashflowCoverage", `SELECT * FROM report_cashflow_coverage(?, ?, ?)`,
 		[]any{fromEpoch, toEpoch, period}, func(r *CashflowCoverageRow) []any {
 			return []any{
-				i64(&r.PeriodStart), &r.SourceID, &r.Account, &r.AccountKind,
+				i64(&r.PeriodStart), &r.SourceID, &r.Account, str(&r.Nickname), &r.AccountKind,
 				&r.Currency, &r.TxnCount, dec(&r.Ledger), dec(&r.UnsignedVolume), dec(&r.Measured), dec(&r.Gap), &r.Status,
 			}
 		})

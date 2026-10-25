@@ -194,17 +194,6 @@ func (n accountNicknames) of(source, id string) *string {
 	return nil
 }
 
-// has reports whether label is the nickname of one of the source's
-// accounts.
-func (n accountNicknames) has(source, label string) bool {
-	for _, nickname := range n[source] {
-		if nickname == label {
-			return true
-		}
-	}
-	return false
-}
-
 // allColumns is every index of a report's registry, in order.
 func (r *report) allColumns() []int {
 	out := make([]int, len(r.columns))

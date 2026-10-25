@@ -160,12 +160,11 @@ func cashflowReport(req request) *report {
 			})
 	case "coverage":
 		kindOf, loadKinds := sourceKinds()
-		nicknames := accountNicknames{}
-		return withLoads(newReport(buildCashflowCoverageColumnRegistry(req.period, kindOf, nicknames),
+		return withLoads(newReport(buildCashflowCoverageColumnRegistry(req.period, kindOf),
 			defaultCashflowCoverageColumns,
 			func(ctx context.Context, db *sql.DB) ([]gold.CashflowCoverageRow, error) {
 				return gold.CashflowCoverage(ctx, db, req.from, req.to, part)
-			}), loadKinds, nicknames.load)
+			}), loadKinds)
 	default:
 		kindOf, loadKinds := sourceKinds()
 		return withLoads(newReport(buildCashflowTransactionColumnRegistry(req.currency, kindOf, req.categories),
@@ -431,12 +430,12 @@ var defaultCashflowCoverageColumns = []string{
 // would be worse than no header at all.
 //
 // A coverage row names its account by one label: the nickname, else
-// the display name, else the id. Under -p a label that is one of its
-// source's nicknames, or that may be typed (typedAccountLabel,
-// typedAccountID), prints as a pseudonym: the row has no id to show in
-// its place.
-func buildCashflowCoverageColumnRegistry(period string, kindOf func(string) string,
-	nicknames accountNicknames) []columnSpec[gold.CashflowCoverageRow] {
+// the display name, else the id. Under -p a label that is the row's
+// nickname, or that may be typed (typedAccountLabel, typedAccountID),
+// prints as a pseudonym: the row has no id to show in its place.
+func buildCashflowCoverageColumnRegistry(period string,
+	kindOf func(string) string) []columnSpec[gold.CashflowCoverageRow] {
+	nickname := func(r gold.CashflowCoverageRow) bool { return r.Nickname != nil && r.Account == *r.Nickname }
 	return []columnSpec[gold.CashflowCoverageRow]{
 		{Name: "period", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowCoverageRow) string { return periodLabel(r.PeriodStart, period) }},
@@ -446,14 +445,13 @@ func buildCashflowCoverageColumnRegistry(period string, kindOf func(string) stri
 			Extract: func(r gold.CashflowCoverageRow) string { return r.SourceID }},
 		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			PrivacyFunc: func(r gold.CashflowCoverageRow) PrivacyClass {
-				if typedAccountLabel(kindOf, r.SourceID) || typedAccountID(kindOf, r.SourceID) ||
-					nicknames.has(r.SourceID, r.Account) {
+				if typedAccountLabel(kindOf, r.SourceID) || typedAccountID(kindOf, r.SourceID) || nickname(r) {
 					return PrivacyPseudonym
 				}
 				return PrivacyAccountID
 			},
 			Pseudonym: func(r gold.CashflowCoverageRow) (string, string) {
-				if nicknames.has(r.SourceID, r.Account) {
+				if nickname(r) {
 					return "nickname", ""
 				}
 				return typedPseudonym(kindOf, r.SourceID)
@@ -670,7 +668,7 @@ Available columns (per view):
   flows         ` + joinColumnNames(buildCashflowFlowColumnRegistry("CCY", "monthly")) + `
   sankey        ` + joinColumnNames(buildCashflowSankeyColumnRegistry("CCY")) + `
   transactions  ` + joinColumnNames(buildCashflowTransactionColumnRegistry("CCY", nil, nil)) + `
-  coverage      ` + joinColumnNames(buildCashflowCoverageColumnRegistry("monthly", nil, nil)) + `
+  coverage      ` + joinColumnNames(buildCashflowCoverageColumnRegistry("monthly", nil)) + `
   projection    ` + joinColumnNames(buildCashflowPlanColumns("CCY", "monthly")) + `
 
   (The money columns render as operating_in_<CCY> / net_<CCY> /

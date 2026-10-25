@@ -1172,6 +1172,62 @@ func TestCoverageOrderIsStable(t *testing.T) {
 	}
 }
 
+// coverageNicknames is the label and the nickname ("" for none) of each
+// USD coverage row, by account label.
+func coverageNicknames(t *testing.T, db *sql.DB, ctx context.Context) map[string]string {
+	t.Helper()
+	rows, err := CashflowCoverage(ctx, db, 172800, 3500000, "total")
+	if err != nil {
+		t.Fatalf("CashflowCoverage: %v", err)
+	}
+	out := map[string]string{}
+	for _, r := range rows {
+		if r.Currency == "USD" {
+			out[r.Account] = ""
+			if r.Nickname != nil {
+				out[r.Account] = *r.Nickname
+			}
+		}
+	}
+	return out
+}
+
+// TestCoverageCarriesTheNickname: a row labelled by its account's
+// nickname carries that nickname, so privacy mode can tell the label is
+// one; a row labelled by its display name carries none.
+func TestCoverageCarriesTheNickname(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedBalanceSpine(t, db, ctx, 10000, 10000)
+	seedReportFixture(t, db, ctx)
+	if _, err := db.ExecContext(ctx,
+		`UPDATE accounts SET nickname = 'Rainy Day Fund' WHERE account_external_id = 'CASH'`); err != nil {
+		t.Fatal(err)
+	}
+	got := coverageNicknames(t, db, ctx)
+	if n, ok := got["Rainy Day Fund"]; !ok || n != "Rainy Day Fund" {
+		t.Errorf("the nicknamed account's row = %q (present %v), want its nickname", n, ok)
+	}
+	if n, ok := got["Brokerage"]; !ok || n != "" {
+		t.Errorf("the brokerage's row nickname = %q (present %v), want none", n, ok)
+	}
+}
+
+// TestMigration0150DDLIsRerunnable: the re-issued coverage macro re-runs
+// cleanly and still carries the nickname.
+func TestMigration0150DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedBalanceSpine(t, db, ctx, 10000, 10000)
+	seedReportFixture(t, db, ctx)
+	if _, err := db.ExecContext(ctx,
+		`UPDATE accounts SET nickname = 'Rainy Day Fund' WHERE account_external_id = 'CASH'`); err != nil {
+		t.Fatal(err)
+	}
+	rerunMigrationDDL(t, db, ctx, "0150_coverage_nickname.sql")
+	if n := coverageNicknames(t, db, ctx)["Rainy Day Fund"]; n != "Rainy Day Fund" {
+		t.Errorf("after the re-run the nicknamed account's row carries %q", n)
+	}
+}
+
 // TestMigration0112DDLIsRerunnable: the re-issued coverage macro re-runs
 // cleanly.
 func TestMigration0112DDLIsRerunnable(t *testing.T) {

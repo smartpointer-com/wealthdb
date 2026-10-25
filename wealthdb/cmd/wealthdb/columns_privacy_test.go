@@ -417,23 +417,28 @@ func TestPortfolioIDColTypedIDs(t *testing.T) {
 // TestCashflowCoverageTypedLabelMasks: a coverage row names its account
 // by one label, the nickname where the account has one, and has no id
 // to show in its place. Under -p a label that may be typed or that is
-// one of its source's nicknames prints as a pseudonym; a bank's label
-// stays.
+// the row's nickname prints as a pseudonym; a bank's label stays.
 func TestCashflowCoverageTypedLabelMasks(t *testing.T) {
 	t.Parallel()
-	kinds := map[string]string{"wallets": "cointracking", "bank": "chase", "venture": "angellist"}
-	nicknames := accountNicknames{"bank": {"CHK000001234": "Example Home"}}
+	kinds := map[string]string{"wallets": "cointracking", "bank": "chase", "venture": "angellist",
+		"linked": "plaid"}
 	cols, err := resolveColumns("silver_source,account", nil,
-		buildCashflowCoverageColumnRegistry("monthly", func(id string) string { return kinds[id] }, nicknames))
+		buildCashflowCoverageColumnRegistry("monthly", func(id string) string { return kinds[id] }))
 	if err != nil {
 		t.Fatal(err)
 	}
+	s := func(v string) *string { return &v }
 	rows := []gold.CashflowCoverageRow{{SourceID: "wallets", Account: "Example Person"},
-		{SourceID: "bank", Account: "Premier Checking"}, {SourceID: "bank", Account: "Example Home"},
-		{SourceID: "venture", Account: "example-holder"}}
+		{SourceID: "bank", Account: "Premier Checking"},
+		{SourceID: "bank", Account: "Example Home", Nickname: s("Example Home")},
+		{SourceID: "venture", Account: "example-holder"},
+		{SourceID: "linked", Account: "Rainy Day Fund", Nickname: s("Rainy Day Fund")},
+		{SourceID: "linked", Account: "Example Bank …0000"}}
 	for privacy, want := range map[bool][]string{
-		true:  {"cointracking-1", "Premier Checking", "nickname-1", "angellist-1"},
-		false: {"Example Person", "Premier Checking", "Example Home", "example-holder"},
+		true: {"cointracking-1", "Premier Checking", "nickname-1", "angellist-1", "nickname-2",
+			"Example Bank …0000"},
+		false: {"Example Person", "Premier Checking", "Example Home", "example-holder", "Rainy Day Fund",
+			"Example Bank …0000"},
 	} {
 		tbl := rowsToTable(rows, cols, privacy, output.FormatTable, nil)
 		for i, w := range want {
