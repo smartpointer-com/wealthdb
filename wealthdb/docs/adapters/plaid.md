@@ -63,7 +63,7 @@ trade lands on the instrument its holding made.
 | --- | --- | --- |
 | `dump_runs` | none | Drives `Status` and `ChangeWindow` — see §8. |
 | `run_products` | none | Decides which runs carry snapshots — see §5. |
-| `item_states` | none | Plaid's update times, kept for audit. |
+| `item_states` | `accounts` | The institution's name names an account with no official name — see §4. The update times are kept for audit. |
 | `accounts` | `accounts`, `cash_balances`, `positions` | By kind — see §4 and §5. |
 | `securities` | `instruments` | Through the holdings and trades that name them. |
 | `holdings` | `positions`, `position_lots`, `cash_balances` | Cash holdings are a balance. |
@@ -122,10 +122,15 @@ who trades.
 Names:
 
 - The display name is the institution's official name for the account,
-  else the account's own name, followed by its mask: `Official Savings
-  …0000`.
-- The nickname is the account's own name, set by the holder or the
-  institution, where an official name stands beside it.
+  followed by its mask: `Official Savings …0000`.
+- Without an official name, the display name is the institution's name
+  from the run's `item_states`, followed by the mask: `Example Bank
+  …0000`. A run with no institution name uses Plaid's subtype instead,
+  else its type: `checking …0000`.
+- The nickname is the account's own name. The holder or the institution
+  sets it, and Plaid does not say which, so it counts as the holder's
+  words: `-p` prints it as a pseudonym. A name equal to the official
+  name is no nickname.
 - `account_category` is Plaid's `type / subtype`, followed by the
   official name: `depository / savings · Official Savings`.
 

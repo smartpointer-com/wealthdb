@@ -124,6 +124,23 @@ func TestTaxableWrapperMovesOnlyTheGenericTaxableAnswer(t *testing.T) {
 	}
 }
 
+// TestAccountOverrideNicknameWinsOverTheAdapters: a config nickname
+// replaces the one the adapter stamped, and an account the config does
+// not name keeps the adapter's.
+func TestAccountOverrideNicknameWinsOverTheAdapters(t *testing.T) {
+	s := func(v string) *string { return &v }
+	accounts := []canonical.AccountChange{
+		{AccountExternalID: "a1", Nickname: s("Rainy Day Fund")},
+		{AccountExternalID: "a2", Nickname: s("Travel Money")},
+	}
+	applyAccountOverrides(accounts, map[string]AccountOverride{"a1": {Nickname: "Joint"}})
+	for i, want := range []string{"Joint", "Travel Money"} {
+		if got := accounts[i].Nickname; got == nil || *got != want {
+			t.Errorf("%s nickname = %v, want %q", accounts[i].AccountExternalID, got, want)
+		}
+	}
+}
+
 // TestDropSupersededCutsByDateNotByAccount pins the cut an account
 // outliving its source needs: everything from the handover on belongs
 // to whatever carries the account now, and everything before it is

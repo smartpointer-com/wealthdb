@@ -263,9 +263,11 @@ How they print:
   `holding:<source>:<id>`. Such a key of a manual holding prints as the
   holding's pseudonym. Any other masks whole.
 - The `(no portfolio)` sentinel is a marker, not a name, and stays.
-- A display name that a provider builds from the holder's words, with
-  no nickname beside it, stays legible as the bank's. So a Plaid account
-  with no official name shows the name its holder gave it.
+- `-p` cannot tell a display name built from the holder's words from
+  the bank's, so it prints display names as they are. An adapter that
+  cannot tell them apart makes the name the nickname, which `-p` masks.
+  So a Plaid account's own name is its nickname, and its display name
+  is its institution and mask.
 
 Ratios and dates stay legible throughout — a return or a spending
 share is not an amount. Independently of the per-column pass, every

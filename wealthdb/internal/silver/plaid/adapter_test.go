@@ -51,13 +51,16 @@ func null(s string) any {
 var noInvestments = map[string]string{"holdings": "not_linked",
 	"investment_transactions": "not_linked"}
 
-// run records one loaded run at `at`, as load.py records it: every product
-// read in full unless `statuses` says otherwise, and a ledger's window,
-// starting at `since`, only where the ledger was read.
+// run records one loaded run at `at`, as load.py records it: the Item at
+// an invented institution, every product read in full unless `statuses`
+// says otherwise, and a ledger's window, starting at `since`, only where
+// the ledger was read.
 func run(t *testing.T, db *sql.DB, at, since int64, statuses map[string]string) {
 	t.Helper()
 	silvertest.Exec(t, db, `INSERT INTO dump_runs (snapshot_at, silver_schema_version, run_dir, loaded_at)
 	             VALUES (?, 1, 'run', ?)`, at, at)
+	silvertest.Exec(t, db, `INSERT INTO item_states (run_at, item_id, environment, institution_name, products, payload)
+	             VALUES (?, 'item-1', 'sandbox', 'Example Bank', '[]', '{}')`, at)
 	for _, p := range []string{"accounts", "holdings", "investment_transactions",
 		"transactions", "liabilities"} {
 		status := statuses[p]
@@ -646,8 +649,17 @@ func TestARunProjectsEachKindWithItsSign(t *testing.T) {
 	if ira.TaxWrapper == nil || *ira.TaxWrapper != canonical.TaxWrapperTraditionalIRA ||
 		ira.ManagementStyle != nil || ira.AccountCategory == nil ||
 		*ira.AccountCategory != "investment / ira" || ira.DisplayName == nil ||
-		*ira.DisplayName != "Synthetic ira …0000" || ira.FirstSeenAt != at || ira.LastSeenAt != at {
+		*ira.DisplayName != "Example Bank …0000" || ira.Nickname == nil || *ira.Nickname != "Synthetic ira" ||
+		ira.FirstSeenAt != at || ira.LastSeenAt != at {
 		t.Errorf("acct-ira = %+v", ira)
+	}
+	// A mortgage's instrument is named as its account is shown.
+	for _, b := range batches {
+		for _, in := range b.Instruments {
+			if in.InstrumentExternalID == "acct-home" && (in.Name == nil || *in.Name != "Example Bank …0000") {
+				t.Errorf("the mortgage's instrument name = %v, want the account's display name", in.Name)
+			}
+		}
 	}
 	checking := accountChanges(batches, "acct-checking")[0]
 	if checking.ManagementStyle == nil || *checking.ManagementStyle != canonical.ManagementStyleSelfDirected ||
@@ -665,13 +677,16 @@ func TestARunProjectsEachKindWithItsSign(t *testing.T) {
 	}
 }
 
-// An account is shown by the institution's official name and its mask. The
-// account's own name is its nickname where an official name stands beside
-// it, and the category carries the official name next to Plaid's subtype.
+// An account is shown by the institution's official name for it, else by
+// the institution's name, and its mask. The account's own name is its
+// nickname unless it repeats the official name: with no official name it
+// is the only name the account has, and it may be the holder's words. The
+// category carries the official name next to Plaid's subtype.
 func TestAccountNames(t *testing.T) {
 	path, db := newFixture(t)
 	run(t, db, runAt(10), day(1), noInvestments)
 	acct(t, db, runAt(10), "acct-a", "depository", "checking", "1")
+	silvertest.Exec(t, db, `UPDATE accounts SET name = 'Rainy Day Fund' WHERE account_id = 'acct-a'`)
 	acct(t, db, runAt(10), "acct-b", "depository", "savings", "2")
 	silvertest.Exec(t, db, `UPDATE accounts SET official_name = 'Official Savings' WHERE account_id = 'acct-b'`)
 	acct(t, db, runAt(10), "acct-c", "depository", "cd", "3")
@@ -680,15 +695,48 @@ func TestAccountNames(t *testing.T) {
 	silvertest.Exec(t, db, `UPDATE accounts SET official_name = name WHERE account_id = 'acct-d'`)
 	acct(t, db, runAt(10), "acct-e", "depository", "hsa", "5")
 	silvertest.Exec(t, db, `UPDATE accounts SET official_name = 'Official HSA', mask = NULL WHERE account_id = 'acct-e'`)
+	acct(t, db, runAt(10), "acct-f", "depository", "prepaid", "6")
+	silvertest.Exec(t, db, `UPDATE accounts SET mask = NULL WHERE account_id = 'acct-f'`)
 	batches := collectSnapshots(t, openConn(t, path))
 
-	cases := map[string]struct{ display, nickname, category string }{
-		"acct-a": {"Synthetic checking …0000", "", "depository / checking"},
+	assertAccountNames(t, batches, map[string]accountNames{
+		"acct-a": {"Example Bank …0000", "Rainy Day Fund", "depository / checking"},
 		"acct-b": {"Official Savings …0000", "Synthetic savings", "depository / savings · Official Savings"},
-		"acct-c": {"0000", "", "depository / cd"},
+		"acct-c": {"Example Bank …0000", "", "depository / cd"},
 		"acct-d": {"Synthetic money market …0000", "", "depository / money market · Synthetic money market"},
 		"acct-e": {"Official HSA", "Synthetic hsa", "depository / hsa · Official HSA"},
-	}
+		"acct-f": {"Example Bank", "Synthetic prepaid", "depository / prepaid"},
+	})
+}
+
+// A run that states no institution name shows an account with no official
+// name by Plaid's subtype, else its type, and its mask. Its own name stays
+// the nickname.
+func TestAccountNamesWithoutAnInstitution(t *testing.T) {
+	path, db := newFixture(t)
+	run(t, db, runAt(10), day(1), noInvestments)
+	silvertest.Exec(t, db, `UPDATE item_states SET institution_name = NULL`)
+	acct(t, db, runAt(10), "acct-a", "depository", "checking", "1")
+	silvertest.Exec(t, db, `UPDATE accounts SET name = 'Rainy Day Fund' WHERE account_id = 'acct-a'`)
+	acct(t, db, runAt(10), "acct-b", "depository", "", "2")
+	silvertest.Exec(t, db, `UPDATE accounts SET name = 'Travel Money' WHERE account_id = 'acct-b'`)
+	acct(t, db, runAt(10), "acct-c", "depository", "savings", "3")
+	silvertest.Exec(t, db, `UPDATE accounts SET official_name = 'Official Savings' WHERE account_id = 'acct-c'`)
+	batches := collectSnapshots(t, openConn(t, path))
+
+	assertAccountNames(t, batches, map[string]accountNames{
+		"acct-a": {"checking …0000", "Rainy Day Fund", "depository / checking"},
+		"acct-b": {"depository …0000", "Travel Money", "depository"},
+		"acct-c": {"Official Savings …0000", "Synthetic savings", "depository / savings · Official Savings"},
+	})
+}
+
+// accountNames is the display name, the nickname ("" for none) and the
+// category an account change carries.
+type accountNames struct{ display, nickname, category string }
+
+func assertAccountNames(t *testing.T, batches []canonical.SnapshotBatch, cases map[string]accountNames) {
+	t.Helper()
 	for id, want := range cases {
 		got := accountChanges(batches, id)
 		if len(got) != 1 {
@@ -827,8 +875,8 @@ func TestAnAccountThatLeftTheItemKeepsItsLedger(t *testing.T) {
 			named = append(named, a)
 		}
 	}
-	if len(named) != 1 || named[0].DisplayName == nil ||
-		*named[0].DisplayName != "Synthetic credit card …0000" {
+	if len(named) != 1 || named[0].Nickname == nil ||
+		*named[0].Nickname != "Synthetic credit card" {
 		t.Errorf("the departed card = %+v, want its newest description", named)
 	}
 }

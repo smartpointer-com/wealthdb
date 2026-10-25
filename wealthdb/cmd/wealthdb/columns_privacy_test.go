@@ -516,19 +516,21 @@ func TestYieldAccountsSeriesPrivacyTypedLabel(t *testing.T) {
 // account under a portfolio keyed by a word and named by nothing else; a
 // brokerage and a cash account the bank names by their nicknames, the
 // brokerage in a category the config's account overrides set and the
-// cash account in a category of the bank's; and a deposit account a bank
-// names by its roster's nickname, which a config nickname has since
-// replaced in gold; and an AngelList account keyed by its holder's
-// portal slug, with no name, which funds its stock. The manual account
-// holds a flat, a plot, a loan and
-// a mortgage, each named and keyed by hand: the loan is private debt, so
-// its name is its issuer's, and a declared rate gives it a calendar; the
-// mortgage states no terms, so the yield coverage lists it. The plot
-// leaves the book through an exit line keyed `exit:<key>`, as the manual
-// adapter keys it. The gold holds what each report reads of them:
-// snapshots at two dates, a coin, a stock and a bond with their lots,
-// trades, a dividend, interest, a salary and a purchase with their
-// categories. Every name, id and figure is invented.
+// cash account in a category of the bank's; a deposit account a bank
+// names by its roster's nickname, which a config nickname replaces in
+// gold; an AngelList account keyed by its holder's portal
+// slug, with no name, which funds its stock; and a Plaid account with no
+// official name, shown as the adapter shows it: by its institution and
+// mask, with its own name as the nickname. The manual account holds a
+// flat, a plot, a loan and a mortgage, each named and keyed by hand: the
+// loan is private debt, so its name is its issuer's, and a declared rate
+// gives it a calendar; the mortgage states no terms, so the yield
+// coverage lists it. The plot leaves the book through an exit line keyed
+// `exit:<key>`, as the manual adapter keys it. The gold holds what each
+// report reads of them: snapshots at two dates, a coin, a stock and a
+// bond with their lots, trades, a dividend, interest, a salary and
+// purchases with their categories. Every name, id and figure is
+// invented.
 func setupTypedLabelGold(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -557,7 +559,7 @@ func setupTypedLabelGold(t *testing.T) string {
 		`INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path, high_watermark, first_loaded_at, last_loaded_at)
 		 VALUES ('wallets', 'cointracking', '/tmp/wallets.db', -1, 0, 0), ('bank', 'schwab', '/tmp/bank.db', -1, 0, 0),
 		        ('hand', 'manual', '/tmp/hand.db', -1, 0, 0), ('deposits', 'chase', '/tmp/deposits.db', -1, 0, 0),
-		        ('venture', 'angellist', '/tmp/venture.db', -1, 0, 0)`,
+		        ('venture', 'angellist', '/tmp/venture.db', -1, 0, 0), ('linked', 'plaid', '/tmp/linked.db', -1, 0, 0)`,
 		`INSERT INTO portfolios (silver_source_id, portfolio_external_id, display_name, first_seen_at, last_seen_at)
 		 VALUES ('wallets', 'cu_000001', 'Example Person', 0, 0), ('hand', 'example-house', NULL, 0, 0)`,
 		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, nickname,
@@ -567,7 +569,8 @@ func setupTypedLabelGold(t *testing.T) string {
 		 ('bank', 'CHK000005678', 'cash', 'Example Home Cash', 'Example Home Cash', NULL, 'taxable_personal', 'USD', 0, 0),
 		 ('hand', 'HAND00001234', 'brokerage', 'Example Person', NULL, 'example-house', 'taxable_personal', 'USD', 0, 0),
 		 ('deposits', 'SAV000009999', 'cash', 'Example Home Savings', 'Joint', NULL, 'taxable_personal', 'USD', 0, 0),
-		 ('venture', 'example-holder', 'brokerage', NULL, NULL, NULL, 'taxable_personal', 'USD', 0, 0)`,
+		 ('venture', 'example-holder', 'brokerage', NULL, NULL, NULL, 'taxable_personal', 'USD', 0, 0),
+		 ('linked', 'PLD000000001', 'cash', 'Example Bank …0000', 'Rainy Day Fund', NULL, 'taxable_personal', 'USD', 0, 0)`,
 		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, cusip, name,
 		 currency, first_seen_at, last_seen_at) VALUES
 		 ('wallets', 'BTC', 'crypto', 'physical', 'BTC', NULL, 'Bitcoin', 'USD', 0, 0),
@@ -623,7 +626,9 @@ func setupTypedLabelGold(t *testing.T) string {
 		 ('deposits', $t0, 'SAV000009999', 'USD', 'current', 700, NULL),
 		 ('deposits', $t1, 'SAV000009999', 'USD', 'current', 700, NULL),
 		 ('venture', $t0, 'example-holder', 'USD', 'current', 50, NULL),
-		 ('venture', $t1, 'example-holder', 'USD', 'current', 80, NULL)`,
+		 ('venture', $t1, 'example-holder', 'USD', 'current', 80, NULL),
+		 ('linked', $t0, 'PLD000000001', 'USD', 'current', 900, NULL),
+		 ('linked', $t1, 'PLD000000001', 'USD', 'current', 880, NULL)`,
 		`INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id,
 		 instrument_external_id, kind, currency, net_amount, quantity, counterparty) VALUES
 		 ('wallets', 'W-DEP', $may05, ` + wallet + `, NULL, 'deposit', 'USD', 1000, NULL, NULL),
@@ -638,7 +643,8 @@ func setupTypedLabelGold(t *testing.T) string {
 		 ('bank', 'C-SHOP', $may09, 'CHK000005678', NULL, 'purchase', 'USD', -60, NULL, 'Corner Market'),
 		 ('bank', 'C-INT', $jun01, 'CHK000005678', NULL, 'interest', 'USD', 5, NULL, NULL),
 		 ('hand', 'exit:example-plot', $jun10, 'HAND00001234', 'example-plot', 'sell', 'USD', 45000, NULL, NULL),
-		 ('venture', 'funding:F0001', $may05, 'example-holder', NULL, 'deposit', 'USD', 30, NULL, NULL)`,
+		 ('venture', 'funding:F0001', $may05, 'example-holder', NULL, 'deposit', 'USD', 30, NULL, NULL),
+		 ('linked', 'P-SHOP', $may09, 'PLD000000001', NULL, 'purchase', 'USD', -20, NULL, 'Corner Market')`,
 		`INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id, payer_signature, signature_version,
 		 income_detailed, provenance, assigned_at) VALUES
 		 ('bank', 'C-SALARY', 'BLUE HARBOUR PAYROLL', 1, 'INCOME_SALARY', 'rule', 1),
@@ -648,7 +654,8 @@ func setupTypedLabelGold(t *testing.T) string {
 		`INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id, merchant_signature, signature_version,
 		 spend_detailed, provenance, far_silver_source_id, far_account_external_id, far_class, assigned_at) VALUES
 		 ('bank', 'C-SHOP', 'CORNER MARKET', 1, 'FOOD_AND_DRINK_GROCERIES', 'signature-only', NULL, NULL, NULL, 1),
-		 ('wallets', 'W-SHOP', 'CORNER MARKET', 1, 'FOOD_AND_DRINK_GROCERIES', 'signature-only', NULL, NULL, NULL, 1)`,
+		 ('wallets', 'W-SHOP', 'CORNER MARKET', 1, 'FOOD_AND_DRINK_GROCERIES', 'signature-only', NULL, NULL, NULL, 1),
+		 ('linked', 'P-SHOP', 'CORNER MARKET', 1, 'FOOD_AND_DRINK_GROCERIES', 'signature-only', NULL, NULL, NULL, 1)`,
 	} {
 		if _, err := db.ExecContext(ctx, at.Replace(q)); err != nil {
 			t.Fatalf("%s: %v", q, err)
@@ -762,11 +769,13 @@ func TestPrivacyHidesTypedAccountNames(t *testing.T) {
 	// Each typed word that prints as a pseudonym, with the pseudonym's
 	// prefix: the portfolio ids, the manual holdings' names and keys (the
 	// exit line's id holds the plot's), the AngelList account's slug, the
-	// config's category and the nickname a config set.
+	// config's category, the nickname a config set and the Plaid
+	// account's own name.
 	pseudonymOf := map[string]string{"cu_000001": "cointracking", "example-house": "manual",
 		"Example Flat": "manual", "example-flat": "manual", "Example Plot": "manual", "example-plot": "manual",
 		"Zephyr Alder Loan": "manual", "zephyr-loan": "manual", "Larch Lane Mortgage": "manual",
-		"larch-mortgage": "manual", "example-holder": "angellist", "Example Trust": "category", "Joint": "nickname"}
+		"larch-mortgage": "manual", "example-holder": "angellist", "Example Trust": "category", "Joint": "nickname",
+		"Rainy Day Fund": "nickname"}
 	hidden := slices.Concat(typed, slices.Sorted(maps.Keys(pseudonymOf)))
 	shown := map[string]bool{}
 	leaks := func(out string, needles []string) []string {

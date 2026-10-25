@@ -14,9 +14,11 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
-// account is one row of silver's `accounts` table, with its kind.
+// account is one row of silver's `accounts` table, with its kind and the
+// name of its institution as the same run states it.
 type account struct {
 	id, name, officialName, mask, typ, subtype, currency string
+	institution                                          string
 	balance, available                                   sql.NullString
 	payload                                              string
 	kind                                                 canonical.AccountKind
@@ -718,22 +720,22 @@ func accountChange(a account, first, last int64) canonical.AccountChange {
 }
 
 // displayName is the institution's official name for the account, else
-// the account's own name, followed by its mask.
+// the institution's own name, followed by the account's mask. Where the
+// run states no institution name, Plaid's subtype stands in, else its
+// type. The account's own name never shows here: it is the nickname.
 func displayName(a account) string {
-	name := cmp.Or(a.officialName, a.name)
-	switch {
-	case a.mask == "":
+	name := cmp.Or(a.officialName, a.institution, a.subtype, a.typ)
+	if a.mask == "" {
 		return name
-	case name == "":
-		return a.mask
 	}
 	return name + " …" + a.mask
 }
 
-// nickname is the account's own name, set by the holder or the institution,
-// where the institution states an official name besides it.
+// nickname is the account's own name, unless it repeats the official name.
+// The holder or the institution sets it, and Plaid does not say which, so
+// it counts as the holder's words.
 func nickname(a account) *string {
-	if a.officialName == "" || a.name == a.officialName {
+	if a.name == a.officialName {
 		return nil
 	}
 	return silver.StrPtrIfNonEmpty(a.name)
@@ -754,12 +756,14 @@ func investmentLedgerKind(k canonical.AccountKind) bool {
 
 const accountColumns = `account_id, COALESCE(name, ''), COALESCE(official_name, ''),
        COALESCE(mask, ''), COALESCE(type, ''), COALESCE(subtype, ''),
-       COALESCE(currency, ''), balance_current, balance_available, payload`
+       COALESCE(currency, ''), balance_current, balance_available, payload,
+       COALESCE((SELECT institution_name FROM item_states
+                  WHERE run_at = accounts.snapshot_at), '')`
 
 func scanAccount(rows *sql.Rows) (account, bool, error) {
 	var a account
 	if err := rows.Scan(&a.id, &a.name, &a.officialName, &a.mask, &a.typ, &a.subtype,
-		&a.currency, &a.balance, &a.available, &a.payload); err != nil {
+		&a.currency, &a.balance, &a.available, &a.payload, &a.institution); err != nil {
 		return a, false, err
 	}
 	kind, projected := accountKindFor(a.typ, a.subtype)

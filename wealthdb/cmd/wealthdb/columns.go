@@ -179,10 +179,7 @@ type accountRef struct {
 // typed reports whether the account's display name may be the
 // customer's own words: its source's kind says so (typedAccountLabel),
 // its source names an account by the bank's nickname
-// (nicknameLabelKinds), or the name is the account's nickname. A display
-// name another provider builds from a name the holder assigned, with no
-// nickname beside it, reads as the bank's: a Plaid account with no
-// official name shows one.
+// (nicknameLabelKinds), or the name is the account's nickname.
 func (a accountRef) typed(kindOf func(string) string) bool {
 	if typedAccountLabel(kindOf, a.source) {
 		return true
