@@ -102,6 +102,24 @@ func returnsReport(req request, cfg *config.Config) *report {
 		defaultReturnColumnsFor(req.method), fetch), loads...)
 }
 
+// returnsCfgFiles are the files returnsCfgSettings reads beside the
+// config. A refresh's input key hashes them with it.
+func returnsCfgFiles(cfg *config.Config) []string {
+	if m, ledger := transferMatching(cfg); m != nil {
+		return []string{ledger}
+	}
+	return nil
+}
+
+// transferMatching is the returns transfer-matching block and the
+// override ledger it reads, or nil when matching is off.
+func transferMatching(cfg *config.Config) (*config.ReturnsTransferMatching, string) {
+	if m := cfg.ReturnsTransferMatching; m != nil && m.Enabled {
+		return m, cfg.SpendTransferOverrides()
+	}
+	return nil, ""
+}
+
 // returnsCfgSettings builds the engine-side inception-override, exclusion,
 // hide, policy-override, and transfer-matching settings from wealthdb.cfg.
 // Shared by `returns` and the hidden `web-materialize` so a materialized
@@ -140,12 +158,12 @@ func returnsCfgSettings(cfg *config.Config) (*gold.InceptionOverrides, *gold.Ret
 		}
 	}
 	var matching *gold.TransferMatching
-	if m := cfg.ReturnsTransferMatching; m != nil && m.Enabled {
+	if m, ledger := transferMatching(cfg); m != nil {
 		// A malformed ledger overrides nothing here rather than taking down
 		// a returns run: `load` and `categorize` both read the same file and
 		// both fail loudly on it, so the error is reported where it can be
 		// acted on, and this read cannot be the first to see it in practice.
-		overrideRules, _ := gold.ParseTransferOverrideLedger(cfg.SpendTransferOverrides())
+		overrideRules, _ := gold.ParseTransferOverrideLedger(ledger)
 		matching = &gold.TransferMatching{
 			WindowDays: m.Window(), TolerancePct: m.Tolerance(), Rules: overrideRules,
 		}

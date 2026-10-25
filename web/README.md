@@ -24,9 +24,9 @@ DuckDB is single-writer across processes. A long-lived Metabase
 connection would hold a lock that makes every `wealthdb load` fail at
 open; a load does not queue behind the server. So Metabase never reads
 the live gold file. `wealthdb web start` serves it a read-only
-**snapshot copy**, and `wealthdb web refresh` re-copies it. Loads never
-contend with the server, and the dashboards show data as of the last
-refresh. See [DESIGN.md](DESIGN.md) §2.
+**snapshot copy**, and `wealthdb web refresh` copies it again when
+gold changed. Loads never contend with the server, and the dashboards
+show data as of the last refresh. See [DESIGN.md](DESIGN.md) §2.
 
 ## Enable it
 

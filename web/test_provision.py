@@ -636,9 +636,14 @@ try:
                     tables_for(ALL_VIEWS + ["report_returns"]))
     check("a fully migrated snapshot reports nothing missing",
           p.missing_web_views("b", "s", 1) == [])
-    with quiet():
+    api = p.req
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
         proceeds = p.ensure_synced("b", "s", 1, tries=1, delay=0) is not None
     check("...and provisioning proceeds", proceeds)
+    check("...without a schema sync, which it says it skipped",
+          not [c for c in api.calls if "sync_schema" in c[1]]
+          and "provision: schema sync skipped" in buf.getvalue(), str(api.calls))
 
     # The probe must name the views, not count them: extra web_* views
     # in gold cannot stand in for a missing one.
@@ -860,7 +865,7 @@ try:
 finally:
     p.req = real_req
 
-section("provision sent and skipped counts")
+section("each provisioning pass prints its counts on one line")
 
 
 class FakeSaveAPI:
@@ -887,11 +892,209 @@ try:
         check("dashboards save", rc == 0)
 finally:
     p.req = real_req
-sent = buf.getvalue()
-for line in ("provision: models — sent ", "provision: cards — sent ",
-             "provision: dashboards — sent "):
-    rest = sent.split(line, 1)[-1].split("\n", 1)[0]
-    check(f"prints {line.strip()}", line in sent and "skipped 0" in rest, sent)
+printed = buf.getvalue()
+n_cards = len(p.question_defs(1, model_ids)) + len(p.privacy_card_defs(1, model_ids))
+for want in (f"provision: report models ({p._ccy_slash()}) — {len(p.report_models())} created, "
+             f"0 updated, 0 unchanged, 0 retired",
+             f"provision: questions — {n_cards} created, 0 updated, 0 unchanged, 0 retired",
+             f"provision: dashboards — {len(p.dashboard_defs())} created, 0 updated, "
+             "0 unchanged, 0 retired"):
+    check(f"prints '{want.split(' — ')[0]}' with its counts", want in printed, printed)
+check("...and one line per pass", printed.count("provision: ") == 3, printed)
+
+section("a card already on the server is not sent again")
+TAG_REF = ["field", 41, None]
+payload = {"name": "n", "type": "question", "description": "d",
+           "collection_id": 7, "display": "bar",
+           "visualization_settings": {"graph.dimensions": ["a"], "graph.show_values": True},
+           "dataset_query": {"type": "native", "database": 1,
+                             "native": {"query": "SELECT 1 [[AND {{source}}]]",
+                                        "template-tags": {"source": {
+                                            "id": "s", "name": "source", "type": "dimension",
+                                            "dimension": TAG_REF, "default": None}}}}}
+
+
+def server_card(body, card_id=9):
+    """The card as Metabase v0.59 returns it in the legacy form: the
+    template tag's field reference typed, an empty tag map left out."""
+    full = json.loads(json.dumps(body))
+    full["id"] = card_id
+    native = full["dataset_query"].get("native") or {}
+    for tag in (native.get("template-tags") or {}).values():
+        if tag.get("dimension"):
+            tag["dimension"][2] = {"base-type": "type/Text"}
+    if native.get("template-tags") == {}:
+        del native["template-tags"]
+    return full
+
+
+stored = server_card(payload)
+check("an equal card matches", p.card_same(stored, payload))
+changed = dict(stored, description="other")
+check("a changed card does not match", not p.card_same(changed, payload))
+check("a card without its query does not match", not p.card_same({"id": 9, "name": "n"}, payload))
+dropped = json.loads(json.dumps(payload))
+del dropped["visualization_settings"]["graph.show_values"]
+check("a payload that drops a visualization setting does not match",
+      not p.card_same(stored, dropped))
+untagged = json.loads(json.dumps(payload))
+untagged["dataset_query"]["native"]["template-tags"] = {}
+check("a payload that drops a template tag does not match", not p.card_same(stored, untagged))
+check("an empty tag map the server left out matches",
+      p.card_same(server_card(untagged), untagged))
+retyped = server_card(payload)
+retyped["dataset_query"]["native"]["template-tags"]["source"]["dimension"] = ["field", 42, None]
+check("a tag on another field does not match", not p.card_same(retyped, payload))
+joined = server_card(payload)
+joined["dataset_query"]["native"]["template-tags"]["source"]["dimension"] = [
+    "field", 41, {"base-type": "type/Text", "join-alias": "j"}]
+check("a typed tag that carries more than its base type does not match",
+      not p.card_same(joined, payload))
+tile = {"card_id": 1, "row": 0, "col": 0, "size_x": 1, "size_y": 1,
+        "series": [], "parameter_mappings": [], "inline_parameters": None,
+        "visualization_settings": {"card.title": "t"}}
+check("equal tiles match", p._dashcards_same([dict(tile, id=9)], [tile]))
+server_tile = dict(tile, id=9, entity_id="server-only", series=None, inline_parameters=[])
+check("a server-shaped tile matches", p._dashcards_same([server_tile], [tile]))
+moved = dict(tile, row=1)
+check("a moved tile does not match", not p._dashcards_same([tile], [moved]))
+beside = dict(tile, col=6, card_id=2)
+check("tiles listed in another order match",
+      p._dashcards_same([dict(beside, id=10), dict(tile, id=9)], [tile, beside]))
+retitled = dict(tile, visualization_settings={})
+check("a tile that drops a setting does not match", not p._dashcards_same([tile], [retitled]))
+
+
+class FetchCard:
+    """A card list in MBQL 5, and the legacy form only when asked for."""
+
+    def __init__(self, body):
+        self.body = body
+        self.puts = 0
+
+    def __call__(self, base, path, method="GET", data=None, session=None, timeout=30):
+        if method == "GET" and path == "/api/card/9?legacy-mbql=true":
+            return 200, server_card(self.body)
+        if method == "GET" and path == "/api/card/9":
+            return 200, dict(self.body, id=9, dataset_query={"lib/type": "mbql/query", "stages": []})
+        if method == "PUT":
+            self.puts += 1
+            return 200, {"id": 9}
+        return 200, {}
+
+
+real_req = p.req
+listed = {"n": {"id": 9, "name": "n", "dataset_query": {"lib/type": "mbql/query"}}}
+try:
+    fetch = p.req = FetchCard(dict(payload))
+    with quiet():
+        saved = p.upsert_cards("b", "s", listed, {"n": payload}, "card")
+    check("a stored card read in the legacy form is not sent",
+          saved == ({"n": 9}, 0, 0, 1) and fetch.puts == 0, saved)
+    fetch.body["description"] = "other"
+    with quiet():
+        saved = p.upsert_cards("b", "s", listed, {"n": payload}, "card")
+    check("a changed card is sent", saved == ({"n": 9}, 0, 1, 0) and fetch.puts == 1, saved)
+    fetch.body["description"] = payload["description"]
+    for label, fail in (("an error status", lambda: (500, {"message": "down"})),
+                        ("a body that is no JSON", lambda: (_ for _ in ()).throw(ValueError("html")))):
+        fetch.puts = 0
+
+        def failing(base, path, method="GET", data=None, session=None, timeout=30, fail=fail):
+            if method == "GET" and "legacy-mbql" in path:
+                return fail()
+            return fetch(base, path, method, data, session, timeout)
+
+        p.req = failing
+        with quiet():
+            saved = p.upsert_cards("b", "s", listed, {"n": payload}, "card")
+        check(f"a card read that fails with {label} is sent",
+              saved == ({"n": 9}, 0, 1, 0) and fetch.puts == 1, saved)
+finally:
+    p.req = real_req
+
+section("an unchanged dashboard is not sent again")
+
+
+def server_dashboard(data):
+    """What a GET returns after a PUT: tile ids and keys of the
+    server's own, and an empty list where the payload sent null."""
+    if not isinstance(data, dict) or "dashcards" not in data:
+        return data
+    out = dict(data)
+    out["dashcards"] = [dict(dc, id=1000 + i, entity_id="server-only",
+                             inline_parameters=dc.get("inline_parameters") or [])
+                        for i, dc in enumerate(data.get("dashcards") or [])]
+    return out
+
+
+class RememberDashboards:
+    """Keeps what each PUT laid out and answers a GET with it. A
+    dashboard id in `failing` answers its GET with a 500. `puts` counts
+    the PUTs and `put_ids` holds the ids they went to."""
+
+    def __init__(self):
+        self.next_id = 100
+        self.names = {}
+        self.layouts = {}
+        self.puts = 0
+        self.put_ids = set()
+        self.failing = set()
+
+    def __call__(self, base, path, method="GET", data=None, session=None, timeout=30):
+        if method == "GET" and path.startswith("/api/collection/"):
+            return 200, {"data": [{"name": n, "id": i} for n, i in self.names.items()]}
+        if method == "GET" and path.startswith("/api/dashboard/"):
+            i = int(path.rsplit("/", 1)[-1])
+            if i in self.failing:
+                return 500, {"message": "down"}
+            return 200, server_dashboard(self.layouts.get(i, {}))
+        if method == "POST" and path == "/api/dashboard":
+            self.next_id += 1
+            self.names[data["name"]] = self.next_id
+            return 200, {"id": self.next_id}
+        if method == "PUT" and path.startswith("/api/dashboard/"):
+            self.puts += 1
+            i = int(path.rsplit("/", 1)[-1])
+            self.put_ids.add(i)
+            if data.get("dashcards") is not None:
+                self.layouts[i] = dict(data)
+            elif i in self.layouts and "parameters" in data:
+                self.layouts[i]["parameters"] = data["parameters"]
+            return 200, {}
+        return 200, {}
+
+
+real_req = p.req
+n_dash = len(p.dashboard_defs())
+try:
+    remembered = p.req = RememberDashboards()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        first = p.ensure_dashboards("b", "s", 7, card_ids, MID)
+    check("first dashboard pass lays them out", first == 0 and remembered.puts > 0)
+    check("...counting each dashboard it made as created, not updated",
+          f"— {n_dash} created, 0 updated, 0 unchanged," in buf.getvalue(), buf.getvalue())
+    remembered.puts = 0
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        second = p.ensure_dashboards("b", "s", 7, card_ids, MID)
+    check("an unchanged dashboard is not sent", second == 0 and remembered.puts == 0)
+    check("...and the second run counts every dashboard unchanged",
+          f"— 0 created, 0 updated, {n_dash} unchanged," in buf.getvalue(), buf.getvalue())
+    one = next(iter(remembered.layouts))
+    remembered.layouts[one]["description"] = "edited"
+    remembered.puts = 0
+    with quiet():
+        third = p.ensure_dashboards("b", "s", 7, card_ids, MID)
+    check("a changed dashboard is sent", third == 0 and remembered.puts > 0)
+    remembered.failing, remembered.put_ids = {one}, set()
+    with quiet():
+        fourth = p.ensure_dashboards("b", "s", 7, card_ids, MID)
+    check("a dashboard whose read fails is sent, and only that one",
+          fourth == 0 and remembered.put_ids == {one}, remembered.put_ids)
+finally:
+    p.req = real_req
 
 layouts = [d for _path, d in api.puts if d.get("dashcards")]
 api_puts_layout = [(path, d) for path, d in api.puts if d.get("dashcards")]

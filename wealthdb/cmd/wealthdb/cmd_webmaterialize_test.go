@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/version"
 )
 
 // TestWebMaterializeCLIEndToEnd drives the hidden web-materialize subcommand
@@ -35,12 +37,33 @@ func TestWebMaterializeCLIEndToEnd(t *testing.T) {
 		}
 	}
 
+	_, se2, code2 := run(t, "-c", cfg, "web-materialize")
+	if code2 != 0 {
+		t.Fatalf("second run exit=%d stderr=%s", code2, se2)
+	}
+	if !strings.Contains(se2, "inputs unchanged") {
+		t.Errorf("second run should skip, stderr=%s", se2)
+	}
+
 	goldPath := filepath.Join(filepath.Dir(cfg), "wealthdb.db")
 	db, err := gold.Open(goldPath, gold.ModeReadOnly)
 	if err != nil {
 		t.Fatalf("open gold: %v", err)
 	}
 	defer db.Close()
+
+	// The stored key hashes the config's bytes.
+	raw, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHash, err := gold.HashInputs(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored, ok, err := gold.ReadMaterializeKey(context.Background(), db, gold.WebMaterializeScope); err != nil || !ok || stored.ConfigHash != wantHash {
+		t.Fatalf("stored key %+v ok=%v err=%v, want config hash %s", stored, ok, err, wantHash)
+	}
 
 	// Per currency, so a missing CHF slice can't hide behind the USD one.
 	for _, ccy := range []string{"USD", "CHF"} {
@@ -124,20 +147,131 @@ func TestWebMaterializeMissingDB(t *testing.T) {
 	}
 }
 
-func TestTimedPhasePrintsDurationOnFailure(t *testing.T) {
+// Each phase prints its timing line, then its summary on success. A
+// failed phase prints its timing line and no row count, and the phases
+// after it do not run.
+func TestRunMaterializePhasesStopsAtAFailure(t *testing.T) {
 	t.Parallel()
 	var errb strings.Builder
-	_, err := timedPhase(&errb, "serving", func() (int, error) {
-		return 0, fmt.Errorf("boom")
+	summary := func(n int) string { return fmt.Sprintf("materialized %d rows", n) }
+	ran := false
+	err := runMaterializePhases(&errb, []materializePhase{
+		{"serving", func() (int, error) { return 3, nil }, summary},
+		{"returns", func() (int, error) { return 5, fmt.Errorf("boom") }, summary},
+		{"gains", func() (int, error) { ran = true; return 0, nil }, summary},
 	})
-	if err == nil {
-		t.Fatal("expected the phase error")
+	if err == nil || ran {
+		t.Fatalf("err=%v, later phase ran=%v", err, ran)
 	}
-	got := errb.String()
-	if !strings.Contains(got, "timing: serving ") {
-		t.Errorf("a failed phase should still report its duration: %q", got)
+	lines := strings.Split(strings.TrimSuffix(errb.String(), "\n"), "\n")
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "timing: serving ") ||
+		lines[1] != "materialized 3 rows" || !strings.HasPrefix(lines[2], "timing: returns ") {
+		t.Fatalf("stderr = %q", errb.String())
 	}
-	if strings.Contains(got, "materialized") {
-		t.Errorf("a failed phase should not report a row count: %q", got)
+}
+
+func TestEngineVersionMatchesThisExecutable(t *testing.T) {
+	t.Parallel()
+	first := engineVersion()
+	if !strings.Contains(first, version.String()) {
+		t.Fatalf("engine version %q does not carry %q", first, version.String())
+	}
+	if second := engineVersion(); second != first {
+		t.Fatalf("one process produced two engine versions: %q and %q", first, second)
+	}
+}
+
+// The transfer-overrides ledger is read beside the config when transfer
+// matching is on, so an edit to it alone makes the next run materialize.
+func TestWebMaterializeRerunsAfterALedgerEdit(t *testing.T) {
+	t.Parallel()
+	cfg := setupReturnsGold(t)
+	dir := filepath.Dir(cfg)
+	ledger := filepath.Join(dir, "transfer-overrides.csv")
+	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD", "silver_sources": [],
+ "returns_transfer_matching": {"enabled": true},
+ "spending": {"transfer_overrides": %q}}`, filepath.Join(dir, "wealthdb.db"), ledger)
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	header := "verb,silver_source_id,account,occurred_at,amount,currency,note\n"
+	if err := os.WriteFile(ledger, []byte(header), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []bool{false, true} {
+		if _, se, code := run(t, "-c", cfg, "web-materialize"); code != 0 || strings.Contains(se, "inputs unchanged") != want {
+			t.Fatalf("run %d: exit=%d skipped=%v, want skipped=%v: %s", i, code, strings.Contains(se, "inputs unchanged"), want, se)
+		}
+	}
+	edited := header + "unmatch,schwab,BROK1,2024-01-02,100.00,USD,not a transfer\n"
+	if err := os.WriteFile(ledger, []byte(edited), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, se, code := run(t, "-c", cfg, "web-materialize"); code != 0 || strings.Contains(se, "inputs unchanged") {
+		t.Fatalf("after a ledger edit: exit=%d, want a materialize: %s", code, se)
+	}
+}
+
+// A gold with a migration still to apply is materialized, never
+// skipped: the read-write open applies the migration. The next run
+// skips.
+func TestWebMaterializeWithAMigrationPending(t *testing.T) {
+	t.Parallel()
+	cfg := setupReturnsGold(t)
+	db, err := gold.Open(filepath.Join(filepath.Dir(cfg), "wealthdb.db"), gold.ModeReadWrite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM schema_meta WHERE gold_schema_version = (SELECT max(gold_schema_version) FROM schema_meta)`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	for i, want := range []bool{false, true} {
+		if _, se, code := run(t, "-c", cfg, "web-materialize"); code != 0 || strings.Contains(se, "inputs unchanged") != want {
+			t.Fatalf("run %d: exit=%d skipped=%v, want skipped=%v: %s", i, code, strings.Contains(se, "inputs unchanged"), want, se)
+		}
+	}
+}
+
+// A run that fails partway leaves no key: the phases before the
+// failure have committed, so a later run with the earlier inputs
+// materializes again rather than match half-rewritten tables.
+func TestWebMaterializeAfterARunThatFailedPartway(t *testing.T) {
+	t.Parallel()
+	cfg := setupReturnsGold(t)
+	goldPath := filepath.Join(filepath.Dir(cfg), "wealthdb.db")
+	body, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := func(stmt string) {
+		t.Helper()
+		db, err := gold.Open(goldPath, gold.ModeReadWrite)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, se, code := run(t, "-c", cfg, "web-materialize"); code != 0 {
+		t.Fatalf("first run: exit=%d %s", code, se)
+	}
+	// Other inputs, and a run that fails in the exposure phase.
+	if err := os.WriteFile(cfg, append(append([]byte{}, body...), '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exec(`ALTER TABLE report_exposure RENAME TO report_exposure_aside`)
+	if _, se, code := run(t, "-c", cfg, "web-materialize"); code == 0 {
+		t.Fatalf("the run without report_exposure succeeded: %s", se)
+	}
+	exec(`ALTER TABLE report_exposure_aside RENAME TO report_exposure`)
+	// Back to the first run's inputs.
+	if err := os.WriteFile(cfg, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, se, code := run(t, "-c", cfg, "web-materialize"); code != 0 || strings.Contains(se, "inputs unchanged") {
+		t.Fatalf("after a failed run: exit=%d, want a materialize: %s", code, se)
 	}
 }

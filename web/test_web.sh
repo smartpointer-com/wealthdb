@@ -33,6 +33,10 @@ check() { # desc, expected-substring, actual
     if printf '%s' "$3" | grep -qF -- "$2"; then pass "$1"
     else fail "$1"; printf '       wanted substring: %s\n       in: %s\n' "$2" "$3"; fi
 }
+check_re() { # desc, extended regex, actual
+    if printf '%s' "$3" | grep -Eq -- "$2"; then pass "$1"
+    else fail "$1"; printf '       wanted pattern: %s\n       in: %s\n' "$2" "$3"; fi
+}
 check_not() { # desc, unwanted-substring, actual
     if printf '%s' "$3" | grep -qF -- "$2"; then fail "$1"; else pass "$1"; fi
 }
@@ -93,6 +97,15 @@ if _snapshot "$tmp/gold.db" "$tmp/snap.db" 2>/dev/null; then pass "copies gold a
 else fail "copies gold at rest"; fi
 check "snapshot contents" "GOLD" "$(cat "$tmp/snap.db" 2>/dev/null)"
 
+echo "== _snapshot keeps gold's mtime where it cannot clone =="
+python3 -c 'import os,sys; os.utime(sys.argv[1], (1000000, 1000000))' "$tmp/gold.db"
+(
+    cp() { case "$1" in -c) return 1 ;; esac; command cp "$@"; }
+    _snapshot "$tmp/gold.db" "$tmp/plain.db"
+) 2>/dev/null
+check_eq "a plain copy carries gold's mtime" "$(_stat st_mtime_ns "$tmp/gold.db")" \
+    "$(_stat st_mtime_ns "$tmp/plain.db")"
+
 echo "== _gen_password complexity (Metabase rule) =="
 p="$(_gen_password)"
 case "$p" in *[A-Z]*) pass "has uppercase";; *) fail "has uppercase";; esac
@@ -120,21 +133,21 @@ unset WEALTHDB_CONFIG
 echo "== refresh prints a duration for materialize and the snapshot =="
 seq_time="$tmp/refresh-time"
 (
-    _load_config() { GOLD_DB="$tmp/gold.db"; }
+    _load_config() { GOLD_DB="$tmp/gold.db"; SNAP="$tmp/refresh-time-snap/wealthdb.db"; }
     _materialize() { :; }
     _snapshot()    { :; }
     _mtime()       { echo now; }
     _is_running()  { return 1; }
     web_refresh
 ) >"$seq_time" 2>&1 || true
-check "materialize is timed" "web: timing: materialize " "$(cat "$seq_time")"
-check "snapshot is timed"    "web: timing: snapshot "    "$(cat "$seq_time")"
+check_re "materialize is timed" "web: timing: materialize [0-9]+\\.[0-9]{3}s" "$(cat "$seq_time")"
+check_re "snapshot is timed"    "web: timing: snapshot [0-9]+\\.[0-9]{3}s"    "$(cat "$seq_time")"
 
 echo "== a failed materialize still prints its duration and stops =="
 seq_fail="$tmp/refresh-fail"
 (
     set -e
-    _load_config() { GOLD_DB="$tmp/gold.db"; }
+    _load_config() { GOLD_DB="$tmp/gold.db"; SNAP="$tmp/refresh-fail-snap/wealthdb.db"; }
     _materialize() { return 7; }
     _snapshot()    { echo SNAPSHOT_RAN; }
     _mtime()       { echo now; }
@@ -142,9 +155,140 @@ seq_fail="$tmp/refresh-fail"
     web_refresh
 ) >"$seq_fail" 2>&1
 fail_rc=$?
-check "failed materialize is timed" "web: timing: materialize " "$(cat "$seq_fail")"
+check_re "failed materialize is timed" "web: timing: materialize [0-9]+\\.[0-9]{3}s" "$(cat "$seq_fail")"
 check_not "snapshot does not run" "SNAPSHOT_RAN" "$(cat "$seq_fail")"
 if [ "$fail_rc" -eq 7 ]; then pass "refresh exits with the materialize status"; else fail "refresh exits with the materialize status (got $fail_rc)"; fi
+
+echo "== an unchanged gold skips the snapshot and still provisions =="
+seq_same="$tmp/refresh-same"
+: > "$tmp/gold.db"
+mkdir -p "$tmp/snap" && : > "$tmp/snap/wealthdb.db"
+(
+    _load_config() { GOLD_DB="$tmp/gold.db"; SNAP="$tmp/snap/wealthdb.db"; }
+    _load_config
+    _mark_snapshot_served
+    _materialize() { :; }
+    _snapshot()    { echo SNAPSHOT_RAN; }
+    _mtime()       { echo now; }
+    _is_running()  { return 0; }
+    _provision()   { echo PROVISIONED; }
+    web_stop()     { echo STOPPED; }
+    web_refresh
+) >"$seq_same" 2>&1
+check "unchanged gold skips the snapshot" "web: snapshot unchanged" "$(cat "$seq_same")"
+check_not "unchanged gold does not copy" "SNAPSHOT_RAN" "$(cat "$seq_same")"
+check "unchanged gold still provisions" "PROVISIONED" "$(cat "$seq_same")"
+check_not "unchanged gold does not restart" "STOPPED" "$(cat "$seq_same")"
+
+echo "== a snapshot older than gold is copied =="
+seq_old="$tmp/refresh-old"
+: > "$tmp/gold.db"
+mkdir -p "$tmp/snap" && : > "$tmp/snap/wealthdb.db"
+python3 -c 'import os,sys; os.utime(sys.argv[1], (1, 1))' "$tmp/snap/wealthdb.db"
+(
+    _load_config() { GOLD_DB="$tmp/gold.db"; SNAP="$tmp/snap/wealthdb.db"; }
+    _materialize() { :; }
+    _snapshot()    { echo SNAPSHOT_RAN; }
+    _mtime()       { echo now; }
+    _is_running()  { return 1; }
+    web_refresh
+) >"$seq_old" 2>&1
+check "an older snapshot is copied" "SNAPSHOT_RAN" "$(cat "$seq_old")"
+
+echo "== a running container on an older inode is restarted without a copy =="
+seq_inode="$tmp/refresh-inode"
+python3 -c 'import os,sys; os.utime(sys.argv[1], None)' "$tmp/snap/wealthdb.db"
+rm -f "$tmp/snap/wealthdb.db.served"
+(
+    _load_config() { GOLD_DB="$tmp/gold.db"; SNAP="$tmp/snap/wealthdb.db"; }
+    _materialize() { :; }
+    _snapshot()    { echo SNAPSHOT_RAN; }
+    _mtime()       { echo now; }
+    _is_running()  { return 0; }
+    web_stop()     { echo STOPPED > "$tmp/did-stop"; }
+    web_start()    { echo STARTED; }
+    web_refresh
+) >"$seq_inode" 2>&1
+if [ -f "$tmp/did-stop" ]; then pass "an unmarked snapshot restarts"; else fail "an unmarked snapshot restarts"; fi
+check "an unmarked snapshot starts" "STARTED" "$(cat "$seq_inode")"
+check_not "an unmarked snapshot is not copied" "SNAPSHOT_RAN" "$(cat "$seq_inode")"
+
+echo "== a running container on a swapped-in snapshot is restarted without a copy =="
+# A refresh that copied and died before the restart leaves the marker
+# naming the inode the container still serves.
+seq_swap="$tmp/refresh-swap"
+rm -f "$tmp/did-stop"
+(
+    _load_config() { GOLD_DB="$tmp/gold.db"; SNAP="$tmp/snap/wealthdb.db"; }
+    _load_config
+    _mark_snapshot_served
+    cp "$SNAP" "$SNAP.new" && mv "$SNAP.new" "$SNAP"
+    _materialize() { :; }
+    _snapshot()    { echo SNAPSHOT_RAN; }
+    _mtime()       { echo now; }
+    _is_running()  { return 0; }
+    web_stop()     { echo STOPPED > "$tmp/did-stop"; }
+    web_start()    { echo STARTED; }
+    web_refresh
+) >"$seq_swap" 2>&1
+if [ -f "$tmp/did-stop" ]; then pass "a swapped snapshot restarts"; else fail "a swapped snapshot restarts"; fi
+check "a swapped snapshot starts" "STARTED" "$(cat "$seq_swap")"
+check_not "a swapped snapshot is not copied" "SNAPSHOT_RAN" "$(cat "$seq_swap")"
+
+echo "== a failed copy keeps the old snapshot =="
+# The copy runs under _timed, with errexit off: _snapshot itself must
+# fail and clean up. The cp stub leaves a partial file and fails.
+seq_torn="$tmp/refresh-torn"
+mkdir -p "$tmp/torn" && printf 'OLD' > "$tmp/torn/wealthdb.db"
+python3 -c 'import os,sys; os.utime(sys.argv[1], (1, 1))' "$tmp/torn/wealthdb.db"
+(
+    set -e
+    _load_config() { GOLD_DB="$tmp/gold.db"; SNAP="$tmp/torn/wealthdb.db"; }
+    _materialize() { :; }
+    _mtime()       { echo now; }
+    _is_running()  { return 1; }
+    cp() { eval "printf PART > \"\${$#}\""; return 1; }
+    web_refresh
+) >"$seq_torn" 2>&1
+torn_rc=$?
+if [ "$torn_rc" -ne 0 ]; then pass "a failed copy fails refresh"; else fail "a failed copy fails refresh"; fi
+check_eq "...leaves the old snapshot" "OLD" "$(cat "$tmp/torn/wealthdb.db")"
+check_eq "...leaves no temp file" "" "$(ls "$tmp/torn" | grep '\.tmp\.')"
+check_not "...and reports no update" "snapshot updated" "$(cat "$seq_torn")"
+
+echo "== a missing gold file is not an unchanged snapshot =="
+seq_nogold="$tmp/refresh-nogold"
+rm -f "$tmp/gold.db"
+(
+    _load_config() { GOLD_DB="$tmp/gold.db"; SNAP="$tmp/snap/wealthdb.db"; }
+    _materialize() { :; }
+    _snapshot()    { echo SNAPSHOT_RAN; return 1; }
+    _mtime()       { echo now; }
+    _is_running()  { return 1; }
+    web_refresh
+) >"$seq_nogold" 2>&1 || true
+check "a missing gold is copied" "SNAPSHOT_RAN" "$(cat "$seq_nogold")"
+check_not "a missing gold is not unchanged" "web: snapshot unchanged" "$(cat "$seq_nogold")"
+: > "$tmp/gold.db"
+
+echo "== a skipped copy still returns a stale provision status =="
+seq_stale="$tmp/refresh-stale"
+python3 -c 'import os,sys; os.utime(sys.argv[1], None)' "$tmp/snap/wealthdb.db"
+(
+    _load_config() { GOLD_DB="$tmp/gold.db"; SNAP="$tmp/snap/wealthdb.db"; }
+    _load_config
+    _mark_snapshot_served
+    _materialize() { :; }
+    _snapshot()    { echo SNAPSHOT_RAN; }
+    _mtime()       { echo now; }
+    _is_running()  { return 0; }
+    _provision()   { PROV_RC=3; return 0; }
+    web_stop()     { echo STOPPED; }
+    web_refresh
+) >"$seq_stale" 2>&1
+stale_rc=$?
+check "an unchanged gold with a stale provision skips the copy" "web: snapshot unchanged" "$(cat "$seq_stale")"
+if [ "$stale_rc" -eq 3 ]; then pass "refresh exits with the provision status"; else fail "refresh exits with the provision status (got $stale_rc)"; fi
 
 echo "== refresh wiring: materialize runs, and before the snapshot =="
 # Spy on the two steps in a subshell so the function overrides don't
@@ -154,7 +298,7 @@ echo "== refresh wiring: materialize runs, and before the snapshot =="
 seq_file="$tmp/refresh-seq"
 : > "$seq_file"
 (
-    _load_config()          { GOLD_DB="$tmp/gold.db"; }
+    _load_config()          { GOLD_DB="$tmp/gold.db"; SNAP="$tmp/refresh-seq-snap/wealthdb.db"; }
     _materialize()          { echo materialize >> "$seq_file"; }
     _snapshot()             { echo snapshot    >> "$seq_file"; }
     _mtime()                { echo now; }
@@ -218,10 +362,25 @@ check_not "...not at refresh"              "re-snapshots a migrated gold" "$err"
 rc="$(start_with 0)"
 check_eq  "a clean provision starts with status 0"  "0"                 "$rc"
 check     "...and prints the login"        "log in as"     "$(cat "$tmp/start-err")"
+# The real python3 this time: start records the inode it mounted.
+(
+    _load_config() { ENABLED=1; PORT=3000; GOLD_DB="$tmp/gold.db"; }
+    _is_running()  { return 1; }
+    _exists()      { return 1; }
+    docker()       { :; }
+    DATA_DIR="$tmp/start" H2_DIR="$tmp/start/metabase" SPILL_DIR="$tmp/start/spill"
+    SNAP="$tmp/start/snapshot/wealthdb.db" BIND=v4 IMAGE=img CONTAINER=wealthdb-metabase
+    WEALTHDB_WEB_NO_PROVISION=1
+    rm -f "$SNAP.served"
+    web_start >/dev/null 2>&1
+)
+check_eq "start records the snapshot inode it serves" \
+    "$(_stat st_ino "$tmp/start/snapshot/wealthdb.db")" \
+    "$(cat "$tmp/start/snapshot/wealthdb.db.served" 2>/dev/null)"
 # Refresh re-snapshots first, so a stale result there means gold itself is
 # older than the cards: the restart's failure is refresh's.
 rc="$(
-    _load_config() { GOLD_DB="$tmp/gold.db"; }
+    _load_config() { GOLD_DB="$tmp/gold.db"; SNAP="$tmp/refresh-restart-snap/wealthdb.db"; }
     _materialize() { :; }
     _snapshot()    { :; }
     _mtime()       { echo now; }
@@ -237,8 +396,8 @@ echo "== web help smoke =="
 hout="$(web_help)"
 check "help mentions snapshot" "read-only SNAPSHOT" "$hout"
 check "help lists refresh"     "refresh"            "$hout"
-check "help mentions serving"  "materialize serving tables" "$hout"
-check "help names the yield tables" "exposure and yield," "$(echo "$hout" | tr -s ' \n' ' ')"
+check "help mentions serving"  "re-materialize the serving and report tables" "$(echo "$hout" | tr -s ' \n' ' ')"
+check "help says refresh copies a changed gold" "snapshot when gold changed" "$(echo "$hout" | tr -s ' \n' ' ')"
 # The banner names the dashboards by hand, so one added to or renamed in
 # provision.py must be named here too.
 prov_python="${WEALTHDB_WEB_PYTHON:-python3}"

@@ -27,10 +27,14 @@ read-only connection open continuously, which would make every
 up — a load does not queue behind the connection.
 
 So Metabase never touches the live file. `web start` copies the gold
-DB to `…/web/snapshot/wealthdb.db` and mounts *that* read-only;
-`web refresh` re-copies and restarts Metabase to pick it up. Loads
-never contend with the server; dashboards show data as of the last
-refresh (run `web refresh` after `wealthdb load`). The copy is atomic
+DB to `…/web/snapshot/wealthdb.db` and mounts *that* read-only.
+`web refresh` copies gold again when it is newer than the snapshot. It
+recreates the container when the running one does not serve the
+current snapshot. Where the file system can clone (APFS), the copy is
+a clone. Either way the copy keeps gold's mtime, so a gold write during
+the copy makes the next refresh copy again. Loads never contend with
+the server; dashboards show data as of the last refresh (run
+`web refresh` after `wealthdb load`). The copy is atomic
 (temp + `mv`) and refuses to run if a `.wal` sidecar is present (gold
 mid-write / not checkpointed), so a torn copy is never captured.
 
@@ -586,8 +590,9 @@ shows in Metabase's table browser or query builder. Native SQL still
 reads it, and the one card that reads `tags` ("What the yields rest
 on") is native SQL.
 
-Provisioning is idempotent. Re-running updates cards and dashboards in
-place and archives retired names. `web/web` takes the admin password
+Provisioning is idempotent. A card or dashboard that matches its
+definition is left as it is. One that differs is updated in place.
+Retired names are archived. `web/web` takes the admin password
 from `WEALTHDB_WEB_ADMIN_PASSWORD` (for example in
 `~/.secrets/wealthdb-web.env`), or generates one once and saves it
 chmod 600. It hands the password to `provision.py` in that same
@@ -836,6 +841,12 @@ runs the engine's hidden `web-materialize` subcommand *before*
 `_snapshot`, so the serving tables, returns, gains, exposure and yield
 are exactly as fresh as the holdings and `wealthdb load && wealthdb web
 refresh` remains the whole update flow.
+`web-materialize` first compares what it would build from with what it
+last built from: the loads in gold, the config and the files it reads,
+the engine binary and the UTC day. When all match, it writes nothing
+and prints `inputs unchanged`. Gold then keeps its mtime, so refresh
+does not copy it again. A run that stops partway leaves no record, so
+the next run rebuilds.
 It is an engine-owned write to live gold — the same class as `load` and
 mutually exclusive with it under the engine's write mutex, an advisory
 flock on a `<gold_db>.wealthdb.lock` sidecar taken before gold is
@@ -855,15 +866,18 @@ helpers with no Docker: the dual-stack `-p` flag construction, the
 read-only snapshot mount in the `docker run` args, the `.wal` guard,
 the generated-password complexity, and — against a stubbed engine —
 the `_materialize` invocation plus `web_refresh`'s
-materialize-then-snapshot ordering. Against a stubbed `provision.py`,
-it checks that a stale snapshot fails `web start` and `web refresh`
-without the browser hint. It then runs
-[`test_provision.py`](test_provision.py), which asserts everything
-`provision.py` builds *before* it talks to the API — the definitions are
-pure functions of module constants, so the filter registry, the model
-SQL, the card and dashboard defs, the parameter ids and the picker →
-template-tag wiring all check statically. Three behaviours are worth
-naming:
+materialize-then-snapshot ordering. It checks the refresh skips too:
+an unchanged gold is not copied, a container that does not serve the
+snapshot's inode is restarted, and a failed copy keeps the old
+snapshot. Against a stubbed `provision.py`, it checks that a stale
+snapshot fails `web start` and `web refresh` without the browser hint.
+It then runs [`test_provision.py`](test_provision.py), which asserts
+everything `provision.py` builds *before* it talks to the API — the
+definitions are pure functions of module constants, so the filter
+registry, the model SQL, the card and dashboard defs, the parameter ids
+and the picker → template-tag wiring all check statically. Against a
+fake API it checks that an unchanged card or dashboard is not sent
+again and that a changed one is. Three behaviours are worth naming:
 
 - the privacy twins render no merchant or account label;
 - the Yield twin, the Income twin's cards of the holdings' income and

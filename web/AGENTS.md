@@ -52,11 +52,12 @@ port-forward; auth is Metabase's own login.
   [DESIGN.md §6](DESIGN.md): the models, the dashboards, their privacy
   twins and how each twin normalises. Read that before changing a card;
   it is not repeated here.
-- Provisioning **converges the pre-defined collection to spec on every
-  start**: dashboards get their tile layout replaced wholesale. User
-  content elsewhere is never touched — card and dashboard matching is
-  scoped to the pre-defined collection — so anyone wanting to customise
-  a pre-defined card must duplicate it into another collection first.
+- Provisioning leaves an unchanged pre-defined card or dashboard in
+  place and updates one that differs in place. A differing dashboard
+  has its tiles replaced wholesale, so a tile added by hand does not
+  survive. Duplicate a pre-defined card into another collection
+  before customizing it. User content elsewhere is never touched. Card
+  and dashboard matching is scoped to the pre-defined collection.
 - Adding a serving view? Register it in `FILTER_FIELD_COLUMNS`. That is
   the single registry both the field-id resolution and the startup probe
   read, and the probe aborts the run rather than converging every card
@@ -103,9 +104,9 @@ connection details in `provision.py`, or the writable spill mount at
 
 `web/provision.py` skips the setup wizard by creating the admin, adding
 the gold DB, and creating the pre-defined report models, questions
-and dashboards over the OSS API. Keep it idempotent (safe on
-every start — it skips the admin and the DB, and updates any card or
-dashboard that already exists by name in place). Do **not** switch to
+and dashboards over the OSS API. Keep it idempotent, so it is safe on
+every start. It skips the admin and the DB, and §3 says what it does to
+cards and dashboards. Do **not** switch to
 Metabase's config-file provisioning — it's Pro/EE-only and a silent
 no-op on OSS. Never hard-code a password; take it from env or generate
 + save chmod 600.

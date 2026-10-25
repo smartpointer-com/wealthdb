@@ -139,7 +139,11 @@ _snapshot() {
     fi
     mkdir -p "$(dirname "$dst")"
     local tmp="${dst}.tmp.$$"
-    cp "$src" "$tmp"
+    # A clone is the whole file and no bytes copied, where the file
+    # system has one (APFS). Anywhere else, copy.
+    if ! cp -c "$src" "$tmp" 2>/dev/null; then
+        cp "$src" "$tmp"
+    fi
     mv "$tmp" "$dst"
 }
 
@@ -184,6 +188,9 @@ web_start() {
             return 1
         fi
     fi
+    # The container resolved the snapshot path at this start. A later
+    # refresh treats that inode as the one being served.
+    _mark_snapshot_served
     _provision
     _start_banner
     # A snapshot older than the cards need leaves the server up with the
@@ -247,12 +254,59 @@ _timed() {
     return "$rc"
 }
 
+_stamp() {
+    python3 -c 'import os, sys
+p = sys.argv[1]
+print(os.stat(p).st_mtime_ns if os.path.exists(p) else 0)' "$1"
+}
+
+_inode() {
+    python3 -c 'import os, sys
+p = sys.argv[1]
+print(os.stat(p).st_ino if os.path.exists(p) else 0)' "$1"
+}
+
+# _mark_snapshot_served records the snapshot inode the container just
+# mounted. A clone keeps the source mtime, so mtime cannot tell a file
+# the container opened from one swapped in after it started.
+_mark_snapshot_served() {
+    _inode "$SNAP" > "${SNAP}.served"
+}
+
+_snapshot_served() {
+    [ -f "$SNAP" ] && [ -f "${SNAP}.served" ] \
+        && [ "$(_inode "$SNAP")" = "$(tr -d '[:space:]' < "${SNAP}.served")" ]
+}
+
 web_refresh() {
     _load_config
     _timed materialize _materialize
-    echo "web: refreshing snapshot from $GOLD_DB …" >&2
-    _timed snapshot _snapshot "$GOLD_DB" "$SNAP"
-    echo "web: snapshot updated (as of $(_mtime "$SNAP"))"
+    # Copy when the snapshot is missing or older than gold. A missing
+    # gold file is not current: the copy reports it. A running container
+    # is current only when it started on this snapshot's inode, so a
+    # refresh that died after the copy and before the restart still
+    # restarts the next time.
+    local gold_ns=0 snap_ns=0
+    if [ -f "$GOLD_DB" ]; then
+        gold_ns="$(_stamp "$GOLD_DB")"
+    fi
+    if [ -f "$SNAP" ]; then
+        snap_ns="$(_stamp "$SNAP")"
+    fi
+    if [ -f "$GOLD_DB" ] && [ -f "$SNAP" ] && [ "$snap_ns" -ge "$gold_ns" ] \
+        && { ! _is_running || _snapshot_served; }; then
+        echo "web: snapshot unchanged" >&2
+        if _is_running; then
+            _provision
+            return "$PROV_RC"
+        fi
+        return 0
+    fi
+    if [ ! -f "$GOLD_DB" ] || [ ! -f "$SNAP" ] || [ "$snap_ns" -lt "$gold_ns" ]; then
+        echo "web: refreshing snapshot from $GOLD_DB …" >&2
+        _timed snapshot _snapshot "$GOLD_DB" "$SNAP"
+        echo "web: snapshot updated (as of $(_mtime "$SNAP"))"
+    fi
     if _is_running; then
         # Recreate the container — do NOT `docker restart`. The snapshot is
         # bind-mounted as a single file (see _docker_run_args) and _snapshot

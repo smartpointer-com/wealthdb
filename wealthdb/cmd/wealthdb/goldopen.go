@@ -58,11 +58,11 @@ func openGoldForRead(g globalFlags, cfg *config.Config, missingDBMsg ...string) 
 // and mutex-held rejections; missingDBMsg is the ExitMissingDB
 // message (a format string taking the DB path) — commands vary it
 // ("Run 'wealthdb init' first" vs "Nothing to reset" vs "Nothing to
-// compact"). It does not open the DB: commands that rewrite the file
-// via swap machinery (compact, reload) gate without holding a handle,
-// which is exactly why the mutex is needed beside DuckDB's own file
-// lock. The caller holds the returned lock for the whole command and
-// releases it with unlock.
+// compact"). It does not open the DB: commands that open the file
+// themselves or rewrite it via swap (compact, reload, web-materialize)
+// gate without holding a handle, which is exactly why the mutex is
+// needed beside DuckDB's own file lock. The caller holds the returned
+// lock for the whole command and releases it with unlock.
 func gateGoldForWrite(g globalFlags, cfg *config.Config, cmdName, missingDBMsg string) (*goldWriteLock, error) {
 	dec, err := pathmode.Detect(cfg.GoldDB, g.ForceReadOnly, false)
 	if err != nil {
@@ -82,8 +82,8 @@ func gateGoldForWrite(g globalFlags, cfg *config.Config, cmdName, missingDBMsg s
 // openGoldForWrite gates as gateGoldForWrite does, then opens the gold
 // DB read-write (applying any outstanding migration on open). The
 // caller owns db.Close() and lock.unlock(). Used by the write commands
-// that mutate the live file directly (load, reset, lots,
-// web-materialize); compact and reload rewrite via a swap and only
+// that mutate the live file directly (load, reset, lots); compact,
+// reload and web-materialize open or swap on their own and only
 // need gateGoldForWrite.
 //
 // The open waits out a reader. DuckDB refuses a read-write attach

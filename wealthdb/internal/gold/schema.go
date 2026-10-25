@@ -68,6 +68,14 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
+// MigrationsPending reports whether this binary carries a migration the
+// database has not applied. A read-only open applies none, so such a
+// database still lacks what they add.
+func MigrationsPending(ctx context.Context, db *sql.DB) (bool, error) {
+	current, latest, err := schemaVersions(ctx, db)
+	return current < latest, err
+}
+
 // CheckSchemaKnown returns ErrStaleBinary, wrapped, when the database's
 // schema is newer than the newest migration this binary carries: a later
 // build has written the database, and this one may misread it. Unlike
@@ -76,19 +84,32 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 // which is what a long-running server needs after the image is rebuilt
 // and a load migrates the database under it.
 func CheckSchemaKnown(ctx context.Context, db *sql.DB) error {
-	current, err := currentSchemaVersion(ctx, db)
+	current, latest, err := schemaVersions(ctx, db)
 	if err != nil {
 		return err
+	}
+	if current > latest {
+		return fmt.Errorf("%w: the database is at schema %d, and this binary knows schema %d at most",
+			ErrStaleBinary, current, latest)
+	}
+	return nil
+}
+
+// schemaVersions is the database's schema version and the newest
+// migration this binary carries. A binary that carries none reports the
+// database's version as its newest, so neither check above fires.
+func schemaVersions(ctx context.Context, db *sql.DB) (current, latest int, err error) {
+	if current, err = currentSchemaVersion(ctx, db); err != nil {
+		return 0, 0, err
 	}
 	migrations, err := listMigrations()
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
-	if n := len(migrations); n > 0 && current > migrations[n-1].version {
-		return fmt.Errorf("%w: the database is at schema %d, and this binary knows schema %d at most",
-			ErrStaleBinary, current, migrations[n-1].version)
+	if len(migrations) == 0 {
+		return current, current, nil
 	}
-	return nil
+	return current, migrations[len(migrations)-1].version, nil
 }
 
 // currentSchemaVersion returns MAX(gold_schema_version) or 0 if

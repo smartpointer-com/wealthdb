@@ -104,3 +104,24 @@ func (c *colInsert) exec(ctx context.Context, tx *sql.Tx, table string) error {
 	}
 	return nil
 }
+
+// tableColumn is one column of a table as the catalog lists it.
+type tableColumn struct{ name, typ string }
+
+// tableColumns is table's columns in the catalog's order, none for a
+// table that does not exist.
+func tableColumns(ctx context.Context, q querier, table string) ([]tableColumn, error) {
+	var cols []tableColumn
+	err := scanAll(ctx, q, `
+SELECT column_name, data_type FROM duckdb_columns()
+ WHERE table_name = ? AND schema_name = 'main' AND database_name = current_database()
+ ORDER BY column_index`, func(rows *sql.Rows) error {
+		var c tableColumn
+		if err := rows.Scan(&c.name, &c.typ); err != nil {
+			return err
+		}
+		cols = append(cols, c)
+		return nil
+	}, table)
+	return cols, err
+}

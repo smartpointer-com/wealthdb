@@ -1568,6 +1568,8 @@ is documented where it is used:
 - The serving table `report_cashflow_plan` (migration `0149`) —
   §10.12.
 - The serving tables `serving_*` (migration `0132`) — web/DESIGN.md §8.
+- `materialize_inputs` (migration `0155`), the inputs the last
+  `web-materialize` built from — web/DESIGN.md §8.
 - The spending overlay: `spend_categories` (migration `0040`;
   docs/SPENDING.md §2), and `spend_txn_enrichment`,
   `spend_merchant_categories` and `spend_account_scope` (migration

@@ -14,6 +14,7 @@ mounted gold snapshot is older than the cards need (MIN_GOLD_SCHEMA),
 and 1 on any other failure.
 """
 import argparse
+import concurrent.futures
 import json
 import os
 import sys
@@ -5782,6 +5783,8 @@ def ensure_synced(base, sid, db_id, tries=20, delay=3):
         return None
     gone = missing_filter_columns(tables)
     if not gone:
+        # The columns are already there. A sync would not change them.
+        print("provision: schema sync skipped")
         return tables
     absent = missing_web_views(base, sid, db_id)
     if absent:
@@ -5927,10 +5930,85 @@ def pre_defined_cards(base, sid, coll_id):
             if c.get("collection_id") == coll_id and not c.get("archived")}
 
 
-def upsert_card(base, sid, by_name, name, payload):
-    """Create card `name` or update it in place. Returns (card id,
-    'created'|'updated') on success, (None, error text) on failure."""
+def _empty(value):
+    return value is None or value == [] or value == {}
+
+
+def _typed_field_ref(got, want):
+    """True when `got` is the field reference `want` with the base type
+    Metabase adds to a template tag's dimension on save."""
+    return (isinstance(got, list) and isinstance(want, list)
+            and len(got) == len(want) == 3 and want[0] == "field"
+            and got[:2] == want[:2] and want[2] is None
+            and isinstance(got[2], dict) and set(got[2]) == {"base-type"})
+
+
+def _same_value(got, want):
+    """True when the server's value equals the payload's. A key on one
+    side only counts, so a setting the payload drops is sent. Metabase
+    stores an empty list or map as null, or leaves it out, and adds a
+    base type to a template tag's field reference: those match."""
+    if _empty(got) and _empty(want):
+        return True
+    if isinstance(want, dict):
+        if not isinstance(got, dict):
+            return False
+        return all(_same_value(got.get(key), want.get(key)) for key in got.keys() | want.keys())
+    if isinstance(want, list):
+        if _typed_field_ref(got, want):
+            return True
+        if not isinstance(got, list) or len(got) != len(want):
+            return False
+        return all(_same_value(item, value) for item, value in zip(got, want, strict=True))
+    return got == want
+
+
+def card_same(existing, payload):
+    """True when the stored card already is the payload. `existing`
+    must carry its query in the legacy form the payload uses
+    (stored_cards). A missing field is not a match."""
+    if not isinstance(existing, dict) or existing.get("id") is None:
+        return False
+    for key, want in payload.items():
+        if key not in existing or not _same_value(existing[key], want):
+            return False
+    return True
+
+
+def _get_all(base, sid, paths):
+    """key -> the body of GET `path`, for each key -> path in `paths`,
+    read in parallel. A read that fails or answers anything but a JSON
+    object is left out, so the caller sends that object."""
+    def fetch(item):
+        key, path = item
+        try:
+            st, body = req(base, path, session=sid)
+        except Exception:
+            # A body that is no JSON, or a read cut short.
+            return key, None
+        return key, body if st == 200 and isinstance(body, dict) else None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        return {key: body for key, body in pool.map(fetch, paths.items()) if body}
+
+
+def stored_cards(base, sid, by_name, names):
+    """name -> the server's card, for each of `names` already in
+    `by_name`. The card list carries each query in MBQL 5, which no
+    payload equals, so every card is read again in the legacy form.
+    A card that cannot be read is left out, and so is sent."""
+    return _get_all(base, sid, {name: f"/api/card/{by_name[name]['id']}?legacy-mbql=true"
+                                for name in names if name in by_name})
+
+
+def upsert_card(base, sid, by_name, name, payload, stored=None):
+    """Create card `name` or update it in place. `stored` is the
+    server's card (stored_cards); one equal to the payload is left in
+    place. Returns (card id, 'created'|'updated'|'skipped') on success,
+    (None, error text) on failure."""
     existing = by_name.get(name)
+    if card_same(stored, payload):
+        return stored["id"], "skipped"
     if existing:
         st, body = req(base, f"/api/card/{existing['id']}", "PUT", payload, session=sid)
         if st in (200, 201):
@@ -5957,18 +6035,20 @@ def card_payload(coll_id, name, ctype, display, desc, query, viz):
 
 def upsert_cards(base, sid, by_name, payloads, label):
     """Create or update-in-place every card in `payloads` (name -> full
-    /api/card payload). Returns (name -> card id, #created, #updated), or
-    None on the first failure."""
-    ids, n = {}, {"created": 0, "updated": 0}
+    /api/card payload). An unchanged card is left in place. Returns
+    (name -> card id, #created, #updated, #skipped), or None on the
+    first failure."""
+    ids, n = {}, {"created": 0, "updated": 0, "skipped": 0}
+    stored = stored_cards(base, sid, by_name, payloads)
     for name, payload in payloads.items():
-        cid, how = upsert_card(base, sid, by_name, name, payload)
+        cid, how = upsert_card(base, sid, by_name, name, payload, stored.get(name))
         if cid is None:
             print(f"provision: failed to save {label} '{name}' {how}",
                   file=sys.stderr)
             return None
         ids[name] = cid
         n[how] += 1
-    return ids, n["created"], n["updated"]
+    return ids, n["created"], n["updated"], n["skipped"]
 
 
 def archive_all(base, sid, kind, ids):
@@ -5983,11 +6063,10 @@ def archive_all(base, sid, kind, ids):
 
 def ensure_models(base, sid, db_id, coll_id, by_name):
     """Create/refresh the pre-defined report models in `coll_id`, and
-    archive any retired (renamed-away) ones. Idempotent: an existing model
-    of the same name is updated in place; re-running converges. The models
-    are content-free shims over the gold serving tables and views — no
-    source data is baked in. Returns model name -> card id, or None on
-    failure."""
+    archive any retired (renamed-away) ones. An unchanged model is left
+    in place. The models are content-free shims over the gold serving
+    tables and views — no source data is baked in. Returns model name ->
+    card id, or None on failure."""
     payloads = {
         name: card_payload(coll_id, name, "model", "table", desc,
                            {"type": "native", "database": db_id,
@@ -5998,13 +6077,13 @@ def ensure_models(base, sid, db_id, coll_id, by_name):
     saved = upsert_cards(base, sid, by_name, payloads, "model")
     if saved is None:
         return None
-    ids, created, updated = saved
+    ids, created, updated, skipped = saved
     archived = archive_all(base, sid, "card",
                            [by_name[n]["id"] for n in RETIRED_MODEL_NAMES
                             if n in by_name])
     print(f"provision: report models ({_ccy_slash()}) — {created} created, "
-          f"{updated} updated, {archived} retired (collection '{COLLECTION_NAME}')")
-    print(f"provision: models — sent {created + updated}, skipped 0")
+          f"{updated} updated, {skipped} unchanged, {archived} retired "
+          f"(collection '{COLLECTION_NAME}')")
     return ids
 
 
@@ -6023,13 +6102,12 @@ def ensure_cards(base, sid, db_id, coll_id, by_name, model_ids):
     saved = upsert_cards(base, sid, by_name, payloads, "card")
     if saved is None:
         return None
-    ids, created, updated = saved
+    ids, created, updated, skipped = saved
     archived = archive_all(base, sid, "card",
                            [by_name[n]["id"] for n in RETIRED_CARD_NAMES
                             if n in by_name])
-    print(f"provision: questions — {created} created, "
-          f"{updated} updated, {archived} retired")
-    print(f"provision: cards — sent {created + updated}, skipped 0")
+    print(f"provision: questions — {created} created, {updated} updated, "
+          f"{skipped} unchanged, {archived} retired")
     return ids, {name: body["description"] for name, body in payloads.items()}
 
 
@@ -6198,11 +6276,11 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
     description, lets a Wealth Overview tile carry its card's description
     with the pickers that do not reach it named. A dashboard in
     DASHBOARD_HEADINGS gets its full-width headings, and a Wealth Overview
-    tile opens its home dashboard (overview_click). Parameters and the
-    dashcard list are replaced wholesale on every run, so the layout
-    converges to spec (a tile added by hand to a pre-defined dashboard
-    does not survive — the dashboard description says to duplicate
-    before customizing)."""
+    tile opens its home dashboard (overview_click). An unchanged dashboard
+    is left in place. One that differs has its parameter list and its
+    tiles replaced wholesale, so the layout converges to spec and a tile
+    added by hand does not survive. The dashboard description says to
+    duplicate before customizing."""
     titles = titles or {}
     st, items = req(base, f"/api/collection/{coll_id}/items?models=dashboard",
                     session=sid)
@@ -6214,7 +6292,7 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
     existing = {d.get("name"): d.get("id") for d in (items.get("data") or [])}
 
     defs = dashboard_defs()
-    n = {"created": 0, "updated": 0}
+    n = {"created": 0, "updated": 0, "skipped": 0}
     # First pass: make sure every dashboard exists, so the switch links
     # can point at the sibling's id.
     dash_ids = {}
@@ -6230,9 +6308,11 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
                 return 1
             did = body["id"]
             n["created"] += 1
-        else:
-            n["updated"] += 1
         dash_ids[name] = did
+    # The dashboards listed before this run, read for the comparison. One
+    # created above has no tiles yet, so it is sent without a read.
+    stored = _get_all(base, sid, {name: f"/api/dashboard/{existing[name]}"
+                                  for name in defs if existing.get(name) is not None})
 
     params = {name: dashboard_parameters(model_ids, mode, name)
               for name, (_desc, mode, _sibling, _tiles) in defs.items()}
@@ -6292,6 +6372,11 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
                                   [VEHICLE_PARAM_ID] if mode == "asof"
                                   and card in POSITION_FILTERED_CARDS else [],
                               "parameter_mappings": maps})
+        if dashboard_unchanged(stored.get(name), name, desc, parameters, dashcards):
+            n["skipped"] += 1
+            continue
+        if name in existing:
+            n["updated"] += 1
         st, body = req(base, f"/api/dashboard/{dash_ids[name]}", "PUT",
                        {"name": name, "description": desc,
                         "parameters": parameters,
@@ -6316,11 +6401,40 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
     archived = archive_all(base, sid, "dashboard",
                            [existing[name] for name in RETIRED_DASHBOARD_NAMES
                             if existing.get(name) is not None])
-    sent = n["created"] + n["updated"]
     print(f"provision: dashboards — {n['created']} created, {n['updated']} updated, "
-          f"{archived} retired")
-    print(f"provision: dashboards — sent {sent}, skipped 0")
+          f"{n['skipped']} unchanged, {archived} retired")
     return 0
+
+
+def _dashcards_same(server, desired):
+    """True when the stored tiles already match the payload. Tiles pair
+    by their place on the grid, whatever order the server lists them
+    in. A tile is compared on the keys the payload sends; the rest of
+    a stored tile is the server's own. A missing tile list is not a
+    match."""
+    if not isinstance(server, list) or len(server) != len(desired):
+        return False
+    if not all(isinstance(t, dict) for t in server):
+        return False
+
+    def place(tile):
+        return (tile.get("row") or 0, tile.get("col") or 0)
+
+    server, desired = sorted(server, key=place), sorted(desired, key=place)
+    for got, want in zip(server, desired, strict=True):
+        for key, value in want.items():
+            if key != "id" and not _same_value(got.get(key), value):
+                return False
+    return True
+
+
+def dashboard_unchanged(current, name, desc, parameters, dashcards):
+    """True when the stored dashboard already matches the payload."""
+    return (isinstance(current, dict)
+            and current.get("name") == name
+            and current.get("description") == desc
+            and _same_value(current.get("parameters"), parameters)
+            and _dashcards_same(current.get("dashcards"), dashcards))
 
 
 if __name__ == "__main__":
