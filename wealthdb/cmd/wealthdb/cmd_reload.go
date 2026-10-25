@@ -30,19 +30,21 @@ func init() {
 // atomically swaps it over the live path, which also compacts the
 // file (a fresh build carries none of the dead row-group versions an
 // in-place reset+load leaves behind). --in-place resets and loads on
-// the live DB instead. Single-source 'reload <id>' always stays
-// in-place.
+// the live DB instead. Named sources stay in-place, and the class,
+// enrichment, lot, exposure and yield passes run once after all of
+// them have loaded.
 func cmdReload(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("wealthdb reload", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	all := fs.Bool("a", false, "reload every registered silver source")
 	inPlace := fs.Bool("in-place", false, "with -a: reset+load on the live DB instead of building a fresh file")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, `usage: wealthdb reload <silver_source_id> | -a [--in-place]
+		fmt.Fprintln(stderr, `usage: wealthdb reload <silver_source_id>... | -a [--in-place]
 
-Reset then re-load one silver source (or every registered silver
-source with -a). Equivalent to running 'wealthdb reset <id>'
-followed by 'wealthdb load <id>'.
+Reset then re-load one or more silver sources (or every registered
+silver source with -a). Equivalent to 'wealthdb reset <id>' followed
+by 'wealthdb load <id>' for each named source. The class, enrichment,
+lot, exposure and yield passes then run once.
 
 With -a, the default builds a fresh gold file from every source and
 atomically swaps it over the live path — concurrent readers keep the
@@ -61,7 +63,7 @@ or below the high watermark. Reload forces a full re-projection.`)
 		fs.Usage()
 		return errs.Newf(errs.ExitUsage, "reload: --in-place only applies to '-a'")
 	}
-	id, err := sourceArg(fs, *all, "reload")
+	ids, err := reloadIDs(fs, *all)
 	if err != nil {
 		return err
 	}
@@ -78,7 +80,7 @@ or below the high watermark. Reload forces a full re-projection.`)
 	if err != nil {
 		return err
 	}
-	targets, err := selectSources(cfg, id, "reload")
+	targets, err := reloadTargets(cfg, ids)
 	if err != nil {
 		return err
 	}
@@ -101,6 +103,48 @@ or below the high watermark. Reload forces a full re-projection.`)
 	}
 
 	return reloadInPlace(ctx, cfg, targets, ledger, in, stdout, stderr)
+}
+
+// reloadIDs is the sources a reload names: nil for -a, otherwise the
+// positional ids, in the order given. -a and an id do not combine,
+// and an id named twice is a usage error rather than two resets.
+func reloadIDs(fs *flag.FlagSet, all bool) ([]string, error) {
+	if all {
+		_, err := sourceArg(fs, all, "reload")
+		return nil, err
+	}
+	if fs.NArg() == 0 {
+		fs.Usage()
+		return nil, errs.Newf(errs.ExitUsage, "reload: expected one or more silver_source_id or -a")
+	}
+	ids := fs.Args()
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if seen[id] {
+			fs.Usage()
+			return nil, errs.Newf(errs.ExitUsage, "reload: %q named more than once", id)
+		}
+		seen[id] = true
+	}
+	return ids, nil
+}
+
+// reloadTargets is every configured source for ids nil (-a), or the
+// named sources in that order. A missing id fails before any source
+// is reset.
+func reloadTargets(cfg *config.Config, ids []string) ([]config.SilverSource, error) {
+	if ids == nil {
+		return selectSources(cfg, "", "reload")
+	}
+	out := make([]config.SilverSource, 0, len(ids))
+	for _, id := range ids {
+		s, err := selectSources(cfg, id, "reload")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s...)
+	}
+	return out, nil
 }
 
 // reloadFreshAndSwap builds a complete gold DB from every target
@@ -183,12 +227,12 @@ func reloadFreshAndSwap(
 					respelled, store.noun)
 			}
 		}
-		// Run the gold passes (enrichment, then lots) AFTER the stores
-		// have been carried across: the signature-version re-key reads
-		// that store, and a pass that ran before the carry would see it
-		// empty and carry nothing forward. Before the CHECKPOINT, so the
-		// swapped-in file is enriched and its lots rebuilt rather than
-		// needing a follow-up load to become correct.
+		// Run runGoldPasses AFTER the stores have been carried across:
+		// the signature-version re-key reads that store, and a pass
+		// that ran before the carry would see it empty and carry
+		// nothing forward. Before the CHECKPOINT, so the swapped-in
+		// file has had every pass rather than needing a follow-up
+		// load to become correct.
 		firstErr = errors.Join(firstErr, runGoldPasses(ctx, db, cfg, in.enrichment, "reload", stdout, stderr))
 		// Checkpoint then close so the temp file is complete and clean
 		// (no leftover WAL) before it is verified and swapped.
@@ -489,9 +533,10 @@ func carriedStoreColumns(ctx context.Context, conn *sql.Conn, store paidStore) (
 }
 
 // reloadInPlace resets and loads each source on the live DB, for
-// single-source reloads and for 'reload -a --in-place'. The
-// verdict stores need no carry-across here: the live file is never
-// replaced, and Reset leaves both of them alone.
+// named sources and for 'reload -a --in-place'. The verdict stores
+// need no carry-across here: the live file is never replaced, and
+// Reset leaves both of them alone. The gold passes run once, after
+// every named source has loaded.
 func reloadInPlace(
 	ctx context.Context,
 	cfg *config.Config,

@@ -73,10 +73,12 @@ The commands fall into four groups, the same as in `wealthdb help`:
   `returns`, `gains`, `exposure`, `yield`, `transactions`, `spending`,
   `income`, `cashflow`, `status` and `snapshots`.
 - **Set up and load** write it. `config` writes the config file and
-  `init` creates the database. `load`, `reset` and `reload` bring a
-  source's silver in or take it out. `compact` reclaims space. `lots
-  rebuild` replays the trades into lots where a source states no cost
-  basis; every load does it too.
+  `init` creates the database. `load` and `reset` take one source,
+  or every source with `-a`. `reload` resets and loads the named
+  sources, then rebuilds what gold derives from them once.
+  `reload -a` rebuilds every source into a fresh file and swaps it in.
+  `compact` reclaims space. `lots rebuild` replays the trades into
+  lots where a source states no cost basis; every load does it too.
 - **Enrich** asks the configured model. `categorize` places the
   merchants and payers no rule could place, and `resolve-symbols`
   fills in missing tickers. `categorizations` and `resolutions` list

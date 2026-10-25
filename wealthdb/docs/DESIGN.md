@@ -114,7 +114,7 @@ wealthdb config [-c <cfg>]            (setup) Interactive first-time wizard; wri
 wealthdb init                         (RW)    Initialise an empty gold DB at the configured path.
 wealthdb load    <id> | -a            (RW)    Merge new silver snapshots into gold.
 wealthdb reset   <id> | -a            (RW)    Purge a silver source's data from gold.
-wealthdb reload  <id> | -a [--in-place] (RW)  Reset then load; -a builds a fresh compact gold and swaps it in.
+wealthdb reload  <id>... | -a         (RW)    Reset then load; -a builds a fresh compact gold and swaps it in (--in-place: on the live file).
 wealthdb compact [--dry-run]          (RW)    Rewrite the gold DB into a fresh file to reclaim dead space.
 wealthdb lots rebuild [--force]       (RW)    Replay the trades into lots: the cost basis no source states (docs/LOTS.md).
 wealthdb holdings <view> [flags]      (RO)    Point-in-time views: positions, accounts, portfolios, sources, global.

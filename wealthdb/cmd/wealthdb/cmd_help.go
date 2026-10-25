@@ -96,7 +96,7 @@ var commandHelps = []commandHelp{
 	{name: "init", group: "load", short: "create the empty database at the configured path"},
 	{name: "load", args: "<id> | -a", group: "load", short: "load a source's new data (or every source's) into the database"},
 	{name: "reset", args: "<id> | -a", group: "load", short: "remove a source's data from the database"},
-	{name: "reload", args: "<id> | -a", group: "load", short: "reset then load (use after upgrading wealthdb)"},
+	{name: "reload", args: "<id>... | -a", group: "load", short: "reset then load (use after upgrading wealthdb)"},
 	{name: "compact", args: "[--dry-run]", group: "load", short: "rewrite the database file to reclaim dead space"},
 	{name: "lots", args: "rebuild", group: "load", short: "replay the trades into lots: the cost basis no source states (load runs it too)"},
 

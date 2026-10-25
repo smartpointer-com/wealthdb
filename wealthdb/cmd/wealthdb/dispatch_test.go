@@ -514,6 +514,67 @@ func TestReloadIsResetThenLoad(t *testing.T) {
 	}
 }
 
+// TestReloadSeveralSourcesRunsThePassesOnce reloads two sources in one
+// command. Each is reset and loaded, and each gold pass runs once.
+func TestReloadSeveralSourcesRunsThePassesOnce(t *testing.T) {
+	t.Parallel()
+	cfg := setupCLITest(t)
+	dir := filepath.Dir(cfg)
+	second := filepath.Join(dir, "schwab2.db")
+	src, err := os.ReadFile(filepath.Join(dir, "schwab.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, src, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD", "silver_sources": [
+        {"id":"schwab-test","kind":"schwab","path":%q},
+        {"id":"schwab-other","kind":"schwab","path":%q}
+    ]}`, filepath.Join(dir, "wealthdb.db"), filepath.Join(dir, "schwab.db"), second)
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
+		t.Fatal("init failed")
+	}
+	so, se, code := run(t, "-c", cfg, "reload", "schwab-test", "schwab-other")
+	if code != 0 {
+		t.Fatalf("reload failed; code=%d so=%q se=%q", code, so, se)
+	}
+	for _, id := range []string{"schwab-test", "schwab-other"} {
+		if !strings.Contains(so, "reload: "+id+": reset +") {
+			t.Errorf("reload stdout missing %s: %q", id, so)
+		}
+	}
+	for _, pass := range []string{"class", "enrichment", "lots", "exposure", "yield"} {
+		if n := strings.Count(so, "timing: "+pass+" "); n != 1 {
+			t.Errorf("%s timings = %d, want 1\n%s", pass, n, so)
+		}
+	}
+
+	so, se, code = run(t, "-c", cfg, "reload", "schwab-test", "no-such")
+	if code == 0 || !strings.Contains(se, "not found") || strings.Contains(so, "reset") {
+		t.Fatalf("unknown source: code=%d so=%q se=%q", code, so, se)
+	}
+	_, se, code = run(t, "-c", cfg, "reload", "-a", "schwab-test")
+	if code != 2 || !strings.Contains(se, "mutually exclusive") {
+		t.Fatalf("-a with a source: code=%d se=%q", code, se)
+	}
+	_, se, code = run(t, "-c", cfg, "reload")
+	if code != 2 || !strings.Contains(se, "expected one or more") {
+		t.Fatalf("no source: code=%d se=%q", code, se)
+	}
+	_, se, code = run(t, "-c", cfg, "reload", "schwab-test", "schwab-test")
+	if code != 2 || !strings.Contains(se, "named more than once") {
+		t.Fatalf("duplicate source: code=%d se=%q", code, se)
+	}
+	_, se, code = run(t, "-c", cfg, "reload", "schwab-test", "schwab-other", "--in-place")
+	if code != 2 || !strings.Contains(se, "--in-place only applies") {
+		t.Fatalf("in-place on named sources: code=%d se=%q", code, se)
+	}
+}
+
 // TestReloadAllNoSources covers the -a path. Empty config + -a should error
 // (mirrors load -a) rather than silently succeed.
 func TestReloadAllNoSources(t *testing.T) {
