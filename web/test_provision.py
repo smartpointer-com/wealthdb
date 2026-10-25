@@ -860,6 +860,39 @@ try:
 finally:
     p.req = real_req
 
+section("provision sent and skipped counts")
+
+
+class FakeSaveAPI:
+    def __init__(self):
+        self.next_id = 0
+
+    def __call__(self, base, path, method="GET", data=None, session=None, timeout=30):
+        if method == "POST" and path in ("/api/card", "/api/dashboard"):
+            self.next_id += 1
+            return 200, {"id": self.next_id}
+        return 200, {}
+
+
+buf = io.StringIO()
+real_req = p.req
+try:
+    p.req = FakeSaveAPI()
+    with contextlib.redirect_stdout(buf):
+        model_ids = p.ensure_models("b", "s", 1, 7, {})
+        check("models save", model_ids is not None)
+        saved = p.ensure_cards("b", "s", 1, 7, {}, model_ids)
+        check("cards save", saved is not None)
+        rc = p.ensure_dashboards("b", "s", 7, saved[0], model_ids, None, saved[1])
+        check("dashboards save", rc == 0)
+finally:
+    p.req = real_req
+sent = buf.getvalue()
+for line in ("provision: models — sent ", "provision: cards — sent ",
+             "provision: dashboards — sent "):
+    rest = sent.split(line, 1)[-1].split("\n", 1)[0]
+    check(f"prints {line.strip()}", line in sent and "skipped 0" in rest, sent)
+
 layouts = [d for _path, d in api.puts if d.get("dashcards")]
 api_puts_layout = [(path, d) for path, d in api.puts if d.get("dashcards")]
 

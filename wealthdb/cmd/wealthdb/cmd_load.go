@@ -270,19 +270,33 @@ func parseEnrichmentLedgers(cfg *config.Config) (enrichmentLedgers, error) {
 // under verb and does not stop the next; the failures come back joined.
 func runGoldPasses(ctx context.Context, db *sql.DB, cfg *config.Config, enrichment enrichmentLedgers, verb string, stdout, stderr io.Writer) error {
 	var failed error
-	for _, pass := range []func() error{
-		func() error { return runClassPass(ctx, db, cfg) },
-		func() error { return runEnrichmentPass(ctx, db, cfg, enrichment, stdout) },
-		func() error { return runLotPass(ctx, db, cfg, false, stdout) },
-		func() error { return runExposurePass(ctx, db, stdout) },
-		func() error { return runYieldPass(ctx, db, stdout) },
+	for _, pass := range []struct {
+		name string
+		fn   func() error
+	}{
+		{"class", func() error { return runClassPass(ctx, db, cfg) }},
+		{"enrichment", func() error { return runEnrichmentPass(ctx, db, cfg, enrichment, stdout) }},
+		{"lots", func() error { return runLotPass(ctx, db, cfg, false, stdout) }},
+		{"exposure", func() error { return runExposurePass(ctx, db, stdout) }},
+		{"yield", func() error { return runYieldPass(ctx, db, stdout) }},
 	} {
-		if err := pass(); err != nil {
+		err := timedPass(stdout, pass.name, pass.fn)
+		if err != nil {
 			fmt.Fprintf(stderr, "%s: %s\n", verb, err.Error())
 			failed = errors.Join(failed, err)
 		}
 	}
 	return failed
+}
+
+// timedPass runs one gold pass and prints its wall time. The pass's own
+// lines say what it wrote; this line says how long it took, on a load,
+// a reload and each web-materialize phase.
+func timedPass(w io.Writer, name string, fn func() error) error {
+	start := time.Now()
+	err := fn()
+	fmt.Fprintf(w, "timing: %s %s\n", name, time.Since(start).Round(time.Millisecond))
+	return err
 }
 
 // runEnrichmentPass re-asserts every deterministic verdict in gold,

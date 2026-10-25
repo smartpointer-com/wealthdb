@@ -1,11 +1,30 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/spending"
 )
+
+// TestTimedPassPrintsDuration pins the timing line a load and a reload
+// print for each gold pass, including a pass that fails.
+func TestTimedPassPrintsDuration(t *testing.T) {
+	t.Parallel()
+	var out strings.Builder
+	if err := timedPass(&out, "enrichment", func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "timing: enrichment ") {
+		t.Errorf("pass duration missing: %q", out.String())
+	}
+	out.Reset()
+	err := timedPass(&out, "lots", func() error { return fmt.Errorf("boom") })
+	if err == nil || !strings.Contains(out.String(), "timing: lots ") {
+		t.Errorf("a failed pass should still report its duration: err=%v out=%q", err, out.String())
+	}
+}
 
 // TestLoadPrintsBothFamilyBlocks pins what `load` says about the pass.
 //

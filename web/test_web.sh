@@ -117,6 +117,35 @@ check "passes the configured path"     "/cfg/wealthdb.cfg" "$args"
 check "still invokes web-materialize"  "web-materialize"   "$args"
 unset WEALTHDB_CONFIG
 
+echo "== refresh prints a duration for materialize and the snapshot =="
+seq_time="$tmp/refresh-time"
+(
+    _load_config() { GOLD_DB="$tmp/gold.db"; }
+    _materialize() { :; }
+    _snapshot()    { :; }
+    _mtime()       { echo now; }
+    _is_running()  { return 1; }
+    web_refresh
+) >"$seq_time" 2>&1 || true
+check "materialize is timed" "web: timing: materialize " "$(cat "$seq_time")"
+check "snapshot is timed"    "web: timing: snapshot "    "$(cat "$seq_time")"
+
+echo "== a failed materialize still prints its duration and stops =="
+seq_fail="$tmp/refresh-fail"
+(
+    set -e
+    _load_config() { GOLD_DB="$tmp/gold.db"; }
+    _materialize() { return 7; }
+    _snapshot()    { echo SNAPSHOT_RAN; }
+    _mtime()       { echo now; }
+    _is_running()  { return 1; }
+    web_refresh
+) >"$seq_fail" 2>&1
+fail_rc=$?
+check "failed materialize is timed" "web: timing: materialize " "$(cat "$seq_fail")"
+check_not "snapshot does not run" "SNAPSHOT_RAN" "$(cat "$seq_fail")"
+if [ "$fail_rc" -eq 7 ]; then pass "refresh exits with the materialize status"; else fail "refresh exits with the materialize status (got $fail_rc)"; fi
+
 echo "== refresh wiring: materialize runs, and before the snapshot =="
 # Spy on the two steps in a subshell so the function overrides don't
 # leak into later tests. _load_config and the restart branch are

@@ -6004,6 +6004,7 @@ def ensure_models(base, sid, db_id, coll_id, by_name):
                             if n in by_name])
     print(f"provision: report models ({_ccy_slash()}) — {created} created, "
           f"{updated} updated, {archived} retired (collection '{COLLECTION_NAME}')")
+    print(f"provision: models — sent {created + updated}, skipped 0")
     return ids
 
 
@@ -6028,6 +6029,7 @@ def ensure_cards(base, sid, db_id, coll_id, by_name, model_ids):
                             if n in by_name])
     print(f"provision: questions — {created} created, "
           f"{updated} updated, {archived} retired")
+    print(f"provision: cards — sent {created + updated}, skipped 0")
     return ids, {name: body["description"] for name, body in payloads.items()}
 
 
@@ -6314,8 +6316,10 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
     archived = archive_all(base, sid, "dashboard",
                            [existing[name] for name in RETIRED_DASHBOARD_NAMES
                             if existing.get(name) is not None])
+    sent = n["created"] + n["updated"]
     print(f"provision: dashboards — {n['created']} created, {n['updated']} updated, "
           f"{archived} retired")
+    print(f"provision: dashboards — sent {sent}, skipped 0")
     return 0
 
 

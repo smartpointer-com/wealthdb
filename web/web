@@ -225,11 +225,33 @@ web_status() {
     [ "$ENABLED" = 1 ] || echo "     note: web.enabled is not set in wealthdb.cfg"
 }
 
+# _epoch is seconds since the epoch, with a fraction. macOS date has no %N.
+_epoch() { python3 -c 'import time; print(f"{time.time():.3f}")'; }
+
+# _timed LABEL CMD... runs CMD and prints its wall time on stderr.
+# The command runs with set -e off so a failure still prints the
+# duration. The function returns that status and leaves the caller's
+# errexit as it found it, so a caller that has set -e still stops.
+_timed() {
+    local label="$1" start end rc errexit=0
+    shift
+    case $- in *e*) errexit=1 ;; esac
+    start="$(_epoch)"
+    set +e
+    "$@"
+    rc=$?
+    if [ "$errexit" -eq 1 ]; then set -e; else set +e; fi
+    end="$(_epoch)"
+    python3 -c 'import sys; print(f"web: timing: {sys.argv[1]} {float(sys.argv[3]) - float(sys.argv[2]):.3f}s", file=sys.stderr)' \
+        "$label" "$start" "$end"
+    return "$rc"
+}
+
 web_refresh() {
     _load_config
-    _materialize
+    _timed materialize _materialize
     echo "web: refreshing snapshot from $GOLD_DB …" >&2
-    _snapshot "$GOLD_DB" "$SNAP"
+    _timed snapshot _snapshot "$GOLD_DB" "$SNAP"
     echo "web: snapshot updated (as of $(_mtime "$SNAP"))"
     if _is_running; then
         # Recreate the container — do NOT `docker restart`. The snapshot is

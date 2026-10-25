@@ -56,45 +56,70 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 	defer lock.unlock()
 	defer db.Close()
 
-	n, err := gold.MaterializeServingTables(ctx, db)
-	if err != nil {
+	if _, err := timedPhase(stderr, "serving", func() (int, error) {
+		return gold.MaterializeServingTables(ctx, db)
+	}); err != nil {
 		return err
 	}
-	fmt.Fprintf(stderr, "serving tables: materialized %d rows (histories, latest holdings, transaction lines)\n", n)
 	inceptionOv, exclude, hide, policyOv, matching := returnsCfgSettings(cfg)
 	now := time.Now()
 	// The same end-of-today anchor a bare CLI run gets from its default
 	// window.
 	toEpoch := anchorToDay(now.UTC(), true).Unix()
-	n, err = gold.MaterializeReturns(ctx, db, gold.MaterializeParams{
-		ToEpoch:            toEpoch,
-		ComputedAt:         now.Unix(),
-		InceptionOverrides: inceptionOv,
-		ReturnsExclude:     exclude,
-		ReturnsHide:        hide,
-		PolicyOverrides:    policyOv,
-		TransferMatching:   matching,
-	})
-	if err != nil {
+	if _, err := timedPhase(stderr, "returns", func() (int, error) {
+		return gold.MaterializeReturns(ctx, db, gold.MaterializeParams{
+			ToEpoch:            toEpoch,
+			ComputedAt:         now.Unix(),
+			InceptionOverrides: inceptionOv,
+			ReturnsExclude:     exclude,
+			ReturnsHide:        hide,
+			PolicyOverrides:    policyOv,
+			TransferMatching:   matching,
+		})
+	}); err != nil {
 		return err
 	}
-	fmt.Fprintf(stderr, "returns: materialized %d rows (4 grains x 4 periods x %d currencies, plus per-year windows)\n", n, len(gold.MaterializedCurrencies()))
-	n, err = gold.MaterializeGains(ctx, db, toEpoch, now.Unix())
-	if err != nil {
+	if _, err := timedPhase(stderr, "gains", func() (int, error) {
+		return gold.MaterializeGains(ctx, db, toEpoch, now.Unix())
+	}); err != nil {
 		return err
 	}
-	fmt.Fprintf(stderr, "gains: materialized %d rows (monthly x %d currencies x %d readings of a missing cost basis)\n",
-		n, len(gold.MaterializedCurrencies()), len(lots.MissingBasisReadings))
-	n, err = gold.MaterializeExposure(ctx, db, toEpoch, now.Unix())
-	if err != nil {
+	if _, err := timedPhase(stderr, "exposure", func() (int, error) {
+		return gold.MaterializeExposure(ctx, db, toEpoch, now.Unix())
+	}); err != nil {
 		return err
 	}
-	fmt.Fprintf(stderr, "exposure: materialized %d rows (month ends x %d currencies)\n", n, len(gold.MaterializedCurrencies()))
-	n, err = gold.MaterializeYield(ctx, db, toEpoch, now.Unix(), cfg.CashflowLookback())
-	if err != nil {
+	if _, err := timedPhase(stderr, "yield", func() (int, error) {
+		return gold.MaterializeYield(ctx, db, toEpoch, now.Unix(), cfg.CashflowLookback())
+	}); err != nil {
 		return err
 	}
-	fmt.Fprintf(stderr, "yield: materialized %d rows (holdings at today and %d month ends x %d currencies, today's projection)\n",
-		n, gold.YieldHistoryMonths, len(gold.MaterializedCurrencies()))
 	return nil
+}
+
+// timedPhase runs one materialize phase and prints its wall time on
+// stderr. The row-count line stays the summary a reader sees; the
+// timing line is what a run compares across builds.
+func timedPhase(stderr io.Writer, name string, fn func() (int, error)) (int, error) {
+	start := time.Now()
+	n, err := fn()
+	fmt.Fprintf(stderr, "timing: %s %s\n", name, time.Since(start).Round(time.Millisecond))
+	if err != nil {
+		return 0, err
+	}
+	switch name {
+	case "serving":
+		fmt.Fprintf(stderr, "serving tables: materialized %d rows (histories, latest holdings, transaction lines)\n", n)
+	case "returns":
+		fmt.Fprintf(stderr, "returns: materialized %d rows (4 grains x 4 periods x %d currencies, plus per-year windows)\n", n, len(gold.MaterializedCurrencies()))
+	case "gains":
+		fmt.Fprintf(stderr, "gains: materialized %d rows (monthly x %d currencies x %d readings of a missing cost basis)\n",
+			n, len(gold.MaterializedCurrencies()), len(lots.MissingBasisReadings))
+	case "exposure":
+		fmt.Fprintf(stderr, "exposure: materialized %d rows (month ends x %d currencies)\n", n, len(gold.MaterializedCurrencies()))
+	case "yield":
+		fmt.Fprintf(stderr, "yield: materialized %d rows (holdings at today and %d month ends x %d currencies, today's projection)\n",
+			n, gold.YieldHistoryMonths, len(gold.MaterializedCurrencies()))
+	}
+	return n, nil
 }

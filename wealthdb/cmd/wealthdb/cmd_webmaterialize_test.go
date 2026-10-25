@@ -29,6 +29,11 @@ func TestWebMaterializeCLIEndToEnd(t *testing.T) {
 	if !strings.Contains(se, "materialized") {
 		t.Errorf("stderr missing the materialize summary line: %s", se)
 	}
+	for _, phase := range []string{"serving", "returns", "gains", "exposure", "yield"} {
+		if !strings.Contains(se, "timing: "+phase+" ") {
+			t.Errorf("stderr missing timing for %s: %s", phase, se)
+		}
+	}
 
 	goldPath := filepath.Join(filepath.Dir(cfg), "wealthdb.db")
 	db, err := gold.Open(goldPath, gold.ModeReadOnly)
@@ -116,5 +121,23 @@ func TestWebMaterializeMissingDB(t *testing.T) {
 	}
 	if !strings.Contains(se, "does not exist") {
 		t.Errorf("stderr missing does-not-exist message: %s", se)
+	}
+}
+
+func TestTimedPhasePrintsDurationOnFailure(t *testing.T) {
+	t.Parallel()
+	var errb strings.Builder
+	_, err := timedPhase(&errb, "serving", func() (int, error) {
+		return 0, fmt.Errorf("boom")
+	})
+	if err == nil {
+		t.Fatal("expected the phase error")
+	}
+	got := errb.String()
+	if !strings.Contains(got, "timing: serving ") {
+		t.Errorf("a failed phase should still report its duration: %q", got)
+	}
+	if strings.Contains(got, "materialized") {
+		t.Errorf("a failed phase should not report a row count: %q", got)
 	}
 }
