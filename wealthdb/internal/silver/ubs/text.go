@@ -103,13 +103,15 @@ type webTxText struct {
 // §7). The counterparty is silver's promoted column — the CSV feed's
 // first Description1 segment, the PDF backfill's first continuation
 // line — passed through because it feeds gold's merchant signature and
-// must not be reformatted here. It is replaced only where the promoted
-// text is not a party at all, three cases pinned in
-// text_columns_test.go: the statement's turnover-total line (the
-// period's figures, dropped); a booking type the bank filed without a
-// payee (refused, so the description decides); and one of the bank's
-// own service charges, whose promoted text is an account or security
-// reference or the product's name (the bank is named instead).
+// must not be reformatted here. It is completed where the bank cut a
+// long name at its line width (rejoinWrappedName, pinned in
+// wrapped_payee_test.go). It is replaced only where the promoted text
+// is not a party at all, three cases pinned in text_columns_test.go:
+// the statement's turnover-total line (the period's figures, dropped);
+// a booking type the bank filed without a payee (refused, so the
+// description decides); and one of the bank's own service charges,
+// whose promoted text is an account or security reference or the
+// product's name (the bank is named instead).
 func projectWebTxText(counterparty, descriptionKind string, p webTxPayload, pdfBackfill bool) (text webTxText, instrumentID *string, memo string) {
 	instrumentID, captionDesc := extractInstrumentFromDescription1(p)
 	bookingType := descriptionKind
@@ -131,6 +133,7 @@ func projectWebTxText(counterparty, descriptionKind string, p webTxPayload, pdfB
 	if isBookingType(payee) {
 		payee = ""
 	}
+	payee = rejoinWrappedName(payee, p, pdfBackfill)
 	// A charge for one of the bank's OWN services has no third party
 	// in it, so the bank is the payee. The export feed writes the
 	// product under the booking type and an account or security
@@ -151,6 +154,181 @@ func projectWebTxText(counterparty, descriptionKind string, p webTxPayload, pdfB
 		description:      description,
 		providerCategory: bookingType,
 	}, instrumentID, memo
+}
+
+// partyLineWidth is the width, in characters, of one line of a payment
+// party's name and address: the line of the SWIFT `35x` format that
+// payment messages carry a party in. The export writes each line as one
+// Description1 segment and the statement prints each as one
+// continuation line. So the promoted payee is the first line, and a
+// name longer than a line is cut at the width.
+const partyLineWidth = 35
+
+// rejoinWrappedName completes a payee the bank cut at its line width.
+// A name longer than one line fills the line exactly, and its remainder
+// (typically the surname) opens the next line. Left cut, the payee is
+// the head of a name: the remainder is missing from the column, and
+// gold's merchant signature keys every party whose name shares that
+// head as one.
+//
+// The next line is the one lineAfterPayee returns. The join takes its
+// leading name tokens, behind one space, and only when every condition
+// holds:
+//   - the payee is exactly partyLineWidth characters long (a cut that
+//     lands on a space trims to one character less, and is not joined);
+//   - the next line carries no digit, so an address line with a number,
+//     an IBAN, a phone number or a numbered reference never joins;
+//   - the payee does not end in a legal form (endsInLegalForm): a firm's
+//     name is complete at its "AG" or "GMBH", and the next line is its
+//     branch or its town;
+//   - the next line is not one of the bank's booking types
+//     (isFiledBooking);
+//   - the next line does not open with a country code (opensWithCountryCode);
+//   - it opens with a name token (isNameToken).
+//
+// The run of name tokens ends at the first token that is not one. A cut
+// inside a word joins as two tokens: the space keeps every letter the
+// bank wrote and invents none. The description keeps both lines as
+// written.
+func rejoinWrappedName(payee string, p webTxPayload, pdfBackfill bool) string {
+	if utf8.RuneCountInString(strings.TrimSpace(payee)) != partyLineWidth {
+		return payee
+	}
+	next := lineAfterPayee(payee, p, pdfBackfill)
+	if strings.ContainsFunc(next, unicode.IsDigit) || endsInLegalForm(payee) ||
+		isFiledBooking(next) || opensWithCountryCode(next) {
+		return payee
+	}
+	var run []string
+	for _, tok := range strings.Fields(next) {
+		if !isNameToken(tok) {
+			break
+		}
+		run = append(run, tok)
+	}
+	if len(run) == 0 {
+		return payee
+	}
+	return strings.TrimSpace(payee) + " " + strings.Join(run, " ")
+}
+
+// legalForms are the legal-entity forms a firm's name ends in,
+// upper-cased and without a trailing dot.
+var legalForms = map[string]bool{
+	"AG": true, "GMBH": true, "SA": true, "SE": true, "SAS": true,
+	"SARL": true, "SRL": true, "SPA": true, "BV": true, "NV": true,
+	"KG": true, "OHG": true, "LTD": true, "LIMITED": true, "INC": true,
+	"LLC": true, "PLC": true, "CORP": true, "CO": true,
+}
+
+// endsInLegalForm reports whether a payee's last word is a legal-entity
+// form, in any case, with or without a trailing dot ("AG", "Ltd.").
+// A name that ends in one is complete, so it was not cut.
+func endsInLegalForm(payee string) bool {
+	words := strings.Fields(payee)
+	if len(words) == 0 {
+		return false
+	}
+	last := strings.TrimSuffix(words[len(words)-1], ".")
+	return legalForms[strings.ToUpper(last)]
+}
+
+// opensWithCountryCode reports whether a narrative line opens with a
+// two-letter upper-case word: the country prefix of an address line
+// ("CH <town>", "AT <TOWN>"). A name's remainder that opens with a
+// two-letter upper-case word is rare enough to refuse with it.
+func opensWithCountryCode(line string) bool {
+	words := strings.Fields(line)
+	if len(words) == 0 || len(words[0]) != 2 {
+		return false
+	}
+	for _, r := range words[0] {
+		if r < 'A' || r > 'Z' {
+			return false
+		}
+	}
+	return true
+}
+
+// lineAfterPayee returns the narrative line that follows the promoted
+// payee: the export's next Description1 segment, the statement's next
+// continuation line. It returns "" when the narrative's first line is not
+// the payee, so a payee from anywhere else is never joined to a line
+// that does not follow it.
+func lineAfterPayee(payee string, p webTxPayload, pdfBackfill bool) string {
+	var lines []string
+	if pdfBackfill {
+		lines, _ = bookingLines(p.Continuation)
+	} else {
+		lines = strings.Split(p.Description1, ";")
+	}
+	if len(lines) < 2 || strings.TrimSpace(lines[0]) != strings.TrimSpace(payee) {
+		return ""
+	}
+	return strings.TrimSpace(lines[1])
+}
+
+// isFiledBooking reports whether a narrative line is one of the bank's
+// booking types: one isBookingType knows, or one whose kind comes from
+// the direction, which isBookingType cannot see. A card-booked entry
+// writes its type as a Description1 segment behind the payee
+// ("<payee>; ATM Withdrawal"), and a type reads as words.
+func isFiledBooking(line string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(line))
+	return isBookingType(line) || outboundPaymentRailBookings[upper] || inboundArrivalBookings[upper]
+}
+
+// narrativeLabels are the words that open a narrative line the bank files
+// under a label rather than a party: the payment's reason, the counter
+// account, the transaction number, the cost note, a reference or invoice,
+// the period's turnover total, and the rails that name themselves (TWINT,
+// e-bill). Upper-cased. A line opening with one is never a name's
+// remainder.
+var narrativeLabels = map[string]bool{
+	"REASON":      true,
+	"PURPOSE":     true,
+	"ACCOUNT":     true,
+	"IBAN":        true,
+	"BIC":         true,
+	"SWIFT":       true,
+	"TRANSACTION": true,
+	"COST":        true,
+	"REF":         true,
+	"REFERENCE":   true,
+	"INVOICE":     true,
+	"TURNOVER":    true,
+	"TWINT":       true,
+	"EBILL":       true,
+}
+
+// isNameToken reports whether a word reads as part of a person's or a
+// firm's name: letters only, accented ones included, with a hyphen or an
+// apostrophe allowed between two letters ("MUSTERFRAU-BEISPIEL",
+// "O'EXAMPLE"). A word with a digit, a stop, a colon or a slash is a
+// label, an abbreviation or a reference, and so is any word whose
+// hyphen-separated part is a narrative label ("TWINT-EXAMPLE").
+func isNameToken(tok string) bool {
+	runes := []rune(tok)
+	if len(runes) == 0 || !unicode.IsLetter(runes[0]) || !unicode.IsLetter(runes[len(runes)-1]) {
+		return false
+	}
+	for i, r := range runes {
+		switch {
+		case unicode.IsLetter(r):
+		case r == '-' || r == '\'' || r == '’':
+			if !unicode.IsLetter(runes[i+1]) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	for _, part := range strings.Split(tok, "-") {
+		if narrativeLabels[strings.ToUpper(part)] {
+			return false
+		}
+	}
+	return true
 }
 
 // firstSegment is the head of a narrative — what precedes the separator

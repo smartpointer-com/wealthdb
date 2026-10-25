@@ -319,7 +319,8 @@ pins the other columns byte for byte).
 
 - `counterparty`: silver's `counterparty` column, the first
   `;`-segment of `Description1`. That is the payee, or the security
-  caption on a securities row. Two exceptions:
+  caption on a securities row. A payee the bank cut at its line width
+  is joined to the name's remainder (below). Two exceptions:
   - A booking type the bank filed without a payee is refused.
   - On a charge the bank bills for itself, the counterparty is the
     bank. These are custody, advice, safe box, the service-price close,
@@ -344,7 +345,8 @@ pins the other columns byte for byte).
 **Statement rows** (`payload.source = "account_statement_pdf"`):
 
 - `counterparty`: silver's `counterparty` column, the first
-  continuation line. None when that line is the turnover-total line
+  continuation line, joined to a name's remainder like an export
+  payee (below). None when that line is the turnover-total line
   (below). The bank on the booking types it bills for itself.
 - `provider_category`: `description_kind` verbatim, the printed booking
   type (`E-BANKING PAYMENT ORDER`, `FEES`, …).
@@ -409,6 +411,30 @@ as its only narrative.
 - `isTurnoverTotalLine` matches the two words, any case, followed by
   figures and nothing else.
 
+**A payee cut at its line width.** The bank holds a party's name and
+address as lines of 35 characters, the SWIFT `35x` line. A longer name
+fills its line exactly, and its remainder opens the next line. The
+adapter then joins the payee and the remainder, with one space between
+them. It joins only when all of these hold:
+
+- the payee is exactly 35 characters long;
+- the next line (the next `Description1` segment, or the next
+  continuation line) holds no digit, so an address line with a
+  number, an IBAN, a phone number or a numbered reference never joins;
+- the payee does not end in a legal form (`AG`, `GMBH`, `SA`, `LTD`,
+  `INC` and the like, with or without a dot). Such a name is complete,
+  and the next line is its branch or its town;
+- the next line is not a booking type (`<payee>; ATM Withdrawal`);
+- the next line does not open with a two-letter upper-case word, the
+  country prefix of an address line (`AT <TOWN>`);
+- the next line opens with a name token: letters, with a hyphen or an
+  apostrophe between two letters, and not a narrative label such as
+  `Reason`, `Reference`, `IBAN` or `TWINT`.
+
+The join takes the leading name tokens and stops at the first other
+word. Only the counterparty changes. The description keeps both lines
+as the bank wrote them.
+
 **TWINT rows** compose like any statement booking: `PAYMENT UBS TWINT;
 <payee>; <street>; <town>` and `DEBIT UBS TWINT; <person>; <phone
 number>; <reference>`. The counterparty is the payee, and the
@@ -418,11 +444,18 @@ never reaches the phone-number segment.
 **Why these sources.** The counterparty is silver's promoted column,
 not a fresh read of the payload. It is the collector's stated
 extraction and fills nearly every row; a second extraction here would
-be a second source of truth. It feeds gold's merchant signature as
-promoted, except where it is not a party: a booking type is refused
-(`SignatureVersion` 9), and the bank's own charge names the bank
-(`SignatureVersion` 11). So its format is part of this contract: a
-change to what the collector promotes re-keys merchants.
+be a second source of truth. The join above reads only the line after
+the promoted payee and only extends it. It never swaps it for another
+text. The column feeds
+gold's merchant signature as promoted, with three exceptions:
+
+- a booking type is refused (`SignatureVersion` 9);
+- the bank's own charge names the bank (`SignatureVersion` 11);
+- a payee cut at its line width is joined to its remainder
+  (`SignatureVersion` 13).
+
+So its format is part of this contract: a change to what the collector
+promotes re-keys merchants.
 
 The booking type is the provider category because it is the bank's own
 filing of the entry. That is the nearest thing a bank statement has to

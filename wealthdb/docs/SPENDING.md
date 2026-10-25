@@ -1454,6 +1454,7 @@ What each version moved, with every other narrative keyed as before:
 | 10 | a narrative that is only a field tag yields no signature |
 | 11 | UBS: a charge for the bank's own service names the bank |
 | 12 | Schwab's web feeds lead the narrative with the movement, the security after it; swissquote and viac project one where none reached gold |
+| 13 | UBS: a payee the bank cut at its line width is joined to the name's remainder on the next line |
 
 ---
 

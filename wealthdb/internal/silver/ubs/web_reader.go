@@ -2350,12 +2350,13 @@ func isDepositProductBooking(bookingType string) bool {
 // booking type whose kind comes from the DIRECTION — every payment
 // order, "ORDER" among them — resolves to TxKindOther when asked with
 // no direction, so this returns false for it. Such a type is a booking
-// type by any other measure, and the two callers are written to survive
+// type by any other measure, and the callers are written to survive
 // the answer: webKindHint returns the booking type unchanged when
-// neither text is recognised, and the payee refusal in text.go only
-// declines to blank a payee it would have blanked. Widening the probe
-// is not the fix — asked WITH a direction the fallback answers for
-// every string, and then nothing is not a booking type.
+// neither text is recognised, the payee refusal in text.go only
+// declines to blank a payee it would have blanked, and isFiledBooking
+// consults the rail sets beside it. Widening the probe is not the fix:
+// asked WITH a direction the fallback answers for every string, and
+// then nothing is not a booking type.
 func isBookingType(s string) bool {
 	return strings.TrimSpace(s) != "" &&
 		webKind(s, false, false) != canonical.TxKindOther

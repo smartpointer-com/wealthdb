@@ -139,10 +139,10 @@ func TestNormalizeFallsBackToDescription(t *testing.T) {
 // without bumping it would carry nothing and orphan everything. A
 // change to Normalize is the usual cause; an adapter that changes what
 // it hands Normalize moves keys just as surely (versions 4, 7, 8, 9,
-// 11 and 12), so the stamp is not a version number for this file alone.
+// 11, 12 and 13), so the stamp is not a version number for this file alone.
 func TestSignatureVersion(t *testing.T) {
-	if SignatureVersion != 12 {
-		t.Errorf("SignatureVersion = %d, want 12", SignatureVersion)
+	if SignatureVersion != 13 {
+		t.Errorf("SignatureVersion = %d, want 13", SignatureVersion)
 	}
 }
 
