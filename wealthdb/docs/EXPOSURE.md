@@ -212,6 +212,8 @@ A stock's size is `large`, `mid` or `small`:
 - A size fund whose file names its stocks by name alone (a US issuer's
   file of foreign stocks) ranks them too. Each line finds the share it
   names, as a report's line does, and the share takes the line's size.
+  A share that two lines of one fund name takes the size of the
+  heavier line.
   That size rests on a name.
 - A depositary receipt, and a line a report names by name alone, takes
   the size of the share it stands for (above).

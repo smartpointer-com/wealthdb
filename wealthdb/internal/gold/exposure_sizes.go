@@ -58,9 +58,11 @@ UPDATE securities SET size = CASE WHEN market_cap >= $1 THEN $3 WHEN market_cap 
 // composition: among the fund's stocks of the stock's country (the
 // fund's own label for it first), by falling weight, the share of that
 // country's weight the stocks before it hold, scaled by the share of the
-// market the fund covers, read as a size. A stock on two lines of one
-// fund counts once, its weights summed. peers is how many stocks of its
-// country the fund lists.
+// market the fund covers, read as a size. A stock on two lines under
+// one key counts once, its weights summed; two lines that name one share
+// by name alone rank apart (sizeByLineSQL). peers is how many stocks of
+// its country the fund lists, and market_pct the share of the market
+// before the stock.
 const sizeRanksSQL = `
 CREATE OR REPLACE TEMP TABLE exposure_size_ranks AS
 WITH f AS (
@@ -89,10 +91,9 @@ ranked AS (
                / SUM(w) OVER (PARTITION BY fund_ref, country) AS before_pct,
            COUNT(*) OVER (PARTITION BY fund_ref, country) AS peers
       FROM lines WHERE country IS NOT NULL)
-SELECT k, fund_ref, coverage_pct, peers,
-       CASE WHEN before_pct * coverage_pct / 100 < $1 THEN $3
-            WHEN before_pct * coverage_pct / 100 < $2 THEN $4 ELSE $5 END AS size
-  FROM ranked`
+SELECT k, fund_ref, coverage_pct, peers, market_pct,
+       CASE WHEN market_pct < $1 THEN $3 WHEN market_pct < $2 THEN $4 ELSE $5 END AS size
+  FROM (SELECT *, before_pct * coverage_pct / 100 AS market_pct FROM ranked)`
 
 // sizeByRankSQL sizes each stock no market cap sizes and an identifier
 // names by its rank in a size fund. A stock in several takes the one
@@ -110,15 +111,20 @@ UPDATE securities SET size = r.size, size_origin = 'size_fund:' || r.fund_ref
 // a match by name): a fund file that states no identifier, such as a US
 // issuer's file of foreign stocks, still ranks its stocks. Of several
 // such lines, the one whose fund covers most of its market, then the
-// one that lists most stocks of its country. The origin says the size
-// rests on a name.
+// one that lists most stocks of its country. Of two lines of one fund,
+// the heavier wins: it ranks first, so its size is the larger. The
+// line's key breaks a tie, so the choice never rests on storage order.
+// The two lines' weights are not summed, so the share can rank lower
+// than one line of their combined weight would. The origin says the
+// size rests on a name.
 const sizeByLineSQL = `
 UPDATE securities SET size = n.size, size_origin = 'size_fund_name:' || n.fund_ref
   FROM (SELECT x.underlying_key AS k, r.size, r.fund_ref
           FROM security_underlyings x JOIN exposure_size_ranks r ON r.k = x.security_key
          WHERE x.security_key LIKE 'name:%'
        QUALIFY ROW_NUMBER() OVER (PARTITION BY x.underlying_key
-                                  ORDER BY r.coverage_pct DESC, r.peers DESC, r.fund_ref) = 1) n
+                                  ORDER BY r.coverage_pct DESC, r.peers DESC, r.fund_ref,
+                                           r.market_pct, x.security_key) = 1) n
  WHERE n.k = securities.security_key AND securities.size IS NULL`
 
 // sizeFillSQL sizes a depositary receipt, and a line a report names by

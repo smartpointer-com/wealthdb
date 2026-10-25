@@ -207,3 +207,50 @@ func TestExposureSizesStocks(t *testing.T) {
 		t.Errorf("the size fund's roles = %v, want reference", roles["symbol:QLM"])
 	}
 }
+
+// A share a size fund names on two lines, by name alone, takes the rank
+// of the heavier line. The lighter is stored first and its key sorts
+// first, so neither the storage order nor the key alone picks it: the
+// ranking is total, and a reload cannot flip the size.
+func TestExposureSizeOfAShareOnTwoLines(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
+	for _, q := range []string{
+		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
+		 first_seen_at, last_seen_at) VALUES ('test-src', 'A', 'brokerage', 'Brokerage', 'USD', 0, 0)`,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, symbol, currency,
+		 first_seen_at, last_seen_at) VALUES ('test-src', 'QTWN', 'public_equity', 'stock', 'CH0000000E01', NULL, 'CHF', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, quantity, market_value) VALUES
+		 ('test-src', ?, 'A', 'QTWN', 'QTWN', 'public_equity', 'stock', 'CHF', 1, 100)`,
+		`INSERT INTO exposure_size_funds (fund_ref, coverage_pct) VALUES ('symbol:QNM2', 100)`,
+		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency) VALUES
+		 ('test-src', 'symbol:QNM2', ?, 'holdings', 'testprov', 3, 'USD'),
+		 ('test-src', 'symbol:QWD3', ?, 'holdings', 'testprov', 1, 'USD')`,
+		// Weights 72, 18 and 10: 0%, 72% and 90% of the country before
+		// each, so large, mid and small. The lighter of the share's two
+		// lines is stored first, and its key sorts first.
+		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
+		 weight, currency, country, sector) VALUES
+		 ('test-src', 'symbol:QNM2', ?, 'holdings', 1, 'name:qtwin-a', NULL, 'QLAND TWIN AG', 'Equity', 10, 'CHF', 'Switzerland', 'Industrials'),
+		 ('test-src', 'symbol:QNM2', ?, 'holdings', 2, 'name:qtwin-b', NULL, 'QLAND TWIN AG', 'Equity', 18, 'CHF', 'Switzerland', 'Industrials'),
+		 ('test-src', 'symbol:QNM2', ?, 'holdings', 3, 'name:qlead', NULL, 'QLAND LEAD AG', 'Equity', 72, 'CHF', 'Switzerland', 'Industrials'),
+		 ('test-src', 'symbol:QWD3', ?, 'holdings', 1, 'isin:CH0000000E01', 'CH0000000E01', 'QLAND TWIN AG', 'Equity', 100, 'CHF', 'Switzerland', 'Industrials')`,
+	} {
+		if _, err := db.ExecContext(ctx, q, slices.Repeat([]any{day}, strings.Count(q, "?"))...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	if err := db.QueryRowContext(ctx, `SELECT concat_ws(' ', COALESCE(size, '-'), COALESCE(size_origin, '-'))
+	  FROM securities WHERE security_key = 'isin:CH0000000E01'`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if want := "mid size_fund_name:symbol:QNM2"; got != want {
+		t.Errorf("the share on two lines = %s, want %s", got, want)
+	}
+}
