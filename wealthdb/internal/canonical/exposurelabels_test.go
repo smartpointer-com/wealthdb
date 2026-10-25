@@ -123,3 +123,29 @@ func TestSICRanges(t *testing.T) {
 		}
 	}
 }
+
+// An OpenFIGI type names a vehicle in either of the spellings the
+// collector keeps, in any case or spacing: a share's, a fund's, an
+// ETP's, a bond's. Any other type names none.
+func TestOpenFIGIVehicle(t *testing.T) {
+	t.Parallel()
+	for typ, want := range map[string]Vehicle{
+		"Common Stock": VehicleStock, "Depositary Receipt": VehicleStock, "REIT": VehicleStock,
+		"Partnership Shares": VehicleStock,
+		"Mutual Fund":        VehicleFund, "closed-end  fund": VehicleFund, "ETP": VehicleETF,
+		"Govt": VehicleBond, " MUNI ": VehicleBond, "Corp": VehicleBond,
+		"Option": "", "Warrant": "", "Index": "", "": "",
+	} {
+		if got := OpenFIGIVehicle(typ); got != want {
+			t.Errorf("OpenFIGIVehicle(%q) = %q, want %q", typ, got, want)
+		}
+	}
+	for label := range openFigiVehicleTypes {
+		if label != normalizeLabel(label) {
+			t.Errorf("type %q is not normalized", label)
+		}
+		if _, bond := openFigiBondTypes[label]; bond {
+			t.Errorf("type %q is both a bond's and a share's or a fund's", label)
+		}
+	}
+}

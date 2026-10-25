@@ -57,6 +57,11 @@ SELECT
 // advance the gold watermark to upon successful load.
 // HasChanges is false when nothing in silver is strictly newer
 // than `since`.
+//
+// Start reaches back two dump snapshots before the first new one: the
+// mark guard reads a spike by the two observations after it, so a new
+// snapshot can turn either of the two before it into a spike
+// (marks.go), and the load re-emits them.
 func (c *apiReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
 	w := canonical.Window{NewChangeNumber: since}
 
@@ -90,6 +95,16 @@ SELECT
 		w.Start = start.Int64
 		w.End = end.Int64
 		w.HasChanges = true
+		var back sql.NullInt64
+		if err := c.db.QueryRowContext(ctx, `
+SELECT MIN(snapshot_at) FROM (
+    SELECT snapshot_at FROM dump_runs WHERE snapshot_at < ? ORDER BY snapshot_at DESC LIMIT 2)`,
+			w.Start).Scan(&back); err != nil {
+			return w, fmt.Errorf("schwab ChangeWindow: %w", err)
+		}
+		if back.Valid {
+			w.Start = back.Int64
+		}
 	}
 	if newCN.Valid {
 		w.NewChangeNumber = newCN.Int64

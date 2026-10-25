@@ -12,6 +12,9 @@ import (
 // internal/silver/ubs/psn_reader.go.
 type apiReader struct {
 	db *sql.DB
+	// marks tunes the guard on a spike that reverts (marks.go); a zero
+	// field takes the default.
+	marks silver.MarkGuard
 }
 
 func (c *apiReader) Close() error { return silver.CloseDB(&c.db) }

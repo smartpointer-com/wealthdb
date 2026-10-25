@@ -49,6 +49,20 @@ func Kinds() []string {
 	return sortedKindsLocked()
 }
 
+// ClassRefiners returns the RefineClass method of every registered
+// adapter that implements ClassRefiner, by kind.
+func ClassRefiners() map[string]RefineClassFunc {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	out := map[string]RefineClassFunc{}
+	for kind, a := range registry {
+		if r, ok := a.(ClassRefiner); ok {
+			out[kind] = r.RefineClass
+		}
+	}
+	return out
+}
+
 func sortedKindsLocked() []string {
 	out := make([]string, 0, len(registry))
 	for k := range registry {

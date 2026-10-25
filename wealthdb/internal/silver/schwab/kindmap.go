@@ -27,6 +27,9 @@ import (
 // kind (ETF dividend vs treasury coupon vs cash sweep) is only
 // recoverable from the free-text description.
 //
+// JOURNAL splits on the description too: Schwab books withholding,
+// depositary fees and cash in lieu as journals (journalShapes).
+//
 // Unrecognised types fall through to TxKindOther; the raw type is
 // preserved in the transaction's payload.
 //
@@ -46,7 +49,7 @@ func kindFor(rawType string, netAmount canonical.Decimal, quantity *canonical.De
 		return canonical.TxKindSell
 
 	case "JOURNAL":
-		return canonical.TxKindJournal
+		return journalKind(description, netAmount, quantity)
 
 	case "DIVIDEND_OR_INTEREST":
 		if isInterestDescription(description) {
@@ -80,6 +83,77 @@ func kindFor(rawType string, netAmount canonical.Decimal, quantity *canonical.De
 		// anything new Schwab adds without an adapter update.
 		return canonical.TxKindOther
 	}
+}
+
+// journalShapes are the cash rows Schwab books as a JOURNAL that move no
+// money between accounts, by the words their description holds. Schwab
+// spells them as the transaction history and the statements do (webKind,
+// catchAllShapes), or in full:
+//
+//   - tax withheld from a non-resident's dividend ("NRA Tax Adj",
+//     "NRA Withholding"), its adjustment for a prior year ("Pr Yr NRA
+//     Tax") and a foreign tax ("Foreign Tax Paid") are tax;
+//   - a depositary's fee on an ADR ("ADR Mgmt Fee", "ADR Pass Thru Fee")
+//     is a fee;
+//   - cash paid in lieu of a fractional share is a corporate action, as
+//     the web feed and the other adapters book it. The lot engine reads
+//     it as cash in lieu (lotpolicy.go).
+//
+// The API's sign stays on each.
+var journalShapes = []struct {
+	words *regexp.Regexp
+	kind  canonical.TxKind
+}{
+	{regexp.MustCompile(`(?i)\bNRA\b|\bNON-?RESIDENT\b|\bWITHHOLDING\b|\bFOREIGN TAX\b|\bFRGN TAX\b|\bPR(?:IOR)? (?:YR|YEAR)\b.*\bTAX\b`),
+		canonical.TxKindTax},
+	{regexp.MustCompile(`(?i)\b(?:ADR|DEPOSITARY)\b.*\bFEES?\b`), canonical.TxKindFee},
+	{cashInLieu, canonical.TxKindCorporateAction},
+}
+
+// cashInLieu matches the description of cash paid in lieu of a
+// fractional share.
+var cashInLieu = regexp.MustCompile(`(?i)\bIN LIEU\b`)
+
+// cashMovement matches the words a JOURNAL that moves cash between
+// accounts carries: a sweep to or from the bank, a transfer of funds
+// between account types, a journal to or from another account, or an
+// account number behind TO, FR or FRM. "FUNDS" is plural only: a
+// security's name can end in "FUND".
+var cashMovement = regexp.MustCompile(
+	`(?i)\b(?:SWEEP|TRF|TRANSFER|XFER|JOURNAL|JOURNALED|JRNL|FUNDS|MONEYLINK|ACH)\b` +
+		`|\b(?:TO|FRM?|FROM) ?\d{4,}`)
+
+// depositaryReceipt matches a security name that marks a depositary
+// receipt. "DEPOSITARY SHARES" alone is a domestic preferred share and
+// does not.
+var depositaryReceipt = regexp.MustCompile(
+	`(?i)\b(?:ADRS?|ADS|F?(?:UN)?SPONSORED|DEPOSITARY RECEIPTS?)\b`)
+
+// journalKind maps a JOURNAL by its description (journalShapes) first.
+//
+// The API also books a non-resident's withholding and a depositary's fee
+// as a JOURNAL that names only the security: cash alone, with no
+// security leg and no word that says which it is. Such a row, a cash
+// JOURNAL that moves an amount and whose description names no move of
+// cash (cashMovement), is a fee when the security is a depositary
+// receipt and a tax otherwise. That reads a receipt's foreign tax as a
+// fee; both are charges, and a refund of either keeps its positive sign.
+//
+// Any other JOURNAL, an internal move of cash or shares, is a journal.
+func journalKind(description string, netAmount canonical.Decimal, quantity *canonical.Decimal) canonical.TxKind {
+	for _, s := range journalShapes {
+		if s.words.MatchString(description) {
+			return s.kind
+		}
+	}
+	if quantity == nil && !netAmount.IsZero() && strings.TrimSpace(description) != "" &&
+		!cashMovement.MatchString(description) {
+		if depositaryReceipt.MatchString(description) {
+			return canonical.TxKindFee
+		}
+		return canonical.TxKindTax
+	}
+	return canonical.TxKindJournal
 }
 
 // corporateActionMarker matches the wording Schwab gives a

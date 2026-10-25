@@ -49,7 +49,7 @@ func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection
 		if err != nil {
 			return nil, err
 		}
-		c.api = &apiReader{db: db}
+		c.api = &apiReader{db: db, marks: spec.MarkGuard}
 		return c, nil
 	}
 
@@ -61,7 +61,7 @@ func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection
 		}
 		switch s.Kind {
 		case "schwab-api":
-			c.api = &apiReader{db: db}
+			c.api = &apiReader{db: db, marks: spec.MarkGuard}
 		case "schwab-web":
 			c.web = &webReader{db: db}
 		default:

@@ -35,6 +35,9 @@ type SourceSpec struct {
 	// by the UBS adapter to align web banking_relationship_id with
 	// PSN SFTP relationship_id under a single label.
 	Relationships []silver.RelationshipPair
+	// MarkGuard tunes the hold the adapter puts on a mark that jumps.
+	// Passed through to silver.OpenSpec.
+	MarkGuard silver.MarkGuard
 	// Overrides is the per-account_external_id override map for
 	// this source, from the config-file `account_overrides` block.
 	// Loader applies these after adapters have stamped their own
@@ -161,6 +164,7 @@ func (l *Loader) Load(ctx context.Context, spec SourceSpec) (*LoadResult, error)
 		Path:          spec.Path,
 		Subsources:    spec.Subsources,
 		Relationships: spec.Relationships,
+		MarkGuard:     spec.MarkGuard,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("Load(%s): open silver: %w", spec.ID, err)

@@ -17,6 +17,7 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/loader"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/spending"
 )
 
@@ -263,13 +264,14 @@ func parseEnrichmentLedgers(cfg *config.Config) (enrichmentLedgers, error) {
 }
 
 // runGoldPasses runs the passes a load or reload ends with, over all of
-// gold: the enrichment pass, the lot pass, the exposure pass, then the
-// yield pass, which reads the exposure pass's keys. A pass that fails is
-// reported under verb and does not stop the next; the failures come back
-// joined.
+// gold: the class pass, whose classes every later pass reads, the
+// enrichment pass, the lot pass, the exposure pass, then the yield pass,
+// which reads the exposure pass's keys. A pass that fails is reported
+// under verb and does not stop the next; the failures come back joined.
 func runGoldPasses(ctx context.Context, db *sql.DB, cfg *config.Config, enrichment enrichmentLedgers, verb string, stdout, stderr io.Writer) error {
 	var failed error
 	for _, pass := range []func() error{
+		func() error { return runClassPass(ctx, db, cfg) },
 		func() error { return runEnrichmentPass(ctx, db, cfg, enrichment, stdout) },
 		func() error { return runLotPass(ctx, db, cfg, false, stdout) },
 		func() error { return runExposurePass(ctx, db, stdout) },
@@ -510,8 +512,8 @@ func matchNames(m *config.SpendingTransferMatching) []spending.CounterpartyName 
 }
 
 // buildSourceSpec assembles a loader.SourceSpec for one configured
-// silver source: translates `path` / `subsources` / `relationships`
-// to their silver-package counterparts and folds in every config
+// silver source: translates `path` / `subsources` / `relationships` /
+// `schwab` to their silver-package counterparts and folds in every config
 // statement scoped to this source — the override families and
 // `transaction_instruments`. Returns an error when the config can't
 // be translated (e.g. invalid psn_start_override date).
@@ -531,6 +533,7 @@ func buildSourceSpec(
 		Path:           openSpec.Path,
 		Subsources:     openSpec.Subsources,
 		Relationships:  openSpec.Relationships,
+		MarkGuard:      openSpec.MarkGuard,
 		TransferLedger: transferLedger[s.ID],
 	}
 	if cfgOvr := cfg.AccountOverrides[s.ID]; len(cfgOvr) > 0 {
@@ -592,6 +595,29 @@ func printLoadResult(w io.Writer, r *loader.LoadResult) {
 			r.SourceID, r.SnapshotsLoaded, r.TransactionsLoaded, realizedLotsNote(r),
 			r.ChangeNumberBefore, r.ChangeNumberAfter)
 	}
+}
+
+// runClassPass reads OpenFIGI's security types over the classes of the
+// instruments whose adapter takes them (gold.RefineClasses). The
+// instruments instrument_overrides pins keep their pair. It prints
+// nothing: every load writes the adapter's pairs back, so the pass
+// rewrites the same instruments each time.
+func runClassPass(ctx context.Context, db *sql.DB, cfg *config.Config) error {
+	_, err := gold.RefineClasses(ctx, db, silver.ClassRefiners(), pinnedInstruments(cfg))
+	return err
+}
+
+// pinnedInstruments names, per source, the instruments the config pins
+// with instrument_overrides.
+func pinnedInstruments(cfg *config.Config) map[string]map[string]bool {
+	pinned := map[string]map[string]bool{}
+	for src, overrides := range cfg.InstrumentOverrides {
+		pinned[src] = map[string]bool{}
+		for iid := range overrides {
+			pinned[src][iid] = true
+		}
+	}
+	return pinned
 }
 
 // runExposurePass rebuilds the exposure report's derived tables

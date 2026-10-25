@@ -26,6 +26,27 @@ func TestCorporateRuleReadsTheActionThenTheDescription(t *testing.T) {
 	}
 }
 
+// Cash in lieu is cash in lieu in both feeds: an api JOURNAL that pays it
+// (kindFor's corporate_action) and the web feed's "Cash In Lieu" action.
+// The web feed's other corporate actions keep their reading.
+func TestCashInLieuReadsAlikeInBothFeeds(t *testing.T) {
+	cases := []struct {
+		typ, action, desc string
+		want              lots.CorporateRule
+	}{
+		{"JOURNAL", "", "Cash In Lieu EXAMPLE HOLDINGS INC", lots.CorpCashInLieu},
+		{"JOURNAL", "", "CASH IN LIEU OF FRACTIONAL SHARES", lots.CorpCashInLieu},
+		{"", "Cash In Lieu", "EXAMPLE HOLDINGS INC", lots.CorpCashInLieu},
+		{"", "Reverse Split", "EXAMPLE HOLDINGS INC", lots.CorpReorg},
+	}
+	for _, c := range cases {
+		got := corporateRule(lots.Txn{Type: c.typ, Action: c.action, Description: c.desc})
+		if got != c.want {
+			t.Errorf("%q %q %q: %v, want %v", c.typ, c.action, c.desc, got, c.want)
+		}
+	}
+}
+
 func TestClassifyLeavesATradeWithoutCashAlone(t *testing.T) {
 	cases := []struct {
 		kind, typ string

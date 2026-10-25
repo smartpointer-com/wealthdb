@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 func writeConfig(t *testing.T, body string) string {
@@ -528,6 +529,46 @@ func TestValidateRefusesAMalformedPSNStartOverride(t *testing.T) {
 	c.SilverSources[0].Relationships[0].PSNStartOverride = "2024-01-31"
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Validate with a valid psn_start_override: %v", err)
+	}
+}
+
+// A schwab source's `schwab` object sets the mark guard it opens with,
+// the defaults filling what it leaves out. Validation refuses the object
+// on another kind, a percentage of 0 or less, and a confirmation band
+// not below the hold threshold, the defaults counted.
+func TestSchwabMarkGuard(t *testing.T) {
+	load := func(source string) (*Config, error) {
+		return Load(writeConfig(t, `{"gold_db": "/tmp/g.db", "default_currency": "USD", "silver_sources": [`+
+			source+`]}`))
+	}
+	for source, want := range map[string]silver.MarkGuard{
+		`{"id": "s", "kind": "schwab", "path": "/tmp/s.db"}`:                                                          {SpikePct: 10, RevertPct: 2},
+		`{"id": "s", "kind": "schwab", "path": "/tmp/s.db", "schwab": {}}`:                                            {SpikePct: 10, RevertPct: 2},
+		`{"id": "s", "kind": "schwab", "path": "/tmp/s.db", "schwab": {"mark_spike_pct": 15}}`:                        {SpikePct: 15, RevertPct: 2},
+		`{"id": "s", "kind": "schwab", "path": "/tmp/s.db", "schwab": {"mark_revert_pct": 1.5}}`:                      {SpikePct: 10, RevertPct: 1.5},
+		`{"id": "s", "kind": "schwab", "path": "/tmp/s.db", "schwab": {"mark_spike_pct": 25, "mark_revert_pct": 12}}`: {SpikePct: 25, RevertPct: 12},
+	} {
+		c, err := load(source)
+		if err != nil {
+			t.Errorf("%s: %v", source, err)
+			continue
+		}
+		spec, err := c.SilverSources[0].ToSilverOpenSpec()
+		if got := spec.MarkGuard.WithDefaults(); err != nil || got != want {
+			t.Errorf("%s: guard %+v (%v), want %+v", source, got, err, want)
+		}
+	}
+	for source, want := range map[string]string{
+		`{"id": "c", "kind": "chase", "path": "/tmp/c.db", "schwab": {}}`:                          "schwab: applies to a source of kind schwab only",
+		`{"id": "s", "kind": "schwab", "path": "/tmp/s.db", "schwab": {"mark_spike_pct": 0}}`:      "mark_spike_pct 0 must be above 0",
+		`{"id": "s", "kind": "schwab", "path": "/tmp/s.db", "schwab": {"mark_revert_pct": -1}}`:    "mark_revert_pct -1 must be above 0",
+		`{"id": "s", "kind": "schwab", "path": "/tmp/s.db", "schwab": {"mark_revert_pct": 10}}`:    "mark_revert_pct 10 must be below mark_spike_pct 10",
+		`{"id": "s", "kind": "schwab", "path": "/tmp/s.db", "schwab": {"mark_spike_pct": 1.5}}`:    "mark_revert_pct 2 must be below mark_spike_pct 1.5",
+		`{"id": "s", "kind": "schwab", "path": "/tmp/s.db", "schwab": {"mark_spike_percent": 10}}`: "unknown field",
+	} {
+		if _, err := load(source); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v, want %q", source, err, want)
+		}
 	}
 }
 

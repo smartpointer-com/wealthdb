@@ -30,12 +30,16 @@ func classify(t lots.Txn) lots.Classified {
 
 // corporateRule maps a corporate action by its action, else its
 // description. Cash-only actions (rights redemptions, litigation
-// proceeds, option exchanges) move no lot.
+// proceeds, option exchanges) move no lot. Cash in lieu of a fraction
+// is cash in lieu in both feeds: the web feed's "Cash In Lieu" action,
+// and an api JOURNAL named so by its description (journalShapes).
 func corporateRule(t lots.Txn) lots.CorporateRule {
 	a, d := strings.ToLower(t.Action), strings.ToLower(t.Description)
 	switch {
 	case a == "return of capital":
 		return lots.CorpReturnOfCapital
+	case a == "cash in lieu", t.Type == "JOURNAL" && cashInLieu.MatchString(d):
+		return lots.CorpCashInLieu
 	case a == "unissued rights redemption", a == "litigation", strings.HasPrefix(d, "exchange "):
 		return lots.CorpIgnore
 	case strings.HasPrefix(d, "removed due to expiration"):

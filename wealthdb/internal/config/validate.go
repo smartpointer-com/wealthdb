@@ -135,8 +135,36 @@ func (c *Config) validateSources() (map[string]bool, error) {
 				}
 			}
 		}
+		if err := s.Schwab.validate(s.Kind); err != nil {
+			return nil, fmt.Errorf("config: silver_sources[%d].schwab: %w", i, err)
+		}
 	}
 	return seenIDs, nil
+}
+
+// validate checks a source's `schwab` object: a schwab-kind source's
+// only, each percentage above zero, and the confirmation band below the
+// hold threshold once the defaults fill what the object leaves out. A
+// nil receiver is no object.
+func (s *SchwabSettings) validate(kind string) error {
+	if s == nil {
+		return nil
+	}
+	if kind != "schwab" {
+		return fmt.Errorf("applies to a source of kind schwab only, not %q", kind)
+	}
+	for _, f := range []struct {
+		name string
+		v    *float64
+	}{{"mark_spike_pct", s.MarkSpikePct}, {"mark_revert_pct", s.MarkRevertPct}} {
+		if f.v != nil && !(*f.v > 0) {
+			return fmt.Errorf("%s %v must be above 0", f.name, *f.v)
+		}
+	}
+	if g := s.markGuard().WithDefaults(); g.RevertPct >= g.SpikePct {
+		return fmt.Errorf("mark_revert_pct %v must be below mark_spike_pct %v", g.RevertPct, g.SpikePct)
+	}
+	return nil
 }
 
 // validateSymbolResolution checks symbol_resolution.overrides: every source

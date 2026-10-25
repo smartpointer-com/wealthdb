@@ -49,7 +49,7 @@ func (c *apiReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 	if err != nil {
 		return nil, err
 	}
-	if err := c.appendPositions(ctx, w, byTime, instrumentNames); err != nil {
+	if err := c.appendPositions(ctx, byTime, instrumentNames); err != nil {
 		return nil, err
 	}
 	if err := c.appendInstrumentBonds(ctx, w, byTime); err != nil {
@@ -318,7 +318,14 @@ type schwabPositionPayload struct {
 // position instrument descriptor has no description (typical for
 // EQUITY rows out of /accounts). A position's book value is its
 // market value less its open P/L (apiBookValue).
-func (c *apiReader) appendPositions(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, instrumentNames map[string]string) error {
+//
+// The mark guard (marks.go) reads every position in snapshot order, so a
+// spike reads the same in a load of the window as in a load of the whole
+// history. A spiked observation's value is at the previous mark, its
+// valued_at is the snapshot that mark is from, and its payload keeps
+// Schwab's value as `stated_market_value`. Its book value comes from
+// Schwab's value, which the open P/L is measured against.
+func (c *apiReader) appendPositions(ctx context.Context, byTime map[int64]*canonical.SnapshotBatch, instrumentNames map[string]string) error {
 	// Silver migration 0005 promoted the open P/L; an older silver
 	// states none, and its positions carry no book value.
 	hasOpenPL, err := silver.HasColumn(ctx, c.db, "positions", "unrealized_gain_loss")
@@ -332,91 +339,124 @@ func (c *apiReader) appendPositions(ctx context.Context, w canonical.Window, byT
 	q := fmt.Sprintf(`
 SELECT snapshot_at, account_external_id, instrument_key, payload, %s
   FROM positions
- WHERE snapshot_at BETWEEN ? AND ?`, openPLCol)
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
+ ORDER BY snapshot_at, account_external_id, instrument_key`, openPLCol)
+	rows, err := c.db.QueryContext(ctx, q)
 	if err != nil {
 		return fmt.Errorf("appendPositions: %w", err)
 	}
 	defer rows.Close()
 
+	// The first pass reads every position and feeds the mark guard; the
+	// second emits the window's rows with the guard's fixes.
+	type apiPosition struct {
+		snap          int64
+		extID, posKey string
+		payload       string
+		openPL        sql.NullFloat64
+		pp            schwabPositionPayload
+		cash          bool
+		assetClass    canonical.AssetClass
+		vehicle       canonical.Vehicle
+		name          string
+		quantity      canonical.Decimal
+	}
+	var read []apiPosition
+	guard := newMarkGuard(c.marks)
 	for rows.Next() {
-		var (
-			snap          int64
-			extID, posKey string
-			payload       string
-			openPL        sql.NullFloat64
-		)
-		if err := rows.Scan(&snap, &extID, &posKey, &payload, &openPL); err != nil {
+		var r apiPosition
+		if err := rows.Scan(&r.snap, &r.extID, &r.posKey, &r.payload, &r.openPL); err != nil {
 			return fmt.Errorf("appendPositions scan: %w", err)
 		}
-		batch, ok := byTime[snap]
-		if !ok {
+		if err := json.Unmarshal([]byte(r.payload), &r.pp); err != nil {
+			return fmt.Errorf("appendPositions row (snap=%d, key=%s): %w", r.snap, r.posKey, err)
+		}
+		guard.snapshot(r.snap)
+		// Cash-like assetType → cash_balances, not positions.
+		r.cash = isCashAssetType(r.pp.Instrument.AssetType)
+		if !r.cash {
+			r.name = r.pp.Instrument.Description
+			if r.name == "" && r.pp.Instrument.Symbol != "" {
+				r.name = instrumentNames[r.pp.Instrument.Symbol]
+			}
+			// taxonomyFor maps the assetType/type signal to the single
+			// (exposure, vehicle) pair emitted to gold; name feeds the
+			// ETF/fund exposure refinement.
+			r.assetClass, r.vehicle = taxonomyFor(r.pp.Instrument.AssetType, r.pp.Instrument.Type, r.name)
+			r.quantity = r.pp.LongQuantity.Sub(r.pp.ShortQuantity)
+			if guardsMarks(r.vehicle) {
+				guard.observe(markSeries{r.extID, r.posKey}, r.snap, r.quantity, r.pp.MarketValue)
+			}
+		}
+		read = append(read, r)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	fixes := guard.fixes()
+
+	for _, r := range read {
+		// byTime holds the window's snapshots only.
+		batch, inWindow := byTime[r.snap]
+		if !inWindow {
 			continue
 		}
-
-		var pp schwabPositionPayload
-		if err := json.Unmarshal([]byte(payload), &pp); err != nil {
-			return fmt.Errorf("appendPositions row (snap=%d, key=%s): %w", snap, posKey, err)
-		}
-
-		// Cash-like assetType → cash_balances, not positions.
-		if isCashAssetType(pp.Instrument.AssetType) {
+		if r.cash {
 			amount := canonical.Decimal{}
-			if pp.MarketValue != nil {
-				amount = *pp.MarketValue
+			if r.pp.MarketValue != nil {
+				amount = *r.pp.MarketValue
 			}
 			batch.CashBalances = append(batch.CashBalances, canonical.CashBalanceChange{
-				SnapshotAt:        snap,
-				AccountExternalID: extID,
+				SnapshotAt:        r.snap,
+				AccountExternalID: r.extID,
 				Currency:          "USD",
 				BalanceKind:       canonical.BalanceKindCurrent,
 				Amount:            amount,
-				Payload:           json.RawMessage(payload),
+				Payload:           json.RawMessage(r.payload),
 			})
 			continue
 		}
 
 		// Real security position.
-		instrExtID := posKey
-		name := pp.Instrument.Description
-		if name == "" && pp.Instrument.Symbol != "" {
-			name = instrumentNames[pp.Instrument.Symbol]
-		}
-		// taxonomyFor maps the assetType/type signal to the single
-		// (exposure, vehicle) pair emitted to gold; name feeds the
-		// ETF/fund exposure refinement.
-		acNew, vehicle := taxonomyFor(pp.Instrument.AssetType, pp.Instrument.Type, name)
+		instrExtID := r.posKey
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: instrExtID,
-			AssetClass:           acNew,
-			Vehicle:              vehicle,
-			CUSIP:                silver.StrPtrIfNonEmpty(pp.Instrument.CUSIP),
-			Symbol:               silver.StrPtrIfNonEmpty(pp.Instrument.Symbol),
-			Name:                 silver.StrPtrIfNonEmpty(name),
+			AssetClass:           r.assetClass,
+			Vehicle:              r.vehicle,
+			CUSIP:                silver.StrPtrIfNonEmpty(r.pp.Instrument.CUSIP),
+			Symbol:               silver.StrPtrIfNonEmpty(r.pp.Instrument.Symbol),
+			Name:                 silver.StrPtrIfNonEmpty(r.name),
 			Currency:             silver.StrPtrIfNonEmpty("USD"),
-			FirstSeenAt:          snap,
-			LastSeenAt:           snap,
-			Payload:              bondTermsPayload(vehicle, pp.Instrument),
+			FirstSeenAt:          r.snap,
+			LastSeenAt:           r.snap,
+			Payload:              bondTermsPayload(r.vehicle, r.pp.Instrument),
 		})
 
-		quantity := pp.LongQuantity.Sub(pp.ShortQuantity)
-		instrExtIDPtr := &instrExtID
+		quantity := r.quantity
+		value, valuedAt := r.pp.MarketValue, int64(0)
+		if f, ok := fixes[markSeries{r.extID, r.posKey}][r.snap]; ok {
+			value, valuedAt = &f.value, f.from
+		}
 		pos := canonical.PositionChange{
-			SnapshotAt:           snap,
-			AccountExternalID:    extID,
-			PositionKey:          posKey,
-			InstrumentExternalID: instrExtIDPtr,
-			AssetClass:           acNew,
-			Vehicle:              vehicle,
+			SnapshotAt:           r.snap,
+			ValuedAt:             valuedAt,
+			AccountExternalID:    r.extID,
+			PositionKey:          r.posKey,
+			InstrumentExternalID: &instrExtID,
+			AssetClass:           r.assetClass,
+			Vehicle:              r.vehicle,
 			Currency:             "USD",
 			Quantity:             &quantity,
-			MarketValue:          pp.MarketValue,
-			Payload:              json.RawMessage(payload),
+			MarketValue:          value,
+			Payload:              json.RawMessage(r.payload),
 		}
-		pos.SetBookValue(apiBookValue(pp, openPL), derivedBasis)
+		if valuedAt != 0 {
+			pos.Payload = silver.PayloadWith(r.payload, map[string]any{
+				"stated_market_value": r.pp.MarketValue.String()})
+		}
+		pos.SetBookValue(apiBookValue(r.pp, r.openPL), derivedBasis)
 		batch.Positions = append(batch.Positions, pos)
 	}
-	return rows.Err()
+	return nil
 }
 
 // apiBookValue is a position's cost basis from its market value and the

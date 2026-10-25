@@ -416,6 +416,39 @@ type SilverSource struct {
 	// the web `banking_relationship_id` (opaque SPA token) to the
 	// PSN `relationship_id` (SFTPCHxx, etc.). Optional.
 	Relationships []RelationshipPair `json:"relationships,omitempty"`
+	// Schwab tunes the schwab adapter. Only a schwab-kind source takes
+	// it. Optional.
+	Schwab *SchwabSettings `json:"schwab,omitempty"`
+}
+
+// SchwabSettings is the `schwab` object of a schwab-kind silver source:
+// the guard on the api feed's overnight marks (docs/adapters/schwab.md
+// §4.1). An absent field takes its default (silver.MarkGuard.WithDefaults).
+type SchwabSettings struct {
+	// MarkSpikePct is the move, in percent of a position's previous
+	// mark, past which a mark may be a spike. Default 10.
+	MarkSpikePct *float64 `json:"mark_spike_pct,omitempty"`
+	// MarkRevertPct is how close, in percent, a later mark must come back
+	// to the previous mark for the move to read as a spike. Default 2;
+	// below MarkSpikePct.
+	MarkRevertPct *float64 `json:"mark_revert_pct,omitempty"`
+}
+
+// markGuard is the guard the settings state. A field they leave out
+// stays zero, which the adapter reads as its default. A nil receiver
+// states nothing.
+func (s *SchwabSettings) markGuard() silver.MarkGuard {
+	var g silver.MarkGuard
+	if s == nil {
+		return g
+	}
+	if s.MarkSpikePct != nil {
+		g.SpikePct = *s.MarkSpikePct
+	}
+	if s.MarkRevertPct != nil {
+		g.RevertPct = *s.MarkRevertPct
+	}
+	return g
 }
 
 // FxSourceOrder returns the silver_source_ids ordered by FX precedence,
@@ -1319,7 +1352,7 @@ func (c *Config) Lookup(id string) (*SilverSource, bool) {
 // silver stays JSON-free. Returns an error when a relationship's
 // psn_start_override fails to parse (YYYY-MM-DD).
 func (s *SilverSource) ToSilverOpenSpec() (silver.OpenSpec, error) {
-	out := silver.OpenSpec{Path: s.Path}
+	out := silver.OpenSpec{Path: s.Path, MarkGuard: s.Schwab.markGuard()}
 	for _, sub := range s.Subsources {
 		out.Subsources = append(out.Subsources, silver.Subsource{
 			Kind: sub.Kind,

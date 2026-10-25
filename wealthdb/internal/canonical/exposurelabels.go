@@ -124,6 +124,32 @@ var openFigiBondTypes = map[string]Sector{
 // state's, city's or territory's.
 var openFigiTypeCountries = map[string]string{"muni": "US"}
 
+// The types OpenFIGI gives a share or a fund, and the vehicle each names.
+// The refdata collector stores OpenFIGI's securityType2 where it states
+// one, else its securityType (collectors/refdata/providers/openfigi.py),
+// so the map holds the spellings of both. securityType2 is the one that
+// arrives as a rule, and it names most fund-like securities, ETFs among
+// them, "Mutual Fund"; only securityType says ETP.
+var openFigiVehicleTypes = map[string]Vehicle{
+	"common stock": VehicleStock, "preference": VehicleStock, "preferred": VehicleStock,
+	"depositary receipt": VehicleStock, "adr": VehicleStock, "gdr": VehicleStock,
+	"reit": VehicleStock, "mlp": VehicleStock, "ltd part": VehicleStock, "partnership shares": VehicleStock,
+	"mutual fund": VehicleFund, "open-end fund": VehicleFund, "closed-end fund": VehicleFund,
+	"fund of funds": VehicleFund, "etp": VehicleETF,
+}
+
+// OpenFIGIVehicle is the vehicle an OpenFIGI security type names: stock
+// for a share, fund or etf for a fund, bond for a bond's type (the types
+// of openFigiBondTypes). It is "" for any other type, such as an option,
+// a warrant or an index, and for none.
+func OpenFIGIVehicle(securityType string) Vehicle {
+	t := normalizeLabel(securityType)
+	if _, ok := openFigiBondTypes[t]; ok {
+		return VehicleBond
+	}
+	return openFigiVehicleTypes[t]
+}
+
 // Country spellings beside the canonical names and the codes themselves.
 var countryAliases = map[string][]string{
 	"US": {"united states of america", "usa", "u.s.", "u.s.a.", "us"},

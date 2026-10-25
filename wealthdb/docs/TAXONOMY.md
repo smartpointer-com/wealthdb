@@ -169,6 +169,7 @@ classification logic. Every other mapping is mechanical.
 | --- | --- | --- |
 | CFI category + group (UBS, ISO 10962) | both | `E`→(public_equity, stock), group `EY` participation certs→structured_product; `CE`→etf, other `C`→fund; `D`→bond; `R`→right; `O`/`H`→option; `F`→future; `J`→forward (FX); `S`/`I`/`K`/`L`/`T`/`M`/unknown→other |
 | UAC asset-class code (UBS) | asset_class | 0100→cash, 0300→public_equity, 0400→private-markets family, 0600→metal |
+| OpenFIGI security type, through gold's class pass (adapters implementing `silver.ClassRefiner`: Schwab) | both | outranks the adapter's own type; the reading of each type is in [adapters/schwab.md](adapters/schwab.md) §4.2 |
 | `instrument.assetType` + `.type` (Schwab) | both | EQUITY→(public_equity, stock); COLLECTIVE_INVESTMENT+EXCHANGE_TRADED_FUND→(…, etf) |
 | Statement section headers (Swissquote) | vehicle-leaning | "ETFs"/"Funds"/"Bonds"/"Shares"/"Options"/"Structured Products" |
 | Description templates (ubs-web / historical PDFs) | both | "Reg.shs"/"Shs"/DRs/participation certs→stock, ETF umbrellas→etf, SICAV/fund→fund, "Actively Managed Certificate"→structured_product, precious-metals lines→(metal, physical) |

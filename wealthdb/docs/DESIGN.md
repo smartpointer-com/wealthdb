@@ -891,13 +891,14 @@ Example config file:
 | `silver_sources[].relationships[].web_id` | string | Optional. Web silver's `banking_relationship_id` (opaque SPA token, or `account_number_prefix` fallback). |
 | `silver_sources[].relationships[].psn_id` | string | Optional. PSN silver's `relationship_id` (SFTP server identifier like `SFTPCHxx`). At least one of `web_id` / `psn_id` must be set. |
 | `silver_sources[].relationships[].psn_start_override` | string | Optional `YYYY-MM-DD`. Overrides the auto-detected web↔PSN transaction-splice cutover for this relationship. Defaults to `MIN(snapshot_at)` in PSN's data for the paired `psn_id`. |
+| `silver_sources[].schwab` | object | Optional, on a `schwab` source only. The guard on the api feed's overnight marks (docs/adapters/schwab.md §4.1): `mark_spike_pct`, the move in percent past which a position's mark may be a spike (default 10), and `mark_revert_pct`, how close in percent one of the next two marks must come back to the previous mark for the move to read as a spike (default 2). Both above 0, `mark_revert_pct` below `mark_spike_pct`; validated at config-load time. |
 | `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname`, `category`, `tax_wrapper`, and/or `management_style` strings, or `exclude: true` to drop the account and every fact keyed to it (a sweep over gold after the load's streams drain, §13.8). All inner fields are optional but at least one must be set per entry, and `exclude` may not be combined with a column override. `tax_wrapper` and `management_style` values are validated against the canonical enums (`internal/canonical/enums.go`) at config-load time. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
 | `declared_accounts` | object | Optional. Map keyed by an id the holder chooses (`[A-Za-z0-9_-]+`) of accounts the household OWNS at institutions the product does not collect: `account_kind` and `tax_wrapper` required and validated against the canonical enums, `nickname` and `currency` optional. The load writes each one as an account row under the reserved source `declared` (no `silver_sources[].id` may take that name), after the per-source loads and before the enrichment pass, and prints how many it stamped; a declaration removed from the config leaves on the next load. A declared account carries no balance and no facts: it exists so a rule's `far` can name it as the other side of an own-account move, which the cash flow statement then places by the declared wrapper exactly as it places a collected far account — a household wrapper makes the move pool-internal, a vehicle wrapper draws it as that vehicle's crossing (docs/CASHFLOW.md §4). Nothing the product measures can falsify a declaration, which is why the wrapper is required and the load prints how many declarations sit inside the pool. Deployment-specific: lives in the user's config. |
 | `exposure` | object | Optional. What the exposure report needs that no source knows: `proxies` (a fund whose composition stands in for another, with `always` and `leverage`), `reference_funds`, `size_funds`, `declarations` (the path to the declarations ledger, NDJSON; expanded as above), `custody` and `max_gap_days` (default 400). Validated at config-load time. docs/EXPOSURE.md §9 defines each key, its bounds and the ledger's records; §7.6 says how a load stores them. Deployment-specific: lives in the user's config. |
 | `yield` | object | Optional. The yield inputs that no source knows: `curves` (a currency's public yield curve, one series of a configured source per tenor, `"3M": "fred:DGS3MO"`), `withholding` (percent withheld at source by situs country and tax wrapper, `default` for any wrapper), `rating_funds` (a rating-sliced fund's bucket or range, `BBB` or `AAA-A`), `conventions` (coupon frequency and day count per market: a currency, or a currency and a bond sector or `bill`; built-in defaults), `horizon_months` (1 to 36, default 12), `cycles` (overrides of the built-in map from the eleven sectors to cyclical, defensive and sensitive) and `settlement_cycles` (a market's settlement cycles, each in business days from a day on; a market named replaces its built-in cycles). Validated at config-load time; §7.6 says how a load stores it. Deployment-specific: lives in the user's config. |
 | `holding_aliases` | array | Optional. Entries `{ "source", "account"?, "key", "as", "note"? }` naming a holding a source keys two ways, so the gains, exposure and yield reports read both keys as one: a statement's overview line (`key`) until a daily feed lists the same holding by ISIN (`as`), say. `account` scopes the alias to one account; absent, it covers every account of the source. The load writes the block into gold's `holding_aliases` table whole, and `gains_windows` maps every position, lot and event key through it before a bucket's start meets its end (docs/GAINS.md §5). Validated for a configured source, two different keys, one alias per key, and no alias of an alias. Deployment-specific: lives in the user's config. |
 | `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole crypto portfolio inside an IRA / trust / Stiftung wrapper. Accepts `tax_wrapper` (unlike `account_overrides`, which also takes nickname / category / management_style) or `exclude: true`, which drops the portfolio and every account inside it with their facts; one of the two must be set and they may not be combined. A per-account `tax_wrapper` override still wins over a portfolio one. See §13.8. |
-| `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. See §13.8. |
+| `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. The class pass leaves a pinned instrument alone. See §13.8. |
 | `transaction_instruments` | object | Optional. Nested map keyed by `silver_source_id` (outer) and the **lookup token** an adapter failed on (inner), naming the `instrument_external_id` that token means. Closes a row (a securities trade, or an income or withholding row of a security) whose feed states its instrument in a way nothing else in the product can resolve — a Swiss valor for a line the instrument dimension has no valor for, a fund renamed since the trade, a ticker of neither shape, a statement name that fits two holdings. The token is whatever the row's `instrument_hint` holds (§10.8); read the open set with `wealthdb transactions -C +instrument_hint`. Validated for a declared source and non-empty halves at config-load time; the instrument id itself cannot be checked without gold, as with the override families above. It states the IDENTITY only — what the instrument IS stays `instrument_overrides`' question. See §13.8. |
 | `supersession` | object | Optional. Ends a source's account at a date because something else carries it from there. An account can outlive its source — a deposit account whose bank is acquired keeps running under the acquirer's collector, a holding moves custodian — and gold keys an account on `(silver_source_id, account_external_id)`, so the two are two accounts and BOTH count. One grain-keyed map (`accounts`), keyed by `silver_source_id` to `account_external_id` to `YYYY-MM-DD` (UTC), validated for a declared source and a parseable date at config-load time. The loader drops that account's positions, cash balances and transactions dated on or AFTER the date, and writes one zero row AT it for whatever the account still held — dropping alone is not enough, because gold carries a key forward until something supersedes it and a source that simply stops reporting supersedes nothing (§10.7). Cutting by date rather than dropping the account keeps the earlier half of a statement or dump that straddles the handover. The drop is of what the adapter read: an `equity_transfers` (§13.9) row dated on or after the date is refused by name and fails the load instead. This bounds a series at the END; `inception_overrides` below bounds the start. An entry matching nothing is a silent no-op. See §13.8. |
 | `inception_overrides` | object | Optional. Pins the returns-window START date per source / portfolio / account so an entity's track record begins at its first real capital rather than a tiny pre-history dust base. Three grain-keyed maps (`sources`, `portfolios`, `accounts`), values `YYYY-MM-DD` (UTC). Consumed by the returns engine at query time — it stamps no gold column. See §5.4. |
@@ -1339,7 +1340,11 @@ roster without it, every other position at the mark it had: the
 snapshot is dated at the read, each position's `valued_at` at its
 mark. Gold ends the holding at the read and invents no mark for it.
 `positions.valued_at` is NULL where the mark is the snapshot's own,
-as it is for every source that reads live values; `holdings
+as it is for every source that reads live values. It is also set on a
+schwab api position whose mark the guard reads as a spike: it names
+the snapshot of the previous mark the position takes
+([adapters/schwab.md](adapters/schwab.md) §4.1).
+`holdings
 positions` and `holdings sources` show it as `valued_date`, and the
 Data Freshness dashboard counts a source's quiet days from it.
 
@@ -2276,7 +2281,7 @@ and don't need transactional scope.
 in its own transaction. A failure in one source does not roll
 back already-completed sources.
 
-Six whole-file steps then run **after** the per-source loop, outside
+Seven whole-file steps then run **after** the per-source loop, outside
 its transactions, because none is a per-source fact:
 
 1. The config-driven FX source precedence is stamped into
@@ -2285,28 +2290,32 @@ its transactions, because none is a per-source fact:
    (`declared_accounts`, §5.1), its `holding_aliases` into the
    table of that name, its `exposure` block into the `exposure_*`
    tables and its `yield` block into the `yield_*` tables (§7.6).
-3. The deterministic enrichment pass re-asserts every spend and income
+3. The class pass (`gold.RefineClasses`) reads OpenFIGI's security
+   types over the classes of the instruments whose adapter takes them
+   (§13.8). Every later pass reads the classes.
+4. The deterministic enrichment pass re-asserts every spend and income
    verdict in gold (§10.10, docs/SPENDING.md §3). An own-account move's
    two legs routinely arrive from two different sources, so neither is
    recognisable until both have landed.
-4. The lot pass replays the trades into lots (docs/LOTS.md §2). A move
+5. The lot pass replays the trades into lots (docs/LOTS.md §2). A move
    links two sources the same way.
-5. The exposure pass rebuilds the exposure report's derived tables
+6. The exposure pass rebuilds the exposure report's derived tables
    (§10.14). An alias ties a line one source loaded to an instrument
    another one did.
-6. The yield pass rebuilds `instrument_terms`, `account_rates` and
+7. The yield pass rebuilds `instrument_terms`, `account_rates` and
    `dividend_gaps` (§7.6). It reads the exposure pass's instrument
    keys.
 
 A failed FX stamp is a warning: it degrades a conversion. The other
-five fail as errors. A failed pass does not stop the next one; the
-load reports each. A failed declaration stamp or enrichment pass
+six fail as errors. A failed pass does not stop the next one; the
+load reports each. A failed class pass leaves the classes as the
+adapters read them. A failed declaration stamp or enrichment pass
 leaves own-account moves counted as spending, which is a wrong answer
 rather than a degraded one. A failed lot pass leaves the positions the
 load rewrote without a rebuilt basis, and nothing would say why. A
 failed exposure pass leaves the exposure report reading the derived
 tables of an earlier load, and a failed yield pass the yield report.
-`reload` runs all six the same way, on both its in-place and fresh-file
+`reload` runs all seven the same way, on both its in-place and fresh-file
 paths.
 
 ### 8.2 Why a windowed delete (not a full-replace)
@@ -4046,6 +4055,16 @@ the source's structured signal nor the ETF name refinement (§6.8) gets
 the pair right — the canonical example is an exchange-traded commodity
 trust whose security name never mentions the metal or the ETF-ness
 (`metal × etf`).
+
+Between the adapter and the override sits the class pass
+(`gold.RefineClasses`). It runs first among the passes a load or a
+reload ends with. An adapter that implements `silver.ClassRefiner`
+(schwab) takes OpenFIGI's security type, from the refdata source's
+`security_identities`, over its own pair. The pass reads the type for
+each instrument of such a source, patches the `instruments` row and its
+`positions` rows as the override does, and leaves a pinned instrument
+alone. It runs after every load, so a type a later refdata load brings
+reaches a source loaded before it (docs/adapters/schwab.md §4.2).
 
 Two statements in the same family are not overrides of an adapter's
 answer but answers an adapter cannot have.
