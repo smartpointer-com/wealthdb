@@ -87,7 +87,38 @@ endef
 
 all: build-wealthdb build-web build-collectors
 build: all
-test: test-wealthdb test-web test-mcp test-collectors test-collectorkit test-wrappers test-demo
+
+# `make test` runs the suites together and prints each one's log when
+# they have all finished, with how long it took. A suite keeps its own
+# temp dirs. Two suites that build the engine image take a lock so they
+# do not build it at the same time. `make test-<name>` still runs one
+# suite and prints as it goes.
+test:
+	@dir=$$(mktemp -d "$${TMPDIR:-/tmp}/wealthdb-test.XXXXXX"); \
+	trap 'rm -rf "$$dir"' EXIT; \
+	n=$$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4); \
+	printf '%s\n' wealthdb demo web mcp collectorkit wrappers $(COLLECTORS) > "$$dir/suites"; \
+	< "$$dir/suites" xargs -n 1 -P "$$n" -I{} $(SHELL) -c ' \
+		name="$$1"; dir="$$2"; \
+		echo "start $$name"; \
+		start=$$(python3 -c "import time; print(time.time())"); \
+		$(MAKE) --no-print-directory test-$$name > "$$dir/$$name.log" 2>&1; \
+		echo $$? > "$$dir/$$name.rc"; \
+		end=$$(python3 -c "import time; print(time.time())"); \
+		python3 -c "import sys; print(\"%.3f\" % (float(sys.argv[2]) - float(sys.argv[1])))" "$$start" "$$end" > "$$dir/$$name.time"; \
+		exit 0' _ {} "$$dir"; \
+	fail=0; \
+	while IFS= read -r name; do \
+		secs=$$(cat "$$dir/$$name.time" 2>/dev/null || echo missing); \
+		rc=$$(cat "$$dir/$$name.rc" 2>/dev/null || echo 1); \
+		echo "==> $$name $${secs}s"; \
+		cat "$$dir/$$name.log" 2>/dev/null || true; \
+		if [ "$$rc" != 0 ]; then \
+			echo "==> $$name failed ($$rc)"; \
+			fail=1; \
+		fi; \
+	done < "$$dir/suites"; \
+	exit $$fail
 
 # ---- install -----------------------------------------------------------
 # Symlink the two top-level entry points onto PATH so they work from any
@@ -150,7 +181,7 @@ BASE_IMAGES := base-python base-playwright base-camoufox
 # These images are local-only and never pushed; nothing consumes the
 # attestation.
 define BUILD_BASES
-@for img in $(BASE_IMAGES); do \
+for img in $(BASE_IMAGES); do \
 	f="shared/images/$$img.Dockerfile"; \
 	[ -e "$$f" ] || continue; \
 	pull=; \
@@ -163,6 +194,10 @@ done
 endef
 
 base-images:
+	@lock="$(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb/build-locks/bases-$(TAG)"; \
+	mkdir -p "$$(dirname "$$lock")"; \
+	while ! mkdir "$$lock" 2>/dev/null; do sleep 0.2; done; \
+	trap 'rmdir "$$lock"' EXIT; \
 	$(call BUILD_BASES,quiet,)
 
 # clean    = build artefacts (pycache, pytest cache, Go build cache,
@@ -262,7 +297,11 @@ lint-python:
 # ---- wealthdb gold engine ---------------------------------------------
 
 build-wealthdb:
-	@echo "==> build wealthdb (docker image)"
+	@lock="$(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb/build-locks/wealthdb-$(TAG)"; \
+	mkdir -p "$$(dirname "$$lock")"; \
+	while ! mkdir "$$lock" 2>/dev/null; do sleep 0.2; done; \
+	trap 'rmdir "$$lock"' EXIT; \
+	echo "==> build wealthdb (docker image)"; \
 	$(WEALTHDB) build
 
 test-wealthdb: build-wealthdb
@@ -449,7 +488,11 @@ define COLLECTOR_RULES
 build-$(1): $(if $(wildcard collectors/$(1)/Dockerfile),base-images)
 	@echo "==> build collector: $(1)"
 	@if [ -x collectors/$(1)/$(1) ] && [ -f collectors/$(1)/Dockerfile ]; then \
-		collectors/$(1)/$(1) build; \
+		lock="$(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb/build-locks/$(1)-$(TAG)"; \
+		mkdir -p "$$(dirname "$$lock")"; \
+		( while ! mkdir "$$lock" 2>/dev/null; do sleep 0.2; done; \
+		  trap 'rmdir "$$lock"' EXIT; \
+		  collectors/$(1)/$(1) build ); \
 	fi
 	@if [ -f collectors/$(1)/requirements.txt ] && { [ ! -f collectors/$(1)/Dockerfile ] || [ -f collectors/$(1)/.host-venv ]; }; then \
 		$(call ENSURE_VENV,collectors/$(1)/.venv,$(1),build-$(1)); \
@@ -575,7 +618,7 @@ update-wealthdb:
 	$(WEALTHDB) build
 
 update-bases:
-	$(call BUILD_BASES,,pull)
+	@$(call BUILD_BASES,,pull)
 
 # ---- help --------------------------------------------------------------
 
@@ -583,7 +626,7 @@ help:
 	@echo "wealthdb build/test — run from the repo root:"
 	@echo ""
 	@echo "  make all                build everything (engine + web + all collectors)"
-	@echo "  make test               test everything"
+	@echo "  make test               test everything; the suites run together"
 	@echo "  make build-wealthdb     build the Go gold-engine image"
 	@echo "  make test-wealthdb      run go test ./... in the wealthdb container"
 	@echo "  make build-web          build the optional Metabase BI image"

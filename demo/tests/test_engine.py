@@ -16,8 +16,11 @@ Needs Docker and the engine image, so it runs only when
 WEALTHDB_DEMO_TEST_ROOT names a directory for the scratch roots
 (`make test-demo` sets it, under the cache dir, where Docker can see
 it). The directory is the tests' own: it carries a marker, and a
-directory that exists without one is left alone. WEALTHDB_BIN names the
-engine wrapper.
+directory that exists without one is left alone. The `short` and
+`today` golds are kept when the generator and the engine image are
+the same; `fresh` is too, at its later date. `rolled` is built
+again, because an append changes it. WEALTHDB_BIN names the engine
+wrapper.
 """
 
 import collections
@@ -31,7 +34,9 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import unittest
+import unittest.mock
 from decimal import Decimal
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -44,6 +49,7 @@ MARKER = ".wealthdb-demo-tests"
 FIRST, SECOND = dt.date(2023, 9, 30), dt.date(2023, 11, 15)
 TODAY = dt.datetime.now(dt.timezone.utc).date()
 SEED = "harlow-19"
+REPO = pathlib.Path(__file__).resolve().parents[2]
 # The kinds of holding the yield report tells apart (wealthdb/docs/YIELD.md
 # §3): every one but `note`, a loan held, which the household does not
 # hold. Its target-date and age-based funds are of class multi_asset.
@@ -61,23 +67,93 @@ DEBT_VIEWS = ("credit", "maturities", "coupons", "cycles", "issuers")
 
 def scratch(name):
     """A fresh demo root under the tests' own directory."""
-    parent = pathlib.Path(PARENT)
-    if parent.exists() and not (parent / MARKER).exists():
-        raise unittest.SkipTest(f"{parent} exists and is not the demo tests' directory")
-    parent.mkdir(parents=True, exist_ok=True)
-    (parent / MARKER).write_text("Scratch demo roots of demo/tests/test_engine.py.\n")
+    parent = tests_dir()
     root = parent / name
     if root.exists():
         shutil.rmtree(root)
     return root
 
 
+def tests_dir():
+    """The directory the scratch roots live in. One that exists without
+    the tests' marker is left alone."""
+    parent = pathlib.Path(PARENT)
+    if parent.exists() and not (parent / MARKER).exists():
+        raise unittest.SkipTest(f"{parent} exists and is not the demo tests' directory")
+    parent.mkdir(parents=True, exist_ok=True)
+    (parent / MARKER).write_text("Scratch demo roots of demo/tests/test_engine.py.\n")
+    return parent
+
+
+# short, today and fresh are built and then only read. rolled is
+# appended to, so a later run cannot reuse it.
+REUSED = {"short", "today", "fresh"}
+STAMP = ".gold-stamp"
+LOAD_OUT = ".gold-load"
+
+
+def inputs_hash():
+    """The spec, the catalogue and the generator, as each silver file records them."""
+    inputs = spec.load()
+    return f"{inputs.spec_hash}\n{inputs.catalogue_hash}\n{inputs.code_hash}"
+
+
+def image_tag(root=REPO):
+    """The tag the wrappers use for the checkout at root, as
+    shared/wrappers/image-tag.sh reads it, or empty when root's
+    .image-tag names no valid tag."""
+    out = subprocess.run(["sh", "-c", '. "$1" && wealthdb_image_tag "$2"', "_",
+                          str(REPO / "shared" / "wrappers" / "image-tag.sh"), str(root)],
+                         capture_output=True, text=True, timeout=60)
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def engine_image_id():
+    """The id of the engine image this checkout runs, or empty when it cannot be read."""
+    tag = image_tag()
+    if not tag:
+        return ""
+    out = subprocess.run(["docker", "image", "inspect", f"wealthdb:{tag}",
+                          "--format", "{{.Id}}"], capture_output=True, text=True, timeout=60)
+    if out.returncode != 0:
+        return ""
+    return out.stdout.strip()
+
+
+def gold_stamp(as_of, image_id, files_hash, seed):
+    return f"{as_of.isoformat()}\n{files_hash}\n{image_id}\n{seed}\n"
+
+
+def reused_gold(root, stamp):
+    """True when root was built from stamp and has not been left mid-write."""
+    db = root / "wealthdb.db"
+    return (root / STAMP).is_file() and (root / LOAD_OUT).is_file() and db.is_file() \
+        and not db.with_name(db.name + ".wal").exists() \
+        and (root / STAMP).read_text() == stamp
+
+
+def build_and_load(name, as_of):
+    image_id = engine_image_id()
+    stamp = gold_stamp(as_of, image_id, inputs_hash(), SEED)
+    if name in REUSED and image_id:
+        root = tests_dir() / name
+        if reused_gold(root, stamp):
+            return root, (root / LOAD_OUT).read_text()
+    root = scratch(name)
+    generate.build(root, as_of, SEED)
+    engine(root, "init")
+    loaded = engine(root, "load", "-a")
+    if name in REUSED and image_id:
+        (root / STAMP).write_text(stamp)
+        (root / LOAD_OUT).write_text(loaded)
+    return root, loaded
+
+
 def engine(root, *args, read_only=False, quiet=False):
     """The engine's stdout for args on root; `quiet` also requires that
     it print nothing on stderr, no warning or note."""
     env = dict(os.environ, WEALTHDB_DATA_ROOT=str(root), XDG_CONFIG_HOME=str(root))
-    wrapper = os.environ.get("WEALTHDB_BIN") or str(pathlib.Path(__file__).resolve().parents[2]
-                                                     / "wealthdb" / "wealthdb")
+    wrapper = os.environ.get("WEALTHDB_BIN") or str(REPO / "wealthdb" / "wealthdb")
     cmd = [wrapper] + (["-r"] if read_only else []) + ["-c", str(root / "wealthdb.cfg"), *args]
     out = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=600)
     if out.returncode != 0:
@@ -85,13 +161,6 @@ def engine(root, *args, read_only=False, quiet=False):
     if quiet and out.stderr:
         raise AssertionError(f"{' '.join(args)} printed on stderr: {out.stderr}")
     return out.stdout
-
-
-def build_and_load(name, as_of):
-    root = scratch(name)
-    generate.build(root, as_of, SEED)
-    engine(root, "init")
-    return root, engine(root, "load", "-a")
 
 
 def report(root, *args):
@@ -471,6 +540,88 @@ class TestToToday(unittest.TestCase):
         reasons = {r["reason"] for r in report(root, "yield", "coverage") if r["section"] == "record_day"}
         self.assertNotIn("stated", reasons)
         self.assertNotIn("learned", reasons)
+
+
+class TestReusedGold(unittest.TestCase):
+    """A saved gold is reused only when its stamp still matches."""
+
+    def scratch_dir(self):
+        """An empty directory, removed when the test ends."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return pathlib.Path(tmp.name)
+
+    def test_a_matching_stamp_is_reused(self):
+        d = self.scratch_dir()
+        stamp = gold_stamp(dt.date(2023, 9, 30), "sha256:abc", "hash", SEED)
+        (d / STAMP).write_text(stamp)
+        (d / LOAD_OUT).write_text("load: demo: 1\n")
+        (d / "wealthdb.db").write_bytes(b"")
+        self.assertTrue(reused_gold(d, stamp))
+        (d / "wealthdb.db.wal").write_bytes(b"")
+        self.assertFalse(reused_gold(d, stamp))
+        (d / "wealthdb.db.wal").unlink()
+        self.assertFalse(reused_gold(d, stamp + "x"))
+
+    def test_the_inputs_hash_names_spec_catalogue_and_generator(self):
+        self.assertEqual(len(inputs_hash().splitlines()), 3)
+
+    def test_the_image_tag_is_the_wrappers(self):
+        d = self.scratch_dir()
+        env = {k: v for k, v in os.environ.items() if k != "WEALTHDB_IMAGE_TAG"}
+        with unittest.mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(image_tag(d), "latest")
+            (d / ".image-tag").write_text("  feature-x  \n")
+            self.assertEqual(image_tag(d), "feature-x")
+            (d / ".image-tag").write_text("not a tag\n")
+            self.assertEqual(image_tag(d), "")
+        with unittest.mock.patch.dict(os.environ, {"WEALTHDB_IMAGE_TAG": "pinned"}):
+            self.assertEqual(image_tag(d), "pinned")
+
+    def test_build_and_load_reuses_only_a_matching_stamp(self):
+        parent = self.scratch_dir() / "roots"
+        calls = []
+        saved = (PARENT, generate.build, engine, engine_image_id, inputs_hash)
+
+        def fake_build(root, *_args, **_kwargs):
+            calls.append("build")
+            root.mkdir(parents=True, exist_ok=True)
+            (root / "wealthdb.db").write_bytes(b"")
+
+        def fake_engine(*_args, **_kwargs):
+            calls.append("engine")
+            return "load: demo: 1\n"
+
+        try:
+            globals()["PARENT"] = str(parent)
+            generate.build = fake_build
+            globals()["engine"] = fake_engine
+            globals()["engine_image_id"] = lambda: "sha256:abc"
+            globals()["inputs_hash"] = lambda: "spec\ncatalogue\ncode"
+            day = dt.date(2023, 9, 30)
+            build_and_load("short", day)
+            self.assertEqual(build_and_load("short", day)[1], "load: demo: 1\n")
+            self.assertEqual(calls.count("build"), 1)
+            globals()["inputs_hash"] = lambda: "spec\nother\ncode"
+            build_and_load("short", day)
+            self.assertEqual(calls.count("build"), 2)
+            globals()["engine_image_id"] = lambda: ""
+            build_and_load("short", day)
+            self.assertEqual(calls.count("build"), 3)
+            globals()["engine_image_id"] = lambda: "sha256:abc"
+            globals()["inputs_hash"] = lambda: "spec\ncatalogue\ncode"
+            build_and_load("fresh", day)
+            build_and_load("fresh", day)
+            self.assertEqual(calls.count("build"), 4)
+            build_and_load("rolled", day)
+            build_and_load("rolled", day)
+            self.assertEqual(calls.count("build"), 6)
+        finally:
+            globals()["PARENT"] = saved[0]
+            generate.build = saved[1]
+            globals()["engine"] = saved[2]
+            globals()["engine_image_id"] = saved[3]
+            globals()["inputs_hash"] = saved[4]
 
 
 if __name__ == "__main__":
