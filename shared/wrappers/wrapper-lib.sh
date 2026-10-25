@@ -268,8 +268,13 @@ wrapper_mounts_help() {
 # Subcommand helpers
 # ----------------------------------------------------------------------
 
-# Implement `./<wrapper> build [extra args]` — exec docker build and
-# pass through any extra args. Caller dispatches on $1 == "build".
+# Implement `./<wrapper> build [extra args]`. When the image's label
+# matches a hash of this directory and of its base image, print that
+# it is unchanged and exit. Returning would fall through into docker
+# run. Extra arguments are passed through, and the image is built. A
+# hash that fails (no python3 on the host) builds an unlabeled image,
+# which is never skipped.
+# Caller dispatches on $1 == "build".
 # --provenance=false: buildx's default provenance attestation embeds build
 # metadata, so the image digest changes on every build even when every layer
 # is CACHED — which defeats the cache for anything built FROM this image.
@@ -278,7 +283,15 @@ wrapper_mounts_help() {
 # tag builds on its own bases.
 wrapper_build() {
     shift  # drop "build"
+    # The base image's id is part of the inputs: a rebuilt base is a
+    # different image even when this directory did not change.
+    _wfrom="$(wealthdb_from_id "$HERE/Dockerfile")"
+    _whash="$(wealthdb_inputs_hash "$HERE" -- "$_wfrom")" || _whash=
+    if wealthdb_build_unchanged "$IMAGE" "$_whash" "$#"; then
+        exit 0
+    fi
     exec docker build --provenance=false \
+        ${_whash:+--label "wealthdb.inputs=$_whash"} \
         --build-arg WEALTHDB_IMAGE_TAG="$WEALTHDB_IMAGE_TAG" \
         -t "$IMAGE" "$@" "$HERE"
 }

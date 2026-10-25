@@ -22,11 +22,12 @@ wealthdb_export_image_tag "$REPO/.." || exit 2
 IMAGE="wealthdb:$WEALTHDB_IMAGE_TAG"
 
 # `build`, `web` and `mcp` are wrapper-handled host-side, not container
-# subcommands: `build` runs `docker build`; `web` and `mcp` delegate to
-# the web/ and mcp/ components' lifecycle scripts. Docker isn't
-# reachable from inside the engine container, so the Metabase server
-# and the MCP server are orchestrated on the host. (web/ and mcp/ are
-# siblings of this inner wealthdb/ dir.)
+# subcommands. `build` runs `docker build`, or skips it when the image
+# was built from the same inputs and no extra argument is given. `web`
+# and `mcp` delegate to the web/ and mcp/ components' lifecycle
+# scripts. Docker isn't reachable from inside the engine container, so
+# the Metabase server and the MCP server are orchestrated on the host.
+# (web/ and mcp/ are siblings of this inner wealthdb/ dir.)
 case "${1:-}" in
     build)
         shift
@@ -46,9 +47,17 @@ case "${1:-}" in
                 tag="$(git -C "$REPO" describe --tags --exact-match --match 'v[0-9]*' HEAD 2>/dev/null || true)"
             fi
         fi
+        # The inputs: this tree, the stamp and the base image's id. A hash
+        # that fails (no python3 on the host) leaves the image unlabeled,
+        # so it is built every time and never skipped.
+        hash="$(wealthdb_inputs_hash "$REPO" -- "$tag" "$base" "$commit" "$(wealthdb_from_id "$REPO/Dockerfile")")" || hash=
+        if wealthdb_build_unchanged "$IMAGE" "$hash" "$#"; then
+            exit 0
+        fi
         # --provenance=false: buildx's default attestation would give the
         # image a fresh digest on every build even when fully cached.
         exec docker build --provenance=false \
+            ${hash:+--label "wealthdb.inputs=$hash"} \
             --build-arg WEALTHDB_TAG="$tag" \
             --build-arg WEALTHDB_BASE="$base" \
             --build-arg WEALTHDB_COMMIT="$commit" \

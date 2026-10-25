@@ -656,7 +656,10 @@ of `collectors/`); **the presence of a Dockerfile decides the runtime.**
   test (`test_collector_images.py`) checks that each Dockerfile copies
   every module the entrypoint's scripts import.
   `make build-<name>` runs `<wrapper> build`, and the bases come from
-  `make base-images`.
+  `make base-images`. A build is skipped when the image's
+  `wealthdb.inputs` label matches a hash of the collector directory and
+  its base image's id. An extra argument to `build` always builds. A
+  host without `python3` always builds.
 - A **host-venv** collector has only `requirements.txt` (no Dockerfile).
   `make build-<name>` creates `.venv` and installs `requirements.txt`
   plus `-e shared/collectorkit`.
@@ -665,16 +668,17 @@ of `collectors/`); **the presence of a Dockerfile decides the runtime.**
 
 ### Unit tests
 
-Tests live in `tests/` (or `test_*.py`); `make test-<name>` rebuilds the
-collector and runs **pytest** — in-container for Docker collectors, in
-the `.venv` for host ones. At minimum they cover **bronze → silver**: a
-*synthetic* bronze dump (no real IDs/balances — see root
-[AGENTS.md](../AGENTS.md) §4) and assertions that `load.py` projects the
-expected silver rows; pure-stdlib `unittest` works too. `make test` /
-`make test-collectors` runs the whole suite, and tests must pass before
-any commit. `make lint` runs ruff over every collector with the rules in
-the root `ruff.toml`; it has to be clean too, and the pre-commit hook
-(`make hooks`) refuses a commit whose staged tree it fails on.
+Tests live in `tests/` (or `test_*.py`); `make test-<name>` builds the
+collector when its inputs changed and runs **pytest** — in-container for
+Docker collectors, in the `.venv` for host ones. At minimum they cover
+**bronze → silver**: a *synthetic* bronze dump (no real IDs/balances —
+see root [AGENTS.md](../AGENTS.md) §4) and assertions that `load.py`
+projects the expected silver rows; pure-stdlib `unittest` works too.
+`make test` / `make test-collectors` runs the whole suite, and tests
+must pass before any commit. `make lint` runs ruff over every collector
+with the rules in the root `ruff.toml`; it has to be clean too, and the
+pre-commit hook (`make hooks`) refuses a commit whose staged tree it
+fails on.
 
 ### The gold adapter
 

@@ -69,6 +69,12 @@ _require_docker() {
     command -v docker >/dev/null 2>&1 || { echo "web: docker not found on PATH" >&2; return 1; }
 }
 
+# start and refresh time their steps and read the snapshot's mtime and
+# inode through python3, and provisioning runs on it.
+_require_python3() {
+    command -v python3 >/dev/null 2>&1 || { echo "web: python3 not found on PATH (start and refresh need it)" >&2; return 1; }
+}
+
 # ---- pure helpers (unit-tested) ---------------------------------------
 
 # _publish_args PORT BIND → prints `docker run` -p flags (one token
@@ -125,7 +131,9 @@ _docker_run_args() {
 
 # _snapshot SRC DST copies a DuckDB file at rest to DST atomically
 # (temp + mv). Refuses if SRC has a .wal sidecar (gold mid-write / not
-# checkpointed) so we never capture a torn copy.
+# checkpointed), so a torn copy is never captured. Each step checks its
+# own status, so a failed copy fails even where errexit is off (_timed)
+# and leaves DST and no temp file behind.
 _snapshot() {
     local src="$1" dst="$2"
     if [ ! -f "$src" ]; then
@@ -137,14 +145,17 @@ _snapshot() {
         echo "     Run 'wealthdb web refresh' after 'wealthdb load' finishes (gold at rest)." >&2
         return 1
     fi
-    mkdir -p "$(dirname "$dst")"
+    mkdir -p "$(dirname "$dst")" || return 1
     local tmp="${dst}.tmp.$$"
     # A clone is the whole file and no bytes copied, where the file
-    # system has one (APFS). Anywhere else, copy.
-    if ! cp -c "$src" "$tmp" 2>/dev/null; then
-        cp "$src" "$tmp"
+    # system has one (APFS). Anywhere else, copy. Both keep gold's mtime,
+    # so a gold write during the copy leaves gold newer than the snapshot
+    # and the next refresh copies again.
+    if ! cp -c "$src" "$tmp" 2>/dev/null && ! cp -p "$src" "$tmp"; then
+        rm -f "$tmp"
+        return 1
     fi
-    mv "$tmp" "$dst"
+    mv "$tmp" "$dst" || { rm -f "$tmp"; return 1; }
 }
 
 _mtime()      { date -r "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || echo unknown; }
@@ -153,11 +164,23 @@ _exists()     { [ -n "$(docker ps -aq -f "name=^${CONTAINER}\$" 2>/dev/null)" ];
 
 # ---- subcommands ------------------------------------------------------
 
+# An image whose label matches a hash of the Dockerfile and of its base
+# image is left as it is. The Dockerfile is the whole build context
+# (.dockerignore), so it is the whole input; a COPY added to it must
+# join the hash. An empty hash builds, with no label.
 # --provenance=false: buildx's default attestation embeds build metadata,
 # so the image digest would change on every build even when fully cached.
-web_build() { exec docker build --provenance=false -t "$IMAGE" "$HERE" "$@"; }
+web_build() {
+    local whash label=()
+    whash="$(wealthdb_inputs_hash "$HERE/Dockerfile" -- "$(wealthdb_from_id "$HERE/Dockerfile")")" || whash=
+    if wealthdb_build_unchanged "$IMAGE" "$whash" "$#"; then return 0; fi
+    if [ -n "$whash" ]; then label=(--label "wealthdb.inputs=$whash"); fi
+    exec docker build --provenance=false ${label[@]+"${label[@]}"} \
+        -t "$IMAGE" "$HERE" "$@"
+}
 
 web_start() {
+    _require_python3
     _load_config
     if [ "$ENABLED" != 1 ]; then
         echo "web: not enabled. Add a \"web\" block to wealthdb.cfg, e.g.:" >&2
@@ -240,74 +263,68 @@ _epoch() { python3 -c 'import time; print(f"{time.time():.3f}")'; }
 # duration. The function returns that status and leaves the caller's
 # errexit as it found it, so a caller that has set -e still stops.
 _timed() {
-    local label="$1" start end rc errexit=0
+    local label="$1" start rc errexit=0
     shift
     case $- in *e*) errexit=1 ;; esac
     start="$(_epoch)"
     set +e
     "$@"
     rc=$?
-    if [ "$errexit" -eq 1 ]; then set -e; else set +e; fi
-    end="$(_epoch)"
-    python3 -c 'import sys; print(f"web: timing: {sys.argv[1]} {float(sys.argv[3]) - float(sys.argv[2]):.3f}s", file=sys.stderr)' \
-        "$label" "$start" "$end"
+    [ "$errexit" -eq 1 ] && set -e
+    python3 -c 'import sys, time; print(f"web: timing: {sys.argv[1]} {time.time() - float(sys.argv[2]):.3f}s", file=sys.stderr)' \
+        "$label" "$start"
     return "$rc"
 }
 
-_stamp() {
+# _stat FIELD PATH prints os.stat(PATH).FIELD (st_mtime_ns, st_ino), or
+# 0 for a missing file.
+_stat() {
     python3 -c 'import os, sys
-p = sys.argv[1]
-print(os.stat(p).st_mtime_ns if os.path.exists(p) else 0)' "$1"
-}
-
-_inode() {
-    python3 -c 'import os, sys
-p = sys.argv[1]
-print(os.stat(p).st_ino if os.path.exists(p) else 0)' "$1"
+p = sys.argv[2]
+print(getattr(os.stat(p), sys.argv[1]) if os.path.exists(p) else 0)' "$1" "$2"
 }
 
 # _mark_snapshot_served records the snapshot inode the container just
-# mounted. A clone keeps the source mtime, so mtime cannot tell a file
+# mounted. The snapshot keeps gold's mtime, so mtime cannot tell a file
 # the container opened from one swapped in after it started.
 _mark_snapshot_served() {
-    _inode "$SNAP" > "${SNAP}.served"
+    _stat st_ino "$SNAP" > "${SNAP}.served"
 }
 
 _snapshot_served() {
     [ -f "$SNAP" ] && [ -f "${SNAP}.served" ] \
-        && [ "$(_inode "$SNAP")" = "$(tr -d '[:space:]' < "${SNAP}.served")" ]
+        && [ "$(_stat st_ino "$SNAP")" = "$(tr -d '[:space:]' < "${SNAP}.served")" ]
 }
 
 web_refresh() {
+    _require_python3
     _load_config
     _timed materialize _materialize
     # Copy when the snapshot is missing or older than gold. A missing
-    # gold file is not current: the copy reports it. A running container
+    # gold file is stale too: the copy reports it. A running container
     # is current only when it started on this snapshot's inode, so a
     # refresh that died after the copy and before the restart still
     # restarts the next time.
-    local gold_ns=0 snap_ns=0
-    if [ -f "$GOLD_DB" ]; then
-        gold_ns="$(_stamp "$GOLD_DB")"
+    local stale=1 running=0
+    if [ -f "$GOLD_DB" ] && [ -f "$SNAP" ] \
+        && [ "$(_stat st_mtime_ns "$SNAP")" -ge "$(_stat st_mtime_ns "$GOLD_DB")" ]; then
+        stale=0
     fi
-    if [ -f "$SNAP" ]; then
-        snap_ns="$(_stamp "$SNAP")"
-    fi
-    if [ -f "$GOLD_DB" ] && [ -f "$SNAP" ] && [ "$snap_ns" -ge "$gold_ns" ] \
-        && { ! _is_running || _snapshot_served; }; then
+    if _is_running; then running=1; fi
+    if [ "$stale" -eq 0 ] && { [ "$running" -eq 0 ] || _snapshot_served; }; then
         echo "web: snapshot unchanged" >&2
-        if _is_running; then
+        if [ "$running" -eq 1 ]; then
             _provision
             return "$PROV_RC"
         fi
         return 0
     fi
-    if [ ! -f "$GOLD_DB" ] || [ ! -f "$SNAP" ] || [ "$snap_ns" -lt "$gold_ns" ]; then
+    if [ "$stale" -eq 1 ]; then
         echo "web: refreshing snapshot from $GOLD_DB …" >&2
         _timed snapshot _snapshot "$GOLD_DB" "$SNAP"
         echo "web: snapshot updated (as of $(_mtime "$SNAP"))"
     fi
-    if _is_running; then
+    if [ "$running" -eq 1 ]; then
         # Recreate the container — do NOT `docker restart`. The snapshot is
         # bind-mounted as a single file (see _docker_run_args) and _snapshot
         # swaps it via atomic rename, so the new copy is a new inode. A bind
@@ -336,7 +353,9 @@ _gen_password() {
 # engine-owned write, mutually exclusive with `wealthdb load` under the
 # engine's write mutex (a concurrent load makes it fail, not wait); it
 # runs BEFORE _snapshot, so a failure aborts under web_main's `set -e`
-# and the previous snapshot keeps serving.
+# and the previous snapshot keeps serving. The engine leaves gold
+# untouched when its inputs did not change, so an unchanged gold keeps
+# its mtime and the snapshot is not copied again.
 _materialize() {
     echo "web: materializing serving tables, returns, gains, exposure, yield and the cash flow projection into gold …" >&2
     local rc=0
@@ -366,10 +385,6 @@ _provision() {
     PROV_RC=0
     if [ "${WEALTHDB_WEB_NO_PROVISION:-0}" = 1 ]; then
         echo "web: auto-provision disabled (WEALTHDB_WEB_NO_PROVISION=1)." >&2
-        return 0
-    fi
-    if ! command -v python3 >/dev/null 2>&1; then
-        echo "web: python3 not found — skipping auto-provision (browser wizard will show)." >&2
         return 0
     fi
     local email pwfile pw pwhint
@@ -433,9 +448,9 @@ subcommands:
   stop       stop + remove the container (keeps dashboards/users in H2)
   status     running state, published port, snapshot freshness
   restart    stop then start
-  refresh    re-materialize serving tables, returns, gains, exposure and
-             yield, re-copy gold → read-only snapshot, then restart
-             Metabase (run after 'wealthdb load' to update the data)
+  refresh    re-materialize the serving and report tables, copy gold to
+             the read-only snapshot when gold changed, and restart
+             Metabase on a new snapshot (run after 'wealthdb load')
   logs       follow the container logs
   build      build the wealthdb/metabase image
   help       this message

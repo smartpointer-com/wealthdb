@@ -16,7 +16,8 @@
 # they Docker-build AND carry a host venv (`.host-venv` marker), and test
 # on that venv.
 # Collectors that ship no tests are a no-op for the test target. Each
-# test-<x> rebuilds its <x> first, so testing always runs current code.
+# test-<x> builds its <x> first when it changed, so testing always runs
+# current code.
 # `make test` also runs the shared collectorkit library's own suite
 # (test-collectorkit), which otherwise runs nowhere.
 
@@ -37,6 +38,13 @@ $(error no image tag: fix .image-tag, or set WEALTHDB_IMAGE_TAG)
 endif
 export WEALTHDB_IMAGE_TAG
 TAG := $(WEALTHDB_IMAGE_TAG)
+NCPU = $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+BUILD_LOCK_DIR := $(if $(XDG_CACHE_HOME),$(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb/build-locks
+# LOCKED NAME: a recipe prefix that holds the build lock NAME-$(TAG)
+# for the rest of the recipe's shell (wealthdb_build_lock), so two
+# builds of one image never run at once.
+LOCKED = . shared/wrappers/image-tag.sh; \
+	wealthdb_build_lock "$(BUILD_LOCK_DIR)/$(1)-$(TAG).lock" || exit 1;
 
 WEALTHDB      := wealthdb/wealthdb
 WEALTHDB_TEST := wealthdb/wealthdb-test
@@ -76,7 +84,7 @@ endef
         build-collectors test-collectors \
         test-collectorkit clean-collectorkit cleanall-collectorkit \
         test-wrappers \
-        clean cleanall clean-wealthdb cleanall-wealthdb \
+        clean cleanall clean-wealthdb cleanall-wealthdb clean-build-locks \
         clean-collectors cleanall-collectors base-images cleanall-bases \
         update update-venvs update-wealthdb update-bases \
         lint lint-go lint-python cleanall-lint \
@@ -85,33 +93,34 @@ endef
 
 # ---- aggregates --------------------------------------------------------
 
-all: build-wealthdb build-web build-collectors
+# `all` builds in parallel: with the -jN it was given, else one job
+# per CPU. Each Docker collector's build waits for the bases on its own.
+all:
+	@$(MAKE) $(if $(findstring jobserver,$(MAKEFLAGS)),,-j$(NCPU)) \
+		build-wealthdb build-web build-collectors
 build: all
 
-# `make test` runs the suites together and prints each one's log when
-# they have all finished, with how long it took. A suite keeps its own
-# temp dirs. Two suites that build the engine image take a lock so they
-# do not build it at the same time. `make test-<name>` still runs one
-# suite and prints as it goes.
+# `make test` runs the suites together and prints each one's log, with
+# its duration in seconds, once all have finished. Each image build
+# holds a lock (LOCKED), so two suites never build one image at once.
+# `make test-<name>` runs one suite and prints as it goes.
 test:
 	@dir=$$(mktemp -d "$${TMPDIR:-/tmp}/wealthdb-test.XXXXXX"); \
 	trap 'rm -rf "$$dir"' EXIT; \
-	n=$$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4); \
 	printf '%s\n' wealthdb demo web mcp collectorkit wrappers $(COLLECTORS) > "$$dir/suites"; \
-	< "$$dir/suites" xargs -n 1 -P "$$n" -I{} $(SHELL) -c ' \
+	< "$$dir/suites" xargs -P $(NCPU) -I{} $(SHELL) -c ' \
 		name="$$1"; dir="$$2"; \
 		echo "start $$name"; \
-		start=$$(python3 -c "import time; print(time.time())"); \
+		start=$$(date +%s); \
 		$(MAKE) --no-print-directory test-$$name > "$$dir/$$name.log" 2>&1; \
 		echo $$? > "$$dir/$$name.rc"; \
-		end=$$(python3 -c "import time; print(time.time())"); \
-		python3 -c "import sys; print(\"%.3f\" % (float(sys.argv[2]) - float(sys.argv[1])))" "$$start" "$$end" > "$$dir/$$name.time"; \
+		echo $$(( $$(date +%s) - start )) > "$$dir/$$name.time"; \
 		exit 0' _ {} "$$dir"; \
 	fail=0; \
 	while IFS= read -r name; do \
-		secs=$$(cat "$$dir/$$name.time" 2>/dev/null || echo missing); \
+		secs=$$(cat "$$dir/$$name.time" 2>/dev/null) && secs="$${secs}s" || secs="(no time)"; \
 		rc=$$(cat "$$dir/$$name.rc" 2>/dev/null || echo 1); \
-		echo "==> $$name $${secs}s"; \
+		echo "==> $$name $$secs"; \
 		cat "$$dir/$$name.log" 2>/dev/null || true; \
 		if [ "$$rc" != 0 ]; then \
 			echo "==> $$name failed ($$rc)"; \
@@ -170,7 +179,14 @@ BASE_IMAGES := base-python base-playwright base-camoufox
 # BUILD_BASES quiet,pull — build the shared bases in order, and stop at
 # the first that fails. quiet hides docker's output. pull refreshes the
 # upstream image a base builds FROM; a base FROM a local wealthdb/ image
-# never pulls.
+# never pulls. Without pull, a base whose wealthdb.inputs label matches
+# the hash of its inputs is kept as it is (wealthdb_build_unchanged).
+# The inputs are its own Dockerfile, collectorkit, shared/.dockerignore,
+# the helper files in shared/images that are not Dockerfiles, and its
+# parent image's id. Another base's Dockerfile is not one, so an edit
+# to one base rebuilds only that base and the images built on it. A
+# hash that fails builds the base without a label. BUILD_BASES runs
+# after LOCKED, which has sourced image-tag.sh.
 #
 # --provenance=false on every docker build: buildx attaches a provenance
 # attestation by default, and it embeds build metadata, so the image digest
@@ -181,31 +197,42 @@ BASE_IMAGES := base-python base-playwright base-camoufox
 # These images are local-only and never pushed; nothing consumes the
 # attestation.
 define BUILD_BASES
+helpers=; \
+for x in shared/images/*; do \
+	case "$$x" in *.Dockerfile) ;; *) helpers="$$helpers $$x" ;; esac; \
+done; \
 for img in $(BASE_IMAGES); do \
 	f="shared/images/$$img.Dockerfile"; \
 	[ -e "$$f" ] || continue; \
 	pull=; \
-	if [ -n "$(2)" ] && ! grep -qE '^FROM[[:space:]]+wealthdb/' "$$f"; then pull=--pull; fi; \
+	if [ -n "$(2)" ] && ! grep -qE '^FROM[[:space:]]+wealthdb/' "$$f"; then \
+		pull=--pull; \
+		docker pull "$$(wealthdb_from_ref "$$f")" || exit 1; \
+	fi; \
+	hash=$$(wealthdb_inputs_hash "$$f" shared/collectorkit $$helpers \
+		shared/.dockerignore -- "$$(wealthdb_from_id "$$f")") || hash=; \
+	if wealthdb_build_unchanged "wealthdb/$$img:$(TAG)" "$$hash" $(if $(2),1,0); then \
+		continue; \
+	fi; \
 	echo "==> build base image wealthdb/$$img:$(TAG)$${pull:+ ($$pull)}"; \
 	docker build $(if $(1),-q) $$pull --provenance=false \
+		$${hash:+--label "wealthdb.inputs=$$hash"} \
 		--build-arg WEALTHDB_IMAGE_TAG=$(TAG) \
 		-f "$$f" -t "wealthdb/$$img:$(TAG)" shared/ $(if $(1),>/dev/null) || exit 1; \
 done
 endef
 
 base-images:
-	@lock="$(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb/build-locks/bases-$(TAG)"; \
-	mkdir -p "$$(dirname "$$lock")"; \
-	while ! mkdir "$$lock" 2>/dev/null; do sleep 0.2; done; \
-	trap 'rmdir "$$lock"' EXIT; \
+	@$(call LOCKED,bases) \
 	$(call BUILD_BASES,quiet,)
 
 # clean    = build artefacts (pycache, pytest cache, Go build cache,
-#            test-demo's scratch roots)
+#            test-demo's scratch roots, the build locks)
 # cleanall = clean + the heavy outputs (docker images, venvs)
-clean:    clean-wealthdb clean-web clean-collectors clean-collectorkit clean-demo
+clean:    clean-wealthdb clean-web clean-collectors clean-collectorkit clean-demo \
+          clean-build-locks
 cleanall: cleanall-wealthdb cleanall-web cleanall-collectors cleanall-bases \
-          cleanall-collectorkit cleanall-lint clean-demo
+          cleanall-collectorkit cleanall-lint clean-demo clean-build-locks
 
 clean-collectors:    $(addprefix clean-,$(COLLECTORS))
 cleanall-collectors: $(addprefix cleanall-,$(COLLECTORS))
@@ -257,6 +284,10 @@ cleanall-collectorkit: clean-collectorkit
 	@echo "==> cleanall collectorkit"
 	@rm -rf $(CK_VENV) $(CK_DIR)/collectorkit.egg-info
 
+clean-build-locks:
+	@echo "==> clean build locks"
+	@. shared/wrappers/image-tag.sh; wealthdb_clean_build_locks "$(BUILD_LOCK_DIR)"
+
 cleanall-lint:
 	@echo "==> cleanall lint (ruff venv)"
 	@rm -rf $(LINT_VENV)
@@ -278,7 +309,7 @@ lint: lint-go lint-python
 
 lint-go:
 	@echo "==> lint wealthdb (gofmt, go vet)"
-	@docker image inspect wealthdb:$(TAG) >/dev/null 2>&1 || $(WEALTHDB) build
+	@docker image inspect wealthdb:$(TAG) >/dev/null 2>&1 || { $(call LOCKED,wealthdb) $(WEALTHDB) build; }
 	@out="$$($(WEALTHDB_GO) run cmd/gofmt -l .)" || exit 1; \
 	if [ -n "$$out" ]; then \
 		echo "    gofmt: not formatted:" >&2; echo "$$out" | sed 's/^/      /' >&2; exit 1; \
@@ -297,10 +328,7 @@ lint-python:
 # ---- wealthdb gold engine ---------------------------------------------
 
 build-wealthdb:
-	@lock="$(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb/build-locks/wealthdb-$(TAG)"; \
-	mkdir -p "$$(dirname "$$lock")"; \
-	while ! mkdir "$$lock" 2>/dev/null; do sleep 0.2; done; \
-	trap 'rmdir "$$lock"' EXIT; \
+	@$(call LOCKED,wealthdb) \
 	echo "==> build wealthdb (docker image)"; \
 	$(WEALTHDB) build
 
@@ -437,7 +465,7 @@ test-mcp:
 
 build-web:
 	@echo "==> build web (metabase image)"
-	web/web build
+	@$(call LOCKED,web) web/web build
 
 # Pure-bash unit tests for the lifecycle script, then provision.py's
 # definitions; no Docker needed. provision.py's tests run the projection
@@ -488,11 +516,7 @@ define COLLECTOR_RULES
 build-$(1): $(if $(wildcard collectors/$(1)/Dockerfile),base-images)
 	@echo "==> build collector: $(1)"
 	@if [ -x collectors/$(1)/$(1) ] && [ -f collectors/$(1)/Dockerfile ]; then \
-		lock="$(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb/build-locks/$(1)-$(TAG)"; \
-		mkdir -p "$$(dirname "$$lock")"; \
-		( while ! mkdir "$$lock" 2>/dev/null; do sleep 0.2; done; \
-		  trap 'rmdir "$$lock"' EXIT; \
-		  collectors/$(1)/$(1) build ); \
+		( $(call LOCKED,$(1)) collectors/$(1)/$(1) build ); \
 	fi
 	@if [ -f collectors/$(1)/requirements.txt ] && { [ ! -f collectors/$(1)/Dockerfile ] || [ -f collectors/$(1)/.host-venv ]; }; then \
 		$(call ENSURE_VENV,collectors/$(1)/.venv,$(1),build-$(1)); \
@@ -610,15 +634,16 @@ update-venvs:
 # which is the single place the toolchain version is declared.
 update-wealthdb:
 	@echo "==> rebuild wealthdb image (its Go toolchain resolves the modules)"
-	$(WEALTHDB) build
+	@$(call LOCKED,wealthdb) $(WEALTHDB) build
 	@echo "==> update wealthdb/ go modules inside the image"
 	$(WEALTHDB_GO) get -u ./...
 	$(WEALTHDB_GO) mod tidy
 	@echo "==> rebuild wealthdb image so the refreshed modules land in the build cache"
-	$(WEALTHDB) build
+	@$(call LOCKED,wealthdb) $(WEALTHDB) build
 
 update-bases:
-	@$(call BUILD_BASES,,pull)
+	@$(call LOCKED,bases) \
+	$(call BUILD_BASES,,pull)
 
 # ---- help --------------------------------------------------------------
 
@@ -640,16 +665,18 @@ help:
 	@echo "  make lint-go / lint-python"
 	@echo "  make build-<name>       build one collector (e.g. build-schwab-web)"
 	@echo "  make test-<name>        test one collector  (e.g. test-schwab-web)"
-	@echo "  make base-images        build the shared Docker bases the collector images FROM"
+	@echo "  make base-images        build the shared bases; skip one whose inputs did not change"
 	@echo ""
 	@echo "  make install            symlink wealthdb + wealthdb-collect into BINDIR (~/.local/bin)"
 	@echo "  make hooks              run make lint before every commit (install runs it too)"
 	@echo "  make uninstall          remove those symlinks and the hooks"
 	@echo ""
-	@echo "  make clean              remove build artefacts (pycache, caches, demo test roots)"
+	@echo "  make clean              remove build artefacts (pycache, caches, demo test roots,"
+	@echo "                          build locks)"
 	@echo "  make cleanall           also remove docker images + venvs"
 	@echo "  make clean-<name> / cleanall-<name>   (incl. -wealthdb, -web, -collectorkit,"
-	@echo "                          -collectors; clean-demo, cleanall-bases, cleanall-lint)"
+	@echo "                          -collectors; clean-demo, clean-build-locks,"
+	@echo "                          cleanall-bases, cleanall-lint)"
 	@echo ""
 	@echo "  make demo               build the synthetic demo household (WEALTHDB_DEMO_ROOT,"
 	@echo "                          default .demo-root's first line, else ~/wealthdb-demo;"
@@ -664,6 +691,7 @@ help:
 	@echo ""
 	@echo "  make update             refresh all tooling: pip in every host venv,"
 	@echo "                          go modules in wealthdb/, shared Docker bases"
-	@echo "  make update-venvs / update-wealthdb / update-bases     (one layer at a time)"
+	@echo "  make update-venvs / update-wealthdb / update-bases     (one layer at a time;"
+	@echo "                          update-bases pulls and rebuilds, and does not skip)"
 	@echo ""
 	@echo "  collectors: $(COLLECTORS)"

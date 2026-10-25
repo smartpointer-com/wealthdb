@@ -6,6 +6,10 @@
 # from a copy of the tree, so the checkout's own .demo-root plays no
 # part.
 set -uo pipefail
+# The makes this test starts read only what it gives them: an outer
+# make's flags and command-line variables (make test-wrappers X=…) stay
+# out.
+unset MAKEFLAGS MFLAGS MAKELEVEL
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"

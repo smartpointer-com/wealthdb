@@ -3516,6 +3516,17 @@ passes for a release. A binary built without the stamp (a plain
 to `devel nightly unknown` without one. A release is therefore just a
 tag: nothing in the source names the version.
 
+`./wealthdb build` skips the build when nothing changed:
+
+- It hashes `wealthdb/`, the stamp and the base image's id.
+- When the hash matches the image's `wealthdb.inputs` label, it prints
+  `build: wealthdb:<tag> unchanged` and builds nothing.
+- Any extra argument, such as `--no-cache`, always builds.
+- A host without `python3` cannot compute the hash, so it always builds.
+
+The collector wrappers and `make base-images` skip a build the same way
+([collectors/README.md](../../collectors/README.md#build-scaffolding)).
+
 Entry point is the production binary. The `./wealthdb-test`
 wrapper overrides with `--entrypoint go` to run tests in the same
 image. See §12.5.
@@ -3597,7 +3608,7 @@ token as a read-only file. The image is the same; the command is
 ### 12.3 Build and first-run commands
 
 ```sh
-./wealthdb build               # docker build, ~2 min
+./wealthdb build               # docker build; skipped when nothing changed
 ./wealthdb config              # one-time interactive setup wizard (§4.9)
 ./wealthdb init                # creates the gold DB at the configured gold_db path
 ./wealthdb load -a             # merges every configured silver into gold
@@ -3629,9 +3640,9 @@ absent from runtime. Retrofitting is mechanical. Not pre-paid.
 ### 12.5 Running tests
 
 From the repo root, `make test-wealthdb` (or `make test` for the
-whole suite) is the top-level entry: it rebuilds the image and runs
-`go test ./...` in one step. Under the hood it calls the
-`./wealthdb-test` wrapper described here.
+whole suite) is the top-level entry: it builds the image when its
+inputs changed and runs `go test ./...` in one step. Under the hood it
+calls the `./wealthdb-test` wrapper described here.
 
 Tests run **inside the container**, so the host stays clean of Go
 toolchain, DuckDB headers, SQLite headers, and the rest. The

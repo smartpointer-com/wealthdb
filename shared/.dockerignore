@@ -7,17 +7,23 @@
 #
 # The tooling writes into that same tree: `make test-collectorkit` builds
 # its venv at shared/collectorkit/.venv (29MB) and pytest leaves
-# __pycache__ behind. Without these excludes, running the tests changed
-# the COPY layer's hash, which gave base-python a new digest, which
-# invalidated `FROM wealthdb/base-*` in every Docker collector — so each
-# one re-ran its whole Dockerfile after every test run.
+# __pycache__ behind. Without these excludes, a test run would change the
+# COPY layer's hash, give base-python a new digest and invalidate
+# `FROM wealthdb/base-*` in every Docker collector, so each one would
+# re-run its whole Dockerfile.
 #
 # None of this belongs in an image regardless: the venv is a host-side
 # artefact built against the host's interpreter, and the container installs
 # collectorkit itself.
+#
+# wealthdb_inputs_hash (shared/wrappers/image-tag.sh) skips the same
+# names when it decides whether a base needs a build; keep the two lists
+# in step.
 collectorkit/.venv/
 **/__pycache__/
 **/*.egg-info/
 **/*.egg-link
 **/.pytest_cache/
+**/.mypy_cache/
+**/.git/
 **/*.pyc

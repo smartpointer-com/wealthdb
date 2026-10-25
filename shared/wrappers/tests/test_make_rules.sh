@@ -12,6 +12,10 @@
 # Nothing is built or run: make only prints, and a stub docker prints.
 # clean-demo alone runs for real, on roots under the temp dir.
 set -uo pipefail
+# The makes this test starts read only what it gives them: an outer
+# make's flags and command-line variables (make test-wrappers X=…) stay
+# out.
+unset MAKEFLAGS MFLAGS MAKELEVEL
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
