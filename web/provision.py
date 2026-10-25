@@ -119,6 +119,7 @@ def main():
         return 1
     global FIELD_IDS
     FIELD_IDS = field_ids_from(tables)
+    unfingerprint_lists(a.base, sid, tables)
 
     coll_id = ensure_collection(a.base, sid, COLLECTION_NAME)
     if coll_id is None:
@@ -5589,6 +5590,37 @@ def field_ids_from(tables):
             if f.get("name") in cols:
                 ids[(t["name"], f["name"])] = f.get("id")
     return ids
+
+
+def list_fields(tables):
+    """The id and name of every list column in `tables` that Metabase
+    would still fingerprint: a DuckDB list, whose type ends in `[]`. A
+    marked field leaves the metadata, so a later run finds nothing to
+    mark, and no run here undoes a mark."""
+    return [(f["id"], f"{t.get('name')}.{f.get('name')}") for t in tables for f in t.get("fields", [])
+            if (f.get("database_type") or "").endswith("[]") and f.get("visibility_type") != "sensitive"]
+
+
+def unfingerprint_lists(base, sid, tables):
+    """Keep Metabase's field sync off the gold's list columns. Its
+    fingerprint reads a table in one query that cuts each text column to
+    a prefix with substring(). The DuckDB driver reports a list as text,
+    and DuckDB has no substring() for a list, so the whole table's
+    fingerprint fails, every hour. Metabase never fingerprints a field
+    marked `sensitive`, and such a field leaves its table browser and
+    query builder. The native cards read the column as before; no model
+    or picker binds one. A field that cannot be marked leaves only the
+    warning, so it is reported, not fatal."""
+    marked = 0
+    for fid, name in list_fields(tables):
+        st, body = req(base, f"/api/field/{fid}", "PUT", {"visibility_type": "sensitive"}, session=sid)
+        if st == 200:
+            marked += 1
+        else:
+            print(f"provision: could not keep {name} from fingerprinting ({st}): {body.get('message')}",
+                  file=sys.stderr)
+    if marked:
+        print(f"provision: {marked} list column(s) kept from fingerprinting")
 
 
 def missing_filter_columns(tables):

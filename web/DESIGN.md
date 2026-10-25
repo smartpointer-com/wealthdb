@@ -547,6 +547,16 @@ Metabase running with the cards it had. A Metabase listing that fails
 aborts the run too. Read as empty, it would create a second collection,
 database, card or dashboard of the same name.
 
+Metabase's field sync fingerprints a table in one query. That query
+cuts each text column to a prefix with `substring()`. The DuckDB driver
+reports a list as text, and DuckDB has no `substring()` for a list. So a
+list column would fail its whole table's fingerprint every hour.
+Metabase never fingerprints a field marked `sensitive`, so provisioning
+marks each list column of the gold `sensitive`. Such a column no longer
+shows in Metabase's table browser or query builder. Native SQL still
+reads it, and the one card that reads `tags` ("What the yields rest
+on") is native SQL.
+
 Provisioning is idempotent. Re-running updates cards and dashboards in
 place and archives retired names. `web/web` takes the admin password
 from `WEALTHDB_WEB_ADMIN_PASSWORD` (for example in

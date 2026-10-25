@@ -2871,6 +2871,62 @@ check("the engine writes the storage format of the DuckDB the driver bundles",
       _driver and _storage and _driver.groups() == _storage.groups(),
       f"{_driver and _driver.groups()} vs {_storage and _storage.groups()}")
 
+section("Metabase never fingerprints a list column")
+
+
+class FieldAPI:
+    """A stand-in for provision.req that records each field write and
+    answers it with `status`."""
+
+    def __init__(self, status=200):
+        self.status, self.puts = status, []
+
+    def __call__(self, base, path, method="GET", data=None, session=None, timeout=30):
+        self.puts.append((method, path, data))
+        return self.status, {"message": "refused"}
+
+
+_tables = [{"name": "web_yield", "fields": [
+    {"id": 1, "name": "tags", "database_type": "VARCHAR[]", "visibility_type": "normal"},
+    {"id": 2, "name": "symbol", "database_type": "VARCHAR", "visibility_type": "normal"}]},
+    {"name": "report_yield_positions", "fields": [
+        {"id": 3, "name": "tags", "database_type": "VARCHAR[]", "visibility_type": "sensitive"},
+        {"id": 4, "name": "weights", "database_type": "DOUBLE[]"}]}]
+real_req = p.req
+try:
+    api = p.req = FieldAPI()
+    with quiet():
+        p.unfingerprint_lists("b", "s", _tables)
+    check("each list column not yet kept from fingerprinting is marked sensitive",
+          api.puts == [("PUT", "/api/field/1", {"visibility_type": "sensitive"}),
+                       ("PUT", "/api/field/4", {"visibility_type": "sensitive"})], api.puts)
+    # A marked field leaves the metadata a later run reads.
+    api = p.req = FieldAPI()
+    p.unfingerprint_lists("b", "s", [{"name": t["name"], "fields": [f for f in t["fields"] if f["id"] not in (1, 4)]}
+                                     for t in _tables])
+    check("...so a later run marks nothing", api.puts == [], api.puts)
+    api = p.req = FieldAPI(403)
+    _err = io.StringIO()
+    with quiet(), contextlib.redirect_stderr(_err):
+        p.unfingerprint_lists("b", "s", _tables)
+    check("...and a field that cannot be marked is named, and does not stop provisioning",
+          len(api.puts) == 2 and "web_yield.tags" in _err.getvalue(), (api.puts, _err.getvalue()))
+finally:
+    p.req = real_req
+# The one card that reads a list column reads it in native SQL, which a
+# sensitive field leaves as it is: no picker and no model may bind one.
+_list_cols = {m.group(1) for f in sorted(os.listdir(os.path.join(_REPO, "wealthdb", "internal", "gold", "migrations")))
+              if f.endswith(".sql")
+              for m in re.finditer(r"^\s+(\w+)\s+\w+(?:\(\d+(?:,\s*\d+)?\))?\[\]",
+                                   open(os.path.join(_REPO, "wealthdb", "internal", "gold", "migrations", f),
+                                        encoding="utf-8").read(), re.M)}
+check("the gold's list columns are found", "tags" in _list_cols, _list_cols)
+check("no picker binds a list column",
+      not _list_cols & {c for cs in p.FILTER_FIELD_COLUMNS.values() for c in cs}, _list_cols)
+check("no model reads a list column",
+      not [m for m, (sql, _d) in p.report_models().items()
+           if any(re.search(rf"\b{c}\b", sql) for c in _list_cols)], _list_cols)
+
 section("the projection cards' SQL, run on an invented book")
 
 # The cards' SQL, rendered the way Metabase fills its template tags and
