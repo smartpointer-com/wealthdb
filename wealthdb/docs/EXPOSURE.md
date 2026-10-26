@@ -755,8 +755,14 @@ instead.
   value held through the fund. Its detail says how far the report's
   equity lines lie from the proxy's, by sector and by country. The
   measure is half the sum of the differences in each sector's or
-  country's share, in points. Each mix holds only the lines that state
-  that dimension. A dimension one side states for no line is left out.
+  country's share, in points. A line's sector is its security's, else
+  its own label. Its country is its security's country of risk, else its
+  own label, else its security's domicile (§3). Each mix holds only the
+  lines that state that dimension. A dimension the proxy's file labels
+  on none of its lines is left out. Its securities may place some of
+  those lines, but a mix of those alone would show a false divergence. A
+  dimension one side states for no line is left out too. A fund left
+  with neither is not listed.
 - `situs` splits net worth by the basis of each holding's legal situs
   (§13), in the rule's order, and sums to it. Then it lists each holding
   whose situs is `unknown`. Its items count holdings, not leaves.

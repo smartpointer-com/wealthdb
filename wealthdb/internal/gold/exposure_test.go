@@ -3,6 +3,7 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -969,36 +970,27 @@ func TestMigration0126DDLIsRerunnable(t *testing.T) {
 	}
 }
 
-// Each side's mix holds only the lines that state the dimension: a proxy
-// whose lines state no country, and that no source places, compares on
-// sectors alone.
-func TestExposureDivergenceComparesWhatEachSideStates(t *testing.T) {
-	t.Parallel()
+// divergenceLines rebuilds the exposure fixture with stmts applied, each
+// `?` the fixture's snapshot, and returns the coverage's divergence
+// lines.
+func divergenceLines(t *testing.T, stmts ...string) []string {
+	t.Helper()
 	db, ctx := openExposureFixture(t)
-	for _, q := range []string{
-		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, name, currency,
-		 first_seen_at, last_seen_at) VALUES ('test-src', 'QRP3', 'public_equity', 'fund', 'QRP3', 'Report Fund', 'USD', 0, 0)`,
-		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
-		 asset_class, vehicle, currency, quantity, market_value)
-		 VALUES ('test-src', ?, 'A1', 'QRP3', 'QRP3', 'public_equity', 'fund', 'USD', 1, 100)`,
-		`INSERT INTO exposure_proxies (fund_ref, proxy_ref, always, leverage) VALUES ('symbol:QRP3', 'symbol:QPX3', FALSE, 1)`,
-		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, source_kind, line_count, currency)
-		 VALUES ('test-src', 'symbol:QRP3', ?, 'holdings', 'swissfunddata', 'report', 2, 'USD'),
-		        ('test-src', 'symbol:QPX3', ?, 'holdings', 'testprov', 'issuer', 2, 'USD')`,
-		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
-		 weight, currency, country, sector) VALUES
-		 ('test-src', 'symbol:QRP3', ?, 'holdings', 1, 'isin:JP0000000F01', 'JP0000000F01', 'QLAND ONE', 'Equity', 60, 'JPY', 'Japan', 'Materials'),
-		 ('test-src', 'symbol:QRP3', ?, 'holdings', 2, 'isin:JP0000000F02', 'JP0000000F02', 'QLAND TWO', 'Equity', 40, 'JPY', 'Japan', 'Industrials'),
-		 ('test-src', 'symbol:QPX3', ?, 'holdings', 1, 'symbol:QPF1', NULL, 'QLAND ONE', 'Equity', 50, 'JPY', NULL, 'Materials'),
-		 ('test-src', 'symbol:QPX3', ?, 'holdings', 2, 'symbol:QPF2', NULL, 'QLAND THREE', 'Equity', 50, 'JPY', NULL, 'Utilities')`,
-	} {
+	for _, q := range stmts {
 		if _, err := db.ExecContext(ctx, q, slices.Repeat([]any{exSnap}, strings.Count(q, "?"))...); err != nil {
-			t.Fatal(err)
+			t.Fatalf("%s: %v", q, err)
 		}
 	}
 	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	return coverageDivergence(t, ctx, db)
+}
+
+// coverageDivergence returns the coverage's divergence lines, each as
+// its reason and detail.
+func coverageDivergence(t *testing.T, ctx context.Context, db *sql.DB) []string {
+	t.Helper()
 	cov, err := ExposureCoverage(ctx, db, exAsOf, "USD")
 	if err != nil {
 		t.Fatal(err)
@@ -1009,8 +1001,89 @@ func TestExposureDivergenceComparesWhatEachSideStates(t *testing.T) {
 			div = append(div, r.Reason+": "+*r.Detail)
 		}
 	}
+	return div
+}
+
+// heldReportFunds returns the statements that hold report fund QRP<n>
+// for each suffix n, proxied by QPX<n>, each with a composition on the
+// fixture's snapshot.
+func heldReportFunds(ns ...string) []string {
+	var ins, pos, prox, comps []string
+	for _, n := range ns {
+		ins = append(ins, fmt.Sprintf("('test-src', 'QRP%s', 'public_equity', 'fund', 'QRP%s', 'Report Fund %s', 'USD', 0, 0)", n, n, n))
+		pos = append(pos, fmt.Sprintf("('test-src', ?, 'A1', 'QRP%s', 'QRP%s', 'public_equity', 'fund', 'USD', 1, 100)", n, n))
+		prox = append(prox, fmt.Sprintf("('symbol:QRP%s', 'symbol:QPX%s', FALSE, 1)", n, n))
+		comps = append(comps, fmt.Sprintf("('test-src', 'symbol:QRP%s', ?, 'holdings', 'swissfunddata', 'report', 2, 'USD'), "+
+			"('test-src', 'symbol:QPX%s', ?, 'holdings', 'testprov', 'issuer', 2, 'USD')", n, n))
+	}
+	return []string{
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, name, currency,
+		 first_seen_at, last_seen_at) VALUES ` + strings.Join(ins, ", "),
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, quantity, market_value) VALUES ` + strings.Join(pos, ", "),
+		`INSERT INTO exposure_proxies (fund_ref, proxy_ref, always, leverage) VALUES ` + strings.Join(prox, ", "),
+		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, source_kind, line_count, currency)
+		 VALUES ` + strings.Join(comps, ", "),
+	}
+}
+
+// A dimension one side states for no line is left out: a report whose
+// lines state no country, and that nothing places, compares on sectors
+// alone, though its proxy's file labels a country.
+func TestExposureDivergenceSkipsWhatTheReportLeavesOut(t *testing.T) {
+	t.Parallel()
+	div := divergenceLines(t, append(heldReportFunds("3"),
+		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
+		 weight, currency, country, sector) VALUES
+		 ('test-src', 'symbol:QRP3', ?, 'holdings', 1, 'symbol:QRF1', NULL, 'QLAND ONE', 'Equity', 60, 'JPY', NULL, 'Materials'),
+		 ('test-src', 'symbol:QRP3', ?, 'holdings', 2, 'symbol:QRF2', NULL, 'QLAND TWO', 'Equity', 40, 'JPY', NULL, 'Industrials'),
+		 ('test-src', 'symbol:QPX3', ?, 'holdings', 1, 'symbol:QPF1', NULL, 'QLAND ONE', 'Equity', 50, 'JPY', 'Japan', 'Materials'),
+		 ('test-src', 'symbol:QPX3', ?, 'holdings', 2, 'symbol:QPF2', NULL, 'QLAND THREE', 'Equity', 50, 'JPY', 'Japan', 'Utilities')`)...)
 	// Materials 60/50, industrials 40/0, utilities 0/50: 50 points.
 	if want := []string{"symbol:QRP3: sector 50.0 points from symbol:QPX3"}; !slices.Equal(div, want) {
+		t.Errorf("divergence = %v, want %v", div, want)
+	}
+}
+
+// A dimension the proxy's file labels on none of its lines is left out,
+// though its securities' own facts place some of them: a mix from those
+// alone would read as a divergence. A label counts on a line of positive
+// weight, in the country or the risk country column. A proxy whose file
+// labels neither sector nor country is not listed.
+func TestExposureDivergenceSkipsWhatTheProxyFileLeavesOut(t *testing.T) {
+	t.Parallel()
+	// Each report holds QLAND ONE 60 and QLAND TWO 40, both Japanese.
+	var report []string
+	for _, n := range []string{"4", "5", "6", "7"} {
+		report = append(report, fmt.Sprintf(
+			"('test-src', 'symbol:QRP%s', ?, 'holdings', 1, 'isin:JP0000000G01', 'JP0000000G01', 'QLAND ONE', 'Equity', 60, 'JPY', 'Japan', 'Materials'), "+
+				"('test-src', 'symbol:QRP%s', ?, 'holdings', 2, 'isin:JP0000000G02', 'JP0000000G02', 'QLAND TWO', 'Equity', 40, 'JPY', 'Japan', 'Industrials')", n, n))
+	}
+	div := divergenceLines(t, append(heldReportFunds("4", "5", "6", "7"),
+		`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value) VALUES
+		 ('refdata', 'isin:US0000000G03', 'sector', ?, 'testfact', 'Utilities'),
+		 ('refdata', 'isin:US0000000G03', 'risk_country', ?, 'testfact', 'US')`,
+		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
+		 weight, currency, country, sector) VALUES `+strings.Join(report, ", "),
+		// QPX4 labels sectors, no country; QPX5 neither; QPX6 a risk
+		// country on one line; QPX7 a country on a line of no weight.
+		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
+		 weight, currency, country, risk_country, sector) VALUES
+		 ('test-src', 'symbol:QPX4', ?, 'holdings', 1, 'isin:JP0000000G01', 'JP0000000G01', 'QLAND ONE', 'Equity', 50, 'JPY', NULL, NULL, 'Materials'),
+		 ('test-src', 'symbol:QPX4', ?, 'holdings', 2, 'isin:US0000000G03', 'US0000000G03', 'QLAND THREE', 'Equity', 50, 'USD', NULL, NULL, 'Utilities'),
+		 ('test-src', 'symbol:QPX5', ?, 'holdings', 1, 'isin:JP0000000G01', 'JP0000000G01', 'QLAND ONE', 'Equity', 50, 'JPY', NULL, NULL, NULL),
+		 ('test-src', 'symbol:QPX5', ?, 'holdings', 2, 'isin:US0000000G03', 'US0000000G03', 'QLAND THREE', 'Equity', 50, 'USD', NULL, NULL, NULL),
+		 ('test-src', 'symbol:QPX6', ?, 'holdings', 1, 'isin:JP0000000G01', 'JP0000000G01', 'QLAND ONE', 'Equity', 50, 'JPY', NULL, 'Japan', NULL),
+		 ('test-src', 'symbol:QPX6', ?, 'holdings', 2, 'isin:US0000000G03', 'US0000000G03', 'QLAND THREE', 'Equity', 50, 'USD', NULL, NULL, NULL),
+		 ('test-src', 'symbol:QPX7', ?, 'holdings', 1, 'isin:JP0000000G01', 'JP0000000G01', 'QLAND ONE', 'Equity', 50, 'JPY', NULL, NULL, NULL),
+		 ('test-src', 'symbol:QPX7', ?, 'holdings', 2, 'isin:US0000000G03', 'US0000000G03', 'QLAND THREE', 'Equity', 50, 'USD', NULL, NULL, NULL),
+		 ('test-src', 'symbol:QPX7', ?, 'holdings', 3, 'isin:US0000000G04', 'US0000000G04', 'QLAND FOUR', 'Equity', 0, 'USD', 'United States', NULL, NULL)`)...)
+	// Materials 60/50, industrials 40/0, utilities 0/50: 50 points. The
+	// countries, Japan 100 against Japan 50 and the US 50, are compared
+	// only for QPX6, whose file labels a country.
+	want := []string{"symbol:QRP4: sector 50.0 points from symbol:QPX4",
+		"symbol:QRP6: country 50.0 points from symbol:QPX6"}
+	if slices.Sort(div); !slices.Equal(div, want) {
 		t.Errorf("divergence = %v, want %v", div, want)
 	}
 }

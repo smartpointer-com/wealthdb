@@ -465,16 +465,7 @@ func TestExposureLinksANamedLineInItsProxyFirst(t *testing.T) {
 	if f := leafFlags(t, db, ctx, `top_key = 'symbol:QRPT' AND key = 'name:r904'`); f != "by_name" {
 		t.Errorf("a share found among all: flags %q, want by_name", f)
 	}
-	cov, err := ExposureCoverage(ctx, db, exAsOf, "USD")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var div []string
-	for _, r := range cov {
-		if r.Section == "divergence" {
-			div = append(div, r.Reason+": "+*r.Detail)
-		}
-	}
+	div := coverageDivergence(t, ctx, db)
 	// Sectors 40/20/30/10 (materials, industrials, technology,
 	// utilities) against 60/40/0/0: 40 points apart; countries 70/30
 	// (Japan, Britain) against 100/0: 30. The proxy's line that states
