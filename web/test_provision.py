@@ -1206,7 +1206,7 @@ if twin:
 _TOP = {card_ids[c] for c in p.POSITION_FILTERED_CARDS}
 _BORROWED = {card_ids[c] for t in ("Wealth Overview", "Wealth Overview" + p.PRIVACY_SUFFIX)
              for c, *_ in DEFS[t][3] if c.removesuffix(p.PRIVACY_SUFFIX) in p.OVERVIEW_TILE_HOMES
-             and c.removesuffix(p.PRIVACY_SUFFIX) != "Asset class split"}
+             and c.removesuffix(p.PRIVACY_SUFFIX) != "Asset class mix over time"}
 _SELECTION = {p.WEALTH_TAX_WRAPPER_PARAM_ID, p.ASSET_PARAM_ID}
 # The debt view carries no asset class, the issuers view neither a source
 # nor a tax wrapper: those tiles take what their views can narrow by.
@@ -1956,12 +1956,19 @@ if _gbody:
 section("every dashboard's grid")
 
 # A heading spans the grid's width on its row, so it counts as a tile.
-for _d, (_desc, _mode, _spec) in p.base_dashboards().items():
-    _spec = _spec + [(_text, _r, 0, 24, 1, None) for _r, _text in p.DASHBOARD_HEADINGS.get(_d, [])]
+# A twin carries its base's headings, and TWIN_TILES places some of its
+# tiles anew.
+for _d, (_desc, _mode, _sibling, _spec) in p.dashboard_defs().items():
+    _base = _sibling if _d.endswith(p.PRIVACY_SUFFIX) else _d
+    _spec = _spec + [(_text, _r, 0, 24, 1, None) for _r, _text in p.DASHBOARD_HEADINGS.get(_base, [])]
     check(f"'{_d}' sits on the 24-column grid without overlaps",
           all(c + w <= 24 for _n, _r, c, w, _h, _t in _spec) and not [
               (a[0], b[0]) for i, a in enumerate(_spec) for b in _spec[i + 1:]
               if a[2] < b[2] + b[3] and b[2] < a[2] + a[3] and a[1] < b[1] + b[4] and b[1] < a[1] + a[4]])
+
+check("every TWIN_TILES card is a tile of its base",
+      all(set(_t) <= {c for c, *_ in p.base_dashboards()[_d][2]} for _d, _t in p.TWIN_TILES.items()),
+      {_d: sorted(set(_t) - {c for c, *_ in p.base_dashboards()[_d][2]}) for _d, _t in p.TWIN_TILES.items()})
 
 section("the Wealth Overview")
 
@@ -1979,7 +1986,7 @@ _by_id = {v: k for k, v in card_ids.items()}
 _ALL = {"currency", "time_range", "source", "tax_wrapper", "asset_class"}
 _FLOW = {"currency", "time_range", "source"}
 _REACH = {"Net worth": _ALL, "Positions value": _ALL, "Cash balance": _ALL, "Net worth — monthly trend": _ALL,
-          "Net worth over time": _ALL, "Asset class split": _ALL, "Stalest source (days)": set(),
+          "Net worth over time": _ALL, "Asset class mix over time": _ALL, "Stalest source (days)": set(),
           "Received income": _FLOW, "Net spend": _FLOW, "Spend — monthly trend": _FLOW,
           "Net cash flow": _FLOW, "Savings rate": _FLOW,
           "Realized gain": _FLOW | {"tax_wrapper"}, "Unrealized gain": _FLOW | {"tax_wrapper"},
@@ -2000,9 +2007,27 @@ for _cid, _dc in _ov_tiles[_OVT].items():
     if sql_of(CARDS[_c][2]) is not None and _got != _tags & _ALL:
         _twin_off.append((_c, sorted(_got), sorted(_tags & _ALL)))
 check("...and each twin figure the pickers its privacy card has", not _twin_off, _twin_off)
-check("...the twin's spending figure, an MBQL card, the Currency, Time range and Source its home gives it",
-      {_ov_params[_OVT][m["parameter_id"]]
-       for m in _ov_tiles[_OVT][card_ids["Net spend (privacy)"]]["parameter_mappings"]} == _FLOW)
+# The twin leaves out the two figures that read 100 by construction, and
+# the four left in their rows sit two to a row (a row below the base's
+# grid: the switch link takes the first).
+_ovt_place = {_by_id[dc["card_id"]]: (dc["row"], dc["col"], dc["size_x"])
+              for dc in _ov_body[_OVT]["dashcards"] if dc["card_id"] is not None}
+check("the twin carries no received income and no net spend, whose shares read 100",
+      not {"Received income (privacy)", "Net spend (privacy)"} & set(_ovt_place)
+      and {"Received income", "Net spend"} <= set(_reach), sorted(_ovt_place))
+check("...and its other four figures of the time range sit two to a row",
+      {c: _ovt_place[c] for c in ("Spend — monthly trend (privacy)", "Net cash flow (privacy)",
+                                  "Savings rate (privacy)", "Realized gain (privacy)")}
+      == {"Spend — monthly trend (privacy)": (21, 0, 12), "Net cash flow (privacy)": (21, 12, 12),
+          "Savings rate (privacy)": (24, 0, 12), "Realized gain (privacy)": (24, 12, 12)}, _ovt_place)
+_params_all = {d.get("name"): d["parameters"] for d in layouts}
+_mbql = p.overview_mappings("Net spend (privacy)", _OVT, DEFS, _params_all, card_ids)
+check("an MBQL card takes the pickers its home dashboard maps, the twin's net spend among them",
+      {_ov_params[_OVT][m["parameter_id"]] for m in _mbql} == _FLOW, _mbql)
+check("...and both show the asset class mix, the same card, under the title of its kind",
+      card_ids["Asset class mix over time"] in _ov_tiles[_OV] and card_ids["Asset class mix over time"] in _ov_tiles[_OVT]
+      and all(_ov_tiles[n][card_ids["Asset class mix over time"]]["visualization_settings"].get("card.title")
+              == "Asset classes over time" for n in (_OV, _OVT)))
 check("...every mapping on both naming a picker the dashboard carries, its card's own id",
       all(m["parameter_id"] in _ov_params[n] and m["card_id"] == cid
           for n in (_OV, _OVT) for cid, dc in _ov_tiles[n].items() for m in dc["parameter_mappings"]))
@@ -2049,7 +2074,7 @@ for _n in (_OV, _OVT):
 check("each figure from another dashboard opens it, passing the pickers both carry",
       not _click_off, _click_off)
 check("...on the twin, a figure opens its home's twin, and the gains, whose dashboard has none, nothing",
-      p.overview_home("Received income (privacy)", _OVT) == "Income (privacy)"
+      p.overview_home("Net cash flow (privacy)", _OVT) == "Cash Flow (privacy)"
       and p.overview_home("Stalest source (days)", _OVT) == "Data Freshness (privacy)"
       and p.overview_home("Realized gain (privacy)", _OVT) is None
       and p.overview_home("Net worth (privacy)", _OVT) is None)
@@ -2079,7 +2104,8 @@ check("...and Income keeps the card's own name",
               for d in layouts if d.get("name") == "Income" for dc in d["dashcards"]))
 
 # The retired tiles' cards are archived, their variants too.
-_RETIRED = {c + s for c in ("Cash vs positions over time", "Investment income by month", "Fees & taxes by month")
+_RETIRED = {c + s for c in ("Cash vs positions over time", "Investment income by month", "Fees & taxes by month",
+                            "Asset class split")
             for s in ("", p.PRIVACY_SUFFIX)}
 check("the overview's retired cards are archived",
       _RETIRED <= set(p.RETIRED_CARD_NAMES), sorted(_RETIRED - set(p.RETIRED_CARD_NAMES)))
@@ -3851,8 +3877,9 @@ if duckdb is not None:
 
     section("the Wealth Overview's new figures, run on an invented book")
 
-    # The asset classes on two days; the split reads the Time range's
-    # last day, the latest day where the range is open.
+    # The asset classes on two days: each day's classes as shares of
+    # that day's total, the largest at the latest day first in the
+    # stack's order, which puts it at the bottom.
     _db.execute("CREATE TABLE web_asset_classes_history (as_of_day DATE, silver_source_id TEXT, tax_wrapper TEXT,"
                 " asset_class TEXT, value_usd DOUBLE, value_chf DOUBLE, value_eur DOUBLE, value_gbp DOUBLE)")
     for _day, _cls, _v in (("2026-09-30", "public_equity", 600.0), ("2026-09-30", "cash", 400.0),
@@ -3860,16 +3887,36 @@ if duckdb is not None:
                            ("2026-10-21", "real_estate", -200.0)):
         _db.execute("INSERT INTO web_asset_classes_history VALUES (?, 'src-1', 'taxable_personal', ?, ?, ?, ?, ?)",
                     [_day, _cls, _v, _v * 0.8, _v, _v])
-    _split = _run("Asset class split")
-    check("the asset class split reads the latest day where the Time range is open, largest first",
-          _split == [("public_equity", 900.0), ("cash", 300.0), ("real_estate", -200.0)], _split)
-    _split = _run("Asset class split", time_range=("2026-09-01", "2026-09-30"))
-    check("...and the range's last day where it ends earlier",
-          _split == [("public_equity", 600.0), ("cash", 400.0)], _split)
-    _split = _run("Asset class split (privacy)")
-    check("...its twin each class as a share of the day's total, summing to 100",
-          [(c, round(v, 6)) for c, v in _split] == [("public_equity", 90.0), ("cash", 30.0), ("real_estate", -20.0)],
-          _split)
+    _mix = [(str(d), c, round(v, 6)) for d, c, v in _run("Asset class mix over time")]
+    check("the asset class mix is each day's classes as shares of its total, the smallest at the end first",
+          _mix == [("2026-10-21", "real_estate", -20.0), ("2026-09-30", "cash", 40.0), ("2026-10-21", "cash", 30.0),
+                   ("2026-09-30", "public_equity", 60.0), ("2026-10-21", "public_equity", 90.0)], _mix)
+    _mix = [(str(d), c, round(v, 6)) for d, c, v in _run("Asset class mix over time", asset_class=["cash", "real_estate"])]
+    check("...narrowed to two classes, their shares of the two, which sum to 100",
+          _mix == [("2026-10-21", "real_estate", -200.0), ("2026-09-30", "cash", 100.0), ("2026-10-21", "cash", 300.0)],
+          _mix)
+    _mix = _run("Asset class mix over time", time_range=("2026-09-01", "2026-09-30"))
+    check("...and the Time range keeps its days", {str(r[0]) for r in _mix} == {"2026-09-30"}, _mix)
+    # A day whose classes cancel to float noise has no mix to show.
+    for _cls, _v in (("public_equity", 0.1), ("cash", 0.2), ("real_estate", -0.3)):
+        _db.execute("INSERT INTO web_asset_classes_history VALUES ('2026-08-31', 'src-1', 'taxable_personal', ?, ?, ?, ?, ?)",
+                    [_cls, _v, _v, _v, _v])
+    _mix = _run("Asset class mix over time")
+    check("...and a day whose classes cancel shows nothing", "2026-08-31" not in {str(r[0]) for r in _mix}, _mix)
+    # Nor does a day whose classes sum below zero: its shares would flip
+    # every band's sign.
+    for _cls, _v in (("public_equity", 100.0), ("real_estate", -400.0)):
+        _db.execute("INSERT INTO web_asset_classes_history VALUES ('2026-07-31', 'src-1', 'taxable_personal', ?, ?, ?, ?, ?)",
+                    [_cls, _v, _v, _v, _v])
+    _mix = _run("Asset class mix over time")
+    check("...nor a day whose classes sum below zero",
+          {str(r[0]) for r in _mix} == {"2026-09-30", "2026-10-21"}, _mix)
+    _db.execute("DELETE FROM web_asset_classes_history WHERE as_of_day IN (DATE '2026-08-31', DATE '2026-07-31')")
+    check("...stacked, not normalized, so a negative band draws, with shares shown as percent",
+          VIZ["Asset class mix over time"].get("stackable.stack_type") == "stacked"
+          and VIZ["Asset class mix over time"].get("legend.is_reversed") is False
+          and VIZ["Asset class mix over time"]["column_settings"]['["name","share_pct"]'] == {"suffix": "%"},
+          VIZ["Asset class mix over time"])
 
     # The year-to-date returns read the summary since 1 January of this
     # year, in the chosen currency, and return the year a click passes on.

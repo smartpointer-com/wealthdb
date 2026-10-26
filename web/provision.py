@@ -717,12 +717,15 @@ RETIRED_CARD_NAMES = [
                       # the positions card beside it does.
                       "Largest issuers", "Largest issuers (privacy)",
                       # The Wealth Overview shows a figure from each
-                      # dashboard: the split over time is Exposure's
-                      # asset classes, the income Income's, the fees and
+                      # dashboard: the income Income's, the fees and
                       # taxes Cash Flow's operating outflows.
-                      "Cash vs positions over time", "Cash vs positions over time (privacy)",
                       "Investment income by month", "Investment income by month (privacy)",
-                      "Fees & taxes by month", "Fees & taxes by month (privacy)"]
+                      "Fees & taxes by month", "Fees & taxes by month (privacy)",
+                      # The asset classes over time, below the net worth
+                      # chart, show the mix the cash and positions chart
+                      # and the one-day split showed.
+                      "Cash vs positions over time", "Cash vs positions over time (privacy)",
+                      "Asset class split", "Asset class split (privacy)"]
 
 # Dashboard names retired by renames; archived on provision so a re-run
 # cleans them up.
@@ -741,7 +744,7 @@ RETURN_YTD_CARDS = (("Return year to date (TWR)", "time-weighted", "twr"),
 # — see PRIVACY_DESC). Cards listed here show no monetary values
 # (percentages, indices, source names), so the twin reuses them as-is. The returns scalars and charts
 # are all percentage/index-only; only the by-source table carries money.
-PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)",
+PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)", "Asset class mix over time",
                         *(c for c, _m, _col in RETURN_YTD_CARDS),
                         "Return (TWR)", "Return (MWR)", "Annualized return (TWR)",
                         "Cumulative return (TWR)", "Monthly returns (TWR)",
@@ -1388,7 +1391,7 @@ def question_defs(db_id, mid):
         tags = native_tags(view, ASOF_FILTERS)
         register_native_targets(name, tags, ALLOCATION_PICKERS)
         return (display, desc + al_note,
-                _native(db_id, _breakdown_sql(view, dim, col, _native_where(tags)), tags),
+                _native(db_id, _breakdown_sql(view, dim, col, tags), tags),
                 viz if viz is not None else
                 {"graph.dimensions": [dim], "graph.metrics": ["value"]})
 
@@ -1429,14 +1432,31 @@ def question_defs(db_id, mid):
                      "  FROM web_sources_history" + _native_where(hist_tags) +
                      "\n GROUP BY 1, 2", "as_of_day", "silver_source_id", "net_worth", "latest"),
             {**_series_viz("as_of_day", "silver_source_id", "net_worth"), **STACKED_VIZ}),
-        "Asset class split": overview_native(
-            "Asset class split", cls_tags, "row",
-            "Value by asset class on the time range's last day: the figure "
-            "Allocation by asset class shows as of that day. A class can "
-            "read negative where a debt outweighs what it is owed on.",
-            _breakdown_sql("web_asset_classes_history", "asset_class", "value",
-                           _window_last_day("web_asset_classes_history", cls_tags)),
-            {"graph.dimensions": ["asset_class"], "graph.metrics": ["value"]}),
+        # Shares, not money, so the twin shows the card as it is.
+        "Asset class mix over time": overview_native(
+            "Asset class mix over time", cls_tags, "area",
+            "Each day's net worth by asset class, as shares of that day's "
+            "total that stack to 100: each class's part of the value "
+            "Allocation by asset class shows as of that day. The largest "
+            "class at the latest day sits at the bottom. The Asset class "
+            "picker narrows the mix to the chosen classes, which then sum to "
+            "100. A class reads below zero where a debt outweighs what it is "
+            "owed on, and the others then reach above 100. A day whose total "
+            "is not positive shows nothing.",
+            _series_order(
+                "WITH v AS (\n"
+                f"  SELECT as_of_day, asset_class, sum({_ccy_case('value')})::DOUBLE AS value\n"
+                "    FROM web_asset_classes_history" + _native_where(cls_tags) + "\n"
+                "   GROUP BY 1, 2),\n"
+                "t AS (SELECT as_of_day, sum(value) AS total FROM v GROUP BY 1)\n"
+                "SELECT v.as_of_day, v.asset_class, v.value / t.total * 100 AS share_pct\n"
+                "  FROM v JOIN t ON t.as_of_day = v.as_of_day\n"
+                " WHERE t.total > 1e-9", "as_of_day", "asset_class", "share_pct", "latest"),
+            # Stacked, not normalized: Metabase pins a normalized stack's
+            # axis to 0..100%, which drops a negative band and clips the
+            # bands above it. The shares already sum to 100.
+            {**_series_viz("as_of_day", "asset_class", "share_pct"), **STACKED_VIZ,
+             **_share_viz("share_pct")}),
         **{name: overview_native(name, ccy_tags, "scalar",
                f"Whole-portfolio {method} return since 1 January of the latest year "
                "the returns cover, this year once a refresh has read it: the Returns "
@@ -2457,7 +2477,7 @@ OVERVIEW_DASHBOARDS = {"Wealth Overview", "Wealth Overview" + PRIVACY_SUFFIX}
 # dashboard gives it. The net worth tiles have no home and open nothing.
 OVERVIEW_TILE_HOMES = {
     "Stalest source (days)": "Data Freshness",
-    "Asset class split": "Allocation",
+    "Asset class mix over time": "Allocation",
     "Received income": "Income", "Expected remaining": "Income",
     "Net spend": "Spending", "Spend — monthly trend": "Spending",
     "Net cash flow": "Cash Flow", "Savings rate": "Cash Flow", "Projected net cash flow": "Cash Flow",
@@ -2466,26 +2486,42 @@ OVERVIEW_TILE_HOMES = {
     "Income yield": "Yield",
 }
 
+# The overview's tiles built for it alone, each from its home dashboard's
+# data: no other dashboard shows them.
+OVERVIEW_BUILT_CARDS = {"Asset class mix over time", "Projected net cash flow",
+                        *(c for c, _m, _col in RETURN_YTD_CARDS)}
+
 # Full-width headings over a dashboard's rows, by base dashboard (the
 # twin takes its base's): (row, text). The overview's say what sets each
 # row of figures.
-# The overview's tiles built for it alone, each from its home dashboard's
-# data: no other dashboard shows them.
-OVERVIEW_BUILT_CARDS = {"Asset class split", "Projected net cash flow",
-                        *(c for c, _m, _col in RETURN_YTD_CARDS)}
-
 DASHBOARD_HEADINGS = {"Wealth Overview": [
-    (11, "Over the time range"),
-    (18, "At the range's end, today and ahead"),
+    (19, "Over the time range"),
+    (26, "At the range's end, today and ahead"),
 ]}
+
+# A twin's own placing of its base's tiles, by base dashboard: card ->
+# (row, col, size_x, size_y), or None for a tile the twin leaves out. On
+# the overview's twin, received income and net spend read 100 by
+# construction: each is the total its own twin divides by. The twin
+# leaves them out, and the other four figures of their rows sit two to a
+# row.
+TWIN_TILES = {"Wealth Overview": {
+    "Received income": None, "Net spend": None,
+    "Spend — monthly trend": (20, 0, 12, 3), "Net cash flow": (20, 12, 12, 3),
+    "Savings rate": (23, 0, 12, 3), "Realized gain": (23, 12, 12, 3),
+}}
 
 
 def dashboard_tile_titles(base):
     """card name -> the title its tiles show on base dashboard `base` and
-    its twin, the twin's in the privacy form: a borrowed card whose own
-    name leans on its home dashboard's pickers."""
-    titles = {"Wealth Overview": {"Expected remaining": f"Expected income, {HORIZONS[0]} months"}}.get(base, {})
-    return {**titles, **{privacy_name(c): privacy_name(t) for c, t in titles.items()}}
+    its twin. The twin's title takes the privacy form, unless the twin
+    shows the card itself (PRIVACY_EXEMPT_CARDS). A title is set for two
+    kinds of card: a borrowed card whose name leans on its home
+    dashboard's pickers, and a card whose title is another card's name."""
+    titles = {"Wealth Overview": {"Expected remaining": f"Expected income, {HORIZONS[0]} months",
+                                  "Asset class mix over time": "Asset classes over time"}}.get(base, {})
+    return {**titles, **{privacy_name(c): privacy_name(t) for c, t in titles.items()
+                         if c not in PRIVACY_EXEMPT_CARDS}}
 
 
 def base_dashboards():
@@ -2515,7 +2551,7 @@ def base_dashboards():
     return {
         "Wealth Overview": (
             "The whole picture in a chosen currency (default "
-            f"{DEFAULT_CURRENCY}): net worth and its asset classes, then a "
+            f"{DEFAULT_CURRENCY}): net worth and its asset classes over time, then a "
             "figure or two from the other dashboards, each opening the "
             "dashboard it restates. " + note, "range", [
             # Net worth = positions + cash by construction — the first
@@ -2528,24 +2564,25 @@ def base_dashboards():
             ("Cash balance", 0, 9, 5, 3, "snapshot_at"),
             ("Net worth — monthly trend", 0, 14, 5, 3, "as_of_day"),
             ("Stalest source (days)", 0, 19, 5, 3, None),
-            ("Net worth over time", 3, 0, 16, 8, "as_of_day"),
-            ("Asset class split", 3, 16, 8, 8, "as_of_day"),
+            # The net worth chart, then its mix by asset class.
+            ("Net worth over time", 3, 0, 24, 8, "as_of_day"),
+            ("Asset class mix over time", 11, 0, 24, 8, "as_of_day"),
             # Under DASHBOARD_HEADINGS' two headings: the figures over
             # the time range, then those at its end, today and ahead,
             # three to a row so each title reads whole. Their time column
             # is unread (overview_mappings).
-            ("Received income", 12, 0, 8, 3, None),
-            ("Net spend", 12, 8, 8, 3, None),
-            ("Spend — monthly trend", 12, 16, 8, 3, None),
-            ("Net cash flow", 15, 0, 8, 3, None),
-            ("Savings rate", 15, 8, 8, 3, None),
-            ("Realized gain", 15, 16, 8, 3, None),
-            ("Unrealized gain", 19, 0, 8, 3, None),
-            ("Return year to date (TWR)", 19, 8, 8, 3, None),
-            ("Return year to date (MWR)", 19, 16, 8, 3, None),
-            ("Income yield", 22, 0, 8, 3, None),
-            ("Expected remaining", 22, 8, 8, 3, None),
-            ("Projected net cash flow", 22, 16, 8, 3, None),
+            ("Received income", 20, 0, 8, 3, None),
+            ("Net spend", 20, 8, 8, 3, None),
+            ("Spend — monthly trend", 20, 16, 8, 3, None),
+            ("Net cash flow", 23, 0, 8, 3, None),
+            ("Savings rate", 23, 8, 8, 3, None),
+            ("Realized gain", 23, 16, 8, 3, None),
+            ("Unrealized gain", 27, 0, 8, 3, None),
+            ("Return year to date (TWR)", 27, 8, 8, 3, None),
+            ("Return year to date (MWR)", 27, 16, 8, 3, None),
+            ("Income yield", 30, 0, 8, 3, None),
+            ("Expected remaining", 30, 8, 8, 3, None),
+            ("Projected net cash flow", 30, 16, 8, 3, None),
         ]),
         "Allocation": (
             "Where the value sits — asset class, currency, tax wrapper, "
@@ -4478,11 +4515,12 @@ def _native_where(tags, indent="   ", exclude=()):
     return f"\n{indent}WHERE TRUE" + _field_clauses(tags, exclude)
 
 
-def _breakdown_sql(view, dim, col, where, share=False):
+def _breakdown_sql(view, dim, col, tags, share=False):
     """An Allocation breakdown's SQL: `col` summed by `dim` over serving
-    view `view`'s rows that `where` keeps, largest first; with `share`
-    each as % of the sum, the twin's (liability buckets read negative,
-    and a zero sum blanks them)."""
+    view `view`'s rows that the field filters in `tags` keep, largest
+    first; with `share` each as % of the sum, the twin's (liability
+    buckets read negative, and a zero sum blanks them)."""
+    where = _native_where(tags)
     if not share:
         return (f"SELECT {dim}, sum({_ccy_case(col)})::DOUBLE AS value\n"
                 f"  FROM {view}" + where + "\n GROUP BY 1\n ORDER BY 2 DESC")
@@ -4494,17 +4532,6 @@ def _breakdown_sql(view, dim, col, where, share=False):
             "       v / (SELECT CASE WHEN sum(v) <> 0 THEN sum(v) END FROM r)"
             " * 100 AS value_pct\n"
             "  FROM r\n ORDER BY 2 DESC")
-
-
-def _window_last_day(view, tags, indent=" "):
-    """The WHERE of a card that reads daily-history view `view` on the
-    time range's last day: the latest day the Time range keeps, then the
-    card's other field filters. The day is the view's, not the
-    selection's: the net worth twins' window-end denominator (nw_cte)
-    reads it the same way."""
-    return (f"\n{indent}WHERE as_of_day = (SELECT max(as_of_day) FROM {view}\n"
-            f"{indent}                    WHERE TRUE" + _cl(tags, "time_range") + ")"
-            + _field_clauses(tags, exclude=("time_range",)))
 
 
 # Dashboard picker -> template tag wiring for every native card, rebuilt
@@ -4610,8 +4637,10 @@ def privacy_card_defs(db_id, model_ids):
     # time filter picks the anchor day, the source filter makes a subset
     # rescale to its own anchor total — so the envelope ends at 100 at
     # the window's last day and tops 100 wherever it previously peaked
-    # higher. The > 0 guard blanks a selection whose anchor total is
-    # zero or negative — dividing would render inf/NaN resp.
+    # higher. The anchor day is the latest day of the view the Time
+    # range keeps, not of the selection; the other pickers then filter
+    # that day's rows. The > 0 guard blanks a selection whose anchor
+    # total is zero or negative — dividing would render inf/NaN resp.
     # sign-flipped bands.
     sh_tags = native_tags("web_sources_history", holdings_filters("as_of_day"))
     total = _ccy_case("total_value")
@@ -4619,8 +4648,10 @@ def privacy_card_defs(db_id, model_ids):
         "WITH nw AS (\n"
         f"  SELECT CASE WHEN sum({total}) > 0\n"
         f"              THEN sum({total})::DOUBLE END AS denom\n"
-        "    FROM web_sources_history"
-        + _window_last_day("web_sources_history", sh_tags, indent="   ") + ")\n")
+        "    FROM web_sources_history\n"
+        "   WHERE as_of_day = (SELECT max(as_of_day) FROM web_sources_history\n"
+        "                       WHERE TRUE" + _cl(sh_tags, "time_range") + ")"
+        + _field_clauses(sh_tags, exclude=("time_range",)) + ")\n")
     sh_where = _native_where(sh_tags, " ")
     out["Net worth — monthly trend (privacy)"] = ("question", "smartscalar",
         "Average daily net worth per month as % of the selected sources' "
@@ -4649,18 +4680,6 @@ def privacy_card_defs(db_id, model_ids):
                  "Net worth over time (privacy)"):
         register_native_targets(name, sh_tags, OVERVIEW_PICKERS)
 
-    # The asset class split on the window's last day, each class as % of
-    # the classes' sum, as the Allocation twin's breakdown reads it.
-    cls_tags = native_tags("web_asset_classes_history", holdings_filters("as_of_day"))
-    out["Asset class split (privacy)"] = ("question", "row",
-        "Value by asset class on the time range's last day, each as % of "
-        "the selection's total that day; the classes sum to 100." + PRIVACY_DESC,
-        _native(db_id, _breakdown_sql("web_asset_classes_history", "asset_class", "value",
-                                      _window_last_day("web_asset_classes_history", cls_tags, indent="   "),
-                                      share=True), cls_tags),
-        {"graph.dimensions": ["asset_class"], "graph.metrics": ["value_pct"]})
-    register_native_targets("Asset class split (privacy)", cls_tags, OVERVIEW_PICKERS)
-
     # -- The Allocation breakdowns: each bucket as % of the summed total
     # over the same filtered rows, so the buckets total 100 across the
     # selected sources as of the chosen day (liability buckets read
@@ -4673,7 +4692,7 @@ def privacy_card_defs(db_id, model_ids):
     def breakdown(name, view, dim, col, display, desc, viz=None):
         tags = native_tags(view, ASOF_FILTERS)
         out[name] = ("question", display, desc + standalone + PRIVACY_DESC,
-                     _native(db_id, _breakdown_sql(view, dim, col, _native_where(tags), share=True), tags),
+                     _native(db_id, _breakdown_sql(view, dim, col, tags, share=True), tags),
                      viz if viz is not None else
                      {"graph.dimensions": [dim], "graph.metrics": ["value_pct"]})
         register_native_targets(name, tags, ALLOCATION_PICKERS)
@@ -5273,9 +5292,10 @@ def dashboard_defs():
     own_pdesc = {"Wealth Overview": (
         "Privacy view: the net worth figures and charts are shares (%) of "
         "the selected sources' total at the window's end; the asset classes "
-        "of their total on its last day. Each figure from another dashboard "
+        "of each day's total. Each figure from another dashboard "
         "is the privacy figure of that dashboard's data: income, spending "
-        "and cash flow as shares of their own totals, the projected net as a share "
+        "and cash flow as shares of their own totals or of their biggest "
+        "month, the projected net as a share "
         "of the income expected over the horizon, rates and returns as "
         "they are. The gains are a percent of the cost basis they are gains "
         "on. Absolute amounts never show. "),
@@ -5317,8 +5337,10 @@ def dashboard_defs():
             continue
         pname = f"{name}{PRIVACY_SUFFIX}"
         out[name] = (desc, mode, pname, tiles)
+        placed = TWIN_TILES.get(name, {})
         ptiles = [(c if c in PRIVACY_EXEMPT_CARDS else privacy_name(c),
-                   r, col, sx, sy, t) for c, r, col, sx, sy, t in tiles]
+                   *placed.get(c, (r, col, sx, sy)), t)
+                  for c, r, col, sx, sy, t in tiles if placed.get(c, ()) is not None]
         out[pname] = ((own_pdesc[name] if name in own_pdesc else pdesc[mode]) + desc, mode, name, ptiles)
     return out
 

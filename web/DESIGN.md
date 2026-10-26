@@ -120,7 +120,7 @@ ten dashboards. Their pickers:
 - **Wealth Overview**: a required currency, a time range, a source, a
   *Tax wrapper* picker, and an *Asset class* picker. Its own tiles take
   all five. They are the net worth figures, the net worth chart and the
-  asset class split on the range's last day.
+  asset classes over time below it.
 - **Allocation**: a required currency, a required as-of day, a source,
   a *Tax wrapper* picker, and an *Asset class* picker. The Top 100
   positions tile carries a *Vehicle* picker of its own. Each stock row
@@ -210,8 +210,10 @@ the flows by their own peak month within the selected window
 (the tallest bar always reads 100). The Wealth Overview twin's scalars are
 ratios of sums over the selected sources' latest holdings (`web_sources_latest`,
 migrations 0113 and 0132) — net worth reads a constant 100, positions + cash split it.
-Each figure from another dashboard is that dashboard's privacy figure.
-The two gains, whose dashboard has no twin, read as a percent of the
+Each figure from another dashboard is that dashboard's privacy figure,
+except received income and net spend. Each is the total its own twin
+divides by, so it reads 100 by construction. The overview's twin leaves
+them out. The two gains, whose dashboard has no twin, read as a percent of the
 cost basis they are gains on.
 The **Spending** twin adds redaction to normalization, the way the Returns
 twin redacts money columns: its shares are of the window's own net spend
@@ -498,8 +500,21 @@ snapshot at the read while the marks keep their dates. Both sources
 models carry the read as `observed_at` and the mark as `valued_at`, so
 the privacy twin's table reads them too.
 
-The **Wealth Overview** shows a figure or two from the other
-dashboards below its net worth tiles:
+The **Wealth Overview** charts net worth over time stacked by source.
+Below it, it charts the asset classes over time: each day's classes as
+shares of that day's total, stacked to 100. The query computes the
+shares, and the chart stacks them as they are. Metabase's normalized
+stack would pin the axis to 0..100%. That drops a negative band, such
+as a debt above what it is owed on, and clips the bands above it. A
+day whose total is not positive shows nothing. The chart reads the
+daily holdings history, as the net worth chart does, so a fund is one
+class. Exposure's chart of that title looks through the funds at month
+ends. The Asset class picker narrows the mix to the chosen classes,
+which then sum to 100. The card holds shares only, so the twin shows
+it as it is.
+
+Below the charts the overview shows a figure or two from the other
+dashboards:
 
 - the Stalest source, beside the net worth figures;
 - under the heading "Over the time range": received income, net
@@ -511,8 +526,8 @@ dashboards below its net worth tiles:
 
 Each borrowed figure is the card its own dashboard shows. Four are
 built for the overview alone, from their dashboard's data: the asset
-class split (Allocation), the two returns year to date (Returns) and
-the projected net cash flow (Cash Flow). The overview's pickers land on
+classes over time (Allocation), the two returns year to date (Returns)
+and the projected net cash flow (Cash Flow). The overview's pickers land on
 a figure by slug: a picker reaches the card where
 the card has a template tag of that name, or, for an MBQL card, where
 its home dashboard maps a picker of that slug. Any other tag of the
