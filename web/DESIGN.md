@@ -110,9 +110,9 @@ On top of the models, provisioning creates pre-defined questions and
 ten dashboards. Their pickers:
 
 - **Wealth Overview**: a required currency, a time range, a source, a
-  *Tax wrapper* picker, and an *Asset class* picker. The fees and income
-  tiles take the tax wrapper alone. A fee or an interest line often
-  names no instrument, so it has no asset class.
+  *Tax wrapper* picker, and an *Asset class* picker. Its own tiles take
+  all five. They are the net worth figures, the net worth chart and the
+  asset class split on the range's last day.
 - **Allocation**: a required currency, a required as-of day, a source,
   a *Tax wrapper* picker, and an *Asset class* picker. The Top 100
   positions tile carries a *Vehicle* picker of its own. Each stock row
@@ -198,10 +198,13 @@ dashboard pickers landing on the cards as field filters. Each card computes
 its normalization denominator in-query with those same filters applied:
 holdings divide by the *selected* sources' total at the selected window's
 end (the net-worth envelope ends at 100, and a subset still totals 100),
-the income/fee flows by their own peak month within the selected window
+the flows by their own peak month within the selected window
 (the tallest bar always reads 100). The Wealth Overview twin's scalars are
 ratios of sums over the selected sources' latest holdings (`web_sources_latest`,
 migrations 0113 and 0132) — net worth reads a constant 100, positions + cash split it.
+Each figure from another dashboard is that dashboard's privacy figure.
+The two gains, whose dashboard has no twin, read as a percent of the
+cost basis they are gains on.
 The **Spending** twin adds redaction to normalization, the way the Returns
 twin redacts money columns: its shares are of the window's own net spend
 (the breakdowns, merchant and account lists) or of its biggest month (the
@@ -487,15 +490,39 @@ snapshot at the read while the marks keep their dates. Both sources
 models carry the read as `observed_at` and the mark as `valued_at`, so
 the privacy twin's table reads them too.
 
-The **Wealth Overview**'s "Investment income by month" card reads
-the same income base (migration 0072), so it and the Income dashboard
-agree to the cent. The first word says what the card charts: the four
-investment types, not the whole base.
-It selects the four investment income *types* rather than transaction
-kinds, and it needs no credit-card fence: a card's finance charge is an
-outflow and is not in the income base at all. A private fund's
-distribution is absent for the same structural reason — it floors to
-`capital_return`, which the base excludes.
+The **Wealth Overview** shows a figure or two from the other
+dashboards below its net worth tiles:
+
+- the Stalest source, beside the net worth figures;
+- under the heading "Over the time range": received income, net
+  spend, the spend trend, net cash flow, the savings rate and the
+  realized gain;
+- under "At the range's end, today and ahead": the unrealized gain,
+  the returns year to date (TWR and MWR), the income yield, the income
+  expected over twelve months and the projected net cash flow.
+
+Each borrowed figure is the card its own dashboard shows. Four are
+built for the overview alone, from their dashboard's data: the asset
+class split (Allocation), the two returns year to date (Returns) and
+the projected net cash flow (Cash Flow). The overview's pickers land on
+a figure by slug: a picker reaches the card where
+the card has a template tag of that name, or, for an MBQL card, where
+its home dashboard maps a picker of that slug. Any other tag of the
+card runs at its default. So the flows take the currency, the time
+range and the source, the gains the tax wrapper too, and the returns
+and the projection the currency alone. A tile's description ends with
+the pickers that do not reach it. The returns read the summary since 1
+January of the latest year they cover, as no stored window follows a
+time range. That is this year once a refresh has read it. The
+projected net is the net of the cash flow projection at its defaults.
+
+A click on one of these figures opens its dashboard, and passes the
+overview's pickers that dashboard also carries. A year-to-date return
+passes its year to the Returns *Start year*. On the twin a figure
+opens its dashboard's twin. Gains has no twin, so its two figures on
+the twin open nothing: a click never leads from the privacy view to
+money. `demo/check_dashboards.py` fails a click whose dashboard or
+picker is not there.
 
 On both spending views the merchant list ranks merchants only: a line whose resolved
 category is a delta — a gift, a bill on a card not itemised, cash out of an
@@ -801,8 +828,8 @@ them: `holdings_lines_history` and `holdings_lines_latest` hold each
 position line and each account's cash. A line carries its
 account's tax wrapper and its asset class, cash being the class `cash`.
 The holdings `web_*` views group these lines, so every holdings tile
-can filter by both. The two flow views the Wealth Overview reads,
-`web_transactions` and `web_income`, carry the tax wrapper alone.
+can filter by both. The flow view `web_income` carries the tax wrapper
+alone.
 
 The refresh hook: `web refresh` (and `web start`'s initial snapshot)
 runs the engine's hidden `web-materialize` subcommand *before*

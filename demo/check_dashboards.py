@@ -35,9 +35,11 @@ A run fails when Metabase reports an error. A response cut off with no
 error and no result is asked once more first. A card that returns no rows
 at its dashboard's defaults fails too, but for the calendar of expected
 payments, and so does a figure of the Income dashboards that reads null
-there. Empty runs under any other picker value are listed, not failed:
-many card and source pairs are empty by nature (card balances for a
-source with no card). Exits 1 on any failure. Stdlib only.
+there. A tile whose click opens a dashboard that is not there, or
+passes a picker either side does not carry, fails too. Empty runs under
+any other picker value are listed, not failed: many card and source
+pairs are empty by nature (card balances for a source with no card).
+Exits 1 on any failure. Stdlib only.
 """
 
 import argparse
@@ -156,6 +158,31 @@ def null_at_defaults(figures):
                   if label == "defaults" and d in NO_NULL_DASHBOARDS and rows and rows[0] and rows[0][0] is None)
 
 
+def broken_clicks(dashes):
+    """The (dashboard, card, reason) of each tile in `dashes`, dashboard
+    id -> its JSON, whose click opens a dashboard that is not there or
+    passes a picker either side does not carry."""
+    params = {i: {p["id"] for p in d.get("parameters", [])} for i, d in dashes.items()}
+    out = []
+    for i, d in sorted(dashes.items()):
+        for dc in d.get("dashcards", []):
+            cb = (dc.get("visualization_settings") or {}).get("click_behavior") or {}
+            if cb.get("type") != "link" or cb.get("linkType") != "dashboard":
+                continue
+            name = (dc.get("card") or {}).get("name")
+            target = cb.get("targetId")
+            if target not in dashes:
+                out.append((d["name"], name, f"opens dashboard {target}, which is not there"))
+                continue
+            for tid, m in sorted((cb.get("parameterMapping") or {}).items()):
+                src = m.get("source") or {}
+                if tid not in params[target]:
+                    out.append((d["name"], name, f"sets {tid}, which {dashes[target]['name']} does not carry"))
+                elif src.get("type") == "parameter" and src.get("id") not in params[i]:
+                    out.append((d["name"], name, f"passes {src.get('id')}, which it does not carry"))
+    return out
+
+
 def run_card(base, auth, dash, dc, ptypes, values):
     mapped = {m["parameter_id"]: m for m in dc.get("parameter_mappings", [])}
     body = {"parameters": [{"id": pid, "type": ptypes[pid], "value": v, "target": mapped[pid]["target"]}
@@ -200,9 +227,10 @@ def main(argv=None):
         coll = next(c for c in cols if c.get("name") == provision.COLLECTION_NAME and not c.get("archived"))
         _, items = call(a.base, f"/api/collection/{coll['id']}/items?models=dashboard", headers=auth)
         dashboards = sorted(items["data"], key=lambda d: d["name"])
-        failures, empties, figures, runs, freshness = [], set(), [], 0, None
+        failures, empties, figures, runs, freshness, dashes = [], set(), [], 0, None, {}
         for d in dashboards:
             _, dash = call(a.base, f"/api/dashboard/{d['id']}", headers=auth)
+            dashes[d["id"]] = dash
             ptypes = {p["id"]: p["type"] for p in dash.get("parameters", [])}
             def offered(slug, dash=dash, d=d):
                 """The values the dashboard's `slug` picker offers."""
@@ -255,7 +283,11 @@ def main(argv=None):
         for label, n in sorted(by_label.items()):
             print(f"  {n:4}  {label}")
         print(f"Stalest source (days): {freshness}")
-        return 1 if failures or at_defaults or nulls else 0
+        clicks = broken_clicks(dashes)
+        print(f"clicks to a dashboard that do not land: {len(clicks)}")
+        for d, c, why in clicks:
+            print("  CLICK", d, "|", c, "|", why)
+        return 1 if failures or at_defaults or nulls or clicks else 0
     finally:
         call(a.base, f"/api/api-key/{key_id}", "DELETE", headers=admin_auth)
 

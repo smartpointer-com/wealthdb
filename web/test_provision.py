@@ -740,21 +740,6 @@ check("gold's spending views render exactly the label the "
       COALESCED == {p.UNCATEGORIZED},
       f"{COALESCED} != {{{p.UNCATEGORIZED!r}}}")
 
-# The same duplicate-with-no-test shape: the flow charts fence account
-# kinds by a Python copy of gold's account_kind vocabulary, and a kind
-# spelled differently there fences nothing at all — silently.
-# The table is recreated by several migrations (DuckDB cannot alter a
-# CHECK in place), so the LAST one in migration order is the vocabulary
-# in force.
-KIND_VOCAB = set(re.findall(r"'([a-z_]+)'", re.findall(
-    r"account_kind\s+TEXT\s+NOT NULL CHECK \(account_kind IN \(([^)]*)\)",
-    MIGRATION_SQL, re.S)[-1]))
-check("every account kind the flow charts fence out is one gold can store",
-      set(p.FLOW_CHART_EXCLUDED_ACCOUNT_KINDS) <= KIND_VOCAB,
-      f"{p.FLOW_CHART_EXCLUDED_ACCOUNT_KINDS} not all in {sorted(KIND_VOCAB)}")
-
-# The same for the transaction kinds the fees-and-taxes charts select: a
-# kind renamed in the engine would empty the tile with no error.
 _CANONICAL = os.path.join(_REPO, "wealthdb", "internal", "canonical")
 
 
@@ -789,22 +774,6 @@ def _go_list(text, var, type_name=None):
     except (AttributeError, KeyError):
         return None
 
-
-_TX_KINDS = _go_consts("enums.go", "TxKind")
-check("every cost kind the fees-and-taxes charts select is an engine transaction kind",
-      bool(_TX_KINDS) and set(p.COST_KINDS) <= _TX_KINDS,
-      f"{p.COST_KINDS} not all in {sorted(_TX_KINDS)}")
-
-# The fence is written the long way ON PURPOSE, in both the MBQL and the
-# native form: a bare `!=` drops the rows whose account_kind is NULL — a
-# transaction with no matching accounts row — and those are flows the chart
-# is supposed to show. The NULL-keeping branch is the whole reason it is not
-# a one-liner, so a future simplification has to fail here.
-for _n in ("Fees & taxes by month", "Fees & taxes by month (privacy)"):
-    check(f"'{_n}' keeps rows with a NULL account_kind",
-          "account_kind IS NULL OR account_kind NOT IN"
-          in (sql_of(CARDS[_n][2]) or ""),
-          "the fence dropped its null branch; a bare NOT IN drops unmatched rows")
 
 # The guard's version is a migration that exists, and no older than the
 # newest one that (re)defines an object the cards read: a web_* view in
@@ -886,12 +855,13 @@ real_req = p.req
 try:
     api = p.req = FakeDashboardAPI()
     with quiet():
-        rc = p.ensure_dashboards("b", "s", 7, card_ids, MID)
+        rc = p.ensure_dashboards("b", "s", 7, card_ids, MID, None, {n: c[1] for n, c in CARDS.items()})
     check("ensure_dashboards lays out every dashboard", rc == 0)
 finally:
     p.req = real_req
 
 layouts = [d for _path, d in api.puts if d.get("dashcards")]
+api_puts_layout = [(path, d) for path, d in api.puts if d.get("dashcards")]
 
 # Where the snapshot holds no withholding table, the Withholding tiles
 # read the tax booked alone, and their titles say so; a probe that does
@@ -930,11 +900,13 @@ try:
     _titled = {dc["card_id"]: dc["visualization_settings"].get("card.title")
                for _path, d in api.puts if d.get("name") in ("Income", "Income (privacy)")
                for dc in d.get("dashcards", []) if dc["visualization_settings"].get("card.title")}
+    # Called without descriptions, the Wealth Overview's tiles carry none
+    # of their own; every other dashboard is laid out as before.
+    _changed = {d.get("name") for k, d in enumerate(x for _path, x in api.puts if x.get("dashcards"))
+                if d != layouts[k]}
     check("...which the tiles show in place of the cards' names, and no other tile changes",
           _titled == {card_ids[c]: t for c, t in _titles.items()}
-          and [d for _path, d in api.puts if d.get("dashcards")] != layouts
-          and all(d == layouts[k] or d.get("name") in ("Income", "Income (privacy)")
-                  for k, d in enumerate(x for _path, x in api.puts if x.get("dashcards"))), _titled)
+          and _changed == {"Income", "Income (privacy)"} | p.OVERVIEW_DASHBOARDS, (_titled, _changed))
 finally:
     p.req = real_req
 
@@ -991,13 +963,14 @@ if twin:
 
 # Every Wealth Overview, Allocation and Exposure tile, on the base and on
 # the twin, answers every picker its dashboard carries — the currency one
-# above all, since a tile it misses silently keeps showing USD.
-# The Overview's flow tiles take the tax wrapper but not the asset
-# class (a fee or an interest line often names no instrument); the
+# above all, since a tile it misses silently keeps showing USD. The
+# Overview's tiles borrowed from the other dashboards take the pickers
+# their cards have (the Wealth Overview section below); the
 # Top-positions tiles take the vehicle as well.
 _TOP = {card_ids[c] for c in p.POSITION_FILTERED_CARDS}
-_FLOWS = {card_ids[c + s] for c in ("Investment income by month", "Fees & taxes by month")
-          for s in ("", p.PRIVACY_SUFFIX)}
+_BORROWED = {card_ids[c] for t in ("Wealth Overview", "Wealth Overview" + p.PRIVACY_SUFFIX)
+             for c, *_ in DEFS[t][3] if c.removesuffix(p.PRIVACY_SUFFIX) in p.OVERVIEW_TILE_HOMES
+             and c.removesuffix(p.PRIVACY_SUFFIX) != "Asset class split"}
 _SELECTION = {p.WEALTH_TAX_WRAPPER_PARAM_ID, p.ASSET_PARAM_ID}
 # The debt view carries no asset class, the issuers view neither a source
 # nor a tax wrapper: those tiles take what their views can narrow by.
@@ -1013,13 +986,11 @@ for _d, _want in (("Wealth Overview", {p.WEALTH_CURRENCY_PARAM_ID,
                                 p.EXPOSURE_TAX_WRAPPER_PARAM_ID, p.EXPOSURE_ASSET_CLASS_PARAM_ID})):
     for _name in (_d, _d + p.PRIVACY_SUFFIX):
         _body = [d for d in layouts if d.get("name") == _name][0]
-        _tiles = [dc for dc in _body["dashcards"] if dc["card_id"] is not None]
+        _tiles = [dc for dc in _body["dashcards"] if dc["card_id"] is not None and dc["card_id"] not in _BORROWED]
 
         def _expected(cid, want=_want):
             if cid in _TOP:
                 return want | {p.VEHICLE_PARAM_ID}
-            if cid in _FLOWS:
-                return want - {p.ASSET_PARAM_ID}
             if cid in _DEBT:
                 return want - {p.EXPOSURE_ASSET_CLASS_PARAM_ID}
             if cid in _ISSUERS:
@@ -1037,18 +1008,13 @@ for _d, _want in (("Wealth Overview", {p.WEALTH_CURRENCY_PARAM_ID,
 # Each tile's SQL holds the clauses its pickers land on: a picker
 # mapped onto a tag the SQL never references filters nothing.
 _WA = {n for d in ("Wealth Overview", "Allocation") for s in ("", p.PRIVACY_SUFFIX)
-       for n, *_ in DEFS[d + s][3]}
-_FLOW_NAMES = {c + s for c in ("Investment income by month", "Fees & taxes by month")
-               for s in ("", p.PRIVACY_SUFFIX)}
+       for n, *_ in DEFS[d + s][3] if card_ids[n] not in _BORROWED}
 # The issuers card covers the whole book: its view carries no source,
 # tax wrapper or asset class (above).
 _wa_sql = {n: sql_of(CARDS[n][2]) or "" for n in _WA if not n.startswith("Top 100 issuers")}
-check("every Wealth Overview and Allocation tile narrows to the tax wrapper",
-      all("[[AND {{tax_wrapper}}]]" in q for q in _wa_sql.values()),
-      [n for n, q in _wa_sql.items() if "{{tax_wrapper}}" not in q])
-check("every holdings tile narrows to the asset class, and no flow tile does",
-      all(("[[AND {{asset_class}}]]" in q) != (n in _FLOW_NAMES) for n, q in _wa_sql.items()),
-      [n for n, q in _wa_sql.items() if ("{{asset_class}}" in q) == (n in _FLOW_NAMES)])
+check("every Wealth Overview and Allocation holdings tile narrows to the tax wrapper and the asset class",
+      all("[[AND {{tax_wrapper}}]]" in q and "[[AND {{asset_class}}]]" in q for q in _wa_sql.values()),
+      [n for n, q in _wa_sql.items() if "{{tax_wrapper}}" not in q or "{{asset_class}}" not in q])
 
 # The history and latest models read the tables `web refresh` fills, not
 # the macros: a macro computes every day of history on each read.
@@ -1456,29 +1422,6 @@ check("the privacy tile population includes the exempt cards",
       any(c in p.PRIVACY_EXEMPT_CARDS for c in _privacy_tiles),
       sorted(_privacy_tiles))
 
-# The Wealth Overview's income card reads the income base.
-_wo = sql_of(CARDS["Investment income by month"][2]) or ""
-check("the Wealth Overview income card reads web_income",
-      "web_income" in _wo, _wo[:120])
-check("...and names the four investment income types",
-      all(t in _wo for t in p.INVESTMENT_INCOME_TYPES),
-      [t for t in p.INVESTMENT_INCOME_TYPES if t not in _wo])
-check("...and fences no card accounts",
-      "account_kind" not in _wo, _wo[:200])
-# ...each of them an income type the engine's taxonomy holds: a type
-# renamed there would drop out of the chart with no error. The rows are
-# read the way demo/tests/goref.py reads them.
-_tax = open(os.path.join(_CANONICAL, "spendtaxonomy.go"), encoding="utf-8").read()
-_tax_consts = dict(re.findall(r'(\w+)\s*=\s*"([^"]+)"', _tax))
-_INCOME_TYPES = {
-    d.strip('"') if d.startswith('"') else _tax_consts.get(d, d)
-    for d, fam in re.findall(r'\{\s*(?:"[A-Za-z_]+"|\w+),\s*("[A-Za-z_]+"|\w+),'
-                             r'\s*"(?:[^"\\]|\\.)*",\s*(Family\w+)\}', _tax, re.S)
-    if fam in ("FamilyIncome", "FamilyBoth")}
-check("...and each of them is an income type of the engine's taxonomy",
-      bool(_INCOME_TYPES) and set(p.INVESTMENT_INCOME_TYPES) <= _INCOME_TYPES,
-      sorted(set(p.INVESTMENT_INCOME_TYPES) - _INCOME_TYPES))
-
 section("the merchant ranking carries every currency")
 MERCH = CARDS["Top 50 merchants"][2]["query"]
 AGGS = MERCH.get("aggregation", [])
@@ -1753,8 +1696,8 @@ check("the winners and losers tables show ten rows each",
 check("the Gains dashboard has no privacy twin",
       "Gains" in DEFS and DEFS["Gains"][2] is None
       and "Gains" + p.PRIVACY_SUFFIX not in DEFS)
-check("...and no card has a privacy variant",
-      not [n for n in _gains_tiles if p.privacy_name(n) in CARDS])
+check("...and no card has a privacy variant but the two the Wealth Overview's twin shows",
+      {n for n in _gains_tiles if p.privacy_name(n) in CARDS} == {"Realized gain", "Unrealized gain"})
 _gn_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Gains")]
 check("the Gains dashboard carries five pickers",
       _gn_pickers == ["currency", "time_range", "source", "tax_wrapper", "missing_basis"],
@@ -1776,11 +1719,134 @@ if _gbody:
 
 section("every dashboard's grid")
 
+# A heading spans the grid's width on its row, so it counts as a tile.
 for _d, (_desc, _mode, _spec) in p.base_dashboards().items():
+    _spec = _spec + [(_text, _r, 0, 24, 1, None) for _r, _text in p.DASHBOARD_HEADINGS.get(_d, [])]
     check(f"'{_d}' sits on the 24-column grid without overlaps",
           all(c + w <= 24 for _n, _r, c, w, _h, _t in _spec) and not [
               (a[0], b[0]) for i, a in enumerate(_spec) for b in _spec[i + 1:]
               if a[2] < b[2] + b[3] and b[2] < a[2] + a[3] and a[1] < b[1] + b[4] and b[1] < a[1] + a[4]])
+
+section("the Wealth Overview")
+
+_OV = "Wealth Overview"
+_OVT = _OV + p.PRIVACY_SUFFIX
+_ov_body = {n: [d for d in layouts if d.get("name") == n][0] for n in (_OV, _OVT)}
+_ov_tiles = {n: {dc["card_id"]: dc for dc in b["dashcards"] if dc["card_id"] is not None}
+             for n, b in _ov_body.items()}
+_ov_params = {n: {x["id"]: x["slug"] for x in b["parameters"]} for n, b in _ov_body.items()}
+_by_id = {v: k for k, v in card_ids.items()}
+
+# The figures each picker reaches (the design's table): a borrowed card
+# takes the overview's pickers its own tags or home dashboard name, and
+# no other.
+_ALL = {"currency", "time_range", "source", "tax_wrapper", "asset_class"}
+_FLOW = {"currency", "time_range", "source"}
+_REACH = {"Net worth": _ALL, "Positions value": _ALL, "Cash balance": _ALL, "Net worth — monthly trend": _ALL,
+          "Net worth over time": _ALL, "Asset class split": _ALL, "Stalest source (days)": set(),
+          "Received income": _FLOW, "Net spend": _FLOW, "Spend — monthly trend": _FLOW,
+          "Net cash flow": _FLOW, "Savings rate": _FLOW,
+          "Realized gain": _FLOW | {"tax_wrapper"}, "Unrealized gain": _FLOW | {"tax_wrapper"},
+          "Return year to date (TWR)": {"currency"}, "Return year to date (MWR)": {"currency"},
+          "Income yield": {"currency", "source", "tax_wrapper", "asset_class"},
+          "Expected remaining": {"currency", "source"}, "Projected net cash flow": {"currency"}}
+_reach = {_by_id[cid]: {_ov_params[_OV][m["parameter_id"]] for m in dc["parameter_mappings"]}
+          for cid, dc in _ov_tiles[_OV].items()}
+check("each Wealth Overview figure answers the pickers its card has, and no other",
+      _reach == _REACH, {c: (_reach.get(c), w) for c, w in _REACH.items() if _reach.get(c) != w})
+# On the twin a tile is the privacy card its home twin shows, whose tags
+# can differ (the expected income's share follows the Time range there).
+_twin_off = []
+for _cid, _dc in _ov_tiles[_OVT].items():
+    _c = _by_id[_cid]
+    _tags = set((CARDS[_c][2].get("native") or {}).get("template-tags") or {})
+    _got = {_ov_params[_OVT][m["parameter_id"]] for m in _dc["parameter_mappings"]}
+    if sql_of(CARDS[_c][2]) is not None and _got != _tags & _ALL:
+        _twin_off.append((_c, sorted(_got), sorted(_tags & _ALL)))
+check("...and each twin figure the pickers its privacy card has", not _twin_off, _twin_off)
+check("...the twin's spending figure, an MBQL card, the Currency, Time range and Source its home gives it",
+      {_ov_params[_OVT][m["parameter_id"]]
+       for m in _ov_tiles[_OVT][card_ids["Net spend (privacy)"]]["parameter_mappings"]} == _FLOW)
+check("...every mapping on both naming a picker the dashboard carries, its card's own id",
+      all(m["parameter_id"] in _ov_params[n] and m["card_id"] == cid
+          for n in (_OV, _OVT) for cid, dc in _ov_tiles[n].items() for m in dc["parameter_mappings"]))
+
+# A tile's description names what does not reach it; one every picker
+# reaches keeps its card's own.
+_ov_desc = {_by_id[cid]: dc["visualization_settings"].get("card.description")
+            for cid, dc in _ov_tiles[_OV].items()}
+check("a figure no picker reaches says so",
+      _ov_desc["Stalest source (days)"].endswith(" On the Wealth Overview no picker reaches it."),
+      _ov_desc["Stalest source (days)"])
+check("...one the asset class misses names that picker",
+      _ov_desc["Realized gain"] == CARDS["Realized gain"][1]
+      + " On the Wealth Overview the Asset class picker does not reach it.", _ov_desc["Realized gain"])
+check("...one several miss names them all",
+      _ov_desc["Projected net cash flow"].endswith(
+          " On the Wealth Overview the Time range, Source, Tax wrapper and Asset class pickers do not reach it."),
+      _ov_desc["Projected net cash flow"])
+check("...and one every picker reaches keeps its card's description",
+      all(_ov_desc[c] is None for c, w in _REACH.items() if w == _ALL))
+
+# A borrowed or family figure opens its dashboard with the pickers that
+# dashboard shares; the twin's open the twins, and none opens money.
+_dash_ids = {d.get("name"): int(path.rsplit("/", 1)[1]) for path, d in api_puts_layout}
+_params_by_id = {d.get("name"): {x["id"]: x["slug"] for x in d["parameters"]} for d in layouts}
+_click_off = []
+for _n in (_OV, _OVT):
+    for _cid, _dc in _ov_tiles[_n].items():
+        _c = _by_id[_cid]
+        _home = p.overview_home(_c, _n)
+        _cb = _dc["visualization_settings"].get("click_behavior")
+        if _home is None:
+            if _cb is not None:
+                _click_off.append((_n, _c, "opens something"))
+            continue
+        _target = _params_by_id.get(_home, {})
+        _want = {t: s for t, s in _target.items() if s in set(_ov_params[_n].values())}
+        if (not _cb or _cb["type"] != "link" or _cb["linkType"] != "dashboard"
+                or _cb["targetId"] != _dash_ids[_home]
+                or any(m["source"]["type"] == "parameter" and _target[t] != _ov_params[_n][m["source"]["id"]]
+                       for t, m in _cb["parameterMapping"].items())
+                or {t for t, m in _cb["parameterMapping"].items() if m["source"]["type"] == "parameter"} != set(_want)):
+            _click_off.append((_n, _c, _home, _cb))
+check("each figure from another dashboard opens it, passing the pickers both carry",
+      not _click_off, _click_off)
+check("...on the twin, a figure opens its home's twin, and the gains, whose dashboard has none, nothing",
+      p.overview_home("Received income (privacy)", _OVT) == "Income (privacy)"
+      and p.overview_home("Stalest source (days)", _OVT) == "Data Freshness (privacy)"
+      and p.overview_home("Realized gain (privacy)", _OVT) is None
+      and p.overview_home("Net worth (privacy)", _OVT) is None)
+_ytd = _ov_tiles[_OV][card_ids["Return year to date (TWR)"]]["visualization_settings"]["click_behavior"]
+check("...a year-to-date return passing its year to the Returns Start year",
+      _ytd["parameterMapping"].get(p.START_YEAR_PARAM_ID, {}).get("source")
+      == {"type": "column", "id": "start_year", "name": "start_year"}, _ytd)
+check("...every borrowed figure's home holds its card, and the ones built for the overview sit nowhere else",
+      all((c in {t[0] for t in DEFS[h][3]}) != (c in p.OVERVIEW_BUILT_CARDS)
+          for c, h in p.OVERVIEW_TILE_HOMES.items())
+      and p.OVERVIEW_BUILT_CARDS <= set(p.OVERVIEW_TILE_HOMES),
+      [c for c, h in p.OVERVIEW_TILE_HOMES.items()
+       if (c in {t[0] for t in DEFS[h][3]}) == (c in p.OVERVIEW_BUILT_CARDS)])
+
+# The two headings sit below the switch link's shift, full width.
+_heads = {n: sorted((dc["row"], dc["visualization_settings"]["text"]) for dc in b["dashcards"]
+                    if dc["card_id"] is None and dc["visualization_settings"]["virtual_card"]["display"] == "heading")
+          for n, b in _ov_body.items()}
+check("the overview and its twin carry the two row headings",
+      _heads[_OV] == _heads[_OVT] == [(r + 1, t) for r, t in p.DASHBOARD_HEADINGS[_OV]], _heads)
+_exp = [dc["visualization_settings"].get("card.title") for n in (_OV, _OVT) for cid, dc in _ov_tiles[n].items()
+        if _by_id[cid].startswith("Expected remaining")]
+check("the expected income tile names its twelve months, on the twin in the privacy form",
+      _exp == ["Expected income, 12 months", "Expected income, 12 months (privacy)"], _exp)
+check("...and Income keeps the card's own name",
+      not any(dc["visualization_settings"].get("card.title")
+              for d in layouts if d.get("name") == "Income" for dc in d["dashcards"]))
+
+# The retired tiles' cards are archived, their variants too.
+_RETIRED = {c + s for c in ("Cash vs positions over time", "Investment income by month", "Fees & taxes by month")
+            for s in ("", p.PRIVACY_SUFFIX)}
+check("the overview's retired cards are archived",
+      _RETIRED <= set(p.RETIRED_CARD_NAMES), sorted(_RETIRED - set(p.RETIRED_CARD_NAMES)))
 
 section("stacked charts with a band per series")
 
@@ -1795,8 +1861,7 @@ _stacked_bands = {n: sql_of(q) or "" for n, (d, _desc, q) in CARDS.items()
                   if d in ("area", "bar", "combo")
                   and VIZ[n].get("stackable.stack_type") == "stacked"
                   and len(VIZ[n].get("graph.dimensions", [])) == 2}
-_STACKED_BARS = {c + s for c in ("Investment income by month", "Fees & taxes by month",
-                                 "Cash flow statement by month", "Investing by month",
+_STACKED_BARS = {c + s for c in ("Cash flow statement by month", "Investing by month",
                                  "Financing and vehicles by month")
                  for s in ("", p.PRIVACY_SUFFIX)}
 check("the population holds the stacked bars as well as the areas",
@@ -1820,12 +1885,6 @@ check("a series rank is an aggregate joined back, never a window",
 check("...and lists its legend in the bands' own order",
       all(VIZ[n].get("legend.is_reversed") is False for n in _stacked_bands),
       [n for n in _stacked_bands if VIZ[n].get("legend.is_reversed") is not False])
-# A stack of two metrics is the mirror case: the first metric sits at
-# the bottom, so positions, the larger, come first and the legend reads
-# the same way.
-check("the cash and positions stacks list positions first, legend unreversed",
-      all(VIZ[n]["graph.metrics"][0].startswith("positions") and VIZ[n].get("legend.is_reversed") is False
-          for n in ("Cash vs positions over time", "Cash vs positions over time (privacy)")))
 check("...ending in that order and nothing after it",
       all(q.rstrip().endswith(("NULLS FIRST, month", "NULLS FIRST, as_of_day")) or "AS latest FROM e" in q
           for q in _stacked_bands.values()))
@@ -2552,12 +2611,15 @@ section("the Wealth Overview and Allocation read the chosen currency")
 # A tile that hard-codes one reporting currency keeps showing it whatever
 # the picker says, plausibly and without an error. So every money tile on
 # these four dashboards is native, reads {{currency}}, and names no
-# reporting-currency column outside the CASE the variable drives.
+# reporting-currency column outside the CASE the variable drives. The
+# Wealth Overview's borrowed tiles are their home dashboards' cards,
+# checked there; the overview's mapping of the Currency picker onto
+# them is checked in the Wealth Overview's section.
 _CCY_CASE = re.compile(r"CASE \{\{currency\}\}(?: WHEN '[A-Z]{3}' THEN -?\w+)+ END")
 _WEALTH_DASHES = ("Wealth Overview", "Allocation")
 for _d in _WEALTH_DASHES:
     for _name in (_d, _d + p.PRIVACY_SUFFIX):
-        for _c, *_ in DEFS[_name][3]:
+        for _c, *_ in (t for t in DEFS[_name][3] if card_ids[t[0]] not in _BORROWED):
             _q = CARDS[_c][2]
             _sql = sql_of(_q)
             check(f"'{_c}' is native", _sql is not None)
@@ -3539,6 +3601,71 @@ if duckdb is not None:
               for a, b in zip(ra[1:], rb[1:], strict=True)))
     check("...and blank where the horizon expects no income",
           all(v is None for r in _plan("Cash flow projection (privacy)", maturing="roll").values() for v in r[1:9]))
+    # The Wealth Overview's figure of the projection is the table's net,
+    # summed over the Horizon; the twin's that net as a share of the
+    # 3,410 the twelve months expect.
+    _net = sum(r[8] for r in _t.values())
+    check("the projected net cash flow is the projection's net over the Horizon",
+          _near(_run("Projected net cash flow")[0][0], _net), (_run("Projected net cash flow"), _net))
+    check("...under roll too",
+          _near(_run("Projected net cash flow", maturing="roll")[0][0],
+                sum(r[8] for r in _plan(maturing="roll").values())))
+    check("...and its twin the share of the horizon's expected income",
+          _near(_run("Projected net cash flow (privacy)")[0][0], 100 * _net / 3410))
+
+    section("the Wealth Overview's new figures, run on an invented book")
+
+    # The asset classes on two days; the split reads the Time range's
+    # last day, the latest day where the range is open.
+    _db.execute("CREATE TABLE web_asset_classes_history (as_of_day DATE, silver_source_id TEXT, tax_wrapper TEXT,"
+                " asset_class TEXT, value_usd DOUBLE, value_chf DOUBLE, value_eur DOUBLE, value_gbp DOUBLE)")
+    for _day, _cls, _v in (("2026-09-30", "public_equity", 600.0), ("2026-09-30", "cash", 400.0),
+                           ("2026-10-21", "public_equity", 900.0), ("2026-10-21", "cash", 300.0),
+                           ("2026-10-21", "real_estate", -200.0)):
+        _db.execute("INSERT INTO web_asset_classes_history VALUES (?, 'src-1', 'taxable_personal', ?, ?, ?, ?, ?)",
+                    [_day, _cls, _v, _v * 0.8, _v, _v])
+    _split = _run("Asset class split")
+    check("the asset class split reads the latest day where the Time range is open, largest first",
+          _split == [("public_equity", 900.0), ("cash", 300.0), ("real_estate", -200.0)], _split)
+    _split = _run("Asset class split", time_range=("2026-09-01", "2026-09-30"))
+    check("...and the range's last day where it ends earlier",
+          _split == [("public_equity", 600.0), ("cash", 400.0)], _split)
+    _split = _run("Asset class split (privacy)")
+    check("...its twin each class as a share of the day's total, summing to 100",
+          [(c, round(v, 6)) for c, v in _split] == [("public_equity", 90.0), ("cash", 30.0), ("real_estate", -20.0)],
+          _split)
+
+    # The year-to-date returns read the summary since 1 January of this
+    # year, in the chosen currency, and return the year a click passes on.
+    _db.execute("CREATE TABLE report_returns (grain TEXT, granularity TEXT, currency TEXT,"
+                " window_from_year INTEGER, twr DOUBLE, mwr DOUBLE)")
+    _year = dt.date.today().year
+    _db.executemany("INSERT INTO report_returns VALUES ('global', 'total', ?, ?, ?, ?)",
+                    [("USD", _year, 0.05, 0.04), ("CHF", _year, 0.03, 0.02), ("USD", _year - 1, 0.20, 0.10)])
+    _db.execute("INSERT INTO report_returns VALUES ('sources', 'total', 'USD', ?, 0.9, 0.9)", [_year])
+    check("the year-to-date returns read this year's global summary in the chosen currency",
+          _run("Return year to date (TWR)") == [(0.05, _year)] and _run("Return year to date (MWR)") == [(0.04, _year)]
+          and _run("Return year to date (TWR)", currency="CHF") == [(0.03, _year)],
+          (_run("Return year to date (TWR)"), _run("Return year to date (MWR)")))
+    _db.execute("DELETE FROM report_returns WHERE window_from_year = ? AND currency = 'USD'", [_year])
+    check("...and last year's where no refresh has read this one yet",
+          _run("Return year to date (TWR)") == [(0.20, _year - 1)], _run("Return year to date (TWR)"))
+
+    # The gains twins: each gain over the cost basis it is a gain on. A
+    # sale with no cost basis, and a holding with none, count on neither
+    # side; the unrealized one reads the window's last month alone.
+    _db.execute("CREATE TABLE web_gains (period TIMESTAMP, silver_source_id TEXT, tax_wrapper TEXT, currency TEXT,"
+                " missing_basis TEXT, realized DOUBLE, realized_cost_basis DOUBLE, unrealized_end DOUBLE,"
+                " cost_basis DOUBLE, at_end BOOLEAN)")
+    _db.executemany("INSERT INTO web_gains VALUES (?, 'src-1', 'taxable_personal', 'USD', 'ignore', ?, ?, ?, ?, ?)", [
+        ("2026-08-01", 50.0, 200.0, 100.0, 400.0, True),
+        ("2026-09-01", 30.0, 100.0, 300.0, 1000.0, True),
+        ("2026-09-01", 70.0, None, None, None, True),
+        ("2026-09-01", None, None, -20.0, 0.0, True)])
+    check("the realized gain's twin is the gain over the cost basis sold, where the sale states both",
+          _near(_run("Realized gain (privacy)")[0][0], 80 / 300), _run("Realized gain (privacy)"))
+    check("...the unrealized gain's the gain at the window's end over the cost basis held there",
+          _near(_run("Unrealized gain (privacy)")[0][0], 300 / 1000), _run("Unrealized gain (privacy)"))
 
 if FAILS:
     print(f"provision tests: {FAILS} failed")

@@ -100,5 +100,37 @@ class NullAtDefaults(unittest.TestCase):
         self.assertEqual(check_dashboards.null_at_defaults(figures), [("Income", "Withholding")])
 
 
+class BrokenClicks(unittest.TestCase):
+    """A click to a dashboard lands where it is there and carries each
+    picker the click names."""
+
+    @staticmethod
+    def dash(name, params, clicks=()):
+        return {"name": name, "parameters": [{"id": p} for p in params],
+                "dashcards": [{"card": {"name": card}, "visualization_settings": {"click_behavior": {
+                    "type": "link", "linkType": "dashboard", "targetId": target,
+                    "parameterMapping": {t: {"id": t, "source": {"type": "parameter", "id": s}}
+                                         for t, s in mapping.items()}}}}
+                              for card, target, mapping in clicks]}
+
+    def test_a_click_lands_where_both_sides_carry_its_pickers(self):
+        dashes = {1: self.dash("Overview", ["ccy"], [("Figure", 2, {"ccy-2": "ccy"})]),
+                  2: self.dash("Home", ["ccy-2"])}
+        self.assertEqual(check_dashboards.broken_clicks(dashes), [])
+
+    def test_a_missing_dashboard_or_picker_is_named(self):
+        dashes = {1: self.dash("Overview", ["ccy"], [("Gone", 9, {}), ("Lost", 2, {"nope": "ccy"}),
+                                                    ("Stray", 2, {"ccy-2": "nope"})]),
+                  2: self.dash("Home", ["ccy-2"])}
+        self.assertEqual([(c, why.split(",")[0]) for _d, c, why in check_dashboards.broken_clicks(dashes)],
+                         [("Gone", "opens dashboard 9"), ("Lost", "sets nope"), ("Stray", "passes nope")])
+
+    def test_a_column_source_needs_no_picker_of_its_own(self):
+        dashes = {1: self.dash("Overview", [], [("Year", 2, {})]), 2: self.dash("Returns", ["year"])}
+        dashes[1]["dashcards"][0]["visualization_settings"]["click_behavior"]["parameterMapping"] = {
+            "year": {"id": "year", "source": {"type": "column", "id": "start_year"}}}
+        self.assertEqual(check_dashboards.broken_clicks(dashes), [])
+
+
 if __name__ == "__main__":
     unittest.main()

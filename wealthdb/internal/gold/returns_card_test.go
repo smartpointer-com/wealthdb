@@ -294,11 +294,10 @@ func TestReturnsCardExcludedFromValueSpine(t *testing.T) {
 	}
 }
 
-// TestWebTransactionsAccountKindFence pins the shape the web's income and fee
-// charts rely on: web_transactions exposes account_kind, and the fence they
-// apply keeps every non-card row INCLUDING one whose account is unknown (the
-// macro's LEFT JOIN leaves account_kind NULL, which a bare `<> 'card'` would
-// silently drop).
+// TestWebTransactionsAccountKindFence pins web_transactions' account_kind:
+// a fence of card accounts keeps every other row INCLUDING one whose
+// account is unknown (the macro's LEFT JOIN leaves account_kind NULL,
+// which a bare `<> 'card'` would silently drop).
 func TestWebTransactionsAccountKindFence(t *testing.T) {
 	db, ctx := openMigrated(t)
 	end := seedCardFixture(t, db, ctx, true)

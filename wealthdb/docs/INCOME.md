@@ -723,7 +723,7 @@ which is the default, one number answers for both.
    `spending.categorization` when absent.
 8. **One matcher.** Income pairs nothing and reads the shared verdicts.
    `spending.transfer_overrides` serves both families.
-9. The Wealth Overview's investment-income card reads the income base.
+9. The Income dashboard's cards read the income base.
 10. **Reimbursements are excluded** via the delta. Spending does not
     net them (§11).
 11. Window default: **trailing twelve months**; on the forward views,
