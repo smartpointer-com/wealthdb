@@ -27,7 +27,8 @@ const (
 // a leaf's credit and maturity buckets split by its page fund's
 // breakdowns as exposure_credit_leaves and exposure_maturity_leaves
 // split them, its coupon kind and its cycle. Each dimension sums to the
-// instant's net worth.
+// instant's net worth. A breakdown's join carries its condition in the
+// key, so the join hashes.
 var exposureDebtSQL = `INSERT INTO report_exposure_debt BY NAME
 WITH ` + exposureScaledSQL + `,
 c AS (
@@ -36,12 +37,12 @@ c AS (
            exposure_credit_unknown(s.debt, s.rating, b.unknown) AS unknown,
            s.value * s.k * COALESCE(b.share, 1) AS value
       FROM s LEFT JOIN exposure_page_breakdown(CAST($1 AS BIGINT), 'credit_quality') b
-           ON s.debt AND s.rating IS NULL AND b.fund = s.page_fund
+           ON b.fund = CASE WHEN s.debt AND s.rating IS NULL THEN s.page_fund END
     UNION ALL
     SELECT s.out_ccy, s.src, s.wrapper, '` + debtDimensionMaturity + `', exposure_maturity_split(s.maturity_bucket, b.bucket), FALSE,
            s.value * s.k * COALESCE(b.share, 1)
       FROM s LEFT JOIN exposure_page_breakdown(CAST($1 AS BIGINT), 'maturity_breakdown') b
-           ON s.maturity_bucket = 'unknown' AND b.fund = s.page_fund
+           ON b.fund = CASE WHEN s.maturity_bucket = 'unknown' THEN s.page_fund END
     UNION ALL
     SELECT s.out_ccy, s.src, s.wrapper, '` + debtDimensionCoupon + `', s.coupon_bucket, FALSE, s.value * s.k FROM s
     UNION ALL
