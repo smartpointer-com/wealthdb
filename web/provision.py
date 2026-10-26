@@ -1000,6 +1000,9 @@ FILTER_FIELD_COLUMNS = {
     # cards take no picker but the currency and the projection's four.
     "web_cashflow_plan": (),
     "web_cashflow_pool": (),
+    # A stock position's size (migration 0154), joined onto the Top 100
+    # positions cards by label. No field filter binds it.
+    "web_position_sizes": (),
 }
 FIELD_IDS = {}          # (table, column) -> field id, filled by main()
 
@@ -1528,12 +1531,15 @@ def question_defs(db_id, mid):
         "Top 100 positions": ("table",
             "The hundred largest positions by market value as of a day, "
             "aggregated across accounts; narrow with the widget's "
-            "vehicle filter." + al_note,
+            "vehicle filter." + POSITION_SIZE_NOTE + al_note,
             _native(db_id,
-                "SELECT symbol, name, asset_class, vehicle,\n"
-                f"       sum({_ccy_case('value')})::DOUBLE AS value\n"
-                "  FROM web_positions_history" + _native_where(pos_tags) +
-                "\n GROUP BY 1, 2, 3, 4\n ORDER BY 5 DESC\n LIMIT 100",
+                "WITH p AS (\n"
+                "  SELECT symbol, name, asset_class, vehicle,\n"
+                f"         sum({_ccy_case('value')})::DOUBLE AS value\n"
+                "    FROM web_positions_history" + _native_where(pos_tags) +
+                "\n   GROUP BY 1, 2, 3, 4\n   ORDER BY 5 DESC\n   LIMIT 100)\n"
+                "SELECT p.symbol, p.name, p.asset_class, p.vehicle, z.size, p.value\n"
+                "  FROM p" + POSITION_SIZE_JOIN + "\n ORDER BY p.value DESC",
                 pos_tags),
             {}),
         # The spending tiles are native over web_spending (spend_native)
@@ -4099,6 +4105,15 @@ SELECTION_FILTERS = {"tax_wrapper": ("tax_wrapper", "string/="),
 ASOF_FILTERS = {"as_of_day": ("as_of_day", "date/single"),
                 "source": ("silver_source_id", "string/="), **SELECTION_FILTERS}
 POSITION_FILTERS = {**ASOF_FILTERS, "vehicle": ("vehicle", "string/=")}
+# The Top 100 positions cards show a stock's size beside it (gold
+# migration 0154), joined after the ranking on the position's label, so
+# the list and its values stay those of web_positions_history alone.
+POSITION_SIZE_JOIN = ("\n  LEFT JOIN web_position_sizes z ON z.symbol IS NOT DISTINCT FROM p.symbol"
+                      "\n       AND z.name IS NOT DISTINCT FROM p.name"
+                      "\n       AND z.asset_class IS NOT DISTINCT FROM p.asset_class"
+                      "\n       AND z.vehicle IS NOT DISTINCT FROM p.vehicle")
+POSITION_SIZE_NOTE = (" Size is a stock's market-cap size (large, mid, small), as the "
+                      "Exposure dashboard sizes it; blank for a fund or any other vehicle.")
 
 
 def holdings_filters(col):
@@ -4708,7 +4723,7 @@ def privacy_card_defs(db_id, model_ids):
         "The hundred largest positions as of a day, each as % of the "
         "selection's total positions value; the widget's vehicle "
         "filter narrows the list but not the denominator."
-        + standalone + PRIVACY_DESC,
+        + POSITION_SIZE_NOTE + standalone + PRIVACY_DESC,
         _native(db_id,
             "WITH tot AS (\n"
             f"  SELECT sum({value})::DOUBLE AS t\n"
@@ -4719,10 +4734,10 @@ def privacy_card_defs(db_id, model_ids):
             f" sum({value})::DOUBLE AS v\n"
             "    FROM web_positions_history" + _native_where(top_tags) + "\n"
             "   GROUP BY 1, 2, 3, 4)\n"
-            "SELECT symbol, name, asset_class, vehicle,\n"
-            "       v / (SELECT CASE WHEN t <> 0 THEN t END FROM tot)"
+            "SELECT p.symbol, p.name, p.asset_class, p.vehicle, z.size,\n"
+            "       p.v / (SELECT CASE WHEN t <> 0 THEN t END FROM tot)"
             " * 100 AS value_pct\n"
-            "  FROM p\n ORDER BY 5 DESC\n LIMIT 100", top_tags),
+            "  FROM p" + POSITION_SIZE_JOIN + "\n ORDER BY value_pct DESC\n LIMIT 100", top_tags),
         {})
     register_native_targets("Top 100 positions (privacy)", top_tags,
                             POSITION_PICKERS)
@@ -5671,14 +5686,15 @@ def missing_web_views(base, sid, db_id):
 
 
 # The oldest gold schema the cards can read: the migration that adds the
-# cash flow projection's look-back parts its cards read (0149). A snapshot
-# older than 0149 lacks that view, one older than 0146 the days the
+# stock positions' sizes the Top 100 positions cards read (0154). A
+# snapshot older than 0154 lacks that view, one older than 0149 the cash
+# flow projection's look-back parts, one older than 0146 the days the
 # Income cards' received figures cover and the tax withheld on them, and
 # one older than 0138 the yield views and the exposure of the debt, which the
 # by-name probe finds. One older than 0133 carries every view by name but
 # reads a missing tax wrapper blank, and one older than 0132 lacks the
 # serving tables' columns: only the version tells those apart.
-MIN_GOLD_SCHEMA = 149
+MIN_GOLD_SCHEMA = 154
 
 # main()'s exit status for a snapshot older than MIN_GOLD_SCHEMA; every
 # other failure exits 1. web/web tells the two apart, because only

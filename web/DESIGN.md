@@ -115,8 +115,9 @@ ten dashboards. Their pickers:
   names no instrument, so it has no asset class.
 - **Allocation**: a required currency, a required as-of day, a source,
   a *Tax wrapper* picker, and an *Asset class* picker. The Top 100
-  positions tile carries a *Vehicle* picker of its own. The Top 100
-  issuers tile below it takes the currency and the as-of day alone: it
+  positions tile carries a *Vehicle* picker of its own. Each stock row
+  shows its share's market-cap size, as Exposure sizes it. A fund row
+  shows none. The Top 100 issuers tile below it takes the currency and the as-of day alone: it
   covers the whole book. It reads the latest of the instants its view
   holds on or before the day: today and the twelve month ends before.
   Its twin drops the value and hides an issuer named by a holding's own
@@ -528,8 +529,9 @@ A stale snapshot is caught before any of this is written. Provisioning
 probes the driver for the snapshot's schema version and for the serving
 views **by name**. It aborts with a "run `wealthdb web refresh`" message
 rather than converging the cards to a degraded shape. The version check
-catches a snapshot older than 0149. Such a snapshot lacks the cash flow
-projection's look-back parts. One older than 0146 lacks the days the Income
+catches a snapshot older than 0154. Such a snapshot lacks the stock
+positions' sizes. One older than 0149 lacks the cash flow projection's
+look-back parts. One older than 0146 lacks the days the Income
 cards' received figures cover and the tax withheld on them. One older
 than 0138 lacks the yield views and the exposure of the debt too.
 The by-name probe finds each of these. An older one also reads wrong in ways no

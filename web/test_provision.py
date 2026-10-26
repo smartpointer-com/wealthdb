@@ -2618,15 +2618,16 @@ def _latest_definition(name):
 # materializers from the same materializeCurrencies list, the cash flow
 # projection's look-back parts among them. The projection's
 # parts and principals are in each holding's currency, with its rate to
-# every reporting currency beside it; its rates table and the days the
-# income received covers hold no money.
+# every reporting currency beside it; its rates table, the days the
+# income received covers and the stock positions' sizes hold no money.
 _LONG_VIEWS = {"web_gains", "web_exposure", "web_exposure_debt", "web_exposure_issuers",
                "web_yield", "web_yield_curve", "web_yield_received", "web_cashflow_plan"}
 _FX_TABLES = {"web_yield_parts": "report_yield_parts", "web_yield_events": "report_yield_events"}
 _missing = {v: [c for c in p.REPORTING_CURRENCIES
                 if not re.search(rf"_{c.lower()}\b", _latest_definition(v))]
             for v in p.web_views_wanted()
-            if v not in _LONG_VIEWS | set(_FX_TABLES) | {"web_yield_rates", "web_income_days", "web_cashflow_pool"}}
+            if v not in _LONG_VIEWS | set(_FX_TABLES) | {"web_yield_rates", "web_income_days", "web_cashflow_pool",
+                                                          "web_position_sizes"}}
 check("every wide serving view carries a value column per reporting currency",
       not any(_missing.values()), {v: m for v, m in _missing.items() if m})
 _ym = open(os.path.join(_REPO, "wealthdb", "internal", "gold", "yield_materialize.go"),
@@ -3397,6 +3398,33 @@ if duckdb is not None:
     check("...and its twin the same rows, with no value",
           [r[:2] for r in _issuers("2026-10-15", p.privacy_name(_iss))] == [(1, "Example Beta")]
           and len(_issuers("2026-10-15", p.privacy_name(_iss))[0]) == 7)
+
+    section("the Top 100 positions cards' size column, run on an invented book")
+
+    # One day's positions: a stock on two accounts and one on one, both
+    # sized, a stock nothing sizes and a fund. The size joins after the
+    # ranking, so a card keeps its rows, order and values, and a stock on
+    # two lines stays one row.
+    _db.execute("CREATE TABLE web_positions_history (as_of_day DATE, silver_source_id TEXT, tax_wrapper TEXT,"
+                " symbol TEXT, name TEXT, asset_class TEXT, vehicle TEXT, currency TEXT, value_usd DOUBLE,"
+                " value_chf DOUBLE, value_eur DOUBLE, value_gbp DOUBLE)")
+    _db.execute("CREATE TABLE web_position_sizes (symbol TEXT, name TEXT, asset_class TEXT, vehicle TEXT,"
+                " size TEXT)")
+    for _sym, _veh, _v in (("QBIG", "stock", 400.0), ("QBIG", "stock", 200.0), ("QMID", "stock", 500.0),
+                           ("QNOS", "stock", 300.0), ("QFND", "fund", 450.0)):
+        _db.execute("INSERT INTO web_positions_history VALUES (DATE '2026-10-21', 'src-1', 'taxable_personal',"
+                    " ?, ?, 'public_equity', ?, 'USD', ?, ?, ?, ?)", [_sym, _sym + " Example", _veh, _v, _v, _v, _v])
+    _db.execute("INSERT INTO web_position_sizes VALUES ('QBIG', 'QBIG Example', 'public_equity', 'stock', 'large'),"
+                " ('QMID', 'QMID Example', 'public_equity', 'stock', 'mid'),"
+                " ('QNOS', 'QNOS Example', 'public_equity', 'stock', NULL)")
+    _top = [(r[0], r[4], r[5]) for r in _run("Top 100 positions")]
+    check("the Top 100 positions card gives a stock its size, a fund none, its ranking and values unchanged",
+          _top == [("QBIG", "large", 600.0), ("QMID", "mid", 500.0), ("QFND", None, 450.0), ("QNOS", None, 300.0)],
+          _top)
+    _top_pct = [(r[0], r[4], round(r[5], 6)) for r in _run(p.privacy_name("Top 100 positions"), vehicle=["stock"])]
+    check("...and its twin the shares, the vehicle narrowing the list but not the denominator",
+          _top_pct == [("QBIG", "large", round(60000 / 1850, 6)), ("QMID", "mid", round(50000 / 1850, 6)),
+                       ("QNOS", None, round(30000 / 1850, 6))], _top_pct)
 
     section("the DV01 card's SQL, run on an invented book")
 
