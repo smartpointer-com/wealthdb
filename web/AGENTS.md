@@ -90,7 +90,10 @@ trap, see DESIGN.md §3):
   "simplify" back to `FROM metabase/metabase` (that image is Alpine).
 
 When bumping pins, re-run the smoke test (provision + `SELECT count(*)
-FROM positions` through the driver) and update the sha256.
+FROM positions` through the driver) and update the sha256. A driver
+bump also moves `gold.StorageVersion`, the storage number in its Go
+tests (`v15Header`) and `web/web`'s `SNAPSHOT_MAX_STORAGE` together.
+The Go and web tests hold the three to one another.
 
 A fourth invariant, same weight (DESIGN.md §7): **keep the memory
 discipline**. DuckDB runs in-process in the Metabase JVM — do not remove

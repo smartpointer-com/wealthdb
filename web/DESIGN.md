@@ -50,9 +50,13 @@ Three things must all be right or DuckDB silently won't work:
   in the 1.5 format (`gold.StorageVersion`). This holds for `init`, a
   full reload and `compact`. A file keeps the format it was created in.
   A file in a newer format stays unreadable to the driver, and
-  `wealthdb compact` rewrites it in the pinned one. A driver bump moves
-  `gold.StorageVersion` with it, and a web test checks that the two
-  match.
+  `wealthdb compact` rewrites it in the pinned one. The snapshot step
+  reads the copy's header. It refuses a newer format and names
+  `wealthdb compact`. It refuses a file that is no DuckDB file too. In
+  both cases the previous snapshot keeps serving. A driver bump moves
+  `gold.StorageVersion`, its header number in the Go tests and
+  `web/web`'s `SNAPSHOT_MAX_STORAGE` together, and the tests hold them
+  to one another.
 - **JAR must be readable.** `ADD`-from-URL writes the JAR root-only
   (0600); Metabase then *silently skips* `/plugins` and the driver never
   registers. `ADD --chmod=0644` fixes it.
@@ -864,8 +868,9 @@ itself still never sees anything but the `:ro` snapshot (AGENTS.md §1).
 [`test_web.sh`](test_web.sh) (`make test-web`) unit-tests the pure
 helpers with no Docker: the dual-stack `-p` flag construction, the
 read-only snapshot mount in the `docker run` args, the `.wal` guard,
-the generated-password complexity, and — against a stubbed engine —
-the `_materialize` invocation plus `web_refresh`'s
+the storage-format guard, the generated-password complexity, and —
+against a stubbed engine — the `_materialize` invocation, the engine's
+own error line and status repeated on a failure, plus `web_refresh`'s
 materialize-then-snapshot ordering. It checks the refresh skips too:
 an unchanged gold is not copied, a container that does not serve the
 snapshot's inode is restarted, and a failed copy keeps the old

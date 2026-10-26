@@ -94,10 +94,20 @@ func open(path string, mode Mode, audit bool, options map[string]string) (*sql.D
 	}
 
 	// DuckDB takes configuration as `?key=value` query parameters on
-	// the DSN. Only on-disk databases take these: an in-memory one has
-	// no file format to pin and always opens read-write (there's
-	// nothing to share).
+	// the DSN.
+	//
+	// Every database turns DuckDB 2.0's caching operator off. It can
+	// throw an internal assertion ("dict-surviving cache: global
+	// dictionary column N changed identity") on a selective filter over
+	// a column that arrives as a dictionary in some chunks and flat in
+	// others, as a CASE over a joined rate does in the gains report.
+	// Without the cache the same query answers, at no measurable cost.
+	//
+	// Only on-disk databases take the rest: an in-memory one has no file
+	// format to pin and always opens read-write (there's nothing to
+	// share).
 	params := url.Values{}
+	params.Set("enable_caching_operators", "false")
 	if dsn != ":memory:" {
 		params.Set("storage_compatibility_version", StorageVersion)
 		if mode == ModeReadOnly {

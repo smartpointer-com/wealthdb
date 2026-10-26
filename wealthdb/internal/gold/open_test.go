@@ -196,3 +196,35 @@ func TestAGoldFileInANewerFormatStillOpens(t *testing.T) {
 		t.Errorf("the newer-format file's storage version = %d, want it kept at %d", got, before)
 	}
 }
+
+// A selective filter over a joined rate that arrives as a dictionary in
+// some chunks and flat in others answers: DuckDB 2.0's caching operator,
+// which Open turns off, throws an internal assertion on it. Invented
+// data; the script fails the same way in DuckDB's own client.
+func TestOpenAnswersAFilterOverAMixedDictionary(t *testing.T) {
+	db, err := Open("", ModeReadWrite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `
+        CREATE TABLE mixed_lines AS
+        SELECT i AS k, i % 10 AS day,
+               CASE (i // 2048) % 3 WHEN 0 THEN 'EUR' WHEN 1 THEN 'USD' ELSE ['USD', 'EUR'][1 + i % 2] END AS currency
+          FROM range(30000) t(i);
+        CREATE TABLE mixed_rates AS SELECT i AS day, 1.0 + i / 100 AS fx_rate FROM range(10) t(i)`); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, `
+        SELECT count(*)
+          FROM (SELECT k, CASE WHEN currency = 'USD' THEN 1.0::DOUBLE ELSE fx_rate END AS rate
+                  FROM mixed_lines JOIN mixed_rates USING (day))
+         WHERE (k * rate) % 997 < 1`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 31 {
+		t.Errorf("count = %d, want 31", n)
+	}
+}

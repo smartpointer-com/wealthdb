@@ -80,8 +80,15 @@ check "aggregated row cap"   "MB_AGGREGATED_QUERY_ROW_LIMIT=100000"             
 check "unaggregated row cap" "MB_UNAGGREGATED_QUERY_ROW_LIMIT=100000"           "$joined"
 check "image is last"     "wealthdb/metabase:latest"                            "$joined"
 
+# duck_file PATH N writes a stand-in for a DuckDB file: its header with
+# the magic and storage number N, then a body that reads GOLD.
+duck_file() {
+    python3 -c 'import struct, sys
+open(sys.argv[1], "wb").write(bytes(8) + b"DUCK" + struct.pack("<Q", int(sys.argv[2])) + b"GOLD")' "$1" "$2"
+}
+
 echo "== _snapshot .wal guard =="
-printf 'GOLD' > "$tmp/gold.db"
+duck_file "$tmp/gold.db" "$SNAPSHOT_MAX_STORAGE"
 printf 'WAL'  > "$tmp/gold.db.wal"
 if _snapshot "$tmp/gold.db" "$tmp/snap.db" 2>/dev/null; then
     fail "refuses copy when .wal present"
@@ -106,6 +113,30 @@ python3 -c 'import os,sys; os.utime(sys.argv[1], (1000000, 1000000))' "$tmp/gold
 check_eq "a plain copy carries gold's mtime" "$(_stat st_mtime_ns "$tmp/gold.db")" \
     "$(_stat st_mtime_ns "$tmp/plain.db")"
 
+echo "== _snapshot refuses a format the driver cannot open =="
+mkdir -p "$tmp/fmt" && duck_file "$tmp/fmt/old.db" 64
+cp "$tmp/fmt/old.db" "$tmp/fmt/snap.db"
+duck_file "$tmp/fmt/new.db" 999
+fmt_out="$(_snapshot "$tmp/fmt/new.db" "$tmp/fmt/snap.db" 2>&1)"
+fmt_rc=$?
+if [ "$fmt_rc" -ne 0 ]; then pass "a newer format is refused"; else fail "a newer format is refused"; fi
+check "...naming its format and the driver's" "storage format 999; the dashboards read $SNAPSHOT_MAX_STORAGE at most" "$fmt_out"
+check "...and the command that rewrites it" "wealthdb compact" "$fmt_out"
+check "...and that the old snapshot serves" "previous snapshot keeps serving" "$fmt_out"
+check_eq "...leaving the old snapshot" "64" "$(_storage_number "$tmp/fmt/snap.db")"
+check_eq "...and no temp file" "" "$(ls "$tmp/fmt" | grep '\.tmp\.')"
+check "with no snapshot yet it says none was taken" "No snapshot was taken." \
+    "$(_snapshot "$tmp/fmt/new.db" "$tmp/fmt/none.db" 2>&1)"
+printf 'not a database' > "$tmp/fmt/junk.db"
+if _snapshot "$tmp/fmt/junk.db" "$tmp/fmt/snap.db" 2>/dev/null; then fail "a file that is no DuckDB file is refused"
+else pass "a file that is no DuckDB file is refused"; fi
+check_eq "...leaving the old snapshot" "64" "$(_storage_number "$tmp/fmt/snap.db")"
+if _snapshot "$tmp/fmt/old.db" "$tmp/fmt/older.db" 2>/dev/null; then pass "an older format is copied"
+else fail "an older format is copied"; fi
+# The engine writes v1.5's format; the compact test names its number.
+v15="$(sed -n 's/^const v15Header = \([0-9]*\)$/\1/p' "$HERE/../wealthdb/cmd/wealthdb/cmd_compact_test.go")"
+check_eq "the newest format read is the one the engine writes" "$v15" "$SNAPSHOT_MAX_STORAGE"
+
 echo "== _gen_password complexity (Metabase rule) =="
 p="$(_gen_password)"
 case "$p" in *[A-Z]*) pass "has uppercase";; *) fail "has uppercase";; esac
@@ -129,6 +160,52 @@ check "passes -c with WEALTHDB_CONFIG" "-c"                "$args"
 check "passes the configured path"     "/cfg/wealthdb.cfg" "$args"
 check "still invokes web-materialize"  "web-materialize"   "$args"
 unset WEALTHDB_CONFIG
+
+echo "== a failed materialize repeats the engine's error line =="
+# An engine that runs a phase, then fails as DuckDB's assertion does:
+# its error line, then a stack trace.
+cat > "$tmp/engine-fail" <<'EOF'
+#!/bin/sh
+if read -r _line; then echo "stdin open" >&2; fi
+echo "progress on stdout"
+echo "timing: serving 1.0s" >&2
+echo "wealthdb: MaterializeGains: INTERNAL Error: an assertion" >&2
+echo "Stack Trace:" >&2
+echo "  frame 1" >&2
+exit 1
+EOF
+chmod +x "$tmp/engine-fail"
+mkdir -p "$tmp/mat-tmp" "$tmp/mat-snap" && : > "$tmp/mat-snap/wealthdb.db"
+mat_out="$(echo input | (WEALTHDB="$tmp/engine-fail" SNAP="$tmp/mat-snap/wealthdb.db" TMPDIR="$tmp/mat-tmp" _materialize) 2>"$tmp/mat-err")"
+mat_rc=$?
+mat_err="$(cat "$tmp/mat-err")"
+if [ "$mat_rc" -eq 1 ]; then pass "it returns the engine's status"; else fail "it returns the engine's status (got $mat_rc)"; fi
+check "the engine's stdout passes through" "progress on stdout" "$mat_out"
+check "the engine's stderr passes through" "timing: serving 1.0s" "$mat_err"
+check_not "...and stays apart from stdout" "INTERNAL Error" "$mat_out"
+check_not "the engine reads no stdin, so its wrapper gives the container no terminal" "stdin open" "$mat_err"
+check "the failure quotes the status and the error line" \
+    "web: materialization failed (exit 1): wealthdb: MaterializeGains: INTERNAL Error: an assertion" "$mat_err"
+check "...and says the previous snapshot serves" "The previous snapshot keeps serving." "$mat_err"
+check_not "...and guesses no cause" "busy" "$mat_err"
+check_eq "...and leaves no temp file" "" "$(ls "$tmp/mat-tmp")"
+mat_err="$( (WEALTHDB="$tmp/engine-fail" SNAP="$tmp/mat-none/wealthdb.db" TMPDIR="$tmp/mat-tmp" _materialize) 2>&1 >/dev/null)"
+check "with no snapshot yet it says none was taken" "No snapshot was taken." "$mat_err"
+# web_start runs it under errexit and pipefail: the message still
+# prints, with the fallback line, and the status comes back.
+printf '#!/bin/sh\necho "timing: serving 1.0s" >&2\nexit 3\n' > "$tmp/engine-quiet" && chmod +x "$tmp/engine-quiet"
+mat_err="$( (set -euo pipefail; WEALTHDB="$tmp/engine-quiet" SNAP="$tmp/mat-snap/wealthdb.db" TMPDIR="$tmp/mat-tmp" _materialize; echo NOT_STOPPED) 2>&1)"
+mat_rc=$?
+if [ "$mat_rc" -eq 3 ]; then pass "under errexit it stops with the engine's status"; else fail "under errexit it stops with the engine's status (got $mat_rc)"; fi
+check "...after its message, the last line standing in for an error line" \
+    "web: materialization failed (exit 3): timing: serving 1.0s" "$mat_err"
+check_not "...and does not run on" "NOT_STOPPED" "$mat_err"
+check_eq "...leaving no temp file" "" "$(ls "$tmp/mat-tmp")"
+printf 'timing: x\n\nlast words\n\n' > "$tmp/mat-tmp/plain"
+check_eq "an output without the engine's name ends in its last line" "last words" "$(_error_line "$tmp/mat-tmp/plain")"
+: > "$tmp/mat-tmp/empty"
+check_eq "an empty output says so" "(the engine printed nothing)" "$(_error_line "$tmp/mat-tmp/empty")"
+rm -f "$tmp/mat-tmp/plain" "$tmp/mat-tmp/empty"
 
 echo "== refresh prints a duration for materialize and the snapshot =="
 seq_time="$tmp/refresh-time"
