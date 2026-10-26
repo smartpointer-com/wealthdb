@@ -186,12 +186,13 @@ func TestMaterializeGainsCopiesAReadingThatChangesNothing(t *testing.T) {
 	matchesBuckets(t, ctx, db)
 }
 
-func TestMigrations0119To0133DDLAreRerunnable(t *testing.T) {
+func TestMigrations0119To0157DDLAreRerunnable(t *testing.T) {
 	db, ctx := openGainsFixture(t)
 	rerunMigrationDDL(t, db, ctx, "0119_gains_one_pass.sql")
 	rerunMigrationDDL(t, db, ctx, "0120_gains_held_sold.sql")
 	rerunMigrationDDL(t, db, ctx, "0121_private_exits.sql")
 	rerunMigrationDDL(t, db, ctx, "0133_deterministic_labels.sql")
+	rerunMigrationDDL(t, db, ctx, "0157_gains_start_rate.sql")
 	if _, err := MaterializeGains(ctx, db, gainsTo, 42); err != nil {
 		t.Fatal(err)
 	}
@@ -284,6 +285,71 @@ func TestMaterializedGainSplitsHeldAndSold(t *testing.T) {
 		heldOK := held == nil && math.IsNaN(c.held) || held != nil && near(*held, c.held)
 		if !heldOK || sold == nil || !near(*sold, c.sold) {
 			t.Errorf("%s %s %s: held %s sold %s, want %v %v", c.ccy, c.month, c.key, floatText(held), floatText(sold), c.held, c.sold)
+		}
+	}
+}
+
+// A source holds GGG in two accounts whose latest snapshots before
+// February fall on days with different rates: BRK3's on 3 January at 2
+// dollars a franc, BRK4's on 24 January at 4. BRK4 sells its 5 in
+// February, 150 dollars over their cost. The start price converts at
+// the newest observation's rate, BRK4's own, so BRK4's start gain of
+// 100 dollars releases as 25 francs: its held change is 0, and the sale
+// gained 12.5 francs (37.5 at the sale's rate, less the 25). BRK3 keeps
+// its 5, and the rate alone moves its gain from 50 francs to 25.
+func TestMaterializedSplitTakesTheNewestStartRate(t *testing.T) {
+	db, ctx := openGainsFixture(t)
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate) VALUES
+            ('test-src', 1728000, 'CHF', 'USD', 0.25),
+            ('test-src', 1728000, 'USD', 'CHF', 4.0);
+        INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name,
+                              first_seen_at, last_seen_at) VALUES
+            ('test-src', 'BRK3', 'brokerage', 'Third', 1, 1),
+            ('test-src', 'BRK4', 'brokerage', 'Fourth', 1, 1);
+        INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, symbol, name,
+                                 currency, first_seen_at, last_seen_at) VALUES
+            ('test-src', 'GGG', 'public_equity', 'GGG', 'Eta', 'USD', 1, 1);
+        INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key,
+                               instrument_external_id, asset_class, vehicle, currency, quantity,
+                               market_value, book_value, basis_origin, basis_method, basis_fees) VALUES
+            ('test-src', 200000,  'BRK3', 'GGG', 'GGG', 'public_equity', 'stock', 'USD', 5, 500, 400, 'stated', 'lots', 'included'),
+            ('test-src', 2000000, 'BRK4', 'GGG', 'GGG', 'public_equity', 'stock', 'USD', 5, 500, 400, 'stated', 'lots', 'included'),
+            ('test-src', 3974400, 'BRK3', 'GGG', 'GGG', 'public_equity', 'stock', 'USD', 5, 500, 400, 'stated', 'lots', 'included'),
+            ('test-src', 3974400, 'BRK4', 'DDD', 'DDD', 'public_equity', 'stock', 'USD', 1, 100, 100, 'stated', 'lots', 'included');
+        INSERT INTO realized_lots (silver_source_id, realized_lot_external_id, account_external_id,
+                                   instrument_external_id, document_kind, tax_year, acquisition_date,
+                                   acquired_various, disposal_date, currency, quantity, proceeds,
+                                   book_value, term, is_primary) VALUES
+            ('test-src', 'R-GGG', 'BRK4', 'GGG', 'form_1099b', 1970, DATE '1969-06-01', FALSE,
+             DATE '1970-02-10', 'USD', 5, 550, 400, 'short', TRUE)`); err != nil {
+		t.Fatal(err)
+	}
+	for run := 0; run < 2; run++ {
+		if _, err := MaterializeGains(ctx, db, gainsTo, int64(run)); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range []struct {
+			ccy, acct  string
+			held, sold float64
+		}{
+			{"CHF", "BRK4", 0, 12.5},
+			{"CHF", "BRK3", -25, math.NaN()},
+			{"USD", "BRK4", 0, 50},
+		} {
+			var held, sold *float64
+			if err := db.QueryRowContext(ctx, `
+                SELECT held_change, sold_gain FROM web_gains
+                 WHERE currency = ? AND period = TIMESTAMP '1970-02-01' AND missing_basis = 'ignore'
+                   AND account_external_id = ? AND instrument_key = 'GGG'`,
+				c.ccy, c.acct).Scan(&held, &sold); err != nil {
+				t.Fatalf("%s %s: %v", c.ccy, c.acct, err)
+			}
+			soldOK := sold == nil && math.IsNaN(c.sold) || sold != nil && near(*sold, c.sold)
+			if held == nil || !near(*held, c.held) || !soldOK {
+				t.Errorf("run %d, %s %s: held %s sold %s, want %v %v",
+					run, c.ccy, c.acct, floatText(held), floatText(sold), c.held, c.sold)
+			}
 		}
 	}
 }

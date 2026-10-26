@@ -108,9 +108,10 @@ by what prices did instead:
 - A lot was held at the start when it was bought before the bucket or
   states no purchase date.
 - The start price is the clean value per unit of the instrument across
-  the source's accounts at the bucket's start, converted at the start's
-  rate. A document that names a security by its CUSIP takes the price
-  of its ticker.
+  the source's accounts at the bucket's start. Each account reads its
+  last snapshot at or before the start. The price converts at the rate
+  of the newest of those snapshots' days. A document that names a
+  security by its CUSIP takes the price of its ticker.
 - Lots that sell more units than the source held at the start release
   in proportion.
 - Nothing is released where the start is unknown: the source did not
