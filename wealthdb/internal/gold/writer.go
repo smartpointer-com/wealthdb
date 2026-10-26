@@ -15,11 +15,12 @@ import (
 // records into the gold tables. The insert-only fact tables
 // (positions, position_lots, cash_balances, fx_rates, transactions)
 // go in as multi-row VALUES chunks, and realized_lots column by column
-// (colInsert) — DuckDB's per-statement cost dwarfs its per-row cost,
-// so one statement per row is the slowest way to feed it. The dimension tables upsert
-// row-by-row (the §8.4 guard needs ON CONFLICT per row); callers keep
-// those batches small by folding duplicate emissions first — see
-// ChangeAccumulator.
+// (colInsert, whose row-wise form insertColumns feeds the yield
+// tables) — DuckDB's per-statement cost dwarfs its per-row cost, so
+// one statement per row is the slowest way to feed it. The dimension
+// tables upsert row-by-row (the §8.4 guard needs ON CONFLICT per row);
+// callers keep those batches small by folding duplicate emissions
+// first — see ChangeAccumulator.
 //
 // Caller owns the transaction lifecycle: BeginTx, call writer
 // methods, Commit or Rollback. A Writer is not goroutine-safe;
@@ -50,7 +51,10 @@ func placeholders(cols string) string {
 // InsertChunkRows, collecting each row's bind args via appendRow
 // (which must append exactly one tuple's worth per call). op labels
 // errors, which name a ROW RANGE rather than a row: the statement that
-// failed carried a chunk of them.
+// failed carried a chunk of them. The statement of a full chunk is
+// prepared once and run for every full chunk: planning a statement of
+// thousands of parameters costs several times running it, so a batch
+// of many chunks pays it once.
 //
 // Exported because the bulk writers outside this package want the same
 // shape — DuckDB's per-statement cost dwarfs its per-row cost, so a
@@ -59,18 +63,39 @@ func placeholders(cols string) string {
 // chunk size or the error wording.
 func InsertChunked(ctx context.Context, tx *sql.Tx, op, head, tuple string, n int, appendRow func(i int, args []any) []any) error {
 	argsPerRow := strings.Count(tuple, "?")
+	var full *sql.Stmt
+	defer func() {
+		if full != nil {
+			full.Close()
+		}
+	}()
 	for off := 0; off < n; off += InsertChunkRows {
 		end := min(off+InsertChunkRows, n)
 		args := make([]any, 0, (end-off)*argsPerRow)
 		for i := off; i < end; i++ {
 			args = appendRow(i, args)
 		}
-		q := head + tuple + strings.Repeat(","+tuple, end-off-1)
-		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+		var err error
+		if end-off == InsertChunkRows && n > InsertChunkRows {
+			if full == nil {
+				full, err = tx.PrepareContext(ctx, chunkSQL(head, tuple, InsertChunkRows))
+			}
+			if err == nil {
+				_, err = full.ExecContext(ctx, args...)
+			}
+		} else {
+			_, err = tx.ExecContext(ctx, chunkSQL(head, tuple, end-off), args...)
+		}
+		if err != nil {
 			return fmt.Errorf("%s rows %d..%d: %w", op, off, end-1, err)
 		}
 	}
 	return nil
+}
+
+// chunkSQL is head with a VALUES list of rows tuples.
+func chunkSQL(head, tuple string, rows int) string {
+	return head + tuple + strings.Repeat(","+tuple, rows-1)
 }
 
 // NewWriter constructs a Writer that writes into the given

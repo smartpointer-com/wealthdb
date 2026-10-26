@@ -98,8 +98,7 @@ func (m *yieldMaterializer) insert(table, cols string, n int, row func(i int, ar
 	if n == 0 {
 		return nil
 	}
-	if err := InsertChunked(m.ctx, m.tx, table, `INSERT INTO `+table+` (`+cols+`) VALUES `,
-		placeholders(cols), n, row); err != nil {
+	if err := insertColumns(m.ctx, m.tx, table, table, cols, n, row); err != nil {
 		return fmt.Errorf("MaterializeYield %s: %w", table, err)
 	}
 	m.rows += n

@@ -105,6 +105,158 @@ func (c *colInsert) exec(ctx context.Context, tx *sql.Tx, table string) error {
 	return nil
 }
 
+// insertColumnRows bounds one statement of insertColumns, as
+// colChunkRows does colInsert's. Its lists are []any, which the driver
+// converts a value at a time.
+const insertColumnRows = 10000
+
+// insertColumns is the row-wise form of colInsert: it writes n rows
+// into the comma-separated columns cols of table, each value from
+// appendRow as InsertChunked's are, NULL as nil, and cast to its
+// column's catalog type. A list travels as text, a double, a bigint, a
+// boolean or a text list (transportType). Each value is the column's
+// value as such, never an SQL expression.
+func insertColumns(ctx context.Context, tx *sql.Tx, op, table, cols string, n int, appendRow func(i int, args []any) []any) error {
+	names := strings.Split(cols, ",")
+	for i := range names {
+		names[i] = strings.TrimSpace(names[i])
+	}
+	catalog, err := tableColumns(ctx, tx, table)
+	if err != nil {
+		return fmt.Errorf("%s: columns of %s: %w", op, table, err)
+	}
+	typeOf := make(map[string]string, len(catalog))
+	for _, c := range catalog {
+		typeOf[c.name] = c.typ
+	}
+	carry := make([]string, len(names))
+	sel := make([]string, len(names))
+	for i, name := range names {
+		t, ok := typeOf[name]
+		if !ok {
+			return fmt.Errorf("%s: %s has no column %s", op, table, name)
+		}
+		if carry[i] = transportType(t); carry[i] == "" {
+			return fmt.Errorf("%s: column %s of type %s has no list to travel in", op, name, t)
+		}
+		sel[i] = "CAST(unnest(CAST(? AS " + carry[i] + "[])) AS " + t + ")"
+	}
+	q := `INSERT INTO ` + table + ` (` + strings.Join(names, ", ") + `) SELECT ` + strings.Join(sel, ", ")
+	row := make([]any, 0, len(names))
+	for off := 0; off < n; off += insertColumnRows {
+		end := min(off+insertColumnRows, n)
+		lists := make([][]any, len(names))
+		for c := range lists {
+			lists[c] = make([]any, 0, end-off)
+		}
+		for i := off; i < end; i++ {
+			row = appendRow(i, row[:0])
+			if len(row) != len(names) {
+				return fmt.Errorf("%s row %d: %d values for %d columns", op, i, len(row), len(names))
+			}
+			for c, v := range row {
+				v, err := transportValue(v, carry[c])
+				if err != nil {
+					return fmt.Errorf("%s row %d column %s: %w", op, i, names[c], err)
+				}
+				lists[c] = append(lists[c], v)
+			}
+		}
+		args := make([]any, len(lists))
+		for c := range lists {
+			args[c] = lists[c]
+		}
+		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+			return fmt.Errorf("%s rows %d..%d: %w", op, off, end-1, err)
+		}
+	}
+	return nil
+}
+
+// transportType is the list element type a column of DuckDB type t is
+// bound in. It covers the types the yield and cashflow-plan tables
+// hold. A BIGINT, DOUBLE, BOOLEAN or VARCHAR[] column travels as
+// itself and an INTEGER as a BIGINT. Any other scalar, such as a DATE,
+// travels as text. A nested type other than a text list has none
+// (empty).
+func transportType(t string) string {
+	switch {
+	case t == "VARCHAR[]":
+		return t
+	case strings.HasSuffix(t, "]") || strings.HasPrefix(t, "STRUCT") || strings.HasPrefix(t, "MAP") || strings.HasPrefix(t, "UNION"):
+		return ""
+	case t == "BOOLEAN" || t == "DOUBLE" || t == "BIGINT":
+		return t
+	case t == "INTEGER":
+		return "BIGINT"
+	default:
+		return "VARCHAR"
+	}
+}
+
+// transportValue is v as an element of a carry list: a pointer is its
+// value or NULL, an integer widens, and a value of another kind is an
+// error rather than a conversion.
+func transportValue(v any, carry string) (any, error) {
+	switch x := v.(type) {
+	case nil:
+		return nil, nil
+	case *float64:
+		if x == nil {
+			return nil, nil
+		}
+		v = *x
+	case *string:
+		if x == nil {
+			return nil, nil
+		}
+		v = *x
+	case *int64:
+		if x == nil {
+			return nil, nil
+		}
+		v = *x
+	case *bool:
+		if x == nil {
+			return nil, nil
+		}
+		v = *x
+	case int:
+		v = int64(x)
+	case int32:
+		v = int64(x)
+	}
+	switch x := v.(type) {
+	case string:
+		if carry == "VARCHAR" {
+			return x, nil
+		}
+	case float64:
+		if carry == "DOUBLE" {
+			return x, nil
+		}
+	case int64:
+		switch carry {
+		case "BIGINT":
+			return x, nil
+		case "DOUBLE":
+			return float64(x), nil
+		}
+	case bool:
+		if carry == "BOOLEAN" {
+			return x, nil
+		}
+	case []string:
+		if carry == "VARCHAR[]" {
+			if x == nil {
+				return nil, nil
+			}
+			return x, nil
+		}
+	}
+	return nil, fmt.Errorf("a %T in a %s list", v, carry)
+}
+
 // tableColumn is one column of a table as the catalog lists it.
 type tableColumn struct{ name, typ string }
 
