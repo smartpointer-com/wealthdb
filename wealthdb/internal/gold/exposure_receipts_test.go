@@ -372,6 +372,51 @@ func TestExposureLinksANamedLineToItsShare(t *testing.T) {
 	}
 }
 
+// A security keeps one link: a line by name whose issuer's ISINs GLEIF
+// states takes that share, not the one its name finds, and its sector
+// comes from GLEIF's share alone.
+func TestExposureLinksASecurityOnce(t *testing.T) {
+	t.Parallel()
+	db, ctx := openExposureFixture(t)
+	for _, q := range []string{
+		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency)
+		 VALUES ('test-src', 'symbol:QSHR', ?, 'holdings', 'testprov', 2, 'USD'),
+		        ('test-src', 'symbol:QREP', ?, 'holdings', 'swissfunddata', 1, 'USD')`,
+		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
+		 weight, currency, country, sector) VALUES
+		 ('test-src', 'symbol:QSHR', ?, 'holdings', 1, 'isin:CH0000000804', 'CH0000000804', 'TALVERI BANK AG', 'Equity', 50, 'CHF', 'Switzerland', 'Financials'),
+		 ('test-src', 'symbol:QSHR', ?, 'holdings', 2, 'isin:CH0000000811', 'CH0000000811', 'TALVERI HOLDING AG', 'Equity', 50, 'CHF', 'Switzerland', 'Utilities'),
+		 ('test-src', 'symbol:QREP', ?, 'holdings', 1, 'name:q804', NULL, 'TALVERI BANK AG CHF0.10 (REGD)', 'Registered shares', 100, 'CHF', 'Switzerland', NULL)`,
+		`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value, scheme) VALUES
+		 ('refdata', 'name:q804', 'issuer_isins', ?, 'gleif', 'CH0000000811', 'isin')`,
+	} {
+		if _, err := db.ExecContext(ctx, q, slices.Repeat([]any{exSnap}, strings.Count(q, "?"))...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	var n, keys int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COUNT(DISTINCT security_key) FROM security_underlyings`).Scan(&n,
+		&keys); err != nil {
+		t.Fatal(err)
+	}
+	if n != keys {
+		t.Errorf("security_underlyings holds %d rows for %d securities", n, keys)
+	}
+	var share, origin string
+	var sectorOrigin sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT x.underlying_key, x.origin, s.sector_origin FROM security_underlyings x
+	    JOIN securities s USING (security_key) WHERE x.security_key = 'name:q804'`).Scan(&share, &origin,
+		&sectorOrigin); err != nil {
+		t.Fatal(err)
+	}
+	if share != "isin:CH0000000811" || origin != "lei" || sectorOrigin.String != "lei:isin:CH0000000811" {
+		t.Errorf("name:q804 links %s by %s, sector from %q; want GLEIF's share", share, origin, sectorOrigin.String)
+	}
+}
+
 // A report's line by name looks among its proxy's lines first: there a
 // name two countries share finds the proxy's share, a ticker serves as
 // its identifier, and its leaf carries no by_name flag. A line the proxy

@@ -240,7 +240,10 @@ func writeReceipts(ctx context.Context, tx *sql.Tx) error {
 		if err := rows.Scan(&key, &country, &name, &sizeOnly); err != nil {
 			return err
 		}
-		if _, linked := byName[key]; linked {
+		// A security has one link, so a fill from its share reads one
+		// share. A key GLEIF or a receipt's name links already is not
+		// linked again as a line.
+		if _, linked := byName[key]; linked || byLEI[key] != "" {
 			return nil
 		}
 		r := lines[key]

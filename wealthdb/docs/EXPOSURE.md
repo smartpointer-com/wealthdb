@@ -185,10 +185,12 @@ two countries takes its fund's market: the country of two in three of
 the fund's lines that found a share.
 
 `security_underlyings` keeps each link and how it was found: `lei`,
-`roster` (in the proxy's lines) or `name` (among all shares). The
-security's attributes name the share as their origin: `lei:isin:…`,
-`roster:` and the share's key, or `underlying:isin:…`. The leaves of a security
-matched among all shares carry the flag `by_name`.
+`roster` (in the proxy's lines) or `name` (among all shares). A
+security has one link: one that GLEIF links is not matched again, in
+the proxy's lines or by name. The security's attributes name the share
+as their origin: `lei:isin:…`, `roster:` and the share's key, or
+`underlying:isin:…`. The leaves of a security matched among all shares
+carry the flag `by_name`.
 
 `--country risk` (the default) places a security in its country of
 risk, else its domicile, on `countries` and `securities`.

@@ -129,7 +129,8 @@ UPDATE securities SET size = n.size, size_origin = 'size_fund_name:' || n.fund_r
 
 // sizeFillSQL sizes a depositary receipt, and a line a report names by
 // name alone, as the share it stands for (security_underlyings): the
-// issuer's size. The origin names the share as receiptFillSQL's do.
+// issuer's size. A security has one link (writeReceipts), so it takes
+// one share's size. The origin names the share as receiptFillSQL's do.
 const sizeFillSQL = `
 UPDATE securities SET size = u.size, size_origin = x.how || u.security_key
   FROM ` + underlyingsHowSQL + ` x
