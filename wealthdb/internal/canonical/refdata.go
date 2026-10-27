@@ -333,6 +333,31 @@ const (
 // Valid reports whether s is final or estimated.
 func (s DividendEventStatus) Valid() bool { return s == DividendFinal || s == DividendEstimated }
 
+// StatedPeriodChange is one insert into gold's `stated_periods`: an
+// account's summary of one period as a document states it. AsOf is the
+// UTC midnight of the period's last day, PeriodStart its first. Each
+// figure is nil where the document states none. NetAdditions is signed,
+// money into the account positive; Fees is a positive amount. A stated
+// period is informative: it is no position and no flow.
+type StatedPeriodChange struct {
+	SilverSourceID    string
+	AccountExternalID string
+	AsOf              int64
+	PeriodStart       int64
+	Currency          string
+	BeginningValue    *Decimal
+	EndingValue       *Decimal
+	Accrual           *Decimal
+	NetAdditions      *Decimal
+	NetGain           *Decimal
+	Income            *Decimal
+	Fees              *Decimal
+	// SourceSHA256 names the stating document, so two documents'
+	// statements of one period stay apart.
+	SourceSHA256 string
+	Payload      json.RawMessage
+}
+
 // RateObservationChange is one insert into gold's `rate_observations`:
 // one day's value of a published interest-rate series, in percent, as
 // the source serves it. The yield config's curves name series by

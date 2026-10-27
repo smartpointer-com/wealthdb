@@ -491,6 +491,37 @@ func TestMCPEmptyResultListsValues(t *testing.T) {
 	}
 }
 
+// TestMCPStatedIsASideView: returns' stated view is no finer grain of
+// accounts. An accounts call that matches nothing does not point to it,
+// a filter never moves a call to or from it, and the help lists it
+// apart from the coarse-to-fine order.
+func TestMCPStatedIsASideView(t *testing.T) {
+	t.Parallel()
+	s := newTestMCP(setupReturnsGold(t), false)
+	text, err := callTool(t, s, "returns", map[string]any{"view": "accounts", "account": "no-such-account"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "(no rows: nothing matched the filter)") || strings.Contains(text, "stated") {
+		t.Errorf("empty accounts result points elsewhere:\n%s", text)
+	}
+	for _, c := range []struct{ view, want string }{{"global", "accounts"}, {"stated", "stated"}} {
+		got, ok := escalate(returnsFamily.walk(c.view), returnsFamily.carries, c.view, []string{"account"})
+		if got != c.want || !ok {
+			t.Errorf("escalate(%s, account) = %s %v, want %s", c.view, got, ok, c.want)
+		}
+	}
+	help, err := callTool(t, s, "describe", map[string]any{"topic": "returns"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ladder, side, ok := strings.Cut(help, "Outside that order")
+	if !ok || strings.Contains(ladder[strings.Index(ladder, "Filters each view takes"):], "stated:") ||
+		!strings.Contains(side, "stated: source, account") {
+		t.Errorf("returns help does not list stated apart:\n%s", help)
+	}
+}
+
 // TestMCPRowCeiling: the ceiling lowers a larger limit, and limit 0, and
 // the paging line says so.
 func TestMCPRowCeiling(t *testing.T) {

@@ -192,12 +192,26 @@ func (s *mcpServer) toolHelp(t toolSpec) (string, error) {
 	}
 	if fam.views != nil {
 		b.WriteString("\nFilters each view takes (a filter the view lacks moves the call to the first finer view that has it):\n")
-		for _, v := range fam.views {
-			fs := fam.carries[v]
-			if len(fs) == 0 {
-				fs = []string{"none"}
+		filters := func(v string) string {
+			if fs := fam.carries[v]; len(fs) > 0 {
+				return strings.Join(fs, ", ")
 			}
-			fmt.Fprintf(&b, "  %s: %s\n", v, strings.Join(fs, ", "))
+			return "none"
+		}
+		for _, v := range fam.ladder() {
+			fmt.Fprintf(&b, "  %s: %s\n", v, filters(v))
+		}
+		var side []string
+		for _, v := range fam.views {
+			if fam.side[v] {
+				side = append(side, v)
+			}
+		}
+		if len(side) > 0 {
+			b.WriteString("Outside that order (a view of its own, which no filter moves a call to or from):\n")
+			for _, v := range side {
+				fmt.Fprintf(&b, "  %s: %s\n", v, filters(v))
+			}
 		}
 	}
 	if note := toolNotes[t.name]; note != "" {
@@ -214,7 +228,7 @@ func (s *mcpServer) toolHelp(t toolSpec) (string, error) {
 var toolNotes = map[string]string{
 	"holdings": `Totals reconcile: global = sum of sources = sum of portfolios = sum of accounts = positions with with_cash. A loan or a card balance is negative. positions_value, cash_balance and total_value are in each account's own currency; the columns with a currency suffix are converted.
 Example: {view: "accounts", tax_wrapper: "roth_ira"}.`,
-	"returns": `The quality column explains every n/a (describe topic=quality). accounts is exact; the coarser views are best-effort, and returns do not add up across views.
+	"returns": `The quality column explains every n/a (describe topic=quality). accounts is exact; the coarser views are best-effort, and returns do not add up across views. stated sets each period a document states for an account (stated net additions, ending value) against the engine's monthly figures for it, in the stated currency; flow_gap and value_gap are the differences.
 Example: {view: "sources", from: "2024", to: "2025", period: "annual", method: "twr"}.`,
 	"gains": `gain = realized + unrealized_change, the price gain on what is held; income, fees and taxes are in returns. Realized is what the sale's documents state, else what the lot engine rebuilt from the trades; unrealized is the clean value (market value less accrued interest) less the cost basis. basis_stamp says which notion of cost basis a figure is. summary, sources, portfolios and accounts add up. The quality column names every gap (describe topic=quality); the coverage view says per account where the figures are blind, and the check view compares the lot engine with the stated lots.
 Example: {view: "accounts", from: "2025", to: "2025", tax_wrapper: "taxable_joint"}.`,

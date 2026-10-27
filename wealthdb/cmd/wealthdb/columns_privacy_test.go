@@ -661,6 +661,10 @@ func setupTypedLabelGold(t *testing.T) string {
 		 ('bank', 'C-SHOP', 'CORNER MARKET', 1, 'FOOD_AND_DRINK_GROCERIES', 'signature-only', NULL, NULL, NULL, 1),
 		 ('wallets', 'W-SHOP', 'CORNER MARKET', 1, 'FOOD_AND_DRINK_GROCERIES', 'signature-only', NULL, NULL, NULL, 1),
 		 ('linked', 'P-SHOP', 'CORNER MARKET', 1, 'FOOD_AND_DRINK_GROCERIES', 'signature-only', NULL, NULL, NULL, 1)`,
+		`INSERT INTO stated_periods (silver_source_id, account_external_id, as_of, period_start, currency,
+		 ending_value, net_additions, source_sha256) VALUES
+		 ('bank', 'BRK000001234', $t1, $jun01, 'USD', 12000, 0, 'doc'),
+		 ('wallets', ` + wallet + `, $t1, $jun01, 'USD', 60000, 0, 'doc')`,
 	} {
 		if _, err := db.ExecContext(ctx, at.Replace(q)); err != nil {
 			t.Fatalf("%s: %v", q, err)

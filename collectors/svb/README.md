@@ -22,12 +22,18 @@ $XDG_DATA_HOME/wealthdb/svb/        # the data dir (override: --data-dir)
 │   ├── derived-marks.xlsx          # optional performance workbook of
 │   │                               # month-end account values, to fill the
 │   │                               # brokerage months no statement covers
+│   │                               # and record each month's stated flows
 │   │                               # (PII; --derived-marks)
 │   └── signature.txt               # page-1 guard substrings, one per line (PII)
 ├── svb.db                          # built silver, brokerage (override: --silver-db)
 ├── svb-deposit.db                  # built silver, deposit accounts (if any)
 └── svb-mortgage.db                 # built silver, mortgage loans (if any)
 ```
+
+The performance workbook states each brokerage account's month: beginning
+and ending value, accrual, net additions, net gain, income and fees. `load`
+keeps every month in the `stated_periods` table of `svb.db`. Only the ending
+value fills a gap; the other numbers never become transactions.
 
 Each PDF is classified from its own text, so each statement family reaches its
 own parser; the build summary prints a per-family census of everything it saw.

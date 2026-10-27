@@ -118,7 +118,7 @@ wealthdb reload  <id>... | -a         (RW)    Reset then load; -a builds a fresh
 wealthdb compact [--dry-run]          (RW)    Rewrite the gold DB into a fresh file to reclaim dead space.
 wealthdb lots rebuild [--force]       (RW)    Replay the trades into lots: the cost basis no source states (docs/LOTS.md).
 wealthdb holdings <view> [flags]      (RO)    Point-in-time views: positions, accounts, portfolios, sources, global.
-wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, portfolios, sources, global.
+wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, portfolios, sources, global; stated sets a document's stated periods beside them.
 wealthdb gains   <view> [flags]       (RO)    Realized and unrealized gains: summary, sources, portfolios, accounts, positions, realized, lots, coverage, check.
 wealthdb exposure <view> [flags]      (RO)    What is really owned, every fund looked through: classes, sectors, sizes, countries, currencies, credit, maturities, coupons, cycles, situs, securities, issuers, funds, coverage.
 wealthdb yield   <view> [flags]       (RO)    What the holdings earn and how they move with rates: global, sources, portfolios, accounts, positions, securities, funds, cash, curve, coverage.
@@ -1565,6 +1565,7 @@ is documented where it is used:
 - The reference table `dividend_calendar` and the config table
   `yield_settlement_cycles` (migration `0147`) — §7.6.
 - The derived table `dividend_gaps` (migration `0148`) — §7.6.
+- The reference table `stated_periods` (migration `0159`) — §7.6.
 - The serving table `report_cashflow_plan` (migration `0149`) —
   §10.12.
 - The serving tables `serving_*` (migration `0132`) — web/DESIGN.md §8.
@@ -2118,6 +2119,17 @@ Its `as_of` is the day the source stated it. A load replaces gold's
 rows of each ref and provider whose rows changed, whole, so gold holds
 what silver holds (adapters/refdata.md §4). The yield report reads a
 dividend's record day from it (YIELD.md §4).
+
+Migration 0159 adds `stated_periods`: an account's summary of one
+period as a document states it. A row holds the values at the period's
+two ends, the net additions, the gain, the income, the fees and the
+accruals, each NULL where the document states none. It is keyed by the
+account, the period's last day (`as_of`) and the stating document. An
+account source writes it, not a reference source: the fidelity kind
+reads it from a silver's `stated_periods` table, which the svb
+collector fills from the month-end workbook. No report counts a row as
+a position or a flow. `wealthdb returns stated` sets each period
+against the returns engine's monthly figures for the account.
 
 Migration 0148 adds `dividend_gaps`: the gap each issuer keeps from a
 distribution's record day to its pay day, learned from the calendar,
@@ -2927,7 +2939,10 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
 
 `wealthdb returns <view>` (`<view>` = `accounts` | `portfolios` | `sources` |
 `global`) computes **time-weighted** (TWR) and **money-weighted** (MWR / XIRR)
-returns over a window. Unlike the holdings views it is **not** a Metabase model:
+returns over a window. `returns stated` sets each period a document states
+for an account (`stated_periods`, §7.6) beside the engine's monthly figures
+for that account: the stated net additions against the engine's net flow,
+the stated ending value against its end value. Unlike the holdings views it is **not** a Metabase model:
 the XIRR root-find and geometric chaining are iterative, not expressible as a
 DuckDB macro. The computation lives in Go — the CLI computes on demand, and
 `web-materialize` snapshots the same engine's output into `report_returns` for

@@ -67,3 +67,21 @@ CREATE TABLE historical_position_snapshots (
     payload             TEXT,
     PRIMARY KEY (as_of_date, account_external_id, description)
 );
+
+-- Mirrors fidelity-web silver migration 0015 (stated_periods).
+CREATE TABLE stated_periods (
+    period_start         INTEGER NOT NULL,
+    period_end           INTEGER NOT NULL,
+    account_external_id  TEXT    NOT NULL,
+    beginning_value      REAL,
+    ending_value         REAL,
+    accrual              REAL,
+    net_additions        REAL,
+    net_gain             REAL,
+    income               REAL,
+    fees                 REAL,
+    currency             TEXT    NOT NULL DEFAULT 'USD',
+    source_sha256        TEXT    NOT NULL,
+    payload              TEXT    NOT NULL,
+    PRIMARY KEY (period_end, account_external_id, source_sha256)
+);

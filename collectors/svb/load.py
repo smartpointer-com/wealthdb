@@ -828,6 +828,43 @@ def insert_derived_marks(conn: sqlite3.Connection, workbook: Path | None) -> int
     return len(fill)
 
 
+def insert_stated_periods(conn: sqlite3.Connection,
+                          workbook: Path | None) -> int:
+    """Write every month the workbook states, all seven values, and return
+    how many rows were written.
+
+    Every row goes in, not only the gaps: these rows record what the
+    workbook says beside the ledger, and create no transaction and no
+    position. Each carries the workbook's sha256. Brokerage only, for the
+    reason :func:`insert_derived_marks` gives.
+    """
+    periods = derived_marks.read_stated_periods(workbook)
+    if not periods:
+        return 0
+    sha = hashlib.sha256(workbook.read_bytes()).hexdigest()
+    seen: set[tuple[str, str]] = set()
+    for p in periods:
+        key = (p.period_end, p.account_external_id)
+        if key in seen:
+            log.warning("stated period %s %s appears twice; the later row "
+                        "stands", p.account_external_id, p.period_end)
+        seen.add(key)
+        conn.execute(
+            "INSERT OR REPLACE INTO stated_periods (period_start, period_end, "
+            "account_external_id, beginning_value, ending_value, accrual, "
+            "net_additions, net_gain, income, fees, currency, source_sha256, "
+            "payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                ts_from_iso(p.period_start), ts_from_iso(p.period_end),
+                p.account_external_id, p.beginning_value, p.ending_value,
+                p.accrual, p.net_additions, p.net_gain, p.income, p.fees,
+                "USD", sha, json.dumps(p.cells, separators=(",", ":")),
+            ),
+        )
+    log.info("stated periods: %d row(s) from %s", len(seen), workbook.name)
+    return len(seen)
+
+
 def synthesize_masters(conn: sqlite3.Connection) -> int:
     """One synthetic accounts + portfolios master per account (neutral kind, so
     the gold adapter defaults to taxable_personal and config overrides set the
@@ -1165,6 +1202,7 @@ def build(silver_db: Path, bronze_dir: Path, *, signatures: tuple[str, ...],
         # sheet that could match one.
         brokerage = conns.get(pdf_parsers_svbwa.FAMILY_BROKERAGE)
         derived = insert_derived_marks(brokerage, workbook) if brokerage else 0
+        stated = insert_stated_periods(brokerage, workbook) if brokerage else 0
         synth = 0
         for conn in conns.values():
             synth += synthesize_masters(conn)
@@ -1172,11 +1210,12 @@ def build(silver_db: Path, bronze_dir: Path, *, signatures: tuple[str, ...],
             conn.commit()
         log.info(
             "svb silver built: %d holdings rows + %d transactions from %d "
-            "document(s) [%s], %d derived mark(s), %d unbooked activity row(s), "
+            "document(s) [%s], %d derived mark(s), %d stated period(s), "
+            "%d unbooked activity row(s), "
             "%d master(s) synthesised across %d silver DB(s)",
             holdings, txns, len(pdfs),
             ", ".join(f"{k}={v}" for k, v in sorted(census.items())),
-            derived, unknown_verbs, synth, len(conns),
+            derived, stated, unknown_verbs, synth, len(conns),
         )
     finally:
         for conn in conns.values():
@@ -1199,7 +1238,7 @@ def main(argv=None) -> int:
     p.add_argument("--derived-marks", type=Path, default=None,
                    help="performance workbook of month-end account values, used "
                         "to fill the brokerage months no statement covers "
-                        "(default "
+                        "and to record each month's stated flows (default "
                         "<bronze>/derived-marks.xlsx). Absent means the "
                         "archive stands on its statements alone.")
     p.add_argument("--migrations-dir", type=Path,

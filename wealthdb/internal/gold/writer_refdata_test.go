@@ -79,6 +79,10 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 			Provider: "p6", EventID: "ev1", AsOf: 345600, Kind: canonical.DividendKindCapitalGain,
 			ExDay: &exDay, RecordDay: &recordDay, PayDay: &payDay, DeclaredDay: &declaredDay, Amount: d("0.1234"),
 			Currency: s("QLM"), Status: &final}},
+		StatedPeriods: []canonical.StatedPeriodChange{{SilverSourceID: "test-src", AccountExternalID: "ACCT-Q",
+			AsOf: 2592000, PeriodStart: 86400, Currency: "QLN", BeginningValue: d("100"), EndingValue: d("125.5"),
+			Accrual: d("1"), NetAdditions: d("-10"), NetGain: d("35.5"), Income: d("2"), Fees: d("0.5"),
+			SourceSHA256: "doc-q", Payload: []byte(`{"w":1}`)}},
 	}
 	before := filledTables(t, db, ctx)
 	inTx(t, db, ctx, func(w *Writer) error { return w.InsertReference(ctx, b) })
@@ -137,6 +141,9 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 		    declared_day, amount, currency, status`,
 			"test-src|isin:XX0000000001|p6|ev1|345600|capital_gain|1970-01-02|1970-01-03|1970-01-09|1969-12-20|" +
 				"0.12340000|QLM|final"},
+		{"stated_periods", `silver_source_id, account_external_id, as_of, period_start, currency, beginning_value,
+		    ending_value, accrual, net_additions, net_gain, income, fees, source_sha256, payload`,
+			"test-src|ACCT-Q|2592000|86400|QLN|100.0000|125.5000|1.0000|-10.0000|35.5000|2.0000|0.5000|doc-q|{\"w\":1}"},
 	} {
 		tables = append(tables, c.table)
 		var got string
@@ -271,23 +278,24 @@ func TestPayloadLEI(t *testing.T) {
 
 // TestEveryReferenceTableHasAKind pins that a load's windowed delete clears
 // each reference table over the span the stream re-emits it over: every
-// table names its kind of record but rate_observations, which the rate
-// streams write and the window takes whole.
+// table names its kind of record but rate_observations and
+// stated_periods, which their streams write over the window whole.
 func TestEveryReferenceTableHasAKind(t *testing.T) {
 	kinds := map[string]bool{}
 	for _, k := range canonical.RefKinds {
 		kinds[k] = true
 	}
+	whole := map[string]bool{"rate_observations": true, "stated_periods": true}
 	for _, table := range ReferenceTables {
 		kind, ok := ReferenceTableKinds[table]
 		switch {
-		case table == "rate_observations" && ok:
-			t.Errorf("rate_observations names kind %q, want none", kind)
-		case table != "rate_observations" && !kinds[kind]:
+		case whole[table] && ok:
+			t.Errorf("%s names kind %q, want none", table, kind)
+		case !whole[table] && !kinds[kind]:
 			t.Errorf("%s names kind %q, want one of the reference kinds", table, kind)
 		}
 	}
-	if len(ReferenceTableKinds) != len(ReferenceTables)-1 {
+	if len(ReferenceTableKinds) != len(ReferenceTables)-len(whole) {
 		t.Errorf("ReferenceTableKinds has %d tables, ReferenceTables %d", len(ReferenceTableKinds), len(ReferenceTables))
 	}
 }

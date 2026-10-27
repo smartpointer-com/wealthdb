@@ -46,6 +46,10 @@ type family struct {
 	// views are the tool's views, coarse to fine; nil for a tool with
 	// one shape.
 	views []string
+	// side marks the views that are no grain of the others but a table
+	// of their own (returns' stated): the coarse-to-fine walks of
+	// escalate, finerViews and the help skip them.
+	side map[string]bool
 	// carries lists the filters each view reads, by view ("" for a
 	// tool with one shape). It decides which view a filter picks.
 	carries map[string][]string
@@ -141,6 +145,7 @@ func (s *mcpServer) tools() []toolSpec {
 			name: "returns", title: "Returns",
 			description: "How investments performed over a window, as time-weighted (twr) and money-weighted (mwr) return percentages, after fees and taxes. " +
 				"view=global: the whole portfolio. view=sources: per institution. view=portfolios: per portfolio. view=accounts: per account (exact; the other views are best-effort). " +
+				"view=stated: each period a document states for an account (stated net additions and ending value) beside the engine's monthly figures for it, in the stated currency. " +
 				"By default one row per entity for the whole window; period adds buckets. Read the quality column: an n/a always has its reason there. " +
 				"Default window: since the first snapshot. " +
 				`Example: {view: "accounts", from: "2025", to: "2025", period: "total"}.`,
@@ -426,10 +431,12 @@ func missingBasisArg(a *toolArgs) (lots.MissingBasis, error) {
 
 var returnsFamily = &family{
 	views: returnsViews,
+	side:  map[string]bool{"stated": true},
 	carries: map[string][]string{
 		"sources":    {"source"},
 		"portfolios": {"source"},
 		"accounts":   {"source", "account"},
+		"stated":     {"source", "account"},
 	},
 	// On returns, "value" means the return itself.
 	principal: func(req request) string {
@@ -442,6 +449,15 @@ var returnsFamily = &family{
 	currency: true,
 	narrow:   "from/to or a filter",
 	prepare: func(a *toolArgs, req *request, _ *[]string) error {
+		if req.view == "stated" {
+			// The document fixes the periods and the currency.
+			for _, name := range []string{"currency", "method", "period", "annualize", "netting", "inception"} {
+				if a.has(name) {
+					return fmt.Errorf("returns: stated takes no %s — the periods and the currency are the document's", name)
+				}
+			}
+			return nil
+		}
 		req.method = orDefault(a.str("method"), "both")
 		req.period = orDefault(a.str("period"), "total")
 		req.annualize = orDefault(a.str("annualize"), "auto")
@@ -449,8 +465,16 @@ var returnsFamily = &family{
 		req.netting = a.flag("netting", true)
 		return nil
 	},
-	build: func(cfg *config.Config, req request, _ *toolArgs) *report { return returnsReport(req, cfg) },
+	build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+		if req.view == "stated" {
+			return returnsStatedReport(req, cfg)
+		}
+		return returnsReport(req, cfg)
+	},
 	header: func(req request) []string {
+		if req.view == "stated" {
+			return nil
+		}
 		h := []string{"method=" + req.method, "period=" + req.period}
 		if req.annualize != "auto" {
 			h = append(h, "annualize="+req.annualize)
@@ -891,6 +915,27 @@ func (s *mcpServer) runFamily(ctx context.Context, tool string, fam *family, a *
 	return render(rs, p, sh.cols, orDefault(a.str("format"), formatTable), head, meta), nil
 }
 
+// ladder is the family's views without its side views: the coarse to
+// fine order the walks follow.
+func (fam *family) ladder() []string {
+	var out []string
+	for _, v := range fam.views {
+		if !fam.side[v] {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// walk is the views escalate may settle view on: the ladder, or a side
+// view alone, which no filter moves off.
+func (fam *family) walk(view string) []string {
+	if fam.side[view] {
+		return []string{view}
+	}
+	return fam.ladder()
+}
+
 // settle turns a call's arguments into the report request: the view
 // the filters need, the currency, the dates, and the family's options.
 // notes are what it chose for the model, for the header.
@@ -901,7 +946,7 @@ func (s *mcpServer) settle(tool string, fam *family, cfg *config.Config, a *tool
 		if view == "" {
 			view = fam.views[0]
 		}
-		settled, ok := escalate(fam.views, fam.carries, view, named)
+		settled, ok := escalate(fam.walk(view), fam.carries, view, named)
 		if !ok {
 			return request{}, nil, filterViewError(tool, fam, view, named)
 		}
@@ -1001,6 +1046,9 @@ func (s *mcpServer) header(tool string, fam *family, rep *report, req request, r
 	case tool == "cashflow" && req.view == "coverage":
 		meta.currency = ""
 		head.add("each account in its own currency")
+	case tool == "returns" && req.view == "stated":
+		meta.currency = ""
+		head.add("each period in the currency its document states")
 	case req.currency != "":
 		head.add("%s", req.currency)
 	}
@@ -1116,7 +1164,7 @@ func (s *mcpServer) paging(a *toolArgs) (limit int, capped bool, offset int, err
 // the filters, and where they are: the view to call when one takes
 // them all, else which views carry each.
 func filterViewError(tool string, fam *family, view string, named []string) error {
-	for _, v := range fam.views {
+	for _, v := range fam.ladder() {
 		if carriesAll(fam.carries, v, named) {
 			return fmt.Errorf("%s: the %s view has no %s filter; the %s view has: call view=%s, or use search",
 				tool, view, strings.Join(named, ", "), v, v)
@@ -1181,7 +1229,7 @@ func emptyNote(rs *resultSet, fam *family, view string, named []string, a *toolA
 func finerViews(fam *family, view string, named []string) []string {
 	var out []string
 	after := false
-	for _, v := range fam.views {
+	for _, v := range fam.ladder() {
 		if after && carriesAll(fam.carries, v, named) {
 			out = append(out, v)
 		}

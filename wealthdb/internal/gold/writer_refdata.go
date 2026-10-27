@@ -21,13 +21,13 @@ var ReferenceTables = []string{
 	"fund_compositions", "fund_lines", "fund_attributes",
 	"fund_counterparties", "security_identities", "security_facts",
 	"fund_risk", "fund_characteristics", "security_period_facts",
-	"rate_observations", "dividend_calendar",
+	"rate_observations", "dividend_calendar", "stated_periods",
 }
 
 // ReferenceTableKinds are the kind of record each reference table holds
 // (canonical.Window.Spans), so a load's windowed delete clears a table
-// over its kind's span. rate_observations, which no kind names, takes
-// the window whole.
+// over its kind's span. rate_observations and stated_periods, which no
+// kind names, take the window whole.
 var ReferenceTableKinds = map[string]string{
 	"fund_compositions": canonical.RefFundDays, "fund_lines": canonical.RefFundDays,
 	"fund_attributes": canonical.RefFundDays, "fund_counterparties": canonical.RefFundDays,
@@ -50,6 +50,7 @@ func (w *Writer) InsertReference(ctx context.Context, b *canonical.SnapshotBatch
 		func() error { return w.insertSecurityPeriodFacts(ctx, b.SecurityPeriodFacts) },
 		func() error { return w.insertRateObservations(ctx, b.RateObservations) },
 		func() error { return w.insertDividendEvents(ctx, b.DividendEvents) },
+		func() error { return w.insertStatedPeriods(ctx, b.StatedPeriods) },
 	} {
 		if err := insert(); err != nil {
 			return err
@@ -283,6 +284,28 @@ INSERT INTO rate_observations (
 			r := &batch[i]
 			return append(args,
 				r.SilverSourceID, r.SeriesID, r.AsOf, r.Value, nullableJSON(r.Payload))
+		})
+}
+
+func (w *Writer) insertStatedPeriods(ctx context.Context, batch []canonical.StatedPeriodChange) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	const head = `
+INSERT INTO stated_periods (
+    silver_source_id, account_external_id, as_of, period_start, currency,
+    beginning_value, ending_value, accrual, net_additions, net_gain, income, fees,
+    source_sha256, payload
+) VALUES `
+	return InsertChunked(ctx, w.tx, "stated_periods", head,
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		func(i int, args []any) []any {
+			r := &batch[i]
+			return append(args,
+				r.SilverSourceID, r.AccountExternalID, r.AsOf, r.PeriodStart, r.Currency,
+				nullable(r.BeginningValue), nullable(r.EndingValue), nullable(r.Accrual),
+				nullable(r.NetAdditions), nullable(r.NetGain), nullable(r.Income), nullable(r.Fees),
+				r.SourceSHA256, nullableJSON(r.Payload))
 		})
 }
 

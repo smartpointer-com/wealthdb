@@ -217,6 +217,12 @@ func cashflowCases() []goldenCase {
 func returnsCases() []goldenCase {
 	var out []goldenCase
 	for _, v := range returnsFamily.views {
+		if v == "stated" {
+			// The document fixes the period: no --method, no --period.
+			out = append(out, goldenCase{"returns stated", []string{"returns", "stated"}, "returns",
+				map[string]any{"view": v}})
+			continue
+		}
 		out = append(out, goldenCase{"returns " + v,
 			[]string{"returns", v, "--method", "both", "--period", "total"}, "returns",
 			map[string]any{"view": v}})

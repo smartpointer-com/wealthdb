@@ -19,16 +19,20 @@ func init() {
 	register("returns", cmdReturns)
 }
 
-// returnsViews are the grains `wealthdb returns <view>` supports,
-// coarsest first: the four reconciling levels. Per-position gains are
-// the gains report's.
-var returnsViews = []string{"global", "sources", "portfolios", "accounts"}
+// returnsViews are the views `wealthdb returns <view>` supports: the
+// four reconciling grains, coarsest first, then `stated`, a side view
+// of the documents' stated periods beside the accounts' figures, which
+// is no grain of them. Per-position gains are the gains report's.
+var returnsViews = []string{"global", "sources", "portfolios", "accounts", "stated"}
 
 // cmdReturns routes `wealthdb returns <view> ...` to the view's run.
 func cmdReturns(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
 	view, rest, err := routeView("returns", subargs, returnsViews, returnsUsage, stderr)
 	if err != nil {
 		return err
+	}
+	if view == "stated" {
+		return runReturnsStated(ctx, g, rest, stdout, stderr)
 	}
 	return runReturnsView(ctx, g, view, rest, stdout, stderr)
 }
@@ -289,6 +293,10 @@ Views (coarsest → finest):
   sources      one row per silver source
   portfolios   one row per portfolio (+ a per-source no-portfolio bucket)
   accounts     one row per account (exact — the headline; coarse views are best-effort)
+
+Also:
+  stated       a document's stated periods beside the engine's figures
+               ('wealthdb returns stated -h')
 
 Plumbing (cash accounts, deposit-bank sources, config returns_hide ids)
 emits no rows of its own at any view, and neither does a portfolio or

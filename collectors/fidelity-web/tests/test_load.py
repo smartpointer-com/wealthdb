@@ -157,7 +157,8 @@ def test_apply_migrations_creates_schema(conn):
     assert names == [
         "accounts", "closed_lots", "documents", "dump_runs",
         "historical_position_snapshots", "open_lots", "parser_generations",
-        "portfolios", "positions", "schema_meta", "transactions",
+        "portfolios", "positions", "schema_meta", "stated_periods",
+        "transactions",
     ]
 
 

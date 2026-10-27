@@ -394,6 +394,7 @@ type SnapshotBatch struct {
 	RateObservations    []RateObservationChange
 
 	DividendEvents []DividendEventChange
+	StatedPeriods  []StatedPeriodChange
 }
 
 // ReferenceRows is the number of reference records in b.
@@ -401,7 +402,7 @@ func (b *SnapshotBatch) ReferenceRows() int {
 	return len(b.FundCompositions) + len(b.FundLines) + len(b.FundAttributes) +
 		len(b.FundCounterparties) + len(b.Securities) + len(b.SecurityFacts) +
 		len(b.FundRisk) + len(b.FundCharacteristics) + len(b.SecurityPeriodFacts) +
-		len(b.RateObservations) + len(b.DividendEvents)
+		len(b.RateObservations) + len(b.DividendEvents) + len(b.StatedPeriods)
 }
 
 // TransactionBatch is one batch yielded by a TransactionStream.Next call.

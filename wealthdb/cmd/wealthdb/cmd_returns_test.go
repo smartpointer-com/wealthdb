@@ -95,6 +95,14 @@ func setupReturnsGold(t *testing.T) string {
 			AccountExternalID: "BROK1", Kind: canonical.TxKindDeposit, Currency: "USD", NetAmount: d(100),
 		}})
 	})
+	seed(func(w *gold.Writer) error {
+		return w.InsertReference(ctx, &canonical.SnapshotBatch{StatedPeriods: []canonical.StatedPeriodChange{{
+			SilverSourceID: "schwab", AccountExternalID: "BROK1", Currency: "USD", SourceSHA256: "00ab00cd",
+			PeriodStart:  time.Date(2024, time.April, 1, 0, 0, 0, 0, time.UTC).Unix(),
+			AsOf:         time.Date(2024, time.April, 30, 0, 0, 0, 0, time.UTC).Unix(),
+			NetAdditions: d(100), EndingValue: d(1100),
+		}}})
+	})
 	if err := db.Close(); err != nil {
 		t.Fatalf("close gold: %v", err)
 	}
@@ -181,4 +189,26 @@ func TestReturnsCLIEndToEnd(t *testing.T) {
 			t.Errorf("invalid --method exit=%d, want 2", code)
 		}
 	})
+}
+
+// `returns stated` sets the fixture's stated April against the engine's
+// April for the account, refuses -x, and redacts its amounts under -p.
+func TestReturnsStatedCLI(t *testing.T) {
+	t.Parallel()
+	cfg := setupReturnsGold(t)
+	so, se, code := run(t, "-c", cfg, "returns", "stated", "-f", "csv", "-C", "account,period,stated_net_additions,net_flow,flow_gap,document")
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, se)
+	}
+	lines := strings.Split(strings.TrimSpace(so), "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[1], "Brokerage,2024-04,100.00,") || !strings.HasSuffix(lines[1], ",00ab00cd") {
+		t.Fatalf("stated rows:\n%s", so)
+	}
+	if _, _, code := run(t, "-c", cfg, "returns", "stated", "-x", "CHF"); code != 2 {
+		t.Errorf("-x exit = %d, want a usage error", code)
+	}
+	so, _, code = run(t, "-c", cfg, "returns", "stated", "-p", "-f", "csv", "-C", "stated_net_additions,document")
+	if code != 0 || strings.Contains(so, "100.00") || strings.Contains(so, "00ab00cd") {
+		t.Errorf("-p left an amount or the document legible:\n%s", so)
+	}
 }

@@ -105,8 +105,9 @@ SELECT activity_since, COALESCE(activity_until, snapshot_at) FROM dump_runs
 // anything new in dump_runs or transactions past since" (so an
 // idle reload remains a no-op); bounds widen to cover any
 // position snapshot whose snapshot_at — or any historical
-// position snapshot whose as_of_date — falls outside the trigger
-// range so the byTime dispatch in Snapshots() doesn't drop rows.
+// position snapshot whose as_of_date — or any stated period's last
+// day — falls outside the trigger range so the snapshot pass doesn't
+// drop rows.
 func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
 	w := canonical.Window{NewChangeNumber: since}
 	hasHist, err := c.hasHistoricalTable(ctx)
@@ -164,6 +165,9 @@ SELECT MIN(as_of_date), MAX(as_of_date) FROM historical_position_snapshots`).
 			if histHi.Valid && histHi.Int64 > w.End {
 				w.End = histHi.Int64
 			}
+		}
+		if err := c.widenToStatedPeriods(ctx, &w); err != nil {
+			return w, err
 		}
 	}
 	if newCN.Valid {

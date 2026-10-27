@@ -62,7 +62,17 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		}
 	}
 
-	return byTime.Stream(), nil
+	stated, err := c.statedPeriods(ctx, w)
+	if err != nil {
+		return nil, err
+	}
+	if len(stated) == 0 {
+		return byTime.Stream(), nil
+	}
+	return silver.NewConcatSnapshotStream([]silver.SnapshotStream{
+		byTime.Stream(),
+		silver.NewSnapshotStream([]canonical.SnapshotBatch{{StatedPeriods: stated}}),
+	}), nil
 }
 
 // snapshotTimesInWindow returns the union of distinct snapshot_at

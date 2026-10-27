@@ -2,9 +2,10 @@
 Unit tests for derived_marks.py — the performance workbook of month-end
 account values that fills the months the statement archive misses.
 
-`read_workbook` is exercised against a workbook this module builds, so
-the fixture is synthetic end to end: all-zero account serials in the
-`SV[MRT]-NNNNNN` shape and round example values. `gaps_to_fill` is a
+`read_workbook` and `read_stated_periods` are exercised against a
+workbook this module builds, so the fixture is synthetic end to end:
+all-zero account serials in the `SV[MRT]-NNNNNN` shape and round
+example values. `gaps_to_fill` is a
 pure function of the marks and the months the statements reach, and
 carries the rules that keep a derived mark honest — so it is tested
 directly, with no file at all.
@@ -13,7 +14,7 @@ directly, with no file at all.
 from __future__ import annotations
 
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -104,6 +105,134 @@ def test_a_missing_workbook_is_not_an_error(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "openpyxl", None)
     assert dm.read_workbook(tmp_path / "absent.xlsx") == []
     assert dm.read_workbook(None) == []
+
+
+# ============================================================
+# read_stated_periods — every value column of every row
+# ============================================================
+
+_FULL_HEADER = ["Date", "BMV", "EMV", "Accrual", "Net Additions",
+                "Net Gain", "Income", "Fees"]
+
+
+def _full_workbook(path, sheets, header=_FULL_HEADER):
+    """Write a workbook at ``path``, one sheet per account, under
+    ``header`` (all eight columns unless given); each row is given whole,
+    so a test states every cell."""
+    openpyxl = pytest.importorskip("openpyxl")
+    book = openpyxl.Workbook()
+    book.remove(book.active)
+    for name, rows in sheets.items():
+        sheet = book.create_sheet(name)
+        sheet.append(header)
+        for row in rows:
+            sheet.append(row)
+    book.save(path)
+    return path
+
+
+def test_a_stated_period_reads_all_seven_values(tmp_path):
+    path = _full_workbook(tmp_path / "marks.xlsx", {"M000000": [
+        [datetime(2022, 2, 1), 1000.0, 1150.0, 5.0, 100.0, 50.0, 20.0, 10.0],
+    ]})
+    [p] = dm.read_stated_periods(path)
+    assert p == dm.StatedPeriod(
+        account_external_id="SVM-000000",
+        period_start="2022-02-01", period_end="2022-02-28",
+        beginning_value=1000.0, ending_value=1150.0, accrual=5.0,
+        net_additions=100.0, net_gain=50.0, income=20.0, fees=10.0,
+        cells={"Date": "2022-02-01", "BMV": 1000, "EMV": 1150, "Accrual": 5,
+               "Net Additions": 100, "Net Gain": 50, "Income": 20,
+               "Fees": 10},
+    )
+
+
+def test_a_stated_period_runs_from_the_rows_date_to_its_month_end(tmp_path):
+    path = _full_workbook(tmp_path / "marks.xlsx", {"T000000": [
+        [datetime(2024, 2, 1), 100.0, 100.0, 0, 0, 0, 0, 0],
+        [datetime(2022, 12, 1), 100.0, 100.0, 0, 0, 0, 0, 0],
+    ]})
+    assert [(p.account_external_id, p.period_start, p.period_end)
+            for p in dm.read_stated_periods(path)] == [
+        ("SVT-000000", "2024-02-01", "2024-02-29"),
+        ("SVT-000000", "2022-12-01", "2022-12-31"),
+    ]
+
+
+def test_net_additions_keep_their_sign(tmp_path):
+    path = _full_workbook(tmp_path / "marks.xlsx", {"M000000": [
+        [datetime(2022, 3, 1), 1000.0, 900.0, 0, -100.0, 0, 0, 0],
+    ]})
+    assert dm.read_stated_periods(path)[0].net_additions == -100.0
+
+
+def test_blank_dash_and_text_cells_read_as_none(tmp_path):
+    path = _full_workbook(tmp_path / "marks.xlsx", {"M000000": [
+        [datetime(2022, 2, 1), None, 100.0, " -   ", "n/a", None, "-", 0],
+    ]})
+    [p] = dm.read_stated_periods(path)
+    assert (p.beginning_value, p.accrual, p.net_additions, p.net_gain,
+            p.income) == (None, None, None, None, None)
+    assert (p.ending_value, p.fees) == (100.0, 0.0)
+    # The payload keeps the cells as read, the dash and the text included.
+    assert p.cells["Accrual"] == " -   "
+    assert p.cells["Net Additions"] == "n/a"
+    assert p.cells["BMV"] is None
+
+
+def test_a_row_that_states_no_value_is_skipped(tmp_path):
+    path = _full_workbook(tmp_path / "marks.xlsx", {"M000000": [
+        [datetime(2022, 2, 1), None, "-", None, None, "", None, None],
+        [datetime(2022, 3, 1), None, None, None, None, None, None, 0],
+        ["not a date", 100.0, 100.0, 0, 0, 0, 0, 0],
+    ]})
+    assert [p.period_start for p in dm.read_stated_periods(path)] == [
+        "2022-03-01"]
+
+
+def test_a_header_without_some_value_columns_reads_them_as_none(tmp_path):
+    path = _full_workbook(tmp_path / "marks.xlsx", {"M000000": [
+        [datetime(2022, 2, 1), 100.0, 0],
+    ]}, header=["Date", "EMV", "Fees"])
+    [p] = dm.read_stated_periods(path)
+    assert (p.ending_value, p.fees) == (100.0, 0.0)
+    assert (p.beginning_value, p.accrual, p.net_additions, p.net_gain,
+            p.income) == (None, None, None, None, None)
+    assert p.cells == {"Date": "2022-02-01", "EMV": 100, "Fees": 0}
+
+
+def test_a_sheet_without_a_date_header_states_nothing(tmp_path):
+    path = _full_workbook(tmp_path / "marks.xlsx", {"M000000": [
+        [datetime(2022, 2, 1), 100.0, 100.0],
+    ]}, header=["Day", "BMV", "EMV"])
+    assert dm.read_stated_periods(path) == []
+    assert dm.read_workbook(path) == []
+
+
+def test_a_sheet_that_is_not_an_account_is_not_read_for_periods(tmp_path):
+    row = [datetime(2022, 2, 1), 100.0, 100.0, 0, 0, 0, 0, 0]
+    path = _full_workbook(tmp_path / "marks.xlsx", {
+        "R000000": [row], "Summary": [row], "530000OTHER": [row]})
+    assert {p.account_external_id for p in dm.read_stated_periods(path)} == {
+        "SVR-000000"}
+
+
+def test_a_missing_workbook_states_no_period(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "openpyxl", None)
+    assert dm.read_stated_periods(tmp_path / "absent.xlsx") == []
+    assert dm.read_stated_periods(None) == []
+
+
+def test_the_marks_of_a_full_workbook_are_its_ending_values(tmp_path):
+    # The gap-fill read stays on the ending value alone, whatever the
+    # other columns state.
+    path = _full_workbook(tmp_path / "marks.xlsx", {"M000000": [
+        [datetime(2022, 2, 1), 1000.0, 1150.0, 5.0, 100.0, 50.0, 20.0, 10.0],
+        [datetime(2022, 3, 1), 1150.0, None, 0, 0, 0, 0, 0],
+    ]})
+    assert [(m.account_external_id, m.as_of, m.market_value)
+            for m in dm.read_workbook(path)] == [
+        ("SVM-000000", "2022-02-28", 1150.0)]
 
 
 # ============================================================

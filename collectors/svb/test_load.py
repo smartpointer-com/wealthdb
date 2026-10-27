@@ -6,6 +6,7 @@ import calendar
 import json
 import sqlite3
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ import load as B  # noqa: E402
 from derived_marks import DERIVED_SHA  # noqa: E402
 import pdf_parsers_svbdep as D  # noqa: E402
 import pdf_parsers_svbwa as P  # noqa: E402
+from test_derived_marks import _full_workbook  # noqa: E402
 
 MIGRATIONS = Path(__file__).parent / "migrations"
 
@@ -1255,6 +1257,138 @@ def test_a_workbook_is_optional(tmp_path, monkeypatch):
     assert conn.execute(
         "SELECT COUNT(*) FROM historical_position_snapshots "
         "WHERE source_sha256=?", (DERIVED_SHA,)).fetchone()[0] == 0
+
+
+_GAP_ARCHIVE = {
+    "SVM-000000/2022-01-31": {
+        "family": P.FAMILY_BROKERAGE, "period_end": "2022-01-31",
+        "stated_total": 10.0, "accounts": [
+            {"account_external_id": "SVM-000000", "holdings": [
+                {"description": "AAAA", "instrument_key": "AAAA",
+                 "market_value": 10.0}]}]},
+    "SVM-000000/2022-03-31": {
+        "family": P.FAMILY_BROKERAGE, "period_end": "2022-03-31",
+        "stated_total": 30.0, "accounts": [
+            {"account_external_id": "SVM-000000", "holdings": [
+                {"description": "AAAA", "instrument_key": "AAAA",
+                 "market_value": 30.0}]}]},
+}
+
+
+_WORKBOOK_ROWS = {
+    "M000000": [
+        [datetime(2022, 1, 1), 0.0, 10.0, 0, 10.0, 0, 0, 0],
+        [datetime(2022, 2, 1), 10.0, 20.0, 0, 5.0, 5.0, 1.0, "-"],
+        [datetime(2022, 3, 1), 20.0, 30.0, 0, 0, 10.0, None, 1.0],
+        # Past the archive's last statement: stated, never a mark.
+        [datetime(2022, 4, 1), 30.0, 40.0, 0, 0, 10.0, 0, 0],
+    ],
+    "Summary": [[datetime(2022, 1, 1), 1.0, 1.0, 0, 0, 0, 0, 0]],
+}
+
+
+def _build_with_workbook(tmp_path, monkeypatch, canned):
+    bronze = _write_bronze(tmp_path, canned)
+    _patch_parsers(monkeypatch, bronze, canned)
+    workbook = _full_workbook(tmp_path / "marks.xlsx", _WORKBOOK_ROWS)
+    db = tmp_path / "svb.db"
+    B.build(db, bronze, signatures=(), migrations_dir=MIGRATIONS,
+            cache_dir=None, max_workers=1, workbook=workbook)
+    return db, workbook
+
+
+def test_every_workbook_row_is_a_stated_period(tmp_path, monkeypatch):
+    import hashlib
+    db, workbook = _build_with_workbook(tmp_path, monkeypatch, _GAP_ARCHIVE)
+    conn = sqlite3.connect(str(db))
+    rows = conn.execute(
+        "SELECT period_start, period_end, account_external_id, "
+        "beginning_value, ending_value, accrual, net_additions, net_gain, "
+        "income, fees, currency, source_sha256, payload "
+        "FROM stated_periods ORDER BY period_end").fetchall()
+    sha = hashlib.sha256(workbook.read_bytes()).hexdigest()
+    # Every row, the covered months and the one past the archive alike.
+    assert [r[:11] for r in rows] == [
+        (B.ts_from_iso("2022-01-01"), B.ts_from_iso("2022-01-31"),
+         "SVM-000000", 0.0, 10.0, 0.0, 10.0, 0.0, 0.0, 0.0, "USD"),
+        (B.ts_from_iso("2022-02-01"), B.ts_from_iso("2022-02-28"),
+         "SVM-000000", 10.0, 20.0, 0.0, 5.0, 5.0, 1.0, None, "USD"),
+        (B.ts_from_iso("2022-03-01"), B.ts_from_iso("2022-03-31"),
+         "SVM-000000", 20.0, 30.0, 0.0, 0.0, 10.0, None, 1.0, "USD"),
+        (B.ts_from_iso("2022-04-01"), B.ts_from_iso("2022-04-30"),
+         "SVM-000000", 30.0, 40.0, 0.0, 0.0, 10.0, 0.0, 0.0, "USD"),
+    ]
+    assert {r[11] for r in rows} == {sha}
+    assert json.loads(rows[1][12]) == {
+        "Date": "2022-02-01", "BMV": 10, "EMV": 20, "Accrual": 0,
+        "Net Additions": 5, "Net Gain": 5, "Income": 1, "Fees": "-"}
+
+
+def test_stated_periods_leave_the_gap_fill_alone(tmp_path, monkeypatch):
+    # The same workbook fills the one interior gap, from its ending value,
+    # exactly as a workbook of marks alone does; no stated period becomes a
+    # transaction.
+    db, _ = _build_with_workbook(tmp_path, monkeypatch, _GAP_ARCHIVE)
+    conn = sqlite3.connect(str(db))
+    rows = conn.execute(
+        "SELECT as_of_date, market_value, description, source_sha256 FROM "
+        "historical_position_snapshots ORDER BY as_of_date").fetchall()
+    assert [(r[0], r[1], r[3] == DERIVED_SHA) for r in rows] == [
+        (B.ts_from_iso("2022-01-31"), 10.0, False),
+        (B.ts_from_iso("2022-02-28"), 20.0, True),
+        (B.ts_from_iso("2022-03-31"), 30.0, False)]
+    assert rows[1][2] == B.derived_marks.DERIVED_DESC
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transactions").fetchone()[0] == 0
+
+
+def test_stated_periods_reach_the_brokerage_db_only(tmp_path, monkeypatch):
+    db, _ = _build_with_workbook(tmp_path, monkeypatch, _CANNED)
+    conns = {family: sqlite3.connect(str(path))
+             for family, path in B.silver_paths(db).items()}
+    count = {family: conn.execute(
+                 "SELECT COUNT(*) FROM stated_periods").fetchone()[0]
+             for family, conn in conns.items()}
+    assert count == {P.FAMILY_BROKERAGE: 4, D.FAMILY_DEPOSIT: 0,
+                     D.FAMILY_MORTGAGE: 0}
+
+
+def test_a_month_stated_twice_keeps_the_later_row(tmp_path, monkeypatch,
+                                                  caplog):
+    import logging
+    bronze = _write_bronze(tmp_path, _GAP_ARCHIVE)
+    _patch_parsers(monkeypatch, bronze, _GAP_ARCHIVE)
+    workbook = _full_workbook(tmp_path / "marks.xlsx", {"M000000": [
+        [datetime(2022, 2, 1), 10.0, 20.0, 0, 5.0, 5.0, 1.0, 0],
+        [datetime(2022, 2, 15), 11.0, 21.0, 0, 6.0, 4.0, 2.0, 1.0],
+    ]})
+    db = tmp_path / "svb.db"
+    with caplog.at_level(logging.WARNING, logger="svb"):
+        B.build(db, bronze, signatures=(), migrations_dir=MIGRATIONS,
+                cache_dir=None, max_workers=1, workbook=workbook)
+    conn = sqlite3.connect(str(db))
+    assert conn.execute(
+        "SELECT period_start, period_end, beginning_value, ending_value, "
+        "net_additions, net_gain, income, fees FROM stated_periods"
+    ).fetchall() == [
+        (B.ts_from_iso("2022-02-15"), B.ts_from_iso("2022-02-28"),
+         11.0, 21.0, 6.0, 4.0, 2.0, 1.0)]
+    assert ("stated period SVM-000000 2022-02-28 appears twice; the later "
+            "row stands") in caplog.text
+
+
+def test_no_workbook_states_no_period(tmp_path, monkeypatch):
+    conn = _build(tmp_path, monkeypatch)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM stated_periods").fetchone()[0] == 0
+
+
+def test_the_build_counts_its_stated_periods(tmp_path, monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="svb")
+    _build_with_workbook(tmp_path, monkeypatch, _GAP_ARCHIVE)
+    assert "stated periods: 4 row(s) from marks.xlsx" in caplog.text
+    assert "1 derived mark(s), 4 stated period(s)" in caplog.text
 
 
 def test_dump_run_marker_is_written(tmp_path, monkeypatch):
