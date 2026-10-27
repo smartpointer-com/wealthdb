@@ -1382,11 +1382,37 @@ func TestTaxWrapperFromDatesAWrapper(t *testing.T) {
 		!strings.Contains(err.Error(), "after today") {
 		t.Errorf("a day ahead: %v, want a refusal", err)
 	}
+	if _, err := load(`{"tax_wrapper": "trust_non_grantor", "tax_wrapper_from": "1970-01-01"}`); err == nil ||
+		!strings.Contains(err.Error(), "not after 1970-01-01") {
+		t.Errorf("the epoch: %v, want a refusal", err)
+	}
 	if _, err := load(`{"category": "Example", "tax_wrapper_from": "2019-03-01"}`); err == nil ||
 		!strings.Contains(err.Error(), "dates a tax_wrapper") {
 		t.Errorf("a date with no wrapper: %v, want a refusal", err)
 	}
 	if _, err := load(`{"tax_wrapper": "trust_non_grantor", "tax_wrapper_from": "03/01/2099"}`); err == nil {
 		t.Error("a day not in YYYY-MM-DD accepted")
+	}
+}
+
+// TestAnOverrideRestatesTheAccountKind: account_kind takes a canonical
+// account kind, never the synthetic overlay or a liability, and nothing
+// else.
+func TestAnOverrideRestatesTheAccountKind(t *testing.T) {
+	load := func(entry string) error {
+		_, err := Load(writeConfig(t, `{
+        "gold_db": "/tmp/x", "default_currency": "USD",
+        "silver_sources": [{"id": "linked", "kind": "plaid", "path": "/tmp/l.db"}],
+        "account_overrides": {"linked": {"ACCT1": `+entry+`}}}`))
+		return err
+	}
+	if err := load(`{"account_kind": "custody", "tax_wrapper": "taxable_personal"}`); err != nil {
+		t.Errorf("a custody account refused: %v", err)
+	}
+	for _, bad := range []string{`{"account_kind": "wallet"}`, `{"account_kind": "overlay"}`,
+		`{"account_kind": "cash", "exclude": true}`, `{"account_kind": "card"}`, `{"account_kind": "mortgage"}`} {
+		if err := load(bad); err == nil {
+			t.Errorf("%s accepted, want a refusal", bad)
+		}
 	}
 }

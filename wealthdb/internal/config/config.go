@@ -504,19 +504,25 @@ type RelationshipPair struct {
 
 // AccountOverride is one per-account override entry. All fields
 // are optional; an empty string means "don't override that
-// column". TaxWrapper and ManagementStyle are validated against
-// the canonical enums at config-load time; bad values fail the
+// column". AccountKind, TaxWrapper and ManagementStyle are validated
+// against the canonical enums at config-load time; bad values fail the
 // load rather than landing as gibberish in gold.
 type AccountOverride struct {
-	Nickname   string `json:"nickname,omitempty"`
-	Category   string `json:"category,omitempty"`
-	TaxWrapper string `json:"tax_wrapper,omitempty"`
+	Nickname string `json:"nickname,omitempty"`
+	Category string `json:"category,omitempty"`
+	// AccountKind restates what the account is where its source types
+	// it wrong, such as an account an aggregator files under the wrong
+	// kind. A card, a mortgage or an overlay keeps its source's kind.
+	// The wrapper is its own override.
+	AccountKind string `json:"account_kind,omitempty"`
+	TaxWrapper  string `json:"tax_wrapper,omitempty"`
 	// TaxWrapperFrom (YYYY-MM-DD) dates TaxWrapper: from that day the
 	// account has the override's wrapper, and before it the wrapper it
-	// has without this override. A day after today or before 1970 is
-	// refused: the dimension already carries the override's wrapper. The cash flow statement's boundary reads the
-	// wrapper as of each row's day (docs/CASHFLOW.md §3). Empty means the
-	// override holds for the whole history.
+	// has without this override. Empty means the override holds for the
+	// whole history. The day must be after 1970-01-01 (0 is unset) and
+	// no later than today, since the dimension carries the override's
+	// wrapper from the load on. The cash flow boundary reads the wrapper
+	// as of each row's day (docs/CASHFLOW.md §3).
 	TaxWrapperFrom  string `json:"tax_wrapper_from,omitempty"`
 	ManagementStyle string `json:"management_style,omitempty"`
 	// Exclude drops the account from gold entirely — the dimension

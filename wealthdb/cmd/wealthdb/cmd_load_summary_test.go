@@ -58,6 +58,9 @@ func TestLoadPrintsBothFamilyBlocks(t *testing.T) {
 		FamilyResult:               spend,
 		Income:                     income,
 		UnmatchedTransferOverrides: 2,
+		ReimbursementPairs:         3,
+		UnmatchedReimbursements:    1,
+		UnlinkedReimbursements:     4,
 	})
 	got := out.String()
 
@@ -71,6 +74,8 @@ func TestLoadPrintsBothFamilyBlocks(t *testing.T) {
 		"income: 5 payer verdict(s) carried forward",
 		"income: 6 payer verdict(s) left behind",
 		"spending: 2 merchant verdict(s) carried forward",
+		"spending: 3 reimbursement pair(s) from the ledger, 1 ledger line(s) naming none; " +
+			"4 repayment(s) no road links (a `reimburse` line links one)",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the load summary is missing %q:\n%s", want, got)
@@ -99,6 +104,11 @@ func TestLoadPrintsBothFamilyBlocks(t *testing.T) {
 	}
 	if override > strings.Index(got, "income: 4 row(s)") {
 		t.Errorf("the transfer-override line prints after the income block:\n%s", got)
+	}
+	// The reimbursement line is spending's too: the repayments net in
+	// spending, and the ledger that links them is the override ledger.
+	if strings.Index(got, "reimbursement pair(s)") > strings.Index(got, "income: 4 row(s)") {
+		t.Errorf("the reimbursement line prints after the income block:\n%s", got)
 	}
 
 	// A quiet run says one line per family and nothing else: the

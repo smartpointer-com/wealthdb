@@ -331,18 +331,28 @@ func (c *Config) validateAccountOverrides(seenIDs map[string]bool) error {
 			if acctID == "" {
 				return fmt.Errorf("config: account_overrides[%q]: empty account_external_id key", sourceID)
 			}
-			if ov.Nickname == "" && ov.Category == "" &&
+			if ov.Nickname == "" && ov.Category == "" && ov.AccountKind == "" &&
 				ov.TaxWrapper == "" && ov.ManagementStyle == "" && !ov.Exclude {
-				return fmt.Errorf("config: account_overrides[%q][%q]: at least one of nickname, category, tax_wrapper, management_style, or exclude must be set", sourceID, acctID)
+				return fmt.Errorf("config: account_overrides[%q][%q]: at least one of nickname, category, account_kind, tax_wrapper, management_style, or exclude must be set", sourceID, acctID)
 			}
 			// Excluding an account and stamping a column on it are
 			// contradictory instructions: the row the column would go
 			// on is the row the exclusion removes. Refused rather than
 			// silently resolved, because either half could be the one
 			// that was meant.
-			if ov.Exclude && (ov.Nickname != "" || ov.Category != "" ||
+			if ov.Exclude && (ov.Nickname != "" || ov.Category != "" || ov.AccountKind != "" ||
 				ov.TaxWrapper != "" || ov.ManagementStyle != "") {
 				return fmt.Errorf("config: account_overrides[%q][%q]: exclude cannot be combined with a column override — the account is dropped, so there is no row to stamp", sourceID, acctID)
+			}
+			if ov.AccountKind != "" && (!canonical.AccountKind(ov.AccountKind).Valid() ||
+				ov.AccountKind == string(canonical.AccountKindOverlay)) {
+				return fmt.Errorf("config: account_overrides[%q][%q]: invalid account_kind %q", sourceID, acctID, ov.AccountKind)
+			}
+			// An adapter signs a liability's balance and books a
+			// mortgage's principal by its own kind, so a restated card
+			// or mortgage would read a debt as an asset.
+			if ov.AccountKind == string(canonical.AccountKindCard) || ov.AccountKind == string(canonical.AccountKindMortgage) {
+				return fmt.Errorf("config: account_overrides[%q][%q]: account_kind %q: a liability's kind follows its source", sourceID, acctID, ov.AccountKind)
 			}
 			if ov.TaxWrapper != "" && !canonical.TaxWrapper(ov.TaxWrapper).Valid() {
 				return fmt.Errorf("config: account_overrides[%q][%q]: invalid tax_wrapper %q", sourceID, acctID, ov.TaxWrapper)
@@ -359,7 +369,7 @@ func (c *Config) validateAccountOverrides(seenIDs map[string]bool) error {
 				// load on, so a day ahead would date it falsely; a day on
 				// or before the epoch is no day a wrapper changed on.
 				if from <= 0 || from > time.Now().Unix() {
-					return fmt.Errorf("config: account_overrides[%q][%q]: tax_wrapper_from %s is after today or before 1970", sourceID, acctID, ov.TaxWrapperFrom)
+					return fmt.Errorf("config: account_overrides[%q][%q]: tax_wrapper_from %s is after today or not after 1970-01-01", sourceID, acctID, ov.TaxWrapperFrom)
 				}
 			}
 			if ov.ManagementStyle != "" && !canonical.ManagementStyle(ov.ManagementStyle).Valid() {

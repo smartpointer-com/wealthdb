@@ -358,8 +358,9 @@ account,account_id,tax_wrapper` shows each account's id:
 }
 ```
 
-The same entry takes `"exclude": true` instead, to leave an account out
-of gold.
+Where Plaid types the account itself wrong, the same entry takes
+`"account_kind"` too. It takes `"exclude": true` instead, to leave an
+account out of gold.
 
 Add only an institution that no other collector reads into the same
 gold. The [adapter](../../wealthdb/docs/adapters/plaid.md) says why.

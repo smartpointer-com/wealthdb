@@ -376,7 +376,7 @@ func printPassSummary(stdout io.Writer, res *spending.Result) {
 	}
 	if res.ReimbursementPairs > 0 || res.UnmatchedReimbursements > 0 || res.UnlinkedReimbursements > 0 {
 		fmt.Fprintf(stdout, "spending: %d reimbursement pair(s) from the ledger, %d ledger line(s) naming none; "+
-			"%d repayment(s) linked to no outflow (a `reimburse` line links one)\n",
+			"%d repayment(s) no road links (a `reimburse` line links one)\n",
 			res.ReimbursementPairs, res.UnmatchedReimbursements, res.UnlinkedReimbursements)
 	}
 	printFamilySummary(stdout, "income", "payer", res.Income)
@@ -566,6 +566,7 @@ func buildSourceSpec(
 			spec.Overrides[acctID] = loader.AccountOverride{
 				Nickname:        ov.Nickname,
 				Category:        ov.Category,
+				AccountKind:     ov.AccountKind,
 				TaxWrapper:      ov.TaxWrapper,
 				TaxWrapperFrom:  ov.TaxWrapperFromEpoch(),
 				ManagementStyle: ov.ManagementStyle,

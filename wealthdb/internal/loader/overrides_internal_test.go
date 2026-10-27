@@ -133,7 +133,7 @@ func TestAccountOverrideNicknameWinsOverTheAdapters(t *testing.T) {
 		{AccountExternalID: "a1", Nickname: s("Rainy Day Fund")},
 		{AccountExternalID: "a2", Nickname: s("Travel Money")},
 	}
-	applyAccountOverrides(accounts, map[string]AccountOverride{"a1": {Nickname: "Joint"}})
+	applyAccountOverrides(accounts, map[string]AccountOverride{"a1": {Nickname: "Joint"}}, nil)
 	for i, want := range []string{"Joint", "Travel Money"} {
 		if got := accounts[i].Nickname; got == nil || *got != want {
 			t.Errorf("%s nickname = %v, want %q", accounts[i].AccountExternalID, got, want)
@@ -657,7 +657,7 @@ func TestADatedWrapperOverrideRecordsTheEarlierWrapper(t *testing.T) {
 		e := earlierWrappers{}
 		for _, b := range batches {
 			e.observe(b, ov)
-			applyAccountOverrides(b, ov)
+			applyAccountOverrides(b, ov, nil)
 		}
 		if err := e.write(ctx, tx, "bank", ov); err != nil {
 			t.Fatal(err)
@@ -685,10 +685,42 @@ func TestADatedWrapperOverrideRecordsTheEarlierWrapper(t *testing.T) {
 	// A later load that sees the account but states no wrapper keeps it.
 	run([]canonical.AccountChange{{AccountExternalID: "TRUST1"}}, later)
 	if got := read(); got != "TRUST1:trust_grantor:4076006400" {
-		t.Errorf("history after an unseen load = %q, want the recorded wrapper at the new day", got)
+		t.Errorf("history after a load that states no wrapper = %q, want the recorded wrapper kept", got)
 	}
 	run(nil, map[string]AccountOverride{"TRUST1": {TaxWrapper: "trust_non_grantor"}})
 	if got := read(); got != "" {
 		t.Errorf("history after the date went = %q, want none", got)
+	}
+}
+
+// TestAnOverrideRestatesTheAccountKind: the override's kind replaces the
+// adapter's, and an override without one leaves it. A card, a mortgage
+// or an overlay keeps the adapter's kind, and its ID is reported.
+func TestAnOverrideRestatesTheAccountKind(t *testing.T) {
+	accounts := []canonical.AccountChange{
+		{AccountExternalID: "ACCT1", AccountKind: canonical.AccountKindBrokerage},
+		{AccountExternalID: "CASH1", AccountKind: canonical.AccountKindCash},
+		{AccountExternalID: "CARD1", AccountKind: canonical.AccountKindCard},
+		{AccountExternalID: "LOAN1", AccountKind: canonical.AccountKindMortgage},
+	}
+	kept := map[string]canonical.AccountKind{}
+	applyAccountOverrides(accounts, map[string]AccountOverride{
+		"ACCT1": {AccountKind: "custody"},
+		"CASH1": {Nickname: "Everyday"},
+		"CARD1": {AccountKind: "cash"},
+		"LOAN1": {AccountKind: "other", Nickname: "Home"},
+	}, kept)
+	want := []canonical.AccountKind{canonical.AccountKindCustody, canonical.AccountKindCash,
+		canonical.AccountKindCard, canonical.AccountKindMortgage}
+	for i, k := range want {
+		if accounts[i].AccountKind != k {
+			t.Errorf("%s kind = %s, want %s", accounts[i].AccountExternalID, accounts[i].AccountKind, k)
+		}
+	}
+	if accounts[3].Nickname == nil || *accounts[3].Nickname != "Home" {
+		t.Errorf("LOAN1 nickname = %v, want the override's other fields applied", accounts[3].Nickname)
+	}
+	if len(kept) != 2 || kept["CARD1"] != canonical.AccountKindCard || kept["LOAN1"] != canonical.AccountKindMortgage {
+		t.Errorf("kept kinds = %v, want CARD1 and LOAN1", kept)
 	}
 }

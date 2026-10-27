@@ -113,7 +113,10 @@ wrapper reads as household, as `other` does, but the load and
 holder's own, and irrevocable ones, which are not.
 
 The wrapper follows the subtype as Plaid reports it. Where that gives
-the wrong wrapper, config `account_overrides` sets the right one.
+the wrong wrapper, config `account_overrides` sets the right one. Where
+Plaid types the account itself wrong, its `account_kind` sets the right
+kind. A card or a mortgage keeps the kind Plaid gives it, because the
+adapter signs its balance by that kind.
 
 `management_style` is `self_directed` on cash, card and mortgage
 accounts, and unset on an investment account, where Plaid does not say

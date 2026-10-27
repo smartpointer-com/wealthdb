@@ -12,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -90,13 +92,14 @@ type SourceSpec struct {
 
 // AccountOverride is the loader's view of one config-file
 // account_overrides entry. An empty string means "don't override
-// that column". TaxWrapper and ManagementStyle must be valid
-// canonical enum values when non-empty — config validation
+// that column". AccountKind, TaxWrapper and ManagementStyle must be
+// valid canonical enum values when non-empty — config validation
 // catches bad values upstream.
 type AccountOverride struct {
-	Nickname   string
-	Category   string
-	TaxWrapper string
+	Nickname    string
+	Category    string
+	AccountKind string
+	TaxWrapper  string
 	// TaxWrapperFrom dates TaxWrapper (UTC midnight, Unix seconds; 0 for
 	// the whole history): before it the account keeps the wrapper it has
 	// without this override, which the load records in
@@ -419,6 +422,7 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 	defer stream.Close()
 
 	earlier := earlierWrappers{}
+	keptKinds := map[string]canonical.AccountKind{}
 	writer := gold.NewWriter(tx)
 	dims := gold.NewChangeAccumulator()
 	closing := newSupersessionClosing(spec.Supersession)
@@ -440,7 +444,7 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 		// broader statements above left it: the account's wrapper before
 		// the override's day.
 		earlier.observe(batch.Accounts, spec.Overrides)
-		applyAccountOverrides(batch.Accounts, spec.Overrides)
+		applyAccountOverrides(batch.Accounts, spec.Overrides, keptKinds)
 		applyInstrumentOverrides(batch.Instruments, batch.Positions, spec.InstrumentOverrides)
 		// Before the drop, record what each superseded account held
 		// going into its handover — read after the statements above, so
@@ -485,6 +489,10 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 			batch.ReferenceRows()
 
 		if !more {
+			for _, id := range slices.Sorted(maps.Keys(keptKinds)) {
+				log.Printf("%s loader: account_kind override on %s ignored: a %s keeps its source's kind",
+					spec.ID, id, keptKinds[id])
+			}
 			positions, balances := closing.rows(spec.ID)
 			if err := deleteClosingRows(ctx, tx, spec.ID, positions, balances); err != nil {
 				return total, err
@@ -1160,12 +1168,19 @@ func applyTaxableWrapper(accounts []canonical.AccountChange, wrapper string) {
 // applyAccountOverrides patches each AccountChange whose
 // account_external_id appears in the overrides map. Non-empty
 // override fields replace the adapter's value (Nickname /
-// AccountCategory / TaxWrapper / ManagementStyle); empty fields
-// are left as-is. Overrides for account_external_ids not in the
-// batch are silently ignored — overrides may be configured
-// for accounts that happen not to be in this snapshot
+// AccountCategory / AccountKind / TaxWrapper / ManagementStyle);
+// empty fields are left as-is. Overrides for account_external_ids
+// not in the batch are silently ignored — overrides may be
+// configured for accounts that happen not to be in this snapshot
 // window.
-func applyAccountOverrides(accounts []canonical.AccountChange, overrides map[string]AccountOverride) {
+//
+// An account the adapter kinds as a card, a mortgage or an overlay
+// keeps its kind: gold reads a card's and a mortgage's balance by
+// that kind, and an overlay is synthetic. Such an account's ID goes
+// into keptKinds, so the caller can say once that the override was
+// ignored; keptKinds may be nil.
+func applyAccountOverrides(accounts []canonical.AccountChange, overrides map[string]AccountOverride,
+	keptKinds map[string]canonical.AccountKind) {
 	if len(overrides) == 0 {
 		return
 	}
@@ -1181,6 +1196,16 @@ func applyAccountOverrides(accounts []canonical.AccountChange, overrides map[str
 		if ov.Category != "" {
 			c := ov.Category
 			accounts[i].AccountCategory = &c
+		}
+		switch kind := accounts[i].AccountKind; {
+		case ov.AccountKind == "":
+		case kind == canonical.AccountKindCard, kind == canonical.AccountKindMortgage,
+			kind == canonical.AccountKindOverlay:
+			if keptKinds != nil {
+				keptKinds[accounts[i].AccountExternalID] = kind
+			}
+		default:
+			accounts[i].AccountKind = canonical.AccountKind(ov.AccountKind)
 		}
 		if ov.TaxWrapper != "" {
 			w := canonical.TaxWrapper(ov.TaxWrapper)
