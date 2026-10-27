@@ -12,8 +12,7 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
-// Connection orchestrates the Schwab subsources: api always, web
-// when its subsource is configured (Open refuses web alone).
+// Connection orchestrates the Schwab subsources: api, web or both.
 //
 // Composition rules (api + web configured):
 //
@@ -39,6 +38,11 @@ import (
 //	  - Web only: the year-end documents' lots, every tax year,
 //	    with no cut at the api's coverage start (realized.go).
 //
+// Web alone (no api configured): the web silver's statement-date
+// positions, cash balances and lots, every transaction with no cut,
+// and the year-end lots, each account keyed by its full account
+// number (webOnlyBridge). No live positions: those are the api's.
+//
 // Account identity: web stores the 3-to-5-digit account suffix;
 // api stores Schwab's opaque hashValue. The orchestrator builds
 // a suffix → hashValue bridge by exact digits-only equality when
@@ -50,9 +54,10 @@ type Connection struct {
 	api *apiReader
 	web *webReader
 
-	// bridge resolves web account_external_id (suffix) → api
-	// account_external_id (hashValue). Built lazily on first
-	// Snapshots/Transactions call.
+	// bridge resolves the web account_external_id (suffix) to the
+	// gold account id: the api hashValue, or with web alone the full
+	// account number. Built lazily on the first Snapshots/Transactions
+	// call.
 	bridge      map[string]string
 	bridgeBuilt bool
 	bridgeErr   error
@@ -103,7 +108,10 @@ type feed struct {
 
 // feeds lists the configured subsources, api first.
 func (c *Connection) feeds() []feed {
-	out := []feed{{"api", c.api}}
+	var out []feed
+	if c.api != nil {
+		out = append(out, feed{"api", c.api})
+	}
 	if c.web != nil {
 		out = append(out, feed{"web", c.web})
 	}
@@ -153,7 +161,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 
 	streams := make([]silver.SnapshotStream, 0, 3)
 
-	hist, err := c.web.snapshotsHistorical(ctx, w, bridge)
+	hist, err := c.web.snapshotsHistorical(ctx, w, bridge, c.api == nil)
 	if err != nil {
 		return nil, fmt.Errorf("schwab web Snapshots (historical): %w", err)
 	}
@@ -161,11 +169,13 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	// api's Snapshots also surfaces accounts. The per-column upsert in
 	// gold merges web's nickname (emitted below) with api's other
 	// account columns.
-	s, err := c.api.Snapshots(ctx, w)
-	if err != nil {
-		return nil, fmt.Errorf("schwab api Snapshots: %w", err)
+	if c.api != nil {
+		s, err := c.api.Snapshots(ctx, w)
+		if err != nil {
+			return nil, fmt.Errorf("schwab api Snapshots: %w", err)
+		}
+		streams = append(streams, s)
 	}
-	streams = append(streams, s)
 	dims, err := c.snapshotsWebDimensions(ctx, w, bridge)
 	if err != nil {
 		return nil, fmt.Errorf("schwab web Snapshots (dimensions): %w", err)
@@ -175,8 +185,8 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 }
 
 // snapshotsWebDimensions emits only the AccountChange rows from
-// the web side (with bridged hashValues). The web silver doesn't
-// carry instruments or live positions/cash; those come from api.
+// the web side (with bridged ids). The web silver carries no live
+// positions or cash; those come from api.
 func (c *Connection) snapshotsWebDimensions(
 	ctx context.Context,
 	w canonical.Window,
@@ -190,7 +200,7 @@ func (c *Connection) snapshotsWebDimensions(
 		return nil, fmt.Errorf("schwab web: %w", err)
 	}
 	byTime := silver.NewBatches(times)
-	if err := c.web.snapshotsDimensions(ctx, w, byTime, bridge); err != nil {
+	if err := c.web.snapshotsDimensions(ctx, w, byTime, bridge, c.api == nil); err != nil {
 		return nil, err
 	}
 	batches := slices.DeleteFunc(byTime.Sorted(), func(b canonical.SnapshotBatch) bool {
@@ -200,9 +210,10 @@ func (c *Connection) snapshotsWebDimensions(
 }
 
 // Transactions emits the api transactions alone when web is not
-// configured. With web, each account's history splits at its
+// configured. With both, each account's history splits at its
 // api-coverage-start: web emits the rows strictly before it, api
-// the rows from it on.
+// the rows from it on. With web alone, every web row is emitted,
+// with no cut.
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	if c.web == nil {
 		return c.api.Transactions(ctx, w)
@@ -226,11 +237,13 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		return nil, fmt.Errorf("schwab web Transactions: %w", err)
 	}
 	streams = append(streams, webTxs)
-	s, err := c.api.Transactions(ctx, w)
-	if err != nil {
-		return nil, fmt.Errorf("schwab api Transactions: %w", err)
+	if c.api != nil {
+		s, err := c.api.Transactions(ctx, w)
+		if err != nil {
+			return nil, fmt.Errorf("schwab api Transactions: %w", err)
+		}
+		streams = append(streams, &apiFromCoverageStart{inner: s, start: apiStart})
 	}
-	streams = append(streams, &apiFromCoverageStart{inner: s, start: apiStart})
 	return silver.NewConcatTransactionStream(streams), nil
 }
 
@@ -261,8 +274,9 @@ func (s *apiFromCoverageStart) Next(ctx context.Context) (canonical.TransactionB
 
 func (s *apiFromCoverageStart) Close() error { return s.inner.Close() }
 
-// ensureBridge builds the web suffix → api hashValue map on first
-// use and caches the result. Returns the cached value on
+// ensureBridge builds the web suffix → account id map on first use and
+// caches the result. The id is the api hashValue, or with web alone the
+// full account number. Returns the cached value on
 // subsequent calls; returns the cached error if the build failed.
 func (c *Connection) ensureBridge(ctx context.Context) (map[string]string, error) {
 	if c.bridgeBuilt {
@@ -273,7 +287,11 @@ func (c *Connection) ensureBridge(ctx context.Context) (map[string]string, error
 		c.bridge = map[string]string{}
 		return c.bridge, nil
 	}
-	c.bridge, c.bridgeErr = buildAccountBridge(ctx, c.api.db, c.web.db)
+	if c.api == nil {
+		c.bridge, c.bridgeErr = webOnlyBridge(ctx, c.web.db)
+	} else {
+		c.bridge, c.bridgeErr = buildAccountBridge(ctx, c.api.db, c.web.db)
+	}
 	return c.bridge, c.bridgeErr
 }
 
@@ -284,6 +302,12 @@ func (c *Connection) ensureSymbolBridge(ctx context.Context) (map[string]string,
 		return c.symbolToCUSIP, c.symbolBridgeErr
 	}
 	c.symbolBridgeBuilt = true
+	if c.api == nil {
+		// Web alone: no CUSIPs to resolve a ticker to, so a web row keeps
+		// its own key, as the historical positions do.
+		c.symbolToCUSIP = map[string]string{}
+		return c.symbolToCUSIP, nil
+	}
 	c.symbolToCUSIP, c.symbolBridgeErr = buildSymbolToCUSIPBridge(ctx, c.api.db)
 	return c.symbolToCUSIP, c.symbolBridgeErr
 }
@@ -395,49 +419,20 @@ SELECT a.account_external_id, a.account_number
 		return nil, err
 	}
 
-	const qWeb = `
-SELECT account_external_id,
-       COALESCE(json_extract(payload, '$.account_number_full'), '')
-  FROM accounts
- ORDER BY snapshot_at`
-	wrows, err := web.QueryContext(ctx, qWeb)
+	suffixes, fulls, err := webFullNumbers(ctx, web)
 	if err != nil {
-		return nil, fmt.Errorf("schwab bridge web scan: %w", err)
-	}
-	defer wrows.Close()
-	type webAcct struct {
-		suffix string
-		full   string
-	}
-	var webAccts []webAcct
-	idx := make(map[string]int) // suffix → index into webAccts
-	for wrows.Next() {
-		var suffix, full string
-		if err := wrows.Scan(&suffix, &full); err != nil {
-			return nil, err
-		}
-		if i, ok := idx[suffix]; ok {
-			if full != "" {
-				webAccts[i].full = full
-			}
-			continue
-		}
-		idx[suffix] = len(webAccts)
-		webAccts = append(webAccts, webAcct{suffix: suffix, full: full})
-	}
-	if err := wrows.Err(); err != nil {
 		return nil, err
 	}
 
-	bridge := make(map[string]string, len(webAccts))
-	for _, wa := range webAccts {
-		if full := digitsOnly(wa.full); full != "" {
+	bridge := make(map[string]string, len(suffixes))
+	for _, suffix := range suffixes {
+		if full := digitsOnly(fulls[suffix]); full != "" {
 			// A full number that doesn't end in the account's
 			// own suffix can only be a mis-parsed statement
 			// header; refuse rather than rebridge the account's
 			// history onto the wrong api hashValue.
-			if !strings.HasSuffix(full, digitsOnly(wa.suffix)) {
-				return nil, fmt.Errorf("schwab bridge: full account number for web suffix %q does not end in that suffix (suspect statement parse); refusing to bridge", wa.suffix)
+			if !strings.HasSuffix(full, digitsOnly(suffix)) {
+				return nil, fmt.Errorf("schwab bridge: full account number for web suffix %q does not end in that suffix (suspect statement parse); refusing to bridge", suffix)
 			}
 			var matches []string
 			for hash, num := range apiAccts {
@@ -446,18 +441,18 @@ SELECT account_external_id,
 				}
 			}
 			if len(matches) == 1 {
-				bridge[wa.suffix] = matches[0]
+				bridge[suffix] = matches[0]
 				continue
 			}
 			if len(matches) > 1 {
-				return nil, fmt.Errorf("schwab bridge: web account number for suffix %q matches %d api accounts, so the web account cannot be bridged", wa.suffix, len(matches))
+				return nil, fmt.Errorf("schwab bridge: web account number for suffix %q matches %d api accounts, so the web account cannot be bridged", suffix, len(matches))
 			}
 			// No exact counterpart — fall through to the suffix
 			// heuristic.
 		}
 		var matches []string
 		for hash, num := range apiAccts {
-			if strings.HasSuffix(num, wa.suffix) {
+			if strings.HasSuffix(num, suffix) {
 				matches = append(matches, hash)
 			}
 		}
@@ -468,12 +463,68 @@ SELECT account_external_id,
 			// dropped by the readers' bridge lookup, with no orphan
 			// gold rows.
 		case 1:
-			bridge[wa.suffix] = matches[0]
+			bridge[suffix] = matches[0]
 		default:
-			return nil, fmt.Errorf("schwab bridge: web suffix %q matches %d api accounts, so the web account cannot be bridged", wa.suffix, len(matches))
+			return nil, fmt.Errorf("schwab bridge: web suffix %q matches %d api accounts, so the web account cannot be bridged", suffix, len(matches))
 		}
 	}
 	return bridge, nil
+}
+
+// webOnlyBridge maps each web suffix to its full account number, the
+// account's id when the web silver is configured alone. The newest
+// non-empty `account_number_full` wins, as in buildAccountBridge, and a
+// full number that does not end in its suffix is refused for the same
+// reason. A suffix with no full number has no id to key it by, so it
+// fails the load rather than reaching gold under its last digits.
+func webOnlyBridge(ctx context.Context, web *sql.DB) (map[string]string, error) {
+	suffixes, fulls, err := webFullNumbers(ctx, web)
+	if err != nil {
+		return nil, err
+	}
+	bridge := make(map[string]string, len(suffixes))
+	for _, suffix := range slices.Sorted(slices.Values(suffixes)) {
+		number := digitsOnly(fulls[suffix])
+		switch {
+		case number == "":
+			return nil, fmt.Errorf("schwab: web account %q states no full account number, so it has no id without the api silver", suffix)
+		case !strings.HasSuffix(number, digitsOnly(suffix)):
+			return nil, fmt.Errorf("schwab: full account number for web suffix %q does not end in that suffix (suspect statement parse)", suffix)
+		}
+		bridge[suffix] = number
+	}
+	return bridge, nil
+}
+
+// webFullNumbers reads every account the web silver has seen, in the
+// order it first appears, and the full account number each states: the
+// newest non-empty `account_number_full`, empty where none states one.
+// Both bridges read it, so they agree on which number an account has.
+func webFullNumbers(ctx context.Context, web *sql.DB) ([]string, map[string]string, error) {
+	rows, err := web.QueryContext(ctx, `
+SELECT account_external_id,
+       COALESCE(json_extract(payload, '$.account_number_full'), '')
+  FROM accounts
+ ORDER BY snapshot_at, rowid`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("schwab bridge web scan: %w", err)
+	}
+	defer rows.Close()
+	var suffixes []string
+	fulls := map[string]string{}
+	for rows.Next() {
+		var suffix, full string
+		if err := rows.Scan(&suffix, &full); err != nil {
+			return nil, nil, err
+		}
+		if _, seen := fulls[suffix]; !seen {
+			suffixes = append(suffixes, suffix)
+			fulls[suffix] = full
+		} else if full != "" {
+			fulls[suffix] = full
+		}
+	}
+	return suffixes, fulls, rows.Err()
 }
 
 // digitsOnly reduces an account number to its digit sequence,
@@ -502,6 +553,9 @@ func (c *Connection) ensureAPIStart(ctx context.Context) (map[string]int64, erro
 	}
 	c.apiStartBuilt = true
 	c.apiStartByHash = map[string]int64{}
+	if c.api == nil {
+		return c.apiStartByHash, nil // web alone: no cut
+	}
 	apiTimes, err := accountTimestamps(ctx, c.api.db, nil)
 	if err != nil {
 		c.apiStartErr = fmt.Errorf("schwab apiStartByHash: %w", err)

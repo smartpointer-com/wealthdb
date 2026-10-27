@@ -27,12 +27,16 @@ import (
 // reload.
 
 // snapshotsHistorical emits one batch per distinct historical
-// timestamp in the window. Account ids are bridged to api
-// hashValues so the rows land alongside the api-side accounts.
+// timestamp in the window. Account ids are bridged (api hashValues,
+// or the full account numbers with web alone) so the rows land on the
+// accounts gold holds. alone says the web silver is configured
+// without the api, which then names no instrument: the statement's
+// security name names it.
 func (r *webReader) snapshotsHistorical(
 	ctx context.Context,
 	w canonical.Window,
 	bridge map[string]string,
+	alone bool,
 ) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
@@ -46,7 +50,7 @@ func (r *webReader) snapshotsHistorical(
 	}
 
 	byTime := silver.Batches{}
-	if err := r.appendHistoricalPositions(ctx, w, byTime.At, bridge); err != nil {
+	if err := r.appendHistoricalPositions(ctx, w, byTime.At, bridge, alone); err != nil {
 		return nil, err
 	}
 	if err := r.appendHistoricalCashBalances(ctx, w, byTime.At, bridge); err != nil {
@@ -82,6 +86,7 @@ func (r *webReader) appendHistoricalPositions(
 	w canonical.Window,
 	getBatch func(int64) *canonical.SnapshotBatch,
 	bridge map[string]string,
+	alone bool,
 ) error {
 	lots, err := r.openLotsInWindow(ctx, w)
 	if err != nil {
@@ -134,14 +139,18 @@ SELECT as_of_date, account_external_id, instrument_key,
 		acNew, vehicle := taxonomyHistorical(hp.Section, instrumentKey, hp.Description)
 
 		instrIDCopy := instrumentKey
-		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
+		instr := canonical.InstrumentChange{
 			InstrumentExternalID: instrumentKey,
 			AssetClass:           acNew,
 			Vehicle:              vehicle,
 			Symbol:               &instrIDCopy,
 			FirstSeenAt:          asOf,
 			LastSeenAt:           asOf,
-		})
+		}
+		if alone {
+			instr.Name = silver.StrPtrIfNonEmpty(hp.Description)
+		}
+		batch.Instruments = append(batch.Instruments, instr)
 
 		printed := silver.DecimalPtrFromNullFloat(marketValue)
 		pos := canonical.PositionChange{

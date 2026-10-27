@@ -157,21 +157,25 @@ func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Wi
 
 // snapshotsDimensions emits AccountChange rows from web's
 // `accounts` table for every snapshot in the window, rewriting
-// account_external_id from web's suffix to the bridged api
-// hashValue. Web supplies the user-friendly `nickname`; api
-// supplies almost everything else. The per-column upsert guard
-// in gold merges them by (silver_source_id, account_external_id).
+// account_external_id from web's suffix to the bridged account id.
+// Web supplies the user-friendly `nickname`. With the api beside
+// it, the api supplies almost everything else, and the per-column
+// upsert guard in gold merges them by (silver_source_id,
+// account_external_id).
 //
-// Accounts whose web suffix doesn't bridge to an api hashValue
-// (e.g. closed accounts no longer in api) are skipped — they
-// have no api counterpart to merge with and emitting them under
-// the raw suffix would create orphaned rows the rest of gold
-// can't join.
+// With the api beside it, an account whose web suffix doesn't bridge
+// (e.g. a closed account no longer in api) is skipped: it has no api
+// counterpart to merge with, and emitting it under the raw suffix
+// would create orphaned rows the rest of gold can't join.
+//
+// alone says the web silver is configured without the api: each row
+// then also carries the display name and currency the api's would.
 func (r *webReader) snapshotsDimensions(
 	ctx context.Context,
 	w canonical.Window,
 	byTime map[int64]*canonical.SnapshotBatch,
 	bridge map[string]string,
+	alone bool,
 ) error {
 	if !w.HasChanges {
 		return nil
@@ -225,6 +229,12 @@ SELECT snapshot_at, account_external_id, nickname, payload, COALESCE(%s, '')
 			LastSeenAt:        snap,
 			Payload:           json.RawMessage(payload),
 		}
+		if alone {
+			// The columns the api's account rows carry otherwise: the
+			// account number as its display name, in USD.
+			change.DisplayName = silver.StrPtrIfNonEmpty(hash)
+			change.BaseCurrency = silver.StrPtrIfNonEmpty("USD")
+		}
 		if registration != "" {
 			// Forward the raw Schwab label as AccountCategory
 			// (verbatim, for forensics) and derive the canonical
@@ -244,15 +254,16 @@ SELECT snapshot_at, account_external_id, nickname, payload, COALESCE(%s, '')
 // transactionsBeforeAPIStart emits web transactions that are
 // strictly older than each account's api-coverage start. Web
 // `activity_id`s are a synthetic SHA-256 prefix — they don't
-// collide with api's real activityIds. Rewrites web suffix to
-// api hashValue so the row lands under the same gold account as
-// the api transactions for that account.
+// collide with api's real activityIds. Rewrites web suffix to the
+// bridged account id so the row lands under the same gold account as
+// the api transactions for that account. With web alone the map of
+// starts is empty and every row passes.
 //
 // `apiStartByHash` maps api hashValue → where that account's api
 // history begins (apiCoverageStart). A web tx
 // is emitted only when:
 //
-//  1. its account bridges to an api hashValue; AND
+//  1. its account bridges; AND
 //  2. its timestamp is strictly less than apiStartByHash[hash]
 //     (or hash has no api transactions at all, in which case
 //     everything from the web side passes).

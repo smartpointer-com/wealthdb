@@ -87,6 +87,12 @@ login read here stays unlinked in Plaid
 ([adapters/plaid.md](../../wealthdb/docs/adapters/plaid.md)).
 Schwab's "new document" emails carry no payload.
 
+Gold reads this silver beside the `schwab-api` one, or on its own. On
+its own, gold keys each account by its full account number. It holds
+the statement-date positions and every statement and history
+transaction, but no daily snapshots between statements
+([adapters/schwab.md](../../wealthdb/docs/adapters/schwab.md) §7.4).
+
 Trade confirmations are skipped on purpose: low signal, high volume.
 
 ## Sign-in and 2FA

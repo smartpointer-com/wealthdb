@@ -49,8 +49,8 @@ func realizedRank(k canonical.RealizedDocKind) int {
 
 // RealizedLots implements silver.RealizedLotReader. Every lot of a
 // bridged account is returned, whatever its tax year. A lot of an
-// account the api roster does not hold is dropped, like every other
-// web row of it, and counted in the load log.
+// account the bridge does not map is dropped, like every other web row
+// of it, and counted in the load log.
 func (c *Connection) RealizedLots(ctx context.Context) ([]canonical.RealizedLotChange, error) {
 	if c.web == nil {
 		return nil, nil
@@ -162,7 +162,7 @@ SELECT logical_doc_key, document_kind, lot_index, account_external_id,
 	})
 
 	if unbridged > 0 {
-		log.Printf("schwab adapter: dropped %d realized lot(s) of accounts the api roster does not hold", unbridged)
+		log.Printf("schwab adapter: dropped %d realized lot(s) of accounts the bridge does not map", unbridged)
 	}
 	if unplaced > 0 {
 		log.Printf("schwab adapter: dropped %d realized lot(s) that state neither a tax year nor a disposal date", unplaced)

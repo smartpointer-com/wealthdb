@@ -20,10 +20,11 @@ orchestrator (`merge.go`) splices them:
 
 §7 has the merge contract and §7.1 the account bridge. A single `path`
 (`"kind": "schwab", "path": ...`, no subsources) reads an api silver
-alone, without the merge layer. A `schwab-web` subsource needs a
-`schwab-api` one beside it, and the adapter refuses it alone. The web
-silver names an account by the last digits of its number, and only the
-api silver maps those to an account (§7.1).
+alone, without the merge layer. A source whose only subsource is
+`schwab-web` reads the web silver without the api (§7.4). The web
+silver names an account by the last digits of its number. With the api
+beside it, the api silver maps those to an account (§7.1). Alone, the
+account's full number is its id.
 
 ## 1. Silver sources
 
@@ -37,7 +38,7 @@ api silver maps those to an account (§7.1).
 
 | Field | Source | Notes |
 | --- | --- | --- |
-| `account_external_id` | Schwab `hashValue` | Opaque account hash, stable per Schwab developer app. The account number is the `display_name` and stays in the payload. |
+| `account_external_id` | Schwab `hashValue`; with the web silver alone, the full account number (§7.4) | Opaque account hash, stable per Schwab developer app. The account number is the `display_name` and stays in the payload. |
 | `instrument_external_id` | CUSIP if present, else symbol | Silver's `instrument_key`. A web ticker maps to the api's CUSIP where the api states one (§8.3). |
 | `transaction_external_id` | Schwab `activityId` | Unique within Schwab. A web row's id is a synthetic SHA-256 prefix (§7.2). |
 | `realized_lot_external_id` | web `closed_lots` key | A hash of `(logical_doc_key, document_kind, lot_index)`: stable across loads, one per copy of a lot. |
@@ -474,6 +475,32 @@ the same content (INTEROP §3). The `schwab-web` silver handles it:
   §4.5).
 
 The adapter does not dedupe further.
+
+### 7.4. The web silver alone
+
+A source can name the `schwab-web` subsource alone. Each account is then
+keyed by its full account number, digits only, which the web silver
+states for every account. That number is also its display name, and its
+currency is USD, as the api would state them. An account the web silver
+states no full number for has no id, and the load fails naming it.
+
+Without the api, the source reads:
+
+- the statement-date positions, cash balances and open lots;
+- every web transaction, with no cut at an api start;
+- the year-end documents' realized lots.
+
+A ticker stays the instrument's key, since no api CUSIP resolves it, and
+the statement's security name names the instrument. The source lacks the
+api's daily snapshots between statements, and its ledger ends at the web
+feed's last run.
+
+A web row of an account the silver's `accounts` table does not list is
+dropped, as with the api beside it. The two modes key an account
+differently: the full number alone, the api's `hashValue` with the api.
+Adding the api to a web-only source re-keys every account, so the source
+is reloaded (`wealthdb reload`), and a config entry keyed by account id
+is rewritten for the new id.
 
 ## 8. Cost basis and tax lots
 

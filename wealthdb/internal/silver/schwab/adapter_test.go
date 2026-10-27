@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
-	"strings"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -35,29 +34,24 @@ func TestKindIsSchwab(t *testing.T) {
 	}
 }
 
-// A web subsource alone is refused: its accounts are named by the last
-// digits of their numbers, and only the api silver maps those to the
-// account ids gold holds, so every web row would be dropped.
-func TestOpenRefusesTheWebSubsourceAlone(t *testing.T) {
+// A configuration names the api subsource, the web one or both; with
+// neither the source has nothing to read and is refused.
+func TestOpenTakesEitherSubsource(t *testing.T) {
 	path, _ := newFixtureSilver(t)
 	a := &Adapter{}
-	conn, err := a.Open(context.Background(), silver.OpenSpec{Subsources: []silver.Subsource{
-		{Kind: "schwab-web", Path: path},
-	}})
-	if err == nil {
+	for _, kind := range []string{"schwab-api", "schwab-web"} {
+		conn, err := a.Open(context.Background(), silver.OpenSpec{Subsources: []silver.Subsource{
+			{Kind: kind, Path: path},
+		}})
+		if err != nil {
+			t.Fatalf("Open with %s alone: %v", kind, err)
+		}
 		conn.Close()
-		t.Fatal("Open accepted a web subsource without the api one")
 	}
-	if !strings.Contains(err.Error(), "subsources[schwab-api] must be configured") {
-		t.Errorf("Open error = %v, want it to name the missing api subsource", err)
+	if conn, err := a.Open(context.Background(), silver.OpenSpec{Subsources: []silver.Subsource{}}); err == nil {
+		conn.Close()
+		t.Fatal("Open accepted a source with no subsource")
 	}
-	conn, err = a.Open(context.Background(), silver.OpenSpec{Subsources: []silver.Subsource{
-		{Kind: "schwab-api", Path: path},
-	}})
-	if err != nil {
-		t.Fatalf("Open with the api subsource alone: %v", err)
-	}
-	conn.Close()
 }
 
 func TestStatusEmpty(t *testing.T) {
