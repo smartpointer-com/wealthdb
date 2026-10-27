@@ -1186,9 +1186,12 @@ Each names a way the statement can be quietly wrong:
   and spending, and the tax they withheld before the household saw the
   money, appear on no line and in no memo (§3).
 - **The two families' limits show here too:**
-  - platform custody deposits ([INCOME.md](INCOME.md) §11);
   - reimbursements no road links to an outflow
     ([SPENDING.md](SPENDING.md) §3, *Reimbursements*);
+  - a platform custody deposit whose funding withdrawal gold holds but
+    the matcher does not pair: the deposit is investing
+    ([INCOME.md](INCOME.md) §3), the withdrawal stays an unplaced
+    outflow;
   - cross-currency own-account moves no assertion reaches. These are a
     movement whose source neither stamps one reference on both halves
     nor describes the counter leg, and a card bill whose two feeds

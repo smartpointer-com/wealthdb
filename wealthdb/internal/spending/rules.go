@@ -424,8 +424,8 @@ func rulePlacement(rules []spendRule, signature, counterparty, description, prov
 	return r.detailed, r.label(fields), r.farClass, true
 }
 
-// IncomeRuleCategory is the income family's built-in rule tier, and it
-// has one rule.
+// IncomeRuleCategory is the income family's narrative built-in, one of
+// its two (the other, custodyDepositCategory, reads the account kind).
 //
 // The asymmetry is the design rather than an omission. A built-in rule
 // encodes something STRUCTURAL about the product's own account graph
@@ -439,11 +439,13 @@ func rulePlacement(rules []spendRule, signature, counterparty, description, prov
 // counter or at a machine, which has no counter-leg anywhere and whose
 // origin is unobservable — the exact mirror of the cash-withdrawal
 // rule, and the one income row a narrative can place that nothing else
-// can.
+// can. A funding wire whose other leg gold does not hold is the other
+// structural fact, where the account kind states it: a custody
+// account's deposit (custodyDepositCategory).
 //
-// An unpaired inbound wire is deliberately NOT here. On the outflow
-// side an unpaired card bill gets `card_spend` because deleting it
-// would delete real consumption; an unpaired inbound wire needs no
+// Any other unpaired inbound wire is deliberately NOT here. On the
+// outflow side an unpaired card bill gets `card_spend` because deleting
+// it would delete real consumption; an unpaired inbound wire needs no
 // such rescue, because it stays in the base either way — visible and
 // unplaced, which is the honest answer and the model tier's backlog.
 //
@@ -784,6 +786,25 @@ var cashDepositRule = spendRule{
 	},
 }
 
-// builtinIncomeRules is the income family's rule table. One rule; see
-// IncomeRuleCategory for why that is the whole of it.
+// custodyDepositCategory places a deposit on a custody account: the
+// holder's own capital going into a private-market platform's custody,
+// the cash it funds a commitment, a capital call or a purchase with.
+// Such a deposit is never income, and its narrative is the platform's
+// own wording, which no narrative rule can tell from a payout. The
+// account kind says it: `custody` is the kind of a login that holds
+// private-market interests (silver.CustodyAccount); no adapter kinds a
+// bank account so. The money the platform pays out leaves by its own
+// kinds (a distribution, a sale), which the floor answers. It reads
+// `capital_return` because that is the income vocabulary's one
+// investing value: capital of the holder's own, returned rather than
+// earned (the cash flow statement draws it as investing).
+func custodyDepositCategory(kind, accountKind string) (string, bool) {
+	if kind != string(canonical.TxKindDeposit) || accountKind != string(canonical.AccountKindCustody) {
+		return "", false
+	}
+	return canonical.IncomeDetailedCapitalReturn, true
+}
+
+// builtinIncomeRules is the income family's narrative rule table. One
+// rule; see IncomeRuleCategory for why that is the whole of it.
 var builtinIncomeRules = []spendRule{cashDepositRule}

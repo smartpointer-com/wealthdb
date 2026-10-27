@@ -506,3 +506,54 @@ func TestIncomeRekeysPayerVerdicts(t *testing.T) {
 		t.Errorf("the payer re-key wrote %d merchant verdict(s)", merchants)
 	}
 }
+
+// TestIncomeCustodyDepositIsCapital pins the built-in that reads the
+// account kind: a deposit on a custody account is the holder's capital
+// going in, `capital_return`, whatever its narrative; the same deposit
+// on a cash account stays the narrative tiers' to place. Like every
+// built-in it sits above the config rules; the matcher and a pin outrank
+// it, and it reads `deposit` alone.
+func TestIncomeCustodyDepositIsCapital(t *testing.T) {
+	db, ctx := openGold(t)
+	seedTxns(t, db, ctx,
+		txn{"bank", "FUNDING", "CUST1", "deposit", day(10), 2500, "Wire received", "", ""},
+		txn{"bank", "WAGES", "CASH1", "deposit", day(10), 2600, "Wire received", "", ""},
+		txn{"other-bank", "RULED", "CUST2", "deposit", day(11), 900, "Example Fund Return", "", ""},
+	)
+	runPass(t, db, ctx, Options{Income: IncomeOptions{Rules: []Rule{{
+		Match: regexp.MustCompile(`(?i)example fund return`), Category: "INCOME_DIVIDENDS"}}}})
+	if d, p, _ := incomeVerdictOf(t, db, ctx, "bank", "FUNDING"); d != canonical.IncomeDetailedCapitalReturn || p != ProvenanceRule {
+		t.Errorf("custody deposit = (%q, %q), want the built-in's capital_return", d, p)
+	}
+	if d, _, _ := incomeVerdictOf(t, db, ctx, "bank", "WAGES"); d == canonical.IncomeDetailedCapitalReturn {
+		t.Error("a deposit on a cash account is not the custody rule's")
+	}
+	if d, _, _ := incomeVerdictOf(t, db, ctx, "other-bank", "RULED"); d != canonical.IncomeDetailedCapitalReturn {
+		t.Errorf("the built-in sits above a config rule: got %q", d)
+	}
+}
+
+// TestIncomeCustodyRuleGivesWay pins the tiers above the custody rule
+// and its gate: a funding leg the matcher pairs stays an own-account
+// move, a pin outranks the rule, and a custody row of another kind is
+// not the rule's.
+func TestIncomeCustodyRuleGivesWay(t *testing.T) {
+	db, ctx := openGold(t)
+	seedTxns(t, db, ctx,
+		txn{"bank", "FUND-OUT", "CASH1", "withdrawal", day(20), -700, "To platform", "", ""},
+		txn{"other-bank", "FUND-IN", "CUST2", "deposit", day(20), 700, "Funds received", "", ""},
+		txn{"bank", "PINNED", "CUST1", "deposit", day(30), 55, "Funds received", "", ""},
+		txn{"bank", "PAYOUT", "CUST1", "distribution", day(40), 80, "Distribution", "", ""},
+	)
+	runPass(t, db, ctx, Options{Income: IncomeOptions{Pins: []Pin{{
+		Source: "bank", Account: "CUST1", Day: day(30), Amount: 55, Currency: "USD", Detailed: "INCOME_OTHER"}}}})
+	if d, p, _ := incomeVerdictOf(t, db, ctx, "other-bank", "FUND-IN"); d != canonical.SpendDetailedInternalTransfer || p != ProvenanceMatcher {
+		t.Errorf("a paired funding leg = (%q, %q), want the matcher's internal_transfer", d, p)
+	}
+	if d, p, _ := incomeVerdictOf(t, db, ctx, "bank", "PINNED"); d != "INCOME_OTHER" || p != ProvenanceManual {
+		t.Errorf("a pinned custody deposit = (%q, %q), want the pin", d, p)
+	}
+	if d, _, _ := incomeVerdictOf(t, db, ctx, "bank", "PAYOUT"); d == canonical.IncomeDetailedCapitalReturn {
+		t.Error("the custody rule reads deposits alone; a distribution is the floor's")
+	}
+}

@@ -69,16 +69,13 @@ type family struct {
 	// the rule stands for where it placed an own-account move without
 	// pairing anything.
 	//
-	// It takes the transaction KIND because one family's rules are
-	// gated on it: income's single built-in reads a narrative, and on
-	// this side a narrative may only speak for the one kind the floor
-	// does not (rules.go, IncomeRuleCategory). Spending's are ungated —
-	// an outflow's kind says how money left, never what it bought.
-	//
-	// `filed` is the provider's filing of the row as the provider tier
-	// translated it, whether or not it claimed the row; empty where it has
-	// no translation. A rule may stand down for it (spendRule.yieldsTo).
-	builtinRule func(kind, signature, counterparty, description, providerCategory, filed string) (detailed, label, farClass string, ok bool)
+	// It reads the row's facts (builtinFacts): the narrative, and what
+	// the narrative cannot say, the transaction kind and the account it
+	// sits on. Income's built-ins are gated on the kind: on this side a
+	// narrative may only speak for the one kind the floor does not
+	// (rules.go, IncomeRuleCategory). Spending's are ungated — an
+	// outflow's kind says how money left, never what it bought.
+	builtinRule func(f builtinFacts) (detailed, label, farClass string, ok bool)
 
 	// providerCategory translates the source's own filing of a row,
 	// and providerClaims says whether that translation is a verdict or
@@ -182,8 +179,9 @@ type familyInput struct {
 //
 // Four differences from its twin, each a decision rather than an
 // omission. There is no label column, because the issuer label is the
-// card rule's alone. There is one built-in rule, because almost every
-// structural inflow fact is the matcher's already (IncomeRuleCategory).
+// card rule's alone. There are two built-in rules, because almost every
+// structural inflow fact is the matcher's already (IncomeRuleCategory):
+// cash paid in, and a custody account's deposit.
 // A matched leg outside the population earns no row, because this
 // family's half of every pair is already in its population — and for
 // that same reason there are no far-account columns: the overlay that
@@ -209,20 +207,38 @@ var incomeFamily = family{
 	emitOutsidePopulation: false,
 }
 
-// spendingBuiltinRule adapts the outflow rule table to the kind-taking
-// hook. The outflow rules read narratives and account graphs, never the
-// kind: a card bill is a card bill whether the adapter kinded it
-// `card_payment` or `withdrawal`, and gating them would make the rule
-// tier depend on how well each source kinds its rows.
-func spendingBuiltinRule(_, signature, counterparty, description, providerCategory, filed string) (detailed, label, farClass string, ok bool) {
-	return rulePlacement(builtinRules, signature, counterparty, description, providerCategory, filed)
+// builtinFacts is what the built-in rule tier reads about one row.
+type builtinFacts struct {
+	// kind is the transaction kind, accountKind the kind of the account
+	// it sits on.
+	kind, accountKind string
+	// The narrative: the normalised signature and the two raw fields
+	// it was built from, and the source's own category.
+	signature, counterparty, description, providerCategory string
+	// filed is the provider's filing of the row as the provider tier
+	// translated it, whether or not it claimed the row; empty where it
+	// has no translation. A rule may stand down for it
+	// (spendRule.yieldsTo).
+	filed string
 }
 
-// incomeBuiltinRule adapts IncomeRuleCategory to the same hook. It
-// places no label and no far class: the label column is the card
-// rule's alone, and the one inflow built-in names cash paid in over a
-// counter, which is not an own-account move at all.
-func incomeBuiltinRule(kind, signature, counterparty, description, providerCategory, _ string) (detailed, label, farClass string, ok bool) {
-	detailed, ok = IncomeRuleCategory(kind, signature, counterparty, description, providerCategory)
+// spendingBuiltinRule adapts the outflow rule table to the hook. The
+// outflow rules read narratives and account graphs, never the kind: a
+// card bill is a card bill whether the adapter kinded it `card_payment`
+// or `withdrawal`, and gating them would make the rule tier depend on
+// how well each source kinds its rows.
+func spendingBuiltinRule(f builtinFacts) (detailed, label, farClass string, ok bool) {
+	return rulePlacement(builtinRules, f.signature, f.counterparty, f.description, f.providerCategory, f.filed)
+}
+
+// incomeBuiltinRule is the inflow side's built-in tier: the custody
+// deposit (custodyDepositCategory), then IncomeRuleCategory's narrative
+// rule. It places no label and no far class: the label column is the
+// card rule's alone, and neither rule names an own-account move.
+func incomeBuiltinRule(f builtinFacts) (detailed, label, farClass string, ok bool) {
+	if detailed, ok = custodyDepositCategory(f.kind, f.accountKind); ok {
+		return detailed, "", "", true
+	}
+	detailed, ok = IncomeRuleCategory(f.kind, f.signature, f.counterparty, f.description, f.providerCategory)
 	return detailed, "", "", ok
 }

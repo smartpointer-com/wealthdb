@@ -73,9 +73,12 @@ of the base. So an inbound leg there is a funding leg. The matcher
 removes it as an own-account move **when the funding bank's side is in
 gold**.
 
-When it is not, the matcher has nothing to pair. The leg stays in the
-base as an unplaced receipt. That is the honest answer for a movement
-whose other half the product cannot see:
+When it is not, the matcher has nothing to pair. On a custody account
+the account kind still says what the leg is: a built-in rule places it
+`capital_return` (§3). A leg the matcher pairs keeps the matcher's
+`internal_transfer`, since the matcher outranks the rule. On any other
+account the leg stays in the base as an unplaced receipt. That is the
+honest answer for a movement whose other half the product cannot see:
 
 - a source loaded for balances alone contributes no transactions;
 - a greedy one-to-one matcher with a missing partner pairs nothing
@@ -85,9 +88,10 @@ Widening the matcher's window or tolerance to reach these legs buys
 false pairs faster than real ones. Funding amounts are round numbers
 that recur across banks.
 
-The remedy is `income.accounts.exclude`. A platform's wallet and custody
-accounts are not accounts whose inflows are income, and the income scope
-exists for this kind of reason. §11 states the two limits behind it.
+Where the funding bank is loaded for balances alone, the remedy for a
+platform wallet is `income.accounts.exclude`. A wallet's inflows are
+not income, and the income scope exists for this kind of reason. §11
+states the limit behind it.
 
 ### Which kinds are income
 
@@ -252,7 +256,7 @@ lowercase, and they record structure a payer's name cannot reveal:
 | value | meaning | in the base? |
 |---|---|---|
 | `internal_transfer` | movement between two tracked accounts, either leg | no |
-| `capital_return` | the holder's own capital coming back | no |
+| `capital_return` | the holder's own capital arriving: returned, or paid into a platform's custody | no |
 | `loan_proceeds` | money borrowed arriving; a liability incurred | no |
 | `reimbursement` | money back for money spent | no |
 | `retirement_transfer` | a payout from, or a contribution to, an untracked retirement plan whose balance is the holder's own | no |
@@ -346,9 +350,10 @@ Examples:
 ## 3. The tiers and the precedence lattice
 
 The lattice is spending's in every tier the pass writes, and the
-provenance vocabulary is the same seven values ([SPENDING.md §7](SPENDING.md)). One
-step is **re-ordered**: the kind floor is read over the model, not
-under it.
+provenance vocabulary is spending's seven tier values
+([SPENDING.md §7](SPENDING.md)). The eighth, `reimbursement`, marks a
+row of spending's base only. One step is **re-ordered**: the kind floor
+is read over the model, not under it.
 
 ```
 spending:  pin > matcher > built-in rule > config rule > provider > model > kind floor
@@ -366,11 +371,17 @@ The re-order follows from the **weight each tier carries**:
 
 The tiers, where income differs:
 
-- **Built-in rules.** There is one: `cash_deposit`, from a narrative
-  naming a counter or machine deposit. Almost every structural inflow
-  fact is the matcher's already. What is left is cash paid in, which
-  has no counter-leg anywhere. The rule is **gated on `deposit`**, the
-  one admitted kind the floor does not answer. The rule tier sits above
+- **Built-in rules.** There are two, both **gated on `deposit`**:
+  - a deposit on a `custody` account reads `capital_return`. A custody
+    account is a platform's holding of private-market interests, so
+    cash paid into it is the holder's capital going in. The platform's
+    narrative cannot say so. The account kind can;
+  - `cash_deposit`, from a narrative naming a counter or machine
+    deposit. Cash paid in has no counter-leg anywhere.
+
+  Almost every structural inflow fact is the matcher's already, and a
+  leg the matcher pairs keeps its verdict. `deposit` is the one
+  admitted kind the floor does not answer. The rule tier sits above
   the floor, so an ungated phrase match would replace a right verdict.
   For example, a call account's interest narrated "INTEREST ON CASH
   DEPOSIT" would read as cash paid in over a counter. Config rules are
@@ -773,13 +784,9 @@ which is the default, one number answers for both.
 - **A balances-only source has no transactions.** A source whose
   bronze holds statements read for balances alone contributes none.
   Every funding wire it sent has no leg for the matcher to pair. The
-  receiving leg stays in the income base as an unplaced receipt (§1).
+  receiving leg stays in the income base as an unplaced receipt (§1),
+  except on a custody account, where it reads `capital_return`.
   `income.accounts.exclude` takes the receiving account out.
-- **No built-in rule places a platform custody deposit.** A `deposit`
-  on a private-market custody account is the holder's own capital going
-  in. A rule cannot say so, because the rule hook carries a narrative,
-  not the account kind or the source. `income.accounts.exclude` is the
-  remedy (§1).
 - **Only the transaction report has a `_multi` form.** The same holds
   for spending. The web reads the lines in every reporting currency and
   buckets them itself, so a summary or types `_multi` would have no
