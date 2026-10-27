@@ -234,6 +234,10 @@ rate.
 An account that states no rate has none: its cash reads unknown, never
 zero.
 
+A card account's balance is no deposit that earns. Its bill is paid in
+full, so it takes no rate, no tag and no expected interest. No rate is
+missing on it, and a ledger `rate` record for it states nothing.
+
 A balance whose rate no source states reads `realized` where its
 account received interest in the twelve months to the day. Its expected
 income repeats that interest
@@ -1128,7 +1132,7 @@ The `missing` reasons, and the ledger record that fills each:
 | Reason | Holdings | The record that fills it |
 | --- | --- | --- |
 | `no terms` | a bond, bill, floating note, note or liability that reads `unknown`, unless it is in default | `terms` |
-| `no rate` | cash with a positive balance and no rate | `rate`, naming the account and the currency |
+| `no rate` | cash with a positive balance and no rate, on any account but a card | `rate`, naming the account and the currency |
 | `no receiving rate` | a bond, bill, floating note, note or term deposit whose principal matures within the projection's 36 months, under the cash rule, into cash whose account states no rate | `rate`, naming the account and the currency |
 | `no figures` | a bond fund or money-market fund that reads `unknown` | `terms` |
 | `no dividend` | a stock, equity fund or multi-asset fund that reads `unknown` | `dividend` |

@@ -520,7 +520,8 @@ func missingOf(p Position) []string {
 			out = append(out, missingRating)
 		}
 	case KindDeposit, KindTermDeposit:
-		if p.Stated == nil && p.Amount > 0 {
+		// A card takes no rate (YIELD.md §3).
+		if p.Stated == nil && p.Amount > 0 && p.Account.Kind != string(canonical.AccountKindCard) {
 			out = append(out, missingRate)
 		}
 	case KindBondFund, KindMoneyMarket:

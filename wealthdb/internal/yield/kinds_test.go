@@ -179,6 +179,26 @@ func TestADepositRepeatsItsInterest(t *testing.T) {
 	}
 }
 
+// A card's credit balance takes no rate, no tag and no expected
+// interest, and misses no rate (YIELD.md §3).
+func TestACardMissesNoRate(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	h := cash("bank", "C", "USD", 300)
+	in.Holdings = []Holding{h}
+	in.Accounts[AccountKey{"bank", "C"}] = Account{Name: "Card", Kind: "card"}
+	b := Compute(in)
+	if c := b.Coverage(); slices.ContainsFunc(c, func(r CoverageRow) bool {
+		return r.Reason == missingRate || r.Reason == string(TagUnknown)
+	}) {
+		t.Errorf("coverage %+v", c)
+	}
+	if p := position(b, h.HoldingKey); len(p.Tags) != 0 || p.Stated != nil {
+		t.Errorf("a card's balance reads %v, stated %v", p.Tags, p.Stated)
+	}
+	near(t, "card income", num(incomeOf(b, h.HoldingKey, 3, RuleCash, PathConstant, 0)), 0, 0)
+}
+
 // An overdraft costs its debit rate but weighs in no rate: the rates say
 // what the assets earn. The cash view lists it after the credit balances.
 func TestAnOverdraft(t *testing.T) {

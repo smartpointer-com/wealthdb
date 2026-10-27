@@ -473,10 +473,17 @@ func writeStatedRates(ctx context.Context, tx *sql.Tx) error {
 }
 
 // writeAccountRates rewrites account_rates from every shape a source
-// states a rate in and the ledger's records.
+// states a rate in and the ledger's records. A card account states no
+// rate: its bill is paid in full, so a rate means nothing there.
 func writeAccountRates(ctx context.Context, tx *sql.Tx) error {
 	if err := execAll(ctx, tx, accountRatesSQL...); err != nil {
 		return err
 	}
-	return writeStatedRates(ctx, tx)
+	if err := writeStatedRates(ctx, tx); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM account_rates r USING accounts a
+ WHERE a.silver_source_id = r.silver_source_id AND a.account_external_id = r.account_external_id
+   AND a.account_kind = ?`, string(canonical.AccountKindCard))
+	return err
 }

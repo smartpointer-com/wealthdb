@@ -328,7 +328,7 @@ func TestYieldPassReadsAccountRates(t *testing.T) {
 // a flat rate on an account, stated once; tiers on a cash balance,
 // observed at its snapshot; a credit and a debit side on one account; a
 // rate that holds from a later day, the older rate in force until then.
-// An account that states none has no row.
+// An account that states none has no row, and a card's rate is none.
 func TestYieldPassReadsTheStatedRateKeys(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -343,9 +343,10 @@ func TestYieldPassReadsTheStatedRateKeys(t *testing.T) {
 	   {"interest_rate": 0.1, "interest_side": "credit"}, {"interest_rate": "6.5", "interest_side": "debit"}]}'),
 	 ('test-src', ?, 'LATER', 'USD', 'closing', 700, '{"interest_rate": 2, "interest_valid_from": "2026-09-01"}'),
 	 ('test-src', ?, 'LATER', 'USD', 'closing', 700, '{"interest_rate": 1.5}'),
+	 ('test-src', ?, 'CARD', 'USD', 'closing', 50, '{"interest_rate": 19.9}'),
 	 ('test-src', ?, 'BAD', 'USD', 'closing', 50, '{"interest_rate": "n/a", "interest_tiers": [{"rate": 1}],
 	   "interest_side": "sideways"}')`
-	if _, err := db.ExecContext(ctx, q, day, day-86400, day, day, day, day-86400, day); err != nil {
+	if _, err := db.ExecContext(ctx, q, day, day-86400, day, day, day, day-86400, day, day); err != nil {
 		t.Fatal(err)
 	}
 	execEach(t, db,
@@ -356,6 +357,7 @@ func TestYieldPassReadsTheStatedRateKeys(t *testing.T) {
 		 ('test-src', 'BOTH', 'cash', 'Both', 'EUR', 0, 0, NULL),
 		 ('test-src', 'LATER', 'cash', 'Later', 'USD', 0, 0, NULL),
 		 ('test-src', 'NONE', 'cash', 'None', 'CHF', 0, 0, '{"basis": "statement"}'),
+		 ('test-src', 'CARD', 'card', 'Card', 'USD', 0, 0, '{"interest_rate": 19.9}'),
 		 ('test-src', 'BAD', 'cash', 'Bad', 'USD', 0, 0, NULL)`)
 	n, err := RebuildYield(ctx, db)
 	if err != nil {

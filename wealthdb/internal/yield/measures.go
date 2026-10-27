@@ -361,9 +361,14 @@ func dv01(value, modified float64) *float64 {
 }
 
 // measureDeposit: a deposit yields its stated rate and lasts no time; a
-// term deposit lasts to its end.
+// term deposit lasts to its end. A card's balance takes no rate and no
+// tag: the bill is paid in full, so it earns and costs nothing, and no
+// rate is missing.
 func measureDeposit(in *Inputs, h Holding, m *Measures) {
 	m.Duration, m.Maturity, m.DV01 = ptr(0), ptr(0), ptr(0)
+	if onCard(in, h) {
+		return
+	}
 	r := depositRate(in, h, in.Day)
 	if r == nil {
 		m.Tags[TagUnknown] = true
@@ -1106,4 +1111,9 @@ func (p *pool) realized(held bool) (pct *float64, thin bool) {
 		r = 0 // a negative zero, from a debt's mean, reads as zero
 	}
 	return ptr(r), false
+}
+
+// onCard reports a holding on a card account.
+func onCard(in *Inputs, h Holding) bool {
+	return in.Accounts[AccountKey{h.Source, h.HoldingKey.Account}].Kind == string(canonical.AccountKindCard)
 }

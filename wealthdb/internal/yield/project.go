@@ -456,7 +456,7 @@ func (pj *projector) holding(h Holding, m *Measures) {
 	switch m.Kind {
 	case KindDeposit:
 		switch {
-		case h.Amount <= 0:
+		case h.Amount <= 0, onCard(pj.in, h):
 		case m.Stated != nil:
 			pj.floating(h, m, m.Stated, TypeInterest, basisOf(m), h.Amount, nil)
 		case !pj.repeatInterest(h):
