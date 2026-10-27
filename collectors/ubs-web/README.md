@@ -297,7 +297,8 @@ ships as a Docker image and runs inside the container. The Dockerfile
 builds on the shared `wealthdb/base-playwright` image, which pins
 `mcr.microsoft.com/playwright/python:v1.64.1-noble` (Chromium and its
 OS deps under `/ms-playwright/`). `requirements.txt` pins the
-Playwright Python package to the same version; bump both in lockstep.
+Playwright Python package to the same version. `make update` bumps
+both, and the user agent's Chrome major, in lockstep.
 
 ### Build
 

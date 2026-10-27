@@ -86,7 +86,7 @@ endef
         test-wrappers \
         clean cleanall clean-wealthdb cleanall-wealthdb clean-build-locks \
         clean-collectors cleanall-collectors base-images cleanall-bases \
-        update update-venvs update-wealthdb update-bases \
+        update update-venvs update-wealthdb update-playwright update-bases \
         lint lint-go lint-python cleanall-lint \
         demo demo-roll demo-web demo-web-stop demo-mcp demo-mcp-stop test-demo \
         clean-demo
@@ -588,6 +588,9 @@ $(foreach c,$(COLLECTORS),$(eval $(call COLLECTOR_RULES,$(c))))
 #     (schwab-api, ubs-psn, …) plus collectorkit's test venv
 #   - Go modules in wealthdb/ (go get -u + go mod tidy, run by the
 #     image's own toolchain — see update-wealthdb)
+#   - The Playwright base image tag, moved to the newest release together
+#     with the collectors' `playwright` pip pins and their user agents'
+#     Chrome major (see update-playwright)
 #   - Shared Docker base images, rebuilt with --pull so the underlying
 #     OS layers also refresh
 #
@@ -603,7 +606,11 @@ $(foreach c,$(COLLECTORS),$(eval $(call COLLECTOR_RULES,$(c))))
 # ruff's (`make lint`), each updated alongside them once it exists.
 HOST_VENV_COLLECTORS := $(patsubst collectors/%/.venv,%,$(wildcard collectors/*/.venv))
 
-update: update-venvs update-wealthdb update-bases
+# The base rebuild follows the Playwright bump in one recipe, so a
+# parallel make cannot build the base on the old tag.
+update: update-venvs update-wealthdb
+	@$(MAKE) --no-print-directory update-playwright
+	@$(MAKE) --no-print-directory update-bases
 	@echo ""
 	@echo "==> update done. Run \`make all\` to rebuild collector images on top of the refreshed bases."
 
@@ -652,6 +659,15 @@ update-wealthdb:
 	@echo "==> rebuild wealthdb image so the refreshed modules land in the build cache"
 	@$(call LOCKED,wealthdb) $(WEALTHDB) build
 
+# The newest vX.Y.Z-noble tag of mcr.microsoft.com/playwright/python,
+# with the Chrome major its Chromium reports, written to the base
+# Dockerfile, both requirements pins and both user agents at once. An
+# unreachable registry fails here and changes no file. It runs before
+# update-bases, which then builds the base on the new tag.
+update-playwright:
+	@echo "==> update the Playwright base image tag, pip pins and user agents"
+	@$(PYTHON) shared/update/bump-playwright.py
+
 update-bases:
 	@$(call LOCKED,bases) \
 	$(call BUILD_BASES,,pull)
@@ -671,7 +687,7 @@ help:
 	@echo "  make build-collectors   build every collector"
 	@echo "  make test-collectors    test every collector"
 	@echo "  make test-collectorkit  run the shared collectorkit test suite"
-	@echo "  make test-wrappers      run the shared wrapper unit tests"
+	@echo "  make test-wrappers      run the shared wrapper tests and the Playwright pin check"
 	@echo "  make lint               gofmt + go vet (engine), ruff (Python)"
 	@echo "  make lint-go / lint-python"
 	@echo "  make build-<name>       build one collector (e.g. build-schwab-web)"
@@ -701,8 +717,10 @@ help:
 	@echo "                          .image-tag's first line, else latest)"
 	@echo ""
 	@echo "  make update             refresh all tooling: pip in every host venv,"
-	@echo "                          go modules in wealthdb/, shared Docker bases"
-	@echo "  make update-venvs / update-wealthdb / update-bases     (one layer at a time;"
-	@echo "                          update-bases pulls and rebuilds, and does not skip)"
+	@echo "                          go modules in wealthdb/, the Playwright pins,"
+	@echo "                          shared Docker bases"
+	@echo "  make update-venvs / update-wealthdb / update-playwright / update-bases"
+	@echo "                          (one layer at a time; update-bases pulls and"
+	@echo "                          rebuilds, and does not skip)"
 	@echo ""
 	@echo "  collectors: $(COLLECTORS)"

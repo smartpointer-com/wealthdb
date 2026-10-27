@@ -1,6 +1,7 @@
 # Headless-browser collector: build on the shared Playwright base
-# (collectorkit pre-installed; the Playwright image tag is pinned there
-# and must stay in lockstep with the `playwright` pin in requirements.txt).
+# (collectorkit pre-installed; the Playwright image tag is pinned there,
+# and `make update` moves it and the `playwright` pin in requirements.txt
+# together).
 ARG WEALTHDB_IMAGE_TAG=latest
 FROM wealthdb/base-playwright:${WEALTHDB_IMAGE_TAG}
 

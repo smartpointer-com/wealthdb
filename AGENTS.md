@@ -190,7 +190,8 @@ root, no `cd`-ing into subdirectories:
   gold engine is `wealthdb`; e.g. `make test-wealthdb`).
 - `make update` — bring deps forward (host venvs, Go modules, base
   images); commit any resulting `go.mod` / `go.sum` bump, never
-  revert it.
+  revert it. It also moves the Playwright base image and its pins in
+  lockstep. Commit that rewrite the same way.
 
 Underneath, each component also builds directly:
 

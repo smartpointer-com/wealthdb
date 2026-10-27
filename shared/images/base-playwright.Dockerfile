@@ -1,8 +1,12 @@
 # Shared base for headless-browser (Playwright) collectors: Microsoft's
 # version-matched Playwright Python image with collectorkit pre-installed.
-# Bump the tag in lockstep with the collectors' pinned `playwright` pip
-# version. Build context is shared/:
+# The tag, the collectors' pinned `playwright` pip version and their user
+# agents' Chrome major move in lockstep: `make update` bumps them all
+# (shared/update/bump-playwright.py), and `make test-wrappers` fails when
+# one disagrees with this file. chrome-major is the major of the Chromium
+# this tag bundles. Build context is shared/:
 #   docker build -f images/base-playwright.Dockerfile -t wealthdb/base-playwright:latest .
+# chrome-major: 156
 FROM mcr.microsoft.com/playwright/python:v1.64.1-noble
 
 # Fetch Ubuntu's archives over HTTPS instead of the image default of HTTP.

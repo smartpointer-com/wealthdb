@@ -3,8 +3,7 @@
 # PLAYWRIGHT_BROWSERS_PATH env var pointing at them). The Python
 # `playwright` package itself must be installed here, and the version
 # MUST match the base-image tag so the package finds compatible
-# browser binaries. When bumping the Dockerfile FROM line, bump this
-# version in lockstep.
+# browser binaries. `make update` moves the tag and this pin together.
 playwright==1.64.1
 
 # Swissquote's positions export is a CDFV2 Microsoft Excel file (the

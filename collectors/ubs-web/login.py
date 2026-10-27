@@ -33,11 +33,12 @@ log = logging.getLogger("ubs-web.login")
 # `HeadlessChrome` and either block or add anti-bot steps; this
 # string matches the Chrome major version Playwright 1.64 ships, so
 # it's plausible without being deceptive about capabilities. The
-# only signal we strip is the "Headless" qualifier.
+# only signal stripped is the "Headless" qualifier.
 #
 # The major version matters: UBS server-side redirects UAs below a
 # minimum Chrome version to a "browser outdated" page, so this string
-# must move forward in lockstep with the Playwright base-image bump.
+# must move forward in lockstep with the Playwright base image, which
+# `make update` does.
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
