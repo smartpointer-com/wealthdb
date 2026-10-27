@@ -80,31 +80,59 @@ var usStates = WordSet("ALABAMA", "ALASKA", "ARIZONA", "ARKANSAS", "CALIFORNIA",
 //
 // ok is false where the description says none of these.
 func ReadBondDescription(desc string, usID bool) (BondReading, bool) {
-	plain := strings.ReplaceAll(strings.ToUpper(desc), ".", "")
-	words := strings.FieldsFunc(plain, func(r rune) bool { return r < 'A' || r > 'Z' })
-	count := func(set map[string]bool) int {
-		n := 0
-		for _, w := range words {
-			if set[w] {
-				n++
-			}
-		}
-		return n
-	}
-	lead := leadWords(plain)
-	companies := count(companyWords)
-	if usID && (named(lead, usStates, stateWords) != "" ||
-		companies == 0 && (count(municipalWords) > 0 || count(municipalHints) > 1)) {
+	plain := plainDescription(desc)
+	words, lead := letterWords(plain), leadWords(plain)
+	if usID && (named(lead, usStates, stateWords) != "" || readsMunicipal(words)) {
 		return BondReading{Sector: SectorMunicipal, Country: "US", Currency: "USD"}, true
 	}
 	names := countryNames()
 	if code := names[named(lead, names, sovereignWords)]; code != "" {
 		return BondReading{Sector: SectorGovernment, Country: code}, true
 	}
-	if count(LegalForms) > 0 {
+	if countIn(words, LegalForms) > 0 {
 		return BondReading{Sector: SectorCorporate}, true
 	}
 	return BondReading{}, false
+}
+
+// ReadsMunicipal reports whether a name reads as a US municipal issuer's:
+// a municipal word, or two words a municipal bond often carries, with no
+// legal form only a company has beside them. It is ReadBondDescription's
+// municipal rule without the reading of a state's name.
+func ReadsMunicipal(name string) bool {
+	return readsMunicipal(letterWords(plainDescription(name)))
+}
+
+// HasCompanyForm reports whether a name carries a legal form only a
+// company has (INC, LLC, PLC): LegalForms less those a municipal issuer
+// may share.
+func HasCompanyForm(name string) bool {
+	return countIn(letterWords(plainDescription(name)), companyWords) > 0
+}
+
+func readsMunicipal(words []string) bool {
+	return countIn(words, companyWords) == 0 &&
+		(countIn(words, municipalWords) > 0 || countIn(words, municipalHints) > 1)
+}
+
+// plainDescription is a description upper-cased, without dots.
+func plainDescription(desc string) string {
+	return strings.ReplaceAll(strings.ToUpper(desc), ".", "")
+}
+
+// letterWords are the runs of letters of a plain description.
+func letterWords(plain string) []string {
+	return strings.FieldsFunc(plain, func(r rune) bool { return r < 'A' || r > 'Z' })
+}
+
+func countIn(words []string, set map[string]bool) int {
+	n := 0
+	for _, w := range words {
+		if set[w] {
+			n++
+		}
+	}
+	return n
 }
 
 // leadWords are a description's words before its first figure, after

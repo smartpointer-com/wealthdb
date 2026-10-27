@@ -62,3 +62,29 @@ func TestReadBondDescription(t *testing.T) {
 		}
 	}
 }
+
+// ReadsMunicipal is the description reader's municipal rule; a form only
+// a company has rules it out, a form a municipal issuer shares does not.
+func TestReadsMunicipalAndHasCompanyForm(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name               string
+		municipal, company bool
+	}{
+		{"QLAND CNTY ST GO BDS SER. 2041", true, false},
+		{"QLAND CNTY HSG DEV CORP REV", true, false},
+		{"QLAND ST BRD ED PUB ED", true, false},
+		{"QLAND WTR CAP CORP", false, false},
+		{"QLAND PASS THRU CTFS AUTH LLC", false, true},
+		{"QLAND HOLDINGS INC.", false, true},
+		{"QLAND SKOG OY", false, true},
+		{"QLAND THING", false, false},
+	} {
+		if got := ReadsMunicipal(c.name); got != c.municipal {
+			t.Errorf("ReadsMunicipal(%q) = %v, want %v", c.name, got, c.municipal)
+		}
+		if got := HasCompanyForm(c.name); got != c.company {
+			t.Errorf("HasCompanyForm(%q) = %v, want %v", c.name, got, c.company)
+		}
+	}
+}

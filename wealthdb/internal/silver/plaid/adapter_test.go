@@ -403,6 +403,25 @@ func TestPairForIsAlwaysAnAdmittedPair(t *testing.T) {
 		// wrong, and the security falls back as `other` does.
 		{"cash", "", "", "PLACEHOLDER NOTE 2031", canonical.AssetClassOther, canonical.VehicleOther, false},
 		{"cash", "", "CIXXXX", "PLACEHOLDER BOND FUND", canonical.AssetClassFixedIncome, canonical.VehicleFund, false},
+		// A loosely typed security whose name reads as a bond is one.
+		{"other", "", "", "EXAMPLETOWN HSG AUTH 05.00000 01/01/2040 MTG", canonical.AssetClassFixedIncome, canonical.VehicleBond, false},
+		{"cash", "EXAMPLETOWN.GO.BDS", "", "EXAMPLETOWN GO BDS SER. 2030 (Cash)", canonical.AssetClassFixedIncome, canonical.VehicleBond, false},
+		{"equity", "", "", "Example Cnty Wtr Rev 4% 06/01/39", canonical.AssetClassFixedIncome, canonical.VehicleBond, false},
+		{"other", "", "", "Example Utility Co 4.5% due 03/15/2035", canonical.AssetClassFixedIncome, canonical.VehicleBond, false},
+		// A preferred share, a fund, a ticker's own type, a currency, or a
+		// fund's CFI code keep what the type says.
+		{"equity", "", "", "Example Corp - 5% PRF CONVERT 15/04/2030", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"equity", "EXR", "", "Example Rev Holdings 5% 01/01/30", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"cash", "EXMXX", "", "PLACEHOLDER MUNI MONEY MARKET", canonical.AssetClassCash, canonical.VehicleFund, true},
+		{"other", "", "CIXXXX", "PLACEHOLDER MUNI BDS", canonical.AssetClassFixedIncome, canonical.VehicleFund, false},
+		{"other", "", "", "PLACEHOLDER MUNI FUND", canonical.AssetClassOther, canonical.VehicleOther, false},
+		{"other", "", "", "PLACEHOLDER MUNI BOND ETF", canonical.AssetClassOther, canonical.VehicleOther, false},
+		{"equity", "", "", "Example Pref Dep Shs 6% 01/01/30", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"equity", "", "", "EXAMPLE CNTY BANCORP", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"cash", "EXMXX", "", "PLACEHOLDER MUNI CASH PORTFOLIO", canonical.AssetClassCash, canonical.VehicleFund, true},
+		{"other", "", "", "PLACEHOLDER SWEEP (Cash)", canonical.AssetClassOther, canonical.VehicleOther, false},
+		{"other", "", "", "PLACEHOLDER 2030 SER. 01/01/2040 (Cash)", canonical.AssetClassFixedIncome, canonical.VehicleBond, false},
+		{"mutual fund", "", "", "PLACEHOLDER 2030 BDS", canonical.AssetClassPublicEquity, canonical.VehicleFund, true},
 	}
 	for _, c := range cases {
 		ac, veh, known := pairFor(security{typ: c.typ, ticker: c.ticker, cfi: c.cfi, name: c.name})
@@ -430,6 +449,10 @@ func TestIsCashAndInstrumentKey(t *testing.T) {
 		// currency stays cash at any price.
 		{security{id: "s8", typ: "cash", priced: true}, false, "plaid:s8"},
 		{security{id: "s9", typ: "cash", ticker: "CUR:EUR", priced: true}, true, "CUR:EUR"},
+		// A name that reads as a bond is no cash, priced or not.
+		{security{id: "s10", typ: "cash", name: "EXAMPLETOWN GO BDS 2030"}, false, "plaid:s10"},
+		{security{id: "s11", typ: "cash", ticker: "USD", name: "EXAMPLETOWN GO BDS 2030"}, true, "USD"},
+		{security{id: "s12", typ: "cash", ticker: "EXAMPLETOWN.GO.BDS", name: "EXAMPLETOWN GO BDS 2030"}, false, "EXAMPLETOWN.GO.BDS"},
 		{security{id: "s5", typ: "equity", ticker: "EXA", isin: "XX0000000000"}, false, "XX0000000000"},
 		{security{id: "s6", typ: "equity", ticker: "EXA", cusip: "000000000", isin: "XX0000000000"}, false, "000000000"},
 		{security{id: "s7", typ: "mutual fund"}, false, "plaid:s7"},
@@ -437,6 +460,10 @@ func TestIsCashAndInstrumentKey(t *testing.T) {
 	for _, c := range cases {
 		if got := isCash(c.s, "USD"); got != c.cash {
 			t.Errorf("isCash(%+v) = %v, want %v", c.s, got, c.cash)
+		}
+		// Cash and a bond exclude each other.
+		if _, veh, _ := pairFor(c.s); c.cash && veh == canonical.VehicleBond {
+			t.Errorf("%+v is both cash and a bond", c.s)
 		}
 		if got := instrumentKey(c.s); got != c.key {
 			t.Errorf("instrumentKey(%+v) = %q, want %q", c.s, got, c.key)
@@ -1670,6 +1697,57 @@ func TestABondPlaidTypesAsCashIsAPosition(t *testing.T) {
 	assertAmount(t, "buy quantity", got["itx-buy"].Quantity, "5000")
 	if tx := got["itx-interest"]; tx.Kind != canonical.TxKindInterest || tx.InstrumentExternalID != nil {
 		t.Errorf("itx-interest = %q on %v, want interest on the cash", tx.Kind, tx.InstrumentExternalID)
+	}
+}
+
+// A municipal bond Plaid types loosely reads as a bond by its name: as a
+// position, never cash, and its coupon is interest on it, under Plaid's
+// dividend type too. Every name and figure is invented.
+func TestABondPlaidTypesLooselyIsReadByItsName(t *testing.T) {
+	path, db := newFixture(t)
+	seedItem(t, db, runAt(10))
+	sec(t, db, "sec-go", "EXAMPLETOWN GO BDS SER. 2030 05.00000 01/01/2040 (Cash)", "", "cash")
+	sec(t, db, "sec-rev", "Example Cnty Wtr Rev 4% 06/01/39", "", "equity")
+	sec(t, db, "sec-fi", "PLACEHOLDER NOTE", "", "fixed income")
+	hold(t, db, runAt(10), "acct-ira", "sec-go", 0, "10000", "10350", "")
+	hold(t, db, runAt(10), "acct-ira", "sec-rev", 0, "5000", "5100", "")
+	silvertest.Exec(t, db, `UPDATE holdings SET institution_price = '0' WHERE security_id = 'sec-go'`)
+	for _, r := range []invRow{
+		{id: "itx-go", account: "acct-ira", security: "sec-go", typ: "cash", subtype: "deposit",
+			amount: "250", quantity: "0", price: "0", name: "EXAMPLETOWN GO BDS - INTEREST", at: day(4)},
+		{id: "itx-rev", account: "acct-ira", security: "sec-rev", typ: "cash", subtype: "dividend",
+			amount: "100", quantity: "0", price: "0", at: day(4)},
+		// A coupon whose text names no action, and the interest accrued at a
+		// purchase, are interest on the bond too; so is a dividend Plaid
+		// states on its own fixed income type.
+		{id: "itx-plain", account: "acct-ira", security: "sec-go", typ: "cash", subtype: "deposit",
+			amount: "250", quantity: "0", price: "0", name: "EXAMPLETOWN GO BDS", at: day(5)},
+		{id: "itx-accrued", account: "acct-ira", security: "sec-go", typ: "cash", subtype: "withdrawal",
+			amount: "-40", quantity: "0", price: "0", name: "EXAMPLETOWN GO BDS", at: day(5)},
+		{id: "itx-fi", account: "acct-ira", security: "sec-fi", typ: "cash", subtype: "dividend",
+			amount: "30", quantity: "0", price: "0", at: day(5)},
+	} {
+		inv(t, db, r)
+	}
+	batches := collectSnapshots(t, openConn(t, path))
+	positions := map[string]canonical.PositionChange{}
+	for _, pos := range positionsAt(batches, runAt(10)) {
+		if pos.InstrumentExternalID != nil {
+			positions[*pos.InstrumentExternalID] = pos
+		}
+	}
+	for _, key := range []string{"plaid:sec-go", "plaid:sec-rev"} {
+		if pos, ok := positions[key]; !ok || pos.AssetClass != canonical.AssetClassFixedIncome ||
+			pos.Vehicle != canonical.VehicleBond || !strings.Contains(string(pos.Payload), `"source_type"`) {
+			t.Errorf("%s = %+v, want a (fixed_income, bond) position keeping Plaid's type", key, pos)
+		}
+	}
+	got := collectTransactions(t, openConn(t, path))
+	for id, key := range map[string]string{"itx-go": "plaid:sec-go", "itx-rev": "plaid:sec-rev",
+		"itx-plain": "plaid:sec-go", "itx-accrued": "plaid:sec-go", "itx-fi": "plaid:sec-fi"} {
+		if tx := got[id]; tx.Kind != canonical.TxKindInterest || tx.InstrumentExternalID == nil || *tx.InstrumentExternalID != key {
+			t.Errorf("%s = %q on %v, want interest on %s", id, tx.Kind, tx.InstrumentExternalID, key)
+		}
 	}
 }
 

@@ -204,7 +204,8 @@ say what such an account holds.
   holding of it, or a buy or sell of it, states a price other than 0
   or 1. It is then a position, and its type says nothing about its
   class (§6). Any other row's price is a placeholder, and does not
-  count.
+  count. A security whose name reads as a bond (§6) is not cash either,
+  priced or not.
 - **A balance Plaid leaves empty.** Gold ends a balance a run leaves
   out once that run states again the balances it was seen with
   (DESIGN.md §10.7). So every run restates every account. A run may
@@ -245,8 +246,24 @@ say what such an account holds.
 | loan | `(private_debt, loan)`: a loan the holder owns |
 | cash, with no ticker and a price | by the CFI code, below; else `(other, other)` |
 | other, or anything else | by the CFI code, below; else `(other, other)` |
+| other, cash or equity with no ticker, named as a bond | `(fixed_income, bond)` |
 
 Plaid marks bitcoin as a cash equivalent. It is still crypto.
+
+Plaid can type a municipal bond loosely: as `other`, as `cash` with a
+dotted pseudo-ticker or none, or as `equity` with no ticker. Its name
+then reads as a bond, and the last row of the table wins over its type.
+A name reads as a bond when it has one of these:
+
+- a coupon rate beside a maturity date (`05.00000 01/01/2040`, `4% 06/01/39`);
+- a municipal issuer word (`BD`, `BDS`, `BONDS`, `REV`, `CTFS`, `CNTY`, `AUTH`, `SCH DIST`, `MUNI`), with no company form such as `INC` or `CORP`;
+- the `(Cash)` suffix of a bond settled in cash, beside a coupon rate or a maturity date.
+
+Some names keep what their type says. These are a preferred share
+(`PRF`, `PFD`, `PREF`, `DEP SHS`), a fund (`FUND`, `FD`, `ETF`, a money
+market word), and a security with a fund's CFI code. A cash security
+with a ticker of its own, or with a currency code as its ticker, is
+never read as a bond.
 
 A security of type `other`, or of a type no row above names, is read by
 its CFI code (ISO 10962). Category C is a collective investment vehicle.
@@ -302,7 +319,7 @@ the sign would book it twice.
 | --- | --- |
 | buy, buy to cover, any reinvestment | `buy` |
 | sell, sell short | `sell` |
-| dividend, qualified and non-qualified dividend | `dividend` |
+| dividend, qualified and non-qualified dividend | `dividend`; `interest` on a bond, which pays a coupon |
 | interest, interest receivable, margin expense | `interest` |
 | long- and short-term capital gain, unqualified gain | `capital_gain` |
 | the fee subtypes, and an adjustment of type `fee` | `fee` |
@@ -330,6 +347,8 @@ the sign would book it twice.
   - a tax: `TAX`, `TAXES` or `TAXPYMT`.
 - Otherwise a row of type `cash` or `fee` that names a security that is
   not cash is read by what it names:
+  - on a bond, a cash deposit is its coupon and a cash withdrawal the
+    interest accrued at its purchase: both are `interest`;
   - an adjustment of type `fee`, or a cash withdrawal, is `tax` where
     the security paid a dividend into the account on the same posting
     date, else a `fee`;

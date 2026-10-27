@@ -275,10 +275,11 @@ func neighboursOf(rows []investmentRow) neighbours {
 //
 // A cash deposit or withdrawal whose text states what it is books as that
 // (describedKind). Otherwise a cash or fee row that names a security that
-// is not cash is read by what it names (securityCash). A movement of a
-// security at no worth is a corporate action where the security is a
-// derivative (an option that expired) or has a corporate action on the
-// same day (the other leg of a merger). Any other such movement is marked
+// is not cash is read by what it names (securityCash). A dividend on a
+// bond is interest: a bond pays a coupon. A movement of a security at no
+// worth is a corporate action where the security is a derivative (an
+// option that expired) or has a corporate action on the same day (the
+// other leg of a merger). Any other such movement is marked
 // unvalued: gold cannot price it.
 func book(r investmentRow, m measured, nb neighbours) booking {
 	if k, ok := describedKind(r.typ, r.subtype, r.name); ok {
@@ -288,6 +289,9 @@ func book(r investmentRow, m measured, nb neighbours) booking {
 		return booking{k, true, m.amount, false}
 	}
 	kind, known := investmentTxKind(r.typ, r.subtype, m.inKind, m.inward())
+	if kind == canonical.TxKindDividend && m.bond {
+		kind = canonical.TxKindInterest
+	}
 	if kind != canonical.TxKindTransferIn && kind != canonical.TxKindTransferOut {
 		return booking{kind, known, m.amount, false}
 	}
@@ -315,14 +319,23 @@ func book(r investmentRow, m measured, nb neighbours) booking {
 //     posting date, else a fee;
 //   - a cash `deposit` is the cash paid in lieu of a fractional share: a
 //     sale of the fraction, which Plaid does not state.
+//
+// On a bond, a cash `deposit` is its coupon, and a cash `withdrawal` the
+// interest accrued at its purchase: both are interest. A withdrawal on the
+// day the bond paid a dividend-typed coupon is still tax withheld.
 func securityCash(r investmentRow, m measured, nb neighbours) (canonical.TxKind, bool) {
 	if !m.secKnown || m.cash {
 		return "", false
 	}
 	typ, sub := norm(r.typ), norm(r.subtype)
+	withheld := nb.dividends[sameDay{r.accountID, r.securityID, r.posted}]
 	switch {
+	case typ == "cash" && sub == "withdrawal" && withheld:
+		return canonical.TxKindTax, true
+	case typ == "cash" && (sub == "deposit" || sub == "withdrawal") && m.bond:
+		return canonical.TxKindInterest, true
 	case typ == "fee" && sub == "adjustment", typ == "cash" && sub == "withdrawal":
-		if nb.dividends[sameDay{r.accountID, r.securityID, r.posted}] {
+		if withheld {
 			return canonical.TxKindTax, true
 		}
 		return canonical.TxKindFee, true
@@ -339,6 +352,8 @@ type measured struct {
 	currency        string
 	sec             security
 	secKnown, cash  bool
+	// bond is true when the row names a bond that is not cash.
+	bond bool
 	// inKind is true when the row moves a security, not cash: it names one
 	// that is not cash, in a quantity, and Plaid's type is not `cash`. A
 	// cash row moves the account's cash whatever security it names, and
@@ -359,6 +374,10 @@ func measure(r investmentRow, a account, secs map[string]security) (measured, er
 	}
 	m.sec, m.secKnown = secs[r.securityID]
 	m.cash = m.secKnown && isCash(m.sec, m.currency)
+	if m.secKnown && !m.cash {
+		_, veh, _ := pairFor(m.sec)
+		m.bond = veh == canonical.VehicleBond
+	}
 	m.inKind = r.securityID != "" && !m.cash && norm(r.typ) != "cash" &&
 		m.quantity != nil && !m.quantity.IsZero()
 	return m, nil
