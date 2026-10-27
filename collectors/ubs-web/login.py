@@ -31,7 +31,7 @@ log = logging.getLogger("ubs-web.login")
 
 # Real desktop Chrome UA, not HeadlessChrome. Banks commonly sniff
 # `HeadlessChrome` and either block or add anti-bot steps; this
-# string matches the Chrome major version Playwright 1.62 ships, so
+# string matches the Chrome major version Playwright 1.64 ships, so
 # it's plausible without being deceptive about capabilities. The
 # only signal we strip is the "Headless" qualifier.
 #
@@ -41,7 +41,7 @@ log = logging.getLogger("ubs-web.login")
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/151.0.0.0 Safari/537.36"
+    "Chrome/156.0.0.0 Safari/537.36"
 )
 
 # Playwright timeouts (milliseconds). Generous defaults — WAN

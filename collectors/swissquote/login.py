@@ -35,7 +35,7 @@ log = logging.getLogger("swissquote.login")
 
 # Real Chrome UA, not HeadlessChrome. Banks commonly sniff
 # `HeadlessChrome` and either block or add extra anti-bot steps; this
-# string matches the Chrome major version that Playwright 1.62 ships,
+# string matches the Chrome major version that Playwright 1.64 ships,
 # so it's plausible without being deceptive about capabilities. The
 # only signal stripped is the "Headless" qualifier. download.py uses
 # the same UA: the anti-bot heuristics may key on it across requests
@@ -43,7 +43,7 @@ log = logging.getLogger("swissquote.login")
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/151.0.0.0 Safari/537.36"
+    "Chrome/156.0.0.0 Safari/537.36"
 )
 
 # Playwright timeouts (milliseconds). Generous defaults — the WAN
