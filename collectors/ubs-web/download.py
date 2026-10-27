@@ -12,6 +12,8 @@ Reuses the Playwright session minted by login.py to export:
   - the credit-card surface        — the SPA's own card API (cards.py):
     the roster, each card account's ledger, its billing periods and
     their statement PDFs
+  - the cash accounts' interest conditions (rates.py): the account API's
+    JSON, and the legacy account page for the accounts it misses
 
 Files land in <bronze-dir>/<UTC-timestamp>/<artefact>. Read-only — see
 AGENTS.md §1. Per AGENTS.md §2, non-dry-run invocations must be
@@ -34,6 +36,7 @@ from collectorkit import bronze, cli, debugcap, launch, session
 
 import cards  # local module
 import landmarks as ubs  # local module
+import rates  # local module
 # The session login.py mints is the one this walk reuses: same state file,
 # same UA (UBS's anti-bot heuristics must see a single session), same
 # screenshot convention.
@@ -44,7 +47,7 @@ from login import (  # local module
 log = logging.getLogger("ubs-web.download")
 
 # The walk's passes, in the order it runs them. `--only` names one.
-PASSES = ("positions", "transactions", "portfolio-transactions",
+PASSES = ("positions", "transactions", "rates", "portfolio-transactions",
           "documents", "cards")
 
 NAV_TIMEOUT_MS = 60_000
@@ -1115,6 +1118,60 @@ def _capture_cards(context, page, apikey_holder: dict, run_dir: Path,
 
 
 # ============================================================
+# Interest conditions
+# ============================================================
+
+def _capture_rates(context, page, apikey_holder: dict, run_dir: Path,
+                   accounts: list[dict], screenshot_dir: Path | None) -> dict:
+    """Capture each cash account's interest conditions.
+
+    Returns the manifest block. A failure is recorded in it and never
+    ends the run, as with the card pass: the passes before it are on
+    disk already.
+    """
+    apikey = cards.pick_apikey(apikey_holder)
+    if not apikey:
+        log.warning("no apikey observed on the SPA's own API calls; the "
+                    "account API will likely refuse, the legacy pages "
+                    "still run")
+    try:
+        client = rates.RatesClient(context, _origin(page.url), apikey,
+                                   page.url)
+        return rates.capture(
+            client, run_dir, accounts,
+            lambda: legacy_rates_entry(page, screenshot_dir))
+    except Exception as e:  # noqa: BLE001 — one facet, not the run
+        log.warning("rate capture failed: %s", debugcap.safe_error(e))
+        return {"error": debugcap.safe_error(e)}
+
+
+def legacy_rates_entry(page, screenshot_dir: Path | None) -> str:
+    """The legacy asset view's entry, as the SPA frames it.
+
+    The portfolio overview's "Structure" menu opens "Account balances",
+    which frames the entry; its `src` is read, not built. The SPA
+    resolves the portfolio from the fixed route itself.
+    """
+    page.goto(_build_spa_url(page.url, ubs.ROUTE_ASSET_VIEW),
+              wait_until="domcontentloaded")
+    try:
+        page.locator(ubs.ASSET_VIEW_STRUCTURE_MENU_SELECTOR).first.click(
+            timeout=LANDMARK_TIMEOUT_MS)
+        page.locator(ubs.ASSET_VIEW_ACCOUNT_BALANCES_SELECTOR).first.click(
+            timeout=LANDMARK_TIMEOUT_MS)
+        src = page.locator(ubs.ASSET_VIEW_LEGACY_FRAME_SELECTOR).first \
+            .get_attribute("src", timeout=LANDMARK_TIMEOUT_MS)
+    except Exception:
+        maybe_screenshot(page, screenshot_dir, "rates-no-legacy-entry")
+        raise
+    if not src:
+        raise RuntimeError("the account balances view frames no entry")
+    if rates.refuse_request("GET", src) is not None:
+        raise RuntimeError("the account balances view frames another page")
+    return src
+
+
+# ============================================================
 # run.json writing
 # ============================================================
 
@@ -1123,7 +1180,8 @@ def write_run_json(run_dir: Path, since: date, until: date,
                    positions: list[dict],
                    cards_meta: dict | None = None,
                    portfolio_transactions: list[dict] | None = None,
-                   only: str | None = None) -> None:
+                   only: str | None = None,
+                   rates_meta: dict | None = None) -> None:
     payload = {
         "dump_started_at": bronze.ts_slug(),
         # Terminal status for the run.json lifecycle: this function is
@@ -1170,6 +1228,10 @@ def write_run_json(run_dir: Path, since: date, until: date,
         # a reader tells "not fetched" from "fetched and empty" by the
         # key being absent rather than by an empty account list.
         **({"cards": cards_meta} if cards_meta is not None else {}),
+        # The rate pass: which accounts each surface was asked for, which
+        # answered, and which legacy rows the account API already
+        # covered. Absent when the pass did not run.
+        **({"rates": rates_meta} if rates_meta is not None else {}),
     }
     bronze.atomic_write_json(run_dir / "run.json", payload)
 
@@ -1672,6 +1734,8 @@ def dry_run_plan(args: argparse.Namespace, cash_accounts: int) -> str:
         "positions": "the positions of each portfolio",
         "transactions": f"the transactions of {cash_accounts} cash "
                         "account(s)",
+        "rates": f"the interest conditions of {cash_accounts} cash "
+                 "account(s), and of the legacy list's other accounts",
         "portfolio-transactions": "one securities-transaction export per "
                                   "managed portfolio",
         "documents": "the documents archive",
@@ -1737,9 +1801,10 @@ def main(argv: list[str]) -> int:
                 args.state_path, DEFAULT_STATE_PATH, LEGACY_STATE_PATH))
             if args.trace:
                 context.tracing.start(screenshots=True, snapshots=True, sources=True)
-            # The card API authenticates with a header the SPA attaches to
-            # its own calls; recording starts before any navigation so the
-            # session-verify and homepage loads below supply it.
+            # The card and account APIs authenticate with a header the SPA
+            # attaches to its own calls; recording starts before any
+            # navigation so the session-verify and homepage loads below
+            # supply it.
             apikey_holder = cards.sniff_apikey(context)
             page = context.new_page()
             page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
@@ -1757,6 +1822,7 @@ def main(argv: list[str]) -> int:
                 positions_meta: list[dict] = []
                 portfolio_txn_meta: list[dict] = []
                 cards_meta: dict | None = None
+                rates_meta: dict | None = None
                 if args.dry_run:
                     # Read-only walk: session verified and accounts
                     # enumerated above. Log the plan (what a real run
@@ -1794,6 +1860,10 @@ def main(argv: list[str]) -> int:
                             capture(page, "20-txn-"
                                     f"{bronze.short_token(account['account_id'])}"
                                     "-failed")
+                    if run("rates"):
+                        rates_meta = _capture_rates(
+                            context, page, apikey_holder, run_dir, accounts,
+                            args.screenshot_dir)
                     try:
                         if run("portfolio-transactions"):
                             portfolio_txn_meta = export_portfolio_transactions(
@@ -1820,7 +1890,8 @@ def main(argv: list[str]) -> int:
                     write_run_json(run_dir, since, until,
                                    txn_results, doc_results,
                                    positions_meta, cards_meta,
-                                   portfolio_txn_meta, args.only)
+                                   portfolio_txn_meta, args.only,
+                                   rates_meta)
             finally:
                 debugcap.stop_trace_if_active(context, args.trace,
                                               args.screenshot_dir,

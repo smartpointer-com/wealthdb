@@ -431,3 +431,49 @@ TXN_EXPORT_FOOTER_RE = re.compile(
     r"from\s+(\d{2}\.\d{2}\.\d{4})\s+to\s+(\d{2}\.\d{2}\.\d{4})",
     re.IGNORECASE,
 )
+
+
+# ============================================================
+# Interest conditions (rates.py)
+# ============================================================
+#
+# Two surfaces state a cash account's interest. Both are requested
+# through the session, and rates.py's allow-list admits exactly the
+# routes below, each with the query it is given.
+
+# The modern account API: this prefix plus the homepage's `accountId`,
+# with the one query that opts the conditions into the response.
+RATES_API_ACCOUNT_PREFIX = "/api/v3/cash-accounts/"
+RATES_API_INCLUDE_QUERY = "include=INTEREST_RATES"
+
+# The legacy asset view, reached the way the SPA reaches it. The
+# portfolio overview's "Structure" menu opens "Account balances",
+# which frames the legacy entry; the frame's `src` is the entry.
+ROUTE_ASSET_VIEW = (
+    "#/assets/asset-view?goto=portfolio-overview"
+    "&preselectFirstPortfolio=true&navitemid=PortfolioDashboard"
+)
+ASSET_VIEW_STRUCTURE_MENU_SELECTOR = (
+    "button#portfolio-top-navigation-overview-group")
+ASSET_VIEW_ACCOUNT_BALANCES_SELECTOR = "li#accountBalances"
+LEGACY_DISPATCHER_PATH = "/assetview/ebidispatcher.do"
+ASSET_VIEW_LEGACY_FRAME_SELECTOR = (
+    f'iframe[src^="{LEGACY_DISPATCHER_PATH}?"]'
+    '[src*="tabControl=account_balance"]')
+# The entry's query: these names with these values, and the
+# portfolio's `assetId` token as the SPA gives it.
+LEGACY_ENTRY_QUERY = {"navitemid": "AssetsPg",
+                      "goToScreen": "AO_Objects",
+                      "tabControl": "account_balance"}
+LEGACY_ENTRY_TOKEN_NAME = "assetId"
+# The dispatcher page frames the page it dispatches to in this frame.
+LEGACY_MAIN_FRAME_NAME = "gj9MainFrame"
+# The contract list the entry frames: one row per account, each with an
+# action menu whose "Account details" item opens `link.do` with the
+# row's id under this key. The server answers `link.do` with a redirect
+# to the dispatcher, which frames the account's page. The list holds no
+# account page's token: only the redirect names it.
+LEGACY_CONTRACT_LIST_PATH = "/assetview/getvaluatedcontractlist.do"
+LEGACY_LINK_PATH = "/assetview/link.do"
+LEGACY_ACCOUNT_DETAILS_KEY = "KONTODETAILS"
+LEGACY_POSITION_DETAIL_PATH = "/assetview/getpositiondetail.do"

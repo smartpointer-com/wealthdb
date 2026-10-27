@@ -848,6 +848,101 @@ confirmations. A booking also recurs in every statement whose period
 covers it, so a month-end statement and the quarter-end one around it
 both list it. `settlement_no` names it across statements.
 
+### 3.11 Interest conditions
+
+Two surfaces state a cash account's credit and debit interest. The
+`rates` pass ([rates.py](rates.py)) reads both, and the statements and
+advices print neither.
+
+**The account API.**
+`GET /api/v3/cash-accounts/<accountId>?include=INTEREST_RATES` returns
+one account as JSON. `<accountId>` is the opaque token the homepage
+anchors carry, the one `enumerate_accounts` extracts. The `include`
+query opts the conditions in; the SPA always sends it, and a response
+without it is not read as one. Beside the balance, currency, product
+and IBAN, the response holds the conditions:
+
+```
+interestItems: [
+  { "conditionType": "CREDIT" | "DEBIT",
+    "interestRate": "<percent as text>",
+    "upperLimit":   "<amount as text, or empty>",
+    "validFrom":    "YYYY-MM-DD" }, ...
+]
+```
+
+A tiered rate is several items of one type, each with an
+`upperLimit`; the last has none. An account with no conditions returns
+an empty list. A response without `interestItems` states nothing about
+the account's conditions. The list endpoint `/api/v3/cash-accounts`
+lists only the retail accounts, so it is not requested.
+
+**The legacy asset view.** The SPA reaches it from the portfolio
+overview (`#/assets/asset-view?goto=portfolio-overview&...`). Its
+"Structure" menu opens "Account balances", which frames the entry
+`ebidispatcher.do?navitemid=AssetsPg&goToScreen=AO_Objects&tabControl=account_balance&assetId=<token>`.
+The SPA builds that `src` from the portfolio it resolved; the collector
+reads it off the frame. Each hop after it is a link a page or a
+redirect gives, never a built one:
+
+1. The entry is a dispatcher page. Its `gj9MainFrame` frames the
+   contract list, `getvaluatedcontractlist.do?parameters=<token>`.
+2. The contract list has one row per cash account, mandate accounts
+   included. Each row prints the IBAN, and its action button sets the
+   row's menu ids: `setLinkId({KONTODETAILS:'AV<n>', ...})`. The
+   page's one menu script opens the "Account details" item as
+   `"/assetview/link.do?link=" + getLinkId().KONTODETAILS + "&"`. The
+   ids hold for the render that printed them. The same map names the
+   row's payment and transfer items, which are never read.
+3. `link.do` answers with a redirect to
+   `ebidispatcher.do?uri=getpositiondetail.do&parameters=<token>`. The
+   list holds no account page's token: only this redirect names it.
+4. That dispatcher page frames the "Account information" page,
+   `getpositiondetail.do?parameters=<token>`. The token names the
+   position and the client.
+
+The account page holds two tables, "Credit interest" and "Debit
+interest". Each puts its caption in a table of its own in its first
+row, then a header row `Valid from | Interest rate | Limit`. The rows
+read `dd.mm.yyyy`, a percent and an amount; a single tier may print
+a limit of `0.00`. Of repeated tables, the first per side is read. The
+"Account selection" chooser lists every account the client holds and
+marks the page's own row as `bzeSelectDialogRow selected`. The page
+prints no other IBAN line, so the account is read off that row.
+
+**The capture.** The API runs first, for every homepage account. An
+answer covers its account only when it holds `interestItems`. The
+legacy pass then takes the entry from the SPA frame and reads the
+contract list. A row whose IBAN the API covered is skipped; a row
+that prints no IBAN is an error entry, since it cannot be found again.
+Each other account is followed from a fresh render: before every
+account after the first, the entry and the list are read again and
+the row found by its IBAN. A page is kept only when its own IBAN is
+its row's. Files land under `rates/`: `<accountId>.json` and
+`legacy-<sha256 of the IBAN>.html`. `run.json` records, per surface,
+the accounts attempted and answered, whether each API answer stated
+conditions, and the legacy rows skipped as covered. A missed entry, a
+failed account and a failed list are error entries, and the files
+already written stay.
+
+**What silver keeps.** `account_rates`
+([migrations/0016_account_rates.sql](migrations/0016_account_rates.sql)):
+one row per snapshot, account, side and tier, with the rate in percent,
+the tier's upper limit (NULL for none), the day it holds from and the
+surface it was read from. Tiers count from 1 per side, in source order.
+The account is the IBAN the response or the page states. An account the
+API stated conditions for keeps the API's. An account that states no
+condition has no row, which reads as no rate, not as 0%.
+
+**What gold reads.** The adapter puts the credit conditions on the
+account's cash balances at the newest instant at or before the capture,
+under the stated-rate keys: `interest_rate` for one tier,
+`interest_tiers` for several, `interest_valid_from` and `interest_side`.
+The rows of one `valid_from` day are one schedule. A capture that
+states several days writes one `interest_conditions` entry per day, so
+a rate announced for a later day stands beside the one in force. It
+adds no balance. The debit side stays in silver.
+
 ## 4. Web loader implementation notes
 
 - **Migration runner.** `collectorkit.silver.apply_migrations`
@@ -881,6 +976,7 @@ both list it. `settlement_no` names it across statements.
      parsers write `advices` (§3.9). A Statement of assets also
      writes its transaction list to `statement_trades` (§3.10).
   7. Parse `cards/` → the `card_*` tables (§5.9).
+  8. Parse `rates/` → `account_rates` (§3.11).
 
 - **PDF parsing isolation.** `pdfplumber` is bundled in the
   Docker image (`requirements.txt`). The parsers live in

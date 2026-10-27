@@ -203,7 +203,8 @@ rate in its currency. One below zero pays the debit rate. A tiered rate
 is blended over the balance: each tier's rate on the part of the
 balance up to its limit. The rates are `account_rates` (DESIGN.md
 §7.6). A rate a snapshot states holds as the newest snapshot on or
-before the day states it. A rate a source states once holds from its
+before the day states it, among the rates that hold from on or before
+the day. A rate a source states once holds from its
 `valid_from` on. A ledger `rate` record holds from its day on and reads
 `declared`. It replaces the credit rates a source states for its account
 and currency.
@@ -219,17 +220,16 @@ under these keys:
 | `interest_side` | who pays it | `credit` (the balance earns it, the default) or `debit` (it pays it) |
 | `interest_conditions` | several rates, such as a credit and a debit side | a list of objects, each with the keys above |
 
-A rate on a cash balance is read at that balance's snapshot. So a
-source puts a statement's rate on the statement's closing balance, and
-it is observed on the statement's day. It puts a netbanking rate on the
-balance of the download. A rate on an account is stated once. Each
-condition in `interest_conditions` states its own keys, one per side
-and day. A value that does not read states nothing, and neither does
-the condition it sits in. A rate that holds from a later day leaves the
-rate in force standing until that day. A liability's rate is its terms'
-(below), never these keys. Three older shapes read as before: UBS PSN's
-balance records, Raiffeisen's account details and VIAC's strategy
-rate.
+A rate on a cash balance is read at that balance's snapshot. A source
+puts a rate on the balance its document or capture is dated by, or on
+the newest one before it. The adapter docs say which. A rate on an
+account is stated once, for the account's base currency. Each condition
+in `interest_conditions` states its own keys, one per side and day. A
+value that does not read states nothing, and neither does the condition
+it sits in. A balance that states UBS PSN's tiers reads those, and the
+keys beside them state nothing. A liability's rate is its terms'
+(below), never these keys. UBS PSN's balance records, Raiffeisen's
+account details and VIAC's strategy rate are read in their own shapes.
 
 An account that states no rate has none: its cash reads unknown, never
 zero.

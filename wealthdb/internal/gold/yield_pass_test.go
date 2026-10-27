@@ -328,7 +328,8 @@ func TestYieldPassReadsAccountRates(t *testing.T) {
 // a flat rate on an account, stated once; tiers on a cash balance,
 // observed at its snapshot; a credit and a debit side on one account; a
 // rate that holds from a later day, the older rate in force until then.
-// An account that states none has no row, and a card's rate is none.
+// An account that states none has no row, and a card's rate is none. A
+// balance that states UBS PSN's tiers reads those alone.
 func TestYieldPassReadsTheStatedRateKeys(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -344,9 +345,10 @@ func TestYieldPassReadsTheStatedRateKeys(t *testing.T) {
 	 ('test-src', ?, 'LATER', 'USD', 'closing', 700, '{"interest_rate": 2, "interest_valid_from": "2026-09-01"}'),
 	 ('test-src', ?, 'LATER', 'USD', 'closing', 700, '{"interest_rate": 1.5}'),
 	 ('test-src', ?, 'CARD', 'USD', 'closing', 50, '{"interest_rate": 19.9}'),
+	 ('test-src', ?, 'PSN', 'CHF', 'closing', 80, '{"CdtIntrstRate1": "0.4", "interest_rate": 0.9}'),
 	 ('test-src', ?, 'BAD', 'USD', 'closing', 50, '{"interest_rate": "n/a", "interest_tiers": [{"rate": 1}],
 	   "interest_side": "sideways"}')`
-	if _, err := db.ExecContext(ctx, q, day, day-86400, day, day, day, day-86400, day, day); err != nil {
+	if _, err := db.ExecContext(ctx, q, day, day-86400, day, day, day, day-86400, day, day, day); err != nil {
 		t.Fatal(err)
 	}
 	execEach(t, db,
@@ -358,13 +360,14 @@ func TestYieldPassReadsTheStatedRateKeys(t *testing.T) {
 		 ('test-src', 'LATER', 'cash', 'Later', 'USD', 0, 0, NULL),
 		 ('test-src', 'NONE', 'cash', 'None', 'CHF', 0, 0, '{"basis": "statement"}'),
 		 ('test-src', 'CARD', 'card', 'Card', 'USD', 0, 0, '{"interest_rate": 19.9}'),
+		 ('test-src', 'PSN', 'cash', 'Psn', 'CHF', 0, 0, NULL),
 		 ('test-src', 'BAD', 'cash', 'Bad', 'USD', 0, 0, NULL)`)
 	n, err := RebuildYield(ctx, db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n.RatedAccounts != 4 {
-		t.Errorf("rated accounts %d, want 4", n.RatedAccounts)
+	if n.RatedAccounts != 5 {
+		t.Errorf("rated accounts %d, want 5", n.RatedAccounts)
 	}
 	got := scanStrings(t, db, `SELECT concat_ws(' ', account_external_id, COALESCE(currency, '-'), side, tier,
 	    rate_pct, COALESCE(up_to::VARCHAR, '-'), COALESCE(valid_from::VARCHAR, '-'), origin, COALESCE(field, '-'),
@@ -376,6 +379,8 @@ func TestYieldPassReadsTheStatedRateKeys(t *testing.T) {
 		"FLAT CHF credit 1 0.75 - - stated interest_rate -",
 		"LATER USD credit 1 1.5 - - stated interest_rate 06-29",
 		"LATER USD credit 1 2.0 - 2026-09-01 stated interest_rate 06-30",
+		// A balance that states PSN's tiers reads them alone.
+		"PSN CHF credit 1 0.4 - - stated CdtIntrstRate1 06-30",
 		// The day before, the current balance's own; on the day, of the
 		// snapshot's balances that state a rate, the closing one.
 		"TIER USD credit 1 9.99 - - stated interest_rate 06-29",

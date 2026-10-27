@@ -105,12 +105,39 @@ def test_a_relative_cursor_with_a_query_is_allowed():
             @staticmethod
             def get(url, **_kw):
                 seen["url"] = url
-                return object()
+                return _Status(200)
 
     api = cards.CardApi(_Ctx(), "https://bank.test", "KEY")
     api._get("/api/v1/credit-card-transactions?cursor=2")
     assert seen["url"] == (
         "https://bank.test/api/v1/credit-card-transactions?cursor=2")
+
+
+class _Status:
+    def __init__(self, status):
+        self.status = status
+        self.ok = 200 <= status < 300
+
+
+def test_a_redirect_is_not_followed():
+    """A 3xx names a target the allow-list never saw. The request asks
+    Playwright not to follow it, and the response raises like any other
+    failure, so the capture records it per account."""
+    seen = {}
+
+    class _Ctx:
+        class request:
+            @staticmethod
+            def get(_url, **kw):
+                seen["max_redirects"] = kw.get("max_redirects")
+                return _Status(302)
+
+    api = cards.CardApi(_Ctx(), "https://bank.test", "KEY")
+    with pytest.raises(RuntimeError, match="302"):
+        api.accounts()
+    assert seen["max_redirects"] == 0
+    with pytest.raises(RuntimeError, match="302"):
+        api.statement_pdf("INV-1")
 
 
 # --------------------------------------------------------------------

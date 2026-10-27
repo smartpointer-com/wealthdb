@@ -362,7 +362,7 @@ WITH ubs_balances AS MATERIALIZED (
     SELECT DISTINCT ON (cb.silver_source_id, cb.account_external_id, cb.currency, cb.snapshot_at)
            cb.silver_source_id, cb.account_external_id, cb.currency, cb.snapshot_at, cb.payload
       FROM cash_balances cb
-     WHERE json_extract_string(cb.payload, 'CdtIntrstRate1') IS NOT NULL
+     WHERE ` + psnShapeSQL("cb") + ` IS NOT NULL
      ORDER BY cb.silver_source_id, cb.account_external_id, cb.currency, cb.snapshot_at,
               ` + cashKindRank + `, cb.balance_kind),
 tiers AS (` + strings.Join(ubs, "\nUNION ALL") + `)
@@ -393,6 +393,14 @@ SELECT r.silver_source_id, r.account_external_id, r.currency, 'credit', 1, r.rat
   SEMI JOIN accounts a ON a.silver_source_id = r.silver_source_id AND a.account_external_id = r.account_external_id`}
 }()
 
+// psnShapeSQL reads the key of alias's payload that marks UBS PSN's
+// balance record. accountRatesSQL reads the balances where it is set in
+// that shape, and statedRatesSQL the others in the canonical keys, so no
+// balance is read in both or in neither.
+func psnShapeSQL(alias string) string {
+	return "json_extract_string(" + alias + ".payload, 'CdtIntrstRate1')"
+}
+
 // dayCountSQL maps a source's day-count text to canonical.DayCount's
 // names: case and spaces aside, ACT/360, ACT/365, ACT/ACT, 30/360 and
 // 30E/360; anything else is NULL.
@@ -408,7 +416,8 @@ func dayCountSQL(expr string) string {
 // canonical.ReadStatedRates reads: each cash balance's, observed at its
 // snapshot (of a snapshot's balances, the one cash_chosen prefers among
 // those that state one), and each account's, stated once in its base
-// currency.
+// currency. A balance that states UBS PSN's tiers is read in that shape
+// alone, so a snapshot never states two schedules for one side.
 var statedRatesSQL = func() string {
 	var has []string
 	for _, k := range []string{canonical.PayloadInterestRate, canonical.PayloadInterestTiers,
@@ -421,7 +430,8 @@ SELECT * FROM (
     SELECT DISTINCT ON (cb.silver_source_id, cb.account_external_id, cb.currency, cb.snapshot_at)
            cb.silver_source_id, cb.account_external_id, cb.currency, cb.snapshot_at, cb.payload::VARCHAR
       FROM cash_balances cb
-     WHERE ` + fmt.Sprintf(states, "cb") + `
+     WHERE (` + fmt.Sprintf(states, "cb") + `)
+       AND ` + psnShapeSQL("cb") + ` IS NULL
      ORDER BY cb.silver_source_id, cb.account_external_id, cb.currency, cb.snapshot_at,
               ` + cashKindRank + `, cb.balance_kind)
 UNION ALL
@@ -434,24 +444,26 @@ SELECT a.silver_source_id, a.account_external_id, a.base_currency, NULL, a.paylo
 // writeStatedRates adds to account_rates the rates the sources' payloads
 // state under the canonical keys, one row per side and tier.
 func writeStatedRates(ctx context.Context, tx *sql.Tx) error {
-	type row struct {
+	type tierRow struct {
 		src, acct string
 		ccy       sql.NullString
 		observed  sql.NullInt64
 		rate      canonical.StatedRate
+		tier      int
 	}
-	var rows []row
-	var tiers int
+	var rows []tierRow
 	if err := scanAll(ctx, tx, statedRatesSQL, func(sc *sql.Rows) error {
-		var r row
+		var r tierRow
 		var payload sql.NullString
 		if err := sc.Scan(&r.src, &r.acct, &r.ccy, &r.observed, &payload); err != nil {
 			return err
 		}
 		for _, rate := range canonical.ReadStatedRates([]byte(payload.String)) {
 			r.rate = rate
-			rows = append(rows, r)
-			tiers += len(rate.Tiers)
+			for i := range rate.Tiers {
+				r.tier = i
+				rows = append(rows, r)
+			}
 		}
 		return nil
 	}); err != nil {
@@ -459,22 +471,18 @@ func writeStatedRates(ctx context.Context, tx *sql.Tx) error {
 	}
 	const cols = `silver_source_id, account_external_id, currency, side, tier, rate_pct, up_to, valid_from, origin, field,
     observed_at`
-	flat := make([]func(args []any) []any, 0, tiers)
-	for _, r := range rows {
-		for i, t := range r.rate.Tiers {
-			flat = append(flat, func(args []any) []any {
-				return append(args, r.src, r.acct, r.ccy, r.rate.Side, i+1, t.Pct, nullable(t.UpTo),
-					nullable(r.rate.ValidFrom), "stated", r.rate.Field, r.observed)
-			})
-		}
-	}
 	return InsertChunked(ctx, tx, "account_rates", `INSERT INTO account_rates (`+cols+`) VALUES `, placeholders(cols),
-		len(flat), func(i int, args []any) []any { return flat[i](args) })
+		len(rows), func(i int, args []any) []any {
+			r := rows[i]
+			t := r.rate.Tiers[r.tier]
+			return append(args, r.src, r.acct, r.ccy, r.rate.Side, r.tier+1, t.Pct, nullable(t.UpTo),
+				nullable(r.rate.ValidFrom), "stated", r.rate.Field, r.observed)
+		})
 }
 
 // writeAccountRates rewrites account_rates from every shape a source
-// states a rate in and the ledger's records. A card account states no
-// rate: its bill is paid in full, so a rate means nothing there.
+// states a rate in and the ledger's records. A card takes no rate
+// (YIELD.md §3).
 func writeAccountRates(ctx context.Context, tx *sql.Tx) error {
 	if err := execAll(ctx, tx, accountRatesSQL...); err != nil {
 		return err

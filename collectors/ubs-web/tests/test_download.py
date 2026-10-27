@@ -18,6 +18,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 import download
 
 
@@ -49,6 +51,8 @@ def test_prepare_run_dir_real_run_writes_in_progress_marker(tmp_path):
 # --------------------------------------------------------------------
 
 class _FakePage:
+    url = "https://bank.test/app/#/home"
+
     def set_default_navigation_timeout(self, _ms):
         pass
 
@@ -157,6 +161,8 @@ def _mock_export_layer(monkeypatch):
     monkeypatch.setattr(download, "export_portfolio_transactions",
                         lambda *a, **k: [])
     monkeypatch.setattr(download, "harvest_documents", lambda *a, **k: [])
+    monkeypatch.setattr(download.rates, "capture",
+                        lambda *a, **k: {"api": {"attempted": []}})
 
 
 def _real_run(tmp_path, monkeypatch, *flags):
@@ -307,6 +313,94 @@ def test_no_card_statements_reaches_the_card_pass(tmp_path, monkeypatch):
     asked for none — and every other assertion would still hold."""
     _, calls = _card_run(tmp_path, monkeypatch, "--no-card-statements")
     assert calls == [False]
+
+
+def test_the_rate_pass_runs_alone_under_only(tmp_path, monkeypatch):
+    _, card_calls = _card_run(tmp_path, monkeypatch, "--only", "rates")
+    assert card_calls == []
+    manifest = json.loads(next((tmp_path / "bronze").glob("*/run.json"))
+                          .read_text())
+    assert manifest["partial_pass"] == "rates"
+    assert manifest["rates"] == {"api": {"attempted": []}}
+
+
+def test_a_failed_rate_pass_leaves_the_rest_of_the_dump(tmp_path,
+                                                        monkeypatch):
+    """The rate client's own failure is caught inside the pass: the dump
+    still finalises, and run.json says what failed."""
+    monkeypatch.setattr(download, "_capture_cards", lambda *a, **k: None)
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("synthetic rate failure")
+
+    monkeypatch.setattr(download.rates, "RatesClient", _boom)
+    rc, dest = _real_run(tmp_path, monkeypatch)
+    assert rc == 0
+    manifest = json.loads(next(dest.glob("*/run.json")).read_text())
+    assert manifest["status"] == "complete"
+    assert manifest["rates"] == {
+        "error": "RuntimeError: synthetic rate failure"}
+
+
+class _AssetViewPage:
+    """The SPA as the rate pass drives it to the legacy entry: a route,
+    two clicks, and the frame the second one renders."""
+
+    url = "https://bank.test/app/ebanking/spa.html#/home"
+
+    def __init__(self, src):
+        self.src = src
+        self.calls = []
+
+    def goto(self, url, **_kw):
+        self.calls.append(("goto", url))
+
+    def locator(self, selector):
+        page = self
+
+        class _Locator:
+            first = None
+
+            def click(self, **_kw):
+                page.calls.append(("click", selector))
+
+            def get_attribute(self, name, **_kw):
+                page.calls.append(("read", selector, name))
+                return page.src
+
+        loc = _Locator()
+        loc.first = loc
+        return loc
+
+
+def test_the_legacy_entry_is_read_off_the_spa_frame():
+    entry = ("/assetview/ebidispatcher.do?navitemid=AssetsPg"
+             "&goToScreen=AO_Objects&tabControl=account_balance"
+             "&assetId=PORTFOLIO-1")
+    page = _AssetViewPage(entry)
+    assert download.legacy_rates_entry(page, None) == entry
+    assert page.calls == [
+        ("goto", "https://bank.test/app/ebanking/spa.html"
+                 + download.ubs.ROUTE_ASSET_VIEW),
+        ("click", download.ubs.ASSET_VIEW_STRUCTURE_MENU_SELECTOR),
+        ("click", download.ubs.ASSET_VIEW_ACCOUNT_BALANCES_SELECTOR),
+        ("read", download.ubs.ASSET_VIEW_LEGACY_FRAME_SELECTOR, "src"),
+    ]
+    # The entry is the SPA's, and still passes the allow-list.
+    assert download.rates.refuse_request("GET", entry) is None
+
+
+def test_a_frame_without_a_source_is_a_missed_entry():
+    with pytest.raises(RuntimeError, match="frames no entry"):
+        download.legacy_rates_entry(_AssetViewPage(None), None)
+
+
+def test_a_frame_of_another_page_is_a_missed_entry():
+    other = ("/assetview/ebidispatcher.do?navitemid=AssetsPg"
+             "&goToScreen=AO_Objects&tabControl=account_balance"
+             "&assetId=PORTFOLIO-1&more=1")
+    with pytest.raises(RuntimeError, match="frames another page"):
+        download.legacy_rates_entry(_AssetViewPage(other), None)
 
 
 def test_an_unreachable_card_surface_leaves_the_rest_of_the_dump(tmp_path,
@@ -671,6 +765,12 @@ def test_the_dry_run_plan_follows_only_and_no_cards():
     no_cards = download.dry_run_plan(
         download.parse_args(["--dry-run", "--no-cards"]), 2)
     assert "card" not in no_cards
+
+    only_rates = download.dry_run_plan(
+        download.parse_args(["--dry-run", "--only", "rates"]), 2)
+    assert only_rates == ("would export the interest conditions of 2 cash "
+                          "account(s), and of the legacy list's other "
+                          "accounts")
 
     assert download.dry_run_plan(download.parse_args(
         ["--dry-run", "--only", "cards", "--no-cards"]), 2) == "nothing"

@@ -35,6 +35,21 @@ binding):
   Equivalently, the read endpoints behind them:
   `credit-card-accounts`, `credit-card-transactions`,
   `credit-card-invoices` and their `extract` links (DESIGN.md §5.1).
+- The cash accounts' **interest conditions** (DESIGN.md §3.11):
+  - The account API
+    `/api/v3/cash-accounts/<accountId>?include=INTEREST_RATES` for a
+    homepage account, requested by GET.
+  - The legacy asset view. The SPA's portfolio overview is navigated,
+    and its "Structure" menu and the "Account balances" item in it
+    are clicked; the frame that item renders gives the legacy entry.
+    From there every request is a GET of a link a page or a redirect
+    gives: the entry `ebidispatcher.do`, the contract list
+    `getvaluatedcontractlist.do`, each row's "Account details" item
+    `link.do` (read for its redirect, never followed), the dispatcher
+    it redirects to, and the `getpositiondetail.do` account page that
+    dispatcher frames. No token is built. Of a row's menu, only the
+    "Account details" item is read: its payment and transfer items
+    are the forbidden surface below.
 - Date-range / period filter inputs and "Apply" / "Search" buttons
   on the above pages.
 - Export / download buttons that produce CSV, XLS, or PDF copies
@@ -76,7 +91,9 @@ the point:
   the API rather than the UI, and is held the same way:
   [cards.py](cards.py)'s `refuse_path` is an allow-list of read
   endpoints that every request passes through, the ledger's paging
-  cursor included.
+  cursor included. The rate pass is held the same way by
+  [rates.py](rates.py)'s `refuse_request`: GET on its three routes and
+  nothing else.
 - **[`explore.py`](explore.py) does neither.** It opens the login entry
   point once and then only *records*; it issues no navigation and no
   click for the rest of the session. A recorder cannot stray onto a

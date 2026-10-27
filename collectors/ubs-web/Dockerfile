@@ -1,6 +1,7 @@
 # Headless-browser collector: build on the shared Playwright base
-# (collectorkit pre-installed; the Playwright image tag is pinned there
-# and must stay in lockstep with the `playwright` pin in requirements.txt).
+# (collectorkit pre-installed; the Playwright image tag is pinned there,
+# and `make update` moves it and the `playwright` pin in requirements.txt
+# together).
 ARG WEALTHDB_IMAGE_TAG=latest
 FROM wealthdb/base-playwright:${WEALTHDB_IMAGE_TAG}
 
@@ -15,8 +16,12 @@ RUN pip install -r requirements.txt
 # incomplete. login.py mints the session; download.py exports bronze;
 # load.py is the silver loader; prune.py is the bronze
 # non-complete-dump cleaner (also reachable host-side via the wrapper);
-# explore.py is the discovery harness; cards.py is the card-API client and card_parsers.py its bronze reader.
-COPY login.py download.py load.py prune.py explore.py cards.py card_parsers.py landmarks.py pdf_parsers.py /app/
+# explore.py is the discovery harness; cards.py is the card-API client and
+# card_parsers.py its bronze reader; rates.py and rate_parsers.py the same
+# for the interest rates. Every module the verbs import must be listed
+# here: shared/collectorkit/tests/test_collector_images.py checks it.
+COPY login.py download.py load.py prune.py explore.py cards.py card_parsers.py landmarks.py pdf_parsers.py \
+     rates.py rate_parsers.py /app/
 COPY migrations /app/migrations
 COPY tests /app/tests
 COPY entrypoint.sh /app/
@@ -27,7 +32,7 @@ RUN chmod +x /app/entrypoint.sh
 # have host-correct ownership; Chromium's user-namespace sandbox is
 # disabled at launch time in code with `--no-sandbox` instead. This
 # is acceptable in a single-tenant, single-trusted-origin scenario
-# (we only ever load ubs.com).
+# (the collector loads only ubs.com).
 
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["help"]

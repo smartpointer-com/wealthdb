@@ -231,10 +231,21 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		_ = merged.Close()
 		return nil, fmt.Errorf("ubs web paid-in basis: %w", err)
 	}
-	if len(paidIn) == 0 {
-		return merged, nil
+	var out silver.SnapshotStream = merged
+	if len(paidIn) > 0 {
+		out = &paidInStream{inner: merged, series: paidIn}
 	}
-	return &paidInStream{inner: merged, series: paidIn}, nil
+	// The netbanking's credit rates go on the balances already emitted
+	// (rates.go), whichever stream emitted them.
+	rates, err := c.web.creditRates(ctx)
+	if err != nil {
+		_ = out.Close()
+		return nil, err
+	}
+	if len(rates) > 0 {
+		out = &rateStampStream{inner: out, rates: rates}
+	}
+	return out, nil
 }
 
 // Transactions applies a hard cut at PSN_start per relationship.

@@ -112,7 +112,9 @@ class CardApi:
         would present an allowed path while naming a host of the
         server's choosing. Only a site-relative reference is ever
         requested, which is what keeps "follow the link" from meaning
-        "follow any link".
+        "follow any link". For the same reason a redirect is not
+        followed: its target was never checked, so a 3xx raises like any
+        other failed request.
         """
         split = urlsplit(path_and_query)
         if split.scheme or split.netloc:
@@ -122,13 +124,19 @@ class CardApi:
         refusal = refuse_path(split.path)
         if refusal is not None:
             raise RuntimeError(f"refusing to request: {refusal}")
-        return self._context.request.get(
+        resp = self._context.request.get(
             self._origin + path_and_query,
             headers={"apikey": self._apikey,
                      "accept": accept,
                      "x-requested-with": "XMLHttpRequest"},
+            max_redirects=0,
             timeout=REQUEST_TIMEOUT_MS,
         )
+        if 300 <= resp.status < 400:
+            raise RuntimeError(
+                f"refusing to follow HTTP {resp.status} redirect for "
+                f"{split.path}")
+        return resp
 
     def _get_json(self, path_and_query: str) -> dict:
         resp = self._get(path_and_query)
@@ -261,7 +269,8 @@ def sniff_apikey(context) -> dict:
 
 
 def pick_apikey(tally: dict) -> str | None:
-    """The key most likely to authenticate the card endpoints.
+    """The key most likely to authenticate the banking endpoints (cards,
+    cash accounts).
 
     The banking micro-frontends share one key across many endpoint
     families — cards, cash accounts, portfolios, contracts — while a

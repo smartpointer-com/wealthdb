@@ -74,6 +74,7 @@ Web silver:
 | `portfolio_transactions` | `transactions`; `realized_lots` | A managed portfolio's securities settlements, booked on the cash account that paid (§11). Its sales with a realized P/L are also realized lots (§12). |
 | `statement_trades` | `realized_lots` | The trade list a Statement of Assets prints (ubs-web DESIGN.md §3.10). Each sale is a realized lot with the cost it drew on (§12). |
 | `advices` | `positions.book_value` | The capital calls are the paid-in basis of a private-markets fund's units (§12). Contract notes are not read. |
+| `account_rates` | `cash_balances.payload` | The netbanking's credit interest (ubs-web DESIGN.md §3.11). A capture's conditions go on the account's balances at the newest instant at or before it, as `interest_rate` (one tier) or `interest_tiers` (several), with `interest_valid_from` and `interest_side`. The rows of one `valid_from` day are one schedule; a capture of several days states one `interest_conditions` entry per day. No balance is added. The debit side is not read. An account with no row states no rate. |
 
 **The MT940 feed is delivered per account.** An account is in scope
 for statements or it is not, and one that is not receives none on any

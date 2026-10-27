@@ -52,6 +52,7 @@ from collectorkit import bronze, cli, silver, srcfp
 
 import card_parsers  # local module
 import landmarks as ubs  # local module: the export's shared vocabulary
+import rate_parsers  # local module
 
 log = logging.getLogger("ubs-web.load")
 
@@ -393,16 +394,17 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
         conn, snapshot_at, dump_dir, parse_cache, mt940_floors)
     card_acc, card_txn, card_inv, card_stmt = _load_cards(
         conn, snapshot_at, dump_dir)
+    rate_count = _load_rates(conn, snapshot_at, dump_dir)
 
     log.info("loaded %s: positions=%d transactions=%d "
              "portfolio_transactions=%d documents=%d "
              "hist_positions=%d hist_cash_balances=%d "
              "hist_mortgages=%d hist_transactions=%d "
              "card_accounts=%d card_transactions=%d card_invoices=%d "
-             "card_statements=%d",
+             "card_statements=%d account_rates=%d",
              dump_dir.name, pos_count, txn_count, ptxn_count, doc_count,
              hist_pos, hist_cash, hist_mort, hist_txn,
-             card_acc, card_txn, card_inv, card_stmt)
+             card_acc, card_txn, card_inv, card_stmt, rate_count)
 
 
 def _read_run_json(dump_dir: Path) -> dict:
@@ -1363,6 +1365,74 @@ def _load_cards(conn: sqlite3.Connection, snapshot_at: int,
     _refresh_invoice_coverage(conn)
     _warn_orphan_card_rows(conn)
     return acc_count, txn_count, inv_count, stmt_count
+
+
+# ----------------------------------------------------------------
+# Interest conditions
+# ----------------------------------------------------------------
+
+_RATE_COLUMNS = ("snapshot_at", "account_external_id", "side", "tier",
+                 "rate_pct", "upper_limit", "valid_from", "surface",
+                 "payload")
+
+
+def _load_rates(conn: sqlite3.Connection, snapshot_at: int,
+                dump_dir: Path) -> int:
+    """Load `<dump>/rates/` into `account_rates`.
+
+    The account API's JSON keys on the IBAN the response states; a
+    legacy page on the IBAN its account chooser selects. An account the
+    API stated conditions for keeps the API's, and a legacy page for it
+    is not read. A response without `interestItems` states none, so it
+    claims no account. A file that states no condition writes no row,
+    so such an account reads as stating no rate. A dump with no `rates/` dir loads
+    as zero. The dump's earlier rows go first, so a re-read that states
+    fewer tiers leaves none of the old ones behind.
+    """
+    conn.execute("DELETE FROM account_rates WHERE snapshot_at = ?",
+                 (snapshot_at,))
+    rates_dir = dump_dir / "rates"
+    if not rates_dir.is_dir():
+        return 0
+    by_account: dict[str, tuple[str, list[dict]]] = {}
+    for path in sorted(rates_dir.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            log.warning("unreadable rate artefact %s: %s", path.name, e)
+            continue
+        if not rate_parsers.api_states_conditions(payload):
+            log.warning("rate artefact %s states no conditions; skipped",
+                        path.name)
+            continue
+        iban = rate_parsers.api_iban(payload)
+        if iban is None:
+            log.warning("rate artefact %s states no IBAN; skipped", path.name)
+            continue
+        by_account[iban] = ("api", rate_parsers.api_conditions(payload))
+    for path in sorted(rates_dir.glob("legacy-*.html")):
+        try:
+            html = path.read_text(encoding="utf-8")
+        except OSError as e:
+            log.warning("unreadable rate artefact %s: %s", path.name, e)
+            continue
+        iban = rate_parsers.legacy_iban(html)
+        if iban is None:
+            log.warning("rate page %s states no IBAN; skipped", path.name)
+            continue
+        if iban not in by_account:
+            by_account[iban] = ("legacy",
+                                rate_parsers.legacy_conditions(html))
+
+    rows = [(snapshot_at, iban, c["side"], c["tier"], c["rate_pct"],
+             c["upper_limit"], c["valid_from"], surface,
+             normalize_payload(c["source"]))
+            for iban, (surface, conditions) in sorted(by_account.items())
+            for c in conditions]
+    conn.executemany(
+        f"INSERT INTO account_rates ({', '.join(_RATE_COLUMNS)}) "
+        f"VALUES ({', '.join('?' * len(_RATE_COLUMNS))})", rows)
+    return len(rows)
 
 
 def _warn_orphan_card_rows(conn: sqlite3.Connection) -> None:

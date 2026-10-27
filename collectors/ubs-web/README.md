@@ -105,9 +105,11 @@ persisted session cookie until UBS invalidates it.
 | Script | Purpose |
 | --- | --- |
 | [`login.py`](login.py) | Drive headless Chromium through the UBS Nevis login dialog and the Access App QR challenge. It fills the contract number and renders the QR to the terminal (Unicode half-blocks the Access App scans directly). `--qr-png` also writes an upscaled PNG for a host with no usable terminal. It follows QR rotations, waits for the post-auth SPA URL, then saves the Playwright storage state at `--state-path` (default `/secrets/ubs-web-state.json`, chmod 0600; `ubs_web_state.json` is read when that file is absent). `--check` probes the stored session without a new QR challenge. |
-| [`download.py`](download.py) | Reuse the persisted session and run five passes. **positions**: one `positions.csv` for the consolidated default view, plus one per `portfolioUid` found on the homepage. **transactions**: for each **cash** account on the homepage, the transaction list as CSV and as enriched SWIFT MT940, both bisected on the 1000-transaction export cap. **portfolio-transactions**: each managed portfolio's securities-transaction CSV, reached through the portfolio switcher ([DESIGN.md](DESIGN.md) §3.7b). **documents**: the eDocuments archive in adaptive windows (bisected on the 999-row display cap), each PDF fetched from `/api/v1/digital-banking/files/`. **cards**: the card surface via [`cards.py`](cards.py). `--only PASS` runs one pass and marks the dump `partial`. Writes a `run.json` manifest. Read-only — see [AGENTS.md](AGENTS.md) §1. |
+| [`download.py`](download.py) | Reuse the persisted session and run six passes. **positions**: one `positions.csv` for the consolidated default view, plus one per `portfolioUid` found on the homepage. **transactions**: for each **cash** account on the homepage, the transaction list as CSV and as enriched SWIFT MT940, both bisected on the 1000-transaction export cap. **rates**: each cash account's interest conditions via [`rates.py`](rates.py) (see [Interest rates](#interest-rates)). **portfolio-transactions**: each managed portfolio's securities-transaction CSV, reached through the portfolio switcher ([DESIGN.md](DESIGN.md) §3.7b). **documents**: the eDocuments archive in adaptive windows (bisected on the 999-row display cap), each PDF fetched from `/api/v1/digital-banking/files/`. **cards**: the card surface via [`cards.py`](cards.py). `--only PASS` runs one pass and marks the dump `partial`. Writes a `run.json` manifest. Read-only — see [AGENTS.md](AGENTS.md) §1. |
 | [`explore.py`](explore.py) | Discovery harness. Launches headed Chromium on the container's Xvfb display and serves it over VNC, so a session can be driven by hand while everything it produces is recorded: the network (requests, responses and bodies, line-flushed so a crash keeps the log), the clicks, one DOM snapshot plus screenshot per structurally distinct screen, and every file downloaded. Artefacts land under `--debug-dir`, never bronze. The harness itself never navigates and never clicks — it opens the login page and records from there, so the read-only surface in [AGENTS.md](AGENTS.md) §1 binds whoever drives. An existing session is reused and saved back on exit, so a sign-in here is not paid for twice. |
 | [`cards.py`](cards.py) | The credit-card surface, read from the SPA's own REST API rather than scraped (see [DESIGN.md §5](DESIGN.md)): the roster, each card account's paged ledger, its billing periods with their reconciling totals, and each period's statement PDF. Read-only and enforced — an allow-list of read endpoints gates every request, including the paging cursor the ledger hands back, so a link the API advertises is never followed for being advertised. Driven by `download.py`; not a verb of its own. |
+| [`rates.py`](rates.py) | The cash accounts' interest conditions: the account API's JSON for each homepage account, and the legacy account page for each other account the legacy contract list links. Read-only and enforced — an allow-list admits GET on those routes, each with the query its page gives, and nothing else. Driven by `download.py`; not a verb of its own. |
+| [`rate_parsers.py`](rate_parsers.py) | Bronze → silver for the interest conditions: the API's `interestItems` and the legacy page's "Credit interest" and "Debit interest" tables, read into rows. Pure functions, shared by the capture and the load. |
 | [`card_parsers.py`](card_parsers.py) | Bronze → silver for the card surface: pure functions from the captured JSON to the rows `load.py` writes, with no database handle, so each is testable against a synthetic payload. Holds the three readings that are easy to get wrong — the row key is minted from row content, because the API's `_id` is re-minted at every login and `transactionNr` is not a key, a `RESERVED` row is unposted activity rather than a transaction, and `merchantName` is the category while `details` is the merchant. |
 | [`prune.py`](prune.py) | Reclaim disk from the bronze tree and the `/debug` mount; see [Reclaiming disk](#reclaiming-disk). |
 | [`load.py`](load.py) | Parse bronze artefacts into a queryable SQLite silver database using the schemas in [migrations/](migrations/). Applies pending migrations on startup; each dump loads atomically (compound-key UPSERT on transactions, content-hash dedup for documents, skip on `dump_runs` for idempotency). Parses the card surface via [`card_parsers.py`](card_parsers.py). Also walks the documents archive — the scraped one plus any bank-delivered PDFs under `supplied-documents/` — and reads it via [`pdf_parsers.py`](pdf_parsers.py) (uses `pdfplumber`, bundled in the image): positions with their cost, and the transaction list, from each "Statement of assets"; cash balances and movements from each "Account Statement"; mortgage balances from maturity notices; payments from credit and debit advices; and capital calls and contract notes ([DESIGN.md](DESIGN.md) §3.6–§3.10). |
@@ -167,6 +169,33 @@ follows to exhaustion. Both the ledger and the invoice archive reach
 back about two years and no further — there is no deeper channel and no
 statement backfill (DESIGN.md §5.5).
 
+### Interest rates
+
+The `rates` pass saves what each cash account earns and pays.
+
+- For each cash account on the homepage, it saves the account API's
+  JSON (`/api/v3/cash-accounts/<accountId>?include=INTEREST_RATES`) as
+  `rates/<accountId>.json`.
+- The legacy asset view's "Account balances" list links an account
+  page for every cash account, mandate accounts included. The pass
+  opens the list the way the portfolio overview's menu does. It
+  fetches the page of each account the API did not state conditions
+  for, matched by IBAN. It saves it as
+  `rates/legacy-<sha256 of the IBAN>.html`.
+
+`load` writes each condition to the `account_rates` table: its side
+(credit or debit), its tier, its rate in percent, the balance the tier
+runs to and the day it holds from. An account that states no condition
+gets no row, so it reads as "no rate", not as 0%. Gold puts the credit
+side on the account's newest cash balance at or before the capture.
+A `--only rates` dump adds no balance of its own. Its rates reach gold
+on the next `wealthdb reload ubs`.
+
+```sh
+./ubs-web download --only rates         # the rate pass alone; the dump is marked partial
+./ubs-web load
+```
+
 ### The two UBS export caps
 
 UBS enforces two hidden caps that `download.py` works around by
@@ -198,6 +227,9 @@ below `WINDOW_MIN_DAYS = 1`.
     │   └── transactions_<sha256-prefix>.csv                       one per managed portfolio
     ├── documents/
     │   └── <sha256>.pdf                                           content-addressed by the PDF bytes
+    ├── rates/
+    │   ├── <accountId>.json                                       the account API's answer, one per homepage account
+    │   └── legacy-<sha256>.html                                   a legacy account page, named by its IBAN's hash
     ├── cards/
     │   ├── accounts.json                                          the card roster, whole
     │   ├── transactions_<sha256-prefix>_<yyyymmdd>_<yyyymmdd>.json  every ledger page for one card account
