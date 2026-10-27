@@ -808,7 +808,8 @@ type SpendingConfig struct {
 	Pins string `json:"pins,omitempty"`
 	// TransferOverrides is an optional path to the CSV ledger of manual
 	// match / unmatch decisions for the internal-transfer matcher — the
-	// surface for a pair the data cannot settle, in either direction.
+	// surface for a pair the data cannot settle, in either direction —
+	// and of reimburse lines, which link a repayment to its outflow.
 	// Expanded like Pins; a missing file is a no-op. See
 	// internal/gold/transferoverridefile.go.
 	TransferOverrides string `json:"transfer_overrides,omitempty"`

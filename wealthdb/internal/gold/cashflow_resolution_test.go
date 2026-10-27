@@ -141,8 +141,10 @@ func seedLines(t *testing.T, db *sql.DB, ctx context.Context, lines []line) map[
                 INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id,
                         payer_signature, signature_version, income_detailed, provenance,
                         stated_asset_class, assigned_at)
-                     VALUES ('cf', ?, 'sig', 1, ?, 'rule', ?, 100)`,
-				l.id, nullIfEmpty(l.income), nullIfEmpty(l.incomeClass)); err != nil {
+                     VALUES ('cf', ?, ?, 1, ?, 'rule', ?, 100)`,
+				// A payer signature of its own: shared with the spending
+				// rows', a repayment would link to one of them (0160).
+				l.id, "payer:"+l.id, nullIfEmpty(l.income), nullIfEmpty(l.incomeClass)); err != nil {
 				t.Fatalf("seed income overlay for %s: %v", l.id, err)
 			}
 		}
@@ -247,7 +249,7 @@ func TestTheKindTable(t *testing.T) {
 			why: "money borrowed is a liability incurred"},
 		{id: "K-CLAIM", account: "CASH", kind: "deposit", amount: 120,
 			income: "reimbursement", want: "operating_in.other_receipts.reimbursement",
-			why: "income drops it; cashflow keeps it, because it is cash that arrived"},
+			why: "a repayment no road links: income drops it; cashflow keeps it, because it is cash that arrived"},
 		{id: "K-DEPLOY", account: "CASH", kind: "withdrawal", amount: -9000,
 			spend: "investment", want: "investing.elsewhere.investment",
 			why: "capital deployed to a destination the product does not track"},

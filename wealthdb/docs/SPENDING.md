@@ -677,6 +677,7 @@ know is refused, as in the pins. `account` is an
 | `unmatch` | both | those two may not pair with **each other**; each stays free to find its real partner |
 | `unmatch` | first only | that leg is not half of a movement at all, whatever sits near it |
 | `match` | both | assert the pair, ahead of the day window, the tolerance, the rail rules **and the currency partition** |
+| `reimburse` | both | the leg with the positive amount repays the other, an outflow; it pairs no transfer (*Reimbursements*, below) |
 
 `match` exists for the movement whose halves no window can reach: a
 bank posting its side of an ACH days after the other side credited.
@@ -714,6 +715,30 @@ account's own perspective, so neither can ever be the receiving half
 of a movement out of it. Widening the set buys false pairs, and a
 false pair does not read as a wrong category — it deletes a real
 spending line.
+
+### Reimbursements
+
+A repayment is an inflow whose income category is `reimbursement`: an
+expense claim settled, a merchant's credit, a utility's refund. Income
+leaves it out. Spending nets it against the outflow it answers, as a
+refund in that outflow's category. The first road that answers links
+it:
+
+1. a `reimburse` line in the override ledger names the repayment and
+   its outflow. Each leg must describe exactly one transaction;
+2. the latest spending line on or before the repayment, at most 365
+   days earlier, in its currency, of at least its amount, whose
+   merchant signature is the repayment's payer signature;
+3. the merchant store's category for that signature.
+
+A repayment no road links stays out of both bases, and the load counts
+it. A `reimburse` line is the remedy. The second and third roads are
+read at query time, so a verdict the model places later links too. The
+cash flow statement draws a linked repayment on the outflow's side
+([CASHFLOW.md](CASHFLOW.md) §4). An insurance payout is income, not a
+repayment ([INCOME.md](INCOME.md) §2).
+
+The matcher and the returns engine skip a `reimburse` line.
 
 ### The reference road
 
@@ -1834,7 +1859,7 @@ filter, and either answer is wrong for some reader.
 ### The provenance column
 
 `provenance` names the tier that decided the category, in the
-vocabulary of §3. Seven values:
+vocabulary of §3. Eight values:
 
 | value | what it means |
 |---|---|
@@ -1845,10 +1870,12 @@ vocabulary of §3. Seven values:
 | `model` | the merchant store's verdict for the line's signature |
 | `kind` | the floor: what the transaction's own kind says a row IS, where nothing else placed it (migrations 0066, 0067, 0103, 0110) |
 | `signature-only` | no verdict: the pass reached the row, recorded its signature and could not place it |
+| `reimbursement` | a repayment linked to the outflow it answers, netted in that outflow's category (§3, *Reimbursements*) |
 
 Five of them are stamped on the overlay row by the enrichment pass and
 are what the `spend_txn_enrichment` CHECK admits (migration 0041).
-`model` and `kind` are stored nowhere. The model tier writes to the
+`model`, `kind` and `reimbursement` are stored nowhere: `reimbursement`
+is the base's own word for a repayment row (migration 0160). The model tier writes to the
 merchant store rather than the overlay, and the kind floor reads no
 verdict at all; both are derived by
 `spend_txn_categories()` where the two scopes meet (migration 0050),

@@ -38,7 +38,11 @@ func TestEveryDeltaLeavesTheFamilyBases(t *testing.T) {
 		}
 		return def
 	}
-	spending, income := body("spending_lines_base"), body("income_lines_base")
+	// spending_lines_base is spending_lines_own and the linked
+	// repayments (0160); the exclusions live in the first, and a
+	// repayment's category is held to them in spend_reimbursements.
+	spending, income := body("spending_lines_own"), body("income_lines_base")
+	repaid := body("spend_reimbursements")
 
 	crossings := 0
 	for _, c := range canonical.SpendCategories {
@@ -50,6 +54,10 @@ func TestEveryDeltaLeavesTheFamilyBases(t *testing.T) {
 			t.Errorf("spending_lines_base does not exclude the delta %q: "+
 				"a movement of the household's own money would be counted as spending",
 				c.Detailed)
+		}
+		if !strings.Contains(repaid, "'"+c.Detailed+"'") {
+			t.Errorf("spend_reimbursements does not refuse the delta %q: "+
+				"a repayment would net against an own-account move", c.Detailed)
 		}
 		if !strings.Contains(income, "'"+c.Detailed+"'") {
 			t.Errorf("income_lines_base does not exclude the delta %q: "+

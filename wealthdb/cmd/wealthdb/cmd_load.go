@@ -374,6 +374,11 @@ func printPassSummary(stdout io.Writer, res *spending.Result) {
 			"not loaded yet, or the ledger row describes none\n",
 			res.UnmatchedTransferOverrides)
 	}
+	if res.ReimbursementPairs > 0 || res.UnmatchedReimbursements > 0 || res.UnlinkedReimbursements > 0 {
+		fmt.Fprintf(stdout, "spending: %d reimbursement pair(s) from the ledger, %d ledger line(s) naming none; "+
+			"%d repayment(s) linked to no outflow (a `reimburse` line links one)\n",
+			res.ReimbursementPairs, res.UnmatchedReimbursements, res.UnlinkedReimbursements)
+	}
 	printFamilySummary(stdout, "income", "payer", res.Income)
 	printCashflowSummary(stdout, res.Cashflow)
 }

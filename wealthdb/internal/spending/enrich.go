@@ -59,7 +59,8 @@ type Options struct {
 
 	// TransferOverrides are the rows of the
 	// `spending.transfer_overrides` ledger: the holder's manual match /
-	// unmatch decisions for the internal-transfer matcher. Resolved
+	// unmatch decisions for the internal-transfer matcher, and the
+	// reimburse lines resolveReimbursements reads. Resolved
 	// against the matcher pool at pass time, so a row the pool does not
 	// hold is reported rather than silently ignored. Nil overrides
 	// nothing.
@@ -124,6 +125,15 @@ type Result struct {
 	// about a row they believe exists, so one that quietly does
 	// nothing is worse than one that says so.
 	UnmatchedTransferOverrides int
+
+	// ReimbursementPairs is the number of ledger `reimburse` lines that
+	// named a repayment and its outflow, UnmatchedReimbursements the lines
+	// that named none, and UnlinkedReimbursements the repayments no road
+	// links to an outflow (gold migration 0160): each stays out of both
+	// bases, and a ledger line is what links it.
+	ReimbursementPairs      int
+	UnmatchedReimbursements int
+	UnlinkedReimbursements  int
 }
 
 // FamilyResult is what the pass did for one family. The counts are the
@@ -276,6 +286,15 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 		rules: opts.Income.Rules, pins: opts.Income.Pins,
 		kinds: kinds, matched: matched, stated: stated, pool: poolNarratives, now: now,
 	}, &res.Income); err != nil {
+		return nil, err
+	}
+
+	// After both families: a repayment's verdict is the income family's,
+	// the outflow's category the spending family's.
+	if res.ReimbursementPairs, res.UnmatchedReimbursements, err = resolveReimbursements(ctx, tx, opts.TransferOverrides); err != nil {
+		return nil, err
+	}
+	if res.UnlinkedReimbursements, err = countUnlinkedReimbursements(ctx, tx); err != nil {
 		return nil, err
 	}
 

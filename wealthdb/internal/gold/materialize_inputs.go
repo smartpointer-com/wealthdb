@@ -61,6 +61,7 @@ var loadKeyTables = []string{
 	"yield_declared_terms",
 	"spend_txn_enrichment",
 	"income_txn_enrichment",
+	"spend_reimbursement_pairs",
 	"spend_account_scope",
 	"income_account_scope",
 	"cashflow_account_scope",

@@ -26,11 +26,29 @@ import (
 //	unmatch,chase,CHECKING,2099-01-04,-10000.00,USD,chase,CHECKING,2099-01-05,9954.00,USD,a refund is not the other half
 //	unmatch,chase,CHECKING,2099-02-01,-1234.56,USD,,,,,,"this cheque is spending, never a transfer"
 //	match,chase,CHECKING,2099-03-10,-10000.00,USD,cointracking,Wallet,2099-03-04,10000.00,USD,the ACH posted six days after the credit
+//	reimburse,bank,CURRENT,2099-04-20,85.00,CHF,card,CARD,2099-04-02,-85.00,CHF,the expense claim for this dinner
 //
 // An `unmatch` with only the first leg isolates it: the row is not half of a
 // movement at all. With both legs it forbids just that pairing, leaving each
 // leg free to find its real partner — the narrower statement, and the one a
 // coincidence usually calls for.
+//
+// A `reimburse` line pairs no transfer. It names a repayment and the
+// outflow it repays, both legs required, so the repayment nets against
+// that outflow's spending category (gold migration 0160). The matcher and
+// the returns engine skip it; the spending pass resolves it
+// (spending.resolveReimbursements).
+
+// The ledger's verbs (TransferOverrideRule.Verb).
+const (
+	// VerbMatch asserts a pair outright.
+	VerbMatch = "match"
+	// VerbUnmatch isolates a leg, or forbids one pairing.
+	VerbUnmatch = "unmatch"
+	// VerbReimburse names a repayment and the outflow it repays; it pairs
+	// no transfer.
+	VerbReimburse = "reimburse"
+)
 
 var requiredOverrideCols = []string{"verb", "silver_source_id", "account", "occurred_at", "amount", "currency"}
 
@@ -94,8 +112,8 @@ func parseTransferOverrideLedger(r io.Reader) ([]TransferOverrideRule, error) {
 
 func overrideFromRecord(row ledgercsv.Row) (TransferOverrideRule, error) {
 	verb := strings.ToLower(row.Get("verb"))
-	if verb != "match" && verb != "unmatch" {
-		return TransferOverrideRule{}, fmt.Errorf("verb %q is neither match nor unmatch", row.Get("verb"))
+	if verb != VerbMatch && verb != VerbUnmatch && verb != VerbReimburse {
+		return TransferOverrideRule{}, fmt.Errorf("verb %q is none of %s, %s and %s", row.Get("verb"), VerbMatch, VerbUnmatch, VerbReimburse)
 	}
 	a, err := selectorFrom(row, "")
 	if err != nil {
@@ -111,8 +129,8 @@ func overrideFromRecord(row ledgercsv.Row) (TransferOverrideRule, error) {
 		}
 	}
 	if !anyB {
-		if verb == "match" {
-			return TransferOverrideRule{}, fmt.Errorf("match needs both legs")
+		if verb == VerbMatch || verb == VerbReimburse {
+			return TransferOverrideRule{}, fmt.Errorf("%s needs both legs", verb)
 		}
 		return rule, nil
 	}

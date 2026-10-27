@@ -51,6 +51,27 @@ func TestParseTransferOverrideLedger(t *testing.T) {
 		}
 	})
 
+	t.Run("a reimburse line needs both legs and pairs no transfer", func(t *testing.T) {
+		got, err := parseTransferOverrideLedger(strings.NewReader(header +
+			"reimburse,bank,CHECKING,2099-04-20,85.00,CHF,card,CARD,2099-04-02,-85.00,CHF,an expense claim\n"))
+		if err != nil || len(got) != 1 || got[0].Verb != VerbReimburse || got[0].B == nil {
+			t.Fatalf("parse = %+v, %v", got, err)
+		}
+		_, err = parseTransferOverrideLedger(strings.NewReader(header +
+			"reimburse,bank,CHECKING,2099-04-20,85.00,CHF,,,,,,\n"))
+		if err == nil || !strings.Contains(err.Error(), "both legs") {
+			t.Errorf("a one-leg reimburse must be refused, got %v", err)
+		}
+		legs := []TransferLeg{
+			{Group: "bank", Owner: "CHECKING", ID: "IN", Day: EpochDay(got[0].A.Day), Ccy: "CHF", Amt: 85},
+			{Group: "card", Owner: "CARD", ID: "OUT", Day: EpochDay(got[0].B.Day), Ccy: "CHF", Amt: -85},
+		}
+		o, unresolved, err := ResolveTransferOverrides(got, legs)
+		if err != nil || len(unresolved) != 0 || len(o.forced) != 0 {
+			t.Errorf("the transfer resolver must skip a reimburse line: %+v, %v, %v", o, unresolved, err)
+		}
+	})
+
 	t.Run("the verb decides whether one leg is enough", func(t *testing.T) {
 		_, err := parseTransferOverrideLedger(strings.NewReader(header +
 			"match,bank,CHECKING,2099-02-01,-100.00,USD,,,,,,\n"))

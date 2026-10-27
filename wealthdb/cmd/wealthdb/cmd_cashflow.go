@@ -633,9 +633,10 @@ Notes
   operating_in and operating_out are NOT what 'wealthdb income' and
   'wealthdb spending' report, which is why they are not named after
   them. Totals here are smaller than those reports', by four terms:
-  the vehicles' own income and spending, the reimbursements cashflow
-  keeps and income drops, the verdicts cashflow re-homes, and any
-  account the families' own scopes exclude but the pool keeps.
+  the vehicles' own income and spending, the reimbursements no road
+  links, which cashflow keeps and income drops, the verdicts cashflow
+  re-homes, and any account the families' own scopes exclude but the
+  pool keeps.
 
   Tax a vehicle withheld before the household saw the money is on no
   node at all, so the Taxes node is the tax the household paid from its

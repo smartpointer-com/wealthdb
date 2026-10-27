@@ -37,9 +37,9 @@ What is deliberately **not** here:
 - **Gross-of-payroll wages.** A bank sees the net salary. The gross,
   the deductions and the employer's contributions are on a payslip the
   product does not collect. Income is what arrived (§5).
-- **Netting reimbursements against spending.** An expense reimbursement
-  is money back for money spent. Income excludes it, and spending does
-  not net it either (§11).
+- **Reimbursements.** An expense reimbursement is money back for money
+  spent. Income excludes it, and spending nets it against the outflow
+  it answers ([SPENDING.md](SPENDING.md) §3, *Reimbursements*).
 - **Tax reporting.** Withholding is visible beside income (§5), but no
   view claims to be a tax figure. Jurisdictions differ on staking, on
   capital-gains distributions and on gifts.
@@ -724,8 +724,8 @@ which is the default, one number answers for both.
 8. **One matcher.** Income pairs nothing and reads the shared verdicts.
    `spending.transfer_overrides` serves both families.
 9. The Income dashboard's cards read the income base.
-10. **Reimbursements are excluded** via the delta. Spending does not
-    net them (§11).
+10. **Reimbursements are excluded** via the delta. Spending nets each
+    one it can link against the outflow it answers.
 11. Window default: **trailing twelve months**; on the forward views,
     the projection's horizon after the current month (§12).
 12. **Reversals net inside their type.** `interest` enters positive
@@ -759,10 +759,6 @@ which is the default, one number answers for both.
 
 ## 11. Known limits
 
-- **Reimbursements are not netted.** An expense claim is money back for
-  a specific outflow. Income excludes it, and spending does not net it
-  against that outflow. An insurance payout is NOT this case and is
-  income (§2).
 - **A rewards credit reaches gold as `refund`.** Card adapters map a
   statement credit to `refund`. Once the issuer's descriptor is gone
   they cannot tell it from a merchant credit. No adapter emits the

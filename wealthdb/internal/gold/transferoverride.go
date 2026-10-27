@@ -123,9 +123,10 @@ type TransferOverrideSelector struct {
 // that pairing, which is the narrower and commoner statement — the row IS a
 // transfer, only not with that partner. Verb "match" asserts the pair
 // outright, ahead of every other phase, for the movement whose halves none of
-// them can reach.
+// them can reach. Verb "reimburse" names a repayment and its outflow; it pairs
+// no transfer (transferoverridefile.go).
 type TransferOverrideRule struct {
-	Verb string // "match" | "unmatch"
+	Verb string // VerbMatch | VerbUnmatch | VerbReimburse
 	A    TransferOverrideSelector
 	B    *TransferOverrideSelector // nil only for an isolating unmatch
 	Note string
@@ -163,13 +164,16 @@ func ResolveTransferOverrides(rules []TransferOverrideRule, legs []TransferLeg) 
 		unmatched []TransferOverrideRule
 	)
 	for _, r := range rules {
+		if r.Verb == VerbReimburse {
+			continue // pairs no transfer: the spending pass reads it
+		}
 		as := find(r.A)
 		if len(as) == 0 {
 			unmatched = append(unmatched, r)
 			continue
 		}
 		if r.B == nil {
-			if r.Verb != "unmatch" {
+			if r.Verb != VerbUnmatch {
 				return TransferOverrides{}, nil, fmt.Errorf(
 					"transfer override: verb %q needs both legs", r.Verb)
 			}
@@ -187,9 +191,9 @@ func ResolveTransferOverrides(rules []TransferOverrideRule, legs []TransferLeg) 
 					continue
 				}
 				switch r.Verb {
-				case "unmatch":
+				case VerbUnmatch:
 					forbidden = append(forbidden, [2]LegRef{a, b})
-				case "match":
+				case VerbMatch:
 					// Orientation is read off the amounts, not off the file:
 					// whichever selector was written first, the debit is the
 					// negative leg.

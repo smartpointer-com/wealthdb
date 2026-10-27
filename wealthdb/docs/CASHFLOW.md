@@ -45,8 +45,8 @@ in, what went out, and what was left.
 
 | section | what crosses the edge | sign |
 |---|---|---|
-| `operating_in` | the income verdicts, plus the reimbursements income excludes | + (net of reversals) |
-| `operating_out` | the spending verdicts, plus moves into a charitable or custodial vehicle | − (net of refunds) |
+| `operating_in` | the income verdicts, plus the reimbursements income excludes that link to no outflow | + (net of reversals) |
+| `operating_out` | the spending verdicts, plus moves into a charitable or custodial vehicle | − (net of refunds and linked reimbursements) |
 | `investing` | buys and sells; private capital called and returned; capital deployed to or returned from a destination the product does not track | net |
 | `financing` | what the mortgage rule places, an own-account move to a mortgage account (matched or stated), `mortgage_transfer`, `loan_proceeds`, `debt_repayment` | net |
 | `vehicles` | moves to or from a retirement plan, an education or health account, a non-grantor trust, or a bank's own deposit product; and the own-account moves nothing paired | net |
@@ -220,7 +220,8 @@ be written in SQL. Nothing here is like that.)
 **Cashflow reads each family's resolution macro, never its
 `*_lines_base`.** The verdicts it needs most are exactly the ones a
 base excludes: the crossings, `investment`, `capital_return`,
-`loan_proceeds`, `debt_repayment` and `reimbursement`.
+`loan_proceeds`, `debt_repayment` and the `reimbursement` no outflow
+answers.
 
 ### Where each row lands
 
@@ -249,8 +250,11 @@ The first matching step places a row:
    pool-internal.
 9. **The income kinds** go to operating in, by resolved income type:
    `dividend`, `coupon`, `staking`, `capital_gain`, `reward`, `deposit`
-   and positive `interest`. A `deposit` placed `reimbursement` lands
-   here too. Income excludes it, but it is cash that arrived.
+   and positive `interest`. A `deposit` placed `reimbursement` that
+   links to no outflow lands here too. Income excludes it, but it is
+   cash that arrived. One that links ([SPENDING.md](SPENDING.md) §3,
+   *Reimbursements*) is placed ahead of this step, on operating out in
+   its outflow's category, netted as a refund is.
 10. **The spending kinds** go to operating out, by resolved spend
     category: `purchase`, `refund`, `fee`, `tax`, `withdrawal` and
     negative `interest`.
@@ -997,7 +1001,8 @@ four terms, each computed separately:
 
 1. the **vehicles' own income**: a plan's dividends are not the
    household's cash flow;
-2. the **reimbursements** cashflow keeps and income drops;
+2. the **reimbursements** that link to no outflow, which cashflow
+   keeps and income drops;
 3. the **re-homed verdicts**: `capital_return` and `investment` to
    investing, `loan_proceeds` to financing;
 4. any account the families' own **scopes** exclude but the pool keeps.
@@ -1182,7 +1187,8 @@ Each names a way the statement can be quietly wrong:
   money, appear on no line and in no memo (§3).
 - **The two families' limits show here too:**
   - platform custody deposits ([INCOME.md](INCOME.md) §11);
-  - reimbursements, which nothing nets ([INCOME.md](INCOME.md) §11);
+  - reimbursements no road links to an outflow
+    ([SPENDING.md](SPENDING.md) §3, *Reimbursements*);
   - cross-currency own-account moves no assertion reaches. These are a
     movement whose source neither stamps one reference on both halves
     nor describes the counter leg, and a card bill whose two feeds
