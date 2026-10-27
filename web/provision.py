@@ -47,10 +47,16 @@ def req(base, path, method="GET", data=None, session=None, timeout=30):
         return 0, {}
 
 
-def wait_health(base, tries=90, delay=3):
-    for _ in range(tries):
+def wait_health(base, limit=270, delay=0.25):
+    """Polls Metabase's health endpoint until it answers, for at most
+    `limit` seconds; once it answers, prints how long the wait took. A
+    short poll: a restarted server answers within seconds of coming up,
+    and each poll is one local request."""
+    start = time.monotonic()
+    while time.monotonic() - start < limit:
         st, _ = req(base, "/api/health", timeout=5)
         if st == 200:
+            print(f"provision: timing: wait for Metabase {time.monotonic() - start:.3f}s", file=sys.stderr)
             return True
         time.sleep(delay)
     return False

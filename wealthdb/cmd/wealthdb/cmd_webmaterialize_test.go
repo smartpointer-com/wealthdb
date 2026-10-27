@@ -31,7 +31,7 @@ func TestWebMaterializeCLIEndToEnd(t *testing.T) {
 	if !strings.Contains(se, "materialized") {
 		t.Errorf("stderr missing the materialize summary line: %s", se)
 	}
-	for _, phase := range []string{"serving", "returns", "gains", "exposure", "yield"} {
+	for _, phase := range []string{"key", "open", "serving", "returns", "gains", "exposure", "yield", "close"} {
 		if !strings.Contains(se, "timing: "+phase+" ") {
 			t.Errorf("stderr missing timing for %s: %s", phase, se)
 		}
@@ -40,6 +40,9 @@ func TestWebMaterializeCLIEndToEnd(t *testing.T) {
 	_, se2, code2 := run(t, "-c", cfg, "web-materialize")
 	if code2 != 0 {
 		t.Fatalf("second run exit=%d stderr=%s", code2, se2)
+	}
+	if !strings.Contains(se2, "timing: key ") || strings.Contains(se2, "timing: open ") {
+		t.Errorf("a skipped run times its key check and opens nothing, stderr=%s", se2)
 	}
 	if !strings.Contains(se2, "inputs unchanged") {
 		t.Errorf("second run should skip, stderr=%s", se2)

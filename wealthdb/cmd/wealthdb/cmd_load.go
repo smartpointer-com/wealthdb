@@ -295,8 +295,13 @@ func runGoldPasses(ctx context.Context, db *sql.DB, cfg *config.Config, enrichme
 func timedPass(w io.Writer, name string, fn func() error) error {
 	start := time.Now()
 	err := fn()
-	fmt.Fprintf(w, "timing: %s %s\n", name, time.Since(start).Round(time.Millisecond))
+	printTiming(w, name, start)
 	return err
+}
+
+// printTiming prints the wall time since start of the step name.
+func printTiming(w io.Writer, name string, start time.Time) {
+	fmt.Fprintf(w, "timing: %s %s\n", name, time.Since(start).Round(time.Millisecond))
 }
 
 // runEnrichmentPass re-asserts every deterministic verdict in gold,

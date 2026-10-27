@@ -46,9 +46,11 @@ _resolve_knobs() {
 # subcommand — the one component that parses + validates the JSON. The
 # default currency stays in WEALTHDB_DEFAULT_CURRENCY and the default
 # reading of a missing cost basis in WEALTHDB_MISSING_BASIS, which
-# _provision passes on.
+# _provision passes on. It checks each step's status itself: start and
+# refresh run it under _timed, with errexit off. With CONFIG_LOADED set,
+# a start later in the same run does not run the engine again.
 _load_config() {
-    _require_docker
+    _require_docker || return 1
     local out
     if [ -n "${WEALTHDB_CONFIG:-}" ]; then
         out="$("$WEALTHDB" -c "$WEALTHDB_CONFIG" web-config)" || out=""
@@ -63,6 +65,7 @@ _load_config() {
     ENABLED="${WEALTHDB_WEB_ENABLED:-0}"
     PORT="${WEALTHDB_WEB_PORT:-3000}"
     GOLD_DB="${WEALTHDB_GOLD_DB:-}"
+    CONFIG_LOADED=1
 }
 
 _require_docker() {
@@ -222,7 +225,9 @@ web_build() {
 
 web_start() {
     _require_python3
-    _load_config
+    if [ "${CONFIG_LOADED:-0}" != 1 ]; then
+        _timed config _load_config || return 1
+    fi
     if [ "$ENABLED" != 1 ]; then
         echo "web: not enabled. Add a \"web\" block to wealthdb.cfg, e.g.:" >&2
         echo '      "web": { "enabled": true, "port": 3000 }' >&2
@@ -235,19 +240,19 @@ web_start() {
     _exists && docker rm "$CONTAINER" >/dev/null 2>&1 || true
     mkdir -p "$H2_DIR" "$(dirname "$SNAP")" "$SPILL_DIR"
     if [ ! -f "$SNAP" ]; then
-        _materialize
+        _timed materialize _materialize
         echo "web: taking initial gold snapshot…" >&2
-        _snapshot "$GOLD_DB" "$SNAP"
+        _timed snapshot _snapshot "$GOLD_DB" "$SNAP"
     fi
 
     _docker_run_args
-    if ! docker "${DOCKER_ARGS[@]}" >/dev/null; then
+    if ! _timed "container start" docker "${DOCKER_ARGS[@]}" >/dev/null; then
         if [ "$BIND" = both ]; then
             echo "web: dual-stack publish failed; retrying IPv4-only (set WEALTHDB_WEB_BIND=v4 to silence)." >&2
             docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
             BIND=v4
             _docker_run_args
-            docker "${DOCKER_ARGS[@]}" >/dev/null
+            _timed "container start" docker "${DOCKER_ARGS[@]}" >/dev/null
         else
             return 1
         fi
@@ -255,7 +260,7 @@ web_start() {
     # The container resolved the snapshot path at this start. A later
     # refresh treats that inode as the one being served.
     _mark_snapshot_served
-    _provision
+    _timed provision _provision
     _start_banner
     # A snapshot older than the cards need leaves the server up with the
     # cards it had. Setup in the browser cannot mend that, so start says
@@ -339,7 +344,7 @@ _snapshot_served() {
 
 web_refresh() {
     _require_python3
-    _load_config
+    _timed config _load_config
     _timed materialize _materialize
     # Copy when the snapshot is missing or older than gold. A missing
     # gold file is stale too: the copy reports it. A running container
@@ -355,7 +360,7 @@ web_refresh() {
     if [ "$stale" -eq 0 ] && { [ "$running" -eq 0 ] || _snapshot_served; }; then
         echo "web: snapshot unchanged" >&2
         if [ "$running" -eq 1 ]; then
-            _provision
+            _timed provision _provision
             return "$PROV_RC"
         fi
         return 0
@@ -374,7 +379,7 @@ web_refresh() {
         # stale (now-unlinked) inode. rm + run re-resolves the path to the new
         # file. Re-running start also re-provisions (idempotent), so new or
         # renamed report models show up after a refresh too.
-        web_stop >/dev/null
+        _timed stop web_stop >/dev/null
         web_start
     fi
 }
@@ -382,9 +387,14 @@ web_refresh() {
 web_logs() { _require_docker; exec docker logs -f "$CONTAINER"; }
 
 # _gen_password makes a random password meeting Metabase's complexity
-# rule (>=1 lower/upper/digit/special).
+# rule (>=1 lower/upper/digit/special). It fails, printing nothing, when
+# openssl gives it fewer than 16 random letters and digits.
 _gen_password() {
-    printf '%sAa1!' "$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | cut -c1-16)"
+    local rand
+    rand="$(openssl rand -base64 18)" || return 1
+    rand="$(printf '%s' "$rand" | tr -dc 'A-Za-z0-9' | cut -c1-16)"
+    [ "${#rand}" -eq 16 ] || return 1
+    printf '%sAa1!' "$rand"
 }
 
 # _materialize refreshes the serving tables and the report_returns,
@@ -440,7 +450,9 @@ PROV_STALE_SNAPSHOT=3
 # Admin email/password come from env (WEALTHDB_WEB_ADMIN_EMAIL/PASSWORD,
 # e.g. from ~/.secrets/wealthdb-web.env); an unset password is generated
 # once and saved (chmod 600). Sets PROV_LOGIN for the start banner and
-# PROV_RC to provision.py's exit status (0 when it does not run).
+# PROV_RC to provision.py's exit status (0 when it does not run). Start
+# and refresh run it under _timed, with errexit off, so a password it
+# cannot read, generate or save stops it here.
 _provision() {
     PROV_RC=0
     if [ "${WEALTHDB_WEB_NO_PROVISION:-0}" = 1 ]; then
@@ -453,10 +465,11 @@ _provision() {
     if [ -n "${WEALTHDB_WEB_ADMIN_PASSWORD:-}" ]; then
         pw="$WEALTHDB_WEB_ADMIN_PASSWORD"; pwhint="from \$WEALTHDB_WEB_ADMIN_PASSWORD"
     elif [ -f "$pwfile" ]; then
-        pw="$(cat "$pwfile")"; pwhint="in $pwfile"
+        pw="$(cat "$pwfile")" || { echo "web: could not read $pwfile" >&2; return 1; }
+        pwhint="in $pwfile"
     else
-        pw="$(_gen_password)"
-        (umask 077; printf '%s\n' "$pw" > "$pwfile")
+        pw="$(_gen_password)" || { echo "web: could not generate a password (is openssl on PATH?)" >&2; return 1; }
+        (umask 077; printf '%s\n' "$pw" > "$pwfile") || { echo "web: could not save $pwfile" >&2; return 1; }
         pwhint="generated, saved to $pwfile"
     fi
     echo "web: provisioning Metabase (admin + gold database + report models + dashboards)…" >&2

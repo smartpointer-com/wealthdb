@@ -52,6 +52,11 @@ func init() {
 // the gate fails cleanly here and the wrapper aborts before the
 // snapshot is touched.
 func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Reader, _, stderr io.Writer) error {
+	// "key" times the config read and the read-only look that decides
+	// whether to rebuild, "open" the read-write open and its migrations,
+	// and "close" the key's write and the close, which checkpoints what
+	// the phases wrote.
+	start := time.Now()
 	// The bytes the key hashes are read before Load parses the file. An
 	// edit between the two reads leaves a key older than the tables, so
 	// the next run rebuilds rather than skip over them.
@@ -82,11 +87,13 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 	if err != nil {
 		return err
 	}
+	printTiming(stderr, "key", start)
 	if same {
 		fmt.Fprintf(stderr, "web-materialize: inputs unchanged\n")
 		return nil
 	}
 
+	opened := time.Now()
 	db, err := retryGoldLock(ctx, func() (*sql.DB, error) {
 		return gold.Open(cfg.GoldDB, gold.ModeReadWrite)
 	})
@@ -94,6 +101,7 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 		return errs.Wrap(errs.ExitOpenFailed, err)
 	}
 	defer db.Close()
+	printTiming(stderr, "open", opened)
 	// The load key of the migrated gold. No phase writes a table the key
 	// stamps, so it still holds once the phases are done.
 	if key.LoadKey, err = gold.LoadKey(ctx, db); err != nil {
@@ -151,7 +159,13 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 	}); err != nil {
 		return err
 	}
-	return gold.WriteMaterializeKey(ctx, db, gold.WebMaterializeScope, key)
+	closing := time.Now()
+	if err := gold.WriteMaterializeKey(ctx, db, gold.WebMaterializeScope, key); err != nil {
+		return err
+	}
+	err = db.Close()
+	printTiming(stderr, "close", closing)
+	return err
 }
 
 // materializePhase is one phase of web-materialize: its name on the

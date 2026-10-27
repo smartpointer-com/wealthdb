@@ -38,6 +38,10 @@ the server; dashboards show data as of the last refresh (run
 (temp + `mv`) and refuses to run if a `.wal` sidecar is present (gold
 mid-write / not checkpointed), so a torn copy is never captured.
 
+Start and refresh print each step's wall time on stderr
+(`web: timing: <step> <seconds>s`). Provisioning prints its wait for
+Metabase too.
+
 ## 3. The driver: glibc base, version pin, readable JAR (load-bearing)
 
 Three things must all be right or DuckDB silently won't work:
@@ -888,11 +892,12 @@ itself still never sees anything but the `:ro` snapshot (AGENTS.md §1).
 [`test_web.sh`](test_web.sh) (`make test-web`) unit-tests the pure
 helpers with no Docker: the dual-stack `-p` flag construction, the
 read-only snapshot mount in the `docker run` args, the `.wal` guard,
-the storage-format guard, the generated-password complexity, and —
-against a stubbed engine — the `_materialize` invocation, the engine's
-own error line and status repeated on a failure, plus `web_refresh`'s
-materialize-then-snapshot ordering. It checks the refresh skips too:
-an unchanged gold is not copied, a container that does not serve the
+the storage-format guard, the generated-password complexity and a
+failed generation, and — against a stubbed engine — the `_materialize`
+invocation, the engine's own error line and status repeated on a
+failure, `web_refresh`'s materialize-then-snapshot ordering and the
+steps' timing lines. It checks the refresh skips too: an unchanged
+gold is not copied, a container that does not serve the
 snapshot's inode is restarted, and a failed copy keeps the old
 snapshot. Against a stubbed `provision.py`, it checks that a stale
 snapshot fails `web start` and `web refresh` without the browser hint.

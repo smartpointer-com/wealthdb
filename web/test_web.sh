@@ -144,6 +144,10 @@ case "$p" in *[a-z]*) pass "has lowercase";; *) fail "has lowercase";; esac
 case "$p" in *[0-9]*) pass "has digit";; *) fail "has digit";; esac
 case "$p" in *[!A-Za-z0-9]*) pass "has special";; *) fail "has special";; esac
 if [ "${#p}" -ge 12 ]; then pass "length >= 12"; else fail "length >= 12"; fi
+gen_out="$(openssl() { return 1; }; _gen_password; echo "rc=$?")"
+check_eq "a failing openssl fails it, printing no password" "rc=1" "$gen_out"
+gen_out="$(openssl() { echo '+/+/'; }; _gen_password; echo "rc=$?")"
+check_eq "...as does one that gives too few letters and digits" "rc=1" "$gen_out"
 
 echo "== _materialize (stubbed engine) =="
 unset WEALTHDB_CONFIG
@@ -235,6 +239,19 @@ fail_rc=$?
 check_re "failed materialize is timed" "web: timing: materialize [0-9]+\\.[0-9]{3}s" "$(cat "$seq_fail")"
 check_not "snapshot does not run" "SNAPSHOT_RAN" "$(cat "$seq_fail")"
 if [ "$fail_rc" -eq 7 ]; then pass "refresh exits with the materialize status"; else fail "refresh exits with the materialize status (got $fail_rc)"; fi
+
+echo "== a failed config read stops refresh =="
+seq_cfg="$tmp/refresh-cfg"
+(
+    set -e
+    _load_config() { return 1; }
+    _materialize() { echo MATERIALIZE_RAN; }
+    web_refresh
+) >"$seq_cfg" 2>&1
+cfg_rc=$?
+check_re "the failed config read is timed" "web: timing: config [0-9]+\\.[0-9]{3}s" "$(cat "$seq_cfg")"
+check_not "materialize does not run" "MATERIALIZE_RAN" "$(cat "$seq_cfg")"
+if [ "$cfg_rc" -eq 1 ]; then pass "refresh exits 1"; else fail "refresh exits 1 (got $cfg_rc)"; fi
 
 echo "== an unchanged gold skips the snapshot and still provisions =="
 seq_same="$tmp/refresh-same"
@@ -414,7 +431,7 @@ start_with() { # provision.py's exit status
         _is_running()  { return 1; }
         _exists()      { return 1; }
         docker()       { printf '%s\n' "$*" >> "$tmp/docker-calls"; }
-        python3()      { return "$stub_rc"; }
+        python3()      { case "$1" in *provision.py) return "$stub_rc" ;; *) command python3 "$@" ;; esac; }
         DATA_DIR="$tmp/start" H2_DIR="$tmp/start/metabase" SPILL_DIR="$tmp/start/spill"
         SNAP="$tmp/start/snapshot/wealthdb.db" BIND=v4 IMAGE=img CONTAINER=wealthdb-metabase
         WEALTHDB_WEB_ADMIN_PASSWORD="Synthetic-pw-1!"
@@ -439,6 +456,61 @@ check_not "...not at refresh"              "re-snapshots a migrated gold" "$err"
 rc="$(start_with 0)"
 check_eq  "a clean provision starts with status 0"  "0"                 "$rc"
 check     "...and prints the login"        "log in as"     "$(cat "$tmp/start-err")"
+err="$(cat "$tmp/start-err")"
+check_re  "...timing the config read"       "web: timing: config [0-9]+\.[0-9]{3}s"          "$err"
+check_re  "...the container's start"        "web: timing: container start [0-9]+\.[0-9]{3}s" "$err"
+check_re  "...and the provisioning"         "web: timing: provision [0-9]+\.[0-9]{3}s"       "$err"
+# After refresh read the config, start does not read it again.
+cfg_reads="$(
+    _load_config() { echo CONFIG_READ; ENABLED=1; PORT=3000; GOLD_DB="$tmp/gold.db"; }
+    _load_config >/dev/null
+    CONFIG_LOADED=1
+    _is_running()  { return 1; }
+    _exists()      { return 1; }
+    docker()       { :; }
+    _provision()   { PROV_RC=0; }
+    _start_banner() { :; }
+    DATA_DIR="$tmp/start" H2_DIR="$tmp/start/metabase" SPILL_DIR="$tmp/start/spill"
+    SNAP="$tmp/start/snapshot/wealthdb.db" BIND=v4 IMAGE=img CONTAINER=wealthdb-metabase
+    web_start 2>/dev/null
+)"
+check_not "a start after refresh's config read does not read it again" "CONFIG_READ" "$cfg_reads"
+
+echo "== provisioning stops on a password it cannot save =="
+# It runs under _timed with errexit off: the step itself must stop it,
+# before provision.py creates an admin whose password is saved nowhere.
+prov_err="$(
+    DATA_DIR="$tmp/no-such-dir/web"
+    unset WEALTHDB_WEB_ADMIN_PASSWORD
+    python3() { if [ "${1##*/}" = provision.py ]; then echo PROVISION_RAN; else command python3 "$@"; fi; }
+    _provision 2>&1; echo "rc=$?"
+)"
+check     "it says so"                 "could not save $tmp/no-such-dir/web/admin-password.txt" "$prov_err"
+check     "...and fails"               "rc=1"          "$prov_err"
+check_not "...before provision.py runs" "PROVISION_RAN" "$prov_err"
+
+echo "== provisioning stops on a password it cannot generate =="
+prov_err="$(
+    DATA_DIR="$tmp/gen-fail"
+    mkdir -p "$DATA_DIR"
+    unset WEALTHDB_WEB_ADMIN_PASSWORD
+    openssl() { return 1; }
+    python3() { if [ "${1##*/}" = provision.py ]; then echo PROVISION_RAN; else command python3 "$@"; fi; }
+    _provision 2>&1; echo "rc=$?"
+)"
+check     "it says so"                  "could not generate a password" "$prov_err"
+check     "...and fails"                "rc=1"          "$prov_err"
+check_not "...before provision.py runs" "PROVISION_RAN" "$prov_err"
+if [ -e "$tmp/gen-fail/admin-password.txt" ]; then fail "...saving no password"; else pass "...saving no password"; fi
+
+echo "== a missing docker stops the config read =="
+cfg_out="$(
+    PATH=/nonexistent
+    _load_config 2>&1; echo "rc=$?"
+)"
+check     "it says docker is missing"   "docker not found" "$cfg_out"
+check     "...and fails"                "rc=1"             "$cfg_out"
+check_not "...without asking the engine" "could not read settings" "$cfg_out"
 # The real python3 this time: start records the inode it mounted.
 (
     _load_config() { ENABLED=1; PORT=3000; GOLD_DB="$tmp/gold.db"; }
@@ -454,6 +526,23 @@ check     "...and prints the login"        "log in as"     "$(cat "$tmp/start-er
 check_eq "start records the snapshot inode it serves" \
     "$(_stat st_ino "$tmp/start/snapshot/wealthdb.db")" \
     "$(cat "$tmp/start/snapshot/wealthdb.db.served" 2>/dev/null)"
+# A start with no snapshot yet materializes and takes one, timing both.
+out="$(
+    _load_config() { ENABLED=1; PORT=3000; GOLD_DB="$tmp/gold.db"; }
+    _is_running()  { return 1; }
+    _exists()      { return 1; }
+    docker()       { :; }
+    _materialize() { echo MATERIALIZED; }
+    _snapshot()    { echo SNAPSHOT_RAN; }
+    DATA_DIR="$tmp/first" H2_DIR="$tmp/first/metabase" SPILL_DIR="$tmp/first/spill"
+    SNAP="$tmp/first/snapshot/wealthdb.db" BIND=v4 IMAGE=img CONTAINER=wealthdb-metabase
+    WEALTHDB_WEB_NO_PROVISION=1
+    web_start 2>&1
+)"
+check    "a first start materializes"   "MATERIALIZED" "$out"
+check    "...and takes a snapshot"      "SNAPSHOT_RAN" "$out"
+check_re "...timing the materialize"    "web: timing: materialize [0-9]+\\.[0-9]{3}s" "$out"
+check_re "...and the snapshot"          "web: timing: snapshot [0-9]+\\.[0-9]{3}s"    "$out"
 # Refresh re-snapshots first, so a stale result there means gold itself is
 # older than the cards: the restart's failure is refresh's.
 rc="$(
@@ -468,6 +557,21 @@ rc="$(
     echo "$?"
 )"
 check_eq "refresh passes a stale restart's status on" "3" "$rc"
+# A refresh that restarts times the config read (an engine run) and the
+# stop. Start times the container's start and the provisioning (the
+# start-wiring tests).
+out="$(
+    _load_config() { GOLD_DB="$tmp/gold.db"; SNAP="$tmp/refresh-restart-snap/wealthdb.db"; }
+    _materialize() { :; }
+    _snapshot()    { :; }
+    _mtime()       { echo now; }
+    _is_running()  { return 0; }
+    web_stop()     { :; }
+    web_start()    { :; }
+    web_refresh 2>&1
+)"
+check_re "the config read is timed" "web: timing: config [0-9]+\.[0-9]{3}s" "$out"
+check_re "...and the stop"          "web: timing: stop [0-9]+\.[0-9]{3}s"   "$out"
 
 echo "== web help smoke =="
 hout="$(web_help)"

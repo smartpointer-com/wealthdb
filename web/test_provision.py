@@ -116,6 +116,27 @@ check("the account filter binds account_label, never the external id",
       not any("account_external_id" in cols
               for cols in p.FILTER_FIELD_COLUMNS.values()))
 
+# ---- the wait for Metabase --------------------------------------------
+
+section("the wait for Metabase")
+_answers = iter([(503, {}), (0, {}), (200, {})])
+_real_req = p.req
+try:
+    p.req = lambda *_a, **_k: next(_answers)
+    _err = io.StringIO()
+    with contextlib.redirect_stderr(_err):
+        _up = p.wait_health("b", limit=5, delay=0)
+finally:
+    p.req = _real_req
+check("the wait polls until Metabase answers and says how long it took",
+      _up is True and re.search(r"provision: timing: wait for Metabase [0-9.]+s", _err.getvalue()), _err.getvalue())
+try:
+    p.req = lambda *_a, **_k: (503, {})
+    _up = p.wait_health("b", limit=0.05, delay=0.01)
+finally:
+    p.req = _real_req
+check("...and gives up after its limit", _up is False)
+
 # ---- parameter ids ----------------------------------------------------
 
 section("dashboard parameter ids")
