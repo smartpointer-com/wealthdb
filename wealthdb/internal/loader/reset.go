@@ -55,6 +55,8 @@ func (l *Loader) Reset(ctx context.Context, sourceID string) error {
 		`DELETE FROM symbol_resolutions   WHERE silver_source_id = ?`,
 		`DELETE FROM spend_txn_enrichment  WHERE silver_source_id = ?`,
 		`DELETE FROM income_txn_enrichment WHERE silver_source_id = ?`,
+		// Per-source load data: the next load rebuilds it.
+		`DELETE FROM account_wrapper_history WHERE silver_source_id = ?`,
 	}
 	for _, t := range slices.Concat(gold.LotLedgerTables, gold.ReferenceTables) {
 		stmts = append(stmts, `DELETE FROM `+t+` WHERE silver_source_id = ?`)

@@ -1359,3 +1359,34 @@ func TestAKindNoAdapterRegistersIsRefused(t *testing.T) {
 		t.Errorf("an empty registry refuses a kind: %v", err)
 	}
 }
+
+// TestTaxWrapperFromDatesAWrapper: a dated wrapper override needs the
+// wrapper it dates and a YYYY-MM-DD day, and reads back as that day's
+// UTC midnight.
+func TestTaxWrapperFromDatesAWrapper(t *testing.T) {
+	load := func(entry string) (*Config, error) {
+		return Load(writeConfig(t, `{
+        "gold_db": "/tmp/x", "default_currency": "USD",
+        "silver_sources": [{"id": "bank", "kind": "schwab", "path": "/tmp/b.db"}],
+        "account_overrides": {"bank": {"ACCT1": `+entry+`}}}`))
+	}
+	c, err := load(`{"tax_wrapper": "trust_non_grantor", "tax_wrapper_from": "2019-03-01"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := c.AccountOverrides["bank"]["ACCT1"].TaxWrapperFromEpoch(),
+		time.Date(2019, time.March, 1, 0, 0, 0, 0, time.UTC).Unix(); got != want {
+		t.Errorf("TaxWrapperFromEpoch = %d, want 2019-03-01 at UTC midnight", got)
+	}
+	if _, err := load(`{"tax_wrapper": "trust_non_grantor", "tax_wrapper_from": "2999-03-01"}`); err == nil ||
+		!strings.Contains(err.Error(), "after today") {
+		t.Errorf("a day ahead: %v, want a refusal", err)
+	}
+	if _, err := load(`{"category": "Example", "tax_wrapper_from": "2019-03-01"}`); err == nil ||
+		!strings.Contains(err.Error(), "dates a tax_wrapper") {
+		t.Errorf("a date with no wrapper: %v, want a refusal", err)
+	}
+	if _, err := load(`{"tax_wrapper": "trust_non_grantor", "tax_wrapper_from": "03/01/2099"}`); err == nil {
+		t.Error("a day not in YYYY-MM-DD accepted")
+	}
+}

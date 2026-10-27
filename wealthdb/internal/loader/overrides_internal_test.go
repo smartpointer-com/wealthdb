@@ -605,3 +605,90 @@ func TestSupersededTransfersAreRefusedRatherThanDropped(t *testing.T) {
 		t.Errorf("a row before the handover, and one for an unlisted account, must load: %v", err)
 	}
 }
+
+// TestADatedWrapperOverrideRecordsTheEarlierWrapper: the wrapper a dated
+// override replaces, as the batch carried it, lands in
+// account_wrapper_history with the override's day; an undated override
+// records nothing; a later load keeps an unseen account's row with the
+// day the config now states, and drops the row once the date goes.
+func TestADatedWrapperOverrideRecordsTheEarlierWrapper(t *testing.T) {
+	ctx := context.Background()
+	db, err := gold.OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	grantor := canonical.TaxWrapperTrustGrantor
+	accounts := []canonical.AccountChange{
+		{AccountExternalID: "TRUST1", TaxWrapper: &grantor},
+		{AccountExternalID: "PLAIN1"},
+	}
+	overrides := map[string]AccountOverride{
+		"TRUST1": {TaxWrapper: "trust_non_grantor", TaxWrapperFrom: 4075920000},
+		"PLAIN1": {TaxWrapper: "trust_non_grantor"},
+	}
+	read := func() string {
+		t.Helper()
+		var out []string
+		rows, err := db.QueryContext(ctx, `SELECT account_external_id || ':' || COALESCE(tax_wrapper, '-') || ':' || until_at
+		    FROM account_wrapper_history ORDER BY 1`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var s string
+			if err := rows.Scan(&s); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, s)
+		}
+		return strings.Join(out, ",")
+	}
+	// A second batch naming the account without a wrapper keeps the one
+	// the first stated, as the dimension fold does.
+	unstated := []canonical.AccountChange{{AccountExternalID: "TRUST1"}}
+	runBatches := func(batches [][]canonical.AccountChange, ov map[string]AccountOverride) {
+		t.Helper()
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e := earlierWrappers{}
+		for _, b := range batches {
+			e.observe(b, ov)
+			applyAccountOverrides(b, ov)
+		}
+		if err := e.write(ctx, tx, "bank", ov); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(seen []canonical.AccountChange, ov map[string]AccountOverride) {
+		t.Helper()
+		runBatches([][]canonical.AccountChange{seen}, ov)
+	}
+	runBatches([][]canonical.AccountChange{accounts, unstated}, overrides)
+	if got := read(); got != "TRUST1:trust_grantor:4075920000" {
+		t.Errorf("history = %q, want the earlier wrapper of the dated account alone", got)
+	}
+	if *accounts[0].TaxWrapper != canonical.TaxWrapperTrustNonGrantor {
+		t.Errorf("the dimension carries %q, want the override's, the current wrapper", *accounts[0].TaxWrapper)
+	}
+	later := map[string]AccountOverride{"TRUST1": {TaxWrapper: "trust_non_grantor", TaxWrapperFrom: 4075920000 + 86400}}
+	run(nil, later)
+	if got := read(); got != "TRUST1:trust_grantor:4076006400" {
+		t.Errorf("history after an unseen load = %q, want the recorded wrapper at the new day", got)
+	}
+	// A later load that sees the account but states no wrapper keeps it.
+	run([]canonical.AccountChange{{AccountExternalID: "TRUST1"}}, later)
+	if got := read(); got != "TRUST1:trust_grantor:4076006400" {
+		t.Errorf("history after an unseen load = %q, want the recorded wrapper at the new day", got)
+	}
+	run(nil, map[string]AccountOverride{"TRUST1": {TaxWrapper: "trust_non_grantor"}})
+	if got := read(); got != "" {
+		t.Errorf("history after the date went = %q, want none", got)
+	}
+}

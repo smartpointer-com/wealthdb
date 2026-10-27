@@ -94,9 +94,14 @@ type SourceSpec struct {
 // canonical enum values when non-empty — config validation
 // catches bad values upstream.
 type AccountOverride struct {
-	Nickname        string
-	Category        string
-	TaxWrapper      string
+	Nickname   string
+	Category   string
+	TaxWrapper string
+	// TaxWrapperFrom dates TaxWrapper (UTC midnight, Unix seconds; 0 for
+	// the whole history): before it the account keeps the wrapper it has
+	// without this override, which the load records in
+	// account_wrapper_history.
+	TaxWrapperFrom  int64
 	ManagementStyle string
 	// Exclude drops the account and every fact keyed to it. See the
 	// config package's AccountOverride for what it is for and why
@@ -413,6 +418,7 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 	}
 	defer stream.Close()
 
+	earlier := earlierWrappers{}
 	writer := gold.NewWriter(tx)
 	dims := gold.NewChangeAccumulator()
 	closing := newSupersessionClosing(spec.Supersession)
@@ -430,6 +436,10 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 		// account still overrules the blanket rule on the same column.
 		applyTaxableWrapper(batch.Accounts, spec.TaxableWrapper)
 		applyPortfolioOverrides(batch.Accounts, spec.PortfolioOverrides)
+		// The wrapper a dated override replaces, as the adapter and the
+		// broader statements above left it: the account's wrapper before
+		// the override's day.
+		earlier.observe(batch.Accounts, spec.Overrides)
 		applyAccountOverrides(batch.Accounts, spec.Overrides)
 		applyInstrumentOverrides(batch.Instruments, batch.Positions, spec.InstrumentOverrides)
 		// Before the drop, record what each superseded account held
@@ -486,6 +496,9 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 				return total, err
 			}
 			total += len(positions) + len(balances)
+			if err := earlier.write(ctx, tx, spec.ID, spec.Overrides); err != nil {
+				return total, err
+			}
 			return total, dims.Flush(ctx, writer)
 		}
 	}

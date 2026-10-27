@@ -192,9 +192,22 @@ both count pooled accounts with no wrapper (§10).
 - **The wrapper decides, not the kind.** A brokerage account inside a
   retirement wrapper is a vehicle. So is a cash account inside a
   non-grantor trust.
-- **The boundary is time-invariant.** A wrapper is one column with no
-  validity range. A grantor trust that becomes non-grantor changes every
-  year at once.
+- **The boundary can move on a day.** A wrapper override with a
+  `tax_wrapper_from` day applies from that day on. Before it the
+  account keeps the wrapper it has without the override. A grantor
+  trust that becomes non-grantor is household money until the day and
+  a vehicle after it.
+
+  These read the wrapper as of each row's day:
+  - whether the row's own account is in the pool;
+  - where a move to a far account lands;
+  - the projection's mortgage history and `status`'s excluded count.
+
+  The balance-side readers read the current wrapper:
+  - the reconciliation memo, so before the day it measures the account
+    by its current side and its `unexplained` shows the difference;
+  - `coverage`;
+  - the projection's split of the expected income.
 
 ---
 
@@ -806,6 +819,11 @@ knobs apply at different times:
 - this block is re-stamped by every enrichment pass;
 - an account override reaches only the rows a load touches, so a
   reload applies it to history.
+
+An account override's `tax_wrapper_from` dates its wrapper: the
+override's wrapper from that day, and before it the one the account has
+without the override (§3). The day is today or earlier. Only a reload
+is sure to apply a new day to the whole history.
 
 `cashflow.projection.lookback_months` is the cash flow projection's
 look-back (§12): 1 to 36 whole months before the current one, 12 by

@@ -508,9 +508,16 @@ type RelationshipPair struct {
 // the canonical enums at config-load time; bad values fail the
 // load rather than landing as gibberish in gold.
 type AccountOverride struct {
-	Nickname        string `json:"nickname,omitempty"`
-	Category        string `json:"category,omitempty"`
-	TaxWrapper      string `json:"tax_wrapper,omitempty"`
+	Nickname   string `json:"nickname,omitempty"`
+	Category   string `json:"category,omitempty"`
+	TaxWrapper string `json:"tax_wrapper,omitempty"`
+	// TaxWrapperFrom (YYYY-MM-DD) dates TaxWrapper: from that day the
+	// account has the override's wrapper, and before it the wrapper it
+	// has without this override. A day after today or before 1970 is
+	// refused: the dimension already carries the override's wrapper. The cash flow statement's boundary reads the
+	// wrapper as of each row's day (docs/CASHFLOW.md §3). Empty means the
+	// override holds for the whole history.
+	TaxWrapperFrom  string `json:"tax_wrapper_from,omitempty"`
 	ManagementStyle string `json:"management_style,omitempty"`
 	// Exclude drops the account from gold entirely — the dimension
 	// row and every fact keyed to it, swept once the load's streams
@@ -1379,6 +1386,16 @@ func (s *SilverSource) ToSilverOpenSpec() (silver.OpenSpec, error) {
 		})
 	}
 	return out, nil
+}
+
+// TaxWrapperFromEpoch is TaxWrapperFrom at UTC midnight, 0 when unset.
+// Validation has already refused an unparseable day.
+func (o AccountOverride) TaxWrapperFromEpoch() int64 {
+	if o.TaxWrapperFrom == "" {
+		return 0
+	}
+	t, _ := parseYYYYMMDD(o.TaxWrapperFrom)
+	return t
 }
 
 // parseYYYYMMDD turns a YYYY-MM-DD string into a Unix-seconds

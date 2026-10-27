@@ -91,8 +91,9 @@ mortgages AS (
 hist AS MATERIALIZED (
     SELECT n.occurred_at, n.class, n.net_amount, n.far_silver_source_id, n.far_account_external_id
       FROM cashflow_txn_nodes(0, ?2) n
-      JOIN cashflow_pool_accounts() p ON p.silver_source_id = n.silver_source_id
+      JOIN cashflow_pool_spans() p ON p.silver_source_id = n.silver_source_id
            AND p.account_external_id = n.account_external_id
+           AND n.occurred_at >= p.from_at AND n.occurred_at < p.until_at
      WHERE n.disposition = 'line'),
 firsts AS (
     SELECT h.far_silver_source_id AS src, h.far_account_external_id AS acct, MIN(h.occurred_at) AS first

@@ -300,9 +300,10 @@ func cashflowDrift(ctx context.Context, db *sql.DB, s *SourceStatus) error {
 	if err := db.QueryRowContext(ctx, `
         SELECT COUNT(*)
           FROM cashflow_txn_nodes(?, ?) n
-          JOIN cashflow_pool_accounts() p
+          JOIN cashflow_pool_spans() p
                  ON p.silver_source_id    = n.silver_source_id
                 AND p.account_external_id = n.account_external_id
+                AND n.occurred_at >= p.from_at AND n.occurred_at < p.until_at
          WHERE n.silver_source_id = ? AND n.disposition = 'excluded'`,
 		int64(0), MaxEpoch, s.SilverSourceID,
 	).Scan(&s.CashflowExcludedByKindCount); err != nil {

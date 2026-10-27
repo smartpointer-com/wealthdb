@@ -567,6 +567,7 @@ func buildSourceSpec(
 				Nickname:        ov.Nickname,
 				Category:        ov.Category,
 				TaxWrapper:      ov.TaxWrapper,
+				TaxWrapperFrom:  ov.TaxWrapperFromEpoch(),
 				ManagementStyle: ov.ManagementStyle,
 				Exclude:         ov.Exclude,
 			}

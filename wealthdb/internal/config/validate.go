@@ -347,6 +347,21 @@ func (c *Config) validateAccountOverrides(seenIDs map[string]bool) error {
 			if ov.TaxWrapper != "" && !canonical.TaxWrapper(ov.TaxWrapper).Valid() {
 				return fmt.Errorf("config: account_overrides[%q][%q]: invalid tax_wrapper %q", sourceID, acctID, ov.TaxWrapper)
 			}
+			if ov.TaxWrapperFrom != "" {
+				if ov.TaxWrapper == "" {
+					return fmt.Errorf("config: account_overrides[%q][%q]: tax_wrapper_from dates a tax_wrapper, and none is set", sourceID, acctID)
+				}
+				from, err := parseYYYYMMDD(ov.TaxWrapperFrom)
+				if err != nil {
+					return fmt.Errorf("config: account_overrides[%q][%q]: tax_wrapper_from: %w", sourceID, acctID, err)
+				}
+				// The dimension carries the override's wrapper from the
+				// load on, so a day ahead would date it falsely; a day on
+				// or before the epoch is no day a wrapper changed on.
+				if from <= 0 || from > time.Now().Unix() {
+					return fmt.Errorf("config: account_overrides[%q][%q]: tax_wrapper_from %s is after today or before 1970", sourceID, acctID, ov.TaxWrapperFrom)
+				}
+			}
 			if ov.ManagementStyle != "" && !canonical.ManagementStyle(ov.ManagementStyle).Valid() {
 				return fmt.Errorf("config: account_overrides[%q][%q]: invalid management_style %q", sourceID, acctID, ov.ManagementStyle)
 			}
