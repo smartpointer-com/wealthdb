@@ -118,8 +118,9 @@ def main():
     tables = ensure_synced(a.base, sid, db_id)
     if tables is None:
         return 1
-    global FIELD_IDS
+    global FIELD_IDS, ASOF_DEFAULT
     FIELD_IDS = field_ids_from(tables)
+    ASOF_DEFAULT = last_history_day(a.base, sid, db_id)
     unfingerprint_lists(a.base, sid, tables)
 
     coll_id = ensure_collection(a.base, sid, COLLECTION_NAME)
@@ -149,6 +150,14 @@ REPORTING_CURRENCIES = ("USD", "CHF", "EUR", "GBP")
 # variable defaults to: wealthdb.cfg's default_currency when it is a
 # reporting currency (main() sets it), USD otherwise.
 DEFAULT_CURRENCY = "USD"
+
+# The As of day picker's default: the last day the holdings history
+# reaches, which main() reads off the snapshot (last_history_day). The
+# history ends on the day the serving tables were last materialized, so
+# a snapshot not refreshed today still shows its latest holdings.
+# ASOF_FALLBACK where the snapshot does not answer.
+ASOF_FALLBACK = "thisday"
+ASOF_DEFAULT = ASOF_FALLBACK
 
 
 def default_currency(configured):
@@ -1472,9 +1481,8 @@ def question_defs(db_id, mid):
                {**_percent_viz(col), "scalar.field": col})
            for name, method, col in RETURN_YTD_CARDS},
         # The Allocation tiles read the daily-history views so the
-        # dashboard can show holdings as of any chosen day (history@today
-        # equals the latest snapshot by construction). The dashboard
-        # supplies the required as-of day.
+        # dashboard can show holdings as of any chosen day, the history's
+        # last day included. The dashboard supplies the required as-of day.
         "Allocation by asset class": breakdown("Allocation by asset class",
             "web_asset_classes_history", "asset_class", "value", "row",
             "Value by asset class as of a day, including a 'cash' class — "
@@ -2370,7 +2378,8 @@ def gains_question_defs(db_id, privacy=False):
 # Dashboard filters: a required currency picker (default: the configured
 # default currency) and a silver-source picker (default: all values) plus
 # either a time range over flows/history (default: past 12 months) or a
-# single as-of day over point-in-time holdings (default: today), each
+# single as-of day over point-in-time holdings (default: the last day
+# the holdings history reaches, ASOF_DEFAULT), each
 # linked to every tile, plus a tax wrapper and an asset class picker on
 # the Wealth Overview and Allocation and a vehicle picker that renders
 # inline on the Top-positions tiles only. The Returns dashboards carry a
@@ -2587,8 +2596,8 @@ def base_dashboards():
         "Allocation": (
             "Where the value sits — asset class, currency, tax wrapper, "
             "management style, the largest positions and the largest "
-            "issuers — as of a chosen day (default: today), in a chosen "
-            f"currency (default {DEFAULT_CURRENCY}). "
+            "issuers — as of a chosen day (default: the latest holdings), "
+            f"in a chosen currency (default {DEFAULT_CURRENCY}). "
             + note, "asof", [
             # The two taxonomy dimensions side by side on the top row.
             ("Allocation by asset class", 0, 0, 12, 8, "as_of_day"),
@@ -5450,16 +5459,17 @@ def dashboard_parameters(model_ids, mode, name=""):
         # '(all sources)' reference line regardless.
         return [currency, start_year, source]
     if mode == "asof":
-        # Required + dynamic "today" default: the as-of cards sum daily
-        # history (one row per entity per day), so they must never run
-        # with the day filter cleared — a required parameter resets to
-        # its default instead of clearing. The vehicle picker draws its
-        # values from the positions model and is linked only to
-        # POSITION_FILTERED_CARDS.
+        # Required, with the history's last day as the default
+        # (ASOF_DEFAULT): the as-of cards sum daily history (one row per
+        # entity per day), so they must never run with the day filter
+        # cleared — a required parameter resets to its default instead
+        # of clearing. A day the history does not reach reads nothing.
+        # The vehicle picker draws its values from the positions model
+        # and is linked only to POSITION_FILTERED_CARDS.
         return [currency_picker(WEALTH_CURRENCY_PARAM_ID),
                 {"id": ASOF_PARAM_ID, "name": "As of day", "slug": "as_of_day",
                  "type": "date/single", "sectionId": "date",
-                 "default": "thisday", "required": True},
+                 "default": ASOF_DEFAULT, "required": True},
                 source, tax_wrapper_picker(WEALTH_TAX_WRAPPER_PARAM_ID),
                 asset_class_picker(ASSET_PARAM_ID),
                 card_picker(VEHICLE_PARAM_ID, "Vehicle", "vehicle",
@@ -5684,6 +5694,20 @@ def probe_rows(base, sid, db_id, sql):
                   {"type": "native", "database": db_id,
                    "native": {"query": sql, "template-tags": {}}}, session=sid)
     return (res.get("data") or {}).get("rows") if st == 202 else None
+
+
+# The last day of the holdings history: the sources' history carries
+# every line, cash included, so it reaches the end where any line does.
+LAST_HISTORY_DAY_SQL = "SELECT CAST(CAST(max(as_of_day) AS DATE) AS VARCHAR) FROM web_sources_history"
+
+
+def last_history_day(base, sid, db_id):
+    """The last day the snapshot's holdings history reaches, as
+    YYYY-MM-DD: the UTC day the serving tables were last materialized,
+    before today when the snapshot was not refreshed today. ASOF_FALLBACK
+    where the probe does not answer or the history is empty."""
+    rows = probe_rows(base, sid, db_id, LAST_HISTORY_DAY_SQL)
+    return rows[0][0] if rows and rows[0] and rows[0][0] else ASOF_FALLBACK
 
 
 def missing_web_views(base, sid, db_id):
@@ -6394,11 +6418,19 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
                                   [VEHICLE_PARAM_ID] if mode == "asof"
                                   and card in POSITION_FILTERED_CARDS else [],
                               "parameter_mappings": maps})
-        if dashboard_unchanged(stored.get(name), name, desc, parameters, dashcards):
+        current = stored.get(name)
+        if dashboard_unchanged(current, name, desc, parameters, dashcards):
             n["skipped"] += 1
             continue
         if name in existing:
             n["updated"] += 1
+        # A change to the pickers alone (Allocation's As of day default
+        # follows the snapshot) is sent alone, so the tiles keep their ids.
+        if dashboard_unchanged(current, name, desc, (current or {}).get("parameters"), dashcards):
+            if not _put_parameters(base, sid, dash_ids[name], name, parameters,
+                                   "update the filters of"):
+                return 1
+            continue
         st, body = req(base, f"/api/dashboard/{dash_ids[name]}", "PUT",
                        {"name": name, "description": desc,
                         "parameters": parameters,
@@ -6412,13 +6444,9 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
         # replacement above deletes every old tile, so an inline parameter
         # sent in the same PUT gets cleaned right back up. Re-assert the
         # parameter list now that the new tiles are in place.
-        if parameters:
-            st, body = req(base, f"/api/dashboard/{dash_ids[name]}", "PUT",
-                           {"parameters": parameters}, session=sid)
-            if st not in (200, 201):
-                print(f"provision: failed to re-assert filters on '{name}' "
-                      f"({st}): {body.get('message')}", file=sys.stderr)
-                return 1
+        if parameters and not _put_parameters(base, sid, dash_ids[name], name, parameters,
+                                              "re-assert filters on"):
+            return 1
 
     archived = archive_all(base, sid, "dashboard",
                            [existing[name] for name in RETIRED_DASHBOARD_NAMES
@@ -6426,6 +6454,18 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
     print(f"provision: dashboards — {n['created']} created, {n['updated']} updated, "
           f"{n['skipped']} unchanged, {archived} retired")
     return 0
+
+
+def _put_parameters(base, sid, did, name, parameters, what):
+    """PUT dashboard `did`'s parameter list alone. False when the server
+    refuses it, with "failed to `what` `name`" printed."""
+    st, body = req(base, f"/api/dashboard/{did}", "PUT",
+                   {"parameters": parameters}, session=sid)
+    if st in (200, 201):
+        return True
+    print(f"provision: failed to {what} '{name}' ({st}): {body.get('message')}",
+          file=sys.stderr)
+    return False
 
 
 def _dashcards_same(server, desired):

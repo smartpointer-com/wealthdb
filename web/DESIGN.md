@@ -122,12 +122,17 @@ ten dashboards. Their pickers:
   all five. They are the net worth figures, the net worth chart and the
   asset classes over time below it.
 - **Allocation**: a required currency, a required as-of day, a source,
-  a *Tax wrapper* picker, and an *Asset class* picker. The Top 100
-  positions tile carries a *Vehicle* picker of its own. Each stock row
-  shows its share's market-cap size, as Exposure sizes it. A fund row
-  shows none. The Top 100 issuers tile below it takes the currency and the as-of day alone: it
-  covers the whole book. It reads the latest of the instants its view
-  holds on or before the day: today and the twelve month ends before.
+  a *Tax wrapper* picker, and an *Asset class* picker. The as-of day
+  defaults to the last day the holdings history reaches. Provisioning
+  reads it off the snapshot. The history ends on the day of the last
+  refresh, so a snapshot not refreshed today still shows its holdings.
+  A day after that end reads nothing. The Top 100 positions tile
+  carries a *Vehicle* picker of its own. Each stock row shows its
+  share's market-cap size, as Exposure sizes it. A fund row shows none.
+  The Top 100 issuers tile below it takes the currency and the as-of
+  day alone: it covers the whole book. It reads the latest of the
+  instants its view holds on or before the day: today and the twelve
+  month ends before.
   Its twin drops the value and hides an issuer named by a holding's own
   key (`holding:<source>:<id>`).
 - **Returns**: a required currency (returns are stored one row set per

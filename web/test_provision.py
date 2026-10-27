@@ -435,6 +435,23 @@ for _mode, _d in (("range", "Wealth Overview"), ("asof", "Allocation"), ("range"
     _ac = [x for x in p.dashboard_parameters(MID, _mode, _d) if x["slug"] == "asset_class"][0]
     check(f"'{_d}' lists its asset classes off the asset class history",
           _ac["values_source_config"]["card_id"] == MID["report_asset_classes_history"], _ac)
+# The As of day defaults to the last day the holdings history reaches,
+# read off the snapshot, so a snapshot not refreshed today shows its
+# latest holdings; "thisday" where the snapshot does not answer.
+_probe = p.probe_rows
+for _rows, _want in (([["2026-10-25"]], "2026-10-25"), (None, "thisday"), ([[None]], "thisday"), ([], "thisday")):
+    p.probe_rows = lambda *_a, _r=_rows: _r
+    check(f"the history's last day reads {_want!r} when the probe returns {_rows!r}",
+          p.last_history_day("b", "s", 1) == _want, p.last_history_day("b", "s", 1))
+p.probe_rows = _probe
+_asof_default = p.ASOF_DEFAULT
+try:
+    p.ASOF_DEFAULT = "2026-10-25"
+    _asof = [x for x in p.dashboard_parameters(MID, "asof", "Allocation") if x["slug"] == "as_of_day"][0]
+finally:
+    p.ASOF_DEFAULT = _asof_default
+check("Allocation's As of day is required and defaults to that day",
+      _asof["required"] is True and _asof["default"] == "2026-10-25", _asof)
 _wccy = p.dashboard_parameters(MID, "range", "Wealth Overview")[0]
 check("that currency picker is required, defaults to USD and offers every "
       "reporting currency",
@@ -589,7 +606,7 @@ def run_main():
     """main()'s exit status against the stand-in in p.req, with the
     arguments web/web passes; the globals main() sets are restored."""
     saved = (sys.argv, os.environ.get("WEALTHDB_WEB_ADMIN_PASSWORD"),
-             p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS)
+             p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.ASOF_DEFAULT, p.FIELD_IDS)
     sys.argv = ["provision.py", "--base", "http://127.0.0.1:3000",
                 "--email", "admin@wealthdb.local", "--gold-path", "/gold/wealthdb.db"]
     os.environ["WEALTHDB_WEB_ADMIN_PASSWORD"] = "Synthetic-pw-1!"
@@ -597,7 +614,7 @@ def run_main():
         with quiet():
             return p.main()
     finally:
-        sys.argv, pw, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS = saved
+        sys.argv, pw, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.ASOF_DEFAULT, p.FIELD_IDS = saved
         if pw is None:
             os.environ.pop("WEALTHDB_WEB_ADMIN_PASSWORD", None)
         else:
@@ -1030,8 +1047,9 @@ def server_dashboard(data):
 
 class RememberDashboards:
     """Keeps what each PUT laid out and answers a GET with it. A
-    dashboard id in `failing` answers its GET with a 500. `puts` counts
-    the PUTs and `put_ids` holds the ids they went to."""
+    dashboard id in `failing` answers its GET with a 500, and one in
+    `refused` its PUT. `puts` counts the PUTs and `put_ids` holds the
+    ids they went to."""
 
     def __init__(self):
         self.next_id = 100
@@ -1040,6 +1058,7 @@ class RememberDashboards:
         self.puts = 0
         self.put_ids = set()
         self.failing = set()
+        self.refused = set()
 
     def __call__(self, base, path, method="GET", data=None, session=None, timeout=30):
         if method == "GET" and path.startswith("/api/collection/"):
@@ -1057,6 +1076,8 @@ class RememberDashboards:
             self.puts += 1
             i = int(path.rsplit("/", 1)[-1])
             self.put_ids.add(i)
+            if i in self.refused:
+                return 500, {"message": "refused"}
             if data.get("dashcards") is not None:
                 self.layouts[i] = dict(data)
             elif i in self.layouts and "parameters" in data:
@@ -1093,6 +1114,34 @@ try:
         fourth = p.ensure_dashboards("b", "s", 7, card_ids, MID)
     check("a dashboard whose read fails is sent, and only that one",
           fourth == 0 and remembered.put_ids == {one}, remembered.put_ids)
+    # A new As of day default changes Allocation's pickers alone: they
+    # go in one PUT of the parameters, and the tiles stay.
+    remembered.failing, remembered.put_ids, remembered.puts = set(), set(), 0
+    _alloc = remembered.names["Allocation"]
+    _tiles = remembered.layouts[_alloc]["dashcards"]
+    _asof_default = p.ASOF_DEFAULT
+    try:
+        p.ASOF_DEFAULT = "2026-10-25"
+        with quiet():
+            fifth = p.ensure_dashboards("b", "s", 7, card_ids, MID)
+    finally:
+        p.ASOF_DEFAULT = _asof_default
+    check("a new As of day default is sent as the pickers alone, to the two Allocation dashboards",
+          fifth == 0 and remembered.puts == 2
+          and remembered.put_ids == {_alloc, remembered.names["Allocation (privacy)"]}
+          and remembered.layouts[_alloc]["dashcards"] is _tiles, (remembered.puts, remembered.put_ids))
+    # A refused pickers-only PUT stops the run.
+    remembered.refused = {_alloc}
+    _err = io.StringIO()
+    try:
+        p.ASOF_DEFAULT = "2026-10-24"
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(_err):
+            sixth = p.ensure_dashboards("b", "s", 7, card_ids, MID)
+    finally:
+        p.ASOF_DEFAULT = _asof_default
+    check("...and a refused one fails the run, naming the dashboard",
+          sixth == 1 and "failed to update the filters of 'Allocation' (500): refused" in _err.getvalue(),
+          (sixth, _err.getvalue()))
 finally:
     p.req = real_req
 
@@ -3897,6 +3946,14 @@ if duckdb is not None:
           _mix)
     _mix = _run("Asset class mix over time", time_range=("2026-09-01", "2026-09-30"))
     check("...and the Time range keeps its days", {str(r[0]) for r in _mix} == {"2026-09-30"}, _mix)
+    # The As of day's probe reads the last day of the sources' history,
+    # which holds cash as well as positions.
+    _days = duckdb.connect()
+    _days.execute("CREATE TABLE web_sources_history (as_of_day TIMESTAMP, silver_source_id TEXT)")
+    _days.execute("INSERT INTO web_sources_history VALUES ('2026-10-20', 'src-1'), ('2026-10-21', 'cash-only')")
+    _last = _days.execute(p.LAST_HISTORY_DAY_SQL).fetchall()
+    check("the As of day probe reads the history's last day as YYYY-MM-DD", _last == [("2026-10-21",)], _last)
+    _days.close()
     # A day whose classes cancel to float noise has no mix to show.
     for _cls, _v in (("public_equity", 0.1), ("cash", 0.2), ("real_estate", -0.3)):
         _db.execute("INSERT INTO web_asset_classes_history VALUES ('2026-08-31', 'src-1', 'taxable_personal', ?, ?, ?, ?, ?)",
