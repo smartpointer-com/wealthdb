@@ -78,6 +78,8 @@ func (h holding) owned() (quantity, value, cost, unvested *canonical.Decimal) {
 //     only, with the tax lots Plaid states for it, and a CURRENT balance
 //     per currency for the cash among its holdings. Plaid's balance of
 //     such an account is its total value, so it is never read as cash.
+//     An account with no holding and a balance carries that balance as
+//     one unitemized position (appendUnitemized).
 //
 // Gold ends a balance a run leaves out once that run restates the
 // balances it was seen with (DESIGN.md §10.7), so every run restates
@@ -271,7 +273,8 @@ func closedCash(last, now []cashKey, t int64) []canonical.CashBalanceChange {
 
 // statedBalance is a figure a cash, card or mortgage account stated: a
 // cash or card balance of `kind`, or a mortgage's principal, in gold's
-// sign.
+// sign. An investment account with no holding states its balance too
+// (appendUnitemized).
 type statedBalance struct {
 	at       int64
 	currency string
@@ -279,8 +282,8 @@ type statedBalance struct {
 	amount   canonical.Decimal
 }
 
-// statedOf is the figure a cash, card or mortgage account's listing in the
-// run at t states, if it states one.
+// statedOf is the figure an account's listing in the run at t states, if
+// it states one.
 func statedOf(a account, t int64) (statedBalance, bool) {
 	amount := silver.DecimalPtrOrNil(a.balance)
 	available := silver.DecimalPtrOrNil(a.available)
@@ -306,9 +309,6 @@ func (c *Connection) noteBalances(ctx context.Context, t int64, stated map[strin
 		return err
 	}
 	for _, a := range accounts {
-		if investmentLedgerKind(a.kind) {
-			continue
-		}
 		if s, ok := statedOf(a, t); ok {
 			stated[a.id] = s
 		}
@@ -356,7 +356,75 @@ func (c *Connection) appendRun(ctx context.Context, b *canonical.SnapshotBatch, 
 	if err != nil {
 		return nil, err
 	}
-	return append(keys, appendHoldings(b, t, byID, holdings, secs, unsummed)...), nil
+	keys = append(keys, appendHoldings(b, t, byID, holdings, secs, unsummed)...)
+	appendUnitemized(b, t, accounts, holdings, stated)
+	return keys, nil
+}
+
+// unitemizedKey is the position key, and the instrument, of the value of
+// an investment account Plaid lists with no holding.
+const unitemizedKey = "plaid:unitemized"
+
+// appendUnitemized adds one (other, other) position for each investment
+// account the run lists with no holding and a balance other than zero,
+// worth that balance. Plaid's balance of an investment account is its
+// total value, so the account counts at its worth, and the payload says
+// its holdings are not itemized. Where the run states no balance, the
+// last one stated since the account last held something is carried,
+// marked "carried": unknown is not zero. A run in which the account holds
+// something states no such position, and the account's snapshot then
+// replaces it whole.
+func appendUnitemized(b *canonical.SnapshotBatch, t int64, accounts []account, holdings []holding,
+	stated map[string]statedBalance) {
+	held := map[string]bool{}
+	for _, h := range holdings {
+		held[h.accountID] = true
+	}
+	instrument := false
+	for _, a := range accounts {
+		if !investmentLedgerKind(a.kind) {
+			continue
+		}
+		if held[a.id] {
+			delete(stated, a.id)
+			continue
+		}
+		payload := `{"basis":"unitemized"}`
+		s, ok := statedOf(a, t)
+		if ok {
+			stated[a.id] = s
+		} else if s, ok = stated[a.id]; ok {
+			payload = fmt.Sprintf(`{"basis":"carried","stated_at":%d}`, s.at)
+		}
+		if !ok || s.amount.IsZero() {
+			continue
+		}
+		key, value := unitemizedKey, s.amount
+		b.Positions = append(b.Positions, canonical.PositionChange{
+			SnapshotAt:           t,
+			AccountExternalID:    a.id,
+			PositionKey:          key,
+			InstrumentExternalID: &key,
+			AssetClass:           canonical.AssetClassOther,
+			Vehicle:              canonical.VehicleOther,
+			Currency:             s.currency,
+			MarketValue:          &value,
+			Payload:              json.RawMessage(payload),
+		})
+		if !instrument {
+			instrument = true
+			name := "Unitemized holdings"
+			b.Instruments = append(b.Instruments, canonical.InstrumentChange{
+				InstrumentExternalID: key,
+				AssetClass:           canonical.AssetClassOther,
+				Vehicle:              canonical.VehicleOther,
+				Name:                 &name,
+				FirstSeenAt:          t,
+				LastSeenAt:           t,
+				Payload:              json.RawMessage(`{}`),
+			})
+		}
+	}
 }
 
 // appendMortgage adds a mortgage's outstanding principal as a negative
@@ -870,6 +938,7 @@ SELECT s.security_id, COALESCE(s.name, ''), COALESCE(s.ticker_symbol, ''),
 			&s.cusip, &s.isin, &s.cfi, &s.payload, &s.priced); err != nil {
 			return nil, err
 		}
+		s.bond = readsAsBond(s)
 		out[s.id] = s
 	}
 	return out, rows.Err()

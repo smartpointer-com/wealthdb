@@ -115,8 +115,13 @@ holder's own, and irrevocable ones, which are not.
 The wrapper follows the subtype as Plaid reports it. Where that gives
 the wrong wrapper, config `account_overrides` sets the right one. Where
 Plaid types the account itself wrong, its `account_kind` sets the right
-kind. A card or a mortgage keeps the kind Plaid gives it, because the
-adapter signs its balance by that kind.
+kind.
+The adapter signs a liability's balance by its own kind, so the kind
+holds both ways:
+
+- no override makes an account a card or a mortgage;
+- a card or a mortgage keeps the kind Plaid gives it. The loader
+  ignores an override of its kind and logs a line.
 
 `management_style` is `self_directed` on cash, card and mortgage
 accounts, and unset on an investment account, where Plaid does not say
@@ -196,9 +201,10 @@ say what such an account holds.
 - **Cash.** A security is cash when its type is `cash` and it has no
   ticker, a currency code as its ticker, or a `CUR:` ticker. A
   cash-type security with a ticker of its own is a money market fund,
-  and stays a `(cash, fund)` position. The payload of a balance read off
-  the holdings says `"basis": "holdings"`. One read off Plaid's account
-  list says `"basis": "roster"`.
+  and stays a `(cash, fund)` position. A dotted pseudo-ticker on a name
+  that reads as a bond is the exception (§6). The payload of a balance
+  read off the holdings says `"basis": "holdings"`. One read off
+  Plaid's account list says `"basis": "roster"`.
 - **Cash that has a price.** Cash is worth one per unit. Plaid can type
   a bond as cash, with no ticker. Such a security is not cash when a
   holding of it, or a buy or sell of it, states a price other than 0
@@ -206,6 +212,16 @@ say what such an account holds.
   class (§6). Any other row's price is a placeholder, and does not
   count. A security whose name reads as a bond (§6) is not cash either,
   priced or not.
+- **An account with no holding.** Plaid can list an investment account
+  with a balance and no holding. The balance is the account's total
+  value. It becomes one `(other, other)` position, keyed
+  `plaid:unitemized`, whose payload says `"basis": "unitemized"`. A
+  balance of zero adds nothing. A run that leaves the balance empty
+  carries the last one, marked `"basis": "carried"`. A run whose
+  holdings failed still records the balance, so a later run can carry
+  it. A run that lists a
+  holding of the account adds no such position, and the account's
+  snapshot replaces it. A run with neither closes it at zero.
 - **A balance Plaid leaves empty.** Gold ends a balance a run leaves
   out once that run states again the balances it was seen with
   (DESIGN.md §10.7). So every run restates every account. A run may
@@ -239,37 +255,47 @@ say what such an account holds.
 | equity | `(public_equity, stock)` |
 | etf | `(RefineETFExposure(name), etf)` |
 | mutual fund | `(cash, fund)` for a money market name, else `(RefineETFExposure(name), fund)` |
-| cash, with a ticker of its own | `(cash, fund)` |
+| cash, with a ticker of its own | `(cash, fund)`, unless a dotted ticker names a bond (below) |
 | fixed income | `(fixed_income, bond)` |
 | derivative | `(public_equity, option)` |
 | cryptocurrency | `(crypto, physical)` |
 | loan | `(private_debt, loan)`: a loan the holder owns |
 | cash, with no ticker and a price | by the CFI code, below; else `(other, other)` |
 | other, or anything else | by the CFI code, below; else `(other, other)` |
-| other, cash or equity with no ticker, named as a bond | `(fixed_income, bond)` |
+| other or none; cash with a dotted pseudo-ticker or none; equity with no ticker; read as a bond (below) | `(fixed_income, bond)` |
 
 Plaid marks bitcoin as a cash equivalent. It is still crypto.
 
-Plaid can type a municipal bond loosely: as `other`, as `cash` with a
-dotted pseudo-ticker or none, or as `equity` with no ticker. Its name
-then reads as a bond, and the last row of the table wins over its type.
-A name reads as a bond when it has one of these:
+Plaid can type a municipal bond loosely: as `other` or no type, as
+`cash` with a dotted pseudo-ticker or none, or as `equity` with no
+ticker. Such a security can read as a bond, and then that row wins
+over the row for its type.
+
+A CFI code decides where Plaid states one. Category D is debt, so the
+security is a bond. Any other category keeps what the type or the CFI
+code says. Without a CFI code, the name decides. A name reads as a bond
+when it has one of these:
 
 - a coupon rate beside a maturity date (`05.00000 01/01/2040`, `4% 06/01/39`);
-- a municipal issuer word (`BD`, `BDS`, `BONDS`, `REV`, `CTFS`, `CNTY`, `AUTH`, `SCH DIST`, `MUNI`), with no company form such as `INC` or `CORP`;
-- the `(Cash)` suffix of a bond settled in cash, beside a coupon rate or a maturity date.
+- the `(Cash)` suffix of a bond settled in cash, beside a coupon rate or a maturity date;
+- a municipal issuer's words, by the rule gold's bond description reader uses;
+- the kind of paper (`BD`, `BDS`, `BONDS`), with no legal form only a company has, such as `INC` or `LLC`.
 
-Some names keep what their type says. These are a preferred share
-(`PRF`, `PFD`, `PREF`, `DEP SHS`), a fund (`FUND`, `FD`, `ETF`, a money
-market word), and a security with a fund's CFI code. A cash security
-with a ticker of its own, or with a currency code as its ticker, is
-never read as a bond.
+A `cash` security with no ticker reads as a bond by the first two
+only. An issuer's word alone does not make a sweep a bond.
+
+Without a CFI code, some names keep what their type says. These are a
+preferred share (`PRF`, `PFD`, `PREF`, `DEP SHS`), a bank holding
+company (`BANCORP`, `BANCSHARES`) and a fund (`FUND`, `FD`, `ETF`, a
+money market word). A cash security with a ticker of its own, or with
+a currency code as its ticker, is never read as a bond.
 
 A security of type `other`, or of a type no row above names, is read by
 its CFI code (ISO 10962). Category C is a collective investment vehicle.
 In group E it is `(RefineETFExposure(name), etf)`. In any other group
-it is classed as a mutual fund. A security classed by its CFI code, or
-not at all, keeps Plaid's type as `source_type` in the payload. Config
+it is classed as a mutual fund. A security classed by its CFI code or
+read as a bond, or not classed at all, keeps Plaid's type as
+`source_type` in the payload. Config
 `instrument_overrides` states the class of one that lands wrong.
 
 ## 7. Transactions
@@ -347,8 +373,10 @@ the sign would book it twice.
   - a tax: `TAX`, `TAXES` or `TAXPYMT`.
 - Otherwise a row of type `cash` or `fee` that names a security that is
   not cash is read by what it names:
-  - on a bond, a cash deposit is its coupon and a cash withdrawal the
-    interest accrued at its purchase: both are `interest`;
+  - on a bond, a cash deposit is its coupon, an `interest`. A cash
+    withdrawal is `tax` withheld where the bond paid a coupon Plaid types
+    as a dividend into the account on the same posting date. Otherwise it is the interest
+    accrued at its purchase, an `interest`;
   - an adjustment of type `fee`, or a cash withdrawal, is `tax` where
     the security paid a dividend into the account on the same posting
     date, else a `fee`;

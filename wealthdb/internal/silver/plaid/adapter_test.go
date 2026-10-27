@@ -371,6 +371,12 @@ func TestWrapperFor(t *testing.T) {
 	}
 }
 
+// classified is s with its bond verdict, as readSecurities reads it.
+func classified(s security) security {
+	s.bond = readsAsBond(s)
+	return s
+}
+
 func TestPairForIsAlwaysAnAdmittedPair(t *testing.T) {
 	cases := []struct {
 		typ, ticker, cfi, name string
@@ -417,14 +423,32 @@ func TestPairForIsAlwaysAnAdmittedPair(t *testing.T) {
 		{"other", "", "", "PLACEHOLDER MUNI FUND", canonical.AssetClassOther, canonical.VehicleOther, false},
 		{"other", "", "", "PLACEHOLDER MUNI BOND ETF", canonical.AssetClassOther, canonical.VehicleOther, false},
 		{"equity", "", "", "Example Pref Dep Shs 6% 01/01/30", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"equity", "", "", "EXAMPLE CNTY HOLDINGS INC", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		// The municipal rule is the bond description reader's: a form a
+		// municipal issuer shares (CORP) does not rule it out. A bank
+		// holding company's word does.
+		{"other", "", "", "EXAMPLE CNTY HSG DEV CORP REV", canonical.AssetClassFixedIncome, canonical.VehicleBond, false},
 		{"equity", "", "", "EXAMPLE CNTY BANCORP", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		// The kind of paper reads as a bond, unless a form only a company
+		// has stands beside it.
+		{"other", "", "", "EXAMPLETOWN BDS", canonical.AssetClassFixedIncome, canonical.VehicleBond, false},
+		{"other", "", "", "EXAMPLE BDS HOLDINGS LLC", canonical.AssetClassOther, canonical.VehicleOther, false},
+		// A CFI code decides over the name: equity stays equity, debt is a
+		// bond.
+		{"other", "", "ESXXXX", "EXAMPLE 5% SER A 01/01/2030", canonical.AssetClassOther, canonical.VehicleOther, false},
+		{"equity", "", "EPXXXX", "EXAMPLE 5% SER A 01/01/2030", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"other", "", "DBXXXX", "PLACEHOLDER THING", canonical.AssetClassFixedIncome, canonical.VehicleBond, false},
+		// Cash with no ticker is a bond only by a coupon and a maturity, or
+		// the "(Cash)" suffix beside either.
+		{"cash", "", "", "PLACEHOLDER 4% 01/01/2040", canonical.AssetClassFixedIncome, canonical.VehicleBond, false},
+		{"cash", "", "", "PLACEHOLDER 01/01/2040 (Cash)", canonical.AssetClassFixedIncome, canonical.VehicleBond, false},
 		{"cash", "EXMXX", "", "PLACEHOLDER MUNI CASH PORTFOLIO", canonical.AssetClassCash, canonical.VehicleFund, true},
 		{"other", "", "", "PLACEHOLDER SWEEP (Cash)", canonical.AssetClassOther, canonical.VehicleOther, false},
 		{"other", "", "", "PLACEHOLDER 2030 SER. 01/01/2040 (Cash)", canonical.AssetClassFixedIncome, canonical.VehicleBond, false},
 		{"mutual fund", "", "", "PLACEHOLDER 2030 BDS", canonical.AssetClassPublicEquity, canonical.VehicleFund, true},
 	}
 	for _, c := range cases {
-		ac, veh, known := pairFor(security{typ: c.typ, ticker: c.ticker, cfi: c.cfi, name: c.name})
+		ac, veh, known := pairFor(classified(security{typ: c.typ, ticker: c.ticker, cfi: c.cfi, name: c.name}))
 		if ac != c.ac || veh != c.veh || known != c.known {
 			t.Errorf("pairFor(%q, %q, %q) = (%q, %q, %v), want (%q, %q, %v)",
 				c.typ, c.cfi, c.name, ac, veh, known, c.ac, c.veh, c.known)
@@ -449,8 +473,11 @@ func TestIsCashAndInstrumentKey(t *testing.T) {
 		// currency stays cash at any price.
 		{security{id: "s8", typ: "cash", priced: true}, false, "plaid:s8"},
 		{security{id: "s9", typ: "cash", ticker: "CUR:EUR", priced: true}, true, "CUR:EUR"},
-		// A name that reads as a bond is no cash, priced or not.
-		{security{id: "s10", typ: "cash", name: "EXAMPLETOWN GO BDS 2030"}, false, "plaid:s10"},
+		// A name that reads as a bond is no cash, priced or not. With no
+		// ticker, an issuer's word alone leaves cash what it is.
+		{security{id: "s10", typ: "cash", name: "EXAMPLETOWN GO BDS 2030"}, true, "plaid:s10"},
+		{security{id: "s13", typ: "cash", name: "EXAMPLETOWN GO BDS 4% 01/01/2030"}, false, "plaid:s13"},
+		{security{id: "s14", typ: "cash", name: "PLACEHOLDER MUNI CASH"}, true, "plaid:s14"},
 		{security{id: "s11", typ: "cash", ticker: "USD", name: "EXAMPLETOWN GO BDS 2030"}, true, "USD"},
 		{security{id: "s12", typ: "cash", ticker: "EXAMPLETOWN.GO.BDS", name: "EXAMPLETOWN GO BDS 2030"}, false, "EXAMPLETOWN.GO.BDS"},
 		{security{id: "s5", typ: "equity", ticker: "EXA", isin: "XX0000000000"}, false, "XX0000000000"},
@@ -458,6 +485,7 @@ func TestIsCashAndInstrumentKey(t *testing.T) {
 		{security{id: "s7", typ: "mutual fund"}, false, "plaid:s7"},
 	}
 	for _, c := range cases {
+		c.s = classified(c.s)
 		if got := isCash(c.s, "USD"); got != c.cash {
 			t.Errorf("isCash(%+v) = %v, want %v", c.s, got, c.cash)
 		}
@@ -1700,6 +1728,127 @@ func TestABondPlaidTypesAsCashIsAPosition(t *testing.T) {
 	}
 }
 
+// An investment account Plaid lists with a balance and no holding counts
+// at its balance as one unitemized position. A run
+// that leaves the balance empty carries it; once holdings arrive the
+// position goes, and one whose balance falls to zero closes at zero.
+// Every figure is invented.
+func TestAnAccountWithNoHoldingCountsAtItsBalance(t *testing.T) {
+	path, db := newFixture(t)
+	seedItem(t, db, runAt(10))
+	acct(t, db, runAt(10), "acct-plan", "investment", "brokerage", "4200")
+	acct(t, db, runAt(10), "acct-grant", "investment", "brokerage", "800")
+	acct(t, db, runAt(10), "acct-empty", "investment", "brokerage", "0")
+	run(t, db, runAt(20), day(11), nil)
+	acct(t, db, runAt(20), "acct-ira", "investment", "ira", "99999")
+	acct(t, db, runAt(20), "acct-plan", "investment", "brokerage", "4300")
+	acct(t, db, runAt(20), "acct-grant", "investment", "brokerage", "")
+	hold(t, db, runAt(20), "acct-ira", "sec-eq", 0, "10", "1500", "1000")
+	hold(t, db, runAt(20), "acct-plan", "sec-eq", 0, "20", "4300", "")
+	run(t, db, runAt(30), day(21), nil)
+	acct(t, db, runAt(30), "acct-ira", "investment", "ira", "99999")
+	acct(t, db, runAt(30), "acct-plan", "investment", "brokerage", "")
+	acct(t, db, runAt(30), "acct-grant", "investment", "brokerage", "0")
+	hold(t, db, runAt(30), "acct-ira", "sec-eq", 0, "10", "1500", "1000")
+
+	batches := collectSnapshots(t, openConn(t, path))
+	unitemized := func(at int64) map[string]canonical.PositionChange {
+		out := map[string]canonical.PositionChange{}
+		for _, p := range positionsAt(batches, at) {
+			if p.PositionKey == "plaid:unitemized" {
+				out[p.AccountExternalID] = p
+			}
+		}
+		return out
+	}
+	instruments := func(at int64) int {
+		n := 0
+		for _, b := range batches {
+			for _, i := range b.Instruments {
+				if i.InstrumentExternalID == "plaid:unitemized" && i.FirstSeenAt == at {
+					n++
+				}
+			}
+		}
+		return n
+	}
+
+	first := unitemized(runAt(10))
+	for id, value := range map[string]string{"acct-plan": "4200", "acct-grant": "800"} {
+		p, ok := first[id]
+		if !ok || p.AssetClass != canonical.AssetClassOther || p.Vehicle != canonical.VehicleOther ||
+			p.InstrumentExternalID == nil || *p.InstrumentExternalID != "plaid:unitemized" ||
+			!strings.Contains(string(p.Payload), `"basis":"unitemized"`) {
+			t.Errorf("first run %s = %+v, want one unitemized (other, other) position", id, p)
+			continue
+		}
+		assertAmount(t, id+" value", p.MarketValue, value)
+	}
+	if len(first) != 2 || instruments(runAt(10)) != 1 {
+		t.Errorf("first run: %d unitemized positions on %d instruments, want two on one "+
+			"(an account at zero, or one with holdings, has none)", len(first), instruments(runAt(10)))
+	}
+
+	second := unitemized(runAt(20))
+	if _, ok := second["acct-plan"]; ok {
+		t.Error("second run: the plan's holdings arrived, want no unitemized position")
+	}
+	if p, ok := second["acct-grant"]; !ok || !strings.Contains(string(p.Payload), `"basis":"carried"`) {
+		t.Errorf("second run: grant = %+v, want its balance carried", p)
+	} else {
+		assertAmount(t, "carried value", p.MarketValue, "800")
+	}
+
+	// A balance of zero adds nothing, so the grant's last position closes;
+	// the plan held shares at the last run, and an empty balance carries
+	// nothing from before them.
+	closed := map[string]bool{}
+	for _, p := range positionsAt(batches, runAt(30)) {
+		if p.AccountExternalID == "acct-ira" {
+			continue
+		}
+		if p.MarketValue == nil || !p.MarketValue.IsZero() {
+			t.Errorf("third run: %s %s = %v, want only closures at zero", p.AccountExternalID, p.PositionKey, p.MarketValue)
+		}
+		closed[p.AccountExternalID+" "+p.PositionKey] = true
+	}
+	if !closed["acct-grant plaid:unitemized"] || !closed["acct-plan EXA"] || instruments(runAt(30)) == 0 {
+		t.Errorf("third run closures = %v, want the grant's unitemized position and the plan's shares, "+
+			"with the instrument", closed)
+	}
+}
+
+// A run whose holdings failed adds no position, but the balance it states
+// for an investment account is the newest figure: a later run that lists
+// the account with no holding and no balance carries it. Every figure is
+// invented.
+func TestAFailedRunsBalanceFeedsTheUnitemizedCarry(t *testing.T) {
+	path, db := newFixture(t)
+	seedItem(t, db, runAt(10))
+	acct(t, db, runAt(10), "acct-plan", "investment", "brokerage", "4200")
+	run(t, db, runAt(20), day(11), map[string]string{"holdings": "failed"})
+	acct(t, db, runAt(20), "acct-plan", "investment", "brokerage", "4600")
+	run(t, db, runAt(30), day(21), nil)
+	acct(t, db, runAt(30), "acct-plan", "investment", "brokerage", "")
+
+	batches := collectSnapshots(t, openConn(t, path))
+	for _, p := range positionsAt(batches, runAt(20)) {
+		t.Errorf("the failed run emitted %+v", p)
+	}
+	var carried *canonical.PositionChange
+	for _, p := range positionsAt(batches, runAt(30)) {
+		if p.AccountExternalID == "acct-plan" && p.PositionKey == "plaid:unitemized" {
+			carried = &p
+		}
+	}
+	want := fmt.Sprintf(`"stated_at":%d`, runAt(20))
+	if carried == nil || !strings.Contains(string(carried.Payload), `"basis":"carried"`) ||
+		!strings.Contains(string(carried.Payload), want) {
+		t.Fatalf("third run: plan = %+v, want the failed run's balance carried", carried)
+	}
+	assertAmount(t, "carried value", carried.MarketValue, "4600")
+}
+
 // A municipal bond Plaid types loosely reads as a bond by its name: as a
 // position, never cash, and its coupon is interest on it, under Plaid's
 // dividend type too. Every name and figure is invented.
@@ -1726,6 +1875,12 @@ func TestABondPlaidTypesLooselyIsReadByItsName(t *testing.T) {
 			amount: "-40", quantity: "0", price: "0", name: "EXAMPLETOWN GO BDS", at: day(5)},
 		{id: "itx-fi", account: "acct-ira", security: "sec-fi", typ: "cash", subtype: "dividend",
 			amount: "30", quantity: "0", price: "0", at: day(5)},
+		// A withdrawal on the day of a dividend-typed coupon is tax
+		// withheld on it, on a bond as on any security.
+		{id: "itx-coupon", account: "acct-ira", security: "sec-go", typ: "cash", subtype: "dividend",
+			amount: "250", quantity: "0", price: "0", at: day(6)},
+		{id: "itx-withheld", account: "acct-ira", security: "sec-go", typ: "cash", subtype: "withdrawal",
+			amount: "-25", quantity: "0", price: "0", at: day(6)},
 	} {
 		inv(t, db, r)
 	}
@@ -1744,10 +1899,14 @@ func TestABondPlaidTypesLooselyIsReadByItsName(t *testing.T) {
 	}
 	got := collectTransactions(t, openConn(t, path))
 	for id, key := range map[string]string{"itx-go": "plaid:sec-go", "itx-rev": "plaid:sec-rev",
-		"itx-plain": "plaid:sec-go", "itx-accrued": "plaid:sec-go", "itx-fi": "plaid:sec-fi"} {
+		"itx-plain": "plaid:sec-go", "itx-accrued": "plaid:sec-go", "itx-fi": "plaid:sec-fi",
+		"itx-coupon": "plaid:sec-go"} {
 		if tx := got[id]; tx.Kind != canonical.TxKindInterest || tx.InstrumentExternalID == nil || *tx.InstrumentExternalID != key {
 			t.Errorf("%s = %q on %v, want interest on %s", id, tx.Kind, tx.InstrumentExternalID, key)
 		}
+	}
+	if tx := got["itx-withheld"]; tx.Kind != canonical.TxKindTax {
+		t.Errorf("itx-withheld = %q, want tax withheld on the coupon", tx.Kind)
 	}
 }
 
