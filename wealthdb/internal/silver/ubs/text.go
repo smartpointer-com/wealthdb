@@ -212,17 +212,9 @@ func rejoinWrappedName(payee string, p webTxPayload, pdfBackfill bool) string {
 	return strings.TrimSpace(payee) + " " + strings.Join(run, " ")
 }
 
-// legalForms are the legal-entity forms a firm's name ends in,
-// upper-cased and without a trailing dot.
-var legalForms = map[string]bool{
-	"AG": true, "GMBH": true, "SA": true, "SE": true, "SAS": true,
-	"SARL": true, "SRL": true, "SPA": true, "BV": true, "NV": true,
-	"KG": true, "OHG": true, "LTD": true, "LIMITED": true, "INC": true,
-	"LLC": true, "PLC": true, "CORP": true, "CO": true,
-}
-
 // endsInLegalForm reports whether a payee's last word is a legal-entity
-// form, in any case, with or without a trailing dot ("AG", "Ltd.").
+// form (canonical.LegalForms), in any case, with or without a trailing
+// dot ("AG", "Ltd.").
 // A name that ends in one is complete, so it was not cut.
 func endsInLegalForm(payee string) bool {
 	words := strings.Fields(payee)
@@ -230,7 +222,7 @@ func endsInLegalForm(payee string) bool {
 		return false
 	}
 	last := strings.TrimSuffix(words[len(words)-1], ".")
-	return legalForms[strings.ToUpper(last)]
+	return canonical.LegalForms[strings.ToUpper(last)]
 }
 
 // opensWithCountryCode reports whether a narrative line opens with a

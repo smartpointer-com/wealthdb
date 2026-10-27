@@ -823,8 +823,9 @@ const wordMinLetters = 3
 // phrase.
 //
 // Three groups, and each earns its place differently. LEGAL FORMS (INC,
-// GMBH, SARL, …) are the strongest signal there is: no natural person
-// carries one. INSTITUTIONAL WORDS (BANK, PENSION, TREASURY, IRS,
+// GMBH, SARL, …; canonical.LegalForms, which the UBS payee reader and
+// the bond reader share) are the strongest signal there is: no natural
+// person carries one. INSTITUTIONAL WORDS (BANK, PENSION, TREASURY, IRS,
 // FINANZAMT, …) name what an organisation does, and the income side is
 // full of them — an employer, a pension fund, a tax office and an
 // insurer are exactly the payers a household most wants named. TRADE
@@ -837,38 +838,40 @@ const wordMinLetters = 3
 // placeable by a config rule or a pin, which is the remedy every fenced
 // row has. A person whose name happens to contain a marker is NOT
 // fenced, which is why this table is a fence on top of the rail fence
-// rather than instead of it. Extend it by adding a token; a marker that
-// is also a common surname (say HOLDING) is a judgement call, and the
-// list errs towards fencing LESS. Both directions cost something: an
+// rather than instead of it. An institutional or trade word extends it
+// by a token here; a legal form goes in canonical.LegalForms. A marker
+// that is also a common surname (say HOLDING) is a judgement call, and
+// the list errs towards fencing LESS. Both directions cost something: an
 // omitted marker quietly withholds a genuine organisation from the
 // model tier, and an ambiguous one lets a person who shares it through.
 // A deployment that cannot accept the second keeps its model endpoint
 // on this machine, where what leaves is nothing and the arm's setting
 // stops mattering.
-var organisationMarkers = map[string]bool{
+var organisationMarkers = func() map[string]bool {
+	m := map[string]bool{
+		// What an organisation does.
+		"BANK": true, "PAYROLL": true, "SALARY": true, "LOHN": true,
+		"GEHALT": true, "TREASURY": true, "PENSION": true,
+		"PENSIONSKASSE": true, "KASSE": true, "AMT": true, "OFFICE": true,
+		"FUND": true, "FUNDS": true, "TRUST": true, "INSURANCE": true,
+		"VERSICHERUNG": true, "UNIVERSITY": true, "UNIVERSITAET": true,
+		"SCHOOL": true, "CITY": true, "STADT": true, "KANTON": true,
+		"CANTON": true, "COUNTY": true, "STATE": true, "FEDERAL": true,
+		"IRS": true, "HMRC": true, "FINANZAMT": true, "STEUERAMT": true,
+		"AHV": true, "SVA": true, "KRANKENKASSE": true, "MUTUAL": true,
+		"PARTNERS": true, "GROUP": true, "HOLDING": true, "HOLDINGS": true,
+		"SERVICES": true, "SYSTEMS": true, "TECHNOLOGIES": true,
+		"LABS": true,
+		// Trades, which are the card side's two-word names.
+		"STUDIO": true, "STORE": true, "MARKET": true, "SHOP": true,
+		"CAFE": true, "RESTAURANT": true, "HOTEL": true,
+	}
 	// Legal forms.
-	"INC": true, "LLC": true, "LTD": true, "LIMITED": true, "PLC": true,
-	"CORP": true, "CORPORATION": true, "CO": true, "COMPANY": true,
-	"AG": true, "SA": true, "SARL": true, "SAS": true, "GMBH": true,
-	"KG": true, "BV": true, "NV": true, "OY": true, "AB": true,
-	"AS": true, "SE": true, "SPA": true, "SRL": true,
-	// What an organisation does.
-	"BANK": true, "PAYROLL": true, "SALARY": true, "LOHN": true,
-	"GEHALT": true, "TREASURY": true, "PENSION": true,
-	"PENSIONSKASSE": true, "KASSE": true, "AMT": true, "OFFICE": true,
-	"FUND": true, "FUNDS": true, "TRUST": true, "INSURANCE": true,
-	"VERSICHERUNG": true, "UNIVERSITY": true, "UNIVERSITAET": true,
-	"SCHOOL": true, "CITY": true, "STADT": true, "KANTON": true,
-	"CANTON": true, "COUNTY": true, "STATE": true, "FEDERAL": true,
-	"IRS": true, "HMRC": true, "FINANZAMT": true, "STEUERAMT": true,
-	"AHV": true, "SVA": true, "KRANKENKASSE": true, "MUTUAL": true,
-	"PARTNERS": true, "GROUP": true, "HOLDING": true, "HOLDINGS": true,
-	"SERVICES": true, "SYSTEMS": true, "TECHNOLOGIES": true,
-	"LABS": true,
-	// Trades, which are the card side's two-word names.
-	"STUDIO": true, "STORE": true, "MARKET": true, "SHOP": true,
-	"CAFE": true, "RESTAURANT": true, "HOTEL": true,
-}
+	for w := range canonical.LegalForms {
+		m[w] = true
+	}
+	return m
+}()
 
 // PersonShaped reports whether a signature looks like a natural
 // person's name and nothing else.

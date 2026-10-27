@@ -23,11 +23,18 @@ var municipalWords = WordSet("GO", "REV", "REVS", "REVENUE", "AUTH", "AUTHORITY"
 var municipalHints = WordSet("WTR", "SWR", "PUB", "CTFS", "PARTN", "TRANSN", "IMPT", "HSG", "BRD", "ARPT", "TPK",
 	"COMWLTH")
 
-// The legal forms only a company has, and those a municipal issuer may
-// share: many a municipal issuer is a corporation, CO stands for a county
-// and LTD for a limited obligation.
-var companyWords = WordSet("INC", "LLC", "PLC", "LP", "NV", "AG", "SA", "SE", "SPA", "BV", "GMBH")
-var sharedFormWords = WordSet("CORP", "CORPORATION", "CO", "COMPANY", "LTD", "LIMITED")
+// The legal forms only a company has: LegalForms less those a municipal
+// issuer may share (SharedLegalForms), and less AB, which a series
+// code's letters can spell (SER 2019AB).
+var companyWords = func() map[string]bool {
+	out := map[string]bool{}
+	for w := range LegalForms {
+		if !SharedLegalForms[w] && w != "AB" {
+			out[w] = true
+		}
+	}
+	return out
+}()
 
 // The words that may stand beside a country's name in its own bond's
 // description: the issuer's form and the kind of paper.
@@ -94,7 +101,7 @@ func ReadBondDescription(desc string, usID bool) (BondReading, bool) {
 	if code := names[named(lead, names, sovereignWords)]; code != "" {
 		return BondReading{Sector: SectorGovernment, Country: code}, true
 	}
-	if companies > 0 || count(sharedFormWords) > 0 {
+	if count(LegalForms) > 0 {
 		return BondReading{Sector: SectorCorporate}, true
 	}
 	return BondReading{}, false

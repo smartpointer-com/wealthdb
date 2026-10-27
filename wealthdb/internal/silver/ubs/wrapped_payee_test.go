@@ -78,8 +78,9 @@ func TestAPayeeIsJoinedOnlyToANamesRemainder(t *testing.T) {
 		firmAG   = "EXAMPLE PRECISION INSTRUMENTS SW AG"
 		firmGmbH = "EXEMPLAR MASCHINEN UND ANLAGEN GMBH"
 		firmLtd  = "EXAMPLE TRADING INTERNATIONALE Ltd."
+		firmOy   = "EXAMPLE NORDICA TRADING HELSINKI OY"
 	)
-	for _, firm := range []string{firmAG, firmGmbH, firmLtd} {
+	for _, firm := range []string{firmAG, firmGmbH, firmLtd, firmOy} {
 		if n := utf8.RuneCountInString(firm); n != partyLineWidth {
 			t.Fatalf("fixture is wrong: %q is %d characters, want %d", firm, n, partyLineWidth)
 		}
@@ -101,6 +102,7 @@ func TestAPayeeIsJoinedOnlyToANamesRemainder(t *testing.T) {
 		{"a firm ending in AG, then its branch", firmAG, firmAG + "; Branch Exampletown"},
 		{"a firm ending in GMBH, then its town", firmGmbH, firmGmbH + "; Exampletown"},
 		{"a legal form in mixed case with a dot", firmLtd, firmLtd + "; Exampletown"},
+		{"a firm ending in OY, then its town", firmOy, firmOy + "; Exampletown"},
 		{"a country prefix on the town", wrappedHead, wrappedHead + "; AT EXAMPLETOWN"},
 		{"no next line", wrappedHead, wrappedHead},
 		{"a payee the narrative does not lead with", wrappedHead, "EXAMPLE PAYEE; BEISPIEL"},

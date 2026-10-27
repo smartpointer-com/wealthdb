@@ -865,6 +865,8 @@ func TestPersonShaped(t *testing.T) {
 		"ACME CORP",              // a legal form
 		"EXAMPLE AG",             //
 		"EXAMPLE HOLDING SA",     //
+		"SAMPLE VENTURES LP",     // a partnership's form (canonical.LegalForms)
+		"EXAMPLE BAU OHG",        //
 		"CORNER MARKET",          // a trade word
 		"BLUE HARBOUR CAFE",      //
 		"STORE 4711",             // a digit anywhere clears it

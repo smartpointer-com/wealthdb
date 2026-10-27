@@ -1547,8 +1547,8 @@ has **two or more tokens**, **every one of them letters only**, **no
 organisation marker** and **no rail token**. The markers are what a
 business puts in its name that a person never does — legal forms (`AG`,
 `GMBH`, `LLC`, `SARL`), institutional words (`BANK`, `PAYROLL`,
-`PENSION`, `FINANZAMT`), trade words (`STORE`, `CAFE`, `MARKET`) — kept
-as a whole-token list a maintainer extends.
+`PENSION`, `FINANZAMT`), trade words (`STORE`, `CAFE`, `MARKET`) — whole
+tokens. The legal forms are the engine's one list (`canonical.LegalForms`).
 
 It applies to rows on **non-card accounts only**. Most card merchants
 are two or three plain words with no marker, and a name-shaped arm over
