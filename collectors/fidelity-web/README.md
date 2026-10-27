@@ -67,8 +67,9 @@ and [AGENTS.md](AGENTS.md) the read-only surface.
 ## Why a web scraper
 
 Fidelity's OFX Direct Connect host does not resolve. Fidelity Access
-(Akoya) serves businesses only. The client site is the one channel open
-to an individual.
+(Akoya) serves businesses only. Plaid reads balances, holdings and
+transactions, but no statements or tax forms. For those, the client
+site is the one channel open to an individual.
 
 Akamai Bot Manager guards the sign-in. Stock Playwright Chromium is
 blocked at credential submit. Camoufox with a macOS fingerprint, a

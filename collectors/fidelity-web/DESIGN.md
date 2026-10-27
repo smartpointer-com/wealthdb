@@ -27,13 +27,19 @@ is retired.
 The official consumer-facing path for 2026 is **Fidelity Access /
 Akoya** (FDX-JSON over OAuth). It is B2B-only: data-recipient
 registration is geared toward fintechs and family offices, not
-individual users reading their own data. Aggregators built on
-Akoya (Plaid, MX, Empower) are similarly B2B.
+individual users reading their own data.
 
-That leaves the client-web channel — `www.fidelity.com` driven
-under Camoufox (a stealth-patched Firefox; rung 3 of §6) — as the
-only realistic surface for a self-service personal-archive
-toolkit today.
+A personal Plaid account can link a Fidelity login, where Plaid covers
+it. The [plaid](../plaid/README.md) collector then reads its balances,
+holdings and transactions. It reads no statements or tax forms. This
+collector reads them, beside the positions and the transaction
+history. Gold cannot tell two copies of one account apart, so a
+Fidelity login read here stays unlinked in Plaid
+([adapters/plaid.md](../../wealthdb/docs/adapters/plaid.md)).
+
+That leaves the client-web channel as the only realistic surface for
+the documents: `www.fidelity.com`, driven under Camoufox (a
+stealth-patched Firefox; rung 3 of §6).
 
 ### 1.2 Account-category model
 
@@ -67,7 +73,9 @@ bronze subdirectory holds documents that arrive out-of-band.
 - **Trade execution, money movement, account configuration.** See
   [AGENTS.md](AGENTS.md) §1 — the contract is read-only.
 - **OFX.** Retired (§1.1).
-- **Akoya / FDX / Plaid / SnapTrade.** B2B-only.
+- **Akoya / FDX / SnapTrade.** B2B-only.
+- **Balances, holdings and transactions through Plaid.** The
+  [plaid](../plaid/README.md) collector's scope (§1.1).
 - **Prospectuses / fund supplements / disclosures.** Out of
   document-center scope (AGENTS.md §1).
 - **Third-party investment-manager feeds.** Their own collector

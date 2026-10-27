@@ -124,6 +124,11 @@ fire real 2FA, so run them deliberately and never in quick succession.
 - `login` / `download` diagnostics (with `--debug`) and `explore`
   captures land under `~/.cache/wealthdb/debug/firstcitizens/<UTC-ts>/`.
 
+An incoming wire's row names no originator.
+The history JSON, the CSV and QFX exports and the statement PDF all
+leave it out. Gold cannot name the payer. A pin in `income.pins` sets
+the income type.
+
 The gold adapter (`wealthdb/internal/silver/firstcitizens/`) maps the
 accounts to cash accounts. It builds a closing-balance series from the
 running balance. It adds the roster balance at each run that listed the

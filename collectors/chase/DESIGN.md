@@ -30,11 +30,14 @@ The README holds the quick start, the bronze layout and the silver tables.
   are revolving-credit liabilities, and gold keeps every `card` account out
   of returns altogether. The gold side is
   [docs/adapters/chase.md](../../wealthdb/docs/adapters/chase.md) §7.
-- **No self-service API.** Chase's programmatic access for retail data
-  runs through aggregator gateways (Akoya / Plaid-class), which are
-  partner-gated — not something an individual retail login can
-  self-provision. The web UI is the surface, as at the other
-  portal-only sources (`carta`, `equityzen`, `angellist`).
+- **No self-service retail API.** Akoya is partner-gated. The
+  [plaid](../plaid/README.md) collector reads balances and transactions
+  where Plaid covers Chase. It reads no statements. Gold cannot tell
+  two copies of one account apart, so a Chase login reaches gold
+  through one of the two collectors
+  ([adapters/plaid.md](../../wealthdb/docs/adapters/plaid.md)). For the
+  statements the web UI is the surface, as at the other portal-only
+  sources (`carta`, `equityzen`, `angellist`).
 - **Bot defense: Camoufox.** Akamai-class bot defense blocks vanilla
   Chromium outright at the two US siblings (`fidelity-web`, `schwab-web`),
   and Chase fronts the same class of defense. The usual escalation rungs

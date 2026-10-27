@@ -79,8 +79,12 @@ The client site holds that history:
 - Transaction History exports that reach further back than the Trader
   API.
 
-No retail read API serves it. Aggregators (Plaid, MX, Finicity) cover
-Schwab brokerage data thinly, and their terms forbid redistribution.
+No retail read API serves that history. The
+[plaid](../plaid/README.md) collector reads balances, holdings and
+transactions where Plaid covers Schwab. It reads no statements or tax
+forms. Gold cannot tell two copies of one account apart, so a Schwab
+login read here stays unlinked in Plaid
+([adapters/plaid.md](../../wealthdb/docs/adapters/plaid.md)).
 Schwab's "new document" emails carry no payload.
 
 Trade confirmations are skipped on purpose: low signal, high volume.
