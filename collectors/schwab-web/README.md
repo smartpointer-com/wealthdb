@@ -93,6 +93,10 @@ the statement-date positions and every statement and history
 transaction, but no daily snapshots between statements
 ([adapters/schwab.md](../../wealthdb/docs/adapters/schwab.md) §7.4).
 
+Each statement's cash interest rate lands beside its closing cash
+balance. Gold reads it as `interest_rate`
+([DESIGN.md §3.1](DESIGN.md#31-the-cashs-interest-rate)).
+
 Trade confirmations are skipped on purpose: low signal, high volume.
 
 ## Sign-in and 2FA

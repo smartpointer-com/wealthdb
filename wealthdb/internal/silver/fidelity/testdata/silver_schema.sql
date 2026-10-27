@@ -36,6 +36,7 @@ CREATE TABLE positions (
     quantity            REAL,
     current_value       REAL,
     cost_basis_total    REAL,
+    sec_yield           REAL,
     payload             TEXT    NOT NULL,
     PRIMARY KEY (snapshot_at, account_external_id, instrument_key)
 );

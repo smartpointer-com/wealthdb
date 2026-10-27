@@ -14,4 +14,5 @@
 pytest>=8,<9
 
 # Nothing else: load.py reads the accountHistory JSON with the stdlib, and
-# indexes statement PDFs without parsing them.
+# the statement PDFs through poppler's pdftotext, an apt package the
+# Dockerfile installs.

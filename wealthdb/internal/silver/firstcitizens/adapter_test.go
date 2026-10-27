@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -353,5 +354,59 @@ func TestSnapshotsNeedRunAccounts(t *testing.T) {
 	_, err := conn.Snapshots(context.Background(), silvertest.FullWindow(t, conn))
 	if want := "firstcitizens silver has no run_accounts; run `firstcitizens load` first"; err == nil || err.Error() != want {
 		t.Errorf("Snapshots = %v, want %q", err, want)
+	}
+}
+
+// A statement's rate rides on the account's closing balance on the
+// statement's closing day, else on the latest one before it inside the
+// cycle. A cycle in which the balance never moved adds no balance for its
+// rate, and a cycle without a rate row leaves its balances stating none.
+// Every number is invented.
+func TestStatementRatesRideOnACycleClosingBalance(t *testing.T) {
+	path, db := newFixture(t)
+	seed(t, db)
+	silvertest.Exec(t, db, `INSERT INTO transactions VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		"t5", silvertest.Day(2026, 2, 28), "acct-1", 1.00, "CREDIT", "INTEREST PAYMENT", nil, 653.50, "history", "{}")
+	rate := func(start, end int64, r float64) {
+		silvertest.Exec(t, db, `INSERT INTO statement_rates VALUES (?,?,?,?,NULL,NULL,'sha','{}')`,
+			"acct-1", end, start, r)
+	}
+	rate(silvertest.Day(2026, 1, 1), silvertest.Day(2026, 1, 31), 2.41)
+	rate(silvertest.Day(2026, 2, 1), silvertest.Day(2026, 2, 28), 3.43)
+	rate(silvertest.Day(2026, 3, 1), silvertest.Day(2026, 3, 31), 3.79)
+	conn := openConn(t, path)
+
+	got := map[int64]string{}
+	for _, cb := range silvertest.Merged(t, conn, silvertest.FullWindow(t, conn)).CashBalances {
+		if cb.BalanceKind == canonical.BalanceKindClosing {
+			got[cb.SnapshotAt] = string(cb.Payload)
+		} else if strings.Contains(string(cb.Payload), "interest_rate") {
+			t.Errorf("%s balance states a rate: %s", cb.BalanceKind, cb.Payload)
+		}
+	}
+	end := func(y int, m time.Month, d int) int64 { return silvertest.Day(y, m, d) + silver.DayEndOffset }
+	plain := `{"basis":"running_balance"}`
+	want := map[int64]string{
+		end(2026, 1, 10): plain,
+		end(2026, 1, 20): `{"basis":"running_balance","interest_rate":2.41,"interest_side":"credit","interest_valid_from":"2026-01-31"}`,
+		end(2026, 2, 5):  plain,
+		end(2026, 2, 15): plain,
+		end(2026, 2, 28): `{"basis":"running_balance","interest_rate":3.43,"interest_side":"credit","interest_valid_from":"2026-02-28"}`,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("closing payloads = %v, want %v", got, want)
+	}
+}
+
+// A silver older than migration 0003 holds no statement rates and loads.
+func TestSnapshotsWithoutStatementRates(t *testing.T) {
+	path, db := newFixture(t)
+	seed(t, db)
+	silvertest.Exec(t, db, `DROP TABLE statement_rates`)
+	conn := openConn(t, path)
+	for _, cb := range silvertest.Merged(t, conn, silvertest.FullWindow(t, conn)).CashBalances {
+		if strings.Contains(string(cb.Payload), "interest_rate") {
+			t.Errorf("balance at %d states a rate: %s", cb.SnapshotAt, cb.Payload)
+		}
 	}
 }

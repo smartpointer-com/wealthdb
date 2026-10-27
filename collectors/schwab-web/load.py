@@ -1691,7 +1691,7 @@ _OPEN_LOT_COLUMNS = (
 _CASH_COLUMNS = (
     "period_end", "period_start", "account_external_id", "currency_iso",
     "opening_balance", "closing_balance", "total_debits", "total_credits",
-    "payload",
+    "payload", "interest_rate", "interest_rate_line",
 )
 
 
@@ -1757,7 +1757,8 @@ def _cash_rows(account_external_id: str, period_end: int, period_start: int,
 
     NULLs are preserved: missing opening / closing / debits / credits
     stay NULL in the row rather than being coerced to 0.0 — the consumer
-    needs to distinguish "not reported" from "actually zero"."""
+    needs to distinguish "not reported" from "actually zero". So does
+    the interest rate: NULL where the statement states none."""
     if not cash:
         return []
     payload = canonical_json({
@@ -1775,6 +1776,7 @@ def _cash_rows(account_external_id: str, period_end: int, period_start: int,
         cash.get("currency_iso") or "USD",
         cash.get("opening_balance"), cash.get("closing_balance"),
         cash.get("total_debits"), cash.get("total_credits"), payload,
+        cash.get("interest_rate"), cash.get("interest_rate_line"),
     )]
 
 

@@ -113,14 +113,15 @@ fire real 2FA, so run them deliberately and never in quick succession.
 
 - Bronze runs land under `$XDG_DATA_HOME/wealthdb/firstcitizens/<UTC-ts>/`.
 - Silver is `$XDG_DATA_HOME/wealthdb/firstcitizens/firstcitizens.db`,
-  with four tables:
+  with these tables:
   - `accounts`: the deposit roster per snapshot (type, nickname, last-4
     mask, currency, current balance). A row lands only when an account
     changed;
   - `run_accounts`: the accounts each run listed;
   - `transactions`: the ledger, keyed by the source's `transactionId`
     (signed amount, description, check number, running balance);
-  - `documents`: the statement PDFs, keyed by content hash.
+  - `documents`: the statement PDFs, keyed by content hash;
+  - `statement_rates`: the interest rate each statement states.
 - `login` / `download` diagnostics (with `--debug`) and `explore`
   captures land under `~/.cache/wealthdb/debug/firstcitizens/<UTC-ts>/`.
 
@@ -129,8 +130,14 @@ The history JSON, the CSV and QFX exports and the statement PDF all
 leave it out. Gold cannot name the payer. A pin in `income.pins` sets
 the income type.
 
+`load` reads the interest rate a statement states into
+`statement_rates`, with poppler's `pdftotext`. A statement that states
+none gives no rate ([DESIGN.md §4.3](DESIGN.md#43-load)).
+
 The gold adapter (`wealthdb/internal/silver/firstcitizens/`) maps the
 accounts to cash accounts. It builds a closing-balance series from the
 running balance. It adds the roster balance at each run that listed the
-account, so gold can end an account the bank stops listing. The accounts
-are conduits, so their return rows are hidden.
+account, so gold can end an account the bank stops listing. It puts each
+statement's rate on a closing balance of the statement's cycle, as
+`interest_rate`. The accounts are conduits, so their return rows are
+hidden.

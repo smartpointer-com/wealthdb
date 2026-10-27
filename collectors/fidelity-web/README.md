@@ -221,6 +221,12 @@ under `supplied-statements/`
 ([DESIGN.md §4.5](DESIGN.md#45-historical-reconstruction--three-pdf-sources)).
 Re-running converges. `load --force` rebuilds silver from bronze.
 
+An account's core sweep fund reads as its cash in gold. The dividend
+view's SEC yield of that fund is the cash's interest rate, held from the
+day the view states it as of
+([YIELD.md §3](../../wealthdb/docs/YIELD.md#3-what-each-kind-reads)).
+A core that states no SEC yield gives its cash no rate.
+
 ## Reclaiming disk
 
 ```sh

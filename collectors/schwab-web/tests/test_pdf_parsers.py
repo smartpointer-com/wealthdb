@@ -904,6 +904,108 @@ class TestParseCashSummary:
         assert cash is None
 
 
+# ============================================================
+# parse_cash_interest_rate
+# ============================================================
+
+class TestParseCashInterestRate:
+    """The rate a statement states for the account's cash. Synthetic
+    text in the shape of the 2025+ cash table and the 2017-2024 note."""
+
+    HEADER = (
+        "Cash and Cash Investments\n"
+        "Type Symbol Description Quantity Price($)\n"
+        "Beginning\nBalance($)\nEnding\nBalance($)\n"
+        "Change in Period\nBalance($)\nPending/Unsettled\nCash($)\n"
+        "Interest/\nYield Rate\n% of\nAcct\n"
+    )
+    SWEEP = "Bank Sweep EXAMPLE\nBANK,\nX,Z\n"
+
+    def _table(self, rows: str) -> str:
+        return ("Positions - Summary\n" + self.HEADER + rows
+                + "Total Cash and Cash Investments $1.00 $2.00 $1.00 <1%\n"
+                + "Positions - Equities\n")
+
+    def test_a_cash_row_with_a_rate(self):
+        line = "Cash , 100.00 250.00 150.00 0.00 1.09% <1%"
+        assert pp.parse_cash_interest_rate(self._table(line + "\n")) == {
+            "interest_rate": 1.09, "interest_rate_line": line}
+
+    def test_a_cash_row_without_a_rate_states_none(self):
+        text = self._table("Cash , 100.00 250.00 150.00 0.00 <1%\n")
+        assert pp.parse_cash_interest_rate(text) is None
+
+    def test_a_sweep_prints_its_figures_after_its_name(self):
+        text = self._table(self.SWEEP + "1,000.00 2,000.00 1,000.00 2.41% 3%\n")
+        assert pp.parse_cash_interest_rate(text)["interest_rate"] == 2.41
+
+    def test_a_table_without_the_acct_column(self):
+        text = self._table(self.SWEEP + "1,000.00 2,000.00 1,000.00 2.41%\n")
+        assert pp.parse_cash_interest_rate(text)["interest_rate"] == 2.41
+
+    def test_the_line_with_the_largest_ending_balance_wins(self):
+        # The cash row prints no rate: the sweep's stands.
+        text = self._table("Cash , 10.00 20.00 10.00 0.00 <1%\n" + self.SWEEP
+                           + "1,000.00 2,000.00 1,000.00 2.41% 3%\n")
+        assert pp.parse_cash_interest_rate(text)["interest_rate"] == 2.41
+        # Both print one: the larger ending balance's stands.
+        text = self._table("Cash , 10.00 5,000.00 4,990.00 0.00 1.09% 8%\n"
+                           + self.SWEEP
+                           + "1,000.00 2,000.00 1,000.00 2.41% 3%\n")
+        assert pp.parse_cash_interest_rate(text)["interest_rate"] == 1.09
+
+    def test_an_overdrawn_line_competes_by_magnitude(self):
+        text = self._table("Cash , 10.00 (5,000.00) (5,010.00) 0.00 1.09% <1%\n"
+                           + self.SWEEP
+                           + "1,000.00 2,000.00 1,000.00 2.41% 3%\n")
+        assert pp.parse_cash_interest_rate(text)["interest_rate"] == 1.09
+
+    def test_a_cash_heading_without_the_table_columns_reads_the_note(self):
+        note = "Bank Sweep: Interest Rate as of 06/30/21 was 2.41%."
+        text = ("Cash and Cash Investments\nStarting Cash $1.00\n"
+                "Cash , 100.00 250.00 150.00 0.00 1.09% <1%\n" + note + "\n")
+        assert pp.parse_cash_interest_rate(text) == {
+            "interest_rate": 2.41, "interest_rate_line": note}
+
+    def test_the_acct_column_is_no_rate(self):
+        text = self._table(self.SWEEP + "1,000.00 2,000.00 1,000.00 3%\n")
+        assert pp.parse_cash_interest_rate(text) is None
+
+    def test_rows_past_the_total_are_not_read(self):
+        text = (self._table("Cash , 100.00 250.00 150.00 0.00 <1%\n")
+                + "Cash , 100.00 250.00 150.00 0.00 1.09% <1%\n")
+        assert pp.parse_cash_interest_rate(text) is None
+
+    @pytest.mark.parametrize("note", [
+        "Bank Sweep: Interest Rate as of 06/30/21 was 2.41%. ",
+        "Bank Sweep: Interest rate as of 06/30/21 was 2.41%. Your interest "
+        "period was 05/16/21 - 06/15/21. Z",
+        "Deposit Accounts: Interest rate as of 06/30/21 was 2.41%. Your "
+        "interest period was 05/16/21 - 06/15/21. Z",
+    ])
+    def test_the_legacy_note(self, note):
+        text = "Cash Transactions Summary\nStarting Cash $1.00\n" + note + "\n"
+        assert pp.parse_cash_interest_rate(text) == {
+            "interest_rate": 2.41, "interest_rate_line": note.strip()}
+
+    def test_an_average_rate_is_no_rate(self):
+        text = ("Interest Credited 03/02 through 03/31: $1.00 based on .500% "
+                "average Schwab One interest rate paid on 12 days.\n")
+        assert pp.parse_cash_interest_rate(text) is None
+
+    def test_parse_statement_pdf_puts_it_on_the_cash_summary(self, monkeypatch):
+        summary = ("Transactions - Summary\n"
+                   "BeginningCash + Deposits ... = EndingCash\n"
+                   "$1.00 $0.00 $0.00 $0.00 $0.00 $1.00 $0.00 $2.00\n"
+                   "Transaction Details\n")
+        rate = self._table(self.SWEEP + "1.00 2.00 1.00 2.41% <1%\n")
+        for text, want in ((summary + rate, 2.41), (summary, None)):
+            monkeypatch.setattr(pp, "_extract_pdf_text", lambda _p, t=text: t)
+            cash = pp.parse_statement_pdf("x.pdf", 2026)["cash_summary"]
+            assert cash["interest_rate"] == want
+            assert (cash["interest_rate_line"] is None) == (want is None)
+
+
 class TestParsePositionsFootnoteMarker:
     """An Endnote reference letter printed inline among a holding's
     numeric columns (e.g. 'e' = "edited or provided by the account

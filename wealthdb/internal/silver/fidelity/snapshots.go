@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
+	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -296,6 +298,36 @@ func addCurrentCash(batch *canonical.SnapshotBatch, snap int64, acct, currency s
 	})
 }
 
+// secYieldAsOf is the dividend view's key for the day its SEC yield is
+// as of, written Jun-17-2026.
+const secYieldAsOf = "SEC yield as of"
+
+// coreRate is a core position's payload with its fund's SEC yield
+// (silver's sec_yield, a fraction) as the cash's credit rate, held from
+// the day the dividend view states it as of. The core reads as cash, so
+// the yield its fund earns is that cash's rate. A core that states no
+// yield keeps its payload: its cash reads no rate.
+func coreRate(payload string, sec sql.NullFloat64) (string, error) {
+	if !sec.Valid {
+		return payload, nil
+	}
+	var view struct {
+		Dividend map[string]any `json:"dividend"`
+	}
+	_ = json.Unmarshal([]byte(payload), &view)
+	var from string
+	if s, ok := view.Dividend[secYieldAsOf].(string); ok {
+		if t, err := time.Parse("Jan-02-2006", strings.TrimSpace(s)); err == nil {
+			from = t.Format(time.DateOnly)
+		}
+	}
+	// The fraction in percent, rounded to four places so the ×100 leaves
+	// no float noise.
+	pct := math.Round(sec.Float64*1e6) / 1e4
+	out, err := silver.WithCreditRate(json.RawMessage(payload), pct, from)
+	return string(out), err
+}
+
 // appendPositionsAndCash walks `positions` once and splits each
 // row down one of two paths based on the silver-side
 // `is_core_position` flag:
@@ -336,6 +368,7 @@ SELECT snapshot_at, account_external_id, instrument_key,
        CAST(quantity         AS VARCHAR),
        CAST(current_value    AS VARCHAR),
        CAST(cost_basis_total AS VARCHAR),
+       sec_yield,
        payload
   FROM positions
  WHERE snapshot_at BETWEEN ? AND ?`
@@ -351,10 +384,11 @@ SELECT snapshot_at, account_external_id, instrument_key,
 			acct, key, desc, silverClass, currency string
 			isCore                                 int
 			qtyStr, valueStr, costStr              sql.NullString
+			secYield                               sql.NullFloat64
 			payload                                string
 		)
 		if err := rows.Scan(&snap, &acct, &key, &desc, &silverClass, &currency,
-			&isCore, &qtyStr, &valueStr, &costStr, &payload); err != nil {
+			&isCore, &qtyStr, &valueStr, &costStr, &secYield, &payload); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -370,6 +404,11 @@ SELECT snapshot_at, account_external_id, instrument_key,
 			amt, err := silver.DecimalOrZero(valueStr)
 			if err != nil {
 				return fmt.Errorf("cash amount parse (acct=%s instr=%s): %w", acct, key, err)
+			}
+			if isCore != 0 {
+				if payload, err = coreRate(payload, secYield); err != nil {
+					return fmt.Errorf("core rate (acct=%s instr=%s): %w", acct, key, err)
+				}
 			}
 			addCurrentCash(batch, snap, acct, currency, amt, payload, isCore != 0)
 			continue

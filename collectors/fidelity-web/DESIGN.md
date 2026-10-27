@@ -410,7 +410,9 @@ Notes:
   Bronze emits these with a `*` / `**` suffix on the Symbol
   column; the loader strips the suffix so `instrument_key` joins
   cleanly across `positions` and `transactions` and promotes the
-  channel signal to this flag. See §4.3.
+  channel signal to this flag. See §4.3. Gold reads a core position
+  as the account's cash. Its `sec_yield` (a fraction) is that cash's
+  credit rate, from the dividend view's "SEC yield as of" day.
 
 ### 4.2 Snapshots vs events
 

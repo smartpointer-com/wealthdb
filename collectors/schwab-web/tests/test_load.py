@@ -2641,43 +2641,51 @@ class TestReportsWithoutRows:
         assert len(calls) == 6
 
 
+_STMT_NAME = "Brokerage-Statement_2026-02-28_NNN.PDF"
+
+
+def _stmt_parsed(market_value=5000.0):
+    """A parsed February statement of account NNN: one position, one lot."""
+    return {
+        "period_start": "2026-02-01", "period_end": "2026-02-28",
+        "transactions": [],
+        "positions": [_pos("SYN1", 100.0, market_value, 4000.0, 1000.0,
+                           [_lot(100.0, 4000.0, "2025-01-02")])],
+        "cash_summary": {"opening_balance": 100.0, "closing_balance": 150.0,
+                         "currency_iso": "USD", "raw_line": ""},
+    }
+
+
+def _patch_statement_parse(monkeypatch, by_name):
+    """Make parse_statement_pdf return by_name[file name]; returns the
+    names parsed."""
+    calls: list[str] = []
+
+    def parse(path, statement_year=None):
+        calls.append(Path(path).name)
+        return by_name[Path(path).name]
+
+    monkeypatch.setattr(load.pp, "parse_statement_pdf", parse)
+    return calls
+
+
+def _statement_bronze(tmp_path, run_ts, docs):
+    """A bronze run of account NNN holding the (date, file name) statements."""
+    return _make_bronze_run(tmp_path, run_ts, [
+        {"suffix": "NNN", "label": "L",
+         "documents": [{"date": date, "type": "Statements",
+                        "document": "Brokerage Statement", "filename": name}
+                       for date, name in docs]},
+    ])
+
+
 class TestStatementOwnership:
     """Statement snapshot rows are keyed by account and the period end the
     statement prints. The first statement to write a key owns it."""
 
-    _NAME = "Brokerage-Statement_2026-02-28_NNN.PDF"
+    _NAME = _STMT_NAME
     _COPY = "Brokerage-Statement_2026-02-28_NNN.2.PDF"
     _END = load.parse_doc_date("02/28/2026")
-
-    @staticmethod
-    def _parsed(market_value=5000.0):
-        return {
-            "period_start": "2026-02-01", "period_end": "2026-02-28",
-            "transactions": [],
-            "positions": [_pos("SYN1", 100.0, market_value, 4000.0, 1000.0,
-                               [_lot(100.0, 4000.0, "2025-01-02")])],
-            "cash_summary": {"opening_balance": 100.0, "closing_balance": 150.0,
-                             "currency_iso": "USD", "raw_line": ""},
-        }
-
-    def _patch(self, monkeypatch, by_name):
-        calls: list[str] = []
-
-        def parse(path, statement_year=None):
-            calls.append(Path(path).name)
-            return by_name[Path(path).name]
-
-        monkeypatch.setattr(load.pp, "parse_statement_pdf", parse)
-        return calls
-
-    @staticmethod
-    def _bronze(tmp_path, run_ts, docs):
-        return _make_bronze_run(tmp_path, run_ts, [
-            {"suffix": "NNN", "label": "L",
-             "documents": [{"date": date, "type": "Statements",
-                            "document": "Brokerage Statement", "filename": name}
-                           for date, name in docs]},
-        ])
 
     @staticmethod
     def _rows(conn):
@@ -2696,11 +2704,11 @@ class TestStatementOwnership:
             self, monkeypatch, migrated, tmp_path):
         # The manifest dates the statement a month early; its rows take
         # the period end it prints, and its marker closes the gate.
-        calls = self._patch(monkeypatch, {self._COPY: self._parsed()})
+        calls = _patch_statement_parse(monkeypatch, {self._COPY: _stmt_parsed()})
         docs = [("01/31/2026", self._COPY)]
-        load.load_run(migrated, self._bronze(tmp_path, "20260301T000000Z", docs),
+        load.load_run(migrated, _statement_bronze(tmp_path, "20260301T000000Z", docs),
                       workers=1)
-        load.load_run(migrated, self._bronze(tmp_path, "20260302T000000Z", docs),
+        load.load_run(migrated, _statement_bronze(tmp_path, "20260302T000000Z", docs),
                       workers=1)
         migrated.commit()
         assert calls == [self._COPY]
@@ -2710,9 +2718,9 @@ class TestStatementOwnership:
 
     def test_a_copy_under_another_name_writes_nothing(
             self, monkeypatch, migrated, tmp_path, caplog):
-        self._patch(monkeypatch, {self._NAME: self._parsed(),
-                                  self._COPY: self._parsed()})
-        run = self._bronze(tmp_path, "20260301T000000Z",
+        _patch_statement_parse(monkeypatch, {self._NAME: _stmt_parsed(),
+                                  self._COPY: _stmt_parsed()})
+        run = _statement_bronze(tmp_path, "20260301T000000Z",
                            [("02/28/2026", self._NAME), ("01/31/2026", self._COPY)])
         with caplog.at_level("WARNING", logger=load.log.name):
             stats = load.load_run(migrated, run, workers=1)
@@ -2728,9 +2736,9 @@ class TestStatementOwnership:
 
     def test_other_content_for_the_same_period_end_is_kept_out(
             self, monkeypatch, migrated, tmp_path, caplog):
-        self._patch(monkeypatch, {self._NAME: self._parsed(),
-                                  self._COPY: self._parsed(market_value=6000.0)})
-        run = self._bronze(tmp_path, "20260301T000000Z",
+        _patch_statement_parse(monkeypatch, {self._NAME: _stmt_parsed(),
+                                  self._COPY: _stmt_parsed(market_value=6000.0)})
+        run = _statement_bronze(tmp_path, "20260301T000000Z",
                            [("02/28/2026", self._NAME), ("01/31/2026", self._COPY)])
         with caplog.at_level("WARNING", logger=load.log.name):
             stats = load.load_run(migrated, run, workers=1)
@@ -2743,13 +2751,13 @@ class TestStatementOwnership:
 
     def test_a_reparse_of_the_owner_replaces_its_rows(
             self, monkeypatch, migrated, tmp_path):
-        by_name = {self._NAME: self._parsed()}
-        self._patch(monkeypatch, by_name)
+        by_name = {self._NAME: _stmt_parsed()}
+        _patch_statement_parse(monkeypatch, by_name)
         docs = [("02/28/2026", self._NAME)]
-        load.load_run(migrated, self._bronze(tmp_path, "20260301T000000Z", docs),
+        load.load_run(migrated, _statement_bronze(tmp_path, "20260301T000000Z", docs),
                       workers=1)
-        by_name[self._NAME] = self._parsed(market_value=6000.0)
-        load.load_run(migrated, self._bronze(tmp_path, "20260302T000000Z", docs),
+        by_name[self._NAME] = _stmt_parsed(market_value=6000.0)
+        load.load_run(migrated, _statement_bronze(tmp_path, "20260302T000000Z", docs),
                       reparse=True, workers=1)
         migrated.commit()
         assert self._rows(migrated)[0] == [
@@ -2802,3 +2810,45 @@ def test_0008_backfills_the_owner_of_snapshot_rows(conn, tmp_path):
         " ORDER BY 1").fetchall() == [("SYN1", ldk), ("SYN2", None)]
     assert conn.execute(
         "SELECT logical_doc_key FROM historical_cash_balances").fetchall() == [(ldk,)]
+
+
+class TestCashInterestRate:
+    """The rate a statement states for its cash lands beside its closing
+    cash balance; a statement that states none leaves it NULL."""
+
+    def _load(self, monkeypatch, migrated, tmp_path, cash):
+        parsed = {**_stmt_parsed(), "cash_summary": cash}
+        _patch_statement_parse(monkeypatch, {_STMT_NAME: parsed})
+        run = _statement_bronze(
+            tmp_path, "20260301T000000Z", [("02/28/2026", _STMT_NAME)])
+        load.load_run(migrated, run, workers=1)
+        migrated.commit()
+        return migrated.execute(
+            "SELECT closing_balance, interest_rate, interest_rate_line"
+            " FROM historical_cash_balances").fetchall()
+
+    def test_a_stated_rate(self, monkeypatch, migrated, tmp_path):
+        cash = {"opening_balance": 100.0, "closing_balance": 150.0,
+                "currency_iso": "USD", "raw_line": "",
+                "interest_rate": 2.41,
+                "interest_rate_line": "1.00 2.00 1.00 2.41% <1%"}
+        assert self._load(monkeypatch, migrated, tmp_path, cash) == [
+            (150.0, 2.41, "1.00 2.00 1.00 2.41% <1%")]
+
+    def test_no_rate_line(self, monkeypatch, migrated, tmp_path):
+        cash = {"opening_balance": 100.0, "closing_balance": 150.0,
+                "currency_iso": "USD", "raw_line": "",
+                "interest_rate": None, "interest_rate_line": None}
+        assert self._load(monkeypatch, migrated, tmp_path, cash) == [
+            (150.0, None, None)]
+
+    def test_the_migration_forces_a_reparse(self, conn):
+        # 0011 clears the documents generation, so the next load is stale
+        # and re-reads every kept statement.
+        for f in sorted(MIGRATIONS_DIR.glob("[0-9]*.sql")):
+            conn.executescript(f.read_text())
+            if f.name.startswith("0010"):
+                conn.execute("INSERT INTO parser_generations VALUES"
+                             " ('documents', 'old', 0)")
+        assert conn.execute("SELECT COUNT(*) FROM parser_generations"
+                            ).fetchone()[0] == 0

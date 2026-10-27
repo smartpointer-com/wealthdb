@@ -194,3 +194,64 @@ func TestWebAloneRealizedLotsAndTheNewestNumber(t *testing.T) {
 		t.Fatalf("realized lots = %+v, want one under 11115678", lots)
 	}
 }
+
+// A statement's stated cash rate rides on its closing balance alone, as
+// interest_rate and interest_side "credit"; a statement without one
+// adds neither key, and neither does a silver older than the column.
+// Every number is invented.
+func TestStatementCashRateRidesOnTheClosingBalance(t *testing.T) {
+	jan, feb := utcDay("2024-01-31"), utcDay("2024-02-29")
+	seed := `
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, nickname, payload) VALUES
+            (1000, '5678', 'Saving', '{"account_number_full":"1111-5678"}');
+        INSERT INTO historical_cash_balances(period_end, period_start, account_external_id, currency_iso,
+                                             opening_balance, closing_balance, source_sha256, payload,
+                                             interest_rate) VALUES
+            (?1, ?1 - 86400 * 30, '5678', 'USD', 50, 75, 'sha-1', '{"raw_line":"x"}', 2.41),
+            (?2, ?1 + 86400, '5678', 'USD', 75, 80, 'sha-2', '{"raw_line":"y"}', NULL);`
+	closing := func(c *Connection) map[int64]string {
+		t.Helper()
+		ctx := context.Background()
+		stream, err := c.Snapshots(ctx, everything)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stream.Close()
+		got := map[int64]string{}
+		for {
+			b, more, err := stream.Next(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, cb := range b.CashBalances {
+				if cb.BalanceKind == canonical.BalanceKindOpening {
+					if strings.Contains(string(cb.Payload), "interest_rate") {
+						t.Errorf("opening balance at %d states a rate: %s", cb.SnapshotAt, cb.Payload)
+					}
+					continue
+				}
+				got[cb.SnapshotAt] = string(cb.Payload)
+			}
+			if !more {
+				break
+			}
+		}
+		return got
+	}
+
+	got := closing(openWebAlone(t, seed, jan, feb))
+	want := map[int64]string{
+		jan: `{"interest_rate":2.41,"interest_side":"credit","raw_line":"x"}`,
+		feb: `{"raw_line":"y"}`,
+	}
+	if len(got) != 2 || got[jan] != want[jan] || got[feb] != want[feb] {
+		t.Errorf("closing payloads = %v, want %v", got, want)
+	}
+
+	older := closing(openWebAlone(t, seed+`
+        ALTER TABLE historical_cash_balances DROP COLUMN interest_rate;`, jan, feb))
+	if older[jan] != `{"raw_line":"x"}` {
+		t.Errorf("closing payload on a silver without the column = %s, want it unchanged", older[jan])
+	}
+}

@@ -2,11 +2,12 @@
 real account ids, balances, or payees). Exercises the history-JSON parser
 (signed amount from `isDebit`, running balance, stable id, malformed-row
 skipping), the roster projection (mask, balance pick), the statement document
-inventory, and the idempotent per-run load.
+inventory, the statement-rate pass, and the idempotent per-run load.
 """
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,15 @@ MIGRATIONS = Path(__file__).resolve().parent.parent / "migrations"
 # Synthetic opaque Q2 account id + a masked account number (placeholders).
 ACCT_ID = "900001"
 MASKED_NUMBER = "XXXXXXXX6789"
+
+
+@pytest.fixture(autouse=True)
+def _no_pdftotext(monkeypatch):
+    """Keep `load.main`'s statement pass off the real pdftotext: every
+    statement reads as a text with no period. The rate tests stub it
+    with their own texts."""
+    monkeypatch.setattr(load.statement_parser.pdftotext, "layout_text",
+                        lambda path, timeout=None: "")
 
 
 def _epoch(y, m, d):
@@ -343,3 +353,215 @@ def test_failed_load_leaves_silver_unchanged(tmp_path, monkeypatch):
     monkeypatch.undo()
     load.load_run(conn, run)
     assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 3
+
+
+# ============================================================
+# Statement rates
+# ============================================================
+
+STMT_HEADER = ("Statement Period: July 1 , 2026      Thru July 31, 2026"
+               "            Account Number :    000000000000\n")
+
+
+def _stmt_text(rate="3.07%", apy="3.12%"):
+    """Synthetic `pdftotext -layout` text of a savings statement; a None
+    figure leaves its line out."""
+    text = STMT_HEADER + "Beginning Balance        1,000.00+\n"
+    if apy:
+        text += f"   0  Other Credits   0.00   Annual Percentage Yield Earned*   {apy}\n"
+    if rate:
+        text += f"Interest Earned    1.00+   Interest Rate on Statement Day    {rate}\n"
+    return text
+
+
+def _with_texts(monkeypatch, texts):
+    """Make pdftotext return texts[i] for the i-th file read; returns the
+    names read."""
+    read: list[str] = []
+
+    def layout_text(path, timeout=None):
+        read.append(Path(path).name)
+        return texts[len(read) - 1]
+
+    monkeypatch.setattr(load.statement_parser.pdftotext, "layout_text", layout_text)
+    return read
+
+
+def _rates(conn):
+    return [tuple(r) for r in conn.execute(
+        "SELECT account_external_id, period_end, period_start, interest_rate,"
+        " apy_earned, apy FROM statement_rates ORDER BY period_end")]
+
+
+def test_a_statement_rate_lands_in_silver(tmp_path, monkeypatch):
+    bronze_dir = tmp_path / "bronze"
+    _write_bronze_run(bronze_dir, "20260801T120000Z")
+    read = _with_texts(monkeypatch, [_stmt_text()])
+    conn = _main(tmp_path, bronze_dir)
+    assert read == ["07-31-2026.pdf"]
+    assert _rates(conn) == [(ACCT_ID, _epoch(2026, 7, 31), _epoch(2026, 7, 1),
+                             3.07, 3.12, None)]
+    sha = conn.execute("SELECT sha256 FROM documents").fetchone()[0]
+    assert conn.execute("SELECT source_sha256 FROM statement_rates").fetchone()[0] == sha
+    assert load.json.loads(conn.execute("SELECT payload FROM statement_rates")
+                           .fetchone()[0])["lines"]["interest_rate"].endswith("3.07%")
+    conn.close()
+    # A later load reads no statement it has read.
+    _main(tmp_path, bronze_dir).close()
+    assert read == ["07-31-2026.pdf"]
+
+
+def test_a_statement_without_a_rate_writes_nothing(tmp_path, monkeypatch):
+    bronze_dir = tmp_path / "bronze"
+    _write_bronze_run(bronze_dir, "20260801T120000Z")
+    _with_texts(monkeypatch, [_stmt_text(rate=None, apy=None)])
+    conn = _main(tmp_path, bronze_dir)
+    assert _rates(conn) == []
+    assert conn.execute("SELECT COUNT(*) FROM parsed_statements").fetchone()[0] == 1
+
+
+def test_a_yield_the_rate_cannot_give_warns(tmp_path, monkeypatch, caplog):
+    bronze_dir = tmp_path / "bronze"
+    _write_bronze_run(bronze_dir, "20260801T120000Z")
+    _with_texts(monkeypatch, [_stmt_text(rate="2.21%", apy="2.58%")])
+    with caplog.at_level("WARNING", logger=load.log.name):
+        conn = _main(tmp_path, bronze_dir)
+    assert "interest rate 2.21% but apy earned 2.58%" in caplog.text
+    assert _rates(conn)[0][3:5] == (2.21, 2.58)
+
+
+def test_a_yield_within_rounding_does_not_warn(tmp_path, monkeypatch, caplog):
+    bronze_dir = tmp_path / "bronze"
+    _write_bronze_run(bronze_dir, "20260801T120000Z")
+    _with_texts(monkeypatch, [_stmt_text()])
+    with caplog.at_level("WARNING", logger=load.log.name):
+        _main(tmp_path, bronze_dir).close()
+    assert caplog.text == ""
+
+
+def test_a_copy_with_other_rates_is_kept_out(tmp_path, monkeypatch, caplog):
+    bronze_dir = tmp_path / "bronze"
+    _write_bronze_run(bronze_dir, "20260801T120000Z")
+    second = _write_bronze_run(bronze_dir, "20260802T120000Z")
+    # The bank renders the statement anew: other bytes, the same cycle.
+    (second / "statements" / ACCT_ID / "07-31-2026.pdf").write_bytes(b"%PDF-1.4 other")
+    _with_texts(monkeypatch, [_stmt_text(), _stmt_text(rate="4.35%", apy="4.44%")])
+    with caplog.at_level("WARNING", logger=load.log.name):
+        conn = _main(tmp_path, bronze_dir)
+    assert "another copy states other rates" in caplog.text
+    assert [r[3] for r in _rates(conn)] == [3.07]
+
+
+def test_a_copy_with_the_same_rates_writes_nothing(tmp_path, monkeypatch, caplog):
+    bronze_dir = tmp_path / "bronze"
+    _write_bronze_run(bronze_dir, "20260801T120000Z")
+    second = _write_bronze_run(bronze_dir, "20260802T120000Z")
+    (second / "statements" / ACCT_ID / "07-31-2026.pdf").write_bytes(b"%PDF-1.4 other")
+    read = _with_texts(monkeypatch, [_stmt_text(), _stmt_text()])
+    with caplog.at_level("WARNING", logger=load.log.name):
+        conn = _main(tmp_path, bronze_dir)
+    assert len(read) == 2 and caplog.text == ""
+    assert [r[3] for r in _rates(conn)] == [3.07]
+    assert conn.execute("SELECT COUNT(*) FROM parsed_statements").fetchone()[0] == 2
+
+
+def test_the_sentence_form_yield_is_checked(tmp_path, monkeypatch, caplog):
+    bronze_dir = tmp_path / "bronze"
+    _write_bronze_run(bronze_dir, "20260801T120000Z")
+    _with_texts(monkeypatch, [STMT_HEADER
+                              + "AS OF ENDING STATEMENT DATE YOUR INTEREST RATE WAS 2.21% AND YOUR\n"
+                              + "ANNUAL PERCENTAGE YIELD WAS 2.58%.\n"])
+    with caplog.at_level("WARNING", logger=load.log.name):
+        conn = _main(tmp_path, bronze_dir)
+    assert "interest rate 2.21% but apy 2.58%" in caplog.text
+    assert _rates(conn)[0][3:6] == (2.21, None, 2.58)
+
+
+def test_a_missing_pdftotext_stops_the_pass(tmp_path, monkeypatch):
+    bronze_dir = tmp_path / "bronze"
+    _write_bronze_run(bronze_dir, "20260801T120000Z")
+
+    def missing(path, timeout=None):
+        raise load.pdftotext.ToolMissing("pdftotext not found")
+
+    monkeypatch.setattr(load.statement_parser.pdftotext, "layout_text", missing)
+    db = tmp_path / "firstcitizens.db"
+    with pytest.raises(load.pdftotext.ToolMissing):
+        load.main(["--bronze-dir", str(bronze_dir), "--silver-db", str(db)])
+    conn = load.silver.open_db(db)
+    assert conn.execute("SELECT COUNT(*) FROM parsed_statements").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM parser_generations"
+                        " WHERE scope = ?", (load.STATEMENT_GENERATION_SCOPE,)
+                        ).fetchone()[0] == 0
+
+
+def test_a_moved_parser_reads_every_statement_again(tmp_path, monkeypatch):
+    bronze_dir = tmp_path / "bronze"
+    _write_bronze_run(bronze_dir, "20260801T120000Z")
+    read = _with_texts(monkeypatch, [_stmt_text(), _stmt_text(rate="4.04%", apy="4.11%")])
+    _main(tmp_path, bronze_dir).close()
+    monkeypatch.setattr(load, "STATEMENT_GENERATION", "another")
+    conn = _main(tmp_path, bronze_dir)
+    assert len(read) == 2
+    assert [r[3] for r in _rates(conn)] == [4.04]
+    assert conn.execute("SELECT generation FROM parser_generations").fetchone()[0] == "another"
+
+
+def test_a_statement_gone_from_bronze_is_read_later(tmp_path, monkeypatch, caplog):
+    bronze_dir = tmp_path / "bronze"
+    run = _write_bronze_run(bronze_dir, "20260801T120000Z")
+    pdf = run / "statements" / ACCT_ID / "07-31-2026.pdf"
+    body = pdf.read_bytes()
+    conn = _load(tmp_path)
+    load.load_run(conn, run)
+    pdf.unlink()
+    read = _with_texts(monkeypatch, [_stmt_text()])
+    with caplog.at_level("WARNING", logger=load.log.name):
+        load.refresh_statement_rates(conn, bronze_dir)
+    assert read == [] and "not in bronze" in caplog.text
+    pdf.write_bytes(body)
+    load.refresh_statement_rates(conn, bronze_dir)
+    assert read == ["07-31-2026.pdf"] and len(_rates(conn)) == 1
+
+
+def test_an_unreadable_statement_is_marked(tmp_path, monkeypatch, caplog):
+    bronze_dir = tmp_path / "bronze"
+    _write_bronze_run(bronze_dir, "20260801T120000Z")
+
+    def fail(path, timeout=None):
+        raise load.pdftotext.ExtractionError("pdftotext exited 1")
+
+    monkeypatch.setattr(load.statement_parser.pdftotext, "layout_text", fail)
+    with caplog.at_level("WARNING", logger=load.log.name):
+        conn = _main(tmp_path, bronze_dir)
+    assert "pdftotext exited 1" in caplog.text
+    assert _rates(conn) == []
+    assert conn.execute("SELECT COUNT(*) FROM parsed_statements").fetchone()[0] == 1
+
+
+def test_a_timed_out_statement_is_read_again(tmp_path, monkeypatch, caplog):
+    bronze_dir = tmp_path / "bronze"
+    _write_bronze_run(bronze_dir, "20260801T120000Z")
+
+    def slow(path, timeout=None):
+        try:
+            raise subprocess.TimeoutExpired("pdftotext", timeout or 60)
+        except subprocess.TimeoutExpired as exc:
+            raise load.pdftotext.ExtractionError("pdftotext timed out") from exc
+
+    monkeypatch.setattr(load.statement_parser.pdftotext, "layout_text", slow)
+    with caplog.at_level("WARNING", logger=load.log.name):
+        conn = _main(tmp_path, bronze_dir)
+    assert "timed out" in caplog.text
+    assert conn.execute("SELECT COUNT(*) FROM parsed_statements").fetchone()[0] == 0
+
+
+def test_a_statement_of_an_unknown_layout_warns(tmp_path, monkeypatch, caplog):
+    bronze_dir = tmp_path / "bronze"
+    _write_bronze_run(bronze_dir, "20260801T120000Z")
+    monkeypatch.setattr(load.statement_parser.pdftotext, "layout_text",
+                        lambda path, timeout=None: "AN EXAMPLE PAGE WITH NO PERIOD\n")
+    with caplog.at_level("WARNING", logger=load.log.name):
+        conn = _main(tmp_path, bronze_dir)
+    assert "no statement period read" in caplog.text
+    assert _rates(conn) == []

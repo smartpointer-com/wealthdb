@@ -26,7 +26,9 @@
 //     latest net worth reflects the balance now. An account the latest runs
 //     leave out has no balance after its last listing run, so gold can end
 //     it. Each closing balance is stamped at its day's last second, so an
-//     as-of query at a day's end returns that day's closing balance.
+//     as-of query at a day's end returns that day's closing balance. The
+//     rate a statement states rides on a closing balance of its cycle
+//     (rates.go).
 //
 //   - TRANSACTIONS: the whole deposit ledger. The collector signs amounts the
 //     canonical way (positive = balance increase), so the source sign is

@@ -208,15 +208,29 @@ SELECT as_of_date, account_external_id, instrument_key,
 // payload (forwarded through PositionChange's payload field) but
 // not projected to gold — they're monthly aggregates, not
 // point-in-time balances.
+//
+// The interest rate the statement states for the cash (silver
+// migration 0011) rides on the closing balance alone, as the
+// payload's interest_rate and interest_side "credit": the
+// statement states it at the period's end. A statement that states
+// none, or a silver older than the column, adds neither key.
 func (r *webReader) appendHistoricalCashBalances(
 	ctx context.Context,
 	w canonical.Window,
 	getBatch func(int64) *canonical.SnapshotBatch,
 	bridge map[string]string,
 ) error {
-	const q = `
+	hasRate, err := silver.HasColumn(ctx, r.db, "historical_cash_balances", "interest_rate")
+	if err != nil {
+		return fmt.Errorf("appendHistoricalCashBalances: %w", err)
+	}
+	rate := "NULL"
+	if hasRate {
+		rate = "interest_rate"
+	}
+	q := `
 SELECT period_end, period_start, account_external_id, currency_iso,
-       opening_balance, closing_balance, payload
+       opening_balance, closing_balance, payload, ` + rate + `
   FROM historical_cash_balances
  WHERE period_end BETWEEN ? AND ?
     OR period_start BETWEEN ? AND ?`
@@ -230,10 +244,10 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 		var (
 			periodEnd, periodStart int64
 			suffix, ccy, payload   string
-			open, closing          sql.NullFloat64
+			open, closing, stated  sql.NullFloat64
 		)
 		if err := rows.Scan(&periodEnd, &periodStart, &suffix, &ccy,
-			&open, &closing, &payload); err != nil {
+			&open, &closing, &payload, &stated); err != nil {
 			return err
 		}
 		hash, ok := bridge[suffix]
@@ -253,6 +267,13 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 			})
 		}
 		if closing.Valid && periodEnd >= w.Start && periodEnd <= w.End {
+			closingPayload := json.RawMessage(payload)
+			if stated.Valid {
+				if closingPayload, err = silver.WithCreditRate(closingPayload,
+					stated.Float64, ""); err != nil {
+					return fmt.Errorf("appendHistoricalCashBalances %s: %w", suffix, err)
+				}
+			}
 			batch := getBatch(periodEnd)
 			batch.CashBalances = append(batch.CashBalances, canonical.CashBalanceChange{
 				SnapshotAt:        periodEnd,
@@ -260,7 +281,7 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 				Currency:          ccy,
 				BalanceKind:       canonical.BalanceKindClosing,
 				Amount:            canonical.NewDecimalFromFloat(closing.Float64),
-				Payload:           json.RawMessage(payload),
+				Payload:           closingPayload,
 			})
 		}
 	}

@@ -1,6 +1,6 @@
 -- Minimal subset of schwab-web's silver schema, sufficient for the
 -- merged-adapter tests. Mirrors the column types of the upstream
--- migrations (0001, 0002, 0004, 0006, 0007) and omits what the adapter
+-- migrations (0001, 0002, 0004, 0006, 0007, 0011) and omits what the adapter
 -- does not read.
 
 CREATE TABLE dump_runs (
@@ -55,6 +55,7 @@ CREATE TABLE historical_cash_balances (
     total_credits        REAL,
     source_sha256        TEXT    NOT NULL,
     payload              TEXT    NOT NULL,
+    interest_rate        REAL,
     PRIMARY KEY (period_end, account_external_id, currency_iso)
 );
 

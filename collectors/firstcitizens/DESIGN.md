@@ -162,10 +162,11 @@ password but fires no `accessCode` call. So:
   banking system's `hostTranNumber` does not move. So a row whose host
   number, posting date and amount match a stored row under another id is
   the same movement, and the id first seen keeps it.
-- **Statements are documents only.** The history reaches further back
+- **Statements give no transactions.** The history reaches further back
   than the statement archive, so there is no older tail to rebuild from
-  PDFs. Chase's `statement_parser.py` and balance-chained attribution
-  are not ported.
+  PDFs. Chase's statement transactions and balance-chained attribution
+  are not ported. A statement is read for its interest rate alone
+  (§4.3).
 
 ## 4. Runtime
 
@@ -268,10 +269,27 @@ reads the **JSON `history/<acct>.json` as the authoritative ledger**:
 - the per-row `runningBalance`, so every row has a balance;
 - the description and check number.
 
-The CSV/QFX exports are not read. Statements are ingested as documents
-only, with no transaction backfill. The silver schema is
-column-compatible with chase's, so the two gold adapters run in
-parallel.
+The CSV/QFX exports are not read. Statements give no transactions. The
+silver schema is column-compatible with chase's, so the two gold
+adapters run in parallel.
+
+`statement_parser.py` reads each statement's `pdftotext -layout` text
+for its cycle and its rate lines, into `statement_rates`:
+
+- "Interest Rate on Statement Day" is the rate. An interest checking
+  statement prints it as the sentence "YOUR INTEREST RATE WAS ...%"
+  instead;
+- "Annual Percentage Yield Earned" checks it. The yield must lie
+  between the rate and the rate compounded daily, each widened by
+  0.01 points of rounding. Outside that band the loader warns and keeps
+  the rate. The rate moved during the cycle, or a line was misread;
+- a statement that prints neither has no row.
+
+The bank renders a statement anew on every download. The first copy
+read writes the cycle's row. A copy with other figures is kept out with
+a warning. `parsed_statements` marks each document read, so a load
+reads only new documents. A moved parser generation reads them all
+again.
 
 The roster keeps a row only when an account changed. The
 `run_accounts` table records the accounts each run listed, so a run
@@ -289,7 +307,11 @@ that still listed an unchanged account is visible.
   (`run_accounts`). An account the bank stops listing has no balance
   after its last listing run, so gold can end it;
 - every transaction: interest and fee recognised from the description,
-  else deposit or withdrawal by sign.
+  else deposit or withdrawal by sign;
+- each statement's rate, as `interest_rate` and `interest_side`
+  `credit` on a closing balance of its cycle: the one on the closing
+  day, else the latest before it. A cycle in which the balance never
+  moved has no closing balance, and its rate is not used.
 
 The adapter registers via a blank import in `cmd/wealthdb/main.go` and
 the `silver_sources` migration

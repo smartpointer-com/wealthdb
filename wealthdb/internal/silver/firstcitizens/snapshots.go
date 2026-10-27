@@ -11,9 +11,10 @@ import (
 // Snapshots emits, in one batch: one cash ACCOUNT per deposit account, a
 // CURRENT cash balance per run whose roster listed the account, and a CLOSING
 // cash balance per day the balance moved, valued at the transaction ledger's
-// end-of-day running balance. Cash is modelled as cash_balances, never a
-// position/instrument; gold's report_cash macro synthesises the read-time cash
-// position.
+// end-of-day running balance. The rate a statement states rides on a
+// closing balance of its cycle (applyStatementRates). Cash is modelled as
+// cash_balances, never a position/instrument; gold's report_cash macro
+// synthesises the read-time cash position.
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
@@ -30,6 +31,9 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return nil, err
 	}
 	if err := c.appendRunningBalances(ctx, w, ccy, &batch); err != nil {
+		return nil, err
+	}
+	if err := c.applyStatementRates(ctx, &batch); err != nil {
 		return nil, err
 	}
 	return silver.NewSnapshotStream([]canonical.SnapshotBatch{batch}), nil

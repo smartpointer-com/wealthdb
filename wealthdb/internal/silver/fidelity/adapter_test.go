@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -33,6 +35,51 @@ func TestKindIsFidelity(t *testing.T) {
 
 func TestStatusEmpty(t *testing.T) {
 	silvertest.AssertEmptyStatus(t, &Adapter{}, silverSchemaSQL)
+}
+
+// A core position's SEC yield is its cash's credit rate, from the day
+// the dividend view states it as of; a core that states none gives its
+// cash no rate.
+func TestSnapshotsCoreCarriesItsSECYieldAsTheCashRate(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 3, '/x/1');
+        INSERT INTO portfolios(snapshot_at, portfolio_external_id, kind, payload) VALUES (1000, 'PORT1', 'other', '{}');
+        INSERT INTO accounts(snapshot_at, account_external_id, portfolio_external_id, nickname, management_style, payload) VALUES
+            (1000, 'ACC1', 'PORT1', 'One', NULL, '{}'), (1000, 'ACC2', 'PORT1', 'Two', NULL, '{}');
+        INSERT INTO positions(snapshot_at, account_external_id, instrument_key, description, asset_class, currency,
+                              is_core_position, quantity, current_value, sec_yield, payload) VALUES
+            (1000, 'ACC1', 'QMMXX', 'Example Cash Reserves', 'money_market', 'USD', 1, 0, 100, 0.0412,
+             '{"dividend": {"SEC yield": "4.12%", "SEC yield as of": "Mar-04-2026"}}'),
+            (1000, 'ACC2', 'QMMXX', 'Example Cash Reserves', 'money_market', 'USD', 1, 0, 50, NULL, '{}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, err := conn.ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	batch, _, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, c := range batch.CashBalances {
+		var rates []string
+		for _, r := range canonical.ReadStatedRates(c.Payload) {
+			rates = append(rates, fmt.Sprintf("%s %g from %v", r.Side, r.Tiers[0].Pct, r.ValidFrom.Format(time.DateOnly)))
+		}
+		got[c.AccountExternalID] = strings.Join(rates, "; ")
+	}
+	if got["ACC1"] != "credit 4.12 from 2026-03-04" || got["ACC2"] != "" {
+		t.Errorf("core rates %v", got)
+	}
 }
 
 // TestSnapshotsCorePositionBecomesCash covers fidelity's

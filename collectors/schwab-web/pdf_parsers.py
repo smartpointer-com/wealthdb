@@ -2532,6 +2532,95 @@ def _parse_cash_summary_very_old(text: str) -> dict | None:
 
 
 # ============================================================
+# The cash's interest rate
+# ============================================================
+#
+# What the account's cash earns, in percent a year, as the statement
+# states it at the period's end. Two shapes:
+#
+#   * 2025+: the "Cash and Cash Investments" table has an
+#     "Interest/Yield Rate" column, the APY as of the period's last
+#     business day. One row per cash line. A "Cash" row prints its
+#     figures on its own line. A "Bank Sweep" row prints its bank's name
+#     and its endnote markers first and its figures on a later line:
+#       Cash , 100.00 250.00 150.00 0.00 1.09% <1%
+#       Bank Sweep EXAMPLE
+#       BANK,
+#       X,Z
+#       1,000.00 2,000.00 1,000.00 2.41% 3%
+#     The rate is the one figure with decimals that ends in "%". The
+#     "% of Acct" column prints a whole percent or "<1%". A line that
+#     earns nothing prints no rate.
+#   * 2017-2024: a note under the cash lines:
+#       Bank Sweep: Interest Rate as of 06/30/21 was 2.41%.
+#       Deposit Accounts: Interest rate as of 03/30/18 was 1.09%. ...
+#
+# The closing cash balance is the sum of the cash lines, so one rate
+# stands for it: the rate of the line with the largest ending balance
+# among the lines that print one. A money fund is a position, not a
+# cash line, and its yield is not read here. A statement that prints no
+# rate states none. The "average ... interest rate" in the description
+# of a 2023-2024 interest credit is a mean over the interest period, not
+# a rate at the period's end, so it is not read either.
+
+_CASH_TABLE_HEADER_RE = re.compile(r"^Cash\s+and\s+Cash\s+Investments$")
+_CASH_TABLE_COLUMNS_RE = re.compile(r"^Type\s+Symbol\s+Description\b")
+_CASH_TABLE_END_RE = re.compile(r"^Total\s+Cash\s+and\s+Cash\s+Investments\b")
+_CASH_TABLE_ROW_RE = re.compile(r"^(?:Cash\s*,|Bank\s+Sweep\b)")
+_CASH_RATE_TOKEN_RE = re.compile(r"^\d+\.\d+%$")
+# Bounds the lines the table can take: its column headers and rows.
+_CASH_TABLE_MAX_LINES = 40
+_LEGACY_CASH_RATE_RE = re.compile(
+    r"^(?:Bank\s+Sweep|Deposit\s+Accounts):\s+Interest\s+[Rr]ate\s+as\s+of\s+"
+    r"\d{2}/\d{2}/\d{2}\s+was\s+(?P<rate>\d+(?:\.\d+)?)%"
+)
+
+
+def parse_cash_interest_rate(text: str) -> dict | None:
+    """The rate the statement states for the account's cash, as
+    {"interest_rate": percent a year, "interest_rate_line": the line it
+    is read from}; None when the statement states none."""
+    lines = [raw.strip() for raw in text.split("\n")]
+    for i, line in enumerate(lines):
+        if (_CASH_TABLE_HEADER_RE.match(line) and i + 1 < len(lines)
+                and _CASH_TABLE_COLUMNS_RE.match(lines[i + 1])):
+            return _cash_table_rate(lines[i + 2:i + 2 + _CASH_TABLE_MAX_LINES])
+    for line in lines:
+        m = _LEGACY_CASH_RATE_RE.match(line)
+        if m:
+            return {"interest_rate": float(m.group("rate")),
+                    "interest_rate_line": line}
+    return None
+
+
+def _cash_table_rate(lines: list[str]) -> dict | None:
+    """The rate of the 2025+ cash table's rows (see above), or None."""
+    best: tuple[float, dict] | None = None
+    in_row = False
+    for line in lines:
+        if _CASH_TABLE_END_RE.match(line):
+            break
+        m = _CASH_TABLE_ROW_RE.match(line)
+        if m:
+            in_row = True
+        if not in_row:
+            continue  # column headers
+        toks = line[m.end():].split() if m else line.split()
+        amounts = [t for t in toks if _NUM_RE.fullmatch(t)]
+        if len(amounts) < 2:
+            continue  # a Bank Sweep row's name or markers; its figures follow
+        in_row = False
+        rates = [t for t in toks if _CASH_RATE_TOKEN_RE.match(t)]
+        if not rates:
+            continue
+        ending = abs(_parse_number(amounts[1]) or 0.0)
+        if best is None or ending > best[0]:
+            best = (ending, {"interest_rate": float(rates[0][:-1]),
+                             "interest_rate_line": line})
+    return best[1] if best else None
+
+
+# ============================================================
 # Convenience: open + parse a file path
 # ============================================================
 
@@ -2560,7 +2649,10 @@ def parse_account_value(text: str) -> float | None:
 def parse_statement_pdf(path, statement_year: int | None = None) -> dict:
     """Open a Schwab brokerage statement PDF and return a dict with
     the statement period, transactions, positions, cash summary,
-    account value, registration label and account number.
+    account value, registration label and account number. The cash
+    summary carries the rate its cash earns (parse_cash_interest_rate)
+    under `interest_rate` and `interest_rate_line`, None where the
+    statement states none.
 
     `statement_year` dates the MM/DD activity rows of a statement
     whose period header does not read (parse_transactions); a printed
@@ -2572,6 +2664,9 @@ def parse_statement_pdf(path, statement_year: int | None = None) -> dict:
     txs = parse_transactions(full_text, statement_year=statement_year)
     positions = parse_positions(full_text)
     cash = parse_cash_summary(full_text)
+    if cash is not None:
+        cash.update(parse_cash_interest_rate(full_text)
+                    or {"interest_rate": None, "interest_rate_line": None})
     account_value = parse_account_value(full_text)
     registration = parse_account_registration(full_text)
     account_number = parse_account_number(full_text)

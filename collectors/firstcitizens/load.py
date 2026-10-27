@@ -17,7 +17,8 @@ export can carry slightly fewer rows than the JSON (a pending/edge item it
 omits), so it is never the source of record. Statements are ingested as
 documents (PDFs belong in bronze) but are not a transaction source: the
 history reaches back further than the statement listing, so there is no
-older tail to reconstruct.
+older tail to reconstruct. Each statement's interest rate is read
+(statement_parser.py) into `statement_rates`.
 
 Bronze run-dir layout consumed:
 
@@ -38,18 +39,29 @@ import json
 import logging
 import re
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, silver
+from collectorkit import bronze, cli, pdftotext, silver, srcfp
 from collectorkit.money import parse_money
 from collectorkit.parse import epoch_day
+
+import statement_parser
 
 
 log = logging.getLogger("firstcitizens.load")
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+
+# `parser_generations` (migration 0003) records which generation of the
+# statement parser read the documents `parsed_statements` marks. A moved one
+# clears the rates and the marks, and every statement is read again. The
+# extraction side is the `pdftotext` binary, pinned by the version it reports.
+STATEMENT_GENERATION_SCOPE = "statements"
+STATEMENT_GENERATION = srcfp.parser_fingerprint(
+    [statement_parser], extra_tools=(("pdftotext", "-v"),))
 
 # transactions.source tag. The JSON `accountHistory` ledger is the single
 # source of record (no export join), so there is exactly one value.
@@ -317,6 +329,117 @@ def _statement_date_from_name(name: str) -> int | None:
 
 
 # ============================================================
+# Statement rates
+# ============================================================
+
+def _statement_path(bronze_dir: Path, run_dir: str, account_external_id: str,
+                    filename: str) -> Path:
+    """Where a document's file sits: in the run that first held it, under
+    the bronze root this load reads (download.py's layout)."""
+    return (bronze_dir / Path(run_dir).name / "statements"
+            / bronze.safe_stem(account_external_id) / filename)
+
+
+def _rate_row(account_external_id: str, sha: str, parsed: dict) -> tuple:
+    return (account_external_id, epoch_day(parsed["period_end"]),
+            epoch_day(parsed["period_start"]), parsed["interest_rate"],
+            parsed["apy_earned"], parsed["apy"], sha,
+            silver.canonical_json({"lines": parsed["lines"]}))
+
+
+def _check_rate(account_external_id: str, parsed: dict) -> None:
+    """Warn where a yield the statement prints is not one its rate can give
+    (statement_parser.rate_disagrees): the rate moved during the cycle, or
+    a line was misread. The rate on the statement day is kept either way."""
+    for key in ("apy_earned", "apy"):
+        apy = parsed[key]
+        if apy is not None and statement_parser.rate_disagrees(
+                parsed["interest_rate"], apy):
+            log.warning(
+                "statement %s ending %s: interest rate %.2f%% but %s %.2f%%; "
+                "keeping the rate", bronze.log_id(account_external_id),
+                parsed["period_end"].isoformat(), parsed["interest_rate"],
+                key.replace("_", " "), apy)
+
+
+def _store_rate(conn, account_external_id: str, sha: str, parsed: dict) -> None:
+    """Write a statement's rate row. The first document of an account and
+    cycle writes it; another with the same figures is a copy, and one with
+    other figures is kept out with a warning."""
+    row = _rate_row(account_external_id, sha, parsed)
+    held = conn.execute(
+        "SELECT interest_rate, apy_earned, apy, source_sha256 FROM statement_rates"
+        " WHERE account_external_id = ? AND period_end = ?", row[:2]).fetchone()
+    if held is None:
+        _check_rate(account_external_id, parsed)
+        conn.execute("INSERT INTO statement_rates VALUES (?,?,?,?,?,?,?,?)", row)
+    elif tuple(held[:3]) != row[3:6]:
+        log.warning("statement %s ending %s: another copy states other rates; "
+                    "keeping those of %s", bronze.log_id(account_external_id),
+                    parsed["period_end"].isoformat(), held[3][:12])
+
+
+def load_statement_rates(conn, bronze_dir: Path) -> int:
+    """Read the rate of every statement document the current parser
+    generation has not read, and mark it read. Returns the documents read.
+
+    A document whose file is gone is left unmarked, so a later load reads
+    it if the file comes back, and so is one whose pdftotext timed out. One
+    pdftotext cannot read is marked: its bytes will not read better under
+    the same parser. A missing pdftotext stops the pass. A document whose
+    statement period does not read warns: a layout the parser does not
+    know would otherwise give no rate in silence."""
+    pending = conn.execute(
+        "SELECT d.sha256, d.account_external_id, d.filename, r.run_dir"
+        "  FROM documents d JOIN dump_runs r ON r.snapshot_at = d.snapshot_at"
+        " WHERE d.doc_kind = 'statement'"
+        "   AND d.sha256 NOT IN (SELECT sha256 FROM parsed_statements)"
+        " ORDER BY d.doc_date, d.snapshot_at, d.sha256").fetchall()
+    read = 0
+    for sha, acct, filename, run_dir in pending:
+        path = _statement_path(bronze_dir, run_dir, acct, filename)
+        if not path.is_file():
+            log.warning("statement %s: %s is not in bronze; not read",
+                        bronze.log_id(acct), filename)
+            continue
+        try:
+            parsed = statement_parser.parse_statement_pdf(path)
+        except pdftotext.ToolMissing:
+            raise
+        except pdftotext.ExtractionError as exc:
+            log.warning("statement %s: %s: %s", bronze.log_id(acct), filename, exc)
+            if isinstance(exc.__cause__, subprocess.TimeoutExpired):
+                continue
+            parsed = None
+        else:
+            if parsed is None:
+                log.warning("statement %s: %s: no statement period read; "
+                            "no rate", bronze.log_id(acct), filename)
+        if parsed is not None and parsed["interest_rate"] is not None:
+            _store_rate(conn, acct, sha, parsed)
+        conn.execute("INSERT INTO parsed_statements VALUES (?)", (sha,))
+        read += 1
+    return read
+
+
+def refresh_statement_rates(conn, bronze_dir: Path) -> None:
+    """The statement pass of a load, in one transaction. A moved parser
+    generation first clears what the old one read."""
+    with silver.transaction(conn):
+        if silver.stale_generation(conn, STATEMENT_GENERATION_SCOPE,
+                                   STATEMENT_GENERATION):
+            log.info("the statement parser has changed since silver was "
+                     "written; reading every statement again")
+            conn.execute("DELETE FROM statement_rates")
+            conn.execute("DELETE FROM parsed_statements")
+        read = load_statement_rates(conn, bronze_dir)
+        silver.stamp_generation(conn, STATEMENT_GENERATION_SCOPE,
+                                STATEMENT_GENERATION)
+    if read:
+        log.info("read the rates of %d statement(s)", read)
+
+
+# ============================================================
 # Per-run loader
 # ============================================================
 
@@ -416,6 +539,7 @@ def main(argv: list[str]) -> int:
         for run_dir in bronze.pending_run_dirs(conn, args.bronze_dir, log=log):
             load_run(conn, run_dir)
             loaded += 1
+        refresh_statement_rates(conn, args.bronze_dir)
         log.info("done: %d run(s) ingested into %s", loaded, db_path)
     finally:
         conn.close()

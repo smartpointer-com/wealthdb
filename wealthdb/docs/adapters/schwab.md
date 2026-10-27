@@ -382,7 +382,10 @@ api silver does not have. §8 has the tax lots, open and realized.
 - **Statement cash balances.** `historical_cash_balances` holds the
   opening and closing balance of each statement period. Opening lands
   at `period_start`, closing at `period_end`. A NULL side is skipped,
-  not read as 0.
+  not read as 0. The rate the statement states for the cash rides on
+  the closing balance alone, as `interest_rate` (percent a year) and
+  `interest_side` `credit` in its payload. A statement that states no
+  rate adds neither key.
 - **Transaction backfill.** The web transactions reach further back
   than the api's. The adapter emits the web rows from before each
   account's api coverage start (§7.2). The `form_1099b` rows stay out

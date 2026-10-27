@@ -12,6 +12,12 @@ FROM wealthdb/base-camoufox:${WEALTHDB_IMAGE_TAG}
 
 WORKDIR /app
 
+# poppler's pdftotext extracts the statement-PDF text the loader reads each
+# statement's interest rate from (statement_parser.py).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install per-collector deps only — camoufox/playwright/collectorkit are
 # already in the base.
 COPY requirements.txt /app/
@@ -25,9 +31,10 @@ RUN pip install -r requirements.txt
 #   login.py        interactive login (device registration) + shared authenticate()
 #   download.py     unattended logon + REST fetch → bronze
 #   load.py         bronze → SQLite silver
+#   statement_parser.py  the interest rate a statement PDF states
 #   prune.py        bronze reclaim
 COPY explore.py q2client.py auth_dialog.py login.py download.py \
-     load.py prune.py /app/
+     load.py statement_parser.py prune.py /app/
 COPY migrations /app/migrations
 COPY tests /app/tests
 COPY entrypoint.sh /app/

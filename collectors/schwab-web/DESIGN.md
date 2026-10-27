@@ -123,7 +123,7 @@ those rows.
 | `dump_runs` | `dump_runs` | Identical convention; `snapshot_at` is the bronze dir's UTC timestamp on both |
 | `accounts` | `accounts` | Both promote `nickname`. api also has `account_type` / `preference_type`; web doesn't expose either. Different `account_external_id` value space — see §2.1 |
 | `user_preference` | — | api-only |
-| `account_balances` | `historical_cash_balances` | api has live per-dump balances; web parses the monthly statement cash-flow summary (opening/closing) into `historical_cash_balances` |
+| `account_balances` | `historical_cash_balances` | api has live per-dump balances; web parses the monthly statement cash-flow summary (opening/closing) and the rate the cash earns (migration 0011; see §3.1) into `historical_cash_balances` |
 | `positions` | `historical_position_snapshots` | api has live per-dump positions; web parses the monthly/quarterly statement holdings block into `historical_position_snapshots` |
 | `open_orders` | — | api-only |
 | `transactions` | `transactions` | Same column shape. Different `activity_id` value space — see §2.2 |
@@ -133,6 +133,21 @@ those rows.
 | — | `closed_lots` | web-only. One row per realized lot a year-end tax document prints; see §9.2 |
 | — | `cost_basis_methods` | web-only. The cost-basis methods a Gain/Loss Report prints; see §9.3 |
 | — | `parsed_documents` | web-only. The logical documents parsed under the current parser generation; see §4.4 |
+
+### 3.1 The cash's interest rate
+
+Each statement states the rate of the account's cash at the period's
+end. `historical_cash_balances.interest_rate` holds it, beside the
+closing cash balance. Two shapes print it:
+
+- from 2025, the "Interest/Yield Rate" column of the "Cash and Cash
+  Investments" table. Several cash lines can print a rate. The line
+  with the largest ending balance stands;
+- before 2025, the note "Bank Sweep: Interest Rate as of ... was
+  ...%". The first such note stands.
+
+A statement that prints no rate gives none. `pdf_parsers.py`
+(`parse_cash_interest_rate`) has the line shapes.
 
 ## 4. Irreconcilable differences (and gold-layer mitigations)
 
