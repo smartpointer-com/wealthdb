@@ -372,8 +372,9 @@ func printSpendCanaries(w io.Writer, c *spendCanaries) {
 		}
 		// The phase leads the pair, because it is what says how to read the
 		// two lines under it: legs that disagree in amount and currency are
-		// the expected shape of a pair the source asserted and the alarming
-		// shape of one the amounts alone produced.
+		// the expected shape of a pair the source asserted or a converted
+		// pair joined at the day's rate, and the alarming shape of one the
+		// amounts alone produced.
 		fmt.Fprintf(w, "    (%s)\n", p.By)
 		printLeg(w, p.Debit)
 		printLeg(w, p.Credit)

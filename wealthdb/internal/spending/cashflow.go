@@ -94,6 +94,10 @@ type CashflowResult struct {
 	// named the other's account (spending.internal_transfer_matching.names)
 	// — still on amount and day, but ahead of every pair those alone make.
 	NamedPairs int
+	// ConvertedPairs is how many were paired across two currencies: a leg
+	// whose narrative names the other's account, the two agreeing at the
+	// day's rate (gold.MatchedByConversion).
+	ConvertedPairs int
 	// ReversalPairs is how many legs no cross-account phase paired were
 	// paired with an opposite leg of the same amount on their own account:
 	// a booking and its reversal.

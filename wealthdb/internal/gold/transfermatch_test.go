@@ -493,8 +493,9 @@ func TestManualOverridesOutrankASharedReference(t *testing.T) {
 
 // A `match` line reaches a movement no amount test can: the phases that
 // ASSERT a pair run ahead of the currency partition and never consult a
-// currency, so the holder can state a conversion's two legs as one movement
-// even where the source stamped nothing on them.
+// currency or the window, so the holder can state a conversion's two legs as
+// one movement even where the source stamped nothing on them. The credit
+// here sits outside WindowDays.
 func TestAForcedPairCrossesTheCurrencyPartition(t *testing.T) {
 	forced, err := newTransferOverrides(nil, nil, []ForcedPair{{
 		Debit: LegRef{"bank", "usd-account", "out"}, Credit: LegRef{"bank", "chf-account", "in"},
@@ -504,7 +505,7 @@ func TestAForcedPairCrossesTheCurrencyPartition(t *testing.T) {
 	}
 	legs := []TransferLeg{
 		refLeg("usd-account", "out", 100, "USD", -1000, ""),
-		refLeg("chf-account", "in", 104, "CHF", 987.65, ""),
+		refLeg("chf-account", "in", 120, "CHF", 987.65, ""),
 	}
 	got := MatchTransferLegs(legs, TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, Overrides: forced})
 	if len(got) != 1 || got[0].By != MatchedByOverride {

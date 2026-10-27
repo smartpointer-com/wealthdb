@@ -28,10 +28,10 @@ func TestLotRatesBridgeInTheReportsOrder(t *testing.T) {
 		prev = i
 	}
 
-	r := &lotRates{pairs: map[[2]string][]dayRate{
+	r := &lotRates{daily: &DailyRates{pairs: map[[2]string][]dayRate{
 		{"BTC", "CHF"}: {{10, 90}}, {"CHF", "EUR"}: {{10, 1}},
 		{"BTC", "USD"}: {{10, 100}}, {"USD", "EUR"}: {{10, 1}},
-	}}
+	}}}
 	if x, ok := r.rate("BTC", "EUR", 12); !ok || x != 90 {
 		t.Errorf("BTC in EUR = %v %v, want the CHF bridge's 90", x, ok)
 	}

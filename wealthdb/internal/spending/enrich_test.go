@@ -1959,3 +1959,44 @@ func sameOnRerun(a, b *Result) bool {
 	x.Cashflow.FirstPass, y.Cashflow.FirstPass = false, false
 	return x == y
 }
+
+// TestPassPairsAConversionAtTheStoredRate pins the converted phase
+// through the pass, from a stored fx_rates row: base CHF, quote USD, mid
+// 0.9 reads as one USD buying 0.9 CHF (fx_norm). A named USD withdrawal
+// and the CHF deposit it became at that rate pair, and both legs read
+// `internal_transfer` via the matcher. A second pair whose amounts agree
+// only at the inverted rate stays two rows. Every name and figure is
+// invented.
+func TestPassPairsAConversionAtTheStoredRate(t *testing.T) {
+	db, ctx := openGold(t)
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate)
+             VALUES ('bank', ?, 'CHF', 'USD', 0.9)`, day(5)); err != nil {
+		t.Fatalf("seed the rate: %v", err)
+	}
+	seedTxns(t, db, ctx,
+		txn{"bank", "FX-OUT", "CASH1", "withdrawal", day(10), -1000, "", "TO EXAMPLE FX BANK", ""},
+		txn{"bank", "INV-OUT", "CASH1", "withdrawal", day(30), -1000, "", "TO EXAMPLE FX BANK", ""})
+	seedTxnsIn(t, db, ctx, "CHF",
+		txn{"other-bank", "FX-IN", "CASH2", "deposit", day(11), 900, "", "Incoming conversion", ""},
+		txn{"other-bank", "INV-IN", "CASH2", "deposit", day(31), 1111.11, "", "Incoming conversion", ""})
+	res := runPass(t, db, ctx, Options{MatchNames: []CounterpartyName{
+		{Source: "other-bank", Account: "CASH2", Pattern: regexp.MustCompile(`(?i)example fx bank`)},
+	}})
+	if res.Cashflow.ConvertedPairs != 1 {
+		t.Errorf("ConvertedPairs = %d, want 1", res.Cashflow.ConvertedPairs)
+	}
+	for _, k := range [][2]string{{"bank", "FX-OUT"}, {"other-bank", "FX-IN"}} {
+		if detailed, prov := verdictOf(t, db, ctx, k[0], k[1]); detailed !=
+			canonical.SpendDetailedInternalTransfer || prov != ProvenanceMatcher {
+			t.Errorf("%s = (%q, %q), want internal_transfer via matcher", k[1], detailed, prov)
+		}
+	}
+	var inverted int
+	if err := db.QueryRowContext(ctx, `
+        SELECT count(*) FROM spend_txn_enrichment
+         WHERE transaction_external_id IN ('INV-OUT', 'INV-IN') AND provenance = ?`,
+		ProvenanceMatcher).Scan(&inverted); err != nil || inverted != 0 {
+		t.Errorf("%d leg(s) paired at the inverted rate (%v), want none", inverted, err)
+	}
+}

@@ -116,7 +116,11 @@ func MatchedPairs(ctx context.Context, db querier, windowDays int, tolerancePct 
 	if err != nil {
 		return nil, nil, err
 	}
-	raw := matchTransferPairs(legs, windowDays, tolerancePct, overrides)
+	rates, err := gold.LoadDailyRates(ctx, db)
+	if err != nil {
+		return nil, nil, err
+	}
+	raw := matchTransferPairs(legs, windowDays, tolerancePct, overrides, rates)
 	matched := matchedPartners(raw)
 
 	byKey := make(map[txKey]Leg, len(legs))

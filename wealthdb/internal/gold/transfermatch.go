@@ -12,13 +12,15 @@ import (
 // sending account, a credit on the receiving one — and nothing in the data
 // links the halves — except where the source itself does, by stamping one
 // reference on both. This file holds the algorithm that re-pairs them: a
-// deterministic 1:1 matcher in five phases, asserting first what the holder
-// stated, then what the source stamped and what it described, and only then
-// guessing from same-currency amounts inside a day window and a tolerance —
-// first among the pairs a narrative names, then among the rest. It
-// knows nothing about returns, spending, or accounts; it takes legs and hands
-// back pairs. Callers own what a leg IS, which legs are offered, and what a
-// pair MEANS:
+// deterministic 1:1 matcher in five phases and two more on request. It
+// asserts first what the holder stated, then what the source stamped and
+// what it described, and only then guesses from same-currency amounts inside
+// a day window and a tolerance — first among the pairs a narrative names,
+// then among the rest. On request it also pairs across two currencies at the
+// day's rate where a narrative names the pair, and a booking with its
+// reversal on one account. It knows nothing about returns, spending, or
+// accounts; it takes legs and hands back pairs. Callers own what a leg IS,
+// which legs are offered, and what a pair MEANS:
 //
 //   - the returns engine (matchCrossTransfers) offers only attached external
 //     flows, restricts pairing to legs from DIFFERENT sources, and reads a
@@ -79,10 +81,9 @@ type TransferLeg struct {
 	// struct. Amount, day and rail are a guess that two rows describe one
 	// movement; a shared reference is the source SAYING so. That is why the
 	// reference phase spends neither the tolerance nor the window (see
-	// matchSharedReferences), and why it is the only road on which a
-	// cross-currency movement can pair at all: an identity does not care what
-	// the two legs were denominated in, and a conversion's two legs never
-	// agree on an amount.
+	// matchSharedReferences), and why it needs no corroboration across
+	// currencies: an identity does not care what the two legs were
+	// denominated in.
 	//
 	// The strength of the claim is exactly the strength of the reference's
 	// uniqueness, so a caller must offer a value the source mints per
@@ -112,7 +113,8 @@ type TransferLeg struct {
 	// common reference on the pair — a statement reconstruction carries
 	// none at all — and the two figures differ by the rate, so no tolerance
 	// can bring them together. A narrative saying "this became CCY 1234.56"
-	// is then the only link there is.
+	// is then the link, unless one leg's narrative names the other's account
+	// (the converted phase).
 	CounterCcy string
 	CounterAmt float64
 
@@ -189,6 +191,17 @@ type TransferMatchOpts struct {
 	// caller sets it; the returns caller does not, since it reads such a
 	// pair as two boundary flows.
 	SameAccountReversals bool
+	// Rate converts one unit of a currency into another as of an epoch
+	// day: fx_daily's direct pair, at or before the day (DailyRates.Direct).
+	// Set, it adds the converted phase: a debit and a credit in two
+	// currencies, inside the window, whose amounts agree at the debit's
+	// day's rate within ConvertedTolerancePct, where one leg's narrative
+	// names the other's account and each is the other's only such
+	// candidate. Nil leaves the phase off, as the returns caller does.
+	Rate func(from, to string, day int64) (float64, bool)
+	// ConvertedTolerancePct is the converted phase's amount gap, as a
+	// percent of the credit: a bank's conversion spread.
+	ConvertedTolerancePct float64
 }
 
 // TransferMatchPair is one matched movement: the debit leg and the credit leg
@@ -225,6 +238,9 @@ const (
 	// MatchedByReversal pairs two legs of one account as a booking and its
 	// reversal (TransferMatchOpts.SameAccountReversals).
 	MatchedByReversal TransferMatchPhase = "reversal"
+	// MatchedByConversion pairs two legs in two currencies that a
+	// narrative names and the day's rate joins (TransferMatchOpts.Rate).
+	MatchedByConversion TransferMatchPhase = "converted"
 )
 
 // transferMatchMinEps is the absolute floor on the amount tolerance, in
@@ -258,7 +274,7 @@ const referenceMatchMaxDays = 90
 
 // MatchTransferLegs pairs debit legs with the credit legs they funded.
 //
-// Pairing runs in five phases over one pool, and a sixth on request, each
+// Pairing runs in five phases over one pool, and two more on request, each
 // withdrawing the legs it claims before the next one looks, strongest
 // evidence first (docs/SPENDING.md §3, "The matcher"):
 //
@@ -270,13 +286,15 @@ const referenceMatchMaxDays = 90
 //  4. NAMED pairs: the banded pass over the pairs one leg's narrative names
 //     the other's account for (TransferLeg.Names), both-named first.
 //  5. AMOUNT pairs: the same banded pass over everything left.
-//  6. REVERSAL pairs, under SameAccountReversals: a leg still unpaired and
+//  6. CONVERTED pairs, with a Rate: two legs in two currencies a narrative
+//     names and the day's rate joins (converted).
+//  7. REVERSAL pairs, under SameAccountReversals: a leg still unpaired and
 //     its reversal on its own account (reversals).
 //
 // A banded pair must agree on native currency, sit within opts.WindowDays of
 // each other, and differ in amount by no more than the tolerance. A debit
 // whose currency has no credits at all is skipped, so a cross-currency
-// movement pairs only in phases 1 to 3.
+// movement pairs only in phases 1 to 3 and 6.
 //
 // The result is deterministic. Legs are sorted by (day, group, owner, id) —
 // the slice is sorted IN PLACE — and each debit in that order ranks the
@@ -355,31 +373,76 @@ func MatchTransferLegs(legs []TransferLeg, opts TransferMatchOpts) []TransferMat
 	band := banded{credits: credits, used: used, parts: parts, opts: opts}
 	mutual, debits := band.maximal(debits, namedByBoth)
 	oneSided, debits := band.maximal(debits, namedByEither)
-	amount := band.greedy(debits)
+	amount, debits := band.greedy(debits)
 	out = append(out, mutual...)
 	out = append(out, oneSided...)
 	out = append(out, amount...)
+	if opts.Rate != nil {
+		var converted []TransferMatchPair
+		converted, debits = band.converted(debits)
+		out = append(out, converted...)
+	}
 	if opts.SameAccountReversals {
-		out = append(out, band.reversals(debits, amount)...)
+		out = append(out, band.reversals(debits)...)
 	}
 	return out
+}
+
+// converted is the converted phase (TransferMatchOpts.Rate): among the
+// debits no phase paired, a debit and a free credit in another currency
+// pair when one of the two names the other's account, they sit inside
+// the window, and the debit converted at its day's rate is the credit
+// within the tolerance. A coincidence of size and day across a currency
+// pair is far likelier than a conversion nothing else marks, so the name
+// is required, and so is uniqueness: each leg must be the other's only
+// candidate, or neither pairs. Returns the pairs and the debits left.
+func (b banded) converted(debits []TransferLeg) ([]TransferMatchPair, []TransferLeg) {
+	window := int64(b.opts.WindowDays)
+	type cand struct{ di, ci int }
+	var cands []cand
+	perDebit, perCredit := map[int]int{}, map[int]int{}
+	for di, d := range debits {
+		lo := sort.Search(len(b.credits), func(k int) bool { return b.credits[k].Day >= d.Day-window })
+		for ci := lo; ci < len(b.credits) && b.credits[ci].Day <= d.Day+window; ci++ {
+			c := b.credits[ci]
+			if b.used[ci] || c.Ccy == d.Ccy || c.Amt <= 0 || !pairableLegs(d, c, b.opts) || !namedByEither(d, c) {
+				continue
+			}
+			rate, ok := b.opts.Rate(d.Ccy, c.Ccy, d.Day)
+			if !ok || math.Abs(-d.Amt*rate-c.Amt) > b.opts.ConvertedTolerancePct/100*c.Amt {
+				continue
+			}
+			cands = append(cands, cand{di, ci})
+			perDebit[di]++
+			perCredit[ci]++
+		}
+	}
+	var out []TransferMatchPair
+	taken := map[int]bool{}
+	for _, k := range cands {
+		if perDebit[k.di] != 1 || perCredit[k.ci] != 1 {
+			continue
+		}
+		b.used[k.ci], taken[k.di] = true, true
+		out = append(out, TransferMatchPair{Debit: debits[k.di], Credit: b.credits[k.ci], By: MatchedByConversion})
+	}
+	var left []TransferLeg
+	for di, d := range debits {
+		if !taken[di] {
+			left = append(left, d)
+		}
+	}
+	return out, left
 }
 
 // reversals is the reversal phase: each debit no phase paired, in order,
 // takes the free credit on its own account that reads as its reversal
 // (sameOwnerRoundTrip), within the window and the tolerance, the nearest
 // in day, earliest on ties. The holder's blocks still hold.
-func (b banded) reversals(debits []TransferLeg, amount []TransferMatchPair) []TransferMatchPair {
-	paired := make(map[string]bool, len(amount))
-	for _, p := range amount {
-		paired[LegRef{p.Debit.Group, p.Debit.Owner, p.Debit.ID}.key()] = true
-	}
+func (b banded) reversals(debits []TransferLeg) []TransferMatchPair {
 	window := int64(b.opts.WindowDays)
 	var out []TransferMatchPair
 	for _, d := range debits {
-		if paired[LegRef{d.Group, d.Owner, d.ID}.key()] {
-			continue
-		}
 		cp := b.parts[d.Ccy]
 		if cp == nil {
 			continue
@@ -494,18 +557,20 @@ func (b banded) maximal(debits []TransferLeg, admit func(d, c TransferLeg) bool)
 }
 
 // greedy is the amount phase: each debit in order takes its best free credit
-// and keeps it.
-func (b banded) greedy(debits []TransferLeg) []TransferMatchPair {
+// and keeps it. Returns the pairs in debit order and the debits left.
+func (b banded) greedy(debits []TransferLeg) ([]TransferMatchPair, []TransferLeg) {
 	var out []TransferMatchPair
+	var left []TransferLeg
 	for _, d := range debits {
 		cands := b.candidates(d, nil)
 		if len(cands) == 0 {
+			left = append(left, d)
 			continue
 		}
 		b.used[cands[0]] = true
 		out = append(out, TransferMatchPair{Debit: d, Credit: b.credits[cands[0]], By: MatchedByAmount})
 	}
-	return out
+	return out, left
 }
 
 // tolerance is the amount gap a banded pair of d and c may show: the

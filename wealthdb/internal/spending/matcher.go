@@ -21,7 +21,8 @@ import (
 //     Reversal from reversalRe);
 //   - the pool spans every account in gold, and its kind filter is the
 //     spend_matcher_pool macro's own (migration 0044);
-//   - amounts and currencies are native, never converted;
+//   - amounts and currencies are native, converted only in the converted
+//     phase, for a pair a narrative names (gold.MatchedByConversion);
 //   - legs carry the reference a source stamped on both halves
 //     (`payload.$.bank_ref`, loadMovementReferences), the other leg a
 //     source describes (`payload.$.counter_currency` / `$.counter_amount`),
@@ -75,17 +76,25 @@ func legNames(names []CounterpartyName, group, owner, counterparty, description 
 	return out
 }
 
+// convertedTolerancePct is the matcher's converted phase's amount gap, as
+// a percent of the credit (gold.TransferMatchOpts.ConvertedTolerancePct):
+// what a bank's conversion spread and a reference rate's distance from the
+// bank's own fixing cost a conversion between two own accounts.
+const convertedTolerancePct = 1.0
+
 // matchTransferPairs is the call into the shared core, in one place so
 // the pass (which wants the flattened leg set) and the audit surface
 // (which wants the pairs themselves) cannot drift on the options.
-func matchTransferPairs(legs []gold.TransferLeg, windowDays int, tolerancePct float64, overrides gold.TransferOverrides) []gold.TransferMatchPair {
+func matchTransferPairs(legs []gold.TransferLeg, windowDays int, tolerancePct float64, overrides gold.TransferOverrides, rates *gold.DailyRates) []gold.TransferMatchPair {
 	return gold.MatchTransferLegs(legs, gold.TransferMatchOpts{
-		WindowDays:           windowDays,
-		TolerancePct:         tolerancePct,
-		ToleranceMaxAbs:      gold.DefaultTransferFeeCap,
-		CrossGroupOnly:       false,
-		Overrides:            overrides,
-		SameAccountReversals: true,
+		WindowDays:            windowDays,
+		TolerancePct:          tolerancePct,
+		ToleranceMaxAbs:       gold.DefaultTransferFeeCap,
+		CrossGroupOnly:        false,
+		Overrides:             overrides,
+		SameAccountReversals:  true,
+		Rate:                  rates.Direct,
+		ConvertedTolerancePct: convertedTolerancePct,
 	})
 }
 

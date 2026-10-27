@@ -1228,10 +1228,11 @@ Each names a way the statement can be quietly wrong:
     the matcher does not pair: the deposit is investing
     ([INCOME.md](INCOME.md) §3), the withdrawal stays an unplaced
     outflow;
-  - cross-currency own-account moves no assertion reaches. These are a
-    movement whose source neither stamps one reference on both halves
-    nor describes the counter leg, and a card bill whose two feeds
-    share no id space.
+  - cross-currency own-account moves no assertion reaches and no
+    narrative names: a movement whose source neither stamps one
+    reference on both halves nor describes the counter leg, and a card
+    bill whose two feeds share no id space. A `match` line in the
+    override ledger pairs one ([SPENDING.md](SPENDING.md) §3).
 
 ---
 

@@ -59,11 +59,11 @@ type Options struct {
 
 	// TransferOverrides are the rows of the
 	// `spending.transfer_overrides` ledger: the holder's manual match /
-	// unmatch decisions for the internal-transfer matcher, and the
-	// reimburse lines resolveReimbursements reads. Resolved
-	// against the matcher pool at pass time, so a row the pool does not
-	// hold is reported rather than silently ignored. Nil overrides
-	// nothing.
+	// unmatch decisions for the internal-transfer matcher, resolved
+	// against the matcher pool at pass time, and the reimburse lines,
+	// resolved against gold's transactions (resolveReimbursements). A
+	// line that names no row is reported rather than silently ignored.
+	// Nil overrides nothing.
 	TransferOverrides []gold.TransferOverrideRule
 
 	// Pins are the rows of the `spending.pins` ledger. Each is stamped
@@ -129,8 +129,8 @@ type Result struct {
 	// ReimbursementPairs is the number of ledger `reimburse` lines that
 	// named a repayment and its outflow, UnmatchedReimbursements the lines
 	// that named none, and UnlinkedReimbursements the repayments no road
-	// links to an outflow (gold migration 0160): each stays out of both
-	// bases, and a ledger line is what links it.
+	// links (gold migration 0160): each stays out of both bases, and a
+	// ledger line is what links it.
 	ReimbursementPairs      int
 	UnmatchedReimbursements int
 	UnlinkedReimbursements  int
@@ -258,12 +258,17 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 		return nil, fmt.Errorf("spending: transfer overrides: %w", err)
 	}
 	res.UnmatchedTransferOverrides = len(unresolvedOverrides)
-	pairs := matchTransferPairs(legs, opts.MatchWindowDays, opts.MatchTolerancePct, overrides)
+	rates, err := gold.LoadDailyRates(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	pairs := matchTransferPairs(legs, opts.MatchWindowDays, opts.MatchTolerancePct, overrides, rates)
 	matched := matchedPartners(pairs)
 	res.Cashflow.ReferencePairs = countPairsBy(pairs, gold.MatchedByReference)
 	res.Cashflow.StatedCounterPairs = countPairsBy(pairs, gold.MatchedByStatedCounter)
 	res.Cashflow.NamedPairs = countPairsBy(pairs, gold.MatchedByName)
 	res.Cashflow.ReversalPairs = countPairsBy(pairs, gold.MatchedByReversal)
+	res.Cashflow.ConvertedPairs = countPairsBy(pairs, gold.MatchedByConversion)
 	res.Cashflow.AmbiguousReferences = ambiguousRefs
 
 	// Read once and shared, for the matcher's reason: where a movement

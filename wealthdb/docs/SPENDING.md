@@ -33,6 +33,9 @@ directions belong elsewhere:
 - Buys and sells are the cash flow statement's
   ([CASHFLOW.md](CASHFLOW.md)).
 
+One inflow joins: a repayment linked to the outflow it answers nets as
+a refund (§3, *Reimbursements*).
+
 The taxonomy carries only what this side may assign. It drops five of
 Plaid's primaries: `TRANSFER_IN`, `TRANSFER_OUT`, `LOAN_PAYMENTS`,
 `LOAN_DISBURSEMENTS` and `OTHER` (§2). Plaid's `INCOME` primary is
@@ -47,7 +50,8 @@ than the one it reads, so no Go-side predicate restates any of it:
 | `spend_scoped_accounts()` | which accounts count at all: EVERY account by default (migration 0068), because whether an account can pay a fee is not a property of its kind. A `spend_account_scope` row is the only thing that takes one out |
 | `spend_enrichment_population(f, t)` | what the enrichment pass may write a verdict for |
 | `spend_matcher_pool(f, t)` | what the internal-transfer matcher sees — deliberately BROADER on two axes: the transfer-eligible KINDS, which include the income side the spending base excludes, on EVERY account rather than the scoped ones (migration 0044). ONE pool for both families: income reads its verdicts and pairs nothing ([INCOME.md](INCOME.md) §1). The legs the pass builds from it also carry the reference their source stamped, which is not a column of the macro but a second read over `transactions` (§3, *The reference road*) |
-| `spending_lines_base(f, t)` | what a report charts: the population with its category resolved, less own-account moves, capital deployed, debt repayments and crossings to untracked plans (§2). A bill on a card not itemised (`card_spend`) and a cash gift (`gift`) stay in |
+| `spending_lines_own(f, t)` | the population with its category resolved, less own-account moves, capital deployed, debt repayments and crossings to untracked plans (§2) |
+| `spending_lines_base(f, t)` | what a report charts: `spending_lines_own` plus each linked repayment, as a refund in its outflow's category (§3, *Reimbursements*). A bill on a card not itemised (`card_spend`) and a cash gift (`gift`) stay in |
 
 The layering is not decoration. The enrichment pass is the thing that
 *decides* which rows are own-account moves, so it cannot read a
@@ -561,9 +565,9 @@ core with spending's own settings: same-source pairing is **allowed**
 (the commonest own-account move is cash account to card inside one
 bank), **every** account in gold participates whatever its kind and
 whether or not spending is scoped to it, and amounts and currencies
-are **native**.
+are **native**, converted only in the converted phase.
 
-The core pairs in **six phases**, each withdrawing the legs it claims
+The core pairs in **seven phases**, each withdrawing the legs it claims
 before the next one looks, in the order of what the evidence is worth:
 
 1. **the override ledger** — the holder naming two rows as one movement;
@@ -576,13 +580,18 @@ before the next one looks, in the order of what the evidence is worth:
    account (*Named counterparties*, below);
 5. **amounts** — the greedy banded pass, which is everything the data
    says when nothing has said it outright;
-6. **a reversal on one account** — a leg still unpaired and its own
+6. **a converted pair** — a named pair in two currencies the day's rate
+   joins (*Named counterparties*, below);
+7. **a reversal on one account** — a leg still unpaired and its own
    account's leg that reads as its reversal (below).
 
-The last two are banded. `window_days` and `tolerance_pct` bound a
-guess; the first three read what the holder or the source said, so
-there is no band to draw around them. A name decides only between
-candidates amount and day already admit.
+Phases 4 to 7 are windowed. `window_days` bounds all four, and
+`tolerance_pct` bounds the named, amount and reversal phases. The
+converted phase has its own band of 1%, and it needs a name: one leg's
+narrative must name the other's account. The first three read what
+the holder or the source said, so there is no band to draw around
+them. In the named phase a name decides only between candidates that
+amount and day already admit.
 
 **Two legs of one account pair last, as a reversal.** A withdrawal
 and a deposit of one amount on one account may be two movements: a
@@ -632,6 +641,24 @@ or account is its own institution speaking and names nothing. Then:
   between two accounts leaves no leg stranded.
 
 With no names configured the matcher pairs on amount and day alone.
+
+**A named pair may cross currencies.** A move between two own accounts
+in two currencies has two figures that differ by the rate, so the
+amount pass, which partitions by currency, cannot reach it. The
+converted phase can, after the amount pass. It pairs a debit and a
+credit in two currencies when all of these hold:
+
+- one leg's narrative names the other's account;
+- they sit inside the window;
+- the debit at its day's rate (`fx_daily`, direct pairs only) is the
+  credit within 1%;
+- each is the other's only such candidate.
+
+The name is what makes it safe. A size and a day across a currency
+pair are far more often a coincidence than a conversion, so the name
+is required. Where no narrative names the pair, the override ledger's
+`match` line is the declared pair (below). The returns caller does not
+run this phase.
 
 Two further bounds close what those leave open, because amount and day
 proximity alone are only ever a coincidence of size, never evidence
@@ -687,7 +714,8 @@ a stated pair cannot lose either half to a nearer coincidence.
 Because it asserts rather than infers, `match` also reaches **across
 currencies**: the native-currency partition belongs to the amount pass
 alone, and a stated pair never meets it. That is the correction surface
-for a conversion whose source stamped no reference on either leg.
+for a conversion whose source stamped no reference on either leg and
+whose narrative names neither account.
 
 The ledger binds **every** phase, a reference pair included. An
 identity the bank asserted is the strongest evidence the data holds,
@@ -725,11 +753,18 @@ refund in that outflow's category. The first road that answers links
 it:
 
 1. a `reimburse` line in the override ledger names the repayment and
-   its outflow. Each leg must describe exactly one transaction;
+   its outflow. Each leg must describe exactly one transaction. The
+   outflow must be a line spending counts, and the repayment must
+   already read `reimbursement`. A line that fails a test is counted
+   as naming none, not applied;
 2. the latest spending line on or before the repayment, at most 365
    days earlier, in its currency, of at least its amount, whose
    merchant signature is the repayment's payer signature;
 3. the merchant store's category for that signature.
+
+Every road links only to a line spending counts, so a repayment never
+nets against an own-account move or an investment. A repayment joins
+the spending base only on an account spending is scoped to.
 
 A repayment no road links stays out of both bases, and the load counts
 it. A `reimburse` line is the remedy. The second and third roads are
@@ -742,13 +777,15 @@ The matcher and the returns engine skip a `reimburse` line.
 
 ### The reference road
 
-**No amount test can join a currency conversion.** The core partitions
-candidates by native currency because matching converted amounts would
-make the same movement pair differently per output currency — a
-report's display currency must not change what counts as spending —
-and a conversion's two legs carry different figures by definition. So
-no amount test can pair a withdrawal in one currency with the deposit
-it funds in another.
+**The amount pass cannot join a currency conversion.** It partitions
+candidates by native currency. Matching amounts converted to a display
+currency would make one movement pair differently per output currency,
+and a report's display currency must not change what counts as
+spending. A conversion's two legs carry different figures by
+definition. So no same-currency amount test can pair them. The
+converted phase pairs such legs at their own direct rate on the day,
+and only where a narrative names the pair (*Named counterparties*).
+Every other conversion needs a road below.
 
 A **shared reference is not an amount test.** Where a bank stamps one
 transaction number on both halves of a move between two accounts of
@@ -808,25 +845,28 @@ page carries none — while the two figures differ by the rate, so the
 amount pass is blind to it too. The sentence in the narrative is then
 the only link the two rows have.
 
-**What is still out of reach:** a movement whose source stamps no
-reference and describes no counter leg, or whose description more than
-one row answers. A chain — a same-currency transfer into an account
-followed by a conversion out of it — is the shape that produces the
-second: three rows then carry the described figure and none can be
-told from the others. Those stay one-legged and are left to the rule
-tier, and `wealthdb categorize` surfaces them as *cross-currency
-near-pairs* rather than pretending to fix them.
+**What is still out of reach:** a movement whose rows carry no shared
+reference, no described counter leg and no configured name. Also out
+of reach is a movement whose description more than one row answers. A
+`match` line in the override ledger pairs either. A chain — a
+same-currency transfer into an account followed by a conversion out of
+it — is the shape that produces the second: three rows then carry the
+described figure and none can be told from the others. Those stay
+one-legged and are left to the rule tier, and `wealthdb categorize`
+surfaces them as *cross-currency near-pairs* rather than pretending to
+fix them.
 
 That residue has a sharp edge once a card IS collected. A card ledger
 mints its own ids, so the bank-side payment order and the card's record
 of being settled share no number and no reference can join them. A card
 billed in one currency and settled from an account in another therefore
-leaves both legs one-legged, so its purchases are itemised *and* its
-bill stays in the base as `card_spend` — the same spending, counted
-twice. The card rule is not narrowed to prevent it: the alternative,
-suppressing `card_spend`
-wherever the source holds any card account, would delete a genuine bill
-for a card that is not collected, and an over-count is visible in a
+leaves both legs one-legged, unless a configured name joins them in the
+converted phase (*Named counterparties*). Then its purchases are
+itemised *and* its bill stays in the base as `card_spend` — the same
+spending, counted twice. The card rule is not narrowed to prevent it:
+the alternative, suppressing `card_spend` wherever the source holds any
+card account, would delete a genuine bill for a card that is not
+collected, and an over-count is visible in a
 report where an under-count is not. The near-pair canary is what makes
 the shape findable; a pin or a config rule is what fixes a deployment's
 own.
@@ -1874,14 +1914,18 @@ vocabulary of §3. Eight values:
 
 Five of them are stamped on the overlay row by the enrichment pass and
 are what the `spend_txn_enrichment` CHECK admits (migration 0041).
-`model`, `kind` and `reimbursement` are stored nowhere: `reimbursement`
-is the base's own word for a repayment row (migration 0160). The model tier writes to the
-merchant store rather than the overlay, and the kind floor reads no
-verdict at all; both are derived by
-`spend_txn_categories()` where the two scopes meet (migration 0050),
-which is the one place a store verdict is distinguishable from the
-backlog — at table level such a line carries `signature-only`, the same
-value an unplaced row carries. `signature-only` is the backlog
+Three are stored nowhere:
+
+- `model`: the model tier writes to the merchant store, not the overlay;
+- `kind`: the floor reads no verdict at all;
+- `reimbursement`: `spending_lines_base` writes it on a linked
+  repayment's row (migration 0160).
+
+`spend_txn_categories()` derives `model` and `kind` where the two
+scopes meet (migration 0050). That is the one place a store verdict is
+distinguishable from the backlog. At table level such a line carries
+`signature-only`, the same value an unplaced row carries.
+`signature-only` is the backlog
 `wealthdb categorize` asks about (§6).
 
 ### The merchant column
@@ -2041,6 +2085,7 @@ provenance and `share_pct` stay legible, like the returns percentages.
 | `spend_txn_enrichment` | (silver_source_id, transaction_external_id) | derived; rewritten whole by every pass, pinned rows included (below) |
 | `spend_merchant_categories` | merchant_signature | GLOBAL and paid for; survives `reset`, and `reload -a` carries it across the fresh-file swap because nothing could regenerate it; a row leaves only by `categorizations --forget` |
 | `spend_account_scope` | (silver_source_id, account_external_id) | configuration stamped into gold; re-stamped whole every pass |
+| `spend_reimbursement_pairs` | (silver_source_id, transaction_external_id) of the repayment | derived; rewritten whole by every pass from the ledger's `reimburse` lines (§3, *Reimbursements*) |
 
 `spend_txn_enrichment` also carries the far-account columns of
 migration 0079, which only the cash flow statement reads. They hold the

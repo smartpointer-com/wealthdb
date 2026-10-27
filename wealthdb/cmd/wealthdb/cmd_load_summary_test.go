@@ -126,7 +126,7 @@ func TestLoadPrintsTheCashflowBoundary(t *testing.T) {
 	printPassSummary(&out, &spending.Result{Cashflow: spending.CashflowResult{
 		ScopeRows: 2, UnresolvedScopeAccounts: 1,
 		WrapperRows: 23, WrapperOverrides: 1, FarAccounts: 17, StatedFarAccounts: 5,
-		ReferencePairs: 3, StatedCounterPairs: 4, NamedPairs: 6, ReversalPairs: 7, AmbiguousReferences: 2,
+		ReferencePairs: 3, StatedCounterPairs: 4, NamedPairs: 6, ConvertedPairs: 8, ReversalPairs: 7, AmbiguousReferences: 2,
 		PooledAccountsWithoutWrapper: 4,
 		DeclaredAccounts:             3, DeclaredPooled: 2, UnusedDeclarations: 1,
 	}})
@@ -135,8 +135,8 @@ func TestLoadPrintsTheCashflowBoundary(t *testing.T) {
 		"cashflow: household boundary stamped — 23 wrapper(s), 1 overridden, 2 account(s) " +
 			"out of the pool; 17 own-account move(s) carry a far account " +
 			"(5 stated by the source itself); the matcher asserted 3 pair(s) on a shared " +
-			"reference and 4 on a described counter leg, and paired 6 a narrative named " +
-			"and 7 reversal(s) on one account",
+			"reference and 4 on a described counter leg, and paired 6 a narrative named, " +
+			"8 across two currencies at the day's rate and 7 reversal(s) on one account",
 		"cashflow: 2 source reference(s) named more than one movement",
 		"cashflow: 4 pooled account(s) have no tax wrapper",
 		"`cashflow.accounts` keys on the account id",
