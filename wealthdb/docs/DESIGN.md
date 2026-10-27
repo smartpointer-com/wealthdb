@@ -1566,6 +1566,7 @@ is documented where it is used:
   `yield_settlement_cycles` (migration `0147`) — §7.6.
 - The derived table `dividend_gaps` (migration `0148`) — §7.6.
 - The reference table `stated_periods` (migration `0159`) — §7.6.
+- The reference table `exposure_reports` (migration `0164`) — §7.6.
 - The serving table `report_cashflow_plan` (migration `0149`) —
   §10.12.
 - The serving tables `serving_*` (migration `0132`) — web/DESIGN.md §8.
@@ -2138,6 +2139,13 @@ collector fills from the month-end workbook. No report counts a row as
 a position or a flow. `wealthdb returns stated` sets each period
 against the returns engine's monthly figures for the account.
 
+Migration 0164 adds `exposure_reports`: a holding's split on one day as
+a source reads it from a document, such as a private-markets fund's
+quarterly report (adapters/ubs.md §13). It is keyed by the holding and
+the day (`as_of`). Each dimension's split is JSON, in percent. An
+account source writes it, and `gold.SyncExposure` copies each row into
+the declarations as a parsed record (below).
+
 The refdata collector learns what to fetch from the hidden read-only
 subcommand `refdata-wanted`, whose JSON contract adapters/refdata.md §5
 defines.
@@ -2153,7 +2161,9 @@ config or the ledger leaves on the next load:
 - `exposure_size_funds`: broad funds whose weights size stocks, each
   with the share of its markets it covers;
 - `exposure_declarations`: the declarations ledger's records, a
-  record's situs among them (migration 0129);
+  record's situs among them (migration 0129), and one parsed record per
+  row of `exposure_reports`. `origin` says which: `ledger` or `parsed`
+  (migration 0164). A parsed record's `line_no` is negative;
 - `exposure_declaration_leaves`: each record's parts, the cross product
   of the dimensions it declares, each a share of the holding;
 - `exposure_custody`: who keeps each source's assets;
@@ -3237,7 +3247,8 @@ The macros:
   flag it states of each line's security (migration 0141);
 - `exposure_declarations_at(asof)`: the declaration that describes each
   holding's exposure at the instant (migration 0128), a record that
-  states only a situs aside (migration 0129);
+  states only a situs aside (migration 0129). On an equal date the
+  ledger's record wins over a parsed one (migration 0164);
 - `exposure_situs_at(asof)`: each holding's situs at the instant
   (migration 0129);
 - `exposure_leaves(asof, ccy, country)`: the look-through, one row per

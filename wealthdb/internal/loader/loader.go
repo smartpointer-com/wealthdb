@@ -906,6 +906,9 @@ func stampSnapshotBatch(b *canonical.SnapshotBatch, sourceID string) {
 	for i := range b.StatedPeriods {
 		b.StatedPeriods[i].SilverSourceID = sourceID
 	}
+	for i := range b.ExposureReports {
+		b.ExposureReports[i].SilverSourceID = sourceID
+	}
 }
 
 func stampTransactionBatch(b *canonical.TransactionBatch, sourceID string) {

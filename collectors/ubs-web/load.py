@@ -53,6 +53,7 @@ from collectorkit import bronze, cli, silver, srcfp
 import card_parsers  # local module
 import landmarks as ubs  # local module: the export's shared vocabulary
 import rate_parsers  # local module
+from rate_parsers import iban_canonical  # local module
 
 log = logging.getLogger("ubs-web.load")
 
@@ -105,6 +106,8 @@ _DOCUMENT_PASS_DELETES = (
     "DELETE FROM transactions WHERE payload LIKE '%payment_advice_pdf%'",
     "DELETE FROM advices",
     "DELETE FROM statement_trades",
+    "DELETE FROM private_market_reports",
+    "DELETE FROM private_market_report_lines",
 )
 
 # The `doc_type` spellings of the per-movement payment advices. UBS labels
@@ -118,8 +121,9 @@ ADVICE_DOC_TYPES = frozenset({"credit advice", "debit advice"})
 # The `doc_type`s that carry a securities advice: what a holding was
 # bought for, where the statement of assets states no price (`advices`,
 # migration 0013). A Private Market Letter is a capital call only when its
-# cover page says so, and the parser declines the quarterly reports and
-# other letters filed under the same label.
+# cover page says so. The quarterly reports filed under the same label are
+# read apart, into `private_market_reports` (migration 0017), and the other
+# letters are declined.
 CONTRACT_NOTE_DOC_TYPE = "Contract note"
 PRIVATE_MARKET_LETTER_DOC_TYPE = "Private Market Letter"
 
@@ -316,26 +320,6 @@ def parse_decimal(s: str | None) -> float | None:
         return float(s)
     except ValueError:
         return None
-
-
-CH_IBAN_CANONICAL_RE = re.compile(r"^CH\d{2}[A-Z0-9]{17}$")
-
-
-def iban_canonical(iban: str | None) -> str | None:
-    """Strip whitespace, uppercase, validate the CH-IBAN shape.
-
-    Returns the canonical string on success, None if the input
-    doesn't pass the basic shape check. UBS occasionally re-uses
-    the IBAN column for non-IBAN fields on mortgages and structured
-    products (e.g. it puts the maturity date / loan term there); we
-    reject those rather than letting them into the accounts table.
-    """
-    if not iban:
-        return None
-    c = re.sub(r"\s+", "", iban).upper()
-    if not CH_IBAN_CANONICAL_RE.match(c):
-        return None
-    return c
 
 
 def iban_to_psn_acct_id(iban_c: str | None) -> str | None:
@@ -1816,7 +1800,7 @@ def _parse_one_pdf(args: tuple[str, str, str, str | None]
     from pdf_parsers import (
         parse_account_statement_combined, parse_capital_call,
         parse_contract_note, parse_maturity_notice, parse_payment_advice,
-        parse_statement_of_assets,
+        parse_quarterly_report, parse_statement_of_assets,
     )
     token, fp, label, doc_type = args
     path = Path(fp)
@@ -1843,8 +1827,14 @@ def _parse_one_pdf(args: tuple[str, str, str, str | None]
             rows = parse_contract_note(path, token)
             return token, "securities_advice", path.name, rows, None
         if doc_type == PRIVATE_MARKET_LETTER_DOC_TYPE:
+            # The cover title says which a letter is. Each parser reads it
+            # from the first page and declines a letter of the other kind.
             rows = parse_capital_call(path, token)
-            return token, "securities_advice", path.name, rows, None
+            if rows:
+                return token, "securities_advice", path.name, rows, None
+            reports, lines = parse_quarterly_report(path, token)
+            return (token, "private_market_report", path.name,
+                    {"reports": reports, "lines": lines}, None)
         # Account Statement: a single PDF open yields BOTH the summary
         # balances (for historical_cash_balances) and the per-transaction
         # movement rows (for the transactions backfill), reusing one
@@ -1862,9 +1852,10 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
                                ) -> tuple[int, int, int, int]:
     """Walk every PDF tracked in the documents table whose label
     indicates a Statement of assets, an Account Statement, a
-    Maturity notice, a payment advice or a securities advice; parse it
-    in a worker-pool of subprocesses, and upsert into the historical_* /
-    transactions / advices / statement_trades tables on the main thread.
+    Maturity notice, a payment advice, a securities advice or a quarterly
+    report; parse it in a worker-pool of subprocesses, and upsert into the
+    historical_* / transactions / advices / statement_trades /
+    private_market_report* tables on the main thread.
     Returns (position_rows, cash_rows, mortgage_rows, transaction_rows) —
     the payment-advice rows are transactions and are counted with the
     statement ones; the securities advices and the statements'
@@ -1961,6 +1952,7 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     txn_rows = 0
     txn_reject_stmts = 0
     securities_advice_rows = 0
+    report_rows = 0
     trade_rows = 0
     advices: list[dict] = []
     for _token, kind, name, rows, err in results:
@@ -1978,6 +1970,8 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
         elif kind == "securities_advice":
             securities_advice_rows += silver.upsert_rows(
                 conn, "advices", _ADVICE_COLUMNS, rows or [])
+        elif kind == "private_market_report":
+            report_rows += _insert_private_market_reports(conn, rows or {})
         elif kind == "payment_advice":
             # Collected, not written here: an advice is only worth writing
             # where nothing else recorded the movement, and the statement
@@ -2005,6 +1999,8 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     if securities_advice_rows:
         log.info("%d capital call(s) and contract note(s)",
                  securities_advice_rows)
+    if report_rows:
+        log.info("%d private-markets quarterly report(s)", report_rows)
     if trade_rows:
         log.info("%d booking(s) from statement transaction lists", trade_rows)
     # Stamped here rather than by the caller, so it records a walk that
@@ -2077,6 +2073,36 @@ def _insert_hist_positions(conn: sqlite3.Connection,
             _replace_hist_cash_row(c, r)
     return _upsert_each(conn, "historical_position_snapshots",
                         _HIST_POSITION_COLUMNS, rows, before=clear_cash)
+
+
+# The columns `pdf_parsers` fills on every `private_market_reports` row,
+# and on every `private_market_report_lines` row: one report per document.
+_REPORT_COLUMNS = (
+    "source_doc_token", "instrument_isin", "fund_name", "as_of",
+    "lines_as_of", "currency_iso", "commitment", "capital_called",
+    "cumulative_expenses", "valuation", "shares_in_issue", "nav_per_share",
+    "line_count", "lines_total", "lines_reconciled", "payload",
+)
+_REPORT_LINE_COLUMNS = (
+    "source_doc_token", "line_no", "name", "region", "sector", "strategy",
+    "cost", "residual_value", "payload",
+)
+
+
+def _insert_private_market_reports(conn: sqlite3.Connection,
+                                   parsed: dict) -> int:
+    """Write a quarterly report and its investment lines. A report's lines
+    replace the ones it had, so a re-derive never keeps a line the table no
+    longer prints. Returns how many reports were written."""
+    reports = parsed.get("reports") or []
+    for r in reports:
+        conn.execute("DELETE FROM private_market_report_lines "
+                     "WHERE source_doc_token = ?", (r["source_doc_token"],))
+    n = silver.upsert_rows(conn, "private_market_reports", _REPORT_COLUMNS,
+                           reports)
+    silver.upsert_rows(conn, "private_market_report_lines",
+                       _REPORT_LINE_COLUMNS, parsed.get("lines") or [])
+    return n
 
 
 # The columns `pdf_parsers` fills on every `advices` row: one capital call

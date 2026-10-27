@@ -1,6 +1,10 @@
 package canonical
 
-import "time"
+import (
+	"slices"
+	"strings"
+	"time"
+)
 
 // ExposureRows is the config `exposure` block as gold stores it: the
 // tables gold.SyncExposure replaces whole at every load.
@@ -31,13 +35,15 @@ type ExposureSizeFund struct {
 	CoveragePct float64
 }
 
-// ExposureDeclaration is one record of the declarations ledger: what the
-// household states about a holding no public source describes, split
-// into the leaves the look-through gives it, the holding's legal situs,
-// and the yield figures no source states (docs/EXPOSURE.md §9). A rate
-// names an account instead of a holding.
+// ExposureDeclaration is one record of the declarations ledger, or one
+// gold parses from a source's exposure_reports (gold.parsedDeclarations):
+// what the household states about a holding no public source describes,
+// split into the leaves the look-through gives it, the holding's legal
+// situs, and the yield figures no source states (docs/EXPOSURE.md §9). A
+// rate names an account instead of a holding.
 type ExposureDeclaration struct {
-	// Line is the record's line in the ledger, and its id in gold.
+	// Line is the record's line in the ledger, and its id in gold; a
+	// parsed record has no line and takes a negative id.
 	Line                 int
 	SilverSourceID       string
 	InstrumentExternalID string
@@ -55,7 +61,8 @@ type ExposureDeclaration struct {
 	Source string
 	Note   string
 	// Leaves are the cross product of the declared dimensions. Their
-	// shares sum to exactly one; a record that declares none has none.
+	// shares sum to one, up to float rounding; a record that declares
+	// none has none.
 	Leaves []ExposureDeclaredLeaf
 	// The yield records, nil where the line states none.
 	Rate     *DeclaredRate
@@ -153,6 +160,24 @@ func (l *ExposureDeclaredLeaf) Set(dim, value string) {
 	}
 }
 
+// Get is the leaf's value in the dimension dim, one of
+// DeclarationDimensions; "" for any other dim.
+func (l ExposureDeclaredLeaf) Get(dim string) string {
+	switch dim {
+	case DimensionRegion:
+		return l.Region
+	case DimensionCountry:
+		return l.Country
+	case DimensionCurrency:
+		return l.Currency
+	case DimensionSector:
+		return l.Sector
+	case DimensionAssetClass:
+		return l.AssetClass
+	}
+	return ""
+}
+
 // The dimensions a declaration may state, in the order gold lists them.
 const (
 	DimensionRegion     = "region"
@@ -200,3 +225,27 @@ const (
 	DefaultAgedDays   = 35
 	DefaultPartialPct = 3.0
 )
+
+// DeclaredValueValid reports whether value is one a record may state in
+// the dimension dim: Unknown, or a name of the dimension's vocabulary (a
+// region or RegionOther, an ISO 3166 alpha-2 code, a 3-letter ISO 4217 code, a sector,
+// an asset class). Any other dim takes no value.
+func DeclaredValueValid(dim, value string) bool {
+	if value == Unknown {
+		return slices.Contains(DeclarationDimensions, dim)
+	}
+	switch dim {
+	case DimensionRegion:
+		return Region(value) == RegionOther || slices.Contains(Regions(), Region(value))
+	case DimensionCountry:
+		c, ok := CountryByCode(value)
+		return ok && c.Code == value
+	case DimensionCurrency:
+		return len(value) == 3 && strings.Trim(value, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") == ""
+	case DimensionSector:
+		return Sector(value).Valid()
+	case DimensionAssetClass:
+		return AssetClass(value).Valid()
+	}
+	return false
+}

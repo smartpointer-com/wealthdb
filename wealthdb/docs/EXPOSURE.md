@@ -688,6 +688,39 @@ source states, with its line: such a record declares nothing, and a
 misspelt instrument would otherwise show only as a holding still
 undeclared.
 
+### Parsed records
+
+A source may read a holding's split from a document of its own, such as
+a private-markets fund's quarterly report ([adapters/ubs.md](adapters/ubs.md)
+§13). Each split
+is a dated record, and a load merges these parsed records with the
+ledger's. A parsed record is like a ledger record dated the document's
+day, with two differences:
+
+- On an equal date, the ledger's record wins. So a parsed record never
+  outranks a ledger record of the same or a later date.
+- It has no ledger line. It is never named in the load's warning about
+  records that name no holding.
+
+So the rule on a day is:
+
+1. Take the records dated on or before the day.
+2. Of these, the latest date wins.
+3. On that date, the ledger's record wins over a parsed one.
+4. With no dated record, the ledger's record without a date holds.
+
+A ledger record that should override the documents carries a date on or
+after the newest document's. A record without a date never wins over a
+parsed one: it wins only the days before the first dated record.
+
+A parsed record states only the dimensions its document gives. It takes
+each other dimension from the ledger record that would hold on its day
+without it, by that record's split of the dimension. A ledger record of a situs
+alone adds nothing here.
+
+`exposure_declarations.origin` says which kind each record is: `ledger`
+or `parsed`.
+
 ### Yield records
 
 The same ledger states the yield figures no source states. A holding's

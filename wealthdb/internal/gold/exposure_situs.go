@@ -217,10 +217,11 @@ SELECT k.src, k.acct, k.position_key, COALESCE(k.iid, ''),
   LEFT JOIN exposure_custody cu ON cu.silver_source_id = k.src
   LEFT JOIN comps c ON c.key = k.key`
 
-// situsRecordsSQL lists every record of the declarations ledger, oldest
-// first, with the situs it declares, the one country it declares at 100
-// if any (a country every part names, other than unknown), and
-// whether it declares the economic dimensions.
+// situsRecordsSQL lists every declaration, oldest first, with the situs
+// it declares, the one country it declares at 100 if any (a country
+// every part names, other than unknown), and whether it declares the
+// economic dimensions. A parsed record's line is negative, so on one
+// day it lists before the ledger's, whose records then win the day.
 const situsRecordsSQL = `
 SELECT d.silver_source_id, d.instrument_external_id, d.as_of, COALESCE(d.situs, ''), COALESCE(c.country, ''),
        d.dimensions <> ''

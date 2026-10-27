@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
@@ -22,12 +23,13 @@ var ReferenceTables = []string{
 	"fund_counterparties", "security_identities", "security_facts",
 	"fund_risk", "fund_characteristics", "security_period_facts",
 	"rate_observations", "dividend_calendar", "stated_periods",
+	"exposure_reports",
 }
 
 // ReferenceTableKinds are the kind of record each reference table holds
 // (canonical.Window.Spans), so a load's windowed delete clears a table
-// over its kind's span. rate_observations and stated_periods, which no
-// kind names, take the window whole.
+// over its kind's span. rate_observations, stated_periods and
+// exposure_reports, which no kind names, take the window whole.
 var ReferenceTableKinds = map[string]string{
 	"fund_compositions": canonical.RefFundDays, "fund_lines": canonical.RefFundDays,
 	"fund_attributes": canonical.RefFundDays, "fund_counterparties": canonical.RefFundDays,
@@ -51,6 +53,7 @@ func (w *Writer) InsertReference(ctx context.Context, b *canonical.SnapshotBatch
 		func() error { return w.insertRateObservations(ctx, b.RateObservations) },
 		func() error { return w.insertDividendEvents(ctx, b.DividendEvents) },
 		func() error { return w.insertStatedPeriods(ctx, b.StatedPeriods) },
+		func() error { return w.insertExposureReports(ctx, b.ExposureReports) },
 	} {
 		if err := insert(); err != nil {
 			return err
@@ -306,6 +309,46 @@ INSERT INTO stated_periods (
 				nullable(r.BeginningValue), nullable(r.EndingValue), nullable(r.Accrual),
 				nullable(r.NetAdditions), nullable(r.NetGain), nullable(r.Income), nullable(r.Fees),
 				r.SourceSHA256, nullableJSON(r.Payload))
+		})
+}
+
+// insertExposureReports writes a batch's parsed splits, each
+// dimension's as JSON. A dimension outside the declarations', or a value
+// outside its dimension's vocabulary (canonical.DeclaredValueValid), is
+// refused.
+func (w *Writer) insertExposureReports(ctx context.Context, batch []canonical.ExposureReportChange) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	dims := make([]string, len(batch))
+	for i, r := range batch {
+		for dim := range r.Dimensions {
+			if !slices.Contains(canonical.DeclarationDimensions, dim) {
+				return fmt.Errorf("exposure_reports row %d (%s, %d): invalid dimension %q", i,
+					r.InstrumentExternalID, r.AsOf, dim)
+			}
+			for v := range r.Dimensions[dim] {
+				if !canonical.DeclaredValueValid(dim, v) {
+					return fmt.Errorf("exposure_reports row %d (%s %s, %d): invalid %s %q", i,
+						r.SilverSourceID, r.InstrumentExternalID, r.AsOf, dim, v)
+				}
+			}
+		}
+		b, err := json.Marshal(r.Dimensions)
+		if err != nil {
+			return fmt.Errorf("exposure_reports row %d: %w", i, err)
+		}
+		dims[i] = string(b)
+	}
+	const head = `
+INSERT INTO exposure_reports (
+    silver_source_id, instrument_external_id, as_of, dimensions, source, note
+) VALUES `
+	return InsertChunked(ctx, w.tx, "exposure_reports", head, `(?, ?, ?, ?, ?, ?)`, len(batch),
+		func(i int, args []any) []any {
+			r := &batch[i]
+			return append(args, r.SilverSourceID, r.InstrumentExternalID, r.AsOf, dims[i],
+				nullableJSON(r.Source), nullableEnumValue(r.Note))
 		})
 }
 

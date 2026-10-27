@@ -1,10 +1,12 @@
 package gold
 
 import (
+	"context"
 	"database/sql"
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
@@ -392,5 +394,179 @@ func TestDeclarationsNamingNoHolding(t *testing.T) {
 		declaration(7, "HOUS3", nil, split{"country", []string{"CH"}, []float64{100}}))
 	if lines, err := DeclarationsNamingNoHolding(ctx, db); err != nil || len(lines) != 1 || lines[0] != 7 {
 		t.Errorf("lines = %v, %v; want [7]", lines, err)
+	}
+}
+
+// parseReport stands in for a source's parsed split of PE1: a row of
+// exposure_reports, which the next SyncExposure merges as a parsed
+// record.
+func parseReport(t *testing.T, db *sql.DB, ctx context.Context, asOf int64, dims string) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, `INSERT INTO exposure_reports (silver_source_id, instrument_external_id, as_of,
+	    dimensions, note) VALUES ('test-src', 'PE1', ?, ?, 'Example Feeder Fund II')`, asOf, dims); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A parsed record joins the hand ledger's. On a day the latest dated
+// record on or before it wins; on an equal date the ledger's does, so a
+// parsed record never outranks a ledger record of the same or a later
+// date. An undated ledger record still serves the days before the first
+// dated one.
+func TestExposureParsedDeclarationsMerge(t *testing.T) {
+	t.Parallel()
+	db, ctx := openExposureFixture(t)
+	jun, jul, aug, sep := exDay(6, 30), exDay(7, 1), exDay(8, 1), exDay(9, 1)
+	country := func(line int, asOf *int64, code string) canonical.ExposureDeclaration {
+		return declaration(line, "PE1", asOf, split{"country", []string{code}, []float64{100}})
+	}
+	at := func(day int64) string {
+		t.Helper()
+		var s sql.NullString
+		if err := db.QueryRowContext(ctx, `SELECT string_agg(DISTINCT COALESCE(country, '-'), ',')
+		    FROM exposure_leaves(?, 'USD') WHERE iid = 'PE1'`, day+86399).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s.String
+	}
+	parseReport(t, db, ctx, jul, `{"country":{"FR":100}}`)
+	parseReport(t, db, ctx, sep, `{"country":{"IT":100}}`)
+	stampDeclarations(t, db, ctx, country(3, nil, "CH"), country(4, &jul, "AT"), country(5, &aug, "DE"))
+	for day, want := range map[int64]string{
+		jun:           "CH", // the undated ledger record, before every dated one
+		jul:           "AT", // the ledger wins the equal date
+		aug:           "DE", // a ledger record later than the parsed one
+		sep:           "IT", // a parsed record newer than every ledger record
+		exDay(12, 30): "IT",
+	} {
+		if got := at(day); got != want {
+			t.Errorf("on %s: %q, want %q", time.Unix(day, 0).UTC().Format(time.DateOnly), got, want)
+		}
+	}
+	var origins string
+	if err := db.QueryRowContext(ctx, `SELECT string_agg(origin || ':' || line_no, ',' ORDER BY origin, line_no)
+	    FROM exposure_declarations WHERE instrument_external_id = 'PE1'`).Scan(&origins); err != nil {
+		t.Fatal(err)
+	}
+	if origins != "ledger:3,ledger:4,ledger:5,parsed:-2,parsed:-1" {
+		t.Errorf("origins = %q", origins)
+	}
+	// A parsed record is no ledger line, so it is never one that names no
+	// holding.
+	if lines, err := DeclarationsNamingNoHolding(ctx, db); err != nil || len(lines) != 0 {
+		t.Errorf("DeclarationsNamingNoHolding = %v (%v), want none", lines, err)
+	}
+}
+
+// A parsed split crosses its dimensions into parts as a ledger record's
+// do, each dimension scaled to sum to one.
+func TestExposureParsedDeclarationParts(t *testing.T) {
+	t.Parallel()
+	db, ctx := openExposureFixture(t)
+	parseReport(t, db, ctx, exDay(6, 30),
+		`{"region":{"europe":30,"north_america":70},"sector":{"technology":50.0001,"industrials":49.9999}}`)
+	stampDeclarations(t, db, ctx)
+	var parts int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM exposure_leaves(?, 'USD') WHERE iid = 'PE1'`, exAsOf).
+		Scan(&parts); err != nil || parts != 4 {
+		t.Errorf("PE1 has %d parts (%v), want 2 regions x 2 sectors", parts, err)
+	}
+	total := leafValue(t, db, ctx, `iid = 'PE1'`)
+	closeTo(t, "PE1 in europe", leafValue(t, db, ctx, `iid = 'PE1' AND region = 'europe'`), 0.3*total)
+	closeTo(t, "PE1 in technology", leafValue(t, db, ctx, `iid = 'PE1' AND sector = 'technology'`), 0.500001*total)
+	if got := leafText(t, db, ctx, "string_agg(DISTINCT how, ',')", `iid = 'PE1'`); got != "declared" {
+		t.Errorf("PE1 parts read %q, want declared", got)
+	}
+}
+
+func TestMigration0164DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
+	db, ctx := openExposureFixture(t)
+	parseReport(t, db, ctx, exDay(7, 1), `{"country":{"FR":100}}`)
+	stampDeclarations(t, db, ctx, declaration(3, "PE1", nil, split{"country", []string{"CH"}, []float64{100}}))
+	rerunMigrationDDL(t, db, ctx, "0164_parsed_declarations.sql")
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM exposure_reports`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("after replay: %d parsed reports (%v), want the one kept", n, err)
+	}
+	var origins string
+	if err := db.QueryRowContext(ctx, `SELECT string_agg(origin, ',' ORDER BY line_no) FROM exposure_declarations
+	    WHERE instrument_external_id = 'PE1'`).Scan(&origins); err != nil || origins != "parsed,ledger" {
+		t.Errorf("after replay: origins %q (%v), want each kept", origins, err)
+	}
+	if got := leafText(t, db, ctx, "string_agg(DISTINCT country, ',')", `iid = 'PE1'`); got != "CH" {
+		t.Errorf("after replay: PE1 reads %q before the parsed date, want the undated record", got)
+	}
+}
+
+// A parsed record takes each dimension it does not state from the ledger
+// record in force on its day, crossed with what it states; a dimension
+// it states is always its own.
+func TestExposureParsedDeclarationCompletedFromLedger(t *testing.T) {
+	t.Parallel()
+	jul, aug, sep := exDay(7, 1), exDay(8, 1), exDay(9, 1)
+	region := `{"region":{"europe":40,"north_america":60}}`
+	hand := func(line int, asOf *int64) canonical.ExposureDeclaration {
+		return declaration(line, "PE1", asOf,
+			split{"currency", []string{"EUR", "unknown"}, []float64{50, 50}},
+			split{"asset_class", []string{"infrastructure", "private_equity"}, []float64{75, 25}})
+	}
+	// parts reads PE1 on day as region/class/currency=share of its 80. A
+	// currency the ledger leaves unknown reads -, where an undeclared one
+	// reads the holding's own USD.
+	parts := func(t *testing.T, db *sql.DB, ctx context.Context, day int64) string {
+		t.Helper()
+		var s sql.NullString
+		if err := db.QueryRowContext(ctx, `SELECT string_agg(COALESCE(region, '-') || '/' || asset_class || '/'
+		    || COALESCE(currency, '-') || '=' || round(value / 80, 4), ' '
+		    ORDER BY region, asset_class, currency)
+		    FROM exposure_leaves(?, 'USD') WHERE iid = 'PE1'`, day+86399).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s.String
+	}
+	crossed := "europe/infrastructure/EUR=0.15 europe/infrastructure/-=0.15 europe/private_equity/EUR=0.05 " +
+		"europe/private_equity/-=0.05 north_america/infrastructure/EUR=0.225 " +
+		"north_america/infrastructure/-=0.225 north_america/private_equity/EUR=0.075 " +
+		"north_america/private_equity/-=0.075"
+	handOnly := "-/infrastructure/EUR=0.375 -/infrastructure/-=0.375 -/private_equity/EUR=0.125 " +
+		"-/private_equity/-=0.125"
+	for _, tc := range []struct {
+		name   string
+		ledger []canonical.ExposureDeclaration
+		want   map[int64]string
+	}{
+		{"a dated ledger record before the report", []canonical.ExposureDeclaration{hand(3, &jul)},
+			map[int64]string{jul: handOnly, sep: crossed}},
+		{"an undated ledger record", []canonical.ExposureDeclaration{hand(3, nil)},
+			map[int64]string{jul: handOnly, sep: crossed}},
+		{"a ledger record dated after the report wins whole", []canonical.ExposureDeclaration{
+			declaration(3, "PE1", &sep, split{"asset_class", []string{"infrastructure"}, []float64{100}})},
+			map[int64]string{aug: "europe/private_equity/USD=0.4 north_america/private_equity/USD=0.6",
+				sep: "-/infrastructure/USD=1.0"}},
+		{"a dated ledger record before the report, beside an undated one", []canonical.ExposureDeclaration{
+			hand(3, &jul), declaration(4, "PE1", nil, split{"asset_class", []string{"real_estate"}, []float64{100}})},
+			map[int64]string{jul: handOnly, sep: crossed}},
+		{"a dimension both state is the report's", []canonical.ExposureDeclaration{
+			declaration(3, "PE1", &jul, split{"region", []string{"asia_pacific"}, []float64{100}},
+				split{"currency", []string{"EUR", "unknown"}, []float64{50, 50}})},
+			map[int64]string{jul: "asia_pacific/private_equity/EUR=0.5 asia_pacific/private_equity/-=0.5",
+				sep: "europe/private_equity/EUR=0.2 europe/private_equity/-=0.2 " +
+					"north_america/private_equity/EUR=0.3 north_america/private_equity/-=0.3"}},
+		{"no ledger record, or only a situs", []canonical.ExposureDeclaration{
+			{Line: 3, SilverSourceID: "test-src", InstrumentExternalID: "PE1", AsOf: &jul, Situs: "LU"}},
+			map[int64]string{sep: "europe/private_equity/USD=0.4 north_america/private_equity/USD=0.6"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			db, ctx := openExposureFixture(t)
+			parseReport(t, db, ctx, aug, region)
+			stampDeclarations(t, db, ctx, tc.ledger...)
+			for day, want := range tc.want {
+				if got := parts(t, db, ctx, day); got != want {
+					t.Errorf("on %s:\n got %s\nwant %s", time.Unix(day, 0).UTC().Format(time.DateOnly), got, want)
+				}
+			}
+		})
 	}
 }

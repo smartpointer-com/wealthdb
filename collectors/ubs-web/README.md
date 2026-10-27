@@ -112,7 +112,7 @@ persisted session cookie until UBS invalidates it.
 | [`rate_parsers.py`](rate_parsers.py) | Bronze → silver for the interest conditions: the API's `interestItems` and the legacy page's "Credit interest" and "Debit interest" tables, read into rows. Pure functions, shared by the capture and the load. |
 | [`card_parsers.py`](card_parsers.py) | Bronze → silver for the card surface: pure functions from the captured JSON to the rows `load.py` writes, with no database handle, so each is testable against a synthetic payload. Holds the three readings that are easy to get wrong — the row key is minted from row content, because the API's `_id` is re-minted at every login and `transactionNr` is not a key, a `RESERVED` row is unposted activity rather than a transaction, and `merchantName` is the category while `details` is the merchant. |
 | [`prune.py`](prune.py) | Reclaim disk from the bronze tree and the `/debug` mount; see [Reclaiming disk](#reclaiming-disk). |
-| [`load.py`](load.py) | Parse bronze artefacts into a queryable SQLite silver database using the schemas in [migrations/](migrations/). Applies pending migrations on startup; each dump loads atomically (compound-key UPSERT on transactions, content-hash dedup for documents, skip on `dump_runs` for idempotency). Parses the card surface via [`card_parsers.py`](card_parsers.py). Also walks the documents archive — the scraped one plus any bank-delivered PDFs under `supplied-documents/` — and reads it via [`pdf_parsers.py`](pdf_parsers.py) (uses `pdfplumber`, bundled in the image): positions with their cost, and the transaction list, from each "Statement of assets"; cash balances and movements from each "Account Statement"; mortgage balances from maturity notices; payments from credit and debit advices; and capital calls and contract notes ([DESIGN.md](DESIGN.md) §3.6–§3.10). |
+| [`load.py`](load.py) | Parse bronze artefacts into a queryable SQLite silver database using the schemas in [migrations/](migrations/). Applies pending migrations on startup; each dump loads atomically (compound-key UPSERT on transactions, content-hash dedup for documents, skip on `dump_runs` for idempotency). Parses the card surface via [`card_parsers.py`](card_parsers.py). Also walks the documents archive — the scraped one plus any bank-delivered PDFs under `supplied-documents/` — and reads it via [`pdf_parsers.py`](pdf_parsers.py) (uses `pdfplumber`, bundled in the image): positions with their cost, and the transaction list, from each "Statement of assets"; cash balances and movements from each "Account Statement"; mortgage balances from maturity notices; payments from credit and debit advices; capital calls and contract notes; and the capital account and per-investment table of each private-markets quarterly report ([DESIGN.md](DESIGN.md) §3.6–§3.12). |
 
 ### Why both CSV and MT940?
 
@@ -183,10 +183,9 @@ The `rates` pass saves what each cash account earns and pays.
   for, matched by IBAN. It saves it as
   `rates/legacy-<sha256 of the IBAN>.html`.
 
-`load` writes each condition to the `account_rates` table: its side
-(credit or debit), its tier, its rate in percent, the balance the tier
-runs to and the day it holds from. An account that states no condition
-gets no row, so it reads as "no rate", not as 0%. Gold puts the credit
+`load` writes the conditions to `account_rates` (DESIGN.md §3.11). An
+account that states no condition gets no row, so it reads as "no rate",
+not as 0%. Gold puts the credit
 side on the account's newest cash balance at or before the capture.
 A `--only rates` dump adds no balance of its own. Its rates reach gold
 on the next `wealthdb reload ubs`.
@@ -228,7 +227,7 @@ below `WINDOW_MIN_DAYS = 1`.
     ├── documents/
     │   └── <sha256>.pdf                                           content-addressed by the PDF bytes
     ├── rates/
-    │   ├── <accountId>.json                                       the account API's answer, one per homepage account
+    │   ├── <accountId>.json                                       the account API's answer, one per homepage account it answered for
     │   └── legacy-<sha256>.html                                   a legacy account page, named by its IBAN's hash
     ├── cards/
     │   ├── accounts.json                                          the card roster, whole
@@ -282,8 +281,11 @@ Silver holds:
   `card_invoices` and `card_statements` (DESIGN.md §5.9);
 - what the PDF archive states: `historical_position_snapshots`,
   `historical_cash_balances` and `historical_mortgages` (DESIGN.md
-  §3.8), `advices` (§3.9) and `statement_trades` (§3.10). The
-  statement-era cash movements land in `transactions` (§3.6);
+  §3.8), `advices` (§3.9), `statement_trades` (§3.10) and
+  `private_market_reports` with `private_market_report_lines` (§3.12).
+  The statement-era cash movements land in `transactions` (§3.6);
+- the cash accounts' interest conditions: `account_rates`
+  (DESIGN.md §3.11);
 - bookkeeping: `dump_runs`, `parser_generations` and `schema_meta`.
 
 [DESIGN.md](DESIGN.md) holds the design notes: identifier

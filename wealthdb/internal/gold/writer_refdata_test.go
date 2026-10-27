@@ -83,6 +83,10 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 			AsOf: 2592000, PeriodStart: 86400, Currency: "QLN", BeginningValue: d("100"), EndingValue: d("125.5"),
 			Accrual: d("1"), NetAdditions: d("-10"), NetGain: d("35.5"), Income: d("2"), Fees: d("0.5"),
 			SourceSHA256: "doc-q", Payload: []byte(`{"w":1}`)}},
+		ExposureReports: []canonical.ExposureReportChange{{SilverSourceID: "test-src",
+			InstrumentExternalID: "XX0000000011", AsOf: 2592000,
+			Dimensions: map[string]map[string]float64{"region": {"europe": 60, "north_america": 40}},
+			Source:     []byte(`{"lines":2}`), Note: "Example Feeder Fund II"}},
 	}
 	before := filledTables(t, db, ctx)
 	inTx(t, db, ctx, func(w *Writer) error { return w.InsertReference(ctx, b) })
@@ -144,6 +148,9 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 		{"stated_periods", `silver_source_id, account_external_id, as_of, period_start, currency, beginning_value,
 		    ending_value, accrual, net_additions, net_gain, income, fees, source_sha256, payload`,
 			"test-src|ACCT-Q|2592000|86400|QLN|100.0000|125.5000|1.0000|-10.0000|35.5000|2.0000|0.5000|doc-q|{\"w\":1}"},
+		{"exposure_reports", `silver_source_id, instrument_external_id, as_of, dimensions, source, note`,
+			"test-src|XX0000000011|2592000|{\"region\":{\"europe\":60,\"north_america\":40}}|{\"lines\":2}|" +
+				"Example Feeder Fund II"},
 	} {
 		tables = append(tables, c.table)
 		var got string
@@ -233,6 +240,33 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 		}
 		_ = tx.Rollback()
 	}
+
+	// A parsed split's dimension or value outside the vocabulary is
+	// refused; unknown and the rest of the world are values.
+	for _, c := range []struct {
+		dims map[string]map[string]float64
+		want string
+	}{
+		{map[string]map[string]float64{"region": {"N. America": 100}}, `invalid region "N. America"`},
+		{map[string]map[string]float64{"country": {"usa": 100}}, `invalid country "usa"`},
+		{map[string]map[string]float64{"currency": {"usd": 100}}, `invalid currency "usd"`},
+		{map[string]map[string]float64{"sector": {"Software": 100}}, `invalid sector "Software"`},
+		{map[string]map[string]float64{"asset_class": {"stocks": 100}}, `invalid asset_class "stocks"`},
+		{map[string]map[string]float64{"style": {"value": 100}}, `invalid dimension "style"`},
+		{map[string]map[string]float64{"region": {"other": 50, "unknown": 50}, "country": {"US": 100},
+			"currency": {"USD": 100}}, ""},
+	} {
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = NewWriter(tx).InsertReference(ctx, &canonical.SnapshotBatch{ExposureReports: []canonical.ExposureReportChange{{
+			SilverSourceID: "test-src", InstrumentExternalID: "XX0000000012", AsOf: 86400, Dimensions: c.dims}}})
+		if c.want == "" && err != nil || c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)) {
+			t.Errorf("%v: %v, want %q", c.dims, err, c.want)
+		}
+		_ = tx.Rollback()
+	}
 }
 
 // filledTables are gold's tables that hold a row, by name.
@@ -278,14 +312,14 @@ func TestPayloadLEI(t *testing.T) {
 
 // TestEveryReferenceTableHasAKind pins that a load's windowed delete clears
 // each reference table over the span the stream re-emits it over: every
-// table names its kind of record but rate_observations and
-// stated_periods, which their streams write over the window whole.
+// table names its kind of record but rate_observations, stated_periods
+// and exposure_reports, which their streams write over the window whole.
 func TestEveryReferenceTableHasAKind(t *testing.T) {
 	kinds := map[string]bool{}
 	for _, k := range canonical.RefKinds {
 		kinds[k] = true
 	}
-	whole := map[string]bool{"rate_observations": true, "stated_periods": true}
+	whole := map[string]bool{"rate_observations": true, "stated_periods": true, "exposure_reports": true}
 	for _, table := range ReferenceTables {
 		kind, ok := ReferenceTableKinds[table]
 		switch {

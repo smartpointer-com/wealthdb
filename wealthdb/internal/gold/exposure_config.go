@@ -3,7 +3,10 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -13,9 +16,12 @@ import (
 // config's `exposure` block: each table is replaced whole, so an entry
 // taken out of the config leaves on the next load. The declarations
 // ledger's yield records go to the yield_declared_* tables; a record
-// that states only those describes no exposure. Returns how many
-// proxies, reference and size funds, declarations and custody entries it
-// stamped.
+// that states only those describes no exposure. Beside the ledger's
+// records, the declarations hold one parsed record per row of
+// exposure_reports, the splits the sources read from documents
+// (parsedDeclarations), each completed with the dimensions it does not
+// state from the ledger. Returns how many proxies, reference and size
+// funds, declarations and custody entries it stamped.
 func SyncExposure(ctx context.Context, db *sql.DB, rows canonical.ExposureRows) (int, error) {
 	return replaceConfigTables(ctx, db, "SyncExposure", []string{"exposure_proxies", "exposure_reference_funds",
 		"exposure_size_funds", "exposure_declarations", "exposure_declaration_leaves", "exposure_custody",
@@ -51,10 +57,19 @@ func SyncExposure(ctx context.Context, db *sql.DB, rows canonical.ExposureRows) 
 				if !d.StatesExposure() {
 					continue
 				}
-				if err := insert(`INSERT INTO exposure_declarations (line_no, silver_source_id, instrument_external_id, as_of,
-dimensions, situs, source, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, d.Line, d.SilverSourceID, d.InstrumentExternalID,
-					d.AsOf, strings.Join(d.Dimensions, ","), nullableEnumValue(d.Situs), nullableEnumValue(d.Source),
-					nullableEnumValue(d.Note)); err != nil {
+				if err := insertDeclaration(insert, d, declarationLedger); err != nil {
+					return 0, err
+				}
+				for i, l := range d.Leaves {
+					leaves = append(leaves, leaf{d.Line, i + 1, l})
+				}
+			}
+			parsed, err := parsedDeclarations(ctx, tx, rows.Declarations)
+			if err != nil {
+				return 0, err
+			}
+			for _, d := range parsed {
+				if err := insertDeclaration(insert, d, declarationParsed); err != nil {
 					return 0, err
 				}
 				for i, l := range d.Leaves {
@@ -82,8 +97,154 @@ dimensions, situs, source, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, d.Line, d.Sil
 				return 0, err
 			}
 			return len(rows.Proxies) + len(rows.ReferenceFunds) + len(rows.SizeFunds) + len(rows.Declarations) +
-				len(rows.Custody), nil
+				len(parsed) + len(rows.Custody), nil
 		})
+}
+
+// The origins of a declaration: the ledger's own records, and those a
+// source parses from a document. Migration 0164 spells 'ledger' in the
+// column default and in exposure_declarations_at.
+const (
+	declarationLedger = "ledger"
+	declarationParsed = "parsed"
+)
+
+// insertDeclaration writes one record that states an exposure.
+func insertDeclaration(insert func(q string, args ...any) error, d canonical.ExposureDeclaration, origin string) error {
+	return insert(`INSERT INTO exposure_declarations (line_no, silver_source_id, instrument_external_id, as_of,
+dimensions, situs, source, note, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, d.Line, d.SilverSourceID,
+		d.InstrumentExternalID, d.AsOf, strings.Join(d.Dimensions, ","), nullableEnumValue(d.Situs),
+		nullableEnumValue(d.Source), nullableEnumValue(d.Note), origin)
+}
+
+// parsedDeclarations reads exposure_reports as declarations: each row a
+// dated record, its dimensions crossed into leaves as the ledger's are.
+// A parsed record has no ledger line, so it takes a negative line, one
+// per row in (source, instrument, date) order. A value at or below zero
+// adds nothing, and each dimension is scaled to sum to one.
+//
+// A dimension the row does not state comes from the ledger record that
+// would describe the holding on the row's day were the row absent
+// (ledgerInForce): that record's split of the dimension, with `unknown`
+// kept as a value. So a parsed record wins whole on its days and keeps
+// what the ledger states beside it.
+func parsedDeclarations(ctx context.Context, tx *sql.Tx,
+	ledger []canonical.ExposureDeclaration) ([]canonical.ExposureDeclaration, error) {
+	type holding struct{ source, iid string }
+	byHolding := map[holding][]canonical.ExposureDeclaration{}
+	for _, d := range ledger {
+		if len(d.Dimensions) > 0 {
+			k := holding{d.SilverSourceID, d.InstrumentExternalID}
+			byHolding[k] = append(byHolding[k], d)
+		}
+	}
+	var out []canonical.ExposureDeclaration
+	err := scanAll(ctx, tx, `
+SELECT silver_source_id, instrument_external_id, as_of, CAST(dimensions AS VARCHAR), CAST(source AS VARCHAR), note
+  FROM exposure_reports
+ ORDER BY 1, 2, 3`, func(rows *sql.Rows) error {
+		var (
+			d            canonical.ExposureDeclaration
+			asOf         int64
+			dims         string
+			source, note sql.NullString
+		)
+		if err := rows.Scan(&d.SilverSourceID, &d.InstrumentExternalID, &asOf, &dims, &source, &note); err != nil {
+			return err
+		}
+		var split map[string]map[string]float64
+		if err := json.Unmarshal([]byte(dims), &split); err != nil {
+			return fmt.Errorf("exposure_reports %s %s %d: %w", d.SilverSourceID, d.InstrumentExternalID, asOf, err)
+		}
+		hand := ledgerInForce(byHolding[holding{d.SilverSourceID, d.InstrumentExternalID}], asOf)
+		d.Line = -(len(out) + 1)
+		d.AsOf = &asOf
+		d.Source, d.Note = source.String, note.String
+		d.Leaves = []canonical.ExposureDeclaredLeaf{{Share: 1}}
+		stated := false
+		for _, dim := range canonical.DeclarationDimensions {
+			values, shares, sum := positiveShares(split[dim])
+			if sum > 0 {
+				stated = true
+			} else if hand != nil {
+				values, shares, sum = positiveShares(marginalShares(*hand, dim))
+			}
+			if sum <= 0 {
+				continue
+			}
+			d.Dimensions = append(d.Dimensions, dim)
+			var next []canonical.ExposureDeclaredLeaf
+			for _, l := range d.Leaves {
+				for _, v := range values {
+					n := l
+					n.Share *= shares[v] / sum
+					n.Set(dim, v)
+					next = append(next, n)
+				}
+			}
+			d.Leaves = next
+		}
+		if stated {
+			out = append(out, d)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("parsed declarations: %w", err)
+	}
+	return out, nil
+}
+
+// ledgerInForce is the record of ds, one holding's ledger records that
+// state a dimension, that describes the holding on day: the latest
+// dated on or before it, else the one without a date. nil for none.
+func ledgerInForce(ds []canonical.ExposureDeclaration, day int64) *canonical.ExposureDeclaration {
+	var best, undated *canonical.ExposureDeclaration
+	for i := range ds {
+		d := &ds[i]
+		switch {
+		case d.AsOf == nil:
+			if undated == nil {
+				undated = d
+			}
+		case *d.AsOf <= day && (best == nil || *d.AsOf > *best.AsOf):
+			best = d
+		}
+	}
+	if best != nil {
+		return best
+	}
+	return undated
+}
+
+// marginalShares is d's split of the dimension dim: each value's summed
+// share of d's leaves. nil where d does not state dim.
+func marginalShares(d canonical.ExposureDeclaration, dim string) map[string]float64 {
+	if !slices.Contains(d.Dimensions, dim) {
+		return nil
+	}
+	shares := map[string]float64{}
+	for _, l := range d.Leaves {
+		shares[l.Get(dim)] += l.Share
+	}
+	return shares
+}
+
+// positiveShares is the part of shares above zero: its values in order,
+// their shares, and their sum, summed in value order so a load is
+// repeatable to the last bit.
+func positiveShares(shares map[string]float64) ([]string, map[string]float64, float64) {
+	var values []string
+	out := map[string]float64{}
+	var sum float64
+	for _, v := range slices.Sorted(maps.Keys(shares)) {
+		if s := shares[v]; s > 0 {
+			values = append(values, v)
+			out[v] = s
+			sum += s
+		}
+	}
+	return values, out, sum
 }
 
 // insertYieldDeclaration writes a ledger record's yield records, each to
@@ -162,6 +323,7 @@ func DeclarationsNamingNoHolding(ctx context.Context, db *sql.DB) ([]int, error)
 	err := scanAll(ctx, db, `
 WITH named AS (
     SELECT line_no, silver_source_id, instrument_external_id FROM exposure_declarations
+     WHERE origin = '`+declarationLedger+`'
     UNION SELECT line_no, silver_source_id, instrument_external_id FROM yield_declared_ratings
     UNION SELECT line_no, silver_source_id, instrument_external_id FROM yield_declared_dividends
     UNION SELECT line_no, silver_source_id, instrument_external_id FROM yield_declared_terms)

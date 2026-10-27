@@ -727,6 +727,8 @@ def _route(monkeypatch, tmp_path, doc_type: str, label: str = "") -> str:
                         lambda *a: called.append("contract_note") or [])
     monkeypatch.setattr(pdf_parsers, "parse_capital_call",
                         lambda *a: called.append("capital_call") or [])
+    monkeypatch.setattr(pdf_parsers, "parse_quarterly_report",
+                        lambda *a: called.append("quarterly_report") or ([], []))
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(b"%PDF-1.4\n")
     loader._parse_one_pdf(("token", str(pdf), label, doc_type))
@@ -1616,6 +1618,22 @@ def test_securities_advices_route_to_their_parsers(monkeypatch, tmp_path):
                   "Private Market Letter") == "capital_call"
 
 
+def test_a_letter_that_is_no_call_goes_on_to_the_report_parser(monkeypatch,
+                                                                tmp_path):
+    import pdf_parsers
+    report = {"source_doc_token": "token"}
+    monkeypatch.setattr(pdf_parsers, "parse_capital_call", lambda *a: [])
+    monkeypatch.setattr(pdf_parsers, "parse_quarterly_report",
+                        lambda *a: ([report], []))
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    _token, kind, _name, rows, err = loader._parse_one_pdf(
+        ("token", str(pdf), "", loader.PRIVATE_MARKET_LETTER_DOC_TYPE))
+    assert err is None
+    assert kind == "private_market_report"
+    assert rows == {"reports": [report], "lines": []}
+
+
 def test_the_walk_lists_the_securities_advices(tmp_path):
     assert _archive_walk_saw(tmp_path, loader.CONTRACT_NOTE_DOC_TYPE)
     assert _archive_walk_saw(tmp_path, loader.PRIVATE_MARKET_LETTER_DOC_TYPE)
@@ -1647,6 +1665,57 @@ def test_the_walk_writes_securities_advices_and_re_derives_them(tmp_path):
     walk(13579.24)      # a re-derive replaces the row rather than adding one
     rows = conn.execute("SELECT source_doc_token, amount FROM advices").fetchall()
     assert [tuple(r) for r in rows] == [("call", 13579.24)]
+    conn.close()
+
+
+def _report(token: str, lines: int) -> dict:
+    """One parsed quarterly report and its lines, as `pdf_parsers`
+    emits them. Every value is invented."""
+    row = dict.fromkeys(loader._REPORT_COLUMNS)
+    row.update(source_doc_token=token, instrument_isin="XX0000000011",
+               as_of=1909008000, line_count=lines, lines_reconciled=1,
+               payload="{}")
+    found = [dict(dict.fromkeys(loader._REPORT_LINE_COLUMNS),
+                  source_doc_token=token, line_no=n, name=f"Investment {n}",
+                  region="Europe", residual_value=13.3 * n, payload="{}")
+             for n in range(1, lines + 1)]
+    return {"reports": [row], "lines": found}
+
+
+def test_the_walk_writes_quarterly_reports_and_re_derives_them(tmp_path):
+    conn = fresh_db(tmp_path)
+    _seed_doc(conn, "report", "sha-report",
+              loader.PRIVATE_MARKET_LETTER_DOC_TYPE)
+    dump = tmp_path / "bronze" / "20260101T000000Z"
+    (dump / "documents").mkdir(parents=True)
+
+    def walk(lines: int) -> None:
+        cache = {"sha-report": ("report", "private_market_report",
+                                "report.pdf", _report("report", lines), None)}
+        with conn:
+            loader._load_historical_from_pdfs(conn, 1700000000, dump,
+                                              cache, {})
+
+    walk(3)
+    walk(2)     # a re-derive replaces the lines rather than keeping a third
+    assert [tuple(r) for r in conn.execute(
+        "SELECT source_doc_token, line_count FROM private_market_reports"
+    )] == [("report", 2)]
+    assert [tuple(r) for r in conn.execute(
+        "SELECT line_no, residual_value FROM private_market_report_lines "
+        "ORDER BY line_no")] == [(1, 13.3), (2, 26.6)]
+    conn.close()
+
+
+def test_the_purge_takes_the_quarterly_reports(tmp_path):
+    conn = fresh_db(tmp_path)
+    loader._insert_private_market_reports(conn, _report("report", 2))
+
+    loader._purge_stale_document_rows(conn)
+
+    for table in ("private_market_reports", "private_market_report_lines"):
+        assert conn.execute(
+            f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
     conn.close()
 
 

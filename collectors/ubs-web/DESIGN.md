@@ -784,7 +784,7 @@ printed.
 - **Other Private Market Letters are not calls.** Quarterly reports and
   other letters share the label. The cover title selects the calls,
   and it is read from the first page alone, so a long report is not
-  read in full.
+  read in full. A quarterly report is read apart (§3.12).
 - **A prepayment is a contract note of its own.** It states the
   amount and the conversion rate but no units. The subscription that
   settles against it prints "Minus your prepayment" (`prepayment`)
@@ -934,14 +934,56 @@ The account is the IBAN the response or the page states. An account the
 API stated conditions for keeps the API's. An account that states no
 condition has no row, which reads as no rate, not as 0%.
 
-**What gold reads.** The adapter puts the credit conditions on the
-account's cash balances at the newest instant at or before the capture,
-under the stated-rate keys: `interest_rate` for one tier,
-`interest_tiers` for several, `interest_valid_from` and `interest_side`.
-The rows of one `valid_from` day are one schedule. A capture that
-states several days writes one `interest_conditions` entry per day, so
-a rate announced for a later day stands beside the one in force. It
-adds no balance. The debit side stays in silver.
+**What gold reads.** The adapter puts the credit side on the account's
+cash balances; [the adapter doc](../../wealthdb/docs/adapters/ubs.md)
+has the keys.
+
+### 3.12 Private-markets quarterly reports
+
+A `Private Market Letter` whose cover page is titled "Quarterly Report"
+is the fund administrator's report on a feeder fund. Migration 0017
+holds two tables:
+
+- `private_market_reports`: one row per report. It names the feeder
+  fund by the ISIN and the name its capital account prints. It holds
+  the capital account's date (`as_of`) and the investor's column of the
+  account: the commitment, the capital called, the cumulative expenses,
+  the valuation, the shares in issue and the NAV per share.
+- `private_market_report_lines`: one row per line of the report's
+  per-investment table. Each line holds its name, its region, its
+  sector or its strategy, its cost and its residual value, all as
+  printed.
+
+How it is read:
+
+- **The cover title decides.** A letter titled "Capital Call" goes to
+  `advices` (§3.9). One titled "Quarterly Report" goes here. Any other
+  letter is declined.
+- **Three table layouts.** The table's header says which one a report
+  prints. One has a sector column and a residual value column. One has
+  a strategy column and a current NAV, which is the residual value. One
+  has a stage column, and its residual value is the total value less
+  the realised value.
+- **A line is a name, labels and figures.** The figures stand at the
+  line's end. The last geography on the line is its region, since a
+  fund's own name may hold a region word too. A name that wraps onto
+  the lines around it is joined.
+- **Only whole tables count.** The lines' residual values must sum to
+  the table's closing total, within its rounding. `lines_reconciled`
+  says whether they do. A report with no table, or one whose layout the
+  reader does not know, has a row and no lines.
+- **The pie charts are never read.** One family prints them as a share
+  of NAV, another as a share of invested capital, and their labels
+  scramble in the text layer. Every split gold computes comes from the
+  lines at residual value.
+- **The table's date.** The table may state an older date than the
+  capital account ("last reported"). `lines_as_of` keeps it.
+
+**What it is for.** The adapter turns each reconciled report into the
+fund's exposure split by region and sector, dated the capital
+account's date ([§13](../../wealthdb/docs/adapters/ubs.md) of the
+adapter doc). A record
+in the declarations ledger of the same or a later date wins over it.
 
 ## 4. Web loader implementation notes
 
@@ -974,7 +1016,8 @@ adds no balance. The debit side stays in silver.
      and the Credit/Debit Advice parser write `transactions` from
      the same walk (§3.6), and the capital-call and contract-note
      parsers write `advices` (§3.9). A Statement of assets also
-     writes its transaction list to `statement_trades` (§3.10).
+     writes its transaction list to `statement_trades` (§3.10), and a
+     quarterly report writes `private_market_reports` (§3.12).
   7. Parse `cards/` → the `card_*` tables (§5.9).
   8. Parse `rates/` → `account_rates` (§3.11).
 

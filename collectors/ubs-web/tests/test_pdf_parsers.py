@@ -23,6 +23,7 @@ from pdf_parsers import (
     parse_label_statement_of_assets,
     parse_maturity_notice_text,
     parse_payment_advice_text,
+    parse_quarterly_report_text,
     parse_statement_of_assets_text,
     statement_of_assets_body_meta,
 )
@@ -1886,3 +1887,207 @@ def test_stmt_security_reads_a_valor_printed_hard_against_its_caption():
     # trailer, a bare date, a short trailing number in a name.
     for line in ("Turnover total 1 111 111.11", "10.04.2025", "Example Index 500"):
         assert _stmt_security([line]) == (None, None), line
+
+
+class TestQuarterlyReport:
+    """A quarterly report: the UBS cover page titled "Quarterly Report",
+    then the administrator's report with its per-investment table and the
+    investor's capital account. All names, figures and identifiers are
+    invented."""
+
+    COVER = [
+        "UBS Switzerland AG",
+        "Quarterly Report",
+        "Produced on 15 July 2030",
+        "Please find enclosed the quarterly report in relation to your",
+        "investment in Example Feeder Fund II.",
+    ]
+    CAPITAL_ACCOUNT = [
+        "Example Feeder Fund II",
+        "Capital Account as at 30 June 2030",
+        "This Capital Account details the status of the investment.",
+        "Net Commitment Net Commitment",
+        "USD 72,500,000 USD 175,000",
+        "ISIN - XX0000000011 Example Feeder Fund II Investor",
+        "100% 0.250%",
+        "Capital Account USD USD",
+        "Capital called 7,250,000 17,500",
+        "Capital distributed - -",
+        "Cumulative expenses (290,000) (735)",
+        "Valuation of investment in Example Feeder Fund II 7,105,000 17,150",
+        "Shares in issue 7,250,000.000 17,500.000",
+        "Example Feeder Fund II - NAV (per shares in issue) 0.9800 0.9800",
+    ]
+    SECTOR_TABLE = [
+        "Portfolio Overview as of 30 June 20307",
+        "Example Fund XII interest (in USD m)",
+        "Company Region Invest. Date Sector MOIC10",
+        "Capital Value Value8 Value9",
+        "Investment Alpha North America Aug‐28 Financial Services 432.1 ‐ 648.3 648.3 1.50x",
+        "Investment Beta Europe Nov‐28 Industrials 345.6 ‐ 217.4 217.4 0.63x",
+        "Investment Gamma Global Jan‐29 Industrials ‐ ‐ 108.7 108.7 NA",
+        "Investment Delta Asia Fund Asia‐Pacific Feb‐29 Consumer / Retail 259.3 44.6 323.9 368.5 1.42x",
+        "Total Investments 1,037.0 44.6 1,298.3 1,342.9 1.29x",
+    ]
+
+    def _text(self, *parts: list[str]) -> str:
+        return "\n".join([*self.COVER, *(ln for p in parts for ln in p)])
+
+    def test_the_report_and_its_capital_account_are_read(self):
+        [row], lines = parse_quarterly_report_text(
+            self._text(self.SECTOR_TABLE, self.CAPITAL_ACCOUNT), "<doc-token>")
+        assert row["instrument_isin"] == "XX0000000011"
+        assert row["fund_name"] == "Example Feeder Fund II"
+        assert row["as_of"] == 1909008000                  # 30.06.2030
+        assert row["lines_as_of"] == 1909008000
+        assert row["currency_iso"] == "USD"
+        assert row["commitment"] == 175000
+        assert row["capital_called"] == 17500
+        assert row["cumulative_expenses"] == -735
+        assert row["valuation"] == 17150
+        assert row["shares_in_issue"] == 17500
+        assert row["nav_per_share"] == pytest.approx(0.98)
+        assert json.loads(row["payload"])["isin"].startswith("ISIN - ")
+        assert len(lines) == row["line_count"] == 4
+
+    def test_a_table_with_a_sector_column_is_read_line_by_line(self):
+        [row], lines = parse_quarterly_report_text(
+            self._text(self.SECTOR_TABLE, self.CAPITAL_ACCOUNT), "<doc-token>")
+        assert [(ln["line_no"], ln["name"], ln["region"], ln["sector"],
+                 ln["strategy"], ln["cost"], ln["residual_value"])
+                for ln in lines] == [
+            (1, "Investment Alpha", "North America", "Financial Services",
+             None, 432.1, 648.3),
+            (2, "Investment Beta", "Europe", "Industrials", None, 345.6, 217.4),
+            (3, "Investment Gamma", "Global", "Industrials", None, 0.0, 108.7),
+            # A region word in the name: the column is the last one.
+            (4, "Investment Delta Asia Fund", "Asia-Pacific",
+             "Consumer / Retail", None, 259.3, 323.9),
+        ]
+        assert row["lines_total"] == pytest.approx(1298.3)
+        assert row["lines_reconciled"] == 1
+        assert json.loads(lines[0]["payload"])["line"].startswith(
+            "Investment Alpha")
+
+    def test_a_table_with_a_nav_column_reads_the_nav_as_residual_value(self):
+        table = [
+            "Example Fund 6 - Portfolio level performance (as of 31 March2030, last reported)11",
+            "In USD",
+            "Investment Geography Strategy",
+            "Inv.",
+            "Capital Cmt. in % of",
+            "Date Invested Distrib. NAV Value12",
+            "Primary Equity",
+            "Investment Alpha Partners IV Europe Buyout 04‐Nov‐27 87.3 43.4% 34.9 40.0% ‐‐ ‐‐ 39.3 39.3 1.13x 12.3%",
+            "Investment Beta Fund N. America Venture/Growth 13‐Dec‐27 92.7 46.1% 37.1 40.0% 3.7 10.0% 41.6 45.3 1.22x 9.4%",
+            "Investment Gamma Fund ROW Buyout 22‐Dec‐28 21.1 10.5% ‐‐ ‐‐ ‐‐ n/a (0.7) (0.7) ‐",
+            "201.1 100.0% 72.0 35.8% 3.7 5.1% 80.2 83.9 1.17x 10.3%",
+        ]
+        [row], lines = parse_quarterly_report_text(
+            self._text(table, self.CAPITAL_ACCOUNT), "<doc-token>")
+        assert [(ln["name"], ln["region"], ln["sector"], ln["strategy"],
+                 ln["cost"], ln["residual_value"]) for ln in lines] == [
+            ("Investment Alpha Partners IV", "Europe", None, "Buyout", 34.9, 39.3),
+            ("Investment Beta Fund", "N. America", None, "Venture/Growth",
+             37.1, 41.6),
+            ("Investment Gamma Fund", "ROW", None, "Buyout", 0.0, -0.7),
+        ]
+        # The line at 100% of the commitments closes the table.
+        assert row["lines_total"] == pytest.approx(80.2)
+        assert row["lines_reconciled"] == 1
+        assert row["lines_as_of"] == 1901145600            # 31.03.2030
+
+    def test_a_table_with_a_stage_column_reads_total_less_realised(self):
+        table = [
+            "Portfolio Overview as of 30 June 20306",
+            "Example interest in USDm",
+            "Fund Vintage Committed Invested % Realised Total",
+            "Fund Geography Stage MOIC9",
+            "CCY Year Capital Capital Funded Value Value8",
+            "Primary Equity",
+            "Investment Alpha Fund I USD 2027 Europe Buyout 47.3 23.6 49.9% 3.1 29.8 1.4x",
+            "Investment Beta, L.P. USD 2028 North America Buyout 61.9 30.4 49.1% ‐ 37.3 1.2x",
+            "109.2 54.0 49.5% 3.1 67.1 1.2x",
+            "Total All Investments 109.2 54.0 49.5% 3.1 67.1 1.2x",
+        ]
+        [row], lines = parse_quarterly_report_text(
+            self._text(table, self.CAPITAL_ACCOUNT), "<doc-token>")
+        assert [(ln["name"], ln["region"], ln["strategy"], ln["cost"],
+                 ln["residual_value"]) for ln in lines] == [
+            ("Investment Alpha Fund I", "Europe", "Buyout", 23.6, pytest.approx(26.7)),
+            ("Investment Beta, L.P.", "North America", "Buyout", 30.4, 37.3),
+        ]
+        assert row["lines_total"] == pytest.approx(64.0)
+        assert row["lines_reconciled"] == 1
+
+    def test_a_name_wrapped_around_its_figures_is_one_line(self):
+        table = [
+            "Company Geography Stage % Funded MOIC9",
+            "Co-Investments",
+            "Investment Alpha Holdings (Example",
+            "53.7 48.9 91.1% ‐ 58.3 1.2x",
+            "Sidecar L.P.) Nov‐28 Europe Buyout",
+            "Total All Investments 53.7 48.9 91.1% ‐ 58.3 1.2x",
+        ]
+        [row], lines = parse_quarterly_report_text(
+            self._text(table, self.CAPITAL_ACCOUNT), "<doc-token>")
+        assert [(ln["name"], ln["region"], ln["residual_value"])
+                for ln in lines] == [
+            ("Investment Alpha Holdings (Example Sidecar L.P.)", "Europe",
+             58.3)]
+        assert row["lines_reconciled"] == 1
+
+    def test_a_name_wrapped_around_its_columns_is_one_line(self):
+        # The middle line holds every column but the name; the line
+        # below names no geography, so it is the name's second half.
+        table = [
+            "Company Geography Stage % Funded MOIC9",
+            "Co-Investments",
+            "Investment Alpha",
+            "Nov‐28 Europe Buyout 53.7 48.9 91.1% ‐ 58.3 1.2x",
+            "Partners IV",
+            "Total All Investments 53.7 48.9 91.1% ‐ 58.3 1.2x",
+        ]
+        [row], lines = parse_quarterly_report_text(
+            self._text(table, self.CAPITAL_ACCOUNT), "<doc-token>")
+        assert [(ln["name"], ln["region"], ln["strategy"],
+                 ln["residual_value"]) for ln in lines] == [
+            ("Investment Alpha Partners IV", "Europe", "Buyout", 58.3)]
+        assert row["lines_reconciled"] == 1
+
+    def test_lines_that_miss_the_total_are_not_reconciled(self):
+        table = [*self.SECTOR_TABLE[:5], *self.SECTOR_TABLE[6:]]
+        [row], lines = parse_quarterly_report_text(
+            self._text(table, self.CAPITAL_ACCOUNT), "<doc-token>")
+        assert len(lines) == 3
+        assert row["lines_reconciled"] == 0
+
+    def test_a_table_without_a_total_is_not_reconciled(self):
+        [row], lines = parse_quarterly_report_text(
+            self._text(self.SECTOR_TABLE[:-1], self.CAPITAL_ACCOUNT),
+            "<doc-token>")
+        assert len(lines) == 4
+        assert row["lines_total"] is None and row["lines_reconciled"] == 0
+
+    def test_a_report_without_a_table_writes_the_report_alone(self):
+        [row], lines = parse_quarterly_report_text(
+            self._text(self.CAPITAL_ACCOUNT), "<doc-token>")
+        assert lines == []
+        assert row["line_count"] == 0 and row["lines_reconciled"] == 0
+        assert row["capital_called"] == 17500
+
+    def test_a_region_in_the_prose_is_no_line(self):
+        prose = ["Example Fund invests in North America and Europe 2030 13.7 27.4 41.1 54.8"]
+        [_row], lines = parse_quarterly_report_text(
+            self._text(prose, self.CAPITAL_ACCOUNT), "<doc-token>")
+        assert lines == []
+
+    def test_a_report_without_a_capital_account_yields_nothing(self):
+        assert parse_quarterly_report_text(
+            self._text(self.SECTOR_TABLE), "<doc-token>") == ([], [])
+
+    def test_the_cover_title_decides_between_a_report_and_a_call(self):
+        report = self._text(self.SECTOR_TABLE, self.CAPITAL_ACCOUNT)
+        call = report.replace("Quarterly Report\n", "Capital Call\n", 1)
+        assert parse_quarterly_report_text(call, "<doc-token>") == ([], [])
+        assert parse_capital_call_text(report, "<doc-token>") == []

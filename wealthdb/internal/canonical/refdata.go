@@ -358,6 +358,23 @@ type StatedPeriodChange struct {
 	Payload      json.RawMessage
 }
 
+// ExposureReportChange is one insert into gold's `exposure_reports`: a
+// holding's split on one day as a source reads it from a document, such
+// as a fund's quarterly report. AsOf is the UTC midnight of that day.
+// Dimensions maps each dimension it states (DeclarationDimensions) to its
+// values and their shares in percent, summing to 100. gold.SyncExposure
+// copies each one into the declarations as a parsed record
+// (docs/EXPOSURE.md §9).
+type ExposureReportChange struct {
+	SilverSourceID       string
+	InstrumentExternalID string
+	AsOf                 int64
+	Dimensions           map[string]map[string]float64
+	// Source names the document, as JSON; Note is free text.
+	Source json.RawMessage
+	Note   string
+}
+
 // RateObservationChange is one insert into gold's `rate_observations`:
 // one day's value of a published interest-rate series, in percent, as
 // the source serves it. The yield config's curves name series by

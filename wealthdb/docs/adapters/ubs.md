@@ -75,6 +75,7 @@ Web silver:
 | `statement_trades` | `realized_lots` | The trade list a Statement of Assets prints (ubs-web DESIGN.md §3.10). Each sale is a realized lot with the cost it drew on (§12). |
 | `advices` | `positions.book_value` | The capital calls are the paid-in basis of a private-markets fund's units (§12). Contract notes are not read. |
 | `account_rates` | `cash_balances.payload` | The netbanking's credit interest (ubs-web DESIGN.md §3.11). A capture's conditions go on the account's balances at the newest instant at or before it, as `interest_rate` (one tier) or `interest_tiers` (several), with `interest_valid_from` and `interest_side`. The rows of one `valid_from` day are one schedule; a capture of several days states one `interest_conditions` entry per day. No balance is added. The debit side is not read. An account with no row states no rate. |
+| `private_market_reports`, `private_market_report_lines` | `exposure_reports` | A private-markets fund's split by region and sector, from its quarterly reports (§13). |
 
 **The MT940 feed is delivered per account.** An account is in scope
 for statements or it is not, and one that is not receives none on any
@@ -750,7 +751,7 @@ gross*).
   covered account.
 
 A conversion between two accounts the feed does speak for stays open
-(§13).
+(§14).
 
 ### The counter account, across both eras
 
@@ -1591,7 +1592,42 @@ count each sale once:
   nowhere. Both kinds rank alike, so a tax year a statement covers in
   part still counts the export's sales after it.
 
-## 13. Open questions
+## 13. Private-markets quarterly reports
+
+ubs-web reads each quarterly report of a private-markets feeder fund
+into `private_market_reports` and its per-investment table into
+`private_market_report_lines` (ubs-web DESIGN.md §3.12). The adapter
+turns a report into one dated exposure record for the fund
+(`exposure_reports.go`). Gold merges it with the declarations ledger
+(EXPOSURE.md §9, parsed records).
+
+- **The holding.** The record names the fund by the ISIN the capital
+  account prints. Both feeds name the fund's position by that ISIN, so
+  the record describes the position on every account that holds it.
+- **The date.** The record is dated the capital account's date, the
+  quarter end.
+- **The split.** It is computed from the investment lines at residual
+  value. The region split is always stated. The sector split is stated
+  where the table prints a sector. A line at or below zero adds
+  nothing. Each split is in percent and sums to 100.
+- **The labels.** The table's geographies map onto the regions. "Rest
+  of World" reads as `other`; "Global" and an unknown label read as
+  `unknown`. A sector maps by the first word stem it contains, such as
+  "software" for `technology`; no match reads as `unknown`. Health
+  comes before technology, so "Healthcare Technology" reads as
+  `health_care`.
+- **Not read.** The table's strategy column (buyout, growth) states
+  neither a sector nor an asset class, so the holding keeps its own
+  class. The report's pie charts are never read.
+- **Only whole tables.** A report whose lines do not sum to the table's
+  total gives no record. Where two documents report one quarter for one
+  fund, the first by document token counts.
+- **The window.** The change window reaches the reports' dates, so a
+  load's windowed delete clears the records before it writes them again.
+- **Reaching gold.** A ubs-web collector load writes no new dump. So new
+  records reach gold on the next `wealthdb reload ubs`.
+
+## 14. Open questions
 
 - **A conversion between two covered accounts.** Both legs are feed
   rows, the `/OCMT/` subfield on the paying one states the other, and

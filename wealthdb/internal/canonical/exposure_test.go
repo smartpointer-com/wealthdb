@@ -41,7 +41,8 @@ func TestSectors(t *testing.T) {
 	}
 }
 
-// Set fills the field of each declarable dimension and no other.
+// Set fills the field of each declarable dimension and no other, and Get
+// reads it back.
 func TestExposureDeclaredLeafSet(t *testing.T) {
 	t.Parallel()
 	l := ExposureDeclaredLeaf{Share: 0.5}
@@ -53,5 +54,13 @@ func TestExposureDeclaredLeafSet(t *testing.T) {
 		Currency: "currency", Sector: "sector"}
 	if l != want {
 		t.Errorf("leaf = %+v, want %+v", l, want)
+	}
+	for _, dim := range DeclarationDimensions {
+		if got := l.Get(dim); got != dim {
+			t.Errorf("Get(%s) = %q", dim, got)
+		}
+	}
+	if got := l.Get(DeclarationSitus); got != "" {
+		t.Errorf("Get(situs) = %q, want none", got)
 	}
 }

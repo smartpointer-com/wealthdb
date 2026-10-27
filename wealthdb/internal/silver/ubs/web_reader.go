@@ -135,9 +135,9 @@ func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Wi
 	// dump run need share — so the window has to reach them or gold's
 	// delete-then-reinsert would leave duplicates behind. The managed
 	// portfolios' trades are the same case, reaching years back past the
-	// oldest live dump.
+	// oldest live dump, and so are the private-markets quarterly reports.
 	for _, extra := range []func(context.Context) (int64, int64, error){
-		r.historicalRange, r.cardRange, r.portfolioTxnRange,
+		r.historicalRange, r.cardRange, r.portfolioTxnRange, r.reportRange,
 	} {
 		lo, hi, err := extra(ctx)
 		if err != nil {
