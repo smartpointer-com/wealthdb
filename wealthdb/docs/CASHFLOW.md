@@ -45,7 +45,7 @@ in, what went out, and what was left.
 
 | section | what crosses the edge | sign |
 |---|---|---|
-| `operating_in` | the income verdicts, plus the reimbursements income excludes that link to no outflow | + (net of reversals) |
+| `operating_in` | the income verdicts, plus the reimbursements income excludes that no road links | + (net of reversals) |
 | `operating_out` | the spending verdicts, plus moves into a charitable or custodial vehicle | − (net of refunds and linked reimbursements) |
 | `investing` | buys and sells; private capital called and returned; capital deployed to or returned from a destination the product does not track | net |
 | `financing` | what the mortgage rule places, an own-account move to a mortgage account (matched or stated), `mortgage_transfer`, `loan_proceeds`, `debt_repayment` | net |
@@ -204,8 +204,8 @@ both count pooled accounts with no wrapper (§10).
   - the projection's mortgage history and `status`'s excluded count.
 
   The balance-side readers read the current wrapper:
-  - the reconciliation memo, so before the day it measures the account
-    by its current side and its `unexplained` shows the difference;
+  - the reconciliation memo. Before the day it measures the account by
+    its current side, and `unexplained` shows the difference;
   - `coverage`;
   - the projection's split of the expected income.
 
@@ -233,8 +233,8 @@ be written in SQL. Nothing here is like that.)
 **Cashflow reads each family's resolution macro, never its
 `*_lines_base`.** The verdicts it needs most are exactly the ones a
 base excludes: the crossings, `investment`, `capital_return`,
-`loan_proceeds`, `debt_repayment` and the `reimbursement` no outflow
-answers.
+`loan_proceeds`, `debt_repayment` and the `reimbursement` no road
+links.
 
 ### Where each row lands
 
@@ -247,7 +247,7 @@ The first matching step places a row:
    are excluded by both families too.
 
    The exception is a cash leg its source states signed:
-   - a sign pin names a source kind and one of the six kinds;
+   - a sign pin names an adapter kind and one of the six kinds;
    - the rows of a pinned kind state their cash signed, positive in;
    - the pins are `canonical.CashSignedKinds`, which the load stamps
      into `cash_signed_kinds`.
@@ -278,11 +278,12 @@ The first matching step places a row:
    pool-internal.
 9. **The income kinds** go to operating in, by resolved income type:
    `dividend`, `coupon`, `staking`, `capital_gain`, `reward`, `deposit`
-   and positive `interest`. A `deposit` placed `reimbursement` that
-   links to no outflow lands here too. Income excludes it, but it is
-   cash that arrived. One that links ([SPENDING.md](SPENDING.md) §3,
-   *Reimbursements*) is placed ahead of this step, on operating out in
-   its outflow's category, netted as a refund is.
+   and positive `interest`. A `deposit` placed `reimbursement` that no
+   road links lands here too. Income excludes it, but it is cash that
+   arrived. One that links ([SPENDING.md](SPENDING.md) §3,
+   *Reimbursements*) is placed right after step 1, ahead of every
+   verdict. It goes to operating out in its outflow's category, netted
+   as a refund is.
 10. **The spending kinds** go to operating out, by resolved spend
     category: `purchase`, `refund`, `fee`, `tax`, `withdrawal` and
     negative `interest`.
@@ -820,10 +821,9 @@ knobs apply at different times:
 - an account override reaches only the rows a load touches, so a
   reload applies it to history.
 
-An account override's `tax_wrapper_from` dates its wrapper: the
-override's wrapper from that day, and before it the one the account has
-without the override (§3). The day is today or earlier. Only a reload
-is sure to apply a new day to the whole history.
+An account override's `tax_wrapper_from` dates its wrapper (§3; the
+key is in [DESIGN.md](DESIGN.md) §5). Only a reload is sure to apply a
+new day to the whole history.
 
 `cashflow.projection.lookback_months` is the cash flow projection's
 look-back (§12): 1 to 36 whole months before the current one, 12 by
@@ -950,7 +950,10 @@ being wrong about itself rather than about the statement.
 2. Accounts that contribute transactions only. An account loaded for
    balances alone has a real balance change and no lines.
 3. Accounts with a balance history only, and never the synthetic
-   per-portfolio `overlay` accounts.
+   per-portfolio `overlay` accounts. Some sources state a deposit's
+   balance as a `demand_deposit` holding. If such an account has no
+   cash balance, the memo and coverage read the holding as its balance
+   (`cashflow_cash_balances`).
 4. Each account is measured **from its own first snapshot**. Collectors
    onboard at different times. One may back-load years of transaction
    history but have balances only from its first run. Blanking every
@@ -1020,7 +1023,9 @@ that query is wrong.
    zero means the account reconciles.
 3. **It reports what it cannot measure.** In a join-based query, an
    account with no balance history never appears, and absent reads as
-   fine. Here it reads **unmeasurable**. An account whose balance series
+   fine. Here it reads **unmeasurable**. A deposit stated as a holding
+   counts as a balance history (§8, *Reconciliation*). An account whose
+   balance series
    begins inside the period reads **opening**. One whose series stopped
    before the period reads **ended**. Either way the difference across
    the period is not a real change.
@@ -1037,8 +1042,8 @@ four terms, each computed separately:
 
 1. the **vehicles' own income**: a plan's dividends are not the
    household's cash flow;
-2. the **reimbursements** that link to no outflow, which cashflow
-   keeps and income drops;
+2. the **reimbursements** that no road links, which cashflow keeps and
+   income drops;
 3. the **re-homed verdicts**: `capital_return` and `investment` to
    investing, `loan_proceeds` to financing;
 4. any account the families' own **scopes** exclude but the pool keeps.
@@ -1117,7 +1122,7 @@ the twin ranks the lines and projects neither.
 ## 10. Storage and lifecycle
 
 Cashflow has no store of its own. It adds columns to the family
-overlays, two stamped tables, and one serving table:
+overlays, four stamped tables, and one serving table:
 
 | table / column | grain | survives `reset`? | carried by `reload -a`? |
 |---|---|---|---|
@@ -1125,10 +1130,13 @@ overlays, two stamped tables, and one serving table:
 | `spend_txn_enrichment.stated_asset_class`, `income_txn_enrichment.stated_asset_class` | per transaction | no | n/a, re-derived |
 | `cashflow_wrapper_sides` | one row per tax wrapper | yes | re-stamped from config |
 | `cashflow_account_scope` | config, stamped into gold | yes | re-stamped from config |
+| `cash_signed_kinds` | one row per sign pin (adapter kind, kind) | yes | re-stamped from code by every pass |
+| `account_wrapper_history` | one row per account with a dated wrapper override | no | n/a, rewritten by the source's load |
 | `report_cashflow_plan` (view `web_cashflow_plan`) | per reporting currency, month ahead, part and class | yes | n/a, rewritten by every web refresh |
 
-Nothing is stored for the memo. It reads `cash_balances` and the
-resolution at query time.
+Nothing is stored for the memo. It reads `cashflow_cash_balances()`
+(the cash balances, plus deposit holdings on accounts with none) and
+the resolution at query time.
 
 The wrapper table is stamped **whole**: every value of the enum,
 defaults included. That keeps the `defaultWrapperSides` table
@@ -1144,7 +1152,9 @@ edits to reach the statement.
 - how many own-account moves carry a far account, and how many of
   those the source stated itself;
 - how many pairs the matcher asserted on a shared reference, on a
-  described counter leg, and on a narrative naming the other account;
+  described counter leg, on a narrative naming the other account,
+  across two currencies at the day's rate, and as a reversal on one
+  account;
 - source references that named more than one movement and paired
   nothing, when there are any;
 - loudly, how many pooled accounts have no tax wrapper;
@@ -1222,7 +1232,7 @@ Each names a way the statement can be quietly wrong:
   and spending, and the tax they withheld before the household saw the
   money, appear on no line and in no memo (§3).
 - **The two families' limits show here too:**
-  - reimbursements no road links to an outflow
+  - reimbursements no road links
     ([SPENDING.md](SPENDING.md) §3, *Reimbursements*);
   - a platform custody deposit whose funding withdrawal gold holds but
     the matcher does not pair: the deposit is investing
