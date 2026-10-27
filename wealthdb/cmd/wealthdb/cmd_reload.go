@@ -227,6 +227,16 @@ func reloadFreshAndSwap(
 					respelled, store.noun)
 			}
 		}
+		// The cash-flow boundary comes across too. The enrichment pass
+		// rewrites it whole, but it reads an empty one as the first pass
+		// ever to stamp it and says every earlier report was wrong. The
+		// outgoing gold's boundary makes that true only where it had
+		// none. Not carrying it costs a false notice, never a figure, so
+		// a failure here warns and the rebuild goes on.
+		if _, _, err := carryVerdictStore(ctx, db, cfg.GoldDB, boundaryStamp); err != nil {
+			fmt.Fprintf(stderr, "reload: the cash-flow boundary did not carry across (%s); "+
+				"the load may call itself its first pass\n", err.Error())
+		}
 		// Run runGoldPasses AFTER the stores have been carried across:
 		// the signature-version re-key reads that store, and a pass
 		// that ran before the carry would see it empty and carry
@@ -287,6 +297,12 @@ var paidStores = []paidStore{
 	{"symbol_resolutions", "symbol", "lookup_value", ""},
 }
 
+// boundaryStamp is the cash-flow boundary (cashflow_wrapper_sides), carried
+// the way a paid store is, so the rebuilt file starts with the outgoing
+// file's rows. It is in no list of paid stores: the enrichment pass
+// re-stamps it from the config.
+var boundaryStamp = paidStore{"cashflow_wrapper_sides", "boundary", "tax_wrapper", ""}
+
 // carryVerdictStore copies one global verdict store out of the
 // outgoing gold file into the freshly built one, and reports whether
 // the outgoing file had the table at all and how many rows it carried.
@@ -309,9 +325,9 @@ var paidStores = []paidStore{
 // The intersection alone does not make the live-behind direction
 // SAFE, only silent: a column the rebuilt schema requires and the
 // outgoing file does not have yet is dropped from the SELECT and then
-// fails the target table's NOT NULL on INSERT. Every column of these
-// tables is NOT NULL, so that is the normal shape of the next additive
-// migration met by a live file no load has touched since. Such
+// fails the target table's NOT NULL on INSERT. Nearly every column of
+// these tables is NOT NULL, so that is the normal shape of the next
+// additive migration met by a live file no load has touched since. Such
 // columns are therefore named in an error before the INSERT runs,
 // rather than surfacing as a constraint violation with nothing
 // actionable in it.
