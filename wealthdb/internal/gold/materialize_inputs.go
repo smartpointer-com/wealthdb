@@ -62,6 +62,7 @@ var loadKeyTables = []string{
 	"spend_txn_enrichment",
 	"income_txn_enrichment",
 	"spend_reimbursement_pairs",
+	"cash_signed_kinds",
 	"spend_account_scope",
 	"income_account_scope",
 	"cashflow_account_scope",

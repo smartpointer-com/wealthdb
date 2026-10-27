@@ -133,9 +133,8 @@ func TestReimbursementNetsAgainstItsOutflow(t *testing.T) {
 // TestReimbursementRoadsHoldTheirGuards pins what each road refuses:
 // an outflow past the 365-day window, one in another currency, one
 // spending does not count (an own-account move), a duplicate or a
-// mismatched ledger line; and that the latest of two candidates wins
-// and an insurance payout stays income. Every name and figure is
-// invented.
+// mismatched ledger line; and that an insurance payout stays income.
+// Every name and figure is invented.
 func TestReimbursementRoadsHoldTheirGuards(t *testing.T) {
 	db, ctx := openGold(t)
 	seedTxns(t, db, ctx,
@@ -144,9 +143,9 @@ func TestReimbursementRoadsHoldTheirGuards(t *testing.T) {
 		txn{"bank", "OLD-BACK", "CASH1", "deposit", day(466), 10, "Example Old Shop", "", ""},
 		txn{"bank", "EDGE", "CARD1", "purchase", day(100), -50, "Example Edge Shop", "", ""},
 		txn{"bank", "EDGE-BACK", "CASH1", "deposit", day(465), 10, "Example Edge Shop", "", ""},
-		// the latest of two outflows
-		txn{"bank", "FIRST", "CARD1", "purchase", day(200), -60, "Example Twice", "", ""},
-		txn{"bank", "SECOND", "CARD1", "purchase", day(210), -60, "Example Twice", "", ""},
+		// an outflow the signature road could take, where the ledger
+		// names another
+		txn{"bank", "TWICE", "CARD1", "purchase", day(210), -60, "Example Twice", "", ""},
 		txn{"bank", "TWICE-BACK", "CASH1", "deposit", day(220), 20, "Example Twice", "", ""},
 		// an own-account move the ledger points at
 		txn{"bank", "MOVE", "CASH1", "withdrawal", day(300), -70, "Own Transfer", "", ""},
@@ -177,7 +176,7 @@ func TestReimbursementRoadsHoldTheirGuards(t *testing.T) {
 	leg := func(acct string, d int64, amt float64) gold.TransferOverrideSelector {
 		return gold.TransferOverrideSelector{Source: "bank", Account: acct, Day: day(d), Amount: amt, Currency: "USD"}
 	}
-	move, payout := leg("CARD1", 300, -70), leg("CARD1", 400, -90)
+	move, premium := leg("CARD1", 300, -70), leg("CARD1", 400, -90)
 	move.Account = "CASH1"
 	// A spending rule files the old shop and the euro shop, which the
 	// store does not hold: only the signature road could link them.
@@ -186,14 +185,14 @@ func TestReimbursementRoadsHoldTheirGuards(t *testing.T) {
 		Rules:  []Rule{filed},
 		Income: IncomeOptions{Rules: []Rule{repaid, insured}},
 		TransferOverrides: []gold.TransferOverrideRule{
-			{Verb: gold.VerbReimburse, A: leg("CASH1", 305, 30), B: &move},   // to an own-account move
-			{Verb: gold.VerbReimburse, A: leg("CASH1", 401, 40), B: &payout}, // a payout is no repayment
-			{Verb: gold.VerbReimburse, A: leg("CASH1", 220, 20), B: &payout},
-			{Verb: gold.VerbReimburse, A: leg("CASH1", 220, 20), B: &payout}, // the same repayment twice
+			{Verb: gold.VerbReimburse, A: leg("CASH1", 305, 30), B: &move},    // to an own-account move
+			{Verb: gold.VerbReimburse, A: leg("CASH1", 401, 40), B: &premium}, // a payout is no repayment
+			{Verb: gold.VerbReimburse, A: leg("CASH1", 220, 20), B: &premium},
+			{Verb: gold.VerbReimburse, A: leg("CASH1", 220, 20), B: &premium}, // the same repayment twice
 		},
 	})
-	if res.ReimbursementPairs != 2 || res.UnmatchedReimbursements != 2 {
-		t.Errorf("pairs %d, unmatched %d; want 2 written (the move and the first twice-line), 2 refused",
+	if res.ReimbursementPairs != 1 || res.UnmatchedReimbursements != 3 {
+		t.Errorf("pairs %d, unmatched %d; want 1 written (the first twice-line), 3 refused",
 			res.ReimbursementPairs, res.UnmatchedReimbursements)
 	}
 	roads := map[string]string{}

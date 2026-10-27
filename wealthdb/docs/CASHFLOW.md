@@ -230,9 +230,24 @@ The first matching step places a row:
 1. **The six unsigned kinds are excluded, whatever a verdict says.**
    They are `fx`, `fx_forward`, `fx_swap`, `corporate_action`, `journal`
    and `other`. Their direction is a per-source convention, so a
-   section that reads direction cannot admit them. Admitting the FX
-   family or corporate actions needs a per-adapter sign pin first. The
-   two catch-alls are excluded by both families too.
+   section that reads direction cannot admit them. The two catch-alls
+   are excluded by both families too.
+
+   The exception is a cash leg its source states signed:
+   - a sign pin names a source kind and one of the six kinds;
+   - the rows of a pinned kind state their cash signed, positive in;
+   - the pins are `canonical.CashSignedKinds`, which the load stamps
+     into `cash_signed_kinds`.
+
+   A pinned row that moves no quantity and carries an amount goes to
+   investing, group `Corporate actions`: cash in lieu of a fraction, a
+   return of capital, the cash for a right not taken up. It is classed
+   by its instrument. One that names none is class `other`, and a
+   `cash`-class instrument's row is pool-internal. A row of the same
+   kind that moves shares stays excluded, since its amount may value
+   the shares rather than pay for them. So a merger whose source books
+   its cash on the share row stays excluded. The fidelity kind (which
+   the svb families load as) and schwab pin `corporate_action`.
 2. **`internal_transfer`** is placed by the far account, whatever the
    kind (see *Own-account moves* below).
 3. **`mortgage_transfer`** goes to `financing · Mortgage`.
@@ -519,10 +534,11 @@ diagram. `Health` and `Trusts` keep their names. "Health savings" is
 right for an HSA and wrong the day the class holds anything else, and
 nobody says "Trust savings".
 
-Seven leaves are cashflow's own, where no family value says the right
+Eight leaves are cashflow's own, where no family value says the right
 thing:
 
-- `trades` and `private_capital`, on the investing classes;
+- `trades`, `private_capital` and `corporate_actions`, on the
+  investing classes;
 - `vehicle_giving` and `vehicle_receipt`, for a crossing to or from a
   giving vehicle. The verdict there is `internal_transfer`, which names
   a movement, not a kind of giving or receipt;
@@ -539,7 +555,8 @@ their sum, and the leaves draw below it.
 
 **Investing is held out of that stage**, at either grain. Its classes
 do have leaves, which `flows --level group` shows: `trades`,
-`private_capital`, and the verdicts `investment` and `capital_return`.
+`private_capital`, `corporate_actions`, and the verdicts `investment`
+and `capital_return`.
 But a leaf stage there would draw a trade against a capital call, which
 is a different question from the one the diagram asks. So investing's
 classes enter the hub in their own right.
@@ -971,7 +988,8 @@ that query is wrong.
 2. **It publishes its own blind spot.** Some volume moves no cash that
    a sign can be read from:
    - the six unsigned kinds of §4: the FX family, corporate actions and
-     the two catch-alls;
+     the two catch-alls. A cash leg a sign pin admits (§4, step 1) is
+     not among them: it is in the ledger;
    - an in-kind transfer (`transfer_in` / `transfer_out` carrying an
      instrument). It is valued securities that moved no cash.
 

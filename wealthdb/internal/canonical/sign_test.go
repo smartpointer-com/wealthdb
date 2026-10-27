@@ -93,3 +93,25 @@ func TestApplyCanonicalSignCardKinds(t *testing.T) {
 		t.Errorf("ApplyCanonicalSign(purchase, 0) = %s, want 0", got.String())
 	}
 }
+
+// TestCashSignedKindsPinOnlyUnsignedKinds keeps the sign pins to the six
+// kinds cash flow excludes for want of a sign (a pin on any other kind
+// would move its rows ahead of every verdict) and in a fixed order, which
+// the pass stamps.
+func TestCashSignedKindsPinOnlyUnsignedKinds(t *testing.T) {
+	pins := CashSignedKinds()
+	if len(pins) == 0 {
+		t.Fatal("no sign pins")
+	}
+	unsigned := map[TxKind]bool{TxKindFx: true, TxKindFxForward: true, TxKindFxSwap: true,
+		TxKindCorporateAction: true, TxKindJournal: true, TxKindOther: true}
+	for i, p := range pins {
+		if !unsigned[p.Kind] {
+			t.Errorf("%s pins %s, which is none of the six kinds cash flow excludes", p.SilverKind, p.Kind)
+		}
+		if i > 0 && (pins[i-1].SilverKind > p.SilverKind ||
+			pins[i-1].SilverKind == p.SilverKind && pins[i-1].Kind >= p.Kind) {
+			t.Errorf("pins out of order at %d: %v", i, pins)
+		}
+	}
+}

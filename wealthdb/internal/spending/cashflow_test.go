@@ -239,3 +239,33 @@ func TestTheBoundaryStampChangesNoFamilyReport(t *testing.T) {
 		}
 	}
 }
+
+// TestThePassStampsTheSignPins: the enrichment pass writes the engine's
+// sign pins (canonical.CashSignedKinds) into cash_signed_kinds, whole.
+func TestThePassStampsTheSignPins(t *testing.T) {
+	db, ctx := openGold(t)
+	if _, err := db.ExecContext(ctx, `INSERT INTO cash_signed_kinds VALUES ('stale', 'journal')`); err != nil {
+		t.Fatal(err)
+	}
+	runPass(t, db, ctx, Options{})
+	var got []string
+	rows, err := db.QueryContext(ctx, `SELECT silver_kind || ':' || kind FROM cash_signed_kinds ORDER BY 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, s)
+	}
+	rows.Close()
+	var want []string
+	for _, p := range canonical.CashSignedKinds() {
+		want = append(want, p.SilverKind+":"+string(p.Kind))
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("stamped %v, want %v", got, want)
+	}
+}

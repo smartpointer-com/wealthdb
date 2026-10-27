@@ -237,9 +237,10 @@ type CashflowCoverageRow struct {
 	Currency    string
 	TxnCount    int64
 	// Ledger is the signed cash delta the transactions imply.
-	// UnsignedVolume is the gross the six unsigned kinds carried and
-	// that therefore could NOT be summed into it — the report's own
-	// blind spot, published rather than hidden.
+	// UnsignedVolume is the gross that moved no cash a sign can be read
+	// from — the six unsigned kinds but a sign pin's cash legs, and the
+	// in-kind transfers — and that therefore could NOT be summed into
+	// it: the report's own blind spot, published rather than hidden.
 	Ledger         *string
 	UnsignedVolume *string
 	// Measured is the balance delta across the period, nil where the

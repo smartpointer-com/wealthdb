@@ -136,8 +136,9 @@ type CashflowResult struct {
 	PooledAccountsWithoutWrapper int
 }
 
-// stampCashflowBoundary writes the resolved household boundary and the
-// cash pool's exclusions into gold, replacing whatever was there.
+// stampCashflowBoundary writes the resolved household boundary, the
+// cash pool's exclusions and the engine's sign pins into gold, replacing
+// whatever was there.
 //
 // The wrapper table is stamped WHOLE — every value of the enum, not
 // just the overridden ones, from canonical.WrapperBoundaries — which
@@ -166,12 +167,32 @@ func stampCashflowBoundary(ctx context.Context, tx *sql.Tx, opts CashflowOptions
 	if err := stampWrapperSides(ctx, tx, opts.Wrappers, out); err != nil {
 		return err
 	}
+	if err := stampCashSignedKinds(ctx, tx); err != nil {
+		return err
+	}
 	if err := tx.QueryRowContext(ctx, `
         SELECT COUNT(*) FROM spend_txn_enrichment
          WHERE far_silver_source_id IS NOT NULL`).Scan(&out.FarAccounts); err != nil {
 		return fmt.Errorf("cashflow: count far accounts: %w", err)
 	}
 	return countPooledAccountsWithoutWrapper(ctx, tx, out)
+}
+
+// stampCashSignedKinds replaces cash_signed_kinds with the engine's sign
+// pins (canonical.CashSignedKinds, gold migration 0161). They are engine
+// constants, not configuration, and they live beside the canonical signs;
+// this is where they reach SQL.
+func stampCashSignedKinds(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM cash_signed_kinds`); err != nil {
+		return fmt.Errorf("cashflow: clear sign pins: %w", err)
+	}
+	for _, p := range canonical.CashSignedKinds() {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO cash_signed_kinds (silver_kind, kind) VALUES (?, ?)`,
+			p.SilverKind, string(p.Kind)); err != nil {
+			return fmt.Errorf("cashflow: stamp sign pins: %w", err)
+		}
+	}
+	return nil
 }
 
 // stampWrapperSides replaces cashflow_wrapper_sides with the engine's

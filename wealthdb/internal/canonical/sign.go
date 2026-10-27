@@ -1,5 +1,7 @@
 package canonical
 
+import "slices"
+
 // Canonical sign convention enforcement for transaction amounts.
 // See TransactionChange.NetAmount in types.go for the contract.
 //
@@ -15,9 +17,9 @@ package canonical
 // (positive, cash sweep / coupon-like) or paid (negative,
 // margin / overdraft). CapitalGain can be a realised gain
 // (positive) or loss (negative). Fx / FxForward / FxSwap have one
-// leg in each currency. CorporateAction can be cash-positive
-// (cash dividend), zero (stock split), or negative (cash
-// merger). Journal / Other are catch-alls. For those, the
+// leg in each currency. CorporateAction can bring cash in (cash in
+// lieu), move none (a stock split), or move shares valued at a price
+// (a merger exchange). Journal / Other are catch-alls. For those, the
 // adapter passes through whatever signed amount the source
 // supplied.
 
@@ -40,6 +42,34 @@ func canonicalSign(k TxKind) int {
 	// proof-of-stake chains can yield a negative, so the canonical
 	// sign isn't pinned.
 	return 0
+}
+
+// cashSignedKinds names, per silver kind, the kinds with no canonical
+// sign whose rows that move no quantity state the cash they moved, signed
+// as every amount is: positive into the account. Such a row is a cash leg
+// of a corporate action: cash in lieu of a fraction, a return of capital,
+// the cash for an unissued right. A row of the same kind that moves shares
+// is not one: its amount may value the shares rather than pay for them,
+// so the pin reaches only the rows that move none. The sources pinned here
+// are the ones whose adapters pass the statement's or the API's signed
+// cash amount through for these rows: the fidelity kind (which the svb
+// families load as) and schwab. A source not listed keeps its unsigned
+// kinds unsigned (docs/CASHFLOW.md §4). The list stays ordered by silver
+// kind and kind, the order the cash flow pass stamps.
+var cashSignedKinds = []SignedKindPin{
+	{"fidelity", TxKindCorporateAction},
+	{"schwab", TxKindCorporateAction},
+}
+
+// SignedKindPin is one sign pin: a silver kind and a kind.
+type SignedKindPin struct {
+	SilverKind string
+	Kind       TxKind
+}
+
+// CashSignedKinds lists the pins, in their order.
+func CashSignedKinds() []SignedKindPin {
+	return slices.Clone(cashSignedKinds)
 }
 
 // ApplyCanonicalSign returns `amount` with its sign normalised
