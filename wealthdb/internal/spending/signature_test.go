@@ -848,6 +848,7 @@ func TestPersonShaped(t *testing.T) {
 		"EXAMPLE JANE MARIE",      // three given names
 		"VAN DER EXAMPLE",         // a multi-part surname
 		"MARIE EXAMPLE DE SAMPLE", // four tokens, still a person
+		"ASA EXAMPLE",             // a given name that is also a legal form
 	}
 	for _, s := range person {
 		if !PersonShaped(s) {
@@ -867,6 +868,8 @@ func TestPersonShaped(t *testing.T) {
 		"EXAMPLE HOLDING SA",     //
 		"SAMPLE VENTURES LP",     // a partnership's form (canonical.LegalForms)
 		"EXAMPLE BAU OHG",        //
+		"EXAMPLE ENERGIA OYJ",    // a form canonical.LegalForms gained
+		"EXAMPLE INCORPORATED",   //
 		"CORNER MARKET",          // a trade word
 		"BLUE HARBOUR CAFE",      //
 		"STORE 4711",             // a digit anywhere clears it

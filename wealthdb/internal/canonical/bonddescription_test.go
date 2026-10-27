@@ -24,6 +24,9 @@ func TestReadBondDescription(t *testing.T) {
 		// A company's legal form rules the municipal reading out.
 		{"QLAND PASS THRU CTFS AUTH LLC 3.21% 2043", true, corp, true},
 		{"QLAND CNTY ENERGI OY 3.21% 2043", true, corp, true},
+		// An incorporated village is a municipal issuer.
+		{"INCORPORATED VILLAGE OF QLAND GO BDS 3.33% 2041", true, muni, true},
+		{"QLAND SKOG ASA 3.21% 2043", false, corp, true},
 		// A series code's letters are not a legal form.
 		{"QLAND CNTY GO BDS SER 2019AB 3.33% 2041", true, muni, true},
 		// A Nordic legal form reads corporate under any identifier.

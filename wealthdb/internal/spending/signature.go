@@ -823,14 +823,15 @@ const wordMinLetters = 3
 // phrase.
 //
 // Three groups, and each earns its place differently. LEGAL FORMS (INC,
-// GMBH, SARL, …; canonical.LegalForms, which the UBS payee reader and
-// the bond reader share) are the strongest signal there is: no natural
-// person carries one. INSTITUTIONAL WORDS (BANK, PENSION, TREASURY, IRS,
-// FINANZAMT, …) name what an organisation does, and the income side is
-// full of them — an employer, a pension fund, a tax office and an
-// insurer are exactly the payers a household most wants named. TRADE
-// WORDS (STORE, MARKET, CAFE, …) are the card side's, where a
-// two-word merchant name is the norm.
+// GMBH, SARL, …; canonical.LegalForms, which the other readers of firm
+// names share, less canonical.NameLikeLegalForms, which double as given
+// names) are the strongest signal there is: no natural person carries
+// one. INSTITUTIONAL WORDS (BANK, PENSION, TREASURY, IRS, FINANZAMT, …)
+// name what an organisation does, and the income side is full of them —
+// an employer, a pension fund, a tax office and an insurer are exactly
+// the payers a household most wants named. TRADE WORDS (STORE, MARKET,
+// CAFE, …) are the card side's, where a two-word merchant name is the
+// norm.
 //
 // The cost of being wrong runs one way only. A business whose name
 // carries no marker — two plain words, like a partnership named after
@@ -866,9 +867,12 @@ var organisationMarkers = func() map[string]bool {
 		"STUDIO": true, "STORE": true, "MARKET": true, "SHOP": true,
 		"CAFE": true, "RESTAURANT": true, "HOTEL": true,
 	}
-	// Legal forms.
+	// Legal forms, but those that are also a given name: a bare name
+	// that carries one is still a person's.
 	for w := range canonical.LegalForms {
-		m[w] = true
+		if !canonical.NameLikeLegalForms[w] {
+			m[w] = true
+		}
 	}
 	return m
 }()

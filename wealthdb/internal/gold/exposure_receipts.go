@@ -707,12 +707,22 @@ var receiptWords = canonical.WordSet("ADR", "ADRS", "ADS", "GDR", "GDRS", "DR", 
 	"EACH", "EA", "REP", "REPR", "REPRESENTING", "REPRESENTS", "REG", "REGS", "LEVEL", "NPV", "UNITARY", "NEW", "CLASS",
 	"CL", "PAR", "PREF", "PFD", "PREFERENCE", "BEARER", "REGISTERED", "UNS", "SP", "SPN", "UN", "EDR")
 
-// legalWords are legal forms and filler, "and" in the languages issuers
-// name themselves in among it.
-var legalWords = canonical.WordSet("AG", "SE", "SA", "SAU", "NV", "PLC", "LTD", "LIMITED", "CORP", "CORPORATION", "CO",
-	"COMPANY", "INC", "INCORPORATED", "SPA", "AB", "PUBL", "ASA", "AS", "OYJ", "ABP", "KK", "BHD", "TBK", "PCL",
-	"LTDA", "SAB", "DE", "CV", "GMBH", "KGAA", "THE", "AND", "UND", "ET", "LLC", "LP", "NL", "BV", "SAS", "SCA",
-	"SGPS", "PJSC", "OJSC", "JSC")
+// legalWords are the words a name match drops: every legal form
+// (canonical.LegalForms), the forms only an issuer's listing name carries
+// beside them, and filler, "and" in the languages issuers name themselves
+// in among it.
+var legalWords = func() map[string]bool {
+	m := canonical.WordSet(
+		// Listing forms beyond LegalForms.
+		"SAU", "PUBL", "ABP", "KK", "BHD", "TBK", "PCL", "LTDA", "SAB", "CV", "KGAA", "NL",
+		"SCA", "SGPS", "PJSC", "OJSC", "JSC",
+		// Filler.
+		"DE", "THE", "AND", "UND", "ET")
+	for w := range canonical.LegalForms {
+		m[w] = true
+	}
+	return m
+}()
 
 // legalCountries are the countries a legal form says a company sits in.
 // A form many countries use (LTD, INC, CORP) says nothing and is absent.

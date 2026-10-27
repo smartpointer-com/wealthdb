@@ -221,8 +221,10 @@ func endsInLegalForm(payee string) bool {
 	if len(words) == 0 {
 		return false
 	}
-	last := strings.TrimSuffix(words[len(words)-1], ".")
-	return canonical.LegalForms[strings.ToUpper(last)]
+	last := strings.ToUpper(strings.TrimSuffix(words[len(words)-1], "."))
+	// A given name that is also a form (Asa) ends a person's name as
+	// often as a firm's, and a surname-first payee is cut before it.
+	return canonical.LegalForms[last] && !canonical.NameLikeLegalForms[last]
 }
 
 // opensWithCountryCode reports whether a narrative line opens with a

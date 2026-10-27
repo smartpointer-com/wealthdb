@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 func TestIssuerWords(t *testing.T) {
@@ -21,6 +23,8 @@ func TestIssuerWords(t *testing.T) {
 			[]string{"QELDRIX", "TECHNOLOGY", "HOLDING"}},
 		{"QELDRIX TECHNOLOGY HOLDING CO LTD", false, []string{"QELDRIX", "TECHNOLOGY", "HOLDING"}},
 		{"QORVANT N AG", false, []string{"QORVANT"}},
+		{"QORVANT ENERGIA OYJ", false, []string{"QORVANT", "ENERGIA"}},
+		{"QORVANT INCORPORATED", false, []string{"QORVANT"}},
 		{"Q'UMBRA-UNSPONSORED ADR", true, []string{"QUMBRA"}},
 		{"QORVANT AKTIENGESELLSCHAF-SP ADR", true, []string{"QORVANT"}},
 		{"QORVANT AG-UNSP ADR PREF", true, []string{"QORVANT"}},
@@ -579,5 +583,16 @@ func TestLinkLinesGivesASizeOnlyLineNoVote(t *testing.T) {
 		"name:b": "isin:GB0000000E05", "name:d": "isin:GB0000000E04"}
 	if !maps.Equal(got, want) {
 		t.Errorf("links = %v, want %v", got, want)
+	}
+}
+
+// TestTheNameMatcherDropsEveryLegalForm: the exposure name matcher's
+// word list is canonical.LegalForms and more, so a form the other
+// readers know is never part of an issuer name it compares.
+func TestTheNameMatcherDropsEveryLegalForm(t *testing.T) {
+	for w := range canonical.LegalForms {
+		if !legalWords[w] {
+			t.Errorf("legalWords lacks the legal form %s", w)
+		}
 	}
 }
