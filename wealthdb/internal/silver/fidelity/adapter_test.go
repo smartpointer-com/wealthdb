@@ -944,6 +944,64 @@ func TestATransferTakesItsDirectionFromItsSigns(t *testing.T) {
 	}
 }
 
+// TestAChargeBookedAsAMoveIsACharge: Fidelity books an account's tax
+// payment and its tax-preparation fee as cash moved to its own ledger,
+// under either verb. The end of the Action names the charge, and the
+// row takes the charge's kind so the spending population admits it. A
+// tax payment is a withdrawal, never the withholding kind. A security
+// whose name contains the words keeps the transfer's kind.
+func TestAChargeBookedAsAMoveIsACharge(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 4, '/x/1');
+        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, instrument_key, currency, quantity, price, amount, payload) VALUES
+            ('taxpay',   900, 'ACC1', 'TRANSFER', NULL,  'USD', NULL, NULL, -1200.00,
+             '{"Action": "TRANSFERRED TO JNL#0000000001 VS X00-000000-1 TAX PAYMENT (Cash)"}'),
+            ('prepjnl',  901, 'ACC1', 'JOURNAL',  NULL,  'USD', NULL, NULL, -45.00,
+             '{"Action": "JOURNALED JNL#0000000002 2025 TAX PREP FEE (Cash)"}'),
+            ('preptfr',  902, 'ACC1', 'TRANSFER', NULL,  'USD', NULL, NULL, -45.00,
+             '{"Action": "TRANSFERRED TO JNL#0000000003 2020 TAX PREP FEE"}'),
+            ('security', 903, 'ACC1', 'TRANSFER', 'XYZ', 'USD', -10, NULL, -1000.00,
+             '{"Action": "TRANSFERRED TO VS 000-000002-1 EXAMPLE TAX PAYMENT FUND (XYZ) (Cash)"}'),
+            ('journal',  904, 'ACC1', 'JOURNAL',  NULL,  'USD', NULL, NULL, -50.00,
+             '{"Action": "JOURNALED EXAMPLE"}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Transactions(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+
+	got := map[string]canonical.TransactionChange{}
+	for _, tx := range batch.Transactions {
+		got[tx.TransactionExternalID] = tx
+	}
+	for id, want := range map[string]struct {
+		kind canonical.TxKind
+		net  string
+	}{
+		"taxpay":   {canonical.TxKindWithdrawal, "-1200"},
+		"prepjnl":  {canonical.TxKindFee, "-45"},
+		"preptfr":  {canonical.TxKindFee, "-45"},
+		"security": {canonical.TxKindTransferOut, "-1000"},
+		"journal":  {canonical.TxKindJournal, "-50"},
+	} {
+		tx, ok := got[id]
+		if !ok {
+			t.Errorf("%s missing", id)
+			continue
+		}
+		if tx.Kind != want.kind {
+			t.Errorf("%s kind = %q, want %q", id, tx.Kind, want.kind)
+		}
+		if tx.NetAmount == nil || tx.NetAmount.String() != want.net {
+			t.Errorf("%s net_amount = %v, want %s", id, tx.NetAmount, want.net)
+		}
+	}
+}
+
 // TestAWindUpInLegGetsItsCounterLeg pins the counter-leg a closed
 // account's wind-up never printed: an in-leg naming one of the source's
 // own accounts gets that account's out-leg, mirrored; one naming an

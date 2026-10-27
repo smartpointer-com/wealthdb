@@ -17,7 +17,9 @@ import (
 // because their verbs do not state the direction from this account's
 // side — WIRE carries none at all, and the DIRECT_* pair names the
 // leg the originating bank saw. TRANSFER reads the signs and the
-// `account` the row is booked on (transferKind). See the cases below.
+// `account` the row is booked on (transferKind). TRANSFER and JOURNAL
+// both read the Action first, for a charge booked as a move
+// (chargeKind). See the cases below.
 //
 // Fidelity's signed `amount` already follows the single-entry
 // convention from the account's perspective (positive = cash in,
@@ -122,8 +124,14 @@ func kindFor(raw string, quantity, amount *canonical.Decimal, action, account st
 		}
 		return canonical.TxKindWithdrawal
 	case "TRANSFER":
+		if k, ok := chargeKind(action); ok {
+			return k
+		}
 		return transferKind(quantity, amount, action, account)
 	case "JOURNAL":
+		if k, ok := chargeKind(action); ok {
+			return k
+		}
 		// It can flow either direction; keep source sign so gold
 		// doesn't lose the in/out distinction.
 		return canonical.TxKindJournal
@@ -181,6 +189,43 @@ func adjustmentKind(action string) canonical.TxKind {
 	}
 	return canonical.TxKindOther
 }
+
+// chargeKind reads a charge the account paid off the Action of a
+// TRANSFER or a JOURNAL.
+//
+// Fidelity books an account's own tax payment and its tax-preparation
+// fee as cash moved to one of its internal ledgers: `TRANSFERRED TO
+// JNL… VS <ledger> TAX PAYMENT`, `JOURNALED JNL… <year> TAX PREP FEE`,
+// and on the statements either verb for either charge. The verb names
+// the booking, and the end of the Action names what was paid. Booked
+// as a transfer or a journal, the row reaches no spending rule: the far
+// leg is Fidelity's own ledger, so nothing pairs it, and a journal is
+// outside the spending population.
+//
+// A tax payment is a withdrawal, not TxKindTax. Tax is the kind for
+// tax withheld at source, which the income report shows beside the
+// income it was withheld from. The rule tier files the withdrawal by
+// its narrative. The preparation fee is a fee, like the account's
+// other service charges.
+//
+// The charge must END the Action, before the account-type suffix. A
+// transfer of a security whose name contains the words names that
+// security after them.
+func chargeKind(action string) (canonical.TxKind, bool) {
+	a := strings.ToUpper(strings.TrimSpace(action))
+	switch {
+	case taxPaymentAction.MatchString(a):
+		return canonical.TxKindWithdrawal, true
+	case taxPrepFeeAction.MatchString(a):
+		return canonical.TxKindFee, true
+	}
+	return "", false
+}
+
+var (
+	taxPaymentAction = regexp.MustCompile(`\bTAX PAYMENT(?:\s+\([A-Z]+\))?$`)
+	taxPrepFeeAction = regexp.MustCompile(`\bTAX PREP FEE(?:\s+\([A-Z]+\))?$`)
+)
 
 // transferKind reads a TRANSFER's direction off its signs.
 //
