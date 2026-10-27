@@ -1174,26 +1174,17 @@ func TestTransactionsBetweenCarriesSpendCategory(t *testing.T) {
 }
 
 // TestMigration0042DDLIsRerunnable holds the spending report migration
-// to the replay bar, and confirms it leaves web_transactions — which it
-// drops and re-creates around the report_transactions_multi swap — in
-// place afterwards.
+// to the replay bar: it drops and re-creates web_transactions around the
+// report_transactions_multi swap, and 0158 drops the view again after it.
 func TestMigration0042DDLIsRerunnable(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedSpendingReportFixture(t, db, ctx)
 
 	rerunMigrationDDL(t, db, ctx, "0042_report_spending.sql")
-
-	var n int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM information_schema.columns
-		  WHERE table_name = 'web_transactions' AND column_name = 'account_kind'`).Scan(&n); err != nil {
-		t.Fatalf("web_transactions.account_kind: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("web_transactions.account_kind columns = %d, want 1", n)
-	}
+	assertTransactionsMacroAfterReplay(t, db, ctx)
 	// The macros still answer, including the one the re-run replaced
 	// underneath a view that reads it.
+	var n int
 	from, to := spendWindow()
 	for _, q := range []string{
 		`SELECT COUNT(*) FROM report_spending_summary(?, ?, 'USD', 'month')`,

@@ -2859,11 +2859,11 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   `web/test_provision.py` checks that the three agree.
 - **`account_kind` on the transaction macros.** `report_transactions` and
   `report_transactions_multi` carry the owning account's `account_kind`
-  (migration 0039), so a consumer can fence a kind out of a chart — the web's
-  income and fee charts exclude `card`, whose finance charges and annual fees
-  are `interest` / `fee` transactions that would otherwise read as investment
-  income and portfolio costs. NULL when the transaction's account is absent
-  from `accounts` (a LEFT JOIN), so a fence must keep NULLs.
+  (migration 0039), so a consumer can fence a kind out: a card's finance
+  charges and annual fees are `interest` / `fee` transactions that would
+  otherwise read as investment income and portfolio costs. NULL when the
+  transaction's account is absent from `accounts` (a LEFT JOIN), so a fence
+  must keep NULLs.
 - **Merchant and spend category on the transaction macros.** The same two
   macros also carry `merchant_name`, `spend_primary` and `spend_detailed`,
   resolved by `spend_txn_categories()`: the overlay's precedence lattice,

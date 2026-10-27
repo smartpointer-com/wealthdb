@@ -132,7 +132,7 @@ func TestWebHistoryViewsSumToTheSources(t *testing.T) {
 // by the account's tax wrapper, cash reads as the class `cash` and the
 // vehicle `demand_deposit`, and an account with no wrapper of its own
 // reads `taxable_personal`, the default the account history gives it.
-// The two flow views carry the wrapper too.
+// The income flow view carries the wrapper too.
 func TestWebHistoryViewsCarryTheWrapperAndClass(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedWebViewEpochFixture(t, db, ctx)
@@ -205,7 +205,7 @@ func TestWebHistoryViewsCarryTheWrapperAndClass(t *testing.T) {
 	if unwrapped != 0 {
 		t.Errorf("%d line(s) with no tax wrapper", unwrapped)
 	}
-	for _, v := range []string{"web_positions_history", "web_sources_latest", "web_income", "web_transactions"} {
+	for _, v := range []string{"web_positions_history", "web_sources_latest", "web_income"} {
 		if n := countRows(t, db, ctx, "(SELECT tax_wrapper FROM "+v+" WHERE tax_wrapper IS NULL)"); n != 0 {
 			t.Errorf("%s: %d row(s) with no tax wrapper", v, n)
 		}
@@ -230,8 +230,24 @@ func TestMigration0132DDLIsRerunnable(t *testing.T) {
 	}
 	for _, v := range []string{"holdings_lines_history", "holdings_lines_latest", "web_sources_latest",
 		"web_sources_history", "web_asset_classes_history", "web_vehicles_history", "web_accounts_history",
-		"web_positions_history", "web_card_balances_history", "web_transactions", "web_income",
+		"web_positions_history", "web_card_balances_history", "web_income",
 		"web_spending", "web_cashflow"} {
 		countRows(t, db, ctx, v)
+	}
+}
+
+// TestWebTransactionsIsDropped: web_transactions is gone (migration
+// 0158), no view or macro left names it, and the table it read stays for
+// the report_transactions model and web_income_withheld.
+func TestWebTransactionsIsDropped(t *testing.T) {
+	db, ctx := openMigrated(t)
+	assertNothingNames(t, db, ctx, "web_transactions")
+	var tables int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM duckdb_tables() WHERE table_name = 'serving_transactions'`).Scan(&tables); err != nil {
+		t.Fatal(err)
+	}
+	if tables != 1 {
+		t.Errorf("serving_transactions tables %d, want 1", tables)
 	}
 }

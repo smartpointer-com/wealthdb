@@ -18,10 +18,12 @@ import (
 // database. A replayed macro or view goes back to that migration's body,
 // so each later migration that re-issues one replays after it, in
 // version order, as Migrate applied them: a rerun test asserts against
-// the schema at head. The re-issues are read off the embedded
-// migrations, so a new one replays with no edit here. A later migration
-// that only undoes a seed (0111 deletes rows 0069 seeds) re-issues
-// nothing: the seed's rerun test replays it itself.
+// the schema at head. A later migration that drops a replayed macro or
+// view replays after it too, so the dropped object is gone again. The
+// re-issues and drops are read off the embedded migrations, so a new
+// one replays with no edit here. A later migration that only undoes a
+// seed (0111 deletes rows 0069 seeds) re-issues nothing: the seed's
+// rerun test replays it itself.
 func rerunMigrationDDL(t *testing.T, db *sql.DB, ctx context.Context, file string) {
 	t.Helper()
 	ms, err := listMigrations()
@@ -64,15 +66,15 @@ func rowsDigest(t *testing.T, ctx context.Context, q querier, sqlText string) st
 	return s.String
 }
 
-// reissueRE matches a macro or a view a migration's DDL creates or
-// replaces, and sqlCommentRE a comment, which names none.
+// reissueRE matches a macro or a view a migration's DDL creates,
+// replaces or drops, and sqlCommentRE a comment, which names none.
 var (
-	reissueRE    = regexp.MustCompile(`(?i)\bCREATE\s+OR\s+REPLACE\s+(?:MACRO|VIEW)\s+(\w+)`)
+	reissueRE    = regexp.MustCompile(`(?i)\b(?:CREATE\s+OR\s+REPLACE\s+(?:MACRO|VIEW)|DROP\s+(?:MACRO\s+TABLE|MACRO|VIEW)\s+IF\s+EXISTS)\s+(\w+)`)
 	sqlCommentRE = regexp.MustCompile(`--[^\n]*`)
 )
 
-// reissuedNames are the macros and views ddl creates or replaces, lower
-// case.
+// reissuedNames are the macros and views ddl creates, replaces or
+// drops, lower case.
 func reissuedNames(ddl string) []string {
 	var out []string
 	for _, m := range reissueRE.FindAllStringSubmatch(sqlCommentRE.ReplaceAllString(ddl, ""), -1) {
@@ -299,21 +301,26 @@ func TestMigration0038DDLIsRerunnable(t *testing.T) {
 
 // TestMigration0039DDLIsRerunnable holds 0039 to the same bar: it drops and
 // re-creates web_transactions around the macro swap, so the DROP must be
-// IF EXISTS and the CREATEs OR REPLACE for a replay to be harmless.
+// IF EXISTS and the CREATEs OR REPLACE for a replay to be harmless. 0158
+// drops the view again after it.
 func TestMigration0039DDLIsRerunnable(t *testing.T) {
 	db, ctx := openMigrated(t)
 	rerunMigrationDDL(t, db, ctx, "0039_report_transactions_account_kind.sql")
+	assertTransactionsMacroAfterReplay(t, db, ctx)
+}
 
-	// The view must still be there and still expose account_kind.
+// assertTransactionsMacroAfterReplay checks the schema at head after a
+// replay of a migration that swaps the transaction macros around
+// web_transactions: the macro still exposes account_kind, and nothing
+// names the view 0158 drops.
+func assertTransactionsMacroAfterReplay(t *testing.T, db *sql.DB, ctx context.Context) {
+	t.Helper()
 	var n int
 	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM information_schema.columns
-		  WHERE table_name = 'web_transactions' AND column_name = 'account_kind'`).Scan(&n); err != nil {
-		t.Fatalf("web_transactions.account_kind: %v", err)
+		`SELECT COUNT(account_kind) FROM report_transactions_multi(0, 9223372036854775807)`).Scan(&n); err != nil {
+		t.Fatalf("report_transactions_multi.account_kind: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("web_transactions.account_kind columns = %d, want 1", n)
-	}
+	assertNothingNames(t, db, ctx, "web_transactions")
 }
 
 // TestCheckSchemaKnown: a database a later build has migrated past this
@@ -368,38 +375,7 @@ func assertGone0124(t *testing.T, db *sql.DB, ctx context.Context) {
 	if cols != 0 {
 		t.Errorf("asset_class_new survives on %d table(s)", cols)
 	}
-	// A view or macro still naming a dropped object would fail only when
-	// read; the word boundary keeps the _multi siblings out of the match.
-	rows, err := db.QueryContext(ctx, `
-        SELECT view_name, sql FROM duckdb_views() WHERE NOT internal
-        UNION ALL
-        SELECT function_name, macro_definition FROM duckdb_functions()
-         WHERE function_type IN ('macro', 'table_macro') AND NOT internal`)
-	if err != nil {
-		t.Fatalf("read definitions: %v", err)
-	}
-	defer rows.Close()
-	names := append([]string{"asset_class_new"}, dropped0124...)
-	read := 0
-	for rows.Next() {
-		read++
-		var name string
-		var body sql.NullString
-		if err := rows.Scan(&name, &body); err != nil {
-			t.Fatalf("scan definition: %v", err)
-		}
-		for _, dropped := range names {
-			if regexp.MustCompile(`\b` + dropped + `\b`).MatchString(body.String) {
-				t.Errorf("%s still names %s", name, dropped)
-			}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate definitions: %v", err)
-	}
-	if read < 100 {
-		t.Fatalf("read %d view and macro definitions; the scan is vacuous", read)
-	}
+	assertNothingNames(t, db, ctx, append([]string{"asset_class_new"}, dropped0124...)...)
 	var idx int
 	if err := db.QueryRowContext(ctx, `
         SELECT COUNT(*) FROM duckdb_indexes()
@@ -409,6 +385,48 @@ func assertGone0124(t *testing.T, db *sql.DB, ctx context.Context) {
 	}
 	if idx != 2 {
 		t.Errorf("instruments carries %d of its two indexes", idx)
+	}
+}
+
+// assertNothingNames checks that no view or macro definition names any
+// of names, as a whole word. A view or macro still naming a dropped
+// object would fail only when read, and a view's own definition names
+// the view, so a surviving view fails too. The word boundary keeps a
+// longer sibling (a _multi macro) out of the match.
+func assertNothingNames(t *testing.T, db *sql.DB, ctx context.Context, names ...string) {
+	t.Helper()
+	res := make([]*regexp.Regexp, len(names))
+	for i, n := range names {
+		res[i] = regexp.MustCompile(`\b` + n + `\b`)
+	}
+	rows, err := db.QueryContext(ctx, `
+        SELECT view_name, sql FROM duckdb_views() WHERE NOT internal
+        UNION ALL
+        SELECT function_name, macro_definition FROM duckdb_functions()
+         WHERE function_type IN ('macro', 'table_macro') AND NOT internal`)
+	if err != nil {
+		t.Fatalf("read definitions: %v", err)
+	}
+	defer rows.Close()
+	read := 0
+	for rows.Next() {
+		read++
+		var name string
+		var body sql.NullString
+		if err := rows.Scan(&name, &body); err != nil {
+			t.Fatalf("scan definition: %v", err)
+		}
+		for i, re := range res {
+			if re.MatchString(body.String) {
+				t.Errorf("%s still names %s", name, names[i])
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate definitions: %v", err)
+	}
+	if read < 100 {
+		t.Fatalf("read %d view and macro definitions; the scan is vacuous", read)
 	}
 }
 

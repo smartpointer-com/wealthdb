@@ -330,8 +330,6 @@ func seedWebViewEpochFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 var webViews = []struct{ view, col, src string }{
 	{"web_sources_history", "as_of_day",
 		"SELECT as_of_day FROM report_sources_history_multi()"},
-	{"web_transactions", "occurred_at",
-		"SELECT occurred_at FROM report_transactions_multi(0, 9223372036854775807)"},
 	{"web_asset_classes_history", "as_of_day",
 		"SELECT as_of_day FROM (SELECT as_of_day FROM report_positions_history_multi() " +
 			"UNION SELECT as_of_day FROM report_sources_history_multi())"},

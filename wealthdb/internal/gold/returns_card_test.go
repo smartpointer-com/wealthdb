@@ -294,11 +294,11 @@ func TestReturnsCardExcludedFromValueSpine(t *testing.T) {
 	}
 }
 
-// TestWebTransactionsAccountKindFence pins web_transactions' account_kind:
-// a fence of card accounts keeps every other row INCLUDING one whose
-// account is unknown (the macro's LEFT JOIN leaves account_kind NULL,
-// which a bare `<> 'card'` would silently drop).
-func TestWebTransactionsAccountKindFence(t *testing.T) {
+// TestServingTransactionsAccountKind pins serving_transactions'
+// account_kind: the card's charges carry `card`, and a transaction on an
+// unknown account reads NULL (the macro's LEFT JOIN), which a fence of
+// card accounts must keep.
+func TestServingTransactionsAccountKind(t *testing.T) {
 	db, ctx := openMigrated(t)
 	end := seedCardFixture(t, db, ctx, true)
 
@@ -312,23 +312,10 @@ func TestWebTransactionsAccountKindFence(t *testing.T) {
 
 	mustMaterializeServing(t, db, ctx)
 
-	got := dumpTable(t, db, ctx, `
-		SELECT kind, account_kind FROM web_transactions
-		 WHERE account_kind IS NULL OR account_kind NOT IN ('card')
-		 ORDER BY ALL`)
-	if !strings.Contains(got, "fee|<nil>") {
-		t.Errorf("the unknown-account row must survive the fence; got:\n%s", got)
-	}
-	if strings.Contains(got, "|card") {
-		t.Errorf("a card row survived the fence; got:\n%s", got)
-	}
-	// The card's own interest / fee charges are exactly what the fence exists
-	// to keep out of the investment charts.
-	all := dumpTable(t, db, ctx,
-		`SELECT kind, account_kind FROM web_transactions WHERE account_kind = 'card' ORDER BY ALL`)
-	for _, want := range []string{"fee|card", "interest|card"} {
-		if !strings.Contains(all, want) {
-			t.Errorf("fixture should book %q on the card; got:\n%s", want, all)
+	got := dumpTable(t, db, ctx, `SELECT kind, account_kind FROM serving_transactions ORDER BY ALL`)
+	for _, want := range []string{"fee|<nil>", "fee|card", "interest|card"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("serving_transactions lacks %q; got:\n%s", want, got)
 		}
 	}
 }
