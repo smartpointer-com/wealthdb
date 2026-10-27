@@ -86,25 +86,57 @@ SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT
   FROM r
  WHERE rank <= %d OR ik = '(none)'`
 
-// materializeExposureDebt fills report_exposure_debt and
-// report_exposure_issuer_ranks at the instants the yield tables hold
-// (yieldInstants: today and the 12 month ends before), the walk with the
-// debt and issuer dimensions costing several times the plain one. parts
-// are exposure_holdings per reporting currency.
-func materializeExposureDebt(ctx context.Context, tx *sql.Tx, toEpoch, computedAt int64, parts []string) (int, error) {
+// exposureSecuritiesSQL is the instant's report_exposure_securities rows
+// per reporting currency, cut by source, tax wrapper and the leaf's asset
+// class: a security's slices (migration 0165). A leaf's security is the
+// view's (report_exposure_securities, migration 0128): keep the CASE the
+// same. Each label is its largest leaf's that has one, the greater
+// label on a tie, with that leaf's absolute value as its weight, so a
+// card that takes the label of the heaviest slice gives the view's.
+var exposureSecuritiesSQL = `INSERT INTO report_exposure_security_slices BY NAME
+WITH ` + scaledLeavesSQL(`l AS (SELECT * FROM exposure_leaves(CAST($1 AS BIGINT), 'USD'))`) + `,
+g AS (
+    SELECT s.*, abs(s.value * s.k) AS w,
+           CASE WHEN s.kind IN ('remainder', 'leverage') THEN '(' || s.kind || ') ' || s.fund_ref
+                WHEN s.asset_class = 'cash' AND NOT s.declared AND (s.key IS NULL OR s.key LIKE 'name:%%')
+                     THEN 'cash:' || s.currency
+                WHEN s.key IS NOT NULL THEN s.key
+                WHEN s.depth > 0 THEN 'line:' || s.fund_ref || ':' || COALESCE(s.name, s.asset_type_raw, '')
+                ELSE 'holding:' || s.src || ':' || COALESCE(s.iid, s.position_key) END AS security
+      FROM s)
+SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT) AS as_of, src AS silver_source_id,
+       wrapper AS tax_wrapper, asset_class, security, MAX(name) AS name, MAX(ticker) AS ticker,
+       arg_max(sector, (w, sector)) AS sector, arg_max(country, (w, country)) AS country,
+       MAX(w) AS class_weight, MAX(w) FILTER (WHERE sector IS NOT NULL) AS sector_weight,
+       MAX(w) FILTER (WHERE country IS NOT NULL) AS country_weight,
+       MAX(market_cap) AS market_cap, MAX(size) AS size, SUM(value * k) AS value,
+       COALESCE(SUM(value * k) FILTER (WHERE depth = 0), 0) AS direct_value,
+       COALESCE(SUM(value * k) FILTER (WHERE depth > 0), 0) AS via_funds_value,
+       COALESCE(list(DISTINCT top_key ORDER BY top_key) FILTER (WHERE depth > 0), []) AS funds
+  FROM g
+ GROUP BY out_ccy, src, wrapper, asset_class, security`
+
+// materializeExposureRecent fills report_exposure_debt,
+// report_exposure_issuer_ranks and report_exposure_security_slices at the
+// instants the yield tables hold (yieldInstants: today and the 12 month
+// ends before): the walk with the debt and issuer dimensions costs
+// several times the plain one, and the securities are many rows an
+// instant. parts are exposure_holdings per reporting currency.
+func materializeExposureRecent(ctx context.Context, tx *sql.Tx, toEpoch, computedAt int64, parts []string) (int, error) {
 	holdings := strings.Join(parts, "\n    UNION ALL ")
 	stmts := []string{fmt.Sprintf(exposureDebtSQL, holdings),
-		fmt.Sprintf(exposureIssuersSQL, holdings, exposureIssuersShown)}
+		fmt.Sprintf(exposureIssuersSQL, holdings, exposureIssuersShown),
+		fmt.Sprintf(exposureSecuritiesSQL, holdings)}
 	n := 0
 	for _, at := range yieldInstants(toEpoch) {
 		for _, q := range stmts {
 			res, err := tx.ExecContext(ctx, q, at, computedAt)
 			if err != nil {
-				return 0, fmt.Errorf("MaterializeExposure debt at %d: %w", at, err)
+				return 0, fmt.Errorf("MaterializeExposure recent at %d: %w", at, err)
 			}
 			k, err := res.RowsAffected()
 			if err != nil {
-				return 0, fmt.Errorf("MaterializeExposure debt at %d: %w", at, err)
+				return 0, fmt.Errorf("MaterializeExposure recent at %d: %w", at, err)
 			}
 			n += int(k)
 		}

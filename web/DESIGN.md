@@ -275,6 +275,8 @@ It reads in this order:
   funds, over time;
 - the debt by credit rating beside its maturities, its coupons beside
   the public equity's cycles;
+- the hundred securities with the most value, each held directly and
+  through every fund added up, with its market cap and size;
 - how the figures are classified over time, so a growing unknown
   band shows where the other charts stop covering.
 
@@ -320,6 +322,21 @@ the latest of those instants in the window:
   label shows two decimals. The CLI's table keeps every bucket.
 - each card's description says what it counts. Metabase shows it
   behind the card's info icon.
+
+The Top securities card reads `web_exposure_securities` (migration
+0165), at the debt cards' instants. It holds each security's slice per
+source, tax wrapper and asset class, so all three pickers reach it. The
+card adds up a security's slices in the selection:
+
+- each label is that of its heaviest slice, as the CLI takes the labels
+  of a security's largest leaves;
+- a fund that reaches it in several slices counts once;
+- its share is of the selection, every security counted.
+
+With nothing picked, its rows are those of `wealthdb exposure
+securities`. Its twin drops the three values for their shares. It shows
+`(unnamed)` and no name for a key that is a holding's own
+(`holding:<source>:<id>`).
 
 The debt view carries no asset class, so the class picker does not
 reach those four. These are compositions as of a day, so no projection
@@ -814,7 +831,12 @@ views and the largest issuers are materialized beside it, into
 0138). Their look-through costs several times the plain one, so they
 hold today and the last second of each of the twelve months before
 only. `web_exposure_debt` keeps the source and the tax wrapper the
-pickers narrow; `web_exposure_issuers` holds the whole book.
+pickers narrow; `web_exposure_issuers` holds the whole book. The
+securities are many rows an instant, so `report_exposure_security_slices`
+(migration 0165) holds the same instants. It cuts the rows of `wealthdb
+exposure securities` by source, tax wrapper and asset class. A Go test
+adds up each security's slices as the card does and compares them with
+the command's rows, and each selection's total with `report_exposure`.
 
 **Yield** is materialized too. The yield report and the income
 projection are computed in Go (`internal/yield`), so `web-materialize`

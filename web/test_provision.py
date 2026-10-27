@@ -2251,10 +2251,10 @@ check("...and is placed once", len(set(_ex_tiles)) == len(_ex_tiles))
 check("...the coverage chart last",
       max(_ex_spec, key=lambda t: t[1])[0] == "How the figures are classified")
 _ex_sql = {n: (sql_of(CARDS[n][2]) or "") for n in _ex_tiles if n in CARDS}
-# The tiles over the look-through itself; the debt and issuer tiles read
-# views of their own (checked below).
+# The tiles over the look-through itself; the debt and securities tiles
+# read views of their own (checked below).
 _ex_look = {n: q for n, q in _ex_sql.items() if re.search(r"FROM web_exposure\b", q)}
-_EX_VIEW = re.compile(r"FROM web_exposure(?:_debt|_issuers)?\b")
+_EX_VIEW = re.compile(r"FROM web_exposure(?:_debt|_issuers|_securities)?\b")
 check("every Exposure tile is native over an exposure view",
       all(_EX_VIEW.search(q) for q in _ex_sql.values()),
       [n for n, q in _ex_sql.items() if not _EX_VIEW.search(q)])
@@ -2462,6 +2462,35 @@ _debt_dims = set(re.findall(r'[Dd]ebtDimension\w+\s*=\s*"(\w+)"', _gold_go))
 check("the debt cards' dimensions are the ones gold materializes",
       set(_ex_debt.values()) == _debt_dims, sorted(_debt_dims))
 _holding_prefix = re.search(r'const HoldingKeyPrefix = "([^"]+)"', _gold_go)
+
+section("the Exposure dashboard's securities card")
+
+# The largest securities sit full width above the coverage chart, on the
+# base and the twin. They read the slices the pickers narrow, at the
+# latest instant in the window, in the picked currency; the twin shows
+# shares alone and hides a key and a name that are a holding's own.
+_ex_by_name = {t[0]: t for t in _ex_spec}
+_sec = "Top securities"
+check("the securities card sits full width just above the coverage chart",
+      _ex_by_name[_sec][3] == 24 and _ex_by_name[_sec][1] + _ex_by_name[_sec][4]
+      == _ex_by_name["How the figures are classified"][1] and p.privacy_name(_sec) in _ex_twin)
+for _name in (_sec, p.privacy_name(_sec)):
+    _q = sql_of(CARDS[_name][2])
+    check(f"'{_name}' sums each security's slices of the selection at the window's end",
+          "FROM web_exposure_securities" in _q and "AND currency = {{currency}}" in _q
+          and "e AS (SELECT * FROM w WHERE as_of_day = (SELECT max(as_of_day) FROM w))" in _q
+          and "GROUP BY security" in _q and "len(list_distinct(flatten(list(funds)))) AS funds" in _q
+          and _q.rstrip().endswith("LIMIT 100")
+          and set(CARDS[_name][2]["native"]["template-tags"])
+          == {"currency", "time_range", "source", "tax_wrapper", "asset_class"}, _q)
+_sec_cols = {n: _output_columns(sql_of(CARDS[n][2])) for n in (_sec, p.privacy_name(_sec))}
+check("the base card gives the view's columns, the market cap and the size among them",
+      _sec_cols[_sec] == ["security", "name", "ticker", "asset_class", "sector", "country", "market_cap", "size",
+                          "value", "direct_value", "via_funds_value", "funds", "share_pct"], _sec_cols[_sec])
+check("...and its twin shares in place of the values",
+      _sec_cols[p.privacy_name(_sec)] == ["security", "name", "ticker", "asset_class", "sector", "country",
+                                          "market_cap", "size", "direct_pct", "via_funds_pct", "funds", "share_pct"]
+      and f"LIKE '%{p.HOLDING_KEY_PREFIX}%'" in sql_of(CARDS[p.privacy_name(_sec)][2]), _sec_cols)
 
 section("the Allocation dashboard's issuers card")
 
@@ -3025,7 +3054,7 @@ def _latest_definition(name):
 # parts and principals are in each holding's currency, with its rate to
 # every reporting currency beside it; its rates table, the days the
 # income received covers and the stock positions' sizes hold no money.
-_LONG_VIEWS = {"web_gains", "web_exposure", "web_exposure_debt", "web_exposure_issuers",
+_LONG_VIEWS = {"web_gains", "web_exposure", "web_exposure_debt", "web_exposure_issuers", "web_exposure_securities",
                "web_yield", "web_yield_curve", "web_yield_received", "web_cashflow_plan"}
 _FX_TABLES = {"web_yield_parts": "report_yield_parts", "web_yield_events": "report_yield_events"}
 _missing = {v: [c for c in p.REPORTING_CURRENCIES
@@ -3803,6 +3832,53 @@ if duckdb is not None:
     check("...and its twin the same rows, with no value",
           [r[:2] for r in _issuers("2026-10-15", p.privacy_name(_iss))] == [(1, "Example Beta")]
           and len(_issuers("2026-10-15", p.privacy_name(_iss))[0]) == 7)
+
+    section("the Exposure securities card's SQL, run on an invented book")
+
+    # Today a stock in three slices: held directly in src-1 (300, sector
+    # and country stated), through one fund in src-2 (200, another
+    # country) and through two funds, one of them that one, in src-1
+    # (100, no sector); a private holding of 500, named by its own key;
+    # and cash of 400. A month end before, a stock of 50 alone. The card
+    # sums the stock to one row with its heaviest slice's labels and its
+    # two funds, each a share of the 1,500.
+    _db.execute(_MIG_TEXT[165])
+    _sec_now = int(dt.datetime(2026, 10, 21, 23, 59, 59, tzinfo=dt.timezone.utc).timestamp())
+    _sec_sep = int(dt.datetime(2026, 9, 30, 23, 59, 59, tzinfo=dt.timezone.utc).timestamp())
+    for _at, _src, _w, _cls, _key, _name, _sector, _country, _v, _direct, _funds in (
+            (_sec_now, "src-1", "taxable_personal", "public_equity", "symbol:QSTK", "Example Stock", "technology",
+             "US", 300.0, 300.0, []),
+            (_sec_now, "src-2", "roth_ira", "public_equity", "symbol:QSTK", "Example Stock", "technology", "IE",
+             200.0, 0.0, ["symbol:QF1"]),
+            (_sec_now, "src-1", "taxable_personal", "public_equity", "symbol:QSTK", "Example Stock", None, "US",
+             100.0, 0.0, ["symbol:QF1", "symbol:QF2"]),
+            (_sec_now, "src-1", "taxable_personal", "private_equity", "holding:src-1:QPRV", "Example Private",
+             None, None, 500.0, 500.0, []),
+            (_sec_now, "src-1", "taxable_personal", "cash", "cash:USD", None, "cash", None, 400.0, 400.0, []),
+            (_sec_sep, "src-1", "taxable_personal", "public_equity", "symbol:QOLD", "Example Old", None, None,
+             50.0, 50.0, [])):
+        _db.execute("INSERT INTO report_exposure_security_slices VALUES (0, 'USD', ?, ?, ?, ?, ?, ?, NULL, ?, ?,"
+                    " ?, ?, ?, 5e10, 'large', ?, ?, ?, ?)",
+                    [_at, _src, _w, _cls, _key, _name, _sector, _country, _v, None if _sector is None else _v,
+                     None if _country is None else _v, _v, _direct, _v - _direct, _funds])
+    _secs = _run(_sec)
+    check("the securities card sums a stock's slices to one row, its heaviest slice's labels, its funds once",
+          [(r[0], r[4], r[5], r[8], r[9], r[10], r[11], round(r[12], 6)) for r in _secs]
+          == [("symbol:QSTK", "technology", "US", 600.0, 300.0, 300.0, 2, 40.0),
+              ("holding:src-1:QPRV", None, None, 500.0, 500.0, 0.0, 0, round(100 * 500 / 1500, 6)),
+              ("cash:USD", "cash", None, 400.0, 400.0, 0.0, 0, round(100 * 400 / 1500, 6))], _secs)
+    _secs2 = _run(_sec, source=["src-2"])
+    check("...a source picked, its slice alone, the whole of that selection",
+          [(r[0], r[5], r[8], r[12]) for r in _secs2] == [("symbol:QSTK", "IE", 200.0, 100.0)], _secs2)
+    _secs_sep = _run(_sec, time_range=("2026-09-01", "2026-09-30"))
+    check("...a window that ends before today, its last instant",
+          [r[0] for r in _secs_sep] == ["symbol:QOLD"], _secs_sep)
+    _twin_secs = _run(p.privacy_name(_sec))
+    check("...and its twin the same rows as shares, a holding's own key and name hidden",
+          [(r[0], r[1], round(r[8], 6), round(r[11], 6)) for r in _twin_secs]
+          == [("symbol:QSTK", "Example Stock", 20.0, 40.0), ("(unnamed)", None, round(100 * 500 / 1500, 6),
+                                                            round(100 * 500 / 1500, 6)),
+              ("cash:USD", None, round(100 * 400 / 1500, 6), round(100 * 400 / 1500, 6))], _twin_secs)
 
     section("the Top 100 positions cards' size column, run on an invented book")
 

@@ -691,16 +691,12 @@ undeclared.
 ### Parsed records
 
 A source may read a holding's split from a document of its own, such as
-a private-markets fund's quarterly report ([adapters/ubs.md](adapters/ubs.md)
-§13). Each split
-is a dated record, and a load merges these parsed records with the
-ledger's. A parsed record is like a ledger record dated the document's
-day, with two differences:
-
-- On an equal date, the ledger's record wins. So a parsed record never
-  outranks a ledger record of the same or a later date.
-- It has no ledger line. It is never named in the load's warning about
-  records that name no holding.
+a private-markets fund's quarterly report
+([adapters/ubs.md §13](adapters/ubs.md#13-private-markets-quarterly-reports)).
+Each split is a dated record, and a load merges these parsed records
+with the ledger's. A parsed record is like a ledger record dated the
+document's day. It has no ledger line, so the load's warning about
+records that name no holding never names it.
 
 So the rule on a day is:
 
@@ -715,8 +711,8 @@ parsed one: it wins only the days before the first dated record.
 
 A parsed record states only the dimensions its document gives. It takes
 each other dimension from the ledger record that would hold on its day
-without it, by that record's split of the dimension. A ledger record of a situs
-alone adds nothing here.
+without it, by that record's split of the dimension. A ledger record of
+a situs alone adds nothing here.
 
 `exposure_declarations.origin` says which kind each record is: `ledger`
 or `parsed`.
@@ -833,8 +829,15 @@ recomputes the whole history, so a new composition or declaration shows
 in past months too. A security's attributes, its size among them, are
 today's at every month end, as in a `--period` series (§7). The debt
 cards cover today and the 12 month ends before. The credit, maturity,
-coupon and cycle cards plot `class_share`. The largest issuers are on
-the Allocation dashboard, over the same instants.
+coupon and cycle cards plot `class_share`.
+
+The Top securities card lists the rows of `securities` (§7), the
+hundred with the most value, narrowed by the pickers. With nothing
+picked, its rows equal `wealthdb exposure securities -d <day> -x CCY`.
+web/DESIGN.md §6 gives its slices, its labels and its twin.
+
+The largest issuers are on the Allocation dashboard, over the same
+instants.
 [web/DESIGN.md](../../web/DESIGN.md) §6 lists the cards, the pickers
 each one takes and the privacy twin, and §8 the tables they read.
 

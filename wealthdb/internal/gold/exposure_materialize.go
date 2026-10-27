@@ -51,10 +51,10 @@ const exposureHoldingsSQL = `SELECT '%s' AS out_ccy, src, acct, position_key, va
 // last second of every month from the first holding gold holds, and at
 // toEpoch, in every reporting currency, grouped by the dimensions the
 // Metabase Exposure dashboard charts and the source and tax wrapper its
-// pickers narrow to; and the debt and issuer tables at the recent
-// instants (materializeExposureDebt). It returns the number of rows
-// written. One transaction, so a reader sees the old tables or the new
-// ones.
+// pickers narrow to; and the debt, issuer and security tables at the
+// recent instants (materializeExposureRecent). It returns the number of
+// rows written. One transaction, so a reader sees the old tables or the
+// new ones.
 func MaterializeExposure(ctx context.Context, db *sql.DB, toEpoch, computedAt int64) (int, error) {
 	// Every month end reads the same endings and spans.
 	tx, commit, err := beginPinned(ctx, db)
@@ -62,7 +62,8 @@ func MaterializeExposure(ctx context.Context, db *sql.DB, toEpoch, computedAt in
 		return 0, fmt.Errorf("MaterializeExposure: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck — no-op after commit
-	for _, t := range []string{"report_exposure", "report_exposure_debt", "report_exposure_issuer_ranks"} {
+	for _, t := range []string{"report_exposure", "report_exposure_debt", "report_exposure_issuer_ranks",
+		"report_exposure_security_slices"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t); err != nil {
 			return 0, fmt.Errorf("MaterializeExposure delete %s: %w", t, err)
 		}
@@ -91,7 +92,7 @@ func MaterializeExposure(ctx context.Context, db *sql.DB, toEpoch, computedAt in
 		}
 		n += int(k)
 	}
-	k, err := materializeExposureDebt(ctx, tx, toEpoch, computedAt, parts)
+	k, err := materializeExposureRecent(ctx, tx, toEpoch, computedAt, parts)
 	if err != nil {
 		return 0, err
 	}

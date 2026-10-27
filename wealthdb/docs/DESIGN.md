@@ -1558,7 +1558,9 @@ is documented where it is used:
 - The exposure tables: the reference and config tables (migrations
   `0125` and `0128`) — §7.6; the derived tables (migrations `0126` and
   `0129`) and `report_exposure` (migrations `0127` and `0130`); migration
-  `0131` touches both — §10.14.
+  `0131` touches both; the recent tables `report_exposure_debt`,
+  `report_exposure_issuer_ranks` (migration `0138`) and
+  `report_exposure_security_slices` (migration `0165`) — §10.14.
 - The reference tables `fund_risk`, `fund_characteristics`,
   `security_period_facts` and `rate_observations`, and the `yield_*`
   config tables (migration `0134`) — §7.6.
@@ -3316,8 +3318,14 @@ walks the instant for itself, so its memory is freed before the next:
 - `report_exposure_issuer_ranks`: the 100 largest issuers per currency
   and the `(none)` row, the running share over every issuer.
 
-`web_exposure`, `web_exposure_debt` and `web_exposure_issuers` are the
-dashboard's reading of them ([web/DESIGN.md](../../web/DESIGN.md) §8).
+`report_exposure_security_slices` (migration 0165) holds the rows of
+`report_exposure_securities` at the same instants, from the plain walk.
+They are cut by source, tax wrapper and asset class, so the dashboard's
+pickers reach them. A slice keeps the weight of the leaf each label
+comes from, so the slices of a selection add up to the view's rows.
+
+`web_exposure`, `web_exposure_debt`, `web_exposure_issuers` and
+`web_exposure_securities` are the dashboard's reading of them ([web/DESIGN.md](../../web/DESIGN.md) §8).
 
 ### 10.15 Yield reports
 

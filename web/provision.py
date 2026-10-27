@@ -980,6 +980,10 @@ FILTER_FIELD_COLUMNS = {
     # day through web_sources_history.
     "web_exposure_debt": ("as_of_day", "silver_source_id", "tax_wrapper"),
     "web_exposure_issuers": (),
+    # Each security's slice per source, tax wrapper and asset class
+    # (migration 0165), at the debt view's instants, narrowed like
+    # web_exposure.
+    "web_exposure_securities": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
     # The yield report per holding and its DV01 per tenor (migration
     # 0138): today and the twelve month ends before, a row set per
     # currency, narrowed like web_exposure.
@@ -2800,8 +2804,9 @@ def base_dashboards():
             "shares then read as shares of the selection. Credit and "
             "maturity show the debt and the cash, coupon the debt, the cycles "
             "the public equity, each bucket as a share of what its chart "
-            "counts. The last chart says how much of net worth the figures "
-            "rest on. " + note,
+            "counts. Top securities adds up each security held directly "
+            "and through every fund. The last chart says how much of net "
+            "worth the figures rest on. " + note,
             "range", [
             # The allocation first, the ring beside the sectors and the
             # classes over time full width; then where it sits: the map
@@ -2810,8 +2815,8 @@ def base_dashboards():
             # then what it moves with, the currency ring beside its
             # history; then public equity by size beside what funds hold;
             # then the debt by credit beside its maturities, its coupons
-            # beside the equity's cycles, and the issuers, full width;
-            # last, how much the figures cover.
+            # beside the equity's cycles, and the largest securities, full
+            # width; last, how much the figures cover.
             ("Exposure by asset class", 0, 0, 12, 9, "as_of_day"),
             ("Exposure by sector", 0, 12, 12, 9, "as_of_day"),
             ("Asset classes over time", 9, 0, 24, 8, "as_of_day"),
@@ -2828,7 +2833,8 @@ def base_dashboards():
             ("Debt by maturity", 68, 12, 12, 8, "as_of_day"),
             ("Debt by coupon kind", 76, 0, 12, 7, "as_of_day"),
             ("Public equity by cycle", 76, 12, 12, 7, "as_of_day"),
-            ("How the figures are classified", 83, 0, 24, 7, "as_of_day"),
+            ("Top securities", 83, 0, 24, 9, "as_of_day"),
+            ("How the figures are classified", 92, 0, 24, 7, "as_of_day"),
         ]),
         "Yield": (
             "What the holdings earn and how their value moves with rates, as "
@@ -3141,6 +3147,44 @@ def exposure_cards(db_id, privacy):
                "built-in map. Unknown is equity with no sector. Debt and cash are not counted. Each "
                "bar is a cycle's share of the public equity at the latest day in the window.",
                "cycle", "cycle", CYCLE_BUCKETS)
+
+    # The securities, each summed over its slices of the selection
+    # (migration 0165): the labels of its heaviest slice that has them,
+    # the greater label on a tie, the funds counted once, as `wealthdb
+    # exposure securities` gives them with nothing picked. The share is
+    # of the selection, all of its securities counted. The twin drops the
+    # values and hides a key and a name that are a holding's own.
+    stags = native_tags("web_exposure_securities", EXPOSURE_FILTERS)
+    hidden = f"security LIKE '%{HOLDING_KEY_PREFIX}%'"
+    shown = ((f"CASE WHEN {hidden} THEN '(unnamed)' ELSE security END AS security,\n"
+              f"       CASE WHEN {hidden} THEN NULL ELSE name END AS name")
+             if privacy else "security, name")
+    values = ("100 * direct / t.total AS direct_pct,\n       100 * via / t.total AS via_funds_pct"
+              if privacy else "amount AS value, direct AS direct_value, via AS via_funds_value")
+    card("Top securities", "table",
+         "The hundred securities with the most value, at the latest day in the window, each held "
+         "directly and through every fund added up: a stock that several funds hold is one row. "
+         "Each gives its market cap and size, how much of it is held directly and how much through "
+         "funds, how many funds hold it, and its share of what the pickers select. Cash is a row "
+         "per currency, "
+         "and a fund nothing looks through a row of its own. The labels are those of its largest "
+         "part." + recent,
+         _window_end("web_exposure_securities", stags)[1] + ",\n"
+         "t AS (SELECT NULLIF(sum(value), 0) AS total FROM e),\n"
+         "g AS (\n"
+         "  SELECT security, max(name) AS name, max(ticker) AS ticker,\n"
+         "         arg_max(asset_class, (class_weight, asset_class)) AS asset_class,\n"
+         "         arg_max(sector, (sector_weight, sector)) AS sector,\n"
+         "         arg_max(country, (country_weight, country)) AS country,\n"
+         "         max(market_cap) AS market_cap, max(size) AS size, sum(value) AS amount,\n"
+         "         sum(direct_value) AS direct, sum(via_funds_value) AS via,\n"
+         "         len(list_distinct(flatten(list(funds)))) AS funds\n"
+         "    FROM e\n   GROUP BY security)\n"
+         f"SELECT {shown},\n       ticker, asset_class, sector, country, market_cap, size,\n"
+         f"       {values}, funds,\n"
+         "       100 * amount / t.total AS share_pct\n"
+         "  FROM g, t\n ORDER BY abs(amount) DESC, g.security\n LIMIT 100",
+         _share_viz("share_pct", *(("direct_pct", "via_funds_pct") if privacy else ())), stags)
     return out
 
 
@@ -5746,15 +5790,16 @@ def missing_web_views(base, sid, db_id):
 
 
 # The oldest gold schema the cards can read: the migration that adds the
-# stock positions' sizes the Top 100 positions cards read (0154). A
-# snapshot older than 0154 lacks that view, one older than 0149 the cash
+# securities the Exposure dashboard ranks (0165). A snapshot older than
+# 0165 lacks that view, one older than 0154 the stock positions' sizes
+# the Top 100 positions cards read, one older than 0149 the cash
 # flow projection's look-back parts, one older than 0146 the days the
 # Income cards' received figures cover and the tax withheld on them, and
 # one older than 0138 the yield views and the exposure of the debt, which the
 # by-name probe finds. One older than 0133 carries every view by name but
 # reads a missing tax wrapper blank, and one older than 0132 lacks the
 # serving tables' columns: only the version tells those apart.
-MIN_GOLD_SCHEMA = 154
+MIN_GOLD_SCHEMA = 165
 
 # main()'s exit status for a snapshot older than MIN_GOLD_SCHEMA; every
 # other failure exits 1. web/web tells the two apart, because only

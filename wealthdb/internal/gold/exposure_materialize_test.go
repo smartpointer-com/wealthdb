@@ -1,9 +1,13 @@
 package gold
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"math"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -85,6 +89,44 @@ func TestMaterializeExposureMatchesTheLiveViews(t *testing.T) {
 			t.Errorf("at %d: %d rows without a source; by source %.6f, whole %.6f", at, unsourced, bySource, whole)
 		}
 		checkMaterializedWrappers(t, ctx, db, at)
+	}
+	// The securities hold the recent instants alone, the last in every
+	// currency: summed as the card sums them they are the securities
+	// view, and narrowed by source, wrapper or class they are what the
+	// other cards read.
+	recent := yieldInstants(to)
+	var held []int64
+	if err := scanAll(ctx, db, `SELECT DISTINCT as_of FROM report_exposure_security_slices ORDER BY 1`,
+		func(rows *sql.Rows) error {
+			var at int64
+			if err := rows.Scan(&at); err != nil {
+				return err
+			}
+			held = append(held, at)
+			return nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+	stray := slices.DeleteFunc(slices.Clone(held), func(at int64) bool { return slices.Contains(recent, at) })
+	if len(held) < 2 || held[len(held)-1] != to || len(stray) > 0 {
+		t.Errorf("securities at %v; want several of %v, the last %d", held, recent, to)
+	}
+	for _, ccy := range MaterializedCurrencies() {
+		n := checkMaterializedSecurities(t, ctx, db, to, ccy)
+		if n > 0 {
+			checkSecuritySlicesNarrow(t, db, to, ccy)
+		} else if ccy == "USD" {
+			t.Error("no securities in US dollars; the test needs some")
+		}
+	}
+	if checkMaterializedSecurities(t, ctx, db, held[0], "USD") == 0 {
+		t.Errorf("no securities at %d", held[0])
+	}
+	// A security reached through two funds is one row, its funds both.
+	if got := scanStrings(t, db, exposureSecuritiesCardSQL, to, "USD"); !slices.ContainsFunc(got, func(r string) bool {
+		return strings.HasPrefix(r, "symbol:CNG|") && strings.Contains(r, "|2|")
+	}) {
+		t.Errorf("no security reached through two funds: %v", got)
 	}
 	var sized int
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure WHERE size = 'large'`).Scan(&sized); err != nil ||
@@ -251,5 +293,107 @@ func TestMigrations0127To0133DDLAreRerunnable(t *testing.T) {
 				t.Errorf("after replay: %d sized rows, err %v", n, err)
 			}
 		})
+	}
+}
+
+// exposureSecuritiesCardSQL sums a security's slices at one instant and
+// currency, as the Exposure dashboard's Top securities card sums those
+// of its selection with nothing picked: each label of its heaviest
+// slice, the greatest name, ticker, market cap and size, the values
+// summed, the distinct funds counted, and its share of their total.
+const exposureSecuritiesCardSQL = `
+WITH g AS (
+    SELECT security, MAX(name) AS name, MAX(ticker) AS ticker,
+           arg_max(asset_class, (class_weight, asset_class)) AS asset_class,
+           arg_max(sector, (sector_weight, sector)) AS sector,
+           arg_max(country, (country_weight, country)) AS country,
+           MAX(market_cap) AS market_cap, MAX(size) AS size, SUM(value) AS value,
+           SUM(direct_value) AS direct_value, SUM(via_funds_value) AS via_funds_value,
+           len(list_distinct(flatten(list(funds)))) AS funds
+      FROM report_exposure_security_slices WHERE as_of = ? AND currency = ? GROUP BY security)
+SELECT concat_ws('|', security, COALESCE(name, '-'), COALESCE(ticker, '-'), COALESCE(asset_class, '-'),
+                 COALESCE(sector, '-'), COALESCE(country, '-'), COALESCE(printf('%.0f', market_cap), '-'),
+                 COALESCE(size, '-'), printf('%.4f', value), printf('%.4f', direct_value),
+                 printf('%.4f', via_funds_value), funds::VARCHAR,
+                 COALESCE(printf('%.2f', 100 * value / NULLIF(SUM(value) OVER (), 0)), '-'))
+  FROM g
+ ORDER BY round(abs(value), 4) DESC, security`
+
+// checkMaterializedSecurities compares one instant and currency of
+// report_exposure_security_slices, summed as the card sums them, with
+// every row of the securities view, in its order: the largest first,
+// two of one value to the cent by their key. It returns the number of
+// rows, none in a currency no rate reaches.
+func checkMaterializedSecurities(t *testing.T, ctx context.Context, db *sql.DB, at int64, ccy string) int {
+	t.Helper()
+	rows, err := ExposureSecurities(ctx, db, at, ccy, "risk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.SortStableFunc(rows, func(a, b ExposureSecurityRow) int {
+		va, vb := math.Round(math.Abs(parse(t, a.Value))*1e4), math.Round(math.Abs(parse(t, b.Value))*1e4)
+		if va != vb {
+			return cmp.Compare(vb, va)
+		}
+		return cmp.Compare(a.Security, b.Security)
+	})
+	or := func(s *string) string {
+		if s == nil {
+			return "-"
+		}
+		return *s
+	}
+	num := func(s *string, prec int) string {
+		if s == nil {
+			return "-"
+		}
+		return strconv.FormatFloat(parse(t, s), 'f', prec, 64)
+	}
+	var want []string
+	for _, r := range rows {
+		share := "-"
+		if r.SharePct != nil {
+			share = strconv.FormatFloat(*r.SharePct, 'f', 2, 64)
+		}
+		want = append(want, strings.Join([]string{r.Security, or(r.Name), or(r.Ticker), or(r.AssetClass), or(r.Sector),
+			or(r.Country), num(r.MarketCap, 0), or(r.Size), num(r.Value, 4), num(r.DirectValue, 4),
+			num(r.ViaFundsValue, 4), strconv.FormatInt(r.Funds, 10), share}, "|"))
+	}
+	got := scanStrings(t, db, exposureSecuritiesCardSQL, at, ccy)
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("%s at %d: the slices give\n%s\nthe securities view\n%s", ccy, at,
+			strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	return len(want)
+}
+
+// checkSecuritySlicesNarrow compares the value of each source, tax
+// wrapper and asset class in report_exposure_security_slices at one
+// instant with report_exposure's, so a picker narrows the securities
+// card to the selection the other Exposure cards read.
+func checkSecuritySlicesNarrow(t *testing.T, db *sql.DB, at int64, ccy string) {
+	t.Helper()
+	q := `SELECT concat_ws('|', COALESCE(silver_source_id, '-'), COALESCE(tax_wrapper, '-'), COALESCE(asset_class, '-'),
+	             printf('%.4f', SUM(value)))
+	        FROM %s WHERE as_of = ? AND currency = ? GROUP BY silver_source_id, tax_wrapper, asset_class ORDER BY 1`
+	slices := scanStrings(t, db, strings.Replace(q, "%s", "report_exposure_security_slices", 1), at, ccy)
+	exposure := scanStrings(t, db, strings.Replace(q, "%s", "report_exposure", 1), at, ccy)
+	if len(slices) == 0 || strings.Join(slices, " ") != strings.Join(exposure, " ") {
+		t.Errorf("%s at %d: slices by selection %v, report_exposure %v", ccy, at, slices, exposure)
+	}
+}
+
+// 0165 replays over a materialized gold and keeps its slices.
+func TestMigration0165DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
+	db, ctx := openExposureFixture(t)
+	if _, err := MaterializeExposure(ctx, db, exAsOf, 1); err != nil {
+		t.Fatal(err)
+	}
+	rerunMigrationDDL(t, db, ctx, "0165_exposure_securities_dashboard.sql")
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure_securities WHERE tax_wrapper = 'taxable_personal'`).
+		Scan(&n); err != nil || n == 0 {
+		t.Errorf("after replay: %d slices, err %v", n, err)
 	}
 }

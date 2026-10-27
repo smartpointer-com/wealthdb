@@ -522,9 +522,10 @@ func TestMigration0137DDLIsRerunnable(t *testing.T) {
 	}
 }
 
-// The dashboard's debt and issuer tables are the views': in every
-// reporting currency, each dimension's buckets at an instant are the CLI
-// view's, and the issuers its rows, in rank order with their shares.
+// The dashboard's debt, issuer and security tables are the views': in
+// every reporting currency, each dimension's buckets at an instant are
+// the CLI view's, the issuers its rows, in rank order with their shares,
+// and the securities' slices summed its securities.
 func TestMaterializeExposureDebtMatchesTheViews(t *testing.T) {
 	t.Parallel()
 	db, ctx, at := seedYieldBookFX(t)
@@ -551,6 +552,10 @@ func TestMaterializeExposureDebtMatchesTheViews(t *testing.T) {
 				t.Errorf("%s %s: %v, want %v", ccy, dim, got, want)
 			}
 		}
+		if checkMaterializedSecurities(t, ctx, db, at, ccy) == 0 {
+			t.Errorf("%s: no securities", ccy)
+		}
+		checkSecuritySlicesNarrow(t, db, at, ccy)
 		iss, err := ExposureIssuers(ctx, db, at, ccy)
 		if err != nil {
 			t.Fatal(err)
