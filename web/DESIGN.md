@@ -550,11 +550,14 @@ projected net is the net of the cash flow projection at its defaults.
 
 A click on one of these figures opens its dashboard, and passes the
 overview's pickers that dashboard also carries. A year-to-date return
-passes its year to the Returns *Start year*. On the twin a figure
-opens its dashboard's twin. Gains has no twin, so its two figures on
-the twin open nothing: a click never leads from the privacy view to
-money. `demo/check_dashboards.py` fails a click whose dashboard or
-picker is not there.
+passes its year to the Returns *Start year*. A click on *Asset class
+mix over time* passes the day clicked to Allocation's *As of day*. On
+the twin a figure opens its dashboard's twin. Gains has no twin, so its
+two figures on the twin open nothing: a click never leads from the
+privacy view to money. `demo/check_dashboards.py` fails a click whose
+dashboard or picker is not there, or that passes a column its card does
+not return. A click whose card has not run yet has no stored columns.
+The script counts it as not checked.
 
 On both spending views the merchant list ranks merchants only: a line whose resolved
 category is a delta — a gift, a bill on a card not itemised, cash out of an

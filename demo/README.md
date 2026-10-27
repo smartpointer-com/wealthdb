@@ -278,10 +278,13 @@ A findings build is a one-off picture: it cannot be appended to.
   investing grain, section, start year, as-of, missing cost basis, asset
   class and tax wrapper pickers. It also varies each of the projection's
   pickers on its own; the script's docstring lists them. It also fails
-  a tile whose click opens a dashboard that is not there, or passes a
-  picker either side does not carry. It uses a temporary API key, so no
-  filter values stay behind on the admin account. Its defaults are the demo's port and the demo root
-  `make demo` uses. Another root needs `--password-file`.
+  a tile whose click opens a dashboard that is not there, passes a
+  picker either side does not carry, or passes a column the card does
+  not return. A click whose card has not run yet has no stored columns,
+  so the script counts it as not checked. It uses a temporary API key,
+  so no filter values stay behind on the admin account. Its defaults
+  are the demo's port and the demo root `make demo` uses. Another root
+  needs `--password-file`.
 - `demo/disjoint.py --demo <gold> --live <gold>` lists every
   identifying value a demo gold shares with another gold: ids, names,
   symbols, keys, descriptions, the ledger's notes, (date, amount) pairs

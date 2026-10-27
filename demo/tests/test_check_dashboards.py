@@ -127,9 +127,35 @@ class BrokenClicks(unittest.TestCase):
 
     def test_a_column_source_needs_no_picker_of_its_own(self):
         dashes = {1: self.dash("Overview", [], [("Year", 2, {})]), 2: self.dash("Returns", ["year"])}
+        dashes[1]["dashcards"][0]["card"]["result_metadata"] = [{"name": "start_year"}]
         dashes[1]["dashcards"][0]["visualization_settings"]["click_behavior"]["parameterMapping"] = {
             "year": {"id": "year", "source": {"type": "column", "id": "start_year"}}}
         self.assertEqual(check_dashboards.broken_clicks(dashes), [])
+
+    def test_a_card_that_states_no_columns_yet_is_not_flagged(self):
+        dashes = {1: self.dash("Overview", [], [("Year", 2, {})]), 2: self.dash("Returns", ["year"])}
+        dashes[1]["dashcards"][0]["visualization_settings"]["click_behavior"]["parameterMapping"] = {
+            "year": {"id": "year", "source": {"type": "column", "id": "start_year"}}}
+        self.assertEqual(check_dashboards.broken_clicks(dashes), [])
+
+    def test_a_column_the_card_does_not_return_is_named(self):
+        dashes = {1: self.dash("Overview", [], [("Mix", 2, {})]), 2: self.dash("Allocation", ["day"])}
+        dashes[1]["dashcards"][0]["card"]["result_metadata"] = [{"name": "share_pct"}]
+        dashes[1]["dashcards"][0]["visualization_settings"]["click_behavior"]["parameterMapping"] = {
+            "day": {"id": "day", "source": {"type": "column", "id": "as_of_day"}}}
+        self.assertEqual([(c, why) for _d, c, why in check_dashboards.broken_clicks(dashes)],
+                         [("Mix", "passes column as_of_day, which the card does not return")])
+
+    def test_the_column_sources_of_a_card_that_has_not_run_are_counted(self):
+        dashes = {1: self.dash("Overview", ["ccy"], [("Year", 2, {"ccy-2": "ccy"}), ("Mix", 2, {})]),
+                  2: self.dash("Returns", ["ccy-2", "year", "day"])}
+        ran, fresh = dashes[1]["dashcards"]
+        ran["card"]["result_metadata"] = [{"name": "start_year"}]
+        for dc, tid, col in ((ran, "year", "start_year"), (fresh, "day", "as_of_day")):
+            dc["visualization_settings"]["click_behavior"]["parameterMapping"][tid] = {
+                "id": tid, "source": {"type": "column", "id": col}}
+        self.assertEqual(check_dashboards.broken_clicks(dashes), [])
+        self.assertEqual(check_dashboards.unchecked_columns(dashes), 1)
 
 
 if __name__ == "__main__":

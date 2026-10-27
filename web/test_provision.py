@@ -2152,6 +2152,11 @@ _ytd = _ov_tiles[_OV][card_ids["Return year to date (TWR)"]]["visualization_sett
 check("...a year-to-date return passing its year to the Returns Start year",
       _ytd["parameterMapping"].get(p.START_YEAR_PARAM_ID, {}).get("source")
       == {"type": "column", "id": "start_year", "name": "start_year"}, _ytd)
+_mix = {n: _ov_tiles[n][card_ids["Asset class mix over time"]]["visualization_settings"]["click_behavior"]
+        for n in (_OV, _OVT)}
+check("...the asset class mix passing the day clicked to Allocation's As of day, on the overview and its twin",
+      all(m["parameterMapping"].get(p.ASOF_PARAM_ID, {}).get("source")
+          == {"type": "column", "id": "as_of_day", "name": "as_of_day"} for m in _mix.values()), _mix)
 check("...every borrowed figure's home holds its card, and the ones built for the overview sit nowhere else",
       all((c in {t[0] for t in DEFS[h][3]}) != (c in p.OVERVIEW_BUILT_CARDS)
           for c, h in p.OVERVIEW_TILE_HOMES.items())
@@ -2416,6 +2421,12 @@ def _picker_targets_resolve(names):
         if not mapped <= set(tags) or any("{{" + t + "}}" not in sql_of(q) for t in tags):
             off.append(n)
     return off
+
+
+# A click passes a column of its card's rows on; Metabase states a card's
+# columns only once it has run, so the column is checked against its SQL.
+_col_off = {c: col for c, col in p.COLUMN_CLICKS.items() if col not in _output_columns(sql_of(CARDS[c][2]) or "")}
+check("each column a click passes is one its card's SQL returns", not _col_off, _col_off)
 
 
 # A privacy card's columns are shares and rates, `_pct`, or labels and

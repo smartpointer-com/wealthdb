@@ -35,8 +35,11 @@ A run fails when Metabase reports an error. A response cut off with no
 error and no result is asked once more first. A card that returns no rows
 at its dashboard's defaults fails too, but for the calendar of expected
 payments, and so does a figure of the Income dashboards that reads null
-there. A tile whose click opens a dashboard that is not there, or
-passes a picker either side does not carry, fails too. Empty runs under
+there. A tile whose click opens a dashboard that is not there, passes
+a picker either side does not carry, or passes a column its card does
+not return, fails too. A card states its columns only once it has run,
+so the column sources of a card that had not run are counted, not
+checked. Empty runs under
 any other picker value are listed, not failed: many card and source
 pairs are empty by nature (card balances for a source with no card).
 Exits 1 on any failure. Stdlib only.
@@ -160,8 +163,9 @@ def null_at_defaults(figures):
 
 def broken_clicks(dashes):
     """The (dashboard, card, reason) of each tile in `dashes`, dashboard
-    id -> its JSON, whose click opens a dashboard that is not there or
-    passes a picker either side does not carry."""
+    id -> its JSON, whose click opens a dashboard that is not there,
+    passes a picker either side does not carry, or passes a column the
+    card does not return."""
     params = {i: {p["id"] for p in d.get("parameters", [])} for i, d in dashes.items()}
     out = []
     for i, d in sorted(dashes.items()):
@@ -180,7 +184,22 @@ def broken_clicks(dashes):
                     out.append((d["name"], name, f"sets {tid}, which {dashes[target]['name']} does not carry"))
                 elif src.get("type") == "parameter" and src.get("id") not in params[i]:
                     out.append((d["name"], name, f"passes {src.get('id')}, which it does not carry"))
+                elif src.get("type") == "column" and (dc.get("card") or {}).get("result_metadata") and \
+                        src.get("id") not in {c.get("name") for c in dc["card"]["result_metadata"]}:
+                    out.append((d["name"], name, f"passes column {src.get('id')}, which the card does not return"))
     return out
+
+
+def unchecked_columns(dashes):
+    """How many column sources of the clicks in `dashes`, dashboard id ->
+    its JSON, broken_clicks cannot check. Metabase states a card's
+    columns once it has run; before that there is nothing to check the
+    column against."""
+    return sum(1 for d in dashes.values() for dc in d.get("dashcards", [])
+               if not (dc.get("card") or {}).get("result_metadata")
+               for m in ((((dc.get("visualization_settings") or {}).get("click_behavior") or {})
+                          .get("parameterMapping") or {}).values())
+               if (m.get("source") or {}).get("type") == "column")
 
 
 def run_card(base, auth, dash, dc, ptypes, values):
@@ -287,6 +306,7 @@ def main(argv=None):
         print(f"clicks to a dashboard that do not land: {len(clicks)}")
         for d, c, why in clicks:
             print("  CLICK", d, "|", c, "|", why)
+        print(f"clicks not checked against columns: {unchecked_columns(dashes)}")
         return 1 if failures or at_defaults or nulls or clicks else 0
     finally:
         call(a.base, f"/api/api-key/{key_id}", "DELETE", headers=admin_auth)

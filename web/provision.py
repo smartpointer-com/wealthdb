@@ -754,6 +754,13 @@ DECLARED_SOURCE = "declared"
 RETURN_YTD_CARDS = (("Return year to date (TWR)", "time-weighted", "twr"),
                     ("Return year to date (MWR)", "money-weighted", "mwr"))
 
+# Overview tiles whose click passes a column of the cell clicked to the
+# home picker of the same slug: card -> that column. A year-to-date
+# return opens the Returns at its start year, and the mix a viewer
+# clicks opens as of the day clicked.
+COLUMN_CLICKS = {**{c: "start_year" for c, _m, _col in RETURN_YTD_CARDS},
+                 "Asset class mix over time": "as_of_day"}
+
 # Every dashboard but those in NO_PRIVACY_TWIN has a privacy twin whose
 # cards show shares (%) instead of money (each names its own denominator
 # — see PRIVACY_DESC). Cards listed here show no monetary values
@@ -6272,8 +6279,9 @@ def overview_mappings(card, dash, defs, params, card_ids):
 def overview_click(card, dash, params, dash_ids):
     """The click behaviour of `card`'s tile on overview dashboard `dash`:
     open its home dashboard (overview_home), passing each overview
-    picker that dashboard carries by slug, and a year-to-date return's
-    year to the Returns Start year. Empty for a tile with no home."""
+    picker that dashboard carries by slug, and a COLUMN_CLICKS card's
+    column to the home picker of that slug. Empty for a tile with no
+    home."""
     home = overview_home(card, dash)
     if home is None:
         return {}
@@ -6283,9 +6291,9 @@ def overview_click(card, dash, params, dash_ids):
         return {"id": tid, "source": source, "target": {"type": "parameter", "id": tid}}
     mapping = {target[x["slug"]]: link(target[x["slug"]], {"type": "parameter", "id": x["id"], "name": x["name"]})
                for x in params[dash] if x["slug"] in target}
-    if card in {c for c, _m, _col in RETURN_YTD_CARDS} and "start_year" in target:
-        mapping[target["start_year"]] = link(target["start_year"],
-                                             {"type": "column", "id": "start_year", "name": "start_year"})
+    col = COLUMN_CLICKS.get(card)
+    if col in target:
+        mapping[target[col]] = link(target[col], {"type": "column", "id": col, "name": col})
     return {"click_behavior": {"type": "link", "linkType": "dashboard",
                                "targetId": dash_ids[home], "parameterMapping": mapping}}
 
