@@ -254,7 +254,9 @@ SELECT silver_source_id, instrument_external_id, coupon_pct, coupon_origin = 'de
 
 // readYieldRates reads the account rates in force at the instant:
 //
-//   - a rate read from a snapshot: the latest snapshot's on or before it;
+//   - a rate read from a snapshot: the latest snapshot's on or before it
+//     whose rate holds on the day, so a rate a snapshot states for a later
+//     day leaves the one in force standing until then;
 //   - a rate a source states once: if it holds from on or before the day;
 //   - of either, the newest schedule that holds, every tier of it;
 //   - a ledger record's: the latest dated on or before the day, else the
@@ -265,6 +267,7 @@ func readYieldRates(ctx context.Context, db querier, in *yield.Inputs) error {
 WITH observed AS (
     SELECT * FROM account_rates
      WHERE observed_at IS NOT NULL AND observed_at <= $1
+       AND (valid_from IS NULL OR valid_from <= CAST(to_timestamp($1) AT TIME ZONE 'UTC' AS DATE))
    QUALIFY observed_at = MAX(observed_at) OVER (PARTITION BY silver_source_id, account_external_id, currency, side)),
 once AS (
     SELECT * FROM account_rates WHERE observed_at IS NULL AND origin = 'stated'),
@@ -296,7 +299,7 @@ SELECT silver_source_id, account_external_id, COALESCE(currency, ''), side, tier
 			&r.Declared); err != nil {
 			return err
 		}
-		r.Credit, r.UpTo, r.ValidFrom, r.TermEnd = side == "credit", nullFloatToPtr(upTo), nullDate(validFrom), nullDate(termEnd)
+		r.Credit, r.UpTo, r.ValidFrom, r.TermEnd = side == canonical.RateSideCredit, nullFloatToPtr(upTo), nullDate(validFrom), nullDate(termEnd)
 		in.Rates[k] = append(in.Rates[k], r)
 		return nil
 	}, in.AsOf)

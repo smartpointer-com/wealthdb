@@ -2196,7 +2196,8 @@ yield pass rewrites at the end of every load (§8.1):
 - `account_rates`: each interest rate an account earns or pays, per
   currency, side and tier, with the day it holds from, a term deposit's
   end, and where it comes from: a source's record, read per snapshot
-  where the source states it per snapshot, or a ledger record.
+  where the source states it per snapshot, or a ledger record. A source
+  states a rate under the payload keys of YIELD.md §3.
 
 The macro `instrument_terms_at(asof)` lays the ledger's terms and rating
 records in force on a day over `instrument_terms`, field by field. It

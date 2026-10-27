@@ -208,6 +208,32 @@ before the day states it. A rate a source states once holds from its
 `declared`. It replaces the credit rates a source states for its account
 and currency.
 
+A source states a rate on a cash balance's payload, or on an account's,
+under these keys:
+
+| Key | States | Read as |
+| --- | --- | --- |
+| `interest_rate` | the rate | percent a year: `0.75` or `0.75%` |
+| `interest_tiers` | a tiered rate, in place of `interest_rate` | a list of `{"rate": 0.5, "up_to": 10000}`; the last tier's `up_to` is null |
+| `interest_valid_from` | the day the rate holds from | `2026-01-01` |
+| `interest_side` | who pays it | `credit` (the balance earns it, the default) or `debit` (it pays it) |
+| `interest_conditions` | several rates, such as a credit and a debit side | a list of objects, each with the keys above |
+
+A rate on a cash balance is read at that balance's snapshot. So a
+source puts a statement's rate on the statement's closing balance, and
+it is observed on the statement's day. It puts a netbanking rate on the
+balance of the download. A rate on an account is stated once. Each
+condition in `interest_conditions` states its own keys, one per side
+and day. A value that does not read states nothing, and neither does
+the condition it sits in. A rate that holds from a later day leaves the
+rate in force standing until that day. A liability's rate is its terms'
+(below), never these keys. Three older shapes read as before: UBS PSN's
+balance records, Raiffeisen's account details and VIAC's strategy
+rate.
+
+An account that states no rate has none: its cash reads unknown, never
+zero.
+
 A balance whose rate no source states reads `realized` where its
 account received interest in the twelve months to the day. Its expected
 income repeats that interest

@@ -14,7 +14,9 @@ import (
 // prints it, the coupon a number or a percentage; ReadPayloadTerms
 // reads them.
 const (
-	// PayloadInterestRate is the coupon in percent a year: 4.25 or 4.25%.
+	// PayloadInterestRate is a bond's coupon in percent a year: 4.25 or
+	// 4.25%. On cash it is the rate the balance earns or pays
+	// (statedrate.go).
 	PayloadInterestRate = "interest_rate"
 	// PayloadMaturityDate is the maturity: 2031-06-15, 06/15/2031,
 	// 06/15/31 or 15.06.2031.

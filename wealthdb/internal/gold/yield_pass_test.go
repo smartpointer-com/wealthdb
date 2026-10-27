@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
 func execEach(t *testing.T, db *sql.DB, stmts ...string) {
@@ -320,6 +321,92 @@ func TestYieldPassReadsAccountRates(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("account rates:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// A rate a payload states under the canonical keys is every source's:
+// a flat rate on an account, stated once; tiers on a cash balance,
+// observed at its snapshot; a credit and a debit side on one account; a
+// rate that holds from a later day, the older rate in force until then.
+// An account that states none has no row.
+func TestYieldPassReadsTheStatedRateKeys(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
+	q := `INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id, currency, balance_kind, amount,
+	 payload) VALUES
+	 ('test-src', ?, 'TIER', 'USD', 'closing', 1000, '{"interest_tiers": [{"rate": 0.5, "up_to": 10000},
+	   {"rate": "1.25%", "up_to": null}], "interest_valid_from": "2026-06-01"}'),
+	 ('test-src', ?, 'TIER', 'USD', 'current', 1000, '{"interest_rate": 9.99}'),
+	 ('test-src', ?, 'TIER', 'USD', 'opening', 1000, '{"basis": "statement"}'),
+	 ('test-src', ?, 'BOTH', 'EUR', 'closing', 500, '{"interest_conditions": [
+	   {"interest_rate": 0.1, "interest_side": "credit"}, {"interest_rate": "6.5", "interest_side": "debit"}]}'),
+	 ('test-src', ?, 'LATER', 'USD', 'closing', 700, '{"interest_rate": 2, "interest_valid_from": "2026-09-01"}'),
+	 ('test-src', ?, 'LATER', 'USD', 'closing', 700, '{"interest_rate": 1.5}'),
+	 ('test-src', ?, 'BAD', 'USD', 'closing', 50, '{"interest_rate": "n/a", "interest_tiers": [{"rate": 1}],
+	   "interest_side": "sideways"}')`
+	if _, err := db.ExecContext(ctx, q, day, day-86400, day, day, day, day-86400, day); err != nil {
+		t.Fatal(err)
+	}
+	execEach(t, db,
+		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
+		 first_seen_at, last_seen_at, payload) VALUES
+		 ('test-src', 'FLAT', 'cash', 'Flat', 'CHF', 0, 0, '{"interest_rate": "0.75"}'),
+		 ('test-src', 'TIER', 'cash', 'Tier', 'USD', 0, 0, NULL),
+		 ('test-src', 'BOTH', 'cash', 'Both', 'EUR', 0, 0, NULL),
+		 ('test-src', 'LATER', 'cash', 'Later', 'USD', 0, 0, NULL),
+		 ('test-src', 'NONE', 'cash', 'None', 'CHF', 0, 0, '{"basis": "statement"}'),
+		 ('test-src', 'BAD', 'cash', 'Bad', 'USD', 0, 0, NULL)`)
+	n, err := RebuildYield(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.RatedAccounts != 4 {
+		t.Errorf("rated accounts %d, want 4", n.RatedAccounts)
+	}
+	got := scanStrings(t, db, `SELECT concat_ws(' ', account_external_id, COALESCE(currency, '-'), side, tier,
+	    rate_pct, COALESCE(up_to::VARCHAR, '-'), COALESCE(valid_from::VARCHAR, '-'), origin, COALESCE(field, '-'),
+	    COALESCE(strftime(to_timestamp(observed_at) AT TIME ZONE 'UTC', '%m-%d'), '-'))
+	  FROM account_rates ORDER BY account_external_id, observed_at, side, tier`)
+	want := []string{
+		"BOTH EUR credit 1 0.1 - - stated interest_conditions[0].interest_rate 06-30",
+		"BOTH EUR debit 1 6.5 - - stated interest_conditions[1].interest_rate 06-30",
+		"FLAT CHF credit 1 0.75 - - stated interest_rate -",
+		"LATER USD credit 1 1.5 - - stated interest_rate 06-29",
+		"LATER USD credit 1 2.0 - 2026-09-01 stated interest_rate 06-30",
+		// The day before, the current balance's own; on the day, of the
+		// snapshot's balances that state a rate, the closing one.
+		"TIER USD credit 1 9.99 - - stated interest_rate 06-29",
+		"TIER USD credit 1 0.5 10000.0 2026-06-01 stated interest_tiers 06-30",
+		"TIER USD credit 2 1.25 - 2026-06-01 stated interest_tiers 06-30",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("account rates:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	rates := func(asOf int64, acct string) []string {
+		in, err := YieldInputs(ctx, db, asOf, "USD")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, r := range in.Rates[yield.AccountKey{Source: "test-src", Account: acct}] {
+			out = append(out, strconv.FormatFloat(r.Pct, 'f', -1, 64)+map[bool]string{true: "c", false: "d"}[r.Credit])
+		}
+		return out
+	}
+	later := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC).Unix()
+	// Until its day, the rate an older snapshot states stays in force.
+	if got := rates(day+3600, "LATER"); !slices.Equal(got, []string{"1.5c"}) {
+		t.Errorf("a rate before its day %v", got)
+	}
+	if got := rates(later, "LATER"); !slices.Equal(got, []string{"2c"}) {
+		t.Errorf("a rate from its day %v", got)
+	}
+	if got := rates(later, "BOTH"); !slices.Equal(got, []string{"0.1c", "6.5d"}) {
+		t.Errorf("both sides %v", got)
+	}
+	if got := rates(later, "NONE"); got != nil {
+		t.Errorf("an account that states no rate %v", got)
 	}
 }
 
