@@ -533,8 +533,17 @@ build-$(1): $(if $(wildcard collectors/$(1)/Dockerfile),base-images)
 # A host-venv or hybrid collector tests on its venv. A Docker collector
 # tests in its image, run directly rather than through the wrapper: no
 # secrets or data mount, and a name docker picks, so a test never meets a
-# live run's container. The checkout is mounted at /app, since not every
-# image copies its tests.
+# live run's container. Not every image copies its tests, so the tests
+# come from the checkout. It is mounted read-only at /src, and sh copies
+# it to a tmpfs at /app, then runs the collector's entrypoint from the
+# copy, as a live run does, so the shared browser setup in
+# entrypoint-lib.sh holds for the tests too. The tmpfs starts empty, so
+# the image's own entrypoint is not there yet. The tests never run on the mount. Inode numbers on a VM's
+# file share (virtiofs under Colima) are not stable: a file gets a new
+# one whenever the VM drops it from its cache, for example under memory
+# pressure. pytest compares inode numbers to check that an imported test
+# module is the file it collected, so on the share a drop between its two
+# stat calls stops the suite with "import file mismatch".
 test-$(1): build-$(1)
 	@echo "==> test collector: $(1)"
 	@if [ ! -d collectors/$(1)/tests ] && ! ls collectors/$(1)/test_*.py >/dev/null 2>&1; then \
@@ -547,8 +556,10 @@ test-$(1): build-$(1)
 		fi; \
 	else \
 		docker run --rm --user "$$$$(id -u):$$$$(id -g)" -e HOME=/tmp \
-			-v "$(ROOT_DIR)/collectors/$(1):/app" "wealthdb/$(1):$(TAG)" \
-			sh -c "cd /app && pytest -q -p no:cacheprovider"; \
+			-v "$(ROOT_DIR)/collectors/$(1):/src:ro" \
+			--tmpfs "/app:exec,uid=$$$$(id -u),gid=$$$$(id -g)" \
+			--entrypoint sh "wealthdb/$(1):$(TAG)" \
+			-c 'cp -R /src/. /app && exec /app/entrypoint.sh sh -c "cd /app && pytest -q -p no:cacheprovider"'; \
 	fi
 
 clean-$(1):

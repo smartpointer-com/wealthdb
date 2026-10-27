@@ -3,8 +3,8 @@
 # runs in a copy of the tree holding one collector of each runtime:
 #   - only a Docker collector's build depends on the shared bases;
 #   - a Docker collector's tests run in its image directly, not through
-#     its wrapper: no secrets or data mount and no fixed container name,
-#     with the checkout mounted at /app;
+#     its wrapper: no secrets or data mount and no fixed container name;
+#     they run on a tmpfs copy of the checkout at /app;
 #   - a host-venv or hybrid collector's tests run on its venv;
 #   - clean-wealthdb clears the Go cache wealthdb-go uses;
 #   - test-demo's scratch roots are the image tag's own, and clean-demo
@@ -27,7 +27,7 @@ has()   { if printf '%s\n' "$3" | grep -qF -- "$2"; then ok "$1"; else bad "$1 (
 lacks() { if printf '%s\n' "$3" | grep -qF -- "$2"; then bad "$1 ('$2' in: $3)"; else ok "$1"; fi; }
 
 # The physical path: make's working dir resolves symlinks such as macOS's
-# /var -> /private/var, and the /app mount is named from it.
+# /var -> /private/var, and the /src mount is named from it.
 TMP="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 TREE="$TMP/tree"
@@ -53,7 +53,12 @@ has "a Docker collector's build builds the bases" "build base image" "$(dry buil
 lacks "a host-venv collector's build builds no base" "build base image" "$(dry build-host)"
 out="$(dry test-dock)"
 has "a Docker collector tests in its image" 'docker run --rm' "$out"
-has "the checkout is mounted at /app" "-v \"$TREE/collectors/dock:/app\" \"wealthdb/dock:t\"" "$out"
+has "the checkout is mounted read-only" "-v \"$TREE/collectors/dock:/src:ro\"" "$out"
+has "the tests run on a tmpfs at /app, the test user's" '--tmpfs "/app:exec,uid=$(id -u),gid=$(id -g)"' "$out"
+has "the image's entrypoint is not run, since the tmpfs hides it" "--entrypoint sh" "$out"
+has "the checkout is copied to /app, then the tests run through its entrypoint" \
+    "-c 'cp -R /src/. /app && exec /app/entrypoint.sh sh -c \"cd /app && pytest -q -p no:cacheprovider\"'" "$out"
+lacks "the tests do not run on the mount" ":/app" "$(printf '%s' "$out" | grep -o -- '-v "[^"]*"')"
 lacks "the test mounts no secrets" ":/secrets" "$out"
 lacks "the test mounts no data" ":/data" "$out"
 lacks "the test takes no fixed container name" "--name" "$out"
