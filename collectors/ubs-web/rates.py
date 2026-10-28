@@ -3,37 +3,40 @@
 Interest-condition capture for ubs-web bronze.
 
 Two surfaces state a cash account's credit and debit interest
-(DESIGN.md §3.11):
+(DESIGN.md §3.11). The pass reads both from what the browser renders.
+It never requests a page of its own: the netbanking answers its own
+SPA's calls, and the legacy asset view binds its tokens to the render
+the browser holds.
 
-* **The modern account API**,
-  ``GET /api/v3/cash-accounts/<accountId>?include=INTEREST_RATES``, one
-  JSON response per account, with its ``interestItems``. The
-  ``accountId`` is the opaque token the homepage anchors carry, the one
-  `download.enumerate_accounts` already extracts. Without the
-  ``include`` query the response leaves the conditions out.
-* **The legacy asset view**, entered the way the SPA enters it. The
-  SPA's "Account balances" view frames the entry
-  ``ebidispatcher.do?navitemid=AssetsPg&...&assetId=<token>``; the
-  dispatcher page frames the contract list
+* **The modern account API.** Each homepage account's "Account
+  information" route makes the SPA call
+  ``GET /api/v3/cash-accounts/<accountId>?include=INTEREST_RATES``. The
+  pass navigates to that route and keeps the SPA's own response, one
+  JSON per account, with its ``interestItems``.
+* **The legacy asset view.** The SPA's "Account balances" view frames
+  the entry ``ebidispatcher.do?navitemid=AssetsPg&...&assetId=<token>``,
+  and the entry frames the contract list
   ``getvaluatedcontractlist.do?parameters=<token>``. Each account row's
-  "Account details" item opens ``link.do?link=<id>&``, which the server
-  answers with a redirect to
-  ``ebidispatcher.do?uri=getpositiondetail.do&parameters=<token>``; that
-  page frames the account's "Account information" page
-  ``getpositiondetail.do?parameters=<token>``, with a "Credit interest"
-  and a "Debit interest" table. It reaches the accounts the homepage
-  does not tile. Every token is taken from the page, the frame or the
-  redirect that gives it, never built.
+  "Account details" item opens ``link.do?link=<id>&`` in the list's
+  parent frame. The browser follows its redirect to
+  ``ebidispatcher.do?uri=getpositiondetail.do&parameters=<token>``,
+  which frames the account's "Account information" page
+  ``getpositiondetail.do?parameters=<token>``. The pass opens the link
+  in that same frame and reads the page the browser renders. It reaches
+  the accounts the homepage does not tile.
 
-The modern pass runs first. The legacy pass then fetches only the
+The modern pass runs first. The legacy pass then reads only the
 accounts the modern pass did not cover, matched by IBAN. An API
 response covers its account only when it states ``interestItems``.
 
-Read-only by construction, as `cards.py` is: :func:`refuse_request`
-admits GET on the routes below, each with exactly its query, and every
-request passes it, a redirect's target included. A redirect is never
-followed by the request client: `link.do`'s is read, checked and then
-requested. AGENTS.md §1 states the surface; this is where it is held.
+Read-only by construction. While the pass runs, a route guard on the
+page aborts every request under `/assetview/` or
+`/api/v3/cash-accounts` that is not a GET, and every GET to a legacy
+page or to the account API that :func:`refuse_request` refuses: the
+SPA's and the legacy app's own requests too. Each abort is an error
+entry. Every reference the pass itself opens goes through
+:func:`refuse_request` first. AGENTS.md §1 states the surface; this is
+where it is held.
 """
 
 from __future__ import annotations
@@ -42,8 +45,9 @@ import hashlib
 import logging
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlsplit
 
 from collectorkit import bronze, debugcap
 
@@ -81,9 +85,6 @@ _LEGACY_QUERIES = {
          **_TOKENED},
     ],
 }
-
-REQUEST_TIMEOUT_MS = 60_000
-
 
 def _query_fields(query: str) -> dict[str, str] | None:
     """The query's fields by name, undecoded, or None when a name
@@ -139,81 +140,148 @@ def refuse_request(method: str, path_and_query: str) -> str | None:
     return None
 
 
-class RatesClient:
-    """Read-only client for the rate surfaces, on the browser session.
+RESPONSE_TIMEOUT_MS = 30_000
+# The first characters of a failed response's body an error keeps.
+BODY_EXCERPT_CHARS = 200
 
-    Requests go through the Playwright context, so the session cookie
-    rides along. Each carries the referer the browser sends: the SPA for
-    the account API and the legacy entry, else the page that gave the
-    link. Only the account API takes the SPA's `apikey` header, the one
-    the card pass uses (`cards.pick_apikey`). A redirect is not
-    followed: its target was never checked against the allow-list, so a
-    3xx is an error, except where :meth:`redirect_target` asks for one.
+# The requests the route guard sees: everything under the legacy app,
+# and the account API with its list endpoint. Of these, a GET is
+# checked when it is a legacy page or an account; the legacy app's
+# scripts and styles, and the SPA's list call, pass.
+_GUARDED = r"/(?:assetview/|api/v3/cash-accounts(?![\w-]))"
+_GUARDED_PATH_RE = re.compile(rf"^{_GUARDED}")
+_CHECKED_GET_RE = re.compile(
+    r"^/(?:assetview/.*\.do|api/v3/cash-accounts/.+)$")
+# A token-shaped run of characters, as an error, a body or a reference
+# may print one: long, and with a digit in it.
+_TOKEN_SHAPED_RE = re.compile(r"[A-Za-z0-9_\-+%~]{20,}")
+
+
+def _ref(url: str) -> str:
+    """A URL's site-relative reference: its path and query."""
+    split = urlsplit(url)
+    return split.path + (f"?{split.query}" if split.query else "")
+
+
+def redact(ref: str) -> str:
+    """A reference as an error may print it: each token in its path as
+    its short token, and the query by its names alone."""
+    split = urlsplit(ref)
+    path = scrub(split.path)
+    names = [f.partition("=")[0] for f in split.query.split("&") if f]
+    return path + (f"?{'&'.join(n + '=…' for n in names)}" if names else "")
+
+
+def scrub(text: str, *, drop: bool = False) -> str:
+    """`text` with each token-shaped run as its short token, or left
+    out with `drop`."""
+    def one(m: re.Match) -> str:
+        run = m.group(0)
+        if not any(c.isdigit() for c in run):
+            return run
+        return "<token>" if drop else bronze.short_token(run)
+    return _TOKEN_SHAPED_RE.sub(one, text)
+
+
+def excerpt(body: str) -> str:
+    """The start of a failed response's body, with every token-shaped
+    run of characters left out."""
+    return scrub(body[:BODY_EXCERPT_CHARS], drop=True)
+
+
+class _Failed(RuntimeError):
+    """A failure with the fields its error entry carries."""
+
+    def __init__(self, message: str, **fields) -> None:
+        super().__init__(message)
+        self.fields = fields
+
+
+def _error(e: Exception) -> str:
+    """An exception as an error entry and a log line print it."""
+    return scrub(debugcap.safe_error(e))
+
+
+class RouteGuard:
+    """The pass's read-only guard on the page, and its record of what
+    the legacy pages and the account API answered.
+
+    :meth:`handle` is the page's route handler for every guarded
+    request; :meth:`on_response` notes each guarded response's status,
+    and the start of its body when it failed, for the error that
+    follows.
     """
 
-    def __init__(self, context, origin: str, apikey: str | None,
-                 spa_url: str) -> None:
-        self._context = context
-        self._origin = origin.rstrip("/")
-        self._apikey = apikey
-        self.spa_url = spa_url.split("#", 1)[0]
+    def __init__(self, origin: str) -> None:
+        self.origin = origin.rstrip("/")
+        self.pattern = re.compile(rf"^{re.escape(self.origin)}{_GUARDED}")
+        self.aborted: list[dict] = []
+        self.answers: dict[str, dict] = {}
 
-    def url(self, path_and_query: str) -> str:
-        return self._origin + path_and_query
+    @staticmethod
+    def refusal(method: str, url: str) -> str | None:
+        """Why the guard aborts this request, or None."""
+        split = urlsplit(url)
+        if not _GUARDED_PATH_RE.match(split.path):
+            return None
+        if method.upper() != "GET":
+            return f"{method} is not a read"
+        if _CHECKED_GET_RE.match(split.path):
+            return refuse_request("GET", _ref(url))
+        return None
 
-    def _get(self, path_and_query: str, *, accept: str, referer: str,
-             api: bool = False, redirect: bool = False):
-        refusal = refuse_request("GET", path_and_query)
-        if refusal is not None:
-            raise RuntimeError(f"refusing to request: {refusal}")
-        headers = {"accept": accept, "referer": referer}
-        if api and self._apikey:
-            headers["apikey"] = self._apikey
-            headers["x-requested-with"] = "XMLHttpRequest"
-        resp = self._context.request.get(self.url(path_and_query),
-                                         headers=headers,
-                                         max_redirects=0,
-                                         timeout=REQUEST_TIMEOUT_MS)
-        path = urlsplit(path_and_query).path
-        if 300 <= resp.status < 400 and not redirect:
-            raise RuntimeError(
-                f"refusing to follow HTTP {resp.status} redirect for {path}")
-        if redirect and not 300 <= resp.status < 400:
-            raise RuntimeError(f"HTTP {resp.status} for {path}, "
-                               "not the redirect its link gives")
-        if not redirect and not resp.ok:
-            raise RuntimeError(f"HTTP {resp.status} for {path}")
-        return resp
+    def handle(self, route, request) -> None:
+        why = self.refusal(request.method, request.url)
+        why = scrub(why) if why is not None else None
+        if why is None:
+            route.continue_()
+            return
+        log.warning("rate guard aborted %s %s: %s", request.method,
+                    redact(_ref(request.url)), why)
+        self.aborted.append({"stage": "guard", "method": request.method,
+                             "ref": redact(_ref(request.url)),
+                             "error": why})
+        route.abort()
 
-    def account(self, account_id: str) -> dict:
-        """One cash account's JSON, interest conditions included."""
-        if not _TOKEN_RE.match(account_id or ""):
-            raise RuntimeError("account token is not in the admitted set")
-        return self._get(
-            f"{ubs.RATES_API_ACCOUNT_PREFIX}{account_id}"
-            f"?{ubs.RATES_API_INCLUDE_QUERY}",
-            accept="application/json", referer=self.spa_url,
-            api=True).json()
+    def on_response(self, response) -> None:
+        split = urlsplit(response.url)
+        if not _CHECKED_GET_RE.match(split.path):
+            return
+        # The status is noted before the body is read: a handler's read
+        # waits for the body while the pass goes on.
+        answer = {"http_status": response.status}
+        self.answers[split.path] = answer
+        if response.status >= 400:
+            try:
+                answer["body"] = excerpt(response.text())
+            except Exception:  # noqa: BLE001 — a diagnostic, not a read
+                pass
 
-    def page(self, ref: str, referer: str) -> str:
-        """One legacy page, as HTML, by the reference a page gave."""
-        return self._get(ref, accept="text/html", referer=referer).text()
+    def forget(self, path: str) -> None:
+        """Drop what the page at `path` answered before, ahead of a new
+        load of it."""
+        self.answers.pop(path, None)
 
-    def redirect_target(self, ref: str, referer: str) -> str:
-        """The site-relative reference `ref` redirects to, unrequested.
+    def answer(self, path: str) -> dict:
+        """What the page at `path` last answered, as error fields."""
+        return dict(self.answers.get(path, {}))
 
-        It goes through the allow-list when it is requested; an off-site
-        target is refused here.
-        """
-        resp = self._get(ref, accept="text/html", referer=referer,
-                         redirect=True)
-        location = resp.headers.get("location")
-        if not location:
-            raise RuntimeError(f"{urlsplit(ref).path} redirects nowhere")
-        target = urlsplit(urljoin(self.url(ref), location))
-        if f"{target.scheme}://{target.netloc}" != self._origin:
-            raise RuntimeError(f"{urlsplit(ref).path} redirects off site")
-        return target.path + (f"?{target.query}" if target.query else "")
+
+@dataclass
+class Surface:
+    """The browser the pass reads, and what `download.py` does for it.
+
+    `spa_url` makes a hash route a URL of the SPA, `open_legacy` opens
+    the "Account balances" view and returns the frame it renders the
+    legacy entry in, and `shot` takes a named screenshot when the run
+    asked for them.
+    """
+
+    page: object
+    origin: str
+    spa_url: Callable[[str], str]
+    open_legacy: Callable[[], object]
+    shot: Callable[[str], None]
 
 
 def legacy_file_name(iban: str) -> str:
@@ -221,15 +289,14 @@ def legacy_file_name(iban: str) -> str:
     return f"legacy-{hashlib.sha256(iban.encode('ascii')).hexdigest()}.html"
 
 
-def capture(client: RatesClient, run_dir: Path, accounts: list[dict],
-            legacy_entry: Callable[[], str]) -> dict:
-    """Capture both surfaces into ``<run_dir>/rates/``.
+def capture(surface: Surface, run_dir: Path, accounts: list[dict]) -> dict:
+    """Capture both surfaces into ``<run_dir>/rates/``, under the guard.
 
     Returns the manifest block for ``run.json``. Each account stands
     alone: one that fails is recorded as an error and the rest still
-    land. ``legacy_entry`` gives the legacy entry as the SPA frames it;
-    when it fails, the miss is recorded and the API files stand. The
-    legacy pass runs even when the modern one covered nobody.
+    land. A missed legacy entry is recorded and the API files stand.
+    The legacy pass runs even when the modern one covered nobody. The
+    guard is removed when the pass ends, also on failure.
     """
     rates_dir = run_dir / "rates"
     rates_dir.mkdir(parents=True, exist_ok=True)
@@ -237,45 +304,33 @@ def capture(client: RatesClient, run_dir: Path, accounts: list[dict],
                     "legacy": {"listed": 0, "attempted": [], "answered": [],
                                "skipped_covered": []},
                     "errors": []}
-
-    covered: set[str] = set()
-    for account in accounts:
-        account_id = account["account_id"]
-        short = bronze.short_token(account_id)
-        result["api"]["attempted"].append(short)
-        try:
-            payload = client.account(account_id)
-        except Exception as e:  # noqa: BLE001 — one account, not the pass
-            log.warning("rates for account %s… failed: %s",
-                        short[:8], debugcap.safe_error(e))
-            result["errors"].append({"account_short_id": short,
-                                     "stage": "api",
-                                     "error": debugcap.safe_error(e)})
-            continue
-        name = f"{account_id}.json"
-        bronze.atomic_write_json(rates_dir / name, payload)
-        states = rate_parsers.api_states_conditions(payload)
-        result["api"]["answered"].append({"account_short_id": short,
-                                          "file": name,
-                                          "states_conditions": states})
-        if states and (iban := rate_parsers.api_iban(payload)):
-            covered.add(iban)
-
+    page = surface.page
+    guard = RouteGuard(surface.origin)
+    page.route(guard.pattern, guard.handle)
+    page.on("response", guard.on_response)
     try:
-        entry = legacy_entry()
-    except Exception as e:  # noqa: BLE001 — the modern files stay
-        log.warning("legacy rate entry not found: %s",
-                    debugcap.safe_error(e))
-        result["errors"].append({"stage": "legacy-entry",
-                                 "error": debugcap.safe_error(e)})
-    else:
+        covered = _capture_api(surface, guard, rates_dir, accounts, result)
         try:
-            _capture_legacy(client, rates_dir, covered, result, entry)
+            frame = surface.open_legacy()
         except Exception as e:  # noqa: BLE001 — the modern files stay
-            log.warning("legacy rate pass failed: %s",
-                        debugcap.safe_error(e))
-            result["errors"].append({"stage": "legacy-list",
-                                     "error": debugcap.safe_error(e)})
+            log.warning("legacy rate entry not found: %s", _error(e))
+            result["errors"].append({"stage": "legacy-entry",
+                                     "error": _error(e)})
+            surface.shot("rates-legacy-entry-failed")
+        else:
+            try:
+                _capture_legacy(surface, guard, frame, rates_dir, covered,
+                                result)
+            except Exception as e:  # noqa: BLE001 — the modern files stay
+                log.warning("legacy rate pass failed: %s", _error(e))
+                result["errors"].append({
+                    "stage": "legacy-list", "error": _error(e),
+                    **guard.answer(ubs.LEGACY_CONTRACT_LIST_PATH)})
+                surface.shot("rates-legacy-list-failed")
+    finally:
+        page.unroute(guard.pattern, guard.handle)
+        page.remove_listener("response", guard.on_response)
+        result["errors"].extend(guard.aborted)
 
     log.info("rates: api %d of %d answered, %d stating conditions; "
              "legacy %d of %d answered, %d covered by the api; %d error(s)",
@@ -288,52 +343,152 @@ def capture(client: RatesClient, run_dir: Path, accounts: list[dict],
     return result
 
 
-def _contract_list(client: RatesClient, entry: str) -> tuple[str, str]:
-    """The contract list the entry frames: its reference and its HTML."""
-    dispatcher = client.page(entry, referer=client.spa_url)
-    ref = rate_parsers.legacy_frame_src(dispatcher)
-    if not ref:
-        raise RuntimeError("the entry frames no page")
-    ref = urljoin(entry, ref)
-    return ref, client.page(ref, referer=client.url(entry))
+def _capture_api(surface: Surface, guard: RouteGuard, rates_dir: Path,
+                 accounts: list[dict], result: dict) -> set[str]:
+    """Keep the SPA's own account API response for each homepage
+    account; return the IBANs whose conditions it stated."""
+    covered: set[str] = set()
+    for account in accounts:
+        account_id = account["account_id"]
+        short = bronze.short_token(account_id)
+        result["api"]["attempted"].append(short)
+        try:
+            payload = _api_response(surface, account_id)
+        except Exception as e:  # noqa: BLE001 — one account, not the pass
+            log.warning("rates for account %s… failed: %s", short[:8],
+                        _error(e))
+            result["errors"].append({"account_short_id": short,
+                                     "stage": "api", "error": _error(e),
+                                     **getattr(e, "fields", {})})
+            surface.shot(f"rates-api-{short}-failed")
+            continue
+        name = f"{account_id}.json"
+        bronze.atomic_write_json(rates_dir / name, payload)
+        states = rate_parsers.api_states_conditions(payload)
+        result["api"]["answered"].append({"account_short_id": short,
+                                          "file": name,
+                                          "states_conditions": states})
+        if states and (iban := rate_parsers.api_iban(payload)):
+            covered.add(iban)
+    return covered
 
 
-def _account_page(client: RatesClient, link: str, list_ref: str,
-                  details: set[str]) -> str:
-    """One account's page, by its "Account details" link: the link's
-    redirect, then the page that redirect's dispatcher frames. The link
-    must be one of the render's ``details`` links: the allow-list admits
-    any `link.do` id, the row's payment and transfer ids among them."""
-    if link not in details:
-        raise RuntimeError("not an account details link of this render")
-    dispatcher_ref = client.redirect_target(link, referer=client.url(list_ref))
-    if urlsplit(dispatcher_ref).path != ubs.LEGACY_DISPATCHER_PATH:
-        raise RuntimeError(f"the details link redirects to "
-                           f"{urlsplit(dispatcher_ref).path}")
-    dispatcher = client.page(dispatcher_ref, referer=client.url(list_ref))
-    ref = rate_parsers.legacy_frame_src(dispatcher)
-    if not ref:
-        raise RuntimeError("the dispatcher frames no page")
-    ref = urljoin(dispatcher_ref, ref)
-    if urlsplit(ref).path != ubs.LEGACY_POSITION_DETAIL_PATH:
-        raise RuntimeError(f"the dispatcher frames {urlsplit(ref).path}, "
-                           "not an account page")
-    return client.page(ref, referer=client.url(dispatcher_ref))
+def _api_response(surface: Surface, account_id: str) -> dict:
+    """The SPA's response to its own call for one account's conditions.
+
+    The pass opens the account's "Account information" route; the SPA
+    makes the call with its own headers. Only the response to exactly
+    the account's reference counts.
+    """
+    if not _TOKEN_RE.match(account_id or ""):
+        raise RuntimeError("account token is not in the admitted set")
+    want = (f"{ubs.RATES_API_ACCOUNT_PREFIX}{account_id}"
+            f"?{ubs.RATES_API_INCLUDE_QUERY}")
+    page = surface.page
+
+    def is_ours(response) -> bool:
+        split = urlsplit(response.url)
+        return (f"{split.scheme}://{split.netloc}" == surface.origin
+                and _ref(response.url) == want)
+
+    try:
+        with page.expect_response(is_ours,
+                                  timeout=RESPONSE_TIMEOUT_MS) as info:
+            page.goto(surface.spa_url(
+                ubs.account_information_route(account_id)),
+                wait_until="domcontentloaded")
+        response = info.value
+    except Exception as e:
+        raise _Failed("no account API response within "
+                      f"{RESPONSE_TIMEOUT_MS // 1000}s: {_error(e)}") from e
+    if not response.ok:
+        try:
+            body = excerpt(response.text())
+        except Exception:  # noqa: BLE001 — a diagnostic, not a read
+            body = ""
+        raise _Failed(f"HTTP {response.status} for the account API",
+                      http_status=response.status, body=body)
+    return response.json()
 
 
-def _capture_legacy(client: RatesClient, rates_dir: Path, covered: set[str],
-                    result: dict, entry: str) -> None:
-    """Fetch the page of each listed account the modern pass did not cover.
+def _framed(frame, guard: RouteGuard, path: str):
+    """The frame `frame` renders in its main frame, once it shows the
+    page at `path` and that page did not answer an error."""
+    el = frame.wait_for_selector(f'iframe[name="{ubs.LEGACY_MAIN_FRAME_NAME}"]',
+                                 state="attached",
+                                 timeout=RESPONSE_TIMEOUT_MS)
+    child = el.content_frame() if el is not None else None
+    if child is None:
+        raise RuntimeError("the page frames no page")
+    child.wait_for_load_state("load", timeout=RESPONSE_TIMEOUT_MS)
+    shown = urlsplit(child.url).path
+    if shown != path:
+        raise RuntimeError(f"the frame shows {shown.rsplit('/', 1)[-1]}, "
+                           f"not {path.rsplit('/', 1)[-1]}")
+    answer = guard.answer(path)
+    if answer.get("http_status", 200) >= 400:
+        raise _Failed(f"HTTP {answer['http_status']} for "
+                      f"{path.rsplit('/', 1)[-1]}", **answer)
+    return child
+
+
+def _open(surface: Surface, guard: RouteGuard, frame, ref: str,
+          referer: str) -> None:
+    """Open the reference a page gave in `frame`, as its link does,
+    with the referer of the page that gave it."""
+    refusal = refuse_request("GET", ref)
+    if refusal is not None:
+        raise RuntimeError(f"refusing to open: {scrub(refusal)}")
+    guard.forget(ubs.LEGACY_DISPATCHER_PATH)
+    guard.forget(ubs.LEGACY_POSITION_DETAIL_PATH)
+    response = frame.goto(surface.origin + ref, wait_until="load",
+                          referer=referer, timeout=RESPONSE_TIMEOUT_MS)
+    if response is not None and response.status >= 400:
+        path = urlsplit(ref).path
+        raise _Failed(f"HTTP {response.status} for "
+                      f"{path.rsplit('/', 1)[-1]}",
+                      **guard.answer(path))
+
+
+def _contract_list(frame, guard: RouteGuard) -> tuple[list[dict], str]:
+    """The account rows of the contract list the entry frame renders,
+    and the list's URL."""
+    if urlsplit(frame.url).path != ubs.LEGACY_DISPATCHER_PATH:
+        raise RuntimeError("the account balances view frames another page")
+    listing = _framed(frame, guard, ubs.LEGACY_CONTRACT_LIST_PATH)
+    return (rate_parsers.legacy_account_rows(
+        debugcap.scrub_dom(listing.content())), listing.url)
+
+
+def _account_page(surface: Surface, guard: RouteGuard, frame,
+                  link: str, list_url: str) -> str:
+    """One account's page, by its "Account details" link, opened in the
+    list's parent frame as the item opens it, from the list. The
+    browser follows the link's redirect; the dispatcher it lands on
+    frames the page."""
+    _open(surface, guard, frame, link, referer=list_url)
+    landed = urlsplit(frame.url).path
+    if landed != ubs.LEGACY_DISPATCHER_PATH:
+        raise RuntimeError(f"the details link led to "
+                           f"{landed.rsplit('/', 1)[-1]}")
+    # Kept in bronze, so serialised as every captured DOM is.
+    return debugcap.scrub_dom(_framed(
+        frame, guard, ubs.LEGACY_POSITION_DETAIL_PATH).content())
+
+
+def _capture_legacy(surface: Surface, guard: RouteGuard, frame,
+                    rates_dir: Path, covered: set[str], result: dict) -> None:
+    """Read the page of each listed account the modern pass did not
+    cover.
 
     The list's links are ids the server resolves for the render that
-    printed them. Each account is followed from a fresh render, so the
-    list is read again before every account after the first, and the
-    account found again by its IBAN. A row that prints no IBAN cannot be
-    found again, and is recorded rather than followed. A page is kept
-    only when its own IBAN is its row's.
+    printed them. Each account is read from a fresh render: before
+    every account after the first, "Account balances" is opened again
+    as the menu opens it, and the account found again by its IBAN. A row that prints
+    no IBAN cannot be found again, and is recorded rather than read. A
+    page is kept only when its own IBAN is its row's.
     """
-    list_ref, html = _contract_list(client, entry)
-    rows = rate_parsers.legacy_account_rows(html)
+    rows, list_url = _contract_list(frame, guard)
     legacy = result["legacy"]
     legacy["listed"] = len(rows)
     pending: list[str] = []
@@ -349,12 +504,11 @@ def _capture_legacy(client: RatesClient, rates_dir: Path, covered: set[str],
             pending.append(row["iban"])
     fresh = True
     for iban in pending:
-        if iban in covered:
-            continue
         if not fresh:
-            list_ref, html = _contract_list(client, entry)
+            guard.forget(ubs.LEGACY_CONTRACT_LIST_PATH)
+            frame = surface.open_legacy()
+            rows, list_url = _contract_list(frame, guard)
         fresh = False
-        rows = rate_parsers.legacy_account_rows(html)
         row = next((r for r in rows if r["iban"] == iban), None)
         if row is None:
             result["errors"].append({"stage": "legacy",
@@ -363,16 +517,18 @@ def _capture_legacy(client: RatesClient, rates_dir: Path, covered: set[str],
         token = bronze.short_token(row["ref"])
         legacy["attempted"].append(token)
         try:
-            page = _account_page(client, row["ref"], list_ref,
-                                 {r["ref"] for r in rows})
+            html = _account_page(surface, guard, frame, row["ref"],
+                                 list_url)
         except Exception as e:  # noqa: BLE001 — one account, not the pass
             log.warning("legacy rates for %s… failed: %s",
-                        token[:8], debugcap.safe_error(e))
-            result["errors"].append({"link_short_id": token,
-                                     "stage": "legacy",
-                                     "error": debugcap.safe_error(e)})
+                        token[:8], _error(e))
+            result["errors"].append({
+                "link_short_id": token, "stage": "legacy",
+                "error": _error(e),
+                **getattr(e, "fields", {})})
+            surface.shot(f"rates-legacy-{token}-failed")
             continue
-        page_iban = rate_parsers.legacy_iban(page)
+        page_iban = rate_parsers.legacy_iban(html)
         if page_iban is None:
             result["errors"].append({"link_short_id": token,
                                      "stage": "legacy",
@@ -386,5 +542,5 @@ def _capture_legacy(client: RatesClient, rates_dir: Path, covered: set[str],
             continue
         covered.add(page_iban)
         name = legacy_file_name(page_iban)
-        bronze.atomic_write_bytes(rates_dir / name, page.encode("utf-8"))
+        bronze.atomic_write_bytes(rates_dir / name, html.encode("utf-8"))
         legacy["answered"].append({"link_short_id": token, "file": name})

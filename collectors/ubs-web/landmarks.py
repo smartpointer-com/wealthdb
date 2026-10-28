@@ -437,14 +437,26 @@ TXN_EXPORT_FOOTER_RE = re.compile(
 # Interest conditions (rates.py)
 # ============================================================
 #
-# Two surfaces state a cash account's interest. Both are requested
-# through the session, and rates.py's allow-list admits exactly the
-# routes below, each with the query it is given.
+# Two surfaces state a cash account's interest. The pass reads both
+# from what the browser renders, and rates.py's route guard admits
+# exactly the routes below, each with the query it is given.
 
 # The modern account API: this prefix plus the homepage's `accountId`,
-# with the one query that opts the conditions into the response.
+# with the one query that opts the conditions into the response. The
+# SPA makes the call on the account's "Account information" route.
 RATES_API_ACCOUNT_PREFIX = "/api/v3/cash-accounts/"
 RATES_API_INCLUDE_QUERY = "include=INTEREST_RATES"
+
+
+def account_information_route(account_id: str) -> str:
+    """Hash route of one account's "Account information" page.
+
+    The homepage's account menu links it in this form, with the same
+    `accountId` its transactions anchor carries; the SPA resolves it to
+    `#/accounts/<accountId>/cash-account-information`."""
+    return ("#/accounts?target=cash-account-information"
+            "&navitemid=AccountsAndCardsAccountInformation"
+            f"&accountId={account_id}")
 
 # The legacy asset view, reached the way the SPA reaches it. The
 # portfolio overview's "Structure" menu opens "Account balances",

@@ -12,8 +12,9 @@ Reuses the Playwright session minted by login.py to export:
   - the credit-card surface        — the SPA's own card API (cards.py):
     the roster, each card account's ledger, its billing periods and
     their statement PDFs
-  - the cash accounts' interest conditions (rates.py): the account API's
-    JSON, and the legacy account page for the accounts it misses
+  - the cash accounts' interest conditions (rates.py): the SPA's own
+    account API responses, and the legacy account pages the browser
+    renders for the accounts they miss
 
 Files land in <bronze-dir>/<UTC-timestamp>/<artefact>. Read-only — see
 AGENTS.md §1. Per AGENTS.md §2, non-dry-run invocations must be
@@ -1121,54 +1122,56 @@ def _capture_cards(context, page, apikey_holder: dict, run_dir: Path,
 # Interest conditions
 # ============================================================
 
-def _capture_rates(context, page, apikey_holder: dict, run_dir: Path,
-                   accounts: list[dict], screenshot_dir: Path | None) -> dict:
+def _capture_rates(page, run_dir: Path, accounts: list[dict],
+                   screenshot_dir: Path | None) -> dict:
     """Capture each cash account's interest conditions.
 
     Returns the manifest block. A failure is recorded in it and never
     ends the run, as with the card pass: the passes before it are on
     disk already.
     """
-    apikey = cards.pick_apikey(apikey_holder)
-    if not apikey:
-        log.warning("no apikey observed on the SPA's own API calls; the "
-                    "account API will likely refuse, the legacy pages "
-                    "still run")
     try:
-        client = rates.RatesClient(context, _origin(page.url), apikey,
-                                   page.url)
-        return rates.capture(
-            client, run_dir, accounts,
-            lambda: legacy_rates_entry(page, screenshot_dir))
+        surface = rates.Surface(
+            page=page, origin=_origin(page.url),
+            spa_url=lambda route: _build_spa_url(page.url, route),
+            open_legacy=lambda: open_legacy_rates(page),
+            shot=lambda name: maybe_screenshot(page, screenshot_dir, name))
+        return rates.capture(surface, run_dir, accounts)
     except Exception as e:  # noqa: BLE001 — one facet, not the run
-        log.warning("rate capture failed: %s", debugcap.safe_error(e))
-        return {"error": debugcap.safe_error(e)}
+        log.warning("rate capture failed: %s", rates.scrub(
+            debugcap.safe_error(e)))
+        return {"error": rates.scrub(debugcap.safe_error(e))}
 
 
-def legacy_rates_entry(page, screenshot_dir: Path | None) -> str:
-    """The legacy asset view's entry, as the SPA frames it.
+def open_legacy_rates(page):
+    """Open the legacy asset view as the SPA does; return the frame it
+    renders the legacy entry in.
 
     The portfolio overview's "Structure" menu opens "Account balances",
-    which frames the entry; its `src` is read, not built. The SPA
-    resolves the portfolio from the fixed route itself.
+    which frames the entry. The SPA resolves the portfolio from the
+    fixed route itself; the frame's `src` is checked, never built.
     """
     page.goto(_build_spa_url(page.url, ubs.ROUTE_ASSET_VIEW),
               wait_until="domcontentloaded")
-    try:
-        page.locator(ubs.ASSET_VIEW_STRUCTURE_MENU_SELECTOR).first.click(
-            timeout=LANDMARK_TIMEOUT_MS)
-        page.locator(ubs.ASSET_VIEW_ACCOUNT_BALANCES_SELECTOR).first.click(
-            timeout=LANDMARK_TIMEOUT_MS)
-        src = page.locator(ubs.ASSET_VIEW_LEGACY_FRAME_SELECTOR).first \
-            .get_attribute("src", timeout=LANDMARK_TIMEOUT_MS)
-    except Exception:
-        maybe_screenshot(page, screenshot_dir, "rates-no-legacy-entry")
-        raise
+    page.locator(ubs.ASSET_VIEW_STRUCTURE_MENU_SELECTOR).first.click(
+        timeout=LANDMARK_TIMEOUT_MS)
+    page.locator(ubs.ASSET_VIEW_ACCOUNT_BALANCES_SELECTOR).first.click(
+        timeout=LANDMARK_TIMEOUT_MS)
+    el = page.locator(ubs.ASSET_VIEW_LEGACY_FRAME_SELECTOR).first
+    src = el.get_attribute("src", timeout=LANDMARK_TIMEOUT_MS)
     if not src:
         raise RuntimeError("the account balances view frames no entry")
     if rates.refuse_request("GET", src) is not None:
         raise RuntimeError("the account balances view frames another page")
-    return src
+    frame = el.element_handle(timeout=LANDMARK_TIMEOUT_MS).content_frame()
+    if frame is None:
+        raise RuntimeError("the account balances view frames no entry")
+    # The frame starts blank; it is the entry once it has navigated.
+    frame.wait_for_url(
+        lambda url: urlsplit(url).path == ubs.LEGACY_DISPATCHER_PATH,
+        timeout=LANDMARK_TIMEOUT_MS)
+    frame.wait_for_load_state("load", timeout=LANDMARK_TIMEOUT_MS)
+    return frame
 
 
 # ============================================================
@@ -1862,8 +1865,7 @@ def main(argv: list[str]) -> int:
                                     "-failed")
                     if run("rates"):
                         rates_meta = _capture_rates(
-                            context, page, apikey_holder, run_dir, accounts,
-                            args.screenshot_dir)
+                            page, run_dir, accounts, args.screenshot_dir)
                     try:
                         if run("portfolio-transactions"):
                             portfolio_txn_meta = export_portfolio_transactions(

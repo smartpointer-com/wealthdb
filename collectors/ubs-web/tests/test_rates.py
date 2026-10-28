@@ -1,13 +1,14 @@
 """Tests for the interest-condition capture and its load.
 
-Three things carry weight. The **request guard**: the pass runs on a
-fully privileged session, so it may GET its few routes, each with the
-one query the pages give it, and nothing else. The **legacy chain**: the
-entry the SPA frames, the contract list, each account's "Account
-details" redirect and its page, with an account the account API covered
-not fetched again. And the **reading**: tiers in source order, the
-caption a nested table carries, and no row for an account that states
-no condition.
+Three things carry weight. The **route guard**: the pass runs on a
+fully privileged session, so while it runs the page may GET the legacy
+pages and the account API only by their few routes, each with the one
+query the pages give it, and never write to either. The **browser
+reads**: the SPA's own account API response, and the legacy pages the
+frames render, with an account the API covered not read again. And
+the **reading**: tiers in source order, the caption a nested table
+carries, and no row for an account that states no condition. A fake
+browser stands in for Playwright; nothing reaches a network.
 
 Every value is invented. The IBANs are the IBAN specification's example
 and placeholders of its shape.
@@ -19,9 +20,11 @@ import sqlite3
 
 import pytest
 
+import landmarks as ubs
 import load
 import rate_parsers
 import rates
+from collectorkit import bronze
 from silverdb import fresh_db
 
 IBAN_API = "CH9300762011623852957"
@@ -129,23 +132,9 @@ def _contract_list(rows, *, script=None):
             f"<table>{body}</table></body></html>")
 
 
-def _dispatcher(src):
-    return (f'<html><body><div><iframe name="gj9MainFrame" '
-            f'id="gj9MainFrame" src="{src}"></iframe></div></body></html>')
-
-
 # --------------------------------------------------------------------
 # The request guard
 # --------------------------------------------------------------------
-
-class _NO_REQUEST:
-    """A context whose every request fails the test."""
-
-    class request:
-        @staticmethod
-        def get(*_a, **_kw):  # pragma: no cover - must not run
-            raise AssertionError("issued a refused request")
-
 
 @pytest.mark.parametrize("ref", [
     API_REF,
@@ -215,38 +204,29 @@ def test_a_dot_segment_is_refused(ref):
     assert rates.refuse_request("GET", ref) is not None
 
 
-@pytest.mark.parametrize("token", ["..", ".", "...", "-._~", "=="])
-def test_a_token_without_a_letter_or_digit_is_refused(token):
-    client = rates.RatesClient(_NO_REQUEST(), "https://bank.test", "KEY", SPA)
-    with pytest.raises(RuntimeError):
-        client.account(token)
-
-
 @pytest.mark.parametrize("method", ["POST", "PUT", "DELETE", "PATCH"])
 def test_a_write_is_refused_even_on_an_admitted_route(method):
     assert rates.refuse_request(method, API_REF) is not None
 
 
-def test_the_guard_runs_before_the_request_is_made():
-    client = rates.RatesClient(_NO_REQUEST(), "https://bank.test", "KEY", SPA)
-    with pytest.raises(RuntimeError, match="refusing to request"):
-        client.page("/assetview/ebidispatcher.do", referer=SPA)
-    with pytest.raises(RuntimeError, match="refusing to request"):
-        client.page("/assetview/getdetailpositionlist.do", referer=SPA)
-    with pytest.raises(RuntimeError, match="not in the admitted set"):
-        client.account("acct/../payments")
-
-
 # --------------------------------------------------------------------
-# The capture, against a scripted session
+# The browser the pass reads, faked
 # --------------------------------------------------------------------
 
-class _Resp:
-    def __init__(self, body="", status=200, location=None):
-        self._body = body
+ORIGIN = "https://bank.test"
+# A long account token with digits in it, as the homepage gives one;
+# no error may print it whole.
+ACCOUNT = "acctOpaqueToken0001AbCdEf"
+API_REF_LONG = (f"/api/v3/cash-accounts/{ACCOUNT}"
+                "?include=INTEREST_RATES")
+
+
+class _Response:
+    def __init__(self, url, body="", status=200):
+        self.url = url
         self.status = status
         self.ok = status < 400
-        self.headers = {"location": location} if location else {}
+        self._body = body
 
     def json(self):
         return json.loads(self._body)
@@ -255,129 +235,262 @@ class _Resp:
         return self._body
 
 
-class _Session:
-    """Answers each admitted reference from a fixed map, recording it. A
-    list answers its items in turn, the last one again after that."""
+class _Route:
+    def __init__(self):
+        self.result = None
 
-    def __init__(self, answers):
-        self.answers = answers
-        self.requested = []
-        self.headers = []
-        self.max_redirects = []
-        session = self
+    def continue_(self):
+        self.result = "continued"
 
-        class _Request:
-            @staticmethod
-            def get(url, **kw):
-                ref = url.removeprefix("https://bank.test")
-                session.requested.append(ref)
-                session.headers.append(kw.get("headers"))
-                session.max_redirects.append(kw.get("max_redirects"))
-                answer = session.answers.get(ref, _Resp("", 404))
-                if isinstance(answer, list):
-                    return answer.pop(0) if len(answer) > 1 else answer[0]
-                return answer
-
-        self.request = _Request
+    def abort(self):
+        self.result = "aborted"
 
 
-def _client(session, apikey="KEY"):
-    return rates.RatesClient(session, "https://bank.test", apikey, SPA + "#/x")
+class _Request:
+    def __init__(self, method, url):
+        self.method = method
+        self.url = url
 
 
-def _detail_chain(link_id, token, page):
-    """The answers that lead from one "Account details" link to a page."""
-    dispatcher = ("/assetview/ebidispatcher.do?uri=getpositiondetail.do"
-                  f"&parameters={token}")
-    detail = f"/assetview/getpositiondetail.do?parameters={token}"
-    return {
-        f"/assetview/link.do?link={link_id}&":
-            _Resp(status=302, location=dispatcher),
-        dispatcher: _Resp(_dispatcher(detail)),
-        detail: page,
-    }
+class _Element:
+    def __init__(self, frame):
+        self._frame = frame
+
+    def content_frame(self):
+        return self._frame
 
 
-_ACCOUNTS = [{"account_id": "acct-opaque-1", "kind": "cash"}]
+class _Frame:
+    """A frame of the fake browser: its URL, the page it frames in its
+    main frame, and the HTML it loaded."""
+
+    def __init__(self, browser, url):
+        self.browser = browser
+        self.url = url
+        self.child = None
+        self.html = ""
+
+    def goto(self, url, referer=None, **_kw):
+        self.browser.opened.append(url.removeprefix(ORIGIN))
+        self.browser.referers.append(referer)
+        return self.browser.load(self, url)
+
+    def wait_for_selector(self, selector, **_kw):
+        if self.child is None:
+            raise TimeoutError(f"no {selector}")
+        return _Element(self.child)
+
+    def wait_for_load_state(self, *_a, **_kw):
+        pass
+
+    def content(self):
+        return self.html
+
+
+class _Waiter:
+    def __init__(self, browser, predicate):
+        self.browser = browser
+        self.predicate = predicate
+        self.seen = []
+
+    def __enter__(self):
+        self.browser.waiters.append(self)
+        return self
+
+    def __exit__(self, *exc):
+        self.browser.waiters.remove(self)
+        return False
+
+    @property
+    def value(self):
+        if not self.seen:
+            raise TimeoutError("Timeout 30000ms exceeded")
+        return self.seen[0]
+
+
+class _Browser:
+    """The page: its route handlers, its response listeners, the SPA's
+    own calls per route, and a site of legacy pages.
+
+    `spa` maps a route fragment to what the SPA does there: a response
+    to a GET it makes, or a (method, ref) request it makes. `site` maps
+    a reference to (status, html, redirect target, framed reference).
+    """
+
+    def __init__(self, spa=None, site=None):
+        self.url = SPA + "#/home"
+        self.spa = spa or {}
+        self.site = site or {}
+        self.routes = []
+        self.listeners = []
+        self.waiters = []
+        self.went = []
+        self.opened = []
+        self.referers = []
+        self.entries = 0
+        self.requests = []
+
+    # The page API the pass uses.
+    def route(self, pattern, handler):
+        self.routes.append((pattern, handler))
+
+    def unroute(self, pattern, handler):
+        self.routes.remove((pattern, handler))
+
+    def on(self, event, handler):
+        assert event == "response"
+        self.listeners.append(handler)
+
+    def remove_listener(self, event, handler):
+        self.listeners.remove(handler)
+
+    def expect_response(self, predicate, **_kw):
+        return _Waiter(self, predicate)
+
+    def goto(self, url, **_kw):
+        self.url = url
+        fragment = url.split("#", 1)[1]
+        self.went.append(fragment)
+        for call in self.spa.get(fragment, []):
+            if isinstance(call, tuple):
+                self.request(*call)
+            elif self.request("GET", call.url.removeprefix(ORIGIN)):
+                self.emit(call)
+
+    # The browser's own doing.
+    def request(self, method, ref):
+        """A request the browser makes, through the route handlers;
+        whether it went out."""
+        url = ORIGIN + ref
+        self.requests.append((method, ref))
+        for pattern, handler in self.routes:
+            if pattern.match(url):
+                route = _Route()
+                handler(route, _Request(method, url))
+                return route.result == "continued"
+        return True
+
+    def emit(self, response):
+        for listener in list(self.listeners):
+            listener(response)
+        for waiter in self.waiters:
+            if waiter.predicate(response):
+                waiter.seen.append(response)
+
+    def load(self, frame, url, *, framed=False):
+        """Load `url` in `frame` as a browser does: the route guard,
+        then the redirect, then the page it frames. An aborted load
+        fails a navigation, and leaves a framed page empty."""
+        ref = url.removeprefix(ORIGIN)
+        if not self.request("GET", ref):
+            if framed:
+                frame.url, frame.child = url, None
+                return None
+            raise RuntimeError(f"net::ERR_FAILED at {url}")
+        status, html, redirect, framed = self.site.get(ref,
+                                                       (404, "", None, None))
+        if redirect:
+            return self.load(frame, ORIGIN + redirect)
+        response = _Response(url, html, status)
+        self.emit(response)
+        frame.url, frame.html, frame.child = url, html, None
+        if framed:
+            frame.child = _Frame(self, ORIGIN + framed)
+            self.load(frame.child, ORIGIN + framed, framed=True)
+        return response
+
+    def open_entry(self):
+        """The SPA's "Account balances" view: its frame shows the entry."""
+        self.entries += 1
+        frame = _Frame(self, ORIGIN + ENTRY)
+        self.load(frame, ORIGIN + ENTRY)
+        return frame
+
+
+def _surface(browser, open_legacy=None, shots=None):
+    return rates.Surface(
+        page=browser, origin=ORIGIN,
+        spa_url=lambda route: SPA + route,
+        open_legacy=open_legacy or browser.open_entry,
+        shot=(shots.append if shots is not None else lambda _n: None))
+
+
+def _info(account_id):
+    return ubs.account_information_route(account_id).removeprefix("#")
+
+
+def _site(*chains, list_html=None):
+    """A site with the entry, its contract list, and per account the
+    "Account details" link's redirect, its dispatcher and its page."""
+    site = {ENTRY: (200, "<html>entry</html>", None, LIST_REF),
+            LIST_REF: (200, list_html or "", None, None)}
+    for link_id, token, status, html in chains:
+        dispatcher = ("/assetview/ebidispatcher.do?uri=getpositiondetail.do"
+                      f"&parameters={token}")
+        detail = f"/assetview/getpositiondetail.do?parameters={token}"
+        site[f"/assetview/link.do?link={link_id}&"] = (302, "", dispatcher,
+                                                       None)
+        site[dispatcher] = (200, "<html>dispatcher</html>", None, detail)
+        site[detail] = (status, html, None, None)
+    return site
 
 
 def _no_entry():
     raise RuntimeError("the menu did not open")
 
 
-def test_the_api_is_asked_for_the_conditions(tmp_path):
-    session = _Session({API_REF: _Resp(json.dumps(_api_payload()))})
-    meta = rates.capture(_client(session), tmp_path, _ACCOUNTS, _no_entry)
-    assert session.requested == [API_REF]
-    assert session.headers[0] == {"accept": "application/json",
-                                  "referer": SPA, "apikey": "KEY",
-                                  "x-requested-with": "XMLHttpRequest"}
+_ACCOUNTS = [{"account_id": "acct-opaque-1", "kind": "cash"}]
+
+
+# --------------------------------------------------------------------
+# The account API, as the SPA calls it
+# --------------------------------------------------------------------
+
+def test_the_spas_own_response_is_kept_and_another_ignored(tmp_path):
+    browser = _Browser(spa={_info("acct-opaque-1"): [
+        # The SPA's other calls on the route are not the pass's.
+        _Response(ORIGIN + "/api/v3/cash-accounts/acct-opaque-1",
+                  json.dumps({"iban": IBAN_OTHER_PRINTED})),
+        _Response(ORIGIN + "/api/v3/cash-accounts?pageSize=20", "{}"),
+        _Response("https://elsewhere.test" + API_REF,
+                  json.dumps(_api_payload(iban=IBAN_OTHER_PRINTED))),
+        _Response(ORIGIN + API_REF, json.dumps(_api_payload())),
+    ]})
+    meta = rates.capture(_surface(browser, _no_entry), tmp_path, _ACCOUNTS)
+    assert browser.went == [_info("acct-opaque-1")]
+    saved = json.loads((tmp_path / "rates" / "acct-opaque-1.json")
+                       .read_text())
+    assert rate_parsers.api_iban(saved) == IBAN_API
     assert meta["api"]["answered"][0]["states_conditions"] is True
+    # The pass itself requested nothing: every request was the SPA's.
+    assert browser.opened == []
 
 
-def test_the_legacy_chain_skips_what_the_api_covered(tmp_path, caplog):
-    caplog.set_level("INFO", logger="ubs-web.rates")
-    render_1 = _contract_list([
-        ("Personal account", IBAN_API_PRINTED,
-         {"KONTO": "AV11", "KONTODETAILS": "AV12", "PAY": "AV13"}),
-        ("Mandate cash account", IBAN_LEGACY_PRINTED,
-         {"KONTO": "AV21", "KONTODETAILS": "AV22", "PAY": "AV23"}),
-        ("Another cash account", IBAN_OTHER_PRINTED,
-         {"KONTO": "AV31", "KONTODETAILS": "AV32", "PAY": "AV33"}),
-    ])
-    # A fresh render numbers its links anew; the account is found again
-    # by its IBAN.
-    render_2 = _contract_list([
-        ("Personal account", IBAN_API_PRINTED, {"KONTODETAILS": "AV42"}),
-        ("Mandate cash account", IBAN_LEGACY_PRINTED,
-         {"KONTODETAILS": "AV52"}),
-        ("Another cash account", IBAN_OTHER_PRINTED,
-         {"KONTODETAILS": "AV62"}),
-    ])
-    answers = {
-        API_REF: _Resp(json.dumps(_api_payload())),
-        ENTRY: _Resp(_dispatcher(LIST_REF)),
-        LIST_REF: [_Resp(render_1), _Resp(render_2)],
-        **_detail_chain("AV22", "TOKEN-B", _Resp(
-            _legacy_page([("01.01.2026", "0.100%", "")], []))),
-        **_detail_chain("AV62", "TOKEN-C", _Resp("", 500)),
-    }
-    session = _Session(answers)
-    meta = rates.capture(_client(session), tmp_path, _ACCOUNTS,
-                         lambda: ENTRY)
+def test_no_response_within_the_timeout_is_an_error(tmp_path):
+    shots = []
+    browser = _Browser()
+    meta = rates.capture(_surface(browser, _no_entry, shots), tmp_path,
+                         [{"account_id": ACCOUNT, "kind": "cash"}])
+    api = [e for e in meta["errors"] if e["stage"] == "api"]
+    assert len(api) == 1
+    assert "no account API response" in api[0]["error"]
+    assert ACCOUNT not in json.dumps(meta)
+    assert any(s.startswith("rates-api-") for s in shots)
 
-    disp_b = ("/assetview/ebidispatcher.do?uri=getpositiondetail.do"
-              "&parameters=TOKEN-B")
-    disp_c = disp_b.replace("TOKEN-B", "TOKEN-C")
-    assert session.requested == [
-        API_REF,
-        ENTRY, LIST_REF,
-        "/assetview/link.do?link=AV22&", disp_b,
-        "/assetview/getpositiondetail.do?parameters=TOKEN-B",
-        ENTRY, LIST_REF,
-        "/assetview/link.do?link=AV62&", disp_c,
-        "/assetview/getpositiondetail.do?parameters=TOKEN-C",
-    ]
-    # No redirect is ever followed by the client, and each page goes
-    # with the referer of the page that gave its link.
-    assert set(session.max_redirects) == {0}
-    referers = [h["referer"] for h in session.headers]
-    assert referers[1:6] == [
-        SPA, "https://bank.test" + ENTRY, "https://bank.test" + LIST_REF,
-        "https://bank.test" + LIST_REF, "https://bank.test" + disp_b]
-    assert all("apikey" not in h for h in session.headers[1:])
-    files = sorted(p.name for p in (tmp_path / "rates").iterdir())
-    assert files == sorted(["acct-opaque-1.json",
-                            rates.legacy_file_name(IBAN_LEGACY)])
-    assert meta["legacy"]["listed"] == 3
-    assert len(meta["legacy"]["skipped_covered"]) == 1
-    assert len(meta["legacy"]["attempted"]) == 2
-    assert len(meta["legacy"]["answered"]) == 1
-    assert [e["stage"] for e in meta["errors"]] == ["legacy"]
-    assert "500" in meta["errors"][0]["error"]
-    # The one line a run ends on.
-    assert ("rates: api 1 of 1 answered, 1 stating conditions; legacy 1 "
-            "of 2 answered, 1 covered by the api; 1 error(s)") in caplog.text
+
+def test_a_failed_spa_call_records_its_status_and_body(tmp_path, caplog):
+    body = json.dumps({"type": "about:blank", "title": "Bad Request",
+                       "detail": f"invalid account {ACCOUNT}"})
+    browser = _Browser(spa={_info(ACCOUNT): [
+        _Response(ORIGIN + API_REF_LONG, body, 400)]})
+    meta = rates.capture(_surface(browser, _no_entry), tmp_path,
+                         [{"account_id": ACCOUNT, "kind": "cash"}])
+    error = next(e for e in meta["errors"] if e["stage"] == "api")
+    assert error["http_status"] == 400
+    assert "Bad Request" in error["body"]
+    assert ACCOUNT not in json.dumps(meta)
+    assert ACCOUNT not in caplog.text
+    assert list((tmp_path / "rates").iterdir()) == []
 
 
 @pytest.mark.parametrize("items,followed", [
@@ -389,82 +502,134 @@ def test_only_a_stated_condition_list_covers_an_account(tmp_path, items,
     payload = _api_payload(iban=IBAN_LEGACY_PRINTED, items=[])
     if items is None:
         del payload["interestItems"]
-    answers = {
-        API_REF: _Resp(json.dumps(payload)),
-        ENTRY: _Resp(_dispatcher(LIST_REF)),
-        LIST_REF: _Resp(_contract_list([
-            ("Cash account", IBAN_LEGACY_PRINTED, {"KONTODETAILS": "AV22"}),
-        ])),
-        **_detail_chain("AV22", "TOKEN-B", _Resp(
-            _legacy_page([("01.01.2026", "0.100%", "")], []))),
-    }
-    session = _Session(answers)
-    meta = rates.capture(_client(session), tmp_path, _ACCOUNTS,
-                         lambda: ENTRY)
+    browser = _Browser(
+        spa={_info("acct-opaque-1"): [
+            _Response(ORIGIN + API_REF, json.dumps(payload))]},
+        site=_site(("AV22", "TOKEN-B", 200,
+                    _legacy_page([("01.01.2026", "0.100%", "")], [])),
+                   list_html=_contract_list([
+                       ("Cash account", IBAN_LEGACY_PRINTED,
+                        {"KONTODETAILS": "AV22"})])))
+    meta = rates.capture(_surface(browser), tmp_path, _ACCOUNTS)
     assert meta["api"]["answered"][0]["states_conditions"] is not followed
-    assert ("/assetview/link.do?link=AV22&" in session.requested) is followed
+    assert ("/assetview/link.do?link=AV22&" in browser.opened) is followed
     assert (len(meta["legacy"]["answered"]) == 1) is followed
 
 
+@pytest.mark.parametrize("token", ["..", ".", "...", "-._~", "=="])
+def test_a_token_without_a_letter_or_digit_is_not_opened(tmp_path, token):
+    browser = _Browser()
+    meta = rates.capture(_surface(browser, _no_entry), tmp_path,
+                         [{"account_id": token, "kind": "cash"}])
+    assert browser.went == []
+    assert "not in the admitted set" in meta["errors"][0]["error"]
+
+
+# --------------------------------------------------------------------
+# The legacy view, as the browser renders it
+# --------------------------------------------------------------------
+
+def test_the_legacy_chain_reads_the_rendered_pages(tmp_path, caplog):
+    caplog.set_level("INFO", logger="ubs-web.rates")
+    listing = _contract_list([
+        ("Personal account", IBAN_API_PRINTED,
+         {"KONTO": "AV11", "KONTODETAILS": "AV12", "PAY": "AV13"}),
+        ("Mandate cash account", IBAN_LEGACY_PRINTED,
+         {"KONTO": "AV21", "KONTODETAILS": "AV22", "PAY": "AV23"}),
+        ("Another cash account", IBAN_OTHER_PRINTED,
+         {"KONTO": "AV31", "KONTODETAILS": "AV32", "PAY": "AV33"}),
+    ])
+    browser = _Browser(
+        spa={_info("acct-opaque-1"): [
+            _Response(ORIGIN + API_REF, json.dumps(_api_payload()))]},
+        site=_site(("AV22", "TOKEN-B", 200,
+                    _legacy_page([("01.01.2026", "0.100%", "")], [])),
+                   ("AV32", "TOKEN-C", 500, "<html>error</html>"),
+                   list_html=listing))
+    meta = rates.capture(_surface(browser), tmp_path, _ACCOUNTS)
+
+    # Opened in the entry's frame, as the item opens its link in the
+    # list's parent, from the list: the details link, then, after
+    # "Account balances" is opened again for a fresh render, the next
+    # account's link. The covered account (AV12) and every payment id
+    # are never opened.
+    assert browser.opened == ["/assetview/link.do?link=AV22&",
+                              "/assetview/link.do?link=AV32&"]
+    assert browser.referers == [ORIGIN + LIST_REF] * 2
+    assert browser.entries == 2
+    files = sorted(p.name for p in (tmp_path / "rates").iterdir())
+    assert files == sorted(["acct-opaque-1.json",
+                            rates.legacy_file_name(IBAN_LEGACY)])
+    assert meta["legacy"]["listed"] == 3
+    assert len(meta["legacy"]["skipped_covered"]) == 1
+    assert len(meta["legacy"]["attempted"]) == 2
+    assert len(meta["legacy"]["answered"]) == 1
+    [error] = meta["errors"]
+    assert error["stage"] == "legacy"
+    assert error["http_status"] == 500
+    assert ("rates: api 1 of 1 answered, 1 stating conditions; legacy 1 "
+            "of 2 answered, 1 covered by the api; 1 error(s)") in caplog.text
+    # The guard is gone once the pass ends.
+    assert browser.routes == [] and browser.listeners == []
+
+
+def test_a_list_that_answers_an_error_is_recorded_with_its_status(tmp_path):
+    shots = []
+    site = _site()
+    site[LIST_REF] = (500, "<html>Internal error</html>", None, None)
+    browser = _Browser(site=site)
+    meta = rates.capture(_surface(browser, shots=shots), tmp_path, [])
+    [error] = meta["errors"]
+    assert error["stage"] == "legacy-list"
+    assert error["http_status"] == 500
+    assert "Internal error" in error["body"]
+    assert "rates-legacy-list-failed" in shots
+    assert browser.opened == []
+
+
+def test_a_frame_that_shows_another_page_is_a_failed_list(tmp_path):
+    site = _site()
+    site[ENTRY] = (200, "", None, "/assetview/getcashtransactionlist.do"
+                   "?parameters=T1")
+    shots = []
+    browser = _Browser(site=site)
+    meta = rates.capture(_surface(browser, shots=shots), tmp_path, [])
+    stages = [e["stage"] for e in meta["errors"]]
+    # The guard aborts the frame's load of a page outside the
+    # allow-list; the list is then missing from the frame.
+    assert stages == ["legacy-list", "guard"]
+    assert "rates-legacy-list-failed" in shots
+
+
 def test_a_missed_entry_is_recorded_and_the_api_files_stand(tmp_path):
-    session = _Session({API_REF: _Resp(json.dumps(_api_payload()))})
-    meta = rates.capture(_client(session), tmp_path, _ACCOUNTS, _no_entry)
-    assert session.requested == [API_REF]
+    browser = _Browser(spa={_info("acct-opaque-1"): [
+        _Response(ORIGIN + API_REF, json.dumps(_api_payload()))]})
+    meta = rates.capture(_surface(browser, _no_entry), tmp_path, _ACCOUNTS)
     assert meta["errors"] == [{"stage": "legacy-entry",
                                "error": "RuntimeError: the menu did not open"}]
     assert [p.name for p in (tmp_path / "rates").iterdir()] == [
         "acct-opaque-1.json"]
 
 
-_DISPATCH_B = ("/assetview/ebidispatcher.do?uri=getpositiondetail.do"
-               "&parameters=TOKEN-B")
-
-
-@pytest.mark.parametrize("link_answer,framed,error", [
-    (_Resp("<html></html>"), None, "not the redirect"),
-    (_Resp(status=302, location="https://evil.test" + LIST_REF), None,
-     "off site"),
-    (_Resp(status=302, location="/assetview/ebidispatcher.do"
-           "?uri=getcashtransactionlist.do&parameters=T1"), None,
-     "refusing to request"),
-    (_Resp(status=302, location=LIST_REF), None, "redirects to"),
-    (_Resp(status=302, location=_DISPATCH_B), LIST_REF,
-     "not an account page"),
-])
-def test_an_unexpected_details_link_answer_fetches_nothing(tmp_path,
-                                                           link_answer,
-                                                           framed, error):
-    answers = {
-        ENTRY: _Resp(_dispatcher(LIST_REF)),
-        LIST_REF: _Resp(_contract_list([
-            ("Cash account", IBAN_LEGACY_PRINTED, {"KONTODETAILS": "AV22"}),
-        ])),
-        "/assetview/link.do?link=AV22&": link_answer,
-        _DISPATCH_B: _Resp(_dispatcher(framed or "")),
-    }
-    session = _Session(answers)
-    meta = rates.capture(_client(session), tmp_path, [], lambda: ENTRY)
-    assert session.requested[:3] == [ENTRY, LIST_REF,
-                                     "/assetview/link.do?link=AV22&"]
-    assert "/assetview/getpositiondetail.do" not in " ".join(
-        session.requested)
-    assert [e["stage"] for e in meta["errors"]] == ["legacy"]
-    assert error in meta["errors"][0]["error"]
+def test_a_details_link_that_leads_elsewhere_reads_nothing(tmp_path):
+    site = _site(list_html=_contract_list([
+        ("Cash account", IBAN_LEGACY_PRINTED, {"KONTODETAILS": "AV22"})]))
+    site["/assetview/link.do?link=AV22&"] = (302, "", LIST_REF, None)
+    browser = _Browser(site=site)
+    meta = rates.capture(_surface(browser), tmp_path, [])
+    [error] = meta["errors"]
+    assert "led to getvaluatedcontractlist.do" in error["error"]
     assert list((tmp_path / "rates").iterdir()) == []
 
 
 def test_a_page_of_another_account_is_recorded_and_not_kept(tmp_path):
-    answers = {
-        ENTRY: _Resp(_dispatcher(LIST_REF)),
-        LIST_REF: _Resp(_contract_list([
-            ("Cash account", IBAN_LEGACY_PRINTED, {"KONTODETAILS": "AV22"}),
-        ])),
-        **_detail_chain("AV22", "TOKEN-B", _Resp(
-            _legacy_page([("01.01.2026", "0.100%", "")], [],
-                         iban=IBAN_OTHER_PRINTED))),
-    }
-    meta = rates.capture(_client(_Session(answers)), tmp_path, [],
-                         lambda: ENTRY)
+    browser = _Browser(site=_site(
+        ("AV22", "TOKEN-B", 200,
+         _legacy_page([("01.01.2026", "0.100%", "")], [],
+                      iban=IBAN_OTHER_PRINTED)),
+        list_html=_contract_list([
+            ("Cash account", IBAN_LEGACY_PRINTED, {"KONTODETAILS": "AV22"})])))
+    meta = rates.capture(_surface(browser), tmp_path, [])
     assert [e["error"] for e in meta["errors"]] == [
         "the page names another account than its row"]
     assert list((tmp_path / "rates").iterdir()) == []
@@ -478,93 +643,114 @@ def test_an_account_gone_from_a_fresh_render_is_recorded(tmp_path):
     second = _contract_list([
         ("Cash account", IBAN_LEGACY_PRINTED, {"KONTODETAILS": "AV42"}),
     ])
-    answers = {
-        ENTRY: _Resp(_dispatcher(LIST_REF)),
-        LIST_REF: [_Resp(first), _Resp(second)],
-        **_detail_chain("AV22", "TOKEN-B", _Resp(
-            _legacy_page([("01.01.2026", "0.100%", "")], []))),
-    }
-    meta = rates.capture(_client(_Session(answers)), tmp_path, [],
-                         lambda: ENTRY)
-    # The page already written stays.
+    site = _site(("AV22", "TOKEN-B", 200,
+                  _legacy_page([("01.01.2026", "0.100%", "")], [])),
+                 list_html=first)
+    browser = _Browser(site=site)
+    surface = _surface(browser)
+
+    def entry_then_second_render():
+        frame = browser.open_entry()
+        site[LIST_REF] = (200, second, None, None)  # the next render
+        return frame
+
+    meta = rates.capture(rates.Surface(**{**surface.__dict__,
+                                          "open_legacy":
+                                          entry_then_second_render}),
+                         tmp_path, [])
     assert [p.name for p in (tmp_path / "rates").iterdir()] == [
         rates.legacy_file_name(IBAN_LEGACY)]
     assert [e["error"] for e in meta["errors"]] == [
         "an account left the list"]
 
 
-def test_a_failed_rerender_keeps_the_pages_written(tmp_path):
-    answers = {
-        ENTRY: [_Resp(_dispatcher(LIST_REF)), _Resp("", 500)],
-        LIST_REF: _Resp(_contract_list([
-            ("Cash account", IBAN_LEGACY_PRINTED, {"KONTODETAILS": "AV22"}),
-            ("Another", IBAN_OTHER_PRINTED, {"KONTODETAILS": "AV32"}),
-        ])),
-        **_detail_chain("AV22", "TOKEN-B", _Resp(
-            _legacy_page([("01.01.2026", "0.100%", "")], []))),
-    }
-    meta = rates.capture(_client(_Session(answers)), tmp_path, [],
-                         lambda: ENTRY)
-    assert [p.name for p in (tmp_path / "rates").iterdir()] == [
-        rates.legacy_file_name(IBAN_LEGACY)]
-    assert [e["stage"] for e in meta["errors"]] == ["legacy-list"]
-
-
-def test_only_a_details_link_of_the_render_is_followed():
-    client = _client(_NO_REQUEST())
-    with pytest.raises(RuntimeError, match="not an account details link"):
-        rates._account_page(client, "/assetview/link.do?link=AV13&",
-                            LIST_REF, {"/assetview/link.do?link=AV12&"})
-
-
-def test_a_redirect_without_a_location_is_not_followed():
-    session = _Session({"/assetview/link.do?link=AV12&": _Resp(status=302)})
-    with pytest.raises(RuntimeError, match="redirects nowhere"):
-        _client(session).redirect_target("/assetview/link.do?link=AV12&",
-                                         referer=SPA)
-
-
 def test_an_unnamed_row_or_page_is_recorded_and_not_kept(tmp_path):
-    answers = {
-        ENTRY: _Resp(_dispatcher(LIST_REF)),
-        LIST_REF: _Resp(_contract_list([
+    browser = _Browser(site=_site(
+        ("AV22", "TOKEN-B", 200,
+         "<html><body><p>Account information</p></body></html>"),
+        list_html=_contract_list([
             ("IBAN not printed", "", {"KONTODETAILS": "AV12"}),
             ("Cash account", IBAN_LEGACY_PRINTED, {"KONTODETAILS": "AV22"}),
-        ])),
-        **_detail_chain("AV22", "TOKEN-B", _Resp(
-            "<html><body><p>Account information</p></body></html>")),
-    }
-    session = _Session(answers)
-    meta = rates.capture(_client(session), tmp_path, [], lambda: ENTRY)
-    assert "/assetview/link.do?link=AV12&" not in session.requested
+        ])))
+    meta = rates.capture(_surface(browser), tmp_path, [])
+    assert "/assetview/link.do?link=AV12&" not in browser.opened
     assert [e["error"] for e in meta["errors"]] == [
         "the row prints no IBAN", "the page states no IBAN"]
     assert list((tmp_path / "rates").iterdir()) == []
 
 
-def test_without_an_apikey_the_requests_carry_no_api_headers(tmp_path):
-    session = _Session({})
-    rates.capture(_client(session, apikey=None), tmp_path, _ACCOUNTS,
-                  lambda: ENTRY)
-    assert session.headers == [
-        {"accept": "application/json", "referer": SPA},
-        {"accept": "text/html", "referer": SPA}]
+# --------------------------------------------------------------------
+# The route guard
+# --------------------------------------------------------------------
+
+def test_the_guard_aborts_a_write_and_a_refused_read(tmp_path):
+    browser = _Browser(spa={_info("acct-opaque-1"): [
+        ("POST", "/assetview/ebidispatcher.do"),
+        ("GET", "/assetview/getcashtransactionlist.do?parameters=T1"),
+        ("PUT", f"/api/v3/cash-accounts/{ACCOUNT}"),
+        ("GET", f"/api/v3/cash-accounts/{ACCOUNT}/transactions"),
+        # The SPA's own reads and searches elsewhere pass untouched.
+        ("POST", "/api/v1/payments/orders/search"),
+        ("GET", "/assetview/UWR/1.0/js/app.js"),
+        ("GET", "/api/v3/cash-accounts?pageSize=20"),
+        _Response(ORIGIN + API_REF, json.dumps(_api_payload())),
+    ]})
+    meta = rates.capture(_surface(browser, _no_entry), tmp_path, _ACCOUNTS)
+    aborted = [e for e in meta["errors"] if e["stage"] == "guard"]
+    assert [(e["method"], e["ref"].split("?")[0]) for e in aborted] == [
+        ("POST", "/assetview/ebidispatcher.do"),
+        ("GET", "/assetview/getcashtransactionlist.do"),
+        ("PUT", "/api/v3/cash-accounts/" + bronze.short_token(ACCOUNT)),
+        ("GET", "/api/v3/cash-accounts/" + bronze.short_token(ACCOUNT)
+         + "/transactions"),
+    ]
+    assert ACCOUNT not in json.dumps(meta)
+    # The SPA's own call for the conditions went through.
+    assert len(meta["api"]["answered"]) == 1
 
 
-def test_a_redirect_is_not_followed_and_is_recorded(tmp_path):
-    # A 3xx names a target the allow-list never saw: the request asks
-    # Playwright not to follow it, and the response counts as a failure.
-    answers = {API_REF: _Resp(status=302, location="/elsewhere"),
-               ENTRY: _Resp(status=302, location="/elsewhere")}
-    session = _Session(answers)
-    meta = rates.capture(_client(session), tmp_path, _ACCOUNTS,
-                         lambda: ENTRY)
-    assert session.max_redirects == [0, 0]
-    assert session.requested == [API_REF, ENTRY]
-    assert [e["stage"] for e in meta["errors"]] == ["api", "legacy-list"]
-    assert all("302" in e["error"] for e in meta["errors"])
-    assert meta["api"]["answered"] == []
-    assert list((tmp_path / "rates").iterdir()) == []
+def test_the_guard_is_removed_when_the_pass_fails(tmp_path, monkeypatch):
+    def broken(*_a, **_kw):
+        raise RuntimeError("synthetic")
+
+    monkeypatch.setattr(rates.rate_parsers, "api_states_conditions", broken)
+    browser = _Browser(spa={_info("acct-opaque-1"): [
+        _Response(ORIGIN + API_REF, json.dumps(_api_payload()))]})
+    with pytest.raises(RuntimeError, match="synthetic"):
+        rates.capture(_surface(browser), tmp_path, _ACCOUNTS)
+    assert browser.routes == [] and browser.listeners == []
+
+
+@pytest.mark.parametrize("method,ref,aborted", [
+    ("GET", ENTRY, False),
+    ("GET", LIST_REF, False),
+    ("GET", "/assetview/link.do?link=AV12&", False),
+    ("GET", "/assetview/UWR/1.0/app.css", False),
+    ("GET", API_REF, False),
+    ("GET", "/api/v3/cash-accounts?pageSize=50", False),
+    ("POST", "/api/v1/marketing/campaigns/search", False),
+    ("GET", "/assetview/ebidispatcher.do", True),
+    ("GET", "/assetview/getdetailpositionlist.do?parameters=T1", True),
+    ("GET", "/api/v3/cash-accounts/acct-opaque-1", True),
+    ("POST", "/assetview/ebidispatcher.do", True),
+    ("POST", "/api/v3/cash-accounts", True),
+    ("DELETE", API_REF, True),
+    ("POST", "/api/v3/cash-accounts-search", False),
+])
+def test_what_the_guard_aborts(method, ref, aborted):
+    assert (rates.RouteGuard.refusal(method, ORIGIN + ref)
+            is not None) is aborted
+
+
+def test_a_reference_and_an_error_print_short_tokens_only():
+    ref = f"/api/v3/cash-accounts/{ACCOUNT}?include=INTEREST_RATES"
+    assert rates.redact(ref) == ("/api/v3/cash-accounts/"
+                                 f"{bronze.short_token(ACCOUNT)}?include=…")
+    text = rates.scrub(f"Timeout at spa.html#/accounts?accountId={ACCOUNT}")
+    assert ACCOUNT not in text and bronze.short_token(ACCOUNT) in text
+    assert "getvaluatedcontractlist" in rates.scrub(
+        "HTTP 500 for getvaluatedcontractlist.do")
+    assert rates.excerpt(f"x{ACCOUNT}y") == "<token>"
 
 
 # --------------------------------------------------------------------
@@ -647,12 +833,6 @@ def test_a_list_without_the_details_item_gives_no_link():
         [("Cash account", IBAN_LEGACY_PRINTED, {"KONTODETAILS": "AV12"})],
         script=_menu_script(keys=("KONTO", "PAY")))
     assert rate_parsers.legacy_account_rows(listing) == []
-
-
-def test_the_dispatcher_gives_the_page_it_frames():
-    assert rate_parsers.legacy_frame_src(_dispatcher(LIST_REF)) == LIST_REF
-    assert rate_parsers.legacy_frame_src(
-        '<iframe name="other" src="/x.do"></iframe>') is None
 
 
 def test_the_page_names_its_account_only_by_the_selected_row():

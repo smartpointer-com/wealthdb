@@ -326,14 +326,14 @@ def test_the_rate_pass_runs_alone_under_only(tmp_path, monkeypatch):
 
 def test_a_failed_rate_pass_leaves_the_rest_of_the_dump(tmp_path,
                                                         monkeypatch):
-    """The rate client's own failure is caught inside the pass: the dump
+    """The rate pass's own failure is caught inside the pass: the dump
     still finalises, and run.json says what failed."""
     monkeypatch.setattr(download, "_capture_cards", lambda *a, **k: None)
 
     def _boom(*_a, **_kw):
         raise RuntimeError("synthetic rate failure")
 
-    monkeypatch.setattr(download.rates, "RatesClient", _boom)
+    monkeypatch.setattr(download.rates, "Surface", _boom)
     rc, dest = _real_run(tmp_path, monkeypatch)
     assert rc == 0
     manifest = json.loads(next(dest.glob("*/run.json")).read_text())
@@ -351,6 +351,7 @@ class _AssetViewPage:
     def __init__(self, src):
         self.src = src
         self.calls = []
+        self.frame = _EntryFrame()
 
     def goto(self, url, **_kw):
         self.calls.append(("goto", url))
@@ -368,17 +369,39 @@ class _AssetViewPage:
                 page.calls.append(("read", selector, name))
                 return page.src
 
+            def element_handle(self, **_kw):
+                return types.SimpleNamespace(
+                    content_frame=lambda: page.frame)
+
         loc = _Locator()
         loc.first = loc
         return loc
 
 
-def test_the_legacy_entry_is_read_off_the_spa_frame():
-    entry = ("/assetview/ebidispatcher.do?navitemid=AssetsPg"
-             "&goToScreen=AO_Objects&tabControl=account_balance"
-             "&assetId=PORTFOLIO-1")
-    page = _AssetViewPage(entry)
-    assert download.legacy_rates_entry(page, None) == entry
+class _EntryFrame:
+    """The frame "Account balances" renders: blank, then the entry."""
+
+    url = "about:blank"
+    loaded = False
+
+    def wait_for_url(self, predicate, **_kw):
+        self.url = "https://bank.test" + _ENTRY
+        assert predicate(self.url)
+
+    def wait_for_load_state(self, *_a, **_kw):
+        assert self.url != "about:blank"
+        self.loaded = True
+
+
+_ENTRY = ("/assetview/ebidispatcher.do?navitemid=AssetsPg"
+          "&goToScreen=AO_Objects&tabControl=account_balance"
+          "&assetId=PORTFOLIO-1")
+
+
+def test_the_legacy_entry_frame_is_opened_as_the_spa_opens_it():
+    page = _AssetViewPage(_ENTRY)
+    frame = download.open_legacy_rates(page)
+    assert frame is page.frame and frame.loaded
     assert page.calls == [
         ("goto", "https://bank.test/app/ebanking/spa.html"
                  + download.ubs.ROUTE_ASSET_VIEW),
@@ -386,21 +409,16 @@ def test_the_legacy_entry_is_read_off_the_spa_frame():
         ("click", download.ubs.ASSET_VIEW_ACCOUNT_BALANCES_SELECTOR),
         ("read", download.ubs.ASSET_VIEW_LEGACY_FRAME_SELECTOR, "src"),
     ]
-    # The entry is the SPA's, and still passes the allow-list.
-    assert download.rates.refuse_request("GET", entry) is None
 
 
 def test_a_frame_without_a_source_is_a_missed_entry():
     with pytest.raises(RuntimeError, match="frames no entry"):
-        download.legacy_rates_entry(_AssetViewPage(None), None)
+        download.open_legacy_rates(_AssetViewPage(None))
 
 
 def test_a_frame_of_another_page_is_a_missed_entry():
-    other = ("/assetview/ebidispatcher.do?navitemid=AssetsPg"
-             "&goToScreen=AO_Objects&tabControl=account_balance"
-             "&assetId=PORTFOLIO-1&more=1")
     with pytest.raises(RuntimeError, match="frames another page"):
-        download.legacy_rates_entry(_AssetViewPage(other), None)
+        download.open_legacy_rates(_AssetViewPage(_ENTRY + "&more=1"))
 
 
 def test_an_unreachable_card_surface_leaves_the_rest_of_the_dump(tmp_path,

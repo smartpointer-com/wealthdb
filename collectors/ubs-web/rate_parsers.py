@@ -2,11 +2,11 @@
 """
 Bronze → silver parsers for the cash accounts' interest conditions.
 
-Pure functions over what `rates.py` reads and stores: the modern
-account JSON, the legacy pages that lead to an account, and the legacy
-"Account information" page. No database handle and no filesystem, so
-the capture and the load read a page the same way and each is tested
-against an invented payload. DESIGN.md §3.11 has the shapes.
+Pure functions over what `rates.py` reads and stores: the modern account
+JSON, the legacy contract list that leads to an account, and the legacy
+"Account information" page. No database handle and no filesystem, so the
+capture and the load read a page the same way and each is tested against
+an invented payload. DESIGN.md §3.11 has the shapes.
 
 A condition becomes a row dict of `side`, `tier`, `rate_pct`,
 `upper_limit`, `valid_from` and the source fields it was read from.
@@ -353,29 +353,6 @@ def legacy_conditions(html: str) -> list[dict]:
                            "limit": cells[2]},
             })
     return out
-
-
-class _Frames(HTMLParser):
-    """The `src` of each frame, by its name and its id."""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.src: dict[str, str] = {}
-
-    def handle_starttag(self, tag, attrs):
-        a = dict(attrs)
-        if tag == "iframe" and a.get("src"):
-            for key in (a.get("name"), a.get("id")):
-                if key:
-                    self.src.setdefault(key, a["src"])
-
-
-def legacy_frame_src(html: str) -> str | None:
-    """The page the dispatcher frames, as its `src` gives it."""
-    p = _Frames()
-    p.feed(html)
-    p.close()
-    return p.src.get(ubs.LEGACY_MAIN_FRAME_NAME)
 
 
 class _AccountRows(HTMLParser):

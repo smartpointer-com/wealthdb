@@ -108,7 +108,7 @@ persisted session cookie until UBS invalidates it.
 | [`download.py`](download.py) | Reuse the persisted session and run six passes. **positions**: one `positions.csv` for the consolidated default view, plus one per `portfolioUid` found on the homepage. **transactions**: for each **cash** account on the homepage, the transaction list as CSV and as enriched SWIFT MT940, both bisected on the 1000-transaction export cap. **rates**: each cash account's interest conditions via [`rates.py`](rates.py) (see [Interest rates](#interest-rates)). **portfolio-transactions**: each managed portfolio's securities-transaction CSV, reached through the portfolio switcher ([DESIGN.md](DESIGN.md) §3.7b). **documents**: the eDocuments archive in adaptive windows (bisected on the 999-row display cap), each PDF fetched from `/api/v1/digital-banking/files/`. **cards**: the card surface via [`cards.py`](cards.py). `--only PASS` runs one pass and marks the dump `partial`. Writes a `run.json` manifest. Read-only — see [AGENTS.md](AGENTS.md) §1. |
 | [`explore.py`](explore.py) | Discovery harness. Launches headed Chromium on the container's Xvfb display and serves it over VNC, so a session can be driven by hand while everything it produces is recorded: the network (requests, responses and bodies, line-flushed so a crash keeps the log), the clicks, one DOM snapshot plus screenshot per structurally distinct screen, and every file downloaded. Artefacts land under `--debug-dir`, never bronze. The harness itself never navigates and never clicks — it opens the login page and records from there, so the read-only surface in [AGENTS.md](AGENTS.md) §1 binds whoever drives. An existing session is reused and saved back on exit, so a sign-in here is not paid for twice. |
 | [`cards.py`](cards.py) | The credit-card surface, read from the SPA's own REST API rather than scraped (see [DESIGN.md §5](DESIGN.md)): the roster, each card account's paged ledger, its billing periods with their reconciling totals, and each period's statement PDF. Read-only and enforced — an allow-list of read endpoints gates every request, including the paging cursor the ledger hands back, so a link the API advertises is never followed for being advertised. Driven by `download.py`; not a verb of its own. |
-| [`rates.py`](rates.py) | The cash accounts' interest conditions: the account API's JSON for each homepage account, and the legacy account page for each other account the legacy contract list links. Read-only and enforced — an allow-list admits GET on those routes, each with the query its page gives, and nothing else. Driven by `download.py`; not a verb of its own. |
+| [`rates.py`](rates.py) | The cash accounts' interest conditions, read from what the browser renders: the SPA's own account API response for each homepage account, and the legacy account page for each other account the legacy contract list links. Read-only and enforced — while it runs, a route guard aborts any write to the legacy app or the account API, and any read of them outside an allow-list of routes. Driven by `download.py`; not a verb of its own. |
 | [`rate_parsers.py`](rate_parsers.py) | Bronze → silver for the interest conditions: the API's `interestItems` and the legacy page's "Credit interest" and "Debit interest" tables, read into rows. Pure functions, shared by the capture and the load. |
 | [`card_parsers.py`](card_parsers.py) | Bronze → silver for the card surface: pure functions from the captured JSON to the rows `load.py` writes, with no database handle, so each is testable against a synthetic payload. Holds the three readings that are easy to get wrong — the row key is minted from row content, because the API's `_id` is re-minted at every login and `transactionNr` is not a key, a `RESERVED` row is unposted activity rather than a transaction, and `merchantName` is the category while `details` is the merchant. |
 | [`prune.py`](prune.py) | Reclaim disk from the bronze tree and the `/debug` mount; see [Reclaiming disk](#reclaiming-disk). |
@@ -173,15 +173,19 @@ statement backfill (DESIGN.md §5.5).
 
 The `rates` pass saves what each cash account earns and pays.
 
-- For each cash account on the homepage, it saves the account API's
-  JSON (`/api/v3/cash-accounts/<accountId>?include=INTEREST_RATES`) as
+- For each cash account on the homepage, it opens the account's
+  "Account information" page. It saves the SPA's own response to
+  `/api/v3/cash-accounts/<accountId>?include=INTEREST_RATES` as
   `rates/<accountId>.json`.
 - The legacy asset view's "Account balances" list links an account
   page for every cash account, mandate accounts included. The pass
-  opens the list the way the portfolio overview's menu does. It
-  fetches the page of each account the API did not state conditions
-  for, matched by IBAN. It saves it as
+  opens the list the way the portfolio overview's menu does. For each
+  account the API did not state conditions for, matched by IBAN, it
+  opens the account's "Account details" link in the list's frame. It
+  saves the page the browser renders as
   `rates/legacy-<sha256 of the IBAN>.html`.
+- The pass requests nothing itself. A route guard on the page aborts
+  any write to the legacy app or the account API while it runs.
 
 `load` writes the conditions to `account_rates` (DESIGN.md §3.11). An
 account that states no condition gets no row, so it reads as "no rate",

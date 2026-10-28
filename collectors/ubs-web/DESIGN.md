@@ -852,14 +852,19 @@ both list it. `settlement_no` names it across statements.
 
 Two surfaces state a cash account's credit and debit interest. The
 `rates` pass ([rates.py](rates.py)) reads both, and the statements and
-advices print neither.
+advices print neither. It reads them from what the browser renders and
+requests nothing itself. A request of its own fails on both: the
+account API answers only the SPA's own calls, and the legacy app binds
+its list tokens to the render the browser holds.
 
 **The account API.**
 `GET /api/v3/cash-accounts/<accountId>?include=INTEREST_RATES` returns
 one account as JSON. `<accountId>` is the opaque token the homepage
-anchors carry, the one `enumerate_accounts` extracts. The `include`
-query opts the conditions in; the SPA always sends it, and a response
-without it is not read as one. Beside the balance, currency, product
+anchors carry, the one `enumerate_accounts` extracts. The SPA makes the
+call on the account's "Account information" route, which the homepage's
+account menu links as
+`#/accounts?target=cash-account-information&navitemid=AccountsAndCardsAccountInformation&accountId=<accountId>`.
+The `include` query opts the conditions in. Beside the balance, currency, product
 and IBAN, the response holds the conditions:
 
 ```
@@ -881,9 +886,8 @@ lists only the retail accounts, so it is not requested.
 overview (`#/assets/asset-view?goto=portfolio-overview&...`). Its
 "Structure" menu opens "Account balances", which frames the entry
 `ebidispatcher.do?navitemid=AssetsPg&goToScreen=AO_Objects&tabControl=account_balance&assetId=<token>`.
-The SPA builds that `src` from the portfolio it resolved; the collector
-reads it off the frame. Each hop after it is a link a page or a
-redirect gives, never a built one:
+The SPA builds that `src` from the portfolio it resolved. Each hop
+after it is a link a page or a redirect gives, never a built one:
 
 1. The entry is a dispatcher page. Its `gj9MainFrame` frames the
    contract list, `getvaluatedcontractlist.do?parameters=<token>`.
@@ -910,20 +914,40 @@ a limit of `0.00`. Of repeated tables, the first per side is read. The
 marks the page's own row as `bzeSelectDialogRow selected`. The page
 prints no other IBAN line, so the account is read off that row.
 
-**The capture.** The API runs first, for every homepage account. An
-answer covers its account only when it holds `interestItems`. The
-legacy pass then takes the entry from the SPA frame and reads the
-contract list. A row whose IBAN the API covered is skipped; a row
-that prints no IBAN is an error entry, since it cannot be found again.
-Each other account is followed from a fresh render: before every
-account after the first, the entry and the list are read again and
-the row found by its IBAN. A page is kept only when its own IBAN is
-its row's. Files land under `rates/`: `<accountId>.json` and
+**The capture.** It runs under a route guard on the page, removed
+when the pass ends. The guard aborts every request under `/assetview/`
+or `/api/v3/cash-accounts` that is not a GET. It also aborts every GET
+to a legacy `.do` page or an account that is not one of the routes
+above with its query. The SPA's own searches, telemetry and assets
+elsewhere pass, as on every other pass. Each abort is an error entry.
+
+1. The API pass runs first. For every homepage account it opens the
+   "Account information" route and keeps the SPA's response to exactly
+   that account's call. An answer covers its account only when it
+   holds `interestItems`.
+2. The legacy pass opens "Account balances" as the menu does and reads
+   the contract list from the frame the entry renders. A row whose
+   IBAN the API covered is skipped. A row that prints no IBAN is an
+   error entry, since it cannot be found again.
+3. For each other account, the entry's frame is navigated to the row's
+   "Account details" link, with the list as its referer, as the menu
+   item opens it in the list's parent frame. The browser follows the
+   redirect. The account page is read from the frame the dispatcher
+   renders.
+4. Each account is read from a fresh render: before every account after
+   the first, "Account balances" is opened again as the menu opens it,
+   and the row is found again by its IBAN. A page is kept only when its
+   own IBAN is its row's.
+
+Files land under `rates/`: `<accountId>.json` and
 `legacy-<sha256 of the IBAN>.html`. `run.json` records, per surface,
 the accounts attempted and answered, whether each API answer stated
 conditions, and the legacy rows skipped as covered. A missed entry, a
-failed account and a failed list are error entries, and the files
-already written stay.
+failed account, a failed list and a guard abort are error entries, and
+the files already written stay. An error names an account or a link
+by its short token only. A failed page or call adds its HTTP status
+and the start of its body with every token-shaped string left out.
+With `--screenshot-dir`, a failure also takes a screenshot of the page.
 
 **What silver keeps.** `account_rates`
 ([migrations/0016_account_rates.sql](migrations/0016_account_rates.sql)):
