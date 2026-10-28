@@ -232,11 +232,14 @@ func dv01ByCurrency(p Position) map[string]float64 {
 	if p.DV01 == nil {
 		return nil
 	}
+	// Summed in key order, so the shares are the same to the last bit at
+	// every run.
 	per, total := map[string]float64{}, 0.0
-	for ccy, tenors := range p.Buckets {
-		for _, v := range tenors {
-			per[ccy] += v
-			total += v
+	for _, ccy := range slices.Sorted(maps.Keys(p.Buckets)) {
+		tenors := p.Buckets[ccy]
+		for _, tenor := range slices.Sorted(maps.Keys(tenors)) {
+			per[ccy] += tenors[tenor]
+			total += tenors[tenor]
 		}
 	}
 	if total == 0 {

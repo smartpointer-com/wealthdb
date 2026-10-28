@@ -2,6 +2,7 @@ package yield
 
 import (
 	"cmp"
+	"maps"
 	"math"
 	"regexp"
 	"slices"
@@ -680,9 +681,13 @@ func fundRisk(h Holding, f *Fund, t Terms, m *Measures) {
 	}
 	if b := fundBuckets(f, h); b != nil && t.Duration == nil {
 		short := f.Duration != nil && f.Duration.Value < 0
+		// Summed in key order, so the total is the same to the last bit at
+		// every run.
 		total := 0.0
-		for _, tenors := range b {
-			for tenor, v := range tenors {
+		for _, ccy := range slices.Sorted(maps.Keys(b)) {
+			tenors := b[ccy]
+			for _, tenor := range slices.Sorted(maps.Keys(tenors)) {
+				v := tenors[tenor]
 				if short {
 					v = -v
 					tenors[tenor] = v
