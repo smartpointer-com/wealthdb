@@ -1,7 +1,9 @@
 package config
 
 import (
+	"encoding/json"
 	"math"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -28,7 +30,8 @@ func TestYieldRows(t *testing.T) {
 	c, err := yieldConfig(t, `{
         "curves": {"USD": {"10Y": "rates:DGS10", "1M": "rates:DGS1MO", "1Y": "rates:DGS1", "3M": "rates:DGS3MO"},
                    "CHF": {"6M": "demo:CHF6M"}},
-        "withholding": {"US": {"default": 30, "taxable_personal": 15}, "CH": {"default": 35}, "IE": {"roth_ira": 0}},
+        "withholding": {"US": {"default": 30, "taxable_personal": 15, "accounts": {"demo": {"acct-2": 0, "acct-1": 30}}},
+                        "CH": {"default": 35}, "IE": {"roth_ira": 0}, "FR": {"accounts": {"rates": {"acct-3": 12.8}}}},
         "rating_funds": {"isin:xx0000000004": "BBB", "symbol:exmp": "AAA-A"},
         "conventions": {"USD": {"frequency": 4, "day_count": "ACT/365"}, "JPY:government": {"frequency": 2, "day_count": "ACT/365"}},
         "horizon_months": 24,
@@ -59,6 +62,14 @@ func TestYieldRows(t *testing.T) {
 	}
 	if !slices.Equal(rows.Withholding, wantWithholding) {
 		t.Errorf("withholding = %+v, want %+v", rows.Withholding, wantWithholding)
+	}
+	wantAccounts := []canonical.YieldAccountWithholding{
+		{Country: "FR", SilverSourceID: "rates", AccountExternalID: "acct-3", RatePct: 12.8},
+		{Country: "US", SilverSourceID: "demo", AccountExternalID: "acct-1", RatePct: 30},
+		{Country: "US", SilverSourceID: "demo", AccountExternalID: "acct-2", RatePct: 0},
+	}
+	if !slices.Equal(rows.AccountWithholding, wantAccounts) {
+		t.Errorf("account withholding = %+v, want %+v", rows.AccountWithholding, wantAccounts)
 	}
 	wantRating := []canonical.YieldRatingFund{
 		{FundRef: "isin:XX0000000004", Rating: "BBB", BucketHigh: canonical.RatingBBB, BucketLow: canonical.RatingBBB},
@@ -157,15 +168,22 @@ func TestYieldRejects(t *testing.T) {
 		`{"curves": {"USD": {"1M": "rates:DGS1MO", "3M": "Rates:DGS3MO"}}}`: `series "Rates:DGS3MO": no silver_sources[].id matches`,
 
 		// withholding
-		`{"withholding": {"us": {"default": 30}}}`:                 `yield.withholding["us"]: not an ISO 3166 alpha-2 code`,
-		`{"withholding": {"QQ": {"default": 30}}}`:                 `yield.withholding["QQ"]: not an ISO 3166`,
-		`{"withholding": {"EU": {"default": 30}}}`:                 `yield.withholding["EU"]: EU is the European Union, never a situs`,
-		`{"withholding": {"US": {}}}`:                              `yield.withholding["US"]: name a rate for "default" or a tax wrapper`,
-		`{"withholding": {"US": {"ira": 0}}}`:                      `yield.withholding["US"]["ira"]: want "default" or a known tax wrapper`,
-		`{"withholding": {"US": {"Default": 30}}}`:                 `yield.withholding["US"]["Default"]: want "default"`,
-		`{"withholding": {"US": {"default": -1}}}`:                 `yield.withholding["US"]["default"] -1: want a percent, 0 to 100`,
-		`{"withholding": {"US": {"taxable_personal": 100.5}}}`:     `yield.withholding["US"]["taxable_personal"] 100.5: want a percent`,
-		`{"withholding": {"CH": {"default": 35}, "US": {"x": 1}}}`: `yield.withholding["US"]["x"]`,
+		`{"withholding": {"us": {"default": 30}}}`:                      `yield.withholding["us"]: not an ISO 3166 alpha-2 code`,
+		`{"withholding": {"QQ": {"default": 30}}}`:                      `yield.withholding["QQ"]: not an ISO 3166`,
+		`{"withholding": {"EU": {"default": 30}}}`:                      `yield.withholding["EU"]: EU is the European Union, never a situs`,
+		`{"withholding": {"US": {}}}`:                                   `yield.withholding["US"]: name a rate for "default", a tax wrapper or an account`,
+		`{"withholding": {"US": {"ira": 0}}}`:                           `yield.withholding["US"]["ira"]: want "default", a known tax wrapper or "accounts"`,
+		`{"withholding": {"US": {"accounts": {"nope": {"a-1": 0}}}}}`:   `yield.withholding["US"]["accounts"]["nope"]: no silver_sources[].id matches`,
+		`{"withholding": {"US": {"accounts": {"demo": {}}}}}`:           `yield.withholding["US"]["accounts"]["demo"]: name at least one account`,
+		`{"withholding": {"US": {"accounts": {"demo": {" ": 0}}}}}`:     `yield.withholding["US"]["accounts"]["demo"]: an account id is empty`,
+		`{"withholding": {"US": {"accounts": {"demo": {"a-1 ": 0}}}}}`:  `["a-1 "]: an account id has no space around it`,
+		`{"withholding": {"US": {"accounts": {"demo": {"a-1": 101}}}}}`: `yield.withholding["US"]["accounts"]["demo"]["a-1"] 101: want a percent, 0 to 100`,
+		`{"withholding": {"US": {"accounts": {"demo": 0}}}}`:            `want {source: {account: percent}}`,
+		`{"withholding": {"US": {"default": "x"}}}`:                     `yield.withholding: "default": want a percent`,
+		`{"withholding": {"US": {"Default": 30}}}`:                      `yield.withholding["US"]["Default"]: want "default"`,
+		`{"withholding": {"US": {"default": -1}}}`:                      `yield.withholding["US"]["default"] -1: want a percent, 0 to 100`,
+		`{"withholding": {"US": {"taxable_personal": 100.5}}}`:          `yield.withholding["US"]["taxable_personal"] 100.5: want a percent`,
+		`{"withholding": {"CH": {"default": 35}, "US": {"x": 1}}}`:      `yield.withholding["US"]["x"]`,
 
 		// rating_funds
 		`{"rating_funds": {"XX0000000004": "BBB"}}`:                     "config: yield.rating_funds: fund reference \"XX0000000004\": want isin:",
@@ -206,12 +224,42 @@ func TestYieldRejects(t *testing.T) {
 	}
 }
 
+// A country's entry reads back as it was written: the wrappers' rates
+// beside the accounts'.
+func TestWithholdingRatesRoundTrip(t *testing.T) {
+	t.Parallel()
+	in := WithholdingRates{Wrappers: map[string]float64{"default": 30, "custodial_utma": 15},
+		Accounts: map[string]map[string]float64{"demo": {"acct-1": 0}}}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `{"accounts":{"demo":{"acct-1":0}},"custodial_utma":15,"default":30}` {
+		t.Errorf("marshal = %s", b)
+	}
+	var out WithholdingRates
+	if err := json.Unmarshal(b, &out); err != nil || !reflect.DeepEqual(out, in) {
+		t.Errorf("unmarshal = %+v (%v), want %+v", out, err, in)
+	}
+	// A country that names accounts alone.
+	only := WithholdingRates{Wrappers: map[string]float64{}, Accounts: map[string]map[string]float64{"demo": {"a": 5}}}
+	b, err = json.Marshal(only)
+	if err != nil || string(b) != `{"accounts":{"demo":{"a":5}}}` {
+		t.Errorf("marshal = %s (%v)", b, err)
+	}
+	out = WithholdingRates{}
+	if err := json.Unmarshal(b, &out); err != nil || !reflect.DeepEqual(out, only) {
+		t.Errorf("unmarshal = %+v (%v), want %+v", out, err, only)
+	}
+}
+
 // A rate no JSON can carry is refused all the same in a config built by
 // hand.
 func TestYieldRejectsNonFiniteRate(t *testing.T) {
 	t.Parallel()
 	for _, r := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
-		c := &Config{Yield: &YieldConfig{Withholding: map[string]map[string]float64{"US": {"default": r}}}}
+		c := &Config{Yield: &YieldConfig{Withholding: map[string]WithholdingRates{
+			"US": {Wrappers: map[string]float64{"default": r}}}}}
 		if err := c.validateYield(nil); err == nil || !strings.Contains(err.Error(), "want a percent, 0 to 100") {
 			t.Errorf("%v: err %v", r, err)
 		}

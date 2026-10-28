@@ -2,6 +2,7 @@ package config
 
 import (
 	"cmp"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
@@ -23,11 +24,11 @@ type YieldConfig struct {
 	// the rate series that gives it, as <silver_source_id>:<series_id>.
 	Curves map[string]map[string]string `json:"curves,omitempty"`
 	// Withholding maps a situs country to the tax it withholds at source
-	// on income, in percent, per tax wrapper. The wrapper `default`
-	// stands for every wrapper the country names no rate for. A country
+	// on income, in percent, per tax wrapper, and per account where an
+	// account's rate is not its wrapper's (WithholdingRates). A country
 	// the block does not name has no rate, which reads as unknown, never
 	// as zero.
-	Withholding map[string]map[string]float64 `json:"withholding,omitempty"`
+	Withholding map[string]WithholdingRates `json:"withholding,omitempty"`
 	// RatingFunds maps a fund sliced by credit rating to the bucket
 	// (BBB) or range of buckets, best first (AAA-A), its lines carry.
 	// Keyed like exposure.size_funds.
@@ -48,6 +49,56 @@ type YieldConfig struct {
 	// market (canonical.BuiltinSettlementCycles); an empty list leaves the
 	// market none.
 	SettlementCycles map[string][]SettlementCycleEntry `json:"settlement_cycles,omitempty"`
+}
+
+// WithholdingRates is one country's entry of `yield.withholding`: a rate
+// per tax wrapper, the wrapper `default` standing for every wrapper it
+// names no rate for, and under the key `accounts` the accounts whose
+// rate is not their wrapper's, by silver_source_id and account, as
+// {"bank-1": {"acct-1": 0}}. An account's rate wins over its wrapper's,
+// which wins over the default.
+type WithholdingRates struct {
+	Wrappers map[string]float64
+	Accounts map[string]map[string]float64
+}
+
+// withholdingAccountsKey is the key of a country's per-account rates.
+const withholdingAccountsKey = "accounts"
+
+// UnmarshalJSON reads a country's object: `accounts` into Accounts, every
+// other key a wrapper's rate.
+func (w *WithholdingRates) UnmarshalJSON(b []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	w.Wrappers, w.Accounts = map[string]float64{}, nil
+	for _, k := range slices.Sorted(maps.Keys(raw)) {
+		if k == withholdingAccountsKey {
+			if err := json.Unmarshal(raw[k], &w.Accounts); err != nil {
+				return fmt.Errorf("yield.withholding: %q: want {source: {account: percent}}: %w", k, err)
+			}
+			continue
+		}
+		var r float64
+		if err := json.Unmarshal(raw[k], &r); err != nil {
+			return fmt.Errorf("yield.withholding: %q: want a percent: %w", k, err)
+		}
+		w.Wrappers[k] = r
+	}
+	return nil
+}
+
+// MarshalJSON writes the object UnmarshalJSON reads.
+func (w WithholdingRates) MarshalJSON() ([]byte, error) {
+	out := map[string]any{}
+	for k, r := range w.Wrappers {
+		out[k] = r
+	}
+	if len(w.Accounts) > 0 {
+		out[withholdingAccountsKey] = w.Accounts
+	}
+	return json.Marshal(out)
 }
 
 // SettlementCycleEntry is one cycle of a `yield.settlement_cycles`
@@ -122,17 +173,38 @@ func (c *Config) validateYield(seenIDs map[string]bool) error {
 		if country == canonical.EuropeanUnion {
 			return fmt.Errorf("config: yield.withholding[%q]: EU is the European Union, never a situs", country)
 		}
-		if len(rates) == 0 {
-			return fmt.Errorf("config: yield.withholding[%q]: name a rate for %q or a tax wrapper",
+		if len(rates.Wrappers) == 0 && len(rates.Accounts) == 0 {
+			return fmt.Errorf("config: yield.withholding[%q]: name a rate for %q, a tax wrapper or an account",
 				country, canonical.WithholdingDefault)
 		}
-		for _, wrapper := range slices.Sorted(maps.Keys(rates)) {
+		for _, wrapper := range slices.Sorted(maps.Keys(rates.Wrappers)) {
 			if wrapper != canonical.WithholdingDefault && !canonical.TaxWrapper(wrapper).Valid() {
-				return fmt.Errorf("config: yield.withholding[%q][%q]: want %q or a known tax wrapper",
-					country, wrapper, canonical.WithholdingDefault)
+				return fmt.Errorf("config: yield.withholding[%q][%q]: want %q, a known tax wrapper or %q",
+					country, wrapper, canonical.WithholdingDefault, withholdingAccountsKey)
 			}
-			if r := rates[wrapper]; !(r >= 0 && r <= 100) {
+			if r := rates.Wrappers[wrapper]; !(r >= 0 && r <= 100) {
 				return fmt.Errorf("config: yield.withholding[%q][%q] %v: want a percent, 0 to 100", country, wrapper, r)
+			}
+		}
+		for _, source := range slices.Sorted(maps.Keys(rates.Accounts)) {
+			accounts := rates.Accounts[source]
+			at := fmt.Sprintf("yield.withholding[%q][%q][%q]", country, withholdingAccountsKey, source)
+			if !seenIDs[source] {
+				return fmt.Errorf("config: %s: no silver_sources[].id matches", at)
+			}
+			if len(accounts) == 0 {
+				return fmt.Errorf("config: %s: name at least one account", at)
+			}
+			for _, acct := range slices.Sorted(maps.Keys(accounts)) {
+				if strings.TrimSpace(acct) == "" {
+					return fmt.Errorf("config: %s: an account id is empty", at)
+				}
+				if strings.TrimSpace(acct) != acct {
+					return fmt.Errorf("config: %s[%q]: an account id has no space around it", at, acct)
+				}
+				if r := accounts[acct]; !(r >= 0 && r <= 100) {
+					return fmt.Errorf("config: %s[%q] %v: want a percent, 0 to 100", at, acct, r)
+				}
 			}
 		}
 	}
@@ -267,9 +339,16 @@ func (c *Config) YieldRows() canonical.YieldRows {
 	})
 	for _, country := range slices.Sorted(maps.Keys(y.Withholding)) {
 		rates := y.Withholding[country]
-		for _, wrapper := range slices.Sorted(maps.Keys(rates)) {
+		for _, wrapper := range slices.Sorted(maps.Keys(rates.Wrappers)) {
 			out.Withholding = append(out.Withholding, canonical.YieldWithholding{Country: country, Wrapper: wrapper,
-				RatePct: rates[wrapper]})
+				RatePct: rates.Wrappers[wrapper]})
+		}
+		for _, source := range slices.Sorted(maps.Keys(rates.Accounts)) {
+			for _, acct := range slices.Sorted(maps.Keys(rates.Accounts[source])) {
+				out.AccountWithholding = append(out.AccountWithholding, canonical.YieldAccountWithholding{
+					Country: country, SilverSourceID: source, AccountExternalID: acct,
+					RatePct: rates.Accounts[source][acct]})
+			}
 		}
 	}
 	for key, rating := range y.RatingFunds {

@@ -459,13 +459,15 @@ The Withholding tile reads two things:
   there, the rows `wealthdb income summary -C +withheld` counts. A row
   counts whatever income it was withheld from, holdings' or not.
 - over the Horizon, what the config's withholding table withholds at
-  each holding's situs and account wrapper. This is a model.
+  each holding's situs, by its account's own rate or its wrapper's.
+  This is a model.
 
-Provisioning probes the snapshot's withholding table
-(`yield_withholding`). Where it holds no rate, the two tiles' titles
-say they read the tax booked alone: "Received withholding — no
-withholding table" and "Income after received withholding". Neither
-tile reads null: with nothing withheld, the withholding reads 0.
+Provisioning probes the snapshot's withholding tables
+(`yield_withholding`, `yield_withholding_accounts`). Where they hold no
+rate, the two tiles' titles say they read the tax booked alone:
+"Received withholding — no withholding table" and "Income after
+received withholding". Neither tile reads null: with nothing withheld,
+the withholding reads 0.
 
 The calendar lists the position the *Position* picker names, by
 symbol, name or position key, and every position while it is empty. A
@@ -612,13 +614,15 @@ A stale snapshot is caught before any of this is written. Provisioning
 probes the driver for the snapshot's schema version and for the serving
 views **by name**. It aborts with a "run `wealthdb web refresh`" message
 rather than converging the cards to a degraded shape. The version check
-catches a snapshot older than 0166. Such a snapshot lacks the
-calendar the Allocation cards read their day through. One older than
-0165 lacks the securities the Exposure dashboard ranks. One older than
-0154 lacks the stock positions' sizes. One older than 0149 lacks the cash flow projection's
-look-back parts. One older than 0146 lacks the days the Income
-cards' received figures cover and the tax withheld on them. One older
-than 0138 lacks the yield views and the exposure of the debt too.
+catches a snapshot older than 0168. Such a snapshot lacks the accounts'
+withholding rates the withholding probe counts. One older than 0166
+lacks the calendar the Allocation cards read their day through. One
+older than 0165 lacks the securities the Exposure dashboard ranks. One
+older than 0154 lacks the stock positions' sizes. One older than 0149
+lacks the cash flow projection's look-back parts. One older than 0146
+lacks the days the Income cards' received figures cover and the tax
+withheld on them. One older than 0138 lacks the yield views and the
+exposure of the debt too.
 The by-name probe finds each of these. An older one also reads wrong in ways no
 probe by name sees:
 

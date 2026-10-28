@@ -14,10 +14,10 @@ import (
 // withholding rates and rating funds it stamped, and how many
 // conventions, cycles and settlement cycles the config sets.
 func SyncYield(ctx context.Context, db *sql.DB, rows canonical.YieldRows) (int, error) {
-	return replaceConfigTables(ctx, db, "SyncYield", []string{"yield_curves", "yield_withholding", "yield_rating_funds",
-		"yield_conventions", "yield_cycles", "yield_settlement_cycles"},
+	return replaceConfigTables(ctx, db, "SyncYield", []string{"yield_curves", "yield_withholding",
+		"yield_withholding_accounts", "yield_rating_funds", "yield_conventions", "yield_cycles", "yield_settlement_cycles"},
 		func(_ *sql.Tx, insert func(q string, args ...any) error) (int, error) {
-			n := len(rows.Curves) + len(rows.Withholding) + len(rows.RatingFunds)
+			n := len(rows.Curves) + len(rows.Withholding) + len(rows.AccountWithholding) + len(rows.RatingFunds)
 			for _, p := range rows.Curves {
 				if err := insert(`INSERT INTO yield_curves (currency, tenor, tenor_months, silver_source_id, series_id)
 VALUES (?, ?, ?, ?, ?)`, p.Currency, p.Tenor, p.TenorMonths, p.SilverSourceID, p.SeriesID); err != nil {
@@ -27,6 +27,12 @@ VALUES (?, ?, ?, ?, ?)`, p.Currency, p.Tenor, p.TenorMonths, p.SilverSourceID, p
 			for _, w := range rows.Withholding {
 				if err := insert(`INSERT INTO yield_withholding (country, wrapper, rate_pct) VALUES (?, ?, ?)`,
 					w.Country, w.Wrapper, w.RatePct); err != nil {
+					return 0, err
+				}
+			}
+			for _, w := range rows.AccountWithholding {
+				if err := insert(`INSERT INTO yield_withholding_accounts (country, silver_source_id, account_external_id,
+rate_pct) VALUES (?, ?, ?, ?)`, w.Country, w.SilverSourceID, w.AccountExternalID, w.RatePct); err != nil {
 					return 0, err
 				}
 			}

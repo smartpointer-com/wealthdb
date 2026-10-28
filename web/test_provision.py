@@ -1181,7 +1181,8 @@ try:
         _probed[_label] = p.withholding_table("b", "s", 1)
     check("the withholding probe reads whether the withholding table holds any rate",
           _probed == {"a rate": True, "no rate": False, "no answer": None}
-          and api.queries == ["SELECT count(*) > 0 FROM yield_withholding"], _probed)
+          and api.queries == ["SELECT (SELECT count(*) FROM yield_withholding)"
+                              " + (SELECT count(*) FROM yield_withholding_accounts) > 0"], _probed)
     _titles = p.tile_titles(False)
     check("...and without a table the Withholding tiles' titles say they read what was received",
           _titles == {"Withholding": "Received withholding — no withholding table",

@@ -15,12 +15,13 @@ import (
 // SettlementCycles are the built-in maps with the block's entries over
 // them.
 type YieldRows struct {
-	Curves           []YieldCurvePoint
-	Withholding      []YieldWithholding
-	RatingFunds      []YieldRatingFund
-	Conventions      []YieldConvention
-	Cycles           []YieldCycle
-	SettlementCycles []SettlementCycle
+	Curves             []YieldCurvePoint
+	Withholding        []YieldWithholding
+	AccountWithholding []YieldAccountWithholding
+	RatingFunds        []YieldRatingFund
+	Conventions        []YieldConvention
+	Cycles             []YieldCycle
+	SettlementCycles   []SettlementCycle
 }
 
 // YieldCurvePoint is one tenor of a currency's public curve and the rate
@@ -41,6 +42,16 @@ type YieldWithholding struct {
 	Country string
 	Wrapper string
 	RatePct float64
+}
+
+// YieldAccountWithholding is the tax a country withholds at source on
+// one account's income, in percent, where it differs from the rate of
+// the account's tax wrapper.
+type YieldAccountWithholding struct {
+	Country           string
+	SilverSourceID    string
+	AccountExternalID string
+	RatePct           float64
 }
 
 // WithholdingDefault is the wrapper of the rate a country withholds from

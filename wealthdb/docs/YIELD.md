@@ -1014,7 +1014,10 @@ The `yield` block of `wealthdb.cfg` holds what no source states
     "EUR": { "3M": "curves:YC.B.U2.EUR.4F.G_N_A.SV_C_YM.SR_3M", "1Y": "curves:YC.B.U2.EUR.4F.G_N_A.SV_C_YM.SR_1Y", "10Y": "curves:YC.B.U2.EUR.4F.G_N_A.SV_C_YM.SR_10Y" },
     "CHF": { "1Y": "curves:SNB1A.SNB.NSS.KZS.EID.J01M0", "2Y": "curves:SNB1A.SNB.NSS.KZS.EID.J02M0", "10Y": "curves:SNB1A.SNB.NSS.KZS.EID.J10M0" }
   },
-  "withholding": { "US": { "default": 30, "taxable_personal": 15 }, "CH": { "default": 35 } },
+  "withholding": {
+    "US": { "default": 30, "taxable_personal": 15, "accounts": { "broker-1": { "acct-7": 0 } } },
+    "CH": { "default": 35 }
+  },
   "rating_funds": { "isin:XX0000000004": "BBB", "isin:XX0000000005": "AAA-A" },
   "conventions": { "EUR": { "frequency": 1, "day_count": "ACT/ACT" } },
   "horizon_months": 12,
@@ -1051,6 +1054,17 @@ The `yield` block of `wealthdb.cfg` holds what no source states
   |---|---|---|
   | a share of a US company | `taxable_personal` | 15 |
   | a share of a US company | `traditional_ira` | 30, the US `default` |
+
+  `accounts` names the accounts whose rate is not their wrapper's. It
+  keys each by its source and account id, the `silver_source` and
+  `account_id` that `wealthdb accounts` prints. Two accounts of one
+  wrapper may belong to holders of different treaty status. An
+  account's rate wins over its wrapper's, which wins over the country's
+  `default`. With the block above, a dividend of 100 from a US company
+  in account `acct-7` of `broker-1` has 0 withheld, whatever its
+  wrapper. A source that `silver_sources` does not name is refused, and
+  the error names the key. An account id that matches no account sets
+  no rate.
 
   A holding whose situs is Switzerland has 35 withheld in any account.
   A country the block does not name withholds nothing in the model, and

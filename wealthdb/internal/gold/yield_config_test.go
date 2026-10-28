@@ -66,6 +66,9 @@ func TestSyncYield(t *testing.T) {
 			{Country: "CH", Wrapper: canonical.WithholdingDefault, RatePct: 35},
 			{Country: "US", Wrapper: "taxable_personal", RatePct: 15},
 		},
+		AccountWithholding: []canonical.YieldAccountWithholding{
+			{Country: "US", SilverSourceID: "broker", AccountExternalID: "acct-1", RatePct: 0},
+		},
 		RatingFunds: []canonical.YieldRatingFund{
 			{FundRef: "isin:XX0000000005", Rating: "AAA-A", BucketHigh: canonical.RatingAAA, BucketLow: canonical.RatingA},
 		},
@@ -76,9 +79,9 @@ func TestSyncYield(t *testing.T) {
 	}
 	rows.Cycles[0] = canonical.YieldCycle{Sector: canonical.SectorEnergy, Cycle: canonical.CycleCyclical,
 		Origin: canonical.OriginConfig}
-	// Two curve points, two rates, one rating fund, and the config's one
-	// convention and one cycle.
-	if n, err := SyncYield(ctx, db, rows); err != nil || n != 7 {
+	// Two curve points, two rates, an account's rate, one rating fund,
+	// and the config's one convention and one cycle.
+	if n, err := SyncYield(ctx, db, rows); err != nil || n != 8 {
 		t.Fatalf("sync: %d %v", n, err)
 	}
 	curves, withholding, rating, conventions, cycles := yieldTables(t, ctx, db)
@@ -87,6 +90,19 @@ func TestSyncYield(t *testing.T) {
 	}
 	if withholding != "CH default 35.0; US taxable_personal 15.0" {
 		t.Errorf("withholding = %q", withholding)
+	}
+	accounts := func() string {
+		var s string
+		if err := db.QueryRowContext(ctx, `SELECT COALESCE(string_agg(country || ' ' || silver_source_id || ':' ||
+		    account_external_id || ' ' || rate_pct, '; ' ORDER BY country, silver_source_id, account_external_id), '')
+		    FROM yield_withholding_accounts`).
+			Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	if got := accounts(); got != "US broker:acct-1 0.0" {
+		t.Errorf("account withholding = %q", got)
 	}
 	if rating != "isin:XX0000000005 AAA-A AAA A" {
 		t.Errorf("rating funds = %q", rating)
@@ -102,6 +118,7 @@ func TestSyncYield(t *testing.T) {
 	// its overrides out: they leave, and only the built-in maps remain.
 	rows.Curves = rows.Curves[:1]
 	rows.Withholding = rows.Withholding[:1]
+	rows.AccountWithholding = nil
 	rows.RatingFunds = nil
 	rows.Conventions = canonical.BuiltinConventions()
 	rows.Cycles = canonical.BuiltinCycles()
@@ -109,8 +126,9 @@ func TestSyncYield(t *testing.T) {
 		t.Fatalf("resync: %d %v", n, err)
 	}
 	curves, withholding, rating, conventions, cycles = yieldTables(t, ctx, db)
-	if curves != "USD 3M 3 rates:DGS3MO" || withholding != "CH default 35.0" || rating != "" {
-		t.Errorf("after resync: curves %q withholding %q rating %q", curves, withholding, rating)
+	if curves != "USD 3M 3 rates:DGS3MO" || withholding != "CH default 35.0" || rating != "" || accounts() != "" {
+		t.Errorf("after resync: curves %q withholding %q rating %q accounts %q", curves, withholding, rating,
+			accounts())
 	}
 	if want := conventionsText(canonical.BuiltinConventions()); conventions != want || strings.Contains(conventions, "config") {
 		t.Errorf("conventions after resync = %q, want %q", conventions, want)

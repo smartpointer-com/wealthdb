@@ -1056,7 +1056,8 @@ The entity views give, per entity:
 `positions` lists every holding, the ones that pay nothing included. It
 also lists any holding no longer held that received income in the
 window, or in the same window a year earlier. Such a holding's income
-is withheld at its security's situs and its own account's wrapper. On
+is withheld at its security's situs, by its own account's rate or
+wrapper. On
 the dashboard it carries no symbol, no name and asset class `unknown`.
 Its rows sort by source and account, then by `total` plus `next_12m`,
 the largest first. The other entity views sort by that sum alone.

@@ -5802,9 +5802,10 @@ def missing_web_views(base, sid, db_id):
 
 
 # The oldest gold schema the cards can read: the migration that adds the
-# calendar the Allocation cards read their day through (0166). A
-# snapshot older than 0166 lacks it, one older than 0165 the securities
-# the Exposure dashboard ranks, one older than 0154 the stock positions' sizes
+# accounts' withholding rates the withholding probe counts (0168). A
+# snapshot older than 0168 lacks them, one older than 0166 the calendar
+# the Allocation cards read their day through, one older than 0165 the
+# securities the Exposure dashboard ranks, one older than 0154 the stock positions' sizes
 # the Top 100 positions cards read, one older than 0149 the cash
 # flow projection's look-back parts, one older than 0146 the days the
 # Income cards' received figures cover and the tax withheld on them, and
@@ -5812,7 +5813,7 @@ def missing_web_views(base, sid, db_id):
 # by-name probe finds. One older than 0133 carries every view by name but
 # reads a missing tax wrapper blank, and one older than 0132 lacks the
 # serving tables' columns: only the version tells those apart.
-MIN_GOLD_SCHEMA = 166
+MIN_GOLD_SCHEMA = 168
 
 # main()'s exit status for a snapshot older than MIN_GOLD_SCHEMA; every
 # other failure exits 1. web/web tells the two apart, because only
@@ -5851,11 +5852,18 @@ def check_gold_schema(base, sid, db_id):
     return 0
 
 
+# WITHHOLDING_PROBE asks whether the snapshot holds any withholding rate,
+# a wrapper's or an account's.
+WITHHOLDING_PROBE = ("SELECT (SELECT count(*) FROM yield_withholding)"
+                     " + (SELECT count(*) FROM yield_withholding_accounts) > 0")
+
+
 def withholding_table(base, sid, db_id):
     """Whether the mounted gold snapshot holds a withholding table with
-    any rate in it (yield_withholding, the config's yield.withholding),
-    probed through the driver; None when the probe does not answer."""
-    rows = probe_rows(base, sid, db_id, "SELECT count(*) > 0 FROM yield_withholding")
+    any rate in it (yield_withholding and yield_withholding_accounts, the
+    config's yield.withholding), probed through the driver; None when the
+    probe does not answer."""
+    rows = probe_rows(base, sid, db_id, WITHHOLDING_PROBE)
     try:
         return bool(rows[0][0])
     except (TypeError, IndexError):

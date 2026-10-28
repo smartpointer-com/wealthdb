@@ -51,6 +51,7 @@ var loadKeyTables = []string{
 	"exposure_settings",
 	"yield_curves",
 	"yield_withholding",
+	"yield_withholding_accounts",
 	"yield_rating_funds",
 	"yield_conventions",
 	"yield_cycles",

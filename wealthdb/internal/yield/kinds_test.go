@@ -528,6 +528,39 @@ func TestWithholdingByWrapper(t *testing.T) {
 	}
 }
 
+// An account's own rate wins over its wrapper's and the default: of two
+// accounts of one wrapper, only the one the block names moves. An
+// account's rate also stands where its country names no wrapper.
+func TestWithholdingByAccount(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	a, b := bondHolding("broker", "A", "QA", 1000, 1000), bondHolding("broker", "B", "QB", 1000, 1000)
+	c, d := bondHolding("broker", "B", "QC", 1000, 1000), bondHolding("broker", "A", "QD", 1000, 1000)
+	in.Holdings = []Holding{a, b, c, d}
+	for _, acct := range []string{"A", "B"} {
+		in.Accounts[AccountKey{"broker", acct}] = Account{TaxWrapper: string(canonical.TaxWrapperCustodialUTMA)}
+	}
+	in.Situs[a.HoldingKey], in.Situs[b.HoldingKey] = "US", "US"
+	in.Situs[c.HoldingKey], in.Situs[d.HoldingKey] = "XX", "XX"
+	in.Withholding["US"] = map[string]float64{canonical.WithholdingDefault: 30,
+		string(canonical.TaxWrapperCustodialUTMA): 15}
+	before := Compute(in).Projection.Withholding
+	in.AccountWithholding = map[AccountKey]map[string]float64{{"broker", "B"}: {"US": 0, "XX": 5}}
+	after := Compute(in).Projection.Withholding
+	if before[a.HoldingKey] != 15 || after[a.HoldingKey] != 15 {
+		t.Errorf("account A: %v then %v, want 15 both times", before[a.HoldingKey], after[a.HoldingKey])
+	}
+	if before[b.HoldingKey] != 15 || after[b.HoldingKey] != 0 {
+		t.Errorf("account B: %v then %v, want 15 then its own 0", before[b.HoldingKey], after[b.HoldingKey])
+	}
+	if w, ok := after[c.HoldingKey]; !ok || w != 5 {
+		t.Errorf("account B in XX: %v %v, want its own 5", w, ok)
+	}
+	if _, ok := after[d.HoldingKey]; ok {
+		t.Errorf("account A in XX withholds %v; the block names no rate for it", after[d.HoldingKey])
+	}
+}
+
 // Rolled along a sloped curve, a holding buys its term again at that
 // day's forward rate for the term plus its spread over the curve today;
 // under constant rates, at its own yield.

@@ -110,7 +110,8 @@ func readYieldBase(ctx context.Context, db querier, asOf int64, shared *yieldSha
 		Accounts: map[yield.AccountKey]yield.Account{}, Terms: map[yield.InstrumentKey]yield.Terms{},
 		Rates: map[yield.AccountKey][]yield.Rate{}, Curves: map[string]*yield.Curve{},
 		Dividends: map[yield.InstrumentKey]canonical.DeclaredDividend{}, Securities: map[string]yield.Facts{},
-		Withholding: map[string]map[string]float64{}, Held: map[yield.InstrumentKey][]string{},
+		Withholding: map[string]map[string]float64{}, AccountWithholding: map[yield.AccountKey]map[string]float64{},
+		Held:         map[yield.InstrumentKey][]string{},
 		HeldSecurity: map[yield.InstrumentKey]string{}, Aliases: map[yield.AliasKey]string{}}
 	b := &yieldBase{in: in, asked: map[string]bool{}, lag: map[yield.InstrumentKey]yield.Lag{},
 		market: map[yield.InstrumentKey]string{}, share: map[yield.InstrumentKey]bool{}}
@@ -1736,8 +1737,11 @@ SELECT f.src, f.acct, f.position_key
 	}, receiptWording.String())
 }
 
+// readWithholding reads the withholding rates: per situs country and tax
+// wrapper, and per account where an account's rate is not its
+// wrapper's.
 func readWithholding(ctx context.Context, db querier, in *yield.Inputs) error {
-	return scanAll(ctx, db, `SELECT country, wrapper, rate_pct FROM yield_withholding`, func(rows *sql.Rows) error {
+	if err := scanAll(ctx, db, `SELECT country, wrapper, rate_pct FROM yield_withholding`, func(rows *sql.Rows) error {
 		var country, wrapper string
 		var pct float64
 		if err := rows.Scan(&country, &wrapper, &pct); err != nil {
@@ -1747,6 +1751,22 @@ func readWithholding(ctx context.Context, db querier, in *yield.Inputs) error {
 			in.Withholding[country] = map[string]float64{}
 		}
 		in.Withholding[country][wrapper] = pct
+		return nil
+	}); err != nil {
+		return err
+	}
+	return scanAll(ctx, db, `SELECT country, silver_source_id, account_external_id, rate_pct
+  FROM yield_withholding_accounts`, func(rows *sql.Rows) error {
+		var country string
+		var acct yield.AccountKey
+		var pct float64
+		if err := rows.Scan(&country, &acct.Source, &acct.Account, &pct); err != nil {
+			return err
+		}
+		if in.AccountWithholding[acct] == nil {
+			in.AccountWithholding[acct] = map[string]float64{}
+		}
+		in.AccountWithholding[acct][country] = pct
 		return nil
 	})
 }

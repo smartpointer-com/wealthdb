@@ -316,13 +316,16 @@ func project(in *Inputs, measures map[HoldingKey]*Measures) *Projection {
 }
 
 // withholding is the percent income of situs is withheld at in account
-// acct, by the account's tax wrapper, the country's default where it
-// names none for the wrapper.
+// acct: the account's own rate, else its tax wrapper's, else the
+// country's default.
 func (pj *projector) withholding(situs string, acct AccountKey) (float64, bool) {
-	rates := pj.in.Withholding[situs]
-	if situs == "" || rates == nil {
+	if situs == "" {
 		return 0, false
 	}
+	if r, ok := pj.in.AccountWithholding[acct][situs]; ok {
+		return r, true
+	}
+	rates := pj.in.Withholding[situs]
 	if r, ok := rates[pj.in.Accounts[acct].TaxWrapper]; ok {
 		return r, true
 	}
@@ -332,7 +335,7 @@ func (pj *projector) withholding(situs string, acct AccountKey) (float64, bool) 
 
 // soldWithholding gives each sold position of a holding's instrument
 // (Inputs.Sold) the percent its received income is withheld at: by the
-// situs of the holding, at its own account's wrapper.
+// situs of the holding, at its own account's rate (withholding).
 func (pj *projector) soldWithholding() {
 	for _, h := range pj.in.Holdings {
 		situs := pj.in.Situs[h.HoldingKey]

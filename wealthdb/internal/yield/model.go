@@ -94,6 +94,9 @@ type Inputs struct {
 	// Withholding is yield_withholding: percent by situs country and
 	// tax wrapper (canonical.WithholdingDefault for every other).
 	Withholding map[string]map[string]float64
+	// AccountWithholding is yield_withholding_accounts: percent by
+	// account and situs country, where it is not the wrapper's.
+	AccountWithholding map[AccountKey]map[string]float64
 	// Situs is each holding's legal situs country, where known.
 	Situs map[HoldingKey]string
 }
