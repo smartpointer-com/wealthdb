@@ -324,6 +324,30 @@ func TestYieldPassReadsAccountRates(t *testing.T) {
 	}
 }
 
+// An account payload states a deposit's rate only on a kind that holds
+// cash: a mortgage's keys state nothing (its rate is its terms'), nor do
+// those of a kind that holds no deposit.
+func TestYieldPassReadsAccountRatesOnCashKindsAlone(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	execEach(t, db,
+		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
+		 first_seen_at, last_seen_at, payload) VALUES
+		 ('test-src', 'LOAN', 'mortgage', 'Loan', 'CHF', 0, 0, '{"interest_rate": 1.85}'),
+		 ('test-src', 'TIERS', 'mortgage', 'Tranches', 'CHF', 0, 0, '{"interest_conditions": [{"interest_rate": 2.1,
+		   "interest_side": "debit"}]}'),
+		 ('test-src', 'COINS', 'crypto', 'Coins', 'USD', 0, 0, '{"interest_rate": 4}'),
+		 ('test-src', 'BROKER', 'brokerage', 'Broker', 'USD', 0, 0, '{"interest_rate": 0.45}'),
+		 ('test-src', 'KEPT', 'custody', 'Kept', 'EUR', 0, 0, '{"interest_tiers": [{"rate": 0.2, "up_to": null}]}')`)
+	if _, err := RebuildYield(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	got := scanStrings(t, db, `SELECT account_external_id || ' ' || side || ' ' || rate_pct FROM account_rates ORDER BY 1`)
+	if want := []string{"BROKER credit 0.45", "KEPT credit 0.2"}; !slices.Equal(got, want) {
+		t.Errorf("account rates %v, want %v", got, want)
+	}
+}
+
 // A rate a payload states under the canonical keys is every source's:
 // a flat rate on an account, stated once; tiers on a cash balance,
 // observed at its snapshot; a credit and a debit side on one account; a

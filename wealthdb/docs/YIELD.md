@@ -223,8 +223,10 @@ under these keys:
 A rate on a cash balance is read at that balance's snapshot. A source
 puts a rate on the balance its document or capture is dated by, or on
 the newest one before it. The adapter docs say which. A rate on an
-account is stated once, for the account's base currency. Each condition
-in `interest_conditions` states its own keys, one per side and day. A
+account is stated once, for the account's base currency. It is read
+only on a kind of account that holds cash: `cash`, `brokerage`,
+`custody` or `safekeeping`. Each condition in `interest_conditions`
+states its own keys, one per side and day. A
 value that does not read states nothing, and neither does the condition
 it sits in. A balance that states UBS PSN's tiers reads those, and the
 keys beside them state nothing. A liability's rate is its terms'

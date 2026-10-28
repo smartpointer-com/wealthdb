@@ -415,10 +415,17 @@ func dayCountSQL(expr string) string {
 // statedRatesSQL lists the payloads that state a rate under the keys
 // canonical.ReadStatedRates reads: each cash balance's, observed at its
 // snapshot (of a snapshot's balances, the one cash_chosen prefers among
-// those that state one), and each account's, stated once in its base
-// currency. A balance that states UBS PSN's tiers is read in that shape
-// alone, so a snapshot never states two schedules for one side.
+// those that state one), and each account's of a kind that holds cash
+// (cashAccountKinds), stated once in its base currency. An account
+// payload is read on a kind that holds cash alone: a liability's rate is
+// its terms', and a kind with no deposit has none. A
+// balance that states UBS PSN's tiers is read in that shape alone, so a
+// snapshot never states two schedules for one side.
 var statedRatesSQL = func() string {
+	kinds := make([]string, len(cashAccountKinds))
+	for i, k := range cashAccountKinds {
+		kinds[i] = "'" + string(k) + "'"
+	}
 	var has []string
 	for _, k := range []string{canonical.PayloadInterestRate, canonical.PayloadInterestTiers,
 		canonical.PayloadInterestConditions} {
@@ -437,9 +444,14 @@ SELECT * FROM (
 UNION ALL
 SELECT a.silver_source_id, a.account_external_id, a.base_currency, NULL, a.payload::VARCHAR
   FROM accounts a
- WHERE ` + fmt.Sprintf(states, "a") + `
+ WHERE (` + fmt.Sprintf(states, "a") + `) AND a.account_kind IN (` + strings.Join(kinds, ", ") + `)
  ORDER BY 1, 2, 3, 4`
 }()
+
+// cashAccountKinds are the kinds of account that hold cash at a bank or
+// a broker: an account payload states a deposit's rate on these alone.
+var cashAccountKinds = []canonical.AccountKind{canonical.AccountKindCash, canonical.AccountKindBrokerage,
+	canonical.AccountKindCustody, canonical.AccountKindSafekeeping}
 
 // writeStatedRates adds to account_rates the rates the sources' payloads
 // state under the canonical keys, one row per side and tier.
