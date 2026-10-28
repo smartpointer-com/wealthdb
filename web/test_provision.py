@@ -456,23 +456,11 @@ for _mode, _d in (("range", "Wealth Overview"), ("asof", "Allocation"), ("range"
     _ac = [x for x in p.dashboard_parameters(MID, _mode, _d) if x["slug"] == "asset_class"][0]
     check(f"'{_d}' lists its asset classes off the asset class history",
           _ac["values_source_config"]["card_id"] == MID["report_asset_classes_history"], _ac)
-# The As of day defaults to the last day the holdings history reaches,
-# read off the snapshot, so a snapshot not refreshed today shows its
-# latest holdings; "thisday" where the snapshot does not answer.
-_probe = p.probe_rows
-for _rows, _want in (([["2026-10-25"]], "2026-10-25"), (None, "thisday"), ([[None]], "thisday"), ([], "thisday")):
-    p.probe_rows = lambda *_a, _r=_rows: _r
-    check(f"the history's last day reads {_want!r} when the probe returns {_rows!r}",
-          p.last_history_day("b", "s", 1) == _want, p.last_history_day("b", "s", 1))
-p.probe_rows = _probe
-_asof_default = p.ASOF_DEFAULT
-try:
-    p.ASOF_DEFAULT = "2026-10-25"
-    _asof = [x for x in p.dashboard_parameters(MID, "asof", "Allocation") if x["slug"] == "as_of_day"][0]
-finally:
-    p.ASOF_DEFAULT = _asof_default
-check("Allocation's As of day is required and defaults to that day",
-      _asof["required"] is True and _asof["default"] == "2026-10-25", _asof)
+# The As of day defaults to today. A card reads the last history day on
+# or before it, so the default is the same whatever the snapshot.
+_asof = [x for x in p.dashboard_parameters(MID, "asof", "Allocation") if x["slug"] == "as_of_day"][0]
+check("Allocation's As of day is required and defaults to today",
+      _asof["required"] is True and _asof["default"] == "thisday", _asof)
 _wccy = p.dashboard_parameters(MID, "range", "Wealth Overview")[0]
 check("that currency picker is required, defaults to USD and offers every "
       "reporting currency",
@@ -627,7 +615,7 @@ def run_main():
     """main()'s exit status against the stand-in in p.req, with the
     arguments web/web passes; the globals main() sets are restored."""
     saved = (sys.argv, os.environ.get("WEALTHDB_WEB_ADMIN_PASSWORD"),
-             p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.ASOF_DEFAULT, p.FIELD_IDS)
+             p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.FIELD_IDS)
     sys.argv = ["provision.py", "--base", "http://127.0.0.1:3000",
                 "--email", "admin@wealthdb.local", "--gold-path", "/gold/wealthdb.db"]
     os.environ["WEALTHDB_WEB_ADMIN_PASSWORD"] = "Synthetic-pw-1!"
@@ -635,7 +623,7 @@ def run_main():
         with quiet():
             return p.main()
     finally:
-        sys.argv, pw, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.ASOF_DEFAULT, p.FIELD_IDS = saved
+        sys.argv, pw, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.FIELD_IDS = saved
         if pw is None:
             os.environ.pop("WEALTHDB_WEB_ADMIN_PASSWORD", None)
         else:
@@ -1135,8 +1123,9 @@ try:
         fourth = p.ensure_dashboards("b", "s", 7, card_ids, MID)
     check("a dashboard whose read fails is sent, and only that one",
           fourth == 0 and remembered.put_ids == {one}, remembered.put_ids)
-    # A new As of day default changes Allocation's pickers alone: they
-    # go in one PUT of the parameters, and the tiles stay.
+    # A new picker default, here the As of day's, changes Allocation's
+    # pickers alone: they go in one PUT of the parameters, and the tiles
+    # stay.
     remembered.failing, remembered.put_ids, remembered.puts = set(), set(), 0
     _alloc = remembered.names["Allocation"]
     _tiles = remembered.layouts[_alloc]["dashcards"]
@@ -2492,6 +2481,52 @@ check("...and its twin shares in place of the values",
                                           "market_cap", "size", "direct_pct", "via_funds_pct", "funds", "share_pct"]
       and f"LIKE '%{p.HOLDING_KEY_PREFIX}%'" in sql_of(CARDS[p.privacy_name(_sec)][2]), _sec_cols)
 
+
+def _aggregates(body):
+    """The items of a SELECT list, each without its alias, in lower case
+    with its whitespace collapsed."""
+    depth, item, items = 0, "", []
+    for ch in body + ",":
+        depth += {"(": 1, ")": -1}.get(ch, 0)
+        if ch == "," and depth == 0:
+            items.append(re.sub(r"\s+as\s+\w+$", "", " ".join(item.lower().split())))
+            item = ""
+        else:
+            item += ch
+    return items
+
+
+# A Go test sums each security's slices as the card does, to prove they
+# add up to report_exposure_securities. Its copy reads the table and
+# names the sums its own way, so the two must agree on the aggregates and
+# the grouping alone: a change to the card's left out of the Go copy
+# would leave that test proving a sum the card no longer takes.
+_go_sec = re.search(r"const exposureSecuritiesCardSQL = `(.*?)`", open(os.path.join(
+    _REPO, "wealthdb", "internal", "gold", "exposure_materialize_test.go"), encoding="utf-8").read(), re.S)
+_go_g = _go_sec and re.search(r"WITH g AS \(\s*SELECT (.*?)\s+FROM report_exposure_security_slices\b"
+                              r"[^)]*?GROUP BY security\)", _go_sec.group(1), re.S)
+_card_g = re.search(r"\ng AS \(\n  SELECT (.*?)\n    FROM e\n   GROUP BY security\)", sql_of(CARDS[_sec][2]), re.S)
+check("the Go test sums a security's slices with the card's aggregates",
+      _go_g and _card_g and _aggregates(_go_g.group(1)) == _aggregates(_card_g.group(1)),
+      "the shapes moved; this check went vacuous" if not (_go_g and _card_g)
+      else (_aggregates(_go_g.group(1)), _aggregates(_card_g.group(1))))
+
+section("the Allocation dashboard's day")
+
+# Every Allocation card, on the base and the twin, reads the last day of
+# the history on or before the As of day: the picker binds the calendar
+# view (gold migration 0166), whose history day the card reads.
+_al_cards = [n for n, *_ in DEFS["Allocation"][3]] + [n for n, *_ in DEFS["Allocation" + p.PRIVACY_SUFFIX][3]]
+_history_day = ("(SELECT max(history_day) FROM web_history_calendar WHERE TRUE\n"
+                "     [[AND {{as_of_day}}]])")
+for _name in _al_cards:
+    _q = sql_of(CARDS[_name][2]) or ""
+    _tag = CARDS[_name][2]["native"]["template-tags"]["as_of_day"]
+    _reads = "AND as_of_day = " + _history_day if "issuers" not in _name else "SELECT " + _history_day + " AS day"
+    check(f"'{_name}' reads the last history day on or before the As of day",
+          _reads in _q and _q.count("{{as_of_day}}") == _q.count("FROM web_history_calendar")
+          and _tag["dimension"][1] == p.FIELD_IDS[("web_history_calendar", "as_of_day")], _q)
+
 section("the Allocation dashboard's issuers card")
 
 # It sits below the top positions, full width, on the base and the twin,
@@ -2509,7 +2544,7 @@ _iss_sql = {n: sql_of(CARDS[n][2]) or "" for n in ("Top 100 issuers", p.privacy_
 for _name, _q in _iss_sql.items():
     check(f"'{_name}' lists the top hundred issuers at the latest instant on or before the as-of day",
           "FROM web_exposure_issuers" in _q and "currency = {{currency}}" in _q
-          and "FROM web_sources_history" in _q and "[[AND {{as_of_day}}]]" in _q
+          and "FROM web_history_calendar" in _q and "[[AND {{as_of_day}}]]" in _q
           and "as_of_day <= (SELECT day FROM d)" in _q
           and "WHERE issuer <> '(none)'" in _q and _q.rstrip().endswith("LIMIT 100")
           and "lei" not in _output_columns(_q)
@@ -3061,7 +3096,7 @@ _missing = {v: [c for c in p.REPORTING_CURRENCIES
                 if not re.search(rf"_{c.lower()}\b", _latest_definition(v))]
             for v in p.web_views_wanted()
             if v not in _LONG_VIEWS | set(_FX_TABLES) | {"web_yield_rates", "web_income_days", "web_cashflow_pool",
-                                                          "web_position_sizes"}}
+                                                          "web_position_sizes", "web_history_calendar"}}
 check("every wide serving view carries a value column per reporting currency",
       not any(_missing.values()), {v: m for v, m in _missing.items() if m})
 _ym = open(os.path.join(_REPO, "wealthdb", "internal", "gold", "yield_materialize.go"),
@@ -3804,10 +3839,13 @@ if duckdb is not None:
     # daily history holds every day from August on. The card reads the
     # latest instant on or before the as-of day: the September month end
     # for a day inside October before the refresh, the refresh from its
-    # day on, and nothing for a day before the first instant.
-    _db.execute("CREATE TABLE web_sources_history (as_of_day DATE, silver_source_id TEXT)")
-    _db.execute("INSERT INTO web_sources_history SELECT d::DATE, 'src-1'"
-                " FROM range(DATE '2026-08-01', DATE '2026-10-22', INTERVAL 1 DAY) t(d)")
+    # day on, a day after the history included, and nothing for a day
+    # before the first instant. The day reaches it through the calendar
+    # over the history (migration 0166).
+    _db.execute("CREATE TABLE serving_global_history (as_of_day BIGINT)")
+    _db.execute("INSERT INTO serving_global_history SELECT epoch(d)::BIGINT"
+                " FROM range(TIMESTAMP '2026-08-01', TIMESTAMP '2026-10-22', INTERVAL 1 DAY) t(d)")
+    _db.execute(_MIG_TEXT[166])
     _db.execute("DELETE FROM report_exposure_issuer_ranks")
     for _at, _who, _v in (("2026-08-31 23:59:59", "Example Alpha", 500.0),
                           ("2026-09-30 23:59:59", "Example Beta", 600.0),
@@ -3826,6 +3864,8 @@ if duckdb is not None:
           [r[:3] for r in _issuers("2026-10-15")] == [(1, "Example Beta", 600.0)], _issuers("2026-10-15"))
     check("...on the refresh's day, the refresh",
           [r[1] for r in _issuers("2026-10-21")] == ["Example Gamma"], _issuers("2026-10-21"))
+    check("...and on a day after the history, the refresh too",
+          [r[1] for r in _issuers("2026-10-25")] == ["Example Gamma"], _issuers("2026-10-25"))
     check("...before the first instant, nothing", _issuers("2026-08-15") == [], _issuers("2026-08-15"))
     check("...opened standalone, the latest day",
           [r[1] for r in _issuers(None)] == ["Example Gamma"], _issuers(None))
@@ -3906,6 +3946,15 @@ if duckdb is not None:
     check("...and its twin the shares, the vehicle narrowing the list but not the denominator",
           _top_pct == [("QBIG", "large", round(60000 / 1850, 6)), ("QMID", "mid", round(50000 / 1850, 6)),
                        ("QNOS", None, round(30000 / 1850, 6))], _top_pct)
+    # The history ends on 2026-10-21 (the issuers' calendar above). A day
+    # after it reads that day's positions, on both cards; a day before
+    # the history reads none.
+    _late = [(r[0], r[5]) for r in _run("Top 100 positions", as_of_day=("2026-10-25", "2026-10-25"))]
+    check("a day after the history reads the positions of its last day",
+          _late == [(r[0], r[2]) for r in _top]
+          and len(_run(p.privacy_name("Top 100 positions"), as_of_day=("2026-10-25", "2026-10-25"))) == 4, _late)
+    check("...and a day before the history none",
+          _run("Top 100 positions", as_of_day=("2026-07-15", "2026-07-15")) == [])
 
     section("the DV01 card's SQL, run on an invented book")
 
@@ -4054,14 +4103,6 @@ if duckdb is not None:
           _mix)
     _mix = _run("Asset class mix over time", time_range=("2026-09-01", "2026-09-30"))
     check("...and the Time range keeps its days", {str(r[0]) for r in _mix} == {"2026-09-30"}, _mix)
-    # The As of day's probe reads the last day of the sources' history,
-    # which holds cash as well as positions.
-    _days = duckdb.connect()
-    _days.execute("CREATE TABLE web_sources_history (as_of_day TIMESTAMP, silver_source_id TEXT)")
-    _days.execute("INSERT INTO web_sources_history VALUES ('2026-10-20', 'src-1'), ('2026-10-21', 'cash-only')")
-    _last = _days.execute(p.LAST_HISTORY_DAY_SQL).fetchall()
-    check("the As of day probe reads the history's last day as YYYY-MM-DD", _last == [("2026-10-21",)], _last)
-    _days.close()
     # A day whose classes cancel to float noise has no mix to show.
     for _cls, _v in (("public_equity", 0.1), ("cash", 0.2), ("real_estate", -0.3)):
         _db.execute("INSERT INTO web_asset_classes_history VALUES ('2026-08-31', 'src-1', 'taxable_personal', ?, ?, ?, ?, ?)",

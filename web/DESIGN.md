@@ -127,16 +127,20 @@ ten dashboards. Their pickers:
   asset classes over time below it.
 - **Allocation**: a required currency, a required as-of day, a source,
   a *Tax wrapper* picker, and an *Asset class* picker. The as-of day
-  defaults to the last day the holdings history reaches. Provisioning
-  reads it off the snapshot. The history ends on the day of the last
-  refresh, so a snapshot not refreshed today still shows its holdings.
-  A day after that end reads nothing. The Top 100 positions tile
+  defaults to today. Each tile reads the last day of the holdings
+  history on or before the day picked. The history ends on the day of
+  the last refresh, so a snapshot not refreshed today still shows its
+  latest holdings. A day before the history reads nothing. The day
+  reaches the tiles through `web_history_calendar` (migration 0166). It
+  maps every day from the history's first to tomorrow to the last
+  history day on or before it. So the default stays the same, and a
+  refresh does not resend Allocation or its twin. The Top 100 positions tile
   carries a *Vehicle* picker of its own. Each stock row shows its
   share's market-cap size, as Exposure sizes it. A fund row shows none.
   The Top 100 issuers tile below it takes the currency and the as-of
   day alone: it covers the whole book. It reads the latest of the
-  instants its view holds on or before the day: today and the twelve
-  month ends before.
+  instants its view holds on or before that history day: today and the
+  twelve month ends before.
   Its twin drops the value and hides an issuer named by a holding's own
   key (`holding:<source>:<id>`).
 - **Returns**: a required currency (returns are stored one row set per
@@ -323,6 +327,10 @@ the latest of those instants in the window:
 - each card's description says what it counts. Metabase shows it
   behind the card's info icon.
 
+The debt view carries no asset class, so the class picker does not
+reach those four. These are compositions as of a day, so no projection
+picker reaches them. Their twins drop the value.
+
 The Top securities card reads `web_exposure_securities` (migration
 0165), at the debt cards' instants. It holds each security's slice per
 source, tax wrapper and asset class, so all three pickers reach it. The
@@ -335,12 +343,8 @@ card adds up a security's slices in the selection:
 
 With nothing picked, its rows are those of `wealthdb exposure
 securities`. Its twin drops the three values for their shares. It shows
-`(unnamed)` and no name for a key that is a holding's own
+`(unnamed)` and no name for a key that is, or holds, a holding's own
 (`holding:<source>:<id>`).
-
-The debt view carries no asset class, so the class picker does not
-reach those four. These are compositions as of a day, so no projection
-picker reaches them. Their twins drop the value.
 
 The **Yield** dashboard shows what the holdings earn and how their
 value moves with rates ([wealthdb/docs/YIELD.md](../wealthdb/docs/YIELD.md)).
@@ -608,8 +612,10 @@ A stale snapshot is caught before any of this is written. Provisioning
 probes the driver for the snapshot's schema version and for the serving
 views **by name**. It aborts with a "run `wealthdb web refresh`" message
 rather than converging the cards to a degraded shape. The version check
-catches a snapshot older than 0154. Such a snapshot lacks the stock
-positions' sizes. One older than 0149 lacks the cash flow projection's
+catches a snapshot older than 0166. Such a snapshot lacks the
+calendar the Allocation cards read their day through. One older than
+0165 lacks the securities the Exposure dashboard ranks. One older than
+0154 lacks the stock positions' sizes. One older than 0149 lacks the cash flow projection's
 look-back parts. One older than 0146 lacks the days the Income
 cards' received figures cover and the tax withheld on them. One older
 than 0138 lacks the yield views and the exposure of the debt too.

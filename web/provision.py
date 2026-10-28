@@ -124,9 +124,8 @@ def main():
     tables = ensure_synced(a.base, sid, db_id)
     if tables is None:
         return 1
-    global FIELD_IDS, ASOF_DEFAULT
+    global FIELD_IDS
     FIELD_IDS = field_ids_from(tables)
-    ASOF_DEFAULT = last_history_day(a.base, sid, db_id)
     unfingerprint_lists(a.base, sid, tables)
 
     coll_id = ensure_collection(a.base, sid, COLLECTION_NAME)
@@ -157,13 +156,10 @@ REPORTING_CURRENCIES = ("USD", "CHF", "EUR", "GBP")
 # reporting currency (main() sets it), USD otherwise.
 DEFAULT_CURRENCY = "USD"
 
-# The As of day picker's default: the last day the holdings history
-# reaches, which main() reads off the snapshot (last_history_day). The
-# history ends on the day the serving tables were last materialized, so
-# a snapshot not refreshed today still shows its latest holdings.
-# ASOF_FALLBACK where the snapshot does not answer.
-ASOF_FALLBACK = "thisday"
-ASOF_DEFAULT = ASOF_FALLBACK
+# The As of day picker's default: today. A card reads the last day of
+# the holdings history on or before the day (web_history_calendar), so a
+# snapshot not refreshed today still shows its latest holdings.
+ASOF_DEFAULT = "thisday"
 
 
 def default_currency(configured):
@@ -937,10 +933,12 @@ FILTER_FIELD_COLUMNS = {
     "web_sources_latest": ("snapshot_at", "silver_source_id", "tax_wrapper", "asset_class"),
     "web_sources_history": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
     "web_asset_classes_history": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
-    "web_vehicles_history": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
-    "web_accounts_history": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
-    "web_positions_history": ("as_of_day", "silver_source_id", "tax_wrapper",
-                              "asset_class", "vehicle"),
+    "web_vehicles_history": ("silver_source_id", "tax_wrapper", "asset_class"),
+    "web_accounts_history": ("silver_source_id", "tax_wrapper", "asset_class"),
+    "web_positions_history": ("silver_source_id", "tax_wrapper", "asset_class", "vehicle"),
+    # Each day to the last history day on or before it (migration 0166):
+    # the Allocation cards' As of day lands on it.
+    "web_history_calendar": ("as_of_day",),
     # The spending views (migration 0043). On the money dashboard both
     # bind their account picker to account_label rather than
     # account_external_id — see dashboard_parameters for why the readable
@@ -977,7 +975,7 @@ FILTER_FIELD_COLUMNS = {
     # The exposure of the debt and the largest issuers (migration 0138),
     # at the same instants. The debt view carries no asset class. No field
     # filter binds the issuers view: the Allocation card reaches its as-of
-    # day through web_sources_history.
+    # day through web_history_calendar.
     "web_exposure_debt": ("as_of_day", "silver_source_id", "tax_wrapper"),
     "web_exposure_issuers": (),
     # Each security's slice per source, tax wrapper and asset class
@@ -1233,8 +1231,7 @@ def allocation_note():
     base dashboard and the twin alike."""
     return (" Built for the Allocation dashboard, which supplies the as-of "
             f"day; opened standalone it runs in {DEFAULT_CURRENCY}, the "
-            "currency variable's default, and sums every day, so set the As "
-            "Of Day filter to a single day first.")
+            "currency variable's default, on the last day the history holds.")
 
 
 # The month a flow line falls in, as a zone-free TIMESTAMP column: the
@@ -1396,7 +1393,7 @@ def question_defs(db_id, mid):
     al_note = allocation_note()
     lat_tags = native_tags("web_sources_latest", holdings_filters("snapshot_at"))
     hist_tags = native_tags("web_sources_history", holdings_filters("as_of_day"))
-    pos_tags = native_tags("web_positions_history", POSITION_FILTERS)
+    pos_tags = asof_tags("web_positions_history", POSITION_FILTERS)
     cls_tags = native_tags("web_asset_classes_history", holdings_filters("as_of_day"))
     ccy_tags = {"currency": currency_tag()}
 
@@ -1414,7 +1411,7 @@ def question_defs(db_id, mid):
     def breakdown(name, view, dim, col, display, desc, viz=None):
         """An Allocation breakdown: `col` summed by `dim` over the as-of
         day's rows of serving view `view`, largest first."""
-        tags = native_tags(view, ASOF_FILTERS)
+        tags = asof_tags(view, ASOF_FILTERS)
         register_native_targets(name, tags, ALLOCATION_PICKERS)
         return (display, desc + al_note,
                 _native(db_id, _breakdown_sql(view, dim, col, tags), tags),
@@ -1499,7 +1496,8 @@ def question_defs(db_id, mid):
            for name, method, col in RETURN_YTD_CARDS},
         # The Allocation tiles read the daily-history views so the
         # dashboard can show holdings as of any chosen day, the history's
-        # last day included. The dashboard supplies the required as-of day.
+        # last day for a later one. The dashboard supplies the required
+        # as-of day.
         "Allocation by asset class": breakdown("Allocation by asset class",
             "web_asset_classes_history", "asset_class", "value", "row",
             "Value by asset class as of a day, including a 'cash' class — "
@@ -1537,7 +1535,7 @@ def question_defs(db_id, mid):
                 "WITH p AS (\n"
                 "  SELECT symbol, name, asset_class, vehicle,\n"
                 f"         sum({_ccy_case('value')})::DOUBLE AS value\n"
-                "    FROM web_positions_history" + _native_where(pos_tags) +
+                "    FROM web_positions_history" + _asof_where(pos_tags) +
                 "\n   GROUP BY 1, 2, 3, 4\n   ORDER BY 5 DESC\n   LIMIT 100)\n"
                 "SELECT p.symbol, p.name, p.asset_class, p.vehicle, z.size, p.value\n"
                 "  FROM p" + POSITION_SIZE_JOIN + "\n ORDER BY p.value DESC",
@@ -2395,11 +2393,10 @@ def gains_question_defs(db_id, privacy=False):
 # Dashboard filters: a required currency picker (default: the configured
 # default currency) and a silver-source picker (default: all values) plus
 # either a time range over flows/history (default: past 12 months) or a
-# single as-of day over point-in-time holdings (default: the last day
-# the holdings history reaches, ASOF_DEFAULT), each
-# linked to every tile, plus a tax wrapper and an asset class picker on
-# the Wealth Overview and Allocation and a vehicle picker that renders
-# inline on the Top-positions tiles only. The Returns dashboards carry a
+# single as-of day over point-in-time holdings (default: today,
+# ASOF_DEFAULT), each linked to every tile, plus a tax wrapper and an
+# asset class picker on the Wealth Overview and Allocation and a vehicle
+# picker that renders inline on the Top-positions tiles only. The Returns dashboards carry a
 # start-year picker instead of a time filter — the periods are
 # precomputed buckets; Spending, Income, Cash Flow, Gains and Exposure
 # carry pickers of their own (dashboard_parameters). The parameter ids
@@ -2613,7 +2610,7 @@ def base_dashboards():
         "Allocation": (
             "Where the value sits — asset class, currency, tax wrapper, "
             "management style, the largest positions and the largest "
-            "issuers — as of a chosen day (default: the latest holdings), "
+            "issuers — as of a chosen day (default: today), "
             f"in a chosen currency (default {DEFAULT_CURRENCY}). "
             + note, "asof", [
             # The two taxonomy dimensions side by side on the top row.
@@ -2931,7 +2928,9 @@ def exposure_cards(db_id, privacy):
     variant.
 
     The debt cards read web_exposure_debt (migration 0138), at the same
-    instants and currencies. docs/EXPOSURE.md defines every figure."""
+    instants and currencies. The Top securities card reads
+    web_exposure_securities (migration 0165), each security's slices at
+    those instants. docs/EXPOSURE.md defines every figure."""
     tags = native_tags("web_exposure", EXPOSURE_FILTERS)
     desc_end = (" Built for the Exposure dashboard; opened standalone it runs in "
                 f"{DEFAULT_CURRENCY}, the currency variable's default, over every month end."
@@ -3091,9 +3090,9 @@ def exposure_cards(db_id, privacy):
     # where its label would read 0.00%; the CLI's table keeps it. The
     # size of the debt is the asset class ring's. These are compositions
     # as of a day, so no projection picker reaches them. The refresh
-    # holds them, and the issuers, for today and the twelve month ends
-    # before only, their look-through costing several times the plain
-    # one.
+    # holds them, the issuers and the securities, for today and the twelve
+    # month ends before only, their look-through costing several times the
+    # plain one.
     dtags = native_tags("web_exposure_debt", EXPOSURE_DEBT_FILTERS)
     recent = (" It covers the last twelve months: a window that ends before them shows "
               "nothing.")
@@ -3166,9 +3165,8 @@ def exposure_cards(db_id, privacy):
          "directly and through every fund added up: a stock that several funds hold is one row. "
          "Each gives its market cap and size, how much of it is held directly and how much through "
          "funds, how many funds hold it, and its share of what the pickers select. Cash is a row "
-         "per currency, "
-         "and a fund nothing looks through a row of its own. The labels are those of its largest "
-         "part." + recent,
+         "per currency, and a fund nothing looks through a row of its own. The labels are those of "
+         "its largest part." + recent,
          _window_end("web_exposure_securities", stags)[1] + ",\n"
          "t AS (SELECT NULLIF(sum(value), 0) AS total FROM e),\n"
          "g AS (\n"
@@ -3194,14 +3192,13 @@ def issuer_cards(db_id, privacy):
     Native SQL over web_exposure_issuers (gold migration 0138): the
     largest issuers of the whole book, per reporting currency, today and
     at the twelve month ends before. The dashboard's as-of day reaches it
-    through web_sources_history, which holds every day, and the card
-    reads the latest instant on or before that day. The issuers view
+    through web_history_calendar (_history_day), and the card reads the
+    latest instant on or before that history day. The issuers view
     carries no source, tax wrapper or asset class, so those pickers do
     not reach it. A security no source names reads its key, which the
     privacy card hides where it is a holding's own; the privacy card also
     drops the value."""
-    tags = {"currency": currency_tag(),
-            **view_tags("web_sources_history", {"as_of_day": ("as_of_day", "date/single")})}
+    tags = {"currency": currency_tag(), **_calendar_tags()}
     tail = (" Built for the Allocation dashboard, which supplies the as-of day; opened standalone it "
             f"runs in {DEFAULT_CURRENCY}, the currency variable's default, at the latest day."
             + (PRIVACY_DESC if privacy else ""))
@@ -3219,8 +3216,7 @@ def issuer_cards(db_id, privacy):
          "the day, or the latest refresh, over the last twelve months: an earlier day shows "
          "nothing. It covers the whole book: the Source, Tax wrapper and Asset class pickers do "
          "not reach it.",
-         "WITH d AS (\n  SELECT max(as_of_day) AS day\n    FROM web_sources_history"
-         + _native_where(tags) + "),\n"
+         "WITH d AS (SELECT " + _history_day(tags) + " AS day),\n"
          "w AS (\n  SELECT *\n    FROM web_exposure_issuers\n   WHERE currency = {{currency}}\n"
          "     AND as_of_day <= (SELECT day FROM d)),\n"
          "e AS (SELECT * FROM w WHERE as_of_day = (SELECT max(as_of_day) FROM w))\n"
@@ -4257,8 +4253,9 @@ CARD_BALANCE_PICKERS = [t for t in SPEND_PICKERS if t[1] != "category"]
 # class `cash` (gold migration 0132).
 SELECTION_FILTERS = {"tax_wrapper": ("tax_wrapper", "string/="),
                      "asset_class": ("asset_class", "string/=")}
-ASOF_FILTERS = {"as_of_day": ("as_of_day", "date/single"),
-                "source": ("silver_source_id", "string/="), **SELECTION_FILTERS}
+# Allocation's As of day is not among its filters: asof_tags binds it to
+# web_history_calendar.
+ASOF_FILTERS = {"source": ("silver_source_id", "string/="), **SELECTION_FILTERS}
 POSITION_FILTERS = {**ASOF_FILTERS, "vehicle": ("vehicle", "string/=")}
 # The Top 100 positions cards show a stock's size beside it (gold
 # migration 0154), joined after the ranking on the position's label, so
@@ -4581,12 +4578,42 @@ def _native_where(tags, indent="   ", exclude=()):
     return f"\n{indent}WHERE TRUE" + _field_clauses(tags, exclude)
 
 
+def _calendar_tags():
+    """The As of day's template tag of an Allocation card. It binds
+    web_history_calendar (gold migration 0166), so a day after the
+    history reaches its last day (_history_day)."""
+    return view_tags("web_history_calendar", {"as_of_day": ("as_of_day", "date/single")})
+
+
+def asof_tags(view, spec):
+    """Template tags for an Allocation card over daily-history view
+    `view`: native_tags for every filter of `spec`, plus the day's
+    (_calendar_tags)."""
+    return {**native_tags(view, spec), **_calendar_tags()}
+
+
+def _history_day(tags):
+    """The history day an Allocation card reads: the last day of the
+    holdings history on or before the As of day, the history's last day
+    with none picked."""
+    return "(SELECT max(history_day) FROM web_history_calendar WHERE TRUE" + _cl(tags, "as_of_day") + ")"
+
+
+def _asof_where(tags, exclude=()):
+    """An Allocation card's WHERE over a daily-history view: its field
+    filters but the day's and those in `exclude`, and the history day
+    (_history_day) as its own."""
+    return (_native_where(tags, exclude=("as_of_day", *exclude))
+            + "\n     AND as_of_day = " + _history_day(tags))
+
+
 def _breakdown_sql(view, dim, col, tags, share=False):
     """An Allocation breakdown's SQL: `col` summed by `dim` over serving
-    view `view`'s rows that the field filters in `tags` keep, largest
-    first; with `share` each as % of the sum, the twin's (liability
-    buckets read negative, and a zero sum blanks them)."""
-    where = _native_where(tags)
+    view `view`'s rows on the history day (_asof_where) that the field
+    filters in `tags` keep, largest first; with `share` each as % of the
+    sum, the twin's (liability buckets read negative, and a zero sum
+    blanks them)."""
+    where = _asof_where(tags)
     if not share:
         return (f"SELECT {dim}, sum({_ccy_case(col)})::DOUBLE AS value\n"
                 f"  FROM {view}" + where + "\n GROUP BY 1\n ORDER BY 2 DESC")
@@ -4751,12 +4778,11 @@ def privacy_card_defs(db_id, model_ids):
     # selected sources as of the chosen day (liability buckets read
     # negative; the sum <> 0 guard blanks a degenerate zero day). Built
     # for the Allocation twin, which supplies the required as-of day;
-    # run standalone they aggregate across all days, so filter As Of Day
-    # to a single day first.
+    # run standalone they read the history's last day.
     standalone = allocation_note()
 
     def breakdown(name, view, dim, col, display, desc, viz=None):
-        tags = native_tags(view, ASOF_FILTERS)
+        tags = asof_tags(view, ASOF_FILTERS)
         out[name] = ("question", display, desc + standalone + PRIVACY_DESC,
                      _native(db_id, _breakdown_sql(view, dim, col, tags, share=True), tags),
                      viz if viz is not None else
@@ -4796,7 +4822,7 @@ def privacy_card_defs(db_id, model_ids):
     # asset classes. The inline vehicle picker narrows the list but not
     # the denominator, so a position's share reads the same however the
     # list is narrowed.
-    top_tags = native_tags("web_positions_history", POSITION_FILTERS)
+    top_tags = asof_tags("web_positions_history", POSITION_FILTERS)
     value = _ccy_case("value")
     out["Top 100 positions (privacy)"] = ("question", "table",
         "The hundred largest positions as of a day, each as % of the "
@@ -4807,11 +4833,11 @@ def privacy_card_defs(db_id, model_ids):
             "WITH tot AS (\n"
             f"  SELECT sum({value})::DOUBLE AS t\n"
             "    FROM web_positions_history"
-            + _native_where(top_tags, exclude=("vehicle",)) + "),\n"
+            + _asof_where(top_tags, exclude=("vehicle",)) + "),\n"
             "p AS (\n"
             "  SELECT symbol, name, asset_class, vehicle,"
             f" sum({value})::DOUBLE AS v\n"
-            "    FROM web_positions_history" + _native_where(top_tags) + "\n"
+            "    FROM web_positions_history" + _asof_where(top_tags) + "\n"
             "   GROUP BY 1, 2, 3, 4)\n"
             "SELECT p.symbol, p.name, p.asset_class, p.vehicle, z.size,\n"
             "       p.v / (SELECT CASE WHEN t <> 0 THEN t END FROM tot)"
@@ -5516,13 +5542,13 @@ def dashboard_parameters(model_ids, mode, name=""):
         # '(all sources)' reference line regardless.
         return [currency, start_year, source]
     if mode == "asof":
-        # Required, with the history's last day as the default
-        # (ASOF_DEFAULT): the as-of cards sum daily history (one row per
-        # entity per day), so they must never run with the day filter
-        # cleared — a required parameter resets to its default instead
-        # of clearing. A day the history does not reach reads nothing.
-        # The vehicle picker draws its values from the positions model
-        # and is linked only to POSITION_FILTERED_CARDS.
+        # Required, with today as the default (ASOF_DEFAULT): a required
+        # parameter resets to its default instead of clearing, so a card
+        # always reads the day picked. It reads the last history day on
+        # or before it (_history_day): a day after the history reads its
+        # last day, a day before it nothing. The vehicle picker draws its
+        # values from the positions model and is linked only to
+        # POSITION_FILTERED_CARDS.
         return [currency_picker(WEALTH_CURRENCY_PARAM_ID),
                 {"id": ASOF_PARAM_ID, "name": "As of day", "slug": "as_of_day",
                  "type": "date/single", "sectionId": "date",
@@ -5753,20 +5779,6 @@ def probe_rows(base, sid, db_id, sql):
     return (res.get("data") or {}).get("rows") if st == 202 else None
 
 
-# The last day of the holdings history: the sources' history carries
-# every line, cash included, so it reaches the end where any line does.
-LAST_HISTORY_DAY_SQL = "SELECT CAST(CAST(max(as_of_day) AS DATE) AS VARCHAR) FROM web_sources_history"
-
-
-def last_history_day(base, sid, db_id):
-    """The last day the snapshot's holdings history reaches, as
-    YYYY-MM-DD: the UTC day the serving tables were last materialized,
-    before today when the snapshot was not refreshed today. ASOF_FALLBACK
-    where the probe does not answer or the history is empty."""
-    rows = probe_rows(base, sid, db_id, LAST_HISTORY_DAY_SQL)
-    return rows[0][0] if rows and rows[0] and rows[0][0] else ASOF_FALLBACK
-
-
 def missing_web_views(base, sid, db_id):
     """The wanted web_* serving views the mounted gold snapshot does not
     carry, probed through the driver itself. A snapshot predating the
@@ -5790,8 +5802,9 @@ def missing_web_views(base, sid, db_id):
 
 
 # The oldest gold schema the cards can read: the migration that adds the
-# securities the Exposure dashboard ranks (0165). A snapshot older than
-# 0165 lacks that view, one older than 0154 the stock positions' sizes
+# calendar the Allocation cards read their day through (0166). A
+# snapshot older than 0166 lacks it, one older than 0165 the securities
+# the Exposure dashboard ranks, one older than 0154 the stock positions' sizes
 # the Top 100 positions cards read, one older than 0149 the cash
 # flow projection's look-back parts, one older than 0146 the days the
 # Income cards' received figures cover and the tax withheld on them, and
@@ -5799,7 +5812,7 @@ def missing_web_views(base, sid, db_id):
 # by-name probe finds. One older than 0133 carries every view by name but
 # reads a missing tax wrapper blank, and one older than 0132 lacks the
 # serving tables' columns: only the version tells those apart.
-MIN_GOLD_SCHEMA = 165
+MIN_GOLD_SCHEMA = 166
 
 # main()'s exit status for a snapshot older than MIN_GOLD_SCHEMA; every
 # other failure exits 1. web/web tells the two apart, because only
@@ -6483,8 +6496,8 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
             continue
         if name in existing:
             n["updated"] += 1
-        # A change to the pickers alone (Allocation's As of day default
-        # follows the snapshot) is sent alone, so the tiles keep their ids.
+        # A change to the pickers alone (a new picker default) is sent
+        # alone, so the tiles keep their ids.
         if dashboard_unchanged(current, name, desc, (current or {}).get("parameters"), dashcards):
             if not _put_parameters(base, sid, dash_ids[name], name, parameters,
                                    "update the filters of"):

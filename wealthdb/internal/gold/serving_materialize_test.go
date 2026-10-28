@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -249,5 +250,45 @@ func TestWebTransactionsIsDropped(t *testing.T) {
 	}
 	if tables != 1 {
 		t.Errorf("serving_transactions tables %d, want 1", tables)
+	}
+}
+
+// web_history_calendar maps a day the history holds to itself, a day in a
+// gap or after its end to the last history day before it, and has no row
+// for a day before it; it reaches tomorrow, past a history that ended
+// earlier. It replays (migration 0166).
+func TestWebHistoryCalendarReadsTheLastHistoryDay(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	day := func(y int, m time.Month, d int) int64 { return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix() }
+	for _, d := range []int64{day(2026, 3, 1), day(2026, 3, 2), day(2026, 3, 5)} {
+		if _, err := db.ExecContext(ctx, `INSERT INTO serving_global_history (as_of_day) VALUES (?)`, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func(at int64) string {
+		t.Helper()
+		got := scanStrings(t, db, `SELECT strftime(history_day, '%Y-%m-%d') FROM web_history_calendar
+		    WHERE as_of_day = epoch_ms(? * 1000)`, at)
+		return strings.Join(got, ",")
+	}
+	for _, c := range []struct {
+		at   int64
+		want string
+	}{
+		{day(2026, 3, 2), "2026-03-02"},
+		{day(2026, 3, 4), "2026-03-02"},
+		{day(2026, 3, 5), "2026-03-05"},
+		{day(2026, 3, 20), "2026-03-05"},
+		{time.Now().UTC().Truncate(24*time.Hour).Unix() + 86400, "2026-03-05"},
+		{day(2026, 2, 28), ""},
+	} {
+		if got := read(c.at); got != c.want {
+			t.Errorf("%s reads %q, want %q", time.Unix(c.at, 0).UTC().Format(time.DateOnly), got, c.want)
+		}
+	}
+	rerunMigrationDDL(t, db, ctx, "0166_history_calendar.sql")
+	if got := read(day(2026, 3, 20)); got != "2026-03-05" {
+		t.Errorf("after replay: %q", got)
 	}
 }
