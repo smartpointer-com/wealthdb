@@ -34,11 +34,12 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 	exDay, recordDay := time.Date(1970, 1, 2, 0, 0, 0, 0, time.UTC), time.Date(1970, 1, 3, 0, 0, 0, 0, time.UTC)
 	payDay, declaredDay := time.Date(1970, 1, 9, 0, 0, 0, 0, time.UTC), time.Date(1969, 12, 20, 0, 0, 0, 0, time.UTC)
 	final := canonical.DividendFinal
+	until := int64(259200)
 	b := &canonical.SnapshotBatch{
 		FundCompositions: []canonical.FundCompositionChange{{SilverSourceID: "test-src", FundRef: "isin:XX0000000001",
 			AsOf: 86400, Basis: canonical.CompositionHoldings, Provider: "p1", SourceKind: "report", FundName: s("Qumbra Fund"),
 			Currency: s("QLD"), NetAssets: d("1001"), LineCount: 2, WeightSum: d("99.5"), UnitsOutstanding: d("7"),
-			FetchedAt: 172800, Payload: []byte(`{"c":1}`)}},
+			FetchedAt: 172800, Payload: []byte(`{"c":1}`), Origin: canonical.CompositionParsed, ValidUntil: &until}},
 		FundLines: []canonical.FundLineChange{{SilverSourceID: "test-src", FundRef: "isin:XX0000000001", AsOf: 86400,
 			Basis: canonical.CompositionHoldings, LineNo: 3, SecurityKey: "isin:XX0000000002", ISIN: s("XX0000000002"),
 			CUSIP: s("Q0000AB01"), FIGI: s("BBG00000Q001"), Ticker: s("QRV"), Exchange: s("Qland Exchange"),
@@ -49,7 +50,7 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 			ExchangeRate: d("1.0855"),
 			Duration:     d("6.25"), ModifiedDuration: d("6.1"), YieldToMaturity: d("4.35"), YieldToWorst: d("4.2"),
 			YieldToCall: d("4.1"), RealDuration: d("5.5"), RealYield: d("1.85"), AccrualDate: &accrual,
-			Payload: []byte(`{"l":1,"lei":"QQQQ00000000000000L1"}`)}},
+			Payload: []byte(`{"l":1,"lei":"QQQQ00000000000000L1"}`), Region: s("europe")}},
 		FundAttributes: []canonical.FundAttributesChange{{SilverSourceID: "test-src", FundRef: "isin:XX0000000001",
 			AsOf: 86400, Domicile: s("QA"), LegalForm: s("SICAV"), UCITS: &yes, Replication: s("physical"),
 			Distribution: s("dis"), TER: d("0.12"), HedgedCurrency: s("QLH"), Lending: &no, IndexName: s("Qland Index"),
@@ -107,18 +108,19 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 	var tables []string
 	for _, c := range []struct{ table, cols, want string }{
 		{"fund_compositions", `silver_source_id, fund_ref, as_of, basis, provider, source_kind, fund_name, currency,
-		    net_assets, line_count, weight_sum, units_outstanding, fetched_at, payload`,
-			"test-src|isin:XX0000000001|86400|holdings|p1|report|Qumbra Fund|QLD|1001.0000|2|99.50000000|7.00000000|172800|{\"c\":1}"},
+		    net_assets, line_count, weight_sum, units_outstanding, fetched_at, payload, origin, valid_until`,
+			"test-src|isin:XX0000000001|86400|holdings|p1|report|Qumbra Fund|QLD|1001.0000|2|99.50000000|7.00000000|172800|{\"c\":1}|" +
+				"parsed|259200"},
 		{"fund_lines", `silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, cusip, figi, ticker,
 		    exchange, name, asset_type, weight, quantity, market_value, currency, country, risk_country, sector, industry,
 		    maturity, coupon, long_currency, long_amount, short_currency, short_amount, coupon_kind, is_default,
 		    in_arrears, paid_in_kind, exchange_rate, duration, modified_duration, yield_to_maturity, yield_to_worst, yield_to_call,
-		    real_duration, real_yield, accrual_date, lei, payload`,
+		    real_duration, real_yield, accrual_date, lei, payload, region`,
 			"test-src|isin:XX0000000001|86400|holdings|3|isin:XX0000000002|XX0000000002|Q0000AB01|BBG00000Q001|QRV|" +
 				"Qland Exchange|Qorvant Corp|Equity|12.50000000|40.00000000|125.2500|QLE|Qland|Rland|Mining|Metals|" +
 				"2041-03-15|3.33000000|QLF|11.0000|QLG|12.0000|Fixed|false|true|false|1.085500000000|6.25000000|6.10000000|" +
 				"4.35000000|4.20000000|4.10000000|5.50000000|1.85000000|2040-09-15|QQQQ00000000000000L1|" +
-				"{\"l\":1,\"lei\":\"QQQQ00000000000000L1\"}"},
+				"{\"l\":1,\"lei\":\"QQQQ00000000000000L1\"}|europe"},
 		{"fund_attributes", `silver_source_id, fund_ref, as_of, domicile, legal_form, ucits, replication, distribution,
 		    ter, hedged_currency, lending, index_name, depositary, payload`,
 			"test-src|isin:XX0000000001|86400|QA|SICAV|true|physical|dis|0.12000000|QLH|false|Qland Index|Example Bank|{\"a\":1}"},
@@ -264,6 +266,27 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 			SilverSourceID: "test-src", InstrumentExternalID: "XX0000000012", AsOf: 86400, Dimensions: c.dims}}})
 		if c.want == "" && err != nil || c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)) {
 			t.Errorf("%v: %v, want %q", c.dims, err, c.want)
+		}
+		_ = tx.Rollback()
+	}
+
+	// A composition's origin and a line's region outside their
+	// vocabularies are refused; a line states no unknown region.
+	region := func(r string) *string { return &r }
+	for _, b := range []*canonical.SnapshotBatch{
+		{FundCompositions: []canonical.FundCompositionChange{{SilverSourceID: "test-src", FundRef: "isin:XX0000000013",
+			AsOf: 86400, Basis: canonical.CompositionHoldings, Provider: "p1", Origin: "guessed"}}},
+		{FundLines: []canonical.FundLineChange{{SilverSourceID: "test-src", FundRef: "isin:XX0000000013", AsOf: 86400,
+			Basis: canonical.CompositionHoldings, LineNo: 1, Region: region("N. America")}}},
+		{FundLines: []canonical.FundLineChange{{SilverSourceID: "test-src", FundRef: "isin:XX0000000013", AsOf: 86400,
+			Basis: canonical.CompositionHoldings, LineNo: 1, Region: region(canonical.Unknown)}}},
+	} {
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := NewWriter(tx).InsertReference(ctx, b); err == nil || !strings.Contains(err.Error(), "invalid") {
+			t.Errorf("%+v: %v, want it refused", b, err)
 		}
 		_ = tx.Rollback()
 	}

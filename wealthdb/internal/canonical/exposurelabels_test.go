@@ -42,6 +42,8 @@ func TestExposureLabelsAreConsistent(t *testing.T) {
 		{"sector", "information technology"}: "technology",
 		{"sector", "consumer defensive"}:     "consumer_staples",
 		{"sector", "securitized"}:            "securitised",
+		{"sector", "health_care"}:            "health_care",
+		{"sector", "consumer_cyclical"}:      "consumer_cyclical",
 		{"country", "korea (south)"}:         "KR",
 		{"country", "united states"}:         "US",
 		{"country", "us"}:                    "US",

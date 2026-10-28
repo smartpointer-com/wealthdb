@@ -70,22 +70,33 @@ func (w *Writer) insertFundCompositions(ctx context.Context, batch []canonical.F
 		if !batch[i].Basis.Valid() {
 			return fmt.Errorf("fund_compositions row %d: invalid basis %q", i, batch[i].Basis)
 		}
+		switch batch[i].Origin {
+		case "", canonical.CompositionProvider, canonical.CompositionParsed:
+		default:
+			return fmt.Errorf("fund_compositions row %d: invalid origin %q", i, batch[i].Origin)
+		}
 	}
 	const head = `
 INSERT INTO fund_compositions (
     silver_source_id, fund_ref, as_of, basis, provider, source_kind, fund_name,
-    currency, net_assets, line_count, weight_sum, units_outstanding, fetched_at, payload
+    currency, net_assets, line_count, weight_sum, units_outstanding, fetched_at, payload,
+    origin, valid_until
 ) VALUES `
 	return InsertChunked(ctx, w.tx, "fund_compositions", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
 		func(i int, args []any) []any {
 			r := &batch[i]
+			origin := r.Origin
+			if origin == "" {
+				origin = canonical.CompositionProvider
+			}
 			return append(args,
 				r.SilverSourceID, r.FundRef, r.AsOf, string(r.Basis), r.Provider,
 				nullableEnumValue(r.SourceKind), nullable(r.FundName),
 				nullable(r.Currency), nullable(r.NetAssets), r.LineCount,
 				nullable(r.WeightSum), nullable(r.UnitsOutstanding),
-				nullableInstant(r.FetchedAt), nullableJSON(r.Payload))
+				nullableInstant(r.FetchedAt), nullableJSON(r.Payload),
+				origin, nullable(r.ValidUntil))
 		})
 }
 
@@ -97,6 +108,10 @@ func (w *Writer) insertFundLines(ctx context.Context, batch []canonical.FundLine
 		if !batch[i].Basis.Valid() {
 			return fmt.Errorf("fund_lines row %d: invalid basis %q", i, batch[i].Basis)
 		}
+		if r := batch[i].Region; r != nil && (*r == canonical.Unknown ||
+			!canonical.DeclaredValueValid(canonical.DimensionRegion, *r)) {
+			return fmt.Errorf("fund_lines row %d: invalid region %q", i, *r)
+		}
 	}
 	const head = `
 INSERT INTO fund_lines (
@@ -107,11 +122,11 @@ INSERT INTO fund_lines (
     long_currency, long_amount, short_currency, short_amount,
     coupon_kind, is_default, in_arrears, paid_in_kind, exchange_rate,
     duration, modified_duration, yield_to_maturity, yield_to_worst, yield_to_call,
-    real_duration, real_yield, accrual_date, lei, payload
+    real_duration, real_yield, accrual_date, lei, payload, region
 ) VALUES `
 	return InsertChunked(ctx, w.tx, "fund_lines", head,
 		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+
-			`?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+			`?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
 		func(i int, args []any) []any {
 			r := &batch[i]
 			return append(args,
@@ -131,7 +146,7 @@ INSERT INTO fund_lines (
 				nullable(r.Duration), nullable(r.ModifiedDuration),
 				nullable(r.YieldToMaturity), nullable(r.YieldToWorst), nullable(r.YieldToCall),
 				nullable(r.RealDuration), nullable(r.RealYield), nullable(r.AccrualDate),
-				nullable(payloadLEI(r.Payload)), nullableJSON(r.Payload))
+				nullable(payloadLEI(r.Payload)), nullableJSON(r.Payload), nullable(r.Region))
 		})
 }
 

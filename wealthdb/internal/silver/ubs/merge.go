@@ -174,13 +174,12 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 			return nil, fmt.Errorf("ubs web Snapshots: %w", err)
 		}
 		streams = append(streams, s)
-		reports, err := c.web.exposureReports(ctx, w)
+		reports, err := c.web.quarterlyReports(ctx, w)
 		if err != nil {
 			return nil, err
 		}
-		if len(reports) > 0 {
-			streams = append(streams, silver.NewSnapshotStream(
-				[]canonical.SnapshotBatch{{ExposureReports: reports}}))
+		if b := reports.batches(); b != nil {
+			streams = append(streams, silver.NewSnapshotStream(b))
 		}
 	}
 	if c.psn != nil {

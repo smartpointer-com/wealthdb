@@ -1597,9 +1597,10 @@ count each sale once:
 ubs-web reads each quarterly report of a private-markets feeder fund
 into `private_market_reports` and its per-investment table into
 `private_market_report_lines` (ubs-web DESIGN.md §3.12). The adapter
-turns a report into one dated exposure record for the fund
-(`exposure_reports.go`). Gold merges it with the declarations ledger
-(EXPOSURE.md §9, parsed records).
+turns a report into two things for the fund (`exposure_reports.go`).
+One is a dated exposure record, which gold merges with the declarations
+ledger (EXPOSURE.md §9, parsed records). The other is the fund's
+composition on that day, one line per investment.
 
 - **The holding.** The record names the fund by the ISIN the capital
   account prints. Both feeds name the fund's position by that ISIN, so
@@ -1616,16 +1617,26 @@ turns a report into one dated exposure record for the fund
   "software" for `technology`; no match reads as `unknown`. Health
   comes before technology, so "Healthcare Technology" reads as
   `health_care`.
+- **The composition.** Each line above zero is a line of the
+  composition. Its weight is its residual value over the sum of every
+  line's, negative lines included. So the lines sum above 100 where a
+  line is negative, and the fund's remainder reads as cash (EXPOSURE.md
+  §5). A line is keyed by its name; the table prints no identifier. It
+  states its region and its sector, mapped as the record's are, where a
+  map knows them. The composition holds until the fund's next report,
+  reconciled or not. EXPOSURE.md §4 and §9 say which of the two
+  describes a day and what fills in the rest of a line.
 - **Not read.** The table's strategy column (buyout, growth) states
   neither a sector nor an asset class, so the holding keeps its own
   class. The report's pie charts are never read.
 - **Only whole tables.** A report whose lines do not sum to the table's
-  total gives no record. Where two documents report one quarter for one
-  fund, the first by document token counts.
+  total gives no record and no composition. Where two documents report
+  one quarter for one fund, the first by document token counts.
 - **The window.** The change window reaches the reports' dates, so a
-  load's windowed delete clears the records before it writes them again.
+  load's windowed delete clears the records and compositions before it
+  writes them again.
 - **Reaching gold.** A ubs-web collector load writes no new dump. So new
-  records reach gold on the next `wealthdb reload ubs`.
+  records and compositions reach gold on the next `wealthdb reload ubs`.
 
 ## 14. Open questions
 

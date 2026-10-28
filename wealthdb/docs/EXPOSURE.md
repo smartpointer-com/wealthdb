@@ -70,7 +70,8 @@ For a day:
    A fund the third level still names stays a leaf, flagged `partial`.
 5. What the weights do not explain becomes a remainder leaf under the
    fund: the holding's value times (100 − the sum of the weights) %. A
-   line without a weight counts in the remainder.
+   line without a weight counts in the remainder. Weights above 100
+   leave a negative remainder, which reads as cash (§5).
 6. Every leaf gets an asset class, a sector, a country and a currency
    (§3, §6).
 
@@ -80,11 +81,14 @@ What describes a holding, in this order:
 2. its declaration (§9);
 3. a proxy's composition (§5).
 
-A declaration never stands in for a fund's own composition. Where the
-config says a proxy always replaces that composition (§5), the proxy
-still does, declaration or not. A declaration describes a holding held
-directly: a fund that another fund holds reads its composition or its
-proxy, never a declaration.
+A declaration never stands in for a fund's own composition, with one
+exception. A ledger record of the same or a later day wins over a
+composition a source parses from the fund's own report (§9, parsed
+records). Where the config says a proxy always replaces a fund's own
+composition (§5), the proxy still does, declaration or not.
+
+A declaration describes a holding held directly: a fund that another
+fund holds reads its composition or its proxy, never a declaration.
 
 A holding none of them describes is a leaf of its own. A listed
 security takes its attributes from §3. A fund takes none of them, held
@@ -282,6 +286,19 @@ A holding whose mark is older than the day (a private fund's quarterly
 NAV) still joins at the day: the composition describes the fund, the
 mark describes the holding.
 
+A source may parse a composition from the fund's own documents, such as
+a private-markets fund's quarterly report
+([adapters/ubs.md §13](adapters/ubs.md#13-private-markets-quarterly-reports)).
+Such a composition describes the fund from its day until the day of the
+fund's next document, within the same bound:
+
+- It never serves a day before its own.
+- It ends at the next document, even where that document gives no
+  composition.
+
+On the other days the holding reads its declaration (§9). A holding
+without one reads as a fund with no composition.
+
 ## 5. Special cases
 
 - **Proxy.** The config names another fund whose composition stands in
@@ -291,6 +308,13 @@ mark describes the holding.
 - **Leverage.** A proxy may carry a factor. A three-times fund is three
   times its proxy's lines and minus two times cash, in the proxy's
   currency. The total still equals the holding's value.
+- **Weights above 100.** A fund's lines may sum to more than its net
+  assets where it owes money, such as accrued fees or calls bridged on a
+  credit line. The negative remainder is a cash leaf in the fund's
+  currency, like the leverage leg. Gross exposure then exceeds the
+  holding's value, and the total still equals it. Nothing finer is
+  modelled: a fund's own cash is not stated. Weights more than 3 above
+  100 still flag the leaf `partial` (§8).
 - **Swap funds.** A provider marks a swap fund's substitute basket as
   `collateral`. The look-through reads the index lines where the
   provider lists them, else the proxy, never the basket.
@@ -542,7 +566,7 @@ instead (§13).
 | `declared` | a declaration states it (§9) |
 | `aged` | the composition is more than 35 days older than the day |
 | `forward` | the composition is dated after the day |
-| `partial` | the weights leave more than 3% of the fund unexplained (the remainder), a forward states no legs, or a fund lies deeper than three levels |
+| `partial` | the weights stray from 100 by more than 3% either way (the remainder), a forward states no legs, or a fund lies deeper than three levels |
 | `unmapped` | a provider's label has no place in the vocabulary |
 | `by_name` | a depositary receipt's or a named line's sector or country comes from a share matched by name among all shares, not in a proxy's lines (§3) |
 | `opaque` | a private equity fund nothing looks through; it reads `diversified` |
@@ -716,6 +740,19 @@ a situs alone adds nothing here.
 
 `exposure_declarations.origin` says which kind each record is: `ledger`
 or `parsed`.
+
+A source that parses a split may also parse the document's lines as the
+fund's composition. The composition describes the days §4 gives it. A
+ledger record of the same or a later day wins over it, as it wins over
+the parsed record. On the other days the declarations above describe
+the holding.
+
+A line states what the document gives, such as its region and sector.
+For the rest it takes what the declaration in force states whole, one
+value at 100: a class, a sector, a currency. That is the parsed record
+of the same document, which carries the ledger's other dimensions. A
+dimension the record splits reads as the line would without it: the
+holding's class, the fund's currency, an unknown sector.
 
 ### Yield records
 

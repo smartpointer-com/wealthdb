@@ -2148,6 +2148,13 @@ the day (`as_of`). Each dimension's split is JSON, in percent. An
 account source writes it, and `gold.SyncExposure` copies each row into
 the declarations as a parsed record (below).
 
+Migration 0167 gives `fund_compositions` an `origin` and a
+`valid_until`, and `fund_lines` a `region`. An account source may write
+a fund's composition too, one it parses from the fund's own documents
+(`parsed`). It holds until the fund's next document
+([EXPOSURE.md](EXPOSURE.md) §4). A reference provider's composition is
+`provider`.
+
 The refdata collector learns what to fetch from the hidden read-only
 subcommand `refdata-wanted`, whose JSON contract adapters/refdata.md §5
 defines.

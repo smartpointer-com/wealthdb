@@ -208,6 +208,15 @@ func ExposureLabels() []Label {
 			}
 		}
 	}
+	// A broad sector's own name reads as itself, so a source that maps
+	// its labels before it writes them (a quarterly report's lines) is
+	// read as written.
+	for _, s := range equitySectors {
+		if prev, ok := sectors[string(s)]; !ok || prev != string(s) {
+			sectors[string(s)] = string(s)
+			out = append(out, Label{Field: LabelSector, Label: string(s), Value: string(s)})
+		}
+	}
 	for a, labels := range genericAssetTypes {
 		for _, l := range labels {
 			out = append(out, Label{Field: LabelAssetType, Label: l, Value: string(a)})

@@ -68,7 +68,21 @@ type FundCompositionChange struct {
 	// FetchedAt is the instant of the run that fetched it.
 	FetchedAt int64
 	Payload   json.RawMessage
+	// Origin is CompositionProvider (or "") for a reference provider's
+	// composition, CompositionParsed for one a holding's own source
+	// parses from a document of the fund's, such as a quarterly report.
+	// A parsed composition describes the fund from AsOf on, never before,
+	// and up to ValidUntil, the date of the fund's next document, where
+	// one exists (docs/EXPOSURE.md §4).
+	Origin     string
+	ValidUntil *int64
 }
+
+// The origins of a composition.
+const (
+	CompositionProvider = "provider"
+	CompositionParsed   = "parsed"
+)
 
 // FundLineChange is one insert into gold's `fund_lines`: one line of a
 // composition, its labels as the provider wrote them.
@@ -101,8 +115,11 @@ type FundLineChange struct {
 	RiskCountry *string
 	Sector      *string
 	Industry    *string
-	Maturity    *time.Time
-	Coupon      *Decimal
+	// Region is the region a line states where it states no country, as
+	// a value of the vocabulary (Region or RegionOther).
+	Region   *string
+	Maturity *time.Time
+	Coupon   *Decimal
 	// The two legs of a currency forward at notional, each in its own
 	// currency, where the provider states them.
 	LongCurrency  *string

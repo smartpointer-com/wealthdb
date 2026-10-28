@@ -2,6 +2,7 @@ package ubs
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"testing"
 
@@ -42,8 +43,8 @@ func seedReport(t *testing.T, r *webReader, token, isin string, asOf int64, reco
 			sector = s
 		}
 		silvertest.Exec(t, r.db, `INSERT INTO private_market_report_lines (source_doc_token, line_no, name, region,
-		    sector, residual_value, payload) VALUES (?, ?, 'Investment Alpha', ?, ?, ?, '{}')`,
-			token, i+1, l[0], sector, l[2])
+		    sector, residual_value, payload) VALUES (?, ?, ?, ?, ?, ?, '{}')`,
+			token, i+1, fmt.Sprintf("Investment %c", 'A'+i), l[0], sector, l[2])
 	}
 }
 
@@ -67,10 +68,11 @@ func TestQuarterlyReportSplitsAtResidualValue(t *testing.T) {
 		[3]any{"Asia-Pacific", "Consumer / Retail", 308.6},
 		[3]any{"Atlantis", "Space Tourism", 102.9},
 		[3]any{"Europe", "Industrials", -4.1})
-	got, err := r.exposureReports(context.Background(), fullWindow())
+	reports, err := r.quarterlyReports(context.Background(), fullWindow())
 	if err != nil {
 		t.Fatal(err)
 	}
+	got := reports.records
 	if len(got) != 1 {
 		t.Fatalf("got %d records, want 1", len(got))
 	}
@@ -108,10 +110,11 @@ func TestQuarterlyReportRecords(t *testing.T) {
 	seedReport(t, r, "doc-d", "XX0000000033", q2, 0, [3]any{"Europe", "", 17.3})
 	seedReport(t, r, "doc-e", "XX0000000044", q1, 1, [3]any{"Europe", "", 17.3})
 	seedReport(t, r, "doc-f", "XX0000000055", q2, 1, [3]any{"Europe", "", 0.0})
-	got, err := r.exposureReports(context.Background(), canonical.Window{HasChanges: true, Start: q2, End: q2})
+	reports, err := r.quarterlyReports(context.Background(), canonical.Window{HasChanges: true, Start: q2, End: q2})
 	if err != nil {
 		t.Fatal(err)
 	}
+	got := reports.records
 	if len(got) != 1 || got[0].InstrumentExternalID != "XX0000000022" {
 		t.Fatalf("got %+v, want XX0000000022 alone", got)
 	}
@@ -132,9 +135,9 @@ func TestQuarterlyReportRecords(t *testing.T) {
 func TestQuarterlyReportsNeedTheirTables(t *testing.T) {
 	t.Parallel()
 	r := newCardFixture(t)
-	got, err := r.exposureReports(context.Background(), fullWindow())
-	if err != nil || got != nil {
-		t.Errorf("exposureReports = %v, %v; want none", got, err)
+	got, err := r.quarterlyReports(context.Background(), fullWindow())
+	if err != nil || got.batches() != nil {
+		t.Errorf("quarterlyReports = %+v, %v; want none", got, err)
 	}
 	if lo, hi, err := r.reportRange(context.Background()); err != nil || lo != -1 || hi != -1 {
 		t.Errorf("reportRange = %d, %d, %v", lo, hi, err)
@@ -205,12 +208,15 @@ CREATE TABLE private_market_report_lines (
 	}
 	defer stream.Close()
 	var got []canonical.ExposureReportChange
+	var comps []canonical.FundCompositionChange
+	var lines []canonical.FundLineChange
 	for {
 		batch, more, err := stream.Next(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
 		got = append(got, batch.ExposureReports...)
+		comps, lines = append(comps, batch.FundCompositions...), append(lines, batch.FundLines...)
 		if !more {
 			break
 		}
@@ -219,4 +225,107 @@ CREATE TABLE private_market_report_lines (
 		t.Fatalf("reports %+v, want XX0000000066 on day 100", got)
 	}
 	near(t, "europe", got[0].Dimensions[canonical.DimensionRegion]["europe"], 75)
+	if len(comps) != 1 || comps[0].FundRef != "isin:XX0000000066" || len(lines) != 2 {
+		t.Errorf("compositions %+v with %d lines, want isin:XX0000000066 with 2", comps, len(lines))
+	}
+}
+
+// A reconciled report is also the fund's composition: each line above
+// zero at its residual value over every line's, so a negative line
+// lifts the others above 100. A line states its region and sector where
+// a map knows them, and is keyed by its name. The composition holds
+// until the fund's next report, reconciled or not; the last one has no
+// bound.
+func TestQuarterlyReportComposition(t *testing.T) {
+	t.Parallel()
+	r := newReportFixture(t)
+	const q1, q2, q3 = 1901145600, 1909008000, 1916956800
+	seedReport(t, r, "doc-p", "XX0000000077", q1, 1,
+		[3]any{"North America", "Software", 60.0},
+		[3]any{"Atlantis", "Space Tourism", 30.0},
+		[3]any{"Europe", "", 0.0},
+		[3]any{"Europe", "Industrials", -10.0})
+	seedReport(t, r, "doc-q", "XX0000000077", q2, 0, [3]any{"Europe", "", 5.0})
+	seedReport(t, r, "doc-r", "XX0000000077", q3, 1, [3]any{"Rest of World", "", 5.0})
+	got, err := r.quarterlyReports(context.Background(), fullWindow())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.comps) != 2 || len(got.records) != 2 {
+		t.Fatalf("got %d compositions and %d records, want 2 and 2", len(got.comps), len(got.records))
+	}
+	c := got.comps[0]
+	if c.FundRef != "isin:XX0000000077" || c.AsOf != q1 || c.Basis != canonical.CompositionHoldings ||
+		c.Origin != canonical.CompositionParsed || c.Provider != reportProvider || c.LineCount != 2 {
+		t.Errorf("composition = %+v", c)
+	}
+	if c.ValidUntil == nil || *c.ValidUntil != q2 {
+		t.Errorf("valid until %v, want the unreconciled report's day %d", c.ValidUntil, q2)
+	}
+	if got.comps[1].ValidUntil != nil {
+		t.Errorf("the last composition is bound to %d", *got.comps[1].ValidUntil)
+	}
+	ws, _ := c.WeightSum.Float64()
+	near(t, "weight sum", ws, 112.5)
+	var first []canonical.FundLineChange
+	for _, l := range got.lines {
+		if l.AsOf == q1 {
+			first = append(first, l)
+		}
+	}
+	if len(first) != 2 {
+		t.Fatalf("lines %+v, want the two above zero", first)
+	}
+	a, b := first[0], first[1]
+	wa, _ := a.Weight.Float64()
+	wb, _ := b.Weight.Float64()
+	near(t, "first weight", wa, 75)
+	near(t, "second weight", wb, 37.5)
+	if a.LineNo != 1 || *a.Name != "Investment A" || a.SecurityKey != canonical.SecurityKey("", "", "", "", "Investment A") {
+		t.Errorf("first line = %+v", a)
+	}
+	if a.Region == nil || *a.Region != "north_america" || a.Sector == nil || *a.Sector != "technology" {
+		t.Errorf("first line's labels = %v, %v", a.Region, a.Sector)
+	}
+	if b.Region != nil || b.Sector != nil {
+		t.Errorf("an unknown label is stated: %v, %v", b.Region, b.Sector)
+	}
+	if r := got.lines[len(got.lines)-1].Region; r == nil || *r != "other" {
+		t.Errorf("rest of world reads %v, want other", r)
+	}
+	// A window that holds the first report alone still bounds it by the
+	// next one.
+	narrow, err := r.quarterlyReports(context.Background(), canonical.Window{HasChanges: true, Start: q1, End: q1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(narrow.comps) != 1 || narrow.comps[0].ValidUntil == nil || *narrow.comps[0].ValidUntil != q2 {
+		t.Errorf("narrow window: %+v, want the first composition bound to %d", narrow.comps, q2)
+	}
+}
+
+// The weights are rounded to eight places and sum to exactly 100 where
+// no line is below zero: the largest line takes what the rounding
+// leaves.
+func TestQuarterlyReportWeightsSumExactly(t *testing.T) {
+	t.Parallel()
+	lines := []reportLine{{no: 1, name: "Investment A", residual: 1}, {no: 2, name: "Investment B", residual: 1},
+		{no: 3, name: "Investment C", residual: 1.000001}}
+	comp, out, ok := reportComposition("XX0000000088", 0, lines)
+	if !ok || len(out) != 3 {
+		t.Fatalf("composition %+v, %d lines, %v", comp, len(out), ok)
+	}
+	var sum canonical.Decimal
+	for _, l := range out {
+		if l.Weight.Exponent() < -8 {
+			t.Errorf("line %d weight %s has more than eight places", l.LineNo, l.Weight)
+		}
+		sum = sum.Add(*l.Weight)
+	}
+	if !sum.Equal(canonical.NewDecimalFromInt(100)) || !comp.WeightSum.Equal(sum) {
+		t.Errorf("weights sum to %s, composition says %s; want 100", sum, comp.WeightSum)
+	}
+	if _, _, ok := reportComposition("XX0000000088", 0, []reportLine{{residual: -1}, {residual: 0}}); ok {
+		t.Error("lines at or below zero gave a composition")
+	}
 }
