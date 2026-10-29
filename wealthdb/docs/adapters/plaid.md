@@ -113,15 +113,9 @@ wrapper reads as household, as `other` does, but the load and
 holder's own, and irrevocable ones, which are not.
 
 The wrapper follows the subtype as Plaid reports it. Where that gives
-the wrong wrapper, config `account_overrides` sets the right one. Where
-Plaid types the account itself wrong, its `account_kind` sets the right
-kind.
-The adapter signs a liability's balance by its own kind, so the kind
-holds both ways:
-
-- no override makes an account a card or a mortgage;
-- a card or a mortgage keeps the kind Plaid gives it. The loader
-  ignores an override of its kind and logs a line.
+the wrong wrapper, or Plaid types the account itself wrong, config
+`account_overrides` sets the wrapper or the kind
+([../DESIGN.md](../DESIGN.md) §5.1).
 
 `management_style` is `self_directed` on cash, card and mortgage
 accounts, and unset on an investment account, where Plaid does not say
@@ -374,9 +368,10 @@ the sign would book it twice.
 - Otherwise a row of type `cash` or `fee` that names a security that is
   not cash is read by what it names:
   - on a bond, a cash deposit is its coupon, an `interest`. A cash
-    withdrawal is `tax` withheld where the bond paid a coupon Plaid types
-    as a dividend into the account on the same posting date. Otherwise it is the interest
-    accrued at its purchase, an `interest`;
+    withdrawal is `tax` withheld where the bond paid a coupon Plaid
+    types as a dividend into the account on the same posting date.
+    Otherwise it is the interest accrued at its purchase, an
+    `interest`;
   - an adjustment of type `fee`, or a cash withdrawal, is `tax` where
     the security paid a dividend into the account on the same posting
     date, else a `fee`;

@@ -74,8 +74,8 @@ Web silver:
 | `portfolio_transactions` | `transactions`; `realized_lots` | A managed portfolio's securities settlements, booked on the cash account that paid (§11). Its sales with a realized P/L are also realized lots (§12). |
 | `statement_trades` | `realized_lots` | The trade list a Statement of Assets prints (ubs-web DESIGN.md §3.10). Each sale is a realized lot with the cost it drew on (§12). |
 | `advices` | `positions.book_value` | The capital calls are the paid-in basis of a private-markets fund's units (§12). Contract notes are not read. |
-| `account_rates` | `cash_balances.payload` | The netbanking's credit interest (ubs-web DESIGN.md §3.11). A capture's conditions go on the account's balances at the newest instant at or before it, as `interest_rate` (one tier) or `interest_tiers` (several), with `interest_valid_from` and `interest_side`. The rows of one `valid_from` day are one schedule; a capture of several days states one `interest_conditions` entry per day. No balance is added. The debit side is not read. An account with no row states no rate. |
-| `private_market_reports`, `private_market_report_lines` | `exposure_reports` | A private-markets fund's split by region and sector, from its quarterly reports (§13). |
+| `account_rates` | `cash_balances.payload` | The netbanking's credit interest (ubs-web DESIGN.md §3.11). A capture's conditions go on the account's balances at the newest instant at or before it, as `interest_rate` (one tier) or `interest_tiers` (several), with `interest_valid_from` and `interest_side`. The rows of one `valid_from` day are one schedule; a capture of several days states one `interest_conditions` entry per day. No balance is added. The debit side is not read. An account with no row states no rate. The load window starts at the new dump, so a `--only rates` dump's conditions reach gold on the next `wealthdb reload ubs`. |
+| `private_market_reports`, `private_market_report_lines` | `exposure_reports`; `fund_compositions`, `fund_lines` | A private-markets fund's split by region and sector, and its composition, from its quarterly reports (§13). |
 
 **The MT940 feed is delivered per account.** An account is in scope
 for statements or it is not, and one that is not receives none on any
@@ -750,8 +750,8 @@ gross*).
   in its balances, or as "other income" when later converted into a
   covered account.
 
-A conversion between two accounts the feed does speak for stays open
-(§14).
+A conversion between two accounts the feed does speak for is a known
+limit (§14).
 
 ### The counter account, across both eras
 
@@ -1638,27 +1638,22 @@ composition on that day, one line per investment.
 - **Reaching gold.** A ubs-web collector load writes no new dump. So new
   records and compositions reach gold on the next `wealthdb reload ubs`.
 
-## 14. Open questions
+## 14. Known limits
 
 - **A conversion between two covered accounts.** Both legs are feed
-  rows, the `/OCMT/` subfield on the paying one states the other, and
-  the veto's conversion phase pairs them for returns — but neither row
-  names the other's account, so the cash flow statement's far account
-  for the pair rests on the matcher, whose amount join cannot cross
-  currencies. Stamping both rows with the counter account the stated
-  leg identifies (the receiving row is the one booking the stated
-  figure that day) would close it by the same road the mirror uses.
-- **MT568 vs MT566 collapsing.** Both carry corporate-action info;
-  MT568 is narrative supplementing MT566. The adapter emits both as
-  separate `corporate_action` events. Consider
-  merging when MT566 and MT568 share an `event_external_id`.
-- **`pending_securities` projection.** If a use case for T+2
-  visibility lands, project into a new gold table
-  `pending_transactions` rather than mixing with settled
-  `transactions`.
+  rows. The `/OCMT/` subfield on the paying one states the other. The
+  veto's conversion phase pairs them for returns. But neither row
+  names the other's account. So the cash flow statement's far account
+  for the pair rests on the matcher. Its amount pass cannot cross
+  currencies. Its converted phase pairs them only where a narrative
+  names the other account. Otherwise an override-ledger `match` line
+  pairs them ([../SPENDING.md](../SPENDING.md) §3).
+- **MT568 and MT566.** Both carry corporate-action info. MT568 is
+  narrative that supplements MT566. The adapter emits both as separate
+  `corporate_action` events, so one action can show as two events.
+- **`pending_securities`.** Not projected. Gold reports no pending
+  settlement.
 - **Historical taxonomy pair.** Historical security positions are
   classified by the description-template read (see the mapping
-  section above); a description outside UBS's known templates
-  stays `(other, other)`. Consider a per-ISIN taxonomy lookup
-  populated from an external catalogue if a residual unmatched
-  instrument ever matters.
+  section above). A description outside UBS's known templates stays
+  `(other, other)`.

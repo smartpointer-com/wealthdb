@@ -863,18 +863,6 @@ record's among them. A dividend a fund pays reads `distributions`.
 Wages, gifts and the other types stay in the other three views. A line
 counts under the holding it belongs to, else under its account.
 
-The Income dashboard's two halves are wider than these views':
-
-- its received half counts every income line, wages and gifts among
-  them, each other line under its account and by its operating-in
-  class ([CASHFLOW.md](CASHFLOW.md) §5);
-- its expected half adds the other income's run-rate: the cash flow
-  projection's `other_income`, which gold keeps by class and account
-  ([CASHFLOW.md](CASHFLOW.md) §12). It covers the household's accounts
-  alone.
-
-`wealthdb income projection` reads the six types alone.
-
 The expected half starts the day after today.
 
 - Income that accrues covers its days exactly. A month that the window,
@@ -886,6 +874,18 @@ The expected half starts the day after today.
   discount, a dividend.
 - The day of a dividend or of a repeated payment is an estimate. The
   calendar shows its month only.
+
+The Income dashboard's two halves are wider than these views':
+
+- its received half counts every income line, wages and gifts among
+  them, each other line under its account and by its operating-in
+  class ([CASHFLOW.md](CASHFLOW.md) §5);
+- its expected half adds the other income's run-rate: the cash flow
+  projection's `other_income`, which gold keeps by class and account
+  ([CASHFLOW.md](CASHFLOW.md) §12). It covers the household's accounts
+  alone.
+
+`wealthdb income projection` reads the six types alone.
 
 ### What each holding is expected to pay
 

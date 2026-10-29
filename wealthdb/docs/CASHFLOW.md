@@ -1025,10 +1025,9 @@ that query is wrong.
    account with no balance history never appears, and absent reads as
    fine. Here it reads **unmeasurable**. A deposit stated as a holding
    counts as a balance history (§8, *Reconciliation*). An account whose
-   balance series
-   begins inside the period reads **opening**. One whose series stopped
-   before the period reads **ended**. Either way the difference across
-   the period is not a real change.
+   balance series begins inside the period reads **opening**. One whose
+   series stopped before the period reads **ended**. Either way the
+   difference across the period is not a real change.
 
 Read `status` first, then sort by `gap` within `measured`. The report
 already lists each period's rows by gap size. That puts first the

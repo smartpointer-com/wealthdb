@@ -608,8 +608,7 @@ The `form_1099b` rows also stay out of the transaction range that
   `gross_amount` NULL, and generates no separate `tax` row for a
   withholding. Tax-lot work may need the withholding as an event of
   its own.
-- **`open_orders` projection.** Not projected. A `wealthdb orders`
-  subcommand would need it.
+- **`open_orders`.** Not projected, so gold reports no open orders.
 - **Cost-basis methods.** A Gain/Loss Report prints the account's
   relief method per asset class (`cost_basis_methods`, schwab-web
   DESIGN.md §9.3). Gold does not map it.

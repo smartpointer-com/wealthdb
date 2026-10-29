@@ -222,11 +222,19 @@ under these keys:
 
 A rate on a cash balance is read at that balance's snapshot. A source
 puts a rate on the balance its document or capture is dated by, or on
-the newest one before it. The adapter docs say which. A rate on an
-account is stated once, for the account's base currency. It is read
-only on a kind of account that holds cash: `cash`, `brokerage`,
-`custody` or `safekeeping`. Each condition in `interest_conditions`
-states its own keys, one per side and day. A
+the newest one before it. These docs say which:
+
+- [adapters/ubs.md](adapters/ubs.md) §3;
+- [adapters/schwab.md](adapters/schwab.md) §7;
+- [firstcitizens DESIGN.md](../../collectors/firstcitizens/DESIGN.md)
+  §4.4;
+- [fidelity-web DESIGN.md](../../collectors/fidelity-web/DESIGN.md)
+  §4.1.
+
+A rate on an account is stated once, for the account's base currency.
+It is read only on a kind of account that holds cash: `cash`,
+`brokerage`, `custody` or `safekeeping`. Each condition in
+`interest_conditions` states its own keys, one per side and day. A
 value that does not read states nothing, and neither does the condition
 it sits in. A balance that states UBS PSN's tiers reads those, and the
 keys beside them state nothing. A liability's rate is its terms'
@@ -1057,7 +1065,8 @@ The `yield` block of `wealthdb.cfg` holds what no source states
 
   `accounts` names the accounts whose rate is not their wrapper's. It
   keys each by its source and account id, the `silver_source` and
-  `account_id` that `wealthdb accounts` prints. Two accounts of one
+  `account_id` that `wealthdb holdings accounts -C +account_id`
+  prints. Two accounts of one
   wrapper may belong to holders of different treaty status. An
   account's rate wins over its wrapper's, which wins over the country's
   `default`. With the block above, a dividend of 100 from a US company

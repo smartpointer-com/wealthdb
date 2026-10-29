@@ -82,10 +82,10 @@ What describes a holding, in this order:
 3. a proxy's composition (§5).
 
 A declaration never stands in for a fund's own composition, with one
-exception. A ledger record of the same or a later day wins over a
-composition a source parses from the fund's own report (§9, parsed
-records). Where the config says a proxy always replaces a fund's own
-composition (§5), the proxy still does, declaration or not.
+exception. A composition a source parses from the fund's own report
+yields to a ledger record, as §9 (*Parsed records*) says. Where the
+config says a proxy always replaces a fund's own composition (§5), the
+proxy still does, declaration or not.
 
 A declaration describes a holding held directly: a fund that another
 fund holds reads its composition or its proxy, never a declaration.
@@ -742,17 +742,24 @@ a situs alone adds nothing here.
 or `parsed`.
 
 A source that parses a split may also parse the document's lines as the
-fund's composition. The composition describes the days §4 gives it. A
-ledger record of the same or a later day wins over it, as it wins over
-the parsed record. On the other days the declarations above describe
-the holding.
+fund's composition. The composition describes the days §4 gives it,
+except a day on which a ledger record wins over it. That is a day whose
+record in force, by the rule above, is a ledger record dated on or after
+the composition's day. It wins as it wins over the parsed record. A
+record without a date never wins over the composition. On the days the
+composition does not describe, the declarations above describe the
+holding.
 
-A line states what the document gives, such as its region and sector.
-For the rest it takes what the declaration in force states whole, one
-value at 100: a class, a sector, a currency. That is the parsed record
-of the same document, which carries the ledger's other dimensions. A
-dimension the record splits reads as the line would without it: the
-holding's class, the fund's currency, an unknown sector.
+A line of a parsed composition takes:
+
+- what the document states, such as its region and sector;
+- for a class, a sector or a currency the document does not state, the
+  one the declaration in force states whole, one value at 100. That
+  declaration is the parsed record of the same document, which carries
+  the ledger's other dimensions;
+- for a dimension that declaration splits, what the line would read
+  without it: the holding's class, the fund's currency, an unknown
+  sector.
 
 ### Yield records
 
@@ -929,13 +936,13 @@ For each holding, the first of these that applies:
    market fund is a fund and reads by rules 3 and 4.
 6. `country`: a private holding (§5) takes the one country its
    declaration in force on the day states at 100 (§9). This holds only
-   on the days no composition of its own is in force (§4). A ledger
-   record of the same or a later day wins over a parsed one, as in the
-   look-through (§9). Take a
-   feeder fund whose reports a source parses. It reads its declared
-   country before its first report. It also reads it in a quarter whose
-   report gives no composition, and once its last composition is out of
-   reach. A split or a region states nothing here.
+   on the days no composition of its own is in force (§4). As in the
+   look-through, a parsed composition is not in force on a day a ledger
+   record wins over it (§9). Take a feeder fund whose reports a source
+   parses. It reads its declared country before its first report. It
+   also reads it in a quarter whose report gives no composition, and
+   once its last composition is out of reach. A split or a region
+   states nothing here.
 7. `unknown`.
 
 The declared situs has a precedence of its own. On a day, it is the one

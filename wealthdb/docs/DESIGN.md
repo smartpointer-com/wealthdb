@@ -126,7 +126,7 @@ wealthdb transactions [FROM [TO]] [flags] (RO) Print transactions over a date ra
 wealthdb spending <view> [flags]      (RO)    Spending reports: summary, categories, transactions.
 wealthdb income   <view> [flags]      (RO)    Income received and expected: summary, types, transactions, projection, calendar, sources, portfolios, accounts, positions.
 wealthdb cashflow <view> [flags]      (RO)    Cash flow statement: summary, flows, sankey, transactions, coverage; projection for the months ahead.
-wealthdb status  [<id>]               (RO)    Report gold state vs each silver source.
+wealthdb status  [<id>] [-v]          (RO)    Report gold state vs each silver source.
 wealthdb snapshots <id> | -a [--latest] (RO)  List snapshots gold has loaded (one silver, or all).
 wealthdb resolve-symbols              (RW)    Back-fill missing instrument ticker symbols via the configured LLM; skips hinted rows and cash-class instruments.
 wealthdb resolutions [-s <id>]        (RO)    Dump the symbol_resolutions table (LLM + manual-override tickers), optionally for one source.
@@ -894,11 +894,11 @@ Example config file:
 | `silver_sources[].relationships[].psn_id` | string | Optional. PSN silver's `relationship_id` (SFTP server identifier like `SFTPCHxx`). At least one of `web_id` / `psn_id` must be set. |
 | `silver_sources[].relationships[].psn_start_override` | string | Optional `YYYY-MM-DD`. Overrides the auto-detected web↔PSN transaction-splice cutover for this relationship. Defaults to `MIN(snapshot_at)` in PSN's data for the paired `psn_id`. |
 | `silver_sources[].schwab` | object | Optional, on a `schwab` source only. The guard on the api feed's overnight marks (docs/adapters/schwab.md §4.1): `mark_spike_pct`, the move in percent past which a position's mark may be a spike (default 10), and `mark_revert_pct`, how close in percent one of the next two marks must come back to the previous mark for the move to read as a spike (default 2). Both above 0, `mark_revert_pct` below `mark_spike_pct`; validated at config-load time. |
-| `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname`, `category`, `account_kind`, `tax_wrapper`, and/or `management_style` strings, or `exclude: true` to drop the account and every fact keyed to it (a sweep over gold after the load's streams drain, §13.8). All inner fields are optional but at least one must be set per entry, and `exclude` may not be combined with a column override. `account_kind`, `tax_wrapper` and `management_style` values are validated against the canonical enums (`internal/canonical/enums.go`) at config-load time. `account_kind` restates what an account is where its source types it wrong. It takes any kind but three. `overlay` is gold's synthetic kind. `card` and `mortgage` are refused because an adapter signs a liability's balance by its own kind. For the same reasons an account its adapter stamped `card`, `mortgage` or `overlay` keeps that kind: the loader ignores the override and logs a line. `tax_wrapper_from` (YYYY-MM-DD, only beside `tax_wrapper`) dates the wrapper: from that day the account has it, and before it the wrapper it has without this override, which the load records in `account_wrapper_history`. The day is today or earlier. The cash flow boundary reads the wrapper as of each row's day ([CASHFLOW.md](CASHFLOW.md) §3). The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
-| `declared_accounts` | object | Optional. Map keyed by an id the holder chooses (`[A-Za-z0-9_-]+`) of accounts the household OWNS at institutions the product does not collect: `account_kind` and `tax_wrapper` required and validated against the canonical enums, `nickname` and `currency` optional. The load writes each one as an account row under the reserved source `declared` (no `silver_sources[].id` may take that name), after the per-source loads and before the enrichment pass, and prints how many it stamped; a declaration removed from the config leaves on the next load. A declared account carries no balance and no facts: it exists so a rule's `far` can name it as the other side of an own-account move, which the cash flow statement then places by the declared wrapper exactly as it places a collected far account — a household wrapper makes the move pool-internal, a vehicle wrapper draws it as that vehicle's crossing (docs/CASHFLOW.md §4). Nothing the product measures can falsify a declaration, which is why the wrapper is required and the load prints how many declarations sit inside the pool. Deployment-specific: lives in the user's config. |
-| `exposure` | object | Optional. What the exposure report needs that no source knows: `proxies` (a fund whose composition stands in for another, with `always` and `leverage`), `reference_funds`, `size_funds`, `declarations` (the path to the declarations ledger, NDJSON; expanded as above), `custody` and `max_gap_days` (default 400). Validated at config-load time. docs/EXPOSURE.md §9 defines each key, its bounds and the ledger's records; §7.6 says how a load stores them. Deployment-specific: lives in the user's config. |
-| `yield` | object | Optional. The yield inputs that no source knows: `curves` (a currency's public yield curve, one series of a configured source per tenor, `"3M": "fred:DGS3MO"`), `withholding` (percent withheld at source by situs country and tax wrapper, `default` for any wrapper, and `accounts` for an account whose rate is not its wrapper's), `rating_funds` (a rating-sliced fund's bucket or range, `BBB` or `AAA-A`), `conventions` (coupon frequency and day count per market: a currency, or a currency and a bond sector or `bill`; built-in defaults), `horizon_months` (1 to 36, default 12), `cycles` (overrides of the built-in map from the eleven sectors to cyclical, defensive and sensitive) and `settlement_cycles` (a market's settlement cycles, each in business days from a day on; a market named replaces its built-in cycles). Validated at config-load time; §7.6 says how a load stores it. Deployment-specific: lives in the user's config. |
-| `holding_aliases` | array | Optional. Entries `{ "source", "account"?, "key", "as", "note"? }` naming a holding a source keys two ways, so the gains, exposure and yield reports read both keys as one: a statement's overview line (`key`) until a daily feed lists the same holding by ISIN (`as`), say. `account` scopes the alias to one account; absent, it covers every account of the source. The load writes the block into gold's `holding_aliases` table whole, and `gains_windows` maps every position, lot and event key through it before a bucket's start meets its end (docs/GAINS.md §5). Validated for a configured source, two different keys, one alias per key, and no alias of an alias. Deployment-specific: lives in the user's config. |
+| `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying per-account `nickname`, `category`, `account_kind`, `tax_wrapper`, and/or `management_style` strings, or `exclude: true` to drop the account and every fact keyed to it (a sweep over gold after the load's streams drain, §13.8). All inner fields are optional but at least one must be set per entry, and `exclude` may not be combined with a column override. `account_kind`, `tax_wrapper` and `management_style` values are validated against the canonical enums (`internal/canonical/enums.go`) at config-load time. `account_kind` restates what an account is where its source types it wrong. It takes any kind but three. `overlay` is gold's synthetic kind. `card` and `mortgage` are refused because an adapter signs a liability's balance by its own kind. For the same reasons an account its adapter stamped `card`, `mortgage` or `overlay` keeps that kind: the loader ignores the override and logs a line. `tax_wrapper_from` (YYYY-MM-DD, only beside `tax_wrapper`) dates the wrapper: from that day the account has it, and before it the wrapper it has without this override, which the load records in `account_wrapper_history`. The day is today or earlier. The cash flow boundary reads the wrapper as of each row's day ([CASHFLOW.md](CASHFLOW.md) §3). The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
+| `declared_accounts` | object | Optional. Map keyed by an id the holder chooses (`[A-Za-z0-9_-]+`) of accounts the household OWNS at institutions the product does not collect: `account_kind` and `tax_wrapper` required and validated against the canonical enums, `nickname` and `currency` optional. The load writes each one as an account row under the reserved source `declared` (no `silver_sources[].id` may take that name), after the per-source loads and before the enrichment pass, and prints how many it stamped; a declaration removed from the config leaves on the next load. A declared account carries no balance and no facts: it exists so a rule's `far` can name it as the other side of an own-account move, which the cash flow statement then places by the declared wrapper exactly as it places a collected far account — a household wrapper makes the move pool-internal, a vehicle wrapper draws it as that vehicle's crossing (docs/CASHFLOW.md §4). Nothing the product measures can falsify a declaration, which is why the wrapper is required and the load prints how many declarations sit inside the pool. Deployment-specific: lives in the config, never in the repository. |
+| `exposure` | object | Optional. What the exposure report needs that no source knows: `proxies` (a fund whose composition stands in for another, with `always` and `leverage`), `reference_funds`, `size_funds`, `declarations` (the path to the declarations ledger, NDJSON; expanded as above), `custody` and `max_gap_days` (default 400). Validated at config-load time. docs/EXPOSURE.md §9 defines each key, its bounds and the ledger's records; §7.6 says how a load stores them. Deployment-specific: lives in the config, never in the repository. |
+| `yield` | object | Optional. The yield inputs that no source knows: `curves` (a currency's public yield curve, one series of a configured source per tenor, `"3M": "fred:DGS3MO"`), `withholding` (percent withheld at source by situs country and tax wrapper, `default` for any wrapper, and `accounts` for an account whose rate is not its wrapper's), `rating_funds` (a rating-sliced fund's bucket or range, `BBB` or `AAA-A`), `conventions` (coupon frequency and day count per market: a currency, or a currency and a bond sector or `bill`; built-in defaults), `horizon_months` (1 to 36, default 12), `cycles` (overrides of the built-in map from the eleven sectors to cyclical, defensive and sensitive) and `settlement_cycles` (a market's settlement cycles, each in business days from a day on; a market named replaces its built-in cycles). Validated at config-load time; §7.6 says how a load stores it. Deployment-specific: lives in the config, never in the repository. |
+| `holding_aliases` | array | Optional. Entries `{ "source", "account"?, "key", "as", "note"? }` naming a holding a source keys two ways, so the gains, exposure and yield reports read both keys as one: a statement's overview line (`key`) until a daily feed lists the same holding by ISIN (`as`), say. `account` scopes the alias to one account; absent, it covers every account of the source. The load writes the block into gold's `holding_aliases` table whole, and `gains_windows` maps every position, lot and event key through it before a bucket's start meets its end (docs/GAINS.md §5). Validated for a configured source, two different keys, one alias per key, and no alias of an alias. Deployment-specific: lives in the config, never in the repository. |
 | `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole crypto portfolio inside an IRA / trust / Stiftung wrapper. Accepts `tax_wrapper` (unlike `account_overrides`, which also takes nickname / category / account_kind / management_style) or `exclude: true`, which drops the portfolio and every account inside it with their facts; one of the two must be set and they may not be combined. A per-account `tax_wrapper` override still wins over a portfolio one. See §13.8. |
 | `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. The class pass leaves a pinned instrument alone. See §13.8. |
 | `transaction_instruments` | object | Optional. Nested map keyed by `silver_source_id` (outer) and the **lookup token** an adapter failed on (inner), naming the `instrument_external_id` that token means. Closes a row (a securities trade, or an income or withholding row of a security) whose feed states its instrument in a way nothing else in the product can resolve — a Swiss valor for a line the instrument dimension has no valor for, a fund renamed since the trade, a ticker of neither shape, a statement name that fits two holdings. The token is whatever the row's `instrument_hint` holds (§10.8); read the open set with `wealthdb transactions -C +instrument_hint`. Validated for a declared source and non-empty halves at config-load time; the instrument id itself cannot be checked without gold, as with the override families above. It states the IDENTITY only — what the instrument IS stays `instrument_overrides`' question. See §13.8. |
@@ -923,7 +923,7 @@ Example config file:
 | `spending.internal_transfer_matching` | object | Optional. Knobs for the matcher that pairs the two legs of an own-account move so neither counts as spending: `window_days` (0–30, default 5) and `tolerance_pct` (0–5, default 0.5). Deliberately the same defaults as `returns_transfer_matching` — one matching core, one banding. Both bound the matcher's banded passes only: a pair the override ledger states, or one a source asserts — by stamping a reference on both legs, or by describing one leg's currency and figure on the other — is not a guess and is not banded. `names` (list of `{source, account?, match}`, each `match` a regular expression) says which narratives name which account as the other side of a movement; a leg that names one pairs with nothing else, and named pairs are claimed before the amount pass. See docs/SPENDING.md §3. |
 | `spending.rules[]` | array | Optional, default empty. The deployment's own entries in the rule tier, each `{ "match": <regex>, "category": <spend_detailed>, "scope"?, "asset_class"?, "far"? }`. `match` is compiled case-insensitively and tested against `counterparty`, the full `description` and `provider_category`; among config rules the first written wins. `category` may be any valid `spend_detailed` value, vendored or delta. `scope` narrows a rule to a `source`, `portfolio` or `account` and an inclusive `from`/`to` date range. `asset_class` is admitted only beside `investment` and `far` (a `declared_accounts` id) only beside `internal_transfer` ([CASHFLOW.md §4 and §7](CASHFLOW.md)). An invalid pattern, one matching the empty string, or an unknown value fails the load naming `spending.rules[i]`. Deployment-specific: lives in the config, never in the repository. [SPENDING.md §3](SPENDING.md), *Config-supplied rules*, owns the semantics. |
 | `spending.pins` | string | Optional. Filesystem path to a CSV ledger of per-transaction category pins — the top of the precedence lattice, for the row nothing else can classify. Columns `silver_source_id, account, occurred_at (YYYY-MM-DD), amount, currency, spend_detailed, asset_class, note` and no others — an unknown header fails the parse, and `asset_class` is optional; `account` is a gold `account_external_id` or a nickname, resolved as `equity_transfers` resolves it; `spend_detailed` may be any valid value, vendored or delta; `note` is free text kept for the ledger's own readability and is not carried into gold. `~` / `$HOME` / `${VAR}` expanded, a relative path resolved against the config file's directory; a missing file is a no-op. Re-stamped by every enrichment pass, so removing a row removes its effect. See §13.10. |
-| `spending.transfer_overrides` | string | Optional. Path to a CSV ledger of manual match and unmatch decisions for the internal-transfer matcher, for a pair the data cannot settle, and of `reimburse` lines that link a repayment to its outflow. Expanded as above; a missing file is a no-op. Both families read it. See [SPENDING.md §3](SPENDING.md), *Manual overrides on the matcher* and *Reimbursements*. |
+| `spending.transfer_overrides` | string | Optional. Path to a CSV ledger of manual match and unmatch decisions for the internal-transfer matcher, for a pair the data cannot settle, and of `reimburse` lines that link a repayment to its outflow. Expanded as above; a missing file is a no-op. Both families read it. See [SPENDING.md §3](SPENDING.md), *The override ledger* and *Reimbursements*. |
 | `spending.categorization` | object | Optional. Configures `wealthdb categorize`: the model endpoint (`model`), how much of a transaction reaches it (`context`), and the per-merchant narrative cap (`descriptor_samples`). Absent ⇒ the subcommand refuses; the deterministic tiers are unaffected and keep running on load. |
 | `spending.categorization.model` | object | Optional. LLM endpoint asked for a category per merchant signature. Same shape and same API support as `symbol_resolution.model` (`baseUrl`, `api`, `apiKey`, `name`). |
 | `spending.categorization.context` | string | Optional. `"merchant"` (default) sends merchant signatures only; `"descriptor"` adds the raw statement narratives; `"transaction"` adds date, amount, account kind and nearby-transaction signatures. The default is the most private level by decision, not by accident. Independent of the fence, which gates candidacy at every level. |
@@ -972,9 +972,10 @@ source, not just crypto.
   accounts grain tries account → its portfolio → source; the portfolios
   grain tries portfolio → source; the sources grain tries source. The
   **global** grain is never anchored.
-- **Semantics:** `winFrom = max(data-inception, configured-inception, --from)`
-  — it can only move an anchor LATER, never earlier (an inception before an
-  entity's data is a no-op). The opening base `V0` becomes the entity's
+- **Semantics:** `winFrom = max(data-inception, configured-inception, FROM)`,
+  where `FROM` is the window's start. It can only move an anchor
+  LATER, never earlier (an inception before an entity's data is a
+  no-op). The opening base `V0` becomes the entity's
   carry-forward value on that date. Truncation is tagged
   `configured_inception` in place of `since_data_inception`. Composes with
   the policy `Inception` mode (e.g. UBS `first-real-snapshot`) as `max`.
@@ -1453,9 +1454,8 @@ A few rules apply to every adapter regardless of bank:
   everything else → `public_equity`. Products whose names don't give
   away the exposure are pinned via the config's
   `instrument_overrides` (§5.1, §13.8).
-- **Deferred silver tables** — silver tables not yet projected
-  into gold by any adapter are catalogued per-bank in the adapter
-  doc and globally in §13.7.
+- **Silver tables gold does not project** — each adapter doc lists
+  its own, and §13.7 lists them across banks.
 
 ## 7. Gold schema
 
@@ -1558,7 +1558,7 @@ is documented where it is used:
 - The exposure tables: the reference and config tables (migrations
   `0125` and `0128`) — §7.6; the derived tables (migrations `0126` and
   `0129`) and `report_exposure` (migrations `0127` and `0130`); migration
-  `0131` touches both; the recent tables `report_exposure_debt`,
+  `0131` touches both; the tables `report_exposure_debt`,
   `report_exposure_issuer_ranks` (migration `0138`) and
   `report_exposure_security_slices` (migration `0165`) — §10.14.
 - The reference tables `fund_risk`, `fund_characteristics`,
@@ -3336,7 +3336,8 @@ pickers reach them. A slice keeps the weight of the leaf each label
 comes from, so the slices of a selection add up to the view's rows.
 
 `web_exposure`, `web_exposure_debt`, `web_exposure_issuers` and
-`web_exposure_securities` are the dashboard's reading of them ([web/DESIGN.md](../../web/DESIGN.md) §8).
+`web_exposure_securities` are the dashboard's reading of them
+([web/DESIGN.md](../../web/DESIGN.md) §8).
 
 ### 10.15 Yield reports
 
@@ -3438,8 +3439,9 @@ each from the books `yield.Compute` gives:
   dollars keeps its projection in the other currencies. A card sums a
   part's income (`yield.Part.Income`) at query time, so a rate path, a
   maturing rule, a shift and a horizon cost no storage;
-- `report_yield_received`: every income line received to the instant,
-  per reporting currency;
+- `report_yield_received`: the income lines the income projection
+  counts as received (its six types), to the instant, per reporting
+  currency;
 - `report_cashflow_plan`: the cash flow projection's look-back parts per
   reporting currency and month ahead (§10.12).
 
@@ -3880,55 +3882,36 @@ is the current contract because the holder may be an hour-long
 model run, and a silent hour of blocking is worse than an exit
 code.
 
-### 13.7 Deferred silver tables
+### 13.7 Silver tables gold does not project
 
-Per the per-bank adapter docs (§6.7), several silver tables exist
-but no adapter projects them into gold. Cross-bank summary of
-what each would need:
+Several silver tables exist that no adapter projects into gold. The
+per-bank adapter docs (§6.7) list them. Across banks:
 
-- **`schwab.user_preference`** — Schwab UI/streamer config. No
-  portfolio relevance. Likely permanent omit.
-- **`schwab.open_orders`** — operational, not portfolio state. A
-  hypothetical `wealthdb orders` subcommand could surface these
-  through a dedicated `open_orders` gold table; deferred until
-  there's a clear use case.
-- **`ubs.account_holders`** — client/legal-owner metadata. Could
-  populate a `clients` dimension joining to `accounts` via
-  `relationship_id`. Useful for households with multiple legal
-  entities; defer until a use case lands.
-- **`ubs.pending_securities`** — MT537 pending-settlement
-  snapshots. Many rows are "no activity" markers
-  (`ACTI//N`); the rest are transient (positions show up in
-  `holdings` once settled). Worth surfacing only if a use case
-  cares about T+2 visibility.
-- **`ubs.portfolio_performance`** — TDPOPF monthly performance
-  rollups. Natural input for a future `wealthdb performance`
-  subcommand; would land in its own `portfolio_performance` gold
-  table to avoid muddling the snapshot/event model.
-- **`ubs.cash_account_pricing`** — TDCAPI interest-rate config.
-  Useful for projecting interest income; would land in a
-  dimension-style `cash_account_pricing` gold table joined to
-  `accounts`.
-- **`swissquote.documents`** — PDF document index. Bronze is the
-  source of truth for binaries; gold doesn't store them. Would
-  only be projected if `wealthdb` ever needed to enumerate document
-  metadata.
-- **Cost facts not projected yet** — §13.4 lists them.
-
-Adding any of these is a localised change: one new gold table
-(or column), one adapter `Snapshots` / `Transactions` extension,
-no impact on the load contract or other adapters.
+- **`schwab.user_preference`**: Schwab UI and streamer config. It has
+  no portfolio relevance.
+- **`schwab.open_orders`**: open orders. They are operational, not
+  portfolio state, so gold reports no open orders.
+- **`ubs.account_holders`**: client and legal-owner metadata. Gold has
+  no client dimension, so it does not report who legally owns an
+  account.
+- **`ubs.pending_securities`**: MT537 pending-settlement snapshots.
+  Many rows are "no activity" markers (`ACTI//N`). The rest are
+  transient: a position shows in `holdings` once it settles. Gold
+  reports no pending settlement.
+- **`ubs.portfolio_performance`**: TDPOPF monthly performance rollups.
+  Gold computes returns itself (§10.9) and does not read the bank's.
+- **`ubs.cash_account_pricing`**: TDCAPI interest-rate config. Gold
+  reads UBS's credit rates from the web feed's `account_rates`
+  instead (adapters/ubs.md §3).
+- **`swissquote.documents`**: PDF document index. Bronze holds the
+  binaries. Gold stores no document metadata.
+- **Cost facts**: §13.4 lists the ones gold does not project.
 
 A `plaid` Item can also report loans that are not on a home, such as
 auto, student and personal loans and lines of credit. They stay in
-silver too (`accounts`, `liabilities`, `transactions`). What they lack
-is not a table but an account kind (adapters/plaid.md §3 says why).
-Projecting them needs a `loan` kind. That is engine-wide work:
-
-- a CHECK migration;
-- the returns liability split;
-- a cashflow arm;
-- a taxonomy pair.
+silver too (`accounts`, `liabilities`, `transactions`). Gold has no
+account kind for them (adapters/plaid.md §3 says why), so it reports
+none of them.
 
 ### 13.8 Account taxonomy (kind / tax_wrapper / management_style) and nickname
 
@@ -3957,9 +3940,10 @@ plus the free-text descriptors:
   negative cash on the account. An `overlay` is a synthetic
   per-portfolio account for positions the bank attributes to the
   portfolio directly (UBS forward contracts). A `custody` account is
-  one a third-party manager directs. `crypto` covers both exchange
-  and self-custody, because wallet names do not reliably tell them
-  apart.
+  a platform's holding of private-market interests (Carta,
+  AngelList, EquityZen). Its holder self-directs it. `crypto` covers
+  both exchange and self-custody, because wallet names do not
+  reliably tell them apart.
 - **`tax_wrapper`** — the tax / regulatory registration.
   Nullable; defaults to `taxable_personal` at render time.
   Values cover US (`traditional_ira`, `roth_ira`, `sep_ira`,
@@ -4018,18 +4002,9 @@ silver schema has evolved (e.g. Swissquote's pre-v5 silvers used
 `account_type` instead of `account_product`); older silvers
 still load with the corresponding columns left NULL.
 
-Config-side override (extends §5): the config accepts
-`account_overrides` as a nested map keyed by
-`(silver_source_id, account_external_id)` with optional
-`nickname`, `category`, `account_kind`, `tax_wrapper`, and/or
-`management_style` fields. `account_kind`, `tax_wrapper` and
-`management_style` values are validated against the canonical
-enums at config-load time. The
-loader applies overrides *after* the adapter has stamped its
-own values, so the override takes precedence on overlap. This
-is the path for sharpening accounts the adapter can't classify
-on its own (e.g. a Schwab IRA whose wrapper isn't reachable
-from any silver-side field).
+Config-side override: `account_overrides` (§5.1) sets what an
+adapter cannot classify, such as a Schwab IRA whose wrapper no
+silver field reaches.
 
 The same block can drop an account outright: `"exclude": true`
 removes the dimension row **and every fact keyed to it** — positions,

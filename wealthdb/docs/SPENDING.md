@@ -686,7 +686,7 @@ so a genuine wire fee still pairs and a coincidence at that distance
 does not. The returns caller applies the same cap. It sets no rail
 demands.
 
-### Manual overrides on the matcher
+### The override ledger
 
 `spending.transfer_overrides` names a CSV ledger of decisions the data
 cannot settle, in the same idiom and for the same reason as the pins
