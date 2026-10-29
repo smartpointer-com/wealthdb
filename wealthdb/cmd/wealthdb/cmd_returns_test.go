@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -107,12 +105,7 @@ func setupReturnsGold(t *testing.T) string {
 		t.Fatalf("close gold: %v", err)
 	}
 
-	cfg := filepath.Join(dir, "wealthdb.cfg")
-	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD", "silver_sources": []}`, goldPath)
-	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
-		t.Fatalf("write cfg: %v", err)
-	}
-	return cfg
+	return writeGoldCfg(t, goldPath)
 }
 
 func strp(s string) *string { return &s }

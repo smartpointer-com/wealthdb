@@ -61,6 +61,20 @@ var cashSignedKinds = []SignedKindPin{
 	{"schwab", TxKindCorporateAction},
 }
 
+// cashflowUnsignedKinds are the six kinds cash flow excludes for want of
+// a sign: canonicalSign's zero-signed set less interest, staking and
+// capital_gain, which cash flow reads by their sign or nets inside their
+// own class. A sign pin names one of them.
+var cashflowUnsignedKinds = []TxKind{
+	TxKindFx, TxKindFxForward, TxKindFxSwap, TxKindCorporateAction, TxKindJournal, TxKindOther,
+}
+
+// CashflowUnsignedKinds returns the six. A copy. A test accessor: the
+// sign pins and cashflow_txn_nodes' exclusion are both held to it.
+func CashflowUnsignedKinds() []TxKind {
+	return slices.Clone(cashflowUnsignedKinds)
+}
+
 // SignedKindPin is one sign pin: a silver kind and a kind.
 type SignedKindPin struct {
 	SilverKind string

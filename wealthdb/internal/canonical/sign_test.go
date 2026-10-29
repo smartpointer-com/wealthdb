@@ -1,6 +1,9 @@
 package canonical
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // TestCanonicalSignTable pins the whole fixed-direction table: which
 // kinds force a sign, which direction, and which are left to the
@@ -103,10 +106,14 @@ func TestCashSignedKindsPinOnlyUnsignedKinds(t *testing.T) {
 	if len(pins) == 0 {
 		t.Fatal("no sign pins")
 	}
-	unsigned := map[TxKind]bool{TxKindFx: true, TxKindFxForward: true, TxKindFxSwap: true,
-		TxKindCorporateAction: true, TxKindJournal: true, TxKindOther: true}
+	unsigned := CashflowUnsignedKinds()
+	for _, k := range unsigned {
+		if canonicalSign(k) != 0 {
+			t.Errorf("%s has a canonical sign, so cash flow need not exclude it", k)
+		}
+	}
 	for i, p := range pins {
-		if !unsigned[p.Kind] {
+		if !slices.Contains(unsigned, p.Kind) {
 			t.Errorf("%s pins %s, which is none of the six kinds cash flow excludes", p.SilverKind, p.Kind)
 		}
 		if i > 0 && (pins[i-1].SilverKind > p.SilverKind ||

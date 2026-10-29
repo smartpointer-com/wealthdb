@@ -58,33 +58,19 @@ func TestReimbursementNetsAgainstItsOutflow(t *testing.T) {
 			res.ReimbursementPairs, res.UnmatchedReimbursements, res.UnlinkedReimbursements)
 	}
 
-	type link struct{ category, road, out string }
-	got := map[string]link{}
-	rows, err := db.QueryContext(ctx, `SELECT transaction_external_id, spend_detailed, road,
-	        COALESCE(out_transaction_external_id, '') FROM spend_reimbursements()`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rows.Next() {
-		var id string
-		var l link
-		if err := rows.Scan(&id, &l.category, &l.road, &l.out); err != nil {
-			t.Fatal(err)
-		}
-		got[id] = l
-	}
-	rows.Close()
-	want := map[string]link{
-		"SHOP-BACK":   {"GENERAL_MERCHANDISE_SPORTING_GOODS", "signature", "SHOP"},
-		"POWER-BACK":  {"RENT_AND_UTILITIES_GAS_AND_ELECTRICITY", "store", ""},
-		"FRIEND-BACK": {"FOOD_AND_DRINK_RESTAURANT", "pair", "DINNER"},
+	got := scanPairs(t, db, `SELECT transaction_external_id,
+	        concat_ws(' ', spend_detailed, road, COALESCE(out_transaction_external_id, '-')) FROM spend_reimbursements()`)
+	want := map[string]string{
+		"SHOP-BACK":   "GENERAL_MERCHANDISE_SPORTING_GOODS signature SHOP",
+		"POWER-BACK":  "RENT_AND_UTILITIES_GAS_AND_ELECTRICITY store -",
+		"FRIEND-BACK": "FOOD_AND_DRINK_RESTAURANT pair DINNER",
 		// Larger than the purchase: no outflow answers, but the store
 		// files the payee, so it nets in the payee's category.
-		"TOO-MUCH": {"GENERAL_MERCHANDISE_SPORTING_GOODS", "store", ""},
+		"TOO-MUCH": "GENERAL_MERCHANDISE_SPORTING_GOODS store -",
 	}
 	for id, w := range want {
 		if got[id] != w {
-			t.Errorf("%s links as %+v, want %+v", id, got[id], w)
+			t.Errorf("%s links as %q, want %q", id, got[id], w)
 		}
 	}
 	if _, ok := got["STRANGER"]; ok {
@@ -111,20 +97,8 @@ func TestReimbursementNetsAgainstItsOutflow(t *testing.T) {
 	if base != 0 {
 		t.Errorf("%d repayments in the income base, want none", base)
 	}
-	places := map[string]string{}
-	rows, err = db.QueryContext(ctx, `SELECT transaction_external_id, section FROM cashflow_txn_nodes(0, 9999999999)
+	places := scanPairs(t, db, `SELECT transaction_external_id, section FROM cashflow_txn_nodes(0, 9999999999)
 	        WHERE transaction_external_id IN ('SHOP-BACK', 'STRANGER')`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rows.Next() {
-		var id, section string
-		if err := rows.Scan(&id, &section); err != nil {
-			t.Fatal(err)
-		}
-		places[id] = section
-	}
-	rows.Close()
 	if places["SHOP-BACK"] != "operating_out" || places["STRANGER"] != "operating_in" {
 		t.Errorf("cash flow sections = %v, want the linked one out, the unlinked one in", places)
 	}
@@ -195,21 +169,9 @@ func TestReimbursementRoadsHoldTheirGuards(t *testing.T) {
 		t.Errorf("pairs %d, unmatched %d; want 1 written (the first twice-line), 3 refused",
 			res.ReimbursementPairs, res.UnmatchedReimbursements)
 	}
-	roads := map[string]string{}
-	outs := map[string]string{}
-	rows, err := db.QueryContext(ctx, `SELECT transaction_external_id, road, COALESCE(out_transaction_external_id, '')
+	roads := scanPairs(t, db, `SELECT transaction_external_id, road FROM spend_reimbursements()`)
+	outs := scanPairs(t, db, `SELECT transaction_external_id, COALESCE(out_transaction_external_id, '')
 	        FROM spend_reimbursements()`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rows.Next() {
-		var id, road, out string
-		if err := rows.Scan(&id, &road, &out); err != nil {
-			t.Fatal(err)
-		}
-		roads[id], outs[id] = road, out
-	}
-	rows.Close()
 	var filedOld string
 	if err := db.QueryRowContext(ctx, `SELECT spend_detailed FROM spend_txn_categories()
 	        WHERE transaction_external_id = 'OLD'`).Scan(&filedOld); err != nil || filedOld == "" {

@@ -26,7 +26,8 @@ func (c *Connection) statedPeriods(ctx context.Context, w canonical.Window) ([]c
 	if err != nil || !ok {
 		return nil, err
 	}
-	rows, err := c.db.QueryContext(ctx, `
+	var out []canonical.StatedPeriodChange
+	err = silver.ScanRows(ctx, c.db, `
 SELECT period_end, period_start, account_external_id, currency,
        CAST(beginning_value AS VARCHAR), CAST(ending_value AS VARCHAR),
        CAST(accrual AS VARCHAR), CAST(net_additions AS VARCHAR),
@@ -34,13 +35,7 @@ SELECT period_end, period_start, account_external_id, currency,
        source_sha256, payload
   FROM `+statedPeriodsTable+`
  WHERE period_end BETWEEN ? AND ?
- ORDER BY period_end, account_external_id, source_sha256`, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("fidelity stated periods: %w", err)
-	}
-	defer rows.Close()
-	var out []canonical.StatedPeriodChange
-	for rows.Next() {
+ ORDER BY period_end, account_external_id, source_sha256`, func(rows *sql.Rows) error {
 		var (
 			r                                         canonical.StatedPeriodChange
 			begin, end, accrual, additions, gain, inc sql.NullString
@@ -49,7 +44,7 @@ SELECT period_end, period_start, account_external_id, currency,
 		if err := rows.Scan(&r.AsOf, &r.PeriodStart, &r.AccountExternalID, &r.Currency,
 			&begin, &end, &accrual, &additions, &gain, &inc, &fees,
 			&r.SourceSHA256, &payload); err != nil {
-			return nil, fmt.Errorf("fidelity stated periods scan: %w", err)
+			return err
 		}
 		r.BeginningValue, r.EndingValue = silver.DecimalPtrOrNil(begin), silver.DecimalPtrOrNil(end)
 		r.Accrual, r.NetAdditions = silver.DecimalPtrOrNil(accrual), silver.DecimalPtrOrNil(additions)
@@ -57,8 +52,12 @@ SELECT period_end, period_start, account_external_id, currency,
 		r.Fees = silver.DecimalPtrOrNil(fees)
 		r.Payload = silver.JSONOrNil(payload)
 		out = append(out, r)
+		return nil
+	}, w.Start, w.End)
+	if err != nil {
+		return nil, fmt.Errorf("fidelity stated periods: %w", err)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // widenToStatedPeriods widens a window with changes to every stated
@@ -69,16 +68,16 @@ func (c *Connection) widenToStatedPeriods(ctx context.Context, w *canonical.Wind
 	if err != nil || !ok {
 		return err
 	}
-	var lo, hi sql.NullInt64
-	if err := c.db.QueryRowContext(ctx,
-		`SELECT MIN(period_end), MAX(period_end) FROM `+statedPeriodsTable).Scan(&lo, &hi); err != nil {
-		return fmt.Errorf("fidelity ChangeWindow stated periods: %w", err)
+	lo, hi, err := silver.Extrema(ctx, c.db, "fidelity ChangeWindow stated periods",
+		[]string{`SELECT MIN(period_end), MAX(period_end) FROM ` + statedPeriodsTable})
+	if err != nil {
+		return err
 	}
-	if lo.Valid && lo.Int64 < w.Start {
-		w.Start = lo.Int64
+	if lo >= 0 && lo < w.Start {
+		w.Start = lo
 	}
-	if hi.Valid && hi.Int64 > w.End {
-		w.End = hi.Int64
+	if hi > w.End {
+		w.End = hi
 	}
 	return nil
 }

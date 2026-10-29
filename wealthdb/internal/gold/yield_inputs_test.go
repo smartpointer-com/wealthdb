@@ -157,14 +157,7 @@ func TestYieldInputsReadsGold(t *testing.T) {
 		    ('ref', 'symbol:QSTK', 'eps_diluted', `+itoa(ymd(2026, 3, 31).Unix())+`, '2026-01-01', 'sec', 1, '2026-05-01'),
 		    ('ref', 'symbol:QSTK', 'eps_diluted', `+itoa(ymd(2026, 6, 30).Unix())+`, '2026-04-01', 'sec', 5, '2026-08-01')`,
 	)
-	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
-		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: 35, PartialPct: 3},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	rebuildExposureWithDefaults(t, db, ctx)
 	if _, err := RebuildYield(ctx, db); err != nil {
 		t.Fatal(err)
 	}
@@ -386,14 +379,7 @@ func TestTheLineOfASecurity(t *testing.T) {
 		     'USD', DATE '2030-01-15', 4),
 		    ('ref', 'symbol:QFA', `+itoa(snap)+`, 'holdings', 3, 'isin:XX00000000T2', 'EXAMPLE BILL', 'Fixed Income', 0,
 		     'USD', DATE '2027-01-15', 7)`)
-	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
-		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: 35, PartialPct: 3},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	rebuildExposureWithDefaults(t, db, ctx)
 	for range 5 {
 		in, err := YieldInputs(ctx, db, snap+86399, "USD")
 		if err != nil {
@@ -469,14 +455,7 @@ func TestYieldSecurities(t *testing.T) {
 		}
 	}
 	execEach(t, db, q...)
-	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
-		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: 35, PartialPct: 3},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	rebuildExposureWithDefaults(t, db, ctx)
 	in, err := YieldInputs(ctx, db, snap+86399, "USD")
 	if err != nil {
 		t.Fatal(err)
@@ -580,14 +559,7 @@ func TestANegativeFilingReadsPositive(t *testing.T) {
 		    ('ref', 'symbol:QBF', `+itoa(snap-10*86400)+`, 'EUR', '5Y', -200)`,
 		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, net_assets, line_count)
 		    VALUES ('ref', 'symbol:QBF', `+itoa(snap-10*86400)+`, 'holdings', 'sec', 1000000, 0)`)
-	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
-		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: 35, PartialPct: 3},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	rebuildExposureWithDefaults(t, db, ctx)
 	in, err := YieldInputs(ctx, db, snap+86399, "USD")
 	if err != nil {
 		t.Fatal(err)
@@ -689,14 +661,7 @@ func TestACouponBookedAsInterestIsTheBonds(t *testing.T) {
 		    currency, net_amount, description, instrument_external_id) VALUES `+strings.Join(txns, ", "),
 		`INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id, payer_signature,
 		    signature_version, income_detailed, provenance, assigned_at) VALUES `+strings.Join(kinds, ", "))
-	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
-		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: 35, PartialPct: 3},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	rebuildExposureWithDefaults(t, db, ctx)
 	if _, err := RebuildYield(ctx, db); err != nil {
 		t.Fatal(err)
 	}

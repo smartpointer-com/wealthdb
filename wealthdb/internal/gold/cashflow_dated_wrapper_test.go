@@ -1,6 +1,7 @@
 package gold
 
 import (
+	"slices"
 	"testing"
 )
 
@@ -41,46 +42,29 @@ func TestADatedWrapperMovesTheBoundaryOnItsDay(t *testing.T) {
 			t.Fatalf("seed: %v", err)
 		}
 	}
-	place := map[string]string{}
-	rows, err := db.QueryContext(ctx, `SELECT transaction_external_id, disposition || ' ' || COALESCE(section, '')
-	        FROM cashflow_txn_nodes(0, 9999999999) WHERE transaction_external_id LIKE 'D-IN-%'`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rows.Next() {
-		var id, p string
-		if err := rows.Scan(&id, &p); err != nil {
-			t.Fatal(err)
+	check := func(when string) {
+		t.Helper()
+		place := scanPairs(t, db, `SELECT transaction_external_id, disposition || ' ' || COALESCE(section, '')
+		        FROM cashflow_txn_nodes(0, 9999999999) WHERE transaction_external_id LIKE 'D-IN-%'`)
+		if place["D-IN-BEFORE"] != "internal " || place["D-IN-AFTER"] != "line vehicles" {
+			t.Errorf("%s: moves into the trust = %v; want pool-internal before the day, a vehicles crossing after",
+				when, place)
 		}
-		place[id] = p
-	}
-	rows.Close()
-	if place["D-IN-BEFORE"] != "internal " || place["D-IN-AFTER"] != "line vehicles" {
-		t.Errorf("moves into the trust = %v; want pool-internal before the day, a vehicles crossing after", place)
-	}
-	lines := map[string]bool{}
-	rows, err = db.QueryContext(ctx, `SELECT DISTINCT transaction_external_id FROM cashflow_lines_base(0, 9999999999)
-	        WHERE transaction_external_id LIKE 'D-OWN-%'`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			t.Fatal(err)
+		lines := scanStrings(t, db, `SELECT DISTINCT transaction_external_id FROM cashflow_lines_base(0, 9999999999)
+		        WHERE transaction_external_id LIKE 'D-OWN-%'`)
+		// The day itself is the override's: the spans are half-open.
+		if !slices.Equal(lines, []string{"D-OWN-BEFORE"}) {
+			t.Errorf("%s: the trust's own lines = %v; want the one before the day alone", when, lines)
 		}
-		lines[id] = true
+		var nodes, txns int
+		if err := db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM cashflow_txn_nodes(0, 9999999999)),
+		        (SELECT count(*) FROM transactions)`).Scan(&nodes, &txns); err != nil || nodes != txns {
+			t.Errorf("%s: %d nodes for %d transactions (%v): a span join fanned out", when, nodes, txns, err)
+		}
 	}
-	rows.Close()
-	// The day itself is the override's: the spans are half-open.
-	if !lines["D-OWN-BEFORE"] || lines["D-OWN-AFTER"] || lines["D-OWN-ON"] {
-		t.Errorf("the trust's own lines = %v; want the one before the day alone", lines)
-	}
-	var nodes, txns int
-	if err := db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM cashflow_txn_nodes(0, 9999999999)),
-	        (SELECT count(*) FROM transactions)`).Scan(&nodes, &txns); err != nil || nodes != txns {
-		t.Errorf("%d nodes for %d transactions (%v): a span join fanned out", nodes, txns, err)
-	}
+	check("at head")
+	rerunMigrationDDL(t, db, ctx, "0162_dated_wrapper_override.sql")
+	check("after replaying 0162")
 
 	// Without a history row the account has one span: the current wrapper
 	// throughout, as before the migration.

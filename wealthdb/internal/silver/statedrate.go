@@ -11,8 +11,9 @@ import (
 // WithStatedRates is payload, a JSON object (empty for none), with the
 // stated-rate keys of keys (canonical.StatedRateKeys). The payload's
 // stated-rate keys are replaced whole, so none it held before stands
-// beside the new ones; its other keys stay byte for byte. A balance
-// whose payload states no rate says nothing of it: unknown, never zero.
+// beside the new ones; its other keys keep their values, numbers as
+// written (re-encoded compact, keys sorted). A balance whose payload
+// states no rate says nothing of it: unknown, never zero.
 func WithStatedRates(payload json.RawMessage, keys map[string]any) (json.RawMessage, error) {
 	out := map[string]json.RawMessage{}
 	if len(payload) > 0 {

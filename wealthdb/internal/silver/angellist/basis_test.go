@@ -8,20 +8,10 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
-
-// day is a calendar date as unix seconds at UTC midnight.
-func day(t *testing.T, s string) int64 {
-	t.Helper()
-	tm, err := time.Parse("2006-01-02", s)
-	if err != nil {
-		t.Fatalf("day(%q): %v", s, err)
-	}
-	return tm.Unix()
-}
 
 // seedInKind builds a book of three SPV stakes, each paired to its K-1
 // fund through offerings.fund_name. Every figure is invented.
@@ -73,25 +63,13 @@ func inKindPositions(t *testing.T, path string) map[int64]map[string]canonical.P
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream, err := conn.Snapshots(ctx, w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 	out := map[int64]map[string]canonical.PositionChange{}
-	for {
-		b, more, err := stream.Next(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, b := range silvertest.Snapshots(t, conn, w) {
 		for _, p := range b.Positions {
 			if out[p.SnapshotAt] == nil {
 				out[p.SnapshotAt] = map[string]canonical.PositionChange{}
 			}
 			out[p.SnapshotAt][p.PositionKey] = p
-		}
-		if !more {
-			break
 		}
 	}
 	return out
@@ -124,7 +102,7 @@ func TestAPropertyDistributionReducesTheBookValueFromTheK1PeriodEnd(t *testing.T
 		{"2021-12-31", "s3", "0.00", derived},
 		{"2022-06-30", "s3", "0.00", derived},
 	} {
-		p, ok := byDay[day(t, c.day)][c.pos]
+		p, ok := byDay[silvertest.ISO(t, c.day)][c.pos]
 		if !ok {
 			t.Errorf("%s %s: no position", c.day, c.pos)
 			continue
@@ -137,10 +115,10 @@ func TestAPropertyDistributionReducesTheBookValueFromTheK1PeriodEnd(t *testing.T
 		}
 	}
 	want := `{"paid_in":"10000","property_distributed":"4000","tax_basis_contributed":"10000"}`
-	if got := string(byDay[day(t, "2022-06-30")]["s1"].Payload); got != want {
+	if got := string(byDay[silvertest.ISO(t, "2022-06-30")]["s1"].Payload); got != want {
 		t.Errorf("s1 payload = %s, want %s", got, want)
 	}
-	if p := byDay[day(t, "2021-06-30")]["s1"]; p.Payload != nil {
+	if p := byDay[silvertest.ISO(t, "2021-06-30")]["s1"]; p.Payload != nil {
 		t.Errorf("s1 payload before the K-1 period end = %s, want none", p.Payload)
 	}
 }
@@ -153,7 +131,7 @@ func TestASilverWithoutPropertyDistributionsKeepsThePaidInBookValue(t *testing.T
 	if _, err := db.Exec(`ALTER TABLE k1_capital_accounts DROP COLUMN property_distributions_minor`); err != nil {
 		t.Fatal(err)
 	}
-	p := inKindPositions(t, path)[day(t, "2022-06-30")]["s1"]
+	p := inKindPositions(t, path)[silvertest.ISO(t, "2022-06-30")]["s1"]
 	if p.BookValue == nil || p.BookValue.StringFixed(2) != "10000.00" || p.Basis != paidInBasis {
 		t.Errorf("s1 book value %v stamped %+v, want 10000.00 stated paid-in", p.BookValue, p.Basis)
 	}
@@ -167,7 +145,7 @@ func TestThePropertyDistributionCutLandsOnTheK1PeriodEnd(t *testing.T) {
 	if _, err := db.Exec(`DELETE FROM position_snapshots WHERE event_type = 'statement'`); err != nil {
 		t.Fatal(err)
 	}
-	at, ok := inKindPositions(t, path)[day(t, "2021-12-31")]
+	at, ok := inKindPositions(t, path)[silvertest.ISO(t, "2021-12-31")]
 	if !ok {
 		t.Fatal("no snapshot on the K-1 period end")
 	}
@@ -190,7 +168,7 @@ func TestAnAmbiguousK1FundReducesNoPosition(t *testing.T) {
 	var logged bytes.Buffer
 	log.SetOutput(&logged)
 	defer log.SetOutput(os.Stderr)
-	at := inKindPositions(t, path)[day(t, "2022-06-30")]
+	at := inKindPositions(t, path)[silvertest.ISO(t, "2022-06-30")]
 	for pos, want := range map[string]string{"s1": "10000.00", "s2": "5000.00"} {
 		if p := at[pos]; p.BookValue == nil || p.BookValue.StringFixed(2) != want || p.Basis != paidInBasis {
 			t.Errorf("%s book value %v stamped %+v, want %s stated paid-in", pos, p.BookValue, p.Basis, want)
@@ -213,7 +191,7 @@ func TestALateK1PeriodEndIsInTheWindow(t *testing.T) {
             property_distributions_minor) VALUES (2022, 'Example SPV One, LP', NULL, 100000)`); err != nil {
 		t.Fatal(err)
 	}
-	end := day(t, "2022-12-31")
+	end := silvertest.ISO(t, "2022-12-31")
 	s, err := openAdapter(t, path).Status(context.Background())
 	if err != nil {
 		t.Fatal(err)

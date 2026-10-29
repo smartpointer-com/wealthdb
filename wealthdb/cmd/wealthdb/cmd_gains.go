@@ -36,6 +36,10 @@ func init() {
 // gainsViews are the views, coarse to fine.
 var gainsViews = []string{"summary", "sources", "portfolios", "accounts", "positions", "realized", "lots", "coverage", "check"}
 
+// gainsDocuments are the `--documents` choices of the realized view:
+// each sale once, or every document's copy of it.
+var gainsDocuments = []string{"primary", "all"}
+
 // gainsGrains maps the four aggregate views to their grain.
 var gainsGrains = map[string]gold.GainsGrain{
 	"summary": gold.GainsAll, "sources": gold.GainsSources,
@@ -72,7 +76,7 @@ func runGainsView(ctx context.Context, g globalFlags, view string, args []string
 	if err := checkChoice("gains", "period", *period, reportPeriodNames...); err != nil {
 		return err
 	}
-	if err := checkChoice("gains", "documents", *documents, "primary", "all"); err != nil {
+	if err := checkChoice("gains", "documents", *documents, gainsDocuments...); err != nil {
 		return err
 	}
 	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), g.clock())

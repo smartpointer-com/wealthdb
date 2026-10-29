@@ -178,26 +178,6 @@ func collectSnapshots(t *testing.T, conn silver.Connection, w canonical.Window) 
 	})
 }
 
-func collectTransactions(t *testing.T, conn silver.Connection, w canonical.Window) []canonical.TransactionChange {
-	t.Helper()
-	stream, err := conn.Transactions(context.Background(), w)
-	if err != nil {
-		t.Fatalf("Transactions: %v", err)
-	}
-	defer stream.Close()
-	var out []canonical.TransactionChange
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatalf("Transactions Next: %v", err)
-		}
-		out = append(out, b.Transactions...)
-		if !more {
-			return out
-		}
-	}
-}
-
 func window(t *testing.T, conn silver.Connection, since int64) canonical.Window {
 	t.Helper()
 	w, err := conn.ChangeWindow(context.Background(), since)
@@ -262,15 +242,8 @@ func TestCloseIsIdempotent(t *testing.T) {
 }
 
 func TestStatusEmpty(t *testing.T) {
+	silvertest.AssertEmptyStatus(t, &Adapter{}, silverSchemaSQL)
 	path, _ := newFixture(t)
-	s, err := openConn(t, path).Status(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := canonical.UnknownStatus()
-	if s != want {
-		t.Errorf("Status = %+v, want %+v", s, want)
-	}
 	if w := window(t, openConn(t, path), -1); w.HasChanges || w.NewChangeNumber != -1 {
 		t.Errorf("ChangeWindow(-1) on an empty silver = %+v, want no changes", w)
 	}
@@ -323,7 +296,7 @@ func TestChangeWindowIsIncremental(t *testing.T) {
 	if got := collectSnapshots(t, conn, idle); len(got) != 0 {
 		t.Errorf("idle Snapshots = %d batches, want none", len(got))
 	}
-	if got := collectTransactions(t, conn, idle); len(got) != 0 {
+	if got := silvertest.Transactions(t, conn, idle); len(got) != 0 {
 		t.Errorf("idle Transactions = %d rows, want none", len(got))
 	}
 }
@@ -755,7 +728,7 @@ func TestTransactions(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
 	conn := openConn(t, path)
-	txs := collectTransactions(t, conn, window(t, conn, -1))
+	txs := silvertest.Transactions(t, conn, window(t, conn, -1))
 
 	var order []string
 	byID := map[string]canonical.TransactionChange{}
@@ -835,7 +808,7 @@ func TestTransactionsWindowed(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
 	conn := openConn(t, path)
-	appended := collectTransactions(t, conn, window(t, conn, 1))
+	appended := silvertest.Transactions(t, conn, window(t, conn, 1))
 	for _, x := range appended {
 		if x.OccurredAt < day(3) || x.OccurredAt > day(4) {
 			t.Errorf("%s at %d is outside the appended run's window", x.TransactionExternalID, x.OccurredAt)
@@ -1175,27 +1148,15 @@ func TestSnapshotsCarryReferenceRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream, err := conn.Snapshots(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 	var comps []canonical.FundCompositionChange
 	var lines []canonical.FundLineChange
 	var facts []canonical.SecurityFactChange
 	var fx int
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, b := range silvertest.Snapshots(t, conn, w) {
 		comps = append(comps, b.FundCompositions...)
 		lines = append(lines, b.FundLines...)
 		facts = append(facts, b.SecurityFacts...)
 		fx += len(b.FxRates)
-		if !more {
-			break
-		}
 	}
 	if fx != 1 {
 		t.Errorf("fx rates = %d, want the window's one", fx)

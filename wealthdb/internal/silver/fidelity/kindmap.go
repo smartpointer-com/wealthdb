@@ -196,7 +196,7 @@ func adjustmentKind(action string) canonical.TxKind {
 // Fidelity books an account's own tax payment and its tax-preparation
 // fee as cash moved to one of its internal ledgers: `TRANSFERRED TO
 // JNL… VS <ledger> TAX PAYMENT`, `JOURNALED JNL… <year> TAX PREP FEE`,
-// and on the statements either verb for either charge. The verb names
+// and either verb may carry either charge. The verb names
 // the booking, and the end of the Action names what was paid. Booked
 // as a transfer or a journal, the row reaches no spending rule: the far
 // leg is Fidelity's own ledger, so nothing pairs it, and a journal is

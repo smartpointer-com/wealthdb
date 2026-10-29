@@ -264,20 +264,8 @@ func TestSnapshotsHistoricalPositionsConsolidatedByISIN(t *testing.T) {
 	}
 	conn := openAdapter(t, path)
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, _ := conn.Snapshots(context.Background(), w)
-	defer stream.Close()
 
-	var allPositions []canonical.PositionChange
-	for {
-		batch, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		allPositions = append(allPositions, batch.Positions...)
-		if !more {
-			break
-		}
-	}
+	allPositions := silvertest.Merged(t, conn, w).Positions
 
 	if len(allPositions) != 2 {
 		t.Fatalf("positions = %d, want 2", len(allPositions))

@@ -231,26 +231,14 @@ func (c *Config) validateYield(seenIDs map[string]bool) error {
 				return fmt.Errorf("config: yield.withholding[%q][%q] %v: want a percent, 0 to 100", country, wrapper, r)
 			}
 		}
-		for _, source := range slices.Sorted(maps.Keys(rates.Accounts)) {
-			accounts := rates.Accounts[source]
-			at := fmt.Sprintf("yield.withholding[%q][%q][%q]", country, withholdingAccountsKey, source)
-			if !seenIDs[source] {
-				return fmt.Errorf("config: %s: no silver_sources[].id matches", at)
+		at := fmt.Sprintf("yield.withholding[%q][%q]", country, withholdingAccountsKey)
+		if err := validateNested(at, rates.Accounts, seenIDs, true, func(path string, r float64) error {
+			if !(r >= 0 && r <= 100) {
+				return fmt.Errorf("config: %s %v: want a percent, 0 to 100", path, r)
 			}
-			if len(accounts) == 0 {
-				return fmt.Errorf("config: %s: name at least one account", at)
-			}
-			for _, acct := range slices.Sorted(maps.Keys(accounts)) {
-				if strings.TrimSpace(acct) == "" {
-					return fmt.Errorf("config: %s: an account id is empty", at)
-				}
-				if strings.TrimSpace(acct) != acct {
-					return fmt.Errorf("config: %s[%q]: an account id has no space around it", at, acct)
-				}
-				if r := accounts[acct]; !(r >= 0 && r <= 100) {
-					return fmt.Errorf("config: %s[%q] %v: want a percent, 0 to 100", at, acct, r)
-				}
-			}
+			return nil
+		}); err != nil {
+			return err
 		}
 	}
 	rated := map[string]string{}

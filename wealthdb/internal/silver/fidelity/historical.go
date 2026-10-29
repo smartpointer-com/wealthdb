@@ -124,7 +124,7 @@ SELECT DISTINCT account_external_id, COALESCE(instrument_key, ''), description
 // --as-of <historical-date>` would show no account for a date
 // the historical positions cover.
 //
-// We use any one live `accounts` row per account_external_id
+// Any one live `accounts` row per account_external_id serves
 // (they're stable across snapshots for a given account) and copy
 // nickname / portfolio / management_style verbatim. Gold's
 // upsert pulls FirstSeenAt back to the historical date so the

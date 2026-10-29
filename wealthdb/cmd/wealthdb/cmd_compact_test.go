@@ -115,12 +115,6 @@ func fileSizeT(t *testing.T, path string) int64 {
 	return fi.Size()
 }
 
-// goldPathFromCfg derives the gold_db path setupCLITest wrote (it
-// lives next to the config, named wealthdb.db).
-func goldPathFromCfg(cfgPath string) string {
-	return filepath.Join(filepath.Dir(cfgPath), "wealthdb.db")
-}
-
 // TestCompactShrinksAndPreservesRows bloats a loaded gold DB, then
 // confirms `compact` shrinks the file while every core row count and
 // the schema version are byte-for-byte identical.

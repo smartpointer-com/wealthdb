@@ -67,9 +67,8 @@ var reportRegions = map[string]canonical.Region{
 
 // reportSectors maps a printed sector onto a sector by the first word
 // stem it contains, in this order: "Healthcare Technology" is health
-// care, "Industrial and office products distribution & retail"
-// industrials, "Consumer / Retail" consumer cyclical. A label no stem
-// matches reads as unknown.
+// care, "Industrial supplies wholesale & retail" industrials, "Consumer
+// / Retail" consumer cyclical. A label no stem matches reads as unknown.
 var reportSectors = []struct {
 	stem   string
 	sector canonical.Sector

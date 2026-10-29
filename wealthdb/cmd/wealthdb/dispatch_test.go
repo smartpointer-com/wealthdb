@@ -98,8 +98,57 @@ func writeCLIConfig(t *testing.T, cfgPath, blocks string) {
 	}
 }
 
-// run invokes Run() with stdio captured into buffers. The string
-// returns are stdout and stderr trimmed of trailing whitespace.
+// goldPathFromCfg is the gold_db path setupCLITest and writeGoldCfg
+// write: wealthdb.db beside the config.
+func goldPathFromCfg(cfgPath string) string {
+	return filepath.Join(filepath.Dir(cfgPath), "wealthdb.db")
+}
+
+// writeGoldCfg writes the minimal config for the gold file at goldPath,
+// with no silver sources, beside it as wealthdb.cfg, and returns the
+// config's path.
+func writeGoldCfg(t *testing.T, goldPath string) string {
+	t.Helper()
+	cfg := filepath.Join(filepath.Dir(goldPath), "wealthdb.cfg")
+	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD", "silver_sources": []}`, goldPath)
+	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	return cfg
+}
+
+// execGold runs q on the gold file at goldPath, opened read-write, and
+// fails the test on an error.
+func execGold(t *testing.T, goldPath, q string, args ...any) {
+	t.Helper()
+	db, err := sql.Open("duckdb", goldPath)
+	if err != nil {
+		t.Fatalf("open gold: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(q, args...); err != nil {
+		t.Fatalf("%s: %v", q, err)
+	}
+}
+
+// countGold is the one integer q reads from the gold file at goldPath,
+// opened read-only.
+func countGold(t *testing.T, goldPath, q string, args ...any) int {
+	t.Helper()
+	db, err := sql.Open("duckdb", goldPath+"?access_mode=read_only")
+	if err != nil {
+		t.Fatalf("open gold read-only: %v", err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(q, args...).Scan(&n); err != nil {
+		t.Fatalf("%s: %v", q, err)
+	}
+	return n
+}
+
+// run invokes Run() with stdio captured into buffers and returns
+// stdout, stderr and the exit code.
 func run(t *testing.T, args ...string) (stdout, stderr string, exit int) {
 	t.Helper()
 	var so, se bytes.Buffer

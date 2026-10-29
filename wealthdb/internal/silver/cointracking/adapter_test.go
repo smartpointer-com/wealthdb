@@ -10,6 +10,7 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 //go:embed testdata/silver_schema.sql
@@ -44,12 +45,7 @@ func newFixtureSilver(t *testing.T, seed string) string {
 
 func openAdapter(t *testing.T, path string) silver.Connection {
 	t.Helper()
-	conn, err := (&Adapter{}).Open(context.Background(), silver.OpenSpec{Path: path})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { conn.Close() })
-	return conn
+	return silvertest.Open(t, &Adapter{}, path)
 }
 
 func TestKindIsCointracking(t *testing.T) {
@@ -99,19 +95,13 @@ func TestSnapshotsCryptoPositionAndFiatCash(t *testing.T) {
 	if !w.HasChanges {
 		t.Fatal("ChangeWindow.HasChanges = false, want true")
 	}
-	stream, _ := conn.Snapshots(context.Background(), w)
-	defer stream.Close()
 
 	// Drain to the snapshot batch carrying the 2024-01-01 holdings.
 	var crypto canonical.PositionChange
 	var cash canonical.CashBalanceChange
 	var btcInst canonical.InstrumentChange
 	var nPos, nCash int
-	for {
-		batch, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, batch := range silvertest.Snapshots(t, conn, w) {
 		for _, p := range batch.Positions {
 			nPos++
 			crypto = p
@@ -124,9 +114,6 @@ func TestSnapshotsCryptoPositionAndFiatCash(t *testing.T) {
 			if ins.InstrumentExternalID == "BTC" {
 				btcInst = ins
 			}
-		}
-		if !more {
-			break
 		}
 	}
 
@@ -178,21 +165,12 @@ func TestSnapshotsCryptoPositionAndFiatCash(t *testing.T) {
 	// read the dimension records (they ride the latest batch).
 	conn2 := openAdapter(t, path)
 	w2, _ := conn2.ChangeWindow(context.Background(), -1)
-	stream2, _ := conn2.Snapshots(context.Background(), w2)
-	defer stream2.Close()
 	var acct canonical.AccountChange
 	var nAcct int
-	for {
-		batch, more, err := stream2.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, batch := range silvertest.Snapshots(t, conn2, w2) {
 		for _, a := range batch.Accounts {
 			nAcct++
 			acct = a
-		}
-		if !more {
-			break
 		}
 	}
 	if nAcct != 1 {

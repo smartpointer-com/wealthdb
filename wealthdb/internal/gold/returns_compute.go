@@ -517,7 +517,7 @@ func groupDebutDays(grp []*accountData, winFrom, winTo int64) []int64 {
 //   - organic market appreciation / dividends / interest on existing holdings that
 //     day — genuine RETURN silently reclassified as a capital inflow.
 //
-// Both surface as POSITIVE sibling deltas, so we exclude them: only NEGATIVE
+// Both surface as POSITIVE sibling deltas, so they are excluded: only NEGATIVE
 // sibling deltas (a funding cash conduit draining to fund the new account) offset
 // the debut value. An internal cash->securities move (new securities +X, funding
 // cash -X) therefore nets to 0; a genuine external inflow landing straight as a
@@ -818,7 +818,7 @@ func entityWindow(assets []*accountData, p ReturnParams, toDay int64) (from, to 
 	// flag documents exactly what the override cuts off; without one it means
 	// the transaction history reaches further back than the value spine
 	// supports. Compared against the inception, NOT the window start, so a
-	// --from / windowed-partition clip never raises it.
+	// FROM clip or a windowed partition never raises it.
 	for _, a := range assets {
 		if hasExternalFlowBefore(a, entityInception) {
 			flags = append(flags, "flows_before_inception")
@@ -1031,11 +1031,15 @@ func hasObservedFlowIn(a *accountData, from, to int64) bool {
 	return false
 }
 
+// monthLabelLayout is a monthly bucket's label, YYYY-MM: the key
+// ReconcileStatedPeriods reads the engine's monthly rows by.
+const monthLabelLayout = "2006-01"
+
 func periodLabel(be int64, period string) string {
 	t := returns.DayToTimeUTC(be - 1) // a day inside the bucket
 	switch period {
 	case "monthly":
-		return t.Format("2006-01")
+		return t.Format(monthLabelLayout)
 	case "annual":
 		return t.Format("2006")
 	default: // quarterly

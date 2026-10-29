@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // lotFixture is one company holding two share certificates, one born from
@@ -55,27 +56,15 @@ func snapshotLots(t *testing.T, path string) (map[string]canonical.PositionLotCh
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream, err := conn.Snapshots(ctx, w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 	var pos []canonical.PositionChange
 	lots := map[string]canonical.PositionLotChange{}
-	for {
-		b, more, err := stream.Next(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, b := range silvertest.Snapshots(t, conn, w) {
 		pos = append(pos, b.Positions...)
 		for _, l := range b.PositionLots {
 			if _, dup := lots[l.LotKey]; dup {
 				t.Errorf("lot %s emitted twice", l.LotKey)
 			}
 			lots[l.LotKey] = l
-		}
-		if !more {
-			break
 		}
 	}
 	if len(pos) != 1 {

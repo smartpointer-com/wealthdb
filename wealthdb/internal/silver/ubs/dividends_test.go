@@ -12,6 +12,7 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
@@ -836,17 +837,8 @@ func TestALinkedDividendLandsOnTheCustodyHolding(t *testing.T) {
 	conn := openAdapter(t, path)
 	ctx := context.Background()
 	w := canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}
-	snaps, err := conn.Snapshots(ctx, w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer snaps.Close()
 	in := &yield.Inputs{Accounts: map[yield.AccountKey]yield.Account{}}
-	for {
-		batch, more, err := snaps.Next(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, batch := range silvertest.Snapshots(t, conn, w) {
 		for _, a := range batch.Accounts {
 			in.Accounts[yield.AccountKey{Source: kindName, Account: a.AccountExternalID}] =
 				yield.Account{Portfolio: derefText(a.PortfolioExternalID)}
@@ -856,9 +848,6 @@ func TestALinkedDividendLandsOnTheCustodyHolding(t *testing.T) {
 				HoldingKey: yield.HoldingKey{Source: kindName, Account: p.AccountExternalID, PositionKey: p.PositionKey},
 				Instrument: derefText(p.InstrumentExternalID),
 			})
-		}
-		if !more {
-			break
 		}
 	}
 	sort.Slice(in.Holdings, func(i, j int) bool { return in.Holdings[i].Account < in.Holdings[j].Account })

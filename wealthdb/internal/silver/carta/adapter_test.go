@@ -26,15 +26,6 @@ func openAdapter(t *testing.T, path string) silver.Connection {
 	return silvertest.Open(t, &Adapter{}, path)
 }
 
-func unixDate(t *testing.T, s string) int64 {
-	t.Helper()
-	tm, err := time.Parse("2006-01-02", s)
-	if err != nil {
-		t.Fatalf("unixDate(%q): %v", s, err)
-	}
-	return tm.Unix()
-}
-
 // seed builds a one-portfolio book with both entity families and every
 // cash-flow kind:
 //   - entity 100 (cap-table): a held share lot + its exit, plus an `exercise`
@@ -46,9 +37,9 @@ func unixDate(t *testing.T, s string) int64 {
 // called capital (fundcarry_test.go covers that).
 func seed(t *testing.T, db *sql.DB) {
 	t.Helper()
-	d0101 := unixDate(t, "2023-01-01")
-	d0630 := unixDate(t, "2023-06-30")
-	dExit := unixDate(t, "2025-09-09")
+	d0101 := silvertest.ISO(t, "2023-01-01")
+	d0630 := silvertest.ISO(t, "2023-06-30")
+	dExit := silvertest.ISO(t, "2025-09-09")
 	stmts := fmt.Sprintf(`
 INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, payload)
     VALUES (1700000000, 3, 'run', 'IND1', '{}');
@@ -91,9 +82,9 @@ func TestStatusTransactionExtrema(t *testing.T) {
 	}
 	// Transaction extrema track the cash-flow dates: 2023-01-01 (first
 	// exercise) .. 2025-09-09 (the exit).
-	if s.OldestTransactionAt != unixDate(t, "2023-01-01") || s.LatestTransactionAt != unixDate(t, "2025-09-09") {
+	if s.OldestTransactionAt != silvertest.ISO(t, "2023-01-01") || s.LatestTransactionAt != silvertest.ISO(t, "2025-09-09") {
 		t.Errorf("tx extrema = [%d,%d], want [%d,%d]", s.OldestTransactionAt,
-			s.LatestTransactionAt, unixDate(t, "2023-01-01"), unixDate(t, "2025-09-09"))
+			s.LatestTransactionAt, silvertest.ISO(t, "2023-01-01"), silvertest.ISO(t, "2025-09-09"))
 	}
 	if s.LatestChangeNumber != 1700000000 {
 		t.Errorf("LatestChangeNumber = %d, want 1700000000", s.LatestChangeNumber)
@@ -106,23 +97,11 @@ func TestSnapshotsEmitCustodyAccountOnly(t *testing.T) {
 	conn := openAdapter(t, path)
 
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, err := conn.Snapshots(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 
 	accts := map[string]canonical.AccountChange{}
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, b := range silvertest.Snapshots(t, conn, w) {
 		for _, a := range b.Accounts {
 			accts[a.AccountExternalID] = a
-		}
-		if !more {
-			break
 		}
 	}
 	// One account: the custody account carries the positions AND the
@@ -145,25 +124,17 @@ func TestTransactions(t *testing.T) {
 	conn := openAdapter(t, path)
 
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, err := conn.Transactions(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
-	batch, _, err := stream.Next(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	txs := silvertest.Transactions(t, conn, w)
 
 	// exercise: deposit+buy. exit: sell ($0, withdrawal omitted). capital_call:
 	// deposit+contribution. distribution: distribution+withdrawal. 2+1+2+2 = 7.
-	if len(batch.Transactions) != 7 {
-		t.Fatalf("transactions = %d, want 7", len(batch.Transactions))
+	if len(txs) != 7 {
+		t.Fatalf("transactions = %d, want 7", len(txs))
 	}
 
 	byID := map[string]canonical.TransactionChange{}
 	sum := canonical.NewDecimalFromInt(0)
-	for _, tx := range batch.Transactions {
+	for _, tx := range txs {
 		byID[tx.TransactionExternalID] = tx
 		if tx.AccountExternalID != "IND1" {
 			t.Errorf("%s account = %q, want the custody account", tx.TransactionExternalID, tx.AccountExternalID)
@@ -229,7 +200,7 @@ func TestTransactions(t *testing.T) {
 // sale + its withdrawals net to 0 on the custody account.
 func TestSideLoadedLegsEmit1to1(t *testing.T) {
 	path, db := newFixtureSilver(t)
-	d := unixDate(t, "2025-09-09")
+	d := silvertest.ISO(t, "2025-09-09")
 	if _, err := db.Exec(fmt.Sprintf(`
 INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, payload)
     VALUES (1700000000, 3, 'run', 'IND1', '{}');
@@ -248,23 +219,15 @@ INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, snapshot_at, k
 	conn := openAdapter(t, path)
 
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, err := conn.Transactions(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
-	batch, _, err := stream.Next(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	txs := silvertest.Transactions(t, conn, w)
 
 	// 1:1 — exactly 3 transactions (no auto-pairing), net 0.
-	if len(batch.Transactions) != 3 {
-		t.Fatalf("transactions = %d, want 3 (sell + 2 withdrawals, 1:1)", len(batch.Transactions))
+	if len(txs) != 3 {
+		t.Fatalf("transactions = %d, want 3 (sell + 2 withdrawals, 1:1)", len(txs))
 	}
 	byID := map[string]canonical.TransactionChange{}
 	sum := canonical.NewDecimalFromInt(0)
-	for _, tx := range batch.Transactions {
+	for _, tx := range txs {
 		byID[tx.TransactionExternalID] = tx
 		if tx.AccountExternalID != "IND1" {
 			t.Errorf("%s account = %q, want the custody account", tx.TransactionExternalID, tx.AccountExternalID)
@@ -306,7 +269,7 @@ INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, snapshot_at, k
 // that class, and that an equity holding in the same book stays private_equity.
 func TestConvertibleNotePosition(t *testing.T) {
 	path, db := newFixtureSilver(t)
-	d := unixDate(t, "2026-06-30")
+	d := silvertest.ISO(t, "2026-06-30")
 	if _, err := db.Exec(fmt.Sprintf(`
 INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, payload)
     VALUES (1700000000, 3, 'run', 'IND1', '{}');
@@ -323,27 +286,15 @@ INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_
 	conn := openAdapter(t, path)
 
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, err := conn.Snapshots(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 
 	posByKey := map[string]canonical.PositionChange{}
 	instByID := map[string]canonical.InstrumentChange{}
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, b := range silvertest.Snapshots(t, conn, w) {
 		for _, p := range b.Positions {
 			posByKey[p.PositionKey] = p
 		}
 		for _, i := range b.Instruments {
 			instByID[i.InstrumentExternalID] = i
-		}
-		if !more {
-			break
 		}
 	}
 
@@ -375,7 +326,7 @@ INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_
 // only.
 func TestTaxonomyPairs(t *testing.T) {
 	path, db := newFixtureSilver(t)
-	d := unixDate(t, "2026-06-30")
+	d := silvertest.ISO(t, "2026-06-30")
 	if _, err := db.Exec(fmt.Sprintf(`
 INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, payload)
     VALUES (1700000000, 3, 'run', 'IND1', '{}');
@@ -400,27 +351,15 @@ INSERT INTO fund_metrics(snapshot_at, entity_external_id, currency, net_asset_va
 	conn := openAdapter(t, path)
 
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, err := conn.Snapshots(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 
 	posByKey := map[string]canonical.PositionChange{}
 	instByID := map[string]canonical.InstrumentChange{}
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, b := range silvertest.Snapshots(t, conn, w) {
 		for _, p := range b.Positions {
 			posByKey[p.PositionKey] = p
 		}
 		for _, i := range b.Instruments {
 			instByID[i.InstrumentExternalID] = i
-		}
-		if !more {
-			break
 		}
 	}
 
@@ -464,7 +403,7 @@ INSERT INTO fund_metrics(snapshot_at, entity_external_id, currency, net_asset_va
 // carries NO share lot (a SAFE has no shares yet) and the pair nets to 0.
 func TestConvertiblePurchasePair(t *testing.T) {
 	path, db := newFixtureSilver(t)
-	d := unixDate(t, "2026-06-30")
+	d := silvertest.ISO(t, "2026-06-30")
 	if _, err := db.Exec(fmt.Sprintf(`
 INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, payload)
     VALUES (1700000000, 3, 'run', 'IND1', '{}');
@@ -482,22 +421,14 @@ INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, snapshot_at, k
 	conn := openAdapter(t, path)
 
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, err := conn.Transactions(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
-	batch, _, err := stream.Next(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	txs := silvertest.Transactions(t, conn, w)
 
-	if len(batch.Transactions) != 2 {
-		t.Fatalf("transactions = %d, want 2 (deposit + buy)", len(batch.Transactions))
+	if len(txs) != 2 {
+		t.Fatalf("transactions = %d, want 2 (deposit + buy)", len(txs))
 	}
 	byID := map[string]canonical.TransactionChange{}
 	sum := canonical.NewDecimalFromInt(0)
-	for _, tx := range batch.Transactions {
+	for _, tx := range txs {
 		byID[tx.TransactionExternalID] = tx
 		if tx.AccountExternalID != "IND1" {
 			t.Errorf("%s account = %q, want the custody account", tx.TransactionExternalID, tx.AccountExternalID)
@@ -534,9 +465,9 @@ INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, snapshot_at, k
 // pre-inception zero).
 func TestSnapshotsEmitClosureMarker(t *testing.T) {
 	path, db := newFixtureSilver(t)
-	dEmpty := unixDate(t, "2022-06-01") // entity known, nothing held yet
-	dHeld := unixDate(t, "2023-01-01")
-	dExit := unixDate(t, "2025-09-09")
+	dEmpty := silvertest.ISO(t, "2022-06-01") // entity known, nothing held yet
+	dHeld := silvertest.ISO(t, "2023-01-01")
+	dExit := silvertest.ISO(t, "2025-09-09")
 	stmts := fmt.Sprintf(`
 INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, payload)
     VALUES (1700000000, 3, 'run', 'IND1', '{}');
@@ -553,23 +484,8 @@ INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_
 	conn := openAdapter(t, path)
 
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, err := conn.Snapshots(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 
-	var batches []canonical.SnapshotBatch
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		batches = append(batches, b)
-		if !more {
-			break
-		}
-	}
+	batches := silvertest.Snapshots(t, conn, w)
 	if len(batches) != 3 {
 		t.Fatalf("batches = %d, want pre-holding empty + held + closure marker", len(batches))
 	}
@@ -629,23 +545,8 @@ INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_
 
 	conn := openAdapter(t, path)
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, err := conn.Snapshots(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 
-	var pos []canonical.PositionChange
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		pos = append(pos, b.Positions...)
-		if !more {
-			break
-		}
-	}
+	pos := silvertest.Merged(t, conn, w).Positions
 	if len(pos) != 1 {
 		t.Fatalf("positions = %d, want the one aggregated cap-table line", len(pos))
 	}
@@ -667,7 +568,7 @@ INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_
 // built from, and a dry run says nothing about the roster.
 func TestACompanyADumpStopsListingLeavesAtThatDump(t *testing.T) {
 	path, db := newFixtureSilver(t)
-	dHeld := unixDate(t, "2023-01-01")
+	dHeld := silvertest.ISO(t, "2023-01-01")
 	stmts := fmt.Sprintf(`
 INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, dry_run, payload) VALUES
     (1700000000, 3, 'run1', 'IND1', 0, '{"entities":[{"corporation_id":100},{"corporation_id":200}]}'),
@@ -693,22 +594,7 @@ INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_
 	if w.End != 1800000000 {
 		t.Errorf("window end = %d, want the dump that dropped the company", w.End)
 	}
-	stream, err := conn.Snapshots(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
-	var batches []canonical.SnapshotBatch
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		batches = append(batches, b)
-		if !more {
-			break
-		}
-	}
+	batches := silvertest.Snapshots(t, conn, w)
 	if len(batches) != 2 {
 		t.Fatalf("batches = %d, want the held snapshot and the dump's roster", len(batches))
 	}

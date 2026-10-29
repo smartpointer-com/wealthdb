@@ -172,20 +172,9 @@ func writeStalePinConfig(t *testing.T) string {
 // open re-applies that migration. Returns the version left behind.
 func putGoldOneMigrationBehind(t *testing.T, goldPath string) int {
 	t.Helper()
-	db, err := sql.Open("duckdb", goldPath)
-	if err != nil {
-		t.Fatalf("open gold: %v", err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`DELETE FROM schema_meta
-         WHERE gold_schema_version = (SELECT MAX(gold_schema_version) FROM schema_meta)`); err != nil {
-		t.Fatalf("unstamp the newest migration: %v", err)
-	}
-	var version int
-	if err := db.QueryRow(`SELECT MAX(gold_schema_version) FROM schema_meta`).Scan(&version); err != nil {
-		t.Fatalf("read schema version: %v", err)
-	}
-	return version
+	execGold(t, goldPath, `DELETE FROM schema_meta
+         WHERE gold_schema_version = (SELECT MAX(gold_schema_version) FROM schema_meta)`)
+	return countGold(t, goldPath, `SELECT MAX(gold_schema_version) FROM schema_meta`)
 }
 
 // goldState reads what a command that opened gold read-write would have

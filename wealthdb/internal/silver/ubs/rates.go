@@ -62,13 +62,8 @@ SELECT snapshot_at, account_external_id, rate_pct, upper_limit, COALESCE(valid_f
   FROM account_rates
  WHERE side = 'credit'
  ORDER BY account_external_id, snapshot_at, COALESCE(valid_from, ''), tier`
-	rows, err := r.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("ubs-web account_rates: %w", err)
-	}
-	defer rows.Close()
 	out := map[string][]rateCapture{}
-	for rows.Next() {
+	err = silver.ScanRows(ctx, r.db, q, func(rows *sql.Rows) error {
 		var (
 			at        int64
 			account   string
@@ -77,7 +72,7 @@ SELECT snapshot_at, account_external_id, rate_pct, upper_limit, COALESCE(valid_f
 			validFrom string
 		)
 		if err := rows.Scan(&at, &account, &pct, &upTo, &validFrom); err != nil {
-			return nil, err
+			return err
 		}
 		caps := out[account]
 		if len(caps) == 0 || caps[len(caps)-1].at != at {
@@ -89,7 +84,7 @@ SELECT snapshot_at, account_external_id, rate_pct, upper_limit, COALESCE(valid_f
 			if validFrom != "" {
 				day, err := time.Parse(time.DateOnly, validFrom)
 				if err != nil {
-					return nil, fmt.Errorf("ubs-web account_rates %s: valid_from: %w", account, err)
+					return fmt.Errorf("%s: valid_from: %w", account, err)
 				}
 				sc.rate.ValidFrom = &day
 			}
@@ -103,8 +98,12 @@ SELECT snapshot_at, account_external_id, rate_pct, upper_limit, COALESCE(valid_f
 		}
 		sc.rate.Tiers = append(sc.rate.Tiers, tier)
 		out[account] = caps
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ubs-web account_rates: %w", err)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // keys is the stated-rate keys for one capture: each schedule's tiers

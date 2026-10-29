@@ -187,32 +187,26 @@ func TestLinkReceipts(t *testing.T) {
 func TestExposurePassCompletesAReceipt(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	ex := func(q string, args ...any) {
-		t.Helper()
-		if _, err := db.ExecContext(ctx, q, args...); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
 	for _, i := range []struct{ id, isin, symbol, name string }{
 		{"QQRVY", "", "QQRVY", "QORVANT AG SPON ADR EACH REP 0.5 ORD SHS"},
 		{"QDR2", "US0000000732", "", "Sponsored American Deposit Receipt Qorvant AG"},
 		{"QDR3", "US0000000733", "", "Sponsored American Deposit Receipt Qorvant AG"},
 		{"QDR4", "US0000000734", "", "Sponsored American Deposit Receipt Qorvant AG"},
 	} {
-		ex(`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, symbol, name,
+		mustExec(t, db, `INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, symbol, name,
 		    currency, first_seen_at, last_seen_at) VALUES ('test-src', ?, 'public_equity', 'stock', NULLIF(?, ''),
 		    NULLIF(?, ''), ?, 'USD', 0, 0)`, i.id, i.isin, i.symbol, i.name)
 	}
-	ex(`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency)
+	mustExec(t, db, `INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency)
 	    VALUES ('test-src', 'symbol:QREF', ?, 'holdings', 'ishares', 1, 'USD')`, exSnap)
-	ex(`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
+	mustExec(t, db, `INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
 	    weight, currency, country, sector) VALUES ('test-src', 'symbol:QREF', ?, 'holdings', 1, 'isin:DE0000000701',
 	    'DE0000000701', 'QORVANT N AG', 'Equity', 100, 'EUR', 'Germany', 'Industrials')`, exSnap)
-	ex(`INSERT INTO security_identities (silver_source_id, security_key, as_of, provider, name, security_type)
+	mustExec(t, db, `INSERT INTO security_identities (silver_source_id, security_key, as_of, provider, name, security_type)
 	    VALUES ('refdata', 'symbol:QQRVY', ?, 'openfigi', 'QORVANT AG-SPONS ADR', 'Depositary Receipt')`, exSnap)
 	// QDR3: a source states its domicile, the share's own; QDR4: a source
 	// places it in another country.
-	ex(`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value, scheme) VALUES
+	mustExec(t, db, `INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value, scheme) VALUES
 	    ('refdata', 'isin:US0000000733', 'legal_country', ?, 'gleif', 'DE', 'iso3166'),
 	    ('refdata', 'isin:US0000000734', 'hq_country', ?, 'gleif', 'AT', 'iso3166')`, exSnap, exSnap)
 	if _, err := RebuildExposure(ctx, db); err != nil {

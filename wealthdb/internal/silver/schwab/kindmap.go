@@ -38,7 +38,7 @@ func kindFor(rawType string, netAmount canonical.Decimal, quantity *canonical.De
 	switch rawType {
 	case "TRADE":
 		// Schwab convention: buy → negative cash (money out), sell
-		// → positive cash. We invert because gold's TxKind is
+		// → positive cash. The kind inverts it because gold's TxKind is
 		// instrument-centric.
 		switch {
 		case netAmount.IsNegative():
@@ -246,7 +246,7 @@ func settleDeliveries(txs []canonical.TransactionChange, idx []int) {
 //     "US TREASU NT 9.999%01/99UST NOTE DUE 01/15/99" or
 //     "US TREASURY 9.999%01/99UST BOND DUE 01/15/99". The Schwab
 //     API drops the instrument leg for DIVIDEND_OR_INTEREST so
-//     assetType=TREASURY isn't available; we fall back to
+//     assetType=TREASURY isn't available; the match falls back to
 //     description substrings ("UST NOTE", "UST BOND") that only
 //     appear in Treasury holdings.
 //

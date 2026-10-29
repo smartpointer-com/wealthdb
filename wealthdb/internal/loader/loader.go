@@ -1177,11 +1177,11 @@ func applyTaxableWrapper(accounts []canonical.AccountChange, wrapper string) {
 // configured for accounts that happen not to be in this snapshot
 // window.
 //
-// An account the adapter kinds as a card, a mortgage or an overlay
-// keeps its kind: gold reads a card's and a mortgage's balance by
-// that kind, and an overlay is synthetic. Such an account's ID goes
-// into keptKinds, so the caller can say once that the override was
-// ignored; keptKinds may be nil.
+// An account whose adapter's kind follows its source
+// (canonical.AccountKind.FollowsSource: a card, a mortgage or an
+// overlay) keeps that kind. Such an account's ID goes into keptKinds,
+// so the caller can say once that the override was ignored; keptKinds
+// may be nil.
 func applyAccountOverrides(accounts []canonical.AccountChange, overrides map[string]AccountOverride,
 	keptKinds map[string]canonical.AccountKind) {
 	if len(overrides) == 0 {
@@ -1202,8 +1202,7 @@ func applyAccountOverrides(accounts []canonical.AccountChange, overrides map[str
 		}
 		switch kind := accounts[i].AccountKind; {
 		case ov.AccountKind == "":
-		case kind == canonical.AccountKindCard, kind == canonical.AccountKindMortgage,
-			kind == canonical.AccountKindOverlay:
+		case kind.FollowsSource():
 			if keptKinds != nil {
 				keptKinds[accounts[i].AccountExternalID] = kind
 			}

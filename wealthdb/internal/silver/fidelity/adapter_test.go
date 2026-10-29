@@ -456,16 +456,10 @@ func TestHistoricalDAFPoolClassification(t *testing.T) {
 	}
 	conn := openAdapter(t, path)
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, _ := conn.Snapshots(context.Background(), w)
-	defer stream.Close()
 
 	var histPos *canonical.PositionChange
 	var histAcct *canonical.AccountChange
-	for {
-		batch, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, batch := range silvertest.Snapshots(t, conn, w) {
 		for i := range batch.Positions {
 			if batch.Positions[i].SnapshotAt == 1000 {
 				histPos = &batch.Positions[i]
@@ -475,9 +469,6 @@ func TestHistoricalDAFPoolClassification(t *testing.T) {
 			if batch.Accounts[i].FirstSeenAt == 1000 {
 				histAcct = &batch.Accounts[i]
 			}
-		}
-		if !more {
-			break
 		}
 	}
 	if histPos == nil {
@@ -525,22 +516,13 @@ func TestAnAccountIsTypedByWhatItHolds(t *testing.T) {
 	}
 	conn := openAdapter(t, path)
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, _ := conn.Snapshots(context.Background(), w)
-	defer stream.Close()
 	kinds := map[string]map[canonical.AccountKind]int{}
-	for {
-		batch, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, batch := range silvertest.Snapshots(t, conn, w) {
 		for _, a := range batch.Accounts {
 			if kinds[a.AccountExternalID] == nil {
 				kinds[a.AccountExternalID] = map[canonical.AccountKind]int{}
 			}
 			kinds[a.AccountExternalID][a.AccountKind]++
-		}
-		if !more {
-			break
 		}
 	}
 	if got := kinds["0000000002"]; len(got) != 1 || got[canonical.AccountKindMortgage] < 3 {
@@ -811,19 +793,10 @@ func TestStatementConstructsHaveNoSymbol(t *testing.T) {
 	}
 	conn := openAdapter(t, path)
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, _ := conn.Snapshots(context.Background(), w)
-	defer stream.Close()
 	byName := map[string]canonical.InstrumentChange{}
-	for {
-		batch, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, batch := range silvertest.Snapshots(t, conn, w) {
 		for _, in := range batch.Instruments {
 			byName[*in.Name] = in
-		}
-		if !more {
-			break
 		}
 	}
 	for _, name := range []string{"NET CASH POSITION", "NO POSITIONS", "CASH BALANCE",
@@ -868,21 +841,12 @@ func TestStatementBondTermsReachThePosition(t *testing.T) {
 	}
 	conn := openAdapter(t, path)
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, _ := conn.Snapshots(context.Background(), w)
-	defer stream.Close()
 	var pos []canonical.PositionChange
 	var vehicles []canonical.Vehicle
-	for {
-		batch, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, batch := range silvertest.Snapshots(t, conn, w) {
 		pos = append(pos, batch.Positions...)
 		for _, in := range batch.Instruments {
 			vehicles = append(vehicles, in.Vehicle)
-		}
-		if !more {
-			break
 		}
 	}
 	if len(pos) != 1 || string(pos[0].Payload) != terms {
@@ -1005,7 +969,7 @@ func TestAChargeBookedAsAMoveIsACharge(t *testing.T) {
             ('taxpay',   900, 'ACC1', 'TRANSFER', NULL,  'USD', NULL, NULL, -1200.00,
              '{"Action": "TRANSFERRED TO JNL#0000000001 VS X00-000000-1 TAX PAYMENT (Cash)"}'),
             ('prepjnl',  901, 'ACC1', 'JOURNAL',  NULL,  'USD', NULL, NULL, -45.00,
-             '{"Action": "JOURNALED JNL#0000000002 2025 TAX PREP FEE (Cash)"}'),
+             '{"Action": "JOURNALED JNL#0000000002 2000 TAX PREP FEE (Cash)"}'),
             ('preptfr',  902, 'ACC1', 'TRANSFER', NULL,  'USD', NULL, NULL, -45.00,
              '{"Action": "TRANSFERRED TO JNL#0000000003 2020 TAX PREP FEE"}'),
             ('security', 903, 'ACC1', 'TRANSFER', 'XYZ', 'USD', -10, NULL, -1000.00,

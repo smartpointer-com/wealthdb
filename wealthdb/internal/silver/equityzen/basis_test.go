@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // stamp is a derived book value's stamp of the given method and fees.
@@ -65,25 +66,13 @@ func TestTheBookValueIncludesThePurchaseFeeProRata(t *testing.T) {
 	conn := openAdapter(t, path)
 	ctx := context.Background()
 	w, _ := conn.ChangeWindow(ctx, -1)
-	stream, err := conn.Snapshots(ctx, w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 	got := map[int64]map[string]canonical.PositionChange{}
-	for {
-		b, more, err := stream.Next(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, b := range silvertest.Snapshots(t, conn, w) {
 		for _, p := range b.Positions {
 			if got[p.SnapshotAt] == nil {
 				got[p.SnapshotAt] = map[string]canonical.PositionChange{}
 			}
 			got[p.SnapshotAt][p.PositionKey] = p
-		}
-		if !more {
-			break
 		}
 	}
 	spvFee := stamp(canonical.BasisMethodAverage, canonical.BasisFeesIncluded)
@@ -100,7 +89,7 @@ func TestTheBookValueIncludesThePurchaseFeeProRata(t *testing.T) {
 		{"2023-06-01", "f3", "500.00", "", stamp(canonical.BasisMethodAverage, canonical.BasisFeesUnknown)},
 		{"2023-06-01", "f4", "800.00", "", stamp(canonical.BasisMethodPaidIn, canonical.BasisFeesUnknown)},
 	} {
-		p, ok := got[iso(t, c.day)][c.deal]
+		p, ok := got[silvertest.ISO(t, c.day)][c.deal]
 		if !ok {
 			t.Errorf("%s %s: no position", c.day, c.deal)
 			continue

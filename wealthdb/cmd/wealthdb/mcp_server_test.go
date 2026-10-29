@@ -520,6 +520,23 @@ func TestMCPStatedIsASideView(t *testing.T) {
 		!strings.Contains(side, "stated: source, account") {
 		t.Errorf("returns help does not list stated apart:\n%s", help)
 	}
+	// The document fixes the periods and the currency: the view refuses
+	// every option that would set them, and its header names none.
+	for _, arg := range []map[string]any{{"method": "twr"}, {"currency": "CHF"}, {"period": "monthly"},
+		{"annualize": "never"}, {"netting": false}, {"inception": "strict"}} {
+		arg["view"] = "stated"
+		if _, err := callTool(t, s, "returns", arg); err == nil || !strings.Contains(err.Error(), "stated takes no") {
+			t.Errorf("returns %v: %v, want the stated view's refusal", arg, err)
+		}
+	}
+	stated, err := callTool(t, s, "returns", map[string]any{"view": "stated"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head, _, _ := strings.Cut(stated, "\n"); !strings.Contains(head, "each period in the currency its document states") ||
+		strings.Contains(head, "method=") {
+		t.Errorf("stated header = %q, want the document-currency line and no method", head)
+	}
 }
 
 // TestMCPRowCeiling: the ceiling lowers a larger limit, and limit 0, and

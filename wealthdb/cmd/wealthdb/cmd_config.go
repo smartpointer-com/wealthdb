@@ -51,8 +51,8 @@ empty configs.`)
 	}
 
 	// TTY check — only meaningful when stdin is a real *os.File.
-	// In tests we pass a *bytes.Buffer / strings.Reader; those
-	// aren't *os.File, so we skip the check and proceed.
+	// A test passes a *bytes.Buffer / strings.Reader; those
+	// aren't *os.File, so the check is skipped.
 	if f, ok := stdin.(*os.File); ok {
 		if !term.IsTerminal(int(f.Fd())) {
 			return errs.Newf(errs.ExitUsage,

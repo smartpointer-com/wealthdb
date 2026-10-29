@@ -55,10 +55,27 @@ type Pin struct {
 var requiredPinCols = []string{"silver_source_id", "account", "occurred_at", "amount", "currency"}
 
 // pinAmountEps is how far a pin's amount may sit from the stored
-// net_amount and still describe it: a cent, the same absolute floor
-// gold's transfer matcher applies. A ledger is written from a
-// statement showing two decimals; gold stores four.
-const pinAmountEps = 0.01
+// net_amount and still describe it: a cent, the absolute floor gold's
+// transfer matcher applies. A ledger is written from a statement
+// showing two decimals; gold stores four.
+const pinAmountEps = gold.TransferMatchMinEps
+
+// naturalKeySQL follows a SELECT of transactions' columns with the
+// natural key a pin and a ledger leg name a transaction by: its source,
+// account and currency, its UTC day, and its amount to within
+// pinAmountEps. naturalKeyArgs gives its arguments.
+const naturalKeySQL = `
+  FROM transactions
+ WHERE silver_source_id = ? AND account_external_id = ? AND currency = ?
+   AND occurred_at >= ? AND occurred_at < ?
+   AND abs(CAST(net_amount AS DOUBLE) - ?) <= ?`
+
+// naturalKeyArgs are naturalKeySQL's arguments: a transaction of the
+// source, account and currency, on the UTC day that starts at dayStart,
+// of the amount.
+func naturalKeyArgs(source, account, currency string, dayStart int64, amount float64) []any {
+	return []any{source, account, currency, dayStart, dayStart + gold.SecondsPerDay, amount, pinAmountEps}
+}
 
 // ParsePinLedger reads the pins ledger CSV at path. An empty path or a
 // missing file is not an error — the ledger is optional and absence
@@ -248,12 +265,8 @@ func resolvePins(ctx context.Context, tx *sql.Tx, fam string, pins []Pin) (map[t
 		return nil, 0, nil
 	}
 	stmt, err := tx.PrepareContext(ctx, `
-        SELECT transaction_external_id, COALESCE(counterparty, ''), COALESCE(description, '')
-          FROM transactions
-         WHERE silver_source_id = ? AND account_external_id = ? AND currency = ?
-           AND occurred_at >= ? AND occurred_at < ?
-           AND ABS(CAST(net_amount AS DOUBLE) - ?) <= ?
-         ORDER BY transaction_external_id`)
+SELECT transaction_external_id, COALESCE(counterparty, ''), COALESCE(description, '')`+naturalKeySQL+`
+ ORDER BY transaction_external_id`)
 	if err != nil {
 		return nil, 0, fmt.Errorf("%s: prepare pin lookup: %w", fam, err)
 	}
@@ -296,8 +309,7 @@ func resolvePins(ctx context.Context, tx *sql.Tx, fam string, pins []Pin) (map[t
 // the next pin is looked up: the statement runs on the pass's
 // transaction, which holds one connection.
 func pinMatches(ctx context.Context, stmt *sql.Stmt, fam string, p Pin, account string) ([]candidate, error) {
-	rows, err := stmt.QueryContext(ctx, p.Source, account, p.Currency,
-		p.Day, p.Day+gold.SecondsPerDay, p.Amount, pinAmountEps)
+	rows, err := stmt.QueryContext(ctx, naturalKeyArgs(p.Source, account, p.Currency, p.Day, p.Amount)...)
 	if err != nil {
 		return nil, fmt.Errorf("%s: look up pin %s/%s: %w", fam, p.Source, p.Account, err)
 	}

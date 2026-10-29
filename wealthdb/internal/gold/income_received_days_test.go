@@ -16,23 +16,17 @@ import (
 func TestIncomeReceivedViews(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	ex := func(q string, args ...any) {
-		t.Helper()
-		if _, err := db.ExecContext(ctx, q, args...); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
 	day := func(y int, m time.Month, d int) int64 { return time.Date(y, m, d, 12, 0, 0, 0, time.UTC).Unix() }
-	ex(`INSERT INTO report_yield_positions (computed_at, as_of, currency, silver_source_id, account_external_id,
+	mustExec(t, db, `INSERT INTO report_yield_positions (computed_at, as_of, currency, silver_source_id, account_external_id,
 	    position_key, kind, value, weighs) VALUES (0, ?, 'USD', 'test-src', 'A', 'cash:USD', 'deposit', 1, TRUE)`,
 		day(2026, 10, 21))
-	ex(`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
+	mustExec(t, db, `INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
 	    first_seen_at, last_seen_at) VALUES ('test-src', 'A', 'brokerage', 'Brokerage', 'USD', 0, 0),
 	    ('test-src', 'B', 'brokerage', 'Other', 'USD', 0, 0)`)
-	ex(`INSERT INTO income_account_scope (silver_source_id, account_external_id, mode) VALUES ('test-src', 'B', 'exclude')`)
+	mustExec(t, db, `INSERT INTO income_account_scope (silver_source_id, account_external_id, mode) VALUES ('test-src', 'B', 'exclude')`)
 	taxed := func(acct, kind string, at int64, net float64) {
 		t.Helper()
-		ex(`INSERT INTO serving_transactions BY NAME
+		mustExec(t, db, `INSERT INTO serving_transactions BY NAME
 		    SELECT 'test-src' AS silver_source_id, ? AS account_external_id, ? AS kind, ? AS occurred_at,
 		           ? AS net_amount, ? AS value_usd, ? AS value_chf, ? AS value_eur, ? AS value_gbp`,
 			acct, kind, at, net, net, 0.8*net, 0.9*net, 0.75*net)
@@ -71,7 +65,7 @@ func TestIncomeReceivedViews(t *testing.T) {
 	// Income received before last year starts the days on its day, tax
 	// withheld earlier still on its own, and an income line of any type
 	// earlier still on its own.
-	ex(`INSERT INTO report_yield_received (computed_at, currency, silver_source_id, account_external_id, position_key,
+	mustExec(t, db, `INSERT INTO report_yield_received (computed_at, currency, silver_source_id, account_external_id, position_key,
 	    day, type, value) VALUES (0, 'USD', 'test-src', 'A', 'cash:USD', DATE '2024-06-01', 'interest', 10)`)
 	if _, first, _ := days(); first != "2024-06-01" {
 		t.Errorf("with income received on 2024-06-01 the days start on %s", first)
@@ -80,7 +74,7 @@ func TestIncomeReceivedViews(t *testing.T) {
 	if _, first, _ := days(); first != "2023-02-01" {
 		t.Errorf("with tax withheld on 2023-02-01 the days start on %s", first)
 	}
-	ex(`INSERT INTO serving_income_transactions BY NAME
+	mustExec(t, db, `INSERT INTO serving_income_transactions BY NAME
 	    SELECT 'test-src' AS silver_source_id, 'A' AS account_external_id, ? AS occurred_at,
 	           'INCOME_SALARY' AS income_detailed, 100 AS value_usd`, day(2021, 4, 30))
 	if _, first, _ := days(); first != "2021-04-30" {
@@ -89,12 +83,11 @@ func TestIncomeReceivedViews(t *testing.T) {
 	n, first, last := days()
 	w := withheld()
 	rerunMigrationDDL(t, db, ctx, "0146_income_received_days.sql")
-	rerunMigrationDDL(t, db, ctx, "0169_cashflow_plan_income_split.sql")
 	if n2, f2, l2 := days(); n2 != n || f2 != first || l2 != last || withheld() != w {
 		t.Errorf("the replay changed the views: %d %s %s %q", n2, f2, l2, withheld())
 	}
 	// With no yield report there is no today, and so no day.
-	ex(`DELETE FROM report_yield_positions`)
+	mustExec(t, db, `DELETE FROM report_yield_positions`)
 	if n, _, _ := days(); n != 0 {
 		t.Errorf("with no yield report web_income_days holds %d days", n)
 	}

@@ -2,7 +2,7 @@ package returns
 
 import "math"
 
-// dietzDegenTol is the smallest average-capital denominator we treat as
+// dietzDegenTol is the smallest average-capital denominator treated as
 // meaningful, in output-currency units. A denominator at or below this (which
 // includes the zero and negative cases) makes the Modified-Dietz return
 // undefined or sign-flipped, so the bucket is reported degenerate.

@@ -50,14 +50,7 @@ func addComposition(t *testing.T, db *sql.DB, src, ref string, day int64, provid
 func rebuildForYield(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
-		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: 35, PartialPct: 3},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	rebuildExposureWithDefaults(t, db, ctx)
 	if _, err := RebuildYield(ctx, db); err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +323,7 @@ func TestMigration0141DDLIsRerunnable(t *testing.T) {
 	addComposition(t, db, "ref", "symbol:QFRF", 0, "sec_nport", "filing", "",
 		filingLine{key: "isin:US00000000F1", name: "EXAMPLE NOTE", assetType: "DBT", weight: 100, kind: "Floating"})
 	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
-		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: 35, PartialPct: 3},
+		Settings: defaultExposureSettings(),
 	}); err != nil {
 		t.Fatal(err)
 	}

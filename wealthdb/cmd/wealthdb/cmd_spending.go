@@ -36,6 +36,10 @@ var reportPeriods = map[string]string{
 // for usage text and error messages.
 var reportPeriodNames = []string{"daily", "weekly", "monthly", "quarterly", "annual", "total"}
 
+// categoryLevels are the `--level` vocabularies of spending's and
+// income's categories: the broad groups or the detailed values.
+var categoryLevels = []string{"primary", "detailed"}
+
 // cmdSpending routes `wealthdb spending <view> ...` to the view's run.
 func cmdSpending(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
 	view, rest, err := routeView("spending", subargs, spendingViews, spendingUsage, stderr)
@@ -58,7 +62,7 @@ func runSpendingView(ctx context.Context, g globalFlags, view string, args []str
 	if err := checkChoice("spending", "period", *period, reportPeriodNames...); err != nil {
 		return err
 	}
-	if err := checkChoice("spending", "level", *level, "primary", "detailed"); err != nil {
+	if err := checkChoice("spending", "level", *level, categoryLevels...); err != nil {
 		return err
 	}
 
@@ -215,17 +219,18 @@ func buildSpendTransactionColumnRegistry(outCcy string, kindOf func(string) stri
 		// The same two values as they read (migration 0058).
 		textCol("category", func(r gold.SpendTransactionRow) *string { return r.SpendLabel }),
 		textCol("category_primary", func(r gold.SpendTransactionRow) *string { return r.SpendPrimaryLabel }),
-		// The ISSUER's own classification of the line, mapped into our
-		// vocabulary and kept beside ours (migration 0057). Off by
-		// default: it is a second opinion, it disagrees with ours by
-		// design, and nothing may sum the two. Empty where the issuer
+		// The ISSUER's own classification of the line, mapped into the
+		// wealthdb vocabulary and kept beside the wealthdb category
+		// (migration 0057). Off by default: it is a second opinion, it
+		// disagrees with the category by design, and nothing may sum
+		// the two. Empty where the issuer
 		// published nothing this build translates — which is not the
 		// same as the issuer filing the row under a catch-all.
 		//
 		// Named `issuer_*` rather than `provider_category`, which
 		// everywhere else in the product — `transactions.provider_category`
 		// (migration 0038), the field a config rule matches — means the
-		// issuer's RAW string. These two are our translation of it.
+		// issuer's RAW string. These two are its translation.
 		textCol("issuer_category", func(r gold.SpendTransactionRow) *string { return r.ProviderSpendLabel }),
 		textCol("issuer_category_id", func(r gold.SpendTransactionRow) *string { return r.ProviderSpendDetailed }),
 		// Which tier decided the category (matcher / rule / provider /

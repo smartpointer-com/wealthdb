@@ -34,7 +34,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	}
 	// Cash + positions share a SQL pass: the per-fund market
 	// values are derived from each account's securities_balance,
-	// so we pull both side-by-side per account.
+	// so both are read side-by-side per account.
 	if err := c.appendPositionsAndCash(ctx, w, byTime); err != nil {
 		return nil, err
 	}
@@ -139,7 +139,7 @@ SELECT snapshot_at, account_external_id, currency_code,
 
 func (c *Connection) appendInstruments(ctx context.Context, byTime map[int64]*canonical.SnapshotBatch) error {
 	// Relevate's instruments table has no snapshot_at; the most-
-	// recent observation is what we have. Emit each instrument
+	// recent observation is all there is. Emit each instrument
 	// against every snapshot in the window so the gold per-column
 	// upsert sees consistent data — the loader-side LEAST/GREATEST
 	// on first_seen_at / last_seen_at dedups them.

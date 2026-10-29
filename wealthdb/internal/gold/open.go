@@ -167,8 +167,8 @@ func open(path string, mode Mode, audit bool, options map[string]string) (*sql.D
 //
 //   - the binary was built without VCS info (CommitAt == 0) — Docker
 //     builds without .git in the build context, raw `go install`
-//     with -buildvcs=false, etc.; we can't compare so we don't
-//     block.
+//     with -buildvcs=false, etc.; there is nothing to compare, so
+//     nothing blocks.
 //   - the binary_versions table is empty or doesn't exist — no
 //     stamped binary has opened the DB read-write yet, or the
 //     schema is older than migration 0012.
@@ -213,7 +213,7 @@ it doesn't know about. Rebuild from source, from the repository root:
 
 // recordBinaryOpen appends a row to binary_versions stamping the
 // current binary's identity. No-op when the binary has no VCS
-// info (CommitAt == 0) — we'd just be polluting the audit log.
+// info (CommitAt == 0): such a row would only pollute the audit log.
 //
 // It is a variable so a test can observe that Open reaches it and
 // ReopenReadWrite does not. Counting the rows it writes cannot answer

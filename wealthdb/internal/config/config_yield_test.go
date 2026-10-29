@@ -176,7 +176,7 @@ func TestYieldRejects(t *testing.T) {
 		`{"withholding": {"US": {"accounts": {"nope": {"a-1": 0}}}}}`:   `yield.withholding["US"]["accounts"]["nope"]: no silver_sources[].id matches`,
 		`{"withholding": {"US": {"accounts": {"demo": {}}}}}`:           `yield.withholding["US"]["accounts"]["demo"]: name at least one account`,
 		`{"withholding": {"US": {"accounts": {"demo": {" ": 0}}}}}`:     `yield.withholding["US"]["accounts"]["demo"]: an account id is empty`,
-		`{"withholding": {"US": {"accounts": {"demo": {"a-1 ": 0}}}}}`:  `["a-1 "]: an account id has no space around it`,
+		`{"withholding": {"US": {"accounts": {"demo": {"a-1 ": 0}}}}}`:  `["a-1 "]: an account id has space around it`,
 		`{"withholding": {"US": {"accounts": {"demo": {"a-1": 101}}}}}`: `yield.withholding["US"]["accounts"]["demo"]["a-1"] 101: want a percent, 0 to 100`,
 		`{"withholding": {"US": {"accounts": {"demo": 0}}}}`:            `yield.withholding["US"]["accounts"]: want {source: {account: percent}}`,
 		`{"withholding": {"US": {"default": "x"}}}`:                     `yield.withholding["US"]["default"]: want a percent`,

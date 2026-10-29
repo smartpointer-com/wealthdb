@@ -81,18 +81,12 @@ INSERT INTO spend_reimbursement_pairs (silver_source_id, transaction_external_id
 	return written, unresolved, nil
 }
 
-// describedTransaction finds the one transaction a ledger leg describes: its
-// source, account, currency, UTC day and amount to the cent, the natural key
-// a pin resolves by (pinMatches). ok is false where none or several answer.
+// describedTransaction finds the one transaction a ledger leg describes by
+// the natural key a pin resolves by (naturalKeySQL). ok is false where none
+// or several answer.
 func describedTransaction(ctx context.Context, tx *sql.Tx, s gold.TransferOverrideSelector) (txKey, bool, error) {
-	from := gold.EpochDay(s.Day) * gold.SecondsPerDay
-	rows, err := tx.QueryContext(ctx, `
-SELECT transaction_external_id
-  FROM transactions
- WHERE silver_source_id = ? AND account_external_id = ? AND currency = ?
-   AND occurred_at >= ? AND occurred_at < ?
-   AND abs(CAST(net_amount AS DOUBLE) - ?) <= ?
- LIMIT 2`, s.Source, s.Account, s.Currency, from, from+gold.SecondsPerDay, s.Amount, pinAmountEps)
+	rows, err := tx.QueryContext(ctx, `SELECT transaction_external_id`+naturalKeySQL+` LIMIT 2`,
+		naturalKeyArgs(s.Source, s.Account, s.Currency, gold.EpochDay(s.Day)*gold.SecondsPerDay, s.Amount)...)
 	if err != nil {
 		return txKey{}, false, fmt.Errorf("spending: reimbursement leg: %w", err)
 	}

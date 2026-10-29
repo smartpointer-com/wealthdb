@@ -344,14 +344,14 @@ func (c *Config) validateAccountOverrides(seenIDs map[string]bool) error {
 				ov.TaxWrapper != "" || ov.ManagementStyle != "") {
 				return fmt.Errorf("config: account_overrides[%q][%q]: exclude cannot be combined with a column override — the account is dropped, so there is no row to stamp", sourceID, acctID)
 			}
-			if ov.AccountKind != "" && (!canonical.AccountKind(ov.AccountKind).Valid() ||
-				ov.AccountKind == string(canonical.AccountKindOverlay)) {
+			// A kind that follows its source (AccountKind.FollowsSource)
+			// is no target: an overlay is synthetic, and a card's or a
+			// mortgage's kind is the liability's.
+			switch kind := canonical.AccountKind(ov.AccountKind); {
+			case ov.AccountKind == "":
+			case !kind.Valid() || kind == canonical.AccountKindOverlay:
 				return fmt.Errorf("config: account_overrides[%q][%q]: invalid account_kind %q", sourceID, acctID, ov.AccountKind)
-			}
-			// An adapter signs a liability's balance and books a
-			// mortgage's principal by its own kind, so a restated card
-			// or mortgage would read a debt as an asset.
-			if ov.AccountKind == string(canonical.AccountKindCard) || ov.AccountKind == string(canonical.AccountKindMortgage) {
+			case kind.FollowsSource():
 				return fmt.Errorf("config: account_overrides[%q][%q]: account_kind %q: a liability's kind follows its source", sourceID, acctID, ov.AccountKind)
 			}
 			if ov.TaxWrapper != "" && !canonical.TaxWrapper(ov.TaxWrapper).Valid() {
@@ -731,24 +731,48 @@ func validateCategorization(key, levels string, cz *SpendingCategorization, vali
 }
 
 // validateNestedDates checks a source_id -> external_id -> YYYY-MM-DD
-// map: every source id names a declared silver source (which catches a
-// typo at load), every inner key is non-empty, and every value parses.
-// Inner ids can't be checked against gold here — no DB access at config
-// load — so a typo'd one silently no-ops, as the other override
-// families' do.
+// map (validateNested): every inner key is non-empty, and every value
+// parses.
 func validateNestedDates(block, grain string, m map[string]map[string]string, seenIDs map[string]bool) error {
+	return validateNested(block+"."+grain, m, seenIDs, false, func(path, d string) error {
+		if _, err := parseYYYYMMDD(d); err != nil {
+			return fmt.Errorf("config: %s: %w", path, err)
+		}
+		return nil
+	})
+}
+
+// validateNested checks a source_id -> external_id -> value map, the
+// block at: every source id names a declared silver source (which
+// catches a typo at load), and check passes every value, at its
+// [source][id] path. Without strict, an empty inner key is refused.
+// With strict, the inner ids are account ids written exactly: a source
+// names at least one, and none is blank or has space around it. Inner
+// ids can't be checked against gold here — no DB access at config load
+// — so a typo'd one silently no-ops, as the other override families'
+// do.
+func validateNested[V any](at string, m map[string]map[string]V, seenIDs map[string]bool, strict bool,
+	check func(path string, v V) error) error {
 	for _, sourceID := range slices.Sorted(maps.Keys(m)) {
 		inner := m[sourceID]
+		src := fmt.Sprintf("%s[%q]", at, sourceID)
 		if !seenIDs[sourceID] {
-			return fmt.Errorf("config: %s.%s[%q]: no silver_sources[].id matches", block, grain, sourceID)
+			return fmt.Errorf("config: %s: no silver_sources[].id matches", src)
+		}
+		if strict && len(inner) == 0 {
+			return fmt.Errorf("config: %s: name at least one account", src)
 		}
 		for _, id := range slices.Sorted(maps.Keys(inner)) {
-			d := inner[id]
-			if id == "" {
-				return fmt.Errorf("config: %s.%s[%q]: empty external-id key", block, grain, sourceID)
+			switch {
+			case !strict && id == "":
+				return fmt.Errorf("config: %s: empty external-id key", src)
+			case strict && strings.TrimSpace(id) == "":
+				return fmt.Errorf("config: %s: an account id is empty", src)
+			case strict && strings.TrimSpace(id) != id:
+				return fmt.Errorf("config: %s[%q]: an account id has space around it", src, id)
 			}
-			if _, err := parseYYYYMMDD(d); err != nil {
-				return fmt.Errorf("config: %s.%s[%q][%q]: %w", block, grain, sourceID, id, err)
+			if err := check(fmt.Sprintf("%s[%q]", src, id), inner[id]); err != nil {
+				return err
 			}
 		}
 	}

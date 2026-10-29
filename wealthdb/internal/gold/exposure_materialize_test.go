@@ -24,20 +24,14 @@ func TestMaterializeExposureMatchesTheLiveViews(t *testing.T) {
 	// holding of each situs basis, and an account in a tax wrapper beside
 	// the fixture's, which state none.
 	seedSitus(t, db, ctx)
-	ex := func(q string, args ...any) {
-		t.Helper()
-		if _, err := db.ExecContext(ctx, q, args...); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
-	ex(`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
+	mustExec(t, db, `INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
 	    VALUES ('refdata', 'isin:XX0000000001', 'market_cap', 0, 'testfact', '50000000000')`)
-	ex(`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency, tax_wrapper,
+	mustExec(t, db, `INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency, tax_wrapper,
 	    first_seen_at, last_seen_at) VALUES ('test-src', 'A3', 'brokerage', 'Wrapped', 'USD', 'roth_ira', 0, 0)`)
-	ex(`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+	mustExec(t, db, `INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
 	    asset_class, vehicle, currency, quantity, market_value)
 	    VALUES ('test-src', ?, 'A3', 'FUNDX', 'FUNDX', 'public_equity', 'etf', 'USD', 1, 300)`, exSnap)
-	ex(`INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id, currency, balance_kind, amount)
+	mustExec(t, db, `INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id, currency, balance_kind, amount)
 	    VALUES ('test-src', ?, 'A3', 'USD', 'current', 40)`, exSnap)
 	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)

@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -54,11 +53,7 @@ func setupExposureGold(t *testing.T, extra ...string) string {
 		t.Fatal(err)
 	}
 	db.Close()
-	cfg := filepath.Join(dir, "wealthdb.cfg")
-	if err := os.WriteFile(cfg, []byte(`{"gold_db": "`+goldPath+`", "default_currency": "USD", "silver_sources": []}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return cfg
+	return writeGoldCfg(t, goldPath)
 }
 
 func runExposure(t *testing.T, cfg string, args ...string) (string, string, int) {

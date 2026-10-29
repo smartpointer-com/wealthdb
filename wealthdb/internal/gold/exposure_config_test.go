@@ -26,7 +26,7 @@ func TestSyncExposure(t *testing.T) {
 				Source: `{"page":4}`, Leaves: []canonical.ExposureDeclaredLeaf{{Share: 0.6, Region: "europe"},
 					{Share: 0.4, Region: "unknown"}}}},
 		Custody:  []canonical.ExposureCustody{{SilverSourceID: "bank", Custodian: "Example Bank AG"}},
-		Settings: canonical.ExposureSettings{MaxGapDays: 400, AgedDays: 35, PartialPct: 3},
+		Settings: defaultExposureSettings(),
 	}
 	if n, err := SyncExposure(ctx, db, rows); err != nil || n != 7 {
 		t.Fatalf("sync: %d %v", n, err)

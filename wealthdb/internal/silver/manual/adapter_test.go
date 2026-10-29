@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	_ "embed"
 	"testing"
-	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -23,17 +22,6 @@ func newFixtureSilver(t *testing.T) (string, *sql.DB) {
 func openAdapter(t *testing.T, path string) silver.Connection {
 	t.Helper()
 	return silvertest.Open(t, &Adapter{}, path)
-}
-
-// iso parses a calendar date to unix seconds at UTC midnight — what the
-// adapter's strftime('%s', <date>) yields for a bare ISO date.
-func iso(t *testing.T, s string) int64 {
-	t.Helper()
-	tm, err := time.Parse("2006-01-02", s)
-	if err != nil {
-		t.Fatalf("iso(%q): %v", s, err)
-	}
-	return tm.Unix()
 }
 
 // seed builds a multi-currency book exercising every path:
@@ -94,9 +82,9 @@ func TestStatusAndChangeWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Snapshot extrema span the earliest acquisition to the latest valuation.
-	if s.OldestSnapshotAt != iso(t, "2020-01-01") || s.LatestSnapshotAt != iso(t, "2023-01-01") {
+	if s.OldestSnapshotAt != silvertest.ISO(t, "2020-01-01") || s.LatestSnapshotAt != silvertest.ISO(t, "2023-01-01") {
 		t.Errorf("snapshot extrema = [%d,%d], want [%d,%d]",
-			s.OldestSnapshotAt, s.LatestSnapshotAt, iso(t, "2020-01-01"), iso(t, "2023-01-01"))
+			s.OldestSnapshotAt, s.LatestSnapshotAt, silvertest.ISO(t, "2020-01-01"), silvertest.ISO(t, "2023-01-01"))
 	}
 	// No transactions → the transaction range is the no-state sentinel.
 	if s.OldestTransactionAt != -1 || s.LatestTransactionAt != -1 {
@@ -112,9 +100,9 @@ func TestStatusAndChangeWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !w.HasChanges || w.Start != iso(t, "2020-01-01") || w.End != iso(t, "2023-01-01") || w.NewChangeNumber != 1700000000 {
+	if !w.HasChanges || w.Start != silvertest.ISO(t, "2020-01-01") || w.End != silvertest.ISO(t, "2023-01-01") || w.NewChangeNumber != 1700000000 {
 		t.Errorf("ChangeWindow(-1) = %+v, want HasChanges Start=%d End=%d NewCN=1700000000",
-			w, iso(t, "2020-01-01"), iso(t, "2023-01-01"))
+			w, silvertest.ISO(t, "2020-01-01"), silvertest.ISO(t, "2023-01-01"))
 	}
 	// Idle reload (watermark already at the latest load) → no changes.
 	w2, err := conn.ChangeWindow(context.Background(), 1700000000)
@@ -172,7 +160,7 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 		}
 	}
 
-	at := func(date string) map[string]canonical.PositionChange { return posByT[iso(t, date)] }
+	at := func(date string) map[string]canonical.PositionChange { return posByT[silvertest.ISO(t, date)] }
 	dec := func(p canonical.PositionChange, which string, d *canonical.Decimal) string {
 		if d == nil {
 			t.Fatalf("%s %s is nil", p.PositionKey, which)
@@ -387,7 +375,7 @@ func TestMortgageLiabilityNegated(t *testing.T) {
 		}
 	}
 
-	at1 := posByT[iso(t, "2021-01-01")]
+	at1 := posByT[silvertest.ISO(t, "2021-01-01")]
 	loan := at1["loan-x"]
 	// 2-D pair: a mortgage is negative real_estate exposure held via the
 	// mortgage vehicle (TAXONOMY.md §1.5).
@@ -405,7 +393,7 @@ func TestMortgageLiabilityNegated(t *testing.T) {
 		t.Errorf("property market_value = %v, want 1000.00 (asset unchanged)", at1["re-x"].MarketValue)
 	}
 	// at payoff (closed_at) the mortgage drops out; only the property remains
-	at2 := posByT[iso(t, "2022-01-01")]
+	at2 := posByT[silvertest.ISO(t, "2022-01-01")]
 	if _, ok := at2["loan-x"]; ok {
 		t.Errorf("loan-x present at payoff date, want dropped out")
 	}

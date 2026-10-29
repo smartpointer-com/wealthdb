@@ -8,6 +8,7 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // fundBookFixture is a fund (entity 300) called twice before its first NAV,
@@ -17,7 +18,7 @@ import (
 func fundBookFixture(t *testing.T, withCompany bool, extra ...string) silver.Connection {
 	t.Helper()
 	path, db := newFixtureSilver(t)
-	nav := unixDate(t, "2024-09-30")
+	nav := silvertest.ISO(t, "2024-09-30")
 	stmts := fmt.Sprintf(`
 INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, payload)
     VALUES (1800000000, 3, 'run', 'IND1', '{}');
@@ -31,7 +32,7 @@ INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, snapshot_at, k
     ('call:300:notice:n1',  '300', 1800000000, 'capital_call', '06/30/2024',  30000, 'USD', '{}');`,
 		nav, nav)
 	if withCompany {
-		d0101 := unixDate(t, "2023-01-01")
+		d0101 := silvertest.ISO(t, "2023-01-01")
 		stmts += fmt.Sprintf(`
 INSERT INTO entities(snapshot_at, entity_external_id, individual_id, is_fund_investment, legal_name, payload)
     VALUES (%d, 100, 'IND1', 0, 'ACME Inc', '{}');
@@ -57,18 +58,9 @@ func fundPositions(t *testing.T, conn silver.Connection) (map[int64]canonical.Po
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream, err := conn.Snapshots(ctx, w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 	byDay := map[int64]canonical.PositionChange{}
 	days := map[int64]bool{}
-	for {
-		b, more, err := stream.Next(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, b := range silvertest.Snapshots(t, conn, w) {
 		for _, a := range b.Accounts {
 			days[a.FirstSeenAt] = true
 		}
@@ -76,9 +68,6 @@ func fundPositions(t *testing.T, conn silver.Connection) (map[int64]canonical.Po
 			if p.PositionKey == positionKey(300) {
 				byDay[p.SnapshotAt] = p
 			}
-		}
-		if !more {
-			break
 		}
 	}
 	return byDay, days
@@ -89,7 +78,7 @@ func fundPositions(t *testing.T, conn silver.Connection) (map[int64]canonical.Po
 func TestAFundIsCarriedAtItsCalledCapitalUntilItsFirstNAV(t *testing.T) {
 	byDay, days := fundPositions(t, fundBookFixture(t, true))
 
-	d0101 := unixDate(t, "2023-01-01")
+	d0101 := silvertest.ISO(t, "2023-01-01")
 	if !days[d0101] {
 		t.Fatalf("no snapshot on the company's day; days = %v", days)
 	}
@@ -105,7 +94,7 @@ func TestAFundIsCarriedAtItsCalledCapitalUntilItsFirstNAV(t *testing.T) {
 		{"2024-06-30", "150000", "150000", true},
 		{"2024-09-30", "140000", "150000", false},
 	} {
-		p, ok := byDay[unixDate(t, c.day)]
+		p, ok := byDay[silvertest.ISO(t, c.day)]
 		if !ok {
 			t.Errorf("%s: no fund position", c.day)
 			continue
@@ -132,7 +121,7 @@ func TestAFundIsCarriedAtItsCalledCapitalUntilItsFirstNAV(t *testing.T) {
 func TestTheWindowReachesAFundCallBeforeAnyStatement(t *testing.T) {
 	conn := fundBookFixture(t, false)
 	ctx := context.Background()
-	first := unixDate(t, "2023-02-15")
+	first := silvertest.ISO(t, "2023-02-15")
 
 	w, err := conn.ChangeWindow(ctx, -1)
 	if err != nil {

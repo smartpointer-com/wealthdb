@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/csv"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -71,12 +70,7 @@ func setupYieldGold(t *testing.T) string {
 		t.Fatal(err)
 	}
 	db.Close()
-	cfg := filepath.Join(dir, "wealthdb.cfg")
-	if err := os.WriteFile(cfg, []byte(`{"gold_db": "`+goldPath+`", "default_currency": "USD", "silver_sources": []}`),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
-	return cfg
+	return writeGoldCfg(t, goldPath)
 }
 
 // addPrivateFund adds a fund no public key names to the gold of the
@@ -95,7 +89,7 @@ func addPrivateFund(t *testing.T, cfg string) {
 // the fixture's snapshot, then rebuilds the exposure and yield passes.
 func changeYieldGold(t *testing.T, cfg string, stmts ...string) {
 	t.Helper()
-	db, err := gold.Open(filepath.Join(filepath.Dir(cfg), "wealthdb.db"), gold.ModeReadWrite)
+	db, err := gold.Open(goldPathFromCfg(cfg), gold.ModeReadWrite)
 	if err != nil {
 		t.Fatal(err)
 	}

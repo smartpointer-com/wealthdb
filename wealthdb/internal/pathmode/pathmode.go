@@ -91,7 +91,7 @@ func Detect(path string, forceReadOnly, subcommandIsInit bool) (Decision, error)
 
 // decidePermissionMode runs the two unix.Access probes that
 // determine writeability. DuckDB needs to write the WAL sidecar
-// and lock file alongside the DB, so we check the parent dir
+// and lock file alongside the DB, so the parent dir is probed
 // FIRST — a writeable file under a read-only mount still can't
 // be opened RW.
 func decidePermissionMode(path string) Decision {

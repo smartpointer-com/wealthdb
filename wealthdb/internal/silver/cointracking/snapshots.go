@@ -235,7 +235,7 @@ SELECT
 
 // appendInstruments emits one InstrumentChange per distinct coin
 // ticker observed in silver.transactions (buy_currency or
-// sell_currency). The trade history's MIN/MAX(occurred_at) give us
+// sell_currency). The trade history's MIN/MAX(occurred_at) give
 // the actual coin-held span for gold's first_seen_at / last_seen_at.
 func (c *Connection) appendInstruments(ctx context.Context, batch *canonical.SnapshotBatch, snap int64) error {
 	const q = `
@@ -413,7 +413,7 @@ SELECT
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			// Snapshot date not in our planned set — shouldn't
+			// Snapshot date not in the planned set — shouldn't
 			// happen since byTime was built from the same DISTINCT
 			// as_of_date list, but skip defensively.
 			continue

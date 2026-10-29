@@ -52,12 +52,9 @@ func returnsStatedReport(req request, cfg *config.Config) *report {
 	kindOf, loadKinds := sourceKinds()
 	nicknames := accountNicknames{}
 	fetch := func(ctx context.Context, db *sql.DB) ([]gold.StatedPeriodRow, error) {
-		inceptionOv, exclude, hide, policyOv, matching := returnsCfgSettings(cfg)
-		return gold.ReconcileStatedPeriods(ctx, db, gold.ReturnParams{
+		return gold.ReconcileStatedPeriods(ctx, db, withReturnsCfg(cfg, gold.ReturnParams{
 			FromEpoch: req.from, ToEpoch: req.to, Annualize: "auto", Netting: true, Inception: "full",
-			InceptionOverrides: inceptionOv, ReturnsExclude: exclude,
-			ReturnsHide: hide, PolicyOverrides: policyOv, TransferMatching: matching,
-		})
+		}))
 	}
 	return withLoads(newReport(buildStatedColumnRegistry(kindOf, nicknames), defaultStatedColumns, fetch),
 		loadKinds, nicknames.load)
@@ -73,41 +70,31 @@ func buildStatedColumnRegistry(kindOf func(string) string, nicknames accountNick
 		return accountRef{source: r.SilverSourceID, name: &r.AccountLabel,
 			nickname: nicknames.of(r.SilverSourceID, r.AccountExternalID), id: r.AccountExternalID}
 	}
-	money := func(name string, get func(gold.StatedPeriodRow) *string) columnSpec[gold.StatedPeriodRow] {
-		return columnSpec[gold.StatedPeriodRow]{Name: name, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.StatedPeriodRow) string { return formatCents(get(r)) }}
-	}
 	return []columnSpec[gold.StatedPeriodRow]{
-		{Name: "silver_source", Align: output.AlignLeft,
-			Extract: func(r gold.StatedPeriodRow) string { return r.SilverSourceID }},
+		strCol("silver_source", func(r gold.StatedPeriodRow) string { return r.SilverSourceID }),
 		accountCol(kindOf, ref),
 		accountIDCol("account_id", kindOf, ref),
-		{Name: "period", Align: output.AlignLeft,
-			Extract: func(r gold.StatedPeriodRow) string { return r.Period }},
-		{Name: "start_date", Align: output.AlignLeft,
-			Extract: func(r gold.StatedPeriodRow) string { return formatEpochDay(r.StartDay) }},
-		{Name: "end_date", Align: output.AlignLeft,
-			Extract: func(r gold.StatedPeriodRow) string { return formatEpochDay(r.EndDay) }},
-		{Name: "currency", Align: output.AlignLeft,
-			Extract: func(r gold.StatedPeriodRow) string { return r.Currency }},
-		money("stated_beginning", func(r gold.StatedPeriodRow) *string { return r.StatedBeginning }),
-		money("stated_ending", func(r gold.StatedPeriodRow) *string { return r.StatedEnding }),
-		money("stated_accrual", func(r gold.StatedPeriodRow) *string { return r.StatedAccrual }),
-		money("stated_net_additions", func(r gold.StatedPeriodRow) *string { return r.StatedNetAdditions }),
-		money("stated_net_gain", func(r gold.StatedPeriodRow) *string { return r.StatedNetGain }),
-		money("stated_income", func(r gold.StatedPeriodRow) *string { return r.StatedIncome }),
-		money("stated_fees", func(r gold.StatedPeriodRow) *string { return r.StatedFees }),
-		money("start_value", func(r gold.StatedPeriodRow) *string { return r.StartValue }),
-		money("end_value", func(r gold.StatedPeriodRow) *string { return r.EndValue }),
-		money("net_flow", func(r gold.StatedPeriodRow) *string { return r.NetFlow }),
-		money("flow_gap", func(r gold.StatedPeriodRow) *string { return r.FlowGap }),
-		money("value_gap", func(r gold.StatedPeriodRow) *string { return r.ValueGap }),
+		strCol("period", func(r gold.StatedPeriodRow) string { return r.Period }),
+		strCol("start_date", func(r gold.StatedPeriodRow) string { return formatEpochDay(r.StartDay) }),
+		strCol("end_date", func(r gold.StatedPeriodRow) string { return formatEpochDay(r.EndDay) }),
+		strCol("currency", func(r gold.StatedPeriodRow) string { return r.Currency }),
+		moneyCol("stated_beginning", "", func(r gold.StatedPeriodRow) *string { return r.StatedBeginning }),
+		moneyCol("stated_ending", "", func(r gold.StatedPeriodRow) *string { return r.StatedEnding }),
+		moneyCol("stated_accrual", "", func(r gold.StatedPeriodRow) *string { return r.StatedAccrual }),
+		moneyCol("stated_net_additions", "", func(r gold.StatedPeriodRow) *string { return r.StatedNetAdditions }),
+		moneyCol("stated_net_gain", "", func(r gold.StatedPeriodRow) *string { return r.StatedNetGain }),
+		moneyCol("stated_income", "", func(r gold.StatedPeriodRow) *string { return r.StatedIncome }),
+		moneyCol("stated_fees", "", func(r gold.StatedPeriodRow) *string { return r.StatedFees }),
+		moneyCol("start_value", "", func(r gold.StatedPeriodRow) *string { return r.StartValue }),
+		moneyCol("end_value", "", func(r gold.StatedPeriodRow) *string { return r.EndValue }),
+		moneyCol("net_flow", "", func(r gold.StatedPeriodRow) *string { return r.NetFlow }),
+		moneyCol("flow_gap", "", func(r gold.StatedPeriodRow) *string { return r.FlowGap }),
+		moneyCol("value_gap", "", func(r gold.StatedPeriodRow) *string { return r.ValueGap }),
 		// The stating document's sha256 names no person, but it is the
 		// handle on a private file, so -p redacts it like an id.
 		{Name: "document", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.StatedPeriodRow) string { return r.SourceSHA256 }},
-		{Name: "quality", Align: output.AlignLeft,
-			Extract: func(r gold.StatedPeriodRow) string { return strings.Join(r.Quality, ";") }},
+		qualityCol(func(r gold.StatedPeriodRow) string { return strings.Join(r.Quality, ";") }),
 	}
 }
 

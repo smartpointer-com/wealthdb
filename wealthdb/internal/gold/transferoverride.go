@@ -150,7 +150,7 @@ func ResolveTransferOverrides(rules []TransferOverrideRule, legs []TransferLeg) 
 			if l.Day != EpochDay(s.Day) {
 				continue
 			}
-			if diff := l.Amt - s.Amount; diff > transferMatchMinEps || diff < -transferMatchMinEps {
+			if diff := l.Amt - s.Amount; diff > TransferMatchMinEps || diff < -TransferMatchMinEps {
 				continue
 			}
 			out = append(out, LegRef{l.Group, l.Owner, l.ID})

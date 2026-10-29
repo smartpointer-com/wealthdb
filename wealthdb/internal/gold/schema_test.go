@@ -53,6 +53,56 @@ func rerunMigrationDDL(t *testing.T, db *sql.DB, ctx context.Context, file strin
 	}
 }
 
+// mustExec runs one statement and fails the test on an error.
+func mustExec(t *testing.T, db *sql.DB, q string, args ...any) {
+	t.Helper()
+	if _, err := db.ExecContext(context.Background(), q, args...); err != nil {
+		t.Fatalf("%s: %v", q, err)
+	}
+}
+
+// execEach runs each statement in turn (mustExec).
+func execEach(t *testing.T, db *sql.DB, stmts ...string) {
+	t.Helper()
+	for _, q := range stmts {
+		mustExec(t, db, q)
+	}
+}
+
+// scanStrings is the one column q reads, a string a row.
+func scanStrings(t *testing.T, db *sql.DB, q string, args ...any) []string {
+	t.Helper()
+	var out []string
+	if err := scanAll(context.Background(), db, q, func(rows *sql.Rows) error {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return err
+		}
+		out = append(out, s)
+		return nil
+	}, args...); err != nil {
+		t.Fatalf("%s: %v", q, err)
+	}
+	return out
+}
+
+// scanPairs is the two columns q reads, key and value, as a map.
+func scanPairs(t *testing.T, db *sql.DB, q string, args ...any) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	if err := scanAll(context.Background(), db, q, func(rows *sql.Rows) error {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return err
+		}
+		out[k] = v
+		return nil
+	}, args...); err != nil {
+		t.Fatalf("%s: %v", q, err)
+	}
+	return out
+}
+
 // rowsDigest is every row sqlText reads, each cast to text, in text
 // order, joined: two reads of one answer compare as one string. "" for
 // none.
@@ -190,6 +240,25 @@ func TestMigrateIdempotent(t *testing.T) {
 	}
 	if after != before {
 		t.Errorf("schema_meta row count = %d, want %d (idempotent)", after, before)
+	}
+}
+
+// TestMultiStatementExecRunsEachOnce pins the driver behaviour
+// Migrate's replay contract rests on: one Exec of several statements
+// runs each of them exactly once.
+func TestMultiStatementExecRunsEachOnce(t *testing.T) {
+	db, err := Open(":memory:", ModeReadWrite)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	mustExec(t, db, `CREATE TABLE exec_once (n INTEGER);
+		INSERT INTO exec_once VALUES (1);
+		INSERT INTO exec_once VALUES (2);`)
+	got := scanStrings(t, db, `SELECT n::VARCHAR FROM exec_once ORDER BY n`)
+	if !slices.Equal(got, []string{"1", "2"}) {
+		t.Errorf("rows = %v, want [1 2]", got)
 	}
 }
 

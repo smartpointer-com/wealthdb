@@ -17,7 +17,7 @@ import (
 // deltas (DESIGN.md §5.1 in the collector). The silver stores a row for a
 // security lot only on a day its state changes; gold's as-of query, by
 // contrast, takes each account's latest snapshot and reads ALL its positions.
-// So for every event date we emit a COMPLETE forward-filled snapshot: each
+// So every event date gets a COMPLETE forward-filled snapshot: each
 // lot's latest delta on/before that date, keep only the `held` ones, then
 // aggregate them per company into a single position. An exited holding drops
 // out exactly at its disposition date; a full portfolio exists at every date.

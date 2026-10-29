@@ -37,26 +37,8 @@ func lotsFixture(t *testing.T) (string, *sql.DB) {
 func snapshotsOf(t *testing.T, path string) ([]canonical.PositionChange, []canonical.PositionLotChange) {
 	t.Helper()
 	conn := openConn(t, path)
-	stream, err := conn.Snapshots(context.Background(), window(t, conn))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
-	var (
-		positions []canonical.PositionChange
-		lots      []canonical.PositionLotChange
-	)
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		positions = append(positions, b.Positions...)
-		lots = append(lots, b.PositionLots...)
-		if !more {
-			return positions, lots
-		}
-	}
+	all := silvertest.Merged(t, conn, window(t, conn))
+	return all.Positions, all.PositionLots
 }
 
 func date(y int, m time.Month, d int) *time.Time {

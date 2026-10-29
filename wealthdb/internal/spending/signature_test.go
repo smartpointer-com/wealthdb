@@ -868,7 +868,7 @@ func TestPersonShaped(t *testing.T) {
 		"EXAMPLE HOLDING SA",     //
 		"SAMPLE VENTURES LP",     // a partnership's form (canonical.LegalForms)
 		"EXAMPLE BAU OHG",        //
-		"EXAMPLE ENERGIA OYJ",    // a form canonical.LegalForms gained
+		"EXAMPLE ENERGIA OYJ",    // a Nordic form (canonical.LegalForms)
 		"EXAMPLE INCORPORATED",   //
 		"CORNER MARKET",          // a trade word
 		"BLUE HARBOUR CAFE",      //

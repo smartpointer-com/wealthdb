@@ -238,7 +238,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		_ = merged.Close()
 		return nil, fmt.Errorf("ubs web paid-in basis: %w", err)
 	}
-	var out silver.SnapshotStream = merged
+	out := merged
 	if len(paidIn) > 0 {
 		out = &paidInStream{inner: merged, series: paidIn}
 	}

@@ -20,8 +20,8 @@ func (c *apiReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 		return silver.NewSnapshotStream(nil), nil
 	}
 
-	// Collect distinct snapshot_at values in the window so we can
-	// build batches in chronological order. We use dump_runs as
+	// Collect distinct snapshot_at values in the window so the
+	// batches build in chronological order. dump_runs is
 	// the authoritative list — every silver row's snapshot_at must
 	// correspond to a dump_runs entry.
 	snapshotTimes, err := dumpTimesInWindow(ctx, c.db, w)
@@ -29,8 +29,8 @@ func (c *apiReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 		return nil, fmt.Errorf("schwab api: %w", err)
 	}
 
-	// One batch per snapshot_at. The map gives O(1) routing as we
-	// walk each table's rows.
+	// One batch per snapshot_at. The map gives O(1) routing while
+	// each table's rows are walked.
 	byTime := silver.NewBatches(snapshotTimes)
 
 	if err := c.appendAccounts(ctx, w, byTime); err != nil {
@@ -43,7 +43,7 @@ func (c *apiReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 	// when the per-position instrument descriptor lacks a
 	// description (common for EQUITY rows from /accounts). The
 	// schwab-api --with-instruments mode populates a separate
-	// instruments table that we treat as the authoritative source
+	// instruments table that is the authoritative source
 	// for symbol → human-readable name.
 	instrumentNames, err := c.latestKnownInstrumentNames(ctx)
 	if err != nil {
@@ -155,7 +155,7 @@ type schwabAccountPayload struct {
 // to the plaintext accountNumber from the payload so user-facing
 // output can show something more recognisable than the hash. The
 // optional `nickname` column (schwab silver v3+) carries the
-// user-set label from /userPreference; we forward it as Nickname.
+// user-set label from /userPreference, forwarded as Nickname.
 // AccountCategory stays nil — Schwab's `account_type` is CASH or
 // MARGIN, which is margin enablement rather than a wealth-
 // management wrapper category, so it is filled in via the
@@ -299,7 +299,7 @@ type schwabInstrument struct {
 	VariableRate *float64 `json:"variableRate"`
 }
 
-// schwabPositionPayload covers the fields we extract from each
+// schwabPositionPayload covers the fields read from each
 // positions row.
 type schwabPositionPayload struct {
 	LongQuantity  canonical.Decimal  `json:"longQuantity"`
@@ -479,7 +479,7 @@ func apiBookValue(pp schwabPositionPayload, openPL sql.NullFloat64) *canonical.D
 // or --with-instruments never used). "Latest as of now" rather than
 // "latest as of snapshot": the cross-bank schema doesn't preserve
 // per-snapshot instrument descriptions, so callers get the freshest
-// label we know about for that symbol.
+// label known for that symbol.
 func (c *apiReader) latestKnownInstrumentNames(ctx context.Context) (map[string]string, error) {
 	exists, err := silver.HasTables(ctx, c.db, "instruments")
 	if err != nil {

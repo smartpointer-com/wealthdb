@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // positionsByKey drains a Snapshots stream into its positions, keyed
@@ -19,24 +20,11 @@ func positionsByKey(t *testing.T, path string) map[string]canonical.PositionChan
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream, err := conn.Snapshots(ctx, w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 	out := map[string]canonical.PositionChange{}
-	for {
-		batch, more, err := stream.Next(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, p := range batch.Positions {
-			out[p.PositionKey] = p
-		}
-		if !more {
-			return out
-		}
+	for _, p := range silvertest.Merged(t, conn, w).Positions {
+		out[p.PositionKey] = p
 	}
+	return out
 }
 
 func seedCostRows(t *testing.T, seed *sql.DB) {

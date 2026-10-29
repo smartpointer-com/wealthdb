@@ -468,14 +468,7 @@ func seedYieldYear(t *testing.T) (*sql.DB, context.Context, int64) {
 		           ('fx', `+itoa(r.day.Unix())+`, 'USD', 'CHF', `+strconv.FormatFloat(1/r.rate, 'f', -1, 64)+`)`)
 	}
 	execEach(t, db, q...)
-	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
-		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: 35, PartialPct: 3},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	rebuildExposureWithDefaults(t, db, ctx)
 	if _, err := RebuildYield(ctx, db); err != nil {
 		t.Fatal(err)
 	}

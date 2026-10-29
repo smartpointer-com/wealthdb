@@ -40,7 +40,7 @@ func TestACostBasisSeriesSetsTheBookValue(t *testing.T) {
 		{"2023-01-01", "pf-1", "120.00"},
 		{"2023-01-01", "re-1", "100.00"}, // no series: the acquired_at valuation
 	} {
-		at, ok := book[iso(t, c.date)]
+		at, ok := book[silvertest.ISO(t, c.date)]
 		if !ok {
 			t.Errorf("%s: no snapshot", c.date)
 			continue
@@ -71,7 +71,7 @@ func TestASilverWithoutTheCostBasisTableStillLoads(t *testing.T) {
 	var pf *canonical.Decimal
 	for _, b := range silvertest.Snapshots(t, conn, w) {
 		for _, p := range b.Positions {
-			if p.PositionKey == "pf-1" && p.SnapshotAt == iso(t, "2023-01-01") {
+			if p.PositionKey == "pf-1" && p.SnapshotAt == silvertest.ISO(t, "2023-01-01") {
 				pf = p.BookValue
 			}
 		}
@@ -92,7 +92,7 @@ func stampsOn(t *testing.T, path, date string) map[string]canonical.Basis {
 	got := map[string]canonical.Basis{}
 	for _, b := range silvertest.Snapshots(t, conn, w) {
 		for _, p := range b.Positions {
-			if p.SnapshotAt == iso(t, date) {
+			if p.SnapshotAt == silvertest.ISO(t, date) {
 				got[p.PositionKey] = p.Basis
 			}
 		}

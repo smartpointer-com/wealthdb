@@ -25,6 +25,14 @@ func init() {
 // is no grain of them. Per-position gains are the gains report's.
 var returnsViews = []string{"global", "sources", "portfolios", "accounts", "stated"}
 
+// The choices of the returns options the CLI and the MCP tool share.
+var (
+	returnsMethods   = []string{"twr", "mwr", "both"}
+	returnsPeriods   = []string{"monthly", "quarterly", "annual", "total"}
+	returnsAnnualize = []string{"auto", "always", "never"}
+	returnsInception = []string{"full", "strict"}
+)
+
 // cmdReturns routes `wealthdb returns <view> ...` to the view's run.
 func cmdReturns(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
 	view, rest, err := routeView("returns", subargs, returnsViews, returnsUsage, stderr)
@@ -54,11 +62,11 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 		flag, value string
 		allowed     []string
 	}{
-		{"method", *method, []string{"twr", "mwr", "both"}},
-		{"period", *period, []string{"monthly", "quarterly", "annual", "total"}},
-		{"annualize", *annualize, []string{"auto", "always", "never"}},
+		{"method", *method, returnsMethods},
+		{"period", *period, returnsPeriods},
+		{"annualize", *annualize, returnsAnnualize},
 		{"netting", *netting, []string{"on", "off"}},
-		{"inception", *inception, []string{"full", "strict"}},
+		{"inception", *inception, returnsInception},
 	} {
 		if err := checkChoice("returns", c.flag, c.value, c.allowed...); err != nil {
 			return err
@@ -88,14 +96,11 @@ func returnsReport(req request, cfg *config.Config) *report {
 	kindOf, loadKinds := sourceKinds()
 	nicknames := accountNicknames{}
 	fetch := func(ctx context.Context, db *sql.DB) ([]gold.ReturnRow, error) {
-		inceptionOv, exclude, hide, policyOv, matching := returnsCfgSettings(cfg)
-		return gold.RunReturns(ctx, db, gold.ReturnParams{
+		return gold.RunReturns(ctx, db, withReturnsCfg(cfg, gold.ReturnParams{
 			Level: req.view, FromEpoch: req.from, ToEpoch: req.to, OutCcy: req.currency,
 			Method: req.method, Period: req.period, Annualize: req.annualize,
 			Netting: req.netting, Inception: req.inception,
-			InceptionOverrides: inceptionOv, ReturnsExclude: exclude,
-			ReturnsHide: hide, PolicyOverrides: policyOv, TransferMatching: matching,
-		})
+		}))
 	}
 	loads := []func(context.Context, *sql.DB) error{loadKinds}
 	// Only an account's entity reads its nickname.
@@ -122,6 +127,13 @@ func transferMatching(cfg *config.Config) (*config.ReturnsTransferMatching, stri
 		return m, cfg.SpendTransferOverrides()
 	}
 	return nil, ""
+}
+
+// withReturnsCfg is p with the config's returns settings
+// (returnsCfgSettings), so every report runner applies the same ones.
+func withReturnsCfg(cfg *config.Config, p gold.ReturnParams) gold.ReturnParams {
+	p.InceptionOverrides, p.ReturnsExclude, p.ReturnsHide, p.PolicyOverrides, p.TransferMatching = returnsCfgSettings(cfg)
+	return p
 }
 
 // returnsCfgSettings builds the engine-side inception-override, exclusion,

@@ -50,18 +50,12 @@ func TestRefdataWantedPinned(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	day := func(m time.Month, d int) int64 { return time.Date(2026, m, d, 0, 0, 0, 0, time.UTC).Unix() }
-	mustExec := func(q string, args ...any) {
-		t.Helper()
-		if _, err := db.ExecContext(ctx, q, args...); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
-	mustExec(`INSERT INTO silver_sources(silver_source_id, silver_kind, silver_path, high_watermark, first_loaded_at, last_loaded_at)
+	mustExec(t, db, `INSERT INTO silver_sources(silver_source_id, silver_kind, silver_path, high_watermark, first_loaded_at, last_loaded_at)
 	    VALUES ('second-src', 'synthetic', '/tmp/s.db', -1, 0, 0)`)
-	mustExec(`UPDATE silver_sources SET observed_snapshots_through = ? WHERE silver_source_id = 'test-src'`, day(10, 1))
-	mustExec(`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
+	mustExec(t, db, `UPDATE silver_sources SET observed_snapshots_through = ? WHERE silver_source_id = 'test-src'`, day(10, 1))
+	mustExec(t, db, `INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
 	    first_seen_at, last_seen_at) VALUES ('test-src', 'A1', 'brokerage', 'Brokerage', 'USD', 0, 0)`)
-	mustExec(`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, cusip, symbol, name, currency, first_seen_at, last_seen_at) VALUES
+	mustExec(t, db, `INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, cusip, symbol, name, currency, first_seen_at, last_seen_at) VALUES
 	    ('test-src',   'FUNDA', 'public_equity', 'etf',   NULL, NULL,        'FUNDA', 'Fund A ETF', 'USD', 0, 0),
 	    ('second-src', 'C1',    'public_equity', 'etf',   NULL, '00000AA01', NULL,    'Fund A',     'USD', 0, 0),
 	    ('test-src',   'FUNDB', 'fixed_income',  'fund',  NULL, NULL,        'FUNDB', 'Fund B',     'USD', 0, 0),
@@ -73,7 +67,7 @@ func TestRefdataWantedPinned(t *testing.T) {
 	    ('test-src',   'MMF1',  'cash',          'fund',  NULL, NULL,        'MMF1',  'Money Fund One', 'USD', 0, 0),
 	    ('test-src',   'ADR1',  'public_equity', 'stock', 'US0000000027', NULL, 'ADR1', 'Qorvant Sponsored ADR', 'USD', 0, 0)`)
 	pos := func(src string, at int64, key string, ac, veh string, mv int) {
-		mustExec(`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		mustExec(t, db, `INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
 		    asset_class, vehicle, currency, quantity, market_value) VALUES (?, ?, 'A1', ?, ?, ?, ?, 'USD', 1, ?)`,
 			src, at, key, key, ac, veh, mv)
 	}
@@ -88,11 +82,11 @@ func TestRefdataWantedPinned(t *testing.T) {
 	pos("test-src", day(6, 30), "MMF1", "cash", "fund", 30)
 	pos("test-src", day(6, 30), "ADR1", "public_equity", "stock", 0)
 	pos("second-src", day(3, 31), "C1", "public_equity", "etf", 70)
-	mustExec(`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count) VALUES
+	mustExec(t, db, `INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count) VALUES
 	    ('test-src', 'symbol:FUNDA', ?1, 'holdings', 'inbox', 2), ('test-src', 'symbol:FUNDA', ?1, 'index', 'inbox', 1),
 	    ('test-src', 'symbol:BNDF', ?1, 'holdings', 'inbox', 1), ('test-src', 'symbol:BNDF', ?2, 'holdings', 'inbox', 1)`,
 		day(3, 31), day(6, 30))
-	mustExec(`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, ticker, name,
+	mustExec(t, db, `INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, ticker, name,
 	    asset_type, weight, currency, country, sector, duration) VALUES
 	    ('test-src', 'symbol:FUNDA', ?1, 'holdings', 1, 'isin:XX0000000009', 'XX0000000009', 'STK1', NULL, NULL, NULL, 'USD',
 	     NULL, 'Technology', NULL),
@@ -101,19 +95,19 @@ func TestRefdataWantedPinned(t *testing.T) {
 	    ('test-src', 'symbol:BNDF', ?1, 'holdings', 1, NULL, NULL, NULL, NULL, NULL, 100, NULL, NULL, NULL, 6.25),
 	    ('test-src', 'symbol:BNDF', ?2, 'holdings', 1, NULL, NULL, NULL, NULL, NULL, 100, NULL, NULL, NULL, NULL)`,
 		day(3, 31), day(6, 30))
-	mustExec(`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value) VALUES
+	mustExec(t, db, `INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value) VALUES
 	    ('test-src', 'isin:XX0000000009', 'legal_country', ?, 'gleif', 'DE')`, day(5, 1))
-	mustExec(`INSERT INTO fund_risk (silver_source_id, fund_ref, as_of, currency, tenor, dv01, dv100, credit_ig_dv01) VALUES
+	mustExec(t, db, `INSERT INTO fund_risk (silver_source_id, fund_ref, as_of, currency, tenor, dv01, dv100, credit_ig_dv01) VALUES
 	    ('refdata', 'symbol:BNDF', ?1, 'USD', '5Y', 120.5, 11800, NULL),
 	    ('refdata', 'symbol:BNDF', ?1, 'XXX', '5Y', NULL, NULL, 40.25),
 	    ('refdata', 'symbol:IDX1', ?2, 'USD', '10Y', 75, 7400, NULL)`, day(6, 30), day(1, 31))
-	mustExec(`INSERT INTO fund_characteristics (silver_source_id, fund_ref, as_of, provider, field, label, value) VALUES
+	mustExec(t, db, `INSERT INTO fund_characteristics (silver_source_id, fund_ref, as_of, provider, field, label, value) VALUES
 	    ('refdata', 'symbol:BNDF', ?1, 'issuer', 'effective_duration', '', 6.1),
 	    ('refdata', 'symbol:BNDF', ?1, 'issuer', 'credit_quality', 'AAA', 40),
 	    ('refdata', 'symbol:MMF1', ?1, 'issuer', 'distribution_yield', '', 4.0),
 	    ('refdata', 'symbol:MMF1', ?2, 'issuer', 'seven_day_yield', '', 4.1),
 	    ('refdata', 'symbol:MMF1', ?2, 'issuer', 'weighted_average_maturity', '', 35)`, day(9, 30), day(10, 9))
-	mustExec(`INSERT INTO security_period_facts (silver_source_id, security_key, field, as_of, period_start, provider, value)
+	mustExec(t, db, `INSERT INTO security_period_facts (silver_source_id, security_key, field, as_of, period_start, provider, value)
 	    VALUES
 	    ('refdata', 'isin:XX0000000009', 'eps_diluted', ?1, '2025-10-01', 'sec-edgar', 1.10),
 	    ('refdata', 'symbol:STK1', 'eps_diluted', ?2, '2026-04-01', 'sec-edgar', 1.25),
@@ -121,7 +115,7 @@ func TestRefdataWantedPinned(t *testing.T) {
 	    ('refdata', 'isin:XX0000000019', 'dividends_per_share', ?2, '2026-04-01', 'sec-edgar', 0.30),
 	    ('refdata', 'isin:XX0000000019', 'revenue', ?2, '2026-04-01', 'sec-edgar', 5000000)`,
 		time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC).Unix(), day(6, 30))
-	mustExec(`INSERT INTO dividend_calendar (silver_source_id, ref, provider, event_id, as_of, kind, ex_day, record_day,
+	mustExec(t, db, `INSERT INTO dividend_calendar (silver_source_id, ref, provider, event_id, as_of, kind, ex_day, record_day,
 	    pay_day, amount, currency) VALUES
 	    ('refdata', 'symbol:MMF1', 'issuer', 'e1', ?1, 'dividend', NULL, '2026-08-31', '2026-09-01', 0.01, 'USD'),
 	    ('refdata', 'symbol:MMF1', 'issuer', 'e2', ?2, 'dividend', NULL, '2026-09-30', '2026-10-01', 0.01, 'USD'),
@@ -131,7 +125,7 @@ func TestRefdataWantedPinned(t *testing.T) {
 	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
 		Proxies:        []canonical.ExposureProxy{{FundRef: "symbol:FUNDB", ProxyRef: "symbol:IDX1", Leverage: 1}},
 		ReferenceFunds: []string{"symbol:IDX9"},
-		Settings:       canonical.ExposureSettings{MaxGapDays: 400, AgedDays: 35, PartialPct: 3},
+		Settings:       defaultExposureSettings(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -637,8 +631,7 @@ func TestRefdataWantedProxiesOfFundsNotHeld(t *testing.T) {
 			{FundRef: "symbol:QNH1", ProxyRef: "symbol:QPX1", Leverage: 1},
 			{FundRef: "symbol:QNH2", ProxyRef: "symbol:QPX2", Leverage: 1},
 		},
-		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: canonical.DefaultAgedDays,
-			PartialPct: canonical.DefaultPartialPct},
+		Settings: defaultExposureSettings(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -675,8 +668,7 @@ func TestRefdataWantedFundsStateTheirAliases(t *testing.T) {
 		Proxies:        []canonical.ExposureProxy{{FundRef: "symbol:QNH1", ProxyRef: "symbol:QPX1", Leverage: 1}},
 		ReferenceFunds: []string{"isin:XX0000000032"},
 		SizeFunds:      []canonical.ExposureSizeFund{{FundRef: "isin:XX0000000031", CoveragePct: 90}},
-		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: canonical.DefaultAgedDays,
-			PartialPct: canonical.DefaultPartialPct},
+		Settings:       defaultExposureSettings(),
 	}); err != nil {
 		t.Fatal(err)
 	}

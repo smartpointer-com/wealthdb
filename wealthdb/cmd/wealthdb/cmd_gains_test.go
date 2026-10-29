@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -69,12 +67,7 @@ func setupGainsGold(t *testing.T) string {
 	if err := db.Close(); err != nil {
 		t.Fatalf("close gold: %v", err)
 	}
-	cfg := filepath.Join(dir, "wealthdb.cfg")
-	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD", "silver_sources": []}`, goldPath)
-	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
-		t.Fatalf("write cfg: %v", err)
-	}
-	return cfg
+	return writeGoldCfg(t, goldPath)
 }
 
 // gainsCases runs every gains view over the fixture's year through both

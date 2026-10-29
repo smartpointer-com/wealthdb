@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
@@ -193,14 +192,7 @@ func TestAFundsLinesNameItsDebt(t *testing.T) {
 		     'USD', NULL, NULL, NULL),
 		    ('ref', 'symbol:QEQ', `+itoa(snap)+`, 'holdings', 2, 'isin:XX00000000E2', 'EXAMPLE NOTE', 'Fixed Income', 20,
 		     'USD', DATE '2031-01-15', 3, 4)`)
-	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
-		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: 35, PartialPct: 3},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	rebuildExposureWithDefaults(t, db, ctx)
 	in, err := YieldInputs(ctx, db, snap+86399, "USD")
 	if err != nil {
 		t.Fatal(err)

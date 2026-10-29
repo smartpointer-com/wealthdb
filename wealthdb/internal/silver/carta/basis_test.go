@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // k1Schema is the K-1 table of silver migrations 0004 and 0005.
@@ -48,7 +49,7 @@ ALTER TABLE k1_capital_accounts DROP COLUMN period_end;`
 	later := fmt.Sprintf(`
 INSERT INTO fund_metrics(snapshot_at, entity_external_id, currency, net_asset_value,
     capital_contributed, payload) VALUES (%d, 300, 'USD', '160000', '150000', '{}');`,
-		unixDate(t, "2025-03-31"))
+		silvertest.ISO(t, "2025-03-31"))
 	byDay, _ := fundPositions(t, fundBookFixture(t, false, later, k1))
 	return byDay
 }
@@ -73,7 +74,7 @@ func TestAPropertyDistributionReducesTheFundsBookValue(t *testing.T) {
 		{"2024-12-31", "125000", reduced},
 		{"2025-03-31", "125000", reduced},
 	} {
-		p, ok := byDay[unixDate(t, c.day)]
+		p, ok := byDay[silvertest.ISO(t, c.day)]
 		if !ok {
 			t.Errorf("%s: no fund position", c.day)
 			continue
@@ -83,11 +84,11 @@ func TestAPropertyDistributionReducesTheFundsBookValue(t *testing.T) {
 				c.day, p.BookValue, p.Basis, c.book, c.basis)
 		}
 	}
-	if got, want := string(byDay[unixDate(t, "2024-12-31")].Payload),
+	if got, want := string(byDay[silvertest.ISO(t, "2024-12-31")].Payload),
 		`{"paid_in":"150000","property_distributed":"25000"}`; got != want {
 		t.Errorf("NAV payload = %s, want %s", got, want)
 	}
-	if got, want := string(byDay[unixDate(t, "2024-03-31")].Payload),
+	if got, want := string(byDay[silvertest.ISO(t, "2024-03-31")].Payload),
 		`{"called_capital":"120000","paid_in":"120000","property_distributed":"20000","valuation_basis":"called_capital"}`; got != want {
 		t.Errorf("carried payload = %s, want %s", got, want)
 	}
@@ -98,7 +99,7 @@ func TestAPropertyDistributionReducesTheFundsBookValue(t *testing.T) {
 func TestAK1WithoutAPeriodEndsOnDec31(t *testing.T) {
 	byDay := inKindFixture(t, false)
 	for day, want := range map[string]string{"2023-02-15": "120000", "2023-12-31": "100000"} {
-		if p := byDay[unixDate(t, day)]; p.BookValue == nil || p.BookValue.String() != want {
+		if p := byDay[silvertest.ISO(t, day)]; p.BookValue == nil || p.BookValue.String() != want {
 			t.Errorf("%s: book value %v, want %s", day, p.BookValue, want)
 		}
 	}
@@ -167,7 +168,7 @@ func TestALateK1PeriodEndIsInTheWindow(t *testing.T) {
 INSERT INTO k1_capital_accounts(content_sha256, doc_id, entity_external_id, tax_year,
     cash_distributions, property_distributions, payload, period_start, period_end) VALUES
     ('sha-c', 13, 300, 2024, NULL, '5000', '{}', NULL, NULL);`)
-	end := unixDate(t, "2024-12-31")
+	end := silvertest.ISO(t, "2024-12-31")
 	s, err := conn.Status(context.Background())
 	if err != nil {
 		t.Fatal(err)

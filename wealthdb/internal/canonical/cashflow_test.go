@@ -1,6 +1,9 @@
 package canonical
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // TestDefaultWrapperSideCoversEveryWrapper is the boundary's
 // completeness pin: every value of the TaxWrapper enum has a side, and
@@ -212,8 +215,8 @@ func TestCashflowSectionAndClassVocabulary(t *testing.T) {
 			t.Errorf("section %q is not valid", s)
 		}
 	}
-	if got, want := len(cashflowSectionValues), len(sections); got != want {
-		t.Errorf("%d sections declared, %d enumerated", got, want)
+	if got := CashflowSections(); !slices.Equal(got, sections) {
+		t.Errorf("CashflowSections() = %v, want %v in report order", got, sections)
 	}
 	for _, bad := range []CashflowSection{"operating", "vehicle", "", "Cash"} {
 		if bad.Valid() {

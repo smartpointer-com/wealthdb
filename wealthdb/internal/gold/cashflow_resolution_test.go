@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -167,6 +168,10 @@ func seedLines(t *testing.T, db *sql.DB, ctx context.Context, lines []line) map[
 		if disposition != "line" {
 			out[id] = disposition
 			continue
+		}
+		// A section canonical does not hold reads unranked on every report.
+		if !canonical.CashflowSection(section).Valid() {
+			t.Errorf("%s lands in section %q, which canonical.CashflowSections does not hold", id, section)
 		}
 		out[id] = section + "." + class + "." + grp
 	}
@@ -791,29 +796,20 @@ func TestNoVerdictPromotesAnUnsignedKind(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 
-	unsigned := map[string]bool{
-		"fx": true, "fx_forward": true, "fx_swap": true,
-		"corporate_action": true, "journal": true, "other": true,
-	}
+	unsigned := canonical.CashflowUnsignedKinds()
 	var rows []line
-	for _, k := range []string{
-		"buy", "sell", "dividend", "coupon", "capital_gain", "interest",
-		"staking", "contribution", "distribution", "fee", "tax", "deposit",
-		"withdrawal", "purchase", "refund", "card_payment", "reward",
-		"fx", "fx_forward", "fx_swap", "corporate_action",
-		"transfer_in", "transfer_out", "journal", "other",
-	} {
+	for _, k := range canonical.TxKinds() {
 		rows = append(rows, line{
-			id: "U-" + k, account: "CASH", kind: k, amount: -100,
+			id: "U-" + string(k), account: "CASH", kind: string(k), amount: -100,
 			spend: "internal_transfer", farAccount: "IRA",
 		})
 	}
 	got := seedLines(t, db, ctx, rows)
 
 	for _, l := range rows {
-		kind := strings.TrimPrefix(l.id, "U-")
+		kind := canonical.TxKind(strings.TrimPrefix(l.id, "U-"))
 		node := got[l.id]
-		if unsigned[kind] {
+		if slices.Contains(unsigned, kind) {
 			if node != "excluded" {
 				t.Errorf("a pin promoted the unsigned kind %q to %q; gold pins no sign for it",
 					kind, node)

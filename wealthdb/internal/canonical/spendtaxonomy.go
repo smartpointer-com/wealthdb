@@ -783,8 +783,9 @@ func ModelIncomeCategories() []SpendCategory {
 	return categoriesIn(FamilyIncome, modelIncomeCategories)
 }
 
-// VendoredSpendCategories returns the vendored outflow rows alone —
-// what a taxonomy refresh diffs against. A copy, for the same reason.
+// VendoredSpendCategories returns the vendored outflow rows alone. A
+// copy, for the same reason. Its callers are tests: the vendored list is
+// what a taxonomy refresh diffs against.
 func VendoredSpendCategories() []SpendCategory {
 	return categoriesIn(FamilySpending, vendoredSpendCategories)
 }

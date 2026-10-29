@@ -89,9 +89,10 @@ type IncomeTransactionRow struct {
 	IncomePrimaryLabel *string
 	Provenance         *string
 	// ProviderIncomeDetailed and ProviderIncomeLabel are the SOURCE's
-	// own filing of the line, mapped to our vocabulary and kept beside
-	// ours. Nil where the source published nothing this build
-	// translates. Never summed with ours: the two disagree by design.
+	// own filing of the line, mapped to the wealthdb vocabulary and
+	// kept beside IncomeDetailed. Nil where the source published nothing
+	// this build translates. Never summed with IncomeDetailed: the two
+	// disagree by design.
 	ProviderIncomeDetailed *string
 	ProviderIncomeLabel    *string
 	Currency               string

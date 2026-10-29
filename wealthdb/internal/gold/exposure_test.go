@@ -61,15 +61,9 @@ func exDay(m time.Month, d int, y ...int) int64 {
 
 func seedExposureFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 	t.Helper()
-	ex := func(q string, args ...any) {
-		t.Helper()
-		if _, err := db.ExecContext(ctx, q, args...); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
-	ex(`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency, first_seen_at, last_seen_at)
+	mustExec(t, db, `INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency, first_seen_at, last_seen_at)
 	    VALUES ('test-src', 'A1', 'brokerage', 'Brokerage', 'USD', 0, 0)`)
-	ex(`INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate)
+	mustExec(t, db, `INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate)
 	    VALUES ('test-src', ?, 'USD', 'EUR', 1.1), ('test-src', ?, 'USD', 'CHF', 1.25)`, exDay(1, 1), exDay(1, 1))
 	type inst struct {
 		id, class, vehicle, isin, symbol, name, ccy string
@@ -98,31 +92,31 @@ func seedExposureFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 		{"QBTP", "crypto", "etf", "", "QBTP", "Example Bitcoin ETP", "USD", 15},
 		{"QPRV", "private_equity", "fund", "", "", "Private Fund Two", "USD", 200},
 	} {
-		ex(`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, symbol, name, currency, first_seen_at, last_seen_at)
+		mustExec(t, db, `INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, symbol, name, currency, first_seen_at, last_seen_at)
 		    VALUES ('test-src', ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, 0, 0)`, i.id, i.class, i.vehicle, i.isin, i.symbol, i.name, i.ccy)
-		ex(`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		mustExec(t, db, `INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
 		    asset_class, vehicle, currency, quantity, market_value) VALUES ('test-src', ?, 'A1', ?, ?, ?, ?, ?, 1, ?)`,
 			exSnap, i.id, i.id, i.class, i.vehicle, i.ccy, i.mv)
 	}
-	ex(`INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id, currency, balance_kind, amount)
+	mustExec(t, db, `INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id, currency, balance_kind, amount)
 	    VALUES ('test-src', ?, 'A1', 'USD', 'current', 1000), ('test-src', ?, 'A1', 'EUR', 'current', 100)`, exSnap, exSnap)
 	// A2: no rate converts its one position, so holdings global leaves the
 	// whole account out, its cash too.
-	ex(`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency, first_seen_at, last_seen_at)
+	mustExec(t, db, `INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency, first_seen_at, last_seen_at)
 	    VALUES ('test-src', 'A2', 'brokerage', 'Second', 'USD', 0, 0)`)
-	ex(`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+	mustExec(t, db, `INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
 	    asset_class, vehicle, currency, quantity, market_value) VALUES ('test-src', ?, 'A2', 'QJPY', 'QJPY', 'public_equity', 'stock', 'JPY', 1, 5000)`,
 		exSnap)
-	ex(`INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id, currency, balance_kind, amount)
+	mustExec(t, db, `INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id, currency, balance_kind, amount)
 	    VALUES ('test-src', ?, 'A2', 'USD', 'current', 100)`, exSnap)
 
 	comp := func(ref string, asOf int64, basis, ccy string, net any, lines ...[]any) {
 		t.Helper()
-		ex(`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency, net_assets)
+		mustExec(t, db, `INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency, net_assets)
 		    VALUES ('test-src', ?, ?, ?, 'testprov', ?, ?, ?)`, ref, asOf, basis, len(lines), ccy, net)
 		for n, l := range lines {
 			args := append([]any{ref, asOf, basis, n + 1}, l...)
-			ex(`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, ticker, name,
+			mustExec(t, db, `INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, ticker, name,
 			    asset_type, weight, currency, country, sector, long_currency, long_amount, short_currency)
 			    VALUES ('test-src', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...)
 		}
@@ -149,7 +143,7 @@ func seedExposureFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 		line("symbol:NEW", "", "NEW", "New Co", "Equity", 100, "USD", "Japan", "Energy"))
 	comp("symbol:QHDG", may, "holdings", "EUR", nil,
 		line("symbol:QEUS", "", "QEUS", "Euro Stock", "Equity", 100, "EUR", "France", "Industrials"))
-	ex(`INSERT INTO fund_attributes (silver_source_id, fund_ref, as_of, hedged_currency) VALUES ('test-src', 'symbol:QHDG', ?, 'USD')`, may)
+	mustExec(t, db, `INSERT INTO fund_attributes (silver_source_id, fund_ref, as_of, hedged_currency) VALUES ('test-src', 'symbol:QHDG', ?, 'USD')`, may)
 	comp("symbol:SWP", may, "collateral", "USD", nil,
 		line("symbol:BSK", "", "BSK", "Basket Co", "Equity", 100, "USD", "United States", "Financials"))
 	comp("symbol:SWP", may, "index", "USD", nil,
@@ -169,8 +163,8 @@ func seedExposureFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 		line("isin:XX0000000001", "XX0000000001", "AAA", "Stock A", "Equity", 100, "USD", "United States", "Information Technology"))
 	// The funds are US funds: their lines list on US exchanges, so a
 	// line's ticker names the US symbol.
-	ex(`UPDATE fund_lines SET exchange = 'NYSE' WHERE ticker IS NOT NULL`)
-	ex(`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
+	mustExec(t, db, `UPDATE fund_lines SET exchange = 'NYSE' WHERE ticker IS NOT NULL`)
+	mustExec(t, db, `INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
 	    VALUES ('test-src', 'isin:XX0000000009', 'legal_country', ?, 'gleif', 'DE'),
 	           ('test-src', 'isin:IE0000000005', 'legal_country', ?, 'gleif', 'IE'),
 	           ('test-src', 'isin:XX0000000001', 'risk_country', ?, 'otherprov', 'IE'),
@@ -200,8 +194,7 @@ func exposureFixtureRows() canonical.ExposureRows {
 				split{"currency", []string{"USD", "EUR"}, []float64{60, 40}},
 				split{"asset_class", []string{"private_equity", "infrastructure"}, []float64{72, 28}}),
 		},
-		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: canonical.DefaultAgedDays,
-			PartialPct: canonical.DefaultPartialPct},
+		Settings: defaultExposureSettings(),
 	}
 }
 
@@ -212,6 +205,25 @@ func stampDeclarations(t *testing.T, db *sql.DB, ctx context.Context, ds ...cano
 	rows := exposureFixtureRows()
 	rows.Declarations = append(rows.Declarations, ds...)
 	if _, err := SyncExposure(ctx, db, rows); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// defaultExposureSettings are the exposure settings an exposure block
+// that states none reads as.
+func defaultExposureSettings() canonical.ExposureSettings {
+	return canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: canonical.DefaultAgedDays,
+		PartialPct: canonical.DefaultPartialPct}
+}
+
+// rebuildExposureWithDefaults stamps an exposure block of the default
+// settings alone and rebuilds the exposure tables.
+func rebuildExposureWithDefaults(t *testing.T, db *sql.DB, ctx context.Context) {
+	t.Helper()
+	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{Settings: defaultExposureSettings()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)
 	}
 }

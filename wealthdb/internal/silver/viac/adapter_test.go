@@ -184,22 +184,10 @@ func TestHistoricalSnapshotsSpanWindow(t *testing.T) {
 		if !w.HasChanges {
 			t.Fatalf("ChangeWindow(%d): HasChanges=false, want true", since)
 		}
-		stream, err := conn.Snapshots(ctx, w)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer stream.Close()
 		seen := map[int64]bool{}
-		for {
-			batch, more, err := stream.Next(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
+		for _, batch := range silvertest.Snapshots(t, conn, w) {
 			for _, p := range batch.Positions {
 				seen[p.SnapshotAt] = true
-			}
-			if !more {
-				break
 			}
 		}
 		return seen

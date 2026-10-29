@@ -71,11 +71,3 @@ func sortedKindsLocked() []string {
 	sort.Strings(out)
 	return out
 }
-
-// resetForTesting clears the registry. Test-only; not exposed
-// outside the package via a public name.
-func resetForTesting() {
-	registryMu.Lock()
-	defer registryMu.Unlock()
-	registry = map[string]Adapter{}
-}

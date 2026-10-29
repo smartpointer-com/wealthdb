@@ -109,7 +109,7 @@ func splitBatches[T any](items []T, size int) [][]T {
 }
 
 // openAIRequest mirrors the chat-completions JSON body. Only the
-// fields we actually set; the server tolerates extras.
+// fields the client sets; the server tolerates extras.
 type openAIRequest struct {
 	Model       string          `json:"model"`
 	Messages    []openAIMessage `json:"messages"`
@@ -205,7 +205,8 @@ var thinkBlockRe = regexp.MustCompile(`(?s)<think>.*?</think>`)
 // reasoning blocks from the response. A reasoning model emits them
 // inline ahead of the CSV body, so the strip runs unconditionally
 // on every response as parse hygiene — no config field gates it.
-// We strip non-greedily to handle stacked / interleaved blocks.
+// The match is non-greedy, so stacked / interleaved blocks strip one
+// by one.
 func stripThinkingBlocks(s string) string {
 	return strings.TrimSpace(thinkBlockRe.ReplaceAllString(s, ""))
 }

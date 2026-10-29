@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // An exit is a sell of the position on its exit date, for the proceeds,
@@ -34,8 +35,8 @@ func TestAnExitSellsThePosition(t *testing.T) {
 		id, acct, inst, ccy, net, desc string
 		at                             int64
 	}{
-		{"exit:cn-1", defaultAccountKey, "cn-1", "CHF", "0.00", "", iso(t, "2022-03-01")},
-		{"exit:spv-1", defaultAccountKey, "spv-1", "USD", "150.25", "sold with the company", iso(t, "2023-06-01")},
+		{"exit:cn-1", defaultAccountKey, "cn-1", "CHF", "0.00", "", silvertest.ISO(t, "2022-03-01")},
+		{"exit:spv-1", defaultAccountKey, "spv-1", "USD", "150.25", "sold with the company", silvertest.ISO(t, "2023-06-01")},
 	} {
 		tx := batch.Transactions[i]
 		desc := ""
@@ -52,7 +53,7 @@ func TestAnExitSellsThePosition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.OldestTransactionAt != iso(t, "2022-03-01") || s.LatestTransactionAt != iso(t, "2023-06-01") {
+	if s.OldestTransactionAt != silvertest.ISO(t, "2022-03-01") || s.LatestTransactionAt != silvertest.ISO(t, "2023-06-01") {
 		t.Errorf("transaction range = [%d, %d]", s.OldestTransactionAt, s.LatestTransactionAt)
 	}
 }

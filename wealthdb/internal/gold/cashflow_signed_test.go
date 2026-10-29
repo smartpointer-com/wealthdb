@@ -46,51 +46,45 @@ func TestASignPinnedCashLegJoinsInvesting(t *testing.T) {
             ('cf', 3456000, 'BROK', 'USD', 'current', 112.5);`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	node := map[string]string{}
-	rows, err := db.QueryContext(ctx, `SELECT transaction_external_id, disposition,
-	        COALESCE(section, '') || '.' || COALESCE(class, '') || '.' || COALESCE(grp, '')
-	          FROM cashflow_txn_nodes(0, 9999999999) WHERE transaction_external_id LIKE 'S-%'`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rows.Next() {
-		var id, disp, n string
-		if err := rows.Scan(&id, &disp, &n); err != nil {
+	check := func(when string) {
+		t.Helper()
+		node := scanPairs(t, db, `SELECT transaction_external_id, disposition || ' ' ||
+		        COALESCE(section, '') || '.' || COALESCE(class, '') || '.' || COALESCE(grp, '')
+		          FROM cashflow_txn_nodes(0, 9999999999) WHERE transaction_external_id LIKE 'S-%'`)
+		want := map[string]string{
+			// No instrument named: class `other`, never Untracked investments.
+			"S-LIEU": "line investing.other.corporate_actions",
+			// Into a cash-class holding: cash becoming cash, pool-internal.
+			"S-CASHMM": "internal ..",
+			"S-ZERO":   "excluded ..",
+			"S-SCHWAB": "line investing.other.corporate_actions",
+			"S-SHARES": "excluded ..",
+			"S-FX":     "excluded ..",
+			"S-OTHER":  "excluded ..",
+		}
+		for id, w := range want {
+			if node[id] != w {
+				t.Errorf("%s: %s = %q, want %q", when, id, node[id], w)
+			}
+		}
+
+		cov, err := CashflowCoverage(ctx, db, 0, 9999999999, "total")
+		if err != nil {
 			t.Fatal(err)
 		}
-		node[id] = disp + " " + n
-	}
-	rows.Close()
-	want := map[string]string{
-		// No instrument named: class `other`, never Untracked investments.
-		"S-LIEU": "line investing.other.corporate_actions",
-		// Into a cash-class holding: cash becoming cash, pool-internal.
-		"S-CASHMM": "internal ..",
-		"S-ZERO":   "excluded ..",
-		"S-SCHWAB": "line investing.other.corporate_actions",
-		"S-SHARES": "excluded ..",
-		"S-FX":     "excluded ..",
-		"S-OTHER":  "excluded ..",
-	}
-	for id, w := range want {
-		if node[id] != w {
-			t.Errorf("%s = %q, want %q", id, node[id], w)
+		for _, r := range cov {
+			if r.SourceID != "cf" || r.Account != "Brokerage" {
+				continue
+			}
+			if show(r.Ledger) != "15.5" || show(r.UnsignedVolume) != "900" {
+				t.Errorf("%s: brokerage coverage: ledger %v, unsigned %v; want the two cash legs in the ledger, "+
+					"the share leg unsigned", when, show(r.Ledger), show(r.UnsignedVolume))
+			}
+			return
 		}
+		t.Errorf("%s: no coverage row for the brokerage account", when)
 	}
-
-	cov, err := CashflowCoverage(ctx, db, 0, 9999999999, "total")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, r := range cov {
-		if r.SourceID != "cf" || r.Account != "Brokerage" {
-			continue
-		}
-		if show(r.Ledger) != "15.5" || show(r.UnsignedVolume) != "900" {
-			t.Errorf("brokerage coverage: ledger %v, unsigned %v; want the two cash legs in the ledger, the share leg unsigned",
-				show(r.Ledger), show(r.UnsignedVolume))
-		}
-		return
-	}
-	t.Error("no coverage row for the brokerage account")
+	check("at head")
+	rerunMigrationDDL(t, db, ctx, "0161_cash_signed_kinds.sql")
+	check("after replaying 0161")
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // A fund paid back capital before its first NAV is carried at the capital paid
@@ -17,14 +18,14 @@ func TestAFundsBookValueIsGrossCalledCapitalAndItIsAcquiredOnItsFirstCall(t *tes
 INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, snapshot_at, kind,
     flow_date, amount, currency, payload) VALUES
     ('dist:300:notice:n2', '300', 1800000000, 'distribution', '07/31/2024', 10000, 'USD', '{}');`))
-	firstCall := time.Unix(unixDate(t, "2023-02-15"), 0).UTC()
+	firstCall := time.Unix(silvertest.ISO(t, "2023-02-15"), 0).UTC()
 	for _, c := range []struct{ day, mv, bv string }{
 		{"2023-02-15", "120000", "120000"},
 		{"2024-06-30", "150000", "150000"},
 		{"2024-07-31", "140000", "150000"},
 		{"2024-09-30", "140000", "150000"},
 	} {
-		p, ok := byDay[unixDate(t, c.day)]
+		p, ok := byDay[silvertest.ISO(t, c.day)]
 		if !ok {
 			t.Errorf("%s: no fund position", c.day)
 			continue
@@ -46,7 +47,7 @@ INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, snapshot_at, k
 // re-issued on a split or transfer), so it gets none.
 func TestAConvertibleIsAcquiredOnItsIssueDate(t *testing.T) {
 	path, db := newFixtureSilver(t)
-	snap := unixDate(t, "2025-01-31")
+	snap := silvertest.ISO(t, "2025-01-31")
 	if _, err := db.Exec(fmt.Sprintf(`
 INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, payload)
     VALUES (%[1]d, 3, 'run', 'IND1', '{}');
@@ -65,25 +66,13 @@ INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream, err := conn.Snapshots(ctx, w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 	got := map[string]canonical.PositionChange{}
-	for {
-		b, more, err := stream.Next(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, b := range silvertest.Snapshots(t, conn, w) {
 		for _, p := range b.Positions {
 			got[p.PositionKey] = p
 		}
-		if !more {
-			break
-		}
 	}
-	issued := time.Unix(unixDate(t, "2022-03-15"), 0).UTC()
+	issued := time.Unix(silvertest.ISO(t, "2022-03-15"), 0).UTC()
 	if p := got[positionKey(100)]; p.AcquisitionDate == nil || !p.AcquisitionDate.Equal(issued) {
 		t.Errorf("convertible acquisition date %v, want %v", p.AcquisitionDate, issued)
 	}

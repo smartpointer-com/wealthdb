@@ -85,10 +85,10 @@ type SpendTransactionRow struct {
 	SpendPrimaryLabel *string
 	Provenance        *string
 	// ProviderSpendDetailed and ProviderSpendLabel are the ISSUER's own
-	// classification of the line, mapped to our vocabulary and kept
-	// beside ours (migration 0057). Nil where the issuer published
-	// nothing this build translates. Never summed with ours: the two
-	// disagree by design.
+	// classification of the line, mapped to the wealthdb vocabulary
+	// and kept beside SpendDetailed (migration 0057). Nil where the
+	// issuer published nothing this build translates. Never summed
+	// with SpendDetailed: the two disagree by design.
 	ProviderSpendDetailed *string
 	ProviderSpendLabel    *string
 	Currency              string

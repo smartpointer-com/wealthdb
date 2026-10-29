@@ -406,7 +406,7 @@ SELECT h.src, h.iid, h.asset_class, COALESCE(h.vehicle, ''), i.isin, i.cusip, il
 		}
 		out = append(out, h)
 		return nil
-	}, now.Unix()-stillHeldDays*86400)
+	}, now.Unix()-stillHeldDays*SecondsPerDay)
 	if err != nil {
 		return nil, fmt.Errorf("wanted: held instruments: %w", err)
 	}

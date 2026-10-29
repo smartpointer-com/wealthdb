@@ -65,7 +65,7 @@ func runIncomeView(ctx context.Context, g globalFlags, view string, args []strin
 	if err := checkChoice("income", "period", *period, reportPeriodNames...); err != nil {
 		return err
 	}
-	if err := checkChoice("income", "level", *level, "primary", "detailed"); err != nil {
+	if err := checkChoice("income", "level", *level, categoryLevels...); err != nil {
 		return err
 	}
 	if err := ff.check(fs, view, *period); err != nil {

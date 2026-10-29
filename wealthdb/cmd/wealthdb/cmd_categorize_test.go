@@ -1210,33 +1210,17 @@ func enableCategorization(t *testing.T, cfgPath string) {
 // whether the pass ran.
 func seedGhostEnrichment(t *testing.T, goldPath string) {
 	t.Helper()
-	db, err := sql.Open("duckdb", goldPath)
-	if err != nil {
-		t.Fatalf("open gold to seed: %v", err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`
+	execGold(t, goldPath, `
         INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
                                           merchant_signature, signature_version,
                                           spend_detailed, provenance, assigned_at)
-             VALUES ('ghost-source', 'G1', 'GHOST SIGNATURE', 1, NULL, 'signature-only', 100)`); err != nil {
-		t.Fatalf("seed ghost enrichment: %v", err)
-	}
+             VALUES ('ghost-source', 'G1', 'GHOST SIGNATURE', 1, NULL, 'signature-only', 100)`)
 }
 
 func ghostEnrichmentRows(t *testing.T, goldPath string) int {
 	t.Helper()
-	db, err := sql.Open("duckdb", goldPath+"?access_mode=read_only")
-	if err != nil {
-		t.Fatalf("open gold read-only: %v", err)
-	}
-	defer db.Close()
-	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM spend_txn_enrichment
-                             WHERE silver_source_id = 'ghost-source'`).Scan(&n); err != nil {
-		t.Fatalf("count ghost rows: %v", err)
-	}
-	return n
+	return countGold(t, goldPath, `SELECT COUNT(*) FROM spend_txn_enrichment
+                             WHERE silver_source_id = 'ghost-source'`)
 }
 
 // TestCategorizeDryRunIsReadOnlyAndSaysSo pins the one place this
@@ -1317,18 +1301,11 @@ func seedTwoMerchantVerdicts(t *testing.T) (cfg string) {
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
 	}
-	db, err := sql.Open("duckdb", goldPathFromCfg(cfg))
-	if err != nil {
-		t.Fatalf("open gold: %v", err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`
+	execGold(t, goldPathFromCfg(cfg), `
         INSERT INTO spend_merchant_categories (merchant_signature, merchant_name, spend_detailed,
                                                signature_version, assigned_at, model_name) VALUES
             ('BLUE HARBOUR CAFE',  'Blue Harbour Cafe',  'FOOD_AND_DRINK_COFFEE',     1, 1700000000, 'test-model'),
-            ('NORTHWIND HARDWARE', 'Northwind Hardware', 'HOME_IMPROVEMENT_HARDWARE', 1, 1700000000, 'test-model')`); err != nil {
-		t.Fatalf("seed merchant store: %v", err)
-	}
+            ('NORTHWIND HARDWARE', 'Northwind Hardware', 'HOME_IMPROVEMENT_HARDWARE', 1, 1700000000, 'test-model')`)
 	return cfg
 }
 

@@ -149,13 +149,13 @@ func TestQuarterlyReportsNeedTheirTables(t *testing.T) {
 func TestReportSectorStemOrder(t *testing.T) {
 	t.Parallel()
 	for label, want := range map[string]string{
-		"Healthcare Technology":                                string(canonical.SectorHealthCare),
-		"Health Care Software":                                 string(canonical.SectorHealthCare),
-		"Enterprise Software":                                  string(canonical.SectorTechnology),
-		"Information Technology":                               string(canonical.SectorTechnology),
-		"Industrial and office products distribution & retail": string(canonical.SectorIndustrials),
-		"Consumer / Retail":                                    string(canonical.SectorConsumerCyclical),
-		"Diversified":                                          canonical.Unknown,
+		"Healthcare Technology":                  string(canonical.SectorHealthCare),
+		"Health Care Software":                   string(canonical.SectorHealthCare),
+		"Enterprise Software":                    string(canonical.SectorTechnology),
+		"Information Technology":                 string(canonical.SectorTechnology),
+		"Industrial supplies wholesale & retail": string(canonical.SectorIndustrials),
+		"Consumer / Retail":                      string(canonical.SectorConsumerCyclical),
+		"Diversified":                            canonical.Unknown,
 	} {
 		if got := reportSector(label); got != want {
 			t.Errorf("reportSector(%q) = %q, want %q", label, got, want)
@@ -202,24 +202,12 @@ CREATE TABLE private_market_report_lines (
 	if !w.HasChanges || w.Start > 100*day {
 		t.Fatalf("window %+v does not reach the report's day %d", w, 100*day)
 	}
-	stream, err := conn.Snapshots(ctx, w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 	var got []canonical.ExposureReportChange
 	var comps []canonical.FundCompositionChange
 	var lines []canonical.FundLineChange
-	for {
-		batch, more, err := stream.Next(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, batch := range silvertest.Snapshots(t, conn, w) {
 		got = append(got, batch.ExposureReports...)
 		comps, lines = append(comps, batch.FundCompositions...), append(lines, batch.FundLines...)
-		if !more {
-			break
-		}
 	}
 	if len(got) != 1 || got[0].InstrumentExternalID != "XX0000000066" || got[0].AsOf != 100*day {
 		t.Fatalf("reports %+v, want XX0000000066 on day 100", got)

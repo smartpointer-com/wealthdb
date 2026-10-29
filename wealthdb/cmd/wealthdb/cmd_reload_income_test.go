@@ -31,21 +31,12 @@ func TestReloadFreshCarriesThePayerStore(t *testing.T) {
 
 	// Written straight into the store, past the migration that would
 	// have respelled them, the way a file from before it holds them.
-	db, err := sql.Open("duckdb", goldPath)
-	if err != nil {
-		t.Fatalf("open gold: %v", err)
-	}
-	if _, err := db.Exec(`
+	execGold(t, goldPath, `
         INSERT INTO income_payer_categories (payer_signature, payer_name, income_detailed,
                                              signature_version, assigned_at, model_name) VALUES
             ('sig-payroll',     'Blue Harbour Payroll',  'INCOME_WAGES',                     1, 100, 'test-model'),
             ('sig-maintenance', 'Example Maintenance',   'INCOME_ALIMONY_AND_CHILD_SUPPORT', 1, 200, 'test-model'),
-            ('sig-letting',     'Example Letting Agent', 'INCOME_RENTAL',                    1, 300, 'test-model')`); err != nil {
-		t.Fatalf("seed payer store: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
+            ('sig-letting',     'Example Letting Agent', 'INCOME_RENTAL',                    1, 300, 'test-model')`)
 
 	so, se, code := run(t, "-c", cfg, "reload", "-a")
 	if code != 0 {

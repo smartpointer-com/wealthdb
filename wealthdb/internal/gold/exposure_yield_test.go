@@ -24,13 +24,7 @@ func seedYieldExposure(t *testing.T) (*sql.DB, context.Context, int64) {
 	t.Helper()
 	db, ctx := openMigrated(t)
 	snap := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
-	ex := func(q string, args ...any) {
-		t.Helper()
-		if _, err := db.ExecContext(ctx, q, args...); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
-	ex(`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
+	mustExec(t, db, `INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
 	    first_seen_at, last_seen_at) VALUES ('test-src', 'A', 'brokerage', 'Brokerage', 'USD', 0, 0)`)
 	for _, i := range []struct {
 		id, class, vehicle, cusip, symbol, name string
@@ -41,14 +35,14 @@ func seedYieldExposure(t *testing.T) (*sql.DB, context.Context, int64) {
 		{"BNDF", "fixed_income", "etf", "", "BNDF", "Example A Bond Fund", 1000},
 		{"BKF", "fixed_income", "etf", "", "BKF", "Example Short Bond Fund", 1000},
 	} {
-		ex(`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, cusip, symbol, name,
+		mustExec(t, db, `INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, cusip, symbol, name,
 		    currency, first_seen_at, last_seen_at) VALUES ('test-src', ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, 'USD', 0, 0)`,
 			i.id, i.class, i.vehicle, i.cusip, i.symbol, i.name)
-		ex(`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		mustExec(t, db, `INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
 		    asset_class, vehicle, currency, quantity, market_value) VALUES ('test-src', ?, 'A', ?, ?, ?, ?, 'USD', 1, ?)`,
 			snap, i.id, i.id, i.class, i.vehicle, i.mv)
 	}
-	ex(`INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id, currency, balance_kind, amount)
+	mustExec(t, db, `INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id, currency, balance_kind, amount)
 	    VALUES ('test-src', ?, 'A', 'USD', 'current', 1000)`, snap)
 	type ln struct {
 		key, name, assetType string
@@ -58,14 +52,14 @@ func seedYieldExposure(t *testing.T) (*sql.DB, context.Context, int64) {
 		kind, lei            string
 	}
 	comp := func(ref string, lines ...ln) {
-		ex(`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency)
+		mustExec(t, db, `INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency)
 		    VALUES ('test-src', ?, ?, 'holdings', 'testprov', ?, 'USD')`, ref, snap, len(lines))
 		for n, l := range lines {
 			payload := "{}"
 			if l.lei != "" {
 				payload = `{"lei": "` + l.lei + `"}`
 			}
-			ex(`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, name, asset_type,
+			mustExec(t, db, `INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, name, asset_type,
 			    weight, currency, sector, maturity, coupon, coupon_kind, lei, payload)
 			    VALUES ('test-src', ?, ?, 'holdings', ?, ?, ?, ?, ?, 'USD', NULLIF(?, ''), CAST(NULLIF(?, '') AS DATE), ?,
 			    NULLIF(?, ''), NULLIF(?, ''), ?)`, ref, snap, n+1, l.key, l.name, l.assetType, l.w, l.sector, l.maturity,
@@ -80,19 +74,19 @@ func seedYieldExposure(t *testing.T) (*sql.DB, context.Context, int64) {
 		"Fixed", ""})
 	comp("symbol:BKF", ln{"cusip:00000000K", "EXAMPLE SHORT NOTE 2027", "Fixed Income", 100, "", "2027-01-01", 2.0,
 		"Fixed", ""})
-	ex(`INSERT INTO fund_characteristics (silver_source_id, fund_ref, as_of, provider, field, label, value) VALUES
+	mustExec(t, db, `INSERT INTO fund_characteristics (silver_source_id, fund_ref, as_of, provider, field, label, value) VALUES
 	    ('ref', 'symbol:BKF', ?, 'ishares', 'credit_quality', 'AAA', 60),
 	    ('ref', 'symbol:BKF', ?, 'ishares', 'credit_quality', 'BB', 40),
 	    ('ref', 'symbol:BKF', ?, 'ishares', 'credit_quality', 'Cash and/or Derivatives', 10)`, snap, snap, snap)
-	ex(`INSERT INTO security_identities (silver_source_id, security_key, as_of, provider, lei, name)
+	mustExec(t, db, `INSERT INTO security_identities (silver_source_id, security_key, as_of, provider, lei, name)
 	    VALUES ('ref', 'cusip:00000000B', 0, 'gleif', 'QQQQ00000000000000Q1', 'Qorvant Corporation')`)
 	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
 		Custody:  []canonical.ExposureCustody{{SilverSourceID: "test-src", Custodian: "Example Bank AG", Country: "CH"}},
-		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: 35, PartialPct: 3},
+		Settings: defaultExposureSettings(),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	ex(`INSERT INTO yield_rating_funds (fund_ref, rating, bucket_high, bucket_low) VALUES ('symbol:BNDF', 'AA-A', 'AA', 'A')`)
+	mustExec(t, db, `INSERT INTO yield_rating_funds (fund_ref, rating, bucket_high, bucket_low) VALUES ('symbol:BNDF', 'AA-A', 'AA', 'A')`)
 	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)
 	}
@@ -351,13 +345,7 @@ func TestExposureYieldEdges(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	snap := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
-	ex := func(q string, args ...any) {
-		t.Helper()
-		if _, err := db.ExecContext(ctx, q, args...); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
-	ex(`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
+	mustExec(t, db, `INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
 	    first_seen_at, last_seen_at) VALUES ('bank', 'A', 'brokerage', 'Brokerage', 'USD', 0, 0)`)
 	for _, i := range []struct {
 		id, class, vehicle, cusip, symbol, name string
@@ -373,17 +361,17 @@ func TestExposureYieldEdges(t *testing.T) {
 		{"TIEF", "fixed_income", "etf", "", "TIEF", "Example Two Lines Fund", 1000},
 		{"PERF", "fixed_income", "etf", "", "PERF", "Example Perpetual Income Fund", 1000},
 	} {
-		ex(`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, cusip, symbol, name,
+		mustExec(t, db, `INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, cusip, symbol, name,
 		    currency, first_seen_at, last_seen_at) VALUES ('bank', ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, 'USD', 0, 0)`,
 			i.id, i.class, i.vehicle, i.cusip, i.symbol, i.name)
-		ex(`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		mustExec(t, db, `INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
 		    asset_class, vehicle, currency, quantity, market_value) VALUES ('bank', ?, 'A', ?, ?, ?, ?, 'USD', 1, ?)`,
 			snap, i.id, i.id, i.class, i.vehicle, i.mv)
 	}
-	ex(`INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id, currency, balance_kind, amount)
+	mustExec(t, db, `INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id, currency, balance_kind, amount)
 	    VALUES ('bank', ?, 'A', 'USD', 'current', 1000)`, snap)
 	line := func(ref string, n int, key, name string, w float64, maturity, kind, lei string, real any) {
-		ex(`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, name, asset_type,
+		mustExec(t, db, `INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, name, asset_type,
 		    weight, currency, maturity, coupon, coupon_kind, lei, real_yield)
 		    VALUES ('bank', ?, ?, 'holdings', ?, NULLIF(?, ''), NULLIF(?, ''), 'Fixed Income', ?, 'USD',
 		    CAST(NULLIF(?, '') AS DATE), 2.0, NULLIF(?, ''), NULLIF(?, ''), ?)`,
@@ -393,7 +381,7 @@ func TestExposureYieldEdges(t *testing.T) {
 		ref   string
 		lines int
 	}{{"symbol:ALF", 1}, {"symbol:TIPF", 2}, {"symbol:TIEF", 2}, {"symbol:PERF", 1}} {
-		ex(`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency)
+		mustExec(t, db, `INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency)
 		    VALUES ('bank', ?, ?, 'holdings', 'testprov', ?, 'USD')`, c.ref, snap, c.lines)
 	}
 	line("symbol:ALF", 1, "cusip:00000000A", "EXAMPLE NOTE 2030", 100, "2030-06-30", "Fixed", "", nil)
@@ -404,20 +392,20 @@ func TestExposureYieldEdges(t *testing.T) {
 	line("symbol:TIEF", 2, "cusip:000000AL4", "ALPHA ISSUER INC 4% 2032", 50, "2032-06-30", "Fixed",
 		"QQQQ000000000000ALPH", nil)
 	line("symbol:PERF", 1, "", "", 100, "", "Fixed", "", nil)
-	ex(`INSERT INTO fund_characteristics (silver_source_id, fund_ref, as_of, provider, field, label, value) VALUES
+	mustExec(t, db, `INSERT INTO fund_characteristics (silver_source_id, fund_ref, as_of, provider, field, label, value) VALUES
 	    ('ref', 'symbol:PGF', ?, 'ishares', 'credit_quality', 'Government', 60),
 	    ('ref', 'symbol:PGF', ?, 'ishares', 'credit_quality', 'AA Rated', 40),
 	    ('ref', 'symbol:PGF', ?, 'ishares', 'maturity_breakdown', '0 - 1 Years', 50),
 	    ('ref', 'symbol:PGF', ?, 'ishares', 'maturity_breakdown', '3 - 5 Years', 50),
 	    ('ref', 'symbol:RTGF', ?, 'ishares', 'credit_quality', 'AA', 100)`, snap, snap, snap, snap, snap)
-	ex(`INSERT INTO security_identities (silver_source_id, security_key, as_of, provider, lei, name) VALUES
+	mustExec(t, db, `INSERT INTO security_identities (silver_source_id, security_key, as_of, provider, lei, name) VALUES
 	    ('ref', 'cusip:00000000E', 0, 'gleif', 'QQQQ0000000000000EB1', 'Example Bank AG')`)
 	spv := declaration(1, "SPV1", nil, split{"asset_class", []string{"public_equity", "fixed_income"}, []float64{60, 40}})
 	spv.SilverSourceID = "bank"
 	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
 		Custody:      []canonical.ExposureCustody{{SilverSourceID: "bank", Custodian: "Example Bank AG", Country: "CH"}},
 		Declarations: []canonical.ExposureDeclaration{spv},
-		Settings:     canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: 35, PartialPct: 3},
+		Settings:     defaultExposureSettings(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -429,10 +417,10 @@ func TestExposureYieldEdges(t *testing.T) {
 	}
 	// After the passes: the term's rate as the yield pass leaves it, the
 	// alias and the two rating keys of one fund.
-	ex(`INSERT INTO account_rates (silver_source_id, account_external_id, currency, side, tier, rate_pct, term_end,
+	mustExec(t, db, `INSERT INTO account_rates (silver_source_id, account_external_id, currency, side, tier, rate_pct, term_end,
 	    origin) VALUES ('bank', 'A', 'USD', 'credit', 1, 3.0, '2028-06-30', 'stated')`)
-	ex(`INSERT OR REPLACE INTO security_aliases (alias, security_key, origin) VALUES ('isin:XX00000000AL', 'symbol:ALF', 'lookup')`)
-	ex(`INSERT INTO yield_rating_funds (fund_ref, rating, bucket_high, bucket_low) VALUES
+	mustExec(t, db, `INSERT OR REPLACE INTO security_aliases (alias, security_key, origin) VALUES ('isin:XX00000000AL', 'symbol:ALF', 'lookup')`)
+	mustExec(t, db, `INSERT INTO yield_rating_funds (fund_ref, rating, bucket_high, bucket_low) VALUES
 	    ('symbol:ALF', 'A', 'A', 'A'), ('isin:XX00000000AL', 'AA-BBB', 'AA', 'BBB'), ('symbol:RTGF', 'BBB', 'BBB', 'BBB')`)
 	at := snap + 86399
 	total := 8800.0
@@ -632,14 +620,7 @@ func TestAFloatingLineWithARealYieldIsFloating(t *testing.T) {
 			`', 'Fixed Income', 10, 'USD', DATE '2030-01-15', 4, `+kind+`, `+real+`)`)
 	}
 	execEach(t, db, q...)
-	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
-		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: 35, PartialPct: 3},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	rebuildExposureWithDefaults(t, db, ctx)
 	// The look-through reads each CUSIP key as its ISIN, which sorts as
 	// the lines do.
 	got := scanStrings(t, db, `SELECT coupon_bucket FROM exposure_yield_leaves(?, 'USD')
@@ -681,14 +662,7 @@ func TestFloatingLineKindsAgree(t *testing.T) {
 			strconv.FormatFloat(100/float64(len(kinds)), 'f', -1, 64)+`, 'USD', DATE '2030-01-15', 4, '`+k+`')`)
 	}
 	execEach(t, db, q...)
-	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
-		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: 35, PartialPct: 3},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	rebuildExposureWithDefaults(t, db, ctx)
 	got := scanStrings(t, db, `SELECT line_coupon_kind || ' ' || coupon_bucket FROM exposure_yield_leaves(?, 'USD')
 	    WHERE depth > 0 AND line_coupon_kind IS NOT NULL ORDER BY 1`, snap+86399)
 	var want []string

@@ -103,7 +103,8 @@ func SyncExposure(ctx context.Context, db *sql.DB, rows canonical.ExposureRows) 
 
 // The origins of a declaration: the ledger's own records, and those a
 // source parses from a document. Migration 0164 spells 'ledger' in the
-// column default and in exposure_declarations_at.
+// column default and in exposure_declarations_at, and 0167 in
+// exposure_composition_wins.
 const (
 	declarationLedger = "ledger"
 	declarationParsed = "parsed"
@@ -118,7 +119,8 @@ dimensions, situs, source, note, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, d.
 }
 
 // parsedDeclarations reads exposure_reports as declarations: each row a
-// dated record, its dimensions crossed into leaves as the ledger's are.
+// dated record, its dimensions crossed into leaves as
+// config.crossDimensions crosses the ledger's, in float.
 // A parsed record has no ledger line, so it takes a negative line, one
 // per row in (source, instrument, date) order. A value at or below zero
 // adds nothing, and each dimension is scaled to sum to one.

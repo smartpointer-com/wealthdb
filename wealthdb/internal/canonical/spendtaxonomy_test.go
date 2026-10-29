@@ -454,21 +454,29 @@ func TestSpendPredicatesRefuseTheIncomeVocabulary(t *testing.T) {
 	}
 }
 
-// TestVendoredSpendCategoriesIsACopy guards the accessor the prompt
+// TestModelSpendCategoriesIsACopy guards the accessor the prompt
 // builder uses: it hands out the vocabulary a model may choose from,
-// and a caller reordering it must not disturb the table the seed
-// migrations are pinned to.
-func TestVendoredSpendCategoriesIsACopy(t *testing.T) {
-	got := VendoredSpendCategories()
-	if len(got) != len(vendoredSpendCategories) {
-		t.Fatalf("got %d rows, want %d", len(got), len(vendoredSpendCategories))
+// no delta among it, and a caller reordering it must not disturb the
+// table the seed migrations are pinned to. VendoredSpendCategories,
+// what a taxonomy refresh diffs against, is held to the same copy.
+func TestModelSpendCategoriesIsACopy(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		got, table []SpendCategory
+	}{
+		{"ModelSpendCategories", ModelSpendCategories(), modelSpendCategories},
+		{"VendoredSpendCategories", VendoredSpendCategories(), vendoredSpendCategories},
+	} {
+		if len(tc.got) != len(tc.table) {
+			t.Fatalf("%s = %d rows, want %d", tc.name, len(tc.got), len(tc.table))
+		}
+		first := tc.table[0]
+		tc.got[0] = SpendCategory{"X", "Y", "Z", FamilySpending}
+		if tc.table[0] != first {
+			t.Errorf("%s must return a copy", tc.name)
+		}
 	}
-	first := vendoredSpendCategories[0]
-	got[0] = SpendCategory{"X", "Y", "Z", FamilySpending}
-	if vendoredSpendCategories[0] != first {
-		t.Error("VendoredSpendCategories must return a copy")
-	}
-	for _, c := range VendoredSpendCategories() {
+	for _, c := range ModelSpendCategories() {
 		for _, d := range deltaCategories {
 			if c.Detailed == d.Detailed {
 				t.Errorf("delta %q must not appear in the model's vocabulary", c.Detailed)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // TestStatedPeriodsLoadAsTheyAre covers the stated_periods table (silver
@@ -31,22 +31,7 @@ func TestStatedPeriodsLoadAsTheyAre(t *testing.T) {
 	if w.Start > 5097600 || w.End < 7689600 {
 		t.Fatalf("window [%d, %d] does not reach the stated periods", w.Start, w.End)
 	}
-	stream, err := conn.Snapshots(ctx, w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
-	var got []canonical.StatedPeriodChange
-	for {
-		b, more, err := stream.Next(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		got = append(got, b.StatedPeriods...)
-		if !more {
-			break
-		}
-	}
+	got := silvertest.Merged(t, conn, w).StatedPeriods
 	if len(got) != 2 {
 		t.Fatalf("stated periods = %d, want 2", len(got))
 	}

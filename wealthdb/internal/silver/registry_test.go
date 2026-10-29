@@ -7,6 +7,13 @@ import (
 	"testing"
 )
 
+// resetForTesting clears the registry.
+func resetForTesting() {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	registry = map[string]Adapter{}
+}
+
 // stubAdapter is a no-op Adapter used for registry exercises.
 type stubAdapter struct{ kind string }
 

@@ -1216,7 +1216,7 @@ func categorizeBatch(
 func parseAndValidateCategorizations(fam categorizeFamily, body string, candSet map[string]bool) ([]categorization, []invalidRow) {
 	body = stripCodeFences(body)
 	r := csv.NewReader(strings.NewReader(body))
-	r.FieldsPerRecord = -1 // tolerate ragged rows; we validate explicitly
+	r.FieldsPerRecord = -1 // tolerate ragged rows; each row is validated explicitly
 	r.LazyQuotes = true
 
 	var valid []categorization
@@ -1424,11 +1424,6 @@ func formatCandidateTransactionCSV(cands []merchantCandidate) string {
 		return ""
 	}
 	return b.String()
-}
-
-// formatEpochDay renders a day number (days since the epoch) as a date.
-func formatEpochDay(day int64) string {
-	return formatDate(day * gold.SecondsPerDay)
 }
 
 // ---- persistence -------------------------------------------------------------

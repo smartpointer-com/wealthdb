@@ -56,7 +56,7 @@ type situsFacts struct {
 	banked  bool
 	custody string
 	// private marks a private holding. described are the spans in
-	// which a composition of its own is in force (compositionSpans);
+	// which a composition of its own describes it (compositionSpans);
 	// inside one, the holding does not read as private.
 	private   bool
 	described []inForce
@@ -130,8 +130,10 @@ func compositionSpans(comps []situsComp, maxGapDays int64, ledger []inForce) []i
 }
 
 // describes says whether a composition of comps describes the fund at
-// the instant at (compositionSpans). A day both a parsed and a provider
-// composition state reads as the provider's, which no record beats.
+// the instant at (compositionSpans). exposure_comps keeps one
+// composition a fund and day, so the pick's origin is that
+// composition's. Only a parsed pick yields to a ledger record in force
+// of its day or later (exposure_composition_wins).
 func describes(comps []situsComp, maxGapDays int64, ledger []inForce, at int64) bool {
 	back, fwd := int64(math.MinInt64), int64(math.MaxInt64)
 	for _, c := range comps {
@@ -164,28 +166,10 @@ func describes(comps []situsComp, maxGapDays int64, ledger []inForce, at int64) 
 	return true
 }
 
-// without is spans with the span cut out of each.
-func without(spans []inForce, cut inForce) []inForce {
-	var out []inForce
-	for _, s := range spans {
-		if cut.until <= s.from || s.until <= cut.from {
-			out = append(out, s)
-			continue
-		}
-		if s.from < cut.from {
-			out = append(out, inForce{s.from, cut.from})
-		}
-		if cut.until < s.until {
-			out = append(out, inForce{cut.until, s.until})
-		}
-	}
-	return out
-}
-
-// situsRecord is what one record of the declarations ledger says of the
-// situs: the situs it declares, and, where it declares the economic
-// dimensions, the one country it declares at 100; and whether the
-// ledger states it (a parsed document's record does not).
+// situsRecord is what one declaration, the ledger's or a parsed
+// document's, says of the situs: the situs it declares, and, where it
+// declares the economic dimensions, the one country it declares at 100;
+// and whether the ledger states it.
 type situsRecord struct {
 	asOf             *int64
 	situs, country   string
@@ -385,7 +369,7 @@ SELECT k.src, k.acct, k.position_key, COALESCE(k.iid, ''), COALESCE(k.key, ''),
 // situsCompsSQL lists every fund's compositions as exposure_funds_at
 // reads them, with the max_gap_days it bounds them by.
 const situsCompsSQL = `
-SELECT c.fund_ref, c.as_of, COALESCE(c.valid_until, 0), c.origin = 'parsed', s.max_gap_days
+SELECT c.fund_ref, c.as_of, COALESCE(c.valid_until, 0), c.origin = '` + canonical.CompositionParsed + `', s.max_gap_days
   FROM exposure_comps() c, exposure_settings_row() s`
 
 // situsRecordsSQL lists every declaration, oldest first, with the situs
@@ -396,7 +380,7 @@ SELECT c.fund_ref, c.as_of, COALESCE(c.valid_until, 0), c.origin = 'parsed', s.m
 // whose records then win the day.
 const situsRecordsSQL = `
 SELECT d.silver_source_id, d.instrument_external_id, d.as_of, COALESCE(d.situs, ''), COALESCE(c.country, ''),
-       d.dimensions <> '', d.origin = 'ledger'
+       d.dimensions <> '', d.origin = '` + declarationLedger + `'
   FROM exposure_declarations d
   LEFT JOIN (SELECT line_no, MIN(country) AS country FROM exposure_declaration_leaves GROUP BY 1
               HAVING COUNT(country) = COUNT(*) AND MIN(country) = MAX(country) AND MIN(country) <> '` + canonical.Unknown + `') c

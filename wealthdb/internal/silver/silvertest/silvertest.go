@@ -89,6 +89,28 @@ func Snapshots(t testing.TB, conn silver.Connection, w canonical.Window) []canon
 	}
 }
 
+// Transactions drains conn's transaction stream over w and returns every
+// change it yields, in stream order.
+func Transactions(t testing.TB, conn silver.Connection, w canonical.Window) []canonical.TransactionChange {
+	t.Helper()
+	stream, err := conn.Transactions(context.Background(), w)
+	if err != nil {
+		t.Fatalf("Transactions: %v", err)
+	}
+	t.Cleanup(func() { stream.Close() })
+	var out []canonical.TransactionChange
+	for {
+		b, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatalf("Transactions Next: %v", err)
+		}
+		out = append(out, b.Transactions...)
+		if !more {
+			return out
+		}
+	}
+}
+
 // Merged drains conn's snapshot stream over w into one batch: each of
 // its slices holds the batches' records of that kind, in stream order.
 func Merged(t testing.TB, conn silver.Connection, w canonical.Window) canonical.SnapshotBatch {
@@ -159,6 +181,16 @@ func SeedRuns(t testing.TB, db *sql.DB, load int64, listed, quiet, left string) 
 // Day is the unix time of UTC midnight on the given date.
 func Day(y int, m time.Month, d int) int64 {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix()
+}
+
+// ISO is the unix time of UTC midnight on s, a YYYY-MM-DD date.
+func ISO(t testing.TB, s string) int64 {
+	t.Helper()
+	d, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		t.Fatalf("parse date %q: %v", s, err)
+	}
+	return d.Unix()
 }
 
 // AssertEmptyStatus checks that a reports the unknown status on a silver

@@ -386,10 +386,15 @@ func TestExposureFundsShowADeclaration(t *testing.T) {
 	t.Error("no funds row for LEV3")
 }
 
-// A record whose holding no source states is listed by its line.
+// A ledger record whose holding no source states is listed by its line.
+// A parsed record of such a holding is no ledger line, so it is not.
 func TestDeclarationsNamingNoHolding(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
+	if _, err := db.ExecContext(ctx, `INSERT INTO exposure_reports (silver_source_id, instrument_external_id, as_of,
+	    dimensions) VALUES ('test-src', 'NOSUCH9', ?, '{"country":{"FR":100}}')`, exDay(6, 30)); err != nil {
+		t.Fatal(err)
+	}
 	stampDeclarations(t, db, ctx,
 		declaration(7, "HOUS3", nil, split{"country", []string{"CH"}, []float64{100}}))
 	if lines, err := DeclarationsNamingNoHolding(ctx, db); err != nil || len(lines) != 1 || lines[0] != 7 {

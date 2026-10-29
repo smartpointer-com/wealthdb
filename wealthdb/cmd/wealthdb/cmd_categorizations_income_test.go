@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"strings"
 	"testing"
 )
@@ -11,12 +10,7 @@ import (
 // case the family selector and the two-store --forget exist for.
 func seedBothStores(t *testing.T, goldPath string) {
 	t.Helper()
-	db, err := sql.Open("duckdb", goldPath)
-	if err != nil {
-		t.Fatalf("open gold: %v", err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`
+	execGold(t, goldPath, `
         INSERT OR REPLACE INTO spend_merchant_categories (merchant_signature, merchant_name, spend_detailed,
                                                signature_version, assigned_at, model_name)
         VALUES ('EXAMPLE TRADING AG', 'Example Trading AG', 'GENERAL_SERVICES_CONSULTING_AND_LEGAL',
@@ -24,9 +18,7 @@ func seedBothStores(t *testing.T, goldPath string) {
         INSERT OR REPLACE INTO income_payer_categories (payer_signature, payer_name, income_detailed,
                                              signature_version, assigned_at, model_name)
         VALUES ('EXAMPLE TRADING AG', 'Example Trading AG', 'INCOME_CONTRACTOR',
-                1, 100, 'test-model');`); err != nil {
-		t.Fatalf("seed both stores: %v", err)
-	}
+                1, 100, 'test-model');`)
 }
 
 // TestCategorizationsNamesOneFamily pins the positional selector on the
@@ -87,16 +79,7 @@ func TestCategorizationsForgetSpansBothStores(t *testing.T) {
 
 	count := func(table string) int {
 		t.Helper()
-		db, err := sql.Open("duckdb", goldPath+"?access_mode=read_only")
-		if err != nil {
-			t.Fatalf("open gold: %v", err)
-		}
-		defer db.Close()
-		var n int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&n); err != nil {
-			t.Fatalf("count %s: %v", table, err)
-		}
-		return n
+		return countGold(t, goldPath, `SELECT COUNT(*) FROM `+table)
 	}
 
 	// One family named: only that store loses the row.

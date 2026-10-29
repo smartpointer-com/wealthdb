@@ -105,23 +105,8 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 	conn := openAdapter(t, path)
 
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, err := conn.Snapshots(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 
-	var batches []canonical.SnapshotBatch
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		batches = append(batches, b)
-		if !more {
-			break
-		}
-	}
+	batches := silvertest.Snapshots(t, conn, w)
 	// One batch per distinct event date: 100, 200, 300, 1000.
 	if len(batches) != 4 {
 		t.Fatalf("batches = %d, want 4 (event dates 100/200/300/1000)", len(batches))
@@ -271,19 +256,14 @@ func TestTransactionsFunding(t *testing.T) {
 	if !w.HasChanges || w.Start != 100 || w.End != 600 {
 		t.Fatalf("ChangeWindow = %+v, want HasChanges Start=100 End=600", w)
 	}
-	stream, err := conn.Transactions(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
-	batch, _, _ := stream.Next(context.Background())
+	txs := silvertest.Transactions(t, conn, w)
 
 	by := map[string]canonical.TransactionChange{}
-	for _, tx := range batch.Transactions {
+	for _, tx := range txs {
 		by[tx.TransactionExternalID] = tx
 	}
 	if len(by) != 7 {
-		t.Fatalf("transactions = %d, want 7", len(batch.Transactions))
+		t.Fatalf("transactions = %d, want 7", len(txs))
 	}
 	// (id, want kind, want signed net)
 	cases := []struct {
@@ -356,22 +336,7 @@ func TestSnapshotsFundingCashBalance(t *testing.T) {
 	}
 	conn := openAdapter(t, path)
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, err := conn.Snapshots(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
-	var cbs []canonical.CashBalanceChange
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		cbs = append(cbs, b.CashBalances...)
-		if !more {
-			break
-		}
-	}
+	cbs := silvertest.Merged(t, conn, w).CashBalances
 	if len(cbs) != 1 {
 		t.Fatalf("cash balances = %d, want 1", len(cbs))
 	}
@@ -407,22 +372,7 @@ func TestExitedInstruments(t *testing.T) {
 	}
 	conn := openAdapter(t, path)
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, err := conn.Snapshots(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
-	var insts []canonical.InstrumentChange
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		insts = append(insts, b.Instruments...)
-		if !more {
-			break
-		}
-	}
+	insts := silvertest.Merged(t, conn, w).Instruments
 	var foo *canonical.InstrumentChange
 	for i := range insts {
 		if insts[i].InstrumentExternalID == "funding:foo" {

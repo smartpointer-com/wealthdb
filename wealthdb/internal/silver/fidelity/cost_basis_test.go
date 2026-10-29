@@ -11,6 +11,7 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // Cost basis, open lots and realized lots. Every account, symbol,
@@ -41,17 +42,8 @@ func allSnapshots(t *testing.T, conn silver.Connection) canonical.SnapshotBatch 
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream, err := conn.Snapshots(ctx, w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 	var all canonical.SnapshotBatch
-	for {
-		b, more, err := stream.Next(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, b := range silvertest.Snapshots(t, conn, w) {
 		// A lot sits in the batch of the position it belongs to, and
 		// states its basis origin exactly when it states a book value.
 		for _, l := range b.PositionLots {
@@ -71,10 +63,8 @@ func allSnapshots(t *testing.T, conn silver.Connection) canonical.SnapshotBatch 
 		all.Positions = append(all.Positions, b.Positions...)
 		all.PositionLots = append(all.PositionLots, b.PositionLots...)
 		all.CashBalances = append(all.CashBalances, b.CashBalances...)
-		if !more {
-			return all
-		}
 	}
+	return all
 }
 
 func positionAt(t *testing.T, b canonical.SnapshotBatch, at int64, acct, key string) canonical.PositionChange {

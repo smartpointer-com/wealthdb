@@ -54,6 +54,9 @@ var cashflowViews = []string{"summary", "flows", "sankey", "transactions", "cove
 // section as one movement, or per asset class.
 var cashflowInvestingGrains = []string{"whole", "class"}
 
+// cashflowLevels are the `--level` node grains, coarsest first.
+var cashflowLevels = []string{"section", "class", "group"}
+
 // cmdCashflow routes `wealthdb cashflow <view> ...` to the view's run.
 func cmdCashflow(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
 	view, rest, err := routeView("cashflow", subargs, cashflowViews, cashflowUsage, stderr)
@@ -106,7 +109,7 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 	if err := checkChoice("cashflow", "period", *period, reportPeriodNames...); err != nil {
 		return err
 	}
-	if err := checkChoice("cashflow", "level", *level, "section", "class", "group"); err != nil {
+	if err := checkChoice("cashflow", "level", *level, cashflowLevels...); err != nil {
 		return err
 	}
 	if err := checkChoice("cashflow", "investing", *investing, cashflowInvestingGrains...); err != nil {

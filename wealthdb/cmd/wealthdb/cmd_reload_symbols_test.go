@@ -24,19 +24,10 @@ func TestReloadFreshCarriesTheSymbolStore(t *testing.T) {
 	}
 	goldPath := goldPathFromCfg(cfg)
 
-	db, err := sql.Open("duckdb", goldPath)
-	if err != nil {
-		t.Fatalf("open gold: %v", err)
-	}
-	if _, err := db.Exec(`
+	execGold(t, goldPath, `
         INSERT INTO symbol_resolutions (silver_source_id, lookup_kind, lookup_value,
                                         symbol, resolved_at, model_name)
-        VALUES ('schwab-test', 'name', 'Example Growth Fund', 'EXGF', 100, 'test-model')`); err != nil {
-		t.Fatalf("seed symbol store: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
+        VALUES ('schwab-test', 'name', 'Example Growth Fund', 'EXGF', 100, 'test-model')`)
 
 	so, se, code := run(t, "-c", cfg, "reload", "-a")
 	if code != 0 {

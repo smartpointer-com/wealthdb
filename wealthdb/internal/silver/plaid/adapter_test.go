@@ -197,27 +197,14 @@ func collectSnapshots(t *testing.T, conn silver.Connection) []canonical.Snapshot
 
 func collectTransactions(t *testing.T, conn silver.Connection) map[string]canonical.TransactionChange {
 	t.Helper()
-	stream, err := conn.Transactions(context.Background(), window(t, conn))
-	if err != nil {
-		t.Fatalf("Transactions: %v", err)
-	}
-	defer stream.Close()
 	out := map[string]canonical.TransactionChange{}
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatalf("Transactions Next: %v", err)
+	for _, tx := range silvertest.Transactions(t, conn, window(t, conn)) {
+		if _, dup := out[tx.TransactionExternalID]; dup {
+			t.Fatalf("transaction %s emitted twice", tx.TransactionExternalID)
 		}
-		for _, tx := range b.Transactions {
-			if _, dup := out[tx.TransactionExternalID]; dup {
-				t.Fatalf("transaction %s emitted twice", tx.TransactionExternalID)
-			}
-			out[tx.TransactionExternalID] = tx
-		}
-		if !more {
-			return out
-		}
+		out[tx.TransactionExternalID] = tx
 	}
+	return out
 }
 
 func dec(t *testing.T, s string) canonical.Decimal {

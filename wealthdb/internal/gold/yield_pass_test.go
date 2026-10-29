@@ -1,8 +1,6 @@
 package gold
 
 import (
-	"context"
-	"database/sql"
 	"slices"
 	"strconv"
 	"strings"
@@ -12,31 +10,6 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
-
-func execEach(t *testing.T, db *sql.DB, stmts ...string) {
-	t.Helper()
-	for _, q := range stmts {
-		if _, err := db.ExecContext(context.Background(), q); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
-}
-
-func scanStrings(t *testing.T, db *sql.DB, q string, args ...any) []string {
-	t.Helper()
-	var out []string
-	if err := scanAll(context.Background(), db, q, func(rows *sql.Rows) error {
-		var s string
-		if err := rows.Scan(&s); err != nil {
-			return err
-		}
-		out = append(out, s)
-		return nil
-	}, args...); err != nil {
-		t.Fatalf("%s: %v", q, err)
-	}
-	return out
-}
 
 // termsText is instrument_terms_at on a day, one line per instrument:
 // each field and its origin.

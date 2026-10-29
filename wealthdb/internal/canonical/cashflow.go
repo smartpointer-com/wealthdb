@@ -1,6 +1,9 @@
 package canonical
 
-import "sort"
+import (
+	"slices"
+	"sort"
+)
 
 // The cashflow vocabulary: the three-level hierarchy the statement
 // groups by, and the boundary that says which accounts are the
@@ -56,16 +59,25 @@ const (
 	SectionCash CashflowSection = "cash"
 )
 
-var cashflowSectionValues = map[CashflowSection]struct{}{
-	SectionOperatingIn: {}, SectionOperatingOut: {},
-	SectionInvesting: {}, SectionFinancing: {},
-	SectionVehicles: {}, SectionCash: {},
+// cashflowSectionValues are the sections in the order the reports
+// print them, so gold's cashflow_section_rank and the sections
+// cashflow_txn_nodes emits can be pinned to one list, as the classes
+// are.
+var cashflowSectionValues = []CashflowSection{
+	SectionOperatingIn, SectionOperatingOut,
+	SectionInvesting, SectionFinancing,
+	SectionVehicles, SectionCash,
 }
 
 // Valid reports whether the receiver is a recognised section.
 func (s CashflowSection) Valid() bool {
-	_, ok := cashflowSectionValues[s]
-	return ok
+	return slices.Contains(cashflowSectionValues, s)
+}
+
+// CashflowSections returns the sections in report order. A copy, for
+// the reason the taxonomy accessors hand one out.
+func CashflowSections() []CashflowSection {
+	return slices.Clone(cashflowSectionValues)
 }
 
 // CashflowClass is the middle level: the diagram's inner nodes. What
@@ -177,6 +189,7 @@ var cashflowClassValues = []CashflowClass{
 
 // CashflowClasses returns the classes cashflow invents, in report
 // order. A copy, for the reason the taxonomy accessors hand one out.
+// Tests read it to hold the SQL macros to this vocabulary.
 func CashflowClasses() []CashflowClass {
 	return append([]CashflowClass(nil), cashflowClassValues...)
 }
@@ -390,11 +403,10 @@ func ParseWrapperDestination(s string) (WrapperSide, CashflowClass, bool) {
 	return "", "", false
 }
 
-// VehicleTransferDetailed is the delta that stands for a crossing to a
-// vehicle whose far side the product does not hold, for each of the
-// pools a rule can place. It is the bridge between the wrapper boundary
-// and the taxonomy: a rule places the value, and the resolution reads
-// the value back as the class it names.
+// VehicleTransferDetailed is the delta that stands for a crossing to
+// each pool a rule can place, as the cashflow resolution's SQL CASE
+// reads it: the crossing to a vehicle whose far side the product does
+// not hold.
 //
 // The first four are the wrapper boundary's own. `deposits` is not a
 // wrapper — no tax treatment sends a crossing there — and it is here
@@ -402,12 +414,8 @@ func ParseWrapperDestination(s string) (WrapperSide, CashflowClass, bool) {
 // deposit product is a destination the collector cannot enumerate, so
 // the verdict is the only thing that can name it.
 //
-// Reported per class rather than as a lookup table so that a class
-// without a delta — `unpaired`, which no rule can place — is a
-// compile-time-visible absence rather than a missing map entry. The
-// cashflow resolution's SQL CASE restates the mapping, and
-// TestVehicleTransferDetailedMatchesTheResolution holds the two
-// together.
+// A test accessor: TestVehicleTransferDetailedMatchesTheResolution
+// holds the CASE to it.
 func VehicleTransferDetailed(c CashflowClass) (string, bool) {
 	switch c {
 	case ClassRetirement:

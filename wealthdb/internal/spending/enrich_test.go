@@ -57,6 +57,28 @@ func openGold(t *testing.T) (*sql.DB, context.Context) {
 	return db, ctx
 }
 
+// scanPairs is the two columns q reads, key and value, as a map.
+func scanPairs(t *testing.T, db *sql.DB, q string, args ...any) map[string]string {
+	t.Helper()
+	rows, err := db.QueryContext(context.Background(), q, args...)
+	if err != nil {
+		t.Fatalf("%s: %v", q, err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		out[k] = v
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("%s: %v", q, err)
+	}
+	return out
+}
+
 // txn is one seeded transaction. Amounts are floats for brevity; gold
 // stores them as DECIMAL(28,4) and the pass reads them back as doubles.
 type txn struct {

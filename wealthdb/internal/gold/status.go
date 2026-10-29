@@ -291,19 +291,16 @@ func spendDrift(ctx context.Context, db *sql.DB, s *SourceStatus) error {
 
 // cashflowDrift fills the cash flow statement's three canaries.
 //
-// Each reads the layered macros rather than restating their predicates,
-// so a change to what the pool holds or to what the resolution declines
+// Each reads the layered macros rather than restating their predicates
+// (the pool's span join is poolSpanJoin, shared with the plan), so a
+// change to what the pool holds or to what the resolution declines
 // moves the numbers with it. The first two join the pool: a vehicle's
 // own FX legs are not the household's, and counting them would make the
 // number permanently large and therefore unreadable.
 func cashflowDrift(ctx context.Context, db *sql.DB, s *SourceStatus) error {
 	if err := db.QueryRowContext(ctx, `
         SELECT COUNT(*)
-          FROM cashflow_txn_nodes(?, ?) n
-          JOIN cashflow_pool_spans() p
-                 ON p.silver_source_id    = n.silver_source_id
-                AND p.account_external_id = n.account_external_id
-                AND n.occurred_at >= p.from_at AND n.occurred_at < p.until_at
+          FROM cashflow_txn_nodes(?, ?) n`+poolSpanJoin+`
          WHERE n.silver_source_id = ? AND n.disposition = 'excluded'`,
 		int64(0), MaxEpoch, s.SilverSourceID,
 	).Scan(&s.CashflowExcludedByKindCount); err != nil {

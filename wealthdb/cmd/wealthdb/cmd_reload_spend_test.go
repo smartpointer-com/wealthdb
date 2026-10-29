@@ -12,12 +12,7 @@ import (
 // LLM categorisation pass would have left behind.
 func seedMerchantStore(t *testing.T, goldPath string) {
 	t.Helper()
-	db, err := sql.Open("duckdb", goldPath)
-	if err != nil {
-		t.Fatalf("open gold to seed merchant store: %v", err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`
+	execGold(t, goldPath, `
         INSERT INTO spend_merchant_categories (merchant_signature, merchant_name, spend_detailed,
                                                signature_version, assigned_at, model_name) VALUES
             ('sig-market', 'Corner Market', 'FOOD_AND_DRINK_GROCERIES', 1, 100, 'test-model');
@@ -26,9 +21,7 @@ func seedMerchantStore(t *testing.T, goldPath string) {
                                           merchant_signature, signature_version,
                                           spend_detailed, provenance, assigned_at) VALUES
             ('schwab-test', 'T1', 'sig-market', 1, NULL, 'signature-only', 100);
-    `); err != nil {
-		t.Fatalf("seed merchant store: %v", err)
-	}
+    `)
 }
 
 // readMerchantStore returns the row count of the merchant store and of
@@ -245,14 +238,7 @@ func TestSpendingPassRunsOnEveryLoadPath(t *testing.T) {
 // opens the live file read-write, so it never migrates it.
 func dropMerchantColumn(t *testing.T, goldPath, column string) {
 	t.Helper()
-	db, err := sql.Open("duckdb", goldPath)
-	if err != nil {
-		t.Fatalf("open gold to drop %s: %v", column, err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`ALTER TABLE spend_merchant_categories DROP COLUMN ` + column); err != nil {
-		t.Fatalf("drop %s from the merchant store: %v", column, err)
-	}
+	execGold(t, goldPath, `ALTER TABLE spend_merchant_categories DROP COLUMN `+column)
 }
 
 // TestReloadFreshNamesTheColumnTheLiveFileLacks covers the drift

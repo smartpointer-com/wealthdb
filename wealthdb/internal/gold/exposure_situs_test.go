@@ -14,6 +14,41 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
+// exposure_situs_quality counts every basis writeSitus writes, each
+// under its own name and in the rule's order: a basis the macro misses
+// would drop its share from the quality cell.
+func TestSitusQualityNamesEveryBasis(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	bases := []string{situsDeclared, situsUnderlying, situsISIN, situsDomicile, situsCustody, situsCountry, situsUnknown}
+	quality := func(bs ...string) string {
+		t.Helper()
+		values := strings.Repeat("(?), ", len(bs))
+		args := make([]any, len(bs))
+		for i, b := range bs {
+			args[i] = b
+		}
+		var q string
+		if err := db.QueryRowContext(ctx, `SELECT exposure_situs_quality(b, 1) FROM (VALUES `+
+			strings.TrimSuffix(values, ", ")+`) t(b)`, args...).Scan(&q); err != nil {
+			t.Fatal(err)
+		}
+		return q
+	}
+	var want []string
+	for _, b := range bases {
+		if got := quality(b); got != b+"=100%" {
+			t.Errorf("basis %s reads %q, want %s=100%%", b, got, b)
+		}
+		want = append(want, b+"=14%")
+	}
+	reversed := slices.Clone(bases)
+	slices.Reverse(reversed)
+	if got := quality(reversed...); got != strings.Join(want, ",") {
+		t.Errorf("every basis reads %q, want %q", got, strings.Join(want, ","))
+	}
+}
+
 // The rule takes the first basis that applies, in the order of
 // docs/EXPOSURE.md §13.
 func TestSitusRuleOrder(t *testing.T) {
@@ -131,25 +166,19 @@ func TestCompositionSpans(t *testing.T) {
 func TestExposureSitusDatesThePrivateFact(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
-	ex := func(q string, args ...any) {
-		t.Helper()
-		if _, err := db.ExecContext(ctx, q, args...); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
 	aug, oct := exDay(8, 1), exDay(10, 1)
 	// QPSF holds a parsed composition from 1 August to 1 October; QPSP a
 	// provider's of 1 August, which reaches max_gap_days (400) either side.
 	isin := map[string]string{"QPSF": "XX00000000S1", "QPSP": "XX00000000S2"}
 	for _, f := range []struct{ id, name string }{{"QPSF", "Example Situs Feeder"}, {"QPSP", "Example Situs Fund"}} {
-		ex(`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, name, currency,
+		mustExec(t, db, `INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, name, currency,
 		    first_seen_at, last_seen_at) VALUES ('test-src', ?, 'private_equity', 'fund', ?, ?, 'USD', 0, 0)`,
 			f.id, isin[f.id], f.name)
-		ex(`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		mustExec(t, db, `INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
 		    asset_class, vehicle, currency, quantity, market_value) VALUES ('test-src', ?, 'A1', ?, ?, 'private_equity',
 		    'fund', 'USD', 1, 100)`, exSnap, f.id, f.id)
 	}
-	ex(`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency, origin,
+	mustExec(t, db, `INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency, origin,
 	    valid_until) VALUES ('test-src', 'isin:XX00000000S1', ?, 'holdings', 'ubs-report', 0, 'USD', 'parsed', ?),
 	    ('test-src', 'isin:XX00000000S2', ?, 'holdings', 'testprov', 0, 'USD', 'provider', NULL)`, aug, oct, aug)
 	rows := exposureFixtureRows()
@@ -197,20 +226,14 @@ func TestExposureSitusDatesThePrivateFact(t *testing.T) {
 func TestExposureSitusYieldsALedgerRecordThatBeatsAComposition(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
-	ex := func(q string, args ...any) {
-		t.Helper()
-		if _, err := db.ExecContext(ctx, q, args...); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
 	aug, sep, oct := exDay(8, 1), exDay(9, 1), exDay(10, 1)
-	ex(`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, name, currency,
+	mustExec(t, db, `INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, name, currency,
 	    first_seen_at, last_seen_at) VALUES ('test-src', 'QPSL', 'private_equity', 'fund', 'XX00000000S3',
 	    'Example Ledger Feeder', 'USD', 0, 0)`)
-	ex(`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+	mustExec(t, db, `INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
 	    asset_class, vehicle, currency, quantity, market_value) VALUES ('test-src', ?, 'A1', 'QPSL', 'QPSL',
 	    'private_equity', 'fund', 'USD', 1, 100)`, exSnap)
-	ex(`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency, origin,
+	mustExec(t, db, `INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency, origin,
 	    valid_until) VALUES ('test-src', 'isin:XX00000000S3', ?, 'holdings', 'ubs-report', 0, 'USD', 'parsed', ?)`, aug, oct)
 	rows := exposureFixtureRows()
 	rows.Declarations = append(rows.Declarations, declaration(3, "QPSL", &sep, split{"country", []string{"CH"}, []float64{100}}))
@@ -306,12 +329,6 @@ func TestLedgerSpansCutAParsedComposition(t *testing.T) {
 //	HOUSE  its one declared country, Switzerland
 func seedSitus(t *testing.T, db *sql.DB, ctx context.Context) {
 	t.Helper()
-	ex := func(q string, args ...any) {
-		t.Helper()
-		if _, err := db.ExecContext(ctx, q, args...); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
 	may := exDay(5, 31)
 	for _, i := range []struct{ id, class, vehicle, isin, cusip, name, ccy string }{
 		{"QADR", "public_equity", "stock", "US00000QADR1", "", "Example Holdings Sponsored ADR", "USD"},
@@ -322,33 +339,33 @@ func seedSitus(t *testing.T, db *sql.DB, ctx context.Context) {
 		{"QEUB", "fixed_income", "bond", "EU00000QEUB2", "", "Example Union Bond 2030", "EUR"},
 		{"QCSP", "public_equity", "stock", "", "00000Q105", "Example Cusip Corp", "USD"},
 	} {
-		ex(`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, cusip, name, currency,
+		mustExec(t, db, `INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, cusip, name, currency,
 		    first_seen_at, last_seen_at) VALUES ('test-src', ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, 0, 0)`,
 			i.id, i.class, i.vehicle, i.isin, i.cusip, i.name, i.ccy)
-		ex(`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		mustExec(t, db, `INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
 		    asset_class, vehicle, currency, quantity, market_value) VALUES ('test-src', ?, 'A1', ?, ?, ?, ?, ?, 1, 40)`,
 			exSnap, i.id, i.id, i.class, i.vehicle, i.ccy)
 	}
-	ex(`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count)
+	mustExec(t, db, `INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count)
 	    VALUES ('test-src', 'symbol:QREF', ?, 'holdings', 'testprov', 1)`, may)
-	ex(`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
+	mustExec(t, db, `INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
 	    weight, currency, country, sector) VALUES ('test-src', 'symbol:QREF', ?, 'holdings', 1, 'isin:NL00000SHAR7',
 	    'NL00000SHAR7', 'Example Holdings NV', 'Equity', 100, 'EUR', 'Netherlands', 'Industrials')`, may)
-	ex(`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
+	mustExec(t, db, `INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
 	    VALUES ('test-src', 'isin:US00000QADR1', 'issuer_isins', ?, 'gleif', 'NL00000SHAR7'),
 	           ('test-src', 'cusip:00000Q105', 'incorporation', ?, 'sec-edgar', 'DE')`, may, may)
-	ex(`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, name, currency,
+	mustExec(t, db, `INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, name, currency,
 	    first_seen_at, last_seen_at) VALUES ('test-src', 'QNPF', 'public_equity', 'fund', 'QNPF', 'Example Registered Fund',
 	    'USD', 0, 0)`)
-	ex(`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+	mustExec(t, db, `INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
 	    asset_class, vehicle, currency, quantity, market_value) VALUES ('test-src', ?, 'A1', 'QNPF', 'QNPF', 'public_equity',
 	    'fund', 'USD', 1, 40)`, exSnap)
-	ex(`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count)
+	mustExec(t, db, `INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count)
 	    VALUES ('test-src', 'symbol:QNPF', ?, 'holdings', 'sec-nport', 1)`, may)
-	ex(`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
+	mustExec(t, db, `INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, name, asset_type,
 	    weight, currency) VALUES ('test-src', 'symbol:QNPF', ?, 'holdings', 1, 'isin:XX0000000001', 'XX0000000001',
 	    'Stock A', 'Equity', 100, 'USD')`, may)
-	ex(`INSERT INTO fund_attributes (silver_source_id, fund_ref, as_of, domicile)
+	mustExec(t, db, `INSERT INTO fund_attributes (silver_source_id, fund_ref, as_of, domicile)
 	    VALUES ('test-src', 'symbol:GAPF', ?, 'IE'), ('test-src', 'symbol:FUNDX', ?, 'US')`, may, may)
 	rows := exposureFixtureRows()
 	rows.Custody = []canonical.ExposureCustody{{SilverSourceID: "test-src", Custodian: "Example Bank", Country: "CH"}}

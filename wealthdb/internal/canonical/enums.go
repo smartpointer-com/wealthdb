@@ -4,6 +4,8 @@
 // docs/DESIGN.md §7.2 for the SQL-side definitions.
 package canonical
 
+import "slices"
+
 // AssetClass is the exposure dimension of the instrument taxonomy —
 // what moves a holding's value. The recognised exposure values and
 // the Valid method live in taxonomy.go (docs/TAXONOMY.md §2).
@@ -179,6 +181,15 @@ var accountKindValues = map[AccountKind]struct{}{
 func (a AccountKind) Valid() bool {
 	_, ok := accountKindValues[a]
 	return ok
+}
+
+// FollowsSource reports whether an account of the kind keeps the kind
+// its adapter states, whatever an override says: an adapter signs a
+// card's balance and books a mortgage's principal by its own kind, so a
+// restated liability would read a debt as an asset, and an overlay is
+// synthetic.
+func (a AccountKind) FollowsSource() bool {
+	return a == AccountKindCard || a == AccountKindMortgage || a == AccountKindOverlay
 }
 
 // TaxWrapper discriminates `accounts.tax_wrapper` — the tax /
@@ -363,6 +374,17 @@ var txKindValues = map[TxKind]struct{}{
 func (t TxKind) Valid() bool {
 	_, ok := txKindValues[t]
 	return ok
+}
+
+// TxKinds returns every kind, sorted, so a test walking them meets a
+// new kind with no edit.
+func TxKinds() []TxKind {
+	out := make([]TxKind, 0, len(txKindValues))
+	for k := range txKindValues {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // BalanceKind discriminates `cash_balances.balance_kind`. The union

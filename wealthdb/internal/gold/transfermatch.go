@@ -164,7 +164,7 @@ type TransferMatchOpts struct {
 	// WindowDays is the maximum |day distance| between the two legs.
 	WindowDays int
 	// TolerancePct is the permitted amount gap as a percent of the larger
-	// leg, floored at transferMatchMinEps absolute — so 0 means
+	// leg, floored at TransferMatchMinEps absolute — so 0 means
 	// exact-to-a-cent, and the returns default of 0.5 covers a wire fee
 	// deducted in transit.
 	TolerancePct float64
@@ -243,10 +243,11 @@ const (
 	MatchedByConversion TransferMatchPhase = "converted"
 )
 
-// transferMatchMinEps is the absolute floor on the amount tolerance, in
+// TransferMatchMinEps is the absolute floor on the amount tolerance, in
 // currency units: a cent of rounding slack, so TolerancePct=0 still matches
-// legs that agree to the cent.
-const transferMatchMinEps = 0.01
+// legs that agree to the cent. A spending pin's amount reads with the same
+// floor.
+const TransferMatchMinEps = 0.01
 
 // DefaultTransferFeeCap bounds the amount tolerance in absolute currency
 // units (TransferMatchOpts.ToleranceMaxAbs): the largest flat fee a rail
@@ -577,7 +578,7 @@ func (b banded) greedy(debits []TransferLeg) ([]TransferMatchPair, []TransferLeg
 // percentage of the larger leg, floored at a cent and capped at the
 // absolute maximum.
 func (b banded) tolerance(d, c TransferLeg) float64 {
-	eps := transferMatchMinEps
+	eps := TransferMatchMinEps
 	if r := b.opts.TolerancePct / 100 * math.Max(math.Abs(d.Amt), c.Amt); r > eps {
 		eps = r
 	}

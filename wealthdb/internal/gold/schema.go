@@ -25,7 +25,7 @@ var migrationsFS embed.FS
 //
 // REPLAY. Nothing at runtime replays a migration: the go-duckdb
 // driver executes each statement of a multi-statement Exec exactly
-// once (verified against duckdb/duckdb-go/v2 v2.10505.0), a version
+// once (TestMultiStatementExecRunsEachOnce holds that), a version
 // at-or-below schema_meta is skipped above, and a file that fails
 // rolls back whole. Additive migrations are nevertheless written
 // replay-safe — IF NOT EXISTS on DDL, OR REPLACE on a seed or a macro
@@ -42,8 +42,9 @@ var migrationsFS embed.FS
 // and one a later migration drops is back at all: the tests' rerun
 // replays every such later migration after it.
 //
-// The CHECK-widening rename-swap migrations (0007-0011, 0013-0018,
-// 0033-0037, 0053, 0107, 0109, 0125) are exempt and deliberately carry no rerun
+// The CHECK-widening rename-swap migrations, each of which renames its
+// table to <table>_pre_NNNN (0007-0011, 0013-0018, 0033-0037, 0053,
+// 0107, 0109, 0125, 0139), are exempt and deliberately carry no rerun
 // test: replaying one rebuilds its table from that migration's own
 // column list, which would drop columns later migrations added, so a
 // rerun test there would commit a truncated table.
@@ -177,8 +178,7 @@ func parseMigrationVersion(name string) (int, error) {
 }
 
 // applyMigration executes one migration inside a transaction.
-// DuckDB supports multi-statement Exec, so we don't have to split
-// on `;` ourselves.
+// DuckDB runs a multi-statement Exec, so the file is not split on `;`.
 func applyMigration(ctx context.Context, db *sql.DB, m migration) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

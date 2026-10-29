@@ -279,6 +279,7 @@ const returnsGainsQualityHelp = `The returns quality column gives the reason for
 - pre_fx_history: part of the window lies before the exchange-rate history begins.
 - flows_before_inception: money moved before the date the measurement starts; it counts in no window.
 - after_tax: the return is net of the fees and taxes paid.
+- no_engine_row: (view=stated) the engine has no monthly row for a month of the stated period; the account's own tags follow.
 Other tags name their reason the same way.
 
 The gains quality column names each way a figure can be incomplete:

@@ -98,7 +98,8 @@ const (
 
 // header returns the column's display label — Header if set,
 // else Name. Used so registries can carry a stable lookup name
-// while rendering a -x/--currency-suffixed header.
+// while rendering a currency-suffixed header such as
+// `total_value_USD`.
 func (c columnSpec[T]) header() string {
 	if c.Header != "" {
 		return c.Header
@@ -647,6 +648,11 @@ func datePtrCol[T any](name string, get func(T) *int64) columnSpec[T] {
 // formatDate is an epoch second's UTC date.
 func formatDate(epoch int64) string {
 	return time.Unix(epoch, 0).UTC().Format("2006-01-02")
+}
+
+// formatEpochDay renders a day number (days since the epoch) as a date.
+func formatEpochDay(day int64) string {
+	return formatDate(day * gold.SecondsPerDay)
 }
 
 // pctCol is a figure already in percent, named name and printed

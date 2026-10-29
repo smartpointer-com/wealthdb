@@ -58,7 +58,7 @@ type StatedPeriodRow struct {
 func ReconcileStatedPeriods(ctx context.Context, db *sql.DB, p ReturnParams) ([]StatedPeriodRow, error) {
 	to := p.ToEpoch
 	if to <= 0 {
-		to = 1<<62 - 1
+		to = MaxEpoch
 	}
 	rows, err := db.QueryContext(ctx, `
 SELECT s.silver_source_id, s.account_external_id, COALESCE(a.display_name, s.account_external_id),
@@ -162,7 +162,7 @@ SELECT s.silver_source_id, s.account_external_id, COALESCE(a.display_name, s.acc
 func statedPeriodLabel(start, end int64) string {
 	s, e := time.Unix(start, 0).UTC(), time.Unix(end, 0).UTC()
 	if s.Year() == e.Year() && s.Month() == e.Month() {
-		return e.Format("2006-01")
+		return e.Format(monthLabelLayout)
 	}
 	return s.Format("2006-01-02") + ".." + e.Format("2006-01-02")
 }
@@ -171,11 +171,11 @@ func statedPeriodLabel(start, end int64) string {
 // month of firstDay through the month of lastDay, epoch days.
 func monthsOf(firstDay, lastDay int64) []string {
 	var out []string
-	t := time.Unix(firstDay*86400, 0).UTC()
+	t := time.Unix(firstDay*SecondsPerDay, 0).UTC()
 	t = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
-	end := time.Unix(lastDay*86400, 0).UTC()
+	end := time.Unix(lastDay*SecondsPerDay, 0).UTC()
 	for !t.After(end) {
-		out = append(out, t.Format("2006-01"))
+		out = append(out, t.Format(monthLabelLayout))
 		t = t.AddDate(0, 1, 0)
 	}
 	return out

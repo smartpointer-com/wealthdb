@@ -133,6 +133,7 @@ func hostSideCommand(name string) (commandHelp, bool) {
 
 // hiddenSubcommands are registered (so they're callable) but omitted
 // from the usage listing — internal plumbing, not user-facing.
+// TestUsageListsEverySubcommand holds commandHelps to that.
 // `web-config` and `mcp-config` emit resolved settings for the
 // host-side `wealthdb web` and `wealthdb mcp` wrappers;
 // `web-materialize` rewrites the serving tables and the report tables

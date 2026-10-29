@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // The cost an MT535 holding states, as the collector promotes it. Every
@@ -48,22 +49,10 @@ func psnHoldingPositions(t *testing.T, withCost bool, seed string) map[string]ca
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream, err := conn.Snapshots(ctx, w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 	got := map[string]canonical.PositionChange{}
-	for {
-		batch, more, err := stream.Next(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, batch := range silvertest.Snapshots(t, conn, w) {
 		for _, p := range batch.Positions {
 			got[p.PositionKey] = p
-		}
-		if !more {
-			break
 		}
 	}
 	return got

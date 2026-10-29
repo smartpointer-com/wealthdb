@@ -425,6 +425,39 @@ func TestEveryCarriedFilterHasAColumn(t *testing.T) {
 	}
 }
 
+// TestEveryViewsPrincipalIsAColumn holds each family's principal to its
+// registries: for every view, the column "value" sorts by is one the
+// view has, or a sort by "-value" ends in an unknown column. Each
+// method of a view counts, since returns' principal follows it.
+func TestEveryViewsPrincipalIsAColumn(t *testing.T) {
+	t.Parallel()
+	s := newTestMCP("", false)
+	for _, tool := range s.tools() {
+		fam := tool.family
+		if fam == nil || fam.principal == nil {
+			continue
+		}
+		views := fam.views
+		if views == nil {
+			views = []string{""}
+		}
+		for _, v := range views {
+			for _, method := range []string{"both", "twr", "mwr"} {
+				req := request{view: v, currency: "USD", period: "total", level: "primary", method: method,
+					annualize: "auto", inception: "full", netting: true, investing: "whole"}
+				principal := fam.principal(req)
+				if principal == "" {
+					continue
+				}
+				rep := fam.build(nil, req, &toolArgs{values: map[string]any{}})
+				if (columnLookup{cols: rep.columns}).byName(principal) < 0 {
+					t.Errorf("%s %s (method %s): principal %q is none of the view's columns", tool.name, v, method, principal)
+				}
+			}
+		}
+	}
+}
+
 func TestThousands(t *testing.T) {
 	t.Parallel()
 	for n, want := range map[int]string{0: "0", 999: "999", 1000: "1,000", 1532: "1,532", 1234567: "1,234,567", -1000: "-1,000"} {

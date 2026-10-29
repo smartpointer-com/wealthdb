@@ -71,6 +71,17 @@ func TestAccountKindValid(t *testing.T) {
 	}
 }
 
+// A card, a mortgage and an overlay keep their source's kind; every
+// other kind an override may restate.
+func TestAccountKindFollowsSource(t *testing.T) {
+	for k := range accountKindValues {
+		want := k == AccountKindCard || k == AccountKindMortgage || k == AccountKindOverlay
+		if got := k.FollowsSource(); got != want {
+			t.Errorf("AccountKind(%q).FollowsSource() = %v, want %v", k, got, want)
+		}
+	}
+}
+
 func TestTxKindValid(t *testing.T) {
 	cases := []struct {
 		v    TxKind

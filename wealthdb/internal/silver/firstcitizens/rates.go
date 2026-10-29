@@ -2,6 +2,7 @@ package firstcitizens
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -40,13 +41,8 @@ func (c *Connection) applyStatementRates(ctx context.Context, batch *canonical.S
 			closings[cb.AccountExternalID] = append(closings[cb.AccountExternalID], i)
 		}
 	}
-	rows, err := c.db.QueryContext(ctx, `SELECT account_external_id, period_start, period_end, interest_rate
-  FROM `+statementRatesTable+` ORDER BY account_external_id, period_end`)
-	if err != nil {
-		return fmt.Errorf("firstcitizens statement rates: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	err = silver.ScanRows(ctx, c.db, `SELECT account_external_id, period_start, period_end, interest_rate
+  FROM `+statementRatesTable+` ORDER BY account_external_id, period_end`, func(rows *sql.Rows) error {
 		var (
 			acct       string
 			start, end int64
@@ -66,13 +62,16 @@ func (c *Connection) applyStatementRates(ctx context.Context, batch *canonical.S
 			}
 		}
 		if at < 0 {
-			continue
+			return nil
 		}
 		cb := &batch.CashBalances[at]
 		day := time.Unix(end, 0).UTC().Format(time.DateOnly)
-		if cb.Payload, err = silver.WithCreditRate(cb.Payload, rate, day); err != nil {
-			return fmt.Errorf("firstcitizens statement rates: %w", err)
-		}
+		payload, err := silver.WithCreditRate(cb.Payload, rate, day)
+		cb.Payload = payload
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("firstcitizens statement rates: %w", err)
 	}
-	return rows.Err()
+	return nil
 }

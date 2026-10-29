@@ -164,6 +164,12 @@ func TestReconcileStatedPeriods(t *testing.T) {
 	if q.Period != "2024-02-01..2024-03-31" || get(q.NetFlow) != "500.00" || get(q.FlowGap) != "50.00" || get(q.StartValue) != "1000.00" {
 		t.Errorf("two-month period: %s net %s gap %s start %s", q.Period, get(q.NetFlow), get(q.FlowGap), get(q.StartValue))
 	}
+
+	// 0159 replays over the stamped table and keeps its rows.
+	rerunMigrationDDL(t, db, ctx, "0159_stated_periods.sql")
+	if again, err := ReconcileStatedPeriods(ctx, db, p); err != nil || len(again) != len(rows) {
+		t.Errorf("after replaying 0159: %d rows (%v), want %d", len(again), err, len(rows))
+	}
 }
 
 // sumDecimals is nil when any figure is missing or does not parse, and

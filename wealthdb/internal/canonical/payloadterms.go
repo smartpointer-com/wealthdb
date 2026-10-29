@@ -109,7 +109,13 @@ func readStatedDate(s string) (time.Time, bool) {
 // readStatedPercent reads a rate a source states in percent: 4.25 or
 // 4.25%.
 func readStatedPercent(s string) (float64, bool) {
-	v, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "%")), 64)
+	return readStatedNumber(strings.TrimSuffix(strings.TrimSpace(s), "%"))
+}
+
+// readStatedNumber reads a finite number from its text, space around it
+// ignored.
+func readStatedNumber(s string) (float64, bool) {
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
 	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
 		return 0, false
 	}

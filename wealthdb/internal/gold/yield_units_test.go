@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
@@ -429,14 +428,7 @@ func TestADividendIsPaidOnWhatItsAccountHeld(t *testing.T) {
 		    currency, net_amount, instrument_external_id, quantity) VALUES `+strings.Join(txns, ", "),
 		`INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id, payer_signature,
 		    signature_version, income_detailed, provenance, assigned_at) VALUES `+strings.Join(kinds, ", "))
-	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{
-		Settings: canonical.ExposureSettings{MaxGapDays: canonical.DefaultMaxGapDays, AgedDays: 35, PartialPct: 3},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	rebuildExposureWithDefaults(t, db, ctx)
 	if _, err := RebuildYield(ctx, db); err != nil {
 		t.Fatal(err)
 	}

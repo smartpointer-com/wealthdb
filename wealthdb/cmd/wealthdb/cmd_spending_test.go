@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -392,12 +391,7 @@ func setupSpendingGold(t *testing.T) string {
 		t.Fatalf("close gold: %v", err)
 	}
 
-	cfg := filepath.Join(dir, "wealthdb.cfg")
-	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD", "silver_sources": []}`, goldPath)
-	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
-		t.Fatalf("write cfg: %v", err)
-	}
-	return cfg
+	return writeGoldCfg(t, goldPath)
 }
 
 // nameSpendingSignature adds a store verdict for a signature
@@ -408,7 +402,7 @@ func setupSpendingGold(t *testing.T) string {
 // fixture's gold file sits beside its cfg.
 func nameSpendingSignature(t *testing.T, cfg, signature, name, detailed string) {
 	t.Helper()
-	db, err := gold.Open(filepath.Join(filepath.Dir(cfg), "wealthdb.db"), gold.ModeReadWrite)
+	db, err := gold.Open(goldPathFromCfg(cfg), gold.ModeReadWrite)
 	if err != nil {
 		t.Fatalf("open gold: %v", err)
 	}

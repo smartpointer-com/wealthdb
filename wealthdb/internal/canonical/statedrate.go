@@ -3,9 +3,7 @@ package canonical
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -67,10 +65,11 @@ type StatedTier struct {
 // above: the conditions in PayloadInterestConditions, else the one the
 // payload's own keys state. A condition reads its tiers, else its flat
 // rate. A rate is a number or its text (0.75 or 0.75%); a tier's limit a
-// number or its text, with no %. A null value is not stated. A condition whose rate, tier, side or day does not
-// read states nothing, so a misread value never stands for a rate. Of
-// two conditions of one side and day, the first holds: a payload states
-// one schedule per side and day.
+// number or its text, with no %. A null value is not stated. A
+// condition whose rate, tier, side or day does not read states nothing,
+// so a misread value never stands for a rate. Of two conditions of one
+// side and day, the first holds: a payload states one schedule per side
+// and day.
 func ReadStatedRates(payload []byte) []StatedRate {
 	var top map[string]json.RawMessage
 	if len(payload) == 0 || json.Unmarshal(payload, &top) != nil {
@@ -237,9 +236,5 @@ func jsonNumber(raw json.RawMessage) (float64, bool) {
 	if !ok {
 		return 0, false
 	}
-	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
-	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
-		return 0, false
-	}
-	return v, true
+	return readStatedNumber(s)
 }

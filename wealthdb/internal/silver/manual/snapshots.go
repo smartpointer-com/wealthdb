@@ -21,7 +21,7 @@ const defaultAccountKey = "manual"
 // and a valuation per (position, as_of_date); gold's as-of query, by contrast,
 // takes each account's latest snapshot and reads ALL its positions. So for
 // every event date — any date a position is acquired, re-valued, or closed —
-// we emit a COMPLETE forward-filled snapshot: every position live at that date
+// the stream carries a COMPLETE forward-filled snapshot: every position live at that date
 // (acquired_at ≤ date < closed_at), each marked at its latest valuation
 // on/before the date. A closed position drops out exactly at its closed_at;
 // a complete portfolio exists at every date so historical as-of queries work.

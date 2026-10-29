@@ -142,40 +142,6 @@ func openConn(t *testing.T, path string) silver.Connection {
 	return silvertest.Open(t, &Adapter{}, path)
 }
 
-// snapshots drains the snapshot stream into one batch.
-func snapshots(t *testing.T, conn silver.Connection, w canonical.Window) canonical.SnapshotBatch {
-	t.Helper()
-	var all canonical.SnapshotBatch
-	for _, b := range silvertest.Snapshots(t, conn, w) {
-		all.Accounts = append(all.Accounts, b.Accounts...)
-		all.CashBalances = append(all.CashBalances, b.CashBalances...)
-		all.Positions = append(all.Positions, b.Positions...)
-	}
-	return all
-}
-
-// transactions drains the transaction stream.
-func transactions(t *testing.T, conn silver.Connection, w canonical.Window) []canonical.TransactionChange {
-	t.Helper()
-	ctx := context.Background()
-	stream, err := conn.Transactions(ctx, w)
-	if err != nil {
-		t.Fatalf("Transactions: %v", err)
-	}
-	defer stream.Close()
-	var out []canonical.TransactionChange
-	for {
-		b, more, err := stream.Next(ctx)
-		if err != nil {
-			t.Fatalf("Transactions Next: %v", err)
-		}
-		out = append(out, b.Transactions...)
-		if !more {
-			return out
-		}
-	}
-}
-
 func TestKind(t *testing.T) {
 	if (&Adapter{}).Kind() != "amex" {
 		t.Fatalf("Kind = %q", (&Adapter{}).Kind())
@@ -234,7 +200,7 @@ func TestAccountIsACardLiability(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
 	conn := openConn(t, path)
-	batch := snapshots(t, conn, silvertest.FullWindow(t, conn))
+	batch := silvertest.Merged(t, conn, silvertest.FullWindow(t, conn))
 
 	if len(batch.Accounts) != 2 {
 		t.Fatalf("accounts = %d, want one per card", len(batch.Accounts))
@@ -265,7 +231,7 @@ func TestBalancesAreNegatedExactlyOnce(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
 	conn := openConn(t, path)
-	batch := snapshots(t, conn, silvertest.FullWindow(t, conn))
+	batch := silvertest.Merged(t, conn, silvertest.FullWindow(t, conn))
 
 	type mark struct {
 		id   string
@@ -323,7 +289,7 @@ func TestCurrentIsStampedAtTheSourcesLatestSnapshot(t *testing.T) {
 
 	conn := openConn(t, path)
 	current := map[string]int64{}
-	for _, b := range snapshots(t, conn, silvertest.FullWindow(t, conn)).CashBalances {
+	for _, b := range silvertest.Merged(t, conn, silvertest.FullWindow(t, conn)).CashBalances {
 		if b.BalanceKind == canonical.BalanceKindCurrent {
 			current[b.AccountExternalID] = b.SnapshotAt
 		}
@@ -343,7 +309,7 @@ func TestTransactionKinds(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
 	conn := openConn(t, path)
-	txs := transactions(t, conn, silvertest.FullWindow(t, conn))
+	txs := silvertest.Transactions(t, conn, silvertest.FullWindow(t, conn))
 
 	byID := map[string]canonical.TransactionChange{}
 	for _, tx := range txs {
@@ -412,7 +378,7 @@ func TestStatementEraKindsComeFromTheSection(t *testing.T) {
 	}
 	conn := openConn(t, path)
 	got := map[string]canonical.TxKind{}
-	for _, tx := range transactions(t, conn, silvertest.FullWindow(t, conn)) {
+	for _, tx := range silvertest.Transactions(t, conn, silvertest.FullWindow(t, conn)) {
 		got[tx.TransactionExternalID] = tx.Kind
 	}
 	for _, r := range rows {
@@ -426,7 +392,7 @@ func TestProviderCategoryAndMerchantAreCarriedVerbatim(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
 	conn := openConn(t, path)
-	txs := transactions(t, conn, silvertest.FullWindow(t, conn))
+	txs := silvertest.Transactions(t, conn, silvertest.FullWindow(t, conn))
 
 	for _, tx := range txs {
 		if tx.TransactionExternalID != "100000000000000001" {
@@ -448,7 +414,7 @@ func TestPendingAndChargeDateRideInThePayload(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
 	conn := openConn(t, path)
-	txs := transactions(t, conn, silvertest.FullWindow(t, conn))
+	txs := silvertest.Transactions(t, conn, silvertest.FullWindow(t, conn))
 
 	payloadOf := func(id string) map[string]any {
 		t.Helper()
@@ -501,7 +467,7 @@ func TestAnUnknownDirectionFallsBackWithoutLosingTheRow(t *testing.T) {
 
 	conn := openConn(t, path)
 	byID := map[string]canonical.TransactionChange{}
-	for _, tx := range transactions(t, conn, silvertest.FullWindow(t, conn)) {
+	for _, tx := range silvertest.Transactions(t, conn, silvertest.FullWindow(t, conn)) {
 		byID[tx.TransactionExternalID] = tx
 	}
 	for _, tc := range []struct {
@@ -538,10 +504,10 @@ func TestEmptyWindowEmitsNothing(t *testing.T) {
 	seed(t, db)
 	conn := openConn(t, path)
 	empty := canonical.Window{}
-	if b := snapshots(t, conn, empty); len(b.Accounts) != 0 || len(b.CashBalances) != 0 {
+	if b := silvertest.Merged(t, conn, empty); len(b.Accounts) != 0 || len(b.CashBalances) != 0 {
 		t.Errorf("snapshots on an empty window = %+v", b)
 	}
-	if txs := transactions(t, conn, empty); len(txs) != 0 {
+	if txs := silvertest.Transactions(t, conn, empty); len(txs) != 0 {
 		t.Errorf("transactions on an empty window = %d", len(txs))
 	}
 }

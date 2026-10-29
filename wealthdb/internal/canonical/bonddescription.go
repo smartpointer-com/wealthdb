@@ -104,8 +104,8 @@ func ReadsMunicipal(name string) bool {
 }
 
 // HasCompanyForm reports whether a name carries a legal form only a
-// company has (INC, LLC, PLC): LegalForms less those a municipal issuer
-// may share.
+// company has (INC, LLC, PLC): companyWords, which is LegalForms less
+// those a municipal issuer may share and less AB.
 func HasCompanyForm(name string) bool {
 	return countIn(letterWords(plainDescription(name)), companyWords) > 0
 }

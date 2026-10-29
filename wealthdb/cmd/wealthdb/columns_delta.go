@@ -2,13 +2,12 @@ package main
 
 import "strings"
 
-// splitFusedColumnsFlag rewrites argv tokens of the form
-// `-C+foo,bar-baz` or `--columns-baz` into two tokens (`-C`,
-// `+foo,bar-baz`) so Go's stdlib flag package can parse them.
-// Without this, `-C+foo` is read as a flag literally named
-// `C+foo`. The `=` form (`-C=+foo`, `--columns=+foo`) and the
-// space form (`-C +foo`) are already handled by the stdlib, so
-// we leave them alone.
+// splitFusedColumnsFlag rewrites a fused `-C+foo,bar-baz` into
+// `-C`, `+foo,bar-baz`, and `--columns-baz` into `--columns`,
+// `-baz`, so Go's stdlib flag package can parse them. Without
+// this, `-C+foo` is read as a flag literally named `C+foo`. The
+// `=` form (`-C=+foo`, `--columns=+foo`) and the space form
+// (`-C +foo`) already parse and pass through unchanged.
 func splitFusedColumnsFlag(args []string) []string {
 	out := make([]string, 0, len(args))
 	for _, a := range args {

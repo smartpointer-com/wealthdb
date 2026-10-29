@@ -48,7 +48,7 @@ func TestWebMaterializeCLIEndToEnd(t *testing.T) {
 		t.Errorf("second run should skip, stderr=%s", se2)
 	}
 
-	goldPath := filepath.Join(filepath.Dir(cfg), "wealthdb.db")
+	goldPath := goldPathFromCfg(cfg)
 	db, err := gold.Open(goldPath, gold.ModeReadOnly)
 	if err != nil {
 		t.Fatalf("open gold: %v", err)
@@ -134,13 +134,7 @@ func TestWebMaterializeRequiresWritableGold(t *testing.T) {
 
 func TestWebMaterializeMissingDB(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	cfg := filepath.Join(dir, "wealthdb.cfg")
-	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD", "silver_sources": []}`,
-		filepath.Join(dir, "missing.db"))
-	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	cfg := writeGoldCfg(t, filepath.Join(t.TempDir(), "missing.db"))
 	_, se, code := run(t, "-c", cfg, "web-materialize")
 	if code != 3 {
 		t.Errorf("exit=%d, want 3 (missing DB)", code)
@@ -193,7 +187,7 @@ func TestWebMaterializeRerunsAfterALedgerEdit(t *testing.T) {
 	ledger := filepath.Join(dir, "transfer-overrides.csv")
 	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD", "silver_sources": [],
  "returns_transfer_matching": {"enabled": true},
- "spending": {"transfer_overrides": %q}}`, filepath.Join(dir, "wealthdb.db"), ledger)
+ "spending": {"transfer_overrides": %q}}`, goldPathFromCfg(cfg), ledger)
 	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +215,7 @@ func TestWebMaterializeRerunsAfterALedgerEdit(t *testing.T) {
 func TestWebMaterializeWithAMigrationPending(t *testing.T) {
 	t.Parallel()
 	cfg := setupReturnsGold(t)
-	db, err := gold.Open(filepath.Join(filepath.Dir(cfg), "wealthdb.db"), gold.ModeReadWrite)
+	db, err := gold.Open(goldPathFromCfg(cfg), gold.ModeReadWrite)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +236,7 @@ func TestWebMaterializeWithAMigrationPending(t *testing.T) {
 func TestWebMaterializeAfterARunThatFailedPartway(t *testing.T) {
 	t.Parallel()
 	cfg := setupReturnsGold(t)
-	goldPath := filepath.Join(filepath.Dir(cfg), "wealthdb.db")
+	goldPath := goldPathFromCfg(cfg)
 	body, err := os.ReadFile(cfg)
 	if err != nil {
 		t.Fatal(err)

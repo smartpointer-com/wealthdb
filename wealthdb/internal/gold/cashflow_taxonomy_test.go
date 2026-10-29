@@ -285,6 +285,26 @@ func TestEveryCashflowClassReadsAsSomething(t *testing.T) {
 	}
 }
 
+// TestEveryCashflowSectionHasARank is the same pin for the sections:
+// cashflow_section_rank ranks each of canonical's sections, in
+// canonical's report order. seedLines holds every section a resolution
+// test lands on to the same list.
+func TestEveryCashflowSectionHasARank(t *testing.T) {
+	db, ctx := openMigrated(t)
+	last := 0
+	for _, s := range canonical.CashflowSections() {
+		var rank sql.NullInt64
+		if err := db.QueryRowContext(ctx, `SELECT cashflow_section_rank(?)`, string(s)).Scan(&rank); err != nil {
+			t.Fatalf("read %s: %v", s, err)
+		}
+		if !rank.Valid || int(rank.Int64) <= last {
+			t.Errorf("section %q ranks %v after %d; want a rank past the section before it", s, rank, last)
+			continue
+		}
+		last = int(rank.Int64)
+	}
+}
+
 // TestEveryAssetClassGoldHoldsReadsAsSomething is the same pin for the
 // investing section, whose classes ARE the instrument taxonomy: a new
 // exposure value would otherwise draw as `private_debt` rather than as

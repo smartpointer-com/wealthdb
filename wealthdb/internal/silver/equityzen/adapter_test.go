@@ -9,7 +9,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -27,17 +26,6 @@ func newFixtureSilver(t *testing.T) (string, *sql.DB) {
 func openAdapter(t *testing.T, path string) silver.Connection {
 	t.Helper()
 	return silvertest.Open(t, &Adapter{}, path)
-}
-
-// iso parses a calendar date to unix seconds at UTC midnight — what the
-// adapter's strftime('%s', as_of_date) yields for a bare ISO date.
-func iso(t *testing.T, s string) int64 {
-	t.Helper()
-	tm, err := time.Parse("2006-01-02", s)
-	if err != nil {
-		t.Fatalf("iso(%q): %v", s, err)
-	}
-	return tm.Unix()
 }
 
 // seed builds an event-sourced book exercising every forward-fill path:
@@ -95,18 +83,18 @@ func TestStatusAndChangeWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.OldestSnapshotAt != iso(t, "2022-01-01") || s.LatestSnapshotAt != iso(t, "2024-01-01") {
+	if s.OldestSnapshotAt != silvertest.ISO(t, "2022-01-01") || s.LatestSnapshotAt != silvertest.ISO(t, "2024-01-01") {
 		t.Errorf("snapshot extrema = [%d,%d], want [%d,%d]",
-			s.OldestSnapshotAt, s.LatestSnapshotAt, iso(t, "2022-01-01"), iso(t, "2024-01-01"))
+			s.OldestSnapshotAt, s.LatestSnapshotAt, silvertest.ISO(t, "2022-01-01"), silvertest.ISO(t, "2024-01-01"))
 	}
 	if s.LatestChangeNumber != 1700000000 {
 		t.Errorf("LatestChangeNumber = %d, want 1700000000 (the dump_run)", s.LatestChangeNumber)
 	}
 	// Transaction extrema track the cash-flow dates (2022-01-01 .. 2024-01-01,
 	// the latter the d3 $0 exit distribution).
-	if s.OldestTransactionAt != iso(t, "2022-01-01") || s.LatestTransactionAt != iso(t, "2024-01-01") {
+	if s.OldestTransactionAt != silvertest.ISO(t, "2022-01-01") || s.LatestTransactionAt != silvertest.ISO(t, "2024-01-01") {
 		t.Errorf("tx extrema = [%d,%d], want [%d,%d]",
-			s.OldestTransactionAt, s.LatestTransactionAt, iso(t, "2022-01-01"), iso(t, "2024-01-01"))
+			s.OldestTransactionAt, s.LatestTransactionAt, silvertest.ISO(t, "2022-01-01"), silvertest.ISO(t, "2024-01-01"))
 	}
 
 	// Window spans both fact streams; End is the exit date (a position event
@@ -115,9 +103,9 @@ func TestStatusAndChangeWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !w.HasChanges || w.Start != iso(t, "2022-01-01") || w.End != iso(t, "2024-01-01") || w.NewChangeNumber != 1700000000 {
+	if !w.HasChanges || w.Start != silvertest.ISO(t, "2022-01-01") || w.End != silvertest.ISO(t, "2024-01-01") || w.NewChangeNumber != 1700000000 {
 		t.Errorf("ChangeWindow(-1) = %+v, want HasChanges Start=%d End=%d NewCN=1700000000",
-			w, iso(t, "2022-01-01"), iso(t, "2024-01-01"))
+			w, silvertest.ISO(t, "2022-01-01"), silvertest.ISO(t, "2024-01-01"))
 	}
 	w2, err := conn.ChangeWindow(context.Background(), 1700000000)
 	if err != nil {
@@ -173,7 +161,7 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 	}
 
 	mv := func(date, deal string) string {
-		p, ok := posByT[iso(t, date)][deal]
+		p, ok := posByT[silvertest.ISO(t, date)][deal]
 		if !ok || p.MarketValue == nil {
 			t.Fatalf("%s %s: no market value", date, deal)
 		}
@@ -181,26 +169,26 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 	}
 
 	// 2022-01-01: only d1 invested.
-	if got := len(posByT[iso(t, "2022-01-01")]); got != 1 {
+	if got := len(posByT[silvertest.ISO(t, "2022-01-01")]); got != 1 {
 		t.Errorf("2022-01-01 positions = %d, want 1 (d1)", got)
 	}
 	if mv("2022-01-01", "d1") != "1000.00" {
 		t.Errorf("2022-01-01 d1 market_value = %s, want 1000.00 (cost)", mv("2022-01-01", "d1"))
 	}
-	if q := posByT[iso(t, "2022-01-01")]["d1"].Quantity; q == nil || q.StringFixed(2) != "100.00" {
+	if q := posByT[silvertest.ISO(t, "2022-01-01")]["d1"].Quantity; q == nil || q.StringFixed(2) != "100.00" {
 		t.Errorf("d1 quantity = %v, want 100.00 (spv share count)", q)
 	}
 	// 2-D taxonomy: the SPV maps to private_equity × spv on
 	// both the position and its instrument, and the pair must be admitted.
-	assertPair(t, "d1 position", posByT[iso(t, "2022-01-01")]["d1"].AssetClass,
-		posByT[iso(t, "2022-01-01")]["d1"].Vehicle,
+	assertPair(t, "d1 position", posByT[silvertest.ISO(t, "2022-01-01")]["d1"].AssetClass,
+		posByT[silvertest.ISO(t, "2022-01-01")]["d1"].Vehicle,
 		canonical.AssetClassPrivateEquity, canonical.VehicleSPV)
 	assertPair(t, "d1 instrument", instByID["d1"].AssetClass, instByID["d1"].Vehicle,
 		canonical.AssetClassPrivateEquity, canonical.VehicleSPV)
 
 	// 2022-06-01: d1 (forward-filled to its investment), d3 (invested
 	// 2022-03-01), d2 (invested today).
-	at := posByT[iso(t, "2022-06-01")]
+	at := posByT[silvertest.ISO(t, "2022-06-01")]
 	if len(at) != 3 {
 		t.Errorf("2022-06-01 positions = %d, want 3 (d1,d2,d3)", len(at))
 	}
@@ -219,7 +207,7 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 	if mv("2023-06-01", "d1") != "1200.00" {
 		t.Errorf("2023-06-01 d1 market_value = %s, want 1200.00 (tender mark)", mv("2023-06-01", "d1"))
 	}
-	if q := posByT[iso(t, "2023-06-01")]["d1"].Quantity; q == nil || q.StringFixed(2) != "60.00" {
+	if q := posByT[silvertest.ISO(t, "2023-06-01")]["d1"].Quantity; q == nil || q.StringFixed(2) != "60.00" {
 		t.Errorf("2023-06-01 d1 quantity = %v, want 60.00 (after tender)", q)
 	}
 	if mv("2023-06-01", "d2") != "2500.00" {
@@ -227,7 +215,7 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 	}
 
 	// 2024-01-01: d3's latest event is its exit (is_open=0) → dropped.
-	end := posByT[iso(t, "2024-01-01")]
+	end := posByT[silvertest.ISO(t, "2024-01-01")]
 	if len(end) != 2 {
 		t.Errorf("2024-01-01 positions = %d, want 2 (d1,d2; d3 exited)", len(end))
 	}
@@ -236,7 +224,7 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 	}
 
 	// Acquisition date is the deal's first event.
-	if ad := posByT[iso(t, "2024-01-01")]["d1"].AcquisitionDate; ad == nil || ad.Format("2006-01-02") != "2022-01-01" {
+	if ad := posByT[silvertest.ISO(t, "2024-01-01")]["d1"].AcquisitionDate; ad == nil || ad.Format("2006-01-02") != "2022-01-01" {
 		t.Errorf("d1 acquisition_date = %v, want 2022-01-01", ad)
 	}
 
@@ -261,26 +249,18 @@ func TestTransactions(t *testing.T) {
 	conn := openAdapter(t, path)
 
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, err := conn.Transactions(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
-	batch, _, err := stream.Next(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	txs := silvertest.Transactions(t, conn, w)
 
 	// d1 spv: deposit+buy, sell+withdrawal. d2 fund: deposit+contribution,
 	// distribution+withdrawal. d3 spv: deposit+buy, then a $0 sell (withdrawal
 	// omitted). 2+2 + 2+2 + 2+1 = 11.
-	if len(batch.Transactions) != 11 {
-		t.Fatalf("transactions = %d, want 11", len(batch.Transactions))
+	if len(txs) != 11 {
+		t.Fatalf("transactions = %d, want 11", len(txs))
 	}
 
 	byID := map[string]canonical.TransactionChange{}
 	sum := canonical.NewDecimalFromInt(0)
-	for _, tx := range batch.Transactions {
+	for _, tx := range txs {
 		byID[tx.TransactionExternalID] = tx
 		if tx.AccountExternalID != accountKey {
 			t.Errorf("%s account = %q, want the custody account", tx.TransactionExternalID, tx.AccountExternalID)
@@ -376,19 +356,11 @@ func TestAPurchaseWithAnExecutionFeeIsThreeLegs(t *testing.T) {
 	conn := openAdapter(t, path)
 
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, err := conn.Transactions(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
-	batch, _, err := stream.Next(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	txs := silvertest.Transactions(t, conn, w)
 
 	byID := map[string]canonical.TransactionChange{}
 	sum := canonical.NewDecimalFromInt(0)
-	for _, tx := range batch.Transactions {
+	for _, tx := range txs {
 		byID[tx.TransactionExternalID] = tx
 		if tx.NetAmount != nil {
 			sum = sum.Add(*tx.NetAmount)
@@ -455,16 +427,8 @@ func TestAFundPurchaseFeeLinksToTheContribution(t *testing.T) {
 	}
 	conn := openAdapter(t, path)
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, err := conn.Transactions(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
-	batch, _, err := stream.Next(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tx := range batch.Transactions {
+	txs := silvertest.Transactions(t, conn, w)
+	for _, tx := range txs {
 		if tx.TransactionExternalID != "cf-d2-buy:fee" {
 			continue
 		}
@@ -493,18 +457,10 @@ func TestADistributionFeeIsDeductedFromTheProceeds(t *testing.T) {
 	}
 	conn := openAdapter(t, path)
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, err := conn.Transactions(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
-	batch, _, err := stream.Next(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	txs := silvertest.Transactions(t, conn, w)
 	byID := map[string]canonical.TransactionChange{}
 	sum := canonical.NewDecimalFromInt(0)
-	for _, tx := range batch.Transactions {
+	for _, tx := range txs {
 		if strings.HasPrefix(tx.TransactionExternalID, "cf-d1-dist:") {
 			byID[tx.TransactionExternalID] = tx
 			sum = sum.Add(*tx.NetAmount)
@@ -583,23 +539,8 @@ func TestSnapshotsEmitClosureMarker(t *testing.T) {
 	conn := openAdapter(t, path)
 
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, err := conn.Snapshots(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 
-	var batches []canonical.SnapshotBatch
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		batches = append(batches, b)
-		if !more {
-			break
-		}
-	}
+	batches := silvertest.Snapshots(t, conn, w)
 	if len(batches) != 2 {
 		t.Fatalf("batches = %d, want the held snapshot and the closure marker", len(batches))
 	}
@@ -614,7 +555,7 @@ func TestSnapshotsEmitClosureMarker(t *testing.T) {
 	if p.Quantity == nil || !p.Quantity.IsZero() {
 		t.Errorf("marker quantity = %v, want explicit zero (SPV share count)", p.Quantity)
 	}
-	if p.SnapshotAt != iso(t, "2024-01-01") {
+	if p.SnapshotAt != silvertest.ISO(t, "2024-01-01") {
 		t.Errorf("marker snapshot_at = %d, want the exit date", p.SnapshotAt)
 	}
 	if marker.Accounts[0].AccountExternalID != accountKey {
@@ -659,41 +600,29 @@ func TestADealADumpStopsListingLeavesAtThatDump(t *testing.T) {
 	if w.End != 1800000000 {
 		t.Errorf("window end = %d, want the dump that dropped d2", w.End)
 	}
-	stream, err := conn.Snapshots(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 	posByT := map[int64]map[string]canonical.PositionChange{}
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, b := range silvertest.Snapshots(t, conn, w) {
 		for _, p := range b.Positions {
 			if posByT[p.SnapshotAt] == nil {
 				posByT[p.SnapshotAt] = map[string]canonical.PositionChange{}
 			}
 			posByT[p.SnapshotAt][p.PositionKey] = p
 		}
-		if !more {
-			break
-		}
 	}
 	if got := len(posByT); got != 4 {
 		t.Fatalf("snapshot times = %d, want the three investments and the dump: %v", got, posByT)
 	}
-	if at := posByT[iso(t, "2022-03-01")]; len(at) != 3 {
+	if at := posByT[silvertest.ISO(t, "2022-03-01")]; len(at) != 3 {
 		t.Errorf("before the dump every deal is listed: %v", at)
 	}
 	at := posByT[1800000000]
 	if len(at) != 2 {
 		t.Fatalf("t=dump positions = %v, want d1 and d3", at)
 	}
-	if p := at["d1"]; p.ValuedAt != iso(t, "2022-01-01") {
+	if p := at["d1"]; p.ValuedAt != silvertest.ISO(t, "2022-01-01") {
 		t.Errorf("d1 valued at %d, want its event date", p.ValuedAt)
 	}
-	if p := at["d3"]; p.ValuedAt != iso(t, "2022-02-01") {
+	if p := at["d3"]; p.ValuedAt != silvertest.ISO(t, "2022-02-01") {
 		t.Errorf("d3 valued at %d, want its event date", p.ValuedAt)
 	}
 }
@@ -725,27 +654,15 @@ func TestAnIncompleteDumpRemovesNothing(t *testing.T) {
 	}
 	conn := openAdapter(t, path)
 	s, err := conn.Status(context.Background())
-	if err != nil || s.LatestSnapshotAt != iso(t, "2022-03-01") {
+	if err != nil || s.LatestSnapshotAt != silvertest.ISO(t, "2022-03-01") {
 		t.Errorf("Status latest snapshot = %d %v, want the latest mark alone", s.LatestSnapshotAt, err)
 	}
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	stream, err := conn.Snapshots(context.Background(), w)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 	n := 0
-	for {
-		b, more, err := stream.Next(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, b := range silvertest.Snapshots(t, conn, w) {
 		n++
-		if len(b.Positions) == 0 || b.Positions[0].SnapshotAt > iso(t, "2022-03-01") {
+		if len(b.Positions) == 0 || b.Positions[0].SnapshotAt > silvertest.ISO(t, "2022-03-01") {
 			t.Errorf("batch %+v, want mark-dated snapshots only", b.Positions)
-		}
-		if !more {
-			break
 		}
 	}
 	if n != 3 {

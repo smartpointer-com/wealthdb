@@ -145,18 +145,18 @@ func (s *mcpServer) tools() []toolSpec {
 			name: "returns", title: "Returns",
 			description: "How investments performed over a window, as time-weighted (twr) and money-weighted (mwr) return percentages, after fees and taxes. " +
 				"view=global: the whole portfolio. view=sources: per institution. view=portfolios: per portfolio. view=accounts: per account (exact; the other views are best-effort). " +
-				"view=stated: each period a document states for an account (stated net additions and ending value) beside the engine's monthly figures for it, in the stated currency. " +
+				"view=stated: each period a document states for an account (stated net additions and ending value) beside the engine's monthly figures for it, in the stated currency. It takes no method, period, annualize, netting, inception or currency. " +
 				"By default one row per entity for the whole window; period adds buckets. Read the quality column: an n/a always has its reason there. " +
 				"Default window: since the first snapshot. " +
 				`Example: {view: "accounts", from: "2025", to: "2025", period: "total"}.`,
 			params: s.rowParams(true,
-				stringParam("view", "Grain (default global).", returnsFamily.views...),
-				stringParam("method", "twr, mwr or both (default both).", "twr", "mwr", "both"),
+				stringParam("view", "Grain (default global); stated is a side view of the documents' periods.", returnsFamily.views...),
+				stringParam("method", "twr, mwr or both (default both).", returnsMethods...),
 				stringParam("period", "Bucket size (default total: one row per entity for the whole window). monthly, quarterly or annual add one row per bucket.",
-					"monthly", "quarterly", "annual", "total"),
-				stringParam("annualize", "auto (default; only spans of a year or more), always, never.", "auto", "always", "never"),
+					returnsPeriods...),
+				stringParam("annualize", "auto (default; only spans of a year or more), always, never.", returnsAnnualize...),
 				param{name: "netting", kind: paramBoolean, doc: "Net internal transfers at coarse grains (default true)."},
-				stringParam("inception", "full (default) or strict.", "full", "strict"),
+				stringParam("inception", "full (default) or strict.", returnsInception...),
 				sourceParam, accountParam,
 			),
 			family: returnsFamily,
@@ -172,7 +172,7 @@ func (s *mcpServer) tools() []toolSpec {
 			params: s.rowParams(true,
 				stringParam("view", "Which rows to return (default summary).", gainsFamily.views...),
 				stringParam("period", "Bucket size for summary, sources, portfolios and accounts (default total: one row for the whole window). monthly, quarterly or annual give a series.", reportPeriodNames...),
-				stringParam("documents", "realized only: primary (default; each sale once) or all (every document's copy of a sale).", "primary", "all"),
+				stringParam("documents", "realized only: primary (default; each sale once) or all (every document's copy of a sale).", gainsDocuments...),
 				param{name: "newest_first", kind: paramBoolean, doc: "realized only: newest first (default false: oldest first)."},
 				sourceParam, accountParam,
 				stringParam("symbol", "positions, realized and lots: keep only rows whose symbol or name contains this text."),
@@ -245,7 +245,7 @@ func (s *mcpServer) tools() []toolSpec {
 			params: s.rowParams(true,
 				stringParam("view", "Which rows to return (default summary).", spendingFamily.views...),
 				stringParam("period", "Bucket size (default total: the whole window as one row per category). monthly, quarterly or annual give a series.", reportPeriodNames...),
-				stringParam("level", "Category vocabulary of the categories view: primary (default, broad groups) or detailed.", "primary", "detailed"),
+				stringParam("level", "Category vocabulary of the categories view: primary (default, broad groups) or detailed.", categoryLevels...),
 				sourceParam, accountParam,
 				stringParam("category", `Keep only categories whose label or id contains this text (e.g. "groceries", "travel"); switches the categories view to level=detailed unless level is given.`),
 				stringParam("merchant", "transactions only: keep only rows whose merchant contains this text."),
@@ -266,7 +266,7 @@ func (s *mcpServer) tools() []toolSpec {
 			params: s.rowParams(true,
 				stringParam("view", "Which rows to return (default summary).", incomeFamily.views...),
 				stringParam("period", "Bucket size (default total: the whole window as one row per type; monthly for the forward views). monthly, quarterly or annual give a series.", reportPeriodNames...),
-				stringParam("level", "Type vocabulary of the types view: detailed (default) or primary.", "primary", "detailed"),
+				stringParam("level", "Type vocabulary of the types view: detailed (default) or primary.", categoryLevels...),
 				stringParam("rates", "Forward views: constant (today's rates for the whole window) or forward (floating rates along the currency's forward curve). Default "+string(yield.DefaultAssumptions.Path)+".", pathNames()...),
 				stringParam("maturing", "Forward views: what a maturing holding's principal earns: cash (its account's cash rate), idle (nothing) or roll (the same holding again). Default "+string(yield.DefaultAssumptions.Rule)+".", ruleNames()...),
 				param{name: "shift", kind: paramInteger, doc: "Forward views: a parallel shift of the floating rates, in basis points (default 0)."},
@@ -290,7 +290,7 @@ func (s *mcpServer) tools() []toolSpec {
 			params: s.rowParams(true,
 				stringParam("view", "Which rows to return (default summary).", cashflowFamily.views...),
 				stringParam("period", "Bucket size (default total: the whole window as one row per node; monthly for projection, which takes no total). monthly, quarterly or annual give a series. Not for sankey.", reportPeriodNames...),
-				stringParam("level", "Node grain for flows and sankey: section, class or group (default group).", "section", "class", "group"),
+				stringParam("level", "Node grain for flows and sankey: section, class or group (default group).", cashflowLevels...),
 				stringParam("investing", "whole (default): investing as one node; class: one node per asset class.", cashflowInvestingGrains...),
 				stringParam("rates", "projection: constant (today's rates for the whole window) or forward (floating rates along the currency's forward curve). Default "+string(yield.DefaultAssumptions.Path)+".", pathNames()...),
 				stringParam("maturing", "projection: what a maturing holding's principal earns: cash (its account's cash rate), idle (nothing) or roll (the same holding again; net then leaves principal_returned out). Default "+string(yield.DefaultAssumptions.Rule)+".", ruleNames()...),
@@ -438,9 +438,13 @@ var returnsFamily = &family{
 		"accounts":   {"source", "account"},
 		"stated":     {"source", "account"},
 	},
-	// On returns, "value" means the return itself.
+	// On returns, "value" means the return itself; on the stated view,
+	// which carries no return, the engine's ending value.
 	principal: func(req request) string {
-		if req.method == "mwr" {
+		switch {
+		case req.view == "stated":
+			return "end_value"
+		case req.method == "mwr":
 			return "mwr"
 		}
 		return "twr"

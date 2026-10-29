@@ -992,7 +992,7 @@ func formatCandidateCSV(cands []candidate, noCurrency bool) string {
 func parseAndValidate(body string, candKeyset map[string]bool, configuredSources map[string]bool) ([]resolution, []invalidRow) {
 	body = stripCodeFences(body)
 	r := csv.NewReader(strings.NewReader(body))
-	r.FieldsPerRecord = -1 // tolerate ragged rows; we validate explicitly
+	r.FieldsPerRecord = -1 // tolerate ragged rows; each row is validated explicitly
 	r.LazyQuotes = true
 
 	var valid []resolution
