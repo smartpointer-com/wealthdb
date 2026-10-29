@@ -679,11 +679,11 @@ shows a row from both sides at once.
 
 **Metabase.** An **Income** dashboard and its privacy twin. Its cards
 of the income lines take the Spending dashboards' shape. Beside them it
-reads the forward views (§12). It shows received and expected income by
-type, month, account and position, the withholding, and a position's
-expected payments. Its Time range sets what was received and its
-Horizon what is expected. Its Rate path, Maturing and Shift (bp)
-pickers are the forward views' assumptions.
+reads the forward views (§12) over every income line. It shows
+received and expected income by type, month, account and position, the
+withholding, and a position's expected payments. Its Time range sets
+what was received and its Horizon what is expected. Its Rate path,
+Maturing and Shift (bp) pickers are the forward views' assumptions.
 [web/DESIGN.md](../../web/DESIGN.md) §6 has the detail.
 
 ---
@@ -862,6 +862,18 @@ force at the end of the received half tell the two apart, a ledger
 record's among them. A dividend a fund pays reads `distributions`.
 Wages, gifts and the other types stay in the other three views. A line
 counts under the holding it belongs to, else under its account.
+
+The Income dashboard's two halves are wider than these views':
+
+- its received half counts every income line, wages and gifts among
+  them, each other line under its account and by its operating-in
+  class ([CASHFLOW.md](CASHFLOW.md) §5);
+- its expected half adds the other income's run-rate: the cash flow
+  projection's `other_income`, which gold keeps by class and account
+  ([CASHFLOW.md](CASHFLOW.md) §12). It covers the household's accounts
+  alone.
+
+`wealthdb income projection` reads the six types alone.
 
 The expected half starts the day after today.
 

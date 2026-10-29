@@ -207,7 +207,9 @@ basis, so there `{{currency}}` and `{{missing_basis}}` filter rows.
 Exposure tiles `{{currency}}` filters rows as well.
 Every Currency picker, and every card opened on its own, defaults to
 `default_currency` from wealthdb.cfg when that is a reporting currency,
-and to USD otherwise. `web/web` passes it to
+and to USD otherwise. A native card opened on its own runs at its
+template variables' defaults, an MBQL card over every row of its model.
+Its description does not say so. `web/web` passes it to
 `provision.py` from `wealthdb web-config`. The
 Wealth Overview's three headline figures read `web_sources_latest`
 (migrations 0113 and 0132), each account at its latest active
@@ -243,7 +245,7 @@ the flows by their own peak month within the selected window
 ratios of sums over the selected sources' latest holdings (`web_sources_latest`,
 migrations 0113 and 0132) — net worth reads a constant 100, positions + cash split it.
 Each figure from another dashboard is that dashboard's privacy figure,
-except the holdings' income received and net spend. Each is the total
+except the income received and net spend. Each is the total
 its own twin divides by, so it reads 100 by construction. The overview's
 twin leaves them out. The two gains, whose dashboard has no twin, read as a percent of the
 cost basis they are gains on.
@@ -429,75 +431,91 @@ names no account, and gives each its share of the credit balances. The
 cards of rates, years and securities alone are exempt: the yields, the
 dividend scatter and the two charts over time.
 
-The **Income** dashboard also puts what was received beside what the
-holdings, and an account's rent or pension, are expected to pay, as
-`wealthdb income`'s forward views do
-([wealthdb/docs/INCOME.md](../wealthdb/docs/INCOME.md) §12). Two
-populations share it:
+The **Income** dashboard also puts what was received beside what is
+expected, as `wealthdb income`'s forward views do
+([wealthdb/docs/INCOME.md](../wealthdb/docs/INCOME.md) §12), but over
+every income line. A figure counts every line unless the Type picker
+leaves its type out:
 
-- the income lines: every receipt, wages and gifts among them. Net
-  income, the trend, the types, the payers and the largest receipts
-  read them.
-- the holdings' income: the six types the projection counts. They are
-  interest, coupons, dividends, distributions, rent and pension. Every
-  other card reads it, but the withholding and the income after it.
+- received: the six types the holdings receive, each under its holding
+  (`web_yield_received`), and every other line, wages and gifts among
+  them, under its account (`web_income`);
+- expected: what the holdings are expected to pay (`web_yield_parts`),
+  and the other income's run-rate. The run-rate is the cash flow
+  projection's `other_income` (`web_cashflow_plan`, migration 0169), by
+  operating-in class and account. So the two dashboards read one
+  run-rate. It covers the household's accounts alone, as the cash flow
+  projection does: other income on a vehicle's account has no run-rate.
 
-A card of the holdings' income is named for it ("Holdings' income
-received"), or its description names it. A title travels with its card,
-to the Wealth Overview and to a card opened alone, where a heading would
-not. The chart by month carries a subtitle, a row of text above it: wages
-and other receipts are in Net income. The dashboard reads in this order:
+The two received sources convert a line each at its own day's rate,
+but by two reports. So "Income received" equals Net income to rounding.
+The yield report puts a line paid into a cash account under the
+security's holding, in the account that holds it. So by account the two
+differ more. The holdings' own cards are named for them ("Holdings'
+interest received"), as is the twin's yield on their value ("Holdings'
+income yield").
 
-- six small figures: the holdings' income received and expected, what
-  they received, what they are expected to pay, the income lines' net
-  income, the holdings' monthly average and the share of income lines
-  nothing placed;
-- the income lines' monthly trend, the withholding, and the income
-  after it;
-- the holdings' income received and expected by month, a band per type
-  and status, the expected one in a lighter shade;
+The by-month chart has a band per type and status. The six types keep
+their colours. The other lines band by their class (`INCOME_LINE_CLASSES`,
+held by a test to the statement's, `cashflow_txn_nodes`): salary and
+earnings, other yield, benefits, other receipts and uncategorized. The
+expected one is marked run-rate, in a lighter shade. A subtitle above
+the chart says so. The Rate path, Maturing and Shift do not move a
+run-rate.
+
+The dashboard reads in this order:
+
+- six small figures: the income in the window, received and expected,
+  net income, the monthly average and the share of income lines nothing
+  placed;
+- the monthly trend, the withholding, and the income after it;
+- received and expected by month;
 - the holdings' interest and dividends received, and those expected;
 - the income lines by type, beside the top payers;
 - received and expected by account, then by position, grouped by
-  vehicle;
-- a calendar of the payments and principals expected, a holding's own
-  income apart from what its matured principal earns, with the basis
-  each rests on;
+  vehicle, a line no holding pays under its account by its class;
+- a calendar of the payments and principals the holdings are expected
+  to pay, with the basis each rests on. A run-rate is no payment, so it
+  is not there;
 - the largest receipts.
 
 The Time range sets every figure of what was received, and the Horizon
 every figure of what is expected: the rest of the current month and
-the horizon's months after it. The holdings' income received comes
-from `web_yield_received`, which holds the income lines of the six
-types. Expected income comes from `web_yield_parts`. A figure of what
-was received depends on no assumption, so it takes no projection picker. On the
-base dashboard a figure of what is expected takes no Time range. On
-the twin it is a share of both halves, so it takes the Time range too.
+the horizon's months after it. The run-rate's months are the calendar
+months after the current one; the rest of the current month takes its
+share of the next month's. A figure of what was received depends on no
+assumption, so it takes no projection picker. On the base dashboard a
+figure of what is expected takes no Time range. On the twin it is a
+share of both halves, so it takes the Time range too.
 
 A card reads several views, and a picker reaches one template tag of a
-card. So the Time range is bound to `web_income_days` (migration 0146),
-one row per day to today from the first day income was received or tax
-withheld, or from 1 January of last year where that is earlier. A card
+card. So the Time range is bound to `web_income_days` (migrations 0146
+and 0169), one row per day to today from the first income line, the
+first day tax was withheld, or 1 January of last year, whichever is
+earliest. A card
 keeps the received rows and the withheld tax of the days it selects. It
 also counts its months by them: each day counts its share of its month.
 The Horizon counts its months and the rest of the current one. The
-monthly average divides by both. The Source, Account and Tax wrapper
-field filters are bound to the views their dropdowns list. The source
-and the tax wrapper bind `web_sources_latest`, which holds every
+monthly average divides by both. With no Time range, a card counts
+every other line, as Net income does. The Source, Account and Tax
+wrapper field filters are bound to the views their dropdowns list. The
+source and the tax wrapper bind `web_sources_latest`, which holds every
 account's, and the account binds `web_income`. Each view the card reads
 keeps the rows whose source, account or tax wrapper those select. The
-tax booked carries no tax wrapper of its own, so it keeps its
-account's.
+tax booked and the run-rate carry no tax wrapper of their own, so they
+keep their account's.
 
-The Type picker lists the income lines' labels. A card of the holdings'
-income keeps the rows of the types a picked label's detailed type maps
-to, the map the engine types a line by: interest earned is interest or
-a bond's coupons, a dividend is a dividend or a fund's distribution,
-and a distribution, a rent and a pension are their own. A test holds
-the map to the engine's. The map is by type, so a label reaches every
-row of its types: Dividends also reaches a fund's distributions. A label
-of any other type, wages among them, selects nothing there. With a type
-picked, the positions table lists the holdings that pay it.
+The Type picker lists the income lines' labels. A row of the six types
+keeps its type where a picked label's detailed type maps to it, the
+map the engine types a line by: interest earned is interest or a
+bond's coupons, a dividend is a dividend or a fund's distribution, and
+a distribution, a rent and a pension are their own. A test holds the
+map to the engine's. The map is by type, so a label reaches every row
+of its types: Dividends also reaches a fund's distributions. Every
+other line keeps its own label. A run-rate's class is kept where a
+picked label's detailed type has that class; a type of the six keeps
+none. With a type picked, the positions table lists the holdings that
+pay it.
 
 The Withholding tile reads two things:
 
@@ -509,12 +527,12 @@ The Withholding tile reads two things:
   each holding's situs, by its account's own rate or its wrapper's.
   This is a model.
 
-The tax booked is on any income line, so the income after withholding
-is every income line received, Net income's, and the income expected,
-less the Withholding tile. With no Time range it counts every line. A
-range keeps the lines of the days the received figures cover. So a line
-older than the first of those days counts only with no range. A tax row names no income type, so neither
-tile takes the Type picker, in either half.
+The income after withholding is the income in the window less the
+Withholding tile: a run-rate withholds nothing. With no Time range it
+counts every line. A range keeps the lines of the days the received
+figures cover. So a line older than the first of those days counts
+only with no range. A tax row names no income type, so neither tile
+takes the Type picker, in either half.
 
 Provisioning probes the snapshot's withholding tables
 (`yield_withholding`, `yield_withholding_accounts`). Where they hold no
@@ -531,9 +549,12 @@ shows.
 
 The twin shows a figure as a share of the income it covers, or of its
 biggest month; what was received is a share of what was received. The
-income, and each position's, becomes a yield: per year, over the value
-it is earned on. The withholding becomes the share it takes of the
-income it is set against, and the income after it the rest. A share
+holdings' income, and each position's, becomes a yield: per year, over
+the value it is earned on. A wage is no yield on a holding, so the
+twin's yield card reads the six types alone. A tile of the twin can
+show a card of another name than its base's (`TWIN_CARDS`). The
+withholding becomes the share it takes of the income it is set
+against, and the income after it the rest. A share
 or a yield of nothing reads 0. A position with no name reads
 `(unnamed)`, unless its key is a cash balance's or an account income's:
 any other key is a holding's own, as on the issuers twin. The twin's
@@ -604,13 +625,15 @@ Below the charts the overview shows a figure or two from the other
 dashboards:
 
 - the Stalest source, beside the net worth figures;
-- under the heading "Over the time range": the holdings' income
-  received, net spend, the spend trend, net cash flow, the savings rate
-  and the realized gain;
+- under the heading "Over the time range": the income received, net
+  spend, the spend trend, net cash flow, the savings rate and the
+  realized gain;
 - under "At the range's end, today and ahead": the unrealized gain,
-  the returns year to date (TWR and MWR), the income yield, the
-  holdings' income expected over twelve months and the projected net
-  cash flow.
+  the returns year to date (TWR and MWR), the income yield, the income
+  expected over twelve months and the projected net cash flow.
+
+The two income figures count every income line, as the Overview has no
+Type picker.
 
 Each borrowed figure is the card its own dashboard shows. Four are
 built for the overview alone, from their dashboard's data: the asset
@@ -620,7 +643,7 @@ a figure by slug: a picker reaches the card where
 the card has a template tag of that name, or, for an MBQL card, where
 its home dashboard maps a picker of that slug. Any other tag of the
 card runs at its default. So the flows take the currency, the time
-range and the source, the holdings' income the tax wrapper too, the
+range and the source, the income the tax wrapper too, the
 gains the tax wrapper and the asset class too, and the returns and the
 projection the currency alone. As on every dashboard, a tile's
 description ends with the pickers that do not reach it. The returns
@@ -672,7 +695,7 @@ probes the driver for the snapshot's schema version and for the serving
 views **by name**. It aborts with a "run `wealthdb web refresh`" message
 rather than converging the cards to a degraded shape. The version check
 catches a snapshot older than 0169, whose `web_cashflow_plan` lacks
-the other income's class and account. One older than
+the other income's class and account the Income cards read. One older than
 0168 lacks the accounts' withholding rates the withholding probe
 counts. One older than 0166
 lacks the calendar the Allocation cards read their day through. One
@@ -1004,8 +1027,8 @@ fake API it checks that an unchanged card or dashboard is not sent
 again and that a changed one is. Three behaviours are worth naming:
 
 - the privacy twins render no merchant or account label;
-- the Yield twin, the Income twin's cards of the holdings' income and
-  the Cash Flow twin's projection cards carry no column but a share, a rate,
+- the Yield twin, the Income twin's cards of received and expected
+  income and the Cash Flow twin's projection cards carry no column but a share, a rate,
   a year, a date or a label;
 - a snapshot missing a serving view, or older than the cards' schema,
   aborts the run (exit 3 for the older one).

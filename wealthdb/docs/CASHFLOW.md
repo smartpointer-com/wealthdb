@@ -1352,4 +1352,7 @@ look-back's parts (§10). It keeps the other income split two ways:
   nothing placed;
 - by the account the lines arrived on.
 
-The split sums to the `other_income` this view prints. The MCP `cashflow` tool serves the same view.
+The split sums to the `other_income` this view prints. The Income
+dashboard shows it as the expected half of the income no holding pays
+([web/DESIGN.md](../../web/DESIGN.md) §6). The MCP `cashflow` tool
+serves the same view.
