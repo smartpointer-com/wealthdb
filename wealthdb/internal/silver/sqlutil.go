@@ -187,6 +187,23 @@ func Extrema(ctx context.Context, db *sql.DB, what string, queries []string, arg
 	return lo, hi, nil
 }
 
+// ScanRows runs q bound by args and hands each row to fn, in the query's
+// order. The first error fn returns ends the loop and is returned; the
+// result is closed on every return.
+func ScanRows(ctx context.Context, db *sql.DB, q string, fn func(*sql.Rows) error, args ...any) error {
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if err := fn(rows); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 // DecimalPtrOrNil parses a string-encoded decimal from a silver
 // column. Returns nil for NULL / empty input, and nil (not an
 // error) on a parse failure — adapters treat an unparseable

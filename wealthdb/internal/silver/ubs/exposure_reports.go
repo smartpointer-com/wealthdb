@@ -187,7 +187,7 @@ func (r *webReader) quarterlyReports(ctx context.Context, w canonical.Window) (q
 		lines []reportLine
 	}
 	var reports []*report
-	err = queryRows(ctx, r.db, `
+	err = silver.ScanRows(ctx, r.db, `
 WITH nxt AS (
     SELECT instrument_isin, as_of, LEAD(as_of) OVER (PARTITION BY instrument_isin ORDER BY as_of) AS next_as_of
       FROM (SELECT DISTINCT instrument_isin, as_of FROM `+reportsTable+`)),
@@ -308,21 +308,6 @@ func reportComposition(isin string, asOf int64, lines []reportLine) (canonical.F
 	out[largest].Weight = &adjusted
 	comp.LineCount, comp.WeightSum = int64(len(out)), &want
 	return comp, out, true
-}
-
-// queryRows runs q and calls fn on each row.
-func queryRows(ctx context.Context, db *sql.DB, q string, fn func(*sql.Rows) error, args ...any) error {
-	rows, err := db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		if err := fn(rows); err != nil {
-			return err
-		}
-	}
-	return rows.Err()
 }
 
 // reportRange is the span of the quarterly reports' dates, so the change

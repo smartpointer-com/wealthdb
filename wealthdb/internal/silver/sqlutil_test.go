@@ -3,6 +3,7 @@ package silver
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -332,5 +333,54 @@ INSERT INTO a VALUES (10), (30), (90); INSERT INTO b VALUES (30), (20), (5);`)
 	}
 	if want := []int64{10, 20, 25, 30}; !slices.Equal(got, want) {
 		t.Errorf("SnapshotTimesOf = %v, want %v", got, want)
+	}
+}
+
+// TestScanRows pins the row loop the silver readers share: rows reach fn
+// in the query's order, the first error fn returns ends the loop and is
+// returned, a query that does not run returns its error, and the result
+// is closed on every return, so the one connection serves the next query.
+func TestScanRows(t *testing.T) {
+	// A result left open holds the one connection: the next query then
+	// waits out this deadline and fails, never hangs.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	errStop := errors.New("stop")
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "silver.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`CREATE TABLE a (x INTEGER); INSERT INTO a VALUES (3), (1), (2)`); err != nil {
+		t.Fatal(err)
+	}
+	collect := func(stopAt int64) ([]int64, error) {
+		var seen []int64
+		err := ScanRows(ctx, db, `SELECT x FROM a WHERE x >= ? ORDER BY x`, func(rows *sql.Rows) error {
+			var x int64
+			if err := rows.Scan(&x); err != nil {
+				return err
+			}
+			seen = append(seen, x)
+			if x == stopAt {
+				return errStop
+			}
+			return nil
+		}, 1)
+		return seen, err
+	}
+	if seen, err := collect(0); err != nil || !slices.Equal(seen, []int64{1, 2, 3}) {
+		t.Errorf("every row: %v (%v), want [1 2 3] in order", seen, err)
+	}
+	if seen, err := collect(2); err != errStop || !slices.Equal(seen, []int64{1, 2}) {
+		t.Errorf("stop at 2: %v (%v), want [1 2] and the scan's error", seen, err)
+	}
+	if err := ScanRows(ctx, db, `SELECT nope FROM a`, func(*sql.Rows) error { return nil }); err == nil {
+		t.Error("a query that does not run returned no error")
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM a`).Scan(&n); err != nil || n != 3 {
+		t.Errorf("after the scans: %d rows (%v), want the connection free", n, err)
 	}
 }

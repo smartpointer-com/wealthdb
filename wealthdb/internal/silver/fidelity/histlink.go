@@ -124,7 +124,7 @@ func (c *Connection) historicalLinks(ctx context.Context) (*historicalLinks, err
 			l.names[n][key] = true
 		}
 	}
-	if err := scanEach(ctx, c.db, `
+	if err := silver.ScanRows(ctx, c.db, `
 SELECT instrument_key, COALESCE(description, '') FROM positions
 UNION SELECT instrument_key, description FROM historical_position_snapshots WHERE instrument_key IS NOT NULL`,
 		func(s *sql.Rows) error {
@@ -139,7 +139,7 @@ UNION SELECT instrument_key, description FROM historical_position_snapshots WHER
 	}
 	// Oldest first, so a key replaced twice keeps its first successor and
 	// the chain is walked from there.
-	if err := scanEach(ctx, c.db, `
+	if err := silver.ScanRows(ctx, c.db, `
 SELECT instrument_key, timestamp, kind, payload FROM transactions
  WHERE instrument_key IS NOT NULL ORDER BY timestamp, instrument_key`,
 		func(s *sql.Rows) error {
@@ -165,7 +165,7 @@ SELECT instrument_key, timestamp, kind, payload FROM transactions
 		}); err != nil {
 		return nil, fmt.Errorf("historicalLinks trades: %w", err)
 	}
-	if err := scanEach(ctx, c.db, `
+	if err := silver.ScanRows(ctx, c.db, `
 SELECT as_of_date, account_external_id, instrument_key
   FROM historical_position_snapshots WHERE instrument_key IS NOT NULL`,
 		func(s *sql.Rows) error {
@@ -179,21 +179,6 @@ SELECT as_of_date, account_external_id, instrument_key
 		return nil, fmt.Errorf("historicalLinks held: %w", err)
 	}
 	return l, nil
-}
-
-// scanEach runs q and hands each row to fn.
-func scanEach(ctx context.Context, db *sql.DB, q string, fn func(*sql.Rows) error) error {
-	rows, err := db.QueryContext(ctx, q)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		if err := fn(rows); err != nil {
-			return err
-		}
-	}
-	return rows.Err()
 }
 
 // successorKinds are the corporate actions whose in-leg names the key
