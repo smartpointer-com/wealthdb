@@ -3643,19 +3643,10 @@ def walk(context, page, config):
 # Env-file loader
 # ---------------------------------------------------------------------------
 
-def _load_env_file(path):
-    envfile.load_env_file(path, _CRED_OVERRIDE_VARS, logger=log,
-                          warn_on_override=True)
-
-
 def maybe_source_env_files(args):
-    if args.env_file is not None and not args.env_file.exists():
-        raise SystemExit(
-            f"--env-file does not exist: {args.env_file}"
-        )
-    path = envfile.resolve_env_file(args.env_file, DEFAULT_ENV_FILE_CANDIDATES)
-    if path is not None:
-        _load_env_file(path)
+    envfile.source_first_env_file(
+        args.env_file, DEFAULT_ENV_FILE_CANDIDATES, logger=log,
+        override_vars=_CRED_OVERRIDE_VARS, warn_on_override=True)
 
 
 # ---------------------------------------------------------------------------

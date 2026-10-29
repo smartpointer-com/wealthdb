@@ -17,9 +17,9 @@ RUN pip install -r requirements.txt
 
 # Vanilla Playwright Firefox for login.py + download.py
 # (headless, no stealth patches). Camoufox stays as the base for
-# explore.py — defensive, in case cointracking ever adds bot
-# detection we want stealth available for the discovery harness —
-# but login + download don't need it and run on plain Firefox.
+# explore.py, so the discovery harness has stealth should
+# cointracking ever add bot detection. login + download don't need
+# it and run on plain Firefox.
 # `install-deps` is a near no-op on this base image because the
 # Camoufox Firefox needs the same shared libraries, but it's cheap
 # insurance against drift.

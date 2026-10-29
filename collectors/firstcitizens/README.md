@@ -139,5 +139,5 @@ accounts to cash accounts. It builds a closing-balance series from the
 running balance. It adds the roster balance at each run that listed the
 account, so gold can end an account the bank stops listing. It puts each
 statement's rate on a closing balance of the statement's cycle, as
-`interest_rate`. The accounts are conduits, so their return rows are
+`interest_rate`, valid from the statement's closing day. The accounts are conduits, so their return rows are
 hidden.

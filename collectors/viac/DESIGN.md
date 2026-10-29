@@ -273,9 +273,8 @@ creates no run dir. The viac specifics:
 - `load` (`bronze.pending_run_dirs`) skips a run dir with no
   `run.json` and one whose status is neither `"complete"` nor absent.
   A statusless manifest stays loadable.
-- `prune` treats a statusless manifest as complete, unless it
-  carries `dry_run: true`. That legacy dry-run shell is non-complete,
-  so `prune` reclaims it, while `load` still reads it.
+- `prune` treats a statusless manifest as complete, a legacy
+  dry-run shell (`dry_run: true`) included, since `load` reads it.
 - `prune`'s `debug_subdirs` is `screenshots/`, where
   `download --debug` writes its HTTP trace (`http-trace.jsonl`).
   viac drives no browser, so the trace is its whole debug surface.

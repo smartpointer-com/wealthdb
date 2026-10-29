@@ -437,7 +437,7 @@ def resolve_two_factor(cli_mfa: bool | None, *, vnc: bool = False,
     This is the one verb that signs in (DESIGN.md §L), so a challenge is a
     routine event on any run rather than an exceptional one — so the default
     is **auto**: drive it from the terminal when stdin is a TTY, and keep the
-    unattended contract when it is not, where a cron run fails loudly rather
+    unattended contract when it is not, where a run fails loudly rather
     than blocking on a prompt nobody will answer.
 
     `--vnc-mfa` (what the `vnc-login` verb passes) hands the challenge to a

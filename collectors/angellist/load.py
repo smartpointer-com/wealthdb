@@ -924,33 +924,18 @@ def main(argv: list[str]) -> int:
 
     # --force = delete the silver DB, then rebuild from all bronze (the
     # fleet-wide meaning). After a reset the DB is empty, so the
-    # already-loaded skip below naturally re-ingests every run.
+    # already-loaded skip in pending_run_dirs re-ingests every run.
     if args.force:
         silver.reset(silver_db)
     conn = silver.open_db(silver_db)
     silver.apply_migrations(conn, MIGRATIONS)
-    already = silver.loaded_snapshots(conn)
 
+    # A dump whose walk never finished (no run.json, or a status other than
+    # complete) may hold a truncated captures.jsonl; pending_run_dirs skips
+    # it, and prune reclaims it instead.
     n = 0
-    for run_dir in bronze.iter_run_dirs(args.bronze_dir):
-        # A slug that names no real date is skipped; prune leaves it too.
-        try:
-            snap = bronze.parse_run_ts(run_dir.name)
-        except ValueError:
-            continue
-        if snap in already:
-            log.debug("skip already-loaded %s", run_dir.name)
-            continue
-        # A dump whose walk never finished (no run.json, or a status other
-        # than complete) may hold a truncated captures.jsonl; prune
-        # reclaims it instead.
-        if not bronze.run_is_loadable(run_dir):
-            run_json = run_dir / "run.json"
-            log.info("skipping %s — %s", run_dir.name,
-                     f"run.json status={bronze.run_status(run_json)}"
-                     if run_json.is_file() else "no run.json")
-            continue
-        load_snapshot(conn, snap, run_dir)
+    for run_dir in bronze.pending_run_dirs(conn, args.bronze_dir, log=log):
+        load_snapshot(conn, bronze.parse_run_ts(run_dir.name), run_dir)
         n += 1
     load_documents(conn, docs_dir)
     fund_to_pid, k1_aliases = _pair_k1_to_positions(conn)

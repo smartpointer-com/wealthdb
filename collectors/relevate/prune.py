@@ -22,24 +22,17 @@ The second is whole run dirs that are **not complete dumps**:
 * a crashed / interrupted walk — ``run.json`` is absent, or present
   but its ``status`` is ``"in-progress"`` / ``"incomplete"`` (the
   marker the walk drops at run-dir creation and only overwrites with a
-  terminal status at the end), or (for a dump predating the ``status``
-  field) a manifest whose ``ended_at`` never got stamped;
-* a ``--dry-run`` shell — ``status`` ``"dry-run"``, or (pre-``status``)
-  a manifest with ``dry_run: true``.
+  terminal status at the end);
+* a ``--dry-run`` shell — ``status`` ``"dry-run"``.
 
 ``load`` skips such dirs, so removing one never changes silver.
 
 Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
 at run-dir creation, atomically overwritten with ``"complete"`` /
-``"dry-run"`` / ``"incomplete"`` at the end). A manifest with no
-``status`` key falls back to ``ended_at``: relevate's manifest is
-written *incrementally* from the start (flushed after every fetch), so
-the mere presence of ``run.json`` does NOT mean the walk finished. The
-fallback therefore classifies a statusless dump COMPLETE only on the
-terminal signal — ``ended_at`` stamped (``finish()`` ran) on a real,
-non-``dry_run`` run. A statusless crashed walk (``run.json`` present,
-``ended_at: null``) is correctly NON_COMPLETE. An unreadable or corrupt
-``run.json`` is UNKNOWN and never deleted.
+``"dry-run"`` / ``"incomplete"`` at the end). A readable manifest with
+no ``status`` key predates the field. ``load`` reads such a dump, so it
+is kept, whatever its ``ended_at`` or ``dry_run`` says. An unreadable or
+corrupt ``run.json`` is UNKNOWN and never deleted.
 
 An in-flight guard skips non-complete dumps written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir
@@ -63,19 +56,12 @@ from collectorkit import debugcap, prune
 
 
 def _legacy_complete(run_dir, meta) -> bool:
-    # A statusless-but-readable run.json is a pre-`status` dump. Unlike
-    # fidelity-web (whose walk wrote run.json ONLY at the end, so mere
-    # presence meant complete), relevate flushes run.json after every
-    # fetch from run-dir creation — so presence proves nothing. The
-    # original terminal signal was `finish()` stamping `ended_at` on a
-    # real (non-dry) run; a crashed walk leaves `ended_at: null`. New
-    # walks always carry a `status` key, so status_classification
+    # A statusless-but-readable run.json is a pre-`status` dump. The
+    # loader reads every such dump (bronze.is_loadable_status), so prune
+    # keeps it too: deleting one would orphan rows already loaded from
+    # it. New walks always carry a `status` key, so status_classification
     # resolves in-progress/dry-run/complete before this fallback runs.
-    return (
-        meta is not None
-        and meta.get("ended_at") is not None
-        and not meta.get("dry_run")
-    )
+    return meta is not None
 
 
 def _is_complete(run_dir, meta):

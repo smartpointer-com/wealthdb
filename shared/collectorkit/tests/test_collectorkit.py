@@ -3,6 +3,7 @@
 import contextlib
 import logging
 import os
+import re
 import sqlite3
 import tempfile
 import unittest
@@ -292,12 +293,12 @@ class BronzeTest(unittest.TestCase):
         self.assertEqual(bronze.safe_stem("..."), "item")
         self.assertEqual(bronze.safe_stem("", fallback="account"), "account")
 
-    def test_log_id_shortens_long_ids_only(self):
-        self.assertEqual(bronze.log_id("ACCT-0001"), "ACCT-0001")
+    def test_log_id_keeps_the_last_four_only(self):
+        self.assertEqual(bronze.log_id("ACCT-0001"), "…0001")
+        self.assertEqual(bronze.log_id("0123456789"), "…6789")
         self.assertEqual(bronze.log_id("0123456789abcdef0123456789abcdef"),
-                         "01234567…")
-        self.assertEqual(bronze.log_id("x" * 12), "x" * 12)
-        self.assertEqual(bronze.log_id("a/b" * 5), "a-ba-ba-…")
+                         "…cdef")
+        self.assertEqual(bronze.log_id("a/b" * 5), "…ba-b")
 
 
 class EnvFileTest(unittest.TestCase):
@@ -576,6 +577,65 @@ class SourceNamedEnvFileTest(unittest.TestCase):
             envfile.source_named_env_file(self.path, "CK_NAMED_ENV_FILE")
 
 
+class SourceFirstEnvFileTest(unittest.TestCase):
+    """source_first_env_file: a named file, else the first candidate that
+    exists; a named file that is missing, or any bash error, exits."""
+
+    LOG = logging.getLogger("test-envfile")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.named = self.dir / "named.env"
+        self.named.write_text("CK_FIRST=named\n")
+        self.c1, self.c2 = self.dir / "a.env", self.dir / "b.env"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _source(self, explicit, candidates=(), **kw):
+        return envfile.source_first_env_file(explicit, candidates,
+                                             logger=self.LOG, **kw)
+
+    def test_a_named_file_is_sourced_over_the_candidates(self):
+        self.c1.write_text("CK_FIRST=candidate\n")
+        with _isolated_environ(CK_FIRST="host"):
+            self.assertEqual(self._source(self.named, [self.c1]), self.named)
+            self.assertEqual(os.environ["CK_FIRST"], "named")
+
+    def test_a_named_file_that_is_missing_exits(self):
+        self.c1.write_text("CK_FIRST=candidate\n")
+        with self.assertRaises(SystemExit):
+            self._source(self.dir / "nope.env", [self.c1])
+
+    def test_a_named_directory_exits(self):
+        with self.assertRaises(SystemExit):
+            self._source(self.dir, [])
+
+    def test_the_first_existing_candidate_is_sourced(self):
+        self.c2.write_text("CK_FIRST=second\n")
+        with _isolated_environ():
+            self.assertEqual(self._source(None, [self.c1, self.c2]), self.c2)
+            self.assertEqual(os.environ["CK_FIRST"], "second")
+
+    def test_no_file_sources_nothing(self):
+        self.assertIsNone(self._source(None, [self.c1, self.c2]))
+
+    def test_a_bash_error_exits(self):
+        self.c1.write_text("CK_FIRST='unterminated\n")
+        with self.assertRaises(SystemExit):
+            self._source(None, [self.c1])
+        with self.assertRaises(SystemExit):
+            self._source(None, [self.c1], override_vars=("CK_FIRST",))
+
+    def test_override_vars_keep_the_environment_for_other_keys(self):
+        self.named.write_text("CK_FIRST=named\nCK_OTHER=named\n")
+        with _isolated_environ(CK_FIRST="host", CK_OTHER="host"):
+            self._source(self.named, override_vars=("CK_FIRST",))
+            self.assertEqual(os.environ["CK_FIRST"], "named")
+            self.assertEqual(os.environ["CK_OTHER"], "host")
+
+
 def _build_parser():
     # The bounded download group, through the public entry point.
     p = argparse.ArgumentParser()
@@ -674,6 +734,32 @@ class ParseTest(unittest.TestCase):
         for bad in (None, "", "   ", "not-a-date", "20260101",
                     "2026/01/01", "2026-13-99"):
             self.assertIsNone(parse.iso_date_to_epoch(bad), bad)
+
+    def test_iso_timestamp_to_epoch_honours_the_offset(self):
+        noon = 1704112496  # 2024-01-01T12:34:56Z
+        for inp in ("2024-01-01T12:34:56+00:00", "2024-01-01T13:34:56+01:00",
+                    "2024-01-01T13:34:56.000+01:00", "2024-01-01T12:34:56Z",
+                    "2024-01-01T12:34:56.123456Z", "2024-01-01T12:34:56",
+                    "2024-01-01T12:34:56.000000"):
+            self.assertEqual(parse.iso_timestamp_to_epoch(inp), noon, inp)
+
+    def test_iso_timestamp_to_epoch_none_on_falsy_or_bad(self):
+        for bad in (None, "", "not a time", "2024-13-01T00:00:00", 17):
+            self.assertIsNone(parse.iso_timestamp_to_epoch(bad), bad)
+
+    def test_date_in_name_reads_the_named_groups(self):
+        from datetime import datetime as _dt, timezone as _tz
+        jul31 = int(_dt(2026, 7, 31, tzinfo=_tz.utc).timestamp())
+        ymd = r"(?P<y>20\d{2})-(?P<m>\d{2})-(?P<d>\d{2})"
+        mdy = re.compile(r"(?P<m>\d{2})-(?P<d>\d{2})-(?P<y>20\d{2})")
+        self.assertEqual(parse.date_in_name("2026-07-31_x.pdf", ymd), jul31)
+        self.assertEqual(parse.date_in_name("07-31-2026.pdf", mdy), jul31)
+
+    def test_date_in_name_none_without_a_real_day(self):
+        ymd = r"(?P<y>20\d{2})-(?P<m>\d{2})-(?P<d>\d{2})"
+        self.assertIsNone(parse.date_in_name("statement.pdf", ymd))
+        self.assertIsNone(parse.date_in_name("2026-13-01.pdf", ymd))
+        self.assertIsNone(parse.date_in_name("2026-02-30.pdf", ymd))
 
 
 class SessionTest(unittest.TestCase):

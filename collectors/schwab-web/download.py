@@ -853,7 +853,7 @@ def download_account(page, account: dict, dest_dir: Path,
     document into <dest_dir>/statements/<suffix>/. Returns a
     per-account summary for the run manifest.
     """
-    log.info("=== account: %s (…%s) ===", account["label"], account["suffix"])
+    log.info("=== account …%s ===", account["suffix"])
     select_account(page, account["entry_id"])
     # Give the page time to refresh after selection.
     page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)

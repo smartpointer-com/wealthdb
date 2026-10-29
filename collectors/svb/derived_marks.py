@@ -58,7 +58,7 @@ _SHEET_RE = re.compile(r"^(?P<family>[MRT])(?P<serial>\d{6})$")
 # The columns of each sheet. A stated period takes all seven value
 # columns, each under its silver name. A derived mark takes only the
 # ending market value ("EMV"), because it is the only one a position row
-# needs and the only one verified against the statements.
+# needs, and a statement states it too.
 _DATE_HEADER = "Date"
 _PERIOD_HEADERS = {
     "BMV": "beginning_value",
@@ -111,12 +111,17 @@ class StatedPeriod:
 def read_workbook(path):
     """Return every ``(account, month-end, value)`` the workbook states.
 
-    A mark is a stated period's ending value, so a row whose EMV cell
-    states nothing is no mark. Returns ``[]`` when the file is absent, as
-    :func:`read_stated_periods` does.
+    Returns ``[]`` when the file is absent, as :func:`read_stated_periods`
+    does.
     """
+    return marks_of(read_stated_periods(path))
+
+
+def marks_of(periods):
+    """The marks among stated `periods`. A mark is a stated period's
+    ending value, so a row whose EMV cell states nothing is no mark."""
     return [DerivedMark(p.account_external_id, p.period_end, p.ending_value)
-            for p in read_stated_periods(path) if p.ending_value is not None]
+            for p in periods if p.ending_value is not None]
 
 
 def read_stated_periods(path):

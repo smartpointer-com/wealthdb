@@ -37,7 +37,7 @@ cmd="${1:-help}"
 
 case "$cmd" in
     -h|--help|help)
-        awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"
+        host_print_banner "${BASH_SOURCE[0]}"
         exit 0
         ;;
     login|download|load|prune)
@@ -55,12 +55,10 @@ case "$cmd" in
     login)
         # No portal mints a session. `--check` asks each one for its
         # cheapest answer instead.
-        case " ${FORWARD_ARGS[*]-} " in
-            *" --check "*)
-                exec "$py" "$HERE/download.py" \
-                    ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
-                ;;
-        esac
+        if host_has_flag --check ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}; then
+            exec "$py" "$HERE/download.py" \
+                ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        fi
         echo "curves: no-op. The portals are public; there is no session to mint." >&2
         echo "To ask each portal for its cheapest answer, run \`./curves login --check\`." >&2
         exit 0

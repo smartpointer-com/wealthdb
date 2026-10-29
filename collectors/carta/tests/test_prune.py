@@ -130,20 +130,27 @@ def test_main_deletes_unfinished_dumps_and_nothing_at_the_root(tmp_path):
 
 
 # ============================================================
-# Load-side of the lifecycle: load.load_run gating on status
+# Load-side of the lifecycle: load gating on status
 # ============================================================
 
 def _dump_runs_count(conn) -> int:
     return conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0]
 
 
-def test_load_skips_in_progress_dump(tmp_path, migrated):
+def test_load_skips_in_progress_dump(tmp_path):
     # A crashed walk left status="in-progress"; load must not ingest its
-    # partial capture as a silver snapshot.
-    d = make_dump(tmp_path, OLD_TS, status="in-progress",
-                  entities=False, documents=False)
-    assert load.load_run(migrated, d) is False
-    assert _dump_runs_count(migrated) == 0
+    # partial capture as a silver snapshot. The run selection in main
+    # (bronze.pending_run_dirs) skips it.
+    make_dump(tmp_path / "bronze", OLD_TS, status="in-progress",
+              entities=False, documents=False)
+    db = tmp_path / "carta.db"
+    assert load.main(["--bronze-dir", str(tmp_path / "bronze"),
+                      "--silver-db", str(db)]) == 0
+    conn = sqlite3.connect(str(db))
+    try:
+        assert _dump_runs_count(conn) == 0
+    finally:
+        conn.close()
 
 
 def test_load_skips_dump_without_run_json(tmp_path, migrated):

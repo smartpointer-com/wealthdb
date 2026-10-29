@@ -9,9 +9,8 @@
 # installed in the base image as an editable package; explore.py /
 # login.py / download.py / load.py import it directly.
 
-# pytest is bundled in the image so tests can be run inside the container
-# with `./equityzen sh -c "cd /app && pytest"`, no host-side Python
-# toolchain required.
+# pytest is bundled in the image: `make test-equityzen` runs the suite there, on
+# a copy of the checkout, so no host-side Python toolchain is needed.
 pytest>=8,<9
 
 # Silver is plain SQLite + JSON1 (the repo default — DuckDB is the

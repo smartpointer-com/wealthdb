@@ -142,7 +142,7 @@ def _maybe_prefill_login(page, email: str, password: str) -> bool:
 
 
 # What the person at the VNC session is asked to do.
-WALK = ("log in via VNC, click through the pages we want to scrape (the "
+WALK = ("log in via VNC, click through the pages the download needs (the "
         "stock-comp plan AND the fund LP statements).")
 
 

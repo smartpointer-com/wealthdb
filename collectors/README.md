@@ -159,11 +159,11 @@ collectors/<name>/
 The wrapper therefore:
 
 - accepts the verbs **`login`**, **`download`**, **`load`**, **`prune`**
-  (plus `build` and `help`; Docker wrappers also `sh`). `login` may be a
-  no-op ([`ubs-psn`](ubs-psn/), key-based) or fold into `download`
-  (one-shot scrapers), but the verb is still accepted so an
-  orchestrator's `login → download → load` never trips. `prune` runs
-  host-side like `load` (a file walk needs no container), so it can
+  (plus `build` and `help`; the Docker wrappers other than schwab-api
+  also `sh`). `login` may be a no-op ([`ubs-psn`](ubs-psn/), key-based)
+  or fold into `download` (one-shot scrapers), but the verb is still
+  accepted so an orchestrator's `login → download → load` never trips.
+  `prune` runs host-side (a file walk needs no container), so it can
   reclaim disk while a `download` is mid-flight.
 - honours the **uniform directory-override flags** on every verb, with
   this precedence (highest first):
@@ -187,16 +187,26 @@ That precedence is not hand-written; it comes from sourcing the matching
 shared library and setting a small config block.
 
 A **Docker** wrapper sources
-[`shared/wrappers/wrapper-lib.sh`](../shared/wrappers/wrapper-lib.sh),
-sets `NAME`, `ENV_PREFIX`, and `ENV_VARS` (env vars forwarded into the
-container with `-e`), optionally opts into feature flags — `HAS_DEBUG`
-(a `/debug` mount for `--screenshot-dir`/`--trace`), `HAS_APP_MOUNT`
-(live-mounted source during iteration), `HAS_SAFETY` (refuse to clobber
-a live container mid-MFA), `HAS_VNC` (`vnc-login` port forwarding) —
-calls `wrapper_init`, handles `build`/`help` inline, and ends with
-`wrapper_main "$@"`. The library bind-mounts `~/.secrets → /secrets` and
-`<data> → /data` (plus `/silver`, `/debug`, `/app` when applicable) and
-runs as `--user $(id -u):$(id -g)`.
+[`shared/wrappers/wrapper-lib.sh`](../shared/wrappers/wrapper-lib.sh)
+and sets `NAME`, `ENV_PREFIX` and `ENV_VARS` (env vars forwarded into
+the container with `-e`). It may opt into these knobs:
+
+- `HAS_DEBUG`: a `/debug` mount for `--screenshot-dir` and `--trace`.
+- `HAS_APP_MOUNT`: the checkout's source over `/app` on every verb.
+- `HAS_SAFETY`: refuse to clobber a live container mid-MFA.
+- `HAS_VNC`: VNC port forwarding for `vnc-login`. `VNC_SUBCOMMANDS`
+  replaces the list of verbs that get it.
+- `HAS_ENV_FILE`: source the credentials env file on the host, so the
+  `ENV_VARS` it sets are forwarded.
+- `SILVER_SUBCOMMANDS`: the verbs that read `--silver-db`, in place of
+  `load`.
+
+A wrapper with a config file calls `wrapper_source_cfg` first. The
+wrapper then calls `wrapper_init` and handles `build` and `help` inline.
+It runs `prune` on the host, most through `wrapper_host_prune`, and
+ends with `wrapper_main "$@"`. The library bind-mounts
+`~/.secrets → /secrets` and `<data> → /data` (plus `/silver`, `/debug`,
+`/app` when applicable) and runs as `--user $(id -u):$(id -g)`.
 
 A **host-venv** wrapper (for tools that need no browser) sources
 [`shared/wrappers/host-lib.sh`](../shared/wrappers/host-lib.sh) and calls
@@ -221,7 +231,7 @@ are the escape, not opt-ins. The canonical spelling per concept:
 | bronze root (every verb that touches it) | `--bronze-dir` | resolved data dir |
 | documents / heavy detail | fetched by default; opt out with `--no-documents` (and the same `--no-<detail>` pattern for other heavy passes) | **on** |
 | force reload (on `load`) | `--force` — delete the silver DB, then rebuild from all bronze | off |
-| session probe | `login --check`: exit `0` = credential or session alive, nonzero = not. See [login.py — the session](#loginpy--the-session) for what it reads and for the four collectors that differ. | — |
+| session probe | `login --check`: exit `0` = credential or session alive, nonzero = not. See [login.py — the session](#loginpy--the-session) for what it reads and for the five collectors that differ. | — |
 | human-MFA wait | `--mfa-timeout SECONDS` | per source; see the list below |
 | MFA-page-appear wait | `--mfa-page-timeout SECONDS` | per source |
 | login-diagnostics dir | `--screenshot-dir` (login); `--debug-dir` on an `explore` harness, and on `prune`, which reclaims that dir | None |
@@ -375,11 +385,13 @@ Where a static credential is the session (fred's API key, ubs-psn's RSA
 key), that call is the cheapest authenticated read. schwab-api reports
 its token file's age. It then refreshes the access token from that file
 the way `download` does and calls `/accounts/accountNumbers`. It opens
-no browser and fires no MFA. Four collectors differ:
+no browser and fires no MFA. Five collectors differ:
 
 - **fidelity-web** has no session to probe. Its session lasts as long as
   the browser, so its `login` is a no-op that keeps an orchestrator's
   `login → download → load` from failing.
+- **schwab-web** has no session to probe either. `download` signs in and
+  keeps nothing for a later run, so its `login` is the same no-op.
 - **amex** spends a sign-in on its cheapest authenticated call, and
   sign-ins are its scarce resource. Its `--check` reads the device-trust
   cookie from the profile's Firefox jar on disk instead. It opens no

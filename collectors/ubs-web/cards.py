@@ -185,8 +185,9 @@ class CardApi:
                 # A page that fails must not discard the pages before
                 # it: they are already in hand, and an account with a
                 # short ledger is worth more than one with none.
-                log.warning("ledger page %d for %s… failed: %s",
-                            n + 1, account_id[:12], debugcap.safe_error(e))
+                log.warning("ledger page %d for %s failed: %s", n + 1,
+                            bronze.short_token(account_id, 8),
+                            debugcap.safe_error(e))
                 return pages, True
             pages.append(payload)
             nxt = (((payload.get("_links") or {}).get("next") or {})
@@ -194,9 +195,11 @@ class CardApi:
             if not nxt:
                 return pages, False
             query = nxt
-            log.debug("ledger page %d for %s…", n + 2, account_id[:12])
-        log.warning("ledger paging for %s… hit the %d-page ceiling; "
-                    "the capture is short", account_id[:12], MAX_PAGES)
+            log.debug("ledger page %d for %s", n + 2,
+                      bronze.short_token(account_id, 8))
+        log.warning("ledger paging for %s hit the %d-page ceiling; "
+                    "the capture is short", bronze.short_token(account_id, 8),
+                    MAX_PAGES)
         return pages, True
 
     def invoices(self, account_id: str) -> dict:

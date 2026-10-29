@@ -23,7 +23,7 @@ Sections:
 7. [Silver schema](#7-silver-schema)
 8. [Identity strategy](#8-identity-strategy)
 9. [Container + wrapper architecture](#9-container--wrapper-architecture)
-10. [What we do NOT do](#10-what-we-do-not-do)
+10. [Out of scope](#10-out-of-scope)
 11. [Open questions](#11-open-questions)
 
 ---
@@ -386,9 +386,8 @@ it are fleet-wide
 relevate adds one terminal status, `"incomplete"`, for a run whose
 master enumeration failed (step 5). `load` skips it and `prune`
 reclaims it. The `ended_at` and `dry_run` fields are written alongside
-`status`. `prune` falls back on them for a manifest with no `status`:
-because `run.json` is flushed from the start, only `ended_at` stamped
-on a non-`dry_run` run marks such a dump complete.
+`status`. A manifest with no `status` predates the field: `load` reads
+it, so `prune` keeps it.
 
 Manifest shape (as written):
 
@@ -582,8 +581,8 @@ Its relevate specifics:
   PDFs are load inputs; the PDFs are read cross-dump by both PDF
   passes via `documents.bronze_path`.
 - A non-complete dump is a crashed walk (`"in-progress"`), an
-  `"incomplete"` abort, a `"dry-run"` shell, or a statusless
-  manifest without a stamped `ended_at` (§4.1).
+  `"incomplete"` abort or a `"dry-run"` shell. A statusless manifest
+  is kept (§4.1).
 - Deleting a non-complete dump shows in silver after the next
   `load --force` rebuild.
 
@@ -744,7 +743,7 @@ relevate adds one more:
 All mounts are read-write. No ports are published: the container is
 purely an HTTP client.
 
-## 10. What we do NOT do
+## 10. Out of scope
 
 The read-only surface is in [AGENTS.md](AGENTS.md) §1. The
 authentication and privacy rules are in the root

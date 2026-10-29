@@ -39,13 +39,13 @@ cmd="${1:-help}"
 
 case "$cmd" in
     -h|--help|help)
-        awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"
+        host_print_banner "${BASH_SOURCE[0]}"
         exit 0
         ;;
     download|login)
         # --check is accepted for fleet uniformity; this collector is load-only
         # with no session, so there is nothing for it to probe.
-        case " $* " in *" --check "*) echo "svb: login --check is a no-op; there is no session to probe." >&2 ;; esac
+        host_has_flag --check ${@+"$@"} && echo "svb: login --check is a no-op; there is no session to probe." >&2
         cat >&2 <<'EOF'
 svb: no-op. This collector has no live source — the SVB statements are a fixed
 historical archive (SVB wound down in 2023). Drop the in-scope statement PDFs

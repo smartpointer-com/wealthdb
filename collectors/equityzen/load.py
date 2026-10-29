@@ -357,25 +357,9 @@ def _parse_documents(run_dir: Path, snapshot_at: int, node: dict):
 # ---- per-run load --------------------------------------------------------
 
 def load_run(conn: sqlite3.Connection, run_dir: Path) -> dict:
+    """Load one pending run dir (see :func:`main`) and return its counts."""
     snapshot_at = bronze.parse_run_ts(run_dir.name)
     snapshot_iso = datetime.fromtimestamp(snapshot_at, timezone.utc).date().isoformat()
-    already = conn.execute(
-        "SELECT 1 FROM dump_runs WHERE snapshot_at = ?", (snapshot_at,)
-    ).fetchone()
-    if already is not None:
-        return {"name": run_dir.name, "skipped": True,
-                "reason": "already loaded"}
-    # A walk that crashed or is still running holds a partial capture: its
-    # list nodes would replace the positions a complete run replayed from the
-    # full ledger, and its dump_runs row would count as an observation.
-    manifest_path = run_dir / "run.json"
-    if not manifest_path.is_file():
-        return {"name": run_dir.name, "skipped": True,
-                "reason": "no run.json (still writing, or crashed)"}
-    status = bronze.run_status(manifest_path)
-    if not bronze.is_loadable_status(status):
-        return {"name": run_dir.name, "skipped": True,
-                "reason": f"run.json status={status!r} (partial dump)"}
 
     # deal_id -> (stage, node, body); prefer the rich detail node, fall back
     # to the list node for any offering whose detail is absent.
@@ -396,7 +380,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> dict:
                 stage = node.get("dealStage") or (prev[0] if prev else None)
                 nodes[did] = (stage, node, body)
 
-    stats = {"name": run_dir.name, "snapshot_at": snapshot_at, "skipped": False,
+    stats = {"name": run_dir.name, "snapshot_at": snapshot_at,
              "offerings": 0, "positions": 0, "cash_flows": 0, "tax_documents": 0,
              "capital_account_statements": 0, "k1_documents": 0}
 
@@ -469,7 +453,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> dict:
                     "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
                 stats["cash_flows"] += 1
 
-        manifest = canonical_json(read_json(manifest_path))
+        manifest = canonical_json(read_json(run_dir / "run.json"))
         conn.execute(
             "INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, "
             "payload) VALUES (?,?,?,?)",
@@ -496,25 +480,28 @@ def main(argv: list[str]) -> int:
     cli.configure_logging(args.verbose)
 
     # --force = delete the silver DB, then rebuild from all bronze (the
-    # fleet-wide meaning). After a reset the DB is empty, so load_run's
-    # already-loaded skip naturally re-ingests every run.
+    # fleet-wide meaning). After a reset the DB is empty, so the
+    # already-loaded skip in pending_run_dirs re-ingests every run.
     if args.force:
         silver.reset(args.silver_db)
     conn = open_db(args.silver_db)
     silver.apply_migrations(conn, MIGRATIONS_DIR)
 
-    runs = list(bronze.iter_run_dirs(args.bronze_dir))
-    log.info("found %d bronze run(s) under %s", len(runs), args.bronze_dir)
+    # A walk that crashed or is still running holds a partial capture: its
+    # list nodes would replace the positions a complete run replayed from the
+    # full ledger, and its dump_runs row would count as an observation.
+    # pending_run_dirs skips such a run, a loaded one, and a slug that names
+    # no real instant.
+    runs = bronze.pending_run_dirs(conn, args.bronze_dir, log=log)
+    log.info("found %d pending bronze run(s) under %s", len(runs),
+             args.bronze_dir)
     for run_dir in runs:
         stats = load_run(conn, run_dir)
-        if stats.get("skipped"):
-            log.info("  %s: skipped (%s)", stats["name"], stats["reason"])
-        else:
-            log.info("  %s: offerings=%d position-events=%d cash_flows=%d "
-                     "tax_documents=%d capital_account_statements=%d k1_documents=%d",
-                     stats["name"], stats["offerings"], stats["positions"],
-                     stats["cash_flows"], stats["tax_documents"],
-                     stats["capital_account_statements"], stats["k1_documents"])
+        log.info("  %s: offerings=%d position-events=%d cash_flows=%d "
+                 "tax_documents=%d capital_account_statements=%d k1_documents=%d",
+                 stats["name"], stats["offerings"], stats["positions"],
+                 stats["cash_flows"], stats["tax_documents"],
+                 stats["capital_account_statements"], stats["k1_documents"])
     conn.close()
     return 0
 

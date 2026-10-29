@@ -35,8 +35,10 @@ page aborts every request under `/assetview/` or
 page or to the account API that :func:`refuse_request` refuses: the
 SPA's and the legacy app's own requests too. Each abort is an error
 entry. Every reference the pass itself opens goes through
-:func:`refuse_request` first. AGENTS.md §1 states the surface; this is
-where it is held.
+:func:`refuse_request` first. A route handler sees only a redirect's
+first URL, so the page a redirect lands on is checked against the same
+allow-list once it has loaded. AGENTS.md §1 states the surface; this
+is where it is held.
 """
 
 from __future__ import annotations
@@ -185,8 +187,9 @@ def scrub(text: str, *, drop: bool = False) -> str:
 
 def excerpt(body: str) -> str:
     """The start of a failed response's body, with every token-shaped
-    run of characters left out."""
-    return scrub(body[:BODY_EXCERPT_CHARS], drop=True)
+    run of characters left out. The body is scrubbed before it is cut,
+    so a token the cut splits is still dropped whole."""
+    return scrub(body, drop=True)[:BODY_EXCERPT_CHARS]
 
 
 class _Failed(RuntimeError):
@@ -197,7 +200,7 @@ class _Failed(RuntimeError):
         self.fields = fields
 
 
-def _error(e: Exception) -> str:
+def error_text(e: Exception) -> str:
     """An exception as an error entry and a log line print it."""
     return scrub(debugcap.safe_error(e))
 
@@ -313,18 +316,18 @@ def capture(surface: Surface, run_dir: Path, accounts: list[dict]) -> dict:
         try:
             frame = surface.open_legacy()
         except Exception as e:  # noqa: BLE001 — the modern files stay
-            log.warning("legacy rate entry not found: %s", _error(e))
+            log.warning("legacy rate entry not found: %s", error_text(e))
             result["errors"].append({"stage": "legacy-entry",
-                                     "error": _error(e)})
+                                     "error": error_text(e)})
             surface.shot("rates-legacy-entry-failed")
         else:
             try:
                 _capture_legacy(surface, guard, frame, rates_dir, covered,
                                 result)
             except Exception as e:  # noqa: BLE001 — the modern files stay
-                log.warning("legacy rate pass failed: %s", _error(e))
+                log.warning("legacy rate pass failed: %s", error_text(e))
                 result["errors"].append({
-                    "stage": "legacy-list", "error": _error(e),
+                    "stage": "legacy-list", "error": error_text(e),
                     **guard.answer(ubs.LEGACY_CONTRACT_LIST_PATH)})
                 surface.shot("rates-legacy-list-failed")
     finally:
@@ -356,9 +359,9 @@ def _capture_api(surface: Surface, guard: RouteGuard, rates_dir: Path,
             payload = _api_response(surface, account_id)
         except Exception as e:  # noqa: BLE001 — one account, not the pass
             log.warning("rates for account %s… failed: %s", short[:8],
-                        _error(e))
+                        error_text(e))
             result["errors"].append({"account_short_id": short,
-                                     "stage": "api", "error": _error(e),
+                                     "stage": "api", "error": error_text(e),
                                      **getattr(e, "fields", {})})
             surface.shot(f"rates-api-{short}-failed")
             continue
@@ -400,7 +403,8 @@ def _api_response(surface: Surface, account_id: str) -> dict:
         response = info.value
     except Exception as e:
         raise _Failed("no account API response within "
-                      f"{RESPONSE_TIMEOUT_MS // 1000}s: {_error(e)}") from e
+                      f"{RESPONSE_TIMEOUT_MS // 1000}s: "
+                      f"{error_text(e)}") from e
     if not response.ok:
         try:
             body = excerpt(response.text())
@@ -444,7 +448,9 @@ def _open(surface: Surface, guard: RouteGuard, frame, ref: str,
     response = frame.goto(surface.origin + ref, wait_until="load",
                           referer=referer, timeout=RESPONSE_TIMEOUT_MS)
     if response is not None and response.status >= 400:
-        path = urlsplit(ref).path
+        # The response that ends the redirect chain, so the page named
+        # is the one that failed.
+        path = urlsplit(response.url).path
         raise _Failed(f"HTTP {response.status} for "
                       f"{path.rsplit('/', 1)[-1]}",
                       **guard.answer(path))
@@ -465,8 +471,17 @@ def _account_page(surface: Surface, guard: RouteGuard, frame,
     """One account's page, by its "Account details" link, opened in the
     list's parent frame as the item opens it, from the list. The
     browser follows the link's redirect; the dispatcher it lands on
-    frames the page."""
+    frames the page.
+
+    A route handler sees only a redirect's first URL, so the page the
+    redirect lands on is checked against the same allow-list once it
+    has loaded.
+    """
     _open(surface, guard, frame, link, referer=list_url)
+    refusal = refuse_request("GET", _ref(frame.url))
+    if refusal is not None:
+        raise RuntimeError(
+            f"the details link led to a refused page: {scrub(refusal)}")
     landed = urlsplit(frame.url).path
     if landed != ubs.LEGACY_DISPATCHER_PATH:
         raise RuntimeError(f"the details link led to "
@@ -484,9 +499,11 @@ def _capture_legacy(surface: Surface, guard: RouteGuard, frame,
     The list's links are ids the server resolves for the render that
     printed them. Each account is read from a fresh render: before
     every account after the first, "Account balances" is opened again
-    as the menu opens it, and the account found again by its IBAN. A row that prints
-    no IBAN cannot be found again, and is recorded rather than read. A
-    page is kept only when its own IBAN is its row's.
+    as the menu opens it, and the account found again by its IBAN. A
+    row that prints no IBAN cannot be found again, and is recorded
+    rather than read. A page is kept only when its own IBAN is its
+    row's. A fresh render that fails is recorded and ends the pass:
+    the accounts after it are not attempted.
     """
     rows, list_url = _contract_list(frame, guard)
     legacy = result["legacy"]
@@ -506,8 +523,17 @@ def _capture_legacy(surface: Surface, guard: RouteGuard, frame,
     for iban in pending:
         if not fresh:
             guard.forget(ubs.LEGACY_CONTRACT_LIST_PATH)
-            frame = surface.open_legacy()
-            rows, list_url = _contract_list(frame, guard)
+            try:
+                frame = surface.open_legacy()
+                rows, list_url = _contract_list(frame, guard)
+            except Exception as e:  # noqa: BLE001 — the read pages stay
+                log.warning("legacy rate entry not found again: %s",
+                            error_text(e))
+                result["errors"].append({
+                    "stage": "legacy-entry", "error": error_text(e),
+                    **getattr(e, "fields", {})})
+                surface.shot("rates-legacy-entry-failed")
+                break
         fresh = False
         row = next((r for r in rows if r["iban"] == iban), None)
         if row is None:
@@ -521,10 +547,10 @@ def _capture_legacy(surface: Surface, guard: RouteGuard, frame,
                                  list_url)
         except Exception as e:  # noqa: BLE001 — one account, not the pass
             log.warning("legacy rates for %s… failed: %s",
-                        token[:8], _error(e))
+                        token[:8], error_text(e))
             result["errors"].append({
                 "link_short_id": token, "stage": "legacy",
-                "error": _error(e),
+                "error": error_text(e),
                 **getattr(e, "fields", {})})
             surface.shot(f"rates-legacy-{token}-failed")
             continue
@@ -540,7 +566,6 @@ def _capture_legacy(surface: Surface, guard: RouteGuard, frame,
                                      "error": "the page names another "
                                               "account than its row"})
             continue
-        covered.add(page_iban)
         name = legacy_file_name(page_iban)
         bronze.atomic_write_bytes(rates_dir / name, html.encode("utf-8"))
         legacy["answered"].append({"link_short_id": token, "file": name})

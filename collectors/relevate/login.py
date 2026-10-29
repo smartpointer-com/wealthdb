@@ -29,8 +29,7 @@ session until Airlock expires it server-side.
 
 --check loads an existing state file and probes the landmark
 without re-authenticating. Reports ALIVE / DEAD / MISSING. Allowed
-without explicit user permission (no credential submit, no mTAN
-push).
+without asking (no credential submit, no mTAN push).
 
 Credentials are read from the RELEVATE_LOGIN / RELEVATE_PASSWORD
 env vars. The host wrapper sources ~/.secrets/relevate.env before

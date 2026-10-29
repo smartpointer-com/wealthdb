@@ -560,9 +560,9 @@ def _apply_account_number(conn: sqlite3.Connection,
         return False
     if len(candidates) > 1:
         log.warning(
-            "account …%s: %d conflicting full account numbers across "
+            "account %s: %d conflicting full account numbers across "
             "statement headers; leaving account_number_full unset",
-            account_external_id, len(candidates),
+            bronze.log_id(account_external_id), len(candidates),
         )
         return _write_account_number(conn, account_external_id, None)
     return _write_account_number(conn, account_external_id,
@@ -694,12 +694,12 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
     with manifest_path.open("r", encoding="utf-8") as fh:
         manifest = json.load(fh)
 
-    # Skip non-complete dumps. download.walk() writes run.json
-    # incrementally with status="in-progress", flipping it to
-    # "complete" (or "dry-run") only at the end — so a crashed walk
-    # or a --dry-run shell leaves a partial manifest present that must
-    # NOT be ingested (partial balances would leak into gold as a
-    # snapshot; a dry-run's tx-history exports still fire).
+    # Skip non-complete dumps (bronze.is_loadable_status, the rule prune
+    # applies to a present status). download.walk() writes run.json
+    # incrementally with status="in-progress", flipping it to "complete"
+    # only at the end, so a crashed walk leaves a partial manifest that
+    # must NOT be ingested (partial balances would leak into gold as a
+    # snapshot). A --dry-run writes nothing under bronze.
     status = manifest.get("status")
     if not bronze.is_loadable_status(status):
         log.warning(
@@ -1715,7 +1715,7 @@ def _position_rows(account_external_id: str, as_of_date: int,
             log.warning(
                 "skipping position with no instrument_key in payload "
                 "(account=%s, as_of=%s)",
-                account_external_id, as_of_date,
+                bronze.log_id(account_external_id), as_of_date,
             )
             continue
         payload = canonical_json({
@@ -2080,7 +2080,7 @@ def _log_registration_histogram(conn: sqlite3.Connection) -> None:
     ).fetchone()[0]
     log.info("account_registration after load:")
     for acct, reg in rows:
-        log.info("  …%s  %s", acct, reg)
+        log.info("  %s  %s", bronze.log_id(acct), reg)
     if null_count:
         log.warning(
             "  %d account(s) have NULL account_registration "

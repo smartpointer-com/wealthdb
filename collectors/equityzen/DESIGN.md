@@ -12,8 +12,7 @@ the **wealthdb** suite — see [the architecture
 overview](../../DESIGN.md) and [collectors/README.md](../README.md).
 
 The API surface, auth flow, page routes, and data model below are mapped
-by the `explore` harness (§3), not guessed. Unbuilt pieces are listed
-under [Future work](#7-future-work).
+by the `explore` harness (§3), not guessed.
 
 Sections:
 
@@ -23,8 +22,7 @@ Sections:
 4. [Login and download](#4-login-and-download)
 5. [Silver schema](#5-silver-schema)
 6. [Gold adapter](#6-gold-adapter)
-7. [Future work](#7-future-work)
-8. [Read-only & PII](#8-read-only--pii)
+7. [Read-only & PII](#7-read-only--pii)
 
 ## Why a separate collector
 
@@ -192,7 +190,8 @@ checkbox), but closing the browser does **not** log the account out — the
 session cookie in the profile dir stays valid until an explicit logout or
 server-side expiry, so the renewal short-circuit keeps later runs from
 asking for a fresh TOTP code (cf. `cointracking`). **Never log out at the end of
-any verb.** `--check` probes the dashboard and exits 0/1 with no 2FA push.
+any verb.** `--check` probes the dashboard and exits 0/1 without asking for
+a code.
 
 ### download — per-surface bronze capture
 
@@ -369,8 +368,9 @@ lacks** — each statement's `ending_nav` is injected into `positions` as a
 `statement` revaluation event (kind=`private_fund` only; SPVs stay
 tender-driven), so a fund's `positions` history runs investment → quarterly
 NAV revaluations. The API reports only cost for a fund, so a fund's fall
-below cost shows only in its statements. K-1s contribute the tax-basis capital account; their
-Part III boxes are not extracted (form-grid parsing — see §7).
+below cost shows only in its statements. K-1s contribute the tax-basis
+capital account. Only Item L of a K-1 is parsed; the Part III grid is not
+(`pdftotext` reads the box numbers, not the amounts).
 
 The GraphQL feed is the primary cash-flow source; these PDFs corroborate
 it and backstop anything it misses — a distribution can reach a bank
@@ -529,22 +529,7 @@ distribution+withdrawal, the $0-exit withdrawal omission) including the
 **paired ledger nets to exactly 0** invariant. `basis_test.go` covers the
 book-value arithmetic.
 
-## 7. Future work
-
-Open items:
-
-- **K-1 Part III box amounts** (income / gains / distributions) — the IRS
-  form grid defeats a naive `pdftotext` parse (it grabs box *numbers*, not
-  amounts), so only Item L (the tax-basis capital account) is extracted.
-  The blobs are archived in bronze, so a grid-aware extractor is a
-  parse-only follow-up.
-- **A per-company *closed*-deal price feed.** The `/equity/<uuid>/` pages
-  carry only order-book asks and company metadata, no reliable price (§4, "Why no
-  `/equity/<uuid>/` capture"), and everything valuation needs is already in
-  the holdings bronze. If EquityZen ever exposes a per-company closed-deal
-  price, that is the surface to revisit; the operation map is recorded in §4.
-
-## 8. Read-only & PII
+## 7. Read-only & PII
 
 See [AGENTS.md](AGENTS.md) for the allowed and forbidden surfaces and the
 private-data rules. Company names, SPV and fund names, share counts, basis

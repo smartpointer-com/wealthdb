@@ -105,8 +105,9 @@ Subcommands:
               cache. --dry-run prints the plan first.
   vnc-login   Fallback to a VNC-driven login + scrape when the
               CLI-MFA selectors drift or a non-code challenge is
-              required. Starts x11vnc on 127.0.0.1:5900; tunnel
-              to it and connect a local VNC client.
+              required. Starts x11vnc; the wrapper publishes it on
+              the first free 127.0.0.1 port in 5900-6000 (printed at
+              start). Tunnel to it and connect a local VNC client.
   sh|bash     Open an interactive shell inside the container.
   help        Show this message.
 

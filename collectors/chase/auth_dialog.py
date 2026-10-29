@@ -77,7 +77,7 @@ class ChallengeMenu:
     devices: tuple[Target, ...] = ()      # in-app push targets
 
     def offerable(self) -> list[str]:
-        """Factors we can both drive AND have the inputs for: SMS/voice need
+        """Factors the flow can both drive AND has the inputs for: SMS/voice need
         at least one phone; in-app needs a registered device. Order follows
         Chase's own `showAll`."""
         out = []

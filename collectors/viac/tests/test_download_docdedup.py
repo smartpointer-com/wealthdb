@@ -2,10 +2,10 @@
 
 Exercises the pieces the live document walk builds on — the per-(type,
 subType) class mapping, the disk-driven extract hook, and the (docid,)
-keying — plus the end-to-end mode dispatch, both through
-``docdedup.process`` directly (with an injected stub fetch) and through the
-real ``download.fetch_pdf`` (with a fake streaming client). Asserts each
-document class behaves per the correctness-safe mapping:
+keying — plus the end-to-end mode dispatch through the real
+``download.fetch_pdf`` (with a fake streaming client). The engine's own
+per-class behaviour is tested in collectorkit (test_docdedup.py). The class
+mapping asserts each document class gets the correctness-safe mode:
 
   * executed-once, immutable, unparsed docs — contracts, investment
     profiles, credit notes, communications, and the per-event TRANSACTION
@@ -18,7 +18,7 @@ document class behaves per the correctness-safe mapping:
     link-everything scheme would serve stale);
   * an unrecognised type → always fetched (fail-safe);
   * a real fetch failure → an error; the audit block carries viac's
-    `skipped` bucket; --documents-force bypasses the index.
+    `skipped` bucket.
 
 viac has no equityzen-style "no-blob" outcome: every in-gate index entry is
 fetchable by its documentNumber (there is no separate URL that could be
@@ -38,15 +38,12 @@ COLLECTOR = HERE.parent
 sys.path.insert(0, str(COLLECTOR))
 
 import download  # noqa: E402
-from collectorkit import bronze, docdedup  # noqa: E402
+from collectorkit import docdedup  # noqa: E402
 
 # Synthetic document numbers — used verbatim as the docdedup key and the
 # on-disk stem, so any stable string works.
 REPORT_ID = "SYN-REPORT-0001"       # INVESTMENT_REPORTING (parsed → fetch-verify)
-TAX_ID = "SYN-TAX-0001"             # TAX_REPORT / Bescheinigung (fetch-verify)
-FUSION_ID = "SYN-FUSION-0001"       # SECURITY_FUSION (data-bearing → fetch-verify)
 CONTRACT_ID = "SYN-CONTRACT-0001"   # PROVISION_CONTRACT (immutable → link)
-TRADE_ID = "SYN-TRADE-0001"         # per-event TRADE_REPORT (immutable → link)
 OTHER_ID = "SYN-OTHER-0001"         # unrecognised subtype (fail-safe → fetch-verify)
 
 BODY = b"%PDF-1.4 synthetic statement body " + b"x" * 200
@@ -70,25 +67,6 @@ def _prior_run(root: Path, docid: str, body: bytes,
 
 def _prior_blob(prior: Path, docid: str) -> Path:
     return prior / "documents" / f"{docid}.pdf"
-
-
-def _dispatch(run: Path, skip, docid: str, doc_type: str | None,
-              subtype: str | None, body: bytes, calls: list,
-              *, force: bool = False) -> str:
-    """Replay download.py's per-document dispatch for one doc through the
-    engine, with a stub fetch that records whether it actually ran."""
-    doc = {"documentNumber": docid, "type": doc_type, "subType": subtype}
-    target_dir = run / "documents"
-
-    def _fetch():
-        calls.append(docid)
-        path = target_dir / f"{docid}.pdf"
-        bronze.atomic_write_bytes(path, body)
-        return path
-
-    return docdedup.process(
-        skip, key=(docid,), doc_class=download._document_class(doc),
-        target_dir=target_dir, stem=docid, fetch=_fetch, force=force)
 
 
 def _skip(root: Path, run: Path):
@@ -187,168 +165,6 @@ def test_extract_viac_no_documents_dir(tmp_path):
     d = tmp_path / OLD
     d.mkdir()
     assert list(download.extract_viac(d, None)) == []
-
-
-# ============================================================
-# End-to-end dispatch by class (engine-level)
-# ============================================================
-
-def test_contract_is_linked(tmp_path):
-    # An executed-once immutable contract identical to a prior run is
-    # hardlinked in — the fetch-avoidance win, safe because it is not parsed.
-    prior = _prior_run(tmp_path, CONTRACT_ID, BODY)
-    run = tmp_path / CUR
-    run.mkdir()
-    calls: list = []
-    status = _dispatch(run, _skip(tmp_path, run), CONTRACT_ID,
-                       "CONTRACT", "PROVISION_CONTRACT", BODY, calls)
-    assert status == docdedup.LINKED
-    assert calls == []                                   # fetch avoided
-    linked = run / "documents" / f"{CONTRACT_ID}.pdf"
-    assert _ino(linked) == _ino(_prior_blob(prior, CONTRACT_ID))
-    assert linked.read_bytes() == BODY
-
-
-def test_transaction_receipt_is_linked(tmp_path):
-    # The bulk-volume case: a per-event TRADE_REPORT receipt (immutable once
-    # settled, never parsed) is hardlinked from a prior identical copy.
-    prior = _prior_run(tmp_path, TRADE_ID, BODY)
-    run = tmp_path / CUR
-    run.mkdir()
-    calls: list = []
-    status = _dispatch(run, _skip(tmp_path, run), TRADE_ID,
-                       "TRANSACTION", "TRADE_REPORT", BODY, calls)
-    assert status == docdedup.LINKED
-    assert calls == []
-    assert _ino(run / "documents" / f"{TRADE_ID}.pdf") == \
-        _ino(_prior_blob(prior, TRADE_ID))
-
-
-def test_report_unchanged_is_verified(tmp_path):
-    # A REPORT statement is fetch-verify (parsed → restatement-prone), NOT
-    # link: it is ALWAYS fetched, and a byte-identical prior is hardlinked
-    # only to reclaim disk (never a fetch-skipping stale link).
-    prior = _prior_run(tmp_path, REPORT_ID, BODY)
-    run = tmp_path / CUR
-    run.mkdir()
-    calls: list = []
-    status = _dispatch(run, _skip(tmp_path, run), REPORT_ID,
-                       "REPORT", "INVESTMENT_REPORTING", BODY, calls)
-    assert status == docdedup.VERIFIED
-    assert calls == [REPORT_ID]                          # statement ALWAYS fetched
-    assert _ino(run / "documents" / f"{REPORT_ID}.pdf") == \
-        _ino(_prior_blob(prior, REPORT_ID))
-
-
-def test_report_restated_is_kept(tmp_path):
-    # The correctness case viac's old link-everything code got wrong: a
-    # REPORT statement whose bytes change between runs (a restatement under a
-    # stable documentNumber) is fetched and its NEW bytes kept — never linked
-    # to a stale prior that would feed a superseded holding into the replay.
-    prior = _prior_run(tmp_path, REPORT_ID, BODY)
-    run = tmp_path / CUR
-    run.mkdir()
-    calls: list = []
-    status = _dispatch(run, _skip(tmp_path, run), REPORT_ID,
-                       "REPORT", "INVESTMENT_REPORTING", BODY2, calls)
-    assert status == docdedup.CHANGED
-    fetched = run / "documents" / f"{REPORT_ID}.pdf"
-    assert fetched.read_bytes() == BODY2                 # restated content kept
-    assert _prior_blob(prior, REPORT_ID).read_bytes() == BODY
-
-
-def test_tax_unchanged_is_verified(tmp_path):
-    prior = _prior_run(tmp_path, TAX_ID, BODY)
-    run = tmp_path / CUR
-    run.mkdir()
-    calls: list = []
-    status = _dispatch(run, _skip(tmp_path, run), TAX_ID,
-                       "TAX", "TAX_REPORT", BODY, calls)
-    assert status == docdedup.VERIFIED
-    assert calls == [TAX_ID]                             # tax docs ALWAYS fetched
-    assert _ino(run / "documents" / f"{TAX_ID}.pdf") == \
-        _ino(_prior_blob(prior, TAX_ID))
-
-
-def test_tax_corrected_is_kept(tmp_path):
-    # A Bescheinigung re-issued under a stable documentNumber is fetched and
-    # its NEW bytes kept — never linked to stale.
-    prior = _prior_run(tmp_path, TAX_ID, BODY)
-    run = tmp_path / CUR
-    run.mkdir()
-    calls: list = []
-    status = _dispatch(run, _skip(tmp_path, run), TAX_ID,
-                       "TAX", "TAX_REPORT", BODY2, calls)
-    assert status == docdedup.CHANGED
-    fetched = run / "documents" / f"{TAX_ID}.pdf"
-    assert fetched.read_bytes() == BODY2
-    assert _prior_blob(prior, TAX_ID).read_bytes() == BODY
-
-
-def test_security_fusion_is_fetch_verified(tmp_path):
-    # SECURITY_FUSION carries the ONLY copy of the old→new ISIN map and a
-    # parser pass is planned, so it is fetch-verified, never linked.
-    prior = _prior_run(tmp_path, FUSION_ID, BODY)
-    run = tmp_path / CUR
-    run.mkdir()
-    calls: list = []
-    status = _dispatch(run, _skip(tmp_path, run), FUSION_ID,
-                       "TRANSACTION", "SECURITY_FUSION", BODY, calls)
-    assert status == docdedup.VERIFIED
-    assert calls == [FUSION_ID]                          # the fetch DID run
-    assert _ino(run / "documents" / f"{FUSION_ID}.pdf") == \
-        _ino(_prior_blob(prior, FUSION_ID))
-
-
-def test_security_fusion_changed_keeps_fresh(tmp_path):
-    _prior_run(tmp_path, FUSION_ID, BODY)
-    run = tmp_path / CUR
-    run.mkdir()
-    calls: list = []
-    status = _dispatch(run, _skip(tmp_path, run), FUSION_ID,
-                       "TRANSACTION", "SECURITY_FUSION", BODY2, calls)
-    assert status == docdedup.CHANGED
-    assert (run / "documents" / f"{FUSION_ID}.pdf").read_bytes() == BODY2
-
-
-def test_unknown_type_is_fetch_verified(tmp_path):
-    # An unclassified type is fetch-verified (the safe default): ALWAYS
-    # fetched, but a byte-identical prior is still deduped to a hardlink.
-    prior = _prior_run(tmp_path, OTHER_ID, BODY)
-    run = tmp_path / CUR
-    run.mkdir()
-    calls: list = []
-    status = _dispatch(run, _skip(tmp_path, run), OTHER_ID,
-                       "TRANSACTION", "SOMETHING_NEW", BODY, calls)
-    assert status == docdedup.VERIFIED                   # fetched, then deduped
-    assert calls == [OTHER_ID]                           # the fetch DID run
-    assert _ino(run / "documents" / f"{OTHER_ID}.pdf") == \
-        _ino(_prior_blob(prior, OTHER_ID))
-
-
-def test_documents_force_bypasses_index(tmp_path):
-    prior = _prior_run(tmp_path, REPORT_ID, BODY)
-    run = tmp_path / CUR
-    run.mkdir()
-    calls: list = []
-    status = _dispatch(run, _skip(tmp_path, run), REPORT_ID,
-                       "REPORT", "INVESTMENT_REPORTING", BODY, calls, force=True)
-    assert status == docdedup.FETCHED                    # forced fetch, no hardlink
-    assert calls == [REPORT_ID]
-    assert _ino(run / "documents" / f"{REPORT_ID}.pdf") != \
-        _ino(_prior_blob(prior, REPORT_ID))
-
-
-def test_new_document_is_fetched(tmp_path):
-    # No prior copy → a genuine first fetch (kept), whatever the class.
-    run = tmp_path / CUR
-    run.mkdir()
-    calls: list = []
-    status = _dispatch(run, _skip(tmp_path, run), REPORT_ID,
-                       "REPORT", "INVESTMENT_REPORTING", BODY, calls)
-    assert status == docdedup.FETCHED
-    assert calls == [REPORT_ID]
-    assert (run / "documents" / f"{REPORT_ID}.pdf").read_bytes() == BODY
 
 
 # ============================================================

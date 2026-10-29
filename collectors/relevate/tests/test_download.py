@@ -11,8 +11,9 @@ invariant.
 
 Part 2 — the document download-avoidance walk (`collectorkit.docdedup`), with
 no network. Exercises the per-document class mapping, the disk-driven extract
-hook, the (doc_id,) keying, and the end-to-end mode dispatch with an injected
-stub fetch. Asserts each document kind behaves per the mode mapping:
+hook, the (doc_id,) keying, and `fetch_documents` end to end over a fake
+session, its manifest audit included. Asserts each document kind behaves per
+the mode mapping:
 
   * executed-once immutable kinds not parsed by load (fee statements, pension
     agreements/plans, investor profiles, account-opening docs) → LINKED from a
@@ -184,24 +185,50 @@ def _prior_run(root: Path, doc_id: int, body: bytes, file_name: str, *,
     return d
 
 
-def _dispatch(run: Path, skip, doc_id: int, file_name: str, body: bytes,
-              calls: list, *, force: bool = False) -> str:
-    """Replays download.py's per-document dispatch for one doc: the class is
-    chosen from the entry's fileName, and the stub fetch writes <id>.pdf and
-    records the call so a test can assert whether the fetch actually ran."""
-    entry = {"id": doc_id, "fileName": file_name}
-    docs_dir = run / "documents"
+class _BinResp:
+    """A requests.Response stand-in for a document GET."""
 
-    def _fetch():
-        calls.append(doc_id)
-        path = docs_dir / f"{doc_id}.pdf"
-        bronze.atomic_write_bytes(path, body)
-        return path
+    def __init__(self, body: bytes, ctype: str) -> None:
+        self.status_code = 200
+        self.content = body
+        self.headers = {"content-type": ctype}
 
-    return docdedup.process(
-        skip, key=(doc_id,), doc_class=download._document_class(entry),
-        target_dir=docs_dir, stem=str(doc_id), fetch=_fetch, force=force,
-        usable=docdedup.is_pdf)
+
+class _DocSession:
+    """Serves the documents index and one body per document id, and
+    records every document GET so a test can tell whether a fetch ran."""
+
+    def __init__(self, entries: list, bodies: dict, ctype: str) -> None:
+        self.entries, self.bodies, self.ctype = entries, bodies, ctype
+        self.calls: list[int] = []
+
+    def get(self, url, timeout=None, allow_redirects=None):  # noqa: ANN001
+        if url.endswith(download.EP_DOCUMENTS_INDEX):
+            return _FakeResp(200, {"documents": self.entries})
+        for doc_id, body in self.bodies.items():
+            if url.endswith(download.ep_document(doc_id)):
+                self.calls.append(doc_id)
+                return _BinResp(body, self.ctype)
+        raise AssertionError(f"unexpected GET: {url}")
+
+
+def _fetch(run: Path, doc_id: int, file_name: str, body: bytes, *,
+           force: bool = False, ctype: str = "application/pdf"):
+    """Run download.fetch_documents over a one-document index, against
+    the prior runs beside `run`. Returns (the manifest's documents audit,
+    the document ids actually fetched)."""
+    sess = _DocSession([{"id": doc_id, "fileName": file_name,
+                         "createDate": OLD_CREATE}], {doc_id: body}, ctype)
+    manifest = download.Manifest(run, mode="full", dry_run=False)
+    download.fetch_documents(
+        sess, run, manifest, limit=None, documents_since=date(2000, 1, 1),
+        documents_until=date(2100, 1, 1), force=force)
+    counts = manifest.documents()
+    assert counts["total"] == 1
+    # The audit is flushed to the run's manifest, not only held in memory.
+    on_disk = json.loads((run / "run.json").read_text())["documents"]
+    assert on_disk == counts
+    return counts, sess.calls
 
 
 def _ino(p: Path) -> int:
@@ -299,11 +326,8 @@ def test_immutable_doc_is_linked(tmp_path):
     prior = _prior_run(tmp_path, DOC_ID_FEE, BODY, FEE_NAME)
     run = bronze.run_dir(tmp_path, CUR)
     run.mkdir()
-    skip = docdedup.SkipSet.derive(tmp_path, download.extract_relevate,
-                                   exclude_run=run)
-    calls: list = []
-    status = _dispatch(run, skip, DOC_ID_FEE, FEE_NAME, BODY, calls)
-    assert status == docdedup.LINKED
+    counts, calls = _fetch(run, DOC_ID_FEE, FEE_NAME, BODY)
+    assert counts["linked"] == 1
     assert calls == []                               # fetch avoided
     linked = run / "documents" / f"{DOC_ID_FEE}.pdf"
     assert _ino(linked) == _ino(prior / "documents" / f"{DOC_ID_FEE}.pdf")
@@ -317,11 +341,8 @@ def test_parsed_report_unchanged_is_verified(tmp_path):
     prior = _prior_run(tmp_path, DOC_ID_REPORT, BODY, REPORT_NAME)
     run = bronze.run_dir(tmp_path, CUR)
     run.mkdir()
-    skip = docdedup.SkipSet.derive(tmp_path, download.extract_relevate,
-                                   exclude_run=run)
-    calls: list = []
-    status = _dispatch(run, skip, DOC_ID_REPORT, REPORT_NAME, BODY, calls)
-    assert status == docdedup.VERIFIED
+    counts, calls = _fetch(run, DOC_ID_REPORT, REPORT_NAME, BODY)
+    assert counts["verified"] == 1
     assert calls == [DOC_ID_REPORT]                  # report ALWAYS fetched
     fetched = run / "documents" / f"{DOC_ID_REPORT}.pdf"
     assert _ino(fetched) == _ino(prior / "documents" / f"{DOC_ID_REPORT}.pdf")
@@ -335,11 +356,8 @@ def test_parsed_report_restated_is_kept(tmp_path):
     prior = _prior_run(tmp_path, DOC_ID_REPORT, BODY, REPORT_NAME)
     run = bronze.run_dir(tmp_path, CUR)
     run.mkdir()
-    skip = docdedup.SkipSet.derive(tmp_path, download.extract_relevate,
-                                   exclude_run=run)
-    calls: list = []
-    status = _dispatch(run, skip, DOC_ID_REPORT, REPORT_NAME, BODY2, calls)
-    assert status == docdedup.CHANGED
+    counts, _ = _fetch(run, DOC_ID_REPORT, REPORT_NAME, BODY2)
+    assert counts["changed"] == 1
     fetched = run / "documents" / f"{DOC_ID_REPORT}.pdf"
     assert fetched.read_bytes() == BODY2             # restated content kept
     assert (prior / "documents" / f"{DOC_ID_REPORT}.pdf").read_bytes() == BODY
@@ -351,11 +369,8 @@ def test_credit_note_corrected_is_kept(tmp_path):
     _prior_run(tmp_path, DOC_ID_CREDIT, BODY, CREDIT_NAME)
     run = bronze.run_dir(tmp_path, CUR)
     run.mkdir()
-    skip = docdedup.SkipSet.derive(tmp_path, download.extract_relevate,
-                                   exclude_run=run)
-    calls: list = []
-    status = _dispatch(run, skip, DOC_ID_CREDIT, CREDIT_NAME, BODY2, calls)
-    assert status == docdedup.CHANGED
+    counts, _ = _fetch(run, DOC_ID_CREDIT, CREDIT_NAME, BODY2)
+    assert counts["changed"] == 1
     fetched = run / "documents" / f"{DOC_ID_CREDIT}.pdf"
     assert fetched.read_bytes() == BODY2
 
@@ -366,11 +381,8 @@ def test_unknown_kind_is_fetch_verified(tmp_path):
     prior = _prior_run(tmp_path, DOC_ID_OTHER, BODY, OTHER_NAME)
     run = bronze.run_dir(tmp_path, CUR)
     run.mkdir()
-    skip = docdedup.SkipSet.derive(tmp_path, download.extract_relevate,
-                                   exclude_run=run)
-    calls: list = []
-    status = _dispatch(run, skip, DOC_ID_OTHER, OTHER_NAME, BODY, calls)
-    assert status == docdedup.VERIFIED               # fetched, then deduped
+    counts, calls = _fetch(run, DOC_ID_OTHER, OTHER_NAME, BODY)
+    assert counts["verified"] == 1                   # fetched, then deduped
     assert calls == [DOC_ID_OTHER]                   # the fetch DID run
     fetched = run / "documents" / f"{DOC_ID_OTHER}.pdf"
     assert _ino(fetched) == _ino(prior / "documents" / f"{DOC_ID_OTHER}.pdf")
@@ -384,11 +396,8 @@ def test_a_linked_document_must_still_be_a_pdf(tmp_path):
     _prior_run(tmp_path, DOC_ID_FEE, b'{"url": "https://cdn.example/x.pdf"}', FEE_NAME)
     run = bronze.run_dir(tmp_path, CUR)
     run.mkdir()
-    skip = docdedup.SkipSet.derive(tmp_path, download.extract_relevate,
-                                   exclude_run=run)
-    calls: list = []
-    status = _dispatch(run, skip, DOC_ID_FEE, FEE_NAME, BODY, calls)
-    assert status == docdedup.FETCHED       # not LINKED
+    counts, calls = _fetch(run, DOC_ID_FEE, FEE_NAME, BODY)
+    assert counts["fetched"] == 1           # not linked
     assert len(calls) == 1
     assert (run / "documents" / f"{DOC_ID_FEE}.pdf").read_bytes() == BODY
 
@@ -401,11 +410,8 @@ def test_link_kind_within_freshness_window_is_refetched(tmp_path):
     prior = _prior_run(tmp_path, DOC_ID_FEE, BODY, FEE_NAME, create_date=recent)
     run = bronze.run_dir(tmp_path, CUR)
     run.mkdir()
-    skip = docdedup.SkipSet.derive(tmp_path, download.extract_relevate,
-                                   exclude_run=run)
-    calls: list = []
-    status = _dispatch(run, skip, DOC_ID_FEE, FEE_NAME, BODY, calls)
-    assert status == docdedup.FETCHED                # re-fetched, not LINKED
+    counts, calls = _fetch(run, DOC_ID_FEE, FEE_NAME, BODY)
+    assert counts["fetched"] == 1                    # re-fetched, not linked
     assert calls == [DOC_ID_FEE]
     fetched = run / "documents" / f"{DOC_ID_FEE}.pdf"
     assert _ino(fetched) != _ino(prior / "documents" / f"{DOC_ID_FEE}.pdf")
@@ -415,12 +421,8 @@ def test_documents_force_bypasses_index(tmp_path):
     prior = _prior_run(tmp_path, DOC_ID_REPORT, BODY, REPORT_NAME)
     run = bronze.run_dir(tmp_path, CUR)
     run.mkdir()
-    skip = docdedup.SkipSet.derive(tmp_path, download.extract_relevate,
-                                   exclude_run=run)
-    calls: list = []
-    status = _dispatch(run, skip, DOC_ID_REPORT, REPORT_NAME, BODY, calls,
-                       force=True)
-    assert status == docdedup.FETCHED                # forced fetch, no hardlink
+    counts, calls = _fetch(run, DOC_ID_REPORT, REPORT_NAME, BODY, force=True)
+    assert counts["fetched"] == 1                    # forced fetch, no hardlink
     assert calls == [DOC_ID_REPORT]
     fetched = run / "documents" / f"{DOC_ID_REPORT}.pdf"
     assert _ino(fetched) != _ino(prior / "documents" / f"{DOC_ID_REPORT}.pdf")
@@ -431,21 +433,20 @@ def test_documents_force_bypasses_index(tmp_path):
 # ------------------------------------------------------------
 
 def test_fetch_failure_is_error(tmp_path):
-    # A fetch that yields no PDF (the closure returns None: non-200, network
-    # error, or a non-PDF body) surfaces as FETCH_FAILED, tallied under errors.
+    # A body that is not a PDF yields no PDF: it is saved beside the target
+    # as <id>.unexpected.<ext>, its content type is noted in the audit, and
+    # the document is tallied under errors.
     run = bronze.run_dir(tmp_path, CUR)
     run.mkdir()
-    skip = docdedup.SkipSet.derive(tmp_path, download.extract_relevate,
-                                   exclude_run=run)
-    entry = {"id": DOC_ID_REPORT, "fileName": REPORT_NAME}
-    status = docdedup.process(
-        skip, key=(DOC_ID_REPORT,), doc_class=download._document_class(entry),
-        target_dir=run / "documents", stem=str(DOC_ID_REPORT),
-        fetch=lambda: None)
-    assert status == docdedup.FETCH_FAILED
-    counts = download._empty_doc_counts()
-    docdedup.tally(counts, status)
+    counts, calls = _fetch(run, DOC_ID_REPORT, REPORT_NAME, b"<html/>",
+                           ctype="text/html")
+    assert calls == [DOC_ID_REPORT]
     assert counts["errors"] == 1
+    assert counts["unexpected_content_type"] == [
+        {"id": DOC_ID_REPORT, "content_type": "text/html"}]
+    docs = run / "documents"
+    assert not (docs / f"{DOC_ID_REPORT}.pdf").exists()
+    assert (docs / f"{DOC_ID_REPORT}.unexpected.html").read_bytes() == b"<html/>"
 
 
 # ============================================================

@@ -44,16 +44,12 @@ TX_PAGE_HTML_ORPHAN_GLOB = "transactions/*/page-*.html"
 def _is_complete(run_dir, meta):
     # status_classification resolves any dump carrying a `status` key
     # (in-progress → complete/dry-run). The fallback below fires only
-    # for a statusless manifest: schwab-web writes run.json
-    # incrementally, so mere presence is NOT proof of completion —
-    # split a real dump (dry_run=false → keep its load inputs) from a
-    # --dry-run shell (dry_run=true → prunable). A crashed statusless
-    # non-dry dump keeps a partial manifest and is treated COMPLETE
-    # (kept) — never deletes a load input.
+    # for a statusless manifest, which predates the field. load reads
+    # every such dump, so it is kept, a legacy --dry-run shell included:
+    # prune never deletes a load input.
     return prune.status_classification(
         run_dir=run_dir, meta=meta,
-        legacy_complete=lambda rd, m: m is not None and not m.get(
-            "dry_run", False),
+        legacy_complete=lambda rd, m: m is not None,
     )
 
 

@@ -54,7 +54,9 @@ cmd="${1:-help}"
 
 case "$cmd" in
     -h|--help|help)
-        awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"
+        # shellcheck disable=SC1091
+        source "$HERE/../../shared/wrappers/host-lib.sh"
+        host_print_banner "${BASH_SOURCE[0]}"
         exit 0
         ;;
     build)

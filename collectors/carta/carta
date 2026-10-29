@@ -6,7 +6,8 @@
 # tolerate concurrent invocations.
 #
 # `explore` forwards a free 5900-6000 host port so the live Camoufox
-# session can be driven over VNC; login + download + load run headlessly.
+# session can be driven over VNC. login and download run headed Camoufox
+# on the container's Xvfb display, with no VNC; load runs no browser.
 #
 # The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
 
@@ -16,7 +17,7 @@ NAME=carta
 ENV_PREFIX=CARTA
 ENV_VARS=(CARTA_USERNAME CARTA_EMAIL CARTA_PASSWORD)
 HAS_DEBUG=1
-HAS_APP_MOUNT=1     # /app live-mount while iterating on explore.py
+HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
 HAS_SAFETY=1        # refuse to evict a live container mid-2FA / mid-VNC
 HAS_VNC=1           # forward a free 5900-6000 port
 VNC_SUBCOMMANDS=(explore)   # replaces the default {vnc-login} — no vnc-login verb here
@@ -34,9 +35,9 @@ if [[ "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0
     cat <<EOF
 carta — host wrapper
 
-Implemented end-to-end: \`login\` (Camoufox SPA login + CLI 2FA) ->
-\`download\` (authenticated REST/JSON walk + document archive) ->
-\`load\` (event-dated silver deltas). See DESIGN.md and README.md.
+\`login\` (Camoufox SPA login + CLI 2FA) -> \`download\` (authenticated
+REST/JSON walk + document archive) -> \`load\` (event-dated silver
+deltas). See DESIGN.md and README.md.
 
 Subcommands:
   build               Build the Docker image (\`docker build\`).
@@ -75,7 +76,8 @@ Subcommands:
                       mid-flight. Also
                       strips screenshots/ (the download --debug captures)
                       from complete dumps; their load inputs are never
-                      touched. --dry-run prints the plan without deleting
+                      touched. Also deletes aged entries of the /debug
+                      cache. --dry-run prints the plan without deleting
                       anything.
   sh|bash             Open an interactive shell in the container.
   help                Show this message.

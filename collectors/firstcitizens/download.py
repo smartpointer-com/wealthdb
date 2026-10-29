@@ -37,7 +37,7 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
-from collectorkit import bronze, cli
+from collectorkit import bronze, cli, debugcap
 
 import login
 import q2client
@@ -67,7 +67,7 @@ def _fetch_history(context, account_id: str,
             if pg == 1:
                 return None
             log.warning("history %s page %d: HTTP %s (stopping)",
-                        account_id, pg, st)
+                        bronze.log_id(account_id), pg, st)
             break
         if count is None:
             d = q2client.history_data(body)
@@ -120,14 +120,17 @@ def _export_account(context, acct: dict, run_dir: Path,
             resp = context.request.post(
                 url, headers=headers, multipart={q2client.Q2TOKEN: token})
             if not 200 <= resp.status < 300:
-                log.warning("export %s/%s: HTTP %s", acct_id, fmt, resp.status)
+                log.warning("export %s/%s: HTTP %s", bronze.log_id(acct_id), fmt, resp.status)
                 continue
             out = (run_dir / "transactions"
                    / f"{bronze.safe_stem(acct_id)}.{fmt}")
             bronze.atomic_write_bytes(out, resp.body())
             written += 1
         except Exception as exc:
-            log.warning("export %s/%s failed: %r", acct_id, fmt, exc)
+            # safe_error, never %r: a Playwright Call log repeats the
+            # request headers, q2token and cookies included.
+            log.warning("export %s/%s failed: %s", bronze.log_id(acct_id), fmt,
+                        debugcap.safe_error(exc))
     return written
 
 
@@ -151,7 +154,7 @@ def _download_statements(context, acct: dict, run_dir: Path,
     status, body = login.q2_get_json(
         context, q2client.account_statement_list_url(acct_id))
     if status != 200 or body is None:
-        log.warning("statement list %s: HTTP %s", acct_id, status)
+        log.warning("statement list %s: HTTP %s", bronze.log_id(acct_id), status)
         return 0
     bronze.atomic_write_json(
         run_dir / "raw" / f"statements-{bronze.safe_stem(acct_id)}.json", body)
@@ -170,14 +173,15 @@ def _download_statements(context, acct: dict, run_dir: Path,
                 url, headers=pdf_headers, multipart={q2client.Q2TOKEN: token})
             if not 200 <= resp.status < 300:
                 log.warning("statement pdf %s/%s: HTTP %s",
-                            acct_id, row["period"], resp.status)
+                            bronze.log_id(acct_id), row["period"], resp.status)
                 continue
             name = f"{bronze.safe_stem(row['period'])}.pdf"
             bronze.atomic_write_bytes(out_dir / name, resp.body())
             written += 1
         except Exception as exc:
-            log.warning("statement pdf %s/%s failed: %r",
-                        acct_id, row["period"], exc)
+            # safe_error, never %r (see the export loop above).
+            log.warning("statement pdf %s/%s failed: %s",
+                        bronze.log_id(acct_id), row["period"], debugcap.safe_error(exc))
     return written
 
 
@@ -224,7 +228,7 @@ def walk(context, bronze_dir: Path, *, formats: tuple[str, ...],
                     acct_id, 1, posted_date=posted_date))
             d = q2client.history_data(body or {})
             log.info("  [dry-run] %s: %s transactions (oldest %s); would "
-                     "fetch history + %s exports + statements", acct_id,
+                     "fetch history + %s exports + statements", bronze.log_id(acct_id),
                      d.get("transactionCount"), d.get("oldestTransactionDate"),
                      "+".join(formats))
             continue
@@ -240,11 +244,11 @@ def walk(context, bronze_dir: Path, *, formats: tuple[str, ...],
             counts["transactions"] += got
             if isinstance(total, int) and got != total:
                 log.warning("history %s: fetched %d of %d transactions",
-                            acct_id, got, total)
+                            bronze.log_id(acct_id), got, total)
             else:
-                log.info("  %s: %d transactions", acct_id, got)
+                log.info("  %s: %d transactions", bronze.log_id(acct_id), got)
         else:
-            log.warning("history %s: fetch failed", acct_id)
+            log.warning("history %s: fetch failed", bronze.log_id(acct_id))
 
         counts["exports"] += _export_account(context, acct, run_dir, formats,
                                              posted_date=posted_date)

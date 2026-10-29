@@ -87,14 +87,40 @@ def test_statement_in_window():
 # Bronze file names
 # ============================================================
 
-def test_bronze_names_are_stable_safe_stems():
-    # download names its bronze files with the shared safe_stem, and load
-    # maps those names back to account ids; the mapping must not drift.
-    from collectorkit import bronze
-    assert bronze.safe_stem("7000001") == "7000001"
-    assert bronze.safe_stem("07/31/2026") == "07-31-2026"
-    assert bronze.safe_stem("../evil") == "evil"
-    assert bronze.safe_stem("") == "item"
+def test_load_finds_a_statement_where_download_puts_it(tmp_path, monkeypatch):
+    # download files a statement PDF under its account and its cycle date;
+    # load resolves that path from the account id and the file name, and
+    # reads the statement date back from the name.
+    from datetime import datetime, timezone
+
+    import load
+
+    class _Resp:
+        status = 200
+
+        def body(self):
+            return b"%PDF-synthetic"
+
+    class _Request:
+        def post(self, url, headers=None, multipart=None):
+            return _Resp()
+
+    class _Context:
+        request = _Request()
+
+    monkeypatch.setattr(login, "q2_get_json", lambda ctx, url: (200, {}))
+    monkeypatch.setattr(login, "q2_headers", lambda ctx: {})
+    monkeypatch.setattr(q2client, "parse_statement_list", lambda body: [
+        {"period": "07/31/2026", "doc_id": "D1"}])
+    run_dir = tmp_path / "bronze" / "20260801T000000Z"
+    assert download._download_statements(
+        _Context(), {"id": "7000001"}, run_dir) == 1
+
+    [pdf] = (run_dir / "statements").rglob("*.pdf")
+    assert load._statement_path(tmp_path / "bronze", run_dir.name,
+                                "7000001", pdf.name) == pdf
+    assert load._statement_date_from_name(pdf.name) == int(
+        datetime(2026, 7, 31, tzinfo=timezone.utc).timestamp())
 
 
 # ============================================================

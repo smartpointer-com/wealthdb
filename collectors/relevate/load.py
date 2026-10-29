@@ -22,7 +22,6 @@ import json
 import logging
 import sqlite3
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -105,21 +104,6 @@ def doc_kind_from_filename(file_name: str | None) -> str:
         if needle.lower() in file_name.lower():
             return label
     return "other"
-
-
-def iso_timestamp_to_epoch(value: str | None) -> int | None:
-    """Unix seconds of an ISO-8601 timestamp (`login.py`'s `minted_at`),
-    or None when absent or unparseable. A timestamp without an offset is
-    read as UTC."""
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(value)
-    except (TypeError, ValueError):
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp())
 
 
 # ============================================================
@@ -429,7 +413,7 @@ def load_one_dump(
                 snapshot_at, schema_version, run_dir.name,
                 run_manifest.get("mode"),
                 1 if run_manifest.get("dry_run") else 0,
-                iso_timestamp_to_epoch(run_manifest.get("state_minted_at")),
+                parse.iso_timestamp_to_epoch(run_manifest.get("state_minted_at")),
                 len(run_manifest.get("files") or []),
                 len(run_manifest.get("errors") or []),
                 canonical_json(run_manifest),

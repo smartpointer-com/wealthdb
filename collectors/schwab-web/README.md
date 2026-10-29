@@ -275,8 +275,8 @@ It removes `<run>/screenshots/` from complete dumps, whole unfinished
 dumps, and old entries of the `/debug` cache. For schwab-web it also
 removes `transactions/*/page-*.html`: landing-page HTML that some run
 dirs hold beside the tx-history exports. `load` never reads those
-files, and the glob matches no `load` input. A run dir without a
-status counts as complete unless its manifest says it was a dry run.
+files, and the glob matches no `load` input. A run dir whose manifest
+has no status counts as complete, since `load` reads it.
 `prune` runs on the host, so it works while a `download` container
 runs.
 

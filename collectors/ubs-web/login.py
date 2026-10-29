@@ -222,8 +222,8 @@ def render_qr_to_terminal(png_bytes: bytes, out=sys.stdout) -> None:
     shows up as one terminal cell. Pairs make the QR look square
     instead of tall.
 
-    Pillow is used for the decoding and pixel access; we deliberately
-    do NOT decode the QR's payload — re-rendering the bitmap as-is
+    Pillow is used for the decoding and pixel access; the QR's payload
+    is deliberately NOT decoded — re-rendering the bitmap as-is
     is enough for the Access App to scan and avoids pulling in
     libzbar / opencv-headless.
     """
@@ -300,8 +300,8 @@ def _detect_module_pitch(bits, w: int, h: int) -> int | None:
     """Find the QR module size in source pixels.
 
     The top-left finder pattern is a 7-module dark square with a
-    5-module dark centre. We scan rows from the top until we find
-    one whose first dark pixel begins a long horizontal dark run;
+    5-module dark centre. Rows are scanned from the top until one is
+    found whose first dark pixel begins a long horizontal dark run;
     that run is exactly 7 modules wide (the outer black border of
     the finder pattern at the very top of the pattern).
     """
@@ -331,7 +331,7 @@ def run_check(state_path: Path, screenshot_dir: Path | None,
     """Validate that the persisted state still authenticates.
 
     Hits a single protected URL with the stored cookies; if UBS
-    redirects us into the workbench (`?navitemid=...`), the
+    redirects the page into the workbench (`?navitemid=...`), the
     session is alive. If it serves the contract-entry dialog or
     a Nevis logout interstitial, the session has expired.
     """
@@ -356,7 +356,7 @@ def run_check(state_path: Path, screenshot_dir: Path | None,
         page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
         try:
             page.goto(ubs.LOGIN_ENTRY_URL, wait_until="domcontentloaded")
-            # Give the SPA a moment to either route us into the
+            # Give the SPA a moment to either route the page into the
             # workbench (cookie valid) or render the login dialog
             # (cookie dead). Wait on either side's anchor selector
             # rather than networkidle.
@@ -430,17 +430,17 @@ def run_login(contract_number: str, state_path: Path, mfa_timeout: int,
             # Submit the form. The contract-entry card has exactly
             # one primary button; click whichever is visible. Falling
             # back to Enter is unreliable: in some flows it submits
-            # cleanly, in others it leaves us on a "Login starten"
+            # cleanly, in others it leaves the page on a "Login starten"
             # interstitial (see Stage 1b below).
             _click_primary_button(page, contract_input)
 
             # ---------- Stage 1b: optional "Login starten" interstitial ----------
             # UBS may render a confirmation card between contract
-            # entry and the QR challenge. We resolve by waiting for
+            # entry and the QR challenge. It is resolved by waiting for
             # whichever shows up first: the QR image (no interstitial)
-            # or the QR card title (interstitial present). If we land
-            # on the interstitial, click its primary button and loop
-            # back to the same wait.
+            # or the QR card title (interstitial present). On the
+            # interstitial, click its primary button and loop back to
+            # the same wait.
             qr_locator = page.locator(f'[data-testid="{ubs.QR_IMG_TESTID}"]')
             _advance_through_access_app_interstitial(page, qr_locator)
 
@@ -532,9 +532,9 @@ def _click_primary_button(page, focus_fallback) -> None:
     """Click the visible primary submit button on a UBS auth card.
 
     UBS labels are locale-dependent ("Weiter" / "Continue" /
-    "Login starten" / ...). We locate by being a `<button
-    type="submit">` inside the auth form; if there are multiple, we
-    pick the first visible one. If none is found, fall back to
+    "Login starten" / ...). The button is located as a `<button
+    type="submit">` inside the auth form; if there are multiple, the
+    first visible one is picked. If none is found, fall back to
     pressing Enter on `focus_fallback`.
     """
     candidates = page.locator('form button[type="submit"]:visible')
@@ -583,7 +583,7 @@ def _read_initial_props_template(page) -> str | None:
     """Return `window.initialProps.template` or None if unavailable.
 
     The Nevis-rendered SPA bootstraps a `var initialProps = {...}`
-    in inline <script>. We just read it back from the page context.
+    in inline <script>. It is read back from the page context.
     """
     try:
         return page.evaluate(
@@ -673,8 +673,8 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
 
-    # `--no-terminal-qr` is only sensible if we still have a way to
-    # see the QR, i.e. via `--qr-png`. Enforce that pairing.
+    # `--no-terminal-qr` is only sensible if the QR can still be seen
+    # another way, i.e. via `--qr-png`. Enforce that pairing.
     if args.no_terminal_qr and args.qr_png is None and not args.check:
         raise SystemExit(
             "--no-terminal-qr requires --qr-png (otherwise there's "

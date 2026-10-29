@@ -515,14 +515,10 @@ def main(argv: list[str] | None = None) -> int:
     # Source the credentials env file before resolving SWISSQUOTE_USERNAME /
     # _PASSWORD, so a plain env file works without a manual `source` and the
     # login isn't forced to getpass-prompt. --env-file wins, else the first
-    # existing default candidate.
-    env_path = envfile.resolve_env_file(args.env_file, DEFAULT_ENV_FILE_CANDIDATES)
-    if env_path is not None:
-        try:
-            if envfile.source_env_file(env_path, prefer_file=True):
-                log.info("env sourced from %s", env_path)
-        except ValueError as e:
-            log.error("env file %s failed to source: %s", env_path, e)
+    # existing default candidate. A named file that is missing, or a bash
+    # error, stops the run.
+    envfile.source_first_env_file(args.env_file, DEFAULT_ENV_FILE_CANDIDATES,
+                                  logger=log)
 
     # --trace must be paired with --screenshot-dir. The trace bundle
     # lands inside that directory; there is no implicit fallback to

@@ -20,7 +20,7 @@ NAME=raiffeisen_at
 ENV_PREFIX=RAIFFEISEN_AT
 ENV_VARS=(RAIFFEISEN_AT_USERNAME RAIFFEISEN_AT_PASSWORD RAIFFEISEN_AT_REGION)
 HAS_DEBUG=1
-HAS_APP_MOUNT=1     # /app live-mount during iteration
+HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
 HAS_SAFETY=1        # refuse to evict a live container mid-pushTAN / mid-VNC
 HAS_VNC=1           # forward a free 5900-6000 port
 VNC_SUBCOMMANDS=(explore vnc-login)   # the browser-over-VNC verbs
@@ -61,8 +61,9 @@ Subcommands:
   load [args...]      Ingest bronze into the SQLite silver (accounts,
                       transactions, daily balances, statements). --force
                       rebuilds from all bronze.
-  prune [args...]     Delete non-complete dumps from the bronze tree (runs
-                      host-side). --dry-run prints the plan.
+  prune [args...]     Delete non-complete dumps from the bronze tree, and
+                      aged entries of the /debug cache (runs host-side).
+                      --dry-run prints the plan.
   explore [args...]   Discovery harness: Camoufox over VNC + HAR / network
                       log / click log / DOM snapshots under /debug. --fresh
                       wipes the profile so the next login forces the cold

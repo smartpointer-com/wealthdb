@@ -25,8 +25,8 @@ Same CLI surface as the rest of the cointracking subcommands:
                        / COINTRACKING_PASSWORD.
   --check              Probe the existing profile via GET
                        /dashboard, exit 0 if authenticated, 1 if
-                       not. No credentials posted, no 2FA push —
-                       safe for cron healthchecks.
+                       not. No credentials posted, no 2FA
+                       challenge.
 """
 from __future__ import annotations
 
@@ -234,7 +234,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--check", action="store_true",
         help=("Probe the stored profile by GET /dashboard. Exits 0 "
               "if authenticated, 1 if not. No credentials posted, "
-              "no 2FA push — safe to call from cron / healthcheck."),
+              "no 2FA challenge."),
     )
     cli.add_standard_args(p, verb="login")
     return p.parse_args(argv)
@@ -244,7 +244,8 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
 
-    envfile.source_env_file(args.env_file, prefer_file=True)
+    # The default file is optional; a bash error in it stops the run.
+    envfile.source_first_env_file(None, (args.env_file,), logger=log)
     # 0700 profile dir (holds the multi-year session + device-trust cookie),
     # with its regenerable startupCache relocated out of the secrets tree.
     launch.prepare_profile_dir(args.profile_dir)

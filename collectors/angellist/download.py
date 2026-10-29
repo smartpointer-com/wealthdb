@@ -409,8 +409,8 @@ def main(argv: list[str]) -> int:
             else:
                 user_slug = cu.get("slug")
                 accounts = cu.get("investAccounts") or []
-            log.info("identity: userSlug=%s, %d invest account(s)",
-                     user_slug, len(accounts))
+            log.info("identity established: %d invest account(s)",
+                     len(accounts))
 
             if args.check:
                 # The server accepted the cookie (identity established) — the
@@ -419,22 +419,22 @@ def main(argv: list[str]) -> int:
                          "no fresh login needed")
                 return 0
 
-            # Capture names carry the account's ordinal, not its slug: the
-            # walk order is what makes the dir legible, and the log lines
-            # already tie each ordinal to a slug.
+            # Capture names and log lines carry the account's ordinal, never
+            # its slug, which can carry a name: the walk order is what makes
+            # the dir and the log legible.
             for n, acct in enumerate(accounts, start=1):
                 aslug = acct.get("slugName")
                 if not aslug:
-                    log.warning("invest account without slugName, skipping: %s",
-                                {k: acct.get(k) for k in ("id", "name")})
+                    log.warning("account %d: no slugName, skipping", n)
                     continue
                 base = f"{VENTURE}/v/{user_slug}/i/{aslug}"
-                log.info("account %s: capturing portfolio", aslug)
+                log.info("account %d: capturing portfolio", n)
                 try:
                     page.goto(f"{base}/portfolio/dashboard",
                               wait_until="domcontentloaded", timeout=45_000)
                 except Exception as exc:
-                    log.warning("portfolio goto failed for %s: %s", aslug, exc)
+                    log.warning("portfolio goto failed for account %d: %s",
+                                n, exc)
                 wait_for_ops(page, PORTFOLIO_OPS, args.settle + 14)
 
                 # Positions are infinite-scroll paginated; scroll until every
@@ -471,37 +471,38 @@ def main(argv: list[str]) -> int:
                         pass
                     page.wait_for_timeout(1300)
                 got, total, more = pos_state()
-                log.info("account %s: positions captured %d/%s (hasNextPage=%s)",
-                         aslug, got, total, more)
+                log.info("account %d: positions captured %d/%s (hasNextPage=%s)",
+                         n, got, total, more)
                 # Taken after the scroll loop, so the DOM shows the table as
                 # it finally settled — the evidence for a stall that stopped
                 # short of totalCount.
                 capture(page, f"20-acct{n}-portfolio")
 
-                log.info("account %s: capturing commitments", aslug)
+                log.info("account %d: capturing commitments", n)
                 try:
                     page.goto(f"{base}/commitments",
                               wait_until="domcontentloaded", timeout=45_000)
                 except Exception as exc:
-                    log.warning("commitments goto failed for %s: %s", aslug, exc)
+                    log.warning("commitments goto failed for account %d: %s",
+                                n, exc)
                 wait_for_ops(page, COMMITMENT_OPS, args.settle + 8)
                 capture(page, f"30-acct{n}-commitments")
 
-                log.info("account %s: capturing tax-document list", aslug)
+                log.info("account %d: capturing tax-document list", n)
                 try:
                     page.goto(f"{base}/taxes-and-documents",
                               wait_until="domcontentloaded", timeout=45_000)
                 except Exception as exc:
-                    log.warning("taxes goto failed for %s: %s", aslug, exc)
+                    log.warning("taxes goto failed for account %d: %s", n, exc)
                 wait_for_ops(page, DOCS_OPS, args.settle + 8)
                 capture(page, f"40-acct{n}-taxes")
 
-                log.info("account %s: capturing funding ledger", aslug)
+                log.info("account %d: capturing funding ledger", n)
                 try:
                     page.goto(f"{base}/funding-accounts",
                               wait_until="domcontentloaded", timeout=45_000)
                 except Exception as exc:
-                    log.warning("funding goto failed for %s: %s", aslug, exc)
+                    log.warning("funding goto failed for account %d: %s", n, exc)
                 # The funding-accounts route loads the funding account detail
                 # (InvestmentEntity), whose `transactions` is the full
                 # dated cash ledger (deposits / withdrawals / investments /

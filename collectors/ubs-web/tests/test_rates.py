@@ -377,26 +377,30 @@ class _Browser:
             if waiter.predicate(response):
                 waiter.seen.append(response)
 
-    def load(self, frame, url, *, framed=False):
+    def load(self, frame, url, *, framed=False, redirected=False):
         """Load `url` in `frame` as a browser does: the route guard,
-        then the redirect, then the page it frames. An aborted load
+        then the redirect, then the page it frames. As in Playwright, a
+        route handler sees only a redirect chain's first URL, and every
+        response of the chain reaches the listeners. An aborted load
         fails a navigation, and leaves a framed page empty."""
         ref = url.removeprefix(ORIGIN)
-        if not self.request("GET", ref):
+        if not redirected and not self.request("GET", ref):
             if framed:
                 frame.url, frame.child = url, None
                 return None
             raise RuntimeError(f"net::ERR_FAILED at {url}")
-        status, html, redirect, framed = self.site.get(ref,
-                                                       (404, "", None, None))
+        status, html, redirect, child = self.site.get(ref,
+                                                      (404, "", None, None))
         if redirect:
-            return self.load(frame, ORIGIN + redirect)
+            self.emit(_Response(url, "", status))
+            return self.load(frame, ORIGIN + redirect, framed=framed,
+                             redirected=True)
         response = _Response(url, html, status)
         self.emit(response)
         frame.url, frame.html, frame.child = url, html, None
-        if framed:
-            frame.child = _Frame(self, ORIGIN + framed)
-            self.load(frame.child, ORIGIN + framed, framed=True)
+        if child:
+            frame.child = _Frame(self, ORIGIN + child)
+            self.load(frame.child, ORIGIN + child, framed=True)
         return response
 
     def open_entry(self):
@@ -622,6 +626,71 @@ def test_a_details_link_that_leads_elsewhere_reads_nothing(tmp_path):
     assert list((tmp_path / "rates").iterdir()) == []
 
 
+def test_a_redirect_to_a_refused_page_reads_nothing(tmp_path):
+    # The route guard never sees a redirect's target, so the page the
+    # details link lands on is checked once it has loaded.
+    site = _site(list_html=_contract_list([
+        ("Cash account", IBAN_LEGACY_PRINTED, {"KONTODETAILS": "AV22"})]))
+    elsewhere = ("/assetview/ebidispatcher.do"
+                 "?uri=getcashtransactionlist.do&parameters=T")
+    site["/assetview/link.do?link=AV22&"] = (302, "", elsewhere, None)
+    site[elsewhere] = (200, "<html>dispatcher</html>", None,
+                       "/assetview/getpositiondetail.do?parameters=T")
+    site["/assetview/getpositiondetail.do?parameters=T"] = (
+        200, _legacy_page([("01.01.2026", "0.100%", "")], []), None, None)
+    browser = _Browser(site=site)
+    meta = rates.capture(_surface(browser), tmp_path, [])
+    [error] = meta["errors"]
+    assert error["stage"] == "legacy"
+    assert "led to a refused page" in error["error"]
+    assert meta["legacy"]["answered"] == []
+    assert list((tmp_path / "rates").iterdir()) == []
+
+
+def test_a_failed_dispatcher_names_itself_and_its_status(tmp_path):
+    site = _site(("AV22", "TOKEN-B", 200, ""), list_html=_contract_list([
+        ("Cash account", IBAN_LEGACY_PRINTED, {"KONTODETAILS": "AV22"})]))
+    dispatcher = ("/assetview/ebidispatcher.do?uri=getpositiondetail.do"
+                  "&parameters=TOKEN-B")
+    site[dispatcher] = (500, "<html>Internal error</html>", None, None)
+    browser = _Browser(site=site)
+    meta = rates.capture(_surface(browser), tmp_path, [])
+    [error] = meta["errors"]
+    assert error["stage"] == "legacy"
+    # The page at the end of the redirect, not the link that led there.
+    assert error["error"].endswith("HTTP 500 for ebidispatcher.do")
+    assert error["http_status"] == 500
+    assert "Internal error" in error["body"]
+
+
+def test_a_fresh_render_that_fails_is_recorded_and_ends_the_pass(tmp_path):
+    shots = []
+    browser = _Browser(site=_site(
+        ("AV22", "TOKEN-B", 200,
+         _legacy_page([("01.01.2026", "0.100%", "")], [])),
+        list_html=_contract_list([
+            ("Cash account", IBAN_LEGACY_PRINTED, {"KONTODETAILS": "AV22"}),
+            ("Another", IBAN_OTHER_PRINTED, {"KONTODETAILS": "AV32"}),
+        ])))
+    opens = []
+
+    def entry_once():
+        opens.append(1)
+        if len(opens) > 1:
+            raise RuntimeError("the menu did not open")
+        return browser.open_entry()
+
+    meta = rates.capture(_surface(browser, entry_once, shots), tmp_path, [])
+    assert meta["errors"] == [{"stage": "legacy-entry",
+                               "error": "RuntimeError: the menu did not open"}]
+    assert "rates-legacy-entry-failed" in shots
+    assert browser.opened == ["/assetview/link.do?link=AV22&"]
+    assert len(meta["legacy"]["attempted"]) == 1
+    assert len(meta["legacy"]["answered"]) == 1
+    assert [p.name for p in (tmp_path / "rates").iterdir()] == [
+        rates.legacy_file_name(IBAN_LEGACY)]
+
+
 def test_a_page_of_another_account_is_recorded_and_not_kept(tmp_path):
     browser = _Browser(site=_site(
         ("AV22", "TOKEN-B", 200,
@@ -751,6 +820,15 @@ def test_a_reference_and_an_error_print_short_tokens_only():
     assert "getvaluatedcontractlist" in rates.scrub(
         "HTTP 500 for getvaluatedcontractlist.do")
     assert rates.excerpt(f"x{ACCOUNT}y") == "<token>"
+
+
+def test_a_token_the_excerpt_cut_splits_is_still_dropped():
+    # The token starts a few characters before the cut, so its first
+    # part alone is too short to read as a token.
+    body = "x" * (rates.BODY_EXCERPT_CHARS - 5) + " " + ACCOUNT
+    got = rates.excerpt(body)
+    assert len(got) <= rates.BODY_EXCERPT_CHARS
+    assert ACCOUNT[:4] not in got
 
 
 # --------------------------------------------------------------------
@@ -960,6 +1038,26 @@ def test_an_api_file_stating_no_conditions_leaves_the_legacy_page(tmp_path):
     load.load_dump(conn, dump, 16, {}, {})
     assert _rows(conn) == [
         (IBAN_LEGACY, "credit", 1, 0.1, None, "2026-01-01", "legacy")]
+
+
+@pytest.mark.parametrize("name,body", [
+    ("broken.json", "{not json"),
+    ("no-iban.json", json.dumps({**_api_payload(), "iban": None})),
+    (rates.legacy_file_name(IBAN_OTHER),
+     _legacy_page([("01.01.2026", "5.000%", "")], []).replace(
+         "bzeSelectDialogRow selected", "bzeSelectDialogRow")),
+])
+def test_a_rate_artefact_that_does_not_read_is_skipped(tmp_path, caplog,
+                                                       name, body):
+    dump = _dump(tmp_path)
+    (dump / "rates" / rates.legacy_file_name(IBAN_LEGACY)).write_text(
+        _legacy_page([("01.01.2026", "0.100%", "")], []))
+    (dump / "rates" / name).write_text(body)
+    conn = fresh_db(tmp_path)
+    load.load_dump(conn, dump, 16, {}, {})
+    assert _rows(conn) == [
+        (IBAN_LEGACY, "credit", 1, 0.1, None, "2026-01-01", "legacy")]
+    assert name in caplog.text
 
 
 def test_a_dump_without_rates_loads_as_zero(tmp_path):

@@ -13,9 +13,8 @@ what relevate's PruneConfig decides:
     non-complete dump whole; every load input (accounts/, portfolios/,
     documents/*.pdf) survives
   * relevate's own "incomplete" status is not complete
-  * a pre-`status` manifest is complete only with ended_at stamped on a
-    non-dry run: a crashed walk whose run.json is PRESENT but
-    ended_at=null, and a legacy --dry-run shell, are deleted
+  * a pre-`status` manifest is kept whatever its ended_at or dry_run,
+    since load reads it
   * validate_target accepts screenshots/, never a load-input subdir
 """
 
@@ -157,25 +156,25 @@ def test_legacy_complete_dump_kept_entirely(tmp_path):
     assert_inputs_present(d)
 
 
-def test_legacy_crashed_ended_at_null_deleted(tmp_path):
-    # THE relevate-specific hazard: run.json is PRESENT (flushed
-    # incrementally from run-dir creation) but ended_at is null because
-    # finish() never ran. A naive `m is not None` legacy signal would
-    # wrongly shield this as complete and defeat prune forever. It must
-    # classify NON_COMPLETE and be deleted once quiescent.
+def test_legacy_ended_at_null_kept(tmp_path):
+    # A pre-`status` run.json whose ended_at was never stamped. load
+    # reads every statusless dump, so prune keeps it: deleting it would
+    # orphan rows already loaded from it.
     d = make_dump(tmp_path, OLD_TS, status=None, ended_at=None,
                   age_s=STALE_S)
     run_main(tmp_path)
-    assert not d.exists()
+    assert d.exists()
+    assert_inputs_present(d)
 
 
-def test_legacy_dry_run_deleted(tmp_path):
-    # A pre-`status` --dry-run shell: ended_at stamped but dry_run=true.
+def test_legacy_dry_run_kept(tmp_path):
+    # A pre-`status` manifest with dry_run=true is kept for the same
+    # reason: load reads it.
     d = make_dump(tmp_path, OLD_TS, status=None,
                   ended_at="2026-01-01T01:00:05+00:00", dry_run=True,
                   age_s=STALE_S)
     run_main(tmp_path)
-    assert not d.exists()
+    assert d.exists()
 
 
 def test_validate_target_accepts_debug_subdir(tmp_path):

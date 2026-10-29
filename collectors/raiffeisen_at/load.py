@@ -334,19 +334,13 @@ def _insert_document(conn, snapshot_at: int, iban: str, pdf: Path) -> None:
 
 # The statement filename is `<YYYY-MM-DD>_<system>_<id>[_v<n>].pdf`
 # (download.py stems the document's creation date + its stable key).
-_DATE_YMD_RE = re.compile(r"(20\d{2})-(\d{2})-(\d{2})")
+_DATE_YMD_RE = re.compile(r"(?P<y>20\d{2})-(?P<m>\d{2})-(?P<d>\d{2})")
 
 
 def _statement_date_from_name(name: str) -> int | None:
     """Best-effort statement date from a filename like
     `2024-01-01_EAZ_....pdf`. None when no date is embedded."""
-    m = _DATE_YMD_RE.search(name)
-    if not m:
-        return None
-    try:
-        return parse.epoch_day(datetime(int(m[1]), int(m[2]), int(m[3])))
-    except ValueError:
-        return None
+    return parse.date_in_name(name, _DATE_YMD_RE)
 
 
 # ============================================================

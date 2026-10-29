@@ -1397,17 +1397,14 @@ def load_run(conn, run_dir: Path) -> bool:
     date; each fund entity gets a snapshot at the LP statement's effective
     (sharing) date. dump_runs is keyed at the download time for idempotency
     + provenance only. Returns True if loaded, False if skipped."""
+    # bronze.pending_run_dirs has already skipped a run whose status is not
+    # loadable; an unreadable manifest stays loadable there, but this
+    # loader needs the manifest's ids.
     manifest = _read_json(run_dir / "run.json")
     if not isinstance(manifest, dict):
         log.warning("skipping %s: no readable run.json", run_dir.name)
         return False
-    # A crashed walk leaves "in-progress", so its partial capture never
-    # reaches silver as a snapshot.
-    status = manifest.get("status")
-    if not bronze.is_loadable_status(status):
-        log.info("skipping %s: run.json status=%r (partial/crashed dump)",
-                 run_dir.name, status)
-        return False
+    # A dry run writes no manifest, so this covers older bronze only.
     if manifest.get("dry_run"):
         log.info("skipping %s: dry-run dump (bootstrap only, no holdings)",
                  run_dir.name)
@@ -1556,22 +1553,14 @@ def main(argv: list[str]) -> int:
 
     # --force = delete the silver DB, then rebuild from all bronze (the
     # fleet-wide meaning). After a reset the DB is empty, so the
-    # already-loaded skip below naturally re-ingests every run.
+    # already-loaded skip in pending_run_dirs re-ingests every run.
     if args.force:
         silver.reset(args.silver_db)
     conn = silver.open_db(args.silver_db)
     silver.apply_migrations(conn, MIGRATIONS_DIR)
-    already = silver.loaded_snapshots(conn)
 
     n_loaded = 0
-    for run_dir in bronze.iter_run_dirs(args.bronze_dir):
-        try:
-            snap = bronze.parse_run_ts(run_dir.name)
-        except ValueError:
-            continue
-        if snap in already:
-            log.debug("skip %s (already loaded)", run_dir.name)
-            continue
+    for run_dir in bronze.pending_run_dirs(conn, args.bronze_dir, log=log):
         if load_run(conn, run_dir):
             n_loaded += 1
 

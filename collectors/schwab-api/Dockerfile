@@ -1,9 +1,9 @@
 # Hybrid collector: only the OAuth `login` runs in this image — it drives
-# Schwab's authorize page in headed Camoufox (VNC) and exchanges the
-# captured redirect for the token bundle. `download` and `load` run on
-# the host venv (see the wrapper + the .host-venv marker). Builds on the
-# shared base-camoufox image (Firefox/Xvfb/x11vnc + camoufox + the
-# matching Playwright pin + collectorkit).
+# Schwab's authorize page in headed Camoufox (over VNC for vnc-login) and
+# exchanges the captured redirect for the token bundle. `download` and
+# `load` run on the host venv (see the wrapper + the .host-venv marker).
+# Builds on the shared base-camoufox image (Firefox/Xvfb/x11vnc + camoufox
+# + the matching Playwright pin + collectorkit).
 ARG WEALTHDB_IMAGE_TAG=latest
 FROM wealthdb/base-camoufox:${WEALTHDB_IMAGE_TAG}
 

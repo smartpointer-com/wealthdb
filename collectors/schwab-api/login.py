@@ -192,18 +192,15 @@ def source_env_files(explicit: Path | None = None) -> None:
     are both available. Absent files are fine. An explicit --env-file (or
     the SCHWAB_API_ENV_FILE env var) is then sourced last and wins."""
     for candidates in _ENV_FILE_SETS:
-        for path in candidates:
-            if path.exists():
-                envfile.load_env_file(path, _CRED_OVERRIDE_VARS, logger=log)
-                break
+        envfile.source_first_env_file(None, candidates, logger=log,
+                                      override_vars=_CRED_OVERRIDE_VARS)
     # An explicit --env-file (or $SCHWAB_API_ENV_FILE) is sourced last, so
     # its credential values win.
     lead = explicit or (Path(os.environ["SCHWAB_API_ENV_FILE"])
                         if os.environ.get("SCHWAB_API_ENV_FILE") else None)
     if lead is not None:
-        if not lead.exists():
-            raise SystemExit(f"--env-file does not exist: {lead}")
-        envfile.load_env_file(lead, _CRED_OVERRIDE_VARS, logger=log)
+        envfile.source_first_env_file(lead, (), logger=log,
+                                      override_vars=_CRED_OVERRIDE_VARS)
 
 
 # ============================================================

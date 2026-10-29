@@ -25,8 +25,6 @@ pdfplumber>=0.11,<1
 # host-venv `load`/`recompress` dependency too, not just a download one.
 zstandard>=0.22,<1
 
-# pytest is bundled in the image so tests can be run inside the
-# container with `./fidelity-web sh -c "cd /app && pytest"`;
-# the host venv (see .host-venv) also runs the suite via `make
-# test-fidelity-web`.
+# pytest: `make test-fidelity-web` runs the suite in the host venv (see
+# .host-venv).
 pytest>=8,<9

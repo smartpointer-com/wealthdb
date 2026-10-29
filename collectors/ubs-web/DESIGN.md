@@ -119,12 +119,12 @@ silver, distinct from the customer-facing portfolios.
 
 Web shows the IBAN with spaces (`CHKK BBBB RRRR AAAA AAAA C`,
 e.g. UBS Switzerland uses `BBBB = 0023`).
-The web loader normalises to `account_external_id`:
+The web loader normalises it to `account_external_id`
+(`iban_canonical` in [landmarks.py](landmarks.py)):
 
-```python
-def iban_canonical(iban: str) -> str:
-    return iban.replace(" ", "").upper()
-```
+- It strips the whitespace and upper-cases the letters.
+- It refuses anything that is not a CH IBAN shape. UBS reuses the
+  column for a maturity date or a loan term.
 
 PSN's loader stores the IBAN in `cash_accounts.account_external_id`
 per the schema comment. The same canonical form on both sides
@@ -920,6 +920,9 @@ or `/api/v3/cash-accounts` that is not a GET. It also aborts every GET
 to a legacy `.do` page or an account that is not one of the routes
 above with its query. The SPA's own searches, telemetry and assets
 elsewhere pass, as on every other pass. Each abort is an error entry.
+A route handler sees only a redirect's first URL, so the page a
+redirect lands on is checked against the same allow-list once it has
+loaded.
 
 1. The API pass runs first. For every homepage account it opens the
    "Account information" route and keeps the SPA's response to exactly
@@ -937,7 +940,8 @@ elsewhere pass, as on every other pass. Each abort is an error entry.
 4. Each account is read from a fresh render: before every account after
    the first, "Account balances" is opened again as the menu opens it,
    and the row is found again by its IBAN. A page is kept only when its
-   own IBAN is its row's.
+   own IBAN is its row's. A fresh render that fails is an error entry,
+   and the pass ends there.
 
 Files land under `rates/`: `<accountId>.json` and
 `legacy-<sha256 of the IBAN>.html`. `run.json` records, per surface,
@@ -956,7 +960,9 @@ the tier's upper limit (NULL for none), the day it holds from and the
 surface it was read from. Tiers count from 1 per side, in source order.
 The account is the IBAN the response or the page states. An account the
 API stated conditions for keeps the API's. An account that states no
-condition has no row, which reads as no rate, not as 0%.
+condition has no row, which reads as no rate, not as 0%. A limit is
+kept as printed: a single tier that prints `0.00` keeps 0, and gold
+reads a one-row schedule as a flat rate.
 
 **What gold reads.** The adapter puts the credit side on the account's
 cash balances; [the adapter doc](../../wealthdb/docs/adapters/ubs.md)
@@ -975,8 +981,8 @@ holds two tables:
   the valuation, the shares in issue and the NAV per share.
 - `private_market_report_lines`: one row per line of the report's
   per-investment table. Each line holds its name, its region, its
-  sector or its strategy, its cost and its residual value, all as
-  printed.
+  sector or its strategy, as printed, and its cost and its residual
+  value.
 
 How it is read:
 
@@ -1003,11 +1009,9 @@ How it is read:
 - **The table's date.** The table may state an older date than the
   capital account ("last reported"). `lines_as_of` keeps it.
 
-**What it is for.** The adapter turns each reconciled report into the
-fund's exposure split by region and sector, dated the capital
-account's date ([§13](../../wealthdb/docs/adapters/ubs.md) of the
-adapter doc). A record
-in the declarations ledger of the same or a later date wins over it.
+**What it is for.** The adapter turns each reconciled report into an
+exposure record and a composition for the fund
+([§13](../../wealthdb/docs/adapters/ubs.md) of the adapter doc).
 
 ## 4. Web loader implementation notes
 

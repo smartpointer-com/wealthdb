@@ -728,6 +728,26 @@ def capture_page(page, run_dir: Path, name: str, *,
         log.warning("--debug: screenshot %s failed: %s", name, e)
 
 
+def page_capturer(debug_dir: Path | None, *, log: logging.Logger):
+    """``capture(page, name)`` for a walk that holds only a session.
+
+    Each call is :func:`capture_page` into `debug_dir`, masked by a
+    :class:`SessionMask`. Such a walk is handed no password, only a lifted
+    session, so the jar is what a capture could leak: an SPA that echoes
+    its session into a meta tag or a bootstrap script puts it in the
+    markup. The jar is read at the first capture. A None `debug_dir` (no
+    ``--debug``) makes every call a no-op.
+    """
+    mask = SessionMask()
+
+    def capture(page, name: str) -> None:
+        if debug_dir is not None:
+            capture_page(page, debug_dir, name, log=log,
+                         redact=mask.for_page(page))
+
+    return capture
+
+
 def capture_landmark(page, out_dir: Path | None, label: str, *,
                      log: logging.Logger, png_timeout_ms: int = 3_000,
                      redact=None) -> None:

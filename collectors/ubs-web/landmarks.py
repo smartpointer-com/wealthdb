@@ -40,7 +40,7 @@ LOGIN_QUERY = "login"
 # with hash routing (`#/home`, `#/accounts`, ...). Older deep links
 # under `/workbench/WorkbenchOpenAction.do?navitemid=<NavItem>` are
 # also valid post-auth pages — UBS renders them server-side as
-# workbench-style pages. We accept either family. `/workspace/`
+# workbench-style pages. Either family is accepted. `/workspace/`
 # shows up as an intermediate redirect target in some flows.
 #
 # The `OQJ/<N>` segment is a versioned SPA bundle path that UBS
@@ -58,7 +58,7 @@ def is_post_auth_url(url: str) -> bool:
         return False
     if not any(hint in url for hint in POST_AUTH_PATH_HINTS):
         return False
-    # `?login` (or `&login`) means we are still in the auth dialog.
+    # `?login` (or `&login`) means the page is still the auth dialog.
     if f"?{LOGIN_QUERY}" in url or f"&{LOGIN_QUERY}" in url:
         return False
     # The dedicated logout-cookie iframe target lives at
@@ -74,14 +74,14 @@ def is_post_auth_url(url: str) -> bool:
 # ============================================================
 
 # The SPA bootstraps with `initialProps.template = "AuthGetContractNrDialog"`
-# on the first page. We read this from window state to confirm we
-# are not on an unexpected screen (e.g. an interstitial KYC dialog
+# on the first page. It is read from window state to confirm the page
+# is not an unexpected screen (e.g. an interstitial KYC dialog
 # UBS occasionally injects).
 TEMPLATE_CONTRACT_NR = "AuthGetContractNrDialog"
 
 # The visible contract-number input. The SPA labels it
-# "Contract number" / "Vertragsnummer" depending on language. We
-# locate by `name="loginalias"`, which is stable across locales.
+# "Contract number" / "Vertragsnummer" depending on language. It is
+# located by `name="loginalias"`, which is stable across locales.
 # Submission clicks the card's visible primary submit button, so no
 # further landmark is needed.
 CONTRACT_INPUT_NAME = "loginalias"
@@ -101,13 +101,13 @@ TEMPLATE_QR = "AuthQRDialog"
 
 # After contract submission the SPA renders an <img data-testid=
 # "qr-scanner-image"> whose `src` is a `data:image/png;base64,...`
-# URL. We read the data URL directly rather than relying on the
+# URL. The data URL is read directly rather than through the
 # server-side `qrCodeImageInternal` REST endpoint, because the SPA
-# does the base64-to-img wiring for us.
+# already does the base64-to-img wiring.
 QR_IMG_TESTID = "qr-scanner-image"
 
-# The polling endpoint the SPA hits every 2s while waiting for the
-# user to scan + approve in Access App. JSON shape (from spa.js):
+# The polling endpoint the SPA hits every 2s while it waits for the
+# scan and approval in Access App. JSON shape (from spa.js):
 #
 #   { "result": "DONE"  | "CONTINUE" | "REFRESH_CONTINUE",
 #     "qrCodeImage": "<base64 PNG>"      (only on REFRESH_CONTINUE),
@@ -115,26 +115,26 @@ QR_IMG_TESTID = "qr-scanner-image"
 #
 # On DONE the SPA auto-submits the form; the resulting POST hands
 # Nevis the proof-of-approval and Nevis redirects to the post-auth
-# workbench. We don't poll the endpoint directly — we let the SPA
-# do its thing and watch for the URL transition.
+# workbench. The endpoint is never polled directly: the SPA polls it,
+# and login.py watches for the URL transition.
 QR_POLL_INTERVAL_SECONDS = 2  # set by the SPA in setInterval(f, 2e3)
 
 # The SPA periodically rotates the QR (REFRESH_CONTINUE), updating
-# the `<img>` src in place. We re-render the terminal QR on every
-# observed src change so a slow Access-App scan doesn't fail.
+# the `<img>` src in place. login.py re-renders the terminal QR on
+# every observed src change so a slow Access-App scan doesn't fail.
 
 # ============================================================
-# Templates we explicitly do NOT want to see
+# Templates that must NOT appear
 # ============================================================
 
-# If UBS routes us to one of these instead of the expected QR
+# If UBS routes the login to one of these instead of the expected QR
 # dialog, the script bails out with an actionable error rather
 # than hanging on a wait_for. Names are best-effort — the SPA
 # bundles them as string literals; expand the list as new ones
 # surface in the wild.
 UNEXPECTED_TEMPLATES = (
     # Access Card challenge (TAN reader) — would be served if the
-    # user has Access Card enabled instead of / in addition to
+    # contract has Access Card enabled instead of / in addition to
     # Access App. This script only implements the Access App path.
     "AuthAccessCardDialog",
     # PIN-change interstitial UBS sometimes injects after MFA.
@@ -150,11 +150,11 @@ UNEXPECTED_TEMPLATES = (
 
 # Hash routes inside the post-auth SPA. UBS routes via fragment
 # identifiers on a single bundle URL (/app/OQJ/<N>/ebanking/spa.html).
-# We append a route fragment to navigate without a full page load.
+# Appending a route fragment navigates without a full page load.
 ROUTE_HOME = "#/home"
 # Custody-account positions, default portfolio of the default banking
-# relationship. Used as a fallback when we can't enumerate explicit
-# portfolioUids. `preselectFirstPortfolio=true` tells the SPA to skip
+# relationship. Used as a fallback when no explicit portfolioUids
+# can be enumerated. `preselectFirstPortfolio=true` tells the SPA to skip
 # the chooser shell — without it the page loads empty.
 ROUTE_POSITIONS_DEFAULT = (
     "#/assets/asset-view?goto=positions"
@@ -167,8 +167,8 @@ def positions_url_for_portfolio(portfolio_uid: str,
     """Hash route for the positions snapshot of a specific portfolio.
 
     Anchors on the homepage carry one (portfolioUid, bankingRelationId)
-    pair per portfolio. Navigating with these explicit values lets us
-    iterate every portfolio under the active banking relationship and
+    pair per portfolio. Navigating with these explicit values lets the
+    walk iterate every portfolio under the active banking relationship and
     pull a distinct positions.csv for each. Without them UBS defaults
     to the first portfolio only (`preselectFirstPortfolio=true`)."""
     return (
@@ -180,8 +180,8 @@ def positions_url_for_portfolio(portfolio_uid: str,
 
 
 # Anchors on the homepage that link to per-portfolio overview pages.
-# We harvest the `portfolioUid` and `bankingRelationId` query params
-# from each, then pivot to the positions route above.
+# The `portfolioUid` and `bankingRelationId` query params are harvested
+# from each, then the walk pivots to the positions route above.
 HOME_PORTFOLIO_LINK_SELECTOR = (
     'a[href*="portfolioUid="][href*="bankingRelationId="]'
 )
@@ -191,7 +191,7 @@ ROUTE_DOCUMENTS = "#/documents/bank-documents?navitemid=MailboxEdocumentsPg"
 
 # Anchor selector on the homepage. Every cash account has an anchor
 # whose href contains the route + an opaque `accountId=` token (the only
-# stable identifier we get — IBANs are partially redacted in the
+# stable identifier the page gives — IBANs are partially redacted in the
 # rendered display).
 #
 # The card area uses the same anchor shape under a different `target=`
@@ -219,19 +219,19 @@ TXN_BUTTON_MT940_SELECTOR = 'button[data-name="button-swiftMt940Export"]'
 
 # MT940 download flow: clicking the MT940 button does NOT trigger a
 # direct download. Instead UBS opens a `<dialog>` titled "Select the
-# file variant to export" with two radios + an Export button. We
-# select the enriched variant, then click Export (which is the call
+# file variant to export" with two radios + an Export button. The walk
+# selects the enriched variant, then clicks Export (which is the call
 # that actually streams the MT940 file).
 #
 # When the active filter spans more than 1000 transactions UBS
 # replaces the variant chooser with an info-only "A maximum of 1000
-# transactions can be exported" dialog (Close button only). We
-# detect that case by the absence of the Export button.
+# transactions can be exported" dialog (Close button only). That case
+# is detected by the absence of the Export button.
 MT940_DIALOG_EXPORT_BUTTON = '[data-testid="export-button"]'
 MT940_DIALOG_CANCEL_BUTTON = '[data-testid="cancel-download-button"]'
 MT940_DIALOG_CLOSE_BUTTON = 'dialog[open] [aria-label="Close"]'
 # The native radio inputs are visually hidden; UBS styles the
-# wrapping <label> as the click target. We click the label, not the
+# wrapping <label> as the click target. The label is clicked, not the
 # input, otherwise Playwright bails with "element is not visible".
 MT940_DIALOG_RADIO_ENRICHED_LABEL = 'label[for="download-option-1"]'
 
@@ -246,8 +246,8 @@ TXN_PERIOD_FILTER_SELECTOR = '[aria-label="Filter by period"]'
 #     Apply has `data-name="filter-item-submit-button"`.
 #   - Documents: inputs have no `name=` attribute (labeled "Start
 #     date" / "End date"), Apply is `<button type="submit">`.
-# We use placeholder-based selection and prefer the data-name
-# Apply button when present, falling back to any submit button.
+# Selection is placeholder-based, and the data-name Apply button is
+# preferred when present, falling back to any submit button.
 # All popover selectors are scoped to `dialog[open]` — the SPA
 # leaves stale, hidden radios and inputs elsewhere in the page DOM
 # (asset-class sliders, view toggles, etc.) and an unscoped selector
@@ -283,12 +283,12 @@ TXN_COUNT_SELECTOR = '[data-name="number-of-trx"]'
 # Each document row carries an <a href="https://…/api/v1/digital-
 # banking/files/<token>?apikey=<key>&Accept=application/pdf&…">.
 # The link is the rendered "document name" hyperlink AND the row's
-# trailing download icon points at the same URL. We harvest these
+# trailing download icon points at the same URL. These are harvested
 # directly from the DOM and fetch via context.request.get() — no
 # per-row clicking, no Playwright `expect_download` plumbing.
 # UBS serves these hrefs as relative paths (e.g. `/api/v1/…`) in
 # the live page DOM, even though saved-as-HTML dumps show absolute
-# URLs. We accept either form and let the caller resolve against
+# URLs. Either form is accepted, and the caller resolves it against
 # the page origin.
 DOC_FILES_API_URL_RE = re.compile(
     r"(?:https://ebanking-ch[0-9]?\.ubs\.com)?"
@@ -299,7 +299,7 @@ DOC_LINK_SELECTOR = 'a[href*="/api/v1/digital-banking/files/"]'
 # Five filter buttons on the documents toolbar, in DOM order:
 # (1) Period (2) Category (3) Banking relationship
 # (4) Account/Portfolio (5) Status. They all share a generic
-# CSS class with no individual handle, so we locate by index. The
+# CSS class with no individual handle, so they are located by index. The
 # Status filter happens to carry a `data-tour-target`; the others
 # do not.
 #
@@ -489,3 +489,19 @@ LEGACY_CONTRACT_LIST_PATH = "/assetview/getvaluatedcontractlist.do"
 LEGACY_LINK_PATH = "/assetview/link.do"
 LEGACY_ACCOUNT_DETAILS_KEY = "KONTODETAILS"
 LEGACY_POSITION_DETAIL_PATH = "/assetview/getpositiondetail.do"
+
+
+# ============================================================
+# Identifiers
+# ============================================================
+
+def iban_canonical(text: str | None) -> str | None:
+    """A CH IBAN without whitespace, upper case, or None when it is not one.
+
+    UBS reuses the IBAN column of mortgages and structured products for
+    other fields (a maturity date, a loan term); those read as None.
+    """
+    if not text:
+        return None
+    c = re.sub(r"\s+", "", str(text)).upper()
+    return c if re.fullmatch(r"CH\d{2}[0-9A-Z]{17}", c) else None

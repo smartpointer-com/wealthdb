@@ -9,9 +9,8 @@
 # in the base image as an editable package; the modules import it
 # directly.
 
-# pytest is bundled in the image so tests run inside the container with
-# `./chase sh -c "cd /app && pytest"` (what `make test-chase` does), no
-# host-side Python toolchain required.
+# pytest is bundled in the image: `make test-chase` runs the suite there, on
+# a copy of the checkout, so no host-side Python toolchain is needed.
 pytest>=8,<9
 
 # Nothing else: the OFX/QFX and CSV parsers are pure standard library, and

@@ -240,7 +240,7 @@ def connect(args: argparse.Namespace) -> paramiko.SSHClient:
     client.set_missing_host_key_policy(
         FingerprintPolicy(allowed, ignore_mismatch=args.ignore_fingerprint_mismatch)
     )
-    log.info("Connecting to %s:%d as %s", args.host, args.port, args.client_id)
+    log.info("Connecting to %s:%d", args.host, args.port)
     client.connect(
         hostname=args.host,
         port=args.port,
@@ -475,14 +475,14 @@ def _check_credential(args: argparse.Namespace) -> int:
         client = connect(args)
     except paramiko.AuthenticationException:
         log.error("credential rejected by UBS — the key is not authorised "
-                  "for client-id %s", args.client_id)
+                  "for this client-id")
         return 1
     except (paramiko.SSHException, OSError) as e:
         log.error("probe could not reach the PSN endpoint: %s", e)
         return 1
     client.close()
-    log.info("credential accepted — UBS authorised the key for client-id %s",
-             args.client_id)
+    log.info("credential accepted — UBS authorised the key for this "
+             "client-id")
     return 0
 
 

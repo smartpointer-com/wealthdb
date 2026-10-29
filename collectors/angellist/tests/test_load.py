@@ -194,15 +194,6 @@ def test_a_position_with_no_dated_mark_takes_cost(tmp_path):
     c.close()
 
 
-def test_parse_money_cents():
-    assert load.parse_money_cents("$1,234.56") == 123456
-    assert load.parse_money_cents("$-2,953") == -295300
-    assert load.parse_money_cents("(1,234)") == -123400
-    assert load.parse_money_cents("0") == 0
-    assert load.parse_money_cents("") is None
-    assert load.parse_money_cents("-") is None
-
-
 def test_k1_documents(tmp_path):
     dest, db = tmp_path / "bronze", tmp_path / "angellist.db"
     # a position whose company matches the K-1 portfolio company

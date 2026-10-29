@@ -190,10 +190,11 @@ def _new_context(p, state_path: Path):
 
 
 def _verify_session(page) -> None:
-    """Navigate to the post-auth landing page and assert we are in."""
+    """Navigate to the post-auth landing page and assert the session is
+    signed in."""
     page.goto(ubs.LOGIN_ENTRY_URL, wait_until="domcontentloaded")
     # Wait for either the post-auth SPA URL to settle OR the login
-    # form to appear. Either way we have an answer in <= 30s.
+    # form to appear. Either way the answer comes in <= 30s.
     try:
         page.wait_for_function(
             "() => /\\/app\\/.*\\/ebanking\\/spa\\.html/.test(location.href) || "
@@ -219,7 +220,7 @@ def enumerate_accounts(page, screenshot_dir: Path | None) -> list[dict]:
 
     The homepage tile widget renders one anchor per account with a
     `target=…-transactions&accountId=<token>` query in its hash
-    route. We scrape these and pair them with the visible row text
+    route. These are scraped and paired with the visible row text
     (account display string), which UBS partially redacts but is
     enough to confirm correctness in run.json.
     """
@@ -291,6 +292,13 @@ def _build_spa_url(current_url: str, hash_route: str) -> str:
 # Per-account transactions export
 # ============================================================
 
+def _log_id(account: dict) -> str:
+    """An account as a log line names it: the start of its short token.
+    The account tokens share a long per-customer prefix, so a slice of
+    the token itself tells them apart least."""
+    return bronze.short_token(account["account_id"], 8)
+
+
 def export_transactions(page, account: dict, since: date, until: date,
                         run_dir: Path, screenshot_dir: Path | None) -> dict:
     """Download CSV + MT940 for one account: one file per format per
@@ -299,8 +307,8 @@ def export_transactions(page, account: dict, since: date, until: date,
     route = account["route"]
     url = _build_spa_url(page.url, route)
     log.info("navigating to transactions for %s account %s",
-             account["kind"], account["account_id"][:12])
-    # Dismiss any lingering overlay before we navigate. A leftover
+             account["kind"], _log_id(account))
+    # Dismiss any lingering overlay before navigating. A leftover
     # MT940 confirmation dialog (or notification popup, KYC survey,
     # etc.) intercepts clicks on the next page's filter buttons.
     _dismiss_open_overlays(page)
@@ -337,7 +345,7 @@ def export_transactions(page, account: dict, since: date, until: date,
 
     log.info("exported %s account %s: %s transactions; "
              "csv chunks=%d; mt940 chunks=%d",
-             account["kind"], account["account_id"][:12],
+             account["kind"], _log_id(account),
              full_count if full_count is not None else "?",
              len(csv_paths), len(mt940_paths))
     if csv_gaps or mt940_gaps:
@@ -345,7 +353,7 @@ def export_transactions(page, account: dict, since: date, until: date,
                   "csv missing %s; mt940 missing %s. The statement PDFs "
                   "are the only record of those windows, and they carry "
                   "a poorer narrative than the export does.",
-                  account["kind"], account["account_id"][:12],
+                  account["kind"], _log_id(account),
                   _windows(csv_gaps) or "nothing",
                   _windows(mt940_gaps) or "nothing")
     return {
@@ -571,11 +579,11 @@ def _click_custom_radio(page, screenshot_dir: Path | None,
                         screenshot_label: str) -> None:
     """Click the 'Custom' radio in the open Period popover.
 
-    Scoped to `dialog[open]` so we don't accidentally pick a
-    `[role="radio"]` elsewhere on the page. We deliberately do NOT
-    pre-click the Predefined radio: that auto-stages Maximum (the
-    first predefined preset) and Apply then submits Maximum, silently
-    overriding the Custom dates we typed afterwards.
+    Scoped to `dialog[open]` so it never picks a `[role="radio"]`
+    elsewhere on the page. The Predefined radio is deliberately NOT
+    pre-clicked: that auto-stages Maximum (the first predefined
+    preset) and Apply then submits Maximum, silently overriding the
+    Custom dates typed afterwards.
 
     The "subsequent-open staleness" problem (DatePicker remembers
     previous values, so React doesn't see the new fill as a change)
@@ -605,15 +613,15 @@ def _fill_custom_dates(page, since: date, until: date,
     UBS's Apply button only enables when the form values actually
     differ from the currently-applied filter. If a previous call
     already set the same period, Apply stays disabled — that means
-    "no change needed", so we close the popover instead of waiting
+    "no change needed", so the popover is closed instead of waiting
     forever on Apply.
 
     Both surfaces render two text inputs with placeholder
-    "DD.MM.YYYY"; we locate by placeholder and fill .nth(0) /
+    "DD.MM.YYYY"; they are located by placeholder and filled .nth(0) /
     .nth(1). The Apply button is `[data-name="filter-item-submit-
     button"]` on the transactions surface and a plain
-    `<button type="submit">` on the documents surface — we prefer
-    the data-name and fall back to the submit button.
+    `<button type="submit">` on the documents surface — the data-name
+    is preferred, with the submit button as the fallback.
     """
     inputs = page.locator(ubs.PERIOD_POPOVER_DATE_INPUTS)
     try:
@@ -632,7 +640,7 @@ def _fill_custom_dates(page, since: date, until: date,
     # UBS's date inputs are React-controlled. Plain Playwright
     # `fill()` updates the DOM value but does NOT trigger React's
     # internal `_valueTracker`, so the DatePicker treats the value
-    # as unchanged and Apply stays disabled. We use the
+    # as unchanged and Apply stays disabled. This uses the
     # React-native-setter trick (set DOM value via the native
     # property setter, then dispatch input + change events) which
     # is the canonical workaround for React-controlled inputs.
@@ -698,7 +706,7 @@ def _export_csv(page, account: dict, out_dir: Path,
         button.wait_for(state="visible", timeout=LANDMARK_TIMEOUT_MS)
     except Exception:
         log.warning("no CSV export button for %s account %s",
-                    account["kind"], account["account_id"][:12])
+                    account["kind"], _log_id(account))
         return None
     try:
         with page.expect_download(timeout=DOWNLOAD_TIMEOUT_MS) as dl_info:
@@ -708,7 +716,7 @@ def _export_csv(page, account: dict, out_dir: Path,
         log.warning("CSV export click did not produce a download for "
                     "%s account %s over [%s..%s] — likely the "
                     "%d-transaction cap: %s",
-                    account["kind"], account["account_id"][:12],
+                    account["kind"], _log_id(account),
                     since, until, TRX_EXPORT_CAP, e)
         # Whatever it opened instead of downloading would intercept
         # the next click, so clear it before handing the page back.
@@ -727,8 +735,8 @@ def _export_mt940(page, account: dict, out_dir: Path,
     with two radios (light / enriched) and an Export button. When
     the period contains more than 1000 transactions, UBS replaces
     the variant chooser with an "A maximum of 1000 transactions can
-    be exported" info dialog (Close only); we detect that by the
-    Export button being absent and skip cleanly.
+    be exported" info dialog (Close only); that is detected by the
+    Export button being absent, and skipped cleanly.
     """
     _dismiss_open_overlays(page)
     button = page.locator(ubs.TXN_BUTTON_MT940_SELECTOR).first
@@ -754,7 +762,7 @@ def _export_mt940(page, account: dict, out_dir: Path,
         log.warning("MT940 dialog did not show an Export button for "
                     "%s account %s — likely the 1000-transaction cap; "
                     "narrow the period and re-run",
-                    account["kind"], account["account_id"][:12])
+                    account["kind"], _log_id(account))
         _close_mt940_dialog(page)
         return None
     # Select the enriched variant (more fields than the light one).
@@ -843,8 +851,8 @@ def _save_download(download, account: dict, out_dir: Path,
                    since: date, until: date, default_ext: str) -> Path:
     """Persist a Playwright Download to bronze.
 
-    UBS suggests filenames that may embed the account number; we
-    rename to use a hash of the full opaque account-id token plus
+    UBS suggests filenames that may embed the account number; the file
+    is renamed to use a hash of the full opaque account-id token plus
     the window bounds. Hashing avoids the long-common-prefix
     collision: UBS account tokens all start with the same ~12-char
     customer prefix, plus a ~22-char depot prefix shared by multiple
@@ -957,7 +965,7 @@ def _walk_window(page, context, since: date, until: date,
     # Below the cap → harvest. Pull every <a href*="/api/v1/digital-
     # banking/files/…">; UBS renders both the document-name link and
     # the trailing download icon as anchors pointing at the same URL,
-    # so we dedup by token.
+    # so they are deduplicated by token.
     rows = page.evaluate(
         """(sel) => Array.from(document.querySelectorAll(sel))
              .map(a => ({
@@ -1008,7 +1016,7 @@ def _apply_docs_period_custom(page, since: date, until: date,
     _click_custom_radio(page, screenshot_dir, "docs-custom-radio-missing")
     applied = _fill_custom_dates(page, since, until, screenshot_dir,
                                  "docs-date-inputs-missing")
-    # Give the list a moment to re-render before we scrape.
+    # Give the list a moment to re-render before the scrape.
     page.wait_for_timeout(2000)
     return applied
 
@@ -1062,7 +1070,7 @@ def _fetch_document(context, href: str, token: str,
     out_path = docs_dir / f"{sha}.pdf"
     # Two rows in one run can resolve to identical bytes (the same
     # statement reachable under two tokens): same bytes, same path, so a
-    # redundant write is a no-op we skip.
+    # redundant write is a no-op and is skipped.
     if not (out_path.exists() and out_path.stat().st_size == len(body)):
         out_path.write_bytes(body)
     log.debug("wrote %s (%d bytes)", out_path.name, len(body))
@@ -1138,9 +1146,9 @@ def _capture_rates(page, run_dir: Path, accounts: list[dict],
             shot=lambda name: maybe_screenshot(page, screenshot_dir, name))
         return rates.capture(surface, run_dir, accounts)
     except Exception as e:  # noqa: BLE001 — one facet, not the run
-        log.warning("rate capture failed: %s", rates.scrub(
-            debugcap.safe_error(e)))
-        return {"error": rates.scrub(debugcap.safe_error(e))}
+        msg = rates.error_text(e)
+        log.warning("rate capture failed: %s", msg)
+        return {"error": msg}
 
 
 def open_legacy_rates(page):
@@ -1286,7 +1294,7 @@ def export_positions(page, run_dir: Path,
     portfolios = _enumerate_portfolios(page, screenshot_dir)
     results: list[dict] = []
     # Always pull the consolidated default-portfolio view, even when
-    # we have explicit portfolioUids. UBS may file a number of
+    # explicit portfolioUids are known. UBS may file a number of
     # customer-facing cash accounts under a synthetic catch-all
     # portfolio code in the default view rather than under a named
     # portfolio. Skipping the consolidated view leaves those
@@ -1781,19 +1789,9 @@ def main(argv: list[str]) -> int:
         log.warning("--debug: --dry-run persists nothing to bronze; "
                     "no captures will be written")
 
-    # The run's own credential. This walk is handed no password — it is
-    # handed a lifted session — so the session jar is what a capture could
-    # leak, and the SPA bootstraps its state into the markup a capture
-    # serialises. Read once, at the first capture, and never fatally: a
-    # mask that cannot be built must not take down the walk it exists to
-    # diagnose.
-    mask = debugcap.SessionMask()
-
-    def capture(page, name: str) -> None:
-        """Snapshot a landmark into the run dir; a no-op unless --debug."""
-        if debug_dir is not None:
-            debugcap.capture_page(page, debug_dir, name, log=log,
-                                  redact=mask.for_page(page))
+    # Snapshots a landmark into the run dir, masked by the session jar;
+    # a no-op unless --debug.
+    capture = debugcap.page_capturer(debug_dir, log=log)
 
     from playwright.sync_api import sync_playwright
 
@@ -1854,7 +1852,7 @@ def main(argv: list[str]) -> int:
                             log.exception("transactions export failed for %s "
                                           "account %s: %s",
                                           account["kind"],
-                                          account["account_id"][:12], e)
+                                          _log_id(account), e)
                             # Failure path only: the page is still on the
                             # surface that raised, so this is the DOM the
                             # failing step saw. One capture per account

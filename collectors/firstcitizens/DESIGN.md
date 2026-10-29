@@ -308,10 +308,12 @@ that still listed an unchanged account is visible.
   after its last listing run, so gold can end it;
 - every transaction: interest and fee recognised from the description,
   else deposit or withdrawal by sign;
-- each statement's rate, as `interest_rate` and `interest_side`
-  `credit` on a closing balance of its cycle: the one on the closing
-  day, else the latest before it. A cycle in which the balance never
-  moved has no closing balance, and its rate is not used.
+- each statement's rate, as `interest_rate`, `interest_side` `credit`
+  and `interest_valid_from` the statement's closing day, on a closing
+  balance of its cycle: the one on the closing day, else the latest
+  before it. The rate holds from the closing day even where its balance
+  is an earlier one. A cycle in which the balance never moved has no
+  closing balance, and its rate is not used.
 
 The adapter registers via a blank import in `cmd/wealthdb/main.go` and
 the `silver_sources` migration

@@ -37,7 +37,8 @@ Subcommands:
                       network, clicks, DOM and downloads into the /debug
                       mount. Writes no bronze.
   prune [args...]     Delete non-complete dumps (crashed walks,
-                      legacy dry-run shells) from the bronze tree.
+                      legacy dry-run shells) from the bronze tree, and
+                      aged entries of the /debug cache.
                       --dry-run prints the plan first.
   sh|bash             Open an interactive shell in the container.
   help                Show this message.

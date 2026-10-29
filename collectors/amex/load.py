@@ -44,7 +44,7 @@ from pathlib import Path
 
 from collectorkit import bronze, cli, silver, srcfp
 from collectorkit.money import parse_money
-from collectorkit.parse import epoch_day
+from collectorkit.parse import date_in_name, epoch_day
 
 import statement_parser
 
@@ -460,7 +460,7 @@ def _insert_document(conn, snapshot_at: int, account_external_id: str,
 # A statement PDF is filed under its safe-stemmed cycle end date
 # (`YYYY-MM-DD.pdf`); a year-end summary under `yes-<YYYY>.pdf`, which carries
 # a year but no day, so it gets no doc_date.
-_DATE_YMD_RE = re.compile(r"(20\d{2})-(\d{2})-(\d{2})")
+_DATE_YMD_RE = re.compile(r"(?P<y>20\d{2})-(?P<m>\d{2})-(?P<d>\d{2})")
 
 
 def document_date(name: str) -> int | None:
@@ -469,13 +469,7 @@ def document_date(name: str) -> int | None:
     year and would otherwise get a fabricated day."""
     if name.startswith(_YEAR_SUMMARY_PREFIX):
         return None
-    m = _DATE_YMD_RE.search(name)
-    if not m:
-        return None
-    try:
-        return epoch_day(datetime(int(m[1]), int(m[2]), int(m[3])))
-    except ValueError:
-        return None
+    return date_in_name(name, _DATE_YMD_RE)
 
 
 # ============================================================

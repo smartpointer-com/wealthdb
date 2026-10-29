@@ -19,16 +19,16 @@ Auth flow (see DESIGN.md §2.1 for the full table):
 
 Credentials are sourced from /secrets/viac.env (or
 ~/.secrets/viac.env outside the container); never from a CLI
-flag — see AGENTS.md §3. The `username` field is the login
+flag — see root AGENTS.md §3. The `username` field is the login
 phone number in E.164 format (`+CC<digits>`).
 
 `--check` probes existing state with one cheap GET against the
 heartbeat endpoint. No credential submit, no MFA push. Allowed
-without prior authorisation per AGENTS.md §2.
+without prior authorisation per root AGENTS.md §2.
 
 Non-`--check` invocation mints a fresh session AND sends an SMS
 to the registered phone. Only allowed with explicit
-authorisation per AGENTS.md §2.
+authorisation per root AGENTS.md §2.
 """
 
 from __future__ import annotations
@@ -274,16 +274,10 @@ def main(argv: list[str]) -> int:
         return check_session(args.state_path)
 
     # Full login: source env file, pull credentials.
-    env_path = envfile.resolve_env_file(args.env_file, DEFAULT_ENV_FILE_CANDIDATES)
-    if env_path is None:
+    if envfile.source_first_env_file(args.env_file,
+                                     DEFAULT_ENV_FILE_CANDIDATES,
+                                     logger=log) is None:
         log.info("no env file path resolved; relying on process env vars.")
-    else:
-        try:
-            if envfile.source_env_file(env_path, prefer_file=True):
-                log.info("env sourced from %s", env_path)
-        except ValueError as e:
-            log.error("env file %s failed to source: %s", env_path, e)
-            return 2
 
     username_raw = os.environ.get(LOGIN_ENV)
     password = os.environ.get(PASSWORD_ENV)

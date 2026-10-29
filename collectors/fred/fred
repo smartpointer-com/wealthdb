@@ -37,7 +37,7 @@ cmd="${1:-help}"
 
 case "$cmd" in
     -h|--help|help)
-        awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"
+        host_print_banner "${BASH_SOURCE[0]}"
         exit 0
         ;;
     login|download|load|prune)
@@ -58,12 +58,10 @@ case "$cmd" in
         # `login` is a no-op. `--check` is a real probe: download.py resolves
         # the key and asks FRED for one observation, so a key that is present
         # but rejected fails here rather than at the next download.
-        case " ${FORWARD_ARGS[*]-} " in
-            *" --check "*)
-                exec "$py" "$HERE/download.py" \
-                    ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
-                ;;
-        esac
+        if host_has_flag --check ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}; then
+            exec "$py" "$HERE/download.py" \
+                ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        fi
         cat >&2 <<'EOF'
 fred: no-op. FRED is an API-key-authenticated REST source — there is no
 interactive login / session to mint. Put your key in ~/.secrets/fred.env

@@ -35,14 +35,14 @@ Allowed without asking:
 
 - reading code, config and docs;
 - `make build-firstcitizens` / `make test-firstcitizens`, unit tests,
-  `--help`;
-- `login --check`. It submits the sign-in form on the trusted device and
-  reads the outcome. It sends no code and fires no MFA.
+  `--help`.
 
-Not allowed unless explicitly asked: anything else that touches the
-live site. That covers a real `explore`, `login` or `download`, a
+Not allowed unless explicitly asked: anything that touches the live
+site. That covers a real `explore`, `login` or `download`, a
 `download --dry-run`, and "just checking the selectors" against the live
-login page.
+login page. It also covers `login --check`: it submits the sign-in form
+on the trusted device, so it is a real session (root AGENTS.md §2),
+though it sends no code and fires no MFA.
 
 ## 0a. The login browser surface — auth only, never act on the account
 

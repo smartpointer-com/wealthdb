@@ -56,7 +56,9 @@ binding):
     request under `/assetview/` or `/api/v3/cash-accounts` that is not
     a GET, and every GET to a legacy page or an account outside the
     routes above. The SPA's and the legacy app's own requests are
-    held to it too.
+    held to it too. A route handler sees only a redirect's first URL,
+    so the page a redirect lands on is checked against the same
+    allow-list once it has loaded.
 - Date-range / period filter inputs and "Apply" / "Search" buttons
   on the above pages.
 - Export / download buttons that produce CSV, XLS, or PDF copies

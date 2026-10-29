@@ -127,7 +127,7 @@ def _prefill(page, username: str, password: str, filled: set) -> bool:
 
 # What the person at the VNC session is asked to do.
 WALK = ("log in via VNC, click through the LP portfolio / per-vehicle / "
-        "activity pages we want to scrape.")
+        "activity pages the download needs.")
 
 
 def _dump_links(page, debug_dir: Path) -> None:

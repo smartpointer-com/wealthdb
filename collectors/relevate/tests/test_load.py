@@ -120,14 +120,6 @@ def test_state_minted_at_keeps_the_time_of_day(tmp_path):
     assert minted == 1704112496
 
 
-def test_iso_timestamp_to_epoch():
-    assert loader.iso_timestamp_to_epoch("2024-01-01T12:34:56+00:00") == 1704112496
-    assert loader.iso_timestamp_to_epoch("2024-01-01T13:34:56+01:00") == 1704112496
-    assert loader.iso_timestamp_to_epoch("2024-01-01T12:34:56") == 1704112496
-    assert loader.iso_timestamp_to_epoch(None) is None
-    assert loader.iso_timestamp_to_epoch("not a time") is None
-
-
 def test_a_dump_that_raises_mid_load_rolls_back_whole(tmp_path):
     # A non-SQL error must roll the dump's transaction back too: no
     # half-written rows, no transaction left open on the connection, and

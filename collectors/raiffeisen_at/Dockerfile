@@ -36,7 +36,6 @@ RUN pip install -r requirements.txt
 COPY explore.py elba_client.py login.py download.py load.py listing_parser.py \
      stitch.py prune.py /app/
 COPY migrations /app/migrations
-COPY tests /app/tests
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 

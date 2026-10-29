@@ -643,8 +643,8 @@ def load_tdcapi(conn, snapshot_at, relationship_id, entities):
         iban = _resolve_iban(conn, relationship_id, acct_mt)
         if iban is None:
             log.warning(
-                "TDCAPI: no IBAN mapping for %r (no cash_accounts row found); "
-                "falling back to raw AcctId for this dump", acct_mt)
+                "TDCAPI: no IBAN mapping for %s (no cash_accounts row found); "
+                "falling back to raw AcctId for this dump", bronze.log_id(acct_mt))
             iban = acct_mt
         settlement_id = f"{sttlm_id}:{bkng_num}"
         payload = canonical_json(strip_header_noise(parsed))
@@ -924,9 +924,9 @@ def load_mt940(conn, snapshot_at, relationship_id, mt_text):
     iban = _resolve_iban(conn, relationship_id, raw_acct)
     if iban is None:
         log.warning(
-            "MT940: no IBAN mapping for %r (no cash_accounts row found); "
+            "MT940: no IBAN mapping for %s (no cash_accounts row found); "
             "falling back to raw MT940 form for this dump",
-            raw_acct,
+            bronze.log_id(raw_acct),
         )
     else:
         account = iban
@@ -968,9 +968,9 @@ def load_mt940(conn, snapshot_at, relationship_id, mt_text):
         # otherwise be silent, and a loud line in the load log is what makes
         # it findable if UBS ever stops sending it.
         log.warning(
-            "MT940 for %r covering %d has no :28C: statement number; its "
+            "MT940 for %s covering %d has no :28C: statement number; its "
             "rows are identified by the period alone",
-            raw_acct, period_end,
+            bronze.log_id(raw_acct), period_end,
         )
     statement = f"{period_start}:{period_end}:{statement_no or ''}"
     conn.execute(

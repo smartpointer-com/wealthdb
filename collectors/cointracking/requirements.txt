@@ -6,9 +6,8 @@
 # Dockerfile pins the exact build. This collector picks it all up via
 # FROM wealthdb/base-camoufox.
 
-# pytest is bundled in the image so tests can be run inside the
-# container with `./cointracking sh -c "cd /app && pytest"`,
-# no host-side Python toolchain required.
+# pytest is bundled in the image: `make test-cointracking` runs the suite there, on
+# a copy of the checkout, so no host-side Python toolchain is needed.
 pytest>=8,<9
 
 # DuckDB drives the silver layer for this collector — the exception

@@ -24,10 +24,10 @@ import argparse
 import json
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
-from collectorkit import bronze, cli, silver
+from collectorkit import bronze, cli, parse, silver
 
 log = logging.getLogger("fred.load")
 
@@ -51,8 +51,7 @@ RATE_MEANING = ("currency", "tenor", "basis")
 
 def date_to_epoch(s: str) -> int:
     """An observation date 'YYYY-MM-DD' -> Unix seconds at 00:00 UTC."""
-    return int(datetime.strptime(s, "%Y-%m-%d")
-               .replace(tzinfo=timezone.utc).timestamp())
+    return parse.epoch_day(datetime.strptime(s, "%Y-%m-%d"))
 
 
 def _payload(fields: dict) -> str:

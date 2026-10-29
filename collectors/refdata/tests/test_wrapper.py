@@ -15,14 +15,15 @@ ROOT = HERE.parents[1]
 
 @pytest.fixture
 def wrapper(tmp_path):
-    """A copy of the wrapper and the shared host lib, with a stand-in
+    """A copy of the wrapper and the shared host libs, with a stand-in
     interpreter, a secrets dir that holds finra.env, and a clean
     environment."""
     home = tmp_path / "collectors" / "refdata"
     (home / ".venv" / "bin").mkdir(parents=True)
     (tmp_path / "shared" / "wrappers").mkdir(parents=True)
     shutil.copy(HERE / "refdata", home / "refdata")
-    shutil.copy(ROOT / "shared" / "wrappers" / "host-lib.sh", tmp_path / "shared" / "wrappers" / "host-lib.sh")
+    for lib in ("host-lib.sh", "envfile-lib.sh"):
+        shutil.copy(ROOT / "shared" / "wrappers" / lib, tmp_path / "shared" / "wrappers" / lib)
     python = home / ".venv" / "bin" / "python"
     python.write_text('#!/bin/sh\n'
                       'echo "$(basename "$1") id=${FINRA_CLIENT_ID-unset} secret=${FINRA_CLIENT_SECRET-unset}"\n')

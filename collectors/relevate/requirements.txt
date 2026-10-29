@@ -1,9 +1,8 @@
-# pytest is bundled so the collector test suite can run inside the
-# container (`./<tool> sh -c "cd /app && pytest"`) / host venv with
-# no extra toolchain.
+# pytest is bundled in the image: `make test-relevate` runs the suite there, on
+# a copy of the checkout, so no host-side Python toolchain is needed.
 pytest>=8,<9
 
-# requests drives the REST flow (login.py, download.py, load.py).
+# requests drives the REST flow (login.py, download.py).
 # Tracking the latest stable 2.x line; the API is decade-stable so
 # a floor pin is enough.
 requests>=2.32,<3

@@ -29,7 +29,7 @@ CLI surface (shared with the other carta subcommands):
                        CARTA_EMAIL) / CARTA_PASSWORD.
   --check              Probe the existing profile (load app.carta.com), exit
                        0 if authenticated, 1 if not. No credentials posted,
-                       no 2FA push — safe for cron healthchecks.
+                       no 2FA challenge.
 
 Auth discipline (root AGENTS.md §3): never weaken or skip 2FA, never add a
 --password flag, never lower the profile dir below 0700. The fix for a
@@ -284,8 +284,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--check", action="store_true",
         help=("Probe the stored profile by loading app.carta.com. Exits 0 if "
-              "authenticated, 1 if not. No credentials posted, no 2FA push — "
-              "safe to call from cron / healthcheck."),
+              "authenticated, 1 if not. No credentials posted, no 2FA "
+              "challenge."),
     )
     cli.add_standard_args(p, verb="login")
     return p.parse_args(argv)

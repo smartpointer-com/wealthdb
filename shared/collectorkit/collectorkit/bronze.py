@@ -106,10 +106,11 @@ def is_loadable_status(status: str | None) -> bool:
 
     ``"complete"`` is, and so is no status at all (see :func:`run_status`).
     Any other status is not: ``"in-progress"`` from a walk that is running
-    or crashed, ``"dry-run"``, or a status this code does not know. It is
-    the rule ``prune`` applies to a present status (see
+    or crashed, ``"dry-run"``, or a status this code does not know. For a
+    present status it is the rule ``prune`` applies (see
     ``prune.status_classification``), so a run a loader skips is a run
-    ``prune`` reclaims.
+    ``prune`` reclaims. A statusless run predates the field; a collector
+    whose loader reads it keeps it in ``prune`` too.
     """
     return status is None or status == COMPLETE_STATUS
 
@@ -247,15 +248,15 @@ def safe_stem(value, fallback: str = "item") -> str:
 
 
 def log_id(value) -> str:
-    """An identifier shortened for the LOG: its :func:`safe_stem`, cut to
-    eight characters and an ellipsis when longer than twelve.
+    """An identifier masked for the LOG: an ellipsis and the last four
+    characters of its :func:`safe_stem`, whatever its length.
 
-    Terminal output gets pasted into chats and issue threads. A prefix
-    still tells a run's accounts apart in its own output, without carrying
-    the whole identifier along. Files on disk keep the full stem.
+    Terminal output gets pasted into chats and issue threads, and a short
+    account number is no less an identifier than a long token. The last
+    four still tell a run's accounts apart in its own output, as a
+    statement does. Files on disk keep the full stem.
     """
-    stem = safe_stem(value)
-    return stem if len(stem) <= 12 else stem[:8] + "…"
+    return "…" + safe_stem(value)[-4:]
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:

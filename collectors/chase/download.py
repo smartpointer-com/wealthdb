@@ -736,8 +736,8 @@ def _discover_accounts(page, captured_bodies: list, timeout_ms: int) -> list[dic
     has already navigated to the overview; settle for the XHRs, then reduce."""
     _settle(page)
     roster = collect_accounts(captured_bodies)
-    # After login the SPA is already mounted, so the same-route goto that got
-    # us here won't re-fire the overview's XHRs. A reload does — it replays
+    # After login the SPA is already mounted, so the same-route goto that
+    # landed here won't re-fire the overview's XHRs. A reload does — it replays
     # account/detail/dda/list and the dashboard envelope (whose cached
     # overview/card/v2/list carries every card's detail in one response),
     # which the capture hook records.
@@ -835,7 +835,8 @@ def _export_account(page, acct: dict, run_dir: Path, timeout_ms: int) -> int:
                     mdsui.activate(page, SEL_DOWNLOAD_BUTTON)
             dl_info.value.save_as(str(run_dir / "transactions" / f"{stem}.{fmt}"))
             got += 1
-            log.info("  exported %s for %s", fmt, acct.get("mask") or ext)
+            log.info("  exported %s for %s", fmt,
+                     acct.get("mask") or bronze.log_id(ext))
         except Exception as exc:
             log.warning("  %s export failed for %s: %r", fmt,
                         acct.get("mask") or ext, exc)

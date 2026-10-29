@@ -44,12 +44,12 @@ import argparse
 import contextlib
 import logging
 import os
-import shutil
 import sys
 import time
 from pathlib import Path
 
 from collectorkit import cli, debugcap, envfile, launch
+from collectorkit import explore as kit_explore
 from collectorkit.launch import page_url, pump, wait_for
 
 import elba_client as elba
@@ -80,11 +80,10 @@ def camoufox(profile_dir: Path, fresh: bool = False):
     profile carries the saved-user identity (which skips form entry on a warm
     run, but never the pushTAN — §F). `fresh` wipes it so the next login is
     the cold blank-form path. Yields (context, page)."""
-    if fresh and profile_dir.exists():
-        log.warning("--fresh: wiping profile dir %s — the next login is the "
-                    "cold blank-form path (region + Verfüger + PIN)",
-                    profile_dir)
-        shutil.rmtree(profile_dir)
+    kit_explore.prepare_profile(
+        profile_dir, fresh=fresh, log=log,
+        note="the next login is the cold blank-form path "
+             "(region + Verfüger + PIN)")
     with launch.persistent_camoufox(profile_dir) as (context, page):
         yield context, page
 
@@ -277,8 +276,8 @@ def _fill_verfueger(page, full_id: str, kennung: str) -> bool:
         got = field.input_value()
         if got and got.startswith(kennung):
             return True
-        log.warning("Verfüger read-back %r does not carry the expected region "
-                    "prefix %r", got, kennung)
+        log.warning("the Verfüger field does not carry the expected region "
+                    "prefix %r", kennung)
     return False
 
 

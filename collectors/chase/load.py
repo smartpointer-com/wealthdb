@@ -92,7 +92,7 @@ from pathlib import Path
 
 from collectorkit import bronze, cli, silver, srcfp
 from collectorkit.money import parse_money
-from collectorkit.parse import epoch_day
+from collectorkit.parse import date_in_name, epoch_day
 
 import statement_parser
 
@@ -900,19 +900,13 @@ def _insert_document(conn, snapshot_at: int, account_external_id: str,
         pdf.name, size, silver.canonical_json({"source_name": pdf.name})))
 
 
-_DATE_IN_NAME_RE = re.compile(r"(20\d{2})[-_]?(\d{2})[-_]?(\d{2})")
+_DATE_IN_NAME_RE = re.compile(r"(?P<y>20\d{2})[-_]?(?P<m>\d{2})[-_]?(?P<d>\d{2})")
 
 
 def _statement_date_from_name(name: str) -> int | None:
     """Best-effort statement date from a filename like
     `…-statements-20260731-…pdf`. None when no date is embedded."""
-    m = _DATE_IN_NAME_RE.search(name)
-    if not m:
-        return None
-    try:
-        return epoch_day(datetime(int(m[1]), int(m[2]), int(m[3])))
-    except ValueError:
-        return None
+    return date_in_name(name, _DATE_IN_NAME_RE)
 
 
 # ============================================================

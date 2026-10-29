@@ -22,8 +22,7 @@ Flow:
      explicit logout (TOTP-only 2FA, no "remember this device" checkbox),
      so if the profile already holds a valid session the portal bounces
      straight to the dashboard — detected, and login returns without
-     touching credentials or firing a 2FA push (the nightly-cron
-     short-circuit).
+     touching credentials or asking for a code.
   3. Otherwise fill EQUITYZEN_USERNAME (alias EQUITYZEN_EMAIL) /
      EQUITYZEN_PASSWORD (clear → fill → verify each field), submit, wait for
      the TOTP field, read the 6-digit code from stdin (re-prompted a
@@ -46,14 +45,14 @@ CLI surface:
                        EQUITYZEN_EMAIL / EQUITYZEN_PASSWORD.
   --check              Probe the existing profile (load the dashboard),
                        exit 0 if authenticated, 1 if not. No credentials
-                       posted, no 2FA push — safe for cron healthchecks.
-  --totp CODE          Supply the 6-digit code non-interactively (for
-                       automation). Omit to be prompted on stdin.
+                       posted, no code asked for.
+  --totp CODE          Supply the 6-digit code as an argument instead of
+                       the prompt.
 
 Auth discipline (root AGENTS.md §3): never weaken or skip 2FA, never add a
 --password flag, never lower the profile dir below 0700. The fix for a
 bot-challenge is a better stealth profile, never an auth bypass. Never log
-out at the end — that would force a fresh 2FA push next run.
+out at the end — that would force a fresh 2FA code next run.
 """
 from __future__ import annotations
 
@@ -107,8 +106,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--check", action="store_true",
         help=("Probe the stored profile. Exits 0 if authenticated, 1 if "
-              "not. No credentials posted, no 2FA push — safe to call from "
-              "cron / healthcheck."),
+              "not. No credentials posted, no code asked for."),
     )
     p.add_argument(
         "--totp", default=None, metavar="CODE",
@@ -230,7 +228,7 @@ def _read_totp(supplied: str | None, *, input_fn=input) -> str:
         return code
     if not sys.stdin.isatty():
         log.warning("stdin is not a TTY; reading the TOTP code from a "
-                    "piped line. Use --totp for automation.")
+                    "piped line. --totp supplies it as an argument instead.")
     try:
         return cli.read_code(prompt="EquityZen 6-digit authenticator code: ",
                              digits=6, exact=True, input_fn=input_fn)
@@ -352,8 +350,8 @@ def _do_login(page, username: str, password: str, totp_supplied: str | None,
             _dump_debug(page, "totp-failed", debug_dir)
         raise SystemExit(
             "Login did not complete after the TOTP step — the code was wrong "
-            "or expired, or the 2FA form needs a submit control we did not "
-            "match (see the visible-buttons log above). Re-run `login` with a "
+            "or expired, or the 2FA form needs a submit control that was not "
+            "matched (see the visible-buttons log above). Re-run `login` with a "
             "fresh code; add --debug for a screenshot + GraphQL trace."
         )
 
@@ -395,7 +393,7 @@ def main(argv: list[str]) -> int:
         page.goto(LOGIN_URL, wait_until="domcontentloaded")
         if _await_settled_auth(page, timeout_ms):
             log.info("existing session still valid — no login needed "
-                     "(no 2FA push fired)")
+                     "(no code asked for)")
             return 0
 
         _do_login(page, username, password, args.totp, timeout_ms,

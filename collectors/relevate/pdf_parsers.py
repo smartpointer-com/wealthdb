@@ -50,7 +50,7 @@ ACCOUNT_RE = re.compile(r"\b(\d{4}\.\d{6}\.\d)\b")
 # Swiss date format: DD.MM.YYYY (from 'Valuation date' / 'Bewertungsdatum').
 DATE_RE = re.compile(r"\b(\d{2})\.(\d{2})\.(\d{4})\b")
 
-# Page-header noise we strip from the Portfolio Detail walk.
+# Page-header noise stripped from the Portfolio Detail walk.
 PAGE_NOISE = re.compile(
     r"^\s*(Quartalsbericht|Quarterly Report)\s+.*Page\s+\d+/\d+\s*$"
 )
@@ -324,7 +324,8 @@ def _parse_quarterly_report_text(text: str, source_sha256: str) -> dict:
             continue
 
         # Anything else under Portfolio Detail is wraparound text
-        # we don't need (security-name wrap, totals, footnote refs).
+        # the parse does not need (security-name wrap, totals, footnote
+        # refs).
 
     # Currency is CHF (the portfolio reference currency); assert from
     # the cash row when present, else from the first position.
@@ -406,7 +407,7 @@ def parse_quarterly_report(pdf_path: Path) -> dict:
 #     NNNN.NNNNNN.N         (Referenznummer / account)
 #     [PII fields: name, address, phone, email, birth date, AHV]
 #
-# We anchor on the 'CHF <amount>' line; the next two non-empty
+# The parse anchors on the 'CHF <amount>' line; the next two non-empty
 # value-column lines are valuta + foundation. The account ID lives
 # elsewhere on the page but uniquely matches NNNN.NNNNNN.N.
 #

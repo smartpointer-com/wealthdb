@@ -17,7 +17,7 @@ NAME=schwab-web
 ENV_PREFIX=SCHWAB_WEB
 ENV_VARS=(SCHWAB_LOGIN_ID SCHWAB_PASSWORD)
 HAS_DEBUG=1
-HAS_APP_MOUNT=1     # /app live-mount during iteration
+HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
 HAS_SAFETY=1        # refuse to evict a live MFA/VNC session
 HAS_VNC=1           # forward a free 5900-6000 port for vnc-login
 

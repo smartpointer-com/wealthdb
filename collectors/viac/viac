@@ -1,8 +1,8 @@
 #!/bin/bash
 # Host-side wrapper around `docker run` for the viac container.
 # Mounts ~/.secrets/ (RW for the cookie-jar state file), the bronze
-# tree (RW), and the wrapper directory at /app for live-code reload
-# during iteration. The common docker-run plumbing lives in
+# tree (RW), and the wrapper directory at /app, so a run uses the
+# checkout's source. The common docker-run plumbing lives in
 # shared/wrappers/wrapper-lib.sh.
 
 set -euo pipefail
@@ -10,7 +10,7 @@ set -euo pipefail
 NAME=viac
 ENV_PREFIX=VIAC
 ENV_VARS=(VIAC_LOGIN VIAC_PASSWORD)
-HAS_APP_MOUNT=1     # /app live-mount during iteration
+HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
 HAS_SAFETY=1        # named container; refuse to clobber a live login
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

@@ -2491,7 +2491,7 @@ def parse_capital_call_text(text: str, doc_token: str) -> list[dict]:
 #
 # The per-investment table: one line per investment of the fund behind
 # the feeder, in the table's own unit (often millions). Its header names
-# the columns. Three layouts recur:
+# the columns. The reader handles three layouts:
 #
 #   with a sector:  name, region, a date, sector, then invested,
 #                   realised, residual and total value, MOIC;

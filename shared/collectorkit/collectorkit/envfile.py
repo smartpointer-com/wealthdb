@@ -165,6 +165,39 @@ def resolve_env_file(arg_path, candidates) -> Path | None:
     return None
 
 
+def source_first_env_file(explicit, candidates, *, logger,
+                          override_vars=None,
+                          warn_on_override: bool = False) -> Path | None:
+    """Source `explicit` (an ``--env-file`` flag), else the first existing
+    path in `candidates`. Returns the path sourced, or None when neither
+    names a file.
+
+    A named file that does not exist exits: a file that was asked for is
+    never silently replaced by a candidate or by the environment. A bash
+    error exits too, with :func:`read_env_file`'s message.
+
+    With `override_vars`, the file is applied by :func:`load_env_file`
+    (the file wins for those keys, the environment for the rest). Without
+    it, every value in the file wins (:func:`source_env_file` with
+    ``prefer_file=True``).
+    """
+    if explicit is not None and not Path(explicit).is_file():
+        raise SystemExit(f"--env-file does not exist: {explicit}")
+    path = resolve_env_file(explicit, candidates)
+    if path is None:
+        return None
+    if override_vars is not None:
+        load_env_file(path, override_vars, logger=logger,
+                      warn_on_override=warn_on_override)
+    else:
+        try:
+            source_env_file(path, prefer_file=True)
+        except ValueError as e:
+            raise SystemExit(str(e)) from e
+    logger.info("env sourced from %s", path)
+    return path
+
+
 def load_env_file(path, override_vars, *, logger,
                   warn_on_override: bool = False) -> None:
     """Source `path` as bash and merge what it sets into ``os.environ``.

@@ -1323,7 +1323,7 @@ def test_export_seam_empty_without_export():
 
 
 def test_single_account_seam_equals_the_global_minimum():
-    # A one-product ledger's per-account seam is exactly the old global
+    # A one-product ledger's per-account seam equals the global
     # MIN(posted_at), so the deposit path is unaffected by the split.
     conn = _conn()
     e1, e2 = _epoch(2024, 8, 15), _epoch(2026, 1, 1)

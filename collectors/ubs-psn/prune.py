@@ -79,14 +79,11 @@ def _is_complete(run_dir, meta):
 
 
 CONFIG = prune.PruneConfig(
-    # The legacy `download --debug` SFTP-listing capture, which debugcap
-    # landed under this subdir fleet-wide (the record now lives in each
-    # run's listing.json, which is provenance and never nominated here).
-    # The zips beside it are the load inputs.
+    # `screenshots/` holds legacy `download --debug` listing captures, never
+    # a load input. Each run's listing.json is provenance and is never
+    # nominated here. The run dir's zips are the load inputs.
     debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
     is_complete=_is_complete,
-    manifest_name="run.json",         # read for status + UNKNOWN-on-corrupt
-    dump_label="dump",
 )
 
 

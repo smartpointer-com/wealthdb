@@ -8,9 +8,8 @@
 # collectorkit (the shared cli/envfile/launch/silver helpers) is also
 # installed in the base image as an editable package.
 
-# pytest is bundled in the image so tests run inside the container with
-# `./firstcitizens sh -c "cd /app && pytest"` (what
-# `make test-firstcitizens` does), no host-side Python toolchain required.
+# pytest is bundled in the image: `make test-firstcitizens` runs the suite there, on
+# a copy of the checkout, so no host-side Python toolchain is needed.
 pytest>=8,<9
 
 # Nothing else: load.py reads the accountHistory JSON with the stdlib, and

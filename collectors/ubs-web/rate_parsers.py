@@ -57,18 +57,6 @@ _ROW_IDS_RE = re.compile(r"setLinkId\(\{([^}]*)\}\)")
 _ROW_ID_RE = re.compile(r"(\w+)\s*:\s*'(AV\d+)'")
 
 
-def iban_canonical(text: str | None) -> str | None:
-    """A CH IBAN without whitespace, upper case, or None when it is not one.
-
-    UBS reuses the IBAN column of mortgages and structured products for
-    other fields (a maturity date, a loan term); those read as None.
-    """
-    if not text:
-        return None
-    c = re.sub(r"\s+", "", str(text)).upper()
-    return c if re.fullmatch(r"CH\d{2}[0-9A-Z]{17}", c) else None
-
-
 def parse_pct(text) -> float | None:
     """`4.188`, `4.188%` or a number -> 4.188; anything else -> None."""
     if isinstance(text, bool) or text is None:
@@ -82,7 +70,9 @@ def parse_pct(text) -> float | None:
 def parse_amount(text) -> float | None:
     """An amount as printed (`100'000.00`, `CHF 100,000.00`, `250000`) or
     a number -> a float; blank -> None. A leading currency code and
-    thousands separators go, the decimal point stays."""
+    thousands separators go, the decimal point stays. Distinct from
+    `load.parse_grouped_decimal`, which reads a trailing unit and no
+    currency."""
     if isinstance(text, bool) or text is None:
         return None
     if isinstance(text, (int, float)):
@@ -135,8 +125,9 @@ def api_iban(payload) -> str | None:
                 continue
             if isinstance(value, dict):
                 value = next((v for v in value.values() if isinstance(v, str)
-                              and iban_canonical(v)), None)
-            if iban := iban_canonical(value if isinstance(value, str) else None):
+                              and ubs.iban_canonical(v)), None)
+            if iban := ubs.iban_canonical(
+                    value if isinstance(value, str) else None):
                 return iban
     return None
 
@@ -292,7 +283,7 @@ def legacy_iban(html: str) -> str | None:
     p.feed(html)
     p.close()
     m = _IBAN_RE.search(" ".join(p.text or []))
-    return iban_canonical(m.group(0)) if m else None
+    return ubs.iban_canonical(m.group(0)) if m else None
 
 
 def _rate_table_side(table: dict) -> str | None:
@@ -416,6 +407,6 @@ def legacy_account_rows(html: str) -> list[dict]:
             continue
         seen.add(ref)
         m = _IBAN_RE.search(text)
-        out.append({"iban": iban_canonical(m.group(0)) if m else None,
+        out.append({"iban": ubs.iban_canonical(m.group(0)) if m else None,
                     "ref": ref})
     return out

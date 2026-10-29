@@ -208,17 +208,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 # Env-file loader
 # ============================================================
 
-def _load_env_file(path: Path) -> None:
-    envfile.load_env_file(path, _CRED_OVERRIDE_VARS, logger=log,
-                          warn_on_override=True)
-
-
 def maybe_source_env_files(args: argparse.Namespace) -> None:
-    if args.env_file is not None and not args.env_file.exists():
-        raise SystemExit(f"--env-file does not exist: {args.env_file}")
-    path = envfile.resolve_env_file(args.env_file, DEFAULT_ENV_FILE_CANDIDATES)
-    if path is not None:
-        _load_env_file(path)
+    envfile.source_first_env_file(
+        args.env_file, DEFAULT_ENV_FILE_CANDIDATES, logger=log,
+        override_vars=_CRED_OVERRIDE_VARS, warn_on_override=True)
 
 
 # ============================================================
@@ -281,14 +274,14 @@ def open_camoufox_context(profile_dir: Path, trace: bool):
 # ============================================================
 
 def log_cookie_jar(context) -> None:
-    """Log the schwab.com cookies in the current context, including
-    a specific check on `_abck` (Akamai's bot-manager cookie). An
-    `_abck` value starting with `~0~` means Akamai has invalidated
-    its trust for this session's fingerprint; a longer value
-    without the prefix means the cookie is still trusted.
+    """Log the schwab.com cookies in the current context by name, domain
+    and length, never by value: they are the live session. Includes a
+    specific check on `_abck` (Akamai's bot-manager cookie). An `_abck`
+    value starting with `~0~` means Akamai has invalidated its trust for
+    this session's fingerprint; a longer value without the prefix means
+    the cookie is still trusted.
 
-    Used by --check and after manual login to confirm what made it
-    onto the wire."""
+    Used by --check to show what the session carries."""
     try:
         jar = context.cookies("https://client.schwab.com")
         schwab_cookies = [c for c in jar if "schwab.com" in c.get("domain", "")]
@@ -296,11 +289,7 @@ def log_cookie_jar(context) -> None:
         for c in schwab_cookies:
             n = c.get("name", "?")
             v = c.get("value", "") or ""
-            short = v[:24] + ("…" if len(v) > 24 else "")
-            log.info(
-                "  %s @ %s  len=%d  starts=%s",
-                n, c.get("domain", "?"), len(v), short,
-            )
+            log.info("  %s @ %s  len=%d", n, c.get("domain", "?"), len(v))
         abck = next((c for c in schwab_cookies if c.get("name") == "_abck"), None)
         if abck is None:
             log.warning("no _abck cookie — bot-manager state missing")

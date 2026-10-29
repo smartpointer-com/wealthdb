@@ -44,7 +44,6 @@ RUN pip install -r requirements.txt
 COPY explore.py amexclient.py auth_dialog.py login.py download.py \
      statement_parser.py load.py prune.py /app/
 COPY migrations /app/migrations
-COPY tests /app/tests
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 

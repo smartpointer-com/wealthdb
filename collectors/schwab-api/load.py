@@ -265,8 +265,8 @@ def load_accounts_positions(
         agg = wrapper.get("aggregatedBalance")
         acct_plain = sa.get("accountNumber")
         if acct_plain is None or acct_plain not in acct_map:
-            log.warning("Account-positions wrapper for unknown account %r — skipping",
-                        acct_plain)
+            log.warning("Account-positions wrapper for unknown account …%s "
+                        "— skipping", str(acct_plain)[-4:])
             continue
         acct_hash = acct_map[acct_plain]
 
@@ -562,7 +562,8 @@ def load_open_orders(
     for order in data.get("orders") or []:
         acct_plain = order.get("accountNumber")
         if acct_plain is None or acct_plain not in acct_map:
-            log.warning("Order references unknown account %r — skipping", acct_plain)
+            log.warning("Order references unknown account …%s — skipping",
+                        str(acct_plain)[-4:])
             continue
         rows.append((
             snapshot_at,

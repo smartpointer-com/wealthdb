@@ -185,7 +185,7 @@ def status_classification(
     ``legacy_complete(run_dir, meta)`` is consulted in BOTH the
     missing-manifest branch (``meta is None``) and the statusless-manifest
     branch (``meta`` is a dict with no ``status`` key). Return True only
-    when your terminal completeness signal is genuinely present, so it
+    when the collector's terminal completeness signal is present, so it
     stays False for a crashed download:
 
     * terminal signal *is* the manifest (the walk writes ``run.json`` only

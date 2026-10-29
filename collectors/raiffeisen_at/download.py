@@ -30,11 +30,10 @@ download. Never a money-movement, card, or settings surface.
 from __future__ import annotations
 
 import logging
-import sys
 from datetime import date
 from pathlib import Path
 
-from collectorkit import bronze
+from collectorkit import bronze, debugcap
 
 import elba_client as elba
 # login provides the browser-session REST helpers (api_get_json / api_post_json
@@ -187,8 +186,10 @@ def _download_statements(context, watch, all_docs: list, iban: str,
         except Exception as exc:
             failed_by_system[row["system_id"]] = (
                 failed_by_system.get(row["system_id"], 0) + 1)
-            log.debug("statement %s/%s failed: %r", bronze.log_id(iban),
-                      row["dokument_id"], exc)
+            # safe_error, never %r: a Playwright Call log repeats the
+            # request headers, the Bearer token included.
+            log.debug("statement %s/%s failed: %s", bronze.log_id(iban),
+                      row["dokument_id"], debugcap.safe_error(exc))
     if failed_by_system:
         total = sum(failed_by_system.values())
         log.warning("%s: %d statement(s) could not be downloaded (by system: "
@@ -274,14 +275,3 @@ def walk(context, watch, bronze_dir: Path, *, since: date | None = None,
     log.info("download %s: %s", status_str, counts)
     return {"run_dir": str(run_dir), "accounts": len(accounts), **counts}
 
-
-def main(argv: list[str]) -> int:
-    """Standalone entry: the full login + fetch, delegating to login.py (the
-    session is minted inside the same browser lifetime — §F). The wrapper's
-    `download` verb routes to login.py directly; this makes `python
-    download.py …` behave identically."""
-    return login.main(["--bronze-dir", "/data", *argv])
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))

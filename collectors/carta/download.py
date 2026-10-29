@@ -87,7 +87,6 @@ transfer / accept action.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import re
 import sys
@@ -186,14 +185,6 @@ def _recorded_url(url: str) -> str:
     if url.startswith((f"{APP}/", f"{FUND_ADMIN}/")):
         return url
     return _short(url)
-
-
-def write_json(path: Path, obj) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, indent=2, sort_keys=True, default=str),
-                   encoding="utf-8")
-    tmp.replace(path)
 
 
 # --------------------------------------------------------------------------
@@ -342,7 +333,7 @@ def capture_captable(api: Api, iid: str, corp_id: str, edir: Path,
         f"{APP}/api/investors/holdings/portfolio/{iid}"
         f"/corporation/{corp_id}/holdings-dashboard/")
     if hd is not None:
-        write_json(edir / "holdings-dashboard.json", hd)
+        bronze.atomic_write_json(edir / "holdings-dashboard.json", hd)
     captable_ok = _captable_accessible(hd)
     if not captable_ok:
         log.info("  no cap-table access — skipping post-money-list + "
@@ -355,7 +346,7 @@ def capture_captable(api: Api, iid: str, corp_id: str, edir: Path,
             f"/corporation/{corp_id}/{kind}/")
         if body is None:
             continue
-        write_json(edir / f"{kind}.json", body)
+        bronze.atomic_write_json(edir / f"{kind}.json", body)
         # Collect grant ids (with vesting) from the option-bearing lists.
         if kind in ("options", "equity-grants", "rsu", "sar"):
             for row in (body.get("rows") if isinstance(body, dict) else None) or []:
@@ -365,14 +356,14 @@ def capture_captable(api: Api, iid: str, corp_id: str, edir: Path,
     if not is_fund and captable_ok:
         _, pml = api.get(f"{APP}/api/corporations/{corp_id}/post-money-list/")
         if pml is not None:
-            write_json(edir / "post-money-list.json", pml)
+            bronze.atomic_write_json(edir / "post-money-list.json", pml)
 
     n_vest = 0
     for gid in sorted(grant_ids):
         _, vest = api.get(
             f"{APP}/api/corporations/{corp_id}/option_grant/{gid}/vesting-data/")
         if vest is not None:
-            write_json(edir / "vesting" / f"grant_{gid}.json", vest)
+            bronze.atomic_write_json(edir / "vesting" / f"grant_{gid}.json", vest)
             n_vest += 1
     if not is_fund:
         capture_exercises(api, grant_ids, edir)
@@ -385,7 +376,7 @@ def capture_captable_summary(api: Api, firm_id: str, entity_id: str,
         f"{APP}/api/investors/firm/{firm_id}/entity/{entity_id}"
         f"/overview-captable/summary")
     if summary is not None:
-        write_json(edir / "overview-captable-summary.json", summary)
+        bronze.atomic_write_json(edir / "overview-captable-summary.json", summary)
 
 
 def capture_fund(api: Api, iid: str, entity_id: str, edir: Path) -> None:
@@ -397,26 +388,27 @@ def capture_fund(api: Api, iid: str, entity_id: str, edir: Path) -> None:
     _, tabs = api.get(
         f"{APP}/api/investors/portfolio/fund/{iid}/entity/{entity_id}/tabs/")
     if tabs is not None:
-        write_json(edir / "fund-tabs.json", tabs)
+        bronze.atomic_write_json(edir / "fund-tabs.json", tabs)
 
     _, companies = api.get(f"{APP}/api/investors/portfolio/fund/{iid}/list/")
     if companies is not None:
-        write_json(edir / "fund-companies.json", companies)
+        bronze.atomic_write_json(edir / "fund-companies.json", companies)
 
     _, calls = api.get(
         f"{APP}/api/investors/portfolio/{iid}/list/individual_lp_active_cap_calls/")
     if calls is not None:
-        write_json(edir / "fund-cap-calls.json", calls)
+        bronze.atomic_write_json(edir / "fund-cap-calls.json", calls)
 
     # fund-admin partner dashboard bootstrap → portfolio_uuid → partner metrics.
     _, init = api.get(f"{FUND_ADMIN}/partner-portfolios/{iid}/app/init")
     if init is not None:
-        write_json(edir / "fund-admin" / "app-init.json", init)
+        bronze.atomic_write_json(edir / "fund-admin" / "app-init.json", init)
         puuid = init.get("portfolio_uuid") if isinstance(init, dict) else None
         if puuid:
             _, metrics = api.get(f"{FUND_ADMIN}/v2/partners/{puuid}/metrics/")
             if metrics is not None:
-                write_json(edir / "fund-admin" / "partner-metrics.json", metrics)
+                bronze.atomic_write_json(
+                    edir / "fund-admin" / "partner-metrics.json", metrics)
 
 
 # --------------------------------------------------------------------------
@@ -594,7 +586,7 @@ def capture_documents(api: Api, iid: str, docs_dir: Path, *,
             log.warning("documents pagination exceeded 100 pages; stopping")
             break
 
-    write_json(docs_dir / "index.json",
+    bronze.atomic_write_json(docs_dir / "index.json",
                {"count": len(all_rows), "results": all_rows})
 
     counts = docdedup.empty_audit(docdedup.NO_BLOB_BUCKET)
@@ -669,13 +661,14 @@ def run(context, args, run_dir: Path, snapshot_at: int,
                  "Skipping holdings, fund, documents.")
         return 0
 
-    write_json(run_dir / "bootstrap" / "navigation-config.json", nav)
-    write_json(run_dir / "bootstrap" / "account-switcher.json", acct)
-    write_json(run_dir / "bootstrap" / "investments.json", investments)
+    boot = run_dir / "bootstrap"
+    bronze.atomic_write_json(boot / "navigation-config.json", nav)
+    bronze.atomic_write_json(boot / "account-switcher.json", acct)
+    bronze.atomic_write_json(boot / "investments.json", investments)
 
     for e in investments:
         edir = run_dir / "entities" / slug_entity(e)
-        write_json(edir / "meta.json", e)
+        bronze.atomic_write_json(edir / "meta.json", e)
         corp_id = e.get("corporation_id")
         is_fund = bool(e.get("is_fund_investment"))
         log.info("→ entity %s", slug_entity(e))
@@ -713,14 +706,14 @@ def run(context, args, run_dir: Path, snapshot_at: int,
             api, iid, run_dir / "documents",
             skip=skip, force=args.documents_force)
 
-    write_json(run_dir / "run.json", {
+    bronze.atomic_write_json(run_dir / "run.json", {
         "schema": 1,
         "snapshot_at": snapshot_at,
         "utc": run_dir.name,
         # Terminal status the prune/load lifecycle keys on. This atomic
-        # write (write_json = tmp + replace) overwrites the in-progress
-        # marker main() dropped at run-dir creation in one step. Reached
-        # only on a successful walk; a crash leaves status="in-progress".
+        # write (tmp + rename) overwrites the in-progress marker main()
+        # dropped at run-dir creation in one step. Reached only on a
+        # successful walk; a crash leaves status="in-progress".
         "status": "complete",
         "dry_run": args.dry_run,
         "individual_id": iid,
@@ -816,7 +809,7 @@ def main(argv: list[str]) -> int:
         # goes quiescent and `load` skips. run() atomically overwrites this
         # marker with the terminal status="complete" manifest when the walk
         # finishes. --dry-run creates no run dir, so it leaves no marker.
-        write_json(run_dir / "run.json", {"status": "in-progress"})
+        bronze.atomic_write_json(run_dir / "run.json", {"status": "in-progress"})
     snapshot_at = int(time.time())
 
     # Captures live inside the run dir, and --dry-run deliberately creates

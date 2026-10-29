@@ -74,6 +74,12 @@ case "${1:-help}" in
             -*) echo "angellist login: unknown flag '$1' (try --check / --fresh / --help)." >&2
                 exit 2 ;;
         esac
+        # One mode flag at most: an extra argument fails rather than
+        # being ignored.
+        if [[ $# -gt 0 ]]; then
+            echo "angellist login: unexpected argument '$1' (try --check / --fresh / --help)." >&2
+            exit 2
+        fi
         # Seed the profile's user.js (a stock Firefox takes no Playwright
         # prefs) and relocate its startupCache out of /secrets. Runs before
         # the session probe, not only on the re-login path: a session can

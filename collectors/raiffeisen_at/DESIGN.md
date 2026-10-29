@@ -382,9 +382,9 @@ So the statement PDFs predate the JSON ledger by only a few months, and
 that window does not grow, because both floors roll forward together.
 Unlike chase (seven years of statements behind a two-year export), there
 is **no deep tail worth a reconcile-gated statement backfill.**
-Statements go to bronze as documents only. The
-deep tail comes from transaction listings the bank supplies on request,
-which also cover the statements' span (§I).
+Statements go to bronze as documents only. The deep tail comes from
+transaction listings the bank supplies on request, which also cover
+the statements' span (§I).
 
 ### §H — Still open
 

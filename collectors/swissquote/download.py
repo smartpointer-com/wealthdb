@@ -260,7 +260,7 @@ def export_transactions_window(
 
     target = run_dir / "transactions_000.csv"
     dl.save_as(str(target))
-    log.info("Saved %s (source filename: %s)", target, dl.suggested_filename)
+    log.info("Saved %s", target)
 
     return {
         "file": target.name,
@@ -289,7 +289,7 @@ def export_positions(page, run_dir: Path) -> tuple[Path, str | None]:
 
     target = run_dir / "positions.xls"
     dl.save_as(str(target))
-    log.info("Saved %s (source filename: %s)", target, dl.suggested_filename)
+    log.info("Saved %s", target)
 
     m = POSITIONS_FILENAME_RE.match(dl.suggested_filename)
     customer_id = m.group("customer") if m else None
@@ -322,7 +322,9 @@ def scrape_accounts(page, run_dir: Path) -> list[dict]:
     for line in raw_lines:
         m = parse_re.match(line)
         if not m:
-            log.warning("Skipping unparseable account-list entry: %r", line)
+            # Digits masked: the entry carries the account number.
+            log.warning("Skipping unparseable account-list entry: %r",
+                        re.sub(r"\d", "#", line))
             continue
         accounts.append({
             "account_product": m.group("type").strip(),
@@ -452,7 +454,7 @@ def export_account_overview(page, run_dir: Path) -> Path:
     dl = dl_info.value
     target = run_dir / "account_overview.pdf"
     dl.save_as(str(target))
-    log.info("Saved %s (source filename: %s)", target, dl.suggested_filename)
+    log.info("Saved %s", target)
     return target
 
 
@@ -469,7 +471,7 @@ def export_list_of_assets(page, run_dir: Path) -> Path:
     dl = dl_info.value
     target = run_dir / "list_of_assets.xls"
     dl.save_as(str(target))
-    log.info("Saved %s (source filename: %s)", target, dl.suggested_filename)
+    log.info("Saved %s", target)
     return target
 
 
@@ -655,19 +657,9 @@ def run(args: argparse.Namespace) -> int:
                     "no captures will be written")
         debug_dir = None
 
-    # The run's own credential. This walk is handed no password — it is
-    # handed a lifted session — so the jar is what a capture could leak,
-    # and an SPA that echoes its session into a meta tag or a bootstrap
-    # script puts it in the markup a capture serialises.
-    # Read once, at the first capture, and never fatally: a mask that
-    # cannot be built must not take down the walk it exists to diagnose.
-    mask = debugcap.SessionMask()
-
-    def capture(page, name: str) -> None:
-        """Snapshot a landmark into the run dir; a no-op unless --debug."""
-        if debug_dir is not None:
-            debugcap.capture_page(page, debug_dir, name, log=log,
-                                  redact=mask.for_page(page))
+    # Snapshot a landmark into the run dir, masked by the lifted session's
+    # jar; a no-op unless --debug.
+    capture = debugcap.page_capturer(debug_dir, log=log)
 
     with sync_playwright() as p:
         browser, context = _new_context(p, session.resolve_state_path(
@@ -744,8 +736,8 @@ def run(args: argparse.Namespace) -> int:
             # exports above; ordering after them avoids any risk of
             # hover state interfering with the export-button clicks.
             position_details = scrape_position_details(page, run_dir)
-            log.info("Customer ID (from XLS filename): %s",
-                     customer_id or "<unknown>")
+            log.info("Customer ID %s", "read from the XLS filename"
+                     if customer_id else "<unknown>")
 
             # --- Transactions ----------------------------------------
             page.goto(

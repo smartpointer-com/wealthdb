@@ -720,6 +720,26 @@ class CapturePageTest(unittest.TestCase):
         out = (self.run / debugcap.SCREENSHOTS_DIR / "signin.html").read_text()
         self.assertNotIn("example-user", out)
 
+    def test_page_capturer_masks_the_session_jar(self):
+        p = self._Page("<meta content='EXAMPLESESSIONVALUE'>")
+
+        class _Context:
+            def cookies(self_ctx):
+                return [{"name": "sid", "value": "EXAMPLESESSIONVALUE"}]
+
+        p.context = _Context()
+        debugcap.page_capturer(self.run, log=log)(p, "landing")
+        d = self.run / debugcap.SCREENSHOTS_DIR
+        self.assertNotIn("EXAMPLESESSIONVALUE",
+                         (d / "landing.html").read_text())
+        self.assertTrue((d / "landing.png").exists())
+
+    def test_page_capturer_without_a_dir_writes_nothing(self):
+        p = self._Page()
+        debugcap.page_capturer(None, log=log)(p, "landing")
+        self.assertFalse((self.run / debugcap.SCREENSHOTS_DIR).exists())
+        self.assertIsNone(p.shot_path)
+
 
 class _Resp:
     """The slice of a Playwright Response BodyCapture touches."""

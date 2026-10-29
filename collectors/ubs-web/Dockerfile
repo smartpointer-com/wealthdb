@@ -23,7 +23,6 @@ RUN pip install -r requirements.txt
 COPY login.py download.py load.py prune.py explore.py cards.py card_parsers.py landmarks.py pdf_parsers.py \
      rates.py rate_parsers.py /app/
 COPY migrations /app/migrations
-COPY tests /app/tests
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 

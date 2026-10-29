@@ -53,7 +53,6 @@ from collectorkit import bronze, cli, silver, srcfp
 import card_parsers  # local module
 import landmarks as ubs  # local module: the export's shared vocabulary
 import rate_parsers  # local module
-from rate_parsers import iban_canonical  # local module
 
 log = logging.getLogger("ubs-web.load")
 
@@ -548,7 +547,7 @@ def _ingest_positions_row(conn: sqlite3.Connection, snapshot_at: int,
         )
 
     iban_raw = row["IBAN"] or None
-    iban_c = iban_canonical(iban_raw)
+    iban_c = ubs.iban_canonical(iban_raw)
     isin = row["ISIN"] or None
 
     # banking_relationships (one synthetic row per relationship-prefix).
@@ -704,10 +703,10 @@ def _ingest_mortgage_row(conn: sqlite3.Connection, snapshot_at: int,
     currency = (row.get("Ccy.") or "").strip() or None
     if currency is None:
         # `Ccy.` should always be set on UBS mortgages; if it
-        # isn't, we'd rather drop than insert a NULL into a NOT
-        # NULL column.
-        log.warning("mortgage row %r has no currency; skipping",
-                    account_ext)
+        # isn't, the row is dropped rather than a NULL inserted into
+        # a NOT NULL column.
+        log.warning("mortgage row %s has no currency; skipping",
+                    bronze.log_id(account_ext))
         return 0
 
     conn.execute(
@@ -812,7 +811,9 @@ def _read_portfolio_txn_csv(csv_path: Path) -> list[dict]:
 def parse_grouped_decimal(s: str | None) -> float | None:
     """Parse a decimal written with apostrophe thousands separators
     ("-98'765", "1'234.50"). Distinct from `parse_decimal`, which
-    reads the plain form the cash CSVs use.
+    reads the plain form the cash CSVs use, and from
+    `rate_parsers.parse_amount`, which drops a leading currency and
+    comma separators but reads no trailing unit.
 
     The portfolio export annotates some figures with the unit they are
     counted in — a quantity in pieces ("4'000 p"), a price per unit
@@ -1251,7 +1252,7 @@ def _parse_transactions_csv(csv_path: Path) -> list[dict]:
     if header_idx is None:
         log.warning("no transactions header in %s; skipping", csv_path.name)
         return []
-    account_ext = iban_canonical(iban) or ""
+    account_ext = ubs.iban_canonical(iban) or ""
     if not account_ext:
         log.warning("no IBAN in %s; skipping", csv_path.name)
         return []
@@ -1369,9 +1370,10 @@ def _load_rates(conn: sqlite3.Connection, snapshot_at: int,
     API stated conditions for keeps the API's, and a legacy page for it
     is not read. A response without `interestItems` states none, so it
     claims no account. A file that states no condition writes no row,
-    so such an account reads as stating no rate. A dump with no `rates/` dir loads
-    as zero. The dump's earlier rows go first, so a re-read that states
-    fewer tiers leaves none of the old ones behind.
+    so such an account reads as stating no rate. A file that does not
+    read, or names no IBAN, warns and is skipped. A dump with no
+    `rates/` dir loads as zero. The dump's earlier rows go first, so a
+    re-read that states fewer tiers leaves none of the old ones behind.
     """
     conn.execute("DELETE FROM account_rates WHERE snapshot_at = ?",
                  (snapshot_at,))
@@ -1380,10 +1382,8 @@ def _load_rates(conn: sqlite3.Connection, snapshot_at: int,
         return 0
     by_account: dict[str, tuple[str, list[dict]]] = {}
     for path in sorted(rates_dir.glob("*.json")):
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as e:
-            log.warning("unreadable rate artefact %s: %s", path.name, e)
+        payload = _read_artefact_json(path, "rate")
+        if payload is None:
             continue
         if not rate_parsers.api_states_conditions(payload):
             log.warning("rate artefact %s states no conditions; skipped",
@@ -1440,15 +1440,21 @@ def _warn_orphan_card_rows(conn: sqlite3.Connection) -> None:
                     "in gold", row[0])
 
 
-def _read_card_json(path: Path) -> dict:
-    """Read one bronze card artefact. An unreadable file warns and yields
-    nothing, so one corrupt artefact costs its own facet rather than the
-    whole dump."""
+def _read_artefact_json(path: Path, kind: str):
+    """Read one bronze JSON artefact, or None when it does not read. An
+    unreadable file warns, so one corrupt artefact costs its own facet
+    rather than the whole dump."""
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
-        log.warning("unreadable card artefact %s: %s", path.name, e)
-        return {}
+        log.warning("unreadable %s artefact %s: %s", kind, path.name, e)
+        return None
+
+
+def _read_card_json(path: Path) -> dict:
+    """Read one bronze card artefact; an unreadable one reads as empty."""
+    payload = _read_artefact_json(path, "card")
+    return {} if payload is None else payload
 
 
 def _insert_card_accounts(conn: sqlite3.Connection, snapshot_at: int,
@@ -2180,7 +2186,7 @@ def _mt940_floors_by_account(dumps: list[Path]) -> dict[str, int]:
                 iban = _txn_header_value(ln)
             elif ln.startswith(TXN_HEADER_FROM):
                 frm = _txn_header_value(ln)
-        acct = iban_canonical(iban)
+        acct = ubs.iban_canonical(iban)
         floor = card_parsers.ts(frm)
         if not acct or not floor:
             continue
@@ -2238,7 +2244,7 @@ def _insert_hist_transactions(conn: sqlite3.Connection, snapshot_at: int,
         return 0, 1  # whole statement rejected
     inserted = 0
     for r in rows:
-        account = iban_canonical(r.get("account_external_id"))
+        account = ubs.iban_canonical(r.get("account_external_id"))
         if not account:
             continue  # non-cash / non-IBAN statement header
         floor = mt940_floors.get(account)
@@ -2352,7 +2358,7 @@ def _insert_advice_transactions(conn: sqlite3.Connection, snapshot_at: int,
     claimed: set[tuple[str, str]] = set()
     for r in sorted(rows, key=lambda r: (r.get("transaction_external_id") or "",
                                          r.get("account_external_id") or "")):
-        account = iban_canonical(r.get("account_external_id"))
+        account = ubs.iban_canonical(r.get("account_external_id"))
         txn_id = r.get("transaction_external_id")
         if not account or not txn_id:
             continue

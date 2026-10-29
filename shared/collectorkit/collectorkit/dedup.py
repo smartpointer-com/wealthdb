@@ -120,8 +120,8 @@ def _eligible_run_dirs(bronze_dir: Path, min_age_s: float, now: float,
             reason = e.reason
             # prune's reason attributes a missing run.json to a crash; for
             # dedup a manifestless dump (schwab-api / ubs-psn legacy) may be
-            # perfectly complete — we just can't confirm it, so say that
-            # honestly rather than implying a crash.
+            # complete, but that cannot be confirmed, so the reason says
+            # that rather than implying a crash.
             if reason.startswith("no manifest"):
                 reason = "no run.json — completeness not confirmed"
             skipped.append((e.run_dir, reason))
@@ -149,8 +149,9 @@ def _walk_files(run_dir: Path, min_size: int):
                 if e.is_dir():
                     stack.append(Path(e.path))
                 elif e.is_file():
-                    # Skip our own transient (a hard kill can strand one):
-                    # never group/replace/count an engine artefact.
+                    # Skip this sweep's own transient (a hard kill can
+                    # strand one): never group/replace/count an engine
+                    # artefact.
                     if e.name.endswith(".dedup-tmp"):
                         continue
                     st = e.stat()

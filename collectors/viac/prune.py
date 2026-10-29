@@ -58,17 +58,13 @@ from collectorkit import debugcap, prune
 def _is_complete(run_dir, meta):
     # Legacy fallback for statusless dumps (and the missing-manifest
     # branch): a run.json with no `status` key predates the status
-    # lifecycle, where the manifest was written only at the end, so its
-    # presence means the walk finished — EXCEPT such a --dry-run also
-    # wrote a full run.json (dry_run: true), so require `not dry_run` to
-    # keep those dry-run shells NON_COMPLETE, mirroring the forward
-    # status="dry-run" -> NON_COMPLETE. A missing run.json (meta is None)
-    # fails the `m is not None` check -> a crashed download with no
-    # manifest is NON_COMPLETE. Current walks always carry a status key,
-    # so status_classification resolves those before this fallback.
+    # lifecycle. load reads every such dump, so it is kept, a legacy
+    # dry-run shell included. A missing run.json (meta is None) fails the
+    # `m is not None` check -> a crashed download with no manifest is
+    # NON_COMPLETE. Current walks always carry a status key, so
+    # status_classification resolves those before this fallback.
     return prune.status_classification(
-        meta, run_dir=run_dir,
-        legacy_complete=lambda rd, m: m is not None and not m.get("dry_run"))
+        meta, run_dir=run_dir, legacy_complete=lambda rd, m: m is not None)
 
 
 CONFIG = prune.PruneConfig(

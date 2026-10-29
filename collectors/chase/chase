@@ -22,7 +22,7 @@ NAME=chase
 ENV_PREFIX=CHASE
 ENV_VARS=(CHASE_USERNAME CHASE_PASSWORD)
 HAS_DEBUG=1
-HAS_APP_MOUNT=1     # /app live-mount during iteration
+HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
 HAS_SAFETY=1        # refuse to evict a live container mid-2FA / mid-VNC
 HAS_VNC=1           # forward a free 5900-6000 port
 VNC_SUBCOMMANDS=(explore vnc-login)   # the browser-over-VNC verbs
@@ -64,8 +64,9 @@ Subcommands:
   load [args...]      Ingest bronze into the SQLite silver (accounts,
                       transactions, statements). --force rebuilds from all
                       bronze.
-  prune [args...]     Delete non-complete dumps from the bronze tree (runs
-                      host-side). --dry-run prints the plan.
+  prune [args...]     Delete non-complete dumps from the bronze tree, and
+                      aged entries of the /debug cache (runs host-side).
+                      --dry-run prints the plan.
   explore [args...]   Discovery harness: Camoufox over VNC + HAR / network
                       log / click log / trace under /debug. --fresh wipes
                       the profile so the next login forces a full 2FA.

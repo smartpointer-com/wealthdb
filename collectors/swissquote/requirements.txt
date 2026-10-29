@@ -20,9 +20,8 @@ pypdf>=6.19,<7
 # Without it, pypdf logs a warning for every such font.
 fonttools>=4.66,<5
 
-# pytest is bundled in the image so tests can be run inside the
-# container with `./swissquote sh -c "cd /app && pytest"`, no
-# host-side Python toolchain required.
+# pytest is bundled in the image: `make test-swissquote` runs the suite there, on
+# a copy of the checkout, so no host-side Python toolchain is needed.
 pytest>=8,<9
 
 # xlwt writes the legacy binary .xls format xlrd reads. Test-only:

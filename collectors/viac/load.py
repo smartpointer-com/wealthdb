@@ -23,7 +23,7 @@ import json
 import logging
 import sqlite3
 import sys
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -148,23 +148,6 @@ def viac_decimal(value: Any) -> float | None:
         f"unsupported shape for a VIAC decimal: {type(value).__name__}")
 
 
-def iso_datetime_to_epoch(s: str | None) -> int | None:
-    """Parse an ISO datetime into Unix seconds UTC. VIAC sometimes
-    emits microsecond-precision timestamps without a timezone
-    (e.g. `2024-01-01T12:00:00.000000`); treat those as UTC."""
-    if not s:
-        return None
-    try:
-        # Trim sub-second precision; ignore the literal Z if present.
-        head = s.rstrip("Z")
-        if "." in head:
-            head = head.split(".", 1)[0]
-        dt = datetime.strptime(head, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
-        return int(dt.timestamp())
-    except (ValueError, TypeError):
-        return None
-
-
 def parse_account_id(account_external_id: str) -> tuple[str, str]:
     """Split a VIAC portfolio number into (product_code, portfolio_index).
 
@@ -190,8 +173,8 @@ def synthesize_transaction_id(
 
     VIAC doesn't surface a stable per-event id on the wire — the
     `documentNumber` is shared across the two legs of corporate-
-    action pairs and is occasionally absent. SHA-256 prefix gives
-    us replay convergence: re-loading the same bronze produces the
+    action pairs and is occasionally absent. A SHA-256 prefix gives
+    replay convergence: re-loading the same bronze produces the
     same id.
     """
     blob = f"{account_external_id}|{tx_type}|{value_date_epoch}|" \
@@ -803,7 +786,7 @@ def load_documents_phase(
             "mime_type": d.get("mimeType"),
             "language": d.get("language"),
             "product": d.get("product"),
-            "timestamp": iso_datetime_to_epoch(d.get("timestamp")),
+            "timestamp": parse.iso_timestamp_to_epoch(d.get("timestamp")),
             "file_size": file_size,
         }
 

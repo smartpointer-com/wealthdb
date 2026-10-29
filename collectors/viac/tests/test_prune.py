@@ -11,8 +11,8 @@ tests cover what viac's PruneConfig decides:
 
   * main() reclaims a complete dump's --debug trace and deletes a stale
     non-complete dump whole; every load input is kept
-  * a legacy statusless manifest is complete, unless it carries
-    dry_run:true (a legacy --dry-run shell), which is deleted
+  * a legacy statusless manifest is complete, a legacy --dry-run shell
+    (dry_run:true) included, since load reads it
   * hard-linked PDFs: deleting a non-complete dump preserves the inode
     while a complete dump still links it (no load input lost)
   * validate_target accepts screenshots/, never a load-input subdir
@@ -150,13 +150,13 @@ def test_statusless_manifest_kept_as_legacy_complete(tmp_path):
     assert _load_inputs_present(d)
 
 
-def test_legacy_dry_run_shell_deleted(tmp_path):
+def test_legacy_dry_run_shell_kept(tmp_path):
     # A statusless manifest carrying dry_run:true is the shape a legacy
-    # --dry-run left behind. It is NON_COMPLETE (matching the forward
-    # status="dry-run") and prunable once quiescent.
+    # --dry-run left behind. load reads every statusless dump, so prune
+    # keeps it.
     d = make_dump(tmp_path, OLD_TS, status=None, dry_run=True, age_s=STALE_S)
     run_main(tmp_path)
-    assert not d.exists()
+    assert d.exists()
 
 
 def test_hardlinked_pdf_survives_noncomplete_dir_deletion(tmp_path):

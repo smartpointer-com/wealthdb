@@ -154,10 +154,11 @@ def apply_migrations(conn: sqlite3.Connection, migrations_dir: Path) -> int:
     numeric order, and return the final schema version.
 
     Each migration must end by inserting its own `silver_schema_version`
-    into `schema_meta`; we verify the version advanced and fail loudly if
-    not (a migration that forgets would otherwise re-run forever).
+    into `schema_meta`; the version is checked to have advanced, and a
+    migration that leaves it fails loudly (it would otherwise re-run
+    forever).
 
-    Transaction-model agnostic: we `commit()` after each migration, which
+    Transaction-model agnostic: each migration is followed by `commit()`, which
     persists the change under default-isolation connections and is a no-op
     under manual (`isolation_level=None`) connections. Migrations are
     independent of per-dump load atomicity, which each collector still

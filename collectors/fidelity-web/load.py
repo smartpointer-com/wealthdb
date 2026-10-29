@@ -2525,7 +2525,7 @@ def _unclaimed_feed_match(conn, account_external_id, amount, ts, claims,
             log.info(
                 "supplied-statements: feed row %s already absorbed another "
                 "statement row; %s %+.2f keeps looking",
-                feed_id, account_external_id, amount,
+                feed_id, bronze.log_id(account_external_id), amount,
             )
             continue
         return feed_id

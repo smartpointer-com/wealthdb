@@ -67,7 +67,7 @@ from itertools import repeat
 from pathlib import Path
 from typing import NamedTuple
 
-from collectorkit import cli, silver, srcfp
+from collectorkit import bronze, cli, silver, srcfp
 
 import derived_marks
 import instrument_links
@@ -781,13 +781,16 @@ def reconcile_activity(parsed: dict) -> list[str]:
         for section, stated in (acct.get("activity_totals") or {}).items():
             got = round(sums.get(section, 0.0), 2)
             if abs(got - stated) >= 0.01:
-                out.append(f"{acct.get('account_external_id')} {section}: "
-                           f"parsed {got:.2f} vs stated {stated:.2f}")
+                short = bronze.short_token(
+                    str(acct.get("account_external_id")))[:8]
+                out.append(f"account {short} {section}: the parsed rows "
+                           "do not sum to the stated total")
     return out
 
 
-def insert_derived_marks(conn: sqlite3.Connection, workbook: Path | None) -> int:
-    """Fill the archive's interior gaps with the values of a performance
+def insert_derived_marks(conn: sqlite3.Connection,
+                         marks: list[derived_marks.DerivedMark]) -> int:
+    """Fill the archive's interior gaps with the `marks` of a performance
     workbook of month-end account values, and return how many were written.
 
     Runs after every statement is in, so "where the archive has nothing" means
@@ -800,7 +803,6 @@ def insert_derived_marks(conn: sqlite3.Connection, workbook: Path | None) -> int
     10-digit ids. The brokerage DB is therefore the only one with gaps this
     can fill — running it against the other two would match nothing.
     """
-    marks = derived_marks.read_workbook(workbook)
     if not marks:
         return 0
     covered: dict[str, set[tuple[int, int]]] = {}
@@ -823,22 +825,21 @@ def insert_derived_marks(conn: sqlite3.Connection, workbook: Path | None) -> int
                            separators=(",", ":")),
             ),
         )
-        log.info("derived mark: %s %s %.2f", mark.account_external_id,
-                 mark.as_of, mark.market_value)
+        log.debug("derived mark: %s", mark.as_of)
     return len(fill)
 
 
 def insert_stated_periods(conn: sqlite3.Connection,
+                          periods: list[derived_marks.StatedPeriod],
                           workbook: Path | None) -> int:
-    """Write every month the workbook states, all seven values, and return
-    how many rows were written.
+    """Write every month `periods` holds (the workbook's rows, all seven
+    values), and return how many rows were written.
 
     Every row goes in, not only the gaps: these rows record what the
     workbook says beside the ledger, and create no transaction and no
     position. Each carries the workbook's sha256. Brokerage only, for the
     reason :func:`insert_derived_marks` gives.
     """
-    periods = derived_marks.read_stated_periods(workbook)
     if not periods:
         return 0
     sha = hashlib.sha256(workbook.read_bytes()).hexdigest()
@@ -847,7 +848,8 @@ def insert_stated_periods(conn: sqlite3.Connection,
         key = (p.period_end, p.account_external_id)
         if key in seen:
             log.warning("stated period %s %s appears twice; the later row "
-                        "stands", p.account_external_id, p.period_end)
+                        "stands", bronze.short_token(p.account_external_id)[:8],
+                        p.period_end)
         seen.add(key)
         conn.execute(
             "INSERT OR REPLACE INTO stated_periods (period_start, period_end, "
@@ -1007,14 +1009,10 @@ def _save_parse_cache(cache_dir: Path | None, entries: dict[str, dict]) -> None:
     when caching is off (``cache_dir is None``)."""
     if cache_dir is None:
         return
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    path = cache_dir / _PARSE_CACHE_FILE
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(
+    bronze.atomic_write_bytes(
+        cache_dir / _PARSE_CACHE_FILE,
         json.dumps({"schema": _PARSE_CACHE_SCHEMA, "entries": entries},
-                   separators=(",", ":")),
-        encoding="utf-8")
-    tmp.replace(path)
+                   separators=(",", ":")).encode("utf-8"))
 
 
 def parse_statements(pdfs: list[Path], shas: list[str], *,
@@ -1200,9 +1198,15 @@ def build(silver_db: Path, bronze_dir: Path, *, signatures: tuple[str, ...],
         # Brokerage only: the workbook keys its sheets on brokerage serials.
         # An archive with no brokerage statements has no DB to fill and no
         # sheet that could match one.
+        # The workbook is read once for both passes.
         brokerage = conns.get(pdf_parsers_svbwa.FAMILY_BROKERAGE)
-        derived = insert_derived_marks(brokerage, workbook) if brokerage else 0
-        stated = insert_stated_periods(brokerage, workbook) if brokerage else 0
+        periods = (derived_marks.read_stated_periods(workbook)
+                   if brokerage else [])
+        derived = (insert_derived_marks(brokerage,
+                                        derived_marks.marks_of(periods))
+                   if brokerage else 0)
+        stated = (insert_stated_periods(brokerage, periods, workbook)
+                  if brokerage else 0)
         synth = 0
         for conn in conns.values():
             synth += synthesize_masters(conn)

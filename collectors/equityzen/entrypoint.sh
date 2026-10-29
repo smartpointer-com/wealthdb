@@ -87,7 +87,7 @@ Subcommands:
               VNC). Prompts for the 6-digit TOTP code on stdin; persists to
               the profile dir at /secrets/equityzen-profile and renews
               silently if still valid. Pass --check to probe the existing
-              session without firing a 2FA push.
+              session without asking for a code.
   download    Browse the investor surfaces and capture bronze: offerings +
               positions + cash flows (getBuyerInvestments per stage +
               getMyInvestmentDetails per offering). Pass --dry-run for a
@@ -104,9 +104,6 @@ Subcommands:
               the plan first.
   sh|bash     Open an interactive shell inside the container.
   help        Show this message.
-
-NOTE: all five verbs (explore / login / download / load / prune) are
-implemented. See DESIGN.md.
 
 Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
 EOF

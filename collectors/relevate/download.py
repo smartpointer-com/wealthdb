@@ -60,7 +60,7 @@ import logging
 import sys
 import tempfile
 import time
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -158,8 +158,8 @@ def new_session_from_state(
     session.headers.update({
         "User-Agent": USER_AGENT,
         # Mirror the SPA's literal-undefined header. Airlock doesn't
-        # validate it; sending the same string keeps our fingerprint
-        # identical to the browser's.
+        # validate it; sending the same string keeps the client's
+        # fingerprint identical to the browser's.
         "Authorization": "bearer undefined",
         "Accept": "application/vnd.api+json, application/json, */*",
         "Accept-Language": "en-US,en;q=0.9",
@@ -223,7 +223,7 @@ class Manifest:
         self.data: dict[str, Any] = {
             "tool": "relevate.download",
             "schema_version": 1,
-            "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "started_at": ck_session.iso_now(),
             "status": "in-progress",
             "ended_at": None,
             "mode": mode,
@@ -285,13 +285,12 @@ class Manifest:
         ingests dumps-with-errors), ``"dry-run"`` for a ``--dry-run``
         shell, ``"incomplete"`` when the walk aborted early."""
         self.data["status"] = status
-        self.data["ended_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        self.data["ended_at"] = ck_session.iso_now()
         self.flush()
 
     def flush(self) -> None:
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
-        tmp.replace(self.path)
+        bronze.atomic_write_bytes(
+            self.path, json.dumps(self.data, indent=2).encode("utf-8"))
 
 
 # ----------------------------------------------------------------------
@@ -535,7 +534,7 @@ def fetch_portfolio(
     logger.info(
         "portfolio id=%s slug=%s product=%s proposal=%s "
         "deposits=years %s-%s",
-        pid, slug, product.get("key"), proposal_id,
+        bronze.log_id(pid), slug, product.get("key"), bronze.log_id(proposal_id),
         year_window[0], year_window[1],
     )
 
@@ -588,7 +587,7 @@ def fetch_portfolio(
         logger.info(
             "portfolio id=%s has no portfolioProposalId; "
             "skipping modelportfolio",
-            pid,
+            bronze.log_id(pid),
         )
 
 

@@ -33,7 +33,7 @@ RUN chmod +x /app/entrypoint.sh
 # have host-correct ownership. download.py drives Camoufox (a
 # stealth-patched Firefox fork) headed under the entrypoint's Xvfb —
 # there is no Chromium here. Single-tenant, single-trusted-origin
-# (we only ever load fidelity.com).
+# (the collector loads only fidelity.com).
 
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["help"]

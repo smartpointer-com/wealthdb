@@ -217,12 +217,6 @@ def test_a_sheet_that_is_not_an_account_is_not_read_for_periods(tmp_path):
         "SVR-000000"}
 
 
-def test_a_missing_workbook_states_no_period(tmp_path, monkeypatch):
-    monkeypatch.setitem(sys.modules, "openpyxl", None)
-    assert dm.read_stated_periods(tmp_path / "absent.xlsx") == []
-    assert dm.read_stated_periods(None) == []
-
-
 def test_the_marks_of_a_full_workbook_are_its_ending_values(tmp_path):
     # The gap-fill read stays on the ending value alone, whatever the
     # other columns state.

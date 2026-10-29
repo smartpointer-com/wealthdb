@@ -55,7 +55,8 @@ Subcommands:
                         other than complete).
   prune [args...]       Delete non-complete dumps (crashed walks +
                         --dry-run shells) and `download --debug`
-                        HTTP traces from the bronze tree. Use
+                        HTTP traces from the bronze tree, and aged
+                        entries of the /debug cache. Use
                         --dry-run to print the plan first;
                         --min-age-hours (default 1) guards a download
                         still in flight.

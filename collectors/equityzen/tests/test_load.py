@@ -100,7 +100,6 @@ def test_load_offering_and_position(tmp_path):
     run_dir = _seed_bronze(tmp_path / "bronze")
     conn = _fresh_db(tmp_path)
     stats = loader.load_run(conn, run_dir)
-    assert stats["skipped"] is False
     assert stats["offerings"] == 1
     assert stats["positions"] >= 1
 
@@ -126,21 +125,27 @@ def test_load_offering_and_position(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 1
 
 
+def _load_all(tmp_path: Path) -> sqlite3.Connection:
+    """`load` over tmp_path/bronze through the CLI entry point, which picks
+    the pending runs; the silver DB, opened."""
+    db = tmp_path / "equityzen.db"
+    assert loader.main(["--bronze-dir", str(tmp_path / "bronze"),
+                        "--silver-db", str(db)]) == 0
+    return loader.open_db(db)
+
+
 def test_skips_already_loaded(tmp_path):
-    run_dir = _seed_bronze(tmp_path / "bronze")
-    conn = _fresh_db(tmp_path)
-    loader.load_run(conn, run_dir)
+    _seed_bronze(tmp_path / "bronze")
+    _load_all(tmp_path).close()
     # A second load of the same run is a no-op (dump_runs guard).
-    again = loader.load_run(conn, run_dir)
-    assert again["skipped"] is True
+    conn = _load_all(tmp_path)
     assert conn.execute("SELECT COUNT(*) FROM offerings").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 1
 
 
 def test_skips_a_dump_whose_walk_never_finished(tmp_path):
-    run_dir = _seed_bronze(tmp_path / "bronze", {"status": "in-progress"})
-    conn = _fresh_db(tmp_path)
-    stats = loader.load_run(conn, run_dir)
-    assert stats["skipped"] is True
+    _seed_bronze(tmp_path / "bronze", {"status": "in-progress"})
+    conn = _load_all(tmp_path)
     assert conn.execute("SELECT COUNT(*) FROM offerings").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 0
 
@@ -148,17 +153,25 @@ def test_skips_a_dump_whose_walk_never_finished(tmp_path):
 def test_skips_a_dump_without_run_json(tmp_path):
     run_dir = _seed_bronze(tmp_path / "bronze")
     (run_dir / "run.json").unlink()
-    conn = _fresh_db(tmp_path)
-    assert loader.load_run(conn, run_dir)["skipped"] is True
+    conn = _load_all(tmp_path)
     assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 0
+
+
+def test_a_slug_that_names_no_real_instant_stops_no_load(tmp_path):
+    # Month 13 matches the run-dir pattern but is no date: it is skipped,
+    # and the runs after it still load.
+    bad = _seed_bronze(tmp_path / "bronze")
+    bad.rename(bad.with_name("20231301T000000Z"))
+    _seed_bronze(tmp_path / "bronze")
+    conn = _load_all(tmp_path)
+    assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 1
 
 
 def test_loads_a_statusless_manifest(tmp_path):
     # A manifest without a status field was written at the end of a
     # finished walk, so it is complete.
-    run_dir = _seed_bronze(tmp_path / "bronze", {"source": "equityzen"})
-    conn = _fresh_db(tmp_path)
-    assert loader.load_run(conn, run_dir)["skipped"] is False
+    _seed_bronze(tmp_path / "bronze", {"source": "equityzen"})
+    conn = _load_all(tmp_path)
     assert conn.execute("SELECT COUNT(*) FROM offerings").fetchone()[0] == 1
 
 

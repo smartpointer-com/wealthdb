@@ -312,7 +312,9 @@ def _enter_mfa_code(page, code: str) -> bool:
         if field.input_value() != code:            # Stencil rejected a bulk fill
             page.keyboard.type(code, delay=30)
     except Exception as exc:
-        log.debug("code entry failed: %r", exc)
+        # safe_error, never %r: a Playwright Call log can reproduce the
+        # typed code.
+        log.debug("code entry failed: %s", debugcap.safe_error(exc))
         return False
     return _click_q2btn(page.locator(q2client.SEL_MFA_SUBMIT).first)
 

@@ -16,7 +16,7 @@ NAME=angellist
 ENV_PREFIX=ANGELLIST
 ENV_VARS=(ANGELLIST_USERNAME ANGELLIST_PASSWORD)
 HAS_DEBUG=1
-HAS_APP_MOUNT=1     # /app live-mount while iterating on explore.py
+HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
 HAS_SAFETY=1        # refuse to evict a live container mid-2FA / mid-VNC
 HAS_VNC=1           # forward a free 5900-6000 port
 VNC_SUBCOMMANDS=(explore login)   # replaces the default {vnc-login} — no vnc-login verb here
@@ -34,9 +34,9 @@ if [[ "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0
     cat <<EOF
 angellist — host wrapper
 
-Implemented end-to-end: \`login\` (real-Firefox cookie lift) ->
-\`download\` (Camoufox + injected cookie, GraphQL capture + tax-doc fetch)
--> \`load\` (event-sourced silver). See DESIGN.md and README.md.
+\`login\` (real-Firefox cookie lift) -> \`download\` (Camoufox + injected
+cookie, GraphQL capture + tax-doc fetch) -> \`load\` (event-sourced
+silver). See DESIGN.md and README.md.
 
 Subcommands:
   build               Build the Docker image (\`docker build\`).
@@ -80,7 +80,8 @@ Subcommands:
                       from the bronze tree. Runs host-side (pure stdlib;
                       no Docker spawn), so it can reclaim disk while a
                       download is mid-flight — the in-flight dump is
-                      protected by prune's own age guard. --dry-run prints
+                      protected by prune's own age guard. Also deletes
+                      aged entries of the /debug cache. --dry-run prints
                       the plan without deleting anything.
   sh|bash             Open an interactive shell in the container.
   help                Show this message.

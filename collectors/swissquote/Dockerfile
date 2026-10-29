@@ -16,7 +16,6 @@ RUN pip install -r requirements.txt
 # .dockerignore is incomplete.
 COPY login.py download.py load.py landmarks.py prune.py /app/
 COPY migrations /app/migrations
-COPY tests /app/tests
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 
@@ -25,7 +24,7 @@ RUN chmod +x /app/entrypoint.sh
 # have host-correct ownership; Chromium's user-namespace sandbox is
 # disabled at launch time in code with `--no-sandbox` instead. This
 # is acceptable in a single-tenant, single-trusted-origin scenario
-# (we only ever load swissquote.ch).
+# (the collector loads only swissquote.ch).
 
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["help"]

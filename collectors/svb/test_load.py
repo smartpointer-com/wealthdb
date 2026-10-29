@@ -1051,6 +1051,7 @@ def test_reconcile_activity_reports_a_section_that_does_not_add_up():
     msgs = B.reconcile_activity(parsed)
     assert len(msgs) == 1
     assert "additions_withdrawals" in msgs[0]
+    assert "SVM-000000" not in msgs[0] and "4500" not in msgs[0]
 
 
 def test_deposit_balance_becomes_a_cash_row(tmp_path, monkeypatch):
@@ -1234,14 +1235,24 @@ def test_derived_marks_fill_the_archive_gaps(tmp_path, monkeypatch):
     }
     bronze = _write_bronze(tmp_path, canned)
     _patch_parsers(monkeypatch, bronze, canned)
-    monkeypatch.setattr(B.derived_marks, "read_workbook", lambda path: [
-        B.derived_marks.DerivedMark("SVM-000000", "2022-02-28", 20.0),
-        # Outside the covered span: must not extend the series.
-        B.derived_marks.DerivedMark("SVM-000000", "2022-04-30", 40.0),
-    ])
+
+    def _period(end, value):
+        return B.derived_marks.StatedPeriod(
+            "SVM-000000", end[:8] + "01", end, None, value, None, None,
+            None, None, None, {})
+    reads = []
+
+    def _read(path):
+        reads.append(path)
+        return [_period("2022-02-28", 20.0),
+                # Outside the covered span: must not extend the series.
+                _period("2022-04-30", 40.0)]
+    monkeypatch.setattr(B.derived_marks, "read_stated_periods", _read)
+    workbook = tmp_path / "marks.xlsx"
+    workbook.write_bytes(b"read_stated_periods is patched")
     db = tmp_path / "svb.db"
     B.build(db, bronze, signatures=(), migrations_dir=MIGRATIONS,
-            cache_dir=None, max_workers=1, workbook=tmp_path / "marks.xlsx")
+            cache_dir=None, max_workers=1, workbook=workbook)
     conn = sqlite3.connect(str(db))
     rows = conn.execute(
         "SELECT as_of_date, market_value, description, source_sha256 FROM "
@@ -1249,6 +1260,8 @@ def test_derived_marks_fill_the_archive_gaps(tmp_path, monkeypatch):
     assert [(r[1], r[3] == DERIVED_SHA) for r in rows] == [
         (10.0, False), (20.0, True), (30.0, False)]
     assert rows[1][2] == B.derived_marks.DERIVED_DESC
+    # One read serves both the marks and the stated periods.
+    assert reads == [workbook]
 
 
 def test_a_workbook_is_optional(tmp_path, monkeypatch):
@@ -1373,8 +1386,11 @@ def test_a_month_stated_twice_keeps_the_later_row(tmp_path, monkeypatch,
     ).fetchall() == [
         (B.ts_from_iso("2022-02-15"), B.ts_from_iso("2022-02-28"),
          11.0, 21.0, 6.0, 4.0, 2.0, 1.0)]
-    assert ("stated period SVM-000000 2022-02-28 appears twice; the later "
+    # The account is named by a hash, never by its id.
+    token = B.bronze.short_token("SVM-000000")[:8]
+    assert (f"stated period {token} 2022-02-28 appears twice; the later "
             "row stands") in caplog.text
+    assert "SVM-000000" not in caplog.text
 
 
 def test_no_workbook_states_no_period(tmp_path, monkeypatch):

@@ -55,8 +55,11 @@ case "${1:-help}" in
         exec python3 /app/download.py --vnc "$@"
         ;;
     load)
+        # The wrapper runs load on the host venv; this arm serves a
+        # direct `docker run`, so it names the /data mount, where the
+        # host layout keeps both bronze and silver.
         shift
-        exec python3 /app/load.py "$@"
+        exec python3 /app/load.py --bronze-dir /data --silver-db /data/fidelity-web.db "$@"
         ;;
     prune)
         # Delete debug artefacts (<run>/screenshots/), non-complete
