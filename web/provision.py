@@ -736,7 +736,18 @@ RETIRED_CARD_NAMES = [
                       # chart, show the mix the cash and positions chart
                       # and the one-day split showed.
                       "Cash vs positions over time", "Cash vs positions over time (privacy)",
-                      "Asset class split", "Asset class split (privacy)"]
+                      "Asset class split", "Asset class split (privacy)",
+                      # The Income dashboard's cards of the holdings'
+                      # income are named for their population, beside
+                      # the income lines' Net income.
+                      "Income in the window", "Income in the window (privacy)",
+                      "Received income", "Received income (privacy)",
+                      "Expected remaining", "Expected remaining (privacy)",
+                      "Monthly average income", "Monthly average income (privacy)",
+                      "Received interest", "Received interest (privacy)",
+                      "Received dividends", "Received dividends (privacy)",
+                      "Expected interest remaining", "Expected interest remaining (privacy)",
+                      "Expected dividends remaining", "Expected dividends remaining (privacy)"]
 
 # Dashboard names retired by renames; archived on provision so a re-run
 # cleans them up.
@@ -925,12 +936,12 @@ INVESTING_TAG = {"id": "inv-tag", "name": "investing",
 # and ensure_synced refuses to build a card while any is missing.
 FILTER_FIELD_COLUMNS = {
     "report_returns": ("currency", "silver_source_id"),
-    # The Wealth Overview's headline figures (migration 0113). Their time
-    # filter lands on the snapshot, so a source whose latest snapshot
-    # falls outside the window drops out of them. The holdings views carry
-    # each line's account tax wrapper and asset class, the flow views the
-    # tax wrapper (migration 0132).
-    "web_sources_latest": ("snapshot_at", "silver_source_id", "tax_wrapper", "asset_class"),
+    # The Wealth Overview's headline figures (migration 0113). They read
+    # the latest snapshot whatever the time range, so no time filter
+    # binds the view. The holdings views carry each line's account tax
+    # wrapper and asset class, the flow views the tax wrapper (migration
+    # 0132).
+    "web_sources_latest": ("silver_source_id", "tax_wrapper", "asset_class"),
     "web_sources_history": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
     "web_asset_classes_history": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
     "web_vehicles_history": ("silver_source_id", "tax_wrapper", "asset_class"),
@@ -966,7 +977,7 @@ FILTER_FIELD_COLUMNS = {
                                   "account_label"),
     # The gains view (migration 0117). Its currency is a row filter
     # through the {{currency}} variable, so no field filter binds it.
-    "web_gains": ("period", "silver_source_id", "tax_wrapper"),
+    "web_gains": ("period", "silver_source_id", "tax_wrapper", "asset_class"),
     # The exposure view (migration 0127): month ends and today, a row set
     # per currency like web_gains, and per source and account wrapper
     # (migration 0130). The pickers narrow those and each leaf's asset
@@ -1391,7 +1402,7 @@ def question_defs(db_id, mid):
     wo_note = (" Built for the Wealth Overview; opened standalone it runs "
                f"in {DEFAULT_CURRENCY}, the currency variable's default.")
     al_note = allocation_note()
-    lat_tags = native_tags("web_sources_latest", holdings_filters("snapshot_at"))
+    lat_tags = native_tags("web_sources_latest", LATEST_FILTERS)
     hist_tags = native_tags("web_sources_history", holdings_filters("as_of_day"))
     pos_tags = asof_tags("web_positions_history", POSITION_FILTERS)
     cls_tags = native_tags("web_asset_classes_history", holdings_filters("as_of_day"))
@@ -1428,13 +1439,13 @@ def question_defs(db_id, mid):
         # the daily history, which agrees with them on each day.
         "Net worth": latest_scalar("Net worth", "total_value",
             "Total net worth in the chosen currency as of the latest "
-            "snapshot (cash + positions across the selected sources)."),
+            "snapshot (cash + positions across the selected sources)." + LATEST_DESC),
         "Positions value": latest_scalar("Positions value", "positions_value",
             "Market value of all positions in the chosen currency as of "
-            "the latest snapshot."),
+            "the latest snapshot." + LATEST_DESC),
         "Cash balance": latest_scalar("Cash balance", "cash_balance",
             "Total cash balance in the chosen currency as of the latest "
-            "snapshot."),
+            "snapshot." + LATEST_DESC),
         "Net worth — monthly trend": overview_native(
             "Net worth — monthly trend", hist_tags, "smartscalar",
             "Average daily net worth of the latest month, with the change "
@@ -2501,7 +2512,7 @@ OVERVIEW_DASHBOARDS = {"Wealth Overview", "Wealth Overview" + PRIVACY_SUFFIX}
 OVERVIEW_TILE_HOMES = {
     "Stalest source (days)": "Data Freshness",
     "Asset class mix over time": "Allocation",
-    "Received income": "Income", "Expected remaining": "Income",
+    "Holdings' income received": "Income", "Holdings' income expected": "Income",
     "Net spend": "Spending", "Spend — monthly trend": "Spending",
     "Net cash flow": "Cash Flow", "Savings rate": "Cash Flow", "Projected net cash flow": "Cash Flow",
     "Realized gain": "Gains", "Unrealized gain": "Gains",
@@ -2515,11 +2526,16 @@ OVERVIEW_BUILT_CARDS = {"Asset class mix over time", "Projected net cash flow",
                         *(c for c, _m, _col in RETURN_YTD_CARDS)}
 
 # Full-width headings over a dashboard's rows, by base dashboard (the
-# twin takes its base's): (row, text). The overview's say what sets each
-# row of figures.
+# twin takes its base's): (row, text, display), a section's heading or a
+# chart's subtitle in plain text. The overview's say what sets each row
+# of figures. Income's names the population of the chart below it, which
+# the cards around it do not share.
 DASHBOARD_HEADINGS = {"Wealth Overview": [
-    (19, "Over the time range"),
-    (26, "At the range's end, today and ahead"),
+    (19, "Over the time range", "heading"),
+    (26, "At the range's end, today and ahead", "heading"),
+], "Income": [
+    (6, "Holdings' income only: interest, coupons, dividends, fund distributions, rent and pension. "
+        "Wages and other receipts are in Net income.", "text"),
 ]}
 
 # A twin's own placing of its base's tiles, by base dashboard: card ->
@@ -2529,7 +2545,7 @@ DASHBOARD_HEADINGS = {"Wealth Overview": [
 # leaves them out, and the other four figures of their rows sit two to a
 # row.
 TWIN_TILES = {"Wealth Overview": {
-    "Received income": None, "Net spend": None,
+    "Holdings' income received": None, "Net spend": None,
     "Spend — monthly trend": (20, 0, 12, 3), "Net cash flow": (20, 12, 12, 3),
     "Savings rate": (23, 0, 12, 3), "Realized gain": (23, 12, 12, 3),
 }}
@@ -2541,7 +2557,7 @@ def dashboard_tile_titles(base):
     shows the card itself (PRIVACY_EXEMPT_CARDS). A title is set for two
     kinds of card: a borrowed card whose name leans on its home
     dashboard's pickers, and a card whose title is another card's name."""
-    titles = {"Wealth Overview": {"Expected remaining": f"Expected income, {HORIZONS[0]} months",
+    titles = {"Wealth Overview": {"Holdings' income expected": f"Holdings' income expected, {HORIZONS[0]} months",
                                   "Asset class mix over time": "Asset classes over time"}}.get(base, {})
     return {**titles, **{privacy_name(c): privacy_name(t) for c, t in titles.items()
                          if c not in PRIVACY_EXEMPT_CARDS}}
@@ -2557,11 +2573,10 @@ def base_dashboards():
     precomputed buckets, and the summary rows ignore windows by
     construction), None for no filters. Every filtered mode carries a
     required currency picker. The time filter lands on each card's time
-    column (as_of_day for history cards, occurred_at for transactions,
-    snapshot_at for latest-snapshot cards): a native card's own tag, or
-    the tile's time column below for an MBQL one. A native tile ignores
-    that column, and only the Spending dashboards carry MBQL tiles that
-    take a time filter. A Wealth Overview tile's time column is unread:
+    column (as_of_day for history cards, occurred_at for transactions):
+    a native card's own tag, or the tile's time column below for an MBQL
+    one. A native tile ignores that column, and only the Spending
+    dashboards carry MBQL tiles that take a time filter. A Wealth Overview tile's time column is unread:
     its mappings come from its card's tags or its home tile
     (overview_mappings). The source filter
     lands on silver_source_id — in 'returns' mode on every tile but the
@@ -2582,9 +2597,9 @@ def base_dashboards():
             # AVERAGE, so it intentionally differs from today's value.
             # The stalest source sits beside them: the warning to read
             # before trusting any figure.
-            ("Net worth", 0, 0, 4, 3, "snapshot_at"),
-            ("Positions value", 0, 4, 5, 3, "snapshot_at"),
-            ("Cash balance", 0, 9, 5, 3, "snapshot_at"),
+            ("Net worth", 0, 0, 4, 3, None),
+            ("Positions value", 0, 4, 5, 3, None),
+            ("Cash balance", 0, 9, 5, 3, None),
             ("Net worth — monthly trend", 0, 14, 5, 3, "as_of_day"),
             ("Stalest source (days)", 0, 19, 5, 3, None),
             # The net worth chart, then its mix by asset class.
@@ -2594,7 +2609,7 @@ def base_dashboards():
             # the time range, then those at its end, today and ahead,
             # three to a row so each title reads whole. Their time column
             # is unread (overview_mappings).
-            ("Received income", 20, 0, 8, 3, None),
+            ("Holdings' income received", 20, 0, 8, 3, None),
             ("Net spend", 20, 8, 8, 3, None),
             ("Spend — monthly trend", 20, 16, 8, 3, None),
             ("Net cash flow", 23, 0, 8, 3, None),
@@ -2604,7 +2619,7 @@ def base_dashboards():
             ("Return year to date (TWR)", 27, 8, 8, 3, None),
             ("Return year to date (MWR)", 27, 16, 8, 3, None),
             ("Income yield", 30, 0, 8, 3, None),
-            ("Expected remaining", 30, 8, 8, 3, None),
+            ("Holdings' income expected", 30, 8, 8, 3, None),
             ("Projected net cash flow", 30, 16, 8, 3, None),
         ]),
         "Allocation": (
@@ -2671,18 +2686,27 @@ def base_dashboards():
         ]),
         "Income": (
             "What the tracked accounts received and what the holdings are "
-            "expected to pay. The income lines are wages, interest, "
-            "dividends, staking rewards, rent and gifts, typed and "
-            "attributed to a payer, gross as booked. The holdings' income "
-            "shows by type, month, account and position: what was "
-            "received, what the holdings and an account's rent or pension "
-            "are expected to pay, and a calendar of the payments. Every "
+            "expected to pay. Two populations share the dashboard. The "
+            "income lines are every receipt: wages, interest, dividends, "
+            "staking rewards, rent and gifts, typed and attributed to a "
+            "payer, gross as booked. Net income, the trend, the types, the "
+            "payers and the largest receipts read them. The holdings' "
+            "income is the six types the projection counts: interest, "
+            "coupons, dividends, distributions, rent and pension. The "
+            "cards named for the holdings, the chart by month and the "
+            "tables by account and position read it: what was received, "
+            "what the holdings and an account's rent or pension are "
+            "expected to pay, and a calendar of the payments. Every "
             "received figure follows the Time range, and every expected "
             "one the Horizon, under the Rate path, Maturing and Shift "
-            "pickers. The Withholding tile shows the tax a source "
-            "withheld, and what the withholding table withholds from the "
-            "income expected. The Type picker narrows the income lines' "
-            "cards. " + note,
+            "pickers. The Withholding tile shows the tax a source withheld "
+            "on any line, and what the withholding table withholds from "
+            "the income expected. The income after withholding is every "
+            "line and the income expected, less that tax. The Source, "
+            "Account, Tax wrapper and Type pickers narrow every card, but "
+            "the withholding and the income after it take no Type: a tax "
+            "line names none. A card's description names each picker "
+            "that does not reach it. " + note,
             "range", [
             # The headline figures first, then the charts, then the
             # tables: what was received and is expected, beside the
@@ -2691,26 +2715,26 @@ def base_dashboards():
             # dividends; the types beside the payers; then by account
             # and by position, the calendar a position's row picks, and
             # the largest receipts.
-            ("Income in the window", 0, 0, 4, 3, None),
-            ("Received income", 0, 4, 4, 3, None),
-            ("Expected remaining", 0, 8, 4, 3, None),
+            ("Holdings' income in the window", 0, 0, 4, 3, None),
+            ("Holdings' income received", 0, 4, 4, 3, None),
+            ("Holdings' income expected", 0, 8, 4, 3, None),
             ("Net income", 0, 12, 4, 3, "occurred_at"),
-            ("Monthly average income", 0, 16, 4, 3, None),
+            ("Holdings' monthly average income", 0, 16, 4, 3, None),
             ("Uncategorized income share", 0, 20, 4, 3, "occurred_at"),
             ("Income — monthly trend", 3, 0, 8, 3, "occurred_at"),
             ("Withholding", 3, 8, 8, 3, None),
             ("Income after withholding", 3, 16, 8, 3, None),
-            ("Received and expected by month", 6, 0, 24, 9, None),
-            ("Received interest", 15, 0, 6, 3, None),
-            ("Received dividends", 15, 6, 6, 3, None),
-            ("Expected interest remaining", 15, 12, 6, 3, None),
-            ("Expected dividends remaining", 15, 18, 6, 3, None),
-            ("Income by type", 18, 0, 12, 8, "occurred_at"),
-            ("Top 50 payers", 18, 12, 12, 8, "occurred_at"),
-            ("Received and expected by account", 26, 0, 24, 7, None),
-            ("Received and expected by position", 33, 0, 24, 10, None),
-            ("Expected payments", 43, 0, 24, 8, None),
-            ("Largest receipts", 51, 0, 24, 8, "occurred_at"),
+            ("Received and expected by month", 7, 0, 24, 9, None),
+            ("Holdings' interest received", 16, 0, 6, 3, None),
+            ("Holdings' dividends received", 16, 6, 6, 3, None),
+            ("Holdings' interest expected", 16, 12, 6, 3, None),
+            ("Holdings' dividends expected", 16, 18, 6, 3, None),
+            ("Income by type", 19, 0, 12, 8, "occurred_at"),
+            ("Top 50 payers", 19, 12, 12, 8, "occurred_at"),
+            ("Received and expected by account", 27, 0, 24, 7, None),
+            ("Received and expected by position", 34, 0, 24, 10, None),
+            ("Expected payments", 44, 0, 24, 8, None),
+            ("Largest receipts", 52, 0, 24, 8, "occurred_at"),
         ]),
         "Cash Flow": (
             "Where the household's cash came from and where it went: the "
@@ -2718,7 +2742,10 @@ def base_dashboards():
             "household is the accounts in its own tax wrappers; "
             "retirement plans, trusts and charitable vehicles are "
             "vehicles it pays into and draws on. Own-account moves are "
-            "invisible, and buying and selling is shown NET. The cash flow "
+            "invisible, and buying and selling is shown NET. The Section "
+            "picker narrows the statement's charts by month and the line "
+            "list; the five figures and the diagram take no Section, since a "
+            "statement narrowed to one section is no longer one. The cash flow "
             "projection sets the income the holdings are expected to pay "
             "against the average outflows of the past months, month by "
             "month over the Horizon, under the Rate path, Maturing and Shift "
@@ -2750,8 +2777,10 @@ def base_dashboards():
             "the tax years, the shape by month, where the gains came from, "
             "the positions behind them, and what the figures miss. The "
             "window selects whole months; a figure at its end reads the "
-            "last month in it. Price gain only: income, fees and taxes are "
-            "on the Returns dashboard. " + note,
+            "last month in it. The Asset class picker keeps the positions "
+            "of the classes picked; a position that names no class counts "
+            "only while none is picked. Price gain only: income, fees and "
+            "taxes are on the Returns dashboard. " + note,
             "range", [
             # Coarse to fine, so scrolling down reveals detail: the
             # totals, the tax years, the months, where the gains came
@@ -2796,14 +2825,16 @@ def base_dashboards():
             "breakdown reads the latest day in the window; the map colours "
             "each country by its share; a chart over time shows every month "
             "end. Exposure by legal situs shows where each holding legally "
-            "sits, a fund whole at its own. The Source, Tax wrapper and "
-            "Asset class pickers narrow every chart to a selection, whose "
-            "shares then read as shares of the selection. Credit and "
-            "maturity show the debt and the cash, coupon the debt, the cycles "
-            "the public equity, each bucket as a share of what its chart "
-            "counts. Top securities adds up each security held directly "
-            "and through every fund. The last chart says how much of net "
-            "worth the figures rest on. " + note,
+            "sits, a fund whole at its own. The Source and Tax wrapper "
+            "pickers narrow every chart to a selection, whose shares then "
+            "read as shares of the selection. The Asset class picker "
+            "narrows every chart but four. Credit and maturity show the "
+            "debt and the cash, coupon the debt, the cycles the public "
+            "equity, each bucket as a share of what its chart counts. "
+            "Their class is fixed, so they take no Asset class. Top "
+            "securities adds up each security held directly and through "
+            "every fund. The last chart says how much of net worth the "
+            "figures rest on. " + note,
             "range", [
             # The allocation first, the ring beside the sectors and the
             # classes over time full width; then where it sits: the map
@@ -3096,6 +3127,8 @@ def exposure_cards(db_id, privacy):
     dtags = native_tags("web_exposure_debt", EXPOSURE_DEBT_FILTERS)
     recent = (" It covers the last twelve months: a window that ends before them shows "
               "nothing.")
+    # The debt view carries no asset class (EXPOSURE_DEBT_FILTERS).
+    whole_class = " Its class is fixed, so it takes no Asset class."
     class_share = "100 * sum(value) / (SELECT CASE WHEN total > 0 THEN total END FROM c)"
 
     def class_bars(name, desc, dimension, label, buckets, extra=(), tooltip=()):
@@ -3103,7 +3136,8 @@ def exposure_cards(db_id, privacy):
         bucket order: each bucket's share of its class, with the `extra`
         columns beside it and the `tooltip` ones in its tooltip."""
         cols = "".join(f",\n       {c}" for c in extra)
-        card(name, "bar", desc + f" A bucket under {SMALLEST_BAR_PCT}% of it is left out of the bars." + recent,
+        card(name, "bar", desc + f" A bucket under {SMALLEST_BAR_PCT}% of it is left out of the bars."
+             + whole_class + recent,
              _window_end("web_exposure_debt", dtags, where=f"\n     AND dimension = '{dimension}'")[1] + ",\n"
              "c AS (SELECT sum(value) AS total FROM e WHERE bucket <> '(none)')\n"
              f"SELECT bucket AS {label}{cols}{money},\n       {class_share} AS class_share_pct\n"
@@ -3588,6 +3622,23 @@ INCOME_TYPE_COLORS = {"interest": "#2a78d6", "coupons": "#eb6834", "dividends": 
 # fund's distributions included.
 INTEREST_TYPES = ("interest", "coupons")
 DIVIDEND_TYPES = ("dividends", "distributions")
+# Each type, by the income lines' detailed types it reads, as the
+# engine's incomeTypeSQL maps a line: interest a bond pays is a coupon,
+# a dividend a fund pays a distribution. So the Type picker, which lists
+# the lines' labels, reaches the holdings' cards through this map, and a
+# label of any other type selects nothing there.
+INCOME_DETAILED_TYPES = {"interest": ("INCOME_INTEREST_EARNED",), "coupons": ("INCOME_INTEREST_EARNED",),
+                         "dividends": ("INCOME_DIVIDENDS",),
+                         "distributions": ("INCOME_DIVIDENDS", "INCOME_DISTRIBUTIONS"),
+                         "rent": ("INCOME_RENTAL",), "pension": ("INCOME_RETIREMENT_PENSION",)}
+# The population a card of the holdings' income reads, which its
+# description names: the dashboard's other cards read every income line.
+HOLDINGS_INCOME_DESC = (" Holdings' income only: interest, coupons, dividends, fund distributions, "
+                        "rent and pension. Wages and other receipts are in the Income dashboard's Net "
+                        "income.")
+# The two cards of income_projected_cards that read every income line
+# received, the withholding's population.
+INCOME_EVERY_LINE_CARDS = {"Withholding", "Income after withholding"}
 
 
 # The keys the engine gives a cash balance (`cash:<ccy>`) and an
@@ -3611,12 +3662,14 @@ def _tint(color, share=0.55):
 def income_projected_cards(db_id, privacy):
     """The Income dashboard's cards of the holdings' income, or with
     `privacy` their privacy variants: name -> (display, description,
-    dataset_query, viz). Native SQL over every income line received
-    (web_yield_received, a row set per reporting currency), the tax booked
-    on the income's accounts (web_income_withheld), and today's
-    projection of what the holdings are expected to pay (web_yield_parts,
-    in each holding's currency at today's rate), gold migrations 0138 and
-    0146.
+    dataset_query, viz). Native SQL over the income lines of the six
+    types received (web_yield_received, a row set per reporting
+    currency), the tax booked on the income's accounts
+    (web_income_withheld), and today's projection of what the holdings
+    are expected to pay (web_yield_parts, in each holding's currency at
+    today's rate), gold migrations 0138 and 0146. The withholding and
+    the income after it set the tax booked against every income line
+    received (web_income), and take no Type picker.
 
     What was received is the Time range's: the picker reaches a card
     through the days web_income_days lists. What is expected is the
@@ -3635,23 +3688,46 @@ def income_projected_cards(db_id, privacy):
     account picker."""
     selection = {k: v for k, v in INCOME_PROJECTED_SELECTION.items()
                  if not (privacy and k == "account")}
-    sel_tags = {}
+    sel_tags = view_tags("web_income", {"type": ("income_label", "string/=")})
     for k, (view, col) in selection.items():
         sel_tags.update(view_tags(view, {k: (col, "string/=")}))
+    # The six types the labels picked map to (INCOME_DETAILED_TYPES).
+    picked_types = ("SELECT m.type FROM (VALUES " + ", ".join(
+        f"('{d}', '{t}')" for t, ds in INCOME_DETAILED_TYPES.items() for d in ds)
+        + ") m(detailed, type)\n                    WHERE m.detailed IN"
+        " (SELECT income_detailed FROM web_income WHERE {{type}})")
 
-    def kept(alias=""):
-        """The optional clauses keeping a row whose source and account
-        the pickers select."""
-        return "".join(f"\n     [[AND {alias}{col} IN (SELECT {col} FROM {view} WHERE {{{{{k}}}}})]]"
-                       for k, (view, col) in selection.items() if k in sel_tags)
+    def kept(alias="", typed=True, by_account=False):
+        """The optional clauses keeping a row whose source, account, tax
+        wrapper and type the pickers select. A row `typed` False has no
+        type and keeps any. A row `by_account` has no tax wrapper of its
+        own, and keeps its account's, defaulted as the views default
+        it."""
+        out = []
+        for k, (view, col) in selection.items():
+            if k not in sel_tags:
+                continue
+            pick = f"SELECT {col} FROM {view} WHERE {{{{{k}}}}}"
+            if by_account and k == "tax_wrapper":
+                out.append(f"({alias}silver_source_id, {alias}account_external_id) IN"
+                           " (SELECT silver_source_id, account_external_id FROM accounts"
+                           f" WHERE COALESCE(tax_wrapper, 'taxable_personal') IN ({pick}))")
+            else:
+                out.append(f"{alias}{col} IN ({pick})")
+        if typed and "type" in sel_tags:
+            out.append(f"{alias}type IN ({picked_types})")
+        return "".join(f"\n     [[AND {c}]]" for c in out)
 
     # A card with a received figure takes the Time range, one with an
     # expected figure the projection's four, a twin's share of the whole
-    # both; the calendar takes the Position picker too.
+    # both; the calendar takes the Position picker too. The withholding
+    # and the income after it take no Type (untyped): a tax row has
+    # none.
     range_tags = view_tags("web_income_days", {"time_range": ("day", "date/all-options")})
     received_tags = {"currency": currency_tag(), **range_tags, **sel_tags}
     expected_tags = {"currency": currency_tag(), **PROJECTION_TAGS, **sel_tags}
     both_tags = {**received_tags, **PROJECTION_TAGS}
+    untyped_tags = {k: v for k, v in both_tags.items() if k != "type"}
     calendar_tags = {**expected_tags, "position": POSITION_TAG}
 
     def standalone(tags):
@@ -3670,7 +3746,8 @@ def income_projected_cards(db_id, privacy):
     make = _card_maker(out, db_id, privacy, INCOME_PROJECTED_PICKERS, both_tags, "")
 
     def card(name, display, desc, sql, viz, tags=both_tags):
-        make(name, display, desc, sql, viz, tags, standalone(tags))
+        population = "" if name in INCOME_EVERY_LINE_CARDS else HOLDINGS_INCOME_DESC
+        make(name, display, desc + population, sql, viz, tags, standalone(tags))
 
     # The days the Time range selects, every day web_income_days lists
     # with none.
@@ -3679,15 +3756,17 @@ def income_projected_cards(db_id, privacy):
     # Each part's income in its holding's currency and its rate to the
     # picked one, over the horizon; a payment of an estimated day reads
     # its month.
-    expected = ("ex AS (\n"
+    def expected(typed=True):
+        return ("ex AS (\n"
                 "  SELECT p.type, p.month_start, p.month AS m, CASE WHEN NOT p.month_only THEN p.day END AS day,\n"
                 f"         p.holding_currency, ({PART_INCOME}) AS amount,\n"
                 f"         {_ccy_case('p.fx')} AS fx, p.withholding_pct,\n"
                 "         p.basis, p.reinvested, p.silver_source_id, p.account_external_id, p.position_key,\n"
                 "         p.account_label, p.vehicle, p.symbol, p.name\n" + PARTS_FROM +
-                "\n   WHERE p.rule = {{maturing}}\n     AND p.month <= " + HORIZON_MONTHS + kept("p.") + ")")
-    received = ("rx AS (\n  SELECT * FROM web_yield_received\n   WHERE currency = {{currency}}\n"
-                f"     AND day IN ({days})" + kept() + ")")
+                "\n   WHERE p.rule = {{maturing}}\n     AND p.month <= " + HORIZON_MONTHS + kept("p.", typed) + ")")
+    def received(typed=True):
+        return ("rx AS (\n  SELECT * FROM web_yield_received\n   WHERE currency = {{currency}}\n"
+                f"     AND day IN ({days})" + kept(typed=typed) + ")")
     keys = "silver_source_id, account_external_id, position_key, account_label, vehicle, symbol, name"
     arms = {"expected": (expected,
                          "SELECT 'expected' AS status, type, month_start, m, day, holding_currency, amount,\n"
@@ -3699,12 +3778,12 @@ def income_projected_cards(db_id, privacy):
                          f"           NULL AS withheld, {keys}\n      FROM rx")}
     both = ("expected", "received")
 
-    def rows(parts, *extra):
+    def rows(parts, *extra, typed=True):
         """The CTEs a card reads, ending with `a`, then the `extra` ones:
         each amount of the `parts`, 'expected' and 'received', in the
         picked currency, an expected one with what the withholding table
-        withholds from it."""
-        ctes = [arms[x][0] for x in parts]
+        withholds from it; with `typed` False, of every type."""
+        ctes = [arms[x][0](typed) for x in parts]
         ctes.append("a AS (\n    " + "\n    UNION ALL\n    ".join(arms[x][1] for x in parts) + ")")
         return "WITH " + ",\n".join(ctes + list(extra)) + "\n"
 
@@ -3717,7 +3796,15 @@ def income_projected_cards(db_id, privacy):
     # The tax a source withheld on the days received, which the
     # withholding table does not model.
     taxed = ("tx AS (\n  SELECT sum(" + _ccy_case("value") + ") AS withheld\n    FROM web_income_withheld\n"
-             f"   WHERE day IN ({days})" + kept() + ")")
+             f"   WHERE day IN ({days})" + kept(typed=False, by_account=True) + ")")
+    # Every income line received on those days, Net income's lines, of
+    # any type: the income the tax booked was withheld from.
+    # With no Time range picked, every line, as Net income counts them;
+    # a range keeps the lines of the days it selects.
+    lines = ("li AS (\n  SELECT coalesce(sum(" + _ccy_case("value") + "), 0) AS income\n    FROM web_income\n"
+             "   WHERE TRUE" + ("\n     [[AND CAST(occurred_at AS DATE) IN"
+                               " (SELECT day FROM web_income_days WHERE {{time_range}})]]" if range_tags else "")
+             + kept(typed=False) + ")")
     # The biggest month, for the twins (PEAK).
     peak = _peak_cte("a", "value", "month_start").rstrip()
 
@@ -3744,40 +3831,41 @@ def income_projected_cards(db_id, privacy):
     expect = "status = 'expected'"
     if privacy:
         h = ("h AS (SELECT value, weighs FROM web_yield\n"
-             "        WHERE today\n          AND currency = {{currency}}" + kept() + ")")
-        card("Income in the window", "scalar",
-             "The income received over the Time range and expected over the Horizon, as a yield: per "
-             "year, over the value today's holdings earn it on; 0 where there is none.",
+             "        WHERE today\n          AND currency = {{currency}}" + kept(typed=False) + ")")
+        card("Holdings' income in the window", "scalar",
+             "The holdings' income received over the Time range and expected over the Horizon, as a "
+             "yield: per year, over the value today's holdings earn it on; 0 where there is none.",
              rows(both, months, h) + "SELECT coalesce(100 * (SELECT sum(value) FROM a) * 12"
              " / (SELECT received + expected FROM mo)\n"
              f"       / NULLIF((SELECT {EARNING_VALUE} FROM h), 0), 0) AS income_yield_pct",
              _share_viz("income_yield_pct"))
-        card("Monthly average income", "scalar",
-             "The income per month, as a share of its biggest month; 0 where no month has any.",
+        card("Holdings' monthly average income", "scalar",
+             "The holdings' income per month, as a share of its biggest month; 0 where no month has any.",
              rows(both, months, peak) +
              "SELECT coalesce(100 * (SELECT sum(value) FROM a) / (SELECT received + expected FROM mo)\n"
              f"       / {PEAK}, 0) AS monthly_average_pct",
              _share_viz("monthly_average_pct"))
     else:
-        tile("Income in the window", "income", "",
-             "The income received over the Time range and expected over the Horizon.")
-        card("Monthly average income", "scalar",
-             "The income received over the Time range and expected over the Horizon, over the months "
-             "they cover: each day received counts its share of its month, and the Horizon its months "
-             "and the rest of this one.",
+        tile("Holdings' income in the window", "income", "",
+             "The holdings' income received over the Time range and expected over the Horizon.")
+        card("Holdings' monthly average income", "scalar",
+             "The holdings' income received over the Time range and expected over the Horizon, over the "
+             "months they cover: each day received counts its share of its month, and the Horizon its "
+             "months and the rest of this one.",
              rows(both, months) + "SELECT coalesce(sum(value), 0) / (SELECT received + expected FROM mo)"
              " AS monthly_average\n  FROM a", {})
-    tile("Received income", "received", "", "The income received over the Time range.", "received")
-    tile("Received interest", "received_interest", interest,
+    tile("Holdings' income received", "received", "", "The holdings' income received over the Time range.",
+         "received")
+    tile("Holdings' interest received", "received_interest", interest,
          "The interest and coupons received over the Time range.", "received")
-    tile("Received dividends", "received_dividends", dividends,
+    tile("Holdings' dividends received", "received_dividends", dividends,
          "The dividends and fund distributions received over the Time range.", "received")
-    tile("Expected remaining", "expected", expect,
+    tile("Holdings' income expected", "expected", expect,
          "What the holdings, and an account's rent or pension, are expected to pay after today, over "
          "the Horizon.", "expected")
-    tile("Expected interest remaining", "expected_interest", f"{expect} AND {interest}",
+    tile("Holdings' interest expected", "expected_interest", f"{expect} AND {interest}",
          "The interest and coupons expected after today, over the Horizon.", "expected")
-    tile("Expected dividends remaining", "expected_dividends", f"{expect} AND {dividends}",
+    tile("Holdings' dividends expected", "expected_dividends", f"{expect} AND {dividends}",
          "The dividends and fund distributions expected after today, over the Horizon.", "expected")
 
     # What was withheld from the income received is the tax booked on the
@@ -3786,29 +3874,34 @@ def income_projected_cards(db_id, privacy):
     # expected is what the config's withholding table withholds at each
     # holding's situs and account wrapper, a model. A line the table names
     # no rate for withholds nothing, and with no table the expected part
-    # is nothing.
+    # is nothing. The tax booked is on any income line, so the income it
+    # is set against is every line received (li) and the income expected.
+    # Neither half takes the Type picker: a tax row names no income type.
     withheld = "coalesce((SELECT withheld FROM tx), 0) + coalesce(sum(withheld), 0)"
+    income = "(SELECT income FROM li) + coalesce(sum(value), 0)"
+    untyped = rows(("expected",), taxed, lines, typed=False)
+    no_type = " It takes no Type: a tax line names no income type."
     withheld_desc = ("The tax withheld at source: over the Time range, the tax booked on the income's "
                      "accounts, every tax line `wealthdb income summary -C +withheld` counts, whatever "
                      "income it was withheld from; over the Horizon, what the withholding table in the "
                      "config withholds from the income expected at each holding's situs and account "
                      "wrapper, a model. With no table it is the tax booked alone, and the tile's title "
-                     "says so. It reads 0 where nothing was withheld.")
-    net_desc = ("The income received over the Time range and expected over the Horizon, less what "
-                "was and will be withheld from it.")
+                     "says so. It reads 0 where nothing was withheld." + no_type)
+    net_desc = ("Every income line received over the Time range, the lines Net income counts, and the "
+                "holdings' income expected over the Horizon, less the Withholding tile." + no_type)
     if privacy:
-        card("Withholding", "scalar", withheld_desc + " As the share of the income it takes, 0 where there "
-             "is no income.",
-             rows(both, taxed) + f"SELECT coalesce(100 * ({withheld}) / NULLIF(sum(value), 0), 0) AS withheld_pct"
-             "\n  FROM a", _share_viz("withheld_pct"))
-        card("Income after withholding", "scalar", net_desc + " As a share of the income, 0 where there is none.",
-             rows(both, taxed) + f"SELECT coalesce(100 * (sum(value) - ({withheld})) / NULLIF(sum(value), 0), 0)"
-             " AS net_pct\n  FROM a", _share_viz("net_pct"))
+        card("Withholding", "scalar", withheld_desc + " As the share it takes of every income line received "
+             "and the income expected, 0 where there is none.",
+             untyped + f"SELECT coalesce(100 * ({withheld}) / NULLIF({income}, 0), 0) AS withheld_pct"
+             "\n  FROM a", _share_viz("withheld_pct"), untyped_tags)
+        card("Income after withholding", "scalar", net_desc + " As a share of that income, 0 where there is none.",
+             untyped + f"SELECT coalesce(100 * ({income} - ({withheld})) / NULLIF({income}, 0), 0)"
+             " AS net_pct\n  FROM a", _share_viz("net_pct"), untyped_tags)
     else:
         card("Withholding", "scalar", withheld_desc,
-             rows(both, taxed) + f"SELECT {withheld} AS withheld\n  FROM a", {})
+             untyped + f"SELECT {withheld} AS withheld\n  FROM a", {}, untyped_tags)
         card("Income after withholding", "scalar", net_desc,
-             rows(both, taxed) + f"SELECT coalesce(sum(value), 0) - ({withheld}) AS net\n  FROM a", {})
+             untyped + f"SELECT {income} - ({withheld}) AS net\n  FROM a", {}, untyped_tags)
 
     # ---- received and expected by month, on one axis
     series = "type || ' (' || status || ')' AS series"
@@ -3854,9 +3947,17 @@ def income_projected_cards(db_id, privacy):
 
     # Every holding of today, the ones that pay nothing included, and any
     # held no longer that received income over the Time range.
+    # With a Type picked, only the holdings that receive or are expected
+    # to pay it.
+    paying = ("" if "type" not in sel_tags else
+              "\n     [[AND (silver_source_id, account_external_id, position_key) IN"
+              "\n          (SELECT silver_source_id, account_external_id, position_key FROM web_yield_parts"
+              f" WHERE type IN ({picked_types})\n           UNION ALL"
+              "\n           SELECT silver_source_id, account_external_id, position_key FROM web_yield_received"
+              f" WHERE type IN ({picked_types}))]]")
     hold = ("hold AS (\n"
             f"  SELECT {keys}, quantity, price, value\n"
-            "    FROM web_yield\n   WHERE today\n     AND currency = {{currency}}" + kept() + ")")
+            "    FROM web_yield\n   WHERE today\n     AND currency = {{currency}}" + kept(typed=False) + paying + ")")
     inc = ("inc AS (\n  SELECT silver_source_id, account_external_id, position_key,\n"
            "         any_value(account_label) AS account_label, any_value(vehicle) AS vehicle,\n"
            "         any_value(symbol) AS symbol, any_value(name) AS name,\n"
@@ -3875,7 +3976,7 @@ def income_projected_cards(db_id, privacy):
     position_desc = ("Each position, grouped by vehicle: what it received over the Time range, what it is "
                      "expected to pay over the Horizon, and the two together. Every holding of today is "
                      "listed, one that pays nothing too, and any holding sold that received income over "
-                     "the Time range. A position with no name "
+                     "the Time range; with a Type picked, those that pay it. A position with no name "
                      + ("reads its key where that is a cash balance's or an account income's, else "
                         "(unnamed)." if privacy else "reads its key.") +
                      " Click its symbol or name to list its payments in the calendar.")
@@ -3907,7 +4008,7 @@ def income_projected_cards(db_id, privacy):
     # shows, so a click on (unnamed) lists every unnamed position's
     # payments.
     picked = "{{position}} IN (symbol, name, position_key" + (f", {TWIN_POSITION_NAME}" if privacy else "") + ")"
-    cal = ("WITH " + expected + ",\ncal AS (\n"
+    cal = ("WITH " + expected() + ",\ncal AS (\n"
            "  SELECT month_start, day, account_label, symbol, name, type, 'income' AS kind, basis, reinvested,\n"
            "         holding_currency, silver_source_id, account_external_id, position_key,\n"
            "         sum(amount) AS amount, sum(amount * fx) AS value\n"
@@ -3988,8 +4089,8 @@ def cashflow_plan_cards(db_id, privacy):
     expects none."""
     tags = {"currency": currency_tag(), **PROJECTION_TAGS}
     tail = (" The projected parts follow the projection's pickers. The other "
-            "parts are the averages of the look-back a refresh stores, so the Time range, Source, "
-            "Section and Investing pickers do not reach this card. Built for the Cash Flow dashboard; "
+            "parts are the averages of the look-back a refresh stores, which no window, source, "
+            "section or grain narrows. Built for the Cash Flow dashboard; "
             f"opened standalone it runs in {DEFAULT_CURRENCY} over the variables' defaults: the "
             f"{HORIZONS[0]} months after this one, {PROJECTION_DEFAULTS}." + (PRIVACY_DESC if privacy else ""))
     out = {}
@@ -4151,6 +4252,7 @@ PRIVACY_CARD_BALANCE_FILTERS = {k: v for k, v in CARD_BALANCE_FILTERS.items()
 INCOME_CURRENCY_PARAM_ID = "aa5df10a"
 INCOME_ACCOUNT_PARAM_ID = "aa5df10b"
 INCOME_TYPE_PARAM_ID = "aa5df10c"
+INCOME_TAX_WRAPPER_PARAM_ID = "aa5df122"
 
 # The Income filters. `type` binds to income_label rather than to the
 # primary label its spending twin uses: the income taxonomy has ONE
@@ -4160,7 +4262,8 @@ INCOME_TYPE_PARAM_ID = "aa5df10c"
 # for.
 INCOME_FILTERS = {**range_filters("occurred_at"),
                   "account": ("account_label", "string/="),
-                  "type": ("income_label", "string/=")}
+                  "type": ("income_label", "string/="),
+                  "tax_wrapper": ("tax_wrapper", "string/=")}
 # The twin's, without the account filter, for the reason the spending
 # twin drops its own: a field filter renders as a dropdown of its
 # column's values, and account labels are the one thing the twin exists
@@ -4170,7 +4273,7 @@ PRIVACY_INCOME_FILTERS = {k: v for k, v in INCOME_FILTERS.items()
 INCOME_PICKERS = [(INCOME_CURRENCY_PARAM_ID, "currency"),
                   (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
                   (INCOME_ACCOUNT_PARAM_ID, "account"),
-                  (INCOME_TYPE_PARAM_ID, "type")]
+                  (INCOME_TYPE_PARAM_ID, "type"), (INCOME_TAX_WRAPPER_PARAM_ID, "tax_wrapper")]
 
 # The Cash Flow dashboards' own picker ids.
 CASHFLOW_CURRENCY_PARAM_ID = "aa5df10d"
@@ -4201,6 +4304,9 @@ CASHFLOW_FILTERS = {**range_filters("occurred_at"),
 # of anything that identifies an account, which is the reason the other
 # two twins drop theirs.
 PRIVACY_CASHFLOW_FILTERS = dict(CASHFLOW_FILTERS)
+# What a card that declines the Section picker says of it.
+SECTION_DECLINED_DESC = (" It takes no Section: the statement's figures and its diagram need every "
+                         "section.")
 CASHFLOW_PICKERS = [(CASHFLOW_CURRENCY_PARAM_ID, "currency"),
                     (CASHFLOW_INVESTING_PARAM_ID, "investing"),
                     (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
@@ -4210,15 +4316,21 @@ CASHFLOW_PICKERS = [(CASHFLOW_CURRENCY_PARAM_ID, "currency"),
 GAINS_CURRENCY_PARAM_ID = "aa5df111"
 GAINS_TAX_WRAPPER_PARAM_ID = "aa5df112"
 GAINS_MISSING_PARAM_ID = "aa5df113"
+GAINS_ASSET_CLASS_PARAM_ID = "aa5df123"
 
 # The Gains filters. The tax wrapper is the one of its own: a realized
 # gain in a taxable account is a tax bill, in a retirement account it is
-# not. No account filter: the tables name the accounts already.
+# not. The asset class is each position's, as Exposure and Yield narrow
+# by it; a position that names none, a sale of an instrument nothing
+# classes, has no value to pick and counts only with none picked. No
+# account filter: the tables name the accounts already.
 GAINS_FILTERS = {**range_filters("period"),
-                 "tax_wrapper": ("tax_wrapper", "string/=")}
+                 "tax_wrapper": ("tax_wrapper", "string/="),
+                 "asset_class": ("asset_class", "string/=")}
 GAINS_PICKERS = [(GAINS_CURRENCY_PARAM_ID, "currency"),
                  (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
                  (GAINS_TAX_WRAPPER_PARAM_ID, "tax_wrapper"),
+                 (GAINS_ASSET_CLASS_PARAM_ID, "asset_class"),
                  (GAINS_MISSING_PARAM_ID, "missing_basis")]
 
 # The Exposure dashboard's picker ids and filters: the currency (a row
@@ -4272,6 +4384,16 @@ def holdings_filters(col):
     """A holdings tile's filters on the Wealth Overview: the range pair on
     `col`, the tax wrapper and the asset class."""
     return {**range_filters(col), **SELECTION_FILTERS}
+
+
+# The Wealth Overview's three headline figures read each account at its
+# latest snapshot whatever the time range, as `wealthdb holdings
+# sources` does: a time filter on the snapshot would drop a source whose
+# last snapshot falls before the range. The Stalest source tile beside
+# them warns of a stale one.
+LATEST_FILTERS = {"source": ("silver_source_id", "string/="), **SELECTION_FILTERS}
+LATEST_DESC = (" It reads the latest snapshot whatever the Time range; the Stalest source "
+               "tile says how old that is.")
 
 
 OVERVIEW_PICKERS = [(WEALTH_CURRENCY_PARAM_ID, "currency"),
@@ -4333,16 +4455,20 @@ YIELD_PICKERS = [(YIELD_CURRENCY_PARAM_ID, "currency"), (TIME_PARAM_ID, "time_ra
 # expected, and a picker reaches one template tag of a card. So each of
 # its field filters is bound to the view whose values its picker's
 # dropdown lists, and every view the card reads keeps the rows whose
-# source or account that view's selected rows carry (`kept` in
-# income_projected_cards). A source with no income line is still a
-# source, so the source's view is the sources', not the income's. The
-# Time range reaches them the same way, through the days the income
-# received covers.
+# source, account or tax wrapper that view's selected rows carry (`kept`
+# in income_projected_cards). A source with no income line is still a
+# source, so the source's view is the sources', not the income's; the
+# same holds for a tax wrapper, whose picker lists every account's. The
+# Type binds the income lines' label, which `kept` maps to the
+# holdings' types (INCOME_DETAILED_TYPES). The Time range reaches them
+# the same way, through the days the income received covers.
 INCOME_PROJECTED_SELECTION = {"source": ("web_sources_latest", "silver_source_id"),
-                              "account": ("web_income", "account_label")}
+                              "account": ("web_income", "account_label"),
+                              "tax_wrapper": ("web_sources_latest", "tax_wrapper")}
 INCOME_PROJECTED_PICKERS = [(INCOME_CURRENCY_PARAM_ID, "currency"),
                             (TIME_PARAM_ID, "time_range"), *PROJECTION_PICKERS,
                             (SOURCE_PARAM_ID, "source"), (INCOME_ACCOUNT_PARAM_ID, "account"),
+                            (INCOME_TYPE_PARAM_ID, "type"), (INCOME_TAX_WRAPPER_PARAM_ID, "tax_wrapper"),
                             (POSITION_PARAM_ID, "position")]
 
 
@@ -4551,7 +4677,8 @@ def _cashflow_kit(db_id, filters, note, privacy=False):
         card_tags = tags if section else tags_nosec
         register_native_targets(name, card_tags,
                                 CASHFLOW_PICKERS if section else pickers_nosec)
-        card = (display, desc + note, _native(db_id, sql, card_tags), viz)
+        card = (display, desc + ("" if section else SECTION_DECLINED_DESC) + note,
+                _native(db_id, sql, card_tags), viz)
         return ("question", *card) if privacy else card
 
     return (_native_where(tags), _native_where(tags_nosec),
@@ -4700,7 +4827,7 @@ def privacy_card_defs(db_id, model_ids):
     # selected sources' latest total. The > 0 guard blanks an empty or
     # under-water selection rather than rendering inf or a sign-flipped
     # share.
-    lat_tags = native_tags("web_sources_latest", holdings_filters("snapshot_at"))
+    lat_tags = native_tags("web_sources_latest", LATEST_FILTERS)
 
     def share(name, num_col, desc):
         out[name] = ("question", "scalar", desc + PRIVACY_DESC,
@@ -4716,13 +4843,13 @@ def privacy_card_defs(db_id, model_ids):
     share("Net worth (privacy)", "total_value",
         "Always 100 by construction — the selected sources' latest net "
         "worth as a share of itself, the anchor every other percentage "
-        "on this dashboard is relative to.")
+        "on this dashboard is relative to." + LATEST_DESC)
     share("Positions value (privacy)", "positions_value",
         "Market value of all positions as % of the selected sources' "
-        "latest net worth; sums to 100 with the cash share.")
+        "latest net worth; sums to 100 with the cash share." + LATEST_DESC)
     share("Cash balance (privacy)", "cash_balance",
         "Cash as % of the selected sources' latest net worth; sums to "
-        "100 with the positions share.")
+        "100 with the positions share." + LATEST_DESC)
 
     # -- The holdings time series: % of the total at the END of the
     # selected window — the last charted day, which is today whenever
@@ -5595,7 +5722,8 @@ def dashboard_parameters(model_ids, mode, name=""):
         missing = static_picker(GAINS_MISSING_PARAM_ID, "Missing cost basis", "missing_basis",
                                 DEFAULT_MISSING_BASIS, MISSING_BASIS_READINGS)
         return [currency_picker(GAINS_CURRENCY_PARAM_ID), time_range, source,
-                tax_wrapper_picker(GAINS_TAX_WRAPPER_PARAM_ID), missing]
+                tax_wrapper_picker(GAINS_TAX_WRAPPER_PARAM_ID),
+                asset_class_picker(GAINS_ASSET_CLASS_PARAM_ID), missing]
     if name in CASHFLOW_DASHBOARDS:
         # The Investing grain: net the section as one movement — the
         # question a reader opens with, "did the portfolio feed the
@@ -5649,6 +5777,9 @@ def dashboard_parameters(model_ids, mode, name=""):
         # vocabulary, which is the contract the spending pair states.
         pickers.append(card_picker(INCOME_TYPE_PARAM_ID, "Type", "type",
                                    "report_income", "income_detailed"))
+        # The tax wrapper, multi-select as on Yield and Gains: a wrapper
+        # names no account, so the twin carries it too.
+        pickers.append(tax_wrapper_picker(INCOME_TAX_WRAPPER_PARAM_ID))
         # The position the calendar lists, a text box the positions
         # table's cells also fill (CROSSFILTER_TILES), then the
         # projection's three assumptions.
@@ -6238,8 +6369,8 @@ def ensure_cards(base, sid, db_id, coll_id, by_name, model_ids):
 
 def text_dashcard(dc_id, text, row=0, display="text"):
     """A virtual tile (no backing card) spanning row `row`: the absolute
-    <-> privacy switch link on the top row as `text`, a section heading
-    as `heading`."""
+    <-> privacy switch link on the top row or a chart's subtitle as
+    `text`, a section heading as `heading`."""
     return {"id": dc_id, "card_id": None, "row": row, "col": 0,
             "size_x": 24, "size_y": 1, "series": [], "parameter_mappings": [],
             "visualization_settings": {
@@ -6364,17 +6495,18 @@ def overview_click(card, dash, params, dash_ids):
                                "targetId": dash_ids[home], "parameterMapping": mapping}}
 
 
-def unreached_note(dash, mapped, params):
-    """The sentence an overview tile's description ends in, naming the
-    pickers of dashboard `dash` (parameters `params`) that the parameter
-    ids `mapped` leave out; empty where every picker reaches the tile."""
+def unreached_note(mapped, params):
+    """The sentence a tile's description ends in, naming the pickers of
+    its dashboard (parameters `params`) that the parameter ids `mapped`
+    leave out; empty where every picker reaches the tile."""
     names = [x["name"] for x in params if x["id"] not in mapped]
     if not names:
         return ""
     if len(names) == len(params):
-        return f" On the {dash} no picker reaches it."
+        return " On this dashboard no picker reaches it."
     listed = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
-    return f" On the {dash} the {listed} picker{'s' if len(names) > 1 else ''} do{'' if len(names) > 1 else 'es'} not reach it."
+    return (f" On this dashboard the {listed} picker{'s' if len(names) > 1 else ''}"
+            f" do{'' if len(names) > 1 else 'es'} not reach it.")
 
 
 def crossfilter_viz(card, param_ids):
@@ -6399,15 +6531,16 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
     tile and, where there is a twin, a switch link to it on the top row,
     and archive any retired (renamed-away) ones. A card in `titles`
     (tile_titles) shows that title on its tiles. `descs`, card name ->
-    description, lets a Wealth Overview tile carry its card's description
-    with the pickers that do not reach it named. A dashboard in
-    DASHBOARD_HEADINGS gets its full-width headings, and a Wealth Overview
+    description, lets a tile carry its card's description with the
+    pickers of its dashboard that do not reach it named. A dashboard in
+    DASHBOARD_HEADINGS gets its full-width rows of text, and a Wealth Overview
     tile opens its home dashboard (overview_click). An unchanged dashboard
     is left in place. One that differs has its parameter list and its
     tiles replaced wholesale, so the layout converges to spec and a tile
     added by hand does not survive. The dashboard description says to
     duplicate before customizing."""
     titles = titles or {}
+    descs = descs or {}
     st, items = req(base, f"/api/collection/{coll_id}/items?models=dashboard",
                     session=sid)
     if st != 200:
@@ -6445,6 +6578,9 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
     for name, (desc, mode, sibling, tiles) in defs.items():
         parameters = params[name]
         param_ids = {x["id"] for x in parameters}
+        # The pickers of the filter bar: the Vehicle picker renders on
+        # its one tile instead (inline_parameters).
+        bar = [x for x in parameters if not (mode == "asof" and x["id"] == VEHICLE_PARAM_ID)]
         # Both returns twins show the same scale-free ratios, so their
         # link says "redacted" where the others say "shares".
         privacy = name.endswith(PRIVACY_SUFFIX)
@@ -6470,8 +6606,8 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
         # filter bar: it only applies to that one widget.
         dashcards = [text_dashcard(-99, link)] if link else []
         shift = 1 if link else 0
-        dashcards += [text_dashcard(-(100 + k), text, row + shift, "heading")
-                      for k, (row, text) in enumerate(DASHBOARD_HEADINGS.get(base_name, []))]
+        dashcards += [text_dashcard(-(100 + k), text, row + shift, display)
+                      for k, (row, text, display) in enumerate(DASHBOARD_HEADINGS.get(base_name, []))]
         for i, (card, row, col, sx, sy, tcol) in enumerate(tiles):
             # The pickers a tile answers to, kept to those the dashboard
             # carries: the Spending twin has no Account picker
@@ -6484,13 +6620,14 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
                     if m["parameter_id"] in param_ids]
             viz = {**crossfilter_viz(card, param_ids),
                    **({"card.title": tile_titles_here[card]} if card in tile_titles_here else {})}
-            # A Wealth Overview tile opens its home dashboard, and its
-            # description names the pickers that do not reach it.
+            # A tile's description names the pickers of the bar that do
+            # not reach it, read off the mappings it is sent with, and a
+            # Wealth Overview tile opens its home dashboard.
+            note = unreached_note({m["parameter_id"] for m in maps}, bar)
+            if note and card in descs:
+                viz["card.description"] = descs[card] + note
             if overview:
                 viz.update(overview_click(card, name, params, dash_ids))
-                note = unreached_note(base_name, {m["parameter_id"] for m in maps}, parameters)
-                if note and descs and card in descs:
-                    viz["card.description"] = descs[card] + note
             dashcards.append({"id": -(i + 1), "card_id": card_ids[card], "row": row + shift,
                               "col": col, "size_x": sx, "size_y": sy, "series": [],
                               "visualization_settings": viz,

@@ -122,9 +122,10 @@ On top of the models, provisioning creates pre-defined questions and
 ten dashboards. Their pickers:
 
 - **Wealth Overview**: a required currency, a time range, a source, a
-  *Tax wrapper* picker, and an *Asset class* picker. Its own tiles take
-  all five. They are the net worth figures, the net worth chart and the
-  asset classes over time below it.
+  *Tax wrapper* picker, and an *Asset class* picker. Its own tiles are
+  the net worth figures, the net worth chart and the asset classes over
+  time below it. They take all five, but the three headline figures
+  take no time range: they read the latest snapshot.
 - **Allocation**: a required currency, a required as-of day, a source,
   a *Tax wrapper* picker, and an *Asset class* picker. The as-of day
   defaults to today. Each tile reads the last day of the holdings
@@ -146,29 +147,36 @@ ten dashboards. Their pickers:
 - **Returns**: a required currency (returns are stored one row set per
   currency), a required start year (0 is since inception) and a source.
 - **Gains**: the time range and source, a required currency, a *Tax
-  wrapper* picker, and a required *Missing cost basis* picker (ignore or
-  zero; the default is `lots.missing_basis` from wealthdb.cfg, else
-  ignore).
+  wrapper* picker, an *Asset class* picker, and a required *Missing
+  cost basis* picker (ignore or zero; the default is
+  `lots.missing_basis` from wealthdb.cfg, else ignore). Every tile takes
+  all six. The asset class is each position's. A position that names no
+  class has no value to pick, so it counts only while no class is
+  picked.
 - **Spending**: the time range and source, a required currency, an
   account, and a category multi-select.
 - **Income**: a required currency, the time range, a required
-  *Horizon*, the source, an account and a *type* picker, then a
-  *Position* and the projection's other three below. The time range
-  sets every figure of what was received, the horizon every figure of
-  what is expected. The type picker reaches the income lines' cards
-  alone.
+  *Horizon*, the source, an account, a *type* picker and a *Tax
+  wrapper* picker, then a *Position* and the projection's other three
+  below. The time range sets every figure of what was received, the
+  horizon every figure of what is expected. The type and the tax
+  wrapper reach every card, but the type does not reach the withholding
+  and the income after it.
 - **Cash Flow**: the time range and source, a required currency, an
   *Investing* grain picker and a *Section* picker, then the projection's
   four: *Horizon*, *Rate path*, *Maturing* and *Shift*. The required
   *Investing* picker nets the section whole or by asset class. The
   *Section* picker is narrower than the rest: the by-month charts and
-  the line list take it, and the headline figures and the Sankey do not.
-  The projection's four reach the cash flow projection's cards alone,
-  and those take no other picker but the currency. There is no account
+  the line list take it, and the headline figures and the Sankey do not:
+  a statement narrowed to one section is no longer one. The
+  projection's four reach the cash flow projection's cards alone, and
+  those take no other picker but the currency. There is no account
   picker, because the household boundary defines the pool.
 - **Exposure**: a required currency, a time range, a source, a *Tax
   wrapper* picker, and an *Asset class* picker. A breakdown reads the
   latest day in the range, and a chart over time each month end in it.
+  The asset class does not reach the four cards of the debt and the
+  cycles, whose class is fixed.
 - **Yield**: the five Exposure carries, and the projection's four: a
   *Rate path* (constant or forward), a *Maturing* rule (cash, idle or
   roll), a *Shift* in basis points and a *Horizon* (12, 24 or 36
@@ -178,6 +186,14 @@ ten dashboards. Their pickers:
 - **Data Freshness**: no pickers.
 
 All of them are definitions only (MBQL or SQL), with no data baked in.
+
+A tile that a picker of its dashboard does not reach says so. Its
+description ends with one sentence that names those pickers, for
+example "On this dashboard the Section picker does not reach it."
+Provisioning writes it from the mappings the tile is sent with, so the
+text follows the binding. Allocation's *Vehicle* picker sits on its
+one tile, not in the filter bar, so no note names it. Where a card
+declines a picker by design, its own description says why.
 
 A tile that sums money in the chosen currency is native SQL over a gold
 `web_*` serving view. The views carry each reporting currency as a
@@ -195,7 +211,10 @@ and to USD otherwise. `web/web` passes it to
 `provision.py` from `wealthdb web-config`. The
 Wealth Overview's three headline figures read `web_sources_latest`
 (migrations 0113 and 0132), each account at its latest active
-snapshot, so they print what `wealthdb holdings sources` prints. A
+snapshot, so they print what `wealthdb holdings sources` prints. They
+take no time range: a filter on the snapshot would drop a source whose
+last snapshot falls before the range. The Stalest source tile beside
+them shows how old the oldest snapshot is. A
 native tile has no "see these records" drill-through. That is the
 price of the picker.
 Metabase takes a chart's series in the order their rows first appear.
@@ -224,9 +243,9 @@ the flows by their own peak month within the selected window
 ratios of sums over the selected sources' latest holdings (`web_sources_latest`,
 migrations 0113 and 0132) — net worth reads a constant 100, positions + cash split it.
 Each figure from another dashboard is that dashboard's privacy figure,
-except received income and net spend. Each is the total its own twin
-divides by, so it reads 100 by construction. The overview's twin leaves
-them out. The two gains, whose dashboard has no twin, read as a percent of the
+except the holdings' income received and net spend. Each is the total
+its own twin divides by, so it reads 100 by construction. The overview's
+twin leaves them out. The two gains, whose dashboard has no twin, read as a percent of the
 cost basis they are gains on.
 The **Spending** twin adds redaction to normalization, the way the Returns
 twin redacts money columns: its shares are of the window's own net spend
@@ -287,12 +306,13 @@ It reads in this order:
 A breakdown reads the latest day in the range. A chart over time shows
 each month end's shares, stacked to 100.
 
-Three pickers narrow every tile. The source and the tax wrapper are the
-pair Gains carries: `report_exposure` holds the look-through per source
-and account wrapper (migration 0130). The asset class picker keeps the
+Three pickers narrow a selection. The source and the tax wrapper reach
+every tile: `report_exposure` holds the look-through per source and
+account wrapper (migration 0130). The asset class picker keeps the
 leaves of the classes picked, so a reader can leave out real estate and
-its mortgages, or read public equity alone. Each tile computes its
-share over the rows it reads. So every figure is a share of the
+its mortgages, or read public equity alone. It reaches every tile but
+the four debt cards below. Each tile computes its share over the rows
+it reads. So every figure is a share of the
 selection's net worth, or of the class a chart counts, and of net worth
 itself with nothing picked; either way scale-free. So the Exposure twin
 needs no normalisation. Each breakdown plots the shares: a bar carries
@@ -412,17 +432,31 @@ dividend scatter and the two charts over time.
 The **Income** dashboard also puts what was received beside what the
 holdings, and an account's rent or pension, are expected to pay, as
 `wealthdb income`'s forward views do
-([wealthdb/docs/INCOME.md](../wealthdb/docs/INCOME.md) §12). It reads
-in this order:
+([wealthdb/docs/INCOME.md](../wealthdb/docs/INCOME.md) §12). Two
+populations share it:
 
-- six small figures: the income received and expected, what was
-  received, what is expected, the income lines' net income, the monthly
-  average and the share of income lines nothing placed;
+- the income lines: every receipt, wages and gifts among them. Net
+  income, the trend, the types, the payers and the largest receipts
+  read them.
+- the holdings' income: the six types the projection counts. They are
+  interest, coupons, dividends, distributions, rent and pension. Every
+  other card reads it, but the withholding and the income after it.
+
+A card of the holdings' income is named for it ("Holdings' income
+received"), or its description names it. A title travels with its card,
+to the Wealth Overview and to a card opened alone, where a heading would
+not. The chart by month carries a subtitle, a row of text above it: wages
+and other receipts are in Net income. The dashboard reads in this order:
+
+- six small figures: the holdings' income received and expected, what
+  they received, what they are expected to pay, the income lines' net
+  income, the holdings' monthly average and the share of income lines
+  nothing placed;
 - the income lines' monthly trend, the withholding, and the income
   after it;
-- received and expected by month, a band per type and status, the
-  expected one in a lighter shade;
-- the interest and the dividends received, and those expected;
+- the holdings' income received and expected by month, a band per type
+  and status, the expected one in a lighter shade;
+- the holdings' interest and dividends received, and those expected;
 - the income lines by type, beside the top payers;
 - received and expected by account, then by position, grouped by
   vehicle;
@@ -433,10 +467,10 @@ in this order:
 
 The Time range sets every figure of what was received, and the Horizon
 every figure of what is expected: the rest of the current month and
-the horizon's months after it. Received income comes from
-`web_yield_received`, which holds every income line received. Expected
-income comes from `web_yield_parts`. A figure of what was received
-depends on no assumption, so it takes no projection picker. On the
+the horizon's months after it. The holdings' income received comes
+from `web_yield_received`, which holds the income lines of the six
+types. Expected income comes from `web_yield_parts`. A figure of what
+was received depends on no assumption, so it takes no projection picker. On the
 base dashboard a figure of what is expected takes no Time range. On
 the twin it is a share of both halves, so it takes the Time range too.
 
@@ -447,10 +481,23 @@ withheld, or from 1 January of last year where that is earlier. A card
 keeps the received rows and the withheld tax of the days it selects. It
 also counts its months by them: each day counts its share of its month.
 The Horizon counts its months and the rest of the current one. The
-monthly average divides by both. The Source and Account field filters
-are bound to the views their dropdowns list, `web_sources_latest` and
-`web_income`, and each view the card reads keeps the rows whose source
-or account those select.
+monthly average divides by both. The Source, Account and Tax wrapper
+field filters are bound to the views their dropdowns list. The source
+and the tax wrapper bind `web_sources_latest`, which holds every
+account's, and the account binds `web_income`. Each view the card reads
+keeps the rows whose source, account or tax wrapper those select. The
+tax booked carries no tax wrapper of its own, so it keeps its
+account's.
+
+The Type picker lists the income lines' labels. A card of the holdings'
+income keeps the rows of the types a picked label's detailed type maps
+to, the map the engine types a line by: interest earned is interest or
+a bond's coupons, a dividend is a dividend or a fund's distribution,
+and a distribution, a rent and a pension are their own. A test holds
+the map to the engine's. The map is by type, so a label reaches every
+row of its types: Dividends also reaches a fund's distributions. A label
+of any other type, wages among them, selects nothing there. With a type
+picked, the positions table lists the holdings that pay it.
 
 The Withholding tile reads two things:
 
@@ -461,6 +508,13 @@ The Withholding tile reads two things:
 - over the Horizon, what the config's withholding table withholds at
   each holding's situs, by its account's own rate or its wrapper's.
   This is a model.
+
+The tax booked is on any income line, so the income after withholding
+is every income line received, Net income's, and the income expected,
+less the Withholding tile. With no Time range it counts every line. A
+range keeps the lines of the days the received figures cover. So a line
+older than the first of those days counts only with no range. A tax row names no income type, so neither
+tile takes the Type picker, in either half.
 
 Provisioning probes the snapshot's withholding tables
 (`yield_withholding`, `yield_withholding_accounts`). Where they hold no
@@ -478,7 +532,8 @@ shows.
 The twin shows a figure as a share of the income it covers, or of its
 biggest month; what was received is a share of what was received. The
 income, and each position's, becomes a yield: per year, over the value
-it is earned on. The withholding becomes the share it takes. A share
+it is earned on. The withholding becomes the share it takes of the
+income it is set against, and the income after it the rest. A share
 or a yield of nothing reads 0. A position with no name reads
 `(unnamed)`, unless its key is a cash balance's or an account income's:
 any other key is a holding's own, as on the issuers twin. The twin's
@@ -549,12 +604,13 @@ Below the charts the overview shows a figure or two from the other
 dashboards:
 
 - the Stalest source, beside the net worth figures;
-- under the heading "Over the time range": received income, net
-  spend, the spend trend, net cash flow, the savings rate and the
-  realized gain;
+- under the heading "Over the time range": the holdings' income
+  received, net spend, the spend trend, net cash flow, the savings rate
+  and the realized gain;
 - under "At the range's end, today and ahead": the unrealized gain,
-  the returns year to date (TWR and MWR), the income yield, the income
-  expected over twelve months and the projected net cash flow.
+  the returns year to date (TWR and MWR), the income yield, the
+  holdings' income expected over twelve months and the projected net
+  cash flow.
 
 Each borrowed figure is the card its own dashboard shows. Four are
 built for the overview alone, from their dashboard's data: the asset
@@ -564,12 +620,13 @@ a figure by slug: a picker reaches the card where
 the card has a template tag of that name, or, for an MBQL card, where
 its home dashboard maps a picker of that slug. Any other tag of the
 card runs at its default. So the flows take the currency, the time
-range and the source, the gains the tax wrapper too, and the returns
-and the projection the currency alone. A tile's description ends with
-the pickers that do not reach it. The returns read the summary since 1
-January of the latest year they cover, as no stored window follows a
-time range. That is this year once a refresh has read it. The
-projected net is the net of the cash flow projection at its defaults.
+range and the source, the holdings' income the tax wrapper too, the
+gains the tax wrapper and the asset class too, and the returns and the
+projection the currency alone. As on every dashboard, a tile's
+description ends with the pickers that do not reach it. The returns
+read the summary since 1 January of the latest year they cover, as no
+stored window follows a time range. That is this year once a refresh
+has read it. The projected net is the net of the cash flow projection at its defaults.
 
 A click on one of these figures opens its dashboard, and passes the
 overview's pickers that dashboard also carries. A year-to-date return
