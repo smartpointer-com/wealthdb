@@ -565,7 +565,7 @@ Maturing rule. It counts towards the net unless the rule is `roll`, as
 in the CLI. `web_cashflow_pool` (migration 0149) lists the pool's
 accounts. A projected part on any other account is the vehicles'
 income, and the net leaves it out. The other parts come from
-`web_cashflow_plan` (migration 0149): the look-back's monthly averages,
+`web_cashflow_plan` (migrations 0149 and 0169): the look-back's monthly averages,
 which a refresh stores per currency. So the projection's cards take the
 Currency and the projection's four pickers, and no Time range, Source,
 Section or Investing picker. The other cards of
@@ -671,8 +671,10 @@ A stale snapshot is caught before any of this is written. Provisioning
 probes the driver for the snapshot's schema version and for the serving
 views **by name**. It aborts with a "run `wealthdb web refresh`" message
 rather than converging the cards to a degraded shape. The version check
-catches a snapshot older than 0168. Such a snapshot lacks the accounts'
-withholding rates the withholding probe counts. One older than 0166
+catches a snapshot older than 0169, whose `web_cashflow_plan` lacks
+the other income's class and account. One older than
+0168 lacks the accounts' withholding rates the withholding probe
+counts. One older than 0166
 lacks the calendar the Allocation cards read their day through. One
 older than 0165 lacks the securities the Exposure dashboard ranks. One
 older than 0154 lacks the stock positions' sizes. One older than 0149
@@ -923,7 +925,7 @@ wealthdb/docs/DESIGN.md §10.15 has the engine side):
 
 Four views sit beside them. `web_income_days` and `web_income_withheld`
 (migration 0146) list each day the received figures cover and the tax
-booked on the income's accounts. `web_cashflow_plan` (migration 0149)
+booked on the income's accounts. `web_cashflow_plan` (migrations 0149 and 0169)
 serves the cash flow projection's look-back parts, which depend on no
 picker. `web_cashflow_pool` (migration 0149) lists the cash pool's
 accounts, which split the income projection for it.

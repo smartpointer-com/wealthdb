@@ -5932,9 +5932,11 @@ def missing_web_views(base, sid, db_id):
     return [t for t in want if t not in have]
 
 
-# The oldest gold schema the cards can read: the migration that adds the
-# accounts' withholding rates the withholding probe counts (0168). A
-# snapshot older than 0168 lacks them, one older than 0166 the calendar
+# The oldest gold schema the cards can read: the migration that redefines
+# web_cashflow_plan with the other income's class and account (0169). A
+# snapshot older than 0169 lacks those columns, one older than 0168 the
+# accounts' withholding rates the withholding probe counts, one older
+# than 0166 the calendar
 # the Allocation cards read their day through, one older than 0165 the
 # securities the Exposure dashboard ranks, one older than 0154 the stock positions' sizes
 # the Top 100 positions cards read, one older than 0149 the cash
@@ -5944,7 +5946,7 @@ def missing_web_views(base, sid, db_id):
 # by-name probe finds. One older than 0133 carries every view by name but
 # reads a missing tax wrapper blank, and one older than 0132 lacks the
 # serving tables' columns: only the version tells those apart.
-MIN_GOLD_SCHEMA = 168
+MIN_GOLD_SCHEMA = 169
 
 # main()'s exit status for a snapshot older than MIN_GOLD_SCHEMA; every
 # other failure exits 1. web/web tells the two apart, because only

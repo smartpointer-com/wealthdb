@@ -3151,8 +3151,9 @@ The third reading of the same engine. Its statement is mostly SQL
   maturities. `cashflowPlan` in
   `cmd/wealthdb/cmd_cashflow.go` joins them for the CLI and the MCP
   `cashflow` tool. A web refresh stores the look-back's parts in
-  `report_cashflow_plan` (migration 0149; `web_cashflow_plan` serves
-  it, and `web_cashflow_pool` the pool's accounts).
+  `report_cashflow_plan` (migrations 0149 and 0169), the other income by
+  class and account; `web_cashflow_plan` serves it, and
+  `web_cashflow_pool` the pool's accounts.
 
 The node assignment reads each family's resolution macro, never its
 `_lines_base`, because several verdicts it needs are exactly the ones a

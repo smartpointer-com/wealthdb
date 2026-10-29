@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -35,7 +36,8 @@ var PlanOutClasses = []string{string(canonical.ClassConsumption), string(canonic
 
 // PlanParts are the look-back's parts of report_cashflow_plan (migration
 // 0149), in the order web/provision.py's PLAN_LOOKBACK_PARTS reads them;
-// operating_out holds a row per class of PlanOutClasses.
+// operating_out holds a row per class of PlanOutClasses, and other_income
+// a row per class and account (OtherIncomeBy, migration 0169).
 var PlanParts = []string{"other_income", "operating_out", "debt_service", "vehicles"}
 
 // PlanThinMonths is the fewest look-back months whose averages read as
@@ -44,8 +46,9 @@ const PlanThinMonths = 6
 
 // PlanLookback is what the look-back window shows, per month, in the
 // output currency: the operating income the projection does not project,
-// the operating outflows (positive) and each class's, the vehicles'
-// flows (signed as the statement signs them), each mortgage's
+// and the same split by its operating-in class and the account it
+// arrived on; the operating outflows (positive) and each class's, the
+// vehicles' flows (signed as the statement signs them), each mortgage's
 // instalment, and the financing outflows no mortgage the product holds
 // names (positive): a loan's repayments, an instalment to a servicer of
 // no account. Months is how many months of the window the averages
@@ -53,9 +56,26 @@ const PlanThinMonths = 6
 type PlanLookback struct {
 	Months                              int
 	OtherIncome, OperatingOut, Vehicles float64
+	OtherIncomeBy                       map[PlanIncomeKey]float64
 	OtherDebt                           float64
 	OutClasses                          map[string]float64
 	Mortgages                           []PlanMortgage
+}
+
+// PlanIncomeKey is where a part of the other income comes from: the
+// operating-in class of its lines (earnings, yield, benefits,
+// other_receipts or the unresolved class) and the account they arrived
+// on.
+type PlanIncomeKey struct {
+	Class, Source, Account string
+}
+
+// IncomeKeys are the keys of OtherIncomeBy, in class, source and
+// account order.
+func (lb PlanLookback) IncomeKeys() []PlanIncomeKey {
+	return slices.SortedFunc(maps.Keys(lb.OtherIncomeBy), func(a, b PlanIncomeKey) int {
+		return strings.Compare(a.Class+"\x00"+a.Source+"\x00"+a.Account, b.Class+"\x00"+b.Source+"\x00"+b.Account)
+	})
 }
 
 // PlanMortgage is one mortgage's instalment in the look-back: what was
@@ -67,10 +87,12 @@ type PlanMortgage struct {
 	Instalment      float64
 }
 
-// planLookbackSQL sums the window's lines by part, and each mortgage's
-// instalments, with the first of the pool's lines ever and each
-// mortgage's first instalment ever. An operating inflow is the
-// projection's by the verdict the statement classes it by.
+// planLookbackSQL sums the window's lines by part, the other income
+// again by class and account, and each mortgage's instalments, with the
+// first of the pool's lines ever and each mortgage's first instalment
+// ever. An operating inflow is the projection's by the verdict the
+// statement classes it by. The parts are summed apart from the split, so
+// the other income reads the same whole either way.
 const planLookbackSQL = `
 WITH l AS MATERIALIZED (SELECT * FROM cashflow_lines_outccy(?1, ?2, ?3)),
 parts AS (
@@ -83,6 +105,12 @@ parts AS (
            CASE WHEN section = 'operating_out' THEN class END AS class,
            SUM(value_outccy)::DOUBLE AS value
       FROM l GROUP BY ALL),
+incomes AS (
+    SELECT class, silver_source_id, account_external_id, SUM(value_outccy)::DOUBLE AS value
+      FROM l
+     WHERE section = 'operating_in' AND NOT list_contains(?4, COALESCE(verdict, ''))
+     GROUP BY ALL
+    HAVING SUM(value_outccy) IS NOT NULL),
 mortgages AS (
     SELECT far_silver_source_id AS src, far_account_external_id AS acct, -SUM(value_outccy)::DOUBLE AS paid
       FROM l
@@ -101,20 +129,23 @@ firsts AS (
       JOIN mortgages m ON m.src = h.far_silver_source_id AND m.acct = h.far_account_external_id
      WHERE h.class = 'mortgage' AND h.net_amount < 0
      GROUP BY ALL)
-SELECT 'part', part, COALESCE(class, ''), value, NULL FROM parts WHERE part IS NOT NULL
+SELECT 'part', part, COALESCE(class, ''), '', value, NULL FROM parts WHERE part IS NOT NULL
 UNION ALL
-SELECT 'mortgage', m.src, m.acct, m.paid, f.first FROM mortgages m JOIN firsts f USING (src, acct)
+SELECT 'income', class, silver_source_id, account_external_id, value, NULL FROM incomes
 UNION ALL
-SELECT 'first', '', '', NULL, MIN(occurred_at) FROM hist`
+SELECT 'mortgage', m.src, m.acct, '', m.paid, f.first FROM mortgages m JOIN firsts f USING (src, acct)
+UNION ALL
+SELECT 'first', '', '', '', NULL, MIN(occurred_at) FROM hist`
 
 // CashflowPlanLookback reads the look-back window [from, to] (whole
 // months, to inclusive) in outCcy: each part's monthly average over the
-// window's months from the month of the pool's first line ever, and each
-// mortgage's over its months from its first instalment ever. So a
-// household or a mortgage newer than the window spreads over the months
-// it has. A line no rate converts counts nothing, as in the statement.
+// window's months from the month of the pool's first line ever, the
+// other income also by class and account, and each mortgage's over its
+// months from its first instalment ever. So a household or a mortgage
+// newer than the window spreads over the months it has. A line no rate
+// converts counts nothing, as in the statement.
 func CashflowPlanLookback(ctx context.Context, db querier, from, to int64, outCcy string) (PlanLookback, error) {
-	out := PlanLookback{OutClasses: map[string]float64{}}
+	out := PlanLookback{OutClasses: map[string]float64{}, OtherIncomeBy: map[PlanIncomeKey]float64{}}
 	months := func(first int64) int {
 		f, t := time.Unix(max(first, from), 0).UTC(), time.Unix(to, 0).UTC()
 		return (t.Year()-f.Year())*12 + int(t.Month()-f.Month()) + 1
@@ -126,13 +157,15 @@ func CashflowPlanLookback(ctx context.Context, db querier, from, to int64, outCc
 	}
 	var mortgages []paid
 	err := scanAll(ctx, db, planLookbackSQL, func(rows *sql.Rows) error {
-		var kind, a, b string
+		var kind, a, b, c string
 		var value sql.NullFloat64
 		var first sql.NullInt64
-		if err := rows.Scan(&kind, &a, &b, &value, &first); err != nil {
+		if err := rows.Scan(&kind, &a, &b, &c, &value, &first); err != nil {
 			return err
 		}
 		switch kind {
+		case "income":
+			out.OtherIncomeBy[PlanIncomeKey{Class: a, Source: b, Account: c}] += value.Float64
 		case "part":
 			parts[a] += value.Float64
 			if a == "operating_out" {
@@ -151,6 +184,9 @@ func CashflowPlanLookback(ctx context.Context, db querier, from, to int64, outCc
 		return out, fmt.Errorf("CashflowPlanLookback: %w", err)
 	}
 	if out.Months == 0 {
+		// No months to spread over: no average either.
+		clear(out.OutClasses)
+		clear(out.OtherIncomeBy)
 		return out, nil
 	}
 	n := float64(out.Months)
@@ -160,6 +196,9 @@ func CashflowPlanLookback(ctx context.Context, db querier, from, to int64, outCc
 	out.OtherDebt = 0 - parts["other_debt"]/n
 	for c := range out.OutClasses {
 		out.OutClasses[c] /= n
+	}
+	for k := range out.OtherIncomeBy {
+		out.OtherIncomeBy[k] /= n
 	}
 	for _, p := range mortgages {
 		p.m.Instalment /= float64(months(p.first))

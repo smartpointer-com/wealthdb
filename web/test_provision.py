@@ -830,10 +830,6 @@ _NEWEST = {o: max(_defined_in(o), default=None) for o in p.web_views_wanted() + 
 check("the cards' minimum gold schema is no older than any view or table they read",
       bool(_SERVED) and all(n is not None and n <= p.MIN_GOLD_SCHEMA for n in _NEWEST.values()),
       {o: n for o, n in _NEWEST.items() if n is None or n > p.MIN_GOLD_SCHEMA})
-# The Type, Tax wrapper and Asset class pickers reach their cards
-# through columns gold 0168 already serves.
-check("the pickers' reach needs no newer gold: the minimum stays 0168",
-      p.MIN_GOLD_SCHEMA == 168, p.MIN_GOLD_SCHEMA)
 # The startup probe and that check read the registry, so a view a card
 # reads and the registry leaves out would go unprobed.
 _READ_SQL = [sql_of(q) or "" for _d, _desc, q in CARDS.values()] + [sql for sql, _d in MODELS.values()]
@@ -4217,6 +4213,7 @@ if duckdb is not None:
                 " VALUES ('src-3', 'acct-3', 'Plan', 'brokerage', 'roth_ira');"
                 + _latest_definition("cashflow_pool_accounts"))
     _db.execute(_MIG_TEXT[149])
+    _db.execute(_MIG_TEXT[169])
     _db.executemany("INSERT INTO report_yield_parts (computed_at, silver_source_id, account_external_id, "
                     "position_key, holding_currency, rule, month, month_start, month_only, type, basis, fixed, "
                     "principal, spread, roll_constant, roll_forward, roll_principal, fx_USD, fx_CHF) "
@@ -4231,10 +4228,17 @@ if duckdb is not None:
     _plan_rows = []
     for _ccy, _k in (("USD", 1.0), ("CHF", 0.8)):
         for _m in range(1, 37):
-            _parts = [("other_income", "", 50.0), *(("operating_out", c, v) for c, v in _out.items()),
-                      ("debt_service", "", 300.0 if _m <= 18 else 0.0), ("vehicles", "", -100.0)]
-            _plan_rows += [(_ccy, _m, _month_start(_m), part, cls, v * _k, "trailing terms") for part, cls, v in _parts]
-    _db.executemany("INSERT INTO report_cashflow_plan VALUES (0, ?, ?, ?, ?, ?, ?, ?)", _plan_rows)
+            # The other income's 50 a month, split by class and account
+            # as gold 0169 stores it.
+            _parts = [("other_income", "earnings", "src-1", "acct-1", 30.0),
+                      ("other_income", "other_receipts", "src-2", "acct-2", 20.0),
+                      *(("operating_out", c, "", "", v) for c, v in _out.items()),
+                      ("debt_service", "", "", "", 300.0 if _m <= 18 else 0.0), ("vehicles", "", "", "", -100.0)]
+            _plan_rows += [(_ccy, _m, _month_start(_m), part, cls, src, acct, v * _k, "trailing terms")
+                           for part, cls, src, acct, v in _parts]
+    _db.executemany("INSERT INTO report_cashflow_plan (computed_at, currency, month, month_start, part, class,"
+                    " silver_source_id, account_external_id, value, quality)"
+                    " VALUES (0, ?, ?, ?, ?, ?, ?, ?, ?, ?)", _plan_rows)
     _db.executemany("INSERT INTO report_yield_events (computed_at, silver_source_id, account_external_id, "
                     "position_key, holding_currency, rule, month, day, type, amount, fx_USD, fx_CHF) "
                     "VALUES (0, 'src-1', 'acct-1', 'isin:XX01', 'USD', ?, 3, ?, 'maturity', 5000, 1.0, 0.8)",

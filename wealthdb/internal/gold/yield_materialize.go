@@ -325,9 +325,13 @@ func (m *yieldMaterializer) received(today map[string]*yield.Book, toEpoch int64
 // (report_cashflow_plan) for each month of today's income projection
 // after the current one, per reporting currency: what CashflowPlan sets
 // against the income projection, over a look-back of lookback months.
+// The other income is written by class and account (OtherIncomeBy),
+// which sums to the month's OtherIncome; a look-back with none writes no
+// other_income row.
 func (m *yieldMaterializer) plan(today map[string]*yield.Book, toEpoch int64, lookback int) error {
 	type part struct {
 		ccy, part, class string
+		source, account  string
 		month            int
 		start            time.Time
 		value            float64
@@ -352,9 +356,15 @@ func (m *yieldMaterializer) plan(today map[string]*yield.Book, toEpoch int64, lo
 			}
 			quality := strings.TrimSpace(strings.TrimPrefix(r.Quality, PlanProjected))
 			add := func(name, class string, v float64) {
-				parts = append(parts, part{ccy, name, class, i + 1, r.Period, v, quality})
+				parts = append(parts, part{ccy, name, class, "", "", i + 1, r.Period, v, quality})
 			}
-			add(other, "", r.OtherIncome)
+			// CashflowPlan's OtherIncome: the look-back's average each month.
+			if lb.Months > 0 {
+				for _, k := range lb.IncomeKeys() {
+					parts = append(parts, part{ccy, other, k.Class, k.Source, k.Account, i + 1, r.Period,
+						lb.OtherIncomeBy[k], quality})
+				}
+			}
 			for _, c := range PlanOutClasses {
 				add(out, c, r.OutClasses[c])
 			}
@@ -362,11 +372,12 @@ func (m *yieldMaterializer) plan(today map[string]*yield.Book, toEpoch int64, lo
 			add(vehicles, "", r.Vehicles)
 		}
 	}
-	return m.insert("report_cashflow_plan", "computed_at, currency, month, month_start, part, class, value, quality",
+	return m.insert("report_cashflow_plan",
+		"computed_at, currency, month, month_start, part, class, silver_source_id, account_external_id, value, quality",
 		len(parts), func(i int, args []any) []any {
 			x := parts[i]
-			return append(args, m.computedAt, x.ccy, x.month, x.start.Format(time.DateOnly), x.part, x.class, x.value,
-				x.quality)
+			return append(args, m.computedAt, x.ccy, x.month, x.start.Format(time.DateOnly), x.part, x.class, x.source,
+				x.account, x.value, x.quality)
 		})
 }
 

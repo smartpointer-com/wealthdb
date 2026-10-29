@@ -7,7 +7,8 @@ import (
 
 // web_income_days holds every day to the yield report's latest day from
 // the earliest of the first day of last year, the first day income was
-// received and the first day tax was withheld. web_income_withheld holds
+// received, the first day tax was withheld and the first income line of
+// any type (0169). web_income_withheld holds
 // the tax a source withheld on the income's accounts: each negative tax
 // row, as a positive amount, in each reporting currency. A refund of
 // tax, another kind of row and an account outside the income's scope
@@ -67,8 +68,9 @@ func TestIncomeReceivedViews(t *testing.T) {
 	if got, want := withheld(), "Brokerage (test-src brokerage) 2026-07-15 30.0000 24.0000"; got != want {
 		t.Errorf("web_income_withheld: %q, want %q", got, want)
 	}
-	// Income received before last year starts the days on its day, and
-	// tax withheld earlier still on its own.
+	// Income received before last year starts the days on its day, tax
+	// withheld earlier still on its own, and an income line of any type
+	// earlier still on its own.
 	ex(`INSERT INTO report_yield_received (computed_at, currency, silver_source_id, account_external_id, position_key,
 	    day, type, value) VALUES (0, 'USD', 'test-src', 'A', 'cash:USD', DATE '2024-06-01', 'interest', 10)`)
 	if _, first, _ := days(); first != "2024-06-01" {
@@ -78,9 +80,16 @@ func TestIncomeReceivedViews(t *testing.T) {
 	if _, first, _ := days(); first != "2023-02-01" {
 		t.Errorf("with tax withheld on 2023-02-01 the days start on %s", first)
 	}
+	ex(`INSERT INTO serving_income_transactions BY NAME
+	    SELECT 'test-src' AS silver_source_id, 'A' AS account_external_id, ? AS occurred_at,
+	           'INCOME_SALARY' AS income_detailed, 100 AS value_usd`, day(2021, 4, 30))
+	if _, first, _ := days(); first != "2021-04-30" {
+		t.Errorf("with wages on 2021-04-30 the days start on %s", first)
+	}
 	n, first, last := days()
 	w := withheld()
 	rerunMigrationDDL(t, db, ctx, "0146_income_received_days.sql")
+	rerunMigrationDDL(t, db, ctx, "0169_cashflow_plan_income_split.sql")
 	if n2, f2, l2 := days(); n2 != n || f2 != first || l2 != last || withheld() != w {
 		t.Errorf("the replay changed the views: %d %s %s %q", n2, f2, l2, withheld())
 	}

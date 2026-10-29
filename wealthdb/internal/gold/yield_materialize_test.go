@@ -67,16 +67,19 @@ func TestMaterializeYieldMatchesTheReport(t *testing.T) {
 	}
 	// The cash flow projection's look-back parts: every month of the
 	// income projection after the current one, in each currency a book
-	// was made in, each part once and operating_out once per class.
+	// was made in, each part but the other income once and operating_out
+	// once per class, all with no account. The book has no other income,
+	// so it has no other_income row; the test below stores some.
 	var planRows, nMonths, planCurrencies int
 	if err := db.QueryRowContext(ctx, `SELECT count(*), count(DISTINCT month), count(DISTINCT currency)
-	    FROM web_cashflow_plan`).Scan(&planRows, &nMonths, &planCurrencies); err != nil || nMonths != yield.Months ||
-		planCurrencies == 0 || planRows != planCurrencies*yield.Months*(len(PlanParts)-1+len(PlanOutClasses)) {
+	    FROM web_cashflow_plan WHERE part <> 'other_income' AND silver_source_id = '' AND account_external_id = ''`).
+		Scan(&planRows, &nMonths, &planCurrencies); err != nil || nMonths != yield.Months ||
+		planCurrencies == 0 || planRows != planCurrencies*yield.Months*(len(PlanParts)-2+len(PlanOutClasses)) {
 		t.Errorf("%d plan rows over %d months and %d currencies (%v)", planRows, nMonths, planCurrencies, err)
 	}
 	parts := scanStrings(t, db, `SELECT DISTINCT part FROM web_cashflow_plan`)
-	if !slices.Equal(slices.Sorted(slices.Values(parts)), slices.Sorted(slices.Values(PlanParts))) {
-		t.Errorf("plan parts %v, want %v", parts, PlanParts)
+	if want := PlanParts[1:]; !slices.Equal(slices.Sorted(slices.Values(parts)), slices.Sorted(slices.Values(want))) {
+		t.Errorf("plan parts %v, want %v", parts, want)
 	}
 	// Their values are the cash flow projection's own, month by month.
 	from, to := PlanWindow(time.Unix(at, 0), 12)
@@ -305,6 +308,71 @@ func TestMigration0149DDLIsRerunnable(t *testing.T) {
 	}
 	if after := count(); after != before {
 		t.Errorf("rows %s, before %s", after, before)
+	}
+}
+
+// seedPlanWage adds a wage to seedYieldBookFX's franc account inside
+// the look-back: other income the projection does not read. Invented.
+func seedPlanWage(t *testing.T, db *sql.DB) {
+	t.Helper()
+	execEach(t, db,
+		`INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id, kind,
+		    currency, net_amount) VALUES ('test-src', 'W1', `+itoa(ymd(2026, 4, 15).Unix())+`, 'F', 'deposit', 'CHF', 3000)`,
+		`INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id, payer_signature,
+		    signature_version, income_detailed, provenance, assigned_at) VALUES
+		    ('test-src', 'W1', 'sig-employer', 1, 'INCOME_SALARY', 'rule', 100)`)
+}
+
+// The stored other income is a row per class and account, each with
+// both, and each month's rows sum to the projection's other income.
+func TestThePlansOtherIncomeIsStoredByClassAndAccount(t *testing.T) {
+	t.Parallel()
+	db, ctx, at := seedYieldBookFX(t)
+	seedPlanWage(t, db)
+	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
+		t.Fatal(err)
+	}
+	keys := scanStrings(t, db, `SELECT DISTINCT class || ' ' || silver_source_id || ' ' || account_external_id
+	    FROM web_cashflow_plan WHERE part = 'other_income'`)
+	if !slices.Equal(keys, []string{"earnings test-src F"}) {
+		t.Errorf("other income keys %v, want the wage's", keys)
+	}
+	from, to := PlanWindow(time.Unix(at, 0), 12)
+	lb, err := CashflowPlanLookback(ctx, db, from, to, "USD")
+	if err != nil || lb.OtherIncome <= 0 {
+		t.Fatalf("look-back: %+v %v", lb, err)
+	}
+	var months int
+	var lo, hi float64
+	if err := db.QueryRowContext(ctx, `SELECT count(*), min(v), max(v) FROM (SELECT month, sum(value) AS v
+	    FROM web_cashflow_plan WHERE part = 'other_income' AND currency = 'USD' GROUP BY 1)`).Scan(&months, &lo, &hi); err != nil ||
+		months != yield.Months || math.Abs(lo-lb.OtherIncome) > 1e-6 || math.Abs(hi-lb.OtherIncome) > 1e-6 {
+		t.Errorf("%d months from %v to %v, want %v each (%v)", months, lo, hi, lb.OtherIncome, err)
+	}
+}
+
+// Migration 0169 replays over a materialized gold: the split columns
+// keep their values and the view its shape.
+func TestMigration0169DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
+	db, ctx, at := seedYieldBookFX(t)
+	seedPlanWage(t, db)
+	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
+		t.Fatal(err)
+	}
+	split := func() string {
+		return strings.Join(scanStrings(t, db, `SELECT count(*)::VARCHAR || ' ' || count(DISTINCT account_external_id)
+		    FROM web_cashflow_plan WHERE part = 'other_income'`), "")
+	}
+	before := split()
+	if strings.HasPrefix(before, "0 ") {
+		t.Fatal("no other income rows materialized")
+	}
+	for range 2 {
+		rerunMigrationDDL(t, db, ctx, "0169_cashflow_plan_income_split.sql")
+	}
+	if after := split(); after != before {
+		t.Errorf("split %s, before %s", after, before)
 	}
 }
 

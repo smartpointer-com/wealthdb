@@ -1132,7 +1132,7 @@ overlays, four stamped tables, and one serving table:
 | `cashflow_account_scope` | config, stamped into gold | yes | re-stamped from config |
 | `cash_signed_kinds` | one row per sign pin (adapter kind, kind) | yes | re-stamped from code by every pass |
 | `account_wrapper_history` | one row per account with a dated wrapper override | no | n/a, rewritten by the source's load |
-| `report_cashflow_plan` (view `web_cashflow_plan`) | per reporting currency, month ahead, part and class | yes | n/a, rewritten by every web refresh |
+| `report_cashflow_plan` (view `web_cashflow_plan`) | per reporting currency, month ahead, part and class; the other income also per account | yes | n/a, rewritten by every web refresh |
 
 Nothing is stored for the memo. It reads `cashflow_cash_balances()`
 (the cash balances, plus deposit holdings on accounts with none) and
@@ -1345,4 +1345,11 @@ budget:
 
 The Cash Flow dashboard's projection section shows it (§9;
 [web/DESIGN.md](../../web/DESIGN.md) §6). A web refresh stores the
-look-back's parts (§10). The MCP `cashflow` tool serves the same view.
+look-back's parts (§10). It keeps the other income split two ways:
+
+- by the operating-in class of its lines (§5): `earnings`, `yield`,
+  `benefits`, `other_receipts`, and `(uncategorized)` for a line
+  nothing placed;
+- by the account the lines arrived on.
+
+The split sums to the `other_income` this view prints. The MCP `cashflow` tool serves the same view.

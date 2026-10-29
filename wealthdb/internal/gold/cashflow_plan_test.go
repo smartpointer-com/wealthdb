@@ -57,6 +57,53 @@ func TestThePlansLookbackIsTheSummarySpread(t *testing.T) {
 	}
 }
 
+// The other income splits by the operating-in class of its lines and
+// the account they arrived on, each over the same months, and the split
+// sums to the whole: the wage, the refund and the unemployment benefit
+// on CASH are earnings, other receipts and benefits, a staking reward on
+// BROK is yield the projection does not read, and the projected dividend
+// is in none. A window with no
+// other income has no split. The fixture's lines are invented.
+func TestThePlansOtherIncomeSplitsByClassAndAccount(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedReportFixture(t, db, ctx)
+	seedLines(t, db, ctx, []line{
+		{id: "R-STAKE", account: "BROK", kind: "deposit", amount: 30, income: "INCOME_STAKING"},
+		{id: "R-DOLE", account: "CASH", kind: "deposit", amount: 20, income: "INCOME_UNEMPLOYMENT"},
+	})
+	lb, err := CashflowPlanLookback(ctx, db, 0, 3500000, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := float64(lb.Months)
+	want := map[PlanIncomeKey]float64{
+		{Class: "earnings", Source: "cf", Account: "CASH"}:       6000 / n,
+		{Class: "other_receipts", Source: "cf", Account: "CASH"}: 50 / n,
+		{Class: "yield", Source: "cf", Account: "BROK"}:          30 / n,
+		{Class: "benefits", Source: "cf", Account: "CASH"}:       20 / n,
+	}
+	sum := 0.0
+	for k, v := range lb.OtherIncomeBy {
+		sum += v
+		if math.Abs(v-want[k]) > 1e-9 {
+			t.Errorf("%+v = %v, want %v", k, v, want[k])
+		}
+	}
+	if len(lb.OtherIncomeBy) != len(want) {
+		t.Errorf("split %v, want %v", lb.OtherIncomeBy, want)
+	}
+	if math.Abs(sum-lb.OtherIncome) > 1e-6 || math.Abs(lb.OtherIncome-6100/n) > 1e-9 {
+		t.Errorf("the split sums to %v, the whole is %v", sum, lb.OtherIncome)
+	}
+	if keys := lb.IncomeKeys(); len(keys) != 4 || keys[0].Class != "benefits" || keys[3].Class != "yield" {
+		t.Errorf("keys out of order: %v", keys)
+	}
+	if empty, err := CashflowPlanLookback(ctx, db, 4000000, 5000000, "USD"); err != nil ||
+		len(empty.OtherIncomeBy) != 0 || empty.OtherIncome != 0 {
+		t.Errorf("a window with no other income: %+v %v", empty, err)
+	}
+}
+
 // A mortgage's instalment is what the look-back paid into it per month,
 // interest and amortization together, over its months from its first
 // instalment ever: MORT's began before the window, MORT2's inside it.
