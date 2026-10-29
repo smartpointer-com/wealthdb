@@ -929,7 +929,9 @@ For each holding, the first of these that applies:
    market fund is a fund and reads by rules 3 and 4.
 6. `country`: a private holding (§5) takes the one country its
    declaration in force on the day states at 100 (§9). This holds only
-   on the days no composition of its own is in force (§4). Take a
+   on the days no composition of its own is in force (§4). A ledger
+   record of the same or a later day wins over a parsed one, as in the
+   look-through (§9). Take a
    feeder fund whose reports a source parses. It reads its declared
    country before its first report. It also reads it in a quarter whose
    report gives no composition, and once its last composition is out of

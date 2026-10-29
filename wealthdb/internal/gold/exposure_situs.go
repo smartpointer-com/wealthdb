@@ -3,6 +3,7 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"math"
 	"slices"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -86,24 +87,96 @@ type situsComp struct {
 	parsed           bool
 }
 
-// compositionSpans are the spans in which one of a fund's compositions
-// is in force, as exposure_funds_at picks it (docs/EXPOSURE.md §4): the
-// latest on or before the instant, within maxGapDays of it; else the
-// earliest after it, within the same bound. A parsed one serves only
-// from its day, and only before its validUntil.
-func compositionSpans(comps []situsComp, maxGapDays int64) []inForce {
-	var out []inForce
+// compositionSpans are the spans in which a composition of a fund's own
+// describes it, as the look-through reads it: exposure_funds_at's pick
+// at the instant (docs/EXPOSURE.md §4), the latest on or before the
+// instant within maxGapDays of it, a parsed one only before its
+// validUntil, else the earliest after it within the same bound that is
+// not parsed; and, where the pick is parsed, only while no ledger record
+// of its day or later is the record in force (ledger), as
+// exposure_composition_wins lets that record beat it. Between two
+// boundaries of the windows and of ledger the pick is constant, so the
+// spans are the pieces where it describes the holding, merged.
+func compositionSpans(comps []situsComp, maxGapDays int64, ledger []inForce) []inForce {
+	if len(comps) == 0 {
+		return nil
+	}
+	var cuts []int64
 	for _, c := range comps {
 		day := c.asOf / 86400
-		until := (day + maxGapDays + 1) * 86400
-		if c.validUntil != 0 && c.validUntil < until {
-			until = c.validUntil
+		cuts = append(cuts, c.asOf, (day+maxGapDays+1)*86400, (day-maxGapDays)*86400)
+		if c.validUntil != 0 {
+			cuts = append(cuts, c.validUntil)
 		}
-		if c.asOf < until {
-			out = append(out, inForce{c.asOf, until})
+	}
+	for _, l := range ledger {
+		cuts = append(cuts, l.from, l.until)
+	}
+	slices.Sort(cuts)
+	cuts = slices.Compact(cuts)
+	var out []inForce
+	for i := 0; i+1 < len(cuts); i++ {
+		at := cuts[i]
+		if !describes(comps, maxGapDays, ledger, at) {
+			continue
 		}
-		if !c.parsed {
-			out = append(out, inForce{(day - maxGapDays) * 86400, c.asOf})
+		if n := len(out); n > 0 && out[n-1].until == at {
+			out[n-1].until = cuts[i+1]
+		} else {
+			out = append(out, inForce{at, cuts[i+1]})
+		}
+	}
+	return out
+}
+
+// describes says whether a composition of comps describes the fund at
+// the instant at (compositionSpans). A day both a parsed and a provider
+// composition state reads as the provider's, which no record beats.
+func describes(comps []situsComp, maxGapDays int64, ledger []inForce, at int64) bool {
+	back, fwd := int64(math.MinInt64), int64(math.MaxInt64)
+	for _, c := range comps {
+		if c.asOf <= at && (c.validUntil == 0 || at < c.validUntil) {
+			back = max(back, c.asOf)
+		}
+		if c.asOf > at && !c.parsed {
+			fwd = min(fwd, c.asOf)
+		}
+	}
+	var pick int64
+	switch {
+	case back != math.MinInt64 && at/86400-back/86400 <= maxGapDays:
+		pick = back
+	case fwd != math.MaxInt64 && fwd/86400-at/86400 <= maxGapDays:
+		pick = fwd
+	default:
+		return false
+	}
+	for _, c := range comps {
+		if c.asOf == pick && !c.parsed {
+			return true
+		}
+	}
+	for _, l := range ledger {
+		if l.from <= at && at < l.until && l.from >= pick {
+			return false
+		}
+	}
+	return true
+}
+
+// without is spans with the span cut out of each.
+func without(spans []inForce, cut inForce) []inForce {
+	var out []inForce
+	for _, s := range spans {
+		if cut.until <= s.from || s.until <= cut.from {
+			out = append(out, s)
+			continue
+		}
+		if s.from < cut.from {
+			out = append(out, inForce{s.from, cut.from})
+		}
+		if cut.until < s.until {
+			out = append(out, inForce{cut.until, s.until})
 		}
 	}
 	return out
@@ -111,11 +184,43 @@ func compositionSpans(comps []situsComp, maxGapDays int64) []inForce {
 
 // situsRecord is what one record of the declarations ledger says of the
 // situs: the situs it declares, and, where it declares the economic
-// dimensions, the one country it declares at 100.
+// dimensions, the one country it declares at 100; and whether the
+// ledger states it (a parsed document's record does not).
 type situsRecord struct {
-	asOf           *int64
-	situs, country string
-	economic       bool
+	asOf             *int64
+	situs, country   string
+	economic, ledger bool
+}
+
+// ledgerSpans are the spans in which a ledger record is the record in
+// force, as exposure_declarations_at picks it: the latest dated record
+// that declares the economic dimensions, the ledger's winning a day it
+// shares with a parsed one. records are oldest first; an undated
+// record beats no composition (exposure_composition_wins).
+func ledgerSpans(records []situsRecord) []inForce {
+	var days []int64
+	ledger := map[int64]bool{}
+	for _, r := range records {
+		if !r.economic || r.asOf == nil {
+			continue
+		}
+		if len(days) == 0 || days[len(days)-1] != *r.asOf {
+			days = append(days, *r.asOf)
+		}
+		ledger[*r.asOf] = ledger[*r.asOf] || r.ledger
+	}
+	var out []inForce
+	for i, d := range days {
+		if !ledger[d] {
+			continue
+		}
+		until := int64(math.MaxInt64)
+		if i+1 < len(days) {
+			until = days[i+1]
+		}
+		out = append(out, inForce{d, until})
+	}
+	return out
 }
 
 // situsOf is the rule: the first basis that applies. declared is the
@@ -286,11 +391,12 @@ SELECT c.fund_ref, c.as_of, COALESCE(c.valid_until, 0), c.origin = 'parsed', s.m
 // situsRecordsSQL lists every declaration, oldest first, with the situs
 // it declares, the one country it declares at 100 if any (a country
 // every part names, other than unknown), and whether it declares the
-// economic dimensions. A parsed record's line is negative, so on one
-// day it lists before the ledger's, whose records then win the day.
+// economic dimensions; and whether the ledger states it. A parsed
+// record's line is negative, so on one day it lists before the ledger's,
+// whose records then win the day.
 const situsRecordsSQL = `
 SELECT d.silver_source_id, d.instrument_external_id, d.as_of, COALESCE(d.situs, ''), COALESCE(c.country, ''),
-       d.dimensions <> ''
+       d.dimensions <> '', d.origin = 'ledger'
   FROM exposure_declarations d
   LEFT JOIN (SELECT line_no, MIN(country) AS country FROM exposure_declaration_leaves GROUP BY 1
               HAVING COUNT(country) = COUNT(*) AND MIN(country) = MAX(country) AND MIN(country) <> '` + canonical.Unknown + `') c
@@ -308,7 +414,7 @@ func writeSitus(ctx context.Context, tx *sql.Tx) error {
 	if err := scanAll(ctx, tx, situsRecordsSQL, func(rows *sql.Rows) error {
 		var in instrument
 		var r situsRecord
-		if err := rows.Scan(&in.src, &in.iid, &r.asOf, &r.situs, &r.country, &r.economic); err != nil {
+		if err := rows.Scan(&in.src, &in.iid, &r.asOf, &r.situs, &r.country, &r.economic, &r.ledger); err != nil {
 			return err
 		}
 		records[in] = append(records[in], r)
@@ -342,10 +448,11 @@ func writeSitus(ctx context.Context, tx *sql.Tx) error {
 			&f.domicile, &f.banked, &f.custody, &f.private); err != nil {
 			return err
 		}
+		recs := records[instrument{h.src, iid}]
 		if f.private {
-			f.described = compositionSpans(comps[key], maxGapDays)
+			f.described = compositionSpans(comps[key], maxGapDays, ledgerSpans(recs))
 		}
-		for _, r := range situsReadings(f, records[instrument{h.src, iid}]) {
+		for _, r := range situsReadings(f, recs) {
 			h.situsReading = r
 			out = append(out, h)
 		}

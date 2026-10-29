@@ -99,9 +99,9 @@ func TestSitusReadings(t *testing.T) {
 	}
 }
 
-// A composition is in force as exposure_funds_at picks it: a provider's
-// from max_gap_days before its day to max_gap_days after, a parsed one
-// from its day to its validUntil, within the same bound.
+// A composition describes a fund as exposure_funds_at picks it: a
+// provider's from max_gap_days before its day to max_gap_days after, a
+// parsed one from its day to its validUntil, within the same bound.
 func TestCompositionSpans(t *testing.T) {
 	t.Parallel()
 	const d = 86400
@@ -110,14 +110,14 @@ func TestCompositionSpans(t *testing.T) {
 		comps []situsComp
 		want  []inForce
 	}{
-		{"a provider's, either side", []situsComp{{asOf: 100*d + 7}}, []inForce{{100*d + 7, 111 * d}, {90 * d, 100*d + 7}}},
+		{"a provider's, either side", []situsComp{{asOf: 100*d + 7}}, []inForce{{90 * d, 111 * d}}},
 		{"a parsed one, from its day to the next document", []situsComp{{asOf: 100 * d, validUntil: 104 * d, parsed: true}},
 			[]inForce{{100 * d, 104 * d}}},
 		{"a parsed one the bound ends first", []situsComp{{asOf: 100 * d, validUntil: 200 * d, parsed: true}},
 			[]inForce{{100 * d, 111 * d}}},
 		{"a parsed one with no next document", []situsComp{{asOf: 100 * d, parsed: true}}, []inForce{{100 * d, 111 * d}}},
 	} {
-		if got := compositionSpans(c.comps, 10); !slices.Equal(got, c.want) {
+		if got := compositionSpans(c.comps, 10, nil); !slices.Equal(got, c.want) {
 			t.Errorf("%s: %v, want %v", c.name, got, c.want)
 		}
 	}
@@ -183,6 +183,102 @@ func TestExposureSitusDatesThePrivateFact(t *testing.T) {
 		if picked != (c.want == "- unknown") {
 			t.Errorf("%s at %s: exposure_funds_at picks a composition: %v", c.key, at, picked)
 		}
+	}
+}
+
+// A ledger record of a parsed composition's day or later beats the
+// composition from its own day, as exposure_composition_wins lets it in
+// the look-through: QPSL's composition is in force from 1 August to 1
+// October, and a record of 1 September declares it Swiss. Before it,
+// nothing places the fund; from it on, the record does, though the
+// composition is still within its span. At each instant the situs reads
+// the record exactly where exposure_leaves describes the holding by its
+// declaration. Every name and identifier is invented.
+func TestExposureSitusYieldsALedgerRecordThatBeatsAComposition(t *testing.T) {
+	t.Parallel()
+	db, ctx := openExposureFixture(t)
+	ex := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	aug, sep, oct := exDay(8, 1), exDay(9, 1), exDay(10, 1)
+	ex(`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, name, currency,
+	    first_seen_at, last_seen_at) VALUES ('test-src', 'QPSL', 'private_equity', 'fund', 'XX00000000S3',
+	    'Example Ledger Feeder', 'USD', 0, 0)`)
+	ex(`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+	    asset_class, vehicle, currency, quantity, market_value) VALUES ('test-src', ?, 'A1', 'QPSL', 'QPSL',
+	    'private_equity', 'fund', 'USD', 1, 100)`, exSnap)
+	ex(`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency, origin,
+	    valid_until) VALUES ('test-src', 'isin:XX00000000S3', ?, 'holdings', 'ubs-report', 0, 'USD', 'parsed', ?)`, aug, oct)
+	rows := exposureFixtureRows()
+	rows.Declarations = append(rows.Declarations, declaration(3, "QPSL", &sep, split{"country", []string{"CH"}, []float64{100}}))
+	stampAndRebuild(t, db, ctx, rows)
+	for _, c := range []struct {
+		at   int64
+		want string
+	}{
+		{aug - 1, "- unknown"}, {aug, "- unknown"}, {sep - 1, "- unknown"}, {sep, "CH country"},
+		{exDay(9, 15), "CH country"}, {oct - 1, "CH country"}, {oct, "CH country"},
+	} {
+		at := time.Unix(c.at, 0).UTC().Format(time.DateTime)
+		if got := situsAt(t, db, ctx, c.at, "QPSL"); got != c.want {
+			t.Errorf("QPSL at %s: %s, want %s", at, got, c.want)
+		}
+		var declared bool
+		if err := db.QueryRowContext(ctx, `SELECT COALESCE(bool_or(how = 'declared'), FALSE) FROM exposure_leaves(?, 'USD')
+		    WHERE position_key = 'QPSL'`, c.at).Scan(&declared); err != nil {
+			t.Fatal(err)
+		}
+		if declared != (c.want == "CH country") {
+			t.Errorf("QPSL at %s: the look-through reads the declaration: %v", at, declared)
+		}
+	}
+}
+
+// A parsed composition's spans leave out where a ledger record of its
+// day or later is in force; a provider's, and an earlier record, change
+// nothing.
+func TestLedgerSpansCutAParsedComposition(t *testing.T) {
+	day := func(d int64) *int64 { v := d * 86400; return &v }
+	recs := []situsRecord{
+		{asOf: nil, economic: true, ledger: true},
+		{asOf: day(5), economic: true, ledger: true},
+		{asOf: day(20), economic: true, ledger: true},
+		{asOf: day(30), economic: true},
+		{asOf: day(40), economic: false, ledger: true},
+	}
+	l := ledgerSpans(recs)
+	if want := []inForce{{5 * 86400, 20 * 86400}, {20 * 86400, 30 * 86400}}; !slices.Equal(l, want) {
+		t.Fatalf("ledger in force %v, want %v", l, want)
+	}
+	parsed := []situsComp{{asOf: 10 * 86400, validUntil: 50 * 86400, parsed: true}}
+	if got, want := compositionSpans(parsed, 100, l), []inForce{{10 * 86400, 20 * 86400}, {30 * 86400, 50 * 86400}}; !slices.Equal(got, want) {
+		t.Errorf("parsed spans %v, want %v", got, want)
+	}
+	provider := []situsComp{{asOf: 10 * 86400}}
+	if got, want := compositionSpans(provider, 100, l), compositionSpans(provider, 100, nil); !slices.Equal(got, want) {
+		t.Errorf("provider spans %v, want %v", got, want)
+	}
+	const d = 86400
+	// A provider's of day 10 and a parsed one of day 20 under one fund,
+	// a ledger record of day 25: from day 25 the pick is the parsed one,
+	// which the record beats, though the provider's bound still reaches.
+	mixed := []situsComp{{asOf: 10 * d}, {asOf: 20 * d, parsed: true}}
+	at25 := ledgerSpans([]situsRecord{{asOf: day(25), economic: true, ledger: true}})
+	if got, want := compositionSpans(mixed, 100, at25), []inForce{{-90 * d, 25 * d}}; !slices.Equal(got, want) {
+		t.Errorf("mixed spans %v, want %v", got, want)
+	}
+	// A record of the composition's own day beats it from that day.
+	own := ledgerSpans([]situsRecord{{asOf: day(20), economic: true, ledger: true}})
+	if got := compositionSpans([]situsComp{{asOf: 20 * d, parsed: true}}, 100, own); len(got) != 0 {
+		t.Errorf("a record of the composition's day leaves %v", got)
+	}
+	// A ledger and a parsed record of one day: the ledger's is in force.
+	tie := ledgerSpans([]situsRecord{{asOf: day(30), economic: true}, {asOf: day(30), economic: true, ledger: true}})
+	if len(tie) != 1 || tie[0].from != 30*d {
+		t.Errorf("a shared day: %v", tie)
 	}
 }
 
