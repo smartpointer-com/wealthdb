@@ -8,6 +8,8 @@
 # wrapper paths to test those instead of the three.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib.sh
+source "$HERE/lib.sh"
 COLLECTORS="$HERE/../../../collectors"
 if [[ $# -gt 0 ]]; then
     WRAPPERS=("$@")
@@ -15,9 +17,6 @@ else
     WRAPPERS=("$COLLECTORS/amex/amex" "$COLLECTORS/fidelity-web/fidelity-web"
               "$COLLECTORS/schwab-web/schwab-web")
 fi
-PASS=0; FAIL=0
-ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
-bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -38,12 +37,10 @@ export PATH="$TMP/bin:$PATH"
 # Everything the wrappers resolve is redirected into $TMP so the test
 # writes nowhere else: wrapper_check_mounts mkdir -p's the data,
 # startupCache and debug dirs, and errors out unless the secrets dir
-# already exists. The fleet-wide data root is cleared, and each case
+# already exists. sandbox_env clears the fleet-wide roots, and each case
 # clears the wrapper's own overrides, so no ambient one can steer a mount
 # back out of the sandbox.
-unset WEALTHDB_DATA_ROOT
-export XDG_DATA_HOME="$TMP/xdgdata"
-export XDG_CACHE_HOME="$TMP/xdgcache"
+sandbox_env "$TMP"
 export WEALTHDB_SECRETS_DIR="$TMP/secrets"
 mkdir -p "$WEALTHDB_SECRETS_DIR"
 
@@ -83,5 +80,4 @@ for wrapper in "${WRAPPERS[@]}"; do
     done
 done
 
-echo "login trap tests: $PASS passed, $FAIL failed"
-[[ $FAIL -eq 0 ]]
+summary "login trap tests"

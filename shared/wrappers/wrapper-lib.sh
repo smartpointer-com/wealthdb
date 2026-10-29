@@ -24,9 +24,9 @@
 #   HAS_DEBUG=1       Mount $HOST_DEBUG → /debug. Required for collectors
 #                     whose --screenshot-dir / --trace flags write under
 #                     /debug.
-#   HAS_APP_MOUNT=1   Mount $HERE → /app (live host-side source). Used by
-#                     collectors under active iteration so a code edit
-#                     doesn't need a docker rebuild.
+#   HAS_APP_MOUNT=1   Mount $HERE over /app on every verb, so a run uses
+#                     the checkout's source and a code edit needs no
+#                     rebuild.
 #   HAS_SAFETY=1      Refuse to clobber a RUNNING container with the same
 #                     name. Required where a docker rm -f mid-MFA would
 #                     burn a 2FA prompt or evict a VNC handoff. Override
@@ -62,10 +62,12 @@
 # ----------------------------------------------------------------------
 
 # The repository root, from this file's place in it, and the image-tag
-# helper beside this file.
+# and env-file helpers beside this file.
 _WRAPPER_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/image-tag.sh"
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/envfile-lib.sh"
 
 # _envvar SUFFIX DEFAULT — echo the value of ${ENV_PREFIX}_${SUFFIX},
 # or DEFAULT if unset/empty.
@@ -98,14 +100,12 @@ wrapper_source_cfg() {
     local cfg="${!var:-$2}"
     printf -v "$var" '%s' "$cfg"
     [[ -f "$cfg" ]] || return 0
-    if ! bash -n "$cfg"; then
+    if ! wealthdb_source_bash "$cfg"; then
+        # A config file holds no secret, so bash may say where it fails.
+        bash -n "$cfg"
         echo "${NAME}: config file $cfg has a bash syntax error" >&2
         exit 2
     fi
-    set -a
-    # shellcheck disable=SC1090
-    source "$cfg"
-    set +a
 }
 
 # Directory resolution precedence (highest first):
@@ -234,14 +234,8 @@ wrapper_source_env_file() {
     local f
     f="$(_envvar ENV_FILE "$HOST_SECRETS/$NAME.env")"
     [[ -f "$f" ]] || return 0
-    if ! bash -n "$f" 2>/dev/null; then
+    wealthdb_source_bash "$f" ||
         echo "${NAME}: env file $f has a bash syntax error; not sourcing it" >&2
-        return 0
-    fi
-    set -a
-    # shellcheck disable=SC1090
-    source "$f"
-    set +a
 }
 
 # The silver-consuming verbs as a display string, for the reject message.
@@ -397,7 +391,7 @@ wrapper_tty_args() {
 
 # Find a free TCP port in 5900-6000 for VNC forwarding. Default 5900
 # can be taken (another VNC server, macOS Screen Sharing, a prior
-# crashed container whose `docker run -p` lingers); we walk +1 until
+# crashed container whose `docker run -p` lingers); the walk moves +1 until
 # something is free, capped at +100 as a defensive limit. The
 # container side always binds 5900 — only the host-side mapping moves.
 # Sets vnc_host_port; aborts the wrapper if every port in the range is

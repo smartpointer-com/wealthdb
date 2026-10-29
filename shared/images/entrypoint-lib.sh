@@ -13,8 +13,8 @@ VFB_DISPLAY=99
 # Symlink the pre-staged camoufox cache (fetched at image build time by
 # fetch-camoufox.py and copied to /opt) into the runtime user's
 # $HOME/.cache/camoufox so camoufox skips its first-run download. HOME is
-# /tmp inside the container (set by the wrapper for the non-root user); we
-# always overwrite the symlink so a stale /tmp/.cache/camoufox from a
+# /tmp inside the container (set by the wrapper for the non-root user). The
+# symlink is always replaced, so a stale /tmp/.cache/camoufox from a
 # previous container with a different runtime uid doesn't shadow it.
 mkdir -p /tmp/.cache
 if [[ -d /opt/camoufox-cache ]]; then
@@ -25,8 +25,8 @@ if [[ -d /opt/camoufox-cache ]]; then
     ln -sn /opt/camoufox-cache /tmp/.cache/camoufox
 fi
 
-# start_xvfb — bring up the virtual X11 display Firefox needs to run headed
-# in the container, then export DISPLAY. Polls for the socket (a
+# start_xvfb — bring up the virtual X11 display a headed browser needs in
+# the container, then export DISPLAY. Polls for the socket (a
 # version-independent ready signal); returns non-zero if Xvfb never comes up.
 #
 # Xvfb is started directly, not via `xvfb-run`. The Ubuntu Noble
@@ -74,8 +74,8 @@ start_x11vnc() {
     x11vnc -display ":$VFB_DISPLAY" -passwd "$VNC_PASSWORD" \
         -forever -shared -rfbport 5900 -bg \
         -o /tmp/x11vnc.log >/dev/null 2>&1
-    # The wrapper picks the host-side port (it knows which are free); we
-    # publish it through VNC_HOST_PORT so the messages below print the
+    # The wrapper picks the host-side port (it knows which are free) and
+    # passes it as VNC_HOST_PORT, so the messages below print the
     # real port to tunnel through. Defaults to 5900 for direct
     # `docker run` invocations that skip the wrapper.
     local label="$1"

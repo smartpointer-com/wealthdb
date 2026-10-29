@@ -14,15 +14,13 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PASS=0
-FAIL=0
+# shellcheck source=lib.sh
+source "$HERE/lib.sh"
 
 # The accepted path mkdir -p's the silver parent; keep that in a temp dir.
 SILVERTMP="$(mktemp -d)"
 trap 'rm -rf "$SILVERTMP"' EXIT
 
-ok()   { PASS=$((PASS+1)); echo "  ok   $1"; }
-bad()  { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
 check() { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi; }
 
 # ---------------------------------------------------------------- wrapper-lib
@@ -115,11 +113,11 @@ _hl() {  # _hl <verb> <args...> -> "rc|stderr"
     (
         set +e
         NAME=testcol; ENV_PREFIX=TESTCOL
-        export XDG_DATA_HOME="${TMPDIR:-/tmp}/wl-test-$$"
+        # The accepted path creates the data dir, so it lands in the temp dir.
+        sandbox_env "$SILVERTMP"
         # shellcheck disable=SC1091
         source "$HERE/../host-lib.sh" 2>/dev/null
         out="$(host_resolve_dirs "$@" 2>&1)"; rc=$?
-        rm -rf "$XDG_DATA_HOME"
         echo "$rc|$out"
     )
 }
@@ -136,5 +134,4 @@ r="$(_hl prune --silver-db /tmp/x.db)"
 check "--silver-db on prune is rejected" "${r%%|*}" "2"
 
 echo
-echo "wrapper tests: $PASS passed, $FAIL failed"
-[[ $FAIL -eq 0 ]]
+summary "wrapper tests"

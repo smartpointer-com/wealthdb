@@ -6,18 +6,14 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib.sh
+source "$HERE/lib.sh"
 COLLECTORS="$HERE/../../../collectors"
-PASS=0
-FAIL=0
-ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
-bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-unset WEALTHDB_DATA_ROOT
-export XDG_DATA_HOME="$TMP/data"
-export XDG_CACHE_HOME="$TMP/cache"
+sandbox_env "$TMP"
 export WEALTHDB_SECRETS_DIR="$TMP/secrets"
 mkdir -p "$WEALTHDB_SECRETS_DIR"
 
@@ -37,5 +33,4 @@ for name in curves fred manual plaid refdata schwab-api svb ubs-psn; do
 done
 
 echo
-echo "unknown verb tests: $PASS passed, $FAIL failed"
-[[ $FAIL -eq 0 ]]
+summary "unknown verb tests"

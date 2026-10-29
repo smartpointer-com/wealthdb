@@ -10,10 +10,8 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PASS=0
-FAIL=0
-ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
-bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
+# shellcheck source=lib.sh
+source "$HERE/lib.sh"
 check() { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi; }
 
 TMP="$(mktemp -d)"
@@ -85,5 +83,4 @@ check "HAS_DEBUG=0 passes no debug dir" "$(argv_of "$out")" \
     "$TMP/collectors/testcol/prune.py --bronze-dir $TMP/data"
 
 echo
-echo "wrapper_host_prune tests: $PASS passed, $FAIL failed"
-[[ $FAIL -eq 0 ]]
+summary "wrapper_host_prune tests"

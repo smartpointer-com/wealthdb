@@ -13,10 +13,8 @@ unset MAKEFLAGS MFLAGS MAKELEVEL
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
-PASS=0
-FAIL=0
-ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
-bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
+# shellcheck source=lib.sh
+source "$HERE/lib.sh"
 
 TMP="$(mktemp -d)"
 trap 'pkill -P $$ 2>/dev/null; rm -rf "$TMP"' EXIT
@@ -101,5 +99,4 @@ touch "$TMP/cache/wealthdb/build-locks/wealthdb-x.lock"
     && ok "make clean includes it" || bad "make clean does not remove the locks"
 
 echo
-echo "build lock tests: $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]
+summary "build lock tests"

@@ -6,10 +6,9 @@
 # with a stubbed docker on PATH, so nothing real is built.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib.sh
+source "$HERE/lib.sh"
 WRAPPER="${1:-$HERE/../../../wealthdb/wealthdb}"
-PASS=0; FAIL=0
-ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
-bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -90,5 +89,4 @@ got="$(GIT_CEILING_DIRECTORIES="$TMP" stamp "$PLAIN")"
 if [ "$got" = "||" ]; then ok "outside a git checkout: no stamp"; else bad "outside a git checkout: got '$got', want '||'"; fi
 
 echo
-echo "wealthdb build stamp tests: $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]
+summary "wealthdb build stamp tests"

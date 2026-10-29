@@ -34,8 +34,8 @@ RUN sed -i -E 's#http://(ports|archive|security)\.ubuntu\.com#https://\1.ubuntu.
 # that never run headed simply carry two unused packages.
 #
 # Pre-create /tmp/.X11-unix world-writable + sticky. Xvfb tries to mkdir it
-# on startup; when the container runs as a non-root host user (we always do
-# for volume-ownership reasons), that mkdir fails
+# on startup; when the container runs as a non-root host user (the
+# containers always do, for volume ownership), that mkdir fails
 # (_XSERVTransmkdir: ERROR: euid != 0) and Xvfb wedges. Provisioning the dir
 # at image-build time sidesteps the race.
 RUN apt-get update && \

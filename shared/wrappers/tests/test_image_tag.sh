@@ -18,10 +18,8 @@ unset MAKEFLAGS MFLAGS MAKELEVEL
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
-PASS=0
-FAIL=0
-ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
-bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
+# shellcheck source=lib.sh
+source "$HERE/lib.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -32,7 +30,8 @@ TREE="$TMP/tree"
 mkdir -p "$TREE/wealthdb" "$TREE/shared/wrappers"
 cp "$ROOT/wealthdb/wealthdb" "$ROOT/wealthdb/wealthdb-go" "$TREE/wealthdb/"
 cp "$ROOT/shared/wrappers/wrapper-lib.sh" "$ROOT/shared/wrappers/image-tag.sh" \
-    "$ROOT/shared/wrappers/demo-root.sh" "$TREE/shared/wrappers/"
+    "$ROOT/shared/wrappers/envfile-lib.sh" "$ROOT/shared/wrappers/demo-root.sh" \
+    "$TREE/shared/wrappers/"
 mkdir -p "$TREE/mcp" "$TREE/web"
 cp "$ROOT/Makefile" "$TREE/"
 cp "$ROOT/mcp/mcp" "$TREE/mcp/"
@@ -56,11 +55,6 @@ printf '%s\n' "$@"
 STUB
 chmod +x "$TMP/bin/docker"
 
-# has DESC LINE ARGV: the stubbed docker's argv holds LINE as one item.
-has() {
-    if printf '%s\n' "$3" | grep -qxF -- "$2"; then ok "$1"; else bad "$1 (no '$2' in: $(printf '%s ' $3))"; fi
-}
-
 run_env() {
     env PATH="$TMP/bin:$PATH" HOME="$TMP" XDG_CONFIG_HOME="$TMP/cfg" \
         XDG_CACHE_HOME="$TMP/cache" WEALTHDB_DATA_ROOT="$TMP/data" "$@"
@@ -80,45 +74,45 @@ collector_build() {
 }
 
 echo "image tag:"
-has "engine runs wealthdb:latest by default" "wealthdb:latest" \
+has_item "engine runs wealthdb:latest by default" "wealthdb:latest" \
     "$(run_env WEALTHDB_IMAGE_TAG= "$TREE/wealthdb/wealthdb" status)"
-has "engine runs the tagged image" "wealthdb:feature" \
+has_item "engine runs the tagged image" "wealthdb:feature" \
     "$(run_env WEALTHDB_IMAGE_TAG=feature "$TREE/wealthdb/wealthdb" status)"
-has "engine builds the tagged image" "wealthdb:feature" \
+has_item "engine builds the tagged image" "wealthdb:feature" \
     "$(run_env WEALTHDB_IMAGE_TAG=feature "$TREE/wealthdb/wealthdb" build)"
-has "go wrapper runs the tagged image" "wealthdb:feature" \
+has_item "go wrapper runs the tagged image" "wealthdb:feature" \
     "$(run_env WEALTHDB_IMAGE_TAG=feature "$TREE/wealthdb/wealthdb-go" version)"
 out="$(collector_build feature)"
-has "collector builds the tagged image" "wealthdb/testcol:feature" "$out"
-has "collector build passes the tag to FROM" "WEALTHDB_IMAGE_TAG=feature" "$out"
+has_item "collector builds the tagged image" "wealthdb/testcol:feature" "$out"
+has_item "collector build passes the tag to FROM" "WEALTHDB_IMAGE_TAG=feature" "$out"
 out="$(collector_build "")"
-has "collector image defaults to latest" "wealthdb/testcol:latest" "$out"
-has "collector base defaults to latest" "WEALTHDB_IMAGE_TAG=latest" "$out"
+has_item "collector image defaults to latest" "wealthdb/testcol:latest" "$out"
+has_item "collector base defaults to latest" "WEALTHDB_IMAGE_TAG=latest" "$out"
 
 # The checkout's .image-tag names the tag when the variable is unset,
 # and the variable still wins over it.
 printf 'pinned\n' > "$TREE/.image-tag"
-has "engine runs the .image-tag image" "wealthdb:pinned" \
+has_item "engine runs the .image-tag image" "wealthdb:pinned" \
     "$(run_env WEALTHDB_IMAGE_TAG= "$TREE/wealthdb/wealthdb" status)"
-has "engine builds the .image-tag image" "wealthdb:pinned" \
+has_item "engine builds the .image-tag image" "wealthdb:pinned" \
     "$(run_env WEALTHDB_IMAGE_TAG= "$TREE/wealthdb/wealthdb" build)"
-has "go wrapper runs the .image-tag image" "wealthdb:pinned" \
+has_item "go wrapper runs the .image-tag image" "wealthdb:pinned" \
     "$(run_env WEALTHDB_IMAGE_TAG= "$TREE/wealthdb/wealthdb-go" version)"
 out="$(collector_build "")"
-has "collector builds the .image-tag image" "wealthdb/testcol:pinned" "$out"
-has "collector base follows .image-tag" "WEALTHDB_IMAGE_TAG=pinned" "$out"
-has "the variable wins over .image-tag" "wealthdb:feature" \
+has_item "collector builds the .image-tag image" "wealthdb/testcol:pinned" "$out"
+has_item "collector base follows .image-tag" "WEALTHDB_IMAGE_TAG=pinned" "$out"
+has_item "the variable wins over .image-tag" "wealthdb:feature" \
     "$(run_env WEALTHDB_IMAGE_TAG=feature "$TREE/wealthdb/wealthdb" status)"
-has "the engine run through a symlink reads .image-tag" "wealthdb:pinned" \
+has_item "the engine run through a symlink reads .image-tag" "wealthdb:pinned" \
     "$(run_env WEALTHDB_IMAGE_TAG= wealthdb status)"
-has "make resolves .image-tag" "pinned" "$(make_tag -u WEALTHDB_IMAGE_TAG)"
-has "make: the variable wins" "feature" "$(make_tag WEALTHDB_IMAGE_TAG=feature)"
-has "mcp reads .image-tag" "wealthdb:pinned" "$(knob_tag "$TREE/mcp/mcp")"
-has "web reads .image-tag" "wealthdb/metabase:pinned" "$(knob_tag "$TREE/web/web")"
+has_item "make resolves .image-tag" "pinned" "$(make_tag -u WEALTHDB_IMAGE_TAG)"
+has_item "make: the variable wins" "feature" "$(make_tag WEALTHDB_IMAGE_TAG=feature)"
+has_item "mcp reads .image-tag" "wealthdb:pinned" "$(knob_tag "$TREE/mcp/mcp")"
+has_item "web reads .image-tag" "wealthdb/metabase:pinned" "$(knob_tag "$TREE/web/web")"
 rm -f "$TREE/.image-tag"
-has "make defaults to latest" "latest" "$(make_tag -u WEALTHDB_IMAGE_TAG)"
-has "mcp defaults to latest" "wealthdb:latest" "$(knob_tag "$TREE/mcp/mcp")"
-has "web defaults to latest" "wealthdb/metabase:latest" "$(knob_tag "$TREE/web/web")"
+has_item "make defaults to latest" "latest" "$(make_tag -u WEALTHDB_IMAGE_TAG)"
+has_item "mcp defaults to latest" "wealthdb:latest" "$(knob_tag "$TREE/mcp/mcp")"
+has_item "web defaults to latest" "wealthdb/metabase:latest" "$(knob_tag "$TREE/web/web")"
 
 # A malformed .image-tag stops the wrapper before docker runs: it never
 # falls back to latest.
@@ -399,5 +393,4 @@ else
     bad "update-bases pulls and builds a labeled base ($out)"
 fi
 
-echo "  $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]
+summary "image tag tests"

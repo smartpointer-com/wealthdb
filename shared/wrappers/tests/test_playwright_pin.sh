@@ -18,12 +18,9 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
+# shellcheck source=lib.sh
+source "$HERE/lib.sh"
 BUMP="$ROOT/shared/update/bump-playwright.py"
-PASS=0
-FAIL=0
-ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
-bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
-has() { if printf '%s\n' "$3" | grep -qF -- "$2"; then ok "$1"; else bad "$1 (no '$2' in: $3)"; fi; }
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -206,5 +203,4 @@ has "...and fetches the index and browsers.json alone" "partial: True" "$out"
 has "a server that ignores the range fails" "plain: failed" "$out"
 has "...and says why, naming the wheel" "/plain/p.whl: no range support (HTTP 200)" "$out"
 
-echo "  $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]
+summary "playwright pin tests"

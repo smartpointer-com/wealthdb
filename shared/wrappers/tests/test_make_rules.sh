@@ -8,9 +8,12 @@
 #   - a host-venv or hybrid collector's tests run on its venv;
 #   - clean-wealthdb clears the Go cache wealthdb-go uses;
 #   - test-demo's scratch roots are the image tag's own, and clean-demo
-#     removes that root only when it holds the tests' marker.
-# Nothing is built or run: make only prints, and a stub docker prints.
-# clean-demo alone runs for real, on roots under the temp dir.
+#     removes that root only when it holds the tests' marker;
+#   - lint reinstalls ruff when its pin changes, and update-venvs stops
+#     at the first pip that fails.
+# Nothing is built: make prints, and a stub docker prints. clean-demo,
+# lint-python and update-venvs run for real, on roots and stub venvs
+# under the temp dir.
 set -uo pipefail
 # The makes this test starts read only what it gives them: an outer
 # make's flags and command-line variables (make test-wrappers X=…) stay
@@ -19,12 +22,8 @@ unset MAKEFLAGS MFLAGS MAKELEVEL
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
-PASS=0
-FAIL=0
-ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
-bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
-has()   { if printf '%s\n' "$3" | grep -qF -- "$2"; then ok "$1"; else bad "$1 (no '$2' in: $3)"; fi; }
-lacks() { if printf '%s\n' "$3" | grep -qF -- "$2"; then bad "$1 ('$2' in: $3)"; else ok "$1"; fi; }
+# shellcheck source=lib.sh
+source "$HERE/lib.sh"
 
 # The physical path: make's working dir resolves symlinks such as macOS's
 # /var -> /private/var, and the /src mount is named from it.
@@ -95,5 +94,34 @@ mkdir -p "$demo/a"
 clean_demo
 if [ -d "$demo/a" ]; then ok "clean-demo leaves a dir without the marker"; else bad "clean-demo removed an unmarked $demo"; fi
 
-echo "  $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]
+# lint-python and update-venvs for real, on stub venvs whose pip and
+# python record their calls.
+echo "make venv rules:"
+real() { (cd "$TREE" && env WEALTHDB_IMAGE_TAG=t XDG_CACHE_HOME="$TMP/cache" make --no-print-directory "$@" 2>&1); }
+lint="$TREE/shared/lint"
+mkdir -p "$lint/.venv/bin"
+printf 'ruff>=1,<2\n' > "$lint/requirements.txt"
+printf '#!/bin/sh\necho "pip $*" >> "%s"\n' "$TMP/pip.log" > "$lint/.venv/bin/pip"
+printf '#!/bin/sh\nexit 0\n' > "$lint/.venv/bin/ruff"
+chmod +x "$lint/.venv/bin/pip" "$lint/.venv/bin/ruff"
+pips() { cat "$TMP/pip.log" 2>/dev/null | wc -l | tr -d ' '; }
+real lint-python >/dev/null
+[ "$(pips)" = 1 ] && ok "lint installs ruff into a venv without a stamp" || bad "pip calls: $(pips)"
+real lint-python >/dev/null
+[ "$(pips)" = 1 ] && ok "lint skips pip while the stamp matches" || bad "pip calls: $(pips)"
+printf 'ruff>=2,<3\n' > "$lint/requirements.txt"
+real lint-python >/dev/null
+[ "$(pips)" = 2 ] && ok "lint reinstalls after a pin edit" || bad "pip calls: $(pips)"
+rm -rf "$lint/.venv"
+
+# A failed pip stops update-venvs at once, with a failure status.
+printf '#!/bin/sh\nexit 1\n' > "$TREE/collectors/host/.venv/bin/python"
+out="$(real update-venvs)"; rc=$?
+[ "$rc" != 0 ] && ok "a failed pip fails update-venvs" || bad "update-venvs exit 0 over a failed pip"
+lacks "a failed pip stops before the next venv" "update collectors/hyb/.venv" "$out"
+printf '#!/bin/sh\n' > "$TREE/collectors/host/.venv/bin/python"
+out="$(real update-venvs)"; rc=$?
+[ "$rc" = 0 ] && ok "update-venvs succeeds over working venvs" || bad "update-venvs exit $rc: $out"
+has "update-venvs updates every collector venv" "update collectors/hyb/.venv" "$out"
+
+summary "make rule tests"

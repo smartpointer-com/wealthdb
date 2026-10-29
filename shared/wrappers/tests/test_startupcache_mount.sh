@@ -11,10 +11,8 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PASS=0
-FAIL=0
-ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
-bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
+# shellcheck source=lib.sh
+source "$HERE/lib.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -58,19 +56,11 @@ docker_argv() {
     )
 }
 
-# has DESC ITEM ARGV: the docker argv holds ITEM as one item.
-has() {
-    if printf '%s\n' "$3" | grep -qxF -- "$2"; then ok "$1"; else bad "$1 (no '$2' in: $(printf '%s ' $3))"; fi
-}
-lacks() {
-    if printf '%s\n' "$3" | grep -qxF -- "$2"; then bad "$1 ('$2' in: $(printf '%s ' $3))"; else ok "$1"; fi
-}
-
 echo "wrapper-lib startupCache mount:"
 out="$(docker_argv)"
 cache="$TMP/xdgcache/wealthdb/startupcache"
-has "mounts the XDG cache dir at /cache/startupcache" "$cache:/cache/startupcache" "$out"
-has "container env points at the mount" "WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache" "$out"
+has_item "mounts the XDG cache dir at /cache/startupcache" "$cache:/cache/startupcache" "$out"
+has_item "container env points at the mount" "WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache" "$out"
 
 # The cache must not be co-located under the /secrets mount.
 if printf '%s\n' "$out" | grep -q "/secrets/[^ ]*startupcache"; then
@@ -89,26 +79,25 @@ fi
 
 echo "wrapper-lib relative mount sources:"
 out="$(docker_argv load --data-dir mydata --silver-db silver/x.db)"
-has "a relative --data-dir mounts as an absolute host path" "$TMP/work/mydata:/data" "$out"
-has "a relative --silver-db parent mounts as an absolute host path" "$TMP/work/silver:/silver" "$out"
-has "--silver-db is rewritten to the /silver path" "/silver/x.db" "$out"
+has_item "a relative --data-dir mounts as an absolute host path" "$TMP/work/mydata:/data" "$out"
+has_item "a relative --silver-db parent mounts as an absolute host path" "$TMP/work/silver:/silver" "$out"
+has_item "--silver-db is rewritten to the /silver path" "/silver/x.db" "$out"
 mkdir -p "$TMP/work/mysecrets"
 out="$(docker_argv login --secrets-dir=mysecrets)"
-has "a relative --secrets-dir mounts as an absolute host path" "$TMP/work/mysecrets:/secrets" "$out"
+has_item "a relative --secrets-dir mounts as an absolute host path" "$TMP/work/mysecrets:/secrets" "$out"
 out="$(TESTCOL_DATA_DIR=envdata docker_argv login)"
-has "a relative TESTCOL_DATA_DIR mounts as an absolute host path" "$TMP/work/envdata:/data" "$out"
+has_item "a relative TESTCOL_DATA_DIR mounts as an absolute host path" "$TMP/work/envdata:/data" "$out"
 
 echo "wrapper-lib VNC port:"
 out="$(HAS_VNC=1 docker_argv vnc-login 2>/dev/null)"
-has "vnc-login gets the first free host port" "127.0.0.1:5901:5900" "$out"
-has "the container learns the host port" "VNC_HOST_PORT=5901" "$out"
+has_item "vnc-login gets the first free host port" "127.0.0.1:5901:5900" "$out"
+has_item "the container learns the host port" "VNC_HOST_PORT=5901" "$out"
 out="$(HAS_VNC=1 docker_argv login)"
-lacks "login gets no VNC port by default" "VNC_HOST_PORT=5901" "$out"
+lacks_item "login gets no VNC port by default" "VNC_HOST_PORT=5901" "$out"
 out="$(HAS_VNC=1 VNC_SUBCOMMANDS=(explore login); docker_argv login 2>/dev/null)"
-has "VNC_SUBCOMMANDS names the verbs that get one" "VNC_HOST_PORT=5901" "$out"
+has_item "VNC_SUBCOMMANDS names the verbs that get one" "VNC_HOST_PORT=5901" "$out"
 out="$(HAS_VNC=1 VNC_SUBCOMMANDS=(explore login); docker_argv vnc-login)"
-lacks "VNC_SUBCOMMANDS replaces the default" "VNC_HOST_PORT=5901" "$out"
+lacks_item "VNC_SUBCOMMANDS replaces the default" "VNC_HOST_PORT=5901" "$out"
 
 echo
-echo "wrapper_main docker argv tests: $PASS passed, $FAIL failed"
-[[ $FAIL -eq 0 ]]
+summary "wrapper_main docker argv tests"

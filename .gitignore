@@ -31,10 +31,10 @@ collectors/**/dist/
 collectors/**/env/
 collectors/**/*.log
 
-# Browser coredumps. The explore verbs live-mount the collector dir as the
+# Browser coredumps. The wrappers live-mount the collector dir as the
 # container's /app cwd, so a crashing camoufox drops its core file into the
 # checkout. Never track one — it is a memory image of a logged-in browser.
-core
+collectors/**/core
 
 # A checkout's image tag and demo root (shared/wrappers/image-tag.sh,
 # demo-root.sh): local to the checkout by design.

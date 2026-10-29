@@ -18,9 +18,15 @@
 #                                       that writes debug output).
 #   FORWARD_ARGS                      — the args left after the dir flags
 #                                       are consumed (pass to the .py).
+#   SILVER_DB_GIVEN                   — 1 when --silver-db or
+#                                       ${ENV_PREFIX}_SILVER_DB names the
+#                                       silver DB, else 0.
 #
 # bash 3.2 compatibility: avoids namerefs / associative arrays; indirect
 # expansion (${!var}) reads the per-prefix override variables.
+
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/envfile-lib.sh"
 
 # _host_envvar SUFFIX DEFAULT — echo ${ENV_PREFIX}_${SUFFIX} or DEFAULT.
 _host_envvar() {
@@ -96,6 +102,8 @@ host_resolve_dirs() {
     DEBUG_DIR="$(_host_envvar DEBUG_DIR "${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/debug/$NAME")"
 
     SILVER_DB="$(_host_envvar SILVER_DB "")"
+    SILVER_DB_GIVEN=0
+    [[ -n "$SILVER_DB" ]] && SILVER_DB_GIVEN=1
 
     FORWARD_ARGS=()
     local silver_from_flag=0
@@ -115,10 +123,28 @@ host_resolve_dirs() {
              "— it is only read by: $(host_silver_verbs_str)." >&2
         exit 2
     fi
+    [[ $silver_from_flag == 1 ]] && SILVER_DB_GIVEN=1
     [[ -z "$SILVER_DB" ]] && SILVER_DB="$DATA_DIR/$NAME.db"
     mkdir -p "$DATA_DIR"
     # Same reasoning as the Docker wrappers: per-collector, owner-only.
     chmod 700 "$DATA_DIR"
+}
+
+# host_print_banner FILE — print FILE's leading comment banner (every
+# line after the shebang up to the first line of code) as help, so the
+# help text is the file's own header whatever its length.
+host_print_banner() {
+    awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$1"
+}
+
+# host_has_flag FLAG ARGS... — true when FLAG is one of ARGS.
+host_has_flag() {
+    local flag="$1" a
+    shift
+    for a; do
+        [[ "$a" == "$flag" ]] && return 0
+    done
+    return 1
 }
 
 # The silver-consuming verbs as a display string, for the reject message.
@@ -150,12 +176,6 @@ host_source_env_file() {
     var="${prefix}_ENV_FILE"
     f="${!var:-$SECRETS_DIR/$name.env}"
     [[ -f "$f" ]] || return 0
-    if ! bash -n "$f" 2>/dev/null; then
+    wealthdb_source_bash "$f" ||
         echo "${NAME}: env file $f has a bash syntax error; not sourcing it" >&2
-        return 0
-    fi
-    set -a
-    # shellcheck disable=SC1090
-    source "$f"
-    set +a
 }

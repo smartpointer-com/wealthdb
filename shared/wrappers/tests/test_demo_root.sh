@@ -13,10 +13,8 @@ unset MAKEFLAGS MFLAGS MAKELEVEL
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
-PASS=0
-FAIL=0
-ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
-bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
+# shellcheck source=lib.sh
+source "$HERE/lib.sh"
 is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$3', want '$2')"; fi; }
 
 TMP="$(mktemp -d)"
@@ -72,5 +70,4 @@ else
     ok "a .demo-root directory stops make"
 fi
 
-echo "  $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]
+summary "demo root tests"

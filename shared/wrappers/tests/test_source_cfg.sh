@@ -7,11 +7,9 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib.sh
+source "$HERE/lib.sh"
 REPO="$(cd "$HERE/../../.." && pwd)"
-PASS=0
-FAIL=0
-ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
-bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -90,5 +88,4 @@ for c in relevate cointracking; do
 done
 
 echo
-echo "wrapper_source_cfg tests: $PASS passed, $FAIL failed"
-[[ $FAIL -eq 0 ]]
+summary "wrapper_source_cfg tests"

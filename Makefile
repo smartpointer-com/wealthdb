@@ -39,7 +39,9 @@ endif
 export WEALTHDB_IMAGE_TAG
 TAG := $(WEALTHDB_IMAGE_TAG)
 NCPU = $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
-BUILD_LOCK_DIR := $(if $(XDG_CACHE_HOME),$(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb/build-locks
+# The build locks, the Go caches and the demo test roots live here.
+CACHE_ROOT := $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb
+BUILD_LOCK_DIR := $(CACHE_ROOT)/build-locks
 # LOCKED NAME: a recipe prefix that holds the build lock NAME-$(TAG)
 # for the rest of the recipe's shell (wealthdb_build_lock), so two
 # builds of one image never run at once.
@@ -274,7 +276,7 @@ test-collectorkit:
 
 test-wrappers:
 	@echo "==> test wrappers (shared/wrappers)"
-	@for t in shared/wrappers/tests/*.sh; do bash "$$t" || exit 1; done
+	@for t in shared/wrappers/tests/test_*.sh; do bash "$$t" || exit 1; done
 
 clean-collectorkit:
 	@echo "==> clean collectorkit"
@@ -301,7 +303,10 @@ cleanall-lint:
 #
 # ruff comes from a venv of its own, pinned in shared/lint/requirements.txt
 # and refreshed by update-venvs; the rule set is /ruff.toml, which covers
-# every Python module in the tree.
+# every Python module in the tree. The venv's .stamp is a copy of the
+# requirements it was installed from, so an edit to the pin reinstalls.
+# It compares contents, not mtimes, because the pre-commit hook lints a
+# fresh export of the index against this checkout's venv.
 LINT_DIR  := shared/lint
 LINT_VENV := $(LINT_DIR)/.venv
 
@@ -320,8 +325,11 @@ lint-python:
 	@echo "==> lint python (ruff)"
 	@if [ ! -x $(LINT_VENV)/bin/ruff ]; then \
 		rm -rf $(LINT_VENV); \
-		$(PYTHON) -m venv $(LINT_VENV) && \
-		$(LINT_VENV)/bin/pip install -q -r $(LINT_DIR)/requirements.txt || exit 1; \
+		$(PYTHON) -m venv $(LINT_VENV) || exit 1; \
+	fi
+	@if [ ! -x $(LINT_VENV)/bin/ruff ] || ! cmp -s $(LINT_DIR)/requirements.txt $(LINT_VENV)/.stamp; then \
+		$(LINT_VENV)/bin/pip install -q -r $(LINT_DIR)/requirements.txt && \
+		cp $(LINT_DIR)/requirements.txt $(LINT_VENV)/.stamp || exit 1; \
 	fi
 	@$(LINT_VENV)/bin/ruff check --quiet .
 
@@ -338,7 +346,7 @@ test-wealthdb: build-wealthdb
 
 # Where wealthdb-go parks the containerised Go toolchain caches
 # (must mirror CACHE in wealthdb/wealthdb-go).
-GO_CACHE := $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb/go
+GO_CACHE := $(CACHE_ROOT)/go
 
 clean-wealthdb:
 	@echo "==> clean wealthdb (go build cache)"
@@ -440,7 +448,7 @@ demo-mcp-stop:
 # today, in scratch roots under the cache dir — a directory Docker can
 # see, holding nothing but the demo's test roots. One per image tag, as
 # the images are, so checkouts on tags of their own never share a root.
-DEMO_TEST_ROOT := $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb/demo-test-$(TAG)
+DEMO_TEST_ROOT := $(CACHE_ROOT)/demo-test-$(TAG)
 
 test-demo: build-wealthdb
 	@echo "==> test demo (generator, then the household through the engine: its first months and to today)"
@@ -533,17 +541,19 @@ build-$(1): $(if $(wildcard collectors/$(1)/Dockerfile),base-images)
 # A host-venv or hybrid collector tests on its venv. A Docker collector
 # tests in its image, run directly rather than through the wrapper: no
 # secrets or data mount, and a name docker picks, so a test never meets a
-# live run's container. Not every image copies its tests, so the tests
-# come from the checkout. It is mounted read-only at /src, and sh copies
-# it to a tmpfs at /app, then runs the collector's entrypoint from the
-# copy, as a live run does, so the shared browser setup in
-# entrypoint-lib.sh holds for the tests too. The tmpfs starts empty, so
-# the image's own entrypoint is not there yet. The tests never run on the mount. Inode numbers on a VM's
-# file share (virtiofs under Colima) are not stable: a file gets a new
-# one whenever the VM drops it from its cache, for example under memory
-# pressure. pytest compares inode numbers to check that an imported test
-# module is the file it collected, so on the share a drop between its two
-# stat calls stops the suite with "import file mismatch".
+# live run's container. The tests come from the checkout, not the image.
+# It is mounted read-only at /src, and sh copies it to a tmpfs at /app,
+# then runs the collector's entrypoint from the copy, as a live run does,
+# so the shared browser setup in entrypoint-lib.sh holds for the tests
+# too. The tmpfs starts empty, so the image's own entrypoint is not there
+# yet.
+#
+# The tests never run on the mount. Inode numbers on a VM's file share
+# (virtiofs under Colima) are not stable: a file gets a new one whenever
+# the VM drops it from its cache, for example under memory pressure.
+# pytest compares inode numbers to check that an imported test module is
+# the file it collected, so on the share a drop between its two stat
+# calls stops the suite with "import file mismatch".
 test-$(1): build-$(1)
 	@echo "==> test collector: $(1)"
 	@if [ ! -d collectors/$(1)/tests ] && ! ls collectors/$(1)/test_*.py >/dev/null 2>&1; then \
@@ -606,6 +616,15 @@ $(foreach c,$(COLLECTORS),$(eval $(call COLLECTOR_RULES,$(c))))
 # ruff's (`make lint`), each updated alongside them once it exists.
 HOST_VENV_COLLECTORS := $(patsubst collectors/%/.venv,%,$(wildcard collectors/*/.venv))
 
+# UPDATE_VENV venv,args: upgrade pip, setuptools and wheel in venv, then
+# `pip install --upgrade args`. A failed pip stops the recipe, so `make
+# update` never reports done over a venv that did not update.
+define UPDATE_VENV
+echo "==> update $(1)"; \
+$(1)/bin/python -m pip install --upgrade pip setuptools wheel || exit 1; \
+$(1)/bin/python -m pip install --upgrade $(2) || exit 1
+endef
+
 # The base rebuild follows the Playwright bump in one recipe, so a
 # parallel make cannot build the base on the old tag.
 update: update-venvs update-wealthdb
@@ -615,32 +634,22 @@ update: update-venvs update-wealthdb
 	@echo "==> update done. Run \`make all\` to rebuild collector images on top of the refreshed bases."
 
 update-venvs:
-	@if [ -z "$(HOST_VENV_COLLECTORS)" ] && [ ! -x $(CK_VENV)/bin/python ]; then \
+	@if [ -z "$(HOST_VENV_COLLECTORS)" ] && [ ! -x $(CK_VENV)/bin/python ] && \
+	   [ ! -x $(LINT_VENV)/bin/python ] && [ ! -x $(WEB_VENV)/bin/python ]; then \
 		echo "==> no host venvs to update"; \
 	fi
 	@for c in $(HOST_VENV_COLLECTORS); do \
-		venv=collectors/$$c/.venv; \
-		echo "==> update collectors/$$c/.venv"; \
-		"$$venv/bin/python" -m pip install --upgrade pip setuptools wheel; \
-		if [ -f "collectors/$$c/requirements.txt" ]; then \
-			"$$venv/bin/python" -m pip install --upgrade -r "collectors/$$c/requirements.txt"; \
-		fi; \
-		"$$venv/bin/python" -m pip install --upgrade -e shared/collectorkit; \
+		req=; [ -f "collectors/$$c/requirements.txt" ] && req="-r collectors/$$c/requirements.txt"; \
+		$(call UPDATE_VENV,collectors/$$c/.venv,$$req -e $(CK_DIR)); \
 	done
 	@if [ -x $(CK_VENV)/bin/python ]; then \
-		echo "==> update $(CK_VENV)"; \
-		$(CK_VENV)/bin/python -m pip install --upgrade pip setuptools wheel; \
-		$(CK_VENV)/bin/python -m pip install --upgrade -e $(CK_DIR) $(CK_TEST_DEPS); \
+		$(call UPDATE_VENV,$(CK_VENV),-e $(CK_DIR) $(CK_TEST_DEPS)); \
 	fi
 	@if [ -x $(LINT_VENV)/bin/python ]; then \
-		echo "==> update $(LINT_VENV)"; \
-		$(LINT_VENV)/bin/python -m pip install --upgrade pip; \
-		$(LINT_VENV)/bin/python -m pip install --upgrade -r $(LINT_DIR)/requirements.txt; \
+		$(call UPDATE_VENV,$(LINT_VENV),-r $(LINT_DIR)/requirements.txt); \
 	fi
 	@if [ -x $(WEB_VENV)/bin/python ]; then \
-		echo "==> update $(WEB_VENV)"; \
-		$(WEB_VENV)/bin/python -m pip install --upgrade pip; \
-		$(WEB_VENV)/bin/python -m pip install --upgrade -r web/requirements-test.txt; \
+		$(call UPDATE_VENV,$(WEB_VENV),-r web/requirements-test.txt); \
 	fi
 
 # The module graph is refreshed by the IMAGE's Go toolchain, never the

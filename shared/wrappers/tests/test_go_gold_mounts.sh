@@ -8,10 +8,8 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
-PASS=0
-FAIL=0
-ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
-bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
+# shellcheck source=lib.sh
+source "$HERE/lib.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -32,13 +30,11 @@ chmod +x "$TMP/bin/docker"
 
 run() { (cd "$TMP/gold" && env PATH="$TMP/bin:$PATH" XDG_CACHE_HOME="$TMP/cache" WEALTHDB_IMAGE_TAG=t "$@" \
     "$TREE/wealthdb/wealthdb-go" test ./internal/gold -run TestTaxonomyInvariants); }
-has()  { case "$3" in *"$2"*) ok "$1" ;; *) bad "$1: no '$2' in: $3" ;; esac; }
-hasnt() { case "$3" in *"$2"*) bad "$1: '$2' in: $3" ;; *) ok "$1" ;; esac; }
 count() { printf '%s\n' "$2" | grep -c -x -F -- "$1"; }
 
 out="$(run)"
-hasnt "unset: no harness variable" "WEALTHDB_GOLD" "$out"
-hasnt "unset: no read-only mount" ":ro" "$out"
+lacks "unset: no harness variable" "WEALTHDB_GOLD" "$out"
+lacks "unset: no read-only mount" ":ro" "$out"
 has "unset: the go argv follows the image" "$(printf 'wealthdb:t\ntest')" "$out"
 
 out="$(run WEALTHDB_GOLD_VERIFY=a/after.db WEALTHDB_GOLD_BEFORE="$TMP/gold/b/before.db")"
@@ -55,5 +51,4 @@ n="$(count "$TMP/gold/a:$TMP/gold/a:ro" "$out")"
 out="$(run WEALTHDB_GOLD_VERIFY=missing/after.db 2>&1)"; rc=$?
 [ "$rc" = 2 ] && ok "a path in no directory exits 2" || bad "a path in no directory exits $rc"
 
-echo "wealthdb-go gold mount tests: $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]
+summary "wealthdb-go gold mount tests"

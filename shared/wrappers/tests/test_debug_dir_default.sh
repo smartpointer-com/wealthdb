@@ -7,10 +7,8 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PASS=0
-FAIL=0
-ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
-bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
+# shellcheck source=lib.sh
+source "$HERE/lib.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -67,5 +65,4 @@ else
 fi
 
 echo
-echo "debug-dir default tests: $PASS passed, $FAIL failed"
-[[ $FAIL -eq 0 ]]
+summary "debug-dir default tests"

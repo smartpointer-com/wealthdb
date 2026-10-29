@@ -22,6 +22,6 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -ldflags "-X $v.Tag=$WEALTHDB_TAG -X $v.Base=$WEALTHDB_BASE -X $v.Commit=$WEALTHDB_COMMIT" \
         -o /usr/local/bin/wealthdb ./cmd/wealthdb
 
-# Default entrypoint is the production binary. The wealthdb-test
-# wrapper overrides with --entrypoint go.
+# Default entrypoint is the production binary. wealthdb-go (and
+# wealthdb-test over it) overrides it with --entrypoint go.
 ENTRYPOINT ["/usr/local/bin/wealthdb"]
