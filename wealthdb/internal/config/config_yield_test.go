@@ -149,7 +149,7 @@ func TestYieldRejects(t *testing.T) {
 		`{"horizon": 12}`: `unknown field "horizon"`,
 		`{"conventions": {"USD": {"frequency": 2, "day_count": "30/360", "coupon": 5}}}`: `unknown field "coupon"`,
 		`{"curves": {"USD": {"3M": {"series": "rates:DGS3MO"}}}}`:                        "cannot unmarshal",
-		`{"withholding": {"US": {"default": "30"}}}`:                                     "cannot unmarshal",
+		`{"withholding": {"US": {"default": "30"}}}`:                                     `yield.withholding["US"]["default"]: want a percent: json: cannot unmarshal`,
 		`{"horizon_months": 6.5}`:                                                        "cannot unmarshal",
 
 		// curves
@@ -178,8 +178,11 @@ func TestYieldRejects(t *testing.T) {
 		`{"withholding": {"US": {"accounts": {"demo": {" ": 0}}}}}`:     `yield.withholding["US"]["accounts"]["demo"]: an account id is empty`,
 		`{"withholding": {"US": {"accounts": {"demo": {"a-1 ": 0}}}}}`:  `["a-1 "]: an account id has no space around it`,
 		`{"withholding": {"US": {"accounts": {"demo": {"a-1": 101}}}}}`: `yield.withholding["US"]["accounts"]["demo"]["a-1"] 101: want a percent, 0 to 100`,
-		`{"withholding": {"US": {"accounts": {"demo": 0}}}}`:            `want {source: {account: percent}}`,
-		`{"withholding": {"US": {"default": "x"}}}`:                     `yield.withholding: "default": want a percent`,
+		`{"withholding": {"US": {"accounts": {"demo": 0}}}}`:            `yield.withholding["US"]["accounts"]: want {source: {account: percent}}`,
+		`{"withholding": {"US": {"default": "x"}}}`:                     `yield.withholding["US"]["default"]: want a percent`,
+		`{"withholding": {"US": 30}}`:                                   `yield.withholding["US"]: want an object`,
+		`{"withholding": 30}`:                                           `yield.withholding: want an object`,
+		`{"withholding": {"CH": {"default": 35}, "US": [30]}}`:          `yield.withholding["US"]: want an object`,
 		`{"withholding": {"US": {"Default": 30}}}`:                      `yield.withholding["US"]["Default"]: want "default"`,
 		`{"withholding": {"US": {"default": -1}}}`:                      `yield.withholding["US"]["default"] -1: want a percent, 0 to 100`,
 		`{"withholding": {"US": {"taxable_personal": 100.5}}}`:          `yield.withholding["US"]["taxable_personal"] 100.5: want a percent`,
@@ -258,7 +261,7 @@ func TestWithholdingRatesRoundTrip(t *testing.T) {
 func TestYieldRejectsNonFiniteRate(t *testing.T) {
 	t.Parallel()
 	for _, r := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
-		c := &Config{Yield: &YieldConfig{Withholding: map[string]WithholdingRates{
+		c := &Config{Yield: &YieldConfig{Withholding: WithholdingTable{
 			"US": {Wrappers: map[string]float64{"default": r}}}}}
 		if err := c.validateYield(nil); err == nil || !strings.Contains(err.Error(), "want a percent, 0 to 100") {
 			t.Errorf("%v: err %v", r, err)

@@ -3,6 +3,7 @@ package config
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -28,7 +29,7 @@ type YieldConfig struct {
 	// account's rate is not its wrapper's (WithholdingRates). A country
 	// the block does not name has no rate, which reads as unknown, never
 	// as zero.
-	Withholding map[string]WithholdingRates `json:"withholding,omitempty"`
+	Withholding WithholdingTable `json:"withholding,omitempty"`
 	// RatingFunds maps a fund sliced by credit rating to the bucket
 	// (BBB) or range of buckets, best first (AAA-A), its lines carry.
 	// Keyed like exposure.size_funds.
@@ -65,24 +66,68 @@ type WithholdingRates struct {
 // withholdingAccountsKey is the key of a country's per-account rates.
 const withholdingAccountsKey = "accounts"
 
+// WithholdingTable is `yield.withholding`: each situs country's rates.
+type WithholdingTable map[string]WithholdingRates
+
+// UnmarshalJSON reads each country's object in key order, so the first
+// error is the same at every run, and names the country of a value that
+// does not read.
+func (t *WithholdingTable) UnmarshalJSON(b []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return &withholdingError{want: "an object"}
+	}
+	out := make(WithholdingTable, len(raw))
+	for _, country := range slices.Sorted(maps.Keys(raw)) {
+		var w WithholdingRates
+		if err := w.UnmarshalJSON(raw[country]); err != nil {
+			if e, ok := errors.AsType[*withholdingError](err); ok {
+				e.at = fmt.Sprintf("[%q]", country) + e.at
+			}
+			return err
+		}
+		out[country] = w
+	}
+	*t = out
+	return nil
+}
+
+// withholdingError is a value of `yield.withholding` that does not read:
+// at is its place in the block, such as ["US"]["default"], and want what
+// it should be.
+type withholdingError struct {
+	at, want string
+	err      error
+}
+
+func (e *withholdingError) Error() string {
+	msg := "yield.withholding" + e.at + ": want " + e.want
+	if e.err != nil {
+		msg += ": " + e.err.Error()
+	}
+	return msg
+}
+
+func (e *withholdingError) Unwrap() error { return e.err }
+
 // UnmarshalJSON reads a country's object: `accounts` into Accounts, every
 // other key a wrapper's rate.
 func (w *WithholdingRates) UnmarshalJSON(b []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(b, &raw); err != nil {
-		return err
+		return &withholdingError{want: "an object"}
 	}
 	w.Wrappers, w.Accounts = map[string]float64{}, nil
 	for _, k := range slices.Sorted(maps.Keys(raw)) {
 		if k == withholdingAccountsKey {
 			if err := json.Unmarshal(raw[k], &w.Accounts); err != nil {
-				return fmt.Errorf("yield.withholding: %q: want {source: {account: percent}}: %w", k, err)
+				return &withholdingError{at: fmt.Sprintf("[%q]", k), want: "{source: {account: percent}}", err: err}
 			}
 			continue
 		}
 		var r float64
 		if err := json.Unmarshal(raw[k], &r); err != nil {
-			return fmt.Errorf("yield.withholding: %q: want a percent: %w", k, err)
+			return &withholdingError{at: fmt.Sprintf("[%q]", k), want: "a percent", err: err}
 		}
 		w.Wrappers[k] = r
 	}
