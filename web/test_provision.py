@@ -2008,6 +2008,19 @@ _gn_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Gains")]
 check("the Gains dashboard carries six pickers",
       _gn_pickers == ["currency", "time_range", "source", "tax_wrapper", "asset_class", "missing_basis"],
       _gn_pickers)
+# The Asset class picker lists the classes the gains rows carry, so it
+# offers `unknown` where a snapshot holds a position nothing classes;
+# the asset class history the other dashboards list may never hold it.
+_gn_class = [q for q in p.dashboard_parameters(MID, "range", "Gains") if q["slug"] == "asset_class"][0]
+check("...the Asset class picker's values those of the gains rows, `unknown` among them",
+      _gn_class["values_source_config"]["card_id"] == MID["report_gains_classes"]
+      and _gn_class["values_source_config"]["value_field"][1] == "asset_class"
+      and MODELS["report_gains_classes"][0] == "SELECT DISTINCT asset_class FROM web_gains"
+      and "COALESCE(g.asset_class, 'unknown') AS asset_class" in _MIG_TEXT[170]
+      and all(q["values_source_config"]["card_id"] == MID["report_asset_classes_history"]
+              for d in ("Wealth Overview", "Exposure", "Yield")
+              for q in p.dashboard_parameters(MID, "range", d) if q["slug"] == "asset_class"),
+      _gn_class["values_source_config"])
 _gn_missing = [q for q in p.dashboard_parameters(MID, "range", "Gains") if q["slug"] == "missing_basis"]
 check("...Missing cost basis is required, defaulting to ignore, and offers both readings",
       _gn_missing and _gn_missing[0]["required"] and _gn_missing[0]["default"] == ["ignore"]

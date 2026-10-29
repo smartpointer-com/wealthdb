@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
@@ -98,6 +99,48 @@ func TestWebGainsLabelsTheAccount(t *testing.T) {
 	if unwrapped != "taxable_personal" {
 		t.Errorf("an account with no wrapper reads %q", unwrapped)
 	}
+}
+
+// web_gains reads a row with no asset class as `unknown` (0170): BBB, a
+// sale within a month no snapshot shows it at the start or the end of,
+// and ZZZ, sold with no snapshot at all, leave report_gains' class blank;
+// every other row, DDD's among them, keeps its class. So the gains of
+// every class picked add up to the whole, realized and unrealized, as
+// the Gains dashboard's Asset class picker sums them: a picked class is
+// never blank. Replaying 0170 changes nothing.
+func TestWebGainsReadsAMissingClassAsUnknown(t *testing.T) {
+	db, ctx := openGainsFixture(t)
+	if _, err := MaterializeGains(ctx, db, gainsTo, 1); err != nil {
+		t.Fatal(err)
+	}
+	blank := scanStrings(t, db, `SELECT DISTINCT k FROM report_gains WHERE asset_class IS NULL ORDER BY 1`)
+	if strings.Join(blank, ",") != "BBB,ZZZ" {
+		t.Fatalf("report_gains leaves %v unclassed, want BBB and ZZZ", blank)
+	}
+	check := func() {
+		t.Helper()
+		var nulls, unknown, dddOther int
+		var whole, picked, wholeU, pickedU float64
+		if err := db.QueryRowContext(ctx, `
+            SELECT count(*) FILTER (WHERE asset_class IS NULL),
+                   count(*) FILTER (WHERE asset_class = 'unknown' AND instrument_key IN ('BBB', 'ZZZ')),
+                   count(*) FILTER (WHERE instrument_key = 'DDD' AND asset_class IS DISTINCT FROM 'public_equity'),
+                   coalesce(sum(realized), 0), coalesce(sum(realized) FILTER (WHERE asset_class IS NOT NULL), 0),
+                   coalesce(sum(unrealized_change), 0),
+                   coalesce(sum(unrealized_change) FILTER (WHERE asset_class IS NOT NULL), 0)
+              FROM web_gains WHERE currency = 'USD' AND missing_basis = 'ignore'`).
+			Scan(&nulls, &unknown, &dddOther, &whole, &picked, &wholeU, &pickedU); err != nil {
+			t.Fatal(err)
+		}
+		if nulls != 0 || unknown == 0 || dddOther != 0 || whole == 0 ||
+			math.Abs(whole-picked) > 1e-9 || math.Abs(wholeU-pickedU) > 1e-9 {
+			t.Errorf("web_gains: %d blank, %d unknown, %d DDD rows not public_equity; realized %v picked %v; "+
+				"unrealized %v picked %v", nulls, unknown, dddOther, whole, picked, wholeU, pickedU)
+		}
+	}
+	check()
+	rerunMigrationDDL(t, db, ctx, "0170_gains_unknown_class.sql")
+	check()
 }
 
 func TestMigration0117DDLIsRerunnable(t *testing.T) {

@@ -3213,8 +3213,9 @@ The Metabase Gains dashboard reads `report_gains`, a derived table like
 'month')` for every reporting currency and reading, less the figures in a
 holding's own currency. It carries `sold_gain_x` and `held_change_x`, the
 split of a bucket's gain by what prices did ([GAINS.md §2](GAINS.md)). The
-`web_gains` view labels its accounts, joins in their tax wrapper and
-exposes `missing_basis` for the dashboard's picker.
+`web_gains` view labels its accounts, joins in their tax wrapper,
+exposes `missing_basis` for the dashboard's picker, and reads a sale no
+snapshot classes as the asset class `unknown` (migration 0170).
 
 ### 10.14 Exposure reports
 

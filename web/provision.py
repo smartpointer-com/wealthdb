@@ -258,8 +258,8 @@ def report_models():
     read, and renders epoch columns as TIMESTAMP (`epoch_ms` -> zone-free
     UTC, not `to_timestamp`, which is TIMESTAMPTZ and renders in the
     reading session's zone) for Metabase — except the taxonomy, spending,
-    income and cashflow models, which wrap the web_* serving views
-    (migrations 0032, 0043, 0049, 0072, 0084 and 0132) that do that
+    income, cashflow and gains-classes models, which wrap the web_*
+    serving views (migrations 0032, 0043, 0049, 0072, 0084, 0132 and 0170) that do that
     rendering, the cash fold-in and the '(uncategorized)' labelling
     themselves. The macros already emit DECIMAL
     money/quantity columns and one value column set per reporting currency
@@ -613,6 +613,14 @@ def report_models():
             "filter). Positive is cash arriving in the household's pool "
             "and negative is cash leaving it. Mirrors `wealthdb cashflow "
             "transactions`."),
+        # The classes the gains rows carry, `unknown` among them where
+        # nothing classes a position (gold migration 0170): the Gains
+        # dashboard's Asset class picker lists them, as the asset class
+        # history may never hold `unknown`. It backs that picker alone.
+        "report_gains_classes": (
+            "SELECT DISTINCT asset_class FROM web_gains",
+            "The asset classes the gains rows carry, `unknown` where nothing classes a "
+            "position. It backs the Gains dashboard's Asset class picker."),
         "report_spending_pct": (
             spending(pct=True),
             "Privacy variant of report_spending: values as % of the latest "
@@ -2148,8 +2156,8 @@ def gains_question_defs(db_id, privacy=False):
             "silver_source_id", "source", gain_split),
         "Gain by asset class": split_bars("Gain by asset class",
             "Each asset class's gain on positions sold and held over the "
-            "window, stacked. '(none)' holds lots no snapshot shows.",
-            "coalesce(asset_class, '(none)')", "asset_class", gain_split),
+            "window, stacked. 'unknown' holds sales no snapshot classes.",
+            "asset_class", "asset_class", gain_split),
         "Realized gains by tax wrapper": split_bars(
             "Realized gains by tax wrapper",
             "Realized gain over the window per tax wrapper, by holding "
@@ -2173,7 +2181,7 @@ def gains_question_defs(db_id, privacy=False):
             "Each position held at the window's end, its unrealized gain "
             "against its percent of cost basis, sized by value.",
             end + f"SELECT {position} AS position,\n"
-            "       coalesce(asset_class, '(none)') AS asset_class,\n"
+            "       asset_class,\n"
             "       unrealized_end / cost_basis AS unrealized_pct,\n"
             "       unrealized_end AS unrealized,\n"
             "       abs(value) AS value\n"
@@ -2569,8 +2577,7 @@ def base_dashboards():
         ]),
         "Gains": (
             "Realized and unrealized gains over the window, by month, source, "
-            "class and position, with what the figures miss. A position with "
-            "no asset class counts only while none is picked. " + note,
+            "class and position, with what the figures miss. " + note,
             "range", [
             # Coarse to fine, so scrolling down reveals detail: the
             # totals, the tax years, the months, where the gains came
@@ -3699,8 +3706,8 @@ def income_projected_cards(db_id, privacy):
                  "    FROM hold h\n"
                  "    FULL JOIN inc i USING (silver_source_id, account_external_id, position_key))")
     position_order = "\n  FROM r\n ORDER BY vehicle NULLS LAST, received + expected DESC, symbol, name"
-    position_desc = ("Each position's income received and expected, by vehicle, a line no holding pays under "
-                     "its account. Click a symbol or name to list its payments below.")
+    position_desc = ("Each position's income received and expected, by vehicle. A class row holds an "
+                     "account's other lines and has no payments; click a holding's symbol or name to list its.")
     # A position's income over the value it is earned on: none for a
     # position no longer held, or of no positive value.
     on_value = "NULLIF(GREATEST(value, 0), 0)"
@@ -3709,8 +3716,8 @@ def income_projected_cards(db_id, privacy):
                     "total": "(SELECT received + expected FROM mo)"}
         figure = {"received": "received", "expected": "expected", "total": "(received + expected)"}
         card("Received and expected by position", "table",
-             "Each position's income as a yearly yield on its value today. Click a symbol or name to "
-             "list its payments below.",
+             "Each position's income as a yearly yield on its value today. A class row has no yield or "
+             "payments; click a holding's symbol or name to list its.",
              rows(every, months, hold, inc, positions) + f"SELECT vehicle, symbol, {TWIN_POSITION_NAME} AS name,\n"
              "       100 * value / NULLIF(sum(GREATEST(value, 0)) OVER (), 0) AS share_pct,\n" +
              ",\n".join(f"       100 * {figure[c]} * 12 / NULLIF({per_year[c]}, 0) / {on_value} AS {c}_pct"
@@ -4013,9 +4020,8 @@ GAINS_ASSET_CLASS_PARAM_ID = "aa5df123"
 # The Gains filters. The tax wrapper is the one of its own: a realized
 # gain in a taxable account is a tax bill, in a retirement account it is
 # not. The asset class is each position's, as Exposure and Yield narrow
-# by it; a position that names none, a sale of an instrument nothing
-# classes, has no value to pick and counts only with none picked. No
-# account filter: the tables name the accounts already.
+# by it. A sale nothing classes reads `unknown` (gold migration 0170).
+# No account filter: the tables name the accounts already.
 GAINS_FILTERS = {**range_filters("period"),
                  "tax_wrapper": ("tax_wrapper", "string/="),
                  "asset_class": ("asset_class", "string/=")}
@@ -5239,13 +5245,13 @@ def dashboard_parameters(model_ids, mode, name=""):
         return card_picker(pid, "Tax wrapper", "tax_wrapper",
                            "report_accounts_latest", "tax_wrapper")
 
-    def asset_class_picker(pid):
+    def asset_class_picker(pid, model="report_asset_classes_history"):
         """An asset class picker. Its values come off the asset class
-        history, which reads cash as the class `cash`, the way every
-        holdings view does. That taxonomy is also the one every exposure
-        leaf's class is one of."""
-        return card_picker(pid, "Asset class", "asset_class",
-                           "report_asset_classes_history", "asset_class")
+        history by default, which reads cash as the class `cash`, the
+        way every holdings view does. That taxonomy is also the one every
+        exposure leaf's class is one of. Gains lists its own rows'
+        classes (report_gains_classes), `unknown` among them."""
+        return card_picker(pid, "Asset class", "asset_class", model, "asset_class")
 
     source = card_picker(SOURCE_PARAM_ID, "Source", "source",
                          "report_sources_latest", "silver_source_id")
@@ -5335,7 +5341,7 @@ def dashboard_parameters(model_ids, mode, name=""):
                                 DEFAULT_MISSING_BASIS, MISSING_BASIS_READINGS)
         return [currency_picker(GAINS_CURRENCY_PARAM_ID), time_range, source,
                 tax_wrapper_picker(GAINS_TAX_WRAPPER_PARAM_ID),
-                asset_class_picker(GAINS_ASSET_CLASS_PARAM_ID), missing]
+                asset_class_picker(GAINS_ASSET_CLASS_PARAM_ID, "report_gains_classes"), missing]
     if name in CASHFLOW_DASHBOARDS:
         # The Investing grain: net the section as one movement — the
         # question a reader opens with, "did the portfolio feed the
@@ -5544,10 +5550,11 @@ def missing_web_views(base, sid, db_id):
     return [t for t in want if t not in have]
 
 
-# The oldest gold schema the cards can read: the migration that keeps the
-# cash flow projection's other income by class and account, the Income
-# cards' run-rate (0169). A snapshot older than 0169 lacks it, one older
-# than 0168 the
+# The oldest gold schema the cards can read: the migration that reads a
+# gains row's missing asset class as `unknown` (0170). A snapshot older
+# than 0170 leaves it blank, one older than 0169 lacks the cash flow
+# projection's other income by class and account, the Income cards'
+# run-rate, one older than 0168 the
 # accounts' withholding rates the withholding probe counts, one older
 # than 0166 the calendar
 # the Allocation cards read their day through, one older than 0165 the
@@ -5559,7 +5566,7 @@ def missing_web_views(base, sid, db_id):
 # by-name probe finds. One older than 0133 carries every view by name but
 # reads a missing tax wrapper blank, and one older than 0132 lacks the
 # serving tables' columns: only the version tells those apart.
-MIN_GOLD_SCHEMA = 169
+MIN_GOLD_SCHEMA = 170
 
 # main()'s exit status for a snapshot older than MIN_GOLD_SCHEMA; every
 # other failure exits 1. web/web tells the two apart, because only

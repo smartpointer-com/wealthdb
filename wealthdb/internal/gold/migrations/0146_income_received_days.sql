@@ -16,8 +16,9 @@
 --     `tax` row on those accounts. It is what a source booked, not the
 --     withholding table's model.
 --   * web_income_days: each day to today from the earliest of the first
---     day income was received (report_yield_received, which holds every
---     income line, gold.MaterializeYield), the first day tax was
+--     day income was received (report_yield_received, which holds the
+--     income lines of the six types the projection counts,
+--     gold.MaterializeYield), the first day tax was
 --     withheld, and the first day of last year. Today is the day of the
 --     yield report's latest instant. A card keeps the received rows and
 --     the withheld tax of the days the picker selects, and counts the

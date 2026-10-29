@@ -105,18 +105,23 @@ shims over the gold **multi-currency** report macros (migration 0024). The
 macros build on the same line bases the CLI's single-currency macros use and
 emit one value-column set per currency (USD/CHF/EUR/GBP). A model reads a
 macro's rows from the serving table `web refresh` fills with them (§8), so
-the models track command output by construction and bake in no data. In a
-`wealthdb (pre-defined)` collection: the `_latest` snapshot
-reports (+ all-time `report_transactions`), the daily `_history` reports
-(migration 0022) for time-series charts, the two taxonomy models over the
-`web_*` breakdown views (migration 0032), cast-only shims over the materialized
-`report_returns` table (§8), the spending models over `web_spending`
-(migration 0043), the income model over `web_income` (migration 0072),
-the `report_cashflow` model over `web_cashflow` (migration 0084) — which
-backs the Cash Flow dashboard's Section picker rather than any card —
-and two `_pct` privacy variants, `report_sources_latest_pct` and
-`report_spending_pct`. They back the privacy twins' MBQL cards and
-their drill-through.
+the models track command output by construction and bake in no data.
+They sit in a `wealthdb (pre-defined)` collection:
+
+- the `_latest` snapshot reports, and the all-time `report_transactions`;
+- the daily `_history` reports (migration 0022), for time-series charts;
+- the two taxonomy models over the `web_*` breakdown views (migration
+  0032);
+- cast-only shims over the materialized `report_returns` table (§8);
+- the spending models over `web_spending` (migration 0043);
+- the income model over `web_income` (migration 0072);
+- the `report_cashflow` model over `web_cashflow` (migration 0084). It
+  backs the Cash Flow dashboard's Section picker, not a card;
+- the `report_gains_classes` model of the classes `web_gains` carries
+  (migration 0170). It backs the Gains Asset class picker alone;
+- two `_pct` privacy variants, `report_sources_latest_pct` and
+  `report_spending_pct`. They back the privacy twins' MBQL cards and
+  their drill-through.
 
 On top of the models, provisioning creates pre-defined questions and
 ten dashboards. Their pickers:
@@ -150,9 +155,9 @@ ten dashboards. Their pickers:
   wrapper* picker, an *Asset class* picker, and a required *Missing
   cost basis* picker (ignore or zero; the default is
   `lots.missing_basis` from wealthdb.cfg, else ignore). Every tile takes
-  all six. The asset class is each position's. A position that names no
-  class has no value to pick, so it counts only while no class is
-  picked.
+  all six. The asset class is each position's, `unknown` where nothing
+  classes it (migration 0170). Its picker lists the classes the gains
+  rows carry, through the `report_gains_classes` model.
 - **Spending**: the time range and source, a required currency, an
   account, and a category multi-select.
 - **Income**: a required currency, the time range, a required
@@ -545,7 +550,8 @@ The calendar lists the position the *Position* picker names, by
 symbol, name or position key, and every position while it is empty. A
 click on a position's symbol or name in the positions table sets that
 picker (Metabase's crossfilter click behaviour) to the value the cell
-shows.
+shows. A class row of the positions table holds an account's other
+lines; a run-rate is no payment, so a click on it lists none.
 
 The twin shows a figure as a share of the income it covers, or of its
 biggest month; what was received is a share of what was received. The
@@ -694,8 +700,9 @@ A stale snapshot is caught before any of this is written. Provisioning
 probes the driver for the snapshot's schema version and for the serving
 views **by name**. It aborts with a "run `wealthdb web refresh`" message
 rather than converging the cards to a degraded shape. The version check
-catches a snapshot older than 0169, whose `web_cashflow_plan` lacks
-the other income's class and account the Income cards read. One older than
+catches a snapshot older than 0170, whose gains view leaves a missing
+asset class blank. One older than 0169 lacks the other income's class
+and account in `web_cashflow_plan`, which the Income cards read. One older than
 0168 lacks the accounts' withholding rates the withholding probe
 counts. One older than 0166
 lacks the calendar the Allocation cards read their day through. One
@@ -876,7 +883,8 @@ call's output, less the figures in a holding's own currency. So the
 rows summed by month equal `wealthdb gains summary --period monthly -x
 CCY --missing-basis M`, and a Go test holds that.
 The `web_gains` view labels the accounts and joins in their tax
-wrapper.
+wrapper. A sale no snapshot classes reads the asset class `unknown`
+(migration 0170).
 
 The Gains dashboard reads it month by month. A figure over the window
 sums the months in it. A figure at the window's end reads the last
