@@ -19,8 +19,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       fontconfig fonts-dejavu-core && \
     rm -rf /var/lib/apt/lists/*
 
+# --checksum verifies the download against the pin; a version bump moves
+# MB_SHA256 with it.
 ARG MB_VERSION=v0.59.15
-ADD https://downloads.metabase.com/${MB_VERSION}/metabase.jar /app/metabase.jar
+ARG MB_SHA256=94803dc0f7e751483a0de35ebb767d74b4a278b0724fad54223d74e080dbbcc8
+ADD --checksum=sha256:${MB_SHA256} https://downloads.metabase.com/${MB_VERSION}/metabase.jar /app/metabase.jar
 
 ARG DRIVER_URL=https://github.com/motherduckdb/metabase_duckdb_driver/releases/download/1.5.3.0/duckdb.metabase-driver.jar
 ARG DRIVER_SHA256=4a94e2e236ed0fa6215e8db98798ab4246a4a7b743ac472dc8f946542af6538e

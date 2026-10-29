@@ -821,8 +821,8 @@ _SERVED = sorted(set(re.findall(r"\bserving_\w+", "\n".join(
 
 
 def _defined_in(obj):
-    """The migrations that create or redefine view or table `obj`."""
-    pat = rf"CREATE (?:OR REPLACE )?(?:VIEW|TABLE) (?:IF NOT EXISTS )?{obj}\b"
+    """The migrations that create or redefine view, table or macro `obj`."""
+    pat = rf"CREATE (?:OR REPLACE )?(?:VIEW|TABLE|MACRO) (?:IF NOT EXISTS )?{obj}\b"
     return [n for n, text in _MIG_TEXT.items() if re.search(pat, text)]
 
 
@@ -1739,8 +1739,6 @@ check("each column carries its own currency predicate, so no row filter is neede
 check("the ranking is by the default currency's column (USD, aggregation 0)",
       MERCH.get("order-by") == [["desc", ["aggregation", 0]]]
       and AGGS[0][2]["display-name"] == "USD")
-check("it carries no standalone-currency caveat",
-      "filter currency to a single" not in CARDS["Top 50 merchants"][1])
 check("the Currency picker is not wired to it — a row filter would empty "
       "every column but the one it selects",
       "Top 50 merchants" in p.SPEND_ALL_CURRENCY_CARDS)
@@ -2879,12 +2877,10 @@ for _n in _in_all:
     check(f"'{_n}' takes the Time range where it shows a received figure, the Horizon and the "
           "assumptions where it shows an expected one",
           _tags == _want, sorted(_tags))
-# A card says what it shows, not what it runs over opened on its own,
-# and a twin ends by saying its figures are shares.
-check("no Income card's description names its standalone defaults; a twin's ends in the privacy note",
-      not [n for n in _in_all if "standalone" in CARDS[n][1]]
-      and all(CARDS[n][1].endswith(p.PRIVACY_DESC) for n in _in_all if n.endswith(p.PRIVACY_SUFFIX)),
-      [n for n in _in_all if "standalone" in CARDS[n][1]])
+# A twin ends by saying its figures are shares.
+check("an Income twin's description ends in the privacy note",
+      all(CARDS[n][1].endswith(p.PRIVACY_DESC) for n in _in_all if n.endswith(p.PRIVACY_SUFFIX)),
+      [n for n in _in_all if n.endswith(p.PRIVACY_SUFFIX) and not CARDS[n][1].endswith(p.PRIVACY_DESC)])
 check("...where no shift is the Shift variable's default",
       p.PROJECTION_TAGS["shift"]["default"] == "0", p.PROJECTION_TAGS["shift"])
 check("only the calendar takes the Position picker, and it is optional",
@@ -3031,10 +3027,12 @@ check("...and a label of any other type mapping to none",
       "INCOME_SALARY" not in _py_map and "INCOME_OTHER" not in _py_map)
 
 # The classes the other lines band by are the cash flow statement's
-# operating-in classes (cashflow_txn_nodes), as gold keeps the plan's
-# other income by them: a class per detailed type its CASE names, the
-# projected types left to the holdings' cards.
-_in_case = re.search(r"WHEN 'in' THEN\s*CASE(.*?)\bEND\b", _MIG_TEXT[162], re.S).group(1)
+# operating-in classes (cashflow_txn_nodes, as its newest migration
+# defines it), as gold keeps the plan's other income by them: a class per
+# detailed type its CASE names, the projected types left to the
+# holdings' cards.
+_in_case = re.search(r"WHEN 'in' THEN\s*CASE(.*?)\bEND\b",
+                     _MIG_TEXT[max(_defined_in("cashflow_txn_nodes"))], re.S).group(1)
 _sql_classes = {}
 for _ds, _c in re.findall(r"WHEN p\.verdict IN \(([^)]*)\)\s*(?:--[^\n]*\n\s*)*THEN '(\w+)'", _in_case):
     for _d in re.findall(r"'(\w+)'", _ds):
@@ -3043,7 +3041,7 @@ _py_classes = {d: c for c, ds in p.INCOME_LINE_CLASSES.items() for d in ds}
 check("the other lines' classes are the statement's operating-in classes, the projected types aside",
       _py_classes == {d: c for d, c in _sql_classes.items() if d not in p.PROJECTED_DETAILED}
       and set(p.PROJECTED_DETAILED) <= set(_sql_classes)
-      and "ELSE 'other_receipts'" in _in_case and "THEN '(uncategorized)'" in _in_case
+      and f"ELSE '{p.OTHER_RECEIPTS}'" in _in_case and f"THEN '{p.UNCATEGORIZED_CLASS}'" in _in_case
       and set(p.INCOME_CLASS_BANDS) == {*p.INCOME_LINE_CLASSES, p.OTHER_RECEIPTS, p.UNCATEGORIZED_CLASS},
       (_py_classes, _sql_classes))
 

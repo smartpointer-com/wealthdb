@@ -5,5 +5,3 @@ metabase/
 snapshot/
 admin-password.txt
 *.tmp.*
-__pycache__/
-*.pyc

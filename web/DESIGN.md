@@ -136,19 +136,19 @@ ten dashboards. Their pickers:
   defaults to today. Each tile reads the last day of the holdings
   history on or before the day picked. The history ends on the day of
   the last refresh, so a snapshot not refreshed today still shows its
-  latest holdings. A day before the history reads nothing. The day
-  reaches the tiles through `web_history_calendar` (migration 0166). It
-  maps every day from the history's first to tomorrow to the last
-  history day on or before it. So the default stays the same, and a
-  refresh does not resend Allocation or its twin. The Top 100 positions tile
-  carries a *Vehicle* picker of its own. Each stock row shows its
-  share's market-cap size, as Exposure sizes it. A fund row shows none.
-  The Top 100 issuers tile below it takes the currency and the as-of
-  day alone: it covers the whole book. It reads the latest of the
-  instants its view holds on or before that history day: today and the
-  twelve month ends before.
-  Its twin drops the value and hides an issuer named by a holding's own
-  key (`holding:<source>:<id>`).
+  latest holdings. A day before the history or later than tomorrow
+  reads nothing. The day reaches the tiles through
+  `web_history_calendar` (migration 0166). It maps every day from the
+  history's first to tomorrow to the last history day on or before it.
+  So the default stays the same, and a refresh does not resend
+  Allocation or its twin. The Top 100 positions tile carries a
+  *Vehicle* picker of its own. Each stock row shows its share's
+  market-cap size, as Exposure sizes it. A fund row shows none. The
+  Top 100 issuers tile below it takes the currency and the as-of day
+  alone: it covers the whole book. It reads the latest of the instants
+  its view holds on or before that history day: today and the twelve
+  month ends before. Its twin drops the value and hides an issuer named
+  by a holding's own key (`holding:<source>:<id>`).
 - **Returns**: a required currency (returns are stored one row set per
   currency), a required start year (0 is since inception) and a source.
 - **Gains**: the time range and source, a required currency, a *Tax
@@ -194,7 +194,7 @@ All of them are definitions only (MBQL or SQL), with no data baked in.
 
 A tile that a picker of its dashboard does not reach says so. Its
 description ends with one sentence that names those pickers, for
-example "On this dashboard the Section picker does not reach it."
+example "The Section picker does not reach it."
 Provisioning writes it from the mappings the tile is sent with, so the
 text follows the binding. Allocation's *Vehicle* picker sits on its
 one tile, not in the filter bar, so no note names it. Where a card
@@ -203,11 +203,11 @@ declines a picker by design, its own description says why.
 A tile that sums money in the chosen currency is native SQL over a gold
 `web_*` serving view. The views carry each reporting currency as a
 column (gold migration 0114), and a dashboard picker selects rows but
-never a column. So each
-such tile reads a required `{{currency}}` variable, which picks the
-column with a CASE. The Gains tiles are the exception: `web_gains`
-(§8) carries a row set per currency and per reading of a missing cost
-basis, so there `{{currency}}` and `{{missing_basis}}` filter rows.
+never a column. So each such tile reads a required `{{currency}}`
+variable, which picks the column with a CASE. The Gains tiles are the
+exception: `web_gains` (§8) carries a row set per currency and per
+reading of a missing cost basis, so there `{{currency}}` and
+`{{missing_basis}}` filter rows.
 `web_exposure` (§8) carries a row set per currency too, so on the
 Exposure tiles `{{currency}}` filters rows as well.
 Every Currency picker, and every card opened on its own, defaults to
@@ -644,18 +644,18 @@ Type picker.
 Each borrowed figure is the card its own dashboard shows. Four are
 built for the overview alone, from their dashboard's data: the asset
 classes over time (Allocation), the two returns year to date (Returns)
-and the projected net cash flow (Cash Flow). The overview's pickers land on
-a figure by slug: a picker reaches the card where
-the card has a template tag of that name, or, for an MBQL card, where
-its home dashboard maps a picker of that slug. Any other tag of the
-card runs at its default. So the flows take the currency, the time
-range and the source, the income the tax wrapper too, the
-gains the tax wrapper and the asset class too, and the returns and the
-projection the currency alone. As on every dashboard, a tile's
-description ends with the pickers that do not reach it. The returns
-read the summary since 1 January of the latest year they cover, as no
-stored window follows a time range. That is this year once a refresh
-has read it. The projected net is the net of the cash flow projection at its defaults.
+and the projected net cash flow (Cash Flow). The overview's pickers
+land on a figure by slug: a picker reaches the card where the card has
+a template tag of that name, or, for an MBQL card, where its home
+dashboard maps a picker of that slug. Any other tag of the card runs
+at its default. So the flows take the currency, the time range and the
+source, the income the tax wrapper too, the gains the tax wrapper and
+the asset class too, and the returns and the projection the currency
+alone. As on every dashboard, a tile's description ends with the
+pickers that do not reach it. The returns read the summary since
+1 January of the latest year they cover, as no stored window follows a
+time range. That is this year once a refresh has read it. The
+projected net is the net of the cash flow projection at its defaults.
 
 A click on one of these figures opens its dashboard, and passes the
 overview's pickers that dashboard also carries. A year-to-date return
@@ -696,24 +696,31 @@ takes, and every column that identifies an account is a label (a card's
 display name falls back to its masked last four digits), so the filter
 is dropped rather than rebound onto a column that would mean something
 else.
+
 A stale snapshot is caught before any of this is written. Provisioning
 probes the driver for the snapshot's schema version and for the serving
 views **by name**. It aborts with a "run `wealthdb web refresh`" message
 rather than converging the cards to a degraded shape. The version check
-catches a snapshot older than 0170, whose gains view leaves a missing
-asset class blank. One older than 0169 lacks the other income's class
-and account in `web_cashflow_plan`, which the Income cards read. One older than
-0168 lacks the accounts' withholding rates the withholding probe
-counts. One older than 0166
-lacks the calendar the Allocation cards read their day through. One
-older than 0165 lacks the securities the Exposure dashboard ranks. One
-older than 0154 lacks the stock positions' sizes. One older than 0149
-lacks the cash flow projection's look-back parts. One older than 0146
-lacks the days the Income cards' received figures cover and the tax
-withheld on them. One older than 0138 lacks the yield views and the
-exposure of the debt too.
-The by-name probe finds each of these. An older one also reads wrong in ways no
-probe by name sees:
+holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
+these migrations falls short of the cards:
+
+- 0170: its gains view leaves a missing asset class blank;
+- 0169: it lacks the other income's class and account in
+  `web_cashflow_plan`, which the Income cards read;
+- 0168: it lacks the accounts' withholding rates the withholding probe
+  counts;
+- 0166: it lacks the calendar the Allocation cards read their day
+  through;
+- 0165: it lacks the securities the Exposure dashboard ranks;
+- 0154: it lacks the stock positions' sizes the Top 100 positions
+  cards read;
+- 0149: it lacks the cash flow projection's look-back parts;
+- 0146: it lacks the days the Income cards' received figures cover and
+  the tax withheld on them;
+- 0138: it lacks the yield views and the exposure of the debt.
+
+The by-name probe finds each of these. An older one also reads wrong in
+ways no probe by name sees:
 
 - before 0132, it lacks the serving tables the models read and the tax
   wrapper and asset class columns the tiles filter on;

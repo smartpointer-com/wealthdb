@@ -186,6 +186,15 @@ out="$(BIND=v6 mcp_url)"
 check     "IPv6-only URL"          "http://[::1]:3300/mcp"                        "$out"
 check_not "no IPv4 URL when v6"    "127.0.0.1"                                    "$out"
 
+echo "== an env file that does not parse stops mcp, and its line is not shown =="
+# bash -n quotes the offending line, and in the env file that line may
+# hold the token.
+printf 'WEALTHDB_MCP_TOKEN=synthetic-marker-7)\n' > "$tmp/bad-mcp.env"
+out="$( (WEALTHDB_MCP_ENV_FILE="$tmp/bad-mcp.env" mcp_main status) 2>&1)"; rc=$?
+check     "a bad env file exits 1"           "1"                          "$rc"
+check     "the message names the file"       "$tmp/bad-mcp.env has a bash syntax error" "$out"
+check_not "the message hides the bad line"   "synthetic-marker-7"         "$out"
+
 echo "== _resolve_knobs (image tag) =="
 WEALTHDB_IMAGE_TAG=feature _resolve_knobs
 check     "image follows the tag"  "wealthdb:feature"                             "$IMAGE"

@@ -24,8 +24,9 @@ flags.
    always sits between `wealthdb` and the command.
 2. **One number for a whole window: add `--period total`.** The default is
    one row per month (per quarter for `returns`). Never add rows up yourself.
-   Income's forward views are the exception: they refuse it, and
-   `projection`'s `total` row already sums the window.
+   Income's forward views and `cashflow projection` are the exception:
+   they refuse it. Each projection's `total` row already sums the window.
+   `cashflow sankey` takes no `--period` at all.
 3. **There are no row-filter flags** (`--source`, `--account`, `--category`,
    `--symbol` do not exist). Run the view, then `| grep -i text` the table
    (one row per line) for a name, wrapper, category or source.
@@ -182,7 +183,7 @@ Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a range.
 | What is **really owned** once funds are looked through (as of a day); where holdings legally sit | `exposure` | `classes`, `sectors`, `sizes`, `countries`, `currencies`, `credit`, `maturities`, `coupons`, `cycles`, `situs`, `securities`, `issuers`, `funds`, `coverage` |
 | What the holdings **yield**; interest rates, duration, rate risk; cash against its benchmark (as of a day) | `yield` | `global`, `sources`, `portfolios`, `accounts`, `positions`, `securities`, `funds`, `cash`, `curve`, `coverage` |
 | Trades, dividends, fees, cash in and out | `transactions` | — |
-| How something **performed** (return %) | `returns` | `global`, `sources`, `portfolios`, `accounts` |
+| How something **performed** (return %) | `returns` | `global`, `sources`, `portfolios`, `accounts`; check: `stated` (each period a statement states, beside the engine's figures; takes no `-x` and no return flags) |
 | **Gained or lost**; cost basis; tax lots | `gains` | `summary`, `sources`, `portfolios`, `accounts`, `positions`, `realized`, `lots`, `coverage`, `check` |
 | **Spent**, on what | `spending` | `summary`, `categories`, `transactions` |
 | **Received**, from whom; what the holdings are **expected to pay** | `income` | `summary`, `types`, `transactions`; forward: `projection`, `calendar`, `sources`, `portfolios`, `accounts`, `positions` |
@@ -222,7 +223,8 @@ from next month on. Its default is the projection's horizon. It refuses
 
 `-f table|json|csv` (`ndjson` on `exposure coverage` and `yield coverage`)
 · `-x CCY` output currency · `-C COLS` columns (names, `all`, or
-`+add,-drop`) · `-p` redact · `--period` on `returns`, `spending`,
+`+add,-drop`; not on `holdings global`, whose one row is fixed) · `-p`
+redact · `--period` on `returns`, `spending`,
 `income`, `cashflow`, `gains`; on `exposure` a series only
 (`monthly|quarterly|annual`, not on `securities`, `issuers` or `funds`),
 and on `yield` for `global`, `sources`, `portfolios`, `accounts` and
@@ -250,7 +252,9 @@ Account attributes, for `grep` or `-C`: `silver_source` (the institution:
 
 `category`, `type`, `income_type`, `class` and `group` are display labels.
 The taxonomy values (`cash_withdrawal`) are in `category_id`
-(`spend_detailed` on lines), `type_id` (`income_type_id` on lines) and
+(`spend_detailed` on lines), `type_id` (`income_type_id` on
+`income transactions`, `income_detailed` on `transactions` and
+`cashflow transactions`) and
 `class_id` / `group_id` (dotted keys like `financing.mortgage`). Filter on
 the value, quote the label.
 

@@ -19,6 +19,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 # shellcheck disable=SC1091
 . "$ROOT/shared/wrappers/image-tag.sh"
+# shellcheck disable=SC1091
+. "$ROOT/shared/wrappers/envfile-lib.sh"
 wealthdb_export_image_tag "$ROOT" || exit 2
 WEALTHDB="${WEALTHDB_BIN:-$ROOT/wealthdb/wealthdb}"
 
@@ -560,13 +562,12 @@ web_main() {
     # Optional secrets env for admin creds etc. (repo convention:
     # secrets live in ~/.secrets, never in the config file). It is a bash
     # script: syntax-checked, then sourced with every assignment exported.
+    # A file that does not parse stops the script, and bash's message is
+    # not shown, since it quotes the line.
     local envf="${WEALTHDB_WEB_ENV_FILE:-$HOME/.secrets/wealthdb-web.env}"
-    if [ -f "$envf" ]; then
-        bash -n "$envf" || { echo "web: $envf has a syntax error" >&2; return 1; }
-        set -a
-        # shellcheck source=/dev/null
-        . "$envf"
-        set +a
+    if [ -f "$envf" ] && ! wealthdb_source_bash "$envf"; then
+        echo "web: $envf has a bash syntax error" >&2
+        return 1
     fi
     _resolve_knobs
     local cmd="${1:-help}"

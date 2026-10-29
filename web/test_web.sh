@@ -573,6 +573,15 @@ out="$(
 check_re "the config read is timed" "web: timing: config [0-9]+\.[0-9]{3}s" "$out"
 check_re "...and the stop"          "web: timing: stop [0-9]+\.[0-9]{3}s"   "$out"
 
+echo "== an env file that does not parse stops web, and its line is not shown =="
+# bash -n quotes the offending line, and in the env file that line may
+# hold the admin password.
+printf 'WEALTHDB_WEB_ADMIN_PASSWORD=Synthetic-marker-7)\n' > "$tmp/bad-web.env"
+out="$( (WEALTHDB_WEB_ENV_FILE="$tmp/bad-web.env" web_main status) 2>&1)"; rc=$?
+check_eq  "a bad env file exits 1"           "1"                          "$rc"
+check     "the message names the file"       "$tmp/bad-web.env has a bash syntax error" "$out"
+check_not "the message hides the bad line"   "Synthetic-marker-7"         "$out"
+
 echo "== web help smoke =="
 hout="$(web_help)"
 check "help mentions snapshot" "read-only SNAPSHOT" "$hout"
