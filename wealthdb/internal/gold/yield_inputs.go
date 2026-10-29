@@ -1791,8 +1791,7 @@ func receiptPositions(ctx context.Context, db querier) (map[[3]string]bool, erro
 	out := map[[3]string]bool{}
 	return out, scanAll(ctx, db, `
 SELECT f.src, f.acct, f.position_key
-  FROM (`+situsHoldingsSQL+`) f(src, acct, position_key, iid, coin, receipt, share, isin, domicile, banked, custody,
-       private)
+  FROM (`+situsHoldingsSQL+`) f
  WHERE f.receipt`, func(rows *sql.Rows) error {
 		var k [3]string
 		if err := rows.Scan(&k[0], &k[1], &k[2]); err != nil {

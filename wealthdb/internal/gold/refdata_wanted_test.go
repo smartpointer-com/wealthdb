@@ -861,7 +861,23 @@ func TestRefdataWantedBeforeTheCalendar(t *testing.T) {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
+	// The gold stands at migration 146. The situs step reads columns a
+	// later migration adds, so the whole pass does not run here; the
+	// wanted list reads only what the steps up to the receipts write.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback() //nolint:errcheck — no-op after Commit
+	steps := exposureSteps(ctx, tx)
+	upTo := slices.IndexFunc(steps, func(s step) bool { return s.name == "receipts" })
+	if upTo < 0 {
+		t.Fatal("the exposure pass has no receipts step")
+	}
+	if err := runSteps("exposure pass", steps[:upTo+1]); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	w, err := RefdataWanted(ctx, db, time.Unix(day+86400, 0))

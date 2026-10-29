@@ -26,17 +26,7 @@ func RebuildExposure(ctx context.Context, db *sql.DB) (ExposureCounts, error) {
 		return n, fmt.Errorf("exposure pass: begin: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck — no-op after Commit
-	if err := runSteps("exposure pass", []step{
-		{"vocabularies", func() error { return syncVocabularies(ctx, tx) }},
-		{"line labels", func() error { return execAll(ctx, tx, lineLabelsSQL) }},
-		{"instrument keys", func() error { return writeInstrumentKeys(ctx, tx) }},
-		{"aliases", func() error { return writeAliases(ctx, tx) }},
-		{"securities", func() error { return execAll(ctx, tx, securitiesSQL) }},
-		{"receipts", func() error { return writeReceipts(ctx, tx) }},
-		{"bonds", func() error { return writeBondReadings(ctx, tx) }},
-		{"sizes", func() error { return writeSizes(ctx, tx) }},
-		{"situs", func() error { return writeSitus(ctx, tx) }},
-	}); err != nil {
+	if err := runSteps("exposure pass", exposureSteps(ctx, tx)); err != nil {
 		return n, err
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT
@@ -398,3 +388,18 @@ SELECT a.k,
   FROM allkeys a LEFT JOIN best b ON b.k = a.k
  WHERE a.k IS NOT NULL
  GROUP BY a.k`
+
+// exposureSteps are the exposure pass's steps, in order.
+func exposureSteps(ctx context.Context, tx *sql.Tx) []step {
+	return []step{
+		{"vocabularies", func() error { return syncVocabularies(ctx, tx) }},
+		{"line labels", func() error { return execAll(ctx, tx, lineLabelsSQL) }},
+		{"instrument keys", func() error { return writeInstrumentKeys(ctx, tx) }},
+		{"aliases", func() error { return writeAliases(ctx, tx) }},
+		{"securities", func() error { return execAll(ctx, tx, securitiesSQL) }},
+		{"receipts", func() error { return writeReceipts(ctx, tx) }},
+		{"bonds", func() error { return writeBondReadings(ctx, tx) }},
+		{"sizes", func() error { return writeSizes(ctx, tx) }},
+		{"situs", func() error { return writeSitus(ctx, tx) }},
+	}
+}

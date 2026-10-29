@@ -929,8 +929,11 @@ For each holding, the first of these that applies:
    market fund is a fund and reads by rules 3 and 4.
 6. `country`: a private holding (§5) takes the one country its
    declaration in force on the day states at 100 (§9). This holds only
-   where no composition of its own describes it. A split or a region
-   states nothing here.
+   on the days no composition of its own is in force (§4). Take a
+   feeder fund whose reports a source parses. It reads its declared
+   country before its first report. It also reads it in a quarter whose
+   report gives no composition, and once its last composition is out of
+   reach. A split or a region states nothing here.
 7. `unknown`.
 
 The declared situs has a precedence of its own. On a day, it is the one
@@ -951,7 +954,8 @@ prefix is no country. Under a country's prefix it reads as an ISIN.
 ### No look-through
 
 The situs never looks through a fund. A fund's whole value sits at its
-own situs; its lines, a proxy and a composition's date play no part.
+own situs; its lines and a proxy play no part. A composition's dates
+matter to rule 6 alone.
 Every leaf of the look-through carries the situs of the holding it
 comes from, so the view sums to `holdings global` like every other
 view.

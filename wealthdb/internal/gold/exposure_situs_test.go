@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"math"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -84,9 +85,103 @@ func TestSitusReadings(t *testing.T) {
 			{asOf: day(5), economic: true, country: "DE"}, {asOf: day(5), situs: "KY"}}, "-:/unknown 5:KY/declared"},
 		{"an economic record that changes nothing starts no reading", situsFacts{isin: "IE"}, []situsRecord{
 			{country: "CH", economic: true}, {asOf: day(5), economic: true}}, "-:IE/isin"},
+		{"a composition in force sets the country rule aside", situsFacts{private: true, described: []inForce{{3, 7}}},
+			[]situsRecord{{country: "CH", economic: true}, {asOf: day(5), economic: true, country: "DE"}},
+			"-:CH/country 3:/unknown 7:DE/country"},
+		{"two spans that meet start no reading", situsFacts{private: true, described: []inForce{{3, 7}, {7, 9}}},
+			[]situsRecord{{country: "CH", economic: true}}, "-:CH/country 3:/unknown 9:CH/country"},
+		{"a span says nothing of a holding not private", situsFacts{described: []inForce{{3, 7}}},
+			[]situsRecord{{country: "CH", economic: true}}, "-:/unknown"},
 	} {
 		if got := text(situsReadings(c.f, c.records)); got != c.want {
 			t.Errorf("%s: %s, want %s", c.name, got, c.want)
+		}
+	}
+}
+
+// A composition is in force as exposure_funds_at picks it: a provider's
+// from max_gap_days before its day to max_gap_days after, a parsed one
+// from its day to its validUntil, within the same bound.
+func TestCompositionSpans(t *testing.T) {
+	t.Parallel()
+	const d = 86400
+	for _, c := range []struct {
+		name  string
+		comps []situsComp
+		want  []inForce
+	}{
+		{"a provider's, either side", []situsComp{{asOf: 100*d + 7}}, []inForce{{100*d + 7, 111 * d}, {90 * d, 100*d + 7}}},
+		{"a parsed one, from its day to the next document", []situsComp{{asOf: 100 * d, validUntil: 104 * d, parsed: true}},
+			[]inForce{{100 * d, 104 * d}}},
+		{"a parsed one the bound ends first", []situsComp{{asOf: 100 * d, validUntil: 200 * d, parsed: true}},
+			[]inForce{{100 * d, 111 * d}}},
+		{"a parsed one with no next document", []situsComp{{asOf: 100 * d, parsed: true}}, []inForce{{100 * d, 111 * d}}},
+	} {
+		if got := compositionSpans(c.comps, 10); !slices.Equal(got, c.want) {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// The country rule reads a private fund's declared country only on the
+// days no composition of its own is in force: before a parsed
+// composition's day, and from the fund's next document on, the
+// declaration places it; while the composition is in force, nothing
+// does. Every name and identifier is invented.
+func TestExposureSitusDatesThePrivateFact(t *testing.T) {
+	t.Parallel()
+	db, ctx := openExposureFixture(t)
+	ex := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	aug, oct := exDay(8, 1), exDay(10, 1)
+	// QPSF holds a parsed composition from 1 August to 1 October; QPSP a
+	// provider's of 1 August, which reaches max_gap_days (400) either side.
+	isin := map[string]string{"QPSF": "XX00000000S1", "QPSP": "XX00000000S2"}
+	for _, f := range []struct{ id, name string }{{"QPSF", "Example Situs Feeder"}, {"QPSP", "Example Situs Fund"}} {
+		ex(`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, name, currency,
+		    first_seen_at, last_seen_at) VALUES ('test-src', ?, 'private_equity', 'fund', ?, ?, 'USD', 0, 0)`,
+			f.id, isin[f.id], f.name)
+		ex(`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		    asset_class, vehicle, currency, quantity, market_value) VALUES ('test-src', ?, 'A1', ?, ?, 'private_equity',
+		    'fund', 'USD', 1, 100)`, exSnap, f.id, f.id)
+	}
+	ex(`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency, origin,
+	    valid_until) VALUES ('test-src', 'isin:XX00000000S1', ?, 'holdings', 'ubs-report', 0, 'USD', 'parsed', ?),
+	    ('test-src', 'isin:XX00000000S2', ?, 'holdings', 'testprov', 0, 'USD', 'provider', NULL)`, aug, oct, aug)
+	rows := exposureFixtureRows()
+	rows.Declarations = append(rows.Declarations,
+		declaration(3, "QPSF", nil, split{"country", []string{"CH"}, []float64{100}}),
+		declaration(4, "QPSP", nil, split{"country", []string{"CH"}, []float64{100}}))
+	stampAndRebuild(t, db, ctx, rows)
+	const gap = 400 * 86400
+	for _, c := range []struct {
+		key  string
+		at   int64
+		want string
+	}{
+		{"QPSF", exAsOf, "CH country"}, {"QPSF", aug - 1, "CH country"}, {"QPSF", aug, "- unknown"},
+		{"QPSF", exDay(9, 15), "- unknown"}, {"QPSF", oct - 1, "- unknown"}, {"QPSF", oct, "CH country"},
+		{"QPSF", exDay(12, 31), "CH country"},
+		{"QPSP", aug - gap - 1, "CH country"}, {"QPSP", aug - gap, "- unknown"}, {"QPSP", aug - 1, "- unknown"},
+		{"QPSP", aug, "- unknown"}, {"QPSP", aug + gap + 86399, "- unknown"}, {"QPSP", aug + gap + 86400, "CH country"},
+	} {
+		at := time.Unix(c.at, 0).UTC().Format(time.DateTime)
+		if got := situsAt(t, db, ctx, c.at, c.key); got != c.want {
+			t.Errorf("%s at %s: %s, want %s", c.key, at, got, c.want)
+		}
+		// The situs sets the country rule aside exactly where
+		// exposure_funds_at picks the composition.
+		var picked bool
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) > 0 FROM exposure_funds_at(?) WHERE fund_ref = ?`,
+			c.at, "isin:"+isin[c.key]).Scan(&picked); err != nil {
+			t.Fatal(err)
+		}
+		if picked != (c.want == "- unknown") {
+			t.Errorf("%s at %s: exposure_funds_at picks a composition: %v", c.key, at, picked)
 		}
 	}
 }

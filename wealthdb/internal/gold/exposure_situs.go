@@ -3,6 +3,7 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"slices"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
@@ -53,9 +54,59 @@ type situsFacts struct {
 	// country of its source's custodian.
 	banked  bool
 	custody string
-	// private marks a private holding no composition of its own
-	// describes.
-	private bool
+	// private marks a private holding. described are the spans in
+	// which a composition of its own is in force (compositionSpans);
+	// inside one, the holding does not read as private.
+	private   bool
+	described []inForce
+}
+
+// inForce is a span of instants: from included, until excluded.
+type inForce struct{ from, until int64 }
+
+// on is the facts of one instant: private holds only where no span of
+// described covers it. A nil instant is before every span.
+func (f situsFacts) on(at *int64) situsFacts {
+	if f.private && at != nil {
+		for _, s := range f.described {
+			if s.from <= *at && *at < s.until {
+				f.private = false
+				break
+			}
+		}
+	}
+	return f
+}
+
+// situsComp is one composition of a fund's own: its day, the day of the
+// fund's next document for a parsed one (0 for none), and whether it is
+// parsed.
+type situsComp struct {
+	asOf, validUntil int64
+	parsed           bool
+}
+
+// compositionSpans are the spans in which one of a fund's compositions
+// is in force, as exposure_funds_at picks it (docs/EXPOSURE.md §4): the
+// latest on or before the instant, within maxGapDays of it; else the
+// earliest after it, within the same bound. A parsed one serves only
+// from its day, and only before its validUntil.
+func compositionSpans(comps []situsComp, maxGapDays int64) []inForce {
+	var out []inForce
+	for _, c := range comps {
+		day := c.asOf / 86400
+		until := (day + maxGapDays + 1) * 86400
+		if c.validUntil != 0 && c.validUntil < until {
+			until = c.validUntil
+		}
+		if c.asOf < until {
+			out = append(out, inForce{c.asOf, until})
+		}
+		if !c.parsed {
+			out = append(out, inForce{(day - maxGapDays) * 86400, c.asOf})
+		}
+	}
+	return out
 }
 
 // situsRecord is what one record of the declarations ledger says of the
@@ -96,7 +147,7 @@ func situsOf(f situsFacts, declared, country string) (situs, basis string) {
 }
 
 // situsReading is a holding's situs and basis from asOf on, nil for the
-// reading before any dated record.
+// reading before any dated record or span.
 type situsReading struct {
 	asOf         *int64
 	situs, basis string
@@ -107,35 +158,46 @@ type situsReading struct {
 // a precedence of their own: on a day, the declared situs is the latest
 // record on or before it that states one, and the country rule reads the
 // latest economic record on or before it; an undated record counts as
-// before every dated one. A reading starts before any dated record, and
-// again on each day it changes.
+// before every dated one. Whether the holding is private is read at each
+// instant (situsFacts.on). A reading starts before any dated record or
+// span, and again at each instant it changes: a record's day, or a
+// span's start or end.
 func situsReadings(f situsFacts, records []situsRecord) []situsReading {
-	situs, basis := situsOf(f, "", "")
-	out := []situsReading{{situs: situs, basis: basis}}
 	var declared, country string
-	for i, r := range records {
+	i := 0
+	apply := func() {
+		r := records[i]
 		if r.situs != "" {
 			declared = r.situs
 		}
 		if r.economic {
 			country = r.country
 		}
-		if i+1 < len(records) && sameDay(records[i+1].asOf, r.asOf) {
-			continue // a day's records count together
+		i++
+	}
+	for i < len(records) && records[i].asOf == nil {
+		apply()
+	}
+	instants := make([]int64, 0, len(records)-i+2*len(f.described))
+	for _, r := range records[i:] {
+		instants = append(instants, *r.asOf)
+	}
+	for _, s := range f.described {
+		instants = append(instants, s.from, s.until)
+	}
+	slices.Sort(instants)
+	situs, basis := situsOf(f.on(nil), declared, country)
+	out := []situsReading{{situs: situs, basis: basis}}
+	for _, at := range slices.Compact(instants) {
+		for i < len(records) && *records[i].asOf == at {
+			apply() // a day's records count together
 		}
-		situs, basis := situsOf(f, declared, country)
-		switch last := &out[len(out)-1]; {
-		case r.asOf == nil:
-			last.situs, last.basis = situs, basis // the undated records read before any dated one
-		case last.situs != situs || last.basis != basis:
-			out = append(out, situsReading{asOf: r.asOf, situs: situs, basis: basis})
+		situs, basis := situsOf(f.on(&at), declared, country)
+		if last := out[len(out)-1]; last.situs != situs || last.basis != basis {
+			out = append(out, situsReading{asOf: &at, situs: situs, basis: basis})
 		}
 	}
 	return out
-}
-
-func sameDay(a, b *int64) bool {
-	return (a == nil && b == nil) || (a != nil && b != nil && *a == *b)
 }
 
 // statedISINsSQL is the CTEs countries, the codes a situs may be (every
@@ -153,7 +215,8 @@ isins AS (
     SELECT key, substr(key, 6, 2) AS country FROM stated WHERE substr(key, 6, 2) IN (SELECT code FROM countries))`
 
 // situsHoldingsSQL lists every holding gold has held, keyed as a leaf
-// names its holding, with the facts situsOf reads. A position reads as
+// names its holding, with its exposure key, under which its compositions
+// are found, and the facts situsOf reads. A position reads as
 // its latest snapshot; a cash balance is the holding cash:<currency>.
 // Its key is read as exposure_holdings reads it (0126): through
 // holdingAliasJoins, then instrument_keys and security_aliases. The
@@ -195,18 +258,16 @@ nport AS (
     SELECT key FROM (SELECT exposure_key(fund_ref) AS key, provider,
                             as_of = MAX(as_of) OVER (PARTITION BY exposure_key(fund_ref)) AS latest
                        FROM fund_compositions)
-     WHERE latest GROUP BY key HAVING BOOL_OR(provider = '` + nportProvider + `')),
-comps AS (SELECT DISTINCT fund_ref AS key FROM exposure_comps())
-SELECT k.src, k.acct, k.position_key, COALESCE(k.iid, ''),
+     WHERE latest GROUP BY key HAVING BOOL_OR(provider = '` + nportProvider + `'))
+SELECT k.src, k.acct, k.position_key, COALESCE(k.iid, ''), COALESCE(k.key, ''),
        COALESCE(k.asset_class = 'crypto' AND k.vehicle = 'physical', FALSE),
-       COALESCE(k.vehicle NOT IN ('etf', 'fund') AND rk.key IS NOT NULL, FALSE),
+       COALESCE(k.vehicle NOT IN ('etf', 'fund') AND rk.key IS NOT NULL, FALSE) AS receipt,
        COALESCE(sh.situs, ''), COALESCE(i.country, ''),
        COALESCE(fd.domicile, CASE WHEN np.key IS NOT NULL THEN 'US' END, d.domicile, ''),
        COALESCE((k.asset_class = 'cash' AND k.vehicle IN ('demand_deposit', 'time_deposit'))
                 OR (k.asset_class = 'metal' AND k.vehicle = 'physical'), FALSE),
        COALESCE(cu.country, ''),
-       COALESCE(NOT exposure_public(k.vehicle, k.asset_class) AND k.asset_class NOT IN ('cash', 'metal', 'crypto')
-                AND c.key IS NULL, FALSE)
+       COALESCE(NOT exposure_public(k.vehicle, k.asset_class) AND k.asset_class NOT IN ('cash', 'metal', 'crypto'), FALSE)
   FROM keyed k
   LEFT JOIN isins i ON i.key = k.key
   LEFT JOIN receipt_keys rk ON rk.key = k.key
@@ -214,8 +275,13 @@ SELECT k.src, k.acct, k.position_key, COALESCE(k.iid, ''),
   LEFT JOIN fund_domiciles fd ON fd.key = k.key
   LEFT JOIN nport np ON np.key = k.key
   LEFT JOIN domiciles d ON d.key = k.key
-  LEFT JOIN exposure_custody cu ON cu.silver_source_id = k.src
-  LEFT JOIN comps c ON c.key = k.key`
+  LEFT JOIN exposure_custody cu ON cu.silver_source_id = k.src`
+
+// situsCompsSQL lists every fund's compositions as exposure_funds_at
+// reads them, with the max_gap_days it bounds them by.
+const situsCompsSQL = `
+SELECT c.fund_ref, c.as_of, COALESCE(c.valid_until, 0), c.origin = 'parsed', s.max_gap_days
+  FROM exposure_comps() c, exposure_settings_row() s`
 
 // situsRecordsSQL lists every declaration, oldest first, with the situs
 // it declares, the one country it declares at 100 if any (a country
@@ -250,6 +316,19 @@ func writeSitus(ctx context.Context, tx *sql.Tx) error {
 	}); err != nil {
 		return err
 	}
+	comps := map[string][]situsComp{}
+	var maxGapDays int64 // every row states it; with no row, nothing reads it
+	if err := scanAll(ctx, tx, situsCompsSQL, func(rows *sql.Rows) error {
+		var key string
+		var c situsComp
+		if err := rows.Scan(&key, &c.asOf, &c.validUntil, &c.parsed, &maxGapDays); err != nil {
+			return err
+		}
+		comps[key] = append(comps[key], c)
+		return nil
+	}); err != nil {
+		return err
+	}
 	type row struct {
 		src, acct, positionKey string
 		situsReading
@@ -258,10 +337,13 @@ func writeSitus(ctx context.Context, tx *sql.Tx) error {
 	if err := scanAll(ctx, tx, situsHoldingsSQL, func(rows *sql.Rows) error {
 		var h row
 		var f situsFacts
-		var iid string
-		if err := rows.Scan(&h.src, &h.acct, &h.positionKey, &iid, &f.coin, &f.receipt, &f.share, &f.isin, &f.domicile,
-			&f.banked, &f.custody, &f.private); err != nil {
+		var iid, key string
+		if err := rows.Scan(&h.src, &h.acct, &h.positionKey, &iid, &key, &f.coin, &f.receipt, &f.share, &f.isin,
+			&f.domicile, &f.banked, &f.custody, &f.private); err != nil {
 			return err
+		}
+		if f.private {
+			f.described = compositionSpans(comps[key], maxGapDays)
 		}
 		for _, r := range situsReadings(f, records[instrument{h.src, iid}]) {
 			h.situsReading = r
