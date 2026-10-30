@@ -880,10 +880,14 @@ The Income dashboard's two halves are wider than these views':
 - its received half counts every income line, wages and gifts among
   them, each other line under its account and by its operating-in
   class ([CASHFLOW.md](CASHFLOW.md) §5);
-- its expected half adds the other income's run-rate: the cash flow
-  projection's `other_income`, which gold keeps by class and account
-  ([CASHFLOW.md](CASHFLOW.md) §12). It covers the household's accounts
-  alone.
+- its expected half adds the other income's run-rate, by class and
+  account ([CASHFLOW.md](CASHFLOW.md) §12). On the household's
+  accounts it is the cash flow projection's `other_income`. On every
+  other account it is `outside_income`, the same average.
+- in the current month a run-rate expects its monthly figure less
+  what its class and account received so far, never below 0. A wage
+  arrives on a pay day, so a share of the month's days would read
+  short before it.
 
 `wealthdb income projection` reads the six types alone.
 

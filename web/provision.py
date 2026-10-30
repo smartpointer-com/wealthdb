@@ -2374,8 +2374,8 @@ DASHBOARD_HEADINGS = {"Wealth Overview": [
     (19, "Over the time range", "heading"),
     (26, "At the range's end, today and ahead", "heading"),
 ], "Income": [
-    (6, "Every income line. A band marked run-rate is the cash flow projection's average of past "
-        "months.", "text"),
+    (6, "Every income line. A band marked run-rate is an account's average of past months; this "
+        "month it expects only what has not arrived.", "text"),
 ]}
 
 # A twin's own placing of its base's tiles, by base dashboard: card ->
@@ -3382,15 +3382,17 @@ def income_projected_cards(db_id, privacy):
     - what the holdings are expected to pay (web_yield_parts, under the
       projection's pickers);
     - the other income's run-rate (web_cashflow_plan's other_income, gold
-      migration 0169), by class and account: the cash flow projection's
-      own figure.
+      migration 0169, and outside_income, 0172), by class and account: the
+      cash flow projection's own figure on the pool's accounts, and the
+      same average on every other account a line arrives on.
 
     What was received is the Time range's: the picker reaches a card
     through the days web_income_days lists. What is expected is the
     Horizon's: the rest of the current month and the horizon's months
-    after it (docs/INCOME.md §12). The tax booked (web_income_withheld)
-    names no income type, so the withholding and the income after it take
-    no Type picker.
+    after it (docs/INCOME.md §12). In the current month a run-rate expects
+    its monthly figure less what its class and account received so far.
+    The tax booked (web_income_withheld) names no income type, so the
+    withholding and the income after it take no Type picker.
 
     A privacy card shows a figure as a share of the income it covers, or
     of its biggest month; the holdings' income, and a position's, as a
@@ -3461,6 +3463,17 @@ def income_projected_cards(db_id, privacy):
     # The rest of the current month, as a share of its days.
     month_rest = ("(SELECT (day(last_day(max(day))) - day(max(day))) / day(last_day(max(day)))"
                   " FROM web_income_days)")
+    # The current month's first day, and the lines no holding pays
+    # received from it to today, by class and account, whatever the Time
+    # range.
+    this_month = "(SELECT CAST(date_trunc('month', max(day)) AS DATE) FROM web_income_days)"
+    this_month_got = ("mg AS (\n"
+                      f"  SELECT {_line_class()} AS class, silver_source_id, account_external_id,\n"
+                      f"         sum({_ccy_case('value')}) AS got\n"
+                      f"    FROM web_income\n   WHERE CAST(occurred_at AS DATE) >= {this_month}\n"
+                      "     AND CAST(occurred_at AS DATE) <= (SELECT max(day) FROM web_income_days)\n"
+                      f"     AND income_detailed NOT IN ({projected})\n"
+                      "   GROUP BY ALL)")
 
     # Each part's income in its holding's currency and its rate to the
     # picked one, over the horizon; a payment of an estimated day reads
@@ -3486,26 +3499,34 @@ def income_projected_cards(db_id, privacy):
                 f"    FROM web_income\n   WHERE income_detailed NOT IN ({projected})" + line_days
                 + kept(typed=False) + ("\n     [[AND {{type}}]]" if typed and typed_by_type else "") + ")")
 
-    # The other income's run-rate over the horizon's months, and the
-    # rest of this one at its share of the next month's.
+    # The other income's run-rate over the horizon's months. A salary
+    # arrives on a pay day, so the current month expects the monthly
+    # figure less what its class and account received so far, never
+    # below 0, rather than a share of its days.
     def run_rate(typed=True):
         keep = kept(typed=False, by_account=True) + (
             f"\n     [[AND class IN ({picked_classes})]]" if typed and typed_by_type else "")
+        # An account whose wrapper changed in the look-back holds a row
+        # of each part: one figure per class, account and month.
         return ("pl AS (\n"
-                "  SELECT c.month, c.class, c.silver_source_id, c.account_external_id, c.month_start, c.value,\n"
+                "  SELECT c.month, c.class, c.silver_source_id, c.account_external_id,\n"
+                "         any_value(c.month_start) AS month_start, sum(c.value) AS value,\n"
                 "         account_label(ac.display_name, c.account_external_id, c.silver_source_id, ac.account_kind)"
                 " AS account_label\n"
                 "    FROM web_cashflow_plan c\n"
                 "    LEFT JOIN accounts ac ON ac.silver_source_id = c.silver_source_id"
                 " AND ac.account_external_id = c.account_external_id\n"
-                "   WHERE c.part = 'other_income'\n     AND c.currency = {{currency}}),\n"
+                f"   WHERE c.part IN ({_sql_list(RUN_RATE_PARTS)})\n     AND c.currency = {{{{currency}}}}\n"
+                "   GROUP BY ALL),\n"
+                + this_month_got + ",\n"
                 "px AS (\n"
                 "  SELECT month AS m, month_start, class, silver_source_id, account_external_id, account_label, value\n"
                 "    FROM pl\n   WHERE month" + AFTER_THIS_MONTH + keep + "\n"
                 "  UNION ALL\n"
-                "  SELECT 0, (SELECT CAST(date_trunc('month', max(day)) AS DATE) FROM web_income_days), class,\n"
-                f"         silver_source_id, account_external_id, account_label, value * {month_rest}\n"
-                "    FROM pl\n   WHERE month = 1" + keep + ")")
+                f"  SELECT 0, {this_month}, class,\n"
+                "         silver_source_id, account_external_id, account_label, GREATEST(0, value - coalesce(mg.got, 0))\n"
+                "    FROM pl\n    LEFT JOIN mg USING (class, silver_source_id, account_external_id)\n"
+                f"   WHERE month = 1\n     AND {this_month} IS NOT NULL" + keep + ")")
 
     keys = "silver_source_id, account_external_id, position_key, account_label, vehicle, symbol, name"
     lined = ("silver_source_id, account_external_id, 'class:' || class AS position_key, account_label,\n"
@@ -3651,8 +3672,8 @@ def income_projected_cards(db_id, privacy):
                  for t, c in INCOME_TYPE_COLORS.items() for s in ("received", "expected")},
               **{f"{INCOME_CLASS_BANDS[k]} ({s})": {"color": c if s == "received" else _tint(c)}
                  for k, c in INCOME_CLASS_COLORS.items() for s in ("received", "expected, run-rate")}}
-    month_desc = ("Income per month by type, received in full colour, expected lighter. "
-                  "A run-rate band ignores the Rate path, Maturing and Shift.")
+    month_desc = ("Income per month by type, received in full colour, expected lighter. A run-rate band "
+                  "expects what is still to come this month and ignores Rate path, Maturing, Shift.")
     if privacy:
         sql = (rows(every, peak) + f"SELECT CAST(month_start AS TIMESTAMP) AS month, {series},\n"
                f"       100 * sum(value) / {PEAK} AS income_pct\n  FROM a\n GROUP BY 1, 2")
@@ -3780,6 +3801,11 @@ def income_projected_cards(db_id, privacy):
              {}, calendar_tags)
     return out
 
+
+# The parts of web_cashflow_plan the Income cards' run-rate reads: the
+# other income on the pool's accounts (0169) and the income lines on
+# every other account (0172), which the cash flow projection leaves out.
+RUN_RATE_PARTS = ("other_income", "outside_income")
 
 # The cash flow projection's look-back parts (web_cashflow_plan) and the
 # order its chart stacks them: what comes in, then what goes out.

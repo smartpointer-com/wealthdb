@@ -1365,7 +1365,7 @@ out.
   line outside the pool.
 
 The boundary keeps that income out of the pool (§3), so `net` never
-counts it. The Income dashboard shows the other income as
-the expected half of the income no holding pays
+counts it. The Income dashboard shows both parts as the
+expected half of the income no holding pays
 ([web/DESIGN.md](../../web/DESIGN.md) §6). The MCP `cashflow` tool
 serves the same view.

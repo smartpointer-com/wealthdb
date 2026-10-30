@@ -453,11 +453,13 @@ leaves its type out:
   (`web_yield_received`), and every other line, wages and gifts among
   them, under its account (`web_income`);
 - expected: what the holdings are expected to pay (`web_yield_parts`),
-  and the other income's run-rate. The run-rate is the cash flow
-  projection's `other_income` (`web_cashflow_plan`, migration 0169), by
-  operating-in class and account. So the two dashboards read one
-  run-rate. It covers the household's accounts alone, as the cash flow
-  projection does: other income on a vehicle's account has no run-rate.
+  and the other income's run-rate, by operating-in class and account
+  (`web_cashflow_plan`). On the pool's accounts it is the cash flow
+  projection's `other_income` (migration 0169), so the two dashboards
+  read one run-rate there. On every other account, such as a wage paid
+  into a retirement account, it is `outside_income` (0172), the same
+  average. So each class on an account expects what it received on
+  average.
 
 The two received sources convert a line each at its own day's rate,
 but by two reports. So "Income received" equals Net income to rounding.
@@ -494,9 +496,11 @@ The dashboard reads in this order:
 The Time range sets every figure of what was received, and the Horizon
 every figure of what is expected: the rest of the current month and
 the horizon's months after it. The run-rate's months are the calendar
-months after the current one; the rest of the current month takes its
-share of the next month's. A figure of what was received depends on no
-assumption, so it takes no projection picker. On the base dashboard a
+months after the current one. In the current month a run-rate expects
+its monthly figure less what its class and account received so far,
+never below 0. A wage arrives on a pay day, not spread over the days.
+A figure of what was received depends on no assumption, so it takes no
+projection picker. On the base dashboard a
 figure of what is expected takes no Time range. On the twin it is a
 share of both halves, so it takes the Time range too.
 
@@ -712,7 +716,7 @@ holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these migrations falls short of the cards:
 
 - 0172: its `web_cashflow_plan` lacks the income lines outside the
-  pool;
+  pool, which the Income cards' run-rate reads;
 - 0171: its history carries an account's cash summed across its
   currencies, which the currency card and the Top 100 positions cards
   cannot split;

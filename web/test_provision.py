@@ -2835,6 +2835,7 @@ check("every card reads the income received where it shows a received figure, ev
           == (n not in _EXPECTED_ONLY | _EVERY_LINE and n != _YIELD_TWIN)
           and ("FROM web_income\n   WHERE TRUE" in q) == (n in _EVERY_LINE)
           and ("FROM web_cashflow_plan c" in q) == (n not in _RECEIVED_ONLY | _HOLDINGS_ONLY)
+          and ("AS got" in q) == ("FROM web_cashflow_plan c" in q)
           and ("FROM web_yield_parts" in q) == (n not in _RECEIVED_ONLY)
           and ("p.rule = {{maturing}}" in q) == (n not in _RECEIVED_ONLY)
           and ("CASE {{currency}} WHEN 'USD' THEN p.fx_usd" in q) == (n not in _RECEIVED_ONLY)
@@ -3892,13 +3893,13 @@ if duckdb is not None:
     _y24, _y25, _y26, _y27 = (("2024-01-01", "2024-12-31"), ("2025-01-01", "2025-12-31"),
                               ("2026-01-01", "2026-12-31"), ("2027-01-01", "2027-12-31"))
     # Every other line: the wages of 1,000 in September 2026. The
-    # run-rate: 210 a month over the horizon's months and 10/31 of it for
-    # the rest of October.
+    # run-rate: 210 a month over the horizon's months, and all of it in
+    # October, which has received no other line yet.
     _received = 80 + 350 + 725.0
     _lines = _received + 1000.0
     _exp12, _exp24 = 260 + 800 + 162.5 + 1500, 500 + 1600 + 312.5 + 3000
     _rest = 10 / 31
-    _rr12, _rr24 = 210 * (12 + _rest), 210 * (24 + _rest)
+    _rr12, _rr24 = 210 * 13, 210 * 25
     _e12, _e24 = _exp12 + _rr12, _exp24 + _rr24
     for _args, _want in (({}, _lines + _e12), ({"time_range": _y24}, 80 + _e12),
                          ({"time_range": _y25}, 350 + _e12), ({"time_range": _y26}, 1725 + _e12),
@@ -3965,8 +3966,8 @@ if duckdb is not None:
     check("...a label of the other lines selecting those lines and their class's run-rate alone, and the "
           "withholding not narrowed",
           _near(_one("Income received", type=_ty["Salary"]), 1000.0)
-          and _near(_one("Income expected", type=_ty["Salary"]), 200 * (12 + _rest))
-          and _near(_one("Income in the window", type=_ty["Salary"]), 1000 + 200 * (12 + _rest))
+          and _near(_one("Income expected", type=_ty["Salary"]), 200 * 13)
+          and _near(_one("Income in the window", type=_ty["Salary"]), 1000 + 200 * 13)
           and all(_one(n, type=_ty["Salary"]) == 0 for n in ("Holdings' interest received",
                                                               "Holdings' dividends expected"))
           and _salary_bands == {"salary and earnings (received)", "salary and earnings (expected, run-rate)"}
@@ -3976,14 +3977,14 @@ if duckdb is not None:
     # src-1 is taxable, src-2 a joint taxable account.
     _tw = {w: [w] for w in ("taxable_personal", "taxable_joint")}
     check("the Tax wrapper picker keeps an account's rows on every view a card reads",
-          _near(_one("Income in the window", tax_wrapper=_tw["taxable_joint"]), 1787.5 + 10 * (12 + _rest))
+          _near(_one("Income in the window", tax_wrapper=_tw["taxable_joint"]), 1787.5 + 10 * 13)
           and _near(_one("Income in the window", tax_wrapper=_tw["taxable_personal"]),
-                    1030 + 1000 + 260 + 800 + 200 * (12 + _rest))
+                    1030 + 1000 + 260 + 800 + 200 * 13)
           and _one("Withholding", tax_wrapper=_tw["taxable_joint"]) == 0
           and _near(_one("Withholding", tax_wrapper=_tw["taxable_personal"]), 202.0)
-          and _near(_one("Income after withholding", tax_wrapper=_tw["taxable_joint"]), 1787.5 + 10 * (12 + _rest))
+          and _near(_one("Income after withholding", tax_wrapper=_tw["taxable_joint"]), 1787.5 + 10 * 13)
           and _near(_one("Income after withholding", tax_wrapper=_tw["taxable_personal"]),
-                    1030 + 1000 + 260 + 800 + 200 * (12 + _rest) - 202.0)
+                    1030 + 1000 + 260 + 800 + 200 * 13 - 202.0)
           and len(_run("Received and expected by position", tax_wrapper=_tw["taxable_joint"])) == 4,
           [_one("Income in the window", tax_wrapper=v) for v in _tw.values()])
     _salary_rows = _run("Received and expected by position", type=_ty["Salary"])
@@ -4033,15 +4034,15 @@ if duckdb is not None:
     check("a range before the first holding's income reaches the older lines, and a label of the other "
           "receipts keeps their run-rate alone",
           _near(_far[0], 500.0) and _near(_far[1], (500 + _e12) / (7 + 12 + _rest))
-          and _near(_far[2], 10 * (12 + _rest)) and _near(_far[3], 40.0), _far)
+          and _near(_far[2], 10 * 13) and _near(_far[3], 40.0), _far)
     check("...and the Account picker keeps an account's run-rate",
-          _near(_one("Income expected", account=["Savings (src-2 deposit)"]), 162.5 + 1500 + 10 * (12 + _rest))
+          _near(_one("Income expected", account=["Savings (src-2 deposit)"]), 162.5 + 1500 + 10 * 13)
           and _near(_one("Income expected", account=["Brokerage (src-1 brokerage)"]),
-                    260 + 800 + 200 * (12 + _rest)),
+                    260 + 800 + 200 * 13),
           [_one("Income expected", account=[a]) for a in ("Savings (src-2 deposit)", "Brokerage (src-1 brokerage)")])
     check("where nothing is withheld, the withholding tiles read 0, not null",
           _one("Withholding", source=["src-2"]) == 0 and _one("Withholding (privacy)", source=["src-2"]) == 0
-          and _near(_one("Income after withholding", source=["src-2"]), 1787.5 + 10 * (12 + _rest))
+          and _near(_one("Income after withholding", source=["src-2"]), 1787.5 + 10 * 13)
           and _near(_one("Income after withholding (privacy)", source=["src-2"]), 100.0))
     # A twin's share of nothing reads 0, as the base figure does.
     _scalars = [n for n in _in_all if CARDS[n][0] == "scalar"]
@@ -4068,26 +4069,72 @@ if duckdb is not None:
     # The second source's: its rent received, its cash's 162.50 and
     # twelve months of rent expected.
     check("the Source picker keeps a source's received and expected rows",
-          _near(_one("Income in the window", source=["src-2"]), 1787.5 + 10 * (12 + _rest)),
+          _near(_one("Income in the window", source=["src-2"]), 1787.5 + 10 * 13),
           _one("Income in the window", source=["src-2"]))
     _accounts = _run("Received and expected by account")
     check("the accounts table splits each account's received and expected income",
           [(r[0], round(r[1], 6), round(r[2], 6), round(r[3], 6)) for r in _accounts]
-          == [("Brokerage (src-1 brokerage)", 2030.0, round(1060 + 200 * (12 + _rest), 6),
-               round(3090 + 200 * (12 + _rest), 6)),
-              ("Savings (src-2 deposit)", 125.0, round(1662.5 + 10 * (12 + _rest), 6),
-               round(1787.5 + 10 * (12 + _rest), 6))], _accounts)
+          == [("Brokerage (src-1 brokerage)", 2030.0, round(1060 + 200 * 13, 6),
+               round(3090 + 200 * 13, 6)),
+              ("Savings (src-2 deposit)", 125.0, round(1662.5 + 10 * 13, 6),
+               round(1787.5 + 10 * 13, 6))], _accounts)
     _months = {(m.date().isoformat(), s): v for m, s, v in _run("Received and expected by month")}
     check("the by-month chart's bands are the Time range's received and the Horizon's expected",
           _near(sum(_months.values()), _lines + _e12)
           and _near(_months.get(("2026-09-01", "salary and earnings (received)")), 1000.0)
-          and _near(_months.get(("2026-10-01", "salary and earnings (expected, run-rate)")), 200 * _rest)
+          and _near(_months.get(("2026-10-01", "salary and earnings (expected, run-rate)")), 200.0)
           and _near(_months.get(("2026-11-01", "other receipts (expected, run-rate)")), 10.0)
           and _near(_months.get(("2026-12-01", "coupons (expected)")), 400.0)
           and _near(_months.get(("2026-02-01", "coupons (received)")), 400.0)
           and _near(_months.get(("2024-03-01", "dividends (received)")), 80.0)
           and _near(_months.get(("2026-10-01", "interest (expected)")), 32.5)
           and ("2027-11-01", "interest (expected)") not in _months, _months)
+    # The current month expects a run-rate's monthly figure less what its
+    # class and account received so far, never below 0: before the pay
+    # day all 200, after a wage of 150 the 50 left, after 250 nothing. A
+    # wage on another account leaves it alone, and next month expects 200.
+    _october = ("2026-10-01", "salary and earnings (expected, run-rate)")
+    _paid = []
+    for _wage in (None, ("2", 150), ("1", 150), ("1", 100)):
+        if _wage:
+            _db.execute("INSERT INTO web_income (occurred_at, silver_source_id, account_external_id, account_label,"
+                        " tax_wrapper, income_detailed, income_label, value_usd, value_chf) VALUES"
+                        f" (TIMESTAMP '2026-10-{10 + len(_paid)} 09:00', 'src-{_wage[0]}', 'acct-{_wage[0]}', 'x',"
+                        f" 'taxable_personal', 'INCOME_SALARY', 'Salary', {_wage[1]}, {_wage[1] * 0.8})")
+        _m = {(m.date().isoformat(), s): v for m, s, v in _run("Received and expected by month")}
+        _paid.append((_m.get(_october, 0.0), _m.get(("2026-11-01", _october[1]))))
+    _db.execute("DELETE FROM web_income WHERE occurred_at >= TIMESTAMP '2026-10-01'")
+    check("this month's run-rate is its figure less what its class and account received, never below 0",
+          [round(a, 6) for a, _ in _paid] == [200.0, 200.0, 50.0, 0.0]
+          and all(_near(b, 200.0) for _, b in _paid), _paid)
+    # An account outside the pool carries its run-rate as outside_income
+    # (gold 0172): the Income cards read it beside the pool's.
+    _db.execute("BEGIN")
+    _db.execute("INSERT INTO report_cashflow_plan (computed_at, currency, month, month_start, part, class,"
+                " silver_source_id, account_external_id, value, quality)"
+                " SELECT 0, currency, month, month_start, 'outside_income', 'benefits', silver_source_id,"
+                " account_external_id, value / 2, quality FROM report_cashflow_plan"
+                " WHERE part = 'other_income' AND class = 'other_receipts'")
+    _outside = (_one("Income expected"), _one("Income in the window", source=["src-2"]))
+    # The same class on both parts, an account whose wrapper changed in
+    # the look-back: one figure of 300 a month, less this month's wage
+    # once, also with a Time range that ends before it.
+    _db.execute("INSERT INTO report_cashflow_plan (computed_at, currency, month, month_start, part, class,"
+                " silver_source_id, account_external_id, value, quality)"
+                " SELECT 0, currency, month, month_start, 'outside_income', class, silver_source_id,"
+                " account_external_id, value / 2, quality FROM report_cashflow_plan"
+                " WHERE part = 'other_income' AND class = 'earnings'")
+    _db.execute("INSERT INTO web_income (occurred_at, silver_source_id, account_external_id, account_label,"
+                " tax_wrapper, income_detailed, income_label, value_usd, value_chf) VALUES"
+                " (TIMESTAMP '2026-10-15 09:00', 'src-1', 'acct-1', 'x', 'taxable_personal', 'INCOME_SALARY',"
+                " 'Salary', 250, 200)")
+    _both = [{(m.date().isoformat(), s): v for m, s, v in _run("Received and expected by month", **a)}.get(_october)
+             for a in ({}, {"time_range": _y25})]
+    _db.execute("ROLLBACK")
+    check("...and an account outside the pool has its run-rate beside the pool's",
+          _near(_outside[0], _e12 + 5 * 13) and _near(_outside[1], 1787.5 + 15 * 13), _outside)
+    check("...an account with both parts expects its one figure less this month's lines once, whatever the range",
+          all(_near(v, 50.0) for v in _both), _both)
     _months26 = {(m.date().isoformat(), s) for m, s, _v in _run("Received and expected by month", time_range=_y26)}
     check("...the received ones moving with the Time range",
           ("2025-06-01", "dividends (received)") not in _months26
