@@ -4268,38 +4268,72 @@ if duckdb is not None:
     section("the Top 100 positions cards' size column, run on an invented book")
 
     # One day's positions: a stock on two accounts and one on one, both
-    # sized, a stock nothing sizes and a fund. The size joins after the
-    # ranking, so a card keeps its rows, order and values, and a stock on
-    # two lines stays one row.
+    # sized, a stock nothing sizes, a fund, and two accounts' cash in
+    # francs (migration 0171). The size joins after the ranking, so a
+    # card keeps its rows, order and values; a stock on two lines stays
+    # one row, and each account's cash is a row of its own.
     _db.execute("CREATE TABLE web_positions_history (as_of_day DATE, silver_source_id TEXT, tax_wrapper TEXT,"
-                " symbol TEXT, name TEXT, asset_class TEXT, vehicle TEXT, currency TEXT, value_usd DOUBLE,"
-                " value_chf DOUBLE, value_eur DOUBLE, value_gbp DOUBLE)")
+                " line_key TEXT, symbol TEXT, name TEXT, asset_class TEXT, vehicle TEXT, currency TEXT,"
+                " value_usd DOUBLE, value_chf DOUBLE, value_eur DOUBLE, value_gbp DOUBLE)")
     _db.execute("CREATE TABLE web_position_sizes (symbol TEXT, name TEXT, asset_class TEXT, vehicle TEXT,"
                 " size TEXT)")
     for _sym, _veh, _v in (("QBIG", "stock", 400.0), ("QBIG", "stock", 200.0), ("QMID", "stock", 500.0),
                            ("QNOS", "stock", 300.0), ("QFND", "fund", 450.0)):
         _db.execute("INSERT INTO web_positions_history VALUES (DATE '2026-10-21', 'src-1', 'taxable_personal',"
-                    " ?, ?, 'public_equity', ?, 'USD', ?, ?, ?, ?)", [_sym, _sym + " Example", _veh, _v, _v, _v, _v])
+                    " NULL, ?, ?, 'public_equity', ?, 'USD', ?, ?, ?, ?)", [_sym, _sym + " Example", _veh, _v, _v, _v, _v])
+    for _key, _v in (("src-1/acct-1", 250.0), ("src-1/acct-2", 100.0)):
+        _db.execute("INSERT INTO web_positions_history VALUES (DATE '2026-10-21', 'src-1', 'taxable_personal',"
+                    " ?, NULL, 'Cash CHF', 'cash', 'demand_deposit', 'CHF', ?, ?, ?, ?)", [_key, _v, _v, _v, _v])
     _db.execute("INSERT INTO web_position_sizes VALUES ('QBIG', 'QBIG Example', 'public_equity', 'stock', 'large'),"
                 " ('QMID', 'QMID Example', 'public_equity', 'stock', 'mid'),"
                 " ('QNOS', 'QNOS Example', 'public_equity', 'stock', NULL)")
     _top = [(r[0], r[4], r[5]) for r in _run("Top 100 positions")]
     check("the Top 100 positions card gives a stock its size, a fund none, its ranking and values unchanged",
-          _top == [("QBIG", "large", 600.0), ("QMID", "mid", 500.0), ("QFND", None, 450.0), ("QNOS", None, 300.0)],
-          _top)
+          _top == [("QBIG", "large", 600.0), ("QMID", "mid", 500.0), ("QFND", None, 450.0), ("QNOS", None, 300.0),
+                   (None, None, 250.0), (None, None, 100.0)], _top)
+    check("...each account's cash in francs a row of its own, named and classed as cash",
+          [r[1:4] for r in _run("Top 100 positions") if r[0] is None]
+          == [("Cash CHF", "cash", "demand_deposit")] * 2)
     _top_pct = [(r[0], r[4], round(r[5], 6)) for r in _run(p.privacy_name("Top 100 positions"), vehicle=["stock"])]
     check("...and its twin the shares, the vehicle narrowing the list but not the denominator",
-          _top_pct == [("QBIG", "large", round(60000 / 1850, 6)), ("QMID", "mid", round(50000 / 1850, 6)),
-                       ("QNOS", None, round(30000 / 1850, 6))], _top_pct)
+          _top_pct == [("QBIG", "large", round(60000 / 2200, 6)), ("QMID", "mid", round(50000 / 2200, 6)),
+                       ("QNOS", None, round(30000 / 2200, 6))], _top_pct)
     # The history ends on 2026-10-21 (the issuers' calendar above). A day
     # after it reads that day's positions, on both cards; a day before
     # the history reads none.
     _late = [(r[0], r[5]) for r in _run("Top 100 positions", as_of_day=("2026-10-25", "2026-10-25"))]
     check("a day after the history reads the positions of its last day",
           _late == [(r[0], r[2]) for r in _top]
-          and len(_run(p.privacy_name("Top 100 positions"), as_of_day=("2026-10-25", "2026-10-25"))) == 4, _late)
+          and len(_run(p.privacy_name("Top 100 positions"), as_of_day=("2026-10-25", "2026-10-25"))) == 6, _late)
     check("...and a day before the history none",
           _run("Top 100 positions", as_of_day=("2026-07-15", "2026-07-15")) == [])
+
+    section("the Allocation by currency cards' SQL, run on an invented book")
+
+    # One day's lines by currency (migration 0171): positions and cash in
+    # francs and dollars on one source, euros on another. The cards sum
+    # every bucket, cash included, largest first; the twin's shares total
+    # 100; the Source picker narrows both.
+    _db.execute("CREATE TABLE web_currencies_history (as_of_day DATE, silver_source_id TEXT, tax_wrapper TEXT,"
+                " asset_class TEXT, currency TEXT, value_usd DOUBLE, value_chf DOUBLE, value_eur DOUBLE,"
+                " value_gbp DOUBLE)")
+    for _src, _cls, _cc, _v in (("src-1", "public_equity", "USD", 500.0), ("src-1", "cash", "USD", 100.0),
+                                ("src-1", "cash", "CHF", 300.0), ("src-1", "fixed_income", "CHF", 200.0),
+                                ("src-2", "cash", "EUR", 150.0)):
+        _db.execute("INSERT INTO web_currencies_history VALUES (DATE '2026-10-21', ?, 'taxable_personal', ?, ?,"
+                    " ?, ?, ?, ?)", [_src, _cls, _cc, _v, _v, _v, _v])
+    _ccy = _run("Allocation by currency")
+    check("the currency card sums every line by currency, cash included, largest first",
+          _ccy == [("USD", 600.0), ("CHF", 500.0), ("EUR", 150.0)], _ccy)
+    _ccy_cash = _run("Allocation by currency", asset_class=["cash"])
+    check("...its cash alone under the Asset class picker",
+          _ccy_cash == [("CHF", 300.0), ("EUR", 150.0), ("USD", 100.0)], _ccy_cash)
+    check("...and the Source picker narrows it",
+          _run("Allocation by currency", source=["src-2"]) == [("EUR", 150.0)])
+    _ccy_pct = _run(p.privacy_name("Allocation by currency"))
+    check("...its twin the same buckets as shares that total 100",
+          [r[0] for r in _ccy_pct] == ["USD", "CHF", "EUR"] and _near(sum(r[1] for r in _ccy_pct), 100.0),
+          _ccy_pct)
 
     section("the DV01 card's SQL, run on an invented book")
 

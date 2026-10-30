@@ -951,6 +951,9 @@ FILTER_FIELD_COLUMNS = {
     "web_vehicles_history": ("silver_source_id", "tax_wrapper", "asset_class"),
     "web_accounts_history": ("silver_source_id", "tax_wrapper", "asset_class"),
     "web_positions_history": ("silver_source_id", "tax_wrapper", "asset_class", "vehicle"),
+    # Every holdings line by its currency, a cash balance by its own
+    # (migration 0171).
+    "web_currencies_history": ("silver_source_id", "tax_wrapper", "asset_class"),
     # Each day to the last history day on or before it (migration 0166):
     # the Allocation cards' As of day lands on it.
     "web_history_calendar": ("as_of_day",),
@@ -1485,9 +1488,9 @@ def question_defs(db_id, mid):
             "Value by vehicle (stock, etf, fund, bond and others) as of the "
             "chosen day. Cash shows as demand_deposit."),
         "Allocation by currency": breakdown("Allocation by currency",
-            "web_positions_history", "currency", "value", "row",
-            "Positions value by native currency as of the chosen day, cash "
-            "excluded. The Currency picker only sets the valuation currency."),
+            "web_currencies_history", "currency", "value", "row",
+            "Value by native currency, cash included, as of the chosen day. "
+            "The Currency picker only sets the valuation currency."),
         "Value by tax wrapper": breakdown("Value by tax wrapper",
             "web_accounts_history", "tax_wrapper", "total_value", "pie",
             "Account value, cash included, by tax wrapper as of the chosen day.",
@@ -1500,13 +1503,14 @@ def question_defs(db_id, mid):
         # pickers narrow the list rather than a K picker sizing it.
         "Top 100 positions": ("table",
             "The hundred largest positions by value as of the chosen day, "
-            "across accounts." + POSITION_SIZE_NOTE,
+            "across accounts. Each account's cash in a currency is a position "
+            "of its own." + POSITION_SIZE_NOTE,
             _native(db_id,
                 "WITH p AS (\n"
                 "  SELECT symbol, name, asset_class, vehicle,\n"
                 f"         sum({_ccy_case('value')})::DOUBLE AS value\n"
                 "    FROM web_positions_history" + _asof_where(pos_tags) +
-                "\n   GROUP BY 1, 2, 3, 4\n   ORDER BY 5 DESC\n   LIMIT 100)\n"
+                "\n   GROUP BY 1, 2, 3, 4, line_key\n   ORDER BY 5 DESC\n   LIMIT 100)\n"
                 "SELECT p.symbol, p.name, p.asset_class, p.vehicle, z.size, p.value\n"
                 "  FROM p" + POSITION_SIZE_JOIN + "\n ORDER BY p.value DESC",
                 pos_tags),
@@ -2467,7 +2471,8 @@ def base_dashboards():
         ]),
         "Allocation": (
             "Where the value sits as of the chosen day, by asset class, vehicle, "
-            "currency, tax wrapper, management style, position and issuer. "
+            "currency, tax wrapper, management style, position and issuer. Cash "
+            "is a position in every breakdown. "
             + PREDEFINED_NOTE, "asof", [
             # The two taxonomy dimensions side by side on the top row.
             ("Allocation by asset class", 0, 0, 12, 8, "as_of_day"),
@@ -4613,9 +4618,9 @@ def privacy_card_defs(db_id, model_ids):
               "Vehicle shares (%) of net worth as of the chosen day. Cash shows "
               "as demand_deposit.")
     breakdown("Allocation by currency (privacy)",
-              "web_positions_history", "currency", "value", "row",
-              "Native-currency shares (%) of positions value as of the chosen "
-              "day, cash excluded.")
+              "web_currencies_history", "currency", "value", "row",
+              "Native-currency shares (%) of net worth as of the chosen day, "
+              "cash included.")
     breakdown("Value by tax wrapper (privacy)",
               "web_accounts_history", "tax_wrapper", "total_value", "pie",
               "Tax-wrapper shares (%) of account value, cash included, as of the "
@@ -4628,15 +4633,15 @@ def privacy_card_defs(db_id, model_ids):
               "the chosen day.")
 
     # -- Top positions: each position's share of the selection's TOTAL
-    # positions value at the day: the selected sources, tax wrappers and
-    # asset classes. The inline vehicle picker narrows the list but not
+    # value at the day, cash included: the selected sources, tax wrappers
+    # and asset classes. The inline vehicle picker narrows the list but not
     # the denominator, so a position's share reads the same however the
     # list is narrowed.
     top_tags = asof_tags("web_positions_history", POSITION_FILTERS)
     value = _ccy_case("value")
     out["Top 100 positions (privacy)"] = ("question", "table",
-        "The hundred largest positions, as shares of the day's positions "
-        "value." + POSITION_SIZE_NOTE + PRIVACY_DESC,
+        "The hundred largest positions, as shares of the day's value. Each "
+        "account's cash in a currency is a row." + POSITION_SIZE_NOTE + PRIVACY_DESC,
         _native(db_id,
             "WITH tot AS (\n"
             f"  SELECT sum({value})::DOUBLE AS t\n"
@@ -4646,7 +4651,7 @@ def privacy_card_defs(db_id, model_ids):
             "  SELECT symbol, name, asset_class, vehicle,"
             f" sum({value})::DOUBLE AS v\n"
             "    FROM web_positions_history" + _asof_where(top_tags) + "\n"
-            "   GROUP BY 1, 2, 3, 4)\n"
+            "   GROUP BY 1, 2, 3, 4, line_key)\n"
             "SELECT p.symbol, p.name, p.asset_class, p.vehicle, z.size,\n"
             "       p.v / (SELECT CASE WHEN t <> 0 THEN t END FROM tot)"
             " * 100 AS value_pct\n"
@@ -5554,7 +5559,7 @@ def missing_web_views(base, sid, db_id):
 # The oldest gold schema the cards can read. A test holds it at or above
 # the newest migration that defines a view or table a card reads.
 # DESIGN.md §6 says what each older snapshot lacks.
-MIN_GOLD_SCHEMA = 170
+MIN_GOLD_SCHEMA = 171
 
 # main()'s exit status for a snapshot older than MIN_GOLD_SCHEMA; every
 # other failure exits 1. web/web tells the two apart, because only

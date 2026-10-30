@@ -111,7 +111,8 @@ func TestWebHistoryViewsSumToTheSources(t *testing.T) {
 		{"web_asset_classes_history", "COALESCE(SUM(value_usd), 0)", "t"},
 		{"web_vehicles_history", "COALESCE(SUM(value_usd), 0)", "t"},
 		{"web_accounts_history", "COALESCE(SUM(total_value_usd), 0)", "t"},
-		{"web_positions_history", "COALESCE(SUM(value_usd), 0)", "p"},
+		{"web_positions_history", "COALESCE(SUM(value_usd), 0)", "t"},
+		{"web_currencies_history", "COALESCE(SUM(value_usd), 0)", "t"},
 	} {
 		var differ int
 		err := db.QueryRowContext(ctx, `

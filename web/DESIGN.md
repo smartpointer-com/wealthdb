@@ -141,14 +141,19 @@ ten dashboards. Their pickers:
   `web_history_calendar` (migration 0166). It maps every day from the
   history's first to tomorrow to the last history day on or before it.
   So the default stays the same, and a refresh does not resend
-  Allocation or its twin. The Top 100 positions tile carries a
-  *Vehicle* picker of its own. Each stock row shows its share's
-  market-cap size, as Exposure sizes it. A fund row shows none. The
-  Top 100 issuers tile below it takes the currency and the as-of day
-  alone: it covers the whole book. It reads the latest of the instants
-  its view holds on or before that history day: today and the twelve
-  month ends before. Its twin drops the value and hides an issuer named
-  by a holding's own key (`holding:<source>:<id>`).
+  Allocation or its twin. Cash is a position in every breakdown. The
+  currency card sums every line by its native currency, a cash balance
+  by its own (migration 0171). It leaves out a line with no currency or
+  no value, such as an open FX forward. The Top 100 positions tile lists
+  each account's cash in a currency as a row `Cash <CCY>`, vehicle
+  `demand_deposit`, with no symbol. It carries a *Vehicle* picker of
+  its own, whose values are the positions' vehicles. Each stock row
+  shows its share's market-cap size, as Exposure sizes it. A fund row
+  shows none. The Top 100 issuers tile below it takes the currency and
+  the as-of day alone: it covers the whole book. It reads the latest of
+  the instants its view holds on or before that history day: today and
+  the twelve month ends before. Its twin drops the value and hides an
+  issuer named by a holding's own key (`holding:<source>:<id>`).
 - **Returns**: a required currency (returns are stored one row set per
   currency), a required start year (0 is since inception) and a source.
 - **Gains**: the time range and source, a required currency, a *Tax
@@ -704,6 +709,9 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these migrations falls short of the cards:
 
+- 0171: its history carries an account's cash summed across its
+  currencies, which the currency card and the Top 100 positions cards
+  cannot split;
 - 0170: its gains view leaves a missing asset class blank;
 - 0169: it lacks the other income's class and account in
   `web_cashflow_plan`, which the Income cards read;
@@ -980,7 +988,7 @@ The **serving tables** (`serving_*`, migration 0132) hold report macros'
 rows verbatim, for the reason §7 gives. They are:
 
 - the daily histories: global, per source, account, portfolio and
-  position, and the card balances;
+  position, each account's cash per currency, and the card balances;
 - the latest holdings: global, per source, portfolio, account and
   position;
 - every transaction line: all of them, and the spending, income and
@@ -992,6 +1000,11 @@ compares every table with its macro, row by row. Two views build on
 them: `holdings_lines_history` and `holdings_lines_latest` hold each
 position line and each account's cash. A line carries its
 account's tax wrapper and its asset class, cash being the class `cash`.
+The history holds one cash line per account and currency
+(`serving_cash_history`, migration 0171), with its currency. Its rows
+sum to the account history's cash on every day. An account with no
+cash has no cash line. The latest view keeps an account's cash as one
+line.
 The holdings `web_*` views group these lines, so every holdings tile
 can filter by both. The flow view `web_income` carries the tax wrapper
 alone.

@@ -11,10 +11,11 @@ import (
 const latestArg = "9223372036854775807"
 
 // servingTables are the tables MaterializeServingTables rewrites, each
-// with the macro whose rows it holds verbatim (migration 0132).
+// with the macro whose rows it holds verbatim (migrations 0132, 0171).
 var servingTables = []struct{ table, source string }{
 	{"serving_sources_history", "report_sources_history_multi()"},
 	{"serving_accounts_history", "report_accounts_history_multi()"},
+	{"serving_cash_history", "report_cash_history_multi()"},
 	{"serving_positions_history", "report_positions_history_multi()"},
 	{"serving_portfolios_history", "report_portfolios_history_multi()"},
 	{"serving_global_history", "report_global_history_multi()"},

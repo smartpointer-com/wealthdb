@@ -2710,8 +2710,10 @@ line is valued **once** at its own snapshot's FX day, then expanded onto a daily
 spine via an at-or-before ASOF join — so per-day compute stays cheap. A day an
 entity has no line on at all is omitted (a day it is observed at zero on is
 not: that emits an explicit 0 row). `report_global_history_multi` is
-`Σ report_accounts_history_multi`. The serving tables hold the
-multi-currency series for the Metabase models (§10.8).
+`Σ report_accounts_history_multi`. `report_cash_history_multi()` splits
+the accounts series' cash by currency: one row per account, currency and
+day, summing to the account's cash (migration 0171). The serving tables
+hold the multi-currency series for the Metabase models (§10.8).
 
 The active snapshot is resolved **per key per day** — migration `0051`,
 `hist_active_pos()` / `hist_active_cash()`. Each key is ASOF-joined onto the day

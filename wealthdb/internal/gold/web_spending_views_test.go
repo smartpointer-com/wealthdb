@@ -339,7 +339,11 @@ var webViews = []struct{ view, col, src string }{
 	{"web_accounts_history", "as_of_day",
 		"SELECT as_of_day FROM report_accounts_history_multi()"},
 	{"web_positions_history", "as_of_day",
-		"SELECT as_of_day FROM report_positions_history_multi()"},
+		"SELECT as_of_day FROM (SELECT as_of_day FROM report_positions_history_multi() " +
+			"UNION SELECT as_of_day FROM report_cash_history_multi())"},
+	{"web_currencies_history", "as_of_day",
+		"SELECT as_of_day FROM (SELECT as_of_day FROM report_positions_history_multi() " +
+			"UNION SELECT as_of_day FROM report_cash_history_multi())"},
 	{"web_spending", "occurred_at",
 		"SELECT occurred_at FROM report_spending_transactions_multi(0, 9223372036854775807)"},
 	{"web_card_balances_history", "as_of_day",
