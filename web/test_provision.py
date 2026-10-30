@@ -4373,6 +4373,7 @@ if duckdb is not None:
                 + _latest_definition("cashflow_pool_accounts"))
     _db.execute(_MIG_TEXT[149])
     _db.execute(_MIG_TEXT[169])
+    _db.execute(_MIG_TEXT[172])
     _db.executemany("INSERT INTO report_yield_parts (computed_at, silver_source_id, account_external_id, "
                     "position_key, holding_currency, rule, month, month_start, month_only, type, basis, fixed, "
                     "principal, spread, roll_constant, roll_forward, roll_principal, fx_USD, fx_CHF) "
@@ -4389,9 +4390,11 @@ if duckdb is not None:
     for _ccy, _k in (("USD", 1.0), ("CHF", 0.8)):
         for _m in range(1, 37):
             # The other income's 50 a month, split by class and account
-            # as gold 0169 stores it.
+            # as gold 0169 stores it, and a wage on the vehicle's account
+            # outside the pool (0172), which no Cash Flow card reads.
             _parts = [("other_income", "earnings", "src-1", "acct-1", 30.0),
                       ("other_income", "other_receipts", "src-2", "acct-2", 20.0),
+                      ("outside_income", "earnings", "src-3", "acct-3", 900.0),
                       *(("operating_out", c, "", "", v) for c, v in _out.items()),
                       ("debt_service", "", "", "", 300.0 if _m <= 18 else 0.0), ("vehicles", "", "", "", -100.0)]
             _plan_rows += [(_ccy, _m, _month_start(_m), part, cls, src, acct, v * _k, "trailing terms")

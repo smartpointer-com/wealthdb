@@ -376,6 +376,153 @@ func TestMigration0169DDLIsRerunnable(t *testing.T) {
 	}
 }
 
+// seedPlanVehicle adds two accounts outside seedYieldBookFX's pool, each
+// on a retirement wrapper: one with a dividend early in the look-back
+// and wages in March and May, the other with no income line. Invented.
+func seedPlanVehicle(t *testing.T, db *sql.DB) {
+	t.Helper()
+	execEach(t, db,
+		`INSERT INTO cashflow_wrapper_sides (tax_wrapper, side, class) VALUES ('traditional_ira', 'vehicle', 'retirement')`,
+		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
+		    tax_wrapper, first_seen_at, last_seen_at) VALUES
+		    ('test-src', 'V', 'brokerage', 'Retirement account', 'USD', 'traditional_ira', 0, 0),
+		    ('test-src', 'Q', 'brokerage', 'Quiet account', 'USD', 'traditional_ira', 0, 0)`,
+		`INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id, kind,
+		    currency, net_amount) VALUES
+		    ('test-src', 'V0', `+itoa(ymd(2026, 1, 12).Unix())+`, 'V', 'deposit', 'USD', 40),
+		    ('test-src', 'V1', `+itoa(ymd(2026, 3, 10).Unix())+`, 'V', 'deposit', 'USD', 1200),
+		    ('test-src', 'V2', `+itoa(ymd(2026, 5, 10).Unix())+`, 'V', 'deposit', 'USD', 1200)`,
+		`INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id, payer_signature,
+		    signature_version, income_detailed, provenance, assigned_at) VALUES
+		    ('test-src', 'V0', 'sig-fund', 1, 'INCOME_DIVIDENDS', 'rule', 100),
+		    ('test-src', 'V1', 'sig-employer', 1, 'INCOME_SALARY', 'rule', 100),
+		    ('test-src', 'V2', 'sig-employer', 1, 'INCOME_SALARY', 'rule', 100)`)
+}
+
+// A wage on a pool account and one on a retirement account both have a
+// run-rate: the first in the plan's other_income, the second in
+// outside_income alone, spread over the months from the account's first
+// income line (the dividend's January, so five to May) and leaving the
+// dividend, a projected type, out. The account with no income line has
+// no row, and the cash flow projection's look-back is what it is without
+// the retirement accounts.
+func TestThePlansOutsideIncomeIsTheVehiclesRunRate(t *testing.T) {
+	t.Parallel()
+	db, ctx, at := seedYieldBookFX(t)
+	seedPlanWage(t, db)
+	from, to := PlanWindow(time.Unix(at, 0), 12)
+	before, err := CashflowPlanLookback(ctx, db, from, to, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedPlanVehicle(t, db)
+	after, err := CashflowPlanLookback(ctx, db, from, to, "USD")
+	if err != nil || fmt.Sprint(after) != fmt.Sprint(before) {
+		t.Errorf("look-back %+v (%v), before the vehicle %+v", after, err, before)
+	}
+	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
+		t.Fatal(err)
+	}
+	keys := func(part string) []string {
+		return scanStrings(t, db, `SELECT DISTINCT class || ' ' || silver_source_id || ' ' || account_external_id
+		    FROM web_cashflow_plan WHERE part = ? ORDER BY 1`, part)
+	}
+	if got := keys("other_income"); !slices.Equal(got, []string{"earnings test-src F"}) {
+		t.Errorf("other income keys %v, want the pool's wage alone", got)
+	}
+	if got := keys(PlanOutsidePart); !slices.Equal(got, []string{"earnings test-src V"}) {
+		t.Errorf("outside income keys %v, want the retirement account's wage alone", got)
+	}
+	var months int
+	var lo, hi float64
+	if err := db.QueryRowContext(ctx, `SELECT count(DISTINCT month), min(value), max(value) FROM web_cashflow_plan
+	    WHERE part = ? AND currency = 'USD'`, PlanOutsidePart).Scan(&months, &lo, &hi); err != nil ||
+		months != yield.Months || math.Abs(lo-480) > 1e-9 || math.Abs(hi-480) > 1e-9 {
+		t.Errorf("%d months from %v to %v, want 2400 over 5 months each (%v)", months, lo, hi, err)
+	}
+	// Its rows carry the month's quality, so a reader of the month's
+	// parts reads one.
+	var qualities int
+	if err := db.QueryRowContext(ctx, `SELECT max(n) FROM (SELECT count(DISTINCT quality) AS n FROM web_cashflow_plan
+	    GROUP BY currency, month)`).Scan(&qualities); err != nil || qualities != 1 {
+		t.Errorf("%d qualities in a month (%v)", qualities, err)
+	}
+}
+
+// An account whose wrapper changed in the window counts each line on the
+// side its day's wrapper puts it: a wage before it left the pool in the
+// plan's other_income, one after in outside_income alone, spread from
+// that first line outside, April, so over two months. Invented.
+func TestThePlansOutsideIncomeFollowsADatedWrapper(t *testing.T) {
+	t.Parallel()
+	db, ctx, at := seedYieldBookFX(t)
+	execEach(t, db,
+		`INSERT INTO cashflow_wrapper_sides (tax_wrapper, side, class) VALUES ('traditional_ira', 'vehicle', 'retirement')`,
+		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
+		    tax_wrapper, first_seen_at, last_seen_at) VALUES
+		    ('test-src', 'T', 'brokerage', 'Converted account', 'USD', 'traditional_ira', 0, 0)`,
+		`INSERT INTO account_wrapper_history (silver_source_id, account_external_id, tax_wrapper, until_at)
+		    VALUES ('test-src', 'T', 'taxable_personal', `+itoa(ymd(2026, 4, 1).Unix())+`)`,
+		`INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id, kind,
+		    currency, net_amount) VALUES
+		    ('test-src', 'T1', `+itoa(ymd(2026, 3, 5).Unix())+`, 'T', 'deposit', 'USD', 700),
+		    ('test-src', 'T2', `+itoa(ymd(2026, 4, 20).Unix())+`, 'T', 'deposit', 'USD', 900)`,
+		`INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id, payer_signature,
+		    signature_version, income_detailed, provenance, assigned_at) VALUES
+		    ('test-src', 'T1', 'sig-employer', 1, 'INCOME_SALARY', 'rule', 100),
+		    ('test-src', 'T2', 'sig-employer', 1, 'INCOME_SALARY', 'rule', 100)`)
+	from, to := PlanWindow(time.Unix(at, 0), 12)
+	lb, err := CashflowPlanLookback(ctx, db, from, to, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside, err := CashflowPlanOutside(ctx, db, from, to, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := PlanIncomeKey{Class: "earnings", Source: "test-src", Account: "T"}
+	if pooled := lb.OtherIncomeBy[k] * float64(lb.Months); math.Abs(pooled-700) > 1e-6 ||
+		len(outside) != 1 || math.Abs(outside[k]-450) > 1e-9 {
+		t.Errorf("pooled %v over %d months, outside %v; want 700 in the pool, 900 over 2 months outside",
+			pooled, lb.Months, outside)
+	}
+	// In francs too, as the income report converts the line.
+	var line float64
+	if err := db.QueryRowContext(ctx, `SELECT value_outccy::DOUBLE FROM income_lines_outccy(?, ?, 'CHF')
+	    WHERE transaction_external_id = 'T2'`, from, to).Scan(&line); err != nil {
+		t.Fatal(err)
+	}
+	chf, err := CashflowPlanOutside(ctx, db, from, to, "CHF")
+	if err != nil || len(chf) != 1 || math.Abs(chf[k]-line/2) > 1e-6 {
+		t.Errorf("in francs %v (%v), want %v", chf, err, line/2)
+	}
+}
+
+// Migration 0172 replays over a materialized gold: the outside rows
+// stay and the view keeps its shape.
+func TestMigration0172DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
+	db, ctx, at := seedYieldBookFX(t)
+	seedPlanVehicle(t, db)
+	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
+		t.Fatal(err)
+	}
+	outside := func() string {
+		return strings.Join(scanStrings(t, db, `SELECT count(*)::VARCHAR FROM web_cashflow_plan WHERE part = ?`,
+			PlanOutsidePart), "")
+	}
+	before := outside()
+	if before == "0" {
+		t.Fatal("no outside income rows materialized")
+	}
+	for range 2 {
+		rerunMigrationDDL(t, db, ctx, "0172_cashflow_plan_outside_income.sql")
+	}
+	if after := outside(); after != before {
+		t.Errorf("outside rows %s, before %s", after, before)
+	}
+}
+
 // seedYieldYear is a book of a year of month-end snapshots, invented:
 // a broker's portfolio of a dollar account, with a stock held all year
 // and one bought a month ago, and a franc account, with a fund and cash;

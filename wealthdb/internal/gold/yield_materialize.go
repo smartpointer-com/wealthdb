@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -327,7 +328,9 @@ func (m *yieldMaterializer) received(today map[string]*yield.Book, toEpoch int64
 // against the income projection, over a look-back of lookback months.
 // The other income is written by class and account (OtherIncomeBy),
 // which sums to the month's OtherIncome; a look-back with none writes no
-// other_income row.
+// other_income row. The income lines outside the pool are written the
+// same way as PlanOutsidePart (CashflowPlanOutside), which the cash flow
+// projection does not read.
 func (m *yieldMaterializer) plan(today map[string]*yield.Book, toEpoch int64, lookback int) error {
 	type part struct {
 		ccy, part, class string
@@ -350,6 +353,11 @@ func (m *yieldMaterializer) plan(today map[string]*yield.Book, toEpoch int64, lo
 		if err != nil {
 			return fmt.Errorf("MaterializeYield: %w", err)
 		}
+		outside, err := CashflowPlanOutside(m.ctx, m.tx, from, to, ccy)
+		if err != nil {
+			return fmt.Errorf("MaterializeYield: %w", err)
+		}
+		outsideKeys := slices.SortedFunc(maps.Keys(outside), comparePlanIncomeKeys)
 		for i, r := range CashflowPlan(lb, PlanStanding(b), planMonths(b), 1, false) {
 			if r.Total || r.Average {
 				continue
@@ -364,6 +372,10 @@ func (m *yieldMaterializer) plan(today map[string]*yield.Book, toEpoch int64, lo
 					parts = append(parts, part{ccy, other, k.Class, k.Source, k.Account, i + 1, r.Period,
 						lb.OtherIncomeBy[k], quality})
 				}
+			}
+			for _, k := range outsideKeys {
+				parts = append(parts, part{ccy, PlanOutsidePart, k.Class, k.Source, k.Account, i + 1, r.Period,
+					outside[k], quality})
 			}
 			for _, c := range PlanOutClasses {
 				add(out, c, r.OutClasses[c])

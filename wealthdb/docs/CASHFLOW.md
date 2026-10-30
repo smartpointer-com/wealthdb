@@ -1351,7 +1351,21 @@ look-back's parts (§10). It keeps the other income split two ways:
   nothing placed;
 - by the account the lines arrived on.
 
-The split sums to the `other_income` this view prints. The Income
-dashboard shows it as the expected half of the income no holding pays
+The split sums to the `other_income` this view prints.
+
+The refresh also stores a part this view does not read,
+`outside_income` (migration 0172). It holds the income lines outside
+the pool on their own day: a vehicle's, such as a wage paid into a
+retirement account, or one on an account `cashflow.accounts` fences
+out.
+
+- It reads the same look-back, split the same two ways.
+- It leaves out the types the income projection reads.
+- Each account's sum is spread over the window's months from its first
+  line outside the pool.
+
+The boundary keeps that income out of the pool (§3), so `net` never
+counts it. The Income dashboard shows the other income as
+the expected half of the income no holding pays
 ([web/DESIGN.md](../../web/DESIGN.md) §6). The MCP `cashflow` tool
 serves the same view.

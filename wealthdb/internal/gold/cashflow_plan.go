@@ -35,9 +35,10 @@ var PlanOutClasses = []string{string(canonical.ClassConsumption), string(canonic
 	string(canonical.ClassTaxes), string(canonical.ClassGiving), "(uncategorized)"}
 
 // PlanParts are the look-back's parts of report_cashflow_plan (migration
-// 0149), in the order web/provision.py's PLAN_LOOKBACK_PARTS reads them;
-// operating_out holds a row per class of PlanOutClasses, and other_income
-// a row per class and account (OtherIncomeBy, migration 0169).
+// 0149), PlanOutsidePart aside, in the order web/provision.py's
+// PLAN_LOOKBACK_PARTS reads them; operating_out holds a row per class of
+// PlanOutClasses, and other_income a row per class and account
+// (OtherIncomeBy, migration 0169).
 var PlanParts = []string{"other_income", "operating_out", "debt_service", "vehicles"}
 
 // PlanThinMonths is the fewest look-back months whose averages read as
@@ -73,9 +74,12 @@ type PlanIncomeKey struct {
 // IncomeKeys are the keys of OtherIncomeBy, in class, source and
 // account order.
 func (lb PlanLookback) IncomeKeys() []PlanIncomeKey {
-	return slices.SortedFunc(maps.Keys(lb.OtherIncomeBy), func(a, b PlanIncomeKey) int {
-		return strings.Compare(a.Class+"\x00"+a.Source+"\x00"+a.Account, b.Class+"\x00"+b.Source+"\x00"+b.Account)
-	})
+	return slices.SortedFunc(maps.Keys(lb.OtherIncomeBy), comparePlanIncomeKeys)
+}
+
+// comparePlanIncomeKeys orders keys by class, source and account.
+func comparePlanIncomeKeys(a, b PlanIncomeKey) int {
+	return strings.Compare(a.Class+"\x00"+a.Source+"\x00"+a.Account, b.Class+"\x00"+b.Source+"\x00"+b.Account)
 }
 
 // PlanMortgage is one mortgage's instalment in the look-back: what was
@@ -143,10 +147,7 @@ SELECT 'first', '', '', '', NULL, MIN(occurred_at) FROM hist`
 // converts counts nothing, as in the statement.
 func CashflowPlanLookback(ctx context.Context, db querier, from, to int64, outCcy string) (PlanLookback, error) {
 	out := PlanLookback{OutClasses: map[string]float64{}, OtherIncomeBy: map[PlanIncomeKey]float64{}}
-	months := func(first int64) int {
-		f, t := time.Unix(max(first, from), 0).UTC(), time.Unix(to, 0).UTC()
-		return (t.Year()-f.Year())*12 + int(t.Month()-f.Month()) + 1
-	}
+	months := func(first int64) int { return windowMonths(first, from, to) }
 	parts := map[string]float64{}
 	type paid struct {
 		m     PlanMortgage
@@ -205,6 +206,99 @@ func CashflowPlanLookback(ctx context.Context, db querier, from, to int64, outCc
 		return strings.Compare(a.Source+"\x00"+a.Account, b.Source+"\x00"+b.Account)
 	})
 	return out, nil
+}
+
+// PlanOutsidePart is report_cashflow_plan's part (migration 0172) of the
+// income lines outside the pool on their own day: a vehicle's, such as a
+// retirement account's own wage, or one cashflow.accounts fences out.
+// The cash flow projection does not read it, as the household boundary
+// keeps their income out of the pool.
+const PlanOutsidePart = "outside_income"
+
+// planIncomeClasses are the operating-in classes of the cash flow
+// statement (cashflow_txn_nodes) by an income line's detailed type, the
+// projected types (projectedIncomeDetailed) aside: a line of no type is
+// the unresolved class, one of any other type other receipts. A test
+// holds it to the statement's CASE.
+var planIncomeClasses = map[string][]string{
+	"earnings": {"INCOME_SALARY", "INCOME_GIG_ECONOMY", "INCOME_CONTRACTOR"},
+	"yield":    {"INCOME_STAKING", "INCOME_ROYALTIES", "INCOME_ENERGY_FEED_IN"},
+	"benefits": {"INCOME_GOVERNMENT_BENEFITS", "INCOME_UNEMPLOYMENT", "INCOME_LONG_TERM_DISABILITY",
+		"INCOME_MILITARY", "INCOME_CHILD_SUPPORT", "INCOME_ALIMONY"},
+}
+
+// planIncomeClassSQL is planIncomeClasses as the SQL class of an income
+// line w.
+var planIncomeClassSQL = func() string {
+	var b strings.Builder
+	b.WriteString("CASE WHEN w.income_detailed IS NULL THEN '(uncategorized)'")
+	for _, c := range slices.Sorted(maps.Keys(planIncomeClasses)) {
+		fmt.Fprintf(&b, " WHEN w.income_detailed IN ('%s') THEN '%s'",
+			strings.Join(planIncomeClasses[c], "', '"), c)
+	}
+	return b.String() + " ELSE 'other_receipts' END"
+}()
+
+// outsidePool keeps an income line b off the pool on its own day: no
+// span of cashflow_pool_spans holds it, so a line on a dated wrapper
+// override's day reads the override's wrapper, as poolSpanJoin does for
+// the statement's lines.
+func outsidePool(b string) string {
+	return `NOT EXISTS (SELECT 1 FROM cashflow_pool_spans() p
+                         WHERE p.silver_source_id = ` + b + `.silver_source_id
+                           AND p.account_external_id = ` + b + `.account_external_id
+                           AND ` + b + `.occurred_at >= p.from_at AND ` + b + `.occurred_at < p.until_at)`
+}
+
+// planOutsideSQL sums the window's income lines outside the pool by
+// class and account, the projected types aside, with the account's
+// first income line outside the pool ever, of any type.
+var planOutsideSQL = `
+WITH firsts AS (
+    SELECT b.silver_source_id, b.account_external_id, MIN(b.occurred_at) AS first
+      FROM income_lines_base(0, ?2) b
+     WHERE ` + outsidePool("b") + `
+     GROUP BY ALL)
+SELECT ` + planIncomeClassSQL + ` AS class, w.silver_source_id, w.account_external_id,
+       SUM(w.value_outccy)::DOUBLE, any_value(f.first)
+  FROM income_lines_outccy(?1, ?2, ?3) w
+  JOIN firsts f USING (silver_source_id, account_external_id)
+ WHERE NOT list_contains(?4, COALESCE(w.income_detailed, ''))
+   AND ` + outsidePool("w") + `
+ GROUP BY ALL
+HAVING SUM(w.value_outccy) IS NOT NULL`
+
+// CashflowPlanOutside reads the income lines of the look-back window
+// [from, to] outside the pool on their own day, in outCcy, by class and
+// account: each one's monthly average over the window's months from the
+// month of the account's first such line ever, as CashflowPlanLookback
+// spreads the pool's from the pool's first line. So an account newer
+// than the window spreads over the months it has. A line no rate
+// converts counts nothing.
+func CashflowPlanOutside(ctx context.Context, db querier, from, to int64, outCcy string) (map[PlanIncomeKey]float64,
+	error) {
+	out := map[PlanIncomeKey]float64{}
+	err := scanAll(ctx, db, planOutsideSQL, func(rows *sql.Rows) error {
+		var k PlanIncomeKey
+		var value float64
+		var first int64
+		if err := rows.Scan(&k.Class, &k.Source, &k.Account, &value, &first); err != nil {
+			return err
+		}
+		out[k] = value / float64(windowMonths(first, from, to))
+		return nil
+	}, from, to, outCcy, projectedIncomeDetailed)
+	if err != nil {
+		return nil, fmt.Errorf("CashflowPlanOutside: %w", err)
+	}
+	return out, nil
+}
+
+// windowMonths are the months of the window [from, to] from the month of
+// first, or of from where first is earlier.
+func windowMonths(first, from, to int64) int {
+	f, t := time.Unix(max(first, from), 0).UTC(), time.Unix(to, 0).UTC()
+	return (t.Year()-f.Year())*12 + int(t.Month()-f.Month()) + 1
 }
 
 // PlanWindow is the look-back window of a cash flow projection made at

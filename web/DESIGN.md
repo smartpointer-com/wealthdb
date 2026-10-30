@@ -711,6 +711,8 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these migrations falls short of the cards:
 
+- 0172: its `web_cashflow_plan` lacks the income lines outside the
+  pool;
 - 0171: its history carries an account's cash summed across its
   currencies, which the currency card and the Top 100 positions cards
   cannot split;
@@ -973,7 +975,7 @@ wealthdb/docs/DESIGN.md §10.15 has the engine side):
 
 Four views sit beside them. `web_income_days` and `web_income_withheld`
 (migration 0146) list each day the received figures cover and the tax
-booked on the income's accounts. `web_cashflow_plan` (migrations 0149 and 0169)
+booked on the income's accounts. `web_cashflow_plan` (migrations 0149, 0169 and 0172)
 serves the cash flow projection's look-back parts, which depend on no
 picker. `web_cashflow_pool` (migration 0149) lists the cash pool's
 accounts, which split the income projection for it.
