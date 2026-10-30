@@ -15,7 +15,9 @@
     />
     <meta property="og:type" content="website" />
     <meta property="og:image" content="shots/overview.webp" />
-    <link rel="icon" href="mark.svg" type="image/svg+xml" />
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <link rel="preload" href="fonts/manrope-latin.woff2" as="font" type="font/woff2" crossorigin />
     <script>
       // Open in the system theme, before first paint. Dark is the default
@@ -298,9 +300,9 @@
         text-decoration: none;
         letter-spacing: -0.02em;
       }
-      .nav-logo svg {
-        width: 26px;
-        height: 26px;
+      .nav-logo img {
+        width: 28px;
+        height: 28px;
       }
       .nav-right {
         display: flex;
@@ -422,12 +424,6 @@
         .hero-content {
           grid-template-columns: 1fr;
         }
-      }
-      .hero-mark {
-        display: block;
-        width: 56px;
-        height: 56px;
-        margin-bottom: 22px;
       }
       .hero-kicker {
         display: inline-flex;
@@ -1411,17 +1407,7 @@
     <nav id="nav" aria-label="Main">
       <div class="container">
         <a class="nav-logo" href="#top" aria-label="wealthdb home">
-          <svg viewBox="0 0 64 64" aria-hidden="true">
-            <defs>
-              <linearGradient id="lg" x1="0" y1="1" x2="1" y2="0">
-                <stop offset="0" stop-color="#3fb950" />
-                <stop offset="0.55" stop-color="#39c5cf" />
-                <stop offset="1" stop-color="#e3b341" />
-              </linearGradient>
-            </defs>
-            <rect x="4" y="4" width="56" height="56" rx="14" fill="none" stroke="url(#lg)" stroke-width="4" />
-            <path d="M16 26 L24 44 L32 32 L40 38 L48 18" fill="none" stroke="url(#lg)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
+          <img src="img/logo-28.png" srcset="img/logo-56.png 2x, img/logo-84.png 3x" width="28" height="28" alt="" />
           wealthdb
         </a>
         <div class="nav-right">
@@ -1467,10 +1453,6 @@
         <section class="hero">
           <div class="container hero-content">
             <div>
-              <svg class="hero-mark" viewBox="0 0 64 64" aria-hidden="true">
-                <rect x="4" y="4" width="56" height="56" rx="14" fill="none" stroke="url(#lg)" stroke-width="4" />
-                <path d="M16 26 L24 44 L32 32 L40 38 L48 18" fill="none" stroke="url(#lg)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
               <div class="hero-kicker"><i aria-hidden="true"></i>Open source · runs on your machine</div>
               <h1>Own your <span class="gradient-text">whole financial picture</span></h1>
               <p class="hero-sub">
