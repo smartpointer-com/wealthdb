@@ -32,7 +32,7 @@ Pick the tool by the question:
 - how investments performed, as a return % -> returns
 - what was gained or lost (P&L), realized or unrealized; a year's realized gains; a holding's cost basis -> gains
 - what is really owned once every fund is looked through: allocation by asset class, sector, country, region or currency; debt by credit, maturity or coupon; the largest issuers; how much of one company is held through funds -> exposure
-- what the holdings yield or earn; interest rates, duration, DV01; cash against its benchmark -> yield
+- what the holdings yield or earn; interest rates, duration, DV01; a bond's credit rating; cash against its benchmark -> yield
 - the individual booked lines (a trade, a deposit, a transfer, the largest transactions) -> transactions; totals of dividends, interest, salary or spending are income and spending
 - what was spent, on what -> spending
 - what was received, from whom; what the holdings will pay and when -> income (view=projection or calendar)
@@ -43,7 +43,7 @@ Pick the tool by the question:
 Conventions:
 - Dates: "2025" is that year, "2025-06" that month, "2025-06-15" that day; also "today", "yesterday", "last month", "last year". from snaps to the start, to and as_of to the end.
 - Every parameter is optional; each description states its default. A filter such as account, category, type or class picks the view that has that column, and the result header says which view ran.
-- One call usually answers the question: a result is one row per entity, category or type for the whole window unless you ask for monthly, quarterly or annual buckets.
+- One call usually answers the question: a result is one row per entity, category or type for the whole window unless you ask for monthly, quarterly or annual buckets. Answer from it; do not call again to confirm. A total comes from a summary, types or projection view, never from adding up the lines of a calendar or transactions view yourself.
 - Each result starts with a header line that states the resolved window or as-of date, the currency and the row count; check it matches the question. Results are capped; the last line says how to get more or narrow.
 - Money columns are plain decimals in the currency named in the header (value_CHF). A blank cell means no value, not zero. In line views money leaving is negative; sort "-value" puts the largest amounts first whatever their sign.
 - In returns, gains, exposure and yield, read the quality column: it names the reason for every n/a or gap. Returns are not additive across views; gains are.
