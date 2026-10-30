@@ -1490,7 +1490,8 @@ def question_defs(db_id, mid):
         "Allocation by currency": breakdown("Allocation by currency",
             "web_currencies_history", "currency", "value", "row",
             "Value by native currency, cash included, as of the chosen day. "
-            "The Currency picker only sets the valuation currency."),
+            "A forward counts at its mark; Exposure shows its legs. The "
+            "Currency picker only sets the valuation currency."),
         "Value by tax wrapper": breakdown("Value by tax wrapper",
             "web_accounts_history", "tax_wrapper", "total_value", "pie",
             "Account value, cash included, by tax wrapper as of the chosen day.",
@@ -4620,7 +4621,8 @@ def privacy_card_defs(db_id, model_ids):
     breakdown("Allocation by currency (privacy)",
               "web_currencies_history", "currency", "value", "row",
               "Native-currency shares (%) of net worth as of the chosen day, "
-              "cash included.")
+              "cash included. A forward counts at its mark; Exposure shows its "
+              "legs.")
     breakdown("Value by tax wrapper (privacy)",
               "web_accounts_history", "tax_wrapper", "total_value", "pie",
               "Tax-wrapper shares (%) of account value, cash included, as of the "

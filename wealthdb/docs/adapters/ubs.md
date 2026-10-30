@@ -55,7 +55,7 @@ PSN silver:
 | `holdings` | `positions` | One securities holding per row. The book value is the MT535 BOOK amount (§12). |
 | `cash_balances` | `cash_balances` | One to one; UBS `balance_kind` carries over. From the MT940 statement feed. |
 | `fx_rates` | `fx_rates` | Base and quote currency as silver states them. The mid rate is the first period's `MiddleRate`. |
-| `forward_contracts` | `positions` `(foreign_exchange, forward)` | On the portfolio's overlay account. `contract_external_id` is the `position_key`. |
+| `forward_contracts` | `positions` `(foreign_exchange, forward)`; `instruments`, `fund_compositions`, `fund_lines` | On the portfolio's overlay account. `contract_external_id` is the `position_key`. An open forward is an instrument, and its legs are its composition (§14). |
 | `events` | `transactions` | §5 maps the kinds. §7 adds the derived rows. |
 | `option_contracts`, `money_market_contracts`, `otc_contracts` | — | Not projected. |
 | `pending_securities` | — | Mostly "no activity" markers (`ACTI//N`). Not projected. |
@@ -751,7 +751,7 @@ gross*).
   covered account.
 
 A conversion between two accounts the feed does speak for is a known
-limit (§14).
+limit (§15).
 
 ### The counter account, across both eras
 
@@ -1638,7 +1638,40 @@ composition on that day, one line per investment.
 - **Reaching gold.** A ubs-web collector load writes no new dump. So new
   records and compositions reach gold on the next `wealthdb reload ubs`.
 
-## 14. Known limits
+## 14. FX forwards
+
+A PSN forward position states both legs at notional. `TradeAmt` is in
+`TradeCcyIsoCd`, and `CounterCcyAmt` is in `CounterCcyIsoCd`. The mark
+is `MrktValueAmt` in `MrktValueCcyIsoCd`. The adapter reads them in
+`forwards.go`.
+
+- **The bought leg.** The leg with the positive amount is bought, the
+  other sold. Where the two amounts do not have opposite signs,
+  `BuySellInd` decides: `Buy` buys the trade leg, `Sell` the counter
+  leg.
+- **The instrument.** Each open forward is an instrument of
+  `(foreign_exchange, forward)`, keyed by its contract id. Its name is
+  the pair and the maturity, such as `FX forward USD/CHF 2026-12-15`.
+  Its currency is the mark's. The position carries the instrument.
+- **The composition.** On each position day, the forward's legs are its
+  composition: origin `parsed`, provider `ubs-psn`, the mark as net
+  assets. The one line is long the bought leg and short the sold one,
+  at 100. Its key is the forward's name, never the forward's own key. Gold
+  then counts the bought notional in its currency and the rest of the
+  mark in the sold one (EXPOSURE.md §5). The composition has no end
+  date: the next day's replaces it, and the holding ends with the
+  contract.
+- **Open.** A contract is open while its `MtrtyDt` is after its
+  position day, `PosDt` or else the snapshot's day. A contract matured
+  by that day emits no position.
+- **Excluded.** A spot deal, a contract with no maturity date, no mark
+  currency or no legs keeps its position and gets no instrument. It
+  counts at its mark, flagged `partial`. A forward marked at zero is
+  split by nothing either, and is flagged too.
+- **Reaching gold.** A load writes the instruments and compositions of
+  the days it reads. `wealthdb reload ubs` writes them for every day.
+
+## 15. Known limits
 
 - **A conversion between two covered accounts.** Both legs are feed
   rows. The `/OCMT/` subfield on the paying one states the other. The

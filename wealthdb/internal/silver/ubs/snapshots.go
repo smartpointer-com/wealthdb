@@ -778,17 +778,13 @@ SELECT snapshot_at, base_currency_iso, quote_currency_iso, payload
 	return rows.Err()
 }
 
-type forwardPayload struct {
-	MrktValueAmt      *canonical.Decimal `json:"MrktValueAmt"`
-	MrktValueCcyIsoCd string             `json:"MrktValueCcyIsoCd"`
-	PrtflId           string             `json:"PrtflId"`
-}
-
-// appendForwardContracts projects open FX-forward contracts as
-// PositionChange rows with asset_class=fx_forward. UBS attributes
-// these directly to the portfolio (no sub-account); we attach
-// them to a synthetic per-portfolio overlay account
-// ("<portfolio_id>:overlay", account_kind=overlay) so every
+// appendForwardContracts projects the FX-forward contracts as
+// PositionChange rows of (foreign_exchange, forward), each open
+// forward with its instrument and its legs as that instrument's
+// composition (forwards.go). A contract matured by its position day
+// emits nothing. UBS attributes these directly to the portfolio (no
+// sub-account); we attach them to a synthetic per-portfolio overlay
+// account ("<portfolio_id>:overlay", account_kind=overlay) so every
 // position remains owned by an `accounts` row and the totals
 // across `accounts` and `portfolios` tie out against `positions
 // --with-cash`. See docs/adapters/ubs.md.
@@ -822,7 +818,7 @@ SELECT snapshot_at, contract_external_id, payload
 		if err := json.Unmarshal([]byte(payload), &p); err != nil {
 			return fmt.Errorf("forward_contracts payload (snap=%d): %w", snap, err)
 		}
-		if p.PrtflId == "" {
+		if p.PrtflId == "" || p.matured(snap) {
 			continue
 		}
 		ccy := p.MrktValueCcyIsoCd
@@ -844,7 +840,7 @@ SELECT snapshot_at, contract_external_id, payload
 				LastSeenAt:          snap,
 			})
 		}
-		batch.Positions = append(batch.Positions, canonical.PositionChange{
+		pos := canonical.PositionChange{
 			SnapshotAt:        snap,
 			AccountExternalID: overlayID,
 			PositionKey:       contractID,
@@ -853,7 +849,14 @@ SELECT snapshot_at, contract_external_id, payload
 			Currency:          ccy,
 			MarketValue:       p.MrktValueAmt,
 			Payload:           json.RawMessage(payload),
-		})
+		}
+		if inst, comp, line, ok := forwardHolding(snap, contractID, p); ok {
+			pos.InstrumentExternalID = &inst.InstrumentExternalID
+			batch.Instruments = append(batch.Instruments, inst)
+			batch.FundCompositions = append(batch.FundCompositions, comp)
+			batch.FundLines = append(batch.FundLines, line)
+		}
+		batch.Positions = append(batch.Positions, pos)
 	}
 	return rows.Err()
 }

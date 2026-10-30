@@ -144,10 +144,12 @@ ten dashboards. Their pickers:
   Allocation or its twin. Cash is a position in every breakdown. The
   currency card sums every line by its native currency, a cash balance
   by its own (migration 0171). It leaves out a line with no currency or
-  no value, such as an open FX forward. The Top 100 positions tile lists
-  each account's cash in a currency as a row `Cash <CCY>`, vehicle
-  `demand_deposit`, with no symbol. It carries a *Vehicle* picker of
-  its own, whose values are the positions' vehicles. Each stock row
+  no value, such as an FX deal with no mark. A forward counts at its
+  mark in the mark's currency, and the Exposure dashboard shows its
+  legs. The Top 100 positions tile lists each account's cash in a
+  currency as a row `Cash <CCY>`, vehicle `demand_deposit`, with no
+  symbol. It carries a *Vehicle* picker of its own, whose values are the
+  positions' vehicles. Each stock row
   shows its share's market-cap size, as Exposure sizes it. A fund row
   shows none. The Top 100 issuers tile below it takes the currency and
   the as-of day alone: it covers the whole book. It reads the latest of

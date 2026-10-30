@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -509,8 +510,9 @@ func foldWebPayloadAsWebKey(base json.RawMessage, web string) json.RawMessage {
 // one-day dip to ~0 before holdings begin, or a collapse to
 // forwards/mortgage-only when a same-day nightly is captured before
 // that day's holdings. Both edges are suppressed here, so each
-// securities account keeps its nearest complete snapshot. Cash
-// balances and dimensions in the same batches pass through untouched,
+// securities account keeps its nearest complete snapshot. A forward's
+// instrument and composition go with its position. Cash balances and
+// the other dimensions in the same batches pass through untouched,
 // so PSN cash still flows. Running BEFORE psnWebFoldStream means an
 // emptied bracket-day batch carries no positions, so the fold won't
 // anchor a mortgage onto it either (matching the rule that no snapshot
@@ -526,16 +528,18 @@ func (s *psnHoldingsGapFilter) Next(ctx context.Context) (canonical.SnapshotBatc
 	if err != nil {
 		return batch, more, err
 	}
-	if len(batch.Positions) > 0 {
-		kept := batch.Positions[:0]
-		for _, p := range batch.Positions {
-			if p.SnapshotAt >= s.firstHoldingsAt &&
-				(s.lastHoldingsAt == 0 || p.SnapshotAt <= s.lastHoldingsAt) {
-				kept = append(kept, p)
-			}
-		}
-		batch.Positions = kept
+	in := func(at int64) bool {
+		return at >= s.firstHoldingsAt && (s.lastHoldingsAt == 0 || at <= s.lastHoldingsAt)
 	}
+	batch.Positions = slices.DeleteFunc(batch.Positions, func(p canonical.PositionChange) bool { return !in(p.SnapshotAt) })
+	// A forward's instrument and legs go with its position, so no
+	// composition describes the holding of another day.
+	batch.Instruments = slices.DeleteFunc(batch.Instruments, func(i canonical.InstrumentChange) bool {
+		return i.Vehicle == canonical.VehicleForward && !in(i.FirstSeenAt)
+	})
+	batch.FundCompositions = slices.DeleteFunc(batch.FundCompositions,
+		func(c canonical.FundCompositionChange) bool { return !in(c.AsOf) })
+	batch.FundLines = slices.DeleteFunc(batch.FundLines, func(l canonical.FundLineChange) bool { return !in(l.AsOf) })
 	return batch, more, nil
 }
 

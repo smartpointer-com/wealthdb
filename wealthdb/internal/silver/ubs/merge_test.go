@@ -31,6 +31,12 @@ func TestPSNHoldingsGapFilter(t *testing.T) {
 			CashBalances: []canonical.CashBalanceChange{{
 				SnapshotAt: at, AccountExternalID: "iban", Currency: "CHF",
 			}},
+			Instruments: []canonical.InstrumentChange{
+				{InstrumentExternalID: "fwd", Vehicle: canonical.VehicleForward, FirstSeenAt: at},
+				{InstrumentExternalID: "XX0000000002", Vehicle: canonical.VehicleStock, FirstSeenAt: at},
+			},
+			FundCompositions: []canonical.FundCompositionChange{{FundRef: "fwd", AsOf: at}},
+			FundLines:        []canonical.FundLineChange{{FundRef: "fwd", AsOf: at}},
 		}
 	}
 	leadingDay := fwdDay(100) // before the first holdings batch
@@ -51,6 +57,7 @@ func TestPSNHoldingsGapFilter(t *testing.T) {
 	ctx := context.Background()
 	posBySnap := map[int64]int{}
 	cashBySnap := map[int64]int{}
+	var kept []string
 	for {
 		batch, more, err := s.Next(ctx)
 		if err != nil {
@@ -61,6 +68,12 @@ func TestPSNHoldingsGapFilter(t *testing.T) {
 		}
 		for _, cb := range batch.CashBalances {
 			cashBySnap[cb.SnapshotAt]++
+		}
+		for _, i := range batch.Instruments {
+			kept = append(kept, i.InstrumentExternalID)
+		}
+		if len(batch.FundCompositions)+len(batch.FundLines) > 0 {
+			kept = append(kept, "legs")
 		}
 		if !more {
 			break
@@ -76,6 +89,11 @@ func TestPSNHoldingsGapFilter(t *testing.T) {
 		if cashBySnap[at] != 1 {
 			t.Errorf("gap-day %d cash = %d, want 1 (PSN cash must still flow)", at, cashBySnap[at])
 		}
+	}
+	// A gap day's forward keeps no instrument and no legs; any other
+	// instrument it states still flows.
+	if len(kept) != 2 || kept[0] != "XX0000000002" || kept[1] != "XX0000000002" {
+		t.Errorf("gap days kept %v, want the stock's instrument alone, once a day", kept)
 	}
 	// Holdings-day positions kept.
 	if posBySnap[firstHoldings] != 1 {

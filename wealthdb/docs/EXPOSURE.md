@@ -325,8 +325,14 @@ without one reads as a fund with no composition.
   notional splits in two. The long leg counts in its own currency, at
   the leg's share of the fund's net assets. The rest of the line is the
   short leg. It counts in the short currency, else in the line's. The
-  two sum to the line. A forward that states no legs, held directly or
-  in a fund, counts in its own currency and is flagged `partial`.
+  two sum to the line. A forward held directly splits the same way
+  where its source states the legs. The source gives it a composition
+  of one such line, with the mark as net assets
+  ([adapters/ubs.md §14](adapters/ubs.md#14-fx-forwards)). Its legs
+  then count as looked through, in `via_funds_pct`, and the
+  forward is a row of `funds`. A forward that states
+  no legs, held directly or in a fund, counts in its own currency and
+  is flagged `partial`. So does one marked at zero.
 - **Cash and derivatives inside a fund** stay leaves of their own asset
   type.
 - **Private holdings.** No public source describes a property, a loan,
@@ -531,7 +537,8 @@ is the running share of net worth down to the row. `equity`, `debt` and
 - real estate, a metal, a private holding of no debt.
 
 `funds` lists each fund held directly, then one row for all other
-holdings together. `securities` and `funds` therefore sum to net worth,
+holdings together. A forward its legs describe is a row of its own
+(§5). `securities` and `funds` therefore sum to net worth,
 like the other views. A fund a declaration describes reads `via`
 `declared`, with the record's `declaration_date` and the dimensions it
 `declared`.
