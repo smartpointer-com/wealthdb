@@ -105,7 +105,9 @@ SELECT r.provider, r.field, r.raw, COALESCE(p.value, g.value)
 
 // writeInstrumentKeys gives every instrument its security key
 // (canonical.SecurityKey), from its ISIN, CUSIP and symbol (a resolved
-// symbol where the source states none).
+// symbol where the source states none). A forward with none of them is
+// keyed by its contract id (canonical.ContractKey), so the legs its
+// source states describe it (docs/EXPOSURE.md §5).
 func writeInstrumentKeys(ctx context.Context, tx *sql.Tx) error {
 	if err := execAll(ctx, tx, `DELETE FROM instrument_keys`); err != nil {
 		return err
@@ -113,15 +115,21 @@ func writeInstrumentKeys(ctx context.Context, tx *sql.Tx) error {
 	type row struct{ src, iid, key string }
 	var out []row
 	if err := scanAll(ctx, tx, `
-SELECT i.silver_source_id, i.instrument_external_id, COALESCE(i.isin, ''), COALESCE(i.cusip, ''), COALESCE(il.symbol, '')
+SELECT i.silver_source_id, i.instrument_external_id, COALESCE(i.isin, ''), COALESCE(i.cusip, ''), COALESCE(il.symbol, ''),
+       COALESCE(i.vehicle = 'forward', FALSE)
   FROM instruments i
   LEFT JOIN instrument_labels() il ON il.silver_source_id = i.silver_source_id
        AND il.instrument_external_id = i.instrument_external_id`, func(rows *sql.Rows) error {
 		var src, iid, isin, cusip, symbol string
-		if err := rows.Scan(&src, &iid, &isin, &cusip, &symbol); err != nil {
+		var forward bool
+		if err := rows.Scan(&src, &iid, &isin, &cusip, &symbol, &forward); err != nil {
 			return err
 		}
-		if k := canonical.SecurityKey(isin, cusip, "", symbol, ""); k != "" {
+		k := canonical.SecurityKey(isin, cusip, "", symbol, "")
+		if k == "" && forward {
+			k = canonical.ContractKey(iid)
+		}
+		if k != "" {
 			out = append(out, row{src, iid, k})
 		}
 		return nil

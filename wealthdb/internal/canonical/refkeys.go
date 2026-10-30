@@ -18,6 +18,9 @@ import (
 //	symbol:<SYMBOL>  a ticker, without its exchange
 //	name:<hash>      a hash of a normalized name, the last resort
 //
+// A contract a source knows by its own id alone, such as a currency
+// forward, takes a name key of that id (ContractKey).
+//
 // A ticker key carries no exchange: providers label exchanges in their
 // own words, and the key must stay stable across providers and dates.
 //
@@ -81,6 +84,16 @@ func SecurityKey(isin, cusip, figi, ticker, name string) string {
 		return keyName + hex.EncodeToString(h[:6])
 	}
 	return ""
+}
+
+// ContractKey is the key of a contract a source knows by its own id
+// alone, such as a currency forward: a name key of the id, so no provider
+// is asked for it and no fund line names it. "" for a blank id.
+func ContractKey(id string) string {
+	if strings.TrimSpace(id) == "" {
+		return ""
+	}
+	return SecurityKey("", "", "", "", "contract "+id)
 }
 
 // normalizeISIN is s upper-cased and trimmed when it has an ISIN's shape

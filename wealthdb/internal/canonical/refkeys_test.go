@@ -1,6 +1,9 @@
 package canonical
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // luhnValid checks a whole ISIN independently of ISINCheckDigit: letters
 // become two digits, and the Luhn sum of every digit is a multiple of 10.
@@ -83,6 +86,20 @@ func TestSecurityKeyNameHashIsStable(t *testing.T) {
 	}
 	if len(a) != len(keyName)+12 {
 		t.Errorf("name key %q: want a 12-hex-digit hash", a)
+	}
+}
+
+func TestContractKeyIsANameKeyOfItsOwn(t *testing.T) {
+	t.Parallel()
+	k := ContractKey("QC-0001")
+	if !strings.HasPrefix(k, keyName) || k != ContractKey(" QC-0001 ") {
+		t.Errorf("ContractKey = %q, want a stable name key", k)
+	}
+	if k == SecurityKey("", "", "", "", "QC-0001") || k == ContractKey("QC-0002") {
+		t.Errorf("ContractKey %q collides with a name or another contract", k)
+	}
+	if ContractKey(" ") != "" {
+		t.Error("a blank id has a key")
 	}
 }
 
