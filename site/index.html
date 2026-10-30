@@ -1,0 +1,2156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>wealthdb — Own your whole financial picture</title>
+    <meta
+      name="description"
+      content="wealthdb collects every bank, brokerage, pension and private-market account into one private database on your own machine. You and your AI agent ask it questions. No advisor, no sales desk, no cloud in the loop."
+    />
+    <meta property="og:title" content="wealthdb — Own your whole financial picture" />
+    <meta
+      property="og:description"
+      content="Every account, one private database, on your own machine. Net worth, returns, exposure, yield, spending, income and cash flow, for you and your AI agent."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="shots/overview.webp" />
+    <link rel="icon" href="mark.svg" type="image/svg+xml" />
+    <link rel="preload" href="fonts/manrope-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <script>
+      // Open in the system theme, before first paint. Dark is the default
+      // when the browser states no preference.
+      if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) {
+        document.documentElement.setAttribute("data-theme", "light");
+      }
+    </script>
+    <style>
+      /* Fonts ship with the page, Latin subset only, under the SIL Open Font
+         License (fonts/OFL-*.txt). Nothing loads from a third party. */
+      @font-face {
+        font-family: "Manrope";
+        font-style: normal;
+        font-weight: 200 800;
+        font-display: swap;
+        src: url("fonts/manrope-latin.woff2") format("woff2");
+      }
+      @font-face {
+        font-family: "IBM Plex Mono";
+        font-style: normal;
+        font-weight: 400;
+        font-display: swap;
+        src: url("fonts/ibm-plex-mono-400-latin.woff2") format("woff2");
+      }
+      @font-face {
+        font-family: "IBM Plex Mono";
+        font-style: normal;
+        font-weight: 500;
+        font-display: swap;
+        src: url("fonts/ibm-plex-mono-500-latin.woff2") format("woff2");
+      }
+      @font-face {
+        font-family: "IBM Plex Mono";
+        font-style: normal;
+        font-weight: 600;
+        font-display: swap;
+        src: url("fonts/ibm-plex-mono-600-latin.woff2") format("woff2");
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      :root {
+        --bg-deep: #06090f;
+        --bg-primary: #0d1117;
+        --bg-secondary: #161b22;
+        --bg-tertiary: #21262d;
+        --bg-card: #131921;
+
+        --text-primary: #e6edf3;
+        --text-secondary: #8b949e;
+        --text-muted: #6e7681;
+        --text-dim: #484f58;
+
+        --accent: #3fb950;
+        --accent-hover: #56d364;
+        --accent-glow: rgba(63, 185, 80, 0.14);
+        --accent-ink: #06090f;
+        --teal: #39c5cf;
+        --gold: #e3b341;
+        --blue: #58a6ff;
+        --purple: #a78bfa;
+        --red: #ff7b72;
+        --orange: #ffa657;
+        --pink: #f778ba;
+
+        --border: #30363d;
+        --border-subtle: #21262d;
+
+        --surface-raised: rgba(255, 255, 255, 0.04);
+        --surface-border: rgba(255, 255, 255, 0.06);
+        --surface-strong: rgba(255, 255, 255, 0.08);
+        --surface-code: #0b0f16;
+        --surface-code-bar: #11161f;
+        --shadow-strong: rgba(0, 0, 0, 0.8);
+        --frame-bezel: #1b212b;
+        --frame-bezel-hi: #262d37;
+        --screen-bg: #0b141f;
+        --glow-green: rgba(63, 185, 80, 0.1);
+        --glow-gold: rgba(227, 179, 65, 0.07);
+        --warn-bg: rgba(227, 179, 65, 0.08);
+        --warn-border: rgba(227, 179, 65, 0.35);
+
+        --gradient-hero: linear-gradient(180deg, #0a0f14 0%, #0d1117 100%);
+        --gradient-text: linear-gradient(135deg, var(--accent) 0%, var(--teal) 50%, var(--gold) 100%);
+
+        --font-sans:
+          "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+        --font-mono:
+          "IBM Plex Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+        --section-pad: clamp(72px, 11vh, 128px);
+        --content-max: 1160px;
+      }
+
+      :root[data-theme="light"] {
+        --bg-deep: #ffffff;
+        --bg-primary: #ffffff;
+        --bg-secondary: #f6f8fa;
+        --bg-tertiary: #eaeef2;
+        --bg-card: #ffffff;
+
+        --text-primary: #0f172a;
+        --text-secondary: #475569;
+        --text-muted: #64748b;
+        --text-dim: #94a3b8;
+
+        --accent: #1a7f37;
+        --accent-hover: #166a2e;
+        --accent-glow: rgba(26, 127, 55, 0.1);
+        --accent-ink: #ffffff;
+        --teal: #1b7c83;
+        --gold: #9a6700;
+        --blue: #0969da;
+        --purple: #8250df;
+        --red: #cf222e;
+        --orange: #bc4c00;
+        --pink: #bf3989;
+
+        --border: #d0d7de;
+        --border-subtle: #e6e9ee;
+
+        --surface-raised: rgba(15, 23, 42, 0.03);
+        --surface-border: rgba(15, 23, 42, 0.08);
+        --surface-strong: rgba(15, 23, 42, 0.06);
+        --surface-code: #0d1117;
+        --surface-code-bar: #161b22;
+        --shadow-strong: rgba(31, 41, 55, 0.25);
+        --frame-bezel: #d9dee5;
+        --frame-bezel-hi: #f0f3f6;
+        --screen-bg: #f9fbfc;
+        --glow-green: rgba(26, 127, 55, 0.08);
+        --glow-gold: rgba(227, 179, 65, 0.12);
+        --warn-bg: rgba(154, 103, 0, 0.06);
+        --warn-border: rgba(154, 103, 0, 0.35);
+
+        --gradient-hero: linear-gradient(180deg, #fbfcfa 0%, #ffffff 100%);
+      }
+
+      html {
+        scroll-behavior: smooth;
+        scroll-padding-top: 80px;
+        overflow-x: hidden;
+      }
+      body {
+        font-family: var(--font-sans);
+        background: var(--bg-deep);
+        color: var(--text-primary);
+        line-height: 1.7;
+        overflow-x: hidden;
+        -webkit-font-smoothing: antialiased;
+      }
+      :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: 4px;
+      }
+      a {
+        color: var(--accent);
+      }
+      code,
+      pre,
+      kbd {
+        font-family: var(--font-mono);
+      }
+
+      .skip-link {
+        position: absolute;
+        left: 12px;
+        top: -48px;
+        z-index: 200;
+        padding: 10px 16px;
+        border-radius: 8px;
+        background: var(--accent);
+        color: var(--accent-ink);
+        font-size: 14px;
+        font-weight: 600;
+        text-decoration: none;
+      }
+      .skip-link:focus {
+        top: 12px;
+      }
+
+      /* Fixed backdrop: gradient plus a radially faded grid. */
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: -2;
+        pointer-events: none;
+        background: var(--gradient-hero);
+      }
+      body::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        pointer-events: none;
+        background:
+          radial-gradient(ellipse 60% 40% at 85% -5%, var(--glow-gold), transparent 70%),
+          radial-gradient(ellipse 55% 45% at 10% 10%, var(--glow-green), transparent 70%);
+      }
+
+      .container {
+        max-width: var(--content-max);
+        margin: 0 auto;
+        padding: 0 clamp(16px, 4vw, 48px);
+      }
+
+      /* Scroll reveal */
+      .reveal {
+        opacity: 0;
+        transform: translateY(32px);
+        transition:
+          opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1),
+          transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      .reveal.visible {
+        opacity: 1;
+        transform: none;
+      }
+      .reveal-delay-1 {
+        transition-delay: 0.1s;
+      }
+      .reveal-delay-2 {
+        transition-delay: 0.2s;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+        .reveal {
+          transition: none;
+          transform: none;
+          opacity: 1;
+        }
+        .hero h1,
+        .hero-sub,
+        .install-card,
+        .showcase {
+          animation: none !important;
+        }
+      }
+
+      /* ───────── Navigation ───────── */
+      #nav {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 100;
+        padding: 14px 0;
+        border-bottom: 1px solid transparent;
+        transition:
+          background 0.3s,
+          border-color 0.3s;
+      }
+      #nav.scrolled {
+        background: var(--bg-deep);
+        border-bottom-color: var(--border-subtle);
+      }
+      #nav .container {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .nav-logo {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 21px;
+        font-weight: 700;
+        color: var(--text-primary);
+        text-decoration: none;
+        letter-spacing: -0.02em;
+      }
+      .nav-logo svg {
+        width: 26px;
+        height: 26px;
+      }
+      .nav-right {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+      }
+      .nav-links {
+        display: flex;
+        gap: 26px;
+        list-style: none;
+      }
+      .nav-links a {
+        color: var(--text-secondary);
+        text-decoration: none;
+        font-size: 14px;
+        font-weight: 500;
+        transition: color 0.2s;
+      }
+      .nav-links a:hover {
+        color: var(--text-primary);
+      }
+      .nav-icons {
+        display: flex;
+        gap: 8px;
+      }
+      .nav-icon-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 38px;
+        height: 38px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: transparent;
+        color: var(--text-secondary);
+        cursor: pointer;
+        text-decoration: none;
+        transition:
+          color 0.2s,
+          border-color 0.2s,
+          background 0.2s;
+      }
+      .nav-icon-btn:hover {
+        color: var(--text-primary);
+        border-color: var(--text-muted);
+        background: var(--surface-raised);
+      }
+      .nav-icon-btn svg {
+        width: 18px;
+        height: 18px;
+        display: block;
+      }
+      .theme-toggle .icon-moon {
+        display: none;
+      }
+      :root[data-theme="light"] .theme-toggle .icon-sun {
+        display: none;
+      }
+      :root[data-theme="light"] .theme-toggle .icon-moon {
+        display: block;
+      }
+      .nav-burger {
+        display: none;
+      }
+      .nav-burger .icon-close {
+        display: none;
+      }
+      #nav.menu-open .nav-burger .icon-open {
+        display: none;
+      }
+      #nav.menu-open .nav-burger .icon-close {
+        display: block;
+      }
+      @media (max-width: 860px) {
+        .nav-burger {
+          display: inline-flex;
+        }
+        .nav-links {
+          position: absolute;
+          top: 100%;
+          left: 0;
+          right: 0;
+          flex-direction: column;
+          gap: 0;
+          padding: 6px 0 10px;
+          background: var(--bg-deep);
+          border-bottom: 1px solid var(--border-subtle);
+          box-shadow: 0 12px 24px -12px var(--shadow-strong);
+          display: none;
+        }
+        #nav.menu-open .nav-links {
+          display: flex;
+        }
+        .nav-links a {
+          display: block;
+          padding: 12px 20px;
+          font-size: 16px;
+        }
+      }
+
+      /* ───────── Hero ───────── */
+      .hero-region {
+        position: relative;
+      }
+      .hero-region > * {
+        position: relative;
+        z-index: 1;
+      }
+      .hero {
+        padding: 136px 0 32px;
+      }
+      .hero-content {
+        display: grid;
+        grid-template-columns: 1.1fr 1fr;
+        gap: 48px;
+        align-items: center;
+      }
+      @media (max-width: 960px) {
+        .hero-content {
+          grid-template-columns: 1fr;
+        }
+      }
+      .hero-mark {
+        display: block;
+        width: 56px;
+        height: 56px;
+        margin-bottom: 22px;
+      }
+      .hero-kicker {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--text-secondary);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 4px 10px;
+        margin-bottom: 20px;
+      }
+      .hero-kicker i {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--accent);
+      }
+      .hero h1 {
+        font-size: clamp(34px, 5.2vw, 58px);
+        font-weight: 800;
+        line-height: 1.08;
+        letter-spacing: -0.035em;
+        text-wrap: balance;
+        animation: fadeInUp 0.8s ease-out;
+      }
+      .gradient-text {
+        background: var(--gradient-text);
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        color: transparent;
+      }
+      @keyframes fadeInUp {
+        from {
+          opacity: 0;
+          transform: translateY(24px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      .hero-sub {
+        font-size: clamp(15px, 2vw, 18px);
+        color: var(--text-secondary);
+        line-height: 1.6;
+        max-width: 560px;
+        margin: 22px 0 0;
+        animation: fadeInUp 0.8s ease-out 0.15s both;
+      }
+
+      /* Install card */
+      .install-card {
+        text-align: left;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        box-shadow: 0 24px 60px -30px var(--shadow-strong);
+        animation: fadeInUp 0.8s ease-out 0.3s both;
+      }
+      .install-tabs {
+        display: flex;
+        gap: 2px;
+        padding: 0 10px;
+        border-bottom: 1px solid var(--border-subtle);
+      }
+      .install-tab {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 13px 12px 11px;
+        border: none;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+        background: transparent;
+        color: var(--text-muted);
+        font-family: var(--font-sans);
+        font-size: 14px;
+        font-weight: 600;
+        white-space: nowrap;
+        cursor: pointer;
+        transition:
+          color 0.15s,
+          background 0.15s;
+      }
+      @media (max-width: 480px) {
+        .install-tab {
+          font-size: 12.5px;
+          padding: 11px 8px 9px;
+        }
+      }
+      .install-tab:hover {
+        color: var(--text-primary);
+      }
+      .install-tab.is-on {
+        border-bottom-color: var(--accent);
+        color: var(--text-primary);
+      }
+      .install-tab svg {
+        width: 16px;
+        height: 16px;
+      }
+      .install-tab.is-on svg {
+        color: var(--accent);
+      }
+      .install-panes {
+        display: grid;
+      }
+      .install-pane {
+        grid-area: 1 / 1;
+        padding: 18px 20px 20px;
+        visibility: hidden;
+      }
+      .install-pane.is-on {
+        visibility: visible;
+      }
+      .install-note {
+        font-size: 13px;
+        color: var(--text-muted);
+        margin-bottom: 10px;
+      }
+      .install-line {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: var(--surface-code);
+        border: 1px solid var(--border-subtle);
+        border-radius: 8px;
+        padding: 12px 12px 12px 14px;
+      }
+      .install-line code {
+        flex: 1;
+        font-size: 13px;
+        line-height: 1.5;
+        color: #e6edf3;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .install-line code .p {
+        color: var(--accent);
+        user-select: none;
+      }
+      :root[data-theme="light"] .install-line code .p {
+        color: #56d364;
+      }
+      .install-copy {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        background: transparent;
+        color: #8b949e;
+        cursor: pointer;
+        transition:
+          color 0.15s,
+          border-color 0.15s;
+      }
+      .install-copy:hover {
+        color: #e6edf3;
+        border-color: #8b949e;
+      }
+      .install-copy svg {
+        width: 15px;
+        height: 15px;
+      }
+      .install-copy.copied {
+        color: var(--accent-hover);
+        border-color: var(--accent-hover);
+      }
+      .install-after {
+        margin-top: 10px;
+        font-size: 13px;
+        color: var(--text-muted);
+      }
+
+      /* Showcase: dashboards in a device frame with tabs */
+      .showcase {
+        padding: 48px 0 0;
+        animation: fadeInUp 0.9s ease-out 0.45s both;
+      }
+      .showcase-tabs {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 6px;
+        margin-bottom: 20px;
+      }
+      .showcase-tab {
+        padding: 7px 14px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: transparent;
+        color: var(--text-secondary);
+        font-family: var(--font-sans);
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition:
+          color 0.15s,
+          border-color 0.15s,
+          background 0.15s;
+      }
+      .showcase-tab:hover {
+        color: var(--text-primary);
+        border-color: var(--text-muted);
+      }
+      .showcase-tab.is-on {
+        color: var(--accent-ink);
+        background: var(--accent);
+        border-color: var(--accent);
+      }
+      .device {
+        position: relative;
+        border-radius: 16px;
+        background: var(--frame-bezel);
+        box-shadow:
+          0 0 0 1px var(--frame-bezel-hi),
+          0 40px 90px -40px var(--shadow-strong);
+        padding: 10px;
+      }
+      .device-bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        height: 24px;
+        padding: 0 4px 6px;
+      }
+      .device-bar i {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #3a424d;
+      }
+      .device-bar i:nth-child(1) {
+        background: #ff5f57;
+      }
+      .device-bar i:nth-child(2) {
+        background: #febc2e;
+      }
+      .device-bar i:nth-child(3) {
+        background: #28c840;
+      }
+      .device-url {
+        margin-left: auto;
+        margin-right: auto;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+      .device-screen {
+        position: relative;
+        aspect-ratio: 2000 / 1636;
+        max-height: 70vh;
+        width: 100%;
+        overflow: hidden;
+        border-radius: 8px;
+        background: var(--screen-bg);
+      }
+      .device-screen img {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: top;
+        opacity: 0;
+        transition: opacity 0.3s;
+      }
+      .device-screen img.is-on {
+        opacity: 1;
+      }
+      /* The dashboards follow the page theme: Metabase in dark mode under
+         the dark page, in light mode under the light one. */
+      :root:not([data-theme="light"]) .device-screen img.shot-light,
+      :root[data-theme="light"] .device-screen img.shot-dark {
+        display: none;
+      }
+      .showcase-caption {
+        text-align: center;
+        font-size: 13px;
+        color: var(--text-muted);
+        margin-top: 14px;
+      }
+
+      /* ───────── Sections ───────── */
+      .section {
+        padding: var(--section-pad) 0;
+      }
+      .section-head {
+        max-width: 720px;
+        margin-bottom: 48px;
+      }
+      .section-head.center {
+        margin-left: auto;
+        margin-right: auto;
+        text-align: center;
+      }
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-family: var(--font-mono);
+        font-size: 12.5px;
+        font-weight: 500;
+        color: var(--text-secondary);
+        margin-bottom: 14px;
+      }
+      .eyebrow::before {
+        content: attr(data-n);
+        color: var(--accent);
+        font-weight: 600;
+      }
+      .eyebrow::after {
+        content: "";
+        width: 28px;
+        height: 1px;
+        background: var(--border);
+      }
+      .section-head.center .eyebrow::after {
+        display: none;
+      }
+      h2 {
+        font-size: clamp(28px, 3.6vw, 40px);
+        font-weight: 800;
+        line-height: 1.12;
+        letter-spacing: -0.03em;
+        text-wrap: balance;
+      }
+      .section-head p {
+        margin-top: 16px;
+        font-size: 17px;
+        color: var(--text-secondary);
+      }
+      h3 {
+        font-size: 17px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+      }
+      .card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 24px;
+        transition: border-color 0.2s;
+      }
+      .card:hover {
+        border-color: var(--text-dim);
+      }
+      .card p {
+        color: var(--text-secondary);
+        font-size: 15px;
+        margin-top: 8px;
+      }
+      .grid-3 {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 18px;
+      }
+      /* A grid cell shrinks below its content, so a wide <pre> scrolls
+         inside its card instead of widening the page. */
+      .grid-3 > *,
+      .pipeline > *,
+      .agent-grid > *,
+      .privacy-grid > * {
+        min-width: 0;
+      }
+      @media (max-width: 900px) {
+        .grid-3 {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+      @media (max-width: 620px) {
+        .grid-3 {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      /* Why */
+      .why-icon {
+        width: 40px;
+        height: 40px;
+        border-radius: 10px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--accent-glow);
+        color: var(--accent);
+        margin-bottom: 16px;
+      }
+      .why-icon svg {
+        width: 20px;
+        height: 20px;
+      }
+
+      /* Pipeline diagram */
+      .pipeline {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr auto 1fr auto 1.1fr;
+        align-items: stretch;
+        gap: 12px;
+      }
+      .stage {
+        align-self: start;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 20px;
+      }
+      .stage-label {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+        margin-bottom: 8px;
+      }
+      .stage h3 {
+        margin-bottom: 8px;
+      }
+      .stage p {
+        font-size: 14px;
+        color: var(--text-secondary);
+      }
+      .stage ul {
+        list-style: none;
+        margin-top: 12px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .stage li,
+      .tag {
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        padding: 3px 8px;
+        border-radius: 6px;
+        background: var(--surface-strong);
+        border: 1px solid var(--surface-border);
+        color: var(--text-secondary);
+      }
+      .stage--bronze {
+        border-top: 3px solid var(--orange);
+      }
+      .stage--silver {
+        border-top: 3px solid var(--text-secondary);
+      }
+      .stage--gold {
+        border-top: 3px solid var(--gold);
+      }
+      .stage--reports {
+        border-top: 3px solid var(--accent);
+      }
+      .surfaces {
+        margin-top: 14px;
+      }
+      .arrow {
+        display: flex;
+        align-items: center;
+        color: var(--text-dim);
+      }
+      .arrow svg {
+        width: 22px;
+        height: 22px;
+      }
+      .surfaces {
+        display: grid;
+        gap: 10px;
+      }
+      .surface {
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 14px 16px;
+      }
+      .surface svg {
+        flex: none;
+        width: 20px;
+        height: 20px;
+        color: var(--accent);
+        margin-top: 3px;
+      }
+      .surface strong {
+        display: block;
+        font-size: 14px;
+      }
+      .surface span {
+        font-size: 13px;
+        color: var(--text-secondary);
+      }
+      @media (max-width: 1100px) {
+        .pipeline {
+          grid-template-columns: 1fr;
+        }
+        .arrow {
+          justify-content: center;
+        }
+        .arrow svg {
+          transform: rotate(90deg);
+        }
+      }
+
+      /* Reports */
+      .report-cmd {
+        display: block;
+        margin-top: 14px;
+        font-family: var(--font-mono);
+        font-size: 12.5px;
+        color: var(--text-primary);
+        background: var(--surface-code);
+        border: 1px solid var(--border-subtle);
+        border-radius: 8px;
+        padding: 8px 10px;
+        white-space: nowrap;
+        overflow-x: auto;
+      }
+      :root[data-theme="light"] .report-cmd {
+        color: #e6edf3;
+      }
+      .report-cmd .p {
+        color: var(--accent);
+      }
+      :root[data-theme="light"] .report-cmd .p {
+        color: #56d364;
+      }
+
+      /* Terminal */
+      .terminal {
+        background: var(--surface-code);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        overflow: hidden;
+        box-shadow: 0 30px 70px -40px var(--shadow-strong);
+      }
+      .terminal-bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 10px 14px;
+        background: var(--surface-code-bar);
+        border-bottom: 1px solid #21262d;
+      }
+      .terminal-bar i {
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+      }
+      .terminal-bar i:nth-child(1) {
+        background: #ff5f57;
+      }
+      .terminal-bar i:nth-child(2) {
+        background: #febc2e;
+      }
+      .terminal-bar i:nth-child(3) {
+        background: #28c840;
+      }
+      .terminal-title {
+        margin: 0 auto;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: #8b949e;
+      }
+      .terminal pre {
+        padding: 18px 20px 22px;
+        font-size: 12.5px;
+        line-height: 1.55;
+        color: #c9d1d9;
+        overflow-x: auto;
+        tab-size: 4;
+      }
+      .terminal .p {
+        color: #3fb950;
+      }
+      .terminal .c {
+        color: #8b949e;
+      }
+      .terminal .h {
+        color: #79c0ff;
+      }
+      .terminal .k {
+        color: #e3b341;
+      }
+
+      /* Sources */
+      .source-card h3 {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .source-card h3 i {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex: none;
+      }
+      .source-card ul {
+        list-style: none;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 14px;
+      }
+      .source-card li {
+        font-size: 12.5px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: var(--surface-strong);
+        border: 1px solid var(--surface-border);
+        color: var(--text-primary);
+      }
+      .source-feature {
+        display: grid;
+        grid-template-columns: 1.4fr 1fr;
+        gap: 24px;
+        align-items: center;
+        border-color: var(--accent);
+        background:
+          linear-gradient(135deg, var(--accent-glow), transparent 60%),
+          var(--bg-card);
+      }
+      .source-feature ul {
+        margin-top: 0;
+      }
+      .source-contribute {
+        margin-top: 18px;
+        display: grid;
+        grid-template-columns: 1.4fr auto;
+        gap: 24px;
+        align-items: center;
+        border-style: dashed;
+      }
+      .source-contribute h3 svg {
+        width: 20px;
+        height: 20px;
+        color: var(--accent);
+        flex: none;
+      }
+      @media (max-width: 760px) {
+        .source-feature,
+        .source-contribute {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      /* Agent chat */
+      .agent-grid {
+        display: grid;
+        grid-template-columns: 1.15fr 0.85fr;
+        gap: 32px;
+        align-items: start;
+      }
+      @media (max-width: 960px) {
+        .agent-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      .chat {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        overflow: hidden;
+        box-shadow: 0 30px 70px -40px var(--shadow-strong);
+      }
+      .chat-bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border-subtle);
+        font-size: 13px;
+        color: var(--text-secondary);
+      }
+      .chat-bar b {
+        color: var(--text-primary);
+        font-weight: 600;
+      }
+      .chat-bar .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-glow);
+      }
+      .chat-bar .tag {
+        margin-left: auto;
+      }
+      .chat-body {
+        padding: 18px 16px 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      .msg {
+        max-width: 92%;
+        font-size: 14px;
+        line-height: 1.6;
+      }
+      .msg p + p {
+        margin-top: 8px;
+      }
+      .msg.user {
+        align-self: flex-end;
+        background: var(--accent);
+        color: var(--accent-ink);
+        padding: 10px 14px;
+        border-radius: 14px 14px 4px 14px;
+        font-weight: 500;
+      }
+      .msg.agent {
+        align-self: flex-start;
+        background: var(--surface-strong);
+        border: 1px solid var(--surface-border);
+        color: var(--text-primary);
+        padding: 12px 14px;
+        border-radius: 14px 14px 14px 4px;
+      }
+      .msg.agent ul {
+        margin: 8px 0 0 18px;
+      }
+      .msg.agent li + li {
+        margin-top: 4px;
+      }
+      .msg.agent small {
+        display: block;
+        margin-top: 8px;
+        color: var(--text-muted);
+        font-size: 12.5px;
+      }
+      .tools {
+        align-self: flex-start;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .tool {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        padding: 4px 9px;
+        border-radius: 6px;
+        border: 1px dashed var(--border);
+        color: var(--text-muted);
+      }
+      .tool svg {
+        width: 12px;
+        height: 12px;
+        color: var(--accent);
+      }
+      .guarantees {
+        display: grid;
+        gap: 14px;
+      }
+      .guarantee {
+        display: flex;
+        gap: 14px;
+      }
+      .guarantee .n {
+        flex: none;
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-family: var(--font-mono);
+        font-size: 13px;
+        font-weight: 700;
+        background: var(--accent-glow);
+        color: var(--accent);
+      }
+      .guarantee strong {
+        display: block;
+        font-size: 15px;
+      }
+      .guarantee span {
+        font-size: 14px;
+        color: var(--text-secondary);
+      }
+
+      /* Privacy */
+      .privacy-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 18px;
+      }
+      @media (max-width: 760px) {
+        .privacy-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      .privacy-grid .card ul {
+        margin: 10px 0 0 18px;
+        color: var(--text-secondary);
+        font-size: 14.5px;
+      }
+      .privacy-grid .card li + li {
+        margin-top: 6px;
+      }
+      .caveat-mark {
+        color: var(--accent);
+        font-weight: 600;
+        margin-left: 2px;
+      }
+      .caveat {
+        max-width: 920px;
+        margin-top: 22px;
+        padding: 0 4px;
+        font-size: 13.5px;
+        line-height: 1.65;
+        color: var(--text-muted);
+      }
+      .caveat strong {
+        color: var(--text-secondary);
+        font-weight: 600;
+      }
+      .callout {
+        margin-top: 24px;
+        border: 1px solid var(--warn-border);
+        background: var(--warn-bg);
+        border-radius: 14px;
+        padding: 20px 22px;
+        display: flex;
+        gap: 14px;
+      }
+      .callout svg {
+        flex: none;
+        width: 22px;
+        height: 22px;
+        color: var(--gold);
+        margin-top: 2px;
+      }
+      .callout p {
+        font-size: 14.5px;
+        color: var(--text-secondary);
+      }
+      .callout strong {
+        color: var(--text-primary);
+      }
+
+      /* CTA */
+      .cta {
+        text-align: center;
+        padding: var(--section-pad) 0;
+      }
+      .cta-card {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 48px 28px;
+        border-radius: 20px;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        position: relative;
+        overflow: hidden;
+      }
+      .cta-card::before {
+        content: "";
+        position: absolute;
+        inset: -40% -20% auto;
+        height: 80%;
+        background: radial-gradient(ellipse at 50% 0%, var(--accent-glow), transparent 70%);
+        pointer-events: none;
+      }
+      .cta-card > * {
+        position: relative;
+      }
+      .cta-card p {
+        margin: 14px auto 28px;
+        max-width: 520px;
+        color: var(--text-secondary);
+        font-size: 16px;
+      }
+      .btn-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        justify-content: center;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 11px 20px;
+        border-radius: 10px;
+        font-weight: 600;
+        font-size: 14.5px;
+        text-decoration: none;
+        transition:
+          background 0.2s,
+          transform 0.2s,
+          border-color 0.2s;
+      }
+      .btn svg {
+        width: 16px;
+        height: 16px;
+      }
+      .btn-primary {
+        background: var(--accent);
+        color: var(--accent-ink);
+      }
+      .btn-primary:hover {
+        background: var(--accent-hover);
+        transform: translateY(-1px);
+      }
+      .btn-ghost {
+        border: 1px solid var(--border);
+        color: var(--text-primary);
+      }
+      .btn-ghost:hover {
+        border-color: var(--text-muted);
+        background: var(--surface-raised);
+      }
+
+      /* Footer */
+      .site-footer {
+        border-top: 1px solid var(--border-subtle);
+        padding: 32px 0 44px;
+        font-size: 13.5px;
+        color: var(--text-muted);
+      }
+      .site-footer .container {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px 28px;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .footer-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 18px;
+      }
+      .footer-links a,
+      .site-footer a {
+        color: var(--text-secondary);
+        text-decoration: none;
+      }
+      .site-footer .legal {
+        display: grid;
+        grid-template-columns: 1fr 1.6fr;
+        gap: 24px 48px;
+        align-items: start;
+        margin-top: 28px;
+        padding-top: 24px;
+        border-top: 1px solid var(--border-subtle);
+        font-size: 12.5px;
+        line-height: 1.6;
+      }
+      .legal h3 {
+        font-size: 12.5px;
+        font-weight: 600;
+        color: var(--text-secondary);
+        margin-bottom: 6px;
+      }
+      .legal p + p {
+        margin-top: 8px;
+      }
+      @media (max-width: 680px) {
+        .site-footer .legal {
+          grid-template-columns: 1fr;
+        }
+      }
+      .footer-links a:hover,
+      .site-footer a:hover {
+        color: var(--text-primary);
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <nav id="nav" aria-label="Main">
+      <div class="container">
+        <a class="nav-logo" href="#top" aria-label="wealthdb home">
+          <svg viewBox="0 0 64 64" aria-hidden="true">
+            <defs>
+              <linearGradient id="lg" x1="0" y1="1" x2="1" y2="0">
+                <stop offset="0" stop-color="#3fb950" />
+                <stop offset="0.55" stop-color="#39c5cf" />
+                <stop offset="1" stop-color="#e3b341" />
+              </linearGradient>
+            </defs>
+            <rect x="4" y="4" width="56" height="56" rx="14" fill="none" stroke="url(#lg)" stroke-width="4" />
+            <path d="M16 26 L24 44 L32 32 L40 38 L48 18" fill="none" stroke="url(#lg)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          wealthdb
+        </a>
+        <div class="nav-right">
+          <ul class="nav-links">
+            <li><a href="#why">Why</a></li>
+            <li><a href="#how">How it works</a></li>
+            <li><a href="#reports">Reports</a></li>
+            <li><a href="#sources">Sources</a></li>
+            <li><a href="#agents">AI agents</a></li>
+            <li><a href="#privacy">Privacy</a></li>
+            <li><a href="https://github.com/smartpointer-com/wealthdb#documentation">Docs</a></li>
+          </ul>
+          <div class="nav-icons">
+            <a class="nav-icon-btn" href="https://github.com/smartpointer-com/wealthdb" aria-label="wealthdb on GitHub">
+              <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z" />
+              </svg>
+            </a>
+            <button class="nav-icon-btn theme-toggle" type="button" aria-label="Toggle light and dark theme">
+              <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="4" />
+                <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+              </svg>
+              <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+              </svg>
+            </button>
+            <button class="nav-icon-btn nav-burger" type="button" aria-label="Toggle menu" aria-expanded="false">
+              <svg class="icon-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                <path d="M4 7h16M4 12h16M4 17h16" />
+              </svg>
+              <svg class="icon-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                <path d="M6 6l12 12M18 6L6 18" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </nav>
+
+    <main id="main">
+      <div class="hero-region" id="top">
+        <section class="hero">
+          <div class="container hero-content">
+            <div>
+              <svg class="hero-mark" viewBox="0 0 64 64" aria-hidden="true">
+                <rect x="4" y="4" width="56" height="56" rx="14" fill="none" stroke="url(#lg)" stroke-width="4" />
+                <path d="M16 26 L24 44 L32 32 L40 38 L48 18" fill="none" stroke="url(#lg)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <div class="hero-kicker"><i aria-hidden="true"></i>Open source · runs on your machine</div>
+              <h1>Own your <span class="gradient-text">whole financial picture</span></h1>
+              <p class="hero-sub">
+                wealthdb collects every bank, brokerage, pension and private-market account into one
+                private database on your own machine. You and your AI agent ask it questions. No
+                advisor, no sales desk, no cloud in the loop.
+              </p>
+            </div>
+            <div class="install-card">
+              <div class="install-tabs" role="tablist" aria-label="Ways to get started">
+                <button class="install-tab is-on" role="tab" aria-selected="true" data-pane="agent" type="button">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l2.4 5.6L20 9l-4.4 3.8L17 19l-5-3-5 3 1.4-6.2L4 9l5.6-1.4z" /></svg>
+                  Agentic
+                </button>
+                <button class="install-tab" role="tab" aria-selected="false" data-pane="manual" type="button">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17l6-5-6-5M12 19h8" /></svg>
+                  Manual
+                </button>
+                <button class="install-tab" role="tab" aria-selected="false" data-pane="demo" type="button">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M10 8l6 4-6 4z" /></svg>
+                  Try the demo
+                </button>
+              </div>
+              <div class="install-panes">
+                <div class="install-pane is-on" data-pane="agent" role="tabpanel">
+                  <p class="install-note">Paste this into your coding agent</p>
+                  <div class="install-line">
+                    <code><span class="p">&gt; </span>Help me set up wealthdb for my accounts. Read https://github.com/smartpointer-com/wealthdb/blob/main/README.md and follow it. Never ask me for a password; I will type credentials and MFA codes myself.</code>
+                    <button class="install-copy" type="button" aria-label="Copy prompt" data-copy="Help me set up wealthdb for my accounts. Read https://github.com/smartpointer-com/wealthdb/blob/main/README.md and follow it. Never ask me for a password; I will type credentials and MFA codes myself.">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                    </button>
+                  </div>
+                  <p class="install-after">The AI agent builds and configures. You sign in to each source and answer its MFA prompt yourself. No AI agent ever logs into your bank.</p>
+                </div>
+                <div class="install-pane" data-pane="manual" role="tabpanel">
+                  <p class="install-note">Run this in a terminal on macOS or Linux. Needs git, make, Docker and Python 3.10+.</p>
+                  <div class="install-line">
+                    <code><span class="p">❯ </span>git clone https://github.com/smartpointer-com/wealthdb.git &amp;&amp; cd wealthdb &amp;&amp; make all &amp;&amp; make install</code>
+                    <button class="install-copy" type="button" aria-label="Copy command" data-copy="git clone https://github.com/smartpointer-com/wealthdb.git && cd wealthdb && make all && make install">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                    </button>
+                  </div>
+                  <p class="install-after">Then <code>wealthdb-collect &lt;source&gt; login</code>, <code>download</code>, <code>load</code>, and <code>wealthdb load -a</code>. No Go toolchain: the engine builds inside its container.</p>
+                </div>
+                <div class="install-pane" data-pane="demo" role="tabpanel">
+                  <p class="install-note">No bank needed. An invented household with every report and dashboard.</p>
+                  <div class="install-line">
+                    <code><span class="p">❯ </span>make demo &amp;&amp; make demo-web</code>
+                    <button class="install-copy" type="button" aria-label="Copy command" data-copy="make demo && make demo-web">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                    </button>
+                  </div>
+                  <p class="install-after">Dashboards on <code>http://127.0.0.1:3100/</code>. Add <code>make demo-mcp</code> to point an AI agent at it. Every screenshot on this page comes from that demo.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="showcase container" aria-label="Dashboards">
+          <div class="showcase-tabs" role="tablist" aria-label="Dashboard">
+            <button class="showcase-tab is-on" role="tab" aria-selected="true" data-shot="overview" type="button">Wealth Overview</button>
+            <button class="showcase-tab" role="tab" aria-selected="false" data-shot="allocation" type="button">Allocation</button>
+            <button class="showcase-tab" role="tab" aria-selected="false" data-shot="returns" type="button">Returns</button>
+            <button class="showcase-tab" role="tab" aria-selected="false" data-shot="exposure" type="button">Exposure</button>
+            <button class="showcase-tab" role="tab" aria-selected="false" data-shot="yield" type="button">Yield</button>
+            <button class="showcase-tab" role="tab" aria-selected="false" data-shot="income" type="button">Income</button>
+            <button class="showcase-tab" role="tab" aria-selected="false" data-shot="spending" type="button">Spending</button>
+            <button class="showcase-tab" role="tab" aria-selected="false" data-shot="cashflow" type="button">Cash Flow</button>
+          </div>
+          <div class="device">
+            <div class="device-bar" aria-hidden="true">
+              <i></i><i></i><i></i>
+              <span class="device-url">127.0.0.1:3100 · wealthdb web</span>
+            </div>
+            <div class="device-screen">
+              <img class="shot-light is-on" src="shots/overview.webp" alt="The Wealth Overview dashboard: net worth, positions and cash tiles, net worth over time by source, asset classes over time" data-shot="overview" />
+              <img class="shot-dark is-on" src="shots/overview-dark.webp" alt="The Wealth Overview dashboard: net worth, positions and cash tiles, net worth over time by source, asset classes over time" data-shot="overview" />
+              <img class="shot-light" src="shots/allocation.webp" alt="The Allocation dashboard" data-shot="allocation" loading="lazy" />
+              <img class="shot-dark" src="shots/allocation-dark.webp" alt="The Allocation dashboard" data-shot="allocation" loading="lazy" />
+              <img class="shot-light" src="shots/returns.webp" alt="The Returns dashboard: time-weighted and money-weighted returns, cumulative return by source, monthly, quarterly and annual returns" data-shot="returns" loading="lazy" />
+              <img class="shot-dark" src="shots/returns-dark.webp" alt="The Returns dashboard: time-weighted and money-weighted returns, cumulative return by source, monthly, quarterly and annual returns" data-shot="returns" loading="lazy" />
+              <img class="shot-light" src="shots/exposure.webp" alt="The Exposure dashboard: exposure by asset class, sector and country with every fund looked through" data-shot="exposure" loading="lazy" />
+              <img class="shot-dark" src="shots/exposure-dark.webp" alt="The Exposure dashboard: exposure by asset class, sector and country with every fund looked through" data-shot="exposure" loading="lazy" />
+              <img class="shot-light" src="shots/yield.webp" alt="The Yield dashboard: what the holdings yield and their rate sensitivity" data-shot="yield" loading="lazy" />
+              <img class="shot-dark" src="shots/yield-dark.webp" alt="The Yield dashboard: what the holdings yield and their rate sensitivity" data-shot="yield" loading="lazy" />
+              <img class="shot-light" src="shots/income.webp" alt="The Income dashboard: income received and expected, by kind and payer" data-shot="income" loading="lazy" />
+              <img class="shot-dark" src="shots/income-dark.webp" alt="The Income dashboard: income received and expected, by kind and payer" data-shot="income" loading="lazy" />
+              <img class="shot-light" src="shots/spending.webp" alt="The Spending dashboard: spending by category and merchant over time" data-shot="spending" loading="lazy" />
+              <img class="shot-dark" src="shots/spending-dark.webp" alt="The Spending dashboard: spending by category and merchant over time" data-shot="spending" loading="lazy" />
+              <img class="shot-light" src="shots/cashflow.webp" alt="The Cash Flow dashboard: operating, investing and financing flows, and the household's cash flow statement" data-shot="cashflow" loading="lazy" />
+              <img class="shot-dark" src="shots/cashflow-dark.webp" alt="The Cash Flow dashboard: operating, investing and financing flows, and the household's cash flow statement" data-shot="cashflow" loading="lazy" />
+            </div>
+          </div>
+          <p class="showcase-caption">
+            Ten dashboards, served locally over a read-only snapshot, in light or dark. Each has a privacy
+            twin that shows shares instead of amounts. The data shown is the invented demo household.
+          </p>
+        </section>
+      </div>
+
+      <!-- ───────── Why ───────── -->
+      <section class="section" id="why">
+        <div class="container">
+          <div class="section-head center reveal">
+            <span class="eyebrow" data-n="01">Why</span>
+            <h2>Take back the whole picture</h2>
+            <p>
+              Your money is spread across banks, brokers, pension plans and platforms that each show
+              you only their slice. The people who see it all are the ones selling to you. wealthdb puts
+              the full picture on your own disk, so the insight is yours.
+            </p>
+          </div>
+          <div class="grid-3">
+            <div class="card reveal">
+              <span class="why-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18M3 12h18" /></svg></span>
+              <h3>Complete</h3>
+              <p>
+                Every account you hold, in every currency, as of any day. Checking and cards, brokerage
+                and retirement plans, pensions, crypto, private funds, property. One number for net worth,
+                and the whole story behind it.
+              </p>
+            </div>
+            <div class="card reveal reveal-delay-1">
+              <span class="why-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="10" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg></span>
+              <h3>Private</h3>
+              <p>
+                Your data lands in local databases and nowhere else. The collectors only read. No
+                tech company keeps a copy, and no AI agent ever touches a credential.
+              </p>
+            </div>
+            <div class="card reveal reveal-delay-2">
+              <span class="why-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19h16M6 16l4-6 4 3 5-8" /></svg></span>
+              <h3>Yours to question</h3>
+              <p>
+                Returns the way a fund reports them, exposure with every fund looked through, yield and
+                rate risk, income, spending and cash flow. From the command line, the dashboards, or an AI
+                agent of your choice that reads the same reports.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───────── How it works ───────── -->
+      <section class="section" id="how">
+        <div class="container">
+          <div class="section-head reveal">
+            <span class="eyebrow" data-n="02">How it works</span>
+            <h2>Collectors download. The engine consolidates. The reports read.</h2>
+            <p>
+              Three layers. Each source keeps its raw downloads and its own parsed database. The engine
+              merges them into one canonical store. Three surfaces read it.
+            </p>
+          </div>
+          <div class="pipeline reveal">
+            <div class="stage stage--bronze">
+              <div class="stage-label">Collectors · bronze</div>
+              <h3>One program per source</h3>
+              <p>A static, auditable script signs in with your credentials and your MFA answer, then downloads everything the provider has: not just today's balances, but the full history, every transaction, every PDF statement and tax form. No AI agent ever logs into your bank.</p>
+              <ul><li>login</li><li>download</li><li>load</li><li>prune</li></ul>
+            </div>
+            <div class="arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg></div>
+            <div class="stage stage--silver">
+              <div class="stage-label">Silver</div>
+              <h3>One SQLite per source</h3>
+              <p>The raw downloads parsed into a relational database: every detail the provider returned, from a JSON export or a PDF statement, in a compact, queryable form.</p>
+              <ul><li>holdings</li><li>transactions</li><li>documents</li></ul>
+            </div>
+            <div class="arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg></div>
+            <div class="stage stage--gold">
+              <div class="stage-label">Engine · gold</div>
+              <h3>One DuckDB store</h3>
+              <p>Every source merged into one canonical model: accounts, positions, lots and flows across all your banks and brokers. FX, transfer pairing between your own accounts, categories, look-through, returns and yield are computed once, over the whole.</p>
+                        </div>
+            <div class="arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg></div>
+            <div class="stage stage--reports">
+              <div class="stage-label">Reports · read</div>
+              <h3>One engine, three surfaces</h3>
+              <p>All the reports, however you ask.</p>
+              <div class="surfaces">
+                <div class="surface">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17l6-5-6-5M12 19h8" /></svg>
+                  <div><strong>CLI</strong><span>tables, CSV or JSON</span></div>
+                </div>
+                <div class="surface">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2" /><path d="M7 14l3-4 3 2 4-5" /></svg>
+                  <div><strong>Dashboards</strong><span>Metabase, over a read-only snapshot</span></div>
+                </div>
+                <div class="surface">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v3M8 21h8M6 6h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z" /><circle cx="9" cy="12" r="1" /><circle cx="15" cy="12" r="1" /></svg>
+                  <div><strong>MCP server</strong><span>the reports as read-only tools for agents</span></div>
+                </div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───────── Reports ───────── -->
+      <section class="section" id="reports">
+        <div class="container">
+          <div class="section-head reveal">
+            <span class="eyebrow" data-n="03">Reports</span>
+            <h2>The questions a household asks of its money</h2>
+            <p>Every report runs for any date and any period, in the currency you pick.</p>
+          </div>
+          <div class="grid-3">
+            <div class="card reveal">
+              <h3>Net worth and allocation</h3>
+              <p>What is held, where, and what it is worth, in one currency at that day's rates. By asset class, vehicle, tax wrapper and account.</p>
+              <code class="report-cmd"><span class="p">❯</span> wealthdb holdings global -d 2024-12-31 -x CHF</code>
+            </div>
+            <div class="card reveal reveal-delay-1">
+              <h3>Performance</h3>
+              <p>Time-weighted and money-weighted returns per account, portfolio, provider and the whole. Transfers between your own accounts are matched and never counted as gain.</p>
+              <code class="report-cmd"><span class="p">❯</span> wealthdb returns portfolios 2025</code>
+            </div>
+            <div class="card reveal reveal-delay-2">
+              <h3>Gains and cost basis</h3>
+              <p>Realized and unrealized gains from the lots the providers state. Where a provider states none, a lot engine rebuilds them from the trades and says so.</p>
+              <code class="report-cmd"><span class="p">❯</span> wealthdb gains realized 2025</code>
+            </div>
+            <div class="card reveal">
+              <h3>Exposure</h3>
+              <p>What is really owned once every fund is looked through: asset class, sector, country, currency, credit, maturity, issuer, and where each holding legally sits.</p>
+              <code class="report-cmd"><span class="p">❯</span> wealthdb exposure countries</code>
+            </div>
+            <div class="card reveal reveal-delay-1">
+              <h3>Yield and rate risk</h3>
+              <p>What the holdings earn, their duration, and how their value moves with interest rates. Cash is set against its currency's benchmark rate.</p>
+              <code class="report-cmd"><span class="p">❯</span> wealthdb yield global -x CHF</code>
+            </div>
+            <div class="card reveal reveal-delay-2">
+              <h3>Income, spending, cash flow</h3>
+              <p>What arrived and what left, categorised across every card and account, and a cash flow statement with the household's internal transfers taken out.</p>
+              <code class="report-cmd"><span class="p">❯</span> wealthdb cashflow sankey 2025</code>
+            </div>
+          </div>
+
+          <div class="terminal reveal" style="margin-top: 40px">
+            <div class="terminal-bar" aria-hidden="true">
+              <i></i><i></i><i></i>
+              <span class="terminal-title">wealthdb — the demo household</span>
+            </div>
+            <pre><span class="p">❯</span> wealthdb exposure countries
+<span class="h"> country | country_name   | region        |  value_USD | share_pct | direct_pct | via_funds_pct | quality</span>
+---------+----------------+---------------+------------+-----------+------------+---------------+-----------------------------------
+ US      | United States  | north_america | 1584598.93 |     66.66 |      34.09 |         32.58 | proxy=2%,declared=54%,unmapped=&lt;1%
+ unknown |                |               |  108023.21 |      4.54 |       2.49 |          2.05 | proxy=3%,partial=2%,unmatched=55%
+ CH      | Switzerland    | europe        |  106259.89 |      4.47 |       3.35 |          1.12 | proxy=2%,undeclared=28%
+ JP      | Japan          | asia_pacific  |   66105.19 |      2.78 |       0.00 |          2.78 | proxy=6%
+ DE      | Germany        | europe        |   65427.86 |      2.75 |       1.75 |          1.01 | proxy=2%
+ GB      | United Kingdom | europe        |   52633.76 |      2.21 |       1.23 |          0.99 | proxy=2%
+ FR      | France         | europe        |   34384.22 |      1.45 |       0.56 |          0.89 | proxy=4%
+ <span class="c">…</span>
+
+<span class="p">❯</span> wealthdb spending categories 2025 --period annual
+<span class="h"> period | category                  | txn_count | spend_USD | refunds_USD | net_spend_USD | share_pct</span>
+--------+---------------------------+-----------+-----------+-------------+---------------+----------
+ 2025   | Food and drink            |       583 |  25368.21 |        0.00 |      25368.21 |     21.70
+ 2025   | General services          |        40 |  24300.57 |        0.00 |      24300.57 |     20.79
+ 2025   | Government and non profit |        33 |  15056.53 |        0.00 |      15056.53 |     12.88
+ 2025   | Travel                    |         8 |  10989.87 |        0.00 |      10989.87 |      9.40
+ 2025   | General merchandise       |        80 |   9230.18 |        0.00 |       9230.18 |      7.90
+ 2025   | Home improvement          |        39 |   7596.31 |      100.15 |       7496.16 |      6.41
+ <span class="c">…</span>
+
+<span class="p">❯</span> wealthdb yield global -x EUR
+<span class="h"> currency |  value_EUR | income_yield_pct | implied_yield_pct | duration | dv01_EUR | quality</span>
+----------+------------+------------------+-------------------+----------+----------+------------------------------------------
+ USD      | 2134498.42 |             1.05 |              4.03 |     2.45 |   -31.15 | implied=6% stated=5% indicated=24% …
+ EUR      |   56496.17 |             3.22 |              2.20 |     4.37 |    13.71 | implied=39% indicated=22% declared=37% …
+ CHF      |   43710.52 |             1.54 |                   |     0.00 |     0.00 | indicated=98% unknown=2%
+ GBP      |   25427.54 |             3.51 |                   |     0.00 |     0.00 | indicated=92% unknown=8%
+ <span class="k">total</span>    | 2260132.65 |             1.13 |              3.92 |     2.55 |   -17.44 | mixed …</pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───────── Sources ───────── -->
+      <section class="section" id="sources">
+        <div class="container">
+          <div class="section-head center reveal">
+            <span class="eyebrow" data-n="04">Sources</span>
+            <h2>Every relationship, one collector each</h2>
+            <p>
+              Banks and brokers, pensions and platforms. Each collector is a small, auditable program that reads one provider and nothing else.
+            </p>
+          </div>
+          <div class="grid-3">
+            <div class="card source-card reveal">
+              <h3><i style="background: var(--blue)"></i>Banks and cards</h3>
+              <p>Accounts, cards, mortgages and the rates they state. Full history, statements included.</p>
+              <ul><li>UBS</li><li>Swissquote</li><li>Raiffeisen</li><li>Chase</li><li>First Citizens</li><li>American Express</li></ul>
+            </div>
+            <div class="card source-card reveal reveal-delay-1">
+              <h3><i style="background: var(--teal)"></i>Brokerages</h3>
+              <p>Positions, trades, lots, dividends and tax forms.</p>
+              <ul><li>Schwab</li><li>Fidelity</li></ul>
+            </div>
+            <div class="card source-card reveal reveal-delay-2">
+              <h3><i style="background: var(--purple)"></i>Pensions</h3>
+              <p>Pillar 3a and pillar 2 vested benefits, with their fund mixes.</p>
+              <ul><li>VIAC</li><li>Relevate</li></ul>
+            </div>
+            <div class="card source-card reveal">
+              <h3><i style="background: var(--orange)"></i>Private markets</h3>
+              <p>Fund stakes, direct holdings, capital calls, distributions and quarterly reports.</p>
+              <ul><li>AngelList</li><li>Carta</li><li>EquityZen</li></ul>
+            </div>
+            <div class="card source-card reveal reveal-delay-1">
+              <h3><i style="background: var(--gold)"></i>Crypto</h3>
+              <p>Exchange and wallet history, custodial and self-custody, with the trades that rebuild a cost basis.</p>
+              <ul><li>CoinTracking</li></ul>
+            </div>
+            <div class="card source-card reveal reveal-delay-2">
+              <h3><i style="background: var(--pink)"></i>Reference and manual</h3>
+              <p>Public data about what each fund holds and pays, FX and yield curves, and a CSV for holdings with no portal such as property or private loans.</p>
+              <ul><li>refdata</li><li>FRED</li><li>curves</li><li>manual</li><li>statement archives</li></ul>
+            </div>
+          </div>
+          <div class="card source-card source-feature reveal" style="margin-top: 18px">
+            <div>
+              <h3><i style="background: var(--accent)"></i>Thousands more through Plaid</h3>
+              <p>
+                Plaid links the banks, brokers and card issuers it covers, one login at a time. Where
+                wealthdb has no collector of its own, Plaid is the door: the same reports, the same
+                local database. Its tokens read data and cannot move money.
+              </p>
+            </div>
+            <ul><li>Checking and savings</li><li>Cards</li><li>Mortgages and loans</li><li>Brokerage</li><li>Retirement plans</li></ul>
+          </div>
+          <div class="card source-card source-contribute reveal">
+            <div>
+              <h3>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                Missing yours? Add it, and share it.
+              </h3>
+              <p>
+                A new source is one small program dropped in beside the others. A playbook walks a
+                coding agent through writing it while you handle the logins. Most collectors here were
+                built that way in a day or two. Pull requests are welcome.
+              </p>
+            </div>
+            <div class="btn-row" style="justify-content: flex-start">
+              <a class="btn btn-primary" href="https://github.com/smartpointer-com/wealthdb/blob/main/NEW-COLLECTOR-PROMPT.md">Read the playbook</a>
+              <a class="btn btn-ghost" href="https://github.com/smartpointer-com/wealthdb/blob/main/collectors/README.md">How collectors work</a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───────── AI agents ───────── -->
+      <section class="section" id="agents">
+        <div class="container">
+          <div class="section-head reveal">
+            <span class="eyebrow" data-n="05">AI agents</span>
+            <h2>An agent that knows your finances, and cannot touch them</h2>
+            <p>
+              Bring your own agent. wealthdb ships no model and no chat window. It serves its reports
+              over MCP to whatever you already use: OpenClaw, Claude, a coding agent, or a model that runs
+              entirely on your own hardware, so the numbers never leave the machine. Whichever you pick,
+              the agent reads the reports, and only the reports.
+            </p>
+          </div>
+          <div class="agent-grid">
+            <div class="chat reveal" aria-label="Example conversation with an agent">
+              <div class="chat-bar">
+                <span class="dot" aria-hidden="true"></span>
+                <span><b>OpenClaw</b> · connected to wealthdb over MCP</span>
+                <span class="tag">read-only</span>
+              </div>
+              <div class="chat-body">
+                <div class="msg user">
+                  Rates look like they are heading down next year. How exposed are we, and would our income take a hit?
+                </div>
+                <div class="tools" aria-label="Tools called">
+                  <span class="tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>yield global -x EUR</span>
+                  <span class="tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>yield accounts</span>
+                  <span class="tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>income projection</span>
+                </div>
+                <div class="msg agent">
+                  <p>Mostly the other way round. A fall in rates would <em>help</em> your balance sheet a little and cost you some cash income.</p>
+                  <ul>
+                    <li><strong>Rate sensitivity is small and net positive.</strong> Across everything, one basis point down is worth about +17 EUR. The home loan is the biggest single lever (duration 2.6, so it reprices soon), and your bond funds gain as rates fall.</li>
+                    <li><strong>Income would slip.</strong> The holdings pay about 1.1% a year in cash. Half of that is interest from the savings account and the term deposit, which float with rates. Dividends and fund distributions, the other half, do not.</li>
+                    <li><strong>Next twelve months, as projected today:</strong> roughly 1,000 EUR a month in quiet months, with spikes in December and March when the funds distribute.</li>
+                  </ul>
+                  <small>Quality: a third of the USD yield figure is still "unknown", mostly the private fund and the 529 plan. Treat the income number as a floor.</small>
+                </div>
+                <div class="msg user">
+                  Which account should I look at first?
+                </div>
+                <div class="tools" aria-label="Tools called">
+                  <span class="tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>holdings accounts -x EUR</span>
+                </div>
+                <div class="msg agent">
+                  <p>The 12-month term deposit. It holds about 42k EUR at 3.04% and matures within the year, so it is the first thing that reprices lower. The joint savings account is the other floating leg, at 3.48% stated.</p>
+                  <p>If you want to lock income in, that is the money to decide about before it rolls. I can list the bond funds you already hold with their durations, so you can compare.</p>
+                </div>
+              </div>
+            </div>
+            <div class="guarantees reveal reveal-delay-1">
+              <div class="guarantee">
+                <span class="n">1</span>
+                <div>
+                  <strong>Credentials never meet an agent</strong>
+                  <span>The collectors are static, reviewable code. A person starts each run and answers each MFA prompt. No agent drives a banking session.</span>
+                </div>
+              </div>
+              <div class="guarantee">
+                <span class="n">2</span>
+                <div>
+                  <strong>The collectors only read</strong>
+                  <span>Navigate, filter, export. No code path submits a form, places an order or changes a setting, and no flag can enable one.</span>
+                </div>
+              </div>
+              <div class="guarantee">
+                <span class="n">3</span>
+                <div>
+                  <strong>The data lands locally</strong>
+                  <span>Parsed into local databases and consolidated into one queryable store on your machine.</span>
+                </div>
+              </div>
+              <div class="guarantee">
+                <span class="n">4</span>
+                <div>
+                  <strong>Agent access is read-only by construction</strong>
+                  <span>The MCP server has no tool that writes, opens the database read-only, and mounts the data read-only. A redacted endpoint keeps amounts out of a transcript. A shell agent runs the CLI with <code>--read-only</code>.</span>
+                </div>
+              </div>
+              <div class="guarantee">
+                <span class="n">5</span>
+                <div>
+                  <strong>Any agent, including a local one</strong>
+                  <span>OpenClaw, Claude Desktop, Claude Code, or a model served from your own machine. Point it at the MCP endpoint, or let a shell agent run the CLI with the bundled skill. No subscription is required.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───────── Privacy ───────── -->
+      <section class="section" id="privacy">
+        <div class="container">
+          <div class="section-head reveal">
+            <span class="eyebrow" data-n="06">Privacy and control</span>
+            <h2>Your data stays on your machine<sup class="caveat-mark">*</sup></h2>
+            <p>
+              Plain database files in a folder you choose. Nothing phones home and nothing syncs. There is
+              no account anywhere for your data to be in.
+            </p>
+          </div>
+          <div class="privacy-grid">
+            <div class="card reveal">
+              <h3>Open files, your tools</h3>
+              <ul>
+                <li>Each source is a SQLite file, the consolidated store a DuckDB file. Open them with any client, notebook or spreadsheet.</li>
+                <li>Every report exports CSV or JSON. Back up with a copy, delete with a delete.</li>
+                <li>Dashboards and the MCP server bind to loopback only and read a snapshot. They never reach the live store.</li>
+              </ul>
+            </div>
+            <div class="card reveal reveal-delay-1">
+              <h3>Privacy mode for shared screens</h3>
+              <ul>
+                <li>The CLI redacts every amount with <code>-p</code>; the shape of the answer stays.</li>
+                <li>Each dashboard has a twin that shows shares instead of amounts.</li>
+                <li>The MCP server has a redacted endpoint, so a transcript can hold the picture without the numbers.</li>
+              </ul>
+            </div>
+          </div>
+          <p class="caveat reveal">
+            <sup class="caveat-mark">*</sup> Three things do leave the machine, each one opt-in. A login linked
+            through <strong>Plaid</strong>: Plaid reads that institution and keeps a copy of its data. The
+            <strong>language model</strong> that categorises merchants and resolves tickers, if it runs on a
+            remote endpoint: it sees merchant, payer and instrument names, never an amount, and it can run
+            locally instead. The <strong>public reference sources</strong> the refdata collector asks about
+            each fund and security: they see which identifiers are asked about, never an amount, an account
+            or a bank.
+          </p>
+          <div class="callout reveal">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4M12 17h.01M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" /></svg>
+            <p>
+              <strong>Read before you configure a credential.</strong> The collectors sign in with the same
+              fully privileged login a human uses to move money. Most providers do not offer a read-only sub-scope.
+              Only the code's own discipline restricts them to reading. You are responsible for auditing
+              this code, its dependencies and its images before trusting it with credentials, and your use
+              may breach a provider's terms. Provided as is, without warranty, under the MIT license.
+              <a href="https://github.com/smartpointer-com/wealthdb#%EF%B8%8F-security--liability-disclaimer">The full disclaimer.</a>
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───────── CTA ───────── -->
+      <section class="cta">
+        <div class="container">
+          <div class="cta-card reveal">
+            <h2>Start with the demo. Then add your first account.</h2>
+            <p>
+              Open source under the MIT license. Runs on macOS and Linux with Docker. The demo household
+              shows every report and dashboard before you hand over a single credential.
+            </p>
+            <div class="btn-row">
+              <a class="btn btn-primary" href="https://github.com/smartpointer-com/wealthdb#getting-started">
+                Get started
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+              </a>
+              <a class="btn btn-ghost" href="https://github.com/smartpointer-com/wealthdb">
+                <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z" /></svg>
+                View on GitHub
+              </a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container">
+        <span>© 2026 SmartPointer AG · <a href="https://github.com/smartpointer-com/wealthdb/blob/main/LICENSE">MIT License</a></span>
+        <nav class="footer-links" aria-label="Footer">
+          <a href="https://github.com/smartpointer-com/wealthdb#documentation">Docs</a>
+          <a href="https://github.com/smartpointer-com/wealthdb/blob/main/DESIGN.md">Design</a>
+          <a href="https://github.com/smartpointer-com/wealthdb/blob/main/NEW-COLLECTOR-PROMPT.md">Build a collector</a>
+          <a href="https://github.com/smartpointer-com/wealthdb/releases">Releases</a>
+          <a href="https://github.com/smartpointer-com/wealthdb">GitHub</a>
+          <a href="#impressum">Impressum</a>
+        </nav>
+      </div>
+      <div class="container legal" id="impressum">
+        <div>
+          <h3>Impressum</h3>
+          <p>
+            SmartPointer AG<br />
+            c/o Verfida Treuhand AG<br />
+            Bahnhofstrasse 11<br />
+            8832 Wollerau, Switzerland
+          </p>
+          <p>
+            <a href="mailto:hello@smartpointer.com">hello@smartpointer.com</a><br />
+            UID CHE-272.010.932<br />
+            Commercial register of the Canton of Schwyz
+          </p>
+        </div>
+        <div>
+          <h3>Privacy</h3>
+          <p>
+            This page sets no cookies, stores nothing in the browser and loads nothing from third
+            parties. GitHub Pages hosts it and keeps server logs that include visitors' IP
+            addresses, as described in the
+            <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub privacy statement</a>.
+          </p>
+        </div>
+      </div>
+    </footer>
+
+    <script>
+      (function () {
+        var nav = document.getElementById("nav");
+        var onScroll = function () {
+          nav.classList.toggle("scrolled", window.scrollY > 10);
+        };
+        onScroll();
+        window.addEventListener("scroll", onScroll, { passive: true });
+
+        // The page follows the system theme live until the toggle is used.
+        // A toggled theme then holds for the rest of the visit; nothing is
+        // stored, so the next visit opens in the system theme again.
+        var root = document.documentElement;
+        var setTheme = function (light) {
+          if (light) root.setAttribute("data-theme", "light");
+          else root.removeAttribute("data-theme");
+        };
+        var toggled = false;
+        if (window.matchMedia) {
+          var systemLight = window.matchMedia("(prefers-color-scheme: light)");
+          var follow = function (e) {
+            if (!toggled) setTheme(e.matches);
+          };
+          if (systemLight.addEventListener) systemLight.addEventListener("change", follow);
+          else if (systemLight.addListener) systemLight.addListener(follow);
+        }
+        document.querySelector(".theme-toggle").addEventListener("click", function () {
+          toggled = true;
+          setTheme(root.getAttribute("data-theme") !== "light");
+        });
+
+        var burger = document.querySelector(".nav-burger");
+        burger.addEventListener("click", function () {
+          var open = nav.classList.toggle("menu-open");
+          burger.setAttribute("aria-expanded", open ? "true" : "false");
+        });
+        document.querySelectorAll(".nav-links a").forEach(function (a) {
+          a.addEventListener("click", function () {
+            nav.classList.remove("menu-open");
+            burger.setAttribute("aria-expanded", "false");
+          });
+        });
+
+        // Install card tabs
+        document.querySelectorAll(".install-tab").forEach(function (tab) {
+          tab.addEventListener("click", function () {
+            var pane = tab.getAttribute("data-pane");
+            document.querySelectorAll(".install-tab").forEach(function (t) {
+              var on = t === tab;
+              t.classList.toggle("is-on", on);
+              t.setAttribute("aria-selected", on ? "true" : "false");
+            });
+            document.querySelectorAll(".install-pane").forEach(function (p) {
+              p.classList.toggle("is-on", p.getAttribute("data-pane") === pane);
+            });
+          });
+        });
+
+        // Copy buttons
+        document.querySelectorAll(".install-copy").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            var text = btn.getAttribute("data-copy");
+            var done = function () {
+              btn.classList.add("copied");
+              setTimeout(function () {
+                btn.classList.remove("copied");
+              }, 1500);
+            };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(text).then(done, done);
+            } else {
+              var ta = document.createElement("textarea");
+              ta.value = text;
+              document.body.appendChild(ta);
+              ta.select();
+              try {
+                document.execCommand("copy");
+              } catch (e) {}
+              document.body.removeChild(ta);
+              done();
+            }
+          });
+        });
+
+        // Dashboard showcase
+        document.querySelectorAll(".showcase-tab").forEach(function (tab) {
+          tab.addEventListener("click", function () {
+            var shot = tab.getAttribute("data-shot");
+            document.querySelectorAll(".showcase-tab").forEach(function (t) {
+              var on = t === tab;
+              t.classList.toggle("is-on", on);
+              t.setAttribute("aria-selected", on ? "true" : "false");
+            });
+            document.querySelectorAll(".device-screen img").forEach(function (img) {
+              img.classList.toggle("is-on", img.getAttribute("data-shot") === shot);
+            });
+          });
+        });
+
+        // Scroll reveal
+        var els = document.querySelectorAll(".reveal");
+        if ("IntersectionObserver" in window) {
+          var io = new IntersectionObserver(
+            function (entries) {
+              entries.forEach(function (e) {
+                if (e.isIntersecting) {
+                  e.target.classList.add("visible");
+                  io.unobserve(e.target);
+                }
+              });
+            },
+            { rootMargin: "0px 0px -8% 0px", threshold: 0.08 }
+          );
+          els.forEach(function (el) {
+            io.observe(el);
+          });
+        } else {
+          els.forEach(function (el) {
+            el.classList.add("visible");
+          });
+        }
+      })();
+    </script>
+  </body>
+</html>
