@@ -1,0 +1,4 @@
+# The one dependency of site/images.py convert: it turns the PNG shots
+# into WebP. `make site-shots` and `make test-site` install it into
+# site/.venv; `make update-venvs` refreshes it.
+Pillow>=11,<13

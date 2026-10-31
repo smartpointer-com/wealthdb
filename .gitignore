@@ -40,3 +40,7 @@ collectors/**/core
 # demo-root.sh): local to the checkout by design.
 /.image-tag
 /.demo-root
+
+# The project page's screenshots: a GitHub release holds them, not git
+# (site/images.py, `make site-shots`).
+/site/public/shots/

@@ -91,7 +91,7 @@ endef
         update update-venvs update-wealthdb update-playwright update-bases \
         lint lint-go lint-python cleanall-lint \
         demo demo-roll demo-web demo-web-stop demo-mcp demo-mcp-stop test-demo \
-        clean-demo
+        clean-demo site-shots site-images site-publish test-site
 
 # ---- aggregates --------------------------------------------------------
 
@@ -109,7 +109,7 @@ build: all
 test:
 	@dir=$$(mktemp -d "$${TMPDIR:-/tmp}/wealthdb-test.XXXXXX"); \
 	trap 'rm -rf "$$dir"' EXIT; \
-	printf '%s\n' wealthdb demo web mcp collectorkit wrappers $(COLLECTORS) > "$$dir/suites"; \
+	printf '%s\n' wealthdb demo web mcp site collectorkit wrappers $(COLLECTORS) > "$$dir/suites"; \
 	< "$$dir/suites" xargs -P $(NCPU) -I{} $(SHELL) -c ' \
 		name="$$1"; dir="$$2"; \
 		echo "start $$name"; \
@@ -462,6 +462,69 @@ clean-demo:
 	@echo "==> clean demo (test-demo's scratch roots of tag $(TAG))"
 	@if [ -f "$(DEMO_TEST_ROOT)/.wealthdb-demo-tests" ]; then rm -rf "$(DEMO_TEST_ROOT)"; fi
 
+# ---- site (the project page) ------------------------------------------
+# The page is site/public, deployed by .github/workflows/pages.yml. Its
+# screenshots stay out of git: they live in a GitHub release, which the
+# workflow downloads into site/public/shots at deploy time
+# (site/images.py).
+#
+# site-shots rebuilds the demo at the pinned seed and date, so a reshoot
+# moves only what the code changed, then shoots every dashboard in both
+# colour schemes in the Camoufox image, with its date pickers pinned to
+# that date, converts the shots into
+# site/public/shots, and prints the figures the page's text quotes.
+# The rebuild resets the demo root to that date; `make demo` or
+# `make demo-roll` brings it back to today.
+# site-images downloads the published screenshots for a local preview.
+# site-publish uploads site/public/shots to the release and starts the
+# deploy. Its token comes from WEALTHDB_SITE_TOKEN or the env file
+# SITE_ENV, read through bash.
+SITE_SEED  := harlow-19
+SITE_AS_OF := 2026-10-30
+SITE_VENV  := site/.venv
+SITE_SHOTS := site/public/shots
+SITE_ENV   ?= $(HOME)/.secrets/github-site.env
+SITE_TMP   := $(CACHE_ROOT)/site-shots-$(TAG)
+
+site-shots: build-wealthdb build-web base-images
+	@$(MAKE) --no-print-directory demo SEED=$(SITE_SEED) AS_OF=$(SITE_AS_OF)
+	@$(MAKE) --no-print-directory demo-web
+	@$(call ENSURE_VENV,$(SITE_VENV),the site tools,site-shots)
+	@if [ ! $(SITE_VENV)/.stamp -nt site/requirements.txt ]; then \
+		$(SITE_VENV)/bin/pip install -q -r site/requirements.txt && touch $(SITE_VENV)/.stamp || exit 1; \
+	fi
+	@echo "==> shoot the demo's dashboards"
+	@rm -rf "$(SITE_TMP)" && mkdir -p "$(SITE_TMP)" && trap 'rm -rf "$(SITE_TMP)"' EXIT && \
+	docker run --rm --add-host=host.docker.internal:host-gateway \
+		-v "$(ROOT_DIR):/repo:ro" -v "$(DEMO_ROOT)/web/admin-password.txt:/password:ro" \
+		-v "$(SITE_TMP):/out" --entrypoint python3 wealthdb/base-camoufox:$(TAG) \
+		/repo/site/capture.py --out /out --as-of $(SITE_AS_OF) --password-file /password && \
+	$(SITE_VENV)/bin/python site/images.py convert "$(SITE_TMP)" $(SITE_SHOTS)
+	@echo "==> the figures the page quotes (terminal block, then the agent conversation)"
+	@$(DEMO_ENGINE) -r exposure countries
+	@$(DEMO_ENGINE) -r spending categories 2025 --period annual
+	@$(DEMO_ENGINE) -r yield global -x EUR
+	@$(DEMO_ENGINE) -r yield accounts
+	@$(DEMO_ENGINE) -r income projection -x EUR
+
+site-images:
+	@$(PYTHON) site/images.py fetch $(SITE_SHOTS)
+
+site-publish:
+	@f="$(SITE_ENV)"; if [ -f "$$f" ]; then bash -n "$$f" || exit 1; fi; \
+	bash -c 'f="$$1"; shift; if [ -f "$$f" ]; then set -a; . "$$f"; set +a; fi; exec "$$@"' _ "$$f" \
+		$(PYTHON) site/images.py publish $(SITE_SHOTS)
+
+# capture.py's and images.py's unit tests; the image conversion's run
+# with Pillow from site/.venv. No Docker, no network.
+test-site:
+	@echo "==> test site (site/tests)"
+	@$(call ENSURE_VENV,$(SITE_VENV),the site tests,test-site)
+	@if [ ! $(SITE_VENV)/.stamp -nt site/requirements.txt ]; then \
+		$(SITE_VENV)/bin/pip install -q -r site/requirements.txt && touch $(SITE_VENV)/.stamp || exit 1; \
+	fi
+	@$(SITE_VENV)/bin/python -m unittest discover -s site/tests -t site
+
 # ---- mcp (optional MCP server) ----------------------------------------
 # The server is the engine image, so there is nothing to build; the
 # lifecycle script has pure-bash unit tests, no Docker needed.
@@ -635,7 +698,8 @@ update: update-venvs update-wealthdb
 
 update-venvs:
 	@if [ -z "$(HOST_VENV_COLLECTORS)" ] && [ ! -x $(CK_VENV)/bin/python ] && \
-	   [ ! -x $(LINT_VENV)/bin/python ] && [ ! -x $(WEB_VENV)/bin/python ]; then \
+	   [ ! -x $(LINT_VENV)/bin/python ] && [ ! -x $(WEB_VENV)/bin/python ] && \
+	   [ ! -x $(SITE_VENV)/bin/python ]; then \
 		echo "==> no host venvs to update"; \
 	fi
 	@for c in $(HOST_VENV_COLLECTORS); do \
@@ -650,6 +714,9 @@ update-venvs:
 	fi
 	@if [ -x $(WEB_VENV)/bin/python ]; then \
 		$(call UPDATE_VENV,$(WEB_VENV),-r web/requirements-test.txt); \
+	fi
+	@if [ -x $(SITE_VENV)/bin/python ]; then \
+		$(call UPDATE_VENV,$(SITE_VENV),-r site/requirements.txt); \
 	fi
 
 # The module graph is refreshed by the IMAGE's Go toolchain, never the
@@ -721,6 +788,13 @@ help:
 	@echo "  make demo-web / demo-web-stop   the demo's dashboards, own container and port"
 	@echo "  make demo-mcp / demo-mcp-stop   the demo over MCP, own container and port"
 	@echo "  make test-demo          test the demo generator, a short demo load and a build to today"
+	@echo ""
+	@echo "  make site-shots         retake the project page's screenshots from the demo at"
+	@echo "                          the pinned seed and date; print the figures the page quotes"
+	@echo "  make site-images        download the published screenshots for a local preview"
+	@echo "  make site-publish       upload the screenshots to their GitHub release and deploy"
+	@echo "                          (token: WEALTHDB_SITE_TOKEN or ~/.secrets/github-site.env)"
+	@echo "  make test-site          run the page tools' unit tests"
 	@echo ""
 	@echo "  WEALTHDB_IMAGE_TAG=…    the tag of every image built and run (default:"
 	@echo "                          .image-tag's first line, else latest)"

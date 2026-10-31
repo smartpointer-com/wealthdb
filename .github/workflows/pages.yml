@@ -1,6 +1,9 @@
-# Publishes site/ to GitHub Pages on every push to main.
-# Pages must be set to "GitHub Actions" as its source once, in the
-# repository settings.
+# Publishes site/public to GitHub Pages on every push to main that touches
+# the page, and when started by hand or by `make site-publish`. The
+# screenshots are not in git: they are the files of the site-images
+# release, downloaded into site/public/shots before the upload
+# (site/images.py). Pages must be set to "GitHub Actions" as its source
+# once, in the repository settings.
 name: pages
 
 on:
@@ -26,9 +29,13 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - name: Download the screenshots
+        env:
+          WEALTHDB_SITE_TOKEN: ${{ github.token }}
+        run: python3 site/images.py fetch site/public/shots --repo "${{ github.repository }}"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: site/public
       - id: deployment
         uses: actions/deploy-pages@v4

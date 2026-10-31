@@ -1547,6 +1547,9 @@
               <img class="shot-dark" src="shots/cashflow-dark.webp" alt="The Cash Flow dashboard: operating, investing and financing flows, and the household's cash flow statement" data-shot="cashflow" loading="lazy" />
             </div>
           </div>
+          <!-- Screenshots and terminal output: the demo household at the seed and
+               date pinned in the Makefile (SITE_SEED, SITE_AS_OF). `make site-shots`
+               retakes the screenshots and prints the figures the page quotes. -->
           <p class="showcase-caption">
             Ten dashboards, served locally over a read-only snapshot, in light or dark. Each has a privacy
             twin that shows shares instead of amounts. The data shown is the invented demo household.
@@ -1700,13 +1703,13 @@
             <pre><span class="p">❯</span> wealthdb exposure countries
 <span class="h"> country | country_name   | region        |  value_USD | share_pct | direct_pct | via_funds_pct | quality</span>
 ---------+----------------+---------------+------------+-----------+------------+---------------+-----------------------------------
- US      | United States  | north_america | 1584598.93 |     66.66 |      34.09 |         32.58 | proxy=2%,declared=54%,unmapped=&lt;1%
- unknown |                |               |  108023.21 |      4.54 |       2.49 |          2.05 | proxy=3%,partial=2%,unmatched=55%
- CH      | Switzerland    | europe        |  106259.89 |      4.47 |       3.35 |          1.12 | proxy=2%,undeclared=28%
- JP      | Japan          | asia_pacific  |   66105.19 |      2.78 |       0.00 |          2.78 | proxy=6%
- DE      | Germany        | europe        |   65427.86 |      2.75 |       1.75 |          1.01 | proxy=2%
- GB      | United Kingdom | europe        |   52633.76 |      2.21 |       1.23 |          0.99 | proxy=2%
- FR      | France         | europe        |   34384.22 |      1.45 |       0.56 |          0.89 | proxy=4%
+ US      | United States  | north_america | 1591419.62 |     66.85 |      34.45 |         32.40 | proxy=2%,declared=54%,unmapped=&lt;1%
+ unknown |                |               |  107819.99 |      4.53 |       2.49 |          2.04 | proxy=3%,partial=2%,unmatched=55%
+ CH      | Switzerland    | europe        |  105441.59 |      4.43 |       3.32 |          1.11 | proxy=2%,undeclared=28%
+ JP      | Japan          | asia_pacific  |   65890.80 |      2.77 |       0.00 |          2.77 | proxy=6%
+ DE      | Germany        | europe        |   64933.53 |      2.73 |       1.73 |          1.00 | proxy=2%
+ GB      | United Kingdom | europe        |   51797.60 |      2.18 |       1.19 |          0.98 | proxy=2%
+ FR      | France         | europe        |   34480.53 |      1.45 |       0.56 |          0.88 | proxy=4%
  <span class="c">…</span>
 
 <span class="p">❯</span> wealthdb spending categories 2025 --period annual
@@ -1723,11 +1726,11 @@
 <span class="p">❯</span> wealthdb yield global -x EUR
 <span class="h"> currency |  value_EUR | income_yield_pct | implied_yield_pct | duration | dv01_EUR | quality</span>
 ----------+------------+------------------+-------------------+----------+----------+------------------------------------------
- USD      | 2134498.42 |             1.05 |              4.03 |     2.45 |   -31.15 | implied=6% stated=5% indicated=24% …
- EUR      |   56496.17 |             3.22 |              2.20 |     4.37 |    13.71 | implied=39% indicated=22% declared=37% …
- CHF      |   43710.52 |             1.54 |                   |     0.00 |     0.00 | indicated=98% unknown=2%
- GBP      |   25427.54 |             3.51 |                   |     0.00 |     0.00 | indicated=92% unknown=8%
- <span class="k">total</span>    | 2260132.65 |             1.13 |              3.92 |     2.55 |   -17.44 | mixed …</pre>
+ USD      | 2142822.68 |             1.05 |              4.04 |     2.38 |   -31.14 | implied=6% stated=5% indicated=24% …
+ EUR      |   56338.70 |             3.22 |              2.21 |     4.36 |    13.70 | implied=39% indicated=23% declared=36% …
+ CHF      |   43184.39 |             1.57 |                   |     0.00 |     0.00 | indicated=98% unknown=2%
+ GBP      |   24748.69 |             3.57 |                   |     0.00 |     0.00 | indicated=92% unknown=8%
+ <span class="k">total</span>    | 2267094.46 |             1.13 |              3.92 |     2.49 |   -17.44 | mixed …</pre>
           </div>
         </div>
       </section>
@@ -1839,7 +1842,7 @@
                   <ul>
                     <li><strong>Rate sensitivity is small and net positive.</strong> Across everything, one basis point down is worth about +17 EUR. The home loan is the biggest single lever (duration 2.6, so it reprices soon), and your bond funds gain as rates fall.</li>
                     <li><strong>Income would slip.</strong> The holdings pay about 1.1% a year in cash. Half of that is interest from the savings account and the term deposit, which float with rates. Dividends and fund distributions, the other half, do not.</li>
-                    <li><strong>Next twelve months, as projected today:</strong> roughly 1,000 EUR a month in quiet months, with spikes in December and March when the funds distribute.</li>
+                    <li><strong>Next twelve months, as projected today:</strong> roughly 1,000 EUR a month in quiet months, with a spike each quarter when the funds distribute.</li>
                   </ul>
                   <small>Quality: a third of the USD yield figure is still "unknown", mostly the private fund and the 529 plan. Treat the income number as a floor.</small>
                 </div>
