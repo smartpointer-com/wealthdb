@@ -325,14 +325,16 @@ without one reads as a fund with no composition.
   notional splits in two. The long leg counts in its own currency, at
   the leg's share of the fund's net assets. The rest of the line is the
   short leg. It counts in the short currency, else in the line's. The
-  two sum to the line. A forward held directly splits the same way
-  where its source states the legs. The source gives it a composition
-  of one such line, with the mark as net assets
-  ([adapters/ubs.md §14](adapters/ubs.md#14-fx-forwards)). Its legs
-  then count as looked through, in `via_funds_pct`, and the
-  forward is a row of `funds`. A forward that states
-  no legs, held directly or in a fund, counts in its own currency and
-  is flagged `partial`. So does one marked at zero.
+  two sum to the line. A forward held directly splits too, where its
+  source states the legs. The source gives it a composition of one
+  such line, with the mark as net assets
+  ([adapters/ubs.md §14](adapters/ubs.md#14-fx-forwards)). The holding
+  holds the whole contract. So its long leg counts at notional,
+  whatever its mark, and the short leg is the mark less the long leg.
+  A forward marked at zero shows both legs, and they cancel. Its legs
+  count as looked through, in `via_funds_pct`, and the forward is a
+  row of `funds`. A forward that states no legs, held directly or in a
+  fund, counts in its own currency and is flagged `partial`.
 - **Cash and derivatives inside a fund** stay leaves of their own asset
   type.
 - **Private holdings.** No public source describes a property, a loan,

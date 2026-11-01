@@ -1666,8 +1666,7 @@ is `MrktValueAmt` in `MrktValueCcyIsoCd`. The adapter reads them in
   by that day emits no position.
 - **Excluded.** A spot deal, a contract with no maturity date, no mark
   currency or no legs keeps its position and gets no instrument. It
-  counts at its mark, flagged `partial`. A forward marked at zero is
-  split by nothing either, and is flagged too.
+  counts at its mark, flagged `partial`.
 - **Reaching gold.** A load writes the instruments and compositions of
   the days it reads. `wealthdb reload ubs` writes them for every day.
 

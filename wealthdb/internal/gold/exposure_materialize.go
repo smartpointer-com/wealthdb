@@ -30,21 +30,37 @@ SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT
 // currency with k, its holding's value in the currency over its dollar
 // value, and its account's tax wrapper. Each leaf is a fixed share of the
 // holding it descends from, so its value in a currency is its dollar
-// value times k. A holding no rate converts to US dollars is left out in
-// every currency.
+// value times k. A holding worth zero has no such share. Its leaves are
+// zero, and left out, but for the legs of a forward held directly, which
+// its mark does not scale (docs/EXPOSURE.md §5). A nonzero leaf of a
+// holding worth zero takes for k the dollar's rate in the currency on
+// the holding's day (the CTE zero), by the chain exposure_holdings
+// values a holding by. A holding no rate converts to US dollars is left
+// out in every currency.
 func scaledLeavesSQL(l string) string {
 	return l + `,
 h AS MATERIALIZED (%s),
-usd AS (SELECT src, acct, position_key, value AS v FROM h WHERE out_ccy = 'USD' AND value <> 0),
-s AS (SELECT l.*, h.out_ccy, h.value / usd.v AS k, a.tax_wrapper AS wrapper
+usd AS (SELECT src, acct, position_key, value AS v, snap FROM h WHERE out_ccy = 'USD'),
+zero AS (
+    SELECT z.out_ccy, z.day, COALESCE(CASE WHEN z.out_ccy = 'USD' THEN 1.0 END, o0.rate, o1.rate * o2.rate) AS k
+      FROM (SELECT DISTINCT h.out_ccy, usd.snap // 86400 AS day
+              FROM usd JOIN h ON h.src = usd.src AND h.acct = usd.acct AND h.position_key = usd.position_key
+             WHERE usd.v = 0) z
+      ASOF LEFT JOIN fx_daily o0 ON o0.from_ccy = 'USD' AND o0.to_ccy = z.out_ccy AND o0.day <= z.day
+      ASOF LEFT JOIN fx_daily o1 ON o1.from_ccy = 'USD' AND o1.to_ccy = 'CHF' AND o1.day <= z.day
+      ASOF LEFT JOIN fx_daily o2 ON o2.from_ccy = 'CHF' AND o2.to_ccy = z.out_ccy AND o2.day <= z.day),
+s AS (SELECT l.*, h.out_ccy, COALESCE(h.value / NULLIF(usd.v, 0), zero.k) AS k, a.tax_wrapper AS wrapper
         FROM l
         JOIN usd ON usd.src = l.src AND usd.acct = l.acct AND usd.position_key = l.position_key
         JOIN h ON h.src = l.src AND h.acct = l.acct AND h.position_key = l.position_key
-        LEFT JOIN accounts a ON a.silver_source_id = l.src AND a.account_external_id = l.acct)`
+        -- The zero test is in the key, so the join hashes.
+        LEFT JOIN zero ON zero.out_ccy = h.out_ccy AND zero.day = CASE WHEN usd.v = 0 THEN usd.snap // 86400 END
+        LEFT JOIN accounts a ON a.silver_source_id = l.src AND a.account_external_id = l.acct
+       WHERE usd.v <> 0 OR (l.value <> 0 AND zero.k IS NOT NULL))`
 }
 
 // exposureHoldingsSQL is one currency's holdings for scaledLeavesSQL.
-const exposureHoldingsSQL = `SELECT '%s' AS out_ccy, src, acct, position_key, value
+const exposureHoldingsSQL = `SELECT '%s' AS out_ccy, src, acct, position_key, value, snap
       FROM exposure_holdings(CAST($1 AS BIGINT), '%s') WHERE value IS NOT NULL`
 
 // MaterializeExposure rewrites report_exposure: the look-through at the
