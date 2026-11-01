@@ -721,10 +721,9 @@ RETIRED_CARD_NAMES = [
                       # The Gains dashboard splits its gain by what was
                       # sold and what was kept.
                       "Unrealized change",
-                      # The Exposure charts over time show shares alone,
-                      # so the twin reuses them.
+                      # The other Exposure charts over time show shares
+                      # alone, so the twin reuses them.
                       "Asset classes over time (privacy)",
-                      "Currencies over time (privacy)",
                       "Held directly or through funds (privacy)",
                       "How the figures are classified (privacy)",
                       "Regions over time (privacy)",
@@ -815,10 +814,11 @@ PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)", "Asset cl
                         # the twin builds its own from
                         # PRIVACY_INCOME_FILTERS.
                         "Uncategorized share",
-                        # The Exposure charts over time: each month end's
-                        # shares of the selection, with no value column.
+                        # The Exposure charts over time but the currencies:
+                        # each month end's shares of the selection, with no
+                        # value column.
                         "Asset classes over time", "Regions over time",
-                        "Currencies over time", "Held directly or through funds",
+                        "Held directly or through funds",
                         "How the figures are classified",
                         # The Yield cards of rates, years and securities
                         # alone: the selection's yields, a stock's
@@ -2749,7 +2749,9 @@ def exposure_cards(db_id, privacy):
     tooltip, or draws the ring from it; its privacy card has the share
     alone, a share being scale-free. A chart over time shows each month
     end's shares on both, so it is privacy-exempt and has no privacy
-    variant.
+    variant. Currencies over time is the exception: its base card plots
+    each month end's value in the picked currency, its privacy card the
+    shares.
 
     The debt cards read web_exposure_debt (migration 0138), at the same
     instants and currencies. The Top securities card reads
@@ -2795,7 +2797,7 @@ def exposure_cards(db_id, privacy):
              "  FROM e\n GROUP BY ALL\n ORDER BY sum(share_pct) DESC, 1",
              ring(label) if display == "pie" else bars(label, "share_pct"))
 
-    def over_time(name, desc, dim, label, fold=False):
+    def over_time(name, desc, dim, label, fold=False, amounts=False):
         """Each month end's shares, stacked by the values of `dim`, the
         rows smallest first by the share at the window's end, as
         _series_order orders any stacked chart. With `fold`, a value
@@ -2805,17 +2807,21 @@ def exposure_cards(db_id, privacy):
         keeps its own band, and Metabase stacks it below zero. A tie
         orders by the value. It ranks with an aggregate of its own: the
         DuckDB in Metabase's driver fails on that helper's window
-        functions over w, whose share is a window function itself."""
+        functions over w, whose share is a window function itself. With
+        `amounts`, a base card plots each band's value in the picked
+        currency instead, with the same bands and order, and its privacy
+        card the shares."""
         kept = "abs(r.latest) >= 1"
         rank = f"CASE WHEN {kept} THEN abs(r.latest) ELSE -1 END" if fold else "COALESCE(r.latest, -1)"
         band = f"CASE WHEN {kept} THEN w.{dim} ELSE 'other' END" if fold else f"w.{dim}"
+        metric = "value" if amounts and not privacy else "share_pct"
         card(name, "area", desc,
              last + f",\nr AS (SELECT {dim} AS k, sum(share_pct) AS latest FROM e GROUP BY 1)\n"
-             f"SELECT w.as_of_day, {band} AS {label},\n       sum(w.share_pct) AS share_pct\n"
+             f"SELECT w.as_of_day, {band} AS {label},\n       sum(w.{metric}) AS {metric}\n"
              f"  FROM w\n  LEFT JOIN r ON r.k = w.{dim}\n GROUP BY 1, 2\n"
              f" ORDER BY max({rank}), {'2, ' if fold else ''}1",
-             {"graph.dimensions": ["as_of_day", label], "graph.metrics": ["share_pct"],
-              **STACKED_VIZ, **_share_viz("share_pct")})
+             {"graph.dimensions": ["as_of_day", label], "graph.metrics": [metric], **STACKED_VIZ,
+              **({} if metric == "value" else _share_viz(metric))})
 
     at_end("Exposure by asset class", "pie",
            "Net worth by asset class after look-through, at the window's end. "
@@ -2862,7 +2868,10 @@ def exposure_cards(db_id, privacy):
     over_time("Currencies over time",
               "Each month end's net worth by the currency it moves with, as "
               "shares stacking to 100. A currency sold forward can read below "
-              "zero.", "exposure_currency", "currency", fold=True)
+              "zero." if privacy else
+              "Each month end's net worth by the currency it moves with, in "
+              "the picked currency. A currency sold forward reads below zero.",
+              "exposure_currency", "currency", fold=True, amounts=True)
     over_time("Held directly or through funds",
               "Each month end's net worth, held directly or through funds.",
               "held", "held")

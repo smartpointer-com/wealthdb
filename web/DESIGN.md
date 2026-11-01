@@ -324,10 +324,11 @@ It reads in this order:
   band shows where the other charts stop covering.
 
 A breakdown reads the latest day in the range. A chart over time shows
-each month end's shares, stacked to 100. The currencies chart keeps a
-currency as its own band when its share at the range's end is 1% or
-more, long or short. The rest fold into one `other` band. A currency sold
-forward can be short, and its band then sits below zero.
+each month end's shares, stacked to 100. The currencies chart shows each
+month end's value in the picked currency instead. It keeps a currency as
+its own band when its share at the range's end is 1% or more, long or
+short. The rest fold into one `other` band. A currency sold forward can
+be short, and its band then sits below zero.
 
 Three pickers narrow a selection. The source and the tax wrapper reach
 every tile: `report_exposure` holds the look-through per source and
@@ -341,10 +342,12 @@ itself with nothing picked; either way scale-free. So the Exposure twin
 needs no normalisation. Each breakdown plots the shares: a bar carries
 its percentage, a ring lists them in its legend. The base card shows
 the value on hover, and its privacy card drops the value column.
-The charts over time show shares alone. They are privacy-exempt, so the
-twin shows the same cards. Country, region, situs and currency labels
-stay, since none names an account. Its tiles read `web_exposure`
-(migration 0127), a view over a materialized table (§8).
+The charts over time but the currencies one show shares alone. They are
+privacy-exempt, so the twin shows the same cards. The currencies chart
+shows money, so its privacy card shows the same bands as shares.
+Country, region, situs and currency labels stay, since none names an
+account. Its tiles read `web_exposure` (migration 0127), a view over a
+materialized table (§8).
 
 The four debt cards read `web_exposure_debt` (migration 0138). It
 holds today and the last second of each of the twelve months before,

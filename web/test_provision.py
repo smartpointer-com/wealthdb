@@ -2309,8 +2309,18 @@ check("...that never shows a value, only shares of the selection",
       [n for n, q in _ex_twin.items() if re.search(r"\bAS value\b", q)])
 check("...and reads the picked currency too",
       all(len(_EX_VIEW.findall(q)) == q.count("AND currency = {{currency}}") for q in _ex_twin.values()))
-check("the base breakdowns show the value beside the share, the charts over time shares alone",
-      all(("sum(value) AS value" in q) == (CARDS[n][0] != "area") for n, q in _ex_look.items()))
+check("the base breakdowns show the value beside the share, the other charts over time shares alone",
+      all(("sum(value) AS value" in q) == (CARDS[n][0] != "area")
+          for n, q in _ex_look.items() if n != "Currencies over time"))
+# The currencies over time plot money, so they leave the exempt cards for
+# a twin of the shares, and their old twin name is no longer retired.
+check("...but the currencies over time plot the value alone, their twin the share",
+      re.search(r"\bAS value\b", _ex_look["Currencies over time"])
+      and "share_pct AS share_pct" not in _ex_look["Currencies over time"]
+      and VIZ["Currencies over time"].get("graph.metrics") == ["value"]
+      and VIZ[p.privacy_name("Currencies over time")].get("graph.metrics") == ["share_pct"]
+      and "Currencies over time" not in p.PRIVACY_EXEMPT_CARDS
+      and p.privacy_name("Currencies over time") not in p.RETIRED_CARD_NAMES)
 # A reader wants the shares first: every bar plots a share, with its
 # figure on the bar and a percent sign; the base card keeps the value for
 # the tooltip, where the privacy card has none to show.
@@ -3280,6 +3290,10 @@ check("...and no field filter binds the snapshot",
 # dashboard tile pointing at the archive.
 _retired_live = sorted(set(p.RETIRED_CARD_NAMES) & set(CARDS))
 check("no retired card name is still defined", not _retired_live, _retired_live)
+# A privacy-exempt card is shown as it is on the twin, so it is a card
+# with no privacy variant beside it.
+_exempt_off = sorted(n for n in p.PRIVACY_EXEMPT_CARDS if n not in CARDS or p.privacy_name(n) in CARDS)
+check("every privacy-exempt card is provisioned, with no privacy variant", not _exempt_off, _exempt_off)
 
 section("the reporting currencies")
 
@@ -4244,26 +4258,29 @@ if duckdb is not None:
 
     section("the Exposure currencies over time, run on an invented frame")
 
-    # Two month ends of a selection in USD, worth 100 on each. At the
+    # Two month ends of a selection in USD, worth 1000 and 2000. At the
     # window's end CHF holds 124.7%, a forward's short USD leg -30%, JPY
     # 5%, EUR 0.7% and GBP -0.4%; SEK, held at the first, is gone. A currency
     # keeps its band where its share at the end is 1% or more either way:
     # CHF, USD and JPY. EUR, GBP and SEK fold into `other`, which comes
     # first, the top of the stack; the bands follow by the magnitude of
-    # their share, the largest last, on the axis.
+    # their share, the largest last, on the axis. The base card plots the
+    # values, its twin the shares.
     _fx = duckdb.connect()
     _fx.execute("CREATE TABLE web_exposure (as_of_day DATE, currency TEXT, silver_source_id TEXT,"
                 " tax_wrapper TEXT, asset_class TEXT, exposure_currency TEXT, value DOUBLE)")
-    for _day, _ccy, _v in (("2026-08-31", "CHF", 80.0), ("2026-08-31", "USD", 10.0), ("2026-08-31", "SEK", 4.0),
-                           ("2026-08-31", "JPY", 6.0), ("2026-09-30", "CHF", 124.7), ("2026-09-30", "USD", -30.0),
-                           ("2026-09-30", "JPY", 5.0), ("2026-09-30", "EUR", 0.7), ("2026-09-30", "GBP", -0.4)):
+    for _day, _ccy, _v in (("2026-08-31", "CHF", 800.0), ("2026-08-31", "USD", 100.0), ("2026-08-31", "SEK", 40.0),
+                           ("2026-08-31", "JPY", 60.0), ("2026-09-30", "CHF", 2494.0), ("2026-09-30", "USD", -600.0),
+                           ("2026-09-30", "JPY", 100.0), ("2026-09-30", "EUR", 14.0), ("2026-09-30", "GBP", -8.0)):
         _fx.execute("INSERT INTO web_exposure VALUES (?, 'USD', 'src-1', 'taxable_personal', 'cash', ?, ?)",
                     [_day, _ccy, _v])
-    _bands = _fx.execute(_render(CARDS["Currencies over time"][2],
-                                 {"time_range": ["2026-08-01", "2026-09-30"]})).fetchall()
+    _fx_cards = {}
+    for _n in ("Currencies over time", p.privacy_name("Currencies over time")):
+        _bands = _fx.execute(_render(CARDS[_n][2], {"time_range": ["2026-08-01", "2026-09-30"]})).fetchall()
+        _by = {(d.isoformat(), c): v for d, c, v in _bands}
+        _fx_cards[_n] = (_bands, _by, {d: sum(v for (dd, _c), v in _by.items() if dd == d) for d, _c in _by})
     _fx.close()
-    _by = {(d.isoformat(), c): v for d, c, v in _bands}
-    _sums = {d: sum(v for (dd, _c), v in _by.items() if dd == d) for d, _c in _by}
+    _bands, _by, _sums = _fx_cards[p.privacy_name("Currencies over time")]
     check("a currency short 30% at the end keeps its own band, below zero",
           _near(_by.get(("2026-09-30", "USD")), -30.0) and _near(_by.get(("2026-08-31", "USD")), 10.0), _bands)
     check("...one under 1% either way folds into other, as one gone by the end does",
@@ -4273,6 +4290,15 @@ if duckdb is not None:
           len(_sums) == 2 and all(_near(v, 100.0) for v in _sums.values()), _sums)
     check("...other first, then the bands by the magnitude of their share, the largest last",
           list(dict.fromkeys(c for _d, c, _v in _bands)) == ["other", "JPY", "USD", "CHF"], _bands)
+    _vbands, _vby, _vsums = _fx_cards["Currencies over time"]
+    check("the base card plots the same bands in money, summing to each day's value",
+          set(_vby) == set(_by) and _near(_vsums.get("2026-08-31"), 1000.0)
+          and _near(_vsums.get("2026-09-30"), 2000.0), _vsums)
+    check("...the short currency below zero and the folded ones in other",
+          _near(_vby.get(("2026-09-30", "USD")), -600.0) and _near(_vby.get(("2026-09-30", "other")), 6.0)
+          and _near(_vby.get(("2026-08-31", "other")), 40.0), _vbands)
+    check("...in the twin's order",
+          [r[:2] for r in _vbands] == [r[:2] for r in _bands], _vbands)
 
     section("the Allocation issuers card's SQL, run on an invented book")
 
