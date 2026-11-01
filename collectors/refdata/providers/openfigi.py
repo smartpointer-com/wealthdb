@@ -29,9 +29,9 @@ from datetime import date
 from pathlib import Path
 
 import fetcher
-from collectorkit import bronze
 
-from .base import Parsed, Provider, ProviderError, ident, present, read_json, read_meta, row, today_utc, write_meta
+from .base import (Parsed, Provider, ProviderError, ident, present, read_json, read_meta, row, today_utc, write_json,
+                   write_meta)
 
 API = "https://api.openfigi.com/v3/mapping"
 DOC = "mapping.json"
@@ -122,7 +122,7 @@ class OpenFigi(Provider):
 
     def fetch_security(self, claim, outdir: Path, ctx):
         result = self._answer(claim, ctx)
-        bronze.atomic_write_json(outdir / DOC, {"job": claim["job"], "result": result})
+        write_json(outdir, DOC, {"job": claim["job"], "result": result})
         write_meta(outdir, provider=self.name, key=claim["key"], as_of=today_utc().isoformat())
 
     def parse(self, indir: Path) -> Parsed:

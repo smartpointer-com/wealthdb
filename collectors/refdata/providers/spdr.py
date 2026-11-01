@@ -66,11 +66,11 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import fetcher
-from collectorkit import bronze
 
 from . import fundpage, table, xlsx
-from .base import (Parsed, Provider, ProviderError, amount, blank_to_none, event_row, facts_missing, ident, kinds_paid,
-                   listed, merge_events, present, read_json, read_meta, write_meta)
+from .base import (Parsed, Provider, ProviderError, amount, blank_to_none, event_row, facts_missing, has_file, ident,
+                   kinds_paid, listed, merge_events, present, read_bytes, read_json, read_meta, write_file, write_json,
+                   write_meta)
 
 FINDER = "https://www.ssga.com/bin/v1/ssmp/fund/fundfinder"
 FINDERS = {
@@ -230,7 +230,7 @@ class Spdr(Provider):
         except (fetcher.FetchError, ProviderError) as e:
             log.warning("%s: its distributions workbook did not come: %s", claim["ref"], e)
             return False
-        bronze.atomic_write_json(outdir / DISTRIBUTIONS_DOC, {
+        write_json(outdir, DISTRIBUTIONS_DOC, {
             "url": book["url"],
             "sheets": [{**sheet, "rows": fund_rows(sheet, claim)} for sheet in book["sheets"]]})
         return True
@@ -244,7 +244,7 @@ class Spdr(Provider):
         day = _as_of(table.preamble(rows, start))
         if day is None:
             raise ProviderError(f"{resp.url} states no holdings date")
-        bronze.atomic_write_bytes(outdir / DOC, resp.body)
+        write_file(outdir, DOC, resp.body)
         missing = []
         if claim.get("characteristics"):
             missing += fundpage.keep(ctx, HOST + claim["page"], outdir, PAGE_DOC, claim["ref"], fund_page, log=log)
@@ -257,11 +257,11 @@ class Spdr(Provider):
     def parse(self, indir: Path) -> Parsed:
         meta = read_meta(indir)
         day = date.fromisoformat(meta["as_of"])
-        out = parse_holdings((indir / DOC).read_bytes(), meta["ref"], provider=self.name)
-        if (indir / PAGE_DOC).is_file():
-            out.characteristics = characteristics((indir / PAGE_DOC).read_bytes().decode("utf-8", "replace"),
+        out = parse_holdings(read_bytes(indir, DOC), meta["ref"], provider=self.name)
+        if has_file(indir, PAGE_DOC):
+            out.characteristics = characteristics(read_bytes(indir, PAGE_DOC).decode("utf-8", "replace"),
                                                   meta["ref"], day, provider=self.name)
-        if (indir / DISTRIBUTIONS_DOC).is_file():
+        if has_file(indir, DISTRIBUTIONS_DOC):
             out.dividend_events = distribution_events(read_json(indir, DISTRIBUTIONS_DOC), meta["ref"], day,
                                                       emea=meta["region"] == "emea", provider=self.name)
             out.events_complete = True

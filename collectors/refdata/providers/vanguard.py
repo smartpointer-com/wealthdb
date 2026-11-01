@@ -38,11 +38,9 @@ import urllib.parse
 from datetime import date
 from pathlib import Path
 
-from collectorkit import bronze
-
 from . import table
 from .base import (Parsed, Provider, ProviderError, amount, blank_to_none, event_row, merge_events, present, read_bytes,
-                   read_meta, today_utc, us_symbol, write_meta)
+                   read_meta, today_utc, us_symbol, write_file, write_meta)
 
 PAGE = "https://investor.vanguard.com/investment-products/etfs/profile/{ticker}"
 PAGE_DOC = "page.html"
@@ -74,7 +72,7 @@ class Vanguard(Provider):
         resp = ctx.client.get(PAGE.format(ticker=urllib.parse.quote(claim["symbol"].lower(), safe="")))
         if distribution_rows(resp.text()) is None:
             raise ProviderError(f"{resp.url} states no distributions")
-        bronze.atomic_write_bytes(outdir / PAGE_DOC, resp.body)
+        write_file(outdir, PAGE_DOC, resp.body)
         day = today_utc()
         write_meta(outdir, provider=self.name, ref=claim["ref"], symbol=claim["symbol"], as_of=day.isoformat())
         return day

@@ -80,11 +80,10 @@ import urllib.parse
 from datetime import date
 from pathlib import Path
 
-from collectorkit import bronze
-
 from . import fundpage, table
-from .base import (Parsed, Provider, ProviderError, Unavailable, amount, dec, event_row, facts_missing, kinds_paid,
-                   listed, merge_events, present, read_json, read_meta, write_meta)
+from .base import (Parsed, Provider, ProviderError, Unavailable, amount, dec, event_row, facts_missing, has_file,
+                   kinds_paid, listed, merge_events, present, read_bytes, read_json, read_meta, write_file, write_json,
+                   write_meta)
 
 HOST = "https://www.ishares.com"
 SCREENERS = {
@@ -238,7 +237,7 @@ class IShares(Provider):
             day = _csv_day(rows)
             if day is None or table.header_index(rows) is None:
                 raise ProviderError(f"{resp.url} is not a holdings file")
-            bronze.atomic_write_bytes(outdir / CSV_DOC, resp.body)
+            write_file(outdir, CSV_DOC, resp.body)
             missing = self._us_page(claim, day, outdir, ctx) if claim["characteristics"] or claim["calendar"] else []
             write_meta(outdir, provider=self.name, ref=claim["ref"], site="us", as_of=day.isoformat(),
                        **facts_missing(missing))
@@ -254,9 +253,9 @@ class IShares(Provider):
             params["asOfDate"] = day.strftime("%Y%m%d")
         resp = ctx.client.get(f"{HOST}{claim['page']}/{CH_HOLDINGS}.ajax", params=params)
         resp.json()  # an answer that is not JSON fails the fetch
-        bronze.atomic_write_bytes(outdir / JSON_DOC, resp.body)
+        write_file(outdir, JSON_DOC, resp.body)
         html_page = self._html(claim, ctx)
-        bronze.atomic_write_bytes(outdir / PAGE_DOC, html_page)
+        write_file(outdir, PAGE_DOC, html_page)
         # The page states today's characteristics whichever day's holdings
         # it serves: a figure it states no day for is the newest day's.
         page_as_of = max(page["dates"])
@@ -279,11 +278,11 @@ class IShares(Provider):
         states a figure, the calendar where the page states no
         distributions table, either where the page did not come."""
         if claim["characteristics"]:
-            bronze.atomic_write_json(outdir / PRODUCT_DOC, claim["product"])
+            write_json(outdir, PRODUCT_DOC, claim["product"])
         got = fundpage.fetch(ctx, HOST + claim["page"], claim["ref"], log=log)
         state = None
         if got is not None:
-            bronze.atomic_write_bytes(outdir / PAGE_DOC, got[0])
+            write_file(outdir, PAGE_DOC, got[0])
             state = page_state(got[1])
         missing = []
         if claim["characteristics"] and not (state is not None and characteristics(
@@ -302,7 +301,7 @@ class IShares(Provider):
                              what="its distributions", json=True)
         if got is None:
             return False
-        bronze.atomic_write_bytes(outdir / DISTRIBUTIONS_DOC, got[0])
+        write_file(outdir, DISTRIBUTIONS_DOC, got[0])
         if ch_grid(got[1]) is None:
             log.warning("%s: its distributions matched no known layout", claim["ref"])
             return False
@@ -314,13 +313,13 @@ class IShares(Provider):
         if meta["site"] == "us":
             # Decoded as the fetch checked it, so a stray byte costs one
             # character rather than the composition.
-            out = parse_csv((indir / CSV_DOC).read_bytes().decode("utf-8-sig", "replace"), meta["ref"], as_of,
+            out = parse_csv(read_bytes(indir, CSV_DOC).decode("utf-8-sig", "replace"), meta["ref"], as_of,
                             provider=self.name)
         else:
             out = parse_grid(read_json(indir, JSON_DOC), meta["columns"], meta["ref"], as_of, provider=self.name,
                              fund_name=meta.get("name"))
-        page = (indir / PAGE_DOC).read_bytes().decode("utf-8", "replace") if (indir / PAGE_DOC).is_file() else ""
-        product = read_json(indir, PRODUCT_DOC) if (indir / PRODUCT_DOC).is_file() else {}
+        page = read_bytes(indir, PAGE_DOC).decode("utf-8", "replace") if has_file(indir, PAGE_DOC) else ""
+        product = read_json(indir, PRODUCT_DOC) if has_file(indir, PRODUCT_DOC) else {}
         day = date.fromisoformat(meta.get("page_as_of") or meta["as_of"])
         state = page_state(page)
         out.characteristics = characteristics(page, product, meta["ref"], day, provider=self.name, state=state)
@@ -328,7 +327,7 @@ class IShares(Provider):
             rows = distribution_rows(state["distributions"])
             out.dividend_events = us_events(rows or [], meta["ref"], day, provider=self.name)
         else:
-            rows = ch_grid(read_json(indir, DISTRIBUTIONS_DOC)) if (indir / DISTRIBUTIONS_DOC).is_file() else None
+            rows = ch_grid(read_json(indir, DISTRIBUTIONS_DOC)) if has_file(indir, DISTRIBUTIONS_DOC) else None
             out.dividend_events = ch_events(rows or [], meta["ref"], day, provider=self.name)
         out.events_complete = rows is not None
         return out

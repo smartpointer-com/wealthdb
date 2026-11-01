@@ -2,7 +2,6 @@
 UCITS fund's latest one by ISIN, on invented answers in the API's layout.
 Every fund, identifier, day and amount is invented."""
 
-import json
 import logging
 from datetime import date
 from functools import partial
@@ -10,7 +9,7 @@ from functools import partial
 import pytest
 
 from providers import REGISTRY
-from providers.base import read_meta
+from providers.base import has_file, read_json, read_meta
 from providers.invesco import API, distribution_events, distribution_rows
 from tests import test_invesco_characteristics as chars
 from tests.helpers import FakeClient, events_by_id, held, plan, wanted_doc
@@ -68,7 +67,7 @@ def test_a_us_fund_states_every_distribution_as_events_per_kind(tmp_path):
     assert url == API.format(locale="en_US", id=US_ID) + "distribution"
     assert params == {"idType": "cusip", "productType": "ETF"}
     assert "facts_missing" not in read_meta(tmp_path)
-    assert json.loads((tmp_path / "distributions.json").read_text()) == US_ANSWER
+    assert read_json(tmp_path, "distributions.json") == US_ANSWER
     assert events_by_id(parsed.dividend_events, declared=True) == {
         "dividend|2026-09-21|2026-09-21|2026-10-08": ("dividend", date(2026, 9, 21), date(2026, 9, 21),
                                                       date(2026, 10, 8), None, "0.75143", "USD"),
@@ -145,7 +144,7 @@ def test_a_fund_that_wants_no_calendar_asks_for_no_distributions(tmp_path):
     client = api(US_ANSWER)
     parsed = fetch(tmp_path, client, wants=())
     assert not [u for u in client.urls() if u.endswith("/distribution")]
-    assert not (tmp_path / "distributions.json").exists() and parsed.dividend_events == []
+    assert not has_file(tmp_path, "distributions.json") and parsed.dividend_events == []
 
 
 def test_both_facts_missing_are_named(tmp_path):

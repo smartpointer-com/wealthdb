@@ -1091,8 +1091,9 @@ A folder is named after the fund's reference or the security's key,
 `isin_XX…` as in the inbox. One failed request does not fail the run.
 The manifest follows the
 [shared status lifecycle](../README.md#debug-artefacts-run-status-and-pruning-bronze),
-so `load` never reads a crashed run. An N-PORT or N-MFP filing and a
-frame are stored zstd-compressed.
+so `load` never reads a crashed run. A provider's text files (JSON,
+HTML, CSV and XML) are stored zstd-compressed, as `<name>.zst`. A
+workbook, a PDF, `meta.json` and the inbox's copies stay as they came.
 
 The silver DB is `refdata.db`, beside the run dirs. It keeps what the
 providers state, labels in their own words: each fund's compositions
@@ -1125,3 +1126,30 @@ Gold reads the silver as a source of kind `refdata` in `wealthdb.cfg`:
 `prune` removes run dirs that are not complete and the `--debug`
 traces. A complete run's raw files are `load` inputs and stay, as do
 the inbox, those two state files and the silver DB.
+
+```sh
+./refdata compact --dry-run               # print the plan and its bytes, write nothing
+./refdata compact                         # rewrite the complete runs
+wealthdb-collect dedup --source refdata   # share identical files across runs
+```
+
+`compact` compresses the plain text files a provider stored in the
+complete runs, the form `download` stores them in. It removes nothing a
+parser reads. `load` reads either form of a file, so a `load --force`
+rebuild gives the same silver.
+
+- A file is replaced only once its new form reads back the same, so a
+  stopped sweep is safe to run again.
+- Like `prune`, it leaves a run alone that is not complete or was
+  touched within `--min-age-hours` (default 1). A run it changed counts
+  as touched, so a second sweep right after skips it.
+- It prints the files of each step and their bytes before and after.
+  `-v` names each file.
+- It rewrites `load` inputs, so it runs by hand only and is never
+  scheduled. It must not run while a download or a load does.
+
+`wealthdb-collect dedup --source refdata` is the step after `compact`.
+It makes byte-identical files of the complete runs share one copy: a
+report PDF fetched again, and the compressed answers that repeat. A
+file that dedup shared before keeps its bytes until every run that
+holds it is compacted. The step after shares the new forms again.

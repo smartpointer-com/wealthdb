@@ -73,12 +73,11 @@ from datetime import date
 from pathlib import Path
 
 import fetcher
-from collectorkit import bronze
 from collectorkit.parse import iso_date
 
 from . import fundpage, table
-from .base import (Parsed, Provider, ProviderError, amount, blank_to_none, dec, event_row, facts_missing, ident,
-                   kinds_paid, merge_events, present, read_json, read_meta, row, write_meta)
+from .base import (Parsed, Provider, ProviderError, amount, blank_to_none, dec, event_row, facts_missing, has_file,
+                   ident, kinds_paid, merge_events, present, read_json, read_meta, row, write_file, write_meta)
 
 API = "https://dng-api.invesco.com/cache/v1/accounts/{locale}/shareclasses/{id}/"
 ISSUER = re.compile(r"invesco|powershares", re.I)
@@ -171,7 +170,7 @@ class Invesco(Provider):
         if day is None or not isinstance(fund_doc.get("holdings"), list):
             raise ProviderError(f"{claim['id']}: the holdings answer states no holdings or no date")
         for kind, (body, _) in got.items():
-            bronze.atomic_write_bytes(outdir / DOCS[kind], body)
+            write_file(outdir, DOCS[kind], body)
         pages, missing = {}, []
         if claim.get("characteristics"):
             pages = self._pages(claim, outdir, ctx)
@@ -191,7 +190,7 @@ class Invesco(Provider):
                              json=True)
         if got is None:
             return False
-        bronze.atomic_write_bytes(outdir / DISTRIBUTIONS_DOC, got[0])
+        write_file(outdir, DISTRIBUTIONS_DOC, got[0])
         if distribution_rows(got[1], claim["site"]) is None:
             log.warning("%s: its distributions matched no known layout", claim["ref"])
             return False
@@ -213,7 +212,7 @@ class Invesco(Provider):
             answer = fundpage.fetch(ctx, url, claim["ref"], log=log, what=f"its page's {name.replace('_', ' ')}",
                                     params=params, headers=JSON, json=True)
             if answer is not None:
-                bronze.atomic_write_bytes(outdir / PAGE_DOCS[name], answer[0])
+                write_file(outdir, PAGE_DOCS[name], answer[0])
                 got[name] = answer[1]
         return got
 
@@ -223,7 +222,7 @@ class Invesco(Provider):
         pages = {k: read_json(indir, PAGE_DOCS[k]) for k in meta.get("pages", ())}
         day = date.fromisoformat(meta["as_of"])
         out.characteristics = characteristics(pages, meta["ref"], day, provider=self.name)
-        if (indir / DISTRIBUTIONS_DOC).is_file():
+        if has_file(indir, DISTRIBUTIONS_DOC):
             doc = read_json(indir, DISTRIBUTIONS_DOC)
             out.dividend_events = distribution_events(doc, meta["site"], meta["ref"], day, provider=self.name)
             out.events_complete = meta["site"] == "us" and distribution_rows(doc, "us") is not None

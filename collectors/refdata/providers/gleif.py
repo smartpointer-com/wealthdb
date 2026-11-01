@@ -30,9 +30,9 @@ from datetime import date
 from pathlib import Path
 
 import fetcher
-from collectorkit import bronze
 
-from .base import Parsed, Provider, ident, present, read_json, read_meta, row, today_utc, write_meta
+from .base import (Parsed, Provider, has_file, ident, present, read_json, read_meta, row, today_utc, write_file,
+                   write_meta)
 
 API = "https://api.gleif.org/api/v1/lei-records"
 DOC = "lei-records.json"
@@ -76,7 +76,7 @@ class Gleif(Provider):
     def fetch_security(self, claim, outdir: Path, ctx):
         resp = ctx.client.get(API, params={"filter[isin]": claim["isin"]}, headers=HEADERS)
         doc = resp.json()
-        bronze.atomic_write_bytes(outdir / DOC, resp.body)
+        write_file(outdir, DOC, resp.body)
         lei, country = _issuer(doc)
         if claim.get("equity") and claim["isin"].startswith("US") and lei and country and country != "US":
             try:
@@ -84,7 +84,7 @@ class Gleif(Provider):
             except fetcher.FetchError as e:
                 log.warning("%s: the ISINs of its issuer did not come: %s", claim["key"], e)
             else:
-                bronze.atomic_write_bytes(outdir / ISINS_DOC, json.dumps({"lei": lei, "isins": isins}).encode())
+                write_file(outdir, ISINS_DOC, json.dumps({"lei": lei, "isins": isins}).encode())
         write_meta(outdir, provider=self.name, key=claim["key"], isin=claim["isin"],
                    as_of=today_utc().isoformat())
 
@@ -92,7 +92,7 @@ class Gleif(Provider):
         meta = read_meta(indir)
         as_of = date.fromisoformat(meta["as_of"])
         out = parse_records(read_json(indir, DOC), meta["key"], meta["isin"], as_of, provider=self.name)
-        if (indir / ISINS_DOC).is_file():
+        if has_file(indir, ISINS_DOC):
             out.security_facts += issuer_isins(read_json(indir, ISINS_DOC), meta["key"], meta["isin"], as_of,
                                                provider=self.name)
         return out

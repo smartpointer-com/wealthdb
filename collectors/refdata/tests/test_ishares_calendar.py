@@ -9,7 +9,7 @@ from functools import partial
 
 import pytest
 
-from providers.base import Context, read_meta
+from providers.base import Context, has_file, read_bytes, read_meta
 from providers.ishares import (CH_DISTRIBUTIONS, HOST, IShares, ch_events, ch_grid, distribution_rows,
                                distributions_url, page_state, us_events)
 from tests import test_ishares_characteristics as chars
@@ -67,8 +67,8 @@ def test_a_us_page_states_every_distribution_as_events_per_kind(tmp_path):
 def test_a_fund_that_wants_its_calendar_alone_asks_for_the_page_and_no_product_entry(tmp_path):
     client = us_site()
     parsed = us_fetch(tmp_path, client, ("dividend_calendar",))
-    assert PAGE_URL in client.urls() and (tmp_path / "page.html").exists()
-    assert not (tmp_path / "product.json").exists() and "facts_missing" not in read_meta(tmp_path)
+    assert PAGE_URL in client.urls() and has_file(tmp_path, "page.html")
+    assert not has_file(tmp_path, "product.json") and "facts_missing" not in read_meta(tmp_path)
     assert events_by_id(parsed.dividend_events) == BOND_EVENTS
 
 
@@ -184,7 +184,7 @@ def test_a_swiss_fetch_asks_for_the_distributions_its_page_names(tmp_path):
 
 def test_an_accumulating_class_answers_null_and_the_calendar_is_answered(tmp_path):
     parsed = ch_fetch(tmp_path, ch_site(distributions=b"null"))
-    assert (tmp_path / "distributions.json").read_bytes() == b"null"
+    assert read_bytes(tmp_path, "distributions.json") == b"null"
     assert "facts_missing" not in read_meta(tmp_path) and parsed.dividend_events == []
 
 

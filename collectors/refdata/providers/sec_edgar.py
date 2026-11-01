@@ -40,11 +40,9 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from collectorkit import bronze
-
 from . import sec_calendar, sec_frames as frames
-from .base import (Parsed, Provider, dec, facts_missing, ident, present, read_json, read_meta, row, today_utc,
-                   write_meta)
+from .base import (Parsed, Provider, dec, facts_missing, has_file, ident, present, read_json, read_meta, row, today_utc,
+                   write_file, write_meta)
 from .sec_nport import SUBMISSIONS, company_tickers
 
 CONCEPT = "https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/{taxonomy}/{concept}.json"
@@ -204,10 +202,10 @@ class SecEdgar(Provider):
         cik, today = claim["cik"], today_utc()
         sub = ctx.client.get(SUBMISSIONS.format(cik=cik))
         doc = sub.json()  # an answer that is not JSON fails the fetch
-        bronze.atomic_write_bytes(outdir / SUB_DOC, sub.body)
+        write_file(outdir, SUB_DOC, sub.body)
         shares = frames.xbrl(ctx, CONCEPT.format(cik=cik, taxonomy="dei", concept=SHARES_CONCEPT))
         if shares is not None:
-            bronze.atomic_write_bytes(outdir / SHARES_DOC, shares[0].body)
+            write_file(outdir, SHARES_DOC, shares[0].body)
         figures = [f for f in FIGURES if f.family in claim.get("families", ())]
         # A company reports under one taxonomy: the IFRS twins are asked
         # for only where it states none of the us-gaap concepts.
@@ -269,10 +267,10 @@ class SecEdgar(Provider):
         if "frame" in meta:
             return frames.parse(indir, meta, provider=self.name)
         sub = read_json(indir, SUB_DOC)
-        shares = read_json(indir, SHARES_DOC) if (indir / SHARES_DOC).is_file() else None
+        shares = read_json(indir, SHARES_DOC) if has_file(indir, SHARES_DOC) else None
         out = parse_company(sub, shares, meta["key"], date.fromisoformat(meta["as_of"]), provider=self.name)
         answers = {(t, c): read_json(indir, frames.answer_file(t, c)) for fig in FIGURES for t, c in fig.concepts()
-                   if (indir / frames.answer_file(t, c)).is_file()}
+                   if has_file(indir, frames.answer_file(t, c))}
         out.period_facts = [r for fig in FIGURES for r in figure_rows(fig, answers, meta["key"], provider=self.name)]
         out.dividend_events = sec_calendar.parse(indir, meta, provider=self.name)
         return out
@@ -291,7 +289,7 @@ def fetch_concepts(ctx, cik: int, outdir: Path, taxonomy: str, concepts) -> int:
     for concept in concepts:
         answer = frames.xbrl(ctx, CONCEPT.format(cik=cik, taxonomy=taxonomy, concept=concept))
         if answer is not None:
-            bronze.atomic_write_bytes(outdir / frames.answer_file(taxonomy, concept), answer[0].body)
+            write_file(outdir, frames.answer_file(taxonomy, concept), answer[0].body)
             n += 1
     return n
 

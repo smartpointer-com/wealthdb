@@ -2,14 +2,13 @@
 invented answers in the API's layout. Every fund, identifier and figure is
 invented."""
 
-import json
 import logging
 from datetime import date
 from functools import partial
 
 import pytest
 
-from providers.base import Context, read_meta, write_meta
+from providers.base import Context, read_json, read_meta, write_meta
 from providers.invesco import API, Invesco, characteristics
 from tests.helpers import FakeClient, characteristics_by_key
 from wanted import Fund
@@ -201,7 +200,7 @@ def test_a_bond_funds_fetch_keeps_its_page_answers(tmp_path):
     meta = read_meta(tmp_path)
     assert meta["pages"] == ["characteristics", "credit_quality", "maturity_breakdown", "yields"]
     assert "facts_missing" not in meta
-    assert json.loads((tmp_path / "page-yields.json").read_text()) == us_bond()["yields"]
+    assert read_json(tmp_path, "page-yields.json") == us_bond()["yields"]
     assert len(parsed.lines) == 1
     assert got(parsed.characteristics) == got(characteristics(us_bond(), "symbol:XMPBND", DAY, provider="invesco"))
 

@@ -68,8 +68,8 @@ from collectorkit import bronze
 
 from . import table
 from .base import (Parsed, Provider, ProviderError, dec, direct_share, earlier_docs, earlier_metas, event_id, event_row,
-                   ident, latest_through, merge_events, present, read_json, read_meta, read_state, today_utc,
-                   write_meta)
+                   has_file, ident, latest_through, merge_events, present, read_json, read_meta, read_state, today_utc,
+                   write_file, write_json, write_meta)
 
 NAME = "six"
 HOST = "https://www.six-group.com"
@@ -181,7 +181,7 @@ class Six(Provider):
                                           claim["key"]: today_utc().isoformat()})
         if resp is not None:
             doc = resp.json()  # an answer that is not JSON fails the fetch
-            bronze.atomic_write_bytes(outdir / DIVIDEND_DOC, resp.body)
+            write_file(outdir, DIVIDEND_DOC, resp.body)
             # Kept all the same, and not asked for again before max_age:
             # asking again would not change the layout, and a parser fix
             # reads the kept answer with `load --force`.
@@ -190,7 +190,7 @@ class Six(Provider):
             ctx.cache.setdefault(RUN_DAYS, {}).setdefault(claim["isin"], set()).update(ex_days(doc))
         notices = sorted(kept_notices(ctx).get(claim["isin"], {}).values(), key=_order)
         if notices:
-            bronze.atomic_write_json(outdir / NOTICES_DOC, notices)
+            write_json(outdir, NOTICES_DOC, notices)
         write_meta(outdir, provider=self.name, key=claim["key"], isin=claim["isin"], currency=claim["currency"],
                    listed=listed, as_of=today_utc().isoformat())
 
@@ -287,7 +287,7 @@ class Six(Provider):
             kept += found
             listed += sum(x.get(TYPE_KEY) == EX_TYPE for x in items)
             through = last
-        bronze.atomic_write_json(outdir / NOTICES_DOC, kept)
+        write_json(outdir, NOTICES_DOC, kept)
         answered = sorted({k for n in kept if standalone(notice_event(n)) for k in claim["isins"][n["isin"]]})
         write_meta(outdir, **claim, provider=self.name, listed=listed, answered=answered,
                    through=through.isoformat(), as_of=today_utc().isoformat())
@@ -311,10 +311,10 @@ class Six(Provider):
     def parse(self, indir: Path) -> Parsed:
         meta = read_meta(indir)
         day = date.fromisoformat(meta["as_of"])
-        notices = read_json(indir, NOTICES_DOC) if (indir / NOTICES_DOC).is_file() else []
+        notices = read_json(indir, NOTICES_DOC) if has_file(indir, NOTICES_DOC) else []
         if meta.get("ref") == NOTICES_REF:
             return Parsed(dividend_events=notice_events(notices, meta["isins"], day, provider=self.name))
-        doc = read_json(indir, DIVIDEND_DOC) if (indir / DIVIDEND_DOC).is_file() else None
+        doc = read_json(indir, DIVIDEND_DOC) if has_file(indir, DIVIDEND_DOC) else None
         rows = records(doc, EX_KEY) if doc is not None else None
         return Parsed(dividend_events=dividend_events(rows or [], notices, meta["key"], meta.get("currency"), day,
                                                       provider=self.name),

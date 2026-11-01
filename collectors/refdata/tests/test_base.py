@@ -9,9 +9,11 @@ from datetime import date
 import pytest
 
 import wanted
+from collectorkit import compress
 from providers.base import (COLUMNS, Context, ProviderError, amount, dec, direct_share, earlier_answers, earlier_docs,
-                            earlier_metas, event_id, event_row, facts_missing, ident, kinds_paid, latest_through,
-                            merge_events, percent, present, read_state, row, through_day, us_symbol)
+                            earlier_metas, event_id, event_row, facts_missing, has_file, ident, kinds_paid,
+                            latest_through, merge_events, percent, present, read_bytes, read_json, read_state, row,
+                            through_day, us_symbol, write_file, write_json)
 
 
 def test_a_row_holds_every_column_but_run_at():
@@ -212,3 +214,29 @@ def test_an_event_row_takes_its_id_from_its_days_unless_given_one():
     assert (r["event_id"], r["ex_date"], r["record_date"], r["pay_date"], r["as_of"], r["amount"]) == (
         "dividend|2026-09-10||2026-09-17", date(2026, 9, 10), None, date(2026, 9, 17), date(2026, 10, 1), "0.5")
     assert event_row("symbol:SPY", "example", date(2026, 10, 1), "dividend", days, event_id="n1")["event_id"] == "n1"
+
+
+def test_a_text_file_is_stored_compressed_and_any_other_as_it_came(tmp_path):
+    for name in ("page.htm", "answer.json", "list.csv", "doc.xml"):
+        assert write_file(tmp_path, name, b"<p>text</p>").name == name + ".zst"
+        assert read_bytes(tmp_path, name) == b"<p>text</p>" and has_file(tmp_path, name)
+    for name in ("book.xlsx", "list.xls", "report.pdf", "filing-xbrl.zip"):
+        assert write_file(tmp_path, name, b"binary").name == name
+    assert write_json(tmp_path, "own.json", {"a": 1}).name == "own.json.zst"
+    assert read_json(tmp_path, "own.json") == {"a": 1}
+    assert not has_file(tmp_path, "none.json")
+
+
+def test_a_file_that_does_not_compress_stays_plain_and_reads(tmp_path, monkeypatch, caplog):
+    def fail(path, **kw):
+        raise OSError("disk full")
+    monkeypatch.setattr(compress, "compress_file", fail)
+    assert write_file(tmp_path, "answer.json", b"{}").name == "answer.json"
+    assert read_json(tmp_path, "answer.json") == {} and "keeping the plain file" in caplog.text
+
+
+def test_the_plain_form_wins_where_both_are_kept(tmp_path):
+    (tmp_path / "answer.json").write_bytes(b'{"plain": 1}')
+    compress.compress_file(tmp_path / "answer.json", remove_original=False)
+    (tmp_path / "answer.json").write_bytes(b'{"plain": 2}')
+    assert read_json(tmp_path, "answer.json") == {"plain": 2} and has_file(tmp_path, "answer.json")

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from providers.base import Context, ProviderError, read_meta
+from providers.base import Context, ProviderError, has_file, read_bytes, read_meta
 from providers.spdr import FILES, FINDER, HOST, Spdr, _plain, characteristics, fund_page, parse_holdings
 from tests.helpers import FakeClient, characteristics_by_key, make_xlsx
 from wanted import Fund
@@ -260,7 +260,7 @@ def page_fetch(tmp_path, page=BOND_PAGE, wants=("characteristics",), fund=None, 
 def test_a_fetch_for_characteristics_keeps_the_fund_page(tmp_path):
     client, parsed = page_fetch(tmp_path)
     assert client.urls().count(US_PAGE_URL) == 1
-    assert (tmp_path / "page.html").read_text() == BOND_PAGE
+    assert read_bytes(tmp_path, "page.html").decode() == BOND_PAGE
     assert "facts_missing" not in read_meta(tmp_path)
     assert len(parsed.lines) == 1
     # The holdings day dates no figure: the page states each one's.
@@ -269,7 +269,7 @@ def test_a_fetch_for_characteristics_keeps_the_fund_page(tmp_path):
 
 def test_a_fund_that_wants_no_characteristics_asks_for_no_page(tmp_path):
     client, parsed = page_fetch(tmp_path, wants=())
-    assert US_PAGE_URL not in client.urls() and not (tmp_path / "page.html").exists()
+    assert US_PAGE_URL not in client.urls() and not has_file(tmp_path, "page.html")
     assert "facts_missing" not in read_meta(tmp_path)
     assert parsed.lines and parsed.characteristics == []
 
@@ -290,7 +290,7 @@ def test_a_page_that_does_not_come_or_is_no_fund_page_leaves_the_characteristics
     with caplog.at_level(logging.WARNING, logger="refdata.spdr"):
         _, parsed = page_fetch(tmp_path, page=page)
     assert warning in caplog.text
-    assert (tmp_path / "page.html").exists() is kept
+    assert has_file(tmp_path, "page.html") is kept
     assert read_meta(tmp_path)["facts_missing"] == ["characteristics"]
     assert parsed.lines and parsed.characteristics == []
 
@@ -301,6 +301,6 @@ def test_a_fund_page_that_states_no_figure_answers_the_characteristics(tmp_path,
     page = EQUITY_PAGE.replace("1.85%", "-")
     with caplog.at_level(logging.WARNING, logger="refdata.spdr"):
         _, parsed = page_fetch(tmp_path, page=page)
-    assert not caplog.text and (tmp_path / "page.html").read_text() == page
+    assert not caplog.text and read_bytes(tmp_path, "page.html").decode() == page
     assert "facts_missing" not in read_meta(tmp_path)
     assert parsed.lines and parsed.characteristics == []

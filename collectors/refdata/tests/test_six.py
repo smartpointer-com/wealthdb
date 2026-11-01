@@ -14,7 +14,7 @@ import load
 import wanted as wantedmod
 from collectorkit import bronze
 from providers import REGISTRY, six
-from providers.base import Context, Provider, ProviderError, read_meta
+from providers.base import Context, Provider, ProviderError, has_file, read_bytes, read_json, read_meta
 from tests.helpers import TODAY, FakeClient, kept_run, make_run, rows, run_entries, wanted_doc
 
 FIX = Path(__file__).parent / "fixtures"
@@ -125,7 +125,7 @@ def test_a_share_six_does_not_list_answers_no_dividend(tmp_path, caplog):
     p = six.Six()
     out = tmp_path / "out"
     p.fetch_security(p.claim_security(share(), None), out, Context(client=FakeClient({}), data_dir=tmp_path))
-    assert read_meta(out)["listed"] is False and not (out / six.DIVIDEND_DOC).exists()
+    assert read_meta(out)["listed"] is False and not has_file(out, six.DIVIDEND_DOC)
     assert p.parse(out).dividend_events == [] and "SIX lists no share CH0000000001 in CHF" in caplog.text
 
 
@@ -141,7 +141,7 @@ def test_an_answer_in_no_known_layout_is_kept_and_counts_as_had(tmp_path, caplog
     out = tmp_path / "out"
     client = FakeClient({DIVIDENDS: {"rows": [{"exDate": 20260310}]}})
     p.fetch_security(p.claim_security(share(), None), out, Context(client=client, data_dir=tmp_path))
-    assert (out / six.DIVIDEND_DOC).is_file() and "facts_missing" not in read_meta(out)
+    assert has_file(out, six.DIVIDEND_DOC) and "facts_missing" not in read_meta(out)
     assert p.parse(out).dividend_events == [] and "matched no known layout" in caplog.text
     # An answer that holds no list, or empty ones, states no dividend.
     assert six.records({}, six.EX_KEY) == [] and six.records({"dividends": []}, six.EX_KEY) == []
@@ -184,14 +184,14 @@ def test_a_search_keeps_only_the_fields_read_of_the_claimed_shares_notices(tmp_p
     # type, and none without an ISIN whose ex day no dividend answer
     # states.
     assert [u.rsplit("/", 1)[1] for u in client.urls()[1:]] == ["900101.json", "900103.json"]
-    assert json.loads((out / six.NOTICES_DOC).read_text()) == [
+    assert read_json(out, six.NOTICES_DOC) == [
         {"id": "900101", "isin": "CH0000000001",
          "fields": {"Ex Date": "10.03.2026", "Payment Date": "12.03.2026",
                     "Gross amount payable per security": "2.50", "Currency Code": "CHF"}},
         {"id": "900103", "isin": "LI0000000002", "fields": {"Ex Date": "2026-03-17", "Payment Date": "2026-03-19"}}]
     meta = read_meta(out)
     assert (meta["listed"], meta["answered"], meta["as_of"]) == (5, [KEY], TODAY.isoformat())
-    written = b"".join(f.read_bytes() for f in out.iterdir()).decode()
+    written = b"".join(read_bytes(out, f.name.removesuffix(".zst")) for f in out.iterdir()).decode()
     assert not [c for c in CONTACT if c in written or c in caplog.text]
 
 
@@ -207,7 +207,7 @@ def test_a_notice_that_states_its_four_fields_is_its_dividends_event(tmp_path):
 
 def test_a_detail_six_no_longer_serves_is_skipped_and_any_other_failure_fails_the_search(tmp_path, caplog):
     p, out = _search(tmp_path, FakeClient(routes(**{"/details/900103.json": 404})))
-    assert [n["id"] for n in json.loads((out / six.NOTICES_DOC).read_text())] == ["900101"]
+    assert [n["id"] for n in read_json(out, six.NOTICES_DOC)] == ["900101"]
     assert "ex-dividend notice 900103: SIX no longer serves it" in caplog.text
     with pytest.raises(fetcher.FetchError):
         _search(tmp_path / "again", FakeClient(routes(**{"/details/900103.json": 500})))
@@ -218,7 +218,7 @@ def test_a_search_answer_in_no_known_layout_fails_the_search(tmp_path):
         _search(tmp_path, FakeClient(routes(**{"/find.json": {"errors": [{"code": "E1"}]}})))
     # No notice that day is no failure.
     p, out = _search(tmp_path / "quiet", FakeClient(routes(**{"/find.json": {"itemList": [], "itemCount": 0}})))
-    assert json.loads((out / six.NOTICES_DOC).read_text()) == [] and p.parse(out).dividend_events == []
+    assert read_json(out, six.NOTICES_DOC) == [] and p.parse(out).dividend_events == []
 
 
 def test_a_notices_fields_are_read_wherever_its_text_writes_them():
@@ -367,7 +367,7 @@ def test_the_search_asks_for_every_page_its_count_names(tmp_path):
     searches = [params for _, url, params in client.asked if url.endswith("/find.json")]
     assert [(s["pageSize"], s["pageNumber"]) for s in searches] == [(1000, 0), (1000, 1)]
     assert read_meta(out)["listed"] == 5
-    assert [n["id"] for n in json.loads((out / six.NOTICES_DOC).read_text())] == ["900101", "900103"]
+    assert [n["id"] for n in read_json(out, six.NOTICES_DOC)] == ["900101", "900103"]
 
 
 def test_pages_that_stop_short_of_the_count_fail_the_search(tmp_path):
@@ -402,14 +402,14 @@ def test_a_notice_two_spans_list_is_asked_for_once(tmp_path):
     p.fetch_bulk(claim, tmp_path / "out", Context(client=client))
     assert len([u for u in client.urls() if u.endswith("/find.json")]) == 2
     assert [u for u in client.urls() if "/details/" in u] == [six.DETAILS.format(id="900101")]
-    assert [n["id"] for n in json.loads((tmp_path / "out" / six.NOTICES_DOC).read_text())] == ["900101"]
+    assert [n["id"] for n in read_json(tmp_path / "out", six.NOTICES_DOC)] == ["900101"]
 
 
 def test_details_that_state_no_ex_day_are_kept_and_state_no_event(tmp_path, caplog):
     client = FakeClient(routes(**{"/details/900101.json": {"noticeId": 900101, "text": "Payment Date 12.03.2026"}}))
     p, out = _search(tmp_path, client)
     assert "ex-dividend notice 900101: its details state no ex day" in caplog.text
-    kept = {n["id"]: n for n in json.loads((out / six.NOTICES_DOC).read_text())}
+    kept = {n["id"]: n for n in read_json(out, six.NOTICES_DOC)}
     assert kept["900101"]["fields"] == {"Payment Date": "12.03.2026"}
     assert KEY not in read_meta(out)["answered"]
     assert not [e for e in p.parse(out).dividend_events if e["ref"] == KEY]
@@ -462,7 +462,7 @@ def test_a_notice_without_an_isin_is_asked_for_where_its_ex_day_is_a_claimed_sha
     # 900106 names none and its ex day is no claimed share's: not asked.
     assert [u.rsplit("/", 1)[1] for u in client.urls() if "/details/" in u] == ["900101.json", "900103.json",
                                                                                "900105.json"]
-    kept = {n["id"]: n for n in json.loads((tmp_path / "notices" / six.NOTICES_DOC).read_text())}
+    kept = {n["id"]: n for n in read_json(tmp_path / "notices", six.NOTICES_DOC)}
     # Its details name the share.
     assert kept["900105"] == {"id": "900105", "isin": "CH0000000001",
                               "fields": {"Ex Date": "11.03.2025", "Payment Date": "13.03.2025",
@@ -470,7 +470,8 @@ def test_a_notice_without_an_isin_is_asked_for_where_its_ex_day_is_a_claimed_sha
     events = by_ex(p.parse(tmp_path / "notices").dividend_events)
     assert (events[date(2025, 3, 11)]["ref"], events[date(2025, 3, 11)]["pay_date"]) == (KEY, date(2025, 3, 13))
     # No contact reaches a file or the log.
-    written = b"".join(f.read_bytes() for f in (tmp_path / "notices").iterdir()).decode()
+    written = b"".join(read_bytes(tmp_path / "notices", f.name.removesuffix(".zst"))
+                       for f in (tmp_path / "notices").iterdir()).decode()
     assert not [c for c in CONTACT if c in written or c in caplog.text]
 
 
@@ -559,7 +560,7 @@ def test_a_span_that_does_not_finish_ends_the_search_and_the_next_run_goes_on_fr
     p.fetch_bulk(claim, out, Context(client=FakeClient(routes(**{"/find.json": _spanned(date(2026, 7, 2))}))))
     meta = read_meta(out)
     assert (meta["through"], meta["listed"]) == ("2026-07-01", 1)
-    assert [n["id"] for n in json.loads((out / six.NOTICES_DOC).read_text())] == ["900101"]
+    assert [n["id"] for n in read_json(out, six.NOTICES_DOC)] == ["900101"]
     assert "the search of 2026-07-02 to 2026-07-15 did not finish" in caplog.text
     assert six.searched_through(tmp_path / "data") == date(2026, 7, 1)
     # The next run resumes there, though the run that searched was later.
@@ -593,7 +594,7 @@ def test_a_search_answer_notice_without_an_id_counts_but_is_never_read(tmp_path,
                  "isin": "CH0000000001"}
     client = FakeClient(routes(**{"/find.json": _paged([[anonymous, *items[:1]]], 2)}))
     p, out = _search(tmp_path, client)
-    assert [n["id"] for n in json.loads((out / six.NOTICES_DOC).read_text())] == ["900101"]
+    assert [n["id"] for n in read_json(out, six.NOTICES_DOC)] == ["900101"]
     assert len([u for u in client.urls() if u.endswith("/find.json")]) == 1
     assert [u for u in client.urls() if "/details/" in u] == [six.DETAILS.format(id="900101")]
 

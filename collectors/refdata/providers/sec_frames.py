@@ -20,9 +20,8 @@ from datetime import date
 from pathlib import Path
 
 import fetcher
-from collectorkit import bronze, compress
 
-from .base import Parsed, Unavailable, dec, present, read_json, row, today_utc, write_meta
+from .base import Parsed, Unavailable, dec, present, read_json, row, today_utc, write_file, write_meta
 
 FRAME = "https://data.sec.gov/api/xbrl/frames/{taxonomy}/{concept}/{unit}/{period}.json"
 
@@ -121,9 +120,7 @@ def fetch(claim: dict, outdir: Path, ctx, *, provider: str) -> None:
         resp, doc = answer
         listed |= {str(d.get("cik")) for d in doc.get("data") or []
                    if d.get("end") and dec(d.get("val")) is not None}
-        path = outdir / answer_file(claim["taxonomy"], concept)
-        bronze.atomic_write_bytes(path, resp.body)
-        compress.compress_best_effort(path, log)
+        write_file(outdir, answer_file(claim["taxonomy"], concept), resp.body)
         got.append(concept)
     if not got:
         raise Unavailable(f"no frame {claim['ref']}")

@@ -31,9 +31,8 @@ from decimal import Decimal
 from html.parser import HTMLParser
 
 import fetcher
-from collectorkit import bronze
 
-from .base import dec, row
+from .base import dec, row, write_file
 
 # The breakdowns a page states, one row per part.
 BREAKDOWN_FIELDS = ("credit_quality", "maturity_breakdown")
@@ -191,5 +190,5 @@ def keep(ctx, url: str, outdir, name: str, ref: str, known, *, log, headers=None
     knows."""
     got = fetch(ctx, url, ref, log=log, headers=headers, json=json)
     if got is not None:
-        bronze.atomic_write_bytes(outdir / name, got[0])
+        write_file(outdir, name, got[0])
     return due(got is not None, got is not None and known(got[1]), ref, log=log)

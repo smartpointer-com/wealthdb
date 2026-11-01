@@ -38,11 +38,9 @@ import urllib.parse
 from datetime import date, datetime
 from pathlib import Path
 
-from collectorkit import bronze
-
 from . import table
 from .base import (Parsed, Provider, ProviderError, direct_share, event_row, ident, merge_events, present, read_bytes,
-                   read_meta, write_meta)
+                   read_meta, write_file, write_meta)
 
 HOST = "www.jpx.co.jp"
 INDEX = f"https://{HOST}/english/listing/others/ex-rights/index.html"
@@ -112,7 +110,7 @@ class Jpx(Provider):
         rows = list_rows(sheet_rows(resp.body))
         if rows is None:
             raise ProviderError(f"{resp.url} holds no ex-rights list")
-        bronze.atomic_write_bytes(outdir / LIST_DOC, resp.body)
+        write_file(outdir, LIST_DOC, resp.body)
         stated = {e["ref"].removeprefix("jpx:") for e in events(rows, date.fromisoformat(claim["day"]),
                                                                   provider=self.name)}
         answered = sorted({k for code, keys in claim["codes"].items() if code in stated for k in keys})

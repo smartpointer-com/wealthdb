@@ -46,9 +46,9 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import fetcher
-from collectorkit import bronze, compress
+from collectorkit import bronze
 
-from .base import ProviderError, dec, earlier_metas, event_id, present, read_bytes, row
+from .base import ProviderError, dec, earlier_metas, event_id, present, read_bytes, row, write_file
 
 CALENDAR = "dividend_calendar"
 ARCHIVE = "https://www.sec.gov/Archives/edgar/data/{cik}/{folder}/{name}"
@@ -545,8 +545,7 @@ def _fetch_filing(ctx, cik: int, f: dict, outdir: Path) -> str:
         raise ProviderError("no XBRL archive and no primary document")
     body = ctx.client.get(ARCHIVE.format(cik=cik, folder=folder, name=urllib.parse.quote(f["document"]))).body
     name = f"{f['accession']}.htm"
-    bronze.atomic_write_bytes(outdir / name, body)
-    compress.compress_best_effort(outdir / name, log)
+    write_file(outdir, name, body)
     return name
 
 

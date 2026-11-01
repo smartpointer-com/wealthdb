@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from providers.base import Context, read_meta
+from providers.base import Context, has_file, read_json, read_meta
 from providers.xtrackers import EXPORT, PAGE, Xtrackers, characteristics, fund_page
 from tests.helpers import FakeClient, characteristics_by_key, make_xlsx
 from wanted import Fund
@@ -108,7 +108,7 @@ def test_a_fetch_for_characteristics_keeps_the_page_data(tmp_path, monkeypatch):
     client = site()
     parsed = fetch(tmp_path, client, monkeypatch)
     assert client.urls() == [EXPORT.format(isin=ISIN), PAGE.format(isin=ISIN)]
-    assert json.loads((tmp_path / "page.json").read_text()) == BOND
+    assert read_json(tmp_path, "page.json") == BOND
     assert "facts_missing" not in read_meta(tmp_path)
     assert len(parsed.lines) == 1
     assert ("effective_duration", "") in got(parsed.characteristics)
@@ -117,7 +117,7 @@ def test_a_fetch_for_characteristics_keeps_the_page_data(tmp_path, monkeypatch):
 def test_a_fund_that_wants_no_characteristics_asks_for_no_page(tmp_path, monkeypatch):
     client = site()
     parsed = fetch(tmp_path, client, monkeypatch, wants=())
-    assert client.urls() == [EXPORT.format(isin=ISIN)] and not (tmp_path / "page.json").exists()
+    assert client.urls() == [EXPORT.format(isin=ISIN)] and not has_file(tmp_path, "page.json")
     assert "facts_missing" not in read_meta(tmp_path)
     assert parsed.lines and parsed.characteristics == []
 
@@ -132,7 +132,7 @@ def test_a_page_that_does_not_come_or_is_no_fund_page_leaves_the_characteristics
     with caplog.at_level(logging.WARNING, logger="refdata.xtrackers"):
         parsed = fetch(tmp_path, site(page), monkeypatch)
     assert warning in caplog.text
-    assert (tmp_path / "page.json").exists() is kept
+    assert has_file(tmp_path, "page.json") is kept
     assert read_meta(tmp_path)["facts_missing"] == ["characteristics"]
     assert parsed.lines and parsed.characteristics == []
 
@@ -142,6 +142,6 @@ def test_an_equity_funds_page_answers_the_characteristics(tmp_path, monkeypatch,
     is not asked for again before max_age."""
     with caplog.at_level(logging.WARNING, logger="refdata.xtrackers"):
         parsed = fetch(tmp_path, site(EQUITY), monkeypatch)
-    assert not caplog.text and (tmp_path / "page.json").exists()
+    assert not caplog.text and has_file(tmp_path, "page.json")
     assert "facts_missing" not in read_meta(tmp_path)
     assert parsed.lines and parsed.characteristics == []

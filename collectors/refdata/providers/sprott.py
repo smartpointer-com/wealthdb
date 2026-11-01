@@ -24,10 +24,8 @@ import urllib.parse
 from datetime import date
 from pathlib import Path
 
-from collectorkit import bronze
-
 from . import table
-from .base import Parsed, Provider, ProviderError, read_meta, us_symbol, write_meta
+from .base import Parsed, Provider, ProviderError, read_bytes, read_meta, us_symbol, write_file, write_meta
 
 HOST = "https://sprottetfs.com"
 DOC = "fund.html"
@@ -63,13 +61,13 @@ class Sprott(Provider):
         day = _as_of(page)
         if day is None:
             raise ProviderError(f"{resp.url} states no holdings date")
-        bronze.atomic_write_bytes(outdir / DOC, resp.body)
+        write_file(outdir, DOC, resp.body)
         write_meta(outdir, provider=self.name, ref=claim["ref"], ticker=claim["ticker"], as_of=day.isoformat())
         return day
 
     def parse(self, indir: Path) -> Parsed:
         meta = read_meta(indir)
-        return parse_page((indir / DOC).read_bytes().decode("utf-8", "replace"), meta["ref"], provider=self.name)
+        return parse_page(read_bytes(indir, DOC).decode("utf-8", "replace"), meta["ref"], provider=self.name)
 
     def probe(self, ctx) -> str:
         return f"Sprott home page: {len(self._pages(ctx))} fund pages"

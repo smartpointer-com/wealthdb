@@ -42,18 +42,16 @@ Terms: README.md, sec-nport.
 
 from __future__ import annotations
 
-import logging
 import xml.etree.ElementTree as ET
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from collectorkit import bronze, compress
 from collectorkit.parse import iso_date
 
 from . import openfigi, table
 from .base import (Parsed, Provider, ProviderError, Unavailable, blank_to_none, dec, ident, present, read_bytes,
-                   read_meta, row, us_symbol, write_meta)
+                   read_meta, row, us_symbol, write_file, write_meta)
 
 FUND_TICKERS = "https://www.sec.gov/files/company_tickers_mf.json"
 COMPANY_TICKERS = "https://www.sec.gov/files/company_tickers.json"
@@ -201,8 +199,7 @@ class SecNport(Provider):
         resp = ctx.client.get(PRIMARY_DOC.format(cik=claim["cik"], acc=acc))
         if b"edgarSubmission" not in resp.body[:20000]:
             raise ProviderError(f"{resp.url} is not an {self.DOCUMENT} document")
-        bronze.atomic_write_bytes(outdir / DOC, resp.body)
-        compress.compress_best_effort(outdir / DOC, logging.getLogger(f"refdata.{self.name}"))
+        write_file(outdir, DOC, resp.body)
         write_meta(outdir, provider=self.name, ref=claim["ref"], symbol=claim["symbol"], cik=claim["cik"],
                    series=claim["series"], **{"class": claim["class"]}, accession=f["accession"], form=f["form"],
                    filed=f["filed"].isoformat(), period=period.isoformat())

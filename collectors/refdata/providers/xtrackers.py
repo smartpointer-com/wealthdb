@@ -51,12 +51,11 @@ import re
 from datetime import date
 from pathlib import Path
 
-from collectorkit import bronze
 from collectorkit.parse import iso_date
 
 from . import fundpage, table, xlsx
-from .base import (Parsed, Provider, ProviderError, amount, event_row, facts_missing, ident, merge_events, present,
-                   read_json, read_meta, today_utc, write_meta)
+from .base import (Parsed, Provider, ProviderError, amount, event_row, facts_missing, has_file, ident, merge_events,
+                   present, read_bytes, read_json, read_meta, today_utc, write_file, write_meta)
 
 EXPORT = "https://etf.dws.com/etfdata/export/GBR/ENG/excel/product/constituent/{isin}/"
 PAGE = "https://etf.dws.com/api/pdp/en-gb/etf/{isin}/pdpMetaTagsTealium"
@@ -106,7 +105,7 @@ class Xtrackers(Provider):
         if not resp.body.startswith(b"PK"):
             raise ProviderError(f"{resp.url} is not a workbook")
         table.require_header(xlsx.rows(resp.body), f"{resp.url} has no constituents header")
-        bronze.atomic_write_bytes(outdir / DOC, resp.body)
+        write_file(outdir, DOC, resp.body)
         day = today_utc()
         missing = self._page(claim, outdir, ctx) if claim.get("characteristics") or claim.get("calendar") else []
         write_meta(outdir, provider=self.name, ref=claim["ref"], isin=claim["isin"], as_of=day.isoformat(),
@@ -120,7 +119,7 @@ class Xtrackers(Provider):
         where a fund page states no dividends (answers_calendar())."""
         got = fundpage.fetch(ctx, PAGE.format(isin=claim["isin"]), claim["ref"], log=log, headers=JSON, json=True)
         if got is not None:
-            bronze.atomic_write_bytes(outdir / PAGE_DOC, got[0])
+            write_file(outdir, PAGE_DOC, got[0])
         known = got is not None and fund_page(got[1])
         due = fundpage.due(got is not None, known, claim["ref"], log=log)
         missing = due if claim.get("characteristics") else []
@@ -131,8 +130,8 @@ class Xtrackers(Provider):
     def parse(self, indir: Path) -> Parsed:
         meta = read_meta(indir)
         day = date.fromisoformat(meta["as_of"])
-        out = parse_export((indir / DOC).read_bytes(), meta["ref"], day, provider=self.name)
-        if (indir / PAGE_DOC).is_file():
+        out = parse_export(read_bytes(indir, DOC), meta["ref"], day, provider=self.name)
+        if has_file(indir, PAGE_DOC):
             doc = read_json(indir, PAGE_DOC)
             out.characteristics = characteristics(doc, meta["ref"], day, provider=self.name)
             out.dividend_events = dividend_events(doc, meta["ref"], day, provider=self.name)

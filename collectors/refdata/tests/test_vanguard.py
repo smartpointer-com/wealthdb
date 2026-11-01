@@ -9,7 +9,7 @@ import pytest
 
 import config
 from providers import REGISTRY
-from providers.base import Context, ProviderError, read_meta, write_meta
+from providers.base import Context, ProviderError, read_bytes, read_meta, write_meta
 from providers.vanguard import PAGE, Vanguard, distribution_rows, events
 from tests.helpers import FakeClient, events_by_id, fund, plan, wanted_doc
 from wanted import Fund
@@ -49,7 +49,7 @@ EVENTS = {
 def test_a_us_etf_states_its_distributions_from_its_profile_page(tmp_path, monkeypatch):
     client, parsed = fetch(tmp_path, monkeypatch)
     assert client.urls() == [PAGE.format(ticker="qvex")]
-    assert (tmp_path / "page.html").read_text() == PAGE_HTML
+    assert read_bytes(tmp_path, "page.html").decode() == PAGE_HTML
     meta = read_meta(tmp_path)
     assert (meta["ref"], meta["symbol"], meta["as_of"]) == ("symbol:QVEX", "QVEX", "2026-10-21")
     # The reinvest day is the ex day; a row without a day is none.

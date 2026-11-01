@@ -13,7 +13,7 @@ import pytest
 
 import download
 
-from providers.base import Context, read_meta
+from providers.base import Context, has_file, read_bytes, read_json, read_meta
 from providers.fundpage import BOND_FIGURES
 from providers.ishares import IShares, characteristics, item_figures, page_items, parse_csv, point_figures
 from tests.helpers import FakeClient, characteristics_by_key
@@ -88,8 +88,8 @@ def test_a_us_fetch_asks_for_the_page_and_keeps_the_product_entry(tmp_path):
     client = us_site()
     parsed = us_fetch(tmp_path, client)
     assert [u for u in client.urls() if u.endswith("/ishares-example-bond-etf")] == [PAGE_URL]
-    assert (tmp_path / "page.html").read_text() == US_PAGE
-    assert json.loads((tmp_path / "product.json").read_text()) == US_PRODUCT
+    assert read_bytes(tmp_path, "page.html").decode() == US_PAGE
+    assert read_json(tmp_path, "product.json") == US_PRODUCT
     assert "facts_missing" not in read_meta(tmp_path)
     assert len(parsed.lines) == 5 and parsed.lines[0]["duration"] == "6.12"
     assert got(parsed.characteristics) == {
@@ -137,7 +137,7 @@ def test_a_fund_that_wants_no_characteristics_asks_for_no_page(tmp_path):
     client = us_site()
     parsed = us_fetch(tmp_path, client, wants=())
     assert PAGE_URL not in client.urls()
-    assert not (tmp_path / "page.html").exists() and not (tmp_path / "product.json").exists()
+    assert not has_file(tmp_path, "page.html") and not has_file(tmp_path, "product.json")
     assert "facts_missing" not in read_meta(tmp_path)
     assert len(parsed.lines) == 5 and parsed.characteristics == []
 
@@ -146,7 +146,7 @@ def test_a_us_page_that_does_not_come_leaves_the_holdings_and_the_characteristic
     with caplog.at_level(logging.WARNING, logger="refdata.ishares"):
         parsed = us_fetch(tmp_path, us_site(page=500))
     assert "its fund page did not come" in caplog.text
-    assert not (tmp_path / "page.html").exists()
+    assert not has_file(tmp_path, "page.html")
     # The product entry's figures land; the characteristics stay due.
     assert read_meta(tmp_path)["facts_missing"] == ["characteristics"]
     assert len(parsed.lines) == 5
@@ -181,7 +181,7 @@ def test_a_swiss_fetch_keeps_the_page_it_reads_the_columns_from(tmp_path):
     assert p.fetch(claim, date(2025, 12, 31), tmp_path / "year-end", ctx) == date(2025, 12, 31)
     # Two product lists, the page once, the grid twice.
     assert len(client.urls()) == 5 and len([u for u in client.urls() if u.endswith("/example-euro-bond")]) == 1
-    assert (tmp_path / "year-end" / "page.html").read_text() == CH_PAGE
+    assert read_bytes(tmp_path / "year-end", "page.html").decode() == CH_PAGE
     latest = p.parse(tmp_path / "latest")
     a, b = latest.lines
     assert (a["duration"], a["yield_to_maturity"], a["maturity"], a["coupon"], a["accrual_date"]) == \
@@ -210,7 +210,7 @@ def test_a_swiss_page_without_data_items_leaves_wanted_characteristics_due(tmp_p
     claim = p.claim(Fund(ref="isin:XX0000000910", isin="XX0000000910", wants=wants), ctx)
     assert p.fetch(claim, None, tmp_path, ctx) == DAY
     assert read_meta(tmp_path).get("facts_missing") == missing
-    assert (tmp_path / "page.html").exists() and p.parse(tmp_path).characteristics == []
+    assert has_file(tmp_path, "page.html") and p.parse(tmp_path).characteristics == []
 
 
 def test_an_equity_funds_page_states_its_pe_ratio_and_yield():

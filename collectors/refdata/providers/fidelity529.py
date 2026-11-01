@@ -33,10 +33,9 @@ from datetime import datetime
 from pathlib import Path
 
 import fetcher
-from collectorkit import bronze
 
 from . import table
-from .base import Parsed, Provider, ProviderError, dec, read_json, read_meta, row, today_utc, write_meta
+from .base import Parsed, Provider, ProviderError, dec, read_json, read_meta, row, today_utc, write_file, write_meta
 from .reports import fetch_pdf, number, own_title, pdf_pages, report_pages, words
 
 SERIES = ("https://www.sec.gov/files/investment/data/other/investment-company-series-class-information/"
@@ -85,7 +84,7 @@ class Fidelity529(Provider):
         day, holdings, _ = schedule(pages, claim["name"])
         exact, by_words = ctx.once("sec_series", lambda: _series(ctx))
         rows = {h["name"]: exact.get(_exact(h["name"])) or by_words.get(_key(h["name"]), []) for h in holdings}
-        bronze.atomic_write_bytes(outdir / SERIES_DOC, json.dumps(rows).encode("utf-8"))
+        write_file(outdir, SERIES_DOC, json.dumps(rows).encode("utf-8"))
         write_meta(outdir, provider=self.name, ref=claim["ref"], name=claim["name"], url=url, as_of=day.isoformat())
         return day
 

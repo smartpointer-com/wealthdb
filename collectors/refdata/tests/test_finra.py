@@ -17,7 +17,7 @@ import load
 from collectorkit import bronze, debugcap
 from providers import REGISTRY
 from providers import finra as finra_mod
-from providers.base import Context, Provider, ProviderError, read_meta
+from providers.base import Context, Provider, ProviderError, read_bytes, read_meta
 from providers.finra import (BUDGET, CAL, DATA_URL, HISTORY_START, REF, REQUEST_MAX, TALLY, TOKEN_KEY, TOKEN_URL,
                              Finra, covered, events)
 from tests.helpers import TODAY, FakeClient, FakeHttps, kept_run, make_run, rows, wanted_doc
@@ -169,7 +169,7 @@ def test_fetch_takes_a_token_and_asks_only_the_fields_tickers_and_days(tmp_path)
                                                  "endDate": "2026-07-15"}]}
     assert posts[1][0]["dateRangeFilters"][0]["startDate"] == "2026-05-01"
     meta = read_meta(out)
-    assert meta["files"] == ["page-001.json", "page-002.json"] and (out / "page-001.json").read_bytes() == PAGE_BODY
+    assert meta["files"] == ["page-001.json", "page-002.json"] and read_bytes(out, "page-001.json") == PAGE_BODY
     assert meta["answered"] == ["isin:XX0000000801", "symbol:QEXPY"] and meta["as_of"] == "2026-07-15"
 
 
@@ -255,7 +255,7 @@ def test_a_budget_stop_keeps_the_pages_had_and_answers_no_key(tmp_path, monkeypa
     out = tmp_path / "out"
     with pytest.raises(ProviderError, match="stopped: "):
         Finra().fetch_bulk(claim, out, ctx(client, tmp_path))
-    assert (out / "page-001.json").read_bytes() == first and not (out / "meta.json").exists()
+    assert read_bytes(out, "page-001.json") == first and not (out / "meta.json").exists()
     assert client.urls() == [TOKEN_URL, DATA_URL]
     assert json.loads((tmp_path / TALLY).read_text()) == {MONTH: len(first)}
 

@@ -3,7 +3,6 @@ workbooks, one request each a run, on invented workbooks in their layout.
 Every fund, identifier, day and amount is invented."""
 
 import io
-import json
 import logging
 import zipfile
 from datetime import date
@@ -11,7 +10,7 @@ from datetime import date
 import pytest
 
 from providers import xlsx
-from providers.base import Context, read_meta
+from providers.base import Context, has_file, read_json, read_meta
 from providers.spdr import DISTRIBUTIONS, Spdr, _day, distribution_events, fund_rows
 from tests.helpers import FakeClient, events_by_id, make_xlsx
 from tests.test_spdr import US, ssga
@@ -117,7 +116,7 @@ def test_a_us_fund_reads_its_rows_of_the_us_workbook(tmp_path):
                                "cusip": "000000AB7", "frequency": "Quarterly", "short_term": "0.05",
                                "long_term": "0.2512"}
     # The fund's rows only, with their sheet's header.
-    kept = json.loads((tmp_path / "distributions.json").read_text())
+    kept = read_json(tmp_path, "distributions.json")
     assert kept["url"] == US_URL
     ((sheet),) = kept["sheets"]
     assert (sheet["sheet"], sheet["header"], len(sheet["rows"])) == ("dividend", US_HEADER, 5)
@@ -169,7 +168,7 @@ def test_one_request_per_workbook_serves_every_fund_of_the_run(tmp_path):
     fetch(tmp_path / "b", client, EMEA_FUND, ctx)
     fetch(tmp_path / "c", client, Fund(ref="isin:XX0000000503", isin="XX0000000503", wants=(CAL,)), ctx)
     assert client.urls().count(US_URL) == 1 and client.urls().count(EMEA_URL) == 1
-    rows = json.loads((tmp_path / "c" / "distributions.json").read_text())["sheets"]
+    rows = read_json(tmp_path / "c", "distributions.json")["sheets"]
     assert [len(s["rows"]) for s in rows] == [1, 0]
 
 
@@ -191,7 +190,7 @@ def test_a_workbook_that_does_not_come_leaves_the_calendar_due_and_is_asked_for_
     assert client.urls().count(US_URL) == 1
     for d in ("a", "b"):
         assert read_meta(tmp_path / d)["facts_missing"] == [CAL]
-        assert not (tmp_path / d / "distributions.json").exists()
+        assert not has_file(tmp_path / d, "distributions.json")
     assert parsed.dividend_events == [] and parsed.lines and not parsed.events_complete
 
 
@@ -199,13 +198,13 @@ def test_a_fund_without_a_row_has_paid_none_and_its_calendar_is_answered(tmp_pat
     us = make_xlsx(sheets={"dividend": [r for r in US_SHEET if "XMPEQB" not in r]})
     parsed = fetch(tmp_path, site(us=us), US_FUND)
     assert "facts_missing" not in read_meta(tmp_path) and parsed.dividend_events == []
-    assert json.loads((tmp_path / "distributions.json").read_text())["sheets"][0]["rows"] == []
+    assert read_json(tmp_path, "distributions.json")["sheets"][0]["rows"] == []
 
 
 def test_a_fund_that_wants_no_calendar_asks_for_no_workbook(tmp_path):
     client = site()
     parsed = fetch(tmp_path, client, Fund(ref="symbol:XMPEQB", symbol="XMPEQB"))
-    assert US_URL not in client.urls() and not (tmp_path / "distributions.json").exists()
+    assert US_URL not in client.urls() and not has_file(tmp_path, "distributions.json")
     assert "facts_missing" not in read_meta(tmp_path) and parsed.dividend_events == []
 
 

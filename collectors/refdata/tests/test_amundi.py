@@ -11,7 +11,7 @@ import pytest
 
 import fetcher
 from providers.amundi import API, Amundi, _ex_day, parse_product
-from providers.base import Context, ProviderError, read_meta, write_meta
+from providers.base import Context, ProviderError, read_json, read_meta, write_meta
 from tests.helpers import FakeClient, events_by_id
 from wanted import Fund
 
@@ -90,7 +90,7 @@ def test_amundi_fetches_the_holdings_of_the_fund_asked_for(tmp_path):
     # stored as served.
     ((method, _, body),) = client.asked
     assert method == "POST" and body["context"]["userProfileName"] == "RETAIL" and body["productIds"] == [ISIN]
-    assert json.loads((tmp_path / "f" / "products.json").read_text())["products"][0]["productId"] == "XX0000000307"
+    assert read_json(tmp_path / "f", "products.json")["products"][0]["productId"] == "XX0000000307"
     assert len(a.parse(tmp_path / "f").lines) == 3
 
 

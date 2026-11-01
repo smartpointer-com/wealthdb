@@ -57,10 +57,10 @@ def test_a_security_held_directly_takes_every_period_of_its_figures(tmp_path):
                              Context(client=FakeClient({"company_tickers.json": TICKERS})))
     assert claim["families"] == list(FAMILIES)
     e.fetch_security(claim, tmp_path, ctx)
-    # One file per concept the company reports; the rest answered 404 and
-    # the IFRS twins are not asked for.
+    # One file per concept the company reports, compressed; the rest
+    # answered 404 and the IFRS twins are not asked for.
     assert sorted(p.name for p in tmp_path.iterdir() if p.name.startswith("us-gaap")) == [
-        "us-gaap_CashAndCashEquivalentsAtCarryingValue.json", "us-gaap_EarningsPerShareDiluted.json"]
+        "us-gaap_CashAndCashEquivalentsAtCarryingValue.json.zst", "us-gaap_EarningsPerShareDiluted.json.zst"]
     assert not any("ifrs-full" in u for u in client.urls())
     got = e.parse(tmp_path).period_facts
     eps = by_period(got, "eps_diluted")

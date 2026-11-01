@@ -63,7 +63,7 @@ from collectorkit import bronze
 from collectorkit.parse import iso_date
 
 from .base import (Parsed, Provider, ProviderError, blank_to_none, dec, earlier_metas, event_id, ident, present,
-                   read_bytes, read_meta, read_state, row, through_day, today_utc, write_meta)
+                   read_bytes, read_meta, read_state, row, through_day, today_utc, write_file, write_meta)
 
 TOKEN_URL = "https://ews.fip.finra.org/fip/rest/ews/oauth2/access_token?grant_type=client_credentials"
 API_HOST = "api.finra.org"
@@ -337,7 +337,7 @@ class Finra(Provider):
                                       offset)
                     rows = answer_rows(body)
                     files.append(f"page-{len(files) + 1:03d}.json")
-                    bronze.atomic_write_bytes(outdir / files[-1], body)
+                    write_file(outdir, files[-1], body)
                     if len(rows) < PAGE:
                         break
                     offset += PAGE

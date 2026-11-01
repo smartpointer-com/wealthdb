@@ -39,11 +39,9 @@ import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze
-
 from . import table
 from .base import (Parsed, Provider, ProviderError, amount, blank_to_none, dec, event_row, facts_missing, ident,
-                   merge_events, percent, read_json, read_meta, row, write_meta)
+                   merge_events, percent, read_json, read_meta, row, write_file, write_meta)
 
 HOST = "https://www.amundietf.ch"
 API = f"{HOST}/mapi/ProductAPI/getProductsData"
@@ -95,7 +93,7 @@ class Amundi(Provider):
         day = _day(product)
         if day is None:
             raise ProviderError(f"Amundi's API lists no dated holdings for {claim['isin']}")
-        bronze.atomic_write_bytes(outdir / DOC, resp.body)
+        write_file(outdir, DOC, resp.body)
         missing = []
         if claim.get("calendar") and not isinstance(product.get("historics"), list):
             log.warning("%s: its answer states no dividend history", claim["ref"])

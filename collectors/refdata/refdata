@@ -18,6 +18,9 @@
 #   load [args...]      Parse bronze into the silver SQLite DB.
 #   prune [args...]     Delete non-complete bronze run dirs and debug
 #                       traces; complete dumps are kept. --dry-run previews.
+#   compact [args...]   Give the complete runs' files the form download
+#                       stores them in; nothing a parser reads goes. Manual
+#                       only, never scheduled. --dry-run previews.
 #
 # Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
 # > default), accepted on any subcommand:
@@ -42,10 +45,10 @@ case "$cmd" in
         host_print_banner "${BASH_SOURCE[0]}"
         exit 0
         ;;
-    login|download|load|prune)
+    login|download|load|prune|compact)
         ;;
     *)
-        echo "refdata: unknown command '$cmd' (expected: login|download|load|prune)" >&2
+        echo "refdata: unknown command '$cmd' (expected: login|download|load|prune|compact)" >&2
         exit 2
         ;;
 esac
@@ -81,6 +84,10 @@ case "$cmd" in
         ;;
     prune)
         exec "$py" "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+    compact)
+        exec "$py" "$HERE/compact.py" --bronze-dir "$DATA_DIR" \
             ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
         ;;
 esac

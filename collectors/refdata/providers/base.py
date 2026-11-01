@@ -98,8 +98,11 @@ table of every company's figure for one period:
 
 Each has probe(ctx), the cheapest answer `login --check` asks for.
 
-fetch writes a meta.json beside the raw files: what was asked, the claim
-and anything parse needs that the files do not hold. parse reads it back.
+fetch writes the raw files with write_file (write_json for a file it
+writes itself), which stores a text file compressed, and a meta.json
+beside them: what was asked, the claim and anything parse needs that the
+files do not hold. parse reads them back with read_bytes, read_json and
+read_meta, and tests for a file with has_file: each takes either form.
 A provider that reads what earlier runs fetched does so through
 earlier_answers(), or earlier_docs() and earlier_metas() for the files
 those answers kept.
@@ -108,6 +111,7 @@ those answers kept.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -117,6 +121,11 @@ from pathlib import Path
 from collectorkit import bronze, compress
 
 META = "meta.json"
+# The formats of the text files a provider keeps: write_file stores each
+# compressed, and `compact` compresses those an earlier run stored plain.
+TEXT_SUFFIXES = frozenset({".json", ".html", ".htm", ".csv", ".xml"})
+
+log = logging.getLogger("refdata")
 
 # Every silver table's columns (migrations/), in order.
 COLUMNS = {
@@ -411,6 +420,35 @@ def log_notes(providers, log) -> None:
 
 def write_meta(outdir: Path, **meta) -> None:
     bronze.atomic_write_json(outdir / META, meta)
+
+
+def write_file(outdir: Path, name: str, body: bytes) -> Path:
+    """A file of a request's folder, as the source answered it: compressed
+    where it is text (TEXT_SUFFIXES), else as it came. The path it is
+    stored at. A file that does not compress stays plain, with a warning
+    (collectorkit compress); read_bytes and has_file take either form.
+    meta.json stays plain (write_meta)."""
+    path = outdir / name
+    bronze.atomic_write_bytes(path, body)
+    return _compressed(path)
+
+
+def write_json(outdir: Path, name: str, doc) -> Path:
+    """A JSON file of a request's folder that the provider writes itself,
+    as write_file stores it."""
+    path = outdir / name
+    bronze.atomic_write_json(path, doc)
+    return _compressed(path)
+
+
+def _compressed(path: Path) -> Path:
+    return compress.compress_best_effort(path, log) if path.suffix.lower() in TEXT_SUFFIXES else path
+
+
+def has_file(indir: Path, name: str) -> bool:
+    """Whether a request's folder holds the file `name`, as stored or
+    compressed."""
+    return compress.resolve_variant(indir / name) is not None
 
 
 def read_bytes(indir: Path, name: str) -> bytes:
