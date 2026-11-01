@@ -802,7 +802,12 @@ not from the XBRL API, which serves no dates:
 - Of an archive, only the inline XBRL documents are read: the main
   document, and any other that declares inline XBRL at its start. The
   exhibits are plain HTML and are skipped. The run's log counts the
-  archives read, the documents parsed and the members skipped.
+  archives read, the documents parsed and the members skipped. A
+  download counts the members it leaves out of an archive as skipped.
+- An archive keeps only its inline documents in bronze. Its images,
+  exhibits, schemas and XBRL instance are left out. A parser that needs
+  another member must fetch the filing again. An archive that does not
+  read as a zip of its members is kept whole.
 - A later request reads only the filings that no earlier run read. The
   company's submissions file names them, and the lookup reads it
   anyway. So a company that tags costs about one filing a quarter.
@@ -1094,6 +1099,8 @@ The manifest follows the
 so `load` never reads a crashed run. A provider's text files (JSON,
 HTML, CSV and XML) are stored zstd-compressed, as `<name>.zst`. A
 workbook, a PDF, `meta.json` and the inbox's copies stay as they came.
+A filing's XBRL archive keeps only its inline documents, compressed as
+`<accession>-xbrl.zip.zst` ([sec-edgar](#sec-edgar)).
 
 The silver DB is `refdata.db`, beside the run dirs. It keeps what the
 providers state, labels in their own words: each fund's compositions
@@ -1133,10 +1140,17 @@ the inbox, those two state files and the silver DB.
 wealthdb-collect dedup --source refdata   # share identical files across runs
 ```
 
-`compact` compresses the plain text files a provider stored in the
-complete runs, the form `download` stores them in. It removes nothing a
-parser reads. `load` reads either form of a file, so a `load --force`
-rebuild gives the same silver.
+`compact` gives the complete runs the form `download` stores files in.
+It removes nothing a parser reads:
+
+- It trims each filing archive to its inline documents, and compresses
+  it. It first checks that the trimmed archive gives the same documents,
+  byte for byte. An archive that does not trim is compressed whole.
+- It compresses the plain text files a provider stored.
+
+`load` reads either form of a file, so a `load --force` rebuild gives
+the same silver. The archive members it leaves out exist only on EDGAR
+and in a backup taken before.
 
 - A file is replaced only once its new form reads back the same, so a
   stopped sweep is safe to run again.

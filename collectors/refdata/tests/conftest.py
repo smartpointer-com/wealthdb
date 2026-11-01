@@ -24,13 +24,19 @@ def _reads(monkeypatch):
     monkeypatch.setattr(sec_calendar, "READS", sec_calendar.Reads())
 
 
+def stored_compressed(f: Path) -> bool:
+    """Whether download stores a file compressed: a text file but
+    meta.json, or a filing's archive."""
+    return f.is_file() and f.name != META and (f.suffix in TEXT_SUFFIXES or f.suffix == ".zip")
+
+
 @pytest.fixture(autouse=True)
 def _compressed_twin(monkeypatch, tmp_path_factory):
     """Each provider's parse, wherever a test calls it, parses a copy of
-    the folder too, its text files compressed as download and compact
-    store them, and must give the same rows, or fail the same way: every
-    reader takes either form of a file. The inbox's copies stay as
-    placed."""
+    the folder too, its text files and archives compressed as download
+    and compact store them, and must give the same rows, or fail the
+    same way: every reader takes either form of a file. The inbox's
+    copies stay as placed."""
     owners = {next(c for c in type(p).__mro__ if "parse" in vars(c)) for p in REGISTRY.values()
               if not isinstance(p, Inbox | FakeProvider)}
 
@@ -43,11 +49,11 @@ def _compressed_twin(monkeypatch, tmp_path_factory):
     for owner in owners:
         def parse(self, indir, _parse=owner.parse):
             out, error = outcome(_parse, self, indir)
-            if any(f.is_file() and f.name != META and f.suffix in TEXT_SUFFIXES for f in indir.rglob("*")):
+            if any(stored_compressed(f) for f in indir.rglob("*")):
                 twin = tmp_path_factory.mktemp("compressed") / indir.name
                 shutil.copytree(indir, twin)
                 for f in twin.rglob("*"):
-                    if f.is_file() and f.name != META and f.suffix in TEXT_SUFFIXES:
+                    if stored_compressed(f):
                         compress.compress_file(f)
                 with monkeypatch.context() as m:
                     m.setattr(sec_calendar, "READS", sec_calendar.Reads())

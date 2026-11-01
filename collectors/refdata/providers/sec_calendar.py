@@ -12,8 +12,8 @@ sec-edgar claims a share's calendar, and fetches and parses it here.
 - Fetch: each 10-Q and 10-K in inline XBRL that the company's
   submissions file lists among its recent filings, filed in the last
   FILINGS_MONTHS months, that no earlier run read: its XBRL archive
-  (<accession>-xbrl.zip, its inline documents within), else its primary
-  document (the inline document itself), compressed.
+  (<accession>-xbrl.zip), of its members only the documents parse reads,
+  else its primary document (the inline document itself); compressed.
 - Parse: of an archive, the primary document and each other member
   that declares inline XBRL's namespace at its start; an exhibit is
   plain HTML and is not parsed. Then the facts US GAAP tags a
@@ -46,7 +46,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import fetcher
-from collectorkit import bronze
+from collectorkit import bronze, compress
 
 from .base import ProviderError, dec, earlier_metas, event_id, present, read_bytes, row, write_file
 
@@ -388,29 +388,83 @@ def inline(head: bytes) -> bool:
     return any(uri.encode() in head for uri in IX)
 
 
+def members(z: zipfile.ZipFile, primary: str | None) -> tuple:
+    """The members of a filing's XBRL archive the calendar reads, as
+    (ZipInfo, bytes) in the archive's order, and the number of the other
+    HTML members, its exhibits. Of the HTML members within MAX_DOCUMENT,
+    it reads the filing's primary document, by its name (`primary`, its
+    folder aside), and each inline document (inline()). documents()
+    parses these, and trim() keeps only these."""
+    out, skipped, primary = [], 0, (primary or "").rpartition("/")[2] or None
+    for i in z.infolist():
+        if not i.filename.lower().endswith((".htm", ".html", ".xhtml")) or i.file_size > MAX_DOCUMENT:
+            continue
+        with z.open(i) as member:
+            head = member.read(SNIFF)
+            if i.filename.rpartition("/")[2] == primary or inline(head):
+                out.append((i, head + member.read()))
+            else:
+                skipped += 1
+    return out, skipped
+
+
 def documents(data: bytes, name: str, primary: str | None) -> list:
     """The inline XBRL documents of a filing's stored file: of its XBRL
-    archive, the members that are inline documents (inline()) or the
-    filing's primary document; else the primary document itself. Any
-    other member, an exhibit, is not parsed. zipfile.BadZipFile where
-    the archive is none."""
+    archive, the members the calendar reads (members()); else the primary
+    document itself. Any other member, an exhibit, is not parsed.
+    zipfile.BadZipFile where the archive is none."""
     if not name.endswith(".zip"):
         READS.documents += 1
         return [data]
-    out, primary = [], (primary or "").rpartition("/")[2] or None
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         READS.archives += 1
-        for i in z.infolist():
-            if not i.filename.lower().endswith((".htm", ".html", ".xhtml")) or i.file_size > MAX_DOCUMENT:
-                continue
-            with z.open(i) as member:
-                head = member.read(SNIFF)
-                if i.filename.rpartition("/")[2] == primary or inline(head):
-                    out.append(head + member.read())
-                else:
-                    READS.skipped += 1
-    READS.documents += len(out)
-    return out
+        kept, skipped = members(z, primary)
+    READS.documents += len(kept)
+    READS.skipped += skipped
+    return [body for _, body in kept]
+
+
+def trimmed(data: bytes, primary: str | None) -> bytes:
+    """A filing's XBRL archive with only the members the calendar reads
+    (members()), each under its name, in the archive's order and with its
+    timestamp. They are stored uncompressed: the file is compressed whole.
+    An error of the archive (zipfile.BadZipFile and the like) where it
+    does not read."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(data)) as z, zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as out:
+        for info, body in members(z, primary)[0]:
+            out.writestr(zipfile.ZipInfo(info.filename, info.date_time), body)
+    return buf.getvalue()
+
+
+def trim(data: bytes, name: str, primary: str | None) -> tuple:
+    """(the file to keep of a filing's XBRL archive `name`, the members it
+    leaves out that the calendar would skip): the archive trimmed()
+    where its members read back as the documents the whole archive's
+    did, byte for byte; else the whole archive, and a warning names it."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            whole, skipped = members(z, primary)
+        kept = trimmed(data, primary)
+        with zipfile.ZipFile(io.BytesIO(kept)) as z:
+            if [body for _, body in members(z, primary)[0]] == [body for _, body in whole]:
+                return kept, skipped
+        log.warning("%s: its documents read otherwise trimmed; kept whole", name)
+    except Exception as e:  # noqa: BLE001 - any archive that does not trim is kept whole
+        log.warning("%s: kept whole, as it does not trim: %s", name, e)
+    return data, 0
+
+
+def store_archive(outdir: Path, name: str, body: bytes, primary: str | None) -> None:
+    """A filing's XBRL archive into outdir as `name`, compressed, with only
+    the members the calendar reads (trim()). A parser that needs another
+    member fetches the filing again. The members left out count as
+    skipped in READS: the stored archive holds none to skip."""
+    kept, skipped = trim(body, name, primary)
+    READS.skipped += skipped
+    path = outdir / name
+    bronze.atomic_write_bytes(path, kept)
+    compress.compress_best_effort(path, log)
 
 
 def filing_dividends(data: bytes, name: str, primary: str | None) -> list:
@@ -513,10 +567,11 @@ def due(s: Seen | None, today: date) -> bool:
 
 def fetch(ctx, cik: int, outdir: Path, sub: dict, today: date, read) -> tuple:
     """The filings of a company's calendar into outdir (filings()): each
-    its XBRL archive, else, where there is none, its primary document,
-    compressed. Returns meta.json's `calendar`, the filings read with
-    the file each is stored in and whether it tags a dividend, and
-    whether a filing could not be had: it is asked for again."""
+    its XBRL archive, trimmed (store_archive()), else, where there is
+    none, its primary document, compressed. Returns meta.json's
+    `calendar`, the filings read with the file each is stored in and
+    whether it tags a dividend, and whether a filing could not be had:
+    it is asked for again."""
     got, missing = [], False
     for f in filings(sub, months_back(today, FILINGS_MONTHS), read):
         try:
@@ -536,7 +591,7 @@ def _fetch_filing(ctx, cik: int, f: dict, outdir: Path) -> str:
     try:
         body = ctx.client.get(ARCHIVE.format(cik=cik, folder=folder, name=archive)).body
         if zipfile.is_zipfile(io.BytesIO(body)):
-            bronze.atomic_write_bytes(outdir / archive, body)
+            store_archive(outdir, archive, body, f["document"])
             return archive
     except fetcher.FetchError as e:
         if e.status != 404:

@@ -31,6 +31,8 @@ driven, and is the one place that list is written down.
   by each collector's `download.py`. Lands under
   `$XDG_DATA_HOME/wealthdb/<source>/<UTC-timestamp>/` (XDG data dir;
   `$XDG_DATA_HOME` defaults to `~/.local/share` when unset).
+  A collector's README may name parts of an answer that its bronze
+  leaves out, because no parser reads them, or stores repacked.
 - **Silver** — bronze parsed into a source-shaped SQLite, owned by
   each collector's `load.py`. One DB per source (cointracking writes
   DuckDB instead). JSON payloads carry through anything not promoted

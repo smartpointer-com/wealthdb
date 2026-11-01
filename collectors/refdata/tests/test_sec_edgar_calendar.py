@@ -15,7 +15,7 @@ import load
 import wanted as wantedmod
 from collectorkit import compress
 from providers import REGISTRY, sec_calendar, sec_edgar
-from providers.base import Context, read_meta, write_meta
+from providers.base import Context, read_bytes, read_meta, write_meta
 from providers.sec_calendar import Seen, due, months_back, seen
 from providers.sec_edgar import SecEdgar
 from tests.helpers import FakeClient, kept_run, make_run, rows, run_entries, wanted_doc
@@ -313,6 +313,46 @@ def test_a_primary_document_stored_on_its_own_is_read_whole():
     assert sec_calendar.READS.line() == "calendar: archives read 0, documents parsed 1, members skipped 0"
 
 
+def whole_archive(method=zipfile.ZIP_DEFLATED) -> bytes:
+    """A filing's whole XBRL archive: its primary document, which declares
+    its namespace late, a second inline document, an exhibit, an image
+    and the XBRL instance, dated."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", method) as z:
+        for name, body in (("exmp-20260930.htm", late(Q3)), ("exmp-ex311.htm", EXHIBIT),
+                           ("exmp-10q2.htm", Q3), ("exmp-logo.jpg", b"\xff\xd8 an image"),
+                           ("exmp-20260930_htm.xml", b"<xbrl/>")):
+            z.writestr(zipfile.ZipInfo(name, (2026, 10, 30, 16, 5, 2)), body)
+    return buf.getvalue()
+
+
+def test_an_archive_keeps_only_the_documents_the_calendar_reads():
+    whole = whole_archive()
+    kept = sec_calendar.trimmed(whole, "exmp-20260930.htm")
+    with zipfile.ZipFile(io.BytesIO(kept)) as z:
+        assert [(i.filename, i.date_time, i.compress_type) for i in z.infolist()] == [
+            ("exmp-20260930.htm", (2026, 10, 30, 16, 5, 2), zipfile.ZIP_STORED),
+            ("exmp-10q2.htm", (2026, 10, 30, 16, 5, 2), zipfile.ZIP_STORED)]
+        assert [z.read(n) for n in z.namelist()] == [late(Q3), Q3]
+    assert (sec_calendar.documents(kept, "a-xbrl.zip", "exmp-20260930.htm")
+            == sec_calendar.documents(whole, "a-xbrl.zip", "exmp-20260930.htm"))
+    for primary in ("exmp-20260930.htm", None):
+        assert (sec_calendar.filing_dividends(kept, "a-xbrl.zip", primary)
+                == sec_calendar.filing_dividends(whole, "a-xbrl.zip", primary))
+    assert sorted(by_record(sec_calendar.filing_dividends(kept, "a-xbrl.zip", None))) == ["2026-07-14", "2026-10-13"]
+
+
+def test_a_stored_archive_is_trimmed_and_compressed_and_one_that_does_not_trim_is_kept_whole(tmp_path, caplog):
+    sec_calendar.store_archive(tmp_path, "a-xbrl.zip", whole_archive(), "exmp-20260930.htm")
+    assert [p.name for p in tmp_path.iterdir()] == ["a-xbrl.zip.zst"]
+    assert read_bytes(tmp_path, "a-xbrl.zip") == sec_calendar.trimmed(whole_archive(), "exmp-20260930.htm")
+    # A document whose bytes fail their CRC: the archive does not trim.
+    broken = whole_archive(zipfile.ZIP_STORED).replace(b"contextRef", b"contextReg", 1)
+    sec_calendar.store_archive(tmp_path, "b-xbrl.zip", broken, "exmp-20260930.htm")
+    assert read_bytes(tmp_path, "b-xbrl.zip") == broken
+    assert "b-xbrl.zip: kept whole, as it does not trim" in caplog.text
+
+
 # ---- fetch and parse ---------------------------------------------------
 
 
@@ -536,13 +576,18 @@ def test_a_run_loads_the_events_and_the_next_asks_only_what_is_new(tmp_path, tod
     assert len(filings_read(client)) == 5
     assert [f["tagged"] for f in read_meta(data / "20261102T010000Z" / entry["dir"])["calendar"]["filings"]] == [
         False, False, False, True, True]
+    # Each archive is stored with its inline document alone, which the
+    # fetch reads back: the exhibits it left out count as skipped.
     assert sec_calendar.READS.line() == "calendar: archives read 5, documents parsed 5, members skipped 5"
-    # The load counts afresh.
+    folder = data / "20261102T010000Z" / entry["dir"]
+    stored = [f["file"] for f in read_meta(folder)["calendar"]["filings"]]
+    assert sorted(p.name for p in folder.glob("*-xbrl.zip*")) == sorted(f"{name}.zst" for name in stored)
+    # The load counts afresh, and finds no exhibit left to skip.
     monkeypatch.setattr(sec_calendar, "READS", sec_calendar.Reads())
     caplog.set_level("INFO", logger="refdata.load")
     db = tmp_path / "refdata.db"
     assert load.main(["--silver-db", str(db), "--bronze-dir", str(data)]) == 0
-    assert "sec-edgar: calendar: archives read 5, documents parsed 5, members skipped 5" in caplog.text
+    assert "sec-edgar: calendar: archives read 5, documents parsed 5, members skipped 0" in caplog.text
     events = rows(db, "SELECT ref, provider, event_id, ex_date, record_date, pay_date, declared_date, amount, "
                       "currency, status FROM dividend_events ORDER BY event_id")
     assert rows(db, "SELECT COUNT(*) FROM securities") == [(1,)]
