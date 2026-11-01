@@ -324,7 +324,10 @@ It reads in this order:
   band shows where the other charts stop covering.
 
 A breakdown reads the latest day in the range. A chart over time shows
-each month end's shares, stacked to 100.
+each month end's shares, stacked to 100. The currencies chart keeps a
+currency as its own band when its share at the range's end is 1% or
+more, long or short. The rest fold into one `other` band. A currency sold
+forward can be short, and its band then sits below zero.
 
 Three pickers narrow a selection. The source and the tax wrapper reach
 every tile: `report_exposure` holds the look-through per source and

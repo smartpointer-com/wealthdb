@@ -4242,6 +4242,38 @@ if duckdb is not None:
             check(f"'{_n}' draws the class shares `wealthdb exposure {_view}` prints, summing to 100",
                   bool(_want) and _got == _want and abs(sum(r[-1] for r in _bars) - 100) < 1e-9, (_got, _want))
 
+    section("the Exposure currencies over time, run on an invented frame")
+
+    # Two month ends of a selection in USD, worth 100 on each. At the
+    # window's end CHF holds 124.7%, a forward's short USD leg -30%, JPY
+    # 5%, EUR 0.7% and GBP -0.4%; SEK, held at the first, is gone. A currency
+    # keeps its band where its share at the end is 1% or more either way:
+    # CHF, USD and JPY. EUR, GBP and SEK fold into `other`, which comes
+    # first, the top of the stack; the bands follow by the magnitude of
+    # their share, the largest last, on the axis.
+    _fx = duckdb.connect()
+    _fx.execute("CREATE TABLE web_exposure (as_of_day DATE, currency TEXT, silver_source_id TEXT,"
+                " tax_wrapper TEXT, asset_class TEXT, exposure_currency TEXT, value DOUBLE)")
+    for _day, _ccy, _v in (("2026-08-31", "CHF", 80.0), ("2026-08-31", "USD", 10.0), ("2026-08-31", "SEK", 4.0),
+                           ("2026-08-31", "JPY", 6.0), ("2026-09-30", "CHF", 124.7), ("2026-09-30", "USD", -30.0),
+                           ("2026-09-30", "JPY", 5.0), ("2026-09-30", "EUR", 0.7), ("2026-09-30", "GBP", -0.4)):
+        _fx.execute("INSERT INTO web_exposure VALUES (?, 'USD', 'src-1', 'taxable_personal', 'cash', ?, ?)",
+                    [_day, _ccy, _v])
+    _bands = _fx.execute(_render(CARDS["Currencies over time"][2],
+                                 {"time_range": ["2026-08-01", "2026-09-30"]})).fetchall()
+    _fx.close()
+    _by = {(d.isoformat(), c): v for d, c, v in _bands}
+    _sums = {d: sum(v for (dd, _c), v in _by.items() if dd == d) for d, _c in _by}
+    check("a currency short 30% at the end keeps its own band, below zero",
+          _near(_by.get(("2026-09-30", "USD")), -30.0) and _near(_by.get(("2026-08-31", "USD")), 10.0), _bands)
+    check("...one under 1% either way folds into other, as one gone by the end does",
+          {c for _d, c, _v in _bands} == {"CHF", "USD", "JPY", "other"}
+          and _near(_by.get(("2026-09-30", "other")), 0.3) and _near(_by.get(("2026-08-31", "other")), 4.0), _bands)
+    check("...the bands sum to 100 on each day",
+          len(_sums) == 2 and all(_near(v, 100.0) for v in _sums.values()), _sums)
+    check("...other first, then the bands by the magnitude of their share, the largest last",
+          list(dict.fromkeys(c for _d, c, _v in _bands)) == ["other", "JPY", "USD", "CHF"], _bands)
+
     section("the Allocation issuers card's SQL, run on an invented book")
 
     # Issuer ranks at two month ends and at a refresh this month; the

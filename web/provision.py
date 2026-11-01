@@ -2799,18 +2799,21 @@ def exposure_cards(db_id, privacy):
         """Each month end's shares, stacked by the values of `dim`, the
         rows smallest first by the share at the window's end, as
         _series_order orders any stacked chart. With `fold`, a value
-        under one percent at the window's end, or gone by then, joins the
-        `other` band, which tops the stack. It ranks with an aggregate of
-        its own: the DuckDB in Metabase's driver fails on that helper's
-        window functions over w, whose share is a window function
-        itself."""
-        rank = "CASE WHEN r.latest >= 1 THEN r.latest ELSE -1 END" if fold else "COALESCE(r.latest, -1)"
-        band = f"CASE WHEN r.latest >= 1 THEN w.{dim} ELSE 'other' END" if fold else f"w.{dim}"
+        under one percent long or short at the window's end, or gone by
+        then, joins the `other` band, which tops the stack. A value kept
+        ranks by the magnitude of its share. A currency sold forward thus
+        keeps its own band, and Metabase stacks it below zero. A tie
+        orders by the value. It ranks with an aggregate of its own: the
+        DuckDB in Metabase's driver fails on that helper's window
+        functions over w, whose share is a window function itself."""
+        kept = "abs(r.latest) >= 1"
+        rank = f"CASE WHEN {kept} THEN abs(r.latest) ELSE -1 END" if fold else "COALESCE(r.latest, -1)"
+        band = f"CASE WHEN {kept} THEN w.{dim} ELSE 'other' END" if fold else f"w.{dim}"
         card(name, "area", desc,
              last + f",\nr AS (SELECT {dim} AS k, sum(share_pct) AS latest FROM e GROUP BY 1)\n"
              f"SELECT w.as_of_day, {band} AS {label},\n       sum(w.share_pct) AS share_pct\n"
              f"  FROM w\n  LEFT JOIN r ON r.k = w.{dim}\n GROUP BY 1, 2\n"
-             f" ORDER BY max({rank}), 1",
+             f" ORDER BY max({rank}), {'2, ' if fold else ''}1",
              {"graph.dimensions": ["as_of_day", label], "graph.metrics": ["share_pct"],
               **STACKED_VIZ, **_share_viz("share_pct")})
 
@@ -2858,7 +2861,8 @@ def exposure_cards(db_id, privacy):
            extra=("currency_kind",))
     over_time("Currencies over time",
               "Each month end's net worth by the currency it moves with, as "
-              "shares stacking to 100.", "exposure_currency", "currency", fold=True)
+              "shares stacking to 100. A currency sold forward can read below "
+              "zero.", "exposure_currency", "currency", fold=True)
     over_time("Held directly or through funds",
               "Each month end's net worth, held directly or through funds.",
               "held", "held")
