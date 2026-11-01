@@ -55,6 +55,11 @@ type RefineClassFunc = func(securityType string, ac canonical.AssetClass, v cano
 // merged adapters (UBS) read Subsources and Relationships; schwab reads
 // MarkGuard too.
 type OpenSpec struct {
+	// ID is the source's id in gold (silver_source_id), for an adapter
+	// whose keys are scoped by the source, such as a contract's
+	// (canonical.ContractKey).
+	ID string
+
 	// Path is the silver SQLite path for single-file adapters.
 	// Empty when Subsources is used.
 	Path string

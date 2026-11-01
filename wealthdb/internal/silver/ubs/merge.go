@@ -127,6 +127,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		forwards               inferredForwards
 	)
 
+	forwards.source = c.source
 	if c.web != nil && c.psn != nil {
 		var err error
 		webPosPayloads, err = c.web.positionPayloadByKey(ctx, w.Start, w.End)

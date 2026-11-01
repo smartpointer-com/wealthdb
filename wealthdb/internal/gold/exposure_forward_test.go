@@ -32,7 +32,7 @@ func TestExposureSplitsAForwardHeldDirectlyIntoItsLegs(t *testing.T) {
 			exSnap, id, id, mark)
 	}
 	for id, mark := range map[string]int{"QFW1": -20, "QFW0": 0, "QFW9": 10} {
-		key := canonical.ContractKey(id)
+		key := canonical.ContractKey("test-src", id)
 		mustExec(t, db, `INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, source_kind, line_count,
 		    weight_sum, currency, net_assets, origin) VALUES ('test-src', ?, ?, 'holdings', 'ubs-psn', 'daily_file', 1, 100, 'CHF', ?,
 		    'parsed')`, key, exSnap, mark)
@@ -69,7 +69,7 @@ func TestExposureSplitsAForwardHeldDirectlyIntoItsLegs(t *testing.T) {
 		return s.String, sum.Float64
 	}
 	leavesOf := func(key string) (string, float64) { return leavesIn("USD", key) }
-	leaves := func(id string) (string, float64) { return leavesOf(canonical.ContractKey(id)) }
+	leaves := func(id string) (string, float64) { return leavesOf(canonical.ContractKey("test-src", id)) }
 	// The long leg at notional in its currency, the rest of the mark in
 	// the short one: the two sum to the mark.
 	if got, sum := leaves("QFW1"); got != "1|looked_through|foreign_exchange|USD|=1000.0 1|looked_through|foreign_exchange|CHF|=-1025.0" ||
@@ -83,7 +83,7 @@ func TestExposureSplitsAForwardHeldDirectlyIntoItsLegs(t *testing.T) {
 		t.Errorf("QFW0 leaves = %q, sum %v; want the USD leg at 1000 and the CHF leg at -1000, summing to 0", got, sum)
 	}
 	// In francs, the long leg is the notional at the day's rate.
-	if got, sum := leavesIn("CHF", canonical.ContractKey("QFW0")); got != "1|looked_through|foreign_exchange|USD|=800.0 1|looked_through|foreign_exchange|CHF|=-800.0" ||
+	if got, sum := leavesIn("CHF", canonical.ContractKey("test-src", "QFW0")); got != "1|looked_through|foreign_exchange|USD|=800.0 1|looked_through|foreign_exchange|CHF|=-800.0" ||
 		sum < -0.0001 || sum > 0.0001 {
 		t.Errorf("QFW0 leaves in CHF = %q, sum %v; want the USD leg at 800 and the CHF leg at -800", got, sum)
 	}
@@ -120,11 +120,75 @@ func TestExposureSplitsAForwardHeldDirectlyIntoItsLegs(t *testing.T) {
 		}
 	}
 
-	// Migration 0173 replays: the macro reads the same.
+	// The held forwards' legs are held directly, as a forward is no
+	// fund; the fund's forward line stays looked through. In dollars the
+	// held legs sum to -25 (QFW1's mark, QFW0's zero), the fund's to 500.
+	split := func(q string) (direct, via float64) {
+		t.Helper()
+		if err := db.QueryRowContext(ctx, q, exAsOf).Scan(&direct, &via); err != nil {
+			t.Fatal(err)
+		}
+		return direct, via
+	}
+	near := func(got, want float64) bool { return got > want-0.0001 && got < want+0.0001 }
+	for name, q := range map[string]string{
+		"exposure_leaves": `SELECT SUM(value) FILTER (WHERE direct), SUM(value) FILTER (WHERE NOT direct)
+		    FROM exposure_leaves(?, 'USD')`,
+		"report_exposure": `SELECT SUM(value) FILTER (WHERE NOT via_funds), SUM(value) FILTER (WHERE via_funds)
+		    FROM report_exposure WHERE currency = 'USD' AND as_of = ?`,
+		"report_exposure_classes": `SELECT value * direct_pct / share_pct, value * via_funds_pct / share_pct
+		    FROM report_exposure_classes(?, 'USD') WHERE asset_class = 'foreign_exchange'`,
+		"report_exposure_currencies": `SELECT SUM(value * direct_pct / share_pct), SUM(value * via_funds_pct / share_pct)
+		    FROM report_exposure_currencies(?, 'USD')`,
+		"report_exposure_securities": `SELECT SUM(direct_value), SUM(via_funds_value)
+		    FROM report_exposure_securities(?, 'USD')`,
+	} {
+		if d, v := split(q); !near(d, -25) || !near(v, 500) {
+			t.Errorf("%s: direct %v, via funds %v; want -25 and 500", name, d, v)
+		}
+	}
+	// The security slices split the same way.
+	if d, v := split(`SELECT SUM(direct_value), SUM(via_funds_value) FROM report_exposure_security_slices
+	    WHERE currency = 'USD' AND as_of = ?`); !near(d, -25) || !near(v, 500) {
+		t.Errorf("security slices: direct %v, via funds %v; want -25 and 500", d, v)
+	}
+	var funds0 int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM report_exposure_security_slices
+	    WHERE currency = 'USD' AND as_of = ? AND list_contains(funds, ?)`, exAsOf,
+		canonical.ContractKey("test-src", "QFW1")).Scan(&funds0); err != nil || funds0 != 0 {
+		t.Errorf("%d slices name a held forward among their funds (%v)", funds0, err)
+	}
+	// The funds list keeps the fund and leaves the held forwards among
+	// the other holdings.
+	funds := map[string]float64{}
+	frows, err := db.QueryContext(ctx, `SELECT fund, value FROM report_exposure_funds(?, 'USD')`, exAsOf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for frows.Next() {
+		var f string
+		var v float64
+		if err := frows.Scan(&f, &v); err != nil {
+			t.Fatal(err)
+		}
+		funds[f] = v
+	}
+	frows.Close()
+	if len(funds) != 2 || !near(funds["symbol:QFND"], 500) || !near(funds["(other holdings)"], -25) {
+		t.Errorf("funds = %v, want the fund at 500 and the forwards' marks among the other holdings", funds)
+	}
+
+	// Migrations 0173 and 0175 replay: the macros read the same.
 	zero, _ := leaves("QFW0")
-	rerunMigrationDDL(t, db, ctx, "0173_forward_legs_at_notional.sql")
-	if got, _ := leaves("QFW0"); got != zero {
-		t.Errorf("QFW0 leaves after replaying 0173 = %q, want %q", got, zero)
+	for _, m := range []string{"0173_forward_legs_at_notional.sql", "0175_forward_held_directly.sql"} {
+		rerunMigrationDDL(t, db, ctx, m)
+		if got, _ := leaves("QFW0"); got != zero {
+			t.Errorf("QFW0 leaves after replaying %s = %q, want %q", m, got, zero)
+		}
+	}
+	if d, v := split(`SELECT SUM(value) FILTER (WHERE direct), SUM(value) FILTER (WHERE NOT direct)
+	    FROM exposure_leaves(?, 'USD')`); !near(d, -25) || !near(v, 500) {
+		t.Errorf("after the replays: direct %v, via funds %v; want -25 and 500", d, v)
 	}
 
 	// A forward its legs describe is no private holding a declaration

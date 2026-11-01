@@ -15,6 +15,9 @@ import (
 // file defines the type, its lifecycle and the shared event scan.
 type psnReader struct {
 	db *sql.DB
+	// source is the source's id in gold, which a contract's key is
+	// scoped by.
+	source string
 
 	// coverage, mirrors and confirmations keep what cashCoverage,
 	// conversionMirrors and cashConfirmations read. Each scans the whole

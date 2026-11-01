@@ -720,7 +720,8 @@ Views
                together, the largest first, with the running share
   funds        one row per fund held directly: what describes it on the
                day, and how old it is; then one row for all other
-               holdings
+               holdings, a forward held directly among them (securities
+               lists its legs)
   coverage     what the figures rest on: how each part of net worth is
                classified, how old the compositions are, the labels no
                map knows, the securities no source describes, the

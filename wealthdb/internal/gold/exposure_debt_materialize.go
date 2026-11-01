@@ -89,10 +89,11 @@ SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT
 // exposureSecuritiesSQL is the instant's report_exposure_securities rows
 // per reporting currency, cut by source, tax wrapper and the leaf's asset
 // class: a security's slices (migration 0165). A leaf's security is the
-// view's (report_exposure_securities, migration 0128): keep the CASE the
-// same. Each label is its largest leaf's that has one, the greater
-// label on a tie, with that leaf's absolute value as its weight, so a
-// card that takes the label of the heaviest slice gives the view's.
+// view's (report_exposure_securities, migrations 0128 and 0175): keep
+// the CASE and the direct split the same. Each label is its largest
+// leaf's that has one, the greater label on a tie, with that leaf's
+// absolute value as its weight, so a card that takes the label of the
+// heaviest slice gives the view's.
 var exposureSecuritiesSQL = `INSERT INTO report_exposure_security_slices BY NAME
 WITH ` + scaledLeavesSQL(`l AS (SELECT * FROM exposure_leaves(CAST($1 AS BIGINT), 'USD'))`) + `,
 g AS (
@@ -110,9 +111,9 @@ SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT
        MAX(w) AS class_weight, MAX(w) FILTER (WHERE sector IS NOT NULL) AS sector_weight,
        MAX(w) FILTER (WHERE country IS NOT NULL) AS country_weight,
        MAX(market_cap) AS market_cap, MAX(size) AS size, SUM(value * k) AS value,
-       COALESCE(SUM(value * k) FILTER (WHERE depth = 0), 0) AS direct_value,
-       COALESCE(SUM(value * k) FILTER (WHERE depth > 0), 0) AS via_funds_value,
-       COALESCE(list(DISTINCT top_key ORDER BY top_key) FILTER (WHERE depth > 0), []) AS funds
+       COALESCE(SUM(value * k) FILTER (WHERE direct), 0) AS direct_value,
+       COALESCE(SUM(value * k) FILTER (WHERE NOT direct), 0) AS via_funds_value,
+       COALESCE(list(DISTINCT top_key ORDER BY top_key) FILTER (WHERE NOT direct), []) AS funds
   FROM g
  GROUP BY out_ccy, src, wrapper, asset_class, security`
 

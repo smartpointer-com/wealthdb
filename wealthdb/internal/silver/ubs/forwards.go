@@ -96,10 +96,11 @@ func (p forwardPayload) legs() (bought, sold forwardLeg, ok bool) {
 }
 
 // forwardHolding is an open forward as an instrument and its legs as
-// the instrument's composition, on the snapshot snap. ok is false for a
-// spot deal, a contract with no maturity date, no mark currency or no
-// legs: such a position keeps no instrument and counts at its mark.
-func forwardHolding(snap int64, contractID string, p forwardPayload) (canonical.InstrumentChange,
+// the instrument's composition, on the snapshot snap, keyed in source.
+// ok is false for a spot deal, a contract with no maturity date, no
+// mark currency or no legs: such a position keeps no instrument and
+// counts at its mark.
+func forwardHolding(snap int64, source, contractID string, p forwardPayload) (canonical.InstrumentChange,
 	canonical.FundCompositionChange, canonical.FundLineChange, bool) {
 	maturity, dated := p.maturity()
 	bought, sold, legs := p.legs()
@@ -107,16 +108,17 @@ func forwardHolding(snap int64, contractID string, p forwardPayload) (canonical.
 		return canonical.InstrumentChange{}, canonical.FundCompositionChange{}, canonical.FundLineChange{}, false
 	}
 	name := "FX forward " + bought.ccy + "/" + sold.ccy + " " + maturity.Format(time.DateOnly)
-	inst, comp, line := forwardRecords(snap, contractID, name, p.MrktValueCcyIsoCd, p.MrktValueAmt, bought, sold)
+	inst, comp, line := forwardRecords(snap, source, contractID, name, p.MrktValueCcyIsoCd, p.MrktValueAmt, bought, sold)
 	return inst, comp, line, true
 }
 
 // forwardRecords are a forward's instrument, of the id and name, and
-// its legs as the instrument's composition on the snapshot snap: one
+// its legs as the instrument's composition on the snapshot snap, keyed
+// by the contract's id in source (canonical.ContractKey): one
 // line, long the bought leg and short the sold one, over the mark as
 // net assets, in the mark's currency ccy. The composition's provider is
 // the PSN feed's.
-func forwardRecords(snap int64, id, name, ccy string, mark *canonical.Decimal, bought, sold forwardLeg) (
+func forwardRecords(snap int64, source, id, name, ccy string, mark *canonical.Decimal, bought, sold forwardLeg) (
 	canonical.InstrumentChange, canonical.FundCompositionChange, canonical.FundLineChange) {
 	inst := canonical.InstrumentChange{
 		InstrumentExternalID: id,
@@ -129,7 +131,7 @@ func forwardRecords(snap int64, id, name, ccy string, mark *canonical.Decimal, b
 	}
 	weight := canonical.NewDecimalFromInt(100)
 	comp := canonical.FundCompositionChange{
-		FundRef: canonical.ContractKey(id), AsOf: snap, Basis: canonical.CompositionHoldings,
+		FundRef: canonical.ContractKey(source, id), AsOf: snap, Basis: canonical.CompositionHoldings,
 		Provider: forwardProvider, SourceKind: "daily_file", Origin: canonical.CompositionParsed,
 		FundName: &name, Currency: &ccy, NetAssets: mark, LineCount: 1, WeightSum: &weight,
 	}

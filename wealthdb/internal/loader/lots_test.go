@@ -31,12 +31,15 @@ var lotsState struct {
 	window    canonical.Window
 	snapshots canonical.SnapshotBatch
 	realized  []canonical.RealizedLotChange
+	// openedAs is the source id the last Open was handed.
+	openedAs string
 }
 
 type lotsAdapter struct{}
 
 func (lotsAdapter) Kind() string { return lotsKind }
-func (lotsAdapter) Open(context.Context, silver.OpenSpec) (silver.Connection, error) {
+func (lotsAdapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
+	lotsState.openedAs = spec.ID
 	return lotsConn{}, nil
 }
 
@@ -121,6 +124,18 @@ func accountsAt(at int64, ids ...string) []canonical.AccountChange {
 			AccountKind: canonical.AccountKindBrokerage, FirstSeenAt: at, LastSeenAt: at})
 	}
 	return out
+}
+
+// The adapter is opened as the source the load is for, so a key it
+// scopes by the source (canonical.ContractKey) is the key gold writes.
+func TestLoadOpensTheAdapterAsItsSource(t *testing.T) {
+	l, _ := lotsGold(t)
+	lotsState.changeNumber, lotsState.window = 1, canonical.Window{Start: 0, End: 1, HasChanges: true}
+	lotsState.snapshots, lotsState.realized, lotsState.openedAs = canonical.SnapshotBatch{}, nil, ""
+	lotsLoad(t, l, loader.SourceSpec{})
+	if lotsState.openedAs != "lots-src" {
+		t.Errorf("opened as %q, want lots-src", lotsState.openedAs)
+	}
 }
 
 func TestPositionLotsRideThePositionWindow(t *testing.T) {

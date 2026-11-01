@@ -165,7 +165,7 @@ func inferredForwardRecords(t *testing.T, web *webReader, psn *psnReader) map[st
 	}
 	w := canonical.Window{Start: 0, End: swapDay(2040, 1, 1), HasChanges: true}
 	stream, err := web.snapshotsHistorical(ctx, w, map[string]string{swapPortfolio: swapSafekeeping}, nil, nil,
-		inferredForwards{swaps: swaps, portfolioOf: portfolioOf, until: first})
+		inferredForwards{source: "test-ubs", swaps: swaps, portfolioOf: portfolioOf, until: first})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func inferredForwardRecords(t *testing.T, web *webReader, psn *psnReader) map[st
 // swapRecords is what a day holding the forward of ref states.
 func swapRecords(ref, name string, long, short string, payload string) []string {
 	id := "fx-swap " + ref
-	key := canonical.ContractKey(id)
+	key := canonical.ContractKey("test-ubs", id)
 	return []string{
 		"P1:overlay " + id + " " + id + " USD 0 " + payload,
 		id + " foreign_exchange/forward " + name + " USD",

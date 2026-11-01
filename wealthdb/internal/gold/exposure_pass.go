@@ -106,8 +106,8 @@ SELECT r.provider, r.field, r.raw, COALESCE(p.value, g.value)
 // writeInstrumentKeys gives every instrument its security key
 // (canonical.SecurityKey), from its ISIN, CUSIP and symbol (a resolved
 // symbol where the source states none). A forward with none of them is
-// keyed by its contract id (canonical.ContractKey), so the legs its
-// source states describe it (docs/EXPOSURE.md §5).
+// keyed by its source and contract id (canonical.ContractKey), so the
+// legs its source states describe it (docs/EXPOSURE.md §5).
 func writeInstrumentKeys(ctx context.Context, tx *sql.Tx) error {
 	if err := execAll(ctx, tx, `DELETE FROM instrument_keys`); err != nil {
 		return err
@@ -127,7 +127,7 @@ SELECT i.silver_source_id, i.instrument_external_id, COALESCE(i.isin, ''), COALE
 		}
 		k := canonical.SecurityKey(isin, cusip, "", symbol, "")
 		if k == "" && forward {
-			k = canonical.ContractKey(iid)
+			k = canonical.ContractKey(src, iid)
 		}
 		if k != "" {
 			out = append(out, row{src, iid, k})

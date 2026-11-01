@@ -24,6 +24,17 @@ func openAdapter(t *testing.T, path string) silver.Connection {
 	return silvertest.Open(t, &Adapter{}, path)
 }
 
+// openAdapterAs opens the PSN silver at path as the source id.
+func openAdapterAs(t *testing.T, id, path string) silver.Connection {
+	t.Helper()
+	conn, err := (&Adapter{}).Open(context.Background(), silver.OpenSpec{ID: id, Path: path})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
+
 func TestKindIsUBS(t *testing.T) {
 	if got := (&Adapter{}).Kind(); got != "ubs" {
 		t.Errorf("Kind() = %q, want %q", got, "ubs")

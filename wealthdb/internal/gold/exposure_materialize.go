@@ -13,12 +13,14 @@ import (
 // today's at every instant: securities holds one row per security. A
 // leaf carries its holding's legal situs and its basis, and its
 // holding's source and account's tax wrapper, which the dashboard's
-// pickers narrow to.
+// pickers narrow to. A leaf is via funds where it is not held directly
+// (exposure_leaves' direct, migration 0175): a forward held directly
+// holds its legs directly.
 var exposureInsertSQL = `INSERT INTO report_exposure BY NAME
 WITH ` + scaledLeavesSQL(`l AS (SELECT * FROM exposure_leaves(CAST($1 AS BIGINT), 'USD'))`) + `
 SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT) AS as_of,
        asset_class, sector, country, region, currency AS exposure_currency, currency_kind,
-       depth > 0 AS via_funds, how, size, situs, situs_basis, src AS silver_source_id, wrapper AS tax_wrapper,
+       NOT direct AS via_funds, how, size, situs, situs_basis, src AS silver_source_id, wrapper AS tax_wrapper,
        SUM(value * k) AS value
   FROM s
  GROUP BY ALL`

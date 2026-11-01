@@ -63,7 +63,7 @@ func TestSnapshotsForwardLegs(t *testing.T) {
 		}, ", "))); err != nil {
 		t.Fatal(err)
 	}
-	conn := openAdapter(t, path)
+	conn := openAdapterAs(t, "test-ubs", path)
 	w, _ := conn.ChangeWindow(context.Background(), -1)
 	stream, err := conn.Snapshots(context.Background(), w)
 	if err != nil {
@@ -109,8 +109,9 @@ func TestSnapshotsForwardLegs(t *testing.T) {
 			t.Errorf("%s: line key %q, want the name key of %q", l.FundRef, l.SecurityKey, *l.Name)
 		}
 	}
-	k1, k2, k3 := canonical.ContractKey("QC-01"), canonical.ContractKey("QC-02"), canonical.ContractKey("QC-03")
-	k7, k8 := canonical.ContractKey("QC-07"), canonical.ContractKey("QC-08")
+	// Each contract is keyed in the source the adapter was opened as.
+	key := func(id string) string { return canonical.ContractKey("test-ubs", id) }
+	k1, k2, k3, k7, k8 := key("QC-01"), key("QC-02"), key("QC-03"), key("QC-07"), key("QC-08")
 	want := map[string]string{
 		"QC-01":      "foreign_exchange/forward FX forward USD/CHF 2026-12-15 CHF",
 		"QC-02":      "foreign_exchange/forward FX forward USD/EUR 2026-09-30 CHF",

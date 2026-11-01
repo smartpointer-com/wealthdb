@@ -91,15 +91,27 @@ func TestSecurityKeyNameHashIsStable(t *testing.T) {
 
 func TestContractKeyIsANameKeyOfItsOwn(t *testing.T) {
 	t.Parallel()
-	k := ContractKey("QC-0001")
-	if !strings.HasPrefix(k, keyName) || k != ContractKey(" QC-0001 ") {
+	k := ContractKey("src-a", "QC-0001")
+	if !strings.HasPrefix(k, keyName) || len(k) != len(keyName)+12 || k != ContractKey("src-a", " QC-0001 ") {
 		t.Errorf("ContractKey = %q, want a stable name key", k)
 	}
-	if k == SecurityKey("", "", "", "", "QC-0001") || k == ContractKey("QC-0002") {
+	if k == SecurityKey("", "", "", "", "QC-0001") || k == ContractKey("src-a", "QC-0002") {
 		t.Errorf("ContractKey %q collides with a name or another contract", k)
 	}
-	if ContractKey(" ") != "" {
+	if ContractKey("src-a", " ") != "" {
 		t.Error("a blank id has a key")
+	}
+}
+
+// Two sources that use one id string hold two contracts, and the
+// boundary between the source and the id is part of the key.
+func TestContractKeyIsScopedByItsSource(t *testing.T) {
+	t.Parallel()
+	if a, b := ContractKey("src-a", "QC-0001"), ContractKey("src-b", "QC-0001"); a == b {
+		t.Errorf("two sources share the key %q", a)
+	}
+	if a, b := ContractKey("src", "a QC-0001"), ContractKey("src a", "QC-0001"); a == b {
+		t.Errorf("a source and an id that split one string differently share the key %q", a)
 	}
 }
 

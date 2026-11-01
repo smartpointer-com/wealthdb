@@ -850,7 +850,7 @@ SELECT snapshot_at, contract_external_id, payload
 			MarketValue:       p.MrktValueAmt,
 			Payload:           json.RawMessage(payload),
 		}
-		if inst, comp, line, ok := forwardHolding(snap, contractID, p); ok {
+		if inst, comp, line, ok := forwardHolding(snap, r.source, contractID, p); ok {
 			pos.InstrumentExternalID = &inst.InstrumentExternalID
 			batch.Instruments = append(batch.Instruments, inst)
 			batch.FundCompositions = append(batch.FundCompositions, comp)

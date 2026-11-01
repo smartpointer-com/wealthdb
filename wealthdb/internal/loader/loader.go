@@ -169,6 +169,7 @@ func (l *Loader) Load(ctx context.Context, spec SourceSpec) (*LoadResult, error)
 		return nil, fmt.Errorf("Load(%s): %w", spec.ID, err)
 	}
 	conn, err := adapter.Open(ctx, silver.OpenSpec{
+		ID:            spec.ID,
 		Path:          spec.Path,
 		Subsources:    spec.Subsources,
 		Relationships: spec.Relationships,

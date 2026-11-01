@@ -358,7 +358,7 @@ func appendInferredForwards(byTime map[int64]*canonical.SnapshotBatch, f inferre
 			case len(open) > 0:
 				held = held[:0]
 				for _, s := range open {
-					held = append(held, appendInferredForward(batch, at, overlayID, s))
+					held = append(held, appendInferredForward(batch, at, f.source, overlayID, s))
 				}
 			case len(held) > 0 && (f.until == 0 || at < f.until):
 				for _, p := range held {
@@ -391,12 +391,13 @@ func appendInferredForwards(byTime map[int64]*canonical.SnapshotBatch, f inferre
 
 // appendInferredForward adds the swap s to batch as a forward on the
 // overlay account at the snapshot at, worth zero, with its instrument
-// and its legs as the instrument's composition, and returns the
-// position.
-func appendInferredForward(batch *canonical.SnapshotBatch, at int64, overlayID string, s inferredSwap) canonical.PositionChange {
+// and its legs as the instrument's composition, keyed in source, and
+// returns the position.
+func appendInferredForward(batch *canonical.SnapshotBatch, at int64, source, overlayID string,
+	s inferredSwap) canonical.PositionChange {
 	zero := canonical.Decimal{}
 	ccy := s.short.ccy
-	inst, comp, line := forwardRecords(at, s.id(), s.name(), ccy, &zero, s.long, s.short)
+	inst, comp, line := forwardRecords(at, source, s.id(), s.name(), ccy, &zero, s.long, s.short)
 	comp.Provider, comp.Payload = swapProvider, s.payload()
 	pos := canonical.PositionChange{
 		SnapshotAt:           at,
@@ -420,6 +421,7 @@ func appendInferredForward(batch *canonical.SnapshotBatch, at int64, overlayID s
 // the swaps, each cash account's portfolio, and the PSN feed's first
 // forward day (until; 0 for none), from which the feed states them.
 type inferredForwards struct {
+	source      string
 	swaps       []inferredSwap
 	portfolioOf map[string]string
 	until       int64

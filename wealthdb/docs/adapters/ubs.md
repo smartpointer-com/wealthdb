@@ -1650,17 +1650,20 @@ is `MrktValueAmt` in `MrktValueCcyIsoCd`. The adapter reads them in
   `BuySellInd` decides: `Buy` buys the trade leg, `Sell` the counter
   leg.
 - **The instrument.** Each open forward is an instrument of
-  `(foreign_exchange, forward)`, keyed by its contract id. Its name is
-  the pair and the maturity, such as `FX forward USD/CHF 2026-12-15`.
-  Its currency is the mark's. The position carries the instrument.
+  `(foreign_exchange, forward)`, keyed by its contract id. Its
+  composition is keyed by the source and the contract id
+  (`canonical.ContractKey`), so two sources with one id do not
+  collide. Its name is the pair and the maturity, such as
+  `FX forward USD/CHF 2026-12-15`. Its currency is the mark's. The
+  position carries the instrument.
 - **The composition.** On each position day, the forward's legs are its
   composition: origin `parsed`, provider `ubs-psn`, the mark as net
   assets. The one line is long the bought leg and short the sold one,
-  at 100. Its key is the forward's name, never the forward's own key. Gold
-  then counts the bought notional in its currency and the rest of the
-  mark in the sold one (EXPOSURE.md §5). The composition has no end
-  date: the next day's replaces it, and the holding ends with the
-  contract.
+  at 100. Its key is the forward's name, never the forward's own key.
+  Gold then counts the bought notional in its currency and the rest of
+  the mark in the sold one, both held directly (EXPOSURE.md §5). The
+  composition has no end date: the next day's replaces it, and the
+  holding ends with the contract.
 - **Open.** A contract is open while its `MtrtyDt` is after its
   position day, `PosDt` or else the snapshot's day. A contract matured
   by that day emits no position.
@@ -1669,6 +1672,8 @@ is `MrktValueAmt` in `MrktValueCcyIsoCd`. The adapter reads them in
   counts at its mark, flagged `partial`.
 - **Reaching gold.** A load writes the instruments and compositions of
   the days it reads. `wealthdb reload ubs` writes them for every day.
+  A change of the key scheme needs that reload: a load rewrites the
+  compositions of its own days only.
 
 ### Forwards before the PSN feed
 
