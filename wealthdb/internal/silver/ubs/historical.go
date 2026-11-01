@@ -46,13 +46,16 @@ import (
 // per-account PSN-start dates: historical rows on or after the
 // applicable cutoff are dropped so PSN's daily snapshots own the
 // overlap without colliding on the gold PK. See
-// webReader.buildHistoricalCutoffs.
+// webReader.buildHistoricalCutoffs. forwards are the swaps the
+// netbanking ledger books, placed on the portfolio's own snapshot
+// days (swaps.go).
 func (r *webReader) snapshotsHistorical(
 	ctx context.Context,
 	w canonical.Window,
 	safekeepingByPortfolio map[string]string,
 	portfolioCutoff map[string]int64,
 	accountCutoff map[string]int64,
+	forwards inferredForwards,
 ) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
@@ -71,6 +74,9 @@ func (r *webReader) snapshotsHistorical(
 	if err := r.appendHistoricalMortgages(ctx, w, byTime); err != nil {
 		return nil, err
 	}
+	// The swaps peek at the securities batches too, for the days the
+	// portfolio's holdings carry.
+	appendInferredForwards(byTime, forwards, safekeepingByPortfolio)
 
 	return byTime.Stream(), nil
 }

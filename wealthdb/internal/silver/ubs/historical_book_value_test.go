@@ -14,7 +14,7 @@ func historicalPositions(t *testing.T, web *webReader) map[string]canonical.Posi
 	t.Helper()
 	ctx := context.Background()
 	w := canonical.Window{Start: 0, End: 2000, HasChanges: true}
-	stream, err := web.snapshotsHistorical(ctx, w, nil, map[string]int64{}, map[string]int64{})
+	stream, err := web.snapshotsHistorical(ctx, w, nil, map[string]int64{}, map[string]int64{}, inferredForwards{})
 	if err != nil {
 		t.Fatal(err)
 	}

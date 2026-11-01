@@ -101,20 +101,25 @@ func (p forwardPayload) legs() (bought, sold forwardLeg, ok bool) {
 // legs: such a position keeps no instrument and counts at its mark.
 func forwardHolding(snap int64, contractID string, p forwardPayload) (canonical.InstrumentChange,
 	canonical.FundCompositionChange, canonical.FundLineChange, bool) {
-	var (
-		inst canonical.InstrumentChange
-		comp canonical.FundCompositionChange
-		line canonical.FundLineChange
-	)
 	maturity, dated := p.maturity()
 	bought, sold, legs := p.legs()
 	if !dated || !legs || p.MrktValueCcyIsoCd == "" || strings.Contains(strings.ToLower(p.DealTpDesc), "spot") {
-		return inst, comp, line, false
+		return canonical.InstrumentChange{}, canonical.FundCompositionChange{}, canonical.FundLineChange{}, false
 	}
 	name := "FX forward " + bought.ccy + "/" + sold.ccy + " " + maturity.Format(time.DateOnly)
-	ccy := p.MrktValueCcyIsoCd
-	inst = canonical.InstrumentChange{
-		InstrumentExternalID: contractID,
+	inst, comp, line := forwardRecords(snap, contractID, name, p.MrktValueCcyIsoCd, p.MrktValueAmt, bought, sold)
+	return inst, comp, line, true
+}
+
+// forwardRecords are a forward's instrument, of the id and name, and
+// its legs as the instrument's composition on the snapshot snap: one
+// line, long the bought leg and short the sold one, over the mark as
+// net assets, in the mark's currency ccy. The composition's provider is
+// the PSN feed's.
+func forwardRecords(snap int64, id, name, ccy string, mark *canonical.Decimal, bought, sold forwardLeg) (
+	canonical.InstrumentChange, canonical.FundCompositionChange, canonical.FundLineChange) {
+	inst := canonical.InstrumentChange{
+		InstrumentExternalID: id,
 		AssetClass:           canonical.AssetClassForeignExchange,
 		Vehicle:              canonical.VehicleForward,
 		Name:                 &name,
@@ -123,20 +128,20 @@ func forwardHolding(snap int64, contractID string, p forwardPayload) (canonical.
 		LastSeenAt:           snap,
 	}
 	weight := canonical.NewDecimalFromInt(100)
-	comp = canonical.FundCompositionChange{
-		FundRef: canonical.ContractKey(contractID), AsOf: snap, Basis: canonical.CompositionHoldings,
+	comp := canonical.FundCompositionChange{
+		FundRef: canonical.ContractKey(id), AsOf: snap, Basis: canonical.CompositionHoldings,
 		Provider: forwardProvider, SourceKind: "daily_file", Origin: canonical.CompositionParsed,
-		FundName: &name, Currency: &ccy, NetAssets: p.MrktValueAmt, LineCount: 1, WeightSum: &weight,
+		FundName: &name, Currency: &ccy, NetAssets: mark, LineCount: 1, WeightSum: &weight,
 	}
 	assetType := forwardAssetType
-	line = canonical.FundLineChange{
+	line := canonical.FundLineChange{
 		FundRef: comp.FundRef, AsOf: snap, Basis: comp.Basis, LineNo: 1,
 		// The legs are keyed by the product's name, never by the
 		// contract's own key, so the line reads as a leaf.
 		SecurityKey: canonical.SecurityKey("", "", "", "", name), Name: &name,
-		AssetType: &assetType, Weight: &weight, MarketValue: p.MrktValueAmt, Currency: &ccy,
+		AssetType: &assetType, Weight: &weight, MarketValue: mark, Currency: &ccy,
 		LongCurrency: &bought.ccy, LongAmount: &bought.amount,
 		ShortCurrency: &sold.ccy, ShortAmount: &sold.amount,
 	}
-	return inst, comp, line, true
+	return inst, comp, line
 }

@@ -19,7 +19,9 @@ import (
 //
 //   Snapshots
 //     - Historical PDF stream (web.snapshotsHistorical) for dates
-//       pre-dating live coverage.
+//       pre-dating live coverage, with the FX forwards the netbanking
+//       ledger's swaps imply before the PSN feed states any
+//       (swaps.go).
 //     - Live web stream (web.snapshotsForOverlap) emits dimensions
 //       only — filtered to snapshot_at < PSN-start per banking
 //       relationship.
@@ -122,6 +124,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		cutoff                 map[string]int64
 		psnTaxPair             map[string]taxPair
 		safekeepingByPortfolio map[string]string
+		forwards               inferredForwards
 	)
 
 	if c.web != nil && c.psn != nil {
@@ -149,6 +152,18 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		if err != nil {
 			return nil, err
 		}
+		// The forwards the feed does not state yet, from the swaps the
+		// netbanking ledger books, each ended by the feed's first
+		// forward day.
+		if forwards.until, err = c.psn.firstForwardDay(ctx); err != nil {
+			return nil, err
+		}
+		if forwards.swaps, err = c.web.inferredSwaps(ctx, forwards.until); err != nil {
+			return nil, err
+		}
+		if forwards.portfolioOf, err = c.psn.portfolioByCashAccount(ctx); err != nil {
+			return nil, err
+		}
 	}
 	var portfolioCutoff, accountCutoff map[string]int64
 	if c.web != nil {
@@ -165,7 +180,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 
 	streams := make([]silver.SnapshotStream, 0, 3)
 	if c.web != nil {
-		hist, err := c.web.snapshotsHistorical(ctx, w, safekeepingByPortfolio, portfolioCutoff, accountCutoff)
+		hist, err := c.web.snapshotsHistorical(ctx, w, safekeepingByPortfolio, portfolioCutoff, accountCutoff, forwards)
 		if err != nil {
 			return nil, fmt.Errorf("ubs web Snapshots (historical): %w", err)
 		}

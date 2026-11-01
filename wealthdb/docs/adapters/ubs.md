@@ -1670,6 +1670,55 @@ is `MrktValueAmt` in `MrktValueCcyIsoCd`. The adapter reads them in
 - **Reaching gold.** A load writes the instruments and compositions of
   the days it reads. `wealthdb reload ubs` writes them for every day.
 
+### Forwards before the PSN feed
+
+The PSN feed states open forwards only from its first day. A forward
+open before that day, such as an FX swap between its two legs, is in
+no feed. The adapter infers such forwards from the netbanking ledger,
+in `swaps.go`, where both feeds are configured.
+
+- **The swap.** The ledger books each swap leg as
+  `Purchase from FX Swap` and `Sale from FX Swap`, one row per cash
+  account. `Description1` names the leg, `(near)` or `(far)`, and the
+  deal reference, `FX <ref>`. `Description3` states both amounts. A
+  swap's near leg and its far leg carry one reference.
+- **The legs.** The far leg buys the long leg and sells the short
+  one. A swap with no far leg booked yet takes the near leg's
+  opposite: long what it sold, short what it bought.
+- **The span.** A swap is open from its near leg's day, inclusive, to
+  its far leg's day, exclusive. One with no far leg yet stays open. The
+  PSN feed's first `forward_contracts` snapshot, of any relationship,
+  ends every swap. So no day the feed states is inferred.
+- **A near leg before the ledger.** The statement era types a swap's
+  legs as plain FX. So a far leg with no near leg in the ledger looks
+  there. Its near leg is the one statement deal that:
+  - books on the far leg's accounts;
+  - falls in the year before the far leg, and before the ledger starts;
+  - sells the currency the far leg buys, at the far leg's amount;
+  - buys the currency the far leg sells.
+
+  The deal's number, printed first under each row, ties its two rows.
+  Where no deal or more than one matches, the swap opens on the
+  ledger's first day. Its payload then says `"opened": "before_ledger"`.
+- **The holding.** Each swap is a forward on the portfolio's overlay
+  account. It is keyed by an id of the adapter's own, from the deal
+  reference. Its name is the pair and the far leg's day, or `open`
+  where none is booked. It is held on the days the portfolio's
+  statement snapshots state its securities, not on every day. So it
+  carries as the portfolio's other holdings do. Its composition is the
+  PSN forward's, with provider `ubs-web`.
+- **The end.** On the first such day with no swap open, the overlay
+  states the forwards of the day before at zero, with no instrument.
+  No composition describes them, so the hedge ends there.
+- **Worth zero.** The bank states no mark for these days, so the
+  forward is worth zero. Its legs count in exposure and cancel there
+  (EXPOSURE.md §5). Net worth, returns, gains, income, spending and
+  the cash flow do not move. The payload of the position and of the
+  composition says `"inferred": "fx_swap"`.
+- **Not inferred.** A `Purchase FX Forward` or `Sale FX Forward` row
+  states no deal day, and most settle within days. No forward is
+  inferred from one.
+
 ## 15. Known limits
 
 - **A conversion between two covered accounts.** Both legs are feed

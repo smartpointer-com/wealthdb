@@ -89,7 +89,7 @@ func TestHistoricalCutoffDropsPSNOverlap(t *testing.T) {
 	}
 
 	w := canonical.Window{Start: 0, End: 3000, HasChanges: true}
-	stream, err := web.snapshotsHistorical(ctx, w, nil, portfolioCutoff, accountCutoff)
+	stream, err := web.snapshotsHistorical(ctx, w, nil, portfolioCutoff, accountCutoff, inferredForwards{})
 	if err != nil {
 		t.Fatal(err)
 	}
