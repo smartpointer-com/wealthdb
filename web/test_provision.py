@@ -3810,13 +3810,18 @@ def _book():
          **{f"value_{c.lower()}": v * per_usd.get(c, 1.0) for c in p.REPORTING_CURRENCIES}}
         for src, acct, _key, day, typ, v, _w in
         [*received, ("src-1", "acct-1", None, dt.date(2026, 9, 25), "salary", 1000.0, None)]])
-    # The other income's run-rate the cash flow projection stores: 200 a
-    # month of earnings into src-1 and 10 of other receipts into src-2.
+    # The run-rate of the pool's income lines (gold 0174): 200 a month of
+    # earnings into src-1 and 10 of other receipts into src-2. The cash
+    # flow projection's other_income, the statement's figure, holds a
+    # reimbursement besides, which no income line holds.
     insert("report_cashflow_plan", [
-        {"computed_at": 0, "currency": ccy, "month": m, "month_start": _month_start(m), "part": "other_income",
+        {"computed_at": 0, "currency": ccy, "month": m, "month_start": _month_start(m), "part": part,
          "class": cls, "silver_source_id": src, "account_external_id": acct, "value": v * k, "quality": "trailing"}
         for m in range(1, 37) for ccy, k in per_usd.items()
-        for cls, src, acct, v in (("earnings", "src-1", "acct-1", 200.0), ("other_receipts", "src-2", "acct-2", 10.0))])
+        for part, cls, src, acct, v in (("pool_income", "earnings", "src-1", "acct-1", 200.0),
+                                        ("pool_income", "other_receipts", "src-2", "acct-2", 10.0),
+                                        ("other_income", "earnings", "src-1", "acct-1", 200.0),
+                                        ("other_income", "other_receipts", "src-2", "acct-2", 17.0))])
 
     def at(day):
         return int(dt.datetime(day.year, day.month, day.day, 9, tzinfo=dt.timezone.utc).timestamp())
@@ -4145,7 +4150,7 @@ if duckdb is not None:
                 " silver_source_id, account_external_id, value, quality)"
                 " SELECT 0, currency, month, month_start, 'outside_income', 'benefits', silver_source_id,"
                 " account_external_id, value / 2, quality FROM report_cashflow_plan"
-                " WHERE part = 'other_income' AND class = 'other_receipts'")
+                " WHERE part = 'pool_income' AND class = 'other_receipts'")
     _outside = (_one("Income expected"), _one("Income in the window", source=["src-2"]))
     # The same class on both parts, an account whose wrapper changed in
     # the look-back: one figure of 300 a month, less this month's wage
@@ -4154,7 +4159,7 @@ if duckdb is not None:
                 " silver_source_id, account_external_id, value, quality)"
                 " SELECT 0, currency, month, month_start, 'outside_income', class, silver_source_id,"
                 " account_external_id, value / 2, quality FROM report_cashflow_plan"
-                " WHERE part = 'other_income' AND class = 'earnings'")
+                " WHERE part = 'pool_income' AND class = 'earnings'")
     _db.execute("INSERT INTO web_income (occurred_at, silver_source_id, account_external_id, account_label,"
                 " tax_wrapper, income_detailed, income_label, value_usd, value_chf) VALUES"
                 " (TIMESTAMP '2026-10-15 09:00', 'src-1', 'acct-1', 'x', 'taxable_personal', 'INCOME_SALARY',"
@@ -4512,10 +4517,13 @@ if duckdb is not None:
     for _ccy, _k in (("USD", 1.0), ("CHF", 0.8)):
         for _m in range(1, 37):
             # The other income's 50 a month, split by class and account
-            # as gold 0169 stores it, and a wage on the vehicle's account
-            # outside the pool (0172), which no Cash Flow card reads.
+            # as gold 0169 stores it, and the income lines' run-rate: in
+            # the pool (0174) and a wage on the vehicle's account outside
+            # it (0172). No Cash Flow card reads either.
             _parts = [("other_income", "earnings", "src-1", "acct-1", 30.0),
                       ("other_income", "other_receipts", "src-2", "acct-2", 20.0),
+                      ("pool_income", "earnings", "src-1", "acct-1", 30.0),
+                      ("pool_income", "other_receipts", "src-2", "acct-2", 4.0),
                       ("outside_income", "earnings", "src-3", "acct-3", 900.0),
                       *(("operating_out", c, "", "", v) for c, v in _out.items()),
                       ("debt_service", "", "", "", 300.0 if _m <= 18 else 0.0), ("vehicles", "", "", "", -100.0)]

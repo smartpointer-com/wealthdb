@@ -881,9 +881,11 @@ The Income dashboard's two halves are wider than these views':
   them, each other line under its account and by its operating-in
   class ([CASHFLOW.md](CASHFLOW.md) §5);
 - its expected half adds the other income's run-rate, by class and
-  account ([CASHFLOW.md](CASHFLOW.md) §12). On the household's
-  accounts it is the cash flow projection's `other_income`. On every
-  other account it is `outside_income`, the same average.
+  account ([CASHFLOW.md](CASHFLOW.md) §12). It is the average of the
+  income lines on every account, so it reads the lines the received
+  half reads. The household's accounts read `pool_income`, every
+  other account `outside_income`. The cash flow projection reads the
+  statement's `other_income` instead;
 - in the current month a run-rate expects its monthly figure less
   what its class and account received so far, never below 0. A wage
   arrives on a pay day, so a share of the month's days would read

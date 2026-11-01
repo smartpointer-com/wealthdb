@@ -3154,8 +3154,8 @@ The third reading of the same engine. Its statement is mostly SQL
   `cmd/wealthdb/cmd_cashflow.go` joins them for the CLI and the MCP
   `cashflow` tool. A web refresh stores the look-back's parts in
   `report_cashflow_plan` (migrations 0149 and 0169), the other income by
-  class and account, and `gold.CashflowPlanOutside`'s income lines
-  outside the pool as a part of their own (0172);
+  class and account, and `gold.CashflowPlanIncome`'s income lines as
+  two parts of their own: outside the pool (0172) and in it (0174);
   `web_cashflow_plan` serves it, and `web_cashflow_pool` the pool's
   accounts.
 

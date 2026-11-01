@@ -1131,7 +1131,7 @@ overlays, four stamped tables, and one serving table:
 | `cashflow_account_scope` | config, stamped into gold | yes | re-stamped from config |
 | `cash_signed_kinds` | one row per sign pin (adapter kind, kind) | yes | re-stamped from code by every pass |
 | `account_wrapper_history` | one row per account with a dated wrapper override | no | n/a, rewritten by the source's load |
-| `report_cashflow_plan` (view `web_cashflow_plan`) | per reporting currency, month ahead, part and class; the other income also per account | yes | n/a, rewritten by every web refresh |
+| `report_cashflow_plan` (view `web_cashflow_plan`) | per reporting currency, month ahead, part and class; the income parts also per account | yes | n/a, rewritten by every web refresh |
 
 Nothing is stored for the memo. It reads `cashflow_cash_balances()`
 (the cash balances, plus deposit holdings on accounts with none) and
@@ -1353,19 +1353,26 @@ look-back's parts (§10). It keeps the other income split two ways:
 
 The split sums to the `other_income` this view prints.
 
-The refresh also stores a part this view does not read,
-`outside_income` (migration 0172). It holds the income lines outside
-the pool on their own day: a vehicle's, such as a wage paid into a
-retirement account, or one on an account `cashflow.accounts` fences
-out.
+The refresh also stores two parts this view does not read. They hold
+the income lines (§5) instead of the statement's lines, each on the
+side of the pool its day puts it:
 
-- It reads the same look-back, split the same two ways.
-- It leaves out the types the income projection reads.
-- Each account's sum is spread over the window's months from its first
-  line outside the pool.
+- `pool_income` (migration 0174) holds the lines in the pool. It is
+  spread over the months `other_income` is spread over.
+- `outside_income` (migration 0172) holds the lines outside the pool:
+  a vehicle's, such as a wage paid into a retirement account, or one
+  on an account `cashflow.accounts` fences out. Each account's sum is
+  spread over the window's months from its first line outside the
+  pool.
 
-The boundary keeps that income out of the pool (§3), so `net` never
-counts it. The Income dashboard shows both parts as the
-expected half of the income no holding pays
-([web/DESIGN.md](../../web/DESIGN.md) §6). The MCP `cashflow` tool
-serves the same view.
+Both read the same look-back, split the same two ways. Both leave out
+the types the income projection reads. The boundary keeps the income
+outside the pool out of it (§3), so `net` never counts it.
+
+`pool_income` and `other_income` differ where the statement counts a
+line as operating income and no income line holds it, such as a
+reimbursement. This view reads the statement, as the rest of the
+projection does. The Income dashboard reads the two income-line parts
+as the expected half of the income no holding pays, so it expects what
+its received half counts ([web/DESIGN.md](../../web/DESIGN.md) §6).
+The MCP `cashflow` tool serves the same view.

@@ -466,12 +466,13 @@ leaves its type out:
   them, under its account (`web_income`);
 - expected: what the holdings are expected to pay (`web_yield_parts`),
   and the other income's run-rate, by operating-in class and account
-  (`web_cashflow_plan`). On the pool's accounts it is the cash flow
-  projection's `other_income` (migration 0169), so the two dashboards
-  read one run-rate there. On every other account, such as a wage paid
-  into a retirement account, it is `outside_income` (0172), the same
-  average. So each class on an account expects what it received on
-  average.
+  (`web_cashflow_plan`). It is the average of the income lines: on the
+  pool's accounts `pool_income` (migration 0174), on every other
+  account `outside_income` (0172), such as a wage paid into a
+  retirement account. So each class on an account expects what it
+  received on average. The cash flow projection reads the statement's
+  `other_income` (0169) instead. The statement also counts lines no
+  income line holds, such as a reimbursement.
 
 The two received sources convert a line each at its own day's rate,
 but by two reports. So "Income received" equals Net income to rounding.
@@ -727,6 +728,8 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these migrations falls short of the cards:
 
+- 0174: its `web_cashflow_plan` lacks the income lines in the pool,
+  which the Income cards' run-rate reads;
 - 0172: its `web_cashflow_plan` lacks the income lines outside the
   pool, which the Income cards' run-rate reads;
 - 0171: its history carries an account's cash summed across its
@@ -991,7 +994,7 @@ wealthdb/docs/DESIGN.md §10.15 has the engine side):
 
 Four views sit beside them. `web_income_days` and `web_income_withheld`
 (migration 0146) list each day the received figures cover and the tax
-booked on the income's accounts. `web_cashflow_plan` (migrations 0149, 0169 and 0172)
+booked on the income's accounts. `web_cashflow_plan` (migrations 0149, 0169, 0172 and 0174)
 serves the cash flow projection's look-back parts, which depend on no
 picker. `web_cashflow_pool` (migration 0149) lists the cash pool's
 accounts, which split the income projection for it.

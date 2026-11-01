@@ -3404,10 +3404,9 @@ def income_projected_cards(db_id, privacy):
       by its operating-in class (INCOME_LINE_CLASSES);
     - what the holdings are expected to pay (web_yield_parts, under the
       projection's pickers);
-    - the other income's run-rate (web_cashflow_plan's other_income, gold
-      migration 0169, and outside_income, 0172), by class and account: the
-      cash flow projection's own figure on the pool's accounts, and the
-      same average on every other account a line arrives on.
+    - the other income's run-rate (web_cashflow_plan's pool_income, gold
+      migration 0174, and outside_income, 0172), by class and account: the
+      average of the income lines on every account a line arrives on.
 
     What was received is the Time range's: the picker reaches a card
     through the days web_income_days lists. What is expected is the
@@ -3826,9 +3825,10 @@ def income_projected_cards(db_id, privacy):
 
 
 # The parts of web_cashflow_plan the Income cards' run-rate reads: the
-# other income on the pool's accounts (0169) and the income lines on
-# every other account (0172), which the cash flow projection leaves out.
-RUN_RATE_PARTS = ("other_income", "outside_income")
+# income lines on the pool's accounts (0174) and on every other account
+# (0172). So the run-rate reads the lines the received half reads. The
+# cash flow projection reads the statement's other_income instead.
+RUN_RATE_PARTS = ("pool_income", "outside_income")
 
 # The cash flow projection's look-back parts (web_cashflow_plan) and the
 # order its chart stacks them: what comes in, then what goes out.
@@ -5611,7 +5611,7 @@ def missing_web_views(base, sid, db_id):
 # The oldest gold schema the cards can read. A test holds it at or above
 # the newest migration that defines a view or table a card reads.
 # DESIGN.md §6 says what each older snapshot lacks.
-MIN_GOLD_SCHEMA = 172
+MIN_GOLD_SCHEMA = 174
 
 # main()'s exit status for a snapshot older than MIN_GOLD_SCHEMA; every
 # other failure exits 1. web/web tells the two apart, because only

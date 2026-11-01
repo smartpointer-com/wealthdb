@@ -476,15 +476,20 @@ func TestThePlansOutsideIncomeFollowsADatedWrapper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outside, err := CashflowPlanOutside(ctx, db, from, to, "USD")
+	pool, outside, err := CashflowPlanIncome(ctx, db, from, to, "USD", lb.Months)
 	if err != nil {
 		t.Fatal(err)
 	}
 	k := PlanIncomeKey{Class: "earnings", Source: "test-src", Account: "T"}
 	if pooled := lb.OtherIncomeBy[k] * float64(lb.Months); math.Abs(pooled-700) > 1e-6 ||
-		len(outside) != 1 || math.Abs(outside[k]-450) > 1e-9 {
-		t.Errorf("pooled %v over %d months, outside %v; want 700 in the pool, 900 over 2 months outside",
-			pooled, lb.Months, outside)
+		math.Abs(pool[k]-lb.OtherIncomeBy[k]) > 1e-9 || len(outside) != 1 || math.Abs(outside[k]-450) > 1e-9 {
+		t.Errorf("pooled %v (lines %v) over %d months, outside %v; want 700 in the pool, 900 over 2 months outside",
+			pooled, pool[k], lb.Months, outside)
+	}
+	// A look-back of no months spreads nothing in the pool.
+	if pool, again, err := CashflowPlanIncome(ctx, db, from, to, "USD", 0); err != nil || len(pool) != 0 ||
+		fmt.Sprint(again) != fmt.Sprint(outside) {
+		t.Errorf("with no pool months: pool %v, outside %v (%v)", pool, again, err)
 	}
 	// In francs too, as the income report converts the line.
 	var line float64
@@ -492,9 +497,112 @@ func TestThePlansOutsideIncomeFollowsADatedWrapper(t *testing.T) {
 	    WHERE transaction_external_id = 'T2'`, from, to).Scan(&line); err != nil {
 		t.Fatal(err)
 	}
-	chf, err := CashflowPlanOutside(ctx, db, from, to, "CHF")
+	_, chf, err := CashflowPlanIncome(ctx, db, from, to, "CHF", lb.Months)
 	if err != nil || len(chf) != 1 || math.Abs(chf[k]-line/2) > 1e-6 {
 		t.Errorf("in francs %v (%v), want %v", chf, err, line/2)
+	}
+}
+
+// The pool's income lines are other_income's average read from the
+// lines: the wage reads the same in both, while a reimbursement the
+// statement counts as other receipts is in other_income alone. So
+// pool_income is the average of the lines received, spread over the
+// months other_income spreads over. Invented.
+func TestThePlansPoolIncomeIsTheIncomeLinesAverage(t *testing.T) {
+	t.Parallel()
+	db, ctx, at := seedYieldBookFX(t)
+	seedPlanWage(t, db)
+	execEach(t, db,
+		`INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id, kind,
+		    currency, net_amount) VALUES
+		    ('test-src', 'C1', `+itoa(ymd(2026, 5, 2).Unix())+`, 'F', 'deposit', 'CHF', 250),
+		    ('test-src', 'G1', `+itoa(ymd(2026, 5, 9).Unix())+`, 'F', 'deposit', 'CHF', 80)`,
+		`INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id, payer_signature,
+		    signature_version, income_detailed, provenance, assigned_at) VALUES
+		    ('test-src', 'C1', 'sig-insurer', 1, 'reimbursement', 'rule', 100),
+		    ('test-src', 'G1', 'sig-shop', 1, 'INCOME_REWARDS', 'rule', 100)`)
+	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
+		t.Fatal(err)
+	}
+	from, to := PlanWindow(time.Unix(at, 0), 12)
+	lb, err := CashflowPlanLookback(ctx, db, from, to, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	month := func(part string) map[string]float64 {
+		out := map[string]float64{}
+		rows, err := db.QueryContext(ctx, `SELECT class, sum(value) FROM web_cashflow_plan
+		    WHERE part = ? AND currency = 'USD' AND month = 1 GROUP BY 1`, part)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var c string
+			var v float64
+			if err := rows.Scan(&c, &v); err != nil {
+				t.Fatal(err)
+			}
+			out[c] = v
+		}
+		return out
+	}
+	received := map[string]float64{}
+	rows, err := db.QueryContext(ctx, `SELECT transaction_external_id, value_outccy::DOUBLE
+	    FROM income_lines_outccy(?, ?, 'USD')`, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id string
+		var v float64
+		if err := rows.Scan(&id, &v); err != nil {
+			t.Fatal(err)
+		}
+		received[id] = v
+	}
+	rows.Close()
+	if _, claimed := received["C1"]; claimed || received["W1"] == 0 || received["G1"] == 0 {
+		t.Fatalf("income lines %v, want the wage and the rewards and no reimbursement", received)
+	}
+	n := float64(lb.Months)
+	lines, statement := month(PlanPoolPart), month("other_income")
+	if math.Abs(lines["earnings"]-received["W1"]/n) > 1e-6 || math.Abs(lines["earnings"]-statement["earnings"]) > 1e-6 {
+		t.Errorf("earnings: lines %v, statement %v, want %v", lines["earnings"], statement["earnings"], received["W1"]/n)
+	}
+	if math.Abs(lines["other_receipts"]-received["G1"]/n) > 1e-6 ||
+		statement["other_receipts"]-lines["other_receipts"] < 1e-6 {
+		t.Errorf("other receipts: lines %v, statement %v, want %v and the statement above it",
+			lines["other_receipts"], statement["other_receipts"], received["G1"]/n)
+	}
+	// other_income stays the look-back's, the statement's figure.
+	if math.Abs(lb.OtherIncome-statement["earnings"]-statement["other_receipts"]) > 1e-6 {
+		t.Errorf("look-back other income %v, statement parts %v", lb.OtherIncome, statement)
+	}
+}
+
+// Migration 0174 replays over a materialized gold: the pool rows stay
+// and the view keeps its shape.
+func TestMigration0174DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
+	db, ctx, at := seedYieldBookFX(t)
+	seedPlanWage(t, db)
+	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
+		t.Fatal(err)
+	}
+	pool := func() string {
+		return strings.Join(scanStrings(t, db, `SELECT count(*)::VARCHAR FROM web_cashflow_plan WHERE part = ?`,
+			PlanPoolPart), "")
+	}
+	before := pool()
+	if before == "0" {
+		t.Fatal("no pool income rows materialized")
+	}
+	for range 2 {
+		rerunMigrationDDL(t, db, ctx, "0174_cashflow_plan_pool_income.sql")
+	}
+	if after := pool(); after != before {
+		t.Errorf("pool rows %s, before %s", after, before)
 	}
 }
 

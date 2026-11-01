@@ -35,7 +35,7 @@ var PlanOutClasses = []string{string(canonical.ClassConsumption), string(canonic
 	string(canonical.ClassTaxes), string(canonical.ClassGiving), "(uncategorized)"}
 
 // PlanParts are the look-back's parts of report_cashflow_plan (migration
-// 0149), PlanOutsidePart aside, in the order web/provision.py's
+// 0149), PlanOutsidePart and PlanPoolPart aside, in the order web/provision.py's
 // PLAN_LOOKBACK_PARTS reads them; operating_out holds a row per class of
 // PlanOutClasses, and other_income a row per class and account
 // (OtherIncomeBy, migration 0169).
@@ -215,6 +215,14 @@ func CashflowPlanLookback(ctx context.Context, db querier, from, to int64, outCc
 // keeps their income out of the pool.
 const PlanOutsidePart = "outside_income"
 
+// PlanPoolPart is report_cashflow_plan's part (migration 0174) of the
+// income lines in the pool on their own day. It is other_income's
+// average read from the income lines, not from the statement, so it
+// leaves out what the statement counts as operating income and no income
+// line holds, such as a reimbursement. The cash flow projection reads
+// other_income; an income reader reads this part with PlanOutsidePart.
+const PlanPoolPart = "pool_income"
+
 // planIncomeClasses are the operating-in classes of the cash flow
 // statement (cashflow_txn_nodes) by an income line's detailed type, the
 // projected types (projectedIncomeDetailed) aside: a line of no type is
@@ -250,48 +258,58 @@ func outsidePool(b string) string {
                            AND ` + b + `.occurred_at >= p.from_at AND ` + b + `.occurred_at < p.until_at)`
 }
 
-// planOutsideSQL sums the window's income lines outside the pool by
-// class and account, the projected types aside, with the account's
-// first income line outside the pool ever, of any type.
-var planOutsideSQL = `
+// planIncomeSQL sums the window's income lines by side of the pool,
+// class and account, the projected types aside, with an account's first
+// income line outside the pool ever, of any type (NULL for one that has
+// none).
+var planIncomeSQL = `
 WITH firsts AS (
     SELECT b.silver_source_id, b.account_external_id, MIN(b.occurred_at) AS first
       FROM income_lines_base(0, ?2) b
      WHERE ` + outsidePool("b") + `
-     GROUP BY ALL)
-SELECT ` + planIncomeClassSQL + ` AS class, w.silver_source_id, w.account_external_id,
+     GROUP BY ALL),
+lines AS (
+    SELECT w.*, ` + outsidePool("w") + ` AS outside
+      FROM income_lines_outccy(?1, ?2, ?3) w
+     WHERE NOT list_contains(?4, COALESCE(w.income_detailed, '')))
+SELECT w.outside, ` + planIncomeClassSQL + ` AS class, w.silver_source_id, w.account_external_id,
        SUM(w.value_outccy)::DOUBLE, any_value(f.first)
-  FROM income_lines_outccy(?1, ?2, ?3) w
-  JOIN firsts f USING (silver_source_id, account_external_id)
- WHERE NOT list_contains(?4, COALESCE(w.income_detailed, ''))
-   AND ` + outsidePool("w") + `
+  FROM lines w
+  LEFT JOIN firsts f USING (silver_source_id, account_external_id)
  GROUP BY ALL
 HAVING SUM(w.value_outccy) IS NOT NULL`
 
-// CashflowPlanOutside reads the income lines of the look-back window
-// [from, to] outside the pool on their own day, in outCcy, by class and
-// account: each one's monthly average over the window's months from the
-// month of the account's first such line ever, as CashflowPlanLookback
-// spreads the pool's from the pool's first line. So an account newer
-// than the window spreads over the months it has. A line no rate
-// converts counts nothing.
-func CashflowPlanOutside(ctx context.Context, db querier, from, to int64, outCcy string) (map[PlanIncomeKey]float64,
-	error) {
-	out := map[PlanIncomeKey]float64{}
-	err := scanAll(ctx, db, planOutsideSQL, func(rows *sql.Rows) error {
+// CashflowPlanIncome reads the income lines of the look-back window
+// [from, to] in outCcy by class and account, each on the side of the
+// pool its day puts it, as monthly averages. The pool's spread over
+// poolMonths, the months CashflowPlanLookback spreads the pool's lines
+// over (none with none). Each account's outside the pool spreads over
+// the window's months from the month of its first such line ever, so an
+// account newer than the window spreads over the months it has. A line
+// no rate converts counts nothing.
+func CashflowPlanIncome(ctx context.Context, db querier, from, to int64, outCcy string, poolMonths int) (pool,
+	outside map[PlanIncomeKey]float64, err error) {
+	pool, outside = map[PlanIncomeKey]float64{}, map[PlanIncomeKey]float64{}
+	err = scanAll(ctx, db, planIncomeSQL, func(rows *sql.Rows) error {
+		var out bool
 		var k PlanIncomeKey
 		var value float64
-		var first int64
-		if err := rows.Scan(&k.Class, &k.Source, &k.Account, &value, &first); err != nil {
+		var first sql.NullInt64
+		if err := rows.Scan(&out, &k.Class, &k.Source, &k.Account, &value, &first); err != nil {
 			return err
 		}
-		out[k] = value / float64(windowMonths(first, from, to))
+		switch {
+		case out:
+			outside[k] = value / float64(windowMonths(first.Int64, from, to))
+		case poolMonths > 0:
+			pool[k] = value / float64(poolMonths)
+		}
 		return nil
 	}, from, to, outCcy, projectedIncomeDetailed)
 	if err != nil {
-		return nil, fmt.Errorf("CashflowPlanOutside: %w", err)
+		return nil, nil, fmt.Errorf("CashflowPlanIncome: %w", err)
 	}
-	return out, nil
+	return pool, outside, nil
 }
 
 // windowMonths are the months of the window [from, to] from the month of
