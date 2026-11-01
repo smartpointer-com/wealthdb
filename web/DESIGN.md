@@ -119,6 +119,9 @@ They sit in a `wealthdb (pre-defined)` collection:
   backs the Cash Flow dashboard's Section picker, not a card;
 - the `report_gains_classes` model of the classes `web_gains` carries
   (migration 0170). It backs the Gains Asset class picker alone;
+- the `report_yield_classes` model of the classes `web_yield` and
+  `web_yield_curve` carry (migration 0138). It backs the Yield Asset
+  class picker alone;
 - two `_pct` privacy variants, `report_sources_latest_pct` and
   `report_spending_pct`. They back the privacy twins' MBQL cards and
   their drill-through.
@@ -194,7 +197,10 @@ ten dashboards. Their pickers:
   roll), a *Shift* in basis points and a *Horizon* (12, 24 or 36
   months). All four are required. They default to the CLI's built-in
   assumptions: constant rates, cash, no shift and 12 months, whatever
-  the config's `horizon_months` says.
+  the config's `horizon_months` says. The asset class is each
+  holding's, `unknown` where nothing classes it (migration 0138). Its
+  picker lists the classes `web_yield` and `web_yield_curve` carry,
+  through the `report_yield_classes` model.
 - **Data Freshness**: no pickers.
 
 All of them are definitions only (MBQL or SQL), with no data baked in.

@@ -820,6 +820,13 @@ _SERVED = sorted(set(re.findall(r"\bserving_\w+", "\n".join(
     sql for sql, _d in MODELS.values()))))
 
 
+def _latest_definition(name):
+    """The text of the last migration statement that (re)defines `name`."""
+    found = re.findall(rf"CREATE OR REPLACE (?:VIEW|MACRO) {name}\b.*?;\n",
+                       MIGRATION_SQL, re.S)
+    return found[-1] if found else ""
+
+
 def _defined_in(obj):
     """The migrations that create or redefine view, table or macro `obj`."""
     pat = rf"CREATE (?:OR REPLACE )?(?:VIEW|TABLE|MACRO) (?:IF NOT EXISTS )?{obj}\b"
@@ -2016,7 +2023,7 @@ check("...the Asset class picker's values those of the gains rows, `unknown` amo
       and MODELS["report_gains_classes"][0] == "SELECT DISTINCT asset_class FROM web_gains"
       and "COALESCE(g.asset_class, 'unknown') AS asset_class" in _MIG_TEXT[170]
       and all(q["values_source_config"]["card_id"] == MID["report_asset_classes_history"]
-              for d in ("Wealth Overview", "Exposure", "Yield")
+              for d in ("Wealth Overview", "Exposure")
               for q in p.dashboard_parameters(MID, "range", d) if q["slug"] == "asset_class"),
       _gn_class["values_source_config"])
 _gn_missing = [q for q in p.dashboard_parameters(MID, "range", "Gains") if q["slug"] == "missing_basis"]
@@ -2663,6 +2670,23 @@ check("...the projection's pickers required, defaulting to the CLI's assumptions
       _y_params)
 _y_all = [n for t in _y_tiles for n in {t, p.privacy_name(t)} if n in CARDS]
 _y_sql = {n: sql_of(CARDS[n][2]) or "" for n in _y_all}
+# The Asset class picker binds web_yield and web_yield_curve. Its model
+# lists the classes of both, so it offers `unknown` where nothing
+# classes a holding; the asset class history may never hold it.
+_y_class_views = {{v: k for k, v in p.FIELD_IDS.items()}[t["dimension"][1]][0]
+                  for n in _y_all for name, t in CARDS[n][2]["native"]["template-tags"].items()
+                  if name == "asset_class"}
+check("the Yield Asset class picker's values those of the yield views it binds, `unknown` among them",
+      _y_params["asset_class"]["values_source_config"]["card_id"] == MID["report_yield_classes"]
+      and _y_params["asset_class"]["values_source_config"]["value_field"][1] == "asset_class"
+      and _y_class_views == {"web_yield", "web_yield_curve"}
+      and MODELS["report_yield_classes"][0]
+      == "SELECT asset_class FROM web_yield\nUNION\nSELECT asset_class FROM web_yield_curve"
+      and all("COALESCE(p.asset_class, 'unknown') AS asset_class" in _latest_definition(v)
+              for v in _y_class_views)
+      and {q["values_source_config"]["card_id"] for q in p.dashboard_parameters(MID, "range", "Yield (privacy)")
+           if q["slug"] == "asset_class"} == {MID["report_yield_classes"]},
+      (_y_params["asset_class"]["values_source_config"], _y_class_views))
 check("every Yield tile and twin is native over the yield views",
       all("FROM web_yield" in q for q in _y_sql.values()), [n for n, q in _y_sql.items() if not q])
 # A row set per currency and instant: a read without the row filter would
@@ -3272,13 +3296,6 @@ check("the returns materializer writes exactly the reporting currencies",
 _go_readings = _go_list(_go_package("lots"), "MissingBasisReadings", "MissingBasis")
 check("the Gains picker offers exactly the engine's readings of a missing cost basis",
       _go_readings == list(p.MISSING_BASIS_READINGS), _go_readings)
-
-
-def _latest_definition(name):
-    """The text of the last migration statement that (re)defines `name`."""
-    found = re.findall(rf"CREATE OR REPLACE (?:VIEW|MACRO) {name}\b.*?;\n",
-                       MIGRATION_SQL, re.S)
-    return found[-1] if found else ""
 
 
 # The long views carry a row set per currency, written by their

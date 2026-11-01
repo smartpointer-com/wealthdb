@@ -261,11 +261,12 @@ def report_models():
     and cashflow models instead wrap the web_* serving views (migrations
     0032, 0043, 0049, 0072, 0084 and 0132) that do that rendering, the
     cash fold-in and the '(uncategorized)' labelling themselves, and the
-    gains-classes model lists the classes of web_gains. The macros
-    already emit DECIMAL money/quantity columns and one value column set
-    per reporting currency (REPORTING_CURRENCIES), so no value casting
-    is needed here. The `_latest` reports are as of each account's
-    latest snapshot; the `_history` reports carry value forward per day;
+    gains- and yield-classes models list the classes of web_gains and
+    of web_yield and web_yield_curve. The macros already emit DECIMAL
+    money/quantity columns and one value column set per reporting
+    currency (REPORTING_CURRENCIES), so no value casting is needed here.
+    The `_latest` reports are as of each account's latest snapshot; the
+    `_history` reports carry value forward per day;
     the two `_pct` models are the privacy variants the privacy twins'
     MBQL cards run over (values as % of the latest global net worth,
     absolute-value columns dropped) — every other privacy chart is
@@ -623,6 +624,15 @@ def report_models():
             "SELECT DISTINCT asset_class FROM web_gains",
             "The asset classes the gains rows carry, `unknown` where nothing classes a "
             "position. It backs the Gains dashboard's Asset class picker."),
+        # The classes web_yield and web_yield_curve carry, `unknown` among
+        # them where nothing classes a holding (gold migration 0138): the
+        # Yield dashboard's Asset class picker lists them, as the asset
+        # class history may never hold `unknown`. It backs that picker
+        # alone.
+        "report_yield_classes": (
+            "SELECT asset_class FROM web_yield\nUNION\nSELECT asset_class FROM web_yield_curve",
+            "The asset classes the yield rows carry, `unknown` where nothing classes a "
+            "holding. It backs the Yield dashboard's Asset class picker."),
         "report_spending_pct": (
             spending(pct=True),
             "Privacy variant of report_spending: values as % of the latest "
@@ -5285,8 +5295,9 @@ def dashboard_parameters(model_ids, mode, name=""):
         """An asset class picker. Its values come off the asset class
         history by default, which reads cash as the class `cash`, the
         way every holdings view does. That taxonomy is also the one every
-        exposure leaf's class is one of. Gains lists its own rows'
-        classes (report_gains_classes), `unknown` among them."""
+        exposure leaf's class is one of. Gains and Yield list their own
+        rows' classes (report_gains_classes, report_yield_classes),
+        `unknown` among them."""
         return card_picker(pid, "Asset class", "asset_class", model, "asset_class")
 
     source = card_picker(SOURCE_PARAM_ID, "Source", "source",
@@ -5366,7 +5377,7 @@ def dashboard_parameters(model_ids, mode, name=""):
         # currency too, and the projection's four.
         return [currency_picker(YIELD_CURRENCY_PARAM_ID), time_range, source,
                 tax_wrapper_picker(YIELD_TAX_WRAPPER_PARAM_ID),
-                asset_class_picker(YIELD_ASSET_CLASS_PARAM_ID), *projection]
+                asset_class_picker(YIELD_ASSET_CLASS_PARAM_ID, "report_yield_classes"), *projection]
     if name in GAINS_DASHBOARDS:
         # Missing cost basis is required, like the currency:
         # report_gains holds a row set per reading, and a tile with the
