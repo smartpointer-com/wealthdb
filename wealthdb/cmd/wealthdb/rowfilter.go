@@ -1769,10 +1769,17 @@ func filterHelp(cli bool) string {
 	return b.String()
 }
 
-// filterDoc is the filter parameter's one-sentence doc in the schema.
+// filterDoc is the filter parameter's doc in each tool's schema; the
+// grammar is in the instructions (filterInstruction).
 func filterDoc() string {
-	return "Conditions on the view's columns, one per item; a row is kept when all hold. Each is \"column op value\", op one of " +
-		operatorNames() + `. Dates by period: a year or a month is the whole period. Example: ["value > 1000", "date >= 2025-07", "category not in Rent, Groceries"].`
+	return `Conditions, all of which hold: ["value > 1000", "date >= 2025-07", "category not in Rent, Groceries"].`
+}
+
+// filterInstruction is the instructions' line on filter: the grammar,
+// said once for every tool.
+func filterInstruction() string {
+	return "- filter: a list of conditions, each \"column op value\" on a column the view prints, op one of " + operatorNames() +
+		"; a row is kept when all hold. The value needs no quotes; a year or a month is the whole period; money leaving is negative."
 }
 
 // reportFamilies are the report tools and commands by name, in describe's

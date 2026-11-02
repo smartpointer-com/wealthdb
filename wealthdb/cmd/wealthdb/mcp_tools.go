@@ -98,8 +98,8 @@ func (s *mcpServer) rowParams(window bool, extra ...param) []param {
 	var ps []param
 	if window {
 		ps = append(ps,
-			stringParam("from", "Window start ("+dateDoc+"); snaps to the unit's start."),
-			stringParam("to", "Window end, same forms; snaps to the unit's end. Default today unless the tool says otherwise."))
+			stringParam("from", "Window start; snaps to the unit's start."),
+			stringParam("to", "Window end; snaps to the unit's end. Default today unless the tool says otherwise."))
 	}
 	ps = append(ps, extra...)
 	ps = append(ps, stringParam("currency", "Output currency, e.g. USD or CHF. Default: the configured one."))
@@ -110,11 +110,11 @@ func (s *mcpServer) rowParams(window bool, extra ...param) []param {
 func (s *mcpServer) shapeParams() []param {
 	return []param{
 		{name: "filter", kind: paramStrings, doc: filterDoc()},
-		stringParam("search", "Keep rows where any text cell contains this (case-insensitive)."),
-		stringParam("columns", `"default", "all", a comma list of names, or "+add,-remove"; describe(topic=<tool>) lists them.`),
-		stringParam("sort", `Column to sort by; "-" prefix for descending. "-value": the main money column, largest first (by size, whatever the sign).`),
+		stringParam("search", "Keep rows with this text in any cell."),
+		stringParam("columns", `"default", "all", names, or "+add,-remove"; describe(topic=<tool>) lists them.`),
+		stringParam("sort", `Column to sort by; "-" for descending. "-value": the main money column, largest first whatever the sign.`),
 		{name: "max_chars", kind: paramInteger, doc: fmt.Sprintf("Most characters the result may take (default %d); the page ends at a row boundary and the last line says how to get the rest.", s.chars)},
-		{name: "limit", kind: paramInteger, doc: "Most rows to return (default: as many as max_chars holds)."},
+		{name: "limit", kind: paramInteger, doc: "Most rows to return (default: as many as fit)."},
 		{name: "offset", kind: paramInteger, doc: "Rows to skip (default 0)."},
 		stringParam("format", "Result format (default table).", resultFormats...),
 	}
@@ -156,7 +156,7 @@ func (s *mcpServer) tools() []toolSpec {
 				`Example: {view: "accounts", as_of: "2025-12-31"}.`,
 			params: s.rowParams(false,
 				stringParam("view", "Which rows to return (default global).", holdingsFamily.views...),
-				stringParam("as_of", "As-of date ("+dateDoc+"). Default today."),
+				stringParam("as_of", "As-of date. Default today."),
 				param{name: "with_cash", kind: paramBoolean, doc: "positions only: also list cash as one row per account and currency."},
 				sourceParam, accountParam,
 				scopedParam(holdingsFamily, "symbol", "keep only holdings whose symbol or name contains this text."),
@@ -219,7 +219,7 @@ func (s *mcpServer) tools() []toolSpec {
 				`Example: {view: "countries", as_of: "2025-12-31"}; quarter by quarter: {view: "countries", period: "quarterly", from: "2025", to: "2025", filter: ["country = US"]}.`,
 			params: s.rowParams(false, append([]param{
 				stringParam("view", "Which breakdown (default classes).", exposureFamily.views...),
-				stringParam("as_of", "As-of date ("+dateDoc+"). Default today."),
+				stringParam("as_of", "As-of date. Default today."),
 				stringParam("country", "countries and securities: the country a security counts in, risk (default) or domicile.",
 					exposureCountryBases...),
 			}, seriesParams(exposureSeriesViews)...)...),
@@ -236,7 +236,7 @@ func (s *mcpServer) tools() []toolSpec {
 				`Example: {view: "cash"}.`,
 			params: s.rowParams(false, append(append([]param{
 				stringParam("view", "Which rows to return (default global).", yieldFamily.views...),
-				stringParam("as_of", "As-of date ("+dateDoc+"). Default today."),
+				stringParam("as_of", "As-of date. Default today."),
 			}, seriesParams(yieldSeriesViews)...),
 				param{name: "converted", kind: paramBoolean, doc: andList(yieldAggregateViews) + ": one row per entity in the output currency (default false)."},
 				scopedParam(yieldFamily, "symbol", "keep only rows whose symbol contains this text."),

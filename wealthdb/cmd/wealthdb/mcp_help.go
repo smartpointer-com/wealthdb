@@ -25,7 +25,7 @@ import (
 // (without it a small model answers "how much is the house worth" with
 // no call), picks the tool by the question, and states the conventions
 // a model otherwise guesses at.
-const instructionsBody = `wealthdb holds a household's complete financial picture in one local, read-only database: every bank, card, brokerage, pension and crypto account, plus the property, loans and private holdings recorded by hand. A house, a mortgage or a venture fund is an account like any other; a loan or a card balance is a negative value.
+var instructionsBody = `wealthdb holds a household's complete financial picture in one local, read-only database: every bank, card, brokerage, pension and crypto account, plus the property, loans and private holdings recorded by hand. A house, a mortgage or a venture fund is an account like any other; a loan or a card balance is a negative value.
 
 Pick the tool by the question:
 - what is held, where, and what it is worth (today or on a date); net worth; one account or one institution -> holdings
@@ -45,6 +45,7 @@ Conventions:
 - Every parameter is optional; each description states its default. A filter such as account, category, type or class, or a condition in filter on any column (["maturity_date = 2027", "value <= -500"]), picks the view that has that column, and the result header says which view ran.
 - One call usually answers the question: a result is one row per entity, category or type for the whole window unless you ask for monthly, quarterly or annual buckets. Answer from it; do not call again to confirm. A total comes from a summary, types or projection view, or from the total line a filtered result ends with, never from adding up the lines of a calendar or transactions view yourself.
 - Each result starts with a header line that states the resolved window or as-of date, the currency and the row count; check it matches the question. A result holds as many rows as fit max_chars; when more exist, the last line says how many, the max_chars that holds them all, and how to narrow.
+` + filterInstruction() + `
 - Money columns are plain decimals in the currency named in the header (value_CHF). A blank cell means no value, not zero. In line views money leaving is negative; sort "-value" puts the largest amounts first whatever their sign.
 - In returns, gains, exposure and yield, read the quality column: it names the reason for every n/a or gap. Returns are not additive across views; gains are.
 - A holding before a source's first snapshot is missing history, not zero; snapshots shows where data begins.`

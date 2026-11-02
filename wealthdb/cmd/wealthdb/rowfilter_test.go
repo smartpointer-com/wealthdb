@@ -374,7 +374,7 @@ func TestTotals(t *testing.T) {
 func TestFilterHelpListsEveryOperator(t *testing.T) {
 	t.Parallel()
 	for _, op := range operators {
-		for _, text := range []string{filterHelp(false), filterHelp(true), filterDoc(), operatorNames()} {
+		for _, text := range []string{filterHelp(false), filterHelp(true), filterInstruction(), instructionsBody, operatorNames()} {
 			if !strings.Contains(text, op.name) {
 				t.Errorf("%q is missing from:\n%s", op.name, text)
 			}
