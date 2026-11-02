@@ -102,8 +102,9 @@ func cmdExposure(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	if skeletons {
 		return writeDeclarationSkeletons(ctx, open, asOfEpoch, outCcy, stdout)
 	}
-	rep := exposureReport(request{view: view, currency: outCcy, asOf: asOfEpoch, country: *country, series: series})
-	return writeReport(ctx, rep, *rf.cols, "exposure", open, *rf.privacy, fmtChoice, stdout)
+	req := request{view: view, currency: outCcy, asOf: asOfEpoch, country: *country, series: series}
+	rep := exposureReport(req)
+	return writeReport(ctx, rep, rf.output(fmtChoice, "exposure", "exposure", req, cfg, g.clock()), open, stdout)
 }
 
 // skeletonFormat is the -f value that turns coverage into declaration
@@ -682,7 +683,7 @@ func exposureUsage() string {
 		"coverage":   joinColumnNames(buildExposureCoverageColumns("CCY", nil)),
 	}
 	return `usage: wealthdb exposure <view> [-d DATE] [--country risk|domicile]
-                        [-f FORMAT] [-C COLS] [-x CCY] [-p]
+                        [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]
        wealthdb exposure <view> --period ` + strings.Join(seriesPeriods, "|") + ` [FROM [TO]]
 
 What is really owned. Every fund is looked through to what it holds, a
@@ -742,6 +743,8 @@ Flags
                      unknown situs, for the declarations ledger
   -C COLS            comma-separated names, 'default', 'all', or a
                      +ADD,-REMOVE delta on the default set
+  -F COND            keep the rows where COND holds; repeatable;
+                     wealthdb help filter lists the operators
   -x CCY             output currency (default: config.default_currency)
   -p                 hide every amount and every instrument id a
                      holding is named by; a manual holding's key and

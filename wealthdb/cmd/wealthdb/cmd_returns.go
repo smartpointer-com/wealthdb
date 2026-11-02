@@ -83,10 +83,11 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 		return err
 	}
 
-	rep := returnsReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
-		method: *method, period: *period, annualize: *annualize, netting: *netting == "on", inception: *inception}, cfg)
+	req := request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
+		method: *method, period: *period, annualize: *annualize, netting: *netting == "on", inception: *inception}
+	rep := returnsReport(req, cfg)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, *rf.cols, "returns", open, *rf.privacy, fmtChoice, stdout)
+	return writeReport(ctx, rep, rf.output(fmtChoice, "returns", "returns", req, cfg, g.clock()), open, stdout)
 }
 
 // returnsReport is one view of the returns family, the runner the CLI
@@ -293,7 +294,7 @@ func formatPctOrBlank(p *float64) string {
 func returnsUsage() string {
 	registry := buildReturnColumnRegistry("CCY", "", nil, nil)
 	return `usage: wealthdb returns <view> [FROM [TO]] [--method M] [--period P] [--annualize MODE]
-                        [--netting on|off] [--inception full|strict] [-f FORMAT] [-C COLS] [-x CCY] [-p]
+                        [--netting on|off] [--inception full|strict] [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]
 
 Time-weighted (TWR) and money-weighted (MWR/XIRR) returns. Grain is the
 positional <view>; everything else is a flag. Returns use historic FX
@@ -333,6 +334,8 @@ Flags:
                     constituent) | strict (latest constituent first-snapshot)
   -f, --format      table | csv | csv_plain | json
   -C, --columns     comma-separated names, 'default', 'all', or a +ADD,-REMOVE delta
+  -F, --filter COND keep the rows where COND holds; repeatable;
+                    wealthdb help filter lists the operators
   -x, --currency    output currency (default: config.default_currency)
   -p, --privacy     redact entity IDs and amounts; every name a person
                     typed prints as a pseudonym, such as manual-1, or as

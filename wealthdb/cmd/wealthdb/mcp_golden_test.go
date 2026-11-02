@@ -84,7 +84,11 @@ func TestMCPMatchesCLI(t *testing.T) {
 		cfg   string
 		cases []goldenCase
 	}{
-		{setupSpendingGold(t), familyCases("spending", spendingFamily.views, "2026-05-01", "2026-06-30")},
+		{setupSpendingGold(t), append(familyCases("spending", spendingFamily.views, "2026-05-01", "2026-06-30"),
+			goldenCase{"spending transactions filtered", []string{"spending", "transactions", "2026-05-01", "2026-06-30",
+				"-F", "date >= 2026-05-06", "-F", "category != Restaurant"}, "spending",
+				map[string]any{"view": "transactions", "from": "2026-05-01", "to": "2026-06-30",
+					"filter": []any{"date >= 2026-05-06", "category != Restaurant"}}})},
 		{setupIncomeGold(t), familyCases("income", []string{"summary", "types", "transactions"}, "2026-05-01",
 			"2026-06-30")},
 		{withResolutions(t, setupCashflowGold(t)), append(cashflowCases(),
@@ -94,6 +98,8 @@ func TestMCPMatchesCLI(t *testing.T) {
 				map[string]any{"from": "2026-05-01", "to": "2026-06-30"}},
 			goldenCase{"transactions in CHF, newest first", []string{"transactions", "2026-05-01", "2026-06-30", "-x", "CHF", "-r"},
 				"transactions", map[string]any{"from": "2026-05-01", "to": "2026-06-30", "currency": "CHF", "newest_first": true}},
+			goldenCase{"transactions filtered", []string{"transactions", "2026-05-01", "2026-06-30", "-F", "kind != dividend"},
+				"transactions", map[string]any{"from": "2026-05-01", "to": "2026-06-30", "filter": "kind != dividend"}},
 		)},
 		{setupReturnsGold(t), append(returnsCases(), holdingsCases()...)},
 		{setupGainsGold(t), gainsCases()},
@@ -128,6 +134,10 @@ func TestMCPMatchesCLI(t *testing.T) {
 					t.Fatalf("%s (privacy %v): MCP error: %v", c.name, privacy, err)
 				}
 				header, body, _ := strings.Cut(got, "\n")
+				// The total line of a filtered result is the server's alone.
+				if i := strings.LastIndex(body, "\ntotal of "); i >= 0 && c.args["filter"] != nil {
+					body = body[:i]
+				}
 				if strings.Count(want, "\n") < 2 {
 					t.Fatalf("%s: the fixture leaves this case empty, which proves nothing:\n%s", c.name, want)
 				}
@@ -271,7 +281,9 @@ func yieldCases() []goldenCase {
 		goldenCase{"yield accounts converted", []string{"yield", "accounts", "-d", "2026-06-30", "--converted"}, "yield",
 			map[string]any{"view": "accounts", "as_of": "2026-06-30", "converted": true}},
 		goldenCase{"yield global quarterly", []string{"yield", "global", "--period", "quarterly", "2026-04-01", "2026-06-30"},
-			"yield", map[string]any{"view": "global", "period": "quarterly", "from": "2026-04-01", "to": "2026-06-30"}})
+			"yield", map[string]any{"view": "global", "period": "quarterly", "from": "2026-04-01", "to": "2026-06-30"}},
+		goldenCase{"yield positions filtered", []string{"yield", "positions", "-d", "2026-06-30", "-F", "kind in bond, deposit"},
+			"yield", map[string]any{"view": "positions", "as_of": "2026-06-30", "filter": []any{"kind in bond, deposit"}}})
 }
 
 // forwardIncomeCases covers each forward view of the income tool over a

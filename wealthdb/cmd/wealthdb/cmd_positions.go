@@ -119,7 +119,7 @@ func positionsUsage() string {
 	// The output currency is not chosen at usage-print time, so the
 	// dynamic column shows a placeholder.
 	registry := buildColumnRegistry("CCY", nil, nil)
-	return `usage: wealthdb holdings positions [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [-p]
+	return `usage: wealthdb holdings positions [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]
                                   [--with-cash] [--missing-basis M]
 
 Print every individual holding as of a date: securities, funds and
@@ -137,6 +137,8 @@ Flags:
   -C, --columns COLS       comma-separated column names, 'default', 'all', or
                            a +ADD,...-REMOVE,... delta against the default set
                            (e.g. -C+account_id-market_value)
+  -F, --filter COND        keep the rows where COND holds; repeatable;
+                           wealthdb help filter lists the operators
   -x, --currency CCY       output currency for the value column (default: config.default_currency)
   -p, --privacy            redact account IDs, share quantities, and monetary amounts;
                            every name a person typed prints as a pseudonym, such as

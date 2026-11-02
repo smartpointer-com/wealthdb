@@ -64,7 +64,7 @@ The model_name column tells you each row's provenance:
 	open := func() (*sql.DB, error) {
 		return openGoldForRead(g, cfg, "gold database %q does not exist. Run 'wealthdb init' first.")
 	}
-	return writeReport(ctx, rep, "default", "resolutions", open, false, fmtChoice, stdout)
+	return writeReport(ctx, rep, reportOutput{cols: "default", prefix: "resolutions", format: fmtChoice}, open, stdout)
 }
 
 // resolutionRow is one symbol_resolutions row as the dump renders it.

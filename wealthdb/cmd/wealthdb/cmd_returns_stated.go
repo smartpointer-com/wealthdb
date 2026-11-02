@@ -41,9 +41,10 @@ func runReturnsStated(ctx context.Context, g globalFlags, args []string, stdout,
 	if err != nil {
 		return err
 	}
-	rep := returnsStatedReport(request{view: "stated", from: fromEpoch, to: toEpoch}, cfg)
+	req := request{view: "stated", from: fromEpoch, to: toEpoch}
+	rep := returnsStatedReport(req, cfg)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, *rf.cols, "returns", open, *rf.privacy, fmtChoice, stdout)
+	return writeReport(ctx, rep, rf.output(fmtChoice, "returns", "returns", req, cfg, g.clock()), open, stdout)
 }
 
 // returnsStatedReport runs the reconciliation with the config's returns
@@ -99,7 +100,7 @@ func buildStatedColumnRegistry(kindOf func(string) string, nicknames accountNick
 }
 
 func returnsStatedUsage() string {
-	return `usage: wealthdb returns stated [FROM [TO]] [-f FORMAT] [-C COLS] [-p]
+	return `usage: wealthdb returns stated [FROM [TO]] [-f FORMAT] [-C COLS] [-F COND]... [-p]
 
 Each period a document states for an account, beside what the returns
 engine computes for that account over the same months. The svb

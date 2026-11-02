@@ -162,7 +162,7 @@ verdict.`)
 	open := func() (*sql.DB, error) {
 		return openGoldForRead(g, cfg, "gold database %q does not exist. Run 'wealthdb init' first.")
 	}
-	return writeReport(ctx, rep, "default", "categorizations", open, *privacy, fmtChoice, stdout)
+	return writeReport(ctx, rep, reportOutput{cols: "default", prefix: "categorizations", privacy: *privacy, format: fmtChoice}, open, stdout)
 }
 
 // categorizationsReport dumps the verdict stores of the given families,

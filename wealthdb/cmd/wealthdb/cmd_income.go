@@ -86,10 +86,11 @@ func runIncomeView(ctx context.Context, g globalFlags, view string, args []strin
 		return err
 	}
 
-	rep := incomeReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch, period: *period, level: *level,
-		asOf: anchorToDay(now.UTC(), true).Unix(), assumptions: ff.assumptions(), categories: overrideCategories(cfg)})
+	req := request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch, period: *period, level: *level,
+		asOf: anchorToDay(now.UTC(), true).Unix(), assumptions: ff.assumptions(), categories: overrideCategories(cfg)}
+	rep := incomeReport(req)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, *rf.cols, "income", open, *rf.privacy, fmtChoice, stdout)
+	return writeReport(ctx, rep, rf.output(fmtChoice, "income", "income", req, cfg, g.clock()), open, stdout)
 }
 
 // incomeReport is one view of the income family, the runner the CLI
@@ -237,7 +238,7 @@ var defaultIncomeTransactionColumns = []string{
 func incomeUsage() string {
 	return "usage: wealthdb income <view> [FROM [TO]] [--period P] [--level L]\n" +
 		"                          [--rates R] [--maturing M] [--shift BP]\n" +
-		"                          [-f FORMAT] [-C COLS] [-x CCY] [-p]\n" +
+		"                          [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]\n" +
 		`
 What the tracked accounts received: wages, interest, dividends, staking
 rewards, rent, gifts — consolidated across every source, typed and
@@ -286,6 +287,8 @@ Flags
   -f FORMAT     table | csv | csv_plain | json
   -C COLS       comma-separated names, 'default', 'all', or a
                 +ADD,-REMOVE delta on the default set
+  -F COND       keep the rows where COND holds; repeatable;
+                wealthdb help filter lists the operators
   -x CCY        output currency (default: config.default_currency)
   -p            redact account ids, payers and amounts; every name a
                 person typed prints as a pseudonym, such as manual-1,

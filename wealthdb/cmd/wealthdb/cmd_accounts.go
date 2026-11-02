@@ -78,7 +78,7 @@ var defaultAccountColumns = []string{
 
 func accountsUsage() string {
 	registry := buildAccountColumnRegistry("CCY", nil, nil)
-	return `usage: wealthdb holdings accounts [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [-p]
+	return `usage: wealthdb holdings accounts [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]
 
 Print one row per account: its source, its kind (brokerage, cash,
 card, mortgage, custody, …), its tax wrapper (taxable, roth_ira,
@@ -97,6 +97,8 @@ Flags:
   -C, --columns COLS       comma-separated column names, 'default', 'all', or
                            a +ADD,...-REMOVE,... delta against the default set
                            (e.g. -C+account_id-cash_balance)
+  -F, --filter COND        keep the rows where COND holds; repeatable;
+                           wealthdb help filter lists the operators
   -x, --currency CCY       output currency for the _<CCY> aggregate columns (default: config.default_currency)
   -p, --privacy            redact account IDs and monetary amounts; every name a person
                            typed prints as a pseudonym, such as manual-1, or as a

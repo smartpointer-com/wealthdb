@@ -116,7 +116,7 @@ var commandHelps = []commandHelp{
 	{name: "mcp-serve", args: "--stdio | --http ADDR", group: "other",
 		short: "the MCP server itself; 'wealthdb mcp' runs and manages it"},
 	{name: "version", group: "other", short: "print the wealthdb version"},
-	{name: "help", args: "[<subcommand>]", group: "other", short: "this listing, or a subcommand's full help"},
+	{name: "help", args: "[<subcommand> | filter]", group: "other", short: "this listing, a subcommand's full help, or the -F conditions"},
 }
 
 // hostSideCommand reports whether name is a command the listing
@@ -152,6 +152,10 @@ func cmdHelp(ctx context.Context, g globalFlags, subargs []string, stdin io.Read
 		return nil
 	}
 	name := subargs[0]
+	if name == "filter" {
+		fmt.Fprintln(stderr, filterHelp(true))
+		return nil
+	}
 	// A holdings view is addressed as `wealthdb holdings <view>`; its
 	// help is the view's own, reached the way the command reaches it.
 	if slices.Contains(holdingsViews, name) {

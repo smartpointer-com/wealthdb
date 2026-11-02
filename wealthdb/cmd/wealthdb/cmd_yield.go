@@ -98,8 +98,9 @@ func cmdYield(ctx context.Context, g globalFlags, subargs []string, _ io.Reader,
 	if skeletons {
 		return writeYieldSkeletons(ctx, open, asOfEpoch, outCcy, stdout)
 	}
-	rep := yieldReport(request{view: view, currency: outCcy, asOf: asOfEpoch, series: series, converted: *converted})
-	return writeReport(ctx, rep, *rf.cols, "yield", open, *rf.privacy, fmtChoice, stdout)
+	req := request{view: view, currency: outCcy, asOf: asOfEpoch, series: series, converted: *converted}
+	rep := yieldReport(req)
+	return writeReport(ctx, rep, rf.output(fmtChoice, "yield", "yield", req, cfg, g.clock()), open, stdout)
 }
 
 // yieldBook computes the book of one instant.
@@ -366,7 +367,7 @@ func yieldUsage() string {
 		fmt.Fprintf(&available, "\n  %-12s %s", v, cols[v])
 		fmt.Fprintf(&defaultSets, "\n  %-12s %s", v, strings.Join(defaults[v], ", "))
 	}
-	return `usage: wealthdb yield <view> [-d DATE] [--converted] [-f FORMAT] [-C COLS] [-x CCY] [-p]
+	return `usage: wealthdb yield <view> [-d DATE] [--converted] [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]
        wealthdb yield <view> --period ` + strings.Join(seriesPeriods, "|") + ` [FROM [TO]]
 
 What the holdings earn now, and how they move with interest rates, as of
@@ -398,6 +399,8 @@ Flags
                      ndjson: the ledger's records still to write
   -C COLS            comma-separated names, 'default', 'all', or a
                      +ADD,-REMOVE delta on the default set
+  -F COND            keep the rows where COND holds; repeatable;
+                     wealthdb help filter lists the operators
   -x CCY             output currency (default: config.default_currency)
   -p                 hide values, dv01, income amounts, prices and
                      account ids; every name a person typed prints as a

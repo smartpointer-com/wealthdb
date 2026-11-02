@@ -39,10 +39,11 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 		return err
 	}
 
-	rep := transactionsReport(request{currency: outCcy, from: fromEpoch, to: toEpoch, newestFirst: *reverse,
-		categories: overrideCategories(cfg)})
+	req := request{currency: outCcy, from: fromEpoch, to: toEpoch, newestFirst: *reverse,
+		categories: overrideCategories(cfg)}
+	rep := transactionsReport(req)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, *rf.cols, "transactions", open, *rf.privacy, fmtChoice, stdout)
+	return writeReport(ctx, rep, rf.output(fmtChoice, "transactions", "transactions", req, cfg, g.clock()), open, stdout)
 }
 
 // transactionsReport is the ledger over a window, the runner the CLI
@@ -195,7 +196,7 @@ var defaultTransactionColumns = []string{
 
 func transactionsUsage() string {
 	registry := buildTransactionColumnRegistry("CCY", nil, nil)
-	return `usage: wealthdb transactions [FROM [TO]] [-r] [-f FORMAT] [-C COLS] [-x CCY] [-p]
+	return `usage: wealthdb transactions [FROM [TO]] [-r] [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]
 
 Print transactions over a date range: trades, dividends, interest,
 fees, deposits, withdrawals and transfers, one line each. Money
@@ -223,6 +224,8 @@ Flags:
   -C, --columns COLS       comma-separated column names, 'default', 'all', or
                            a +ADD,...-REMOVE,... delta against the default set
                            (e.g. -C+description-account)
+  -F, --filter COND        keep the rows where COND holds; repeatable;
+                           wealthdb help filter lists the operators
   -x, --currency CCY       output currency for the value column (default: config.default_currency)
   -p, --privacy            redact account / tx IDs, quantities, prices, and monetary amounts;
                            every name a person typed prints as a pseudonym, such as manual-1,

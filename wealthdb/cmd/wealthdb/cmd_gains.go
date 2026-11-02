@@ -93,11 +93,12 @@ func runGainsView(ctx context.Context, g globalFlags, view string, args []string
 		return err
 	}
 
-	rep := gainsReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
+	req := request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
 		period: *period, allDocuments: *documents == "all", newestFirst: *reverse, missing: missingBasis,
-		categories: overrideCategories(cfg)})
+		categories: overrideCategories(cfg)}
+	rep := gainsReport(req)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, *rf.cols, "gains", open, *rf.privacy, fmtChoice, stdout)
+	return writeReport(ctx, rep, rf.output(fmtChoice, "gains", "gains", req, cfg, g.clock()), open, stdout)
 }
 
 // gainsReport is one view of the gains family, the runner the CLI and
@@ -482,7 +483,7 @@ func gainsUsage() string {
 		return joinColumnNames(buildGainsBucketColumnRegistry("CCY", "monthly", grain, nil, nil))
 	}
 	return "usage: wealthdb gains <view> [FROM [TO]] [--period P] [--documents D] [-r]\n" +
-		"                         [--missing-basis M] [-f FORMAT] [-C COLS] [-x CCY] [-p]\n" +
+		"                         [--missing-basis M] [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]\n" +
 		`
 What was gained or lost (P&L) on what is held, realized and unrealized,
 over a window. A realized gain is what a sale's tax document or
@@ -532,6 +533,8 @@ Flags
   -f FORMAT       table | csv | csv_plain | json
   -C COLS         comma-separated names, 'default', 'all', or a
                   +ADD,-REMOVE delta on the default set
+  -F COND         keep the rows where COND holds; repeatable;
+                  wealthdb help filter lists the operators
   -x CCY          output currency (default: config.default_currency)
   -p              redact account ids, quantities and amounts; every name
                   a person typed prints as a pseudonym, such as manual-1,

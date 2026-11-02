@@ -77,10 +77,11 @@ func runSpendingView(ctx context.Context, g globalFlags, view string, args []str
 		return err
 	}
 
-	rep := spendingReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch, period: *period, level: *level,
-		categories: overrideCategories(cfg)})
+	req := request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch, period: *period, level: *level,
+		categories: overrideCategories(cfg)}
+	rep := spendingReport(req)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, *rf.cols, "spending", open, *rf.privacy, fmtChoice, stdout)
+	return writeReport(ctx, rep, rf.output(fmtChoice, "spending", "spending", req, cfg, g.clock()), open, stdout)
 }
 
 // spendingReport is one view of the spending family, the runner the
@@ -271,7 +272,7 @@ var defaultSpendTransactionColumns = []string{
 
 func spendingUsage() string {
 	return `usage: wealthdb spending <view> [FROM [TO]] [--period P] [--level L]
-                         [-f FORMAT] [-C COLS] [-x CCY] [-p]
+                         [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]
 
 What the tracked accounts spent. Every account counts unless the
 config takes it out; what makes a row spending is its KIND, not the
@@ -304,6 +305,8 @@ Flags:
                     restaurants, flights — is detailed
   -f, --format      table | csv | csv_plain | json
   -C, --columns     comma-separated names, 'default', 'all', or a +ADD,-REMOVE delta
+  -F, --filter COND keep the rows where COND holds; repeatable;
+                    wealthdb help filter lists the operators
   -x, --currency    output currency (default: config.default_currency)
   -p, --privacy     redact account IDs, amounts, and every name taken off
                     a statement line — merchant, signature, counterparty;

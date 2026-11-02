@@ -51,7 +51,7 @@ var defaultSourceColumns = []string{
 
 func sourcesUsage() string {
 	registry := buildSourceColumnRegistry("CCY")
-	return `usage: wealthdb holdings sources [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [-p]
+	return `usage: wealthdb holdings sources [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]
 
 Print one row per source (an institution, or a hand-kept ledger),
 rolling up every one of its accounts (positions + cash): the one
@@ -72,6 +72,8 @@ Flags:
   -C, --columns COLS       comma-separated column names, 'default', 'all', or
                            a +ADD,...-REMOVE,... delta against the default set
                            (e.g. -C+positions_value_outccy-base_currency)
+  -F, --filter COND        keep the rows where COND holds; repeatable;
+                           wealthdb help filter lists the operators
   -x, --currency CCY       output currency for the _<CCY> aggregate columns (default: config.default_currency)
   -p, --privacy            redact the monetary amounts
                            (table: visible placeholders; csv: empty cells; json: keys omitted)

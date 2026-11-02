@@ -6,23 +6,35 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
-// reportFlags are the output flags every report takes: -f, -C, -x and
-// -p. The family registers its own options beside them, and each
+// reportFlags are the output flags every report takes: -f, -C, -F, -x
+// and -p. The family registers its own options beside them, and each
 // family's usage text says what -p redacts there.
 type reportFlags struct {
 	format, cols, currency *string
 	privacy                *bool
+	filters                conditionFlags
+}
+
+// conditionFlags are the -F conditions, one per flag, in order.
+type conditionFlags []string
+
+func (c *conditionFlags) String() string { return strings.Join(*c, " · ") }
+
+func (c *conditionFlags) Set(v string) error {
+	*c = append(*c, v)
+	return nil
 }
 
 // registerReportFlags registers the output flags on fs. A report with
-// one fixed shape (holdings global) takes no -C, and cols then reads
-// "default".
+// one fixed shape (holdings global) takes no -C and no -F, and cols
+// then reads "default".
 func registerReportFlags(fs *flag.FlagSet, withColumns bool) *reportFlags {
 	rf := &reportFlags{}
 	rf.format = fs.String("f", "table", "output format: table | csv | csv_plain | json")
@@ -30,6 +42,8 @@ func registerReportFlags(fs *flag.FlagSet, withColumns bool) *reportFlags {
 	if withColumns {
 		rf.cols = fs.String("C", "default", "columns: comma-separated names, 'default', 'all', or a +ADD,-REMOVE delta")
 		fs.StringVar(rf.cols, "columns", "default", "columns: comma-separated names, 'default', 'all', or a +ADD,-REMOVE delta")
+		fs.Var(&rf.filters, "F", "keep the rows where this condition holds (repeatable; wealthdb help filter)")
+		fs.Var(&rf.filters, "filter", "keep the rows where this condition holds (repeatable; wealthdb help filter)")
 	} else {
 		cols := "default"
 		rf.cols = &cols
@@ -61,6 +75,17 @@ func (rf *reportFlags) resolve(g globalFlags, cmd string) (output.Format, *confi
 		return "", nil, "", errs.Newf(errs.ExitUsage, "%s: invalid -x/--currency %q (want a 3-letter ISO 4217 code)", cmd, outCcy)
 	}
 	return fmtChoice, cfg, outCcy, nil
+}
+
+// output is how the report is written: the -C columns, the format, -p,
+// and the -F conditions, which bind to the report tool runs for req.
+// prefix names the command in a column error ("gains").
+func (rf *reportFlags) output(format output.Format, prefix, tool string, req request, cfg *config.Config, now time.Time) reportOutput {
+	out := reportOutput{cols: *rf.cols, prefix: prefix, privacy: *rf.privacy, format: format}
+	if len(rf.filters) > 0 {
+		out.filter = &cliFilter{conds: rf.filters, tool: tool, req: req, cfg: cfg, now: now}
+	}
+	return out
 }
 
 // routeView splits a report family's `<view> [args]` into the view and

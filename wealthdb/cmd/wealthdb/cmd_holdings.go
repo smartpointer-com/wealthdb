@@ -78,7 +78,7 @@ func runHoldingsView(ctx context.Context, g globalFlags, view string, args []str
 	}
 
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, holdingsReport(req), *rf.cols, view, open, *rf.privacy, fmtChoice, stdout)
+	return writeReport(ctx, holdingsReport(req), rf.output(fmtChoice, view, "holdings", req, cfg, g.clock()), open, stdout)
 }
 
 // holdingsReport is one holdings view as of req.asOf, the runner the
@@ -132,7 +132,7 @@ func holdingsReport(req request) *report {
 const holdingsUsage = `wealthdb holdings — what is held, where, and what it is worth, as of a date
 
 usage:
-  wealthdb holdings <view> [-d DATE] [-f FORMAT] [-x CCY] [-C COLS] [-p]
+  wealthdb holdings <view> [-d DATE] [-f FORMAT] [-x CCY] [-C COLS] [-F COND]... [-p]
 
 views (coarsest → finest):
   global       one row: cash, positions value and total value of everything (net worth)

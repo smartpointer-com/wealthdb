@@ -130,11 +130,12 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 		return err
 	}
 
-	rep := cashflowReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
+	req := request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
 		period: *period, level: *level, investing: *investing, categories: overrideCategories(cfg),
-		asOf: anchorToDay(now.UTC(), true).Unix(), assumptions: ff.assumptions(), lookback: cfg.CashflowLookback()})
+		asOf: anchorToDay(now.UTC(), true).Unix(), assumptions: ff.assumptions(), lookback: cfg.CashflowLookback()}
+	rep := cashflowReport(req)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, *rf.cols, "cashflow", open, *rf.privacy, fmtChoice, stdout)
+	return writeReport(ctx, rep, rf.output(fmtChoice, "cashflow", "cashflow", req, cfg, g.clock()), open, stdout)
 }
 
 // cashflowReport is one view of the cash flow family, the runner the
@@ -545,7 +546,7 @@ var defaultCashflowTransactionColumns = []string{
 
 func cashflowUsage() string {
 	return "usage: wealthdb cashflow <view> [FROM [TO]] [--period P] [--level L] [--investing G]\n" +
-		"                            [--rates R] [--maturing M] [--shift BP] [-f FORMAT] [-C COLS] [-x CCY] [-p]\n" +
+		"                            [--rates R] [--maturing M] [--shift BP] [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]\n" +
 		`
 What the household's cash did: where it came from and where it went,
 as a cash flow statement and as the edge list of a Sankey. The
@@ -603,6 +604,8 @@ Flags beyond the ones every report shares:
   -f FORMAT     table | csv | csv_plain | json
   -C COLS       comma-separated names, 'default', 'all', or a
                 +ADD,-REMOVE delta on the default set
+  -F COND       keep the rows where COND holds; repeatable;
+                wealthdb help filter lists the operators
   -x CCY        output currency (default: config.default_currency);
                 coverage refuses it - every account is reported in its own
   -p            redact account ids, statement names and amounts;

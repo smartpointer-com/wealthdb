@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"strings"
+	"time"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
@@ -204,15 +207,71 @@ func (r *report) allColumns() []int {
 	return out
 }
 
-// writeReport is the CLI's tail for a report: resolve -C before the
-// database is touched, so a typo fails fast, then fetch and write.
-// prefix names the command in a column error ("spending: unknown
-// column …"). open is the caller's gold open, deferred until the
-// columns are known to be good.
-func writeReport(ctx context.Context, rep *report, colsExpr, prefix string, open func() (*sql.DB, error), privacy bool, format output.Format, w io.Writer) error {
-	cols, err := rep.pick(colsExpr)
+// reportOutput is how the CLI writes one report: the -C expression,
+// the format, -p, and the -F conditions (nil for none). prefix names
+// the command in a column error ("spending: unknown column …").
+type reportOutput struct {
+	cols    string
+	prefix  string
+	privacy bool
+	format  output.Format
+	filter  *cliFilter
+}
+
+// cliFilter is a command's -F conditions and what they bind to: the
+// report tool's view and options, so a column the view lacks names the
+// views that print it.
+type cliFilter struct {
+	conds []string
+	tool  string
+	req   request
+	cfg   *config.Config
+	now   time.Time
+}
+
+// label names the command in a condition's message: "wealthdb yield
+// positions".
+func (f *cliFilter) label() string {
+	return strings.TrimSpace("wealthdb " + f.tool + " " + f.req.view)
+}
+
+// bind reads the conditions against rep, as the server reads its filter
+// parameter.
+func (f *cliFilter) bind(rep *report, privacy bool) ([]condition, error) {
+	front := filterFront{prefix: f.label() + ":", cli: true}
+	lookup := columnLookup{cols: rep.columns, currency: f.req.currency}
+	for _, rf := range reportFamilies {
+		if rf.name == f.tool && rf.fam.principal != nil {
+			lookup.principal = rf.fam.principal(f.req)
+		}
+	}
+	target := filterTarget{view: f.req.view, lookup: lookup, privacy: privacy, now: f.now, front: front,
+		elsewhere: func(col string) string { return columnElsewhere(f.cfg, f.tool, f.req.view, col, true) }}
+	raws, bad := parseConditions(f.conds, front)
+	conds, err := target.bind(raws, bad)
 	if err != nil {
-		return errs.Newf(errs.ExitUsage, "%s: %s", prefix, err.Error())
+		return nil, errs.Newf(errs.ExitUsage, "%s", err.Error())
+	}
+	return conds, nil
+}
+
+// writeReport is the CLI's tail for a report: resolve -C and -F before
+// the database is touched, so a typo fails fast, then fetch and write.
+// open is the caller's gold open, deferred until the columns and the
+// conditions are known to be good. The conditions read the printed
+// cells, privacy applied, as the server's do: the table then ends with
+// a line of the matching rows and the conditions, csv and json carry
+// the matching rows alone.
+func writeReport(ctx context.Context, rep *report, out reportOutput, open func() (*sql.DB, error), w io.Writer) error {
+	cols, err := rep.pick(out.cols)
+	if err != nil {
+		return errs.Newf(errs.ExitUsage, "%s: %s", out.prefix, err.Error())
+	}
+	var conds []condition
+	if out.filter != nil {
+		if conds, err = out.filter.bind(rep, out.privacy); err != nil {
+			return err
+		}
 	}
 	db, err := open()
 	if err != nil {
@@ -223,5 +282,24 @@ func writeReport(ctx context.Context, rep *report, colsExpr, prefix string, open
 	if err != nil {
 		return err
 	}
-	return writeFormatted(w, format, rows.table(nil, cols, privacy, format, nil))
+	if out.filter == nil {
+		return writeFormatted(w, out.format, rows.table(nil, cols, out.privacy, out.format, nil))
+	}
+	// Pseudonyms number over every row, as the server's do, so a
+	// filtered csv names a row as the unfiltered one.
+	rs := newResultSet(rep, rows, out.privacy)
+	all := rs.filter(nil, "")
+	idx, _ := keepRows(rs.cells, all, conds)
+	if err := writeFormatted(w, out.format, rows.table(idx, cols, out.privacy, out.format, rs.names)); err != nil {
+		return err
+	}
+	if out.format == output.FormatTable {
+		line := fmt.Sprintf("%s of %s %s match: %s", thousands(len(idx)), thousands(len(all)), plural(len(all), "row", "rows"),
+			strings.Join(canonicalForms(conds), " · "))
+		if len(idx) == 0 && len(all) > 0 {
+			line = "0 rows match: " + emptiedNote(rs.cells, all, conds)
+		}
+		_, err = fmt.Fprintln(w, line)
+	}
+	return err
 }
