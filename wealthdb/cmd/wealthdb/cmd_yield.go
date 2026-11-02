@@ -289,7 +289,7 @@ func buildYieldPositionColumns(outCcy string, kindOf func(string) string) []colu
 	ids = append(ids, yieldRateCols(outCcy, positionFigures)...)
 	return append(ids,
 		pctCol("coupon", func(r row) *float64 { return r.Coupon }),
-		strCol("maturity_date", func(r row) string { return dateOrBlank(r.MaturityDate) }),
+		asDate(strCol("maturity_date", func(r row) string { return dateOrBlank(r.MaturityDate) })),
 		priceCol(func(r row) *float64 { return r.Price }),
 		strCol("coupon_kind", func(r row) string { return string(r.CouponKind) }),
 		strCol("rating", func(r row) string { return r.Rating }),

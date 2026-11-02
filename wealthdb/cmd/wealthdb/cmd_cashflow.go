@@ -254,7 +254,7 @@ func cashflowPlan(ctx context.Context, db *sql.DB, req request) ([]gold.PlanRow,
 func buildCashflowPlanColumns(outCcy, period string) []columnSpec[gold.PlanRow] {
 	type row = gold.PlanRow
 	cols := []columnSpec[row]{
-		{Name: "period", Align: output.AlignLeft, Extract: func(r row) string {
+		{Name: "period", Align: output.AlignLeft, Date: true, Extract: func(r row) string {
 			switch {
 			case r.Total:
 				return "total"
@@ -309,7 +309,7 @@ func planClassColumns() string {
 
 func buildCashflowSummaryColumnRegistry(outCcy, period string) []columnSpec[gold.CashflowSummaryRow] {
 	return []columnSpec[gold.CashflowSummaryRow]{
-		{Name: "period", Align: output.AlignLeft,
+		{Name: "period", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.CashflowSummaryRow) string { return periodLabel(r.PeriodStart, period) }},
 		{Name: "period_start", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowSummaryRow) string { return periodStart(r.PeriodStart) }},
@@ -356,7 +356,7 @@ var defaultCashflowSummaryColumns = []string{
 
 func buildCashflowFlowColumnRegistry(outCcy, period string) []columnSpec[gold.CashflowFlowRow] {
 	return []columnSpec[gold.CashflowFlowRow]{
-		{Name: "period", Align: output.AlignLeft,
+		{Name: "period", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.CashflowFlowRow) string { return periodLabel(r.PeriodStart, period) }},
 		{Name: "period_start", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowFlowRow) string { return periodStart(r.PeriodStart) }},
@@ -440,7 +440,7 @@ func buildCashflowCoverageColumnRegistry(period string,
 	kindOf func(string) string) []columnSpec[gold.CashflowCoverageRow] {
 	nickname := func(r gold.CashflowCoverageRow) bool { return r.Nickname != nil && r.Account == *r.Nickname }
 	return []columnSpec[gold.CashflowCoverageRow]{
-		{Name: "period", Align: output.AlignLeft,
+		{Name: "period", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.CashflowCoverageRow) string { return periodLabel(r.PeriodStart, period) }},
 		{Name: "period_start", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowCoverageRow) string { return periodStart(r.PeriodStart) }},
@@ -486,9 +486,9 @@ func buildCashflowTransactionColumnRegistry(outCcy string, kindOf func(string) s
 	return []columnSpec[gold.CashflowTransactionRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowTransactionRow) string { return r.SilverSourceID }},
-		{Name: "date", Align: output.AlignLeft,
+		{Name: "date", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.CashflowTransactionRow) string { return formatDate(r.OccurredAt) }},
-		{Name: "datetime", Align: output.AlignLeft,
+		{Name: "datetime", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.CashflowTransactionRow) string { return formatDateTime(r.OccurredAt) }},
 		accountCol(kindOf, ref),
 		accountIDCol("account_id", kindOf, ref),

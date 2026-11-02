@@ -44,7 +44,7 @@ func callTool(t *testing.T, s *mcpServer, tool string, args map[string]any) (str
 		}
 		var out toolOutput
 		if spec.family != nil {
-			out, err = s.runFamily(context.Background(), tool, spec.family, a)
+			out, err = s.runFamily(context.Background(), spec, a)
 		} else {
 			out, err = spec.run(context.Background(), a)
 		}

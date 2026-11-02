@@ -124,7 +124,7 @@ func periodStart(periodStart *int64) string {
 // same way the money headers follow -x/--currency.
 func buildSpendSummaryColumnRegistry(outCcy, period string) []columnSpec[gold.SpendSummaryRow] {
 	return []columnSpec[gold.SpendSummaryRow]{
-		{Name: "period", Align: output.AlignLeft,
+		{Name: "period", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.SpendSummaryRow) string { return periodLabel(r.PeriodStart, period) }},
 		{Name: "period_start", Align: output.AlignLeft,
 			Extract: func(r gold.SpendSummaryRow) string { return periodStart(r.PeriodStart) }},
@@ -141,7 +141,7 @@ var defaultSpendSummaryColumns = []string{
 
 func buildSpendCategoryColumnRegistry(outCcy, period string) []columnSpec[gold.SpendCategoryRow] {
 	return []columnSpec[gold.SpendCategoryRow]{
-		{Name: "period", Align: output.AlignLeft,
+		{Name: "period", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.SpendCategoryRow) string { return periodLabel(r.PeriodStart, period) }},
 		{Name: "period_start", Align: output.AlignLeft,
 			Extract: func(r gold.SpendCategoryRow) string { return periodStart(r.PeriodStart) }},
@@ -176,9 +176,9 @@ func buildSpendTransactionColumnRegistry(outCcy string, kindOf func(string) stri
 	return []columnSpec[gold.SpendTransactionRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(r gold.SpendTransactionRow) string { return r.SilverSourceID }},
-		{Name: "date", Align: output.AlignLeft,
+		{Name: "date", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.SpendTransactionRow) string { return formatDate(r.OccurredAt) }},
-		{Name: "datetime", Align: output.AlignLeft,
+		{Name: "datetime", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.SpendTransactionRow) string { return formatDateTime(r.OccurredAt) }},
 		// A card's display name is "<product> ****1234" on most
 		// issuers, so the account columns carry an account number and

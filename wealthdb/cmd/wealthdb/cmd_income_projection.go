@@ -313,7 +313,7 @@ func positionField(p *yield.Position, get func(*yield.Position) string) string {
 func buildProjectionColumns(outCcy, period string) []columnSpec[yield.ProjectionRow] {
 	type row = yield.ProjectionRow
 	cols := []columnSpec[row]{
-		{Name: "period", Align: output.AlignLeft, Extract: func(r row) string {
+		{Name: "period", Align: output.AlignLeft, Date: true, Extract: func(r row) string {
 			switch {
 			case r.Total:
 				return "total"
@@ -356,12 +356,12 @@ func buildCalendarColumns(outCcy string, kindOf func(string) string) []columnSpe
 	key, name := holdingCols(kindOf, func(r row) string { return r.Holding.Source },
 		func(r row) string { return r.Holding.PositionKey }, calendarPos(func(p *yield.Position) string { return p.Name }))
 	return []columnSpec[row]{
-		strCol("date", func(r row) string {
+		asDate(strCol("date", func(r row) string {
 			if r.Day != nil {
 				return r.Day.Format(time.DateOnly)
 			}
 			return r.Month.Format("2006-01")
-		}),
+		})),
 		strCol("silver_source", func(r row) string { return r.Holding.Source }),
 		accountCol(kindOf, ref),
 		accountIDCol("account_id", kindOf, ref),

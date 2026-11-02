@@ -91,7 +91,7 @@ func resolutionColumns() []columnSpec[resolutionRow] {
 			},
 			Extract: func(r resolutionRow) string { return r.LookupValue }},
 		{Name: "symbol", Align: output.AlignLeft, Extract: func(r resolutionRow) string { return r.Symbol }},
-		{Name: "resolved_at", Align: output.AlignLeft, Extract: func(r resolutionRow) string { return formatDate(r.ResolvedAt) }},
+		{Name: "resolved_at", Align: output.AlignLeft, Date: true, Extract: func(r resolutionRow) string { return formatDate(r.ResolvedAt) }},
 		{Name: "model_name", Align: output.AlignLeft, Extract: func(r resolutionRow) string { return r.ModelName }},
 	}
 }

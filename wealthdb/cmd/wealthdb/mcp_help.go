@@ -42,8 +42,8 @@ Pick the tool by the question:
 
 Conventions:
 - Dates: "2025" is that year, "2025-06" that month, "2025-06-15" that day; also "today", "yesterday", "last month", "last year". from snaps to the start, to and as_of to the end.
-- Every parameter is optional; each description states its default. A filter such as account, category, type or class picks the view that has that column, and the result header says which view ran.
-- One call usually answers the question: a result is one row per entity, category or type for the whole window unless you ask for monthly, quarterly or annual buckets. Answer from it; do not call again to confirm. A total comes from a summary, types or projection view, never from adding up the lines of a calendar or transactions view yourself.
+- Every parameter is optional; each description states its default. A filter such as account, category, type or class, or a condition in filter on any column (["maturity_date = 2027", "value <= -500"]), picks the view that has that column, and the result header says which view ran.
+- One call usually answers the question: a result is one row per entity, category or type for the whole window unless you ask for monthly, quarterly or annual buckets. Answer from it; do not call again to confirm. A total comes from a summary, types or projection view, or from the total line a filtered result ends with, never from adding up the lines of a calendar or transactions view yourself.
 - Each result starts with a header line that states the resolved window or as-of date, the currency and the row count; check it matches the question. A result holds as many rows as fit max_chars; when more exist, the last line says how many, the max_chars that holds them all, and how to narrow.
 - Money columns are plain decimals in the currency named in the header (value_CHF). A blank cell means no value, not zero. In line views money leaving is negative; sort "-value" puts the largest amounts first whatever their sign.
 - In returns, gains, exposure and yield, read the quality column: it names the reason for every n/a or gap. Returns are not additive across views; gains are.
@@ -64,7 +64,7 @@ func (s *mcpServer) instructions(today time.Time) string {
 
 // describeTopics are the conventions describe explains beside the
 // tools, in listing order.
-var describeTopics = []string{"dates", "privacy", "quality", "glossary"}
+var describeTopics = []string{"dates", "filter", "privacy", "quality", "glossary"}
 
 // describe is the help tool: the overview, one tool's long help, or a
 // convention.
@@ -80,6 +80,8 @@ func (s *mcpServer) describeText(ctx context.Context, topic string) (string, err
 		return s.overview(ctx)
 	case "dates":
 		return datesHelp, nil
+	case "filter", "filters":
+		return filterHelp(false), nil
 	case "privacy":
 		return s.privacyHelp(), nil
 	case "quality":
@@ -166,11 +168,9 @@ func (s *mcpServer) toolHelp(t toolSpec) (string, error) {
 	b.WriteString("\nColumns (* = shown by default; columns=all shows every one):\n")
 	empty := &toolArgs{values: map[string]any{}}
 	for _, v := range views {
-		req := request{view: v, currency: cfg.DefaultCurrency, period: "total", method: "both",
-			annualize: "auto", inception: "full", netting: true, investing: "whole"}
-		req.level = map[string]string{"cashflow": "group", "income": "detailed"}[t.name]
-		if req.level == "" {
-			req.level = "primary"
+		req := defaultRequest(v, cfg.DefaultCurrency)
+		if level := map[string]string{"cashflow": "group", "income": "detailed"}[t.name]; level != "" {
+			req.level = level
 		}
 		rep := fam.build(cfg, req, empty)
 		var cols []string
@@ -190,7 +190,13 @@ func (s *mcpServer) toolHelp(t toolSpec) (string, error) {
 	if fam.views != nil {
 		b.WriteString("\nFilters each view takes (a filter the view lacks moves the call to the first finer view that has it):\n")
 		filters := func(v string) string {
-			if fs := fam.carries[v]; len(fs) > 0 {
+			var fs []string
+			for _, f := range fam.carries()[v] {
+				if slices.ContainsFunc(t.params, func(p param) bool { return p.name == f }) {
+					fs = append(fs, f)
+				}
+			}
+			if len(fs) > 0 {
 				return strings.Join(fs, ", ")
 			}
 			return "none"

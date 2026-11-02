@@ -45,13 +45,22 @@ The server exists to read. Never:
 The CLI and the server share each family's `report` runner. Add a view
 to the runner and both front-ends have it; `TestMCPCoversEveryCLIView`
 fails until the tool's view enum names it, and `TestMCPMatchesCLI`
-fails if the two front-ends disagree on a cell. Give the new view its
-filters in the family's `carries` and a case in `TestMCPMatchesCLI`.
+fails if the two front-ends disagree on a cell. Give the new view a case
+in `TestMCPMatchesCLI`; it carries the named filters whose key columns
+it prints.
 
-A new filter needs a parameter, its columns in `filterColumns`, its
-place in `filterOrder`, and its views in the family's `carries`.
-`TestFilterOrderNamesEveryFilter` and `TestEveryCarriedFilterHasAColumn`
-check the last three agree.
+A new named filter needs a parameter, its columns in `filterColumns`,
+its key columns in `filterKeys` and its place in `filterOrder`. The
+views that carry it are derived: those that print a key column. Where
+the column means something else on a view, add the view to the
+family's `excludes`; where a view prints it under another name, to its
+`keyAlias`. `TestDerivedCarries` pins the result, and
+`TestEveryCarriedFilterHasAColumn` checks it against the columns and
+the parameters.
+
+A condition (`filter`, CLI `-F`) needs nothing per view: it reads any
+column the view prints. A new date column is marked `Date` (`dateCol`,
+`asDate`); `TestDateMarksMatchTheCells` finds one that is not.
 
 ## 5. What the model reads
 

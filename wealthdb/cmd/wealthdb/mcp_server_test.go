@@ -508,7 +508,9 @@ func TestMCPStatedIsASideView(t *testing.T) {
 		t.Errorf("empty accounts result points elsewhere:\n%s", text)
 	}
 	for _, c := range []struct{ view, want string }{{"global", "accounts"}, {"stated", "stated"}} {
-		got, ok := escalate(returnsFamily.walk(c.view), returnsFamily.carries, c.view, []string{"account"})
+		got, ok := escalate(returnsFamily.walk(c.view), func(v string) bool {
+			return carriesAll(returnsFamily.carries(), v, []string{"account"})
+		}, c.view)
 		if got != c.want || !ok {
 			t.Errorf("escalate(%s, account) = %s %v, want %s", c.view, got, ok, c.want)
 		}

@@ -256,7 +256,7 @@ func categorizationColumns() []columnSpec[categorizationRow] {
 		{Name: "detailed", Align: output.AlignLeft,
 			Extract: func(r categorizationRow) string { return r.Detailed }},
 		countCol("signature_version", func(r categorizationRow) int64 { return int64(r.Version) }),
-		{Name: "assigned_at", Align: output.AlignLeft,
+		{Name: "assigned_at", Align: output.AlignLeft, Date: true,
 			Extract: func(r categorizationRow) string { return formatDate(r.AssignedAt) }},
 		{Name: "model_name", Align: output.AlignLeft,
 			Extract: func(r categorizationRow) string { return r.ModelName }},

@@ -270,7 +270,7 @@ func (s *mcpServer) handler(t toolSpec) mcp.ToolHandler {
 		var out toolOutput
 		if err == nil {
 			if t.family != nil {
-				out, err = s.runFamily(ctx, t.name, t.family, a)
+				out, err = s.runFamily(ctx, t, a)
 			} else {
 				out, err = t.run(ctx, a)
 			}

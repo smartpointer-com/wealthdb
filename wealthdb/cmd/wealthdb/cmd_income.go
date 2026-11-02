@@ -124,7 +124,7 @@ func incomeReport(req request) *report {
 
 func buildIncomeSummaryColumnRegistry(outCcy, period string) []columnSpec[gold.IncomeSummaryRow] {
 	return []columnSpec[gold.IncomeSummaryRow]{
-		{Name: "period", Align: output.AlignLeft,
+		{Name: "period", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.IncomeSummaryRow) string { return periodLabel(r.PeriodStart, period) }},
 		{Name: "period_start", Align: output.AlignLeft,
 			Extract: func(r gold.IncomeSummaryRow) string { return periodStart(r.PeriodStart) }},
@@ -146,7 +146,7 @@ var defaultIncomeSummaryColumns = []string{
 
 func buildIncomeTypeColumnRegistry(outCcy, period string) []columnSpec[gold.IncomeTypeRow] {
 	return []columnSpec[gold.IncomeTypeRow]{
-		{Name: "period", Align: output.AlignLeft,
+		{Name: "period", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.IncomeTypeRow) string { return periodLabel(r.PeriodStart, period) }},
 		{Name: "period_start", Align: output.AlignLeft,
 			Extract: func(r gold.IncomeTypeRow) string { return periodStart(r.PeriodStart) }},
@@ -177,9 +177,9 @@ func buildIncomeTransactionColumnRegistry(outCcy string, kindOf func(string) str
 	return []columnSpec[gold.IncomeTransactionRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(r gold.IncomeTransactionRow) string { return r.SilverSourceID }},
-		{Name: "date", Align: output.AlignLeft,
+		{Name: "date", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.IncomeTransactionRow) string { return formatDate(r.OccurredAt) }},
-		{Name: "datetime", Align: output.AlignLeft,
+		{Name: "datetime", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.IncomeTransactionRow) string { return formatDateTime(r.OccurredAt) }},
 		accountCol(kindOf, ref),
 		accountIDCol("account_id", kindOf, ref),

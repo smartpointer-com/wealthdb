@@ -148,10 +148,30 @@ enrichment dumps, and `describe`. The design rules:
 3. Enums wherever the CLI has a vocabulary, matched in any case; a
    number sent for a string, or a word for a boolean, reads as meant.
    An unknown parameter or value is an error that names the fix.
-4. Row filters, `search`, `sort`, `limit` and `offset` on every table,
-   applied after the report has run, so shares are still shares of the
-   whole.
-5. Every result starts with one header line, then a markdown table
+4. Row filters, `search`, `filter`, `sort`, `limit` and `offset` on
+   every table, applied after the report has run, so shares are still
+   shares of the whole. `filter` is a list of conditions, each one
+   string `column op value`, all of which hold. They read the printed
+   cells, privacy applied, so the privacy endpoint cannot be probed:
+   - A condition names any column the view prints. The value is the
+     rest of the string, unquoted. A date value is a period, and money
+     compares signed.
+   - SQL habits (`==`, `is null`, `like`, `between`, a leading `WHERE`)
+     read as meant, and the header echoes each condition in canonical
+     form. `or`, functions and an object are refused with the fix.
+   - Every bad condition is one line of the reply, before gold opens.
+   - A filtered result ends with the total of its money columns, over
+     every matching row. A balance view adds up within one period only,
+     and the privacy endpoint shows no total.
+
+   The parser and the row layer are shared with the CLI's `-F`, so the
+   two front-ends agree on every row and every message.
+5. A view carries a named filter (`account`, `symbol`, `kind`, …)
+   exactly when it prints the filter's key column: the carries are
+   derived from the registries. A family excludes a view where the
+   column means something else, such as a source's `tax_wrapper`,
+   which is its accounts' common one.
+6. Every result starts with one header line, then a markdown table
    (`csv` and `json` on request), then a paging line when cut.
 
 The descriptions and instructions are tuned against small local models
@@ -162,8 +182,9 @@ answers or extra round trips such a model otherwise makes:
   Without them a model reads "last year" as two years ago.
 - **A filter picks its view.** A model starts at the default view and
   adds a filter (`spending` with a category, `holdings` with a tax
-  wrapper). The first view at or after the requested one that carries
-  every named filter runs, and the header says so.
+  wrapper, a condition on `merchant`). The first view at or after the
+  requested one that carries every named filter and prints every
+  condition's column runs, and the header says so.
 - **Money sorts by magnitude.** Spending lines are negative, so a plain
   descending sort puts the smallest purchase first.
 - **A category filter implies the detailed vocabulary.** "Groceries" is
@@ -174,7 +195,10 @@ answers or extra round trips such a model otherwise makes:
   `value`, `amount` or the family's own word name the view's main money
   column (on `returns`, the return).
 - **An empty filtered result lists the values the column takes,** so a
-  guessed section or class is corrected by the next call.
+  guessed section or class is corrected by the next call. With
+  conditions it says how many rows each kept, the values nearest first
+  (`US` for `United States`), and the mirrored bound for money signed
+  the other way.
 - **The instructions name the data's scope:** property and loans are
   accounts like any other, and mortgage and plan payments are in
   `cashflow`.

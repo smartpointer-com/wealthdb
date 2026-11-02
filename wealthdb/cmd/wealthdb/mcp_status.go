@@ -56,15 +56,15 @@ func statusColumns() []columnSpec[statusRow] {
 		}},
 		{Name: "positions", Align: output.AlignRight, Extract: count(func(s *gold.SourceStatus) int { return s.PositionsCount })},
 		{Name: "transactions", Align: output.AlignRight, Extract: count(func(s *gold.SourceStatus) int { return s.TransactionsCount })},
-		{Name: "first_snapshot", Align: output.AlignLeft, Extract: date(func(s *gold.SourceStatus) int64 { return s.OldestSnapshotAt })},
-		{Name: "latest_snapshot", Align: output.AlignLeft, Extract: date(func(s *gold.SourceStatus) int64 { return s.LatestSnapshotAt })},
-		{Name: "latest_transaction", Align: output.AlignLeft, Extract: date(func(s *gold.SourceStatus) int64 { return s.LatestTransactionAt })},
+		{Name: "first_snapshot", Align: output.AlignLeft, Date: true, Extract: date(func(s *gold.SourceStatus) int64 { return s.OldestSnapshotAt })},
+		{Name: "latest_snapshot", Align: output.AlignLeft, Date: true, Extract: date(func(s *gold.SourceStatus) int64 { return s.LatestSnapshotAt })},
+		{Name: "latest_transaction", Align: output.AlignLeft, Date: true, Extract: date(func(s *gold.SourceStatus) int64 { return s.LatestTransactionAt })},
 		// When a run last read the source, whether or not anything had
 		// changed: a source that marks quarterly is current through its
 		// latest download, not its latest snapshot.
-		{Name: "observed_holdings", Align: output.AlignLeft, Extract: date(func(s *gold.SourceStatus) int64 { return s.ObservedSnapshotsThrough })},
-		{Name: "observed_ledger", Align: output.AlignLeft, Extract: date(func(s *gold.SourceStatus) int64 { return s.ObservedTransactionsThrough })},
-		{Name: "last_loaded", Align: output.AlignLeft, Extract: func(r statusRow) string {
+		{Name: "observed_holdings", Align: output.AlignLeft, Date: true, Extract: date(func(s *gold.SourceStatus) int64 { return s.ObservedSnapshotsThrough })},
+		{Name: "observed_ledger", Align: output.AlignLeft, Date: true, Extract: date(func(s *gold.SourceStatus) int64 { return s.ObservedTransactionsThrough })},
+		{Name: "last_loaded", Align: output.AlignLeft, Date: true, Extract: func(r statusRow) string {
 			if r.st == nil {
 				return ""
 			}
@@ -208,7 +208,7 @@ func statusDetail(ctx context.Context, db *sql.DB, cfg *config.Config, id string
 func snapshotColumns() []columnSpec[snapshotRow] {
 	return []columnSpec[snapshotRow]{
 		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r snapshotRow) string { return r.source }},
-		{Name: "date", Align: output.AlignLeft, Extract: func(r snapshotRow) string { return r.date }},
+		{Name: "date", Align: output.AlignLeft, Date: true, Extract: func(r snapshotRow) string { return r.date }},
 		countCol("snapshots", func(r snapshotRow) int64 { return int64(r.count) }),
 	}
 }

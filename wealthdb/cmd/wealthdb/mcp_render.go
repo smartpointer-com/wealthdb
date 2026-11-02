@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -51,6 +53,84 @@ type page struct {
 	narrow string
 	// empty explains a result with no rows; it is set exactly then.
 	empty string
+	// totals are the total line's sums over every row of the result.
+	totals []columnTotal
+}
+
+// totalRule says how a view's money adds up over its rows.
+type totalRule int
+
+const (
+	noTotal      totalRule = iota
+	flowTotal              // lines and buckets over a window: any rows add up
+	balanceTotal           // values at a date: rows add up within one period
+)
+
+// columnTotal is one money column's sum over a result's rows.
+type columnTotal struct {
+	header, sum string
+}
+
+// totals sums each shown money column in the output currency over the
+// rows at idx, under rule: a balance view adds up only within one
+// period, so a series of more than one has no total.
+func totals(rs *resultSet, idx, cols []int, currency string, rule totalRule) []columnTotal {
+	if rule == noTotal || len(idx) == 0 || currency == "" {
+		return nil
+	}
+	if rule == balanceTotal {
+		for i, c := range rs.rep.columns {
+			if c.name == "period" && len(distinctAt(rs.cells, idx, i)) > 1 {
+				return nil
+			}
+		}
+	}
+	var out []columnTotal
+	for _, col := range cols {
+		c := rs.rep.columns[col]
+		if c.privacy != PrivacyMoney || !strings.HasSuffix(c.header, "_"+currency) {
+			continue
+		}
+		var cents int64
+		for _, i := range idx {
+			if f, err := strconv.ParseFloat(strings.TrimSpace(rs.cells[i][col]), 64); err == nil {
+				cents += int64(math.Round(f * 100))
+			}
+		}
+		out = append(out, columnTotal{header: c.header, sum: formatCentsInt(cents)})
+	}
+	return out
+}
+
+// formatCentsInt prints cents as a decimal with two places.
+func formatCentsInt(cents int64) string {
+	sign := ""
+	if cents < 0 {
+		sign, cents = "-", -cents
+	}
+	return fmt.Sprintf("%s%d.%02d", sign, cents/100, cents%100)
+}
+
+// distinctAt is the distinct cells of column col over the rows at idx.
+func distinctAt(cells [][]string, idx []int, col int) map[string]bool {
+	seen := map[string]bool{}
+	for _, i := range idx {
+		seen[cells[i][col]] = true
+	}
+	return seen
+}
+
+// totalLine is the total line of a page with totals: the rows it sums
+// and each column's sum.
+func (p page) totalLine() string {
+	if len(p.totals) == 0 {
+		return ""
+	}
+	parts := make([]string, len(p.totals))
+	for i, t := range p.totals {
+		parts[i] = t.header + " " + t.sum
+	}
+	return fmt.Sprintf("total of %s %s: %s\n", thousands(len(p.idx)), plural(len(p.idx), "row", "rows"), strings.Join(parts, ", "))
 }
 
 // cutInfo is what the paging line says of a page that does not hold the
@@ -132,6 +212,8 @@ type jsonResult struct {
 	CharsPerRow   int           `json:"chars_per_row,omitempty"`
 	Narrow        string        `json:"narrow,omitempty"`
 	WidestColumns []columnShare `json:"widest_columns,omitempty"`
+	// Totals are the total line's sums over every matching row.
+	Totals map[string]string `json:"totals,omitempty"`
 	// Note explains an empty result: why it may be empty, and the
 	// values the filters' columns take.
 	Note string `json:"note,omitempty"`
@@ -269,6 +351,7 @@ func textLayout(t output.Table, head, cols string, always bool, rows []string, p
 		for _, r := range rows[from:to] {
 			b.WriteString(r)
 		}
+		b.WriteString(p.totalLine())
 		b.WriteString(p.empty)
 		if c != nil {
 			b.WriteString(c.line())
@@ -302,6 +385,12 @@ func jsonLayout(rs *resultSet, p page, cols []int, head resultHeader, meta resul
 		}
 		if res.Rows == nil {
 			res.Rows = []map[string]string{}
+		}
+		if len(p.totals) > 0 {
+			res.Totals = map[string]string{}
+			for _, t := range p.totals {
+				res.Totals[t.header] = t.sum
+			}
 		}
 		if c != nil {
 			res.Offset = c.offset

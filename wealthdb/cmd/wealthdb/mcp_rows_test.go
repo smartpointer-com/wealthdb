@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -384,17 +385,66 @@ func TestEscalate(t *testing.T) {
 		{"positions", []string{"tax_wrapper"}, "positions", false},
 		{"global", []string{"symbol", "tax_wrapper"}, "global", false},
 	} {
-		got, ok := escalate(f.views, f.carries, c.view, c.filters)
+		got, ok := escalate(f.views, func(v string) bool { return carriesAll(f.carries(), v, c.filters) }, c.view)
 		if got != c.want || ok != c.ok {
 			t.Errorf("escalate(%s, %v) = %s %v, want %s %v", c.view, c.filters, got, ok, c.want, c.ok)
 		}
 	}
 }
 
-// TestEveryCarriedFilterHasAColumn holds the view-filter table against
-// the registries: a filter a view claims must read a column the view
-// has, or it would match nothing.
+// TestDerivedCarries pins what the derivation adds to the hand-kept
+// lists it replaced, and what the families exclude because the key
+// column means something else there. A view that gains a key column
+// fails here, to be added or excluded.
+func TestDerivedCarries(t *testing.T) {
+	t.Parallel()
+	want := map[string]map[string][]string{
+		"holdings": {"sources": {"source"}, "portfolios": {"source"}, "accounts": {"source", "account", "tax_wrapper"},
+			"positions": {"source", "account", "symbol", "asset_class"}},
+		"returns": {"sources": {"source"}, "portfolios": {"source"}, "accounts": {"source", "account"},
+			"stated": {"source", "account"}},
+		"gains": {"sources": {"source"}, "portfolios": {"source"}, "accounts": {"source", "account", "tax_wrapper"},
+			"positions": {"source", "account", "symbol", "asset_class"}, "realized": {"source", "account", "symbol", "term"},
+			"lots": {"source", "account", "symbol", "term"}, "coverage": {"source", "account", "tax_wrapper"},
+			"check": {"source", "account"}},
+		"yield": {"sources": {"source"}, "portfolios": {"source"}, "accounts": {"source", "account", "tax_wrapper"},
+			"positions":  {"source", "account", "symbol", "kind", "asset_class", "tax_wrapper"},
+			"securities": {"asset_class"}, "funds": {"symbol", "kind"},
+			"cash": {"source", "account", "symbol", "kind", "tax_wrapper"}, "coverage": {"source", "account", "section"}},
+		"income": {"types": {"type"}, "transactions": {"source", "account", "type", "payer"},
+			"calendar": {"source", "account", "symbol", "type", "kind"}, "sources": {"source"}, "portfolios": {"source"},
+			"accounts": {"source", "account", "tax_wrapper"}, "positions": {"source", "account", "symbol", "tax_wrapper"}},
+		"spending": {"categories": {"category"}, "transactions": {"source", "account", "category", "kind", "merchant"}},
+	}
+	for _, rf := range reportFamilies {
+		w, ok := want[rf.name]
+		if !ok {
+			continue
+		}
+		for _, v := range rf.fam.viewsOrOne() {
+			if got := rf.fam.carries()[v]; !slices.Equal(got, w[v]) {
+				t.Errorf("%s %s carries %v, want %v", rf.name, v, got, w[v])
+			}
+		}
+	}
+}
+
+// TestEveryCarriedFilterHasAColumn holds the derived carries against
+// the named filters' columns and the tools' parameters: a filter a view
+// carries must read a column the view has, or it would match nothing.
 func TestEveryCarriedFilterHasAColumn(t *testing.T) {
+	// The named filters a view carries that its tool offers no
+	// parameter for: a condition on the column does their job.
+	toolLacks := map[string][]string{
+		"exposure":     {"source", "account", "asset_class", "kind", "section", "symbol"},
+		"yield":        {"source", "account", "kind", "asset_class", "tax_wrapper", "section"},
+		"transactions": {"merchant", "payer", "asset_class"},
+		"spending":     {"kind"},
+		"income":       {"tax_wrapper"},
+		"cashflow":     {"category", "kind"},
+		"returns":      {},
+		"resolutions":  {"symbol"},
+	}
 	t.Parallel()
 	s := newTestMCP("", false)
 	for _, tool := range s.tools() {
@@ -409,7 +459,7 @@ func TestEveryCarriedFilterHasAColumn(t *testing.T) {
 		for _, v := range views {
 			req := request{view: v, currency: "USD", period: "total", level: "primary", method: "both", investing: "whole"}
 			rep := fam.build(nil, req, &toolArgs{values: map[string]any{}})
-			for _, f := range fam.carries[v] {
+			for _, f := range fam.carries()[v] {
 				if len(newRowFilter(rep, f, "x").cols) == 0 {
 					t.Errorf("%s %s carries %s, but has none of its columns %v", tool.name, v, f, filterColumns[f])
 				}
@@ -417,7 +467,7 @@ func TestEveryCarriedFilterHasAColumn(t *testing.T) {
 				for _, p := range tool.params {
 					found = found || p.name == f
 				}
-				if !found {
+				if !found && !slices.Contains(toolLacks[tool.name], f) {
 					t.Errorf("%s %s carries %s, which is not one of the tool's parameters", tool.name, v, f)
 				}
 			}

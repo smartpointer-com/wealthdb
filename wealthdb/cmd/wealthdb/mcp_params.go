@@ -17,6 +17,7 @@ const (
 	paramString paramKind = iota
 	paramInteger
 	paramBoolean
+	paramStrings // a list of strings; one string reads as a list of one
 )
 
 // param is one tool parameter. The input schema, describe's listing
@@ -106,6 +107,8 @@ func decodeParam(p param, raw json.RawMessage) (v any, given bool, err error) {
 		return nil, false, nil
 	}
 	switch p.kind {
+	case paramStrings:
+		return decodeStrings(x)
 	case paramInteger:
 		var f float64
 		switch t := x.(type) {
@@ -167,6 +170,202 @@ func decodeParam(p param, raw json.RawMessage) (v any, given bool, err error) {
 		return nil, false, fmt.Errorf("%q is not one of its values; use %s", s, orList(p.enum))
 	}
 	return low, true, nil
+}
+
+// decodeStrings reads a list of strings: one string is a list of one, a
+// number or a boolean its text, and blank items are dropped. An object,
+// alone or in the list, in any of the dialects a model writes one in, is
+// refused with the whole filter restated as strings.
+func decodeStrings(x any) (any, bool, error) {
+	items, ok := x.([]any)
+	if !ok {
+		items = []any{x}
+	}
+	var out []string
+	object := false
+	for _, item := range items {
+		switch t := item.(type) {
+		case string:
+			if t = strings.TrimSpace(t); t != "" {
+				out = append(out, t)
+			}
+		case float64:
+			out = append(out, strconv.FormatFloat(t, 'f', -1, 64))
+		case bool:
+			out = append(out, strconv.FormatBool(t))
+		case map[string]any:
+			object = true
+		default:
+			return nil, false, fmt.Errorf("must be a list of condition strings")
+		}
+	}
+	if object {
+		return nil, false, objectFilterError(items)
+	}
+	return out, len(out) > 0, nil
+}
+
+// objectOps are the operator spellings of the object dialects a model
+// writes: MongoDB's $gte, a bare gte, and the operator itself as a key.
+var objectOps = map[string]string{
+	"eq": "=", "ne": "!=", "neq": "!=", "lt": "<", "lte": "<=", "le": "<=", "gt": ">", "gte": ">=", "ge": ">=",
+	"in": "in", "nin": "not in", "not_in": "not in", "contains": "contains", "like": "contains", "regex": "contains",
+	"=": "=", "==": "=", "!=": "!=", "<>": "!=", "<": "<", "<=": "<=", ">": ">", ">=": ">=",
+}
+
+// objectFilterError restates an object filter as condition strings:
+// {"value": {"$gte": 100}}, {"value": {"gte": 100}}, {"value": {">=": 100}},
+// {"date": "< 2020-01-01"}, {"category": "Rent"} and
+// {"column": "value", "op": ">", "value": 100} all read as the strings
+// they mean, a string item beside them as itself. An $or is refused as
+// "or" is, one call per branch.
+func objectFilterError(items []any) error {
+	var conds []string
+	var branches [][]string
+	for _, item := range items {
+		switch t := item.(type) {
+		case string:
+			if t = strings.TrimSpace(t); t != "" {
+				conds = append(conds, t)
+			}
+		case map[string]any:
+			c, or := objectConditions(t)
+			conds = append(conds, c...)
+			if or != nil {
+				branches = or
+			}
+		}
+	}
+	front := filterFront{}
+	if branches != nil {
+		for i := range branches {
+			branches[i] = append(branches[i], conds...)
+		}
+		return fmt.Errorf("is a list of condition strings, not an object, and every condition must hold, so $or cannot join them; %s",
+			front.alternatives(branches))
+	}
+	return fmt.Errorf("is a list of condition strings, not an object; send %s", front.list(conds...))
+}
+
+// objectConditions are the conditions one object states, and the
+// branches of an $or in it.
+func objectConditions(obj map[string]any) (conds []string, or [][]string) {
+	// The column, operator and value dialect.
+	col, hasCol := firstKey(obj, "column", "field", "col", "name")
+	op, hasOp := firstKey(obj, "op", "operator")
+	if hasCol && hasOp {
+		o := fmt.Sprint(op)
+		if mapped, ok := objectOps[strings.ToLower(strings.TrimPrefix(o, "$"))]; ok {
+			o = mapped
+		}
+		return []string{fmt.Sprint(col) + " " + o + " " + objectValue(obj["value"])}, nil
+	}
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		switch strings.ToLower(key) {
+		case "$and", "and":
+			for _, sub := range asObjects(obj[key]) {
+				c, _ := objectConditions(sub)
+				conds = append(conds, c...)
+			}
+			continue
+		case "$or", "or":
+			for _, sub := range asObjects(obj[key]) {
+				c, _ := objectConditions(sub)
+				or = append(or, c)
+			}
+			continue
+		}
+		switch v := obj[key].(type) {
+		case map[string]any:
+			ops := make([]string, 0, len(v))
+			for k := range v {
+				ops = append(ops, k)
+			}
+			sort.Strings(ops)
+			for _, k := range ops {
+				name := strings.ToLower(strings.TrimPrefix(k, "$"))
+				o, ok := objectOps[name]
+				switch {
+				case name == "exists":
+					b, _ := v[k].(bool)
+					conds = append(conds, key+" "+map[bool]string{true: "is not empty", false: "is empty"}[b])
+					continue
+				case v[k] == nil && (o == "=" || o == "!="):
+					conds = append(conds, key+" "+map[string]string{"=": "is empty", "!=": "is not empty"}[o])
+					continue
+				case !ok:
+					o = strings.TrimPrefix(k, "$")
+				}
+				conds = append(conds, key+" "+o+" "+objectValue(v[k]))
+			}
+		case string:
+			if _, sp, ok := findOperator(" " + strings.TrimSpace(v)); ok && sp.op != nil && strings.HasPrefix(strings.TrimSpace(v), sp.text) {
+				conds = append(conds, key+" "+strings.TrimSpace(v))
+			} else {
+				conds = append(conds, key+" = "+v)
+			}
+		case nil:
+			conds = append(conds, key+" is empty")
+		default:
+			conds = append(conds, key+" = "+objectValue(v))
+		}
+	}
+	return conds, or
+}
+
+// firstKey is the value of the first of names obj has.
+func firstKey(obj map[string]any, names ...string) (any, bool) {
+	for _, n := range names {
+		if v, ok := obj[n]; ok {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+// asObjects is v's objects: a list's, or v itself.
+func asObjects(v any) []map[string]any {
+	var out []map[string]any
+	switch t := v.(type) {
+	case map[string]any:
+		out = append(out, t)
+	case []any:
+		for _, x := range t {
+			if m, ok := x.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+	}
+	return out
+}
+
+// objectValue spells an object filter's value: a list as a comma list,
+// an item that holds a comma in quotes.
+func objectValue(v any) string {
+	switch t := v.(type) {
+	case []any:
+		parts := make([]string, len(t))
+		for i, x := range t {
+			parts[i] = quoteListItem(objectValue(x), true)
+		}
+		return strings.Join(parts, ", ")
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	case nil:
+		return ""
+	}
+	return fmt.Sprint(v)
+}
+
+// strs is a list parameter, nil when not given.
+func (a *toolArgs) strs(name string) []string {
+	l, _ := a.values[name].([]string)
+	return l
 }
 
 // unknownParamError names the parameters the tool does take, and the

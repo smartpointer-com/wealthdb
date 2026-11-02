@@ -9,14 +9,17 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 // The MCP server's row layer: what it does to a report's rows after
-// the report has run. The CLI has none of this because a shell has jq;
-// a model has nothing to pipe into. Aggregates and shares are computed
-// before any of it, as the CLI computes them, so a filtered categories
-// result still shows each category's share of the whole bucket.
+// the report has run. The named filters, search, sort and the column
+// names here are the server's alone, because a shell has jq and a model
+// has nothing to pipe into; the conditions (rowfilter.go) are shared
+// with the CLI. Aggregates and shares are computed before any of it, as
+// the CLI computes them, so a filtered categories result still shows
+// each category's share of the whole bucket.
 
 // filterColumns maps each named row filter to the registry columns it
 // reads: the label spelling and the id spelling of the same thing, so
@@ -37,6 +40,15 @@ var filterColumns = map[string][]string{
 	"asset_class": {"asset_class"},
 	"tax_wrapper": {"tax_wrapper"},
 	"term":        {"term"},
+}
+
+// filterKeys are the columns that make a view carry a named filter: a
+// view carries it exactly when it prints one of them (family.carries).
+var filterKeys = map[string][]string{
+	"source": {"silver_source"}, "account": {"account"}, "symbol": {"symbol"}, "category": {"category", "detailed"},
+	"type": {"type", "income_type"}, "kind": {"kind"}, "merchant": {"merchant"}, "payer": {"payer"},
+	"section": {"section"}, "class": {"class"}, "group": {"group"}, "asset_class": {"asset_class"},
+	"tax_wrapper": {"tax_wrapper"}, "term": {"term"},
 }
 
 // filterOrder is the order filters are applied and reported in.
@@ -455,17 +467,58 @@ func (l columnLookup) pick(expr string, defaults []string) ([]int, []string, err
 	return out, notes, nil
 }
 
+// carries are the named filters each view takes, by view ("" for a
+// tool of one shape): those whose key column (filterKeys, or the
+// family's keyAlias) the view prints, but its excludes. Derived once
+// from the registries, so a column a view gains brings its filter.
+func (fam *family) carries() map[string][]string {
+	fam.derive.Do(func() {
+		fam.carried = map[string][]string{}
+		cfg := &config.Config{DefaultCurrency: "USD"}
+		for _, v := range fam.viewsOrOne() {
+			printed := map[string]bool{}
+			for _, c := range fam.build(cfg, defaultRequest(v, "USD"), &toolArgs{values: map[string]any{}}).columns {
+				printed[c.name] = true
+			}
+			for _, f := range filterOrder {
+				keys := filterKeys[f]
+				if alias := fam.keyAlias[v][f]; alias != "" {
+					keys = append(slices.Clone(keys), alias)
+				}
+				if slices.ContainsFunc(keys, func(k string) bool { return printed[k] }) && !slices.Contains(fam.excludes[v], f) {
+					fam.carried[v] = append(fam.carried[v], f)
+				}
+			}
+		}
+	})
+	return fam.carried
+}
+
+// viewsOrOne is the family's views, or the one shape ("") of a tool
+// that has none.
+func (fam *family) viewsOrOne() []string {
+	if fam.views == nil {
+		return []string{""}
+	}
+	return fam.views
+}
+
+// defaultRequest is a request for view with every option at its
+// default: what describe lists a view's columns from, and what the
+// view walk and the derived carries read a view's columns from.
+func defaultRequest(view, currency string) request {
+	return request{view: view, currency: currency, period: "total", method: "both", annualize: "auto",
+		inception: "full", netting: true, investing: "whole", level: "primary"}
+}
+
 // escalate picks the view a call's filters need. A small model starts
 // at the coarse default view and adds a filter — spending with a
-// category, holdings with a tax wrapper — and the coarse view has no
-// such column. Instead of failing, the first view at or after the
-// requested one, coarse to fine, that carries every named filter
-// runs. ok is false when no view carries them all; the requested view
-// is returned and the caller says which views carry which filter.
-func escalate(views []string, carries map[string][]string, view string, filters []string) (string, bool) {
-	if len(filters) == 0 {
-		return view, true
-	}
+// category, holdings with a tax wrapper, a condition on a column only a
+// finer view prints — and the coarse view has no such column. Instead
+// of failing, the first view at or after the requested one, coarse to
+// fine, that fits runs. ok is false when none fits; the requested view
+// is returned and the caller says why.
+func escalate(views []string, fits func(view string) bool, view string) (string, bool) {
 	start := 0
 	for i, v := range views {
 		if v == view {
@@ -473,7 +526,7 @@ func escalate(views []string, carries map[string][]string, view string, filters 
 		}
 	}
 	for _, v := range views[start:] {
-		if carriesAll(carries, v, filters) {
+		if fits(v) {
 			return v, true
 		}
 	}

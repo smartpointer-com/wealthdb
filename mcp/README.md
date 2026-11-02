@@ -154,7 +154,18 @@ Fourteen tools, every parameter optional:
 | `describe` | help on any tool, column or term |
 
 Each tool also filters, sorts and pages its rows, because a model has no
-`jq` to pipe a result into. The tools are written for small local models
+`jq` to pipe a result into. A filter is a list of conditions on the
+columns a view prints, and a row is kept when all of them hold. This call
+asks for the bonds that mature by the end of 2030:
+
+```json
+{"view": "positions", "filter": ["asset_class = fixed_income", "maturity_date <= 2030"]}
+```
+
+The result's header restates each condition as read
+(`maturity_date <= 2030 (to 2030-12-31)`), and its last line is the total
+of the matching rows' value. `describe(topic=filter)` lists the
+operators. The tools are written for small local models
 as well as large ones: one call usually answers a question. The server's
 instructions and `describe` explain the rest to the model.
 

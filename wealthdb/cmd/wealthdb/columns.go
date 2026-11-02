@@ -17,9 +17,12 @@ import (
 // type the Extract function takes, such as gold.PositionRow or
 // gold.TransactionRow.
 type columnSpec[T any] struct {
-	Name    string
-	Header  string // empty ⇒ same as Name (use for dynamic headers like value_<CCY>)
-	Align   output.Alignment
+	Name   string
+	Header string // empty ⇒ same as Name (use for dynamic headers like value_<CCY>)
+	Align  output.Alignment
+	// Date marks a column whose cells are dates or periods: a filter
+	// condition reads its value through the date grammar.
+	Date    bool
 	Extract func(T) string
 	// Privacy controls how the cell is redacted when the
 	// caller runs in privacy mode (`-p` / `--privacy` on the
@@ -548,6 +551,12 @@ func strCol[T any](name string, get func(T) string) columnSpec[T] {
 	return columnSpec[T]{Name: name, Align: output.AlignLeft, Extract: get}
 }
 
+// asDate marks c as a date column: its cells are dates or periods.
+func asDate[T any](c columnSpec[T]) columnSpec[T] {
+	c.Date = true
+	return c
+}
+
 // qualityCol is a report's quality column.
 func qualityCol[T any](get func(T) string) columnSpec[T] { return strCol("quality", get) }
 
@@ -627,7 +636,7 @@ func strOrEmpty(p *string) string {
 // dateCol is a date column, blank where the epoch is 0: a source that
 // has produced no observations at all.
 func dateCol[T any](name string, get func(T) int64) columnSpec[T] {
-	return columnSpec[T]{Name: name, Align: output.AlignLeft, Extract: func(r T) string {
+	return columnSpec[T]{Name: name, Align: output.AlignLeft, Date: true, Extract: func(r T) string {
 		if epoch := get(r); epoch != 0 {
 			return formatDate(epoch)
 		}
@@ -637,7 +646,7 @@ func dateCol[T any](name string, get func(T) int64) columnSpec[T] {
 
 // datePtrCol is a date column, blank for nil.
 func datePtrCol[T any](name string, get func(T) *int64) columnSpec[T] {
-	return columnSpec[T]{Name: name, Align: output.AlignLeft, Extract: func(r T) string {
+	return columnSpec[T]{Name: name, Align: output.AlignLeft, Date: true, Extract: func(r T) string {
 		if epoch := get(r); epoch != nil {
 			return formatDate(*epoch)
 		}

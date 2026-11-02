@@ -219,9 +219,9 @@ func buildGainsBucketColumnRegistry(outCcy, period string, grain gold.GainsGrain
 				Extract: func(r row) string { return strOrEmpty(r.RelationshipID) }})
 	}
 	return append(ids,
-		col{Name: "period", Align: output.AlignLeft,
+		col{Name: "period", Align: output.AlignLeft, Date: true,
 			Extract: func(r row) string { return periodLabel(r.PeriodStart, period) }},
-		col{Name: "period_start", Align: output.AlignLeft,
+		col{Name: "period_start", Align: output.AlignLeft, Date: true,
 			Extract: func(r row) string { return periodStart(r.PeriodStart) }},
 		outCcyCol("realized", outCcy, func(r row) *string { return r.Realized }),
 		outCcyCol("realized_short", outCcy, func(r row) *string { return r.RealizedShort }),
@@ -297,7 +297,7 @@ func buildGainsPositionColumnRegistry(outCcy string, kindOf func(string) string)
 		{Name: "unrealized_pct", Align: output.AlignRight,
 			Extract: func(r row) string { return formatPctOrBlank(r.UnrealizedRatio) }},
 		textCol("basis_stamp", func(r row) *string { return r.BasisStamp }),
-		textCol("acquisition_date", func(r row) *string { return r.AcquisitionDate }),
+		asDate(textCol("acquisition_date", func(r row) *string { return r.AcquisitionDate })),
 		countCol("lots", func(r row) int64 { return r.OpenLots }),
 		{Name: "quality", Align: output.AlignLeft, Extract: func(r row) string { return r.Quality }},
 	}
@@ -380,7 +380,7 @@ func buildOpenLotColumnRegistry(outCcy string, kindOf func(string) string) []col
 		func(r row) string { return r.PositionKey }, func(r row) string { return strOrEmpty(r.Name) })
 	return []col{
 		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r row) string { return r.SilverSourceID }},
-		{Name: "snapshot_date", Align: output.AlignLeft, Extract: func(r row) string { return formatDate(r.SnapshotAt) }},
+		{Name: "snapshot_date", Align: output.AlignLeft, Date: true, Extract: func(r row) string { return formatDate(r.SnapshotAt) }},
 		accountCol(kindOf, ref),
 		accountIDCol("account_id", kindOf, ref),
 		nicknameCol("account_nickname", func(r row) *string { return r.Nickname }),
@@ -388,7 +388,7 @@ func buildOpenLotColumnRegistry(outCcy string, kindOf func(string) string) []col
 		name,
 		key,
 		typedIDCol("lot_id", kindOf, func(r row) (string, string) { return r.SilverSourceID, r.LotKey }),
-		textCol("acquisition_date", func(r row) *string { return r.AcquisitionDate }),
+		asDate(textCol("acquisition_date", func(r row) *string { return r.AcquisitionDate })),
 		intPtrCol("held_days", func(r row) *int64 { return r.HeldDays }),
 		textCol("term", func(r row) *string { return r.Term }),
 		yesNoCol("covered", func(r row) *bool { return r.Covered }),

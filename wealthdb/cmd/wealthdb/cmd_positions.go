@@ -45,11 +45,11 @@ func buildColumnRegistry(outCcy string, kindOf func(string) string, categories t
 	return []columnSpec[gold.PositionRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(r gold.PositionRow) string { return r.SilverSourceID }},
-		{Name: "snapshot_date", Align: output.AlignLeft,
+		{Name: "snapshot_date", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.PositionRow) string { return formatDate(r.SnapshotAt) }},
 		// The date the mark is from: the snapshot date, unless a read
 		// dated the snapshot after the marks it found unchanged.
-		{Name: "valued_date", Align: output.AlignLeft,
+		{Name: "valued_date", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.PositionRow) string { return formatDate(r.ValuedAt) }},
 		accountCol(kindOf, ref),
 		accountIDCol("account_id", kindOf, ref),

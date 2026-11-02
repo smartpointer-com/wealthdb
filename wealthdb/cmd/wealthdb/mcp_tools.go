@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -50,9 +51,19 @@ type family struct {
 	// of their own (returns' stated): the coarse-to-fine walks of
 	// escalate, finerViews and the help skip them.
 	side map[string]bool
-	// carries lists the filters each view reads, by view ("" for a
-	// tool with one shape). It decides which view a filter picks.
-	carries map[string][]string
+	// excludes are the named filters a view prints the key column of
+	// but does not carry, because the column means something else
+	// there; keyAlias names a view's key column where it prints the
+	// filter's under another name. Both by view ("" for a tool with one
+	// shape); carries derives the rest.
+	excludes map[string][]string
+	keyAlias map[string]map[string]string
+	derive   sync.Once
+	carried  map[string][]string
+	// adds says how a view's money adds up over its rows, for the
+	// total line of a filtered result; nil for a family whose views
+	// never add up.
+	adds func(view string) totalRule
 	// principal is the main column of the request's view: what
 	// "value", "amount" and the family's own word mean in a sort.
 	principal func(req request) string
@@ -97,6 +108,7 @@ func (s *mcpServer) rowParams(window bool, extra ...param) []param {
 // shapeParams pick, order and page the rows of any table result.
 func (s *mcpServer) shapeParams() []param {
 	return []param{
+		{name: "filter", kind: paramStrings, doc: filterDoc()},
 		stringParam("search", "Keep rows where any text cell contains this (case-insensitive)."),
 		stringParam("columns", `"default", "all", a comma list of names, or "+add,-remove"; describe(topic=<tool>) lists them.`),
 		stringParam("sort", `Column to sort by; "-" prefix for descending. "-value": the main money column, largest first (by size, whatever the sign).`),
@@ -105,6 +117,26 @@ func (s *mcpServer) shapeParams() []param {
 		{name: "offset", kind: paramInteger, doc: "Rows to skip (default 0)."},
 		stringParam("format", "Result format (default table).", resultFormats...),
 	}
+}
+
+// scopedParam is a named filter's parameter, its doc opened by the views
+// that carry the filter (family.carries) where not every view does.
+func scopedParam(fam *family, name, doc string) param {
+	var views []string
+	for _, v := range fam.views {
+		if slices.Contains(fam.carries()[v], name) {
+			views = append(views, v)
+		}
+	}
+	switch {
+	case len(views) == len(fam.views):
+		doc = strings.ToUpper(doc[:1]) + doc[1:]
+	case len(views) == 1:
+		doc = views[0] + " only: " + doc
+	default:
+		doc = andList(views) + ": " + doc
+	}
+	return stringParam(name, doc)
 }
 
 var (
@@ -126,9 +158,9 @@ func (s *mcpServer) tools() []toolSpec {
 				stringParam("as_of", "As-of date ("+dateDoc+"). Default today."),
 				param{name: "with_cash", kind: paramBoolean, doc: "positions only: also list cash as one row per account and currency."},
 				sourceParam, accountParam,
-				stringParam("symbol", "positions only: keep only holdings whose symbol or name contains this text."),
-				stringParam("asset_class", "positions only: keep only this asset class (e.g. public_equity, fixed_income, cash, real_estate, crypto)."),
-				stringParam("tax_wrapper", "accounts: keep only this tax wrapper (e.g. roth_ira, 401k, 529, taxable_joint)."),
+				scopedParam(holdingsFamily, "symbol", "keep only holdings whose symbol or name contains this text."),
+				scopedParam(holdingsFamily, "asset_class", "keep only this asset class (e.g. public_equity, fixed_income, cash, real_estate, crypto)."),
+				scopedParam(holdingsFamily, "tax_wrapper", "keep only this tax wrapper (e.g. roth_ira, 401k, 529, taxable_joint)."),
 				missingBasisParam("positions only: ", ""),
 			),
 			family: holdingsFamily,
@@ -165,10 +197,10 @@ func (s *mcpServer) tools() []toolSpec {
 				stringParam("documents", "realized only: each sale once (primary, default) or every document's copy (all).", gainsDocuments...),
 				param{name: "newest_first", kind: paramBoolean, doc: "realized only: newest first (default false: oldest first)."},
 				sourceParam, accountParam,
-				stringParam("symbol", "positions, realized and lots: keep only rows whose symbol or name contains this text."),
-				stringParam("asset_class", "positions only: keep only this asset class (e.g. public_equity, fixed_income, private_equity)."),
-				stringParam("term", "realized and lots: short or long."),
-				stringParam("tax_wrapper", "accounts only: keep only this tax wrapper (e.g. taxable_joint, roth_ira)."),
+				scopedParam(gainsFamily, "symbol", "keep only rows whose symbol or name contains this text."),
+				scopedParam(gainsFamily, "asset_class", "keep only this asset class (e.g. public_equity, fixed_income, private_equity)."),
+				scopedParam(gainsFamily, "term", "short or long."),
+				scopedParam(gainsFamily, "tax_wrapper", "keep only this tax wrapper (e.g. taxable_joint, roth_ira)."),
 				missingBasisParam("Not on coverage and check: ", "; quality then says basis_assumed_zero=N"),
 			),
 			family: gainsFamily,
@@ -207,6 +239,7 @@ func (s *mcpServer) tools() []toolSpec {
 				stringParam("from", "With period: the series' start ("+dateDoc+")."),
 				stringParam("to", "With period: the series' end, same forms. Default today."),
 				param{name: "converted", kind: paramBoolean, doc: andList(yieldAggregateViews) + ": one row per entity in the output currency (default false)."},
+				scopedParam(yieldFamily, "symbol", "keep only rows whose symbol contains this text."),
 			),
 			family: yieldFamily,
 		},
@@ -235,7 +268,7 @@ func (s *mcpServer) tools() []toolSpec {
 				stringParam("level", "Category vocabulary of the categories view: primary (default, broad groups) or detailed.", categoryLevels...),
 				sourceParam, accountParam,
 				stringParam("category", `Keep categories whose label or id contains this (e.g. "groceries"); implies level=detailed.`),
-				stringParam("merchant", "transactions only: keep only rows whose merchant contains this text."),
+				scopedParam(spendingFamily, "merchant", "keep only rows whose merchant contains this text."),
 			),
 			family: spendingFamily,
 		},
@@ -258,8 +291,9 @@ func (s *mcpServer) tools() []toolSpec {
 				param{name: "shift", kind: paramInteger, doc: "Forward views: parallel shift of the floating rates in basis points (default 0)."},
 				sourceParam, accountParam,
 				stringParam("type", `Keep income types whose label or id contains this (e.g. "dividend", "salary").`),
-				stringParam("payer", "transactions only: keep only rows whose payer contains this text."),
-				stringParam("symbol", "calendar and positions: keep only rows whose symbol contains this text."),
+				scopedParam(incomeFamily, "payer", "keep only rows whose payer contains this text."),
+				scopedParam(incomeFamily, "symbol", "keep only rows whose symbol contains this text."),
+				scopedParam(incomeFamily, "kind", "income or principal."),
 			),
 			family: incomeFamily,
 		},
@@ -336,12 +370,10 @@ func (s *mcpServer) tools() []toolSpec {
 
 var holdingsFamily = &family{
 	views: holdingsViews,
-	carries: map[string][]string{
-		"sources":    {"source"},
-		"portfolios": {"source"},
-		"accounts":   {"source", "account", "tax_wrapper"},
-		"positions":  {"source", "account", "symbol", "asset_class"},
-	},
+	// A source's or a portfolio's tax_wrapper is its accounts' common
+	// one, blank where they differ: a filter there would drop the rest.
+	excludes: map[string][]string{"sources": {"tax_wrapper"}, "portfolios": {"tax_wrapper"}},
+	adds:     func(string) totalRule { return balanceTotal },
 	principal: byView(map[string]string{
 		"global": "total_value_outccy", "sources": "total_value_outccy", "portfolios": "total_value_outccy",
 		"accounts": "total_value_outccy", "positions": "value",
@@ -417,12 +449,10 @@ func missingBasisArg(a *toolArgs) (lots.MissingBasis, error) {
 var returnsFamily = &family{
 	views: returnsViews,
 	side:  map[string]bool{"stated": true},
-	carries: map[string][]string{
-		"sources":    {"source"},
-		"portfolios": {"source"},
-		"accounts":   {"source", "account"},
-		"stated":     {"source", "account"},
-	},
+	// global's silver_source is the whole portfolio's, not one source;
+	// on accounts the entity is the account.
+	excludes: map[string][]string{"global": {"source"}},
+	keyAlias: map[string]map[string]string{"accounts": {"account": "entity"}},
 	// On returns, "value" means the return itself; on the stated view,
 	// which carries no return, the engine's ending value.
 	principal: func(req request) string {
@@ -479,7 +509,13 @@ var returnsFamily = &family{
 }
 
 var exposureFamily = &family{
-	views:     exposureViews,
+	views: exposureViews,
+	adds: func(view string) totalRule {
+		if view == "coverage" {
+			return noTotal
+		}
+		return balanceTotal
+	},
 	principal: func(request) string { return "value" },
 	window:    asOfDate,
 	currency:  true,
@@ -506,16 +542,7 @@ var exposureFamily = &family{
 
 var gainsFamily = &family{
 	views: gainsViews,
-	carries: map[string][]string{
-		"sources":    {"source"},
-		"portfolios": {"source"},
-		"accounts":   {"source", "account", "tax_wrapper"},
-		"positions":  {"source", "account", "symbol", "asset_class"},
-		"realized":   {"source", "account", "symbol", "term"},
-		"lots":       {"source", "account", "symbol", "term"},
-		"coverage":   {"source", "account"},
-		"check":      {"source", "account"},
-	},
+	adds:  byRule(map[string]totalRule{"lots": balanceTotal, "coverage": noTotal, "check": noTotal}, flowTotal),
 	principal: byView(map[string]string{
 		"summary": "gain", "sources": "gain", "portfolios": "gain", "accounts": "gain",
 		"positions": "gain", "realized": "gain_outccy", "lots": "unrealized_gain_outccy", "coverage": "value",
@@ -565,7 +592,7 @@ var gainsFamily = &family{
 }
 
 var transactionsFamily = &family{
-	carries:   map[string][]string{"": {"source", "account", "kind", "symbol"}},
+	adds:      func(string) totalRule { return flowTotal },
 	principal: byView(map[string]string{"": "value"}),
 	window:    pastMonth,
 	currency:  true,
@@ -584,11 +611,8 @@ var transactionsFamily = &family{
 }
 
 var spendingFamily = &family{
-	views: spendingViews,
-	carries: map[string][]string{
-		"categories":   {"category"},
-		"transactions": {"source", "account", "category", "merchant"},
-	},
+	views:     spendingViews,
+	adds:      func(string) totalRule { return flowTotal },
 	principal: byView(map[string]string{"summary": "net_spend", "categories": "net_spend", "transactions": "value"}),
 	window:    trailingYear,
 	currency:  true,
@@ -614,15 +638,10 @@ var spendingFamily = &family{
 
 var incomeFamily = &family{
 	views: incomeViews,
-	carries: map[string][]string{
-		"types":        {"type"},
-		"transactions": {"source", "account", "type", "payer"},
-		"calendar":     {"source", "account", "symbol", "type"},
-		"sources":      {"source"},
-		"portfolios":   {"source"},
-		"accounts":     {"source", "account"},
-		"positions":    {"source", "account", "symbol"},
-	},
+	// kind is income or principal on the calendar; on transactions the
+	// column is the booked kind.
+	excludes: map[string][]string{"transactions": {"kind"}},
+	adds:     func(string) totalRule { return flowTotal },
 	principal: byView(map[string]string{"summary": "net_income", "types": "net_income", "transactions": "value",
 		"projection": "total", "calendar": "value", "sources": "total", "portfolios": "total", "accounts": "total",
 		"positions": "total"}),
@@ -660,6 +679,9 @@ var incomeFamily = &family{
 
 var yieldFamily = &family{
 	views: yieldViews,
+	// The aggregate views carry a total row of their own.
+	adds: byRule(map[string]totalRule{"positions": balanceTotal, "securities": balanceTotal, "funds": balanceTotal,
+		"cash": balanceTotal}, noTotal),
 	principal: func(req request) string {
 		if req.view == "curve" {
 			return "dv01"
@@ -706,12 +728,8 @@ var yieldFamily = &family{
 
 var cashflowFamily = &family{
 	views: cashflowViews,
-	carries: map[string][]string{
-		"flows":        {"section", "class", "group"},
-		"sankey":       {"section"},
-		"transactions": {"source", "account", "section", "class", "group"},
-		"coverage":     {"source", "account"},
-	},
+	// A flow node nets the nodes under it, and coverage measures gaps.
+	adds: byRule(map[string]totalRule{"flows": noTotal, "sankey": noTotal, "coverage": noTotal}, flowTotal),
 	principal: byView(map[string]string{
 		"summary": "net_cash_flow", "flows": "net", "sankey": "value", "transactions": "value", "coverage": "gap",
 		"projection": "net",
@@ -792,15 +810,16 @@ func bucketHeader(req request) []string {
 // status's source parameter is not a row filter: it asks for the
 // source's detail block instead of the table.
 var statusFamily = &family{
-	narrow:  "search",
-	prepare: noOptions,
+	// source asks for one source's detail block; kind is the source's.
+	excludes: map[string][]string{"": {"source", "kind"}},
+	narrow:   "search",
+	prepare:  noOptions,
 	build: func(cfg *config.Config, _ request, a *toolArgs) *report {
 		return statusReport(cfg, a.flag("verbose", false))
 	},
 }
 
 var snapshotsFamily = &family{
-	carries: map[string][]string{"": {"source"}},
 	narrow:  "source or latest_only",
 	prepare: noOptions,
 	build: func(_ *config.Config, _ request, a *toolArgs) *report {
@@ -809,14 +828,12 @@ var snapshotsFamily = &family{
 }
 
 var resolutionsFamily = &family{
-	carries: map[string][]string{"": {"source"}},
 	narrow:  "source or search",
 	prepare: noOptions,
 	build:   func(*config.Config, request, *toolArgs) *report { return resolutionsReport("") },
 }
 
 var categorizationsFamily = &family{
-	carries: map[string][]string{"": {"category"}},
 	narrow:  "family, category or search",
 	prepare: noOptions,
 	build: func(_ *config.Config, _ request, a *toolArgs) *report {
@@ -828,6 +845,24 @@ var categorizationsFamily = &family{
 }
 
 func noOptions(*toolArgs, *request, *[]string) error { return nil }
+
+// byRule is a total rule per view, def for the views it does not name.
+func byRule(m map[string]totalRule, def totalRule) func(string) totalRule {
+	return func(view string) totalRule {
+		if r, ok := m[view]; ok {
+			return r
+		}
+		return def
+	}
+}
+
+// totalRule is the family's rule for view.
+func (fam *family) totalRule(view string) totalRule {
+	if fam.adds == nil {
+		return noTotal
+	}
+	return fam.adds(view)
+}
 
 // byView is a principal column per view.
 func byView(m map[string]string) func(request) string {
@@ -843,11 +878,13 @@ func orDefault(v, def string) string {
 
 // ---- the call pipeline ---------------------------------------------------
 
-// runFamily is every report tool's call: settle the view, the dates
-// and the options, check the columns and the sort before gold is
-// touched, fetch the rows on a read-only handle held for the fetch
-// alone, then filter, sort, page and render.
-func (s *mcpServer) runFamily(ctx context.Context, tool string, fam *family, a *toolArgs) (toolOutput, error) {
+// runFamily is every report tool's call: read the conditions, settle
+// the view, the dates and the options, check the columns, the
+// conditions and the sort before gold is touched, fetch the rows on a
+// read-only handle held for the fetch alone, then filter, sort, page
+// and render.
+func (s *mcpServer) runFamily(ctx context.Context, spec toolSpec, a *toolArgs) (toolOutput, error) {
+	tool, fam := spec.name, spec.family
 	cfg, err := s.loadConfig()
 	if err != nil {
 		return toolOutput{}, err
@@ -868,14 +905,28 @@ func (s *mcpServer) runFamily(ctx context.Context, tool string, fam *family, a *
 			named = append(named, f)
 		}
 	}
-	req, notes, err := s.settle(tool, fam, cfg, a, named)
+	front := filterFront{prefix: tool + ":"}
+	raws, badConds := parseConditions(a.strs("filter"), front)
+	req, notes, err := s.settle(tool, fam, cfg, a, named, raws)
 	if err != nil {
 		return toolOutput{}, err
 	}
 	rep := fam.build(cfg, req, a)
-	sh, err := s.shape(tool, fam, rep, req, a)
+	lookup := fam.lookup(rep, req)
+	sh, err := s.shape(tool, rep, lookup, a)
 	if err != nil {
 		return toolOutput{}, err
+	}
+	target := filterTarget{view: req.view, lookup: lookup, privacy: s.privacy, now: s.now(), front: front,
+		elsewhere: func(col string) string { return columnElsewhere(cfg, tool, req.view, col, false) }}
+	conds, err := target.bind(raws, badConds)
+	if err != nil {
+		return toolOutput{}, err
+	}
+	for _, c := range conds {
+		if c.note != "" {
+			notes = append(notes, c.note)
+		}
 	}
 
 	var rows reportRows
@@ -890,17 +941,46 @@ func (s *mcpServer) runFamily(ctx context.Context, tool string, fam *family, a *
 	for _, f := range named {
 		filters = append(filters, newRowFilter(rep, f, a.str(f)))
 	}
-	idx := rs.filter(filters, a.str("search"))
+	before := rs.filter(filters, a.str("search"))
+	idx, _ := keepRows(rs.cells, before, conds)
 	if sh.sortCol >= 0 {
 		rs.sortRows(idx, sh.sortCol, sh.desc)
 	}
 
-	head, meta := s.header(tool, fam, rep, req, len(idx), sh, append(notes, sh.notes...))
-	p := page{idx: idx, offset: sh.offset, limit: sh.limit, budget: sh.budget, narrow: fam.narrow}
-	if len(idx) == 0 {
-		p.empty = emptyNote(rs, fam, req.view, named, a)
+	head, meta := s.header(tool, fam, rep, req, len(idx), sh, canonicalForms(conds), append(notes, sh.notes...))
+	p := page{idx: idx, offset: sh.offset, limit: sh.limit, budget: sh.budget, narrow: narrowAdvice(spec, req.view)}
+	switch {
+	case len(idx) == 0:
+		p.empty = emptyNote(rs, fam, req.view, named, a, before, conds)
+	case !s.privacy && (len(named) > 0 || len(conds) > 0 || a.has("search")):
+		p.totals = totals(rs, idx, sh.cols, req.currency, fam.totalRule(req.view))
 	}
 	return render(rs, p, sh.cols, orDefault(a.str("format"), formatTable), head, meta), nil
+}
+
+// narrowAdvice is the paging line's advice for view: the family's, the
+// named filters the view carries, and conditions on its columns.
+func narrowAdvice(spec toolSpec, view string) string {
+	advice := spec.family.narrow
+	var fs []string
+	for _, f := range spec.family.carries()[view] {
+		if slices.ContainsFunc(spec.params, func(p param) bool { return p.name == f }) {
+			fs = append(fs, f)
+		}
+	}
+	if len(fs) > 0 && strings.Contains(advice, "a filter") {
+		advice = strings.Replace(advice, "a filter", "a filter ("+strings.Join(fs, ", ")+")", 1)
+	}
+	return advice + ", or filter on its columns"
+}
+
+// lookup resolves the names a call sends for rep's columns.
+func (fam *family) lookup(rep *report, req request) columnLookup {
+	l := columnLookup{cols: rep.columns, currency: req.currency}
+	if fam.principal != nil {
+		l.principal = fam.principal(req)
+	}
+	return l
 }
 
 // ladder is the family's views without its side views: the coarse to
@@ -925,21 +1005,32 @@ func (fam *family) walk(view string) []string {
 }
 
 // settle turns a call's arguments into the report request: the view
-// the filters need, the currency, the dates, and the family's options.
-// notes are what it chose for the model, for the header.
-func (s *mcpServer) settle(tool string, fam *family, cfg *config.Config, a *toolArgs, named []string) (request, []string, error) {
+// the filters and the conditions need, the currency, the dates, and the
+// family's options. notes are what it chose for the model, for the
+// header.
+func (s *mcpServer) settle(tool string, fam *family, cfg *config.Config, a *toolArgs, named []string, raws []rawCond) (request, []string, error) {
 	var notes []string
+	moved := "" // the note of a move off the requested view
 	view := a.str("view")
 	if fam.views != nil {
 		if view == "" {
 			view = fam.views[0]
 		}
-		settled, ok := escalate(fam.walk(view), fam.carries, view, named)
+		carries := fam.carries()
+		takesNamed := func(v string) bool { return carriesAll(carries, v, named) }
+		settled, ok := escalate(fam.walk(view), func(v string) bool {
+			return takesNamed(v) && printsAll(cfg, fam, v, raws, a.has("period"))
+		}, view)
 		if !ok {
-			return request{}, nil, filterViewError(tool, fam, view, named)
+			// No view prints every condition's column: settle for the
+			// named filters, and the binding says which column is where.
+			if settled, ok = escalate(fam.walk(view), takesNamed, view); !ok {
+				return request{}, nil, filterViewError(tool, fam, view, named)
+			}
 		}
 		if settled != view {
-			notes = append(notes, fmt.Sprintf("view %s chosen for the %s filter", settled, strings.Join(named, ", ")))
+			moved = fmt.Sprintf("view %s chosen for the %s", settled, escalationReason(named, raws, view, cfg, fam, a.has("period")))
+			notes = append(notes, moved)
 		}
 		view = settled
 	}
@@ -957,9 +1048,53 @@ func (s *mcpServer) settle(tool string, fam *family, cfg *config.Config, a *tool
 		return request{}, nil, fmt.Errorf("%s: %v", tool, err)
 	}
 	if err := fam.prepare(a, &req, &notes); err != nil {
+		if moved != "" {
+			// Say what moved the call, or the refusal names a view
+			// that was never asked for.
+			return request{}, nil, fmt.Errorf("%v (%s)", err, moved)
+		}
 		return request{}, nil, err
 	}
 	return req, notes, nil
+}
+
+// printsAll reports whether view prints the column of every condition.
+func printsAll(cfg *config.Config, fam *family, view string, raws []rawCond, series bool) bool {
+	if len(raws) == 0 {
+		return true
+	}
+	req := defaultRequest(view, cfg.DefaultCurrency)
+	if series {
+		// A series prints its period column ahead of the view's own.
+		req.series = []seriesPoint{{}}
+	}
+	rep := fam.build(cfg, req, &toolArgs{values: map[string]any{}})
+	lookup := fam.lookup(rep, req)
+	for _, r := range raws {
+		if _, _, err := lookup.find(r.col); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// escalationReason names what moved the call off view: the named
+// filters, and the conditions whose column view lacks.
+func escalationReason(named []string, raws []rawCond, view string, cfg *config.Config, fam *family, series bool) string {
+	var parts []string
+	if len(named) > 0 && !carriesAll(fam.carries(), view, named) {
+		parts = append(parts, strings.Join(named, ", ")+" filter")
+	}
+	var cols []string
+	for _, r := range raws {
+		if !printsAll(cfg, fam, view, []rawCond{r}, series) && !slices.Contains(cols, r.col) {
+			cols = append(cols, r.col)
+		}
+	}
+	if len(cols) > 0 {
+		parts = append(parts, strings.Join(cols, ", ")+" "+plural(len(cols), "condition", "conditions"))
+	}
+	return strings.Join(parts, " and ")
 }
 
 // resultShape is how a call wants its rows: the columns, the sort and
@@ -977,12 +1112,8 @@ type resultShape struct {
 // shape resolves the columns, sort, limit and offset parameters
 // against the report, before gold is opened, so a misspelt name costs
 // no query.
-func (s *mcpServer) shape(tool string, fam *family, rep *report, req request, a *toolArgs) (resultShape, error) {
+func (s *mcpServer) shape(tool string, rep *report, lookup columnLookup, a *toolArgs) (resultShape, error) {
 	sh := resultShape{sortCol: -1}
-	lookup := columnLookup{cols: rep.columns, currency: req.currency}
-	if fam.principal != nil {
-		lookup.principal = fam.principal(req)
-	}
 	var err error
 	if sh.cols, sh.notes, err = lookup.pick(a.str("columns"), rep.defaults); err != nil {
 		return sh, fmt.Errorf("%s: %v", tool, err)
@@ -1008,7 +1139,7 @@ func (s *mcpServer) shape(tool string, fam *family, rep *report, req request, a 
 
 // header builds the result's first line and the json result's fields
 // beside the rows.
-func (s *mcpServer) header(tool string, fam *family, rep *report, req request, rows int, sh resultShape, notes []string) (resultHeader, resultMeta) {
+func (s *mcpServer) header(tool string, fam *family, rep *report, req request, rows int, sh resultShape, conds, notes []string) (resultHeader, resultMeta) {
 	head := resultHeader{}
 	meta := resultMeta{tool: tool, view: req.view, currency: req.currency}
 	if fam.views != nil {
@@ -1043,6 +1174,7 @@ func (s *mcpServer) header(tool string, fam *family, rep *report, req request, r
 	if fam.header != nil {
 		head.parts = append(head.parts, fam.header(req)...)
 	}
+	head.parts = append(head.parts, conds...)
 	head.add("%s %s", thousands(rows), plural(rows, "row", "rows"))
 	if sh.sortCol >= 0 {
 		c := rep.columns[sh.sortCol]
@@ -1156,7 +1288,7 @@ func (s *mcpServer) paging(a *toolArgs) (limit, budget, offset int, err error) {
 // them all, else which views carry each.
 func filterViewError(tool string, fam *family, view string, named []string) error {
 	for _, v := range fam.ladder() {
-		if carriesAll(fam.carries, v, named) {
+		if carriesAll(fam.carries(), v, named) {
 			return fmt.Errorf("%s: the %s view has no %s filter; the %s view has: call view=%s, or use search",
 				tool, view, strings.Join(named, ", "), v, v)
 		}
@@ -1165,7 +1297,7 @@ func filterViewError(tool string, fam *family, view string, named []string) erro
 	for _, f := range named {
 		var vs []string
 		for _, v := range fam.views {
-			if slices.Contains(fam.carries[v], f) {
+			if slices.Contains(fam.carries()[v], f) {
 				vs = append(vs, v)
 			}
 		}
@@ -1179,13 +1311,17 @@ func filterViewError(tool string, fam *family, view string, named []string) erro
 		tool, strings.Join(named, ", "), strings.Join(where, "; "))
 }
 
-// emptyNote explains a result with no rows, and for each filter lists
-// the values its column takes, so a guessed section or class is
-// corrected by the next call rather than concluded from.
-func emptyNote(rs *resultSet, fam *family, view string, named []string, a *toolArgs) string {
+// emptyNote explains a result with no rows: which condition emptied
+// it, and for each named filter the values its column takes, so a
+// guessed section or class is corrected by the next call rather than
+// concluded from. before are the rows the named filters and search
+// kept, which the conditions then emptied.
+func emptyNote(rs *resultSet, fam *family, view string, named []string, a *toolArgs, before []int, conds []condition) string {
 	var b strings.Builder
 	switch {
-	case len(named) > 0 || a.has("search"):
+	case len(conds) > 0 && len(before) > 0:
+		b.WriteString("(no rows: " + emptiedNote(rs.cells, before, conds) + ")")
+	case len(named) > 0 || a.has("search") || len(conds) > 0:
 		b.WriteString("(no rows: nothing matched the filter")
 		if finer := finerViews(fam, view, named); len(finer) > 0 {
 			fmt.Fprintf(&b, "; a finer view (%s) may carry what it looks for", strings.Join(finer, ", "))
@@ -1221,7 +1357,7 @@ func finerViews(fam *family, view string, named []string) []string {
 	var out []string
 	after := false
 	for _, v := range fam.ladder() {
-		if after && carriesAll(fam.carries, v, named) {
+		if after && carriesAll(fam.carries(), v, named) {
 			out = append(out, v)
 		}
 		after = after || v == view
@@ -1247,6 +1383,9 @@ func toolSchema(params []param) json.RawMessage {
 			prop["type"] = "integer"
 		case paramBoolean:
 			prop["type"] = "boolean"
+		case paramStrings:
+			prop["type"] = "array"
+			prop["items"] = map[string]any{"type": "string"}
 		default:
 			prop["type"] = "string"
 		}
