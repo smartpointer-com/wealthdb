@@ -23,6 +23,7 @@ func TestConditionReadings(t *testing.T) {
 		{"value == 50210", []string{"value_USD = 50210"}},
 		{"value <> 5", []string{"value_USD != 5"}},
 		{"value ≥ 100", []string{"value_USD >= 100"}},
+		{"value≥100", []string{"value_USD >= 100"}},
 		{"value ≤ 100", []string{"value_USD <= 100"}},
 		{"value ≠ 100", []string{"value_USD != 100"}},
 		{"WHERE value > 100", []string{"value_USD > 100"}},
@@ -54,6 +55,7 @@ func TestConditionReadings(t *testing.T) {
 		{"name = ''", []string{"name is empty"}},
 		{`value != ""`, []string{"value_USD is not empty"}},
 		{"maturity-date = 2027", []string{"maturity_date = 2027 (2027-01-01 → 2027-12-31)"}},
+		{"maturity date = 2027", []string{"maturity_date = 2027 (2027-01-01 → 2027-12-31)"}},
 		{"coupon_pct > 5 percent", []string{"coupon_pct > 5"}},
 		{"value >= 100 and maturity_date < 2030", []string{"value_USD >= 100", "maturity_date < 2030 (before 2030-01-01)"}},
 		{"value between 100 and 30000", []string{"value_USD >= 100", "value_USD <= 30000"}},
@@ -148,8 +150,14 @@ func TestConditionMessages(t *testing.T) {
 		{"nosuch > 5", `the positions view has no column "nosuch". Its number and money columns: value_USD, cost_basis_USD, unrealized_gain_USD, coupon_pct, share_pct, quantity`, ""},
 		{"maturiti > 2027", `the positions view has no column "maturiti". Nearest: maturity_date ("maturity_date > 2027"). Its date, number and money columns: period, value_USD, cost_basis_USD, unrealized_gain_USD, coupon_pct, share_pct, quantity, maturity_date`, ""},
 		{"nosuch > 1000", `the positions view has no column "nosuch". Its number and money columns: value_USD, cost_basis_USD, unrealized_gain_USD, coupon_pct, share_pct, quantity`, ""},
-		// 2. No operator.
+		{"nosuch = 2027-03", `the positions view has no column "nosuch". Its date columns: period, maturity_date`, ""},
+		{"nosuch is empty", `the positions view has no column "nosuch"`, ""},
+		// 2. No operator, no column, no condition.
 		{"maturity_date 2027", `no operator; the operators are = != < <= > >= in, not in, contains, not contains, is empty, is not empty. Write "maturity_date = 2027"`, ""},
+		{"value", `no operator; the operators are = != < <= > >= in, not in, contains, not contains, is empty, is not empty. Write column op value, such as "value > 1000"`, ""},
+		{"", `an empty condition; write column op value, such as "value > 1000"`, ""},
+		{"> 5", `no column before ">"; a condition starts with the column it reads, such as "value > 1000"`, ""},
+		{"2value > 5", `"2value" is not a column name; a column is one word, such as value_USD or maturity_date`, ""},
 		// 3. Near-miss operators.
 		{"value => 100", `"=>" is not an operator; write "value >= 100"`, ""},
 		{"value =< 100", `"=<" is not an operator; write "value <= 100"`, ""},
@@ -160,36 +168,51 @@ func TestConditionMessages(t *testing.T) {
 		// 4. Operator and kind.
 		{"name > M", `">" compares numbers, money and dates; name is text, which takes =, !=, in, not in, contains, not contains, is empty, is not empty`, ""},
 		{"value contains 5", `contains reads text, and value_USD is money; write "value_USD = 5"`, ""},
+		{"value not contains 5", `not contains reads text, and value_USD is money; write "value_USD != 5"`, ""},
 		// 5. Values.
 		{"maturity_date = 03/15/2027", `"03/15/2027" is not a date: dates are ISO; write "maturity_date = 2027-03-15"`, ""},
 		{"maturity_date = 03/04/2027", `"03/04/2027" is not a date: dates are ISO, and day and month are ambiguous here; write "maturity_date = 2027-03-04" or "maturity_date = 2027-04-03"`, ""},
+		{"maturity_date = 03/03/2027", `"03/03/2027" is not a date: dates are ISO; write "maturity_date = 2027-03-03"`, ""},
 		{"maturity_date = 15.03.2027", `"15.03.2027" is not a date: dates are ISO; write "maturity_date = 2027-03-15"`, ""},
+		{"maturity_date = 31/02/2027", `"31/02/2027" is not a date: no such day; dates are YYYY, YYYY-Qn, YYYY-MM, YYYY-MM-DD, today, yesterday, this month, last month, this year, last year`, ""},
+		{"maturity_date = 13/02/2027", `"13/02/2027" is not a date: dates are ISO; write "maturity_date = 2027-02-13"`, ""},
+		{"maturity_date = 2027/03/15", `"2027/03/15" is not a date: dates are ISO; write "maturity_date = 2027-03-15"`, ""},
 		{"maturity_date = March 2027", `"March 2027" is not a date: dates are ISO; write "maturity_date = 2027-03"`, ""},
 		{"maturity_date = Q1 2027", `"Q1 2027" is not a date: a quarter is written YYYY-Qn; write "maturity_date = 2027-Q1"`, ""},
 		{"maturity_date = 2027-02-30", `"2027-02-30" is not a date: no such day; dates are YYYY, YYYY-Qn, YYYY-MM, YYYY-MM-DD, today, yesterday, this month, last month, this year, last year`, ""},
+		{"maturity_date = 2027-13", `"2027-13" is not a date: no such month; dates are YYYY, YYYY-Qn, YYYY-MM, YYYY-MM-DD, today, yesterday, this month, last month, this year, last year`, ""},
+		{"maturity_date = soon", `"soon" is not a date, which maturity_date takes; dates are YYYY, YYYY-Qn, YYYY-MM, YYYY-MM-DD, today, yesterday, this month, last month, this year, last year`, ""},
 		{"value > 1k", `"1k" is not money: a scale is not read; write "value_USD > 1000"`, ""},
 		{"value > five", `"five" is not money: a number in words is not read; write "value_USD > 5"`, ""},
 		{"value > 1000 USD", `"1000 USD" is not money: a unit is not read; amounts are plain numbers in the result's currency; write "value_USD > 1000"`, ""},
+		// A value in parentheses reads as text, and fails as money.
+		{"value > (5)", `"(5)" is not money, which value_USD takes; write a plain number, such as 1000 or -42.5`, ""},
+		{"quantity > abc", `"abc" is not a number, which quantity takes; write a plain number, such as 1000 or -42.5`, ""},
 		{"quantity > 5%", `"5%" is not a number: a percent sign is read on a _pct column only, whose cells are percentages; write "quantity > 5"`, ""},
-		// 6. No value.
+		{"coupon_pct > 50 bps", `"50 bps" is not a number: basis points are not read; the column is in percent; write "coupon_pct > 0.5"`, ""},
+		// 6. No value, or one too many.
 		{"value >", `">" needs a value after it, such as "value_USD > 1000"`, ""},
 		{"maturity_date >", `">" needs a value after it, such as "maturity_date > 2027"`, ""},
 		{"name like '%'", `"like" needs a value after it, such as "name contains x"`, ""},
 		{"country in", `"in" needs a comma list after it, such as "country in a, b"`, ""},
+		{"country in ()", `"in" needs a comma list after it, such as "country in a, b"`, ""},
+		{"name is empty x", `"is empty" takes no value; write "name is empty"`, ""},
 		// 7. or.
 		{"asset_class = cash or asset_class = fixed_income", `every condition must hold, so "or" cannot join them; for one column write "asset_class in cash, fixed_income"`, ""},
+		{"country = US || country = CH", `every condition must hold, so "or" cannot join them; for one column write "country in US, CH"`, ""},
 		{"country = US or value > 100", `every condition must hold, so "or" cannot join them; make one call with filter ["country = US"] and one with filter ["value > 100"]`,
 			`every condition must hold, so "or" cannot join them; run the command once with -F "country = US" and once with -F "value > 100"`},
+		{"country = US or value > 5 or name = x", `every condition must hold, so "or" cannot join them; make one call with each of filter ["country = US"], filter ["value > 5"] and filter ["name = x"]`,
+			`every condition must hold, so "or" cannot join them; run the command once with each of -F "country = US", -F "value > 5" and -F "name = x"`},
+		{"name = Arts or Crafts", `every condition must hold, so "or" cannot join them; for any of the values write "name in Arts, Crafts"; a value that holds "or" goes in quotes: "name = \"Arts or Crafts\""`, ""},
 		// 8. Parentheses.
 		{"(value > 5 or country = US) and name = x", `every condition must hold, so "or" cannot join them; make one call with filter ["value > 5", "name = x"] and one with filter ["country = US", "name = x"]`,
 			`every condition must hold, so "or" cannot join them; run the command once with -F "value > 5" -F "name = x" and once with -F "country = US" -F "name = x"`},
 		{"(country = US or country = CH) and value > 5", `every condition must hold, so "or" cannot join them; for one column write ["country in US, CH", "value > 5"]`,
 			`every condition must hold, so "or" cannot join them; for one column write -F "country in US, CH" -F "value > 5"`},
-		{"country = US or value > 5 or name = x", `every condition must hold, so "or" cannot join them; make one call with each of filter ["country = US"], filter ["value > 5"] and filter ["name = x"]`,
-			`every condition must hold, so "or" cannot join them; run the command once with each of -F "country = US", -F "value > 5" and -F "name = x"`},
-		{"name = Arts or Crafts", `every condition must hold, so "or" cannot join them; for any of the values write "name in Arts, Crafts"; a value that holds "or" goes in quotes: "name = \"Arts or Crafts\""`, ""},
-		{"country in ()", `"in" needs a comma list after it, such as "country in a, b"`, ""},
-		// Review follow-up: ambiguous lists, between, is alone, quotes, a trailing and.
+		{"(value) > 5", `parentheses group nothing: every condition must hold, so send each as its own item: ["value > 1000", "date >= 2025"]`,
+			`parentheses group nothing: every condition must hold, so send each as its own item: -F "value > 1000" -F "date >= 2025"`},
+		// 9. Lists, between, is alone, quotes, a trailing and.
 		{"quantity in 100,200", `"100,200" may be 2 numbers or a number with thousands commas; write "quantity in 100, 200" or "quantity = 100200"`, ""},
 		{"quantity in 100,200,5", `"100,200,5" may be 3 numbers or a number with thousands commas; write "quantity in 100, 200, 5" or "quantity in 100200, 5"`, ""},
 		{"value between 5", `between takes two values joined by and; write "value between 5 and 10", which reads as "value >= 5" and "value <= 10"`, ""},
@@ -199,28 +222,30 @@ func TestConditionMessages(t *testing.T) {
 		{"name is not", `"is not" needs a word after it; write "name is not empty", or "name != x" for a value`, ""},
 		{"name in 'GOLD, Silver", `the ' before GOLD, never closes; close it: "name in 'GOLD, Silver'"`, ""},
 		{"value > 5 and", `nothing follows the "and"; write "value > 5", and each other condition in full as its own item`, ""},
+		{"and", `nothing follows the "and"; write "", and each other condition in full as its own item`, ""},
 		{"country in (US, CH", `a parenthesis around the list never closes; write "country in US, CH"`, ""},
 		{`"`, `the " at the end never closes; write column op value, such as "name = Miller's Pantry": a value needs no quotes`, ""},
-		{"value > (5)", "", ""}, // a value in parentheses reads as text and fails as money below
-		// 9. An unclosed quote.
+		// 10. An unclosed quote.
 		{`name = "Paper Cash`, `the " before Paper never closes; a value needs no quotes: "name = Paper Cash"`, ""},
-		// 10. Two columns.
+		// 11. Two columns.
 		{"value > cost_basis", `a condition compares a column with a constant, and cost_basis_USD is a column; unrealized_gain_USD holds the comparison: "unrealized_gain_USD > 0"`, ""},
 		{"value < cost_basis", `a condition compares a column with a constant, and cost_basis_USD is a column; unrealized_gain_USD holds the comparison: "unrealized_gain_USD < 0"`, ""},
 		{"maturity_date > period", `a condition compares a column with a constant, and period is a column; compare with a date, such as "maturity_date > 2027"`, ""},
-		{"maturity_date = 31/02/2027", `"31/02/2027" is not a date: no such day; dates are YYYY, YYYY-Qn, YYYY-MM, YYYY-MM-DD, today, yesterday, this month, last month, this year, last year`, ""},
-		{"maturity_date = 13/02/2027", `"13/02/2027" is not a date: dates are ISO; write "maturity_date = 2027-02-13"`, ""},
-		{"coupon_pct > 50 bps", `"50 bps" is not a number: basis points are not read; the column is in percent; write "coupon_pct > 0.5"`, ""},
+		// 12. Functions.
 		{"month(maturity_date) = 3", `a date compares by period, and a month needs its year; write "maturity_date = YYYY-MM" with the year`, ""},
-		// 11. SQL that is no condition.
+		{"lower(name) = paper cash", `= ignores case already; write "name = paper cash"`, ""},
+		{"year(maturity_date) = 2027", `a date compares by period; write "maturity_date = 2027"`, ""},
+		{"year(maturity_date)", `a date compares by period; write "maturity_date = 2025"`, ""},
+		{"abs(value) > 500", `money compares signed: spending lines are negative, so "over 500" is "value <= -500"; a size either way takes one call per sign`, ""},
+		{"round(value) > 5", `functions are not read; compare the column itself: "value > 5"`, ""},
+		// 13. SQL that is no condition.
 		{"value > 0 ORDER BY value", `ORDER BY is not a condition; sort orders the rows: sort="-value"`,
 			`ORDER BY is not a condition; the CLI prints the report's own order; pipe -f csv into sort`},
 		{"value > 0 LIMIT 5", `LIMIT is not a condition; limit and offset page the rows: limit=5`, `LIMIT is not a condition; pipe the output into head`},
+		{"value > 0 OFFSET 5", `OFFSET is not a condition; limit and offset page the rows: offset=5`, `OFFSET is not a condition; pipe the output into head`},
 		{"value > 0 GROUP BY country", `GROUP BY is not a condition; a view groups: spending categories, income types, a period of monthly, quarterly or annual`, ""},
+		{"HAVING value > 5", `HAVING is not a condition; a view groups: spending categories, income types, a period of monthly, quarterly or annual`, ""},
 		{"SELECT name", `SELECT is not a condition; columns picks the columns: columns="+coupon,maturity_date"`, `SELECT is not a condition; -C picks the columns: -C +coupon,maturity_date`},
-		{"lower(name) = paper cash", `= ignores case already; write "name = paper cash"`, ""},
-		{"year(maturity_date) = 2027", `a date compares by period; write "maturity_date = 2027"`, ""},
-		{"abs(value) > 500", `money compares signed: spending lines are negative, so "over 500" is "value <= -500"; a size either way takes one call per sign`, ""},
 	}
 	for _, cli := range []bool{false, true} {
 		tg := bondTarget(testBonds(t, false), cli)
@@ -238,15 +263,12 @@ func TestConditionMessages(t *testing.T) {
 			if cli && c.cli != "" {
 				want = c.cli
 			}
-			if want == "" {
-				continue
-			}
 			if want = prefix + strconv.Quote(c.written) + ": " + want; err.Error() != want {
 				t.Errorf("cli %v %q:\n got %s\nwant %s", cli, c.written, err, want)
 			}
 		}
 	}
-	// 12. A redacted column, on the privacy endpoint and under -p.
+	// 14. A redacted column, on the privacy endpoint and under -p.
 	for _, cli := range []bool{false, true} {
 		_, err := bindAll(bondTarget(testBonds(t, true), cli), "value > 1000")
 		where := "on this endpoint"
@@ -270,6 +292,31 @@ func TestConditionMessages(t *testing.T) {
 			t.Errorf("redacted without a share, cli %v: %v", cli, err)
 		}
 	}
+	// 15. A tool of one shape names no view; two columns where no gain
+	// holds the comparison name a share, or nothing.
+	tg := bondTarget(testBonds(t, false), false)
+	tg.view = ""
+	if _, err := bindAll(tg, "nosuch is empty"); err == nil || err.Error() != `yield: filter "nosuch is empty": this result has no column "nosuch"` {
+		t.Errorf("no view: %v", err)
+	}
+	without := func(cols []reportColumn, drop func(string) bool) []reportColumn {
+		var out []reportColumn
+		for _, c := range cols {
+			if !drop(c.header) {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	const two = `yield: filter "value > cost_basis": a condition compares a column with a constant, and cost_basis_USD is a column`
+	tg.lookup.cols = without(tg.lookup.cols, func(h string) bool { return strings.Contains(h, "gain") })
+	if _, err := bindAll(tg, "value > cost_basis"); err == nil || err.Error() != two+`; coupon_pct or share_pct hold the comparison: "coupon_pct > 0"` {
+		t.Errorf("two columns, no gain: %v", err)
+	}
+	tg.lookup.cols = without(tg.lookup.cols, func(h string) bool { return strings.HasSuffix(h, "_pct") })
+	if _, err := bindAll(tg, "value > cost_basis"); err == nil || err.Error() != two {
+		t.Errorf("two columns, no holder: %v", err)
+	}
 	// Every bad condition in one reply, one line each.
 	_, err := bindAll(bondTarget(testBonds(t, false), false), "value => 1", "country = US", "nosuch = 1", "value >")
 	if err == nil || strings.Count(err.Error(), "\n") != 2 {
@@ -286,6 +333,7 @@ func TestObjectFilterRestated(t *testing.T) {
 		{`{"filter": {"value": {"$gte": 100}}}`, `["value >= 100"]`},
 		{`{"filter": {"value": {"gte": 100, "lt": 500}}}`, `["value >= 100", "value < 500"]`},
 		{`{"filter": {"value": {">=": 4}}}`, `["value >= 4"]`},
+		{`{"filter": {"value": {"≥": 4}}}`, `["value >= 4"]`},
 		{`{"filter": {"acquisition_date": "< 2020-01-01"}}`, `["acquisition_date < 2020-01-01"]`},
 		{`{"filter": {"category": "Rent"}}`, `["category = Rent"]`},
 		{`{"filter": {"category": {"$nin": ["Rent", "Groceries"]}}}`, `["category not in Rent, Groceries"]`},
@@ -363,6 +411,12 @@ func TestTotals(t *testing.T) {
 	if got := totals(rs, both, cols, "USD", noTotal); got != nil {
 		t.Errorf("no total = %v", got)
 	}
+	// No currency, or one no money column is in: nothing to add up.
+	for _, ccy := range []string{"", "CHF"} {
+		if got := totals(rs, both, cols, ccy, flowTotal); got != nil {
+			t.Errorf("currency %q totals %v", ccy, got)
+		}
+	}
 	p := page{idx: q1, totals: totals(rs, q1, cols, "USD", balanceTotal)}
 	if line := p.totalLine(); line != "total of 2 rows: value_USD 75210.50\n" {
 		t.Errorf("total line = %q", line)
@@ -382,5 +436,9 @@ func TestFilterHelpListsEveryOperator(t *testing.T) {
 	}
 	if !strings.Contains(filterHelp(true), "-F") || strings.Contains(filterHelp(false), "-F ") {
 		t.Error("each help names its own front-end's parameter")
+	}
+	help, err := callTool(t, newTestMCP("", false), "describe", map[string]any{"topic": "filter"})
+	if err != nil || help != filterHelp(false) {
+		t.Errorf("describe filter: %v", err)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
 // The forward rows of one PSN day, in the shapes a forward position
@@ -63,7 +64,7 @@ func TestSnapshotsForwardLegs(t *testing.T) {
 		}, ", "))); err != nil {
 		t.Fatal(err)
 	}
-	conn := openAdapterAs(t, "test-ubs", path)
+	conn := silvertest.OpenAs(t, &Adapter{}, "test-ubs", path)
 	w, _ := conn.ChangeWindow(context.Background(), -1)
 	stream, err := conn.Snapshots(context.Background(), w)
 	if err != nil {

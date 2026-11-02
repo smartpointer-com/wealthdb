@@ -251,6 +251,16 @@ func NullStringPtr(n sql.NullString) *string {
 	return &v
 }
 
+// NullInt64Ptr converts a sql.NullInt64 to a *int64: nil when not
+// valid, else a pointer to the value.
+func NullInt64Ptr(n sql.NullInt64) *int64 {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Int64
+	return &v
+}
+
 // StrPtrIfNonEmpty returns nil for the empty string, else a pointer
 // to s. Use for optional free-text columns where "" means absent.
 func StrPtrIfNonEmpty(s string) *string {

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -569,6 +570,23 @@ func TestSchwabMarkGuard(t *testing.T) {
 		if _, err := load(source); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: %v, want %q", source, err, want)
 		}
+	}
+}
+
+// The open spec carries the source's id, its subsources and its
+// relationships, each override as the epoch of its day.
+func TestToSilverOpenSpecCarriesTheSource(t *testing.T) {
+	s := SilverSource{ID: "u", Kind: "ubs", Subsources: []SilverSubsource{{Kind: "ubs-psn", Path: "/p"}},
+		Relationships: []RelationshipPair{{Label: "main", WebID: "W1", PSNID: "SYNTH01", PSNStartOverride: "2024-01-31"}}}
+	spec, err := s.ToSilverOpenSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := silver.OpenSpec{ID: "u", Subsources: []silver.Subsource{{Kind: "ubs-psn", Path: "/p"}},
+		Relationships: []silver.RelationshipPair{{Label: "main", WebID: "W1", PSNID: "SYNTH01",
+			PSNStartOverride: time.Date(2024, 1, 31, 0, 0, 0, 0, time.UTC).Unix()}}}
+	if !reflect.DeepEqual(spec, want) {
+		t.Errorf("ToSilverOpenSpec = %+v, want %+v", spec, want)
 	}
 }
 

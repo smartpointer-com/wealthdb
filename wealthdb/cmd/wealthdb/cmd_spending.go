@@ -81,7 +81,7 @@ func runSpendingView(ctx context.Context, g globalFlags, view string, args []str
 		categories: overrideCategories(cfg)}
 	rep := spendingReport(req)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, rf.output(fmtChoice, "spending", "spending", req, cfg, g.clock()), open, stdout)
+	return writeReport(ctx, rep, rf.output(fmtChoice, "spending", req, cfg, g.clock()), open, stdout)
 }
 
 // spendingReport is one view of the spending family, the runner the
@@ -127,7 +127,7 @@ func buildSpendSummaryColumnRegistry(outCcy, period string) []columnSpec[gold.Sp
 	return []columnSpec[gold.SpendSummaryRow]{
 		{Name: "period", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.SpendSummaryRow) string { return periodLabel(r.PeriodStart, period) }},
-		{Name: "period_start", Align: output.AlignLeft,
+		{Name: "period_start", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.SpendSummaryRow) string { return periodStart(r.PeriodStart) }},
 		countCol("txn_count", func(r gold.SpendSummaryRow) int64 { return r.TxnCount }),
 		outCcyCol("spend", outCcy, func(r gold.SpendSummaryRow) *string { return r.Spend }),
@@ -144,7 +144,7 @@ func buildSpendCategoryColumnRegistry(outCcy, period string) []columnSpec[gold.S
 	return []columnSpec[gold.SpendCategoryRow]{
 		{Name: "period", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.SpendCategoryRow) string { return periodLabel(r.PeriodStart, period) }},
-		{Name: "period_start", Align: output.AlignLeft,
+		{Name: "period_start", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.SpendCategoryRow) string { return periodStart(r.PeriodStart) }},
 		// The category is taxonomy — a vocabulary value, not an
 		// identifier — and stays legible under -p, like asset_class

@@ -238,6 +238,7 @@ func TestExposureCoverageSkeletons(t *testing.T) {
 		{"classes", "-f", "ndjson"},
 		{"coverage", "-f", "ndjson", "-p"},
 		{"coverage", "-f", "ndjson", "-C", "reason"},
+		{"coverage", "-f", "ndjson", "-F", "reason = x"},
 		{"coverage", "-f", "ndjson", "--period", "monthly"},
 	} {
 		if _, errb, code := runExposure(t, cfg, args...); code != 2 || !strings.Contains(errb, "ndjson") {

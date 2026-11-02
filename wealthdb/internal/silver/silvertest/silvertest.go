@@ -37,7 +37,14 @@ func NewDB(t testing.TB, schemaSQL string) (string, *sql.DB) {
 // closes when the test ends.
 func Open(t testing.TB, a silver.Adapter, path string) silver.Connection {
 	t.Helper()
-	conn, err := a.Open(context.Background(), silver.OpenSpec{Path: path})
+	return OpenAs(t, a, "", path)
+}
+
+// OpenAs is Open with the source id id, which an adapter that scopes
+// its keys by source reads.
+func OpenAs(t testing.TB, a silver.Adapter, id, path string) silver.Connection {
+	t.Helper()
+	conn, err := a.Open(context.Background(), silver.OpenSpec{ID: id, Path: path})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

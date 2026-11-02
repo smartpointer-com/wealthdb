@@ -51,6 +51,10 @@ type mcpServer struct {
 	now    func() time.Time
 }
 
+// defaultMCPChars is a result's character budget (max_chars) when
+// neither --chars nor WEALTHDB_MCP_CHARS sets one.
+const defaultMCPChars = 16000
+
 func cmdMCPServe(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, _, stderr io.Writer) error {
 	fs := flag.NewFlagSet("wealthdb mcp-serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -62,7 +66,7 @@ func cmdMCPServe(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	insecure := fs.Bool("insecure", false, "acknowledge --auth none")
 	var allowHosts hostList
 	fs.Var(&allowHosts, "allow-host", "a Host besides loopback the HTTP server answers to (repeatable, or a comma list)")
-	chars := fs.Int("chars", envInt("WEALTHDB_MCP_CHARS", 16000), "default characters per result")
+	chars := fs.Int("chars", envInt("WEALTHDB_MCP_CHARS", defaultMCPChars), "default characters per result")
 	memLimit := fs.String("memory-limit", "2GB", "DuckDB memory_limit per open")
 	threads := fs.Int("threads", 4, "DuckDB threads per open")
 	tempDir := fs.String("temp-dir", filepath.Join(os.TempDir(), "wealthdb-mcp"), "DuckDB spill directory (must be writable)")
@@ -399,7 +403,7 @@ func (s *mcpServer) scrubPaths(msg string) string {
 	return msg
 }
 
-const mcpServeUsage = `usage: wealthdb mcp-serve --stdio [--privacy]
+var mcpServeUsage = `usage: wealthdb mcp-serve --stdio [--privacy]
        wealthdb mcp-serve --http ADDR (--token-file FILE | --auth none --insecure) [--allow-host HOST]
                           [--all-interfaces]
 
@@ -428,7 +432,7 @@ Flags:
   --insecure            acknowledge --auth none
   --allow-host HOST     answer to this Host as well as loopback (repeatable)
   --chars N             default characters per result, a call's max_chars
-                        (default 16000, or WEALTHDB_MCP_CHARS)
+                        (default ` + strconv.Itoa(defaultMCPChars) + `, or WEALTHDB_MCP_CHARS)
   --memory-limit SIZE   DuckDB memory limit per call (default 2GB)
   --threads N           DuckDB threads per call (default 4)
   --temp-dir DIR        DuckDB spill directory (default $TMPDIR/wealthdb-mcp)

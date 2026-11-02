@@ -59,7 +59,7 @@ type goldenCase struct {
 	name string
 	cli  []string       // after `-c cfg`, before `-f csv`
 	tool string         // the MCP tool
-	args map[string]any // the call's arguments, before format/columns/limit
+	args map[string]any // the call's arguments, before format/columns/max_chars
 }
 
 // fixedColumns marks the two dumps, which print every column and take

@@ -32,7 +32,10 @@ var projectedIncomeDetailed = []string{"INCOME_INTEREST_EARNED", "INCOME_DIVIDEN
 // breaks operating_out into (`-C +<class>`), in the vocabulary's order, the
 // unresolved class last, as the statement names it.
 var PlanOutClasses = []string{string(canonical.ClassConsumption), string(canonical.ClassFees),
-	string(canonical.ClassTaxes), string(canonical.ClassGiving), "(uncategorized)"}
+	string(canonical.ClassTaxes), string(canonical.ClassGiving), planUncategorized}
+
+// planUncategorized is the statement's unresolved class.
+const planUncategorized = "(uncategorized)"
 
 // PlanParts are the look-back's parts of report_cashflow_plan (migration
 // 0149), PlanOutsidePart and PlanPoolPart aside, in the order web/provision.py's
@@ -74,7 +77,13 @@ type PlanIncomeKey struct {
 // IncomeKeys are the keys of OtherIncomeBy, in class, source and
 // account order.
 func (lb PlanLookback) IncomeKeys() []PlanIncomeKey {
-	return slices.SortedFunc(maps.Keys(lb.OtherIncomeBy), comparePlanIncomeKeys)
+	return sortedIncomeKeys(lb.OtherIncomeBy)
+}
+
+// sortedIncomeKeys are the keys of m, in class, source and account
+// order.
+func sortedIncomeKeys(m map[PlanIncomeKey]float64) []PlanIncomeKey {
+	return slices.SortedFunc(maps.Keys(m), comparePlanIncomeKeys)
 }
 
 // comparePlanIncomeKeys orders keys by class, source and account.
@@ -97,7 +106,7 @@ type PlanMortgage struct {
 // ever. An operating inflow is the projection's by the verdict the
 // statement classes it by. The parts are summed apart from the split, so
 // the other income reads the same whole either way.
-const planLookbackSQL = `
+var planLookbackSQL = `
 WITH l AS MATERIALIZED (SELECT * FROM cashflow_lines_outccy(?1, ?2, ?3)),
 parts AS (
     SELECT CASE WHEN section = 'operating_in' AND NOT list_contains(?4, COALESCE(verdict, ''))
@@ -229,9 +238,9 @@ const PlanPoolPart = "pool_income"
 // the unresolved class, one of any other type other receipts. A test
 // holds it to the statement's CASE.
 var planIncomeClasses = map[string][]string{
-	"earnings": {"INCOME_SALARY", "INCOME_GIG_ECONOMY", "INCOME_CONTRACTOR"},
-	"yield":    {"INCOME_STAKING", "INCOME_ROYALTIES", "INCOME_ENERGY_FEED_IN"},
-	"benefits": {"INCOME_GOVERNMENT_BENEFITS", "INCOME_UNEMPLOYMENT", "INCOME_LONG_TERM_DISABILITY",
+	string(canonical.ClassEarnings): {"INCOME_SALARY", "INCOME_GIG_ECONOMY", "INCOME_CONTRACTOR"},
+	string(canonical.ClassYield):    {"INCOME_STAKING", "INCOME_ROYALTIES", "INCOME_ENERGY_FEED_IN"},
+	string(canonical.ClassBenefits): {"INCOME_GOVERNMENT_BENEFITS", "INCOME_UNEMPLOYMENT", "INCOME_LONG_TERM_DISABILITY",
 		"INCOME_MILITARY", "INCOME_CHILD_SUPPORT", "INCOME_ALIMONY"},
 }
 
@@ -239,23 +248,20 @@ var planIncomeClasses = map[string][]string{
 // line w.
 var planIncomeClassSQL = func() string {
 	var b strings.Builder
-	b.WriteString("CASE WHEN w.income_detailed IS NULL THEN '(uncategorized)'")
+	fmt.Fprintf(&b, "CASE WHEN w.income_detailed IS NULL THEN '%s'", planUncategorized)
 	for _, c := range slices.Sorted(maps.Keys(planIncomeClasses)) {
 		fmt.Fprintf(&b, " WHEN w.income_detailed IN ('%s') THEN '%s'",
 			strings.Join(planIncomeClasses[c], "', '"), c)
 	}
-	return b.String() + " ELSE 'other_receipts' END"
+	return b.String() + " ELSE '" + string(canonical.ClassOtherReceipts) + "' END"
 }()
 
 // outsidePool keeps an income line b off the pool on its own day: no
-// span of cashflow_pool_spans holds it, so a line on a dated wrapper
-// override's day reads the override's wrapper, as poolSpanJoin does for
-// the statement's lines.
+// span of cashflow_pool_spans holds it (poolSpanOn), so a line on a
+// dated wrapper override's day reads the override's wrapper, as
+// poolSpanJoin does for the statement's lines.
 func outsidePool(b string) string {
-	return `NOT EXISTS (SELECT 1 FROM cashflow_pool_spans() p
-                         WHERE p.silver_source_id = ` + b + `.silver_source_id
-                           AND p.account_external_id = ` + b + `.account_external_id
-                           AND ` + b + `.occurred_at >= p.from_at AND ` + b + `.occurred_at < p.until_at)`
+	return "NOT EXISTS (SELECT 1 FROM cashflow_pool_spans() p WHERE " + poolSpanOn(b) + ")"
 }
 
 // planIncomeSQL sums the window's income lines by side of the pool,
@@ -281,12 +287,12 @@ HAVING SUM(w.value_outccy) IS NOT NULL`
 
 // CashflowPlanIncome reads the income lines of the look-back window
 // [from, to] in outCcy by class and account, each on the side of the
-// pool its day puts it, as monthly averages. The pool's spread over
-// poolMonths, the months CashflowPlanLookback spreads the pool's lines
-// over (none with none). Each account's outside the pool spreads over
-// the window's months from the month of its first such line ever, so an
-// account newer than the window spreads over the months it has. A line
-// no rate converts counts nothing.
+// pool its day puts it, as monthly averages. The pool's lines spread
+// over poolMonths, the months CashflowPlanLookback spreads them over;
+// with no months the pool has no rows. An account's lines outside the
+// pool spread over the window's months from the month of its first such
+// line ever, so an account newer than the window spreads over the months
+// it has. A line no rate converts counts nothing.
 func CashflowPlanIncome(ctx context.Context, db querier, from, to int64, outCcy string, poolMonths int) (pool,
 	outside map[PlanIncomeKey]float64, err error) {
 	pool, outside = map[PlanIncomeKey]float64{}, map[PlanIncomeKey]float64{}

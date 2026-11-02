@@ -286,6 +286,7 @@ func TestYieldPrivacyAndFlags(t *testing.T) {
 		{[]string{"global", "--period", "weekly"}, "weekly"},
 		{[]string{"global", "-f", "ndjson"}, "-f ndjson belongs to the coverage view"},
 		{[]string{"coverage", "-f", "ndjson", "-C", "section"}, "it takes no -C"},
+		{[]string{"coverage", "-f", "ndjson", "-F", "section = x"}, "it takes no -F"},
 		{[]string{"coverage", "-f", "ndjson", "--period", "quarterly"}, "it takes no --period"},
 		{[]string{"global", "--period", "quarterly", "-d", "2026-06-30"}, "-d names one day"},
 		{[]string{"coverage", "-f", "ndjson", "-p"}, "which -p hides"},

@@ -151,21 +151,12 @@ func newSwapFixture(t *testing.T, statement ...[3]string) (*webReader, *psnReade
 func inferredForwardRecords(t *testing.T, web *webReader, psn *psnReader) map[string][]string {
 	t.Helper()
 	ctx := context.Background()
-	first, err := psn.firstForwardDay(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	swaps, err := web.inferredSwaps(ctx, first)
-	if err != nil {
-		t.Fatal(err)
-	}
-	portfolioOf, err := psn.portfolioByCashAccount(ctx)
+	forwards, err := (&Connection{web: web, psn: psn, source: "test-ubs"}).inferredForwards(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	w := canonical.Window{Start: 0, End: swapDay(2040, 1, 1), HasChanges: true}
-	stream, err := web.snapshotsHistorical(ctx, w, map[string]string{swapPortfolio: swapSafekeeping}, nil, nil,
-		inferredForwards{source: "test-ubs", swaps: swaps, portfolioOf: portfolioOf, until: first})
+	stream, err := web.snapshotsHistorical(ctx, w, map[string]string{swapPortfolio: swapSafekeeping}, nil, nil, forwards)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,6 +291,19 @@ func TestInferredForwardsCloseWhenNoSwapIsOpen(t *testing.T) {
 		"2033-09-30": got["2033-09-30"], "2033-12-31": got["2033-12-31"]}, map[string][]string{
 		"2033-03-31": {"P1:overlay Portfolio overlay P1", `P1:overlay fx-swap QA-00002 - USD 0 {"closure_marker": true}`},
 	})
+}
+
+// Without the PSN feed no swap is inferred: the forwards carry the
+// source alone.
+func TestInferredForwardsNeedBothFeeds(t *testing.T) {
+	web, _ := newSwapFixture(t)
+	f, err := (&Connection{web: web, source: "test-ubs"}).inferredForwards(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.source != "test-ubs" || f.swaps != nil || f.portfolioOf != nil || f.until != 0 {
+		t.Errorf("inferredForwards without PSN = %+v, want the source alone", f)
+	}
 }
 
 // checkForwardRecords compares the records of each day, as sets.

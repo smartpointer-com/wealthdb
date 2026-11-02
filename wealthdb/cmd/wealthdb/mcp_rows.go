@@ -371,6 +371,19 @@ func (l columnLookup) exact(name string) int {
 	return -1
 }
 
+// exactOrStem is the first column name names as its registry name, its
+// header or its stem, any case; -1 for none. A value that names a
+// column, and a column printed elsewhere, read names this way.
+func (l columnLookup) exactOrStem(name string) int {
+	want := strings.ToLower(strings.TrimSpace(name))
+	for i, c := range l.cols {
+		if strings.ToLower(c.header) == want || c.name == want || l.stem(c) == want {
+			return i
+		}
+	}
+	return -1
+}
+
 func (l columnLookup) byName(name string) int {
 	for i, c := range l.cols {
 		if c.name == name {
@@ -487,7 +500,7 @@ func (fam *family) carries() map[string][]string {
 		cfg := &config.Config{DefaultCurrency: "USD"}
 		for _, v := range fam.viewsOrOne() {
 			printed := map[string]bool{}
-			for _, c := range fam.build(cfg, defaultRequest(v, "USD"), &toolArgs{values: map[string]any{}}).columns {
+			for _, c := range fam.defaultLookup(cfg, v, false).cols {
 				printed[c.name] = true
 			}
 			for _, f := range filterOrder {
@@ -511,6 +524,23 @@ func (fam *family) viewsOrOne() []string {
 		return []string{""}
 	}
 	return fam.views
+}
+
+// buildDefault builds req's report with no call arguments: a view's
+// columns as describe lists them.
+func (fam *family) buildDefault(cfg *config.Config, req request) *report {
+	return fam.build(cfg, req, &toolArgs{values: map[string]any{}})
+}
+
+// defaultLookup is the column lookup of view at every option's default
+// (defaultRequest), in the configured currency. series reads the view
+// as a series, which prints its period column ahead of the view's own.
+func (fam *family) defaultLookup(cfg *config.Config, view string, series bool) columnLookup {
+	req := defaultRequest(view, cfg.DefaultCurrency)
+	if series {
+		req.series = []seriesPoint{{}}
+	}
+	return fam.lookup(fam.buildDefault(cfg, req), req)
 }
 
 // defaultRequest is a request for view with every option at its

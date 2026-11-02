@@ -128,19 +128,3 @@ func TestReadOnlyDir(t *testing.T) {
 		t.Errorf("reason = %v, want ReasonDirNotWriteable", d.Reason)
 	}
 }
-
-func TestParentDir(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"/foo/bar.db", "/foo"},
-		{"/bar.db", "/"},
-		{"bar.db", "."},
-		{"./bar.db", "."},
-	}
-	for _, c := range cases {
-		if got := parentDir(c.in); got != c.want {
-			t.Errorf("parentDir(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}

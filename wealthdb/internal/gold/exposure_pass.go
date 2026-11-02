@@ -116,17 +116,16 @@ func writeInstrumentKeys(ctx context.Context, tx *sql.Tx) error {
 	var out []row
 	if err := scanAll(ctx, tx, `
 SELECT i.silver_source_id, i.instrument_external_id, COALESCE(i.isin, ''), COALESCE(i.cusip, ''), COALESCE(il.symbol, ''),
-       COALESCE(i.vehicle = 'forward', FALSE)
+       COALESCE(i.vehicle, '')
   FROM instruments i
   LEFT JOIN instrument_labels() il ON il.silver_source_id = i.silver_source_id
        AND il.instrument_external_id = i.instrument_external_id`, func(rows *sql.Rows) error {
-		var src, iid, isin, cusip, symbol string
-		var forward bool
-		if err := rows.Scan(&src, &iid, &isin, &cusip, &symbol, &forward); err != nil {
+		var src, iid, isin, cusip, symbol, vehicle string
+		if err := rows.Scan(&src, &iid, &isin, &cusip, &symbol, &vehicle); err != nil {
 			return err
 		}
 		k := canonical.SecurityKey(isin, cusip, "", symbol, "")
-		if k == "" && forward {
+		if k == "" && canonical.Vehicle(vehicle) == canonical.VehicleForward {
 			k = canonical.ContractKey(src, iid)
 		}
 		if k != "" {

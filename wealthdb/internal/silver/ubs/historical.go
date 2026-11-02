@@ -112,10 +112,10 @@ func (r *webReader) appendHistoricalSecurities(
 	safekeepingByPortfolio map[string]string,
 	portfolioCutoff map[string]int64,
 ) error {
-	// Year-end Statements of Assets print a per-instrument gold-bar
-	// detail line for the precious-metals overlay portfolio that the
-	// quarterly statements omit. We already synthesise a single
-	// overview precious-metals position (PM-<portfolio>) for that
+	// A year-end Statement of Assets can print a per-instrument gold-bar
+	// detail line for a precious-metals overlay portfolio that the
+	// quarterly statements omit. The adapter also synthesises a single
+	// overview precious-metals position (PM-<portfolio>) for such a
 	// portfolio from the sibling reporting-currency statement, so
 	// emitting the detail line too would double-count the metal at
 	// every year-end (the two reach gold under distinct position
@@ -343,8 +343,8 @@ SELECT DISTINCT as_of_date, portfolio_external_id
 // fine weight" Statement-of-Assets row), matched on its description and
 // raw payload. The call site already gates on an overview sibling being
 // present for the same portfolio, so this only ever fires inside a
-// precious-metals overlay portfolio — a genuine non-metal security
-// there (e.g. a money-market fund) is left untouched.
+// precious-metals overlay portfolio, and a genuine non-metal security
+// there is left untouched.
 func isPreciousMetalsLine(description, payload string) bool {
 	hay := strings.ToLower(description + " " + payload)
 	for _, kw := range []string{

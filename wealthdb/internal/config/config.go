@@ -153,10 +153,10 @@ type Config struct {
 	InceptionOverrides *InceptionOverrides `json:"inception_overrides,omitempty"`
 	// ReturnsExclude omits whole accounts or portfolios from HIGHER-grain
 	// return aggregates (sources, global) while still reporting them at their
-	// own grain. Use it to keep holdings tracked in a shared login that
-	// belong to another person out of source/global
-	// returns. Keyed by grain: portfolios[source_id] and accounts[source_id]
-	// each map to a list of external ids. An excluded account is also omitted
+	// own grain. Use it to keep accounts that are tracked but are not part
+	// of the household's own wealth out of source/global returns. Keyed by
+	// grain: portfolios[source_id] and accounts[source_id] each map to a
+	// list of external ids. An excluded account is also omitted
 	// from its portfolio's row; an excluded portfolio still shows its own row.
 	// Returns only — holdings / net-worth are unaffected. Absent ⇒
 	// nothing excluded. See docs/DESIGN.md §5.5 and internal/gold
@@ -281,9 +281,9 @@ type WebConfig struct {
 // on when `mcp.port` is omitted.
 const DefaultMCPPort = 3300
 
-// MCP auth modes. AuthToken requires a bearer token on every HTTP
-// request; AuthNone serves any local process and is honoured only with
-// Insecure set as well.
+// MCP auth modes. MCPAuthToken requires a bearer token on every HTTP
+// request; MCPAuthNone serves any local process and is honoured only
+// with Insecure set as well.
 const (
 	MCPAuthToken = "token"
 	MCPAuthNone  = "none"
@@ -921,8 +921,8 @@ type CompiledSpendScope struct {
 // silver_source_id, in the same shape as returns_exclude. `include`
 // is a no-op on an account already in the population by default (a
 // wallet whose outflows really are spending); `exclude` fences a cash
-// or card account out (a card belonging to someone else on a shared
-// login). An account may not appear in both.
+// or card account out (a card whose spending is not the household's).
+// An account may not appear in both.
 type SpendingAccounts struct {
 	Include map[string][]string `json:"include,omitempty"` // source_id -> [account_external_id...]
 	Exclude map[string][]string `json:"exclude,omitempty"` // source_id -> [account_external_id...]
@@ -1366,7 +1366,7 @@ func (c *Config) Lookup(id string) (*SilverSource, bool) {
 // silver stays JSON-free. Returns an error when a relationship's
 // psn_start_override fails to parse (YYYY-MM-DD).
 func (s *SilverSource) ToSilverOpenSpec() (silver.OpenSpec, error) {
-	out := silver.OpenSpec{Path: s.Path, MarkGuard: s.Schwab.markGuard()}
+	out := silver.OpenSpec{ID: s.ID, Path: s.Path, MarkGuard: s.Schwab.markGuard()}
 	for _, sub := range s.Subsources {
 		out.Subsources = append(out.Subsources, silver.Subsource{
 			Kind: sub.Kind,

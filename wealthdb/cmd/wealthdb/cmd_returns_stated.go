@@ -44,7 +44,7 @@ func runReturnsStated(ctx context.Context, g globalFlags, args []string, stdout,
 	req := request{view: "stated", from: fromEpoch, to: toEpoch}
 	rep := returnsStatedReport(req, cfg)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, rf.output(fmtChoice, "returns", "returns", req, cfg, g.clock()), open, stdout)
+	return writeReport(ctx, rep, rf.output(fmtChoice, "returns", req, cfg, g.clock()), open, stdout)
 }
 
 // returnsStatedReport runs the reconciliation with the config's returns

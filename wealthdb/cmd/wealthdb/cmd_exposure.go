@@ -104,7 +104,7 @@ func cmdExposure(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	}
 	req := request{view: view, currency: outCcy, asOf: asOfEpoch, country: *country, series: series}
 	rep := exposureReport(req)
-	return writeReport(ctx, rep, rf.output(fmtChoice, "exposure", "exposure", req, cfg, g.clock()), open, stdout)
+	return writeReport(ctx, rep, rf.output(fmtChoice, "exposure", req, cfg, now), open, stdout)
 }
 
 // skeletonFormat is the -f value that turns coverage into declaration
@@ -112,8 +112,8 @@ func cmdExposure(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 const skeletonFormat = "ndjson"
 
 // checkSkeletonFlags refuses what cmd's -f ndjson cannot honour:
-// another view, a series, a column set, and -p, since a record names its
-// instrument.
+// another view, a series, a column set, a condition, and -p, since a
+// record names its instrument.
 func checkSkeletonFlags(cmd string, fs *flag.FlagSet, view, period string, privacy bool) error {
 	switch {
 	case view != "coverage":
@@ -122,6 +122,8 @@ func checkSkeletonFlags(cmd string, fs *flag.FlagSet, view, period string, priva
 		return errs.Newf(errs.ExitUsage, "%s: -f ndjson prints the records still to write on one day; it takes no --period", cmd)
 	case isSet(fs, "C", "columns"):
 		return errs.Newf(errs.ExitUsage, "%s: -f ndjson prints whole records; it takes no -C", cmd)
+	case isSet(fs, "F", "filter"):
+		return errs.Newf(errs.ExitUsage, "%s: -f ndjson prints every record still to write; it takes no -F", cmd)
 	case privacy:
 		return errs.Newf(errs.ExitUsage, "%s: -f ndjson names each holding's instrument, which -p hides", cmd)
 	}
@@ -652,11 +654,17 @@ func wrapWords(s string, width int) []string {
 }
 
 // andList joins words as prose: "a, b and c".
-func andList(words []string) string {
+func andList(words []string) string { return joinProse(words, "and") }
+
+// orList joins words as prose: "a, b or c".
+func orList(words []string) string { return joinProse(words, "or") }
+
+// joinProse joins words as prose, the last two by conj.
+func joinProse(words []string, conj string) string {
 	if len(words) < 2 {
 		return strings.Join(words, "")
 	}
-	return strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
+	return strings.Join(words[:len(words)-1], ", ") + " " + conj + " " + words[len(words)-1]
 }
 
 // flagDescription wraps a flag's description to the usage's description

@@ -117,7 +117,7 @@ func forwardHolding(snap int64, source, contractID string, p forwardPayload) (ca
 // by the contract's id in source (canonical.ContractKey): one
 // line, long the bought leg and short the sold one, over the mark as
 // net assets, in the mark's currency ccy. The composition's provider is
-// the PSN feed's.
+// the PSN feed's, and a caller of another feed overrides it.
 func forwardRecords(snap int64, source, id, name, ccy string, mark *canonical.Decimal, bought, sold forwardLeg) (
 	canonical.InstrumentChange, canonical.FundCompositionChange, canonical.FundLineChange) {
 	inst := canonical.InstrumentChange{

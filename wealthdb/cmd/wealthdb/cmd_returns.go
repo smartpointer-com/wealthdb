@@ -87,7 +87,7 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 		method: *method, period: *period, annualize: *annualize, netting: *netting == "on", inception: *inception}
 	rep := returnsReport(req, cfg)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, rf.output(fmtChoice, "returns", "returns", req, cfg, g.clock()), open, stdout)
+	return writeReport(ctx, rep, rf.output(fmtChoice, "returns", req, cfg, g.clock()), open, stdout)
 }
 
 // returnsReport is one view of the returns family, the runner the CLI

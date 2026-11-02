@@ -127,6 +127,14 @@ func (c *nonNullCell) apply() { *c.dst = c.String }
 // nonNull scans a nullable text column into a string, "" for NULL.
 func nonNull(dst *string) *nonNullCell { return &nonNullCell{dst: dst} }
 
+func nullStringToPtr(n sql.NullString) *string {
+	if !n.Valid {
+		return nil
+	}
+	s := n.String
+	return &s
+}
+
 func nullFloatToPtr(n sql.NullFloat64) *float64 {
 	if !n.Valid {
 		return nil

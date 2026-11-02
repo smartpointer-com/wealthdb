@@ -581,53 +581,34 @@ func TestThePlansPoolIncomeIsTheIncomeLinesAverage(t *testing.T) {
 	}
 }
 
-// Migration 0174 replays over a materialized gold: the pool rows stay
-// and the view keeps its shape.
-func TestMigration0174DDLIsRerunnable(t *testing.T) {
+// Migration 0172 replays over a materialized gold, and 0174 after it:
+// the pool and outside rows stay and the view keeps its shape.
+func TestMigrations0172And0174DDLAreRerunnable(t *testing.T) {
 	t.Parallel()
 	db, ctx, at := seedYieldBookFX(t)
 	seedPlanWage(t, db)
-	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
-		t.Fatal(err)
-	}
-	pool := func() string {
-		return strings.Join(scanStrings(t, db, `SELECT count(*)::VARCHAR FROM web_cashflow_plan WHERE part = ?`,
-			PlanPoolPart), "")
-	}
-	before := pool()
-	if before == "0" {
-		t.Fatal("no pool income rows materialized")
-	}
-	for range 2 {
-		rerunMigrationDDL(t, db, ctx, "0174_cashflow_plan_pool_income.sql")
-	}
-	if after := pool(); after != before {
-		t.Errorf("pool rows %s, before %s", after, before)
-	}
-}
-
-// Migration 0172 replays over a materialized gold: the outside rows
-// stay and the view keeps its shape.
-func TestMigration0172DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx, at := seedYieldBookFX(t)
 	seedPlanVehicle(t, db)
 	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
 		t.Fatal(err)
 	}
-	outside := func() string {
+	count := func(part string) string {
 		return strings.Join(scanStrings(t, db, `SELECT count(*)::VARCHAR FROM web_cashflow_plan WHERE part = ?`,
-			PlanOutsidePart), "")
+			part), "")
 	}
-	before := outside()
-	if before == "0" {
-		t.Fatal("no outside income rows materialized")
+	parts := []string{PlanPoolPart, PlanOutsidePart}
+	before := map[string]string{}
+	for _, part := range parts {
+		if before[part] = count(part); before[part] == "0" {
+			t.Fatalf("no %s rows materialized", part)
+		}
 	}
 	for range 2 {
 		rerunMigrationDDL(t, db, ctx, "0172_cashflow_plan_outside_income.sql")
 	}
-	if after := outside(); after != before {
-		t.Errorf("outside rows %s, before %s", after, before)
+	for _, part := range parts {
+		if after := count(part); after != before[part] {
+			t.Errorf("%s rows %s, before %s", part, after, before[part])
+		}
 	}
 }
 

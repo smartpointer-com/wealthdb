@@ -333,7 +333,7 @@ func taxWrapperForAcctTp(known map[string]canonical.TaxWrapper, side, code, desc
 // are personal banking outside any investment mandate — they
 // must not inherit the safekeeping's advisory tag. Named-mandate
 // safekeeping accounts always carry an AcctDesc (a strategy
-// name like "STRATEGY ALPHA" / "STRATEGY BETA"); their cash
+// name such as "STRATEGY ALPHA"); their cash
 // siblings ARE part of the mandate (typically labelled in
 // silver as "Cash Account for investment solutions"), and
 // inheriting the safekeeping's style is correct. Cash staged in

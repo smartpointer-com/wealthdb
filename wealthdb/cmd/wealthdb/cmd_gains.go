@@ -98,7 +98,7 @@ func runGainsView(ctx context.Context, g globalFlags, view string, args []string
 		categories: overrideCategories(cfg)}
 	rep := gainsReport(req)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, rf.output(fmtChoice, "gains", "gains", req, cfg, g.clock()), open, stdout)
+	return writeReport(ctx, rep, rf.output(fmtChoice, "gains", req, cfg, g.clock()), open, stdout)
 }
 
 // gainsReport is one view of the gains family, the runner the CLI and
@@ -318,7 +318,7 @@ func buildRealizedLotColumnRegistry(outCcy string, kindOf func(string) string) [
 	holding := func(r row) (string, string) { return r.SilverSourceID, strOrEmpty(r.InstrumentExternalID) }
 	return []col{
 		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r row) string { return r.SilverSourceID }},
-		{Name: "date", Align: output.AlignLeft, Extract: func(r row) string { return r.EffectiveDate }},
+		{Name: "date", Align: output.AlignLeft, Date: true, Extract: func(r row) string { return r.EffectiveDate }},
 		// The date is the tax year's last day when the document states
 		// no disposal or settlement date.
 		yesNoCol("undated", func(r row) *bool { return &r.Undated }),

@@ -115,6 +115,27 @@ func (c *Connection) ChangeWindow(ctx context.Context, sinceN int64) (canonical.
 	return silver.MergeWindows(sinceN, windows), nil
 }
 
+// inferredForwards reads the forwards the PSN feed does not state yet,
+// from the swaps the netbanking ledger books, each ended by the feed's
+// first forward day. Without both feeds it carries the source alone.
+func (c *Connection) inferredForwards(ctx context.Context) (inferredForwards, error) {
+	f := inferredForwards{source: c.source}
+	if c.web == nil || c.psn == nil {
+		return f, nil
+	}
+	var err error
+	if f.until, err = c.psn.firstForwardDay(ctx); err != nil {
+		return inferredForwards{}, err
+	}
+	if f.swaps, err = c.web.inferredSwaps(ctx, f.until); err != nil {
+		return inferredForwards{}, err
+	}
+	if f.portfolioOf, err = c.psn.portfolioByCashAccount(ctx); err != nil {
+		return inferredForwards{}, err
+	}
+	return f, nil
+}
+
 // Snapshots emits the merged stream described in the file header.
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	var (
@@ -124,10 +145,8 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		cutoff                 map[string]int64
 		psnTaxPair             map[string]taxPair
 		safekeepingByPortfolio map[string]string
-		forwards               inferredForwards
 	)
 
-	forwards.source = c.source
 	if c.web != nil && c.psn != nil {
 		var err error
 		webPosPayloads, err = c.web.positionPayloadByKey(ctx, w.Start, w.End)
@@ -153,18 +172,10 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		if err != nil {
 			return nil, err
 		}
-		// The forwards the feed does not state yet, from the swaps the
-		// netbanking ledger books, each ended by the feed's first
-		// forward day.
-		if forwards.until, err = c.psn.firstForwardDay(ctx); err != nil {
-			return nil, err
-		}
-		if forwards.swaps, err = c.web.inferredSwaps(ctx, forwards.until); err != nil {
-			return nil, err
-		}
-		if forwards.portfolioOf, err = c.psn.portfolioByCashAccount(ctx); err != nil {
-			return nil, err
-		}
+	}
+	forwards, err := c.inferredForwards(ctx)
+	if err != nil {
+		return nil, err
 	}
 	var portfolioCutoff, accountCutoff map[string]int64
 	if c.web != nil {
@@ -440,8 +451,8 @@ func (s *psnStatementCarryStream) Close() error { return s.inner.Close() }
 // Position match key is (utc_day(snapshot_at), ISIN). Cash match
 // key is (utc_day(snapshot_at), account, currency).
 //
-// The stream also carries forward web-only positions that PSN
-// doesn't surface — currently just mortgages. For each PSN batch
+// The stream also carries forward the web-only mortgage positions,
+// which PSN does not surface. For each PSN batch
 // in the window, it injects one PositionChange per known mortgage
 // at the batch's snapshot_at, so a mortgage reports in every PSN
 // snapshot. A PSN snapshot without it would report every account
@@ -527,7 +538,8 @@ func foldWebPayloadAsWebKey(base json.RawMessage, web string) json.RawMessage {
 // forwards/mortgage-only when a same-day nightly is captured before
 // that day's holdings. Both edges are suppressed here, so each
 // securities account keeps its nearest complete snapshot. A forward's
-// instrument and composition go with its position. Cash balances and
+// instrument and composition (the only compositions PSN states) go
+// with its position. Cash balances and
 // the other dimensions in the same batches pass through untouched,
 // so PSN cash still flows. Running BEFORE psnWebFoldStream means an
 // emptied bracket-day batch carries no positions, so the fold won't
@@ -549,7 +561,8 @@ func (s *psnHoldingsGapFilter) Next(ctx context.Context) (canonical.SnapshotBatc
 	}
 	batch.Positions = slices.DeleteFunc(batch.Positions, func(p canonical.PositionChange) bool { return !in(p.SnapshotAt) })
 	// A forward's instrument and legs go with its position, so no
-	// composition describes the holding of another day.
+	// composition describes the holding of another day. The PSN stream
+	// states no other composition.
 	batch.Instruments = slices.DeleteFunc(batch.Instruments, func(i canonical.InstrumentChange) bool {
 		return i.Vehicle == canonical.VehicleForward && !in(i.FirstSeenAt)
 	})

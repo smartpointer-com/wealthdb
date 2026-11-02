@@ -135,7 +135,7 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 		asOf: anchorToDay(now.UTC(), true).Unix(), assumptions: ff.assumptions(), lookback: cfg.CashflowLookback()}
 	rep := cashflowReport(req)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, rf.output(fmtChoice, "cashflow", "cashflow", req, cfg, g.clock()), open, stdout)
+	return writeReport(ctx, rep, rf.output(fmtChoice, "cashflow", req, cfg, now), open, stdout)
 }
 
 // cashflowReport is one view of the cash flow family, the runner the
@@ -312,7 +312,7 @@ func buildCashflowSummaryColumnRegistry(outCcy, period string) []columnSpec[gold
 	return []columnSpec[gold.CashflowSummaryRow]{
 		{Name: "period", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.CashflowSummaryRow) string { return periodLabel(r.PeriodStart, period) }},
-		{Name: "period_start", Align: output.AlignLeft,
+		{Name: "period_start", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.CashflowSummaryRow) string { return periodStart(r.PeriodStart) }},
 		countCol("txn_count", func(r gold.CashflowSummaryRow) int64 { return r.TxnCount }),
 		// The two halves of operating. NOT named `income` and
@@ -327,8 +327,8 @@ func buildCashflowSummaryColumnRegistry(outCcy, period string) []columnSpec[gold
 		outCcyCol("financing", outCcy, func(r gold.CashflowSummaryRow) *string { return r.Financing }),
 		outCcyCol("vehicles", outCcy, func(r gold.CashflowSummaryRow) *string { return r.Vehicles }),
 		outCcyCol("net_cash_flow", outCcy, func(r gold.CashflowSummaryRow) *string { return r.NetCashFlow }),
-		// The yield class alone: for a household whose money comes from
-		// wealth rather than wages, the figure the report is opened for.
+		// The yield class alone: the part of operating income the
+		// household's assets produce, rather than its wages.
 		outCcyCol("yield", outCcy, func(r gold.CashflowSummaryRow) *string { return r.Yield }),
 		outCcyCol("taxes", outCcy, func(r gold.CashflowSummaryRow) *string { return r.Taxes }),
 		outCcyCol("fees", outCcy, func(r gold.CashflowSummaryRow) *string { return r.Fees }),
@@ -359,7 +359,7 @@ func buildCashflowFlowColumnRegistry(outCcy, period string) []columnSpec[gold.Ca
 	return []columnSpec[gold.CashflowFlowRow]{
 		{Name: "period", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.CashflowFlowRow) string { return periodLabel(r.PeriodStart, period) }},
-		{Name: "period_start", Align: output.AlignLeft,
+		{Name: "period_start", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.CashflowFlowRow) string { return periodStart(r.PeriodStart) }},
 		{Name: "section", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowFlowRow) string { return r.Section }},
@@ -443,7 +443,7 @@ func buildCashflowCoverageColumnRegistry(period string,
 	return []columnSpec[gold.CashflowCoverageRow]{
 		{Name: "period", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.CashflowCoverageRow) string { return periodLabel(r.PeriodStart, period) }},
-		{Name: "period_start", Align: output.AlignLeft,
+		{Name: "period_start", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.CashflowCoverageRow) string { return periodStart(r.PeriodStart) }},
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowCoverageRow) string { return r.SourceID }},

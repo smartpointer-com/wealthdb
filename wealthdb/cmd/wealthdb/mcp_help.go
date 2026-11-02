@@ -167,13 +167,12 @@ func (s *mcpServer) toolHelp(t toolSpec) (string, error) {
 		views = []string{""}
 	}
 	b.WriteString("\nColumns (* = shown by default; columns=all shows every one):\n")
-	empty := &toolArgs{values: map[string]any{}}
 	for _, v := range views {
 		req := defaultRequest(v, cfg.DefaultCurrency)
 		if level := map[string]string{"cashflow": "group", "income": "detailed"}[t.name]; level != "" {
 			req.level = level
 		}
-		rep := fam.build(cfg, req, empty)
+		rep := fam.buildDefault(cfg, req)
 		var cols []string
 		for _, c := range rep.columns {
 			name := c.header
@@ -191,13 +190,7 @@ func (s *mcpServer) toolHelp(t toolSpec) (string, error) {
 	if fam.views != nil {
 		b.WriteString("\nFilters each view takes (a filter the view lacks moves the call to the first finer view that has it):\n")
 		filters := func(v string) string {
-			var fs []string
-			for _, f := range fam.carries()[v] {
-				if slices.ContainsFunc(t.params, func(p param) bool { return p.name == f }) {
-					fs = append(fs, f)
-				}
-			}
-			if len(fs) > 0 {
+			if fs := t.carriedParams(v); len(fs) > 0 {
 				return strings.Join(fs, ", ")
 			}
 			return "none"

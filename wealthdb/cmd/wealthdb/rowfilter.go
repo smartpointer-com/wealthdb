@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
@@ -38,7 +39,15 @@ const (
 	kindDate
 )
 
-var kindNames = map[colKind]string{kindText: "text", kindNumber: "a number", kindMoney: "money", kindDate: "a date"}
+// kindWords name a kind in prose: one cell's kind ("a number"), the
+// kind of several ("numbers"), the bare word for the help ("number"),
+// and a value of it for an example.
+var kindWords = map[colKind]struct{ one, many, bare, example string }{
+	kindText:   {"text", "text", "text", "x"},
+	kindNumber: {"a number", "numbers", "number", "10"},
+	kindMoney:  {"money", "money", "money", "1000"},
+	kindDate:   {"a date", "dates", "date", "2027"},
+}
 
 // kind is the column's kind: a date by the registry's mark, money by
 // its privacy class, a number by its alignment, else text.
@@ -142,10 +151,9 @@ func opsForKind(k colKind) string {
 // kindsOf names the kinds an operator compares: "numbers, money and
 // dates".
 func kindsOf(op *opSpec) string {
-	plural := map[colKind]string{kindText: "text", kindNumber: "numbers", kindMoney: "money", kindDate: "dates"}
 	var out []string
 	for _, k := range op.kinds {
-		out = append(out, plural[k])
+		out = append(out, kindWords[k].many)
 	}
 	return andList(out)
 }
@@ -164,7 +172,8 @@ type spelling struct {
 var spellings = func() []spelling {
 	var out []spelling
 	add := func(text string, op *opSpec, near string) {
-		out = append(out, spelling{text: text, op: op, near: near, word: unicode.IsLetter(rune(text[0])) || text[0] == '!' && len(text) > 2})
+		first, _ := utf8.DecodeRuneInString(text)
+		out = append(out, spelling{text: text, op: op, near: near, word: unicode.IsLetter(first) || text[0] == '!' && len(text) > 2})
 	}
 	for i := range operators {
 		op := &operators[i]
@@ -202,16 +211,16 @@ func (f filterFront) param() string {
 
 // list spells conditions as this front-end takes them.
 func (f filterFront) list(conds ...string) string {
+	prefix := ""
 	if f.cli {
-		parts := make([]string, len(conds))
-		for i, c := range conds {
-			parts[i] = "-F " + strconv.Quote(c)
-		}
-		return strings.Join(parts, " ")
+		prefix = "-F "
 	}
 	parts := make([]string, len(conds))
 	for i, c := range conds {
-		parts[i] = strconv.Quote(c)
+		parts[i] = prefix + strconv.Quote(c)
+	}
+	if f.cli {
+		return strings.Join(parts, " ")
 	}
 	return "[" + strings.Join(parts, ", ") + "]"
 }
@@ -260,9 +269,6 @@ type rawCond struct {
 	// the binding names an example for in the column's kind.
 	missing bool
 	spelled string // the operator as written
-	// lenient notes a reading that is not the canonical form: the
-	// header's canonical echo shows it.
-	lenient bool
 }
 
 // condSyntaxError is a condition that cannot be split, with its message.
@@ -277,6 +283,7 @@ var (
 	// ("credit limit fee"), never this shape.
 	sqlTailRe = regexp.MustCompile(`(?i)\s((?:order|group)\s+by)\s+[A-Za-z_][A-Za-z0-9_]*(?:\s+(?:asc|desc))?\s*$|\s(limit|offset)\s+\d+\s*$`)
 	funcRe    = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*(.*)$`)
+	limitRe   = regexp.MustCompile(`(?i)\b(?:limit|offset)\s+(\d+)`)
 )
 
 // condErrors are the messages of a call's bad conditions, by the place
@@ -325,7 +332,6 @@ func parseConditions(written []string, front filterFront) ([]rawCond, condErrors
 // joined by "and" read as meant), each a condition or a between.
 func splitCondition(written string, front filterFront) ([]rawCond, error) {
 	text := strings.TrimSpace(written)
-	lenient := false
 	if text == "" {
 		return nil, condSyntaxError{"an empty condition; write column op value, such as \"value > 1000\""}
 	}
@@ -333,16 +339,16 @@ func splitCondition(written string, front filterFront) ([]rawCond, error) {
 		return nil, unclosedQuoteError(text, pos, q)
 	}
 	if strings.HasPrefix(asciiLower(text), "where ") {
-		text, lenient = strings.TrimSpace(text[len("where "):]), true
+		text = strings.TrimSpace(text[len("where "):])
 	}
 	if trimmed := strings.TrimRight(text, "; "); trimmed != text {
-		text, lenient = trimmed, true // a statement's closing semicolon
+		text = trimmed // a statement's closing semicolon
 	}
 	if err := sqlClause(text, front); err != nil {
 		return nil, err
 	}
 	if inner, ok := outerParens(text); ok {
-		text, lenient = inner, true
+		text = inner
 	}
 	parts := conjuncts(text)
 	for i, part := range parts {
@@ -377,9 +383,6 @@ func splitCondition(written string, front filterFront) ([]rawCond, error) {
 				return nil, err
 			}
 			conds = c
-		}
-		for i := range conds {
-			conds[i].lenient = conds[i].lenient || lenient || len(parts) > 1
 		}
 		out = append(out, conds...)
 	}
@@ -420,9 +423,8 @@ func orBranches(text string) []string {
 // splitOne reads a single condition: column, operator, value.
 func splitOne(written, text string, front filterFront) ([]rawCond, error) {
 	text = strings.TrimSpace(text)
-	lenient := false
 	if inner, ok := outerParens(text); ok {
-		text, lenient = inner, true
+		text = inner
 	}
 	if m := funcRe.FindStringSubmatch(text); m != nil {
 		return nil, functionError(m[1], m[2], m[3])
@@ -441,14 +443,14 @@ func splitOne(written, text string, front filterFront) ([]rawCond, error) {
 		return nil, condSyntaxError{fmt.Sprintf("no column before %q; a condition starts with the column it reads, such as \"value %s 1000\"",
 			sp.text, orDefault(sp.near, sp.text))}
 	}
-	if !identRe.MatchString(col) || identRe.FindString(col) != col {
+	if identRe.FindString(col) != col {
 		// "market value > 5": a name with spaces means the column with
 		// underscores.
 		joined := strings.Join(strings.Fields(strings.ReplaceAll(col, "-", "_")), "_")
 		if identRe.FindString(joined) != joined {
 			return nil, condSyntaxError{fmt.Sprintf("%q is not a column name; a column is one word, such as value_USD or maturity_date", col)}
 		}
-		col, lenient = joined, true
+		col = joined
 	}
 	if sp.op == nil {
 		fixed := col + " " + sp.near
@@ -466,20 +468,19 @@ func splitOne(written, text string, front filterFront) ([]rawCond, error) {
 		return nil, condSyntaxError{msg}
 	}
 	op := sp.op
-	lenient = lenient || sp.text != op.name
 	if sp.text == "like" || sp.text == "not like" {
 		value = strings.Trim(unquote(value), "%")
 	}
 	if op.arg == argOne && value != "" && unquote(value) == "" {
-		value, lenient = "", true // a quoted empty value: the empty cell
+		value = "" // a quoted empty value: the empty cell
 	}
 	switch {
 	case value != "" || op.arg != argOne:
 	case op.name == "=":
 		// "col =" with nothing after it: the empty cell.
-		return []rawCond{{written: written, col: col, op: opByName("is empty"), lenient: true}}, nil
+		return []rawCond{{written: written, col: col, op: opByName("is empty")}}, nil
 	case op.name == "!=":
-		return []rawCond{{written: written, col: col, op: opByName("is not empty"), lenient: true}}, nil
+		return []rawCond{{written: written, col: col, op: opByName("is not empty")}}, nil
 	default:
 		return []rawCond{{written: written, col: col, op: op, missing: true, spelled: sp.text}}, nil
 	}
@@ -488,13 +489,13 @@ func splitOne(written, text string, front filterFront) ([]rawCond, error) {
 		if value != "" {
 			return nil, condSyntaxError{fmt.Sprintf("%q takes no value; write %q", op.name, col+" "+op.name)}
 		}
-		return []rawCond{{written: written, col: col, op: op, lenient: lenient}}, nil
+		return []rawCond{{written: written, col: col, op: op}}, nil
 	case argList:
 		if value == "" {
 			return nil, condSyntaxError{fmt.Sprintf("%q needs a comma list after it, such as %q", op.name, col+" "+op.name+" a, b")}
 		}
 		if inner, ok := outerParens(value); ok {
-			value, lenient = inner, true
+			value = inner
 		} else if strings.HasPrefix(value, "(") != strings.HasSuffix(value, ")") {
 			return nil, condSyntaxError{fmt.Sprintf("a parenthesis around the list never closes; write %q",
 				col+" "+op.name+" "+strings.Trim(value, "() "))}
@@ -503,12 +504,9 @@ func splitOne(written, text string, front filterFront) ([]rawCond, error) {
 		if len(items) == 0 {
 			return nil, condSyntaxError{fmt.Sprintf("%q needs a comma list after it, such as %q", op.name, col+" "+op.name+" a, b")}
 		}
-		return []rawCond{{written: written, col: col, op: op, value: value, list: items, lenient: lenient}}, nil
+		return []rawCond{{written: written, col: col, op: op, value: value, list: items}}, nil
 	}
-	if unq := unquote(value); unq != value {
-		value, lenient = unq, true
-	}
-	return []rawCond{{written: written, col: col, op: op, value: value, lenient: lenient}}, nil
+	return []rawCond{{written: written, col: col, op: op, value: unquote(value)}}, nil
 }
 
 // betweenRe reads "col between a and b".
@@ -784,7 +782,7 @@ func orError(parts []string, i int, branches []string, front filterFront) error 
 	const lead = "every condition must hold, so \"or\" cannot join them; "
 	var col string
 	var vals []string
-	same, bare := true, len(branches) > 1
+	same, bare := true, true
 	for k, b := range branches {
 		pos, sp, ok := findOperator(b)
 		if k > 0 && ok {
@@ -840,7 +838,7 @@ func sqlClause(text string, front filterFront) error {
 		}
 	case "LIMIT", "OFFSET":
 		n := "10"
-		if m := regexp.MustCompile(`(?i)\b(?:limit|offset)\s+(\d+)`).FindStringSubmatch(text); m != nil {
+		if m := limitRe.FindStringSubmatch(text); m != nil {
 			n = m[1]
 		}
 		fix = "limit and offset page the rows: " + strings.ToLower(word) + "=" + n
@@ -915,16 +913,15 @@ type filterTarget struct {
 
 // condition is a bound condition: which column, how its cells compare.
 type condition struct {
-	written string
-	col     int
-	header  string
-	op      *opSpec
-	kind    colKind
-	texts   []string   // normalized values: one for = and contains, the list for in
-	nums    []float64  // number and money values
-	days    [][2]int64 // date values, each a period [first, last] in epoch days
-	canon   string     // the canonical form, for the header
-	note    string     // a name resolved to another column, for the header
+	col    int
+	header string
+	op     *opSpec
+	kind   colKind
+	texts  []string   // normalized values: one for = and contains, the list for in
+	nums   []float64  // number and money values
+	days   [][2]int64 // date values, each a period [first, last] in epoch days
+	canon  string     // the canonical form, for the header
+	note   string     // a name resolved to another column, for the header
 }
 
 // bind resolves raw conditions against the view. Every bad condition,
@@ -954,7 +951,7 @@ func (t filterTarget) bindOne(r rawCond) (condition, error) {
 		return condition{}, t.unknownColumn(r)
 	}
 	col := t.lookup.cols[i]
-	c := condition{written: r.written, col: i, header: col.header, op: r.op, kind: col.kind(), note: note}
+	c := condition{col: i, header: col.header, op: r.op, kind: col.kind(), note: note}
 	if t.privacy && redactedClass(col.privacy) {
 		return c, t.redacted(col)
 	}
@@ -962,8 +959,7 @@ func (t filterTarget) bindOne(r rawCond) (condition, error) {
 		return c, kindError(r, col, c.kind)
 	}
 	if r.missing {
-		example := map[colKind]string{kindText: "x", kindNumber: "10", kindMoney: "1000", kindDate: "2027"}[c.kind]
-		return c, condSyntaxError{fmt.Sprintf("%q needs a value after it, such as %q", r.spelled, col.header+" "+r.op.name+" "+example)}
+		return c, condSyntaxError{fmt.Sprintf("%q needs a value after it, such as %q", r.spelled, col.header+" "+r.op.name+" "+kindWords[c.kind].example)}
 	}
 	values := r.list
 	switch {
@@ -1089,11 +1085,8 @@ func redactedClass(p PrivacyClass) bool {
 // columnNamed reports the column a value names exactly, for a
 // comparison of two columns.
 func (t filterTarget) columnNamed(v string) (reportColumn, bool) {
-	want := strings.ToLower(strings.TrimSpace(v))
-	for _, c := range t.lookup.cols {
-		if strings.ToLower(c.header) == want || c.name == want || t.lookup.stem(c) == want {
-			return c, true
-		}
+	if i := t.lookup.exactOrStem(v); i >= 0 {
+		return t.lookup.cols[i], true
 	}
 	return reportColumn{}, false
 }
@@ -1116,7 +1109,7 @@ func (t filterTarget) unknownColumn(r rawCond) error {
 	if len(near) == 0 {
 		near = t.nearest(want, others, 2)
 	}
-	msg := fmt.Sprintf("%s has no column %q", orDefault(t.view, "this result"), r.col)
+	msg := fmt.Sprintf("this result has no column %q", r.col)
 	if t.view != "" {
 		msg = fmt.Sprintf("the %s view has no column %q", t.view, r.col)
 	}
@@ -1189,15 +1182,14 @@ func (t filterTarget) nearest(s string, headers []string, n int) []string {
 				score = max(score, 0.75)
 			}
 		}
-		c := h
 		if score >= 0.6 {
-			all = append(all, scored{c, score})
+			all = append(all, scored{h, score})
 		}
 	}
 	sort.SliceStable(all, func(a, b int) bool { return all[a].score > all[b].score })
 	var out []string
-	for _, s := range all[:min(n, len(all))] {
-		out = append(out, s.name)
+	for _, a := range all[:min(n, len(all))] {
+		out = append(out, a.name)
 	}
 	return out
 }
@@ -1209,7 +1201,7 @@ func kindError(r rawCond, col reportColumn, k colKind) error {
 		if r.op.name == "not contains" {
 			eq = "!="
 		}
-		return condSyntaxError{fmt.Sprintf("%s reads text, and %s is %s; write %q", r.op.name, col.header, kindNames[k],
+		return condSyntaxError{fmt.Sprintf("%s reads text, and %s is %s; write %q", r.op.name, col.header, kindWords[k].one,
 			col.header+" "+eq+" "+r.value)}
 	}
 	return condSyntaxError{fmt.Sprintf("%q compares %s; %s is text, which takes %s", r.op.name, kindsOf(r.op), col.header, opsForKind(k))}
@@ -1220,9 +1212,9 @@ func valueError(r rawCond, col reportColumn, v string, err error) error {
 	if e, ok := err.(fixableValue); ok {
 		fe = e
 	}
-	msg := fmt.Sprintf("%q is not %s, which %s takes", v, kindNames[col.kind()], col.header)
+	msg := fmt.Sprintf("%q is not %s, which %s takes", v, kindWords[col.kind()].one, col.header)
 	if fe.why != "" {
-		msg = fmt.Sprintf("%q is not %s: %s", v, kindNames[col.kind()], fe.why)
+		msg = fmt.Sprintf("%q is not %s: %s", v, kindWords[col.kind()].one, fe.why)
 	}
 	switch len(fe.fixes) {
 	case 0:
@@ -1265,9 +1257,9 @@ func (t filterTarget) twoColumns(r rawCond, col, other reportColumn) error {
 	if len(diffs) == 0 {
 		diffs = shares
 	}
-	sign := map[string]string{"<": "<", "<=": "<=", ">": ">", ">=": ">=", "=": "=", "!=": "!="}[r.op.name]
-	if holders := diffs[:min(2, len(diffs))]; len(holders) > 0 && sign != "" {
-		msg += fmt.Sprintf("; %s %s the comparison: %q", orList(holders), plural(len(holders), "holds", "hold"), holders[0]+" "+sign+" 0")
+	compares := slices.Contains([]string{"<", "<=", ">", ">=", "=", "!="}, r.op.name)
+	if holders := diffs[:min(2, len(diffs))]; len(holders) > 0 && compares {
+		msg += fmt.Sprintf("; %s %s the comparison: %q", orList(holders), plural(len(holders), "holds", "hold"), holders[0]+" "+r.op.name+" 0")
 	}
 	return condSyntaxError{msg}
 }
@@ -1333,9 +1325,6 @@ func parseNumberValue(v string, pct bool) (float64, string, error) {
 	if neg {
 		body = "-" + body
 	}
-	if strings.HasPrefix(s, "-") && len(body) > 1 && strings.ContainsAny(body[1:2], "$€£") {
-		body = "-" + strings.TrimLeft(body[1:], "$€£")
-	}
 	if pct {
 		for _, sign := range []string{"%", "percent", "pct"} {
 			if strings.HasSuffix(asciiLower(body), sign) {
@@ -1346,13 +1335,13 @@ func parseNumberValue(v string, pct bool) (float64, string, error) {
 	if groupedRe.MatchString(body) {
 		body = strings.ReplaceAll(body, ",", "")
 	}
+	plain := func(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
 	if plainNumberRe.MatchString(body) {
 		f, err := strconv.ParseFloat(body, 64)
 		if err == nil {
-			return f, strconv.FormatFloat(f, 'f', -1, 64), nil
+			return f, plain(f), nil
 		}
 	}
-	plain := func(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
 	if m := scaledRe.FindStringSubmatch(s); m != nil {
 		f, _ := strconv.ParseFloat(m[1], 64)
 		mult := map[string]float64{"k": 1e3, "thousand": 1e3, "m": 1e6, "mm": 1e6, "mn": 1e6, "million": 1e6,
@@ -1447,11 +1436,7 @@ func parseDateValue(v string, now time.Time) (int64, int64, error) {
 			return 0, 0, fixableValue{why: "dates are ISO", fixes: []string{y + "-" + pad(a) + "-" + pad(b)}}
 		case !valid(a, b):
 			return 0, 0, fixableValue{why: "dates are ISO", fixes: []string{y + "-" + pad(b) + "-" + pad(a)}}
-		case a > 12 && b <= 12:
-			return 0, 0, fixableValue{why: "dates are ISO", fixes: []string{y + "-" + pad(b) + "-" + pad(a)}}
-		case b > 12 && a <= 12:
-			return 0, 0, fixableValue{why: "dates are ISO", fixes: []string{y + "-" + pad(a) + "-" + pad(b)}}
-		case a <= 12 && b <= 12 && a != b:
+		case a != b:
 			return 0, 0, fixableValue{why: "dates are ISO, and day and month are ambiguous here",
 				fixes: []string{y + "-" + pad(a) + "-" + pad(b), y + "-" + pad(b) + "-" + pad(a)}}
 		case a == b:
@@ -1508,17 +1493,49 @@ func periodNote(op string, lo, hi int64) string {
 	return epochDayString(lo) + " → " + epochDayString(hi)
 }
 
-// cellDay is the first day a date or period cell names, in epoch days;
-// false for a blank or a cell that is no date (total).
+// cellDay is the first day a date or period cell names, in epoch days:
+// YYYY, YYYY-Qn, YYYY-MM, or YYYY-MM-DD with any time after it; false
+// for a blank or a cell that is no date (total). It reads the forms by
+// hand, since it runs for every row a date condition reads.
 func cellDay(cell string) (int64, bool) {
 	cell = strings.TrimSpace(cell)
 	if len(cell) > 10 && isoDayRe.MatchString(cell) {
 		cell = cell[:10]
 	}
+	digits := func(s string) (int, bool) {
+		n := 0
+		for i := 0; i < len(s); i++ {
+			if s[i] < '0' || s[i] > '9' {
+				return 0, false
+			}
+			n = 10*n + int(s[i]-'0')
+		}
+		return n, true
+	}
+	day := func(y, m, d int) (int64, bool) {
+		t := time.Date(y, time.Month(m), d, 0, 0, 0, 0, time.UTC)
+		return t.Unix() / 86400, m >= 1 && m <= 12 && int(t.Month()) == m && t.Day() == d
+	}
+	y, ok := digits(cell[:min(4, len(cell))])
 	switch {
-	case isoDayRe.MatchString(cell), isoMonthRe.MatchString(cell), isoYearRe.MatchString(cell), isoQuarterRe.MatchString(cell):
-		lo, _, err := parseDateValue(cell, time.Time{})
-		return lo, err == nil
+	case !ok || len(cell) < 4:
+		return 0, false
+	case len(cell) == 4:
+		return day(y, 1, 1)
+	case cell[4] != '-':
+		return 0, false
+	case len(cell) == 7 && (cell[5] == 'q' || cell[5] == 'Q') && cell[6] >= '1' && cell[6] <= '4':
+		return day(y, 3*int(cell[6]-'0')-2, 1)
+	case len(cell) == 7:
+		if m, ok := digits(cell[5:]); ok {
+			return day(y, m, 1)
+		}
+	case len(cell) == 10 && cell[7] == '-':
+		m, okM := digits(cell[5:7])
+		d, okD := digits(cell[8:])
+		if okM && okD {
+			return day(y, m, d)
+		}
 	}
 	return 0, false
 }
@@ -1751,7 +1768,7 @@ func filterHelp(cli bool) string {
 	for _, op := range operators {
 		var ks []string
 		for _, k := range op.kinds {
-			ks = append(ks, strings.TrimPrefix(kindNames[k], "a "))
+			ks = append(ks, kindWords[k].bare)
 		}
 		fmt.Fprintf(&b, "  %-13s %s (%s)\n", op.name, op.keeps, strings.Join(ks, ", "))
 	}
@@ -1782,17 +1799,6 @@ func filterInstruction() string {
 		"; a row is kept when all hold. The value needs no quotes; a year or a month is the whole period; money leaving is negative."
 }
 
-// reportFamilies are the report tools and commands by name, in describe's
-// order: where a column a view lacks is printed instead.
-var reportFamilies = []struct {
-	name string
-	fam  *family
-}{
-	{"holdings", holdingsFamily}, {"returns", returnsFamily}, {"gains", gainsFamily}, {"exposure", exposureFamily},
-	{"yield", yieldFamily}, {"transactions", transactionsFamily}, {"spending", spendingFamily}, {"income", incomeFamily},
-	{"cashflow", cashflowFamily},
-}
-
 // columnElsewhere names where col is printed when view of tool lacks it:
 // the tool's other views, else the first views of other tools. cli
 // spells a view as the command that prints it. "" when nothing prints
@@ -1804,17 +1810,7 @@ func columnElsewhere(cfg *config.Config, tool, view, col string, cli bool) strin
 		}
 		return "period is a series' column: give period=quarterly with from and to"
 	}
-	prints := func(fam *family, v string) bool {
-		req := defaultRequest(v, cfg.DefaultCurrency)
-		rep := fam.build(cfg, req, &toolArgs{values: map[string]any{}})
-		l := fam.lookup(rep, req)
-		for _, c := range rep.columns {
-			if c.name == col || strings.ToLower(c.header) == col || l.stem(c) == col {
-				return true
-			}
-		}
-		return false
-	}
+	prints := func(fam *family, v string) bool { return fam.defaultLookup(cfg, v, false).exactOrStem(col) >= 0 }
 	spell := func(t, v string) string {
 		switch {
 		case cli:

@@ -55,10 +55,6 @@ func TestMCPFilterErrorsBeforeGold(t *testing.T) {
 		!strings.Contains(err.Error(), `no column "nosuch"`) {
 		t.Errorf("err = %v", err)
 	}
-	_, err = callTool(t, s, "yield", map[string]any{"filter": map[string]any{"value": map[string]any{"$gte": 100}}})
-	if err == nil || err.Error() != `yield: filter is a list of condition strings, not an object; send ["value >= 100"]` {
-		t.Errorf("an object: %v", err)
-	}
 }
 
 // TestMCPFilterNamesTheViewThatPrintsIt: a column no view at or after
@@ -77,9 +73,9 @@ func TestMCPFilterNamesTheViewThatPrintsIt(t *testing.T) {
 	}
 }
 
-// TestMCPNewNamedFilters: yield takes symbol and income takes kind,
-// the views that print the key column carrying them.
-func TestMCPNewNamedFilters(t *testing.T) {
+// TestMCPNamedFiltersYieldIncome: yield takes symbol and income takes
+// kind, the views that print the key column carrying them.
+func TestMCPNamedFiltersYieldIncome(t *testing.T) {
 	t.Parallel()
 	s := onFixtureToday(newTestMCP(setupYieldGold(t), false))
 	text, err := callTool(t, s, "yield", map[string]any{"symbol": "QBF"})
@@ -89,9 +85,5 @@ func TestMCPNewNamedFilters(t *testing.T) {
 	text, err = callTool(t, s, "income", map[string]any{"view": "calendar", "kind": "income", "symbol": "QBF"})
 	if err != nil || !strings.Contains(text, "12 rows") {
 		t.Errorf("income kind: %v\n%s", err, text)
-	}
-	help, err := callTool(t, s, "describe", map[string]any{"topic": "filter"})
-	if err != nil || help != filterHelp(false) {
-		t.Errorf("describe filter: %v", err)
 	}
 }

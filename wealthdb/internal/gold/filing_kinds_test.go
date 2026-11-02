@@ -243,7 +243,7 @@ func TestAFloatingRateFundThroughTheReports(t *testing.T) {
 		if !p.Tags[yield.TagFloating] || p.Kind != yield.KindBondFund || p.Income100bp == nil || p.Income12 == nil ||
 			math.Abs(*p.Income100bp-p.Value/100) > 1e-6 || math.Abs(*p.Income12-p.Value*4.8/100) > 1e-6 {
 			t.Errorf("%s: kind %s tags %v, income %v, 100bp %v", p.HoldingKey.Account, p.Kind, p.Tags,
-				ptrVal(p.Income12), ptrVal(p.Income100bp))
+				nullable(p.Income12), nullable(p.Income100bp))
 		}
 	}
 	if funds := b.Funds(); len(funds) != 1 || funds[0].FloatingPct == nil || math.Abs(*funds[0].FloatingPct-96) > 1e-9 {
@@ -303,13 +303,6 @@ func TestAFloatingRateFundThroughTheReports(t *testing.T) {
 	if len(months) != 6 {
 		t.Errorf("calendar months %v", months)
 	}
-}
-
-func ptrVal(p *float64) any {
-	if p == nil {
-		return nil
-	}
-	return *p
 }
 
 // The migration's macros replay over themselves and still read a

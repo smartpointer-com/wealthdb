@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -357,15 +356,12 @@ func (m *yieldMaterializer) plan(today map[string]*yield.Book, toEpoch int64, lo
 		if err != nil {
 			return fmt.Errorf("MaterializeYield: %w", err)
 		}
-		type incomePart struct {
+		lines := []struct {
 			part   string
 			values map[PlanIncomeKey]float64
 			keys   []PlanIncomeKey
-		}
-		lines := []incomePart{{PlanPoolPart, pool, nil}, {PlanOutsidePart, outside, nil}}
-		for i := range lines {
-			lines[i].keys = slices.SortedFunc(maps.Keys(lines[i].values), comparePlanIncomeKeys)
-		}
+		}{{PlanPoolPart, pool, sortedIncomeKeys(pool)}, {PlanOutsidePart, outside, sortedIncomeKeys(outside)}}
+		otherKeys := lb.IncomeKeys()
 		for i, r := range CashflowPlan(lb, PlanStanding(b), planMonths(b), 1, false) {
 			if r.Total || r.Average {
 				continue
@@ -376,7 +372,7 @@ func (m *yieldMaterializer) plan(today map[string]*yield.Book, toEpoch int64, lo
 			}
 			// CashflowPlan's OtherIncome: the look-back's average each month.
 			if lb.Months > 0 {
-				for _, k := range lb.IncomeKeys() {
+				for _, k := range otherKeys {
 					parts = append(parts, part{ccy, other, k.Class, k.Source, k.Account, i + 1, r.Period,
 						lb.OtherIncomeBy[k], quality})
 				}

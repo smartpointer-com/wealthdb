@@ -43,7 +43,7 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 		categories: overrideCategories(cfg)}
 	rep := transactionsReport(req)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, rf.output(fmtChoice, "transactions", "transactions", req, cfg, g.clock()), open, stdout)
+	return writeReport(ctx, rep, rf.output(fmtChoice, "transactions", req, cfg, g.clock()), open, stdout)
 }
 
 // transactionsReport is the ledger over a window, the runner the CLI
@@ -203,8 +203,7 @@ fees, deposits, withdrawals and transfers, one line each. Money
 leaving an account is negative, money arriving positive. Default:
 past 30 days, table format, oldest first, default column set,
 output currency from config.default_currency, historic FX (nearest
-rate at-or-before occurred_at). There are no row filters: filter the
-output (grep on the table, or -f json and jq).
+rate at-or-before occurred_at).
 
 Date arguments (positional, optional; may appear before or after
 flags):

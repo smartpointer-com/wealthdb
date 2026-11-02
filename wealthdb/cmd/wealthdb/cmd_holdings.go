@@ -17,9 +17,9 @@ func init() {
 
 // holdingsViews are the point-in-time portfolio views, coarsest first,
 // grouped under `wealthdb holdings`. They share one flag idiom (-d / -f
-// / -x / -p, plus -C on all but global) and their totals reconcile:
-// global == Σ sources == Σ portfolios == Σ accounts == positions
-// --with-cash.
+// / -x / -p, plus -C and -F on all but global) and their totals
+// reconcile: global == Σ sources == Σ portfolios == Σ accounts ==
+// positions --with-cash.
 var holdingsViews = []string{"global", "sources", "portfolios", "accounts", "positions"}
 
 // holdingsViewUsage is each view's own -h text.
@@ -78,7 +78,9 @@ func runHoldingsView(ctx context.Context, g globalFlags, view string, args []str
 	}
 
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, holdingsReport(req), rf.output(fmtChoice, view, "holdings", req, cfg, g.clock()), open, stdout)
+	out := rf.output(fmtChoice, "holdings", req, cfg, g.clock())
+	out.prefix = view // a column error names the view alone
+	return writeReport(ctx, holdingsReport(req), out, open, stdout)
 }
 
 // holdingsReport is one holdings view as of req.asOf, the runner the
@@ -132,6 +134,7 @@ func holdingsReport(req request) *report {
 const holdingsUsage = `wealthdb holdings — what is held, where, and what it is worth, as of a date
 
 usage:
+  wealthdb holdings global [-d DATE] [-f FORMAT] [-x CCY] [-p]
   wealthdb holdings <view> [-d DATE] [-f FORMAT] [-x CCY] [-C COLS] [-F COND]... [-p]
 
 views (coarsest → finest):
@@ -157,6 +160,6 @@ again keeps its older snapshot across the gap. Totals
 reconcile: global == Σ sources == Σ portfolios == Σ accounts ==
 positions --with-cash.
 
-There are no row filters: pick the view, then filter the output (grep
-on the table, or -f json and jq). Run 'wealthdb holdings <view> -h'
-for a view's columns.`
+-F keeps the rows where a condition holds ('wealthdb help filter');
+global takes no -C and no -F. Run 'wealthdb holdings <view> -h' for a
+view's columns.`

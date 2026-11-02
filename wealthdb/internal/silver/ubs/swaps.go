@@ -269,13 +269,8 @@ func (r *webReader) inferredSwaps(ctx context.Context, psnForwards int64) ([]inf
 	if err != nil {
 		return nil, err
 	}
-	refs := make([]string, 0, len(legs))
-	for ref := range legs {
-		refs = append(refs, ref)
-	}
-	slices.Sort(refs)
 	var out []inferredSwap
-	for _, ref := range refs {
+	for _, ref := range slices.Sorted(maps.Keys(legs)) {
 		near, far := legs[ref][0], legs[ref][1]
 		s := inferredSwap{ref: ref}
 		switch {
@@ -374,16 +369,7 @@ func appendInferredForwards(byTime map[int64]*canonical.SnapshotBatch, f inferre
 			if !slices.ContainsFunc(batch.Accounts, func(a canonical.AccountChange) bool {
 				return a.AccountExternalID == overlayID
 			}) {
-				pid := portfolio
-				batch.Accounts = append(batch.Accounts, canonical.AccountChange{
-					AccountExternalID:   overlayID,
-					AccountKind:         canonical.AccountKindOverlay,
-					TaxWrapper:          relationshipTaxWrapper(),
-					DisplayName:         silver.StrPtrIfNonEmpty("Portfolio overlay"),
-					PortfolioExternalID: &pid,
-					FirstSeenAt:         at,
-					LastSeenAt:          at,
-				})
+				batch.Accounts = append(batch.Accounts, overlayAccount(portfolio, at))
 			}
 		}
 	}
@@ -398,7 +384,8 @@ func appendInferredForward(batch *canonical.SnapshotBatch, at int64, source, ove
 	zero := canonical.Decimal{}
 	ccy := s.short.ccy
 	inst, comp, line := forwardRecords(at, source, s.id(), s.name(), ccy, &zero, s.long, s.short)
-	comp.Provider, comp.Payload = swapProvider, s.payload()
+	payload := s.payload()
+	comp.Provider, comp.Payload = swapProvider, payload
 	pos := canonical.PositionChange{
 		SnapshotAt:           at,
 		AccountExternalID:    overlayID,
@@ -408,7 +395,7 @@ func appendInferredForward(batch *canonical.SnapshotBatch, at int64, source, ove
 		Vehicle:              canonical.VehicleForward,
 		Currency:             ccy,
 		MarketValue:          &zero,
-		Payload:              s.payload(),
+		Payload:              payload,
 	}
 	batch.Instruments = append(batch.Instruments, inst)
 	batch.FundCompositions = append(batch.FundCompositions, comp)
@@ -418,8 +405,9 @@ func appendInferredForward(batch *canonical.SnapshotBatch, at int64, source, ove
 }
 
 // inferredForwards is what the statement stream places the swaps by:
-// the swaps, each cash account's portfolio, and the PSN feed's first
-// forward day (until; 0 for none), from which the feed states them.
+// the source the contracts are keyed in, the swaps, each cash account's
+// portfolio, and the PSN feed's first forward day (until; 0 for none),
+// from which the feed states them.
 type inferredForwards struct {
 	source      string
 	swaps       []inferredSwap

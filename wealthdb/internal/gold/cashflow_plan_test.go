@@ -1,7 +1,6 @@
 package gold
 
 import (
-	"io/fs"
 	"maps"
 	"math"
 	"regexp"
@@ -10,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
@@ -259,18 +259,14 @@ func TestPlanWindow(t *testing.T) {
 // as the newest migration defining cashflow_txn_nodes cases them, the
 // projected types aside; its two remaining arms are the SQL's own.
 func TestThePlansIncomeClassesAreTheStatements(t *testing.T) {
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	ms, err := listMigrations()
 	if err != nil {
 		t.Fatal(err)
 	}
 	var newest string
-	for _, e := range entries {
-		b, err := fs.ReadFile(migrationsFS, "migrations/"+e.Name())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(b), "MACRO cashflow_txn_nodes") {
-			newest = string(b)
+	for _, m := range ms {
+		if strings.Contains(m.body, "MACRO cashflow_txn_nodes") {
+			newest = m.body
 		}
 	}
 	in := regexp.MustCompile(`(?s)WHEN 'in' THEN\s*CASE(.*?)\bEND\b`).FindStringSubmatch(newest)
@@ -292,8 +288,8 @@ func TestThePlansIncomeClassesAreTheStatements(t *testing.T) {
 			goClasses[d] = c
 		}
 	}
-	if !maps.Equal(goClasses, sqlClasses) || !strings.Contains(in[1], "THEN '(uncategorized)'") ||
-		!strings.Contains(in[1], "ELSE 'other_receipts'") {
+	if !maps.Equal(goClasses, sqlClasses) || !strings.Contains(in[1], "THEN '"+planUncategorized+"'") ||
+		!strings.Contains(in[1], "ELSE '"+string(canonical.ClassOtherReceipts)+"'") {
 		t.Errorf("classes %v, the statement's %v", goClasses, sqlClasses)
 	}
 }

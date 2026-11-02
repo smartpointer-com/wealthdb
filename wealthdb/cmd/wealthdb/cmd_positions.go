@@ -81,7 +81,7 @@ func buildColumnRegistry(outCcy string, kindOf func(string) string, categories t
 			Extract: func(r gold.PositionRow) string { return formatPctOrBlank(r.UnrealizedRatio) }},
 		textCol("basis_stamp", func(r gold.PositionRow) *string { return r.BasisStamp }),
 		quantityCol("quantity_without_basis", func(r gold.PositionRow) *string { return r.QuantityWithoutBasis }),
-		textCol("acquisition_date", func(r gold.PositionRow) *string { return r.AcquisitionDate }),
+		asDate(textCol("acquisition_date", func(r gold.PositionRow) *string { return r.AcquisitionDate })),
 		moneyCol("accrued_interest", "", func(r gold.PositionRow) *string { return r.AccruedInterest }),
 		moneyCol("clean_value", "", func(r gold.PositionRow) *string { return r.CleanValue }),
 		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,

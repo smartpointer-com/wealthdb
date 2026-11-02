@@ -359,14 +359,26 @@ func (s *mcpServer) tools() []toolSpec {
 		{
 			name: "describe", title: "Describe",
 			description: "Help. Without topic: what this server is, the configured sources and their latest data dates, the default currency, the character budget, and which tool answers which question. " +
-				"topic=<tool name>: that tool's views, every column it can show, its filters and conventions. topic=dates, privacy, quality or glossary: the conventions.",
-			params: []param{stringParam("topic", "A tool name, or dates, privacy, quality, glossary. Default: the overview.")},
+				"topic=<tool name>: that tool's views, every column it can show, its filters and conventions. topic=" + orList(describeTopics) + ": the conventions.",
+			params: []param{stringParam("topic", "A tool name, or "+strings.Join(describeTopics, ", ")+". Default: the overview.")},
 			run:    s.describe,
 		},
 	}
 }
 
 // ---- families ------------------------------------------------------------
+
+// reportFamilies are the report tools and commands by name, in describe's
+// order: where a column a view lacks is printed instead, and the family
+// a CLI condition binds with.
+var reportFamilies = []struct {
+	name string
+	fam  *family
+}{
+	{"holdings", holdingsFamily}, {"returns", returnsFamily}, {"gains", gainsFamily}, {"exposure", exposureFamily},
+	{"yield", yieldFamily}, {"transactions", transactionsFamily}, {"spending", spendingFamily}, {"income", incomeFamily},
+	{"cashflow", cashflowFamily},
+}
 
 var holdingsFamily = &family{
 	views: holdingsViews,
@@ -449,10 +461,10 @@ func seriesArg(tool string, views []string, a *toolArgs, req *request, notes *[]
 	var err error
 	req.series, err = seriesWindow(windowArgs(a.str("from"), a.str("to")), a.str("period"), time.Unix(req.asOf, 0))
 	switch {
-	case errors.Is(err, errSeriesAfterToday), err != nil && strings.Contains(err.Error(), "from > to") && !a.has("to"):
+	case errors.Is(err, errSeriesAfterToday), errors.Is(err, errFromAfterTo) && !a.has("to"):
 		// A lone from after today: the window runs to today.
 		return fmt.Errorf("%s: %w", tool, errSeriesAfterToday)
-	case err != nil && strings.Contains(err.Error(), "from > to"):
+	case errors.Is(err, errFromAfterTo):
 		return fmt.Errorf("%s: from %q is after to %q", tool, a.str("from"), a.str("to"))
 	case err != nil:
 		return fmt.Errorf("%s: %v; dates are %s", tool, err, dateDoc)
@@ -547,13 +559,8 @@ var returnsFamily = &family{
 }
 
 var exposureFamily = &family{
-	views: exposureViews,
-	adds: func(view string) totalRule {
-		if view == "coverage" {
-			return noTotal
-		}
-		return balanceTotal
-	},
+	views:     exposureViews,
+	adds:      byRule(map[string]totalRule{"coverage": noTotal}, balanceTotal),
 	principal: func(request) string { return "value" },
 	window:    asOfDate,
 	currency:  true,
@@ -980,16 +987,22 @@ func (s *mcpServer) runFamily(ctx context.Context, spec toolSpec, a *toolArgs) (
 // named filters the view carries, and conditions on its columns.
 func narrowAdvice(spec toolSpec, view string) string {
 	advice := spec.family.narrow
-	var fs []string
-	for _, f := range spec.family.carries()[view] {
-		if slices.ContainsFunc(spec.params, func(p param) bool { return p.name == f }) {
-			fs = append(fs, f)
-		}
-	}
-	if len(fs) > 0 && strings.Contains(advice, "a filter") {
+	if fs := spec.carriedParams(view); len(fs) > 0 && strings.Contains(advice, "a filter") {
 		advice = strings.Replace(advice, "a filter", "a filter ("+strings.Join(fs, ", ")+")", 1)
 	}
 	return advice + ", or filter on its columns"
+}
+
+// carriedParams are the named filters view carries that the tool has a
+// parameter for.
+func (t toolSpec) carriedParams(view string) []string {
+	var out []string
+	for _, f := range t.family.carries()[view] {
+		if slices.ContainsFunc(t.params, func(p param) bool { return p.name == f }) {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // lookup resolves the names a call sends for rep's columns.
@@ -1081,13 +1094,7 @@ func printsAll(cfg *config.Config, fam *family, view string, raws []rawCond, ser
 	if len(raws) == 0 {
 		return true
 	}
-	req := defaultRequest(view, cfg.DefaultCurrency)
-	if series {
-		// A series prints its period column ahead of the view's own.
-		req.series = []seriesPoint{{}}
-	}
-	rep := fam.build(cfg, req, &toolArgs{values: map[string]any{}})
-	lookup := fam.lookup(rep, req)
+	lookup := fam.defaultLookup(cfg, view, series)
 	for _, r := range raws {
 		if _, _, err := lookup.find(r.col); err != nil {
 			return false
@@ -1104,9 +1111,12 @@ func escalationReason(named []string, raws []rawCond, view string, cfg *config.C
 		parts = append(parts, strings.Join(named, ", ")+" filter")
 	}
 	var cols []string
-	for _, r := range raws {
-		if !printsAll(cfg, fam, view, []rawCond{r}, series) && !slices.Contains(cols, r.col) {
-			cols = append(cols, r.col)
+	if len(raws) > 0 {
+		lookup := fam.defaultLookup(cfg, view, series)
+		for _, r := range raws {
+			if _, _, err := lookup.find(r.col); err != nil && !slices.Contains(cols, r.col) {
+				cols = append(cols, r.col)
+			}
 		}
 	}
 	if len(cols) > 0 {
@@ -1265,7 +1275,7 @@ func resolveDates(fam *family, a *toolArgs, now time.Time, horizon int, req *req
 	if err == nil {
 		return nil
 	}
-	if strings.Contains(err.Error(), "from > to") {
+	if errors.Is(err, errFromAfterTo) {
 		return fmt.Errorf("from %q is after to %q", from, to)
 	}
 	return fmt.Errorf("%v; dates are %s", err, dateDoc)
@@ -1285,7 +1295,7 @@ func windowStart(from int64) string {
 func (s *mcpServer) paging(a *toolArgs) (limit, budget, offset int, err error) {
 	if n, ok := a.integer("limit"); ok {
 		if n < 0 {
-			return 0, 0, 0, fmt.Errorf("limit must be 1 or more, not %d; leave it out (or 0) for as many rows as max_chars holds", n)
+			return 0, 0, 0, fmt.Errorf("limit must be 0 or more, not %d; leave it out (or 0) for as many rows as max_chars holds", n)
 		}
 		limit = n
 	}

@@ -402,8 +402,8 @@ func (w *lotWriter) writeFindings(ctx context.Context) error {
 		}
 		l := w.res.Lots[d.Lot]
 		ts := buys[l.Key]
-		j, _ := slices.BinarySearch(ts, d.At-30*86400)
-		for ; j < len(ts) && ts[j] <= d.At+30*86400; j++ {
+		j, _ := slices.BinarySearch(ts, d.At-30*SecondsPerDay)
+		for ; j < len(ts) && ts[j] <= d.At+30*SecondsPerDay; j++ {
 			if ts[j] != l.OpenedAt {
 				add(l.Key, d.Account, d.At, lots.FindWashSaleWindow, d.Qty, d.Txn)
 				break

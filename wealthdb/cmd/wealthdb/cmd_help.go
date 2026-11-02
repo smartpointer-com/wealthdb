@@ -232,8 +232,8 @@ day, FROM TO a range ('-' leaves an end open); holdings, exposure
 and yield take an as-of date (-d) instead, and exposure and yield
 --period a window. One figure for a whole window: --period total.
 Every report prints a table; -f json for machines, -x CCY for another
-currency, -C for columns, -p to hide amounts, ids and names. There are
-no row filters: pick the view, then filter the output.
+currency, -C for columns, -p to hide amounts, ids and names. -F keeps
+the rows where a condition holds ('wealthdb help filter').
 
 Run 'wealthdb help <subcommand>' or 'wealthdb <subcommand> -h' for its full help.
 `

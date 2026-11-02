@@ -103,8 +103,8 @@ func compositionSpans(comps []situsComp, maxGapDays int64, ledger []inForce) []i
 	}
 	var cuts []int64
 	for _, c := range comps {
-		day := c.asOf / 86400
-		cuts = append(cuts, c.asOf, (day+maxGapDays+1)*86400, (day-maxGapDays)*86400)
+		day := c.asOf / SecondsPerDay
+		cuts = append(cuts, c.asOf, (day+maxGapDays+1)*SecondsPerDay, (day-maxGapDays)*SecondsPerDay)
 		if c.validUntil != 0 {
 			cuts = append(cuts, c.validUntil)
 		}
@@ -146,9 +146,9 @@ func describes(comps []situsComp, maxGapDays int64, ledger []inForce, at int64) 
 	}
 	var pick int64
 	switch {
-	case back != math.MinInt64 && at/86400-back/86400 <= maxGapDays:
+	case back != math.MinInt64 && at/SecondsPerDay-back/SecondsPerDay <= maxGapDays:
 		pick = back
-	case fwd != math.MaxInt64 && fwd/86400-at/86400 <= maxGapDays:
+	case fwd != math.MaxInt64 && fwd/SecondsPerDay-at/SecondsPerDay <= maxGapDays:
 		pick = fwd
 	default:
 		return false

@@ -195,12 +195,17 @@ func (f FindingKind) String() string { return findingNames[f] }
 const NoDay int32 = math.MinInt32
 
 // DayOf is the Unix day of a Unix second.
-func DayOf(at int64) int32 {
+func DayOf(at int64) int32 { return int32(EpochDay(at)) }
+
+// EpochDay floors a Unix second to its Unix day. Floor rather than
+// truncate so a pre-1970 second bands with the day it belongs to instead
+// of the one after.
+func EpochDay(at int64) int64 {
 	d := at / 86400
 	if at < 0 && at%86400 != 0 {
 		d--
 	}
-	return int32(d)
+	return d
 }
 
 // Tolerance is how far two quantities may differ and still agree:

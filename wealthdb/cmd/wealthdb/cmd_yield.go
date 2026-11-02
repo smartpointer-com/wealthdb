@@ -100,7 +100,7 @@ func cmdYield(ctx context.Context, g globalFlags, subargs []string, _ io.Reader,
 	}
 	req := request{view: view, currency: outCcy, asOf: asOfEpoch, series: series, converted: *converted}
 	rep := yieldReport(req)
-	return writeReport(ctx, rep, rf.output(fmtChoice, "yield", "yield", req, cfg, g.clock()), open, stdout)
+	return writeReport(ctx, rep, rf.output(fmtChoice, "yield", req, cfg, now), open, stdout)
 }
 
 // yieldBook computes the book of one instant.

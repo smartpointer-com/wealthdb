@@ -95,14 +95,6 @@ func scanPositionRows(ctx context.Context, db *sql.DB, label, q string, args ...
 	})
 }
 
-func nullStringToPtr(n sql.NullString) *string {
-	if !n.Valid {
-		return nil
-	}
-	s := n.String
-	return &s
-}
-
 // trimmedDecimalPtr drops trailing zeros (and a dangling decimal
 // point) from DuckDB's CAST(decimal AS VARCHAR) output. The cast
 // pads to the declared scale — DECIMAL(28,8) renders "100" as

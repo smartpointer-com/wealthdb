@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
@@ -152,7 +154,7 @@ type columnShare struct {
 // line is the paging line of a cut page.
 func (c cutInfo) line() string {
 	if c.end == c.offset {
-		return fmt.Sprintf("no rows at offset=%d: the result has %s rows", c.offset, thousands(c.total))
+		return fmt.Sprintf("no rows at offset=%d: the result has %s %s", c.offset, thousands(c.total), plural(c.total, "row", "rows"))
 	}
 	line := fmt.Sprintf("showing rows %s–%s of %s (%s of %s chars, about %s a row)",
 		thousands(c.offset+1), thousands(c.end), thousands(c.total),
@@ -230,6 +232,9 @@ type resultMeta struct {
 type layout struct {
 	compose func(from, to int, c *cutInfo) string
 	rowLen  []int // each row's characters, as compose writes it
+	// colsLen is the column line's characters where compose leaves it
+	// off a page with no rows, else 0.
+	colsLen int
 	table   output.Table
 	json    func(from, to int, c *cutInfo) jsonResult
 }
@@ -269,12 +274,24 @@ func (l layout) fit(c *cutInfo, p page) int {
 	probe := *c
 	probe.end = c.offset + 1
 	room := p.budget - runes(l.compose(c.offset, c.offset, &probe))
-	end := c.offset
-	for end < limitEnd && room >= l.rowLen[end] {
-		room -= l.rowLen[end]
-		end++
+	guess := func(room int) int {
+		end := c.offset
+		for end < limitEnd && room >= l.rowLen[end] {
+			room -= l.rowLen[end]
+			end++
+		}
+		return max(end, c.offset+1)
 	}
-	end = max(end, c.offset+1)
+	// A page with rows has the column line too, so no run past end
+	// fits; but the last page's paging line names no next offset, so
+	// the whole rest may fit where a shorter run does not.
+	end := guess(room - l.colsLen)
+	if last := guess(room); last == len(l.rowLen) && last > end {
+		probe.end = last
+		if runes(settle(l, &probe)) <= p.budget {
+			return last
+		}
+	}
 	for end > c.offset+1 {
 		probe.end = end
 		if runes(settle(l, &probe)) <= p.budget {
@@ -316,10 +333,13 @@ func newLayout(rs *resultSet, p page, cols []int, format string, head resultHead
 	case formatCSV:
 		t := rs.rows.table(p.idx, cols, rs.privacy, output.FormatCSV, rs.names)
 		rows := make([]string, len(t.Rows))
+		var b bytes.Buffer
+		cw := csv.NewWriter(&b)
 		for i, row := range t.Rows {
-			var b bytes.Buffer
-			_ = output.WriteCSVPlain(&b, output.Table{Columns: t.Columns, Rows: [][]string{row}})
-			rows[i] = b.String()
+			start := b.Len()
+			_ = cw.Write(row)
+			cw.Flush()
+			rows[i] = string(b.Bytes()[start:])
 		}
 		var cols bytes.Buffer
 		_ = output.WriteCSV(&cols, output.Table{Columns: t.Columns})
@@ -341,6 +361,9 @@ func textLayout(t output.Table, head, cols string, always bool, rows []string, p
 	l := layout{table: t, rowLen: make([]int, len(rows))}
 	for i, r := range rows {
 		l.rowLen[i] = runes(r)
+	}
+	if !always {
+		l.colsLen = runes(cols)
 	}
 	l.compose = func(from, to int, c *cutInfo) string {
 		var b strings.Builder
@@ -498,8 +521,34 @@ func markdownRow(row []string) string {
 }
 
 // markdownCell escapes what would break a table row: a pipe, and a
-// line break inside a statement narrative.
+// line break inside a statement narrative. Every run of space is one
+// space, and none leads or trails.
 func markdownCell(s string) string {
+	if plainCell(s) {
+		return s
+	}
 	s = strings.ReplaceAll(s, `|`, `\|`)
-	return strings.Join(strings.Fields(strings.NewReplacer("\r", " ", "\n", " ").Replace(s)), " ")
+	return strings.Join(strings.Fields(lineBreaks.Replace(s)), " ")
+}
+
+var lineBreaks = strings.NewReplacer("\r", " ", "\n", " ")
+
+// plainCell reports whether markdownCell keeps s as it is: no pipe, and
+// no space but one between two words.
+func plainCell(s string) bool {
+	space := true // a leading space is dropped
+	for _, r := range s {
+		switch {
+		case r == '|':
+			return false
+		case unicode.IsSpace(r):
+			if r != ' ' || space {
+				return false
+			}
+			space = true
+		default:
+			space = false
+		}
+	}
+	return s == "" || !space
 }

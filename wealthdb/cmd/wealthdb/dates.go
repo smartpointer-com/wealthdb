@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -132,6 +133,9 @@ func parseAsOf(s string, now time.Time) (int64, error) {
 	return t.Unix(), nil
 }
 
+// errFromAfterTo refuses an explicit range whose from is after its to.
+var errFromAfterTo = errors.New("from > to")
+
 // parseDateRange interprets the positional window of `transactions`,
 // and of the other windowed reports once their own bare-invocation
 // defaults are settled. Returns [fromEpoch, toEpoch] Unix seconds
@@ -174,7 +178,7 @@ func parseDateRange(args []string, now time.Time) (int64, int64, error) {
 			return 0, 0, fmt.Errorf("to: %w", err)
 		}
 		if from > to {
-			return 0, 0, fmt.Errorf("from > to")
+			return 0, 0, errFromAfterTo
 		}
 		return from, to, nil
 	default:

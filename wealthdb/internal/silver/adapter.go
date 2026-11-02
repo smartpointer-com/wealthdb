@@ -51,9 +51,8 @@ type ClassRefiner interface {
 type RefineClassFunc = func(securityType string, ac canonical.AssetClass, v canonical.Vehicle, name string) (canonical.AssetClass, canonical.Vehicle)
 
 // OpenSpec is everything Adapter.Open needs to know about the
-// configured silver source. Single-file adapters only read Path;
-// merged adapters (UBS) read Subsources and Relationships; schwab reads
-// MarkGuard too.
+// configured silver source. Single-file adapters read Path; UBS reads
+// ID, Subsources and Relationships; schwab reads MarkGuard too.
 type OpenSpec struct {
 	// ID is the source's id in gold (silver_source_id), for an adapter
 	// whose keys are scoped by the source, such as a contract's

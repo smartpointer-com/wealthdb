@@ -522,7 +522,7 @@ SELECT security_key, field, as_of, period_start, provider, value, scheme, unit,
 			return canonical.SecurityPeriodFactChange{
 				SecurityKey: key, Field: field, AsOf: asOf, PeriodStart: *first, Provider: provider,
 				Value: v, Scheme: NullStringPtr(scheme), Unit: NullStringPtr(unit),
-				FiscalYear: int64Ptr(year), FiscalPeriod: NullStringPtr(period), Form: NullStringPtr(form),
+				FiscalYear: NullInt64Ptr(year), FiscalPeriod: NullStringPtr(period), Form: NullStringPtr(form),
 				Filed: ISODate(filed.String), Payload: JSONOrNil(payload),
 			}, []any{key, field, asOf, start, provider}, nil
 		})
@@ -592,13 +592,5 @@ func boolPtr(n sql.NullBool) *bool {
 		return nil
 	}
 	v := n.Bool
-	return &v
-}
-
-func int64Ptr(n sql.NullInt64) *int64 {
-	if !n.Valid {
-		return nil
-	}
-	v := n.Int64
 	return &v
 }

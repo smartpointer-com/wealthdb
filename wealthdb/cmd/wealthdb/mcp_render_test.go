@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 // renderLines renders the merchant and value columns of the spend lines
@@ -66,8 +68,7 @@ func TestBudgetCutsAtARowBoundary(t *testing.T) {
 						t.Errorf("%s budget %d offset %d: a limit above the page moved it", format, budget, offset)
 					}
 					// One more row would not have fit.
-					if longer := renderLines(t, rs, page{offset: offset, limit: rows + 1, budget: maxIntegerParam}, format); rows > 0 &&
-						utf8.RuneCountInString(longer.text) <= budget && pageRows(t, longer.text, format) == rows+1 {
+					if longer := renderLines(t, rs, page{offset: offset, limit: rows + 1, budget: maxIntegerParam}, format); utf8.RuneCountInString(longer.text) <= budget && pageRows(t, longer.text, format) == rows+1 {
 						t.Errorf("%s budget %d offset %d: %d rows fit, %d returned", format, budget, offset, rows+1, rows)
 					}
 				}
@@ -121,6 +122,15 @@ func TestPagingLine(t *testing.T) {
 	if past != "spending transactions\nno rows at offset=9: the result has 4 rows" {
 		t.Errorf("past the end:\n%s", past)
 	}
+	// csv keeps its column line past the end, so a reader still sees
+	// the columns.
+	if csvPast := renderLines(t, rs, page{offset: 9}, formatCSV).text; csvPast != "spending transactions\nmerchant,value_USD\nno rows at offset=9: the result has 4 rows" {
+		t.Errorf("csv past the end:\n%s", csvPast)
+	}
+	one := renderLines(t, rs, page{idx: rs.filter(nil, "")[:1], offset: 1}, formatTable).text
+	if one != "spending transactions\nno rows at offset=1: the result has 1 row" {
+		t.Errorf("past the end of one row:\n%s", one)
+	}
 }
 
 func plainInt(n int) string { return strings.ReplaceAll(thousands(n), ",", "") }
@@ -168,6 +178,27 @@ func TestRenderJSONContract(t *testing.T) {
 	}
 	if blank.Chars != 0 || blank.NextOffset != nil {
 		t.Errorf("a whole result carries paging fields: %s", out.text)
+	}
+	// The last page names no next offset and no narrowing; a page past
+	// the end holds no rows.
+	for _, c := range []struct{ offset, rows int }{{3, 1}, {9, 0}} {
+		out := renderLines(t, rs, page{offset: c.offset, limit: 3, narrow: "a filter"}, formatJSON)
+		var got jsonResult
+		if err := json.Unmarshal([]byte(out.text), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.RowCount != c.rows || len(got.Rows) != c.rows || got.TotalRows != 4 || got.NextOffset != nil || got.Narrow != "" {
+			t.Errorf("offset %d: %s", c.offset, out.text)
+		}
+	}
+	// The widest columns: three at most, each of 10% or more, and none
+	// for a table of one column.
+	wide := output.Table{Columns: []string{"a", "b", "c", "d"}, Rows: [][]string{{strings.Repeat("a", 16), "bb", "c", "d"}}}
+	if got := widestColumns(wide); len(got) != 2 || got[0] != (columnShare{"a", 80}) || got[1] != (columnShare{"b", 10}) {
+		t.Errorf("widest columns = %v", got)
+	}
+	if got := widestColumns(output.Table{Columns: []string{"a"}, Rows: [][]string{{"x"}}}); got != nil {
+		t.Errorf("one column's widest = %v", got)
 	}
 }
 

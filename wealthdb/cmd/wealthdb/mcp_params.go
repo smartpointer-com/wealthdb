@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // paramKind is a tool parameter's JSON type.
@@ -206,12 +208,22 @@ func decodeStrings(x any) (any, bool, error) {
 }
 
 // objectOps are the operator spellings of the object dialects a model
-// writes: MongoDB's $gte, a bare gte, and the operator itself as a key.
-var objectOps = map[string]string{
-	"eq": "=", "ne": "!=", "neq": "!=", "lt": "<", "lte": "<=", "le": "<=", "gt": ">", "gte": ">=", "ge": ">=",
-	"in": "in", "nin": "not in", "not_in": "not in", "contains": "contains", "like": "contains", "regex": "contains",
-	"=": "=", "==": "=", "!=": "!=", "<>": "!=", "<": "<", "<=": "<=", ">": ">", ">=": ">=",
-}
+// writes: MongoDB's $gte, a bare gte, and the operator itself as a key,
+// every symbol of the operator table and its aliases.
+var objectOps = func() map[string]string {
+	m := map[string]string{
+		"eq": "=", "ne": "!=", "neq": "!=", "lt": "<", "lte": "<=", "le": "<=", "gt": ">", "gte": ">=", "ge": ">=",
+		"in": "in", "nin": "not in", "not_in": "not in", "contains": "contains", "like": "contains", "regex": "contains",
+	}
+	for _, op := range operators {
+		for _, sym := range append([]string{op.name}, op.alias...) {
+			if first, _ := utf8.DecodeRuneInString(sym); !unicode.IsLetter(first) {
+				m[sym] = op.name
+			}
+		}
+	}
+	return m
+}()
 
 // objectFilterError restates an object filter as condition strings:
 // {"value": {"$gte": 100}}, {"value": {"gte": 100}}, {"value": {">=": 100}},
@@ -406,17 +418,6 @@ func (a *toolArgs) flag(name string, def bool) bool {
 		return b
 	}
 	return def
-}
-
-// orList renders a vocabulary for a message: "a, b or c".
-func orList(values []string) string {
-	switch len(values) {
-	case 0:
-		return ""
-	case 1:
-		return values[0]
-	}
-	return strings.Join(values[:len(values)-1], ", ") + " or " + values[len(values)-1]
 }
 
 // nearMiss returns the one candidate within a typo of s: a similarity

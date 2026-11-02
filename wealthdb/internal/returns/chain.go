@@ -113,8 +113,8 @@ func boundaryDays(fromDay, toDay int64, kind BucketKind) []int64 {
 // year for the given calendar granularity (i.e. the next day rolls into a new
 // period).
 func isPeriodEnd(day int64, kind BucketKind) bool {
-	t := dayToTime(day)
-	n := dayToTime(day + 1)
+	t := DayToTimeUTC(day)
+	n := DayToTimeUTC(day + 1)
 	switch kind {
 	case BucketMonthly:
 		return t.Month() != n.Month()
@@ -130,10 +130,6 @@ func quarterOf(t time.Time) int {
 	return t.Year()*4 + (int(t.Month())-1)/3
 }
 
-func dayToTime(day int64) time.Time {
-	return time.Unix(day*86400, 0).UTC()
-}
-
 // DayToTimeUTC converts an epoch day to its UTC midnight time. Exported for
 // callers that label reporting periods.
-func DayToTimeUTC(day int64) time.Time { return dayToTime(day) }
+func DayToTimeUTC(day int64) time.Time { return time.Unix(day*86400, 0).UTC() }

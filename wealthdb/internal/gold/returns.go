@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
 
@@ -982,15 +983,9 @@ const MaxEpoch = int64(1) << 62
 // beside MaxEpoch as the shared spelling for callers.
 const SecondsPerDay = 86400
 
-// EpochDay floors a Unix-seconds timestamp to its epoch day. Floor
-// rather than truncate so a pre-1970 timestamp bands with the day it
-// belongs to instead of the one after.
-func EpochDay(sec int64) int64 {
-	if sec < 0 {
-		return -((-sec + SecondsPerDay - 1) / SecondsPerDay)
-	}
-	return sec / SecondsPerDay
-}
+// EpochDay floors a Unix-seconds timestamp to its epoch day
+// (lots.EpochDay).
+func EpochDay(sec int64) int64 { return lots.EpochDay(sec) }
 
 // ---- grouping ------------------------------------------------------------
 

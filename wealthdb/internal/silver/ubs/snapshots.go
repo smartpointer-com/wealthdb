@@ -40,7 +40,7 @@ func (r *psnReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 	// sibling cash / overlay accounts within the same portfolio,
 	// gated on the portfolio being a "named mandate" (i.e. its
 	// safekeeping carries a non-empty AcctDesc — strategy name
-	// like "STRATEGY ALPHA" or "STRATEGY BETA").
+	// such as "STRATEGY ALPHA").
 	// Portfolios whose safekeeping has no AcctDesc are residuals
 	// in general-banking portfolios; the cash there is personal
 	// banking and should stay self_directed, not inherit the
@@ -159,10 +159,10 @@ type safekeepingPayload struct {
 	AcctSubTypeDesc string `json:"AcctSubTypeDesc"`
 	// AcctDesc is the strategy / mandate name UBS attaches to
 	// safekeeping accounts that hold a dedicated investment
-	// mandate (e.g. "STRATEGY ALPHA", "STRATEGY BETA",
-	// "STRATEGY GAMMA"). Empty when the safekeeping is a
-	// residual sitting in a general-banking portfolio rather
-	// than a named mandate. Used by the cash-propagation pass
+	// mandate (a strategy name such as "STRATEGY ALPHA"). Empty
+	// when the safekeeping is a residual sitting in a
+	// general-banking portfolio rather than a named mandate.
+	// Used by the cash-propagation pass
 	// to decide whether the sibling cash accounts in this
 	// portfolio inherit the safekeeping's management_style.
 	AcctDesc string `json:"AcctDesc"`
@@ -487,16 +487,14 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload, ` + costCols + `
 		// chosen 19A:HOLD leg (mvCcy). The instrument's
 		// GacInstrRskCcyIsoCd is the issuer's *domicile / risk*
 		// currency, which diverges from the holding's quotation
-		// currency for cross-listed names: Cayman- or PRC-
-		// incorporated, HK-listed shares book in HKD but carry a
-		// domicile risk currency (KYD / CNY); US-listed ADRs of
-		// Asian issuers book in USD but carry a domicile risk
-		// currency (TWD / KRW / INR). Tagging the HOLD amount with
-		// the domicile currency made gold convert it at the wrong
-		// FX rate — a large over- or under-statement depending on
-		// the peg. So mvCcy wins; the instrument's risk currency is
-		// only a fallback for the no-HOLD case (where market_value
-		// is nil anyway), and "XXX" is the last resort.
+		// currency for cross-listed names: a share listed in one
+		// market and incorporated in another, or a depositary
+		// receipt, books in its listing currency. Tagging the HOLD
+		// amount with the domicile currency would make gold convert
+		// it at the wrong FX rate. So mvCcy wins; the instrument's
+		// risk currency is only a fallback for the no-HOLD case
+		// (where market_value is nil anyway), and "XXX" is the last
+		// resort.
 		positionCcy := mvCcy
 		if positionCcy == "" {
 			positionCcy = meta.Currency
@@ -592,18 +590,18 @@ SELECT snapshot_at, account_external_id, balance_kind, currency_iso, payload
 //
 // MT940 delivery is per-account and the master data is not: an
 // account out of scope for statements receives none on any day, while
-// its book balance arrives with every dump. Such an account had a
-// ledger and no balance — which the coverage report cannot measure,
-// and does not merely leave unchecked: it resolves both period
-// boundaries ASOF, so a series ending before the period puts both on
-// one stale snapshot and the row reports a measured gap it never
-// looked at.
+// its book balance arrives with every dump. Without this pass such an
+// account has a ledger and no balance — which the coverage report
+// cannot measure, and does not merely leave unchecked: it resolves
+// both period boundaries ASOF, so a series ending before the period
+// puts both on one stale snapshot and the row reports a measured gap
+// it never looked at.
 //
 // The book balance is the CLOSING balance rather than a kind of its
-// own. Measured, not assumed: wherever the two feeds overlap it
-// equals the MT940 closing figure to the cent and matches neither the
-// opening nor the available one. It is signed at the source, so the
-// statement rail's credit/debit indicator has no counterpart here.
+// own: where the two feeds overlap it equals the MT940 closing
+// figure, not the opening or the available one. It is signed at the
+// source, so the statement rail's credit/debit indicator has no
+// counterpart here.
 //
 // Runs after appendCashBalances and skips whatever that pass EMITTED,
 // which is why it takes the balances it wrote rather than re-reading
@@ -783,7 +781,7 @@ SELECT snapshot_at, base_currency_iso, quote_currency_iso, payload
 // forward with its instrument and its legs as that instrument's
 // composition (forwards.go). A contract matured by its position day
 // emits nothing. UBS attributes these directly to the portfolio (no
-// sub-account); we attach them to a synthetic per-portfolio overlay
+// sub-account); each attaches to a synthetic per-portfolio overlay
 // account ("<portfolio_id>:overlay", account_kind=overlay) so every
 // position remains owned by an `accounts` row and the totals
 // across `accounts` and `portfolios` tie out against `positions
@@ -798,8 +796,8 @@ SELECT snapshot_at, contract_external_id, payload
 		return fmt.Errorf("appendForwardContracts: %w", err)
 	}
 	defer rows.Close()
-	// Track which (snapshot, portfolio) overlay accounts we've
-	// already emitted to avoid one AccountChange per forward.
+	// The (snapshot, portfolio) overlay accounts already emitted, so
+	// one AccountChange serves every forward.
 	overlayEmitted := map[snapshotKey]bool{}
 	for rows.Next() {
 		var (
@@ -829,16 +827,7 @@ SELECT snapshot_at, contract_external_id, payload
 		key := snapshotKey{snap, p.PrtflId}
 		if !overlayEmitted[key] {
 			overlayEmitted[key] = true
-			pid := p.PrtflId
-			batch.Accounts = append(batch.Accounts, canonical.AccountChange{
-				AccountExternalID:   overlayID,
-				AccountKind:         canonical.AccountKindOverlay,
-				TaxWrapper:          relationshipTaxWrapper(),
-				DisplayName:         silver.StrPtrIfNonEmpty("Portfolio overlay"),
-				PortfolioExternalID: &pid,
-				FirstSeenAt:         snap,
-				LastSeenAt:          snap,
-			})
+			batch.Accounts = append(batch.Accounts, overlayAccount(p.PrtflId, snap))
 		}
 		pos := canonical.PositionChange{
 			SnapshotAt:        snap,
@@ -866,6 +855,20 @@ SELECT snapshot_at, contract_external_id, payload
 // OTC). One per portfolio.
 func overlayAccountID(portfolioID string) string {
 	return portfolioID + ":overlay"
+}
+
+// overlayAccount is a portfolio's overlay account as seen at the
+// snapshot at.
+func overlayAccount(portfolioID string, at int64) canonical.AccountChange {
+	return canonical.AccountChange{
+		AccountExternalID:   overlayAccountID(portfolioID),
+		AccountKind:         canonical.AccountKindOverlay,
+		TaxWrapper:          relationshipTaxWrapper(),
+		DisplayName:         silver.StrPtrIfNonEmpty("Portfolio overlay"),
+		PortfolioExternalID: &portfolioID,
+		FirstSeenAt:         at,
+		LastSeenAt:          at,
+	}
 }
 
 // ---- helpers --------------------------------------------------------------

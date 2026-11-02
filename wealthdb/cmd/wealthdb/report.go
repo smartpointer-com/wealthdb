@@ -241,8 +241,8 @@ func (f *cliFilter) bind(rep *report, privacy bool) ([]condition, error) {
 	front := filterFront{prefix: f.label() + ":", cli: true}
 	lookup := columnLookup{cols: rep.columns, currency: f.req.currency}
 	for _, rf := range reportFamilies {
-		if rf.name == f.tool && rf.fam.principal != nil {
-			lookup.principal = rf.fam.principal(f.req)
+		if rf.name == f.tool {
+			lookup = rf.fam.lookup(rep, f.req)
 		}
 	}
 	target := filterTarget{view: f.req.view, lookup: lookup, privacy: privacy, now: f.now, front: front,

@@ -208,8 +208,9 @@ func TestMCPCallShapes(t *testing.T) {
 }
 
 // TestMCPExposureRefusals: country belongs to two views and takes two
-// values; anything else is a tool error that says so. A result by
-// domicile says so in its header.
+// values, and a series (period with from and to) takes the CLI's
+// refusals; anything else is a tool error that says so, and names the
+// view a condition chose. A result by domicile says so in its header.
 func TestMCPExposureRefusals(t *testing.T) {
 	t.Parallel()
 	cs := connect(t, newTestMCP(setupExposureGold(t), false), time.Now())
@@ -228,8 +229,7 @@ func TestMCPExposureRefusals(t *testing.T) {
 		{map[string]any{"view": "countries", "period": "monthly", "from": "2099"}, "the window starts after today"},
 		{map[string]any{"view": "countries", "period": "monthly", "from": "2026-06", "to": "2026-01"}, `exposure: from "2026-06" is after to "2026-01"`},
 		{map[string]any{"view": "classes", "period": "quarterly", "filter": "issuer contains a"},
-			"period belongs to the classes, sectors"},
-		{map[string]any{"view": "classes", "period": "quarterly", "filter": "issuer contains a"}, "(view issuers chosen for the issuer condition)"},
+			"period belongs to the " + andList(exposureSeriesViews) + " views (view issuers chosen for the issuer condition)"},
 		{map[string]any{"view": "classes", "filter": "period >= 2026-05"}, "period is a series' column: give period=quarterly with from and to"},
 	} {
 		res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "exposure", Arguments: c.args})
@@ -595,7 +595,7 @@ func TestMCPCharBudget(t *testing.T) {
 	if def, _ := callTool(t, s, "transactions", map[string]any{"from": "2026", "to": "2026"}); def != text {
 		t.Errorf("--chars %d is not the default:\n%s", budget, def)
 	}
-	s.chars = 16000
+	s.chars = defaultMCPChars
 	limited, err := callTool(t, s, "transactions", map[string]any{"from": "2026", "to": "2026", "limit": 1})
 	if err != nil || !strings.Contains(limited, "showing rows 1–1 of") {
 		t.Errorf("limit 1: %v\n%s", err, limited)
@@ -604,6 +604,14 @@ func TestMCPCharBudget(t *testing.T) {
 		if _, err := callTool(t, s, "transactions", map[string]any{"max_chars": bad}); err == nil ||
 			!strings.Contains(err.Error(), "no unlimited value") {
 			t.Errorf("max_chars %v: err = %v", bad, err)
+		}
+	}
+	for name, want := range map[string]string{
+		"limit":  "transactions: limit must be 0 or more, not -1; leave it out (or 0) for as many rows as max_chars holds",
+		"offset": "transactions: offset must be 0 or more, not -1",
+	} {
+		if _, err := callTool(t, s, "transactions", map[string]any{name: -1}); err == nil || err.Error() != want {
+			t.Errorf("%s -1: err = %v, want %s", name, err, want)
 		}
 	}
 }
@@ -695,4 +703,61 @@ func TestLoopbackAddr(t *testing.T) {
 			t.Errorf("loopbackAddr(%q) = %v, want %v", addr, got, want)
 		}
 	}
+}
+
+// TestMCPServeCharsRefusals: --chars below 1 is refused, from the flag
+// or from WEALTHDB_MCP_CHARS, and an env value that is no integer is
+// ignored. Every case stops before it serves: the ones that pass the
+// check fail on a spill directory that cannot be made.
+func TestMCPServeCharsRefusals(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "wealthdb.cfg")
+	body := `{"gold_db": "` + filepath.Join(dir, "none.db") + `", "default_currency": "USD", "silver_sources": []}`
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const refused = "mcp-serve: --chars must be 1 or more"
+	for _, c := range []struct {
+		env  string
+		args []string
+		want string
+	}{
+		{"", []string{"--chars", "0"}, refused},
+		{"", []string{"--chars", "-5"}, refused},
+		{"0", nil, refused},
+		{"-1", nil, refused},
+		{"500", []string{"--chars", "0"}, refused},
+		{"0", []string{"--chars", "500"}, "spill directory"},
+		{"many", nil, "spill directory"},
+	} {
+		t.Setenv("WEALTHDB_MCP_CHARS", c.env)
+		args := append([]string{"--stdio", "--temp-dir", filepath.Join(file, "spill")}, c.args...)
+		var stderr strings.Builder
+		err := cmdMCPServe(context.Background(), globalFlags{ConfigPath: cfg}, args, nil, nil, &stderr)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("WEALTHDB_MCP_CHARS=%q %v: %v, want %q", c.env, c.args, err, c.want)
+		}
+	}
+}
+
+// TestDescribeNamesEveryTopic: the describe tool's description and its
+// topic parameter name every topic it serves.
+func TestDescribeNamesEveryTopic(t *testing.T) {
+	t.Parallel()
+	for _, tool := range newTestMCP("", false).tools() {
+		if tool.name != "describe" {
+			continue
+		}
+		for _, topic := range describeTopics {
+			if !strings.Contains(tool.description, topic) || !strings.Contains(tool.params[0].doc, topic) {
+				t.Errorf("describe does not name topic %s:\n%s\n%s", topic, tool.description, tool.params[0].doc)
+			}
+		}
+		return
+	}
+	t.Fatal("no describe tool")
 }

@@ -392,10 +392,9 @@ func TestEscalate(t *testing.T) {
 	}
 }
 
-// TestDerivedCarries pins what the derivation adds to the hand-kept
-// lists it replaced, and what the families exclude because the key
-// column means something else there. A view that gains a key column
-// fails here, to be added or excluded.
+// TestDerivedCarries pins each view's derived carries, and what a
+// family excludes because the key column means something else there. A
+// view that gains a key column fails here, to be added or excluded.
 func TestDerivedCarries(t *testing.T) {
 	t.Parallel()
 	want := map[string]map[string][]string{
@@ -429,6 +428,34 @@ func TestDerivedCarries(t *testing.T) {
 	}
 }
 
+// TestReportFamiliesAreTheReportTools holds reportFamilies to tools():
+// every tool with a family but the four dumps, in describe's order. A
+// report tool missing there gets no CLI -F binding and is never named
+// where a column is printed.
+func TestReportFamiliesAreTheReportTools(t *testing.T) {
+	t.Parallel()
+	dumps := []string{"status", "snapshots", "resolutions", "categorizations"}
+	var want, got []string
+	for _, tool := range newTestMCP("", false).tools() {
+		if tool.family != nil && !slices.Contains(dumps, tool.name) {
+			want = append(want, tool.name)
+		}
+	}
+	for _, rf := range reportFamilies {
+		got = append(got, rf.name)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("reportFamilies = %v, want %v", got, want)
+	}
+	for _, tool := range newTestMCP("", false).tools() {
+		for _, rf := range reportFamilies {
+			if rf.name == tool.name && rf.fam != tool.family {
+				t.Errorf("%s: reportFamilies holds another family than the tool", rf.name)
+			}
+		}
+	}
+}
+
 // TestEveryCarriedFilterHasAColumn holds the derived carries against
 // the named filters' columns and the tools' parameters: a filter a view
 // carries must read a column the view has, or it would match nothing.
@@ -442,7 +469,6 @@ func TestEveryCarriedFilterHasAColumn(t *testing.T) {
 		"spending":     {"kind"},
 		"income":       {"tax_wrapper"},
 		"cashflow":     {"category", "kind"},
-		"returns":      {},
 		"resolutions":  {"symbol"},
 	}
 	t.Parallel()

@@ -90,7 +90,7 @@ func runIncomeView(ctx context.Context, g globalFlags, view string, args []strin
 		asOf: anchorToDay(now.UTC(), true).Unix(), assumptions: ff.assumptions(), categories: overrideCategories(cfg)}
 	rep := incomeReport(req)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, rf.output(fmtChoice, "income", "income", req, cfg, g.clock()), open, stdout)
+	return writeReport(ctx, rep, rf.output(fmtChoice, "income", req, cfg, now), open, stdout)
 }
 
 // incomeReport is one view of the income family, the runner the CLI
@@ -127,7 +127,7 @@ func buildIncomeSummaryColumnRegistry(outCcy, period string) []columnSpec[gold.I
 	return []columnSpec[gold.IncomeSummaryRow]{
 		{Name: "period", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.IncomeSummaryRow) string { return periodLabel(r.PeriodStart, period) }},
-		{Name: "period_start", Align: output.AlignLeft,
+		{Name: "period_start", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.IncomeSummaryRow) string { return periodStart(r.PeriodStart) }},
 		countCol("txn_count", func(r gold.IncomeSummaryRow) int64 { return r.TxnCount }),
 		outCcyCol("income", outCcy, func(r gold.IncomeSummaryRow) *string { return r.Income }),
@@ -149,7 +149,7 @@ func buildIncomeTypeColumnRegistry(outCcy, period string) []columnSpec[gold.Inco
 	return []columnSpec[gold.IncomeTypeRow]{
 		{Name: "period", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.IncomeTypeRow) string { return periodLabel(r.PeriodStart, period) }},
-		{Name: "period_start", Align: output.AlignLeft,
+		{Name: "period_start", Align: output.AlignLeft, Date: true,
 			Extract: func(r gold.IncomeTypeRow) string { return periodStart(r.PeriodStart) }},
 		// `type` is what a reader sees and `type_id` is the key they
 		// would group or join on — the same split the spending

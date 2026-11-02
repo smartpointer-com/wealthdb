@@ -79,9 +79,9 @@ func (rf *reportFlags) resolve(g globalFlags, cmd string) (output.Format, *confi
 
 // output is how the report is written: the -C columns, the format, -p,
 // and the -F conditions, which bind to the report tool runs for req.
-// prefix names the command in a column error ("gains").
-func (rf *reportFlags) output(format output.Format, prefix, tool string, req request, cfg *config.Config, now time.Time) reportOutput {
-	out := reportOutput{cols: *rf.cols, prefix: prefix, privacy: *rf.privacy, format: format}
+// The tool names the command in a column error ("gains").
+func (rf *reportFlags) output(format output.Format, tool string, req request, cfg *config.Config, now time.Time) reportOutput {
+	out := reportOutput{cols: *rf.cols, prefix: tool, privacy: *rf.privacy, format: format}
 	if len(rf.filters) > 0 {
 		out.filter = &cliFilter{conds: rf.filters, tool: tool, req: req, cfg: cfg, now: now}
 	}

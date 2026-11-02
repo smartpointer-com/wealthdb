@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"golang.org/x/sys/unix"
 )
@@ -95,26 +96,13 @@ func Detect(path string, forceReadOnly, subcommandIsInit bool) (Decision, error)
 // FIRST — a writeable file under a read-only mount still can't
 // be opened RW.
 func decidePermissionMode(path string) Decision {
-	dir := parentDir(path)
-	if err := unix.Access(dir, unix.W_OK); err != nil {
+	if err := unix.Access(filepath.Dir(path), unix.W_OK); err != nil {
 		return Decision{Mode: ModeReadOnly, Reason: ReasonDirNotWriteable, DBExists: true}
 	}
 	if err := unix.Access(path, unix.W_OK); err != nil {
 		return Decision{Mode: ModeReadOnly, Reason: ReasonFileNotWriteable, DBExists: true}
 	}
 	return Decision{Mode: ModeReadWrite, Reason: ReasonDBWriteable, DBExists: true}
-}
-
-func parentDir(path string) string {
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i] == '/' {
-			if i == 0 {
-				return "/"
-			}
-			return path[:i]
-		}
-	}
-	return "."
 }
 
 func pathExists(path string) bool {

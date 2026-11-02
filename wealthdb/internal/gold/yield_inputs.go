@@ -885,7 +885,7 @@ func (b *yieldBase) readIncome(ctx context.Context, db querier, in *yield.Inputs
 		// A payment of the window's first days reads what was held up to
 		// RecordLagDays before it, or across its record window.
 		u, err := readYieldUnits(ctx, db, in, unitIDs(in, lines),
-			from-max(yield.RecordLagDays, yield.RecordWindowDays)*86400, in.AsOf)
+			from-max(yield.RecordLagDays, yield.RecordWindowDays)*SecondsPerDay, in.AsOf)
 		if err != nil {
 			return err
 		}
@@ -917,17 +917,17 @@ func (b *yieldBase) readIncome(ctx context.Context, db querier, in *yield.Inputs
 				readDay, source := yield.RecordOf(events, pay, lag, learned, share, market, b.cycles)
 				p.RecordSource = source
 				if source == yield.RecordNone {
-					p.Before, _ = b.units.quantity(keys, start-yield.RecordLagDays*86400)
+					p.Before, _ = b.units.quantity(keys, start-yield.RecordLagDays*SecondsPerDay)
 				} else {
 					read := readDay.Unix()
-					p.LagDays = int((start - read) / 86400)
+					p.LagDays = int((start - read) / SecondsPerDay)
 					far, near := readDay, readDay
 					switch source {
 					case yield.RecordLagged:
 						far, near = lag.Window(pay)
 					case yield.RecordLearned:
 						far, near = learned.ExWindow(pay, market, b.cycles)
-						p.ReachDays = int((start - far.Unix()) / 86400)
+						p.ReachDays = int((start - far.Unix()) / SecondsPerDay)
 					}
 					q, units := b.units.quantity(keys, read)
 					if q != nil && b.units.seenBy(keys, far.Unix()) {
@@ -1447,7 +1447,7 @@ func (w dayWindow) instant(i int) int64 {
 	if i == w.days-1 {
 		return w.asOf
 	}
-	return w.first + int64(i)*86400
+	return w.first + int64(i)*SecondsPerDay
 }
 
 // from is the first day of the window an observation taken at at holds
