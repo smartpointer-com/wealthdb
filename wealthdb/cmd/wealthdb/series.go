@@ -14,7 +14,7 @@ import (
 )
 
 // A series is a view repeated at the end of every period of a window:
-// `exposure` and `yield` take one with --period, the MCP yield tool with
+// `exposure` and `yield` take one with --period, their MCP tools with
 // period. The window is FROM [TO], the last twelve months by default.
 
 // seriesView is a view at req.asOf, or its series over req.series when

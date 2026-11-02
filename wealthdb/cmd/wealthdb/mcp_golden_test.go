@@ -256,7 +256,12 @@ func exposureCases() []goldenCase {
 	return append(out,
 		goldenCase{"exposure countries by domicile", []string{"exposure", "countries", "-d", "2026-06-30",
 			"--country", "domicile"}, "exposure",
-			map[string]any{"view": "countries", "as_of": "2026-06-30", "country": "domicile"}})
+			map[string]any{"view": "countries", "as_of": "2026-06-30", "country": "domicile"}},
+		goldenCase{"exposure countries quarterly", []string{"exposure", "countries", "--period", "quarterly", "2026-01-01", "2026-06-30"},
+			"exposure", map[string]any{"view": "countries", "period": "quarterly", "from": "2026-01-01", "to": "2026-06-30"}},
+		goldenCase{"exposure classes monthly, filtered", []string{"exposure", "classes", "--period", "monthly", "2026-04", "2026-06",
+			"-F", "period >= 2026-05"}, "exposure",
+			map[string]any{"view": "classes", "period": "monthly", "from": "2026-04", "to": "2026-06", "filter": "period >= 2026-05"}})
 }
 
 func holdingsCases() []goldenCase {

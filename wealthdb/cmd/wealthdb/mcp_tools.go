@@ -13,6 +13,7 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
@@ -214,13 +215,14 @@ func (s *mcpServer) tools() []toolSpec {
 				"issuers (stock, bonds and deposits together, largest first, with the running share); funds (each fund held, what describes it and how old that is); coverage (what the figures rest on and what nothing describes). " +
 				"Every view sums to net worth: share_pct is of it; class_share_pct is within the row's dimension (its class on sectors and sizes; every row but (none) on credit, maturities, coupons, cycles), so those sum to 100. " +
 				"Read quality and coverage before trusting a figure. " +
-				`Example: {view: "countries", as_of: "2025-12-31"}.`,
-			params: s.rowParams(false,
+				"period with from/to: the view at the end of every month, quarter or year, in one call. " +
+				`Example: {view: "countries", as_of: "2025-12-31"}; quarter by quarter: {view: "countries", period: "quarterly", from: "2025", to: "2025", filter: ["country = US"]}.`,
+			params: s.rowParams(false, append([]param{
 				stringParam("view", "Which breakdown (default classes).", exposureFamily.views...),
 				stringParam("as_of", "As-of date ("+dateDoc+"). Default today."),
 				stringParam("country", "countries and securities: the country a security counts in, risk (default) or domicile.",
 					exposureCountryBases...),
-			),
+			}, seriesParams(exposureSeriesViews)...)...),
 			family: exposureFamily,
 		},
 		{
@@ -232,15 +234,13 @@ func (s *mcpServer) tools() []toolSpec {
 				"curve (DV01 per currency and tenor: " + strings.Join(canonical.RiskTenors, ", ") + "); coverage (what the figures rest on, what is missing, where each dividend's record day comes from). " +
 				"income_yield: the next twelve months' projected income over value; implied_yield: what the price implies; dv01: the value's fall per basis point. Read quality. " +
 				`Example: {view: "cash"}.`,
-			params: s.rowParams(false,
+			params: s.rowParams(false, append(append([]param{
 				stringParam("view", "Which rows to return (default global).", yieldFamily.views...),
 				stringParam("as_of", "As-of date ("+dateDoc+"). Default today."),
-				stringParam("period", andList(yieldSeriesViews)+": a series at the end of each period of from/to (default: the last twelve months).", seriesPeriods...),
-				stringParam("from", "With period: the series' start ("+dateDoc+")."),
-				stringParam("to", "With period: the series' end, same forms. Default today."),
+			}, seriesParams(yieldSeriesViews)...),
 				param{name: "converted", kind: paramBoolean, doc: andList(yieldAggregateViews) + ": one row per entity in the output currency (default false)."},
 				scopedParam(yieldFamily, "symbol", "keep only rows whose symbol contains this text."),
-			),
+			)...),
 			family: yieldFamily,
 		},
 		{
@@ -423,6 +423,44 @@ func missingBasisParam(scope, note string) param {
 		stringsOf(lots.MissingBasisReadings)...)
 }
 
+// seriesParams are the period, from and to of a tool whose views take a
+// series, as the CLI's --period and FROM [TO] do.
+func seriesParams(views []string) []param {
+	return []param{
+		stringParam("period", andList(views)+": a series at the end of each period of from/to (default: the last twelve months).", seriesPeriods...),
+		stringParam("from", "With period: the series' start ("+dateDoc+")."),
+		stringParam("to", "With period: the series' end, same forms. Default today."),
+	}
+}
+
+// seriesArg reads a call's period, from and to into req.series with the
+// CLI's checks (checkSeriesOptions) and window (seriesWindow); without a
+// period, from and to are refused.
+func seriesArg(tool string, views []string, a *toolArgs, req *request, notes *[]string) error {
+	if !a.has("period") {
+		if a.has("from") || a.has("to") {
+			return fmt.Errorf("%s: from and to belong to a series: give a period too", tool)
+		}
+		return nil
+	}
+	if err := checkSeriesOptions(tool, req.view, views, a.has, func(name string) string { return name }); err != nil {
+		return err
+	}
+	var err error
+	req.series, err = seriesWindow(windowArgs(a.str("from"), a.str("to")), a.str("period"), time.Unix(req.asOf, 0))
+	switch {
+	case errors.Is(err, errSeriesAfterToday), err != nil && strings.Contains(err.Error(), "from > to") && !a.has("to"):
+		// A lone from after today: the window runs to today.
+		return fmt.Errorf("%s: %w", tool, errSeriesAfterToday)
+	case err != nil && strings.Contains(err.Error(), "from > to"):
+		return fmt.Errorf("%s: from %q is after to %q", tool, a.str("from"), a.str("to"))
+	case err != nil:
+		return fmt.Errorf("%s: %v; dates are %s", tool, err, dateDoc)
+	}
+	*notes = append(*notes, "series "+a.str("period"))
+	return nil
+}
+
 // stringsOf spells a vocabulary as strings: a flag's choices, a param's
 // enum.
 func stringsOf[T ~string](vs []T) []string {
@@ -520,16 +558,15 @@ var exposureFamily = &family{
 	window:    asOfDate,
 	currency:  true,
 	narrow:    "a coarser view",
-	prepare: func(a *toolArgs, req *request, _ *[]string) error {
+	prepare: func(a *toolArgs, req *request, notes *[]string) error {
 		req.country = exposureCountryBases[0]
-		if !a.has("country") {
-			return nil
+		if a.has("country") {
+			if !slices.Contains(exposureCountryViews, req.view) {
+				return errCountryView("country")
+			}
+			req.country = a.str("country") // the enum admits exposureCountryBases alone
 		}
-		if !slices.Contains(exposureCountryViews, req.view) {
-			return errCountryView("country")
-		}
-		req.country = a.str("country") // the enum admits exposureCountryBases alone
-		return nil
+		return seriesArg("exposure", exposureSeriesViews, a, req, notes)
 	},
 	build: func(_ *config.Config, req request, _ *toolArgs) *report { return exposureReport(req) },
 	header: func(req request) []string {
@@ -696,26 +733,7 @@ var yieldFamily = &family{
 		if _, ok := yieldGrains[req.view]; !ok && req.converted {
 			return errConverted("converted")
 		}
-		if !a.has("period") {
-			if a.has("from") || a.has("to") {
-				return fmt.Errorf("yield: from and to belong to a series: give a period too")
-			}
-			return nil
-		}
-		if err := checkSeriesOptions("yield", req.view, yieldSeriesViews, a.has,
-			func(name string) string { return name }); err != nil {
-			return err
-		}
-		var err error
-		req.series, err = seriesWindow(windowArgs(a.str("from"), a.str("to")), a.str("period"), time.Unix(req.asOf, 0))
-		switch {
-		case errors.Is(err, errSeriesAfterToday):
-			return fmt.Errorf("yield: %w", err)
-		case err != nil:
-			return fmt.Errorf("yield: %v; dates are %s", err, dateDoc)
-		}
-		*notes = append(*notes, "series "+a.str("period"))
-		return nil
+		return seriesArg("yield", yieldSeriesViews, a, req, notes)
 	},
 	build: func(_ *config.Config, req request, _ *toolArgs) *report { return yieldReport(req) },
 	header: func(req request) []string {
@@ -1152,6 +1170,10 @@ func (s *mcpServer) header(tool string, fam *family, rep *report, req request, r
 		if n := len(req.series); n > 0 {
 			// A series states its first and last period end, not one day.
 			meta.from, meta.to = formatDate(req.series[0].at), formatDate(req.series[n-1].at)
+			if req.series[0].at < gold.SecondsPerDay*366 {
+				// A lone to: the series begins with the data.
+				meta.from = windowStart(0)
+			}
 			head.add("window %s → %s", meta.from, meta.to)
 		} else {
 			meta.asOf = formatDate(req.asOf)

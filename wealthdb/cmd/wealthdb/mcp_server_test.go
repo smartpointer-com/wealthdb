@@ -221,6 +221,16 @@ func TestMCPExposureRefusals(t *testing.T) {
 		{map[string]any{"view": "classes", "country": "domicile"}, "country belongs to the countries and securities views"},
 		{map[string]any{"country": "domicile"}, "country belongs to the countries and securities views"},
 		{map[string]any{"view": "countries", "country": "home"}, "is not one of its values"},
+		// A series is the CLI's --period, with its refusals.
+		{map[string]any{"view": "securities", "period": "quarterly"}, "exposure: period belongs to the classes, sectors"},
+		{map[string]any{"view": "countries", "period": "quarterly", "as_of": "2026-06-30"}, "as_of names one day; a series takes a window instead"},
+		{map[string]any{"view": "countries", "from": "2026-01"}, "exposure: from and to belong to a series: give a period too"},
+		{map[string]any{"view": "countries", "period": "monthly", "from": "2099"}, "the window starts after today"},
+		{map[string]any{"view": "countries", "period": "monthly", "from": "2026-06", "to": "2026-01"}, `exposure: from "2026-06" is after to "2026-01"`},
+		{map[string]any{"view": "classes", "period": "quarterly", "filter": "issuer contains a"},
+			"period belongs to the classes, sectors"},
+		{map[string]any{"view": "classes", "period": "quarterly", "filter": "issuer contains a"}, "(view issuers chosen for the issuer condition)"},
+		{map[string]any{"view": "classes", "filter": "period >= 2026-05"}, "period is a series' column: give period=quarterly with from and to"},
 	} {
 		res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "exposure", Arguments: c.args})
 		if err != nil {
@@ -240,6 +250,22 @@ func TestMCPExposureRefusals(t *testing.T) {
 	}
 	if header, _, _ := strings.Cut(resultText(res), "\n"); !strings.Contains(header, "country by domicile") {
 		t.Errorf("by domicile: header %q", header)
+	}
+	// A condition on the series' period still lets another condition
+	// move the call to the view that prints its column; a lone to
+	// begins the series with the data.
+	for _, c := range []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{"view": "classes", "period": "quarterly", "from": "2026-01", "to": "2026-06",
+			"filter": []any{"period >= 2026-Q2", "country = US"}}, "view countries chosen for the country condition"},
+		{map[string]any{"view": "classes", "period": "quarterly", "to": "2026-06"}, "window start of data → 2026-06-30"},
+	} {
+		res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "exposure", Arguments: c.args})
+		if err != nil || res.IsError || !strings.Contains(resultText(res), c.want) {
+			t.Errorf("%v: %v %s", c.args, err, resultText(res))
+		}
 	}
 }
 
