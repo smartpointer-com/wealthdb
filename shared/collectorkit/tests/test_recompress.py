@@ -8,8 +8,8 @@ suite's safety focus:
   * non-complete / UNKNOWN / symlinked / fresh run dirs untouched
   * already-converted runs drop out (idempotence)
   * interrupted attempt (twin + original both present): a verifying
-    twin is adopted, a corrupt twin is recompressed — either way the
-    run converges
+    twin is adopted, a corrupt twin or one that is not a zstd frame is
+    recompressed — either way the run converges
   * --dry-run rewrites nothing
   * files outside the patterns (run.json) are never touched
   * validate_target refuses non-run-dir paths and symlinks
@@ -195,3 +195,18 @@ def test_recompresses_corrupt_twin(tmp_path):
     assert not (run_dir / "cu_1" / "trades.csv").exists()
     with compress.open_bytes(twin) as fh:
         assert fh.read() == BODY
+
+
+def test_recompresses_twin_that_is_not_a_frame(tmp_path):
+    run_dir = _seed_run(tmp_path)
+    twin = run_dir / "cu_1" / "trades.csv.zst"
+    twin.write_bytes(b"not a frame")
+    _backdate(twin)
+
+    assert _run(tmp_path) == 0
+    assert not (run_dir / "cu_1" / "trades.csv").exists()
+    with compress.open_bytes(twin) as fh:
+        assert fh.read() == BODY
+    # The sweep went on past the bad twin.
+    assert (run_dir / "cu_1" / "balance.csv.zst").is_file()
+    assert not (run_dir / "cu_1" / "balance.csv").exists()

@@ -783,8 +783,7 @@ The figures come from the SEC's XBRL API in two ways:
   as debt or cash, is asked for at each quarter's end. A frame fetched
   before is not asked for again, unless it was fetched within 120 days
   of its period's end and is older than `max_age_days`, since late
-  filers arrive. A frame holds US GAAP figures in US dollars only. It is
-  stored zstd-compressed.
+  filers arrive. A frame holds US GAAP figures in US dollars only.
 
 A figure by concept counts only from 10-K, 10-Q, 20-F, 40-F and 6-K
 filings and their amendments. A frame states no form.
@@ -804,10 +803,11 @@ not from the XBRL API, which serves no dates:
   exhibits are plain HTML and are skipped. The run's log counts the
   archives read, the documents parsed and the members skipped. A
   download counts the members it leaves out of an archive as skipped.
-- An archive keeps only its inline documents in bronze. Its images,
-  exhibits, schemas and XBRL instance are left out. A parser that needs
-  another member must fetch the filing again. An archive that does not
-  read as a zip of its members is kept whole.
+- An archive keeps in bronze only the documents it reads: the main
+  document and the other inline ones. Its images, exhibits, schemas and
+  XBRL instance are left out. A parser that needs another member must
+  fetch the filing again. An archive that does not read as a zip of its
+  members is kept whole.
 - A later request reads only the filings that no earlier run read. The
   company's submissions file names them, and the lookup reads it
   anyway. So a company that tags costs about one filing a quarter.
@@ -1099,7 +1099,7 @@ The manifest follows the
 so `load` never reads a crashed run. A provider's text files (JSON,
 HTML, CSV and XML) are stored zstd-compressed, as `<name>.zst`. A
 workbook, a PDF, `meta.json` and the inbox's copies stay as they came.
-A filing's XBRL archive keeps only its inline documents, compressed as
+A filing's XBRL archive keeps only the documents it reads, compressed as
 `<accession>-xbrl.zip.zst` ([sec-edgar](#sec-edgar)).
 
 The silver DB is `refdata.db`, beside the run dirs. It keeps what the
@@ -1143,7 +1143,7 @@ wealthdb-collect dedup --source refdata   # share identical files across runs
 `compact` gives the complete runs the form `download` stores files in.
 It removes nothing a parser reads:
 
-- It trims each filing archive to its inline documents, and compresses
+- It trims each filing archive to the documents it reads, and compresses
   it. It first checks that the trimmed archive gives the same documents,
   byte for byte. An archive that does not trim is compressed whole.
 - It compresses the plain text files a provider stored.
@@ -1165,5 +1165,7 @@ and in a backup taken before.
 `wealthdb-collect dedup --source refdata` is the step after `compact`.
 It makes byte-identical files of the complete runs share one copy: a
 report PDF fetched again, and the compressed answers that repeat. A
-file that dedup shared before keeps its bytes until every run that
-holds it is compacted. The step after shares the new forms again.
+file that dedup shared stays shared among the runs `compact` rewrites:
+its paths share one compressed copy. A run that is not compacted yet
+keeps the old bytes. Run dedup again after `compact`: it shares the
+compressed files again.

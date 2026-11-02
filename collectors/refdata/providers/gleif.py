@@ -23,7 +23,6 @@ Terms: README.md, gleif.
 
 from __future__ import annotations
 
-import json
 import logging
 import unicodedata
 from datetime import date
@@ -32,7 +31,7 @@ from pathlib import Path
 import fetcher
 
 from .base import (Parsed, Provider, has_file, ident, present, read_json, read_meta, row, today_utc, write_file,
-                   write_meta)
+                   write_json, write_meta)
 
 API = "https://api.gleif.org/api/v1/lei-records"
 DOC = "lei-records.json"
@@ -84,7 +83,7 @@ class Gleif(Provider):
             except fetcher.FetchError as e:
                 log.warning("%s: the ISINs of its issuer did not come: %s", claim["key"], e)
             else:
-                write_file(outdir, ISINS_DOC, json.dumps({"lei": lei, "isins": isins}).encode())
+                write_json(outdir, ISINS_DOC, {"lei": lei, "isins": isins})
         write_meta(outdir, provider=self.name, key=claim["key"], isin=claim["isin"],
                    as_of=today_utc().isoformat())
 

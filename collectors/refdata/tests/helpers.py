@@ -1,7 +1,7 @@
 """Shared test helpers: an invented wanted list and the plan of it, fake
 providers, fake sources and a run's context on them, a run and a silver
-DB as the collector writes them, invented workbooks and PDFs, and the
-engine's vocabularies read from its Go source."""
+DB as the collector writes them, invented workbooks, PDFs and filing
+archives, and the engine's vocabularies read from its Go source."""
 
 import email.message
 import http
@@ -22,11 +22,9 @@ import load
 import wanted as wantedmod
 from collectorkit import bronze, silver
 from providers import openfigi
-from providers.base import Context, Parsed, Provider, Unavailable, folder_name, read_meta, write_meta
+from providers.base import KIND_DIRS, Context, Parsed, Provider, Unavailable, folder_name, read_meta, write_meta
 
 TODAY = date(2026, 7, 15)
-# The folder of a run a security or a bulk request writes its answer under.
-KIND_DIRS = {"security": "securities", "bulk": "bulk"}
 ENGINE = Path(__file__).resolve().parents[3] / "wealthdb" / "internal"
 
 
@@ -308,6 +306,28 @@ def make_xlsx(rows=(), *, sheets=None, sheet=None, shared=None, target="workshee
             z.writestr(path if path.startswith("xl/") else f"xl/{path}",
                        f"<worksheet {ns}><sheetData>{xml}</sheetData></worksheet>")
     return buf.getvalue()
+
+
+EXHIBIT = b"<html><p>Certification<br></p></html>"  # a plain-HTML exhibit: no inline XBRL
+
+
+def whole_archive(primary: bytes, second: bytes, method=zipfile.ZIP_DEFLATED) -> bytes:
+    """A filing's whole XBRL archive, dated: its primary document
+    (exmp-20260930.htm), a second inline document, an exhibit, an image
+    and the XBRL instance."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", method) as z:
+        for name, body in (("exmp-20260930.htm", primary), ("exmp-ex311.htm", EXHIBIT),
+                           ("exmp-10q2.htm", second), ("exmp-logo.jpg", b"\xff\xd8 an image"),
+                           ("exmp-20260930_htm.xml", b"<xbrl/>")):
+            z.writestr(zipfile.ZipInfo(name, (2026, 10, 30, 16, 5, 2)), body)
+    return buf.getvalue()
+
+
+def broken_archive(primary: bytes, second: bytes) -> bytes:
+    """whole_archive(), stored, its primary document's bytes failing their
+    CRC: an archive that does not trim."""
+    return whole_archive(primary, second, zipfile.ZIP_STORED).replace(b"contextRef", b"contextReg", 1)
 
 
 def pdf(pages) -> bytes:

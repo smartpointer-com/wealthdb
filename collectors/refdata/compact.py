@@ -4,13 +4,14 @@ Compact the refdata bronze tree: give the files of the complete runs
 the form download stores them in.
 
 - trim: each filing archive the dividend calendar stored whole keeps
-  only the documents the calendar reads (sec_calendar.trimmed()),
-  compressed. The archive is replaced only once its documents read the
-  same, byte for byte, as the whole archive's.
+  only the documents the calendar reads, compressed (sec_calendar.trim()):
+  it is replaced only once its documents read the same, byte for byte, as
+  the whole archive's.
 - compress: each plain text file a provider stored (JSON, HTML, CSV,
   XML) is replaced by a zstd-compressed copy, with collectorkit
-  recompress's engine. meta.json, run.json, the inbox's copies and the
-  `--debug` traces stay as they are.
+  recompress's engine. The paths of a hard-linked file share one copy.
+  meta.json, run.json, the inbox's copies and the `--debug` traces stay
+  as they are.
 
 No step removes anything a parser reads: load reads either form of a
 file, so a `load --force` rebuild gives the same silver.
@@ -26,7 +27,7 @@ run it changed is quiet again only after `--min-age-hours`. It must not
 run while a download or a load does.
 
 Usage:
-    compact.py [--bronze-dir DIR] [--dry-run] [--min-age-hours N]
+    compact.py --bronze-dir DIR [--dry-run] [--min-age-hours N] [-v]
 """
 
 from __future__ import annotations
@@ -40,25 +41,22 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import zstandard
 from collectorkit import bronze, cli, compress, prune, recompress
 from collectorkit.prune import human_size
 
 from prune import CONFIG as PRUNE_CONFIG
 from providers import sec_calendar
-from providers.base import META, TEXT_SUFFIXES, ProviderError, read_meta
+from providers.base import KIND_DIRS, META, TEXT_SUFFIXES, ProviderError, read_meta
 
 # The folders of a run that hold the providers' files:
 # <kind>/<provider>/<ref>/…
-KINDS = ("funds", "securities", "bulk")
+KINDS = tuple(KIND_DIRS.values())
 # The providers whose files stay as they are: the inbox's are copies of
 # what was placed by hand.
 KEPT = frozenset({"inbox"})
 CONFIG = recompress.RecompressConfig(
     patterns=tuple(f"{kind}/**/*{suffix}" for kind in KINDS for suffix in sorted(TEXT_SUFFIXES)),
     is_complete=PRUNE_CONFIG.is_complete)
-# The read size compress_file streams a file with.
-CHUNK = 1 << 20
 
 log = logging.getLogger("refdata.compact")
 
@@ -72,12 +70,15 @@ class Tally:
     after: int = 0
     inodes: set = field(default_factory=set)
 
-    def add(self, path: Path) -> None:
-        st = path.lstat()
+    def add(self, st: os.stat_result) -> bool:
+        """Counts a file of stat `st`: whether its inode is new to the
+        tally."""
         self.files += 1
-        if (st.st_dev, st.st_ino) not in self.inodes:
-            self.inodes.add((st.st_dev, st.st_ino))
-            self.before += st.st_size
+        if (st.st_dev, st.st_ino) in self.inodes:
+            return False
+        self.inodes.add((st.st_dev, st.st_ino))
+        self.before += st.st_size
+        return True
 
     def line(self, step: str, dry_run: bool) -> str:
         verb, frees = ("would change", "frees") if dry_run else ("changed", "freed")
@@ -120,13 +121,13 @@ def archives(run_dir: Path) -> list:
 
 
 def trim_archives(bronze_dir: Path, targets: list, *, dry_run: bool) -> Tally:
-    """Each archive of `targets` (archives()) as <name>.zst with only the
-    documents the calendar reads (sec_calendar.trim()): one whose
-    documents read otherwise trimmed, or that does not trim, or that two
-    filings name with two primary documents, is kept whole, compressed,
-    and a warning names it. The kept file is written and verified beside the archive,
-    which is removed last; an archive that fails to be written stays as
-    it is, and a warning names it."""
+    """Each archive of `targets` (archives()) as <name>.zst, with only the
+    documents the calendar reads (sec_calendar.trim()). An archive is kept
+    whole, compressed, with a warning, where it does not trim, where its
+    trimmed documents read otherwise, or where two filings name it with two
+    primary documents. The new file is written and verified beside the
+    archive, and the archive is removed last. An archive that fails to be
+    written stays as it is, with a warning."""
     tally = Tally()
     for path, primary, whole in targets:
         rel = path.relative_to(bronze_dir)
@@ -138,8 +139,8 @@ def trim_archives(bronze_dir: Path, targets: list, *, dry_run: bool) -> Tally:
         else:
             kept, _ = sec_calendar.trim(data, str(rel), primary)
         if dry_run:
-            tally.add(path)
-            tally.after += packed_size(io.BytesIO(kept))
+            tally.add(path.lstat())
+            tally.after += compress.packed_size(io.BytesIO(kept), CONFIG.level)
             continue
         recompress.validate_target(path, bronze_dir)
         st = path.stat()
@@ -154,55 +155,52 @@ def trim_archives(bronze_dir: Path, targets: list, *, dry_run: bool) -> Tally:
             continue
         finally:
             work.unlink(missing_ok=True)
-        tally.add(path)
+        tally.add(st)
         path.unlink()
         tally.after += final.lstat().st_size
     return tally
 
 
-def packed_size(src) -> int:
-    """The bytes compress_file stores a stream in."""
-    return zstandard.ZstdCompressor(level=CONFIG.level).copy_stream(src, _Sink(), read_size=CHUNK)[1]
-
-
 def compress_text(bronze_dir: Path, targets: list, *, dry_run: bool) -> Tally:
     """Each plain text file of `targets` (recompress.plan_recompress) as
-    its .zst twin. A twin left by a run that stopped is kept where it
-    decompresses to the original, else made again."""
+    its .zst twin (recompress.compress_target()). A path that shares its
+    file with one compressed before (a hard link) becomes a hard link of
+    that one's twin. A file that fails to be compressed stays as it is,
+    with a warning."""
     tally = Tally()
+    twins = {}
     for t in targets:
         path = t["path"]
-        tally.add(path)
-        log.debug("compress %s%s", path.relative_to(bronze_dir), " [finishing a stopped run]" if t["adopt"] else "")
+        rel = path.relative_to(bronze_dir)
+        st = path.lstat()
+        key = (st.st_dev, st.st_ino)
+        log.debug("compress %s%s", rel, " [finishing a stopped run]" if t["adopt"] else "")
         if dry_run:
-            with path.open("rb") as src:
-                tally.after += packed_size(src)
+            if tally.add(st):
+                with path.open("rb") as src:
+                    tally.after += compress.packed_size(src, CONFIG.level)
             continue
-        recompress.validate_target(path, bronze_dir)
-        twin = path.with_name(path.name + compress.ZSTD_SUFFIX)
-        if t["adopt"] and reads_back(twin, path):
-            path.unlink()
-        else:
-            twin = compress.compress_file(path, level=CONFIG.level)
-        tally.after += twin.lstat().st_size
+        try:
+            if key in twins:
+                share(twins[key], path, bronze_dir)
+            else:
+                twins[key] = recompress.compress_target(t, bronze_dir, CONFIG.level)
+        except (OSError, RuntimeError) as e:
+            log.warning("%s: not compressed: %s", rel, e)
+            continue
+        if tally.add(st):
+            tally.after += twins[key].lstat().st_size
     return tally
 
 
-def reads_back(twin: Path, original: Path) -> bool:
-    """Whether a compressed twin decompresses to its original's bytes; a
-    twin that does not decompress does not."""
-    try:
-        return compress.decompressed_sha256(twin)[0] == bronze.sha256_file(original)[0]
-    except zstandard.ZstdError:
-        return False
-
-
-class _Sink:
-    """A stream that keeps nothing: a dry run counts the bytes a write
-    would store, written as compress_file writes them (CHUNK)."""
-
-    def write(self, data) -> int:
-        return len(data)
+def share(twin: Path, path: Path, bronze_dir: Path) -> None:
+    """`path`, a hard link of a file compressed to `twin`, as a hard link
+    of `twin`: any twin of its own is replaced, and `path` goes last."""
+    recompress.validate_target(path, bronze_dir)
+    final = path.with_name(path.name + compress.ZSTD_SUFFIX)
+    final.unlink(missing_ok=True)
+    os.link(twin, final)
+    path.unlink()
 
 
 def run(bronze_dir: Path, *, dry_run: bool, min_age_hours: float) -> int:
@@ -210,15 +208,14 @@ def run(bronze_dir: Path, *, dry_run: bool, min_age_hours: float) -> int:
     writes make a run look young to the next; then runs them in order."""
     if not bronze_dir.is_dir():
         raise SystemExit(f"--bronze-dir does not exist: {bronze_dir}")
-    min_age_s = min_age_hours * 3600.0
-    eligible = {e.run_dir for e in prune.iter_run_eligibility(bronze_dir, PRUNE_CONFIG, min_age_s, time.time())
+    min_age_s, now = min_age_hours * 3600.0, time.time()
+    eligible = {e.run_dir for e in prune.iter_run_eligibility(bronze_dir, PRUNE_CONFIG, min_age_s, now)
                 if e.verdict == prune.ELIGIBLE}
-    texts, skipped = recompress.plan_recompress(bronze_dir, CONFIG, min_age_s)
-    texts = [t for t in texts if provider_file(t["path"], bronze_dir) and run_of(t["path"], bronze_dir) in eligible]
+    texts, skipped = recompress.plan_recompress(bronze_dir, CONFIG, min_age_s, now)
+    texts = [t for t in texts if provider_file(t["path"], bronze_dir)]
     zips = [a for run_dir in sorted(eligible) for a in archives(run_dir)]
     for s in skipped:
-        age = f"; {s['age_s'] / 60:.0f} min old" if s["age_s"] is not None else ""
-        print(f"skipping  {s['path'].relative_to(bronze_dir)}/  [{s['reason']}{age}]")
+        print(recompress.skip_line(s, bronze_dir))
     steps = [("trim", trim_archives(bronze_dir, zips, dry_run=dry_run)),
              ("compress", compress_text(bronze_dir, texts, dry_run=dry_run))]
     for name, tally in steps:
@@ -226,11 +223,6 @@ def run(bronze_dir: Path, *, dry_run: bool, min_age_hours: float) -> int:
     if not dry_run and any(tally.files for _, tally in steps):
         print("a `load --force` rebuild gives the same silver")
     return 0
-
-
-def run_of(path: Path, bronze_dir: Path) -> Path:
-    """The run dir a file of the bronze tree is in."""
-    return bronze_dir / path.relative_to(bronze_dir).parts[0]
 
 
 def main(argv=None) -> int:

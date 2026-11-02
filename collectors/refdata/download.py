@@ -71,8 +71,8 @@ import fetcher
 import wanted as wantedmod
 from collectorkit import bronze, cli, debugcap
 from providers import REGISTRY
-from providers.base import (Context, ProviderError, Unavailable, complete_runs, folder_name, log_notes, read_meta,
-                            today_utc)
+from providers.base import (KIND_DIRS, Context, ProviderError, Unavailable, complete_runs, folder_name, log_notes,
+                            read_meta, today_utc)
 
 log = logging.getLogger("refdata.download")
 
@@ -786,9 +786,10 @@ def log_coverage(cover, deferred=frozenset()) -> None:
 
 
 def request_dir(run: Path, r: Request) -> Path:
+    folder = run / KIND_DIRS[r.kind] / r.provider / folder_name(r.ref)
     if r.kind == "fund":
-        return run / "funds" / r.provider / folder_name(r.ref) / (r.as_of.isoformat() if r.as_of else "current")
-    return run / ("bulk" if r.kind == "bulk" else "securities") / r.provider / folder_name(r.ref)
+        return folder / (r.as_of.isoformat() if r.as_of else "current")
+    return folder
 
 
 def execute(reqs, run: Path, ctx: Context, limit=None):

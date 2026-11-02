@@ -18,7 +18,8 @@ from providers import REGISTRY, sec_calendar, sec_edgar
 from providers.base import Context, read_bytes, read_meta, write_meta
 from providers.sec_calendar import Seen, due, months_back, seen
 from providers.sec_edgar import SecEdgar
-from tests.helpers import FakeClient, kept_run, make_run, rows, run_entries, wanted_doc
+from tests.helpers import EXHIBIT, FakeClient, broken_archive, kept_run, make_run, rows, run_entries, wanted_doc, \
+    whole_archive
 
 FIXTURE = Path(__file__).parent / "fixtures" / "edgar_10q_dividends.htm"
 CAL = "dividend_calendar"
@@ -64,7 +65,6 @@ def xbrl_zip(doc: bytes) -> bytes:
     return buf.getvalue()
 
 
-EXHIBIT = b"<html><p>Certification<br></p></html>"  # a plain-HTML exhibit: no inline XBRL
 
 
 def late(doc: bytes) -> bytes:
@@ -307,27 +307,20 @@ def test_an_archive_without_the_primarys_name_misses_a_late_declaration():
     assert sec_calendar.READS.line() == "calendar: archives read 1, documents parsed 2, members skipped 1"
 
 
-def test_a_primary_document_stored_on_its_own_is_read_whole():
+def test_a_primary_document_stored_on_its_own_is_read_filing_archive():
     assert sec_calendar.READS.line() is None  # nothing read yet
     assert sorted(by_record(sec_calendar.filing_dividends(late(Q3), "c.htm", None))) == ["2026-07-14", "2026-10-13"]
     assert sec_calendar.READS.line() == "calendar: archives read 0, documents parsed 1, members skipped 0"
 
 
-def whole_archive(method=zipfile.ZIP_DEFLATED) -> bytes:
-    """A filing's whole XBRL archive: its primary document, which declares
-    its namespace late, a second inline document, an exhibit, an image
-    and the XBRL instance, dated."""
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", method) as z:
-        for name, body in (("exmp-20260930.htm", late(Q3)), ("exmp-ex311.htm", EXHIBIT),
-                           ("exmp-10q2.htm", Q3), ("exmp-logo.jpg", b"\xff\xd8 an image"),
-                           ("exmp-20260930_htm.xml", b"<xbrl/>")):
-            z.writestr(zipfile.ZipInfo(name, (2026, 10, 30, 16, 5, 2)), body)
-    return buf.getvalue()
+def filing_archive() -> bytes:
+    """A filing's whole XBRL archive (whole_archive()) whose primary
+    document declares its namespace late."""
+    return whole_archive(late(Q3), Q3)
 
 
 def test_an_archive_keeps_only_the_documents_the_calendar_reads():
-    whole = whole_archive()
+    whole = filing_archive()
     kept = sec_calendar.trimmed(whole, "exmp-20260930.htm")
     with zipfile.ZipFile(io.BytesIO(kept)) as z:
         assert [(i.filename, i.date_time, i.compress_type) for i in z.infolist()] == [
@@ -343,11 +336,11 @@ def test_an_archive_keeps_only_the_documents_the_calendar_reads():
 
 
 def test_a_stored_archive_is_trimmed_and_compressed_and_one_that_does_not_trim_is_kept_whole(tmp_path, caplog):
-    sec_calendar.store_archive(tmp_path, "a-xbrl.zip", whole_archive(), "exmp-20260930.htm")
+    sec_calendar.store_archive(tmp_path, "a-xbrl.zip", filing_archive(), "exmp-20260930.htm")
     assert [p.name for p in tmp_path.iterdir()] == ["a-xbrl.zip.zst"]
-    assert read_bytes(tmp_path, "a-xbrl.zip") == sec_calendar.trimmed(whole_archive(), "exmp-20260930.htm")
+    assert read_bytes(tmp_path, "a-xbrl.zip") == sec_calendar.trimmed(filing_archive(), "exmp-20260930.htm")
     # A document whose bytes fail their CRC: the archive does not trim.
-    broken = whole_archive(zipfile.ZIP_STORED).replace(b"contextRef", b"contextReg", 1)
+    broken = broken_archive(late(Q3), Q3)
     sec_calendar.store_archive(tmp_path, "b-xbrl.zip", broken, "exmp-20260930.htm")
     assert read_bytes(tmp_path, "b-xbrl.zip") == broken
     assert "b-xbrl.zip: kept whole, as it does not trim" in caplog.text

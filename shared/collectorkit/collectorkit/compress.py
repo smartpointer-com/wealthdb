@@ -12,6 +12,8 @@ shared, reviewed implementation of the whole lifecycle:
   compressed copy — never neither.
 * :func:`compress_best_effort` — the download-side call: compress a
   fresh artefact, and on any failure warn and keep the plain file.
+* :func:`packed_size` — the bytes :func:`compress_file` would store a
+  stream in, for a sweep's dry run.
 * :func:`resolve_variant` — the loader-side lookup: given the logical
   (uncompressed) path, return whichever variant exists on disk. Plain
   wins over compressed so the original is authoritative whenever both
@@ -246,6 +248,21 @@ def compress_file(path: Path, *, level: int = DEFAULT_LEVEL,
     if remove_original:
         path.unlink()
     return final
+
+
+def packed_size(src: BinaryIO, level: int = DEFAULT_LEVEL) -> int:
+    """The bytes :func:`compress_file` stores the binary stream ``src``
+    in, counted without writing them anywhere: a dry run's figure."""
+    zstandard = _zstandard()
+    return zstandard.ZstdCompressor(level=level).copy_stream(
+        src, _Sink(), read_size=_CHUNK)[1]
+
+
+class _Sink:
+    """A writable stream that keeps nothing."""
+
+    def write(self, data) -> int:
+        return len(data)
 
 
 def compress_best_effort(path: Path, log: logging.Logger) -> Path:

@@ -121,6 +121,9 @@ from pathlib import Path
 from collectorkit import bronze, compress
 
 META = "meta.json"
+# The folder of a run each kind of request writes its answer under:
+# <kind dir>/<provider>/<ref>/…, a fund's in a folder of its day.
+KIND_DIRS = {"fund": "funds", "security": "securities", "bulk": "bulk"}
 # The formats of the text files a provider keeps: write_file stores each
 # compressed, and `compact` compresses those an earlier run stored plain.
 TEXT_SUFFIXES = frozenset({".json", ".html", ".htm", ".csv", ".xml"})

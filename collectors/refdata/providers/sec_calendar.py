@@ -7,7 +7,7 @@ sec-edgar claims a share's calendar, and fetches and parses it here.
   (max_age_days), as long as a filing of the last QUIET_DAYS that an
   earlier run read tags a dividend. A company whose filings tag none is
   asked again only QUIET_DAYS after the last run that read them all.
-  About one payer in ten tags its dividends' days. Earlier runs'
+  Few payers tag their dividends' days. Earlier runs'
   meta.json name the filings they read and whether each tags one.
 - Fetch: each 10-Q and 10-K in inline XBRL that the company's
   submissions file lists among its recent filings, filed in the last
@@ -430,9 +430,16 @@ def trimmed(data: bytes, primary: str | None) -> bytes:
     timestamp. They are stored uncompressed: the file is compressed whole.
     An error of the archive (zipfile.BadZipFile and the like) where it
     does not read."""
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        return _pack(members(z, primary)[0])
+
+
+def _pack(kept: list) -> bytes:
+    """An archive of members()' (ZipInfo, body) pairs, in their order,
+    each under its name and with its timestamp, stored uncompressed."""
     buf = io.BytesIO()
-    with zipfile.ZipFile(io.BytesIO(data)) as z, zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as out:
-        for info, body in members(z, primary)[0]:
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as out:
+        for info, body in kept:
             out.writestr(zipfile.ZipInfo(info.filename, info.date_time), body)
     return buf.getvalue()
 
@@ -445,7 +452,7 @@ def trim(data: bytes, name: str, primary: str | None) -> tuple:
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as z:
             whole, skipped = members(z, primary)
-        kept = trimmed(data, primary)
+        kept = _pack(whole)
         with zipfile.ZipFile(io.BytesIO(kept)) as z:
             if [body for _, body in members(z, primary)[0]] == [body for _, body in whole]:
                 return kept, skipped

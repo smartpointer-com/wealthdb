@@ -93,6 +93,15 @@ def test_compress_file_overwrites_stale_twin(tmp_path):
         out.read_bytes(), max_output_size=1 << 20) == BODY
 
 
+@pytest.mark.parametrize("level", [3, compress.DEFAULT_LEVEL])
+def test_packed_size_is_what_compress_file_stores(tmp_path, level):
+    f = _seed(tmp_path)
+    with f.open("rb") as src:
+        size = compress.packed_size(src, level)
+    assert compress.compress_file(f, level=level).stat().st_size == size
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 # ============================================================
 # compress_best_effort
 # ============================================================

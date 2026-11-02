@@ -46,6 +46,7 @@ def wrapper(tmp_path):
 @pytest.mark.parametrize("verb,sees", [
     (("load",), "load.py id=unset secret=unset"),
     (("prune",), "prune.py id=unset secret=unset"),
+    (("compact",), "compact.py id=unset secret=unset"),
     (("download", "--dry-run"), "download.py id=example-id secret=example-secret"),
     (("login", "--check"), "download.py id=example-id secret=example-secret"),
 ])

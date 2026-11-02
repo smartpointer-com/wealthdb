@@ -147,6 +147,47 @@ def validate_target(path: Path, bronze_dir: Path) -> None:
     raise SystemExit(f"refusing to touch path outside a run dir: {path}")
 
 
+def compress_target(t: dict, bronze_dir: Path, level: int) -> Path:
+    """Replace one planned target (:func:`plan_recompress`) by its
+    verified ``.zst`` twin and return the twin.
+
+    A twin from an interrupted attempt is adopted only if it decompresses
+    to the original's bytes. One that does not, or that is not a zstd
+    frame at all, is recompressed over.
+    """
+    path = t["path"]
+    validate_target(path, bronze_dir)
+    final = path.with_name(path.name + compress.ZSTD_SUFFIX)
+    if t["adopt"]:
+        if _reads_back(final, path):
+            path.unlink()
+            return final
+        log.info("%s: existing twin does not verify; recompressing",
+                 path.relative_to(bronze_dir))
+    return compress.compress_file(path, level=level)
+
+
+def _reads_back(twin: Path, original: Path) -> bool:
+    """Whether ``twin`` decompresses to ``original``'s bytes. A twin
+    that does not decompress does not."""
+    zstandard = compress._zstandard()
+    try:
+        twin_digest, _ = compress.decompressed_sha256(twin)
+    except zstandard.ZstdError:
+        return False
+    return twin_digest == bronze.sha256_file(original)[0]
+
+
+def skip_line(s: dict, bronze_dir: Path) -> str:
+    """The line that reports one skipped run dir of the plan
+    (:func:`plan_recompress`)."""
+    rel = s["path"].relative_to(bronze_dir)
+    if s["age_s"] is None:
+        return f"skipping  {rel}/  [{s['reason']}]"
+    return (f"skipping  {rel}/  [{s['reason']}; only {s['age_s'] / 60:.0f} "
+            f"min old — possibly still being written]")
+
+
 def run(config: RecompressConfig, bronze_dir: Path, *, dry_run: bool,
         min_age_hours: float) -> int:
     """Execute (or preview) the sweep. Returns an exit code and prints
@@ -169,30 +210,11 @@ def run(config: RecompressConfig, bronze_dir: Path, *, dry_run: bool,
         total_orig += t["bytes"]
         if dry_run:
             continue
-        validate_target(path, bronze_dir)
-        final = path.with_name(path.name + compress.ZSTD_SUFFIX)
-        if t["adopt"]:
-            # A twin from an interrupted attempt: trust it only if it
-            # verifies against the original; otherwise recompress.
-            twin_digest, _ = compress.decompressed_sha256(final)
-            orig_digest, _ = bronze.sha256_file(path)
-            if twin_digest == orig_digest:
-                path.unlink()
-            else:
-                print("  ...existing twin does not verify; recompressing")
-                final = compress.compress_file(path, level=config.level)
-        else:
-            final = compress.compress_file(path, level=config.level)
+        final = compress_target(t, bronze_dir, config.level)
         total_comp += final.lstat().st_size
         done += 1
     for s in skipped:
-        if s["age_s"] is None:
-            print(f"skipping  {s['path'].relative_to(bronze_dir)}/"
-                  f"  [{s['reason']}]")
-        else:
-            print(f"skipping  {s['path'].relative_to(bronze_dir)}/"
-                  f"  [{s['reason']}; only {s['age_s'] / 60:.0f} min old "
-                  f"— possibly still being written]")
+        print(skip_line(s, bronze_dir))
 
     if not targets:
         print("nothing to recompress")
