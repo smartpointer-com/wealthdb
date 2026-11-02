@@ -39,7 +39,8 @@ endif
 export WEALTHDB_IMAGE_TAG
 TAG := $(WEALTHDB_IMAGE_TAG)
 NCPU = $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
-# The build locks, the Go caches and the demo test roots live here.
+# The build locks, the Go caches, the demo test roots and site-shots'
+# scratch dir live here: paths Docker can mount.
 CACHE_ROOT := $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb
 BUILD_LOCK_DIR := $(CACHE_ROOT)/build-locks
 # LOCKED NAME: a recipe prefix that holds the build lock NAME-$(TAG)
@@ -52,10 +53,12 @@ WEALTHDB      := wealthdb/wealthdb
 WEALTHDB_TEST := wealthdb/wealthdb-test
 WEALTHDB_GO   := wealthdb/wealthdb-go
 
-# Interpreter for the host-venv collectors and the hybrids' host venvs
-# (curves, fred, manual, plaid, refdata, svb, ubs-psn; schwab-api,
-# fidelity-web). Their deps (e.g. schwab-py) need Python >=3.10, but macOS
-# /usr/bin/python3 is 3.9 and `make` may resolve a bare `python3` to it.
+# Host interpreter for every venv the Makefile creates (the host-venv
+# collectors' and hybrids', collectorkit's, web's, site's, ruff's) and for
+# the host-side scripts (the demo generator, bump-playwright.py,
+# site/images.py). The venvs' deps (e.g. schwab-py) need Python >=3.10,
+# but macOS /usr/bin/python3 is 3.9 and `make` may resolve a bare
+# `python3` to it.
 # Prefer a versioned python3.X from PATH, then a Homebrew install, then
 # plain python3.
 # Override explicitly:  make build-schwab-api PYTHON=python3.12
@@ -71,12 +74,27 @@ define ENSURE_VENV
 if [ ! -x $(1)/bin/python ] || \
    ! $(1)/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then \
 	$(PYTHON) -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null || { \
-		echo "    ERROR: '$(PYTHON)' is older than 3.10; $(2) needs >=3.10." >&2; \
+		echo "    ERROR: $(2): needs Python >=3.10, and '$(PYTHON)' is older." >&2; \
 		echo "    Re-run with a newer interpreter, e.g.: make $(3) PYTHON=python3.14" >&2; \
 		exit 1; }; \
 	rm -rf $(1); \
 	$(PYTHON) -m venv $(1); \
 fi
+endef
+
+# VENV_REQS dir,reqs,label,target — ENSURE_VENV, then pip install -r reqs
+# when the venv's .stamp is older than reqs.
+define VENV_REQS
+$(call ENSURE_VENV,$(1),$(3),$(4)); \
+if [ ! $(1)/.stamp -nt $(2) ]; then \
+	$(1)/bin/pip install -q -r $(2) && touch $(1)/.stamp || exit 1; \
+fi
+endef
+
+# CLEAN_PYCACHE dirs — remove the __pycache__ and .pytest_cache dirs under
+# dirs, leaving any .venv alone.
+define CLEAN_PYCACHE
+find $(1) -name .venv -prune -o -type d \( -name __pycache__ -o -name .pytest_cache \) -exec rm -rf {} + 2>/dev/null || true
 endef
 
 .DEFAULT_GOAL := help
@@ -91,7 +109,8 @@ endef
         update update-venvs update-wealthdb update-playwright update-bases \
         lint lint-go lint-python cleanall-lint \
         demo demo-roll demo-web demo-web-stop demo-mcp demo-mcp-stop test-demo \
-        clean-demo site-shots site-images site-publish test-site
+        clean-demo site-shots site-images site-publish test-site \
+        clean-site cleanall-site
 
 # ---- aggregates --------------------------------------------------------
 
@@ -232,9 +251,11 @@ base-images:
 #            test-demo's scratch roots, the build locks)
 # cleanall = clean + the heavy outputs (docker images, venvs)
 clean:    clean-wealthdb clean-web clean-collectors clean-collectorkit clean-demo \
-          clean-build-locks
-cleanall: cleanall-wealthdb cleanall-web cleanall-collectors cleanall-bases \
-          cleanall-collectorkit cleanall-lint clean-demo clean-build-locks
+          clean-site clean-build-locks
+	@$(call CLEAN_PYCACHE,shared/update)
+	@rm -rf .pytest_cache
+cleanall: clean cleanall-wealthdb cleanall-web cleanall-collectors cleanall-bases \
+          cleanall-collectorkit cleanall-lint cleanall-site
 
 clean-collectors:    $(addprefix clean-,$(COLLECTORS))
 cleanall-collectors: $(addprefix cleanall-,$(COLLECTORS))
@@ -280,7 +301,7 @@ test-wrappers:
 
 clean-collectorkit:
 	@echo "==> clean collectorkit"
-	@find $(CK_DIR) -name .venv -prune -o -type d \( -name __pycache__ -o -name .pytest_cache \) -exec rm -rf {} + 2>/dev/null || true
+	@$(call CLEAN_PYCACHE,$(CK_DIR))
 
 cleanall-collectorkit: clean-collectorkit
 	@echo "==> cleanall collectorkit"
@@ -459,7 +480,8 @@ test-demo: build-wealthdb
 # write into it (demo/tests/test_engine.py), so a dir of another kind
 # at that path is left alone.
 clean-demo:
-	@echo "==> clean demo (test-demo's scratch roots of tag $(TAG))"
+	@echo "==> clean demo (pycache, test-demo's scratch roots of tag $(TAG))"
+	@$(call CLEAN_PYCACHE,demo)
 	@if [ -f "$(DEMO_TEST_ROOT)/.wealthdb-demo-tests" ]; then rm -rf "$(DEMO_TEST_ROOT)"; fi
 
 # ---- site (the project page) ------------------------------------------
@@ -468,11 +490,13 @@ clean-demo:
 # workflow downloads into site/public/shots at deploy time
 # (site/images.py).
 #
-# site-shots rebuilds the demo at the pinned seed and date, so a reshoot
-# moves only what the code changed, then shoots every dashboard in both
-# colour schemes in the Camoufox image, with its date pickers pinned to
-# that date, converts the shots into
-# site/public/shots, and prints the figures the page's text quotes.
+# site-shots retakes the screenshots:
+#   - it rebuilds the demo at the pinned seed and date, so a reshoot
+#     moves only what the code changed;
+#   - it shoots every dashboard in both colour schemes in the Camoufox
+#     image, with the date pickers pinned to that date;
+#   - it converts the shots into site/public/shots;
+#   - it prints the figures the page's text quotes.
 # The rebuild resets the demo root to that date; `make demo` or
 # `make demo-roll` brings it back to today.
 # site-images downloads the published screenshots for a local preview.
@@ -489,10 +513,7 @@ SITE_TMP   := $(CACHE_ROOT)/site-shots-$(TAG)
 site-shots: build-wealthdb build-web base-images
 	@$(MAKE) --no-print-directory demo SEED=$(SITE_SEED) AS_OF=$(SITE_AS_OF)
 	@$(MAKE) --no-print-directory demo-web
-	@$(call ENSURE_VENV,$(SITE_VENV),the site tools,site-shots)
-	@if [ ! $(SITE_VENV)/.stamp -nt site/requirements.txt ]; then \
-		$(SITE_VENV)/bin/pip install -q -r site/requirements.txt && touch $(SITE_VENV)/.stamp || exit 1; \
-	fi
+	@$(call VENV_REQS,$(SITE_VENV),site/requirements.txt,the site tools,site-shots)
 	@echo "==> shoot the demo's dashboards"
 	@rm -rf "$(SITE_TMP)" && mkdir -p "$(SITE_TMP)" && trap 'rm -rf "$(SITE_TMP)"' EXIT && \
 	docker run --rm --add-host=host.docker.internal:host-gateway \
@@ -504,26 +525,33 @@ site-shots: build-wealthdb build-web base-images
 	@$(DEMO_ENGINE) -r exposure countries
 	@$(DEMO_ENGINE) -r spending categories 2025 --period annual
 	@$(DEMO_ENGINE) -r yield global -x EUR
-	@$(DEMO_ENGINE) -r yield accounts
+	@$(DEMO_ENGINE) -r yield accounts -x EUR
 	@$(DEMO_ENGINE) -r income projection -x EUR
+	@$(DEMO_ENGINE) -r holdings accounts -x EUR
 
 site-images:
 	@$(PYTHON) site/images.py fetch $(SITE_SHOTS)
 
 site-publish:
-	@f="$(SITE_ENV)"; if [ -f "$$f" ]; then bash -n "$$f" || exit 1; fi; \
-	bash -c 'f="$$1"; shift; if [ -f "$$f" ]; then set -a; . "$$f"; set +a; fi; exec "$$@"' _ "$$f" \
-		$(PYTHON) site/images.py publish $(SITE_SHOTS)
+	@bash -c '. shared/wrappers/envfile-lib.sh; f="$$1"; shift; \
+		if [ -f "$$f" ] && ! wealthdb_source_bash "$$f"; then \
+			echo "site-publish: $$f has a bash syntax error" >&2; exit 1; fi; \
+		exec "$$@"' _ "$(SITE_ENV)" $(PYTHON) site/images.py publish $(SITE_SHOTS)
 
-# capture.py's and images.py's unit tests; the image conversion's run
+# capture.py's and images.py's unit tests. The image conversion runs
 # with Pillow from site/.venv. No Docker, no network.
 test-site:
 	@echo "==> test site (site/tests)"
-	@$(call ENSURE_VENV,$(SITE_VENV),the site tests,test-site)
-	@if [ ! $(SITE_VENV)/.stamp -nt site/requirements.txt ]; then \
-		$(SITE_VENV)/bin/pip install -q -r site/requirements.txt && touch $(SITE_VENV)/.stamp || exit 1; \
-	fi
+	@$(call VENV_REQS,$(SITE_VENV),site/requirements.txt,the site tests,test-site)
 	@$(SITE_VENV)/bin/python -m unittest discover -s site/tests -t site
+
+clean-site:
+	@echo "==> clean site (pycache)"
+	@$(call CLEAN_PYCACHE,site)
+
+cleanall-site: clean-site
+	@echo "==> cleanall site (site tools venv)"
+	@rm -rf $(SITE_VENV)
 
 # ---- mcp (optional MCP server) ----------------------------------------
 # The server is the engine image, so there is nothing to build; the
@@ -548,14 +576,12 @@ WEB_VENV := web/.venv
 
 test-web:
 	@echo "==> test web (web/test_web.sh)"
-	@$(call ENSURE_VENV,$(WEB_VENV),the web tests,test-web)
-	@if [ ! $(WEB_VENV)/.stamp -nt web/requirements-test.txt ]; then \
-		$(WEB_VENV)/bin/pip install -q -r web/requirements-test.txt && touch $(WEB_VENV)/.stamp || exit 1; \
-	fi
+	@$(call VENV_REQS,$(WEB_VENV),web/requirements-test.txt,the web tests,test-web)
 	@WEALTHDB_WEB_PYTHON="$(abspath $(WEB_VENV))/bin/python" web/test_web.sh
 
 clean-web:
-	@echo "==> clean web (nothing to clean)"
+	@echo "==> clean web (pycache)"
+	@$(call CLEAN_PYCACHE,web)
 
 cleanall-web: clean-web
 	@echo "==> cleanall web (image, test venv)"
@@ -637,7 +663,7 @@ test-$(1): build-$(1)
 
 clean-$(1):
 	@echo "==> clean collector: $(1)"
-	@find collectors/$(1) -name .venv -prune -o -type d \( -name __pycache__ -o -name .pytest_cache \) -exec rm -rf {} + 2>/dev/null || true
+	@$$(call CLEAN_PYCACHE,collectors/$(1))
 
 cleanall-$(1): clean-$(1)
 	@echo "==> cleanall collector: $(1)"
@@ -658,7 +684,7 @@ $(foreach c,$(COLLECTORS),$(eval $(call COLLECTOR_RULES,$(c))))
 # `make update` brings every layer of the toolchain forward in one shot:
 #
 #   - pip + project deps in every host venv: the collectors' own
-#     (schwab-api, ubs-psn, …) plus collectorkit's test venv
+#     (schwab-api, ubs-psn, …) and the tool venvs below
 #   - Go modules in wealthdb/ (go get -u + go mod tidy, run by the
 #     image's own toolchain — see update-wealthdb)
 #   - The Playwright base image tag, moved to the newest release together
@@ -669,14 +695,17 @@ $(foreach c,$(COLLECTORS),$(eval $(call COLLECTOR_RULES,$(c))))
 #
 # `make all` then rebuilds the collector images on the refreshed bases.
 # The host venvs and the gold engine pick up their updates at once.
+# The one pin set `make update` does not move is the GitHub actions in
+# .github/workflows/pages.yml: their major tags move by hand.
 #
 # Host venvs are auto-discovered as any collectors/<name>/.venv that
 # already exists — the venv has to have been created by `make build-<name>`
 # at least once. Docker collectors have no .venv on the host; their pip
 # is inside the image and refreshes when the image rebuilds. The venvs
 # outside collectors/ are collectorkit's test venv
-# (`make test-collectorkit`), the web tests' (`make test-web`) and
-# ruff's (`make lint`), each updated alongside them once it exists.
+# (`make test-collectorkit`), the web tests' (`make test-web`), the site
+# tools' (`make test-site`, `make site-shots`) and ruff's (`make lint`),
+# each updated alongside them once it exists.
 HOST_VENV_COLLECTORS := $(patsubst collectors/%/.venv,%,$(wildcard collectors/*/.venv))
 
 # UPDATE_VENV venv,args: upgrade pip, setuptools and wheel in venv, then
@@ -778,7 +807,7 @@ help:
 	@echo "                          build locks)"
 	@echo "  make cleanall           also remove docker images + venvs"
 	@echo "  make clean-<name> / cleanall-<name>   (incl. -wealthdb, -web, -collectorkit,"
-	@echo "                          -collectors; clean-demo, clean-build-locks,"
+	@echo "                          -collectors, -site; clean-demo, clean-build-locks,"
 	@echo "                          cleanall-bases, cleanall-lint)"
 	@echo ""
 	@echo "  make demo               build the synthetic demo household (WEALTHDB_DEMO_ROOT,"
@@ -789,8 +818,8 @@ help:
 	@echo "  make demo-mcp / demo-mcp-stop   the demo over MCP, own container and port"
 	@echo "  make test-demo          test the demo generator, a short demo load and a build to today"
 	@echo ""
-	@echo "  make site-shots         retake the project page's screenshots from the demo at"
-	@echo "                          the pinned seed and date; print the figures the page quotes"
+	@echo "  make site-shots         rebuild the demo at the pinned seed and date (resets the"
+	@echo "                          demo root), shoot its dashboards, print the page's figures"
 	@echo "  make site-images        download the published screenshots for a local preview"
 	@echo "  make site-publish       upload the screenshots to their GitHub release and deploy"
 	@echo "                          (token: WEALTHDB_SITE_TOKEN or ~/.secrets/github-site.env)"

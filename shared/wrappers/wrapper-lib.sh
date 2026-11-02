@@ -4,9 +4,11 @@
 #   1. sets a small config block (NAME, ENV_PREFIX, ENV_VARS, optional
 #      feature flags),
 #   2. sources this file,
-#   3. handles its own special subcommands inline (build, help, plus
-#      any pure-host-side shortcuts like fidelity-web's `load`),
-#   4. calls `wrapper_main "$@"` for the common docker-run path.
+#   3. prints its help text when wrapper_wants_help, and handles its own
+#      special subcommands inline (pure-host-side shortcuts like
+#      fidelity-web's `load`),
+#   4. calls `wrapper_main "$@"`, which dispatches build and prune and
+#      runs every other verb on the common docker-run path.
 #
 # Caller must SET (before sourcing):
 #   HERE         absolute path to the wrapper's own directory. Convention:
@@ -268,7 +270,7 @@ wrapper_mounts_help() {
 # run. Extra arguments are passed through, and the image is built. A
 # hash that fails (no python3 on the host) builds an unlabeled image,
 # which is never skipped.
-# Caller dispatches on $1 == "build".
+# wrapper_main dispatches $1 == "build" here.
 # --provenance=false: buildx's default provenance attestation embeds build
 # metadata, so the image digest changes on every build even when every layer
 # is CACHED — which defeats the cache for anything built FROM this image.
@@ -299,8 +301,9 @@ wrapper_build() {
 # host-side bypasses the single-writer safety guard so it can reclaim
 # disk while a download container is mid-flight (prune's own --min-age
 # guard protects an in-flight dump). The container entrypoints keep a
-# `prune)` arm too, for a direct `docker run`. Caller dispatches on
-# $1 == "prune".
+# `prune)` arm too, for a direct `docker run`. wrapper_main dispatches
+# $1 == "prune" here; a wrapper with a prune of its own handles it
+# before calling wrapper_main.
 #
 # With HAS_DEBUG=1 the reclaim extends past bronze to $HOST_DEBUG (the
 # /debug mount source), passed as --debug-dir: the screenshots / traces
@@ -444,11 +447,23 @@ wrapper_safety_guard() {
 # Common dispatch
 # ----------------------------------------------------------------------
 
-# The common docker-run path. Caller has already handled its own
-# special subcommands (build, help, any host-side shortcuts) before
-# falling through here. Composes the docker argv from the active
-# features and execs it.
+# wrapper_wants_help [args...] — are the args a request for the
+# wrapper's help: none at all, or help / --help / -h as the verb?
+wrapper_wants_help() {
+    [[ $# -eq 0 || "$1" == help || "$1" == --help || "$1" == -h ]]
+}
+
+# The common dispatch. Caller has already printed its help and handled
+# its own special subcommands (any host-side shortcuts) before falling
+# through here. build and prune go to wrapper_build and
+# wrapper_host_prune, which exit or exec. Every other verb takes the
+# docker-run path: compose the docker argv from the active features and
+# exec it.
 wrapper_main() {
+    case "${1:-}" in
+        build) wrapper_build "$@" ;;
+        prune) wrapper_host_prune "$@" ;;
+    esac
     # Pull the --secrets-dir/--data-dir/--silver-db flags out of the args
     # (they may override HOST_SECRETS/HOST_DATA + add the /silver mount),
     # then continue with the remaining args as the positional parameters.

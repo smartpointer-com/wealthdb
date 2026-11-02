@@ -10,10 +10,13 @@
 #   - test-demo's scratch roots are the image tag's own, and clean-demo
 #     removes that root only when it holds the tests' marker;
 #   - lint reinstalls ruff when its pin changes, and update-venvs stops
-#     at the first pip that fails.
+#     at the first pip that fails;
+#   - site-shots mounts the checkout read-only and no secrets;
+#   - site-publish exports the env file's token, and refuses a file that
+#     does not parse without printing its lines.
 # Nothing is built: make prints, and a stub docker prints. clean-demo,
-# lint-python and update-venvs run for real, on roots and stub venvs
-# under the temp dir.
+# lint-python, update-venvs and site-publish run for real, on roots,
+# stub venvs and a stub interpreter under the temp dir.
 set -uo pipefail
 # The makes this test starts read only what it gives them: an outer
 # make's flags and command-line variables (make test-wrappers X=…) stay
@@ -32,7 +35,8 @@ trap 'rm -rf "$TMP"' EXIT
 TREE="$TMP/tree"
 mkdir -p "$TREE/shared/wrappers" "$TREE/wealthdb" "$TMP/bin"
 cp "$ROOT/Makefile" "$TREE/"
-cp "$ROOT/shared/wrappers/image-tag.sh" "$ROOT/shared/wrappers/demo-root.sh" "$TREE/shared/wrappers/"
+cp "$ROOT/shared/wrappers/image-tag.sh" "$ROOT/shared/wrappers/demo-root.sh" \
+   "$ROOT/shared/wrappers/envfile-lib.sh" "$TREE/shared/wrappers/"
 cp "$ROOT/wealthdb/wealthdb-go" "$TREE/wealthdb/"
 # One collector per runtime: Docker, host venv, and a hybrid.
 for c in dock host hyb; do mkdir -p "$TREE/collectors/$c/tests"; done
@@ -123,5 +127,34 @@ printf '#!/bin/sh\n' > "$TREE/collectors/host/.venv/bin/python"
 out="$(real update-venvs)"; rc=$?
 [ "$rc" = 0 ] && ok "update-venvs succeeds over working venvs" || bad "update-venvs exit $rc: $out"
 has "update-venvs updates every collector venv" "update collectors/hyb/.venv" "$out"
+
+echo "make site rules:"
+out="$(cd "$TREE" && env WEALTHDB_IMAGE_TAG=t XDG_CACHE_HOME="$TMP/cache" \
+    WEALTHDB_DEMO_ROOT="$TMP/demo" make -n site-shots 2>&1)"
+has "site-shots mounts the checkout read-only" "-v \"$TREE:/repo:ro\"" "$out"
+lacks "site-shots mounts no secrets" ":/secrets" "$out"
+has "clean runs clean-site" "==> clean site" "$(dry clean)"
+has "cleanall removes the site venv" "rm -rf site/.venv" "$(dry cleanall)"
+
+# site-publish for real, with a stub interpreter that prints the token it
+# sees in place of site/images.py.
+unset WEALTHDB_SITE_TOKEN
+printf '#!/bin/sh\necho "token=${WEALTHDB_SITE_TOKEN:-}"\n' > "$TMP/bin/stubpy"
+chmod +x "$TMP/bin/stubpy"
+publish() { real site-publish PYTHON="$TMP/bin/stubpy" SITE_ENV="$TMP/site.env"; }
+printf "WEALTHDB_SITE_TOKEN='fake-file-token'\n" > "$TMP/site.env"
+has "site-publish exports the env file's token" "token=fake-file-token" "$(publish)"
+has "the env file wins over the environment" "token=fake-file-token" \
+    "$(WEALTHDB_SITE_TOKEN=fake-env-token publish)"
+printf "WEALTHDB_SITE_TOKEN='fake-bad-token' (\n" > "$TMP/site.env"
+out="$(publish)"; rc=$?
+[ "$rc" != 0 ] && ok "site-publish refuses an env file that does not parse" \
+    || bad "site-publish exit 0 over a bad env file: $out"
+has "the refusal names the file" "$TMP/site.env has a bash syntax error" "$out"
+lacks "the refusal prints none of the file's lines" "fake-bad-token" "$out"
+lacks "the publish does not run" "token=" "$out"
+rm -f "$TMP/site.env"
+has "without an env file the environment's token is used" "token=fake-env-token" \
+    "$(WEALTHDB_SITE_TOKEN=fake-env-token publish)"
 
 summary "make rule tests"

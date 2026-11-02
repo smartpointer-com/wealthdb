@@ -95,7 +95,10 @@ touch "$TMP/cache/wealthdb/build-locks/wealthdb-x.lock"
 (cd "$ROOT" && XDG_CACHE_HOME="$TMP/cache" make --no-print-directory clean-build-locks >/dev/null)
 [ ! -e "$TMP/cache/wealthdb/build-locks" ] && ok "the lock directory is gone" \
     || bad "make clean-build-locks left $(ls "$TMP/cache/wealthdb/build-locks")"
-(cd "$ROOT" && make -n clean 2>/dev/null) | grep -q "build-locks" \
+# Captured first: a grep -q that stops reading early would fail the
+# pipe under pipefail once make writes past the match.
+out="$(cd "$ROOT" && make -n clean 2>/dev/null)"
+printf '%s\n' "$out" | grep -q "build-locks" \
     && ok "make clean includes it" || bad "make clean does not remove the locks"
 
 echo
