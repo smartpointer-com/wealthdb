@@ -90,7 +90,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, silver, srcfp
+from collectorkit import bronze, cli, documents, silver, srcfp
 from collectorkit.money import parse_money
 from collectorkit.parse import date_in_name, epoch_day
 
@@ -893,11 +893,9 @@ def _upsert_card_transaction(conn, account_external_id: str,
 
 def _insert_document(conn, snapshot_at: int, account_external_id: str,
                      pdf: Path) -> None:
-    sha, size = bronze.sha256_file(pdf)
-    doc_date = _statement_date_from_name(pdf.name)
-    silver.record_document(conn, (
-        sha, snapshot_at, account_external_id, doc_date, "statement", "pdf",
-        pdf.name, size, silver.canonical_json({"source_name": pdf.name})))
+    documents.record_pdf_document(
+        conn, snapshot_at, account_external_id, pdf,
+        doc_date=_statement_date_from_name(pdf.name))
 
 
 _DATE_IN_NAME_RE = re.compile(r"(?P<y>20\d{2})[-_]?(?P<m>\d{2})[-_]?(?P<d>\d{2})")

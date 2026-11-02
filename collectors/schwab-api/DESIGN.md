@@ -110,8 +110,9 @@ Schwab specifics:
   `in-progress` shell too. `--dry-run` creates no run dir, so it leaves
   no shell and no manifest.
 - Never imports or calls write endpoints (`place_order`, etc.).
-  This is enforced by code review and documented in `AGENTS.md`. An
-  order rate limit of 0 on the Schwab app adds a safeguard.
+  This is enforced by code review and documented in `AGENTS.md`.
+  Setting the app's order rate limit to 0 in the Schwab developer
+  portal adds a safeguard.
 
 **Bronze compression.** Each of the six data artefacts
 (`account_numbers.json`, `user_preference.json`,
@@ -145,7 +146,7 @@ a `load --force` rebuild must produce identical silver.
   file.** Re-runs accumulate; never overwrite a prior run. The dump
   timestamp doubles as a primary key in silver later. Schwab uses
   `YYYYMMDDTHHMMSSZ`; pick something similar.
-- **Re-fetch generous windows on every run, don't try to be
+- **Re-fetch generous windows on every run, do not try to be
   incremental.** Silver does the dedup. This is cheaper than tracking
   "since when" cursors and survives missed runs trivially.
 - **Filename should not leak identifiers.** Schwab returns account
@@ -158,7 +159,7 @@ a `load --force` rebuild must produce identical silver.
   and discards everything else — order history is out of
   scope. Data that would only be thrown away is not captured.
 - **A `--dry-run` mode that validates auth and lists accounts but
-  doesn't fetch.** It refreshes the stored token and signs in to
+  does not fetch.** It refreshes the stored token and signs in to
   nothing, so it serves as a connectivity test that fires no 2FA.
 
 ### 3.3 `load.py` — bronze → silver
@@ -244,7 +245,7 @@ SQLite chosen over alternatives:
 - vs. DuckDB: SQLite is universal (`sqlite3` CLI on every Unix box),
   has a stable file format with a 25-year track record, and is OLTP-
   shaped, which matches silver's "append-only single-writer" usage.
-  DuckDB is better for analytics; that's why gold uses it instead.
+  DuckDB is better for analytics; that is why gold uses it instead.
 - vs. Postgres / MySQL: server-process overhead has no benefit at
   personal-portfolio scale. Single-file portability wins.
 - vs. flat files / parquet: silver needs cheap point queries and
@@ -304,10 +305,10 @@ account_external_id = ?` should be an index probe, not a JSON scan.
 table, not as a universal rule):
 - The query pattern needs it as a filter or join key, or an adapter
   reads it on every row.
-- It's present on *every* row of that table (no nulls from sparse
-  fields — promoting a field that's only on 60% of rows produces a
+- It is present on *every* row of that table (no nulls from sparse
+  fields — promoting a field that is only on 60% of rows produces a
   half-useful column).
-- It's in the source's stable surface (not a generated/random ID).
+- It is in the source's stable surface (not a generated/random ID).
 
 When in doubt, leave it in `payload`.
 
@@ -380,7 +381,7 @@ source-stable event ID. For Schwab: `transactions` only.
   appear to be selected by posting/settlement date while the row's
   `time` is the underlying event time, which can be days earlier. A
   prior dump may already hold such a row at its out-of-window
-  timestamp, where the window DELETE won't reach it, so the re-fetch
+  timestamp, where the window DELETE will not reach it, so the re-fetch
   would PK-collide on `activity_id`. The loader therefore also DELETEs
   the exact `activity_id`s it is about to INSERT (chunked under the 999
   host-param cap), which keeps the window-DELETE removal-detection
@@ -430,7 +431,7 @@ which lets gold bridge schwab-api accounts to schwab-web's without a
 `account_external_id` never holds a real Schwab account number.
 
 **For other banks:**
-- UBS PSN doesn't hash account numbers, but it does have a
+- UBS PSN does not hash account numbers, but it does have a
   `relationship_id` dimension (there can be multiple banking relationships
   under one SFTP login, distinguished by the `SFTPCH<NN>` / `SFTPCH<MM>`
   server-ID in filenames). silver needs to carry that as a stable
@@ -444,12 +445,12 @@ which lets gold bridge schwab-api accounts to schwab-web's without a
 
 Silver is allowed to drop fields that are pure per-request noise. The
 test: if the field changes on every API call regardless of the
-underlying state, it's noise.
+underlying state, it is noise.
 
 Schwab example: `streamerInfo[*].schwabClientCorrelId` in the
 `/userPreference` response. Schwab regenerates it per call. Without
 stripping, content-based dedup of `user_preference` would *never*
-deduplicate, even when the underlying preferences haven't
+deduplicate, even when the underlying preferences have not
 changed for years.
 
 Implementation in `load.py`:
@@ -466,10 +467,10 @@ def _strip_user_preference_noise(pref: dict) -> dict:
 Strip on the way in; store the stripped form. Bronze retains the
 original for anyone who genuinely needs to trace a specific request.
 
-**Don't strip:**
+**Do not strip:**
 - Anything that could carry semantic information ("status" fields,
   "type" fields, anything that might be queried later).
-- Anything that *could* be noise but isn't provably so — silver
+- Anything that *could* be noise but is not provably so — silver
   faithfulness defaults to "preserve, dedup based on the noisy form".
 
 ### 4.8 Schema versioning via migrations
@@ -492,7 +493,7 @@ The loader:
 
 **Silver is always at the latest schema.** Never write code that
 handles "if column X exists, use it, else fall back". If the migration
-hasn't run, fix the migration. If it has, the column always exists.
+has not run, fix the migration. If it has, the column always exists.
 
 ### 4.9 Optional enrichment artefacts
 
@@ -509,7 +510,7 @@ silver and pass it downstream. Two coherent ways out:
 
 schwab-api takes (2): the `/instruments` lookup runs by default, with a
 `download.py --no-instruments` opt-out, because the metadata is
-slow-changing and the extra round-trip needn't fire on every dump.
+slow-changing and the extra round-trip need not fire on every dump.
 The fetched payload lands in a
 separate bronze file (`instruments.json`), consistent with the
 "one Schwab response per file" convention. The silver loader populates
@@ -519,7 +520,7 @@ not an error.
 **Generalisable pattern: optional enrichment bronze artefacts.**
 
 - Gated by a dedicated flag on the dump tool (here default-on, with a `--no-instruments` opt-out).
-- Live in their own bronze file; don't get merged into the
+- Live in their own bronze file; do not get merged into the
   state/event artefacts.
 - Map to their own silver table; do not back-fill columns into
   existing tables.
@@ -617,11 +618,11 @@ The implications that bear on *silver schema design* here:
   Communicate breaking changes.
 - **Promote anything the adapter needs as a filter or join key.**
   If gold ends up doing `json_extract(...)` on every row during
-  silver→gold transforms, that's a sign the column should be
+  silver→gold transforms, that is a sign the column should be
   promoted.
-- **Don't over-design for gold.** Adapters can handle reasonable
-  joins, type coercion, and JSON extraction. Don't materialize
-  "convenience columns" silver doesn't otherwise need.
+- **Do not over-design for gold.** Adapters can handle reasonable
+  joins, type coercion, and JSON extraction. Do not materialize
+  "convenience columns" silver does not otherwise need.
 
 ## 7. Notes for other-bank backends
 

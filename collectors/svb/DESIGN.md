@@ -223,7 +223,7 @@ they default cleanly and the overrides set the precise values.
 - **PK disambiguation.** `historical_position_snapshots` is keyed on
   `(as_of, account, description)`, but option legs share a description (the strike
   is off-description); colliding descriptions are disambiguated by the unique
-  instrument key (OCC symbol) so short legs aren't collapsed (which would inflate
+  instrument key (OCC symbol) so short legs are not collapsed (which would inflate
   the signed total).
 
 ## Data caveats

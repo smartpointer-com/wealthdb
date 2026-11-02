@@ -85,9 +85,9 @@ into these `~/.secrets/` artefacts; treat each as a credential (0600/0700):
   (holds the live plaintext `cookies.sqlite`).
 - `angellist-profile/` — the Camoufox profile used by `explore`.
 
-Don't invalidate without cause: re-run `login` only when the cookie
+Do not invalidate without cause: re-run `login` only when the cookie
 genuinely expires (each one is a real human login + 2FA on the user's
-device). Don't log out programmatically; don't add a routine "fresh login
+device). Do not log out programmatically; do not add a routine "fresh login
 per N runs".
 
 ## 3. Authentication is a by-hand login — never weaken it

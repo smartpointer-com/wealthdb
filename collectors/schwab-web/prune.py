@@ -16,11 +16,11 @@ load input: every sibling is ``more-details.json`` or a ``.csv`` /
 ``.json`` / ``.xml`` export. The login captures land in the debug dir
 outside bronze, which the wrapper passes as ``--debug-dir``.
 
-Completeness comes from the ``run.json`` status. ``run.json`` is
-written incrementally, so a statusless one falls back to ``dry_run``: a
-real dump (``dry_run`` false) is complete and keeps its load inputs, a
-``--dry-run`` shell is not. ``load`` skips a dump whose status is not
-``"complete"``, so removing one never changes silver. The safety
+Completeness comes from the ``run.json`` status. A statusless
+``run.json`` predates the field. ``load`` reads such a dump, so it is
+complete and kept, a legacy ``--dry-run`` shell included. ``load``
+skips a dump whose status is not ``"complete"``, so removing one never
+changes silver. The safety
 envelope (the age guard, ``--dry-run``, symlinks, an unreadable
 manifest) is the shared engine's: see collectors/README.md.
 
@@ -41,22 +41,12 @@ from collectorkit import debugcap, prune
 TX_PAGE_HTML_ORPHAN_GLOB = "transactions/*/page-*.html"
 
 
-def _is_complete(run_dir, meta):
-    # status_classification resolves any dump carrying a `status` key
-    # (in-progress → complete/dry-run). The fallback below fires only
-    # for a statusless manifest, which predates the field. load reads
-    # every such dump, so it is kept, a legacy --dry-run shell included:
-    # prune never deletes a load input.
-    return prune.status_classification(
-        run_dir=run_dir, meta=meta,
-        legacy_complete=lambda rd, m: m is not None,
-    )
-
-
 CONFIG = prune.PruneConfig(
     debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
     debug_globs=(TX_PAGE_HTML_ORPHAN_GLOB,),
-    is_complete=_is_complete,
+    # A status key decides. A statusless but readable run.json predates
+    # the field; load reads such a dump, so it is kept.
+    is_complete=prune.lenient_classification,
 )
 
 

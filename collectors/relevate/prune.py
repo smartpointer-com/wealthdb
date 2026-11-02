@@ -55,25 +55,13 @@ import sys
 from collectorkit import debugcap, prune
 
 
-def _legacy_complete(run_dir, meta) -> bool:
-    # A statusless-but-readable run.json is a pre-`status` dump. The
-    # loader reads every such dump (bronze.is_loadable_status), so prune
-    # keeps it too: deleting one would orphan rows already loaded from
-    # it. New walks always carry a `status` key, so status_classification
-    # resolves in-progress/dry-run/complete before this fallback runs.
-    return meta is not None
-
-
-def _is_complete(run_dir, meta):
-    return prune.status_classification(
-        meta, run_dir=run_dir, legacy_complete=_legacy_complete)
-
-
 CONFIG = prune.PruneConfig(
     # `download --debug`'s HTTP trace, which debugcap lands under this
     # subdir fleet-wide. Everything else in a run dir is a bronze capture.
     debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
-    is_complete=_is_complete,
+    # A status key decides. A statusless but readable run.json predates
+    # the field; load reads such a dump, so it is kept.
+    is_complete=prune.lenient_classification,
 )
 
 

@@ -89,10 +89,10 @@ tick (`#enable-bypass`) plants a device-trust cookie that skips 2FA on
 renewal; its exact lifetime is unmeasured — do not assume the session
 persists, and do not invalidate it without cause:
 
-- Don't add a routine "fresh login per N runs" pattern. Re-mint only when
+- Do not add a routine "fresh login per N runs" pattern. Re-mint only when
   the session genuinely expires. Each fresh login fires a real 2FA
   challenge.
-- Don't log out programmatically at the end of `download`.
+- Do not log out programmatically at the end of `download`.
 - `/secrets/carta-profile/` is the persistent Camoufox profile dir. It
   holds the session cookie and any device-trust value. Keep it at 0700;
   treat the whole dir as a credential.

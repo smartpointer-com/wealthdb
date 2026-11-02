@@ -554,8 +554,8 @@ def walk(client: ViacClient, dest_root: Path, *,
     get("/rest/web/wealth/summary", "wealth/summary.json")
     get("/rest/web/wealth/allocation", "wealth/allocation.json")
 
-    # Per-portfolio (Pillar-3a only; Pillar-2 vested-benefits surface
-    # not yet mapped — see DESIGN.md open questions).
+    # Per-portfolio (Pillar-3a only; the Pillar-2 vested-benefits
+    # surface is unmapped, DESIGN.md §9 Known limits).
     p3a_portfolios = inventory.get("p3a") if isinstance(inventory, dict) else []
     for pf in p3a_portfolios:
         num = pf["number"]

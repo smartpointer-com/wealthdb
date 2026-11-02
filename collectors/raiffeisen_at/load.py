@@ -14,8 +14,8 @@ booking (`buchungstag`) and value (`valuta`) date. Unlike the US siblings the
 history has **no per-row running balance**; the closing-balance time series
 comes from the `kontostaende` daily series (`balances/<iban>.json`) into the
 `daily_balances` table. Statements are ingested as documents (PDFs belong in
-bronze), not as a transaction source — the archive reaches only ~5 months
-past the history floor (DESIGN.md §G).
+bronze), not as a transaction source — the archive reaches only a few
+months past the history floor (DESIGN.md §G).
 
 The deep past comes from transaction listings the bank supplies on request,
 dropped into `<bronze-dir>/supplied/` and read on every load (DESIGN.md §I):
@@ -56,7 +56,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, money, parse, pdftotext, silver
+from collectorkit import bronze, cli, documents, money, parse, pdftotext, silver
 
 import listing_parser
 import stitch
@@ -325,11 +325,9 @@ def _insert_balance(conn, snapshot_at: int, iban: str, row: dict) -> None:
 
 
 def _insert_document(conn, snapshot_at: int, iban: str, pdf: Path) -> None:
-    sha, size = bronze.sha256_file(pdf)
-    silver.record_document(conn, (
-        sha, snapshot_at, iban, _statement_date_from_name(pdf.name),
-        "statement", "pdf", pdf.name, size,
-        silver.canonical_json({"source_name": pdf.name})))
+    documents.record_pdf_document(
+        conn, snapshot_at, iban, pdf,
+        doc_date=_statement_date_from_name(pdf.name))
 
 
 # The statement filename is `<YYYY-MM-DD>_<system>_<id>[_v<n>].pdf`

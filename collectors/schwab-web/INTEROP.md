@@ -30,7 +30,7 @@ that needs to converge them.
 | Column | `accounts.account_external_id` | `accounts.account_external_id` |
 | Value | 3-to-5-digit account suffix (e.g. `"NNN"`) | Schwab opaque `hashValue` |
 | Source | `…NNN` text in the account-selector dropdown | `/accounts/accountNumbers` response |
-| Joinable? | **No** — there's no public Schwab mapping |
+| Joinable? | **No** — there is no public Schwab mapping |
 
 ### Gold-layer bridge
 
@@ -184,7 +184,7 @@ document per account and tax year as primary (see §8.1). The
 `form_1099b` rows of `transactions` do not reach gold's transactions;
 the statement and history feeds carry the sales. Remaining 1099
 sections (DIV / INT / OID) are unparsed. **Do not** modify the api
-silver — the data simply isn't in the api.
+silver — the data simply is not in the api.
 
 ## 5. No live position snapshots in web silver
 
@@ -224,9 +224,9 @@ silver is correct as-is.
 
 ## 7. Open issues in `schwab-web` itself (for transparency)
 
-These are tracked in [DESIGN.md §7](DESIGN.md) and don't block
+These are tracked in [DESIGN.md §7](DESIGN.md) and do not block
 gold-layer work — but the gold-layer author should know what
-the web feed is and isn't carrying:
+the web feed is and is not carrying:
 
 | Gap | Impact on gold |
 | --- | --- |

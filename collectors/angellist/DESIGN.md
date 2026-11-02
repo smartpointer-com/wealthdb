@@ -27,8 +27,8 @@ Two constraints shape the design:
    (a Next.js app) gates sign-in behind an *invisible* Cloudflare
    Turnstile + Google reCAPTCHA challenge. The `SignupLogin` mutation
    returns `unprocessable_entity` with "Our security check couldn't verify
-   your session." It's score-based with no solvable puzzle, so a human in
-   a VNC session can't help — the **automation fingerprint** is what's
+   your session." It is score-based with no solvable puzzle, so a human in
+   a VNC session cannot help — the **automation fingerprint** is what is
    flagged. A hardened automation browser (block_webrtc, manual typing,
    profile warmup, no init-script tampering) is flagged too, so the cause
    is the browser stack, not the IP.
@@ -301,7 +301,7 @@ adapter is a thin forward-fill:
   (`invest_account_slug`): `account_kind=custody` (LP interests held in
   custody, not a brokerage), `tax_wrapper=taxable_personal`,
   `management_style=self_directed` (the holder picks which deals to back;
-  the GP's management inside each vehicle isn't modeled) — same as carta /
+  the GP's management inside each vehicle is not modeled) — same as carta /
   equityzen. Config `account_overrides` win on overlap.
 - **Instruments + positions — one per SPV stake** (the SPV, not the company;
   keyed by the AngelList position id). The taxonomy comes from
@@ -362,7 +362,7 @@ adapter is a thin forward-fill:
 - **Cash.** The funding account's current uninvested cash is one
   `BalanceKind=current` CashBalanceChange, so account value = positions + cash.
 
-Consequence: `positions.market_value` summed in gold won't equal
+Consequence: `positions.market_value` summed in gold will not equal
 `portfolio_summary.totalValue` for the current date — positions without a
 reported FMV carry their latest dated mark, the K-1's tax basis, or cost
 before the first K-1. A re-mark to cost at the data date would override a

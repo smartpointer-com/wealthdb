@@ -13,12 +13,11 @@ Unlike chase, there is **no export join and no statement-PDF backfill**. The
 every row carries a stable `transactionId` AND a `runningBalance`, so the
 ledger — signed amount, per-row balance, id — comes from one payload
 (DESIGN.md §4.3). The CSV/QFX exports are captured for provenance only; a flat
-export can carry slightly fewer rows than the JSON (a pending/edge item it
-omits), so it is never the source of record. Statements are ingested as
-documents (PDFs belong in bronze) but are not a transaction source: the
-history reaches back further than the statement listing, so there is no
-older tail to reconstruct. Each statement's interest rate is read
-(statement_parser.py) into `statement_rates`.
+export can omit a pending or edge item the JSON carries, so it is never the
+source of record. Statements are ingested as documents (PDFs belong in
+bronze) but are not a transaction source: the JSON history is the ledger,
+and no older tail is rebuilt from statement PDFs. Each statement's interest
+rate is read (statement_parser.py) into `statement_rates`.
 
 Bronze run-dir layout consumed:
 
@@ -44,7 +43,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, pdftotext, silver, srcfp
+from collectorkit import bronze, cli, documents, pdftotext, silver, srcfp
 from collectorkit.money import parse_money
 from collectorkit.parse import date_in_name, epoch_day
 
@@ -297,11 +296,9 @@ def _insert_transaction(conn, account_external_id: str, tx: dict) -> None:
 
 def _insert_document(conn, snapshot_at: int, account_external_id: str,
                      pdf: Path) -> None:
-    sha, size = bronze.sha256_file(pdf)
-    doc_date = _statement_date_from_name(pdf.name)
-    silver.record_document(conn, (
-        sha, snapshot_at, account_external_id, doc_date, "statement", "pdf",
-        pdf.name, size, silver.canonical_json({"source_name": pdf.name})))
+    documents.record_pdf_document(
+        conn, snapshot_at, account_external_id, pdf,
+        doc_date=_statement_date_from_name(pdf.name))
 
 
 # The statement filename is the safe-stemmed cycle date, `MM-DD-YYYY.pdf`

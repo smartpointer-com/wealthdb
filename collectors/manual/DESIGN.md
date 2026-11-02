@@ -49,7 +49,7 @@ Because the CSVs *are* the source of truth (not a captured snapshot of a
 remote state), `load` **fully rebuilds** silver from the current CSVs each
 run, inside one transaction. Same CSVs in ⇒ same silver out. There are no
 timestamped bronze run-dirs and no per-dump idempotency gate — the model
-that fits a remote source that emits successive dumps doesn't apply to a
+that fits a remote source that emits successive dumps does not apply to a
 hand-edited spreadsheet.
 
 The fleet-wide **`prune`** verb follows from this shape. There are no run
@@ -246,7 +246,7 @@ correct at any historical date:
 - A `mortgage` is entered as a positive outstanding balance. The adapter
   negates its market and book value, so the liability nets against the
   property.
-- `quantity` = NULL — none of these are unit-denominated; they're valued by
+- `quantity` = NULL — none of these are unit-denominated; they are valued by
   amount (the way carta values a fund LP interest by NAV, not units).
 - `acquisition_date` = `acquired_at`.
 
@@ -281,7 +281,7 @@ sources' cash is invisible to everything else; manual's is not.
 
 **One exception — value that arrives from another tracked vehicle, not from a
 bank.** Another source can book a withdrawal whose value reappears here as a
-claim, with no bank in between: sale proceeds an agent holds back, for
+claim, with no bank in between: a receivable a third party holds, for
 example, as an `other`/`escrow` position. The position alone would make the
 returns engine read the arrival as performance — a mark stepping up with
 nothing to fund it — and a later release as a loss of the whole claim. The

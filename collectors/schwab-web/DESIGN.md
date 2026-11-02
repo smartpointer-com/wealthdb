@@ -8,7 +8,7 @@ This document is the contract between `schwab-web` and the
 column-level commentary in
 [migrations/0001_initial.sql](migrations/0001_initial.sql); read
 that file for the schema, this file for the inter-feed merge
-logic and for the issues gold has to bridge that aren't fixable
+logic and for the issues gold has to bridge that are not fixable
 in either silver alone.
 
 The companion silvers:
@@ -46,10 +46,10 @@ identifier spaces** and with **different field fidelity**. The
 gold layer is responsible for the alignment.
 
 The web silver is the **historical source of truth** for any
-date the API doesn't cover. From the API activation date forward,
+date the API does not cover. From the API activation date forward,
 the API silver wins (it has stable `activity_id`, structured
 positions, and dollar-accurate balances; the web silver has none
-of those without screen-scraping work that's lossy by nature).
+of those without screen-scraping work that is lossy by nature).
 
 ## 2. Identifier conventions
 
@@ -63,7 +63,7 @@ bridge them manually.
 | --- | --- | --- |
 | Value | Last-3-to-5-digit account suffix (e.g. `"NNN"`) | Schwab opaque `hashValue` (a long hex string) |
 | Source | `…NNN` text rendered next to the account name in the dropdown | `/accounts/accountNumbers` response |
-| Stable? | Yes (Schwab doesn't recycle suffixes within a profile) | Yes |
+| Stable? | Yes (Schwab does not recycle suffixes within a profile) | Yes |
 | Joinable across silvers? | **No** — see §4.1 |
 
 ### 2.2 `activity_id` (transactions table)
@@ -95,20 +95,16 @@ every export already held.
 
 ### 2.3 `instrument_key`
 
-Both silvers use the convention `CUSIP > ticker symbol`. In
-practice:
+Both silvers use the convention `CUSIP > ticker symbol`:
 
-- **api silver** consistently has CUSIP for fixed-income +
-  options + most equities (Schwab populates `cusip` on the
-  `instrument` sub-object); falls back to `symbol` for the few
-  asset classes Schwab leaves uncusiped (notably money-market
-  fund proxies).
-- **web silver** has whatever pdf_parsers picks out of the
-  statement PDF's activity rows — typically the ticker only.
-  CUSIP lives in the statement's holdings/positions block;
-  pdf_parsers extracts that block (`parse_positions` →
-  `historical_position_snapshots`), but those rows too usually
-  surface only the ticker.
+- **api silver** takes `cusip` from the `instrument` sub-object,
+  which Schwab populates for fixed income, options and most
+  equities. It falls back to `symbol` for an instrument Schwab
+  leaves without a CUSIP, such as a money-market fund proxy.
+- **web silver** takes the symbol a statement row leads with:
+  the ticker, or a CUSIP where the row leads with one. The
+  activity rows and the holdings block (`parse_positions` →
+  `historical_position_snapshots`) are keyed the same way.
 
 Gold can resolve `web.instrument_key` → CUSIP via api's
 `instruments` table by symbol match. Pre-API-coverage dates have
@@ -121,7 +117,7 @@ those rows.
 | --- | --- | --- |
 | `schema_meta` | `schema_meta` | Identical convention |
 | `dump_runs` | `dump_runs` | Identical convention; `snapshot_at` is the bronze dir's UTC timestamp on both |
-| `accounts` | `accounts` | Both promote `nickname`. api also has `account_type` / `preference_type`; web doesn't expose either. Different `account_external_id` value space — see §2.1 |
+| `accounts` | `accounts` | Both promote `nickname`. api also has `account_type` / `preference_type`; web does not expose either. Different `account_external_id` value space — see §2.1 |
 | `user_preference` | — | api-only |
 | `account_balances` | `historical_cash_balances` | api has live per-dump balances; web parses the monthly statement cash-flow summary (opening/closing) and the rate the cash earns (migration 0011; see §3.1) into `historical_cash_balances` |
 | `positions` | `historical_position_snapshots` | api has live per-dump positions; web parses the monthly/quarterly statement holdings block into `historical_position_snapshots` |
@@ -194,7 +190,7 @@ should:
      ∪ api.transactions  WHERE timestamp >= api_coverage_start
    ```
 3. Do NOT attempt per-row matching across the boundary — the web
-   parser can't reliably extract every field the api carries, and
+   parser cannot reliably extract every field the api carries, and
    per-row joins on (account, timestamp, amount, description)
    would have spurious matches and misses.
 
@@ -216,7 +212,7 @@ does NOT expose the IRS-level tax categorisation.
 with `source='form_1099b'` and in `closed_lots`. Gold reads them
 from `closed_lots` as realized lots; the statement and history
 feeds book the sales themselves ([INTEROP.md](INTEROP.md) §8). The
-api silver is NOT modified — the data simply isn't in the api.
+api silver is NOT modified — the data simply is not in the api.
 
 ### 4.4 Schwab regenerates PDFs per download — sha256 dedup is byte-level only
 
@@ -313,11 +309,11 @@ load: its positions plus its closing cash must equal the account value
 it prints. A statement that does not add up logs a warning, so a
 parser gap shows at load rather than in the returns built on the data.
 
-**Gold-layer recommendation**: don't try to interpolate
+**Gold-layer recommendation**: do not try to interpolate
 mid-year positions for pre-api dates. Mark gaps explicitly. The
 statement transactions feed gives ENOUGH activity context to
 recompute positions retroactively when needed,
-but that's a gold-layer derivation, not a silver one.
+but that is a gold-layer derivation, not a silver one.
 
 ## 5. What the merge needs from schwab-api
 
@@ -493,11 +489,11 @@ pypdfium2 extractor the statement parser uses.
 - **The per-row "More" detail pass runs by default; `--no-more-detail`
   opts out** — it adds one modal click per transaction, so an account
   with many transactions takes long, and `--no-more-detail` skips it
-  when that cost isn't warranted.
+  when that cost is not warranted.
 
 ## 8. `account_registration` column (migration 0003)
 
-Schwab's Trader API doesn't surface the per-account tax
+Schwab's Trader API does not surface the per-account tax
 wrapper (see `schwab-api/DESIGN.md` §4.10). The web feed
 does — every statement PDF prints the registration label at
 the top of page 1, adjacent to the account number. Migration
@@ -576,8 +572,8 @@ split.
 
 ### 8.3 Tax-form filename fallback
 
-For accounts whose statements don't yield a parseable
-registration (e.g. a brand-new account that hasn't received
+For accounts whose statements do not yield a parseable
+registration (e.g. a brand-new account that has not received
 its first monthly statement, or one in an unparseable layout
 era), the loader falls back to the documents table:
 

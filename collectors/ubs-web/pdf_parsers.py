@@ -2055,16 +2055,16 @@ def _stmt_dmy_to_unix(dmy: str | None) -> int | None:
 # columns that extract_text merges into one printed line ("Herr IBAN
 # CH00 ...") — which is what the IBAN scan below allows for.
 #
-# Not every document UBS labels an advice is a payment advice: a
-# mortgage interest settlement and a safe-deposit-box rental bill
-# carry the same label and a different layout altogether. They print
+# Not every document UBS labels an advice is a payment advice: other
+# bank notices, such as an interest settlement or a fee bill, carry
+# the same label and a different layout altogether. They print
 # no TRX-No., so the absence of one is what rejects them — a
 # document that does not state the id its row would be keyed by is
 # not a movement this parser can place.
 
 # "Credit Advice" / "Debit Advice" / "Debit advice" — the headline is the
 # only place the document says which way the money went, so the match has
-# to survive the casing UBS varies within one archive. The optional tail is
+# to survive the casing UBS varies between advices. The optional tail is
 # the production date, which the header sets in a column of its own: whether
 # the two arrive as one printed line depends on how the page's columns
 # resolve, and a direction lost to a merged line would drop the movement

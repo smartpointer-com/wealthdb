@@ -1,6 +1,6 @@
 # ubs-psn: Design notes for downstream consumers
 
-This document captures decisions and contracts that aren't obvious from
+This document captures decisions and contracts that are not obvious from
 the operational README — primarily for engineers writing adapters
 against this repo's silver schema, such as the `wealthdb` gold-layer
 adapter. The README covers how to run the tools; this document covers
@@ -11,7 +11,7 @@ what the silver data does and does not contain, and why.
 What the silver carries: each `cash_accounts` /
 `safekeeping_accounts` row promotes the UBS product code in its
 `payload.AcctTpCd` / `AcctTpDesc` fields. This section records what
-those values do and don't reveal about pension assets. How gold
+those values do and do not reveal about pension assets. How gold
 interprets these columns is owned by the wealthdb UBS adapter — see
 [the adapter doc](../../wealthdb/docs/adapters/ubs.md).
 
@@ -20,10 +20,9 @@ interprets these columns is owned by the wealthdb UBS adapter — see
 PSN is a private-banking custody/cash feed. Swiss pension assets
 typically live in legally separate entities from a private-banking
 relationship, so they are structurally unlikely to surface in this
-feed regardless of a given customer's holdings. A PSN feed without
-pension accounts would not, on its own, establish that PSN *would*
-surface them if they existed — they may simply never fall within
-PSN's scope:
+feed regardless of a given customer's holdings. A PSN feed that
+carries no pension rows cannot, on its own, show whether PSN would
+surface them. They may simply never fall within PSN's scope:
 
 - **Pillar 2 (BVG / LPP):** the employer's *Personalvorsorgekasse* /
   *Pensionskasse* — a foundation distinct from UBS AG.
@@ -96,7 +95,7 @@ processed.
 ## 5. What silver deliberately omits
 
 Where the gold-layer adapter should not look for data because silver
-doesn't try to surface it:
+does not try to surface it:
 
 - **MT950 (`ZAY.zip`).** Bank-to-bank statement format; a duplicate of
   MT940 for the same accounts in a retail PSN setup. Bronze
@@ -126,7 +125,7 @@ the operationally-correct response is:
    re-ingests all bronze.
 
 `dump_runs.snapshot_at` (= the dump-directory timestamp) provides
-idempotency on re-runs that don't change loader semantics, but for
+idempotency on re-runs that do not change loader semantics, but for
 loader-semantics changes a wipe is the only consistent path.
 
 ## 7. Bronze layout and pruning

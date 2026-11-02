@@ -416,11 +416,7 @@ def scan_bronze(bronze_dir):
 
 
 def already_loaded(conn, dump_dir):
-    snapshot_at = ts_from_dir(dump_dir.name)
-    cur = conn.execute(
-        "SELECT 1 FROM dump_runs WHERE snapshot_at = ?", (snapshot_at,),
-    )
-    return cur.fetchone() is not None
+    return silver.snapshot_loaded(conn, ts_from_dir(dump_dir.name))
 
 
 # ============================================================
@@ -1603,8 +1599,8 @@ def _positions_completeness_gate(dump_dir, run_meta, merged):
     rows, not snapshots). See DESIGN.md §12.3.
 
     Partiality signals:
-      * mode='daf' — the retired DAF-only mode; such legacy dumps
-        cover a single account and are partial by construction.
+      * mode='daf' — the retired DAF-only mode; such a legacy dump
+        runs no retail phase, so it is partial by construction.
       * daf_results.status='error', or an error in its per_account
         map — the walk expected a DAF (the account selector
         enumerated one) but the charitable phase, or one giving
@@ -2447,10 +2443,10 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, *,
 _ACTIVITY_MATCH_WINDOW = 3 * 86400
 
 # A fee is the exception. The statement dates it when it is assessed and the
-# feed when the cash is debited, and on a managed account the debit can trail
-# it by more than a week. Two different fees of one signed amount, to the cent, on
-# one account inside two weeks are rare enough that the one-to-one claim
-# settles them.
+# feed when the cash is debited, so the two can sit further apart than other
+# payments, and the window is wider for that reason. Two different fees of one
+# signed amount, to the cent, on one account inside the window are left to the
+# one-to-one claim to settle.
 _FEE_MATCH_WINDOW = 14 * 86400
 
 
@@ -2461,10 +2457,9 @@ class _FeedClaims:
     Without it the match is many-to-one: two statement rows sharing an
     account, an amount and the window both resolve to the single feed
     row that carries one of them, and the other payment is dropped with
-    nothing in the log to say so. The shape is not hypothetical: two
-    payments can share an account, a day and an amount and still be
-    different payments, telling apart only by a reference and a payee
-    the scraped feed does not carry.
+    nothing in the log to say so. Two payments can share an account, a
+    day and an amount and still be different payments, telling apart
+    only by a reference and a payee the scraped feed does not carry.
 
     Only rows the feed ABSORBED are recorded. A row that found no feed
     match is simply inserted, and its id converges on a re-sighting
@@ -3040,14 +3035,15 @@ def _load_consolidated_1099s(conn, dumps, *, rederive=False, coord=None):
 
 
 # Default portfolio + management classification for an account
-# synthesised from supplied historical statements. The defaults are
-# the `Authorized` group's: `_load_master` maps that selector label
-# to portfolios.kind = 'trust_managed', and the gold adapter
-# promotes the kind to TaxWrapperTrustNonGrantor +
-# ManagementStyleDiscretionary. The synthesised row pre-fills the
-# same shape, so an account that no live download returns still
-# rolls up under that portfolio and wrapper. Groups the web document
-# center serves statements for need no synthesis.
+# synthesised from supplied historical statements. Supplied
+# statements stand in for the web document center, which may serve
+# no statement PDFs for the `Authorized` group (DESIGN.md §4.5), so
+# the defaults are that group's: `_load_master` maps the selector
+# label to portfolios.kind = 'trust_managed', and the gold adapter
+# maps the kind to its wrapper and management style. The synthesised
+# row pre-fills the same shape, so the account rolls up under that
+# portfolio. Groups the web document center serves statements for
+# need no synthesis.
 _SUPPLIED_SYNTHETIC_PORTFOLIO = "Authorized"
 _SUPPLIED_SYNTHETIC_KIND = "trust_managed"
 _SUPPLIED_SYNTHETIC_MANAGEMENT = "discretionary"

@@ -2,7 +2,7 @@
 # extra toolchain.
 pytest>=8,<9
 
-schwab-py>=1.5
+schwab-py>=1.5,<2
 
 # download.py zstd-compresses each bronze JSON artefact as it lands
 # (accounts_positions.json → accounts_positions.json.zst) via

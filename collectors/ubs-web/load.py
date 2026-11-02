@@ -110,11 +110,12 @@ _DOCUMENT_PASS_DELETES = (
 )
 
 # The `doc_type` spellings of the per-movement payment advices. UBS labels
-# them inconsistently — one archive holds both 'Debit Advice' and 'Debit
-# advice' — so the match is case-folded and the next casing it invents still
-# routes. 'UBS Advice' (a fee the bank bills itself) and 'Advice _ Statement'
-# (a securities confirmation) are deliberately NOT in the set: neither is a
-# payment, and neither carries the movement block this pass reads.
+# them inconsistently — the same advice type appears as 'Debit Advice' and
+# 'Debit advice' — so the match is case-folded and the next casing it
+# invents still routes. 'UBS Advice' (a fee the bank bills itself) and
+# 'Advice _ Statement' (a securities confirmation) are deliberately NOT in
+# the set: neither is a payment, and neither carries the movement block
+# this pass reads.
 ADVICE_DOC_TYPES = frozenset({"credit advice", "debit advice"})
 
 # The `doc_type`s that carry a securities advice: what a holding was
@@ -280,11 +281,7 @@ def loadable_dumps(dumps: list[Path]) -> list[Path]:
 
 
 def already_loaded(conn: sqlite3.Connection, dump_dir: Path) -> bool:
-    snapshot_at = ts_from_dir(dump_dir.name)
-    cur = conn.execute(
-        "SELECT 1 FROM dump_runs WHERE snapshot_at = ?", (snapshot_at,),
-    )
-    return cur.fetchone() is not None
+    return silver.snapshot_loaded(conn, ts_from_dir(dump_dir.name))
 
 
 # ============================================================
@@ -2337,9 +2334,9 @@ def _insert_advice_transactions(conn: sqlite3.Connection, snapshot_at: int,
     Why the key is not enough on its own. Against the STATEMENT era the same
     argument runs backwards: a statement row is keyed by a minted `stmt:`
     hash, so the very movement an advice states can already sit on the same
-    account under an id the primary key can never collide with — and most of
-    the archive is exactly that, an advice issued for a payment the account's
-    own statement went on to print in its ledger. Inserting there does not
+    account under an id the primary key can never collide with. An advice
+    issued for a payment the account's own statement goes on to print in its
+    ledger is exactly that case. Inserting there does not
     fill a hole, it books the payment a second time, which is the phantom
     flow this whole path exists to remove. So before an advice is written the
     movement is looked for by its CONTENT (`_advice_already_recorded`), and
@@ -2421,8 +2418,8 @@ def _advice_already_recorded(conn: sqlite3.Connection, account: str,
 
     `claimed` names the rows earlier advices in this pass already matched or
     wrote, so one row can excuse only one advice: two genuinely distinct
-    payments of the same amount, on one account, on one day are a shape the
-    archive really holds (an FX leg and a same-currency leg landing
+    payments of the same amount, on one account, on one day are a shape an
+    archive can hold (for example an FX leg and a same-currency leg landing
     together), and the second of them must still be written."""
     amount = r.get("amount_debit")
     outbound = amount is not None

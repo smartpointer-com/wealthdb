@@ -113,11 +113,11 @@ via the flows above).
   it at 0700; treat the whole dir as a credential.
 - Device-trust does not buy a 2FA skip — every sign-in is challenged
   (DESIGN.md §F) — but the profile does hold a device token, and losing
-  it narrows the factors Chase offers to push only (DESIGN.md §A). So don't
+  it narrows the factors Chase offers to push only (DESIGN.md §A). So do not
   invalidate it without cause: `--fresh` wipes the profile deliberately
   (to capture the first-login flow); never add a routine fresh-login
   pattern.
-- Don't log out programmatically at the end of any verb.
+- Do not log out programmatically at the end of any verb.
 
 ## 3. Never weaken authentication
 

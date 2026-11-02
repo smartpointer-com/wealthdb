@@ -332,10 +332,7 @@ def discover_bronze_runs(bronze_dir: Path) -> list[Path]:
 
 
 def already_loaded(conn: sqlite3.Connection, snapshot_at: int) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM dump_runs WHERE snapshot_at = ?", (snapshot_at,),
-    ).fetchone()
-    return row is not None
+    return silver.snapshot_loaded(conn, snapshot_at)
 
 
 def _doc_kind(doc: dict) -> str:

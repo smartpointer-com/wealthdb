@@ -501,11 +501,12 @@ Read from the `user_good` test Item at First Platypus Bank.
 - **The stamp moves.** `status.investments.last_successful_update` has
   moved by the first `/item/get` after the 200.
 
-## 8. Open questions
+## 8. Known limits
 
-1. Does Plaid keep an account's id from one run to the next? A new id
-   would read in gold as one account closed and another opened.
-2. Does `/item/get` show a renewed Item as healthy at once after update
-   mode?
-3. How long after a link does `/transactions/sync` report
-   `HISTORICAL_UPDATE_COMPLETE`?
+1. Whether Plaid keeps an account's id from one run to the next is
+   unverified. A new id would read in gold as one account closed and
+   another opened.
+2. Whether `/item/get` shows a renewed Item as healthy at once after
+   update mode is unverified.
+3. How long after a link `/transactions/sync` reports
+   `HISTORICAL_UPDATE_COMPLETE` is unmeasured.

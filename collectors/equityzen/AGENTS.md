@@ -47,7 +47,7 @@ Allowed — only these surfaces may be navigated, clicked, or queried:
 - Document-download endpoints (K-1-equivalent / statement PDFs + zip
   bundles) reachable via the session cookie, fetched through Playwright's
   authenticated request API.
-- Logout (optional; not required between runs — and see §2, don't).
+- Logout (optional; not required between runs — and see §2, do not).
 
 Forbidden — do not navigate to, click, query, or mutate:
 
@@ -91,10 +91,10 @@ and move money via the flows above). EquityZen 2FA is **TOTP-only** with
 log the account out — so the session cookie carried in the profile dir
 stays valid across runs until an explicit logout or a server-side expiry.
 
-- Don't add a routine "fresh login per N runs" pattern — re-mint only when
+- Do not add a routine "fresh login per N runs" pattern — re-mint only when
   the session genuinely expires. Each fresh login fires a real TOTP
   challenge to the user's authenticator.
-- Don't log out programmatically at the end of any verb.
+- Do not log out programmatically at the end of any verb.
 - `/secrets/equityzen-profile/` is the persistent Camoufox profile dir,
   shared by `explore` / `login` / `download`. It holds the session cookie.
   Keep it at 0700; treat the whole dir as a credential.

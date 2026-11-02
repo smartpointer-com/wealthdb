@@ -27,7 +27,7 @@ The companion silvers, by path:
 Both silvers expose the same logical entities (accounts, portfolios,
 positions, transactions) plus a few feed-specific extras. The web
 silver is the **historical source of truth** (it carries multi-year
-data PSN can't); PSN takes over from its activation date forward.
+data PSN cannot); PSN takes over from its activation date forward.
 The two feeds splice on a per-relationship cutover date: web before
 it, PSN after it. Documents (PDFs) are web-only — PSN has no
 equivalent.
@@ -45,7 +45,7 @@ defines every identifier. Recap of the cross-silver join keys:
 
 | Entity | Web silver | PSN silver | Join condition |
 | --- | --- | --- | --- |
-| Banking relationship | `banking_relationship_id` (UBS opaque token), plus `account_number_prefix` (e.g. `BBBB AAAAAAAA`) and `description` | `relationship_id` (`SFTPCH01` / `SFTPCH02`, the SFTP server name) | **Manual config required** — there is no shared key. See §3.1. |
+| Banking relationship | `banking_relationship_id` (UBS opaque token), plus `account_number_prefix` (e.g. `BBBB AAAAAAAA`) and `description` | `relationship_id` (the SFTP server name, e.g. `SFTPCH01`) | **Manual config required** — there is no shared key. See §3.1. |
 | Portfolio | `portfolio_external_id` (e.g. `RNNN`) + `base_currency` (e.g. `CHF`, from positions.csv "Valued in:" footer) | `portfolio_external_id` (= UBS `PrtflId`) + `PrtflKey.PrtflCcyIsoCd` in payload | Equality on `portfolio_external_id` |
 | Cash account | `account_external_id` = IBAN no-spaces uppercase (e.g. `CHKKBBBBRRRRAAAAAAAAC`); plus parallel `account_acct_id_psn_form` (e.g. `RRRR000000AAAAAAAA0000C`) computed by the web loader | `account_external_id` = IBAN per `psn/migrations/0001` comment; the PSN payload also has UBS `AcctId` in the 21-char form | Equality on `account_external_id` (IBAN) OR equality on `account_acct_id_psn_form` ↔ PSN payload `AcctId`. Either works. |
 | Safekeeping account | Not surfaced by the web feed (§3.4) | `account_external_id` = UBS safekeeping code (e.g. `BBBB-AAAAAAAA.S1`) | PSN only. |
@@ -62,8 +62,8 @@ see [the adapter doc](../../wealthdb/docs/adapters/ubs.md).
 ### 3.1 Banking relationships
 
 An e-banking login can hold 1+ banking relationships.
-PSN sees each as a separate SFTP endpoint (`SFTPCH01`, `SFTPCH02`,
-…). Web sees each as an opaque `bankingRelationId` URL token.
+PSN sees each as a separate SFTP endpoint, named like `SFTPCH01`.
+Web sees each as an opaque `bankingRelationId` URL token.
 
 **There is no shared key**, only proxies the silver surfaces:
 
@@ -100,7 +100,7 @@ hang off cash and safekeeping accounts.
    anchors enumerated from the homepage.
 2. **A synthetic catch-all portfolio** that the consolidated
    default view (`positions.csv`, the `preselectFirstPortfolio
-   =true` route) uses to file accounts that aren't attached to
+   =true` route) uses to file accounts that are not attached to
    any real portfolio. The web loader processes per-portfolio
    CSVs first, then the consolidated CSV, and only inserts
    accounts + positions for `(account, isin)` pairs not yet seen.
@@ -158,7 +158,7 @@ The web loader computes `account_acct_id_psn_form` from the IBAN
 and stores it as a parallel column, so both the IBAN and the
 21-char AcctId form are present in both silvers.
 
-#### Accounts PSN sees but web doesn't
+#### Accounts PSN sees but web does not
 
 PSN can report internal UBS booking accounts that the customer UI
 does not expose. The web feed has no rows for them at all —
@@ -339,9 +339,9 @@ distinguishes it is its payload, which carries `document` =
 document-generation purge deletes on, so advice rows re-derive when the
 parser moves without the delete reaching an export row.
 
-Not every document UBS labels an advice is a payment — a mortgage
-interest settlement and a safe-deposit-box rental bill wear the same
-label — and neither prints a TRX-No. The absence of one is what rejects
+Not every document UBS labels an advice is a payment. Other bank
+notices, such as an interest settlement or a fee bill, wear the same
+label, and none prints a TRX-No. The absence of one is what rejects
 them: a document that does not state the id its row would be keyed by
 is not a movement the parser can place, and stays in the `documents`
 catalog alone.
@@ -591,7 +591,7 @@ in §3.6):
 
 | Table | Source PDF type | Granularity |
 | --- | --- | --- |
-| `historical_position_snapshots` | "Statement of assets" PDFs (semi-annual, sometimes quarterly) | One row per `(as_of_date, portfolio, account, ISIN)`. Cash positions have `instrument_isin = NULL` and a populated `account_external_id` (IBAN); securities have `instrument_isin` set and `account_external_id = ''` (UBS doesn't surface the safekeeping account in the printed text in a way we can extract). |
+| `historical_position_snapshots` | "Statement of assets" PDFs (semi-annual, sometimes quarterly) | One row per `(as_of_date, portfolio, account, ISIN)`. Cash positions have `instrument_isin = NULL` and a populated `account_external_id` (IBAN); securities have `instrument_isin` set and `account_external_id = ''` (UBS does not surface the safekeeping account in the printed text in a way we can extract). |
 | `historical_cash_balances` | "Account Statement" PDFs (monthly) | One row per `(period_end, account_external_id)` with opening / closing balance + turnover totals. UBS only issues an Account Statement for a given month when the account had activity in that month, so coverage is uneven; year-end months tend to cover the full account inventory. |
 | `historical_mortgages` | "Maturity notice" PDFs (one per fixed-rate / SARON interest-roll period, typically quarterly) | One row per `(as_of_date, account_external_id)` with the outstanding principal (negated to liability sign), the product line → rate type, and the collateral description (migration 0005). |
 
@@ -706,7 +706,7 @@ tables.** Two reasons:
    against PSN's `PrtflId`. The live-fetch `portfolios` table uses
    4-char UBS-internal codes (e.g. `RNNN`, `NNNN`) which are a different
    surface. Putting them in one table would require either a
-   mapping that doesn't exist in either source, or a `source`
+   mapping that does not exist in either source, or a `source`
    column that gold would still have to filter on every query.
 2. **Cadence + authority differ.** PDFs are bank-of-record end-
    of-period snapshots, semi-annual at best for positions. Live
@@ -731,8 +731,9 @@ re-lists the whole archive on every dump, so the loader deletes the row
 a cash line is about to replace, as the key would if NULLs compared
 equal. Migration 0011 collapses byte-identical copies already stored.
 The cash rows stay even though the gold adapter reads cash from
-`historical_cash_balances`: most carry a quarter-end date that series
-has no row for, so those observations exist nowhere else.
+`historical_cash_balances`: a statement of assets can carry a
+quarter-end date that series has no row for, and such an observation
+exists nowhere else.
 
 **Known parser limitations.** The parsers in
 [pdf_parsers.py](pdf_parsers.py) are best-effort:
@@ -745,7 +746,7 @@ has no row for, so those observations exist nowhere else.
   description column on the printed page). The IBAN, currency,
   and market value are reliable.
 - UBS only issues Account Statements for months with activity,
-  so missing months don't imply missing balances — the closing
+  so missing months do not imply missing balances — the closing
   balance from the most recent prior month is still valid until
   the next statement.
 - Within a row, individual numeric columns may be NULL even when

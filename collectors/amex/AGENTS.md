@@ -164,7 +164,7 @@ redeem rewards via the flows above).
   lets `download` run unattended. It survives a browser restart (~396-day
   `Max-Age`) and skips the passcode. The session cookies die with the
   browser every time (DESIGN.md §G). Losing the profile costs a real
-  passcode at the user's device, so don't invalidate it without cause:
+  passcode at the user's device, so do not invalidate it without cause:
   - `download --fresh` moves the profile aside to exercise the
     untrusted-device flow. `vnc-login --fresh` is the same code path.
   - `explore --fresh` deletes the profile outright.
@@ -173,7 +173,7 @@ redeem rewards via the flows above).
   are `Discard`-scoped by the provider and the server holds its own state;
   working around that is the "no cleverness in auth flows" rule, and a
   password-only logon is unattended anyway.
-- Don't log out programmatically at the end of any verb.
+- Do not log out programmatically at the end of any verb.
 
 ## 3. Never weaken authentication
 

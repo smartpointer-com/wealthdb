@@ -175,10 +175,9 @@ STMT_DATE_CELL = "#accountsTable-STATEMENTS-row{n}-cell0"
 # whose clickable target is the icon inside it.
 STMT_DOWNLOAD_ANCHOR = ("#icon-accountsTable-STATEMENTS-row{n}-cell3"
                         "-requestThisDocumentLink-download")
-# The legacy shape: a per-row dropdown, then a "Save as PDF" item. It appears
-# in NONE of the card-exploration DOM snapshots — but that session never opened
-# the deposit documents view, so whether the anchor is a card-only shape or a
-# global change that already replaced the dropdown everywhere is unverified.
+# The legacy shape: a per-row dropdown, then a "Save as PDF" item. The card
+# documents view offers the anchor; whether the deposit documents view still
+# offers the dropdown, or the anchor replaced it everywhere, is unverified.
 # Neither may be assumed, so both are coded and the anchor is preferred.
 STMT_DOWNLOAD_TRIGGER = ("#header-accountsTable-STATEMENTS-row{n}-cell3"
                          "-downloadDocumentDropdown")
@@ -192,7 +191,8 @@ STMT_PDF_OPTION = "#item-0-{n}-downloadPDFOption"
 def safe_stem(ext_id: str) -> str:
     """A filesystem-safe stem for an account's export files. The external id
     is Chase-generated but treated as untrusted: keep word chars, collapse
-    the rest to '_'."""
+    the rest to '_'. Deliberately separate from `bronze.safe_stem`: its
+    stems name existing bronze folders."""
     stem = re.sub(r"[^0-9A-Za-z._-]+", "_", str(ext_id)).strip("_")
     return stem or "account"
 
@@ -471,12 +471,11 @@ def statement_click_paths(n: int) -> list[list[str]]:
     preference order; each is clicked in turn and the download fires on the
     LAST click of a sequence.
 
-    Two shapes are coded because only one of them is evidenced. The card
-    documents view offers a direct download anchor per row; the legacy
-    dropdown + "Save as PDF" item that the deposit path was built on appears
-    nowhere in the card capture — but that session never opened the deposit
-    documents view, so whether the anchor replaced the dropdown everywhere or
-    only on cards is unverified, and neither shape may be assumed gone."""
+    Two shapes are coded. The card documents view offers a direct
+    download anchor per row; the deposit path was built on the legacy
+    dropdown + "Save as PDF" item.
+    Whether the anchor replaced the dropdown everywhere or only on cards is
+    unverified, so neither shape may be assumed gone."""
     return [
         [STMT_DOWNLOAD_ANCHOR.format(n=n)],
         [STMT_DOWNLOAD_TRIGGER.format(n=n), STMT_PDF_OPTION.format(n=n)],
@@ -689,7 +688,8 @@ def walk(page, bronze_dir: Path, *, since: date | None = None,
         if dry_run:
             log.info("  [dry-run] would export %s for %s",
                      "+".join(f.upper() for f in EXPORT_FORMATS),
-                     acct.get("mask") or acct["account_external_id"])
+                     acct.get("mask")
+                     or bronze.log_id(acct["account_external_id"]))
             continue
         got = _export_account(page, acct, run_dir, nav_timeout_ms)
         counts["transactions_files"] += got
@@ -839,7 +839,7 @@ def _export_account(page, acct: dict, run_dir: Path, timeout_ms: int) -> int:
                      acct.get("mask") or bronze.log_id(ext))
         except Exception as exc:
             log.warning("  %s export failed for %s: %r", fmt,
-                        acct.get("mask") or ext, exc)
+                        acct.get("mask") or bronze.log_id(ext), exc)
     return got
 
 
@@ -928,7 +928,7 @@ def _download_card_statements(page, cards, captured_bodies: list,
     saved, covered = 0, 0
     for card in cards:
         ext = card["account_external_id"]
-        label = card.get("mask") or ext
+        label = card.get("mask") or bronze.log_id(ext)
         # The documents menu says which accounts carry statements at all; skip
         # a card it lists without them rather than paging an empty table. Read
         # per card, not once: the menu is fetched by the first navigation into

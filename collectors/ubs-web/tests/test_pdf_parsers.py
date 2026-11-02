@@ -1651,19 +1651,19 @@ _ADV_TWO_COLUMN_TEXT = (
     "Val. 02.01.2020\n"
 )
 
-# A safe-deposit-box rental bill. UBS labels it a Debit Advice and it
+# A service fee bill. UBS labels it a Debit Advice and it
 # is not a payment: no transaction number, and its total is printed in
 # a shape of its own.
-_ADV_SAFE_BOX_TEXT = (
+_ADV_FEE_BILL_TEXT = (
     "aUBS UBS Switzerland AG\n"
-    "UBS safe deposit box\n"
-    "Herr Box no. 000-00-000\n"
+    "UBS service fee\n"
+    "Herr Reference no. 000-00-000\n"
     "A. Example u/o Client no. 000-000000\n"
     "B. Example\n"
     "Account no. 000-000000.001\n"
     "Debit Advice\n"
     "Produced on 4 January 2020\n"
-    "Rental fee from 01.01.2020 to 31.12.2020 CHF 11.11\n"
+    "Service fee from 01.01.2020 to 31.12.2020 CHF 11.11\n"
     "Total CHF 11.11\n"
     "0.00 % VAT (on CHF 11.11) CHF 2.22\n"
     "Total Val. 03.01.2020 CHF 13.33\n"
@@ -1810,7 +1810,7 @@ class TestPaymentAdvice:
         # Both wear an advice label and neither is a movement: a
         # document that does not state the id its row would be keyed by
         # cannot be placed, and is left to the documents catalog alone.
-        assert parse_payment_advice_text(_ADV_SAFE_BOX_TEXT, "t") == []
+        assert parse_payment_advice_text(_ADV_FEE_BILL_TEXT, "t") == []
         assert parse_payment_advice_text(_ADV_MORTGAGE_TEXT, "t") == []
 
 

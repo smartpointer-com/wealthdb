@@ -1,13 +1,11 @@
-"""maybe_source_env_files' explicit-path guard: a named env file that does
-not exist stops the run, and one that does is the file sourced, with the
-credential keys overriding the environment. The candidate search is
-collectorkit.envfile.source_first_env_file, tested there. Synthetic
+"""maybe_source_env_files' wiring: a named env file is the file sourced,
+with the credential keys overriding the environment. The candidate search
+and the exit on a missing named file are
+collectorkit.envfile.source_first_env_file's, tested there. Synthetic
 fixtures only."""
 import argparse
 import sys
 from pathlib import Path
-
-import pytest
 
 from collectorkit import envfile
 
@@ -27,13 +25,6 @@ def _record_loads(monkeypatch):
         lambda p, override_vars, *, logger, warn_on_override=False:
             loaded.append((Path(p), tuple(override_vars), warn_on_override)))
     return loaded
-
-
-def test_explicit_missing_raises(tmp_path, monkeypatch):
-    loaded = _record_loads(monkeypatch)
-    with pytest.raises(SystemExit):
-        login.maybe_source_env_files(_args(tmp_path / "nope.env"))
-    assert loaded == []
 
 
 def test_explicit_existing_loads_it(tmp_path, monkeypatch):

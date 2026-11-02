@@ -7,6 +7,10 @@ provider's document id and its metadata ride along, and ``bronze_path``
 points at the newest copy (relative to the bronze root, so the row
 resolves inside a container and on the host alike). This module writes
 that index; the columns beyond the shared ones are the collector's.
+
+A statement collector whose ``documents`` table has the shared
+:data:`silver.DOCUMENT_COLUMNS` instead records each PDF with
+:func:`record_pdf_document`.
 """
 from __future__ import annotations
 
@@ -15,7 +19,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import bronze
+from . import bronze, silver
 from .silver import canonical_json
 
 
@@ -96,3 +100,22 @@ def index_documents(
         )
         counts.inserted += 1
     return counts
+
+
+def record_pdf_document(
+    conn: sqlite3.Connection,
+    snapshot_at: int,
+    account_external_id: str,
+    pdf: Path,
+    *,
+    doc_date: int | None,
+    kind: str = "statement",
+) -> bool:
+    """Record one downloaded PDF as a :data:`silver.DOCUMENT_COLUMNS` row,
+    keyed by its sha256, with the file name as the payload's
+    ``source_name``. The collector supplies the date and kind it reads
+    from the name. True when the row is new."""
+    sha, size = bronze.sha256_file(pdf)
+    return silver.record_document(conn, (
+        sha, snapshot_at, account_external_id, doc_date, kind, "pdf",
+        pdf.name, size, canonical_json({"source_name": pdf.name})))

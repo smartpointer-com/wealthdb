@@ -42,7 +42,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, silver, srcfp
+from collectorkit import bronze, cli, documents, silver, srcfp
 from collectorkit.money import parse_money
 from collectorkit.parse import date_in_name, epoch_day
 
@@ -449,12 +449,11 @@ def _insert_statement_balance(conn, snapshot_at: int,
 
 def _insert_document(conn, snapshot_at: int, account_external_id: str,
                      pdf: Path) -> None:
-    sha, size = bronze.sha256_file(pdf)
     kind = ("year_end_summary" if pdf.name.startswith(_YEAR_SUMMARY_PREFIX)
             else "statement")
-    silver.record_document(conn, (
-        sha, snapshot_at, account_external_id, document_date(pdf.name), kind,
-        "pdf", pdf.name, size, silver.canonical_json({"source_name": pdf.name})))
+    documents.record_pdf_document(
+        conn, snapshot_at, account_external_id, pdf,
+        doc_date=document_date(pdf.name), kind=kind)
 
 
 # A statement PDF is filed under its safe-stemmed cycle end date

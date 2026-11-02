@@ -207,7 +207,7 @@ bisecting the request window:
 | Documents list (`#/documents/bank-documents`) | 999 rows displayed | Banner "Not all documents are displayed right now" | `_walk_window` bisects `[--lookback..today]` recursively until each leaf window has < 999 docs |
 | Transaction export, CSV and MT940 | 1000 transactions | MT940: an info-only dialog "A maximum of 1000 transactions can be exported" with no Export button. CSV: a dialog instead of a file | `_export_with_split` reads the rendered transaction count for the window; above 1000 it bisects and writes one file per leaf window, named `cash_<sha256-prefix>_<yyyymmdd>_<yyyymmdd>.<csv\|mt940>` |
 
-Both bisections cap at `WINDOW_MAX_DEPTH = 20` and won't sub-divide
+Both bisections cap at `WINDOW_MAX_DEPTH = 20` and will not sub-divide
 below `WINDOW_MIN_DAYS = 1`.
 
 ### Bronze layout

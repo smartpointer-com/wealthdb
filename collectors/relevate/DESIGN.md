@@ -24,7 +24,7 @@ Sections:
 8. [Identity strategy](#8-identity-strategy)
 9. [Container + wrapper architecture](#9-container--wrapper-architecture)
 10. [Out of scope](#10-out-of-scope)
-11. [Open questions](#11-open-questions)
+11. [Known limits](#11-known-limits)
 
 ---
 
@@ -661,7 +661,7 @@ Each `positions` row carries an `asset_class` label (from
 same bronze is a no-op (the `dump_runs.snapshot_at` PK is the
 idempotency anchor).
 
-### 7.3 What's deliberately NOT a table
+### 7.3 What is deliberately NOT a table
 
 - **`fx_rates`**: portfolios are CHF-denominated, and `currentValue`
   comes back in `currency.currencyCode = "CHF"`.
@@ -757,29 +757,26 @@ authentication and privacy rules are in the root
 - Account numbers have the shape `NNNN.NNNNNN.N`, and AHV numbers
   `756.NNNN.NNNN.NN`. Neither belongs in a tracked file.
 
-## 11. Open questions
+## 11. Known limits
 
 1. **Session TTL.** Airlock typically defaults to 30 min idle
    / 8 h absolute, and its device-trust cookie to about 30 days.
-   The real values can be measured by running `login.py --check`
-   periodically after a fresh login and noting when it flips to DEAD.
+   The real values are unmeasured.
 2. **Session renewal.** No `/refresh` endpoint appears on the
    wire, but the SPA may issue keepalives that have not been
-   captured. An idle-extending call that needs no fresh mTAN would
-   let a session live longer.
-3. **`documentType` + `category` enum mapping.** Labels could be
-   derived by correlating the numeric codes with `fileName`
-   patterns, or from a config endpoint that exposes the mapping.
+   captured.
+3. **`documentType` + `category` enum mapping.** The numeric codes
+   carry no labels, and no mapping for them is known.
 4. **Pillar 3a presence.** The SPA has a `/dashboard/3a/depots`
-   route. Unconfirmed: whether `investment-overview` lists 3a
-   portfolios, or whether they need a separate endpoint.
+   route. Whether `investment-overview` lists 3a portfolios, or
+   whether they need a separate endpoint, is unverified.
 5. **Actual unit holdings.** Modelportfolio gives the target
    allocation; investment-overview gives the total `currentValue`.
    No endpoint returning the actual units held (e.g. `/positions`,
-   `/holdings`) is known. Until one is, live `positions` holds
-   target allocations, and actual units come only from the
-   quarterly reports.
-6. **OTP retry behaviour.** Does Airlock invalidate the mTAN after
-   one bad guess, or accept the next attempt? `login.py` allows 3
-   attempts plus `resend`; whether a typo can be corrected before
-   the session locks is unverified.
+   `/holdings`) is known. Live `positions` holds target
+   allocations, and actual units come only from the quarterly
+   reports.
+6. **OTP retry behaviour.** Whether Airlock invalidates the mTAN
+   after one bad guess, or accepts the next attempt, is unverified.
+   `login.py` allows 3 attempts plus `resend`. Whether a typo can be
+   corrected before the session locks is unverified too.

@@ -28,7 +28,7 @@ the per-source carry-forward (see [DESIGN.md](DESIGN.md)). The
 migrations, and MUST stay schema-compatible with that gold adapter: a
 fidelity-web migration that changes a shape svb writes or the adapter reads has
 to be copied here, while one that touches neither needs no copy (DESIGN.md
-§Pieces lists the current exceptions). Keep those in lockstep, don't let them
+§Pieces lists the current exceptions). Keep those in lockstep, do not let them
 drift.
 
 ## Two extraction stacks, one of them OCR
@@ -64,7 +64,7 @@ serial, every row a real month-end value. None of that may ever reach a tracked 
 comments, not commit messages, not test fixtures. All three inputs live
 **only** under `$XDG_DATA_HOME/wealthdb/svb/` (outside the repo); the PDFs, the
 workbook and the derived `*.db` files are git-ignored as a backstop, but the
-primary rule is **don't author repo content from real statements**.
+primary rule is **do not author repo content from real statements**.
 
 **Synthetic placeholders only**, exactly as in the tests: all-zero account
 serials — the `SV[MRT]-NNNNNN` shape for brokerage, all-zero 10-digit serials
@@ -88,7 +88,7 @@ workbook. It writes those SQLite DBs and a parse-cache sidecar
 under `--parse-cache-dir`; there is no network call and no credential, and it
 never writes back into the input PDFs.
 
-## 3. Modelling invariants — don't silently change
+## 3. Modelling invariants — do not silently change
 
 The three-way split into one silver DB and one gold source id per statement
 family (a single id makes the families close each other — see

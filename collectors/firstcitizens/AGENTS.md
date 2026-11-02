@@ -127,10 +127,10 @@ move money via the flows above).
   dir. It holds the session cookie and any "remember this device"
   state. Keep it at 0700; treat the whole dir as a credential.
 - Device trust persists across runs, for a lifetime the source does
-  not state (DESIGN.md §3, flow 1). Don't invalidate it without cause.
+  not state (DESIGN.md §3, flow 1). Do not invalidate it without cause.
   `--fresh` wipes the profile deliberately, to force the full 2FA flow.
   Never add a routine fresh-login pattern.
-- Don't log out programmatically at the end of any verb.
+- Do not log out programmatically at the end of any verb.
 
 ## 3. Never weaken authentication
 

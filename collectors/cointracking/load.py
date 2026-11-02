@@ -1244,10 +1244,7 @@ def process_snapshot(
     log.info("snapshot %s (snapshot_at=%d)", run_dir.name, snapshot_at)
 
     # Idempotency gate.
-    already = conn.execute(
-        "SELECT 1 FROM dump_runs WHERE snapshot_at = ?",
-        [snapshot_at]).fetchone()
-    if already and not force:
+    if silver.snapshot_loaded(conn, snapshot_at) and not force:
         log.info("  already loaded; skipping (use --force to rebuild)")
         return
 

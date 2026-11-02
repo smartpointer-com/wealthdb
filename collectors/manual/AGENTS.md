@@ -22,27 +22,25 @@ The only step is `load`: it reads a few hand-maintained CSVs from
 
 Root [AGENTS.md](../../AGENTS.md) §4 (no private information in source)
 applies in **full force** and is the single most important rule for this
-collector. The real CSVs under `$XDG_DATA_HOME/wealthdb/manual/` can name:
+collector. The CSVs under `$XDG_DATA_HOME/wealthdb/manual/` can name:
 
-- **Real properties** — addresses, cities, the fact of ownership.
-- **Private companies, funds & vehicles** — names of held companies
-  (equity and lending), venture/PE funds and SPVs, and the deals behind
-  them. **A company / fund / SPV name alone is identifying.**
-- **Counterparties & agents** — lenders, co-owners, sellers, deal leads,
-  escrow agents, fund admins, and the external bank accounts that funded a
-  deal.
-- **Exact figures** — purchase prices, valuations, principal/commitment
-  amounts, ownership percentages, rent, dividends, distributions.
-- **Account names in `accounts.csv`** — a sleeve may be named after the
-  legal entity that holds it, and that name is identifying. The tax wrapper
-  itself is a canonical enum and carries nothing; the `display_name` beside
-  it does.
+- **Properties** — addresses, cities, the fact of ownership.
+- **Private companies, funds & vehicles** — the names of held companies,
+  funds and SPVs, and the deals behind them. **A company / fund / SPV name
+  alone is identifying.**
+- **Counterparties** — the other parties to a holding, and the external
+  bank accounts behind it.
+- **Exact figures** — prices, valuations, amounts, ownership percentages
+  and income.
+- **Account names in `accounts.csv`** — a display name can be a legal
+  entity's name, and that name is identifying. The tax wrapper itself is a
+  canonical enum and carries nothing; the `display_name` beside it does.
 
 None of that may ever reach a tracked file — not source, not comments, not
 commit messages, not test fixtures, not "sample" CSVs. The real CSVs live
 **only** under `$XDG_DATA_HOME/wealthdb/manual/` (outside the repo) and the silver
 `manual.db` SQLite derived from them stays there too; both are git-ignored as a
-backstop, but the primary rule is **don't author repo content from real
+backstop, but the primary rule is **do not author repo content from real
 holdings**.
 
 **Synthetic placeholders only**, exactly as in [examples/](examples/):
@@ -68,4 +66,4 @@ mismatch, malformed JSON payload, a dangling `converted_from_position_id`)
 must fail the load with `file:row:column` context and a non-zero exit.
 It is never skipped, coerced, or partially loaded. The load is one transaction: a
 single bad row rolls the whole rebuild back, so silver is never left in a
-half-updated state. Don't add a "lenient" / "skip-bad-rows" mode.
+half-updated state. Do not add a "lenient" / "skip-bad-rows" mode.

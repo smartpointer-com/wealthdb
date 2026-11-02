@@ -604,10 +604,7 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path) -> dict:
     name = dump_dir.name
     snapshot_at = bronze.parse_run_ts(name)
 
-    already = conn.execute(
-        "SELECT 1 FROM dump_runs WHERE snapshot_at = ?", (snapshot_at,)
-    ).fetchone()
-    if already is not None:
+    if silver.snapshot_loaded(conn, snapshot_at):
         return {"name": name, "skipped": True, "reason": "already loaded"}
 
     state, reason = prune.classify(dump_dir, PRUNE_CONFIG)

@@ -94,7 +94,7 @@ Two anchor endpoints of the public API, and what each one serves:
 ## 2. Carta's data model (API map, kept as a scraping treasure-map)
 
 The documented API is the best available map of *what data exists and how
-it's shaped*. The SPA calls internal endpoints with different names and
+it is shaped*. The SPA calls internal endpoints with different names and
 shapes (§3), but the concepts match, so this map helps read an `explore`
 capture. Holder-side (`/v1alpha1/portfolios/...`), all read-only:
 
@@ -220,9 +220,9 @@ below. (No values reproduced here — PII.)
   amount is NOT exposed to the holder**: the payments endpoint each row
   advertises via `transaction_receipts_update_url`
   (`/api/payments/corporation/{cid}/transaction-receipts/certificates/{id}/`)
-  returns **403** — issuer/admin-gated. So acquisition consideration isn't
-  API-obtainable; it would live in a 1099-B / payout statement, which the
-  documents index does not carry. `download` makes no receipts fetch.
+  returns **403** — issuer/admin-gated. So acquisition consideration is not
+  API-obtainable; it can appear only in a document such as a 1099-B or a
+  payout statement. `download` makes no receipts fetch.
 
 - **Fund-LP side** (`app.carta.com/api/investors/…` + `fund-admin.app.carta.com/…`):
   `/api/investors/portfolio/fund/{fid}/list/` (look-through portfolio
@@ -586,8 +586,8 @@ existing rows gain them on a reload from bronze (`load --force`).
 
 The repo default is SQLite + JSON1; the single DuckDB exception
 (`cointracking`) is driven by a window-function holdings *replay* and a
-`DECIMAL(38,18)` need — neither applies here (a small set of securities,
-shape transformation only). `angellist` made the same call.
+`DECIMAL(38,18)` need — neither applies here (shape transformation only,
+no computation over many rows). `angellist` made the same call.
 
 ## 6. Gold mapping
 

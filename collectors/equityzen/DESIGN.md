@@ -177,7 +177,7 @@ trap a naive flow falls into):
 - Each field is filled clear → fill → **verify**, and Firefox's password
   manager is disabled (the `signon.*` prefs in the shared
   [`collectorkit.launch`](../../shared/collectorkit/collectorkit/launch.py)
-  pref set) so a saved credential can't autofill on top and concatenate the
+  pref set) so a saved credential cannot autofill on top and concatenate the
   password.
 - Auth state is decided **purely by the URL leaving `/accounts/login`**
   (the whole login + TOTP flow stays on that path; a valid session
@@ -367,8 +367,8 @@ statements give the multi-company funds the fair-value NAV the holdings API
 lacks** — each statement's `ending_nav` is injected into `positions` as a
 `statement` revaluation event (kind=`private_fund` only; SPVs stay
 tender-driven), so a fund's `positions` history runs investment → quarterly
-NAV revaluations. The API reports only cost for a fund, so a fund's fall
-below cost shows only in its statements. K-1s contribute the tax-basis
+NAV revaluations. The API reports only cost for a fund, so a fall below
+cost can show only in its statements. K-1s contribute the tax-basis
 capital account. Only Item L of a K-1 is parsed; the Part III grid is not
 (`pdftotext` reads the box numbers, not the amounts).
 
@@ -386,8 +386,8 @@ collector. Money stored as REAL to source precision, currency promoted.
 
 The repo default is SQLite + JSON1; the single DuckDB exception
 (`cointracking`) was driven by a window-function holdings *replay* and a
-`DECIMAL(38,18)` need — neither applies here (a small set of SPV
-interests with a handful of cash flows each, shape transformation only).
+`DECIMAL(38,18)` need — neither applies here (shape transformation only,
+no computation over many rows).
 So this collector stays on the documented default — the same call
 `angellist` and `carta` made.
 
@@ -468,7 +468,7 @@ exist in gold.
   unlike angellist, whose source carries a true funding ledger — so each
   event is a *balanced* pair netting to 0, implying no cash position). The
   investment leg's kind splits by `offerings.kind`
-  (the source bucket can't distinguish a membership-sale from a true
+  (the source bucket cannot distinguish a membership-sale from a true
   distribution — an SPV sale and a fund distribution share the identical
   `distributedTransactions` shape, no `sellOrders`):
   - **purchase, `spv`** → `deposit` (+) + `buy` (−, with
@@ -478,7 +478,7 @@ exist in gold.
     lot). A fund interest is an LP capital contribution, not a share buy.
   - **distribution, `spv`** → `sell` (+, with lot) + `withdrawal` (−). The
     tax authority treats an SPV distribution as a realization of the
-    underlying. (An SPV *could* retain/reinvest/lever, but that doesn't
+    underlying. (An SPV *could* retain/reinvest/lever, but that does not
     happen for individual-stock vehicles — the simplification holds.)
   - **distribution, `private_fund`** → `distribution` (+, no lot) +
     `withdrawal` (−). Funds routinely reinvest, so a payout is not a sale.

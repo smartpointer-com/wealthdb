@@ -1,8 +1,9 @@
 """The helpers a document-downloading collector shares: the class table
 (docdedup.classify), the ISO date gate (parse.iso_date), the pending-run
 listing and its status rule (bronze.pending_run_dirs,
-bronze.is_loadable_status) and the silver document index
-(documents.index_documents). Synthetic fixtures only."""
+bronze.is_loadable_status), the silver document index
+(documents.index_documents) and the statement row
+(documents.record_pdf_document). Synthetic fixtures only."""
 from __future__ import annotations
 
 import json
@@ -12,7 +13,7 @@ from datetime import date
 
 import pytest
 
-from collectorkit import bronze, docdedup, documents, parse, prune
+from collectorkit import bronze, docdedup, documents, parse, prune, silver
 
 # ---- docdedup.classify ---------------------------------------------------
 
@@ -193,3 +194,37 @@ def test_index_without_supersede_keeps_both_versions(tmp_path):
         _pdf(tmp_path / slug, "a", body)
         _index(conn, snap, tmp_path / slug, [{"id": "a"}])
     assert conn.execute("SELECT COUNT(*) FROM documents").fetchone() == (2,)
+
+
+# ---- documents.record_pdf_document ---------------------------------------
+
+def test_record_pdf_document_writes_the_statement_row(tmp_path):
+    conn = sqlite3.connect(":memory:")
+    conn.execute(f"CREATE TABLE documents ({', '.join(silver.DOCUMENT_COLUMNS)},"
+                 " PRIMARY KEY (sha256))")
+    pdf = tmp_path / "2098-01-31.pdf"
+    pdf.write_bytes(b"%PDF-statement")
+    sha, size = bronze.sha256_file(pdf)
+
+    assert documents.record_pdf_document(
+        conn, 100, "acct-1", pdf, doc_date=200) is True
+    assert conn.execute("SELECT * FROM documents").fetchall() == [
+        (sha, 100, "acct-1", 200, "statement", "pdf", "2098-01-31.pdf", size,
+         '{"source_name":"2098-01-31.pdf"}')]
+
+    # The same bytes again are already held, whatever the caller passes.
+    assert documents.record_pdf_document(
+        conn, 300, "acct-1", pdf, doc_date=None, kind="summary") is False
+    assert conn.execute("SELECT COUNT(*) FROM documents").fetchone() == (1,)
+
+
+def test_record_pdf_document_takes_a_kind_and_no_date(tmp_path):
+    conn = sqlite3.connect(":memory:")
+    conn.execute(f"CREATE TABLE documents ({', '.join(silver.DOCUMENT_COLUMNS)},"
+                 " PRIMARY KEY (sha256))")
+    pdf = tmp_path / "summary-2098.pdf"
+    pdf.write_bytes(b"%PDF-summary")
+    documents.record_pdf_document(conn, 100, "acct-1", pdf, doc_date=None,
+                                  kind="year_end_summary")
+    assert conn.execute("SELECT doc_date, doc_kind FROM documents").fetchone() \
+        == (None, "year_end_summary")

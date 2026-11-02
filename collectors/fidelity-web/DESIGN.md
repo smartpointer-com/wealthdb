@@ -7,13 +7,13 @@ against the live `www.fidelity.com` UI. It is also the contract
 between this silver and the wealthdb Fidelity adapter
 ([`wealthdb/internal/silver/fidelity/`](../../wealthdb/internal/silver/fidelity/)).
 
-A revised decision is revised here, in place. §11 lists the open
-questions.
+A revised decision is revised here, in place. §11 lists the known
+limits.
 
 Part of the **wealthdb** suite — see [the architecture
 overview](../../DESIGN.md) for the bronze → silver → gold
 model and [collectors/README.md](../README.md) for shared collector
-conventions. This document only covers what's Fidelity-specific.
+conventions. This document only covers what is Fidelity-specific.
 
 ## 1. Context and non-goals
 
@@ -54,7 +54,7 @@ into a stable `portfolios.kind`:
 | `Education`                    | `529`             | 529 College Investing Plan participant accounts. Statement PDFs are generated and surface in the document center's Statements sub-page. |
 | `Authorized`                   | `trust_managed`   | Accounts under a trust agreement whose investments a third-party manager runs, with Fidelity as custodian (see §1.3). The web document center may serve no statement PDFs for this group; statements supplied out-of-band are ingested separately (see §4.5). Its tax forms surface in the read-through view. |
 | `Fidelity Charitable® Giving`  | `daf`             | Donor-Advised Fund. Ingested by the DAF walk phase (§12) over the Fidelity Charitable JSON REST API, reached by an SSO hop; the retail phases auto-exclude it by its 7-digit id length (it has no brokerage-side surfaces). Gold: `account_kind = donor_advised_fund`, `tax_wrapper = charitable`, `management_style = automated` (§12.3). |
-| any other label                | `other`           | Fall-through so future Fidelity labels don't need a schema migration. |
+| any other label                | `other`           | Fall-through so future Fidelity labels do not need a schema migration. |
 
 ### 1.3 Third-party managers and institutional feeds
 
@@ -193,7 +193,7 @@ Filename conventions:
   window or view name) — no account discriminator in the name.
   `run.json` keys its `account_dimensions` block by
   `sha256(account_external_id)[:16]` so that `ls`-ing a bronze
-  dir + a glance at the manifest doesn't expose the 9-digit
+  dir + a glance at the manifest does not expose the 9-digit
   Fidelity account number; the canonical mapping lives inside
   each CSV's `Account Number` column.
 - Positions: TWO CSVs, one per view, **each containing all
@@ -291,7 +291,7 @@ Fidelity uses **9-digit account numbers** for brokerage / trust /
 `account_external_id`; the dashed form lives only in PDF payloads.
 
 The DAF's 7-digit id is the in-built exclusion criterion: walk()
-auto-excludes any account whose id isn't exactly 9 characters.
+auto-excludes any account whose id is not exactly 9 characters.
 
 ### 3.2 `instrument_external_id`
 
@@ -363,15 +363,14 @@ to capture three dimensions per account:
   `apex-kit-web-link`, with the account-id digit-sequence
   stripped (so e.g. a display name
   `<Nickname> NNNNNNNNN , balance: $...` becomes just `<Nickname>`).
-  Accounts under a trust agreement can share one generic label;
-  only the agreement number tells them apart, and it is not
-  promoted.
+  Several accounts can share one nickname; `account_id` tells
+  them apart.
 - `account_id` — the 9-digit account number from the
   `data-testid` (`ap143528-accounts-selector-account-link-
   <id>`).
 
 Persisted in `run.json` under `account_dimensions`, keyed by
-`account_key(account_id)` so the run.json doesn't itself leak
+`account_key(account_id)` so the run.json does not itself leak
 raw 9-digit ids if viewed standalone. The mapping back to
 canonical id lives inside the per-phase CSVs.
 
@@ -437,7 +436,7 @@ same occurrence index in every file.
 `content_sha256` so the same PDF / HTML across multiple dumps
 collapses to one row whose `snapshot_at` is the first dump that
 observed it. PDF regeneration (same logical doc, different bytes)
-is the open question in §11.1.
+is unverified (§11.1).
 
 ### 4.3 Cash routing + asset_class
 
@@ -465,7 +464,7 @@ Symbol shape into a small enum:
 
 The classifier is order-sensitive: `plan_fund` is checked before
 `bond` because the plan-fund shape is a stricter subset of
-CUSIP-9. Anything Fidelity adds in the future that doesn't match
+CUSIP-9. Anything Fidelity adds in the future that does not match
 the above falls into `equity` — the wealthdb config's
 `instrument_overrides` pins the class of any holding the shapes
 misjudge (e.g. an exchange-traded commodity trust whose name
@@ -473,7 +472,7 @@ never says "ETF"). The gold adapter further refines `etf` rows
 by underlying exposure (crypto / metal / bond ETFs leave the
 `etf` bucket — see wealthdb docs/DESIGN.md §6.8).
 
-The `Type` column on `positions` carries `Cash` / `Margin` — that's
+The `Type` column on `positions` carries `Cash` / `Margin` — that is
 the account margin bucket, NOT an instrument category; it stays
 promoted separately on `positions.type`. The `wealthdb` gold
 adapter re-routes money-market positions per its per-broker
@@ -499,7 +498,7 @@ Any future Fidelity group label drops cleanly into `other`
 without a schema change.
 
 `accounts.management_style` is derived from the same `kind` —
-silver pins what's structurally implied without needing per-
+silver pins what is structurally implied without needing per-
 account UI signals (Fidelity emits none — see §11.6):
 
 | `portfolios.kind` | `accounts.management_style` |
@@ -529,7 +528,7 @@ account groups it serves statements for, such as 529 plan accounts.
 extraction is CPU-bound; SQLite insert stays on the main thread).
 The cross-walk from the human-readable fund description to an
 `instrument_key` queries the live `positions` table per (account,
-description); when the fund hasn't appeared in any live snapshot
+description); when the fund has not appeared in any live snapshot
 yet the row lands with `instrument_key` NULL and the description
 preserved for downstream resolution. The engine's adapter links such
 a row to the key the rest of the silver uses. It reads the ticker the
@@ -762,7 +761,7 @@ not apply.
 The wrapper mounts `$HERE:/app` so edits to `download.py` on the
 host land in the next container spawn — no image rebuild during
 iteration. The device-trust cookie suppresses MFA across spawns
-for ~30 days, so iteration on the walk phases doesn't burn MFA
+for ~30 days, so iteration on the walk phases does not burn MFA
 pushes.
 
 **Hybrid: Docker `download`, host-venv `load` / `prune` /
@@ -1105,7 +1104,7 @@ shape; both are driven by `_doccenter_*` helpers in `download.py`.
 | Element | Selector |
 | --- | --- |
 | Document-type rail link | `a[href='statements']` (= "Personal" statements), `a[href='tax-forms']`, `a[href='ip-statements']` (interested-party — often empty). The default landing is `ip-statements`, which is empty, so the type MUST be switched. |
-| Document-type `<select>` | `select[aria-label='Document selector']` — present but **ignored**: the Stencil component doesn't react to programmatic value writes, which is why the rail link is used instead. |
+| Document-type `<select>` | `select[aria-label='Document selector']` — present but **ignored**: the Stencil component does not react to programmatic value writes, which is why the rail link is used instead. |
 | Date filter | `#options-select-TimeFilter` (native `<select>`; "Last 3/6 months" + concrete years). Driven via Playwright `select_option`, then Apply. |
 | Apply | `button.pvd-button--primary:has-text('Apply')` |
 | Document row | `ent-ds-link` whose text ends in `(pdf)` (e.g. `"Jan-March 2026 — Statement (pdf)"`, `"Consolidated Form 1099 (pdf)"`). No stable `data-testid`/href — the href is `javascript:void(0)`. |
@@ -1164,41 +1163,34 @@ See the non-goals in §1.4.
 
 ## 10. Implementation status
 
-Every surface above is built. §11 lists the open questions.
+Every surface above is built. §11 lists the known limits.
 
-## 11. Open questions
+## 11. Known limits
 
 ### 11.1 PDF regeneration
 The Consolidated 1099 is regenerated per request: each download
 carries the same form with new bytes. `documents` keeps one row per
 copy; `closed_lots` keys the form on its account and tax year instead
-(§4.6). Whether statement PDFs are regenerated the same way is open.
-Resolve by downloading the same statement twice and diffing sha256s.
-The silver loader dedups statements on `content_sha256`, which assumes
-stable hashes; if they turn out to be regenerated, switch to
-`(account, doc_date, doc_kind, filename)` dedup à la schwab-web.
+(§4.6). Whether statement PDFs are regenerated the same way is
+unverified. The silver loader dedups statements on `content_sha256`,
+which assumes stable hashes.
 
 ### 11.2 GraphQL endpoint
 `https://digital.fidelity.com/ftgw/digital/portfolio/api/graphql`
-is reachable from the post-auth session. Its schema is unknown. It
-could give cleaner, more stable access to positions and activity
-than the CSV exports; the walk does not use it.
+is reachable from the post-auth session. Its schema is unknown. The
+walk does not use it.
 
 ### 11.3 Balance Letter wizard
-Skipped (§4.7). The per-account totals already come from the saved
-`balances.html`; the wizard matters only if a formal as-of PDF is
-ever needed.
+Skipped (§4.7). The per-account totals come from the saved
+`balances.html`. No formal as-of PDF is fetched.
 
 ### 11.4 Third-party-manager institutional feed
-Out-of-band; such a feed would live in its own collector
-(see §1.3), so it blocks nothing here.
+This collector reads no such feed. A feed of that kind belongs in
+its own collector (§1.3).
 
 ### 11.5 Per-account registration label (`account_registration`)
-The wealthdb gold layer's three-column account taxonomy wants a
-promoted `account_registration` on `accounts` — the Fidelity-
-exposed wrapper label (`Roth IRA`, `Traditional IRA`,
-`Coverdell ESA`, `Health Savings Account`, `Joint WROS`,
-`Individual TOD`, etc.).
+Silver has no `account_registration` column for the wrapper label,
+such as `Roth IRA` or `Coverdell ESA`.
 
 Fidelity emits no per-account registration label on any surface the
 walk scrapes. Keyword shapes (`Roth IRA`, `Coverdell`, `HSA`, `TOD`,
@@ -1214,28 +1206,20 @@ registration tag on:
 * the consolidated positions CSV (`Account Name` carries only
   the account nickname)
 
-The keyword hits that do appear ("Health Savings Account",
-"Strategic Disciplines", "Fidelity Wealth Services") are all in
-page-wide disclosure / footer text, not per-account tags.
+Product names in the page-wide disclosure and footer text are no
+per-account tags.
 
-For the account categories silver currently models, the
-registration is implied by `portfolios.kind`:
+For the account categories silver models, the registration is
+implied by `portfolios.kind`:
 
 | `portfolios.kind` | Implied registration                         |
 | --- | --- |
 | `529`            | 529 College Savings Plan participant account |
 | `trust_managed`  | Trust account, managed                        |
 
-Other account types (retirement, brokerage) would extend this
-table. The most likely place a registration label surfaces is the
-`/portfolio/accounts/<account-id>` detail page, which `download.py`
-does not visit. Capturing it would take three steps: visit each
-in-scope detail page and record the label under
-`run.json/account_dimensions[*].registration`, add an
-`accounts.account_registration` column, and have the loader fill it.
-
-Until then, gold treats `portfolios.kind` as the registration
-proxy, and silver has no registration column.
+`download.py` does not visit the `/portfolio/accounts/<account-id>`
+detail page. Gold treats `portfolios.kind` as the registration
+proxy.
 
 ### 11.6 Advisory vs discretionary within `trust_managed`
 Migration 0003 promotes `accounts.management_style`, derived
@@ -1244,23 +1228,15 @@ from `portfolios.kind` (see §4.4):
 - `trust_managed` → `discretionary`
 - other / unknown kind → NULL
 
-What's NOT derivable: the advisory-vs-discretionary distinction
+What is NOT derivable: the advisory-vs-discretionary distinction
 inside `trust_managed`. Fidelity's relevant product taxonomy
 (`Fidelity® Wealth Services`, `Fidelity® Strategic Disciplines`,
 `Portfolio Advisory Services`, `Fidelity Personal and Workplace
 Advisors`, the generic `Managed Accounts` umbrella) appears
 ONLY in page-wide disclosure, footer and marketing-sidebar text,
-never as a per-account tag. The current default of `discretionary` is the
-common case for the trust-account pattern silver models; gold
-can override per-account if it has out-of-band knowledge that
-a specific trust agreement is an advisory rather than
-discretionary arrangement.
-
-If a future Fidelity build emits a structured indicator —
-candidates: a `data-testid$='-managed-by-label'` on the
-account-detail page, or an `aria-label` on the section header
-that names the advisory product — the path mirrors §11.5:
-extend `download.py`, schema migration, loader populates.
+never as a per-account tag. Silver stamps every `trust_managed`
+account `discretionary`. A config `account_overrides` entry sets
+another `management_style` for one account.
 
 ## 12. Donor-Advised Fund extension
 
@@ -1494,18 +1470,14 @@ it omits. The invariant is enforced at both ends:
   the retail master rows of a legacy `mode='daf'` dump (its
   `account_dimensions` is an enumeration-only capture).
 
-### 12.4 Remaining open questions
+### 12.4 Known limits
 
 1. Whether `poolBalances?numberOfDays=N` (N > 1) returns a NAV/value
-   time series. The quarterly statement reconstruction (§12.3) already
-   covers history, so this would only add intra-quarter granularity;
-   one read-only probe with a larger N answers it.
-2. PDF byte stability across repeated downloads (dedup key choice —
-   content hash vs logical identity; same question as §11.1). The
-   walk dedups within a run by content hash; cross-run silver dedup
-   is the silver loader's concern.
-3. Retail idle-timeout behaviour across the hop for long walks
-   (~15 min, §5.1) — matters only if the DAF phase runs late in a
-   long dump.
-4. Gold treatment beyond the wrapper: the include/exclude default in
-   the deployment's config (§12.3).
+   time series is unverified. The quarterly statement reconstruction
+   (§12.3) covers history.
+2. PDF byte stability across repeated downloads is unverified, as in
+   §11.1. The walk dedups within a run by content hash. Cross-run
+   dedup is the silver loader's concern.
+3. The retail idle timeout across the hop (about 15 min, §5.1) is
+   unmeasured for long walks. It matters only when the DAF phase
+   runs late in a long dump.

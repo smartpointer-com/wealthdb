@@ -23,7 +23,7 @@ pdfplumber>=0.11,<1
 pypdfium2>=4.30,<6
 ocrmac>=1,<2 ; sys_platform == "darwin"
 rapidocr>=3,<4 ; sys_platform != "darwin"
-onnxruntime>=1.17 ; sys_platform != "darwin"
+onnxruntime>=1.17,<2 ; sys_platform != "darwin"
 
 # A performance workbook of month-end account values supplies the marks for
 # the months no brokerage statement covers (DESIGN.md "Data caveats"; the rules are in

@@ -2,4 +2,7 @@
 # toolchain.
 pytest>=8,<9
 
+# The SFTP client of download.py. It has no major cap, unlike the other
+# pins: a cap at the floor's next major (<5) would roll back the 5.x
+# that `make update` resolves.
 paramiko>=4.0

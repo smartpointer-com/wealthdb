@@ -49,12 +49,12 @@ log = logging.getLogger("schwab-web.download")
 NAV_TIMEOUT_MS = 60_000
 LANDMARK_TIMEOUT_MS = 60_000
 # A pagination swap re-fetches the page's rows server-side, which on
-# wide date ranges (Last5Years / All) regularly takes well over 10s —
+# wide date ranges (Last5Years / All) can take well over 10s —
 # hence its own, longer budget.
 PAGE_SWAP_TIMEOUT_MS = 30_000
 
-# More-detail walk pacing. A modal-heavy page costs ~1-2 min at
-# baseline (~25 rows x open/read/close), and a degraded SPA (runaway
+# More-detail walk pacing. A modal-heavy page can cost a minute or two
+# at baseline (an open/read/close per row), and a degraded SPA (runaway
 # change detection starving every protocol call) can stretch a lap
 # several-fold — or, at the extreme, wedge it entirely, which no
 # per-call timeout catches because page.evaluate has none. The lap
@@ -159,7 +159,7 @@ def enumerate_accounts(page) -> list[dict]:
     selector_button.click()
     log.info("found %d account(s)", len(accounts))
     for a in accounts:
-        log.debug("  - %s (…%s, id=%s)", a["label"], a["suffix"], a["entry_id"])
+        log.debug("  - …%s", a["suffix"])
     return accounts
 
 def select_account(page, entry_id: str) -> None:
@@ -733,8 +733,8 @@ def _confirm_export_tax_modal(page) -> None:
 # download click — the inline "Download" link briefly shows a
 # "Download failed" pill but stays clickable, and the second
 # click usually goes through. Three attempts with a 2-second
-# breather covers what's been observed; if it's still failing
-# at attempt 3, the row gets logged + skipped at the caller.
+# breather bound the retry cost; if it is still failing at
+# attempt 3, the row gets logged + skipped at the caller.
 DOWNLOAD_ATTEMPT_TIMEOUT_MS = 30_000
 DOWNLOAD_MAX_ATTEMPTS = 3
 DOWNLOAD_RETRY_PAUSE_MS = 2_000
@@ -1211,8 +1211,8 @@ def _parse_more_modal_text(text: str) -> dict:
     return fields
 
 # Rows whose "More" opens the wire-details dialog. That modal
-# lazy-loads its content, ignores Escape, and once wedged a whole run
-# (its leaked overlay intercepted every later click); it also carries
+# lazy-loads its content and ignores Escape, and its leaked overlay
+# can intercept every later click and wedge the run; it also carries
 # none of the securities enrichment fields (Settle Date / CUSIP /
 # Principal / Commission) the More walk exists for. Matched on the
 # row's cell text and skipped outright.
@@ -1457,8 +1457,8 @@ def capture_transactions(page, account: dict, dest_dir: Path,
     captures the per-row detail modal contents (Settle Date,
     CUSIP, Principal, Commission, Industry Fee, etc.) into a
     sidecar `more-details.json`. The CLI turns this on unless
-    `--no-more-detail`, which opts out of the ~1 extra click per transaction (several
-    thousand for a multi-year backfill). The silver loader
+    `--no-more-detail`, which opts out of the ~1 extra click per
+    transaction (thousands for a long backfill). The silver loader
     merges these details into the transaction's payload when the
     sidecar is present (see load._load_more_details).
     """

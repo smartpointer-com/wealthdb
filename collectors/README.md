@@ -8,8 +8,8 @@ reads every collector's silver and merges them into one canonical
 store. For the full bronze → silver → gold model see
 [../DESIGN.md](../DESIGN.md).
 
-This file covers what's **common** to all collectors. Each
-subdirectory's own `README.md` covers only what's specific to that
+This file covers what is **common** to all collectors. Each
+subdirectory's own `README.md` covers only what is specific to that
 source (its auth method, what it produces, its quirks).
 
 > [!WARNING]
@@ -180,7 +180,7 @@ The wrapper therefore:
 - forwards `--lookback` to every `download` — the one window flag, accepted
   everywhere; see the date contract under
   [Collector CLI conventions](#collector-cli-conventions). A full-history
-  source accepts it for uniformity but warns it can't narrow its fetch,
+  source accepts it for uniformity but warns it cannot narrow its fetch,
   rather than silently ignoring or rejecting it.
 
 That precedence is not hand-written; it comes from sourcing the matching
@@ -202,9 +202,11 @@ the container with `-e`). It may opt into these knobs:
   `load`.
 
 A wrapper with a config file calls `wrapper_source_cfg` first. The
-wrapper then calls `wrapper_init` and handles `build` and `help` inline.
-It runs `prune` on the host, most through `wrapper_host_prune`, and
-ends with `wrapper_main "$@"`. The library bind-mounts
+wrapper then calls `wrapper_init`, prints its help when
+`wrapper_wants_help`, and ends with `wrapper_main "$@"`. `wrapper_main`
+runs `build`, and runs `prune` on the host through
+`wrapper_host_prune`; fidelity-web and schwab-api route `prune`
+themselves. The library bind-mounts
 `~/.secrets → /secrets` and `<data> → /data` (plus `/silver`, `/debug`,
 `/app` when applicable) and runs as `--user $(id -u):$(id -g)`.
 
@@ -294,7 +296,7 @@ did this run cover".
   loudly** that it has no effect and pull their complete history — a
   superset of any window — rather than either silently ignoring it or
   rejecting it at parse time.
-- A collector whose source can't express the window exactly maps it to
+- A collector whose source cannot express the window exactly maps it to
   the narrowest thing that covers it. relevate's year-granularity
   endpoint widens the window to whole years without a warning; a
   collector that has to cap the window **warns when it caps**.
@@ -629,7 +631,7 @@ guarantees, for every collector:
   I/O error or corrupt bytes is an environmental failure, not proof of
   incompleteness, so it is skipped before the collector predicate runs;
 - **symlinks are never followed or deleted**, and nothing at the bronze
-  root that isn't a timestamped run dir (a silver `.db`, a shared
+  root that is not a timestamped run dir (a silver `.db`, a shared
   `manual/` tree, supplied inputs such as raiffeisen_at's `supplied/`) is
   ever touched;
 - a whole-dir deletion **rechecks completeness + quiescence immediately
@@ -643,7 +645,7 @@ between `download` and `load`: a containerised load can read a stale
 file-share cache of a swept file. `wealthdb-collect help` describes it.
 
 Load-only collectors have no `<UTC-ts>/` run-dir layout, and the two ship
-**different on-disk shapes** (both user-visible, don't move the data):
+**different on-disk shapes** (both user-visible, do not move the data):
 [`manual`](manual/) keeps its CSVs flat in the data dir, while [`svb`](svb/)
 takes its statement PDFs in a `<data-dir>/bronze/` subdir. Each documents a
 `prune` that is a justified no-op (nothing to reclaim; the inputs are the

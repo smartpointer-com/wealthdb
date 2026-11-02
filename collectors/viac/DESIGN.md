@@ -8,7 +8,7 @@ the verbs, examples and bronze layout.
 Part of the **wealthdb** suite — see [the architecture
 overview](../../DESIGN.md) for the bronze → silver → gold
 model and [collectors/README.md](../README.md) for shared collector
-conventions. This document only covers what's VIAC-specific.
+conventions. This document only covers what is VIAC-specific.
 
 Scope: `download` fetches per-portfolio detail (strategy, positions,
 fees) for Pillar-3a portfolios only. PVB and INV portfolios reach silver
@@ -94,7 +94,7 @@ before its walk.
 
 After step 4 the `AL_SESS-S` cookie is server-side promoted
 from anonymous to authenticated; the cookie value itself
-doesn't rotate. `CSRFT<N>-S` (digit suffix is bundle-build-
+does not rotate. `CSRFT<N>-S` (digit suffix is bundle-build-
 bound) is echoed as the `x-csrft<N>` request header on
 POST / PUT / PATCH / DELETE only. See `viac_client.py` for the
 double-submit-cookie machinery.
@@ -151,7 +151,7 @@ free.
 
 Synthetic SHA-256 prefix over
 `(account | type | value_date | amount_chf | document_number)`.
-VIAC doesn't surface a stable per-event id on the wire — the
+VIAC does not surface a stable per-event id on the wire — the
 `documentNumber` is shared across some legs of corporate-
 action pairs, so the id hashes a tuple. Deterministic → re-loading
 the same bronze converges.
@@ -335,7 +335,7 @@ The silver-side facts the adapter reads:
   and the adapter reads it. VIAC is robo-advisor-shaped — the holder
   picks a strategy from a menu (or builds one within VIAC's
   concentration limits), then rebalancing runs by rules. The
-  custom-strategy capability looks self-directed but isn't:
+  custom-strategy capability looks self-directed but is not:
   the holder can only pick from VIAC's listed fund universe,
   with concentration / risk-level guards. Same product shape
   as Relevate's FZ products. A non-robo product line would
@@ -358,33 +358,26 @@ The non-goals of §1.3 hold. One more:
   sha256 + (type, subType) metadata; their bodies are not parsed
   (§9).
 
-## 9. Open questions
-
-Open items, none blocking:
+## 9. Known limits
 
 1. **Session lifetime.** Airlock typically defaults to ~30 min
    idle / ~8 h absolute. `login --check` measures it.
 2. **`/N-N` endpoint suffixes rotating.** They are constants.
    A rotation makes `download` fail fast with a pointer to
    §2.2 rather than a silent 404.
-3. **PVB per-portfolio endpoints.** PVB portfolios are in the
-   inventory, but `download.py` does not fetch their detail.
-   An ACTIVE PVB portfolio would need the
-   `/pvb/portfolio/<num>/...` surface mapped; symmetric to p3a
-   is the likely shape.
+3. **PVB per-portfolio endpoints.** The inventory schema has a
+   `pvb[]` array, but `download.py` does not fetch its detail. The
+   `/pvb/portfolio/<num>/...` surface is unmapped.
 4. **`INV` product line.** The `inv[]` array is in the
    inventory schema, but its per-portfolio surface is unmapped.
    Its gold mapping to `tax_wrapper='taxable_personal'` is
    unverified.
-5. **Transaction collision rate.** Some source rows can
-   collapse in silver on identical-to-16-decimals (account, type,
-   date, amount, doc) keys — most likely duplicate reports of the
-   same dividend in VIAC's API rather than legitimately
-   distinct events. If such collisions grow, the synthesizer needs a
-   row-index disambiguator.
+5. **Transaction collisions.** Two source rows with identical
+   (account, type, date, amount, doc) keys, to 16 decimals,
+   collapse into one in silver. The synthesizer has no row-index
+   disambiguator, so two distinct events with such keys would
+   count once.
 6. **Transaction-document PDF body parsing.** The per-event TRADE /
    DIVIDEND / SECURITY_FUSION PDFs carry data not in the JSON
    (per-event ISIN, units, FX rate, old→new ISIN mapping for
-   fusions). Projecting them into a structured silver column (they are
-   indexed, not parsed; §8) is a mechanical parser
-   pass, left until a downstream consumer needs it.
+   fusions). They are indexed, not parsed (§8).

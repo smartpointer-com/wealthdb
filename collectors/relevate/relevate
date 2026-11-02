@@ -27,11 +27,7 @@ source "$HERE/../../shared/wrappers/wrapper-lib.sh"
 wrapper_source_cfg RELEVATE "${XDG_CONFIG_HOME:-$HOME/.config}/relevate.cfg"
 wrapper_init
 
-if [[ "${1:-}" == "build" ]]; then
-    wrapper_build "$@"
-fi
-
-if [[ "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0 ]]; then
+if wrapper_wants_help "$@"; then
     cat <<EOF
 relevate — host wrapper
 
@@ -54,7 +50,7 @@ Subcommands:
                         the walk never finished (a run.json status
                         other than complete).
   prune [args...]       Delete non-complete dumps (crashed walks +
-                        --dry-run shells) and `download --debug`
+                        --dry-run shells) and \`download --debug\`
                         HTTP traces from the bronze tree, and aged
                         entries of the /debug cache. Use
                         --dry-run to print the plan first;
@@ -86,11 +82,6 @@ Credentials:
   chmod 600 the file.
 EOF
     exit 0
-fi
-
-# prune runs host-side (wrapper_host_prune).
-if [[ "${1:-}" == "prune" ]]; then
-    wrapper_host_prune "$@"
 fi
 
 wrapper_main "$@"

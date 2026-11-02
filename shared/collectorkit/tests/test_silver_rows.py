@@ -1,5 +1,6 @@
-"""Unit tests for the silver row writers: `silver.upsert_rows` and
-`silver.record_document`. Synthetic rows only."""
+"""Unit tests for the silver row writers, `silver.upsert_rows` and
+`silver.record_document`, and the `silver.snapshot_loaded` probe.
+Synthetic rows only."""
 from __future__ import annotations
 
 import sqlite3
@@ -64,3 +65,11 @@ def test_record_document_is_true_only_for_a_new_sha256(conn):
                  filename="other.pdf")
     assert silver.record_document(conn, again) is False
     assert conn.execute("SELECT * FROM documents").fetchall() == [row]
+
+
+def test_snapshot_loaded_matches_only_a_recorded_run(conn):
+    conn.execute("CREATE TABLE dump_runs (snapshot_at INTEGER PRIMARY KEY)")
+    assert silver.snapshot_loaded(conn, 100) is False
+    conn.execute("INSERT INTO dump_runs VALUES (100)")
+    assert silver.snapshot_loaded(conn, 100) is True
+    assert silver.snapshot_loaded(conn, 200) is False

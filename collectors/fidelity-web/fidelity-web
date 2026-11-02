@@ -49,11 +49,7 @@ source "$HERE/../../shared/wrappers/wrapper-lib.sh"
 source "$HERE/../../shared/wrappers/host-lib.sh"
 wrapper_init
 
-if [[ "${1:-}" == "build" ]]; then
-    wrapper_build "$@"
-fi
-
-if [[ "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0 ]]; then
+if wrapper_wants_help "$@"; then
     cat <<EOF
 fidelity-web — host wrapper
 

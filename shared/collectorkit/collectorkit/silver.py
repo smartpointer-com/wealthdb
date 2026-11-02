@@ -214,6 +214,16 @@ def loaded_snapshots(conn: sqlite3.Connection) -> set[int]:
     }
 
 
+def snapshot_loaded(conn: sqlite3.Connection, snapshot_at: int) -> bool:
+    """Whether `dump_runs` already records the run at `snapshot_at`, for a
+    loader that tests one run at a time. The table must exist; a DuckDB
+    connection works too.
+    """
+    return conn.execute(
+        "SELECT 1 FROM dump_runs WHERE snapshot_at = ?", (snapshot_at,),
+    ).fetchone() is not None
+
+
 def canonical_json(obj, *, ascii: bool = False) -> str:
     """Stable, compact JSON for silver `payload` columns and content-based
     dedup: sorted keys and no separator whitespace so two equivalent

@@ -162,9 +162,8 @@ password but fires no `accessCode` call. So:
   banking system's `hostTranNumber` does not move. So a row whose host
   number, posting date and amount match a stored row under another id is
   the same movement, and the id first seen keeps it.
-- **Statements give no transactions.** The history reaches further back
-  than the statement archive, so there is no older tail to rebuild from
-  PDFs. Chase's statement transactions and balance-chained attribution
+- **Statements give no transactions.** The JSON history is the ledger,
+  and no older tail is rebuilt from statement PDFs. Chase's statement transactions and balance-chained attribution
   are not ported. A statement is read for its interest rate alone
   (§4.3).
 

@@ -88,7 +88,7 @@ except the login sequence itself):
     account-information page
     `GET /api/bankingzv-kontoinformationen/kontoinformationen-ui/rest/konten/<IBAN>/details`
     (account type, currency, institution/BIC, interest rates). Its response
-    carries an **incidental card-limits block** — captured as provenance
+    can carry an **incidental card-limits block** — captured as provenance
     only, never acted on (deposit-only scope);
   - the session keepalive
     (`GET …/bankingws-ui/rest/keepalive`).
@@ -171,10 +171,10 @@ the flows above, subject to pushTAN).
   (it skips region/Verfüger/PIN entry) but **not** the second factor
   (DESIGN.md §3-Surface·§F). pushTAN fires on every login. So the
   profile holds sign-in state worth protecting, but it is never a route
-  past 2FA. Don't invalidate it without cause. `--fresh` wipes the
+  past 2FA. Do not invalidate it without cause. `--fresh` wipes the
   profile deliberately, to force the full challenge. Never add a routine
   fresh-login pattern.
-- Don't log out programmatically at the end of any verb.
+- Do not log out programmatically at the end of any verb.
 
 ## 3. Never weaken authentication
 

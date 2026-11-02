@@ -30,11 +30,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/../../shared/wrappers/wrapper-lib.sh"
 wrapper_init
 
-if [[ "${1:-}" == "build" ]]; then
-    wrapper_build "$@"
-fi
-
-if [[ "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0 ]]; then
+if wrapper_wants_help "$@"; then
     cat <<EOF
 equityzen — host wrapper
 
@@ -98,11 +94,6 @@ Credentials:
   future logins from asking for a code.
 EOF
     exit 0
-fi
-
-# prune runs host-side (wrapper_host_prune).
-if [[ "${1:-}" == "prune" ]]; then
-    wrapper_host_prune "$@"
 fi
 
 wrapper_main "$@"

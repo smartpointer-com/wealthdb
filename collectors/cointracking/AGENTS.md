@@ -47,8 +47,8 @@ Forbidden — do not navigate to, click, or scrape:
   explicit export-generation triggers.
 
 The cointracking portal also exposes a paid-tier upsell + community
-features (forum, comments). Those are out of scope — don't
-navigate there, don't trigger anything that touches them.
+features (forum, comments). Those are out of scope — do not
+navigate there, do not trigger anything that touches them.
 
 When in doubt during `explore`, treat a surface as forbidden until
 it appears in the allow-list above.
@@ -59,9 +59,9 @@ The cointracking session cookie is multi-year.
 That means a single MFA challenge bootstraps the collector for the
 foreseeable future. **Do not** invalidate it without cause:
 
-- Don't add a routine "fresh login per N runs" pattern — the
+- Do not add a routine "fresh login per N runs" pattern — the
   collector should only re-mint when the cookie genuinely expires.
-- Don't log out programmatically at the end of `download`. An
+- Do not log out programmatically at the end of `download`. An
   unnecessary fresh login costs a real 2FA challenge that only a
   human can answer.
 - `/secrets/cointracking-profile/` is the Playwright Firefox

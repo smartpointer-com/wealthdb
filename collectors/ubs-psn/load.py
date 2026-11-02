@@ -1413,9 +1413,7 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
     name = dump_dir.name
     snapshot_at = bronze.parse_run_ts(name)
 
-    if conn.execute(
-        "SELECT 1 FROM dump_runs WHERE snapshot_at = ?", (snapshot_at,)
-    ).fetchone():
+    if silver.snapshot_loaded(conn, snapshot_at):
         return {"name": name, "skipped": True}
 
     log.info("Loading dump %s (snapshot_at=%d)", name, snapshot_at)

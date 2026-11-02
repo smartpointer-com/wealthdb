@@ -22,12 +22,9 @@ prune engine) with viac's configuration. Two categories are reclaimed:
 Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
 at run-dir creation, atomically overwritten with ``"complete"`` /
 ``"dry-run"`` at the end). A statusless-but-readable manifest predates
-the ``status`` field, where the manifest was written only at the end, so
-it is a finished dump — classified COMPLETE and kept — UNLESS it also
-carries ``dry_run: true``, the shape an older ``--dry-run`` left behind,
-which stays NON_COMPLETE to match the forward ``status="dry-run"``
-behaviour. An unreadable or corrupt ``run.json`` is UNKNOWN and never
-deleted.
+the ``status`` field. ``load`` reads such a dump, so it is COMPLETE and
+kept, a legacy ``dry_run: true`` shell included. An unreadable or
+corrupt ``run.json`` is UNKNOWN and never deleted.
 
 Note on hard-linked PDFs: ``download.py`` deduplicates document PDFs
 across run dirs with ``os.link``. Deleting a whole NON-complete run dir
@@ -55,23 +52,13 @@ import sys
 from collectorkit import debugcap, prune
 
 
-def _is_complete(run_dir, meta):
-    # Legacy fallback for statusless dumps (and the missing-manifest
-    # branch): a run.json with no `status` key predates the status
-    # lifecycle. load reads every such dump, so it is kept, a legacy
-    # dry-run shell included. A missing run.json (meta is None) fails the
-    # `m is not None` check -> a crashed download with no manifest is
-    # NON_COMPLETE. Current walks always carry a status key, so
-    # status_classification resolves those before this fallback.
-    return prune.status_classification(
-        meta, run_dir=run_dir, legacy_complete=lambda rd, m: m is not None)
-
-
 CONFIG = prune.PruneConfig(
     # `download --debug`'s HTTP trace, which debugcap lands under this
     # subdir fleet-wide. Everything else in a run dir is a bronze capture.
     debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
-    is_complete=_is_complete,
+    # A status key decides. A statusless but readable run.json predates
+    # the field; load reads such a dump, so it is kept.
+    is_complete=prune.lenient_classification,
 )
 
 
