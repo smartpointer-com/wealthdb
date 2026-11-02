@@ -1062,15 +1062,15 @@ the row's own day). Every field is optional, and an omitted one does
 not constrain. A rule with no scope matches everywhere.
 
 It exists because a pattern specific enough for one booking is rarely
-specific enough for the whole future. `^\s*closing\s*$` reads a
-mortgage settlement exactly right, and is a liability the day another
-bank writes "Closing" on something else; scoped to the account and the
-month it stays surgical, and a later row that merely reads the
-same falls through to be asked about rather than inheriting last
-year's answer. Prefer the narrowest scope that still admits what the
-rule is FOR: a self-describing phrase wants the account but not a date
-(another extraordinary amortization on the same mortgage would be the
-same thing again), while a generic word wants both.
+specific enough for the whole future. A pattern such as
+`^\s*settlement\s*$` can read one booking exactly right, and is a
+liability the day another bank writes "Settlement" on something else.
+Scoped to the account and the month, it stays surgical: a later row
+that merely reads the same falls through to be asked about rather than
+inheriting last year's answer. Prefer the narrowest scope that still
+admits what the rule is FOR. A self-describing phrase wants the account
+but not a date, because a later row on that account with the same phrase
+means the same thing. A generic word wants both.
 
 An inverted range is a config error rather than a rule that silently
 never fires — a scope that can admit nothing is a typo every time.
@@ -1847,11 +1847,10 @@ flags widen it, and they choose different things:
   it was asked, and could say no more than the primary already did.
 
 `--refine` is scoped by PROVENANCE, not by value, and that is the whole
-point. A catch-all a rule or a pin placed is a considered decision —
-the taxonomy has no word for a portrait photographer or for household
-removals, so one was chosen deliberately after checking — and a pass
-that re-asked those would undo the work and push private individuals at
-a model.
+point. A catch-all a rule or a pin placed is a considered decision. The
+taxonomy may have no word for a given trade, and the catch-all is then
+the right answer. A pass that re-asked those would undo the work and
+push private individuals at a model.
 
 A value is a catch-all when its detail part is `OTHER` or starts with
 `OTHER_`. The detail part is the value with its primary's prefix taken
@@ -1889,12 +1888,9 @@ extended downwards to `daily` and `weekly`. A quarter is the coarsest
 interesting return bucket and about the finest interesting spending
 one.
 
-**There are no row-filter flags**, matching `holdings positions` and
-`transactions`. Filtering by merchant, category or account is `-f json`
-plus a downstream filter, SQL, or the dashboard. Beyond keeping the
-surface small: a filter flag on a report whose numbers are shares of a
-bucket would have to decide whether the denominator moves with the
-filter, and either answer is wrong for some reader.
+**`-F` keeps the rows where every condition holds** (`wealthdb help
+filter`). It reads the printed rows after the report has run. So a
+share stays a share of its whole bucket.
 
 ### The provenance column
 
@@ -2226,8 +2222,7 @@ Each decision points to the section that argues it.
   population.** Neither carries a reliable sign. `wealthdb status -v`
   counts the in-scope rows of either kind, so the gap is visible.
 - **Context defaults to `merchant`**, the most private level (§5).
-- **The read CLI carries no row filters** and defaults to the trailing
-  twelve months (§7).
+- **The read CLI defaults to the trailing twelve months** (§7).
 - **A narrow correction surface: `spending.rules` and `spending.pins`**
   (§3). Rules key on narrative text for a counterparty that recurs.
   Pins name one transaction. Both are config, re-stamped whole on every

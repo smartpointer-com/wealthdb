@@ -29,7 +29,7 @@ interface of [../DESIGN.md](../DESIGN.md) §6.
 | `positions` (`source='pp:<doc_id>'`) | `positions` | Year-end snapshots reconstructed from Portfolio Performance PDFs. Same mapping as live (§8, §9). |
 | `currency_balances` | `cash_balances`; also derives `fx_rates` from `rate_to_chf` | See §5. |
 | `transactions` | `transactions` | See `transaction_type` mapping in §6. |
-| `documents` | — | PDFs are bronze-only; gold doesn't store binaries. |
+| `documents` | — | PDFs are bronze-only; gold does not store binaries. |
 
 ## 4. `(asset_class, vehicle)` derivation for `positions`
 
@@ -178,13 +178,10 @@ the cost in CHF at the rates of the purchases. Gold's book value is
 in the row's currency, so these figures stay in the payload
 (`total_value_chf`, `pl_nominal_chf`).
 
-## 10. Open questions
+## 10. Known limits
 
 - **One ISIN in two currencies.** Silver keeps `(symbol, USD)` and
   `(symbol, EUR)` apart. Gold keys a position by its ISIN alone, so two
   listings of one ISIN in one account and snapshot share a
-  `position_key` and collide on the gold `positions` key. Keying on
-  ISIN and currency would keep them apart.
-- **Document indexing.** Gold holds no Swissquote document metadata. A
-  `documents` gold table joined to `accounts` would answer "which tax
-  statements are loaded?".
+  `position_key` and collide on the gold `positions` key.
+- **Document indexing.** Gold holds no Swissquote document metadata.

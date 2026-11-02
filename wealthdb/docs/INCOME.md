@@ -452,7 +452,7 @@ write into the overlay, and the overlay heads the resolution. A pin,
 the matcher, a built-in rule, a config rule and the provider map all
 sit above the floor. Only the model sits below it. Decision 4 holds: a
 `distribution` floors to `capital_return`, and a tier that writes the
-overlay promotes it. In practice that is a rule or a pin.
+overlay promotes it: a rule or a pin.
 
 The **kind floor** is read at query time and never stored. Its
 provenance is `kind`. One arm places a delta, `distribution` →
@@ -555,8 +555,9 @@ name itself. It is on by default
 of the block).
 
 On the income side the model sees what is left of the **deposits**.
-Candidacy is that one kind (§7). In practice the model sees employers,
-letting agents, agencies and platforms whose names say what they are.
+Candidacy is that one kind (§7). Past the fence, the model sees payers
+whose names say what they are, such as employers, letting agents,
+agencies and platforms.
 
 - A business named like a person is fenced with the people. A config
   rule or a pin places it, which is the remedy for every fenced row.
@@ -631,7 +632,7 @@ behaviour:
 ```
 wealthdb income <view> [FROM [TO]] [--period P] [--level L]
                        [--rates R] [--maturing M] [--shift BP]
-                       [-f FORMAT] [-C COLS] [-x CCY] [-p]
+                       [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]
 ```
 
 The flags and their defaults are in [DESIGN.md](DESIGN.md) §4.13 and
@@ -880,16 +881,13 @@ The Income dashboard's two halves are wider than these views':
 - its received half counts every income line, wages and gifts among
   them, each other line under its account and by its operating-in
   class ([CASHFLOW.md](CASHFLOW.md) §5);
-- its expected half adds the other income's run-rate, by class and
-  account ([CASHFLOW.md](CASHFLOW.md) §12). It is the average of the
-  income lines on every account, so it reads the lines the received
-  half reads. The household's accounts read `pool_income`, every
-  other account `outside_income`. The cash flow projection reads the
-  statement's `other_income` instead;
-- in the current month a run-rate expects its monthly figure less
-  what its class and account received so far, never below 0. A wage
-  arrives on a pay day, so a share of the month's days would read
-  short before it.
+- its expected half adds the run-rate of the other income lines on
+  every account, by class and account. So it reads the lines the
+  received half reads. A line counts in `pool_income` or in
+  `outside_income` by the side of the pool its day puts it.
+  [CASHFLOW.md](CASHFLOW.md) §12 defines the two parts, and
+  [web/DESIGN.md](../../web/DESIGN.md) §6 how the dashboard shows
+  them.
 
 `wealthdb income projection` reads the six types alone.
 

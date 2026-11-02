@@ -56,7 +56,7 @@ One SQLite DB (`$XDG_DATA_HOME/wealthdb/carta/carta.db`). The relevant tables:
 - `instrument_external_id` = `entity:<corporation_id>`. One instrument per
   company (the issuer / the fund). Carta private securities carry no
   ISIN/CUSIP/symbol, so the instrument is adapter-scoped; cross-source joins
-  on these don't apply.
+  on these do not apply.
 - `position_key` = `entity:<corporation_id>` — one position per held company
   (keyed on its instrument). The company's share certificates / option grants
   are the lots of that position, aggregated, with the per-lot detail in the
@@ -328,7 +328,7 @@ removal times and the K-1 period ends, as the snapshot range. `LatestChangeNumbe
 newest dump. The source is observed through the newest dump that is not
 a dry run.
 
-## Open questions / future work
+## Known limits
 
 - **Cap-table valuation.** Held shares are valued per date: the share
   count from the certificate issue dates times the FMV in effect at each
@@ -338,5 +338,4 @@ a dry run.
   Without one, the collector falls back to the FMV at the last exercise.
   That is exact from the last exercise onward and over-states earlier
   dates (collector `DESIGN.md` §5.1).
-- **Vesting in gold.** Vesting stays silver-only. A gold home for it
-  would be a dedicated table, not the positions or transactions facts.
+- **Vesting in gold.** Vesting stays silver-only.

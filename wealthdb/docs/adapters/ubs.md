@@ -1179,11 +1179,11 @@ row.
 | `description` | `instruments.name` |
 | `sector` | payload only |
 
-A year-end Statement of Assets prints a gold-bar detail line for the
+A year-end Statement of Assets can print a gold-bar detail line for a
 precious-metals portfolio that the quarterly statements omit. The
-adapter already emits one overview precious-metals position
-(`PM-<portfolio>`) for that portfolio. Where the overview exists for the
-same date and portfolio, the detail line is suppressed, so the metal
+adapter also emits one overview precious-metals position
+(`PM-<portfolio>`) for such a portfolio. Where the overview exists for
+the same date and portfolio, the detail line is suppressed, so the metal
 counts once.
 
 The PDFs carry no CFI or UAC code, so the pair comes from the
@@ -1417,18 +1417,18 @@ it.
 ## 11. The portfolio transaction list (ubs-web migration 0012)
 
 A managed portfolio's securities trades reach gold on three rails, and
-the two older ones leave a hole between them.
+the two older ones can leave a gap between them.
 
 | Rail | Ids | Covers |
 | --- | --- | --- |
-| Annual Account Statement PDF | `stmt:` | A calendar year, published the following January — so the current year is unreadable for as long as twelve months, and a year whose statement was never published for an account is never covered at all. |
+| Annual Account Statement PDF | `stmt:` | A calendar year, published the following January — so the current year is unreadable for as long as twelve months, and a year whose statement is not published for an account is not covered. |
 | PSN MT515 confirmations | `mt515:` | From wherever that feed was first ingested. Nothing earlier is recoverable from it. |
 | The portfolio transaction list | `ptx:` | Back to the surface's own archive floor, which the collector records per export. |
 
 Between the last statement and the first confirmation, a discretionary
-mandate's cash account shows money arriving and leaving with nothing to
-explain it — which the cash flow statement can only read as cash the
-household kept.
+mandate's cash account can show money arriving and leaving with nothing
+to explain it. The cash flow statement can then only read that money as
+cash the household kept.
 
 **The rows are booked on the CASH ACCOUNT that paid**, not on the
 custody account the securities moved in: that is the account whose
@@ -1711,7 +1711,8 @@ in `swaps.go`, where both feeds are configured.
   where none is booked. It is held on the days the portfolio's
   statement snapshots state its securities, not on every day. So it
   carries as the portfolio's other holdings do. Its composition is the
-  PSN forward's, with provider `ubs-web`.
+  PSN forward's, with provider `ubs-web`, in the currency it sells,
+  with net assets of zero.
 - **The end.** On the first such day with no swap open, the overlay
   states the forwards of the day before at zero, with no instrument.
   No composition describes them, so the hedge ends there.

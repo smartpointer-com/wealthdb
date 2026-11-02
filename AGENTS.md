@@ -140,12 +140,12 @@ not just the one that was noticed.
   framing. Bank names and example tickers are fine.
 - **Messages say WHAT changed and WHY, not HOW — and stay short.**
   A tight subject line that carries the change; add at most a
-  sentence or two of context, and only when the subject can't stand
+  sentence or two of context, and only when the subject cannot stand
   alone. No per-file blow-by-blow. Match the existing log's voice.
 - **No AI-attribution trailer** — no `Co-Authored-By: Claude`, no
   "generated with" line. Use the repo's normal git identity.
 - Stage specific files by name; avoid `git add -A` so stray
-  secrets/artefacts don't slip in.
+  secrets/artefacts do not slip in.
 
 ## 6. Code quality & style
 
@@ -162,7 +162,7 @@ Hold every change to the bar a senior engineer would.
   never a substitute.
 - **Comments and docs describe behaviour, not an operator.**
   Narrate what the code does and why; describe a choice's *effect*,
-  not the person making it. Don't lean on a stand-in like "the
+  not the person making it. Do not lean on a stand-in like "the
   user" / "the owner" — rephrase to remove it. First/second person
   ("you") only in install and license docs. Match the density and
   idiom of the surrounding code.

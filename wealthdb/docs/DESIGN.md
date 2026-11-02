@@ -49,7 +49,7 @@ gains, exposure, spending, income, cash flow) read.
   "what do I hold today, anywhere?". Asset class, currency, and bank
   dimensions are filter columns, not JSON probes.
 - **Incremental merge from silver.** Each `wealthdb load` brings forward
-  only what's new since the previous merge, so daily runs stay cheap.
+  only what is new since the previous merge, so daily runs stay cheap.
 - **Faithful provenance.** Every gold row carries the silver
   `silver_source_id` and a payload pointer back to the silver row(s)
   it derives from. Nothing is irreversibly transformed.
@@ -134,7 +134,7 @@ wealthdb categorize [spending|income] (RW)    Categorise the unplaced merchants 
 wealthdb categorizations [spending|income] (RO) Dump the model-derived verdict stores; --forget SIG removes one (RW).
 wealthdb mcp-serve --stdio | --http ADDR (RO) Serve the read-only reports to AI agents over MCP (mcp/DESIGN.md).
 wealthdb version                      (RO)    Print the version: a release tag, or `<last release> nightly <commit>`.
-wealthdb help [<subcommand>]
+wealthdb help [<subcommand> | filter]
 ```
 
 `-a` means "all configured silver sources". `<id>` is the
@@ -150,7 +150,7 @@ flag list.
 subcommands work on a read-only one. See §4.10 for how read-only
 mode is detected, declared, and reported. `(setup)` denotes a
 subcommand that writes the config file, not the gold DB; it
-needs write permission on `--config`'s path but doesn't open the
+needs write permission on `--config`'s path but does not open the
 gold DB at all.
 
 ### 4.2 Top-level flags
@@ -202,7 +202,8 @@ Prints the consolidated portfolio as of a date.
 | --- | --- | --- |
 | `-d`, `--as-of` | today (UTC) | Date in `YYYY-MM-DD` to query as-of. |
 | `-f`, `--format` | `table` | One of `table`, `csv`, `csv_plain`, `json`. |
-| `-C`, `--columns` | `default` | Comma-separated column names, `default`, `all`, or a `+ADD,-REMOVE` delta against the default set. |
+| `-C`, `--columns` | `default` | Comma-separated columns, each by its name or its printed header, `default`, `all`, or a `+ADD,-REMOVE` delta against the default set. |
+| `-F`, `--filter` | none | Repeatable. Keeps the rows where every condition holds. It reads the printed columns after the report has run. `wealthdb help filter` lists the operators. |
 | `-x`, `--currency` | value of `default_currency` in the config file | ISO 4217 output currency for value columns (e.g. `USD`, `CHF`). The short form `-x` is mnemonic for "(currency) exchange"; `-c` stays reserved for the top-level `--config` flag (§4.2). |
 | `--with-cash` | off | Also emit one synthetic row per account+currency with non-zero cash (`asset_class = 'cash'`). |
 | `--missing-basis` | `lots.missing_basis`, else `ignore` | `ignore` \| `zero`: how a missing cost basis counts ([GAINS.md §8](GAINS.md)). Under `zero` the cost basis is the part the lots know. |
@@ -339,7 +340,7 @@ through:
 1. **Gold DB path** — default `$XDG_DATA_HOME/wealthdb/wealthdb.db`
    (`~/.local/share/wealthdb/wealthdb.db` without the variable). The wizard
    confirms the parent directory exists but does **not** create
-   the gold DB itself — that's `wealthdb init`'s job.
+   the gold DB itself — that is `wealthdb init`'s job.
 2. **Default output currency** — default `USD`. ISO 4217 only;
    validated for ISO 4217 shape (three uppercase ASCII letters).
 3. **First silver source** — `id` (slug matching `^[A-Za-z0-9_-]+$`),
@@ -617,12 +618,13 @@ flag.
 | `--period` | `monthly` | `daily` \| `weekly` \| `monthly` \| `quarterly` \| `annual` \| `total`. Maps onto the `date_trunc` part `report_spending_*` buckets by; `total` collapses the window into one bucket. |
 | `--level` | `primary` | `primary` \| `detailed` — the category vocabulary `categories` groups by. The other views ignore it. |
 | `-f`, `--format` | `table` | `table` \| `csv` \| `csv_plain` \| `json`. |
-| `-C`, `--columns` | `default` | Per-view column set: names, `default`, `all`, or a `+ADD,-REMOVE` delta. |
+| `-C`, `--columns` | `default` | Per-view column set: columns by name or printed header, `default`, `all`, or a `+ADD,-REMOVE` delta. |
+| `-F`, `--filter` | none | Repeatable. Keeps the rows where every condition holds. It reads the printed columns after the report has run. `wealthdb help filter` lists the operators. |
 | `-x`, `--currency` | `default_currency` | ISO 4217 output currency; historic FX at each line's `occurred_at`. |
 | `-p`, `--privacy` | off | Redact account ids, narratives and amounts. |
 
-The window defaults to the trailing twelve months rather than inception,
-and there are no row-filter flags; docs/SPENDING.md §7 argues both.
+The window defaults to the trailing twelve months rather than inception
+(docs/SPENDING.md §7).
 
 **Privacy classes** (§4.6): `merchant`, `counterparty`, `description`
 and `merchant_signature` take the free-text class. The account's id and
@@ -656,7 +658,7 @@ expected to pay over a window that may reach into the future
 | `--maturing` | `cash` | `cash` \| `idle` \| `roll`: what a maturing principal earns. Forward views only. |
 | `--shift` | `0` | A parallel shift of the floating rates, in whole basis points. Forward views only. |
 | `-C/--columns` | `default` | `withheld` is available on `summary` and off by default: tax deducted at source, shown beside the income it was taken from and never subtracted from `net_income`. On the forward views `withheld` is the withholding table's model, a default column of `projection`. |
-| `-f`, `-x`, `-p` | as §4.12 | `-p` masks `payer`, `payer_signature`, `counterparty` and `description` whole; types, provenance and `share` stay legible. On the forward views it stars amounts, quantities, prices and account ids. A name a person typed prints as a pseudonym (§4.6). |
+| `-f`, `-F`, `-x`, `-p` | as §4.12 | `-p` masks `payer`, `payer_signature`, `counterparty` and `description` whole; types, provenance and `share` stay legible. On the forward views it stars amounts, quantities, prices and account ids. A name a person typed prints as a pseudonym (§4.6). |
 
 The views of what was received refuse `--rates`, `--maturing` and
 `--shift`. The MCP `income` tool takes the same window and flags
@@ -693,7 +695,7 @@ and assumptions instead.
 | `--investing` | `whole` | `whole` \| `class` — net the investing section as one `Investments` node, or per asset class. Honoured by `flows` and `sankey`; the summary is always whole. **Refused** on `projection`. |
 | `--rates`, `--maturing`, `--shift` | `constant`, `cash`, 0 | `projection` only, as on `wealthdb income`'s forward views (§4.13); **refused** on the other views. |
 | `-C/--columns` | `default` | `summary` carries `yield`, `taxes`, `fees`, `giving`, `savings_rate` and the reconciliation memo (`cash_measured`, `fx_effect`, `cash_flow_measured`, `unexplained`) off by default; `flows` and `sankey` carry the dotted node keys; `projection` carries the operating-out classes `consumption`, `fees`, `taxes`, `giving` and `uncategorized`. |
-| `-f`, `-x`, `-p` | as §4.12 | `-p` masks account ids, amounts and the `name` column; sections, classes, groups and shares stay legible, which is what makes the diagram's privacy twin normalisation alone. A name a person typed prints as a pseudonym (§4.6). |
+| `-f`, `-F`, `-x`, `-p` | as §4.12 | `-p` masks account ids, amounts and the `name` column; sections, classes, groups and shares stay legible, which is what makes the diagram's privacy twin normalisation alone. A name a person typed prints as a pseudonym (§4.6). |
 
 The MCP `cashflow` tool takes the same views and flags. On
 `projection` its period defaults to `monthly` and refuses `total`. Its
@@ -712,7 +714,7 @@ What was gained or lost on what is held, realized and unrealized, over
 a window (docs/GAINS.md for the figures, §10.13 for the macros). The
 families' idiom: a positional view, a positional window with the
 trailing twelve months as its default, `--period` on the aggregate
-views, and the shared `-f`, `-C`, `-x`, `-p`.
+views, and the shared `-f`, `-C`, `-F`, `-x`, `-p`.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -722,7 +724,7 @@ views, and the shared `-f`, `-C`, `-x`, `-p`.
 | `--documents` | `primary` | `primary` \| `all`, on `realized` only: `all` lists every document's copy of a sale. Refused on the other views. |
 | `-r`, `--reverse` | off | `realized` only: newest first. Refused on the other views. |
 | `--missing-basis` | `lots.missing_basis`, else `ignore` | `ignore` \| `zero`: how a missing cost basis counts ([GAINS.md §8](GAINS.md)). Refused on `coverage` and `check`, which count a missing cost rather than read it. |
-| `-f`, `-C`, `-x`, `-p` | as §4.12 | `-p` masks account ids, quantities and amounts; percentages, basis stamps, dates and public security names stay legible. A name a person typed prints as a pseudonym (§4.6). |
+| `-f`, `-C`, `-F`, `-x`, `-p` | as §4.12 | `-p` masks account ids, quantities and amounts; percentages, basis stamps, dates and public security names stay legible. A name a person typed prints as a pseudonym (§4.6). |
 
 Every aggregate and positions row carries a `quality` column naming
 each way its figures can be incomplete, and `coverage` gives a verdict
@@ -747,8 +749,8 @@ What is really owned, as of a day: every fund looked through to what
 it holds, added to what is held directly (docs/EXPOSURE.md for the
 figures, §10.14 for the macros). `situs` gives where each holding
 legally sits, each fund whole (EXPOSURE.md §13). The holdings idiom: a
-positional view, `-d` for the day, and the shared `-f`, `-C`, `-x`,
-`-p`. `--period` turns a view into a series over a window.
+positional view, `-d` for the day, and the shared `-f`, `-C`, `-F`,
+`-x`, `-p`. `--period` turns a view into a series over a window.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -756,7 +758,7 @@ positional view, `-d` for the day, and the shared `-f`, `-C`, `-x`,
 | `-d`, `--as-of` | today | The day. |
 | `--country` | `risk` | `risk` \| `domicile`: the country a security counts in, on `countries` and `securities`. Refused on the other views. |
 | `--period` | none | `monthly` \| `quarterly` \| `annual`: the view at the end of every period of the window `[FROM [TO]]`, a `period` column first (EXPOSURE.md §7). Refused on `securities`, `issuers` and `funds`, and with `-d`. |
-| `-f`, `-C`, `-x`, `-p` | as §4.12 | `-C` names a share column without its `_pct` suffix. `-p` hides every amount and every instrument id (EXPOSURE.md §7). A name a person typed prints as a pseudonym (§4.6). On `coverage`, `-f ndjson` prints the declarations ledger's skeleton records still to fill in (EXPOSURE.md §9); it takes no `-C`, `-p` or `--period`. |
+| `-f`, `-C`, `-F`, `-x`, `-p` | as §4.12 | `-C` takes a share column by its name (`share`) or its header (`share_pct`). `-p` hides every amount and every instrument id (EXPOSURE.md §7). A name a person typed prints as a pseudonym (§4.6). On `coverage`, `-f ndjson` prints the declarations ledger's skeleton records still to fill in (EXPOSURE.md §9); it takes no `-C`, `-p` or `--period`. |
 
 Every view sums to `holdings global`, and every row carries a
 `quality` column naming what its figure rests on.
@@ -766,7 +768,7 @@ Every view sums to `holdings global`, and every row carries a
 What the holdings earn, and how their value moves with interest rates,
 as of a day (docs/YIELD.md for the figures, §10.15 for the code). The
 exposure idiom: a positional view, `-d` for the day, `--period` for a
-series, and the shared `-f`, `-C`, `-x`, `-p`.
+series, and the shared `-f`, `-C`, `-F`, `-x`, `-p`.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -774,7 +776,7 @@ series, and the shared `-f`, `-C`, `-x`, `-p`.
 | `-d`, `--as-of` | today | The day. |
 | `--converted` | off | The aggregate views at one row per entity, every currency together (YIELD.md §5). Refused on the other views. |
 | `--period` | none | `monthly` \| `quarterly` \| `annual`: the aggregate views and `curve` at the end of every period of the window `[FROM [TO]]`, a `period` column first. Refused on the other views, and with `-d`. |
-| `-f`, `-C`, `-x`, `-p` | as §4.12 | `-C` names a rate column without its `_pct` suffix. `-p` hides every amount, a price, every account id, and a security or fund key that is a holding's own (YIELD.md §2). A name a person typed prints as a pseudonym (§4.6). On `coverage`, `-f ndjson` prints the ledger's yield records still to fill in (YIELD.md §10); it takes no `-C`, `-p` or `--period`. |
+| `-f`, `-C`, `-F`, `-x`, `-p` | as §4.12 | `-C` takes a rate column by its name (`income_yield`) or its header (`income_yield_pct`). `-p` hides every amount, a price, every account id, and a security or fund key that is a holding's own (YIELD.md §2). A name a person typed prints as a pseudonym (§4.6). On `coverage`, `-f ndjson` prints the ledger's yield records still to fill in (YIELD.md §10); it takes no `-C`, `-p` or `--period`. |
 
 An aggregate row is one entity in one currency, and the total row
 weighs the currencies by value. Every row but `curve`'s and
@@ -870,7 +872,7 @@ Example config file:
 | --- | --- | --- |
 | `gold_db` | string | Filesystem path to the DuckDB file. Created by `wealthdb init`. Expanded as above. |
 | `default_currency` | string | ISO 4217. The output currency of every command that values money, and of the MCP server, when `-x`/`--currency` is not given. When it is a reporting currency (USD, CHF, EUR or GBP, §10.8), the web dashboards open in it too. |
-| `equity_transfers` | string | Optional. Filesystem path to a CSV ledger of equity transfers in/out of a tracked account that the collectors don't capture as valued flows. The loader injects each row as a canonical `transfer_in`/`transfer_out` transaction. Expanded as above; a missing file is a no-op. See §13.9. |
+| `equity_transfers` | string | Optional. Filesystem path to a CSV ledger of equity transfers in/out of a tracked account that the collectors do not capture as valued flows. The loader injects each row as a canonical `transfer_in`/`transfer_out` transaction. Expanded as above; a missing file is a no-op. See §13.9. |
 | `web` | object | Optional. Enables the dockerized Metabase BI server driven by `wealthdb web` (host-side). See [web/README.md](../../web/README.md). |
 | `web.enabled` | bool | `true` to allow `wealthdb web start`. Absent block or `false` = the server is not configured. |
 | `web.port` | integer | Host loopback port Metabase is published on (127.0.0.1 + [::1] → container 3000). Default 3000. |
@@ -900,11 +902,11 @@ Example config file:
 | `yield` | object | Optional. The yield inputs that no source knows: `curves` (a currency's public yield curve, one series of a configured source per tenor, `"3M": "fred:DGS3MO"`), `withholding` (percent withheld at source by situs country and tax wrapper, `default` for any wrapper, and `accounts` for an account whose rate is not its wrapper's), `rating_funds` (a rating-sliced fund's bucket or range, `BBB` or `AAA-A`), `conventions` (coupon frequency and day count per market: a currency, or a currency and a bond sector or `bill`; built-in defaults), `horizon_months` (1 to 36, default 12), `cycles` (overrides of the built-in map from the eleven sectors to cyclical, defensive and sensitive) and `settlement_cycles` (a market's settlement cycles, each in business days from a day on; a market named replaces its built-in cycles). Validated at config-load time; §7.6 says how a load stores it. Deployment-specific: lives in the config, never in the repository. |
 | `holding_aliases` | array | Optional. Entries `{ "source", "account"?, "key", "as", "note"? }` naming a holding a source keys two ways, so the gains, exposure and yield reports read both keys as one: a statement's overview line (`key`) until a daily feed lists the same holding by ISIN (`as`), say. `account` scopes the alias to one account; absent, it covers every account of the source. The load writes the block into gold's `holding_aliases` table whole, and `gains_windows` maps every position, lot and event key through it before a bucket's start meets its end (docs/GAINS.md §5). Validated for a configured source, two different keys, one alias per key, and no alias of an alias. Deployment-specific: lives in the config, never in the repository. |
 | `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole crypto portfolio inside an IRA / trust / Stiftung wrapper. Accepts `tax_wrapper` (unlike `account_overrides`, which also takes nickname / category / account_kind / management_style) or `exclude: true`, which drops the portfolio and every account inside it with their facts; one of the two must be set and they may not be combined. A per-account `tax_wrapper` override still wins over a portfolio one. See §13.8. |
-| `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. The class pass leaves a pinned instrument alone. See §13.8. |
+| `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name does not give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. The class pass leaves a pinned instrument alone. See §13.8. |
 | `transaction_instruments` | object | Optional. Nested map keyed by `silver_source_id` (outer) and the **lookup token** an adapter failed on (inner), naming the `instrument_external_id` that token means. Closes a row (a securities trade, or an income or withholding row of a security) whose feed states its instrument in a way nothing else in the product can resolve — a Swiss valor for a line the instrument dimension has no valor for, a fund renamed since the trade, a ticker of neither shape, a statement name that fits two holdings. The token is whatever the row's `instrument_hint` holds (§10.8); read the open set with `wealthdb transactions -C +instrument_hint`. Validated for a declared source and non-empty halves at config-load time; the instrument id itself cannot be checked without gold, as with the override families above. It states the IDENTITY only — what the instrument IS stays `instrument_overrides`' question. See §13.8. |
 | `supersession` | object | Optional. Ends a source's account at a date because something else carries it from there. An account can outlive its source — a deposit account whose bank is acquired keeps running under the acquirer's collector, a holding moves custodian — and gold keys an account on `(silver_source_id, account_external_id)`, so the two are two accounts and BOTH count. One grain-keyed map (`accounts`), keyed by `silver_source_id` to `account_external_id` to `YYYY-MM-DD` (UTC), validated for a declared source and a parseable date at config-load time. The loader drops that account's positions, cash balances and transactions dated on or AFTER the date, and writes one zero row AT it for whatever the account still held — dropping alone is not enough, because gold carries a key forward until something supersedes it and a source that simply stops reporting supersedes nothing (§10.7). Cutting by date rather than dropping the account keeps the earlier half of a statement or dump that straddles the handover. The drop is of what the adapter read: an `equity_transfers` (§13.9) row dated on or after the date is refused by name and fails the load instead. This bounds a series at the END; `inception_overrides` below bounds the start. An entry matching nothing is a silent no-op. See §13.8. |
 | `inception_overrides` | object | Optional. Pins the returns-window START date per source / portfolio / account so an entity's track record begins at its first real capital rather than a tiny pre-history dust base. Three grain-keyed maps (`sources`, `portfolios`, `accounts`), values `YYYY-MM-DD` (UTC). Consumed by the returns engine at query time — it stamps no gold column. See §5.4. |
-| `returns_exclude` | object | Optional. Omits whole accounts or portfolios from HIGHER-grain return aggregates (`sources`, `global`) while still reporting them at their own grain — e.g. keep holdings tracked in a shared login that belong to another person out of the source/global returns. Two grain-keyed maps (`portfolios`, `accounts`), each keyed by `silver_source_id` to a list of external ids; a listed source id must name a declared silver source. Returns only — holdings / net-worth are unaffected. See §5.5. |
+| `returns_exclude` | object | Optional. Omits whole accounts or portfolios from HIGHER-grain return aggregates (`sources`, `global`) while still reporting them at their own grain — e.g. keep accounts that are tracked but are not part of the household's own wealth out of the source/global returns. Two grain-keyed maps (`portfolios`, `accounts`), each keyed by `silver_source_id` to a list of external ids; a listed source id must name a declared silver source. Returns only — holdings / net-worth are unaffected. See §5.5. |
 | `returns_policy_overrides` | object | Optional. Per-source adjustments to the registered ReturnsPolicy, keyed by `silver_source_id` (not adapter kind). `flow_regime` replaces the source's flow classification with a named regime's canonical kind sets (`"flow_complete"` \| `"crypto_partial"` \| `"nav_only"`); `accounts_grain` sets the per-account display mode (`"normal"` \| `"blanked"` \| `"hidden"`). Unset fields keep the registered policy's values. See §5.6. |
 | `returns_hide` | object | Optional. Suppresses accounts' or portfolios' OWN return rows at every grain while their values and flows keep contributing to every aggregate — the display mirror of `returns_exclude`. Same grain-keyed shape (`portfolios`, `accounts` per `silver_source_id`). See §5.7. |
 | `lots` | object | Optional. The lot engine (docs/LOTS.md §7): `method` (`fifo` default, `lifo`, `hifo`, `lofo`, `average`), the global method; `missing_basis` (`ignore` default, `zero`), the readers' default reading of a missing cost basis; `sources` keyed by `silver_source_id` with `method`, `mode` (`fill` \| `shadow` \| `stated` \| `off`) and `grain` (`account` \| `portfolio`) overriding the source kind's policy; `portfolios` and `accounts` keyed by `silver_source_id` to an external id to `{"method": …}`; `basis`, a list of `{ "source", "account"?, "instrument", "per_unit", "acquired"?, "note"? }`, the cost basis of an instrument's lots the engine opens without one (a seed, a receipt nothing pairs, a transfer in with no ledger cost), at quantity × `per_unit` with `acquired` as the acquisition date. The method in force for a key is its account's, else its portfolio's, else its source's, else the kind's own, else the global one. Every source id must name a configured source; a bad value fails the load. Absent ⇒ fifo and each kind's registered policy. |
@@ -929,7 +931,7 @@ Example config file:
 | `spending.categorization.context` | string | Optional. `"merchant"` (default) sends merchant signatures only; `"descriptor"` adds the raw statement narratives; `"transaction"` adds date, amount, account kind and nearby-transaction signatures. The default is the most private level by decision, not by accident. Independent of the fence, which gates candidacy at every level. |
 | `spending.categorization.descriptor_samples` | integer | Optional, 0–20, default 3. Caps the raw narratives sent per merchant at the two context levels that send any. Range-checked even at the `merchant` level, where nothing reads it. |
 | `spending.categorization.fence_person_names` | boolean | Optional, **default `true`**. Keeps a signature that is a bare person's name — two or more all-letter tokens with no organisation marker — off a non-card account out of the model tier, at every context level. Turn it off only when the model endpoint is on this machine: a person's name is the one signature shape that is PII by itself, and every other arm of the fence reads a marker beside the name rather than the name. Card rows are exempt by construction (most card merchants are two plain words). `income.categorization` inherits it with the rest of the block. See docs/SPENDING.md §5. |
-| `symbol_resolution` | object | Optional. Groups the knobs for `wealthdb resolve-symbols`: the LLM endpoint (`model`) and the ticker-mapping override list (`overrides`). Both inner fields optional; the subcommand fails if `model` is unset and `--overrides-only` wasn't passed. |
+| `symbol_resolution` | object | Optional. Groups the knobs for `wealthdb resolve-symbols`: the LLM endpoint (`model`) and the ticker-mapping override list (`overrides`). Both inner fields optional; the subcommand fails if `model` is unset and `--overrides-only` was not passed. |
 | `symbol_resolution.model` | object | Optional. LLM endpoint used to back-fill missing instrument tickers (`baseUrl`, `api`, `apiKey`, `name`). Only the OpenAI-compatible Chat Completions API (`api: "openai-completions"`) is supported today. |
 | `symbol_resolution.overrides[]` | array | Optional. User-authored ticker-mapping overrides applied at the start of every run under `model_name='manual-override'`. Each entry keys on `silver_source_id` + `lookup_kind` (`instrument_external_id` or `name`) + `lookup_value`; set `symbol` to correct a ticker, or `delete: true` to suppress a row where no real ticker exists. |
 
@@ -951,7 +953,7 @@ remove it from gold — run `wealthdb reset <id>` first.
 
 `inception_overrides` pins where a returns track record
 STARTS, per entity, so a portfolio funded on top of a tiny pre-history
-dust base (an account-opening gift, a stub position) isn't measured from
+dust base (an account-opening gift, a stub position) is not measured from
 that base — which would leave the money-multiple correct but blow the
 *time-weighted* return up by orders of magnitude. It is general to every
 source, not just crypto.
@@ -992,8 +994,8 @@ source, not just crypto.
 ### 5.5 Returns exclusion (higher grains)
 
 `returns_exclude` omits whole accounts or portfolios from the SOURCES and GLOBAL
-return aggregates while still reporting them at their own grain — for holdings
-tracked in a shared login that belong to another person.
+return aggregates while still reporting them at their own grain — for accounts
+that are tracked but are not part of the household's own wealth.
 
 ```json
 "returns_exclude": {
@@ -1410,7 +1412,7 @@ The main binary deliberately knows nothing about these mappings.
 Bank-specific mappings (which silver table feeds which gold table,
 how the `(asset_class, vehicle)` pair is derived per source, how
 `transactions.kind` maps from each bank's discriminator, identifier
-conventions, deferred silver tables, open questions) live in their
+conventions, deferred silver tables, known limits) live in their
 own files under [adapters/](adapters/), one per adapter that needed
 one; the directory is the list. This keeps the present document
 focused on gold-side architecture. (Adapters without a dedicated doc
@@ -1451,7 +1453,7 @@ A few rules apply to every adapter regardless of bank:
   `silver.RefineETFExposure`: crypto ETFs/ETPs → `crypto`,
   physical-metal ETFs/ETPs → `metal` (miners funds excluded —
   they hold stocks), bond / fixed-income ETFs → `fixed_income`,
-  everything else → `public_equity`. Products whose names don't give
+  everything else → `public_equity`. Products whose names do not give
   away the exposure are pinned via the config's
   `instrument_overrides` (§5.1, §13.8).
 - **Silver tables gold does not project** — each adapter doc lists
@@ -1469,7 +1471,7 @@ applied migration, always add a new file.
 
 - **Timestamps**: `BIGINT` Unix seconds, UTC. Matches silver. The
   one exception is `load_audit.loaded_at`, which uses Unix
-  nanoseconds so a back-to-back `wealthdb load` pair can't
+  nanoseconds so a back-to-back `wealthdb load` pair cannot
   collide on the PK.
 - **Dates**: `DATE` for calendar-only fields like `acquisition_date`.
 - **Money**: `DECIMAL(28, 4)` for amounts, `DECIMAL(28, 8)` for
@@ -1965,7 +1967,7 @@ CREATE TABLE realized_lots (
 -- view realized_lots_all reads both: docs/LOTS.md §5.
 ```
 
-### 7.3 What's deliberately omitted
+### 7.3 What is deliberately omitted
 
 - **Views ahead of a reader.** A view exists because a query needed
   it. The serving views for the optional Metabase server are named
@@ -2309,7 +2311,7 @@ One transaction wraps the gold-side work. A crash anywhere rolls
 everything back; the next `wealthdb load` retries from the same
 watermark. The plugin's `Open` / `Status` / `ChangeWindow` /
 `Snapshots` / `Transactions` calls are read-only against silver
-and don't need transactional scope.
+and do not need transactional scope.
 
 `wealthdb load -a` runs the same sequence per silver source, each
 in its own transaction. A failure in one source does not roll
@@ -2366,12 +2368,12 @@ the delta:
 - **For transactions**: every event whose `occurred_at` falls in
   the window is wiped and re-emitted. This handles silver's
   amend-in-place behaviour cleanly: if silver retracted an event
-  inside the window, that event simply doesn't reappear, and the
+  inside the window, that event simply does not reappear, and the
   retraction propagates to gold.
 
 The plugin guarantees that any silver record changed since the
 previous watermark has its `snapshot_at` or `occurred_at` inside
-the returned window. That's the load contract.
+the returned window. That is the load contract.
 
 ### 8.3 The adapter contract for `Snapshots` and `Transactions`
 
@@ -2399,7 +2401,7 @@ the source's `realized_lots` rows with them. A sale's tax document
 arrives months after the sale and restates it, so no window derived
 from dumps or event dates is sure to cover it.
 
-The plugin does **not** consult gold for "what's already there" —
+The plugin does **not** consult gold for "what is already there" —
 the windowed delete in step 7 has wiped the slot first. The plugin
 is therefore stateless w.r.t. previous loads.
 
@@ -2427,9 +2429,9 @@ ON CONFLICT (silver_source_id, account_external_id) DO UPDATE
 Per column: **the newest non-NULL observation wins, and an older
 observation still fills a column no newer record has carried** —
 recency arbitrates conflicts, absence never wins. NULL means "this
-record doesn't carry the field", not "set it to NULL", in both
-directions: a newer record's NULL doesn't erase an older value, and
-an older record's value isn't discarded just because a newer,
+record does not carry the field", not "set it to NULL", in both
+directions: a newer record's NULL does not erase an older value, and
+an older record's value is not discarded just because a newer,
 field-less record exists. A merged source needs this: one feed may
 carry an attribute (a statement-derived `tax_wrapper`, say) that a
 newer feed's rows lack. The seen-at range expands in both directions
@@ -2845,8 +2847,8 @@ What follows for readers of these macros:
 
 The Metabase models need a value column **per reporting currency** (USD, CHF,
 EUR, GBP) so the currency is picked by picking a column — Metabase native
-*models* don't expose template-tag parameters to questions built on them, so a
-"target currency" widget wouldn't reach the charts. Calling
+*models* do not expose template-tag parameters to questions built on them, so a
+"target currency" widget would not reach the charts. Calling
 `report_x(MAX, '<ccy>')` once per currency and joining would re-run the
 whole pipeline per currency: only the out-currency conversion varies; the scan,
 cash dedup, and **base-currency** conversion are currency-agnostic. Migration
@@ -3510,7 +3512,7 @@ cmd/wealthdb                 imports loader + gold + config + wizard + output
 adapters, to register their policies. The writer takes canonical
 `*Change` values, not adapter handles, and `loader` is the sole place silver
 and gold meet. Migrations live under `internal/gold/migrations/`
-because Go's `//go:embed` can't traverse up the tree. The
+because Go's `//go:embed` cannot traverse up the tree. The
 `internal/` prefix keeps every package unimportable downstream —
 wealthdb is an application, not a library.
 
@@ -3791,10 +3793,10 @@ A user with only Docker installed can run the entire test suite — and
 `make update` — end-to-end. This is the same contract as `./wealthdb`
 itself.
 
-## 13. Further mechanisms and open questions
+## 13. Further mechanisms and known limits
 
 This section holds mechanisms that cut across the sections above
-(§13.2, §13.8 to §13.10) and the questions still open.
+(§13.2, §13.8 to §13.10) and the known limits.
 
 ### 13.1 Cross-silver instrument canonicalisation
 
@@ -3835,16 +3837,14 @@ covers; `fred` covers the major ones).
 ### 13.3 acquisition_date backfill
 
 Adapters set `acquisition_date` only where silver states it (§10.4).
-For holding-period queries to work across every source, the rest would
-have to be derived, for example from the earliest `buy` or
-`transfer_in` of each position. On the sources the lot engine fills,
+The other positions have none. On the sources the lot engine fills,
 `lots_at` already gives each open lot's acquisition date.
 
-### 13.4 Lot engine: open items
+### 13.4 Lot engine: known limits
 
 The lot engine (§7.5) leaves out what docs/LOTS.md §11 lists.
 
-Silver also states a few cost facts gold does not project yet:
+Silver also states a few cost facts gold does not project:
 
 - schwab-web's `cost_basis_methods`, the method a Gain/Loss Report
   prints per account;
@@ -3859,9 +3859,7 @@ Silver also states a few cost facts gold does not project yet:
 ### 13.5 A silver's own kind
 
 Nothing checks a source's configured kind against its silver, so a
-mismatch shows only as that adapter's read error. A silver that
-published its own kind in `schema_meta` would let the loader check the
-pairing up front. That needs a coordinated change with the collectors.
+mismatch shows only as that adapter's read error.
 
 ### 13.6 Concurrent loads
 
@@ -3880,11 +3878,9 @@ than racing or queueing. Concurrent readers (read-only mode,
 open on the file does fail a read-write open for as long as it
 lives, which is why the model commands retry their store.
 
-What remains open is queueing rather than refusing: a blocking
-take would suit a cron that would rather wait than fail. Refusing
-is the current contract because the holder may be an hour-long
-model run, and a silent hour of blocking is worse than an exit
-code.
+A second writer is refused, not queued. The holder may be an
+hour-long model run, and a silent hour of blocking is worse than an
+exit code.
 
 ### 13.7 Silver tables gold does not project
 
@@ -3963,7 +3959,7 @@ plus the free-text descriptors:
   `self_directed`, `advisory`, `discretionary`, `automated`.
 - **`account_category`** — free-text bank-supplied descriptor,
   supplementary to the enums. It keeps verbatim strings the
-  structured enums don't capture (UBS's "Custody / Cash-Custody",
+  structured enums do not capture (UBS's "Custody / Cash-Custody",
   etc.).
 
 Examples of adapter-supplied values:
@@ -3975,7 +3971,7 @@ Examples of adapter-supplied values:
   safekeeping legs. `tax_wrapper` is derived from `AcctTpCd`
   via an explicit known-code switch (every known PSN code
   maps to `taxable_personal`); unknown codes log a one-shot
-  WARN and leave the column nil. UBS PSN doesn't expose a
+  WARN and leave the column nil. UBS PSN does not expose a
   per-account nickname, so `nickname` stays NULL unless the
   config-side override fills it in. `management_style` is not
   surfaced by silver and stays nil.
@@ -3989,7 +3985,7 @@ Examples of adapter-supplied values:
   product label scraped from the eBanking account-overview
   page): `Trading`/`Savings` → `taxable_personal`,
   `Säule 3a` → `pillar_3a`, `Freizügigkeit` → `vested_benefits`.
-  `nickname` stays NULL; Swissquote doesn't expose one.
+  `nickname` stays NULL; Swissquote does not expose one.
 - **Fidelity** populates `tax_wrapper` (and, for a charitable
   account, `account_kind`) through `silver.portfolios.kind`:
   - `529` → `tax_wrapper=529`;
@@ -3999,7 +3995,7 @@ Examples of adapter-supplied values:
   `management_style` comes from silver's `accounts.management_style`
   (`automated` for a 529, `discretionary` for a managed trust). Silver
   does not carry per-account registration labels (Roth IRA, Coverdell
-  ESA); fidelity-web's DESIGN.md §11.5 describes the path to add them.
+  ESA). fidelity-web's DESIGN.md §11.5 says why.
 
 Adapters use SQLite PRAGMA-based feature detection where the
 silver schema has evolved (e.g. Swissquote's pre-v5 silvers used
@@ -4146,15 +4142,12 @@ The three structured classifiers are part of the default
 column set; the descriptor columns (`account_category`,
 `account_nickname`) are registered but opt-in.
 
-The reports take no row filters (`wealthdb help`): a view is picked,
-then its output filtered.
-
 ### 13.9 Equity-transfer ledger
 
 Securities transferred *into* a tracked account (e.g. shares
 transferred in from another custodian at appreciated value) are a
 capital inflow at their market value on the transfer date —
-but the collectors often don't capture them as valued transactions
+but the collectors often do not capture them as valued transactions
 (the position just appears in a later snapshot, or the transfer is
 booked as a $0-cash share journal). Left uncorrected, that value
 reads as in-account performance, inflating returns — most visibly
@@ -4175,7 +4168,7 @@ and it shows in the transactions report. Columns:
 `cost_basis` (the pre-transfer basis) rides along in the payload for
 reference and is not used by the returns math. `account` accepts
 either the gold `account_external_id` or an account nickname
-(resolved at load). A row whose value isn't yet known is left at 0
+(resolved at load). A row whose value is not yet known is left at 0
 — a placeholder that books nothing until filled in.
 
 Mechanics (`internal/loader/transfers.go`): ledger transactions get

@@ -45,7 +45,7 @@ holding is valued exactly as `holdings global` values it.
 
 ## 2. The views
 
-`wealthdb yield <view> [-d DATE] [--converted] [-f FORMAT] [-C COLS] [-x CCY] [-p]`
+`wealthdb yield <view> [-d DATE] [--converted] [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]`
 
 `wealthdb yield <view> --period monthly|quarterly|annual [FROM [TO]]`
 

@@ -163,6 +163,11 @@ CUSIP and symbol, after it maps the holding's key through
 the reference, and the collector stores the composition under it. The
 join back is exact.
 
+A forward with none of them is keyed by its source and its contract id
+(`canonical.ContractKey`). The key is a `name:` key. Its composition
+is the legs its own source states
+([ubs.md §14](ubs.md#14-fx-forwards)).
+
 Gold then reads every key through its security aliases
 (`security_aliases`, rebuilt at every load):
 

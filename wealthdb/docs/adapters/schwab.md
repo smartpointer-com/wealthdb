@@ -601,21 +601,17 @@ sales. The statement and history feeds book each sale as cash once.
 The `form_1099b` rows also stay out of the transaction range that
 `Status` and `ChangeWindow` report, so they widen no load window.
 
-## 9. Open questions
+## 9. Known limits
 
 - **Tax withholding on dividends.** A `DIVIDEND_OR_INTEREST` row
   carries only its cash leg. The adapter books its `netAmount`, leaves
   `gross_amount` NULL, and generates no separate `tax` row for a
-  withholding. Tax-lot work may need the withholding as an event of
-  its own.
+  withholding.
 - **`open_orders`.** Not projected, so gold reports no open orders.
 - **Cost-basis methods.** A Gain/Loss Report prints the account's
   relief method per asset class (`cost_basis_methods`, schwab-web
   DESIGN.md §9.3). Gold does not map it.
-- **Explicit suffix→hashValue override.** The bridge is automatic
-  only. The exact tier (§7.1) resolves a suffix collision wherever
-  `account_number_full` is present. A config field such as
-  `account_bridge: {<api_hash>: <web_suffix>}` would be needed only for
-  a suffix collision on an account whose payload carries no full
-  number. The bridge's error message suggests an override, which no
-  config field provides.
+- **A suffix collision without a full number.** The bridge matches
+  automatically (§7.1). Where two api accounts share a web suffix and
+  no payload carries the full number, the load fails with "cannot be
+  bridged". No config field overrides the bridge.

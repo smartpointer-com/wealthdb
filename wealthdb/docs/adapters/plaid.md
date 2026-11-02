@@ -486,13 +486,13 @@ categories, version 2, under one key for every account kind.
   vocabulary translates the row to something other than a card bill
   (SPENDING.md §3).
 
-## 11. Open questions
+## 11. Known limits
 
 - **Account ids.** Whether Plaid keeps an account's id from one run to
-  the next is open (collector DESIGN.md §8). A new id would read as one
-  account closed and another opened.
+  the next is unverified (collector DESIGN.md §8). A new id would read
+  as one account closed and another opened.
 - **Cancel rows.** Which institutions send a `cancel` row, and for what,
-  is open.
+  is unknown.
 - **Mortgage instalments.** A payment to the Item's own mortgage is not
   linked to that mortgage. Plaid states no counter account, and the
   loan's own ledger is not booked. Cash flow therefore draws each

@@ -175,7 +175,7 @@ collision is impossible. Suppressing the whole period rather than
 just the day is also the right reading — the reconstruction is
 anchored *to* these closing figures, so wherever it runs it
 already carries them, at balance-move density instead of monthly.
-In practice the split falls out as: statement era → period
+So the split falls out as: statement era → period
 anchors; export era → the per-day reconstruction.
 
 `transactions_covered` is deliberately **not** consulted. It
@@ -321,9 +321,9 @@ refused. A record outside the delete window is re-inserted without its
 predecessor being removed, so it would duplicate on every load.
 `period_start` is not included: nothing is emitted at it.
 
-## 9. Open questions
+## 9. Known limits
 
 - **Unmapped card types.** The kind map covers the CSV types,
   statement sections and `TRNTYPE` values listed in §6. A cash advance
   or a balance transfer lands as `other`, with its raw type in the
-  payload, until it is mapped.
+  payload.

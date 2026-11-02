@@ -24,15 +24,16 @@ one owner and a stable contract with the next.
 
 Four collectors stand in for the rest above; the diagram shows the
 shape, not the roster. [collectors/README.md](collectors/README.md)
-carries the roster. It names every source, what it fetches and how it is
-driven, and is the one place that list is written down.
+carries the roster: the full table, with what each fetches and how it
+is driven.
 
-- **Bronze** — exactly what the source returned, untouched. Owned
-  by each collector's `download.py`. Lands under
+- **Bronze** — what the source returned, as the source returned it.
+  Owned by each collector's `download.py`. Lands under
   `$XDG_DATA_HOME/wealthdb/<source>/<UTC-timestamp>/` (XDG data dir;
   `$XDG_DATA_HOME` defaults to `~/.local/share` when unset).
-  A collector's README may name parts of an answer that its bronze
-  leaves out, because no parser reads them, or stores repacked.
+  A collector may leave out a part of an answer that no parser reads,
+  or store a part repacked, such as compressed. Its README names each
+  such part.
 - **Silver** — bronze parsed into a source-shaped SQLite, owned by
   each collector's `load.py`. One DB per source (cointracking writes
   DuckDB instead). JSON payloads carry through anything not promoted

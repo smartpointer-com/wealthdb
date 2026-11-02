@@ -32,7 +32,8 @@ creates or loses any. Every view therefore sums to `holdings global`.
 - **A fund reference** names a fund: `isin:…`, `cusip:…` or `symbol:…`.
   **A security key** names a security the same way, with `figi:…` and
   `name:…` as last resorts. One scheme serves both: a fund is a security
-  that has a composition.
+  that has a composition. A forward with no ISIN, CUSIP or symbol is a
+  `name:` key built from its source and contract id.
 - **An alias** reads one key as another. A ticker a fund line states
   beside an ISIN reads as that ISIN, so a stock held under its ticker
   and a line that names its ISIN are one security.
@@ -375,7 +376,7 @@ The `currencies` view marks each row's kind: `fiat`, `metal` or
 
 ## 7. The views
 
-`wealthdb exposure <view> [-d DATE] [--country risk|domicile] [-f FORMAT] [-C COLS] [-x CCY] [-p]`
+`wealthdb exposure <view> [-d DATE] [--country risk|domicile] [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]`
 
 `wealthdb exposure <view> --period monthly|quarterly|annual [FROM [TO]]`
 
@@ -542,9 +543,9 @@ is the running share of net worth down to the row. `equity`, `debt` and
 `funds` lists each fund held directly, then one row for all other
 holdings together. A forward held directly is one of the other
 holdings, and `securities` lists its legs (§5). `securities` and
-`funds` therefore sum to net worth, like the other views. A fund a declaration describes reads `via`
-`declared`, with the record's `declaration_date` and the dimensions it
-`declared`.
+`funds` therefore sum to net worth, like the other views. A fund a
+declaration describes reads `via` `declared`, with the record's
+`declaration_date` and the dimensions it `declared`.
 
 `-p` hides every amount and every instrument id a holding is named by.
 A manual holding's key and name print as a pseudonym, such as
@@ -878,9 +879,10 @@ figures at every month end and today, by country of risk, and each
 holding's legal situs. Its pickers narrow a chart to a selection of
 sources, tax wrappers and asset classes. A share then reads as a share
 of the selection's net worth. With nothing picked, it is a share of net
-worth, as here. The command has no such filter. Every refresh
-recomputes the whole history, so a new composition or declaration shows
-in past months too. A security's attributes, its size among them, are
+worth, as here. The command has no such selection: `-F` keeps rows,
+and a share stays a share of net worth. Every refresh recomputes the
+whole history, so a new composition or declaration shows in past
+months too. A security's attributes, its size among them, are
 today's at every month end, as in a `--period` series (§7). The debt
 cards cover today and the 12 month ends before. The credit, maturity,
 coupon and cycle cards plot `class_share`.
@@ -896,8 +898,9 @@ instants.
 each one takes and the privacy twin, and §8 the tables they read.
 
 The MCP server has an `exposure` tool with the same fourteen views, an
-`as_of` day and the `country` choice, but no `--period` series. Its
-rows equal the command's, cell for cell.
+`as_of` day, the `country` choice, and a `period` series between
+`from` and `to` on the views `--period` takes. Its rows equal the
+command's, cell for cell.
 
 ## 13. Legal situs
 

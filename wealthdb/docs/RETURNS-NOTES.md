@@ -29,7 +29,7 @@ Each source's knowledge enters through its `ReturnsPolicy` (see
   (`transfer_in` / `transfer_out` from the equity-transfer ledger) for value
   that arrived from another tracked vehicle rather than a bank.
   A blended aggregate MWR is still computed and tagged
-  `mwr_incomplete_flows`: disclose, don't refuse. carta and equityzen
+  `mwr_incomplete_flows`: disclose, do not refuse. carta and equityzen
   count the real boundary flows of their double-entry ledgers (see
   "Pluggable per-source policy"). A window of theirs with no observed
   flow keeps `nav_only_capital_call_risk` through the `CapitalCallRisk`
@@ -54,7 +54,7 @@ downstream stage follows from that absence:
   so a card leg can never pair with a real transfer and net it away;
 - snapshot-day loading, grouping and the materializer need no change of
   their own: they only ever walk the map, and `loadSnapshotDays` /
-  `matchCrossTransfers` already skip accounts they don't find.
+  `matchCrossTransfers` already skip accounts they do not find.
 
 **Deliberately not a `ReturnsPolicy` knob.** Policies are keyed by adapter
 kind and default to a strict no-op, so a card arriving from a source with

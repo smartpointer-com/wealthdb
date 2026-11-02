@@ -287,9 +287,8 @@ The first matching step places a row:
 10. **The spending kinds** go to operating out, by resolved spend
     category: `purchase`, `refund`, `fee`, `tax`, `withdrawal` and
     negative `interest`.
-11. **Everything else is excluded and counted.** In practice that is an
-    unpaired `card_payment` or an unmatched `transfer_in` /
-    `transfer_out`.
+11. **Everything else is excluded and counted.** That is an unpaired
+    `card_payment` or an unmatched `transfer_in` / `transfer_out`.
 
 The two cases in step 11 are excluded for these reasons:
 
@@ -849,7 +848,7 @@ config surfaces would let a deployment carry half of it.
 
 ```
 wealthdb cashflow <view> [FROM [TO]] [--period P] [--level L] [--investing G]
-                         [--rates R] [--maturing M] [--shift BP] [-f FORMAT] [-C COLS] [-x CCY] [-p]
+                         [--rates R] [--maturing M] [--shift BP] [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]
 ```
 
 The families' idiom, unchanged. The flags and their defaults are in
@@ -1249,7 +1248,7 @@ Each names a way the statement can be quietly wrong:
 
 ```
 wealthdb cashflow projection [FROM [TO]] [--period P] [--rates R] [--maturing M] [--shift BP]
-                             [-f FORMAT] [-C COLS] [-x CCY] [-p]
+                             [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]
 ```
 
 The cash flow projection sets the household's expected income against
@@ -1261,7 +1260,7 @@ months, not a plan. Its window is the income projection's
 month's first day, TO a month's last. `--period` is `monthly` (the
 default), `quarterly` or `annual`.
 `--rates`, `--maturing` and `--shift` are the income projection's
-assumptions.
+assumptions. The MCP `cashflow` tool serves the same view.
 
 Two sources feed it:
 
@@ -1373,6 +1372,4 @@ outside the pool out of it (§3), so `net` never counts it.
 line as operating income and no income line holds it, such as a
 reimbursement. This view reads the statement, as the rest of the
 projection does. The Income dashboard reads the two income-line parts
-as the expected half of the income no holding pays, so it expects what
-its received half counts ([web/DESIGN.md](../../web/DESIGN.md) §6).
-The MCP `cashflow` tool serves the same view.
+([web/DESIGN.md](../../web/DESIGN.md) §6).

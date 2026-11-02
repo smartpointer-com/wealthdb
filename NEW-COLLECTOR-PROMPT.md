@@ -34,7 +34,7 @@ the template should read this whole file plus the docs it names.
    the end of scaffolding (explore occasionally adds one later, such
    as a region or contract code). The agent never sees credential
    values, only the file's variable *names*.
-2. **Have an agent draft the kickoff — don't hand-fill the
+2. **Have an agent draft the kickoff — do not hand-fill the
    template.** Start a throwaway *authoring* session in the repo root
    and say, roughly:
 
@@ -92,8 +92,7 @@ Auth/Runtime columns of the roster table in
 Which archetype a new source is cannot be known up front — the explore
 phase measures it. Scaffold on the closest guess (a Camoufox browser
 scraper is the safe default for an unknown bank) and let the captures
-decide; de-escalating to plain REST after discovery is cheap and has
-happened before.
+decide; de-escalating to plain REST after discovery is cheap.
 
 ## The kickoff prompt template
 
@@ -275,7 +274,7 @@ and move on.
 
 - NEVER start a live session unprompted. Logins fire real 2FA at the
   user's device, and repeated attempts trip fraud lockouts (repeated
-  rapid logins at one provider have led to a soft block).
+  rapid logins at one provider can trigger a soft block).
   Every live run is explicitly requested with the user present.
   Treat each failed login as a burned experiment: diagnose from
   captures, respect multi-hour cooldowns, never fire logins in quick
@@ -327,16 +326,15 @@ in the bank's UI before the authoring interview and note what the
 login asks for, which 2FA factor fires, what export buttons exist, how
 far back statements go, and anything idiosyncratic about the login
 screen — the answers land here whether typed directly or elicited by
-the authoring agent's questions. Frame every item as *verify, don't re-derive*: the agent
+the authoring agent's questions. Frame every item as *verify, do not re-derive*: the agent
 treats each as a hypothesis, and explore confirms or refutes it. Both
 outcomes are wins — a confirmed known skips discovery; a refuted one
-gets corrected for free, and whole phases have been dropped this way
-when their premise turned out false. What no prompt can know (an
-unusual login control, an undocumented endpoint) surfaces during
-explore; the user's eyes on the live UI routinely catch what captures
-miss. Narrating observations back in prose — and wandering
-off-script — has repeatedly surfaced load-bearing endpoints that no
-scripted walk would have visited.
+gets corrected for free, and can drop a whole phase whose premise
+was false. What no prompt can know (an unusual login control, an
+undocumented endpoint) surfaces during explore; the user's eyes on
+the live UI can catch what captures miss. Narrating observations
+back in prose — and wandering off-script — can surface load-bearing
+endpoints that no scripted walk would visit.
 
 ## The user protocol
 
@@ -498,7 +496,7 @@ as hard rules rather than advice.
   of what is fetched carries the rest to the next run. fidelity-web's
   lot step is the reference (its DESIGN.md §8.3.1).
 - **Logins are budgeted.** Banks rate-limit: a handful of rapid
-  attempts has triggered multi-hour fraud holds (pushes silently stop
+  attempts can trigger multi-hour fraud holds (pushes silently stop
   arriving; logins stall before the challenge), and a handful of
   sign-ins in a short window can provoke a captcha. Recognize the tell,
   stop unprompted, and let the user time the single retry. Captcha
