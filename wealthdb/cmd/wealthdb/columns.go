@@ -123,7 +123,7 @@ func (c columnSpec[T]) header() string {
 func resolveColumns[T any](flagValue string, defaults []string, registry []columnSpec[T]) ([]columnSpec[T], error) {
 	flagValue = strings.TrimSpace(flagValue)
 	if adds, removes, isDelta := parseColumnsDelta(flagValue); isDelta {
-		return columnsByName(applyColumnsDelta(defaults, adds, removes), registry)
+		return columnsByName(applyColumnsDelta(defaults, registryNames(adds, registry), registryNames(removes, registry)), registry)
 	}
 	switch flagValue {
 	case "", "default":
@@ -137,7 +137,25 @@ func resolveColumns[T any](flagValue string, defaults []string, registry []colum
 	for i, n := range names {
 		names[i] = strings.TrimSpace(n)
 	}
-	return columnsByName(names, registry)
+	return columnsByName(registryNames(names, registry), registry)
+}
+
+// registryNames reads each name as the server's columnLookup.exact does:
+// a registry name or a header as printed (value_USD for value), any
+// case. A name that is neither is left for columnsByName to refuse.
+func registryNames[T any](names []string, registry []columnSpec[T]) []string {
+	l := columnLookup{cols: make([]reportColumn, len(registry))}
+	for i, c := range registry {
+		l.cols[i] = reportColumn{name: c.Name, header: c.header()}
+	}
+	out := make([]string, len(names))
+	for i, n := range names {
+		out[i] = n
+		if j := l.exact(n); j >= 0 {
+			out[i] = registry[j].Name
+		}
+	}
+	return out
 }
 
 func columnsByName[T any](names []string, registry []columnSpec[T]) ([]columnSpec[T], error) {

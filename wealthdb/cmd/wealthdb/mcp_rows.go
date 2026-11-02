@@ -298,10 +298,8 @@ var currencySuffixed = regexp.MustCompile(`^(.+)_([a-z]{3})$`)
 func (l columnLookup) find(name string) (int, string, error) {
 	want := strings.ToLower(strings.TrimSpace(name))
 	ccy := strings.ToLower(l.currency)
-	for i, c := range l.cols {
-		if strings.ToLower(c.header) == want || c.name == want {
-			return i, l.note(name, i, false), nil
-		}
+	if i := l.exact(name); i >= 0 {
+		return i, l.note(name, i, false), nil
 	}
 	// A name with a currency suffix means a converted column, even when
 	// it is misspelt or names another currency: total_valu_usd is
@@ -359,6 +357,18 @@ func (l columnLookup) find(name string) (int, string, error) {
 		}
 	}
 	return -1, "", fmt.Errorf("unknown column %q; available: %s", name, l.headers())
+}
+
+// exact is the column name names as its registry name or its header,
+// any case; -1 for none. The CLI's -C reads names this way.
+func (l columnLookup) exact(name string) int {
+	want := strings.ToLower(strings.TrimSpace(name))
+	for i, c := range l.cols {
+		if strings.ToLower(c.header) == want || c.name == want {
+			return i
+		}
+	}
+	return -1
 }
 
 func (l columnLookup) byName(name string) int {

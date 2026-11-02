@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -63,5 +64,38 @@ func TestApplyColumnsDelta(t *testing.T) {
 		if !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// TestColumnsTakeHeaders: -C reads a column by its registry name or by
+// its header as printed, any case, in a list and in a delta, as the
+// server's columns parameter does.
+func TestColumnsTakeHeaders(t *testing.T) {
+	t.Parallel()
+	type row struct{}
+	reg := []columnSpec[row]{
+		{Name: "name"}, {Name: "value", Header: "value_USD"}, {Name: "quality"},
+	}
+	names := func(cs []columnSpec[row]) []string {
+		var out []string
+		for _, c := range cs {
+			out = append(out, c.Name)
+		}
+		return out
+	}
+	for _, c := range []struct{ expr, want string }{
+		{"name,value_USD", "name value"},
+		{"NAME,Value_usd", "name value"},
+		{"name,value", "name value"},
+		{"-value_USD", "name"},
+		{"+quality,-value_USD", "name quality"},
+	} {
+		got, err := resolveColumns(c.expr, []string{"name", "value"}, reg)
+		if err != nil || strings.Join(names(got), " ") != c.want {
+			t.Errorf("-C %s = %v %v, want %s", c.expr, names(got), err, c.want)
+		}
+	}
+	if _, err := resolveColumns("value_CHF", nil, reg); err == nil || !strings.Contains(err.Error(), `unknown column "value_CHF"`) {
+		t.Errorf("another currency's header: %v", err)
 	}
 }
