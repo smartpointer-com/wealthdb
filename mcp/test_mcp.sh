@@ -68,7 +68,7 @@ if _publish_args 3300 all 2>/dev/null; then fail "bad bind refused"; else pass "
 
 echo "== _docker_run_args (detached, read-only, hardened, loopback) =="
 HOME=/home/u XDG_DATA_HOME= XDG_CONFIG_HOME=/cfg WEALTHDB_DATA_ROOT=/data WEALTHDB_CONFIG= WEALTHDB_IMAGE_TAG=latest _resolve_knobs
-PORT=3300 BIND=both AUTH=token ROWS= MAX_ROWS= ALLOW_HOSTS=
+PORT=3300 BIND=both AUTH=token CHARS= ALLOW_HOSTS=
 _docker_run_args
 joined="${DOCKER_ARGS[*]}"
 check     "detached"               "run -d"                                       "$joined"
@@ -86,12 +86,12 @@ check     "serves HTTP"            "wealthdb:latest -c /cfg/wealthdb.cfg mcp-ser
 check_not "no token in env"        "WEALTHDB_MCP_TOKEN"                           "$joined"
 check_not "no -t"                  " -t "                                         "$joined"
 
-ROWS=200 MAX_ROWS=500 ALLOW_HOSTS="wealthdb-mcp,host.docker.internal"
+CHARS=4000 ALLOW_HOSTS="wealthdb-mcp,host.docker.internal"
 _docker_run_args
 joined="${DOCKER_ARGS[*]}"
-check     "row knobs"              "--rows 200 --max-rows 500"                    "$joined"
+check     "character budget"       "--chars 4000"                                 "$joined"
 check     "allowed hosts"          "--allow-host wealthdb-mcp --allow-host host.docker.internal" "$joined"
-ROWS= MAX_ROWS= ALLOW_HOSTS=
+CHARS= ALLOW_HOSTS=
 
 AUTH=none
 _docker_run_args

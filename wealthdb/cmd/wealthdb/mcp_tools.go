@@ -100,18 +100,11 @@ func (s *mcpServer) shapeParams() []param {
 		stringParam("search", "Keep rows where any text cell contains this (case-insensitive)."),
 		stringParam("columns", `"default", "all", a comma list of names, or "+add,-remove"; describe(topic=<tool>) lists them.`),
 		stringParam("sort", `Column to sort by; "-" prefix for descending. "-value": the main money column, largest first (by size, whatever the sign).`),
-		{name: "limit", kind: paramInteger, doc: s.limitDoc()},
+		{name: "max_chars", kind: paramInteger, doc: fmt.Sprintf("Most characters the result may take (default %d); the page ends at a row boundary and the last line says how to get the rest.", s.chars)},
+		{name: "limit", kind: paramInteger, doc: "Most rows to return (default: as many as max_chars holds)."},
 		{name: "offset", kind: paramInteger, doc: "Rows to skip (default 0)."},
 		stringParam("format", "Result format (default table).", resultFormats...),
 	}
-}
-
-func (s *mcpServer) limitDoc() string {
-	doc := fmt.Sprintf("Rows to return (default %d; 0 for all", s.rows)
-	if s.maxRows > 0 {
-		doc += fmt.Sprintf(", up to %d", s.maxRows)
-	}
-	return doc + ")."
 }
 
 var (
@@ -331,7 +324,7 @@ func (s *mcpServer) tools() []toolSpec {
 		},
 		{
 			name: "describe", title: "Describe",
-			description: "Help. Without topic: what this server is, the configured sources and their latest data dates, the default currency, the row limit, and which tool answers which question. " +
+			description: "Help. Without topic: what this server is, the configured sources and their latest data dates, the default currency, the character budget, and which tool answers which question. " +
 				"topic=<tool name>: that tool's views, every column it can show, its filters and conventions. topic=dates, privacy, quality or glossary: the conventions.",
 			params: []param{stringParam("topic", "A tool name, or dates, privacy, quality, glossary. Default: the overview.")},
 			run:    s.describe,
@@ -903,8 +896,7 @@ func (s *mcpServer) runFamily(ctx context.Context, tool string, fam *family, a *
 	}
 
 	head, meta := s.header(tool, fam, rep, req, len(idx), sh, append(notes, sh.notes...))
-	p := page{idx: cut(idx, sh.offset, sh.limit), total: len(idx), offset: sh.offset, limit: sh.limit,
-		capped: sh.capped, narrow: fam.narrow}
+	p := page{idx: idx, offset: sh.offset, limit: sh.limit, budget: sh.budget, narrow: fam.narrow}
 	if len(idx) == 0 {
 		p.empty = emptyNote(rs, fam, req.view, named, a)
 	}
@@ -976,8 +968,8 @@ type resultShape struct {
 	cols    []int
 	sortCol int // -1 for the report's own order
 	desc    bool
-	limit   int
-	capped  bool
+	limit   int // 0 for no row bound
+	budget  int // max_chars
 	offset  int
 	notes   []string
 }
@@ -1008,7 +1000,7 @@ func (s *mcpServer) shape(tool string, fam *family, rep *report, req request, a 
 			sh.notes = append(sh.notes, note)
 		}
 	}
-	if sh.limit, sh.capped, sh.offset, err = s.paging(a); err != nil {
+	if sh.limit, sh.budget, sh.offset, err = s.paging(a); err != nil {
 		return sh, fmt.Errorf("%s: %v", tool, err)
 	}
 	return sh, nil
@@ -1134,26 +1126,29 @@ func windowStart(from int64) string {
 	return formatDate(from)
 }
 
-// paging reads limit and offset against the server's default and
-// ceiling. capped reports a limit the ceiling lowered.
-func (s *mcpServer) paging(a *toolArgs) (limit int, capped bool, offset int, err error) {
-	limit = s.rows
+// paging reads limit, max_chars and offset. Without a limit the page
+// is as long as the budget holds; max_chars defaults to the server's.
+func (s *mcpServer) paging(a *toolArgs) (limit, budget, offset int, err error) {
 	if n, ok := a.integer("limit"); ok {
 		if n < 0 {
-			return 0, false, 0, fmt.Errorf("limit must be 0 (every row) or more, not %d", n)
+			return 0, 0, 0, fmt.Errorf("limit must be 1 or more, not %d; leave it out (or 0) for as many rows as max_chars holds", n)
 		}
 		limit = n
 	}
-	if s.maxRows > 0 && (limit == 0 || limit > s.maxRows) {
-		limit, capped = s.maxRows, true
+	budget = s.chars
+	if n, ok := a.integer("max_chars"); ok {
+		if n < 1 {
+			return 0, 0, 0, fmt.Errorf("max_chars must be 1 or more, not %d; it has no unlimited value", n)
+		}
+		budget = n
 	}
 	if n, ok := a.integer("offset"); ok {
 		if n < 0 {
-			return 0, false, 0, fmt.Errorf("offset must be 0 or more, not %d", n)
+			return 0, 0, 0, fmt.Errorf("offset must be 0 or more, not %d", n)
 		}
 		offset = n
 	}
-	return limit, capped, offset, nil
+	return limit, budget, offset, nil
 }
 
 // filterViewError says why the requested view and every finer one lack

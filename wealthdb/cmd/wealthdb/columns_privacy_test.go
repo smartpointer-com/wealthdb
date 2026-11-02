@@ -717,7 +717,7 @@ func typedLabelCalls(s *mcpServer, today time.Time) []typedLabelCall {
 		}
 		for _, view := range views {
 			c := typedLabelCall{name: strings.TrimSpace(spec.name + " " + view),
-				args: map[string]any{"format": "csv", "columns": "all", "limit": 0}, cli: []string{spec.name}}
+				args: map[string]any{"format": "csv", "columns": "all", "max_chars": maxIntegerParam}, cli: []string{spec.name}}
 			if view != "" {
 				c.args["view"] = view
 				c.cli = append(c.cli, view)

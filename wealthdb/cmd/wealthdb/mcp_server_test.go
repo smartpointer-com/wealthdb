@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -539,19 +541,41 @@ func TestMCPStatedIsASideView(t *testing.T) {
 	}
 }
 
-// TestMCPRowCeiling: the ceiling lowers a larger limit, and limit 0, and
-// the paging line says so.
-func TestMCPRowCeiling(t *testing.T) {
+// TestMCPCharBudget: max_chars bounds a page, the server's --chars
+// sets the default, a limit bounds rows within it, and max_chars has no
+// unlimited value.
+func TestMCPCharBudget(t *testing.T) {
 	t.Parallel()
 	s := newTestMCP(setupCashflowGold(t), false)
-	s.maxRows = 2
-	for _, limit := range []int{0, 5} {
-		text, err := callTool(t, s, "transactions", map[string]any{"from": "2026", "to": "2026", "limit": limit})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(text, "showing rows 1–2 of") || !strings.Contains(text, "at most 2 rows per call") {
-			t.Errorf("limit %d under a ceiling of 2:\n%s", limit, text)
+	whole, err := callTool(t, s, "transactions", map[string]any{"from": "2026", "to": "2026"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(whole, "showing rows") {
+		t.Fatalf("the default budget cut a small result:\n%s", whole)
+	}
+	budget := utf8.RuneCountInString(whole) - 1
+	text, err := callTool(t, s, "transactions", map[string]any{"from": "2026", "to": "2026", "max_chars": budget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if utf8.RuneCountInString(text) > budget || !strings.Contains(text, "showing rows 1–") || strings.Contains(text, "showing rows 1–1 ") ||
+		!strings.Contains(text, fmt.Sprintf("all rows: max_chars=%d;", utf8.RuneCountInString(whole))) {
+		t.Errorf("max_chars %d:\n%s", budget, text)
+	}
+	s.chars = budget
+	if def, _ := callTool(t, s, "transactions", map[string]any{"from": "2026", "to": "2026"}); def != text {
+		t.Errorf("--chars %d is not the default:\n%s", budget, def)
+	}
+	s.chars = 16000
+	limited, err := callTool(t, s, "transactions", map[string]any{"from": "2026", "to": "2026", "limit": 1})
+	if err != nil || !strings.Contains(limited, "showing rows 1–1 of") {
+		t.Errorf("limit 1: %v\n%s", err, limited)
+	}
+	for _, bad := range []any{0, -5} {
+		if _, err := callTool(t, s, "transactions", map[string]any{"max_chars": bad}); err == nil ||
+			!strings.Contains(err.Error(), "no unlimited value") {
+			t.Errorf("max_chars %v: err = %v", bad, err)
 		}
 	}
 }

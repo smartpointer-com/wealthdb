@@ -44,8 +44,7 @@ _resolve_knobs() {
     DATA_ROOT="${WEALTHDB_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb}"
     CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
     CFG="${WEALTHDB_CONFIG:-$CFG_DIR/wealthdb.cfg}"
-    ROWS="${WEALTHDB_MCP_ROWS:-}"
-    MAX_ROWS="${WEALTHDB_MCP_MAX_ROWS:-}"
+    CHARS="${WEALTHDB_MCP_CHARS:-}"
     ALLOW_HOSTS="${WEALTHDB_MCP_ALLOW_HOSTS:-}"
 }
 
@@ -138,8 +137,7 @@ _base_args() {
 # _serve_args prints the mcp-serve flags the knobs ask for (one token
 # per line).
 _serve_args() {
-    [ -n "$ROWS" ] && printf '%s\n' --rows "$ROWS"
-    [ -n "$MAX_ROWS" ] && printf '%s\n' --max-rows "$MAX_ROWS"
+    [ -n "$CHARS" ] && printf '%s\n' --chars "$CHARS"
     local h
     for h in $(printf '%s' "$ALLOW_HOSTS" | tr ',' ' '); do
         printf '%s\n' --allow-host "$h"
@@ -416,9 +414,8 @@ WEALTHDB_IMAGE_TAG (the engine image's tag; unset, the checkout's
 .image-tag, else latest),
 WEALTHDB_MCP_CONTAINER, WEALTHDB_MCP_DATA_DIR, WEALTHDB_MCP_BIND
 (both|v4|v6), WEALTHDB_MCP_TOKEN, WEALTHDB_MCP_AUTH and
-WEALTHDB_MCP_INSECURE (the config fields' env forms), WEALTHDB_MCP_ROWS
-(rows per result, default 100), WEALTHDB_MCP_MAX_ROWS (a ceiling on a
-call's limit), WEALTHDB_MCP_ALLOW_HOSTS (Host names to answer besides
+WEALTHDB_MCP_INSECURE (the config fields' env forms), WEALTHDB_MCP_CHARS
+(characters per result, default 16000), WEALTHDB_MCP_ALLOW_HOSTS (Host names to answer besides
 loopback, comma-separated), WEALTHDB_MCP_ENV_FILE (default
 ~/.secrets/wealthdb-mcp.env, read for the variables above).
 EOF

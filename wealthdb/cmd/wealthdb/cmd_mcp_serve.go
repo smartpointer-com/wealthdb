@@ -44,8 +44,7 @@ type mcpServer struct {
 	// privacy is the stdio session's redaction; over HTTP it is the
 	// endpoint's, and each endpoint has its own mcpServer.
 	privacy bool
-	rows    int // default row limit
-	maxRows int // ceiling on a call's limit; 0 means none
+	chars   int // default character budget of a result (max_chars)
 	// duckdb is the configuration each read-only open passes DuckDB.
 	duckdb map[string]string
 	log    *slog.Logger
@@ -63,8 +62,7 @@ func cmdMCPServe(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	insecure := fs.Bool("insecure", false, "acknowledge --auth none")
 	var allowHosts hostList
 	fs.Var(&allowHosts, "allow-host", "a Host besides loopback the HTTP server answers to (repeatable, or a comma list)")
-	rows := fs.Int("rows", envInt("WEALTHDB_MCP_ROWS", 100), "default rows per result")
-	maxRows := fs.Int("max-rows", envInt("WEALTHDB_MCP_MAX_ROWS", 0), "most rows one call may return; 0 for no ceiling")
+	chars := fs.Int("chars", envInt("WEALTHDB_MCP_CHARS", 16000), "default characters per result")
 	memLimit := fs.String("memory-limit", "2GB", "DuckDB memory_limit per open")
 	threads := fs.Int("threads", 4, "DuckDB threads per open")
 	tempDir := fs.String("temp-dir", filepath.Join(os.TempDir(), "wealthdb-mcp"), "DuckDB spill directory (must be writable)")
@@ -87,11 +85,8 @@ func cmdMCPServe(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 		return errs.Newf(errs.ExitUsage, "mcp-serve: --http %s listens beyond loopback; use 127.0.0.1:PORT, or pass --all-interfaces "+
 			"where a container's publish keeps it on loopback, as 'wealthdb mcp start' does", *httpAddr)
 	}
-	if *rows < 1 || *maxRows < 0 {
-		return errs.Newf(errs.ExitUsage, "mcp-serve: --rows must be 1 or more and --max-rows 0 or more")
-	}
-	if *maxRows > 0 && *rows > *maxRows {
-		*rows = *maxRows
+	if *chars < 1 {
+		return errs.Newf(errs.ExitUsage, "mcp-serve: --chars must be 1 or more")
 	}
 	// The config is loaded per call, but a broken one should fail the
 	// start, not the first question.
@@ -109,8 +104,7 @@ func cmdMCPServe(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	s := &mcpServer{
 		configPath: g.ConfigPath,
 		privacy:    *privacy,
-		rows:       *rows,
-		maxRows:    *maxRows,
+		chars:      *chars,
 		duckdb: map[string]string{
 			"memory_limit":   *memLimit,
 			"threads":        strconv.Itoa(*threads),
@@ -433,9 +427,8 @@ Flags:
   --auth token|none     HTTP authentication (default token)
   --insecure            acknowledge --auth none
   --allow-host HOST     answer to this Host as well as loopback (repeatable)
-  --rows N              default rows per result (default 100, or WEALTHDB_MCP_ROWS)
-  --max-rows N          most rows one call returns; 0 for no ceiling
-                        (default 0, or WEALTHDB_MCP_MAX_ROWS)
+  --chars N             default characters per result, a call's max_chars
+                        (default 16000, or WEALTHDB_MCP_CHARS)
   --memory-limit SIZE   DuckDB memory limit per call (default 2GB)
   --threads N           DuckDB threads per call (default 4)
   --temp-dir DIR        DuckDB spill directory (default $TMPDIR/wealthdb-mcp)

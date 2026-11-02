@@ -197,10 +197,14 @@ the redacted stdio form.
 Environment variables, not config: `WEALTHDB_CONFIG`,
 `WEALTHDB_MCP_CONTAINER`, `WEALTHDB_MCP_DATA_DIR`, `WEALTHDB_MCP_BIND`
 (`both`, `v4` or `v6`), `WEALTHDB_MCP_TOKEN`, `WEALTHDB_MCP_AUTH` and
-`WEALTHDB_MCP_INSECURE`, `WEALTHDB_MCP_ROWS` (rows per result, default
-100), `WEALTHDB_MCP_MAX_ROWS` (a ceiling on what one call returns; none
-by default), `WEALTHDB_MCP_ALLOW_HOSTS`, `WEALTHDB_MCP_ENV_FILE`.
+`WEALTHDB_MCP_INSECURE`, `WEALTHDB_MCP_CHARS` (characters per result,
+default 16000), `WEALTHDB_MCP_ALLOW_HOSTS`, `WEALTHDB_MCP_ENV_FILE`.
 `wealthdb mcp help` describes each.
+
+A call sets its own budget with `max_chars`. A result that does not fit
+ends with a line that says how many rows and characters it holds in
+all, the `offset` of the next page, and the `max_chars` that returns
+every row at once.
 
 After rebuilding the image, run `wealthdb mcp restart`: a running server
 keeps the old binary, and `wealthdb mcp status` says so.

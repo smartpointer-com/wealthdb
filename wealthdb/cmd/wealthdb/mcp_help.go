@@ -44,7 +44,7 @@ Conventions:
 - Dates: "2025" is that year, "2025-06" that month, "2025-06-15" that day; also "today", "yesterday", "last month", "last year". from snaps to the start, to and as_of to the end.
 - Every parameter is optional; each description states its default. A filter such as account, category, type or class picks the view that has that column, and the result header says which view ran.
 - One call usually answers the question: a result is one row per entity, category or type for the whole window unless you ask for monthly, quarterly or annual buckets. Answer from it; do not call again to confirm. A total comes from a summary, types or projection view, never from adding up the lines of a calendar or transactions view yourself.
-- Each result starts with a header line that states the resolved window or as-of date, the currency and the row count; check it matches the question. Results are capped; the last line says how to get more or narrow.
+- Each result starts with a header line that states the resolved window or as-of date, the currency and the row count; check it matches the question. A result holds as many rows as fit max_chars; when more exist, the last line says how many, the max_chars that holds them all, and how to narrow.
 - Money columns are plain decimals in the currency named in the header (value_CHF). A blank cell means no value, not zero. In line views money leaving is negative; sort "-value" puts the largest amounts first whatever their sign.
 - In returns, gains, exposure and yield, read the quality column: it names the reason for every n/a or gap. Returns are not additive across views; gains are.
 - A holding before a source's first snapshot is missing history, not zero; snapshots shows where data begins.`
@@ -120,11 +120,8 @@ func (s *mcpServer) overview(ctx context.Context) (string, error) {
 	} else {
 		b.WriteString("This endpoint serves full data.\n")
 	}
-	fmt.Fprintf(&b, "Default currency: %s. Rows per result: %d by default; limit=0 returns every row", cfg.DefaultCurrency, s.rows)
-	if s.maxRows > 0 {
-		fmt.Fprintf(&b, ", up to %d", s.maxRows)
-	}
-	b.WriteString(".\n\nSources (id · kind · latest snapshot):\n")
+	fmt.Fprintf(&b, "Default currency: %s. A result takes at most %d characters unless max_chars says otherwise.\n\nSources (id · kind · latest snapshot):\n",
+		cfg.DefaultCurrency, s.chars)
 	err = s.withGold(ctx, cfg, func(db *sql.DB) error {
 		for _, src := range cfg.SilverSources {
 			latest := "not loaded"

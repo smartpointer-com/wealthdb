@@ -19,7 +19,7 @@ func newTestMCP(cfg string, privacy bool) *mcpServer {
 	return &mcpServer{
 		configPath: cfg,
 		privacy:    privacy,
-		rows:       100,
+		chars:      16000,
 		duckdb:     map[string]string{"threads": "2"},
 		log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		now:        time.Now,
@@ -119,7 +119,7 @@ func TestMCPMatchesCLI(t *testing.T) {
 				if code != 0 {
 					t.Fatalf("%s: CLI exit %d: %s", c.name, code, se)
 				}
-				args := map[string]any{"format": "csv", "columns": "all", "limit": 0}
+				args := map[string]any{"format": "csv", "columns": "all", "max_chars": maxIntegerParam}
 				for k, v := range c.args {
 					args[k] = v
 				}

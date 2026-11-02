@@ -179,10 +179,23 @@ answers or extra round trips such a model otherwise makes:
   accounts like any other, and mortgage and plan payments are in
   `cashflow`.
 
-Paging: `limit` defaults to 100 and has no fixed maximum; `limit: 0`
-returns every row, so a model with a large context pays no round trips.
-`WEALTHDB_MCP_MAX_ROWS` sets a ceiling for a deployment serving small
-models.
+Paging is a character budget, because a wide row costs as much as many
+narrow ones:
+
+- `max_chars` bounds the whole text a call returns, in code points:
+  the header, the rows and the last line. Its default is 16,000
+  (`--chars`, `WEALTHDB_MCP_CHARS`); it has no unlimited value. The
+  client knows what its context holds.
+- The page ends at a row boundary and holds at least one row. `limit`
+  bounds the rows within the budget and has no default.
+- Every row is in memory before the page is cut, so the whole result's
+  size is exact. A cut page's last line gives the rows and the
+  characters shown and in all, the average row, the next `offset`, the
+  `max_chars` that holds every row, the parameters that narrow the
+  result, and the widest columns' shares. The json format carries the
+  same as fields.
+- Paging is stateless: `offset` re-runs the query. There is no cursor
+  and no server-side state.
 
 Not exposed, because they write or prompt: `config`, `init`, `load`,
 `reset`, `reload`, `compact`, `lots`, `categorize`, `resolve-symbols`,
