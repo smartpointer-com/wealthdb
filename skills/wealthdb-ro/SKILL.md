@@ -23,8 +23,10 @@ connection flags.
    one row per month (per quarter for `returns`); never add rows up
    yourself. Income's forward views and `cashflow projection` refuse it
    and print a `total` row already; `cashflow sankey` takes no `--period`.
-3. **No row filters** (`--source`, `--account`, `--symbol` do not exist):
-   run the view, then `| grep -i text` the table.
+3. **Row filters: `-F "column op value"`**, once per condition, every one
+   holding (`-F "tax_wrapper = roth_ira" -F "value > 100000"`); a column
+   is any the view has, its name or header. `wealthdb -r help filter`
+   lists the operators. `--source`, `--account`, `--symbol` do not exist.
 4. **Read tables; use JSON only to sort.** `-f json | jq`: the output is
    one array (`.[]` or `map(...)`); keys are the table headers with the
    currency suffix (`value_USD`, `twr_pct`), so pass `-x USD` to know the
@@ -48,9 +50,10 @@ range. `-d YYYY-MM-DD` is the as-of day of `holdings`, `exposure`, `yield`.
 - **Net worth or total cash, now / at a date / in CHF** — `wealthdb -r holdings global`
   (one row: cash, positions, total), then `-d 2025-12-31` or `-x CHF`
 - **Each account, with its tax wrapper** — `wealthdb -r holdings accounts`;
-  one institution: `wealthdb -r holdings sources | grep -i schwab`; one
-  wrapper, property or loan: `wealthdb -r holdings accounts | grep -i roth`
-  (or `401`, `mortgage`)
+  one institution: `wealthdb -r holdings sources | grep -i schwab`; some
+  wrappers: `wealthdb -r holdings accounts -F "tax_wrapper in roth_ira, hsa"`,
+  all but one: `-F "tax_wrapper != taxable_joint"`; property or loan:
+  `wealthdb -r holdings accounts | grep -i mortgage`
 - **Largest holdings** —
   `wealthdb -r holdings positions -x USD -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber) | reverse | .[0:5]'`
   (a house or a loan is a position too)
@@ -79,6 +82,10 @@ range. `-d YYYY-MM-DD` is the as-of day of `holdings`, `exposure`, `yield`.
 - **What the holdings yield** — `wealthdb -r yield global`
   (`income_yield_pct`: the next twelve months' expected income over value;
   the `total` row weighs the currencies); per account: `wealthdb -r yield accounts`
+- **Bonds by maturity or rating** —
+  `wealthdb -r yield positions -F "asset_class = fixed_income" -F "maturity_date = 2027"`
+  (a year or a month is the whole period; `>= 2030`, `<= 2032` for a range);
+  through funds too: `wealthdb -r yield securities -F "asset_class = fixed_income" -F "rating is empty"`
 - **Cash that earns too little** — `wealthdb -r yield cash` (`gap_pct` is
   the rate less the currency's benchmark; term deposits and money-market
   funds sit in the same table)
@@ -110,6 +117,8 @@ range. `-d YYYY-MM-DD` is the as-of day of `holdings`, `exposure`, `yield`.
 - **Spent in a window / by category** — `wealthdb -r spending summary 2025 --period total` /
   `wealthdb -r spending categories 2025 --period total` (`--level detailed`
   for groceries, restaurants, flights …, then `| grep -i grocer`)
+- **Purchases over an amount** — `wealthdb -r spending transactions 2025 -F "value <= -500"`
+  (money leaving is negative; the table ends with the count)
 - **Biggest purchases in a month** —
   `wealthdb -r spending transactions 2026-03 -x USD -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber) | .[0:5]'`
 - **Income / by type** — `wealthdb -r income summary 2025 --period total` /
@@ -171,7 +180,7 @@ refused. `cashflow projection` starts at next month at the earliest.
 ## Flags and columns
 
 `-f table|json|csv` (`ndjson` on `exposure coverage`, `yield coverage`)
-· `-x CCY` output currency · `-C COLS` columns (names, `all`, or
+· `-x CCY` output currency · `-F COND` keep matching rows · `-C COLS` columns (names, `all`, or
 `+add,-drop`; not on `holdings global`) · `-p` hides amounts, ids and
 typed names · `--period` on `returns`, `gains`, `spending`, `income`,
 `cashflow`; a series on `exposure` (not `securities`, `issuers`, `funds`)
@@ -181,8 +190,8 @@ forward views only `projection`, never `total` · `--level` on `spending`,
 entity across currencies · `--rates forward`, `--maturing roll|idle`,
 `--shift -50` on income's forward views and `cashflow projection`.
 
-`-C` takes column names, not headers: `value`, `share`, `twr` print as
-`value_USD`, `share_pct`, `twr_pct`.
+`-C` and `-F` take a column's name or its header: `value` or
+`value_USD`, `share` or `share_pct`.
 
 Account attributes, for `grep` or `-C`: `silver_source` (`schwab`,
 `ubs`, …), `account_kind`, `tax_wrapper` (`roth_ira`, `529`, `pillar_3a`,
