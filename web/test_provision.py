@@ -2630,12 +2630,14 @@ check("...and the names they replace are retired",
 check("every picker these tiles map lands on a tag they declare and read",
       not _picker_targets_resolve(list(_ex_debt_sql)), _picker_targets_resolve(list(_ex_debt_sql)))
 # The bars follow the views' own bucket orders (the CLI's), so a bucket
-# respelt in the engine would drop out of its bar silently.
-_orders = [re.findall(r"'([^']+)'", m)
-           for m in re.findall(r"list_position\(\[([^\]]*)\]", _MIG_TEXT.get(137, ""), re.S)]
+# respelt in the engine would drop out of its bar silently. Each order is
+# read from its macro's newest definition.
+_orders = {b: [re.findall(r"'([^']+)'", m) for m in re.findall(
+               r"list_position\(\[([^\]]*)\]", _latest_definition(f"report_exposure_{macro}"), re.S)]
+           for b, macro in ((p.CREDIT_BUCKETS, "credit"), (p.MATURITY_BUCKETS, "maturities"),
+                            (p.COUPON_BUCKETS, "coupons"), (p.CYCLE_BUCKETS, "cycles"))}
 check("each card's buckets are the engine's, in its order, (none) apart",
-      all([*b, "(none)"] in _orders for b in (p.CREDIT_BUCKETS, p.MATURITY_BUCKETS,
-                                               p.COUPON_BUCKETS, p.CYCLE_BUCKETS)), _orders)
+      all(orders and all(o == [*b, "(none)"] for o in orders) for b, orders in _orders.items()), _orders)
 # The grades split canonical's rating buckets, and the credit view grades
 # a bucket by the same split.
 _canonical_go = _go_package("canonical")
@@ -2643,7 +2645,8 @@ _ratings = _go_list(_canonical_go, "ratingBuckets", "RatingBucket")
 check("the grades split canonical's rating buckets, best first, as the credit view grades them",
       [*p.INVESTMENT_GRADE, *p.HIGH_YIELD] == _ratings
       and (f"WHEN bucket IN ({p._sql_list(p.INVESTMENT_GRADE)}) THEN 'IG' "
-           f"WHEN bucket IN ({p._sql_list(p.HIGH_YIELD)}) THEN 'HY'") in _MIG_TEXT.get(137, ""), _ratings)
+           f"WHEN bucket IN ({p._sql_list(p.HIGH_YIELD)}) THEN 'HY'") in _latest_definition("report_exposure_credit"),
+      _ratings)
 check("their descriptions say they cover the last twelve months",
       all("last twelve months" in CARDS[n][1] for n in _ex_debt_sql))
 
@@ -3336,12 +3339,17 @@ _fx_missing = {v: [c for c in p.REPORTING_CURRENCIES if not re.search(
 check("the projection's parts and principals carry a rate to every reporting currency",
       not any(_fx_missing.values()) and "range materializeCurrencies" in _ym, _fx_missing)
 # The projection cards filter the look-back parts by name and re-add the tag
-# the engine strips from their quality. A name respelt on either side
-# would read 0 with no error.
+# the engine strips from their quality; the Income run-rate filters the
+# income-line parts by name. A name respelt on either side would read 0
+# with no error.
 _cfp = open(os.path.join(_REPO, "wealthdb", "internal", "gold", "cashflow_plan.go"), encoding="utf-8").read()
 _plan_parts = _go_list(_cfp, "PlanParts")
 check("the projection cards read the look-back parts the engine writes, in its order",
       _plan_parts == list(p.PLAN_LOOKBACK_PARTS), _plan_parts)
+_income_parts = [m.group(1) if m else None for m in (
+    re.search(rf'\b{c}\s*=\s*"([^"]*)"', _cfp) for c in ("PlanPoolPart", "PlanOutsidePart"))]
+check("the Income run-rate reads the engine's income-line parts",
+      _income_parts == list(p.RUN_RATE_PARTS), _income_parts)
 _projected = re.search(r'\bPlanProjected\s*=\s*"([^"]*)"', _cfp)
 check("...and re-add the tag it strips from the quality",
       _projected is not None and re.search(r"TrimPrefix\(r\.Quality, PlanProjected\)", _ym) is not None

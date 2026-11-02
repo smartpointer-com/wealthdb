@@ -111,6 +111,15 @@ check_not "no token"               "token"                                      
 check     "data root read-only"    "/data:/data:ro"                               "$joined"
 check     "serves stdio, privacy"  "mcp-serve --stdio --privacy"                  "$joined"
 
+echo "== _resolve_knobs (character budget, allowed hosts) =="
+HOME=/home/u XDG_DATA_HOME= XDG_CONFIG_HOME=/cfg WEALTHDB_DATA_ROOT=/data WEALTHDB_CONFIG= WEALTHDB_IMAGE_TAG=latest \
+    WEALTHDB_MCP_CHARS=4000 WEALTHDB_MCP_ALLOW_HOSTS=wealthdb-mcp _resolve_knobs
+_stdio_args --privacy
+joined="${DOCKER_ARGS[*]}"
+check     "stdio character budget" "mcp-serve --stdio --chars 4000"               "$joined"
+check     "stdio allowed host"     "--allow-host wealthdb-mcp --privacy"          "$joined"
+CHARS= ALLOW_HOSTS=
+
 echo "== _check_auth =="
 AUTH=token INSECURE=0; if _check_auth 2>/dev/null; then pass "token accepted"; else fail "token accepted"; fi
 AUTH=none INSECURE=0

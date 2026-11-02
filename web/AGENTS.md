@@ -77,7 +77,7 @@ port-forward; auth is Metabase's own login.
 
 ## 4. The driver is fragile — keep all three invariants
 
-DuckDB silently won't work unless ALL of these hold (each one is a real
+DuckDB silently will not work unless ALL of these hold (each one is a real
 trap, see DESIGN.md §3):
 
 - (a) the driver's bundled DuckDB engine **reads the storage format
@@ -110,6 +110,6 @@ the gold DB, and creating the pre-defined report models, questions
 and dashboards over the OSS API. Keep it idempotent, so it is safe on
 every start. It skips the admin and the DB, and §3 says what it does to
 cards and dashboards. Do **not** switch to
-Metabase's config-file provisioning — it's Pro/EE-only and a silent
+Metabase's config-file provisioning — it is Pro/EE-only and a silent
 no-op on OSS. Never hard-code a password; take it from env or generate
 + save chmod 600.

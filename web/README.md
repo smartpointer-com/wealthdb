@@ -113,5 +113,5 @@ $XDG_DATA_HOME/wealthdb/web/
 The repo is publishable. The Metabase **H2 metadata DB** can hold the
 SQL of saved questions (no raw source data), and the **snapshot** is a
 copy of gold — both live under `$XDG_DATA_HOME`, outside the repo.
-Never commit either, and don't bake real queries/dashboards into the
+Never commit either, and do not bake real queries/dashboards into the
 image. See [AGENTS.md](AGENTS.md).

@@ -24,15 +24,15 @@ connection flags.
    yourself. Income's forward views and `cashflow projection` refuse it
    and print a `total` row already; `cashflow sankey` takes no `--period`.
 3. **Row filters: `-F "column op value"`**, once per condition, every one
-   holding (`-F "tax_wrapper = roth_ira" -F "value > 100000"`); a column
-   is any the view has, its name or header. `wealthdb -r help filter`
-   lists the operators. `--source`, `--account`, `--symbol` do not exist.
+   holding (`-F "tax_wrapper = roth_ira" -F "value > 100000"`) on any
+   column the view has. `wealthdb -r help filter` lists the operators.
+   `--source`, `--account`, `--symbol` do not exist.
 4. **Read tables; use JSON only to sort.** `-f json | jq`: the output is
    one array (`.[]` or `map(...)`); keys are the table headers with the
-   currency suffix (`value_USD`, `twr_pct`), so pass `-x USD` to know the
-   key; every value is a string (`tonumber`); an empty column is omitted
-   (`map(select(.value_USD))` first). A return that cannot be computed is
-   `"n/a"`, reason in `quality`.
+   currency suffix (`value_USD`, `twr_pct`): `-x` the answer's currency
+   (USD below) fixes it; every value is a string (`tonumber`); an empty
+   column is omitted (`map(select(.value_USD))` first). A return that
+   cannot be computed is `"n/a"`, reason in `quality`.
 5. **Signs.** In line views (`transactions`, `spending transactions`,
    `cashflow transactions`) money leaving is negative. In `summary`,
    `categories` and `types`, `spend`, `refunds` and `income` are positive.
@@ -47,8 +47,8 @@ connection flags.
 Windows: `2025` a year, `2026-03` a month, `2025-01-01 2025-06-30` a
 range. `-d YYYY-MM-DD` is the as-of day of `holdings`, `exposure`, `yield`.
 
-- **Net worth or total cash, now / at a date / in CHF** — `wealthdb -r holdings global`
-  (one row: cash, positions, total), then `-d 2025-12-31` or `-x CHF`
+- **Net worth or total cash, now / at a date / in CCY** — `wealthdb -r holdings global`
+  (one row: cash, positions, total), then `-d 2025-12-31` or `-x CCY`
 - **Each account, with its tax wrapper** — `wealthdb -r holdings accounts`;
   one institution: `wealthdb -r holdings sources | grep -i schwab`; some
   wrappers: `wealthdb -r holdings accounts -F "tax_wrapper in roth_ira, hsa"`,
@@ -180,12 +180,13 @@ refused. `cashflow projection` starts at next month at the earliest.
 ## Flags and columns
 
 `-f table|json|csv` (`ndjson` on `exposure coverage`, `yield coverage`)
-· `-x CCY` output currency · `-F COND` keep matching rows · `-C COLS` columns (names, `all`, or
-`+add,-drop`; not on `holdings global`) · `-p` hides amounts, ids and
-typed names · `--period` on `returns`, `gains`, `spending`, `income`,
-`cashflow`; a series on `exposure` (not `securities`, `issuers`, `funds`)
-and on `yield global|sources|portfolios|accounts|curve`; of income's
-forward views only `projection`, never `total` · `--level` on `spending`,
+· `-x CCY` output currency · `-F COND` keep matching rows · `-C COLS`
+columns (names, `all`, or `+add,-drop`) · neither on `holdings global`
+· `-p` hides amounts, ids and typed names · `--period` on `returns`,
+`gains`, `spending`, `income`, `cashflow`; a series on `exposure` (not
+`securities`, `issuers`, `funds`) and on
+`yield global|sources|portfolios|accounts|curve`; of income's forward
+views only `projection`, never `total` · `--level` on `spending`,
 `income`, `cashflow` · `--converted` on `yield`'s aggregates: one row per
 entity across currencies · `--rates forward`, `--maturing roll|idle`,
 `--shift -50` on income's forward views and `cashflow projection`.

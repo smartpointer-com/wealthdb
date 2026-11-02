@@ -100,7 +100,7 @@ docker run -d --name wealthdb-mcp --restart unless-stopped \
   --memory 3g \
   -v "$DATA_DIR/token:/run/wealthdb-mcp/token:ro" \
   -p 127.0.0.1:PORT:PORT -p "[::1]:PORT:PORT" \
-  wealthdb:<tag> -c "$CFG" mcp-serve --http :PORT --token-file /run/wealthdb-mcp/token
+  wealthdb:<tag> -c "$CFG" mcp-serve --http :PORT --all-interfaces --token-file /run/wealthdb-mcp/token
 ```
 
 The mounts are the engine wrapper's, at the same paths, so the config's

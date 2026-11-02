@@ -415,9 +415,9 @@ WEALTHDB_IMAGE_TAG (the engine image's tag; unset, the checkout's
 WEALTHDB_MCP_CONTAINER, WEALTHDB_MCP_DATA_DIR, WEALTHDB_MCP_BIND
 (both|v4|v6), WEALTHDB_MCP_TOKEN, WEALTHDB_MCP_AUTH and
 WEALTHDB_MCP_INSECURE (the config fields' env forms), WEALTHDB_MCP_CHARS
-(characters per result, default 16000), WEALTHDB_MCP_ALLOW_HOSTS (Host names to answer besides
-loopback, comma-separated), WEALTHDB_MCP_ENV_FILE (default
-~/.secrets/wealthdb-mcp.env, read for the variables above).
+(characters per result, default 16000), WEALTHDB_MCP_ALLOW_HOSTS (Host
+names to answer besides loopback, comma-separated), WEALTHDB_MCP_ENV_FILE
+(default ~/.secrets/wealthdb-mcp.env, read for the variables above).
 EOF
 }
 

@@ -163,11 +163,12 @@ asks for the bonds that mature by the end of 2030:
 ```
 
 The result's header restates each condition as read
-(`maturity_date <= 2030 (to 2030-12-31)`), and its last line is the total
-of the matching rows' value. `describe(topic=filter)` lists the
-operators. The tools are written for small local models
-as well as large ones: one call usually answers a question. The server's
-instructions and `describe` explain the rest to the model.
+(`maturity_date <= 2030 (to 2030-12-31)`), and a line after the rows
+gives the total of the matching rows' money columns.
+`describe(topic=filter)` lists the operators. The tools are written for
+small local models as well as large ones: one call usually answers a
+question. The server's instructions and `describe` explain the rest to
+the model.
 
 ## Two endpoints: full and redacted
 
@@ -206,7 +207,7 @@ the redacted stdio form.
 ## Knobs
 
 Environment variables, not config: `WEALTHDB_CONFIG`,
-`WEALTHDB_MCP_CONTAINER`, `WEALTHDB_MCP_DATA_DIR`, `WEALTHDB_MCP_BIND`
+`WEALTHDB_IMAGE_TAG`, `WEALTHDB_MCP_CONTAINER`, `WEALTHDB_MCP_DATA_DIR`, `WEALTHDB_MCP_BIND`
 (`both`, `v4` or `v6`), `WEALTHDB_MCP_TOKEN`, `WEALTHDB_MCP_AUTH` and
 `WEALTHDB_MCP_INSECURE`, `WEALTHDB_MCP_CHARS` (characters per result,
 default 16000), `WEALTHDB_MCP_ALLOW_HOSTS`, `WEALTHDB_MCP_ENV_FILE`.

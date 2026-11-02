@@ -814,9 +814,9 @@ PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)", "Asset cl
                         # the twin builds its own from
                         # PRIVACY_INCOME_FILTERS.
                         "Uncategorized share",
-                        # The Exposure charts over time but the currencies:
-                        # each month end's shares of the selection, with no
-                        # value column.
+                        # The Exposure charts over time, the currencies chart
+                        # aside: each month end's shares of the selection,
+                        # with no value column.
                         "Asset classes over time", "Regions over time",
                         "Held directly or through funds",
                         "How the figures are classified",
@@ -1114,12 +1114,11 @@ def returns_growth_sql():
     calendar-month/quarter Modified-Dietz returns is unsound here: a flow
     landing between two sparse snapshots poisons that bucket (a mid-month
     deposit with no fresh snapshot reads as a huge loss, then a huge gain next
-    period), so a chained index can diverge by hundreds of points from the true
-    TWR for sparse-snapshot sources — a real gainer chained all the way down to
-    a spurious near-total loss. The windowed summaries use the engine's
-    snapshot-aligned chain, so they are correct and — being the very figures
-    the scalars and by-source table show — the chart agrees with them by
-    construction.
+    period), so a chained index can diverge badly from the true TWR for
+    sparse-snapshot sources, even turning a gain into a spurious loss. The
+    windowed summaries use the engine's snapshot-aligned chain, so they are
+    correct and — being the very figures the scalars and by-source table
+    show — the chart agrees with them by construction.
 
     Since window_from_year=Y is the TWR from Jan 1 Y to today, growth from the
     start of Ymin to the start of Y is (1 + TWR_since_Ymin) / (1 + TWR_Y), and
@@ -2805,12 +2804,12 @@ def exposure_cards(db_id, privacy):
         then, joins the `other` band, which tops the stack. A value kept
         ranks by the magnitude of its share. A currency sold forward thus
         keeps its own band, and Metabase stacks it below zero. A tie
-        orders by the value. It ranks with an aggregate of its own: the
-        DuckDB in Metabase's driver fails on that helper's window
-        functions over w, whose share is a window function itself. With
-        `amounts`, a base card plots each band's value in the picked
-        currency instead, with the same bands and order, and its privacy
-        card the shares."""
+        orders by the band's name. It ranks with an aggregate of its
+        own: the DuckDB in Metabase's driver fails on that helper's
+        window functions over w, whose share is a window function
+        itself. With `amounts`, a base card plots each band's value in
+        the picked currency instead, with the same bands and order, and
+        its privacy card the shares."""
         kept = "abs(r.latest) >= 1"
         rank = f"CASE WHEN {kept} THEN abs(r.latest) ELSE -1 END" if fold else "COALESCE(r.latest, -1)"
         band = f"CASE WHEN {kept} THEN w.{dim} ELSE 'other' END" if fold else f"w.{dim}"
@@ -3011,8 +3010,9 @@ def issuer_cards(db_id, privacy):
 # (gold.HoldingKeyPrefix): it can carry an account's id.
 HOLDING_KEY_PREFIX = "holding:"
 
-# The exposure views' buckets in their order (gold migration 0137), each
-# card's bars drawn in it, and the grades of the credit buckets.
+# The exposure views' buckets in their order (the report_exposure_credit,
+# _maturities, _coupons and _cycles macros), each card's bars drawn in it,
+# and the grades of the credit buckets.
 CREDIT_BUCKETS = ("AAA", "AA", "A", "BBB", "BB", "B", "unrated", "cash")
 INVESTMENT_GRADE = ("AAA", "AA", "A", "BBB")
 HIGH_YIELD = ("BB", "B")
@@ -3695,7 +3695,7 @@ def income_projected_cards(db_id, privacy):
               **{f"{INCOME_CLASS_BANDS[k]} ({s})": {"color": c if s == "received" else _tint(c)}
                  for k, c in INCOME_CLASS_COLORS.items() for s in ("received", "expected, run-rate")}}
     month_desc = ("Income per month by type, received in full colour, expected lighter. A run-rate band "
-                  "expects what is still to come this month and ignores Rate path, Maturing, Shift.")
+                  "expects the rest of this month. It ignores the Rate path, Maturing and Shift.")
     if privacy:
         sql = (rows(every, peak) + f"SELECT CAST(month_start AS TIMESTAMP) AS month, {series},\n"
                f"       100 * sum(value) / {PEAK} AS income_pct\n  FROM a\n GROUP BY 1, 2")
@@ -3825,8 +3825,9 @@ def income_projected_cards(db_id, privacy):
 
 
 # The parts of web_cashflow_plan the Income cards' run-rate reads: the
-# income lines on the pool's accounts (0174) and on every other account
-# (0172). So the run-rate reads the lines the received half reads. The
+# income lines on a day their account sits in the cash pool (0174) and
+# every other income line (0172). So the run-rate reads the lines the
+# received half reads. The
 # cash flow projection reads the statement's other_income instead.
 RUN_RATE_PARTS = ("pool_income", "outside_income")
 
@@ -4361,15 +4362,14 @@ def _cashflow_sankey_sql(where, sum_expr, share=False):
         # belongs to. An atomic node is its own kin, so stages 2 and 3
         # sort by value alone.
         #
-        # It does NOT decide the diagram's layout, and it was measured
-        # rather than assumed. The renderer seeds each column in the
-        # order the rows arrive and then RELAXES, pulling every node
-        # toward the weighted mean of its neighbours for a fixed number
-        # of iterations; the seed is forgotten. Running the real edge
-        # list through that layout with the rows in this order and in
-        # plain value order gives the same column, node for node. If the
-        # leaf column reads wrongly, the lever is `sankey.node_align`
-        # (see the parameter list) and not this ORDER BY.
+        # It does NOT decide the diagram's layout. The renderer seeds
+        # each column in the order the rows arrive and then RELAXES,
+        # pulling every node toward the weighted mean of its neighbours
+        # for a fixed number of iterations; the seed is forgotten, so
+        # the rows in this order and in plain value order give the same
+        # column. If the leaf column reads wrongly, the lever is
+        # `sankey.node_align` (see the parameter list) and not this
+        # ORDER BY.
         "e AS (SELECT CASE WHEN net > 0 THEN 2 ELSE 3 END AS stage,\n"
         "             CASE WHEN net > 0 THEN node ELSE 'Household' END AS source,\n"
         "             CASE WHEN net > 0 THEN 'Household' ELSE node END AS target,\n"

@@ -6,12 +6,12 @@ The optional Metabase BI server. The decisions worth recording.
 
 The `wealthdb` wrapper forwards subcommands *into* the engine container
 (`wealthdb:<tag>`, wealthdb/docs/DESIGN.md §12), which has no Docker
-socket — so it can't manage a sibling Metabase container. `web` is
+socket — so it cannot manage a sibling Metabase container. `web` is
 therefore handled **host-side**: the wrapper special-cases the `web`
 verb (like `build`) and execs [`web/web`](web), which drives `docker`
 on the host. The Go engine stays pure (CLI/query only; no daemon).
 
-The one thing the host script needs from the engine is config it can't
+The one thing the host script needs from the engine is config it cannot
 easily parse itself (`wealthdb.cfg` is JSON, validated in Go): it calls
 `wealthdb web-config`, a hidden read-only subcommand that prints the
 resolved `web.enabled`, `web.port`, `gold_db`, `default_currency` and
@@ -44,7 +44,7 @@ Metabase too.
 
 ## 3. The driver: glibc base, version pin, readable JAR (load-bearing)
 
-Three things must all be right or DuckDB silently won't work:
+Three things must all be right or DuckDB silently will not work:
 
 - **Storage format.** The driver bundles its own DuckDB, which reads
   files up to its own storage format. Pin driver **1.5.3.0** (DuckDB
@@ -79,7 +79,7 @@ driver*) is the canary that all three are right.
 Published on `127.0.0.1:PORT` **and** `[::1]:PORT` → container `:3000`
 (two `-p` flags). Dual-stack so an `ssh -L PORT:127.0.0.1:PORT` *or* a
 `[::1]` tunnel both reach it — avoiding an IPv4/IPv6 loopback
-mismatch. If the daemon can't bind IPv6, `web start`
+mismatch. If the daemon cannot bind IPv6, `web start`
 falls back to IPv4-only with a warning (`WEALTHDB_WEB_BIND=v4` to
 force). Never bound to a public interface; auth is Metabase's own.
 
@@ -93,9 +93,9 @@ preserves it so a restart keeps everything.
 
 ## 6. Provisioning (skip the setup wizard)
 
-A private loopback service shouldn't require the "tell us about
+A private loopback service should not require the "tell us about
 your company" wizard. Metabase's declarative config file
-(`MB_CONFIG_FILE_PATH`) can create users/databases — but that's a
+(`MB_CONFIG_FILE_PATH`) can create users/databases — but that is a
 Pro/EE feature, a silent no-op on OSS. So `web start` provisions over the
 OSS **setup API** ([`provision.py`](provision.py), stdlib only): create
 the admin (`POST /api/setup`, which also finishes the wizard), pre-add
@@ -342,9 +342,10 @@ itself with nothing picked; either way scale-free. So the Exposure twin
 needs no normalisation. Each breakdown plots the shares: a bar carries
 its percentage, a ring lists them in its legend. The base card shows
 the value on hover, and its privacy card drops the value column.
-The charts over time but the currencies one show shares alone. They are
-privacy-exempt, so the twin shows the same cards. The currencies chart
-shows money, so its privacy card shows the same bands as shares.
+Every chart over time except the currencies chart shows shares alone.
+Those charts are privacy-exempt, so the twin shows the same cards. The
+currencies chart shows money, so its privacy card shows the same bands
+as shares.
 Country, region, situs and currency labels stay, since none names an
 account. Its tiles read `web_exposure` (migration 0127), a view over a
 materialized table (§8).
@@ -466,11 +467,13 @@ leaves its type out:
   them, under its account (`web_income`);
 - expected: what the holdings are expected to pay (`web_yield_parts`),
   and the other income's run-rate, by operating-in class and account
-  (`web_cashflow_plan`). It is the average of the income lines: on the
-  pool's accounts `pool_income` (migration 0174), on every other
-  account `outside_income` (0172), such as a wage paid into a
-  retirement account. So each class on an account expects what it
-  received on average. The cash flow projection reads the statement's
+  (`web_cashflow_plan`). It is the average of the income lines, split
+  by each line's day. A line on a day its account sits in the cash
+  pool is `pool_income` (migration 0174). Any other line is
+  `outside_income` (0172), such as a wage paid into a retirement
+  account. An account under a dated wrapper override has lines on both
+  sides. So each class on an account expects what it received on
+  average. The cash flow projection reads the statement's
   `other_income` (0169) instead. The statement also counts lines no
   income line holds, such as a reimbursement.
 
@@ -811,7 +814,7 @@ Four settings work together, each load-bearing:
   so memory-capped queries spill to disk instead of failing.
 - **Container caps** (`--memory 8g`, `-Xmx2g`, `MALLOC_ARENA_MAX=2`) —
   the backstop: a runaway kills only this container, never the VM; the
-  heap can't auto-size against the container cap; glibc doesn't hoard
+  heap cannot auto-size against the container cap; glibc does not hoard
   arenas under DuckDB's thread pool.
 - **`--restart unless-stopped`** — if the backstop ever fires, Metabase
   comes back on its own (metadata is safe on the H2 volume); a plain
@@ -830,7 +833,7 @@ what the queries need small:
 
 ## 8. Materialized returns, gains, exposure, yield and serving tables
 
-The Returns dashboards can't be views or macros: MWR is XIRR (iterative
+The Returns dashboards cannot be views or macros: MWR is XIRR (iterative
 root-finding), and the returns engine leans on things that only exist
 in Go and config: the per-source `ReturnsPolicy`, `wealthdb.cfg`'s
 inception overrides and exclusions, the transfer-netting heuristic,
@@ -900,10 +903,9 @@ so it starts at 0% in `Y0`. Chaining calendar-bucket
 Modified-Dietz returns would be wrong here — a flow landing between two
 sparse snapshots poisons that bucket (a mid-month deposit with no fresh
 snapshot reads as a large loss, then a large gain next period), so a
-chained index can diverge from the true TWR by hundreds of points for
-sparse-snapshot sources: a source that gained can chain down to a
-spurious near-total loss. The windowed TWRs use the
-engine's snapshot-aligned chain, so the chart is correct and is
+chained index can diverge badly from the true TWR for sparse-snapshot
+sources, even turning a gain into a spurious loss. The windowed TWRs
+use the engine's snapshot-aligned chain, so the chart is correct and is
 built from the same figures the scalars and table show — at the cost
 of annual granularity (a finer curve would need per-month windows).
 The last point is the start of the current year, so the stretch from
