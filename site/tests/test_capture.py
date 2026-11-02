@@ -1,6 +1,7 @@
 """Tests for site/capture.py's pure parts; no browser, no Metabase."""
 
 import datetime as dt
+import re
 import sys
 import unittest
 import urllib.parse
@@ -10,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import capture  # noqa: E402
 
 AS_OF = dt.date(2026, 10, 30)
+PAGE = (Path(__file__).resolve().parent.parent / "public/index.html").read_text()
 
 
 class DefaultsQuery(unittest.TestCase):
@@ -49,7 +51,7 @@ class PinDate(unittest.TestCase):
         self.assertEqual(capture.pin_date("past2months~", dt.date(2027, 1, 15)), "2026-11-01~2027-01-15")
 
     def test_days(self):
-        self.assertEqual(capture.pin_date("past7days~", AS_OF), "2026-10-24~2026-10-30")
+        self.assertEqual(capture.pin_date("past7days~", AS_OF), "2026-10-23~2026-10-30")
         self.assertEqual(capture.pin_date("past7days", AS_OF), "2026-10-23~2026-10-29")
 
     def test_this_day(self):
@@ -71,11 +73,55 @@ class ShotName(unittest.TestCase):
         self.assertEqual(capture.shot_name("Wealth Overview", "dark"), "overview-dark.png")
 
     def test_every_dashboard_has_a_page_image(self):
-        page = (Path(__file__).resolve().parent.parent / "public/index.html").read_text()
         for name in capture.DASHBOARDS:
             for scheme in capture.SCHEMES:
                 stem = capture.shot_name(name, scheme).removesuffix(".png")
-                self.assertIn(f'"shots/{stem}.webp"', page)
+                self.assertIn(f'"shots/{stem}.webp"', PAGE)
+
+    def test_every_page_image_is_a_shot(self):
+        stems = {capture.shot_name(n, s).removesuffix(".png") for n in capture.DASHBOARDS for s in capture.SCHEMES}
+        named = set(re.findall(r"shots/([\w-]+)\.webp", PAGE))
+        self.assertTrue(named)
+        self.assertLessEqual(named, stems)
+
+
+class FindDashboards(unittest.TestCase):
+    """find_dashboards against a fake Metabase API."""
+
+    def fake(self, collections, dashboards):
+        calls = []
+
+        def call(base, path, method="GET", body=None, session=None):
+            calls.append(path)
+            if path == "/api/collection":
+                return collections
+            if path.startswith("/api/collection/"):
+                return {"data": [{"name": n, "id": i} for i, n in enumerate(dashboards, 1)]}
+            return {"id": int(path.rsplit("/", 1)[1])}
+
+        old, capture.call = capture.call, call
+        self.addCleanup(setattr, capture, "call", old)
+        return calls
+
+    def test_finds_every_dashboard_in_the_live_collection(self):
+        calls = self.fake([{"id": 4, "name": capture.provision.COLLECTION_NAME, "archived": True},
+                           {"id": 5, "name": capture.provision.COLLECTION_NAME}],
+                          [*capture.DASHBOARDS, "Something else"])
+        found = capture.find_dashboards("http://mb", "s")
+        self.assertEqual(sorted(found), sorted(capture.DASHBOARDS))
+        self.assertIn("/api/collection/5/items?models=dashboard", calls)
+        self.assertNotIn("/api/dashboard/9", calls)
+
+    def test_a_missing_dashboard_stops(self):
+        self.fake([{"id": 5, "name": capture.provision.COLLECTION_NAME}], list(capture.DASHBOARDS)[1:])
+        with self.assertRaises(SystemExit) as e:
+            capture.find_dashboards("http://mb", "s")
+        self.assertIn(next(iter(capture.DASHBOARDS)), str(e.exception))
+
+    def test_a_missing_collection_stops(self):
+        self.fake([{"id": 4, "name": capture.provision.COLLECTION_NAME, "archived": True}], [])
+        with self.assertRaises(SystemExit):
+            capture.find_dashboards("http://mb", "s")
 
 
 if __name__ == "__main__":

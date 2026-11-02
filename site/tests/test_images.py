@@ -1,12 +1,15 @@
 """Tests for site/images.py against a fake GitHub; no network."""
 
+import contextlib
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import images  # noqa: E402
@@ -25,9 +28,11 @@ class Response(io.BytesIO):
 class FakeGitHub:
     """Records every request; answers from a release held in memory."""
 
-    def __init__(self, release=None):
+    def __init__(self, release=None, fail_upload=None):
         self.release = release
+        self.fail_upload = fail_upload
         self.calls = []
+        self.next_id = 100
 
     def __call__(self, req, timeout=None):
         method, url = req.get_method(), req.full_url
@@ -42,7 +47,10 @@ class FakeGitHub:
             self.release = {"id": 7, "assets": [], **json.loads(req.data)}
             return Response(json.dumps(self.release).encode())
         if method == "POST" and "uploads.github.com" in url:
-            return Response(b'{"id": 1}')
+            if self.fail_upload and url.endswith(self.fail_upload):
+                raise urllib.error.HTTPError(url, 502, "Bad Gateway", {}, io.BytesIO(b"upstream"))
+            self.next_id += 1
+            return Response(json.dumps({"id": self.next_id}).encode())
         return Response(b"")
 
 
@@ -51,8 +59,8 @@ class Base(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp))
 
-    def fake(self, release=None):
-        gh = FakeGitHub(release)
+    def fake(self, release=None, fail_upload=None):
+        gh = FakeGitHub(release, fail_upload)
         old, images._urlopen = images._urlopen, gh
         self.addCleanup(setattr, images, "_urlopen", old)
         return gh
@@ -75,25 +83,39 @@ class Publish(Base):
             (self.tmp / n).write_bytes(n.encode())
         (self.tmp / "notes.txt").write_text("not an image")
 
-    def test_replaces_every_asset_then_deploys(self):
+    def test_uploads_every_file_before_it_replaces_any(self):
         self.files("a.webp", "b.webp")
-        gh = self.fake({"id": 3, "assets": [{"id": 11, "name": "a.webp"}, {"id": 12, "name": "gone.webp"}]})
+        gh = self.fake({"id": 3, "assets": [{"id": 11, "name": "a.webp"}, {"id": 12, "name": "gone.webp"},
+                                            {"id": 13, "name": "staging-b.webp"}]})
         uploaded = images.publish(REPO, images.TAG, self.tmp, "t0ken")
         self.assertEqual(uploaded, ["a.webp", "b.webp"])
         steps = [(m, u.split("github.com")[1]) for m, u, _, _ in gh.calls]
         self.assertEqual(steps, [
             ("GET", f"/repos/{REPO}/releases/tags/{images.TAG}"),
+            ("DELETE", f"/repos/{REPO}/releases/assets/13"),
+            ("POST", f"/repos/{REPO}/releases/3/assets?name=staging-a.webp"),
+            ("POST", f"/repos/{REPO}/releases/3/assets?name=staging-b.webp"),
             ("DELETE", f"/repos/{REPO}/releases/assets/11"),
+            ("PATCH", f"/repos/{REPO}/releases/assets/101"),
+            ("PATCH", f"/repos/{REPO}/releases/assets/102"),
             ("DELETE", f"/repos/{REPO}/releases/assets/12"),
-            ("POST", f"/repos/{REPO}/releases/3/assets?name=a.webp"),
-            ("POST", f"/repos/{REPO}/releases/3/assets?name=b.webp"),
             ("POST", f"/repos/{REPO}/actions/workflows/pages.yml/dispatches"),
         ])
-        _, _, headers, data = gh.calls[3]
+        _, _, headers, data = gh.calls[2]
         self.assertEqual(headers["Authorization"], "Bearer t0ken")
         self.assertEqual(headers["Content-type"], "image/webp")
         self.assertEqual(data, b"a.webp")
+        self.assertEqual([json.loads(d) for m, _, _, d in gh.calls if m == "PATCH"],
+                         [{"name": "a.webp"}, {"name": "b.webp"}])
         self.assertEqual(json.loads(gh.calls[-1][3]), {"ref": "main"})
+
+    def test_a_failed_upload_leaves_the_old_assets(self):
+        self.files("a.webp", "b.webp")
+        gh = self.fake({"id": 3, "assets": [{"id": 11, "name": "a.webp"}, {"id": 12, "name": "b.webp"}]},
+                       fail_upload="name=staging-b.webp")
+        with self.assertRaises(images.GitHubError):
+            images.publish(REPO, images.TAG, self.tmp, "t0ken")
+        self.assertEqual([m for m, _, _, _ in gh.calls], ["GET", "POST", "POST"])
 
     def test_creates_a_pre_release_when_missing(self):
         self.files("a.webp")
@@ -112,6 +134,59 @@ class Publish(Base):
         self.assertEqual(gh.calls, [])
 
 
+class Main(Base):
+    def setUp(self):
+        super().setUp()
+        (self.tmp / "a.webp").write_bytes(b"a")
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("WEALTHDB_SITE_TOKEN", None)
+
+    def run_main(self, *argv):
+        with contextlib.redirect_stdout(io.StringIO()):
+            images.main(list(argv))
+
+    def test_publish_needs_the_token(self):
+        gh = self.fake({"id": 3, "assets": []})
+        with self.assertRaises(SystemExit) as e:
+            self.run_main("publish", str(self.tmp), "--repo", REPO)
+        self.assertIn("WEALTHDB_SITE_TOKEN", str(e.exception))
+        self.assertEqual(gh.calls, [])
+
+    def test_publish_reads_the_token_from_the_environment(self):
+        os.environ["WEALTHDB_SITE_TOKEN"] = "t0ken"
+        gh = self.fake({"id": 3, "assets": []})
+        self.run_main("publish", str(self.tmp), "--repo", REPO, "--no-deploy")
+        self.assertTrue(all(h["Authorization"] == "Bearer t0ken" for _, _, h, _ in gh.calls))
+        self.assertFalse(any(u.endswith("/dispatches") for _, u, _, _ in gh.calls))
+
+    def test_publish_deploys_by_default(self):
+        os.environ["WEALTHDB_SITE_TOKEN"] = "t0ken"
+        gh = self.fake({"id": 3, "assets": []})
+        self.run_main("publish", str(self.tmp), "--repo", REPO)
+        self.assertTrue(gh.calls[-1][1].endswith("/actions/workflows/pages.yml/dispatches"))
+
+    def test_a_github_error_exits_with_its_text(self):
+        os.environ["WEALTHDB_SITE_TOKEN"] = "t0ken"
+        self.fake({"id": 3, "assets": []}, fail_upload="name=staging-a.webp")
+        with self.assertRaises(SystemExit) as e:
+            self.run_main("publish", str(self.tmp), "--repo", REPO)
+        self.assertIn("HTTP 502", str(e.exception))
+
+    def test_fetch_needs_no_token(self):
+        gh = self.fake({"id": 3, "assets": [
+            {"id": 11, "name": "a.webp", "browser_download_url": "https://github.com/dl/a.webp"}]})
+        self.run_main("fetch", str(self.tmp / "shots"), "--repo", REPO)
+        self.assertTrue((self.tmp / "shots/a.webp").exists())
+        self.assertTrue(all("Authorization" not in h for _, _, h, _ in gh.calls))
+
+    def test_the_removed_options_are_refused(self):
+        for opt in ("--token", "--tag", "--ref", "--workflow"):
+            with self.assertRaises(SystemExit, msg=opt), contextlib.redirect_stderr(io.StringIO()):
+                self.run_main("publish", str(self.tmp), "--repo", REPO, opt, "x")
+
+
 class Fetch(Base):
     def test_downloads_every_asset_without_the_token(self):
         gh = self.fake({"id": 3, "assets": [
@@ -122,6 +197,13 @@ class Fetch(Base):
         self.assertEqual((self.tmp / "shots/a.webp").read_bytes(), b"image:a.webp")
         self.assertIn("Authorization", gh.calls[0][2])
         self.assertTrue(all("Authorization" not in h for _, _, h, _ in gh.calls[1:]))
+
+    def test_skips_a_staged_leftover(self):
+        self.fake({"id": 3, "assets": [
+            {"id": 11, "name": "a.webp", "browser_download_url": "https://github.com/dl/a.webp"},
+            {"id": 12, "name": "staging-b.webp", "browser_download_url": "https://github.com/dl/staging-b.webp"}]})
+        self.assertEqual(images.fetch(REPO, images.TAG, self.tmp / "shots"), ["a.webp"])
+        self.assertFalse((self.tmp / "shots/staging-b.webp").exists())
 
     def test_no_release_fails(self):
         self.fake(None)

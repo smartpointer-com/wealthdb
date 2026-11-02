@@ -1,15 +1,16 @@
-# Publishes site/public to GitHub Pages on every push to main that touches
-# the page, and when started by hand or by `make site-publish`. The
-# screenshots are not in git: they are the files of the site-images
-# release, downloaded into site/public/shots before the upload
-# (site/images.py). Pages must be set to "GitHub Actions" as its source
-# once, in the repository settings.
+# Publishes site/public to GitHub Pages on every push to main that changes
+# site/public, site/images.py or this file, and when started by hand or by
+# `make site-publish`. The screenshots are not in git: they are the files
+# of the site-images release, downloaded into site/public/shots before the
+# upload (site/images.py). Pages must be set to "GitHub Actions" as its
+# source once, in the repository settings. The actions sit on major tags,
+# which `make update` does not move.
 name: pages
 
 on:
   push:
     branches: [main]
-    paths: ["site/**", ".github/workflows/pages.yml"]
+    paths: ["site/public/**", "site/images.py", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:
@@ -19,7 +20,7 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -28,14 +29,14 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Download the screenshots
         env:
           WEALTHDB_SITE_TOKEN: ${{ github.token }}
         run: python3 site/images.py fetch site/public/shots --repo "${{ github.repository }}"
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site/public
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

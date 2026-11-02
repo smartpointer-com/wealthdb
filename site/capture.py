@@ -12,16 +12,16 @@ Each dashboard opens with every picker set to its default in the URL.
 Metabase otherwise shows the last values the admin ran it with. A
 default relative to today, such as "previous 12 months", is pinned to
 the same window ending at --as-of, the demo's last day, so a reshoot on
-a later day shows the same history. The
-admin's colour scheme is switched to dark for the second pass and set
-back to what it was afterwards, also when a shot fails.
+a later day shows the same history. The admin's colour scheme is
+switched to dark for the second pass and set back to what it was
+afterwards, also when a shot fails.
 """
 
 import argparse
 import datetime as dt
 import json
-import re
 import pathlib
+import re
 import sys
 import urllib.parse
 import urllib.request
@@ -63,10 +63,11 @@ def pin_date(value, as_of):
     """A date picker's relative value as the same window ending at as_of.
 
     Metabase's "past12months~" is the 12 whole months before this one
-    plus this one; without the ~, this month is left out. "thisday" is
-    the day itself. A value that is not relative passes unchanged. A
-    relative value of another kind stops the capture, so a new picker
-    is pinned by hand rather than shot against today.
+    plus this one; without the ~, this month is left out. Days work the
+    same way: "past7days~" is the 7 days before as_of plus as_of itself.
+    "thisday" is the day itself. A value that is not relative passes
+    unchanged. A relative value of another kind stops the capture, so a
+    new picker is pinned by hand rather than shot against today.
     """
     if value == "thisday":
         return as_of.isoformat()
@@ -77,7 +78,7 @@ def pin_date(value, as_of):
         return value
     n, unit, current = int(m.group(1)), m.group(2), m.group(3) == "~"
     if unit == "day":
-        start = as_of - dt.timedelta(days=n - (1 if current else 0))
+        start = as_of - dt.timedelta(days=n)
         end = as_of if current else as_of - dt.timedelta(days=1)
     else:
         start = month_start(as_of, n)
@@ -126,7 +127,9 @@ def call(base, path, method="GET", body=None, session=None):
 def find_dashboards(base, session):
     """{name: dashboard} for the page's dashboards in the pre-defined collection."""
     cols = call(base, "/api/collection", session=session)
-    coll = next(c for c in cols if c.get("name") == provision.COLLECTION_NAME and not c.get("archived"))
+    coll = next((c for c in cols if c.get("name") == provision.COLLECTION_NAME and not c.get("archived")), None)
+    if coll is None:
+        raise SystemExit(f"capture: collection not found: {provision.COLLECTION_NAME}")
     items = call(base, f"/api/collection/{coll['id']}/items?models=dashboard", session=session)
     found = {d["name"]: d["id"] for d in items["data"] if d["name"] in DASHBOARDS}
     missing = sorted(set(DASHBOARDS) - set(found))

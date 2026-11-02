@@ -14,7 +14,8 @@
       content="Every account, one private database, on your own machine. Net worth, returns, exposure, yield, spending, income and cash flow, for you and your AI agent."
     />
     <meta property="og:type" content="website" />
-    <meta property="og:image" content="shots/overview.webp" />
+    <meta property="og:url" content="https://wealthdb.smartpointer.com/" />
+    <meta property="og:image" content="https://wealthdb.smartpointer.com/shots/overview.webp" />
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
@@ -1495,7 +1496,7 @@
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
                     </button>
                   </div>
-                  <p class="install-after">Then <code>wealthdb-collect &lt;source&gt; login</code>, <code>download</code>, <code>load</code>, and <code>wealthdb load -a</code>. No Go toolchain: the engine builds inside its container.</p>
+                  <p class="install-after">Then, for each source, <code>wealthdb-collect &lt;source&gt; login</code>, <code>download</code> and <code>load</code>. Then <code>wealthdb config</code>, <code>wealthdb init</code> and <code>wealthdb load -a</code>. No Go toolchain: the engine builds inside its container.</p>
                 </div>
                 <div class="install-pane" data-pane="demo" role="tabpanel">
                   <p class="install-note">No bank needed. An invented household with every report and dashboard.</p>
@@ -1551,8 +1552,8 @@
                date pinned in the Makefile (SITE_SEED, SITE_AS_OF). `make site-shots`
                retakes the screenshots and prints the figures the page quotes. -->
           <p class="showcase-caption">
-            Ten dashboards, served locally over a read-only snapshot, in light or dark. Each has a privacy
-            twin that shows shares instead of amounts. The data shown is the invented demo household.
+            Ten dashboards, served locally over a read-only snapshot, in light or dark. All but Gains have
+            a privacy twin that shows shares instead of amounts. The data shown is the invented demo household.
           </p>
         </section>
       </div>
@@ -1630,7 +1631,7 @@
               <div class="stage-label">Engine · gold</div>
               <h3>One DuckDB store</h3>
               <p>Every source merged into one canonical model: accounts, positions, lots and flows across all your banks and brokers. FX, transfer pairing between your own accounts, categories, look-through, returns and yield are computed once, over the whole.</p>
-                        </div>
+            </div>
             <div class="arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg></div>
             <div class="stage stage--reports">
               <div class="stage-label">Reports · read</div>
@@ -1648,7 +1649,8 @@
                 <div class="surface">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v3M8 21h8M6 6h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z" /><circle cx="9" cy="12" r="1" /><circle cx="15" cy="12" r="1" /></svg>
                   <div><strong>MCP server</strong><span>the reports as read-only tools for agents</span></div>
-                </div></div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -1690,7 +1692,7 @@
             </div>
             <div class="card reveal reveal-delay-2">
               <h3>Income, spending, cash flow</h3>
-              <p>What arrived and what left, categorised across every card and account, and a cash flow statement with the household's internal transfers taken out.</p>
+              <p>What arrived and what left, categorized across every card and account, and a cash flow statement with the household's internal transfers taken out.</p>
               <code class="report-cmd"><span class="p">❯</span> wealthdb cashflow sankey 2025</code>
             </div>
           </div>
@@ -1749,7 +1751,7 @@
             <div class="card source-card reveal">
               <h3><i style="background: var(--blue)"></i>Banks and cards</h3>
               <p>Accounts, cards, mortgages and the rates they state. Full history, statements included.</p>
-              <ul><li>UBS</li><li>Swissquote</li><li>Raiffeisen</li><li>Chase</li><li>First Citizens</li><li>American Express</li></ul>
+              <ul><li>UBS</li><li>Swissquote</li><li>Raiffeisen Austria</li><li>Chase</li><li>First Citizens</li><li>American Express</li></ul>
             </div>
             <div class="card source-card reveal reveal-delay-1">
               <h3><i style="background: var(--teal)"></i>Brokerages</h3>
@@ -1796,8 +1798,7 @@
               </h3>
               <p>
                 A new source is one small program dropped in beside the others. A playbook walks a
-                coding agent through writing it while you handle the logins. Most collectors here were
-                built that way in a day or two. Pull requests are welcome.
+                coding agent through writing it while you handle the logins. Pull requests are welcome.
               </p>
             </div>
             <div class="btn-row" style="justify-content: flex-start">
@@ -1834,8 +1835,8 @@
                 </div>
                 <div class="tools" aria-label="Tools called">
                   <span class="tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>yield global -x EUR</span>
-                  <span class="tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>yield accounts</span>
-                  <span class="tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>income projection</span>
+                  <span class="tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>yield accounts -x EUR</span>
+                  <span class="tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>income projection -x EUR</span>
                 </div>
                 <div class="msg agent">
                   <p>Mostly the other way round. A fall in rates would <em>help</em> your balance sheet a little and cost you some cash income.</p>
@@ -1916,14 +1917,14 @@
               <ul>
                 <li>Each source is a SQLite file, the consolidated store a DuckDB file. Open them with any client, notebook or spreadsheet.</li>
                 <li>Every report exports CSV or JSON. Back up with a copy, delete with a delete.</li>
-                <li>Dashboards and the MCP server bind to loopback only and read a snapshot. They never reach the live store.</li>
+                <li>Dashboards and the MCP server bind to loopback only. The dashboards read a snapshot. The MCP server opens the live store read-only.</li>
               </ul>
             </div>
             <div class="card reveal reveal-delay-1">
               <h3>Privacy mode for shared screens</h3>
               <ul>
                 <li>The CLI redacts every amount with <code>-p</code>; the shape of the answer stays.</li>
-                <li>Each dashboard has a twin that shows shares instead of amounts.</li>
+                <li>Every dashboard but Gains has a twin that shows shares instead of amounts.</li>
                 <li>The MCP server has a redacted endpoint, so a transcript can hold the picture without the numbers.</li>
               </ul>
             </div>
@@ -1931,7 +1932,7 @@
           <p class="caveat reveal">
             <sup class="caveat-mark">*</sup> Three things do leave the machine, each one opt-in. A login linked
             through <strong>Plaid</strong>: Plaid reads that institution and keeps a copy of its data. The
-            <strong>language model</strong> that categorises merchants and resolves tickers, if it runs on a
+            <strong>language model</strong> that categorizes merchants and resolves tickers, if it runs on a
             remote endpoint: it sees merchant, payer and instrument names, never an amount, and it can run
             locally instead. The <strong>public reference sources</strong> the refdata collector asks about
             each fund and security: they see which identifiers are asked about, never an amount, an account

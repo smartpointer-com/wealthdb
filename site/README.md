@@ -2,7 +2,8 @@
 
 The page at wealthdb.smartpointer.com. It is static: one HTML file with
 its fonts and images in `public/`. The Pages workflow publishes that
-folder on every push to `main` that changes it.
+folder on every push to `main` that changes it, `images.py` or the
+workflow.
 
 The dashboard screenshots are not in git. A GitHub release named
 `site-images` holds them, and the workflow downloads them into

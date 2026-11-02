@@ -2,9 +2,8 @@
 """Keep the project page's screenshots in a GitHub release, not in git.
 
     python3 site/images.py convert SRC DEST
-    python3 site/images.py fetch DEST [--repo OWNER/NAME] [--tag TAG] [--token VALUE]
-    python3 site/images.py publish SRC [--repo OWNER/NAME] [--tag TAG] [--token VALUE]
-                                       [--ref REF] [--workflow FILE] [--no-deploy]
+    python3 site/images.py fetch DEST [--repo OWNER/NAME]
+    python3 site/images.py publish SRC [--repo OWNER/NAME] [--no-deploy]
 
 convert   turns the PNG shots in SRC into the WebP files the page loads,
           2000 pixels wide, and removes WebP files in DEST that have no
@@ -13,13 +12,15 @@ fetch     downloads every file of the release into DEST. The Pages
           workflow and a local preview both use it. It needs no token,
           but a token lifts the API's limit for anonymous callers.
 publish   makes the release hold exactly the WebP files in SRC, then
-          starts the Pages workflow so the page picks them up. The
-          release is created on first use, as a pre-release so GitHub
-          never shows it as the latest wealthdb release.
+          starts the Pages workflow so the page picks them up. Every
+          file goes up before an old one is removed, so a failed upload
+          leaves the published shots in place. The release is created
+          on first use, as a pre-release so GitHub never shows it as
+          the latest wealthdb release.
 
-The repository defaults to the one the checkout's origin points at. A
-token comes from --token or WEALTHDB_SITE_TOKEN; publish needs one
-allowed to write the repository's contents and run its workflows.
+The repository defaults to the one the checkout's origin points at. The
+token comes from WEALTHDB_SITE_TOKEN; publish needs one allowed to write
+the repository's contents and run its workflows.
 """
 
 import argparse
@@ -35,6 +36,8 @@ import urllib.request
 API = "https://api.github.com"
 UPLOADS = "https://uploads.github.com"
 TAG = "site-images"
+# The name a file is uploaded under until every file is up.
+STAGING = "staging-"
 RELEASE_NAME = "Website images"
 RELEASE_BODY = ("The screenshots on the project page. The Pages workflow downloads "
                 "them at deploy time, so they stay out of the git history.")
@@ -139,6 +142,8 @@ def fetch(repo, tag, dest, token=None):
     dest.mkdir(parents=True, exist_ok=True)
     names = []
     for a in release["assets"]:
+        if a["name"].startswith(STAGING):
+            continue  # left by a publish that failed part way
         # The public download URL, without the token: GitHub redirects to
         # storage that refuses a request carrying one.
         data = request("GET", a["browser_download_url"], accept="application/octet-stream")
@@ -153,15 +158,33 @@ def publish(repo, tag, src, token, ref="main", workflow="pages.yml", deploy=True
     if not files:
         raise SystemExit(f"images: no WebP files in {src}; run make site-shots first")
     release = get_release(repo, tag, token) or create_release(repo, tag, ref, token)
-    # Every asset goes first: GitHub refuses a second asset of one name,
-    # and one with no local file must go too, so the release mirrors src.
-    for asset in release.get("assets", []):
-        request("DELETE", f"{API}/repos/{repo}/releases/assets/{asset['id']}", token)
+
+    def asset_url(asset_id):
+        return f"{API}/repos/{repo}/releases/assets/{asset_id}"
+
+    old = {}
+    for a in release.get("assets", []):
+        # A staged file a failed run left behind would block its name.
+        if a["name"].startswith(STAGING):
+            request("DELETE", asset_url(a["id"]), token)
+        else:
+            old[a["name"]] = a["id"]
+    # GitHub refuses a second asset of one name, so each file goes up
+    # under a staging name. The old assets stay until every file is up.
     upload = sorted(files)
+    staged = {}
     for name in upload:
-        request("POST", f"{UPLOADS}/repos/{repo}/releases/{release['id']}/assets?name={name}",
-                token, data=files[name].read_bytes(), content_type="image/webp")
+        staged[name] = request(
+            "POST", f"{UPLOADS}/repos/{repo}/releases/{release['id']}/assets?name={STAGING}{name}",
+            token, data=files[name].read_bytes(), content_type="image/webp")["id"]
         print(f"images: uploaded {name}", flush=True)
+    for name in upload:
+        if name in old:
+            request("DELETE", asset_url(old.pop(name)), token)
+        request("PATCH", asset_url(staged[name]), token, body={"name": name})
+    # An asset with no local file goes last, so the release mirrors src.
+    for asset_id in old.values():
+        request("DELETE", asset_url(asset_id), token)
     if deploy:
         request("POST", f"{API}/repos/{repo}/actions/workflows/{workflow}/dispatches", token, body={"ref": ref})
         print(f"images: started {workflow} on {ref}", flush=True)
@@ -178,25 +201,20 @@ def main(argv=None):
         p = sub.add_parser(name)
         p.add_argument(folder)
         p.add_argument("--repo", help="OWNER/NAME (default: the origin remote)")
-        p.add_argument("--tag", default=TAG)
-        p.add_argument("--token", help="GitHub token (default: $WEALTHDB_SITE_TOKEN)")
-    pub = sub.choices["publish"]
-    pub.add_argument("--ref", default="main")
-    pub.add_argument("--workflow", default="pages.yml")
-    pub.add_argument("--no-deploy", action="store_true")
+    sub.choices["publish"].add_argument("--no-deploy", action="store_true")
     a = ap.parse_args(argv)
     if a.cmd == "convert":
         print(f"images: wrote {len(convert(a.src, a.dest))} files to {a.dest}")
         return
     repo = a.repo or origin_repo()
-    token = a.token or os.environ.get("WEALTHDB_SITE_TOKEN")
+    token = os.environ.get("WEALTHDB_SITE_TOKEN")
     try:
         if a.cmd == "fetch":
-            print(f"images: fetched {len(fetch(repo, a.tag, a.dest, token))} files to {a.dest}")
+            print(f"images: fetched {len(fetch(repo, TAG, a.dest, token))} files to {a.dest}")
         else:
             if not token:
-                raise SystemExit("images: publish needs a token: --token, or WEALTHDB_SITE_TOKEN")
-            publish(repo, a.tag, a.src, token, a.ref, a.workflow, deploy=not a.no_deploy)
+                raise SystemExit("images: publish needs WEALTHDB_SITE_TOKEN")
+            publish(repo, TAG, a.src, token, deploy=not a.no_deploy)
     except GitHubError as e:
         raise SystemExit(f"images: {e}") from None
 
