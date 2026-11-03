@@ -215,7 +215,9 @@ root, no `cd`-ing into subdirectories:
   (`PII_BASE=<rev>` moves the base) and the staged change;
   `make pii-history` over every commit.
 - CI (`.github/workflows/ci.yml`) runs the privacy check, `make lint`
-  and `make test` on every push to `main` and every pull request.
+  and every suite of `make test` on every push to `main` and every
+  pull request. The suites run in jobs of their own, and the `check`
+  job passes only when all of them have.
 - `make build-<name>` / `make test-<name>` — one component (the
   gold engine is `wealthdb`; e.g. `make test-wealthdb`).
 - `make update` — bring deps forward (host venvs, Go modules, base

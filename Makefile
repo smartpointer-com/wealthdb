@@ -99,7 +99,7 @@ endef
 
 .DEFAULT_GOAL := help
 .PHONY: all build test help install uninstall hooks \
-        build-wealthdb test-wealthdb \
+        list-suites list-collectors build-wealthdb test-wealthdb \
         build-web test-web clean-web cleanall-web test-mcp \
         build-collectors test-collectors \
         test-collectorkit clean-collectorkit cleanall-collectorkit \
@@ -121,14 +121,22 @@ all:
 		build-wealthdb build-web build-collectors
 build: all
 
+# TEST_SUITES is every suite `make test` runs, in start order: each
+# names a test-<name> target. `make list-suites` prints it, and CI runs
+# each suite in exactly one job (.github/ci-suites.sh).
+TEST_SUITES := wealthdb demo web mcp site collectorkit wrappers pii $(COLLECTORS)
+# SUITES narrows `make test` to some of them (e.g. SUITES="web mcp").
+SUITES ?= $(TEST_SUITES)
+
 # `make test` runs the suites together and prints each one's log, with
 # its duration in seconds, once all have finished. Each image build
 # holds a lock (LOCKED), so two suites never build one image at once.
 # `make test-<name>` runs one suite and prints as it goes.
 test:
+	$(if $(strip $(SUITES)),,$(error SUITES names no suite))
 	@dir=$$(mktemp -d "$${TMPDIR:-/tmp}/wealthdb-test.XXXXXX"); \
 	trap 'rm -rf "$$dir"' EXIT; \
-	printf '%s\n' wealthdb demo web mcp site collectorkit wrappers pii $(COLLECTORS) > "$$dir/suites"; \
+	printf '%s\n' $(SUITES) > "$$dir/suites"; \
 	< "$$dir/suites" xargs -P $(NCPU) -I{} $(SHELL) -c ' \
 		name="$$1"; dir="$$2"; \
 		echo "start $$name"; \
@@ -149,6 +157,12 @@ test:
 		fi; \
 	done < "$$dir/suites"; \
 	exit $$fail
+
+list-suites:
+	@printf '%s\n' $(TEST_SUITES)
+
+list-collectors:
+	@printf '%s\n' $(COLLECTORS)
 
 # ---- install -----------------------------------------------------------
 # Symlink the two top-level entry points onto PATH so they work from any
@@ -385,9 +399,14 @@ build-wealthdb:
 	echo "==> build wealthdb (docker image)"; \
 	$(WEALTHDB) build
 
+# WEALTHDB_PKGS narrows the packages, and GO_TEST_FLAGS adds go test
+# flags (CI passes -count=1, so no result comes from the test cache).
+WEALTHDB_PKGS ?= ./...
+GO_TEST_FLAGS ?=
+
 test-wealthdb: build-wealthdb
-	@echo "==> test wealthdb (go test ./...)"
-	$(WEALTHDB_TEST) ./...
+	@echo "==> test wealthdb (go test $(WEALTHDB_PKGS))"
+	$(WEALTHDB_TEST) $(GO_TEST_FLAGS) $(WEALTHDB_PKGS)
 
 # Where wealthdb-go parks the containerised Go toolchain caches
 # (must mirror CACHE in wealthdb/wealthdb-go).
@@ -808,8 +827,11 @@ help:
 	@echo ""
 	@echo "  make all                build everything (engine + web + all collectors)"
 	@echo "  make test               test everything; the suites run together"
+	@echo "                          (SUITES=\"a b\" runs some of them)"
+	@echo "  make list-suites        the suites make test runs (list-collectors: the collectors)"
 	@echo "  make build-wealthdb     build the Go gold-engine image"
 	@echo "  make test-wealthdb      run go test ./... in the wealthdb container"
+	@echo "                          (WEALTHDB_PKGS=, GO_TEST_FLAGS=)"
 	@echo "  make build-web          build the optional Metabase BI image"
 	@echo "  make test-web           run the web unit tests (lifecycle script, provision.py)"
 	@echo "  make test-mcp           run the MCP server lifecycle unit tests"

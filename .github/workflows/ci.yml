@@ -1,9 +1,23 @@
 # Checks every push to main and every pull request: the privacy check on
-# what the change adds, then `make lint` and `make test`. The jobs build
-# and run the change's own code, so they hold a read-only token and no
-# secrets, and a fork's pull request runs only once a maintainer approves
-# the run (repository settings, Actions). The actions sit on major tags,
-# which `make update` does not move.
+# what the change adds, `make lint`, and every suite `make test` runs.
+# The suites run in jobs of their own, side by side:
+#   - pii: the privacy check;
+#   - lint: `make lint`;
+#   - go: the engine's Go tests, one job each for internal/gold,
+#     cmd/wealthdb and every other package;
+#   - demo: the demo household through the engine;
+#   - collectors: the shared base images and every collector's suite;
+#   - rest: every other suite of `make test`;
+#   - check: passes only when lint, go, demo, collectors and rest have.
+# .github/ci-suites.sh splits the Makefile's suite list between the
+# jobs, so a new suite runs in CI without an edit here, and it fails
+# when the list and the jobs disagree.
+# The Go caches are restored in every run and saved only by pushes to
+# main, also when a run fails. A pull request restores main's.
+# The jobs build and run the change's own code, so they hold a read-only
+# token and no secrets, and a fork's pull request runs only once a
+# maintainer approves the run (repository settings, Actions). The
+# actions sit on major tags, which `make update` does not move.
 name: ci
 
 on:
@@ -40,9 +54,149 @@ jobs:
           fi
           shared/pii/check_at.sh "$BASE" range "$BASE" HEAD
 
-  check:
+  lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      # The Go module and build caches that wealthdb-go mounts into the
+      # container. The module cache has one entry per module graph and
+      # toolchain, and only this job saves it, after downloading every
+      # module. Each job kind keeps a build cache of its own.
+      - name: Restore the Go module cache
+        id: gomod
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/wealthdb/go/go-mod
+          key: go-mod-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}
+      - name: Restore the Go build cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/wealthdb/go/go-build
+          key: go-build-lint-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: go-build-lint-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}-
+      - name: Go modules
+        run: |
+          make build-wealthdb
+          wealthdb/wealthdb-go mod download
+      - name: Lint
+        run: make lint
+      - name: Save the Go module cache
+        if: always() && github.event_name == 'push' && steps.gomod.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/wealthdb/go/go-mod
+          key: go-mod-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}
+      - name: Save the Go build cache
+        if: always() && github.event_name == 'push'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/wealthdb/go/go-build
+          key: go-build-lint-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+  go:
+    name: go (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: gold
+            pkgs: ./internal/gold/
+          - name: cmd
+            pkgs: ./cmd/wealthdb/
+          # Every package the entries above do not name.
+          - name: rest
+            pkgs: ""
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Restore the Go module cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/wealthdb/go/go-mod
+          key: go-mod-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}
+      - name: Restore the Go build cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/wealthdb/go/go-build
+          key: go-build-${{ matrix.name }}-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: go-build-${{ matrix.name }}-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}-
+      # -count=1: Go cannot see the files DuckDB opens through C, so a
+      # cached pass could hide a change.
+      - name: Test
+        env:
+          PKGS: ${{ matrix.pkgs }}
+          # The packages of the entries that name theirs.
+          OWN: ./internal/gold/ ./cmd/wealthdb/
+        run: |
+          make build-wealthdb
+          if [ -z "$PKGS" ]; then
+            own=$(wealthdb/wealthdb-go list $OWN)
+            PKGS=$(wealthdb/wealthdb-go list ./... | grep -vxF -e "$own" | tr '\n' ' ')
+            [ -n "$PKGS" ] || { echo "no other package to test" >&2; exit 1; }
+          fi
+          make test-wealthdb WEALTHDB_PKGS="$PKGS" GO_TEST_FLAGS=-count=1
+      - name: Save the Go build cache
+        if: always() && github.event_name == 'push'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/wealthdb/go/go-build
+          key: go-build-${{ matrix.name }}-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Test
+        run: make test-demo
+
+  collectors:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # The browser base images need more disk than a fresh runner has
+      # free. The delete runs while the job sets up, and the test step
+      # waits for its exit status.
+      - name: Free disk space
+        run: |
+          m="$RUNNER_TEMP/free-disk"
+          (sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
+           echo $? > "$m.tmp" && mv "$m.tmp" "$m") >/dev/null 2>&1 &
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Host tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends poppler-utils
+      - name: Test
+        run: |
+          split=$(.github/ci-suites.sh)
+          m="$RUNNER_TEMP/free-disk"
+          while [ ! -e "$m" ]; do sleep 2; done
+          [ "$(cat "$m")" = 0 ] || { echo "freeing disk space failed" >&2; exit 1; }
+          make test SUITES="$(echo "$split" | sed -n 's/^collectors=//p')"
+
+  rest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
@@ -54,11 +208,25 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends poppler-utils
-      # The browser base images need more disk than a fresh runner has
-      # free.
-      - name: Free disk space
-        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
-      - name: Lint
-        run: make lint
       - name: Test
-        run: make test
+        run: |
+          split=$(.github/ci-suites.sh)
+          make test SUITES="$(echo "$split" | sed -n 's/^rest=//p')"
+
+  # The one status check a ruleset needs. It runs whatever its needs
+  # did, since a check skipped after a failed need would count as
+  # passed, and it fails unless every need succeeded.
+  check:
+    needs: [lint, go, demo, collectors, rest]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Every job passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do
+            [ "$r" = success ] || exit 1
+          done
