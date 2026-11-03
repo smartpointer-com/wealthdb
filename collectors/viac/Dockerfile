@@ -8,12 +8,9 @@ FROM wealthdb/base-python:${WEALTHDB_IMAGE_TAG}
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# Copy scripts last, by name, so stray host artefacts (.venv,
-# real-credential env files, bronze downloads) never enter the image.
-COPY login.py download.py load.py prune.py viac_client.py pdf_parsers.py /app/
-COPY migrations /app/migrations
-COPY entrypoint.sh /app/
-RUN chmod +x /app/entrypoint.sh
+# No source: every run and every test mounts the checkout over /app
+# (HAS_APP_MOUNT in the wrapper), entrypoint.sh included, so the image
+# holds only what the code runs on.
 
 # Image default user is root. The wrapper runs the container with
 # `--user $(id -u):$(id -g)` so files written to mounted volumes

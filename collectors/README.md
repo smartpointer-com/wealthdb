@@ -193,6 +193,8 @@ the container with `-e`). It may opt into these knobs:
 
 - `HAS_DEBUG`: a `/debug` mount for `--screenshot-dir` and `--trace`.
 - `HAS_APP_MOUNT`: the checkout's source over `/app` on every verb.
+  The image then holds no source, so only an edit to the Dockerfile
+  or `requirements.txt` rebuilds it.
 - `HAS_SAFETY`: refuse to clobber a live container mid-MFA.
 - `HAS_VNC`: VNC port forwarding for `vnc-login`. `VNC_SUBCOMMANDS`
   replaces the list of verbs that get it.

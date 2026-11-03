@@ -30,22 +30,9 @@ RUN apt-get update \
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# Copy scripts last, by name, so stray host artefacts (.venv, traces,
-# captures, downloaded statements) never enter the image.
-#   explore.py      discovery harness
-#   amexclient.py   the wire contract (pure: endpoints, classify, parse)
-#   auth_dialog.py  the passcode challenge as a tested CLI dialog
-#   login.py        the sign-in driver download.py signs in with, plus
-#                   the `login --check` device-trust probe
-#   download.py     the whole run: sign-in + REST fetch → bronze
-#   statement_parser.py  statement PDF → transactions + balances
-#   load.py         bronze → SQLite silver
-#   prune.py        bronze reclaim
-COPY explore.py amexclient.py auth_dialog.py login.py download.py \
-     statement_parser.py load.py prune.py /app/
-COPY migrations /app/migrations
-COPY entrypoint.sh /app/
-RUN chmod +x /app/entrypoint.sh
+# No source: every run and every test mounts the checkout over /app
+# (HAS_APP_MOUNT in the wrapper), entrypoint.sh included, so the image
+# holds only what the code runs on.
 
 # Image default user is root. The wrapper runs the container with
 # `--user $(id -u):$(id -g)` so files written to mounted volumes have

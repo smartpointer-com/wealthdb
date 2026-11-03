@@ -7,7 +7,8 @@
 # .image-tag stops the wrapper. A build whose inputs hash matches the
 # image's wealthdb.inputs label is skipped, for the engine, a collector
 # and the shared bases; an extra argument, a changed input or a rebuilt
-# base image builds. The wrappers run from a copy of the tree, so the
+# base image builds. A HAS_APP_MOUNT collector's inputs are its
+# Dockerfile and requirements.txt alone. The wrappers run from a copy of the tree, so the
 # checkout's own .image-tag plays no part. A stubbed docker on PATH
 # records the argv; nothing real is built.
 set -uo pipefail
@@ -296,6 +297,41 @@ if printf '%s\n' "$out" | grep -qx BUILT; then
 else
     bad "a rebuilt base image rebuilds the collector ($out)"
 fi
+# A HAS_APP_MOUNT image holds no source: its inputs are the Dockerfile
+# and requirements.txt, so a doc or code edit beside them builds nothing
+# and an edit to requirements.txt builds.
+mountdir="$TMP/mountcol"
+mkdir -p "$mountdir"
+cp "$skipdir/Dockerfile" "$mountdir/"
+printf 'requests>=2\n' > "$mountdir/requirements.txt"
+mount_build() {
+    (
+        export PATH="$TMP/bin:$PATH" STUB_LABEL="$1" WEALTHDB_IMAGE_TAG=feature
+        NAME=testcol; ENV_PREFIX=TESTCOL; ENV_VARS=(); HERE="$mountdir"; HAS_APP_MOUNT=1
+        unset TESTCOL_IMAGE
+        # shellcheck disable=SC1091
+        source "$TREE/shared/wrappers/wrapper-lib.sh"
+        wrapper_init
+        wrapper_build build
+    )
+}
+mounthash="$(hash_of "$mountdir/Dockerfile" "$mountdir/requirements.txt" -- sha256:from)"
+printf 'notes\n' > "$mountdir/README.md"
+printf 'print(1)\n' > "$mountdir/download.py"
+out="$(mount_build "$mounthash")"
+if printf '%s\n' "$out" | grep -qx 'build: wealthdb/testcol:feature unchanged'; then
+    ok "a mounted image ignores an edit to its code or docs"
+else
+    bad "a mounted image ignores an edit to its code or docs"
+fi
+printf 'requests>=3\n' > "$mountdir/requirements.txt"
+out="$(mount_build "$mounthash")"
+if printf '%s\n' "$out" | grep -qx BUILT; then
+    ok "a mounted image rebuilds on a requirements edit"
+else
+    bad "a mounted image rebuilds on a requirements edit"
+fi
+
 from="$(. "$TREE/shared/wrappers/image-tag.sh"; WEALTHDB_IMAGE_TAG=feature wealthdb_from_ref "$skipdir/Dockerfile")"
 if [ "$from" = wealthdb/base-python:feature ]; then
     ok "the FROM lookup fills in the image tag"

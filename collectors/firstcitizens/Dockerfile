@@ -23,21 +23,9 @@ RUN apt-get update \
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# Copy scripts last, by name, so stray host artefacts (.venv, traces,
-# captures, downloaded statements) never enter the image.
-#   explore.py      discovery harness
-#   q2client.py     Q2 mobilews wire contract (pure: endpoints, classify, parse)
-#   auth_dialog.py  the access-code 2FA challenge as a tested CLI dialog
-#   login.py        interactive login (device registration) + shared authenticate()
-#   download.py     unattended logon + REST fetch → bronze
-#   load.py         bronze → SQLite silver
-#   statement_parser.py  the interest rate a statement PDF states
-#   prune.py        bronze reclaim
-COPY explore.py q2client.py auth_dialog.py login.py download.py \
-     load.py statement_parser.py prune.py /app/
-COPY migrations /app/migrations
-COPY entrypoint.sh /app/
-RUN chmod +x /app/entrypoint.sh
+# No source: every run and every test mounts the checkout over /app
+# (HAS_APP_MOUNT in the wrapper), entrypoint.sh included, so the image
+# holds only what the code runs on.
 
 # Image default user is root. The wrapper runs the container with
 # `--user $(id -u):$(id -g)` so files written to mounted volumes have

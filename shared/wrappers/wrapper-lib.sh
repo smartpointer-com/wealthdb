@@ -28,7 +28,9 @@
 #                     /debug.
 #   HAS_APP_MOUNT=1   Mount $HERE over /app on every verb, so a run uses
 #                     the checkout's source and a code edit needs no
-#                     rebuild.
+#                     rebuild. The image then holds no source (its
+#                     Dockerfile copies requirements.txt alone), and a
+#                     direct `docker run` mounts the checkout too.
 #   HAS_SAFETY=1      Refuse to clobber a RUNNING container with the same
 #                     name. Required where a docker rm -f mid-MFA would
 #                     burn a 2FA prompt or evict a VNC handoff. Override
@@ -265,8 +267,11 @@ wrapper_mounts_help() {
 # ----------------------------------------------------------------------
 
 # Implement `./<wrapper> build [extra args]`. When the image's label
-# matches a hash of this directory and of its base image, print that
-# it is unchanged and exit. Returning would fall through into docker
+# matches a hash of its inputs and of its base image, print that it is
+# unchanged and exit. The inputs are this directory; with HAS_APP_MOUNT=1
+# they are the Dockerfile and requirements.txt alone, since such an
+# image holds no source and an edit to the code or the docs leaves it
+# as it is. Returning would fall through into docker
 # run. Extra arguments are passed through, and the image is built. A
 # hash that fails (no python3 on the host) builds an unlabeled image,
 # which is never skipped.
@@ -282,7 +287,12 @@ wrapper_build() {
     # The base image's id is part of the inputs: a rebuilt base is a
     # different image even when this directory did not change.
     _wfrom="$(wealthdb_from_id "$HERE/Dockerfile")"
-    _whash="$(wealthdb_inputs_hash "$HERE" -- "$_wfrom")" || _whash=
+    if [[ "${HAS_APP_MOUNT:-0}" == "1" ]]; then
+        _winputs=("$HERE/Dockerfile" "$HERE/requirements.txt")
+    else
+        _winputs=("$HERE")
+    fi
+    _whash="$(wealthdb_inputs_hash "${_winputs[@]}" -- "$_wfrom")" || _whash=
     if wealthdb_build_unchanged "$IMAGE" "$_whash" "$#"; then
         exit 0
     fi

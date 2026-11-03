@@ -25,21 +25,9 @@ RUN apt-get update \
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# Copy scripts last, by name, so stray host artefacts (.venv, traces,
-# captures, downloaded statements) never enter the image.
-#   explore.py     discovery harness
-#   login.py       one-shot login + scrape driver (backs `download`)
-#   download.py    the walk() scrape + bronze layout
-#   auth_dialog.py the 2FA challenge contract as a tested CLI dialog
-#   mdsui.py       frame-aware helpers for Chase's MDS controls
-#   statement_parser.py  Chase statement-PDF → transactions + balances
-#   load.py        bronze → SQLite silver
-#   prune.py       bronze reclaim
-COPY explore.py login.py download.py auth_dialog.py mdsui.py \
-     statement_parser.py load.py prune.py /app/
-COPY migrations /app/migrations
-COPY entrypoint.sh /app/
-RUN chmod +x /app/entrypoint.sh
+# No source: every run and every test mounts the checkout over /app
+# (HAS_APP_MOUNT in the wrapper), entrypoint.sh included, so the image
+# holds only what the code runs on.
 
 # Image default user is root. The wrapper runs the container with
 # `--user $(id -u):$(id -g)` so files written to mounted volumes have

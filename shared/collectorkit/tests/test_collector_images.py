@@ -1,9 +1,13 @@
 """Every Docker collector's image carries each module its verbs run.
 
-A collector's Dockerfile copies its scripts by name, so a module a script
-starts to import is missing from the image until it is listed too. The
-wrappers that mount the source tree over `/app` hide the gap; the image on
-its own then fails at import. The check reads, per collector:
+A collector whose wrapper mounts the checkout over `/app`
+(`HAS_APP_MOUNT=1`) runs no code from its image, so its Dockerfile copies
+`requirements.txt` alone: the wrapper hashes only the Dockerfile and that
+file to decide on a rebuild, and anything else copied would go stale.
+
+Any other collector's Dockerfile copies its scripts by name, so a module a
+script starts to import is missing from the image until it is listed too.
+The check reads, per such collector:
 
 * the scripts its `entrypoint.sh` runs (`python3 /app/<script>.py`);
 * their first-party import closure: the collector's own modules they
@@ -28,6 +32,11 @@ if not COLLECTORS.is_dir():
 DOCKER_COLLECTORS = sorted(
     d.name for d in COLLECTORS.iterdir()
     if (d / "Dockerfile").is_file() and (d / "entrypoint.sh").is_file())
+
+MOUNTED = sorted(
+    n for n in DOCKER_COLLECTORS
+    if re.search(r"^HAS_APP_MOUNT=1\b",
+                 (COLLECTORS / n / n).read_text(encoding="utf-8"), re.M))
 
 _RUN_RE = re.compile(r"\bpython3? /app/([\w./-]+\.py)\b")
 _COPY_RE = re.compile(r"^\s*COPY\s", re.IGNORECASE)
@@ -83,7 +92,14 @@ def _closure(root: Path, scripts: set[str]) -> set[Path]:
     return seen
 
 
-@pytest.mark.parametrize("name", DOCKER_COLLECTORS)
+@pytest.mark.parametrize("name", MOUNTED)
+def test_a_mounted_image_copies_requirements_alone(name):
+    assert _copied(COLLECTORS / name) == {"requirements.txt"}, (
+        f"{name}: a HAS_APP_MOUNT image copies requirements.txt alone")
+
+
+@pytest.mark.parametrize(
+    "name", [n for n in DOCKER_COLLECTORS if n not in MOUNTED])
 def test_the_image_ships_every_module_its_verbs_run(name):
     root = COLLECTORS / name
     scripts = set(_RUN_RE.findall(
@@ -98,4 +114,5 @@ def test_the_image_ships_every_module_its_verbs_run(name):
 
 
 def test_the_docker_collectors_are_found():
-    assert {"fidelity-web", "schwab-web"} <= set(DOCKER_COLLECTORS)
+    assert {"fidelity-web", "schwab-web"} <= set(MOUNTED)
+    assert set(DOCKER_COLLECTORS) - set(MOUNTED)

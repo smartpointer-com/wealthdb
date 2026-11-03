@@ -14,19 +14,9 @@ WORKDIR /app
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# Copy scripts last. Listed explicitly so accidentally-present
-# host artefacts (.venv, real-credential JSONs, recorded Playwright
-# traces) never make it into the image even if .dockerignore is
-# incomplete. download.py is the one-shot CLI (login → walk →
-# logout); load.py is the silver loader, prune.py the bronze
-# debug-artefact/incomplete-dump cleaner, and recompress.py the
-# one-time HTML/CSV → .zst backlog sweep (all also reachable
-# host-side via the wrapper). The other modules are what those scripts
-# import.
-COPY download.py explore.py load.py prune.py recompress.py lot_parsers.py pdf_parsers.py pdf_parsers_supplied.py pdf_parsers_daf.py pdf_parsers_1099.py pdf_common.py /app/
-COPY migrations /app/migrations
-COPY entrypoint.sh /app/
-RUN chmod +x /app/entrypoint.sh
+# No source: every run and every test mounts the checkout over /app
+# (HAS_APP_MOUNT in the wrapper), entrypoint.sh included, so the image
+# holds only what the code runs on.
 
 # Default user is root. The wrapper runs the container with
 # `--user $(id -u):$(id -g)` so files written to mounted volumes

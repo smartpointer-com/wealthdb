@@ -25,14 +25,9 @@ RUN pip install -r requirements.txt
 # insurance against drift.
 RUN playwright install firefox && playwright install-deps firefox
 
-# Copy scripts last. Listed explicitly so accidentally-present host
-# artefacts (.venv, real-credential JSONs, recorded Playwright
-# traces) never make it into the image even if .dockerignore is
-# incomplete.
-COPY explore.py login.py download.py load.py prune.py recompress.py fetch_prices.py binance.py frankfurter.py /app/
-COPY migrations /app/migrations
-COPY entrypoint.sh /app/
-RUN chmod +x /app/entrypoint.sh
+# No source: every run and every test mounts the checkout over /app
+# (HAS_APP_MOUNT in the wrapper), entrypoint.sh included, so the image
+# holds only what the code runs on.
 
 # Image default user is root. The wrapper runs the container with
 # `--user $(id -u):$(id -g)` so files written to mounted volumes
