@@ -692,9 +692,13 @@ see root [AGENTS.md](../AGENTS.md) §4) and assertions that `load.py`
 projects the expected silver rows; pure-stdlib `unittest` works too.
 `make test` / `make test-collectors` runs the whole suite, and tests
 must pass before any commit. `make lint` runs ruff over every collector
-with the rules in the root `ruff.toml`; it has to be clean too, and the
-pre-commit hook (`make hooks`) refuses a commit whose staged tree it
-fails on.
+with the rules in the root `ruff.toml`; it has to be clean too. The
+pre-commit hook (`make hooks`) refuses a commit whose staged tree fails
+the lint or the privacy check (root [AGENTS.md](../AGENTS.md) §4).
+Fixtures are where real data most often slips in, and no pattern
+catches all of it: run the privacy review
+([../.claude/skills/wealthdb-pii-review/SKILL.md](../.claude/skills/wealthdb-pii-review/SKILL.md))
+over a branch before it is pushed.
 
 ### The gold adapter
 

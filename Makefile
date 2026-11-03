@@ -103,7 +103,7 @@ endef
         build-web test-web clean-web cleanall-web test-mcp \
         build-collectors test-collectors \
         test-collectorkit clean-collectorkit cleanall-collectorkit \
-        test-wrappers \
+        test-wrappers test-pii pii pii-history \
         clean cleanall clean-wealthdb cleanall-wealthdb clean-build-locks \
         clean-collectors cleanall-collectors base-images cleanall-bases \
         update update-venvs update-wealthdb update-playwright update-bases \
@@ -128,7 +128,7 @@ build: all
 test:
 	@dir=$$(mktemp -d "$${TMPDIR:-/tmp}/wealthdb-test.XXXXXX"); \
 	trap 'rm -rf "$$dir"' EXIT; \
-	printf '%s\n' wealthdb demo web mcp site collectorkit wrappers $(COLLECTORS) > "$$dir/suites"; \
+	printf '%s\n' wealthdb demo web mcp site collectorkit wrappers pii $(COLLECTORS) > "$$dir/suites"; \
 	< "$$dir/suites" xargs -P $(NCPU) -I{} $(SHELL) -c ' \
 		name="$$1"; dir="$$2"; \
 		echo "start $$name"; \
@@ -179,11 +179,13 @@ uninstall:
 	fi
 
 # The repo's git hooks live in .githooks/, tracked, and git runs them once
-# core.hooksPath names that dir. The pre-commit hook runs `make lint` on the
-# staged tree and refuses a commit it fails on or rewrites.
+# core.hooksPath names that dir. The pre-commit hook runs the privacy check
+# (shared/pii) and `make lint` on the staged tree, and refuses a commit
+# either fails on or the lint rewrites; the commit-msg hook runs the
+# privacy check on the message.
 hooks:
 	@git config core.hooksPath .githooks
-	@echo "  git hooks: core.hooksPath -> .githooks (pre-commit runs make lint)"
+	@echo "  git hooks: core.hooksPath -> .githooks (privacy check and make lint)"
 
 build-collectors: $(addprefix build-,$(COLLECTORS))
 test-collectors:  $(addprefix test-,$(COLLECTORS))
@@ -252,7 +254,7 @@ base-images:
 # cleanall = clean + the heavy outputs (docker images, venvs)
 clean:    clean-wealthdb clean-web clean-collectors clean-collectorkit clean-demo \
           clean-site clean-build-locks
-	@$(call CLEAN_PYCACHE,shared/update)
+	@$(call CLEAN_PYCACHE,shared/update shared/pii)
 	@rm -rf .pytest_cache
 cleanall: clean cleanall-wealthdb cleanall-web cleanall-collectors cleanall-bases \
           cleanall-collectorkit cleanall-lint cleanall-site
@@ -298,6 +300,28 @@ test-collectorkit:
 test-wrappers:
 	@echo "==> test wrappers (shared/wrappers)"
 	@for t in shared/wrappers/tests/test_*.sh; do bash "$$t" || exit 1; done
+
+# The privacy check the hooks and CI run (shared/pii): stdlib only, so
+# it runs on the host interpreter, no venv.
+test-pii:
+	@echo "==> test pii (shared/pii/tests)"
+	@$(PYTHON) -m unittest discover -s shared/pii/tests
+
+# The privacy check by hand. `pii` reads what a push would publish: every
+# commit since PII_BASE (default origin/main; a fork's upstream is often
+# upstream/main) and the staged change. `pii-history` reads every commit
+# HEAD reaches. Findings print as shapes; SHOW=1 adds the values, for this
+# terminal only.
+PII_BASE ?= origin/main
+PII_CHECK = $(PYTHON) shared/pii/pii_check.py $(if $(SHOW),--show)
+
+pii:
+	@echo "==> pii check (the commits since $(PII_BASE), then the index)"
+	@$(PII_CHECK) range $(PII_BASE) HEAD && $(PII_CHECK) staged
+
+pii-history:
+	@echo "==> pii check (every commit HEAD reaches)"
+	@$(PII_CHECK) history HEAD
 
 clean-collectorkit:
 	@echo "==> clean collectorkit"
@@ -793,6 +817,9 @@ help:
 	@echo "  make test-collectors    test every collector"
 	@echo "  make test-collectorkit  run the shared collectorkit test suite"
 	@echo "  make test-wrappers      run the shared wrapper tests and the Playwright pin check"
+	@echo "  make test-pii           run the privacy check's unit tests"
+	@echo "  make pii                privacy check of the unpushed commits and the index"
+	@echo "  make pii-history        privacy check of every commit"
 	@echo "  make lint               gofmt + go vet (engine), ruff (Python)"
 	@echo "  make lint-go / lint-python"
 	@echo "  make build-<name>       build one collector (e.g. build-schwab-web)"

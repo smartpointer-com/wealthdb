@@ -122,6 +122,30 @@ present or absent, or contact points on file). When the user pastes a
 captured response or log fragment in chat, strip identifiers before
 committing anything derived from it. When in doubt, ask.
 
+**The privacy check** (`shared/pii/pii_check.py`) is a net under that
+read, never a substitute. The hooks run it on every staged change and
+commit message, and CI on every push and pull request. It refuses:
+
+- checksum-valid IBANs, card, AHV and social security numbers;
+- credentials, home paths, host names, e-mail addresses, phone numbers;
+- in docs and messages, account numbers and masked last-four digits;
+  in messages, money amounts;
+- every term of the private watchlist in `~/.config/wealthdb-pii/`
+  (`shared/pii/watchlist.py` writes it from the local gold database).
+
+It cannot read a sentence. Before a branch is pushed or opened as a pull
+request, run the privacy review in
+[.claude/skills/wealthdb-pii-review/SKILL.md](.claude/skills/wealthdb-pii-review/SKILL.md)
+over it.
+
+- Never bypass a hook (`--no-verify`) unless the user says so for that
+  commit.
+- Never add a value to `shared/pii/allow.txt` to get past a finding. It
+  holds published test values only, and a value added there fails its
+  own commit by design. A test that needs a valid checksum computes the
+  value at run time. `shared/pii/known.txt` lists findings in published
+  history that the user has ruled on; only the user adds to it.
+
 A brief for a sub-agent gets the same care. Give the *shape* of a
 value (`####XXXXXXXX####`), never a real value, not even masked or
 labelled "synthetic" — the agent reuses it verbatim as a fixture, and
@@ -184,8 +208,14 @@ root, no `cd`-ing into subdirectories:
 - `make lint` — gofmt and `go vet` over the gold engine, ruff over
   every Python module (rules in the root `ruff.toml`). The pre-commit
   hook (`.githooks/`, installed by `make hooks` or `make install`)
-  runs it on the staged tree and refuses a commit it fails on or
-  rewrites.
+  runs the privacy check (§4) and the lint on the staged tree, and
+  refuses a commit either fails on or the lint rewrites. The commit-msg
+  hook runs the privacy check on the message.
+- `make pii` — the privacy check over the commits since `origin/main`
+  (`PII_BASE=<rev>` moves the base) and the staged change;
+  `make pii-history` over every commit.
+- CI (`.github/workflows/ci.yml`) runs the privacy check, `make lint`
+  and `make test` on every push to `main` and every pull request.
 - `make build-<name>` / `make test-<name>` — one component (the
   gold engine is `wealthdb`; e.g. `make test-wealthdb`).
 - `make update` — bring deps forward (host venvs, Go modules, base

@@ -24,7 +24,9 @@ the template should read this whole file plus the docs it names.
 ## How to run a build
 
 1. **Prerequisites.** A working checkout (`make` runs, Docker works,
-   `make base-images` has been run for browser collectors) and a VNC
+   `make base-images` has been run for browser collectors, and
+   `make hooks` has installed the git hooks, so every commit runs the
+   privacy check and the lint) and a VNC
    viewer for explore sessions (macOS Screen Sharing works; any VNC
    client on Linux). Commands below invoke the wrapper directly
    (`collectors/<name>/<name> <verb>`); after `make install`,
@@ -301,7 +303,9 @@ and move on.
   never as what the login was observed to hold. Synthetic fixtures
   and placeholders only, format-valid and obviously fake. Sweep
   source, fixtures, docstrings, docs AND the drafted commit message
-  before git add — and mind grep's exit codes in && chains.
+  before git add — and mind grep's exit codes in && chains. The hooks
+  run the mechanical check (shared/pii) on every commit; never bypass
+  one. It cannot read prose, so the privacy review below still runs.
 - Tests green (make test-<name>) and make lint clean before every
   commit; a refactor pass
   (dead code, stale comments, comments encoding disproven theories)
@@ -311,9 +315,11 @@ and move on.
   change: record each live-run root cause as a fleet lesson, and
   correct the allow/forbid surface when discovery reclassifies a
   surface.
-- End every phase with: commit + PII sweep + docs updated + a
-  numbered list of exactly what is needed from the user next. Leave
-  genuine judgment calls to the user, stated with a default.
+- End every phase with: commit + the privacy review over the phase's
+  commits (.claude/skills/wealthdb-pii-review/SKILL.md) + docs
+  updated + a numbered list of exactly what is needed from the user
+  next. Leave genuine judgment calls to the user, stated with a
+  default.
 
 Start with phase 1 (scaffold + AGENTS.md + DESIGN.md skeleton), then
 stop and ask for the first explore session to be run.
@@ -377,6 +383,20 @@ proposes with a stated default and waits. Conversely, the agent may,
 without asking, read code and captures and run `login --check` and unit
 tests. A `download --dry-run` is allowed only where it walks an existing
 session and cannot sign in (root [AGENTS.md](AGENTS.md) §2).
+
+**The watchlist and the push.** A build writes code with real captures
+in view, and that is how private data reaches a repository. Two steps
+keep it out:
+
+- After the first explore session, the user adds the new login's
+  account numbers and the names it shows to
+  `~/.config/wealthdb-pii/curated.txt`, by hand. From then on, every
+  commit the agent makes is checked against them. Once the source loads
+  into gold, `python3 shared/pii/watchlist.py` adds what the data holds.
+- The user pushes, never the agent. Before a push, the agent runs the
+  privacy review
+  ([.claude/skills/wealthdb-pii-review/SKILL.md](.claude/skills/wealthdb-pii-review/SKILL.md))
+  over the unpushed commits and reports its findings.
 
 **Lending a session.** The user may explicitly lend an authenticated
 session to the agent for bounded iteration ("iterate on download
@@ -586,7 +606,11 @@ as hard rules rather than advice.
   synthesized from scratch (transforming real numbers leaks and
   corrupts), format-valid, and obviously fake. Scope prose states
   account *kinds*, never what a login was observed to hold. Tests
-  never read real data directories. The agent never pushes.
+  never read real data directories. The agent never pushes. The
+  hooks' check (shared/pii) and the watchlist catch values; only a
+  read catches the prose, so the privacy review
+  ([.claude/skills/wealthdb-pii-review/SKILL.md](.claude/skills/wealthdb-pii-review/SKILL.md))
+  ends every phase and comes before every push.
 - **The CLI conventions table is binding** (collectors/README.md).
   Independently built collectors drift: four names for one timeout,
   three meanings of `--force`, flags that parse and do nothing.

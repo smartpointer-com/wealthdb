@@ -1,0 +1,63 @@
+# Values pii_check.py lets through although they pass its checks.
+#
+# Published test and example values only, and the public addresses the
+# repository itself names. Never a value from a real statement, page or
+# response, not even with digits changed. A test that needs a valid
+# value computes one at run time instead (shared/pii/tests).
+#
+# The hooks and CI read this file as the commit before the change holds
+# it, so a value added here fails the commit that adds it: a person lets
+# that commit through on purpose.
+#
+# One value per line; spaces, dashes, dots and case are ignored.
+
+# The card networks' published test numbers.
+4111111111111111
+4012888888881881
+4000056655665556
+4000000000000002
+5555555555554444
+5105105105105100
+5200828282828210
+2223003122003222
+378282246310005
+371449635398431
+6011111111111117
+6011000990139424
+3530111333300000
+30569309025904
+6200000000000005
+
+# The example IBANs of the national IBAN specifications.
+CH9300762011623852957
+DE89370400440532013000
+GB82WEST12345698765432
+GB29NWBK60161331926819
+FR1420041010050500013M02606
+AT611904300234573201
+NL91ABNA0417164300
+BE68539007547034
+ES9121000418450200051332
+IT60X0542811101000000123456
+LI21088100002324013AA
+LU280019400644750000
+SE4550000000058398257466
+DK5000400440116243
+NO9386011117947
+PL61109010140000071219812874
+IE29AIBK93115212345678
+FI2112345600000785
+
+# The federal specification's example AHV number, and the social
+# security numbers published as examples.
+756.1234.5678.97
+078-05-1120
+219-09-9999
+
+# The project's placeholder host, GitHub's SSH address, and the public
+# addresses the collectors and the site name.
+wealthdb.local
+git@github.com
+developers@carta.com
+sh-psn@ubs.com
+hello@smartpointer.com

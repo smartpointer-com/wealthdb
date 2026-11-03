@@ -1,0 +1,7 @@
+# Findings already ruled on in published history, which cannot change.
+# One per line: the full commit hash, the location as pii_check.py
+# prints it, and the rule. Never the value. Only a finding the user has
+# ruled harmless goes here, and only for a commit already published.
+
+# A format example of an amount, quoted in a commit message.
+eefbb834828b6b2d3a62e4e5be68af3d603b9c69 message:4 amount

@@ -1,0 +1,64 @@
+# Checks every push to main and every pull request: the privacy check on
+# what the change adds, then `make lint` and `make test`. The jobs build
+# and run the change's own code, so they hold a read-only token and no
+# secrets, and a fork's pull request runs only once a maintainer approves
+# the run (repository settings, Actions). The actions sit on major tags,
+# which `make update` does not move.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pii:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The rules and the allow list come from the base of the change,
+      # never from the change (shared/pii/check_at.sh). A base the history
+      # no longer holds, after main was rewritten, falls back to the
+      # parent commit.
+      - name: Privacy check
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if ! git cat-file -e "${BASE:-none}^{commit}" 2>/dev/null; then
+            BASE=HEAD~1
+          fi
+          shared/pii/check_at.sh "$BASE" range "$BASE" HEAD
+
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Host tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends poppler-utils
+      # The browser base images need more disk than a fresh runner has
+      # free.
+      - name: Free disk space
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
+      - name: Lint
+        run: make lint
+      - name: Test
+        run: make test

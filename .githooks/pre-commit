@@ -1,5 +1,10 @@
 #!/bin/sh
-# pre-commit — refuse a commit that `make lint` fails on or rewrites.
+# pre-commit — refuse a commit that holds an identifier or a credential,
+# or that `make lint` fails on or rewrites.
+#
+# The privacy check (shared/pii/check_at.sh) reads the staged change
+# with the rules and allow list HEAD holds, so a commit that edits either
+# is judged by the old ones.
 #
 # The lint runs on exactly what is being committed: the index is
 # exported to a scratch tree, so an unstaged edit neither hides a finding
@@ -20,6 +25,11 @@
 set -eu
 
 repo="$(git rev-parse --show-toplevel)"
+if ! "$repo/shared/pii/check_at.sh" HEAD staged; then
+	echo "pre-commit: the privacy check failed on the staged change; commit refused" >&2
+	exit 1
+fi
+
 . "$repo/shared/wrappers/image-tag.sh"
 if ! wealthdb_export_image_tag "$repo"; then
 	echo "pre-commit: no image tag for this checkout; commit refused" >&2

@@ -363,6 +363,9 @@ describes the household and how to query it from the command line.
   every component (security, PII, read-only access).
 - **[skills/wealthdb-ro/SKILL.md](skills/wealthdb-ro/SKILL.md)** — a
   skill that teaches an AI agent which read-only reports to run.
+- **[.claude/skills/wealthdb-pii-review/SKILL.md](.claude/skills/wealthdb-pii-review/SKILL.md)**
+  — the privacy review a contributor's agent runs over a branch before
+  it is pushed.
 - **[NEW-COLLECTOR-PROMPT.md](NEW-COLLECTOR-PROMPT.md)** — the
   playbook for building a collector with a coding agent.
 - **[collectors/README.md](collectors/README.md)**,

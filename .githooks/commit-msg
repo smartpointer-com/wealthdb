@@ -1,0 +1,16 @@
+#!/bin/sh
+# commit-msg — refuse a commit message that holds an identifier, a
+# credential or a money amount.
+#
+# The privacy check (shared/pii/check_at.sh) reads the message with the
+# rules and allow list HEAD holds, like the pre-commit hook.
+#
+# Installed by `make hooks` (core.hooksPath); `git commit --no-verify`
+# skips it.
+set -eu
+
+repo="$(git rev-parse --show-toplevel)"
+if ! "$repo/shared/pii/check_at.sh" HEAD message "$1"; then
+	echo "commit-msg: the privacy check failed on the message; commit refused" >&2
+	exit 1
+fi
