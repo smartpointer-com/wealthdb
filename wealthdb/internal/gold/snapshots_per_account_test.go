@@ -224,6 +224,7 @@ func pitColumns(suffixes ...string) string {
 // point-in-time read is a LATERAL call of the report at that day's end,
 // which equals a direct call (checked on a sample of days).
 func TestPointInTimeIsTheHistoryEveryDay(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedPartialRuns(t, db, ctx)
 	single, base := pitColumns("outccy"), pitColumns("base")
@@ -303,6 +304,7 @@ func pitDiff(t *testing.T, db *sql.DB, ctx context.Context, a, b string) (diff, 
 // grain: the snapshot each key holds at a day's last second is the one
 // the history gives it on that day, for every key and day of the book.
 func TestActiveAtADaysEndIsTheHistorysDay(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedPartialRuns(t, db, ctx)
 	const ends = `(SELECT list(day * 86400 + 86399) FROM hist_days())`
@@ -323,6 +325,7 @@ func TestActiveAtADaysEndIsTheHistorysDay(t *testing.T) {
 // (pos_key_spans, cash_key_spans), and an observation followed by a
 // later one of its key holds to it.
 func TestKeySpansEndEveryShape(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedPartialRuns(t, db, ctx)
 	// The book has every ending, each at its instant: C-0000 and DEP-0001
@@ -371,6 +374,7 @@ func TestKeySpansEndEveryShape(t *testing.T) {
 // before it, and dates each account by its own snapshot and the source
 // by the newest of them.
 func TestAnInstantBetweenRunsKeepsEveryAccount(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	const src = "day-src"
 	seedHistAccount(t, db, ctx, src, "A-0000", "brokerage", "Brokerage EXAMPLE")
@@ -451,6 +455,7 @@ func TestAnInstantBetweenRunsKeepsEveryAccount(t *testing.T) {
 // Q-0000 is observed alone before the window: its source's newest
 // snapshot at the window's start leaves it out, yet it holds there.
 func TestYieldUnitsTakeTheHistorysEnding(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	const src = "units-src"
 	day := func(d int64) int64 { return d*86400 + 43200 }
@@ -555,6 +560,7 @@ func TestRefdataWantedBeforeMigration0140(t *testing.T) {
 // A's last snapshot in the window; the positions check still compares A
 // at its own.
 func TestCheckReadsEachAccountsActiveSnapshot(t *testing.T) {
+	t.Parallel()
 	db, ctx := lotFixture(t, tradesSeed+`
         UPDATE positions SET book_value = 410 WHERE snapshot_at = 450*86400;
         INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key,
@@ -576,6 +582,7 @@ func TestCheckReadsEachAccountsActiveSnapshot(t *testing.T) {
 // TestMigration0140DDLIsRerunnable holds the migration to the replay bar:
 // a second application changes no answer.
 func TestMigration0140DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedPartialRuns(t, db, ctx)
 	const accounts = `SELECT * FROM report_accounts_multi(9223372036854775807)`

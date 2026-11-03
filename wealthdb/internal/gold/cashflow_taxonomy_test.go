@@ -73,6 +73,7 @@ func seedCashflowTaxonomyFixture(t *testing.T, db *sql.DB, ctx context.Context) 
 // behavioural change: the five values are enriched and visible, and
 // neither family's base charts them.
 func TestCashflowDeltasLeaveBothBases(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCashflowTaxonomyFixture(t, db, ctx)
 
@@ -113,6 +114,7 @@ func TestCashflowDeltasLeaveBothBases(t *testing.T) {
 // read the verdict and `wealthdb transactions` can name the row. A base
 // exclusion is about what a report charts, never about what gold knows.
 func TestCashflowDeltasStayVisibleOnTheOverlay(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCashflowTaxonomyFixture(t, db, ctx)
 
@@ -138,6 +140,7 @@ func TestCashflowDeltasStayVisibleOnTheOverlay(t *testing.T) {
 // new rows against the Go rule, which is what the diagram's node names
 // are read from.
 func TestCashflowDeltaLabelsAreSeeded(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	for _, v := range []string{
 		canonical.SpendDetailedDebtRepayment,
@@ -167,6 +170,7 @@ func TestCashflowDeltaLabelsAreSeeded(t *testing.T) {
 // bases to the replay bar: OR REPLACE throughout, and the catch-all
 // recompute guarded on NULL so a second application changes nothing.
 func TestMigration0078DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCashflowTaxonomyFixture(t, db, ctx)
 	rerunMigrationDDL(t, db, ctx, "0078_cashflow_taxonomy.sql")
@@ -189,6 +193,7 @@ func TestMigration0078DDLIsRerunnable(t *testing.T) {
 // replay bar: three IF NOT EXISTS ALTERs, so a second application
 // neither fails nor drops what the first wrote.
 func TestMigration0079DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCashflowTaxonomyFixture(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `
@@ -213,6 +218,7 @@ func TestMigration0079DDLIsRerunnable(t *testing.T) {
 // bar: CREATE TABLE IF NOT EXISTS and an OR REPLACE macro, so a replay
 // keeps the stamped rows and the pool still reads them.
 func TestMigration0080DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
@@ -241,6 +247,7 @@ func TestMigration0080DDLIsRerunnable(t *testing.T) {
 // outside the four pools, and the pairing rule — a class exactly on the
 // vehicle side, never beside a household or a giving one.
 func TestWrapperSidesRefusesAnIncoherentRow(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	for _, tc := range []struct{ name, values string }{
 		{"unknown side", `('other', 'pool', NULL)`},
@@ -265,6 +272,7 @@ func TestWrapperSidesRefusesAnIncoherentRow(t *testing.T) {
 // spelling on every chart, and one with no rank sorts with the asset
 // classes — both silent, and both a single forgotten CASE arm away.
 func TestEveryCashflowClassReadsAsSomething(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	for _, c := range canonical.CashflowClasses() {
 		var label string
@@ -290,6 +298,7 @@ func TestEveryCashflowClassReadsAsSomething(t *testing.T) {
 // canonical's report order. seedLines holds every section a resolution
 // test lands on to the same list.
 func TestEveryCashflowSectionHasARank(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	last := 0
 	for _, s := range canonical.CashflowSections() {
@@ -311,6 +320,7 @@ func TestEveryCashflowSectionHasARank(t *testing.T) {
 // "Private debt". `cash` is excluded because a cash-class instrument is
 // pool-internal and never reaches a node.
 func TestEveryAssetClassGoldHoldsReadsAsSomething(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	for _, a := range canonical.AssetClasses() {
 		if a == canonical.AssetClassCash {

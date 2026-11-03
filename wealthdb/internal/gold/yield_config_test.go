@@ -175,6 +175,7 @@ func TestSyncYieldIsAtomic(t *testing.T) {
 // fund line keeps its new columns, the reference rows and the config rows
 // stay (gold.Migrate's REPLAY note).
 func TestMigration0134DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	for _, q := range []string{
 		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, coupon_kind, is_default, duration)

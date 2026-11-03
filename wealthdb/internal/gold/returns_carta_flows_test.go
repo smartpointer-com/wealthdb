@@ -15,6 +15,7 @@ import (
 // deposit/withdrawal legs count, the holding legs (contribution here) do not,
 // MWR computes for real, and no nav flag appears on a flow-bearing window.
 func TestCartaBoundaryFlowsCounted(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "crt", "carta")
 
@@ -57,6 +58,7 @@ func TestCartaBoundaryFlowsCounted(t *testing.T) {
 // unobserved capital calls — while a fully nav-only entity's nav_only flag
 // does not appear (the regime is flow-counting).
 func TestCapitalCallRiskFlowlessTagged(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "crt", "carta")
 
@@ -89,6 +91,7 @@ func TestCapitalCallRiskFlowlessTagged(t *testing.T) {
 // entity nor a staggered constituent's own synthetic onboarding flow may
 // suppress the tag for a flow-less carta account.
 func TestCapitalCallRiskNotMaskedByOtherFlows(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "crt", "carta")
 	seedReturnsSource(t, db, ctx, "sq", "swissquote")

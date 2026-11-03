@@ -31,6 +31,7 @@ const partialSeed = `
             ('lot-src', 41*86400, 'A', 'COIN', 'COIN', 'crypto', 'USD', 4, 200);`
 
 func TestReadersUnderBothReadingsOfAMissingBasis(t *testing.T) {
+	t.Parallel()
 	db, ctx := lotFixture(t, partialSeed)
 	rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
 
@@ -106,6 +107,7 @@ func TestReadersUnderBothReadingsOfAMissingBasis(t *testing.T) {
 func ptrF(v float64) *float64 { return &v }
 
 func TestReadersFlagTheEnginesFindings(t *testing.T) {
+	t.Parallel()
 	// XYZ leaves A's snapshot unexplained, and the history opens with
 	// a holding of unknown cost.
 	db, ctx := lotFixture(t, `
@@ -128,6 +130,7 @@ func TestReadersFlagTheEnginesFindings(t *testing.T) {
 }
 
 func TestOpenLotsShowTheEnginesLots(t *testing.T) {
+	t.Parallel()
 	db, ctx := lotFixture(t, tradesSeed)
 	rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
 	got, err := OpenLotsAsOf(ctx, db, 600*lotDay+86399, "USD", lots.MissingIgnore)
@@ -143,6 +146,7 @@ func TestOpenLotsShowTheEnginesLots(t *testing.T) {
 }
 
 func TestCoverageCountsRebuiltSales(t *testing.T) {
+	t.Parallel()
 	db, ctx := lotFixture(t, tradesSeed)
 	rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
 	rows, err := GainsCoverage(ctx, db, 0, 600*lotDay+86399, "USD")
@@ -157,6 +161,7 @@ func TestCoverageCountsRebuiltSales(t *testing.T) {
 }
 
 func TestCheckComparesTheEngineWithStatedLots(t *testing.T) {
+	t.Parallel()
 	// A 1099-B states the sale's cost as 110; the engine's FIFO says
 	// 100. The check shows the delta.
 	db, ctx := lotFixture(t, tradesSeed+`
@@ -183,6 +188,7 @@ func TestCheckComparesTheEngineWithStatedLots(t *testing.T) {
 }
 
 func TestCheckComparesAShadowLedgerWithTheStatedAverage(t *testing.T) {
+	t.Parallel()
 	// The source states an average cost of 410 for its 20 units; the
 	// shadow ledger's average is 400.
 	db, ctx := lotFixture(t, tradesSeed+`
@@ -201,6 +207,7 @@ func TestCheckComparesAShadowLedgerWithTheStatedAverage(t *testing.T) {
 }
 
 func TestCheckCountsAHandoverOnce(t *testing.T) {
+	t.Parallel()
 	// Two lots move to another source of the same kind, which states
 	// their cost as 160. The handover carries 10 units and 150.
 	db, ctx := lotFixture(t, `
@@ -238,6 +245,7 @@ func TestCheckCountsAHandoverOnce(t *testing.T) {
 }
 
 func TestMigration0118DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := lotFixture(t, tradesSeed)
 	rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
 	rerunMigrationDDL(t, db, ctx, "0118_lot_engine.sql")
@@ -250,6 +258,7 @@ func TestMigration0118DDLIsRerunnable(t *testing.T) {
 }
 
 func TestOpenLotsStandAtTheirPositionsSnapshot(t *testing.T) {
+	t.Parallel()
 	// A buy after the last snapshot is not in the lots of the position
 	// that snapshot shows: they add up to its 10 units.
 	db, ctx := lotFixture(t, tradesSeed+`
@@ -271,6 +280,7 @@ func TestOpenLotsStandAtTheirPositionsSnapshot(t *testing.T) {
 }
 
 func TestCheckComparesEachAccountOfAPortfolio(t *testing.T) {
+	t.Parallel()
 	// Two accounts of one portfolio each sell 10 XYZ with a statement
 	// lot of their own: one realized row each.
 	db, ctx := lotFixture(t, `

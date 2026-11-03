@@ -7,6 +7,7 @@ import "testing"
 // tolerance, and only where a narrative names the pair and each is the
 // other's only candidate. Every figure is invented.
 func TestTheConvertedPhase(t *testing.T) {
+	t.Parallel()
 	rate := func(from, to string, _ int64) (float64, bool) {
 		if from == "USD" && to == "CHF" {
 			return 0.9, true

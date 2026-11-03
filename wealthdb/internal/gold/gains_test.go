@@ -131,6 +131,7 @@ func num(t *testing.T, s *string) float64 {
 func near(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
 
 func TestGainsSummaryHoldsTheIdentity(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	rows, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", GainsAll, lots.MissingIgnore)
 	if err != nil {
@@ -181,6 +182,7 @@ func TestGainsSummaryHoldsTheIdentity(t *testing.T) {
 // Every grain is the same sums grouped differently, so each adds up to
 // the summary, and the monthly buckets add up to the total.
 func TestGainsGrainsAndBucketsReconcile(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	total, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", GainsAll, lots.MissingIgnore)
 	if err != nil {
@@ -225,6 +227,7 @@ func TestGainsGrainsAndBucketsReconcile(t *testing.T) {
 }
 
 func TestGainsPortfolioAndAccountRows(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	ports, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", GainsPortfolios, lots.MissingIgnore)
 	if err != nil {
@@ -270,6 +273,7 @@ func TestGainsPortfolioAndAccountRows(t *testing.T) {
 }
 
 func TestGainsPositionsAttachLotsToTheirHolding(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	rows, err := GainsPositions(ctx, db, gainsFrom, gainsTo, "USD", lots.MissingIgnore)
 	if err != nil {
@@ -313,6 +317,7 @@ func TestGainsPositionsAttachLotsToTheirHolding(t *testing.T) {
 }
 
 func TestRealizedLotsPrimaryAllAndOrder(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	rows, err := RealizedLotsBetween(ctx, db, gainsFrom, gainsTo, "USD", false, SortAscending, lots.MissingIgnore)
 	if err != nil {
@@ -344,6 +349,7 @@ func TestRealizedLotsPrimaryAllAndOrder(t *testing.T) {
 }
 
 func TestOpenLotsValueAndUnrealized(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	rows, err := OpenLotsAsOf(ctx, db, 250000, "CHF", lots.MissingIgnore)
 	if err != nil {
@@ -363,6 +369,7 @@ func TestOpenLotsValueAndUnrealized(t *testing.T) {
 }
 
 func TestGainsCoverageVerdicts(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	rows, err := GainsCoverage(ctx, db, gainsFrom, gainsTo, "USD")
 	if err != nil {
@@ -384,6 +391,7 @@ func TestGainsCoverageVerdicts(t *testing.T) {
 }
 
 func TestPositionsCarryTheCostBasis(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	rows, err := PositionsAsOf(ctx, db, 250000, "CHF", lots.MissingIgnore)
 	if err != nil {
@@ -410,6 +418,7 @@ func TestPositionsCarryTheCostBasis(t *testing.T) {
 }
 
 func TestMigration0116DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	rerunMigrationDDL(t, db, ctx, "0116_gains_reports.sql")
 	rows, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", GainsAll, lots.MissingIgnore)

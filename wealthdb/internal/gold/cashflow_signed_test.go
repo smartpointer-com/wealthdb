@@ -10,6 +10,7 @@ import (
 // shares, the same cash leg on an unpinned source, and an FX leg stay
 // excluded and in the unsigned volume. Every figure is invented.
 func TestASignPinnedCashLegJoinsInvesting(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `

@@ -12,6 +12,7 @@ import (
 // plus TOTAL net flow <= 0. An interim contribution dip that recovers to a
 // net-positive window is NOT flagged (the account value was never truly negative).
 func TestMwrNetCapitalNonPositive(t *testing.T) {
+	t.Parallel()
 	f := func(d int64, a float64) returns.Flow { return returns.Flow{Day: d, Amount: a} }
 	cases := []struct {
 		name  string
@@ -36,6 +37,7 @@ func TestMwrNetCapitalNonPositive(t *testing.T) {
 // exceeds the invested capital drives running capital negative, so MWR is n/a +
 // mwr_negative_net_capital while TWR is still reported.
 func TestRunReturnsMwrNegativeNetCapital(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubs", "ubs")
 	t0, tW, t1 := dy(2023, time.January, 2), dy(2023, time.June, 1), dy(2023, time.December, 29)

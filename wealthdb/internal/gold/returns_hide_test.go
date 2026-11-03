@@ -17,6 +17,7 @@ import (
 // gone from the accounts grain, its portfolio and source rows still show and
 // still carry its value and flows, and a sibling account is untouched.
 func TestReturnsHideAccount(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "sq", "swissquote")
 
@@ -68,6 +69,7 @@ func TestReturnsHideAccount(t *testing.T) {
 // portfolio row and its member accounts' rows are hidden, the source row
 // (which has another account) still shows and includes them.
 func TestReturnsHidePortfolio(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "sq", "swissquote")
 

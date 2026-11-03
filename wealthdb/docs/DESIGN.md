@@ -3722,11 +3722,20 @@ Argv after `wealthdb-test` is handed to `go test` as-is. Verbose
 output, `-run`, `-race`, `-count`, `-bench`, etc. all work
 unchanged. Exit code is `go test`'s exit code.
 
-The `cmd/wealthdb` tests run in parallel (`t.Parallel`): each builds its
-gold under its own `t.TempDir()` and talks to the command through
-`Run`'s readers and writers, never the process's own. The exceptions
-stay serial on purpose — a test that sets an environment variable, and
-one that times a persist into a reader's wall-clock window.
+The tests of `cmd/wealthdb` and `internal/gold` run in parallel
+(`t.Parallel`):
+
+- each test builds its gold under its own `t.TempDir()`;
+- the `cmd/wealthdb` tests talk to the command through `Run`'s readers
+  and writers, never the process's own;
+- a test over many fixtures or cases runs each one as a parallel
+  subtest.
+
+A test that changes process or package state stays serial, and a
+comment says why. Examples are a test that sets an environment
+variable, one that swaps a package variable, and one that times a
+persist into a reader's wall-clock window. Go holds the parallel tests
+until every serial one has finished, so the two never overlap.
 
 **Reload verification.** `TestTaxonomyInvariants`
 (internal/gold/taxonomy_invariants_test.go) checks a real gold, not a

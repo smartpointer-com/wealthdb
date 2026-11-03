@@ -13,6 +13,7 @@ import (
 // draws it as that vehicle's crossing — in both directions. The same
 // move with no far account stays the residual.
 func TestADeclaredAccountPlacesTheMoveByItsWrapper(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `

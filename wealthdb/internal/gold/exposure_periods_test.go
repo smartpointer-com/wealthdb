@@ -7,6 +7,7 @@ import (
 )
 
 func TestPeriodEnds(t *testing.T) {
+	t.Parallel()
 	day := func(y int, m time.Month, d int) int64 { return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix() }
 	end := func(y int, m time.Month, d int) int64 { return day(y, m, d) + 86399 }
 	for _, c := range []struct {

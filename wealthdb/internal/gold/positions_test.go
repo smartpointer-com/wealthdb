@@ -9,6 +9,7 @@ import (
 )
 
 func TestPositionsAsOfSingleSource(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	// Two snapshots for one silver source; older has 1 position,
@@ -77,6 +78,7 @@ func TestPositionsAsOfSingleSource(t *testing.T) {
 }
 
 func TestPositionsAsOfMultiSourceIndependentLatest(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	// Seed a second silver source.
@@ -131,6 +133,7 @@ func TestPositionsAsOfMultiSourceIndependentLatest(t *testing.T) {
 // snapshot's own, and a position that states none is valued at the
 // snapshot.
 func TestPositionsAsOfCarriesTheValuedDate(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	inTx(t, db, ctx, func(w *Writer) error {
 		if err := w.UpsertAccounts(ctx, []canonical.AccountChange{{

@@ -8,6 +8,7 @@ import (
 
 // The table holds exactly the config's aliases after each sync.
 func TestSyncHoldingAliases(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	rows := []canonical.HoldingAlias{
 		{SilverSourceID: "test-src", AccountExternalID: "A", FromKey: "OLD", ToKey: "NEW"},
@@ -35,6 +36,7 @@ func TestSyncHoldingAliases(t *testing.T) {
 // the basis appearing as a loss, and the ignore reading NEW's whole
 // gain as the bucket's.
 func TestAHoldingAliasPairsAKeyAcrossFeeds(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, first_seen_at, last_seen_at)
@@ -89,6 +91,7 @@ func TestAHoldingAliasPairsAKeyAcrossFeeds(t *testing.T) {
 // under different names: the holding reads under the smaller name on
 // every read, not whichever line a scan meets first.
 func TestAnAliasedHoldingReadsOneName(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, first_seen_at, last_seen_at)

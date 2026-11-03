@@ -82,7 +82,7 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 		return err
 	}
 	key := gold.MaterializeKey{ConfigHash: hash, EngineVersion: engineVersion(),
-		AsOf: anchorToDay(time.Now().UTC(), true).Unix()}
+		AsOf: anchorToDay(g.clock().UTC(), true).Unix()}
 	same, err := materializeInputsSame(ctx, cfg, key)
 	if err != nil {
 		return err

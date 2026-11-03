@@ -10,6 +10,7 @@ import (
 // Every copy OpenFresh hands out is at the current schema, is a database
 // of its own, and never lands on a file that already exists.
 func TestOpenFreshCopiesAreCurrentAndIndependent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	dir := t.TempDir()
 	open := func(name string) *sql.DB {

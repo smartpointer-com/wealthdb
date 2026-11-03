@@ -19,13 +19,14 @@ import (
 type globalFlags struct {
 	ConfigPath    string
 	ForceReadOnly bool
-	// now is the clock the reports read today from (clock); nil is
-	// the wall clock.
+	// now is the clock the reports and web-materialize read today from
+	// (clock); nil is the wall clock.
 	now func() time.Time
 }
 
 // clock is today as the reports read it: a window's default end, an
-// as-of day's default, the forward views' start.
+// as-of day's default, the forward views' start, and the last day
+// web-materialize writes.
 func (g globalFlags) clock() time.Time {
 	if g.now != nil {
 		return g.now()

@@ -17,6 +17,7 @@ import (
 //     non-overlay accounts.
 //   - sum(sources.total_<CCY>) == sum(accounts.total_<CCY>).
 func TestSourcesAsOfRollupAndReconcile(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	chf := "CHF"
@@ -127,6 +128,7 @@ func TestSourcesAsOfRollupAndReconcile(t *testing.T) {
 // disagree on base currency reports a NULL base trio (the agree-or-
 // NULL rollup), while the output-currency trio is still computed.
 func TestSourcesAsOfMixedBaseNull(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	chf := "CHF"
@@ -180,6 +182,7 @@ func TestSourcesAsOfMixedBaseNull(t *testing.T) {
 // TestSourcesAsOfEmpty confirms an empty gold DB yields no rows
 // (no accounts ⇒ no source buckets) rather than an error.
 func TestSourcesAsOfEmpty(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	rows, err := SourcesAsOf(ctx, db, 3000, "USD")
 	if err != nil {
@@ -196,6 +199,7 @@ func TestSourcesAsOfEmpty(t *testing.T) {
 // spine with the value carried forward on the gap day, and history@today
 // should equal the latest non-history total.
 func TestSourcesHistoryCarryForward(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	chf := "CHF"
 
@@ -277,6 +281,7 @@ func TestSourcesHistoryCarryForward(t *testing.T) {
 // A source's observed date is when a run last read its holdings, capped
 // at the as-of date; NULL in silver_sources reads as 0.
 func TestSourcesAsOfCarriesTheObservedDate(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	usd := "USD"
 	inTx(t, db, ctx, func(w *Writer) error {
@@ -312,6 +317,7 @@ func TestSourcesAsOfCarriesTheObservedDate(t *testing.T) {
 }
 
 func TestMigration0122DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	if _, err := db.ExecContext(ctx, `UPDATE silver_sources SET observed_snapshots_through = 4000`); err != nil {
 		t.Fatal(err)
@@ -327,6 +333,7 @@ func TestMigration0122DDLIsRerunnable(t *testing.T) {
 // valued_at: the latest mark its accounts' active snapshots ride on,
 // which is the snapshot itself where no position states an older one.
 func TestSourcesAsOfCarriesTheValuedDate(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	usd := "USD"
 	inTx(t, db, ctx, func(w *Writer) error {
@@ -361,6 +368,7 @@ func TestSourcesAsOfCarriesTheValuedDate(t *testing.T) {
 }
 
 func TestMigration0123DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	usd := "USD"
 	inTx(t, db, ctx, func(w *Writer) error {

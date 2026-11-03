@@ -16,25 +16,36 @@ import (
 // period columns print.
 func TestDateMarksMatchTheCells(t *testing.T) {
 	t.Parallel()
-	fixtures := []string{setupSpendingGold(t), setupIncomeGold(t), setupCashflowGold(t), setupReturnsGold(t),
-		setupGainsGold(t), setupExposureGold(t), setupYieldGold(t)}
-	s := newTestMCP("", false)
-	for _, cfg := range fixtures {
-		srv := onFixtureToday(newTestMCP(cfg, false))
-		for _, tool := range s.tools() {
-			if tool.family == nil || tool.name == "status" {
-				continue
-			}
-			periods := []string{""}
-			if slices.ContainsFunc(tool.params, func(p param) bool { return p.name == "period" }) {
-				periods = append(periods, "monthly")
-			}
-			for _, v := range tool.family.viewsOrOne() {
-				for _, period := range periods {
-					checkDateMarks(t, srv, tool, v, period)
+	tools := newTestMCP("", false).tools()
+	for _, fx := range []struct {
+		name  string
+		setup func(*testing.T) string
+	}{
+		{"spending", setupSpendingGold}, {"income", setupIncomeGold}, {"cashflow", setupCashflowGold},
+		{"returns", setupReturnsGold}, {"gains", setupGainsGold},
+		{"exposure", func(t *testing.T) string { return setupExposureGold(t) }}, {"yield", setupYieldGold},
+	} {
+		t.Run(fx.name, func(t *testing.T) {
+			t.Parallel()
+			srv := onFixtureToday(newTestMCP(fx.setup(t), false))
+			for _, tool := range tools {
+				if tool.family == nil || tool.name == "status" {
+					continue
 				}
+				t.Run(tool.name, func(t *testing.T) {
+					t.Parallel()
+					periods := []string{""}
+					if slices.ContainsFunc(tool.params, func(p param) bool { return p.name == "period" }) {
+						periods = append(periods, "monthly")
+					}
+					for _, v := range tool.family.viewsOrOne() {
+						for _, period := range periods {
+							checkDateMarks(t, srv, tool, v, period)
+						}
+					}
+				})
 			}
-		}
+		})
 	}
 }
 

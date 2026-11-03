@@ -19,6 +19,7 @@ import (
 // derived flags and globalMax. If they ever diverge, the materialized table
 // would silently stop matching the CLI outside USD.
 func TestLoadReturnsDatasetsMultiMatchesSingle(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedMaterializeFixture(t, db, ctx)
 
@@ -97,6 +98,7 @@ func sameFlows(a, b []returns.Flow) bool {
 // tuple per row with the right column count (a miscount would shift every bind
 // value silently).
 func TestReturnsInsertSQL(t *testing.T) {
+	t.Parallel()
 	for _, n := range []int{1, 3, returnsInsertBatch} {
 		q := returnsInsertSQL(n)
 		if got := strings.Count(q, "?"); got != n*returnsInsertCols {
@@ -117,6 +119,7 @@ func TestReturnsInsertSQL(t *testing.T) {
 // equals the table count equals the sum of the per-partition RunReturns row
 // counts, on a single computed_at.
 func TestMaterializeReturnsBatchBoundary(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "src-a", "schwab")
 
@@ -163,6 +166,7 @@ func TestMaterializeReturnsBatchBoundary(t *testing.T) {
 // RunReturns since Jan 1 of that year, and window_from_year = 0 totals equal
 // since-inception — so the dashboard's start-year picker rescopes exactly.
 func TestMaterializeReturnsWindowedSummaries(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	end := seedMaterializeFixture(t, db, ctx) // spans 2024-01 .. 2024-07
 
@@ -219,6 +223,7 @@ func TestMaterializeReturnsWindowedSummaries(t *testing.T) {
 // for this many deliberately-unsorted ids is astronomically unlikely to already
 // be sorted, so the assertion fails.
 func TestGroupAccountsMemberOrderDeterministic(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "src-a", "schwab")
 
@@ -262,6 +267,7 @@ func TestGroupAccountsMemberOrderDeterministic(t *testing.T) {
 // groupAccounts sort at the whole-table level; the direct guarantee is
 // TestGroupAccountsMemberOrderDeterministic.
 func TestMaterializeReturnsDeterministic(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedMaterializeFixture(t, db, ctx)
 	end := time.Date(2024, time.July, 2, 23, 59, 59, 0, time.UTC).Unix()

@@ -195,6 +195,7 @@ func seedIncomeFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 // income_account_scope fences an account out, and that a row leaves the
 // base when what it resolves to is not income after all.
 func TestIncomeLinesBasePopulation(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeFixture(t, db, ctx)
 
@@ -295,6 +296,7 @@ func TestIncomeLinesBasePopulation(t *testing.T) {
 // exclusions and cannot read a population that has already applied
 // them.
 func TestIncomePopulationLayering(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeFixture(t, db, ctx)
 
@@ -384,6 +386,7 @@ func readIncomeResolution(t *testing.T, db *sql.DB, ctx context.Context, id stri
 // floor's arms also places a DELTA — the only floor in either family
 // that does.
 func TestIncomeKindFloorPlacesWhatNothingElseCould(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeFixture(t, db, ctx)
 
@@ -493,6 +496,7 @@ func TestIncomeKindFloorPlacesWhatNothingElseCould(t *testing.T) {
 // clause reads the joined relation rather than the projection, so even
 // the row set would be unchanged.
 func TestIncomeLinesBaseCarriesTheResolution(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeFixture(t, db, ctx)
 
@@ -560,6 +564,7 @@ func TestIncomeLinesBaseCarriesTheResolution(t *testing.T) {
 // the load-bearing part: step 2 answers for every row that carries an
 // instrument, and a step-3 store verdict must not win over it.
 func TestIncomePayerResolution(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeFixture(t, db, ctx)
 
@@ -610,6 +615,7 @@ func TestIncomePayerResolution(t *testing.T) {
 // have to resolve their primary and label independently of what any
 // tier decided — including on a row where no tier decided anything.
 func TestIncomeProviderViewRecordsWithoutDeciding(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id,
@@ -652,6 +658,7 @@ func TestIncomeProviderViewRecordsWithoutDeciding(t *testing.T) {
 // admitting a further tier or scope mode later costs a table rewrite —
 // which is the reason to pin what they admit today.
 func TestIncomeOverlayCheckConstraints(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	insertEnrichment := func(id, provenance string) error {
@@ -699,6 +706,7 @@ func TestIncomeOverlayCheckConstraints(t *testing.T) {
 // different exceptions, and one table answering both would make every
 // exception a compromise.
 func TestIncomeScopeIsItsOwn(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeFixture(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `
@@ -733,6 +741,7 @@ func TestIncomeScopeIsItsOwn(t *testing.T) {
 // the resolution table below are what would catch a clause dropped in
 // the copy.
 func TestMigration0073DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeFixture(t, db, ctx)
 
@@ -773,6 +782,7 @@ func TestMigration0073DDLIsRerunnable(t *testing.T) {
 // carried-forward clause dropped here would be a silent regression in
 // what every spending report reads.
 func TestMigration0070DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeFixture(t, db, ctx)
 

@@ -25,6 +25,7 @@ import (
 // asks the deployed macro whether it names each delta. Migration 0160
 // replays to the same bodies.
 func TestEveryDeltaLeavesTheFamilyBases(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	body := func(macro string) string {
 		var def string

@@ -11,6 +11,7 @@ import (
 // its own; every row lands with its values, and a failing chunk names
 // its row range.
 func TestInsertChunkedFullChunksAndTail(t *testing.T) {
+	t.Parallel()
 	db, err := Open(":memory:", ModeReadWrite)
 	if err != nil {
 		t.Fatal(err)
@@ -64,6 +65,7 @@ func TestInsertChunkedFullChunksAndTail(t *testing.T) {
 // insertColumns writes the rows InsertChunked writes: NULLs, a nil and
 // an empty list, a date as text, across a chunk boundary.
 func TestInsertColumnsMatchesInsertChunked(t *testing.T) {
+	t.Parallel()
 	db, err := Open(":memory:", ModeReadWrite)
 	if err != nil {
 		t.Fatal(err)
@@ -128,6 +130,7 @@ func TestInsertColumnsMatchesInsertChunked(t *testing.T) {
 // insertColumns refuses a value of the wrong kind for its column and a
 // column no list carries, rather than cast either.
 func TestInsertColumnsRefusesWhatItCannotCarry(t *testing.T) {
+	t.Parallel()
 	db, err := Open(":memory:", ModeReadWrite)
 	if err != nil {
 		t.Fatal(err)

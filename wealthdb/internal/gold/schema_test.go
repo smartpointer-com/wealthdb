@@ -184,6 +184,7 @@ func latestSchemaVersion() (int, error) {
 // DuckDB driver loads, the embedded migrations run end-to-end,
 // and schema_meta records the latest applied version.
 func TestMigrateAppliesSchema(t *testing.T) {
+	t.Parallel()
 	db, err := Open(":memory:", ModeReadWrite)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -214,6 +215,7 @@ func TestMigrateAppliesSchema(t *testing.T) {
 // an already-migrated database is a no-op (no re-application of
 // already-applied migrations).
 func TestMigrateIdempotent(t *testing.T) {
+	t.Parallel()
 	db, err := Open(":memory:", ModeReadWrite)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -247,6 +249,7 @@ func TestMigrateIdempotent(t *testing.T) {
 // Migrate's replay contract rests on: one Exec of several statements
 // runs each of them exactly once.
 func TestMultiStatementExecRunsEachOnce(t *testing.T) {
+	t.Parallel()
 	db, err := Open(":memory:", ModeReadWrite)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -265,6 +268,7 @@ func TestMultiStatementExecRunsEachOnce(t *testing.T) {
 // TestMigrateCreatesAllTables verifies every table named in
 // docs/DESIGN.md §7.2 is present after migration.
 func TestMigrateCreatesAllTables(t *testing.T) {
+	t.Parallel()
 	db, err := Open(":memory:", ModeReadWrite)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -308,6 +312,7 @@ func TestMigrateCreatesAllTables(t *testing.T) {
 // is admitted alongside the kinds 0036 already allowed, and an
 // unrecognised kind is still refused by the constraint.
 func TestAccountKindCheckAdmitsCard(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	insert := func(id, kind string) error {
@@ -336,6 +341,7 @@ func TestAccountKindCheckAdmitsCard(t *testing.T) {
 // Nullable matters — every pre-existing row and every non-card source
 // leaves them unset.
 func TestTransactionEnrichmentColumns(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	for _, col := range []string{"counterparty", "provider_category"} {
@@ -364,6 +370,7 @@ func TestTransactionEnrichmentColumns(t *testing.T) {
 // Re-executing the migration's DDL against an already-migrated DB must
 // stay clean.
 func TestMigration0038DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	rerunMigrationDDL(t, db, ctx, "0038_transactions_enrichment_columns.sql")
 }
@@ -373,6 +380,7 @@ func TestMigration0038DDLIsRerunnable(t *testing.T) {
 // IF EXISTS and the CREATEs OR REPLACE for a replay to be harmless. 0158
 // drops the view again after it.
 func TestMigration0039DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	rerunMigrationDDL(t, db, ctx, "0039_report_transactions_account_kind.sql")
 	assertTransactionsMacroAfterReplay(t, db, ctx)
@@ -396,6 +404,7 @@ func assertTransactionsMacroAfterReplay(t *testing.T, db *sql.DB, ctx context.Co
 // binary's newest migration reads as stale, with or without a build
 // stamp; one at the binary's own schema does not.
 func TestCheckSchemaKnown(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	if err := CheckSchemaKnown(ctx, db); err != nil {
 		t.Fatalf("a database at this binary's schema: %v", err)
@@ -502,6 +511,7 @@ func assertNothingNames(t *testing.T, db *sql.DB, ctx context.Context, names ...
 // TestMigration0124DropsOverRows applies 0124 to a database that holds
 // instruments and positions, as a live gold does, and keeps their rows.
 func TestMigration0124DropsOverRows(t *testing.T) {
+	t.Parallel()
 	db, ctx := openAtVersion(t, 123)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO silver_sources(silver_source_id, silver_kind, silver_path,
@@ -533,6 +543,7 @@ func TestMigration0124DropsOverRows(t *testing.T) {
 
 // TestMigration0124DDLIsRerunnable holds the drops to the replay bar.
 func TestMigration0124DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	rerunMigrationDDL(t, db, ctx, "0124_drop_unread_reports.sql")
 	assertGone0124(t, db, ctx)

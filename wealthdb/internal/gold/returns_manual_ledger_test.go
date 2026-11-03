@@ -15,6 +15,7 @@ import (
 // rather than earned — net flow equals the leg, the return is flat, and
 // the source keeps its NAV-only honesty tags with MWR n/a.
 func TestAManualLedgerLegFundsTheMarkItArrivesWith(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "man", "manual")
 

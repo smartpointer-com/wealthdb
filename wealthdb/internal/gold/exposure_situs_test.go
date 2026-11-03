@@ -264,6 +264,7 @@ func TestExposureSitusYieldsALedgerRecordThatBeatsAComposition(t *testing.T) {
 // day or later is in force; a provider's, and an earlier record, change
 // nothing.
 func TestLedgerSpansCutAParsedComposition(t *testing.T) {
+	t.Parallel()
 	day := func(d int64) *int64 { v := d * 86400; return &v }
 	recs := []situsRecord{
 		{asOf: nil, economic: true, ledger: true},

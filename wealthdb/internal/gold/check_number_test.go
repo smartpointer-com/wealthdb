@@ -41,6 +41,7 @@ func seedCheckFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 // same-typed VARCHARs — so this reads the value back AND checks the
 // neighbours either side of it still land where they belong.
 func TestTransactionsCarriesTheCheckNumberInOrder(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCheckFixture(t, db, ctx)
 
@@ -89,6 +90,7 @@ func TestTransactionsCarriesTheCheckNumberInOrder(t *testing.T) {
 // already-migrated database, which is what gold.Migrate's REPLAY note
 // requires of every migration body.
 func TestMigration0075DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCheckFixture(t, db, ctx)
 

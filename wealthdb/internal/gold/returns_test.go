@@ -42,6 +42,7 @@ func summaryFor(rows []ReturnRow, entityID string) (ReturnRow, bool) {
 // USD gold fixture: a flow-complete brokerage account, a mortgage liability, and
 // a NAV-only (manual) holding.
 func TestRunReturnsSyntheticFixture(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "schwab", "schwab")
 	seedReturnsSource(t, db, ctx, "manualre", "manual")
@@ -140,6 +141,7 @@ func TestRunReturnsSyntheticFixture(t *testing.T) {
 // TestRunReturnsGlobalExcludesLiabilities confirms the global rollup builds a
 // single summary row and excludes the mortgage from the return.
 func TestRunReturnsGlobalExcludesLiabilities(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "schwab", "schwab")
 
@@ -193,6 +195,7 @@ func TestRunReturnsGlobalExcludesLiabilities(t *testing.T) {
 // pre-1970 timestamp with the day after the one it belongs to, and the
 // helper is what every day-banded window in the tree computes from.
 func TestEpochDayFloors(t *testing.T) {
+	t.Parallel()
 	cases := map[int64]int64{
 		0:      0,
 		86399:  0,

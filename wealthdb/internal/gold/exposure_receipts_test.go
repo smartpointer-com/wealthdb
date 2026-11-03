@@ -584,6 +584,7 @@ func TestLinkLinesGivesASizeOnlyLineNoVote(t *testing.T) {
 // word list is canonical.LegalForms and more, so a form the other
 // readers know is never part of an issuer name it compares.
 func TestTheNameMatcherDropsEveryLegalForm(t *testing.T) {
+	t.Parallel()
 	for w := range canonical.LegalForms {
 		if !legalWords[w] {
 			t.Errorf("legalWords lacks the legal form %s", w)

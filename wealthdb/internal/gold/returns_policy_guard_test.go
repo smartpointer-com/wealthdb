@@ -65,6 +65,7 @@ func silverKindCheckList(t *testing.T) []string {
 // so nothing of theirs reaches the returns engine;
 // TestRegisteredFlowPolicies pins their Known=false fallback.
 func TestEveryCheckKindHasAdapterAndPolicy(t *testing.T) {
+	t.Parallel()
 	checkKinds := silverKindCheckList(t)
 	registered := silver.Kinds()
 
@@ -103,6 +104,7 @@ func TestEveryCheckKindHasAdapterAndPolicy(t *testing.T) {
 // sources grain (AccountsGrainHidden plumbing), while its balances and flows
 // still enter the global aggregate.
 func TestDepositBankPlumbingHidden(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "chx", "chase")
 	seedReturnsSource(t, db, ctx, "sq", "swissquote")
@@ -162,6 +164,7 @@ func TestDepositBankPlumbingHidden(t *testing.T) {
 // portfolio holding anything else still shows, and the cash still counts in
 // every aggregate that contains it.
 func TestCashAccountsHiddenWhateverTheSource(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "dep", "fidelity")
 	seedReturnsSource(t, db, ctx, "brk", "fidelity")

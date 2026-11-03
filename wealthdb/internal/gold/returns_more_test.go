@@ -73,6 +73,7 @@ func params(level string, from, to int64) ReturnParams {
 // TestNetTransfers covers the heuristic internal-transfer matching directly
 // against netOwnedTransfers (the ownership-free case: untagged ownedFlow inputs).
 func TestNetTransfers(t *testing.T) {
+	t.Parallel()
 	net := func(fs ...returns.Flow) (int, int) {
 		owned := make([]ownedFlow, len(fs))
 		for i, f := range fs {
@@ -103,6 +104,7 @@ func TestNetTransfers(t *testing.T) {
 // TestRunReturnsPortfoliosGrain covers the portfolios grain end to end: a real
 // portfolio bucket plus the per-source "(no portfolio)" bucket.
 func TestRunReturnsPortfoliosGrain(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubs", "ubs")
 	pf := "PF1"
@@ -129,6 +131,7 @@ func TestRunReturnsPortfoliosGrain(t *testing.T) {
 // portfolio's display_name as the entity label while EntityID stays the stable
 // external id (so the friendly name shows in the `entity` column like holdings).
 func TestRunReturnsPortfolioNameResolved(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubs", "ubs")
 	pid, name := "PF9", "my-nickname"
@@ -159,6 +162,7 @@ func TestRunReturnsPortfolioNameResolved(t *testing.T) {
 // onboarding (the late constituent's full debut value, with its own debut-region
 // deposit subsumed — see flowSubsumed) and the staggered_inception flag.
 func TestRunReturnsStaggeredOnboarding(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubs", "ubs")
 	t0, tMid, t1 := dy(2024, time.January, 2), dy(2024, time.April, 1), dy(2024, time.July, 2)
@@ -190,6 +194,7 @@ func TestRunReturnsStaggeredOnboarding(t *testing.T) {
 // TestRunReturnsMWRFlags covers mwr_incomplete_flows (mixed regime aggregate)
 // and mwr_nonunique (interleaved flows).
 func TestRunReturnsMWRFlags(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "schwab", "schwab")
 	seedReturnsSource(t, db, ctx, "manualre", "manual")
@@ -236,6 +241,7 @@ func TestRunReturnsMWRFlags(t *testing.T) {
 // only known adapter kinds — so the policy default is unit-tested at the
 // ReturnsPolicyFor level instead; see RETURNS-NOTES.)
 func TestRunReturnsRegimeFlags(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "fid", "fidelity")
 	seedReturnsSource(t, db, ctx, "ct", "cointracking")
@@ -263,6 +269,7 @@ func TestRunReturnsRegimeFlags(t *testing.T) {
 // TestRunReturnsPartialWindowAndStrict covers the explicit-window clamp flag and
 // the strict-inception aggregate window start.
 func TestRunReturnsPartialWindowAndStrict(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubs", "ubs")
 	t0, tMid, t1 := dy(2024, time.March, 1), dy(2024, time.June, 1), dy(2024, time.September, 1)
@@ -300,6 +307,7 @@ func TestRunReturnsPartialWindowAndStrict(t *testing.T) {
 // TestRunReturnsEmptyBucket covers the per-bucket display row and the
 // empty_bucket / carried_forward flags on a month with no fresh snapshot.
 func TestRunReturnsEmptyBucket(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubs", "ubs")
 	// Snapshots in Jan and Apr only ⇒ Feb and Mar buckets are carried-forward.

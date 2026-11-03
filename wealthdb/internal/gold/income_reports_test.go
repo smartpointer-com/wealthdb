@@ -67,6 +67,7 @@ func seedIncomeReportFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 // columns are positive magnitudes and net_income is the difference,
 // mirroring the spending summary exactly.
 func TestIncomeSummaryArithmetic(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeReportFixture(t, db, ctx)
 
@@ -112,6 +113,7 @@ func TestIncomeSummaryArithmetic(t *testing.T) {
 // would both pass such a check — so this reads the three lines seeded
 // in later months, one of them in CHF, and asks for CHF monthly.
 func TestIncomeReportsBucketAndConvert(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeReportFixture(t, db, ctx)
 
@@ -187,6 +189,7 @@ func TestIncomeReportsBucketAndConvert(t *testing.T) {
 // TestIncomeWithheldIsAMemo pins the one column with no spending twin:
 // present on the summary, absent from types, and never subtracted.
 func TestIncomeWithheldIsAMemo(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeReportFixture(t, db, ctx)
 
@@ -251,6 +254,7 @@ func TestIncomeWithheldIsAMemo(t *testing.T) {
 // pair owes its reader: the parts sum to the whole, in the same window
 // and the same bucket.
 func TestIncomeTypesReconcileWithSummary(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeReportFixture(t, db, ctx)
 
@@ -289,6 +293,7 @@ func TestIncomeTypesReconcileWithSummary(t *testing.T) {
 // the base holds the right rows — a deposit the matcher wrongly paired
 // leaves it entirely, and no total would notice.
 func TestIncomeWronglyMatchedDepositStaysVisible(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeReportFixture(t, db, ctx)
 
@@ -342,6 +347,7 @@ func TestIncomeWronglyMatchedDepositStaysVisible(t *testing.T) {
 // that carry them, including the one default that differs from
 // spending's.
 func TestIncomeTypesLevelsAndLabels(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeReportFixture(t, db, ctx)
 
@@ -390,6 +396,7 @@ func TestIncomeTypesLevelsAndLabels(t *testing.T) {
 // TestIncomeTransactionsCarryThePayer pins the transaction grain: the
 // payer resolution reaches the report, and a delta line carries none.
 func TestIncomeTransactionsCarryThePayer(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeReportFixture(t, db, ctx)
 
@@ -420,6 +427,7 @@ func TestIncomeTransactionsCarryThePayer(t *testing.T) {
 // each reader scans `SELECT *`, so a macro re-issue that adds, removes
 // or reorders a column breaks the scan rather than the query.
 func TestIncomeReportColumnsSurviveAReissue(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	assertMacroProjects(t, db, ctx, "report_income_summary(0, 5000, 'USD', 'total')",
 		"period_start", "txn_count", "income", "reversals", "net_income", "withheld")
@@ -440,6 +448,7 @@ func TestIncomeReportColumnsSurviveAReissue(t *testing.T) {
 // surface: report_transactions carries the spending trio it already
 // had, plus the income one.
 func TestMigration0071DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeReportFixture(t, db, ctx)
 
@@ -512,6 +521,7 @@ func closeEnough(a, b float64) bool {
 // shift rather than an error — so the values are read back and matched
 // to the rows that should carry them.
 func TestTransactionsCarriesBothFamiliesInOrder(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeReportFixture(t, db, ctx)
 

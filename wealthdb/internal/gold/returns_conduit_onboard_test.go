@@ -34,6 +34,7 @@ import (
 // fabricating 1000 (market +500 + the deposit counted again +500, minus the netted
 // cash/securities move). groupOnboardStep books 800 - 800 = 0, so net_flow = 500.
 func TestUBSConduitOnboardStepNoSameDayContamination(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubsx", "ubs")
 
@@ -83,6 +84,7 @@ func TestUBSConduitOnboardStepNoSameDayContamination(t *testing.T) {
 // per-CONSTITUENT default this same shape would phantom-onboard the new account's
 // full value; per-entity-once nets it away.
 func TestUBSConduitInternalMoveNetsToZeroOnboarding(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubsy", "ubs")
 
@@ -115,6 +117,7 @@ func TestUBSConduitInternalMoveNetsToZeroOnboarding(t *testing.T) {
 // (no sibling funding drop that day) still onboards its full value. Otherwise the
 // fix would swing the other way and understate capital.
 func TestUBSConduitGenuineExternalDebutOnboards(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubsz", "ubs")
 

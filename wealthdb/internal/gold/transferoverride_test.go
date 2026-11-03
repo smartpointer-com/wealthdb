@@ -5,6 +5,7 @@ import "testing"
 // The three manual decisions, against a pool where the matcher would
 // otherwise do the wrong thing on its own. Every value is synthetic.
 func TestTransferOverridesSteerTheMatcher(t *testing.T) {
+	t.Parallel()
 	// A debit with two same-amount credits nearby: the matcher takes the
 	// nearest, which here is the coincidence rather than the real partner.
 	pool := func() []TransferLeg {
@@ -78,6 +79,7 @@ func TestTransferOverridesSteerTheMatcher(t *testing.T) {
 // Reporting it is the whole point: an override that quietly does nothing is
 // worse than one that says so.
 func TestResolveTransferOverridesReportsWhatItCannotFind(t *testing.T) {
+	t.Parallel()
 	legs := []TransferLeg{leg("bank", "checking", "out", 100, -500)}
 	day := int64(100) * 86400
 	rules := []TransferOverrideRule{
@@ -101,6 +103,7 @@ func TestResolveTransferOverridesReportsWhatItCannotFind(t *testing.T) {
 // A leg cannot be both asserted into a pair and declared not to be half of
 // one; the contradiction is the holder's to resolve, not this file's.
 func TestTransferOverridesRejectContradictions(t *testing.T) {
+	t.Parallel()
 	l := LegRef{"bank", "checking", "out"}
 	if _, err := newTransferOverrides([]LegRef{l}, nil,
 		[]ForcedPair{{Debit: l, Credit: LegRef{"bank", "checking", "in"}}}); err == nil {

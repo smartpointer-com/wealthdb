@@ -11,6 +11,7 @@ import (
 // and its own spending is a line; after it the move is a vehicles
 // crossing and its spending is the vehicle's. Every figure is invented.
 func TestADatedWrapperMovesTheBoundaryOnItsDay(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	const day = 86400

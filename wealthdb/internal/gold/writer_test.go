@@ -56,6 +56,7 @@ func inTx(t *testing.T, db *sql.DB, ctx context.Context, fn func(*Writer) error)
 func ptr[T any](v T) *T { return &v }
 
 func TestUpsertAccountsFreshInsert(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	inTx(t, db, ctx, func(w *Writer) error {
@@ -99,6 +100,7 @@ func TestUpsertAccountsFreshInsert(t *testing.T) {
 // re-emitting an account with last_seen_at < stored.last_seen_at
 // must not overwrite the stored attributes.
 func TestUpsertAccountsGuard(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	// First insert at t=2000 with display_name "Newer"
@@ -149,6 +151,7 @@ func TestUpsertAccountsGuard(t *testing.T) {
 // TestUpsertAccountsAdvance exercises the happy path: a newer
 // last_seen_at observation overwrites attributes.
 func TestUpsertAccountsAdvance(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	inTx(t, db, ctx, func(w *Writer) error {
@@ -192,6 +195,7 @@ func TestUpsertAccountsAdvance(t *testing.T) {
 }
 
 func TestInsertPositionsNullable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	// Seed an account so the FK is satisfied.
@@ -280,6 +284,7 @@ func TestInsertPositionsNullable(t *testing.T) {
 }
 
 func TestInsertCashBalancesAndFxRatesAndTransactions(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	inTx(t, db, ctx, func(w *Writer) error {
@@ -346,6 +351,7 @@ func TestInsertCashBalancesAndFxRatesAndTransactions(t *testing.T) {
 // merchant signature, so byte-for-byte fidelity is the contract), and
 // the nil pair — every non-card source — lands as SQL NULL.
 func TestInsertTransactionsEnrichment(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	inTx(t, db, ctx, func(w *Writer) error {
@@ -383,6 +389,7 @@ func TestInsertTransactionsEnrichment(t *testing.T) {
 }
 
 func TestInvalidEnumRejected(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	tx, err := db.BeginTx(ctx, nil)
@@ -403,6 +410,7 @@ func TestInvalidEnumRejected(t *testing.T) {
 }
 
 func TestEmptyBatchIsNoop(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	inTx(t, db, ctx, func(w *Writer) error {
@@ -425,6 +433,7 @@ func TestEmptyBatchIsNoop(t *testing.T) {
 // (asset_class, vehicle) pair round-trips, and a missing, invalid,
 // or nonsensical pair is rejected before it reaches gold.
 func TestPositionTaxonomyPair(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	inTx(t, db, ctx, func(w *Writer) error {
 		return w.UpsertAccounts(ctx, []canonical.AccountChange{{
@@ -477,6 +486,7 @@ func insertOne(ctx context.Context, db *sql.DB, p canonical.PositionChange) erro
 // multiple-chunks-plus-remainder batch. Every row must land, with
 // values intact at both ends of the batch.
 func TestInsertPositionsChunkBoundaries(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	for _, n := range []int{1, InsertChunkRows - 1, InsertChunkRows, InsertChunkRows + 1, 2*InsertChunkRows + 3} {
@@ -522,6 +532,7 @@ func TestInsertPositionsChunkBoundaries(t *testing.T) {
 // TestInsertTransactionsChunked pushes one multi-chunk batch through
 // the widest remaining insert path and spot-checks both ends.
 func TestInsertTransactionsChunked(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	n := InsertChunkRows + 7
@@ -566,6 +577,7 @@ func TestInsertTransactionsChunked(t *testing.T) {
 // verbatim from a source that prints a spaced em dash can never be
 // read as a memo. Every value is synthetic.
 func TestInsertTransactionsComposesDescription(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
@@ -635,6 +647,7 @@ func TestInsertTransactionsComposesDescription(t *testing.T) {
 // to invent one than a holding is — the gate checked each half alone
 // and let the pair through.
 func TestInsertTransactionsRefusesAnInadmissiblePair(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

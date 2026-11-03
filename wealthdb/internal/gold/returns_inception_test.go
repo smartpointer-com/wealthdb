@@ -10,6 +10,7 @@ import (
 // TestInceptionOverridesResolve locks the most-specific-first resolution and
 // the per-grain scoping (global is never anchored; a nil receiver is inert).
 func TestInceptionOverridesResolve(t *testing.T) {
+	t.Parallel()
 	o := &InceptionOverrides{
 		Sources:    map[string]int64{"ct": 100},
 		Portfolios: map[string]map[string]int64{"ct": {"P1": 200}},
@@ -48,6 +49,7 @@ func TestInceptionOverridesResolve(t *testing.T) {
 // the opening base to its date and flags configured_inception; an inception
 // BEFORE the data is a no-op (the floor can only move an anchor later).
 func TestRunReturnsConfiguredInception(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubs", "ubs")
 	pf := "PF1"
@@ -123,6 +125,7 @@ func TestRunReturnsConfiguredInception(t *testing.T) {
 // inception (data-derived or configured), and stays quiet for at- or
 // post-inception flows and for plain --from window clipping.
 func TestRunReturnsFlowsBeforeInception(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubs", "ubs")
 	pf := "PF1"

@@ -6,6 +6,7 @@ import "testing"
 // before the day, the exact day included, with the day it was quoted;
 // none before the pair's first day or for a pair with no rates.
 func TestDailyRatesReadAtOrBeforeTheDay(t *testing.T) {
+	t.Parallel()
 	r := &DailyRates{pairs: map[[2]string][]dayRate{{"USD", "CHF"}: {{10, 0.9}, {20, 0.8}}}}
 	for _, c := range []struct {
 		from, to string

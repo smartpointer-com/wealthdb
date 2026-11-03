@@ -64,6 +64,7 @@ func fxConvert(t *testing.T, db *sql.DB, day int64, amount float64, from, to str
 // and CHF→USD = ×1.25.
 
 func TestFxIdentity(t *testing.T) {
+	t.Parallel()
 	db, _ := openMigrated(t)
 	if v, ok := fxConvert(t, db, 0, 42, "USD", "USD"); !ok || v != "42.0000" {
 		t.Errorf("USD→USD identity = %q (ok=%v), want 42.0000", v, ok)
@@ -71,6 +72,7 @@ func TestFxIdentity(t *testing.T) {
 }
 
 func TestFxDirect(t *testing.T) {
+	t.Parallel()
 	db, _ := openMigrated(t)
 	seedFX(t, db, 0, "CHF", "USD", "0.8")
 	if v, ok := fxConvert(t, db, 0, 100, "USD", "CHF"); !ok || v != "80.0000" {
@@ -79,6 +81,7 @@ func TestFxDirect(t *testing.T) {
 }
 
 func TestFxReciprocal(t *testing.T) {
+	t.Parallel()
 	db, _ := openMigrated(t)
 	// Only one direction stored (1 USD = 0.8 CHF); CHF→USD must use 1/0.8.
 	seedFX(t, db, 0, "CHF", "USD", "0.8")
@@ -88,6 +91,7 @@ func TestFxReciprocal(t *testing.T) {
 }
 
 func TestFxNoRate(t *testing.T) {
+	t.Parallel()
 	db, _ := openMigrated(t)
 	if v, ok := fxConvert(t, db, 0, 100, "CHF", "USD"); ok {
 		t.Errorf("CHF→USD with no rates = %q (ok=%v), want no result", v, ok)
@@ -98,6 +102,7 @@ func TestFxNoRate(t *testing.T) {
 // neither direct nor reciprocal exists for the pair — the UBS /
 // Swissquote feed shape (only CHF→X pairs published).
 func TestFxTriangulatesViaCHF(t *testing.T) {
+	t.Parallel()
 	db, _ := openMigrated(t)
 	// 1 EUR = 1.06 CHF, 1 USD = 0.80 CHF.
 	seedFX(t, db, 0, "CHF", "EUR", "1.06")
@@ -116,6 +121,7 @@ func TestFxTriangulatesViaCHF(t *testing.T) {
 // TestFxTriangulationMissingLeg confirms a half-present CHF pivot
 // resolves to no result rather than a wrong one.
 func TestFxTriangulationMissingLeg(t *testing.T) {
+	t.Parallel()
 	db, _ := openMigrated(t)
 	seedFX(t, db, 0, "CHF", "EUR", "1.06") // USD leg absent
 	if v, ok := fxConvert(t, db, 0, 100, "EUR", "USD"); ok {
@@ -129,6 +135,7 @@ func TestFxTriangulationMissingLeg(t *testing.T) {
 // (migration 0023's fx_daily floor) rather than failing — so deep-history
 // holdings still convert. Days 10 and 12 are distinct UTC-day buckets.
 func TestFxFlatAtOrBefore(t *testing.T) {
+	t.Parallel()
 	db, _ := openMigrated(t)
 	const day = int64(86400)
 	seedFX(t, db, 10*day, "CHF", "USD", "0.8")
@@ -151,6 +158,7 @@ func TestFxFlatAtOrBefore(t *testing.T) {
 // TestFxLatestSnapshotWinsWithinDay confirms that, absent a priority
 // tiebreak, the latest snapshot in a UTC day supplies that day's rate.
 func TestFxLatestSnapshotWinsWithinDay(t *testing.T) {
+	t.Parallel()
 	db, _ := openMigrated(t)
 	seedFX(t, db, 10, "CHF", "USD", "0.8") // same day (bucket 0)...
 	seedFX(t, db, 20, "CHF", "USD", "0.9") // ...later stamp wins
@@ -163,6 +171,7 @@ func TestFxLatestSnapshotWinsWithinDay(t *testing.T) {
 // by SetFxPriorities) overrides the within-day latest-snapshot
 // tiebreak, and that reversing the order flips the winner.
 func TestFxSourcePrecedence(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	for _, src := range []string{"ubs", "fred"} {
 		if _, err := db.Exec(`

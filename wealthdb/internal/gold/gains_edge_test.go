@@ -66,6 +66,7 @@ func show(p *string) string {
 // change unknown and flags it, rather than booking the whole gain since
 // purchase.
 func TestGainsBasisChangeIsFlaggedNotBooked(t *testing.T) {
+	t.Parallel()
 	for name, bv := range map[string][2]string{"appears": {"NULL", "600"}, "vanishes": {"600", "NULL"}} {
 		db, ctx := openMigrated(t)
 		edgeExec(t, db, ctx, edgeBase+
@@ -81,6 +82,7 @@ func TestGainsBasisChangeIsFlaggedNotBooked(t *testing.T) {
 // A position whose value cannot be converted leaves the coverage share
 // unmeasured, so the verdict cannot read ok.
 func TestGainsCoverageNeedsEveryValue(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	edgeExec(t, db, ctx, edgeBase+
 		edgePos(1000, "A1", "X", "X", "USD", 1, 100, "80")+
@@ -97,6 +99,7 @@ func TestGainsCoverageNeedsEveryValue(t *testing.T) {
 // A lot that names its instrument by hint meets its position, and is
 // not unmatched.
 func TestGainsHintLotMeetsItsPosition(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	edgeExec(t, db, ctx, edgeBase+
 		edgePos(1000, "A1", "X", "X", "USD", 10, 1000, "600")+
@@ -117,6 +120,7 @@ func TestGainsHintLotMeetsItsPosition(t *testing.T) {
 
 // Every grain carries an account the accounts table does not list.
 func TestGainsGrainsCarryAnUnlistedAccount(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	edgeExec(t, db, ctx, edgeBase+
 		edgePos(1000, "GHOST", "X", "X", "USD", 10, 1000, "600")+
@@ -133,6 +137,7 @@ func TestGainsGrainsCarryAnUnlistedAccount(t *testing.T) {
 // the snapshots may be partial, or the account closed without a closing
 // row.
 func TestGainsUnobservedAccountIsFlagged(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	edgeExec(t, db, ctx, edgeBase+
 		edgePos(1000, "A1", "X", "X", "USD", 10, 1000, "600")+
@@ -148,6 +153,7 @@ func TestGainsUnobservedAccountIsFlagged(t *testing.T) {
 // The positions view and the account grain read the same rows, so they
 // agree when one instrument has a line without a basis.
 func TestGainsPositionsAgreeWithTheAccount(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	edgeExec(t, db, ctx, edgeBase+
 		edgePos(1000, "A1", "X-1", "X", "USD", 10, 1000, "600")+
@@ -175,6 +181,7 @@ func TestGainsPositionsAgreeWithTheAccount(t *testing.T) {
 // The change in the output currency includes the exchange-rate change
 // on a gain carried through the bucket (docs/GAINS.md §4): end − start.
 func TestGainsChangeCarriesTheRateOnTheGain(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	edgeExec(t, db, ctx, edgeBase+`
         INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate) VALUES
@@ -190,6 +197,7 @@ func TestGainsChangeCarriesTheRateOnTheGain(t *testing.T) {
 // A window with realized lots and no positions still opens, and an
 // unpriced line counts once.
 func TestGainsLotsOnlyAndFxMissingCountOnce(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	edgeExec(t, db, ctx, edgeBase+`
         INSERT INTO realized_lots (silver_source_id, realized_lot_external_id, account_external_id,
@@ -211,6 +219,7 @@ func TestGainsLotsOnlyAndFxMissingCountOnce(t *testing.T) {
 // at its own active snapshot (migration 0140), with a bridged FX path
 // whose legs change on different days.
 func TestReportPositionsKeepsItsEarlierColumns(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	edgeExec(t, db, ctx, edgeBase+`
         INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate) VALUES
@@ -277,6 +286,7 @@ func TestReportPositionsKeepsItsEarlierColumns(t *testing.T) {
 
 // Weekly, daily and quarterly buckets add up to the total.
 func TestGainsEveryPeriodAddsUpToTheTotal(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	total := edgeTotal(t, db, ctx, "USD", GainsAll)
 	for _, p := range []string{"week", "day", "quarter"} {
@@ -299,6 +309,7 @@ func TestGainsEveryPeriodAddsUpToTheTotal(t *testing.T) {
 // A realized lot that names no instrument, hint or description still
 // counts, and is unmatched.
 func TestGainsAnonymousLotCounts(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	edgeExec(t, db, ctx, edgeBase+`
         INSERT INTO realized_lots (silver_source_id, realized_lot_external_id, account_external_id,
@@ -318,6 +329,7 @@ func TestGainsAnonymousLotCounts(t *testing.T) {
 // An open-start window opens at the first sell too, so a sell before
 // any snapshot or lot is counted.
 func TestGainsWindowOpensAtTheFirstSell(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	edgeExec(t, db, ctx, edgeBase+`
         INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
@@ -333,6 +345,7 @@ func TestGainsWindowOpensAtTheFirstSell(t *testing.T) {
 // A line with a cost basis but no value leaves its change unknown
 // rather than booking the basis as a loss.
 func TestGainsLineWithoutValueIsNotALoss(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	edgeExec(t, db, ctx, edgeBase+
 		edgePos(1000, "A1", "X", "X", "USD", 10, 1000, "600")+
@@ -346,6 +359,7 @@ func TestGainsLineWithoutValueIsNotALoss(t *testing.T) {
 // The aggregate share is blank when a holding it should measure cannot
 // be converted, as in the coverage view.
 func TestGainsBucketCoverageNeedsEveryValue(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	edgeExec(t, db, ctx, edgeBase+
 		edgePos(200000, "A1", "X", "X", "USD", 1, 100, "80")+
@@ -358,6 +372,7 @@ func TestGainsBucketCoverageNeedsEveryValue(t *testing.T) {
 
 // An account that sold out, its sale documented, is not unobserved.
 func TestGainsSoldOutAccountIsNotUnobserved(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	edgeExec(t, db, ctx, edgeBase+
 		edgePos(1000, "A1", "X", "X", "USD", 10, 1000, "600")+
@@ -377,6 +392,7 @@ func TestGainsSoldOutAccountIsNotUnobserved(t *testing.T) {
 // Lines of one instrument in two currencies keep their converted sums
 // and leave the native ones blank.
 func TestGainsMixedCurrenciesLeaveNativeFiguresBlank(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	edgeExec(t, db, ctx, edgeBase+
 		edgePos(200000, "A1", "X-USD", "X", "USD", 1, 100, "80")+
@@ -394,6 +410,7 @@ func TestGainsMixedCurrenciesLeaveNativeFiguresBlank(t *testing.T) {
 // A lot's unrealized gain leaves out its share of the accrued interest,
 // stated value or not, so the lots add up to the position.
 func TestOpenLotsLeaveOutAccruedInterest(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	edgeExec(t, db, ctx, edgeBase+`
         INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key,

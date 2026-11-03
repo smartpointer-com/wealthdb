@@ -8,6 +8,7 @@ import "testing"
 // coverage; an account with a cash balance keeps reading that alone.
 // Every figure is invented.
 func TestTheMemoSeesADepositStatedAsAHolding(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `

@@ -13,6 +13,7 @@ import (
 // stated flow the ledger lacks, one before the account's history, and a
 // month a second account states in its own currency, EUR.
 func TestReconcileStatedPeriods(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "bank", "fidelity")
 	monthEnd := func(y int, m time.Month) int64 {
@@ -175,6 +176,7 @@ func TestReconcileStatedPeriods(t *testing.T) {
 // sumDecimals is nil when any figure is missing or does not parse, and
 // subDecimals when either side is; a gap is never read off a partial sum.
 func TestStatedDecimalHelpers(t *testing.T) {
+	t.Parallel()
 	s := func(v string) *string { return &v }
 	if got := sumDecimals(s("1.10"), s("2.205")); got == nil || *got != "3.305" {
 		t.Errorf("sum = %v, want 3.305", got)

@@ -19,6 +19,7 @@ import (
 // counting flows and picks up the nav flags. The unoverridden baselines are
 // asserted first, so the deltas are attributable to the override alone.
 func TestPolicyOverrideFlowRegime(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "man", "manual")
 	seedReturnsSource(t, db, ctx, "sq", "swissquote")
@@ -92,6 +93,7 @@ func TestPolicyOverrideFlowRegime(t *testing.T) {
 // the "normal" override brings back an account the policy hid. It cannot
 // bring back a cash account, which hides whatever the policy says.
 func TestPolicyOverrideAccountsGrain(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "chx", "chase")
 
@@ -136,6 +138,7 @@ func TestPolicyOverrideAccountsGrain(t *testing.T) {
 // the override map identically to the single-currency path — otherwise the
 // materialized report_returns would silently diverge from the CLI.
 func TestPolicyOverrideMultiLoader(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "man", "manual")
 	a, b := dy(2024, time.January, 2), dy(2024, time.December, 30)

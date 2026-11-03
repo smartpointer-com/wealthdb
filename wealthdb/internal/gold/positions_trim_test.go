@@ -3,6 +3,7 @@ package gold
 import "testing"
 
 func TestTrimTrailingZeros(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ in, want string }{
 		{"100.00000000", "100"},
 		{"100.50000000", "100.5"},

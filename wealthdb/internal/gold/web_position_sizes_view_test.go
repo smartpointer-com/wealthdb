@@ -14,6 +14,7 @@ import (
 // size; a key the look-through expands is no share. A private share and
 // a fund have no row.
 func TestWebPositionSizesNamesAShareSize(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	for _, q := range []string{
 		`INSERT INTO serving_positions_history BY NAME

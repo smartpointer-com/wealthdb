@@ -24,6 +24,7 @@ func basisPosition(key string) canonical.PositionChange {
 }
 
 func TestInsertPositionsStoresTheBasisStamp(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	p := basisPosition("XYZ")
 	bv := canonical.NewDecimalFromInt(1234)
@@ -49,6 +50,7 @@ func TestInsertPositionsStoresTheBasisStamp(t *testing.T) {
 }
 
 func TestInsertPositionsRefusesAnUnstampedBookValue(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	p := basisPosition("XYZ")
 	bv := canonical.NewDecimalFromInt(1)
@@ -65,6 +67,7 @@ func TestInsertPositionsRefusesAnUnstampedBookValue(t *testing.T) {
 }
 
 func TestInsertPositionLotsRoundTrips(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	q := canonical.NewDecimalFromInt(10)
 	bv := canonical.NewDecimalFromInt(900)
@@ -99,6 +102,7 @@ func TestInsertPositionLotsRoundTrips(t *testing.T) {
 }
 
 func TestInsertPositionLotsRefusesAMismatchedOrigin(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	bv := canonical.NewDecimalFromInt(1)
 	for _, c := range []struct {
@@ -122,6 +126,7 @@ func TestInsertPositionLotsRefusesAMismatchedOrigin(t *testing.T) {
 }
 
 func TestInsertRealizedLotsRoundTrips(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	q := canonical.NewDecimalFromInt(5)
 	proceeds := canonical.NewDecimalFromInt(700)
@@ -151,6 +156,7 @@ func TestInsertRealizedLotsRoundTrips(t *testing.T) {
 }
 
 func TestInsertRealizedLotsRefusesBadRows(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	cost := canonical.NewDecimalFromInt(1)
 	for _, c := range []struct {
@@ -178,6 +184,7 @@ func TestInsertRealizedLotsRefusesBadRows(t *testing.T) {
 // migrated database holding a stamped row and a lot of each kind, and
 // pins that nothing is lost.
 func TestMigration0115DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	p := basisPosition("XYZ")
 	bv := canonical.NewDecimalFromInt(1)

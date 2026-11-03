@@ -81,17 +81,18 @@ func (c goldenCase) cliPrivacy() bool { return c.tool != "resolutions" }
 func TestMCPMatchesCLI(t *testing.T) {
 	t.Parallel()
 	fixtures := []struct {
-		cfg   string
+		name  string
+		setup func(*testing.T) string
 		cases []goldenCase
 	}{
-		{setupSpendingGold(t), append(familyCases("spending", spendingFamily.views, "2026-05-01", "2026-06-30"),
+		{"spending", setupSpendingGold, append(familyCases("spending", spendingFamily.views, "2026-05-01", "2026-06-30"),
 			goldenCase{"spending transactions filtered", []string{"spending", "transactions", "2026-05-01", "2026-06-30",
 				"-F", "date >= 2026-05-06", "-F", "category != Restaurant"}, "spending",
 				map[string]any{"view": "transactions", "from": "2026-05-01", "to": "2026-06-30",
 					"filter": []any{"date >= 2026-05-06", "category != Restaurant"}}})},
-		{setupIncomeGold(t), familyCases("income", []string{"summary", "types", "transactions"}, "2026-05-01",
+		{"income", setupIncomeGold, familyCases("income", []string{"summary", "types", "transactions"}, "2026-05-01",
 			"2026-06-30")},
-		{withResolutions(t, setupCashflowGold(t)), append(cashflowCases(),
+		{"cashflow", func(t *testing.T) string { return withResolutions(t, setupCashflowGold(t)) }, append(cashflowCases(),
 			goldenCase{"categorizations", []string{"categorizations"}, "categorizations", map[string]any{}},
 			goldenCase{"resolutions", []string{"resolutions"}, "resolutions", map[string]any{}},
 			goldenCase{"transactions", []string{"transactions", "2026-05-01", "2026-06-30"}, "transactions",
@@ -101,54 +102,77 @@ func TestMCPMatchesCLI(t *testing.T) {
 			goldenCase{"transactions filtered", []string{"transactions", "2026-05-01", "2026-06-30", "-F", "kind != dividend"},
 				"transactions", map[string]any{"from": "2026-05-01", "to": "2026-06-30", "filter": "kind != dividend"}},
 		)},
-		{setupReturnsGold(t), append(returnsCases(), holdingsCases()...)},
-		{setupGainsGold(t), gainsCases()},
-		{setupExposureGold(t), exposureCases()},
-		{setupYieldGold(t), append(yieldCases(), forwardIncomeCases()...)},
+		{"returns", setupReturnsGold, append(returnsCases(), holdingsCases()...)},
+		{"gains", setupGainsGold, gainsCases()},
+		{"exposure", func(t *testing.T) string { return setupExposureGold(t) }, exposureCases()},
+		{"yield", setupYieldGold, append(yieldCases(), forwardIncomeCases()...)},
 	}
 	for _, fx := range fixtures {
-		for _, privacy := range []bool{false, true} {
-			s := onFixtureToday(newTestMCP(fx.cfg, privacy))
-			for _, c := range fx.cases {
-				if privacy && !c.cliPrivacy() {
-					continue
-				}
-				cli := append([]string{"-c", fx.cfg}, c.cli...)
-				cli = append(cli, "-f", "csv")
-				if !c.fixedColumns() && (c.tool != "holdings" || c.args["view"] != "global") {
-					cli = append(cli, "-C", "all")
-				}
+		t.Run(fx.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := fx.setup(t)
+			for _, privacy := range []bool{false, true} {
+				mode := "plain"
 				if privacy {
-					cli = append(cli, "-p")
+					mode = "privacy"
 				}
-				want, se, code := runToday(t, cli...)
-				if code != 0 {
-					t.Fatalf("%s: CLI exit %d: %s", c.name, code, se)
-				}
-				args := map[string]any{"format": "csv", "columns": "all", "max_chars": maxIntegerParam}
-				for k, v := range c.args {
-					args[k] = v
-				}
-				got, err := callTool(t, s, c.tool, args)
-				if err != nil {
-					t.Fatalf("%s (privacy %v): MCP error: %v", c.name, privacy, err)
-				}
-				header, body, _ := strings.Cut(got, "\n")
-				// The total line of a filtered result is the server's alone.
-				if i := strings.LastIndex(body, "\ntotal of "); i >= 0 && c.args["filter"] != nil {
-					body = body[:i]
-				}
-				if strings.Count(want, "\n") < 2 {
-					t.Fatalf("%s: the fixture leaves this case empty, which proves nothing:\n%s", c.name, want)
-				}
-				if body != strings.TrimRight(want, "\n") {
-					t.Errorf("%s (privacy %v): MCP and CLI differ\nheader: %s\nMCP:\n%s\nCLI:\n%s", c.name, privacy, header, body, want)
-				}
-				if privacy && !strings.Contains(header, "redacted") {
-					t.Errorf("%s: privacy result's header does not say redacted: %s", c.name, header)
-				}
+				// The cases of one mode share a copy and run in turn: the
+				// CLI and the server open it under different configurations.
+				t.Run(mode, func(t *testing.T) {
+					t.Parallel()
+					cfg := copyFixture(t, cfg)
+					s := onFixtureToday(newTestMCP(cfg, privacy))
+					for _, c := range fx.cases {
+						if privacy && !c.cliPrivacy() {
+							continue
+						}
+						t.Run(c.name, func(t *testing.T) {
+							checkMCPMatchesCLI(t, s, cfg, c, privacy)
+						})
+					}
+				})
 			}
-		}
+		})
+	}
+}
+
+// checkMCPMatchesCLI is TestMCPMatchesCLI for one case: the server s
+// over cfg against the CLI, with privacy on or off.
+func checkMCPMatchesCLI(t *testing.T, s *mcpServer, cfg string, c goldenCase, privacy bool) {
+	t.Helper()
+	cli := append([]string{"-c", cfg}, c.cli...)
+	cli = append(cli, "-f", "csv")
+	if !c.fixedColumns() && (c.tool != "holdings" || c.args["view"] != "global") {
+		cli = append(cli, "-C", "all")
+	}
+	if privacy {
+		cli = append(cli, "-p")
+	}
+	want, se, code := runToday(t, cli...)
+	if code != 0 {
+		t.Fatalf("CLI exit %d: %s", code, se)
+	}
+	args := map[string]any{"format": "csv", "columns": "all", "max_chars": maxIntegerParam}
+	for k, v := range c.args {
+		args[k] = v
+	}
+	got, err := callTool(t, s, c.tool, args)
+	if err != nil {
+		t.Fatalf("MCP error: %v", err)
+	}
+	header, body, _ := strings.Cut(got, "\n")
+	// The total line of a filtered result is the server's alone.
+	if i := strings.LastIndex(body, "\ntotal of "); i >= 0 && c.args["filter"] != nil {
+		body = body[:i]
+	}
+	if strings.Count(want, "\n") < 2 {
+		t.Fatalf("the fixture leaves this case empty, which proves nothing:\n%s", want)
+	}
+	if body != strings.TrimRight(want, "\n") {
+		t.Errorf("MCP and CLI differ\nheader: %s\nMCP:\n%s\nCLI:\n%s", header, body, want)
+	}
+	if privacy && !strings.Contains(header, "redacted") {
+		t.Errorf("privacy result's header does not say redacted: %s", header)
 	}
 }
 

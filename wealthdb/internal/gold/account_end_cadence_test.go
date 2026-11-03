@@ -68,6 +68,7 @@ func accountOn(t *testing.T, db *sql.DB, ctx context.Context, src, acct string, 
 // leg reported monthly in the runs of a leg reported nightly stands as a
 // quarterly account does.
 func TestASlowAccountStandsWithinItsCadence(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	for _, a := range []struct{ src, acct, kind string }{
 		{"recent-src", "M-0000", "brokerage"}, {"recent-src", "Q-0000", "brokerage"},
@@ -146,6 +147,7 @@ func TestASlowAccountStandsWithinItsCadence(t *testing.T) {
 // runs on nightly. Each burst is a run of its own, so no nightly run
 // covers their company, and nothing ends them between bursts.
 func TestBurstAccountsStandBetweenBursts(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	for _, acct := range []string{"F-0000", "B-0000", "B-0001"} {
 		seedHistAccount(t, db, ctx, "burst-src", acct, "cash", "Account EXAMPLE")
@@ -179,6 +181,7 @@ func TestBurstAccountsStandBetweenBursts(t *testing.T) {
 // would make the shortest gap hours; the shortest day gap of 5 would end
 // it at 8 days, the mean of 22 hold it open 33, the longest 75.
 func TestTheCadenceIsTheMedianOfTheKeysDays(t *testing.T) {
+	t.Parallel()
 	for _, table := range []string{"positions", "cash"} {
 		for _, c := range []struct {
 			name   string
@@ -225,6 +228,7 @@ func TestTheCadenceIsTheMedianOfTheKeysDays(t *testing.T) {
 // states no cash of S, it says nothing of S itself, and S's holdings stand
 // inside their grace.
 func TestASoldOutAccountEndsAtTheRunThatStatesItsCash(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	for _, src := range []string{"cash-src", "nocash-src"} {
 		for _, acct := range []string{"A-0000", "S-0000"} {
@@ -262,6 +266,7 @@ func TestASoldOutAccountEndsAtTheRunThatStatesItsCash(t *testing.T) {
 // source's positions stop while its cash runs on to today. A source that
 // stops running ends nothing, so A stands.
 func TestACashRunMovesNoPositionsGrace(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	for off := int64(-60); off <= -51; off++ {
 		if off < -51 {

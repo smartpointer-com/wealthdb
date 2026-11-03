@@ -15,6 +15,7 @@ import (
 //     aggregating accounts with no portfolio.
 //   - sum(portfolios.total) == sum(accounts.total).
 func TestPortfoliosAsOfRollupAndSentinel(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	chf := "CHF"

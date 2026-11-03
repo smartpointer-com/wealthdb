@@ -11,6 +11,7 @@ import (
 // renamed takes the new name — and a collected source's rows are never
 // touched.
 func TestSyncDeclaredAccounts(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	inTx(t, db, ctx, func(w *Writer) error {
 		return w.UpsertAccounts(ctx, []canonical.AccountChange{{

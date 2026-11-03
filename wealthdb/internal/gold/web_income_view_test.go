@@ -16,6 +16,7 @@ var seededSeconds = map[int64]bool{1000: true, 9000: true, 2700000: true, 530000
 // fallback on the type columns — and its deliberate absence on the
 // payer, which a delta line has none of.
 func TestWebIncomeViewShape(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeReportFixture(t, db, ctx)
 	mustMaterializeServing(t, db, ctx)
@@ -76,6 +77,7 @@ func TestWebIncomeViewShape(t *testing.T) {
 // TestMigration0072DDLIsRerunnable holds the serving view to the replay
 // bar, and confirms it still answers afterwards.
 func TestMigration0072DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeReportFixture(t, db, ctx)
 

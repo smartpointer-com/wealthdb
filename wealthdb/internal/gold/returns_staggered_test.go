@@ -37,6 +37,7 @@ func netFlowOf(t *testing.T, rows []ReturnRow, entity string) float64 {
 // not counted on top of it, and the aggregate TWR must come out sane/positive
 // rather than driven below −100% by a pre-spine deposit booked against ΔV≈0.
 func TestStaggeredPreDebutDepositSubsumed(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "viacx", "viac")
 	// Window opens 2023-01-02 with A alive and flat. B debuts only at a year-end
@@ -83,6 +84,7 @@ func TestStaggeredPreDebutDepositSubsumed(t *testing.T) {
 // Both deposits must be subsumed; net_flow is the sum of the two debut values
 // once, not doubled.
 func TestStaggeredTwoLateAccounts(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "relx", "relevate")
 	wStart := dy(2025, time.January, 2)
@@ -129,6 +131,7 @@ func TestStaggeredTwoLateAccounts(t *testing.T) {
 // The assertion is that no orphaned negative phantom is produced and the net_flow
 // equals exactly the sum the boundary values justify.
 func TestStaggeredJournalFundedNoPhantom(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "fidx", "fidelity")
 	wStart := dy(2023, time.January, 2)
@@ -195,6 +198,7 @@ func TestStaggeredJournalFundedNoPhantom(t *testing.T) {
 // outflow. (For the in-window subsumption itself, see
 // TestStaggeredPostClosureFlowSubsumed.)
 func TestStaggeredClosureNoSyntheticAfterWindow(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubsx", "ubs")
 	t0 := dy(2024, time.January, 2)
@@ -235,6 +239,7 @@ func TestStaggeredClosureNoSyntheticAfterWindow(t *testing.T) {
 // flow dated in the flat zero-carry gap — after the last non-zero day — is
 // subsumed rather than booked as a spurious exit with no matching value move.
 func TestStaggeredPostClosureFlowSubsumed(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "clx", "ubs")
 	t0 := dy(2024, time.January, 2)

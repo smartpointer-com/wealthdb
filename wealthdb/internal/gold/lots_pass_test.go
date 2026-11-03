@@ -89,6 +89,7 @@ const tradesSeed = `
             ('lot-src', 600*86400, 'A', 'XYZ', 'XYZ', 'public_equity', 'stock', 'USD', 10, 350);`
 
 func TestLotPassFillsPositionsAndRealizes(t *testing.T) {
+	t.Parallel()
 	db, ctx := lotFixture(t, tradesSeed)
 	sum := rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
 	if len(sum.Sources) != 1 || sum.Sources[0].RealizedLots != 1 || sum.Sources[0].PositionsFilled != 3 {
@@ -126,6 +127,7 @@ func TestLotPassFillsPositionsAndRealizes(t *testing.T) {
 }
 
 func TestLotPassMethodChangesTheBasis(t *testing.T) {
+	t.Parallel()
 	db, ctx := lotFixture(t, tradesSeed)
 	rebuild(t, db, ctx, fillCfg(lots.LIFO), false)
 	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE snapshot_at = ?`, 600*lotDay); !closeEnough(got, 100) {
@@ -137,6 +139,7 @@ func TestLotPassMethodChangesTheBasis(t *testing.T) {
 }
 
 func TestLotPassStatedWins(t *testing.T) {
+	t.Parallel()
 	db, ctx := lotFixture(t, tradesSeed+`
         UPDATE positions SET book_value = 777, basis_origin = 'stated', basis_method = 'lots', basis_fees = 'included'
          WHERE snapshot_at = 600*86400;
@@ -155,6 +158,7 @@ func TestLotPassStatedWins(t *testing.T) {
 }
 
 func TestLotPassSkipsUnchangedInputs(t *testing.T) {
+	t.Parallel()
 	db, ctx := lotFixture(t, tradesSeed)
 	cfg := fillCfg(lots.FIFO)
 	rebuild(t, db, ctx, cfg, false)
@@ -178,6 +182,7 @@ func TestLotPassSkipsUnchangedInputs(t *testing.T) {
 }
 
 func TestLotPassOffWritesNothing(t *testing.T) {
+	t.Parallel()
 	db, ctx := lotFixture(t, tradesSeed)
 	sum := rebuild(t, db, ctx, lots.Config{}, false)
 	if len(sum.Sources) != 0 {
@@ -189,6 +194,7 @@ func TestLotPassOffWritesNothing(t *testing.T) {
 }
 
 func TestLotPassShadowFillsOnlyTheLedger(t *testing.T) {
+	t.Parallel()
 	db, ctx := lotFixture(t, tradesSeed)
 	shadow := lots.Shadow
 	rebuild(t, db, ctx, lots.Config{Sources: map[string]lots.SourceConfig{"lot-src": {Mode: &shadow}}}, false)
@@ -202,6 +208,7 @@ func TestLotPassShadowFillsOnlyTheLedger(t *testing.T) {
 }
 
 func TestLotPassRewritesAShadowLedgerAReloadDropped(t *testing.T) {
+	t.Parallel()
 	db, ctx := lotFixture(t, tradesSeed)
 	shadow := lots.Shadow
 	cfg := lots.Config{Sources: map[string]lots.SourceConfig{"lot-src": {Mode: &shadow}}}
@@ -219,6 +226,7 @@ func TestLotPassRewritesAShadowLedgerAReloadDropped(t *testing.T) {
 }
 
 func TestLotPassMovesLotsBetweenAccounts(t *testing.T) {
+	t.Parallel()
 	// A journal moves 4 units from A to B a day apart; B's snapshot
 	// carries the moved cost and date, and nothing seeds.
 	db, ctx := lotFixture(t, `
@@ -244,6 +252,7 @@ func TestLotPassMovesLotsBetweenAccounts(t *testing.T) {
 }
 
 func TestLotPassCorporateActions(t *testing.T) {
+	t.Parallel()
 	// A merger stated twice (two feeds) turns 10 OLD into 5 NEW; a cash
 	// merger takes 3 CSH for 90; shares that arrive on a held
 	// instrument split it.
@@ -285,6 +294,7 @@ func TestLotPassCorporateActions(t *testing.T) {
 }
 
 func TestLotPassObservesZeroOnlyForAPresentAccount(t *testing.T) {
+	t.Parallel()
 	// XYZ leaves A's snapshot while A shows other rows: an implied
 	// disposal. B is missing from a snapshot altogether: no disposal.
 	db, ctx := lotFixture(t, `
@@ -308,6 +318,7 @@ func TestLotPassObservesZeroOnlyForAPresentAccount(t *testing.T) {
 }
 
 func TestLotPassPoolsAPortfolio(t *testing.T) {
+	t.Parallel()
 	// Two wallets of one portfolio: a coin bought in W1 sweeps to W2
 	// minus a network fee; the pool's basis is shared by quantity, the
 	// fee is a disposal at market value, and nothing moves.
@@ -354,6 +365,7 @@ func TestLotPassPoolsAPortfolio(t *testing.T) {
 }
 
 func TestLotPassValuesReceiptsInKind(t *testing.T) {
+	t.Parallel()
 	// Staking income is costed at the day's market value; a day with
 	// no rate leaves the lot without a cost.
 	db, ctx := lotFixture(t, `
@@ -386,6 +398,7 @@ func TestLotPassValuesReceiptsInKind(t *testing.T) {
 }
 
 func TestLotPassAdoptsAnchorsAndResolvesSeeds(t *testing.T) {
+	t.Parallel()
 	// The history opens holding 10 of unknown cost; a later snapshot
 	// states the lots: the seed takes their cost back to its opening.
 	db, ctx := lotFixture(t, `
@@ -411,6 +424,7 @@ func TestLotPassAdoptsAnchorsAndResolvesSeeds(t *testing.T) {
 }
 
 func TestLotPassTakesALedgerReceiptsStatedBasis(t *testing.T) {
+	t.Parallel()
 	// A hand-kept equity-transfer ledger row moves 10 XYZ in with its
 	// pre-transfer cost basis; nothing in gold sends them.
 	db, ctx := lotFixture(t, `
@@ -431,6 +445,7 @@ func TestLotPassTakesALedgerReceiptsStatedBasis(t *testing.T) {
 }
 
 func TestLotPassPairsAcrossSourcesOfOneKindOnly(t *testing.T) {
+	t.Parallel()
 	// The same instrument leaves one source and arrives at another the
 	// next day. Between two sources of one kind it is a move; between
 	// kinds the ids need not mean the same thing, so it is not.
@@ -463,6 +478,7 @@ func TestLotPassPairsAcrossSourcesOfOneKindOnly(t *testing.T) {
 }
 
 func TestLotPassSharesAReorgByStatedValue(t *testing.T) {
+	t.Parallel()
 	// One instrument becomes two; the cost goes 3:1 by the legs' values,
 	// and each new instrument holds a slice of both lots.
 	db, ctx := lotFixture(t, `
@@ -490,6 +506,7 @@ func TestLotPassSharesAReorgByStatedValue(t *testing.T) {
 }
 
 func TestLotPassKeepsAStatedIdTheTradesUse(t *testing.T) {
+	t.Parallel()
 	// The source keys the security by its CUSIP in the trades and the
 	// documents alike, and its instruments also link the CUSIP to a
 	// ticker row: the stated lot stays with the CUSIP and resolves the
@@ -513,6 +530,7 @@ func TestLotPassKeepsAStatedIdTheTradesUse(t *testing.T) {
 }
 
 func TestLotPassTakesTheSalesOwnAccountsStatedLotsFirst(t *testing.T) {
+	t.Parallel()
 	// A and B share a portfolio. A's sale relieves a seed; B's statement
 	// lot of the day before must not resolve it while A's own is there.
 	db, ctx := lotFixture(t, `
@@ -539,6 +557,7 @@ func TestLotPassTakesTheSalesOwnAccountsStatedLotsFirst(t *testing.T) {
 }
 
 func TestLotPassLeavesADocumentedYearsCashMergerToItsDocuments(t *testing.T) {
+	t.Parallel()
 	// A cash merger is a disposal the corporate actions make; in a year
 	// the account's documents state, it is theirs, as a sale is.
 	db, ctx := lotFixture(t, `
@@ -558,6 +577,7 @@ func TestLotPassLeavesADocumentedYearsCashMergerToItsDocuments(t *testing.T) {
 }
 
 func TestLotPassMovesAtTheReceiptWhenItComesFirst(t *testing.T) {
+	t.Parallel()
 	// B's journal in comes two days before A's journal out. The lots
 	// move at the receipt, so B's snapshot between the two carries their
 	// cost. A's snapshot there still shows the 4 that left: the book does
@@ -599,6 +619,7 @@ func TestLotPassMovesAtTheReceiptWhenItComesFirst(t *testing.T) {
 }
 
 func TestLotPassCarriesAWalletASnapshotLeavesOut(t *testing.T) {
+	t.Parallel()
 	// Two wallets of a pooled portfolio hold the coin; one is missing
 	// from a snapshot. The pool keeps its basis whole, and nothing is
 	// implied away.
@@ -628,6 +649,7 @@ func TestLotPassCarriesAWalletASnapshotLeavesOut(t *testing.T) {
 }
 
 func TestLotPassDropsAWalletItsTradesEmptied(t *testing.T) {
+	t.Parallel()
 	// A sweeps its coins to B inside the pool and leaves the snapshots:
 	// it holds nothing, and B's coins are not counted twice.
 	db, ctx := lotFixture(t, `
@@ -654,6 +676,7 @@ func TestLotPassDropsAWalletItsTradesEmptied(t *testing.T) {
 }
 
 func TestLotPassTakesAKeysCurrencyFromItsPositions(t *testing.T) {
+	t.Parallel()
 	// The trade settles in CHF; the position is in USD. The cost is
 	// converted into the position's currency.
 	db, ctx := lotFixture(t, `
@@ -673,6 +696,7 @@ func TestLotPassTakesAKeysCurrencyFromItsPositions(t *testing.T) {
 }
 
 func TestLotPassLeavesADocumentedYearToItsDocuments(t *testing.T) {
+	t.Parallel()
 	// A year-end summary states the account's sales by CUSIP; the trades
 	// use the ticker. The engine's rows for the year are not primary, so
 	// the sale is not counted twice, and the stated lot still resolves
@@ -706,6 +730,7 @@ func TestLotPassLeavesADocumentedYearToItsDocuments(t *testing.T) {
 // The writer stamps a rebuilt basis with the engine's method and fees
 // names, so each must be a value the stamp vocabulary knows.
 func TestLotNamesAreBasisStampValues(t *testing.T) {
+	t.Parallel()
 	for m := lots.FIFO; m <= lots.Average; m++ {
 		if !canonical.BasisMethod(m.String()).Valid() {
 			t.Errorf("method %q is no basis_method", m)
@@ -744,6 +769,7 @@ const statedSeed = `
 // a holding no snapshot shows (s3) writes nothing and stays
 // undocumented.
 func TestStatedModeRealizesAgainstTheStatedBasis(t *testing.T) {
+	t.Parallel()
 	db, ctx := lotFixture(t, statedSeed)
 	stated := lots.Stated
 	cfg := lots.Config{Method: lots.FIFO, Sources: map[string]lots.SourceConfig{"lot-src": {Mode: &stated}}}
@@ -800,6 +826,7 @@ func TestStatedModeRealizesAgainstTheStatedBasis(t *testing.T) {
 // A `lots.basis` rule costs a receipt nothing pairs and a seed; it is
 // part of the inputs, so changing it replays.
 func TestLotPassCostsUnknownLotsFromTheConfigBasis(t *testing.T) {
+	t.Parallel()
 	db, ctx := lotFixture(t, `
         INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id,
                                   instrument_external_id, kind, currency, quantity, net_amount) VALUES

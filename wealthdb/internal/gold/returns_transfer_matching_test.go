@@ -24,6 +24,7 @@ func tmParams(level string, from, to int64) ReturnParams {
 // native currency, amount within tolerance, day window, (amount gap, day
 // distance)-ranked greedy, one-to-one, deterministic.
 func TestMatchCrossTransfers(t *testing.T) {
+	t.Parallel()
 	mk := func() map[string]*accountData {
 		return map[string]*accountData{
 			acctKey("s1", "A"): {src: "s1", acct: "A"},
@@ -129,6 +130,7 @@ func TestMatchCrossTransfers(t *testing.T) {
 // TestAppendCrossCandidate pins the candidate filters: equity-transfer ledger
 // legs and zero/valueless amounts never enter the pool.
 func TestAppendCrossCandidate(t *testing.T) {
+	t.Parallel()
 	amt := "5000.00"
 	zero := "0"
 	if got := appendCrossCandidate(nil, "s", "a", "xfer:abc", "USD", 86400, &amt); len(got) != 0 {
@@ -165,6 +167,7 @@ func seedCrossPair(t *testing.T, db *sql.DB, ctx context.Context, b1FirstSnap in
 // nets at global (both legs inside), stays counted at the sources grain (one
 // leg each), and the whole feature is a no-op when the amounts can't pair.
 func TestRunReturnsCrossSourceNetting(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCrossPair(t, db, ctx, dy(2024, time.January, 2))
 	end := eod(2024, time.December, 2)
@@ -219,6 +222,7 @@ func TestRunReturnsCrossSourceNetting(t *testing.T) {
 // matching enabled but no eligible pair, output equals the baseline rows
 // exactly.
 func TestCrossSourceNettingNoPairIsByteIdentical(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "s1", "schwab")
 	seedReturnsSource(t, db, ctx, "s2", "schwab")
@@ -246,6 +250,7 @@ func TestCrossSourceNettingNoPairIsByteIdentical(t *testing.T) {
 // TestCrossSourceNettingWindowStraddle pins the both-legs-inside rule: a
 // window ending between the legs keeps the in-window leg as a real flow.
 func TestCrossSourceNettingWindowStraddle(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCrossPair(t, db, ctx, dy(2024, time.January, 2))
 
@@ -270,6 +275,7 @@ func TestCrossSourceNettingWindowStraddle(t *testing.T) {
 // represented by the synthetic onboarding step-up, so the pair must NOT net —
 // dropping the sender's live leg would count the capital asymmetrically.
 func TestCrossSourceNettingSubsumedDebutLegKeptOut(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	// B1's first snapshot lands the day after its funding deposit.
 	seedCrossPair(t, db, ctx, dy(2024, time.March, 4))
@@ -297,6 +303,7 @@ func TestCrossSourceNettingSubsumedDebutLegKeptOut(t *testing.T) {
 // links the single-currency USD dataset derives are exactly the links the
 // multi loader's USD dataset derives.
 func TestCrossMatchingMultiSingleParity(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCrossPair(t, db, ctx, dy(2024, time.January, 2))
 	tm := &TransferMatching{WindowDays: 5, TolerancePct: 0.5}
@@ -327,6 +334,7 @@ func TestCrossMatchingMultiSingleParity(t *testing.T) {
 // TestCrossSourceNettingObeysNettingSwitch pins that --netting off disables
 // cross-source pair drops too: the diagnostic view shows every raw leg.
 func TestCrossSourceNettingObeysNettingSwitch(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCrossPair(t, db, ctx, dy(2024, time.January, 2))
 	end := eod(2024, time.December, 2)
@@ -349,6 +357,7 @@ func TestCrossSourceNettingObeysNettingSwitch(t *testing.T) {
 // TestMatchCrossTransfersPrefersExactAmount pins the greedy rank: within the
 // tolerance, an exact-amount partner beats a nearer-day coincidence.
 func TestMatchCrossTransfersPrefersExactAmount(t *testing.T) {
+	t.Parallel()
 	byKey := map[string]*accountData{
 		acctKey("s1", "A"): {src: "s1", acct: "A"},
 		acctKey("s2", "B"): {src: "s2", acct: "B"},
@@ -372,6 +381,7 @@ func TestMatchCrossTransfersPrefersExactAmount(t *testing.T) {
 // asymmetrically. No registered policy produces this shape today; the pin
 // guards the invariant for future OnboardNone sources with transfer kinds.
 func TestCrossMatchedDropsOnboardNoneTransferLike(t *testing.T) {
+	t.Parallel()
 	winFrom, winTo := int64(100), int64(300)
 	// matchCrossTransfers indexes every linked account's transferLike slice;
 	// direct construction must uphold that invariant.
@@ -412,6 +422,7 @@ func TestCrossMatchedDropsOnboardNoneTransferLike(t *testing.T) {
 // the spending pass reads — through the matcher. Without it the field could
 // be dropped on the floor and every test here would still pass.
 func TestMatchCrossTransfersHonoursOverrideRules(t *testing.T) {
+	t.Parallel()
 	mk := func() map[string]*accountData {
 		return map[string]*accountData{
 			acctKey("s1", "A"): {src: "s1", acct: "A"},

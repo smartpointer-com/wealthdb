@@ -456,6 +456,7 @@ func TestSyncExposureWritesYieldRecords(t *testing.T) {
 // convention table a load has stamped. A fresh gold reads the built-in
 // conventions and cycles before any load.
 func TestMigration0135DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	var conv []string
 	for _, c := range canonical.BuiltinConventions() {

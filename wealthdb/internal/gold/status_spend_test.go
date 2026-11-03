@@ -3,6 +3,7 @@ package gold
 import "testing"
 
 func TestStatusSpendCounters(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
@@ -88,6 +89,7 @@ func TestStatusSpendCounters(t *testing.T) {
 // account kind gets no breakdown, because it would only repeat the
 // source-wide extrema printed a few lines above it.
 func TestStatusPerKindSkipsSingleKindSources(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
@@ -110,6 +112,7 @@ func TestStatusPerKindSkipsSingleKindSources(t *testing.T) {
 // status path off the spending macros: they join three overlay tables
 // and the one-line overview runs them once per source.
 func TestStatusSpendCountersSkippedWithoutVerbose(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
@@ -137,6 +140,7 @@ func TestStatusSpendCountersSkippedWithoutVerbose(t *testing.T) {
 // its sign instead, so the row reads as an ordinary purchase or bill
 // everywhere downstream and no `other` counter can see it.
 func TestStatusCountsAKindGuessedBySign(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO accounts (silver_source_id, account_external_id, account_kind,

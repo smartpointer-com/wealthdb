@@ -37,6 +37,7 @@ func seedReportingFX(t *testing.T, db *sql.DB) {
 // last — fx_reporting_value over the two grid views gives fxConvert's
 // answer to the last decimal, NULL where fxConvert finds no path.
 func TestFxReportingValueMatchesTheReference(t *testing.T) {
+	t.Parallel()
 	db, _ := openMigrated(t)
 	seedReportingFX(t, db)
 
@@ -106,6 +107,7 @@ func seedReportingFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 // equals the single-currency report asked for in that currency — the
 // figure `wealthdb … -x <CCY>` prints.
 func TestMultiReportsMatchTheSingleCurrencyOnes(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportingFixture(t, db, ctx)
 
@@ -178,6 +180,7 @@ func TestMultiReportsMatchTheSingleCurrencyOnes(t *testing.T) {
 // TestMigration0114DDLIsRerunnable holds the helper and the re-issued
 // macros and views to the replay bar, and confirms each still answers.
 func TestMigration0114DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportingFixture(t, db, ctx)
 

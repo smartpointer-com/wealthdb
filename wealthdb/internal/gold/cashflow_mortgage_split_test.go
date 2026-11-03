@@ -122,6 +122,7 @@ func mortgageShares(t *testing.T, db *sql.DB, ctx context.Context) map[string]ma
 // TestAMortgageInstalmentSplitsByWhatItRetired is the whole rule, in
 // the four shapes a mortgage produces.
 func TestAMortgageInstalmentSplitsByWhatItRetired(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	// The lender's figure: 8,000 retired over the first interval,
@@ -184,6 +185,7 @@ func TestAMortgageInstalmentSplitsByWhatItRetired(t *testing.T) {
 // instalment draws as interest, which overstates what was consumed
 // rather than understating the debt.
 func TestAMortgageTheProductDoesNotHoldStaysWhole(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedMortgagePayment(t, db, ctx, "M-UNTRACKED", 100, -6789, "")
@@ -202,6 +204,7 @@ func TestAMortgageTheProductDoesNotHoldStaysWhole(t *testing.T) {
 // safe to draw: the statement it feeds still ties to the balances it
 // was drawn from, because nothing was created or lost in splitting.
 func TestTheSharesSumToTheInstalment(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedMortgageBalances(t, db, ctx, map[int]float64{100: -88000, 200: -80000, 300: -33000})
@@ -299,6 +302,7 @@ func planScans(t *testing.T, db *sql.DB, ctx context.Context, from string) int {
 // copies are counted by the scans of `transactions`, which the base
 // reads only through the resolution.
 func TestTheSplitPlantsNoThirdResolution(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedMortgageBalances(t, db, ctx, map[int]float64{100: -88000, 200: -80000, 300: -33000})
@@ -353,6 +357,7 @@ func seedFarMortgageRow(t *testing.T, db *sql.DB, ctx context.Context,
 // An interval's allocation is a property of the interval. The question
 // asked of it cannot change the answer.
 func TestTheSplitDoesNotDependOnTheWindowAsked(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedMortgageBalances(t, db, ctx, map[int]float64{100: -88000, 200: -80000, 300: -33000})
@@ -402,6 +407,7 @@ func TestTheSplitDoesNotDependOnTheWindowAsked(t *testing.T) {
 // had retired, and draw itself as a positive interest edge on the wrong
 // side of the diagram.
 func TestADrawdownIsNotSplitAndTakesNoPrincipal(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedMortgageBalances(t, db, ctx, map[int]float64{100: -88000, 200: -80000, 300: -33000})
@@ -433,6 +439,7 @@ func TestADrawdownIsNotSplitAndTakesNoPrincipal(t *testing.T) {
 // decline, and the share it took was then dropped, turning real
 // amortisation into interest with nothing to show for it.
 func TestOnlyAMortgageLineSpendsThePrincipal(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedMortgageBalances(t, db, ctx, map[int]float64{100: -88000, 200: -80000, 300: -33000})
@@ -461,6 +468,7 @@ func TestOnlyAMortgageLineSpendsThePrincipal(t *testing.T) {
 // wherever a source tracks a single one, leaving the arm unable to fire
 // and the final repayment drawn as interest.
 func TestAClosedMortgageRetiresWhatWasLeft(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	// The only mortgage, observed every 100 days with a custody account
@@ -499,6 +507,7 @@ var monthlyMortgage = map[int]float64{100: -90000, 130: -89000, 160: -88000, 190
 // interest. Ended, the interval retires what was left. How the shared
 // ending reads a cadence is TestTheCadenceIsTheMedianOfTheKeysDays's.
 func TestAMortgageEndsAfterOneAndAHalfCadences(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		last   int // the day of the source's newest nightly snapshot
@@ -533,6 +542,7 @@ func TestAMortgageEndsAfterOneAndAHalfCadences(t *testing.T) {
 // past one and a half months it reads as repaid, its last interval
 // retiring the whole of what was left.
 func TestAMortgageObservedOnceTakesAMonthAsItsCadence(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		srcDay int
@@ -563,6 +573,7 @@ func TestAMortgageObservedOnceTakesAMonthAsItsCadence(t *testing.T) {
 // day began hours before that snapshot. Both shapes stand: one with a
 // cadence, and one observed once.
 func TestAMortgageInTheSourcesNewestSnapshotStands(t *testing.T) {
+	t.Parallel()
 	const run = 2 * 3600 // the nightly run lands at 02:00
 	for _, tc := range []struct {
 		name string
@@ -598,6 +609,7 @@ func TestAMortgageInTheSourcesNewestSnapshotStands(t *testing.T) {
 // 14:00 that day. Standing, an instalment after its last snapshot is
 // all interest.
 func TestAMortgageSeenIntradayStandsThroughALaterRunThatDay(t *testing.T) {
+	t.Parallel()
 	const run, later = 2 * 3600, 14 * 3600
 	for _, tc := range []struct {
 		name            string
@@ -637,6 +649,7 @@ func TestAMortgageSeenIntradayStandsThroughALaterRunThatDay(t *testing.T) {
 // company, while the feed at 03:00 runs two cadences past it: 0143's rule
 // reads it as repaid, the shared ending as standing, after each replay.
 func TestMigration0143DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedMortgageBalancesAt(t, db, ctx, 2*3600, monthlyMortgage)
@@ -663,6 +676,7 @@ func TestMigration0143DDLIsRerunnable(t *testing.T) {
 // it stands past one and a half cadences and at 300 days, and reads as
 // repaid once its source runs more than hist_carry_days() past it.
 func TestAMortgageInARunOfItsOwnWaitsForTheHorizon(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		last   int // the day of the source's newest nightly snapshot
 		repaid bool
@@ -697,6 +711,7 @@ func TestAMortgageInARunOfItsOwnWaitsForTheHorizon(t *testing.T) {
 // Both orientations, because which way the class nets decides where
 // the drawdown hangs and only one of the two was ever exercised.
 func TestADrawdownIsDrawnAndTheHubStillConserves(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name            string
 		draw, repay     float64
@@ -767,6 +782,7 @@ func TestADrawdownIsDrawnAndTheHubStillConserves(t *testing.T) {
 // the self-edge rule and from the atoms by its class having others, so
 // it reaches the diagram nowhere while the residual keeps counting it.
 func TestNoFinancingGroupRepeatsItsClass(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedMortgageBalances(t, db, ctx, map[int]float64{100: -88000, 200: -80000})
@@ -808,6 +824,7 @@ func TestNoFinancingGroupRepeatsItsClass(t *testing.T) {
 // admission test and vanished — small, but the one way a split could
 // fail to conserve.
 func TestEveryMortgageRowSurvivesItsSplit(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedMortgageBalances(t, db, ctx, map[int]float64{100: -88000, 200: -80000, 300: -33000})

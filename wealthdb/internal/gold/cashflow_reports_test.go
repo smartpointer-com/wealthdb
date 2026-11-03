@@ -72,6 +72,7 @@ func mustFloat(t *testing.T, s *string, what string) float64 {
 // operating is the signed difference of the two magnitudes, and the
 // four sections sum to net_cash_flow.
 func TestSummaryClosesOnNetCashFlow(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)
 
@@ -136,6 +137,7 @@ func TestSummaryClosesOnNetCashFlow(t *testing.T) {
 // the residual seen from the pool's side, so cash the household kept is
 // cash the pool absorbed, which is a use.
 func TestFlowsSumToZero(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)
 
@@ -185,6 +187,7 @@ func TestFlowsSumToZero(t *testing.T) {
 // read at two levels gives the same total and a different number of
 // rows, and the investing toggle changes the investing rows alone.
 func TestFlowsNetAtTheLevelAsked(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)
 
@@ -231,6 +234,7 @@ func TestFlowsNetAtTheLevelAsked(t *testing.T) {
 // TestSankeyConservesFlow pins the diagram: every stage conserves flow,
 // each side sums to the hub, and no node appears on both sides.
 func TestSankeyConservesFlow(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)
 
@@ -288,6 +292,7 @@ func TestSankeyConservesFlow(t *testing.T) {
 // leaves drawn through it, so a leaf detached for running the other way
 // is neither double-counted nor lost.
 func TestSankeyStagesConserveThroughTheClass(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `
@@ -338,6 +343,7 @@ func TestSankeyStagesConserveThroughTheClass(t *testing.T) {
 // Sankey needs: a gift given and a gift received are two nodes, and a
 // visualisation keys a node by its NAME, so the two names differ.
 func TestSharedValuesAreTwoNodesInTheDiagram(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `
@@ -383,6 +389,7 @@ func keysOf(m map[string]bool) []string {
 // or merchant on an operating one, and nothing at all on a line whose
 // counterparty is an account.
 func TestCashflowTransactionsNameTheRightThing(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `
@@ -431,6 +438,7 @@ func TestCashflowTransactionsNameTheRightThing(t *testing.T) {
 // spending and income ones, read from the RESOLUTION so a row this
 // feature declines still says what it was resolved as.
 func TestTransactionsCarriesTheCashflowTrio(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)
 
@@ -474,6 +482,7 @@ func TestTransactionsCarriesTheCashflowTrio(t *testing.T) {
 
 // TestMigration0082DDLIsRerunnable holds the reports to the replay bar.
 func TestMigration0082DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)
 	// 0082 puts report_cashflow_summary back at its own 14-column shape,
@@ -490,6 +499,7 @@ func TestMigration0082DDLIsRerunnable(t *testing.T) {
 // every report has to survive: a window with no lines returns nothing
 // rather than a row of zeroes or a division by zero.
 func TestCashflowReportsTolerateAnEmptyWindow(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 
@@ -538,6 +548,7 @@ func seedBalanceSpine(t *testing.T, db *sql.DB, ctx context.Context, opening, cl
 // pool whose observed balance change is exactly the lines that moved it,
 // `unexplained` is zero.
 func TestTheMemoClosesWhenTheBalancesAgree(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	// The pooled lines on CASH, plus the wire to a pooled account whose
 	// balances are not collected: that leaves the MEASURED spine even
@@ -572,6 +583,7 @@ func TestTheMemoClosesWhenTheBalancesAgree(t *testing.T) {
 // surfaces cannot give: theirs is structural, and their canary counts
 // only rows nothing placed.
 func TestTheMemoSeesAHoleInThePopulation(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	// The closing balance is 25 lower than anything accounts for: the
 	// `fx` row on the pooled cash account moved money and the
@@ -599,6 +611,7 @@ func TestTheMemoSeesAHoleInThePopulation(t *testing.T) {
 // blanks every year before the last collector was added, which is every
 // year a household would want to read.
 func TestAnAccountIsMeasuredFromItsFirstObservation(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	// The balance history begins on day 30, inside the window, and the
 	// fixture's lines are all on day 20 — before the account is
@@ -643,6 +656,7 @@ func TestAnAccountIsMeasuredFromItsFirstObservation(t *testing.T) {
 // as a permanent hole, and on a real deployment it is the largest term
 // there is.
 func TestAMoveOutOfTheMeasuredSpineIsAFlowOfIt(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	// Only CASH is measurable; SAVE has no balance history.
 	seedBalanceSpine(t, db, ctx, 10000, 9000)
@@ -686,6 +700,7 @@ func TestAMoveOutOfTheMeasuredSpineIsAFlowOfIt(t *testing.T) {
 // deployment whose pool has no balance history reports no memo rather
 // than a figure made of zeroes.
 func TestTheMemoIsBlankWithNoBalancesAtAll(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)
 
@@ -704,6 +719,7 @@ func TestTheMemoIsBlankWithNoBalancesAtAll(t *testing.T) {
 // window's end in the balance, and that difference is revaluation rather
 // than a hole.
 func TestTheMemoSeparatesRevaluationFromError(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `
@@ -749,6 +765,7 @@ func TestTheMemoSeparatesRevaluationFromError(t *testing.T) {
 
 // TestMigration0083DDLIsRerunnable holds the memo to the replay bar.
 func TestMigration0083DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedBalanceSpine(t, db, ctx, 10000, 12150)
 	seedReportFixture(t, db, ctx)
@@ -764,6 +781,7 @@ func TestMigration0083DDLIsRerunnable(t *testing.T) {
 // TestMigration0086DDLIsRerunnable holds the re-issued summary and memo
 // to the replay bar: two OR REPLACE macros and nothing else.
 func TestMigration0086DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedBalanceSpine(t, db, ctx, 10000, 12150)
 	seedReportFixture(t, db, ctx)
@@ -786,6 +804,7 @@ func TestMigration0086DDLIsRerunnable(t *testing.T) {
 // and a gift received sharing a name would merge into one node with a
 // self-edge.
 func TestWebCashflowIsLineGrainAndReadyToDraw(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)
 	seedLines(t, db, ctx, []line{
@@ -853,6 +872,7 @@ func TestWebCashflowIsLineGrainAndReadyToDraw(t *testing.T) {
 // bar: one OR REPLACE VIEW. Replayed forward, it reads the serving table
 // that migration 0132 adds and the materialize pass fills.
 func TestMigration0084DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)
 	rerunMigrationDDL(t, db, ctx, "0084_web_cashflow.sql")
@@ -874,6 +894,7 @@ func TestMigration0084DDLIsRerunnable(t *testing.T) {
 // about them — so it attaches to the hub directly rather than through a
 // leaf stage, the way cash and the vehicles do.
 func TestNoNodeIsDrawnIntoItself(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)
 	seedLines(t, db, ctx, []line{
@@ -927,6 +948,7 @@ func TestNoNodeIsDrawnIntoItself(t *testing.T) {
 // unsigned volume could explain it, and it says so out loud where the
 // balances cannot answer at all.
 func TestCoverageNamesTheAccountAndItsBlindSpot(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedBalanceSpine(t, db, ctx, 10000, 10000)
 	seedReportFixture(t, db, ctx)
@@ -984,6 +1006,7 @@ func TestCoverageNamesTheAccountAndItsBlindSpot(t *testing.T) {
 // nobody asked and would carry a rate error into the one number the
 // report exists to make trustworthy.
 func TestCoverageIsInTheAccountsOwnCurrency(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedBalanceSpine(t, db, ctx, 10000, 10000)
 	seedReportFixture(t, db, ctx)
@@ -1029,6 +1052,7 @@ func coverageRow(t *testing.T, rows []CashflowCoverageRow, account string) Cashf
 // an account are valued and paid for by nobody, so they move no cash and
 // cannot open a gap against the account's cash balance.
 func TestCoverageReadsAnInKindTransferAsUnsigned(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedBrokerageBalances(t, db, ctx, 5000, 1, 40)
@@ -1057,6 +1081,7 @@ func TestCoverageReadsAnInKindTransferAsUnsigned(t *testing.T) {
 // measures nothing, so the row says so instead of naming every
 // transaction a gap.
 func TestCoverageFlagsASeriesThatEndedBeforeThePeriod(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedBrokerageBalances(t, db, ctx, 5000, 1)
@@ -1082,6 +1107,7 @@ func TestCoverageFlagsASeriesThatEndedBeforeThePeriod(t *testing.T) {
 // is the clean case the report exists to confirm. Nothing hides its verdict,
 // so it reads measured with a gap of zero rather than obscured.
 func TestCoverageReadsAReconciledAccountAsMeasured(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedBrokerageBalances(t, db, ctx, 5000, 1)
@@ -1109,6 +1135,7 @@ func TestCoverageReadsAReconciledAccountAsMeasured(t *testing.T) {
 // TestCoverageObscuresAGapTheUnsignedVolumeCovers: a gap no larger than the
 // volume no sign could be read from is not answerable, and reads obscured.
 func TestCoverageObscuresAGapTheUnsignedVolumeCovers(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedBrokerageBalances(t, db, ctx, 5000, 1, 40)
@@ -1137,6 +1164,7 @@ func TestCoverageObscuresAGapTheUnsignedVolumeCovers(t *testing.T) {
 // the same gap — every unmeasurable one has none — list by source,
 // account and currency, the same way on every run.
 func TestCoverageOrderIsStable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedBalanceSpine(t, db, ctx, 10000, 10000)
 	seedReportFixture(t, db, ctx)
@@ -1196,6 +1224,7 @@ func coverageNicknames(t *testing.T, db *sql.DB, ctx context.Context) map[string
 // nickname carries that nickname, so privacy mode can tell the label is
 // one; a row labelled by its display name carries none.
 func TestCoverageCarriesTheNickname(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedBalanceSpine(t, db, ctx, 10000, 10000)
 	seedReportFixture(t, db, ctx)
@@ -1215,6 +1244,7 @@ func TestCoverageCarriesTheNickname(t *testing.T) {
 // TestMigration0150DDLIsRerunnable: the re-issued coverage macro re-runs
 // cleanly and still carries the nickname.
 func TestMigration0150DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedBalanceSpine(t, db, ctx, 10000, 10000)
 	seedReportFixture(t, db, ctx)
@@ -1231,6 +1261,7 @@ func TestMigration0150DDLIsRerunnable(t *testing.T) {
 // TestMigration0112DDLIsRerunnable: the re-issued coverage macro re-runs
 // cleanly.
 func TestMigration0112DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	rerunMigrationDDL(t, db, ctx, "0112_coverage_stable_order.sql")
 	if _, err := CashflowCoverage(ctx, db, 0, 3500000, "total"); err != nil {
@@ -1241,6 +1272,7 @@ func TestMigration0112DDLIsRerunnable(t *testing.T) {
 // TestMigration0108DDLIsRerunnable: the re-issued coverage macro re-runs
 // cleanly.
 func TestMigration0108DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	rerunMigrationDDL(t, db, ctx, "0108_coverage_measured_without_unsigned.sql")
 	if _, err := CashflowCoverage(ctx, db, 0, 3500000, "total"); err != nil {
@@ -1250,6 +1282,7 @@ func TestMigration0108DDLIsRerunnable(t *testing.T) {
 
 // TestMigration0105DDLIsRerunnable: the coverage macro re-issues cleanly.
 func TestMigration0105DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	rerunMigrationDDL(t, db, ctx, "0105_coverage_in_kind_and_ended.sql")
 	if _, err := CashflowCoverage(ctx, db, 0, 3500000, "total"); err != nil {

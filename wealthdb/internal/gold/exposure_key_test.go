@@ -8,6 +8,7 @@ import "testing"
 // it does in a select list, and a caller's qualified column binds there
 // too.
 func TestExposureKeyBindsTheCallersColumn(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO security_aliases (alias, security_key, origin) VALUES ('symbol:EXMP', 'isin:XX0000000001', 'lookup');

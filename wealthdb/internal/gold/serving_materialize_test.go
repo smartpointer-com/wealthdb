@@ -53,6 +53,7 @@ func assertTablesHoldTheMacros(t *testing.T, db *sql.DB, ctx context.Context) {
 // macro's shape and values. A second run replaces the rows rather than
 // adding to them.
 func TestMaterializeServingTablesHoldsTheMacrosRows(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedWebViewEpochFixture(t, db, ctx)
 
@@ -97,6 +98,7 @@ func TestMaterializeServingTablesHoldsTheMacrosRows(t *testing.T) {
 // tiles that read different views agree with each other and with
 // `wealthdb holdings` history.
 func TestWebHistoryViewsSumToTheSources(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedWebViewEpochFixture(t, db, ctx)
 
@@ -136,6 +138,7 @@ func TestWebHistoryViewsSumToTheSources(t *testing.T) {
 // reads `taxable_personal`, the default the account history gives it.
 // The income flow view carries the wrapper too.
 func TestWebHistoryViewsCarryTheWrapperAndClass(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedWebViewEpochFixture(t, db, ctx)
 	snap := dy(2026, time.January, 10)
@@ -221,6 +224,7 @@ func TestWebHistoryViewsCarryTheWrapperAndClass(t *testing.T) {
 // replay bar: a replay keeps what the tables hold, and every view still
 // answers.
 func TestMigration0132DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedWebViewEpochFixture(t, db, ctx)
 	before := countRows(t, db, ctx, "serving_positions_history")
@@ -242,6 +246,7 @@ func TestMigration0132DDLIsRerunnable(t *testing.T) {
 // 0158), no view or macro left names it, and the table it read stays for
 // the report_transactions model and web_income_withheld.
 func TestWebTransactionsIsDropped(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	assertNothingNames(t, db, ctx, "web_transactions")
 	var tables int

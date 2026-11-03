@@ -17,6 +17,7 @@ import (
 // view. Two sources carry transactions on the SAME day to exercise the
 // (occurred_at, silver_source_id, transaction_external_id) tiebreak.
 func TestLoadFlowTransactionsMatchesTransactionsBetween(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	d1 := dy(2023, time.March, 2)

@@ -104,6 +104,28 @@ func goldPathFromCfg(cfgPath string) string {
 	return filepath.Join(filepath.Dir(cfgPath), "wealthdb.db")
 }
 
+// copyFixture copies the directory of the fixture config cfg into a new
+// t.TempDir and returns the copy's config, which names the copied files.
+// DuckDB refuses a second open of one file under another configuration
+// in the same process, and the CLI and the MCP server open it
+// differently, so parallel subtests that run both read their own copy.
+func copyFixture(t *testing.T, cfg string) string {
+	t.Helper()
+	src, dst := filepath.Dir(cfg), t.TempDir()
+	if err := os.CopyFS(dst, os.DirFS(src)); err != nil {
+		t.Fatalf("copy fixture: %v", err)
+	}
+	body, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dst, filepath.Base(cfg))
+	if err := os.WriteFile(out, bytes.ReplaceAll(body, []byte(src), []byte(dst)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 // writeGoldCfg writes the minimal config for the gold file at goldPath,
 // with no silver sources, beside it as wealthdb.cfg, and returns the
 // config's path.

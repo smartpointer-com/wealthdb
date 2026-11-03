@@ -10,6 +10,7 @@ import "testing"
 // Overview's headline figures read it, and they promise the numbers
 // `wealthdb holdings sources` prints.
 func TestWebSourcesLatestMatchesTheMacro(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedWebViewEpochFixture(t, db, ctx)
 
@@ -66,6 +67,7 @@ func TestWebSourcesLatestMatchesTheMacro(t *testing.T) {
 // TestMigration0113DDLIsRerunnable holds the serving view to the replay
 // bar, and confirms it still answers afterwards.
 func TestMigration0113DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedWebViewEpochFixture(t, db, ctx)
 

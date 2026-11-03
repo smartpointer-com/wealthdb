@@ -181,6 +181,7 @@ func dumpTable(t *testing.T, db *sql.DB, ctx context.Context, query string) stri
 // cross-source matcher (a leaked leg would net CHK1's -200 away and move the
 // bank/global numbers).
 func TestReturnsCardEmitsNoRowsAndLeavesAggregatesIdentical(t *testing.T) {
+	t.Parallel()
 	base, bctx := openMigrated(t)
 	end := seedCardFixture(t, base, bctx, false)
 	withCard, cctx := openMigrated(t)
@@ -220,6 +221,7 @@ func TestReturnsCardEmitsNoRowsAndLeavesAggregatesIdentical(t *testing.T) {
 // with RunReturns, and its whole report_returns table (every partition plus the
 // windowed summaries, in every currency) must be identical with and without a card.
 func TestMaterializeReturnsCardInvisible(t *testing.T) {
+	t.Parallel()
 	const dump = `SELECT * FROM report_returns ORDER BY ALL`
 
 	base, bctx := openMigrated(t)
@@ -249,6 +251,7 @@ func TestMaterializeReturnsCardInvisible(t *testing.T) {
 // The gap is exactly the card balance — the same precedent as mortgages and
 // other liabilities, which the rollups already drop.
 func TestReturnsCardExcludedFromValueSpine(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	end := seedCardFixture(t, db, ctx, true)
 
@@ -299,6 +302,7 @@ func TestReturnsCardExcludedFromValueSpine(t *testing.T) {
 // unknown account reads NULL (the macro's LEFT JOIN), which a fence of
 // card accounts must keep.
 func TestServingTransactionsAccountKind(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	end := seedCardFixture(t, db, ctx, true)
 
@@ -325,6 +329,7 @@ func TestServingTransactionsAccountKind(t *testing.T) {
 // TransactionsBetween scans it positionally, so a drifted projection would
 // surface here rather than at runtime.
 func TestTransactionsBetweenCarriesAccountKind(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	end := seedCardFixture(t, db, ctx, true)
 

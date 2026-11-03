@@ -182,6 +182,7 @@ func wantAccounts(t *testing.T, got map[string]histValues, off int64, want map[s
 // happened to snapshot last, so a card-only day read as the card's
 // negative balance alone.
 func TestHistoryCarriesAccountsAcrossPartialRuns(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	const src = "partial-src"
 	seedHistAccount(t, db, ctx, src, "DEP-0000", "cash", "Deposit EXAMPLE")
@@ -225,6 +226,7 @@ func TestHistoryCarriesAccountsAcrossPartialRuns(t *testing.T) {
 // paid down to zero would keep contributing its last non-zero balance
 // for ever.
 func TestHistoryZeroObservationWins(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	const src = "zero-src"
 	seedHistAccount(t, db, ctx, src, "DEP-0000", "cash", "Drained EXAMPLE")
@@ -258,6 +260,7 @@ func TestHistoryZeroObservationWins(t *testing.T) {
 // the whole account (and with it the source and global totals), not just
 // that line.
 func TestHistoryZeroLineNeedsNoFxRate(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	const src = "nofx-src"
 	seedHistAccount(t, db, ctx, src, "ACC-0000", "brokerage", "Exotic EXAMPLE")
@@ -288,6 +291,7 @@ func TestHistoryZeroLineNeedsNoFxRate(t *testing.T) {
 // that day, as the point-in-time report does, once the source has run
 // past the account's own pace.
 func TestHistoryFullDumpSupersedesADroppedAccount(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	const src = "dump-src"
 	seedHistAccount(t, db, ctx, src, "A-0000", "cash", "Closed EXAMPLE")
@@ -332,6 +336,7 @@ func TestHistoryFullDumpSupersedesADroppedAccount(t *testing.T) {
 // source runs nightly, so the dumps after the closing run past the
 // keys' own pace.
 func TestHistoryFullDumpSupersedesSeveralDroppedKeys(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedFX(t, db, snapAt(-30), "USD", "EUR", "1.2") // 1 EUR = 1.2 USD
 
@@ -430,6 +435,7 @@ func TestHistoryFullDumpSupersedesSeveralDroppedKeys(t *testing.T) {
 // the source's own clock, never the calendar — a source that stops running
 // supersedes nothing, so its accounts keep their last values.
 func TestHistoryCarryIsBoundedBySourceClock(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	const src = "bound-src"
 	seedHistAccount(t, db, ctx, src, "H-0000", "cash", "Forgotten EXAMPLE")
@@ -469,6 +475,7 @@ func TestHistoryCarryIsBoundedBySourceClock(t *testing.T) {
 // private holding marked every other year, say — sits inside a source that
 // snapshots far more often without ever falling out between its own marks.
 func TestHistorySlowCadenceAccountKeepsEveryDay(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	const src = "slow-src"
 	seedHistAccount(t, db, ctx, src, "M-0000", "brokerage", "Marked EXAMPLE")
@@ -513,6 +520,7 @@ func TestHistorySlowCadenceAccountKeepsEveryDay(t *testing.T) {
 // and, symmetrically, a run that re-covers the account's other legs ends
 // the one it left out.
 func TestHistoryCashCarriesEachCurrencyLeg(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedFX(t, db, snapAt(-30), "USD", "EUR", "1.2") // 1 EUR = 1.2 USD
 
@@ -556,6 +564,7 @@ func TestHistoryCashCarriesEachCurrencyLeg(t *testing.T) {
 // absent from the account's next snapshot is sold, not carried, while
 // an account another run passed over keeps every holding it had.
 func TestHistoryPositionsFollowTheAccountSnapshot(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	const src = "pos-src"
 	seedHistAccount(t, db, ctx, src, "P-0000", "brokerage", "Brokerage EXAMPLE")
@@ -665,6 +674,7 @@ func dumpMacro(t *testing.T, db *sql.DB, ctx context.Context, macro, src string,
 // history answers the goldens byte for byte. An account observed at ZERO
 // keeps its row (TestHistoryZeroBalanceEmitsItsOwnRow).
 func TestHistoryFullDumpSourceIsUnchanged(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	const src = "full-src"
 	seedHistAccount(t, db, ctx, src, "F-0000", "brokerage", "Brokerage EXAMPLE")
@@ -699,6 +709,7 @@ func TestHistoryFullDumpSourceIsUnchanged(t *testing.T) {
 // day is a zero balance emits an explicit 0 row for it, as the
 // point-in-time report reads it.
 func TestHistoryZeroBalanceEmitsItsOwnRow(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	const src = "fullzero-src"
 	seedHistAccount(t, db, ctx, src, "Z-0000", "cash", "Drained EXAMPLE")
@@ -812,6 +823,7 @@ var historyMacroColumns = []struct {
 // TestMigration0051DDLIsRerunnable holds the re-issued history macros
 // to the replay bar and confirms each still answers afterwards.
 func TestMigration0051DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	const src = "replay-src"
 	seedHistAccount(t, db, ctx, src, "R-0000", "brokerage", "Brokerage EXAMPLE")
@@ -836,6 +848,7 @@ func TestMigration0051DDLIsRerunnable(t *testing.T) {
 // active-snapshot macros changes which rows land on a day, never the
 // columns a row carries.
 func TestHistoryMacroShapesUnchanged(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	for _, m := range historyMacroColumns {
 		rows, err := db.QueryContext(ctx, "SELECT * FROM "+m.macro+" LIMIT 0")

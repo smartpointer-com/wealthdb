@@ -21,6 +21,7 @@ func eod(y int, m time.Month, d int) int64 {
 // macros), so the aggregate reconciles with GlobalAsOf and the dropped account is
 // flagged rather than carried forward at its last value.
 func TestRunReturnsDisappearingAccountReconciles(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubs", "ubs")
 	t0, t1 := dy(2024, time.January, 2), dy(2024, time.July, 2)
@@ -67,6 +68,7 @@ func TestRunReturnsDisappearingAccountReconciles(t *testing.T) {
 // looked at. The engine's terminal value therefore equals the spine's, which
 // is above the point-in-time GlobalAsOf for such a source (gold DESIGN §10.7).
 func TestRunReturnsUncoveredAccountCarries(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "src-partial", "ubs")
 	t0, t1 := dy(2024, time.January, 2), dy(2024, time.July, 2)
@@ -135,6 +137,7 @@ func seedCashAcct(t *testing.T, db *sql.DB, ctx context.Context, src, acct strin
 // the series at the last non-zero balance. The engine reads that as a closure,
 // not as a feed drop.
 func TestRunReturnsCashZeroingIsAClosure(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "src-closed", "ubs")
 	t0, t1 := dy(2024, time.January, 2), dy(2024, time.July, 2)
@@ -171,6 +174,7 @@ func TestRunReturnsCashZeroingIsAClosure(t *testing.T) {
 // TestRunReturnsClosureDedup: a real "withdraw everything"
 // closure must not be double-counted by the synthetic closure outflow.
 func TestRunReturnsClosureDedup(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubs", "ubs")
 	t0, t1 := dy(2024, time.January, 2), dy(2024, time.July, 2)
@@ -198,6 +202,7 @@ func TestRunReturnsClosureDedup(t *testing.T) {
 // pair nets, a lone leg stays unmatched (with the =N count), and --netting off
 // keeps all legs.
 func TestRunReturnsCoarseNetting(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubs", "ubs")
 	t0, tMid, t1 := dy(2024, time.January, 2), dy(2024, time.April, 1), dy(2024, time.July, 2)
@@ -233,6 +238,7 @@ func TestRunReturnsCoarseNetting(t *testing.T) {
 // TestRunReturnsMWRErrorFlags guards the XIRR-error → quality-flag mapping
 // through RunReturns.
 func TestRunReturnsMWRErrorFlags(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "schwab", "schwab")
 	t0, tMid, t1 := dy(2024, time.January, 2), dy(2024, time.April, 1), dy(2024, time.July, 2)
@@ -258,6 +264,7 @@ func TestRunReturnsMWRErrorFlags(t *testing.T) {
 // TestRunReturnsFxClampFlags: a cross-currency window/flow valued
 // before the FX history (off the migration-0023 day-0 clamp) is flagged.
 func TestRunReturnsFxClampFlags(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubs", "ubs")
 	t0, tDep, t1 := dy(2024, time.January, 2), dy(2024, time.February, 1), dy(2024, time.July, 2)
@@ -300,6 +307,7 @@ func TestRunReturnsFxClampFlags(t *testing.T) {
 // derived from the seeded inputs — verifying the engine assembles (v0, v1,
 // window, flows) correctly and renders the period (de-annualized) figure.
 func TestRunReturnsMWRWiring(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "schwab", "schwab")
 	t0, tMid := dy(2024, time.January, 1), dy(2024, time.July, 1)
@@ -334,6 +342,7 @@ func TestRunReturnsMWRWiring(t *testing.T) {
 // (symptom: a since-inception TWR orders of magnitude below -100%).
 // Snapshot-aligned sub-periods keep both in one [snap,snap] bucket.
 func TestRunReturnsSparseSnapshotNoChainCollapse(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "sprx", "ubs")
 	jan7 := dy(2024, time.January, 7)

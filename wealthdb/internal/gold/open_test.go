@@ -36,6 +36,7 @@ func binaryVersionRows(t *testing.T, path string) int {
 // once per flush. Stamping those would append a row per batch and bury
 // the answer under the same command's own re-entries.
 func TestReopenReadWriteDoesNotStampBinaryVersions(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "gold.db")
 
 	db, err := Open(path, ModeReadWrite)
@@ -98,6 +99,8 @@ func TestReopenReadWriteDoesNotStampBinaryVersions(t *testing.T) {
 // read-only Open never, and ReopenReadWrite — the re-take a model
 // command makes once per flush, the whole reason it exists beside
 // Open — never either.
+//
+// Not parallel: it swaps the binary-open recorder.
 func TestOpenStampsAndReopenDoesNot(t *testing.T) {
 	calls := 0
 	restore := recordBinaryOpen
@@ -158,6 +161,7 @@ func storageHeader(t *testing.T, path string) uint64 {
 // A gold file is created in the storage format Metabase's DuckDB driver
 // reads (StorageVersion), not in DuckDB's own newest one.
 func TestANewGoldFileIsOneTheDashboardsRead(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "gold.db")
 	db, err := Open(path, ModeReadWrite)
 	if err != nil {
@@ -172,6 +176,7 @@ func TestANewGoldFileIsOneTheDashboardsRead(t *testing.T) {
 // A file in a newer format still opens, read-write and read-only, and
 // keeps its format: the pin applies to files being created.
 func TestAGoldFileInANewerFormatStillOpens(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "gold.db")
 	raw, err := sql.Open("duckdb", path)
 	if err != nil {
@@ -202,6 +207,7 @@ func TestAGoldFileInANewerFormatStillOpens(t *testing.T) {
 // which Open turns off, throws an internal assertion on it. Invented
 // data; the script fails the same way in DuckDB's own client.
 func TestOpenAnswersAFilterOverAMixedDictionary(t *testing.T) {
+	t.Parallel()
 	db, err := Open("", ModeReadWrite)
 	if err != nil {
 		t.Fatal(err)

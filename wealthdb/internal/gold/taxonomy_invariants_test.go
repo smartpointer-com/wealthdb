@@ -24,6 +24,7 @@ import (
 // of the gold DB it additionally asserts value preservation across
 // the reload (see checkValuePreservation).
 func TestTaxonomyInvariants(t *testing.T) {
+	t.Parallel()
 	path := os.Getenv("WEALTHDB_GOLD_VERIFY")
 	if path == "" {
 		t.Skip("set WEALTHDB_GOLD_VERIFY=<gold.db> to run the taxonomy harness")

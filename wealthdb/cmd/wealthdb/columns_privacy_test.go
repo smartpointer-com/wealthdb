@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -768,7 +769,6 @@ func typedLabelCalls(s *mcpServer, today time.Time) []typedLabelCall {
 func TestPrivacyHidesTypedAccountNames(t *testing.T) {
 	t.Parallel()
 	cfg := setupTypedLabelGold(t)
-	full, priv := onFixtureToday(newTestMCP(cfg, false)), onFixtureToday(newTestMCP(cfg, true))
 	// The typed names; the typed portfolios' names, the manual one shown
 	// by its id; and their ids: the tracker's names its user, the manual
 	// one is a word.
@@ -786,7 +786,11 @@ func TestPrivacyHidesTypedAccountNames(t *testing.T) {
 		"larch-mortgage": "manual", "example-holder": "angellist", "Example Trust": "category", "Joint": "nickname",
 		"Rainy Day Fund": "nickname"}
 	hidden := slices.Concat(typed, slices.Sorted(maps.Keys(pseudonymOf)))
-	shown := map[string]bool{}
+	var shown struct {
+		sync.Mutex
+		words map[string]bool
+	}
+	shown.words = map[string]bool{}
 	leaks := func(out string, needles []string) []string {
 		var found []string
 		for _, w := range needles {
@@ -799,19 +803,21 @@ func TestPrivacyHidesTypedAccountNames(t *testing.T) {
 	// cells checks that wherever a cell of plain shows a word with a
 	// pseudonym, the same cell of out is a pseudonym of the word's
 	// prefix. Both are csv of the same rows in the same order.
-	cells := func(name, plain, out string) {
+	cells := func(t *testing.T, name, plain, out string) {
 		t.Helper()
 		want, got := csvCells(t, plain), csvCells(t, out)
 		if len(want) != len(got) {
 			t.Fatalf("%s: %d rows with privacy, %d without", name, len(got), len(want))
 		}
+		shown.Lock()
+		defer shown.Unlock()
 		for i, row := range want {
 			for j, cell := range row {
 				for w, prefix := range pseudonymOf {
 					if !strings.Contains(strings.ToLower(cell), strings.ToLower(w)) {
 						continue
 					}
-					shown[w] = true
+					shown.words[w] = true
 					if j >= len(got[i]) || !regexp.MustCompile(`^`+prefix+`-\d+$`).MatchString(got[i][j]) {
 						t.Errorf("%s: %s %q of row %d reads %q with privacy on, want a %s pseudonym", name, want[0][j],
 							cell, i, got[i][j:min(j+1, len(got[i]))], prefix)
@@ -820,61 +826,71 @@ func TestPrivacyHidesTypedAccountNames(t *testing.T) {
 			}
 		}
 	}
-	for _, c := range typedLabelCalls(priv, fixtureToday) {
-		tool, _, _ := strings.Cut(c.name, " ")
-		plain, err := callTool(t, full, tool, c.args)
-		if err != nil {
-			t.Fatalf("%s: %v", c.name, err)
+	// The calls run as parallel subtests inside one group, so every one
+	// has finished when the group returns and the shown words are read.
+	// Each reads its own copy of the gold (copyFixture).
+	t.Run("calls", func(t *testing.T) {
+		for _, c := range typedLabelCalls(newTestMCP(cfg, true), fixtureToday) {
+			t.Run(c.name, func(t *testing.T) {
+				t.Parallel()
+				cfg := copyFixture(t, cfg)
+				full, priv := onFixtureToday(newTestMCP(cfg, false)), onFixtureToday(newTestMCP(cfg, true))
+				tool, _, _ := strings.Cut(c.name, " ")
+				plain, err := callTool(t, full, tool, c.args)
+				if err != nil {
+					t.Fatalf("%s: %v", c.name, err)
+				}
+				_, body, _ := strings.Cut(plain, "\n")
+				head, _, _ := strings.Cut(body, "\n")
+				names := strings.Split(head, ",")
+				has := func(cols ...string) bool {
+					return slices.ContainsFunc(cols, func(c string) bool { return slices.Contains(names, c) })
+				}
+				returnsAt := func(level string) bool { return tool == "returns" && c.args["view"] == level }
+				if (has("account", "account_id") || returnsAt("accounts")) && len(leaks(body, typed)) == 0 {
+					t.Errorf("%s: no typed name without privacy, which proves nothing:\n%s", c.name, body)
+				}
+				for _, w := range []struct {
+					on      bool
+					needles []string
+				}{
+					{has("portfolio") || returnsAt("portfolios"), portfolioNames},
+					{has("portfolio_id", "portfolio_external_id") || returnsAt("portfolios"), portfolioIDs},
+				} {
+					if found := leaks(body, w.needles); w.on && len(found) != len(w.needles) {
+						t.Errorf("%s: only %q of %q without privacy, which proves too little:\n%s", c.name, found, w.needles, body)
+					}
+				}
+				got, err := callTool(t, priv, tool, c.args)
+				if err != nil {
+					t.Fatalf("%s (privacy): %v", c.name, err)
+				}
+				if found := leaks(got, hidden); found != nil {
+					t.Errorf("%s: the privacy endpoint shows %q:\n%s", c.name, found, got)
+				}
+				_, gotBody, _ := strings.Cut(got, "\n")
+				cells(t, c.name, body, gotBody)
+				if c.cli == nil {
+					return
+				}
+				so, se, code := runToday(t, append([]string{"-c", cfg}, c.cli...)...)
+				if code != 0 {
+					t.Fatalf("%s: CLI exit %d: %s", c.name, code, se)
+				}
+				if found := leaks(so+se, hidden); found != nil {
+					t.Errorf("%s: -p shows %q:\n%s%s", c.name, found, so, se)
+				}
+				plainCLI, _, code := runToday(t, append([]string{"-c", cfg}, slices.DeleteFunc(slices.Clone(c.cli),
+					func(a string) bool { return a == "-p" })...)...)
+				if code != 0 {
+					t.Fatalf("%s: CLI exit %d without -p", c.name, code)
+				}
+				cells(t, c.name+" (CLI)", plainCLI, so)
+			})
 		}
-		_, body, _ := strings.Cut(plain, "\n")
-		head, _, _ := strings.Cut(body, "\n")
-		names := strings.Split(head, ",")
-		has := func(cols ...string) bool {
-			return slices.ContainsFunc(cols, func(c string) bool { return slices.Contains(names, c) })
-		}
-		returnsAt := func(level string) bool { return tool == "returns" && c.args["view"] == level }
-		if (has("account", "account_id") || returnsAt("accounts")) && len(leaks(body, typed)) == 0 {
-			t.Errorf("%s: no typed name without privacy, which proves nothing:\n%s", c.name, body)
-		}
-		for _, w := range []struct {
-			on      bool
-			needles []string
-		}{
-			{has("portfolio") || returnsAt("portfolios"), portfolioNames},
-			{has("portfolio_id", "portfolio_external_id") || returnsAt("portfolios"), portfolioIDs},
-		} {
-			if found := leaks(body, w.needles); w.on && len(found) != len(w.needles) {
-				t.Errorf("%s: only %q of %q without privacy, which proves too little:\n%s", c.name, found, w.needles, body)
-			}
-		}
-		got, err := callTool(t, priv, tool, c.args)
-		if err != nil {
-			t.Fatalf("%s (privacy): %v", c.name, err)
-		}
-		if found := leaks(got, hidden); found != nil {
-			t.Errorf("%s: the privacy endpoint shows %q:\n%s", c.name, found, got)
-		}
-		_, gotBody, _ := strings.Cut(got, "\n")
-		cells(c.name, body, gotBody)
-		if c.cli == nil {
-			continue
-		}
-		so, se, code := runToday(t, append([]string{"-c", cfg}, c.cli...)...)
-		if code != 0 {
-			t.Fatalf("%s: CLI exit %d: %s", c.name, code, se)
-		}
-		if found := leaks(so+se, hidden); found != nil {
-			t.Errorf("%s: -p shows %q:\n%s%s", c.name, found, so, se)
-		}
-		plainCLI, _, code := runToday(t, append([]string{"-c", cfg}, slices.DeleteFunc(slices.Clone(c.cli),
-			func(a string) bool { return a == "-p" })...)...)
-		if code != 0 {
-			t.Fatalf("%s: CLI exit %d without -p", c.name, code)
-		}
-		cells(c.name+" (CLI)", plainCLI, so)
-	}
+	})
 	for w := range pseudonymOf {
-		if !shown[w] {
+		if !shown.words[w] {
 			t.Errorf("no view shows %q without privacy, which proves nothing", w)
 		}
 	}

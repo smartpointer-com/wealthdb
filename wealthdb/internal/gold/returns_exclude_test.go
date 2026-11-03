@@ -12,6 +12,7 @@ import (
 // but at sources/global an excluded account OR any account of an excluded
 // portfolio drops out.
 func TestReturnsExcludeGrains(t *testing.T) {
+	t.Parallel()
 	e := &ReturnsExclude{
 		Portfolios: map[string]map[string]bool{"ct": {"P1": true}},
 		Accounts:   map[string]map[string]bool{"ct": {"A1": true}},
@@ -44,6 +45,7 @@ func TestReturnsExcludeGrains(t *testing.T) {
 // TestRunReturnsExclude drives the exclusion end to end: an excluded portfolio
 // drops out of the source aggregate but still reports at the portfolios grain.
 func TestRunReturnsExclude(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubs", "ubs")
 	pfKeep, pfDrop := "KEEP", "DROP"

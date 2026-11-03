@@ -14,6 +14,7 @@ import (
 // unlabelled slice, which reads as a rendering fault instead of as the
 // backlog it is.
 func TestWebSpendingLabelsUncategorized(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingReportFixture(t, db, ctx)
 	mustMaterializeServing(t, db, ctx)
@@ -142,6 +143,7 @@ func accountsOnDay(t *testing.T, db *sql.DB, ctx context.Context, day int64) []s
 // both accounts on every day; one active snapshot per source would
 // report only whichever of them happened to snapshot last.
 func TestAccountHistoryKeepsBothClocks(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCardBalanceFixture(t, db, ctx)
 
@@ -168,6 +170,7 @@ func TestAccountHistoryKeepsBothClocks(t *testing.T) {
 // at zero — dropping the row the way cash_chosen does would leave the
 // series owing money forever).
 func TestCardBalancesHistoryCarriesEachAccountIndependently(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCardBalanceFixture(t, db, ctx)
 
@@ -270,6 +273,7 @@ func TestCardBalancesHistoryCarriesEachAccountIndependently(t *testing.T) {
 // TestMigration0043DDLIsRerunnable holds the web views to the replay
 // bar and confirms both still answer afterwards.
 func TestMigration0043DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingReportFixture(t, db, ctx)
 
@@ -361,6 +365,7 @@ var webViews = []struct{ view, col, src string }{
 // zone's offset, so no rendered timestamp maps back to an epoch the
 // macro carries.
 func TestWebViewsRenderEpochsInUTC(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedWebViewEpochFixture(t, db, ctx)
 
@@ -398,6 +403,7 @@ func TestWebViewsRenderEpochsInUTC(t *testing.T) {
 // TestMigration0049DDLIsRerunnable holds the re-issued serving views to
 // the replay bar and confirms each still answers.
 func TestMigration0049DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedWebViewEpochFixture(t, db, ctx)
 
@@ -416,6 +422,7 @@ func TestMigration0049DDLIsRerunnable(t *testing.T) {
 // the clearest — and a view that groups by the label must not collapse
 // every one of them into a single "null" that leads the chart.
 func TestWebSpendingLabelsAnUnnamedAccount(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingFixture(t, db, ctx)
 	// Two accounts with no name of their own, and one with a name.
@@ -461,6 +468,7 @@ func TestWebSpendingLabelsAnUnnamedAccount(t *testing.T) {
 // clips is the annotation rather than the thing being labelled — and
 // the bare name and the id stay projected beside it.
 func TestWebSpendingLabelsAnAccountWithSourceAndKind(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingFixture(t, db, ctx)
 	// An account with no name of its own is labelled by its id: 0061's
@@ -517,6 +525,7 @@ func TestWebSpendingLabelsAnAccountWithSourceAndKind(t *testing.T) {
 // literal there: report_card_balances_history_multi keeps only
 // account_kind = 'card', so every row is one by construction.
 func TestCardBalancesLabelsAnAccountWithSourceAndKind(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCardBalanceFixture(t, db, ctx)
 	mustMaterializeServing(t, db, ctx)

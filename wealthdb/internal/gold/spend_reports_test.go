@@ -175,6 +175,7 @@ func readSpendingCategories(t *testing.T, db *sql.DB, ctx context.Context, ccy, 
 // are both positive, `net_spend` is their difference, and the
 // own-account move never appears in either.
 func TestSpendingSummaryBuckets(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingReportFixture(t, db, ctx)
 
@@ -247,6 +248,7 @@ func TestSpendingSummaryBuckets(t *testing.T) {
 // is converted at its own day's rate, so the same window reads
 // differently in a different output currency.
 func TestSpendingSummaryConvertsAtTheTransactionDay(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingReportFixture(t, db, ctx)
 
@@ -274,6 +276,7 @@ func TestSpendingSummaryConvertsAtTheTransactionDay(t *testing.T) {
 // TestSpendingWronglyMatchedTransferStaysVisible covers what this one
 // structurally cannot.
 func TestSpendingCategoriesReconcileWithSummary(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingReportFixture(t, db, ctx)
 
@@ -350,6 +353,7 @@ func TestSpendingCategoriesReconcileWithSummary(t *testing.T) {
 // a bucket of its own at BOTH levels, materialised before the GROUP BY
 // so it can never render as a blank row.
 func TestSpendingCategoriesLevelsAndLabel(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingReportFixture(t, db, ctx)
 
@@ -431,6 +435,7 @@ func TestSpendingCategoriesLevelsAndLabel(t *testing.T) {
 // 7 lines / 464 net are the baseline every time and a delta the base
 // silently dropped would show as 7 rather than 8.
 func TestSpendingInBaseDeltasAreLines(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		detailed, provenance, signature, description string
 		amount                                       int
@@ -534,6 +539,7 @@ func TestSpendingInBaseDeltasAreLines(t *testing.T) {
 // transaction macro all read merchant_name from spend_txn_categories()
 // by name, and none re-derives it from the signature.
 func TestSpendingDeltaLinesCarryNoMerchant(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingReportFixture(t, db, ctx)
 	from, to := spendWindow()
@@ -753,6 +759,7 @@ func TestSpendingDeltaLinesCarryNoMerchant(t *testing.T) {
 // one way and a report groups its lines as a single merchant — asserted
 // here by grouping two lines that share a signature.
 func TestSpendingLinesFallBackToTheirSignature(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingReportFixture(t, db, ctx)
 	from, to := spendWindow()
@@ -938,6 +945,7 @@ func TestSpendingLinesFallBackToTheirSignature(t *testing.T) {
 // category and the tier that decided it, and the category left NULL
 // (not labelled) at this grain.
 func TestSpendingTransactionsMacro(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingReportFixture(t, db, ctx)
 	from, to := spendWindow()
@@ -1021,6 +1029,7 @@ func TestSpendingTransactionsMacro(t *testing.T) {
 // withdrawal, shows the reports quietly lose 600 while their identity
 // survives, and shows the population accounting for exactly that 600.
 func TestSpendingWronglyMatchedTransferStaysVisible(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingReportFixture(t, db, ctx)
 	from, to := spendWindow()
@@ -1126,6 +1135,7 @@ func TestSpendingWronglyMatchedTransferStaysVisible(t *testing.T) {
 // surfaces here rather than at runtime. The neighbouring fields are
 // checked too — a shifted scan lands a category in the description.
 func TestTransactionsBetweenCarriesSpendCategory(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingReportFixture(t, db, ctx)
 	from, to := spendWindow()
@@ -1177,6 +1187,7 @@ func TestTransactionsBetweenCarriesSpendCategory(t *testing.T) {
 // to the replay bar: it drops and re-creates web_transactions around the
 // report_transactions_multi swap, and 0158 drops the view again after it.
 func TestMigration0042DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingReportFixture(t, db, ctx)
 
@@ -1210,6 +1221,7 @@ func TestMigration0042DDLIsRerunnable(t *testing.T) {
 // looking for one. This is the cheap guard: it does not care what a
 // column means, only that the report still has it.
 func TestSpendReportColumnsSurviveAReissue(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	cols := func(q string) map[string]bool {
 		t.Helper()

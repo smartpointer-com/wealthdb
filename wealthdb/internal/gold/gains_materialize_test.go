@@ -14,6 +14,7 @@ import (
 // The materialized rows summed by month are the gains report's monthly
 // buckets, in every reporting currency.
 func TestMaterializeGainsMatchesTheMonthlyBuckets(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	n, err := MaterializeGains(ctx, db, gainsTo, 42)
 	if err != nil {
@@ -42,6 +43,7 @@ func TestMaterializeGainsMatchesTheMonthlyBuckets(t *testing.T) {
 // derived gain of 150 on 400, and not the undated AAA lot, which states
 // a gain and no cost basis.
 func TestMaterializedRealizedCostBasis(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	if _, err := MaterializeGains(ctx, db, gainsTo, 1); err != nil {
 		t.Fatal(err)
@@ -78,6 +80,7 @@ func TestMaterializedRealizedCostBasis(t *testing.T) {
 // month's start, the first bucket's too, which opens at the first
 // snapshot.
 func TestWebGainsLabelsTheAccount(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	if _, err := MaterializeGains(ctx, db, gainsTo, 1); err != nil {
 		t.Fatal(err)
@@ -109,6 +112,7 @@ func TestWebGainsLabelsTheAccount(t *testing.T) {
 // the Gains dashboard's Asset class picker sums them: a picked class is
 // never blank. Replaying 0170 changes nothing.
 func TestWebGainsReadsAMissingClassAsUnknown(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	if _, err := MaterializeGains(ctx, db, gainsTo, 1); err != nil {
 		t.Fatal(err)
@@ -144,6 +148,7 @@ func TestWebGainsReadsAMissingClassAsUnknown(t *testing.T) {
 }
 
 func TestMigration0117DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	if _, err := MaterializeGains(ctx, db, gainsTo, 1); err != nil {
 		t.Fatal(err)
@@ -208,6 +213,7 @@ func matchesBuckets(t *testing.T, ctx context.Context, db *sql.DB) {
 // Where no cost basis is missing the zero reading is a copy of the
 // ignore reading, and still the report's buckets.
 func TestMaterializeGainsCopiesAReadingThatChangesNothing(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	if _, err := db.ExecContext(ctx, `
         UPDATE positions SET book_value = 0 WHERE basis_missing(asset_class, vehicle, book_value);
@@ -230,6 +236,7 @@ func TestMaterializeGainsCopiesAReadingThatChangesNothing(t *testing.T) {
 }
 
 func TestMigrations0119To0157DDLAreRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	rerunMigrationDDL(t, db, ctx, "0119_gains_one_pass.sql")
 	rerunMigrationDDL(t, db, ctx, "0120_gains_held_sold.sql")
@@ -261,6 +268,7 @@ func TestMigrations0119To0157DDLAreRerunnable(t *testing.T) {
 // to release from: BBB's whole gain of 150 is sold gain there. Every
 // row keeps held + sold = realized + unrealized change.
 func TestMaterializedGainSplitsHeldAndSold(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name,
@@ -341,6 +349,7 @@ func TestMaterializedGainSplitsHeldAndSold(t *testing.T) {
 // gained 12.5 francs (37.5 at the sale's rate, less the 25). BRK3 keeps
 // its 5, and the rate alone moves its gain from 50 francs to 25.
 func TestMaterializedSplitTakesTheNewestStartRate(t *testing.T) {
+	t.Parallel()
 	db, ctx := openGainsFixture(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate) VALUES

@@ -18,6 +18,7 @@ import (
 // the projection projects (the dividend), operating outflows positive
 // and by class, the vehicles signed. The fixture's lines are invented.
 func TestThePlansLookbackIsTheSummarySpread(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)
 	lb, err := CashflowPlanLookback(ctx, db, 0, 3500000, "USD")
@@ -69,6 +70,7 @@ func TestThePlansLookbackIsTheSummarySpread(t *testing.T) {
 // is in none. A window with no
 // other income has no split. The fixture's lines are invented.
 func TestThePlansOtherIncomeSplitsByClassAndAccount(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)
 	seedLines(t, db, ctx, []line{
@@ -115,6 +117,7 @@ func TestThePlansOtherIncomeSplitsByClassAndAccount(t *testing.T) {
 // the other financing outflows. The fixture's days are arbitrary
 // ordinals in an impossible era.
 func TestThePlansLookbackCarriesEachMortgage(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
@@ -154,6 +157,7 @@ func TestThePlansLookbackCarriesEachMortgage(t *testing.T) {
 // principal under the roll rule; a quarter sums its months, a window's
 // first quarter perhaps short; the tags say what each part rests on.
 func TestCashflowPlan(t *testing.T) {
+	t.Parallel()
 	day := func(y int, m time.Month) time.Time { return time.Date(y, m, 1, 0, 0, 0, 0, time.UTC) }
 	maturity := time.Date(2027, 1, 15, 0, 0, 0, 0, time.UTC)
 	lb := PlanLookback{Months: 12, OtherIncome: 1000, OperatingOut: 3000, Vehicles: -200,
@@ -206,6 +210,7 @@ func TestCashflowPlan(t *testing.T) {
 // A mortgage stands while the book holds it, maturing on the latest of
 // its tranches' terms; a tranche of no maturity leaves it none.
 func TestPlanStanding(t *testing.T) {
+	t.Parallel()
 	early, late := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
 	in := &yield.Inputs{Terms: map[yield.InstrumentKey]yield.Terms{
 		{Source: "bank", Instrument: "T1"}: {Maturity: &early}, {Source: "bank", Instrument: "T2"}: {Maturity: &late},
@@ -259,6 +264,7 @@ func TestPlanWindow(t *testing.T) {
 // as the newest migration defining cashflow_txn_nodes cases them, the
 // projected types aside; its two remaining arms are the SQL's own.
 func TestThePlansIncomeClassesAreTheStatements(t *testing.T) {
+	t.Parallel()
 	ms, err := listMigrations()
 	if err != nil {
 		t.Fatal(err)

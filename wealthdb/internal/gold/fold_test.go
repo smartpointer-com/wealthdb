@@ -185,6 +185,7 @@ func permutationsOfLength(alphabet, length int, visit func(seq []int)) {
 }
 
 func TestFoldInstrumentMatchesSequentialUpserts(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	alpha := instrumentAlphabet()
 
@@ -228,6 +229,7 @@ func TestFoldInstrumentMatchesSequentialUpserts(t *testing.T) {
 }
 
 func TestFoldAccountMatchesSequentialUpserts(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	alpha := accountAlphabet()
 
@@ -267,6 +269,7 @@ func TestFoldAccountMatchesSequentialUpserts(t *testing.T) {
 }
 
 func TestFoldPortfolioMatchesSequentialUpserts(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	alpha := portfolioAlphabet()
 
@@ -325,6 +328,7 @@ func stripID(row, id string) string {
 // conscious decision, not an accident. See ChangeAccumulator's doc
 // comment.
 func TestChangeAccumulatorPreexistingRow(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	seed := canonical.InstrumentChange{
@@ -373,6 +377,7 @@ func TestChangeAccumulatorPreexistingRow(t *testing.T) {
 // later valid record would supersede it in the fold, matching the
 // old write path where every emission hit the upsert's checks.
 func TestChangeAccumulatorRejectsSupersededInvalid(t *testing.T) {
+	t.Parallel()
 	bad := canonical.SnapshotBatch{Instruments: []canonical.InstrumentChange{{
 		SilverSourceID:       "test-src",
 		InstrumentExternalID: "INSTR",
@@ -390,6 +395,7 @@ func TestChangeAccumulatorRejectsSupersededInvalid(t *testing.T) {
 // the fold: many emissions of the same entity leave exactly one
 // dimension row, with the seen-at range spanning all of them.
 func TestChangeAccumulatorFoldsToOneRowPerEntity(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	acc := NewChangeAccumulator()
@@ -437,6 +443,7 @@ func TestChangeAccumulatorFoldsToOneRowPerEntity(t *testing.T) {
 // arbitrates conflicts — absence never wins — in both the fold and
 // the record-by-record SQL, in either arrival order.
 func TestOlderObservationFillsAbsentColumns(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	older := canonical.AccountChange{

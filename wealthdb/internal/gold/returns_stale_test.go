@@ -14,6 +14,7 @@ import (
 )
 
 func TestMedianSnapGap(t *testing.T) {
+	t.Parallel()
 	if _, ok := medianSnapGap([]int64{1, 2, 3}); ok {
 		t.Error("2 gaps must not yield a cadence")
 	}
@@ -26,6 +27,7 @@ func TestMedianSnapGap(t *testing.T) {
 }
 
 func TestStaleAt(t *testing.T) {
+	t.Parallel()
 	snaps := []int64{10, 11, 12, 13, 14} // daily cadence
 	gap, ok := medianSnapGap(snaps)
 	if staleAt(snaps, 17, gap, ok) {
@@ -49,6 +51,7 @@ func TestStaleAt(t *testing.T) {
 // window end is stale too. A quarterly-cadence sibling with the same
 // absolute last-snapshot age stays unflagged throughout.
 func TestRunReturnsStaleSnapshot(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubs", "ubs")
 

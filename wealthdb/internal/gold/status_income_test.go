@@ -8,6 +8,7 @@ import (
 // backlog counter counts what a report SHOWS as uncategorised, and the
 // catch-all counter is not duplicated per family.
 func TestStatusIncomeCounters(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path,

@@ -9,6 +9,7 @@ import (
 // what a person plausibly types and to refuse — by line — what it cannot
 // act on. Every value here is invented.
 func TestParseTransferOverrideLedger(t *testing.T) {
+	t.Parallel()
 	const header = "verb,silver_source_id,account,occurred_at,amount,currency," +
 		"silver_source_id_b,account_b,occurred_at_b,amount_b,currency_b,note\n"
 
@@ -138,6 +139,7 @@ func TestParseTransferOverrideLedger(t *testing.T) {
 // A missing ledger is the normal case — the override surface is opt-in —
 // and must not be reported as a failure.
 func TestParseTransferOverrideLedgerMissingFileIsNotAnError(t *testing.T) {
+	t.Parallel()
 	got, err := ParseTransferOverrideLedger(t.TempDir() + "/absent.csv")
 	if err != nil || got != nil {
 		t.Errorf("got %v, %v; want nil, nil", got, err)

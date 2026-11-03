@@ -338,6 +338,7 @@ func TestPayloadLEI(t *testing.T) {
 // table names its kind of record but rate_observations, stated_periods
 // and exposure_reports, which their streams write over the window whole.
 func TestEveryReferenceTableHasAKind(t *testing.T) {
+	t.Parallel()
 	kinds := map[string]bool{}
 	for _, k := range canonical.RefKinds {
 		kinds[k] = true

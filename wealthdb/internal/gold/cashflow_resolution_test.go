@@ -209,6 +209,7 @@ func check(t *testing.T, got map[string]string, lines []line) {
 // section a transaction lands in given its kind and the verdict the two
 // families resolved for it.
 func TestTheKindTable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 
@@ -357,6 +358,7 @@ func TestTheKindTable(t *testing.T) {
 // nothing would say so. A type missing from the table fails here, which
 // is the prompt to place it in both.
 func TestEveryIncomeTypeHasItsInflowClass(t *testing.T) {
+	t.Parallel()
 	classOf := map[string]canonical.CashflowClass{
 		// Money from labour.
 		"INCOME_SALARY":      canonical.ClassEarnings,
@@ -419,6 +421,7 @@ func TestEveryIncomeTypeHasItsInflowClass(t *testing.T) {
 // custodial account drawn for the minor's costs is cash arriving, and
 // none of that is negative giving.
 func TestTheBoundaryTableInBothDirections(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 
@@ -467,6 +470,7 @@ func TestTheBoundaryTableInBothDirections(t *testing.T) {
 // inside a foundation and a mortgage on a trust-owned property are both
 // a kind and a wrapper, and the wrapper is what says whose money moved.
 func TestTheWrapperIsAskedBeforeTheKind(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `
@@ -495,6 +499,7 @@ func TestTheWrapperIsAskedBeforeTheKind(t *testing.T) {
 // each, and the row's own sign says whether it was a contribution or a
 // distribution.
 func TestTheCrossingDeltasAreDirectional(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	lines := []line{
@@ -536,6 +541,7 @@ func TestTheCrossingDeltasAreDirectional(t *testing.T) {
 // every class that has a crossing delta, a row placed with that delta
 // and no far account lands on that class, read from either family.
 func TestVehicleTransferDetailedMatchesTheResolution(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	var lines []line
@@ -571,6 +577,7 @@ func TestVehicleTransferDetailedMatchesTheResolution(t *testing.T) {
 // must not collapse, because a mortgage is split into interest and
 // principal downstream and a car loan is not.
 func TestAMortgageServicerNeedsNoFarAccount(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	lines := []line{
@@ -596,6 +603,7 @@ func TestAMortgageServicerNeedsNoFarAccount(t *testing.T) {
 // tranche, which is the shape that motivated the verdict, and for any
 // other it is a visible approximation rather than invented principal.
 func TestAServicerWithNoBalanceDrawsAsInterest(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedLines(t, db, ctx, []line{
@@ -617,6 +625,7 @@ func TestAServicerWithNoBalanceDrawsAsInterest(t *testing.T) {
 // must be a line. A vehicle's own dividends, trades and fees are not
 // the household's cash flow.
 func TestTheBaseIsThePoolsLines(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedLines(t, db, ctx, []line{
@@ -653,6 +662,7 @@ func TestTheBaseIsThePoolsLines(t *testing.T) {
 // that also swept up the vehicles' own rows would be permanently large
 // and therefore unreadable.
 func TestExcludedMeansCounted(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedLines(t, db, ctx, []line{
@@ -694,6 +704,7 @@ func TestExcludedMeansCounted(t *testing.T) {
 // account or an instrument; the leaves are vocabulary, which is what
 // makes the privacy twin normalisation alone.
 func TestNodeLabelsReadAsVocabulary(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedLines(t, db, ctx, []line{
@@ -753,6 +764,7 @@ func TestNodeLabelsReadAsVocabulary(t *testing.T) {
 // TestMigration0081DDLIsRerunnable holds the resolution to the replay
 // bar: three OR REPLACE macros and nothing else.
 func TestMigration0081DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedLines(t, db, ctx, []line{
@@ -793,6 +805,7 @@ func assertAtHead(t *testing.T, db *sql.DB, ctx context.Context, id string) {
 // interest BY its sign, and a negative staking or capital gain nets
 // inside its own class rather than choosing a side of the diagram.
 func TestNoVerdictPromotesAnUnsignedKind(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 
@@ -834,6 +847,7 @@ func TestNoVerdictPromotesAnUnsignedKind(t *testing.T) {
 // the case this pins — and it is why the arm tests the row's OWN
 // instrument_external_id rather than the joined class.
 func TestElsewhereIsForARowWithNoInstrument(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 
@@ -855,6 +869,7 @@ func TestElsewhereIsForARowWithNoInstrument(t *testing.T) {
 // TestMigration0085DDLIsRerunnable holds the corrected resolution to the
 // replay bar: two OR REPLACE macros and nothing else.
 func TestMigration0085DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedLines(t, db, ctx, []line{
@@ -877,6 +892,7 @@ func TestMigration0085DDLIsRerunnable(t *testing.T) {
 // get an edge of their own. So that one value is promoted, and its
 // neighbours are not.
 func TestAConsumptionLeafIsItsPrimaryUnlessThePrimarySaysNothing(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 
@@ -911,6 +927,7 @@ func TestAConsumptionLeafIsItsPrimaryUnlessThePrimarySaysNothing(t *testing.T) {
 // giving a row its class would have cost it its group and a house
 // purchase would have read `Real estate · Private capital`.
 func TestAStatedExposureNamesTheInvestingClass(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	lines := []line{
@@ -939,6 +956,7 @@ func TestAStatedExposureNamesTheInvestingClass(t *testing.T) {
 // the holder last — and nothing at all once the movement stops being a
 // deployment.
 func TestAStatedExposureYieldsToEveryRoadAboveIt(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `
@@ -993,6 +1011,7 @@ func TestAStatedExposureYieldsToEveryRoadAboveIt(t *testing.T) {
 // the same way, or a row carrying both overlays can show the class of
 // the family whose verdict lost.
 func TestTheExposureTravelsWithTheVerdictThatWon(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	lines := []line{
@@ -1010,6 +1029,7 @@ func TestTheExposureTravelsWithTheVerdictThatWon(t *testing.T) {
 // an UPDATE guarded on a NULL, all replayable against a database that
 // already has them.
 func TestMigration0101DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	rerunMigrationDDL(t, db, ctx, "0101_cashflow_mortgage_transfer.sql")
 }
@@ -1018,6 +1038,7 @@ func TestMigration0101DDLIsRerunnable(t *testing.T) {
 // ALTERs are IF NOT EXISTS and the macro is OR REPLACE, so applying the
 // file twice is a no-op rather than an error.
 func TestMigration0102DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	rerunMigrationDDL(t, db, ctx, "0102_cashflow_stated_exposure.sql")
 }

@@ -13,7 +13,9 @@ import (
 )
 
 // TestWebMaterializeCLIEndToEnd drives the hidden web-materialize subcommand
-// against the synthetic returns fixture and checks the report_returns table
+// against the synthetic returns fixture on fixtureToday, as the reports
+// tests run, so the month ends it writes do not grow with the wall
+// clock. It checks the report_returns table
 // carries the full grain/granularity matrix in the currencies the fixture's
 // FX rates can resolve (no EUR rate is seeded, so EUR partitions are empty),
 // and that report_exposure holds the history in those currencies.
@@ -21,7 +23,7 @@ func TestWebMaterializeCLIEndToEnd(t *testing.T) {
 	t.Parallel()
 	cfg := setupReturnsGold(t)
 
-	so, se, code := run(t, "-c", cfg, "web-materialize")
+	so, se, code := runToday(t, "-c", cfg, "web-materialize")
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, se)
 	}
@@ -37,7 +39,7 @@ func TestWebMaterializeCLIEndToEnd(t *testing.T) {
 		}
 	}
 
-	_, se2, code2 := run(t, "-c", cfg, "web-materialize")
+	_, se2, code2 := runToday(t, "-c", cfg, "web-materialize")
 	if code2 != 0 {
 		t.Fatalf("second run exit=%d stderr=%s", code2, se2)
 	}
@@ -93,7 +95,8 @@ func TestWebMaterializeCLIEndToEnd(t *testing.T) {
 		t.Errorf("EUR partitions carry %d rows despite the fixture seeding no EUR rate", eur)
 	}
 
-	// The exposure history reaches today, in each currency a rate resolves.
+	// The exposure history reaches the fixture's today, in each currency
+	// a rate resolves.
 	if !strings.Contains(se, "exposure: materialized") {
 		t.Errorf("stderr missing the exposure line: %s", se)
 	}
@@ -182,7 +185,7 @@ func TestEngineVersionMatchesThisExecutable(t *testing.T) {
 // matching is on, so an edit to it alone makes the next run materialize.
 func TestWebMaterializeRerunsAfterALedgerEdit(t *testing.T) {
 	t.Parallel()
-	cfg := setupReturnsGold(t)
+	cfg := setupEmptyGold(t)
 	dir := filepath.Dir(cfg)
 	ledger := filepath.Join(dir, "transfer-overrides.csv")
 	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD", "silver_sources": [],
@@ -196,7 +199,7 @@ func TestWebMaterializeRerunsAfterALedgerEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, want := range []bool{false, true} {
-		if _, se, code := run(t, "-c", cfg, "web-materialize"); code != 0 || strings.Contains(se, "inputs unchanged") != want {
+		if _, se, code := runToday(t, "-c", cfg, "web-materialize"); code != 0 || strings.Contains(se, "inputs unchanged") != want {
 			t.Fatalf("run %d: exit=%d skipped=%v, want skipped=%v: %s", i, code, strings.Contains(se, "inputs unchanged"), want, se)
 		}
 	}
@@ -204,17 +207,20 @@ func TestWebMaterializeRerunsAfterALedgerEdit(t *testing.T) {
 	if err := os.WriteFile(ledger, []byte(edited), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, se, code := run(t, "-c", cfg, "web-materialize"); code != 0 || strings.Contains(se, "inputs unchanged") {
+	if _, se, code := runToday(t, "-c", cfg, "web-materialize"); code != 0 || strings.Contains(se, "inputs unchanged") {
 		t.Fatalf("after a ledger edit: exit=%d, want a materialize: %s", code, se)
 	}
 }
 
 // A gold with a migration still to apply is materialized, never
-// skipped: the read-write open applies the migration. The next run
-// skips.
+// skipped, even when its stored key matches: the read-write open
+// applies the migration. The next run skips.
 func TestWebMaterializeWithAMigrationPending(t *testing.T) {
 	t.Parallel()
-	cfg := setupReturnsGold(t)
+	cfg := setupEmptyGold(t)
+	if _, se, code := runToday(t, "-c", cfg, "web-materialize"); code != 0 {
+		t.Fatalf("first run: exit=%d %s", code, se)
+	}
 	db, err := gold.Open(goldPathFromCfg(cfg), gold.ModeReadWrite)
 	if err != nil {
 		t.Fatal(err)
@@ -224,7 +230,7 @@ func TestWebMaterializeWithAMigrationPending(t *testing.T) {
 	}
 	db.Close()
 	for i, want := range []bool{false, true} {
-		if _, se, code := run(t, "-c", cfg, "web-materialize"); code != 0 || strings.Contains(se, "inputs unchanged") != want {
+		if _, se, code := runToday(t, "-c", cfg, "web-materialize"); code != 0 || strings.Contains(se, "inputs unchanged") != want {
 			t.Fatalf("run %d: exit=%d skipped=%v, want skipped=%v: %s", i, code, strings.Contains(se, "inputs unchanged"), want, se)
 		}
 	}
@@ -235,7 +241,7 @@ func TestWebMaterializeWithAMigrationPending(t *testing.T) {
 // materializes again rather than match half-rewritten tables.
 func TestWebMaterializeAfterARunThatFailedPartway(t *testing.T) {
 	t.Parallel()
-	cfg := setupReturnsGold(t)
+	cfg := setupEmptyGold(t)
 	goldPath := goldPathFromCfg(cfg)
 	body, err := os.ReadFile(cfg)
 	if err != nil {
@@ -252,7 +258,7 @@ func TestWebMaterializeAfterARunThatFailedPartway(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, se, code := run(t, "-c", cfg, "web-materialize"); code != 0 {
+	if _, se, code := runToday(t, "-c", cfg, "web-materialize"); code != 0 {
 		t.Fatalf("first run: exit=%d %s", code, se)
 	}
 	// Other inputs, and a run that fails in the exposure phase.
@@ -260,7 +266,7 @@ func TestWebMaterializeAfterARunThatFailedPartway(t *testing.T) {
 		t.Fatal(err)
 	}
 	exec(`ALTER TABLE report_exposure RENAME TO report_exposure_aside`)
-	if _, se, code := run(t, "-c", cfg, "web-materialize"); code == 0 {
+	if _, se, code := runToday(t, "-c", cfg, "web-materialize"); code == 0 {
 		t.Fatalf("the run without report_exposure succeeded: %s", se)
 	}
 	exec(`ALTER TABLE report_exposure_aside RENAME TO report_exposure`)
@@ -268,7 +274,23 @@ func TestWebMaterializeAfterARunThatFailedPartway(t *testing.T) {
 	if err := os.WriteFile(cfg, body, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, se, code := run(t, "-c", cfg, "web-materialize"); code != 0 || strings.Contains(se, "inputs unchanged") {
+	if _, se, code := runToday(t, "-c", cfg, "web-materialize"); code != 0 || strings.Contains(se, "inputs unchanged") {
 		t.Fatalf("after a failed run: exit=%d, want a materialize: %s", code, se)
 	}
+}
+
+// setupEmptyGold writes a migrated gold that holds no data, and its
+// config. The skip and rerun tests check which runs materialize, not
+// what they write, so they run on it.
+func setupEmptyGold(t *testing.T) string {
+	t.Helper()
+	goldPath := filepath.Join(t.TempDir(), "wealthdb.db")
+	db, err := gold.OpenFresh(goldPath)
+	if err != nil {
+		t.Fatalf("open gold: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return writeGoldCfg(t, goldPath)
 }

@@ -70,6 +70,7 @@ func seedCashHistoryFixture(t *testing.T, db *sql.DB, ctx context.Context) (day1
 // every reporting currency, to the cent; an account with no cash has no
 // rows, and one whose only balance no rate converts reads NULL in both.
 func TestCashHistorySumsToTheAccountsHistory(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	day1, day3 := seedCashHistoryFixture(t, db, ctx)
 
@@ -144,6 +145,7 @@ func TestCashHistorySumsToTheAccountsHistory(t *testing.T) {
 // account's cash in a currency as its own `Cash <CCY>` row. The latest
 // holdings keep net worth equal to positions plus cash on every source.
 func TestHoldingsLinesCarryCashByCurrency(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	_, day3 := seedCashHistoryFixture(t, db, ctx)
 
@@ -249,6 +251,7 @@ func TestHoldingsLinesCarryCashByCurrency(t *testing.T) {
 // TestMigration0171DDLIsRerunnable: a replay keeps what the table holds,
 // and every view on it still answers.
 func TestMigration0171DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCashHistoryFixture(t, db, ctx)
 	before := countRows(t, db, ctx, "serving_cash_history")

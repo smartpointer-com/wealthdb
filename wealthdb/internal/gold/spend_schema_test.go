@@ -22,6 +22,7 @@ import (
 // vocabularies are told apart by, and a row seeded into the wrong one
 // would be admitted by the wrong rules, pins and conversation.
 func TestSpendCategoriesMatchGoTable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	assertSpendCategoriesMatchGoTable(t, db, ctx)
 }
@@ -78,6 +79,7 @@ func assertSpendCategoriesMatchGoTable(t *testing.T, db *sql.DB, ctx context.Con
 // INSERT would collide on spend_detailed — and that the re-run neither
 // duplicates nor drops rows.
 func TestMigration0040DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	rerunMigrationDDL(t, db, ctx, "0040_spend_taxonomy.sql")
@@ -95,6 +97,7 @@ func TestMigration0040DDLIsRerunnable(t *testing.T) {
 // same bar, and confirms the macro still answers afterwards (CREATE OR
 // REPLACE MACRO must not have been left in a half-replaced state).
 func TestMigration0041DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	rerunMigrationDDL(t, db, ctx, "0041_spend_categorizations.sql")
@@ -117,6 +120,7 @@ func TestMigration0041DDLIsRerunnable(t *testing.T) {
 // TestMigration0044DDLIsRerunnable holds the matcher-pool re-issue to
 // the same bar, and confirms the macro still answers afterwards.
 func TestMigration0044DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	rerunMigrationDDL(t, db, ctx, "0044_spend_matcher_pool_all_accounts.sql")
@@ -134,6 +138,7 @@ func TestMigration0044DDLIsRerunnable(t *testing.T) {
 // migration — a row resolving to `investment` must be out of it while
 // the backlog stays in.
 func TestMigration0045DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	rerunMigrationDDL(t, db, ctx, "0045_spend_investment.sql")
@@ -159,6 +164,7 @@ func TestMigration0045DDLIsRerunnable(t *testing.T) {
 // is IN the base, as its own primary, while the two excluded deltas
 // still are not.
 func TestMigration0046DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	rerunMigrationDDL(t, db, ctx, "0046_spend_card_spend.sql")
@@ -199,6 +205,7 @@ func TestMigration0046DDLIsRerunnable(t *testing.T) {
 // structural: the same fixture and the same macro drop the two
 // excluded rows in this very query.
 func TestMigration0047DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	rerunMigrationDDL(t, db, ctx, "0047_spend_gift.sql")
@@ -236,6 +243,7 @@ func TestMigration0047DDLIsRerunnable(t *testing.T) {
 // resolved to an own-account move, and a grocery purchase — the first
 // two blank, the third named, whichever scope answered.
 func TestMigration0048DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	rerunMigrationDDL(t, db, ctx, "0048_spend_delta_no_merchant.sql")
@@ -273,6 +281,7 @@ func TestMigration0048DDLIsRerunnable(t *testing.T) {
 // reads 'model', which no tier writes to the overlay, while every line
 // the pass placed keeps the provenance it was stamped with.
 func TestMigration0050DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	rerunMigrationDDL(t, db, ctx, "0050_spend_model_provenance.sql")
@@ -317,6 +326,7 @@ func TestMigration0050DDLIsRerunnable(t *testing.T) {
 // issuer the rule labelled it with, while every other delta line still
 // shows nothing and a vendored line still shows the store's name.
 func TestMigration0052DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	rerunMigrationDDL(t, db, ctx, "0052_spend_card_bill_issuer.sql")
@@ -359,6 +369,7 @@ func TestMigration0052DDLIsRerunnable(t *testing.T) {
 // the replay bar. 0055 re-issues two macros, so a replay that dropped one
 // would leave the enrichment pass with no population to read.
 func TestMigration0055DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingFixture(t, db, ctx)
 
@@ -402,6 +413,7 @@ func TestMigration0055DDLIsRerunnable(t *testing.T) {
 // replay bar. Its INSERT is OR REPLACE for exactly this reason, so a second
 // application must neither fail nor duplicate the row.
 func TestMigration0056DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	rerunMigrationDDL(t, db, ctx, "0056_spend_digital_services.sql")
@@ -423,6 +435,7 @@ func TestMigration0056DDLIsRerunnable(t *testing.T) {
 // still reads the store, a delta still reads its label or nothing, and
 // an empty signature renders as nothing rather than as an empty name.
 func TestMigration0054DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	rerunMigrationDDL(t, db, ctx, "0054_spend_merchant_signature_fallback.sql")
@@ -479,6 +492,7 @@ func TestMigration0054DDLIsRerunnable(t *testing.T) {
 // resolves it (migration 0050), and DuckDB cannot widen a CHECK in
 // place anyway.
 func TestSpendOverlayCheckConstraints(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	insertEnrichment := func(id, provenance string) error {
@@ -637,6 +651,7 @@ func macroTxnIDs(t *testing.T, db *sql.DB, ctx context.Context, macro string, fr
 // splits on sign, that `other` and the income kinds stay out, and that
 // an own-account move drops out however its category was resolved.
 func TestSpendingLinesBasePopulation(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingFixture(t, db, ctx)
 
@@ -688,6 +703,7 @@ func TestSpendingLinesBasePopulation(t *testing.T) {
 // primary comes from the seeded dimension rather than from string
 // surgery on the detailed value.
 func TestSpendingLinesBaseCategoryPrecedence(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingFixture(t, db, ctx)
 
@@ -750,6 +766,7 @@ func TestSpendingLinesBaseCategoryPrecedence(t *testing.T) {
 //     account fenced out is fenced out of what the pass writes and
 //     what a report charts — but not out of what the matcher may pair.
 func TestSpendPopulationLayering(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingFixture(t, db, ctx)
 
@@ -830,6 +847,7 @@ func TestSpendPopulationLayering(t *testing.T) {
 // whole body, so a carried-forward clause dropped here is a silent
 // regression in what every spending report reads.
 func TestMigration0057DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	rerunMigrationDDL(t, db, ctx, "0057_spend_provider_view.sql")
 
@@ -870,6 +888,7 @@ func TestMigration0057DDLIsRerunnable(t *testing.T) {
 // policy at once: the issuer's mapped value is recorded on every row it
 // translates, and a catch-all among them does not become the verdict.
 func TestProviderViewRecordsWithoutDeciding(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
@@ -914,6 +933,7 @@ func TestProviderViewRecordsWithoutDeciding(t *testing.T) {
 // disagreeing with the rule in Go, and what catches a new taxonomy value
 // seeded without a label at all.
 func TestSpendCategoryLabelsMatchGoTable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	assertSpendCategoryLabelsMatchGoTable(t, db, ctx)
 }
@@ -959,6 +979,7 @@ func assertSpendCategoryLabelsMatchGoTable(t *testing.T, db *sql.DB, ctx context
 // bar: the ALTERs are IF NOT EXISTS and the UPDATE is idempotent, so a
 // second application neither fails nor changes a label.
 func TestMigration0058DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	rerunMigrationDDL(t, db, ctx, "0058_spend_category_labels.sql")
 	var label string
@@ -984,6 +1005,7 @@ func TestMigration0058DDLIsRerunnable(t *testing.T) {
 // family and an ordinary value in the other, because no value is in both
 // unless it is a delta, and a delta is never one.
 func TestSpendCategoryCatchAllMatchesGoTable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	assertSpendCategoryCatchAllMatchesGoTable(t, db, ctx)
 }
@@ -1049,6 +1071,7 @@ func assertSpendCategoryCatchAllMatchesGoTable(t *testing.T, db *sql.DB, ctx con
 // for rows it does not re-assert, and
 // TestMigration0069LeavesALaterFamilyStampAlone is what holds it.
 func TestMigration0069DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	rerunMigrationDDL(t, db, ctx, "0069_income_taxonomy.sql")
@@ -1143,6 +1166,7 @@ func TestMigration0069DDLIsRerunnable(t *testing.T) {
 // The stand-in row is synthetic and local to this database: the point is
 // the stamp, not the value.
 func TestMigration0069LeavesALaterFamilyStampAlone(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	const later = "INCOME_EXAMPLE_LATER_VALUE"
@@ -1175,6 +1199,7 @@ VALUES ('INCOME', ?, 'A value a later migration seeds', 'Example later value', '
 // matches the Go table afterwards — rows, labels and catch-alls — and
 // the re-issued node macro still places a salary under earnings.
 func TestMigration0111DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 
@@ -1202,6 +1227,7 @@ func TestMigration0111DDLIsRerunnable(t *testing.T) {
 // 0111 deletes with no canonical.RetiredDetailed entry fails, and so
 // does a successor on which the SQL and the Go table disagree.
 func TestMigration0111MovesEveryStoredVerdictToItsSuccessor(t *testing.T) {
+	t.Parallel()
 	db, ctx := openAtVersion(t, 110)
 
 	current := map[string]bool{}
@@ -1368,6 +1394,7 @@ func TestMigration0111MovesEveryStoredVerdictToItsSuccessor(t *testing.T) {
 // no portfolio. Everywhere else it is an investment fee, the cash side of
 // an investment mandate included.
 func TestSpendKindFloorPlacesWhatNothingElseCould(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingFixture(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `
@@ -1471,6 +1498,7 @@ func TestSpendKindFloorPlacesWhatNothingElseCould(t *testing.T) {
 // leave the category legible in the id column and blank in the one a
 // report prints.
 func TestSpendKindFloorLabelsResolve(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingFixture(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `

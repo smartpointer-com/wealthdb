@@ -9,6 +9,7 @@ import (
 // The lot engine's cross rates must bridge in the order the reports do,
 // or a figure the engine values and one a report converts disagree.
 func TestLotRatesBridgeInTheReportsOrder(t *testing.T) {
+	t.Parallel()
 	b, err := fs.ReadFile(migrationsFS, "migrations/0119_gains_one_pass.sql")
 	if err != nil {
 		t.Fatal(err)

@@ -15,6 +15,7 @@ import (
 // return an error, leave the live gold DB byte-for-byte untouched, and
 // remove the temp — it must NEVER swap an unverified file into place.
 func TestBuildFreshAndSwapAbortsOnBadBuild(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	goldPath := filepath.Join(dir, "gold.db")
 

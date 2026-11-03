@@ -46,6 +46,7 @@ func closureFixture(t *testing.T, db *sql.DB, ctx context.Context, src string, p
 // synthetic is booked, so an exit below the last mark is a loss and one above
 // it a gain.
 func TestClosureLedgerExactRealizedDelta(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "below", "carta")
 	seedReturnsSource(t, db, ctx, "above", "carta")
@@ -85,6 +86,7 @@ func TestClosureLedgerExactRealizedDelta(t *testing.T) {
 // value drop reads as a full loss — flagged by the flow-less capital-call tag,
 // and identical to what the default scope yields for the same data.
 func TestClosureLedgerExactFlowlessReadsAsLoss(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "crt", "carta")
 	closureFixture(t, db, ctx, "crt", 0)
@@ -109,6 +111,7 @@ func TestClosureLedgerExactFlowlessReadsAsLoss(t *testing.T) {
 // proceeds vanish from the flow series. This contrast is exactly why the
 // complete-ledger sources opt into ClosureLedgerExact.
 func TestClosureDefaultSubsumesZeroTailDrains(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "sq", "swissquote")
 	closureFixture(t, db, ctx, "sq", 1800)

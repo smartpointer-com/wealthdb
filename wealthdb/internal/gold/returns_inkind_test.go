@@ -15,6 +15,7 @@ import (
 // gain from its last mark to that value, the brokerage receives it as
 // capital, and global sees the pair as no flow at all.
 func TestAnInKindExitPairsAcrossSources(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "al", "angellist")
 	seedReturnsSource(t, db, ctx, "sw", "schwab")

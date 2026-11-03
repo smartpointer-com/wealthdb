@@ -10,6 +10,7 @@ import (
 // snapshots and asserts that GlobalAsOf sums their output-currency
 // aggregates into one row and spans their snapshot dates.
 func TestGlobalAsOfRollup(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	usd := "USD"
 
@@ -70,6 +71,7 @@ func TestGlobalAsOfRollup(t *testing.T) {
 // TestGlobalAsOfEmpty confirms an empty gold DB yields a zeroed row
 // (sums "0", no snapshot dates) rather than an error.
 func TestGlobalAsOfEmpty(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	g, err := GlobalAsOf(ctx, db, 3000, "USD")
 	if err != nil {

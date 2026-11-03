@@ -11,6 +11,7 @@ import (
 // zero balances are filtered out; the synthetic
 // position_key/symbol/name/asset_class fields are populated.
 func TestCashAsOfMultiCurrencyAndZeroFiltering(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	// Seed two accounts. ACC1 has USD + EUR cash (multi-currency);
@@ -80,6 +81,7 @@ func TestCashAsOfMultiCurrencyAndZeroFiltering(t *testing.T) {
 // snapshot), the highest-precedence kind wins — `current` beats
 // `closing` beats `available` etc.
 func TestCashAsOfBalanceKindPrecedence(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	inTx(t, db, ctx, func(w *Writer) error {
@@ -119,6 +121,7 @@ func TestCashAsOfBalanceKindPrecedence(t *testing.T) {
 // read each (account, currency) at its latest snapshot, as
 // PositionsAsOf reads each account — older snapshots aren't summed in.
 func TestCashAsOfPicksTheAccountsLatestSnapshot(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	inTx(t, db, ctx, func(w *Writer) error {

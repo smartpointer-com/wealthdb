@@ -18,6 +18,7 @@ func leg(group, owner, id string, day int64, amt float64) TransferLeg {
 // crossMatchedDrops silently reads every linked leg as a nonTransfer one and
 // applies the wrong subsumption rule. Accounts without links stay unindexed.
 func TestMatchCrossTransfersIndexesTransferLike(t *testing.T) {
+	t.Parallel()
 	byKey := map[string]*accountData{
 		acctKey("s1", "A"): {src: "s1", acct: "A", transferLike: []returns.Flow{
 			{Day: 100, Amount: -5000, ID: "t1"},
@@ -53,6 +54,7 @@ func TestMatchCrossTransfersIndexesTransferLike(t *testing.T) {
 // TestMatchTransferLegsWithinGroup pins the knob the returns path never sets:
 // two accounts of the SAME group pair; CrossGroupOnly forbids it.
 func TestMatchTransferLegsWithinGroup(t *testing.T) {
+	t.Parallel()
 	legs := []TransferLeg{
 		leg("bank", "checking", "out", 100, -5000),
 		leg("bank", "savings", "in", 101, 5000),
@@ -72,6 +74,7 @@ func TestMatchTransferLegsWithinGroup(t *testing.T) {
 // is no candidate in any cross-account phase, so it neither wins a tie nor
 // beats a far partner by being exact.
 func TestSameAccountLegsNeverPair(t *testing.T) {
+	t.Parallel()
 	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}
 	roundTrip := []TransferLeg{
 		leg("bank", "checking", "out", 100, -5000),
@@ -129,6 +132,7 @@ func signedLeg(group, owner, id string, day int64, amt float64, sig string, reve
 // day. A leg with a partner on another account keeps it, and the holder's
 // `unmatch` keeps a leg out.
 func TestASameAccountReversalPairsLast(t *testing.T) {
+	t.Parallel()
 	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, SameAccountReversals: true}
 	pairs := func(legs []TransferLeg, opts TransferMatchOpts) map[string]string {
 		out := map[string]string{}
@@ -206,6 +210,7 @@ func TestASameAccountReversalPairsLast(t *testing.T) {
 // ledger is read ahead of every phase, so the rule that keeps the banded
 // passes off one account does not reach it.
 func TestAForcedPairCanJoinOneAccount(t *testing.T) {
+	t.Parallel()
 	forced, err := newTransferOverrides(nil, nil, []ForcedPair{{
 		Debit: LegRef{"bank", "checking", "out"}, Credit: LegRef{"bank", "checking", "back"},
 	}})
@@ -236,6 +241,7 @@ func railLeg(owner, id string, day int64, amt float64, rail, partner string) Tra
 // window — a utility bill, a payment to a person — and the pair then removes
 // BOTH legs from spending, so the debit is real spending that disappears.
 func TestMatchTransferLegsHonoursRequiredPartnerRail(t *testing.T) {
+	t.Parallel()
 	const (
 		payment = "card_payment"
 		receipt = "card_receipt"
@@ -281,6 +287,7 @@ func TestMatchTransferLegsHonoursRequiredPartnerRail(t *testing.T) {
 // is FLAT. Uncapped, the percentage grows with the transfer until it spans
 // the band where coincidences live.
 func TestMatchTransferLegsCapsToleranceInAbsoluteTerms(t *testing.T) {
+	t.Parallel()
 	// 0.5% of 10000 is 50, so uncapped this pairs; a real wire fee never is.
 	legs := []TransferLeg{
 		leg("bank", "checking", "out", 10, -10000),
@@ -321,6 +328,7 @@ func refLeg(owner, id string, day int64, ccy string, amt float64, ref string) Tr
 // in separate pools forever. The bank stamped one transaction number on both,
 // and that is an identity rather than a guess, so it crosses the partition.
 func TestSharedReferencePairsAcrossCurrencies(t *testing.T) {
+	t.Parallel()
 	legs := []TransferLeg{
 		refLeg("usd-account", "out", 100, "USD", -1000, "TXN-1"),
 		refLeg("chf-account", "in", 100, "CHF", 987.65, "TXN-1"),
@@ -343,6 +351,7 @@ func TestSharedReferencePairsAcrossCurrencies(t *testing.T) {
 // resolving across a span no settlement takes is a reused string, not a
 // movement.
 func TestSharedReferenceSpendsNoToleranceAndOnlyAStalenessBound(t *testing.T) {
+	t.Parallel()
 	within := []TransferLeg{
 		refLeg("checking", "out", 100, "USD", -25, "TXN-2"),
 		refLeg("savings", "in", 100+referenceMatchMaxDays, "USD", 900000, "TXN-2"),
@@ -364,6 +373,7 @@ func TestSharedReferenceSpendsNoToleranceAndOnlyAStalenessBound(t *testing.T) {
 // to disagree in amount and currency, which is exactly what an over-eager
 // amount pair looks like.
 func TestEveryPairNamesThePhaseThatAssertedIt(t *testing.T) {
+	t.Parallel()
 	forced, err := newTransferOverrides(nil, nil, []ForcedPair{{
 		Debit: LegRef{"bank", "checking", "manual-out"}, Credit: LegRef{"bank", "wallet", "manual-in"},
 	}})
@@ -400,6 +410,7 @@ func TestEveryPairNamesThePhaseThatAssertedIt(t *testing.T) {
 // withdraws BOTH legs, so the spending line the debit stood for is not
 // mislabelled but deleted.
 func TestSharedReferenceRefusesWhatItCannotResolve(t *testing.T) {
+	t.Parallel()
 	opts := TransferMatchOpts{}
 	cases := []struct {
 		name string
@@ -438,6 +449,7 @@ func TestSharedReferenceRefusesWhatItCannotResolve(t *testing.T) {
 // forbids same-group pairing outright, the phase has nothing left to do at
 // all.
 func TestSharedReferenceNeverCrossesSources(t *testing.T) {
+	t.Parallel()
 	legs := []TransferLeg{
 		refLeg("checking", "out", 100, "USD", -500, "TXN-7"),
 		{Group: "other-bank", Owner: "acct", ID: "in", Day: 100, Ccy: "CHF", Amt: 440, Ref: "TXN-7"},
@@ -461,6 +473,7 @@ func TestSharedReferenceNeverCrossesSources(t *testing.T) {
 // of the pool, so the reference phase finds one half already spoken for and
 // refuses the rest.
 func TestManualOverridesOutrankASharedReference(t *testing.T) {
+	t.Parallel()
 	legs := func() []TransferLeg {
 		return []TransferLeg{
 			refLeg("checking", "out", 100, "USD", -500, "TXN-9"),
@@ -497,6 +510,7 @@ func TestManualOverridesOutrankASharedReference(t *testing.T) {
 // one movement even where the source stamped nothing on them. The credit
 // here sits outside WindowDays.
 func TestAForcedPairCrossesTheCurrencyPartition(t *testing.T) {
+	t.Parallel()
 	forced, err := newTransferOverrides(nil, nil, []ForcedPair{{
 		Debit: LegRef{"bank", "usd-account", "out"}, Credit: LegRef{"bank", "chf-account", "in"},
 	}})
@@ -519,6 +533,7 @@ func TestAForcedPairCrossesTheCurrencyPartition(t *testing.T) {
 // identity is better evidence than a coincidence of figures, and the
 // coincidence is left one-legged, which is what it is.
 func TestSharedReferenceIsSettledBeforeAmountsAre(t *testing.T) {
+	t.Parallel()
 	legs := []TransferLeg{
 		refLeg("checking", "out", 100, "USD", -500, "TXN-10"),
 		refLeg("savings", "in", 100, "CHF", 440, "TXN-10"),
@@ -534,6 +549,7 @@ func TestSharedReferenceIsSettledBeforeAmountsAre(t *testing.T) {
 // existed, and the phase's verdict does not depend on the order legs arrive
 // in.
 func TestSharedReferenceLeavesUnreferencedLegsAlone(t *testing.T) {
+	t.Parallel()
 	plain := []TransferLeg{
 		leg("bank", "checking", "out", 100, -5000),
 		leg("bank", "savings", "in", 101, 5000),
@@ -581,6 +597,7 @@ func counterLeg(owner, id string, day int64, ccy string, amt float64, statedCcy 
 // described, which is the only link two legs of different currencies and
 // different figures have when the source stamped no reference on either.
 func TestAStatedCounterPairsAConversion(t *testing.T) {
+	t.Parallel()
 	legs := []TransferLeg{
 		counterLeg("gbp-account", "pays", 100, "GBP", -1234.50, "", 0),
 		counterLeg("usd-account", "gets", 100, "USD", 1587.75, "GBP", 1234.50),
@@ -596,6 +613,7 @@ func TestAStatedCounterPairsAConversion(t *testing.T) {
 // resolve pairs nothing. Unlike a reference it also keeps the day: a figure
 // repeating in another month is a coincidence, not a movement.
 func TestAStatedCounterRefusesWhatItCannotResolve(t *testing.T) {
+	t.Parallel()
 	opts := TransferMatchOpts{WindowDays: 30, TolerancePct: 0.5}
 	cases := []struct {
 		name string
@@ -640,6 +658,7 @@ func namedLeg(group, owner, id string, day int64, amt float64, names ...string) 
 // of an earlier, silent debit a day nearer to it, which is left to the credit
 // that is really its own.
 func TestANamedPairIsClaimedBeforeANearerSilentOne(t *testing.T) {
+	t.Parallel()
 	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}
 	got := MatchTransferLegs([]TransferLeg{
 		leg("bank", "checking", "silent", 100, -1000),
@@ -665,6 +684,7 @@ func TestANamedPairIsClaimedBeforeANearerSilentOne(t *testing.T) {
 // amount and day agree, and a name for a whole group admits any account in it
 // while a name for one account admits that account alone.
 func TestANamedLegPairsOnlyWithWhatItNames(t *testing.T) {
+	t.Parallel()
 	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}
 	if got := MatchTransferLegs([]TransferLeg{
 		namedLeg("bank", "checking", "out", 100, -1000, "exchange"),
@@ -690,6 +710,7 @@ func TestANamedLegPairsOnlyWithWhatItNames(t *testing.T) {
 // debit whose nearest credit is also the only one another debit can reach
 // moves to its other candidate rather than stranding both.
 func TestNamedPairsStrandNoLegANearerChoiceWouldStrand(t *testing.T) {
+	t.Parallel()
 	opts := TransferMatchOpts{WindowDays: 3, TolerancePct: 0.5}
 	got := MatchTransferLegs([]TransferLeg{
 		namedLeg("bank", "checking", "first", 105, -1000, "exchange"),
@@ -709,6 +730,7 @@ func TestNamedPairsStrandNoLegANearerChoiceWouldStrand(t *testing.T) {
 // Where both narratives name each other, that pair is claimed before a credit
 // that names only a group can be taken by a silent debit of that group.
 func TestMutuallyNamedPairsOutrankOneSidedOnes(t *testing.T) {
+	t.Parallel()
 	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}
 	got := MatchTransferLegs([]TransferLeg{
 		leg("bank", "savings", "internal", 100, -5000),
@@ -728,6 +750,7 @@ func TestMutuallyNamedPairsOutrankOneSidedOnes(t *testing.T) {
 // On an exact tie of amount and day, a leg of the debit's own source wins
 // over another source's: moves inside one institution are the commoner kind.
 func TestATieGoesToTheDebitsOwnSource(t *testing.T) {
+	t.Parallel()
 	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}
 	// The other source sorts first, so a first-found tie-break would take it.
 	got := MatchTransferLegs([]TransferLeg{

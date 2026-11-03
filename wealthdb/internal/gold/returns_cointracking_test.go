@@ -25,6 +25,7 @@ import (
 // per-constituent default the cold wallets' +debut-value would be onboarded as
 // phantom inflows, inflating net_flow and dragging TWR negative.
 func TestCointrackingOnboardNoneNoPhantomInflow(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ctx", "cointracking")
 
@@ -91,6 +92,7 @@ func TestCointrackingOnboardNoneNoPhantomInflow(t *testing.T) {
 // that debuts AFTER winFrom must be KEPT — subsuming it would make the funded
 // value read as pure performance on the tiny opening base.
 func TestCointrackingOnboardNoneKeepsLateDebutDeposit(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ctx", "cointracking")
 
@@ -124,6 +126,7 @@ func TestCointrackingOnboardNoneKeepsLateDebutDeposit(t *testing.T) {
 // fabricated. OnboardNone only suppresses synthetic INFLOWS at debut; the
 // closure treatment of the zeroing drop is untouched.
 func TestCointrackingDeadCoinClosureSurvivesOnboardNone(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ctdead", "cointracking")
 
@@ -169,6 +172,7 @@ func TestCointrackingDeadCoinClosureSurvivesOnboardNone(t *testing.T) {
 // fabricated outflow, and sets the droppedNonzero DISPLAY flag only. OnboardNone
 // does not touch this path.
 func TestCointrackingFeedDropContributesZeroNoFabricatedOutflow(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ctdrop", "cointracking")
 
@@ -215,6 +219,7 @@ func TestCointrackingFeedDropContributesZeroNoFabricatedOutflow(t *testing.T) {
 // blanks TWR/MWR to n/a plus the accounts_grain_meaningless flag, while the
 // portfolios, sources, and global grains all still compute real numbers.
 func TestCointrackingAccountsGrainBlanked(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ctag", "cointracking")
 

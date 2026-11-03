@@ -12,6 +12,7 @@ import (
 // account's base (USD) and the output currency (CHF). Asserts
 // positions_value + cash + total in both columns.
 func TestAccountsAsOfAggregates(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	// Account is USD-based.
@@ -107,6 +108,7 @@ func TestAccountsAsOfAggregates(t *testing.T) {
 // still populates the _<CCY> output columns (the requested output
 // currency is always known).
 func TestAccountsAsOfNoBaseCurrency(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	// Account WITHOUT base_currency.
@@ -149,6 +151,7 @@ func TestAccountsAsOfNoBaseCurrency(t *testing.T) {
 // and cash only; the portfolio rollup is `holdings portfolios`.
 // Summing the accounts must not double-count.
 func TestAccountsAsOfNoCrossAccountRollup(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	chf := "CHF"
@@ -215,6 +218,7 @@ func TestAccountsAsOfNoCrossAccountRollup(t *testing.T) {
 // positions and no cash still appears, with zero aggregates (or
 // nil for the base columns when base_currency is absent).
 func TestAccountsAsOfEmptyAccount(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 
 	usd := "USD"

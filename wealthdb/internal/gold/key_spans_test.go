@@ -41,6 +41,7 @@ func activeCounts(t *testing.T, ctx context.Context, q querier, at int64) (pos, 
 // none, even under a `main.` name. Committed or rolled back, the
 // connection keeps nothing of the pin, and the readers compute them again.
 func TestPinnedKeySpansHoldForTheTransaction(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	db.SetMaxOpenConns(1)
 	pitPosition(t, db, ctx, "pin-src", "A-0000", "AX", pitAt(-10, 12), 100)
@@ -95,6 +96,7 @@ func TestPinnedKeySpansHoldForTheTransaction(t *testing.T) {
 // macros give: the history, and the picks at each observation, a day,
 // 40 days and 400 days after it.
 func TestPinnedKeysReadAsTheLiveOnes(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	db.SetMaxOpenConns(1)
 	seedPartialRuns(t, db, ctx)
@@ -126,6 +128,7 @@ func TestPinnedKeysReadAsTheLiveOnes(t *testing.T) {
 // connection as it found it, on an empty gold and on one with a holding,
 // and a position written next is read.
 func TestAMaterializerLeavesNoPin(t *testing.T) {
+	t.Parallel()
 	for _, seeded := range []bool{false, true} {
 		t.Run(fmt.Sprint("seeded=", seeded), func(t *testing.T) {
 			db, ctx := openMigrated(t)
@@ -159,6 +162,7 @@ func TestAMaterializerLeavesNoPin(t *testing.T) {
 // a second application changes no ending, span or day of the history.
 // It holds 0144's endings too, which 0145 re-issues.
 func TestMigration0145DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedPartialRuns(t, db, ctx)
 	const answers = `
@@ -207,6 +211,7 @@ func planBlockwiseJoins(t *testing.T, db *sql.DB, ctx context.Context, from stri
 // lets DuckDB hash both joins: a condition on the holding alone would
 // test every holding against every position.
 func TestYieldHoldingsReadsEachKindsOwnRow(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedHistAccount(t, db, ctx, "bank", "A1", "brokerage", "Brokerage")
 	seedHistCash(t, db, ctx, "bank", "A1", -1, "100")

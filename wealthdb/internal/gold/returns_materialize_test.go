@@ -38,6 +38,7 @@ func seedMaterializeFixture(t *testing.T, db *sql.DB, ctx context.Context) int64
 // TestMaterializeReturnsMatrix verifies one run populates every
 // (grain, granularity, currency) partition and reports the row count.
 func TestMaterializeReturnsMatrix(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	end := seedMaterializeFixture(t, db, ctx)
 
@@ -159,6 +160,7 @@ func matchRate(t *testing.T, key, col string, got sql.NullFloat64, want *float64
 // exercises the single-pass multi-currency loader (CHF/EUR, not just USD) and
 // the batched insert end to end.
 func TestMaterializeReturnsVerbatimAllPartitions(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	end := seedMaterializeFixture(t, db, ctx)
 
@@ -250,6 +252,7 @@ func TestMaterializeReturnsVerbatimAllPartitions(t *testing.T) {
 // TestMaterializeReturnsRerunReplaces verifies a second run fully replaces
 // the first: same row count, no leftover rows from the earlier computed_at.
 func TestMaterializeReturnsRerunReplaces(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	end := seedMaterializeFixture(t, db, ctx)
 

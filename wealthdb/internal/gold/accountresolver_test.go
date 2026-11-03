@@ -13,6 +13,7 @@ import (
 // is ErrUnknownAccount so a caller can tell "not loaded yet" from a
 // configuration fault.
 func TestNewAccountResolver(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMigrated(t)
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

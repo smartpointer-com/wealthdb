@@ -9,6 +9,7 @@ import (
 )
 
 func TestMaterializeInputsRoundTrip(t *testing.T) {
+	t.Parallel()
 	db, err := Open(":memory:", ModeReadWrite)
 	if err != nil {
 		t.Fatal(err)
@@ -46,6 +47,7 @@ func TestMaterializeInputsRoundTrip(t *testing.T) {
 }
 
 func TestMigration0155DDLIsRerunnable(t *testing.T) {
+	t.Parallel()
 	db, err := Open(":memory:", ModeReadWrite)
 	if err != nil {
 		t.Fatal(err)
@@ -64,6 +66,7 @@ func TestMigration0155DDLIsRerunnable(t *testing.T) {
 }
 
 func TestLoadKeyMovesWithEachStampedTable(t *testing.T) {
+	t.Parallel()
 	db, err := Open(":memory:", ModeReadWrite)
 	if err != nil {
 		t.Fatal(err)
@@ -146,6 +149,7 @@ VALUES ('a', 'name', 'Example Growth Fund', 'EGF', 1, 'm')`); err != nil {
 // drops, still has a load key, and that key is not the key of the same
 // gold with the table.
 func TestLoadKeyReadsAnAbsentTable(t *testing.T) {
+	t.Parallel()
 	db, err := Open(":memory:", ModeReadWrite)
 	if err != nil {
 		t.Fatal(err)
@@ -169,6 +173,7 @@ func TestLoadKeyReadsAnAbsentTable(t *testing.T) {
 }
 
 func TestHashInputsCoversEveryFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ledger := filepath.Join(dir, "transfer-overrides.csv")
 	write := func(path, body string) {
@@ -209,6 +214,7 @@ func TestHashInputsCoversEveryFile(t *testing.T) {
 }
 
 func TestMigrationsPending(t *testing.T) {
+	t.Parallel()
 	db, err := Open(":memory:", ModeReadWrite)
 	if err != nil {
 		t.Fatal(err)
@@ -229,6 +235,7 @@ func TestMigrationsPending(t *testing.T) {
 // Swapping two sources' FX priority, an account scope, and a pair of
 // equal rows (whose hashes cancel in the xor) each move the key.
 func TestLoadKeySeesASwapAScopeAndAPair(t *testing.T) {
+	t.Parallel()
 	db, err := Open(":memory:", ModeReadWrite)
 	if err != nil {
 		t.Fatal(err)
