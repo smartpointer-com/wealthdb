@@ -217,7 +217,7 @@ root, no `cd`-ing into subdirectories:
 - CI (`.github/workflows/ci.yml`) runs the privacy check, `make lint`
   and every suite of `make test` on every push to `main` and every
   pull request. The suites run in jobs of their own, and the `check`
-  job passes only when all of them have.
+  job passes only when every other job has.
 - `make build-<name>` / `make test-<name>` — one component (the
   gold engine is `wealthdb`; e.g. `make test-wealthdb`).
 - `make update` — bring deps forward (host venvs, Go modules, base

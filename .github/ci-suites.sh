@@ -4,8 +4,11 @@
 # demo, the collectors job every collector, and the rest job every
 # other suite the Makefile lists, so a new suite reaches CI unedited.
 # Prints the collectors job's and the rest job's suites as
-# collectors=… and rest=… lines, the form $GITHUB_OUTPUT reads. Fails
-# when a suite a job claims is not in the list, or two jobs claim one.
+# collectors=… and rest=… lines, the form $GITHUB_OUTPUT reads.
+# It checks the list against the claims, not the workflow: it fails
+# when a suite is claimed twice, when wealthdb, demo or a collector is
+# claimed but missing from the list, or when no suite is left for the
+# rest job. That the go and demo jobs exist is ci.yml's to keep.
 # Runs from the repo root.
 set -eu
 

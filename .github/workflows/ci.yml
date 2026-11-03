@@ -8,10 +8,14 @@
 #   - demo: the demo household through the engine;
 #   - collectors: the shared base images and every collector's suite;
 #   - rest: every other suite of `make test`;
-#   - check: passes only when lint, go, demo, collectors and rest have.
+#   - check: passes only when every job above has.
 # .github/ci-suites.sh splits the Makefile's suite list between the
-# jobs, so a new suite runs in CI without an edit here, and it fails
-# when the list and the jobs disagree.
+# jobs, so a new suite runs in CI without an edit here. It fails when a
+# suite is claimed twice, or when the go, demo or collectors job claims
+# one the list lacks. It cannot see this file: the jobs it assumes are
+# the ones below.
+# Every job runs on ubuntu-24.04: the free-disk paths and the job
+# timeouts assume that image.
 # The Go caches are restored in every run and saved only by pushes to
 # main, also when a run fails. A pull request restores main's.
 # The jobs build and run the change's own code, so they hold a read-only
@@ -34,7 +38,7 @@ concurrency:
 
 jobs:
   pii:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -55,7 +59,7 @@ jobs:
           shared/pii/check_at.sh "$BASE" range "$BASE" HEAD
 
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -101,7 +105,7 @@ jobs:
 
   go:
     name: go (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -152,7 +156,7 @@ jobs:
           key: go-build-${{ matrix.name }}-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   demo:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -165,12 +169,12 @@ jobs:
         run: make test-demo
 
   collectors:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       # The browser base images need more disk than a fresh runner has
       # free. The delete runs while the job sets up, and the test step
-      # waits for its exit status.
+      # waits up to 10 minutes for its exit status.
       - name: Free disk space
         run: |
           m="$RUNNER_TEMP/free-disk"
@@ -190,12 +194,13 @@ jobs:
         run: |
           split=$(.github/ci-suites.sh)
           m="$RUNNER_TEMP/free-disk"
-          while [ ! -e "$m" ]; do sleep 2; done
+          for _ in $(seq 300); do [ -e "$m" ] && break; sleep 2; done
+          [ -e "$m" ] || { echo "freeing disk space did not finish in 10 minutes" >&2; exit 1; }
           [ "$(cat "$m")" = 0 ] || { echo "freeing disk space failed" >&2; exit 1; }
           make test SUITES="$(echo "$split" | sed -n 's/^collectors=//p')"
 
   rest:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -213,13 +218,13 @@ jobs:
           split=$(.github/ci-suites.sh)
           make test SUITES="$(echo "$split" | sed -n 's/^rest=//p')"
 
-  # The one status check a ruleset needs. It runs whatever its needs
-  # did, since a check skipped after a failed need would count as
-  # passed, and it fails unless every need succeeded.
+  # The one status check a ruleset needs, over every job. It runs
+  # whatever its needs did, since a check skipped after a failed need
+  # would count as passed, and it fails unless every need succeeded.
   check:
-    needs: [lint, go, demo, collectors, rest]
+    needs: [pii, lint, go, demo, collectors, rest]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Every job passed

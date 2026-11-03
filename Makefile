@@ -134,6 +134,7 @@ SUITES ?= $(TEST_SUITES)
 # `make test-<name>` runs one suite and prints as it goes.
 test:
 	$(if $(strip $(SUITES)),,$(error SUITES names no suite))
+	$(if $(subst $(strip $(TEST_SUITES)),,$(strip $(SUITES))),@echo "make test: running $(words $(SUITES)) of $(words $(TEST_SUITES)) suites (SUITES)")
 	@dir=$$(mktemp -d "$${TMPDIR:-/tmp}/wealthdb-test.XXXXXX"); \
 	trap 'rm -rf "$$dir"' EXIT; \
 	printf '%s\n' $(SUITES) > "$$dir/suites"; \
@@ -405,7 +406,7 @@ WEALTHDB_PKGS ?= ./...
 GO_TEST_FLAGS ?=
 
 test-wealthdb: build-wealthdb
-	@echo "==> test wealthdb (go test $(WEALTHDB_PKGS))"
+	@echo "==> test wealthdb (go test $(strip $(GO_TEST_FLAGS) $(WEALTHDB_PKGS)))"
 	$(WEALTHDB_TEST) $(GO_TEST_FLAGS) $(WEALTHDB_PKGS)
 
 # Where wealthdb-go parks the containerised Go toolchain caches
