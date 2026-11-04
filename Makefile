@@ -312,9 +312,20 @@ test-collectorkit:
 	fi
 	@$(CK_VENV)/bin/python -m pytest -q -p no:cacheprovider $(CK_DIR)/tests
 
+# The test files run side by side, and each one's output prints once all
+# have finished, in file order.
 test-wrappers:
 	@echo "==> test wrappers (shared/wrappers)"
-	@for t in shared/wrappers/tests/test_*.sh; do bash "$$t" || exit 1; done
+	@dir=$$(mktemp -d "$${TMPDIR:-/tmp}/wealthdb-wrappers.XXXXXX"); \
+	trap 'rm -rf "$$dir"' EXIT; \
+	printf '%s\n' shared/wrappers/tests/test_*.sh | xargs -P $(NCPU) -I{} $(SHELL) -c \
+		'n=$$(basename "$$1"); bash "$$1" > "$$2/$$n.log" 2>&1; echo $$? > "$$2/$$n.rc"' _ {} "$$dir"; \
+	fail=0; \
+	for t in shared/wrappers/tests/test_*.sh; do \
+		n=$$(basename "$$t"); cat "$$dir/$$n.log"; \
+		if [ "$$(cat "$$dir/$$n.rc" 2>/dev/null)" != 0 ]; then echo "==> $$n failed"; fail=1; fi; \
+	done; \
+	exit $$fail
 
 # The privacy check the hooks and CI run (shared/pii): stdlib only, so
 # it runs on the host interpreter, no venv.

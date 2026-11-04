@@ -24,6 +24,7 @@ copy with nothing configured. WEALTHDB_BIN names the engine wrapper.
 """
 
 import collections
+import concurrent.futures
 import csv
 import datetime as dt
 import hashlib
@@ -174,24 +175,24 @@ def roll_forward():
     return root, waiting, load
 
 
-def bare_gold(today):
-    """A new installation's first day: today's household with no
+def bare_gold():
+    """A new installation's first day: the household to today with no
     `yield` block in its config (no withholding table, no curves, the
     default horizon), no declarations ledger and no dividend calendar,
-    loaded with nothing on stderr. Kept while today's stamp and this
-    file match; the stamp is written last."""
+    loaded with nothing on stderr. It generates its own household, so it
+    loads beside `today` rather than after it. Kept while its stamp
+    matches; the stamp is written last."""
     image_id = engine_image_id()
     stamp = gold_stamp(TODAY, image_id, inputs_hash(), SEED) + f"bare\n{RECIPE}\n"
     root = tests_dir() / "bare"
     if image_id and reused_gold(root, stamp):
         return root
     root = scratch("bare")
-    for d in ("silver", "overrides"):
-        shutil.copytree(today / d, root / d)
+    generate.build(root, TODAY, SEED)
     (root / "overrides" / "exposure_declarations.ndjson").unlink()
     with sqlite3.connect(root / "silver" / "refdata.db") as db:
         db.execute("DELETE FROM dividend_events")
-    cfg = json.loads((today / "wealthdb.cfg").read_text())
+    cfg = json.loads((root / "wealthdb.cfg").read_text())
     del cfg["yield"], cfg["exposure"]["declarations"]
     (root / "wealthdb.cfg").write_text(json.dumps(cfg))
     engine(root, "init")
@@ -457,8 +458,12 @@ class TestRollForward(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.rolled, cls.waiting, cls.load = roll_forward()
-        cls.fresh, _ = build_and_load("fresh", SECOND)
+        # Two roots, built side by side.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            rolled = pool.submit(roll_forward)
+            fresh = pool.submit(build_and_load, "fresh", SECOND)
+            cls.rolled, cls.waiting, cls.load = rolled.result()
+            cls.fresh, _ = fresh.result()
 
     def test_status_shows_the_append_waiting(self):
         self.assertIn("*", self.waiting)
@@ -481,10 +486,15 @@ class TestRollForward(unittest.TestCase):
             *(("yield", view, "-d", SECOND.isoformat(), "-C", "all")
               for view in ("positions", "cash", "funds", "curve", "coverage")),
         ]
-        for args in reports:
-            rolled = sorted(engine(self.rolled, *args, "-f", "csv", read_only=True).splitlines())
-            fresh = sorted(engine(self.fresh, *args, "-f", "csv", read_only=True).splitlines())
-            self.assertEqual(rolled, fresh, " ".join(args))
+        def rows(root, args):
+            return sorted(engine(root, *args, "-f", "csv", read_only=True).splitlines())
+
+        # Read-only reports of two roots, run side by side.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            rolled = [pool.submit(rows, self.rolled, args) for args in reports]
+            fresh = [pool.submit(rows, self.fresh, args) for args in reports]
+            for args, r, f in zip(reports, rolled, fresh, strict=True):
+                self.assertEqual(r.result(), f.result(), " ".join(args))
 
     def test_the_wanted_list_matches_a_fresh_build(self):
         """It reads the reference records no report compared above reads:
@@ -560,13 +570,23 @@ class TestToToday(unittest.TestCase):
             self.assertIn(reason, rows)
             self.assertGreater(int(rows[reason]["payments"] or 0), 0, reason)
 
+
+
+@unittest.skipUnless(PARENT, "WEALTHDB_DEMO_TEST_ROOT is not set (make test-demo sets it)")
+class TestNothingConfigured(unittest.TestCase):
+    """The household to today on a new installation's first day."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = bare_gold()
+
     def test_with_nothing_configured_every_yield_view_answers(self):
         """A new installation's first day: the household with no `yield`
         block in its config (no withholding table, no curves, the default
         horizon), no declarations ledger and no dividend calendar loads,
         and every yield view, the income projection and the cash-flow
         plan answer, printing nothing on stderr and no null."""
-        root = bare_gold(self.root)
+        root = self.root
         for args in (("yield", "global"), ("yield", "sources"), ("yield", "portfolios"), ("yield", "accounts"),
                      ("yield", "positions"), ("yield", "securities"), ("yield", "funds"), ("yield", "cash"),
                      ("yield", "curve"), ("yield", "coverage"), ("income", "projection"), ("income", "calendar"),
@@ -666,19 +686,17 @@ class TestReusedGold(unittest.TestCase):
 
     def test_rolled_and_bare_are_reused_only_under_a_matching_stamp(self):
         parent = self.scratch_dir() / "roots"
-        today = self.scratch_dir() / "today"
-        (today / "silver").mkdir(parents=True)
-        (today / "overrides").mkdir()
-        (today / "overrides" / "exposure_declarations.ndjson").write_text("{}\n")
-        with sqlite3.connect(today / "silver" / "refdata.db") as db:
-            db.execute("CREATE TABLE dividend_events (x)")
-        (today / "wealthdb.cfg").write_text(json.dumps({"yield": {}, "exposure": {"declarations": "x"}}))
         calls = []
         saved = (PARENT, generate.build, engine, engine_image_id, inputs_hash)
 
         def fake_build(root, *_args, append=False, **_kwargs):
             calls.append("append" if append else "build")
-            root.mkdir(parents=True, exist_ok=True)
+            (root / "silver").mkdir(parents=True, exist_ok=True)
+            (root / "overrides").mkdir(exist_ok=True)
+            (root / "overrides" / "exposure_declarations.ndjson").write_text("{}\n")
+            with sqlite3.connect(root / "silver" / "refdata.db") as db:
+                db.execute("CREATE TABLE IF NOT EXISTS dividend_events (x)")
+            (root / "wealthdb.cfg").write_text(json.dumps({"yield": {}, "exposure": {"declarations": "x"}}))
             (root / "wealthdb.db").write_bytes(b"")
 
         def fake_engine(root, *args, **_kwargs):
@@ -699,15 +717,15 @@ class TestReusedGold(unittest.TestCase):
             (parent / "rolled" / STAMP).unlink()
             roll_forward()
             self.assertEqual(calls.count("append"), 2)
-            bare_gold(today)
-            bare_gold(today)
+            bare_gold()
+            bare_gold()
             self.assertEqual(calls.count("init"), 3)
             cfg = json.loads((parent / "bare" / "wealthdb.cfg").read_text())
             self.assertNotIn("yield", cfg)
             self.assertNotIn("declarations", cfg["exposure"])
             globals()["inputs_hash"] = lambda: "spec\nother\ncode"
             roll_forward()
-            bare_gold(today)
+            bare_gold()
             self.assertEqual((calls.count("append"), calls.count("init")), (3, 5))
             globals()["engine_image_id"] = lambda: ""
             roll_forward()

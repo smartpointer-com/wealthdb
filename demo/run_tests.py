@@ -1,10 +1,11 @@
 """Runs the demo's tests side by side.
 
-One process runs each test class, so the engine cases that build and
-load a household overlap. A module that builds a household once for all
-its classes (setUpModule) runs as one process instead. Each process's
-output prints once it ends, in discovery order, and the run fails when
-any process fails.
+One process runs each test class that shares a fixture among its tests
+(setUpClass), so the engine cases that build and load a household
+overlap. A module that builds a household once for all its classes
+(setUpModule) runs as one process, and each test of any other class
+runs in a process of its own. Each process's output prints once it
+ends, in discovery order, and the run fails when any process fails.
 
     python3 demo/run_tests.py [-j JOBS]
 """
@@ -39,8 +40,10 @@ def groups():
                 name = t.id().removeprefix("unittest.loader._FailedTest.")
             elif hasattr(sys.modules[module], "setUpModule"):
                 name = module
-            else:
+            elif type(t).setUpClass.__func__ is not unittest.TestCase.setUpClass.__func__:
                 name = f"{module}.{cls}"
+            else:
+                name = t.id()
             if name not in names:
                 names.append(name)
 
