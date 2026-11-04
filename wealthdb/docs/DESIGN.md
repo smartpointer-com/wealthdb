@@ -3557,13 +3557,16 @@ CGO). The Dockerfile:
    mount, so a build whose only change is the stamp relinks rather than
    recompiles.
 
-The build context is `wealthdb/`, which holds no `.git`, so the binary
-cannot read its own version from git. `./wealthdb build` reads it on
+The build context is `wealthdb/`, less what `wealthdb/.dockerignore`
+leaves out: the docs and the Markdown files, which the binary does not
+embed. The context holds no `.git`, so the binary cannot read its own
+version from git. `./wealthdb build` reads it on
 the host instead and passes it as build args, which the Dockerfile
 links into `internal/version`:
 
 - `WEALTHDB_TAG` — the release tag (`v*`) HEAD sits on, set only when
-  the engine tree (`wealthdb/`) has no uncommitted or untracked change;
+  the engine tree (`wealthdb/`) has no uncommitted or untracked change
+  outside what `.dockerignore` leaves out;
 - `WEALTHDB_BASE` — the nearest release tag at or below HEAD;
 - `WEALTHDB_COMMIT` — HEAD's abbreviated hash, with `-dirty` when the
   engine tree has changes.
@@ -3577,7 +3580,11 @@ tag: nothing in the source names the version.
 
 `./wealthdb build` skips the build when nothing changed:
 
-- It hashes `wealthdb/`, the stamp and the base image's id.
+- It hashes `wealthdb/` less what `.dockerignore` leaves out, the stamp
+  and the base image's id. So an edit to a doc alone builds nothing.
+- The hash reads two forms of `.dockerignore` line, a name at the top
+  (`docs`) and a suffix at any depth (`**/*.md`). Any other line makes
+  it fail, and the image is then always built.
 - When the hash matches the image's `wealthdb.inputs` label, it prints
   `build: wealthdb:<tag> unchanged` and builds nothing.
 - Any extra argument, such as `--no-cache`, always builds.

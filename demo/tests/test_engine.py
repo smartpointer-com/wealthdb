@@ -16,16 +16,17 @@ Needs Docker and the engine image, so it runs only when
 WEALTHDB_DEMO_TEST_ROOT names a directory for the scratch roots
 (`make test-demo` sets it, under the cache dir, where Docker can see
 it). The directory is the tests' own: it carries a marker, and a
-directory that exists without one is left alone. The `short` and
-`today` golds are kept when the generator and the engine image are
-the same; `fresh` is too, at its later date. `rolled` is built
-again, because an append changes it. WEALTHDB_BIN names the engine
-wrapper.
+directory that exists without one is left alone. Each gold is kept
+while the generator, the engine image and this file are the same:
+`short`, `today` and `fresh` at their days, `rolled` once appended and
+loaded again, with what that load printed, and `bare` as `today`'s
+copy with nothing configured. WEALTHDB_BIN names the engine wrapper.
 """
 
 import collections
 import csv
 import datetime as dt
+import hashlib
 import io
 import json
 import os
@@ -86,10 +87,14 @@ def tests_dir():
 
 
 # short, today and fresh are built and then only read. rolled is
-# appended to, so a later run cannot reuse it.
+# appended to after build_and_load, so roll_forward keeps it instead.
 REUSED = {"short", "today", "fresh"}
 STAMP = ".gold-stamp"
 LOAD_OUT = ".gold-load"
+WAITING = ".gold-status"
+# The recipes of rolled and bare are this file's code, so their stamps
+# hold its hash.
+RECIPE = hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()
 
 
 def inputs_hash():
@@ -147,6 +152,54 @@ def build_and_load(name, as_of):
         (root / STAMP).write_text(stamp)
         (root / LOAD_OUT).write_text(loaded)
     return root, loaded
+
+
+def roll_forward():
+    """rolled: the household built to FIRST, appended to SECOND and
+    loaded again, with `status` before that load and the load's output.
+    Kept while its stamp matches; the stamp is written last."""
+    image_id = engine_image_id()
+    stamp = gold_stamp(FIRST, image_id, inputs_hash(), SEED) + f"{SECOND.isoformat()}\n{RECIPE}\n"
+    root = tests_dir() / "rolled"
+    if image_id and reused_gold(root, stamp) and (root / WAITING).is_file():
+        return root, (root / WAITING).read_text(), (root / LOAD_OUT).read_text()
+    root, _ = build_and_load("rolled", FIRST)
+    generate.build(root, SECOND, SEED, append=True)
+    waiting = engine(root, "status", read_only=True)
+    load = engine(root, "load", "-a")
+    if image_id:
+        (root / WAITING).write_text(waiting)
+        (root / LOAD_OUT).write_text(load)
+        (root / STAMP).write_text(stamp)
+    return root, waiting, load
+
+
+def bare_gold(today):
+    """A new installation's first day: today's household with no
+    `yield` block in its config (no withholding table, no curves, the
+    default horizon), no declarations ledger and no dividend calendar,
+    loaded with nothing on stderr. Kept while today's stamp and this
+    file match; the stamp is written last."""
+    image_id = engine_image_id()
+    stamp = gold_stamp(TODAY, image_id, inputs_hash(), SEED) + f"bare\n{RECIPE}\n"
+    root = tests_dir() / "bare"
+    if image_id and reused_gold(root, stamp):
+        return root
+    root = scratch("bare")
+    for d in ("silver", "overrides"):
+        shutil.copytree(today / d, root / d)
+    (root / "overrides" / "exposure_declarations.ndjson").unlink()
+    with sqlite3.connect(root / "silver" / "refdata.db") as db:
+        db.execute("DELETE FROM dividend_events")
+    cfg = json.loads((today / "wealthdb.cfg").read_text())
+    del cfg["yield"], cfg["exposure"]["declarations"]
+    (root / "wealthdb.cfg").write_text(json.dumps(cfg))
+    engine(root, "init")
+    loaded = engine(root, "load", "-a", quiet=True)
+    if image_id:
+        (root / LOAD_OUT).write_text(loaded)
+        (root / STAMP).write_text(stamp)
+    return root
 
 
 def engine(root, *args, read_only=False, quiet=False):
@@ -404,10 +457,7 @@ class TestRollForward(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.rolled, _ = build_and_load("rolled", FIRST)
-        generate.build(cls.rolled, SECOND, SEED, append=True)
-        cls.waiting = engine(cls.rolled, "status", read_only=True)
-        cls.load = engine(cls.rolled, "load", "-a")
+        cls.rolled, cls.waiting, cls.load = roll_forward()
         cls.fresh, _ = build_and_load("fresh", SECOND)
 
     def test_status_shows_the_append_waiting(self):
@@ -516,17 +566,7 @@ class TestToToday(unittest.TestCase):
         horizon), no declarations ledger and no dividend calendar loads,
         and every yield view, the income projection and the cash-flow
         plan answer, printing nothing on stderr and no null."""
-        root = scratch("bare")
-        for d in ("silver", "overrides"):
-            shutil.copytree(self.root / d, root / d)
-        (root / "overrides" / "exposure_declarations.ndjson").unlink()
-        with sqlite3.connect(root / "silver" / "refdata.db") as db:
-            db.execute("DELETE FROM dividend_events")
-        cfg = json.loads((self.root / "wealthdb.cfg").read_text())
-        del cfg["yield"], cfg["exposure"]["declarations"]
-        (root / "wealthdb.cfg").write_text(json.dumps(cfg))
-        engine(root, "init")
-        engine(root, "load", "-a", quiet=True)
+        root = bare_gold(self.root)
         for args in (("yield", "global"), ("yield", "sources"), ("yield", "portfolios"), ("yield", "accounts"),
                      ("yield", "positions"), ("yield", "securities"), ("yield", "funds"), ("yield", "cash"),
                      ("yield", "curve"), ("yield", "coverage"), ("income", "projection"), ("income", "calendar"),
@@ -623,6 +663,62 @@ class TestReusedGold(unittest.TestCase):
             globals()["engine_image_id"] = saved[3]
             globals()["inputs_hash"] = saved[4]
 
+
+    def test_rolled_and_bare_are_reused_only_under_a_matching_stamp(self):
+        parent = self.scratch_dir() / "roots"
+        today = self.scratch_dir() / "today"
+        (today / "silver").mkdir(parents=True)
+        (today / "overrides").mkdir()
+        (today / "overrides" / "exposure_declarations.ndjson").write_text("{}\n")
+        with sqlite3.connect(today / "silver" / "refdata.db") as db:
+            db.execute("CREATE TABLE dividend_events (x)")
+        (today / "wealthdb.cfg").write_text(json.dumps({"yield": {}, "exposure": {"declarations": "x"}}))
+        calls = []
+        saved = (PARENT, generate.build, engine, engine_image_id, inputs_hash)
+
+        def fake_build(root, *_args, append=False, **_kwargs):
+            calls.append("append" if append else "build")
+            root.mkdir(parents=True, exist_ok=True)
+            (root / "wealthdb.db").write_bytes(b"")
+
+        def fake_engine(root, *args, **_kwargs):
+            calls.append(args[0])
+            (root / "wealthdb.db").write_bytes(b"")
+            return "* waiting\n" if args[0] == "status" else "load: demo: 1\n"
+
+        try:
+            globals()["PARENT"] = str(parent)
+            generate.build = fake_build
+            globals()["engine"] = fake_engine
+            globals()["engine_image_id"] = lambda: "sha256:abc"
+            globals()["inputs_hash"] = lambda: "spec\ncatalogue\ncode"
+            first = roll_forward()
+            self.assertEqual(roll_forward(), first)
+            self.assertEqual(first[1:], ("* waiting\n", "load: demo: 1\n"))
+            self.assertEqual(calls.count("append"), 1)
+            (parent / "rolled" / STAMP).unlink()
+            roll_forward()
+            self.assertEqual(calls.count("append"), 2)
+            bare_gold(today)
+            bare_gold(today)
+            self.assertEqual(calls.count("init"), 3)
+            cfg = json.loads((parent / "bare" / "wealthdb.cfg").read_text())
+            self.assertNotIn("yield", cfg)
+            self.assertNotIn("declarations", cfg["exposure"])
+            globals()["inputs_hash"] = lambda: "spec\nother\ncode"
+            roll_forward()
+            bare_gold(today)
+            self.assertEqual((calls.count("append"), calls.count("init")), (3, 5))
+            globals()["engine_image_id"] = lambda: ""
+            roll_forward()
+            roll_forward()
+            self.assertEqual(calls.count("append"), 5)
+        finally:
+            globals()["PARENT"] = saved[0]
+            generate.build = saved[1]
+            globals()["engine"] = saved[2]
+            globals()["engine_image_id"] = saved[3]
+            globals()["inputs_hash"] = saved[4]
 
 if __name__ == "__main__":
     unittest.main()

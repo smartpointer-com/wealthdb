@@ -1,0 +1,6 @@
+# What the engine image's build context leaves out: the docs and the
+# Markdown files, which the binary does not embed. `wealthdb build`
+# leaves them out of its inputs hash and its version stamp too, so an
+# edit to them alone does not rebuild the image.
+docs
+**/*.md

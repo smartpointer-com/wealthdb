@@ -35,22 +35,34 @@ case "${1:-}" in
         # the build context holds no .git: the release tag only when HEAD
         # sits on one and the engine tree has no uncommitted change, the
         # nearest release tag, and HEAD's hash, marked -dirty when the
-        # engine tree has changes. Outside a git checkout all three stay
-        # empty, and the binary never claims a release.
+        # engine tree has changes. What .dockerignore leaves out of the
+        # build context is no change. Outside a git checkout all three
+        # stay empty, and the binary never claims a release.
         tag="" base="" commit=""
         if git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
             commit="$(git -C "$REPO" rev-parse --short=7 HEAD)"
             base="$(git -C "$REPO" describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
-            if [ -n "$(git -C "$REPO" status --porcelain --untracked-files=normal -- . 2>/dev/null)" ]; then
+            # A subshell, so the pathspecs leave the build's arguments alone.
+            changes="$(
+                set -- .
+                if [ -f "$REPO/.dockerignore" ]; then
+                    while IFS= read -r line; do
+                        case "$line" in (''|'#'*) ;; (*) set -- "$@" ":(exclude,glob)$line" ;; esac
+                    done < "$REPO/.dockerignore"
+                fi
+                git -C "$REPO" status --porcelain --untracked-files=normal -- "$@" 2>/dev/null || true
+            )"
+            if [ -n "$changes" ]; then
                 commit="$commit-dirty"
             else
                 tag="$(git -C "$REPO" describe --tags --exact-match --match 'v[0-9]*' HEAD 2>/dev/null || true)"
             fi
         fi
-        # The inputs: this tree, the stamp and the base image's id. A hash
-        # that fails (no python3 on the host) leaves the image unlabeled,
-        # so it is built every time and never skipped.
-        hash="$(wealthdb_inputs_hash "$REPO" -- "$tag" "$base" "$commit" "$(wealthdb_from_id "$REPO/Dockerfile")")" || hash=
+        # The inputs: this tree less what .dockerignore leaves out, the
+        # stamp and the base image's id. A hash that fails (no python3 on
+        # the host, or a .dockerignore line it cannot follow) leaves the
+        # image unlabeled, so it is built every time and never skipped.
+        hash="$(wealthdb_inputs_hash --ignore "$REPO/.dockerignore" "$REPO" -- "$tag" "$base" "$commit" "$(wealthdb_from_id "$REPO/Dockerfile")")" || hash=
         if wealthdb_build_unchanged "$IMAGE" "$hash" "$#"; then
             exit 0
         fi

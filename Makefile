@@ -515,10 +515,12 @@ demo-mcp-stop:
 # the images are, so checkouts on tags of their own never share a root.
 DEMO_TEST_ROOT := $(CACHE_ROOT)/demo-test-$(TAG)
 
+# The test classes run side by side (demo/run_tests.py), one process
+# each, so the engine cases overlap.
 test-demo: build-wealthdb
 	@echo "==> test demo (generator, then the household through the engine: its first months and to today)"
 	@WEALTHDB_DEMO_TEST_ROOT="$(DEMO_TEST_ROOT)" WEALTHDB_BIN="$(abspath $(WEALTHDB))" \
-		$(PYTHON) -m unittest discover -s demo/tests -t demo
+		$(PYTHON) demo/run_tests.py -j $(NCPU)
 
 # This tag's root only, and only when it holds the marker the tests
 # write into it (demo/tests/test_engine.py), so a dir of another kind

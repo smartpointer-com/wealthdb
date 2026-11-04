@@ -2,7 +2,8 @@
 # Behaviour test for the version stamp `wealthdb build` passes to the
 # image build: the release tag only for a clean engine tree on a release
 # tag, the nearest release tag, and HEAD's hash with -dirty for an engine
-# tree with changes. Runs a copy of the wrapper inside a scratch git repo
+# tree with changes; what the engine's .dockerignore leaves out is no
+# change. Runs a copy of the wrapper inside a scratch git repo
 # with a stubbed docker on PATH, so nothing real is built.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -36,6 +37,11 @@ REPO="$TMP/repo"
 mkdir -p "$REPO/wealthdb" "$REPO/shared/wrappers"
 cp "$WRAPPER" "$REPO/wealthdb/wealthdb"
 cp "$HELPER" "$REPO/shared/wrappers/"
+printf '# context\ndocs\n**/*.md\n' > "$REPO/wealthdb/.dockerignore"
+mkdir -p "$REPO/wealthdb/docs"
+echo "doc" > "$REPO/wealthdb/docs/DESIGN.md"
+echo "notes" > "$REPO/wealthdb/docs/notes.txt"
+echo "engine readme" > "$REPO/wealthdb/README.md"
 echo "package main" > "$REPO/wealthdb/main.go"
 echo "readme" > "$REPO/README.md"
 git -C "$REPO" init -q
@@ -76,6 +82,18 @@ git -C "$REPO" checkout -q -- wealthdb/main.go
 echo "edit" >> "$REPO/README.md"
 expect "change outside the engine tree: still the tag" "v9.9.0|v9.9.0|$(sha)"
 git -C "$REPO" checkout -q -- README.md
+
+echo "edit" >> "$REPO/wealthdb/docs/notes.txt"
+echo "edit" >> "$REPO/wealthdb/README.md"
+echo "draft" > "$REPO/wealthdb/docs/new.md"
+expect "change the .dockerignore leaves out: still the tag" "v9.9.0|v9.9.0|$(sha)"
+git -C "$REPO" checkout -q -- wealthdb/docs/notes.txt wealthdb/README.md
+rm "$REPO/wealthdb/docs/new.md"
+
+: > "$DOCKER_ARGS"
+"$REPO/wealthdb/wealthdb" build --no-cache >/dev/null 2>&1
+if grep -qx -- --no-cache "$DOCKER_ARGS"; then ok "build passes its own arguments to docker build"
+else bad "build passes its own arguments to docker build"; fi
 
 git -C "$REPO" commit -q --allow-empty -m two
 git -C "$REPO" tag latest

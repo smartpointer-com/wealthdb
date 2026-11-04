@@ -212,6 +212,37 @@ else
     bad "a version string is hashed as text"
 fi
 
+# --ignore leaves out what a .dockerignore leaves out of the context:
+# a name at the top and a suffix at any depth. A line it cannot follow
+# fails the hash, and a missing file leaves nothing out.
+idir="$TMP/ignsrc"
+mkdir -p "$idir/docs" "$idir/cmd"
+printf 'docs\n**/*.md\n' > "$TMP/ign"
+printf 'g\n' > "$idir/cmd/m.go"
+printf 'd\n' > "$idir/docs/x.txt"
+printf 'r\n' > "$idir/cmd/n.md"
+ign1="$(hash_of --ignore "$TMP/ign" "$idir")"
+printf 'e\n' >> "$idir/docs/x.txt"; printf 'e\n' >> "$idir/cmd/n.md"; printf 'n\n' > "$idir/README.md"
+ign2="$(hash_of --ignore "$TMP/ign" "$idir")"
+printf 'e\n' >> "$idir/cmd/m.go"
+ign3="$(hash_of --ignore "$TMP/ign" "$idir")"
+if [ -n "$ign1" ] && [ "$ign1" = "$ign2" ] && [ "$ign2" != "$ign3" ]; then
+    ok "--ignore leaves out what the .dockerignore leaves out, and only that"
+else
+    bad "--ignore leaves out what the .dockerignore leaves out, and only that"
+fi
+printf 'docs\n!docs/keep.md\n' > "$TMP/ign-bad"
+if ign_bad="$(hash_of --ignore "$TMP/ign-bad" "$idir" 2>/dev/null)"; then
+    bad "a .dockerignore line --ignore cannot follow fails the hash (got $ign_bad)"
+else
+    ok "a .dockerignore line --ignore cannot follow fails the hash"
+fi
+if [ "$(hash_of --ignore "$TMP/no-such-ignore" "$idir")" = "$(hash_of "$idir")" ]; then
+    ok "a missing .dockerignore leaves nothing out"
+else
+    bad "a missing .dockerignore leaves nothing out"
+fi
+
 # An image whose label matches that hash is not built. The stub returns
 # the label on the inputs inspect and STUB_ID on any other inspect, and
 # prints BUILT and its argv on a build and PULLED and the image on a pull.

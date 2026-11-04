@@ -87,11 +87,18 @@ wealthdb_export_image_tag() {
 # empty one. A directory skips a virtualenv, bytecode and egg-info.
 # shared/.dockerignore excludes the same names from the base images'
 # context; keep the two lists in step.
+# --ignore FILE, first, also leaves out of each directory what FILE, the
+# .dockerignore of its build context, leaves out of that context. It
+# reads two forms of line: a name at the directory's top (docs) and a
+# file suffix at any depth (**/*.md). Any other line fails the hash, so
+# an image whose context the hash cannot follow is always built. A
+# missing FILE leaves nothing out.
 wealthdb_inputs_hash() {
     python3 - "$@" <<'PY'
-import hashlib, os, stat, sys
+import hashlib, os, re, stat, sys
 h = hashlib.sha256()
 skip = {".venv", "__pycache__", ".pytest_cache", ".git", ".mypy_cache"}
+ignore_top, ignore_suffixes = set(), ()
 
 def add_file(path, name, st):
     h.update(b"%s\0%o\0" % (name.encode(), st.st_mode))
@@ -114,7 +121,11 @@ def add(path):
         return
     for root, dirs, files in os.walk(path):
         dirs[:] = sorted(
-            d for d in dirs if d not in skip and not d.endswith(".egg-info"))
+            d for d in dirs if d not in skip and not d.endswith(".egg-info")
+            and not (root == path and d in ignore_top))
+        if root == path:
+            files = [f for f in files if f not in ignore_top]
+        files = [f for f in files if not f.endswith(ignore_suffixes)]
         # os.walk lists a link to a directory with the directories and
         # does not enter it; it is hashed as a link.
         links = [d for d in dirs if os.path.islink(os.path.join(root, d))]
@@ -126,6 +137,22 @@ def add(path):
             add_file(full, label + "/" + rel, os.lstat(full))
 
 args = sys.argv[1:]
+if args[:1] == ["--ignore"]:
+    ignore_file, args = args[1], args[2:]
+    suffixes = []
+    if os.path.isfile(ignore_file):
+        for line in open(ignore_file):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            m = re.fullmatch(r"\*\*/\*(\.[A-Za-z0-9]+)", line)
+            if m:
+                suffixes.append(m.group(1))
+            elif re.fullmatch(r"[A-Za-z0-9_.-]+/?", line) and line not in (".", ".."):
+                ignore_top.add(line.rstrip("/"))
+            else:
+                sys.exit(f"wealthdb_inputs_hash: {ignore_file}: cannot follow the line {line!r}")
+    ignore_suffixes = tuple(suffixes)
 if "--" in args:
     cut = args.index("--")
     paths, literals = args[:cut], args[cut + 1:]
