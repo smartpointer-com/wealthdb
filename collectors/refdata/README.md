@@ -328,6 +328,21 @@ US registered funds and ETFs, from their N-PORT filings on SEC EDGAR.
   was held, and the last one before them: the composition in force when
   the holding began.
 
+A filing states each share class's total return for the three months
+that end at its report date. The collector keeps the class the fund's
+ticker maps to, in `fund_returns`. Another class has other fees, so it
+is another fund. `sec-nport` is asked for these figures for a fund whose
+wanted-list entry wants `monthly_returns`: a fund a benchmark names.
+`--backfill` reads them for every filing from the entry's `history_from`
+on, whatever days the fund was held. A composition fetched earlier does
+not count as having them, so no `load --force` is needed:
+
+```sh
+./refdata download --backfill --no-securities --ref symbol:ACWI --ref symbol:BND --ref symbol:IVV
+./refdata load
+wealthdb load refdata
+```
+
 A debt holding also states its coupon kind, and whether it is in
 default, its interest payments in arrears or its coupon paid in kind. A
 holding in another currency states the exchange rate it was valued at,

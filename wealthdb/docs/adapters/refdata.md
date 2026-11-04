@@ -34,10 +34,11 @@ is `collectors/refdata/migrations/`:
   columns of a line, and the tables `fund_risk`, `characteristics` and
   `period_facts`.
 - `0003_dividend_calendar.sql` adds the table `dividend_events`.
+- `0004_fund_returns.sql` adds the table `fund_returns`.
 
-The adapter's test fixture, `testdata/silver_schema.sql`, is the three
+The adapter's test fixture, `testdata/silver_schema.sql`, is the four
 files in order. The collector's tests check that the copy matches the
-migrations. A file at schema 1 or 2 loads too: the adapter reads the
+migrations. A file at an older schema loads too: the adapter reads the
 tables and columns of a later migration only where the file has them.
 
 Conventions:
@@ -69,6 +70,7 @@ Conventions:
 | `securities` | `security_identities` | security, lookup day and provider |
 | `security_facts` | `security_facts` | security, field, lookup day and provider |
 | `fund_risk` | `fund_risk` | fund, day, currency and tenor |
+| `fund_returns` | `fund_returns` | fund, filing day and month |
 | `characteristics` | `fund_characteristics` | fund, day, provider, field and label |
 | `period_facts` | `security_period_facts` | security, field, period and provider |
 | `dividend_events` | `dividend_calendar` | fund or security, provider and distribution |
@@ -103,6 +105,13 @@ follow no one sign convention: gold reads each filing in one sign
 one figure a provider states for the fund as a whole. Its `label` is
 empty, or names one part of a breakdown such as a credit quality. A
 `period_facts` row is a figure a company reported for one period.
+
+A `fund_returns` row is a fund's total return for one month, in percent,
+as the filing of day `as_of` states it for the share class its ticker
+maps to. `month` is the month's last day, `YYYY-MM-DD`. Two filings can
+state a month. Gold keeps both, and a reader takes the later one. A
+return that is no decimal fails the load. RETURNS-NOTES.md, "Benchmarks",
+reads them.
 
 A `dividend_events` row is one distribution of a fund or a security, as
 a provider states it:
@@ -204,7 +213,8 @@ key it reads as.
 `ChangeWindow` triggers on a load past the watermark. Its window spans
 the as-of days that the rows of the runs loaded since describe. It reads
 every reference table that has a run: `compositions`, `attributes`,
-`counterparties`, `fund_risk`, `characteristics`, `securities`,
+`counterparties`, `fund_risk`, `fund_returns`, `characteristics`,
+`securities`,
 `security_facts`, `period_facts` and `dividend_events`. A line belongs
 to its composition's run. The clock is the load, not the fetch, so a run
 fetched earlier but loaded later still reaches gold: an import from
@@ -215,7 +225,7 @@ advances the watermark without a window.
 Each kind of record has a span of its own within the window:
 
 - the fund-days: a fund's compositions, attributes, counterparties, rate
-  sensitivities and characteristics of one day;
+  sensitivities, monthly returns and characteristics of one day;
 - the security identities;
 - the security facts;
 - the period facts;
@@ -254,7 +264,7 @@ It prints one JSON document, the wanted list (`internal/gold/refdata_wanted.go`)
 It is the one way the collector reads gold, and its JSON is a versioned
 contract:
 
-- `contract` is `refdata-wanted`, `version` is `3`.
+- `contract` is `refdata-wanted`, `version` is `4`.
 - A change takes a new version when a collector of the version before
   would misread the list. Such a change removes or renames a field,
   changes what a field means, gives a field a value it did not hold
@@ -263,11 +273,13 @@ contract:
 - A field added alone, that an older collector may ignore, takes no new
   version.
 - A collector refuses a version it does not know. The refdata collector
-  reads versions 1, 2 and 3.
+  reads versions 1 to 4.
 - Version 1 has no `wants`, `facts` or `periods`. Its `missing` names no
   family of period facts.
 - Version 2 wants no `dividend_calendar`. Its securities have no
   `receipt`, `wants` or `calendar`.
+- Version 3 has no role `benchmark`, no `history_from` and no
+  `monthly_returns`.
 
 Top-level fields:
 
@@ -286,11 +298,12 @@ A fund:
 | `ref` | the fund reference (§3) |
 | `isin`, `cusip`, `symbol` | the identifiers known, each `null` where none is; the identifier the reference is made of is always filled |
 | `name`, `currency` | the holding's name and the currency it is priced in |
-| `roles` | `held`, `proxy` (it stands in for a held fund), `reference` (its lines widen the security master) or `underlying` (a held fund holds it) |
+| `roles` | `held`, `proxy` (it stands in for a held fund), `reference` (its lines widen the security master), `underlying` (a held fund holds it) or `benchmark` (a benchmark's mix names it) |
 | `held_from`, `held_to` | the days a composition is wanted for; `held_to` is `null` while the fund is still held |
 | `compositions` | the days gold already has a composition for, on any basis, ascending |
 | `wants` | the facts the fund is wanted for beyond its compositions (below), in the order below; `[]` where none |
 | `facts` | per fact, the days gold holds it for the fund, ascending, `YYYY-MM-DD`; a fact gold holds nothing of is absent; `{}` where nothing |
+| `history_from` | how far back a backfill reads the fund's `monthly_returns`, whatever days it was held; `null` for a fund no benchmark names |
 
 A fund is wanted when a position holds it as an `etf`, a `fund` or a
 `structured_product` whose asset class has lines worth reading: public
@@ -322,6 +335,12 @@ A fund held (role `held`) wants these facts, in this order:
 | `line_durations` | a fund of class fixed income whose newest composition has no line with a duration or a modified duration | the durations of its lines, which come only with a composition that states them, such as an issuer's holdings file |
 | `dividend_calendar` | every fund held but a structured product | its distributions: their ex, record and pay days and amounts (`dividend_events`) |
 
+A fund a benchmark names is wanted from today, as a reference fund is,
+in the role `benchmark`. It wants `monthly_returns`, its N-PORT filing's
+monthly total returns (`fund_returns`), first, then `characteristics`
+where it is not held. Its lines widen the security master, as a
+reference fund's do ([EXPOSURE.md](../EXPOSURE.md), "Benchmarks").
+
 The class is the one a holding states. A bond fund with no composition
 yet wants `line_durations` too. A fund that only the roles `proxy`,
 `reference` or `underlying` name wants none of these, and neither does a
@@ -334,6 +353,7 @@ skips a day it already has, and reads freshness from the last one. Each
 fact has its days from these rows:
 
 - `risk_metrics`: the fund's `fund_risk` rows.
+- `monthly_returns`: the filing days of its `fund_returns` rows.
 - `money_market`: its `fund_characteristics` rows whose field is
   `seven_day_yield`, `seven_day_gross_yield`,
   `weighted_average_maturity` or `weighted_average_life`.

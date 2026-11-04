@@ -902,6 +902,52 @@ The MCP server has an `exposure` tool with the same fourteen views, an
 `from` and `to` on the views `--period` takes. Its rows equal the
 command's, cell for cell.
 
+## Benchmarks
+
+A benchmark's look-through is the exposure engine run over a virtual
+holding of its weights, one per fund of the mix
+([RETURNS-NOTES.md](RETURNS-NOTES.md), "Benchmarks"). The funds are
+wanted like reference funds. They need not be held.
+
+Their lines widen the security master as a reference fund's do. A newer
+filing can update a held security's name, sector or country, so a
+benchmark's fund can move the household's figures a little, towards
+fresher data.
+
+`web refresh` writes it to `benchmark_exposure`, at the end of the
+exposure pass. A temporary `exposure_holdings` shadows the macro inside
+the pass's transaction, so every label and every fund pick is the
+household's, and nothing else sees the virtual holdings.
+
+- Each bucket is a share of the benchmark in percent, on the dashboard's
+  definition of that dimension.
+- It is today's look-through alone. Only the newest composition of a
+  fund a benchmark alone names is fetched, so a past day compares with
+  today's mix.
+- The source, tax wrapper and asset class pickers narrow the household's
+  side alone.
+- A bond fund's filing states no rating and no sector, so its lines read
+  `unrated` and `unknown`.
+
+The dashboard reads it this way:
+
+| Card | Benchmark |
+| --- | --- |
+| Allocation by asset class | a bar per class, the same total in the mix |
+| Allocation by currency | a bar per currency, by the currency its funds are priced in |
+| By asset class, sector, region, currency, size, rating, maturity | a second bar per bucket, on the same card |
+| By country | unchanged; a table of the twenty largest deviations |
+| Top securities, Top 100 issuers | `benchmark_pct` and `difference_pct` columns |
+
+```sh
+wealthdb exposure classes --benchmark "Global 60/40"
+wealthdb exposure sectors --benchmark "S&P 500"
+```
+
+`--benchmark` reads the rows the last `web refresh` wrote. It takes no
+`--period` and no `--country domicile`, and does not apply to `situs`,
+`funds` or `coverage`.
+
 ## 13. Legal situs
 
 `wealthdb exposure situs` says where each holding legally sits. The

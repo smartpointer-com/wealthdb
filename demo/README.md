@@ -191,6 +191,19 @@ source knows:
   terms, two bonds' ratings, the floating note's coupon kind, the
   callable bond's call date, and each discount note's terms.
 
+## Benchmarks
+
+The config redefines the built-in benchmarks over three invented funds,
+so no real fund enters the demo. A quarter's filing of each states its
+three months' total returns, drawn from the fund's `benchmark` drift and
+volatility in the catalogue and keyed by the month alone. So a month
+reads the same in any build. The months stop at the last quarter's end,
+so the newest months are missing, as they are in a real gold.
+
+```sh
+demo -r returns global --benchmark "Global 60/40" --period annual
+```
+
 ## How it is built
 
 `demo/generate.py` reads `demo/household.json` (the household's accounts,

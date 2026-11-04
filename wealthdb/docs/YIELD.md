@@ -1221,6 +1221,27 @@ The MCP server has a `yield` tool with the same views, an `as_of` day,
 equal the command's, cell for cell. A series' header names its window:
 its first and last period ends.
 
+## Benchmarks
+
+`web refresh` writes each benchmark's yield and duration to
+`benchmark_yield`, at the instants the dashboard reads. Each is the
+funds' figures, weighted. A day that lacks a figure for a fund of the
+mix has none for the benchmark.
+
+- A fund's yield is the one its page or filing states: distribution,
+  SEC, trailing, to worst, to maturity, in that order. Else its lines
+  imply it, where they cover half the fund.
+- A fund's duration is the one its page states. Else it is the filing's
+  DV01 summed over the tenors, times 10,000, over the net assets. Else
+  its lines imply it, over the whole fund, where they cover half of it.
+  A line's stated maturity overstates a mortgage pool's, so the filing
+  comes first. A fund with under one percent of debt has a duration of
+  zero.
+
+A fund's lines are read for today alone, and a fund's page states
+its figures from the day they were first fetched. So the over-time lines
+of a benchmark start short and grow as refdata runs.
+
 ## 12. What yield is not
 
 - Not a dividend model. A stock has no yield to maturity and no

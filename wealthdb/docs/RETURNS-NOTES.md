@@ -409,6 +409,10 @@ every approximation is tagged. Computed set:
 `unknown_adapter_policy`, `fx_clamped_flow`, `pre_fx_history`,
 `flows_before_inception`, `after_tax`.
 
+A benchmark's figures have flags of their own ("Benchmarks" below):
+`benchmark_gap`, `benchmark_partial_period`, `benchmark_start_clipped`,
+`benchmark_end_clipped`, `benchmark_no_overlap` and `shadow_nonpositive`.
+
 `configured_inception` marks a window truncated to a configured
 inception override (DESIGN.md §5.4) rather than the data's own start.
 `accounts_grain_meaningless` blanks TWR/MWR on accounts-grain rows of
@@ -451,6 +455,117 @@ raises it.
 
 No flag marks a corporate action inside a window, or a dormant account
 carried forward.
+
+## Benchmarks
+
+A benchmark is a named mix of funds with target weights, rebalanced
+monthly. One fund at 100% is the simple case. Funds stand in for
+indexes: a fund's total return is public, and an index's own series is
+licensed. A fund's fee costs a few basis points a year.
+
+The engine ships a built-in set, on with no config:
+
+| Benchmark | Funds |
+| --- | --- |
+| S&P 500 | IVV 100 |
+| World (ACWI) | ACWI 100 |
+| US total bond market | BND 100 |
+| Global 60/40 | ACWI 60, BND 40 |
+| Global 80/20 | ACWI 80, BND 20 |
+
+The `benchmarks` block of wealthdb.cfg adds one, or redefines a built-in
+one by its name (DESIGN.md §5.1). `wealthdb help benchmarks` lists them.
+
+Examples:
+
+```sh
+wealthdb returns global --benchmark "Global 60/40" --period annual
+wealthdb returns global 2024 --benchmark "S&P 500" --period total -x CHF
+```
+
+**Months.** Each public N-PORT filing states the fund's total return for
+each of the three months it covers, per share class. refdata keeps the
+class the ticker maps to, and gold holds them in `fund_returns`. Where
+two filings state a month, the later one counts.
+
+- US registered funds only. A configured mix of UCITS funds has no
+  returns.
+- History starts in 2019.
+- Filings are quarterly and public 60 days after the quarter's end, so
+  the newest months lag by two to five months.
+
+**A month's return.** `r = Σ wᵢ rᵢ`. A month that lacks a fund of the mix
+has no return: it is a gap, and no month is ever invented. A mix runs
+from the latest first month of its funds to the earliest last month.
+
+**Currency.** Funds report in dollars. Read in another currency, a month
+is unhedged at month-end FX: `(1 + r) × FX_end / FX_start − 1`. The rate
+comes from `fx_daily`, by the chain a holding is valued by. A rate that
+falls back to the day-0 clamp carries `pre_fx_history`. A month with no
+rate is a gap.
+
+**Growth between two days** (`returns.Index`). Whole months compound. A
+day inside a month has earned the share of the month its days so far
+make up, compounded per day. The first of a month has earned none of
+it, so a window from January 1 takes January whole, and the buckets of
+`report_returns` compound their months exactly.
+
+**The days compared.** Every comparison runs over the days both sides
+have. A window that starts before the benchmark's first month compares
+from there (`benchmark_start_clipped`). A window that ends after its
+last month compares through it (`benchmark_end_clipped`). The engine
+then computes the household over those same days, so the excess is
+like with like. That figure can differ from the Return tiles, which run
+to today. A window with a gap has no return (`benchmark_gap`). It does
+not skip the month.
+
+**Buckets.** `benchmark_returns` holds a row per household bucket, at
+each granularity:
+
+- A bucket before the benchmark's first month, or after its last, has
+  no row.
+- A bucket its months start or end inside has no return
+  (`benchmark_partial_period`): part of a quarter beside a whole quarter
+  is not like with like.
+- A bucket through a gap has no return (`benchmark_gap`).
+
+**Excess return** is the plain difference, portfolio less benchmark, in
+percentage points.
+
+**The shadow value** starts at the window's start value. Each flow of
+the household enters at the end of its day, and every amount then grows
+with the benchmark. It is the same money on the same days in another
+investment. The benchmark's MWR is the XIRR of the household's flows
+with the shadow's value at the end: a public market equivalent. The
+flows are those `entityFlows` gives the global grain. A shadow the flows
+take to zero or below is a short position from that day on, which no
+household holds. It keeps its value but has no MWR
+(`shadow_nonpositive`).
+
+**The money-weighted lines.** `benchmark_mwr` holds, per benchmark,
+currency and start-year window, two series of month ends:
+
+- `portfolio`: the household's value, and its MWR from the window's
+  start to the day. It runs through the household's own window, so its
+  last point is the Return (MWR) tile where the window starts inside
+  the benchmark's months.
+- `benchmark`: the shadow's value and MWR, through the benchmark's last
+  month. Its last point is the benchmark's MWR tile.
+
+Each series opens with a row at the window's start, with no return, so
+the two sides start level. A window with no opening value has no lines. A month end past a gap has no value and
+`benchmark_gap`. One with no XIRR answer has the engine's `mwr_*` flag.
+
+Each month end's solve starts from the rate of the one before, over the
+flows netted by day (`returns.FlowSeries`). The last one is solved from
+the engine's usual guess over the flows themselves, as the summary row
+is, so a line ends on its tile's number. A month end's `mwr_nonunique`
+reads the netted flows, so it can differ from the raw flows' on a day
+with flows both ways.
+
+`web refresh` writes both tables with `report_returns`, in one
+transaction, from the same datasets. `returns global --benchmark`
+computes the same figures live.
 
 ## Out of scope
 

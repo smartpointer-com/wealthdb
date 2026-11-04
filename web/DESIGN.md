@@ -122,6 +122,8 @@ They sit in a `wealthdb (pre-defined)` collection:
 - the `report_yield_classes` model of the classes `web_yield` and
   `web_yield_curve` carry (migration 0138). It backs the Yield Asset
   class picker alone;
+- the `report_benchmarks` model of `web_benchmarks` (migration 0176). It
+  backs the Benchmark picker alone;
 - two `_pct` privacy variants, `report_sources_latest_pct` and
   `report_spending_pct`. They back the privacy twins' MBQL cards and
   their drill-through.
@@ -161,6 +163,11 @@ ten dashboards. Their pickers:
   issuer named by a holding's own key (`holding:<source>:<id>`).
 - **Returns**: a required currency (returns are stored one row set per
   currency), a required start year (0 is since inception) and a source.
+- **Benchmark**: a required picker on Returns, Allocation, Exposure and
+  Yield, with their twins. Its default is None.
+  Its values are the `report_benchmarks` model's, over `web_benchmarks`:
+  None, then the built-in and configured benchmarks. Metabase remembers
+  a reader's last value, so a dashboard reopens on it.
 - **Gains**: the time range and source, a required currency, a *Tax
   wrapper* picker, an *Asset class* picker, and a required *Missing
   cost basis* picker (ignore or zero; the default is
@@ -303,8 +310,7 @@ The **Exposure** dashboard shows what is really owned once every fund
 is looked through ([wealthdb/docs/EXPOSURE.md](../wealthdb/docs/EXPOSURE.md)).
 It reads in this order:
 
-- net worth by asset class as a ring, beside net worth by sector as
-  bars;
+- net worth by asset class beside net worth by sector, both as bars;
 - the classes over time;
 - a world map of the countries, each coloured by its share;
 - the regions as bars, beside a table of every region and the countries
@@ -312,7 +318,8 @@ It reads in this order:
 - the regions over time;
 - net worth by legal situs as bars: where each holding legally sits,
   each fund whole at its own (wealthdb/docs/EXPOSURE.md §13);
-- the currencies as a ring, beside the currencies over time;
+- the currencies as bars, beside the currencies over time. A currency
+  under 1% on both sides joins `other`;
 - public equity by size (large, mid, small), as shares of public
   equity, beside what is held directly against what is held through
   funds, over time;
@@ -339,9 +346,9 @@ the four debt cards below. Each tile computes its share over the rows
 it reads. So every figure is a share of the
 selection's net worth, or of the class a chart counts, and of net worth
 itself with nothing picked; either way scale-free. So the Exposure twin
-needs no normalisation. Each breakdown plots the shares: a bar carries
-its percentage, a ring lists them in its legend. The base card shows
-the value on hover, and its privacy card drops the value column.
+needs no normalisation. Each breakdown plots the shares, and a bar
+carries its percentage. The base card shows the value on hover, and its
+privacy card drops the value column.
 Every chart over time except the currencies chart shows shares alone.
 Those charts are privacy-exempt, so the twin shows the same cards. The
 currencies chart shows money, so its privacy card shows the same bands
@@ -367,7 +374,7 @@ the latest of those instants in the window:
   to 100. A card's title names the class it counts. The maturity card's
   names the debt alone, but it counts the debt and the cash, each by its
   term. Where the rest sums to zero or less, a loan outweighing it, no
-  bucket has a share. The size of the debt is on the asset class ring
+  bucket has a share. The size of the debt is on the asset class bars
   and on Allocation.
 - a bucket under 0.01% of its class is left out of the bars, and a
   label shows two decimals. The CLI's table keeps every bucket.
@@ -1056,6 +1063,68 @@ snapshot keeps serving. The sidecar is an expected artefact beside the
 gold DB: the kernel drops the lock when the process ends, the empty
 file stays, and a copy or a backup may ignore it. The web container
 itself still never sees anything but the `:ro` snapshot (AGENTS.md §1).
+
+
+### Benchmarks
+
+`benchmark_returns`, `benchmark_mwr`, `benchmark_exposure` and
+`benchmark_yield` (migration 0176) are derived tables, written with
+`report_returns`, the exposure tables and the yield tables. The cards
+read them as they stand, so they have no serving copy. Each card's SQL
+takes a `{{benchmark}}` text tag.
+
+Under None a dashboard reads as it does with no benchmark, but for one
+legend entry on Exposure's bars:
+
+- A chart adds the benchmark's rows. Under None there are none. A line
+  chart labels them `Benchmark`, whichever is picked, and a card's
+  `series_settings` draws that label grey, dashed and heavy
+  (`BENCHMARK_LINE`). The grey reads on a light and on a dark theme.
+  Monthly, Quarterly and Annual returns have no legend at their size,
+  so the look alone tells the line from the sources'. Under None no
+  series has the label, and the setting does nothing.
+- Allocation's two bar charts break out by a `series` column. Under None
+  the card drops the column, so it stays a single series with no legend.
+  `SELECT COLUMNS(lambda c: …)` chooses the columns from the picker's
+  value when the query is bound. This holds only for a card with one
+  number: a chart whose saved breakout column is gone plots every number
+  a run returns.
+- Exposure's bars carry a value for the tooltip, so they keep the
+  `series` column under None, with `Portfolio` alone in it. Metabase
+  colours a bar with no breakout by its metric's column. `series_settings`
+  gives `Portfolio` that colour (`EXPOSURE_BAR_COLORS`), and `Benchmark`
+  a fixed grey. So under None the bars keep their colour, and the card
+  adds only a legend of one entry.
+- A card's display type is fixed, and a ring takes no second bar. So
+  the Exposure class and currency cards are bars whatever is picked.
+- A table's benchmark columns go the same way (`_columns_with_benchmark`).
+  `table.columns` names them, as a table otherwise shows only a saved
+  question's columns.
+- A tile that exists only beside a benchmark (`BENCHMARK_CARDS`) reads no
+  row under None and hides (`card.hide_empty`). Metabase closes the gap
+  a hidden tile leaves, so such a tile can sit anywhere on the grid.
+
+A field filter binds one table's column, so the benchmark tables read
+the picked currency through it: `currency IN (SELECT currency FROM
+report_returns WHERE {{currency}})`.
+
+Returns adds two rows of figures under its top row, in the same columns
+and order: the benchmark's, then the excess. They are numbers, as the
+Return tiles are. A benchmark's months start and end on days of their
+own, and `Returns by source` names them. The Return tiles run to today,
+so an Excess tile, which compares the same months, can differ from the
+gap between the two tiles above it. A window past the benchmark's last
+month has no figure.
+
+The twins show returns and weights as they are. The value chart indexes
+both sides to 100 at the window's start. Allocation's base bars read
+the household's total held in the benchmark's mix, so both bars read in
+the picked currency, and the twin sets share beside share.
+
+The Cumulative return line starts on the first year the benchmark covers
+whole, at the `(all sources)` line's level that year.
+
+Spending, Income, Cash Flow, Gains and Data Freshness have no benchmark.
 
 ## Testing
 

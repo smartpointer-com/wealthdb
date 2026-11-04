@@ -130,6 +130,7 @@ A few of the questions it answers, and the commands behind them:
 ```sh
 wealthdb holdings global -d 2024-12-31 -x CHF        # net worth at the end of 2024, in CHF
 wealthdb returns portfolios 2025                     # how each portfolio did in 2025
+wealthdb returns global --benchmark "Global 60/40"   # the whole against a plain 60/40 mix
 wealthdb gains realized 2025                         # every lot sold in 2025, with its gain
 wealthdb exposure countries                          # where the money is, every fund looked through
 wealthdb yield global -x CHF                         # what the holdings yield, by currency

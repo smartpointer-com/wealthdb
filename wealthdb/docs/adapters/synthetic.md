@@ -71,7 +71,7 @@ find its positions row in the same way.
 | `fx_rates` | `fx_rates` | In the same per-instant batches, already in gold's direction. |
 | `transactions` | `transactions` | Re-signed as a guard — see §7. |
 | `realized_lots` | `realized_lots` | Read whole on every load — see §11. |
-| `compositions`, `lines`, `attributes`, `counterparties`, `securities`, `security_facts`, `fund_risk`, `characteristics`, `period_facts` | the reference tables | After the snapshots, by `as_of` — see §12. |
+| `compositions`, `lines`, `attributes`, `counterparties`, `securities`, `security_facts`, `fund_risk`, `fund_returns`, `characteristics`, `period_facts` | the reference tables | After the snapshots, by `as_of` — see §12. |
 | `rates` | `rate_observations` | After the reference records, by `as_of` — see §12. |
 
 ## 4. Account taxonomy
@@ -371,8 +371,8 @@ refdata collector's silver shape column for column, so one reader
 serves both kinds (`silver.NewReferenceStream`; [refdata.md](refdata.md) §2 maps
 each table to its gold table).
 
-- `compositions`, `lines`, `attributes`, `counterparties`, `fund_risk`
-  and `characteristics` describe a fund on a day. `as_of` is that day's
+- `compositions`, `lines`, `attributes`, `counterparties`, `fund_risk`,
+  `fund_returns` and `characteristics` describe a fund on a day. `as_of` is that day's
   UTC midnight.
 - `securities` and `security_facts` describe a security as one lookup
   found it on a day.
