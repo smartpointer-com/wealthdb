@@ -180,6 +180,7 @@ func (s *mcpServer) tools() []toolSpec {
 				stringParam("annualize", "auto (default; only spans of a year or more), always, never.", returnsAnnualize...),
 				param{name: "netting", kind: paramBoolean, doc: "Net internal transfers at coarse grains (default true)."},
 				stringParam("inception", "full (default) or strict.", returnsInception...),
+				stringParam("benchmark", benchmarkParamDoc("view=global only: the benchmark beside each row, over the days both sides have.")),
 				sourceParam, accountParam,
 			),
 			family: returnsFamily,
@@ -222,6 +223,7 @@ func (s *mcpServer) tools() []toolSpec {
 				stringParam("as_of", "As-of date. Default today."),
 				stringParam("country", "countries and securities: the country a security counts in, risk (default) or domicile.",
 					exposureCountryBases...),
+				stringParam("benchmark", benchmarkParamDoc("the benchmark's weight of each row and the row's share less it; not on situs, funds or coverage, and no period.")),
 			}, seriesParams(exposureSeriesViews)...)...),
 			family: exposureFamily,
 		},
@@ -520,7 +522,7 @@ var returnsFamily = &family{
 	prepare: func(a *toolArgs, req *request, _ *[]string) error {
 		if req.view == "stated" {
 			// The document fixes the periods and the currency.
-			for _, name := range []string{"currency", "method", "period", "annualize", "netting", "inception"} {
+			for _, name := range []string{"currency", "method", "period", "annualize", "netting", "inception", "benchmark"} {
 				if a.has(name) {
 					return fmt.Errorf("returns: stated takes no %s — the periods and the currency are the document's", name)
 				}
@@ -532,7 +534,8 @@ var returnsFamily = &family{
 		req.annualize = orDefault(a.str("annualize"), "auto")
 		req.inception = orDefault(a.str("inception"), "full")
 		req.netting = a.flag("netting", true)
-		return nil
+		req.benchmark = a.str("benchmark")
+		return checkReturnsBenchmark(req.view, req.benchmark)
 	},
 	build: func(cfg *config.Config, req request, _ *toolArgs) *report {
 		if req.view == "stated" {
@@ -554,6 +557,9 @@ var returnsFamily = &family{
 		if req.inception != "full" {
 			h = append(h, "inception="+req.inception)
 		}
+		if req.benchmark != "" {
+			h = append(h, "benchmark="+req.benchmark)
+		}
 		return h
 	},
 }
@@ -573,14 +579,22 @@ var exposureFamily = &family{
 			}
 			req.country = a.str("country") // the enum admits exposureCountryBases alone
 		}
-		return seriesArg("exposure", exposureSeriesViews, a, req, notes)
+		if err := seriesArg("exposure", exposureSeriesViews, a, req, notes); err != nil {
+			return err
+		}
+		req.benchmark = a.str("benchmark")
+		return checkExposureBenchmark(req.view, req.benchmark, req.country, req.series)
 	},
 	build: func(_ *config.Config, req request, _ *toolArgs) *report { return exposureReport(req) },
 	header: func(req request) []string {
+		var h []string
 		if req.country == "domicile" {
-			return []string{"country by domicile"}
+			h = append(h, "country by domicile")
 		}
-		return nil
+		if req.benchmark != "" {
+			h = append(h, "benchmark="+req.benchmark)
+		}
+		return h
 	},
 }
 

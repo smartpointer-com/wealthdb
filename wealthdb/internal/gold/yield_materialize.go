@@ -30,7 +30,8 @@ func yieldInstants(toEpoch int64) []int64 {
 // currency at yieldInstants, and at toEpoch the projection's parts, the
 // rate table, the principals maturities return, every income line
 // received, and the cash flow projection's parts over a look-back of
-// lookback months (CashflowPlan). Each figure is the yield report's
+// lookback months (CashflowPlan); and at every instant each benchmark's
+// yield and duration. Each figure is the yield report's
 // (yield.Compute over YieldInputs), so the dashboard and the CLI agree.
 // It returns the number of rows written.
 // One transaction, so a reader sees the old tables or the new ones.
@@ -43,15 +44,21 @@ func MaterializeYield(ctx context.Context, db *sql.DB, toEpoch, computedAt int64
 	}
 	defer tx.Rollback() //nolint:errcheck — no-op after commit
 	for _, t := range []string{"report_yield_positions", "report_yield_buckets", "report_yield_parts",
-		"report_yield_rates", "report_yield_events", "report_yield_received", "report_cashflow_plan"} {
+		"report_yield_rates", "report_yield_events", "report_yield_received", "report_cashflow_plan",
+		"benchmark_yield"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t); err != nil {
 			return 0, fmt.Errorf("MaterializeYield %s: delete: %w", t, err)
 		}
 	}
 	m := yieldMaterializer{ctx: ctx, tx: tx, computedAt: computedAt}
+	mix, err := readBenchmarkMix(ctx, tx)
+	if err != nil {
+		return 0, fmt.Errorf("MaterializeYield: %w", err)
+	}
 	today := map[string]*yield.Book{}
 	// What depends on neither the currency nor the instant is read once.
 	shared := &yieldShared{}
+	var now *yield.Inputs
 	for _, at := range yieldInstants(toEpoch) {
 		// What does not depend on the currency is read once an instant.
 		base, err := readYieldBase(ctx, tx, at, shared)
@@ -71,6 +78,12 @@ func MaterializeYield(ctx context.Context, db *sql.DB, toEpoch, computedAt int64
 				today[ccy] = b
 			}
 		}
+		if at == toEpoch {
+			now = base.in
+		}
+	}
+	if err := m.benchmarks(ctx, mix, now, toEpoch); err != nil {
+		return 0, err
 	}
 	if err := m.projection(today); err != nil {
 		return 0, err

@@ -80,14 +80,14 @@
   ],
   "funds": [
     {
-      "instrument": "ortm", "from": "2023-06-30",
+      "instrument": "ortm", "benchmark": {"mu": "0.07", "sigma": "0.16"}, "from": "2023-06-30",
       "attributes": {"domicile": "US", "legal_form": "open-end fund", "replication": "physical", "ter": "0.03"},
       "lines": {"tvsd": "6.0", "qlmr": "5.0", "bkwf": "2.5", "vlcp": "3.5", "mrfk": "2.0", "qlvn": "8.0", "brsk": "7.5",
                 "hldw": "6.0", "mrvx": "5.5", "clnb": "4.5", "fnwk": "6.5", "ardl": "5.5", "glmh": "6.0", "prsv": "4.0",
                 "kstr": "4.5", "tndl": "4.0", "vrbm": "2.5", "lmwt": "3.0", "stvl": "5.0", "rdmr": "2.5", "obsk": "1.0"}
     },
     {
-      "instrument": "orie", "from": "2023-06-30",
+      "instrument": "orie", "benchmark": {"mu": "0.06", "sigma": "0.17"}, "from": "2023-06-30",
       "attributes": {"domicile": "US", "legal_form": "open-end fund", "replication": "physical", "ter": "0.07", "hedged_currency": "USD"},
       "lines": {"rhwc": "7.0", "csnr": "6.0", "rtbw": "8.0", "thbr": "6.5", "kmnr": "10.0", "tswg": "9.0", "brmb": "7.5",
                 "nrtw": "8.5", "vldr": "8.0", "lkva": "6.0", "hvbo": "9.5", "crvl": "5.0", "almd": "4.5", "hnsl": "4.0"}
@@ -99,7 +99,7 @@
                 "tndl": "8.5", "vlcp": "8.0", "clnb": "8.0", "stvl": "8.5"}
     },
     {
-      "instrument": "orab", "from": "2023-06-30", "net_assets": "18400000000", "risk": true,
+      "instrument": "orab", "benchmark": {"mu": "0.03", "sigma": "0.05"}, "from": "2023-06-30", "net_assets": "18400000000", "risk": true,
       "attributes": {"domicile": "US", "legal_form": "open-end fund", "replication": "sampled", "ter": "0.04"},
       "lines": {"tn32": "22.0", "tb41": "6.0", "ti33": "6.0", "tf28": "7.0", "elsm": "7.0", "oxmr30": "8.0",
                 "fnwb": "10.0", "kstb": "9.0", "lksp": "17.0", "astw": "6.0"}

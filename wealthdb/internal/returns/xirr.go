@@ -23,6 +23,7 @@ var (
 
 const (
 	xirrDayBasis  = 365.25  // annualization day-count
+	xirrGuess     = 0.1     // Newton's first guess with no better one
 	xirrRateFloor = -0.9999 // hard lower bound: never report worse than ~-100%
 	xirrRateCeil  = 100.0   // upper search bound (10,000%/yr)
 	xirrScanStep  = 0.01    // bracket-scan resolution for the bisection fallback
@@ -50,7 +51,14 @@ type datedCF struct {
 // with only [-v0, +v1] has a single sign change and would yield the holding
 // period return dressed up as an IRR. Treat len(flows)==0 as mwr_no_flows.
 func XIRR(v0, v1 float64, startDay, endDay int64, flows []Flow) (float64, error) {
-	return xirr(investorCFs(v0, v1, startDay, endDay, flows))
+	return XIRRFrom(xirrGuess, v0, v1, startDay, endDay, flows)
+}
+
+// XIRRFrom is XIRR with Newton's first guess given: a nearby rate, such
+// as the previous month end's, cuts a run of solves to a few iterations
+// each.
+func XIRRFrom(guess, v0, v1 float64, startDay, endDay int64, flows []Flow) (float64, error) {
+	return xirr(investorCFs(v0, v1, startDay, endDay, flows), guess)
 }
 
 // investorCFs assembles the investor cash-flow vector: pay in the opening value
@@ -66,7 +74,7 @@ func investorCFs(v0, v1 float64, startDay, endDay int64, flows []Flow) []datedCF
 	return cfs
 }
 
-func xirr(cfs []datedCF) (float64, error) {
+func xirr(cfs []datedCF, guess float64) (float64, error) {
 	if len(cfs) < 2 {
 		return 0, ErrNoFlows
 	}
@@ -106,8 +114,8 @@ func xirr(cfs []datedCF) (float64, error) {
 		return s
 	}
 
-	// Newton-Raphson from a 10% guess.
-	r := 0.1
+	// Newton-Raphson from the guess.
+	r := guess
 	for i := 0; i < newtonMaxIter; i++ {
 		if 1.0+r <= 0 {
 			break // out of domain → bisection
@@ -212,4 +220,75 @@ func MWRSignChanges(v0, v1 float64, startDay, endDay int64, flows []Flow) int {
 		prevSign = s
 	}
 	return changes
+}
+
+// FlowSeries is a window's flows prepared for a run of solves from one
+// start day to one end day after another: netted by day, as a day's flows
+// discount alike, with each day's time held in years.
+type FlowSeries struct {
+	start int64
+	flows []Flow    // one per day, ascending
+	years []float64 // flows[i]'s time since start
+}
+
+// NewFlowSeries prepares flows, sorted by day, that fall after start.
+func NewFlowSeries(start int64, flows []Flow) *FlowSeries {
+	s := &FlowSeries{start: start}
+	for _, f := range flows {
+		if f.Day <= start {
+			continue
+		}
+		if n := len(s.flows); n > 0 && s.flows[n-1].Day == f.Day {
+			s.flows[n-1].Amount += f.Amount
+			continue
+		}
+		s.flows = append(s.flows, Flow{Day: f.Day, Amount: f.Amount})
+		s.years = append(s.years, float64(f.Day-start)/xirrDayBasis)
+	}
+	return s
+}
+
+// Upto is the netted flows through day end.
+func (s *FlowSeries) Upto(end int64) []Flow {
+	i, _ := slices.BinarySearchFunc(s.flows, end+1, func(f Flow, day int64) int { return cmp.Compare(f.Day, day) })
+	return s.flows[:i]
+}
+
+// Solve is XIRRFrom over the first n flows, with v0 at the start and v1
+// on day end: Newton's method from guess, one exponential per flow and
+// step. A step it cannot take goes to XIRRFrom's fallbacks.
+func (s *FlowSeries) Solve(guess, v0, v1 float64, end int64, n int) (float64, error) {
+	years, last := s.years[:n], float64(end-s.start)/xirrDayBasis
+	r, stalled := guess, false
+	for i := 0; i < newtonMaxIter; i++ {
+		if 1+r <= 0 {
+			break
+		}
+		log := math.Log1p(r)
+		endValue := v1 * math.Exp(-last*log)
+		f, d := endValue-v0, -last*endValue
+		for k, t := range years {
+			pv := -s.flows[k].Amount * math.Exp(-t*log)
+			f += pv
+			d -= t * pv
+		}
+		d /= 1 + r
+		if math.Abs(f) < npvTol {
+			return r, nil
+		}
+		next := r - f/d
+		if d == 0 || math.IsNaN(next) || math.IsInf(next, 0) || next <= xirrRateFloor {
+			break
+		}
+		// A step that stalls is a root only where the value is near zero,
+		// as in xirr; the next pass reads it, and a second stall falls back.
+		if math.Abs(next-r) < stepTol {
+			if stalled {
+				break
+			}
+			stalled = true
+		}
+		r = next
+	}
+	return XIRRFrom(guess, v0, v1, s.start, end, s.flows[:n])
 }

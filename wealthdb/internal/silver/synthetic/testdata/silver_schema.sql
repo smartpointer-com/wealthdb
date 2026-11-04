@@ -326,6 +326,17 @@ CREATE TABLE fund_risk (
     PRIMARY KEY (fund_ref, as_of, currency, tenor)
 );
 
+CREATE TABLE fund_returns (
+    fund_ref      TEXT    NOT NULL,
+    as_of         INTEGER NOT NULL,
+    month         TEXT    NOT NULL,
+    class_id      TEXT,
+    total_return  TEXT    NOT NULL,
+    run_at        INTEGER NOT NULL,
+    payload       TEXT    NOT NULL DEFAULT '{}',
+    PRIMARY KEY (fund_ref, as_of, month)
+);
+
 CREATE TABLE characteristics (
     fund_ref   TEXT    NOT NULL,
     as_of      INTEGER NOT NULL,

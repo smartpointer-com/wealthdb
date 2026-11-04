@@ -276,6 +276,11 @@ const returnsGainsQualityHelp = `The returns quality column gives the reason for
 - pre_fx_history: part of the window lies before the exchange-rate history begins.
 - flows_before_inception: money moved before the date the measurement starts; it counts in no window.
 - after_tax: the return is net of the fees and taxes paid.
+- benchmark_start_clipped, benchmark_end_clipped: the benchmark's months start later or end sooner than the window; compared_from and compared_to say which days the figures cover.
+- benchmark_gap: a month of the span has no return for a fund of the mix, so the benchmark has none.
+- benchmark_partial_period: the benchmark's months end inside the bucket.
+- benchmark_no_overlap: the window and the benchmark's months share no day.
+- shadow_nonpositive: the flows took out more than the same money in the benchmark held.
 - no_engine_row: (view=stated) the engine has no monthly row for a month of the stated period; the account's own tags follow.
 Other tags name their reason the same way.
 

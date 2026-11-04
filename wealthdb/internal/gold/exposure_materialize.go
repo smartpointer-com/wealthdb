@@ -70,8 +70,9 @@ const exposureHoldingsSQL = `SELECT '%s' AS out_ccy, src, acct, position_key, va
 // toEpoch, in every reporting currency, grouped by the dimensions the
 // Metabase Exposure dashboard charts and the source and tax wrapper its
 // pickers narrow to; and the debt, issuer and security tables at the
-// recent instants (materializeExposureRecent). It returns the number of
-// rows written. One transaction, so a reader sees the old tables or the
+// recent instants (materializeExposureRecent); and at toEpoch each
+// benchmark's look-through (materializeBenchmarkExposure). It returns the
+// number of rows written. One transaction, so a reader sees the old tables or the
 // new ones.
 func MaterializeExposure(ctx context.Context, db *sql.DB, toEpoch, computedAt int64) (int, error) {
 	// Every month end reads the same endings and spans.
@@ -112,6 +113,11 @@ func MaterializeExposure(ctx context.Context, db *sql.DB, toEpoch, computedAt in
 	}
 	k, err := materializeExposureRecent(ctx, tx, toEpoch, computedAt, parts)
 	if err != nil {
+		return 0, err
+	}
+	n += k
+	// The virtual holdings shadow exposure_holdings, so they come last.
+	if k, err = materializeBenchmarkExposure(ctx, tx, toEpoch, computedAt); err != nil {
 		return 0, err
 	}
 	n += k

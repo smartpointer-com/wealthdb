@@ -113,6 +113,52 @@ def asked(reqs):
     return [(r.provider, r.as_of, r.facts, r.fallbacks) for r in reqs]
 
 
+def benchmark_fund(**kw):
+    return {**held(roles=["benchmark"], held_from="2026-07-15", wants=["monthly_returns"], **kw),
+            "history_from": "2026-01-01"}
+
+
+def filing_fund(registry):
+    (filing,) = registry(_Facts("filing", {"monthly_returns"}, latest_=date(2026, 6, 30),
+                                dates_=[date(2025, 12, 31), date(2026, 3, 31), date(2026, 6, 30)]))
+    return filing
+
+
+def test_a_backfill_reads_returns_from_history_from_and_no_past_composition(registry):
+    doc = wanted_doc([benchmark_fund(compositions=["2026-07-10"])], version=4)
+    reqs, _, _ = plan(doc, [filing_fund(registry)], backfill=True)
+    # The newest as the current answer, then each filing from history_from on.
+    assert [r.as_of for r in reqs] == [None, date(2026, 3, 31)]
+    assert all(r.facts == ("monthly_returns",) and not r.compositions for r in reqs)
+
+
+def test_a_composition_fetched_earlier_does_not_have_the_returns(registry):
+    doc = wanted_doc([benchmark_fund(compositions=["2026-03-31", "2026-07-10"],
+                                     facts={"monthly_returns": ["2026-06-30"]})], version=4)
+    earlier = Fetched.of(funds={("filing", REF, date(2026, 3, 31)): date(2026, 4, 1)})
+    reqs, _, _ = plan(doc, [filing_fund(registry)], backfill=True, earlier=earlier)
+    assert [r.as_of for r in reqs] == [date(2026, 3, 31)]
+
+
+def test_gold_s_days_and_a_request_that_asked_count_as_having_them(registry):
+    doc = wanted_doc([benchmark_fund(compositions=["2026-07-10"], facts={"monthly_returns": ["2026-03-31"]})], version=4)
+    earlier = Fetched.of(fact_days={("filing", REF, "monthly_returns"): {date(2026, 6, 30)}})
+    reqs, _, _ = plan(doc, [filing_fund(registry)], backfill=True, earlier=earlier)
+    assert reqs == []
+
+
+def test_a_benchmark_fund_with_no_backfill_asks_for_its_newest_filing_only(registry):
+    doc = wanted_doc([benchmark_fund(compositions=["2026-07-10"])], version=4)
+    assert [r.as_of for r in plan(doc, [filing_fund(registry)])[0]] == [None]
+
+
+def test_a_benchmark_fund_wants_its_current_composition(registry):
+    comp = registry(_Facts("comp"))[0]
+    doc = wanted_doc([benchmark_fund()], version=4)
+    (r,) = plan(doc, [comp])[0]
+    assert r.as_of is None and r.compositions
+
+
 def test_a_fact_is_asked_of_its_provider_beside_the_one_serving_compositions(registry):
     comp, issuer = registry(_Facts("comp"), _Facts("issuer", {"characteristics"}))
     doc = v2([held(compositions=["2026-05-29"], wants=["characteristics"])])

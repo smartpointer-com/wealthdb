@@ -216,7 +216,9 @@ Never echo any of them wholesale.
   `stale_snapshot`. Account rows are exact, coarser views best-effort;
   returns never add across views. Cash accounts and deposit banks have no
   rows of their own (their money still counts in `global`); a card is in
-  no return at all.
+  no return at all. `--benchmark NAME` on `returns global` and on
+  `exposure` sets a fund mix beside the figures (`wealthdb help benchmarks`
+  lists them); its months lag by two to five, so read `compared_to`.
 - **Exposure.** Every view sums to net worth: `share_pct` is of net worth
   (a loan is negative); `class_share_pct` is within the row's own
   dimension (its asset class in `sectors` and `sizes`; the debt and cash

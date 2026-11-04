@@ -892,6 +892,9 @@ func stampSnapshotBatch(b *canonical.SnapshotBatch, sourceID string) {
 	for i := range b.FundRisk {
 		b.FundRisk[i].SilverSourceID = sourceID
 	}
+	for i := range b.FundReturns {
+		b.FundReturns[i].SilverSourceID = sourceID
+	}
 	for i := range b.FundCharacteristics {
 		b.FundCharacteristics[i].SilverSourceID = sourceID
 	}

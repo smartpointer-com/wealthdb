@@ -211,6 +211,13 @@
   },
 
   "config": {
+    "benchmarks": {
+      "S&P 500": {"symbol:ORTM": 100},
+      "World (ACWI)": {"symbol:ORTM": 60, "symbol:ORIE": 40},
+      "US total bond market": {"symbol:ORAB": 100},
+      "Global 60/40": {"symbol:ORTM": 36, "symbol:ORIE": 24, "symbol:ORAB": 40},
+      "Global 80/20": {"symbol:ORTM": 48, "symbol:ORIE": 32, "symbol:ORAB": 20}
+    },
     "account_overrides": {"quayvane": {"qv-ira-01": {"nickname": "Sam's rollover IRA"}}},
     "returns_policy_overrides": {"homestead": {"flow_regime": "nav_only"}, "tessarite": {"flow_regime": "crypto_partial"}},
     "lots": {"sources": {"tessarite": {"mode": "fill"}}},

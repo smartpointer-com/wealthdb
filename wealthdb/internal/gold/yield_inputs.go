@@ -491,6 +491,23 @@ func (b *yieldBase) readFunds(ctx context.Context, db querier, in *yield.Inputs)
 // of its composition at the instant say, and the share of its filing's
 // lines that float, with the name the filing gives it.
 func readYieldFunds(ctx context.Context, db querier, in *yield.Inputs, keys []string) (map[string]*fundRead, error) {
+	out, err := readFundFigures(ctx, db, in, keys)
+	if err != nil {
+		return nil, err
+	}
+	list, args := sqlList(keys, "")
+	if err := readFundFilings(ctx, db, in, out, list, args); err != nil {
+		return nil, err
+	}
+	if err := readFundLines(ctx, db, in, out, list, args); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// readFundFigures is readYieldFunds' figures and rate sensitivities
+// alone: neither the filing's lines nor the composition's.
+func readFundFigures(ctx context.Context, db querier, in *yield.Inputs, keys []string) (map[string]*fundRead, error) {
 	out := make(map[string]*fundRead, len(keys))
 	for _, k := range keys {
 		out[k] = &fundRead{fund: &yield.Fund{}}
@@ -551,12 +568,6 @@ SELECT r.key, r.as_of, r.currency, r.tenor, r.dv01, MAX(c.net_assets)::DOUBLE
 		f.Risk[ccy][tenor] = dv01
 		return nil
 	}, args(in.AsOf, in.AsOf)...); err != nil {
-		return nil, err
-	}
-	if err := readFundFilings(ctx, db, in, out, list, args); err != nil {
-		return nil, err
-	}
-	if err := readFundLines(ctx, db, in, out, list, args); err != nil {
 		return nil, err
 	}
 	return out, nil

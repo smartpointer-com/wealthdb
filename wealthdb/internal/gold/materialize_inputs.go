@@ -49,6 +49,7 @@ var loadKeyTables = []string{
 	"exposure_declaration_leaves",
 	"exposure_custody",
 	"exposure_settings",
+	"benchmark_funds",
 	"yield_curves",
 	"yield_withholding",
 	"yield_withholding_accounts",

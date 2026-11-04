@@ -252,6 +252,20 @@ type FundRiskChange struct {
 	Payload        json.RawMessage
 }
 
+// FundReturnChange is one insert into gold's `fund_returns`: a fund's
+// total return for one month, as the filing of day AsOf states it for
+// the share class its reference maps to. Month is the month's last day,
+// YYYY-MM-DD. TotalReturn is in percent.
+type FundReturnChange struct {
+	SilverSourceID string
+	FundRef        string
+	AsOf           int64
+	Month          string
+	ClassID        *string
+	TotalReturn    Decimal
+	Payload        json.RawMessage
+}
+
 // FundCharacteristicChange is one insert into gold's
 // `fund_characteristics`: one figure a provider states for a fund as a
 // whole on one day. Field names the figure (effective_duration,

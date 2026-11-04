@@ -17,7 +17,7 @@ func TestEveryReferenceTableHasAKind(t *testing.T) {
 	for _, k := range canonical.RefKinds {
 		kinds[k] = true
 	}
-	tables := slices.Concat(ReferenceTables, ReferenceYieldTables, []string{ReferenceCalendarTable})
+	tables := slices.Concat(ReferenceTables, ReferenceYieldTables, []string{ReferenceCalendarTable, ReferenceReturnsTable})
 	for _, table := range tables {
 		if kind := ReferenceTableKinds[table]; !kinds[kind] {
 			t.Errorf("%s names kind %q, want one of the reference kinds", table, kind)
@@ -26,10 +26,10 @@ func TestEveryReferenceTableHasAKind(t *testing.T) {
 	if len(ReferenceTableKinds) != len(tables) {
 		t.Errorf("ReferenceTableKinds has %d tables, the reference tables are %d", len(ReferenceTableKinds), len(tables))
 	}
-	run := ReferenceRunTables(ReferenceSchema{Yield: true, Calendar: true})
+	run := ReferenceRunTables(ReferenceSchema{Yield: true, Calendar: true, Returns: true})
 	for _, table := range tables {
 		if slices.Contains(run, table) == (table == "lines") {
-			t.Errorf("ReferenceRunTables at v3 = %v, want every reference table but lines", run)
+			t.Errorf("ReferenceRunTables at v4 = %v, want every reference table but lines", run)
 		}
 	}
 	if v1 := ReferenceRunTables(ReferenceSchema{}); slices.ContainsFunc(v1, func(t string) bool {

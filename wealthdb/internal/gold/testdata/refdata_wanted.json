@@ -1,6 +1,6 @@
 {
   "contract": "refdata-wanted",
-  "version": 3,
+  "version": 4,
   "generated_at": "2026-10-13T09:30:00Z",
   "as_of": "2026-10-13",
   "settings": {
@@ -24,7 +24,8 @@
         "characteristics",
         "dividend_calendar"
       ],
-      "facts": {}
+      "facts": {},
+      "history_from": null
     },
     {
       "ref": "isin:XX0000000017",
@@ -40,7 +41,8 @@
       "held_to": null,
       "compositions": [],
       "wants": [],
-      "facts": {}
+      "facts": {},
+      "history_from": null
     },
     {
       "ref": "symbol:BNDF",
@@ -74,7 +76,8 @@
         "risk_metrics": [
           "2026-06-30"
         ]
-      }
+      },
+      "history_from": null
     },
     {
       "ref": "symbol:FUNDA",
@@ -95,7 +98,8 @@
         "characteristics",
         "dividend_calendar"
       ],
-      "facts": {}
+      "facts": {},
+      "history_from": null
     },
     {
       "ref": "symbol:FUNDB",
@@ -116,7 +120,8 @@
         "line_durations",
         "dividend_calendar"
       ],
-      "facts": {}
+      "facts": {},
+      "history_from": null
     },
     {
       "ref": "symbol:IDX1",
@@ -136,7 +141,8 @@
         "risk_metrics": [
           "2026-01-31"
         ]
-      }
+      },
+      "history_from": null
     },
     {
       "ref": "symbol:IDX9",
@@ -152,7 +158,8 @@
       "held_to": null,
       "compositions": [],
       "wants": [],
-      "facts": {}
+      "facts": {},
+      "history_from": null
     },
     {
       "ref": "symbol:MMF1",
@@ -183,7 +190,8 @@
         "money_market": [
           "2026-10-09"
         ]
-      }
+      },
+      "history_from": null
     }
   ],
   "securities": [

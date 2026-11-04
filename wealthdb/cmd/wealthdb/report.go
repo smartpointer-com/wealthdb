@@ -74,6 +74,7 @@ type request struct {
 
 	method, annualize, inception string // returns
 	netting                      bool   // returns
+	benchmark                    string // returns global, exposure: the benchmark beside the rows
 
 	withCash     bool              // holdings positions
 	country      string            // exposure: risk | domicile

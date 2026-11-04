@@ -51,7 +51,7 @@ JITTER = "0.05"
 
 # The silver tables the reference records fill.
 TABLES = ("compositions", "lines", "attributes", "counterparties", "securities", "security_facts",
-          "fund_risk", "characteristics", "period_facts", "dividend_events")
+          "fund_risk", "fund_returns", "characteristics", "period_facts", "dividend_events")
 
 # The tenors a filing states a fund's rate sensitivity at, in years
 # (canonical.RiskTenors), and the currency of its credit-spread rows.
@@ -423,6 +423,24 @@ def dividend_events(calendar, inst, key, first, as_of):
     return out
 
 
+def _monthly_returns(seed, ref, fund, day, at):
+    """What a quarter's filing states of the fund: its total return for
+    each of the quarter's months, in percent, drawn from the fund's
+    `benchmark` drift and volatility, keyed by the month alone. So a
+    month reads the same in any build, and no return comes from the
+    market that prices the holdings."""
+    model = fund["benchmark"]
+    out = []
+    for back in (2, 1, 0):
+        month = dates.add_months(day.replace(day=1), -back)
+        end = dates.month_end(month.year, month.month)
+        r = keyed.rng(seed, "fund-return", fund["instrument"], end.isoformat())
+        pct = 100 * (D(model["mu"]) / 12 + D(model["sigma"]) / D(12).sqrt() * keyed.normal(r))
+        out.append({"fund_ref": ref, "as_of": at, "month": end.isoformat(), "total_return": text(pct, 8),
+                    "run_at": at, "payload": "{}"})
+    return out
+
+
 def rows(inputs, seed, as_of, curve):
     """Every reference row dated on or before as_of, per table, and every
     company figure filed by then, its bonds priced off `curve`, the dollar
@@ -460,6 +478,8 @@ def rows(inputs, seed, as_of, curve):
                                                             a["ter"])
                     if day.month % 3 == 0:
                         out["fund_risk"] += _risk(ref, at, nav, weights, bonds, listed)
+            if "benchmark" in fund and day.month % 3 == 0:
+                out["fund_returns"] += _monthly_returns(seed, ref, fund, day, at)
             if payout:
                 r = keyed.rng(seed, "fund-yield", fund["instrument"], day.isoformat())
                 out["characteristics"].append(_figure(ref, at, cat["provider"], "distribution_yield",

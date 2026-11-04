@@ -120,6 +120,54 @@ def test_the_tenors_and_the_spread_currency_are_the_engines():
     assert m.NO_CURRENCY == go_const(refdata, "NoCurrency")
 
 
+def returns(share_class, doc=None):
+    return parse_nport(FIXTURE.read_bytes() if doc is None else doc, "symbol:EXMP", provider="sec-nport",
+                       share_class=share_class).fund_returns
+
+
+def test_a_filing_states_the_three_months_of_the_share_class():
+    rows = returns("C000000001")
+    assert [(r["month"], r["class_id"], r["total_return"]) for r in rows] == [
+        (date(2026, 6, 30), "C000000001", "3"), (date(2026, 5, 31), "C000000001", "-2.5"),
+        (date(2026, 4, 30), "C000000001", "1")]
+    assert {r["as_of"] for r in rows} == {date(2026, 6, 30)}
+
+
+def test_a_month_the_class_leaves_blank_has_no_row():
+    assert [r["month"] for r in returns("C000000002")] == [date(2026, 5, 31), date(2026, 4, 30)]
+
+
+def test_another_class_of_the_fund_is_another_fund():
+    assert returns("C000000009") == []
+
+
+def test_a_fund_with_no_class_takes_the_only_one_its_filing_names():
+    assert returns(None) == []
+    doc = FIXTURE.read_bytes().replace(
+        b'<monthlyTotReturn classId="C000000002" rtn1="0.90000000" rtn2="-2.60000000" rtn3="N/A"/>', b"")
+    assert len(returns(None, doc)) == 3
+
+
+def test_a_filing_without_returns_has_no_rows():
+    assert bond_fund().fund_returns == []
+
+
+@pytest.mark.parametrize("day, back, end", [
+    (date(2026, 3, 31), 2, date(2026, 1, 31)),
+    (date(2026, 2, 27), 0, date(2026, 2, 28)),     # a report date that is no month end
+    (date(2026, 1, 31), 1, date(2025, 12, 31)),
+    (date(2024, 4, 30), 2, date(2024, 2, 29)),
+])
+def test_month_end(day, back, end):
+    assert m._month_end(day, back) == end
+
+
+def test_the_share_class_comes_from_the_filings_meta(tmp_path):
+    (tmp_path / "primary_doc.xml").write_bytes(FIXTURE.read_bytes())
+    (tmp_path / "meta.json").write_text('{"ref": "symbol:EXMP", "class": "C000000002"}')
+    assert {r["class_id"] for r in SecNport().parse(tmp_path).fund_returns} == {"C000000002"}
+
+
 def test_a_filing_without_risk_metrics_has_no_fund_risk_rows():
     assert parsed().fund_risk == []
     assert parse_nport(SWAP_DOC, "symbol:QSWP", provider="sec-nport").fund_risk == []

@@ -46,6 +46,10 @@ var ReferenceYieldTables = []string{"fund_risk", "characteristics", "period_fact
 // ReferenceCalendarTable is the table schema v3 adds: the distributions.
 const ReferenceCalendarTable = "dividend_events"
 
+// ReferenceReturnsTable is the table schema v4 adds: a fund's monthly
+// returns.
+const ReferenceReturnsTable = "fund_returns"
+
 // ReferenceTableKinds names the kind of record each reference table's
 // rows are (canonical.Window.Spans). A fund's tables, lines among them,
 // are its fund-days; each security table is a kind of its own.
@@ -53,15 +57,17 @@ var ReferenceTableKinds = map[string]string{
 	"compositions": canonical.RefFundDays, "lines": canonical.RefFundDays,
 	"attributes": canonical.RefFundDays, "counterparties": canonical.RefFundDays,
 	"fund_risk": canonical.RefFundDays, "characteristics": canonical.RefFundDays,
-	"securities": canonical.RefSecurities, "security_facts": canonical.RefSecurityFacts,
+	ReferenceReturnsTable: canonical.RefFundDays,
+	"securities":          canonical.RefSecurities, "security_facts": canonical.RefSecurityFacts,
 	"period_facts": canonical.RefPeriodFacts, ReferenceCalendarTable: canonical.RefDividendEvents,
 }
 
 // ReferenceSchema says which of the later schema versions' tables a
-// reference silver holds: v2's (ReferenceYieldTables) and v3's
-// (ReferenceCalendarTable). A file last migrated before a version lacks
-// its tables and reads as stating none of their records.
-type ReferenceSchema struct{ Yield, Calendar bool }
+// reference silver holds: v2's (ReferenceYieldTables), v3's
+// (ReferenceCalendarTable) and v4's (ReferenceReturnsTable). A file last
+// migrated before a version lacks its tables and reads as stating none
+// of their records.
+type ReferenceSchema struct{ Yield, Calendar, Returns bool }
 
 // ProbeReferenceSchema reads which of the later versions' tables db
 // holds.
@@ -71,7 +77,10 @@ func ProbeReferenceSchema(ctx context.Context, db *sql.DB) (ReferenceSchema, err
 	if s.Yield, err = HasTables(ctx, db, ReferenceYieldTables...); err != nil {
 		return s, err
 	}
-	s.Calendar, err = HasTables(ctx, db, ReferenceCalendarTable)
+	if s.Calendar, err = HasTables(ctx, db, ReferenceCalendarTable); err != nil {
+		return s, err
+	}
+	s.Returns, err = HasTables(ctx, db, ReferenceReturnsTable)
 	return s, err
 }
 
@@ -86,6 +95,9 @@ func ReferenceRunTables(s ReferenceSchema) []string {
 	}
 	if s.Calendar {
 		tables = append(tables, ReferenceCalendarTable)
+	}
+	if s.Returns {
+		tables = append(tables, ReferenceReturnsTable)
 	}
 	return slices.DeleteFunc(tables, func(t string) bool { return t == "lines" })
 }
@@ -128,8 +140,10 @@ type referenceStream struct {
 	// file has none.
 	yield           bool
 	lineYieldSelect string
-	days            []fundDay
-	next            int
+	// returns says the file holds the v4 table.
+	returns bool
+	days    []fundDay
+	next    int
 	// The cursors of the three security tables and the distributions.
 	secs, facts, periods, events keyset
 }
@@ -150,7 +164,7 @@ func NewReferenceStream(ctx context.Context, db *sql.DB, w canonical.Window) (Sn
 	if err != nil {
 		return nil, err
 	}
-	s := &referenceStream{db: db, w: w, yield: schema.Yield,
+	s := &referenceStream{db: db, w: w, yield: schema.Yield, returns: schema.Returns,
 		lineYieldSelect: strings.Repeat(", NULL", len(ReferenceLineYieldColumns)),
 		secs:            keyset{after: []any{"", int64(-1), ""}, done: !w.Changes(canonical.RefSecurities)},
 		facts:           keyset{after: []any{"", "", int64(-1), ""}, done: !w.Changes(canonical.RefSecurityFacts)},
@@ -228,6 +242,9 @@ func (s *referenceStream) readFundDay(ctx context.Context, d fundDay, b *canonic
 	}
 	if s.yield {
 		readers = append(readers, s.readFundRisk, s.readCharacteristics)
+	}
+	if s.returns {
+		readers = append(readers, s.readFundReturns)
 	}
 	for _, read := range readers {
 		if err := read(ctx, d, b); err != nil {
@@ -396,6 +413,36 @@ SELECT currency, tenor, dv01, dv100, credit_ig_dv01, credit_hy_dv01, payload
 			FundRef: d.ref, AsOf: d.asOf, Currency: ccy, Tenor: tenor,
 			DV01: DecimalPtrOrNil(dv01), DV100: DecimalPtrOrNil(dv100),
 			CreditIGDV01: DecimalPtrOrNil(ig), CreditHYDV01: DecimalPtrOrNil(hy),
+			Payload: JSONOrNil(payload),
+		})
+	}
+	return rows.Err()
+}
+
+// readFundReturns reads a fund-day's monthly returns. A return that is no
+// decimal fails the load: the figure is the row's whole point.
+func (s *referenceStream) readFundReturns(ctx context.Context, d fundDay, b *canonical.SnapshotBatch) error {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT month, class_id, total_return, payload
+  FROM fund_returns WHERE fund_ref = ? AND as_of = ? ORDER BY month`, d.ref, d.asOf)
+	if err != nil {
+		return fmt.Errorf("reference fund returns: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			month, value   string
+			class, payload sql.NullString
+		)
+		if err := rows.Scan(&month, &class, &value, &payload); err != nil {
+			return fmt.Errorf("reference fund returns scan: %w", err)
+		}
+		total, err := canonical.NewDecimalFromString(value)
+		if err != nil {
+			return fmt.Errorf("reference fund returns: %s %s: %w", d.ref, month, err)
+		}
+		b.FundReturns = append(b.FundReturns, canonical.FundReturnChange{
+			FundRef: d.ref, AsOf: d.asOf, Month: month, ClassID: NullStringPtr(class), TotalReturn: total,
 			Payload: JSONOrNil(payload),
 		})
 	}

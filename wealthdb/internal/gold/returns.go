@@ -44,6 +44,10 @@ type ReturnRow struct {
 	MWRAnnualized *float64
 
 	Quality []string
+
+	// Benchmark is the benchmark beside the row, where a run asks for one
+	// (RunReturnsBenchmark).
+	Benchmark *BenchmarkRow
 }
 
 // ReturnParams configures a returns run.

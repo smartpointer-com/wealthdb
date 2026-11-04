@@ -249,6 +249,10 @@ type Config struct {
 	// Absent block ⇒ none of them and the default settings. See
 	// ExposureConfig and docs/EXPOSURE.md §9.
 	Exposure *ExposureConfig `json:"exposure,omitempty"`
+	// Benchmarks adds named fund mixes to the built-in set, or redefines
+	// a built-in one by its name (benchmarks.go). Absent block: the
+	// built-in set alone.
+	Benchmarks map[string]map[string]float64 `json:"benchmarks,omitempty"`
 	// Yield configures the yield report: the public rate curves, the
 	// tax withheld at source, the funds sliced by credit rating, coupon
 	// conventions, the projection's horizon and the sectors' cycles.

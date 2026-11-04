@@ -33,6 +33,12 @@ EDGAR.
   sign (fund_risk_signed). The credit-spread figures, for a one basis
   point move of investment-grade and of non-investment-grade spreads,
   are the fund's as a whole, under currency XXX.
+- Monthly returns: a filing states each share class's total return for
+  the three months that end at its report date, in percent
+  (fund_returns). Only the class the ticker maps to is kept: another
+  class of the fund is another fund, with other fees. A fund the ticker
+  file gives no class takes the one class its filing names, and a filing
+  that names several then has no row.
 
 N-PORT carries no sector. Public filings are quarterly and two to five
 months old, and quarter ends differ by fund.
@@ -43,6 +49,7 @@ Terms: README.md, sec-nport.
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+import calendar
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -85,7 +92,7 @@ class SecNport(Provider):
     name = "sec-nport"
     serves_funds = True
     needs_contact = True
-    facts = dated_facts = frozenset({"risk_metrics"})
+    facts = dated_facts = frozenset({"risk_metrics", "monthly_returns"})
     # The forms a submissions file names the filings by, amendments
     # included, and the types the series' browse feed is asked for, each
     # of which takes in its amendment.
@@ -213,7 +220,7 @@ class SecNport(Provider):
 
     def _parse_document(self, xml: bytes, meta: dict) -> Parsed:
         """The rows of one filing's document, read with its meta.json."""
-        return parse_nport(xml, meta["ref"], provider=self.name)
+        return parse_nport(xml, meta["ref"], provider=self.name, share_class=meta.get("class"))
 
     def probe(self, ctx) -> str:
         n = len(self._fund_tickers(ctx))
@@ -290,8 +297,9 @@ def find(el, name):
     return None
 
 
-def parse_nport(xml: bytes, ref: str, *, provider: str) -> Parsed:
-    """One N-PORT primary_doc.xml as silver rows for fund `ref`."""
+def parse_nport(xml: bytes, ref: str, *, provider: str, share_class: str | None = None) -> Parsed:
+    """One N-PORT primary_doc.xml as silver rows for fund `ref`, whose
+    ticker maps to `share_class`."""
     try:
         root = ET.fromstring(xml)
     except ET.ParseError as e:
@@ -375,6 +383,7 @@ def parse_nport(xml: bytes, ref: str, *, provider: str) -> Parsed:
                               share=dec(v["share"]) if v["share"] else None)
                           for (role, name), v in sorted(cps.items())]
     out.fund_risk = _fund_risk(fund_info, ref, as_of)
+    out.fund_returns = _fund_returns(fund_info, ref, as_of, share_class)
     return out
 
 
@@ -405,6 +414,31 @@ def _tenors(ref: str, as_of: date, currency: str, **elements) -> list:
         if any(v is not None for v in values.values()):
             out.append(row("fund_risk", fund_ref=ref, as_of=as_of, currency=currency, tenor=tenor, **values))
     return out
+
+
+def _fund_returns(fund_info, ref: str, as_of: date, share_class: str | None) -> list:
+    """The share class's total returns as fund_returns rows: rtn3 for the
+    month of the report date, rtn2 and rtn1 for the two months before. A
+    month the filing leaves blank has no row."""
+    stated = children(find(fund_info, "monthlyTotReturns"), "monthlyTotReturn") if fund_info is not None else []
+    if share_class is not None:
+        stated = [s for s in stated if s.get("classId") == share_class]
+    if len(stated) != 1:
+        return []
+    (el,) = stated
+    out = []
+    for back, attr in enumerate(("rtn3", "rtn2", "rtn1")):
+        value = dec(el.get(attr))
+        if value is not None:
+            out.append(row("fund_returns", fund_ref=ref, as_of=as_of, month=_month_end(as_of, back),
+                           class_id=blank_to_none(el.get("classId")), total_return=value))
+    return out
+
+
+def _month_end(day: date, back: int) -> date:
+    """The last day of the month `back` months before `day`'s."""
+    year, month = divmod(day.year * 12 + day.month - 1 - back, 12)
+    return date(year, month + 1, calendar.monthrange(year, month + 1)[1])
 
 
 def _flag(v):

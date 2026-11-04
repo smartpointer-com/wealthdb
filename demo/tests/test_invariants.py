@@ -618,6 +618,12 @@ class TestReference(Built):
             self.assertIn(r["fund_ref"], funds)
         for r in self.ref["period_facts"]:
             self.assertIn(r["security_key"], refs)
+        months = sorted(r["month"] for r in self.ref["fund_returns"] if r["fund_ref"] == "symbol:ORAB")
+        self.assertEqual(len(months), len(set(months)))
+        self.assertTrue(months)
+        for r in self.ref["fund_returns"]:
+            self.assertIn(r["fund_ref"], funds)
+            self.assertLess(abs(float(r["total_return"])), 40)
         labels = {r["label"] for r in self.ref["characteristics"] if r["field"] == "credit_quality"}
         self.assertLessEqual(labels, {*goref.rating_buckets(), reference.NOT_RATED})
         self.assertEqual(list(reference.RATINGS), goref.rating_buckets())

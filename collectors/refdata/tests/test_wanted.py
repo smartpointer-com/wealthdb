@@ -64,6 +64,16 @@ def test_parse_reads_the_calendar_of_version_3():
     assert (s.receipt, s.wants, s.calendar) == (False, (), None)
 
 
+def test_parse_reads_the_history_of_version_4():
+    (f,) = wanted.parse(wanted_doc(funds=[{"ref": "symbol:QIDX", "roles": ["benchmark"],
+                                           "wants": ["monthly_returns", "characteristics"],
+                                           "history_from": "2019-01-01"}], version=4)).funds
+    assert f.history_from == date(2019, 1, 1) and f.roles == ("benchmark",)
+    # A version 3 list states none.
+    (f,) = wanted.parse(wanted_doc(funds=[{"ref": "symbol:QIDX"}], version=3)).funds
+    assert f.history_from is None
+
+
 @pytest.mark.parametrize("doc,msg", [
     ({"contract": "other", "version": 1}, "not a refdata-wanted"),
     ({"contract": "refdata-wanted", "version": 9}, "version 9"),

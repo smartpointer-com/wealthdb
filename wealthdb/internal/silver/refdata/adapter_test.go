@@ -17,16 +17,19 @@ import (
 )
 
 // testdata/silver_schema.sql is collectors/refdata/migrations/0001_initial.sql,
-// 0002_yield_facts.sql and 0003_dividend_calendar.sql, one after the
-// other; the collector's tests check that it is the migrated schema.
+// 0002_yield_facts.sql, 0003_dividend_calendar.sql and
+// 0004_fund_returns.sql, one after the other; the collector's tests check
+// that it is the migrated schema.
 //
 //go:embed testdata/silver_schema.sql
 var silverSchemaSQL string
 
-// v2Header and v3Header open 0002's and 0003's parts of the schema.
+// v2Header, v3Header and v4Header open 0002's, 0003's and 0004's parts of
+// the schema.
 const (
 	v2Header = "-- refdata silver schema v2"
 	v3Header = "-- refdata silver schema v3"
+	v4Header = "-- refdata silver schema v4"
 )
 
 const (
@@ -65,6 +68,17 @@ func newV2Silver(t *testing.T) (string, *sql.DB) {
 		t.Fatalf("testdata/silver_schema.sql has no %q", v3Header)
 	}
 	return silvertest.NewDB(t, v2)
+}
+
+// newV3Silver is a silver its collector last loaded before migration
+// 0004: the schema's part before v4Header.
+func newV3Silver(t *testing.T) (string, *sql.DB) {
+	t.Helper()
+	v3, _, found := strings.Cut(silverSchemaSQL, v4Header)
+	if !found {
+		t.Fatalf("testdata/silver_schema.sql has no %q", v4Header)
+	}
+	return silvertest.NewDB(t, v3)
 }
 
 func openAdapter(t *testing.T, path string) silver.Connection {
@@ -735,6 +749,79 @@ func TestSnapshotsMapDividendEvents(t *testing.T) {
 			"<nil> <nil> estimated",
 	}
 	checkFields(t, "dividend events", lines, want)
+}
+
+// A fund-day carries its monthly returns, whichever filing states them.
+func TestSnapshotsReadFundReturns(t *testing.T) {
+	t.Parallel()
+	path, db := newFixtureSilver(t)
+	seed(t, db)
+	silvertest.Exec(t, db, `INSERT INTO fund_returns (fund_ref, as_of, month, class_id, total_return, run_at)
+	    VALUES ('isin:XX0000000001', ?, '2025-12-31', 'C000000001', '1.25', ?),
+	           ('isin:XX0000000001', ?, '2025-11-30', 'C000000001', '-0.5', ?)`, d1, run1, d1, run1)
+	conn := openAdapter(t, path)
+	w, err := conn.ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := silvertest.Merged(t, conn, w)
+	if len(got.FundReturns) != 2 {
+		t.Fatalf("returns = %+v, want 2 rows", got.FundReturns)
+	}
+	r := got.FundReturns[1]
+	if r.FundRef != "isin:XX0000000001" || r.AsOf != d1 || r.Month != "2025-12-31" || *r.ClassID != "C000000001" ||
+		r.TotalReturn.String() != "1.25" {
+		t.Errorf("return = %+v", r)
+	}
+}
+
+// A return that is no decimal fails the load.
+func TestSnapshotsRefuseAFundReturnThatIsNoDecimal(t *testing.T) {
+	t.Parallel()
+	path, db := newFixtureSilver(t)
+	seed(t, db)
+	silvertest.Exec(t, db, `INSERT INTO fund_returns (fund_ref, as_of, month, total_return, run_at)
+	    VALUES ('isin:XX0000000001', ?, '2025-12-31', 'n/a', ?)`, d1, run1)
+	conn := openAdapter(t, path)
+	w, err := conn.ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for {
+		_, more, err := stream.Next(context.Background())
+		if err != nil {
+			if !strings.Contains(err.Error(), "2025-12-31") {
+				t.Errorf("error %v names no month", err)
+			}
+			return
+		}
+		if !more {
+			t.Fatal("the load went through")
+		}
+	}
+}
+
+// A silver still at schema v3 has no fund_returns: it loads as before.
+func TestSnapshotsReadAV3Silver(t *testing.T) {
+	t.Parallel()
+	path, db := newV3Silver(t)
+	if ok, err := silver.HasTables(context.Background(), db, silver.ReferenceReturnsTable); err != nil || ok {
+		t.Fatalf("the v3 fixture holds fund_returns (%v)", err)
+	}
+	seed(t, db)
+	conn := openAdapter(t, path)
+	w, err := conn.ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := silvertest.Merged(t, conn, w); len(got.FundCompositions) != 4 || len(got.FundReturns) != 0 {
+		t.Errorf("v3 records = %d compositions, %d returns", len(got.FundCompositions), len(got.FundReturns))
+	}
 }
 
 // A silver still at schema v2 has no dividend_events: it loads as

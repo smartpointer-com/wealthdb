@@ -1,5 +1,6 @@
-"""load.write for the facts of schema v2 and v3: a fund's rate
-sensitivities go with its fund-day, its characteristics are replaced per
+"""load.write for the facts of schema v2 to v4: a fund's rate
+sensitivities and monthly returns go with its fund-day, its
+characteristics are replaced per
 provider, a company's figure for a period replaces the same provider's,
 and a dividend event the same provider's same event; a complete answer
 also drops the events it no longer states."""
@@ -39,6 +40,20 @@ def fact(value, filed):
                period_start=date(2026, 4, 1), provider="sec-edgar", value=value,
                scheme="us-gaap:EarningsPerShareDiluted", unit="USD/shares", fiscal_year=2026,
                fiscal_period="Q2", form="10-Q", filed=filed)
+
+
+def fund_return(month, pct, as_of=DAY):
+    return row("fund_returns", fund_ref=REF, as_of=as_of, month=month, class_id="C000000001", total_return=pct)
+
+
+def test_a_filings_returns_replace_those_of_its_day_alone(tmp_path):
+    conn = silver_db(tmp_path)
+    later = date(DAY.year + 1, DAY.month, DAY.day)
+    load.write(conn, Parsed(fund_returns=[fund_return("2026-05-31", "1"), fund_return("2026-06-30", "2")]), run_at=1)
+    load.write(conn, Parsed(fund_returns=[fund_return("2026-06-30", "9", later)]), run_at=2)
+    load.write(conn, Parsed(fund_returns=[fund_return("2026-06-30", "3")]), run_at=3)
+    assert fetch(conn, "SELECT month, total_return, run_at FROM fund_returns ORDER BY as_of, month") == [
+        ("2026-06-30", "3", 3), ("2026-06-30", "9", 2)]
 
 
 def test_a_line_keeps_its_debt_flags_and_figures(tmp_path):

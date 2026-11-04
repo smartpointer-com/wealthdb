@@ -21,7 +21,7 @@ import (
 var ReferenceTables = []string{
 	"fund_compositions", "fund_lines", "fund_attributes",
 	"fund_counterparties", "security_identities", "security_facts",
-	"fund_risk", "fund_characteristics", "security_period_facts",
+	"fund_risk", "fund_returns", "fund_characteristics", "security_period_facts",
 	"rate_observations", "dividend_calendar", "stated_periods",
 	"exposure_reports",
 }
@@ -33,8 +33,9 @@ var ReferenceTables = []string{
 var ReferenceTableKinds = map[string]string{
 	"fund_compositions": canonical.RefFundDays, "fund_lines": canonical.RefFundDays,
 	"fund_attributes": canonical.RefFundDays, "fund_counterparties": canonical.RefFundDays,
-	"fund_risk": canonical.RefFundDays, "fund_characteristics": canonical.RefFundDays,
-	"security_identities": canonical.RefSecurities, "security_facts": canonical.RefSecurityFacts,
+	"fund_risk": canonical.RefFundDays, "fund_returns": canonical.RefFundDays,
+	"fund_characteristics": canonical.RefFundDays,
+	"security_identities":  canonical.RefSecurities, "security_facts": canonical.RefSecurityFacts,
 	"security_period_facts": canonical.RefPeriodFacts, "dividend_calendar": canonical.RefDividendEvents,
 }
 
@@ -48,6 +49,7 @@ func (w *Writer) InsertReference(ctx context.Context, b *canonical.SnapshotBatch
 		func() error { return w.insertSecurityIdentities(ctx, b.Securities) },
 		func() error { return w.insertSecurityFacts(ctx, b.SecurityFacts) },
 		func() error { return w.insertFundRisk(ctx, b.FundRisk) },
+		func() error { return w.insertFundReturns(ctx, b.FundReturns) },
 		func() error { return w.insertFundCharacteristics(ctx, b.FundCharacteristics) },
 		func() error { return w.insertSecurityPeriodFacts(ctx, b.SecurityPeriodFacts) },
 		func() error { return w.insertRateObservations(ctx, b.RateObservations) },
@@ -247,6 +249,24 @@ INSERT INTO fund_risk (
 				r.SilverSourceID, r.FundRef, r.AsOf, r.Currency, r.Tenor,
 				nullable(r.DV01), nullable(r.DV100),
 				nullable(r.CreditIGDV01), nullable(r.CreditHYDV01), nullableJSON(r.Payload))
+		})
+}
+
+func (w *Writer) insertFundReturns(ctx context.Context, batch []canonical.FundReturnChange) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	const head = `
+INSERT INTO fund_returns (
+    silver_source_id, fund_ref, as_of, month, class_id, total_return, payload
+) VALUES `
+	return InsertChunked(ctx, w.tx, "fund_returns", head,
+		`(?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		func(i int, args []any) []any {
+			r := &batch[i]
+			return append(args,
+				r.SilverSourceID, r.FundRef, r.AsOf, r.Month, nullable(r.ClassID), r.TotalReturn,
+				nullableJSON(r.Payload))
 		})
 }
 

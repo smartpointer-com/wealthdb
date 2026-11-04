@@ -53,6 +53,7 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 	annualize := fs.String("annualize", "auto", "auto | always | never")
 	netting := fs.String("netting", "on", "on | off — net internal transfers at coarse grains (incl. cross-source matched pairs)")
 	inception := fs.String("inception", "full", "full | strict — aggregate since-inception handling")
+	benchmark := fs.String("benchmark", "", "a benchmark's name, beside the global view's rows ('wealthdb help benchmarks')")
 	rf := registerReportFlags(fs, true)
 	fs.Usage = func() { fmt.Fprintln(stderr, returnsUsage()) }
 	if err := parseFlags(fs, args, "returns"); err != nil {
@@ -72,6 +73,9 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 			return err
 		}
 	}
+	if err := checkReturnsBenchmark(view, *benchmark); err != nil {
+		return err
+	}
 	fromEpoch, toEpoch, err := parseReturnsWindow(fs.Args(), g.clock())
 	if err != nil {
 		fs.Usage()
@@ -84,7 +88,8 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 	}
 
 	req := request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
-		method: *method, period: *period, annualize: *annualize, netting: *netting == "on", inception: *inception}
+		method: *method, period: *period, annualize: *annualize, netting: *netting == "on", inception: *inception,
+		benchmark: *benchmark}
 	rep := returnsReport(req, cfg)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
 	return writeReport(ctx, rep, rf.output(fmtChoice, "returns", req, cfg, g.clock()), open, stdout)
@@ -97,19 +102,36 @@ func returnsReport(req request, cfg *config.Config) *report {
 	kindOf, loadKinds := sourceKinds()
 	nicknames := accountNicknames{}
 	fetch := func(ctx context.Context, db *sql.DB) ([]gold.ReturnRow, error) {
-		return gold.RunReturns(ctx, db, withReturnsCfg(cfg, gold.ReturnParams{
+		p := withReturnsCfg(cfg, gold.ReturnParams{
 			Level: req.view, FromEpoch: req.from, ToEpoch: req.to, OutCcy: req.currency,
 			Method: req.method, Period: req.period, Annualize: req.annualize,
 			Netting: req.netting, Inception: req.inception,
-		}))
+		})
+		if req.benchmark != "" {
+			return gold.RunReturnsBenchmark(ctx, db, p, req.benchmark)
+		}
+		return gold.RunReturns(ctx, db, p)
 	}
 	loads := []func(context.Context, *sql.DB) error{loadKinds}
 	// Only an account's entity reads its nickname.
 	if req.view == "accounts" {
 		loads = append(loads, nicknames.load)
 	}
-	return withLoads(newReport(buildReturnColumnRegistry(req.currency, req.view, kindOf, nicknames),
-		defaultReturnColumnsFor(req.method), fetch), loads...)
+	defaults := defaultReturnColumnsFor(req.method)
+	if req.benchmark != "" {
+		defaults = benchmarkReturnColumnsFor(req.method)
+	}
+	return withLoads(newReport(buildReturnColumnRegistry(req.currency, req.view, kindOf, nicknames), defaults, fetch),
+		loads...)
+}
+
+// checkReturnsBenchmark refuses a benchmark on a view other than global:
+// a benchmark stands beside the whole portfolio, as on the dashboard.
+func checkReturnsBenchmark(view, benchmark string) error {
+	if benchmark != "" && view != "global" {
+		return errs.Newf(errs.ExitUsage, "returns: --benchmark belongs to the global view")
+	}
+	return nil
 }
 
 // returnsCfgFiles are the files returnsCfgSettings reads beside the
@@ -253,8 +275,50 @@ func buildReturnColumnRegistry(outCcy, level string, kindOf func(string) string,
 			Extract: func(r gold.ReturnRow) string { return formatPct(r.MWR) }},
 		{Name: "mwr_annualized", Header: "mwr_ann_pct", Align: output.AlignRight,
 			Extract: func(r gold.ReturnRow) string { return formatPct(r.MWRAnnualized) }},
+		{Name: "benchmark_twr", Header: "benchmark_twr_pct", Align: output.AlignRight,
+			Extract: benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.TWR })},
+		{Name: "compared_twr", Header: "compared_twr_pct", Align: output.AlignRight,
+			Extract: benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.PortfolioTWR })},
+		{Name: "excess", Header: "excess_pct", Align: output.AlignRight,
+			Extract: benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.Excess })},
+		{Name: "benchmark_mwr", Header: "benchmark_mwr_pct", Align: output.AlignRight,
+			Extract: benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.MWR })},
+		{Name: "compared_mwr", Header: "compared_mwr_pct", Align: output.AlignRight,
+			Extract: benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.PortfolioMWR })},
+		{Name: "compared_from", Align: output.AlignLeft, Date: true,
+			Extract: benchmarkDay(func(b *gold.BenchmarkRow) int64 { return b.StartDay })},
+		{Name: "compared_to", Align: output.AlignLeft, Date: true,
+			Extract: benchmarkDay(func(b *gold.BenchmarkRow) int64 { return b.EndDay })},
+		{Name: "benchmark_quality", Align: output.AlignLeft, Extract: func(r gold.ReturnRow) string {
+			if r.Benchmark == nil {
+				return ""
+			}
+			return strings.Join(r.Benchmark.Quality, ";")
+		}},
 		{Name: "quality", Align: output.AlignLeft,
 			Extract: func(r gold.ReturnRow) string { return strings.Join(r.Quality, ";") }},
+	}
+}
+
+// benchmarkFigure is a column's extract of a benchmark's figure: n/a
+// where the row has none, and benchmark_quality says why.
+func benchmarkFigure(get func(*gold.BenchmarkRow) *float64) func(gold.ReturnRow) string {
+	return func(r gold.ReturnRow) string {
+		if r.Benchmark == nil {
+			return "n/a"
+		}
+		return formatPct(get(r.Benchmark))
+	}
+}
+
+// benchmarkDay is a column's extract of a day of the days compared,
+// blank where the row compares none.
+func benchmarkDay(get func(*gold.BenchmarkRow) int64) func(gold.ReturnRow) string {
+	return func(r gold.ReturnRow) string {
+		if r.Benchmark == nil || r.Benchmark.EndDay == 0 {
+			return ""
+		}
+		return formatEpochDay(get(r.Benchmark))
 	}
 }
 
@@ -269,6 +333,20 @@ func defaultReturnColumnsFor(method string) []string {
 		out = append(out, "mwr")
 	}
 	return append(out, "quality")
+}
+
+// benchmarkReturnColumnsFor is the default column set beside a benchmark:
+// the household's figures over the days compared, the benchmark's and
+// the excess, on the rows' own window columns.
+func benchmarkReturnColumnsFor(method string) []string {
+	out := []string{"period"}
+	if method != "mwr" {
+		out = append(out, "twr", "compared_twr", "benchmark_twr", "excess")
+	}
+	if method != "twr" {
+		out = append(out, "mwr", "compared_mwr", "benchmark_mwr")
+	}
+	return append(out, "compared_from", "compared_to", "benchmark_quality", "quality")
 }
 
 // formatPct renders a return ratio as a percentage with two decimals, or "n/a"
@@ -294,7 +372,8 @@ func formatPctOrBlank(p *float64) string {
 func returnsUsage() string {
 	registry := buildReturnColumnRegistry("CCY", "", nil, nil)
 	return `usage: wealthdb returns <view> [FROM [TO]] [--method M] [--period P] [--annualize MODE]
-                        [--netting on|off] [--inception full|strict] [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]
+                        [--netting on|off] [--inception full|strict] [--benchmark NAME]
+                        [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]
 
 Time-weighted (TWR) and money-weighted (MWR/XIRR) returns. Grain is the
 positional <view>; everything else is a flag. Returns use historic FX
@@ -332,6 +411,10 @@ Flags:
                     accounts view is always exact and ignores this)
   --inception MODE  full (default; synthetic onboarding from earliest
                     constituent) | strict (latest constituent first-snapshot)
+  --benchmark NAME  the global view only: the benchmark beside each row, over
+                    the days both sides have. compared_twr is the portfolio
+                    over those days, excess is compared_twr less benchmark_twr,
+                    in percentage points. 'wealthdb help benchmarks' lists them
   -f, --format      table | csv | csv_plain | json
   -C, --columns     comma-separated names, 'default', 'all', or a +ADD,-REMOVE delta
   -F, --filter COND keep the rows where COND holds; repeatable;

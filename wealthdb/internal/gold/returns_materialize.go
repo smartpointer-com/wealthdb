@@ -66,7 +66,8 @@ type MaterializeParams struct {
 // rescoping. The currencies are loaded in a single pass over the `_multi`
 // report macros, and each currency's dataset drives every (grain, period) and
 // windowed computation without re-querying — the loaded data depends only on
-// the currency, never the grain, period or window. Rows are written in one
+// the currency, never the grain, period or window. The benchmark tables
+// (computeBenchmarks) read the same datasets. Rows are written in one
 // transaction (DELETE all + batched INSERT), so a failed run leaves the
 // previous materialization intact. Returns the inserted row count.
 func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (int, error) {
@@ -127,6 +128,17 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 		}
 	}
 
+	globals := map[[2]string][]ReturnRow{}
+	for _, part := range parts {
+		if part.grain == "global" && part.windowFromYear == 0 {
+			globals[[2]string{part.currency, part.granularity}] = part.rows
+		}
+	}
+	bench, err := computeBenchmarks(ctx, db, datasets, fx, p, minYear, maxYear, globals)
+	if err != nil {
+		return 0, err
+	}
+
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("MaterializeReturns begin: %w", err)
@@ -172,10 +184,15 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 			return 0, fmt.Errorf("MaterializeReturns insert remainder: %w", err)
 		}
 	}
+	k, err := bench.write(ctx, tx, p.ComputedAt)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("MaterializeReturns: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("MaterializeReturns commit: %w", err)
 	}
-	return n, nil
+	return n + k, nil
 }
 
 // returnsInsertBatch is the number of rows per multi-row INSERT (× the 20

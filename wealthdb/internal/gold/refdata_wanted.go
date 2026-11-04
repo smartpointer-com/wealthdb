@@ -24,7 +24,7 @@ import (
 // version: a field removed or renamed, a field's meaning changed, a
 // value a field did not hold before, or a field that asks for work the
 // older collector would skip. A field it may ignore does not.
-const WantedContractVersion = 3
+const WantedContractVersion = 4
 
 // Wanted is the wanted list.
 type Wanted struct {
@@ -52,8 +52,9 @@ type WantedFund struct {
 	// Currency is the currency the holding is priced in.
 	Currency *string `json:"currency"`
 	// Roles says why the fund is wanted: held, proxy (it stands in for a
-	// held fund), reference (its lines widen the security master) or
-	// underlying (a held fund holds it).
+	// held fund), reference (its lines widen the security master),
+	// underlying (a held fund holds it) or benchmark (a benchmark's mix
+	// names it).
 	Roles []string `json:"roles"`
 	// HeldFrom and HeldTo bound the days a composition is wanted for;
 	// HeldTo is null while the fund is still held.
@@ -71,6 +72,10 @@ type WantedFund struct {
 	// and reads freshness from the last. A fact gold holds nothing of is
 	// absent.
 	Facts map[string][]string `json:"facts"`
+	// HistoryFrom is how far back a backfill reads the fund's monthly
+	// returns, whatever days it was held; nil for a fund no benchmark
+	// names.
+	HistoryFrom *string `json:"history_from"`
 }
 
 // WantedSecurity is one security gold wants attributes for.
@@ -143,8 +148,8 @@ type heldInstrument struct {
 // read-only before the exposure migrations reached it has no reference
 // or exposure tables yet, one before migration 0134 no fact tables, and
 // one before migration 0147 no dividend calendar; it is read as holding
-// none, so the first fetch can run before the first load. One before
-// migration 0140 reads each source's newest snapshot as every account's
+// none, so the first fetch can run before the first load, and one
+// before migration 0176 as naming no benchmark. One before migration 0140 reads each source's newest snapshot as every account's
 // (heldInstruments).
 func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, error) {
 	held, err := heldInstruments(ctx, db, now)
@@ -162,6 +167,10 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		return nil, err
 	}
 	withCalendar, err := hasTable(ctx, db, "dividend_calendar")
+	if err != nil {
+		return nil, err
+	}
+	withBenchmarks, err := hasTable(ctx, db, "benchmark_funds")
 	if err != nil {
 		return nil, err
 	}
@@ -234,6 +243,11 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		if err := addProxiesAndReferences(ctx, db, funds, spans, now, keys); err != nil {
 			return nil, err
 		}
+		if withBenchmarks {
+			if err := addBenchmarkFunds(ctx, db, funds, spans, now, keys); err != nil {
+				return nil, err
+			}
+		}
 		var open []string
 		for ref, f := range funds {
 			if spans[ref] != nil && spans[ref].open && slices.Contains(f.Roles, "held") {
@@ -248,7 +262,7 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 			return nil, err
 		}
 		if withFacts {
-			if err := addFundFacts(ctx, db, funds, keys, withCalendar); err != nil {
+			if err := addFundFacts(ctx, db, funds, keys, withCalendar, withBenchmarks); err != nil {
 				return nil, err
 			}
 		}
@@ -544,6 +558,33 @@ func addProxiesAndReferences(ctx context.Context, db *sql.DB, funds map[string]*
 	return nil
 }
 
+// benchmarkHistoryFrom is the first day of the first year N-PORT's
+// monthly returns are public.
+const benchmarkHistoryFrom = "2019-01-01"
+
+// addBenchmarkFunds adds the funds of every benchmark, wanted from today
+// in the role benchmark, as a reference fund is, and for their returns
+// from benchmarkHistoryFrom on.
+func addBenchmarkFunds(ctx context.Context, db *sql.DB, funds map[string]*WantedFund, spans map[string]*span,
+	now time.Time, keys keyReader) error {
+	from := benchmarkHistoryFrom
+	err := scanAll(ctx, db, `SELECT DISTINCT fund_ref FROM benchmark_funds ORDER BY 1`, func(rows *sql.Rows) error {
+		var ref string
+		if err := rows.Scan(&ref); err != nil {
+			return err
+		}
+		ref = keys.key(ref)
+		f := wantFund(funds, spans, ref, "benchmark")
+		f.HistoryFrom = &from
+		spans[ref].add(fromToday(now))
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("wanted: benchmark funds: %w", err)
+	}
+	return nil
+}
+
 // addUnderlying adds the funds a held fund holds, one level down: each
 // line of the composition the look-through reads on its newest day
 // (exposure_comps: holdings before index lines, never a swap fund's
@@ -624,6 +665,8 @@ func addCompositionDates(ctx context.Context, db *sql.DB, funds map[string]*Want
 //
 //   - risk_metrics: a bond or multi-asset fund's rate sensitivities, as
 //     its N-PORT filing states them (fund_risk);
+//   - monthly_returns: a benchmark fund's monthly total returns, as its
+//     N-PORT filing states them (fund_returns);
 //   - characteristics: the figures its issuer's page states for the fund
 //     as a whole: duration, yields, credit quality (fund_characteristics);
 //   - money_market: a money-market fund's 7-day yields and weighted
@@ -634,6 +677,7 @@ func addCompositionDates(ctx context.Context, db *sql.DB, funds map[string]*Want
 //     (dividend_calendar). A stock held directly wants it too.
 const (
 	wantRiskMetrics      = "risk_metrics"
+	wantMonthlyReturns   = "monthly_returns"
 	wantCharacteristics  = "characteristics"
 	wantMoneyMarket      = "money_market"
 	wantLineDurations    = "line_durations"
@@ -650,10 +694,19 @@ var moneyMarketFields = []string{"seven_day_yield", "seven_day_gross_yield", "we
 // only as a proxy, a reference or size fund, or a held fund's underlying
 // wants none, and so does a structured product: no filing or issuer page
 // states them for a note. A bond fund with no composition yet wants its
-// lines' durations too. Every fund held wants its dividend calendar.
+// lines' durations too. Every fund held wants its dividend calendar. A
+// benchmark's fund wants its monthly returns and its characteristics,
+// the yield and duration the benchmark reads.
 func fundWants(f *WantedFund, classes []string, fund bool) []string {
 	wants := []string{}
+	benchmark := slices.Contains(f.Roles, "benchmark")
+	if benchmark {
+		wants = append(wants, wantMonthlyReturns)
+	}
 	if !slices.Contains(f.Roles, "held") || !fund {
+		if benchmark {
+			wants = append(wants, wantCharacteristics)
+		}
 		return wants
 	}
 	of := func(cs ...string) bool {
@@ -686,13 +739,19 @@ func lastDay(days []string) string {
 // composition's day counts for line_durations where one of its lines
 // states a duration or a modified duration. A dividend calendar's days
 // are those its rows were stated on, where gold holds the table
-// (calendar).
-func addFundFacts(ctx context.Context, db *sql.DB, funds map[string]*WantedFund, keys keyReader, calendar bool) error {
-	calendarDays := ""
+// (calendar), and its monthly returns' days are the filings' that state
+// them, where gold holds theirs (returns).
+func addFundFacts(ctx context.Context, db *sql.DB, funds map[string]*WantedFund, keys keyReader, calendar, returns bool) error {
+	extraDays := ""
 	if calendar {
-		calendarDays = `
+		extraDays = `
     UNION
     SELECT ref, '` + wantDividendCalendar + `', as_of FROM dividend_calendar`
+	}
+	if returns {
+		extraDays += `
+    UNION
+    SELECT fund_ref, '` + wantMonthlyReturns + `', as_of FROM fund_returns`
 	}
 	err := scanAll(ctx, db, `
 WITH f AS (
@@ -703,7 +762,7 @@ WITH f AS (
       FROM fund_characteristics
     UNION
     SELECT fund_ref, '`+wantLineDurations+`', as_of FROM fund_lines
-     WHERE duration IS NOT NULL OR modified_duration IS NOT NULL`+calendarDays+`)
+     WHERE duration IS NOT NULL OR modified_duration IS NOT NULL`+extraDays+`)
 SELECT DISTINCT `+keys.sql("fund_ref")+` AS k, fact, as_of FROM f ORDER BY 1, 2, 3`, func(rows *sql.Rows) error {
 		var ref, fact string
 		var asOf int64
@@ -1061,7 +1120,7 @@ SELECT security_key,
 }
 
 // hasTable reports whether gold holds a table of that name.
-func hasTable(ctx context.Context, db *sql.DB, name string) (bool, error) {
+func hasTable(ctx context.Context, db querier, name string) (bool, error) {
 	var n int
 	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?`, name).Scan(&n)
 	return n > 0, err

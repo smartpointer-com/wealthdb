@@ -389,6 +389,7 @@ type SnapshotBatch struct {
 	SecurityFacts      []SecurityFactChange
 
 	FundRisk            []FundRiskChange
+	FundReturns         []FundReturnChange
 	FundCharacteristics []FundCharacteristicChange
 	SecurityPeriodFacts []SecurityPeriodFactChange
 	RateObservations    []RateObservationChange
@@ -402,7 +403,7 @@ type SnapshotBatch struct {
 func (b *SnapshotBatch) ReferenceRows() int {
 	return len(b.FundCompositions) + len(b.FundLines) + len(b.FundAttributes) +
 		len(b.FundCounterparties) + len(b.Securities) + len(b.SecurityFacts) +
-		len(b.FundRisk) + len(b.FundCharacteristics) + len(b.SecurityPeriodFacts) +
+		len(b.FundRisk) + len(b.FundReturns) + len(b.FundCharacteristics) + len(b.SecurityPeriodFacts) +
 		len(b.RateObservations) + len(b.DividendEvents) + len(b.StatedPeriods) + len(b.ExposureReports)
 }
 

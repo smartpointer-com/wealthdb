@@ -101,6 +101,24 @@ func SyncExposure(ctx context.Context, db *sql.DB, rows canonical.ExposureRows) 
 		})
 }
 
+// SyncBenchmarks makes benchmark_funds hold exactly these benchmarks: the
+// table is replaced whole, so one taken out of the config leaves on the
+// next load. Returns how many benchmarks it stamped.
+func SyncBenchmarks(ctx context.Context, db *sql.DB, defs []canonical.Benchmark) (int, error) {
+	return replaceConfigTables(ctx, db, "SyncBenchmarks", []string{"benchmark_funds"},
+		func(tx *sql.Tx, insert func(q string, args ...any) error) (int, error) {
+			for _, b := range defs {
+				for _, f := range b.Funds {
+					if err := insert(`INSERT INTO benchmark_funds (benchmark, fund_ref, weight_pct, builtin) VALUES (?, ?, ?, ?)`,
+						b.Name, f.FundRef, f.WeightPct, b.Builtin); err != nil {
+						return 0, err
+					}
+				}
+			}
+			return len(defs), nil
+		})
+}
+
 // The origins of a declaration: the ledger's own records, and those a
 // source parses from a document. Migration 0164 spells 'ledger' in the
 // column default and in exposure_declarations_at, and 0167 in

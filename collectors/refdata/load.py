@@ -59,7 +59,7 @@ MIGRATIONS = HERE / "migrations"
 # serves it again.
 FUND_DAY_TABLES = ("compositions", "lines", "attributes", "counterparties")
 # Every table a request writes by key, in the order it writes them.
-TABLES = (*FUND_DAY_TABLES, "fund_risk", "characteristics", "securities", "security_facts")
+TABLES = (*FUND_DAY_TABLES, "fund_risk", "fund_returns", "characteristics", "securities", "security_facts")
 
 # A company's figure for a period: a row replaces the one silver holds
 # for its key unless that one was filed later, or states its filing day
@@ -144,8 +144,8 @@ def write(conn, parsed: Parsed, run_at: int) -> int:
     """Write one request's rows. A fund-day the rows' compositions or
     attributes name is cleared first, on every basis and table, so a
     re-served day replaces the old one. A fund-day's rate sensitivities
-    are cleared only by rows that state them, and a provider's figure for
-    a fund-day only by that provider's rows of the same figure, every
+    and monthly returns are cleared only by rows that state them, and a
+    provider's figure for a fund-day only by that provider's rows of the same figure, every
     part of a breakdown with it: an issuer's file for a day leaves a
     filing's figures standing, and a page that dates one figure later
     leaves the others' days as they were. A dividend event replaces the
@@ -157,8 +157,9 @@ def write(conn, parsed: Parsed, run_at: int) -> int:
     for ref, at in sorted(days):
         for table in FUND_DAY_TABLES:
             conn.execute(f"DELETE FROM {table} WHERE fund_ref = ? AND as_of = ?", (ref, at))
-    for ref, at in sorted({(r["fund_ref"], epoch(r["as_of"])) for r in parsed.fund_risk}):
-        conn.execute("DELETE FROM fund_risk WHERE fund_ref = ? AND as_of = ?", (ref, at))
+    for table, rows in (("fund_risk", parsed.fund_risk), ("fund_returns", parsed.fund_returns)):
+        for ref, at in sorted({(r["fund_ref"], epoch(r["as_of"])) for r in rows}):
+            conn.execute(f"DELETE FROM {table} WHERE fund_ref = ? AND as_of = ?", (ref, at))
     stated = {(c["fund_ref"], epoch(c["as_of"]), c["provider"], c["field"]) for c in parsed.characteristics}
     for ref, at, provider, field in sorted(stated):
         conn.execute("DELETE FROM characteristics WHERE fund_ref = ? AND as_of = ? AND provider = ? AND field = ?",

@@ -64,7 +64,7 @@ func TestXIRREdgeCases(t *testing.T) {
 		t.Errorf("all-outflow: err = %v, want ErrNoSignChange", err)
 	}
 	// Fewer than two cash flows (internal guard).
-	if _, err := xirr([]datedCF{{0, -100}}); !errors.Is(err, ErrNoFlows) {
+	if _, err := xirr([]datedCF{{0, -100}}, xirrGuess); !errors.Is(err, ErrNoFlows) {
 		t.Errorf("single cf: err = %v, want ErrNoFlows", err)
 	}
 	// Rate never reported below the -100% floor.

@@ -66,6 +66,7 @@ TEXT_FIELDS = [
     ("characteristic fund", "fund_characteristics", "fund_ref"),
     ("period fact key", "security_period_facts", "security_key"),
     ("fund risk reference", "fund_risk", "fund_ref"),
+    ("fund return ref", "fund_returns", "fund_ref"),
     ("declaration note", "exposure_declarations", "note"),
     ("rate record note", "yield_declared_rates", "note"),
     ("rating record note", "yield_declared_ratings", "note"),

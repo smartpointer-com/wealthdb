@@ -32,21 +32,7 @@ func computeEntityReturn(assets []*accountData, p ReturnParams, toDay int64, fx 
 	}
 	aggregate := len(assets) > 1 || p.Level != "accounts"
 
-	// Aggregate value at a day: each constituent's carry-forward value, zeroed
-	// from its explicit-closure day (atomic with the closure outflow).
-	av := func(day int64) (float64, bool) {
-		var sum float64
-		var any bool
-		for _, a := range assets {
-			v, alive := a.valueAt(day)
-			if !alive {
-				continue
-			}
-			any = true
-			sum += returns.ZeroedValue(v, day, a.closureDay())
-		}
-		return sum, any
-	}
+	av := entityValue(assets)
 
 	flows, qFlowTags, rolled := entityFlows(assets, p, winFrom, winTo, aggregate)
 
@@ -118,6 +104,25 @@ func computeEntityReturn(assets []*accountData, p ReturnParams, toDay int64, fx 
 	}
 	out = append(out, sr)
 	return out
+}
+
+// entityValue is the aggregate value at a day: each constituent's
+// carry-forward value, zeroed from its explicit-closure day (atomic with
+// the closure outflow).
+func entityValue(assets []*accountData) func(day int64) (float64, bool) {
+	return func(day int64) (float64, bool) {
+		var sum float64
+		var any bool
+		for _, a := range assets {
+			v, alive := a.valueAt(day)
+			if !alive {
+				continue
+			}
+			any = true
+			sum += returns.ZeroedValue(v, day, a.closureDay())
+		}
+		return sum, any
+	}
 }
 
 // staleFactor is the source-relative staleness multiple: an end day
@@ -244,9 +249,27 @@ func summaryRow(base ReturnRow, winFrom, winTo int64, av func(int64) (float64, b
 }
 
 func computeMWR(v0, v1 float64, winFrom, winTo int64, flows []returns.Flow, assets []*accountData, p ReturnParams, q []string) (*float64, *float64, []string) {
-	windowFlows := flowsIn(flows, winFrom, winTo)
+	rate, q := solveMWR(returns.XIRR, v0, v1, winFrom, winTo, flowsIn(flows, winFrom, winTo), assets, q)
+	if rate == nil {
+		return nil, nil, q
+	}
+	days := float64(winTo - winFrom)
+	var ann *float64
+	if returns.ShouldAnnualize(p.Annualize, days) {
+		ann = rate // XIRR is already an annual rate
+	}
+	// The mwr_pct column shows the PERIOD (cumulative-equivalent) figure so it is
+	// consistent with the twr_pct column; mwr_ann_pct holds the annualized XIRR.
+	// For a full-year window the two coincide.
+	return f64(returns.DeAnnualize(*rate, days)), ann, q
+}
+
+// solveMWR is the annual money-weighted rate of a window's flows through
+// solve, or nil with the mwr_* flag that says why there is none.
+func solveMWR(solve func(v0, v1 float64, from, to int64, flows []returns.Flow) (float64, error),
+	v0, v1 float64, winFrom, winTo int64, windowFlows []returns.Flow, assets []*accountData, q []string) (*float64, []string) {
 	if allNavOnly(assets) || len(windowFlows) == 0 {
-		return nil, nil, append(q, "mwr_no_flows")
+		return nil, append(q, "mwr_no_flows")
 	}
 	// If the entity's net invested capital over the window — the opening base plus
 	// the total net external flow (deposits minus withdrawals) — is zero or below,
@@ -266,9 +289,9 @@ func computeMWR(v0, v1 float64, winFrom, winTo int64, flows []returns.Flow, asse
 	// exist to surface, while losses (net capital still positive) compute one.
 	if mwrNetCapitalNonPositive(v0, windowFlows) &&
 		(v1 > valueTol || returns.MWRSignChanges(v0, v1, winFrom, winTo, windowFlows) != 1) {
-		return nil, nil, append(q, "mwr_negative_net_capital")
+		return nil, append(q, "mwr_negative_net_capital")
 	}
-	rate, err := returns.XIRR(v0, v1, winFrom, winTo, windowFlows)
+	rate, err := solve(v0, v1, winFrom, winTo, windowFlows)
 	if err != nil {
 		switch err {
 		case returns.ErrNoSignChange:
@@ -278,7 +301,7 @@ func computeMWR(v0, v1 float64, winFrom, winTo int64, flows []returns.Flow, asse
 		default:
 			q = append(q, "mwr_no_converge")
 		}
-		return nil, nil, q
+		return nil, q
 	}
 	if anyNavOnly(assets) {
 		q = append(q, "mwr_incomplete_flows")
@@ -286,15 +309,7 @@ func computeMWR(v0, v1 float64, winFrom, winTo int64, flows []returns.Flow, asse
 	if returns.MWRSignChanges(v0, v1, winFrom, winTo, windowFlows) > 1 {
 		q = append(q, "mwr_nonunique")
 	}
-	days := float64(winTo - winFrom)
-	var ann *float64
-	if returns.ShouldAnnualize(p.Annualize, days) {
-		ann = f64(rate) // XIRR is already an annual rate
-	}
-	// The mwr_pct column shows the PERIOD (cumulative-equivalent) figure so it is
-	// consistent with the twr_pct column; mwr_ann_pct holds the annualized XIRR.
-	// For a full-year window the two coincide.
-	return f64(returns.DeAnnualize(rate, days)), ann, q
+	return &rate, q
 }
 
 // ownedFlow is a constituent flow tagged with its owning account and whether it

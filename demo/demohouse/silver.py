@@ -66,6 +66,7 @@ _TABLES = {
     "security_facts": ("security_key", "field", "as_of", "provider", "value", "scheme", "run_at", "payload"),
     "fund_risk": ("fund_ref", "as_of", "currency", "tenor", "dv01", "dv100", "credit_ig_dv01", "credit_hy_dv01",
                   "run_at", "payload"),
+    "fund_returns": ("fund_ref", "as_of", "month", "class_id", "total_return", "run_at", "payload"),
     "characteristics": ("fund_ref", "as_of", "provider", "field", "label", "value", "run_at", "payload"),
     "period_facts": ("security_key", "field", "as_of", "period_start", "provider", "value", "scheme", "unit",
                      "fiscal_year", "fiscal_period", "form", "filed", "run_at", "payload"),

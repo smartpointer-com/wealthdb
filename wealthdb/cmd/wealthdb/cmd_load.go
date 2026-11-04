@@ -207,6 +207,9 @@ func syncConfigRows(ctx context.Context, db *sql.DB, cfg *config.Config, in load
 	if n > 0 {
 		fmt.Fprintf(stdout, "%s: %d yield entr(ies) stamped\n", verb, n)
 	}
+	if _, err = gold.SyncBenchmarks(ctx, db, cfg.BenchmarkDefs()); err != nil {
+		return fmt.Errorf("benchmarks: %w", err)
+	}
 	return nil
 }
 

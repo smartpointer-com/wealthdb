@@ -82,20 +82,25 @@ log = logging.getLogger("refdata.download")
 # the month next to it.
 NEAR_DAYS = 15
 # The roles that want a fund's current composition whether or not it is
-# held today: it stands in for, widens or lies under a held fund.
-CURRENT_ROLES = frozenset({"proxy", "reference", "underlying"})
+# held today: it stands in for, widens or lies under a held fund, or
+# makes up a benchmark.
+CURRENT_ROLES = frozenset({"proxy", "reference", "underlying", "benchmark"})
 # The facts a wanted list names beyond compositions, in the order the
 # coverage lists them (adapters/refdata.md §5): a held fund's, which a
 # fund provider's `facts` answer, or its compositions (`composition_facts`),
 # then the families of figures a security lacks, which a security or bulk
 # provider's `answers` answer.
-FUND_FACTS = ("risk_metrics", "characteristics", "money_market", "line_durations", "dividend_calendar")
+FUND_FACTS = ("risk_metrics", "monthly_returns", "characteristics", "money_market", "line_durations",
+              "dividend_calendar")
 SECURITY_FACTS = ("earnings", "dividends", "financials")
 FACTS = FUND_FACTS + SECURITY_FACTS
 # The facts a security wants (its `wants`), which a security or bulk
 # provider's `answers` answer, each with the wanted list's field that
 # holds the newest day gold has it for.
 SECURITY_WANTS = {"dividend_calendar": "calendar"}
+# The fact a backfill reads from the fund's history_from on, whatever
+# days the fund was held.
+HISTORY_FACT = "monthly_returns"
 DEFERRED = "deferred by --limit"
 
 # What a provider's answer can raise without failing the run: its own
@@ -316,6 +321,11 @@ class _Asked:
     def dates(self, p) -> list:
         return self._once(p, "list its dates", p.dates, self.claim(p), self.since, self.until, self.ctx) or []
 
+    def history(self, p) -> list:
+        """The dates from the fund's history_from on."""
+        return self._once(p, "list its history", p.dates, self.claim(p), self.fund.history_from, self.until,
+                          self.ctx) or []
+
 
 def described(fund: wantedmod.Fund, claim: dict) -> wantedmod.Fund:
     """The fund with its empty identifiers filled from the claim's `ids`.
@@ -474,14 +484,21 @@ def _fact_requests(fund, providers, asked, own, rank, *, today, max_age, backfil
     the last one before them, that is none of those days, nor the newest
     one when the current answer is asked for.
 
+    HISTORY_FACT differs in two ways. A backfill reads it for every date
+    from the fund's history_from on, not the days held. And a composition
+    fetched earlier does not count as having it, as a composition parsed
+    before the collector read the fact states none: only gold's days and
+    a request that asked for it do.
+
     A fact that no provider's `facts` name, but some provider's
     `composition_facts` do, gets no request of its own. A due one is
     asked for by each of the fund's composition requests to such a
     provider, and had where an earlier run fetched a composition from one
     within max_age."""
     held = fund.held_to is None
-    past = backfill and fund.held_from is not None
     for fact in fund.wants:
+        history = fact == HISTORY_FACT and fund.history_from is not None
+        past = backfill and (history or fund.held_from is not None)
         days = fund.facts.get(fact, ())
         due = held and not _fresh(max(days, default=None), today, max_age)
         c = Cover(had=held and not due)
@@ -503,7 +520,7 @@ def _fact_requests(fund, providers, asked, own, rank, *, today, max_age, backfil
             claim = asked.claim(p)
             if claim is None:
                 continue
-            known = {*days, *provider_days.get((p.name, fund.ref), ()),
+            known = {*days, *(() if fact == HISTORY_FACT else provider_days.get((p.name, fund.ref), ())),
                      *earlier.fact_days.get((p.name, fund.ref, fact), ())}
             if due:
                 joins = any(r.provider == p.name and r.as_of is None for r in own)
@@ -516,7 +533,8 @@ def _fact_requests(fund, providers, asked, own, rank, *, today, max_age, backfil
                     if asked.latest(p) is not None:
                         known.add(asked.latest(p))
             if past and fact in p.dated_facts:
-                for d in _past_days(asked.dates(p), fund.held_from, known, near=0):
+                listed, first = (asked.history(p), fund.history_from) if history else (asked.dates(p), fund.held_from)
+                for d in _past_days(listed, first, known, near=0):
                     _asking(own, fund, p, d, claim, fact, (), rank)
             break
         else:

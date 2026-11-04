@@ -29,8 +29,8 @@ A fund provider:
                                    with `load --force`
 
 A fund provider may also answer some of the facts a fund `wants`
-(risk_metrics, money_market, characteristics, line_durations,
-dividend_calendar; the wanted list, adapters/refdata.md §5): it names
+(risk_metrics, monthly_returns, money_market, characteristics,
+line_durations, dividend_calendar; the wanted list, adapters/refdata.md §5): it names
 them in `facts`, and is asked for a fund that wants one even where
 another provider serves the fund's compositions. Its fetch and parse are
 the same calls. The facts it can state for a past day, as a filing does,
@@ -148,6 +148,7 @@ COLUMNS = {
     "security_facts": ("security_key", "field", "as_of", "provider", "value", "scheme", "run_at", "payload"),
     "fund_risk": ("fund_ref", "as_of", "currency", "tenor", "dv01", "dv100", "credit_ig_dv01", "credit_hy_dv01",
                   "run_at", "payload"),
+    "fund_returns": ("fund_ref", "as_of", "month", "class_id", "total_return", "run_at", "payload"),
     "characteristics": ("fund_ref", "as_of", "provider", "field", "label", "value", "run_at", "payload"),
     "period_facts": ("security_key", "field", "as_of", "period_start", "provider", "value", "scheme", "unit",
                      "fiscal_year", "fiscal_period", "form", "filed", "run_at", "payload"),
@@ -236,6 +237,7 @@ class Parsed:
     securities: list = field(default_factory=list)
     security_facts: list = field(default_factory=list)
     fund_risk: list = field(default_factory=list)
+    fund_returns: list = field(default_factory=list)
     characteristics: list = field(default_factory=list)
     period_facts: list = field(default_factory=list)
     dividend_events: list = field(default_factory=list)

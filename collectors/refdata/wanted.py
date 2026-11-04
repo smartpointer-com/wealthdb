@@ -8,7 +8,8 @@ for a run on another machine. It is a versioned JSON contract
 or a version it does not know rather than guess at its fields. A
 version 1 list names no facts: it reads with `wants`, `facts` and
 `periods` empty. A list of version 1 or 2 names no security's receipt,
-wants or calendar: they read false, empty and None.
+wants or calendar: they read false, empty and None. A list before
+version 4 names no fund's history_from: it reads None.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from pathlib import Path
 import config
 
 CONTRACT = "refdata-wanted"
-VERSIONS = (1, 2, 3)
+VERSIONS = (1, 2, 3, 4)
 
 
 class WantedError(Exception):
@@ -42,9 +43,10 @@ class Fund:
     held_from: date | None = None
     held_to: date | None = None          # None: still held
     compositions: tuple = ()             # dates gold has, ascending
-    wants: tuple = ()                    # risk_metrics, characteristics, money_market, line_durations,
-                                         # dividend_calendar
+    wants: tuple = ()                    # risk_metrics, monthly_returns, characteristics, money_market,
+                                         # line_durations, dividend_calendar
     facts: dict = field(default_factory=dict)     # fact -> tuple of the dates gold has, ascending
+    history_from: date | None = None     # how far back a backfill reads its monthly_returns
 
 
 @dataclass(frozen=True)
@@ -98,7 +100,8 @@ def parse(doc) -> Wanted:
             held_from=_date(f.get("held_from")), held_to=_date(f.get("held_to")),
             compositions=tuple(date.fromisoformat(d) for d in f.get("compositions") or ()),
             wants=tuple(f.get("wants") or ()),
-            facts={k: tuple(date.fromisoformat(d) for d in v) for k, v in (f.get("facts") or {}).items()})
+            facts={k: tuple(date.fromisoformat(d) for d in v) for k, v in (f.get("facts") or {}).items()},
+            history_from=_date(f.get("history_from")))
             for f in doc.get("funds") or ())
         securities = tuple(Security(
             key=s["key"], isin=s.get("isin"), cusip=s.get("cusip"), symbol=s.get("symbol"),
