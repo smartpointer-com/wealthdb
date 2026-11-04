@@ -2,7 +2,9 @@ package gold
 
 import (
 	"fmt"
+	"maps"
 	"math"
+	"slices"
 	"sort"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
@@ -46,7 +48,7 @@ func computeEntityReturn(assets []*accountData, p ReturnParams, toDay int64, fx 
 		return sum, any
 	}
 
-	flows, qFlowTags := entityFlows(assets, p, winFrom, winTo, aggregate)
+	flows, qFlowTags, rolled := entityFlows(assets, p, winFrom, winTo, aggregate)
 
 	// Snapshot-day union (real snapshots) for inception, the canonical headline
 	// bucket, and empty- / stale-bucket detection.
@@ -110,7 +112,7 @@ func computeEntityReturn(assets []*accountData, p ReturnParams, toDay int64, fx 
 	}
 
 	// Since-inception summary row, cumulative TWR pinned to the canonical bucket.
-	sr := summaryRow(base, winFrom, winTo, av, flows, snaps, assets, p, entityQ)
+	sr := summaryRow(base, winFrom, winTo, av, flows, rolled, snaps, assets, p, entityQ)
 	if staleAt(snaps, winTo, snapGap, snapGapOK) {
 		sr.Quality = append(sr.Quality, "stale_snapshot")
 	}
@@ -191,7 +193,7 @@ func preFxHistory(assets []*accountData, outCcy string, winFrom int64, fx fxBoun
 	return false
 }
 
-func summaryRow(base ReturnRow, winFrom, winTo int64, av func(int64) (float64, bool), flows []returns.Flow, snaps []int64, assets []*accountData, p ReturnParams, entityQ []string) ReturnRow {
+func summaryRow(base ReturnRow, winFrom, winTo int64, av func(int64) (float64, bool), flows, rolled []returns.Flow, snaps []int64, assets []*accountData, p ReturnParams, entityQ []string) ReturnRow {
 	r := base
 	r.Period, r.IsSummary = summaryLabel(winFrom, winTo), true
 	v0, _ := av(winFrom)
@@ -202,18 +204,19 @@ func summaryRow(base ReturnRow, winFrom, winTo int64, av func(int64) (float64, b
 
 	// Cumulative TWR chained over the entity's actual valuation (snapshot) days,
 	// independent of --period. Snapshot-aligned sub-periods keep every flow in the
-	// same bucket as the value change it causes, so a flow landing in a gap
-	// between sparse snapshots can't manufacture a sub-(-100%) bucket that poisons
-	// the geometric chain — a fixed calendar bucket could, when a period boundary
-	// falls inside a snapshot gap and splits a flow from its later value
+	// same bucket as the value change it causes (unvaluedAt), so a flow landing in
+	// a gap between sparse snapshots can't manufacture a sub-(-100%) bucket that
+	// poisons the geometric chain — a fixed calendar bucket could, when a period
+	// boundary falls inside a snapshot gap and splits a flow from its later value
 	// realisation (see RETURNS-NOTES §"snapshot-aligned headline").
 	bounds := canonicalChainBounds(winFrom, winTo, snaps)
+	unvalued := unvaluedAt(bounds, rolled)
 	var buckets []returns.Bucket
 	degenerate := false
 	for i := 0; i+1 < len(bounds); i++ {
 		bv0, _ := av(bounds[i])
 		bv1, _ := av(bounds[i+1])
-		rr, ok := returns.ModifiedDietz(bv0, bv1, bounds[i], bounds[i+1], flowsIn(flows, bounds[i], bounds[i+1]))
+		rr, ok := returns.ModifiedDietz(bv0+unvalued[i], bv1+unvalued[i+1], bounds[i], bounds[i+1], flowsIn(flows, bounds[i], bounds[i+1]))
 		buckets = append(buckets, returns.Bucket{R: rr, OK: ok})
 		if !ok {
 			degenerate = true
@@ -304,6 +307,78 @@ func computeMWR(v0, v1 float64, winFrom, winTo int64, flows []returns.Flow, asse
 type ownedFlow struct {
 	returns.Flow
 	subsumed bool
+	// acct is the leg's account.
+	acct *accountData
+	// onSpine says the account holds value by the leg's day.
+	onSpine bool
+	// live says it also shows the leg by the window's end, so a synthetic flow
+	// can count on the money being inside.
+	live bool
+	// funds says the leg falls before acct's debut, where onboarding books acct's
+	// own first value.
+	funds bool
+	// closes says the leg falls into acct's closure: the closure day is the first
+	// valuation to show it, so the synthetic closure would book it again.
+	closes bool
+}
+
+// movedLegs is what an entity's accounts moved. Netting cancels some of it, which
+// the synthetic flows must then not book again, and the chain still reads all of
+// it between valuations (rolled).
+type movedLegs struct {
+	funded  map[*accountData]float64        // onboarding: what the first value holds through moves, signed
+	closing map[*accountData]float64        // closure: what the last value holds that stays inside, signed
+	moves   map[*accountData][]returns.Flow // each account's flows and inside legs
+}
+
+func newMovedLegs() *movedLegs {
+	return &movedLegs{funded: map[*accountData]float64{}, closing: map[*accountData]float64{},
+		moves: map[*accountData][]returns.Flow{}}
+}
+
+func (m *movedLegs) add(a *accountData, f returns.Flow) { m.moves[a] = append(m.moves[a], f) }
+
+// cancel records a cancelled pair. A debut's first value holds a leg's money as an
+// inside move only if the partner's account was on the spine by then: money from
+// an account the entity does not hold yet is new to it. Money leaving a closing
+// account stays inside where the partner is on the spine or debuts into it.
+func (m *movedLegs) cancel(a, b ownedFlow) {
+	inside := func(leg, partner ownedFlow) bool { return leg.onSpine || (leg.funds && partner.live) }
+	if inside(a, b) && inside(b, a) {
+		m.add(a.acct, a.Flow)
+		m.add(b.acct, b.Flow)
+	}
+	for _, p := range [][2]ownedFlow{{a, b}, {b, a}} {
+		leg, partner := p[0], p[1]
+		if leg.funds && partner.live {
+			m.funded[leg.acct] += leg.Amount
+		}
+		if leg.closes && leg.live && (partner.live || partner.funds) {
+			m.closing[leg.acct] += leg.Amount
+		}
+	}
+}
+
+// rolled is the moves the chain may read before their accounts value: those of
+// each gap between valuations that the closing valuation confirms
+// (accountData.confirms). A gap into a closure the synthetic flow books stays out:
+// that flow already stands for the account's whole value.
+func (m *movedLegs) rolled(assets []*accountData, winTo int64) []returns.Flow {
+	var out []returns.Flow
+	for _, a := range assets {
+		gaps, cd := map[int64][]returns.Flow{}, a.closureDay()
+		for _, f := range m.moves[a] {
+			if f.ValuedOn != 0 && f.ValuedOn != cd {
+				gaps[f.ValuedOn] = append(gaps[f.ValuedOn], f)
+			}
+		}
+		for _, on := range slices.Sorted(maps.Keys(gaps)) {
+			if a.confirms(on, winTo, gaps[on]) {
+				out = append(out, gaps[on]...)
+			}
+		}
+	}
+	return out
 }
 
 // entityFlows assembles the entity's external flow series at a coarse grain:
@@ -317,7 +392,7 @@ type ownedFlow struct {
 // no longer) reflect are subsumed by the synthetic amount, so each dollar
 // crossing the entity boundary is counted exactly once, in the same bucket as the
 // value change it causes. See flowSubsumed / RETURNS-NOTES §"staggered inception".
-func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, aggregate bool) ([]returns.Flow, []string) {
+func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, aggregate bool) ([]returns.Flow, []string, []returns.Flow) {
 	var flows []returns.Flow
 	var tags []string
 
@@ -326,7 +401,7 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 		// (Cross-source links never net here: the partner is by definition in
 		// another source, so it can't be a member of a single-account entity.)
 		a := assets[0]
-		return append(flowsIn(a.nonTransfer, winFrom, winTo), flowsIn(a.transferLike, winFrom, winTo)...), tags
+		return append(flowsIn(a.nonTransfer, winFrom, winTo), flowsIn(a.transferLike, winFrom, winTo)...), tags, nil
 	}
 
 	// Cross-source matched pairs obey the same --netting switch as the
@@ -351,14 +426,18 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 	// subsumed — explicit closure fires regardless of OnboardScope — except under
 	// ClosureLedgerExact, where a zero-tail flow is a real dated exit leg (an
 	// exit's proceeds land on the zeroing day itself) and IS the capital event.
+	moved := newMovedLegs()
 	for _, a := range assets {
 		for _, f := range flowsIn(a.nonTransfer, winFrom, winTo) {
+			f.ValuedOn = a.valuedOn(f.Day)
 			if crossDrop[acctKey(acctKey(a.src, a.acct), f.ID)] {
+				moved.add(a, f)
 				continue
 			}
 			if flowSubsumed(a, f.Day, winFrom, winTo, false) {
 				continue
 			}
+			moved.add(a, f)
 			flows = append(flows, f)
 		}
 	}
@@ -366,48 +445,58 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 	// Transfer-like: net opposite pairs within the boundary to drop internal moves,
 	// THEN subsume any surviving pre-debut / closure-drain leg. Netting runs over the
 	// full candidate set (subsumed legs included) so an internal pair whose other leg
-	// sits on an already-alive account still annihilates and is never orphaned.
+	// sits on an already-alive account still annihilates and is never orphaned. The
+	// synthetic flows below then leave out what such a pair moved (movedLegs).
 	// Cross-source-matched legs are already accounted for (their pair dropped
 	// above) and are withheld from the candidate pool so greedy heuristic
 	// netting can't consume them again.
 	var cand []ownedFlow
 	for _, a := range assets {
+		cd := a.closureDay()
 		for _, f := range flowsIn(a.transferLike, winFrom, winTo) {
+			f.ValuedOn = a.valuedOn(f.Day)
 			if crossDrop[acctKey(acctKey(a.src, a.acct), f.ID)] {
+				moved.add(a, f)
 				continue
 			}
-			cand = append(cand, ownedFlow{Flow: f, subsumed: flowSubsumed(a, f.Day, winFrom, winTo, true)})
+			onSpine := f.Day > a.firstDay()
+			cand = append(cand, ownedFlow{Flow: f, subsumed: flowSubsumed(a, f.Day, winFrom, winTo, true),
+				acct: a, onSpine: onSpine, live: onSpine && f.ValuedOn != 0 && f.ValuedOn <= winTo,
+				funds:  onboardsOwnValue(a) && subsumesAtDebut(a, f.Day, winFrom, winTo),
+				closes: cd > winFrom && cd <= winTo && f.ValuedOn == cd && a.rpolicy.ClosureScope != returns.ClosureLedgerExact})
+		}
+	}
+	keep := func(of ownedFlow) {
+		if !of.subsumed { // a survivor that is its own pre-debut/closure capital is subsumed
+			moved.add(of.acct, of.Flow)
+			flows = append(flows, of.Flow)
 		}
 	}
 	if p.Netting {
-		kept, unmatched := netOwnedTransfers(cand)
+		kept, unmatched := netOwnedTransfers(cand, moved)
 		for _, of := range kept {
-			if !of.subsumed { // a survivor that is its own pre-debut/closure capital is subsumed
-				flows = append(flows, of.Flow)
-			}
+			keep(of)
 		}
 		if unmatched > 0 {
 			tags = append(tags, fmt.Sprintf("unmatched_transfers=%d", unmatched))
 		}
 	} else {
 		for _, of := range cand {
-			if !of.subsumed {
-				flows = append(flows, of.Flow)
-			}
+			keep(of)
 		}
 	}
 
 	// Synthetic onboarding (the late constituent's whole arrival) + explicit
 	// closure. The real pre-debut / closure-drain flows were subsumed above, so
-	// no near-day dedup is needed: onboarding books the FULL debut value, and the
+	// no near-day dedup is needed: onboarding books the debut value, and the
 	// closure loop below books whatever value remains the day before the closure
-	// day (in effect only a final-day zeroing — see that loop's comment).
+	// day (in effect only a final-day zeroing — see that loop's comment), each
+	// less what netting found moved inside the entity.
 	//
 	// OnboardScope splits the onboarding GRAIN — the AMOUNT booked when a
 	// constituent debuts after winFrom:
-	//   - OnboardPerConstituent (default): the debuting account's OWN value. No
-	//     sibling account moves on a debut day in the flow-complete sources, so
-	//     per-account == aggregate step-up there.
+	//   - OnboardPerConstituent (default): the debuting account's OWN value, less
+	//     the legs netting cancelled against a live partner (movedLegs).
 	//   - OnboardPerEntityOnce: the newly-debuting constituents' first value MINUS
 	//     same-day sibling FUNDING drops only (NOT the raw calendar aggregate delta —
 	//     see groupOnboardStep: same-day external deposits and market moves on
@@ -440,11 +529,14 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 		if a.isConduit() {
 			continue // conduit: value only, no per-account onboarding
 		}
-		// Default per-constituent onboarding: the debuting account's own value.
+		// Default per-constituent onboarding: the debuting account's own value,
+		// less what netting already cancelled as a sibling's funding of it. That
+		// money was in the entity before the debut, and its out-leg is gone, so
+		// it is no new capital.
 		debut := a.firstDay()
 		if debut > winFrom && debut <= winTo {
 			v, _ := a.valueAt(debut)
-			if of, ok := returns.OnboardingFlow(debut, v); ok {
+			if of, ok := returns.FundedOnboardingFlow(debut, v, moved.funded[a]); ok {
 				flows = append(flows, of)
 			}
 		}
@@ -476,13 +568,20 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 		}
 		if cd := a.closureDay(); cd > winFrom && cd <= winTo {
 			last, _ := a.valueAt(cd - 1)
-			if cf, ok := returns.ClosureFlow(cd, last); ok {
+			if cf, ok := returns.ClosureFlow(cd, last+moved.closing[a]); ok {
 				flows = append(flows, cf)
 			}
 		}
 	}
 	sortFlows(flows)
-	return flows, tags
+	// The opening value is as stale as any other: what its accounts moved before
+	// the window and have not shown yet counts for the chain too.
+	for _, a := range assets {
+		if a.firstDay() <= winFrom {
+			moved.moves[a] = append(moved.moves[a], a.unshownAt(winFrom)...)
+		}
+	}
+	return flows, tags, moved.rolled(assets, winTo)
 }
 
 // groupDebutDays returns the ascending, de-duplicated set of days on which a
@@ -659,8 +758,9 @@ func subsumesAtClosure(a *accountData, day, winFrom, winTo int64) bool {
 // (|amount|, day, id) tie-break means internal pairs annihilate the same way
 // whether or not a leg is subsumed. Survivors keep their tags so the caller can
 // drop subsumed pre-debut / closure-drain legs AFTER netting. Returns the
-// survivors and the count of unmatched legs.
-func netOwnedTransfers(cand []ownedFlow) (kept []ownedFlow, unmatched int) {
+// survivors and the count of unmatched legs, and records each cancelled pair in
+// moved.
+func netOwnedTransfers(cand []ownedFlow, moved *movedLegs) (kept []ownedFlow, unmatched int) {
 	var pos, neg []ownedFlow
 	for _, f := range cand {
 		if f.Amount >= 0 {
@@ -699,6 +799,7 @@ func netOwnedTransfers(cand []ownedFlow) (kept []ownedFlow, unmatched int) {
 			if math.Abs(pf.Amount+nf.Amount) <= eps && absDay(pf.Day-nf.Day) <= nettingWindowDay {
 				usedNeg[j] = true
 				matched = true
+				moved.cancel(pf, nf)
 				break
 			}
 		}
@@ -714,6 +815,12 @@ func netOwnedTransfers(cand []ownedFlow) (kept []ownedFlow, unmatched int) {
 		}
 	}
 	return kept, unmatched
+}
+
+// onboardsOwnValue reports whether a debut of a books a's own first value, so
+// that value alone stands for everything a's pre-debut legs moved.
+func onboardsOwnValue(a *accountData) bool {
+	return a.rpolicy.OnboardScope == returns.OnboardPerConstituent && !a.isConduit()
 }
 
 // ---- liability + window + identity --------------------------------------
@@ -915,6 +1022,35 @@ func canonicalChainBounds(winFrom, winTo int64, snaps []int64) []int64 {
 		bounds = append(bounds, winTo)
 	}
 	return bounds
+}
+
+// unvaluedAt is, for each of bounds, what moves has rolled forward there: what the
+// entity's accounts moved since each last valued, which their carried values do
+// not show yet. A coarse grain's valuation days are the union of its accounts', so
+// a boundary can fall between a flow into a sparsely valued account and the
+// valuation that shows it. Without this, one sub-period holds the flow against a
+// flat value and a later one the value change against no flow, and the chain keeps
+// the difference, about the square of the flow's share of the entity. On an
+// account's own valuation days this is nothing. bounds must be ascending.
+func unvaluedAt(bounds []int64, moves []returns.Flow) []float64 {
+	type step struct {
+		day    int64
+		amount float64
+	}
+	steps := make([]step, 0, 2*len(moves))
+	for _, m := range moves {
+		steps = append(steps, step{m.Day, m.Amount}, step{m.ValuedOn, -m.Amount})
+	}
+	sort.Slice(steps, func(i, j int) bool { return steps[i].day < steps[j].day })
+	out := make([]float64, len(bounds))
+	sum, next := 0.0, 0
+	for i, b := range bounds {
+		for ; next < len(steps) && steps[next].day <= b; next++ {
+			sum += steps[next].amount
+		}
+		out[i] = sum
+	}
+	return out
 }
 
 func flowsIn(flows []returns.Flow, from, to int64) []returns.Flow {

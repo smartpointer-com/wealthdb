@@ -45,10 +45,14 @@ func Chain(buckets []Bucket) (cum float64, ok bool) {
 }
 
 // Annualize converts a cumulative return over `days` to an annual rate:
-// (1+cum)^(365.25/days)-1.
+// (1+cum)^(365.25/days)-1. A total loss, or a chain past one, stays a total loss:
+// a negative base has no fractional power.
 func Annualize(cum, days float64) float64 {
 	if days <= 0 {
 		return cum
+	}
+	if 1+cum <= 0 {
+		return -1
 	}
 	return math.Pow(1+cum, xirrDayBasis/days) - 1
 }

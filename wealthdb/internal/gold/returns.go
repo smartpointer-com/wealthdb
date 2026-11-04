@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -468,6 +469,72 @@ func (a *accountData) firstDay() int64 {
 		return 0
 	}
 	return a.series[0].day
+}
+
+// valuedOn is the first real snapshot day on or after day, 0 when none is.
+func (a *accountData) valuedOn(day int64) int64 {
+	i := sort.Search(len(a.snapDays), func(k int) bool { return a.snapDays[k] >= day })
+	if i == len(a.snapDays) {
+		return 0
+	}
+	return a.snapDays[i]
+}
+
+// valueBefore is a's value at the valuation before day, nothing before its first.
+func (a *accountData) valueBefore(day int64) float64 {
+	i := sort.Search(len(a.snapDays), func(k int) bool { return a.snapDays[k] >= day })
+	if i == 0 {
+		return 0
+	}
+	v, _ := a.valueAt(a.snapDays[i-1])
+	return v
+}
+
+// confirms reports whether a's valuation on `on` shows moves, the flows and legs
+// of the gap that ends there. It does if the value change matches what moved, to
+// within half of that, and the moves never take the account below zero. Money can
+// also leave an account by a path no flow records, such as a purchase, and a flow
+// can be dated after the valuation that shows it. The value then says the account
+// never held what the flows imply. A gap that nets to nothing says nothing either
+// way. Flows past winTo are in the value change, so they count towards what moved.
+func (a *accountData) confirms(on, winTo int64, moves []returns.Flow) bool {
+	net := sumFlows(moves)
+	if on > winTo {
+		net += sumFlows(flowsIn(a.nonTransfer, winTo, on)) + sumFlows(flowsIn(a.transferLike, winTo, on))
+	}
+	v, _ := a.valueAt(on)
+	before := a.valueBefore(on)
+	if math.Abs(net) <= valueTol || math.Abs(v-before-net) >= math.Abs(net)/2 {
+		return false
+	}
+	byDay := slices.Clone(moves)
+	sort.SliceStable(byDay, func(i, j int) bool { return byDay[i].Day < byDay[j].Day })
+	held := before
+	for i, f := range byDay {
+		held += f.Amount
+		if held < -valueTol && (i+1 == len(byDay) || byDay[i+1].Day != f.Day) {
+			return false
+		}
+	}
+	return true
+}
+
+// unshownAt is a's flows on or before day that its value does not show yet, those
+// after its last valuation, each with the valuation that will show it. Nil where
+// no valuation comes before day or after it.
+func (a *accountData) unshownAt(day int64) []returns.Flow {
+	i := sort.Search(len(a.snapDays), func(k int) bool { return a.snapDays[k] > day })
+	if i == 0 || i == len(a.snapDays) {
+		return nil
+	}
+	var out []returns.Flow
+	for _, flows := range [][]returns.Flow{a.nonTransfer, a.transferLike} {
+		for _, f := range flowsIn(flows, a.snapDays[i-1], day) {
+			f.ValuedOn = a.snapDays[i]
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // isConduit reports whether this account is a conduit (plumbing) under its

@@ -37,4 +37,8 @@ type Flow struct {
 	// coarse grains; it is empty for synthetic onboarding/closure flows (which
 	// never enter netting).
 	ID string
+	// ValuedOn is the first day on or after Day that the flow's account is
+	// valued, where the value first shows the flow. Zero where that is not
+	// known: a synthetic flow, or a flow past the account's last valuation.
+	ValuedOn int64
 }

@@ -1,5 +1,7 @@
 package returns
 
+import "math"
+
 // syntheticTol is the absolute (output-currency) value below which no
 // synthetic onboarding/closure flow is booked — a ~0 or negative amount
 // (a per-entity-once step-up fully netted by sibling funding drops, a
@@ -10,7 +12,7 @@ const syntheticTol = 1e-6
 // constituent's debut, so the step-up in the aggregate value series on the day
 // a constituent first appears is booked as capital-in rather than performance.
 // The caller subsumes the constituent's real pre-debut flows first
-// (entityFlows), so the synthetic books the full debut amount; ~0/negative
+// (entityFlows), so the synthetic books the whole amount it is given; ~0/negative
 // amounts are suppressed. The returned Flow is dated on the debut day with
 // capital-in (positive) sign.
 func OnboardingFlow(debutDay int64, firstValue float64) (Flow, bool) {
@@ -18,6 +20,23 @@ func OnboardingFlow(debutDay int64, firstValue float64) (Flow, bool) {
 		return Flow{}, false
 	}
 	return Flow{Day: debutDay, Amount: firstValue}, true
+}
+
+// FundedOnboardingFlow is OnboardingFlow for a debut whose pre-debut legs netting
+// cancelled against money the entity already held, funded being their signed sum.
+// It books what the first value holds beyond those legs. That is an outflow where
+// the account passed on or paid out more than it kept, so this amount is not
+// suppressed when negative: what happens before a first valuation is capital in
+// either direction, never performance.
+func FundedOnboardingFlow(debutDay int64, firstValue, funded float64) (Flow, bool) {
+	if funded == 0 {
+		return OnboardingFlow(debutDay, firstValue)
+	}
+	amount := firstValue - funded
+	if math.Abs(amount) <= syntheticTol {
+		return Flow{}, false
+	}
+	return Flow{Day: debutDay, Amount: amount}, true
 }
 
 // ClosureFlow returns the synthetic closure outflow for an explicitly-closed

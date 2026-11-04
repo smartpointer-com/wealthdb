@@ -139,3 +139,12 @@ func TestBucketBoundaries(t *testing.T) {
 		t.Errorf("annual buckets = %d, want 3", len(a))
 	}
 }
+
+func TestAnnualizeATotalLoss(t *testing.T) {
+	t.Parallel()
+	for _, cum := range []float64{-1, -1 - 1e-15, -1.5} {
+		if got := Annualize(cum, 800); got != -1 {
+			t.Errorf("Annualize(%v) = %v, want -1", cum, got)
+		}
+	}
+}

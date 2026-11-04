@@ -1,6 +1,8 @@
 package gold
 
 import (
+	"context"
+	"database/sql"
 	"math"
 	"testing"
 	"time"
@@ -125,8 +127,8 @@ func TestStaggeredTwoLateAccounts(t *testing.T) {
 //     phantom — the −X is backed by OLD's value series — and capital is counted
 //     once.
 //   - MATCHED (same magnitude, within ±3 days): netting annihilates the internal
-//     pair BEFORE subsumption, so neither leg appears and onboarding still books
-//     NEW's full debut value.
+//     pair BEFORE subsumption, so neither leg appears, and onboarding books NEW's
+//     debut value less that funding: the money moved inside the entity.
 //
 // The assertion is that no orphaned negative phantom is produced and the net_flow
 // equals exactly the sum the boundary values justify.
@@ -171,11 +173,10 @@ func TestStaggeredJournalFundedNoPhantom(t *testing.T) {
 	//   OLD1 journal-out  -4000            (kept: OLD1 is alive, real value drop)
 	//   NEW1 onboarding   +4200            (its pre-debut +4200 journal-in subsumed)
 	//   OLD2/NEW2 3000 internal pair       (netted away — both gone)
-	//   NEW2 debuts at the drop day with value 3000, BUT note NEW2's debut == drop
-	//     day (not strictly after the netted leg). NEW2's journal-in is dated ON its
-	//     debut day, so it is subsumed too; onboarding books NEW2's 3000.
-	// So net_flow = -4000 + 4200 + 3000 = 3200.
-	want := -4000.0 + 4200.0 + 3000.0
+	//   NEW2 debuts at the drop day with value 3000, all of it that funding, so
+	//     onboarding books nothing.
+	// So net_flow = -4000 + 4200 = 200.
+	want := -4000.0 + 4200.0
 	if nf := netFlowOf(t, rows, "fidx"); math.Abs(nf-want) > 1e-6 {
 		t.Errorf("net_flow = %.2f, want %.2f (no phantom; one count per boundary dollar)", nf, want)
 	}
@@ -260,5 +261,198 @@ func TestStaggeredPostClosureFlowSubsumed(t *testing.T) {
 	}
 	if nf := netFlowOf(t, rows, "clx"); math.Abs(nf) > 1e-6 {
 		t.Errorf("net_flow = %.2f, want 0 (post-closure -500 is subsumed, not a phantom exit)", nf)
+	}
+}
+
+// TestFundedDebutBooksNoNewMoney: netting cancels a pair, and the synthetic flows
+// must then book only what is new to the entity. An inside move read as new money
+// is a flow against a flat value: a loss of the whole amount, or a gain if the
+// flow is lost instead. Every case states both the flow and the return.
+func TestFundedDebutBooksNoNewMoney(t *testing.T) {
+	t.Parallel()
+	start := dy(2023, time.January, 31)
+	move := dy(2023, time.February, 20)
+	next := dy(2023, time.February, 21)
+	debut := dy(2023, time.February, 28)
+	later := dy(2023, time.March, 15)
+	end := dy(2023, time.March, 31)
+	out := []txn{{move, canonical.TxKindTransferOut, -6000}}
+	in := []txn{{move, canonical.TxKindTransferIn, 6000}}
+	type env struct {
+		t   *testing.T
+		db  *sql.DB
+		ctx context.Context
+	}
+	acct := func(e env, src, name string, snaps []snap, txns []txn) {
+		seedAcct(e.t, e.db, e.ctx, src, name, canonical.AccountKindBrokerage, nil, snaps, txns)
+	}
+	flat := func(e env, src string) {
+		acct(e, src, "LIVE", []snap{{start, 10000}, {debut, 10000}, {end, 10000}}, nil)
+	}
+	one := func(e env) { seedReturnsSource(e.t, e.db, e.ctx, "fidx", "fidelity") }
+
+	cases := []struct {
+		name          string
+		level, entity string
+		seed          func(e env)
+		flow, twr     float64
+	}{
+		{"siblings in one source", "sources", "fidx", func(e env) {
+			one(e)
+			acct(e, "fidx", "OLD", []snap{{start, 10000}, {debut, 4000}, {end, 4100}}, out)
+			acct(e, "fidx", "NEW", []snap{{debut, 6000}, {end, 6100}}, in)
+		}, 0, 0.02},
+		{"a move between two sources", "global", "", func(e env) {
+			seedReturnsSource(e.t, e.db, e.ctx, "fromx", "fidelity")
+			seedReturnsSource(e.t, e.db, e.ctx, "tox", "fidelity")
+			acct(e, "fromx", "OLD", []snap{{start, 10000}, {debut, 4000}, {end, 4100}}, out)
+			acct(e, "tox", "NEW", []snap{{debut, 6000}, {end, 6100}}, in)
+		}, 0, 0.02},
+		{"growth before the debut stays onboarded", "sources", "fidx", func(e env) {
+			one(e)
+			acct(e, "fidx", "OLD", []snap{{start, 10000}, {debut, 4000}, {end, 4100}}, out)
+			acct(e, "fidx", "NEW", []snap{{debut, 6100}, {end, 6200}}, in)
+		}, 100, 200.0 / 10100},
+		{"money passed on through an account that keeps nothing", "sources", "fidx", func(e env) {
+			one(e)
+			acct(e, "fidx", "OLD", []snap{{start, 10000}, {debut, 4000}, {end, 4100}}, out)
+			acct(e, "fidx", "MID", []snap{{debut, 0}, {end, 0}},
+				[]txn{{move, canonical.TxKindTransferIn, 6000}, {next, canonical.TxKindTransferOut, -6000}})
+			acct(e, "fidx", "NEW", []snap{{debut, 6000}, {end, 6100}},
+				[]txn{{next, canonical.TxKindTransferIn, 6000}})
+		}, 0, 0.02},
+		{"a late account paying into a live one brought that money too", "sources", "fidx", func(e env) {
+			one(e)
+			acct(e, "fidx", "OLD", []snap{{start, 10000}, {debut, 16000}, {end, 16100}}, in)
+			acct(e, "fidx", "NEW", []snap{{debut, 2000}, {end, 2100}}, out)
+		}, 8000, 200.0 / 18000},
+		{"two debuts together, one paying the other", "sources", "fidx", func(e env) {
+			one(e)
+			flat(e, "fidx")
+			acct(e, "fidx", "SAV", []snap{{debut, 9000}, {end, 9000}}, out)
+			acct(e, "fidx", "CHK", []snap{{debut, 1000}, {end, 1000}},
+				append([]txn{{next, canonical.TxKindWithdrawal, -5000}}, in...))
+		}, 10000, 0},
+		{"staggered debuts, the payer first", "sources", "fidx", func(e env) {
+			one(e)
+			flat(e, "fidx")
+			acct(e, "fidx", "PAYER", []snap{{debut, 2000}, {end, 2000}}, out)
+			acct(e, "fidx", "RECEIVER", []snap{{later, 5000}, {end, 5000}}, in)
+		}, 7000, 0},
+		{"a partner the window never holds", "sources", "fidx", func(e env) {
+			one(e)
+			flat(e, "fidx")
+			acct(e, "fidx", "NEW", []snap{{debut, 6000}, {end, 6000}}, in)
+			acct(e, "fidx", "AFTER", []snap{{dy(2023, time.April, 30), 3000}}, out)
+		}, 6000, 0},
+		{"a partner that has not shown the leg by the window's end", "sources", "fidx", func(e env) {
+			one(e)
+			acct(e, "fidx", "OLD", []snap{{start, 10000}, {dy(2023, time.April, 30), 4000}}, out)
+			acct(e, "fidx", "NEW", []snap{{debut, 6000}, {end, 6000}}, in)
+		}, 6000, 0},
+		{"a per-entity-once payer before its own debut", "global", "", func(e env) {
+			one(e)
+			seedReturnsSource(e.t, e.db, e.ctx, "ubsx", "ubs")
+			flat(e, "fidx")
+			acct(e, "fidx", "NEW", []snap{{debut, 6000}, {end, 6000}}, in)
+			acct(e, "ubsx", "PAYER", []snap{{later, 1000}, {end, 1000}}, out)
+		}, 7000, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			db, ctx := openMigrated(t)
+			c.seed(env{t, db, ctx})
+			rows, err := RunReturns(ctx, db, params(c.level, 0, eod(2023, time.March, 31)))
+			if err != nil {
+				t.Fatalf("RunReturns: %v", err)
+			}
+			if nf := netFlowOf(t, rows, c.entity); math.Abs(nf-c.flow) > 1e-6 {
+				t.Errorf("net_flow = %.2f, want %.2f", nf, c.flow)
+			}
+			s, ok := summaryFor(rows, c.entity)
+			if !ok || s.TWR == nil {
+				t.Fatalf("no TWR: %+v", s)
+			}
+			if math.Abs(*s.TWR-c.twr) > 1e-9 {
+				t.Errorf("TWR = %.6f, want %.6f", *s.TWR, c.twr)
+			}
+		})
+	}
+}
+
+// TestClosureOnTheFinalDayBooksNoExit: an account zeroes on the spine's last day,
+// today, the one case the synthetic closure books anything. Money that went to a
+// sibling never left the entity, so the cancelled pair keeps the closure out of
+// the flows. An account whose only row is that zero never held value on the
+// spine, so a pair of its is read as a debut's.
+func TestClosureOnTheFinalDayBooksNoExit(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	today := dy(now.Year(), now.Month(), now.Day())
+	start, move := today-60*86400, today-2*86400
+	out := []txn{{move, canonical.TxKindTransferOut, -6000}}
+	in := []txn{{move, canonical.TxKindTransferIn, 6000}}
+	cases := []struct {
+		name          string
+		closing, peer []snap
+		closingLeg    []txn
+		peerLeg       []txn
+		flow          float64
+	}{
+		{"into a debut", []snap{{start, 6000}, {today, 0}}, []snap{{today, 6000}}, out, in, 0},
+		{"into a live account", []snap{{start, 6000}, {today, 0}}, []snap{{start, 10000}, {today, 16000}}, out, in, 0},
+		{"only a zero row, paying a live account", []snap{{today, 0}}, []snap{{start, 10000}, {today, 16000}}, out, in, 6000},
+		{"only a zero row, paid by a live account", []snap{{today, 0}}, []snap{{start, 10000}, {today, 4000}}, in, out, -6000},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			db, ctx := openMigrated(t)
+			seedReturnsSource(t, db, ctx, "fidx", "fidelity")
+			seedAcct(t, db, ctx, "fidx", "ANCHOR", canonical.AccountKindBrokerage, nil, []snap{{start, 10000}, {today, 10000}}, nil)
+			seedAcct(t, db, ctx, "fidx", "CLOSING", canonical.AccountKindBrokerage, nil, c.closing, c.closingLeg)
+			seedAcct(t, db, ctx, "fidx", "PEER", canonical.AccountKindBrokerage, nil, c.peer, c.peerLeg)
+			rows, err := RunReturns(ctx, db, params("sources", 0, eod(now.Year()+1, time.January, 1)))
+			if err != nil {
+				t.Fatalf("RunReturns: %v", err)
+			}
+			if nf := netFlowOf(t, rows, "fidx"); math.Abs(nf-c.flow) > 1e-6 {
+				t.Errorf("net_flow = %.2f, want %.2f", nf, c.flow)
+			}
+			s, ok := summaryFor(rows, "fidx")
+			if !ok || s.TWR == nil {
+				t.Fatalf("no TWR: %+v", s)
+			}
+			if math.Abs(*s.TWR) > 1e-9 {
+				t.Errorf("TWR = %.6f, want 0", *s.TWR)
+			}
+		})
+	}
+}
+
+// TestDrainBeforeAFinalDayClosure: a wire before the window out of an account that
+// zeroes on the spine's last day. The synthetic closure stands for the account's
+// whole carried value, so the opening value must not take the wire off as well.
+func TestDrainBeforeAFinalDayClosure(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	today := dy(now.Year(), now.Month(), now.Day())
+	start := today - 60*86400
+	db, ctx := openMigrated(t)
+	seedReturnsSource(t, db, ctx, "fidx", "fidelity")
+	seedAcct(t, db, ctx, "fidx", "ANCHOR", canonical.AccountKindBrokerage, nil, []snap{{start, 10000}, {today, 10000}}, nil)
+	seedAcct(t, db, ctx, "fidx", "OLD", canonical.AccountKindBrokerage, nil, []snap{{start, 6000}, {today, 0}},
+		[]txn{{start + 10*86400, canonical.TxKindWithdrawal, -6000}})
+	rows, err := RunReturns(ctx, db, params("sources", start+20*86400, eod(now.Year()+1, time.January, 1)))
+	if err != nil {
+		t.Fatalf("RunReturns: %v", err)
+	}
+	s, ok := summaryFor(rows, "fidx")
+	if !ok || s.TWR == nil {
+		t.Fatalf("no TWR: %+v", s)
+	}
+	if math.Abs(*s.TWR) > 1e-9 {
+		t.Errorf("TWR = %.6f, want 0", *s.TWR)
 	}
 }

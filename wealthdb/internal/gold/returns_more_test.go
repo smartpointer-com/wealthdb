@@ -79,7 +79,7 @@ func TestNetTransfers(t *testing.T) {
 		for i, f := range fs {
 			owned[i] = ownedFlow{Flow: f}
 		}
-		kept, unmatched := netOwnedTransfers(owned)
+		kept, unmatched := netOwnedTransfers(owned, newMovedLegs())
 		return len(kept), unmatched
 	}
 	// Opposite pair, same magnitude, within ±3 days ⇒ netted (internal move).

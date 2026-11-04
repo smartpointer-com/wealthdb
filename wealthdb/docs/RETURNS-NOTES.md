@@ -112,10 +112,34 @@ price gain on positions measured against a cost basis;
   falls back to a single `[winFrom, winTo]` bucket. For dense
   (daily-snapshot) sources this is daily bucketing. Guard:
   `TestRunReturnsSparseSnapshotNoChainCollapse`.
+- **Between valuations the chain rolls an account forward.** A coarse
+  grain's valuation days are the union of its accounts', so a boundary can
+  fall between a flow into a sparsely valued account and the valuation that
+  shows it. A carried value would not show the flow yet: one sub-period
+  would hold the flow against a flat value and a later one the value change
+  against no flow. The chain would keep about the square of the flow's
+  share of the entity. So at each boundary the chain adds what each account
+  moved since it last valued (`unvaluedAt`, `Flow.ValuedOn`): its flows, and
+  the legs of any pair netting cancelled, flows keeping their days. The
+  window's opening value counts the same way.
+- **The valuation has to confirm it.** Money can leave an account by a path
+  no flow records, such as a purchase, and a flow can be dated after the
+  valuation that shows it. So a gap between two valuations rolls forward
+  only if the value change matches what moved, to within half of that, and
+  the moves never take the account below zero (`confirms`). Otherwise the
+  gap keeps its carried values, the plain reading. A gap that nets to
+  nothing says nothing either way, so it keeps them too, as does a gap into
+  a closure the synthetic flow books. This is an estimate: an unrelated
+  value change of the same size passes the check. On an account's own
+  valuation days a roll adds nothing, so a grain whose accounts value
+  together reads as before. The accounts grain never rolls. Only the chain
+  does: per-period rows, `start` and `end` values, `net_flow` and MWR read
+  the carried values. Guard: `TestChainRollsAnAccountForward`.
 - **Onboarding books the debut value.** A staggered constituent's real
   debut-region flows are subsumed first (`flowSubsumed` in `entityFlows`),
-  then synthetic onboarding books the full first-snapshot value — or, under
-  per-entity-once, the sibling-netted step (`groupOnboardStep`). A ~0 or
+  then synthetic onboarding books the first-snapshot value, less the
+  pre-debut legs netting cancelled — or, under per-entity-once, the
+  sibling-netted step (`groupOnboardStep`). A ~0 or
   negative amount is suppressed, never injected.
 - **XIRR:** Newton-Raphson (analytic derivative) from a 10% guess, with a
   bisection fallback scanning `[−0.9999, 100]` at 0.01 resolution for the
@@ -231,7 +255,8 @@ chained TWR below −100%.
 
 - A constituent debuting at `d > winFrom` has every own external flow dated
   `≤ d` **dropped** from the aggregate flow series; onboarding books the
-  **full first-snapshot value** at `d`. An account already alive at
+  **first-snapshot value** at `d`, less the legs netting cancelled (below).
+  An account already alive at
   `winFrom` keeps all in-window flows and gets no onboarding.
 - The **closure mirror** (`lastNonzeroDay`): a closing constituent's flows
   dated after its last non-zero carried value — anywhere in the terminal
@@ -244,6 +269,23 @@ chained TWR below −100%.
   pre-debut/closure capital is subsumed. A surviving journal-OUT sits on an
   *alive* account whose value series reflects the drop, so it is real, not
   an orphaned phantom.
+- **A cancelled pre-debut leg reduces onboarding** by its signed amount,
+  where the partner's account is on the spine by then and shows the leg by
+  the window's end. The debut value
+  holds that money and the pair's other leg is gone, so booking the value
+  in full would read an internal move as an outside inflow, and the flat
+  value as a loss. At the global grain this covers a move between two
+  sources. Money from an account the entity does not hold yet is new to
+  it, so such a pair changes nothing. The reduced amount may be negative:
+  an account that passed on more than it kept. What happens before a first
+  valuation is capital in either direction, never performance. Guard:
+  `TestFundedDebutBooksNoNewMoney`.
+- **The same holds at a closure.** A leg the closure day first shows,
+  cancelled against money that stays inside, leaves the synthetic closure
+  flow.
+- **Per-entity-once nets a sibling's same-day drop only**
+  (`groupOnboardStep`). Funding days before the debut still books as new
+  money there.
 
 Onboarding still legitimately recognizes **untracked pre-existing
 capital** — a late account whose backfill carries no funding transactions

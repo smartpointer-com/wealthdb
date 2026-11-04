@@ -87,3 +87,26 @@ func TestClosurePhantomLossRegression(t *testing.T) {
 		t.Errorf("buggy return %.4f should be grossly inflated", rBug)
 	}
 }
+
+func TestFundedOnboardingFlow(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name          string
+		first, funded float64
+		want          float64
+		ok            bool
+	}{
+		{"no funding is plain onboarding", 100, 0, 100, true},
+		{"no funding never books a negative", -5, 0, 0, false},
+		{"funding comes off", 100, 60, 40, true},
+		{"wholly funded books nothing", 100, 100, 0, false},
+		{"passed on more than it kept books an outflow", 0, 60, -60, true},
+		{"money paid out before the debut comes back on", 20, -60, 80, true},
+	}
+	for _, c := range cases {
+		f, ok := FundedOnboardingFlow(7, c.first, c.funded)
+		if ok != c.ok || f.Amount != c.want || (ok && f.Day != 7) {
+			t.Errorf("%s: got %+v, %v; want amount %v, %v", c.name, f, ok, c.want, c.ok)
+		}
+	}
+}
