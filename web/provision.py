@@ -629,6 +629,10 @@ def report_models():
         # Yield dashboard's Asset class picker lists them, as the asset
         # class history may never hold `unknown`. It backs that picker
         # alone.
+        "report_benchmarks": (
+            "SELECT benchmark FROM web_benchmarks",
+            "The benchmarks, built-in and configured, and None. It backs the "
+            "Benchmark picker."),
         "report_yield_classes": (
             "SELECT asset_class FROM web_yield\nUNION\nSELECT asset_class FROM web_yield_curve",
             "The asset classes the yield rows carry, `unknown` where nothing classes a "
@@ -827,6 +831,39 @@ PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)", "Asset cl
                         "Dividend yield against payout", "Yields over time",
                         "Duration over time"}
 
+# The Benchmark picker's value for no benchmark, and the name of the
+# household's side on a card that sets the two beside each other. Gold
+# holds the first too (canonical.NoBenchmark).
+NO_BENCHMARK = "None"
+PORTFOLIO_SERIES = "Portfolio"
+# The picked benchmark on a line chart, under one label whichever is picked:
+# the small tiles draw no legend, so its look tells it from the sources, and
+# a card's series_settings keys on the label. The picker names the benchmark.
+# No such series, no effect: under None a card draws as if the key were absent.
+BENCHMARK_SERIES = "Benchmark"
+# The colour Metabase gives each share column on its own, kept for the
+# portfolio's series on a card that breaks out by series.
+EXPOSURE_BAR_COLORS = {"share_pct": "#7172AD", "class_share_pct": "#A989C5"}
+# A mid-tone in no palette: it has to read on a light and on a dark theme.
+BENCHMARK_COLOR = "#8A99A8"
+BENCHMARK_LINE = {"series_settings": {BENCHMARK_SERIES: {
+    "color": BENCHMARK_COLOR, "line.style": "dashed", "line.size": "L", "line.marker_enabled": False}}}
+BENCHMARK_PARAM_ID = "aa5df124"
+BENCHMARK_TAG = {"id": "benchmark-tag", "name": "benchmark", "display-name": "Benchmark",
+                 "type": "text", "default": NO_BENCHMARK, "required": True}
+
+# The cards that exist only beside a benchmark. Each reads no row under
+# None, and its tile hides then (card.hide_empty), so a dashboard with no
+# benchmark picked reads as it does without them: Metabase closes the gap
+# a hidden tile leaves, wherever the tile sits.
+BENCHMARK_CARDS = {"Benchmark return (TWR)", "Benchmark return (MWR)", "Benchmark annualized return (TWR)",
+                   "Excess return (TWR)", "Excess return (MWR)", "Excess annualized return (TWR)",
+                   "Money-weighted return over time", "Value against the benchmark",
+                   "Largest country deviations"}
+# Those of them a twin reuses as they are: shares and returns, no amount.
+# The others have a privacy card of their own.
+PRIVACY_EXEMPT_CARDS |= BENCHMARK_CARDS - {"Value against the benchmark"}
+
 # Denominator-neutral by design: a twin card's own text says what its
 # shares are of (latest total, chosen day's total, peak month, the
 # window's own net spend) where its title does not.
@@ -1021,6 +1058,8 @@ FILTER_FIELD_COLUMNS = {
     # narrows them to the holdings web_yield selects, an Income card
     # through the views its pickers list (INCOME_PROJECTED_SELECTION).
     "web_yield_parts": (),
+    # The Benchmark picker's values. No field filter binds them.
+    "web_benchmarks": (),
     "web_yield_rates": (),
     "web_yield_events": (),
     "web_yield_received": (),
@@ -1042,24 +1081,29 @@ FILTER_FIELD_COLUMNS = {
 FIELD_IDS = {}          # (table, column) -> field id, filled by main()
 
 
-def returns_tags():
+def returns_tags(sql=None):
     """Template tags for the native returns charts. Currency and Source are
     field filters on report_returns (a dropdown, values from the column).
     Start year is a plain number variable (it drives a `year(end_day) >= …`
-    range, which a field filter can't express)."""
+    range, which a field filter can't express). With `sql` the Source tag
+    only where that query reads it, so a tile it misses says so."""
     # A field-filter default is a LIST (string/= is multi-value-shaped),
     # unlike a plain text variable's bare-string default.
-    return {"currency": {"id": "ccy-ff", "name": "currency", "display-name": "Currency",
+    tags = {"currency": {"id": "ccy-ff", "name": "currency", "display-name": "Currency",
                          "type": "dimension",
                          "dimension": ["field", FIELD_IDS[("report_returns", "currency")], None],
                          "widget-type": "string/=", "default": [DEFAULT_CURRENCY],
                          "required": True},
             "start_year": START_YEAR_TAG,
+            "benchmark": BENCHMARK_TAG,
             "source_ff": {"id": "src-ff", "name": "source_ff",
                           "display-name": "Source", "type": "dimension",
                           "dimension": ["field", FIELD_IDS[("report_returns", "silver_source_id")],
                                         None],
                           "widget-type": "string/=", "default": None}}
+    if sql is not None and "{{source_ff}}" not in sql:
+        del tags["source_ff"]
+    return tags
 
 
 def _native(db_id, sql, tags):
@@ -1073,6 +1117,11 @@ def _native(db_id, sql, tags):
 # optional [[…]] clause, omitted when nothing is selected.
 RETURNS_CCY_CLAUSE = "\n     AND {{currency}}"
 RETURNS_SOURCE_CLAUSE = "\n     [[AND {{source_ff}}]]"
+# A benchmark table's currency, by the {{currency}} field filter, which
+# binds report_returns' column and so reaches another table through it.
+BENCHMARK_CCY_CLAUSE = ("\n     AND currency IN (SELECT currency FROM report_returns WHERE TRUE"
+                        + RETURNS_CCY_CLAUSE + ")")
+PICKED_BENCHMARK = "benchmark = {{benchmark}}"
 
 
 def _returns_source_union(granularity, value_col):
@@ -1081,7 +1130,8 @@ def _returns_source_union(granularity, value_col):
     granularity's per-period buckets. Filtered to {{currency}} and to periods
     ending on/after {{start_year}} (0 = all). The Source field filter
     narrows the real sources but never the '(all sources)' line, so the
-    global reference stays visible while a subset is selected."""
+    global reference stays visible while a subset is selected, and the
+    picked benchmark's buckets join them as one more source."""
     return (
         "WITH s AS (\n"
         "  SELECT silver_source_id, currency, end_day, " + value_col + " AS v\n"
@@ -1092,7 +1142,12 @@ def _returns_source_union(granularity, value_col):
         "  SELECT '(all sources)', currency, end_day, " + value_col + "\n"
         "    FROM report_returns\n"
         "   WHERE grain = 'global' AND granularity = '" + granularity + "'\n"
-        "     AND NOT is_summary" + RETURNS_CCY_CLAUSE + ")\n"
+        "     AND NOT is_summary" + RETURNS_CCY_CLAUSE + "\n"
+        "  UNION ALL\n"
+        f"  SELECT '{BENCHMARK_SERIES}', currency, end_day, " + value_col + "\n"
+        "    FROM benchmark_returns\n"
+        "   WHERE " + PICKED_BENCHMARK + " AND granularity = '" + granularity + "'"
+        + BENCHMARK_CCY_CLAUSE + ")\n"
         "SELECT silver_source_id AS source, end_day, v\n"
         "  FROM s\n"
         " WHERE year(epoch_ms(end_day * 1000)) >= {{start_year}}")
@@ -1101,10 +1156,12 @@ def _returns_source_union(granularity, value_col):
 def returns_period_sql(granularity):
     """Per-period TWR, one row per (source, period) plus the '(all sources)'
     global line — the pseudo-source that fixes the split-by-source
-    inconsistency (every chart shows sources and the global line together)."""
+    inconsistency (every chart shows sources and the global line together).
+    The benchmark's rows come last: Metabase draws series in the order their
+    rows first appear, so its line lies over the sources'."""
     return ("SELECT source, epoch_ms(end_day * 1000) AS period, v AS twr\n"
             "  FROM (\n" + _returns_source_union(granularity, "twr") + "\n) u\n"
-            " ORDER BY end_day")
+            f" ORDER BY source = '{BENCHMARK_SERIES}', end_day")
 
 
 def returns_growth_sql():
@@ -1126,7 +1183,13 @@ def returns_growth_sql():
     rebases to the chosen start); null windows (degenerate inception) drop out,
     so the line begins where the return is first defined. Annual granularity —
     one point per year — is the price of correctness here; a finer curve would
-    need per-month windowed summaries."""
+    need per-month windowed summaries.
+
+    The picked benchmark's line comes from its own windows the same way. Its
+    windows all end on its last month, and the ratio cancels that end. A window
+    the benchmark's months do not cover from its start stays off the line, so it
+    starts on the first year it covers whole, at the '(all sources)' line's
+    level that year: the two then read as money from one point."""
     return (
         "WITH w AS (\n"
         "  SELECT silver_source_id AS source, currency, window_from_year AS yr, twr\n"
@@ -1140,11 +1203,27 @@ def returns_growth_sql():
         "     AND window_from_year > 0" + RETURNS_CCY_CLAUSE + "),\n"
         "f AS (\n"
         "  SELECT source, yr, twr FROM w\n"
-        "   WHERE yr >= {{start_year}} AND twr IS NOT NULL)\n"
-        "SELECT source, make_date(yr, 1, 1) AS year,\n"
-        "       first_value(1 + twr) OVER (PARTITION BY source ORDER BY yr)\n"
-        "           / (1 + twr) - 1 AS cumulative_return\n"
-        "  FROM f")
+        "   WHERE yr >= {{start_year}} AND twr IS NOT NULL),\n"
+        "c AS (\n"
+        "  SELECT source, yr, first_value(1 + twr) OVER (PARTITION BY source ORDER BY yr)\n"
+        "             / (1 + twr) - 1 AS cumulative_return\n"
+        "    FROM f),\n"
+        "b AS (\n"
+        "  SELECT window_from_year AS yr, twr\n"
+        "    FROM benchmark_returns\n"
+        "   WHERE " + PICKED_BENCHMARK + " AND granularity = 'total'\n"
+        "     AND window_from_year > 0 AND window_from_year >= {{start_year}}\n"
+        "     AND twr IS NOT NULL AND quality NOT LIKE '%benchmark_start_clipped%'"
+        + BENCHMARK_CCY_CLAUSE + "),\n"
+        "o AS (\n"
+        "  SELECT COALESCE((SELECT cumulative_return FROM c\n"
+        "                    WHERE source = '(all sources)' AND yr = (SELECT min(yr) FROM b)), 0) AS level)\n"
+        "SELECT source, make_date(yr, 1, 1) AS year, cumulative_return\n"
+        "  FROM c\n"
+        "UNION ALL\n"
+        f"SELECT '{BENCHMARK_SERIES}', make_date(yr, 1, 1),\n"
+        "       (1 + o.level) * first_value(1 + twr) OVER (ORDER BY yr) / (1 + twr) - 1\n"
+        "  FROM b, o")
 
 
 def _returns_part(grain, granularity):
@@ -1155,19 +1234,59 @@ def _returns_part(grain, granularity):
             ["=", _f("granularity", "type/Text"), granularity]]
 
 
-def _returns_by_source(db_id, model_id, money):
-    """The by-source returns table's query over model `model_id`: each
-    source's returns and quality flags, and with `money` the absolute
-    money columns (RETURNS_MONEY_COLUMNS) too."""
-    return _mbql(db_id, model_id,
-                 {"filter": _returns_part("sources", "total"),
-                  "fields": [_f("silver_source_id", "type/Text"),
-                             _f("entity_label", "type/Text"),
-                             *(_f(c, "type/Float")
-                               for c in ("twr", "twr_annualized", "mwr", "mwr_annualized")),
-                             *(_dec(c) for c in RETURNS_MONEY_COLUMNS if money),
-                             _f("quality", "type/Text")],
-                  "order-by": [["asc", _f("silver_source_id", "type/Text")]]})
+def returns_by_source_sql(money):
+    """The by-source returns table: each source's returns and quality
+    flags, with `money` the absolute money columns (RETURNS_MONEY_COLUMNS)
+    too, and the picked benchmark as one more line over the same window.
+    Native, for that line: a question over a model has no union."""
+    cols = ("twr", "twr_annualized", "mwr", "mwr_annualized")
+    money_cols = RETURNS_MONEY_COLUMNS if money else ()
+    blanks = "".join(f", NULL AS {c}" for c in money_cols)
+    return ("SELECT silver_source_id, entity_label, " + ", ".join(cols)
+            + "".join(f", {c}" for c in money_cols) + ", quality\n"
+            "  FROM report_returns\n"
+            " WHERE grain = 'sources' AND granularity = 'total'\n"
+            "   AND window_from_year = {{start_year}}" + RETURNS_CCY_CLAUSE + RETURNS_SOURCE_CLAUSE + "\n"
+            "UNION ALL\n"
+            "SELECT benchmark, " + _months_compared() + ", twr, twr_annualized, mwr, mwr_annualized" + blanks
+            + ", quality\n"
+            "  FROM benchmark_returns\n"
+            " WHERE " + PICKED_BENCHMARK + " AND granularity = 'total'\n"
+            "   AND window_from_year = {{start_year}}" + BENCHMARK_CCY_CLAUSE + "\n"
+            " ORDER BY 1")
+
+
+def _months_compared():
+    """A window's days as a reader names them, first month to last. A
+    window starts at the end of its first day, so a month end opens the
+    month after it. A window past the benchmark's months names its last."""
+    first = "strftime(epoch_ms((start_day + 86400) * 1000), '%b %Y')"
+    last = "strftime(epoch_ms(end_day * 1000), '%b %Y')"
+    return f"CASE WHEN start_day < end_day THEN {first} || ' to ' || {last} ELSE 'through ' || {last} END"
+
+
+def benchmark_scalar_sql(expression, label):
+    """A figure of the picked benchmark over the months it covers of the
+    start year's window, which `Returns by source` names. A window its
+    months cannot answer has a row with no figure. No benchmark, no row."""
+    return (f"SELECT {expression} AS {label}\n"
+            "  FROM benchmark_returns\n"
+            " WHERE " + PICKED_BENCHMARK + " AND granularity = 'total'\n"
+            "   AND window_from_year = {{start_year}}" + BENCHMARK_CCY_CLAUSE)
+
+
+def benchmark_line_sql(value, *, index=False):
+    """A line of benchmark_mwr per side over the start year's window:
+    `value` of the household and of the same money in the picked benchmark.
+    With `index` each side reads 100 at the window's start, the twin's
+    reading, as the amounts hide. No benchmark, no row."""
+    metric = f"100 * {value} / first_value({value}) OVER (PARTITION BY series ORDER BY end_day)" if index else value
+    return ("SELECT CAST(epoch_ms(end_day * 1000) AS DATE) AS day,\n"
+            f"       CASE series WHEN 'portfolio' THEN '{PORTFOLIO_SERIES}' ELSE '{BENCHMARK_SERIES}' END AS series,\n"
+            f"       {metric} AS {'indexed_value' if index else value}\n"
+            "  FROM benchmark_mwr\n"
+            " WHERE " + PICKED_BENCHMARK + " AND window_from_year = {{start_year}}" + BENCHMARK_CCY_CLAUSE + "\n"
+            " ORDER BY series, day")
 
 
 def _series_order(sql, t, series, metric, by, largest_first=False):
@@ -1308,11 +1427,24 @@ def question_defs(db_id, mid):
         """A native returns chart, its pickers registered from its tags:
         Currency and Source land as dimensions, Start year as a
         variable."""
-        tags = returns_tags()
-        register_native_targets(name, tags, [(CURRENCY_PARAM_ID, "currency"),
-                                             (START_YEAR_PARAM_ID, "start_year"),
-                                             (SOURCE_PARAM_ID, "source_ff")])
+        tags = returns_tags(sql)
+        register_native_targets(name, tags, RETURNS_PICKERS)
         return ("line", desc, _native(db_id, sql, tags), viz)
+
+    def returns_figure(name, desc, sql, label, excess=False):
+        """A figure beside the returns scalars, a benchmark's: a percent,
+        or with `excess` a difference in percentage points."""
+        tags = returns_tags(sql)
+        register_native_targets(name, tags, RETURNS_PICKERS)
+        viz = ({"column_settings": {f'["name","{label}"]': {"suffix": " pp", "decimals": 2}}} if excess
+               else _percent_viz(label))
+        return ("scalar", desc, _native(db_id, sql, tags), {**viz, "scalar.field": label})
+
+    def returns_table(name, desc, money):
+        tags = returns_tags()
+        register_native_targets(name, tags, RETURNS_PICKERS)
+        return ("table", desc, _native(db_id, returns_by_source_sql(money), tags),
+                _percent_viz("twr", "twr_annualized", "mwr", "mwr_annualized"))
 
     # Spending cards: `value` carries gold's canonical sign (spend
     # negative, refunds positive), so every card charts its negation,
@@ -1409,15 +1541,19 @@ def question_defs(db_id, mid):
             f"SELECT sum({_ccy_case(col)})::DOUBLE AS {col}\n"
             "  FROM web_sources_latest" + _native_where(lat_tags), {})
 
-    def breakdown(name, view, dim, col, display, desc, viz=None):
+    def breakdown(name, view, dim, col, display, desc, viz=None, benchmark=None):
         """An Allocation breakdown: `col` summed by `dim` over the as-of
-        day's rows of serving view `view`, largest first."""
+        day's rows of serving view `view`, largest first, and with
+        `benchmark` that dimension of the picked benchmark beside it."""
         tags = asof_tags(view, HOLDINGS_FILTERS)
+        if benchmark:
+            tags["benchmark"] = BENCHMARK_TAG
         register_native_targets(name, tags, ALLOCATION_PICKERS)
         return (display, desc,
-                _native(db_id, _breakdown_sql(view, dim, col, tags), tags),
+                _native(db_id, _breakdown_sql(view, dim, col, tags, benchmark=benchmark), tags),
                 viz if viz is not None else
-                {"graph.dimensions": [dim], "graph.metrics": ["value"]})
+                {"graph.dimensions": [dim], "graph.metrics": ["value"],
+                 **(_beside_viz(dim) if benchmark else {})})
 
     register_native_targets("Top 100 positions", pos_tags, POSITION_PICKERS)
 
@@ -1491,7 +1627,8 @@ def question_defs(db_id, mid):
         "Allocation by asset class": breakdown("Allocation by asset class",
             "web_asset_classes_history", "asset_class", "value", "row",
             "Value by asset class, cash included, as of the chosen day. The "
-            "bars sum to net worth, debts below zero."),
+            "bars sum to net worth, debts below zero. A benchmark's bar is the same "
+            "total in its mix.", benchmark="asset_class"),
         "Allocation by vehicle": breakdown("Allocation by vehicle",
             "web_vehicles_history", "vehicle", "value", "row",
             "Value by vehicle (stock, etf, fund, bond and others) as of the "
@@ -1500,7 +1637,8 @@ def question_defs(db_id, mid):
             "web_currencies_history", "currency", "value", "row",
             "Value by native currency, cash included, as of the chosen day. "
             "A forward counts at its mark; Exposure shows its legs. The "
-            "Currency picker only sets the valuation currency."),
+            "Currency picker only sets the valuation currency. A benchmark's bar "
+            "is its funds' currencies.", benchmark="fund_currency"),
         "Value by tax wrapper": breakdown("Value by tax wrapper",
             "web_accounts_history", "tax_wrapper", "total_value", "pie",
             "Account value, cash included, by tax wrapper as of the chosen day.",
@@ -1915,27 +2053,60 @@ def question_defs(db_id, mid):
             "per source and for '(all sources)'.",
             _series_order(returns_growth_sql(), "year", "source", "cumulative_return", "latest",
                           largest_first=True),
-            {**_series_viz("year", "source", "cumulative_return", percent=True), **LINES_VIZ}),
+            {**_series_viz("year", "source", "cumulative_return", percent=True), **LINES_VIZ, **BENCHMARK_LINE}),
         "Monthly returns (TWR)": returns_native("Monthly returns (TWR)",
             "Time-weighted return per month, one line per source plus an "
             "'(all sources)' line.",
             returns_period_sql("monthly"),
-            _series_viz("period", "source", "twr", percent=True)),
+            {**_series_viz("period", "source", "twr", percent=True), **BENCHMARK_LINE}),
         "Quarterly returns (TWR)": returns_native("Quarterly returns (TWR)",
             "Time-weighted return per quarter, one line per source plus an "
             "'(all sources)' line.",
             returns_period_sql("quarterly"),
-            _series_viz("period", "source", "twr", percent=True)),
+            {**_series_viz("period", "source", "twr", percent=True), **BENCHMARK_LINE}),
         "Annual returns (TWR)": returns_native("Annual returns (TWR)",
             "Time-weighted return per calendar year, one line per source plus "
             "an '(all sources)' line.",
             returns_period_sql("annual"),
-            _series_viz("period", "source", "twr", percent=True)),
-        "Returns by source": ("table",
+            {**_series_viz("period", "source", "twr", percent=True), **BENCHMARK_LINE}),
+        "Returns by source": returns_table("Returns by source",
             "TWR and MWR per source over the chosen window, with values, net "
-            "external flow and the flags behind each n/a.",
-            _returns_by_source(db_id, mid["report_returns"], money=True),
-            _percent_viz("twr", "twr_annualized", "mwr", "mwr_annualized")),
+            "external flow and the flags behind each n/a. A benchmark adds a line "
+            "over the months it covers.", True),
+        "Benchmark return (TWR)": returns_figure("Benchmark return (TWR)",
+            "The picked benchmark's time-weighted return over the months it covers of "
+            "the chosen window, which Returns by source names.",
+            benchmark_scalar_sql("twr", "benchmark_return"), "benchmark_return"),
+        "Benchmark return (MWR)": returns_figure("Benchmark return (MWR)",
+            "What the household's own flows would have earned in the benchmark: the "
+            "same money on the same days, over the months it covers.",
+            benchmark_scalar_sql("mwr", "benchmark_mwr"), "benchmark_mwr"),
+        "Benchmark annualized return (TWR)": returns_figure("Benchmark annualized return (TWR)",
+            "The benchmark's return over its months as a constant yearly rate, n/a under a year.",
+            benchmark_scalar_sql("twr_annualized", "benchmark_annualized"), "benchmark_annualized"),
+        "Excess return (TWR)": returns_figure("Excess return (TWR)",
+            "The portfolio's time-weighted return less the benchmark's, in percentage "
+            "points, over the same months.",
+            benchmark_scalar_sql("100 * excess", "excess_return"), "excess_return", excess=True),
+        "Excess return (MWR)": returns_figure("Excess return (MWR)",
+            "The portfolio's money-weighted return less the same money's in the benchmark, "
+            "in percentage points, over the same months.",
+            benchmark_scalar_sql("100 * (portfolio_mwr - mwr)", "excess_mwr"), "excess_mwr", excess=True),
+        "Excess annualized return (TWR)": returns_figure("Excess annualized return (TWR)",
+            "The portfolio's yearly rate less the benchmark's, in percentage points.",
+            benchmark_scalar_sql("100 * excess_annualized", "excess_annualized"), "excess_annualized", excess=True),
+        "Money-weighted return over time": returns_native("Money-weighted return over time",
+            "The money-weighted return from the window's start to each month end, for the "
+            "portfolio and for the same money in the benchmark.",
+            benchmark_line_sql("mwr"),
+            # Ordinal, or the days between month ends read as missing too.
+            {**_series_viz("day", "series", "mwr", percent=True), **LINES_VIZ, **BENCHMARK_LINE, "line.missing": "none",
+             "graph.x_axis.scale": "ordinal"}),
+        "Value against the benchmark": returns_native("Value against the benchmark",
+            "The portfolio's value, and what the same start value and flows would be "
+            "worth in the benchmark.",
+            benchmark_line_sql("value"),
+            {**_series_viz("day", "series", "value"), **LINES_VIZ, **BENCHMARK_LINE}),
         "Stalest source (days)": ("scalar",
             "Days since the source read longest ago was last read. A source "
             "that marks quarterly counts from its latest read.",
@@ -2407,6 +2578,11 @@ TWIN_TILES = {"Wealth Overview": {
 TWIN_CARDS = {"Income": {"Income in the window": "Holdings' income yield"}}
 
 
+def base_card(name):
+    """A card's base name: a twin's card less its suffix."""
+    return name.removesuffix(PRIVACY_SUFFIX)
+
+
 def dashboard_tile_titles(base):
     """card name -> the title its tiles show on base dashboard `base` and
     its twin. The twin's title takes the privacy form, unless the twin
@@ -2505,11 +2681,21 @@ def base_dashboards():
             ("Return (TWR)", 0, 0, 8, 3, None),
             ("Return (MWR)", 0, 8, 8, 3, None),
             ("Annualized return (TWR)", 0, 16, 8, 3, None),
-            ("Cumulative return (TWR)", 3, 0, 24, 8, None),
-            ("Monthly returns (TWR)", 11, 0, 8, 6, None),
-            ("Quarterly returns (TWR)", 11, 8, 8, 6, None),
-            ("Annual returns (TWR)", 11, 16, 8, 6, None),
-            ("Returns by source", 17, 0, 24, 8, None),
+            # Beside a benchmark alone (BENCHMARK_CARDS), the figures above them
+            # again in their order.
+            ("Benchmark return (TWR)", 3, 0, 8, 3, None),
+            ("Benchmark return (MWR)", 3, 8, 8, 3, None),
+            ("Benchmark annualized return (TWR)", 3, 16, 8, 3, None),
+            ("Excess return (TWR)", 6, 0, 8, 3, None),
+            ("Excess return (MWR)", 6, 8, 8, 3, None),
+            ("Excess annualized return (TWR)", 6, 16, 8, 3, None),
+            ("Cumulative return (TWR)", 9, 0, 24, 8, None),
+            ("Monthly returns (TWR)", 17, 0, 8, 6, None),
+            ("Quarterly returns (TWR)", 17, 8, 8, 6, None),
+            ("Annual returns (TWR)", 17, 16, 8, 6, None),
+            ("Returns by source", 23, 0, 24, 8, None),
+            ("Money-weighted return over time", 31, 0, 24, 8, None),
+            ("Value against the benchmark", 39, 0, 24, 8, None),
         ]),
         "Spending": (
             "Where the money goes over the window, by month, category, merchant "
@@ -2664,6 +2850,9 @@ def base_dashboards():
             ("Public equity by cycle", 76, 12, 12, 7, "as_of_day"),
             ("Top securities", 83, 0, 24, 9, "as_of_day"),
             ("How the figures are classified", 92, 0, 24, 7, "as_of_day"),
+            # Beside a benchmark alone (BENCHMARK_CARDS), and the map's
+            # comparison is a table.
+            ("Largest country deviations", 99, 0, 24, 8, "as_of_day"),
         ]),
         "Yield": (
             "What the holdings earn and how their value moves with rates, over "
@@ -2712,6 +2901,10 @@ def _card_maker(out, db_id, privacy, pickers, tags, tail):
         if privacy and name in PRIVACY_EXEMPT_CARDS:
             return
         name = privacy_name(name) if privacy else name
+        # A family's tags are all its cards', but a picker lands only on
+        # a card that reads it.
+        if "{{benchmark}}" not in sql:
+            card_tags = {k: v for k, v in card_tags.items() if k != "benchmark"}
         register_native_targets(name, card_tags, pickers)
         out[name] = (display, desc + tail, _native(db_id, sql, card_tags), viz)
     return card
@@ -2729,6 +2922,56 @@ def _window_end(view, tags, share=False, where=""):
     w = ("WITH w AS (\n  SELECT *" + cols + view + _native_where(tags)
          + "\n     AND currency = {{currency}}" + where + ")")
     return w, w + ",\ne AS (SELECT * FROM w WHERE as_of_day = (SELECT max(as_of_day) FROM w))"
+
+
+def _beside(label, metric, dimension, cols=(), weight="share_pct", where="", order=None, picked_only=False,
+            keep_series=False):
+    """The tail of a card that sets the household's rows, CTE `p` of
+    `label`, `metric` and `cols`, beside the picked benchmark's: the rows
+    of `dimension` of benchmark_exposure, each with `weight` as `metric`
+    under `label`, and a `series` column the chart breaks out by. Under
+    None the benchmark's rows are none and the household's stay as they
+    are, and `series` goes, so the chart is the single series it is with
+    no benchmark at all; with `picked_only` the household's rows go too,
+    for a card that exists only beside a benchmark. The portfolio comes
+    first, so its order sets the bars'. `order`, by default the metric,
+    largest first, orders within a series. With `keep_series` the column
+    stays under None, one series, and the benchmark's takes the fixed
+    label, so a chart keeps its breakout and its colours."""
+    picked = "\n WHERE {{benchmark}} <> '" + NO_BENCHMARK + "'" if picked_only else ""
+    named = ", ".join((label, *cols, metric))
+    columns = (", ".join((label, "series", *cols, metric)) if keep_series
+               else f"COLUMNS(lambda c: c <> 'series' OR {{{{benchmark}}}} <> '{NO_BENCHMARK}')")
+    name = f"'{BENCHMARK_SERIES}'" if keep_series else "{{benchmark}}"
+    return (f"SELECT {columns}\n  FROM (\n"
+            f"SELECT {named}, '{PORTFOLIO_SERIES}' AS series\n  FROM p{picked}\n"
+            "UNION ALL BY NAME\n"
+            f"SELECT bucket AS {label}, {name} AS series, {weight} AS {metric}\n"
+            "  FROM benchmark_exposure\n"
+            f" WHERE {PICKED_BENCHMARK} AND dimension = '{dimension}'{where})\n"
+            f" ORDER BY series <> '{PORTFOLIO_SERIES}', {order or metric + ' DESC'}, 1")
+
+
+def _beside_viz(label):
+    """The dimensions of a chart a `series` column breaks out."""
+    return {"graph.dimensions": [label, "series"]}
+
+
+def _table_columns(*names):
+    """A table's columns, named: a run that returns more than the saved
+    question's columns shows only those, so a column the Benchmark picker
+    brings is named here. One a run leaves out is passed over."""
+    return {"table.columns": [{"name": n, "enabled": True} for n in names]}
+
+
+def _columns_with_benchmark(sql, order, *cols):
+    """`sql`'s columns, the benchmark's `cols` among them only with a
+    benchmark picked, by `order`. A table then shows under None what it
+    shows with no benchmark at all. DuckDB reads the picker's value when
+    it binds the query, so the column list can follow it."""
+    names = ", ".join(f"'{c}'" for c in cols)
+    return (f"SELECT COLUMNS(lambda c: c <> '{order}' AND (c NOT IN ({names}) OR {{{{benchmark}}}} <> '{NO_BENCHMARK}'))\n"
+            f"  FROM (\n{sql}\n)\n ORDER BY {order}")
 
 
 def exposure_cards(db_id, privacy):
@@ -2755,46 +2998,49 @@ def exposure_cards(db_id, privacy):
     The debt cards read web_exposure_debt (migration 0138), at the same
     instants and currencies. The Top securities card reads
     web_exposure_securities (migration 0165), each security's slices at
-    those instants. docs/EXPOSURE.md defines every figure."""
-    tags = native_tags("web_exposure", EXPOSURE_FILTERS)
+    those instants. docs/EXPOSURE.md defines every figure.
+
+    A breakdown of the design's table sets the picked benchmark beside
+    the selection (_beside): today's look-through of its funds, which no
+    picker but the Benchmark narrows. A chart type is fixed, so those
+    breakouts are bars whatever is picked, and the map has a table."""
+    tags = {**native_tags("web_exposure", EXPOSURE_FILTERS), "benchmark": BENCHMARK_TAG}
     tail = PRIVACY_DESC if privacy else ""
     # The selection, each row's share of its day's selected total, and
     # its rows at the window's end.
     last = _window_end("web_exposure", tags, share=True)[1]
     end = last + "\n"
     money = "" if privacy else ",\n       sum(value) AS value"
+    amount = () if privacy else ("value",)
     out = {}
     card = _card_maker(out, db_id, privacy, EXPOSURE_PICKERS, tags, tail)
 
-    def bars(label, metric, tooltip=(), decimals=None):
+    def bars(label, metric, tooltip=(), decimals=None, beside=False):
         """The viz of a breakdown's bars: the share, its figure on each
         bar, and in the tooltip the value on a base card, then the
-        `tooltip` columns."""
+        `tooltip` columns; with `beside` a bar per series."""
         viz = {"graph.dimensions": [label], "graph.metrics": [metric],
-               "graph.show_values": True, **_share_viz(metric, decimals=decimals)}
+               "graph.show_values": True, **_share_viz(metric, decimals=decimals),
+               **(_beside_viz(label) if beside else {})}
+        if beside:
+            viz["series_settings"] = {PORTFOLIO_SERIES: {"color": EXPOSURE_BAR_COLORS[metric]},
+                                      BENCHMARK_SERIES: {"color": BENCHMARK_COLOR}}
         cols = ([] if privacy else ["value"]) + list(tooltip)
         if cols:
             viz["graph.tooltip_columns"] = cols
         return viz
 
-    def ring(label):
-        """The viz of a breakdown's ring, slices under one percent folded.
-        A base card draws the ring from the values, so a slice's hover
-        gives the amount with the percent; a privacy card draws it from
-        the shares, with no figure in the hole (see _donut). Metabase
-        leaves a negative slice out with a warning, which the card's
-        description says."""
-        return {"pie.dimension": label, "pie.metric": "share_pct" if privacy else "value",
-                **_donut(threshold=1, total=not privacy)}
-
-    def at_end(name, display, desc, dim, label, extra=()):
-        """A breakdown at the window's end, a ring or bars: one row per
-        value of `dim` and of the `extra` columns shown beside it."""
-        cols = "".join(f",\n       {c}" for c in extra)
-        card(name, display, desc,
-             end + f"SELECT {dim} AS {label}{cols}{money},\n       sum(share_pct) AS share_pct\n"
-             "  FROM e\n GROUP BY ALL\n ORDER BY sum(share_pct) DESC, 1",
-             ring(label) if display == "pie" else bars(label, "share_pct"))
+    def at_end(name, display, desc, dim, label, dimension=None):
+        """A breakdown's bars at the window's end, one row per value of
+        `dim`. With `dimension`, the bars of benchmark_exposure's dimension
+        beside them."""
+        rows = f"SELECT {dim} AS {label}{money},\n       sum(share_pct) AS share_pct\n  FROM e\n GROUP BY ALL"
+        if dimension:
+            card(name, display, desc,
+                 last + ",\np AS (\n" + rows + ")\n" + _beside(label, "share_pct", dimension, amount, keep_series=True),
+                 bars(label, "share_pct", beside=True))
+            return
+        card(name, display, desc, end + rows + "\n ORDER BY sum(share_pct) DESC, 1", bars(label, "share_pct"))
 
     def over_time(name, desc, dim, label, fold=False, amounts=False):
         """Each month end's shares, stacked by the values of `dim`, the
@@ -2822,21 +3068,38 @@ def exposure_cards(db_id, privacy):
              {"graph.dimensions": ["as_of_day", label], "graph.metrics": [metric], **STACKED_VIZ,
               **({} if metric == "value" else _share_viz(metric))})
 
-    at_end("Exposure by asset class", "pie",
-           "Net worth by asset class after look-through, at the window's end. "
-           "A loan's negative share is left out.", "asset_class", "asset_class")
+    at_end("Exposure by asset class", "bar",
+           "Net worth by asset class after look-through, at the window's end.",
+           "asset_class", "asset_class", dimension="asset_class")
     over_time("Asset classes over time",
               "Each month end's net worth by asset class after look-through, as "
               "shares stacking to 100.", "asset_class", "asset_class")
     at_end("Exposure by sector", "bar",
            "Net worth by sector at the window's end. Unknown is what no "
-           "source describes.", "sector", "sector")
+           "source describes.", "sector", "sector", dimension="sector")
     at_end("Exposure by region", "row",
            "Net worth by region of risk at the window's end. Metals and coins "
-           "have no country.", "region", "region")
+           "have no country.", "region", "region", dimension="region")
     over_time("Regions over time",
               "Each month end's net worth by region, as shares stacking to 100.",
               "region", "region")
+    card("Largest country deviations", "table",
+         "The twenty countries furthest from the picked benchmark's share, in "
+         "percentage points. Metals, coins and unknowns are not placed.",
+         last + ",\np AS (\n"
+         "  SELECT country, max(country_name) AS country_name, sum(share_pct) AS share_pct\n"
+         "    FROM e\n   WHERE country NOT IN ('(none)', 'unknown')\n   GROUP BY 1),\n"
+         "b AS (\n"
+         "  SELECT bucket AS country, share_pct AS benchmark_pct\n"
+         "    FROM benchmark_exposure\n"
+         f"   WHERE {PICKED_BENCHMARK} AND dimension = 'country' AND bucket NOT IN ('(none)', 'unknown'))\n"
+         "SELECT COALESCE(p.country, b.country) AS country, p.country_name,\n"
+         "       COALESCE(p.share_pct, 0) AS share_pct, COALESCE(b.benchmark_pct, 0) AS benchmark_pct,\n"
+         "       COALESCE(p.share_pct, 0) - COALESCE(b.benchmark_pct, 0) AS difference_pct\n"
+         "  FROM p FULL JOIN b ON b.country = p.country\n"
+         " WHERE {{benchmark}} <> '" + NO_BENCHMARK + "'\n"
+         " ORDER BY abs(difference_pct) DESC, 1\n LIMIT 20",
+         _share_viz("share_pct", "benchmark_pct", "difference_pct"))
     card("Exposure by country", "map",
          "Net worth by country of risk at the window's end. Metals, coins "
          "and unknowns are not mapped.",
@@ -2860,10 +3123,26 @@ def exposure_cards(db_id, privacy):
     at_end("Exposure by legal situs", "bar",
            "Net worth by legal situs at the window's end. No fund is looked "
            "through, so funds count whole.", "situs", "situs")
-    at_end("Exposure by currency", "pie",
-           "Net worth by the currency each value moves with at the window's "
-           "end. Negative shares are left out.", "exposure_currency", "currency",
-           extra=("currency_kind",))
+    # A currency under one percent on both sides joins `other`, as a ring's
+    # small slices fold: a bar per currency would leave most too thin to read.
+    card("Exposure by currency", "bar",
+         "Net worth by the currency each value moves with at the window's end, those "
+         "under one percent on both sides as other.",
+         last + ",\n"
+         f"b AS (SELECT bucket, share_pct FROM benchmark_exposure\n WHERE {PICKED_BENCHMARK} AND dimension = 'currency'),\n"
+         "s AS (SELECT exposure_currency AS bucket, sum(share_pct) AS share_pct FROM e GROUP BY 1),\n"
+         "kept AS (SELECT bucket FROM s WHERE abs(share_pct) >= 1\n"
+         "         UNION SELECT bucket FROM b WHERE abs(share_pct) >= 1)\n"
+         f"SELECT {', '.join(('currency', 'series', *amount, 'share_pct'))}\n  FROM (\n"
+         "SELECT CASE WHEN exposure_currency IN (SELECT bucket FROM kept) THEN exposure_currency ELSE 'other' END"
+         f" AS currency{money},\n       sum(share_pct) AS share_pct, '{PORTFOLIO_SERIES}' AS series\n"
+         "  FROM e\n GROUP BY 1\n"
+         "UNION ALL BY NAME\n"
+         "SELECT CASE WHEN bucket IN (SELECT bucket FROM kept) THEN bucket ELSE 'other' END AS currency,\n"
+         f"       sum(share_pct) AS share_pct, '{BENCHMARK_SERIES}' AS series\n"
+         "  FROM b\n GROUP BY 1)\n"
+         f" ORDER BY series <> '{PORTFOLIO_SERIES}', currency = 'other', share_pct DESC, 1",
+         bars("currency", "share_pct", beside=True))
     over_time("Currencies over time",
               "Each month end's net worth by the currency it moves with, as "
               "shares stacking to 100. A currency sold forward can read below "
@@ -2877,11 +3156,13 @@ def exposure_cards(db_id, privacy):
     card("Public equity by size", "bar",
          "Public equity by company size at the window's end, large from 10bn "
          "USD market cap, mid from 2bn.",
-         end + f"SELECT size{money},\n"
+         last + f",\np AS (\nSELECT size{money},\n"
          "       100 * sum(share_pct) / sum(sum(share_pct)) OVER () AS class_share_pct\n"
-         "  FROM e\n WHERE asset_class = 'public_equity'\n GROUP BY 1\n"
-         " ORDER BY CASE size WHEN 'large' THEN 1 WHEN 'mid' THEN 2 WHEN 'small' THEN 3 ELSE 4 END",
-         bars("size", "class_share_pct"))
+         "  FROM e\n WHERE asset_class = 'public_equity'\n GROUP BY 1)\n"
+         + _beside("size", "class_share_pct", "size", amount, weight="100 * share_pct / sum(share_pct) OVER ()",
+                   order="CASE size WHEN 'large' THEN 1 WHEN 'mid' THEN 2 WHEN 'small' THEN 3 ELSE 4 END",
+                   keep_series=True),
+         bars("size", "class_share_pct", beside=True))
     over_time("How the figures are classified",
               "Each month end's net worth by how its figures are classified. "
               "The lower the unknown band, the more the charts cover.", "how", "how")
@@ -2901,23 +3182,35 @@ def exposure_cards(db_id, privacy):
     # holds them, the issuers and the securities, for today and the twelve
     # month ends before only, their look-through costing several times the
     # plain one.
-    dtags = native_tags("web_exposure_debt", EXPOSURE_DEBT_FILTERS)
+    dtags = {**native_tags("web_exposure_debt", EXPOSURE_DEBT_FILTERS), "benchmark": BENCHMARK_TAG}
     # The debt view carries no asset class (EXPOSURE_DEBT_FILTERS).
     whole_class = " Its class is fixed, so it takes no Asset class."
     class_share = "100 * sum(value) / (SELECT CASE WHEN total > 0 THEN total END FROM c)"
 
-    def class_bars(name, desc, dimension, label, buckets, extra=(), tooltip=()):
+    def class_select(dimension, label, cols):
+        """The CTEs of a class_bars card over `dimension`, and its rows."""
+        return (_window_end("web_exposure_debt", dtags, where=f"\n     AND dimension = '{dimension}'")[1] + ",\n"
+                "c AS (SELECT sum(value) AS total FROM e WHERE bucket <> '(none)')",
+                f"SELECT bucket AS {label}{cols}{money},\n       {class_share} AS class_share_pct\n"
+                "  FROM e\n WHERE bucket <> '(none)'\n GROUP BY bucket\n"
+                f"HAVING coalesce(abs({class_share}) >= {SMALLEST_BAR_PCT}, TRUE)")
+
+    def class_bars(name, desc, dimension, label, buckets, extra=(), tooltip=(), beside=False):
         """A dimension's bars at the window's end, in the view's own
         bucket order: each bucket's share of its class, with the `extra`
-        columns beside it and the `tooltip` ones in its tooltip."""
-        cols = "".join(f",\n       {c}" for c in extra)
+        columns beside it and the `tooltip` ones in its tooltip. With
+        `beside`, the picked benchmark's on the same reading."""
+        head, select = class_select(dimension, label, "".join(f",\n       {c}" for c in extra))
+        if beside:
+            card(name, "bar", desc + whole_class,
+                 head + ",\np AS (\n" + select + ")\n"
+                 + _beside(label, "class_share_pct", dimension, (*tooltip, *amount),
+                           weight="100 * share_pct / sum(share_pct) OVER ()", where="\n   AND bucket <> '(none)'",
+                           order=f"list_position([{_sql_list(buckets)}], {label})", keep_series=True),
+                 bars(label, "class_share_pct", tooltip, decimals=2, beside=True), dtags)
+            return
         card(name, "bar", desc + whole_class,
-             _window_end("web_exposure_debt", dtags, where=f"\n     AND dimension = '{dimension}'")[1] + ",\n"
-             "c AS (SELECT sum(value) AS total FROM e WHERE bucket <> '(none)')\n"
-             f"SELECT bucket AS {label}{cols}{money},\n       {class_share} AS class_share_pct\n"
-             "  FROM e\n WHERE bucket <> '(none)'\n GROUP BY bucket\n"
-             f"HAVING coalesce(abs({class_share}) >= {SMALLEST_BAR_PCT}, TRUE)\n"
-             f" ORDER BY list_position([{_sql_list(buckets)}], bucket)",
+             head + "\n" + select + f"\n ORDER BY list_position([{_sql_list(buckets)}], bucket)",
              bars(label, "class_share_pct", tooltip, decimals=2), dtags)
 
     grade = (f"CASE WHEN bucket IN ({_sql_list(INVESTMENT_GRADE)}) THEN 'IG'"
@@ -2927,10 +3220,10 @@ def exposure_cards(db_id, privacy):
                "credit", "rating", CREDIT_BUCKETS,
                extra=(grade, "100 * sum(abs(value)) FILTER (WHERE unknown) / NULLIF(sum(abs(value)), 0)"
                              " AS unknown_pct"),
-               tooltip=("grade", "unknown_pct"))
+               tooltip=("grade", "unknown_pct"), beside=True)
     class_bars("Debt by maturity",
                "Counts debt and cash by term at the window's end. It covers the last twelve months.",
-               "maturity", "maturity", MATURITY_BUCKETS)
+               "maturity", "maturity", MATURITY_BUCKETS, beside=True)
     class_bars("Debt by coupon kind",
                "Counts debt by coupon kind at the window's end. It covers the last twelve months.",
                "coupon", "coupon", COUPON_BUCKETS)
@@ -2944,7 +3237,7 @@ def exposure_cards(db_id, privacy):
     # exposure securities` gives them with nothing picked. The share is
     # of the selection, all of its securities counted. The twin drops the
     # values and hides a key and a name that are a holding's own.
-    stags = native_tags("web_exposure_securities", EXPOSURE_FILTERS)
+    stags = {**native_tags("web_exposure_securities", EXPOSURE_FILTERS), "benchmark": BENCHMARK_TAG}
     hidden = f"security LIKE '%{HOLDING_KEY_PREFIX}%'"
     shown = ((f"CASE WHEN {hidden} THEN '(unnamed)' ELSE security END AS security,\n"
               f"       CASE WHEN {hidden} THEN NULL ELSE name END AS name")
@@ -2953,23 +3246,36 @@ def exposure_cards(db_id, privacy):
               if privacy else "amount AS value, direct AS direct_value, via AS via_funds_value")
     card("Top securities", "table",
          "The hundred largest securities at the window's end, held directly and "
-         "through funds, added up. It covers the last twelve months.",
-         _window_end("web_exposure_securities", stags)[1] + ",\n"
-         "t AS (SELECT NULLIF(sum(value), 0) AS total FROM e),\n"
-         "g AS (\n"
-         "  SELECT security, max(name) AS name, max(ticker) AS ticker,\n"
-         "         arg_max(asset_class, (class_weight, asset_class)) AS asset_class,\n"
-         "         arg_max(sector, (sector_weight, sector)) AS sector,\n"
-         "         arg_max(country, (country_weight, country)) AS country,\n"
-         "         max(market_cap) AS market_cap, max(size) AS size, sum(value) AS amount,\n"
-         "         sum(direct_value) AS direct, sum(via_funds_value) AS via,\n"
-         "         len(list_distinct(flatten(list(funds)))) AS funds\n"
-         "    FROM e\n   GROUP BY security)\n"
-         f"SELECT {shown},\n       ticker, asset_class, sector, country, market_cap, size,\n"
-         f"       {values}, funds,\n"
-         "       100 * amount / t.total AS share_pct\n"
-         "  FROM g, t\n ORDER BY abs(amount) DESC, g.security\n LIMIT 100",
-         _share_viz("share_pct", *(("direct_pct", "via_funds_pct") if privacy else ())), stags)
+         "through funds, added up. It covers the last twelve months. A benchmark "
+         "adds its weight and the difference.",
+         _columns_with_benchmark(
+             _window_end("web_exposure_securities", stags)[1] + ",\n"
+             "t AS (SELECT NULLIF(sum(value), 0) AS total FROM e),\n"
+             "g AS (\n"
+             "  SELECT security, max(name) AS name, max(ticker) AS ticker,\n"
+             "         arg_max(asset_class, (class_weight, asset_class)) AS asset_class,\n"
+             "         arg_max(sector, (sector_weight, sector)) AS sector,\n"
+             "         arg_max(country, (country_weight, country)) AS country,\n"
+             "         max(market_cap) AS market_cap, max(size) AS size, sum(value) AS amount,\n"
+             "         sum(direct_value) AS direct, sum(via_funds_value) AS via,\n"
+             "         len(list_distinct(flatten(list(funds)))) AS funds\n"
+             "    FROM e\n   GROUP BY security)\n"
+             f"SELECT {shown},\n       ticker, asset_class, sector, country, market_cap, size,\n"
+             f"       {values}, funds,\n"
+             "       100 * amount / t.total AS share_pct,\n"
+             "       COALESCE(b.share_pct, 0) AS benchmark_pct,\n"
+             "       100 * amount / t.total - COALESCE(b.share_pct, 0) AS difference_pct,\n"
+             "       row_number() OVER (ORDER BY abs(amount) DESC, g.security) AS sort_rank\n"
+             "  FROM g CROSS JOIN t\n"
+             "  LEFT JOIN benchmark_exposure b ON b.benchmark = {{benchmark}} AND b.dimension = 'security'"
+             " AND b.bucket = g.security\n ORDER BY sort_rank\n LIMIT 100",
+             "sort_rank", "benchmark_pct", "difference_pct"),
+         {**_share_viz("share_pct", "benchmark_pct", "difference_pct",
+                       *(("direct_pct", "via_funds_pct") if privacy else ())),
+          **_table_columns("security", "name", "ticker", "asset_class", "sector", "country", "market_cap", "size",
+                           *(("direct_pct", "via_funds_pct") if privacy else
+                             ("value", "direct_value", "via_funds_value")),
+                           "funds", "share_pct", "benchmark_pct", "difference_pct")}, stags)
     return out
 
 
@@ -2985,24 +3291,36 @@ def issuer_cards(db_id, privacy):
     not reach it. A security no source names reads its key, which the
     privacy card hides where it is a holding's own; the privacy card also
     drops the value."""
-    tags = {"currency": currency_tag(), **_calendar_tags()}
+    tags = {"currency": currency_tag(), "benchmark": BENCHMARK_TAG, **_calendar_tags()}
     tail = PRIVACY_DESC if privacy else ""
     out = {}
     card = _card_maker(out, db_id, privacy, ALLOCATION_PICKERS, tags, tail)
+    weight = ("(SELECT max(b.share_pct) FROM benchmark_exposure b\n"
+              f"         WHERE b.{PICKED_BENCHMARK} AND b.dimension = 'issuer'\n"
+              "           AND (b.bucket = 'lei:' || e.lei OR upper(b.label) = upper(e.issuer)))")
     issuer = (f"CASE WHEN issuer LIKE '{HOLDING_KEY_PREFIX}%' THEN '(unnamed)' ELSE issuer END"
               if privacy else "issuer")
     value = "" if privacy else ",\n       value"
     card("Top 100 issuers", "table",
          "The hundred largest issuers as of the day, a company's stock, bonds and deposits together. "
          "A day over a year back shows none.",
-         "WITH d AS (SELECT " + _history_day(tags) + " AS day),\n"
-         "w AS (\n  SELECT *\n    FROM web_exposure_issuers\n   WHERE currency = {{currency}}\n"
-         "     AND as_of_day <= (SELECT day FROM d)),\n"
-         "e AS (SELECT * FROM w WHERE as_of_day = (SELECT max(as_of_day) FROM w))\n"
-         f"SELECT rank,\n       {issuer} AS issuer{value},\n"
-         "       share_pct, cumulative_share_pct, equity_pct, debt_pct, cash_pct\n"
-         "  FROM e\n WHERE issuer <> '(none)'\n ORDER BY rank\n LIMIT 100",
-         _share_viz("share_pct", "cumulative_share_pct", "equity_pct", "debt_pct", "cash_pct"))
+         _columns_with_benchmark(
+             "WITH d AS (SELECT " + _history_day(tags) + " AS day),\n"
+             "w AS (\n  SELECT *\n    FROM web_exposure_issuers\n   WHERE currency = {{currency}}\n"
+             "     AND as_of_day <= (SELECT day FROM d)),\n"
+             "e AS (SELECT * FROM w WHERE as_of_day = (SELECT max(as_of_day) FROM w))\n"
+             f"SELECT rank,\n       {issuer} AS issuer{value},\n"
+             "       share_pct, cumulative_share_pct, equity_pct, debt_pct, cash_pct,\n"
+             f"       COALESCE({weight}, 0) AS benchmark_pct,\n"
+             f"       share_pct - COALESCE({weight}, 0) AS difference_pct,\n"
+             "       rank AS sort_rank\n"
+             "  FROM e\n WHERE issuer <> '(none)'\n ORDER BY rank\n LIMIT 100",
+             "sort_rank", "benchmark_pct", "difference_pct"),
+         {**_share_viz("share_pct", "cumulative_share_pct", "equity_pct", "debt_pct", "cash_pct",
+                       "benchmark_pct", "difference_pct"),
+          **_table_columns("rank", "issuer", *(() if privacy else ("value",)), "share_pct",
+                           "benchmark_pct", "difference_pct",
+                           "cumulative_share_pct", "equity_pct", "debt_pct", "cash_pct")})
     return out
 
 
@@ -3105,7 +3423,7 @@ def yield_cards(db_id, privacy):
     reaches it. A card of rates, years and securities alone is
     privacy-exempt, the twin showing it unchanged. docs/YIELD.md defines
     every figure."""
-    tags = native_tags("web_yield", YIELD_FILTERS)
+    tags = {**native_tags("web_yield", YIELD_FILTERS), "benchmark": BENCHMARK_TAG}
     # Today's selected holdings, whatever the window.
     held_tags = native_tags("web_yield", {k: v for k, v in YIELD_FILTERS.items() if k != "time_range"})
     note = PRIVACY_DESC if privacy else ""
@@ -3285,22 +3603,36 @@ def yield_cards(db_id, privacy):
 
     # Two charts, not one: a yield and a duration differ in unit, and one
     # chart would need an axis for each.
+    # A benchmark's figure is one more line, on the household's axis, so
+    # the two read against one scale. No graph.metrics: the chart takes
+    # the columns a run returns, so under None it has no such line.
     yields = ("income_yield_pct", "implied_yield_pct", "realized_yield_pct")
+    picked = ("  LEFT JOIN (SELECT as_of, yield_pct AS benchmark_yield_pct, duration AS benchmark_duration\n"
+              "               FROM benchmark_yield WHERE " + PICKED_BENCHMARK + ") b\n"
+              "         ON CAST(epoch_ms(b.as_of * 1000) AS DATE) = w.as_of_day\n")
     card("Yields over time", "line",
          "The income, implied and realized yields at each month end in the window and "
-         "today.",
-         w + f"\nSELECT as_of_day,\n       {_income_yield()} AS income_yield_pct,\n"
-         f"       {_rate('implied_pct')} AS implied_yield_pct,\n"
-         f"       {REALIZED_YIELD} AS realized_yield_pct\n"
-         "  FROM w\n GROUP BY 1\n ORDER BY 1",
-         {"graph.dimensions": ["as_of_day"], "graph.metrics": list(yields), **LINES_VIZ,
-          **_share_viz(*yields)})
+         "today. A benchmark adds its funds' yield.",
+         _columns_with_benchmark(
+             w + f"\nSELECT as_of_day,\n       {_income_yield()} AS income_yield_pct,\n"
+             f"       {_rate('implied_pct')} AS implied_yield_pct,\n"
+             f"       {REALIZED_YIELD} AS realized_yield_pct,\n"
+             "       any_value(benchmark_yield_pct) AS benchmark_yield_pct,\n"
+             "       as_of_day AS sort_rank\n"
+             "  FROM w\n" + picked + " GROUP BY 1",
+             "sort_rank", "benchmark_yield_pct"),
+         {"graph.dimensions": ["as_of_day"], **LINES_VIZ, **_share_viz(*yields, "benchmark_yield_pct"),
+          "series_settings": {"benchmark_yield_pct": {"axis": "left"}}})
     card("Duration over time", "line",
          "The holdings' value-weighted modified duration in years, at each month end in the "
-         "window and today.",
-         w + f"\nSELECT as_of_day,\n       {_rate('duration')} AS duration\n  FROM w\n GROUP BY 1\n ORDER BY 1",
-         {"graph.dimensions": ["as_of_day"], "graph.metrics": ["duration"]})
-
+         "window and today. A benchmark adds its funds' duration.",
+         _columns_with_benchmark(
+             w + f"\nSELECT as_of_day,\n       {_rate('duration')} AS duration,\n"
+             "       any_value(benchmark_duration) AS benchmark_duration,\n"
+             "       as_of_day AS sort_rank\n"
+             "  FROM w\n" + picked + " GROUP BY 1",
+             "sort_rank", "benchmark_duration"),
+         {"graph.dimensions": ["as_of_day"], "series_settings": {"benchmark_duration": {"axis": "left"}}})
     # A holding carries every tag that describes a figure of it, so the
     # shares overlap; each is of the gross value, a liability counted
     # whole (docs/YIELD.md §7).
@@ -4101,7 +4433,7 @@ EXPOSURE_FILTERS = {**range_filters("as_of_day"), "tax_wrapper": ("tax_wrapper",
                     "asset_class": ("asset_class", "string/=")}
 EXPOSURE_PICKERS = [(EXPOSURE_CURRENCY_PARAM_ID, "currency"), (TIME_PARAM_ID, "time_range"),
                     (SOURCE_PARAM_ID, "source"), (EXPOSURE_TAX_WRAPPER_PARAM_ID, "tax_wrapper"),
-                    (EXPOSURE_ASSET_CLASS_PARAM_ID, "asset_class")]
+                    (EXPOSURE_ASSET_CLASS_PARAM_ID, "asset_class"), (BENCHMARK_PARAM_ID, "benchmark")]
 # Its debt cards (migration 0138). The debt view carries no asset class,
 # so the class picker does not reach those cards.
 EXPOSURE_DEBT_FILTERS = {k: v for k, v in EXPOSURE_FILTERS.items() if k != "asset_class"}
@@ -4152,10 +4484,12 @@ LATEST_DESC = " It reads the latest snapshot whatever the Time range."
 
 OVERVIEW_PICKERS = [(WEALTH_CURRENCY_PARAM_ID, "currency"),
                     (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
-                    (WEALTH_TAX_WRAPPER_PARAM_ID, "tax_wrapper"), (ASSET_PARAM_ID, "asset_class")]
+                    (WEALTH_TAX_WRAPPER_PARAM_ID, "tax_wrapper"), (ASSET_PARAM_ID, "asset_class"),
+                    (BENCHMARK_PARAM_ID, "benchmark")]
 ALLOCATION_PICKERS = [(WEALTH_CURRENCY_PARAM_ID, "currency"),
                       (ASOF_PARAM_ID, "as_of_day"), (SOURCE_PARAM_ID, "source"),
-                      (WEALTH_TAX_WRAPPER_PARAM_ID, "tax_wrapper"), (ASSET_PARAM_ID, "asset_class")]
+                      (WEALTH_TAX_WRAPPER_PARAM_ID, "tax_wrapper"), (ASSET_PARAM_ID, "asset_class"),
+                      (BENCHMARK_PARAM_ID, "benchmark")]
 POSITION_PICKERS = ALLOCATION_PICKERS + [(VEHICLE_PARAM_ID, "vehicle")]
 
 # The projection's assumptions (docs/INCOME.md §12), each list's default
@@ -4199,7 +4533,8 @@ CASHFLOW_PLAN_PICKERS = [(CASHFLOW_CURRENCY_PARAM_ID, "currency"), *PROJECTION_P
 YIELD_FILTERS = EXPOSURE_FILTERS
 YIELD_PICKERS = [(YIELD_CURRENCY_PARAM_ID, "currency"), (TIME_PARAM_ID, "time_range"),
                  (SOURCE_PARAM_ID, "source"), (YIELD_TAX_WRAPPER_PARAM_ID, "tax_wrapper"),
-                 (YIELD_ASSET_CLASS_PARAM_ID, "asset_class"), *PROJECTION_PICKERS]
+                 (YIELD_ASSET_CLASS_PARAM_ID, "asset_class"), (BENCHMARK_PARAM_ID, "benchmark"),
+                 *PROJECTION_PICKERS]
 
 # The Income dashboards' cards of received and expected income read
 # several views each, the income received and its other lines, the tax
@@ -4487,13 +4822,25 @@ def _asof_where(tags, exclude=()):
             + "\n     AND as_of_day = " + _history_day(tags))
 
 
-def _breakdown_sql(view, dim, col, tags, share=False):
+def _breakdown_sql(view, dim, col, tags, share=False, benchmark=None):
     """An Allocation breakdown's SQL: `col` summed by `dim` over serving
     view `view`'s rows on the history day (_asof_where) that the field
     filters in `tags` keep, largest first; with `share` each as % of the
     sum, the twin's (liability buckets read negative, and a zero sum
-    blanks them)."""
+    blanks them). With `benchmark`, that dimension of the picked benchmark
+    beside it: a share as a share, and on the base card as the same total
+    held in the benchmark's mix, so both bars read in the picked currency."""
     where = _asof_where(tags)
+    if benchmark and not share:
+        return (f"WITH p AS (\n  SELECT {dim}, sum({_ccy_case(col)})::DOUBLE AS value\n"
+                f"    FROM {view}" + where + "\n   GROUP BY 1)\n"
+                + _beside(dim, "value", benchmark, weight="share_pct / 100 * (SELECT sum(value) FROM p)"))
+    if benchmark:
+        return ("WITH r AS (\n"
+                f"  SELECT {dim}, sum({_ccy_case(col)})::DOUBLE AS v\n"
+                f"    FROM {view}" + where + "\n   GROUP BY 1),\n"
+                f"p AS (SELECT {dim}, v / (SELECT CASE WHEN sum(v) <> 0 THEN sum(v) END FROM r) * 100 AS value_pct\n"
+                "        FROM r)\n" + _beside(dim, "value_pct", benchmark))
     if not share:
         return (f"SELECT {dim}, sum({_ccy_case(col)})::DOUBLE AS value\n"
                 f"  FROM {view}" + where + "\n GROUP BY 1\n ORDER BY 2 DESC")
@@ -4514,6 +4861,11 @@ def _breakdown_sql(view, dim, col, tags, share=False):
 # those cards' pickers; cards absent here take the default MBQL
 # dimension mappings.
 NATIVE_PARAM_TARGETS = {}
+
+
+# The native returns cards' pickers.
+RETURNS_PICKERS = [(CURRENCY_PARAM_ID, "currency"), (START_YEAR_PARAM_ID, "start_year"),
+                   (SOURCE_PARAM_ID, "source_ff"), (BENCHMARK_PARAM_ID, "benchmark")]
 
 
 def register_native_targets(card, tags, pairs):
@@ -4651,18 +5003,21 @@ def privacy_card_defs(db_id, model_ids):
     # selected sources as of the chosen day (liability buckets read
     # negative; the sum <> 0 guard blanks a degenerate zero day).
 
-    def breakdown(name, view, dim, col, display, desc, viz=None):
+    def breakdown(name, view, dim, col, display, desc, viz=None, benchmark=None):
         tags = asof_tags(view, HOLDINGS_FILTERS)
+        if benchmark:
+            tags["benchmark"] = BENCHMARK_TAG
         out[name] = ("question", display, desc + PRIVACY_DESC,
-                     _native(db_id, _breakdown_sql(view, dim, col, tags, share=True), tags),
+                     _native(db_id, _breakdown_sql(view, dim, col, tags, share=True, benchmark=benchmark), tags),
                      viz if viz is not None else
-                     {"graph.dimensions": [dim], "graph.metrics": ["value_pct"]})
+                     {"graph.dimensions": [dim], "graph.metrics": ["value_pct"],
+                      **(_beside_viz(dim) if benchmark else {})})
         register_native_targets(name, tags, ALLOCATION_PICKERS)
 
     breakdown("Allocation by asset class (privacy)",
               "web_asset_classes_history", "asset_class", "value", "row",
               "Asset-class shares (%) of net worth as of the chosen day, cash "
-              "included. Debts read negative.")
+              "included. Debts read negative.", benchmark="asset_class")
     breakdown("Allocation by vehicle (privacy)",
               "web_vehicles_history", "vehicle", "value", "row",
               "Vehicle shares (%) of net worth as of the chosen day. Cash shows "
@@ -4671,7 +5026,7 @@ def privacy_card_defs(db_id, model_ids):
               "web_currencies_history", "currency", "value", "row",
               "Native-currency shares (%) of net worth as of the chosen day, "
               "cash included. A forward counts at its mark; Exposure shows its "
-              "legs.")
+              "legs.", benchmark="fund_currency")
     breakdown("Value by tax wrapper (privacy)",
               "web_accounts_history", "tax_wrapper", "total_value", "pie",
               "Tax-wrapper shares (%) of account value, cash included, as of the "
@@ -4726,11 +5081,22 @@ def privacy_card_defs(db_id, model_ids):
     # so the by-source table's privacy variant lists its fields without
     # them (a reference to a dropped column would error against it) and
     # gets a description that doesn't promise them.
+    tags = returns_tags()
+    register_native_targets("Returns by source (privacy)", tags, RETURNS_PICKERS)
     out["Returns by source (privacy)"] = ("question", "table",
         "TWR and MWR per source over the chosen window, with the flags "
-        "behind each n/a." + RETURNS_PRIVACY_DESC,
-        _returns_by_source(db_id, model_ids["report_returns_redacted"], money=False),
+        "behind each n/a. A benchmark adds a line over the months it covers."
+        + RETURNS_PRIVACY_DESC,
+        _native(db_id, returns_by_source_sql(False), tags),
         _percent_viz("twr", "twr_annualized", "mwr", "mwr_annualized"))
+    sql = benchmark_line_sql("value", index=True)
+    tags = returns_tags(sql)
+    register_native_targets("Value against the benchmark (privacy)", tags, RETURNS_PICKERS)
+    out["Value against the benchmark (privacy)"] = ("question", "line",
+        "The portfolio's value and the same money in the benchmark, each at 100 at "
+        "the window's start." + RETURNS_PRIVACY_DESC,
+        _native(db_id, sql, tags),
+        {**_series_viz("day", "series", "indexed_value"), **LINES_VIZ, **BENCHMARK_LINE})
 
     out.update(spending_privacy_defs(db_id, model_ids))
     out.update(income_privacy_defs(db_id))
@@ -5315,6 +5681,13 @@ def dashboard_parameters(model_ids, mode, name=""):
 
     source = card_picker(SOURCE_PARAM_ID, "Source", "source",
                          "report_sources_latest", "silver_source_id")
+    # Required with None as its default: every card then reads one
+    # benchmark or none, and the list comes off the config by the model.
+    benchmark = {**static_picker(BENCHMARK_PARAM_ID, "Benchmark", "benchmark", NO_BENCHMARK, ()),
+                 "values_source_type": "card",
+                 "values_source_config": {
+                     "card_id": model_ids["report_benchmarks"],
+                     "value_field": ["field", "benchmark", {"base-type": "type/Text"}]}}
     if mode == "returns":
         # report_returns carries one row set per currency, so a card
         # running with the currency cleared would show every period once
@@ -5345,7 +5718,7 @@ def dashboard_parameters(model_ids, mode, name=""):
         # global scalars are whole-portfolio, so it doesn't touch them). Not
         # required / no default = all sources; the charts keep the global
         # '(all sources)' reference line regardless.
-        return [currency, start_year, source]
+        return [currency, start_year, source, benchmark]
     if mode == "asof":
         # Required, with today as the default (ASOF_DEFAULT): a required
         # parameter resets to its default instead of clearing, so a card
@@ -5361,7 +5734,8 @@ def dashboard_parameters(model_ids, mode, name=""):
                 source, tax_wrapper_picker(WEALTH_TAX_WRAPPER_PARAM_ID),
                 asset_class_picker(ASSET_PARAM_ID),
                 card_picker(VEHICLE_PARAM_ID, "Vehicle", "vehicle",
-                            "report_positions_history", "vehicle")]
+                            "report_positions_history", "vehicle"),
+                benchmark]
     # "past12months~": the trailing ~ means "include this month".
     # Without it Metabase takes the previous 12 COMPLETE months, which
     # silently drops every row of the current partial month.
@@ -5384,13 +5758,13 @@ def dashboard_parameters(model_ids, mode, name=""):
         # compute.
         return [currency_picker(EXPOSURE_CURRENCY_PARAM_ID), time_range, source,
                 tax_wrapper_picker(EXPOSURE_TAX_WRAPPER_PARAM_ID),
-                asset_class_picker(EXPOSURE_ASSET_CLASS_PARAM_ID)]
+                asset_class_picker(EXPOSURE_ASSET_CLASS_PARAM_ID), benchmark]
     if name in YIELD_DASHBOARDS:
         # Exposure's five, report_yield_positions holding a row set per
         # currency too, and the projection's four.
         return [currency_picker(YIELD_CURRENCY_PARAM_ID), time_range, source,
                 tax_wrapper_picker(YIELD_TAX_WRAPPER_PARAM_ID),
-                asset_class_picker(YIELD_ASSET_CLASS_PARAM_ID, "report_yield_classes"), *projection]
+                asset_class_picker(YIELD_ASSET_CLASS_PARAM_ID, "report_yield_classes"), benchmark, *projection]
     if name in GAINS_DASHBOARDS:
         # Missing cost basis is required, like the currency:
         # report_gains holds a row set per reading, and a tile with the
@@ -5611,7 +5985,7 @@ def missing_web_views(base, sid, db_id):
 # The oldest gold schema the cards can read. A test holds it at or above
 # the newest migration that defines a view or table a card reads.
 # DESIGN.md §6 says what each older snapshot lacks.
-MIN_GOLD_SCHEMA = 174
+MIN_GOLD_SCHEMA = 176
 
 # main()'s exit status for a snapshot older than MIN_GOLD_SCHEMA; every
 # other failure exits 1. web/web tells the two apart, because only
@@ -6165,7 +6539,10 @@ def overview_click(card, dash, params, dash_ids):
 def unreached_note(mapped, params):
     """The sentence a tile's description ends in, naming the pickers of
     its dashboard (parameters `params`) that the parameter ids `mapped`
-    leave out; empty where every picker reaches the tile."""
+    leave out; empty where every picker reaches the tile. The Benchmark
+    picker goes unnamed: most tiles have no benchmark to show, and a
+    reader expects none there."""
+    params = [x for x in params if x["id"] != BENCHMARK_PARAM_ID]
     names = [x["name"] for x in params if x["id"] not in mapped]
     if not names:
         return ""
@@ -6286,7 +6663,8 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
                                 else card_mappings(card, tcol, mode, name, card_ids))
                     if m["parameter_id"] in param_ids]
             viz = {**crossfilter_viz(card, param_ids),
-                   **({"card.title": tile_titles_here[card]} if card in tile_titles_here else {})}
+                   **({"card.title": tile_titles_here[card]} if card in tile_titles_here else {}),
+                   **({"card.hide_empty": True} if base_card(card) in BENCHMARK_CARDS else {})}
             # A tile's description names the pickers of the bar that do
             # not reach it, read off the mappings it is sent with, and a
             # Wealth Overview tile opens its home dashboard.

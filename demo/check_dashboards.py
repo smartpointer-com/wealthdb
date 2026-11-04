@@ -26,7 +26,8 @@ pickers are varied one at a time around their defaults:
   offers but its default;
 - a currency picker without such a list over each currency it offers;
 - the section, start year, as-of day, asset class and tax wrapper over a
-  few values each, and the shift at -100 basis points.
+  few values each, the shift at -100 basis points, and the benchmark
+  over each built-in name.
 
 The account, category, income type, vehicle and position pickers stay at
 their defaults.
@@ -34,7 +35,7 @@ their defaults.
 A run fails when Metabase reports an error. A response cut off with no
 error and no result is asked once more first. A card that returns no rows
 at its dashboard's defaults fails too, but for the calendar of expected
-payments, and so does a figure of the Income dashboards that reads null
+payments and the tiles that exist only beside a benchmark, and so does a figure of the Income dashboards that reads null
 there. A tile whose click opens a dashboard that is not there, passes
 a picker either side does not carry, or passes a column its card does
 not return, fails too. A card states its columns only once it has run,
@@ -68,7 +69,8 @@ from demohouse import config, spec  # noqa: E402
 WINDOWS = ["past7days~", "past30days~", "past3months~", "past12months~", "past3years~"]
 # Cards that may be empty at their defaults: a book whose holdings pay
 # nothing over the horizon expects no payment.
-EMPTY_AT_DEFAULTS_OK = {"Expected payments", provision.privacy_name("Expected payments")}
+EMPTY_AT_DEFAULTS_OK = {"Expected payments", provision.privacy_name("Expected payments"),
+                        *provision.BENCHMARK_CARDS, *map(provision.privacy_name, provision.BENCHMARK_CARDS)}
 # The dashboards whose figures read 0 where nothing counts, never null.
 NO_NULL_DASHBOARDS = provision.INCOME_DASHBOARDS
 
@@ -135,6 +137,7 @@ def combos(params, sources, currencies, first_year, today):
         "asset_class": [["public_equity"]],
         "tax_wrapper": [["taxable_personal"]],
         "shift": [[-100]],
+        "benchmark": [[n] for n in sorted(json.loads((HERE / "household.json").read_text())["config"]["benchmarks"])],
     }
     for p in params:
         if p.get("values_source_type") == "static-list":

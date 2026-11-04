@@ -449,7 +449,7 @@ for _d in ("Allocation", "Allocation (privacy)"):
     check(f"'{_d}' carries the currency picker, the as-of pickers, the tax wrapper and the asset class",
           [x["id"] for x in p.dashboard_parameters(MID, "asof", _d)]
           == [p.WEALTH_CURRENCY_PARAM_ID, p.ASOF_PARAM_ID, p.SOURCE_PARAM_ID,
-              p.WEALTH_TAX_WRAPPER_PARAM_ID, p.ASSET_PARAM_ID, p.VEHICLE_PARAM_ID])
+              p.WEALTH_TAX_WRAPPER_PARAM_ID, p.ASSET_PARAM_ID, p.VEHICLE_PARAM_ID, p.BENCHMARK_PARAM_ID])
 # The class picker lists the asset class history's classes, cash among
 # them: a cash balance is the class `cash` in every holdings view.
 for _mode, _d in (("range", "Wealth Overview"), ("asof", "Allocation"), ("range", "Exposure")):
@@ -1277,6 +1277,8 @@ _BORROWED = {card_ids[c] for t in ("Wealth Overview", "Wealth Overview" + p.PRIV
              for c, *_ in DEFS[t][3] if c.removesuffix(p.PRIVACY_SUFFIX) in p.OVERVIEW_TILE_HOMES
              and c.removesuffix(p.PRIVACY_SUFFIX) != "Asset class mix over time"}
 _SELECTION = {p.WEALTH_TAX_WRAPPER_PARAM_ID, p.ASSET_PARAM_ID}
+# The tiles that read the picked benchmark take its picker too.
+_BENCHMARKED = {card_ids[n] for n, c in CARDS.items() if "{{benchmark}}" in (sql_of(c[2]) or "")}
 # The debt view carries no asset class, the issuers view neither a source
 # nor a tax wrapper: those tiles take what their views can narrow by.
 _DEBT = {card_ids[c + s] for c in ("Debt by credit rating, share of debt and cash", "Debt by maturity",
@@ -1298,12 +1300,14 @@ for _d, _want in (("Wealth Overview", {p.WEALTH_CURRENCY_PARAM_ID,
         _tiles = [dc for dc in _body["dashcards"] if dc["card_id"] is not None and dc["card_id"] not in _BORROWED]
 
         def _expected(cid, want=_want):
+            if cid in _BENCHMARKED:
+                want = want | {p.BENCHMARK_PARAM_ID}
             if cid in _TOP:
                 return want | {p.VEHICLE_PARAM_ID}
             if cid in _DEBT:
                 return want - {p.EXPOSURE_ASSET_CLASS_PARAM_ID}
             if cid in _ISSUERS:
-                return {p.WEALTH_CURRENCY_PARAM_ID, p.ASOF_PARAM_ID}
+                return {p.WEALTH_CURRENCY_PARAM_ID, p.ASOF_PARAM_ID, p.BENCHMARK_PARAM_ID}
             if cid in _LATEST:
                 return want - {p.TIME_PARAM_ID}
             return want
@@ -2096,8 +2100,8 @@ for _cid, _dc in _ov_tiles[_OVT].items():
     _c = _by_id[_cid]
     _tags = set((CARDS[_c][2].get("native") or {}).get("template-tags") or {})
     _got = {_ov_params[_OVT][m["parameter_id"]] for m in _dc["parameter_mappings"]}
-    if sql_of(CARDS[_c][2]) is not None and _got != _tags & _ALL:
-        _twin_off.append((_c, sorted(_got), sorted(_tags & _ALL)))
+    if sql_of(CARDS[_c][2]) is not None and _got != _tags & (_ALL | {"benchmark"}):
+        _twin_off.append((_c, sorted(_got), sorted(_tags & (_ALL | {"benchmark"}))))
 check("...and each twin figure the pickers its privacy card has", not _twin_off, _twin_off)
 # The twin leaves out the two figures that read 100 by construction, and
 # the four left in their rows sit two to a row (a row below the base's
@@ -2272,7 +2276,8 @@ check("every Exposure tile is defined",
 check("...and is placed once", len(set(_ex_tiles)) == len(_ex_tiles))
 # The description promises the coverage chart last.
 check("...the coverage chart last",
-      max(_ex_spec, key=lambda t: t[1])[0] == "How the figures are classified")
+      max((t for t in _ex_spec if t[0] not in p.BENCHMARK_CARDS), key=lambda t: t[1])[0]
+      == "How the figures are classified")
 _ex_sql = {n: (sql_of(CARDS[n][2]) or "") for n in _ex_tiles if n in CARDS}
 # The tiles over the look-through itself; the debt and securities tiles
 # read views of their own (checked below).
@@ -2288,7 +2293,7 @@ check("...and every read of one is held to the picked currency",
 _ex_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Exposure")]
 check("the Exposure dashboard carries the currency, the time range, the source, the tax wrapper "
       "and the asset class",
-      _ex_pickers == ["currency", "time_range", "source", "tax_wrapper", "asset_class"], _ex_pickers)
+      _ex_pickers == ["currency", "time_range", "source", "tax_wrapper", "asset_class", "benchmark"], _ex_pickers)
 # A share of what the pickers select is each card's own, over the rows
 # it reads; nothing picked, it is the share of net worth.
 check("every Exposure tile reads the source, the tax wrapper and the asset class "
@@ -2311,7 +2316,7 @@ check("...and reads the picked currency too",
       all(len(_EX_VIEW.findall(q)) == q.count("AND currency = {{currency}}") for q in _ex_twin.values()))
 check("the base breakdowns show the value beside the share, the other charts over time shares alone",
       all(("sum(value) AS value" in q) == (CARDS[n][0] != "area")
-          for n, q in _ex_look.items() if n != "Currencies over time"))
+          for n, q in _ex_look.items() if n not in ("Currencies over time", "Largest country deviations")))
 # The currencies over time plot money, so they leave the exempt cards for
 # a twin of the shares, and their old twin name is no longer retired.
 check("...but the currencies over time plot the value alone, their twin the share",
@@ -2337,20 +2342,10 @@ check("...and its privacy card plots the share with no value to show",
       all(VIZ[n].get("graph.metrics") in (["share_pct"], ["class_share_pct"])
           and "value" not in VIZ[n].get("graph.tooltip_columns", [])
           for n in _ex_twin if n in CARDS and CARDS[n][0] in ("bar", "row")))
-# A loan can make a class or a currency negative, which a ring cannot
-# draw: Metabase leaves the slice out with a warning, so only the two
-# rings whose descriptions say so are rings; the sector and region
-# charts stay bars.
-_ex_rings = {"Exposure by asset class", "Exposure by currency"}
+# A ring takes no second bar, and it cannot draw the negative share a
+# loan leaves a class or a currency.
 _ex_pies = [n for n in _ex_tiles + list(_ex_twin) if n in CARDS and CARDS[n][0] == "pie"]
-check("the asset class and currency tiles are rings, and their twins",
-      set(_ex_pies) == _ex_rings | {p.privacy_name(n) for n in _ex_rings}, _ex_pies)
-check("...whose descriptions say a negative slice is left out",
-      all("left out" in CARDS[n][1] for n in _ex_pies))
-check("...drawn from the value on the base card, with its total in the hole, the share on the twin",
-      all(VIZ[n].get("pie.metric") == ("share_pct" if "(privacy)" in n else "value")
-          and VIZ[n].get("pie.show_total") is ("(privacy)" not in n)
-          and VIZ[n].get("pie.percent_visibility") == "legend" for n in _ex_pies))
+check("no Exposure tile is a ring", not _ex_pies, _ex_pies)
 # The countries on a world map, keyed by their ISO alpha-2 code as the
 # exposure view carries it, beside every region and its countries.
 check("the country tile is a world map of the shares",
@@ -2396,7 +2391,11 @@ check("the region and country table carries a row per region and one per country
 def _output_columns(q):
     """The names of the columns a query's rows carry: the alias, else the
     trailing identifier, of each item of every top-level projection, a
-    `cte.*` read through to that CTE's own."""
+    `cte.*` read through to that CTE's own. A query that picks its columns
+    by the Benchmark picker reads as the one it wraps, less its sort key."""
+    wrapped = re.match(r"SELECT COLUMNS\(lambda c:.*?\n  FROM \(\n(.*)\n\)\n ORDER BY", q, re.S)
+    if wrapped:
+        return [c for c in _output_columns(wrapped.group(1)) if c != "sort_rank"]
     ctes, out = _ctes(q), []
     for pr in _projections(q):
         depth, item, items = 0, "", []
@@ -2487,7 +2486,7 @@ for _n, _dim in _ex_debt.items():
         _tags = CARDS[_name][2]["native"]["template-tags"]
         check(f"'{_name}' takes the window, the source and the tax wrapper, but no asset class "
               "and no projection picker",
-              {"currency", "time_range", "source", "tax_wrapper"} == set(_tags), sorted(_tags))
+              {"currency", "time_range", "source", "tax_wrapper"} == set(_tags) - {"benchmark"}, sorted(_tags))
 _gold_go = _go_package("gold")
 # The dimensions are the ones gold's materializer writes (its
 # debtDimension constants): one respelt there would leave its card with
@@ -2514,16 +2513,18 @@ for _name in (_sec, p.privacy_name(_sec)):
           "FROM web_exposure_securities" in _q and "AND currency = {{currency}}" in _q
           and "e AS (SELECT * FROM w WHERE as_of_day = (SELECT max(as_of_day) FROM w))" in _q
           and "GROUP BY security" in _q and "len(list_distinct(flatten(list(funds)))) AS funds" in _q
-          and _q.rstrip().endswith("LIMIT 100")
+          and "LIMIT 100" in _q
           and set(CARDS[_name][2]["native"]["template-tags"])
-          == {"currency", "time_range", "source", "tax_wrapper", "asset_class"}, _q)
-_sec_cols = {n: _output_columns(sql_of(CARDS[n][2])) for n in (_sec, p.privacy_name(_sec))}
-check("the base card gives the view's columns, the market cap and the size among them",
+          == {"currency", "time_range", "source", "tax_wrapper", "asset_class", "benchmark"}, _q)
+_sec_cols = {n: [c["name"] for c in VIZ[n]["table.columns"]] for n in (_sec, p.privacy_name(_sec))}
+check("the base card gives the view's columns, the market cap and the size among them, then the benchmark's",
       _sec_cols[_sec] == ["security", "name", "ticker", "asset_class", "sector", "country", "market_cap", "size",
-                          "value", "direct_value", "via_funds_value", "funds", "share_pct"], _sec_cols[_sec])
+                          "value", "direct_value", "via_funds_value", "funds", "share_pct",
+                          "benchmark_pct", "difference_pct"], _sec_cols[_sec])
 check("...and its twin shares in place of the values",
       _sec_cols[p.privacy_name(_sec)] == ["security", "name", "ticker", "asset_class", "sector", "country",
-                                          "market_cap", "size", "direct_pct", "via_funds_pct", "funds", "share_pct"]
+                                          "market_cap", "size", "direct_pct", "via_funds_pct", "funds", "share_pct",
+                                          "benchmark_pct", "difference_pct"]
       and f"LIKE '%{p.HOLDING_KEY_PREFIX}%'" in sql_of(CARDS[p.privacy_name(_sec)][2]), _sec_cols)
 
 
@@ -2591,9 +2592,9 @@ for _name, _q in _iss_sql.items():
           "FROM web_exposure_issuers" in _q and "currency = {{currency}}" in _q
           and "FROM web_history_calendar" in _q and "[[AND {{as_of_day}}]]" in _q
           and "as_of_day <= (SELECT day FROM d)" in _q
-          and "WHERE issuer <> '(none)'" in _q and _q.rstrip().endswith("LIMIT 100")
+          and "WHERE issuer <> '(none)'" in _q and "LIMIT 100" in _q
           and "lei" not in _output_columns(_q)
-          and set(CARDS[_name][2]["native"]["template-tags"]) == {"currency", "as_of_day"}, _q[-300:])
+          and set(CARDS[_name][2]["native"]["template-tags"]) == {"currency", "as_of_day", "benchmark"}, _q[-300:])
 check("the issuers twin hides an issuer named by a holding's own key, gold's, and shows no value",
       _holding_prefix is not None and p.HOLDING_KEY_PREFIX == _holding_prefix.group(1)
       and f"LIKE '{p.HOLDING_KEY_PREFIX}%'" in _iss_sql[p.privacy_name("Top 100 issuers")]
@@ -2612,7 +2613,7 @@ for _n in _ex_debt:
               VIZ[_name]["graph.metrics"] == ["class_share_pct"]
               and "c AS (SELECT sum(value) AS total FROM e WHERE bucket <> '(none)')" in _q
               and "100 * sum(value) / (SELECT CASE WHEN total > 0 THEN total END FROM c) AS class_share_pct" in _q
-              and "share_pct AS share_pct" not in _q and "OVER" not in _q, _q[-500:])
+              and "share_pct AS share_pct" not in _q and "OVER" not in _q.split("UNION ALL BY NAME")[0], _q[-500:])
         check(f"...its label held to two decimals, a bucket under {p.SMALLEST_BAR_PCT}% left out of the bars",
               VIZ[_name]["column_settings"]['["name","class_share_pct"]'] == {"suffix": "%", "decimals": 2}
               and ("HAVING coalesce(abs(100 * sum(value) / (SELECT CASE WHEN total > 0 THEN total END FROM c))"
@@ -2668,7 +2669,7 @@ check("...and has a privacy twin of the same layout",
       [n if n in p.PRIVACY_EXEMPT_CARDS else p.privacy_name(n) for n in _y_tiles])
 _y_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Yield")]
 check("the Yield dashboard carries Exposure's five pickers and the projection's four",
-      _y_pickers == ["currency", "time_range", "source", "tax_wrapper", "asset_class",
+      _y_pickers == ["currency", "time_range", "source", "tax_wrapper", "asset_class", "benchmark",
                      "rates", "maturing", "shift", "horizon"]
       and [q["slug"] for q in p.dashboard_parameters(MID, "range", "Yield (privacy)")] == _y_pickers,
       _y_pickers)
@@ -2701,7 +2702,8 @@ check("the Yield Asset class picker's values those of the yield views it binds, 
            if q["slug"] == "asset_class"} == {MID["report_yield_classes"]},
       (_y_params["asset_class"]["values_source_config"], _y_class_views))
 check("every Yield tile and twin is native over the yield views",
-      all("FROM web_yield" in q for q in _y_sql.values()), [n for n, q in _y_sql.items() if not q])
+      all("FROM web_yield" in q for q in _y_sql.values()),
+      [n for n, q in _y_sql.items() if not q])
 # A row set per currency and instant: a read without the row filter would
 # sum every currency.
 _y_reads = {n: len(re.findall(r"FROM web_yield(?:_curve)?\b", q)) for n, q in _y_sql.items()}
@@ -2758,9 +2760,9 @@ check("the DV01 cards group by curve currency, a bar per tenor, in curve order a
           and not VIZ[n].get("stackable.stack_type")
           for n in ("DV01 along the curve", "DV01 along the curve (privacy)")))
 check("the yields and the duration are two charts, each on one axis",
-      VIZ["Yields over time"]["graph.metrics"] == ["income_yield_pct", "implied_yield_pct",
-                                                   "realized_yield_pct"]
-      and VIZ["Duration over time"]["graph.metrics"] == ["duration"])
+      "graph.metrics" not in VIZ["Yields over time"] and "graph.metrics" not in VIZ["Duration over time"]
+      and VIZ["Yields over time"]["series_settings"]["benchmark_yield_pct"]["axis"] == "left"
+      and VIZ["Duration over time"]["series_settings"]["benchmark_duration"]["axis"] == "left")
 check("the column reader reads a card's columns, through a CTE's star",
       _output_columns(_y_sql["Cash against its benchmark (privacy)"]) ==
       ["rank", "kind", "currency", "rate_pct", "benchmark_pct", "gap_pct", "share_pct"]
@@ -2768,6 +2770,7 @@ check("the column reader reads a card's columns, through a CTE's star",
       _output_columns(_y_sql["Cash against its benchmark (privacy)"]))
 _y_exempt = [n for n in _y_tiles if n in p.PRIVACY_EXEMPT_CARDS]
 _y_priv = [p.privacy_name(n) for n in _y_tiles if n not in p.PRIVACY_EXEMPT_CARDS] + _y_exempt
+_LABELS = {*_LABELS, "benchmark_duration"}
 _y_money = {n: [c for c in _output_columns(_y_sql[n]) if not c.endswith("_pct") and c not in _LABELS]
             for n in _y_priv}
 check("no Yield privacy or exempt card carries an amount: shares, rates, years and labels alone",
@@ -3328,7 +3331,8 @@ _missing = {v: [c for c in p.REPORTING_CURRENCIES
                 if not re.search(rf"_{c.lower()}\b", _latest_definition(v))]
             for v in p.web_views_wanted()
             if v not in _LONG_VIEWS | set(_FX_TABLES) | {"web_yield_rates", "web_income_days", "web_cashflow_pool",
-                                                          "web_position_sizes", "web_history_calendar"}}
+                                                          "web_position_sizes", "web_history_calendar",
+                                                          "web_benchmarks"}}
 check("every wide serving view carries a value column per reporting currency",
       not any(_missing.values()), {v: m for v, m in _missing.items() if m})
 _ym = open(os.path.join(_REPO, "wealthdb", "internal", "gold", "yield_materialize.go"),
@@ -3717,6 +3721,15 @@ def _book():
 
     Today is 2026-10-21, so month 0 is October 2026."""
     db = duckdb.connect()
+    db.execute("CREATE TABLE benchmark_yield (benchmark TEXT, as_of BIGINT, yield_pct DOUBLE, duration DOUBLE);"
+               "CREATE TABLE benchmark_exposure (benchmark TEXT, dimension TEXT, bucket TEXT, label TEXT, lei TEXT,"
+               " share_pct DOUBLE);"
+               "CREATE TABLE benchmark_returns (benchmark TEXT, currency TEXT, granularity TEXT,"
+               " window_from_year INTEGER, period TEXT, start_day BIGINT, end_day BIGINT, twr DOUBLE,"
+               " twr_annualized DOUBLE, excess DOUBLE, excess_annualized DOUBLE, mwr DOUBLE, mwr_annualized DOUBLE,"
+               " portfolio_twr DOUBLE, portfolio_twr_annualized DOUBLE, portfolio_mwr DOUBLE, quality TEXT);"
+               "CREATE TABLE benchmark_mwr (benchmark TEXT, currency TEXT, window_from_year INTEGER, series TEXT,"
+               " end_day BIGINT, value DOUBLE, mwr DOUBLE, quality TEXT);")
     db.execute("CREATE TABLE schema_meta (gold_schema_version INTEGER, applied_at BIGINT);"
                "CREATE TABLE accounts (silver_source_id TEXT, account_external_id TEXT, display_name TEXT,"
                " account_kind TEXT, tax_wrapper TEXT, nickname TEXT, account_category TEXT,"
@@ -4292,7 +4305,28 @@ if duckdb is not None:
         _bands = _fx.execute(_render(CARDS[_n][2], {"time_range": ["2026-08-01", "2026-09-30"]})).fetchall()
         _by = {(d.isoformat(), c): v for d, c, v in _bands}
         _fx_cards[_n] = (_bands, _by, {d: sum(v for (dd, _c), v in _by.items() if dd == d) for d, _c in _by})
+    # The bars at the end, beside a benchmark that holds 60% USD, 30% CHF,
+    # 9.5% SEK and 0.5% NOK. A currency over 1% on either side keeps its
+    # bars, so SEK does on the benchmark's holding alone; the rest fold on
+    # both sides.
+    _fx.execute("CREATE TABLE benchmark_exposure (benchmark TEXT, dimension TEXT, bucket TEXT, share_pct DOUBLE)")
+    _fx.executemany("INSERT INTO benchmark_exposure VALUES ('Mix', 'currency', ?, ?)",
+                    [("USD", 60.0), ("CHF", 30.0), ("SEK", 9.5), ("NOK", 0.5)])
+    _fx_at = {"time_range": ["2026-08-01", "2026-09-30"], "benchmark": "Mix"}
+    _fx_bars = _fx.execute(_render(CARDS["Exposure by currency (privacy)"][2], _fx_at)).fetchall()
+    _fx_none = _fx.execute(_render(CARDS["Exposure by currency (privacy)"][2],
+                                   {**_fx_at, "benchmark": "None"})).fetchall()
     _fx.close()
+    _fx_side = {(s, c): v for c, s, v in _fx_bars}
+    check("a currency over 1% on either side keeps its bars, the rest fold into other on both",
+          {c for _s, c in _fx_side} == {"CHF", "USD", "JPY", "SEK", "other"}
+          and _near(_fx_side.get(("Portfolio", "other")), 0.3) and _near(_fx_side.get(("Benchmark", "other")), 0.5)
+          and ("Portfolio", "SEK") not in _fx_side and _near(_fx_side.get(("Benchmark", "SEK")), 9.5), _fx_bars)
+    check("...the household first, largest first, other last, so its order sets the bars'",
+          [c for c, s, _v in _fx_bars if s == "Portfolio"] == ["CHF", "JPY", "USD", "other"], _fx_bars)
+    check("...and None leaves the household's bars alone, one series, folded on its own shares",
+          {s for _c, s, _v in _fx_none} == {"Portfolio"}
+          and {c for c, _s, _v in _fx_none} == {"CHF", "USD", "JPY", "other"}, _fx_none)
     _bands, _by, _sums = _fx_cards[p.privacy_name("Currencies over time")]
     check("a currency short 30% at the end keeps its own band, below zero",
           _near(_by.get(("2026-09-30", "USD")), -30.0) and _near(_by.get(("2026-08-31", "USD")), 10.0), _bands)
@@ -4622,6 +4656,23 @@ if duckdb is not None:
                            ("2026-10-21", "real_estate", -200.0)):
         _db.execute("INSERT INTO web_asset_classes_history VALUES (?, 'src-1', 'taxable_personal', ?, ?, ?, ?, ?)",
                     [_day, _cls, _v, _v * 0.8, _v, _v])
+    # Beside a benchmark a bar is the same total in its mix: 1,000 at 70%
+    # and 30%. Under None the card has its two columns and no series.
+    _db.execute("INSERT INTO benchmark_exposure VALUES ('Mix', 'asset_class', 'public_equity', NULL, NULL, 70.0),"
+                " ('Mix', 'asset_class', 'fixed_income', NULL, NULL, 30.0)")
+    _al = _db.execute(_render(CARDS["Allocation by asset class"][2], {"benchmark": "Mix"}))
+    _cols, _rows = [c[0] for c in _al.description], _al.fetchall()
+    check("the allocation bars set the benchmark's mix of the same total beside the household's",
+          _cols == ["asset_class", "value", "series"]
+          and {(c, round(v, 6), s) for c, v, s in _rows if s == "Mix"}
+          == {("public_equity", 700.0, "Mix"), ("fixed_income", 300.0, "Mix")}
+          and all(s == "Portfolio" for *_x, s in _rows[:3]), (_cols, _rows))
+    _al = _db.execute(_render(CARDS["Allocation by asset class"][2], {}))
+    check("...and under None they are the household's bars, with no series column",
+          [c[0] for c in _al.description] == ["asset_class", "value"] and len(_al.fetchall()) == 3)
+    _al = _db.execute(_render(CARDS["Allocation by asset class (privacy)"][2], {"benchmark": "Mix"})).fetchall()
+    check("...the twin sets share beside share",
+          {(c, round(v, 6)) for c, v, s in _al if s == "Mix"} == {("public_equity", 70.0), ("fixed_income", 30.0)}, _al)
     _mix = [(str(d), c, round(v, 6)) for d, c, v in _run("Asset class mix over time")]
     check("the asset class mix is each day's classes as shares of its total, the smallest at the end first",
           _mix == [("2026-10-21", "real_estate", -20.0), ("2026-09-30", "cash", 40.0), ("2026-10-21", "cash", 30.0),
@@ -4669,6 +4720,57 @@ if duckdb is not None:
     check("...and last year's where no refresh has read this one yet",
           _run("Return year to date (TWR)") == [(0.20, _year - 1)], _run("Return year to date (TWR)"))
 
+    # A benchmark's figures: its window of the start year, in the picked
+    # currency. Under None, no row.
+    _mar, _jun = 1711843200, 1719705600   # the ends of March and June 2024
+    _db.execute("INSERT INTO benchmark_returns (benchmark, currency, granularity, window_from_year, period, start_day,"
+                " end_day, twr, portfolio_twr, excess, mwr, portfolio_mwr, quality) VALUES"
+                " ('Mix', 'USD', 'total', 2024, 'total', ?, ?, 0.0525, 0.0405, -0.012, 0.06, 0.045, ''),"
+                " ('Mix', 'CHF', 'total', 2024, 'total', ?, ?, 0.0725, 0.1025, 0.03, NULL, NULL, ''),"
+                " ('Mix', 'USD', 'total', 2023, 'total', ?, ?, NULL, 0.01, NULL, NULL, NULL, 'benchmark_gap'),"
+                " ('Mix', 'USD', 'total', 2025, 'total', ?, ?, NULL, NULL, NULL, NULL, NULL, 'benchmark_no_overlap')",
+                [_mar, _jun, _mar, _jun, _mar, _jun, _jun + 86400, _jun])
+    _db.execute("INSERT INTO report_returns VALUES ('global', 'total', 'CHF', 2024, 0, 0), "
+                "('global', 'total', 'USD', 2024, 0, 0)")
+    _fig = {"benchmark": "Mix", "start_year": 2024, "currency": ["USD"]}
+    check("a benchmark's figure reads its window in the picked currency",
+          _run("Benchmark return (TWR)", **_fig) == [(0.0525,)]
+          and _run("Benchmark return (TWR)", **{**_fig, "currency": ["CHF"]}) == [(0.0725,)],
+          _run("Benchmark return (TWR)", **_fig))
+    check("...the excess in percentage points",
+          _near(_one("Excess return (TWR)", **_fig), -1.2), _run("Excess return (TWR)", **_fig))
+    check("...the money-weighted one the portfolio's less the same money's in the benchmark",
+          _near(_one("Excess return (MWR)", **_fig), -1.5), _run("Excess return (MWR)", **_fig))
+    check("...a window with no return has a row with no figure",
+          _run("Benchmark return (TWR)", **{**_fig, "start_year": 2023}) == [(None,)]
+          and _run("Excess return (TWR)", **{**_fig, "start_year": 2025}) == [(None,)],
+          _run("Benchmark return (TWR)", **{**_fig, "start_year": 2023}))
+    check("...and None reads no row",
+          _run("Benchmark return (TWR)", **{**_fig, "benchmark": "None"}) == []
+          and _run("Excess return (MWR)", **{**_fig, "benchmark": "None"}) == [])
+    _db.execute("DELETE FROM report_returns WHERE twr = 0 AND window_from_year = 2024")
+    _db.execute("INSERT INTO benchmark_mwr VALUES ('Mix', 'USD', 2024, 'portfolio', 0, 200, NULL, ''),"
+                " ('Mix', 'USD', 2024, 'portfolio', 86400, 220, 0.1, ''),"
+                " ('Mix', 'USD', 2024, 'benchmark', 0, 200, NULL, ''),"
+                " ('Mix', 'USD', 2024, 'benchmark', 86400, 250, 0.2, '')")
+    _db.execute("INSERT INTO report_returns VALUES ('global', 'total', 'USD', 2024, 0, 0)")
+    check("the value chart's two sides start level; its twin reads each from 100",
+          [(s, v) for _d, s, v in _run("Value against the benchmark", **_fig)]
+          == [("Benchmark", 200.0), ("Benchmark", 250.0), ("Portfolio", 200.0), ("Portfolio", 220.0)]
+          and [(s, round(v, 6)) for _d, s, v in _run("Value against the benchmark (privacy)", **_fig)]
+          == [("Benchmark", 100.0), ("Benchmark", 125.0), ("Portfolio", 100.0), ("Portfolio", 110.0)],
+          _run("Value against the benchmark (privacy)", **_fig))
+    check("a month with no money-weighted return stays a gap in the line",
+          [(s, v) for _d, s, v in _run("Money-weighted return over time", **_fig)]
+          == [("Benchmark", None), ("Benchmark", 0.2), ("Portfolio", None), ("Portfolio", 0.1)]
+          and VIZ["Money-weighted return over time"]["line.missing"] == "none"
+          and VIZ["Money-weighted return over time"]["graph.x_axis.scale"] == "ordinal")
+    check("a benchmark's own Returns tiles say the Source picker does not reach them",
+          all("source_ff" not in CARDS[n][2]["native"]["template-tags"]
+              for n in ("Benchmark return (TWR)", "Money-weighted return over time", "Value against the benchmark",
+                        "Value against the benchmark (privacy)")))
+    _db.execute("DELETE FROM report_returns WHERE twr = 0 AND window_from_year = 2024")
+
     # The gains twins: each gain over the cost basis it is a gain on. A
     # sale with no cost basis, and a holding with none, count on neither
     # side; the unrealized one reads the window's last month alone.
@@ -4685,8 +4787,135 @@ if duckdb is not None:
     check("...the unrealized gain's the gain at the window's end over the cost basis held there",
           _near(_run("Unrealized gain (privacy)")[0][0], 300 / 1000), _run("Unrealized gain (privacy)"))
 
+section("the benchmarks")
+
+# The small return tiles draw no legend: the benchmark's look is all that
+# tells it from the sources. A series_settings key only ever matches a
+# series' label, so the rows and the setting must agree on it.
+_b_lines = {n for n, c in CARDS.items() if f"'{p.BENCHMARK_SERIES}'" in (sql_of(c[2]) or "") and c[0] == "line"}
+check("every line a benchmark joins carries the one label, the small tiles among them",
+      _b_lines >= {"Cumulative return (TWR)", "Monthly returns (TWR)", "Quarterly returns (TWR)",
+                   "Annual returns (TWR)", "Money-weighted return over time", "Value against the benchmark",
+                   "Value against the benchmark (privacy)"}, sorted(_b_lines))
+check("...the rows themselves carry it, not only the sort",
+      all(f"SELECT '{p.BENCHMARK_SERIES}', currency, end_day" in sql_of(CARDS[n][2])
+          for n in ("Monthly returns (TWR)", "Quarterly returns (TWR)", "Annual returns (TWR)"))
+      and f"SELECT '{p.BENCHMARK_SERIES}', make_date" in sql_of(CARDS["Cumulative return (TWR)"][2]))
+check("...and draws in the one style, whichever benchmark is picked",
+      all(VIZ[n].get("series_settings") == p.BENCHMARK_LINE["series_settings"] for n in _b_lines), sorted(_b_lines))
+_b_style = p.BENCHMARK_LINE["series_settings"][p.BENCHMARK_SERIES]
+check("...a style that needs no colour vision to tell it from a source's line",
+      _b_style["line.style"] == "dashed" and _b_style["line.size"] == "L", _b_style)
+
+_b_dashes = ("Returns", "Allocation", "Exposure", "Yield")
+for _d in _b_dashes:
+    for _name in (_d, _d + p.PRIVACY_SUFFIX):
+        _mode = {"Returns": "returns", "Allocation": "asof"}.get(_d, "range")
+        _bp = [x for x in p.dashboard_parameters(MID, _mode, _name) if x["slug"] == "benchmark"]
+        check(f"'{_name}' carries a required Benchmark picker that defaults to None and lists the model",
+              len(_bp) == 1 and _bp[0]["required"] and _bp[0]["default"] == ["None"]
+              and _bp[0]["id"] == p.BENCHMARK_PARAM_ID
+              and _bp[0]["values_source_config"]["card_id"] == MID["report_benchmarks"], _bp)
+for _d, _mode in (("Wealth Overview", "range"), ("Spending", "range"), ("Income", "range"), ("Cash Flow", "range"),
+                  ("Gains", "range")):
+    check(f"'{_d}' has no Benchmark picker",
+          not [x for x in p.dashboard_parameters(MID, _mode, _d) if x["slug"] == "benchmark"])
+check("the picker's model reads web_benchmarks", "web_benchmarks" in MODELS["report_benchmarks"][0])
+check("every card that exists only beside a benchmark is on a dashboard, hidden when empty",
+      all(any(c.removesuffix(p.PRIVACY_SUFFIX) == n for d in _b_dashes for c, *_ in DEFS[d][3])
+          for n in p.BENCHMARK_CARDS))
+_b_layouts = {d["name"]: d for d in layouts if d.get("name")}
+_id_name = {v: k for k, v in card_ids.items()}
+for _d in _b_dashes:
+    for _name in (_d, _d + p.PRIVACY_SUFFIX):
+        _tiles = [dc for dc in _b_layouts[_name]["dashcards"] if dc["card_id"] is not None]
+        _off = [_id_name[dc["card_id"]] for dc in _tiles
+                if bool(dc["visualization_settings"].get("card.hide_empty"))
+                != (_id_name[dc["card_id"]].removesuffix(p.PRIVACY_SUFFIX) in p.BENCHMARK_CARDS)]
+        check(f"on '{_name}' only the benchmark's own tiles hide when empty", not _off, _off)
+_b_grid = {t[0]: t[1:5] for t in DEFS["Returns"][3]}
+_b_top = ("Return (TWR)", "Return (MWR)", "Annualized return (TWR)")
+for _names in (("Benchmark return (TWR)", "Benchmark return (MWR)", "Benchmark annualized return (TWR)"),
+               ("Excess return (TWR)", "Excess return (MWR)", "Excess annualized return (TWR)")):
+    check(f"'{_names[0]}' and its row stand in the top row's columns, in its order",
+          len({_b_grid[n][0] for n in _names}) == 1
+          and [_b_grid[n][1:] for n in _names] == [_b_grid[n][1:] for n in _b_top], [_b_grid[n] for n in _names])
+check("...directly under it, the charts below them",
+      {_b_grid[n][0] for n in _b_top} == {0}
+      and sorted({_b_grid[n][0] for n in p.BENCHMARK_CARDS if n in _b_grid and n.endswith(("(TWR)", "(MWR)"))
+                  and n != "Money-weighted return over time"}) == [3, 6]
+      and _b_grid["Cumulative return (TWR)"][0] == 9, _b_grid)
+for _n in sorted(p.BENCHMARK_CARDS):
+    _q = sql_of(CARDS[_n][2]) or ""
+    check(f"'{_n}' reads no row under None",
+          "{{benchmark}} <> 'None'" in _q or "benchmark = {{benchmark}}" in _q, _q[:200])
+    _uses_p = "FROM p" in _q
+    check("...not even the household's", not _uses_p or "WHERE {{benchmark}} <> 'None'" in _q, _q[-400:])
+# A twin of a card that shows money shows none; a twin that reuses its
+# base card takes it only where the card names no amount.
+for _n in sorted(p.BENCHMARK_CARDS):
+    _twin = _n if _n in p.PRIVACY_EXEMPT_CARDS else p.privacy_name(_n)
+    _q = sql_of(CARDS[_twin][2]) or ""
+    check(f"the twin of '{_n}' shows no amount",
+          "value" not in _output_columns(_q), _output_columns(_q))
+check("the twin's value chart indexes each side to 100 at the window's start",
+      "100 * value / first_value(value) OVER (PARTITION BY series ORDER BY end_day) AS indexed_value"
+      in sql_of(CARDS["Value against the benchmark (privacy)"][2]))
+_b_bars = {"Exposure by asset class": "share_pct", "Exposure by sector": "share_pct",
+           "Exposure by region": "share_pct", "Exposure by currency": "share_pct",
+           "Public equity by size": "class_share_pct", "Debt by maturity": "class_share_pct",
+           "Debt by credit rating, share of debt and cash": "class_share_pct"}
+for _n, _metric in _b_bars.items():
+    for _name in (_n, p.privacy_name(_n)):
+        _q = sql_of(CARDS[_name][2])
+        check(f"'{_name}' sets the benchmark's bars beside the household's, whatever benchmark is picked",
+              "benchmark_exposure" in _q and f"'{p.BENCHMARK_SERIES}' AS series" in _q
+              and f"'{p.PORTFOLIO_SERIES}' AS series" in _q and "{{benchmark}} AS series" not in _q, _q[:200])
+        check("...and keeps one colour per side, the household's the colour of its bars with no benchmark",
+              VIZ[_name]["graph.dimensions"][1:] == ["series"]
+              and VIZ[_name]["series_settings"] == {p.PORTFOLIO_SERIES: {"color": p.EXPOSURE_BAR_COLORS[_metric]},
+                                                    p.BENCHMARK_SERIES: {"color": p.BENCHMARK_COLOR}},
+              VIZ[_name].get("series_settings"))
+for _n in ("Allocation by asset class", "Allocation by currency"):
+    for _name in (_n, p.privacy_name(_n)):
+        _q = sql_of(CARDS[_name][2])
+        check(f"'{_name}' adds the benchmark's bars, and drops its series column under None",
+              "c <> 'series' OR {{benchmark}} <> 'None'" in _q and "benchmark_exposure" in _q
+              and VIZ[_name]["graph.dimensions"][1:] == ["series"], _q[:200])
+for _n in ("Top securities", "Top 100 issuers", "Yields over time", "Duration over time"):
+    for _name in {_n, _n if _n in p.PRIVACY_EXEMPT_CARDS else p.privacy_name(_n)}:
+        _q = sql_of(CARDS[_name][2])
+        check(f"'{_name}' adds the benchmark's columns only with one picked",
+              _q.startswith("SELECT COLUMNS(lambda c: c <> 'sort_rank' AND (c NOT IN (")
+              and "OR {{benchmark}} <> 'None'" in _q, _q[:200])
+check("a card with a window reads the benchmark's rows in the picked currency",
+      all("currency IN (SELECT currency FROM report_returns WHERE TRUE\n     AND {{currency}})" in sql_of(CARDS[n][2])
+          for n in ("Monthly returns (TWR)", "Cumulative return (TWR)", "Returns by source",
+                    "Benchmark return (TWR)", "Money-weighted return over time")))
+check("the cumulative line leaves out the windows the benchmark clips, and starts on the portfolio's level",
+      "quality NOT LIKE '%benchmark_start_clipped%'" in sql_of(CARDS["Cumulative return (TWR)"][2])
+      and "(1 + o.level) * first_value(1 + twr) OVER (ORDER BY yr) / (1 + twr) - 1"
+      in sql_of(CARDS["Cumulative return (TWR)"][2]))
+_b_figures = {"Benchmark return (TWR)": "benchmark_return", "Benchmark return (MWR)": "benchmark_mwr",
+              "Benchmark annualized return (TWR)": "benchmark_annualized", "Excess return (TWR)": "excess_return",
+              "Excess return (MWR)": "excess_mwr", "Excess annualized return (TWR)": "excess_annualized"}
+check("a figure is a number, as the top row's are; Returns by source names the months",
+      all(CARDS[n][0] == "scalar" and VIZ[n]["scalar.field"] == c and p._months_compared() not in sql_of(CARDS[n][2])
+          for n, c in _b_figures.items())
+      and p._months_compared() in sql_of(CARDS["Returns by source"][2]))
+check("...a return in percent, an excess in percentage points",
+      all((VIZ[n]["column_settings"][f'["name","{c}"]'].get("suffix") == " pp") == n.startswith("Excess")
+          for n, c in _b_figures.items()), {n: VIZ[n]["column_settings"] for n in _b_figures})
+check("a card over a family's tags takes the Benchmark tag only where it reads it",
+      all(("benchmark" in q["native"]["template-tags"]) == ("{{benchmark}}" in sql_of(q))
+          for n, (_d, _desc, q) in CARDS.items() if q.get("type") == "native"),
+      [n for n, (_d, _desc, q) in CARDS.items() if q.get("type") == "native"
+       and ("benchmark" in q["native"]["template-tags"]) != ("{{benchmark}}" in sql_of(q))])
+
+
 if FAILS:
     print(f"provision tests: {FAILS} failed")
 else:
     print("provision tests: all passed")
 sys.exit(1 if FAILS else 0)
+
