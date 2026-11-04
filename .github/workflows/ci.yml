@@ -3,8 +3,8 @@
 # The suites run in jobs of their own, side by side:
 #   - pii: the privacy check;
 #   - lint: `make lint`;
-#   - go: the engine's Go tests, one job each for internal/gold,
-#     cmd/wealthdb and every other package;
+#   - go: the engine's Go tests, two jobs for internal/gold and one
+#     each for cmd/wealthdb and every other package;
 #   - demo: the demo household through the engine;
 #   - collectors: the shared base images and every collector's suite;
 #   - rest: every other suite of `make test`;
@@ -111,8 +111,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # internal/gold in two legs by test name: its TestM tests
+          # (materialize and migration, about 40 % of its time) and
+          # every other one. -run and -skip of one pattern are exact
+          # complements, so no test falls between them.
+          - name: gold-m
+            pkgs: ./internal/gold/
+            flags: -run ^TestM
           - name: gold
             pkgs: ./internal/gold/
+            flags: -skip ^TestM
           - name: cmd
             pkgs: ./cmd/wealthdb/
           # Every package the entries above do not name.
@@ -138,6 +146,7 @@ jobs:
       - name: Test
         env:
           PKGS: ${{ matrix.pkgs }}
+          FLAGS: ${{ matrix.flags }}
           # The packages of the entries that name theirs.
           OWN: ./internal/gold/ ./cmd/wealthdb/
         run: |
@@ -147,7 +156,7 @@ jobs:
             PKGS=$(wealthdb/wealthdb-go list ./... | grep -vxF -e "$own" | tr '\n' ' ')
             [ -n "$PKGS" ] || { echo "no other package to test" >&2; exit 1; }
           fi
-          make test-wealthdb WEALTHDB_PKGS="$PKGS" GO_TEST_FLAGS=-count=1
+          make test-wealthdb WEALTHDB_PKGS="$PKGS" GO_TEST_FLAGS="-count=1 $FLAGS"
       - name: Save the Go build cache
         if: always() && github.event_name == 'push'
         uses: actions/cache/save@v6
