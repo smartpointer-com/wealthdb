@@ -102,6 +102,9 @@ SECURITY_WANTS = {"dividend_calendar": "calendar"}
 # days the fund was held.
 HISTORY_FACT = "monthly_returns"
 DEFERRED = "deferred by --limit"
+LOOKUP_FAILED = "the lookup failed"
+# The questions of _Asked a lost fact can hang on.
+CLAIM, LIST_DATES, LIST_HISTORY = "claim it", "list its dates", "list its history"
 
 # What a provider's answer can raise without failing the run: its own
 # error, an HTTP failure or an answer that is not JSON, or an answer that
@@ -149,7 +152,7 @@ class Fetched(NamedTuple):
     funds: dict      # (provider, fund ref, day of the composition) -> day
     lookups: dict    # (provider, security key) -> day
     facts: dict      # (provider, fund ref, fact) -> day
-    fact_days: dict  # (provider, fund ref, fact) -> the days a request for facts alone fetched it for
+    fact_days: dict  # (provider, fund ref, fact) -> the days a request fetched it for
     bulk: dict       # (provider, bulk ref) -> day
     answered: dict   # (provider, security key) -> day, of a bulk answer whose `answered` names it
     families: dict   # (provider, security key) -> day, of a security request that asked for figures
@@ -169,7 +172,8 @@ def parse_args(argv):
     p.add_argument("--wanted", type=Path, default=None,
                    help="Read the wanted list from this file instead of asking the engine.")
     p.add_argument("--backfill", action="store_true",
-                   help="Also fetch every past date a provider can serve inside the days a fund was held.")
+                   help="Also fetch every past date a provider can serve inside the days a fund was held, "
+                        "and a benchmark fund's monthly returns from its history_from on.")
     p.add_argument("--provider", action="append", default=None,
                    help="Ask only this provider (repeatable); it must be one refdata.cfg enables.")
     p.add_argument("--ref", action="append", default=None,
@@ -234,10 +238,9 @@ def fetched_before(bronze_dir: Path | None) -> Fetched:
     holds it, so a second run before the next load asks for it no more:
     every composition (provider, fund ref, date), security answer, fund
     fact and bulk request, each with the day of the latest run that
-    fetched it. Apart: the days a request for a fund's facts alone
-    fetched each fact for, which are no compositions; the securities a
-    bulk answer names in its meta.json's `answered`; the security
-    answers whose request asked for families of figures; and the
+    fetched it. Apart: the days a fund's requests fetched each fact for;
+    the securities a bulk answer names in its meta.json's `answered`; the
+    security answers whose request asked for families of figures; and the
     facts a security wants that a security request asked for, or a bulk
     request asked for and its answer names the security in. Apart too:
     every security request sent, one that failed included, for a provider
@@ -260,7 +263,7 @@ def fetched_before(bronze_dir: Path | None) -> Fetched:
                     seen(out.funds, (e["provider"], e["ref"], as_of), day)
                 for fact in e.get("facts") or ():
                     seen(out.facts, (e["provider"], e["ref"], fact), day)
-                    if as_of and e.get("facts_only"):
+                    if as_of:
                         out.fact_days.setdefault((e["provider"], e["ref"], fact), set()).add(as_of)
             elif e.get("kind") == "security":
                 seen(out.lookups, (e["provider"], e["ref"]), day)
@@ -286,44 +289,55 @@ def _answered(folder: Path) -> set:
         return set()
 
 
-def _ask(ref: str, provider: str, what: str, call, *args):
+def _ask(ref: str, provider: str, what: str, call, *args, failed=None):
     """call(*args): a provider's answer about one fund or security, or
-    None where it fails. Its own error is a warning, anything else a
-    traceback; the run goes on either way."""
+    None where it fails, which adds the provider to the set `failed`.
+    Its own error is a warning, anything else a traceback; the run goes
+    on either way."""
     try:
         return call(*args)
     except LOOKUP_ERRORS as e:
         log.warning("%s: %s could not %s: %s", ref, provider, what, e)
     except Exception:  # noqa: BLE001 - one provider's surprise must not end the run
         log.exception("%s: %s could not %s", ref, provider, what)
+    if failed is not None:
+        failed.add(provider)
     return None
 
 
 class _Asked:
     """One fund's questions to the providers, each asked once a run: the
     composition and the fact planning share its claims, newest dates and
-    date lists. The dates are those in [since, until]."""
+    date lists. The dates are those in [since, until]. `failed` holds the
+    providers each question failed on, as a None alone does not tell a
+    failure from a provider that does not claim the fund."""
 
     def __init__(self, fund, ctx, since, until):
         self.fund, self.ctx, self.since, self.until, self.answers = fund, ctx, since, until, {}
+        self.failed = {}
 
     def _once(self, p, what, call, *args):
         if (p.name, what) not in self.answers:
-            self.answers[(p.name, what)] = _ask(self.fund.ref, p.name, what, call, *args)
+            self.answers[(p.name, what)] = _ask(self.fund.ref, p.name, what, call, *args,
+                                                failed=self.failed.setdefault(what, set()))
         return self.answers[(p.name, what)]
 
+    def failed_on(self, what, names) -> bool:
+        """Whether the question `what` failed on one of the providers `names`."""
+        return not self.failed.get(what, set()).isdisjoint(names)
+
     def claim(self, p):
-        return self._once(p, "claim it", p.claim, self.fund, self.ctx)
+        return self._once(p, CLAIM, p.claim, self.fund, self.ctx)
 
     def latest(self, p):
         return self._once(p, "name its newest date", p.latest, self.claim(p), self.ctx)
 
     def dates(self, p) -> list:
-        return self._once(p, "list its dates", p.dates, self.claim(p), self.since, self.until, self.ctx) or []
+        return self._once(p, LIST_DATES, p.dates, self.claim(p), self.since, self.until, self.ctx) or []
 
     def history(self, p) -> list:
         """The dates from the fund's history_from on."""
-        return self._once(p, "list its history", p.dates, self.claim(p), self.fund.history_from, self.until,
+        return self._once(p, LIST_HISTORY, p.dates, self.claim(p), self.fund.history_from, self.until,
                           self.ctx) or []
 
 
@@ -363,14 +377,18 @@ def _past_days(listed, held_from, have, near=NEAR_DAYS):
 
 
 def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_age: int, backfill: bool,
-         refs=None, securities=True, constituents=False, floor_pct=0, earlier: Fetched | None = None):
+         refs=None, securities=True, constituents=False, floor_pct=0, earlier: Fetched | None = None,
+         unplanned=None):
     """The requests a run makes, the funds' then the securities' and the
     bulk ones; the funds that want a composition no provider claims; and
     what becomes of every fact wanted, as fact -> ref or key -> Cover.
-    `earlier` is what earlier runs fetched (fetched_before)."""
+    `earlier` is what earlier runs fetched (fetched_before). The set
+    `unplanned` gains (fund ref, fact) for a fact a failed lookup left
+    with a request missing."""
     cover, earlier = {}, earlier or Fetched.of()
     reqs, unclaimed = _fund_requests(want, providers, ctx, today=today, max_age=max_age, backfill=backfill,
-                                     refs=refs, earlier=earlier, cover=cover)
+                                     refs=refs, earlier=earlier, cover=cover,
+                                     unplanned=set() if unplanned is None else unplanned)
     if securities:
         secs = security_order(want.securities, constituents, floor_pct)
         asks = _asks(providers, ctx)
@@ -383,7 +401,7 @@ def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_ag
     return reqs, unclaimed, cover
 
 
-def _fund_requests(want, providers, ctx, *, today, max_age, backfill, refs, earlier, cover):
+def _fund_requests(want, providers, ctx, *, today, max_age, backfill, refs, earlier, cover, unplanned):
     """The fund requests a run makes, and the funds that want a
     composition no provider claims: each fund's composition requests, then
     its facts' (_fact_requests)."""
@@ -404,9 +422,10 @@ def _fund_requests(want, providers, ctx, *, today, max_age, backfill, refs, earl
                                            have=set(fund.compositions) | fetched_days.get(fund.ref, set()),
                                            served_days=served_days)
         _fact_requests(fund, funds, asked, own, rank, today=today, max_age=max_age, backfill=backfill,
-                       earlier=earlier, provider_days=provider_days, served_days=served_days, cover=cover)
+                       earlier=earlier, provider_days=provider_days, served_days=served_days, cover=cover,
+                       unplanned=unplanned)
         reqs += own
-        if lacks:
+        if lacks and not asked.failed_on(CLAIM, {p.name for p in funds}):
             unclaimed.append(fund.ref)
     return reqs, unclaimed
 
@@ -464,7 +483,7 @@ def _composition_requests(fund, providers, asked, *, today, max_age, backfill, h
 
 
 def _fact_requests(fund, providers, asked, own, rank, *, today, max_age, backfill, earlier, provider_days,
-                   served_days, cover):
+                   served_days, cover, unplanned):
     """Add to own, a fund's requests, those for the facts it wants beyond
     compositions, and record in cover what becomes of each while the fund
     is held.
@@ -478,7 +497,7 @@ def _fact_requests(fund, providers, asked, own, rank, *, today, max_age, backfil
     claimant is not asked where an earlier run fetched the fact from it
     within max_age, or where the newest day it names is one gold holds
     the fact for or one an earlier run fetched from it: a composition's
-    day, or a day a request for facts alone fetched the fact for. A
+    day, or a day a request fetched the fact for. A
     backfill asks the claimant, where it states the fact for past days
     (`dated_facts`), for every date it lists inside the days held, and
     the last one before them, that is none of those days, nor the newest
@@ -494,7 +513,10 @@ def _fact_requests(fund, providers, asked, own, rank, *, today, max_age, backfil
     `composition_facts` do, gets no request of its own. A due one is
     asked for by each of the fund's composition requests to such a
     provider, and had where an earlier run fetched a composition from one
-    within max_age."""
+    within max_age.
+
+    A failed claim of a fact due or of past days, or a failed date list,
+    adds the fact to `unplanned`: a request that should exist does not."""
     held = fund.held_to is None
     for fact in fund.wants:
         history = fact == HISTORY_FACT and fund.history_from is not None
@@ -515,6 +537,9 @@ def _fact_requests(fund, providers, asked, own, rank, *, today, max_age, backfil
                                                for q in stating)
                 if not (c.requests or c.had):
                     c.reason = _unanswered(fact, providers)
+                    if asked.failed_on(CLAIM, stating):
+                        c.reason = LOOKUP_FAILED
+                        unplanned.add((fund.ref, fact))
             continue
         for i, p in enumerate(answering):
             claim = asked.claim(p)
@@ -536,9 +561,14 @@ def _fact_requests(fund, providers, asked, own, rank, *, today, max_age, backfil
                 listed, first = (asked.history(p), fund.history_from) if history else (asked.dates(p), fund.held_from)
                 for d in _past_days(listed, first, known, near=0):
                     _asking(own, fund, p, d, claim, fact, (), rank)
+                if asked.failed_on(LIST_HISTORY if history else LIST_DATES, {p.name}):
+                    unplanned.add((fund.ref, fact))
             break
         else:
-            c.reason = "no provider claims it"
+            failed = [p for p in answering if asked.failed_on(CLAIM, {p.name})]
+            c.reason = LOOKUP_FAILED if failed else "no provider claims it"
+            if failed and (due or (past and any(fact in p.dated_facts for p in failed))):
+                unplanned.add((fund.ref, fact))
 
 
 def _asking(own, fund, p, as_of, claim, fact, standbys, rank) -> Request:
@@ -803,6 +833,49 @@ def log_coverage(cover, deferred=frozenset()) -> None:
                  "".join(f", {n} {reason}" for reason, n in reasons.items()))
 
 
+def _failed(entry) -> bool:
+    """Whether a request met an error, on its provider or one standing
+    by, and not only providers with nothing to serve."""
+    return "error" in (entry["status"], *(t["status"] for t in entry.get("tried", ())))
+
+
+def lost_funds(cover, reqs, results, unplanned=frozenset()) -> dict:
+    """fund ref -> the facts a failure cost it this run, sorted: a request
+    that asked for one met an error and none answered it, or a failed
+    lookup left a request missing (`unplanned`), whatever else came.
+    HISTORY_FACT counts by date: a filing's months are its own, one
+    missing month leaves a gap in every window over it, and only a
+    backfill asks a past date again. A provider with nothing to state
+    loses nothing, and a rerun would not change its answer. A request
+    --limit deferred has not failed."""
+    entries = {id(r): e for r, e in zip(reqs, results, strict=True)}
+    asked = [(r, f) for r in reqs if r.kind == "fund" for f in r.facts]
+    asked += [(r, fact) for fact, wanting in cover.items() for c in wanting.values() for r in c.requests
+              if r.kind == "fund" and fact not in r.facts]
+    got, lost = set(), set()
+    for r, fact in asked:
+        e = entries[id(r)]
+        key = (r.ref, fact, r.as_of if fact == HISTORY_FACT else None)
+        if e["status"] == "ok" and (fact in e["facts"] if fact in r.facts
+                                    else fact in REGISTRY[e["provider"]].composition_facts):
+            got.add(key)
+        elif _failed(e):
+            lost.add(key)
+    out = {}
+    for ref, fact in sorted({key[:2] for key in lost - got} | set(unplanned)):
+        out.setdefault(ref, []).append(fact)
+    return out
+
+
+def log_lost(lost, backfill) -> None:
+    """One closing line per fund a failure cost a fact it wanted, with the
+    rerun that recovers it. The exit code stays 0: one timeout must not
+    fail a nightly."""
+    flag = "--backfill " if backfill else ""
+    for ref, facts in lost.items():
+        log.warning("lost: %s: this run failed on %s; rerun with %s--ref %s", ref, ", ".join(facts), flag, ref)
+
+
 def request_dir(run: Path, r: Request) -> Path:
     folder = run / KIND_DIRS[r.kind] / r.provider / folder_name(r.ref)
     if r.kind == "fund":
@@ -834,7 +907,11 @@ def execute(reqs, run: Path, ctx: Context, limit=None):
         for name in (r.provider, *r.fallbacks):
             if limit is not None and attempts >= limit:
                 break
-            claim = r.claim if name == r.provider else _ask(r.ref, name, "claim it", REGISTRY[name].claim, r.fund, ctx)
+            unasked = set()
+            claim = r.claim if name == r.provider else _ask(r.ref, name, CLAIM, REGISTRY[name].claim, r.fund, ctx,
+                                                            failed=unasked)
+            if unasked:
+                tried.append({"provider": name, "status": "error", "error": "its claim failed"})
             if claim is None:
                 continue
             attempts += 1
@@ -929,10 +1006,11 @@ def main(argv=None) -> int:
         bronze.atomic_write_json(run / "run.json", {"slug": slug, "status": "in-progress"})
         ctx.client.trace = debugcap.HttpTrace(run, log=log, enabled=args.debug)
     earlier = fetched_before(args.bronze_dir)
+    unplanned = set()
     reqs, unclaimed, cover = plan(want, providers, ctx, today=today_utc(), max_age=cfg.max_age_days,
                                   backfill=args.backfill, refs=set(args.ref or ()),
                                   securities=not args.no_securities, constituents=cfg.constituents,
-                                  floor_pct=cfg.constituent_floor_pct, earlier=earlier)
+                                  floor_pct=cfg.constituent_floor_pct, earlier=earlier, unplanned=unplanned)
     log.info("wanted: %d funds, %d securities; %d requests; %d funds no provider claims",
              len(want.funds), len(want.securities), len(reqs), len(unclaimed))
     for ref in unclaimed:
@@ -956,6 +1034,7 @@ def main(argv=None) -> int:
     log.info("run %s: %s", slug, ", ".join(f"{n} {s}" for s, n in sorted(by.items())) or "nothing to fetch")
     log_coverage(cover, {id(r) for r, e in zip(reqs, manifest["requests"], strict=True) if e["status"] == "deferred"})
     log_notes(providers, log)
+    log_lost(lost_funds(cover, reqs, manifest["requests"], unplanned), args.backfill)
     return 0
 
 

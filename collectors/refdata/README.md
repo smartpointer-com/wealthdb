@@ -170,8 +170,23 @@ The reason for one left is one of these:
   security once in N days at most. An earlier run sent it a request
   within them, a failed one too.
 - `deferred by --limit`: its request waits for the next run.
+- `the lookup failed`: a provider that answers the fact could not be
+  asked about the fund. A timeout does this.
 
-A download logs the same counts, one line per fact.
+A download logs the same counts, one line per fact. It closes with one
+`lost:` line per fund whose fact a failure cost this run. That is a
+failed fetch with no other answer, a failed claim or date list, or for
+`monthly_returns` any one date that failed:
+
+```text
+lost: symbol:ACWI: this run failed on monthly_returns; rerun with --backfill --ref symbol:ACWI
+```
+
+The rerun recovers the fund, and asks only the dates still missing. A
+line names `--backfill` only where the run had it. A `lost:` line does
+not change the exit code, so one timeout does not fail a nightly run. A
+provider can answer that it has nothing for a fund. That loses nothing,
+and no line names the fund.
 
 ## Settings
 

@@ -12,7 +12,7 @@ import config
 import download
 import load
 from download import Fetched
-from providers.base import Context, Parsed, Provider, ProviderError, read_meta, row, write_meta
+from providers.base import Context, Parsed, Provider, ProviderError, Unavailable, read_meta, row, write_meta
 from tests.helpers import (TODAY, FakeLookup, FakeProvider, fund, held, make_run, plan, run_entries, wanted_doc,
                            write_wanted)
 
@@ -618,6 +618,211 @@ def test_a_run_logs_the_same_counts_one_line_per_fact(tmp_path, monkeypatch, reg
     (run,) = (tmp_path / "data").iterdir()
     assert [(e["provider"], e.get("facts"), e["status"]) for e in run_entries(run)] == [
         ("comp", None, "ok"), ("issuer", ["characteristics"], "ok"), ("frames", None, "deferred")]
+
+
+def _lost_lines(tmp_path, monkeypatch, caplog, funds, enabled, *flags):
+    """The `lost:` lines of a run of `funds` with the providers `enabled`,
+    which must exit 0 whatever it loses."""
+    caplog.set_level(logging.WARNING, logger="refdata.download")
+    monkeypatch.setattr(download.config, "load", lambda known: config.Config(providers=enabled))
+    monkeypatch.setattr(download, "today_utc", lambda: TODAY)
+    w = write_wanted(tmp_path / "wanted.json", wanted_doc(funds, version=4))
+    assert download.main(["--bronze-dir", str(tmp_path / "data"), "--wanted", str(w), *flags]) == 0
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("lost: ")]
+
+
+class _NoClaim(_Facts):
+    """Times out on the question that claims the fund."""
+
+    def claim(self, fund, ctx):
+        raise ProviderError("timed out")
+
+
+class _NoDates(_Facts):
+    """Times out on the question that lists a fund's dates."""
+
+    def dates(self, claim, since, until, ctx):
+        raise ProviderError("timed out")
+
+
+class _Nothing(_Facts):
+    """Has nothing to serve."""
+
+    def fetch(self, claim, as_of, outdir, ctx):
+        raise Unavailable("no filing")
+
+
+def test_a_fund_a_failed_fetch_leaves_without_a_fact_is_named_with_its_rerun(registry, tmp_path, monkeypatch, caplog):
+    registry(_Facts("filing", {"monthly_returns", "risk_metrics"}, fails=True))
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [benchmark_fund(), held("symbol:FUNDB", "EXMB")], ("filing",),
+                       "--backfill") == [
+        f"lost: {REF}: this run failed on monthly_returns; rerun with --backfill --ref {REF}"]
+
+
+def test_a_run_without_backfill_names_a_rerun_without_it(registry, tmp_path, monkeypatch, caplog):
+    registry(_Facts("filing", {"monthly_returns", "risk_metrics"}, fails=True))
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["monthly_returns", "risk_metrics"])], ("filing",)) == [
+        f"lost: {REF}: this run failed on monthly_returns, risk_metrics; rerun with --ref {REF}"]
+
+
+def test_a_lookup_that_fails_is_lost_and_not_read_as_unclaimed(registry, tmp_path, monkeypatch, caplog, capsys):
+    registry(_NoClaim("filing", {"risk_metrics"}))
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["risk_metrics"])], ("filing",)) == [
+        f"lost: {REF}: this run failed on risk_metrics; rerun with --ref {REF}"]
+    assert download.main(["--bronze-dir", str(tmp_path / "data"), "--wanted", str(tmp_path / "wanted.json"),
+                          "--dry-run"]) == 0
+    assert f"risk_metrics\t{REF}\t{download.LOOKUP_FAILED}" in capsys.readouterr().out
+
+
+def test_a_provider_that_does_not_claim_the_fund_loses_nothing(registry, tmp_path, monkeypatch, caplog):
+    registry(_Facts("filing", {"risk_metrics"}, known=()))
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["risk_metrics"])], ("filing",)) == []
+
+
+def test_a_standby_that_serves_after_the_failure_loses_nothing(registry, tmp_path, monkeypatch, caplog):
+    registry(_Facts("a", {"risk_metrics"}, fails=True), _Facts("b", {"risk_metrics"}))
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["risk_metrics"])], ("a", "b")) == []
+
+
+def test_a_fact_the_answer_names_missing_is_no_loss(registry, tmp_path, monkeypatch, caplog):
+    registry(_Facts("filing", {"risk_metrics"}, missing=["risk_metrics"]))
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["risk_metrics"])], ("filing",)) == []
+
+
+def test_a_request_past_the_limit_is_no_loss(registry, tmp_path, monkeypatch, caplog):
+    registry(_Facts("filing", {"risk_metrics"}, fails=True))
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["risk_metrics"])], ("filing",), "--limit", "0") == []
+
+
+def test_a_fact_that_comes_with_a_composition_is_lost_with_it(registry, tmp_path, monkeypatch, caplog):
+    registry(_Facts("comp", stated={"line_durations"}, fails=True))
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["line_durations"])], ("comp",)) == [
+        f"lost: {REF}: this run failed on line_durations; rerun with --ref {REF}"]
+
+
+def test_a_failed_date_list_loses_a_history_though_the_current_answer_came(registry, tmp_path, monkeypatch, caplog):
+    registry(_NoDates("filing", {"monthly_returns"}, latest_=date(2026, 6, 30)))
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [benchmark_fund()], ("filing",), "--backfill") == [
+        f"lost: {REF}: this run failed on monthly_returns; rerun with --backfill --ref {REF}"]
+
+
+def test_a_failed_lookup_on_another_provider_loses_nothing(registry, tmp_path, monkeypatch, caplog):
+    registry(_NoClaim("comp"), _Facts("filing", {"risk_metrics"}, known=(), compositions=False))
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["risk_metrics"])], ("comp", "filing")) == []
+
+
+def test_a_fresh_fact_nothing_would_ask_for_is_no_loss(registry, tmp_path, monkeypatch, caplog):
+    registry(_NoClaim("filing", {"risk_metrics"}, dated=False))
+    fund = held(wants=["risk_metrics"], facts={"risk_metrics": [TODAY.isoformat()]})
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [fund], ("filing",), "--backfill") == []
+
+
+def test_a_sold_fund_whose_past_days_a_failed_claim_cost_is_named(registry, tmp_path, monkeypatch, caplog):
+    registry(_NoClaim("filing", {"risk_metrics"}))
+    fund = held(wants=["risk_metrics"], held_to="2026-06-30")
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [fund], ("filing",), "--backfill") == [
+        f"lost: {REF}: this run failed on risk_metrics; rerun with --backfill --ref {REF}"]
+
+
+def test_a_failed_claim_on_a_fact_of_compositions_is_lost(registry, tmp_path, monkeypatch, caplog):
+    registry(_NoClaim("comp", stated={"line_durations"}))
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["line_durations"])], ("comp",)) == [
+        f"lost: {REF}: this run failed on line_durations; rerun with --ref {REF}"]
+
+
+def test_a_failed_claim_does_not_read_as_unclaimed(registry, tmp_path, monkeypatch, caplog):
+    registry(_NoClaim("comp"))
+    _lost_lines(tmp_path, monkeypatch, caplog, [held()], ("comp",))
+    (run,) = (tmp_path / "data").iterdir()
+    assert json.loads((run / "run.json").read_text())["unclaimed"] == []
+
+
+def test_a_standby_that_serves_without_the_fact_leaves_it_lost(registry, tmp_path, monkeypatch, caplog):
+    registry(_Facts("a", {"risk_metrics"}, fails=True), _Facts("b"))
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["risk_metrics"])], ("a", "b")) == [
+        f"lost: {REF}: this run failed on risk_metrics; rerun with --ref {REF}"]
+
+
+def test_a_standby_that_states_no_composition_fact_leaves_it_lost(registry, tmp_path, monkeypatch, caplog):
+    registry(_Facts("a", stated={"line_durations"}, fails=True), _Facts("b"))
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["line_durations"])], ("a", "b")) == [
+        f"lost: {REF}: this run failed on line_durations; rerun with --ref {REF}"]
+
+
+def test_nothing_to_serve_is_no_loss(registry, tmp_path, monkeypatch, caplog):
+    registry(_Nothing("a", {"risk_metrics"}))
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["risk_metrics"])], ("a",)) == []
+
+
+def test_a_standby_error_after_nothing_to_serve_is_lost(registry, tmp_path, monkeypatch, caplog):
+    registry(_Nothing("a", {"risk_metrics"}), _Facts("b", {"risk_metrics"}, fails=True))
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["risk_metrics"])], ("a", "b")) == [
+        f"lost: {REF}: this run failed on risk_metrics; rerun with --ref {REF}"]
+
+
+def test_a_standby_whose_claim_fails_counts_as_an_error(registry, tmp_path, monkeypatch, caplog):
+    registry(_Nothing("a", {"risk_metrics"}), _NoClaim("b", {"risk_metrics"}))
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["risk_metrics"])], ("a", "b")) == [
+        f"lost: {REF}: this run failed on risk_metrics; rerun with --ref {REF}"]
+
+
+def _dated(*outcomes, fact="monthly_returns"):
+    """Requests for `fact` at each of (day, entry), and their entries."""
+    reqs = [download.Request("fund", "filing", REF, day, facts=(fact,)) for day, _ in outcomes]
+    return reqs, [e for _, e in outcomes]
+
+
+GOT = {"status": "ok", "facts": ["monthly_returns"]}
+FAILED = {"status": "error"}
+
+
+def test_a_failed_past_month_is_lost_though_another_month_came():
+    assert download.lost_funds({}, *_dated((None, GOT), (date(2026, 3, 31), FAILED))) == {REF: ["monthly_returns"]}
+
+
+def test_every_month_answered_prints_no_line():
+    assert download.lost_funds({}, *_dated((None, GOT), (date(2026, 3, 31), GOT))) == {}
+
+
+def test_a_month_a_second_request_answered_is_no_loss():
+    day = date(2026, 3, 31)
+    assert download.lost_funds({}, *_dated((day, FAILED), (day, GOT))) == {}
+
+
+def test_another_fact_counts_by_fund_and_fact():
+    got = {"status": "ok", "facts": ["risk_metrics"]}
+    assert download.lost_funds({}, *_dated((None, got), (date(2026, 3, 31), FAILED), fact="risk_metrics")) == {}
+
+
+class _DownOn(_Facts):
+    """Fails the dates in `down`, and records in `asked` each date asked.
+    Its current answer states its newest day, as a filing does."""
+
+    def __init__(self, *args, down=(), **kw):
+        super().__init__(*args, **kw)
+        self.down, self.asked = set(down), []
+
+    def fetch(self, claim, as_of, outdir, ctx):
+        self.asked.append(as_of)
+        if as_of in self.down:
+            raise ProviderError("timed out")
+        return super().fetch(claim, as_of or self.latest_, outdir, ctx)
+
+
+def test_the_rerun_a_lost_line_names_asks_only_the_month_it_lost(registry, tmp_path, monkeypatch, caplog):
+    lost = date(2026, 3, 31)
+    (filing,) = registry(_DownOn("filing", {"monthly_returns"}, latest_=date(2026, 6, 30), down=[lost],
+                                 dates_=[date(2025, 12, 31), lost, date(2026, 6, 30)]))
+    slugs = iter(["20260714T000001Z", "20260714T000002Z"])
+    monkeypatch.setattr(download.bronze, "ts_slug", lambda: next(slugs))
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [benchmark_fund()], ("filing",), "--backfill") == [
+        f"lost: {REF}: this run failed on monthly_returns; rerun with --backfill --ref {REF}"]
+    filing.down.clear()
+    filing.asked.clear()
+    caplog.clear()
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [benchmark_fund()], ("filing",), "--backfill", "--ref", REF) == []
+    assert filing.asked == [lost]
+
 
 
 def test_a_version_1_list_plans_as_it_always_did(tmp_path, monkeypatch, registry, capsys):
