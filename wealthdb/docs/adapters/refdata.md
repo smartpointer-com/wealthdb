@@ -214,8 +214,7 @@ key it reads as.
 the as-of days that the rows of the runs loaded since describe. It reads
 every reference table that has a run: `compositions`, `attributes`,
 `counterparties`, `fund_risk`, `fund_returns`, `characteristics`,
-`securities`,
-`security_facts`, `period_facts` and `dividend_events`. A line belongs
+`securities`, `security_facts`, `period_facts` and `dividend_events`. A line belongs
 to its composition's run. The clock is the load, not the fetch, so a run
 fetched earlier but loaded later still reaches gold: an import from
 another machine, or a re-parse of kept bronze. A composition for an old

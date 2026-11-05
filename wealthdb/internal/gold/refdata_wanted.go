@@ -660,8 +660,7 @@ func addCompositionDates(ctx context.Context, db *sql.DB, funds map[string]*Want
 	return nil
 }
 
-// The facts a held fund is wanted for beyond its compositions, in the
-// order the list names them:
+// The facts a held fund is wanted for beyond its compositions:
 //
 //   - risk_metrics: a bond or multi-asset fund's rate sensitivities, as
 //     its N-PORT filing states them (fund_risk);

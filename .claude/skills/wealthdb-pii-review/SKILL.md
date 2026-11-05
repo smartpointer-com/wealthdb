@@ -17,7 +17,7 @@ adds. The rule it enforces is section 4 of `AGENTS.md`. Read it first.
 
 ## Hard rules
 
-1. Read and report. Change nothing until the person agrees to each fix.
+1. Read and report. Change nothing until the user agrees to each fix.
    Never push.
 2. Never copy a real value anywhere: not into the repository, a commit
    message, a pull request, an issue, or a brief for another agent. Name
@@ -274,7 +274,7 @@ Hard cases:
 
 ## 7. Report
 
-For each finding, give the person:
+For each finding, give the user:
 
 - the commit, the file and the line;
 - the group (A to J) and the value's shape, never the value;

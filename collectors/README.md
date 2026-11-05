@@ -666,15 +666,16 @@ of `collectors/`); **the presence of a Dockerfile decides the runtime.**
   browser can be run headed and driven over VNC), or
   `wealthdb/base-camoufox` (that, plus a stealth-patched Firefox).
   `requirements.txt` is copied and `pip install`ed first (a cache
-  layer), then the scripts + `migrations` + `entrypoint.sh` are copied
-  **by name** so stray host artefacts never enter the image;
-  `entrypoint.sh` maps the subcommand to the right script. A collectorkit
-  test (`test_collector_images.py`) checks that each Dockerfile copies
-  every module the entrypoint's scripts import.
+  layer). A collector with `HAS_APP_MOUNT` copies nothing more. Any
+  other copies its scripts, `migrations` and `entrypoint.sh` **by name**,
+  so stray host artefacts never enter the image. `entrypoint.sh` maps
+  the subcommand to the right script. A collectorkit test
+  (`test_collector_images.py`) checks both rules.
   `make build-<name>` runs `<wrapper> build`, and the bases come from
   `make base-images`. A build is skipped when the image's
-  `wealthdb.inputs` label matches a hash of the collector directory and
-  its base image's id. An extra argument to `build` always builds. A
+  `wealthdb.inputs` label matches a hash of its inputs and its base
+  image's id. The inputs are the collector directory, or the Dockerfile
+  and `requirements.txt` with `HAS_APP_MOUNT`. An extra argument to `build` always builds. A
   host without `python3` always builds.
 - A **host-venv** collector has only `requirements.txt` (no Dockerfile).
   `make build-<name>` creates `.venv` and installs `requirements.txt`

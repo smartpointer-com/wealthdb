@@ -124,9 +124,11 @@ committing anything derived from it. When in doubt, ask.
 
 **The privacy check** (`shared/pii/pii_check.py`) is a net under that
 read, never a substitute. The hooks run it on every staged change and
-commit message, and CI on every push and pull request. It refuses:
+commit message, and CI on every push to `main` and every pull request.
+It refuses:
 
-- checksum-valid IBANs, card, AHV and social security numbers;
+- checksum-valid IBANs, card and AHV numbers, and US social security
+  numbers in their dashed form;
 - credentials, home paths, host names, e-mail addresses, phone numbers;
 - in docs and messages, account numbers and masked last-four digits;
   in messages, money amounts;

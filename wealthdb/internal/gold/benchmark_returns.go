@@ -17,7 +17,8 @@ const (
 	// benchmarkGap: a month of the span has no return for every fund of
 	// the mix, so the span has none.
 	benchmarkGap = "benchmark_gap"
-	// benchmarkPartialPeriod: the benchmark's months end inside the bucket.
+	// benchmarkPartialPeriod: the benchmark's months start or end inside
+	// the bucket.
 	benchmarkPartialPeriod = "benchmark_partial_period"
 	// benchmarkStartClipped: the window starts before the benchmark's
 	// first month, and compares from there.

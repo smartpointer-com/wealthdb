@@ -898,8 +898,8 @@ instants.
 each one takes and the privacy twin, and §8 the tables they read.
 
 The MCP server has an `exposure` tool with the same fourteen views, an
-`as_of` day, the `country` choice, and a `period` series between
-`from` and `to` on the views `--period` takes. Its rows equal the
+`as_of` day, the `country` choice, a `benchmark`, and a `period` series
+between `from` and `to` on the views `--period` takes. Its rows equal the
 command's, cell for cell.
 
 ## Benchmarks
@@ -914,10 +914,10 @@ filing can update a held security's name, sector or country, so a
 benchmark's fund can move the household's figures a little, towards
 fresher data.
 
-`web refresh` writes it to `benchmark_exposure`, at the end of the
-exposure pass. A temporary `exposure_holdings` shadows the macro inside
-the pass's transaction, so every label and every fund pick is the
-household's, and nothing else sees the virtual holdings.
+`web refresh` writes the look-through to `benchmark_exposure`, at the
+end of the exposure pass. A temporary `exposure_holdings` shadows the
+macro inside the pass's transaction, so every label and every fund pick
+is the household's, and nothing else sees the virtual holdings.
 
 - Each bucket is a share of the benchmark in percent, on the dashboard's
   definition of that dimension.

@@ -95,7 +95,9 @@ it inside retirement plans" rather than a list of tickers.
 **Investment performance.** Time-weighted and money-weighted returns
 for each account, each portfolio, each provider and the whole, over any
 period. Money moved between the household's own accounts is not counted
-as gain or loss, and every figure carries its own caveats. Realized and
+as gain or loss, and every figure carries its own caveats. A benchmark,
+a plain mix of public funds, can stand beside the returns, the
+allocation, the exposure and the yield. Realized and
 unrealized gains come from the cost basis and tax lots the providers
 state. A crypto exchange or an old brokerage statement often states
 none. There a lot engine rebuilds them from the trades, first in first

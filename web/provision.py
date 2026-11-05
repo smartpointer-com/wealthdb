@@ -2972,9 +2972,10 @@ def _table_columns(*names):
 
 def _columns_with_benchmark(sql, order, *cols):
     """`sql`'s columns, the benchmark's `cols` among them only with a
-    benchmark picked, by `order`. A table then shows under None what it
-    shows with no benchmark at all. DuckDB reads the picker's value when
-    it binds the query, so the column list can follow it."""
+    benchmark picked, by `order`. A table or a Yield line chart then
+    shows under None what it shows with no benchmark at all. DuckDB reads
+    the picker's value when it binds the query, so the column list can
+    follow it."""
     names = ", ".join(f"'{c}'" for c in cols)
     return (f"SELECT COLUMNS(lambda c: c <> '{order}' AND (c NOT IN ({names}) OR {{{{benchmark}}}} <> '{NO_BENCHMARK}'))\n"
             f"  FROM (\n{sql}\n)\n ORDER BY {order}")
@@ -2991,10 +2992,9 @@ def exposure_cards(db_id, privacy):
     computed over the rows a card reads. Sizes and cycles plot a share
     of the public equity instead, and the debt cards one of the debt, or
     of the debt and cash. A breakdown reads the latest day in the window
-    and plots each share: a bar carries its figure, a ring its
-    percentage in the legend, a map colours each country by its share.
-    Its base card keeps the value as a column and shows it in the
-    tooltip, or draws the ring from it; its privacy card has the share
+    and plots each share: a bar carries its figure, a map colours each
+    country by its share. Its base card keeps the value as a column and
+    shows it in the tooltip; its privacy card has the share
     alone, a share being scale-free. A chart over time shows each month
     end's shares on both, so it is privacy-exempt and has no privacy
     variant. Currencies over time is the exception: its base card plots

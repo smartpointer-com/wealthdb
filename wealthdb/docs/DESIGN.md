@@ -134,7 +134,7 @@ wealthdb categorize [spending|income] (RW)    Categorise the unplaced merchants 
 wealthdb categorizations [spending|income] (RO) Dump the model-derived verdict stores; --forget SIG removes one (RW).
 wealthdb mcp-serve --stdio | --http ADDR (RO) Serve the read-only reports to AI agents over MCP (mcp/DESIGN.md).
 wealthdb version                      (RO)    Print the version: a release tag, or `<last release> nightly <commit>`.
-wealthdb help [<subcommand> | filter]
+wealthdb help [<subcommand> | filter | benchmarks]
 ```
 
 `-a` means "all configured silver sources". `<id>` is the
@@ -757,6 +757,7 @@ positional view, `-d` for the day, and the shared `-f`, `-C`, `-F`,
 | `<view>` | required | `classes` \| `sectors` \| `sizes` \| `countries` \| `currencies` \| `credit` \| `maturities` \| `coupons` \| `cycles` \| `situs` \| `securities` \| `issuers` \| `funds` \| `coverage`. |
 | `-d`, `--as-of` | today | The day. |
 | `--country` | `risk` | `risk` \| `domicile`: the country a security counts in, on `countries` and `securities`. Refused on the other views. |
+| `--benchmark` | none | A benchmark's weight of each row, and the row's share less it (EXPOSURE.md, "Benchmarks"). Not on `situs`, `funds` or `coverage`; no `--period`; no `--country domicile`. |
 | `--period` | none | `monthly` \| `quarterly` \| `annual`: the view at the end of every period of the window `[FROM [TO]]`, a `period` column first (EXPOSURE.md §7). Refused on `securities`, `issuers` and `funds`, and with `-d`. |
 | `-f`, `-C`, `-F`, `-x`, `-p` | as §4.12 | `-C` takes a share column by its name (`share`) or its header (`share_pct`). `-p` hides every amount and every instrument id (EXPOSURE.md §7). A name a person typed prints as a pseudonym (§4.6). On `coverage`, `-f ndjson` prints the declarations ledger's skeleton records still to fill in (EXPOSURE.md §9); it takes no `-C`, `-p` or `--period`. |
 
@@ -2108,8 +2109,6 @@ Migration 0125 adds `fund_compositions`, `fund_lines`,
 `security_facts`. Migration 0134 adds columns to `fund_lines`, such
 as a debt line's durations and yields. It also adds four tables:
 
-- `fund_returns`: a filing's monthly total returns, per fund, filing day
-  and month, in percent (migration 0176).
 - `fund_risk`: a filing's rate sensitivities, per fund, day, currency and
   tenor, as filed. The view `fund_risk_signed` reads each filing in one
   sign, positive where the fund loses value as rates rise (YIELD.md §6);
@@ -2120,6 +2119,9 @@ as a debt line's durations and yields. It also adds four tables:
   period and dated by the period's last day;
 - `rate_observations`: one day's value of a public rate series, in
   percent.
+
+Migration 0176 adds `fund_returns`: a filing's monthly total returns,
+per fund, filing day and month, in percent.
 
 Migration 0147 adds `dividend_calendar`: one distribution of a fund or
 a security as a provider states it, with its ex, record and pay days.
@@ -2171,8 +2173,6 @@ aliases (`gold.SyncExposure`, §8.1), so an entry taken out of the
 config or the ledger leaves on the next load:
 
 - `exposure_proxies`: a fund whose composition stands in for another;
-- `benchmark_funds`: the built-in benchmarks and the `benchmarks`
-  block, one row per benchmark and fund;
 - `exposure_reference_funds`: funds fetched for their lines alone;
 - `exposure_size_funds`: broad funds whose weights size stocks, each
   with the share of its markets it covers;
@@ -2184,6 +2184,10 @@ config or the ledger leaves on the next load:
   of the dimensions it declares, each a share of the holding;
 - `exposure_custody`: who keeps each source's assets;
 - `exposure_settings`: one row of settings.
+
+Migration 0176 adds `benchmark_funds`: the built-in benchmarks and the
+`benchmarks` block, one row per benchmark and fund. A load replaces it
+whole the same way (`gold.SyncBenchmarks`).
 
 The exposure report reads the six reference tables of migration 0125
 and the `exposure_*` tables ([EXPOSURE.md](EXPOSURE.md), §10.14).
@@ -3333,15 +3337,17 @@ tables hold it at today and the last second of each of the 12 months
 before, the yield tables' instants (migration 0138). Each statement
 walks the instant for itself, so its memory is freed before the next:
 
-- `benchmark_returns`, `benchmark_mwr`, `benchmark_exposure` and
-  `benchmark_yield` (migration 0176): each benchmark beside the household
-  (RETURNS-NOTES.md, "Benchmarks").
 - `report_exposure_debt`: the buckets of the dimensions `credit`,
   `maturity`, `coupon` and `cycle`, by source and tax wrapper, a leaf
   split by its fund's page as the views split it. Unlike the `credit`
   view, it keeps no split by held directly or through funds;
 - `report_exposure_issuer_ranks`: the 100 largest issuers per currency
   and the `(none)` row, the running share over every issuer.
+
+`benchmark_returns`, `benchmark_mwr`, `benchmark_exposure` and
+`benchmark_yield` (migration 0176) hold each benchmark beside the
+household. The first two are written with `report_returns`
+(RETURNS-NOTES.md, "Benchmarks").
 
 `report_exposure_security_slices` (migration 0165) holds the rows of
 `report_exposure_securities` at the same instants, from the plain walk.

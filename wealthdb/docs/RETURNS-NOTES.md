@@ -117,8 +117,8 @@ price gain on positions measured against a cost basis;
   fall between a flow into a sparsely valued account and the valuation that
   shows it. A carried value would not show the flow yet: one sub-period
   would hold the flow against a flat value and a later one the value change
-  against no flow. The chain would keep about the square of the flow's
-  share of the entity. So at each boundary the chain adds what each account
+  against no flow. The chain would then miss most of the flow's effect.
+  So at each boundary the chain adds what each account
   moved since it last valued (`unvaluedAt`, `Flow.ValuedOn`): its flows, and
   the legs of any pair netting cancelled, flows keeping their days. The
   window's opening value counts the same way.
@@ -132,9 +132,9 @@ price gain on positions measured against a cost basis;
   a closure the synthetic flow books. This is an estimate: an unrelated
   value change of the same size passes the check. On an account's own
   valuation days a roll adds nothing, so a grain whose accounts value
-  together reads as before. The accounts grain never rolls. Only the chain
-  does: per-period rows, `start` and `end` values, `net_flow` and MWR read
-  the carried values. Guard: `TestChainRollsAnAccountForward`.
+  together chains its plain carried values. The accounts grain never rolls.
+  Only the chain does: per-period rows, `start` and `end` values, `net_flow`
+  and MWR read the carried values. Guard: `TestChainRollsAnAccountForward`.
 - **Onboarding books the debut value.** A staggered constituent's real
   debut-region flows are subsumed first (`flowSubsumed` in `entityFlows`),
   then synthetic onboarding books the first-snapshot value, less the
@@ -226,9 +226,9 @@ macro of its own:
   - `ClosureLedgerExact` (carta, equityzen, manual): zero-tail flows are
     real dated exit legs. Those ledgers put the proceeds on the zeroing day
     itself, so they are KEPT and no closure synthetic is booked. The
-    realized-vs-last-mark delta shows as return. A late escrow release
-    after the zeroing likewise books as gain. A flow-less zeroing reads as a full loss under
-    either scope, tagged via `CapitalCallRisk`.
+    realized-vs-last-mark delta shows as return. A late escrow release after
+    the zeroing likewise books as gain. A flow-less zeroing reads as a full
+    loss under either scope, tagged via `CapitalCallRisk`.
 
   The closure day is the zero tail's END, so the machinery engages when the
   window reaches it. The exit-day zero snapshot itself comes from the
@@ -271,15 +271,14 @@ chained TWR below −100%.
   an orphaned phantom.
 - **A cancelled pre-debut leg reduces onboarding** by its signed amount,
   where the partner's account is on the spine by then and shows the leg by
-  the window's end. The debut value
-  holds that money and the pair's other leg is gone, so booking the value
-  in full would read an internal move as an outside inflow, and the flat
-  value as a loss. At the global grain this covers a move between two
-  sources. Money from an account the entity does not hold yet is new to
-  it, so such a pair changes nothing. The reduced amount may be negative:
-  an account that passed on more than it kept. What happens before a first
-  valuation is capital in either direction, never performance. Guard:
-  `TestFundedDebutBooksNoNewMoney`.
+  the window's end. The debut value holds that money and the pair's other
+  leg is gone, so booking the value in full would read an internal move as
+  an outside inflow, and the flat value as a loss. At the global grain this
+  covers a move between two sources. Money from an account the entity does
+  not hold yet is new to it, so such a pair changes nothing. The reduced
+  amount may be negative: an account that passed on more than it kept. What
+  happens before a first valuation is capital in either direction, never
+  performance. Guard: `TestFundedDebutBooksNoNewMoney`.
 - **The same holds at a closure.** A leg the closure day first shows,
   cancelled against money that stays inside, leaves the synthetic closure
   flow.
@@ -517,7 +516,10 @@ last month compares through it (`benchmark_end_clipped`). The engine
 then computes the household over those same days, so the excess is
 like with like. That figure can differ from the Return tiles, which run
 to today. A window with a gap has no return (`benchmark_gap`). It does
-not skip the month.
+not skip the month. A window that shares no day with the benchmark's
+months has no return either (`benchmark_no_overlap`).
+
+The MCP `returns` and `exposure` tools take the same `benchmark`.
 
 **Buckets.** `benchmark_returns` holds a row per household bucket, at
 each granularity:
@@ -553,8 +555,9 @@ currency and start-year window, two series of month ends:
   month. Its last point is the benchmark's MWR tile.
 
 Each series opens with a row at the window's start, with no return, so
-the two sides start level. A window with no opening value has no lines. A month end past a gap has no value and
-`benchmark_gap`. One with no XIRR answer has the engine's `mwr_*` flag.
+the two sides start level. A window with no opening value has no lines.
+A month end past a gap has no value and `benchmark_gap`. One with no
+XIRR answer has the engine's `mwr_*` flag.
 
 Each month end's solve starts from the rate of the one before, over the
 flows netted by day (`returns.FlowSeries`). The last one is solved from

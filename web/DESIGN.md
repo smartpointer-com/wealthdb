@@ -1064,7 +1064,6 @@ gold DB: the kernel drops the lock when the process ends, the empty
 file stays, and a copy or a backup may ignore it. The web container
 itself still never sees anything but the `:ro` snapshot (AGENTS.md §1).
 
-
 ### Benchmarks
 
 `benchmark_returns`, `benchmark_mwr`, `benchmark_exposure` and
@@ -1097,7 +1096,11 @@ legend entry on Exposure's bars:
   adds only a legend of one entry.
 - A card's display type is fixed, and a ring takes no second bar. So
   the Exposure class and currency cards are bars whatever is picked.
-- A table's benchmark columns go the same way (`_columns_with_benchmark`).
+- Yield's yield and duration charts add the benchmark as one more
+  line: a column on the household's axis, in the card's own colours.
+  YIELD.md, "Benchmarks", says what it reads.
+- A table's or a Yield line chart's benchmark columns go the same way
+  (`_columns_with_benchmark`).
   `table.columns` names them, as a table otherwise shows only a saved
   question's columns.
 - A tile that exists only beside a benchmark (`BENCHMARK_CARDS`) reads no
@@ -1124,7 +1127,8 @@ the picked currency, and the twin sets share beside share.
 The Cumulative return line starts on the first year the benchmark covers
 whole, at the `(all sources)` line's level that year.
 
-Spending, Income, Cash Flow, Gains and Data Freshness have no benchmark.
+Wealth Overview, Spending, Income, Cash Flow, Gains and Data Freshness
+have no benchmark.
 
 ## Testing
 
