@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"math"
+	"slices"
 	"testing"
 	"time"
 
@@ -79,25 +80,34 @@ func exposureTotals(t *testing.T, db *sql.DB, ctx context.Context) map[string]fl
 	return out
 }
 
+// syncTestBenchmark names the mix exposureTotals reads: a fund of the
+// exposure fixture and one gold holds nothing of.
+func syncTestBenchmark(t *testing.T, db *sql.DB, ctx context.Context) {
+	t.Helper()
+	if _, err := SyncBenchmarks(ctx, db, []canonical.Benchmark{{Name: "Test", Funds: []canonical.BenchmarkFund{
+		{FundRef: "symbol:FUNDX", WeightPct: 60}, {FundRef: "symbol:NOPE", WeightPct: 40}}}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The look-through alone. TestMaterializeExposureMatchesTheLiveViews runs
+// it inside the whole pass and checks the household's rows beside it.
 func TestMaterializeBenchmarkExposureLooksThroughTheMix(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	at := exAsOf
-	if _, err := MaterializeExposure(ctx, db, at, 1); err != nil {
+	syncTestBenchmark(t, db, ctx)
+	tx, commit, err := beginPinned(ctx, db)
+	if err != nil {
 		t.Fatal(err)
 	}
-	var before int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM report_exposure`).Scan(&before); err != nil {
+	defer tx.Rollback() //nolint:errcheck — no-op after commit
+	if _, err := materializeBenchmarkExposure(ctx, tx, exAsOf, 2); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SyncBenchmarks(ctx, db, []canonical.Benchmark{{Name: "Test", Funds: []canonical.BenchmarkFund{
-		{FundRef: "symbol:FUNDX", WeightPct: 60}, {FundRef: "symbol:NOPE", WeightPct: 40}}}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := MaterializeExposure(ctx, db, at, 2); err != nil {
+	if err := commit(); err != nil {
 		t.Fatal(err)
 	}
 	totals := exposureTotals(t, db, ctx)
@@ -108,23 +118,21 @@ func TestMaterializeBenchmarkExposureLooksThroughTheMix(t *testing.T) {
 			t.Errorf("%s sums to %v, want the whole mix: %v", d, totals[d], totals)
 		}
 	}
-	var after int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM report_exposure`).Scan(&after); err != nil {
-		t.Fatal(err)
-	}
-	if after != before {
-		t.Errorf("report_exposure went from %d to %d rows: the virtual holdings leaked", before, after)
-	}
 	var leaked int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM report_exposure WHERE silver_source_id = ?`, benchmarkSource).Scan(&leaked); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM report_exposure`).Scan(&leaked); err != nil {
 		t.Fatal(err)
 	}
 	if leaked != 0 {
-		t.Errorf("%d report_exposure rows name the virtual source", leaked)
+		t.Errorf("%d report_exposure rows: the virtual holdings leaked", leaked)
 	}
-	// The macro's shadow is gone with the pass: the live view reads
-	// holdings again on the same connection pool.
-	if _, err := ExposureClasses(ctx, db, at, "USD"); err != nil {
+	// The macro's shadow is gone with the pass: the live view reads the
+	// household's holdings again, real estate among them, which no
+	// benchmark holds.
+	classes, err := ExposureClasses(ctx, db, exAsOf, "USD")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(classes, func(c ExposureClassRow) bool { return c.AssetClass == "real_estate" }) {
+		t.Errorf("the live view reads %+v, no real estate: the shadow outlived the pass", classes)
 	}
 }

@@ -36,6 +36,8 @@ func TestMaterializeExposureMatchesTheLiveViews(t *testing.T) {
 	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	// A benchmark beside them changes none of the rows below.
+	syncTestBenchmark(t, db, ctx)
 	to := exAsOf + 45*86400
 	n, err := MaterializeExposure(ctx, db, to, 42)
 	if err != nil {
@@ -43,6 +45,9 @@ func TestMaterializeExposureMatchesTheLiveViews(t *testing.T) {
 	}
 	if n == 0 {
 		t.Fatal("no rows materialized")
+	}
+	if len(exposureTotals(t, db, ctx)) == 0 {
+		t.Error("the pass wrote no benchmark look-through")
 	}
 	first, _, err := FirstHoldingsAt(ctx, db)
 	if err != nil {
