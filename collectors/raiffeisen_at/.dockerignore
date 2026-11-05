@@ -49,8 +49,7 @@ exports/
 *.mhtml
 *.har
 
-# Local captures beside the synthetic tests (`COPY tests` would bake
-# them in)
+# Local captures beside the synthetic tests stay out of the build context
 tests/fixtures/
 
 # Local logs / traces

@@ -19,8 +19,8 @@ it). The directory is the tests' own: it carries a marker, and a
 directory that exists without one is left alone. Each gold is kept
 while the generator, the engine image and this file are the same:
 `short`, `today` and `fresh` at their days, `rolled` once appended and
-loaded again, with what that load printed, and `bare` as `today`'s
-copy with nothing configured. WEALTHDB_BIN names the engine wrapper.
+loaded again, with what that load printed, and `bare` as the same
+household with nothing configured. WEALTHDB_BIN names the engine wrapper.
 """
 
 import collections

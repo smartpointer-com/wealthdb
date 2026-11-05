@@ -63,6 +63,14 @@ def main():
     ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4)
     args = ap.parse_args()
     names = groups()
+    # The classes share the scratch directory. It is made here, before they
+    # start: one that saw it without its marker would skip itself.
+    if os.environ.get("WEALTHDB_DEMO_TEST_ROOT"):
+        from tests import test_engine
+        try:
+            test_engine.tests_dir()
+        except unittest.SkipTest:
+            pass
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
         results = list(pool.map(run, names))
     failed, ran = [], 0
@@ -76,7 +84,7 @@ def main():
     print(f"demo tests: {ran} tests in {len(names)} processes, {len(failed)} failed")
     for name in failed:
         print(f"  failed: {name}")
-    return 1 if failed else 0
+    return 1 if failed or not ran else 0
 
 
 if __name__ == "__main__":

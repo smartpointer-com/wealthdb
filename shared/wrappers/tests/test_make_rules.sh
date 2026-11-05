@@ -11,7 +11,9 @@
 #     removes that root only when it holds the tests' marker;
 #   - lint reinstalls ruff when its pin changes, and update-venvs stops
 #     at the first pip that fails;
-#   - site-shots mounts the checkout read-only and no secrets;
+#   - site-shots runs as the caller, with the checkout read-only and no
+#     secrets;
+#   - an exported SHOW prints no value from make pii;
 #   - site-publish exports the env file's token, and refuses a file that
 #     does not parse without printing its lines.
 # Nothing is built: make prints, and a stub docker prints. clean-demo,
@@ -136,6 +138,8 @@ lacks "site-shots mounts no secrets" ":/secrets" "$out"
 has "site-shots runs as the caller" "--user \"\$(id -u):\$(id -g)\" -e HOME=/tmp" "$out"
 has "site-shots sources the shared browser bootstrap" "source /opt/entrypoint-lib.sh" "$out"
 has "clean runs clean-site" "==> clean site" "$(dry clean)"
+lacks "an exported SHOW prints no value" "--show"     "$(cd "$TREE" && env SHOW=1 WEALTHDB_IMAGE_TAG=t XDG_CACHE_HOME="$TMP/cache" make -n pii 2>&1)"
+has "SHOW on the command line prints them" "--show"     "$(cd "$TREE" && env WEALTHDB_IMAGE_TAG=t XDG_CACHE_HOME="$TMP/cache" make -n pii SHOW=1 2>&1)"
 has "cleanall removes the site venv" "rm -rf site/.venv" "$(dry cleanall)"
 
 # site-publish for real, with a stub interpreter that prints the token it

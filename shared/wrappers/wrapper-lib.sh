@@ -271,10 +271,10 @@ wrapper_mounts_help() {
 # unchanged and exit. The inputs are this directory; with HAS_APP_MOUNT=1
 # they are the Dockerfile and requirements.txt alone, since such an
 # image holds no source and an edit to the code or the docs leaves it
-# as it is. Returning would fall through into docker
-# run. Extra arguments are passed through, and the image is built. A
-# hash that fails (no python3 on the host) builds an unlabeled image,
-# which is never skipped.
+# as it is. Returning would fall through into docker run. Extra
+# arguments are passed through, and the image is built. A hash that
+# fails (no python3 on the host) builds an unlabeled image, which is
+# never skipped.
 # wrapper_main dispatches $1 == "build" here.
 # --provenance=false: buildx's default provenance attestation embeds build
 # metadata, so the image digest changes on every build even when every layer

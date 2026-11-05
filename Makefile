@@ -54,13 +54,12 @@ WEALTHDB_TEST := wealthdb/wealthdb-test
 WEALTHDB_GO   := wealthdb/wealthdb-go
 
 # Host interpreter for every venv the Makefile creates (the host-venv
-# collectors' and hybrids', collectorkit's, web's, site's, ruff's) and for
-# the host-side scripts (the demo generator, bump-playwright.py,
-# site/images.py). The venvs' deps (e.g. schwab-py) need Python >=3.10,
-# but macOS /usr/bin/python3 is 3.9 and `make` may resolve a bare
-# `python3` to it.
-# Prefer a versioned python3.X from PATH, then a Homebrew install, then
-# plain python3.
+# collectors' and hybrids', collectorkit's, web's, site's, ruff's) and
+# for the host-side scripts (the demo generator and test runner, the
+# privacy check, bump-playwright.py, site/images.py). The venvs' deps
+# (e.g. schwab-py) need Python >=3.10, but macOS /usr/bin/python3 is 3.9
+# and `make` may resolve a bare `python3` to it. Prefer a versioned
+# python3.X from PATH, then a Homebrew install, then plain python3.
 # Override explicitly:  make build-schwab-api PYTHON=python3.12
 PYTHON := $(or \
   $(shell for p in python3.14 python3.13 python3.12 python3.11 python3.10; do command -v $$p && break; done 2>/dev/null),\
@@ -126,7 +125,7 @@ build: all
 # each suite in exactly one job (.github/ci-suites.sh).
 TEST_SUITES := wealthdb demo web mcp site collectorkit wrappers pii $(COLLECTORS)
 # SUITES narrows `make test` to some of them (e.g. SUITES="web mcp").
-SUITES ?= $(TEST_SUITES)
+SUITES = $(TEST_SUITES)
 
 # `make test` runs the suites together and prints each one's log, with
 # its duration in seconds, once all have finished. Each image build
@@ -264,13 +263,13 @@ base-images:
 	@$(call LOCKED,bases) \
 	$(call BUILD_BASES,quiet,)
 
-# clean    = build artefacts (pycache, pytest cache, Go build cache,
+# clean    = build artefacts (pycache, pytest and ruff caches, Go build cache,
 #            test-demo's scratch roots, the build locks)
 # cleanall = clean + the heavy outputs (docker images, venvs)
 clean:    clean-wealthdb clean-web clean-collectors clean-collectorkit clean-demo \
           clean-site clean-build-locks
 	@$(call CLEAN_PYCACHE,shared/update shared/pii)
-	@rm -rf .pytest_cache
+	@rm -rf .pytest_cache .ruff_cache
 cleanall: clean cleanall-wealthdb cleanall-web cleanall-collectors cleanall-bases \
           cleanall-collectorkit cleanall-lint cleanall-site
 
@@ -339,6 +338,7 @@ test-pii:
 # HEAD reaches. Findings print as shapes; SHOW=1 adds the values, for this
 # terminal only.
 PII_BASE ?= origin/main
+SHOW =
 PII_CHECK = $(PYTHON) shared/pii/pii_check.py $(if $(SHOW),--show)
 
 pii:
@@ -413,8 +413,8 @@ build-wealthdb:
 
 # WEALTHDB_PKGS narrows the packages, and GO_TEST_FLAGS adds go test
 # flags (CI passes -count=1, so no result comes from the test cache).
-WEALTHDB_PKGS ?= ./...
-GO_TEST_FLAGS ?=
+WEALTHDB_PKGS = ./...
+GO_TEST_FLAGS =
 
 test-wealthdb: build-wealthdb
 	@echo "==> test wealthdb (go test $(strip $(GO_TEST_FLAGS) $(WEALTHDB_PKGS)))"
@@ -692,8 +692,8 @@ build-$(1): $(if $(wildcard collectors/$(1)/Dockerfile),base-images)
 # It is mounted read-only at /src, and sh copies it to a tmpfs at /app,
 # then runs the collector's entrypoint from the copy, as a live run does,
 # so the shared browser setup in entrypoint-lib.sh holds for the tests
-# too. The tmpfs starts empty, so the image's own entrypoint is not there
-# yet.
+# too. The tmpfs starts empty and hides any /app of the image, so sh does
+# the copy before any entrypoint runs.
 #
 # The tests never run on the mount. Inode numbers on a VM's file share
 # (virtiofs under Colima) are not stable: a file gets a new one whenever
@@ -754,7 +754,7 @@ $(foreach c,$(COLLECTORS),$(eval $(call COLLECTOR_RULES,$(c))))
 # `make all` then rebuilds the collector images on the refreshed bases.
 # The host venvs and the gold engine pick up their updates at once.
 # The one pin set `make update` does not move is the GitHub actions in
-# .github/workflows/pages.yml: their major tags move by hand.
+# .github/workflows/: their major tags move by hand.
 #
 # Host venvs are auto-discovered as any collectors/<name>/.venv that
 # already exists — the venv has to have been created by `make build-<name>`
@@ -856,6 +856,7 @@ help:
 	@echo "  make test-wrappers      run the shared wrapper tests and the Playwright pin check"
 	@echo "  make test-pii           run the privacy check's unit tests"
 	@echo "  make pii                privacy check of the unpushed commits and the index"
+	@echo "                          (PII_BASE=, default origin/main; SHOW=1 prints the values)"
 	@echo "  make pii-history        privacy check of every commit"
 	@echo "  make lint               gofmt + go vet (engine), ruff (Python)"
 	@echo "  make lint-go / lint-python"
@@ -864,7 +865,7 @@ help:
 	@echo "  make base-images        build the shared bases; skip one whose inputs did not change"
 	@echo ""
 	@echo "  make install            symlink wealthdb + wealthdb-collect into BINDIR (~/.local/bin)"
-	@echo "  make hooks              run make lint before every commit (install runs it too)"
+	@echo "  make hooks              run the privacy check and make lint on every commit (install runs it too)"
 	@echo "  make uninstall          remove those symlinks and the hooks"
 	@echo ""
 	@echo "  make clean              remove build artefacts (pycache, caches, demo test roots,"

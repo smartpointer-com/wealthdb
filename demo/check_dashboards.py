@@ -33,17 +33,17 @@ The account, category, income type, vehicle and position pickers stay at
 their defaults.
 
 A run fails when Metabase reports an error. A response cut off with no
-error and no result is asked once more first. A card that returns no rows
-at its dashboard's defaults fails too, but for the calendar of expected
-payments and the tiles that exist only beside a benchmark, and so does a figure of the Income dashboards that reads null
-there. A tile whose click opens a dashboard that is not there, passes
-a picker either side does not carry, or passes a column its card does
-not return, fails too. A card states its columns only once it has run,
-so the column sources of a card that had not run are counted, not
-checked. Empty runs under
-any other picker value are listed, not failed: many card and source
-pairs are empty by nature (card balances for a source with no card).
-Exits 1 on any failure. Stdlib only.
+error and no result is asked once more first. A card that returns no
+rows at its dashboard's defaults fails too, but for the calendar of
+expected payments and the tiles that exist only beside a benchmark, and
+so does a figure of the Income dashboards that reads null there. A tile
+whose click opens a dashboard that is not there, passes a picker either
+side does not carry, or passes a column its card does not return, fails
+too. A card states its columns only once it has run, so the column
+sources of a card that had not run are counted, not checked. Empty runs
+under any other picker value are listed, not failed: many card and
+source pairs are empty by nature (card balances for a source with no
+card). Exits 1 on any failure. Stdlib only.
 """
 
 import argparse
