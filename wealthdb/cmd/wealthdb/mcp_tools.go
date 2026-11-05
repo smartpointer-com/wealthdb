@@ -986,7 +986,8 @@ func (s *mcpServer) runFamily(ctx context.Context, spec toolSpec, a *toolArgs) (
 		rs.sortRows(idx, sh.sortCol, sh.desc)
 	}
 
-	head, meta := s.header(tool, fam, rep, req, len(idx), sh, canonicalForms(conds), append(notes, sh.notes...))
+	stated := append(namedForms(named, a), canonicalForms(conds)...)
+	head, meta := s.header(tool, fam, rep, req, len(idx), sh, stated, append(notes, sh.notes...))
 	p := page{idx: idx, offset: sh.offset, limit: sh.limit, budget: sh.budget, narrow: narrowAdvice(spec, req.view)}
 	switch {
 	case len(idx) == 0:
@@ -995,6 +996,15 @@ func (s *mcpServer) runFamily(ctx context.Context, spec toolSpec, a *toolArgs) (
 		p.totals = totals(rs, idx, sh.cols, req.currency, fam.totalRule(req.view))
 	}
 	return render(rs, p, sh.cols, orDefault(a.str("format"), formatTable), head, meta), nil
+}
+
+// namedForms states the named filters as the header shows them.
+func namedForms(named []string, a *toolArgs) []string {
+	out := make([]string, len(named))
+	for i, f := range named {
+		out[i] = f + "=" + a.str(f)
+	}
+	return out
 }
 
 // narrowAdvice is the paging line's advice for view: the family's, the
@@ -1181,7 +1191,7 @@ func (s *mcpServer) shape(tool string, rep *report, lookup columnLookup, a *tool
 
 // header builds the result's first line and the json result's fields
 // beside the rows.
-func (s *mcpServer) header(tool string, fam *family, rep *report, req request, rows int, sh resultShape, conds, notes []string) (resultHeader, resultMeta) {
+func (s *mcpServer) header(tool string, fam *family, rep *report, req request, rows int, sh resultShape, filters, notes []string) (resultHeader, resultMeta) {
 	head := resultHeader{}
 	meta := resultMeta{tool: tool, view: req.view, currency: req.currency}
 	if fam.views != nil {
@@ -1220,7 +1230,7 @@ func (s *mcpServer) header(tool string, fam *family, rep *report, req request, r
 	if fam.header != nil {
 		head.parts = append(head.parts, fam.header(req)...)
 	}
-	head.parts = append(head.parts, conds...)
+	head.parts = append(head.parts, filters...)
 	head.add("%s %s", thousands(rows), plural(rows, "row", "rows"))
 	if sh.sortCol >= 0 {
 		c := rep.columns[sh.sortCol]

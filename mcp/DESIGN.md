@@ -170,7 +170,8 @@ enrichment dumps, and `describe`. The design rules:
    exactly when it prints the filter's key column: the carries are
    derived from the registries. A family excludes a view where the
    column means something else, such as a source's `tax_wrapper`,
-   which is its accounts' common one.
+   which is its accounts' common one. The header echoes each named
+   filter (`symbol=ABC`), before the conditions.
 6. Every result starts with one header line, then a markdown table
    (`csv` and `json` on request), then a paging line when cut.
 

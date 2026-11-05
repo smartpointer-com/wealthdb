@@ -87,3 +87,33 @@ func TestMCPNamedFiltersYieldIncome(t *testing.T) {
 		t.Errorf("income kind: %v\n%s", err, text)
 	}
 }
+
+// TestMCPHeaderStatesNamedFilters: the header echoes a named filter as
+// it does a condition, the named one first, so a model can check its
+// call. A call with neither states neither.
+func TestMCPHeaderStatesNamedFilters(t *testing.T) {
+	t.Parallel()
+	s := onFixtureToday(newTestMCP(setupYieldGold(t), false))
+	head := func(args map[string]any) string {
+		t.Helper()
+		text, err := callTool(t, s, "yield", args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.SplitN(text, "\n", 2)[0]
+	}
+	if h := head(map[string]any{"symbol": "QBF"}); !strings.Contains(h, " · symbol=QBF · ") {
+		t.Errorf("named filter: %s", h)
+	}
+	h := head(map[string]any{"symbol": "QBF", "filter": []any{"symbol contains Q"}})
+	if !strings.Contains(h, " · symbol=QBF · symbol contains Q · ") {
+		t.Errorf("named filter beside a condition: %s", h)
+	}
+	if h := head(map[string]any{}); strings.Contains(h, "symbol") {
+		t.Errorf("no filter: %s", h)
+	}
+	text, err := callTool(t, s, "income", map[string]any{"view": "calendar", "kind": "income", "symbol": "QBF"})
+	if err != nil || !strings.Contains(strings.SplitN(text, "\n", 2)[0], " · symbol=QBF · kind=income · ") {
+		t.Errorf("two filters in their order: %v\n%s", err, text)
+	}
+}
