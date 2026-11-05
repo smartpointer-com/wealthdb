@@ -9,6 +9,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -102,6 +103,18 @@ class Collect(unittest.TestCase):
         dates = [line.split()[line.split().index("-d") + 1]
                  for line in self.log.read_text().splitlines()]
         self.assertEqual(sorted(set(dates)), ["2024-12-31", "2025-12-31", "2026-06-30"])
+
+    def test_a_null_cell_is_no_term(self):
+        rows = [{"account": None, "account_id": None}]
+        with mock.patch.object(w, "holdings", return_value=rows):
+            self.assertEqual(w.collect([self.stub, "-r"], 2026, datetime.date(2026, 6, 30), frozenset()),
+                             (set(), set()))
+
+    def test_an_existing_directory_keeps_its_mode(self):
+        out = Path(self.tmp.name) / "here"
+        out.mkdir(mode=0o755)
+        w.write(out / "x.txt", [], datetime.date(2026, 6, 30))
+        self.assertEqual(stat.S_IMODE(out.stat().st_mode), 0o755)
 
     def test_main_writes_a_private_file_and_prints_counts_only(self):
         out = Path(self.tmp.name) / "cfg" / "wealthdb-pii" / "watchlist.txt"

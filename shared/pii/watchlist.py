@@ -133,6 +133,8 @@ def collect(cmd: list[str], since: int, today: datetime.date,
             break
         for row in rows:
             for key, value in row.items():
+                if value is None:
+                    continue
                 value = str(value).strip()
                 if key in ID_KEYS:
                     if sum(c.isdigit() for c in value) >= 3:
@@ -151,8 +153,10 @@ def environment() -> set[str]:
 
 
 def write(out: Path, terms: list[str], today: datetime.date) -> None:
+    fresh = not out.parent.exists()
     out.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(out.parent, 0o700)
+    if fresh or out.parent == CONFIG_DIR:
+        os.chmod(out.parent, 0o700)
     fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(f"# Written by watchlist.py on {today}; rerun it rather than"

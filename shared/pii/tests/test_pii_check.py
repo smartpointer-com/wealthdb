@@ -282,6 +282,28 @@ class Sources(unittest.TestCase):
             ("new/f.py (file name)", "new/f.py", "code"),
         ])
 
+    def added(self, *lines):
+        return [text for _, text, _ in p.diff_lines("\n".join(lines))]
+
+    def test_an_added_line_that_reads_like_a_header_stays_added(self):
+        self.assertEqual(self.added(
+            "diff --git a/a.py b/a.py", "--- a/a.py", "+++ b/a.py", "@@ -0,0 +1,3 @@",
+            "+first", "+++ plus line", "+after it"), ["first", "++ plus line", "after it"])
+
+    def test_a_quoted_file_name_is_read(self):
+        self.assertEqual(list(p.diff_lines("\n".join([
+            'diff --git "a/x\\ty.md" "b/x\\ty.md"', "new file mode 100644", "--- /dev/null",
+            '+++ "b/x\\ty.md"', "@@ -0,0 +1 @@", "+text"]))), [
+            ("x\ty.md:1", "text", "doc"), ("x\ty.md (file name)", "x\ty.md", "code")])
+
+    def test_a_name_with_a_space_keeps_its_kind(self):
+        (line,) = p.diff_lines("\n".join([
+            "diff --git a/y z.md b/y z.md", "--- a/y z.md", "+++ b/y z.md\t", "@@ -1 +1 @@", "+text"]))
+        self.assertEqual(line, ("y z.md:1", "text", "doc"))
+
+    def test_a_form_feed_does_not_end_a_line(self):
+        self.assertEqual(self.added("+++ b/a.py", "@@ -0,0 +1 @@", "+one\x0ctwo"), ["one\x0ctwo"])
+
     def test_an_edited_message_drops_comments_and_the_verbose_diff(self):
         msg = "subject\n# a comment\nbody\n# ------------------------ >8 ---\n+diff"
         self.assertEqual(list(p.message_lines("m", msg, editing=True)), [
@@ -352,6 +374,27 @@ class CommandLine(ScratchRepo):
         run = self.run_check("range", "main")
         self.assertEqual(run.returncode, 1)
         self.assertIn("message:1: amount", run.stderr)
+
+    def test_control_bytes_in_a_line_hide_nothing_after_it(self):
+        iban = make_iban("CH", "04839271556039182")
+        self.git("checkout", "-q", "-b", "topic")
+        (self.repo / "f.txt").write_text(f"a\x1e\x1d\x1eb\x1fc\npay {iban}\n")
+        self.git("add", "f.txt")
+        self.git("commit", "-q", "-m", "add")
+        run = self.run_check("range", "main")
+        self.assertEqual(run.returncode, 1)
+        self.assertRegex(run.stderr, r"commit [0-9a-f]+ f\.txt:2: iban")
+
+    def test_control_bytes_in_a_message_hide_nothing_after_them(self):
+        iban = make_iban("CH", "04839271556039182")
+        self.git("checkout", "-q", "-b", "topic")
+        (self.repo / "f.txt").write_text(f"pay {iban}\n")
+        self.git("add", "f.txt")
+        self.git("commit", "-q", "-m", f"a\x1fb\x1e\x1d\x1ec\n\npay {iban}")
+        run = self.run_check("range", "main")
+        self.assertEqual(run.returncode, 1)
+        self.assertRegex(run.stderr, r"message:\d+: iban")
+        self.assertRegex(run.stderr, r"f\.txt:1: iban")
 
     def test_range_reads_each_commit_not_the_net_diff(self):
         iban = make_iban("CH", "04839271556039182")

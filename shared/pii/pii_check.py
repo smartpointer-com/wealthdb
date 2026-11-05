@@ -43,10 +43,9 @@ they are not shown again. A commit's hash exists only once it is made,
 so no change can list itself.
 
 check_at.sh runs this file, allow.txt and known.txt as a fixed commit
-holds them:
-HEAD in the hooks, the base of the change in CI. A change to any of
-them is judged by the old one, so a value added to allow.txt fails the commit
-that adds it, until a person lets that commit through.
+holds them: HEAD in the hooks, the base of the change in CI. A change to
+any of them is judged by the old one, so a value added to allow.txt
+fails the commit that adds it, until a person lets that commit through.
 
 A finding prints its location, its rule and the value's shape (digits
 as #, letters as X), never the value: the CI log of a public repository
@@ -68,6 +67,7 @@ Exit status: 0 clean, 1 findings, 2 a usage or git error.
 """
 from __future__ import annotations
 
+import codecs
 import argparse
 import math
 import os
@@ -439,25 +439,41 @@ def kind_of(path: str) -> str:
     return "doc" if Path(path).suffix.lower() in DOC_SUFFIXES else "code"
 
 
+def new_name(raw: str) -> str:
+    """The file a diff header names on its b/ side, "" for none. git
+    quotes a name holding a quote, a backslash or a tab, and ends one
+    holding a space with a tab."""
+    name = raw.rstrip("\t")
+    if name.startswith('"'):
+        name = codecs.escape_decode(name[1:-1].encode())[0].decode("utf-8", "replace")
+    return name[2:] if name.startswith("b/") else ""
+
+
 def diff_lines(diff: str) -> Iterator[Line]:
     """Every added line of a unified diff, and the name of every added or
-    renamed file."""
-    path, line = "", 0
-    for raw in diff.splitlines():
-        if raw.startswith("+++ "):
-            path = raw[6:] if raw.startswith("+++ b/") else ""
+    renamed file. A hunk header counts its lines, so an added line that
+    reads like a file header stays an added line. Only a newline ends a
+    line: a form feed inside one does not."""
+    path, line, left = "", 0, 0
+    for raw in diff.split("\n"):
+        if left:
+            if raw.startswith("+"):
+                if path and not skipped(path):
+                    yield f"{path}:{line}", raw[1:].rstrip("\r"), kind_of(path)
+                line += 1
+                left -= 1
+        elif raw.startswith("+++ "):
+            path = new_name(raw[4:])
         elif raw.startswith("@@ "):
-            m = re.match(r"@@ -\S+ \+(\d+)", raw)
+            m = re.match(r"@@ -\S+ \+(\d+)(?:,(\d+))?", raw)
             line = int(m.group(1)) if m else 0
+            left = int(m.group(2) or 1) if m else 0
         elif raw.startswith("diff --git "):
-            m = re.match(r"diff --git a/.* b/(.*)$", raw)
-            path = m.group(1) if m else ""
-        elif raw.startswith("+") and path and not skipped(path):
-            yield f"{path}:{line}", raw[1:], kind_of(path)
-            line += 1
-    for m in re.finditer(r"^diff --git a/(.*) b/(.*)\n(?:new file mode|similarity)",
+            path = ""
+    for m in re.finditer(r'^diff --git .* ("?b/.*)\n(?:new file mode|similarity)',
                          diff, re.M):
-        yield f"{m.group(2)} (file name)", m.group(2), "code"
+        name = new_name(m.group(1))
+        yield f"{name} (file name)", name, "code"
 
 
 def diff_of(*args: str) -> str:
@@ -480,12 +496,14 @@ def log_lines(*revs: str) -> Iterator[Line]:
     """Each commit's own added lines, new file names and message, for the
     commits `git log REVS` lists. No --diff-filter: in `git log` it drops
     every commit without a matching file, and with it that message. A
-    deleted file adds no lines anyway."""
+    deleted file adds no lines anyway. NUL delimits an entry and its
+    parts: a message cannot hold one, and a diff line starts with its
+    prefix. Two open an entry, as a message's own last newline puts the
+    one that closes it at the start of a line too."""
     log = git("log", "-p", "--no-color", "--no-ext-diff", "-U0", "-M",
-              "--format=%x1e%h%x00%B%x1f", *revs)
-    for entry in log.split("\x1e")[1:]:
-        head, _, diff = entry.partition("\x1f")
-        sha, _, message = head.partition("\x00")
+              "--format=%x00%x00%h%x00%B%x00", *revs)
+    for entry in ("\n" + log).split("\n\x00\x00")[1:]:
+        sha, message, diff = entry.split("\x00", 2)
         yield from message_lines(f"commit {sha} message", message)
         for where, text, kind in diff_lines(diff):
             yield f"commit {sha} {where}", text, kind
