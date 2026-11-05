@@ -852,12 +852,13 @@ BENCHMARK_PARAM_ID = "aa5df124"
 BENCHMARK_TAG = {"id": "benchmark-tag", "name": "benchmark", "display-name": "Benchmark",
                  "type": "text", "default": NO_BENCHMARK, "required": True}
 
+EXCESS_CARDS = ("Excess return (TWR)", "Excess return (MWR)", "Excess annualized return (TWR)")
 # The cards that exist only beside a benchmark. Each reads no row under
 # None, and its tile hides then (card.hide_empty), so a dashboard with no
 # benchmark picked reads as it does without them: Metabase closes the gap
 # a hidden tile leaves, wherever the tile sits.
 BENCHMARK_CARDS = {"Benchmark return (TWR)", "Benchmark return (MWR)", "Benchmark annualized return (TWR)",
-                   "Excess return (TWR)", "Excess return (MWR)", "Excess annualized return (TWR)",
+                   *EXCESS_CARDS,
                    "Money-weighted return over time", "Value against the benchmark",
                    "Largest country deviations"}
 # Those of them a twin reuses as they are: shares and returns, no amount.
@@ -1158,10 +1159,11 @@ def returns_period_sql(granularity):
     global line — the pseudo-source that fixes the split-by-source
     inconsistency (every chart shows sources and the global line together).
     The benchmark's rows come last: Metabase draws series in the order their
-    rows first appear, so its line lies over the sources'."""
+    rows first appear, so its line lies over the sources'. The source breaks
+    a day's ties, so a load keeps each series' place and colour."""
     return ("SELECT source, epoch_ms(end_day * 1000) AS period, v AS twr\n"
             "  FROM (\n" + _returns_source_union(granularity, "twr") + "\n) u\n"
-            f" ORDER BY source = '{BENCHMARK_SERIES}', end_day")
+            f" ORDER BY source = '{BENCHMARK_SERIES}', end_day, source")
 
 
 def returns_growth_sql():
@@ -2586,11 +2588,15 @@ def base_card(name):
 def dashboard_tile_titles(base):
     """card name -> the title its tiles show on base dashboard `base` and
     its twin. The twin's title takes the privacy form, unless the twin
-    shows the card itself (PRIVACY_EXEMPT_CARDS). A title is set for two
+    shows the card itself (PRIVACY_EXEMPT_CARDS). A title is set for three
     kinds of card: a borrowed card whose name leans on its home
-    dashboard's pickers, and a card whose title is another card's name."""
+    dashboard's pickers, a card whose title is another card's name, and
+    an Excess figure, which reads the benchmark's months and not the
+    Return tiles' window."""
     titles = {"Wealth Overview": {"Income expected": f"Income expected, {HORIZONS[0]} months",
-                                  "Asset class mix over time": "Asset classes over time"}}.get(base, {})
+                                  "Asset class mix over time": "Asset classes over time"},
+              "Returns": {**{c: f"{c}, same months" for c in EXCESS_CARDS},
+                          "Excess annualized return (TWR)": "Excess annualized (TWR), same months"}}.get(base, {})
     return {**titles, **{privacy_name(c): privacy_name(t) for c, t in titles.items()
                          if c not in PRIVACY_EXEMPT_CARDS}}
 

@@ -1111,10 +1111,10 @@ report_returns WHERE {{currency}})`.
 Returns adds two rows of figures under its top row, in the same columns
 and order: the benchmark's, then the excess. They are numbers, as the
 Return tiles are. A benchmark's months start and end on days of their
-own, and `Returns by source` names them. The Return tiles run to today,
-so an Excess tile, which compares the same months, can differ from the
-gap between the two tiles above it. A window past the benchmark's last
-month has no figure.
+own, and `Returns by source` names them. The Return tiles run to today.
+An Excess tile compares the same months, so it can differ from the gap
+between the two tiles above it. Its title ends "same months" to say so.
+A window past the benchmark's last month has no figure.
 
 The twins show returns and weights as they are. The value chart indexes
 both sides to 100 at the window's start. Allocation's base bars read

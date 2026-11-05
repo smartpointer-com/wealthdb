@@ -4748,6 +4748,26 @@ if duckdb is not None:
     check("...and None reads no row",
           _run("Benchmark return (TWR)", **{**_fig, "benchmark": "None"}) == []
           and _run("Excess return (MWR)", **{**_fig, "benchmark": "None"}) == [])
+    # A period tile's series, tied on every day: a benchmark and two sources
+    # with one month in common, read in either order of insertion.
+    _ties = [("src-b", 100), ("src-a", 100), ("src-b", 200), ("src-a", 200)]
+
+    def _period_rows(order):
+        tied = duckdb.connect()
+        tied.execute("CREATE TABLE report_returns (grain TEXT, granularity TEXT, is_summary BOOLEAN, currency TEXT,"
+                     " silver_source_id TEXT, end_day BIGINT, twr DOUBLE);"
+                     "CREATE TABLE benchmark_returns (benchmark TEXT, currency TEXT, granularity TEXT, end_day BIGINT,"
+                     " twr DOUBLE)")
+        tied.execute("INSERT INTO benchmark_returns VALUES ('Mix', 'USD', 'monthly', 100, 0.1)")
+        for src, day in order:
+            tied.execute("INSERT INTO report_returns VALUES ('sources', 'monthly', FALSE, 'USD', ?, ?, 0.1)", [src, day])
+        tied.execute("INSERT INTO report_returns VALUES ('global', 'monthly', FALSE, 'USD', NULL, 100, 0.1)")
+        return [(r[0], r[1].timestamp()) for r in tied.execute(_render(
+            CARDS["Monthly returns (TWR)"][2], {"benchmark": "Mix", "start_year": 0, "currency": ["USD"]})).fetchall()]
+    _tied = _period_rows(_ties)
+    check("a period tile sorts tied rows by source, whatever order they come in, the benchmark last",
+          [s for s, _ in _tied] == ["(all sources)", "src-a", "src-b", "src-a", "src-b", p.BENCHMARK_SERIES]
+          and _tied == _period_rows(_ties[::-1]), _tied)
     _db.execute("DELETE FROM report_returns WHERE twr = 0 AND window_from_year = 2024")
     _db.execute("INSERT INTO benchmark_mwr VALUES ('Mix', 'USD', 2024, 'portfolio', 0, 200, NULL, ''),"
                 " ('Mix', 'USD', 2024, 'portfolio', 86400, 220, 0.1, ''),"
@@ -4845,6 +4865,14 @@ check("...directly under it, the charts below them",
       and sorted({_b_grid[n][0] for n in p.BENCHMARK_CARDS if n in _b_grid and n.endswith(("(TWR)", "(MWR)"))
                   and n != "Money-weighted return over time"}) == [3, 6]
       and _b_grid["Cumulative return (TWR)"][0] == 9, _b_grid)
+for _name in ("Returns", "Returns" + p.PRIVACY_SUFFIX):
+    _shown = {_id_name[dc["card_id"]]: dc["visualization_settings"].get("card.title")
+              for dc in _b_layouts[_name]["dashcards"] if dc["card_id"] is not None}
+    check(f"'{_name}' titles each Excess tile 'same months', on the card it had",
+          [_shown[n] for n in p.EXCESS_CARDS] == ["Excess return (TWR), same months",
+                                                  "Excess return (MWR), same months",
+                                                  "Excess annualized (TWR), same months"],
+          [_shown.get(n) for n in p.EXCESS_CARDS])
 for _n in sorted(p.BENCHMARK_CARDS):
     _q = sql_of(CARDS[_n][2]) or ""
     check(f"'{_n}' reads no row under None",
