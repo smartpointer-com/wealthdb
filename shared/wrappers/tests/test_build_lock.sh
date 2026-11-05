@@ -98,7 +98,7 @@ touch "$TMP/cache/wealthdb/build-locks/wealthdb-x.lock"
 # Captured first: a grep -q that stops reading early would fail the
 # pipe under pipefail once make writes past the match.
 out="$(cd "$ROOT" && make -n clean 2>/dev/null)"
-printf '%s\n' "$out" | grep -q "build-locks" \
+grep -q "build-locks" <<<"$out" \
     && ok "make clean includes it" || bad "make clean does not remove the locks"
 
 echo

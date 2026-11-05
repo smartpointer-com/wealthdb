@@ -804,7 +804,7 @@ func webTransferSide(netAmount *canonical.Decimal) canonical.TxKind {
 // with numeric values (`amount`, `quantity`, `price`).
 // Transaction-history JSON rows use Schwab's CSV-export-style
 // capitalised string keys (`Amount`, `Quantity`, `Price`) with
-// values like `"$384.01"`, `"(25,000.00)"`, or `""`.
+// values like `"$1,000.00"`, `"(2,000.00)"`, or `""`.
 // third_party_distribution rows carry the external-flow magnitude
 // as `market_value` (securities) or `cash_amount` (cash) per the
 // documented payload contract (schwab-web DESIGN.md §6 / INTEROP

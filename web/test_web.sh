@@ -30,20 +30,25 @@ fails=0
 pass()  { printf '  ok   %s\n' "$1"; }
 fail()  { printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); }
 check() { # desc, expected-substring, actual
-    if printf '%s' "$3" | grep -qF -- "$2"; then pass "$1"
+    if grep -qF -- "$2" <<<"$3"; then pass "$1"
     else fail "$1"; printf '       wanted substring: %s\n       in: %s\n' "$2" "$3"; fi
 }
 check_re() { # desc, extended regex, actual
-    if printf '%s' "$3" | grep -Eq -- "$2"; then pass "$1"
+    if grep -Eq -- "$2" <<<"$3"; then pass "$1"
     else fail "$1"; printf '       wanted pattern: %s\n       in: %s\n' "$2" "$3"; fi
 }
 check_not() { # desc, unwanted-substring, actual
-    if printf '%s' "$3" | grep -qF -- "$2"; then fail "$1"; else pass "$1"; fi
+    if grep -qF -- "$2" <<<"$3"; then fail "$1"; else pass "$1"; fi
 }
 check_eq() { # desc, expected, actual
     if [ "$3" = "$2" ]; then pass "$1"
     else fail "$1"; printf '       wanted: %s\n       got:    %s\n' "$2" "$3"; fi
 }
+
+# A match on the first line of an input longer than grep's first read:
+# grep quits there, and a pipe into it would read as failed under pipefail.
+check "a long input does not break check" "needle" "needle
+$(seq 1 300000)"
 
 echo "== _publish_args =="
 out="$(_publish_args 3000 both)"

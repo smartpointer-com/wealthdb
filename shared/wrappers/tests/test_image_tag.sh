@@ -119,7 +119,7 @@ has_item "web defaults to latest" "wealthdb/metabase:latest" "$(knob_tag "$TREE/
 # falls back to latest.
 printf 'not a tag\n' > "$TREE/.image-tag"
 out="$(run_env WEALTHDB_IMAGE_TAG= "$TREE/wealthdb/wealthdb" build 2>&1)"; rc=$?
-if [ "$rc" -eq 2 ] && ! printf '%s\n' "$out" | grep -q '^build$'; then
+if [ "$rc" -eq 2 ] && ! grep -q '^build$' <<<"$out"; then
     ok "a malformed .image-tag stops the engine wrapper"
 else
     bad "a malformed .image-tag stops the engine wrapper (exit $rc: $out)"
@@ -129,7 +129,7 @@ if [ "$rc" -eq 2 ]; then ok "a malformed .image-tag stops a collector wrapper"
 else bad "a malformed .image-tag stops a collector wrapper (exit $rc)"; fi
 if out="$(cd "$TMP" && env -u WEALTHDB_IMAGE_TAG make -f "$TREE/Makefile" -n help 2>&1 >/dev/null)"; then
     bad "a malformed .image-tag stops make"
-elif printf '%s\n' "$out" | grep -qF '*** no image tag'; then
+elif grep -qF '*** no image tag' <<<"$out"; then
     ok "a malformed .image-tag stops make"
 else
     bad "a malformed .image-tag stops make, for another reason: $out"
@@ -279,8 +279,8 @@ out="$(
     wrapper_init
     wrapper_build build
 )"
-if printf '%s\n' "$out" | grep -qx 'build: wealthdb/testcol:feature unchanged' \
-    && ! printf '%s\n' "$out" | grep -qx BUILT; then
+if grep -qx 'build: wealthdb/testcol:feature unchanged' <<<"$out" \
+    && ! grep -qx BUILT <<<"$out"; then
     ok "a labeled image is not rebuilt"
 else
     bad "a labeled image is not rebuilt ($out)"
@@ -294,7 +294,7 @@ out="$(
     wrapper_init
     wrapper_build build
 )"
-if printf '%s\n' "$out" | grep -qx BUILT; then
+if grep -qx BUILT <<<"$out"; then
     ok "a different label rebuilds the image"
 else
     bad "a different label rebuilds the image ($out)"
@@ -308,7 +308,7 @@ out="$(
     wrapper_init
     wrapper_build build --no-cache
 )"
-if printf '%s\n' "$out" | grep -qx BUILT; then
+if grep -qx BUILT <<<"$out"; then
     ok "extra build arguments rebuild a labeled image"
 else
     bad "extra build arguments rebuild a labeled image ($out)"
@@ -323,7 +323,7 @@ out="$(
     wrapper_init
     wrapper_build build
 )"
-if printf '%s\n' "$out" | grep -qx BUILT; then
+if grep -qx BUILT <<<"$out"; then
     ok "a rebuilt base image rebuilds the collector"
 else
     bad "a rebuilt base image rebuilds the collector ($out)"
@@ -350,14 +350,14 @@ mounthash="$(hash_of "$mountdir/Dockerfile" "$mountdir/requirements.txt" -- sha2
 printf 'notes\n' > "$mountdir/README.md"
 printf 'print(1)\n' > "$mountdir/download.py"
 out="$(mount_build "$mounthash")"
-if printf '%s\n' "$out" | grep -qx 'build: wealthdb/testcol:feature unchanged'; then
+if grep -qx 'build: wealthdb/testcol:feature unchanged' <<<"$out"; then
     ok "a mounted image ignores an edit to its code or docs"
 else
     bad "a mounted image ignores an edit to its code or docs"
 fi
 printf 'requests>=3\n' > "$mountdir/requirements.txt"
 out="$(mount_build "$mounthash")"
-if printf '%s\n' "$out" | grep -qx BUILT; then
+if grep -qx BUILT <<<"$out"; then
     ok "a mounted image rebuilds on a requirements edit"
 else
     bad "a mounted image rebuilds on a requirements edit"
@@ -396,7 +396,7 @@ else
     bad "the engine skips a labeled image ($out)"
 fi
 out="$(run_env STUB_LABEL="$enginehash" WEALTHDB_IMAGE_TAG=feature "$TREE/wealthdb/wealthdb" build --no-cache)"
-if printf '%s\n' "$out" | grep -qx BUILT && printf '%s\n' "$out" | grep -qxF "wealthdb.inputs=$enginehash"; then
+if grep -qx BUILT <<<"$out" && grep -qxF "wealthdb.inputs=$enginehash" <<<"$out"; then
     ok "an extra argument builds the engine, labeled"
 else
     bad "an extra argument builds the engine, labeled ($out)"
@@ -406,7 +406,7 @@ mkdir -p "$TMP/nopy"
 printf '#!/bin/sh\nexit 1\n' > "$TMP/nopy/python3"
 chmod +x "$TMP/nopy/python3"
 out="$(run_env PATH="$TMP/nopy:$TMP/bin:$PATH" STUB_LABEL= WEALTHDB_IMAGE_TAG=feature "$TREE/wealthdb/wealthdb" build)"
-if printf '%s\n' "$out" | grep -qx BUILT && ! printf '%s\n' "$out" | grep -q wealthdb.inputs; then
+if grep -qx BUILT <<<"$out" && ! grep -q wealthdb.inputs <<<"$out"; then
     ok "a failed hash builds the engine without a label"
 else
     bad "a failed hash builds the engine without a label ($out)"
@@ -439,9 +439,9 @@ bases() {
 }
 pyhash="$(base_hash)"
 out="$(bases "$pyhash" base-images)"
-if printf '%s\n' "$out" | grep -qx 'build: wealthdb/base-python:feature unchanged' \
-    && ! printf '%s\n' "$out" | grep -q 'build base image wealthdb/base-python' \
-    && printf '%s\n' "$out" | grep -q 'build base image wealthdb/base-playwright:feature'; then
+if grep -qx 'build: wealthdb/base-python:feature unchanged' <<<"$out" \
+    && ! grep -q 'build base image wealthdb/base-python' <<<"$out" \
+    && grep -q 'build base image wealthdb/base-playwright:feature' <<<"$out"; then
     ok "base-images skips a labeled base and builds the others"
 else
     bad "base-images skips a labeled base and builds the others ($out)"
@@ -453,8 +453,8 @@ else
     bad "another base's Dockerfile is not an input of base-python"
 fi
 out="$(bases "$pyhash" update-bases)"
-if printf '%s\n' "$out" | grep -q 'build base image wealthdb/base-python:feature (--pull)' \
-    && printf '%s\n' "$out" | grep -q '^PULLED python:'; then
+if grep -q 'build base image wealthdb/base-python:feature (--pull)' <<<"$out" \
+    && grep -q '^PULLED python:' <<<"$out"; then
     ok "update-bases pulls and builds a labeled base"
 else
     bad "update-bases pulls and builds a labeled base ($out)"

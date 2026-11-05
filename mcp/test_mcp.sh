@@ -45,12 +45,17 @@ fails=0
 pass()  { printf '  ok   %s\n' "$1"; }
 fail()  { printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); }
 check() { # desc, expected-substring, actual
-    if printf '%s' "$3" | grep -qF -- "$2"; then pass "$1"
+    if grep -qF -- "$2" <<<"$3"; then pass "$1"
     else fail "$1"; printf '       wanted substring: %s\n       in: %s\n' "$2" "$3"; fi
 }
 check_not() { # desc, unwanted-substring, actual
-    if printf '%s' "$3" | grep -qF -- "$2"; then fail "$1"; else pass "$1"; fi
+    if grep -qF -- "$2" <<<"$3"; then fail "$1"; else pass "$1"; fi
 }
+
+# A match on the first line of an input longer than grep's first read:
+# grep quits there, and a pipe into it would read as failed under pipefail.
+check "a long input does not break check" "needle" "needle
+$(seq 1 300000)"
 
 config() { # enabled port auth insecure
     printf 'WEALTHDB_MCP_ENABLED=%s\nWEALTHDB_MCP_PORT=%s\nWEALTHDB_MCP_CONFIG_AUTH=%s\nWEALTHDB_MCP_CONFIG_INSECURE=%s\nWEALTHDB_GOLD_DB=%s\n' \

@@ -8,16 +8,16 @@ ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
 bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
 
 # has DESC NEEDLE TEXT: some line of TEXT contains NEEDLE.
-has()   { if printf '%s\n' "$3" | grep -qF -- "$2"; then ok "$1"; else bad "$1 (no '$2' in: $3)"; fi; }
-lacks() { if printf '%s\n' "$3" | grep -qF -- "$2"; then bad "$1 ('$2' in: $3)"; else ok "$1"; fi; }
+has()   { if grep -qF -- "$2" <<<"$3"; then ok "$1"; else bad "$1 (no '$2' in: $3)"; fi; }
+lacks() { if grep -qF -- "$2" <<<"$3"; then bad "$1 ('$2' in: $3)"; else ok "$1"; fi; }
 
 # has_item DESC ITEM ARGV: ARGV, one item per line, holds ITEM as a whole
 # item. The failure message prints ARGV on one line.
 has_item() {
-    if printf '%s\n' "$3" | grep -qxF -- "$2"; then ok "$1"; else bad "$1 (no '$2' in: $(printf '%s ' $3))"; fi
+    if grep -qxF -- "$2" <<<"$3"; then ok "$1"; else bad "$1 (no '$2' in: $(printf '%s ' $3))"; fi
 }
 lacks_item() {
-    if printf '%s\n' "$3" | grep -qxF -- "$2"; then bad "$1 ('$2' in: $(printf '%s ' $3))"; else ok "$1"; fi
+    if grep -qxF -- "$2" <<<"$3"; then bad "$1 ('$2' in: $(printf '%s ' $3))"; else ok "$1"; fi
 }
 
 # summary LABEL: prints the tally and fails when any case failed. It is

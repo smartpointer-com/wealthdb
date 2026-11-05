@@ -63,7 +63,7 @@ has_item "mounts the XDG cache dir at /cache/startupcache" "$cache:/cache/startu
 has_item "container env points at the mount" "WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache" "$out"
 
 # The cache must not be co-located under the /secrets mount.
-if printf '%s\n' "$out" | grep -q "/secrets/[^ ]*startupcache"; then
+if grep -q "/secrets/[^ ]*startupcache" <<<"$out"; then
     bad "cache must not live under /secrets"
 else
     ok "cache is not under /secrets"
