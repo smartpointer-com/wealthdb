@@ -1534,10 +1534,10 @@
               <img class="shot-dark is-on" src="shots/overview-dark.webp" alt="The Wealth Overview dashboard: net worth, positions and cash tiles, net worth over time by source, asset classes over time" data-shot="overview" />
               <img class="shot-light" src="shots/allocation.webp" alt="The Allocation dashboard" data-shot="allocation" loading="lazy" />
               <img class="shot-dark" src="shots/allocation-dark.webp" alt="The Allocation dashboard" data-shot="allocation" loading="lazy" />
-              <img class="shot-light" src="shots/returns.webp" alt="The Returns dashboard: time-weighted and money-weighted returns, cumulative return by source, monthly, quarterly and annual returns" data-shot="returns" loading="lazy" />
-              <img class="shot-dark" src="shots/returns-dark.webp" alt="The Returns dashboard: time-weighted and money-weighted returns, cumulative return by source, monthly, quarterly and annual returns" data-shot="returns" loading="lazy" />
-              <img class="shot-light" src="shots/exposure.webp" alt="The Exposure dashboard: exposure by asset class, sector and country with every fund looked through" data-shot="exposure" loading="lazy" />
-              <img class="shot-dark" src="shots/exposure-dark.webp" alt="The Exposure dashboard: exposure by asset class, sector and country with every fund looked through" data-shot="exposure" loading="lazy" />
+              <img class="shot-light" src="shots/returns.webp" alt="The Returns dashboard with the Global 60/40 benchmark picked: time-weighted and money-weighted returns, the benchmark's returns and the excess, cumulative return by source" data-shot="returns" loading="lazy" />
+              <img class="shot-dark" src="shots/returns-dark.webp" alt="The Returns dashboard with the Global 60/40 benchmark picked: time-weighted and money-weighted returns, the benchmark's returns and the excess, cumulative return by source" data-shot="returns" loading="lazy" />
+              <img class="shot-light" src="shots/exposure.webp" alt="The Exposure dashboard with the Global 60/40 benchmark picked: exposure by asset class and sector beside the benchmark's, asset classes over time and country, with every fund looked through" data-shot="exposure" loading="lazy" />
+              <img class="shot-dark" src="shots/exposure-dark.webp" alt="The Exposure dashboard with the Global 60/40 benchmark picked: exposure by asset class and sector beside the benchmark's, asset classes over time and country, with every fund looked through" data-shot="exposure" loading="lazy" />
               <img class="shot-light" src="shots/yield.webp" alt="The Yield dashboard: what the holdings yield and their rate sensitivity" data-shot="yield" loading="lazy" />
               <img class="shot-dark" src="shots/yield-dark.webp" alt="The Yield dashboard: what the holdings yield and their rate sensitivity" data-shot="yield" loading="lazy" />
               <img class="shot-light" src="shots/income.webp" alt="The Income dashboard: income received and expected, by kind and payer" data-shot="income" loading="lazy" />
@@ -1672,7 +1672,7 @@
             </div>
             <div class="card reveal reveal-delay-1">
               <h3>Performance</h3>
-              <p>Time-weighted and money-weighted returns per account, portfolio, provider and the whole. Transfers between your own accounts are matched and never counted as gain.</p>
+              <p>Time-weighted and money-weighted returns per account, portfolio, provider and the whole. Transfers between your own accounts are matched and never counted as gain. Pick a benchmark, and the dashboards set a plain fund mix beside your returns, allocation, exposure and yield.</p>
               <code class="report-cmd"><span class="p">❯</span> wealthdb returns portfolios 2025</code>
             </div>
             <div class="card reveal reveal-delay-2">
@@ -1704,14 +1704,14 @@
             </div>
             <pre><span class="p">❯</span> wealthdb exposure countries
 <span class="h"> country | country_name   | region        |  value_USD | share_pct | direct_pct | via_funds_pct | quality</span>
----------+----------------+---------------+------------+-----------+------------+---------------+-----------------------------------
- US      | United States  | north_america | 1591419.62 |     66.85 |      34.45 |         32.40 | proxy=2%,declared=54%,unmapped=&lt;1%
- unknown |                |               |  107819.99 |      4.53 |       2.49 |          2.04 | proxy=3%,partial=2%,unmatched=55%
- CH      | Switzerland    | europe        |  105441.59 |      4.43 |       3.32 |          1.11 | proxy=2%,undeclared=28%
- JP      | Japan          | asia_pacific  |   65890.80 |      2.77 |       0.00 |          2.77 | proxy=6%
- DE      | Germany        | europe        |   64933.53 |      2.73 |       1.73 |          1.00 | proxy=2%
- GB      | United Kingdom | europe        |   51797.60 |      2.18 |       1.19 |          0.98 | proxy=2%
- FR      | France         | europe        |   34480.53 |      1.45 |       0.56 |          0.88 | proxy=4%
+---------+----------------+---------------+------------+-----------+------------+---------------+---------------------------------------------
+ US      | United States  | north_america | 1591419.62 |     66.85 |      34.45 |         32.40 | proxy=2%,declared=54%,aged=29%,unmapped=&lt;1%
+ unknown |                |               |  107819.99 |      4.53 |       2.49 |          2.04 | proxy=3%,aged=45%,partial=2%,unmatched=55%
+ CH      | Switzerland    | europe        |  105441.59 |      4.43 |       3.32 |          1.11 | proxy=2%,aged=25%,undeclared=28%
+ JP      | Japan          | asia_pacific  |   65890.80 |      2.77 |       0.00 |          2.77 | proxy=6%,aged=100%
+ DE      | Germany        | europe        |   64933.53 |      2.73 |       1.73 |          1.00 | proxy=2%,aged=37%
+ GB      | United Kingdom | europe        |   51797.60 |      2.18 |       1.19 |          0.98 | proxy=2%,aged=45%
+ FR      | France         | europe        |   34480.53 |      1.45 |       0.56 |          0.88 | proxy=4%,aged=61%
  <span class="c">…</span>
 
 <span class="p">❯</span> wealthdb spending categories 2025 --period annual
@@ -1726,13 +1726,13 @@
  <span class="c">…</span>
 
 <span class="p">❯</span> wealthdb yield global -x EUR
-<span class="h"> currency |  value_EUR | income_yield_pct | implied_yield_pct | duration | dv01_EUR | quality</span>
-----------+------------+------------------+-------------------+----------+----------+------------------------------------------
- USD      | 2142822.68 |             1.05 |              4.04 |     2.38 |   -31.14 | implied=6% stated=5% indicated=24% …
- EUR      |   56338.70 |             3.22 |              2.21 |     4.36 |    13.70 | implied=39% indicated=23% declared=36% …
- CHF      |   43184.39 |             1.57 |                   |     0.00 |     0.00 | indicated=98% unknown=2%
- GBP      |   24748.69 |             3.57 |                   |     0.00 |     0.00 | indicated=92% unknown=8%
- <span class="k">total</span>    | 2267094.46 |             1.13 |              3.92 |     2.49 |   -17.44 | mixed …</pre>
+<span class="h"> currency |  value_EUR | income_yield_pct | implied_yield_pct | realized_yield_pct | duration | dv01_EUR | quality</span>
+----------+------------+------------------+-------------------+--------------------+----------+----------+------------------------------------------
+ USD      | 2142822.68 |             1.05 |              4.10 |               1.00 |     2.38 |   -30.69 | implied=6% stated=5% indicated=24% …
+ EUR      |   56338.70 |             3.22 |              2.22 |               3.16 |     4.35 |    13.67 | implied=39% indicated=23% declared=36% …
+ CHF      |   43184.39 |             1.57 |                   |               1.71 |     0.00 |     0.00 | indicated=98% unknown=2%
+ GBP      |   24748.69 |             3.57 |                   |               3.67 |     0.00 |     0.00 | indicated=92% unknown=8%
+ <span class="k">total</span>    | 2267094.46 |             1.12 |              3.98 |               1.08 |     2.48 |   -17.02 | mixed …</pre>
           </div>
         </div>
       </section>

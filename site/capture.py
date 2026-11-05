@@ -8,13 +8,13 @@ Runs in the repo's Camoufox image (`make site-shots` starts it there)
 against the demo's Metabase. Writes one PNG per dashboard and colour
 scheme into DIR: overview.png, overview-dark.png and so on.
 
-Each dashboard opens with every picker set to its default in the URL.
-Metabase otherwise shows the last values the admin ran it with. A
-default relative to today, such as "previous 12 months", is pinned to
-the same window ending at --as-of, the demo's last day, so a reshoot on
-a later day shows the same history. The admin's colour scheme is
-switched to dark for the second pass and set back to what it was
-afterwards, also when a shot fails.
+Each dashboard opens with every picker set to its default in the URL,
+but for the pickers PICKS sets. Metabase otherwise shows the last values
+the admin ran it with. A default relative to today, such as "previous 12
+months", is pinned to the same window ending at --as-of, the demo's last
+day, so a reshoot on a later day shows the same history. The admin's
+colour scheme is switched to dark for the second pass and set back to
+what it was afterwards, also when a shot fails.
 """
 
 import argparse
@@ -45,6 +45,11 @@ DASHBOARDS = {
     "Cash Flow": "cashflow",
 }
 SCHEMES = {"light": "", "dark": "-dark"}
+
+# The pickers a dashboard's shots set away from their defaults, by slug:
+# these two show a benchmark beside the household.
+BENCHMARK_PICK = {"benchmark": "Global 60/40"}
+PICKS = {"Returns": BENCHMARK_PICK, "Exposure": BENCHMARK_PICK}
 
 # A 1440-pixel-wide window at twice the density, cut below Metabase's own
 # header bar, which carries nothing the page needs.
@@ -86,17 +91,23 @@ def pin_date(value, as_of):
     return f"{start.isoformat()}~{end.isoformat()}"
 
 
-def defaults_query(parameters, as_of):
-    """The query string that opens a dashboard at its pickers' defaults.
+def defaults_query(parameters, as_of, picks=None):
+    """The query string that opens a dashboard at its pickers' defaults,
+    or at the value `picks` names for a slug.
 
     A picker with no default gets an empty value, which clears whatever
     value Metabase remembered for it. A date picker's default is pinned
     to as_of (pin_date).
     """
+    unknown = sorted(set(picks or ()) - {p["slug"] for p in parameters})
+    if unknown:
+        raise SystemExit(f"capture: no picker {', '.join(unknown)}")
     pairs = []
     for p in parameters:
         default = p.get("default")
-        if default is None:
+        if p["slug"] in (picks or {}):
+            pairs.append((p["slug"], picks[p["slug"]]))
+        elif default is None:
             pairs.append((p["slug"], ""))
         elif isinstance(default, list):
             pairs.extend((p["slug"], str(v)) for v in default)
@@ -152,7 +163,8 @@ def capture(base, session, dashboards, out, as_of):
                 ctx.add_cookies([{"name": "metabase.SESSION", "value": session, "domain": host, "path": "/"}])
                 page = ctx.new_page()
                 for name, dash in dashboards.items():
-                    url = f"{base}/dashboard/{dash['id']}?{defaults_query(dash.get('parameters', []), as_of)}"
+                    query = defaults_query(dash.get("parameters", []), as_of, PICKS.get(name))
+                    url = f"{base}/dashboard/{dash['id']}?{query}"
                     page.goto(url, wait_until="networkidle", timeout=180000)
                     page.wait_for_timeout(SETTLE_MS)
                     welcome = page.get_by_role("button", name="Start exploring")

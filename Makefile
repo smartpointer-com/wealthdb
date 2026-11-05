@@ -551,7 +551,7 @@ clean-demo:
 #   - it rebuilds the demo at the pinned seed and date, so a reshoot
 #     moves only what the code changed;
 #   - it shoots every dashboard in both colour schemes in the Camoufox
-#     image, with the date pickers pinned to that date;
+#     image, as the caller, with the date pickers pinned to that date;
 #   - it converts the shots into site/public/shots;
 #   - it prints the figures the page's text quotes.
 # The rebuild resets the demo root to that date; `make demo` or
@@ -573,10 +573,11 @@ site-shots: build-wealthdb build-web base-images
 	@$(call VENV_REQS,$(SITE_VENV),site/requirements.txt,the site tools,site-shots)
 	@echo "==> shoot the demo's dashboards"
 	@rm -rf "$(SITE_TMP)" && mkdir -p "$(SITE_TMP)" && trap 'rm -rf "$(SITE_TMP)"' EXIT && \
-	docker run --rm --add-host=host.docker.internal:host-gateway \
+	docker run --rm --user "$$(id -u):$$(id -g)" -e HOME=/tmp --add-host=host.docker.internal:host-gateway \
 		-v "$(ROOT_DIR):/repo:ro" -v "$(DEMO_ROOT)/web/admin-password.txt:/password:ro" \
-		-v "$(SITE_TMP):/out" --entrypoint python3 wealthdb/base-camoufox:$(TAG) \
-		/repo/site/capture.py --out /out --as-of $(SITE_AS_OF) --password-file /password && \
+		-v "$(SITE_TMP):/out" --entrypoint bash wealthdb/base-camoufox:$(TAG) \
+		-c 'source /opt/entrypoint-lib.sh && exec python3 /repo/site/capture.py "$$@"' capture \
+		--out /out --as-of $(SITE_AS_OF) --password-file /password && \
 	$(SITE_VENV)/bin/python site/images.py convert "$(SITE_TMP)" $(SITE_SHOTS)
 	@echo "==> the figures the page quotes (terminal block, then the agent conversation)"
 	@$(DEMO_ENGINE) -r exposure countries

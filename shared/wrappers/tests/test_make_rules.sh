@@ -133,6 +133,8 @@ out="$(cd "$TREE" && env WEALTHDB_IMAGE_TAG=t XDG_CACHE_HOME="$TMP/cache" \
     WEALTHDB_DEMO_ROOT="$TMP/demo" make -n site-shots 2>&1)"
 has "site-shots mounts the checkout read-only" "-v \"$TREE:/repo:ro\"" "$out"
 lacks "site-shots mounts no secrets" ":/secrets" "$out"
+has "site-shots runs as the caller" "--user \"\$(id -u):\$(id -g)\" -e HOME=/tmp" "$out"
+has "site-shots sources the shared browser bootstrap" "source /opt/entrypoint-lib.sh" "$out"
 has "clean runs clean-site" "==> clean site" "$(dry clean)"
 has "cleanall removes the site venv" "rm -rf site/.venv" "$(dry cleanall)"
 

@@ -9,7 +9,8 @@ The dashboard screenshots are not in git. A GitHub release named
 `site-images` holds them, and the workflow downloads them into
 `public/shots/` before it publishes. Each screenshot is the demo
 household at a seed and date pinned in the Makefile, so a reshoot moves
-only what the code changed.
+only what the code changed. Returns and Exposure open with a benchmark
+picked, and every other dashboard at its defaults.
 
 ```sh
 make site-shots      # rebuild the demo at the pinned seed and date, shoot all dashboards

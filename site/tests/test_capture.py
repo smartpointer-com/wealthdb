@@ -1,6 +1,7 @@
 """Tests for site/capture.py's pure parts; no browser, no Metabase."""
 
 import datetime as dt
+import json
 import re
 import sys
 import unittest
@@ -38,6 +39,21 @@ class DefaultsQuery(unittest.TestCase):
 
     def test_no_pickers(self):
         self.assertEqual(capture.defaults_query([], AS_OF), "")
+
+    def test_a_pick_replaces_a_default_and_leaves_the_others(self):
+        q = capture.defaults_query([{"slug": "benchmark", "type": "string/=", "default": ["None"]},
+                                    {"slug": "source", "type": "string/="}], AS_OF, {"benchmark": "Mix 1/2"})
+        self.assertEqual(urllib.parse.parse_qsl(q, keep_blank_values=True),
+                         [("benchmark", "Mix 1/2"), ("source", "")])
+
+    def test_a_pick_with_no_picker_stops_the_capture(self):
+        with self.assertRaises(SystemExit):
+            capture.defaults_query([{"slug": "source", "type": "string/="}], AS_OF, {"benchmark": "Mix"})
+
+    def test_a_pick_names_a_shot_dashboard_and_a_benchmark_of_the_demo(self):
+        self.assertLessEqual(set(capture.PICKS), set(capture.DASHBOARDS))
+        household = json.loads((capture.REPO / "demo" / "household.json").read_text())
+        self.assertIn(capture.BENCHMARK_PICK["benchmark"], household["config"]["benchmarks"])
 
 
 class PinDate(unittest.TestCase):
