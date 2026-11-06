@@ -3157,6 +3157,18 @@ check("...and none names what a card runs over opened on its own",
       not [n for n in CARDS if "standalone" in CARDS[n][1]]
       and not [n for n, d in DEFS.items() if "standalone" in d[0]])
 
+section("the cash flow statement by month")
+
+for _n in ("Cash flow statement by month", p.privacy_name("Cash flow statement by month")):
+    _ss = VIZ[_n]["series_settings"]
+    check(f"'{_n}' draws every section as a bar and the net as a line",
+          {k: v["display"] for k, v in _ss.items()}
+          == {"operating": "bar", "investing": "bar", "financing": "bar", "vehicles": "bar",
+              p.NET_CASH_FLOW: "line"}, _ss)
+    check("...and its SQL holds the net series, unranked, so the legend ends with it",
+          f"'{p.NET_CASH_FLOW}'" in sql_of(CARDS[_n][2])
+          and f"CASE WHEN statement_section <> '{p.NET_CASH_FLOW}' THEN sum(" in sql_of(CARDS[_n][2]))
+
 section("the net worth bridge, the fee tiles and mark age")
 
 _bridge_all = [n + x for n in ("Net worth at start", "Net worth at end", "Why net worth moved",

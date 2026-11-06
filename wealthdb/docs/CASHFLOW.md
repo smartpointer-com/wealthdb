@@ -1107,7 +1107,7 @@ household's own accounts is invisible only while both are in the pool.
 |---|---|
 | headlines | Operating in · Operating out · Net cash flow · Savings rate · Yield share |
 | the diagram | Cash flow: the Sankey, full width, the window's four stages |
-| the shape of the window | Cash flow statement by month: signed stacked bars per section |
+| the shape of the window | Cash flow statement by month: signed stacked bars per section, net cash flow as a line |
 | why net worth moved | Net worth at start · Net worth at end · Why net worth moved: a waterfall of the window's changes |
 | saved and gained | Saved and gained by month: signed stacked bars, with the change in net worth as a line |
 | the two sides | Inflows by class by month · Outflows by class by month |

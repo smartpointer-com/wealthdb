@@ -1299,7 +1299,7 @@ def benchmark_line_sql(value, *, index=False):
             " ORDER BY series, day")
 
 
-def _series_order(sql, t, series, metric, by, largest_first=False):
+def _series_order(sql, t, series, metric, by, largest_first=False, legend_last=None):
     """A chart's query with its rows ordered by series, since Metabase
     takes the series in the order their rows first appear. `by` ranks a
     series by its value at the last `t` ("latest", a level that carries
@@ -1311,7 +1311,8 @@ def _series_order(sql, t, series, metric, by, largest_first=False):
     legend's own order, top line first. A series with no value at the
     last `t` ranks last. `sql` ends without an ORDER BY, and `t`,
     `series` and `metric` are its column names; the result keeps its
-    columns.
+    columns. `legend_last` names a series with no rank, whose rows come
+    first, which puts it at the end of a stacked chart's legend.
 
     The rank is an aggregate per series joined back, not a window: the
     DuckDB the Metabase driver bundles fails on a window partitioned by
@@ -1321,6 +1322,8 @@ def _series_order(sql, t, series, metric, by, largest_first=False):
         rank = f"max(CASE WHEN {t} = (SELECT max({t}) FROM q) THEN {metric} END)"
     else:
         rank = f"sum({metric})"
+    if legend_last:
+        rank = f"CASE WHEN {series} <> '{legend_last}' THEN {rank} END"
     order = "series_rank DESC NULLS LAST" if largest_first else "series_rank NULLS FIRST"
     return (f"WITH q AS (\n{sql}\n),\n"
             f"ranks AS (SELECT {series} AS series_key, {rank} AS series_rank FROM q GROUP BY 1)\n"
@@ -1339,6 +1342,13 @@ LINES_VIZ = {"legend.is_reversed": False}
 # metric sits at the bottom, so such a card lists its metrics largest
 # first and the legend then reads the same way.
 STACKED_VIZ = {"stackable.stack_type": "stacked", "legend.is_reversed": False}
+
+# The Cash Flow statement's series: a combo draws its last series as a line
+# unless each says what it is, so the sections are bars and the net a line.
+NET_CASH_FLOW = "net cash flow"
+STATEMENT_SERIES = {"series_settings": {**{s: {"display": "bar"}
+                                           for s in ("operating", "investing", "financing", "vehicles")},
+                                        NET_CASH_FLOW: {"display": "line", "color": "#8A99A8"}}}
 
 
 def _series_viz(time_col, series_col, metric, *, percent=False):
@@ -1960,10 +1970,13 @@ def question_defs(db_id, mid):
                      "       CASE WHEN section IN ('operating_in', 'operating_out')\n"
                      "            THEN 'operating' ELSE section END AS statement_section,\n"
                      f"       {cf_val} AS value\n"
-                     "  FROM web_cashflow" + cf_where + "\n GROUP BY 1, 2",
-                     "month", "statement_section", "value", "total"),
+                     "  FROM web_cashflow" + cf_where + "\n GROUP BY 1, 2\n"
+                     f"UNION ALL\nSELECT {OCCURRED_MONTH},\n       '{NET_CASH_FLOW}',\n"
+                     f"       {cf_val}\n"
+                     "  FROM web_cashflow" + cf_where + "\n GROUP BY 1",
+                     "month", "statement_section", "value", "total", legend_last=NET_CASH_FLOW),
             {"graph.dimensions": ["month", "statement_section"],
-             "graph.metrics": ["value"], **STACKED_VIZ}),
+             "graph.metrics": ["value"], **STACKED_VIZ, **STATEMENT_SERIES}),
         "Inflows by class by month": cashflow_native(
             "Inflows by class by month", "area",
             "Receipts per month by class, such as earnings, yield, pensions "
@@ -5398,17 +5411,19 @@ def cashflow_privacy_defs(db_id):
          "sankey.value": "value", "sankey.node_align": "justify"}, section=False)
 
     cashflow_card(privacy_name("Cash flow statement by month"), "combo",
-        "The statement per month, each section a share of the biggest "
-        "month's gross movement.",
+        "The statement per month, each section and the net a share of the "
+        "biggest month's gross movement.",
         _series_order(
             month_cte("CASE WHEN section IN ('operating_in', 'operating_out')\n"
                       "              THEN 'operating' ELSE section END"
                       " AS statement_section,\n         ")
             + "   GROUP BY 1, 2),\n" + peak_cte +
             f"SELECT month, statement_section,\n       {PEAK_DIV} AS share_pct\n"
-            "  FROM m", "month", "statement_section", "share_pct", "total"),
+            f"  FROM m\nUNION ALL\nSELECT month, '{NET_CASH_FLOW}',\n       sum(v) / {PEAK} * 100\n"
+            "  FROM m\n GROUP BY 1", "month", "statement_section", "share_pct", "total",
+            legend_last=NET_CASH_FLOW),
         {"graph.dimensions": ["month", "statement_section"],
-         "graph.metrics": ["share_pct"], **STACKED_VIZ})
+         "graph.metrics": ["share_pct"], **STACKED_VIZ, **STATEMENT_SERIES})
 
     # The grouping expression rides in the tuple rather than being
     # inferred from the filter text: the investing row is the one that
