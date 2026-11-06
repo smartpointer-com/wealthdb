@@ -799,7 +799,7 @@ COLUMN_CLICKS = {**{c: "start_year" for c, _m, _col in RETURN_YTD_CARDS},
 # — see PRIVACY_DESC). Cards listed here show no monetary values
 # (percentages, indices, source names), so the twin reuses them as-is. The returns scalars and charts
 # are all percentage/index-only; only the by-source table carries money.
-PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)", "Asset class mix over time",
+PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)", "Mark age", "Asset class mix over time",
                         *(c for c, _m, _col in RETURN_YTD_CARDS),
                         "Return (TWR)", "Return (MWR)", "Annualized return (TWR)",
                         "Cumulative return (TWR)", "Monthly returns (TWR)",
@@ -1075,6 +1075,14 @@ FILTER_FIELD_COLUMNS = {
     # cards take no picker but the currency and the projection's four.
     "web_cashflow_plan": (),
     "web_cashflow_pool": (),
+    # The net worth bridge's months (migration 0177). The Time range lands
+    # on the month's end, so a picked window takes whole months.
+    "web_bridge": ("month_end",),
+    # The fee tiles' lines, values and returns (migration 0177), by day.
+    "web_fees": ("day", "silver_source_id", "account_label"),
+    # Each month end's marked share. The Data Freshness dashboard has no
+    # pickers, so no field filter binds it.
+    "web_marks": (),
     # A stock position's size (migration 0154), joined onto the Top 100
     # positions cards by label. No field filter binds it.
     "web_position_sizes": (),
@@ -2137,6 +2145,9 @@ def question_defs(db_id, mid):
         **yield_cards(db_id, privacy=False),
         **income_projected_cards(db_id, privacy=False),
         **cashflow_plan_cards(db_id, privacy=False),
+        **bridge_cards(db_id, privacy=False),
+        **fee_cards(db_id, privacy=False),
+        **mark_cards(db_id),
     }
 
 
@@ -2705,8 +2716,8 @@ def base_dashboards():
         ]),
         "Spending": (
             "Where the money goes over the window, by month, category, merchant "
-            "and account, and what the cards owe. Own-account moves are not "
-            "spend. " + PREDEFINED_NOTE,
+            "and account, what each portfolio paid in fees, and what the cards "
+            "owe. Own-account moves are not spend. " + PREDEFINED_NOTE,
             "range", [
             # The three headline figures, then the shape of the window
             # (months x category), then the two breakdown levels side by
@@ -2724,8 +2735,10 @@ def base_dashboards():
             ("Spending by subcategory", 12, 12, 12, 8, "occurred_at"),
             ("Top 50 merchants", 20, 0, 12, 8, "occurred_at"),
             ("Spend by account", 20, 12, 12, 8, "occurred_at"),
-            ("Card balances over time", 28, 0, 24, 6, "as_of_day"),
-            ("Largest transactions", 34, 0, 24, 8, "occurred_at"),
+            ("Fees by portfolio", 28, 0, 10, 8, None),
+            ("Fee rate by portfolio", 28, 10, 14, 8, None),
+            ("Card balances over time", 36, 0, 24, 6, "as_of_day"),
+            ("Largest transactions", 42, 0, 24, 8, "occurred_at"),
         ]),
         "Income": (
             "Every income line received, wages included, and the income expected, the "
@@ -2761,13 +2774,14 @@ def base_dashboards():
         ]),
         "Cash Flow": (
             "Where the household's cash came from and went, as a statement and "
-            "a Sankey. Buying and selling shows net. The projection sets "
-            "expected income against average past outflows. " + PREDEFINED_NOTE,
+            "a Sankey, and why net worth moved. Buying and selling shows net. "
+            "The projection sets expected income against average past outflows. "
+            + PREDEFINED_NOTE,
             "range", [
             # Five headline figures, then the diagram at the centre, then
-            # the shape of the window and the projection of the months ahead,
-            # then the two sides of operating, then the swing sections,
-            # then the lines.
+            # the shape of the window, why net worth moved, and the
+            # projection of the months ahead, then the two sides of
+            # operating, then the swing sections, then the lines.
             ("Operating in", 0, 0, 5, 3, "occurred_at"),
             ("Operating out", 0, 5, 5, 3, "occurred_at"),
             ("Net cash flow", 0, 10, 5, 3, "occurred_at"),
@@ -2776,13 +2790,19 @@ def base_dashboards():
             # Full width and tall: the diagram is the dashboard.
             ("Cash flow", 3, 0, 24, 12, "occurred_at"),
             ("Cash flow statement by month", 15, 0, 24, 8, "occurred_at"),
-            ("Cash flow projection by month", 23, 0, 24, 8, None),
-            ("Cash flow projection", 31, 0, 24, 9, None),
-            ("Inflows by class by month", 40, 0, 12, 7, "occurred_at"),
-            ("Outflows by class by month", 40, 12, 12, 7, "occurred_at"),
-            ("Investing by month", 47, 0, 12, 7, "occurred_at"),
-            ("Financing and vehicles by month", 47, 12, 12, 7, "occurred_at"),
-            ("Largest flows", 54, 0, 24, 8, "occurred_at"),
+            # The net worth the walk leads from and to, in a column
+            # beside the walk.
+            ("Net worth at start", 23, 0, 6, 4, None),
+            ("Net worth at end", 27, 0, 6, 4, None),
+            ("Why net worth moved", 23, 6, 18, 8, None),
+            ("Saved and gained by month", 31, 0, 24, 8, None),
+            ("Cash flow projection by month", 39, 0, 24, 8, None),
+            ("Cash flow projection", 47, 0, 24, 9, None),
+            ("Inflows by class by month", 56, 0, 12, 7, "occurred_at"),
+            ("Outflows by class by month", 56, 12, 12, 7, "occurred_at"),
+            ("Investing by month", 63, 0, 12, 7, "occurred_at"),
+            ("Financing and vehicles by month", 63, 12, 12, 7, "occurred_at"),
+            ("Largest flows", 70, 0, 24, 8, "occurred_at"),
         ]),
         "Gains": (
             "Realized and unrealized gains over the window, by month, source, "
@@ -2886,11 +2906,13 @@ def base_dashboards():
             ("Duration over time", 36, 12, 12, 7, "as_of_day"),
         ]),
         "Data Freshness": (
-            "How long ago each source was last read. It takes no pickers, so "
-            "every stale source shows. " + PREDEFINED_NOTE, None, [
+            "How long ago each source was last read, and how much of the value "
+            "each month end rests on recent marks. It takes no pickers, so every "
+            "stale source shows. " + PREDEFINED_NOTE, None, [
             ("Stalest source (days)", 0, 0, 8, 3, None),
             ("Returns age (days)", 0, 8, 8, 3, None),
             ("Source freshness", 3, 0, 24, 10, None),
+            ("Mark age", 13, 0, 24, 8, None),
         ]),
     }
 
@@ -4286,6 +4308,190 @@ def cashflow_plan_cards(db_id, privacy):
     return out
 
 
+# The net worth bridge's colours: a rise green, a fall red, a total grey
+# (BENCHMARK_COLOR).
+BRIDGE_RISE, BRIDGE_FALL = "#1BAF7A", "#E0533D"
+# The monthly bars by column, and the month's change as a line.
+BRIDGE_MONTH_SERIES = {"net_saved": ("Net saved", "#2A78D6"), "tracking_changes": ("Tracking changes", "#A989C5"),
+                       "investment_gain": ("Investment gain", BRIDGE_RISE)}
+BRIDGE_FILTERS = {"time_range": ("month_end", "date/all-options")}
+
+
+def bridge_cards(db_id, privacy):
+    """The Cash Flow dashboard's bridge tiles, or with `privacy` their
+    twins: name -> (display, description, dataset_query, viz). They read
+    the months of `wealthdb returns bridge` (web_bridge, gold migration
+    0177), which sum to any window. A bridge exists for the whole household
+    only, since returns do not add across grains, so the cards take the
+    Currency and the Time range and decline Source, Section and Investing.
+
+    The waterfall shows the window's changes alone, so its steps fill the
+    chart, and two figures beside it state the net worth they lead from and
+    to. Metabase's total bar is their sum and carries Metabase's own label.
+
+    A twin card shows the same as shares of the starting net worth: the
+    window's, or by month that month's."""
+    tags = native_tags("web_bridge", BRIDGE_FILTERS)
+    tail = " Shares of the start." if privacy else ""
+    pickers = [(CASHFLOW_CURRENCY_PARAM_ID, "currency"), (TIME_PARAM_ID, "time_range")]
+    out = {}
+    card = _card_maker(out, db_id, privacy, pickers, tags, tail)
+    window = ("WITH w AS (\n  SELECT * FROM web_bridge" + _native_where(tags)
+              + "\n     AND currency = {{currency}})")
+    start = "arg_min(start_net_worth, end_day)::DOUBLE"
+    finish = "arg_max(end_net_worth, end_day)::DOUBLE"
+
+    def share(x, of):
+        return f"({x}) * 100 / NULLIF(abs({of}), 0)" if privacy else x
+
+    def figure(name, desc, value):
+        col = "net_worth_pct" if privacy else "net_worth"
+        # Never compact: Metabase compacts a figure too wide for its tile,
+        # and the two would then read differently.
+        card(name, "scalar", desc, window + f"\nSELECT {value} AS {col}\n  FROM w",
+             {"scalar.compact_primary_number": "never",
+              **(_share_viz(col, decimals=1) if privacy
+                 else {"column_settings": {f'["name","{col}"]': {"decimals": 0}}})})
+
+    figure("Net worth at start", "Net worth where the Time range's first whole month starts.",
+           share(start, start))
+    figure("Net worth at end", "Net worth where the Time range's last whole month ends.",
+           share(finish, start))
+
+    amount = "amount_pct" if privacy else "amount"
+    steps = (window + ",\ns AS (\n"
+             f"  SELECT {start} AS start, sum(net_saved)::DOUBLE AS saved,\n"
+             "         sum(onboarded)::DOUBLE AS tracked, sum(gain)::DOUBLE AS gained\n"
+             "    FROM w)\n")
+    arms = [("Net saved", "saved", ""), ("Tracking changes", "tracked", " WHERE tracked <> 0"),
+            ("Investment gain", "gained", "")]
+    card("Why net worth moved", "waterfall",
+         "What moved net worth: saved, moved in or out of tracking, and gained, by whole months.",
+         steps + "\nUNION ALL\n".join(
+             f"SELECT {i} AS i, '{label}' AS step, {col + ' / NULLIF(abs(start), 0)' if privacy else col}"
+             f" AS {amount} FROM s{where}"
+             for i, (label, col, where) in enumerate(arms)) + "\nORDER BY i",
+         {"graph.dimensions": ["step"], "graph.metrics": [amount], "graph.x_axis.title_text": "",
+          "graph.y_axis.title_text": "", "graph.show_values": True, "graph.label_value_formatting": "full",
+          "waterfall.increase_color": BRIDGE_RISE, "waterfall.decrease_color": BRIDGE_FALL,
+          "waterfall.total_color": BENCHMARK_COLOR, "waterfall.show_total": True,
+          # Metabase's waterfall labels print a negative in parentheses,
+          # with no setting. As a percent style the sign stays inside them.
+          "column_settings": {f'["name","{amount}"]': {"number_style": "percent", "decimals": 1} if privacy
+                              else {"decimals": 0}}})
+
+    # One row a month, the change beside its parts. The twin divides each
+    # by the month's own start.
+    parts = {"net_saved": "net_saved", "tracking_changes": "onboarded", "investment_gain": "gain",
+             "change": "end_net_worth - start_net_worth"}
+    names = {c: f"{c}_pct" if privacy else c for c in parts}
+    series = {names[c]: {"display": "bar", "color": color, "title": title}
+              for c, (title, color) in BRIDGE_MONTH_SERIES.items()}
+    series[names["change"]] = {"display": "line", "color": BENCHMARK_COLOR, "title": "Change in net worth"}
+    card("Saved and gained by month", "combo",
+         "Each month's net saved, tracking changes and gain, with the change in net worth as a line.",
+         window + "\nSELECT CAST(date_trunc('month', month_end) AS TIMESTAMP) AS month,\n       " +
+         ",\n       ".join(f"({share(e, 'start_net_worth')})::DOUBLE AS {names[c]}" for c, e in parts.items()) +
+         "\n  FROM w\n ORDER BY month",
+         {"graph.dimensions": ["month"], "graph.metrics": list(names.values()), **STACKED_VIZ,
+          "graph.x_axis.title_text": "", "graph.y_axis.title_text": "", "series_settings": series,
+          **(_share_viz(*names.values()) if privacy else {})})
+    return out
+
+
+# The fee tiles' detailed groups, in stacking order (gold's fee_group),
+# and their colours.
+FEE_GROUP_COLORS = {"investment": "#2A78D6", "bank": "#EB6834", "atm": "#1BAF7A", "other": "#8A99A8"}
+FEE_GROUP_TITLES = {"investment": "Investment", "bank": "Bank", "atm": "ATM", "other": "Other"}
+FEE_FILTERS = {"time_range": ("day", "date/all-options"), "source": ("silver_source_id", "string/="),
+               "account": ("account_label", "string/=")}
+PRIVACY_FEE_FILTERS = {k: v for k, v in FEE_FILTERS.items() if k != "account"}
+
+
+def fee_cards(db_id, privacy):
+    """The Spending dashboard's two fee tiles, or with `privacy` their
+    twins: name -> (display, description, dataset_query, viz). They read
+    `wealthdb spending fees` over web_fees, gold migration 0177: the
+    spending lines of primary BANK_FEES, so a vehicle's fees show, and the
+    daily values, each entity a portfolio, else an account outside any.
+    They take the card balance tile's pickers: a fee has no Category.
+
+    The return is the CLI's: the entity's monthly returns chained over
+    the months that end inside the window. A picked account narrows the
+    fees and the value, never the return.
+
+    On a twin the rates and returns stay, the fees read as shares of the
+    window's fees, and an entity is its source, its kind and its rank, as
+    the Spend by account twin names a group, with no name of its own."""
+    tags = native_tags("web_fees", PRIVACY_FEE_FILTERS if privacy else FEE_FILTERS)
+    tail = PRIVACY_DESC if privacy else ""
+    out = {}
+    card = _card_maker(out, db_id, privacy, CARD_BALANCE_PICKERS, tags, tail)
+    val = _ccy_case("value")
+    rows = ("WITH f AS (\n  SELECT * FROM web_fees" + _native_where(tags) + "),\n"
+            "e AS (\n  SELECT entity_key, any_value(silver_source_id) AS silver_source_id,\n"
+            "         any_value(entity_kind) AS entity_kind, any_value(entity) AS entity,\n"
+            f"         sum({val}) FILTER (WHERE line = 'fee')::DOUBLE AS fees,\n" +
+            "".join(f"         coalesce(sum({val}) FILTER (WHERE fee_group = '{g}'), 0)::DOUBLE AS {g},\n"
+                    for g in FEE_GROUP_COLORS) +
+            f"         sum({val}) FILTER (WHERE line = 'value')::DOUBLE AS value_days,\n"
+            "         count(DISTINCT day) FILTER (WHERE line = 'value') AS days\n"
+            "    FROM f\n   GROUP BY 1\n  HAVING count(*) FILTER (WHERE line = 'fee') > 0),\n"
+            "r AS (\n  SELECT entity_key, exp(sum(ln(1 + twr))) - 1 AS twr\n"
+            "    FROM (SELECT DISTINCT entity_key, day, twr FROM f\n"
+            "           WHERE line = 'return' AND currency = {{currency}} AND twr > -1)\n"
+            "   GROUP BY 1),\n"
+            "t AS (SELECT NULLIF(sum(fees), 0) AS total FROM e),\n"
+            "n AS (\n  SELECT *, silver_source_id || ' / ' || entity_kind || ' ' ||\n"
+            "         row_number() OVER (PARTITION BY silver_source_id, entity_kind ORDER BY fees DESC) AS entity_group\n"
+            "    FROM e)\n")
+    label = "entity_group" if privacy else "entity"
+    group_cols = [f"{g}_pct" if privacy else g for g in FEE_GROUP_COLORS]
+    groups = (", ".join(f"100 * {g} / (SELECT total FROM t) AS {g}_pct" for g in FEE_GROUP_COLORS) if privacy
+              else ", ".join(FEE_GROUP_COLORS))
+    card("Fees by portfolio", "row",
+         "What each portfolio, or account outside one, paid in fees, net of refunds, by group. Trading "
+         "and fund costs are not fee lines.",
+         rows + f"SELECT {label}, {groups}\n  FROM n\n ORDER BY fees DESC",
+         {"graph.dimensions": [label], "graph.metrics": group_cols, "stackable.stack_type": "stacked",
+          "graph.x_axis.title_text": "", "graph.y_axis.title_text": "",
+          "series_settings": {c: {"color": FEE_GROUP_COLORS[g], "title": FEE_GROUP_TITLES[g]}
+                              for c, g in zip(group_cols, FEE_GROUP_COLORS, strict=True)},
+          **(_share_viz(*group_cols) if privacy else {})})
+    rate = "CASE WHEN value_days > 0 THEN 100 * fees * 365 / value_days END AS fee_rate_pct"
+    twr = "100 * r.twr AS twr_pct"
+    money = ("100 * fees / (SELECT total FROM t) AS fees_pct" if privacy
+             else "value_days / NULLIF(days, 0) AS mean_value")
+    card("Fee rate by portfolio", "table",
+         "Fees as an annualized share of the value held, beside the return over the months that end in "
+         "the window. Blank with no value or return.",
+         rows + f"SELECT {label}, {money},\n       {rate},\n       {twr}\n"
+         "  FROM n LEFT JOIN r USING (entity_key)\n ORDER BY fees DESC",
+         _share_viz("fees_pct", "fee_rate_pct", "twr_pct", decimals=2) if privacy
+         else {"column_settings": {**_share_viz("fee_rate_pct", "twr_pct", decimals=2)["column_settings"],
+                                   '["name","mean_value"]': {"decimals": 0}}})
+    return out
+
+
+def mark_cards(db_id):
+    """The Data Freshness dashboard's Mark age tile: name -> (display,
+    description, dataset_query, viz). It reads `wealthdb status --marks`
+    (web_marks, gold migration 0177) and takes no picker, like that
+    dashboard's other tiles. Its figures are shares, so the twin shows the
+    card as it is."""
+    return {"Mark age": (
+        "bar",
+        "The share of value marked within five days of each month end: how far that month's return can "
+        "be trusted. Liabilities and cash are out.",
+        _native(db_id, "SELECT CAST(date_trunc('month', month_end) AS TIMESTAMP) AS month, marked_pct\n"
+                "  FROM web_marks\n ORDER BY month", {}),
+        {"graph.dimensions": ["month"], "graph.metrics": ["marked_pct"],
+         "graph.y_axis.auto_range": False, "graph.y_axis.min": 0, "graph.y_axis.max": 100,
+         "graph.x_axis.title_text": "", "graph.y_axis.title_text": "",
+         "series_settings": {"marked_pct": {"color": BENCHMARK_COLOR}},
+         **_share_viz("marked_pct")})}
+
+
 def view_tags(table, spec):
     """Field-filter template tags for a native card over serving view
     `table`. spec maps tag name -> (column, widget-type). A tag whose
@@ -5108,6 +5314,7 @@ def privacy_card_defs(db_id, model_ids):
     out.update(income_privacy_defs(db_id))
     out.update(cashflow_privacy_defs(db_id))
     for cards in (exposure_cards, issuer_cards, yield_cards, income_projected_cards, cashflow_plan_cards,
+                  bridge_cards, fee_cards,
                   gains_question_defs):
         out.update({name: ("question", *card) for name, card in cards(db_id, privacy=True).items()})
     return out
@@ -5991,7 +6198,7 @@ def missing_web_views(base, sid, db_id):
 # The oldest gold schema the cards can read. A test holds it at or above
 # the newest migration that defines a view or table a card reads.
 # DESIGN.md §6 says what each older snapshot lacks.
-MIN_GOLD_SCHEMA = 176
+MIN_GOLD_SCHEMA = 177
 
 # main()'s exit status for a snapshot older than MIN_GOLD_SCHEMA; every
 # other failure exits 1. web/web tells the two apart, because only

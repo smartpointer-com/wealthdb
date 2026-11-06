@@ -463,6 +463,33 @@ names no account, and gives each its share of the credit balances. The
 cards of rates, years and securities alone are exempt: the yields, the
 dividend scatter and the two charts over time.
 
+The **Cash Flow** dashboard's bridge tiles read `web_bridge`, the months
+of `wealthdb returns bridge` a refresh stores in `report_bridge` (§8).
+They take the currency and the time range. They decline the rest: a
+bridge exists for the whole household only.
+
+- Why net worth moved is a waterfall of the window's changes: net saved,
+  tracking changes where not zero, and investment gain. Its total bar is
+  the change in net worth. Metabase names that bar Total and prints a
+  negative label in parentheses, with no setting for either.
+- Net worth at start and Net worth at end sit in a column beside it. The
+  waterfall draws no start bar, because Metabase paints a first bar as an
+  increase, and the changes fill the chart this way.
+- Saved and gained by month is signed stacked bars of the same three, with
+  the month's change in net worth as a line.
+
+On the twin the figures and the waterfall are shares of the window's
+starting net worth, and each month is a share of its own start.
+
+The **Spending** dashboard's fee tiles read `web_fees` (migration 0177),
+a view over the serving tables and `report_returns` at day grain. They
+take the card balance tile's pickers: Currency, Time range, Source and
+Account. A fee has no Category. Every figure equals
+`wealthdb spending fees` over the same window. A picked account narrows
+the fees and the value, never the return. On the twin an
+entity is its source, its kind and its rank. Rates and returns stay, and
+fees read as shares of the window's fees.
+
 The **Income** dashboard also puts what was received beside what is
 expected, as `wealthdb income`'s forward views do
 ([wealthdb/docs/INCOME.md](../wealthdb/docs/INCOME.md) §12), but over
@@ -635,6 +662,11 @@ the dashboard take none of the projection's four.
 The twin shows each part, and the net, as a share of all the income
 the projection expects over the Horizon, on every account. Where the
 Horizon expects none, the shares are blank. No amount reaches it.
+
+**Data Freshness** also shows Mark age: bars by month-end from 0 to
+100%, the share of value marked within five days (`web_marks`, from the
+`serving_marks` table). It takes no picker, like that dashboard's other
+tiles. Its figures are shares, so the twin shows the card as it is.
 
 **Data Freshness** counts a source's age from its last read, not from
 its latest snapshot: gold's `source_observed` (migration 0122) says
@@ -847,8 +879,9 @@ inception overrides and exclusions, the transfer-netting heuristic,
 synthetic onboarding. A SQL re-implementation would be a second returns
 engine that drifts. So the existing engine computes and the result is
 **materialized** into `report_returns` (migration 0026). It,
-`report_gains`, the `report_exposure` tables, the `report_yield`
-tables and the serving tables (below) are gold's *derived* tables;
+`report_bridge`, `report_gains`, the `report_exposure` tables, the
+`report_yield` tables and the serving tables (below) are gold's
+*derived* tables;
 everything else is loader-written source of truth or computed on read.
 
 The contract keeps it honest: each `(grain, granularity, currency)`
@@ -863,6 +896,11 @@ intact. Bucket rows carry TWR only and MWR lives on the
 since-inception summary rows — that is engine behavior, mirrored, not
 smoothed over. Diagnostic knobs (`--netting off`, `--inception strict`)
 stay CLI-only.
+
+`report_bridge` (migration 0177) holds each reporting currency's months:
+the rows of `wealthdb returns bridge --period monthly -x <CCY>`, off the
+same datasets and in the same transaction. Its money has two decimals,
+so a window's months sum in SQL to the CLI's bucket.
 
 The 64 partitions are cheap because the loaded data depends only on the
 currency, never the grain or period: `RunReturns` is split into a load

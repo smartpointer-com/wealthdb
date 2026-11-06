@@ -1225,15 +1225,16 @@ if spending:
            p.ACCOUNT_PARAM_ID, p.CATEGORY_PARAM_ID])
     tiles = [dc for dc in body["dashcards"] if dc["card_id"] is not None]
     check("every tile plus the switch link is present",
-          len(tiles) == 10 and len(body["dashcards"]) == 11)
+          len(tiles) == 12 and len(body["dashcards"]) == 13)
     ALL_CCY_IDS = {card_ids[c] for c in p.SPEND_ALL_CURRENCY_CARDS}
+    FEE_IDS = {card_ids[c] for c in ("Fees by portfolio", "Fee rate by portfolio")}
     check("every picker lands on every tile",
           all({m["parameter_id"] for m in dc["parameter_mappings"]} ==
               {p.SPEND_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
                p.ACCOUNT_PARAM_ID, p.CATEGORY_PARAM_ID}
               for dc in tiles
               if dc["card_id"] != card_ids["Card balances over time"]
-              and dc["card_id"] not in ALL_CCY_IDS),
+              and dc["card_id"] not in ALL_CCY_IDS | FEE_IDS),
           json.dumps([[m["parameter_id"] for m in dc["parameter_mappings"]]
                       for dc in tiles]))
     # A tile carrying every currency as its own column is the exception:
@@ -1244,6 +1245,10 @@ if spending:
               {m["parameter_id"] for m in dc["parameter_mappings"]} ==
               {p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
                p.ACCOUNT_PARAM_ID, p.CATEGORY_PARAM_ID})
+    for dc in (dc for dc in tiles if dc["card_id"] in FEE_IDS):
+        check("a fee tile takes Currency, Time range, Source and Account, and declines Category",
+              {m["parameter_id"] for m in dc["parameter_mappings"]} ==
+              {p.SPEND_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID, p.ACCOUNT_PARAM_ID})
     balances = [dc for dc in tiles
                 if dc["card_id"] == card_ids["Card balances over time"]][0]
     check("the card-balances tile takes every picker but the category one",
@@ -2236,10 +2241,10 @@ check("every stacked chart with bands ranks its rows by band",
       bool(_stacked_bands) and all("series_rank" in q or "AS latest FROM e" in q for q in _stacked_bands.values()),
       [n for n, q in _stacked_bands.items() if "series_rank" not in q and "AS latest FROM e" not in q])
 check("...the bars, flows each, by the band's total over the window",
-      all(f"{VIZ[n]['graph.dimensions'][1]} AS series_key, sum({VIZ[n]['graph.metrics'][0]}) AS series_rank"
-          in _stacked_bands.get(n, "") for n in _STACKED_BARS),
+      all(f"sum({VIZ[n]['graph.metrics'][0]})" in _stacked_bands.get(n, "")
+          and f"{VIZ[n]['graph.dimensions'][1]} AS series_key," in _stacked_bands.get(n, "") for n in _STACKED_BARS),
       [n for n in sorted(_STACKED_BARS)
-       if f"sum({VIZ[n]['graph.metrics'][0]}) AS series_rank" not in _stacked_bands.get(n, "")])
+       if f"sum({VIZ[n]['graph.metrics'][0]})" not in _stacked_bands.get(n, "")])
 # The driver's DuckDB fails on a window partitioned by a constant over
 # no rows: a card whose series is a constant (Investing, whole grain)
 # meets one when a picker contradicts its own filter.
@@ -2250,8 +2255,8 @@ check("...and lists its legend in the bands' own order",
       all(VIZ[n].get("legend.is_reversed") is False for n in _stacked_bands),
       [n for n in _stacked_bands if VIZ[n].get("legend.is_reversed") is not False])
 check("...ending in that order and nothing after it",
-      all(q.rstrip().endswith(("NULLS FIRST, month", "NULLS FIRST, as_of_day")) or "AS latest FROM e" in q
-          for q in _stacked_bands.values()))
+      all(q.rstrip().endswith(("NULLS FIRST, month", "NULLS FIRST, as_of_day", "ORDER BY series_rank, i"))
+          or "AS latest FROM e" in q for q in _stacked_bands.values()))
 
 section("line charts list their legend top line first")
 
@@ -3152,6 +3157,63 @@ check("...and none names what a card runs over opened on its own",
       not [n for n in CARDS if "standalone" in CARDS[n][1]]
       and not [n for n, d in DEFS.items() if "standalone" in d[0]])
 
+section("the net worth bridge, the fee tiles and mark age")
+
+_bridge_all = [n + x for n in ("Net worth at start", "Net worth at end", "Why net worth moved",
+                               "Saved and gained by month") for x in ("", p.PRIVACY_SUFFIX)]
+for _n in _bridge_all:
+    _tags = set(CARDS[_n][2]["native"]["template-tags"])
+    check(f"'{_n}' takes Currency and the Time range, and declines Source, Section and Investing",
+          _tags == {"currency", "time_range"}, _tags)
+    check("...and picks its rows by the currency, reading the bridge's months",
+          "currency = {{currency}}" in sql_of(CARDS[_n][2]) and "FROM web_bridge" in sql_of(CARDS[_n][2]))
+    check("...and says no money on the twin", _n.endswith(p.PRIVACY_SUFFIX) == ("/ NULLIF(abs(" in sql_of(CARDS[_n][2])))
+_walk = sql_of(CARDS["Why net worth moved"][2])
+check("the walk is a waterfall of the changes: saved, tracking, gain, in that order",
+      CARDS["Why net worth moved"][0] == "waterfall"
+      and _walk.index("'Net saved'") < _walk.index("'Tracking changes'") < _walk.index("'Investment gain'")
+      and "'Start'" not in _walk and "'End'" not in _walk)
+check("...and tracking changes only when it is not zero", "WHERE tracked <> 0" in _walk)
+_wviz = VIZ["Why net worth moved"]
+check("...a rise green, a fall red, the total grey, each step's value printed",
+      (_wviz["waterfall.increase_color"], _wviz["waterfall.decrease_color"], _wviz["waterfall.total_color"])
+      == (p.BRIDGE_RISE, p.BRIDGE_FALL, p.BENCHMARK_COLOR)
+      and _wviz["waterfall.show_total"] is True and _wviz["graph.show_values"] is True)
+check("the figures beside it are scalars that never compact",
+      all(CARDS[n][0] == "scalar" and VIZ[n]["scalar.compact_primary_number"] == "never"
+          for n in ("Net worth at start", "Net worth at end")))
+check("...the base in whole units",
+      VIZ["Net worth at end"]["column_settings"]['["name","net_worth"]'] == {"decimals": 0})
+check("the waterfall prints full figures", _wviz["graph.label_value_formatting"] == "full")
+_mviz = VIZ["Saved and gained by month"]
+check("the months are stacked bars with the change as a line, and print no values",
+      CARDS["Saved and gained by month"][0] == "combo" and _mviz["stackable.stack_type"] == "stacked"
+      and {k: v["display"] for k, v in _mviz["series_settings"].items()}
+      == {"net_saved": "bar", "tracking_changes": "bar", "investment_gain": "bar", "change": "line"}
+      and "graph.show_values" not in _mviz)
+check("the monthly twin divides by each month's own start",
+      "/ NULLIF(abs(start_net_worth), 0)" in sql_of(CARDS["Saved and gained by month (privacy)"][2]))
+
+for _n in ("Fees by portfolio", "Fee rate by portfolio"):
+    _base, _twin = sql_of(CARDS[_n][2]), sql_of(CARDS[p.privacy_name(_n)][2])
+    check(f"'{_n}' reads the fee lines, never the statement", "FROM web_fees" in _base and "web_cashflow" not in _base)
+    check("...the twin drops the Account tag, the entity's name and the money",
+          "account" not in CARDS[p.privacy_name(_n)][2]["native"]["template-tags"]
+          and "SELECT entity_group" in _twin and "mean_value" not in _twin)
+_rate = sql_of(CARDS["Fee rate by portfolio"][2])
+check("the fee rate is the CLI's: fees over the summed daily value, on 365 days, blank at no value",
+      "CASE WHEN value_days > 0 THEN 100 * fees * 365 / value_days END AS fee_rate_pct" in _rate)
+check("...beside the monthly returns chained in the picked currency",
+      "exp(sum(ln(1 + twr))) - 1" in _rate and "currency = {{currency}}" in _rate)
+
+_mark = next(t for t in p.base_dashboards()["Data Freshness"][2] if t[0] == "Mark age")
+check("Mark age is on Data Freshness, and its twin shows the same card",
+      "Mark age" in p.PRIVACY_EXEMPT_CARDS
+      and "Mark age" in [t[0] for t in DEFS["Data Freshness (privacy)"][3]])
+check("...it takes no picker", not CARDS["Mark age"][2]["native"]["template-tags"] and _mark[5] is None)
+check("...its bars run from 0 to 100", (VIZ["Mark age"]["graph.y_axis.min"],
+                                        VIZ["Mark age"]["graph.y_axis.max"]) == (0, 100))
+
 section("the Cash Flow dashboard's projection")
 
 _PLAN = ["Cash flow projection by month", "Cash flow projection"]
@@ -3162,10 +3224,11 @@ check("the projection cards and their twins are defined",
 # the twin alike.
 _cf_spec = [t[0] for t in p.base_dashboards()["Cash Flow"][2]]
 _cf_at = _cf_spec.index("Cash flow statement by month")
-check("the projection follows the statement on the Cash Flow dashboard, its twin's on the twin",
-      _cf_spec[_cf_at + 1:_cf_at + 3] == _PLAN
-      and [t[0] for t in DEFS["Cash Flow (privacy)"][3]][_cf_at + 1:_cf_at + 3]
-      == [p.privacy_name(n) for n in _PLAN], _cf_spec)
+_BRIDGE = ["Net worth at start", "Net worth at end", "Why net worth moved", "Saved and gained by month"]
+check("the bridge follows the statement and the projection the bridge, its twin's on the twin",
+      _cf_spec[_cf_at + 1:_cf_at + 7] == _BRIDGE + _PLAN
+      and [t[0] for t in DEFS["Cash Flow (privacy)"][3]][_cf_at + 1:_cf_at + 7]
+      == [p.privacy_name(n) for n in _BRIDGE + _PLAN], _cf_spec)
 _plan_sql = {n: sql_of(CARDS[n][2]) or "" for n in _plan_all}
 # The investment income is the Income cards' expected income, part by
 # part, over the months after this one; the principal is the events' of
@@ -3325,14 +3388,14 @@ check("the Gains picker offers exactly the engine's readings of a missing cost b
 # every reporting currency beside it; its rates table, the days the
 # income received covers and the stock positions' sizes hold no money.
 _LONG_VIEWS = {"web_gains", "web_exposure", "web_exposure_debt", "web_exposure_issuers", "web_exposure_securities",
-               "web_yield", "web_yield_curve", "web_yield_received", "web_cashflow_plan"}
+               "web_yield", "web_yield_curve", "web_yield_received", "web_cashflow_plan", "web_bridge"}
 _FX_TABLES = {"web_yield_parts": "report_yield_parts", "web_yield_events": "report_yield_events"}
 _missing = {v: [c for c in p.REPORTING_CURRENCIES
                 if not re.search(rf"_{c.lower()}\b", _latest_definition(v))]
             for v in p.web_views_wanted()
             if v not in _LONG_VIEWS | set(_FX_TABLES) | {"web_yield_rates", "web_income_days", "web_cashflow_pool",
                                                           "web_position_sizes", "web_history_calendar",
-                                                          "web_benchmarks"}}
+                                                          "web_benchmarks", "web_marks"}}
 check("every wide serving view carries a value column per reporting currency",
       not any(_missing.values()), {v: m for v, m in _missing.items() if m})
 _ym = open(os.path.join(_REPO, "wealthdb", "internal", "gold", "yield_materialize.go"),
@@ -3867,6 +3930,41 @@ if duckdb is not None:
 
     def _near(a, b):
         return a is not None and abs(a - b) < 1e-9
+
+    # The bridge cards on invented rows, two months.
+    def _bridge_db():
+        db = duckdb.connect()
+        db.execute("CREATE TABLE web_bridge (month_end TIMESTAMP, currency TEXT, end_day BIGINT, "
+                   "start_net_worth DECIMAL(24,2), end_net_worth DECIMAL(24,2), net_saved DECIMAL(24,2), "
+                   "onboarded DECIMAL(24,2), gain DECIMAL(24,2))")
+        db.execute("INSERT INTO web_bridge VALUES "
+                   "(TIMESTAMP '2025-01-31', 'USD', 1, 1000, 1100, 50, 0, 50), "
+                   "(TIMESTAMP '2025-02-28', 'USD', 2, 1100, 900, -300, 150, -50), "
+                   "(TIMESTAMP '2025-02-28', 'CHF', 2, 9, 9, 0, 0, 0)")
+        return db
+
+    def _bridge(name):
+        return _bridge_db().execute(_render(CARDS[name][2], {"currency": "USD"})).fetchall()
+
+    check("the walk's steps sum the months",
+          [(r[1], r[2]) for r in _bridge("Why net worth moved")]
+          == [("Net saved", -250), ("Tracking changes", 150), ("Investment gain", 0)])
+    check("...the figures are the first start and the last end",
+          (_bridge("Net worth at start")[0][0], _bridge("Net worth at end")[0][0]) == (1000, 900))
+    check("...on the twin the start reads 100, the end and the steps shares of it",
+          (_bridge("Net worth at start (privacy)")[0][0], _bridge("Net worth at end (privacy)")[0][0]) == (100, 90)
+          and [r[2] for r in _bridge("Why net worth moved (privacy)")] == [-0.25, 0.15, 0])
+    _z = _bridge_db()
+    _z.execute("UPDATE web_bridge SET onboarded = 0")
+    check("...and tracking changes leaves the walk at zero",
+          [r[1] for r in _z.execute(_render(CARDS["Why net worth moved"][2], {"currency": "USD"})).fetchall()]
+          == ["Net saved", "Investment gain"])
+    _m = _bridge("Saved and gained by month")
+    check("the months keep their signs and the change adds up",
+          [r[1:] for r in _m] == [(50, 0, 50, 100), (-300, 150, -50, -200)])
+    _mt = _bridge("Saved and gained by month (privacy)")
+    check("...on the twin each is a share of its own month's start",
+          abs(_mt[0][4] - 10) < 1e-9 and abs(_mt[1][1] - (-300 * 100 / 1100)) < 1e-9, _mt)
 
     # The income yield: months 1..12 pay 12 x 20 on the USD cash (12,000
     # x (3.00 - 1.00) / 1200), two coupons of 400 and 12 x 12.50 on the
